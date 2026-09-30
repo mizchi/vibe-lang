@@ -1,0 +1,1825 @@
+// lib/@vibe/compiler/runtime/typecheck_fs.vibe — finish typecheck fs impl.
+
+import @vibe/compiler/cache {
+  cache_read_source_fs,
+  cache_source_text_memo_reset,
+  compact_source_fingerprint_memo,
+  compact_source_fingerprint_memo_reset,
+  compact_string_fingerprint,
+  normalize_persistent_cache_text,
+  persistent_dep_list_cache_path,
+  persistent_leaf_fingerprint_cache_path,
+  persistent_type_env_cache_path,
+  persistent_typing_dependency_env_reuse_eligibility_path,
+  persistent_typing_dependency_env_reuse_sidecar_path,
+  typing_module_fingerprint
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import @vibe/ast {
+  TypeExpr,
+  TypeExpr::is_array_of_int,
+  impl_target_from_key,
+  impl_target_key,
+  trait_ref_args,
+  trait_ref_from_key,
+  trait_ref_key,
+  trait_ref_name,
+  type_param_arity,
+  type_param_name
+}
+
+import @vibe/compiler/checker {
+  CheckedProgram,
+  aggregate_export_names,
+  check_program,
+  check_program_type_table,
+  check_program_with_env_result,
+  check_program_with_projected_import_env_typed_lowering_located_observation,
+  collect_builtin_shadowing_names,
+  detect_redundant_namespace_imports,
+  detect_top_level_let_star,
+  detect_unbound_nonunit_returns,
+  detect_unused_imports,
+  export_local_nonvalue_kind,
+  import_item_kind_errors,
+  is_explicit_builtin_declaration,
+  report_unknown_type_names_deferred_validation,
+  typed_lowering_enc_offset,
+  typed_lowering_enc_tag,
+  typing_semantics_seed,
+  unresolved_aggregate_export_name,
+  unresolved_export_message,
+  validate_derives
+}
+
+import @vibe/compiler/checker/artifacts {
+  checked_exported_interface_artifact_from_checked_program,
+  checked_module_typing_artifact_v2_matches_exact_inputs,
+  encode_checked_module_typing_artifact_v2,
+  shadow_unattested_checked_module_typing_artifact_v2_from_checked_program
+}
+
+import @vibe/compiler/checker/artifacts/program {
+  encode_checked_program
+}
+
+import @vibe/compiler/checker/artifacts/module {
+  CheckedModuleArtifact
+}
+
+import @vibe/compiler/runtime/checked_module_cache {
+  checked_module_artifact_stmts,
+  checked_module_cache_input_identity,
+  checked_module_cache_mode,
+  checked_module_cache_reset,
+  commit_checked_module_artifact,
+  load_checked_module_artifact
+}
+
+import @vibe/compiler/core {
+  BindingOrigin,
+  EnvValueBinding,
+  Expr,
+  Stmt,
+  Type,
+  TypeDef,
+  TypeEnv,
+  bsearch_leftmost,
+  dir_of_path,
+  env_bind,
+  env_bind_with_origin,
+  env_flat_bindings,
+  env_lookup,
+  env_lookup_binding_including_surface,
+  env_lookup_flat,
+  env_preserve_type_definition_origins,
+  env_selectable_type_defs,
+  env_trait_def_names_into,
+  env_type_defs,
+  env_value_binding,
+  find_typedef,
+  has_standard_effect_policy,
+  is_alias_constructor,
+  is_builtin_iterator_serialized_boundary_path,
+  is_contract_ext,
+  is_exception_effect_name,
+  lookup_registry_builtin,
+  namespace_private_renamer_for_path,
+  normalize_path,
+  resolution_env_seed,
+  resolve_builtin,
+  resolve_import_path,
+  resolve_import_path_candidates,
+  str_lt,
+  typed_render_refuse_key,
+  unstable_package_note
+}
+
+import @vibe/compiler/codegen {
+  compile_inline_wat_array_params
+}
+
+import @vibe/compiler/entry/source_compile/wasi_only {
+  expand_interp_stmts
+}
+
+import @vibe/compiler/contract {
+  classify_contract_stmts,
+  contract_duplicate_decl_index,
+  contract_effective_decl_indices,
+  contract_effective_decls,
+  contract_parse_error_offset,
+  contract_type_provenance,
+  contract_types_item_names,
+  contract_unsupported_stmt_index,
+  extract_package_version,
+  extract_require_pins,
+  parse_contract_program,
+  parse_contract_program_spans,
+  vpkg_path_escape_one_line,
+  vpkg_types_contract_of_source,
+  vpkg_types_decl_pos_for_line
+}
+
+import @vibe/compiler/loader {
+  ast_cache_prefetch_count,
+  ast_cache_prefetch_count_reset,
+  ast_cache_prefetch_fs,
+  ingest_source_text_fs,
+  ingestion_pipeline_telemetry_add,
+  load_or_parse_module_header_fs,
+  parse_program_located_shared,
+  parse_program_located_shared_mark_semantic,
+  parse_program_located_shared_ran_parser,
+  parse_program_located_shared_semantic_pending,
+  vpkg_types_module_path_prefix
+}
+
+import @vibe/compiler/incremental {
+  RippleDb, ripple_get_deps, ripple_get_fingerprint, ripple_get_source, ripple_record_eval, ripple_set_source
+}
+
+import @vibe/compiler/module_graph {
+  plan_module_order
+}
+
+import @vibe/compiler/syntax {
+  Token,
+  lex_with_offsets,
+  lex_with_offsets_recovering,
+  offset_to_line_col,
+  parse_program_located,
+  parse_program_recovering,
+  print_type_expr,
+  token_to_string
+}
+
+import @vibe/compiler/runtime/eval_loader {
+  contains_str
+}
+
+import ./persistent_env_codec.vibe {
+  PersistentModuleCache,
+  load_persistent_dep_list,
+  load_persistent_leaf_fingerprint,
+  load_persistent_module_cache,
+  load_persistent_type_env,
+  parse_persistent_module_cache,
+  parse_persistent_type_env,
+  persistent_dep_list_text,
+  persistent_leaf_fingerprint_text,
+  persistent_module_cache_text,
+  persistent_type_env_cache_text
+}
+
+import ./typed_lowering_codec.vibe {
+  module_typed_lowering_text, parse_module_typed_lowering_offsets_text
+}
+
+import ./typecheck_fs_bind_import_names_from_cache_collecting.vibe {
+  build_import_envs_collecting,
+  copy_string_array,
+  load_planned_module_source,
+  project_exact_dependency_envs,
+  type_diagnostic_display,
+  typecheck_fs_build_fingerprint
+}
+
+import ./typecheck_fs_find_fn_anchor_off.vibe {
+  collect_module_diagnostics,
+  copy_string_pairs,
+  ensure_env_cache_for_paths,
+  experimental_typing_dependency_env_reuse_enabled,
+  find_fn_anchor_off,
+  incremental_interface_trace_enabled,
+  incremental_interface_trace_observe,
+  incremental_typecheck_telemetry_add,
+  is_vpkg_types_stub_path,
+  load_typing_dependency_env_reuse_target,
+  locate_type_error_heuristic,
+  offset_line_col_prefix,
+  offset_line_col_range_prefix,
+  parse_offset_digits,
+  parse_program_with_path_impl,
+  publish_typing_dependency_env_reuse_eligibility,
+  store_persistent_type_env,
+  typecheck_fs_lookup_string_pair,
+  typecheck_fs_upsert_env_cache,
+  typecheck_fs_upsert_string_pair,
+  typecheck_ident_run,
+  typing_dependency_env_reuse_is_eligible,
+  typing_dependency_transport_input_key,
+  write_persistent_dep_list_if_missing,
+  write_typing_dependency_env_reuse_sidecar
+}
+
+import ./typecheck_fs_interface_decl_lines.vibe {
+  checked_module_public_env_for_path,
+  incremental_checked_env_identity,
+  incremental_implementation_identity,
+  incremental_interface_identity,
+  incremental_persistent_type_env_transport_identity,
+  incremental_trace_observe_checked_env
+}
+
+import ./typecheck_fs_local_type_member_markers.vibe {
+  empty_stack,
+  ensure_module_typed_lowering_offsets,
+  module_typed_lowering_memo_get_by_fp,
+  module_typed_lowering_memo_put,
+  typecheck_fs_empty_dep_fps,
+  typecheck_fs_lookup_env_cache,
+  valid_persistent_leaf_fingerprint,
+  valid_persistent_type_env
+}
+
+/// Decode ` [@fn=name]` (the #1941 fallback when a return-type mismatch has
+/// no AST offset). Always strips the marker. When `name` is found in
+/// `source`, prefix the exact name span; otherwise fall through to the
+/// first-occurrence heuristic on the cleaned message.
+fn locate_fn_name_marker(source: String, msg: String, mi: Int) -> String {
+  let marker = " [@fn="
+  let inner_start = mi + String::length(marker)
+  let rel_end = String::index_of(String::substring(msg, inner_start, String::length(msg)), "]")
+  if rel_end < 0 {
+    locate_type_error_heuristic(source, String::substring(msg, 0, mi))
+  } else {
+    let close = inner_start + rel_end
+    let name = String::substring(msg, inner_start, close)
+    let stripped = String::concat(String::substring(msg, 0, mi), String::substring(msg, close + 1, String::length(msg)))
+    let off = find_fn_anchor_off(source, name)
+    if off >= 0 {
+      String::concat(offset_line_col_range_prefix(source, off, off + String::length(name)), stripped)
+    } else {
+      locate_type_error_heuristic(source, stripped)
+    }
+  }
+}
+
+/// Decode (and ALWAYS strip) the ` [@off=N]` marker the checker may have
+/// appended. If N is a valid in-range offset, prefix the stripped message with
+/// its exact `line:col`. Otherwise strip the marker and fall through to the
+/// existing first-occurrence heuristics on the cleaned message. If no marker is
+/// present, returns msg unchanged.
+/// The end offset of the string literal token starting at `start`, or
+/// `fallback` when `start` is not one.
+///
+/// Scans to the matching close, honouring `\` escapes, so the span is the
+/// LEXER's rather than the decoded value's length. An interpolated string is
+/// not an `EString`, so no `\{` can appear here; an unterminated literal has
+/// no close to find and keeps the fallback. The result is never SHORTER than
+/// the fallback -- escapes only make the source longer than the decoded value
+/// -- so this can extend a range to the closing quote and never pull one in.
+fn string_token_end(source: String, start: Int, fallback: Int) -> Int {
+  let slen = String::length(source)
+  if start < 0 || start >= slen || String::byte_at(source, start) != 34 {
+    fallback
+  } else {
+    let mut i = start + 1
+    let mut found = 0 - 1
+    while i < slen {
+      let c = String::byte_at(source, i)
+      if c == 92 {
+        i = i + 2
+      } else if c == 34 {
+        found = i + 1
+        i = slen
+      } else {
+        i = i + 1
+      }
+    }
+    if found > fallback {
+      found
+    } else {
+      fallback
+    }
+  }
+}
+
+/// #2831 criterion 1: the range of a BINDING's literal initializer, or
+/// `(n, -1)` when this does not apply.
+///
+/// `EInt` / `EFloat` / `EBool` carry no offset slot -- `EString` and `EIdent`
+/// do -- so a mismatch on one of them anchors the enclosing binder instead.
+/// Measured on a stage2 from this checkout:
+///
+///   let a: Int = "not an int"   5:16-28   the literal, as a range
+///   let b: String = 42          5:7       the BINDER NAME, a point
+///   let c: Int = true           5:7       the binder
+///   let d: Int = 1.5            5:7       the binder
+///
+/// Widening those three constructors is an AST ABI bump across 174 files.
+/// This is the same answer without one, and by the same means `string_token_end`
+/// above already uses: the AST has no offset, this function has the SOURCE, so
+/// the honest range is derived from it. Nothing is invented -- the bytes are
+/// read back, and when they are not a literal the binder anchor stands.
+///
+/// Four conditions, each one narrowing:
+///   * no end was supplied (`m < 0`), so this cannot touch a case that already
+///     has a real range -- the string literal above keeps its own;
+///   * the message IS a binding mismatch, so a callee or argument anchor
+///     (#2885) is never moved;
+///   * `n` lands on an identifier start, i.e. a binder name;
+///   * the initializer after `=` is a bare INT / FLOAT / BOOL literal. Anything
+///     else -- a name, a call, a string, a leading `-` -- returns no answer.
+fn binding_literal_range(source: String, stripped: String, n: Int) -> (Int, Int) {
+  let slen = String::length(source)
+  if n < 0 || n >= slen {
+    (n, 0 - 1)
+  } else if !String::starts_with(stripped, "binding type mismatch") {
+    (n, 0 - 1)
+  } else if !lit_is_ident_start(String::byte_at(source, n)) {
+    (n, 0 - 1)
+  } else {
+    let eq = lit_scan_to_eq(source, n, slen)
+    if eq < 0 {
+      (n, 0 - 1)
+    } else {
+      let start = lit_skip_ws(source, eq + 1, slen)
+      let end = lit_token_end(source, start, slen)
+      if end > start {
+        (start, end)
+      } else {
+        (n, 0 - 1)
+      }
+    }
+  }
+}
+
+fn lit_is_ident_start(c: Int) -> Bool {
+  (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || c == 95
+}
+
+fn lit_is_digit(c: Int) -> Bool {
+  c >= 48 && c <= 57
+}
+
+fn lit_is_ident_char(c: Int) -> Bool {
+  lit_is_ident_start(c) || lit_is_digit(c)
+}
+
+fn lit_skip_ws(source: String, from: Int, slen: Int) -> Int {
+  let mut i = from
+  while i < slen && (String::byte_at(source, i) == 32 || String::byte_at(source, i) == 9 || String::byte_at(source, i) == 10 || String::byte_at(source, i) == 13) {
+    i = i + 1
+  }
+  i
+}
+
+/// The binding's `=`, or -1. A comparison (`==` `!=` `<=` `>=`) is not it, and
+/// neither is anything after the statement ends -- `;` or `}` stop the scan so
+/// a binder with NO initializer on this line cannot reach a later statement's.
+fn lit_scan_to_eq(source: String, from: Int, slen: Int) -> Int {
+  let mut i = from
+  let mut found = 0 - 1
+  while found < 0 && i < slen {
+    let c = String::byte_at(source, i)
+    if c == 59 || c == 125 {
+      i = slen
+    } else if c == 61 {
+      let prev = if i > from {
+        String::byte_at(source, i - 1)
+      } else {
+        0
+      }
+      let next = if i + 1 < slen {
+        String::byte_at(source, i + 1)
+      } else {
+        0
+      }
+      if next == 61 || prev == 61 || prev == 33 || prev == 60 || prev == 62 {
+        i = i + 1
+      } else {
+        found = i
+      }
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// The end of a bare INT / FLOAT / BOOL literal starting at `from`, or `from`
+/// when what is there is something else. A leading `-` is deliberately NOT
+/// accepted: that is a unary operator over a literal, a different node, and
+/// guessing at its extent is how an invented range gets in.
+fn lit_token_end(source: String, from: Int, slen: Int) -> Int {
+  if from >= slen {
+    from
+  } else {
+    let c = String::byte_at(source, from)
+    if lit_is_digit(c) {
+      let mut i = from
+      while i < slen && (lit_is_digit(String::byte_at(source, i)) || lit_is_ident_char(String::byte_at(source, i))) {
+        i = i + 1
+      }
+      // A fractional part, and an exponent, each only when a digit follows.
+      let mut j = i
+      if j < slen && String::byte_at(source, j) == 46 && j + 1 < slen && lit_is_digit(String::byte_at(source, j + 1)) {
+        j = j + 1
+        while j < slen && lit_is_ident_char(String::byte_at(source, j)) {
+          j = j + 1
+        }
+      } else {
+        ()
+      }
+      j
+    } else if lit_word_at(source, from, slen, "true") {
+      from + 4
+    } else if lit_word_at(source, from, slen, "false") {
+      from + 5
+    } else {
+      from
+    }
+  }
+}
+
+/// `word` at `from`, not followed by another identifier character -- so
+/// `truely` is not `true`.
+fn lit_word_at(source: String, from: Int, slen: Int, word: String) -> Bool {
+  let wlen = String::length(word)
+  if from + wlen > slen {
+    false
+  } else if String::substring(source, from, from + wlen) != word {
+    false
+  } else if from + wlen == slen {
+    true
+  } else {
+    !lit_is_ident_char(String::byte_at(source, from + wlen))
+  }
+}
+
+/// #2831: locate and path-prefix each diagnostic in a `\n`-joined message.
+///
+/// One entry per line, in order, blank lines dropped. A single-diagnostic
+/// message goes through unchanged, so this is the same answer it always gave
+/// for the one-error case.
+fn locate_each_line(path: String, source: String, msg: String) -> Array[String] with Exception {
+  let parts = split_diagnostics(msg)
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(parts) {
+    let part = Array::get(parts, i)
+    let located = locate_type_error(source, part)
+    match type_diagnostic_display(path, source, located) {
+      (disp_path, disp_msg) => Array::push(out, String::concat(String::concat(disp_path, ": "), disp_msg))
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// #2831: one located diagnostic per line of a `\n`-joined message, for the
+/// single-file lane (which carries no path prefix of its own).
+export fn locate_type_error_lines(source: String, msg: String) -> Array[String] {
+  let parts = split_diagnostics(msg)
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(parts) {
+    Array::push(out, locate_type_error(source, Array::get(parts, i)))
+    i = i + 1
+  }
+  out
+}
+
+/// #2831: a `\n`-joined report split into ONE STRING PER DIAGNOSTIC.
+///
+/// Not per line. A diagnostic may carry continuation lines -- `hint: ...`, and
+/// anything indented -- and `format_check_report` has kept them attached since
+/// #1888 so that `grep -c '^error: '` is an exact count. Splitting on every
+/// newline instead turned the one-error program
+///
+///   fn f() -> Unit { println("x") }
+///
+/// into TWO reported diagnostics, the second being its own hint. Measured; it
+/// is what the 1315-file corpus caught and the fixtures did not.
+///
+/// The continuation rule is a verbatim twin of `is_check_report_continuation`
+/// in user_dispatch.vibe. It is duplicated rather than shared because the
+/// framing and the locating live on opposite sides of the compiler, and a
+/// brand-new cross-file export plus its first caller in one commit is the
+/// shape the merge/flatten tool drops.
+fn split_diagnostics(msg: String) -> Array[String] {
+  let lines = String::split(msg, "\n")
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(lines) {
+    let line = Array::get(lines, i)
+    if String::length(line) == 0 {
+      ()
+    } else if diag_line_is_continuation(line) && Array::length(out) > 0 {
+      let last = Array::length(out) - 1
+      Array::set(out, last, String::concat(Array::get(out, last), String::concat("\n", line)))
+    } else {
+      Array::push(out, line)
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn diag_line_is_continuation(line: String) -> Bool {
+  if String::starts_with(line, "hint: ") {
+    true
+  } else if String::length(line) == 0 {
+    false
+  } else {
+    let c = String::byte_at(line, 0)
+    c == 32 || c == 9
+  }
+}
+
+/// An assignment node stores the target spelling but no offset. Recover its
+/// exact token from the source only when there is one matching assignment;
+/// ambiguity stays unlocated instead of pointing at an unrelated occurrence.
+fn locate_assignment_target(source: String, msg: String, marker_at: Int) -> String {
+  let marker = " [@assign-target]"
+  let stripped = String::concat(String::substring(msg, 0, marker_at), String::substring(msg, marker_at + String::length(marker), String::length(msg)))
+  let name_marker = "unknown name: "
+  let start = String::index_of(stripped, name_marker)
+  if start < 0 {
+    return stripped
+  }
+  let name_start = start + String::length(name_marker)
+  let name_end = typecheck_ident_run(stripped, name_start)
+  if name_end <= name_start {
+    return stripped
+  }
+  let name = String::substring(stripped, name_start, name_end)
+  let (tokens, starts, ends, _, _) = lex_with_offsets_recovering(source)
+  let mut found = -1
+  let mut found_end = -1
+  let mut matches = 0
+  let mut i = 0
+  while i + 1 < Array::length(tokens) {
+    let is_target = match Array::get(tokens, i) {
+      TIdent(n) => n == name,
+      _ => false
+    }
+    let is_assignment = match Array::get(tokens, i + 1) {
+      TEq => true,
+      TPlusEq => true,
+      TMinusEq => true,
+      TStarEq => true,
+      TSlashEq => true,
+      TPercentEq => true,
+      _ => false
+    }
+    let is_declaration = if i == 0 {
+      false
+    } else {
+      match Array::get(tokens, i - 1) {
+        TLet => true,
+        TMut => true,
+        TRec => true,
+        TDot => true,
+        _ => false
+      }
+    }
+    // A labeled call argument also spells `name = value`, but cannot be an
+    // assignment expression. Its preceding token is `(` or `,`.
+    let is_call_label = if i == 0 {
+      false
+    } else {
+      match Array::get(tokens, i - 1) {
+        TLParen => true,
+        TComma => true,
+        _ => false
+      }
+    }
+    if is_target && is_assignment && !is_declaration && !is_call_label {
+      found = Array::get(starts, i)
+      found_end = Array::get(ends, i)
+      matches = matches + 1
+    }
+    i = i + 1
+  }
+  if matches == 1 {
+    String::concat(offset_line_col_range_prefix(source, found, found_end), stripped)
+  } else {
+    stripped
+  }
+}
+
+export fn locate_type_error(source: String, msg: String) -> String {
+  let assign_at = String::index_of(msg, " [@assign-target]")
+  if assign_at >= 0 {
+    return locate_assignment_target(source, msg, assign_at)
+  }
+  let marker = " [@off="
+  let mi = String::index_of(msg, marker)
+  let fn_mi = String::index_of(msg, " [@fn=")
+  if mi < 0 {
+    if fn_mi < 0 {
+      locate_type_error_heuristic(source, msg)
+    } else {
+      locate_fn_name_marker(source, msg, fn_mi)
+    }
+  } else {
+    let inner_start = mi + String::length(marker)
+    let rel_end = String::index_of(String::substring(msg, inner_start, String::length(msg)), "]")
+    if rel_end < 0 {
+      // Malformed marker (no closing `]`): strip from the marker onward.
+      locate_type_error_heuristic(source, String::substring(msg, 0, mi))
+    } else {
+      let close = inner_start + rel_end
+      // inner is `N` (start only) or `N:M` (start:end). Split on `:`.
+      let inner = String::substring(msg, inner_start, close)
+      let colon = String::index_of(inner, ":")
+      let n = if colon < 0 {
+        parse_offset_digits(inner, 0, String::length(inner))
+      } else {
+        parse_offset_digits(inner, 0, colon)
+      }
+      let m = if colon < 0 {
+        -1
+      } else {
+        parse_offset_digits(inner, colon + 1, String::length(inner))
+      }
+      // Strip the full ` [@off=...]` segment (marker .. closing `]` inclusive).
+      let stripped = String::concat(String::substring(msg, 0, mi), String::substring(msg, close + 1, String::length(msg)))
+      let slen = String::length(source)
+      // #2868 (Codex P2): recover a string literal's TOKEN end from the source.
+      // `string_lit_end` in the checker computes `off + 2 + String::length(s)`,
+      // the DECODED length, so `"\n"` -- two source bytes, one decoded -- ends
+      // the range inside the token, and every escape costs another byte. The
+      // AST carries no token end and the checker has no source text; this
+      // function has both, so the honest end is derived here.
+      let m = string_token_end(source, n, m)
+      // #2831: a literal with no offset slot anchors its BINDER; move to the
+      // literal when the source says that is what the initializer is.
+      let (n, m) = if m < 0 {
+        match binding_literal_range(source, stripped, n) {
+          (ln, lm) => (ln, lm)
+        }
+      } else {
+        (n, m)
+      }
+      if n >= 0 && n < slen {
+        if m > n && m <= slen {
+          String::concat(offset_line_col_range_prefix(source, n, m), stripped)
+        } else {
+          String::concat(offset_line_col_prefix(source, n), stripped)
+        }
+      } else {
+        locate_type_error_heuristic(source, stripped)
+      }
+    }
+  }
+}
+/// --- #906 Phase 1: module job / outcome seam ----------------------------
+///
+/// Phase 2 hands one module at a time to a worker that cannot touch the
+/// filesystem or the driver's accumulators. This splits the existing
+/// per-module work along exactly that line, with no parallelism and no
+/// change in behaviour:
+///
+///   driver  resolves dependency environments (the only Fs the work needs)
+///           and packs them into a ModuleJob value
+///   worker  check_module : ModuleJob -> ModuleOutcome, no Fs row
+///   driver  commit_module_outcome performs every write
+///
+/// check_module still carries `Error` because parse errors are not yet
+/// values -- only type errors are. Making parse diagnostics part of
+/// ModuleOutcome would change today's messages, so it is left to the phase
+/// that also introduces the canonical diagnostic ordering.
+/// ModuleJob is defined TRANSPARENTLY in this package's contract
+/// (index.vpkg), not here -- the perceus/ PerceusAction precedent. Its field
+/// layout is the worker contract itself, so it belongs in the contract
+/// rather than being an opaque handle; record literals and field access
+/// resolve from impl units against the contract definition.
+export enum ModuleOutcome {
+  // The final strings are trace-only interface, checked-value-env, and
+  // complete persistent TypeEnv v9 transport identities. They are computed
+  // from this successful check's typed environment, never used as cache
+  // inputs, and are empty unless the invalidation trace is enabled. The final
+  // optional string is a canonical in-memory-only #1550 module artifact
+  // observation. ModuleOutcome is opaque at the package boundary, so only this
+  // real checker-success path can authorize a present observation.
+  Checked(String, String, TypeEnv, String, String, String, Option[String]);
+  Diagnosed(String, Array[String])
+}
+
+/// Opaque proof that the exact retained v2 bytes in one successful
+/// ModuleOutcome matched one current, already-ingested ModuleJob. The package
+/// contract hides this constructor: decoded or caller-authored bytes cannot
+/// create an attestation.
+export enum CheckedModuleTypingArtifactFreshnessAttestation {
+  AttestedCheckedModuleTypingArtifact(String)
+}
+
+fn checked_module_dependency_interface_assumptions(dep_envs: Array[(String, TypeEnv)]) -> Array[(String, String)] with Exception {
+  let assumptions = array_empty()
+  let mut i = 0
+  while i < Array::length(dep_envs) {
+    let (path, env) = Array::get(dep_envs, i)
+    // check_module receives dependency environments only after they have been
+    // restricted to their published export surfaces. Preserve their actual
+    // import order and fingerprint exactly that checker-visible interface.
+    Array::push(assumptions, (path, incremental_persistent_type_env_transport_identity(env)))
+    i = i + 1
+  }
+  assumptions
+}
+
+let checked_module_typing_artifact_construction_attempts: Array[Int] = [0]
+
+let checked_module_typing_artifact_validation_attempts: Array[Int] = [0]
+
+/// Test-observation counter. It measures entry into artifact construction, not
+/// checker execution: ordinary and diagnosed paths remain zero.
+export fn checked_module_typing_artifact_construction_attempt_count() -> Int {
+  Array::get(checked_module_typing_artifact_construction_attempts, 0)
+}
+
+export fn reset_checked_module_typing_artifact_construction_attempt_count() -> Unit {
+  Array::set(checked_module_typing_artifact_construction_attempts, 0, 0)
+}
+
+/// Test-only count of entries into the explicit freshness validator.
+export fn checked_module_typing_artifact_validation_attempt_count() -> Int {
+  Array::get(checked_module_typing_artifact_validation_attempts, 0)
+}
+
+export fn reset_checked_module_typing_artifact_validation_attempt_count() -> Unit {
+  Array::set(checked_module_typing_artifact_validation_attempts, 0, 0)
+}
+
+fn checked_module_typing_artifact_bytes(checked: CheckedProgram, job: ModuleJob) -> Option[String] with Exception {
+  Array::set(checked_module_typing_artifact_construction_attempts, 0, Array::get(checked_module_typing_artifact_construction_attempts, 0) + 1)
+  // Both identities are derived here from the exact same already-ingested
+  // ModuleJob.source; there is no filesystem reread or caller identity input.
+  let source_identity = compact_source_fingerprint_memo(job.path, job.source)
+  let implementation_identity = incremental_implementation_identity(job.source)
+  match checked_exported_interface_artifact_from_checked_program(checked) {
+    Some(exported_interface) => match shadow_unattested_checked_module_typing_artifact_v2_from_checked_program(checked, job.path, source_identity, source_identity, implementation_identity, implementation_identity, checked_module_dependency_interface_assumptions(job.dep_envs), [
+      (job.path, "provisional_token_stream_v1", implementation_identity)
+    ], exported_interface) {
+      Some(artifact) => Some(encode_checked_module_typing_artifact_v2(artifact)),
+      None => None
+    },
+    None => None
+  }
+}
+
+/// Observe only canonical bytes retained by an opaque successful ModuleOutcome.
+/// Diagnosed outcomes have no observation, and callers cannot construct either
+/// variant through the runtime package contract. The bytes are not persisted or
+/// consulted by planning, cache lookup, TypeEnv assembly, or reuse.
+export fn checked_module_typing_artifact_observation(outcome: ModuleOutcome) -> Option[String] {
+  match outcome {
+    Checked(_, _, _, _, _, _, observation) => observation,
+    Diagnosed(_, _) => None
+  }
+}
+
+/// Validate one opaque successful outcome against one current, already-ingested
+/// ModuleJob and bind the authority to the exact retained bytes. Validation is
+/// strict v2 decoding plus exact owner, source, implementation, dependency, and
+/// singleton-closure matching. Missing, malformed, stale, or diagnosed inputs
+/// return None. Nothing is published, persisted, planned, cached, or reused.
+export fn checked_module_typing_artifact_freshness_attestation_for_job(job: ModuleJob, outcome: ModuleOutcome) -> Option[CheckedModuleTypingArtifactFreshnessAttestation] with Exception {
+  Array::set(checked_module_typing_artifact_validation_attempts, 0, Array::get(checked_module_typing_artifact_validation_attempts, 0) + 1)
+  match outcome {
+    Checked(_, _, _, _, _, _, Some(bytes)) => if checked_module_typing_artifact_v2_matches_exact_inputs(bytes, job.path, compact_source_fingerprint_memo(job.path, job.source), incremental_implementation_identity(job.source), checked_module_dependency_interface_assumptions(job.dep_envs)) {
+      Some(AttestedCheckedModuleTypingArtifact(bytes))
+    } else {
+      None
+    },
+    Checked(_, _, _, _, _, _, None) => None,
+    Diagnosed(_, _) => None
+  }
+}
+
+/// Return the exact retained bytes that were validated when the opaque
+/// attestation was minted. This does not decode or re-encode the artifact.
+export fn checked_module_typing_artifact_freshness_attestation_snapshot(attestation: CheckedModuleTypingArtifactFreshnessAttestation) -> String {
+  match attestation {
+    AttestedCheckedModuleTypingArtifact(bytes) => bytes
+  }
+}
+
+/// Compatibility observation over the opaque attestation API.
+export fn checked_module_typing_artifact_observation_is_fresh_for_job(job: ModuleJob, outcome: ModuleOutcome) -> Bool with Exception {
+  match checked_module_typing_artifact_freshness_attestation_for_job(job, outcome) {
+    Some(_) => true,
+    None => false
+  }
+}
+
+/// Pure module check implementation. Artifact observation is explicitly opt-in:
+/// the production incremental path must not allocate canonical shadow bytes for
+/// every checked module when no observer consumes them.
+fn check_module_impl(job: ModuleJob, observe_typing_artifact: Bool, program_transport: Option[Array[Bytes]], artifact_output: Option[(Bytes, Array[CheckedModuleArtifact])]) -> ModuleOutcome with Env + Exception {
+  // Parse stays OUTSIDE the handler below: parse errors currently
+  // propagate verbatim, while type errors get located and path-prefixed.
+  // Folding both into one handler would relabel every parse diagnostic.
+  let stmts = parse_program_with_path_impl(job.path, job.source, true)
+  // Match the shared parser's ownership contract: Stmt values are immutable,
+  // while checker desugars replace entries in their top-level array.
+  let parsed_snapshot: Array[Stmt] = []
+  if artifact_output is Some(_) {
+    for stmt in stmts {
+      Array::push(parsed_snapshot, stmt)
+    }
+  }
+  // #1521: importing a name the dependency does not export used to bind
+  // CtUnknown silently, so `vibe check` said ok and `vibe build` died in
+  // codegen with `undefined variable (ident): X` -- no file, no line. The
+  // names are collected during env construction and reported here, before
+  // the body is checked, so the diagnostic names the import rather than
+  // whatever the body happened to do with it.
+  let unresolved_imports = array_empty()
+  let (import_env, reexport_declarations) = build_import_envs_collecting(stmts, dir_of_path(job.path), job.dep_envs, unresolved_imports)
+  // The CANONICAL fingerprint, computed the same way the serial walk
+  // computes it (build_fingerprint, same file) from the same inputs: this
+  // module's own source and each dependency's fingerprint in declaration
+  // order. A worker that invented its own cache key -- or trusted one
+  // handed to it -- could publish a checked environment that the serial
+  // driver would never look up, which would make a parallel pre-check pass
+  // silently do nothing.
+  let fingerprint = typecheck_fs_build_fingerprint(job.path, job.source, job.dep_fps, typing_semantics_seed())
+  if Array::length(unresolved_imports) > 0 {
+    Diagnosed(job.path, for msg in unresolved_imports {
+      String::concat(String::concat(job.path, ": "), msg)
+    })
+  } else {
+    handle {
+      // Retain the opaque-producing checker result from this exact production
+      // invocation. No caller-supplied CheckedProgram or diagnostic assertion
+      // participates in the #1550 observation.
+      incremental_typecheck_telemetry_add(6, 1)
+      // #2391: one checker invocation, two outputs -- the CheckedProgram this
+      // function always produced (EnvEmpty delegates to the plain check, so
+      // both former arms are preserved), plus this module's Double
+      // call-result offsets for the FS lanes' float_call_offsets channel.
+      let (checked_program, located_offsets, eq_offs, eq_keys) = check_program_with_projected_import_env_typed_lowering_located_observation(stmts, import_env)
+      // `None` (the parse carried no offsets) cannot happen on this lane --
+      // parse_program_with_path_impl lexes with offsets -- but if it did, an
+      // empty table classifies nothing and leaves the syntactic classifier
+      // in charge, deterministically.
+      module_typed_lowering_memo_put(job.path, fingerprint, match located_offsets {
+        Some(offsets) => offsets,
+        None => array_empty()
+      }, eq_offs, eq_keys)
+      let full_checked_env = checked_program.final_env
+      // #1533: what leaves this function is the module's PUBLISHED
+      // environment -- restricted to its export surface -- because every
+      // consumer of `Checked`'s env (env cache, persistent store, worker
+      // transport, TDRE9, trace identities) is a publication path. The full
+      // environment never needs to outlive the check itself.
+      // #2762: this call REFUSES a module whose aggregate `export { }` names
+      // something it neither declares nor imports, by throwing -- so the
+      // handler below turns it into this module's `Diagnosed`, and the
+      // `program_transport` bytes and `CheckedModuleArtifact` pushed further
+      // down are never published for it. That matters: a refused module that
+      // still cached an artifact would be reused through
+      // `checked_module_artifact_outcome` on the next build, and the refusal
+      // would disappear.
+      let checked_env = checked_module_public_env_for_path(job.path, stmts, full_checked_env, reexport_declarations)
+      let interface_identity = if incremental_interface_trace_enabled() {
+        incremental_interface_identity(job.source, checked_env)
+      } else {
+        ""
+      }
+      let checked_env_identity = if incremental_interface_trace_enabled() {
+        incremental_checked_env_identity(checked_env)
+      } else {
+        ""
+      }
+      let persistent_type_env_transport_identity = if incremental_interface_trace_enabled() {
+        incremental_persistent_type_env_transport_identity(checked_env)
+      } else {
+        ""
+      }
+      let module_typing_artifact = if observe_typing_artifact {
+        checked_module_typing_artifact_bytes(checked_program, job)
+      } else {
+        None
+      }
+      match program_transport {
+        Some(output) => Array::push(output, encode_checked_program(checked_program)),
+        None => ()
+      }
+      match artifact_output {
+        Some((input_identity, output)) => Array::push(output, CheckedModuleArtifact::{
+          input_identity,
+          parsed_stmts: parsed_snapshot,
+          checked_program,
+          lowering_offsets: match located_offsets {
+            Some(offsets) => offsets,
+            None => array_empty()
+          },
+          eq_offsets: eq_offs,
+          eq_keys
+        }),
+        None => ()
+      }
+      Checked(job.path, fingerprint, checked_env, interface_identity, checked_env_identity, persistent_type_env_transport_identity, module_typing_artifact)
+    } with { Exception::Throw(msg) => {
+      // #2831 criterion 4: the checker now throws EVERY diagnostic it
+      // collected, `\n`-joined. Locate and path-prefix each one -- the
+      // markers are per-diagnostic, so running this over the joined string
+      // would stamp the FIRST `[@off=]` it found onto the whole report and
+      // leave the rest unlocated (measured).
+      Diagnosed(job.path, locate_each_line(job.path, job.source, msg))
+    } }
+  }
+}
+
+/// Production module check. No Fs: dependency environments are already values
+/// inside the job. Shadow artifact observation stays disabled by default.
+export fn check_module(job: ModuleJob) -> ModuleOutcome with Env + Exception {
+  check_module_impl(job, false, None, None)
+}
+
+/// Opt-in trusted #1550 observation producer. This runs the same complete module
+/// checker and retains canonical bytes only in its opaque successful outcome.
+export fn check_module_with_typing_artifact_observation(job: ModuleJob) -> ModuleOutcome with Env + Exception {
+  check_module_impl(job, true, None, None)
+}
+
+/// Check against the job's actual import environment and retain the complete
+/// result from that one successful invocation. Diagnosed modules have no bytes;
+/// parse failures propagate exactly as in check_module. This transport has no
+/// persistent identity or cache authority until a coordinator binds its inputs.
+export fn check_module_with_program_transport(job: ModuleJob) -> (ModuleOutcome, Option[Bytes]) with Env + Exception {
+  let output: Array[Bytes] = []
+  let outcome = check_module_impl(job, false, Some(output), None)
+  let bytes = if Array::length(output) == 1 {
+    Some(Array::get(output, 0))
+  } else {
+    None
+  }
+  (outcome, bytes)
+}
+
+/// Coordinator-owned commit. Every filesystem and accumulator write for a
+/// module happens here and nowhere else.
+/// #2728 slice 1: `reuse_eligible` and `reuse_input_key` are what the caller
+/// already computed for the TDRE9 lookup, threaded in rather than recomputed.
+/// `None` for either means the caller did not compute it, and this function
+/// falls back to computing it itself -- so the fallback keeps the old
+/// behaviour if a second call site ever appears.
+fn commit_module_outcome(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, job: ModuleJob, outcome: ModuleOutcome, reuse_eligible: Option[Bool], reuse_input_key: Option[String]) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
+  match outcome {
+    // Diagnostics are values as far as the worker is concerned, but the
+    // driver still fails fast on the first one so the observable behaviour
+    // is byte-identical to the pre-Phase-1 compiler. Collecting them into
+    // a canonical set is Phase 2's job.
+    // #2831 criterion 4: throw ALL of them, `\n`-joined. The comment that
+    // stood here said the driver "fails fast on the first one so the
+    // observable behaviour is byte-identical to the pre-Phase-1 compiler" --
+    // which is exactly the behaviour this criterion asks to change. Each entry
+    // is already located and path-prefixed on its own by `locate_each_line`,
+    // and `format_check_report` splits on lines and prefixes each with
+    // `error: `, so joining them is the whole change on this side.
+    Diagnosed(_, diags) => if Array::length(diags) > 0 {
+      throw(String::join(diags, "\n"))
+    } else {
+      throw(String::concat(job.path, ": type error"))
+    },
+    Checked(path, fingerprint, checked_env, interface_identity, checked_env_identity, persistent_type_env_transport_identity, _) => {
+      // Serialize both check outputs once and publish one atomic disk record.
+      // TDRE9 binds these exact bytes; worker outcomes without a lowering
+      // table explicitly encode its absence and cannot skip a later check.
+      let target_text = store_persistent_type_env(fingerprint, checked_env)
+      // Publish in commit order: canonical target first, bound witness second,
+      // alias last. Diagnosed/thrown checks never enter this Checked arm. Keep
+      // the extra canonical target text and input serialization wholly inside
+      // the enabled, transitively eligible experimental lane.
+      let eligible_here = match reuse_eligible {
+        Some(known) => known,
+        None => experimental_typing_dependency_env_reuse_enabled() && typing_dependency_env_reuse_is_eligible(job.dep_fps)
+      }
+      if eligible_here {
+        let input_key = match reuse_input_key {
+          Some(known_key) => known_key,
+          None => typing_dependency_transport_input_key(path, job.source, typing_semantics_seed(), job.dep_envs)
+        }
+        publish_typing_dependency_env_reuse_eligibility(input_key, fingerprint, target_text)
+        write_typing_dependency_env_reuse_sidecar(input_key, fingerprint, target_text)
+      } else {
+        ()
+      }
+      if incremental_interface_trace_enabled() {
+        if String::length(interface_identity) == 0 || String::length(checked_env_identity) == 0 || String::length(persistent_type_env_transport_identity) == 0 {
+          throw(String::concat("incremental trace observation: missing checked identity for ", path))
+        } else {
+          incremental_interface_trace_observe(path, interface_identity, checked_env_identity, persistent_type_env_transport_identity)
+        }
+      } else {
+        ()
+      }
+      if Array::length(job.deps) == 0 {
+        Fs::write_file(persistent_leaf_fingerprint_cache_path(path, compact_source_fingerprint_memo(job.path, job.source)), persistent_leaf_fingerprint_text(fingerprint, typing_semantics_seed()))
+      } else {
+        ()
+      }
+      let next_env_cache = typecheck_fs_upsert_env_cache(env_cache, path, checked_env)
+      let next_db = ripple_record_eval(rdb, path, fingerprint, job.deps)
+      (fingerprint, next_db, next_env_cache, dep_source_cache, parse_count)
+    }
+  }
+}
+/// --- #906 Phase 2: worker entry ------------------------------------------
+///
+/// The transport boundary. A worker is handed a JOB DIRECTORY and may touch
+/// nothing else -- it is the whole preopen sandbox:
+///
+///   <dir>/job.txt      version / path / fingerprint / dep rows
+///   <dir>/source.vibe  the module source, verbatim
+///   <dir>/dep<i>.env   dependency i's serialized public environment
+///   <dir>/outcome.txt  written here: "ok" or "diag"
+///   <dir>/env.out      written here on ok: the checked environment
+///   <dir>/diag.txt     written here on diag: one diagnostic per line
+///
+/// This is what docs/internal/design/compiler-parallelism.md calls the missing in-memory
+/// ModuleJob -> ModuleArtifact API. Without it a worker could only check
+/// leaf modules: the type-env cache is keyed by a fingerprint derived from
+/// the whole transitive source snapshot, which is precisely what a worker
+/// must not see, so a worker can never look its own dependencies up. Here
+/// the driver hands them over as values instead.
+///
+/// `path` in job.txt is the module's LOGICAL path, not the materialized
+/// temp file. It never gets opened -- it is the base directory that
+/// build_import_env resolves each import against, so the dep<i>.env entries
+/// bind to the same names they would in a serial compile. Getting this
+/// wrong does not fail loudly; it silently binds imports to nothing.
+fn job_dir_path(dir: String, name: String) -> String {
+  String::concat(String::concat(dir, "/"), name)
+}
+/// `dep` rows carry the dependency's path AND its already-computed
+/// fingerprint (`dep\t<path>\t<fingerprint>`) -- three columns, unlike every
+/// other row. There is deliberately no `fingerprint` row for the job's OWN
+/// identity: that is check_module's output (via build_fingerprint), never
+/// an input a caller could get wrong or fail to keep in sync.
+fn parse_job_rows(job_text: String) -> (String, Array[String], Array[String]) with Exception {
+  let lines = String::split(normalize_persistent_cache_text(job_text), "\n")
+  let len = Array::length(lines)
+  let deps = empty_stack()
+  let dep_fps = empty_stack()
+  let mut path = ""
+  let mut version_ok = false
+  let mut i = 0
+  while i < len {
+    let line = Array::get(lines, i)
+    if String::length(line) == 0 {
+      ()
+    } else {
+      let parts = String::split(line, "\t")
+      let plen = Array::length(parts)
+      let key = if plen > 0 {
+        Array::get(parts, 0)
+      } else {
+        ""
+      }
+      if key == "dep" {
+        let dep_path = Array::get(parts, 1)
+        let dep_fp = Array::get(parts, 2)
+        if plen != 3 {
+          throw(String::concat("invalid module job dep row (want path + fingerprint): ", line))
+        } else if String::length(dep_path) == 0 || String::length(dep_fp) == 0 {
+          // Codex review (#1126): a row with an empty path or fingerprint
+          // column (e.g. a trailing tab, `dep\t/dep.vibe\t`) still has 3
+          // parts and would otherwise pass the column-count check above.
+          // An empty fingerprint folds into build_fingerprint the same way
+          // regardless of which dependency revision produced it, so two
+          // different revisions would silently collide on one fingerprint
+          // instead of the job being rejected as malformed.
+          throw(String::concat("invalid module job dep row (empty path or fingerprint): ", line))
+        } else {
+          Array::push(deps, dep_path)
+          Array::push(dep_fps, dep_fp)
+        }
+      } else if plen != 2 {
+        throw(String::concat("invalid module job row: ", line))
+      } else {
+        let value = Array::get(parts, 1)
+        if key == "version" {
+          if value == "1" {
+            version_ok = true
+          } else {
+            throw(String::concat("unsupported module job version: ", value))
+          }
+        } else if key == "path" {
+          path = value
+        } else {
+          throw(String::concat("unknown module job row: ", line))
+        }
+      }
+    }
+    i = i + 1
+  }
+  if !version_ok {
+    throw("module job is missing its version row")
+  } else if String::length(path) == 0 {
+    throw("module job is missing its path row")
+  } else {
+    (path, deps, dep_fps)
+  }
+} export fn run_module_job_dir(dir: String) -> Unit with Env + Exception + Fs {
+  // The source-text fingerprint memo spans one compile (the serial walk
+  // resets it at its start). A worker process runs one module job after
+  // another with no walk around them, so it resets the memo per job: the
+  // job's key is built through the memo like the walk's, and the memo holds
+  // this job's source, not every source the worker has ever been handed.
+  // The source-text memo (#2386) is reset per job for the same reason.
+  compact_source_fingerprint_memo_reset()
+  cache_source_text_memo_reset()
+  let (path, deps, dep_fps) = parse_job_rows(Fs::read_file(job_dir_path(dir, "job.txt")))
+  let source = Fs::read_file(job_dir_path(dir, "source.vibe"))
+  let dep_envs = array_empty()
+  let job_dep_fps = array_empty()
+  let mut i = 0
+  let dlen = Array::length(deps)
+  while i < dlen {
+    let dep_path = Array::get(deps, i)
+    Array::push(job_dep_fps, (dep_path, Array::get(dep_fps, i)))
+    let env_file = job_dir_path(dir, String::concat(String::concat("dep", __to_string(i)), ".env"))
+    if Fs::exists(env_file) {
+      match parse_persistent_type_env(Fs::read_file(env_file)) {
+        Some(env) => Array::push(dep_envs, (dep_path, env)),
+        // A dep<i>.env that exists but does not decode is an
+        // INFRASTRUCTURE failure, not "no environment". Skipping it would
+        // drop the dependency's interface and make its imports lenient
+        // again, so a truncated file would turn real type errors into a
+        // clean check -- the silent-success mode this whole transport is
+        // built to avoid. (parse_persistent_type_env returns None only for
+        // a missing version header, i.e. an empty or truncated file; a
+        // malformed row already throws.)
+        None => throw(String::concat("module job: unreadable dependency environment: ", env_file))
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  let job = ModuleJob::{
+    path: path,
+    source: source,
+    deps: deps,
+    dep_fps: job_dep_fps,
+    dep_envs: dep_envs
+  }
+  // Parse errors are still an `Error` out of check_module (see the Phase 1
+  // note above). At the transport boundary they have to become a value
+  // regardless -- a worker that throws is an infrastructure failure, which
+  // the coordinator treats as fatal rather than as a compiler diagnostic.
+  let outcome = handle {
+    check_module(job)
+  } with { Exception::Throw(msg) => Diagnosed(path, [msg]) }
+  // outcome.txt is written LAST in both arms. It is the commit marker: a
+  // coordinator that sees it knows env.out / diag.txt are already complete,
+  // so a worker killed mid-write leaves an obviously unfinished job dir
+  // rather than a plausible-looking wrong answer.
+  match outcome {
+    Checked(_, fingerprint, env, _, _, _, _) => {
+      Fs::write_file(job_dir_path(dir, "env.out"), persistent_type_env_cache_text(env))
+      // The module's own identity, as check_module computed it -- an
+      // OUTPUT of this job, needed by the coordinator to build the NEXT
+      // job's `dep\t<path>\t<fingerprint>` row for this module's
+      // dependents, and eventually to publish this environment at the
+      // real persistent-cache path a serial compile would look under.
+      Fs::write_file(job_dir_path(dir, "fingerprint.out"), fingerprint)
+      Fs::write_file(job_dir_path(dir, "outcome.txt"), "ok")
+    },
+    Diagnosed(_, diags) => {
+      Fs::write_file(job_dir_path(dir, "diag.txt"), String::join(diags, "\n"))
+      Fs::write_file(job_dir_path(dir, "outcome.txt"), "diag")
+    }
+  }
+}
+/// Batch worker publication. Each manifest row supplies a fingerprint and a
+/// relative env.out filename. Validate canonical TypeEnv-v9 transport before
+/// wrapping it in the v10 disk record with an explicitly unavailable table.
+/// A later serial check supplies lowering rows before that entry can be reused.
+fn parse_publish_manifest_rows(text: String) -> Array[(String, String)] with Exception {
+  let lines = String::split(normalize_persistent_cache_text(text), "\n")
+  let rows = array_empty()
+  let mut i = 0
+  let len = Array::length(lines)
+  while i < len {
+    let line = Array::get(lines, i)
+    if String::length(line) == 0 {
+      ()
+    } else {
+      let parts = String::split(line, "\t")
+      if Array::length(parts) != 2 {
+        throw(String::concat("invalid publish manifest row (want fingerprint + envfile): ", line))
+      } else {
+        let fingerprint = Array::get(parts, 0)
+        let env_file = Array::get(parts, 1)
+        if String::length(fingerprint) == 0 || String::length(env_file) == 0 {
+          throw(String::concat("invalid publish manifest row (empty fingerprint or envfile): ", line))
+        } else {
+          Array::push(rows, (fingerprint, env_file))
+        }
+      }
+    }
+    i = i + 1
+  }
+  rows
+} export fn run_publish_env_cache_dir(dir: String) -> Unit with Env + Exception + Fs {
+  let rows = parse_publish_manifest_rows(Fs::read_file(job_dir_path(dir, "manifest.txt")))
+  let mut i = 0
+  let len = Array::length(rows)
+  while i < len {
+    let (fingerprint, env_file) = Array::get(rows, i)
+    let env_text = Fs::read_file(job_dir_path(dir, env_file))
+    match parse_persistent_type_env(env_text) {
+      Some(env) => {
+        let canonical = persistent_type_env_cache_text(env)
+        if env_text == canonical {
+          Fs::write_file(persistent_type_env_cache_path(fingerprint), persistent_module_cache_text(env, None))
+        } else {
+          throw(String::concat("publish manifest has non-canonical v4 environment: ", env_file))
+        }
+      },
+      None => throw(String::concat("publish manifest has unreadable v4 environment: ", env_file))
+    }
+    i = i + 1
+  }
+}
+/// Recover publication from the same complete checked result. Re-export
+/// projection reads the current dependency environments already bound by the
+/// exact input identity; it performs no type inference.
+fn checked_module_artifact_outcome(job: ModuleJob, artifact: CheckedModuleArtifact) -> ModuleOutcome with Env + Exception {
+  let unresolved: Array[String] = []
+  let (_, reexports) = build_import_envs_collecting(artifact.parsed_stmts, dir_of_path(job.path), job.dep_envs, unresolved)
+  if Array::length(unresolved) > 0 {
+    throw("checked module: validated imports no longer resolve")
+  }
+  let fingerprint = typecheck_fs_build_fingerprint(job.path, job.source, job.dep_fps, typing_semantics_seed())
+  let env = checked_module_public_env_for_path(job.path, artifact.parsed_stmts, artifact.checked_program.final_env, reexports)
+  module_typed_lowering_memo_put(job.path, fingerprint, artifact.lowering_offsets, artifact.eq_offsets, artifact.eq_keys)
+  let tracing = incremental_interface_trace_enabled()
+  Checked(job.path, fingerprint, env, if tracing {
+    incremental_interface_identity(job.source, env)
+  } else {
+    ""
+  }, if tracing {
+    incremental_checked_env_identity(env)
+  } else {
+    ""
+  }, if tracing {
+    incremental_persistent_type_env_transport_identity(env)
+  } else {
+    ""
+  }, None)
+}
+
+/// One accepting edge for complete artifacts. An unchanged public dependency
+/// environment preserves this module's input even when its dependency's body
+/// changed. The conservative fingerprint remains available to older consumers.
+fn finish_checked_module_artifact_fs(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, source: String, deps: Array[String], dep_fps: Array[(String, String)]) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
+  let coordinated = ensure_env_cache_for_paths(rdb, env_cache, deps)
+  let projected = project_exact_dependency_envs(deps, coordinated)
+  let job = ModuleJob::{ path, source, deps, dep_fps, dep_envs: projected }
+  let input_identity = checked_module_cache_input_identity(path, source, typing_semantics_seed(), projected)
+  if checked_module_cache_mode() == "on" {
+    match load_checked_module_artifact(path, input_identity) {
+      Some(artifact) => {
+        let outcome = checked_module_artifact_outcome(job, artifact)
+        let committed = commit_module_outcome(rdb, coordinated, dep_source_cache, parse_count, job, outcome, Some(false), None)
+        commit_checked_module_artifact(path, source, artifact, false)
+        incremental_typecheck_telemetry_add(9, 1)
+        return committed
+      },
+      None => ()
+    }
+  }
+  let output: Array[CheckedModuleArtifact] = []
+  let outcome = check_module_impl(job, false, None, Some((input_identity, output)))
+  if Array::length(output) == 0 {
+    // Preserve the existing diagnosed/parse failure behavior and publish nothing.
+    return commit_module_outcome(rdb, coordinated, dep_source_cache, parse_count + 1, job, outcome, Some(false), None)
+  }
+  let artifact = Array::get(output, 0)
+  commit_checked_module_artifact(path, source, artifact, true)
+  commit_module_outcome(rdb, coordinated, dep_source_cache, parse_count + 1, job, outcome, Some(false), None)
+}
+
+/// `fingerprint` is the already-folded build_fingerprint(source, dep_fps)
+/// every call site computed to decide whether to call this function at all
+/// (the Fs::exists / ripple_record_eval fast path below needs that folded
+/// value, not the raw pairs). `dep_fps` is the SAME per-dependency pairs
+/// that fold produced, passed through unfolded too so the ModuleJob built
+/// below carries the real inputs check_module needs to compute (and thereby
+/// cross-check) that identical fingerprint itself, the same way a worker
+/// would -- one canonical computation, not a value trusted from the caller.
+fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, source: String, deps: Array[String], dep_fps: Array[(String, String)], fingerprint: String) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
+  // #2391/#2546: reuse requires both outputs in the unified module entry.
+  // A missing output forces a real check, which republishes both.
+  let reusable_cached_env = match valid_persistent_type_env(path, fingerprint) {
+    Some(cached_env) => if ensure_module_typed_lowering_offsets(path, fingerprint) {
+      Some(cached_env)
+    } else {
+      None
+    },
+    None => None
+  }
+  match reusable_cached_env {
+    Some(cached_env) => {
+      if incremental_interface_trace_enabled() {
+        incremental_trace_observe_checked_env(path, source, cached_env)
+      } else {
+        ()
+      }
+      let next_db = ripple_record_eval(rdb, path, fingerprint, deps)
+      incremental_typecheck_telemetry_add(7, 1)
+      (fingerprint, next_db, env_cache, dep_source_cache, parse_count)
+    },
+    None => {
+      // Keep the accumulated cache as coordinator state, but expose exactly the
+      // resolved dependency sequence to the checker and TDRE9. Construct this
+      // once: lookup, check, and publication must describe the same value.
+      let coordinated_env_cache = ensure_env_cache_for_paths(rdb, env_cache, deps)
+      let projected_dep_envs = project_exact_dependency_envs(deps, coordinated_env_cache)
+      // #2728 slice 1: the eligibility walk and the input key are computed
+      // HERE and threaded to `commit_module_outcome`, which used to recompute
+      // both from `job.dep_fps` / `job.source` / `job.dep_envs` and the
+      // `Checked`-bound path. Those are the same values by construction -- the
+      // `ModuleJob` below is built from exactly these, `commit_module_outcome`
+      // has one call site, and `Checked` is constructed only from `job.path`
+      // -- so this removes a duplicate, not a difference.
+      //
+      // Neither is cheap. The walk reads and parses every dependency's
+      // canonical target env text, and the key embeds this module's verbatim
+      // source plus each dependency's exact env text, so both scale with text
+      // and dependency count rather than with anything being reused. Paying
+      // them twice per module is a term of the cold regression #2728 measures.
+      //
+      // Hoisting is also safe in TIME, not only in the values: the second
+      // evaluation used to happen after `check_module`, and the walk reads one
+      // WITNESS per dependency. A module's dependencies are checked before it
+      // -- they have to be, they feed `projected_dep_envs` -- so each of their
+      // witnesses is already published or already absent by the time this
+      // module is looked at, and nothing between these two points writes one.
+      // The later evaluation could therefore never have answered differently.
+      let reuse_eligible = if experimental_typing_dependency_env_reuse_enabled() {
+        typing_dependency_env_reuse_is_eligible(dep_fps)
+      } else {
+        false
+      }
+      let reuse_input_key = if reuse_eligible {
+        Some(typing_dependency_transport_input_key(path, source, typing_semantics_seed(), projected_dep_envs))
+      } else {
+        None
+      }
+      let reused_env = match reuse_input_key {
+        Some(input_key) => {
+          match load_typing_dependency_env_reuse_target(path, input_key) {
+            // The bound record hydrates this path's lowering memo from the
+            // target fingerprint. Absent tables already declined the reuse.
+            Some((target_fingerprint, target_text, target_env)) => if ensure_module_typed_lowering_offsets(path, target_fingerprint) {
+              Some((input_key, target_fingerprint, target_text, target_env))
+            } else {
+              None
+            },
+            None => None
+          }
+        },
+        None => None
+      }
+      match reused_env {
+        Some((input_key, target_fingerprint, target_text, target_env)) => {
+          // Preserve the ordinary conservative fingerprint path for every later
+          // consumer. Commit this target first, then its exact bound witness, and
+          // only then the alias, so torn publication always fails closed.
+          Fs::write_file(persistent_type_env_cache_path(fingerprint), target_text)
+          // The copied record contains both outputs; bind the existing rows
+          // in memory to the new conservative fingerprint as well.
+          match module_typed_lowering_memo_get_by_fp(target_fingerprint) {
+            Some((reused_offsets, reused_eq_offs, reused_eq_keys)) => {
+              module_typed_lowering_memo_put(path, fingerprint, reused_offsets, reused_eq_offs, reused_eq_keys)
+            },
+            None => ()
+          }
+          publish_typing_dependency_env_reuse_eligibility(input_key, fingerprint, target_text)
+          write_typing_dependency_env_reuse_sidecar(input_key, fingerprint, target_text)
+          let next_env_cache = typecheck_fs_upsert_env_cache(coordinated_env_cache, path, target_env)
+          let next_db = ripple_record_eval(rdb, path, fingerprint, deps)
+          incremental_typecheck_telemetry_add(8, 1)
+          (fingerprint, next_db, next_env_cache, dep_source_cache, parse_count)
+        },
+        None => {
+          let job = ModuleJob::{
+            path: path,
+            source: source,
+            deps: deps,
+            dep_fps: dep_fps,
+            dep_envs: projected_dep_envs
+          }
+          let outcome = check_module(job)
+          commit_module_outcome(rdb, coordinated_env_cache, dep_source_cache, parse_count + 1, job, outcome, Some(reuse_eligible), reuse_input_key)
+        }
+      }
+    }
+  }
+} fn collect_import_deps_from_stmts(stmts: Array[Stmt], base_dir: String) -> Array[String] {
+  // Iterative push: previously the recursive `Array::concat(acc, [x])`
+  // copied the full prefix on each new dep — O(N^2) for files with
+  // many imports.
+  let out = empty_stack()
+  let mut i = 0
+  let len = Array::length(stmts)
+  while i < len {
+    match Array::get(stmts, i) {
+      SImport(raw_path, _) => if String::length(raw_path) > 0 && !is_builtin_iterator_serialized_boundary_path(raw_path) {
+        let resolved = resolve_import_path(base_dir, raw_path)
+        if !contains_str(out, resolved) {
+          Array::push(out, resolved)
+        }
+      },
+      SReExport(raw_path, _) => if String::length(raw_path) > 0 {
+        let resolved = resolve_import_path(base_dir, raw_path)
+        if !contains_str(out, resolved) {
+          Array::push(out, resolved)
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+} fn load_or_parse_deps_for_source_fs(dep_source_cache: Array[(String, String)], path: String, source: String, parse_count: Int) -> (Array[String], Array[(String, String)], Int) with Env + Exception + Fs {
+  match load_persistent_dep_list(path, source) {
+    Some(deps) => (deps, typecheck_fs_upsert_string_pair(dep_source_cache, path, source), parse_count),
+    None => {
+      let (deps, _, next_parse_count) = load_or_parse_module_header_fs(path, source, parse_count)
+      (deps, typecheck_fs_upsert_string_pair(dep_source_cache, path, source), next_parse_count)
+    }
+  }
+} fn resolve_deps_for_source_fs(rdb: RippleDb, dep_source_cache: Array[(String, String)], path: String, source: String, parse_count: Int) -> (Array[String], Array[(String, String)], Int) with Env + Exception + Fs {
+  match typecheck_fs_lookup_string_pair(dep_source_cache, path) {
+    Some(cached_source) =>
+    if cached_source == source {
+      match ripple_get_deps(rdb, path) {
+        Some(deps) => (deps, dep_source_cache, parse_count),
+        None => load_or_parse_deps_for_source_fs(dep_source_cache, path, source, parse_count)
+      }
+    } else {
+      load_or_parse_deps_for_source_fs(dep_source_cache, path, source, parse_count)
+    },
+    None => load_or_parse_deps_for_source_fs(dep_source_cache, path, source, parse_count)
+  }
+}
+/// #1239 step 4(A), on the real fs path: the coordinator-side upfront pass.
+///
+/// Walks the import graph from `root` ONCE and records, per reachable module,
+/// either the persistent leaf fingerprint it found or the module's resolved
+/// dependency list. The walk that follows looks both up here instead of
+/// paying for them a second time, so this is a REPLACEMENT for work
+/// the walk used to do inline, not an extra pass.
+///
+/// The three short-circuits are the same three the walk applies, in the same
+/// order -- no source in the db (the `missing:` arm), a reusable cached
+/// fingerprint, a persistent leaf fingerprint -- and evaluating them here
+/// gives the same answers the walk gets: nothing mutates module M's db or
+/// dep-cache entries before M's own first visit, and the walk resolves each
+/// module's deps exactly once too (a module reached a second time returns on
+/// its now-cached fingerprint). The queue dedupes by path for the same reason.
+///
+/// A module left OUT of `edges` -- missing, or short-circuited -- is a leaf
+/// to plan_module_order (mo_deps_of), which is what makes those arms terminal
+/// for scheduling as well as for the walk.
+export fn plan_import_graph_fs(rdb: RippleDb, dep_source_cache: Array[(String, String)], parse_count: Int, root: String) -> (Array[(String, String)], Array[(String, Array[String])], Int, Array[(String, String)]) with Env + Exception + Fs {
+  let leaf_fps = typecheck_fs_empty_dep_fps()
+  let plan_diags: Array[(String, String)] = []
+  let edges: Array[(String, Array[String])] = []
+  let seen = empty_stack()
+  let queue = empty_stack()
+  // Private copy -- see copy_string_pairs. The predicates below still read
+  // the caller's cache, because what they must reproduce is the state the
+  // walk sees on a module's FIRST visit; only the resolver gets the copy.
+  let scratch_cache = copy_string_pairs(dep_source_cache)
+  let mut pc = parse_count
+  Array::push(seen, root)
+  Array::push(queue, root)
+  let mut qi = 0
+  while qi < Array::length(queue) {
+    let path = Array::get(queue, qi)
+    qi = qi + 1
+    match ripple_get_source(rdb, path) {
+      None => (),
+      Some(source) => {
+        // #2767: hand this module its stored AST, if there is one, BEFORE any
+        // of the branches below decide it needs no parsing.
+        //
+        // This is the only point every planned module passes through exactly
+        // once. Hung on any of the branches instead, the prefetch misses the
+        // others, and there are four ways planning settles a module without
+        // parsing: a valid persistent leaf fingerprint (just below), an
+        // in-process `reusable` decision, `ripple_get_deps`, and the
+        // persistent dep list. It was originally hung on the FIFTH -- the
+        // module-header text cache, one level further in -- which a warm
+        // build reaches only when the dep list missed, so it fired zero times
+        // per warm build and the merge lane re-parsed the whole closure.
+        // Measured on the full CLI closure (420 modules, one cache directory
+        // per run): a warm build's bump-heap high-water was byte-identical
+        // with VIBE_EXPERIMENTAL_AST_CACHE=1 and with it off, while every
+        // cold build wrote 42 MB of artifacts nobody read.
+        //
+        // Then measured again at the dep-list branch alone, which is how this
+        // ended up here: 2 of 3 modules prefetched and the third still parsed
+        // in the merge, because a LEAF never resolves dependencies at all.
+        //
+        // This does NOT make the warm build cheaper -- measured N=3 on that
+        // closure, it makes it worse. With the prefetch reaching all 420
+        // modules a warm build decodes 420 stored ASTs instead of parsing 420
+        // sources, and that is +38.7 MiB of heap (+2.1%) and +1.07 s of wall
+        // (+12%) against the same build with the cache off: the decode
+        // allocates the AST the parse would have allocated and reads 42 MB to
+        // do it. The flag stays opt-in and off. What changed is that the
+        // question became decidable -- `ast_cache_prefetches` reporting 420
+        // means a slower warm build is the cache losing on its merits, not
+        // the cache failing to run.
+        // Unguarded and uncounted HERE on purpose: `ast_cache_prefetch_fs`
+        // owns both. It has a second call site -- the module-header pass,
+        // reached from `module_plan_data_fs`'s source-collection walk, which
+        // runs before this one -- and a policy or a count written at one call
+        // site is simply absent at the other. Both were, until Codex found
+        // them on #2771.
+        let _ = ast_cache_prefetch_fs(path, source)
+        let reusable = if checked_module_cache_mode() == "off" && dep_source_cache_is_current(dep_source_cache, path, source) {
+          match ripple_get_fingerprint(rdb, path) {
+            // #2391: reuse needs BOTH cache halves -- the TypeEnv and the
+            // module's checked lowering table -- or the walk must re-check.
+            Some(fingerprint) => match valid_persistent_type_env(path, fingerprint) {
+              Some(_) => ensure_module_typed_lowering_offsets(path, fingerprint),
+              None => false
+            },
+            None => false
+          }
+        } else {
+          false
+        }
+        if reusable {
+          ()
+        } else {
+          match valid_persistent_leaf_fingerprint(path, source) {
+            Some(leaf_fingerprint) => Array::push(leaf_fps, (path, leaf_fingerprint)),
+            None => {
+              // Codex review P2: resolving a module's imports PARSES it, so a
+              // syntax error raises here -- during planning, before the walk's
+              // per-step handler exists. Left alone that made parse errors
+              // fail-fast even while collecting: two malformed leaves reported
+              // one diagnostic, because planning aborted on the first.
+              //
+              // Collected the same way a step's diagnostic is, and with the
+              // same two exclusions (fail-fast mode, and `type_db:` internal
+              // invariants). A module that fails to plan gets no edge entry and
+              // no dependencies explored -- it is a leaf to the schedule, and
+              // the caller seeds it into `failed` so its importers are blocked
+              // rather than cascading.
+              let plan_raised = empty_stack()
+              let (deps_raw, _, next_pc) = handle {
+                resolve_deps_for_source_fs(rdb, scratch_cache, path, source, pc)
+              } with { Exception::Throw(msg) => {
+                Array::push(plan_raised, msg)
+                (empty_stack(), scratch_cache, pc)
+              } }
+              if Array::length(plan_raised) > 0 {
+                let msg = Array::get(plan_raised, 0)
+                if !collect_module_diagnostics() || String::starts_with(msg, "type_db: ") {
+                  throw(msg)
+                } else {
+                  Array::push(plan_diags, (path, msg))
+                }
+              } else {
+                ()
+              }
+              let deps = copy_string_array(deps_raw)
+              pc = next_pc
+              if Array::length(plan_raised) > 0 {
+                ()
+              } else {
+                Array::push(edges, (path, deps))
+              }
+              let dlen = Array::length(deps)
+              let mut i = 0
+              while i < dlen {
+                let dep = Array::get(deps, i)
+                if contains_str(seen, dep) {
+                  ()
+                } else {
+                  Array::push(seen, dep)
+                  Array::push(queue, dep)
+                }
+                i = i + 1
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  (leaf_fps, edges, pc, plan_diags)
+}
+/// The dep list `plan_import_graph_fs` recorded for `path`, or None when it
+/// recorded none. Returns a copy for the same reason graph.vibe's mo_deps_of
+/// does: the caller takes ownership of the list it folds fingerprints over.
+export fn plan_deps_of(plan_edges: Array[(String, Array[String])], path: String) -> Option[Array[String]] {
+  let n = Array::length(plan_edges)
+  let mut i = 0
+  let mut found: Option[Array[String]] = None
+  while i < n {
+    let e = Array::get(plan_edges, i)
+    if e.0 == path {
+      found = Some(copy_string_array(e.1))
+      i = n
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+/// The leaf-fingerprint arm: a module whose persistent leaf cache is valid is
+/// recorded with no deps at all and needs no checking.
+fn commit_leaf_fingerprint_fs(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, source: String, leaf_fingerprint: String) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
+  // The plan read this cache earlier, but recheck at the accepting edge: a
+  // stale/malformed leaf pointer must cold-check rather than become authority.
+  // #2391: the checked lowering table is part of that acceptance too.
+  match valid_persistent_type_env(path, leaf_fingerprint) {
+    Some(cached_env) => if ensure_module_typed_lowering_offsets(path, leaf_fingerprint) {
+      if incremental_interface_trace_enabled() {
+        incremental_trace_observe_checked_env(path, source, cached_env)
+      } else {
+        ()
+      }
+      write_persistent_dep_list_if_missing(path, source, empty_stack())
+      let next_dep_source_cache = typecheck_fs_upsert_string_pair(dep_source_cache, path, source)
+      let next_db = ripple_record_eval(rdb, path, leaf_fingerprint, empty_stack())
+      incremental_typecheck_telemetry_add(7, 1)
+      (leaf_fingerprint, next_db, env_cache, next_dep_source_cache, parse_count)
+    } else {
+      finish_typecheck_fs_impl(rdb, env_cache, dep_source_cache, parse_count, path, source, empty_stack(), typecheck_fs_empty_dep_fps(), typecheck_fs_build_fingerprint(path, source, typecheck_fs_empty_dep_fps(), typing_semantics_seed()))
+    },
+    None => finish_typecheck_fs_impl(rdb, env_cache, dep_source_cache, parse_count, path, source, empty_stack(), typecheck_fs_empty_dep_fps(), typecheck_fs_build_fingerprint(path, source, typecheck_fs_empty_dep_fps(), typing_semantics_seed()))
+  }
+}
+/// One module's step, once its dependency list is known and every dependency
+/// already has a fingerprint. Folds the dependency fingerprints in
+/// DECLARATION order (build_fingerprint folds them as a sequence, not a set),
+/// then either reuses the cached fingerprint or checks and commits.
+fn commit_with_deps_fs(fps: Array[(String, String)], rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, source: String, deps: Array[String]) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
+  write_persistent_dep_list_if_missing(path, source, deps)
+  let dlen = Array::length(deps)
+  let dep_fps = typecheck_fs_empty_dep_fps()
+  let mut i = 0
+  while i < dlen {
+    let dep_path = Array::get(deps, i)
+    match typecheck_fs_lookup_string_pair(fps, dep_path) {
+      Some(dep_fp) => Array::push(dep_fps, (dep_path, dep_fp)),
+      // Unreachable: rank order guarantees every dependency was stepped
+      // before its importer. Loud rather than folding a placeholder into the
+      // fingerprint, which would key the persistent cache on a lie.
+      None => throw(String::concat("type_db: dependency stepped out of rank order: ", dep_path))
+    }
+    i = i + 1
+  }
+  let fingerprint = typecheck_fs_build_fingerprint(path, source, dep_fps, typing_semantics_seed())
+  if checked_module_cache_mode() != "off" {
+    return finish_checked_module_artifact_fs(rdb, env_cache, dep_source_cache, parse_count, path, source, deps, dep_fps)
+  }
+  match ripple_get_fingerprint(rdb, path) {
+    Some(cached_fp) =>
+    if cached_fp == fingerprint {
+      match valid_persistent_type_env(path, fingerprint) {
+        // #2391: both cache halves, or re-check (which republishes both).
+        Some(_) => if ensure_module_typed_lowering_offsets(path, fingerprint) {
+          incremental_typecheck_telemetry_add(7, 1)
+          (fingerprint, rdb, env_cache, dep_source_cache, parse_count)
+        } else {
+          finish_typecheck_fs_impl(rdb, env_cache, dep_source_cache, parse_count, path, source, deps, dep_fps, fingerprint)
+        },
+        None => finish_typecheck_fs_impl(rdb, env_cache, dep_source_cache, parse_count, path, source, deps, dep_fps, fingerprint)
+      }
+    } else {
+      finish_typecheck_fs_impl(rdb, env_cache, dep_source_cache, parse_count, path, source, deps, dep_fps, fingerprint)
+    },
+    None =>
+    finish_typecheck_fs_impl(rdb, env_cache, dep_source_cache, parse_count, path, source, deps, dep_fps, fingerprint)
+  }
+}
+/// True when `path`'s entry in the ripple db can be reused as-is: the source
+/// the dep cache was built from still matches the source in the db. The three
+/// arms of the old nested match collapsed to this one predicate because two
+/// of them (source changed / never seen) did exactly the same thing.
+fn dep_source_cache_is_current(dep_source_cache: Array[(String, String)], path: String, source: String) -> Bool {
+  match typecheck_fs_lookup_string_pair(dep_source_cache, path) {
+    Some(cached_source) => cached_source == source,
+    None => false
+  }
+}
+/// One module of the schedule. The same three short-circuits the plan applied
+/// (no source in the db, a reusable cached fingerprint, a persistent leaf
+/// fingerprint), in the same order, then the dep fold.
+///
+/// This is where the walk stopped being a recursion. It reads state and hands
+/// back the next state; it never reaches into another module's step. That is
+/// the property step 4(D) needs: the old DFS threaded four state values
+/// through dependencies IN SEQUENCE (dep[1] received dep[0]'s output
+/// RippleDb), so siblings could not be dispatched independently no matter
+/// what the host could do.
+export fn step_module_fs(plan_leaf_fps: Array[(String, String)], plan_edges: Array[(String, Array[String])], fps: Array[(String, String)], rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
+  let (rdb_loaded, loaded_source) = load_planned_module_source(rdb, path)
+  match loaded_source {
+    None => (String::concat("missing:", path), rdb_loaded, env_cache, dep_source_cache, parse_count),
+    Some(source) => {
+      if checked_module_cache_mode() != "off" {
+        let deps = match plan_deps_of(plan_edges, path) {
+          Some(planned) => planned,
+          None => if (typecheck_fs_lookup_string_pair(plan_leaf_fps, path) is Some(_)) || is_vpkg_types_stub_path(path) {
+            empty_stack()
+          } else {
+            throw(String::concat("type_db: module missing from the import plan: ", path))
+          }
+        }
+        return commit_with_deps_fs(fps, rdb_loaded, env_cache, dep_source_cache, parse_count, path, source, deps)
+      }
+      let reusable = if dep_source_cache_is_current(dep_source_cache, path, source) {
+        match ripple_get_fingerprint(rdb_loaded, path) {
+          // #2391: both cache halves, or no reuse (see ensure_module_typed_lowering_offsets).
+          Some(fingerprint) => match valid_persistent_type_env(path, fingerprint) {
+            Some(_) => if ensure_module_typed_lowering_offsets(path, fingerprint) {
+              Some(fingerprint)
+            } else {
+              None
+            },
+            None => None
+          },
+          None => None
+        }
+      } else {
+        None
+      }
+      match reusable {
+        // The fingerprint is enough for dependency fingerprint folding.
+        // Loading the env here caused shared leaf modules to re-read their
+        // persistent leaf cache every time they were reached before a parent
+        // needed their bindings.
+        Some(cached_fingerprint) => {
+          if incremental_interface_trace_enabled() {
+            let observed_env = match typecheck_fs_lookup_env_cache(env_cache, path) {
+              Some(value) => value,
+              None => match load_persistent_type_env(cached_fingerprint) {
+                Some(value) => value,
+                None => throw(String::concat("incremental trace observation: unreadable in-memory reused environment for ", path))
+              }
+            }
+            incremental_trace_observe_checked_env(path, source, observed_env)
+          } else {
+            ()
+          }
+          incremental_typecheck_telemetry_add(7, 1)
+          (cached_fingerprint, rdb_loaded, env_cache, dep_source_cache, parse_count)
+        }
+        None =>
+        match typecheck_fs_lookup_string_pair(plan_leaf_fps, path) {
+          Some(leaf_fingerprint) =>
+          commit_leaf_fingerprint_fs(rdb_loaded, env_cache, dep_source_cache, parse_count, path, source, leaf_fingerprint),
+          None =>
+          match plan_deps_of(plan_edges, path) {
+            Some(planned_deps) =>
+            commit_with_deps_fs(fps, rdb_loaded, env_cache, typecheck_fs_upsert_string_pair(dep_source_cache, path, source), parse_count, path, source, planned_deps),
+            // Types stubs interned only as someone else's dep have no plan
+            // edge: plan_import_graph_fs skipped them because they were not
+            // in the ripple db. They are leaves (type-family defs only).
+            None =>
+            if is_vpkg_types_stub_path(path) {
+              commit_with_deps_fs(fps, rdb_loaded, env_cache, typecheck_fs_upsert_string_pair(dep_source_cache, path, source), parse_count, path, source, empty_stack())
+            } else {
+              throw(String::concat("type_db: module missing from the import plan: ", path))
+            }
+          }
+        }
+      }
+    }
+  }
+}

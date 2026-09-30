@@ -1,0 +1,2009 @@
+// lib/@vibe/compiler/perceus/perceus.vibe — analyze calls.
+
+import @vibe/compiler/codegen/common_analysis {
+  collect_free_vars, is_branching_value, md_borrow_mask_of, md_consume_count, md_consume_count_pre
+}
+
+import @vibe/core {
+  array_empty, struct MutSet
+}
+
+import @vibe/compiler/core {
+  Expr,
+  Pat,
+  Stmt,
+  TypeExpr,
+  borrow_ret_builtin_names,
+  bsearch_leftmost,
+  expr_child_at,
+  expr_children,
+  expr_children_pop,
+  expr_children_push,
+  expr_children_top,
+  is_exception_throw_operation,
+  sort_perm_by_names,
+  sorted_names_of
+}
+
+import ./perceus_pctx.vibe {
+  HeapInferCtx,
+  PCtx,
+  PScope,
+  PerceusActionKind,
+  array_contains_str_pctx,
+  collect_spine_let_vals,
+  is_borrow_ret_fname,
+  name_in,
+  pat_names,
+  ps_get,
+  ps_has,
+  spine_ident_returns_owned
+}
+
+fn tail_is_borrow_ret_safe(known: MutSet[String], e0: Expr, spine_names: Array[String], spine_vals: Array[Expr], spine_excluded: Array[String]) -> Bool {
+  // ADR-0090 / #1770: the worklist grows while being consumed in-place and
+  // only the Bool verdict escapes, so its growth garbage goes to the region
+  // arena (MutList) instead of the main heap. Bump lane only; under RC the
+  // list degrades to a plain main-heap array with the same semantics.
+  region r {
+    let worklist = MutList::empty(r)
+    MutList::push(worklist, e0)
+    let mut all_safe = true
+    let mut i = 0
+    while i < MutList::length(worklist) {
+      match MutList::get(worklist, i) {
+        // #1915: an inner binding that reuses a spine name shadows it for any
+        // ident tail walked after this point -- resolution through the spine
+        // map would read the WRONG value, so retire the name (over-excluding
+        // across sibling branches only ever restores the safe fallback).
+        ELet(n, _, b, _) => {
+          if array_contains_str_pctx(spine_names, n) {
+            Array::push(spine_excluded, n)
+          } else {
+            ()
+          }
+          MutList::push(worklist, b)
+        },
+        ELetMut(n, _, b, _) => {
+          if array_contains_str_pctx(spine_names, n) {
+            Array::push(spine_excluded, n)
+          } else {
+            ()
+          }
+          MutList::push(worklist, b)
+        },
+        ELetRec(n, _, b) => {
+          if array_contains_str_pctx(spine_names, n) {
+            Array::push(spine_excluded, n)
+          } else {
+            ()
+          }
+          MutList::push(worklist, b)
+        },
+        ESeq(_, b) => MutList::push(worklist, b),
+        EAssign(_, _, b) => MutList::push(worklist, b),
+        EAssignOp(_, _, _, b) => MutList::push(worklist, b),
+        EIf(_, t, el) => {
+          MutList::push(worklist, t)
+          MutList::push(worklist, el)
+        },
+        EMatch(_, arms) => {
+          let mut ai = 0
+          while ai < Array::length(arms) {
+            let (p, ae) = Array::get(arms, ai)
+            // #1915: pattern bindings shadow spine names the same way inner
+            // lets do (see the ELet case above).
+            let pnames: Array[String] = []
+            pat_names(p, pnames)
+            let mut pi = 0
+            while pi < Array::length(pnames) {
+              if array_contains_str_pctx(spine_names, Array::get(pnames, pi)) {
+                Array::push(spine_excluded, Array::get(pnames, pi))
+              } else {
+                ()
+              }
+              pi = pi + 1
+            }
+            MutList::push(worklist, ae)
+            ai = ai + 1
+          }
+        },
+        ECall(callee_e, cargs, _) =>
+        match callee_e {
+          EIdent(callee, _) =>
+          if callee == "perform" && Array::length(cargs) == 1 {
+            // #640 Stage 2: `throw(x)` now parses to `perform Exception::Throw(x)`,
+            // so the #715 throwing-tail exemption below (EThrow) must also
+            // recognize this shape — a throwing tail never produces a value, so
+            // it cannot violate the borrow-returning invariant. Without this,
+            // every `match x { Ctor(..) => field, _ => throw(..) }` accessor is
+            // again rejected as borrow-returning and the #715 same-address
+            // double-free returns. Matched step-by-step (NOT one nested
+            // ECall(EIdent(..)) pattern) per the workaround note above.
+            let mut op_is_throw = false
+            match Array::get(cargs, 0) {
+              ECall(op_e, _, _) =>
+              match op_e {
+                EIdent(op_n, _) => if is_exception_throw_operation(op_n) {
+                  op_is_throw = true
+                } else {
+                  ()
+                },
+                _ => ()
+              },
+              _ => ()
+            }
+            if op_is_throw {
+              ()
+            } else if !MutSet::has(known, callee) {
+              all_safe = false
+            } else {
+              ()
+            }
+          } else if !MutSet::has(known, callee) {
+            all_safe = false
+          } else {
+            ()
+          },
+          _ => {
+            all_safe = false
+          }
+        },
+        // #1915: a bare ident tail resolving to a spine binding that provably
+        // holds an owned heap value (builder/literal/owned call) rejects the
+        // function -- callers must keep their scope-end drop. Sentinels,
+        // params, views, and unresolvable names keep the safe fallback.
+        EIdent(nm, _) => if spine_ident_returns_owned(known, spine_names, spine_vals, spine_excluded, nm) {
+          all_safe = false
+        } else {
+          ()
+        },
+        // #715: a throwing tail (the ubiquitous `match x { Ctor(..) => field, _
+        // => throw("not X") }` shape used by every common_extractors.vibe
+        // accessor) never actually produces a value along that path, so it
+        // cannot violate the borrow-returning invariant -- there is nothing to
+        // mismanage. Without this, EVERY such accessor (get_efn_params,
+        // get_efn_body, get_ecall_args, ...) fell through to the catch-all
+        // below and was rejected solely because of its own error arm, even
+        // though its real (non-throwing) arm is a plain borrowed field
+        // projection. That misclassification made the caller treat the
+        // extracted field as an independently owned value while the
+        // scrutinee's own later structural drop also reclaims it -- a
+        // same-address double-free (the #715 self-hosting free-list
+        // corruption).
+        _ => {
+          all_safe = false
+        }
+      }
+      i = i + 1
+    }
+    all_safe
+  }
+}
+
+/// Strip let/seq/assign wrappers, same as tail_is_borrow_ret_safe, to find the
+/// expression whose SHAPE decides eligibility at the top level.
+fn strip_wrappers_for_borrow_ret(e: Expr) -> Expr {
+  match e {
+    ELet(_, _, b, _) => strip_wrappers_for_borrow_ret(b),
+    ELetMut(_, _, b, _) => strip_wrappers_for_borrow_ret(b),
+    ELetRec(_, _, b) => strip_wrappers_for_borrow_ret(b),
+    ESeq(_, b) => strip_wrappers_for_borrow_ret(b),
+    EAssign(_, _, b) => strip_wrappers_for_borrow_ret(b),
+    EAssignOp(_, _, _, b) => strip_wrappers_for_borrow_ret(b),
+    _ => e
+  }
+}
+
+/// The two Map iterator accessors have source-ownership guards in both linear
+/// and GC codegen. If source binds either exact name, its body -- not the
+/// compiler intrinsic -- determines whether the result is borrowed.
+/// #2638: ONE ROUND of the borrow-returning fixpoint over `stmts`, against
+/// the set decided so far. Returns whether it added anything.
+///
+/// The fixpoint is MONOTONE -- `known` only grows and the loop runs to
+/// quiescence -- so the least fixed point does not depend on the order bodies
+/// are visited in. That is what lets the link drive the rounds across modules:
+/// each round it asks every module what IT can add given the current set, and
+/// unions the answers. A module reads only its own bodies plus that set, and
+/// the answer is the whole program's because the modules partition it.
+///
+/// One implementation serves both the whole-program pass and the per-module
+/// lane, so `tail_is_borrow_ret_safe` is not re-stated anywhere.
+fn bret_round(stmts: Array[Stmt], known: Array[String], known_set: MutSet[String]) -> Bool {
+  let mut changed = false
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, value) =>
+      if !MutSet::has(known_set, name) {
+        match value {
+          EFn(_, _, _, _, _, body) => {
+            // A function is borrow-returning only if its (wrapper-stripped)
+            // top-level shape is itself a call/if/match reaching a known
+            // borrow-return name on every branch -- a BARE identifier tail
+            // at the *top level* (an identity-like function) is NOT eligible
+            // here even though tail_is_borrow_ret_safe accepts a bare ident
+            // as a safe fallback *inside* an if/match branch (e.g. peek's
+            // `else TEof`). This keeps `let f = (x) -> T { x }` (a genuine
+            // passthrough of a normally-owned argument) from being
+            // misclassified as a Array::get-style borrowed view.
+            let top = strip_wrappers_for_borrow_ret(body)
+            let eligible_shape = match top {
+              ECall(_, _, _) => true,
+              EIf(_, _, _) => true,
+              EMatch(_, _) => true,
+              _ => false
+            }
+            if eligible_shape {
+              // #1915: the spine bindings resolve bare ident branch tails
+              // to the values they name (see tail_is_borrow_ret_safe).
+              let sp_names: Array[String] = []
+              let sp_vals: Array[Expr] = []
+              let sp_excluded: Array[String] = []
+              let _ = collect_spine_let_vals(body, sp_names, sp_vals, sp_excluded)
+              if tail_is_borrow_ret_safe(known_set, top, sp_names, sp_vals, sp_excluded) {
+                Array::push(known, name)
+                MutSet::add(known_set, name)
+                changed = true
+              } else {
+                ()
+              }
+            } else {
+              ()
+            }
+          },
+          _ => ()
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  changed
+}
+
+/// Return a two-bit mask in one statement scan: bit 0 is the checked accessor,
+/// bit 1 is the unchecked accessor. This runs on every linked compile, so do
+/// not scan the compiler-sized statement array once per builtin seed.
+fn source_owned_shadowable_borrow_mask(stmts: Array[Stmt]) -> Int {
+  let mut mask = 0
+  let mut i = 0
+  while i < Array::length(stmts) && mask != 3 {
+    let bound = match Array::get(stmts, i) {
+      SLet(_, _, name, _, _) => name,
+      SFnDecl(_, name, _, _, _) => name,
+      _ => ""
+    }
+    if bound == "Map::iter_get" {
+      mask = mask|1
+    } else if bound == "Map::__iter_get_unchecked" {
+      mask = mask|2
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  mask
+}
+
+fn source_owns_shadowable_borrow_builtin(mask: Int, name: String) -> Bool {
+  if name == "Map::iter_get" {
+    (mask&1) != 0
+  } else if name == "Map::__iter_get_unchecked" {
+    (mask&2) != 0
+  } else {
+    false
+  }
+}
+
+export fn compute_borrow_returning_names(stmts: Array[Stmt]) -> Array[String] {
+  // Seeded from the shared single-source-of-truth list (#1979) -- a seed that
+  // drifts from is_borrow_ret_builtin (MutList::get was missing until #1932
+  // review) makes both the inline branch-tail check and the #1915
+  // spine-binding resolution classify that builtin's result as owned, and RC
+  // callers then drop an interior view. Source-owned shadowable names are
+  // removed before the fixed point and may re-enter only when their bodies
+  // actually return a borrowed view.
+  let builtin_names = borrow_ret_builtin_names()
+  let known: Array[String] = []
+  // #2386: `known` is queried per statement per round and per callee inside
+  // `tail_is_borrow_ret_safe`; the set answers those, the array keeps the
+  // insertion order the result is read in.
+  let known_set = MutSet::new_string()
+  let source_owned_mask = source_owned_shadowable_borrow_mask(stmts)
+  let mut seed_i = 0
+  while seed_i < Array::length(builtin_names) {
+    let builtin_name = Array::get(builtin_names, seed_i)
+    if !source_owns_shadowable_borrow_builtin(source_owned_mask, builtin_name) {
+      Array::push(known, builtin_name)
+      MutSet::add(known_set, builtin_name)
+    } else {
+      ()
+    }
+    seed_i = seed_i + 1
+  }
+  let mut changed = true
+  while changed {
+    changed = bret_round(stmts, known, known_set)
+  }
+  known
+}
+
+/// A direct return of a parameter transfers that parameter's value without
+/// creating a second reference. Keep this separate from borrow_ret_names:
+/// identity functions are owning passthroughs at ordinary call sites, but an
+/// enclosing recursive binder still needs to retain an escaping result before
+/// its own scope-end drop.
+fn passthrough_alias_source(name: String, bound: Array[String], aliases: Array[(String, String)]) -> String {
+  if !array_contains_str_pctx(bound, name) {
+    return name
+  }
+  let mut i = Array::length(aliases) - 1
+  while i >= 0 {
+    let row = Array::get(aliases, i)
+    if row.0 == name {
+      return row.1
+    }
+    i = i - 1
+  }
+  ""
+}
+
+fn passthrough_tail_name(body: Expr, known: Array[(String, Int)], bound: Array[String], aliases: Array[(String, String)]) -> String {
+  match body {
+    EIdent(name, _) => passthrough_alias_source(name, bound, aliases),
+    EReturn(value) => passthrough_tail_name(value, known, bound, aliases),
+    ECall(EIdent(callee, _), args, _) => {
+      if array_contains_str_pctx(bound, callee) {
+        return ""
+      }
+      for row in known {
+        if row.0 == callee && row.1 < Array::length(args) {
+          match Array::get(args, row.1) {
+            EIdent(arg, _) => return passthrough_alias_source(arg, bound, aliases),
+            _ => return ""
+          }
+        }
+      }
+      ""
+    },
+    ELet(name, value, tail, _) => {
+      let source = passthrough_tail_name(value, known, bound, aliases)
+      let mark = Array::length(bound)
+      let alias_mark = Array::length(aliases)
+      Array::push(bound, name)
+      Array::push(aliases, (name, source))
+      let returned = passthrough_tail_name(tail, known, bound, aliases)
+      Array::truncate(bound, mark)
+      Array::truncate(aliases, alias_mark)
+      returned
+    },
+    ELetMut(name, _, tail, _) => {
+      let mark = Array::length(bound)
+      let alias_mark = Array::length(aliases)
+      Array::push(bound, name)
+      Array::push(aliases, (name, ""))
+      let returned = passthrough_tail_name(tail, known, bound, aliases)
+      Array::truncate(bound, mark)
+      Array::truncate(aliases, alias_mark)
+      if returned == name {
+        ""
+      } else {
+        returned
+      }
+    },
+    ELetRec(name, _, tail) => {
+      let mark = Array::length(bound)
+      let alias_mark = Array::length(aliases)
+      Array::push(bound, name)
+      Array::push(aliases, (name, ""))
+      let returned = passthrough_tail_name(tail, known, bound, aliases)
+      Array::truncate(bound, mark)
+      Array::truncate(aliases, alias_mark)
+      if returned == name {
+        ""
+      } else {
+        returned
+      }
+    },
+    ESeq(_, tail) => passthrough_tail_name(tail, known, bound, aliases),
+    EAssign(_, _, tail) => passthrough_tail_name(tail, known, bound, aliases),
+    EAssignOp(_, _, _, tail) => passthrough_tail_name(tail, known, bound, aliases),
+    EIf(_, yes, no) => {
+      let y = passthrough_tail_name(yes, known, bound, aliases)
+      if y != "" && y == passthrough_tail_name(no, known, bound, aliases) {
+        y
+      } else {
+        ""
+      }
+    },
+    EMatch(_, arms) => {
+      let mut result = ""
+      let mut valid = Array::length(arms) > 0
+      for arm in arms {
+        let mark = Array::length(bound)
+        let alias_mark = Array::length(aliases)
+        pat_names(arm.0, bound)
+        let mut i = mark
+        while i < Array::length(bound) {
+          Array::push(aliases, (Array::get(bound, i), ""))
+          i = i + 1
+        }
+        let next = passthrough_tail_name(arm.1, known, bound, aliases)
+        Array::truncate(bound, mark)
+        Array::truncate(aliases, alias_mark)
+        if next == "" || (result != "" && result != next) {
+          valid = false
+        } else {
+          result = next
+        }
+      }
+      if valid {
+        result
+      } else {
+        ""
+      }
+    },
+    EHandle(value, arms) => {
+      let result = passthrough_tail_name(value, known, bound, aliases)
+      let mut valid = result != ""
+      for arm in arms {
+        let mark = Array::length(bound)
+        let alias_mark = Array::length(aliases)
+        pat_names(arm.0, bound)
+        let mut i = mark
+        while i < Array::length(bound) {
+          Array::push(aliases, (Array::get(bound, i), ""))
+          i = i + 1
+        }
+        let next = passthrough_tail_name(arm.1, known, bound, aliases)
+        Array::truncate(bound, mark)
+        Array::truncate(aliases, alias_mark)
+        if next != result {
+          valid = false
+        }
+      }
+      if valid {
+        result
+      } else {
+        ""
+      }
+    },
+    _ => ""
+  }
+}
+
+fn passthrough_return_value_agrees(value: Expr, source: String, known: Array[(String, Int)], fresh_noarg: Array[String], bound: Array[String], aliases: Array[(String, String)]) -> Bool {
+  let returned = passthrough_tail_name(value, known, bound, aliases)
+  if returned != "" {
+    return returned == source
+  }
+  match value {
+    // A bound name with no recorded source can be a pattern payload. It is
+    // not a fresh return and cannot agree with the parameter being tracked.
+    EIdent(name, _) => !array_contains_str_pctx(bound, name),
+    ECall(EIdent(callee, _), args, _) => {
+      if array_contains_str_pctx(bound, callee) {
+        return false
+      }
+      for row in known {
+        if row.0 == callee && row.1 < Array::length(args) {
+          return passthrough_return_value_agrees(Array::get(args, row.1), source, known, fresh_noarg, bound, aliases)
+        }
+      }
+      // Only a top-level helper proven to allocate a closure can certify a
+      // fresh early return. An unclassified call may return any argument.
+      Array::length(args) == 0 && array_contains_str_pctx(fresh_noarg, callee)
+    },
+    ECall(_, _, _) => false,
+    EIf(_, yes, no) => passthrough_return_value_agrees(yes, source, known, fresh_noarg, bound, aliases) && passthrough_return_value_agrees(no, source, known, fresh_noarg, bound, aliases),
+    EMatch(_, arms) => {
+      for arm in arms {
+        let mark = Array::length(bound)
+        let alias_mark = Array::length(aliases)
+        pat_names(arm.0, bound)
+        let mut i = mark
+        while i < Array::length(bound) {
+          Array::push(aliases, (Array::get(bound, i), ""))
+          i = i + 1
+        }
+        let agrees = passthrough_return_value_agrees(arm.1, source, known, fresh_noarg, bound, aliases)
+        Array::truncate(bound, mark)
+        Array::truncate(aliases, alias_mark)
+        if !agrees {
+          return false
+        }
+      }
+      true
+    },
+    EHandle(body, arms) => {
+      if !passthrough_return_value_agrees(body, source, known, fresh_noarg, bound, aliases) {
+        return false
+      }
+      for arm in arms {
+        let mark = Array::length(bound)
+        let alias_mark = Array::length(aliases)
+        pat_names(arm.0, bound)
+        let mut i = mark
+        while i < Array::length(bound) {
+          Array::push(aliases, (Array::get(bound, i), ""))
+          i = i + 1
+        }
+        let agrees = passthrough_return_value_agrees(arm.1, source, known, fresh_noarg, bound, aliases)
+        Array::truncate(bound, mark)
+        Array::truncate(aliases, alias_mark)
+        if !agrees {
+          return false
+        }
+      }
+      true
+    },
+    ELet(name, head, tail, _) => {
+      let value_source = passthrough_tail_name(head, known, bound, aliases)
+      let mark = Array::length(bound)
+      let alias_mark = Array::length(aliases)
+      Array::push(bound, name)
+      Array::push(aliases, (name, value_source))
+      let agrees = passthrough_return_value_agrees(tail, source, known, fresh_noarg, bound, aliases)
+      Array::truncate(bound, mark)
+      Array::truncate(aliases, alias_mark)
+      agrees
+    },
+    // A mutable result may alias a parameter at initialization or after an
+    // assignment. Without a source for every write, it cannot certify the
+    // single parameter required by the owning passthrough rewrite.
+    ELetMut(_, _, _, _) => false,
+    ELetRec(name, _, tail) => {
+      let mark = Array::length(bound)
+      let alias_mark = Array::length(aliases)
+      Array::push(bound, name)
+      Array::push(aliases, (name, ""))
+      let agrees = passthrough_return_value_agrees(tail, source, known, fresh_noarg, bound, aliases)
+      Array::truncate(bound, mark)
+      Array::truncate(aliases, alias_mark)
+      agrees
+    },
+    ESeq(_, tail) => passthrough_return_value_agrees(tail, source, known, fresh_noarg, bound, aliases),
+    EAssign(_, _, tail) => passthrough_return_value_agrees(tail, source, known, fresh_noarg, bound, aliases),
+    EAssignOp(_, _, _, tail) => passthrough_return_value_agrees(tail, source, known, fresh_noarg, bound, aliases),
+    EReturn(inner) => passthrough_return_value_agrees(inner, source, known, fresh_noarg, bound, aliases),
+    _ => true
+  }
+}
+
+/// A tail parameter is a passthrough only when every explicit return that
+/// names a parameter names that same source. A fresh early return has no
+/// parameter source and does not change the owning-return classification.
+fn passthrough_early_returns_agree(body: Expr, source: String, known: Array[(String, Int)], fresh_noarg: Array[String], bound: Array[String], aliases: Array[(String, String)]) -> Bool {
+  match body {
+    EReturn(value) => passthrough_early_returns_agree(value, source, known, fresh_noarg, bound, aliases) && passthrough_return_value_agrees(value, source, known, fresh_noarg, bound, aliases),
+    EFn(_, _, _, _, _, _) => true,
+    ELet(name, value, tail, _) => {
+      if !passthrough_early_returns_agree(value, source, known, fresh_noarg, bound, aliases) {
+        return false
+      }
+      let value_source = passthrough_tail_name(value, known, bound, aliases)
+      let mark = Array::length(bound)
+      let alias_mark = Array::length(aliases)
+      Array::push(bound, name)
+      Array::push(aliases, (name, value_source))
+      let agrees = passthrough_early_returns_agree(tail, source, known, fresh_noarg, bound, aliases)
+      Array::truncate(bound, mark)
+      Array::truncate(aliases, alias_mark)
+      agrees
+    },
+    ELetMut(name, value, tail, _) => {
+      if !passthrough_early_returns_agree(value, source, known, fresh_noarg, bound, aliases) {
+        return false
+      }
+      let mark = Array::length(bound)
+      let alias_mark = Array::length(aliases)
+      Array::push(bound, name)
+      Array::push(aliases, (name, ""))
+      let agrees = passthrough_early_returns_agree(tail, source, known, fresh_noarg, bound, aliases)
+      Array::truncate(bound, mark)
+      Array::truncate(aliases, alias_mark)
+      agrees
+    },
+    ELetRec(name, value, tail) => {
+      if !passthrough_early_returns_agree(value, source, known, fresh_noarg, bound, aliases) {
+        return false
+      }
+      let mark = Array::length(bound)
+      let alias_mark = Array::length(aliases)
+      Array::push(bound, name)
+      Array::push(aliases, (name, ""))
+      let agrees = passthrough_early_returns_agree(tail, source, known, fresh_noarg, bound, aliases)
+      Array::truncate(bound, mark)
+      Array::truncate(aliases, alias_mark)
+      agrees
+    },
+    EMatch(scrutinee, arms) => {
+      if !passthrough_early_returns_agree(scrutinee, source, known, fresh_noarg, bound, aliases) {
+        return false
+      }
+      for arm in arms {
+        let mark = Array::length(bound)
+        let alias_mark = Array::length(aliases)
+        pat_names(arm.0, bound)
+        let mut i = mark
+        while i < Array::length(bound) {
+          Array::push(aliases, (Array::get(bound, i), ""))
+          i = i + 1
+        }
+        let agrees = passthrough_early_returns_agree(arm.1, source, known, fresh_noarg, bound, aliases)
+        Array::truncate(bound, mark)
+        Array::truncate(aliases, alias_mark)
+        if !agrees {
+          return false
+        }
+      }
+      true
+    },
+    EHandle(value, arms) => {
+      if !passthrough_early_returns_agree(value, source, known, fresh_noarg, bound, aliases) {
+        return false
+      }
+      for arm in arms {
+        let mark = Array::length(bound)
+        let alias_mark = Array::length(aliases)
+        pat_names(arm.0, bound)
+        let mut i = mark
+        while i < Array::length(bound) {
+          Array::push(aliases, (Array::get(bound, i), ""))
+          i = i + 1
+        }
+        let agrees = passthrough_early_returns_agree(arm.1, source, known, fresh_noarg, bound, aliases)
+        Array::truncate(bound, mark)
+        Array::truncate(aliases, alias_mark)
+        if !agrees {
+          return false
+        }
+      }
+      true
+    },
+    EForIn(value_name, index_opt, iterable, loop_body) => {
+      if !passthrough_early_returns_agree(iterable, source, known, fresh_noarg, bound, aliases) {
+        return false
+      }
+      let mark = Array::length(bound)
+      let alias_mark = Array::length(aliases)
+      Array::push(bound, value_name)
+      Array::push(aliases, (value_name, ""))
+      match index_opt {
+        Some(index_name) => {
+          Array::push(bound, index_name)
+          Array::push(aliases, (index_name, ""))
+        },
+        None => ()
+      }
+      let agrees = passthrough_early_returns_agree(loop_body, source, known, fresh_noarg, bound, aliases)
+      Array::truncate(bound, mark)
+      Array::truncate(aliases, alias_mark)
+      agrees
+    },
+    ELoop(params, loop_body) => {
+      let mark = Array::length(bound)
+      let alias_mark = Array::length(aliases)
+      for param in params {
+        if !passthrough_early_returns_agree(param.1, source, known, fresh_noarg, bound, aliases) {
+          Array::truncate(bound, mark)
+          Array::truncate(aliases, alias_mark)
+          return false
+        }
+        Array::push(bound, param.0)
+        Array::push(aliases, (param.0, ""))
+      }
+      let agrees = passthrough_early_returns_agree(loop_body, source, known, fresh_noarg, bound, aliases)
+      Array::truncate(bound, mark)
+      Array::truncate(aliases, alias_mark)
+      agrees
+    },
+    _ => {
+      for child in expr_children(body) {
+        if !passthrough_early_returns_agree(child, source, known, fresh_noarg, bound, aliases) {
+          return false
+        }
+      }
+      true
+    }
+  }
+}
+
+fn passthrough_fresh_closure_tail(body: Expr) -> Bool {
+  match body {
+    EFn(_, _, _, _, _, _) => true,
+    EReturn(value) => passthrough_fresh_closure_tail(value),
+    ELet(_, _, tail, _) => passthrough_fresh_closure_tail(tail),
+    ELetMut(_, _, tail, _) => passthrough_fresh_closure_tail(tail),
+    ELetRec(_, _, tail) => passthrough_fresh_closure_tail(tail),
+    ESeq(_, tail) => passthrough_fresh_closure_tail(tail),
+    EIf(_, yes, no) => passthrough_fresh_closure_tail(yes) && passthrough_fresh_closure_tail(no),
+    EMatch(_, arms) => {
+      if Array::length(arms) == 0 {
+        return false
+      }
+      for arm in arms {
+        if !passthrough_fresh_closure_tail(arm.1) {
+          return false
+        }
+      }
+      true
+    },
+    _ => false
+  }
+}
+
+fn passthrough_fresh_closure_early_returns(body: Expr) -> Bool {
+  match body {
+    EFn(_, _, _, _, _, _) => true,
+    EReturn(value) => passthrough_fresh_closure_tail(value),
+    _ => {
+      for child in expr_children(body) {
+        if !passthrough_fresh_closure_early_returns(child) {
+          return false
+        }
+      }
+      true
+    }
+  }
+}
+
+fn passthrough_fresh_noarg_names(stmts: Array[Stmt]) -> Array[String] {
+  let names: Array[String] = []
+  for stmt in stmts {
+    match stmt {
+      SLet(_, _, name, _, EFn(_, _, params, _, _, body)) => if Array::length(params) == 0 && passthrough_fresh_closure_tail(body) && passthrough_fresh_closure_early_returns(body) {
+        Array::push(names, name)
+      } else {
+        ()
+      },
+      _ => ()
+    }
+  }
+  names
+}
+
+export fn compute_passthrough_returning(stmts: Array[Stmt]) -> Array[(String, Int)] {
+  let out: Array[(String, Int)] = []
+  let fresh_noarg = passthrough_fresh_noarg_names(stmts)
+  let mut changed = true
+  while changed {
+    changed = false
+    let mut i = 0
+    while i < Array::length(stmts) {
+      match Array::get(stmts, i) {
+        SLet(_, _, name, _, EFn(_, _, params, _, _, body)) => {
+          let returned = passthrough_tail_name(body, out, [], [])
+          if returned != "" && passthrough_early_returns_agree(body, returned, out, fresh_noarg, [
+          ], []) {
+            let mut p = 0
+            while p < Array::length(params) {
+              let (raw_name, _) = Array::get(params, p)
+              let len = String::length(raw_name)
+              let param_name = if len > 0 && (String::char_code_at(raw_name, len - 1) == '~' || String::char_code_at(raw_name, len - 1) == '?') {
+                raw_name[0: len - 1]
+              } else {
+                raw_name
+              }
+              if param_name == returned && !array_contains_str_pctx(bound_passthrough_names(out), name) {
+                Array::push(out, (name, p))
+                changed = true
+              }
+              p = p + 1
+            }
+          } else {
+            ()
+          }
+        },
+        _ => ()
+      }
+      i = i + 1
+    }
+  }
+  // An early call can look fresh before a later declaration joins `out`.
+  // Recheck every candidate against the completed set, and keep removing
+  // candidates whose own dependencies were invalidated by that recheck.
+  let mut stable = false
+  while !stable {
+    stable = true
+    let kept: Array[(String, Int)] = []
+    for row in out {
+      if passthrough_row_agrees(stmts, row, out, fresh_noarg) {
+        Array::push(kept, row)
+      } else {
+        stable = false
+      }
+    }
+    Array::truncate(out, 0)
+    for row in kept {
+      Array::push(out, row)
+    }
+  }
+  out
+}
+
+fn passthrough_row_agrees(stmts: Array[Stmt], row: (String, Int), known: Array[(String, Int)], fresh_noarg: Array[String]) -> Bool {
+  for stmt in stmts {
+    match stmt {
+      SLet(_, _, name, _, EFn(_, _, params, _, _, body)) => if name == row.0 && row.1 < Array::length(params) {
+        let (raw_name, _) = Array::get(params, row.1)
+        let len = String::length(raw_name)
+        let param_name = if len > 0 && (String::char_code_at(raw_name, len - 1) == '~' || String::char_code_at(raw_name, len - 1) == '?') {
+          raw_name[0: len - 1]
+        } else {
+          raw_name
+        }
+        let returned = passthrough_tail_name(body, known, [], [])
+        return returned == param_name && passthrough_early_returns_agree(body, returned, known, fresh_noarg, [
+        ], [])
+      } else {
+        ()
+      },
+      _ => ()
+    }
+  }
+  false
+}
+
+fn bound_passthrough_names(rows: Array[(String, Int)]) -> Array[String] {
+  let names: Array[String] = []
+  for row in rows {
+    Array::push(names, row.0)
+  }
+  names
+}
+
+/// #2638: this module's half of the borrow-returning SEED -- the two bits
+/// saying whether the program's own source shadows a shadowable borrow-ret
+/// builtin. The whole program's answer is the OR, so a module publishes its
+/// bits like any other body-local fact.
+export fn borrow_ret_shadow_mask(stmts: Array[Stmt]) -> Int {
+  source_owned_shadowable_borrow_mask(stmts)
+}
+
+/// #2638: THE BORROW-RETURNING LINK. The whole program's borrow-returning set,
+/// run as a fixpoint over the MODULES rather than over one statement array.
+///
+/// Each round asks every module what it can add given the set decided so far,
+/// and the round repeats until no module adds anything. A module reads only
+/// its own bodies and that set -- it never sees another module's statements --
+/// and the result is the whole program's because the modules partition it and
+/// the fixpoint is monotone (least fixed point, independent of visit order).
+///
+/// This is the shape #2638 calls "the module collects, the link decides", and
+/// unlike the borrow-param analysis it genuinely needs the ITERATION at the
+/// link: whether a module can classify `f` depends on whether a callee in
+/// another module entered the set, which is only known after that module's
+/// round.
+///
+/// `shadow_mask` is the OR of what the modules published, so the seed is the
+/// program's and not any one module's.
+export fn borrow_ret_link_parts(parts: Array[Array[Stmt]], shadow_mask: Int) -> Array[String] {
+  let builtin_names = borrow_ret_builtin_names()
+  let known: Array[String] = []
+  let known_set = MutSet::new_string()
+  let mut seed_i = 0
+  while seed_i < Array::length(builtin_names) {
+    let builtin_name = Array::get(builtin_names, seed_i)
+    if !source_owns_shadowable_borrow_builtin(shadow_mask, builtin_name) {
+      Array::push(known, builtin_name)
+      MutSet::add(known_set, builtin_name)
+    } else {
+      ()
+    }
+    seed_i = seed_i + 1
+  }
+  let mut changed = true
+  while changed {
+    changed = false
+    let mut pi = 0
+    while pi < Array::length(parts) {
+      if bret_round(Array::get(parts, pi), known, known_set) {
+        changed = true
+      } else {
+        ()
+      }
+      pi = pi + 1
+    }
+  }
+  known
+}
+
+/// A top-level function's declared return type, from its `let f: (T1,...) ->
+/// R = ...` signature -- `None` when untyped (no signature to consult).
+export fn fn_sig_return_type(ty: Option[TypeExpr]) -> Option[TypeExpr] {
+  match ty {
+    Some(t) =>
+    match t {
+      TyFn(_, ret, _) => Some(ret),
+      _ => None
+    },
+    None => None
+  }
+}
+
+/// #710 out-param crash: `let n = f(...)` for a user function `f` whose body
+/// is not one of the 3 hardcoded borrow-returning builtins falls through to
+/// `heap_binding_names`'s default -- "any non-borrow-ret call result is heap"
+/// (compile_expr_tail.vibe's ELet ECall branch; see that struct field's own
+/// doc comment, which already promises "we never touch a non-heap (e.g.
+/// Int-returning call) binding"). When `f` actually returns a scalar (Int/
+/// Bool/Unit) -- e.g. `build_import_plan(...) -> Int` -- the binding is a
+/// plain integer, not a tagged heap pointer. If that binding is later
+/// ALIASED more than once (`let a = n; let b = n`), the Perceus plan schedules
+/// a PaAliasDup for the 2nd+ alias, and compile_expr_tail.vibe's `is_eident`
+/// branch used to call the unguarded `emit_rc_dup_local` on it: untag (AND -2)
+/// then read/write 4 bytes before the "pointer". For a small scalar like 0
+/// that computes a near-null address -- `RuntimeError: memory access out of
+/// bounds`, not a leak (component_codegen_test.vibe's "component async: sync
+/// lift" hit this via `import_func_count` aliased into run_core_func_idx/
+/// run_type_idx/run_func_idx). That call site now uses the runtime-tag-checked
+/// `emit_rc_dup_guarded` instead (a misclassified scalar is a silent no-op
+/// there rather than a wild write) -- this was the one remaining unguarded RC
+/// increment anywhere in codegen, so it is now fixed on general principle even
+/// though it was empirically NOT the cause of the *other* still-open #709
+/// self-hosting crash (a free-list node with corrupted size/next fields,
+/// surfacing later inside `fn_type_param_types`'s `vibe_rc_alloc`; confirmed via a
+/// differential rebuild that the crash persists byte-for-byte unchanged with
+/// this fix in place). Names collected here still matter for perf/precision
+/// (avoiding unnecessary heap_binding_names churn) and let the ELet ECall
+/// branch skip `heap_binding_names` for a call whose declared return type is
+/// provably scalar, matching the exemption the field's own doc comment already
+/// describes. Untyped functions are conservatively left out (stay in the
+/// existing heap over-approximation) since there is no signature to consult --
+/// no longer a correctness cliff-edge now that the alias-dup site is guarded,
+/// only a missed optimization.
+export fn compute_scalar_returning_names(stmts: Array[Stmt]) -> Array[String] {
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, ty, value) =>
+      match value {
+        EFn(_, _, _, _, _, _) =>
+        match fn_sig_return_type(ty) {
+          Some(ret) =>
+          if !type_expr_is_heap(Some(ret)) {
+            Array::push(out, name)
+          } else {
+            ()
+          },
+          None => ()
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// `scope` holds the binding's enclosing locals: a callee spelled like a
+/// borrow-returning global but bound to a LOCAL (a closure parameter, a
+/// `let pick = (..) -> ..`) is that local, which returns whatever it
+/// returns -- codegen's `call_returns_borrow` declines the same way, so a
+/// fresh result the plan called scalar was never released (#3114 review).
+///
+/// A `Double` literal is NOT scalar (#3135): codegen boxes every Double on the
+/// heap (classify_let_value_heap's `expr_is_floatish` arm gives the binding
+/// rc_kind 2), so a plan that called `let x = 1.5` scalar planned no drop for
+/// a box codegen allocated -- 16 B leaked per evaluation -- and an alias of
+/// it inside a loop (#3134) took no reference of its own, so the alias's
+/// scope-end drop freed the box on the first iteration. The literals left
+/// here are exactly the ones codegen does not allocate: Int, Bool, Unit.
+export fn is_scalar_expr(ctx: PCtx, scope: PScope, e: Expr) -> Bool {
+  match e {
+    EInt(_) => true,
+    EBool(_) => true,
+    EUnit => true,
+    ECall(EIdent(fname, _), _, _) => fname == "Stdin::read_via_stream" || (!ps_has(scope, fname) && is_borrow_ret_fname(ctx, fname)),
+    _ => false
+  }
+}
+
+/// The heap-inference walk's local environment: name -> "holds a heap
+/// value", innermost first. A `Map[String, Bool]` before, whose every
+/// `Map::set` copied the whole map (see `PScope`).
+enum PEnv {
+  PeNil;
+  PeBind(String, Bool, PEnv)
+}
+
+fn pe_has(env: PEnv, name: String) -> Bool {
+  let mut cur = env
+  let mut found = false
+  let mut looking = true
+  while looking {
+    match cur {
+      PeBind(n, _, rest) => if n == name {
+        found = true
+        looking = false
+      } else {
+        cur = rest
+      },
+      PeNil => looking = false
+    }
+  }
+  found
+}
+
+/// The innermost binding of `name`; false when unbound (callers ask
+/// `pe_has` first).
+fn pe_get(env: PEnv, name: String) -> Bool {
+  let mut cur = env
+  let mut found = false
+  let mut looking = true
+  while looking {
+    match cur {
+      PeBind(n, heap, rest) => if n == name {
+        found = heap
+        looking = false
+      } else {
+        cur = rest
+      },
+      PeNil => looking = false
+    }
+  }
+  found
+}
+
+fn pat_shadow_env(pat: Pat, env: PEnv) -> PEnv {
+  let names: Array[String] = []
+  pat_names(pat, names)
+  let mut env2 = env
+  let mut j = 0
+  while j < Array::length(names) {
+    env2 = PeBind(Array::get(names, j), false, env2)
+    j = j + 1
+  }
+  env2
+}
+
+fn restore_prefix(dst: Array[Int], src: Array[Int]) -> Int {
+  let mut i = 0
+  while i < Array::length(src) {
+    Array::set(dst, i, Array::get(src, i))
+    i = i + 1
+  }
+  0
+}
+
+fn is_heap_literal(e: Expr) -> Bool {
+  match e {
+    ETuple(_) => true,
+    EArray(_) => true,
+    ERecord(_, _, _) => true,
+    _ => false
+  }
+}
+
+fn is_heap_value(e: Expr, env: PEnv, hctx: HeapInferCtx) -> Bool {
+  if is_heap_literal(e) {
+    true
+  } else {
+    match e {
+      ECall(callee, args, _) =>
+      match callee {
+        EIdent(c, _) =>
+        if pe_has(env, c) {
+          false
+        } else {
+          (Array::length(args) > 0 && name_in(hctx.ctors, c)) ||
+          name_in(hctx.heap_fns, c)
+        },
+        _ => false
+      },
+      _ => false
+    }
+  }
+}
+
+fn arg_class(arg: Expr, env: PEnv, hctx: HeapInferCtx) -> Bool {
+  if is_heap_value(arg, env, hctx) {
+    true
+  } else {
+    match arg {
+      EIdent(n, _) => if pe_has(env, n) {
+        pe_get(env, n)
+      } else {
+        let slot = bsearch_leftmost(hctx.top_names, n)
+        slot >= 0 && Array::get(hctx.top_heaps, slot)
+      },
+      _ => false
+    }
+  }
+}
+
+fn analyze_calls(name: String, e_in: Expr, env_in: PEnv, calls: Array[Array[Bool]], esc: Array[Bool], hctx: HeapInferCtx) -> Int {
+  // #556: iterate the let / seq / assign "spine" instead of recursing on its
+  // tail, so a deeply-nested (flattened) expression — e.g. the whole compiler
+  // compiled as a single unit under RC — no longer exhausts the wasm stack in
+  // this pass. The shallow side of each spine node is still analyzed
+  // recursively; the visit order and env threading are identical to the former
+  // pure recursion (fixpoint-verified), so the RC analysis result is unchanged.
+  let mut e = e_in
+  let mut env = env_in
+  let mut looping = true
+  while looping {
+    looping = false
+    match e {
+      EIdent(n, _) => {
+        if n == name {
+          Array::set(esc, 0, true)
+        } else {
+          ()
+        }
+        0
+      },
+      ECall(callee, args, _) => {
+        let is_self = match callee {
+          EIdent(cn, _) => cn == name,
+          _ => false
+        }
+        if is_self {
+          let cls: Array[Bool] = []
+          let mut k = 0
+          while k < Array::length(args) {
+            Array::push(cls, arg_class(Array::get(args, k), env, hctx))
+            k = k + 1
+          }
+          Array::push(calls, cls)
+        } else {
+          let _ = analyze_calls(name, callee, env, calls, esc, hctx)
+          ()
+        }
+        let mut i = 0
+        while i < Array::length(args) {
+          analyze_calls(name, Array::get(args, i), env, calls, esc, hctx)
+          i = i + 1
+        }
+        0
+      },
+      EDot(obj, _, _, _) => analyze_calls(name, obj, env, calls, esc, hctx),
+      ELet(n, v, b, _) => {
+        analyze_calls(name, v, env, calls, esc, hctx)
+        env = PeBind(n, is_heap_value(v, env, hctx), env)
+        e = b
+        looping = true
+      },
+      ELetRec(n, v, b) => {
+        env = PeBind(n, false, env)
+        analyze_calls(name, v, env, calls, esc, hctx)
+        e = b
+        looping = true
+      },
+      ELetMut(n, v, b, _) => {
+        analyze_calls(name, v, env, calls, esc, hctx)
+        env = PeBind(n, false, env)
+        e = b
+        looping = true
+      },
+      EAssign(_, v, c) => {
+        analyze_calls(name, v, env, calls, esc, hctx)
+        e = c
+        looping = true
+      },
+      EAssignOp(_, _, v, c) => {
+        analyze_calls(name, v, env, calls, esc, hctx)
+        e = c
+        looping = true
+      },
+      ESeq(a, b) => {
+        analyze_calls(name, a, env, calls, esc, hctx)
+        e = b
+        looping = true
+      },
+      EIf(c, t, el) => {
+        analyze_calls(name, c, env, calls, esc, hctx)
+        analyze_calls(name, t, env, calls, esc, hctx)
+        analyze_calls(name, el, env, calls, esc, hctx)
+        0
+      },
+      EWhile(c, b) => {
+        analyze_calls(name, c, env, calls, esc, hctx)
+        analyze_calls(name, b, env, calls, esc, hctx)
+        0
+      },
+      EForIn(v0, ix, it, b) => {
+        analyze_calls(name, it, env, calls, esc, hctx)
+        let env1 = PeBind(v0, false, env)
+        let env2 = match ix {
+          Some(ixn) => PeBind(ixn, false, env1),
+          None => env1
+        }
+        analyze_calls(name, b, env2, calls, esc, hctx)
+        0
+      },
+      EBinOp(_, l, r, _) => {
+        analyze_calls(name, l, env, calls, esc, hctx)
+        analyze_calls(name, r, env, calls, esc, hctx)
+        0
+      },
+      EUnaryOp(_, o) => analyze_calls(name, o, env, calls, esc, hctx),
+      EFn(_, _, params, _, _, b) => {
+        let mut env2 = env
+        let mut pi = 0
+        while pi < Array::length(params) {
+          let (pn, _) = Array::get(params, pi)
+          env2 = PeBind(pn, false, env2)
+          pi = pi + 1
+        }
+        analyze_calls(name, b, env2, calls, esc, hctx)
+        0
+      },
+      ETuple(xs) => {
+        let mut i = 0
+        while i < Array::length(xs) {
+          analyze_calls(name, Array::get(xs, i), env, calls, esc, hctx)
+          i = i + 1
+        }
+        0
+      },
+      EArray(xs) => {
+        let mut i = 0
+        while i < Array::length(xs) {
+          analyze_calls(name, Array::get(xs, i), env, calls, esc, hctx)
+          i = i + 1
+        }
+        0
+      },
+      EMatch(s, arms) => {
+        analyze_calls(name, s, env, calls, esc, hctx)
+        let mut i = 0
+        while i < Array::length(arms) {
+          let (pat, ab) = Array::get(arms, i)
+          analyze_calls(name, ab, pat_shadow_env(pat, env), calls, esc, hctx)
+          i = i + 1
+        }
+        0
+      },
+      EHandle(b, arms) => {
+        analyze_calls(name, b, env, calls, esc, hctx)
+        let mut i = 0
+        while i < Array::length(arms) {
+          let (pat, ab) = Array::get(arms, i)
+          analyze_calls(name, ab, pat_shadow_env(pat, env), calls, esc, hctx)
+          i = i + 1
+        }
+        0
+      },
+      ELoop(ps, b) => {
+        let mut env2 = env
+        let mut i = 0
+        while i < Array::length(ps) {
+          let (pn, iv) = Array::get(ps, i)
+          analyze_calls(name, iv, env2, calls, esc, hctx)
+          env2 = PeBind(pn, false, env2)
+          i = i + 1
+        }
+        analyze_calls(name, b, env2, calls, esc, hctx)
+        0
+      },
+      ERecord(_, fs, _) => {
+        let mut i = 0
+        while i < Array::length(fs) {
+          let (_, fv) = Array::get(fs, i)
+          analyze_calls(name, fv, env, calls, esc, hctx)
+          i = i + 1
+        }
+        0
+      },
+      EMap(fs) => {
+        let mut i = 0
+        while i < Array::length(fs) {
+          let (_, fv) = Array::get(fs, i)
+          analyze_calls(name, fv, env, calls, esc, hctx)
+          i = i + 1
+        }
+        0
+      },
+      ELabeledArg(_, _, x) => analyze_calls(name, x, env, calls, esc, hctx),
+      EReturn(x) => analyze_calls(name, x, env, calls, esc, hctx),
+      ESpread(x) => analyze_calls(name, x, env, calls, esc, hctx),
+      EBreak(o) =>
+      match o {
+        Some(x) => analyze_calls(name, x, env, calls, esc, hctx),
+        None => 0
+      },
+      EContinue(xs) => {
+        let mut i = 0
+        while i < Array::length(xs) {
+          analyze_calls(name, Array::get(xs, i), env, calls, esc, hctx)
+          i = i + 1
+        }
+        0
+      },
+      EInt(_) => 0,
+      EFloat(_) => 0,
+      EString(_, _) => 0,
+      EBool(_) => 0,
+      EStringInterp(_) => 0,
+      EUnit => 0
+    }
+  }
+  0
+}
+
+/// An alias-attributed dup: `let a = t` where `t` is multiply-used and owned.
+/// Keyed by the alias name.
+export fn pa_is_alias_dup(a: PerceusAction) -> Bool {
+  match a.kind {
+    PaAliasDup => true,
+    _ => false
+  }
+}
+
+export fn pc_count_borrow(ctx: PCtx, scope: PScope, name: String) -> Int {
+  if ps_has(scope, name) {
+    let id = ps_get(scope, name)
+    Array::set(ctx.borrows, id, Array::get(ctx.borrows, id) + 1)
+  }
+  0
+}
+
+fn all_calls_heap_at(idx: Int, calls: Array[Array[Bool]]) -> Bool {
+  let mut ci = 0
+  let mut all_heap = true
+  while ci < Array::length(calls) {
+    let cls = Array::get(calls, ci)
+    if idx >= Array::length(cls) {
+      all_heap = false
+    } else if !Array::get(cls, idx) {
+      all_heap = false
+    } else {
+      ()
+    }
+    ci = ci + 1
+  }
+  all_heap
+}
+
+/// #3169: the evidence-passing lowering (lowering/effects/evidence,
+/// `edp_dict_struct_name`) prepends a parameter typed `__EvDict_<E>` to every
+/// function that performs a migrated user effect, and each call inside the
+/// handle passes a FRESH record literal there -- one owned reference the
+/// callee must release. The name starts with `_`, so the capital-letter test
+/// below called it scalar: the callee planned no drop and every handled call
+/// leaked its dictionary (24 B for a one-operation effect).
+fn type_name_is_evidence_dict(n: String) -> Bool {
+  String::length(n) > 9 && String::substring(n, 0, 9) == "__EvDict_"
+}
+
+fn type_name_is_heap(n: String) -> Bool {
+  if String::length(n) == 0 {
+    false
+  } else if type_name_is_evidence_dict(n) {
+    true
+  } else {
+    let c0 = String::char_code_at(n, 0)
+    if c0 < 'A' || c0 > 'Z' {
+      false
+    } else if n == "Int" || n == "Bool" || n == "String" || n == "Bytes" || n == "Char" || n == "Unit" || n == "StdinStream" {
+      // #3135: `Double` and `Float` are NOT in this list. The RC lane boxes
+      // every one of them on the heap (`emit_box_float`), and the plan has
+      // counted a `Double` binding as heap since #3130 -- so a caller hands
+      // its box to a `Double` parameter as an owned reference. Listing them
+      // here made the callee's parameter scalar: it planned no drop, and the
+      // box every call passed leaked (32 B a call for `take_d(x)`).
+      false
+    } else {
+      true
+    }
+  }
+}
+
+export fn type_expr_is_heap(ot: Option[TypeExpr]) -> Bool {
+  match ot {
+    None => false,
+    Some(t) =>
+    match t {
+      // #702: a bare function-typed binding/param is a closure — heap when it
+      // captures (an odd RC block), a scalar constant when it doesn't. Treating
+      // it as heap lets the owning function drop it (vibe_rc_drop's odd-check makes
+      // the non-capturing constant a no-op), reclaiming capturing closures passed
+      // as arguments to higher-order fns instead of leaking them.
+      TyFn(_, _, _) => true,
+      TyTuple(_) => true,
+      TyApp(_, _) => true,
+      TyName(n) => n == inferred_heap_marker_name() || type_name_is_heap(n),
+      TyUnit => false
+    }
+  }
+}
+
+/// #791: program-wide (name of every top-level function whose DECLARED return
+/// type is heap), mirroring compute_agg_returning's scan but reading
+/// type_expr_is_heap instead of agg_info_of_type_expr. This is the "read the
+/// declared signature" alternative to threading checker-inferred types
+/// through codegen: `let mut s = Set::new()` can be classified correctly by
+/// looking up `Set::new`'s OWN `-> Set[T]` annotation (already sitting on the
+/// AST, no unification/inference needed) instead of guessing from the RHS
+/// expression's shape. Only covers named, annotated top-level functions --
+/// classify_let_value_heap (compile_expr_tail.vibe) falls back to its
+/// existing "any ECall is heap by default" over-approximation when a callee
+/// isn't found here (unannotated function, local closure, shadowed name),
+/// so this is a precision refinement, not a completeness requirement.
+fn inferred_double_name(double_names: Array[String], name: String) -> Bool {
+  let mut i = Array::length(double_names) - 1
+  let mut found = false
+  let mut answer = false
+  while i >= 0 && !found {
+    let entry = Array::get(double_names, i)
+    if entry == name || entry == "!" + name {
+      answer = entry == name
+      found = true
+    }
+    i = i - 1
+  }
+  answer
+}
+
+fn inferred_double_expr(body: Expr, double_names: Array[String]) -> Bool {
+  match body {
+    EFloat(_) => true,
+    EIdent(name, _) => inferred_double_name(double_names, name),
+    EBinOp(op, left, right, _) => (op == "+" || op == "-" || op == "*" || op == "/") && (inferred_double_expr(left, double_names) || inferred_double_expr(right, double_names)),
+    EUnaryOp("-", value) => inferred_double_expr(value, double_names),
+    _ => false
+  }
+}
+
+fn inferred_bound_owns(bound: Array[String], name: String) -> Int {
+  let mut i = Array::length(bound) - 1
+  while i >= 0 {
+    let entry = Array::get(bound, i)
+    if entry == "+" + name {
+      return 1
+    }
+    if entry == name {
+      return 0
+    }
+    i = i - 1
+  }
+  -1
+}
+
+fn inferred_heap_result_spine(body: Expr, ctor_names: Array[String], heap_names: Array[String], bound: Array[String], double_names: Array[String]) -> Bool {
+  match body {
+    EIdent(name, _) => inferred_bound_owns(bound, name) == 1,
+    EArray(_) => true,
+    ETuple(_) => true,
+    ERecord(_, _, _) => true,
+    EMap(_) => true,
+    EFloat(_) => true,
+    EFn(_, _, _, _, _, _) => true,
+    ECall(EIdent(name, off), args, _) => if name == "__lambda_return_owned" && off < 0 && Array::length(args) == 1 {
+      true
+    } else {
+      inferred_bound_owns(bound, name) < 0 && (array_contains_str_pctx(ctor_names, name) || array_contains_str_pctx(heap_names, name))
+    },
+    EReturn(value) => inferred_heap_result_spine(value, ctor_names, heap_names, bound, double_names),
+    EBinOp(_, _, _, _) => inferred_double_expr(body, double_names),
+    EUnaryOp(_, _) => inferred_double_expr(body, double_names),
+    EIf(_, yes, no) => inferred_heap_result_spine(yes, ctor_names, heap_names, bound, double_names) && inferred_heap_result_spine(no, ctor_names, heap_names, bound, double_names),
+    EMatch(_, arms) => if Array::length(arms) == 0 {
+      false
+    } else {
+      let mut all_fresh = true
+      for arm in arms {
+        let mark = Array::length(bound)
+        pat_names(arm.0, bound)
+        if !inferred_heap_result_spine(arm.1, ctor_names, heap_names, bound, double_names) {
+          all_fresh = false
+        }
+        Array::truncate(bound, mark)
+      }
+      all_fresh
+    },
+    ELet(name, value, tail, _) => {
+      let bmark = Array::length(bound)
+      let dmark = Array::length(double_names)
+      let value_owned = inferred_heap_result_spine(value, ctor_names, heap_names, bound, double_names)
+      if inferred_double_expr(value, double_names) {
+        Array::push(double_names, name)
+      } else {
+        Array::push(double_names, "!" + name)
+      }
+      Array::push(bound, if value_owned {
+        "+" + name
+      } else {
+        name
+      })
+      let owned = inferred_heap_result_spine(tail, ctor_names, heap_names, bound, double_names)
+      Array::truncate(bound, bmark)
+      Array::truncate(double_names, dmark)
+      owned
+    },
+    ELetMut(name, _, tail, _) => {
+      let mark = Array::length(bound)
+      let dmark = Array::length(double_names)
+      Array::push(bound, name)
+      Array::push(double_names, "!" + name)
+      let owned = inferred_heap_result_spine(tail, ctor_names, heap_names, bound, double_names)
+      Array::truncate(bound, mark)
+      Array::truncate(double_names, dmark)
+      owned
+    },
+    ELetRec(name, _, tail) => {
+      let mark = Array::length(bound)
+      let dmark = Array::length(double_names)
+      Array::push(bound, name)
+      Array::push(double_names, "!" + name)
+      let owned = inferred_heap_result_spine(tail, ctor_names, heap_names, bound, double_names)
+      Array::truncate(bound, mark)
+      Array::truncate(double_names, dmark)
+      owned
+    },
+    ESeq(_, tail) => inferred_heap_result_spine(tail, ctor_names, heap_names, bound, double_names),
+    EAssign(_, _, tail) => inferred_heap_result_spine(tail, ctor_names, heap_names, bound, double_names),
+    EAssignOp(_, _, _, tail) => inferred_heap_result_spine(tail, ctor_names, heap_names, bound, double_names),
+    _ => false
+  }
+}
+
+export fn compute_heap_returning(stmts: Array[Stmt]) -> Array[String] {
+  let out: Array[String] = []
+  let ctor_names = collect_ctor_names(stmts)
+  let mut changed = true
+  while changed {
+    changed = false
+    let mut i = 0
+    while i < Array::length(stmts) {
+      match Array::get(stmts, i) {
+        SLet(_, _, name, ann, value) => match value {
+          EFn(_, _, params, fn_ret, _, body) => {
+            let ret = match ann {
+              Some(at) => match at {
+                TyFn(_, r, _) => Some(r),
+                _ => fn_ret
+              },
+              None => fn_ret
+            }
+            // Follow only result spines whose every leaf allocates. A borrowed
+            // name or call remains unknown without a declared return type.
+            let bound: Array[String] = []
+            let double_names: Array[String] = []
+            for param in params {
+              Array::push(bound, param.0)
+              match param.1 {
+                Some(TyName(ty)) => if ty == "Double" || ty == "Float" || ty == "f64" || ty == "f32" {
+                  Array::push(double_names, param.0)
+                },
+                _ => ()
+              }
+            }
+            let direct_fresh_result = inferred_heap_result_spine(body, ctor_names, out, bound, double_names)
+            if type_expr_is_heap(ret) || (match ret {
+              None => direct_fresh_result,
+              Some(_) => false
+            }) {
+              if !array_contains_str_pctx(out, name) {
+                Array::push(out, name)
+                changed = true
+              }
+            } else {
+              ()
+            }
+          },
+          _ => ()
+        },
+        _ => ()
+      }
+      i = i + 1
+    }
+  }
+  out
+}
+
+export fn collect_ctor_names(stmts: Array[Stmt]) -> Array[String] {
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SEnum(_, _, _, variants, _) => {
+        let mut j = 0
+        while j < Array::length(variants) {
+          let (vn, _) = Array::get(variants, j)
+          Array::push(out, vn)
+          j = j + 1
+        }
+      },
+      SSuberror(_, _, variants) => {
+        let mut j = 0
+        while j < Array::length(variants) {
+          let (vn, _) = Array::get(variants, j)
+          Array::push(out, vn)
+          j = j + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// The annotation a parameter gets when the planner CLASSIFIES it heap
+/// (fill_params_from_calls). It says "an rc block", not a type, and every
+/// reader but type_expr_is_heap must treat it as no annotation at all. It
+/// used to be the empty tuple `TyTuple([])` -- a shape no source spells
+/// (`()` parses to TyUnit), which made it look private, but desugar_trait_dicts
+/// runs AFTER elaborate_heap_params and seed_var_types recorded it as a
+/// composite eq shape: `Array::get(names, i) == name` on a heap-classified
+/// string parameter became eq_for_typed(TyTuple([])), trivially true, and
+/// `lookup` in fixtures/rc_shadow_regression_test.vibe answered Some for a
+/// name it did not hold (#2681 follow-up; the RC lane only). linked_compile's
+/// agg_info_of_type_expr read the same annotation as a tuple of arity 0 and
+/// registered the parameter as an aggregate local. A nominal no type table
+/// knows is what an unannotated parameter already is to those readers:
+/// agg_info_of_type_name answers 0 for it, and seed_var_types skips it by
+/// name (desugar_trait_dict.vibe) so no witness or comparator is ever
+/// looked up under it.
+fn inferred_heap_type() -> TypeExpr {
+  TyName(inferred_heap_marker_name())
+}
+
+/// The marker's spelling, shared by name with desugar_trait_dict.vibe's
+/// seed_var_types (which cannot import this module).
+fn inferred_heap_marker_name() -> String {
+  "__rc_heap"
+}
+
+fn fill_lambda_params(name: String, efn: Expr, body: Expr, hctx: HeapInferCtx) -> Expr {
+  match efn {
+    EFn(_, _, params, _, _, _) =>
+    if !params_have_unannotated(params) {
+      // Call-site inference can only fill missing annotations. In particular,
+      // a nullary lambda needs neither a scope walk nor a call table.
+      efn
+    } else {
+      let calls: Array[Array[Bool]] = []
+      let esc = [false]
+      let env0: PEnv = PeNil
+      analyze_calls(name, body, env0, calls, esc, hctx)
+      fill_params_from_calls(efn, calls, esc)
+    },
+    _ => efn
+  }
+}
+
+/// Give every unannotated parameter of `efn` the inferred heap type when
+/// EVERY collected call passes a heap value at that position and the lambda
+/// never escapes as a value, OR (#2681) when the body itself CONSUMES the
+/// parameter at an owning position. The second test is what the scalar
+/// classification cannot afford to miss: a value the body hands to an
+/// owning position is released there whatever it is, so a heap argument
+/// needs the dups and the exit accounting a heap parameter gets, while a
+/// scalar handed the same treatment costs only guarded no-ops (rc_dup and
+/// rc_drop ignore even values and fat pointers). The consume count is the
+/// builtin-only view (`md_consume_count`: a user callee counts as owning),
+/// which over-approximates in the harmless direction -- the plan built
+/// later decides the actual dups and drops from the real borrow masks.
+fn fill_params_from_calls(efn: Expr, calls: Array[Array[Bool]], esc: Array[Bool]) -> Expr {
+  match efn {
+    EFn(tps, bounds, params, ret, eff, fnbody) => {
+      let calls_decide = !Array::get(esc, 0) && Array::length(calls) > 0
+      let new_params = Array::slice(params, 0, 0)
+      let mut changed = false
+      let mut pi = 0
+      while pi < Array::length(params) {
+        let (pname, pty) = Array::get(params, pi)
+        let filled = match pty {
+          Some(_) => (pname, pty),
+          None =>
+          if (calls_decide && all_calls_heap_at(pi, calls)) || md_consume_count(fnbody, pname) > 0 {
+            changed = true
+            (pname, Some(inferred_heap_type()))
+          } else {
+            (pname, pty)
+          }
+        }
+        Array::push(new_params, filled)
+        pi = pi + 1
+      }
+      if changed {
+        EFn(tps, bounds, new_params, ret, eff, fnbody)
+      } else {
+        efn
+      }
+    },
+    _ => efn
+  }
+}
+
+/// #2681: the same inference for a TOP-LEVEL `let f = (p) -> ..`. Only the
+/// ELet / ELetRec locals went through fill_lambda_params, so an unannotated
+/// parameter of a top-level lambda kept no type, the planner read it as a
+/// scalar and planned neither dups nor drops for it, and a heap argument
+/// consumed twice or more in the body (`(tys) -> consume(tys) + consume(tys)`)
+/// was released once more than it was retained -- the shadow lane's "drop of
+/// freed value". The calls are collected from every top-level statement's
+/// expressions (`top_level_call_scope`), with the top-level `let` bindings
+/// seeded into the environment so a heap constant passed by name counts as
+/// heap. A lambda used as a value anywhere escapes and is left alone, as
+/// before.
+export fn fill_top_lambda_params(name: String, efn: Expr, scope: Array[Expr], scope_refs: Array[Array[String]], hctx: HeapInferCtx) -> Expr {
+  match efn {
+    EFn(_, _, params, _, _, _) =>
+    if !params_have_unannotated(params) {
+      efn
+    } else {
+      let calls: Array[Array[Bool]] = []
+      let esc = [false]
+      let env0: PEnv = PeNil
+      let mut si = 0
+      while si < Array::length(scope) {
+        // Only the statements that mention the lambda can hold a call to it
+        // or let it escape; the others are skipped without a walk. The
+        // top-level bindings' heap-ness reaches arg_class through
+        // the top-level index, so the threaded environment starts empty.
+        if bsearch_leftmost(Array::get(scope_refs, si), name) >= 0 {
+          analyze_calls(name, Array::get(scope, si), env0, calls, esc, hctx)
+        } else {
+          ()
+        }
+        si = si + 1
+      }
+      fill_params_from_calls(efn, calls, esc)
+    },
+    _ => efn
+  }
+}
+
+fn params_have_unannotated(params: Array[(String, Option[TypeExpr])]) -> Bool {
+  let mut pi = 0
+  let mut found = false
+  while pi < Array::length(params) && !found {
+    let (_, pty) = Array::get(params, pi)
+    match pty {
+      None => {
+        found = true
+      },
+      Some(_) => ()
+    }
+    pi = pi + 1
+  }
+  found
+}
+
+export fn has_top_heap_param_candidate(stmts: Array[Stmt]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(stmts) && !found {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, EFn(_, _, params, _, _, _)) => {
+        found = params_have_unannotated(params)
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Every expression a top-level statement carries: the scope a top-level
+/// lambda's calls are collected from (#2681). Impl methods are top-level
+/// lets by the time the planner runs.
+export fn top_level_call_scope(stmts: Array[Stmt], out: Array[Expr]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, e) => Array::push(out, e),
+      SLetMut(_, _, e) => Array::push(out, e),
+      SExpr(e) => Array::push(out, e),
+      STest(_, e) => Array::push(out, e),
+      SBench(_, e) => Array::push(out, e),
+      SExample(_, e) => Array::push(out, e),
+      SLetPat(_, e) => Array::push(out, e),
+      SFnDecl(_, _, fv, _, _) => Array::push(out, fv),
+      SModule(_, _, inner) => top_level_call_scope(inner, out),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+/// The top-level `let` bindings' heap-ness, the environment the top-level
+/// call analysis starts from (#2681): an annotated binding by its type, an
+/// unannotated one by its value.
+export fn top_level_heap_env(stmts: Array[Stmt], hctx: HeapInferCtx) -> (Array[String], Array[Bool]) {
+  // MapBuilder::set scans prior keys on each insertion. Build a sorted index
+  // once instead. Visit bindings backwards so the stable sort + leftmost
+  // lookup preserves the original last-binding-wins rule, including false.
+  let names: Array[String] = []
+  let heaps: Array[Bool] = []
+  let empty_env: PEnv = PeNil
+  let mut i = Array::length(stmts)
+  while i > 0 {
+    i = i - 1
+    match Array::get(stmts, i) {
+      SLet(_, _, n, ty, e) => {
+        let heap = match ty {
+          Some(_) => type_expr_is_heap(ty),
+          None => is_heap_value(e, empty_env, hctx)
+        }
+        Array::push(names, n)
+        Array::push(heaps, heap)
+      },
+      _ => ()
+    }
+  }
+  let perm = sort_perm_by_names(names)
+  let sorted_names: Array[String] = []
+  let sorted_heaps: Array[Bool] = []
+  i = 0
+  while i < Array::length(perm) {
+    let slot = Array::get(perm, i)
+    Array::push(sorted_names, Array::get(names, slot))
+    Array::push(sorted_heaps, Array::get(heaps, slot))
+    i = i + 1
+  }
+  (sorted_names, sorted_heaps)
+}
+
+/// The identifiers each top-level expression mentions, sorted, one list per
+/// entry of `top_level_call_scope`'s output (#2681): the filter that keeps a
+/// lambda's call analysis to the statements that can reference it.
+export fn top_level_scope_refs(scope: Array[Expr]) -> Array[Array[String]] {
+  let out: Array[Array[String]] = []
+  let no_names: Array[String] = []
+  let mut i = 0
+  while i < Array::length(scope) {
+    Array::push(out, sorted_names_of(collect_free_vars(Array::get(scope, i), no_names, no_names)))
+    i = i + 1
+  }
+  out
+}
+
+export fn elaborate_rw(e: Expr, hctx: HeapInferCtx) -> Expr {
+  match e {
+    ELet(n, v, b, soff) => {
+      let v2 = elaborate_rw(v, hctx)
+      let v3 = fill_lambda_params(n, v2, b, hctx)
+      ELet(n, v3, elaborate_rw(b, hctx), soff)
+    },
+    ELetRec(n, v, b) => {
+      let v2 = elaborate_rw(v, hctx)
+      let v3 = fill_lambda_params(n, v2, b, hctx)
+      ELetRec(n, v3, elaborate_rw(b, hctx))
+    },
+    ELetMut(n, v, b, soff) => ELetMut(n, elaborate_rw(v, hctx), elaborate_rw(b, hctx), soff),
+    EAssign(n, v, c) => EAssign(n, elaborate_rw(v, hctx), elaborate_rw(c, hctx)),
+    EAssignOp(n, op, v, c) => EAssignOp(n, op, elaborate_rw(v, hctx), elaborate_rw(c, hctx)),
+    ESeq(a, b) => ESeq(elaborate_rw(a, hctx), elaborate_rw(b, hctx)),
+    EIf(c, t, el) => EIf(elaborate_rw(c, hctx), elaborate_rw(t, hctx), elaborate_rw(el, hctx)),
+    EWhile(c, b) => EWhile(elaborate_rw(c, hctx), elaborate_rw(b, hctx)),
+    EForIn(n, ix, it, b) => EForIn(n, ix, elaborate_rw(it, hctx), elaborate_rw(b, hctx)),
+    EFn(tps, bounds, params, ret, eff, fb) =>
+    EFn(tps, bounds, params, ret, eff, elaborate_rw(fb, hctx)),
+    ECall(callee, args, off) => {
+      let new_args = Array::slice(args, 0, 0)
+      let mut i = 0
+      while i < Array::length(args) {
+        Array::push(new_args, elaborate_rw(Array::get(args, i), hctx))
+        i = i + 1
+      }
+      ECall(elaborate_rw(callee, hctx), new_args, off)
+    },
+    EBinOp(op, l, r, boff) => EBinOp(op, elaborate_rw(l, hctx), elaborate_rw(r, hctx), boff),
+    EUnaryOp(op, o) => EUnaryOp(op, elaborate_rw(o, hctx)),
+    EDot(o, f, off, fdoff) => EDot(elaborate_rw(o, hctx), f, off, fdoff),
+    ETuple(xs) => {
+      let ys = Array::slice(xs, 0, 0)
+      let mut i = 0
+      while i < Array::length(xs) {
+        Array::push(ys, elaborate_rw(Array::get(xs, i), hctx))
+        i = i + 1
+      }
+      ETuple(ys)
+    },
+    EArray(xs) => {
+      let ys = Array::slice(xs, 0, 0)
+      let mut i = 0
+      while i < Array::length(xs) {
+        Array::push(ys, elaborate_rw(Array::get(xs, i), hctx))
+        i = i + 1
+      }
+      EArray(ys)
+    },
+    EMatch(s, arms) => {
+      let new_arms = Array::slice(arms, 0, 0)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (p, ab) = Array::get(arms, i)
+        Array::push(new_arms, (p, elaborate_rw(ab, hctx)))
+        i = i + 1
+      }
+      EMatch(elaborate_rw(s, hctx), new_arms)
+    },
+    EHandle(b, arms) => {
+      let new_arms = Array::slice(arms, 0, 0)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (p, ab) = Array::get(arms, i)
+        Array::push(new_arms, (p, elaborate_rw(ab, hctx)))
+        i = i + 1
+      }
+      EHandle(elaborate_rw(b, hctx), new_arms)
+    },
+    ELoop(ps, b) => {
+      let new_ps = Array::slice(ps, 0, 0)
+      let mut i = 0
+      while i < Array::length(ps) {
+        let (pn, iv) = Array::get(ps, i)
+        Array::push(new_ps, (pn, elaborate_rw(iv, hctx)))
+        i = i + 1
+      }
+      ELoop(new_ps, elaborate_rw(b, hctx))
+    },
+    ERecord(rn, fs, targs) => {
+      let new_fs = Array::slice(fs, 0, 0)
+      let mut i = 0
+      while i < Array::length(fs) {
+        let (fn0, fv) = Array::get(fs, i)
+        Array::push(new_fs, (fn0, elaborate_rw(fv, hctx)))
+        i = i + 1
+      }
+      ERecord(rn, new_fs, targs)
+    },
+    EMap(fs) => {
+      let new_fs = Array::slice(fs, 0, 0)
+      let mut i = 0
+      while i < Array::length(fs) {
+        let (fn0, fv) = Array::get(fs, i)
+        Array::push(new_fs, (fn0, elaborate_rw(fv, hctx)))
+        i = i + 1
+      }
+      EMap(new_fs)
+    },
+    ELabeledArg(l, k, x) => ELabeledArg(l, k, elaborate_rw(x, hctx)),
+    EReturn(x) => EReturn(elaborate_rw(x, hctx)),
+    ESpread(x) => ESpread(elaborate_rw(x, hctx)),
+    EBreak(o) =>
+    match o {
+      Some(x) => EBreak(Some(elaborate_rw(x, hctx))),
+      None => EBreak(None)
+    },
+    EContinue(xs) => {
+      let ys = Array::slice(xs, 0, 0)
+      let mut i = 0
+      while i < Array::length(xs) {
+        Array::push(ys, elaborate_rw(Array::get(xs, i), hctx))
+        i = i + 1
+      }
+      EContinue(ys)
+    },
+    EInt(_) => e,
+    EFloat(_) => e,
+    EString(_, _) => e,
+    EBool(_) => e,
+    EIdent(_, _) => e,
+    EStringInterp(_) => e,
+    EUnit => e
+  }
+}
+
+/// Bit i means parameter i of this callee is borrowed. Mirrors
+/// bmask_has/md_borrow_mask_of in codegen/common_analysis.
+export fn pe_bmask_has(mask: Int, i: Int) -> Bool {
+  i >= 0 && i < 32 && ((mask>>i)&1) == 1
+}
+
+/// The borrowed-parameter mask for callee `f`, honoring lexical scope: a
+/// LOCAL binding that shadows a borrow-set name is an ordinary owned
+/// closure call (mirrors compile_call's #875 local_idx_hint guard).
+export fn pe_borrow_mask(ctx: PCtx, scope: PScope, callee: Expr) -> Int {
+  match callee {
+    EIdent(f, _) => if ps_has(scope, f) {
+      0
+    } else {
+      md_borrow_mask_of(f, ctx.borrow_param_user, ctx.borrow_param_mask)
+    },
+    _ => 0
+  }
+}

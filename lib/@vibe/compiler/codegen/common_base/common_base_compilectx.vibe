@@ -1,0 +1,1260 @@
+// lib/@vibe/compiler/codegen/common_base/common_base.vibe — compilectx.
+
+import @vibe/compiler/core {
+  Expr,
+  Pat,
+  Stmt,
+  TypeExpr,
+  __to_string,
+  apply_perm_strings,
+  bsearch_leftmost,
+  bytebuf_length,
+  bytebuf_new,
+  bytebuf_push,
+  bytebuf_push_buf,
+  bytebuf_to_bytes,
+  leb128_encode_u32,
+  sort_perm_by_names
+}
+
+import @vibe/ast {
+  type_param_name
+}
+
+import @vibe/core {
+  MutMap, array_empty
+}
+
+import @vibe/compiler/codegen/reloc {
+  blind_owner_pending
+}
+
+import @vibe/compiler/codegen/wasm_emit {
+  emit_block_i64,
+  emit_br,
+  emit_call,
+  emit_call_indirect,
+  emit_else,
+  emit_end,
+  emit_i32_add,
+  emit_i32_const,
+  emit_i32_load,
+  emit_i32_load8_u,
+  emit_i32_store,
+  emit_i32_store8,
+  emit_i32_wrap_i64,
+  emit_i64_add,
+  emit_i64_and,
+  emit_i64_const,
+  emit_i64_div_s,
+  emit_i64_eq,
+  emit_i64_eqz,
+  emit_i64_extend_i32_s,
+  emit_i64_ge_s,
+  emit_i64_gt_s,
+  emit_i64_le_s,
+  emit_i64_lt_s,
+  emit_i64_mul,
+  emit_i64_ne,
+  emit_i64_or,
+  emit_i64_rem_s,
+  emit_i64_shl,
+  emit_i64_shr_s,
+  emit_i64_store,
+  emit_i64_sub,
+  emit_i64_xor,
+  emit_if_void,
+  emit_local_get,
+  emit_local_set
+}
+
+import @vibe/compiler/normalize {
+  desugar_array_spread,
+  desugar_derives,
+  desugar_hoist_local_lambdas,
+  desugar_labeled_args,
+  desugar_railway_binds,
+  desugar_trait_dicts,
+  ensure_exn_kind_cell,
+  erase_railway_origin_markers,
+  exn_kind_read_expr,
+  exn_msg_read_expr,
+  inject_trait_method_generics,
+  unbox_tuple_loop_params,
+  wrap_entry_exception_boundary,
+  wrap_entry_host_provider
+}
+
+//# Types
+
+export struct FuncTable {
+  names: Array[String];
+  indices: Array[Int];
+  params: Array[Int];
+  returns: Array[Int];
+  needs_env: Array[Bool];
+  // #1100: sorted-name index (see ctor_sorted_index/ctor_table_index_of,
+  // this file) for func_table_index_of's O(log N) bsearch_leftmost lookup --
+  // built ONCE per compile from `names` via ctor_sorted_index, same as
+  // CtorTable.names_sorted/names_sorted_pos. `names` itself stays in its
+  // original (declaration) order; only this sorted VIEW is new.
+  names_sorted: Array[String];
+  names_sorted_pos: Array[Int]
+}
+
+export struct StrTable {
+  strs: Array[String];
+  offsets: Array[Int];
+  lengths: Array[Int];
+  // #2386: string -> its FIRST slot in `strs`, built once per compile by
+  // str_table_new. str_table_index_of answers through it instead of scanning
+  // `strs` per string literal, map key and match-arm string (the scan was
+  // ~35 ms of a compiler-closure compile on either lane). A table built by
+  // str_table_lite leaves it empty and keeps the scan.
+  index: MutMap[String, Int]
+}
+
+/// A string table with its lookup index: `index` maps every string to the
+/// first slot that holds it, so a repeated string answers as the forward
+/// scan did. Build it ONCE per compile, after the last push to `strs`.
+export fn str_table_new(strs: Array[String], offsets: Array[Int], lengths: Array[Int]) -> StrTable {
+  let index = MutMap::with_capacity_string(Array::length(strs) * 2 + 16)
+  // Earlier slots overwrite later ones, preserving the first occurrence
+  // without hashing each new string once for membership and again to insert.
+  let mut i = Array::length(strs)
+  while i > 0 {
+    i = i - 1
+    let s = Array::get(strs, i)
+    MutMap::set(index, s, i)
+  }
+  StrTable::{
+    strs: strs,
+    offsets: offsets,
+    lengths: lengths,
+    index: index
+  }
+}
+
+/// A string table without an index: str_table_index_of scans `strs`. For
+/// the tables built per function (the gc lane) and the lite module path.
+export fn str_table_lite(strs: Array[String], offsets: Array[Int], lengths: Array[Int]) -> StrTable {
+  StrTable::{
+    strs: strs,
+    offsets: offsets,
+    lengths: lengths,
+    index: MutMap::new_string()
+  }
+}
+
+/// #3126: the raw `(ptr << 32) | len` constant of `s` in the string table, or 0 when
+/// `s` is empty or was not seeded. Never throws: a missing location is a
+/// shorter message, not a failed build.
+export fn str_table_fat_or_zero(st: StrTable, s: String) -> Int {
+  if String::length(s) == 0 {
+    0
+  } else {
+    let idx = if MutMap::size(st.index) > 0 {
+      match MutMap::get(st.index, s) {
+        Some(i) => i,
+        None => 0 - 1
+      }
+    } else {
+      let mut found = 0 - 1
+      let mut i = 0
+      while i < Array::length(st.strs) {
+        if String::equals(Array::get(st.strs, i), s) {
+          found = i
+          i = Array::length(st.strs)
+        } else {
+          i = i + 1
+        }
+      }
+      found
+    }
+    if idx < 0 {
+      0
+    } else {
+      (Array::get(st.offsets, idx)<<32)|Array::get(st.lengths, idx)
+    }
+  }
+}
+
+/// The slot of `s` in `st` -- the first one that holds it -- or a thrown
+/// "string not in table" (the message str_table_lookup throws).
+export fn str_table_index_of(st: StrTable, s: String) -> Int with Exception {
+  if MutMap::size(st.index) > 0 {
+    match MutMap::get(st.index, s) {
+      Some(i) => i,
+      None => throw(String::concat("string not in table: ", s))
+    }
+  } else {
+    let strs = st.strs
+    let len = Array::length(strs)
+    let mut i = 0
+    let mut found = -1
+    while i < len {
+      if String::equals(Array::get(strs, i), s) {
+        found = i
+        i = len
+      } else {
+        i = i + 1
+      }
+    }
+    if found < 0 {
+      throw(String::concat("string not in table: ", s))
+    }
+    found
+  }
+}
+
+export struct LambdaTable {
+  bodies: Array[Bytes];
+  param_counts: Array[Int];
+  captures: Array[Array[String]];
+  meta_i32: Array[Int];
+  meta_i64: Array[Int]
+}
+
+/// #1259 step 7: one user function's codegen OUTPUT, carried as a value.
+///
+/// Body codegen has to become something a coordinator can hand out per
+/// function and collect back, and the compiler runs inside wasm -- it cannot
+/// spawn workers, and it must not grow an `Fs` row to persist anything (that
+/// row propagates out through the codegen facades and into the signatures of
+/// user programs that call `compile_wasi_module`, which is not acceptable).
+/// So the unit of exchange is a VALUE: the caller (file_compile, which already
+/// has Fs) does any serialization.
+///
+/// Parallel arrays rather than an array of records, matching how `bodies` /
+/// `meta_i32` / `meta_i64` and LambdaTable are already carried in this
+/// codegen.
+///
+/// `fn_*` is one entry per cached user function, keyed by `fn_indices`.
+/// `lam_*` is one entry per lambda that function produced, keyed by the
+/// PLANNED lambda index (#1275/#1277) -- which is what makes a body compiled
+/// in isolation reusable: its emitted table_slot immediates already refer to
+/// the slots the whole-program assembly will install these lambdas at.
+export struct CodegenBodyCache {
+  fn_indices: Array[Int];
+  /// #2669 step 2a: the function each entry was harvested from, by NAME.
+  ///
+  /// `fn_indices` keys the lookup today, and that is exactly why
+  /// `decode_body_cache_payload_for` can only keep the unchanged leading
+  /// PREFIX of files: over an identical prefix, cache index i and build index
+  /// i are the same function, and past the first change they are not. The
+  /// prefix rule is that precondition, not caution.
+  ///
+  /// A name does not move when something ahead of it is inserted, so keying
+  /// on it is what lets the filter keep every unchanged file instead. Recorded
+  /// now and checked against the index lookup; nothing depends on it yet.
+  fn_names: Array[String];
+  /// #2669 step 2b: the SOURCE FILE each entry was harvested from, by index
+  /// into the compile's file list, or -1 when the compile could not say.
+  ///
+  /// This is what the widened filter keys on, and it exists because a
+  /// statement POSITION after lowering cannot answer the question: prelude
+  /// insertion and DCE compaction move it across source-file boundaries.
+  /// `fn_src_stmts` now preserves the original position too, for the prefix
+  /// fallback, but a file id directly answers the wider unchanged-file query.
+  ///
+  /// The file id comes from the pre-prelude name -> file snapshot
+  /// (`pre_prelude_let_names` / `pre_prelude_let_files`), the identity that
+  /// survives the prelude -- the same one interior-line breakpoints resolve a
+  /// function's file through.
+  fn_files: Array[Int];
+  fn_bodies: Array[Bytes];
+  fn_meta_i32: Array[Int];
+  fn_meta_i64: Array[Int];
+  /// v128-local run length of the function's code-entry locals header
+  /// (inline-wasm fns with `(local $x v128)` declarations; 0 otherwise).
+  fn_meta_v128: Array[Int];
+  lam_owner: Array[Int];
+  lam_indices: Array[Int];
+  lam_bodies: Array[Bytes];
+  lam_param_counts: Array[Int];
+  lam_captures: Array[Array[String]];
+  lam_meta_i32: Array[Int];
+  lam_meta_i64: Array[Int];
+  /// The `table_slots_used` entries this function's compile appended, keyed by
+  /// owning function index. Not part of the function's own bytes -- the log is
+  /// read only after the body loop, to decide which table slots the element
+  /// section registers -- but a replayed function never runs the pushes, so
+  /// without carrying them a fully replayed build would emit a SMALLER element
+  /// section than a compiled one. The consumer builds a flag set, so order and
+  /// duplicates do not matter, which is what lets slices merge freely.
+  slot_owner: Array[Int];
+  slot_values: Array[Int];
+  /// #2669 slice 3: the references this function's compile recorded that the
+  /// INSTRUCTION ENCODING does not expose -- a function used as a value, and
+  /// the funcref slot a capturing lambda stores in its closure header. Carried
+  /// for the same reason as slot_owner above: a replayed function never runs
+  /// the emission, so without these a replaying build's log is short by
+  /// exactly the functions it replayed, and the paired-count invariant that
+  /// keeps the recording honest could only be checked on compiled ones.
+  ///
+  /// `blind_fn` is the owning user function, the selection key that lets
+  /// merge and filter reuse the same keep-set logic the slots use.
+  /// `blind_body` is the BODY the record sits in -- the same function, or one
+  /// of its lambdas as `blind_owner_of_lambda` -- because the offset is
+  /// relative to that body's instruction stream and to no other.
+  blind_fn: Array[Int];
+  blind_body: Array[Int];
+  blind_offsets: Array[Int];
+  blind_kinds: Array[Int];
+  blind_syms: Array[Int];
+  /// #2199: production `vibe.linemap` rows this function recorded. Replay
+  /// skips `compile_expr`, so without these a warm/verify compile emits a
+  /// shorter (or empty) linemap than a fresh one and `verify` traps on the
+  /// byte mismatch. Offsets are body-relative, same as `LineMapState` at
+  /// record time; the consuming compile adds locals-header length.
+  lm_owner: Array[Int];
+  lm_offsets: Array[Int];
+  lm_file_ids: Array[Int];
+  lm_lines: Array[Int];
+  /// #2721: the ORIGINAL merged-statement index, before the prelude or DCE,
+  /// parallel to fn_indices (-1 for an unknown or ambiguous origin). Replay ignores
+  /// it; the cross-compile persistence layer uses it to keep only the
+  /// entries whose source-group prefix is unchanged.
+  fn_src_stmts: Array[Int];
+  /// #2388 step 3 guards. Cross-compile replay is only sound while the
+  /// layout facts every cached body's immediates were emitted against still
+  /// hold in the consuming compile. `guard_meta` is exactly
+  /// `[pin_src_n, pin_capacity, lambda_slot_base, num_imported_funcs,
+  /// num_generated]` when the recording compile ran the #2388 step-2 pin
+  /// reorder, and empty otherwise -- an empty guard makes the cache
+  /// in-process-only (the consumer treats it as unusable across compiles).
+  /// The import/generated counts pin `func_offset`, the base every user
+  /// call immediate is built on. `guard_synth_names`/`guard_synth_stmts`
+  /// are the synthesized region's function names and their merged-statement
+  /// positions: a prelude whose synthesized output changed in CONTENT keeps
+  /// name and position, so synthesized entries are never replayed across
+  /// compiles at all -- these lists exist to pin their count, order, and
+  /// insertion positions, which is what keeps every pre-pass table
+  /// (string pool, signatures) and the synth index region aligned for the
+  /// source bodies that ARE replayed. `guard_import_names` is the sorted
+  /// used-builtin-name set plus the linked-import names: the gated host
+  /// imports are assigned indices by a fixed code sequence of
+  /// `Map::has_key(used_builtin_names, ...)` tests, so set equality (not
+  /// merely count equality -- two different sets of the same size assign
+  /// DIFFERENT indices to each import) pins the whole import vector.
+  /// `guard_borrow_names`/`guard_borrow_masks` are the ADR-0092 program-wide
+  /// borrow-parameter inference (sorted names, masks aligned): it is
+  /// CALL-SITE sensitive -- a position ever passed a non-ident argument is
+  /// disqualified -- so an edit anywhere can flip an unchanged function's
+  /// owned/borrowed parameter ABI, changing both its own drop obligations
+  /// and every caller's dup obligations. Replay is only sound while the
+  /// whole vector is unchanged.
+  /// `guard_unmangled_names` closes the global name-membership class:
+  /// compile_call's `prefer_bound_call` and the func-table name lookups are
+  /// cross-file matches on the spelled name, and only builtin-spelled names
+  /// take those branches. Prefix defs are #716 path-mangled, so the names
+  /// that can flip such a branch are the unmangled source-region ones;
+  /// `__test_`/`__bench_` blocks are excluded (nothing calls them by name),
+  /// which is what keeps the append-a-test edit inside the cache.
+  guard_meta: Array[Int];
+  guard_synth_names: Array[String];
+  guard_synth_stmts: Array[Int];
+  guard_import_names: Array[String];
+  guard_borrow_names: Array[String];
+  guard_borrow_masks: Array[Int];
+  guard_unmangled_names: Array[String];
+  /// #2669 step 2b: the PROGRAM-WIDE inputs a cached body's bytes depend on,
+  /// as a fixed-order list of `[h1, h2]` fingerprints -- the fact the prefix
+  /// rule used to supply for free, so replay can reach past the leading prefix
+  /// to EVERY unchanged file.
+  ///
+  /// Merge order is topological, so a body in the unchanged PREFIX can only
+  /// reference things declared in the unchanged prefix: its call immediates,
+  /// funcref slots, string offsets, constructor tags and exception tags could
+  /// not have moved. A body from a file AFTER the edit has none of that
+  /// protection.
+  ///
+  /// What must be pinned is not a list of index spaces someone thought of --
+  /// four reference classes were found missing one at a time in the reloc scan
+  /// for exactly that reason. It is a CLOSED set, and `CompileCtx` is what
+  /// closes it: a function's bytes are a function of its own AST and the
+  /// context it is compiled in, and a per-function value is in turn a function
+  /// of its own AST and the program-wide part of that context (the Perceus
+  /// plan, for instance, takes only the body plus the borrow tables). So the
+  /// slots are every program-wide field the per-function `CompileCtx` is built
+  /// from, enumerated at that construction site in `linked_compile.vibe`.
+  ///
+  /// Fingerprints rather than the values: the pinned set includes the entire
+  /// string pool and the whole function vector, which would roughly double the
+  /// artifact. The artifact already stakes correctness on a fingerprint of the
+  /// same shape -- `bcw_checksum` decides whether a stored body is read at all.
+  ///
+  /// The LENGTH is a schema check: a compile whose slot count differs from the
+  /// harvest's is one whose enumeration changed, and it declines.
+  guard_layout: Array[Int];
+  /// #2669 step 2b (Codex P0): the checker's PER-MODULE typed-lowering
+  /// classification, fingerprinted in each module's OWN coordinates.
+  ///
+  /// `guard_layout` folds `float_ret_fn_names` but deliberately not the three
+  /// typed-lowering OFFSET arrays, because those are positions in the merged
+  /// text -- a comment anywhere shifts every offset after it, and folding them
+  /// made a comment-only edit decline the whole widened lane (measured:
+  /// `offered=4394 recompiled=5155`, a cold build in all but name).
+  ///
+  /// What that leaves unpinned is the CLASSIFICATION those offsets carry, and
+  /// one class of it is name-keyed nowhere: a callee that changes from `Int` to
+  /// `Bool` keeps its name, its arity and its scalar-return classification,
+  /// while every render and `eq` argument fed by it changes tag. So this
+  /// fingerprints each module's own table -- `module_typed_lowering_offsets_for_path`
+  /// and `module_typed_eq_rows_for_path`, before the merge rebases them.
+  ///
+  /// Those rows follow the INTERFACES a module reads, not the text anyone else
+  /// moves. Measured on a two-file chain, editing the callee's file and reading
+  /// the untouched CONSUMER's rows: a comment, a same-length body edit, and a
+  /// body edit that LENGTHENS the callee's file all leave them at `[715]`;
+  /// changing the callee's return type from `Int` to `Bool` moves them to
+  /// `[717]`. That is the dependence this guard exists to see, and the reason
+  /// the merged arrays cannot stand in for it.
+  ///
+  /// Filled in by the FS lane, which is the layer that knows the file list;
+  /// empty on every in-process lane, where it pins nothing and nothing reads it.
+  guard_typed_lowering: Array[Int];
+  /// #2669 step 2b, and NOT part of the artifact: what the CONSUMING build's
+  /// file table said, filled in by `decode_body_cache_payload_for` and read by
+  /// the body loop. One element, the merged-statement limit of the unchanged
+  /// leading PREFIX -- the subset that stays replayable when the three guards
+  /// above do not hold, so widening can never leave a build with less than it
+  /// had. Empty means "no narrowing available", which is what an in-process
+  /// cache and a hand-built one both are.
+  consumer_src_limit: Array[Int];
+  /// #2199 follow-up: does anyone READ what this cache collects? One element,
+  /// 1 to record and 0 to decline. The ordinary `vibe run` / `vibe test`
+  /// compile passes a fresh cache as its out-parameter and drops it on the
+  /// floor, so every row `codegen_body_cache_record` fills there is allocated
+  /// and never read -- and the per-function `vibe.linemap` rows made that the
+  /// largest of them (measured: 4.6 MiB of the selfcompile KPI's bump heap,
+  /// which never frees). `codegen_body_cache_discard` is that cache.
+  collect: Array[Int]
+}
+
+export struct CtorTable {
+  names: Array[String];
+  tags: Array[Int];
+  field_counts: Array[Int];
+  type_names: Array[String];
+  struct_names: Array[String];
+  struct_field_names: Array[Array[String]];
+  // #1542: parallel to struct_field_names -- whether each declared field is a
+  // reference-lane array, which decides that field's wasm type.
+  struct_field_is_ref: Array[Array[Bool]];
+  // Sorted view of `names` + original-position payload (ctor_sorted_index).
+  // ctor_table_index_of binary-searches these instead of linearly scanning
+  // `names` per constructor reference -- lookup_ctor was a top-10 self-time
+  // entry in compiler-closure compile profiles. Keep in sync with `names`
+  // (same length); ctor_table_index_of falls back to the linear scan when a
+  // hand-built table skips them.
+  names_sorted: Array[String];
+  names_sorted_pos: Array[Int];
+  // #2386: the same sorted view + original-position payload over
+  // `struct_names`, and a sorted view of `type_names` (membership only), so
+  // agg_info_of_type_name binary-searches both instead of scanning the
+  // program's struct and constructor-type lists per annotated parameter and
+  // per aggregate-returning function. Same contract as names_sorted: keep in
+  // sync with the array each mirrors; a hand-built table that leaves them
+  // empty falls back to the linear scan.
+  struct_names_sorted: Array[String];
+  struct_names_sorted_pos: Array[Int];
+  type_names_sorted: Array[String]
+}
+
+/// #cov branch coverage state, threaded via CompileCtx. Linear-backend only;
+/// active only when `enabled` (VIBE_COVERAGE=1 build). `base`/`cap` bound a fixed
+/// reserved memory region (1 byte per branch id). `next` is a 1-element mutable
+/// counter cell assigning sequential branch ids in codegen-traversal order;
+/// `cur_fn` is a 1-element cell holding the index of the function currently being
+/// compiled (set before each top-level body). `owners` accumulates, per branch
+/// id in id order, the owning function index so the report attributes branches to
+/// functions (reusing the `vibe_cov` function-name table). When disabled all of
+/// this is inert and codegen output is byte-identical to a normal build.
+export struct CovState {
+  enabled: Bool;
+  base: Int;
+  cap: Int;
+  next: Array[Int];
+  cur_fn: Array[Int];
+  owners: Array[Int]
+}
+
+/// A disabled CovState (coverage off): inert, used by the normal compile path and
+/// the non-WASI module entry. Fresh 1-element cells keep Array::get safe.
+export fn cov_disabled() -> CovState {
+  CovState::{
+    enabled: false,
+    base: 0,
+    cap: 0,
+    next: [0],
+    cur_fn: [0],
+    owners: ArrayBuilder::freeze(ArrayBuilder::new())
+  }
+}
+
+/// #cov: emit a stack-neutral hit store for one branch target and assign it the
+/// next sequential branch id, recording the owning function index. No-op when
+/// coverage is off or the fixed-cap region is full. Called at the start of each
+/// branch arm's instruction sequence (if/else, match arm), so the store runs
+/// only when that branch is actually taken at run time.
+export fn cov_emit_branch(buf: Bytes, cov: CovState) -> Unit {
+  if cov.enabled {
+    let id = Array::get(cov.next, 0)
+    if id < cov.cap {
+      Array::set(cov.next, 0, id + 1)
+      Array::push(cov.owners, Array::get(cov.cur_fn, 0))
+      emit_i32_const(buf, cov.base + id)
+      emit_i32_const(buf, 1)
+      emit_i32_store8(buf, 0, 0)
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+}
+
+export struct CompileCtx {
+  func_table: FuncTable;
+  str_table: StrTable;
+  lambda_table: LambdaTable;
+  num_user_funcs: Int;
+  /// #2388: first funcref-table slot of the lambda region. The table is
+  /// [0, num_user_funcs) named-function slots, then lambdas from this base.
+  /// linked_compile rounds num_user_funcs up to the next multiple of 1024 so
+  /// a program gaining a few named functions does not shift any lambda-slot
+  /// immediate until a 1024 boundary is crossed — the invariant per-module
+  /// codegen caching stands on. The lite path (compile_module_expr) keeps
+  /// base == num_user_funcs.
+  lambda_slot_base: Int;
+  func_offset: Int;
+  ref_cell_names: Array[String];
+  ctor_table: CtorTable;
+  // #1062: sparse `ctor_idx * 64 + field_idx` entries for constructor (enum
+  // variant / struct) fields whose DECLARED type is Double/Float, keyed by
+  // position in ctor_table.names (see ctor_table_index_of) and positional
+  // field index (see ctor_table's field_counts). Built once from the
+  // program's SEnum/SSuberror/SStruct declarations (the only place a
+  // constructor field's static type is available -- codegen itself is
+  // otherwise untyped, see float_local_slots below). Consulted by
+  // bind_match_pat (compile_match.vibe) so a pattern-bound field like `r` in
+  // `Circle(r) => r * r` gets registered into float_local_slots exactly like
+  // a `let`-bound float, instead of falling through to the integer-multiply
+  // path and treating a boxed-float pointer as a scalar (OOB trap under RC).
+  ctor_float_fields: Array[Int];
+  // #2386: the `perceus_pin_tables` token for the four borrow tables carried
+  // below (borrow_ret_names / borrow_param_user / borrow_param_mask /
+  // borrow_view_ret), 0 when nobody pinned them; a lambda's plan presents it
+  // so the perceus pass skips its per-function table compare.
+  perceus_pin: Int;
+  // #2158: names of user functions whose DECLARED return type is
+  // Double/Float. codegen is untyped, so a call `half(5.0)` is just an ECall
+  // -- the syntactic cc_expr_is_floatish could not tell it from an Int-valued
+  // call and fell through to the runtime bit-pattern heuristic, which renders
+  // an f64 as a plausible-looking integer. Same failure the annotated-param
+  // seeding above exists to prevent (#1015 for Bool), one level out: there
+  // the type is on the parameter, here it is on the callee's signature.
+  float_ret_fns: Array[String];
+  // #2158: the CHECKER's answer for the same question, keyed by source offset
+  // instead of by callee name. `float_ret_fns` above can only speak about a
+  // call whose callee is a top-level `fn` carrying a literal `-> Double`
+  // annotation; everything else -- a generic instantiated at Double, a call
+  // through a local alias or a lambda binding, `Array::get` on an
+  // `Array[Double]` -- is invisible to it and rendered its raw f64 bits.
+  //
+  // Populated only by an entry that ran a whole-program check over an AST
+  // parsed with `parse_program_located`, and then filtered (in
+  // wasi/linked_compile.vibe, via unique_typed_lowering_offsets_in_stmts) down to the
+  // offsets that identify exactly ONE `ECall` node in the program this ctx
+  // compiles. That filter is what makes the key unambiguous: the FS lanes
+  // merge many files into one statement array and each file's offsets are
+  // relative to its own text, so a raw offset is not by itself a unique name
+  // for a call. An empty array is the fail-closed default: it classifies
+  // nothing, so every lane that does not supply it keeps the pre-#2158
+  // syntactic answer unchanged. The two classifiers consult it as an EXTRA
+  // `||` term, never as a replacement -- this table can only ADD a Double
+  // classification, never remove one.
+  float_call_offsets: Array[Int];
+  // #2424: the same channel, one type over -- the source offsets of render
+  // (`__to_string` / `Int::to_string`) and `eq` ARGUMENTS whose
+  // checker-confirmed type is `Int` (typed_lowering tag 3). Same fail-closed
+  // default and the same extra-`||` discipline: an empty array classifies
+  // nothing, and a present offset can only ADD an Int classification the
+  // syntactic slot log missed, never remove one it made.
+  int_render_offsets: Array[Int];
+  // #2462/#2464: the Bool half of the same channel (typed_lowering tag 5) --
+  // render/`eq` ARGUMENT offsets the checker typed as `Bool`. Read by
+  // `cc_expr_is_boolish` / `expr_is_boolish` under the same extra-`||`
+  // discipline as the Int field above: an empty array classifies nothing, and
+  // a present offset can only ADD a Bool classification the syntactic arms
+  // missed. It is a separate array from `int_render_offsets` because a Bool
+  // offset reaching `ts_known_int` would render `true` as a number.
+  bool_render_offsets: Array[Int];
+  thunk_names: Array[String];
+  const_int_names: Array[String];
+  const_int_values: Array[Int];
+  // Perceus RC mode (docs/spec/selfhost-rc-port.md). When true, heap objects
+  // carry a uniform `[type_id@0][length@4][payload@8...]` header so the (future)
+  // RC drop helper can dispatch and recurse. Default false: layout unchanged.
+  // Threaded as a parameter on the WASI compile path (a module-level flag is
+  // not usable: a getter capturing it is `missing closure env` in the native
+  // CLI codegen, and a cross-module `let` reference is `unknown name`).
+  enable_rc: Bool;
+  // #1696: under RC the exported entry's RESULT is untagged, and that untag is
+  // appended after the body -- which a `return` jumps straight past, handing the
+  // host a tagged (doubled) value. True only while compiling the entry
+  // function's own body, so `return` untags there too. Deliberately not
+  // propagated into `lam_ctx` (compile_lambda.vibe): a lambda is a separate
+  // wasm function whose result is an ordinary tagged value.
+  rc_entry_untag_return: Bool;
+  // Lambda results cross an owning indirect-call ABI, including early returns.
+  rc_owned_return: Bool;
+  // #715 recurrence guard (VIBE_RC=shadow): emit shadow-liveness traps -- a
+  // byte per heap address marks freed blocks; the FIRST dup-of-freed or
+  // drop-of-freed executes `unreachable` instead of silently corrupting the
+  // free list. Debug-only; false (byte-identical output) on normal builds.
+  rc_shadow: Bool;
+  // RC: names of `let` bindings whose value the Perceus analysis says to drop
+  // at scope end (computed per function from build_perceus_plan). compile_expr
+  // emits an rc_drop for a tuple binding whose name appears here.
+  rc_drop_names: Array[String];
+  // RC: alias bindings (`let a = t`) whose source `t` is multiply-used, so the
+  // alias takes a duplicated reference — compile_expr emits an rc_dup of the
+  // source at the alias `let`. (PaAliasDup from the Perceus plan.)
+  rc_alias_dup_names: Array[String];
+  // RC: bindings known at codegen time to hold a heap object (bound to a
+  // tuple/record/enum literal, or an alias of such). Built as `let`s compile.
+  // Gates rc_dup / rc_drop so we never touch a non-heap (e.g. Int-returning
+  // call) binding the static Perceus `scalar` flag over-approximates as heap.
+  heap_binding_names: Array[String];
+  // RC: wasm function index of the generic recursive `vibe_rc_drop` helper
+  // (ADR-0055 Stage 3), or -1 when unavailable (non-RC, or the legacy inline
+  // drop). When >= 0, scope-end drops emit a `call` to it so nested heap is
+  // reclaimed to arbitrary depth.
+  rc_drop_func_idx: Int;
+  // RC: wasm function index of the free-list search allocator `vibe_rc_alloc`
+  // (ADR-0055 Stage 4), or -1 when unavailable (non-RC). When >= 0, heap-object
+  // construction calls it with the block size so an exact-fit free block is found
+  // anywhere in the free-list (not just the head), eliminating the size-ordering
+  // fragmentation a head-only check leaves when interleaved sizes are freed.
+  rc_alloc_func_idx: Int;
+  // ADR-0092 (#1262): index of the out-of-line dup helper (__rt_rc_dup).
+  // -1 outside the linked RC path, which makes emit_rc_dup_guarded fall back
+  // to the inline form.
+  rc_dup_func_idx: Int;
+  // ADR-0090 (#1262): the region arena. `region_ptr_addr` is the linear-memory
+  // address of the arena bump pointer, or -1 when this module has no region
+  // (or is on the RC lane, where the arena is not yet safe -- see the layout
+  // comment in wasi/linked_compile.vibe). The two func indices are the arena
+  // variants of `ArrayBuilder::new` / `ArrayBuilder::push`, -1 alongside.
+  // Everything else about the segment is derived from region_ptr_addr by the
+  // region_* helpers below, so the emitter and the layout cannot disagree.
+  region_ptr_addr: Int;
+  region_arr_new_func_idx: Int;
+  region_bytes_new_func_idx: Int;
+  // #1937: Exception tag to catch around `__region_run`, or -1 when this
+  // module has no exception machinery. try_table is omitted then so a
+  // throw-free region program stays off the #721 exnref path.
+  region_exn_tag: Int;
+  // Linear-memory backend: wasm function index of `vibe_heap_grow_check`, or -1
+  // when the surrounding module does not define the helper. Bump allocations
+  // call it after updating global 0 so low initial memory can grow on demand.
+  heap_grow_check_func_idx: Int;
+  // Map[String,V] O(1)-average get/has_key side hash index (see the doc
+  // comment on gen_map_hash_body, builtin_bodies/bodies_core_b.vibe). -1 in
+  // any CompileCtx that doesn't wire these (e.g. compile_module_expr.vibe's
+  // non-linked lite path) -- Map::get/has_key/set/delete/MapBuilder::freeze
+  // all fall back to the untouched linear-scan/no-index codegen whenever
+  // map_probe_func_idx / map_build_index_func_idx is negative.
+  map_hash_func_idx: Int;
+  map_cap_func_idx: Int;
+  map_build_index_func_idx: Int;
+  map_probe_func_idx: Int;
+  // ADR-0092 for maps (#2683 follow-up): __rt_map_index_insert, so an
+  // in-place Map::set can add one entry to an existing side index instead
+  // of rebuilding it. -1 where the index machinery is not wired.
+  map_index_insert_func_idx: Int;
+  // RC: names of `let` bindings the Perceus plan marks with a non-alias `PaDup`
+  // (a heap value used in more than one *owning* position, e.g. `let u = (t, t)`
+  // dups `t`). One entry per dup (so a name's multiplicity = its dup budget).
+  // compile_expr emits that many guarded rc_dups at the binding site, giving the
+  // block the extra references its container/owning uses consume — without this
+  // the recursive drop visits the shared child more times than it has refs.
+  // (ADR-0055 Stage 4.)
+  rc_dup_names: Array[String];
+  rc_dup_offsets: Array[Int];
+  rc_mut_use_names: Array[String];
+  // Blocker-3 (ADR-0055): append-only log of `slot*2 + flag` entries (flag 1 =
+  // a `let`/`let mut` binding whose value is statically floatish; flag 0 = a
+  // non-float rebind overriding a previously-float slot). The MOST RECENT entry
+  // for a local slot wins, so `expr_is_floatish` can recognise a *variable*
+  // holding a float (`let x = 1.5; x + y` takes the f64 path) while a shadowing
+  // rebind of another type — nested block or if/match branch reusing the slot —
+  // is classified by its own binding. Append-only (not truncated) because the
+  // wasm-gc backend cannot truncate a struct-field array; the log only grows for
+  // float-related bindings, which are rare. Still a syntactic over-
+  // approximation (the AST is untyped): float function params / lambda-captured
+  // floats are not tracked.
+  // #799 perf: membership index over func_table.names + ctor_table.names,
+  // built ONCE per compile. collect_free_vars_indexed consults it per ident
+  // instead of linearly scanning the flat name arrays (which was ~70% of a
+  // compiler-closure compile's profile).
+  // Round 2: the Map representation was itself a linear assoc scan per
+  // lookup (Map::has_key is O(entries)); now a SORTED name array consulted
+  // via binary search (core/sorted_index.vibe).
+  capture_name_index: Array[String];
+  // Most recent slot*2+flag classifies a local lambda's return as fresh heap.
+  // A reused slot is explicitly cleared by the next let binding.
+  seq_owned_return_slots: Array[Int];
+  passthrough_ret_params: Array[(String, Int)];
+  float_local_slots: Array[Int];
+  // #678: append-only log of `slot*2 + flag` entries, the integer dual of
+  // float_local_slots. flag 1 marks a `let`/`let mut` slot whose value is
+  // statically integral (Int/Bool); flag 0 a non-int rebind overriding a
+  // previously-int slot. Most-recent entry per slot wins, so a bare integer
+  // variable in `==`/`!=` takes the direct `i64.eq` path instead of the
+  // polymorphic `eq` whose string fall-back misreads a large int as a string
+  // fat-pointer (two unequal ints with a zero low word compare EQUAL). UNLIKE
+  // the float log this one IS pruned: `int_log_reset_above` drops entries for
+  // slots a branch/arm is about to reuse, so a slot rebound by a NON-`let`
+  // binder (match-arm / for-in / catch-all pattern var) — which never logs an
+  // entry — is never read as a stale int. Without that pruning a reused slot
+  // holding a string would be misclassified and string `==` would break.
+  int_local_slots: Array[Int];
+  // #724: append-only log of `slot*256 + kind*64 + n` entries tracking
+  // let-bound AGGREGATE literals, so `a == b` with BOTH sides non-literal
+  // bindings can still take the structural comparators (the generic runtime
+  // `eq` pointer-compares tuples, which carry no runtime header to walk).
+  // kind 1 = tuple literal (n = arity), kind 2 = ctor / record literal
+  // (n = field count), kind 0 = non-aggregate rebind overriding a reused
+  // slot. Most-recent entry per slot wins; pruned at the same branch/arm
+  // boundaries as int_local_slots (agg_log_reset_above) so a slot reused by
+  // a non-`let` binder is never read as a stale aggregate. Bindings whose
+  // value shape is not statically known (params, call results, match binds)
+  // are NOT tracked and keep the generic-eq fallback.
+  agg_local_slots: Array[Int];
+  // #672 (post-#724): parallel array to agg_local_slots, SAME length and
+  // index correspondence (every push to agg_local_slots pushes exactly one
+  // entry here too, in the same call). Holds the actual shape LITERAL
+  // expression (ETuple / ctor ECall / nullary-ctor EIdent) backing a kind-1
+  // (tuple) or kind-2 (ctor/record) entry, or an inert EInt(0) placeholder
+  // for kind-0 / untracked entries (never consulted — callers only read this
+  // after confirming kind via agg_slot_lookup). This lets `a == b` on a
+  // TRACKED variable recurse into NESTED aggregate elements (e.g. `let a =
+  // ((1,2),3)`) the same way a literal operand does, instead of only
+  // comparing the top-level shape and falling back to pointer `eq` for any
+  // element that is itself an aggregate. See agg_expr_lookup / emit_eq_shape_slots
+  // (compile_expr.vibe).
+  agg_local_exprs: Array[Expr];
+  // #724 round 2: program-wide (fn name -> declared aggregate return shape)
+  // parallel arrays (see compute_agg_returning). Shared across functions —
+  // NOT per-function like agg_local_slots.
+  agg_ret_names: Array[String];
+  agg_ret_infos: Array[Int];
+  // #2386: sorted view of agg_ret_names + original-position payload
+  // (ctor_sorted_index, the same shape as CtorTable.names_sorted), built once
+  // per compile right after compute_agg_returning fills the arrays, so a
+  // `let a = f(..)` classification is one binary search instead of a scan of
+  // every aggregate-returning function in the program. Shared across
+  // functions like the arrays it mirrors.
+  agg_ret_names_sorted: Array[String];
+  agg_ret_names_sorted_pos: Array[Int];
+  // #791: program-wide (fn name) set for top-level functions whose DECLARED
+  // return type is heap (see compute_heap_returning / type_expr_is_heap).
+  // Consulted by classify_let_value_heap so `let mut s = Set::new()` reads
+  // Set::new's own `-> Set[T]` signature instead of over-approximating every
+  // ECall-valued let/let-mut as heap. Shared across functions, like
+  // agg_ret_names.
+  heap_ret_names: Array[String];
+  // #545 nesting: declared effect names (excluding `Error`), in tag-assignment
+  // order. Effect `effect_names[i]` is routed through wasm exception tag `3 + i`
+  // with its own resume frontier; `perform` and `handle` both derive the tag
+  // from this list so a perform reaches its own handler through an unrelated
+  // inner handle (which catches a different tag) and uses an independent
+  // frontier. See effect_name_to_tag.
+  effect_names: Array[String];
+  // #548 multi-value payloads: parallel arrays keyed by full op name
+  // ("Effect::Op") giving each effect op's DECLARED parameter count. The handle
+  // arm uses the declared arity (not the pattern arity) to decide whether the
+  // thrown payload is a packed tuple to destructure (arity > 1) or a single
+  // value — so an extra continuation-slot bind like `Question(q, k)` on a
+  // 1-arg op is not mistaken for a 2-tuple. See effect_op_declared_arity.
+  effect_op_keys: Array[String];
+  effect_op_arities: Array[Int];
+  // #cov branch coverage state (linear backend). cov_disabled() when off.
+  cov: CovState;
+  // Interior-line breakpoints (span-arc step5): wasm function index of the
+  // `vibe::dbg_line` host import, or -1 when off (default / non-break /
+  // multi-file). When >= 0, the ELet/ELetMut/ESeq handlers emit
+  // `i32.const <line>` + `call dbg_line_idx` at each statement boundary so the
+  // runner can pause at interior source lines. Default -1: codegen unchanged.
+  dbg_line_idx: Int;
+  // Interior-line breakpoints: sorted newline char-offsets of THIS function's
+  // source file, used to map a statement's char-offset to a 1-based line. Empty
+  // when off.
+  dbg_line_nl: Array[Int];
+  // Interior-line breakpoints (multi-file): the file id of THIS function's source
+  // file (index into `vibe.dbgfiles`), emitted alongside the line so the runner
+  // matches `--break <file>:<line>` against the right file. 0 when off.
+  dbg_line_file_id: Int;
+  // #3126: `__rt_div_zero_abort`, called by an `Int` `/` or `%` whose divisor
+  // is zero so the trap names the operation and its `path:line:col`. -1 when
+  // the module has none: the division then keeps the engine's bare trap.
+  div_zero_abort_func_idx: Int;
+  // #706 (RC): names live-in to the innermost enclosing `while` loop. A loop body
+  // re-executes, so passing such an owned heap value to a consuming call frees it
+  // on iteration 1 and dangles on the next (use-after-free). compile_call emits a
+  // guarded rc_dup for a bare-ident owning arg whose name is in this set, so each
+  // iteration's consume is balanced and the loop-carried reference survives. The
+  // EWhile codegen sets this to the live-in locals around the body and restores
+  // it after (a shared mutable array; bindings declared inside the body are never
+  // added). Empty outside any loop; rc_dup is a no-op under bump, so the
+  // bump-built compiler is unaffected.
+  loop_borrowed_names: Array[String];
+  // #706 leak follow-up: append-only per-function log — one entry per loop-
+  // borrowed identifier name each time compile_call emits the protective
+  // rc_dup (see loop_borrowed_names above). That dup+the callee's own internal
+  // drop cancel out across the loop, so the textual occurrence the Perceus plan
+  // treated as "one real consume" of the binding actually consumes NOTHING from
+  // it — the plan's `remaining` count is therefore one too low per occurrence,
+  // and it omits the function-exit drop the binding still needs. The function
+  // epilogue (linked_compile.vibe) counts each function param's occurrences in
+  // this log and emits that many EXTRA rc_drop calls, exactly compensating
+  // without touching the plan's borrow/consume decisions anywhere else (so it
+  // cannot perturb a path the plan and codegen already agree on).
+  loop_consumed_names: Array[String];
+  // ADR-0092 Phase 1 (drop-guided reuse, narrow fusion): parallel stacks
+  // scoped by an ELet whose planned scope-end drop can be moved to last use.
+  // compile_expr_tail pushes (name, flag_local) before compiling a let body
+  // that is exactly `match <name> { ... }` and truncates after; compile_match,
+  // on a PCtor arm whose payload arity equals its tail constructor's field
+  // count (same block size by layout), consumes the unique scrutinee block in
+  // place and sets the flag local to 1. The ELet guards its scope-end drop on
+  // the flag (0 = not reused on the taken path, drop exactly as before).
+  // Same push/truncate discipline as loop_borrowed_names above.
+  reuse_scrutinee_names: Array[String];
+  reuse_flag_locals: Array[Int];
+  // #2389 per-path release. `rc_path_drop_names` are the plan's PaPathDrop
+  // bindings -- a `let` whose scope-end drop a branch merge planned away
+  // because SOME branch spends its initial reference, leaving the branches
+  // that do not spend it with nothing to release the value. The let lowering
+  // gives that drop back, guarded by a flag local the marked occurrences set:
+  // `rc_consume_mark_names` / `rc_consume_mark_offs` are the plan's
+  // PaConsumeMark rows (a binding name and the source offset of one
+  // occurrence that spends its initial reference), and compile_expr sets the
+  // flag when it compiles an `EIdent` at that exact (name, offset).
+  // `rc_path_flag_names` / `rc_path_flag_locals` are the live stack, pushed
+  // and truncated around the let body like the reuse stacks above -- a mark
+  // whose binding is not on it (a lambda compiled in its own ctx) emits
+  // nothing, and the guarded drop then fires, which is the direction that
+  // leaks rather than the one that double-frees.
+  rc_path_drop_names: Array[String];
+  rc_consume_mark_names: Array[String];
+  rc_consume_mark_offs: Array[Int];
+  rc_path_flag_names: Array[String];
+  rc_path_flag_locals: Array[Int];
+  // #2837 truncate reclamation. `rc_trunc_release` are the local arrays the
+  // Perceus plan proved may release what a truncate removes
+  // (PaTruncRelease); `rc_trunc_pin_arrays[i]` needs `rc_trunc_pin_names[i]`
+  // pinned (PaViewPin) -- dup'd at its `let` and dropped at its scope end.
+  // `rc_pins_live` is the live stack of pins the let lowering actually
+  // emitted, pushed and truncated around the let body; a truncate releases
+  // only while every pin its array needs is on it, so a pin some other
+  // lowering skipped withdraws the release instead of freeing a view.
+  rc_trunc_release: Array[String];
+  rc_trunc_pin_arrays: Array[String];
+  rc_trunc_pin_names: Array[String];
+  rc_pins_live: Array[String];
+  // #3115 review: false when the program declares its own top-level
+  // `Array::truncate`, `Array::with_capacity`, `Array::push`, `Array::length`
+  // or `Array::get`. Calls spelled like those then resolve to the user
+  // function, whose semantics the release plan cannot assume, so no truncate
+  // releases.
+  rc_trunc_builtin: Bool;
+  // #3140 field-assignment reclamation: the local structs whose field
+  // assignments the Perceus plan proved may release the value they
+  // overwrite (PaFieldRelease, `plan_setfield_release`).
+  rc_setf_release: Array[String];
+  // #3141 early-exit release. An early `return` / `break` / `continue` /
+  // `throw` jumps past the scope-end drops of every scope it leaves, so it
+  // releases them itself (`rc_exit_release`, compile_call.vibe).
+  // `rc_exit_stack_names` / `rc_exit_stack_info` are the live stack of what a
+  // scope end would release -- a name and three ints `[kind, local, flag]`
+  // each (kinds in compile_call.vibe's `rc_exit_kind_*`: the owned bindings,
+  // the pinned ones, the captured cells, and the loop / try boundaries an
+  // exit stops at) -- pushed and truncated around each scope's body.
+  // `rc_exit_lets` is every enclosing `let` name, innermost last.
+  // `rc_exit_plan_names` / `rc_exit_plan_info` are the plan's exit rows
+  // (`perceus_exit_rows`), and `rc_exit_state` is `[the next exit ordinal,
+  // 1 once an exit failed to match its row, how many enclosing stores hold
+  // a value an exit cannot vouch for]`: a mismatch means the plan and
+  // codegen numbered the exits differently, and every exit from there on
+  // releases nothing, which leaks rather than frees what is still live; an
+  // unvouched store (`rc_exit_note_store`) makes every exit in its
+  // continuation release nothing. `rc_exit_keep` is what those stores read
+  // through, which the exits in their continuations keep.
+  rc_exit_stack_names: Array[String];
+  rc_exit_stack_info: Array[Int];
+  rc_exit_lets: Array[String];
+  rc_exit_plan_names: Array[String];
+  rc_exit_plan_info: Array[Int];
+  rc_exit_state: Array[Int];
+  rc_exit_keep: Array[String];
+  // User parameters occupy these first local slots before a local `let rec`
+  // can be allocated. A parameter cannot contain that later recursive owner.
+  rc_exit_param_count: Int;
+  // Active immutable bindings and loop-result assignments. Keep their value
+  // expressions so a throw or break can release an unselected recursive owner.
+  rc_exit_result_stores: Array[(String, Expr)];
+  // #3184: the plan's `PaStoreDup` rows (`perceus_store_dup_rows`), aligned:
+  // the source name and source offset of each store -- an assignment, a
+  // `let mut` initializer, or (#3190) a branch or block tail of either or of
+  // a `let` initializer -- that takes a reference of its own because it runs
+  // once per iteration of a loop its value's owner was declared outside of
+  // (compile_expr_tail's EAssign / ELetMut arms and
+  // `let_retain_store_dup_tails` retain there).
+  rc_store_dup_names: Array[String];
+  rc_store_dup_offs: Array[Int];
+  // #3168: the result slots of the parameterized loops in scope
+  // (`perceus_loop_result_slot`). A slot owns what it holds, so a store the
+  // exit operand's test cannot vouch for retains its value.
+  rc_loop_result_slots: Array[String];
+  // ADR-0092 / #2389 (plan-guided wide reuse): scrutinee names the Perceus
+  // plan marked with a PaReuseToken candidate, with the pattern arity
+  // parallel. compile_match consults these for arms the NARROW fusion above
+  // declines (a let spine with planned RC actions): the arm's prelude still
+  // tokenizes the unique block exactly like the narrow path, but the arm
+  // BODY then compiles through the ordinary machinery with the armed token
+  // pushed on the stacks below, and the first same-arity constructor
+  // allocation while armed (compile_call's ctor path) consumes it -- the
+  // spine-tail constructor is the guaranteed consumer, so an armed token
+  // can never leak. Same push/truncate discipline as the narrow stacks.
+  rc_reuse_token_names: Array[String];
+  rc_reuse_token_arities: Array[Int];
+  // The armed-token stacks: the token's wasm local, the arity its block
+  // size matches, and a per-entry "some site emitted the conditional"
+  // counter the arm compiler asserts on (a token nothing could consume is a
+  // compile-time error, never a silent leak).
+  reuse_tok_locals: Array[Int];
+  reuse_tok_arities: Array[Int];
+  reuse_tok_emitted: Array[Int];
+  // #707: names of user-defined `let`s whose body provably tail-reaches only
+  // `Array::get`/`Map::get`/`__index` (transitively, through if/match/wrapper
+  // calls to other names already in this list) — computed once per compile via
+  // `compute_borrow_returning_names` over the merged program. compile_call's
+  // `cc_is_borrow_ret_call` treats a call to one of these exactly like a direct
+  // `Array::get`/`Map::get`/`__index` call: its result is a borrowed view of a
+  // heap element (no refcount bump), so passing it into an OWNING position
+  // (ctor field / consuming call arg) needs the same guarded rc_dup or the
+  // element is double-freed when its container is later dropped (e.g. a
+  // `peek(tokens, pos)` wrapper around `Array::get`). Empty outside RC.
+  borrow_ret_names: Array[String];
+  // ADR-0092 borrow-inference: sorted whole-program function names with an
+  // aligned borrow mask (compute_borrow_param_user_fns). This also retains a
+  // source-owned shadowable builtin with mask zero, so its source ABI
+  // overrides the compiler builtin's ownership contract. Empty outside the
+  // linked RC path.
+  borrow_param_user: Array[String];
+  // Aligned to borrow_param_user: bit i of entry k says parameter i of
+  // borrow_param_user[k] is borrowed. Always carried together with the names
+  // -- one bsearch on the names indexes straight into this, and a caller that
+  // re-sorted the names alone would silently misattribute every mask.
+  borrow_param_mask: Array[Int];
+  // User fns that may RETURN an unowned interior view
+  // (compute_may_return_view_fns, intersected in linked_compile). The plan
+  // builder marks view-call let-bindings from it (PCtx.view_ret_user).
+  // Empty outside the linked RC path.
+  borrow_view_ret: Array[String];
+  // #710: names of top-level functions whose DECLARED return type (from
+  // their `let f: (...) -> R = ...` signature) is provably scalar (Int/Bool/
+  // Unit) — computed once via `compute_scalar_returning_names` over the
+  // merged program. The ELet ECall branch (compile_expr_tail.vibe) consults
+  // this to skip `heap_binding_names` for `let n = f(...)` when `f` is one of
+  // these: without it, ANY non-borrow-ret call result defaults to heap, so a
+  // binding that is really a plain Int (e.g. `build_import_plan(...) -> Int`)
+  // gets treated as a tagged pointer. If that binding is later aliased more
+  // than once, the Perceus plan schedules a PaAliasDup for it, and
+  // `emit_rc_dup_local` untags-and-derefs the "pointer" — for a small int
+  // like 0 that reads/writes near address -4, a `memory access out of
+  // bounds` trap, not a leak. Empty outside RC.
+  scalar_ret_names: Array[String];
+  // #875 fix 2: single-slot mutable hint (0 = unset, 1 entry = pending name),
+  // set by the ELetRec codegen handler (compile_expr_tail.vibe, `__tag == 10`)
+  // immediately before compiling a `let rec NAME = (...) -> { ... }` closure's
+  // OWN value, and consumed (read + cleared) as the very first action of
+  // compile_lambda -- the sole, immediate callee that dispatch to an EFn value
+  // reaches (compile_expr -> compile_expr_tail chain -> compile_expr_tail3
+  // `__tag == 24`), so the window between set and consume contains no
+  // throwable code and no other codegen call. Lets compile_lambda force NAME
+  // into its own capture list (collect_free_vars_indexed_self) even when NAME
+  // collides by bare string equality with an unrelated entry already in
+  // capture_name_index (see collect_free_vars_indexed_self's doc comment in
+  // common_analysis/common_analysis.vibe) -- without this, a colliding let-rec closure's
+  // self-reference is wrongly treated as "resolves globally" and never
+  // captured, so it has no way to call itself (#875). Any OTHER EFn value
+  // (anonymous lambda, non-rec `let`) leaves this empty, so capture
+  // computation is byte-identical to before. Reset to empty in every
+  // freshly-derived per-lambda CompileCtx (see compile_lambda.vibe's
+  // `lam_ctx`) so a nested let-rec inside a closure body starts with no
+  // stale hint from its enclosing scope.
+  pending_letrec_self_name: Array[String];
+  // #1107 Phase 4: append-only recorder of every funcref-table slot codegen
+  // actually materializes as a closure value — the `(table_slot<<2)|2`
+  // constant in compile_expr's named-function-as-value branch and the
+  // single `table_slot` computation in compile_lambda (which feeds both the
+  // captureless i64-const form and the closure-header i32.store forms).
+  // The linear backend's element section is then built from exactly this
+  // set (run-compressed active segments, emit_element_section_active_runs)
+  // instead of registering every user function + lambda: a slot no closure
+  // value ever carries can never reach call_indirect, so it stays ref.null.
+  // Slot NUMBERING and the declared table size are unchanged. Shared BY
+  // REFERENCE into per-lambda derived ctxs (like the other append-only logs
+  // above) so nested-lambda recordings land in the module-level array.
+  table_slots_used: Array[Int];
+  // #1259 step 7 groundwork: the lambda index this function's NEXT lambda
+  // must receive, preassigned before any body is emitted.
+  //
+  // compile_lambda takes a lambda's function index from the live length of
+  // the shared LambdaTable, and emits it into the body as a table_slot
+  // immediate -- so a function's output bytes depend on how many lambdas
+  // every function compiled before it produced. That is what stops a worker
+  // from ever compiling a body on its own, and it is the thing a frozen
+  // WholeProgramPlan has to remove (docs/internal/design/compiler-parallelism.md).
+  //
+  // A one-element mutable cell, shared BY REFERENCE into per-lambda derived
+  // ctxs exactly like table_slots_used above, so a nested lambda advances the
+  // same counter its enclosing function does. Seeded per user function from
+  // the counting pass (plan_lambda_bases) and checked against the live length
+  // at every allocation: while the two agree, the plan is a faithful
+  // prediction of what the sequential walk does, which is what makes flipping
+  // compile_lambda over to it a no-op on the emitted bytes.
+  //
+  // Empty disables the check entirely (the gc lane and any ctx built outside
+  // the planned body loop).
+  lambda_plan_next: Array[Int];
+  // #644: static (wasm code offset -> source file/line) recorder for the
+  // `vibe.linemap` custom section. Shared by reference across every
+  // TOP-LEVEL function's CompileCtx (like `cov` above); `linemap.cur_fn`
+  // holds the user-function index (`bi`) currently being compiled, set by
+  // linked_compile.vibe's main function loop before each body. Every
+  // emit_dbg_line_stmt call (compile_expr_tail.vibe) appends the body-buffer-
+  // relative byte offset of its probe alongside `linemap.cur_fn`'s current
+  // value, the file id and the line. Enabled for production trap provenance
+  // when newline tables are present, and for debug-break. Forced disabled on
+  // every lambda-derived ctx (compile_lambda.vibe) -- a lambda compiles into
+  // its OWN separate wasm function body buffer, so an offset recorded against
+  // `cur_fn`'s enclosing top-level index would point at the wrong function
+  // entirely. That is a known, documented gap (like the funcmap's
+  // entry-file-only scope): lambda-body statements are simply absent from
+  // the linemap. The runner resolves each frame on its own, so a trap inside
+  // a lambda degrades to a wasm frame and never borrows the enclosing
+  // function's line (#2199).
+  linemap: LineMapState;
+  // #2669 slice 2: where THIS body puts a reference the instruction encoding
+  // cannot expose. A `call` immediate says what it is -- the opcode declares
+  // the next uleb a funcidx -- but a function used as a VALUE is an
+  // `i64.const ((slot << 2) | 2)` and a data pointer rides an `i64.const` the
+  // same way, indistinguishable from an ordinary constant by any amount of
+  // decoding. A cached body cannot be moved onto another index assignment
+  // without them, and they cannot be recovered afterwards, so they are
+  // recorded here as they are written (blind_reloc_record).
+  //
+  // `blind_reloc_owner_cell` is a one-element cell naming the body being
+  // filled, and an EMPTY one disables recording entirely -- the same
+  // convention `lambda_plan_next` uses for "this ctx was built outside the
+  // planned body loop". The three payload arrays are shared BY REFERENCE into
+  // per-lambda derived ctxs, like table_slots_used, so a nested lambda's
+  // records land in the module-level arrays; only the cell is per-body.
+  blind_reloc_owner_cell: Array[Int];
+  blind_reloc_owners: Array[Int];
+  blind_reloc_offsets: Array[Int];
+  blind_reloc_kinds: Array[Int];
+  blind_reloc_syms: Array[Int]
+}
+
+/// Interior-line breakpoints (span-arc step5, multi-file): per-file provenance the
+/// break codegen needs to emit `vibe::dbg_line(<file_id>, <line>)` and a
+/// `vibe.dbgfiles` section. `files[k]` is the basename of source file id k;
+/// `file_nls[k]` its newline char-offsets; `stmt_file_id[s]` the file id of merged
+/// top-level statement s. Empty (via empty_dbg_prov) on non-break builds.
+/// #2575 item 2: what a per-module prelude needs that the merged statement
+/// array does not carry.
+///
+/// `stmt_file_id` is one module id per merged PRE-PRELUDE top-level statement,
+/// `file_count` how many modules those ids range over, and `import_closure`
+/// what each module is given as context -- its own direct imports with a
+/// package dep expanded to that package's sibling implementations, reduced to
+/// their exported form.
+export struct ModuleSplit {
+  file_count: Int;
+  stmt_file_id: Array[Int];
+  import_closure: Array[Array[Int]];
+  /// Is `import_closure` the loader's RE-EXPORT closure -- each module's
+  /// direct imports plus what those re-export, transitively, and nothing
+  /// else (#2658)?
+  ///
+  /// It matters because the conservative test a split is otherwise held to,
+  /// "everything reachable is already named", is SUFFICIENT rather than the
+  /// rule, and an exact closure fails it: A's row holds C, re-exported
+  /// through B, but not C's own private imports. A producer that did the
+  /// exact thing has to be able to say so, or the guard rejects precisely
+  /// the closure that is correct.
+  ///
+  /// False is the safe answer and what `module_split_none` reports, so a
+  /// caller that does not know gets the conservative test.
+  closure_exact: Bool
+}
+
+export fn module_split_none() -> ModuleSplit {
+  ModuleSplit::{
+    closure_exact: false,
+    file_count: 0,
+    stmt_file_id: array_empty(),
+    import_closure: array_empty()
+  }
+}
+
+export struct DbgProv {
+  files: Array[String];
+  file_nls: Array[Array[Int]];
+  stmt_file_id: Array[Int]
+}
+
+export fn empty_dbg_prov() -> DbgProv {
+  DbgProv::{
+    files: array_empty(),
+    file_nls: array_empty(),
+    stmt_file_id: array_empty()
+  }
+}
+
+/// #644: static line-map recorder threaded via CompileCtx.linemap. Mirrors
+/// CovState's cur_fn/append-only-log shape: `cur_fn` is a 1-element mutable
+/// cell holding the top-level user-function index (`bi`) currently being
+/// compiled (set once per function by linked_compile.vibe's main loop,
+/// BEFORE that function's body_buf is compiled); `funcs`/`offsets`/
+/// `file_ids`/`lines` are parallel append-only logs, one entry per
+/// emit_dbg_line_stmt probe, recording (that probe's owning `bi`, the
+/// probe's body_buf-relative byte offset, the file id, the 1-based line).
+/// `offsets` are relative to the START of the function's own instruction
+/// buffer (body_buf) -- NOT yet shifted by that function's locals-
+/// declaration header length, since body_buf is compiled before the
+/// final per-function locals header is known. linked_compile.vibe adds
+/// each function's header length (computed while assembling the code
+/// section) before emitting the final `vibe.linemap` custom section, so
+/// the section's offsets land exactly where wasmtime's own
+/// `FrameInfo::func_offset()` measures from (the first byte of the code
+/// entry, i.e. including the locals declaration -- verified empirically
+/// against wasmtime 45's WasmBacktrace).
+export struct LineMapState {
+  enabled: Bool;
+  cur_fn: Array[Int];
+  /// #2874: the rows of the function currently being compiled, and ONLY
+  /// those. `linemap_flush_fn` encodes them into `stream` and truncates these
+  /// four back to zero at each function boundary, so they stay at the widest
+  /// single function rather than growing to the whole module. On the bump
+  /// lane a grown Array's abandoned buffers are never reclaimed, so a table
+  /// that ends at N entries has allocated about 2N: measured on the
+  /// selfcompile corpus these four reached 73,920 rows -- 8.00 MiB of
+  /// allocation, against 2.26 MiB of live rows and 406 KiB of encoded
+  /// section. `Array::truncate` writes the length and leaves the capacity, so
+  /// the reset costs nothing and the next function reuses the same buffer.
+  funcs: Array[Int];
+  offsets: Array[Int];
+  file_ids: Array[Int];
+  lines: Array[Int];
+  /// #2874: every flushed function's rows, in the `vibe.linemap` encoding
+  /// minus the one field that is not known yet. The section's own format
+  /// restarts the offset as an ABSOLUTE whenever the function delta is
+  /// non-zero (`lc_linemap_put_row`), and rows are recorded in function
+  /// order, so adding a function's locals-header length -- the thing only the
+  /// assembled code section knows -- moves its FIRST row's offset and leaves
+  /// every delta after it alone. That is what lets a group be encoded before
+  /// the header length exists and copied verbatim afterwards.
+  ///
+  /// Per flushed group g: `grp_fn[g]` is the user function index, and
+  /// `grp_first_off[g]` its first row's body-relative offset (held out of the
+  /// stream because it is the field that gets rebased). `stream` from
+  /// `grp_start[g]` holds LEB(file_id), LEB(line) -- the rest of that first
+  /// row -- and then a whole LEB quadruple, function delta 0 included, for
+  /// each row after it. The emitter supplies the first row's two missing
+  /// fields and blits the rest, so what lands in the section is byte for byte
+  /// what `lc_linemap_put_row` wrote before.
+  stream: Bytes;
+  grp_fn: Array[Int];
+  grp_first_off: Array[Int];
+  grp_start: Array[Int];
+  /// #2199: the source line of the construct currently being compiled, as a
+  /// 1-slot cell (0 = none). A statement sets it; `compile_expr`'s call arm
+  /// saves it, sets its own, and RESTORES it once `compile_call` returns --
+  /// which re-asserts the enclosing line at the offset the enclosing call's
+  /// own instruction is about to land past. Without that, a call in an
+  /// argument (`Array::get(xs, compute_index())`) leaves the last row before
+  /// the outer call, and the outer call's trap is reported at the argument's
+  /// line (Codex P2 on PR #2867). The file id is not stored: every row in one
+  /// body uses that function's own `ctx.dbg_line_file_id`.
+  site: Array[Int]
+}
+
+/// A disabled LineMapState (no newline tables, and every lambda-derived
+/// CompileCtx): `record` is a no-op.
+export fn linemap_disabled() -> LineMapState {
+  LineMapState::{
+    enabled: false,
+    cur_fn: [0],
+    funcs: array_empty(),
+    offsets: array_empty(),
+    file_ids: array_empty(),
+    lines: array_empty(),
+    stream: bytebuf_new(),
+    grp_fn: array_empty(),
+    grp_first_off: array_empty(),
+    grp_start: array_empty(),
+    site: [0]
+  }
+}
+
+/// #2874: end the function whose rows are in the scratch tables -- encode them
+/// as one group of `stream` and reset the scratch. Called at every function
+/// boundary, including one that recorded nothing (then it does nothing) and
+/// one the compile skipped.
+///
+/// The offsets a group carries are still body-relative. `lc_pf_emit_linemap`'s
+/// reader wants them measured from the start of the code entry, which is the
+/// body plus that function's locals-declaration header; the header length is
+/// only known once the code section is assembled. Because the encoding makes
+/// the first row of a function absolute and every later row a delta from its
+/// predecessor, the rebase touches `grp_first_off` alone -- so the emitter
+/// re-encodes that one field and blits the rest of the group unchanged.
+export fn linemap_flush_fn(lm: LineMapState) -> Unit {
+  let n = Array::length(lm.offsets)
+  if n == 0 {
+    ()
+  } else {
+    Array::push(lm.grp_fn, Array::get(lm.funcs, 0))
+    Array::push(lm.grp_first_off, Array::get(lm.offsets, 0))
+    Array::push(lm.grp_start, bytebuf_length(lm.stream))
+    leb128_encode_u32(lm.stream, Array::get(lm.file_ids, 0))
+    leb128_encode_u32(lm.stream, Array::get(lm.lines, 0))
+    let mut i = 1
+    while i < n {
+      // The zero function delta is part of the row, not an optimization the
+      // group structure makes redundant. Every reader of this section decodes
+      // fixed LEB QUADRUPLES -- including `lc_linemap_remap_stream`, which
+      // re-parses the finished section during the late-DCE prune. Omitting it
+      // for rows after the group's first cost a whole afternoon: the module
+      // still validated, and the prune re-emitted 449 bytes of plausible
+      // garbage where 406 KiB of rows belonged.
+      leb128_encode_u32(lm.stream, 0)
+      leb128_encode_u32(lm.stream, Array::get(lm.offsets, i) - Array::get(lm.offsets, i - 1))
+      leb128_encode_u32(lm.stream, Array::get(lm.file_ids, i))
+      leb128_encode_u32(lm.stream, Array::get(lm.lines, i))
+      i = i + 1
+    }
+    Array::truncate(lm.funcs, 0)
+    Array::truncate(lm.offsets, 0)
+    Array::truncate(lm.file_ids, 0)
+    Array::truncate(lm.lines, 0)
+  }
+}

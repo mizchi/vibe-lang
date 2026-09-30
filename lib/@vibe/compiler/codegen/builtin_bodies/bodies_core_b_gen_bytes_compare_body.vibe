@@ -1,0 +1,1349 @@
+// lib/@vibe/compiler/codegen/builtin_bodies/bodies_core_b.vibe — gen bytes compare body.
+
+import @vibe/compiler/core {
+  Expr,
+  Pat,
+  Stmt,
+  TypeExpr,
+  bytebuf_length,
+  bytebuf_new,
+  bytebuf_push,
+  bytebuf_push_section,
+  bytebuf_push_vec_header,
+  bytebuf_to_bytes,
+  leb128_encode_s64,
+  leb128_encode_u32
+}
+
+import @vibe/compiler/codegen/common_analysis {
+  collect_free_vars, collect_strings_stmts, emit_closure_call_tail, emit_closure_resolve, emit_i64_extend_i32_u, is_mut_captured_in
+}
+
+import @vibe/compiler/codegen/common_base {
+  CompileCtx,
+  CtorTable,
+  FuncTable,
+  LambdaTable,
+  StrTable,
+  emit_binop_op,
+  emit_i32_eq,
+  emit_i32_eqz,
+  emit_i32_ge_u,
+  emit_i32_gt_u,
+  emit_i32_mul,
+  emit_i32_ne,
+  emit_i32_sub,
+  emit_i64_load,
+  emit_i64_store,
+  emit_str_ref,
+  expr_tag,
+  get_arm_body,
+  get_arm_pat,
+  get_ebinop_op,
+  get_efn_body,
+  get_eif_cond,
+  get_eif_else,
+  get_eif_then,
+  get_elet_body,
+  get_elet_name,
+  get_elet_val,
+  get_slet_expr,
+  get_slet_name,
+  is_efn,
+  is_eident,
+  is_etuple,
+  is_pbind,
+  is_pbool,
+  is_pctor,
+  is_pint,
+  is_pstring,
+  is_ptuple,
+  is_pwild,
+  is_slet,
+  lookup_ctor,
+  resolve_func,
+  resolve_local
+}
+
+import @vibe/compiler/codegen/common_extractors {
+  array_contains_str,
+  emit_assignop_op,
+  emit_memory_copy,
+  emit_memory_fill,
+  find_catchall_idx,
+  get_earray_elems,
+  get_eassign_body,
+  get_eassign_name,
+  get_eassign_val,
+  get_eassignop_body,
+  get_eassignop_name,
+  get_eassignop_op,
+  get_eassignop_val,
+  get_ebinop_lhs,
+  get_ebinop_rhs,
+  get_ebool_value,
+  get_ecall_args,
+  get_ecall_callee,
+  get_efloat_value,
+  get_efn_params,
+  get_eforin_body,
+  get_eforin_iter,
+  get_eforin_name,
+  get_eident_name,
+  get_eint_value,
+  get_eletmut_body,
+  get_eletmut_name,
+  get_eletmut_val,
+  get_eletrec_body,
+  get_eletrec_name,
+  get_eletrec_val,
+  get_eseq_first,
+  get_eseq_second,
+  get_estring_value,
+  get_etuple_elems,
+  get_eunaryop_expr,
+  get_eunaryop_op,
+  get_ewhile_body,
+  get_ewhile_cond,
+  get_match_arms,
+  get_match_scrutinee,
+  get_pbind_name,
+  get_pbool_value,
+  get_pctor_args,
+  get_pctor_name,
+  get_pint_value,
+  get_pstring_value,
+  get_ptuple_pats,
+  get_slet_export,
+  str_table_lookup
+}
+
+import @vibe/compiler/codegen/wasm_emit {
+  emit_block_i64,
+  emit_block_void,
+  emit_br,
+  emit_br_if,
+  emit_call,
+  emit_call_indirect,
+  emit_code_section,
+  emit_code_section_with_locals,
+  emit_data_section,
+  emit_data_section_multi,
+  emit_drop,
+  emit_element_section_active,
+  emit_else,
+  emit_end,
+  emit_export_section,
+  emit_export_section_multi,
+  emit_exports_full,
+  emit_exports_with_memory,
+  emit_f64_add,
+  emit_f64_const_bits,
+  emit_f64_const_lohi,
+  emit_f64_convert_i64_s,
+  emit_f64_div,
+  emit_f64_eq,
+  emit_f64_ge,
+  emit_f64_gt,
+  emit_f64_le,
+  emit_f64_lt,
+  emit_f64_mul,
+  emit_f64_ne,
+  emit_f64_neg,
+  emit_f64_reinterpret_i64,
+  emit_f64_sub,
+  emit_func_type_raw,
+  emit_function_section,
+  emit_global_get,
+  emit_global_section_i32_mut,
+  emit_global_set,
+  emit_header,
+  emit_heap_memory_grow_check,
+  emit_i32_add,
+  emit_i32_const,
+  emit_i32_load,
+  emit_i32_load8_u,
+  emit_i32_store,
+  emit_i32_store8,
+  emit_i32_wrap_i64,
+  emit_i64_add,
+  emit_i64_and,
+  emit_i64_clz,
+  emit_i64_const,
+  emit_i64_ctz,
+  emit_i64_div_s,
+  emit_i64_eq,
+  emit_i64_eqz,
+  emit_i64_extend_i32_s,
+  emit_i64_ge_s,
+  emit_i64_gt_s,
+  emit_i64_le_s,
+  emit_i64_lt_s,
+  emit_i64_mul,
+  emit_i64_ne,
+  emit_i64_or,
+  emit_i64_popcnt,
+  emit_i64_reinterpret_f64,
+  emit_i64_rem_s,
+  emit_i64_shl,
+  emit_i64_shr_s,
+  emit_i64_shr_u,
+  emit_i64_sub,
+  emit_i64_trunc_f64_s,
+  emit_i64_xor,
+  emit_i8x16_bitmask,
+  emit_i8x16_eq,
+  emit_i8x16_splat,
+  emit_if_i64,
+  emit_if_void,
+  emit_import_section_func,
+  emit_local_get,
+  emit_local_set,
+  emit_local_tee,
+  emit_loop_void,
+  emit_memory_section,
+  emit_name,
+  emit_return,
+  emit_table_section_funcref,
+  emit_type_section,
+  emit_type_section_multi,
+  emit_v128_any_true,
+  emit_v128_load,
+  string_to_data
+}
+
+/// `Bytes::count(hay, byte)` -- how many times `byte` occurs (#2345).
+///
+/// The only one of this family that reads the SIMD mask as an ANSWER rather
+/// than as a hint, and that difference is a correctness requirement, not a
+/// speed one. `i8x16.splat` takes the low 8 bits of its operand, so a needle
+/// of 300 splats as 44 and a needle of -1 splats as 255. `Bytes::index_of` and
+/// `Bytes::last_index_of` survive that because their mask only decides WHERE
+/// to hand over to a scalar loop that compares the full i64 -- the mask can
+/// cost a scan, never change an answer. Counting straight out of
+/// `i64.popcnt(bitmask)` has no such verification step, so an out-of-range
+/// needle would silently return the count of some OTHER byte.
+///
+/// Hence the guard: `needle >>> 8 != 0` (unsigned, so it catches negatives
+/// too) answers 0 without entering the scan at all.
+///
+/// Complete 16-byte chunks contribute `popcnt(i8x16.bitmask(...))` each; the
+/// final partial chunk is counted by a branchless scalar loop that adds the
+/// comparison result directly.
+///
+///   locals: i32 { 2: addr } ; i64 { 3: i, 4: len, 5: needle, 6: count }
+export fn gen_bytes_count_byte_body(enable_rc: Bool) -> Bytes {
+  let b = bytebuf_new()
+  emit_local_get(b, 0)
+  emit_i32_wrap_i64(b)
+  emit_i32_load(b, 2, 8)
+  emit_local_set(b, 2)
+  emit_local_get(b, 0)
+  emit_i32_wrap_i64(b)
+  emit_i32_load(b, 2, 4)
+  emit_i64_extend_i32_u(b)
+  emit_local_set(b, 4)
+  emit_local_get(b, 1)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
+  emit_local_set(b, 5)
+  emit_i64_const(b, 0)
+  emit_local_set(b, 3)
+  emit_i64_const(b, 0)
+  emit_local_set(b, 6)
+  emit_local_get(b, 5)
+  emit_i64_const(b, 8)
+  emit_i64_shr_u(b)
+  emit_i64_eqz(b)
+  emit_if_i64(b)
+  emit_block_void(b)
+  emit_loop_void(b)
+  emit_local_get(b, 3)
+  emit_i64_const(b, 16)
+  emit_i64_add(b)
+  emit_local_get(b, 4)
+  emit_i64_gt_s(b)
+  emit_br_if(b, 1)
+  emit_local_get(b, 2)
+  emit_local_get(b, 3)
+  emit_i32_wrap_i64(b)
+  emit_i32_add(b)
+  emit_v128_load(b, 0, 0)
+  emit_local_get(b, 5)
+  emit_i32_wrap_i64(b)
+  emit_i8x16_splat(b)
+  emit_i8x16_eq(b)
+  emit_i8x16_bitmask(b)
+  emit_i64_extend_i32_u(b)
+  emit_i64_popcnt(b)
+  emit_local_get(b, 6)
+  emit_i64_add(b)
+  emit_local_set(b, 6)
+  emit_local_get(b, 3)
+  emit_i64_const(b, 16)
+  emit_i64_add(b)
+  emit_local_set(b, 3)
+  emit_br(b, 0)
+  emit_end(b)
+  emit_end(b)
+  emit_block_void(b)
+  emit_loop_void(b)
+  emit_local_get(b, 3)
+  emit_local_get(b, 4)
+  emit_i64_ge_s(b)
+  emit_br_if(b, 1)
+  emit_local_get(b, 2)
+  emit_local_get(b, 3)
+  emit_i32_wrap_i64(b)
+  emit_i32_add(b)
+  emit_i32_load8_u(b, 0, 0)
+  emit_i64_extend_i32_u(b)
+  emit_local_get(b, 5)
+  emit_i64_eq(b)
+  emit_i64_extend_i32_u(b)
+  emit_local_get(b, 6)
+  emit_i64_add(b)
+  emit_local_set(b, 6)
+  emit_local_get(b, 3)
+  emit_i64_const(b, 1)
+  emit_i64_add(b)
+  emit_local_set(b, 3)
+  emit_br(b, 0)
+  emit_end(b)
+  emit_end(b)
+  emit_local_get(b, 6)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
+  emit_else(b)
+  emit_i64_const(b, 0)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
+  emit_end(b)
+  b
+}
+
+/// `Bytes::last_index_of(hay, byte)` -- the LAST index holding `byte`, or -1
+/// (#2345).
+///
+/// One cursor, `hi`, walks down. The chunk phase tests [hi-15, hi] and drops
+/// `hi` by 16 while the mask is empty; the windows are disjoint and are visited
+/// from the end, so the first one that reports a match is the LAST chunk
+/// containing the byte. The scalar phase then walks down from `hi` and stops on
+/// the first full-width match, which is therefore the last occurrence overall.
+///
+/// The two phases share `hi` and the function returns it unconditionally,
+/// because both ways out already leave the right value in it: the scalar loop
+/// exits either on a match (with `hi` at that index) or by decrementing to -1,
+/// which is the not-found answer. No final comparison, and no separate
+/// sentinel that could disagree with the loop.
+///
+/// Like `Bytes::index_of` and unlike `Bytes::count`, the mask is only a hint:
+/// an out-of-range needle can make a chunk look interesting, and the scalar
+/// walk then simply runs to the bottom and answers -1.
+///
+///   locals: i32 { 2: addr } ; i64 { 3: hi, 4: len, 5: needle }
+export fn gen_bytes_last_index_of_byte_body(enable_rc: Bool) -> Bytes {
+  let b = bytebuf_new()
+  emit_local_get(b, 0)
+  emit_i32_wrap_i64(b)
+  emit_i32_load(b, 2, 8)
+  emit_local_set(b, 2)
+  emit_local_get(b, 0)
+  emit_i32_wrap_i64(b)
+  emit_i32_load(b, 2, 4)
+  emit_i64_extend_i32_u(b)
+  emit_local_set(b, 4)
+  emit_local_get(b, 1)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
+  emit_local_set(b, 5)
+  emit_local_get(b, 4)
+  emit_i64_const(b, 1)
+  emit_i64_sub(b)
+  emit_local_set(b, 3)
+  emit_block_void(b)
+  emit_loop_void(b)
+  emit_local_get(b, 3)
+  emit_i64_const(b, 15)
+  emit_i64_lt_s(b)
+  emit_br_if(b, 1)
+  emit_local_get(b, 2)
+  emit_local_get(b, 3)
+  emit_i64_const(b, 15)
+  emit_i64_sub(b)
+  emit_i32_wrap_i64(b)
+  emit_i32_add(b)
+  emit_v128_load(b, 0, 0)
+  emit_local_get(b, 5)
+  emit_i32_wrap_i64(b)
+  emit_i8x16_splat(b)
+  emit_i8x16_eq(b)
+  emit_i8x16_bitmask(b)
+  emit_br_if(b, 1)
+  emit_local_get(b, 3)
+  emit_i64_const(b, 16)
+  emit_i64_sub(b)
+  emit_local_set(b, 3)
+  emit_br(b, 0)
+  emit_end(b)
+  emit_end(b)
+  emit_block_void(b)
+  emit_loop_void(b)
+  emit_local_get(b, 3)
+  emit_i64_const(b, 0)
+  emit_i64_lt_s(b)
+  emit_br_if(b, 1)
+  emit_local_get(b, 2)
+  emit_local_get(b, 3)
+  emit_i32_wrap_i64(b)
+  emit_i32_add(b)
+  emit_i32_load8_u(b, 0, 0)
+  emit_i64_extend_i32_u(b)
+  emit_local_get(b, 5)
+  emit_i64_eq(b)
+  emit_br_if(b, 1)
+  emit_local_get(b, 3)
+  emit_i64_const(b, 1)
+  emit_i64_sub(b)
+  emit_local_set(b, 3)
+  emit_br(b, 0)
+  emit_end(b)
+  emit_end(b)
+  emit_local_get(b, 3)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
+  b
+}
+
+/// `Bytes::compare(a, b)` -- lexicographic ordering (#2345). -1, 0 or 1.
+///
+/// The last member of #2345's Layer 2 surface, and the only one that is not a
+/// search: `Bytes < Bytes` was a type error, so there was no way to order byte
+/// strings at all.
+///
+/// Two phases, like the searches, but the vector phase asks the opposite
+/// question. `i8x16.eq` sets a lane to all-ones where the bytes MATCH, so
+/// `i8x16.bitmask` is 0xFFFF exactly when a whole 16-byte chunk is equal.
+/// Anything else means the first difference is inside this chunk, and the
+/// scalar loop then finds which byte it is. The searches break OUT of their
+/// vector loop on a hit; this one breaks out on a MISS.
+///
+/// The compare itself is unsigned. Bytes are `i32.load8_u`, so both sides are
+/// 0..255 and the i64 signed compare below cannot see a negative -- but the
+/// distinction matters for the contract: `compare` orders by BYTE VALUE, so
+/// 0x80 is greater than 0x7F, which a signed byte compare would invert.
+///
+/// A common prefix falls through to the lengths, which is what makes this
+/// lexicographic rather than a memcmp: "ab" < "abc".
+///
+///   locals: i32 { 2: pa, 3: pb } ; i64 { 4: i, 5: n, 6: la, 7: lb }
+export fn gen_bytes_compare_body(enable_rc: Bool) -> Bytes {
+  let b = bytebuf_new()
+  emit_local_get(b, 0)
+  emit_i32_wrap_i64(b)
+  emit_i32_load(b, 2, 8)
+  emit_local_set(b, 2)
+  emit_local_get(b, 1)
+  emit_i32_wrap_i64(b)
+  emit_i32_load(b, 2, 8)
+  emit_local_set(b, 3)
+  emit_local_get(b, 0)
+  emit_i32_wrap_i64(b)
+  emit_i32_load(b, 2, 4)
+  emit_i64_extend_i32_u(b)
+  emit_local_set(b, 6)
+  emit_local_get(b, 1)
+  emit_i32_wrap_i64(b)
+  emit_i32_load(b, 2, 4)
+  emit_i64_extend_i32_u(b)
+  emit_local_set(b, 7)
+  emit_local_get(b, 6)
+  emit_local_get(b, 7)
+  emit_i64_lt_s(b)
+  emit_if_i64(b)
+  emit_local_get(b, 6)
+  emit_else(b)
+  emit_local_get(b, 7)
+  emit_end(b)
+  emit_local_set(b, 5)
+  emit_i64_const(b, 0)
+  emit_local_set(b, 4)
+  emit_block_void(b)
+  emit_loop_void(b)
+  emit_local_get(b, 4)
+  emit_i64_const(b, 16)
+  emit_i64_add(b)
+  emit_local_get(b, 5)
+  emit_i64_gt_s(b)
+  emit_br_if(b, 1)
+  emit_local_get(b, 2)
+  emit_local_get(b, 4)
+  emit_i32_wrap_i64(b)
+  emit_i32_add(b)
+  emit_v128_load(b, 0, 0)
+  emit_local_get(b, 3)
+  emit_local_get(b, 4)
+  emit_i32_wrap_i64(b)
+  emit_i32_add(b)
+  emit_v128_load(b, 0, 0)
+  emit_i8x16_eq(b)
+  emit_i8x16_bitmask(b)
+  emit_i32_const(b, 65535)
+  emit_i32_ne(b)
+  emit_br_if(b, 1)
+  emit_local_get(b, 4)
+  emit_i64_const(b, 16)
+  emit_i64_add(b)
+  emit_local_set(b, 4)
+  emit_br(b, 0)
+  emit_end(b)
+  emit_end(b)
+  emit_block_void(b)
+  emit_loop_void(b)
+  emit_local_get(b, 4)
+  emit_local_get(b, 5)
+  emit_i64_ge_s(b)
+  emit_br_if(b, 1)
+  emit_local_get(b, 2)
+  emit_local_get(b, 4)
+  emit_i32_wrap_i64(b)
+  emit_i32_add(b)
+  emit_i32_load8_u(b, 0, 0)
+  emit_local_get(b, 3)
+  emit_local_get(b, 4)
+  emit_i32_wrap_i64(b)
+  emit_i32_add(b)
+  emit_i32_load8_u(b, 0, 0)
+  emit_i32_ne(b)
+  emit_br_if(b, 1)
+  emit_local_get(b, 4)
+  emit_i64_const(b, 1)
+  emit_i64_add(b)
+  emit_local_set(b, 4)
+  emit_br(b, 0)
+  emit_end(b)
+  emit_end(b)
+  emit_local_get(b, 4)
+  emit_local_get(b, 5)
+  emit_i64_lt_s(b)
+  emit_if_i64(b)
+  emit_local_get(b, 2)
+  emit_local_get(b, 4)
+  emit_i32_wrap_i64(b)
+  emit_i32_add(b)
+  emit_i32_load8_u(b, 0, 0)
+  emit_i64_extend_i32_u(b)
+  emit_local_get(b, 3)
+  emit_local_get(b, 4)
+  emit_i32_wrap_i64(b)
+  emit_i32_add(b)
+  emit_i32_load8_u(b, 0, 0)
+  emit_i64_extend_i32_u(b)
+  emit_i64_lt_s(b)
+  emit_if_i64(b)
+  emit_i64_const(b, -1)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
+  emit_else(b)
+  emit_i64_const(b, 1)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
+  emit_end(b)
+  emit_else(b)
+  emit_local_get(b, 6)
+  emit_local_get(b, 7)
+  emit_i64_lt_s(b)
+  emit_if_i64(b)
+  emit_i64_const(b, -1)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
+  emit_else(b)
+  emit_local_get(b, 6)
+  emit_local_get(b, 7)
+  emit_i64_gt_s(b)
+  emit_if_i64(b)
+  emit_i64_const(b, 1)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
+  emit_else(b)
+  emit_i64_const(b, 0)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
+  emit_end(b)
+  emit_end(b)
+  emit_end(b)
+  b
+}
+
+/// `Bytes::index_of_bytes(hay, needle)` -- the substring search, over two heap
+/// handles instead of two String fat values.
+///
+/// It does NOT carry a copy of the search. It packs each handle into the fat
+/// value `String` already uses -- `(data_ptr << 32) | len`, read at offsets 8
+/// and 4 -- and CALLS `String::index_of`, which owns the length guard, the RC
+/// tagging of the result, and the windowed SIMD loop
+/// (`emit_windowed_substring_search`).
+///
+/// #2345 step 2 inlined the loop into this body instead, via the shared emit
+/// helper. That is a code EXPANDER, not a wasm function, so the loop was
+/// duplicated in the output: the wasm-gc lane, which links builtins
+/// unconditionally, grew +2.8-3.9% on all nine perf scenarios even for
+/// programs that never call this. One `call` replaces ~215 B of duplicated
+/// body, and the loop's needle can go back to reading local 1 (see the comment
+/// at that site), which returns the +0.61% string_ops fuel the synthesis cost.
+///
+/// The loads are the same ones `gen_bytes_get_body` does and are deliberately
+/// NOT untagged: a `Bytes` handle is a raw pointer in the value world, and only
+/// `Int` carries the `n << 1` tag.
+export fn gen_bytes_index_of_bytes_body(string_index_of_idx: Int) -> Bytes {
+  let b = bytebuf_new()
+  emit_local_get(b, 0)
+  emit_i32_wrap_i64(b)
+  emit_local_tee(b, 2)
+  emit_i32_load(b, 2, 8)
+  emit_i64_extend_i32_u(b)
+  emit_i64_const(b, 32)
+  emit_i64_shl(b)
+  emit_local_get(b, 2)
+  emit_i32_load(b, 2, 4)
+  emit_i64_extend_i32_u(b)
+  emit_i64_or(b)
+  emit_local_get(b, 1)
+  emit_i32_wrap_i64(b)
+  emit_local_tee(b, 3)
+  emit_i32_load(b, 2, 8)
+  emit_i64_extend_i32_u(b)
+  emit_i64_const(b, 32)
+  emit_i64_shl(b)
+  emit_local_get(b, 3)
+  emit_i32_load(b, 2, 4)
+  emit_i64_extend_i32_u(b)
+  emit_i64_or(b)
+  emit_call(b, string_index_of_idx)
+  b
+}
+
+let static_str_eq_body_bytes: Bytes = Bytes::from_array([
+  32,
+  0,
+  66,
+  255,
+  255,
+  255,
+  255,
+  15,
+  131,
+  167,
+  33,
+  2,
+  32,
+  1,
+  66,
+  255,
+  255,
+  255,
+  255,
+  15,
+  131,
+  167,
+  33,
+  3,
+  32,
+  2,
+  32,
+  3,
+  71,
+  4,
+  126,
+  66,
+  0,
+  5,
+  32,
+  0,
+  66,
+  32,
+  135,
+  167,
+  33,
+  4,
+  32,
+  1,
+  66,
+  32,
+  135,
+  167,
+  33,
+  5,
+  65,
+  0,
+  33,
+  6,
+  2,
+  126,
+  2,
+  64,
+  3,
+  64,
+  32,
+  6,
+  32,
+  2,
+  79,
+  13,
+  1,
+  32,
+  4,
+  32,
+  6,
+  106,
+  45,
+  0,
+  0,
+  32,
+  5,
+  32,
+  6,
+  106,
+  45,
+  0,
+  0,
+  71,
+  4,
+  64,
+  66,
+  0,
+  12,
+  3,
+  11,
+  32,
+  6,
+  65,
+  1,
+  106,
+  33,
+  6,
+  12,
+  0,
+  11,
+  11,
+  66,
+  1,
+  11,
+  11
+])
+
+export fn static_str_eq_body() -> Bytes {
+  static_str_eq_body_bytes
+}
+
+export fn gen_str_char_code_at_body(enable_rc: Bool, oob_prefix_fat: Int, oob_abort_idx: Int) -> Bytes {
+  let b = bytebuf_new()
+  // #811: bounds check — idx (untagged, i32-wrapped) must be < length (the
+  // fat pointer's low 32 bits). ge_u catches negative indices too (they wrap
+  // to huge unsigned values). OOB reads previously returned adjacent memory.
+  // #2199: before the trap, call __rt_oob_abort with this operation's prefix
+  // plus the signed index and the length, so the abort line names the
+  // operation and both values. oob_abort_idx < 0 emits the historical
+  // bare-trap form (the static twin pins that shape).
+  emit_local_get(b, 1)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
+  emit_i32_wrap_i64(b)
+  emit_local_get(b, 0)
+  emit_i32_wrap_i64(b)
+  bytebuf_push(b, 79)
+  emit_if_void(b)
+  if oob_abort_idx >= 0 {
+    emit_i64_const(b, oob_prefix_fat)
+    emit_local_get(b, 1)
+    if enable_rc {
+      emit_i64_const(b, 1)
+      emit_i64_shr_s(b)
+    }
+    emit_local_get(b, 0)
+    emit_i32_wrap_i64(b)
+    emit_i64_extend_i32_u(b)
+    emit_call(b, oob_abort_idx)
+  } else {
+    ()
+  }
+  bytebuf_push(b, 0)
+  emit_end(b)
+  emit_local_get(b, 0)
+  emit_i64_const(b, 32)
+  emit_i64_shr_s(b)
+  emit_i32_wrap_i64(b)
+  emit_local_set(b, 2)
+  emit_local_get(b, 2)
+  emit_local_get(b, 1)
+  // ADR-0055 Stage 1: the index argument is a tagged int (idx<<1) under RC;
+  // untag it before using it as a byte offset.
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
+  emit_i32_wrap_i64(b)
+  emit_i32_add(b)
+  emit_i32_load8_u(b, 0, 0)
+  emit_i64_extend_i32_u(b)
+  // ADR-0055 Stage 1: the char code is a count entering the value world; tag it.
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
+  b
+}
+
+export fn gen_string_ends_with_body(enable_rc: Bool, str_len_idx: Int, str_substring_idx: Int, str_eq_idx: Int) -> Bytes {
+  let b = bytebuf_new()
+  emit_local_get(b, 0)
+  emit_call(b, str_len_idx)
+  // ADR-0055: String::length is value-world (tagged) under RC; untag to a raw
+  // length. `substring` stays raw, so its args are passed raw as before.
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
+  emit_i32_wrap_i64(b)
+  emit_local_set(b, 2)
+  emit_local_get(b, 1)
+  emit_call(b, str_len_idx)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
+  emit_i32_wrap_i64(b)
+  emit_local_set(b, 3)
+  emit_local_get(b, 3)
+  emit_local_get(b, 2)
+  bytebuf_push(b, 75)
+  emit_if_i64(b)
+  emit_i64_const(b, 0)
+  emit_else(b)
+  emit_local_get(b, 0)
+  emit_local_get(b, 2)
+  emit_local_get(b, 3)
+  emit_i32_sub(b)
+  emit_i64_extend_i32_u(b)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
+  emit_local_get(b, 2)
+  emit_i64_extend_i32_u(b)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
+  emit_call(b, str_substring_idx)
+  emit_local_set(b, 4)
+  emit_local_get(b, 4)
+  emit_local_get(b, 1)
+  emit_call(b, str_eq_idx)
+  emit_end(b)
+  // ADR-0055: starts_with/ends_with return a value-world Bool. str_eq returns raw
+  // 0/1 and the needle-too-long branch returns raw 0, so tag the unified if
+  // result (true=2) so callers comparing `== true` or storing it see the tag.
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
+  b
+}
+
+let static_arr_get_body_bytes: Bytes = Bytes::from_array([
+  32,
+  1,
+  167,
+  32,
+  0,
+  167,
+  40,
+  2,
+  4,
+  79,
+  4,
+  64,
+  0,
+  11,
+  32,
+  0,
+  167,
+  40,
+  2,
+  8,
+  33,
+  2,
+  32,
+  2,
+  32,
+  1,
+  167,
+  65,
+  3,
+  116,
+  106,
+  41,
+  3,
+  0
+])
+
+export fn static_arr_get_body() -> Bytes {
+  static_arr_get_body_bytes
+}
+
+let static_arr_len_body_bytes: Bytes = Bytes::from_array([
+  32,
+  0,
+  167,
+  40,
+  2,
+  4,
+  173
+])
+
+export fn static_arr_len_body() -> Bytes {
+  static_arr_len_body_bytes
+}
+
+let static_arr_new_body_bytes: Bytes = Bytes::from_array([
+  35,
+  0,
+  34,
+  0,
+  65,
+  204,
+  0,
+  106,
+  36,
+  0,
+  32,
+  0,
+  65,
+  8,
+  54,
+  2,
+  0,
+  32,
+  0,
+  65,
+  0,
+  54,
+  2,
+  4,
+  32,
+  0,
+  32,
+  0,
+  65,
+  12,
+  106,
+  54,
+  2,
+  8,
+  32,
+  0,
+  173
+])
+
+export fn static_arr_new_body() -> Bytes {
+  static_arr_new_body_bytes
+}
+
+let static_arr_set_body_bytes: Bytes = Bytes::from_array([
+  32,
+  1,
+  167,
+  32,
+  0,
+  167,
+  40,
+  2,
+  4,
+  79,
+  4,
+  64,
+  0,
+  11,
+  32,
+  0,
+  167,
+  40,
+  2,
+  8,
+  33,
+  3,
+  32,
+  3,
+  32,
+  1,
+  167,
+  65,
+  3,
+  116,
+  106,
+  32,
+  2,
+  55,
+  3,
+  0
+])
+
+export fn static_arr_set_body() -> Bytes {
+  static_arr_set_body_bytes
+}
+
+let static_fs_stub_body_bytes: Bytes = Bytes::from_array([66, 0])
+
+export fn static_fs_stub_body() -> Bytes {
+  static_fs_stub_body_bytes
+}
+
+let static_str_len_body_bytes: Bytes = Bytes::from_array([
+  32,
+  0,
+  66,
+  255,
+  255,
+  255,
+  255,
+  15,
+  131
+])
+
+export fn static_str_len_body() -> Bytes {
+  static_str_len_body_bytes
+}
+
+export fn gen_fs_read_file_stub_body() -> Bytes {
+  let b = bytebuf_new()
+  emit_i64_const(b, 0)
+  b
+}
+
+let static_arr_push_body_bytes: Bytes = Bytes::from_array([
+  32,
+  0,
+  167,
+  33,
+  2,
+  32,
+  2,
+  40,
+  2,
+  0,
+  33,
+  3,
+  32,
+  2,
+  40,
+  2,
+  4,
+  33,
+  4,
+  32,
+  2,
+  40,
+  2,
+  8,
+  33,
+  5,
+  32,
+  4,
+  32,
+  3,
+  79,
+  4,
+  64,
+  32,
+  3,
+  65,
+  2,
+  108,
+  33,
+  7,
+  35,
+  0,
+  34,
+  6,
+  32,
+  7,
+  65,
+  8,
+  108,
+  106,
+  36,
+  0,
+  32,
+  6,
+  32,
+  5,
+  32,
+  4,
+  65,
+  8,
+  108,
+  252,
+  10,
+  0,
+  0,
+  32,
+  2,
+  32,
+  7,
+  54,
+  2,
+  0,
+  32,
+  2,
+  32,
+  6,
+  54,
+  2,
+  8,
+  32,
+  6,
+  33,
+  5,
+  11,
+  32,
+  5,
+  32,
+  4,
+  65,
+  3,
+  116,
+  106,
+  32,
+  1,
+  55,
+  3,
+  0,
+  32,
+  2,
+  32,
+  4,
+  65,
+  1,
+  106,
+  54,
+  2,
+  4
+])
+
+export fn static_arr_push_body() -> Bytes {
+  static_arr_push_body_bytes
+}
+
+let static_identity_body_bytes: Bytes = Bytes::from_array([32, 0])
+
+export fn static_identity_body() -> Bytes {
+  static_identity_body_bytes
+}
+
+export fn gen_fs_stat_token_stub_body() -> Bytes {
+  let b = bytebuf_new()
+  emit_i64_const(b, 0)
+  b
+}
+
+export fn gen_str_from_char_code_body(enable_rc: Bool) -> Bytes {
+  let b = bytebuf_new()
+  emit_global_get(b, 0)
+  emit_local_tee(b, 1)
+  emit_i32_const(b, 1)
+  emit_i32_add(b)
+  emit_i32_const(b, 7)
+  emit_i32_add(b)
+  emit_i32_const(b, -8)
+  bytebuf_push(b, 113)
+  emit_global_set(b, 0)
+  emit_heap_memory_grow_check(b)
+  emit_local_get(b, 1)
+  emit_local_get(b, 0)
+  // ADR-0055 #705: the char code arrives as a tagged Int (code<<1, see
+  // gen_str_char_code_at_body); untag before storing the byte, or every byte is
+  // doubled (e.g. decode_string produced 'h'<<1='\xd0'… so `== "hello"` failed).
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  } else {
+    ()
+  }
+  emit_i32_wrap_i64(b)
+  emit_i32_store8(b, 0, 0)
+  emit_local_get(b, 1)
+  emit_i64_extend_i32_u(b)
+  emit_i64_const(b, 32)
+  emit_i64_shl(b)
+  emit_i64_const(b, 1)
+  emit_i64_or(b)
+  b
+}
+
+export fn gen_string_starts_with_body(enable_rc: Bool, str_len_idx: Int, str_substring_idx: Int, str_eq_idx: Int) -> Bytes {
+  let b = bytebuf_new()
+  emit_local_get(b, 0)
+  emit_call(b, str_len_idx)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
+  emit_i32_wrap_i64(b)
+  emit_local_set(b, 2)
+  emit_local_get(b, 1)
+  emit_call(b, str_len_idx)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
+  emit_i32_wrap_i64(b)
+  emit_local_set(b, 3)
+  emit_local_get(b, 3)
+  emit_local_get(b, 2)
+  bytebuf_push(b, 75)
+  emit_if_i64(b)
+  emit_i64_const(b, 0)
+  emit_else(b)
+  emit_local_get(b, 0)
+  emit_i64_const(b, 0)
+  emit_local_get(b, 3)
+  emit_i64_extend_i32_u(b)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
+  emit_call(b, str_substring_idx)
+  emit_local_set(b, 4)
+  emit_local_get(b, 4)
+  emit_local_get(b, 1)
+  emit_call(b, str_eq_idx)
+  emit_end(b)
+  // ADR-0055: starts_with/ends_with return a value-world Bool. str_eq returns raw
+  // 0/1 and the needle-too-long branch returns raw 0, so tag the unified if
+  // result (true=2) so callers comparing `== true` or storing it see the tag.
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
+  b
+}
+
+export let static_arr_slice_body_bytes: Bytes = Bytes::from_array([
+  32,
+  0,
+  167,
+  33,
+  3,
+  32,
+  3,
+  40,
+  2,
+  8,
+  33,
+  4,
+  32,
+  2,
+  167,
+  32,
+  1,
+  167,
+  107,
+  33,
+  5,
+  32,
+  5,
+  65,
+  8,
+  106,
+  33,
+  8,
+  35,
+  0,
+  34,
+  6,
+  65,
+  12,
+  32,
+  8,
+  65,
+  3,
+  116,
+  106,
+  106,
+  36,
+  0,
+  32,
+  6,
+  32,
+  8,
+  54,
+  2,
+  0,
+  32,
+  6,
+  32,
+  5,
+  54,
+  2,
+  4,
+  32,
+  6,
+  65,
+  12,
+  106,
+  33,
+  7,
+  32,
+  6,
+  32,
+  7,
+  54,
+  2,
+  8,
+  32,
+  7,
+  32,
+  4,
+  32,
+  1,
+  167,
+  65,
+  3,
+  116,
+  106,
+  32,
+  5,
+  65,
+  3,
+  116,
+  252,
+  10,
+  0,
+  0,
+  32,
+  6,
+  173
+])

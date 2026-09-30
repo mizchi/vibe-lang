@@ -1,0 +1,278 @@
+import @vibe/compiler/core {
+  Expr, Stmt, expr_children
+}
+
+import @vibe/compiler/checker {
+  check_program, check_program_binder_occurrence_observation
+}
+
+import @vibe/compiler/runtime {
+  type_at_source
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import @vibe/parser {
+  BinderAuthorityNode,
+  BinderSemanticRole,
+  SourceBinder,
+  Token,
+  binder_authority_node_children,
+  binder_authority_node_slots,
+  binder_authority_slot_binder,
+  binder_authority_slot_role,
+  lex_with_offsets,
+  located_program_binder_authority_nodes,
+  located_program_binder_authority_program,
+  offset_to_line_col,
+  parse_source_located_with_binder_authority,
+  parse_source_with_ranges,
+  source_expr,
+  source_expr_range,
+  source_expr_syntax_range
+}
+
+// Source range lookup traverses the parser's annotated AST, never token
+// fragments. For example, x + 1 inside y * x + 1 is not a subtree.
+fn extract_find_expr(expr: Expr, start: Int, end: Int) -> Option[Expr] {
+  let extent = source_expr_range(expr)
+  let syntax = source_expr_syntax_range(expr)
+  if (extent.0 == start && extent.1 == end) || (syntax.0 == start && syntax.1 == end) {
+    Some(expr)
+  } else {
+    let children = expr_children(source_expr(expr))
+    let mut found = None
+    let mut i = 0
+    while i < Array::length(children) && found == None {
+      found = extract_find_expr(Array::get(children, i), start, end)
+      i = i + 1
+    }
+    found
+  }
+}
+
+fn extract_find_program(stmts: Array[Stmt], start: Int, end: Int) -> Option[Expr] {
+  let mut found = None
+  let mut i = 0
+  while i < Array::length(stmts) && found == None {
+    found = match Array::get(stmts, i) {
+      SLet(_, _, _, _, value) => extract_find_expr(value, start, end),
+      SLetMut(_, _, value) => extract_find_expr(value, start, end),
+      SExpr(value) => extract_find_expr(value, start, end),
+      _ => None
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn extract_contains_offset(offsets: Array[Int], offset: Int) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(offsets) {
+    if Array::get(offsets, i) == offset {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+// Mutable binders come from validated semantic roles. Text such as "let mut"
+// in a comment or string cannot change the classification.
+fn extract_mutable_binders(node: BinderAuthorityNode, out: Array[Int]) -> Unit {
+  let slots = binder_authority_node_slots(node)
+  let mut i = 0
+  while i < Array::length(slots) {
+    let slot = Array::get(slots, i)
+    let mutable = match binder_authority_slot_role(slot) {
+      StatementLetMutBinder => true,
+      ExpressionLetMutBinder => true,
+      _ => false
+    }
+    if mutable {
+      match binder_authority_slot_binder(slot) {
+        SourceToken(_, start, _) => Array::push(out, start),
+        _ => ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  let children = binder_authority_node_children(node)
+  let mut j = 0
+  while j < Array::length(children) {
+    extract_mutable_binders(Array::get(children, j), out)
+    j = j + 1
+  }
+}
+
+fn extract_check_control_flow(expr: Expr) -> Unit with Exception {
+  let plain = source_expr(expr)
+  match plain {
+    EReturn(_) => throw("extract-function: select an expression without escaping control flow (return)"),
+    EBreak(_) => throw("extract-function: select an expression without escaping control flow (break)"),
+    EContinue(_) => throw("extract-function: select an expression without escaping control flow (continue)"),
+    EAssign(_, _, _) => throw("extract-function: extract a read-only expression; assignment is not supported"),
+    EAssignOp(_, _, _, _) => throw("extract-function: extract a read-only expression; assignment is not supported"),
+    _ => ()
+  }
+  let children = expr_children(plain)
+  let mut i = 0
+  while i < Array::length(children) {
+    extract_check_control_flow(Array::get(children, i))
+    i = i + 1
+  }
+}
+
+fn extract_check_name(source: String, name: String) -> Unit with Exception {
+  let (name_tokens, name_starts, name_ends) = lex_with_offsets(name)
+  let valid = if Array::length(name_tokens) == 2 {
+    match Array::get(name_tokens, 0) {
+      TIdent(value) => value == name && Array::get(name_starts, 0) == 0 && Array::get(name_ends, 0) == String::length(name) && !String::contains(name, "::"),
+      _ => false
+    }
+  } else {
+    false
+  }
+  if !valid {
+    throw("extract-function: choose one unqualified identifier for the function name")
+  } else {
+    ()
+  }
+  let (tokens, _, _) = lex_with_offsets(source)
+  let mut i = 0
+  while i < Array::length(tokens) {
+    match Array::get(tokens, i) {
+      TIdent(value) => if value == name {
+        throw(String::concat("extract-function: the name already occurs in this file: ", name))
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+/// Extract one complete expression into a module-level function. Capture
+/// identity is supplied by the checker's validated binder provenance; capture
+/// types use its existing type-at query. Both the input and the edited source
+/// must pass the production checker before the caller can publish an edit.
+export fn extract_function(source: String, start: Int, end: Int, name: String) -> String with Exception {
+  if start < 0 || end <= start || end > String::length(source) {
+    throw("extract-function: use a nonempty half-open byte range within the source")
+  } else {
+    ()
+  }
+  extract_check_name(source, name)
+  let selected = match extract_find_program(parse_source_with_ranges(source), start, end) {
+    Some(expr) => expr,
+    None => throw("extract-function: select one complete expression, including its delimiters")
+  }
+  extract_check_control_flow(selected)
+  let authority = match parse_source_located_with_binder_authority(source) {
+    Some(value) => value,
+    None => throw("extract-function: this source has no validated binding information; simplify the selected declaration")
+  }
+  let program = located_program_binder_authority_program(authority)
+  let mut si = 0
+  while si < Array::length(program) {
+    match Array::get(program, si) {
+      SImport(_, _) => throw("extract-function: imported modules are not supported yet; extract in a standalone file"),
+      _ => ()
+    }
+    si = si + 1
+  }
+  let occurrences = match check_program_binder_occurrence_observation(authority) {
+    Some(rows) => rows,
+    None => throw("extract-function: this declaration shape has no complete binding information yet")
+  }
+  let _ = check_program(located_program_binder_authority_program(authority))
+  let roots = located_program_binder_authority_nodes(authority)
+  let globals: Array[Int] = array_empty()
+  let mutable: Array[Int] = array_empty()
+  let mut ri = 0
+  while ri < Array::length(roots) {
+    let root = Array::get(roots, ri)
+    extract_mutable_binders(root, mutable)
+    let slots = binder_authority_node_slots(root)
+    let mut bi = 0
+    while bi < Array::length(slots) {
+      match binder_authority_slot_binder(Array::get(slots, bi)) {
+        SourceToken(_, begin, _) => Array::push(globals, begin),
+        _ => ()
+      }
+      bi = bi + 1
+    }
+    ri = ri + 1
+  }
+  let captured: Array[Int] = array_empty()
+  let names: Array[String] = array_empty()
+  let mut params = ""
+  let mut args = ""
+  let mut oi = 0
+  while oi < Array::length(occurrences) {
+    let (use, binder, binder_end) = Array::get(occurrences, oi)
+    if use >= start && use < end && (binder < start || binder >= end) {
+      let capture_name = String::substring(source, binder, binder_end)
+      if extract_contains_offset(mutable, binder) {
+        throw(String::concat("extract-function: mutable capture is not supported: ", capture_name))
+      } else {
+        ()
+      }
+      if !extract_contains_offset(globals, binder) && !extract_contains_offset(captured, binder) {
+        let mut ni = 0
+        while ni < Array::length(names) {
+          if Array::get(names, ni) == capture_name {
+            throw(String::concat("extract-function: two captured bindings share a name; rename one first: ", capture_name))
+          } else {
+            ()
+          }
+          ni = ni + 1
+        }
+        let (line, col) = offset_to_line_col(source, use)
+        let ty = type_at_source(source, line, col)
+        if ty == "" {
+          throw(String::concat("extract-function: annotate the type of captured binding: ", capture_name))
+        } else {
+          ()
+        }
+        let comma = if Array::length(captured) == 0 {
+          ""
+        } else {
+          ", "
+        }
+        params = String::concat(params, String::concat(comma, String::concat(capture_name, String::concat(": ", ty))))
+        args = String::concat(args, String::concat(comma, capture_name))
+        Array::push(captured, binder)
+        Array::push(names, capture_name)
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    oi = oi + 1
+  }
+  let invocation = String::concat(name, String::concat("(", String::concat(args, ")")))
+  let call = if String::char_code_at(source, start) == 123 {
+    String::concat("{ ", String::concat(invocation, " }"))
+  } else {
+    invocation
+  }
+  let edited = String::concat(String::substring(source, 0, start), String::concat(call, String::substring(source, end, String::length(source))))
+  let definition = String::concat("\nlet ", String::concat(name, String::concat(" = (", String::concat(params, String::concat(") -> {\n", String::concat(String::substring(source, start, end), "\n}\n"))))))
+  let result = String::concat(edited, definition)
+  let candidate = match parse_source_located_with_binder_authority(result) {
+    Some(value) => located_program_binder_authority_program(value),
+    None => throw("extract-function: the generated function cannot be parsed; select a simpler expression")
+  }
+  let _ = check_program(candidate)
+  result
+}

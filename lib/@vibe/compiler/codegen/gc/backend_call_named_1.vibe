@@ -1,0 +1,2150 @@
+// lib/@vibe/compiler/codegen/gc/backend_call.vibe — named 1.
+
+import @vibe/compiler/core {
+  Expr,
+  Pat,
+  Stmt,
+  TypeExpr,
+  bytebuf_length,
+  bytebuf_new,
+  bytebuf_push,
+  bytebuf_push_section,
+  bytebuf_push_vec_header,
+  bytebuf_to_bytes,
+  canonical_builtin_name,
+  is_exception_operation_name,
+  is_exception_throw_operation,
+  leb128_encode_s64,
+  leb128_encode_u32,
+  typed_lowering_arg_offset,
+  typed_lowering_float_key,
+  typed_render_refuse_key,
+  unrenderable_render_message
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import @vibe/compiler/codegen/common_analysis {
+  collect_free_vars,
+  collect_strings_stmts,
+  emit_closure_call_tail,
+  emit_closure_resolve,
+  emit_i64_extend_i32_u,
+  is_mut_captured_in,
+  packed_dir_entries_to_array_expr,
+  region_mutbytes_exit_copy,
+  region_mutlist_exit_copy
+}
+
+import @vibe/compiler/codegen/common_base {
+  CompileCtxGc,
+  CtorTable,
+  FuncTable,
+  LambdaTable,
+  StrTable,
+  agg_log_reset_above,
+  ctor_table_index_of,
+  double_parse_expr,
+  double_runtime_parse_name,
+  double_runtime_require,
+  double_runtime_to_string_name,
+  double_to_string_expr,
+  emit_binop_op,
+  emit_i32_eq,
+  emit_i32_eqz,
+  emit_i32_ge_u,
+  emit_i32_gt_u,
+  emit_i32_mul,
+  emit_i32_ne,
+  emit_i32_sub,
+  emit_i64_load,
+  emit_i64_store,
+  emit_region_enter,
+  emit_region_exit,
+  emit_region_try_epilogue,
+  emit_region_try_prologue,
+  emit_str_ref,
+  expr_tag,
+  find_func_stmt,
+  find_local_slot,
+  func_table_builtin_pos_of,
+  func_table_index_of,
+  func_table_user_index_of,
+  gc_ctor_field_is_ref,
+  gc_ctor_field_slot,
+  gc_slot_log_reset_above,
+  gc_slot_map_get,
+  gc_slot_map_reset_above,
+  int_parse_expr,
+  is_eident,
+  region_try_body_ld,
+  resolve_func,
+  resolve_local,
+  sized_bytes_new_expr,
+  str_table_index_of,
+  string_unicode_length_expr,
+  string_utf16_length_expr,
+  string_views_runtime_require,
+  string_views_runtime_unicode_name,
+  string_views_runtime_utf16_name,
+  struct_field_candidates,
+  struct_field_dispatch_cases
+}
+
+import @vibe/compiler/codegen/common_extractors {
+  array_contains_int,
+  array_contains_str,
+  emit_assignop_op,
+  emit_memory_copy,
+  find_catchall_idx,
+  get_ecall_args,
+  get_ecall_callee,
+  get_eident_name,
+  get_estring_value
+}
+
+import @vibe/compiler/codegen/wasm_emit {
+  emit_array_get,
+  emit_array_len,
+  emit_array_new_default,
+  emit_array_set,
+  emit_block_i64,
+  emit_block_void,
+  emit_br,
+  emit_br_if,
+  emit_call,
+  emit_call_indirect,
+  emit_code_section,
+  emit_code_section_with_locals,
+  emit_data_section,
+  emit_data_section_multi,
+  emit_drop,
+  emit_element_section_active,
+  emit_else,
+  emit_end,
+  emit_export_section,
+  emit_export_section_multi,
+  emit_exports_with_memory,
+  emit_f64_abs,
+  emit_f64_add,
+  emit_f64_ceil,
+  emit_f64_const_bits,
+  emit_f64_convert_i64_s,
+  emit_f64_div,
+  emit_f64_eq,
+  emit_f64_floor,
+  emit_f64_ge,
+  emit_f64_gt,
+  emit_f64_le,
+  emit_f64_lt,
+  emit_f64_max,
+  emit_f64_min,
+  emit_f64_mul,
+  emit_f64_ne,
+  emit_f64_neg,
+  emit_f64_reinterpret_i64,
+  emit_f64_sub,
+  emit_func_type_raw,
+  emit_function_section,
+  emit_global_get,
+  emit_global_section_i32_mut,
+  emit_global_set,
+  emit_header,
+  emit_heap_memory_grow_check,
+  emit_i32_add,
+  emit_i32_const,
+  emit_i32_load,
+  emit_i32_load8_u,
+  emit_i32_store,
+  emit_i32_store8,
+  emit_i32_wrap_i64,
+  emit_i64_add,
+  emit_i64_and,
+  emit_i64_const,
+  emit_i64_div_s,
+  emit_i64_eq,
+  emit_i64_eqz,
+  emit_i64_extend_i32_s,
+  emit_i64_ge_s,
+  emit_i64_gt_s,
+  emit_i64_le_s,
+  emit_i64_lt_s,
+  emit_i64_mul,
+  emit_i64_ne,
+  emit_i64_or,
+  emit_i64_reinterpret_f64,
+  emit_i64_rem_s,
+  emit_i64_shl,
+  emit_i64_shr_s,
+  emit_i64_sub,
+  emit_i64_trunc_f64_s,
+  emit_i64_xor,
+  emit_if_i64,
+  emit_if_type_index,
+  emit_if_void,
+  emit_import_section_func,
+  emit_local_get,
+  emit_local_set,
+  emit_local_tee,
+  emit_loop_void,
+  emit_memory_section,
+  emit_name,
+  emit_return,
+  emit_struct_get,
+  emit_struct_new,
+  emit_struct_set,
+  emit_struct_type_raw,
+  emit_table_section_funcref,
+  emit_type_section,
+  emit_type_section_multi,
+  string_to_data
+}
+
+import ./backend_builtins_array_alloc.vibe {
+  gc_gen_arr_len_body, gc_gen_arr_new_body
+}
+
+import ./backend_builtins_array_get.vibe {
+  gc_gen_arr_get_body
+}
+
+import ./backend_builtins_array_push.vibe {
+  gc_gen_arr_push_body
+}
+
+import ./backend_builtins_array_set.vibe {
+  gc_gen_arr_set_body
+}
+
+import ./backend_builtins_numeric.vibe {
+  gc_emit_int_to_string, gc_gen_double_to_int_body, gc_gen_identity_body, gc_gen_int_to_double_body
+}
+
+import ./backend_builtins_print.vibe {
+  gc_gen_print_i64_body, gc_gen_print_str_body
+}
+
+import ./backend_builtins_string.vibe {
+  gc_gen_str_concat_body, gc_gen_str_eq_body, gc_gen_str_len_body
+}
+
+import ./backend_builtins_string_extra.vibe {
+  gc_gen_str_char_code_at_body, gc_gen_str_from_char_code_body, gc_gen_str_substring_body
+}
+
+import ./backend_call_named_2.vibe {
+  bc_expr_is_boolish,
+  bc_expr_is_floatish,
+  bc_expr_is_intish,
+  bc_offset_refuses_render,
+  emit_call_resolved,
+  gc_compile_map_iter_get_checked,
+  gc_compile_named_2,
+  gc_direct_abi_call_index,
+  gc_direct_abi_twin_callee,
+  gc_expr_is_native_array_ref,
+  gc_frozen_conversion_copy,
+  gc_name_is_user_defined,
+  gc_native_array_receiver_slot,
+  gc_reset_join_arm_slots,
+  gc_resolve_builtin_last
+}
+
+/// Emit one value already proven to inhabit the direct reference lane.
+/// Unsupported shapes are an internal proof failure and abort compilation;
+/// they are never reinterpreted as i64.
+export fn gc_compile_native_array_ref(buf: Bytes, expr: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, ce: (Bytes, Expr, Array[String], Int, Int) -> Int with Exception) -> Int with Exception {
+  match expr {
+    EIdent(name, _) => {
+      let slot = find_local_slot(local_names, name)
+      if slot >= 0 && array_contains_int(ctx.gc_native_array_locals, slot) {
+        emit_local_get(buf, slot)
+        next_local
+      } else {
+        throw("gc direct ABI proof mismatch: expected native array local")
+      }
+    },
+    // #1542: the reference lives in a struct field, so producing it is a
+    // struct.get rather than a local.get.
+    EDot(EIdent(ns_obj, _), ns_field, _, _) => {
+      let ns_slot = find_local_slot(local_names, ns_obj)
+      let ns_struct_idx = gc_slot_map_get(ctx.gc_native_struct_scope, ns_slot)
+      let ns_fidx = gc_ctor_field_slot(ctx.gc_ctor_table, ns_struct_idx, ns_field)
+      if ns_struct_idx >= 0 && ns_fidx >= 0 && gc_ctor_field_is_ref(ctx.gc_ctor_table, ns_struct_idx, ns_field) {
+        emit_local_get(buf, ns_slot)
+        emit_struct_get(buf, ctx.gc_native_struct_type_base + ns_struct_idx, ns_fidx)
+        next_local
+      } else {
+        throw("gc direct ABI proof mismatch: expected a reference-lane struct field")
+      }
+    },
+    EArray(elems) => {
+      let slot = next_local
+      Array::push(local_names, "[gc-temp]__gc_direct_array_arg")
+      Array::push(ctx.gc_native_array_locals, slot)
+      Array::push(ctx.gc_native_array_local_types, slot)
+      emit_i32_const(buf, Array::length(elems))
+      emit_array_new_default(buf, ctx.gc_native_array_type_idx)
+      emit_local_set(buf, slot)
+      let mut nl = next_local + 1
+      let mut i = 0
+      while i < Array::length(elems) {
+        emit_local_get(buf, slot)
+        emit_i32_const(buf, i)
+        nl = ce(buf, Array::get(elems, i), local_names, nl, ld)
+        emit_array_set(buf, ctx.gc_native_array_type_idx)
+        i = i + 1
+      }
+      emit_local_get(buf, slot)
+      nl
+    },
+    ECall(callee, args, _) => match callee {
+      EIdent(name, _) => {
+        let idx = gc_direct_abi_call_index(ctx, name)
+        if find_local_slot(local_names, name) < 0 && idx >= 0 && Array::get(ctx.gc_direct_abi_return_refs, idx) {
+          compile_call_gc(buf, callee, args, local_names, next_local, ctx, ld, ce)
+        } else {
+          throw("gc direct ABI proof mismatch: call does not return a native array")
+        }
+      },
+      _ => throw("gc direct ABI proof mismatch: indirect native array call")
+    },
+    // Reference-lane join. The blocktype has to name a TYPE INDEX because the
+    // result is `(ref null $native_i64_array)`, which has no single-byte value
+    // type spelling; `gc_native_array_block_type_idx` is the base type reserved
+    // for exactly this (backend_body.vibe).
+    //
+    // The local bookkeeping mirrors the i64 `if` in backend_expr.vibe and for
+    // the same reason: a native slot is a typed local, so the else arm must
+    // never reuse a slot the then arm allocated -- the sibling can legally bind
+    // an ordinary i64 at the same lexical depth. Start the else arm above the
+    // then arm's high-water mark so the declaration list stays monotonic.
+    EIf(cond, then_e, else_e) => {
+      if ctx.gc_native_array_block_type_idx < 0 {
+        throw("gc direct ABI proof mismatch: no blocktype for a reference-lane join")
+      } else {
+        ()
+      }
+      let nl_cond = ce(buf, cond, local_names, next_local, ld)
+      emit_i32_wrap_i64(buf)
+      emit_if_type_index(buf, ctx.gc_native_array_block_type_idx)
+      let names_len_before = Array::length(local_names)
+      let nl_then = gc_compile_native_array_ref(buf, then_e, local_names, nl_cond, ctx, ld, ce)
+      emit_else(buf)
+      gc_reset_join_arm_slots(local_names, ctx, names_len_before, nl_then)
+      let nl_else = gc_compile_native_array_ref(buf, else_e, local_names, nl_then, ctx, ld, ce)
+      emit_end(buf)
+      gc_reset_join_arm_slots(local_names, ctx, names_len_before, nl_else)
+      nl_else
+    },
+    _ => throw("gc direct ABI proof mismatch: unsupported native array expression")
+  }
+}
+
+/// #3129: a `MutList::*` / `MutBytes::*` call is the BUILTIN `target` under
+/// another spelling. Re-dispatching it as a call spelled `target` let a
+/// program's own function of that name capture it (a program `Array::length`
+/// answered 77 for `MutList::length` of a three-element list). When the
+/// program defines `target`, call the builtin's table entry directly, with
+/// the same argument handling as the resolved-call fallback in
+/// `compile_call_gc`; otherwise the spelling is unambiguous and keeps its
+/// ordinary lowering.
+fn gc_mut_alias_call(buf: Bytes, target: String, args: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, ce: (Bytes, Expr, Array[String], Int, Int) -> Int with Exception) -> Int with Exception {
+  let eff_target = gc_direct_abi_twin_callee(ctx, target)
+  let pos = if func_table_user_index_of(ctx.func_table, target, ctx.num_user_funcs) >= 0 {
+    func_table_builtin_pos_of(ctx.func_table, eff_target, ctx.num_user_funcs)
+  } else {
+    -1
+  }
+  if pos < 0 {
+    ce(buf, ECall(EIdent(target, -1), args, -1), local_names, next_local, ld)
+  } else {
+    let fidx = Array::get(ctx.func_table.indices, pos)
+    let has_ret = Array::get(ctx.func_table.returns, pos)
+    let direct_idx = gc_direct_abi_call_index(ctx, eff_target)
+    let mut nl = next_local
+    let mut ci = 0
+    while ci < Array::length(args) {
+      if direct_idx >= 0 && Array::get(Array::get(ctx.gc_direct_abi_param_refs, direct_idx), ci) {
+        nl = gc_compile_native_array_ref(buf, Array::get(args, ci), local_names, nl, ctx, ld, ce)
+      } else {
+        nl = ce(buf, Array::get(args, ci), local_names, nl, ld)
+      }
+      ci = ci + 1
+    }
+    if ctx.func_offset > 0 && fidx >= ctx.func_offset {
+      emit_i64_const(buf, 0)
+    } else {
+      ()
+    }
+    emit_call(buf, fidx)
+    if has_ret == 0 {
+      emit_i64_const(buf, 0)
+    } else {
+      ()
+    }
+    nl
+  }
+}
+
+fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, ce: (Bytes, Expr, Array[String], Int, Int) -> Int with Exception) -> Int with Exception {
+  match callee {
+    EIdent(source_name, _) => {
+      // Match checker/linear shadowing: an alias spelling is a builtin only
+      // when the original source name has no function or local binding.
+      let source_is_bound = func_table_index_of(ctx.func_table, source_name) >= 0 || find_local_slot(local_names, source_name) >= 0
+      let fname = if source_is_bound {
+        source_name
+      } else {
+        canonical_builtin_name(source_name)
+      }
+      // A refusal emits no call, including inside a lambda: its body is
+      // compiled before capture emission. The direct-ABI list must leave
+      // these spellings available to user definitions.
+      // review-lint: allow-gc-direct-abi-unlisted
+      if (fname == "await" || fname == "Future::ready" || fname == "Future::pending" || fname == "Future::resolve") && !gc_name_is_user_defined(ctx, local_names, fname) {
+        throw("compile with the linear or RC backend: the wasm-gc backend does not support the builtin `\{fname}` yet")
+      }
+      // #1733: FrozenArray's two conversions must COPY, on this backend too.
+      // Body 16 (the ArrayBuilder::freeze identity cast) is what they used to
+      // map to in backend_body.vibe, which made `FrozenArray` mutable through
+      // either end and took away the reason it is on the Send allowlist. The
+      // rewrite mirrors the linear lane's (codegen/expr/compile_call.vibe):
+      // bind the value once, then slice it. Guarded on the name not resolving
+      // to anything real, same as every other builtin spelling here.
+      //
+      // The marker on the next line suppresses the gc_direct_abi_names() drift
+      // rule, deliberately: both conversions have real func-table bodies, so
+      // `globals` already keeps the lambda capture scan off them -- this is a
+      // rewrite of a call that already resolves, not a spelling that exists
+      // only here. Measured before suppressing: a closure calling
+      // `FrozenArray::from_array` compiles and runs on both lanes. Listing
+      // them would instead claim a user declaration with those names is
+      // unsafe, which is not what this branch means.
+      // ADR-0090 (#1262): regions on the gc lane, arena-free tier.
+      //
+      // The linear lane has two tiers: these source-level rewrites, and on top
+      // of them an arena (watermark save/restore + a segment allocator) for
+      // bulk release. Correctness lives entirely in the first tier -- the
+      // arena is the reclamation optimization -- so the gc lane gets regions
+      // that RUN CORRECTLY here, and the arena stays a separate question.
+      //
+      // `__region_run(lam)` calls the body immediately with a dummy token (0).
+      // The token exists only for the checker's skolem escape scan; it has no
+      // runtime representation, which is why passing 0 is not a placeholder
+      // but the actual lowering.
+      //
+      // With tier 2 present (`gc_region_ptr_addr >= 0`) the body call is
+      // bracketed by the arena watermark save/restore -- the SAME two
+      // emitters the linear lane uses, now shared from common_base so the
+      // save/restore protocol cannot change on one lane only.
+      // #1937: the body sits in try_table catch (tag 0, same as EHandle);
+      // a throw runs exit then rethrows so depth cannot fill the save table.
+      if !source_is_bound && fname == "__region_run" && Array::length(args) == 1 {
+        if ctx.gc_region_ptr_addr >= 0 {
+          emit_region_enter(buf, ctx.gc_region_ptr_addr)
+          if ctx.gc_region_exn_tag >= 0 {
+            emit_region_try_prologue(buf, ctx.gc_region_exn_tag)
+            let region_r = ce(buf, ECall(Array::get(args, 0), [EInt(0)], -1), local_names, next_local, region_try_body_ld(ld))
+            emit_region_try_epilogue(buf, ctx.gc_region_ptr_addr, ctx.gc_region_exn_tag)
+            return region_r
+          } else {
+            let region_r = ce(buf, ECall(Array::get(args, 0), [EInt(0)], -1), local_names, next_local, ld)
+            emit_region_exit(buf, ctx.gc_region_ptr_addr)
+            return region_r
+          }
+        } else {
+          return ce(buf, ECall(Array::get(args, 0), [EInt(0)], -1), local_names, next_local, ld)
+        }
+      } else {
+        ()
+      }
+      // With an arena the storage comes from the segment; without one
+      // `MutList` storage IS an ArrayBuilder, as before. Either way the region
+      // token is not evaluated -- by construction it is the pure binder ident
+      // the parser emitted.
+      if !source_is_bound && fname == "MutList::empty" && Array::length(args) == 1 {
+        if ctx.gc_region_arr_new_func_idx >= 0 {
+          emit_call(buf, ctx.gc_region_arr_new_func_idx)
+          return next_local
+        } else {
+          ()
+        }
+        let no_args = Array::slice([EInt(0)], 0, 0)
+        return ce(buf, ECall(EIdent("ArrayBuilder::new", -1), no_args, -1), local_names, next_local, ld)
+      } else {
+        ()
+      }
+      // Arena-free, `MutList` storage IS an ArrayBuilder, so the mutating and
+      // reading operations are the ArrayBuilder/Array ones under another
+      // spelling. The linear lane reaches the same place by registering these
+      // as builtins whose bodies alias those; rewriting at the call site keeps
+      // the gc lane's arena-free tier in one block.
+      if !source_is_bound && fname == "MutList::push" && Array::length(args) == 2 {
+        return gc_mut_alias_call(buf, "ArrayBuilder::push", args, local_names, next_local, ctx, ld, ce)
+      } else {
+        ()
+      }
+      if !source_is_bound && fname == "MutList::get" && Array::length(args) == 2 {
+        return gc_mut_alias_call(buf, "Array::get", args, local_names, next_local, ctx, ld, ce)
+      } else {
+        ()
+      }
+      if !source_is_bound && fname == "MutList::length" && Array::length(args) == 1 {
+        return gc_mut_alias_call(buf, "Array::length", args, local_names, next_local, ctx, ld, ce)
+      } else {
+        ()
+      }
+      if !source_is_bound && fname == "MutList::truncate" && Array::length(args) == 2 {
+        return gc_mut_alias_call(buf, "Array::truncate", args, local_names, next_local, ctx, ld, ce)
+      } else {
+        ()
+      }
+      // The Bytes half of the same tier. `MutBytes` storage IS a `Bytes`
+      // without an arena, so the operations are the Bytes ones under another
+      // spelling, and the exit copies for the same reason as MutList's.
+      if !source_is_bound && fname == "MutBytes::empty" && Array::length(args) == 1 {
+        if ctx.gc_region_bytes_new_func_idx >= 0 {
+          emit_call(buf, ctx.gc_region_bytes_new_func_idx)
+          return next_local
+        } else {
+          ()
+        }
+        let no_bytes_args = Array::slice([EInt(0)], 0, 0)
+        return ce(buf, ECall(EIdent("Bytes::new", -1), no_bytes_args, -1), local_names, next_local, ld)
+      } else {
+        ()
+      }
+      if !source_is_bound && fname == "MutBytes::to_bytes" && Array::length(args) == 1 {
+        return ce(buf, region_mutbytes_exit_copy(Array::get(args, 0)), local_names, next_local, ld)
+      } else {
+        ()
+      }
+      if !source_is_bound && fname == "MutBytes::push" && Array::length(args) == 2 {
+        return gc_mut_alias_call(buf, "Bytes::push", args, local_names, next_local, ctx, ld, ce)
+      } else {
+        ()
+      }
+      if !source_is_bound && fname == "MutBytes::append" && Array::length(args) == 2 {
+        return gc_mut_alias_call(buf, "Bytes::append", args, local_names, next_local, ctx, ld, ce)
+      } else {
+        ()
+      }
+      if !source_is_bound && fname == "MutBytes::length" && Array::length(args) == 1 {
+        return gc_mut_alias_call(buf, "Bytes::length", args, local_names, next_local, ctx, ld, ce)
+      } else {
+        ()
+      }
+      // The sanctioned region exits COPY (see region_mutlist_exit_copy).
+      if !source_is_bound && (fname == "MutList::freeze" || fname == "MutList::to_array") && Array::length(args) == 1 {
+        return ce(buf, region_mutlist_exit_copy(Array::get(args, 0)), local_names, next_local, ld)
+      } else {
+        ()
+      }
+      // #729/#730 + #1262: `Fs::readdir` surface. The host import returns the
+      // entries NUL-joined (#2957) as ONE packed string, so turning it into
+      // Array[String] is a source-level rewrite -- the SAME rewrite the linear
+      // lane does, taken from the shared builder rather than spelled out again
+      // here (that duplication is what drifted in #1809).
+      if !source_is_bound && fname == "Fs::readdir" && Array::length(args) == 1 {
+        return ce(buf, packed_dir_entries_to_array_expr(ECall(EIdent("vibe_fs_read_dir_raw", -1), [
+          Array::get(args, 0)
+        ], -1), "__rd_names"), local_names, next_local, ld)
+      } else {
+        ()
+      }
+      if !source_is_bound && Array::length(args) == 1 && (fname == "FrozenArray::from_array" || fname == "FrozenArray::to_array") {
+        // review-lint: allow-gc-direct-abi-unlisted
+        let ftmp = if fname == "FrozenArray::from_array" {
+          // review-lint: allow-gc-direct-abi-unlisted
+          "__frozen_in"
+        } else {
+          "__frozen_out"
+        }
+        return ce(buf, gc_frozen_conversion_copy(Array::get(args, 0), ftmp), local_names, next_local, ld)
+      } else {
+        ()
+      }
+      if fname == "Map::iter_get" && Array::length(args) == 2 && !gc_name_is_user_defined(ctx, local_names, fname) {
+        return gc_compile_map_iter_get_checked(buf, Array::get(args, 0), Array::get(args, 1), local_names, next_local, ld, ce)
+      } else {
+        ()
+      }
+      let native_slot = gc_native_array_receiver_slot(args, local_names, ctx)
+      // #3132: the shortcuts below ARE the builtins; a call the program
+      // resolves to its own function of that name must not take them.
+      let native_receiver = Array::length(args) > 0 && (native_slot >= 0 || gc_expr_is_native_array_ref(Array::get(args, 0), local_names, ctx)) && !gc_name_is_user_defined(ctx, local_names, fname)
+      if native_receiver && fname == "Array::length" && Array::length(args) == 1 {
+        let nl = if native_slot >= 0 {
+          emit_local_get(buf, native_slot)
+          next_local
+        } else {
+          gc_compile_native_array_ref(buf, Array::get(args, 0), local_names, next_local, ctx, ld, ce)
+        }
+        emit_array_len(buf)
+        emit_i64_extend_i32_u(buf)
+        return nl
+      } else if native_receiver && fname == "Array::get" && Array::length(args) == 2 {
+        let nl0 = if native_slot >= 0 {
+          emit_local_get(buf, native_slot)
+          next_local
+        } else {
+          gc_compile_native_array_ref(buf, Array::get(args, 0), local_names, next_local, ctx, ld, ce)
+        }
+        let nl = ce(buf, Array::get(args, 1), local_names, nl0, ld)
+        emit_i32_wrap_i64(buf)
+        emit_array_get(buf, ctx.gc_native_array_type_idx)
+        return nl
+      } else if native_receiver && fname == "Array::set" && Array::length(args) == 3 {
+        let nl0 = if native_slot >= 0 {
+          emit_local_get(buf, native_slot)
+          next_local
+        } else {
+          gc_compile_native_array_ref(buf, Array::get(args, 0), local_names, next_local, ctx, ld, ce)
+        }
+        let nl1 = ce(buf, Array::get(args, 1), local_names, nl0, ld)
+        emit_i32_wrap_i64(buf)
+        let nl2 = ce(buf, Array::get(args, 2), local_names, nl1, ld)
+        emit_array_set(buf, ctx.gc_native_array_type_idx)
+        emit_i64_const(buf, 0)
+        return nl2
+      } else {
+        ()
+      }
+      if fname == "Stdin::read_via_stream" || fname == "StdinStream::next" || fname == "StdinStream::close" || fname == "StdinStream::read_chunk" {
+        throw("StdinStream is unsupported on gc backend; compile an Async component with the linear or RC backend")
+      } else {
+        ()
+      }
+      let ctor_lookup_idx = ctor_table_index_of(ctx.gc_ctor_table, fname)
+      gc_compile_named_1(buf, callee, args, local_names, next_local, ctx, ld, ce, fname, source_is_bound, ctor_lookup_idx, compile_call_gc, gc_mut_alias_call, gc_compile_native_array_ref)
+    },
+    _ => {
+      let num_args = Array::length(args)
+      let fn_val_local = next_local
+      let slot_local = next_local + 1
+      let env_local = next_local + 2
+      let mut nl = next_local + 3
+      Array::push(local_names, "[gc-temp]__fn_val")
+      Array::push(local_names, "[gc-temp]__slot")
+      Array::push(local_names, "[gc-temp]__env")
+      nl = ce(buf, callee, local_names, nl, ld)
+      emit_local_set(buf, fn_val_local)
+      emit_closure_resolve(buf, fn_val_local, slot_local, env_local)
+      let mut ci = 0
+      while ci < num_args {
+        nl = ce(buf, Array::get(args, ci), local_names, nl, ld)
+        ci = ci + 1
+      }
+      emit_closure_call_tail(buf, env_local, slot_local, ctx.closure_type_base, num_args)
+      nl
+    }
+  }
+}
+
+//# Misc
+
+// Ordered named-call dispatch group.
+fn gc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, ce: (Bytes, Expr, Array[String], Int, Int) -> Int with Exception, fname: String, source_is_bound: Bool, ctor_lookup_idx: Int, compile_call_gc_fn: (Bytes, Expr, Array[Expr], Array[String], Int, CompileCtxGc, Int, (Bytes, Expr, Array[String], Int, Int) -> Int with Exception) -> Int with Exception, gc_mut_alias_call_fn: (Bytes, String, Array[Expr], Array[String], Int, CompileCtxGc, Int, (Bytes, Expr, Array[String], Int, Int) -> Int with Exception) -> Int with Exception, gc_compile_native_array_ref_fn: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int, (Bytes, Expr, Array[String], Int, Int) -> Int with Exception) -> Int with Exception) -> Int with Exception {
+  if ctor_lookup_idx >= 0 {
+    let tag = Array::get(ctx.gc_ctor_table.tags, ctor_lookup_idx)
+    let fc = Array::get(ctx.gc_ctor_table.field_counts, ctor_lookup_idx)
+    let obj_size = 8 + fc * 8
+    let ptr_local = next_local
+    Array::push(local_names, "[gc-temp]__ctor_ptr")
+    emit_global_get(buf, 0)
+    emit_i64_extend_i32_u(buf)
+    emit_local_set(buf, ptr_local)
+    emit_global_get(buf, 0)
+    emit_i32_const(buf, obj_size)
+    emit_i32_add(buf)
+    emit_global_set(buf, 0)
+    // #415: gc-lane heap bump must grow linear memory like the linear
+    // backend does -- without this any allocation past the initial page
+    // traps OOB (the gc smoke fixture only ever allocated a few bytes).
+    emit_heap_memory_grow_check(buf)
+    emit_local_get(buf, ptr_local)
+    emit_i32_wrap_i64(buf)
+    emit_i32_const(buf, tag)
+    emit_i32_store(buf, 2, 0)
+    emit_local_get(buf, ptr_local)
+    emit_i32_wrap_i64(buf)
+    emit_i32_const(buf, fc)
+    emit_i32_store(buf, 2, 4)
+    let actual_args = if Array::length(args) == 1 {
+      match Array::get(args, 0) {
+        ERecord(_, rec_fields, _) => {
+          let rec find_sn: (Int) -> Int = (sni) -> {
+            if sni >= Array::length(ctx.gc_ctor_table.struct_names) {
+              -1
+            }
+            else if Array::get(ctx.gc_ctor_table.struct_names, sni) == fname {
+              sni
+            }
+            else find_sn(sni + 1)
+          }
+          let sn_idx = find_sn(0)
+          if sn_idx >= 0 {
+            let def_fnames = Array::get(ctx.gc_ctor_table.struct_field_names, sn_idx)
+            let ordered = array_empty()
+            let mut oi = 0
+            while oi < Array::length(def_fnames) {
+              let target_name = Array::get(def_fnames, oi)
+              let rec find_rf: (Int) -> Expr = (ri) -> {
+                if ri >= Array::length(rec_fields) {
+                  EUnit
+                }
+                else {
+                  let (rfn, rfv) = Array::get(rec_fields, ri)
+                  if rfn == target_name {
+                    rfv
+                  }
+                  else find_rf(ri + 1)
+                }
+              }
+              Array::push(ordered, find_rf(0))
+              oi = oi + 1
+            }
+            ordered
+          } else {
+            args
+          }
+        },
+        _ => args
+      }
+    } else {
+      args
+    }
+    let mut nl_c = next_local + 1
+    let mut fi_c = 0
+    while fi_c < Array::length(actual_args) {
+      nl_c = ce(buf, Array::get(actual_args, fi_c), local_names, nl_c, ld)
+      let val_local = nl_c
+      Array::push(local_names, "[gc-temp]__ctor_val")
+      emit_local_set(buf, val_local)
+      nl_c = nl_c + 1
+      emit_local_get(buf, ptr_local)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, val_local)
+      emit_i64_store(buf, 3, 8 + fi_c * 8)
+      fi_c = fi_c + 1
+    }
+    emit_local_get(buf, ptr_local)
+    emit_i64_const(buf, 1)
+    emit_i64_or(buf)
+    nl_c
+  }
+  else if fname == "__slice" {
+    let (ss_idx, _, _) = resolve_func(ctx.func_table, "String::substring")
+    let (bs_idx, _, _) = resolve_func(ctx.func_table, "Bytes::slice")
+    let (as_idx, _, _) = resolve_func(ctx.func_table, "Array::slice")
+    let obj_local = next_local
+    let start_local = next_local + 1
+    let end_local = next_local + 2
+    let ptr_local = next_local + 3
+    let cap_local = next_local + 4
+    Array::push(local_names, "[gc-temp]__slice_obj")
+    Array::push(local_names, "[gc-temp]__slice_start")
+    Array::push(local_names, "[gc-temp]__slice_end")
+    Array::push(local_names, "[gc-temp]__slice_ptr")
+    Array::push(local_names, "[gc-temp]__slice_cap")
+    let mut nl = next_local + 5
+    nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
+    emit_local_set(buf, obj_local)
+    nl = ce(buf, Array::get(args, 1), local_names, nl, ld)
+    emit_local_set(buf, start_local)
+    nl = ce(buf, Array::get(args, 2), local_names, nl, ld)
+    emit_local_set(buf, end_local)
+    emit_local_get(buf, obj_local)
+    emit_i64_const(buf, 32)
+    emit_i64_shr_s(buf)
+    emit_i64_eqz(buf)
+    emit_if_i64(buf)
+    emit_local_get(buf, obj_local)
+    emit_local_set(buf, ptr_local)
+    emit_local_get(buf, ptr_local)
+    emit_i32_wrap_i64(buf)
+    emit_i32_load(buf, 2, 0)
+    emit_i64_extend_i32_u(buf)
+    emit_local_set(buf, cap_local)
+    emit_local_get(buf, cap_local)
+    emit_i32_wrap_i64(buf)
+    emit_i32_const(buf, 2147483647)
+    emit_i32_gt_u(buf)
+    emit_if_i64(buf)
+    emit_local_get(buf, obj_local)
+    emit_local_get(buf, start_local)
+    emit_local_get(buf, end_local)
+    emit_call_resolved(buf, ctx, bs_idx)
+    emit_else(buf)
+    emit_local_get(buf, obj_local)
+    emit_local_get(buf, start_local)
+    emit_local_get(buf, end_local)
+    emit_call_resolved(buf, ctx, as_idx)
+    emit_end(buf)
+    emit_else(buf)
+    emit_local_get(buf, obj_local)
+    emit_local_get(buf, start_local)
+    emit_local_get(buf, end_local)
+    emit_call_resolved(buf, ctx, ss_idx)
+    emit_end(buf)
+    nl
+  }
+  else if fname == "__index" {
+    let (sg_idx, _, _) = resolve_func(ctx.func_table, "String::char_code_at")
+    let (bg_idx, _, _) = resolve_func(ctx.func_table, "Bytes::get")
+    let (ag_idx, _, _) = resolve_func(ctx.func_table, "Array::get")
+    let obj_local = next_local
+    let idx_local = next_local + 1
+    let ptr_local = next_local + 2
+    let cap_local = next_local + 3
+    Array::push(local_names, "[gc-temp]__index_obj")
+    Array::push(local_names, "[gc-temp]__index_idx")
+    Array::push(local_names, "[gc-temp]__index_ptr")
+    Array::push(local_names, "[gc-temp]__index_cap")
+    let mut nl = next_local + 4
+    nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
+    emit_local_set(buf, obj_local)
+    nl = ce(buf, Array::get(args, 1), local_names, nl, ld)
+    emit_local_set(buf, idx_local)
+    emit_local_get(buf, obj_local)
+    emit_i64_const(buf, 32)
+    emit_i64_shr_s(buf)
+    emit_i64_eqz(buf)
+    emit_if_i64(buf)
+    emit_local_get(buf, obj_local)
+    emit_local_set(buf, ptr_local)
+    emit_local_get(buf, ptr_local)
+    emit_i32_wrap_i64(buf)
+    emit_i32_load(buf, 2, 0)
+    emit_i64_extend_i32_u(buf)
+    emit_local_set(buf, cap_local)
+    emit_local_get(buf, cap_local)
+    emit_i32_wrap_i64(buf)
+    emit_i32_const(buf, 2147483647)
+    emit_i32_gt_u(buf)
+    emit_if_i64(buf)
+    emit_local_get(buf, obj_local)
+    emit_local_get(buf, idx_local)
+    emit_call_resolved(buf, ctx, bg_idx)
+    emit_else(buf)
+    emit_local_get(buf, obj_local)
+    emit_local_get(buf, idx_local)
+    emit_call_resolved(buf, ctx, ag_idx)
+    emit_end(buf)
+    emit_else(buf)
+    emit_local_get(buf, obj_local)
+    emit_local_get(buf, idx_local)
+    emit_call_resolved(buf, ctx, sg_idx)
+    emit_end(buf)
+    nl
+  }
+  else if fname == "__set_field" {
+    let field = get_estring_value(Array::get(args, 1))
+    let fc = String::char_code_at(field, 0)
+    let is_numeric = fc >= 48 && fc <= 57
+    if is_numeric {
+      let mut vi = 0
+      let mut vp = 0
+      while vp < String::length(field) {
+        vi = vi * 10 + (String::char_code_at(field, vp) - 48)
+        vp = vp + 1
+      }
+      let mut nl = next_local
+      nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
+      emit_i64_const(buf, -2)
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+      nl = ce(buf, Array::get(args, 2), local_names, nl, ld)
+      emit_i64_store(buf, 3, vi * 8)
+      emit_i64_const(buf, 1)
+      nl
+    } else {
+      // #1702 writes: a native wasm-gc struct local. Its exact struct was
+      // fixed at the binding site, so the field index is static -- and the
+      // tag dispatch below is impossible here anyway, because a native
+      // struct carries no ctor tag.
+      let ns_slot = match Array::get(args, 0) {
+        EIdent(ns_obj, _) => find_local_slot(local_names, ns_obj),
+        _ => 0 - 1
+      }
+      let ns_struct_idx = gc_slot_map_get(ctx.gc_native_struct_scope, ns_slot)
+      if ns_struct_idx >= 0 {
+        let ns_declared = Array::get(ctx.gc_ctor_table.struct_field_names, ns_struct_idx)
+        let ns_field_refs = Array::get(ctx.gc_ctor_table.struct_field_is_ref, ns_struct_idx)
+        let mut ns_fidx = 0 - 1
+        let mut ns_i = 0
+        while ns_i < Array::length(ns_declared) {
+          if ns_fidx < 0 && Array::get(ns_declared, ns_i) == field {
+            ns_fidx = ns_i
+          } else {
+            ()
+          }
+          ns_i = ns_i + 1
+        }
+        if ns_fidx < 0 {
+          throw("gc native struct: stored field is not declared on the bound struct")
+        } else {
+          ()
+        }
+        emit_local_get(buf, ns_slot)
+        let ns_nl = if Array::get(ns_field_refs, ns_fidx) {
+          gc_compile_native_array_ref_fn(buf, Array::get(args, 2), local_names, next_local, ctx, ld, ce)
+        } else {
+          ce(buf, Array::get(args, 2), local_names, next_local, ld)
+        }
+        emit_struct_set(buf, ctx.gc_native_struct_type_base + ns_struct_idx, ns_fidx)
+        emit_i64_const(buf, 1)
+        return ns_nl
+      } else {
+        ()
+      }
+      // #722: same struct-tag dispatch as the linear __set_field — a
+      // same-named `mut` field can live at a different slot in another
+      // struct, and the static first-match store would corrupt it.
+      let cands = struct_field_candidates(ctx.gc_ctor_table, field)
+      if Array::length(cands) == 0 {
+        throw(String::concat("unknown struct field: ", field))
+      }
+      let (_, idx0) = Array::get(cands, 0)
+      let dispatch = struct_field_dispatch_cases(cands)
+      if Array::length(dispatch) == 0 {
+        let mut nl = next_local
+        nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
+        emit_i64_const(buf, -2)
+        emit_i64_and(buf)
+        emit_i32_wrap_i64(buf)
+        nl = ce(buf, Array::get(args, 2), local_names, nl, ld)
+        emit_i64_store(buf, 3, 8 + idx0 * 8)
+        emit_i64_const(buf, 1)
+        nl
+      } else {
+        let mut nl = next_local
+        nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
+        emit_i64_const(buf, -2)
+        emit_i64_and(buf)
+        let obj_l = nl
+        Array::push(local_names, "[gc-temp]__setf_obj")
+        emit_local_set(buf, obj_l)
+        nl = ce(buf, Array::get(args, 2), local_names, nl + 1, ld)
+        let val_l = nl
+        Array::push(local_names, "[gc-temp]__setf_val")
+        emit_local_set(buf, val_l)
+        let mut di = 0
+        while di < Array::length(dispatch) {
+          let (dtag, didx) = Array::get(dispatch, di)
+          emit_local_get(buf, obj_l)
+          emit_i32_wrap_i64(buf)
+          emit_i32_load(buf, 2, 0)
+          emit_i32_const(buf, dtag)
+          emit_i32_eq(buf)
+          emit_if_void(buf)
+          emit_local_get(buf, obj_l)
+          emit_i32_wrap_i64(buf)
+          emit_local_get(buf, val_l)
+          emit_i64_store(buf, 3, 8 + didx * 8)
+          emit_else(buf)
+          di = di + 1
+        }
+        emit_local_get(buf, obj_l)
+        emit_i32_wrap_i64(buf)
+        emit_local_get(buf, val_l)
+        emit_i64_store(buf, 3, 8 + idx0 * 8)
+        let mut de = 0
+        while de < Array::length(dispatch) {
+          emit_end(buf)
+          de = de + 1
+        }
+        emit_i64_const(buf, 1)
+        nl + 1
+      }
+    }
+  }
+  else if fname == "__rec_field" {
+    // #760(4): positional record field read `__rec_field(rec, i)` — emitted
+    // by the record-pattern destructure (parser) and the anonymous-record
+    // dot-access lowering (desugar_trait_dict). gc records are
+    // [tag@0][len@4][fields@8+i*8], the same shape as the linear backend, so
+    // the field load is `8 + i*8` after untagging the pointer. Mirrors the
+    // linear __rec_field in compile_call.vibe.
+    let field_idx = match Array::get(args, 1) {
+      EInt(n) => n,
+      _ => throw("__rec_field: index must be an int literal")
+    }
+    let nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
+    emit_i64_const(buf, -2)
+    emit_i64_and(buf)
+    emit_i32_wrap_i64(buf)
+    emit_i64_load(buf, 3, 8 + field_idx * 8)
+    nl
+  }
+  else if fname == "__len" {
+    let (sl_idx, _, _) = resolve_func(ctx.func_table, "String::length")
+    let (bl_idx, _, _) = resolve_func(ctx.func_table, "Bytes::length")
+    let (al_idx, _, _) = resolve_func(ctx.func_table, "Array::length")
+    let obj_local = next_local
+    let ptr_local = next_local + 1
+    let cap_local = next_local + 2
+    Array::push(local_names, "[gc-temp]__len_obj")
+    Array::push(local_names, "[gc-temp]__len_ptr")
+    Array::push(local_names, "[gc-temp]__len_cap")
+    let mut nl = next_local + 3
+    nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
+    emit_local_set(buf, obj_local)
+    emit_local_get(buf, obj_local)
+    emit_i64_const(buf, 32)
+    emit_i64_shr_s(buf)
+    emit_i64_eqz(buf)
+    emit_if_i64(buf)
+    emit_local_get(buf, obj_local)
+    emit_local_set(buf, ptr_local)
+    emit_local_get(buf, ptr_local)
+    emit_i32_wrap_i64(buf)
+    emit_i32_load(buf, 2, 0)
+    emit_i64_extend_i32_u(buf)
+    emit_local_set(buf, cap_local)
+    emit_local_get(buf, cap_local)
+    emit_i32_wrap_i64(buf)
+    emit_i32_const(buf, 2147483647)
+    emit_i32_gt_u(buf)
+    emit_if_i64(buf)
+    emit_local_get(buf, obj_local)
+    emit_call_resolved(buf, ctx, bl_idx)
+    emit_else(buf)
+    emit_local_get(buf, obj_local)
+    emit_call_resolved(buf, ctx, al_idx)
+    emit_end(buf)
+    emit_else(buf)
+    emit_local_get(buf, obj_local)
+    emit_call_resolved(buf, ctx, sl_idx)
+    emit_end(buf)
+    nl
+  }
+  else if fname == "Float::to_int" && Array::length(args) == 1 {
+    ce(buf, ECall(EIdent("Double::to_int", -1), [Array::get(args, 0)], -1), local_names, next_local, ld)
+  }
+  else if fname == "Map::values" {
+    let (arr_new_fi, _, _) = resolve_func(ctx.func_table, "array_new")
+    let (arr_push_fi, _, _) = resolve_func(ctx.func_table, "Array::push")
+    let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
+    let map_l = nl
+    let res_l = nl + 1
+    let cnt_l = nl + 2
+    let i_l = nl + 3
+    Array::push(local_names, "[gc-temp]__values_map")
+    Array::push(local_names, "[gc-temp]__values_res")
+    Array::push(local_names, "[gc-temp]__values_cnt")
+    Array::push(local_names, "[gc-temp]__values_i")
+    emit_local_set(buf, map_l)
+    emit_call_resolved(buf, ctx, arr_new_fi)
+    emit_local_set(buf, res_l)
+    emit_local_get(buf, map_l)
+    emit_i32_wrap_i64(buf)
+    emit_i32_load(buf, 2, 0)
+    emit_i64_extend_i32_u(buf)
+    emit_local_set(buf, cnt_l)
+    emit_i64_const(buf, 0)
+    emit_local_set(buf, i_l)
+    emit_block_void(buf)
+    emit_loop_void(buf)
+    emit_local_get(buf, i_l)
+    emit_local_get(buf, cnt_l)
+    emit_i64_ge_s(buf)
+    emit_br_if(buf, 1)
+    emit_local_get(buf, res_l)
+    emit_local_get(buf, map_l)
+    emit_i32_wrap_i64(buf)
+    emit_local_get(buf, i_l)
+    emit_i32_wrap_i64(buf)
+    emit_i32_const(buf, 16)
+    emit_i32_mul(buf)
+    emit_i32_add(buf)
+    emit_i64_load(buf, 3, 16)
+    emit_call_resolved(buf, ctx, arr_push_fi)
+    emit_local_get(buf, i_l)
+    emit_i64_const(buf, 1)
+    emit_i64_add(buf)
+    emit_local_set(buf, i_l)
+    emit_br(buf, 0)
+    emit_end(buf)
+    emit_end(buf)
+    emit_local_get(buf, res_l)
+    nl + 4
+  }
+  else if !source_is_bound && fname == "Path::to_string" && Array::length(args) == 1 {
+    // #762: PathRef / DynamicPath wrap a raw String; to_string is identity.
+    ce(buf, Array::get(args, 0), local_names, next_local, ld)
+  }
+  else if !source_is_bound && fname == "Path::is_absolute" && Array::length(args) == 1 {
+    // #762: absolute iff the path begins with '/'. `eq(char_code_at(x, 0),
+    // 47)` avoids synthesizing a "/" string, which would not be in the
+    // string table.
+    ce(buf, ECall(EIdent("eq", -1), [
+      ECall(EIdent("String::char_code_at", -1), [Array::get(args, 0), EInt(0)], -1),
+      EInt(47)
+    ], -1), local_names, next_local, ld)
+  }
+  else if !source_is_bound && fname == "String::to_bytes" {
+    let (an_idx, _, _) = resolve_func(ctx.func_table, "array_new")
+    let (ap_idx, _, _) = resolve_func(ctx.func_table, "Array::push")
+    let (sl_idx, _, _) = resolve_func(ctx.func_table, "String::length")
+    let (sc_idx, _, _) = resolve_func(ctx.func_table, "String::char_code_at")
+    let str_local = next_local
+    let res_local = next_local + 1
+    let len_local = next_local + 2
+    let i_local = next_local + 3
+    Array::push(local_names, "[gc-temp]__tb_str")
+    Array::push(local_names, "[gc-temp]__tb_res")
+    Array::push(local_names, "[gc-temp]__tb_len")
+    Array::push(local_names, "[gc-temp]__tb_idx")
+    let mut nl = next_local + 4
+    nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
+    emit_local_set(buf, str_local)
+    emit_call_resolved(buf, ctx, an_idx)
+    emit_local_set(buf, res_local)
+    emit_local_get(buf, str_local)
+    emit_call_resolved(buf, ctx, sl_idx)
+    emit_local_set(buf, len_local)
+    emit_i64_const(buf, 0)
+    emit_local_set(buf, i_local)
+    emit_block_void(buf)
+    emit_loop_void(buf)
+    emit_local_get(buf, i_local)
+    emit_local_get(buf, len_local)
+    emit_i64_ge_s(buf)
+    emit_br_if(buf, 1)
+    emit_local_get(buf, res_local)
+    emit_local_get(buf, str_local)
+    emit_local_get(buf, i_local)
+    emit_call_resolved(buf, ctx, sc_idx)
+    emit_call_resolved(buf, ctx, ap_idx)
+    emit_local_get(buf, i_local)
+    emit_i64_const(buf, 1)
+    emit_i64_add(buf)
+    emit_local_set(buf, i_local)
+    emit_br(buf, 0)
+    emit_end(buf)
+    emit_end(buf)
+    emit_local_get(buf, res_local)
+    nl
+  }
+  else if fname == "Double::abs" || fname == "Double::floor" || fname == "Double::ceil" {
+    let nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
+    emit_f64_reinterpret_i64(buf)
+    if fname == "Double::abs" {
+      emit_f64_abs(buf)
+    } else if fname == "Double::floor" {
+      emit_f64_floor(buf)
+    } else {
+      emit_f64_ceil(buf)
+    }
+    emit_i64_reinterpret_f64(buf)
+    nl
+  }
+  else if fname == "Double::max" || fname == "Double::min" {
+    let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
+    emit_f64_reinterpret_i64(buf)
+    nl = ce(buf, Array::get(args, 1), local_names, nl, ld)
+    emit_f64_reinterpret_i64(buf)
+    if fname == "Double::max" {
+      emit_f64_max(buf)
+    } else {
+      emit_f64_min(buf)
+    }
+    emit_i64_reinterpret_f64(buf)
+    nl
+  }
+  else if fname == "Double::parse" && !gc_name_is_user_defined(ctx, local_names, fname) {
+    double_runtime_require(ctx.func_table, double_runtime_parse_name())
+    ce(buf, double_parse_expr(Array::get(args, 0)), local_names, next_local, ld)
+  }
+  else if (fname == "Double::to_string" || fname == "Float::to_string") && !gc_name_is_user_defined(ctx, local_names, fname) {
+    double_runtime_require(ctx.func_table, double_runtime_to_string_name())
+    ce(buf, double_to_string_expr(Array::get(args, 0)), local_names, next_local, ld)
+  }
+  else if fname == "String::unicode_length" && Array::length(args) == 1 && !gc_name_is_user_defined(ctx, local_names, fname) {
+    // #2630 (gc mirror of the linear arm): the code-point view of a byte
+    // string -- one call into the String length-view runtime prelude
+    // (string_views_runtime.vibe), the lowering both lanes share
+    // (string_length_exprs.vibe). Guarded like the other builtin arms: a
+    // program's own `fn String::unicode_length` is that program's
+    // function, not this one (Codex review on #2708).
+    string_views_runtime_require(ctx.func_table, string_views_runtime_unicode_name())
+    ce(buf, string_unicode_length_expr(Array::get(args, 0)), local_names, next_local, ld)
+  }
+  else if fname == "String::utf16_length" && Array::length(args) == 1 && !gc_name_is_user_defined(ctx, local_names, fname) {
+    string_views_runtime_require(ctx.func_table, string_views_runtime_utf16_name())
+    ce(buf, string_utf16_length_expr(Array::get(args, 0)), local_names, next_local, ld)
+  }
+  else if fname == "String::utf8_length" && Array::length(args) == 1 && !gc_name_is_user_defined(ctx, local_names, fname) {
+    // #2630: a String IS its UTF-8 bytes (ADR-0098), so the UTF-8 length
+    // is the byte length.
+    ce(buf, ECall(EIdent("String::length", -1), [Array::get(args, 0)], -1), local_names, next_local, ld)
+  }
+  else if fname == "Int::parse" {
+    ce(buf, int_parse_expr(Array::get(args, 0)), local_names, next_local, ld)
+  }
+  else if fname == "Map::size" {
+    let nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
+    let map_local = nl
+    Array::push(local_names, "[gc-temp]__size_map")
+    emit_local_set(buf, map_local)
+    emit_local_get(buf, map_local)
+    emit_i64_const(buf, -2)
+    emit_i64_and(buf)
+    emit_local_set(buf, map_local)
+    emit_local_get(buf, map_local)
+    emit_i32_wrap_i64(buf)
+    emit_i32_load(buf, 2, 0)
+    emit_i64_extend_i32_u(buf)
+    nl + 1
+  }
+  else if fname == "Array::map" {
+    let (an_idx, _, _) = resolve_func(ctx.func_table, "array_new")
+    let (al_idx, _, _) = resolve_func(ctx.func_table, "Array::length")
+    let (ag_idx, _, _) = resolve_func(ctx.func_table, "Array::get")
+    let (ap_idx, _, _) = resolve_func(ctx.func_table, "Array::push")
+    let arr_local = next_local
+    let fn_local = next_local + 1
+    let res_local = next_local + 2
+    let len_local = next_local + 3
+    let i_local = next_local + 4
+    let slot_local = next_local + 5
+    let env_local = next_local + 6
+    let elem_local = next_local + 7
+    Array::push(local_names, "[gc-temp]__map_arr")
+    Array::push(local_names, "[gc-temp]__map_fn")
+    Array::push(local_names, "[gc-temp]__map_res")
+    Array::push(local_names, "[gc-temp]__map_len")
+    Array::push(local_names, "[gc-temp]__map_i")
+    Array::push(local_names, "[gc-temp]__map_slot")
+    Array::push(local_names, "[gc-temp]__map_env")
+    Array::push(local_names, "[gc-temp]__map_elem")
+    let mut nl = next_local + 8
+    nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
+    emit_local_set(buf, arr_local)
+    nl = ce(buf, Array::get(args, 1), local_names, nl, ld)
+    emit_local_set(buf, fn_local)
+    emit_call_resolved(buf, ctx, an_idx)
+    emit_local_set(buf, res_local)
+    emit_local_get(buf, arr_local)
+    emit_call_resolved(buf, ctx, al_idx)
+    emit_local_set(buf, len_local)
+    emit_i64_const(buf, 0)
+    emit_local_set(buf, i_local)
+    emit_closure_resolve(buf, fn_local, slot_local, env_local)
+    emit_block_void(buf)
+    emit_loop_void(buf)
+    emit_local_get(buf, i_local)
+    emit_local_get(buf, len_local)
+    emit_i64_ge_s(buf)
+    emit_br_if(buf, 1)
+    emit_local_get(buf, arr_local)
+    emit_local_get(buf, i_local)
+    emit_call_resolved(buf, ctx, ag_idx)
+    emit_local_set(buf, elem_local)
+    emit_local_get(buf, elem_local)
+    emit_closure_call_tail(buf, env_local, slot_local, ctx.closure_type_base, 1)
+    emit_local_set(buf, elem_local)
+    emit_local_get(buf, res_local)
+    emit_local_get(buf, elem_local)
+    emit_call_resolved(buf, ctx, ap_idx)
+    emit_local_get(buf, i_local)
+    emit_i64_const(buf, 1)
+    emit_i64_add(buf)
+    emit_local_set(buf, i_local)
+    emit_br(buf, 0)
+    emit_end(buf)
+    emit_end(buf)
+    emit_local_get(buf, res_local)
+    nl
+  }
+  else if fname == "Array::filter" {
+    let (an_idx, _, _) = resolve_func(ctx.func_table, "array_new")
+    let (al_idx, _, _) = resolve_func(ctx.func_table, "Array::length")
+    let (ag_idx, _, _) = resolve_func(ctx.func_table, "Array::get")
+    let (ap_idx, _, _) = resolve_func(ctx.func_table, "Array::push")
+    let arr_local = next_local
+    let fn_local = next_local + 1
+    let res_local = next_local + 2
+    let len_local = next_local + 3
+    let i_local = next_local + 4
+    let slot_local = next_local + 5
+    let env_local = next_local + 6
+    let elem_local = next_local + 7
+    Array::push(local_names, "[gc-temp]__filter_arr")
+    Array::push(local_names, "[gc-temp]__filter_fn")
+    Array::push(local_names, "[gc-temp]__filter_res")
+    Array::push(local_names, "[gc-temp]__filter_len")
+    Array::push(local_names, "[gc-temp]__filter_i")
+    Array::push(local_names, "[gc-temp]__filter_slot")
+    Array::push(local_names, "[gc-temp]__filter_env")
+    Array::push(local_names, "[gc-temp]__filter_elem")
+    let mut nl = next_local + 8
+    nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
+    emit_local_set(buf, arr_local)
+    nl = ce(buf, Array::get(args, 1), local_names, nl, ld)
+    emit_local_set(buf, fn_local)
+    emit_call_resolved(buf, ctx, an_idx)
+    emit_local_set(buf, res_local)
+    emit_local_get(buf, arr_local)
+    emit_call_resolved(buf, ctx, al_idx)
+    emit_local_set(buf, len_local)
+    emit_i64_const(buf, 0)
+    emit_local_set(buf, i_local)
+    emit_closure_resolve(buf, fn_local, slot_local, env_local)
+    emit_block_void(buf)
+    emit_loop_void(buf)
+    emit_local_get(buf, i_local)
+    emit_local_get(buf, len_local)
+    emit_i64_ge_s(buf)
+    emit_br_if(buf, 1)
+    emit_local_get(buf, arr_local)
+    emit_local_get(buf, i_local)
+    emit_call_resolved(buf, ctx, ag_idx)
+    emit_local_set(buf, elem_local)
+    emit_local_get(buf, elem_local)
+    emit_closure_call_tail(buf, env_local, slot_local, ctx.closure_type_base, 1)
+    emit_i32_wrap_i64(buf)
+    emit_if_void(buf)
+    emit_local_get(buf, res_local)
+    emit_local_get(buf, elem_local)
+    emit_call_resolved(buf, ctx, ap_idx)
+    emit_end(buf)
+    emit_local_get(buf, i_local)
+    emit_i64_const(buf, 1)
+    emit_i64_add(buf)
+    emit_local_set(buf, i_local)
+    emit_br(buf, 0)
+    emit_end(buf)
+    emit_end(buf)
+    emit_local_get(buf, res_local)
+    nl
+  }
+  else if fname == "Array::fold" {
+    let (al_idx, _, _) = resolve_func(ctx.func_table, "Array::length")
+    let (ag_idx, _, _) = resolve_func(ctx.func_table, "Array::get")
+    let arr_local = next_local
+    let acc_local = next_local + 1
+    let fn_local = next_local + 2
+    let len_local = next_local + 3
+    let i_local = next_local + 4
+    let slot_local = next_local + 5
+    let env_local = next_local + 6
+    Array::push(local_names, "[gc-temp]__fold_arr")
+    Array::push(local_names, "[gc-temp]__fold_acc")
+    Array::push(local_names, "[gc-temp]__fold_fn")
+    Array::push(local_names, "[gc-temp]__fold_len")
+    Array::push(local_names, "[gc-temp]__fold_i")
+    Array::push(local_names, "[gc-temp]__fold_slot")
+    Array::push(local_names, "[gc-temp]__fold_env")
+    let mut nl = next_local + 7
+    nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
+    emit_local_set(buf, arr_local)
+    nl = ce(buf, Array::get(args, 1), local_names, nl, ld)
+    emit_local_set(buf, acc_local)
+    nl = ce(buf, Array::get(args, 2), local_names, nl, ld)
+    emit_local_set(buf, fn_local)
+    emit_local_get(buf, arr_local)
+    emit_call_resolved(buf, ctx, al_idx)
+    emit_local_set(buf, len_local)
+    emit_i64_const(buf, 0)
+    emit_local_set(buf, i_local)
+    emit_closure_resolve(buf, fn_local, slot_local, env_local)
+    emit_block_void(buf)
+    emit_loop_void(buf)
+    emit_local_get(buf, i_local)
+    emit_local_get(buf, len_local)
+    emit_i64_ge_s(buf)
+    emit_br_if(buf, 1)
+    emit_local_get(buf, acc_local)
+    emit_local_get(buf, arr_local)
+    emit_local_get(buf, i_local)
+    emit_call_resolved(buf, ctx, ag_idx)
+    emit_closure_call_tail(buf, env_local, slot_local, ctx.closure_type_base, 2)
+    emit_local_set(buf, acc_local)
+    emit_local_get(buf, i_local)
+    emit_i64_const(buf, 1)
+    emit_i64_add(buf)
+    emit_local_set(buf, i_local)
+    emit_br(buf, 0)
+    emit_end(buf)
+    emit_end(buf)
+    emit_local_get(buf, acc_local)
+    nl
+  }
+  else if !source_is_bound && fname == "Array::iter_eager" {
+    let (al_idx, _, _) = resolve_func(ctx.func_table, "Array::length")
+    let (ag_idx, _, _) = resolve_func(ctx.func_table, "Array::get")
+    let arr_local = next_local
+    let fn_local = next_local + 1
+    let len_local = next_local + 2
+    let i_local = next_local + 3
+    let slot_local = next_local + 4
+    let env_local = next_local + 5
+    Array::push(local_names, "[gc-temp]__iter_arr")
+    Array::push(local_names, "[gc-temp]__iter_fn")
+    Array::push(local_names, "[gc-temp]__iter_len")
+    Array::push(local_names, "[gc-temp]__iter_i")
+    Array::push(local_names, "[gc-temp]__iter_slot")
+    Array::push(local_names, "[gc-temp]__iter_env")
+    let mut nl = next_local + 6
+    nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
+    emit_local_set(buf, arr_local)
+    nl = ce(buf, Array::get(args, 1), local_names, nl, ld)
+    emit_local_set(buf, fn_local)
+    emit_local_get(buf, arr_local)
+    emit_call_resolved(buf, ctx, al_idx)
+    emit_local_set(buf, len_local)
+    emit_i64_const(buf, 0)
+    emit_local_set(buf, i_local)
+    emit_closure_resolve(buf, fn_local, slot_local, env_local)
+    emit_block_void(buf)
+    emit_loop_void(buf)
+    emit_local_get(buf, i_local)
+    emit_local_get(buf, len_local)
+    emit_i64_ge_s(buf)
+    emit_br_if(buf, 1)
+    emit_local_get(buf, arr_local)
+    emit_local_get(buf, i_local)
+    emit_call_resolved(buf, ctx, ag_idx)
+    emit_closure_call_tail(buf, env_local, slot_local, ctx.closure_type_base, 1)
+    emit_drop(buf)
+    emit_local_get(buf, i_local)
+    emit_i64_const(buf, 1)
+    emit_i64_add(buf)
+    emit_local_set(buf, i_local)
+    emit_br(buf, 0)
+    emit_end(buf)
+    emit_end(buf)
+    emit_local_get(buf, i_local)
+    nl
+  }
+  else if fname == "Array::reverse" {
+    let (an_idx, _, _) = resolve_func(ctx.func_table, "array_new")
+    let (al_idx, _, _) = resolve_func(ctx.func_table, "Array::length")
+    let (ag_idx, _, _) = resolve_func(ctx.func_table, "Array::get")
+    let (ap_idx, _, _) = resolve_func(ctx.func_table, "Array::push")
+    let arr_local = next_local
+    let res_local = next_local + 1
+    let len_local = next_local + 2
+    let i_local = next_local + 3
+    Array::push(local_names, "[gc-temp]__rev_arr")
+    Array::push(local_names, "[gc-temp]__rev_res")
+    Array::push(local_names, "[gc-temp]__rev_len")
+    Array::push(local_names, "[gc-temp]__rev_i")
+    let mut nl = next_local + 4
+    nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
+    emit_local_set(buf, arr_local)
+    emit_call_resolved(buf, ctx, an_idx)
+    emit_local_set(buf, res_local)
+    emit_local_get(buf, arr_local)
+    emit_call_resolved(buf, ctx, al_idx)
+    emit_local_set(buf, len_local)
+    emit_local_get(buf, len_local)
+    emit_i64_const(buf, 1)
+    emit_i64_sub(buf)
+    emit_local_set(buf, i_local)
+    emit_block_void(buf)
+    emit_loop_void(buf)
+    emit_local_get(buf, i_local)
+    emit_i64_const(buf, 0)
+    emit_i64_lt_s(buf)
+    emit_br_if(buf, 1)
+    emit_local_get(buf, res_local)
+    emit_local_get(buf, arr_local)
+    emit_local_get(buf, i_local)
+    emit_call_resolved(buf, ctx, ag_idx)
+    emit_call_resolved(buf, ctx, ap_idx)
+    emit_local_get(buf, i_local)
+    emit_i64_const(buf, 1)
+    emit_i64_sub(buf)
+    emit_local_set(buf, i_local)
+    emit_br(buf, 0)
+    emit_end(buf)
+    emit_end(buf)
+    emit_local_get(buf, res_local)
+    nl
+  }
+  else if fname == "Array::any" {
+    let (al_idx, _, _) = resolve_func(ctx.func_table, "Array::length")
+    let (ag_idx, _, _) = resolve_func(ctx.func_table, "Array::get")
+    let arr_local = next_local
+    let fn_local = next_local + 1
+    let len_local = next_local + 2
+    let i_local = next_local + 3
+    let slot_local = next_local + 4
+    let env_local = next_local + 5
+    let res_local = next_local + 6
+    Array::push(local_names, "[gc-temp]__any_arr")
+    Array::push(local_names, "[gc-temp]__any_fn")
+    Array::push(local_names, "[gc-temp]__any_len")
+    Array::push(local_names, "[gc-temp]__any_i")
+    Array::push(local_names, "[gc-temp]__any_slot")
+    Array::push(local_names, "[gc-temp]__any_env")
+    Array::push(local_names, "[gc-temp]__any_res")
+    let mut nl = next_local + 7
+    nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
+    emit_local_set(buf, arr_local)
+    nl = ce(buf, Array::get(args, 1), local_names, nl, ld)
+    emit_local_set(buf, fn_local)
+    emit_local_get(buf, arr_local)
+    emit_call_resolved(buf, ctx, al_idx)
+    emit_local_set(buf, len_local)
+    emit_i64_const(buf, 0)
+    emit_local_set(buf, i_local)
+    emit_i64_const(buf, 0)
+    emit_local_set(buf, res_local)
+    emit_closure_resolve(buf, fn_local, slot_local, env_local)
+    emit_block_void(buf)
+    emit_loop_void(buf)
+    emit_local_get(buf, i_local)
+    emit_local_get(buf, len_local)
+    emit_i64_ge_s(buf)
+    emit_br_if(buf, 1)
+    emit_local_get(buf, arr_local)
+    emit_local_get(buf, i_local)
+    emit_call_resolved(buf, ctx, ag_idx)
+    emit_closure_call_tail(buf, env_local, slot_local, ctx.closure_type_base, 1)
+    emit_i32_wrap_i64(buf)
+    emit_if_void(buf)
+    emit_i64_const(buf, 1)
+    emit_local_set(buf, res_local)
+    emit_br(buf, 2)
+    emit_end(buf)
+    emit_local_get(buf, i_local)
+    emit_i64_const(buf, 1)
+    emit_i64_add(buf)
+    emit_local_set(buf, i_local)
+    emit_br(buf, 0)
+    emit_end(buf)
+    emit_end(buf)
+    emit_local_get(buf, res_local)
+    nl
+  }
+  else if fname == "Array::all" {
+    let (al_idx, _, _) = resolve_func(ctx.func_table, "Array::length")
+    let (ag_idx, _, _) = resolve_func(ctx.func_table, "Array::get")
+    let arr_local = next_local
+    let fn_local = next_local + 1
+    let len_local = next_local + 2
+    let i_local = next_local + 3
+    let slot_local = next_local + 4
+    let env_local = next_local + 5
+    let res_local = next_local + 6
+    Array::push(local_names, "[gc-temp]__all_arr")
+    Array::push(local_names, "[gc-temp]__all_fn")
+    Array::push(local_names, "[gc-temp]__all_len")
+    Array::push(local_names, "[gc-temp]__all_i")
+    Array::push(local_names, "[gc-temp]__all_slot")
+    Array::push(local_names, "[gc-temp]__all_env")
+    Array::push(local_names, "[gc-temp]__all_res")
+    let mut nl = next_local + 7
+    nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
+    emit_local_set(buf, arr_local)
+    nl = ce(buf, Array::get(args, 1), local_names, nl, ld)
+    emit_local_set(buf, fn_local)
+    emit_local_get(buf, arr_local)
+    emit_call_resolved(buf, ctx, al_idx)
+    emit_local_set(buf, len_local)
+    emit_i64_const(buf, 0)
+    emit_local_set(buf, i_local)
+    emit_i64_const(buf, 1)
+    emit_local_set(buf, res_local)
+    emit_closure_resolve(buf, fn_local, slot_local, env_local)
+    emit_block_void(buf)
+    emit_loop_void(buf)
+    emit_local_get(buf, i_local)
+    emit_local_get(buf, len_local)
+    emit_i64_ge_s(buf)
+    emit_br_if(buf, 1)
+    emit_local_get(buf, arr_local)
+    emit_local_get(buf, i_local)
+    emit_call_resolved(buf, ctx, ag_idx)
+    emit_closure_call_tail(buf, env_local, slot_local, ctx.closure_type_base, 1)
+    emit_i32_wrap_i64(buf)
+    emit_i64_extend_i32_s(buf)
+    emit_i64_eqz(buf)
+    emit_if_void(buf)
+    emit_i64_const(buf, 0)
+    emit_local_set(buf, res_local)
+    emit_br(buf, 2)
+    emit_end(buf)
+    emit_local_get(buf, i_local)
+    emit_i64_const(buf, 1)
+    emit_i64_add(buf)
+    emit_local_set(buf, i_local)
+    emit_br(buf, 0)
+    emit_end(buf)
+    emit_end(buf)
+    emit_local_get(buf, res_local)
+    nl
+  }
+  else if fname == "Array::find" {
+    let (al_idx, _, _) = resolve_func(ctx.func_table, "Array::length")
+    let (ag_idx, _, _) = resolve_func(ctx.func_table, "Array::get")
+    let arr_local = next_local
+    let fn_local = next_local + 1
+    let len_local = next_local + 2
+    let i_local = next_local + 3
+    let slot_local = next_local + 4
+    let env_local = next_local + 5
+    let elem_local = next_local + 6
+    let res_local = next_local + 7
+    Array::push(local_names, "[gc-temp]__find_arr")
+    Array::push(local_names, "[gc-temp]__find_fn")
+    Array::push(local_names, "[gc-temp]__find_len")
+    Array::push(local_names, "[gc-temp]__find_i")
+    Array::push(local_names, "[gc-temp]__find_slot")
+    Array::push(local_names, "[gc-temp]__find_env")
+    Array::push(local_names, "[gc-temp]__find_elem")
+    Array::push(local_names, "[gc-temp]__find_res")
+    let mut nl = next_local + 8
+    nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
+    emit_local_set(buf, arr_local)
+    nl = ce(buf, Array::get(args, 1), local_names, nl, ld)
+    emit_local_set(buf, fn_local)
+    emit_local_get(buf, arr_local)
+    emit_call_resolved(buf, ctx, al_idx)
+    emit_local_set(buf, len_local)
+    emit_i64_const(buf, 0)
+    emit_local_set(buf, i_local)
+    nl = ce(buf, EIdent("None", -1), local_names, nl, ld)
+    emit_local_set(buf, res_local)
+    emit_closure_resolve(buf, fn_local, slot_local, env_local)
+    emit_block_void(buf)
+    emit_loop_void(buf)
+    emit_local_get(buf, i_local)
+    emit_local_get(buf, len_local)
+    emit_i64_ge_s(buf)
+    emit_br_if(buf, 1)
+    emit_local_get(buf, arr_local)
+    emit_local_get(buf, i_local)
+    emit_call_resolved(buf, ctx, ag_idx)
+    emit_local_set(buf, elem_local)
+    emit_local_get(buf, elem_local)
+    emit_closure_call_tail(buf, env_local, slot_local, ctx.closure_type_base, 1)
+    emit_i32_wrap_i64(buf)
+    emit_if_void(buf)
+    nl = ce(buf, ECall(EIdent("Some", -1), [EIdent("[gc-temp]__find_elem", -1)], -1), local_names, nl, ld)
+    emit_local_set(buf, res_local)
+    emit_br(buf, 2)
+    emit_end(buf)
+    emit_local_get(buf, i_local)
+    emit_i64_const(buf, 1)
+    emit_i64_add(buf)
+    emit_local_set(buf, i_local)
+    emit_br(buf, 0)
+    emit_end(buf)
+    emit_end(buf)
+    emit_local_get(buf, res_local)
+    nl
+  }
+  else if fname == "Array::slice" {
+    // #3078: call the builtin body (`gc_gen_arr_slice_body`) rather than
+    // inlining a second copy loop here. The inline copy had no bounds
+    // checks, so `Array::slice([3, 1, 2], -1, 2)` read index -1 while
+    // linear clamped; the builtin clamps with the linear lane's shared
+    // `emit_slice_bounds_clamp`, and one body cannot drift from another.
+    let as_idx = gc_resolve_builtin_last(ctx.func_table, "Array::slice")
+    let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
+    nl = ce(buf, Array::get(args, 1), local_names, nl, ld)
+    nl = ce(buf, Array::get(args, 2), local_names, nl, ld)
+    emit_call_resolved(buf, ctx, as_idx)
+    nl
+  }
+  else if fname == "Array::concat" {
+    let (an_idx, _, _) = resolve_func(ctx.func_table, "array_new")
+    let (ap_idx, _, _) = resolve_func(ctx.func_table, "Array::push")
+    let (ag_idx, _, _) = resolve_func(ctx.func_table, "Array::get")
+    let (al_idx, _, _) = resolve_func(ctx.func_table, "Array::length")
+    let a_local = next_local
+    let b_local = next_local + 1
+    let new_arr_local = next_local + 2
+    let i_local = next_local + 3
+    let len_local = next_local + 4
+    Array::push(local_names, "[gc-temp]__concat_a")
+    Array::push(local_names, "[gc-temp]__concat_b")
+    Array::push(local_names, "[gc-temp]__concat_new")
+    Array::push(local_names, "[gc-temp]__concat_i")
+    Array::push(local_names, "[gc-temp]__concat_len")
+    let mut nl = next_local + 5
+    nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
+    emit_local_set(buf, a_local)
+    nl = ce(buf, Array::get(args, 1), local_names, nl, ld)
+    emit_local_set(buf, b_local)
+    emit_call_resolved(buf, ctx, an_idx)
+    emit_local_set(buf, new_arr_local)
+    emit_i64_const(buf, 0)
+    emit_local_set(buf, i_local)
+    emit_local_get(buf, a_local)
+    emit_call_resolved(buf, ctx, al_idx)
+    emit_local_set(buf, len_local)
+    emit_block_void(buf)
+    emit_loop_void(buf)
+    emit_local_get(buf, i_local)
+    emit_local_get(buf, len_local)
+    emit_i64_ge_s(buf)
+    emit_br_if(buf, 1)
+    emit_local_get(buf, new_arr_local)
+    emit_local_get(buf, a_local)
+    emit_local_get(buf, i_local)
+    emit_call_resolved(buf, ctx, ag_idx)
+    emit_call_resolved(buf, ctx, ap_idx)
+    emit_local_get(buf, i_local)
+    emit_i64_const(buf, 1)
+    emit_i64_add(buf)
+    emit_local_set(buf, i_local)
+    emit_br(buf, 0)
+    emit_end(buf)
+    emit_end(buf)
+    emit_i64_const(buf, 0)
+    emit_local_set(buf, i_local)
+    emit_local_get(buf, b_local)
+    emit_call_resolved(buf, ctx, al_idx)
+    emit_local_set(buf, len_local)
+    emit_block_void(buf)
+    emit_loop_void(buf)
+    emit_local_get(buf, i_local)
+    emit_local_get(buf, len_local)
+    emit_i64_ge_s(buf)
+    emit_br_if(buf, 1)
+    emit_local_get(buf, new_arr_local)
+    emit_local_get(buf, b_local)
+    emit_local_get(buf, i_local)
+    emit_call_resolved(buf, ctx, ag_idx)
+    emit_call_resolved(buf, ctx, ap_idx)
+    emit_local_get(buf, i_local)
+    emit_i64_const(buf, 1)
+    emit_i64_add(buf)
+    emit_local_set(buf, i_local)
+    emit_br(buf, 0)
+    emit_end(buf)
+    emit_end(buf)
+    emit_local_get(buf, new_arr_local)
+    nl
+  }
+  else if fname == "Array::truncate" {
+    // #538 P4.5: this was a drop-args no-op stub, so every direct
+    // `Array::truncate(arr, n)` silently kept the old length -- the
+    // checker's worklist loops (pop = truncate) never terminated when the
+    // gc-compiled compiler ran. Call the real generated body (idx 40).
+    let (at_idx, _, _) = resolve_func(ctx.func_table, "Array::truncate")
+    let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
+    nl = ce(buf, Array::get(args, 1), local_names, nl, ld)
+    emit_call_resolved(buf, ctx, at_idx)
+    emit_i64_const(buf, 0)
+    nl
+  }
+  else if fname == "Array::push_all" {
+    let (ap_idx, _, _) = resolve_func(ctx.func_table, "Array::push")
+    let (ag_idx, _, _) = resolve_func(ctx.func_table, "Array::get")
+    let (al_idx, _, _) = resolve_func(ctx.func_table, "Array::length")
+    let dst_local = next_local
+    let src_local = next_local + 1
+    let i_local = next_local + 2
+    let len_local = next_local + 3
+    Array::push(local_names, "[gc-temp]__pushall_dst")
+    Array::push(local_names, "[gc-temp]__pushall_src")
+    Array::push(local_names, "[gc-temp]__pushall_i")
+    Array::push(local_names, "[gc-temp]__pushall_len")
+    let mut nl = next_local + 4
+    nl = ce(buf, Array::get(args, 0), local_names, nl, ld)
+    emit_local_set(buf, dst_local)
+    nl = ce(buf, Array::get(args, 1), local_names, nl, ld)
+    emit_local_set(buf, src_local)
+    emit_i64_const(buf, 0)
+    emit_local_set(buf, i_local)
+    emit_local_get(buf, src_local)
+    emit_call_resolved(buf, ctx, al_idx)
+    emit_local_set(buf, len_local)
+    emit_block_void(buf)
+    emit_loop_void(buf)
+    emit_local_get(buf, i_local)
+    emit_local_get(buf, len_local)
+    emit_i64_ge_s(buf)
+    emit_br_if(buf, 1)
+    emit_local_get(buf, dst_local)
+    emit_local_get(buf, src_local)
+    emit_local_get(buf, i_local)
+    emit_call_resolved(buf, ctx, ag_idx)
+    emit_call_resolved(buf, ctx, ap_idx)
+    emit_local_get(buf, i_local)
+    emit_i64_const(buf, 1)
+    emit_i64_add(buf)
+    emit_local_set(buf, i_local)
+    emit_br(buf, 0)
+    emit_end(buf)
+    emit_end(buf)
+    emit_i64_const(buf, 0)
+    nl
+  }
+  else if fname == "perform" {
+    // #538: performs of host-capability effects (Fs::ReadFile,
+    // Profiler::NowUs, ...) lower to their canonical builtin, exactly like
+    // the linear backend's builtin fast path. Algebraic (user-effect)
+    // performs need the replay-memo machinery and are not ported yet.
+    let op_expr = Array::get(args, 0)
+    let op_head = if is_eident(op_expr) {
+      get_eident_name(op_expr)
+    } else if expr_tag(op_expr) == 8 {
+      let op_callee = get_ecall_callee(op_expr)
+      if is_eident(op_callee) {
+        get_eident_name(op_callee)
+      } else {
+        ""
+      }
+    } else {
+      ""
+    }
+    // #640: `perform Exception::Throw(x)` IS `throw(x)` — route it to the same
+    // wasm exception the EThrow arm emits (tag 0 on the gc backend, see
+    // backend_expr.vibe), so a `with Exception` handler catches both spellings.
+    if is_exception_throw_operation(op_head) {
+      let mut enl = next_local
+      if expr_tag(op_expr) == 8 && Array::length(get_ecall_args(op_expr)) > 0 {
+        enl = ce(buf, Array::get(get_ecall_args(op_expr), 0), local_names, enl, ld)
+      } else {
+        emit_i64_const(buf, 0)
+      }
+      bytebuf_push(buf, 8)
+      leb128_encode_u32(buf, 0)
+      return enl
+    }
+    if is_exception_operation_name(op_head) {
+      throw(String::concat("perform ", String::concat(op_head, ": the abortive Exception alias has a single operation, Throw (#1279)")))
+    }
+    let op_canon = canonical_builtin_name(op_head)
+    let __pf_len = Array::length(ctx.func_table.names)
+    let mut pf_i = -1
+    let mut __pf = 0
+    while __pf < __pf_len {
+      if Array::get(ctx.func_table.names, __pf) == op_canon {
+        pf_i = __pf
+        __pf = __pf_len
+      } else {
+        __pf = __pf + 1
+      }
+    }
+    if pf_i < 0 {
+      // #3071: an algebraic (user-effect) perform that reaches codegen was
+      // NOT migrated by evidence_dict_pass, so no live handle reaches it:
+      // it can only ever run as an unhandled effect. In practice the site
+      // is dead code -- a function nobody calls, or an exported callee
+      // whose every call site took the suspend-lowered clone -- and
+      // refusing it here rejected the whole program. Lower it the way the
+      // linear lane does (compile_call.vibe's perform arm): evaluate the
+      // payload, then abort. The linear lane throws an effect tag no
+      // handler catches; this lane traps with `unreachable`, which no
+      // `with Exception` handler (tag 0) can intercept either.
+      let raw_args = if expr_tag(op_expr) == 8 {
+        get_ecall_args(op_expr)
+      } else {
+        array_empty()
+      }
+      let mut unl = next_local
+      let mut uai = 0
+      while uai < Array::length(raw_args) {
+        unl = ce(buf, Array::get(raw_args, uai), local_names, unl, ld)
+        emit_drop(buf)
+        uai = uai + 1
+      }
+      // `unreachable` leaves the stack polymorphic, so the site types as
+      // whatever the operation returns, with nothing pushed after it.
+      bytebuf_push(buf, 0)
+      return unl
+    }
+    let pf_idx = Array::get(ctx.func_table.indices, pf_i)
+    let pf_ret = Array::get(ctx.func_table.returns, pf_i)
+    let op_args = if expr_tag(op_expr) == 8 {
+      get_ecall_args(op_expr)
+    } else {
+      array_empty()
+    }
+    let mut nl = next_local
+    let mut pai = 0
+    while pai < Array::length(op_args) {
+      nl = ce(buf, Array::get(op_args, pai), local_names, nl, ld)
+      pai = pai + 1
+    }
+    emit_call_resolved(buf, ctx, pf_idx)
+    if pf_ret == 0 {
+      emit_i64_const(buf, 0)
+    }
+    nl
+  }
+  else if fname == "Bytes::new" && Array::length(args) == 1 && !gc_name_is_user_defined(ctx, local_names, fname) {
+    // review-lint: allow-gc-direct-abi-unlisted -- Bytes::new has a registered GC function-table body; this arm rewrites its sized overload
+    // Bytes::new(n): length-n zero-filled buffer. The runtime bytes_new
+    // takes NO operands, so the generic path emits `n` and then calls the
+    // zero-parameter body anyway, stranding the argument. This lane had no
+    // counterpart to the linear lane's synthesis, which made the
+    // one-argument overload linear-only -- clean under `vibe check` on both
+    // lanes, past `wasmtime compile`, failing at run time on one (#2363).
+    // The synthesis is SHARED now (common_base/sized_bytes_new_expr.vibe),
+    // so this arm and the linear one are the same single call and cannot
+    // drift apart again.
+    //
+    // The guard is gc_name_is_user_defined, NOT `!source_is_bound`: on this
+    // backend the generated builtin BODIES live in ctx.func_table, so
+    // `source_is_bound` is true for every builtin and the `!source_is_bound`
+    // arms further up are reachable only for region-surface names that have
+    // no body (MutList::/MutBytes::). Guarding this arm that way compiled,
+    // linked, and simply never fired -- measured, not reasoned.
+    ce(buf, sized_bytes_new_expr(Array::get(args, 0)), local_names, next_local, ld)
+  }
+  else if fname == "eq" && !gc_name_is_user_defined(ctx, local_names, fname) {
+    // #2309 (Codex review on #2312): unconditional until now, so a program
+    // that bound `eq` itself -- locally or at top level -- got content
+    // equality instead of its own function. `let eq = (a: Int, b: Int) ->
+    // Int { a + b }` then `eq(1, 2)` answered 0. Same guard as the assert
+    // arms below, same reason.
+    // #2407: a provably scalar operand takes a bare `i64.eq` and never
+    // reaches the string fallback below. Without this the fallback ran for
+    // every pair that is not bit-identical, reading both values as
+    // `(ptr << 32) | len` fat pointers -- so `eq(64 << 32, 65 << 32)`
+    // loaded from whatever address the high word happened to name and
+    // trapped. Small values were fine only because the bogus address
+    // happened to be in bounds, which is why this went unnoticed.
+    //
+    // The linear lane has had this guard since #705 (`cc_arg_is_scalarish`
+    // in compile_call.vibe); it was never ported here. One operand is
+    // enough: `==` already routes that way (`emit_gc_eq_value`), and a
+    // scalar can only be equal to another scalar's bit pattern.
+    if bc_expr_is_floatish(Array::get(args, 0), local_names, ctx) || bc_expr_is_floatish(Array::get(args, 1), local_names, ctx) {
+      // #2426: a provably Double operand takes a real f64 comparison,
+      // like `==` does (emit_gc_eq_value) and like the linear lane's own
+      // `eq` arm has since #745. Without it BOTH remaining arms answer on
+      // raw bits, and the content fall-back below is the sharper of the
+      // two: it reads each operand as `(ptr << 32) | len`, and a Double's
+      // low 32 bits are its mantissa tail, which is ZERO for every
+      // round value. Two zero-length "strings" compare EQUAL, so
+      // `eq(0.0, 1.5)` answered **true** -- measured on 978ccefc4, gc
+      // lane, for two ordinary distinct Doubles with no diagnostic. The
+      // `i64.eq` arm below is wrong for Doubles in the other direction:
+      // `-0.0` and `nan` (identical bits, and IEEE 754 says not equal).
+      let mut fnl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
+      emit_f64_reinterpret_i64(buf)
+      fnl = ce(buf, Array::get(args, 1), local_names, fnl, ld)
+      emit_f64_reinterpret_i64(buf)
+      emit_f64_eq(buf)
+      emit_i64_extend_i32_s(buf)
+      fnl
+    } else if bc_expr_is_intish(Array::get(args, 0), local_names, ctx) || bc_expr_is_intish(Array::get(args, 1), local_names, ctx) {
+      let mut snl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
+      snl = ce(buf, Array::get(args, 1), local_names, snl, ld)
+      emit_i64_eq(buf)
+      emit_i64_extend_i32_s(buf)
+      snl
+    } else {
+      // Content-based equality: i64_eq fast path, then str_eq fallback
+      let (str_eq_idx, _, _) = resolve_func(ctx.func_table, "String::equals")
+      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
+      nl = ce(buf, Array::get(args, 1), local_names, nl, ld)
+      let eq_a = nl
+      let eq_b = nl + 1
+      Array::push(local_names, "[gc-temp]__eq_a")
+      Array::push(local_names, "[gc-temp]__eq_b")
+      emit_local_set(buf, eq_b)
+      emit_local_set(buf, eq_a)
+      emit_local_get(buf, eq_a)
+      emit_local_get(buf, eq_b)
+      emit_i64_eq(buf)
+      emit_if_i64(buf)
+      emit_i64_const(buf, 1)
+      emit_else(buf)
+      emit_local_get(buf, eq_a)
+      emit_local_get(buf, eq_b)
+      emit_call_resolved(buf, ctx, str_eq_idx)
+      emit_end(buf)
+      nl + 2
+    }
+  }
+  else if fname == "not" && !gc_name_is_user_defined(ctx, local_names, fname) {
+    // #2309: same as `eq` above. Measured -- `let not = (a: Int) -> Int
+    // { a + 41 }` then `not(1)` gives 42 on linear (its arm is guarded by
+    // `!prefer_bound_call`) and was hijacked here.
+    let nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
+    emit_i64_eqz(buf)
+    emit_i64_extend_i32_u(buf)
+    nl
+  }
+  else if fname == "Double::from_i64_bits" {
+    let nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
+    nl
+  }
+  else if fname == "Double::from_i64_bits_lohi" {
+    // #2651. The gc lane carries a Double as raw f64 bits in an untagged
+    // i64, so reassembling the halves IS the conversion. Both are masked
+    // for the same reasons the linear arm gives.
+    let nl0 = ce(buf, Array::get(args, 0), local_names, next_local, ld)
+    emit_i64_const(buf, 4294967295)
+    emit_i64_and(buf)
+    let nl1 = ce(buf, Array::get(args, 1), local_names, nl0, ld)
+    emit_i64_const(buf, 4294967295)
+    emit_i64_and(buf)
+    emit_i64_const(buf, 32)
+    emit_i64_shl(buf)
+    emit_i64_or(buf)
+    nl1
+  }
+  else if fname == "Double::to_i64_bits_lo" {
+    let nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
+    emit_i64_const(buf, 4294967295)
+    emit_i64_and(buf)
+    nl
+  }
+  else if fname == "Double::to_i64_bits_hi" {
+    let nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
+    emit_i64_const(buf, 32)
+    emit_i64_shr_s(buf)
+    emit_i64_const(buf, 4294967295)
+    emit_i64_and(buf)
+    nl
+  }
+  else if fname == "__to_string" && Array::length(args) == 1 && bc_offset_refuses_render(Array::get(args, 0), ctx) {
+    // #3068: refuse exactly where the linear lane refuses (#2987), with
+    // the same message, rather than print an address.
+    throw(unrenderable_render_message(Array::get(args, 0)))
+  }
+  else if fname == "__to_string" && Array::length(args) == 1 && bc_expr_is_floatish(Array::get(args, 0), local_names, ctx) {
+    // #744 (gc mirror of the linear fix): a statically-floatish argument
+    // takes the synthesized Double formatter — the runtime-dispatch
+    // builtin below reads the raw f64 bits as an integer.
+    double_runtime_require(ctx.func_table, double_runtime_to_string_name())
+    ce(buf, double_to_string_expr(Array::get(args, 0)), local_names, next_local, ld)
+  }
+  else if fname == "__to_string" && Array::length(args) == 1 && bc_expr_is_boolish(Array::get(args, 0), local_names, ctx) {
+    // #1015 (gc mirror of the linear fix): a statically-boolish argument
+    // takes the "true"/"false" formatter directly — the runtime-dispatch
+    // builtin below cannot distinguish Bool from Int (same
+    // representation on this lane) and would mis-render `true` as "1".
+    ce(buf, EIf(Array::get(args, 0), EString("true", -1), EString("false", -1)), local_names, next_local, ld)
+  }
+  else if fname == "to_string" && ctx.gc_to_string_is_show_wrapper && Array::length(args) == 1 && (bc_expr_is_floatish(Array::get(args, 0), local_names, ctx) || bc_expr_is_boolish(Array::get(args, 0), local_names, ctx)) {
+    // #1015: gc-lane counterpart of the linear call-site fast path in
+    // expr/compile_call.vibe. The gc lane has no cross-file #716
+    // export-name mangling to key off (VIBE_BACKEND=gc is always a
+    // direct SINGLE-FILE compile — see cli_adapter.vibe's dispatch,
+    // "FS-import mode... stays linear-backend-only" — so the prelude's
+    // to_string can't even be imported here; exercising this path means
+    // the compiled file defines its own local `to_string[T: Show](x: T)
+    // -> String { __to_string(x) }`-shaped wrapper). Inside that
+    // wrapper's body `x` has the opaque generic type param T, so no
+    // param/let seeding (concrete "Bool"/"Float" annotations only) can
+    // make `bc_expr_is_boolish`/`bc_expr_is_floatish` recognize it --
+    // the SAME root cause as the linear bug. Bypass the wrapper call
+    // entirely and inline `__to_string(arg)` with the ORIGINAL call-site
+    // argument expression, which the two branches above then classify
+    // correctly.
+    //
+    // `ctx.gc_to_string_is_show_wrapper` (backend_body.vibe,
+    // gc_to_string_resolves_to_show_wrapper, computed once per compile)
+    // is the shadow guard: code review (#1015) correctly pointed out
+    // that a bare `fname == "to_string"` match, while safe against
+    // CROSS-file shadowing (the gc lane's single-file compile model
+    // rules that out -- a second same-named top-level fn is a compile
+    // error), is NOT safe against a SAME-file user `fn to_string(x:
+    // Bool) -> String { "custom" }` -- a real, different function that
+    // must keep running, not be silently replaced by this fast path.
+    // The flag verifies the actual "to_string" in THIS program
+    // structurally matches the trivial Show-forwarding wrapper shape
+    // before this branch is allowed to bypass it; a differently-shaped
+    // "to_string" (any real user function) leaves the flag false and
+    // this whole branch inert, falling through to the ordinary bound
+    // call below untouched.
+    ce(buf, ECall(EIdent("__to_string", -1), [Array::get(args, 0)], -1), local_names, next_local, ld)
+  }
+  else if (fname == "Int::to_string" || fname == "__to_string") && Array::length(args) == 1 && bc_expr_is_intish(Array::get(args, 0), local_names, ctx) {
+    // #2405: the builtin decides Int-vs-String by a HEURISTIC on the bit
+    // pattern (`gc_gen_to_string_body`), so an Int whose high word is a
+    // plausible address is returned unchanged instead of rendered:
+    // `__to_string(64 << 32)` reads as (ptr 64, len 0) and produced the
+    // EMPTY STRING on this lane while the linear lane printed
+    // "274877906944". A statically-int argument therefore skips the
+    // heuristic entirely and renders directly -- the same answer the
+    // linear lane reaches through `ts_known_int` (compile_call.vibe).
+    // The renderer is ~182 bytes. When the module carries the shared body
+    // (`gc_gen_to_string_int_body`, pushed by backend_body.vibe whenever a
+    // statically-int argument appears anywhere in it) this is one call;
+    // int_wrap has eight such sites and paid for eight copies before.
+    // The -1 case is not a fallback that can be wrong: the pre-pass that
+    // decides to push the body classifies by shape alone and cannot see
+    // the `gc_int_locals` slot log this arm also reads, so a bare-ident
+    // site in a module with no shape-int site still inlines -- correct,
+    // just bigger. A call to a body that was not pushed cannot happen.
+    if ctx.gc_to_string_int_func_idx >= 0 {
+      let nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
+      emit_call(buf, ctx.gc_to_string_int_func_idx)
+      nl
+    } else {
+      let nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
+      let ts_val = nl
+      let ts_neg = nl + 1
+      let ts_cur = nl + 2
+      let ts_abs = nl + 3
+      let ts_hp = nl + 4
+      let ts_len = nl + 5
+      Array::push(local_names, "[gc-temp]__ts_val")
+      Array::push(local_names, "[gc-temp]__ts_neg")
+      Array::push(local_names, "[gc-temp]__ts_cur")
+      Array::push(local_names, "[gc-temp]__ts_abs")
+      Array::push(local_names, "[gc-temp]__ts_hp")
+      Array::push(local_names, "[gc-temp]__ts_len")
+      emit_local_set(buf, ts_val)
+      gc_emit_int_to_string(buf, ts_val, ts_neg, ts_cur, ts_abs, ts_hp, ts_len)
+      nl + 6
+    }
+  }
+  else if fname == "Int::to_string" || fname == "__to_string" {
+    let ts_idx = gc_resolve_builtin_last(ctx.func_table, "__to_string")
+    let nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
+    emit_call_resolved(buf, ctx, ts_idx)
+    nl
+  }
+  else if fname == "MapBuilder::new" {
+    // #723-family fix (mirrors the linear backend): the builder used to
+    // be a FIXED 520-byte block whose append never checked the stored
+    // capacity — the 33rd entry silently corrupted the heap. New shape:
+    // handle [count@0][cap@4][storage_ptr@8] + separate entries storage
+    // (key@+0/value@+8 per 16-byte slot); `set` grows storage through
+    // the handle, `freeze` copies into a plain Map block.
+    let ptr_l = next_local
+    Array::push(local_names, "[gc-temp]__mb_ptr")
+    emit_global_get(buf, 0)
+    emit_i64_extend_i32_u(buf)
+    emit_local_set(buf, ptr_l)
+    emit_global_get(buf, 0)
+    emit_i32_const(buf, 144)
+    emit_i32_add(buf)
+    emit_global_set(buf, 0)
+    // #415: gc-lane heap bump must grow linear memory like the linear
+    // backend does -- without this any allocation past the initial page
+    // traps OOB (the gc smoke fixture only ever allocated a few bytes).
+    emit_heap_memory_grow_check(buf)
+    emit_local_get(buf, ptr_l)
+    emit_i32_wrap_i64(buf)
+    emit_i32_const(buf, 0)
+    emit_i32_store(buf, 2, 0)
+    emit_local_get(buf, ptr_l)
+    emit_i32_wrap_i64(buf)
+    emit_i32_const(buf, 8)
+    emit_i32_store(buf, 2, 4)
+    emit_local_get(buf, ptr_l)
+    emit_i32_wrap_i64(buf)
+    emit_local_get(buf, ptr_l)
+    emit_i64_const(buf, 16)
+    emit_i64_add(buf)
+    emit_i64_store(buf, 3, 8)
+    emit_local_get(buf, ptr_l)
+    next_local + 1
+  } else {
+    gc_compile_named_2(buf, callee, args, local_names, next_local, ctx, ld, ce, fname, source_is_bound, ctor_lookup_idx, compile_call_gc_fn, gc_mut_alias_call_fn, gc_compile_native_array_ref_fn)
+  }
+}
+
+export {
+  compile_call_gc
+}

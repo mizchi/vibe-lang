@@ -1,0 +1,2262 @@
+// lib/@vibe/compiler/codegen/expr/compile_expr_tail.vibe — classify let value heap.
+
+import @vibe/compiler/core {
+  Expr,
+  Pat,
+  Stmt,
+  TypeExpr,
+  bsearch_leftmost,
+  builtin_allocates,
+  bytebuf_length,
+  bytebuf_new,
+  bytebuf_push,
+  bytebuf_push_section,
+  bytebuf_push_vec_header,
+  bytebuf_to_bytes,
+  is_borrow_ret_builtin,
+  leb128_encode_s64,
+  leb128_encode_u32,
+  registry_builtin_arity,
+  typed_lowering_arg_offset,
+  typed_lowering_float_key
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import @vibe/compiler/codegen/common_analysis {
+  collect_free_vars,
+  collect_free_vars_indexed,
+  collect_free_vars_indexed_self,
+  collect_pattern_bindings,
+  collect_strings_stmts,
+  emit_closure_call_tail,
+  emit_closure_resolve,
+  emit_i64_extend_i32_u,
+  is_branching_value,
+  md_consume_count_b,
+  md_self_reassign_move_arg,
+  mut_needs_ref_cell,
+  proj_root_ident,
+  scope_tail_ident,
+  scope_tail_proj_root
+}
+
+import @vibe/compiler/codegen/common_base {
+  CompileCtx,
+  CtorTable,
+  FuncTable,
+  LambdaTable,
+  LineMapState,
+  StrTable,
+  agg_expr_lookup,
+  agg_ret_lookup_indexed,
+  agg_slot_lookup,
+  emit_arith_wrap_int,
+  emit_binop_op,
+  emit_heap_grow_after_heap_set,
+  emit_i32_eq,
+  emit_i32_eqz,
+  emit_i32_ge_u,
+  emit_i32_mul,
+  emit_i32_ne,
+  emit_i32_sub,
+  emit_i64_load,
+  emit_i64_store,
+  emit_rc_dup_guarded,
+  emit_str_ref,
+  expr_tag,
+  find_local_slot,
+  func_table_index_of,
+  func_table_user_index_of,
+  get_arm_body,
+  get_arm_pat,
+  get_ebinop_op,
+  get_efn_body,
+  get_eif_cond,
+  get_eif_else,
+  get_eif_then,
+  get_elet_body,
+  get_elet_name,
+  get_elet_off,
+  get_elet_val,
+  get_eletmut_off,
+  get_slet_expr,
+  get_slet_name,
+  is_ctor_call,
+  is_earray,
+  is_efn,
+  is_eident,
+  is_erecord,
+  is_etuple,
+  is_nullary_ctor_ident,
+  is_pbind,
+  is_pbool,
+  is_pctor,
+  is_pint,
+  is_pstring,
+  is_ptuple,
+  is_pwild,
+  is_slet,
+  lookup_ctor,
+  rc_exit_push,
+  rc_exit_truncate,
+  resolve_func,
+  resolve_local,
+  str_table_fat_or_zero
+}
+
+import @vibe/compiler/codegen/common_extractors {
+  array_contains_int,
+  array_contains_str,
+  emit_assignop_op,
+  emit_memory_copy,
+  find_catchall_idx,
+  first_offset,
+  get_earray_elems,
+  get_eassign_body,
+  get_eassign_name,
+  get_eassign_val,
+  get_eassignop_body,
+  get_eassignop_name,
+  get_eassignop_op,
+  get_eassignop_val,
+  get_ebinop_lhs,
+  get_ebinop_rhs,
+  get_ebool_value,
+  get_ecall_args,
+  get_ecall_callee,
+  get_ecall_off,
+  get_efloat_value,
+  get_efn_params,
+  get_eforin_body,
+  get_eforin_iter,
+  get_eforin_name,
+  get_eident_name,
+  get_eint_value,
+  get_eletmut_body,
+  get_eletmut_name,
+  get_eletmut_val,
+  get_eletrec_body,
+  get_eletrec_name,
+  get_eletrec_val,
+  get_eseq_first,
+  get_eseq_second,
+  get_estring_value,
+  get_etuple_elems,
+  get_eunaryop_expr,
+  get_eunaryop_op,
+  get_ewhile_body,
+  get_ewhile_cond,
+  get_match_arms,
+  get_match_scrutinee,
+  get_pbind_name,
+  get_pbool_value,
+  get_pctor_args,
+  get_pctor_name,
+  get_pint_value,
+  get_pstring_value,
+  get_ptuple_pats,
+  get_slet_export,
+  int_div_site,
+  int_divisor_may_be_zero,
+  offset_to_line,
+  str_table_lookup
+}
+
+import @vibe/compiler/perceus {
+  perceus_loop_result_slot
+}
+
+import @vibe/compiler/codegen/wasm_emit {
+  emit_block_i64,
+  emit_block_void,
+  emit_br,
+  emit_br_if,
+  emit_call,
+  emit_call_indirect,
+  emit_code_section,
+  emit_code_section_with_locals,
+  emit_data_section,
+  emit_data_section_multi,
+  emit_drop,
+  emit_element_section_active,
+  emit_else,
+  emit_end,
+  emit_export_section,
+  emit_export_section_multi,
+  emit_exports_full,
+  emit_exports_with_memory,
+  emit_f64_add,
+  emit_f64_const_bits,
+  emit_f64_convert_i64_s,
+  emit_f64_div,
+  emit_f64_eq,
+  emit_f64_ge,
+  emit_f64_gt,
+  emit_f64_le,
+  emit_f64_lt,
+  emit_f64_mul,
+  emit_f64_ne,
+  emit_f64_neg,
+  emit_f64_reinterpret_i64,
+  emit_f64_sub,
+  emit_func_type_raw,
+  emit_function_section,
+  emit_global_get,
+  emit_global_section_i32_mut,
+  emit_global_set,
+  emit_header,
+  emit_i32_add,
+  emit_i32_const,
+  emit_i32_load,
+  emit_i32_load8_u,
+  emit_i32_store,
+  emit_i32_store8,
+  emit_i32_wrap_i64,
+  emit_i64_add,
+  emit_i64_and,
+  emit_i64_const,
+  emit_i64_div_s,
+  emit_i64_eq,
+  emit_i64_eqz,
+  emit_i64_extend_i32_s,
+  emit_i64_ge_s,
+  emit_i64_gt_s,
+  emit_i64_le_s,
+  emit_i64_lt_s,
+  emit_i64_mul,
+  emit_i64_ne,
+  emit_i64_or,
+  emit_i64_reinterpret_f64,
+  emit_i64_rem_s,
+  emit_i64_shl,
+  emit_i64_shr_s,
+  emit_i64_sub,
+  emit_i64_trunc_f64_s,
+  emit_i64_xor,
+  emit_if_i64,
+  emit_if_void,
+  emit_import_section_func,
+  emit_local_get,
+  emit_local_set,
+  emit_local_tee,
+  emit_loop_void,
+  emit_memory_section,
+  emit_name,
+  emit_return,
+  emit_table_section_funcref,
+  emit_type_section,
+  emit_type_section_multi,
+  string_to_data
+}
+
+import ./compile_call.vibe {
+  cc_builtin_call_ret_kind,
+  cc_expr_is_stringish,
+  cc_fn_returns_float,
+  compile_call,
+  rc_exit_break_result_owns_rec,
+  rc_exit_end_store,
+  rc_exit_note_store,
+  rc_exit_passthrough_rec_result,
+  rc_exit_value_owned
+}
+
+import ./compile_expr_tail2.vibe {
+  compile_expr_tail2, compile_forin_loop
+}
+
+import ./compile_lambda.vibe {
+  cl_return_operand, compile_lambda, forin_is_discarded_seq_head
+}
+
+import ./compile_match.vibe {
+  compile_match, store_dup_tail_present
+}
+
+import ./compile_expr_tail_expr_is_floatish_syntactic.vibe {
+  assign_value_mentions,
+  efn_is_capturing,
+  emit_dbg_line_stmt,
+  expr_is_boolish,
+  expr_is_floatish,
+  expr_is_intish,
+  is_edot,
+  reassign_carry_safe
+}
+
+//# Functions
+
+/// #1899: local copy of compile_lambda.vibe's `strip_param_label_marker` --
+/// see its doc comment for why this is copied rather than imported. A labeled
+/// (`x~`) or optional (`x?`) parameter binds plain `x` in the body, and the
+/// capture scan has to be told the name the body actually uses.
+export fn cet_strip_param_label_marker(n: String) -> String {
+  let ln = String::length(n)
+  if ln > 0 {
+    let c = String::char_code_at(n, ln - 1)
+    if c == '~' || c == '?' {
+      n[0: ln - 1]
+    } else {
+      n
+    }
+  } else {
+    n
+  }
+}
+
+/// ADR-0055 tag repair for compound assignment: under RC both operands are
+/// tagged (n<<1), so `+`, `-`, `%` preserve the tag for free; `/` yields
+/// a/b untagged (shift left once, applied by the POST fix below). `*` is
+/// repaired BEFORE the multiply instead (#1877): untagging the loaded LHS
+/// first ((t>>1)*u = tagged(a*b)) makes the product overflow i64 exactly at
+/// the payload's 63-bit boundary, where every other RC op already wraps —
+/// the old post-multiply `>>1` pre-wrapped the intermediate one bit early.
+export fn emit_assignop_rc_mul_pre(buf: Bytes, enable_rc: Bool, op: String) -> Unit {
+  if enable_rc && op == "*" {
+    emit_i64_const(buf, 1)
+    emit_i64_shr_s(buf)
+  } else {
+    ()
+  }
+}
+
+export fn emit_assignop_rc_tag_fix(buf: Bytes, enable_rc: Bool, op: String) -> Unit {
+  if enable_rc && op == "/" {
+    emit_i64_const(buf, 1)
+    emit_i64_shl(buf)
+  } else {
+    ()
+  }
+}
+
+/// A sequence discards its first result. Only fresh values with a reference
+/// of their own may be released here: the Perceus walk treats a bare name or
+/// a projection in this position as a borrow, leaving its owner to drop it.
+/// A named call uses the same declared-return and view checks as the owned
+/// path classifier; an unknown result keeps the previous conservative drop.
+fn seq_handler_resumes(e: Expr, local_names: Array[String], bound: Array[String]) -> Bool with Exception {
+  match e {
+    ECall(EIdent("resume", _), _, _) => find_local_slot(local_names, "resume") < 0 && seq_bound_call_result(bound, "resume") < 0,
+    ELet(name, _, body, _) => {
+      let mark = Array::length(bound)
+      Array::push(bound, name)
+      let resumes = seq_handler_resumes(body, local_names, bound)
+      Array::truncate(bound, mark)
+      resumes
+    },
+    ELetMut(name, _, body, _) => {
+      let mark = Array::length(bound)
+      Array::push(bound, name)
+      let resumes = seq_handler_resumes(body, local_names, bound)
+      Array::truncate(bound, mark)
+      resumes
+    },
+    ELetRec(name, _, body) => {
+      let mark = Array::length(bound)
+      Array::push(bound, name)
+      let resumes = seq_handler_resumes(body, local_names, bound)
+      Array::truncate(bound, mark)
+      resumes
+    },
+    ESeq(_, body) => seq_handler_resumes(body, local_names, bound),
+    EIf(_, then_body, else_body) => seq_handler_resumes(then_body, local_names, bound) && seq_handler_resumes(else_body, local_names, bound),
+    EMatch(_, arms) => if Array::length(arms) == 0 {
+      false
+    } else {
+      let mut all_resume = true
+      for arm in arms {
+        let mark = Array::length(bound)
+        if !seq_push_pattern_binds(arm.0, bound) || !seq_handler_resumes(arm.1, local_names, bound) {
+          all_resume = false
+        }
+        Array::truncate(bound, mark)
+      }
+      all_resume
+    },
+    _ => false
+  }
+}
+
+export fn seq_local_call_owns_result(ctx: CompileCtx, slot: Int) -> Bool {
+  let mut i = Array::length(ctx.seq_owned_return_slots) - 1
+  let mut found = false
+  let mut owned = false
+  while i >= 0 && !found {
+    let entry = Array::get(ctx.seq_owned_return_slots, i)
+    if entry / 2 == slot {
+      owned = entry % 2 == 1
+      found = true
+    }
+    i = i - 1
+  }
+  owned
+}
+
+fn seq_bound_call_result(bound: Array[String], name: String) -> Int {
+  let mut i = Array::length(bound) - 1
+  while i >= 0 {
+    let entry = Array::get(bound, i)
+    if entry == "+" + name {
+      return 1
+    }
+    if entry == name {
+      return 0
+    }
+    i = i - 1
+  }
+  -1
+}
+
+fn seq_push_pattern_binds(pat: Pat, bound: Array[String]) -> Bool with Exception {
+  let names: Array[String] = []
+  if !pvo_pat_binds(pat, names) {
+    return false
+  }
+  for name in names {
+    Array::push(bound, name)
+  }
+  true
+}
+
+fn seq_discard_exits(e: Expr, local_names: Array[String], bound: Array[String]) -> Bool with Exception {
+  match e {
+    EReturn(_) => true,
+    EBreak(_) => true,
+    EContinue(_) => true,
+    ECall(EIdent("throw", _), _, _) => find_local_slot(local_names, "throw") < 0 && seq_bound_call_result(bound, "throw") < 0,
+    ELet(name, _, body, _) => {
+      let mark = Array::length(bound)
+      Array::push(bound, name)
+      let exits = seq_discard_exits(body, local_names, bound)
+      Array::truncate(bound, mark)
+      exits
+    },
+    ELetMut(name, _, body, _) => {
+      let mark = Array::length(bound)
+      Array::push(bound, name)
+      let exits = seq_discard_exits(body, local_names, bound)
+      Array::truncate(bound, mark)
+      exits
+    },
+    ELetRec(name, _, body) => {
+      let mark = Array::length(bound)
+      Array::push(bound, name)
+      let exits = seq_discard_exits(body, local_names, bound)
+      Array::truncate(bound, mark)
+      exits
+    },
+    ESeq(head, body) => seq_discard_exits(head, local_names, bound) || seq_discard_exits(body, local_names, bound),
+    EIf(_, yes, no) => seq_discard_exits(yes, local_names, bound) && seq_discard_exits(no, local_names, bound),
+    EMatch(_, arms) => if Array::length(arms) == 0 {
+      false
+    } else {
+      let mut all_exit = true
+      for arm in arms {
+        let mark = Array::length(bound)
+        if !seq_push_pattern_binds(arm.0, bound) || !seq_discard_exits(arm.1, local_names, bound) {
+          all_exit = false
+        }
+        Array::truncate(bound, mark)
+      }
+      all_exit
+    },
+    _ => false
+  }
+}
+
+fn seq_discard_owns_result_in(e: Expr, local_names: Array[String], bound: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  match e {
+    ECall(EIdent(n, _), _, _) => {
+      let local_bound = seq_bound_call_result(bound, n)
+      let slot = find_local_slot(local_names, n)
+      if local_bound >= 0 {
+        local_bound == 1
+      } else if slot >= 0 {
+        seq_local_call_owns_result(ctx, slot)
+      } else {
+        is_ctor_call(e, ctx.ctor_table) || ((bsearch_leftmost(ctx.heap_ret_names, n) >= 0 || (registry_builtin_arity(n) >= 0 && builtin_allocates(n) && func_table_user_index_of(ctx.func_table, n, ctx.num_user_funcs) < 0)) && !is_borrow_ret_builtin(n) && bsearch_leftmost(ctx.borrow_ret_names, n) < 0 && bsearch_leftmost(ctx.borrow_view_ret, n) < 0)
+      }
+    },
+    ECall(_, _, _) => true,
+    EArray(_) => true,
+    ETuple(_) => true,
+    ERecord(_, _, _) => true,
+    EMap(_) => true,
+    EFloat(_) => true,
+    EFn(_, _, _, _, _, _) => true,
+    EBinOp(op, _, _, _) => (op == "+" || op == "-" || op == "*" || op == "/") && expr_is_floatish(e, local_names, ctx),
+    EUnaryOp("-", _) => expr_is_floatish(e, local_names, ctx),
+    EIf(_, then_body, else_body) => (seq_discard_owns_result_in(then_body, local_names, bound, ctx) || seq_discard_exits(then_body, local_names, bound)) && (seq_discard_owns_result_in(else_body, local_names, bound, ctx) || seq_discard_exits(else_body, local_names, bound)),
+    EMatch(_, arms) => if Array::length(arms) == 0 {
+      false
+    } else {
+      let mut owned = true
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (pat, body) = Array::get(arms, i)
+        let mark = Array::length(bound)
+        if !seq_push_pattern_binds(pat, bound) || !(seq_discard_owns_result_in(body, local_names, bound, ctx) || seq_discard_exits(body, local_names, bound)) {
+          owned = false
+        }
+        Array::truncate(bound, mark)
+        i = i + 1
+      }
+      owned
+    },
+    EHandle(body, arms) => if !(seq_discard_owns_result_in(body, local_names, bound, ctx) || seq_discard_exits(body, local_names, bound)) {
+      false
+    } else {
+      let mut owned = true
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (pat, arm_body) = Array::get(arms, i)
+        let mark = Array::length(bound)
+        if !seq_push_pattern_binds(pat, bound) || !(seq_discard_owns_result_in(arm_body, local_names, bound, ctx) || seq_discard_exits(arm_body, local_names, bound) || seq_handler_resumes(arm_body, local_names, bound)) {
+          owned = false
+        }
+        Array::truncate(bound, mark)
+        i = i + 1
+      }
+      owned
+    },
+    ELet(name, value, body, _) => {
+      let mark = Array::length(bound)
+      Array::push(bound, if seq_lambda_returns_owned(value, local_names, ctx) {
+        "+" + name
+      } else {
+        name
+      })
+      let owned = seq_discard_owns_result_in(body, local_names, bound, ctx)
+      Array::truncate(bound, mark)
+      owned
+    },
+    ELetMut(name, value, body, _) => {
+      let mark = Array::length(bound)
+      Array::push(bound, if seq_lambda_returns_owned(value, local_names, ctx) {
+        "+" + name
+      } else {
+        name
+      })
+      let owned = seq_discard_owns_result_in(body, local_names, bound, ctx)
+      Array::truncate(bound, mark)
+      owned
+    },
+    ELetRec(name, value, body) => {
+      let mark = Array::length(bound)
+      Array::push(bound, if seq_lambda_returns_owned(value, local_names, ctx) {
+        "+" + name
+      } else {
+        name
+      })
+      let owned = seq_discard_owns_result_in(body, local_names, bound, ctx)
+      Array::truncate(bound, mark)
+      owned
+    },
+    ESeq(_, body) => seq_discard_owns_result_in(body, local_names, bound, ctx),
+    EAssign(_, _, body) => seq_discard_owns_result_in(body, local_names, bound, ctx),
+    EAssignOp(_, _, _, body) => seq_discard_owns_result_in(body, local_names, bound, ctx),
+    _ => false
+  }
+}
+
+export fn seq_discard_owns_result(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  seq_discard_owns_result_in(e, local_names, array_empty(), ctx)
+}
+
+export fn seq_lambda_returns_owned(value: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  if is_efn(value) {
+    // compile_lambda normalizes every heap return through cl_own_return.
+    // Borrowed leaves acquire a reference at that marker, and fresh leaves
+    // already own one. The indirect call therefore returns an owned value
+    // even when the source body ends in a projection or borrowed call.
+    true
+  } else if is_eident(value) {
+    let name = get_eident_name(value)
+    let slot = find_local_slot(local_names, name)
+    if slot >= 0 {
+      seq_local_call_owns_result(ctx, slot)
+    } else {
+      bsearch_leftmost(ctx.heap_ret_names, name) >= 0 && !is_borrow_ret_builtin(name) && bsearch_leftmost(ctx.borrow_ret_names, name) < 0 && bsearch_leftmost(ctx.borrow_view_ret, name) < 0
+    }
+  } else {
+    false
+  }
+}
+
+/// #3126: guard an `Int` `/` or `%` whose divisor may be zero. Called with the
+/// dividend and the divisor on the stack, right before the division; leaves
+/// them there. A zero divisor calls `__rt_div_zero_abort`, which prints
+/// `Int <op> by zero at <path>:<line>:<col>` and traps, instead of the engine's
+/// bare `divide by zero` with no source position.
+///
+/// `site_off` is the operator's merged source offset (the divisor's for
+/// `x /= y`). The location is printed only when it places in a source file
+/// whose path the string pool seeded (`collect_int_div_sites` walks the same
+/// program); anything else passes 0 and the message stops after the operation.
+///
+/// Costs one scratch local and `local.tee; i64.eqz; if .. end; local.get` on
+/// the fast path. A literal divisor other than 0 (`n / 10`, `i % 2`) is not
+/// guarded at all, and neither is anything in a module without the helper.
+/// Answers the next free local.
+export fn emit_int_div_zero_guard(buf: Bytes, op: String, divisor: Expr, site_off: Int, ctx: CompileCtx, local_names: Array[String], slot: Int) -> Int {
+  if ctx.div_zero_abort_func_idx < 0 || !(op == "/" || op == "%") || !int_divisor_may_be_zero(divisor) {
+    slot
+  } else {
+    let (path, line, col) = int_div_site(site_off)
+    let loc_fat = str_table_fat_or_zero(ctx.str_table, path)
+    Array::push(local_names, "__div_d")
+    emit_local_tee(buf, slot)
+    emit_i64_eqz(buf)
+    emit_if_void(buf)
+    emit_i64_const(buf, if op == "/" {
+      0
+    } else {
+      1
+    })
+    emit_i64_const(buf, loc_fat)
+    emit_i64_const(buf, if loc_fat == 0 {
+      0
+    } else {
+      (line<<32)|col
+    })
+    emit_call(buf, ctx.div_zero_abort_func_idx)
+    emit_end(buf)
+    emit_local_get(buf, slot)
+    slot + 1
+  }
+}
+
+/// Interior-line breakpoints (span-arc step5): when break-mode line instrumentation
+/// is active (ctx.dbg_line_idx >= 0), emit `i32.const <line>` + `call dbg_line` for
+/// the statement whose value subexpression is `value`, deriving the 1-based source
+/// line from the value's first offset. No-op when off or when no offset is found,
+/// so the default codegen path is byte-identical. Stack-neutral: dbg_line is
+/// `(i32) -> ()`, the i32 const it consumes leaves the stack unchanged.
+export fn emit_dbg_line_for(buf: Bytes, value: Expr, ctx: CompileCtx) -> Unit {
+  emit_dbg_line_stmt(buf, value, -1, ctx)
+}
+
+export fn reassign_self_reusable(value: Expr, name: String) -> Bool with Exception {
+  if is_etuple(value) {
+    let elems = get_etuple_elems(value)
+    let mut i = 0
+    let mut ok = true
+    while i < Array::length(elems) {
+      if !reassign_carry_safe(Array::get(elems, i), name) {
+        ok = false
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    ok
+  } else {
+    false
+  }
+}
+
+/// A fresh array of proven immediate elements cannot keep a view into the
+/// old array slot, even when an element reads that slot to compute an Int.
+/// Release the old array after the replacement has been constructed.
+export fn reassign_fresh_scalar_array(value: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  match value {
+    EArray(elems) => {
+      let mut i = 0
+      let mut all_scalar = true
+      while i < Array::length(elems) {
+        if !expr_is_intish(Array::get(elems, i), local_names, ctx) {
+          all_scalar = false
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      all_scalar
+    },
+    _ => false
+  }
+}
+
+/// #791: shared RC heap-classification for a `let`/`let mut` binding's INITIAL
+/// value, extracted so ELet (tag 9) and ELetMut (tag 11) can never drift apart
+/// again -- the entire #715/#791 bug family was ELetMut silently missing shape
+/// coverage (EIf/EMatch/ELet/ESeq/EDot/EFn/generic-ECall) that ELet already
+/// had, one shape re-discovered and patched at a time without ever being
+/// ported to the sibling form. Requires `value` to already be compiled and
+/// stored into `local_idx` (so the is_edot/is_eident-alias branches' immediate
+/// `emit_rc_dup_guarded(buf, local_idx, ...)` targets the right local) --
+/// call this AFTER `compile_expr(buf, value, ...)` + the corresponding
+/// `emit_local_set`/`emit_local_tee`, never before. Pushes `name` into
+/// `ctx.heap_binding_names` whenever the value's shape can't be proven scalar;
+/// over-classifying is a leak/no-op at worst (guarded dup/drop no-ops on a
+/// tagged-even scalar), under-classifying is the corruption class both issues
+/// hit. Returns (rc_kind, is_borrow_ret_ext) exactly as the original inline
+/// ELet chain did, for callers that still need those (loop_borrowed_names
+/// scoping for a borrow-returning call's alias).
+export fn classify_let_value_heap(buf: Bytes, value: Expr, name: String, local_idx: Int, local_names: Array[String], ctx: CompileCtx) -> (Int, Bool) with Exception {
+  let mut rc_kind = 0
+  let mut is_borrow_ret_ext = false
+  if ctx.enable_rc {
+    if expr_is_floatish(value, local_names, ctx) {
+      rc_kind = 2
+      Array::push(ctx.heap_binding_names, name)
+      // #3135: a `Double` is a heap box, and the plan now says so, so an
+      // alias of a `Double` binding gets the same PaAliasDup as any other
+      // heap alias (a source with later uses, or a loop-carried one). This
+      // arm is reached before the `is_eident` arm below, which is the one
+      // that applies an alias dup -- without this the plan's dup was
+      // silently dropped for a floatish alias, and the alias's own drop
+      // released the source's box.
+      if is_eident(value) && array_contains_str(ctx.rc_alias_dup_names, name) {
+        emit_rc_dup_guarded(buf, local_idx, ctx.rc_shadow, ctx.rc_dup_func_idx)
+      } else {
+        ()
+      }
+    } else if is_etuple(value) {
+      rc_kind = 2
+      Array::push(ctx.heap_binding_names, name)
+    } else if is_earray(value) {
+      rc_kind = 2
+      Array::push(ctx.heap_binding_names, name)
+    } else if is_erecord(value) {
+      rc_kind = 2
+      Array::push(ctx.heap_binding_names, name)
+    } else if is_ctor_call(value, ctx.ctor_table) {
+      rc_kind = 2
+      Array::push(ctx.heap_binding_names, name)
+    } else if is_nullary_ctor_ident(value, ctx.ctor_table) {
+      rc_kind = 2
+      Array::push(ctx.heap_binding_names, name)
+    } else if is_eident(value) {
+      let src = get_eident_name(value)
+      // An alias of a source this pass never classified -- a pattern or
+      // destructure binder (`let (t, s, c) = f(); let mut s1 = s`) is the
+      // common one, since only this file registers heap bindings -- is still
+      // heap when the Perceus plan gives the ALIAS a scope-end drop: the plan
+      // budgeted it as an owned heap binding. (Dups alone are not the test --
+      // the plan also budgets them for an alias of an `Int` parameter, whose
+      // guarded dups are no-ops that only cost fuel.) Declining here
+      // applied that plan by halves: the budget dups landed on the initial
+      // value at the declaration, while the reassignment re-budget and the
+      // scope-end drop (both gated on heap_binding_names) were skipped. A
+      // `let mut` reassigned in a loop then reached its later owning uses
+      // one reference short per extra use, and an owning callee freed the
+      // value the next use still held -- the checker's handle arm returned
+      // a `Subst` whose cell the tuple around it had been allocated into.
+      if array_contains_str(ctx.heap_binding_names, src) || array_contains_str(ctx.rc_drop_names, name) {
+        rc_kind = 2
+        Array::push(ctx.heap_binding_names, name)
+        if array_contains_str(ctx.rc_alias_dup_names, name) {
+          emit_rc_dup_guarded(buf, local_idx, ctx.rc_shadow, ctx.rc_dup_func_idx)
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+    } else if expr_tag(value) == 8 {
+      let callee = get_ecall_callee(value)
+      let is_borrow_ret = call_returns_borrow(value, local_names, ctx)
+      // #791: consult the DECLARED return-type table (compute_heap_returning,
+      // built once from a syntactic scan of top-level signatures -- see its
+      // doc comment) before falling back to the blanket "any ECall is heap"
+      // default. This makes the common `let mut s = Set::new()` case
+      // precise (uses the function's OWN declared `-> Set[T]` signature)
+      // instead of over-approximating every call, without needing full
+      // checker-inferred types threaded through codegen.
+      let is_declared_heap_ret = if is_eident(callee) {
+        bsearch_leftmost(ctx.heap_ret_names, get_eident_name(callee)) >= 0
+      } else {
+        false
+      }
+      let is_builtin_scalar_ret = if is_eident(callee) {
+        let cn = get_eident_name(callee)
+        let is_always_registered = cn == "Array::length" || cn == "Bytes::length" || cn == "String::length" || cn == "eq"
+        let is_user_shadowed = !is_always_registered && func_table_index_of(ctx.func_table, cn) >= 0
+        !is_user_shadowed && (cn == "Array::length" || cn == "Bytes::length" || cn == "String::length" || cn == "String::unicode_length" || cn == "String::utf16_length" || cn == "String::utf8_length" || cn == "Map::has_key" || cn == "MapBuilder::has_key" || cn == "eq" || cn == "not" || cn == "add" || cn == "sub" || cn == "mul" || cn == "lt")
+      } else {
+        false
+      }
+      let is_scalar_ret = if is_eident(callee) {
+        bsearch_leftmost(ctx.scalar_ret_names, get_eident_name(callee)) >= 0 || is_builtin_scalar_ret
+      } else {
+        false
+      }
+      if is_borrow_ret || is_scalar_ret {
+        ()
+      } else if is_declared_heap_ret {
+        rc_kind = 2
+        Array::push(ctx.heap_binding_names, name)
+      } else {
+        // No declared signature resolved either way (unannotated callee, a
+        // local closure, or a shadowed/unresolved name) -- default to heap,
+        // same "leak/no-op at worst" over-approximation the rest of this
+        // chain already relies on.
+        rc_kind = 2
+        Array::push(ctx.heap_binding_names, name)
+      }
+      is_borrow_ret_ext = is_borrow_ret
+    } else if is_edot(value) {
+      rc_kind = 2
+      Array::push(ctx.heap_binding_names, name)
+      emit_rc_dup_guarded(buf, local_idx, ctx.rc_shadow, ctx.rc_dup_func_idx)
+    } else if is_efn(value) {
+      if efn_is_capturing(value, ctx) {
+        rc_kind = 2
+        Array::push(ctx.heap_binding_names, name)
+      } else {
+        ()
+      }
+    } else if expr_tag(value) == 7 {
+      rc_kind = 2
+      Array::push(ctx.heap_binding_names, name)
+    } else if expr_tag(value) == 16 {
+      rc_kind = 2
+      Array::push(ctx.heap_binding_names, name)
+    } else if expr_tag(value) == 9 || expr_tag(value) == 14 || expr_tag(value) == 10 || expr_tag(value) == 11 || expr_tag(value) == 12 || expr_tag(value) == 13 {
+      // #2733: a WRAPPER value -- a block, or a binder/assignment chain --
+      // produces whatever its RESULT SPINE ends in, which is what has to be
+      // classified. Reading the top node instead made every one of these
+      // owning, so a block around a borrow-returning call got a scope-end
+      // drop that freed an element its container still owned. Tags 10..13
+      // reached the same default through the catch-all below; they are
+      // pulled in here so one rule covers the whole wrapper class.
+      //
+      // Only the borrowed direction changes: a spine this cannot place still
+      // falls through to heap exactly as before.
+      let spine_self = Array::get(local_names, local_idx)
+      Array::set(local_names, local_idx, "")
+      let spine_borrowed = value_spine_borrowed(value, local_names, array_empty(), array_empty(), ctx)
+      Array::set(local_names, local_idx, spine_self)
+      if spine_borrowed {
+        // Decline the drop, and mark the binding borrow-bound for its body
+        // scope so a consuming use dups it -- the same shape the
+        // `is_borrow_ret` arm above takes for a call value node.
+        is_borrow_ret_ext = true
+      } else {
+        rc_kind = 2
+        Array::push(ctx.heap_binding_names, name)
+      }
+    } else {
+      let __sf_tag = expr_tag(value)
+      if is_eident(value) || __sf_tag == 0 || __sf_tag == 1 || __sf_tag == 2 || __sf_tag == 3 || __sf_tag == 22 {
+        ()
+      } else {
+        rc_kind = 2
+        Array::push(ctx.heap_binding_names, name)
+      }
+    }
+  } else {
+    ()
+  }
+  (rc_kind, is_borrow_ret_ext)
+}
+
+/// Record wasm local `slot` in `local_names`, so the array spans it.
+///
+/// `local_names` is indexed BY wasm local index -- `compile_expr` resolves an
+/// identifier to its slot by position -- so a lowering that CLAIMS a slot has
+/// to give it an entry in the same breath. Every other claim in codegen does:
+/// `compile_call` pushes `__map_arr` .. `__map_uniq` and `__argdup` /
+/// `__argtmp`, one name per scratch local it takes. The scope-end promotion did
+/// not, and #2792 is what that cost: it used `nl2` and returned `nl2 + 1` while
+/// pushing nothing, leaving the array one short of the next binding's index, so
+/// the next `let` in the ENCLOSING scope ran `Array::set(local_names,
+/// local_idx, "")` one past the end and the compiler ABORTED --
+/// `Array::set: index 12 out of bounds for length 12`, no diagnostic, no source
+/// position, nothing naming an edit. The bump lane has no promotion and
+/// compiled the same program, so the two lanes disagreed on whether the program
+/// exists.
+///
+/// The promotion is written out TWICE -- once in the `ELet` lowering, once in
+/// `ELetMut`'s -- and only the first was found at first. `let mut ys = [..]`
+/// inside the wrapper aborted identically until review on #2797 named the
+/// second. That is the argument for a helper over a fourth hand-rolled copy:
+/// the sites that claim a slot are enumerable (`emit_local_set(buf, nl2)` finds
+/// exactly these two), and one call is what makes each of them checkable.
+///
+/// The entry is the empty no-name marker, never a spelling: the slot is
+/// addressed by index and never looked up by name, and `compile_expr` resolves
+/// identifiers through this array with LAST MATCH WINNING, so a real name here
+/// would make a same-named outer binding read as this scratch slot (Codex on
+/// #2725).
+///
+/// Padding up to `slot` first is what makes this safe to call after a lowering
+/// that already left the array short. It deliberately does NOT push when the
+/// array already spans `slot`: appending there would put the marker at one
+/// index and the slot at another, which is the very misalignment it exists to
+/// prevent -- so a caller that needs the slot to be FRESH tests that itself
+/// (`path_drop` below does).
+export fn cet_record_local_slot(local_names: Array[String], slot: Int) -> Unit {
+  while Array::length(local_names) < slot + 1 {
+    Array::push(local_names, "")
+  }
+}
+
+/// Did the spine's own `ELet` lowering already retain the escaping element for
+/// `root`? The assignment retain must not be stacked on top of that one, and
+/// must not be withheld when it was never taken. The two mistakes are not
+/// symmetric -- the first leaks, the second frees a reference the container
+/// still owns -- so this answers only where it can establish the retain, and
+/// the caller retains wherever it cannot.
+///
+/// The NAME alone does not establish it, which is the correction this function
+/// carries. `x = { let ys = Array::get(xss, 0); Array::get(ys, 0) }` binds `ys`
+/// in the spine exactly as the owning shape does, but `classify_let_value_heap`
+/// leaves a borrow-returning call at `rc_kind == 0`, so that binder gets no
+/// scope-end drop and the promotion guarded by it never runs. Suppressing there
+/// left the owning slot holding a reference nobody took: measured `850` on the
+/// RC lane against the bump lane's `770`, the second read answering with the
+/// filler. Pinned by `assign_borrow_bound_binder` in
+/// fixtures/rc_wrapper_assign_borrow_test.vibe.
+///
+/// So the test mirrors the promotion's OWN guard -- `rc_kind > 0 &&
+/// array_contains_str(ctx.rc_drop_names, name)` -- instead of approximating it.
+/// `heap_binding_names` is the record `classify_let_value_heap` writes on
+/// exactly its `rc_kind = 2` paths, and both callers run after the value is
+/// compiled, so the record is already there to read. Reading those flat
+/// whole-function lists by name is exact rather than approximate because
+/// normalize alpha-renames every shadowing binder (#715): within one function a
+/// name is one binding.
+///
+/// `reuse_fusion` is the promotion's remaining guard and is deliberately not
+/// tested, because it cannot hold here: it requires the binder's body to be an
+/// `EMatch`, and `scope_tail_proj_root` answers "" for one, so a spine whose
+/// root is this binder never took that branch.
+fn spine_binder_promoted(root: String, binders: Array[String], ctx: CompileCtx) -> Bool {
+  array_contains_str(binders, root) && array_contains_str(ctx.heap_binding_names, root) && array_contains_str(ctx.rc_drop_names, root)
+}
+
+/// After the store, does the plan spend MORE references on this slot than the
+/// #791 budget re-application below hands it?
+///
+/// This is the counterpart #2786's "Fix shape" asks for -- the retain and the
+/// planner have to agree about what the slot holds -- and it is arithmetic over
+/// what the planner itself recorded, not a syntactic property of the value.
+///
+/// A store of an OWNED value gives the slot one reference of its own, so the
+/// plan balances: the dups the budget re-applies plus that one cover the
+/// consumes that follow. A BORROWED value gives it none. So the slot is short
+/// exactly when the consumes after the store outnumber the dups, and the retain
+/// is what puts the missing one back.
+///
+/// The consumes after the store are the scope-end drop, if one is planned
+/// (`rc_drop_names`), plus the owning uses in the assignment's own continuation.
+/// The dups are the occurrences of the name in `rc_dup_names`, which is what the
+/// budget loop below iterates -- reading the same list keeps the two from
+/// disagreeing about the count.
+///
+/// Measured with `vibe rc-plan`, which prints the same plan linked_compile
+/// threads into codegen, on the fixtures that carry each shape:
+///
+///   | fixture case                       | plan for the slot | short |
+///   |------------------------------------|-------------------|------:|
+///   | `assign_self_borrow_unused`        | drop 1            |   yes |
+///   | `assign_self_borrow_use`           | drop 1            |   yes |
+///   | `assign_self_borrow_then_consume`  | dup 1, drop 1     |   yes |
+///   | `once_owning_self`                 | drop 1            |   yes |
+///   | `assign_self_owning_use`           | dup 1             |    no |
+///   | a consuming self-use, later read   | dup 1, drop 1     |    no |
+///   | a leaf derived from the slot       | dup 1, drop 1     |    no |
+///
+/// The first is #2786's repro, which traps in `__rt_rc_alloc` on main. The third
+/// needs the `> dups` arithmetic and not the drop record alone: its consuming
+/// use puts the slot in the budget, and a clause keyed on `rc_drop_names` with
+/// `rc_dup_names` as a veto declines it and leaves that spelling broken.
+///
+/// The last two rows are the ones a bolder clause gets wrong. Retaining a
+/// consuming self-use's slot, or one whose stored value came OUT of the slot,
+/// adds a reference nothing releases -- 80 B per assignment on the shapes
+/// measured, the same rate as #2760's own leak.
+///
+/// `md_consume_count_b` is asked about the CONTINUATION, never about the value.
+/// Asking it about the value was tried (#2799) and is wrong: whether it reads a
+/// call as owning depends on the borrow masks that file's OTHER call sites
+/// produce -- `total` comes back borrow-inferred in one fixture here and not in
+/// another -- so the clause answers differently for the same spelling depending
+/// on its neighbours. The plan does not have that property: it is computed for
+/// the function being compiled. What the continuation contributes is an owning
+/// use the drop record cannot see, and there an under-count only leaves today's
+/// answer standing.
+export fn assign_slot_short_after_store(name: String, body: Expr, ctx: CompileCtx) -> Bool {
+  let mut dups = 0
+  let mut i = 0
+  while i < Array::length(ctx.rc_dup_names) {
+    if Array::get(ctx.rc_dup_names, i) == name {
+      dups = dups + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  let scope_end = if array_contains_str(ctx.rc_drop_names, name) {
+    1
+  } else {
+    0
+  }
+  scope_end + md_consume_count_b(body, name, ctx.borrow_param_user, ctx.borrow_param_mask) > dups
+}
+
+/// Does a value's STRAIGHT-LINE spine hand a mutable slot a reference the
+/// scope does not own? The twin of `pc_count`'s ELetMut `borrowed_call`: the
+/// retain this gates and the owning plan that arm records must cover the same
+/// values, or codegen and the planner disagree about what the slot holds.
+///
+/// TWO leaf kinds are unowned, and they are enumerated here once rather than
+/// one per review round (#2760): a call returning a borrow, and a PROJECTION,
+/// which is a view into its parent exactly as that call result is.
+///
+/// The two arms are NOT separable, which was measured rather than assumed --
+/// attributed on `6507c60` by building each variant against
+/// fixtures/rc_mut_init_proj_leak_test.vibe:
+///
+///   unpatched                  268 B at N=20000,       268 B at N=40000
+///   assignment arm ONLY  1,600,348 B at N=20000, 3,200,348 B at N=40000
+///   both arms                  348 B at N=20000,       348 B at N=40000
+///
+/// The assignment arm below retains a wrapped borrow on the way IN; without
+/// the projection arm the initializer never recorded the slot owning, so
+/// nothing spends that retain and it leaks at a rate that scales with N. This
+/// is the shape of caution #1 on #2760 -- a one-sided change to what codegen
+/// records is what the planner then disagrees with -- so adding either arm
+/// alone is worse than adding neither.
+///
+/// Both callers compose this with the top-node tests they already ran, so a
+/// leaf this declines keeps today's answer -- it can only ADD a retain, never
+/// withdraw one. That is why the projection arm can be conservative about a
+/// root it cannot place without narrowing anything.
+export fn spine_leaf_unowned(value: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool {
+  let binders = array_empty()
+  let leaf = mib_spine_leaf(value, binders)
+  match leaf {
+    // The spine's own binder must not be retained TWICE. When the wrapper binds
+    // the borrow's SOURCE and OWNS it -- `x = { let ys = [..]; Array::get(ys,
+    // 0) }` -- the inner `ELet` lowering already promotes the escaping element
+    // before dropping `ys`, keyed on `scope_tail_proj_root(body) == n`.
+    // Retaining it again here gives the slot two references and its drop spends
+    // one, so every assignment leaks the element permanently.
+    //
+    // Measured on `6507c60` at N=20000: 164 B unpatched against 1,600,084 B
+    // with this clause classifying from the leaf callee alone -- 80 B per
+    // iteration, so it SCALES. Bounded by
+    // fixtures/rc_wrapper_assign_double_retain_test.vibe (gate row 40e2).
+    //
+    // `scope_tail_proj_root` is asked for the root because it is the SAME
+    // predicate the inner lowering keys on, so the two cannot read the spine
+    // differently. But the root being a spine binder is NOT on its own evidence
+    // that the lowering retained, which is what `spine_binder_promoted` exists
+    // to establish -- see its doc comment for the shape that proved it.
+    ECall(EIdent(cn, _), _, _) => if array_contains_str(binders, cn) || !call_returns_borrow(leaf, local_names, ctx) {
+      false
+    } else {
+      let tail_root = scope_tail_proj_root(value)
+      String::length(tail_root) == 0 || !spine_binder_promoted(tail_root, binders, ctx)
+    },
+    // A BARE projection is retained by `classify_let_value_heap`'s own
+    // `is_edot(value)` arm, and by the assignment path's own top-node clause.
+    // Only a WRAPPED one arrives here unretained; firing on the bare one too
+    // would retain it a second time, which is the leak this arm exists to
+    // remove. `is_edot(value)` is exactly "the spine walk moved".
+    //
+    // A projection rooted at a binder the spine OWNS is declined, for the same
+    // reason as the `ECall` arm above: that binder's own `ELet` lowering
+    // promotes the escaping element -- retains it before dropping the binder --
+    // so retaining again here gives the slot two references while its drop
+    // spends one, and every assignment leaks.
+    //
+    // Being a spine binder is NOT on its own evidence of that promotion. This
+    // arm tested the name until #2796, which is the same mistake #2793 found one
+    // arm over, reached through a projection leaf instead of a call. A binder
+    // bound to a BORROW -- `x = { let h = Array::get(hs, 0); h.node }` -- stays
+    // at `rc_kind == 0`: no entry in `heap_binding_names`, no scope-end drop, so
+    // nothing promoted and nothing already retained. Declining there costs the
+    // slot a reference the container still owns, and its drop releases it.
+    // Measured on `main` at 702c134 and on the committed seed alike: 850 on the
+    // RC lane against the bump lane's 770, the second read of the element
+    // answering with the filler.
+    //
+    // An unplaceable root (`f().a`) is still declined, and that one IS only
+    // today's answer kept -- main emits nothing there either, and widening it
+    // needs its own measurement of what the retain would be following.
+    EDot(_, _, _, _) => if is_edot(value) {
+      false
+    } else {
+      let root = proj_root_ident(leaf)
+      String::length(root) > 0 && !spine_binder_promoted(root, binders, ctx)
+    },
+    _ => false
+  }
+}
+
+/// The leaf of a STRAIGHT-LINE spine, collecting the names it binds. Mirrors
+/// `pmvc_spine_leaf` in perceus.vibe; branching stops the walk because the
+/// plan it pairs with records one answer per binding.
+export fn mib_spine_leaf(e: Expr, binders: Array[String]) -> Expr {
+  match e {
+    ELet(n, _, b, _) => {
+      Array::push(binders, n)
+      mib_spine_leaf(b, binders)
+    },
+    ELetMut(n, _, b, _) => {
+      Array::push(binders, n)
+      mib_spine_leaf(b, binders)
+    },
+    ELetRec(n, _, b) => {
+      Array::push(binders, n)
+      mib_spine_leaf(b, binders)
+    },
+    ESeq(_, b) => mib_spine_leaf(b, binders),
+    EAssign(_, _, b) => mib_spine_leaf(b, binders),
+    EAssignOp(_, _, _, b) => mib_spine_leaf(b, binders),
+    _ => e
+  }
+}
+
+/// The direct-call borrow contract, shared by initialization and assignment.
+///
+/// The tables are keyed by GLOBAL name, so a callee whose spelling resolves
+/// to a LOCAL -- a parameter or a local closure shadowing a borrow-returning
+/// top-level function -- is not described by them. Reading one anyway calls a
+/// fresh owned result borrowed; on the assignment path that adds a retain
+/// nothing spends, measured at 80 B per iteration (244 B on main against
+/// 1,600,164 B at N=20000). A local resolves to no contract, which is not the
+/// same as a borrow contract.
+export fn call_returns_borrow(value: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool {
+  match value {
+    ECall(EIdent(cn, _), _, _) => find_local_slot(local_names, cn) < 0 && (is_borrow_ret_builtin(cn) || bsearch_leftmost(ctx.borrow_ret_names, cn) >= 0),
+    _ => false
+  }
+}
+
+/// Find a path that can return this owner through a borrow or passthrough
+/// helper. The caller compares the actual result pointer with the owner, so
+/// a fresh branch does not retain an owner it did not return.
+fn rc_scope_borrow_arg_reaches_owner(e: Expr, owner: String, local_names: Array[String], ctx: CompileCtx) -> Bool {
+  let operand = cl_return_operand(e)
+  match operand {
+    EIdent(_, _) => proj_root_ident(operand) == owner,
+    EDot(_, _, _, _) => proj_root_ident(operand) == owner,
+    ECall(EIdent(callee, _), args, _) => {
+      let mut source_idx = if call_returns_borrow(operand, local_names, ctx) {
+        0
+      } else {
+        -1
+      }
+      if source_idx < 0 && find_local_slot(local_names, callee) < 0 {
+        let mut i = 0
+        while i < Array::length(ctx.passthrough_ret_params) {
+          let (name, param_idx) = Array::get(ctx.passthrough_ret_params, i)
+          if name == callee {
+            source_idx = param_idx
+          }
+          i = i + 1
+        }
+      }
+      if source_idx >= 0 && source_idx < Array::length(args) {
+        rc_scope_borrow_arg_reaches_owner(Array::get(args, source_idx), owner, local_names, ctx)
+      } else {
+        false
+      }
+    },
+    EIf(_, yes, no) => rc_scope_borrow_arg_reaches_owner(yes, owner, local_names, ctx) || rc_scope_borrow_arg_reaches_owner(no, owner, local_names, ctx),
+    EMatch(_, arms) => {
+      let mut found = false
+      for arm in arms {
+        let binds: Array[String] = []
+        let _ = collect_pattern_bindings(arm.0, binds)
+        if !array_contains_str(binds, owner) && rc_scope_borrow_arg_reaches_owner(arm.1, owner, local_names, ctx) {
+          found = true
+        }
+      }
+      found
+    },
+    ELet(bound, value, tail, _) => if bound == owner {
+      false
+    } else if rc_mut_rec_result_is_name(tail, bound) || rc_exit_passthrough_rec_result(tail, bound, local_names, [
+    ], ctx) {
+      rc_scope_borrow_arg_reaches_owner(value, owner, local_names, ctx)
+    } else {
+      !assign_value_mentions(value, owner) && rc_scope_borrow_arg_reaches_owner(tail, owner, local_names, ctx)
+    },
+    ELetMut(bound, value, tail, _) => bound != owner && !assign_value_mentions(value, owner) && rc_scope_borrow_arg_reaches_owner(tail, owner, local_names, ctx),
+    ELetRec(bound, value, tail) => bound != owner && !assign_value_mentions(value, owner) && rc_scope_borrow_arg_reaches_owner(tail, owner, local_names, ctx),
+    ESeq(head, tail) => !assign_value_mentions(head, owner) && rc_scope_borrow_arg_reaches_owner(tail, owner, local_names, ctx),
+    EAssign(target, value, tail) => target != owner && !assign_value_mentions(value, owner) && rc_scope_borrow_arg_reaches_owner(tail, owner, local_names, ctx),
+    EAssignOp(target, _, value, tail) => target != owner && !assign_value_mentions(value, owner) && rc_scope_borrow_arg_reaches_owner(tail, owner, local_names, ctx),
+    _ => false
+  }
+}
+
+fn rc_mut_rec_owner_slot(name: String, local_names: Array[String], ctx: CompileCtx) -> Bool {
+  let slot = find_local_slot(local_names, name)
+  let mut i = Array::length(ctx.rc_exit_stack_names) - 1
+  while i >= 0 {
+    if Array::get(ctx.rc_exit_stack_names, i) == name {
+      return Array::get(ctx.rc_exit_stack_info, i * 3) == 6 && Array::get(ctx.rc_exit_stack_info, i * 3 + 1) == slot
+    }
+    i = i - 1
+  }
+  false
+}
+
+/// A mutable slot receives an owning passthrough result. Retain its recursive
+/// argument at the selected call, so either a forwarded result or an early
+/// fresh return can consume that reference without consuming the binder's.
+fn rc_mut_rec_result_is_name(e: Expr, name: String) -> Bool {
+  match cl_return_operand(e) {
+    EIdent(result, _) => result == name,
+    ELet(bound, value, tail, _) => bound != name && (if rc_mut_rec_result_is_name(tail, bound) {
+      rc_mut_rec_result_is_name(value, name)
+    } else {
+      !assign_value_mentions(value, name) && rc_mut_rec_result_is_name(tail, name)
+    }),
+    ELetMut(bound, value, tail, _) => bound != name && !assign_value_mentions(value, name) && rc_mut_rec_result_is_name(tail, name),
+    ELetRec(bound, value, tail) => bound != name && !assign_value_mentions(value, name) && rc_mut_rec_result_is_name(tail, name),
+    ESeq(head, tail) => !assign_value_mentions(head, name) && rc_mut_rec_result_is_name(tail, name),
+    EAssign(target, value, tail) => target != name && !assign_value_mentions(value, name) && rc_mut_rec_result_is_name(tail, name),
+    EAssignOp(target, _, value, tail) => target != name && !assign_value_mentions(value, name) && rc_mut_rec_result_is_name(tail, name),
+    _ => false
+  }
+}
+
+fn rc_mut_rec_result_flows_from(e: Expr, name: String, local_names: Array[String], ctx: CompileCtx, shadowed: Array[String]) -> Bool {
+  rc_mut_rec_result_is_name(e, name) || rc_exit_passthrough_rec_result(e, name, local_names, shadowed, ctx)
+}
+
+fn rc_mut_rec_prefix_reads_owner(e: Expr, local_names: Array[String], ctx: CompileCtx, shadowed: Array[String]) -> Bool {
+  for owner in ctx.rc_exit_lets {
+    if !array_contains_str(shadowed, owner) && rc_mut_rec_owner_slot(owner, local_names, ctx) && assign_value_mentions(e, owner) {
+      return true
+    }
+  }
+  false
+}
+
+fn rc_mut_rec_retain_passthrough_source(e: Expr, local_names: Array[String], ctx: CompileCtx, shadowed: Array[String]) -> Expr {
+  match e {
+    EIdent(name, _) => if !array_contains_str(shadowed, name) && array_contains_str(ctx.rc_exit_lets, name) && rc_mut_rec_owner_slot(name, local_names, ctx) {
+      ECall(EIdent("__loop_tail_retain", -1), [e], -1)
+    } else {
+      e
+    },
+    ECall(_, _, _) => rc_mut_rec_transfer_value(e, local_names, ctx, shadowed),
+    EIf(cond, yes, no) => EIf(cond, rc_mut_rec_retain_passthrough_source(yes, local_names, ctx, shadowed), rc_mut_rec_retain_passthrough_source(no, local_names, ctx, shadowed)),
+    EMatch(scrutinee, arms) => EMatch(scrutinee, for arm in arms {
+      let mark = Array::length(shadowed)
+      let _ = collect_pattern_bindings(arm.0, shadowed)
+      let next = rc_mut_rec_retain_passthrough_source(arm.1, local_names, ctx, shadowed)
+      Array::truncate(shadowed, mark)
+      (arm.0, next)
+    }),
+    ELet(name, value, body, off) => if rc_mut_rec_result_flows_from(body, name, local_names, ctx, shadowed) {
+      ELet(name, rc_mut_rec_retain_passthrough_source(value, local_names, ctx, shadowed), body, off)
+    } else if rc_mut_rec_prefix_reads_owner(value, local_names, ctx, shadowed) {
+      e
+    } else {
+      let mark = Array::length(shadowed)
+      Array::push(shadowed, name)
+      let next_body = rc_mut_rec_retain_passthrough_source(body, local_names, ctx, shadowed)
+      Array::truncate(shadowed, mark)
+      ELet(name, value, next_body, off)
+    },
+    ELetMut(name, value, body, off) => if rc_mut_rec_prefix_reads_owner(value, local_names, ctx, shadowed) {
+      e
+    } else {
+      let mark = Array::length(shadowed)
+      Array::push(shadowed, name)
+      let next_body = rc_mut_rec_retain_passthrough_source(body, local_names, ctx, shadowed)
+      Array::truncate(shadowed, mark)
+      ELetMut(name, value, next_body, off)
+    },
+    ELetRec(name, value, body) => if rc_mut_rec_prefix_reads_owner(value, local_names, ctx, shadowed) {
+      e
+    } else {
+      let mark = Array::length(shadowed)
+      Array::push(shadowed, name)
+      let next_body = rc_mut_rec_retain_passthrough_source(body, local_names, ctx, shadowed)
+      Array::truncate(shadowed, mark)
+      ELetRec(name, value, next_body)
+    },
+    ESeq(head, tail) => if rc_mut_rec_prefix_reads_owner(head, local_names, ctx, shadowed) {
+      e
+    } else {
+      ESeq(head, rc_mut_rec_retain_passthrough_source(tail, local_names, ctx, shadowed))
+    },
+    EAssign(target, value, tail) => if rc_mut_rec_prefix_reads_owner(value, local_names, ctx, shadowed) || rc_mut_rec_owner_slot(target, local_names, ctx) {
+      e
+    } else {
+      EAssign(target, value, rc_mut_rec_retain_passthrough_source(tail, local_names, ctx, shadowed))
+    },
+    EAssignOp(target, op, value, tail) => if rc_mut_rec_prefix_reads_owner(value, local_names, ctx, shadowed) || rc_mut_rec_owner_slot(target, local_names, ctx) {
+      e
+    } else {
+      EAssignOp(target, op, value, rc_mut_rec_retain_passthrough_source(tail, local_names, ctx, shadowed))
+    },
+    _ => e
+  }
+}
+
+export fn rc_mut_rec_transfer_value(e: Expr, local_names: Array[String], ctx: CompileCtx, shadowed: Array[String]) -> Expr {
+  match e {
+    ECall(EIdent("__lambda_return_owned", off), args, call_off) => if off < 0 && Array::length(args) == 1 {
+      ECall(EIdent("__lambda_return_owned", off), [
+        rc_mut_rec_transfer_value(Array::get(args, 0), local_names, ctx, shadowed)
+      ], call_off)
+    } else {
+      e
+    },
+    ECall(EIdent(callee, off), args, call_off) => {
+      if find_local_slot(local_names, callee) >= 0 {
+        return e
+      }
+      for row in ctx.passthrough_ret_params {
+        if row.0 == callee && row.1 < Array::length(args) {
+          let next_args: Array[Expr] = []
+          let mut i = 0
+          while i < Array::length(args) {
+            let arg = Array::get(args, i)
+            Array::push(next_args, if i == row.1 {
+              rc_mut_rec_retain_passthrough_source(arg, local_names, ctx, shadowed)
+            } else {
+              arg
+            })
+            i = i + 1
+          }
+          return ECall(EIdent(callee, off), next_args, call_off)
+        }
+      }
+      e
+    },
+    EIf(cond, yes, no) => EIf(cond, rc_mut_rec_transfer_value(yes, local_names, ctx, shadowed), rc_mut_rec_transfer_value(no, local_names, ctx, shadowed)),
+    EMatch(scrutinee, arms) => EMatch(scrutinee, for arm in arms {
+      let mark = Array::length(shadowed)
+      let _ = collect_pattern_bindings(arm.0, shadowed)
+      let next = rc_mut_rec_transfer_value(arm.1, local_names, ctx, shadowed)
+      Array::truncate(shadowed, mark)
+      (arm.0, next)
+    }),
+    ELet(name, value, body, off) => {
+      let next_value = if rc_mut_rec_result_is_name(body, name) {
+        rc_mut_rec_transfer_value(value, local_names, ctx, shadowed)
+      } else if rc_exit_passthrough_rec_result(body, name, local_names, shadowed, ctx) {
+        rc_mut_rec_retain_passthrough_source(value, local_names, ctx, shadowed)
+      } else {
+        value
+      }
+      let mark = Array::length(shadowed)
+      Array::push(shadowed, name)
+      let next_body = rc_mut_rec_transfer_value(body, local_names, ctx, shadowed)
+      Array::truncate(shadowed, mark)
+      ELet(name, next_value, next_body, off)
+    },
+    ELetMut(name, value, body, off) => {
+      let mark = Array::length(shadowed)
+      Array::push(shadowed, name)
+      let next_body = rc_mut_rec_transfer_value(body, local_names, ctx, shadowed)
+      Array::truncate(shadowed, mark)
+      ELetMut(name, value, next_body, off)
+    },
+    ELetRec(name, value, body) => {
+      let mark = Array::length(shadowed)
+      Array::push(shadowed, name)
+      let next_body = rc_mut_rec_transfer_value(body, local_names, ctx, shadowed)
+      Array::truncate(shadowed, mark)
+      ELetRec(name, value, next_body)
+    },
+    ESeq(head, tail) => ESeq(head, rc_mut_rec_transfer_value(tail, local_names, ctx, shadowed)),
+    EAssign(name, value, body) => EAssign(name, value, rc_mut_rec_transfer_value(body, local_names, ctx, shadowed)),
+    EAssignOp(name, op, value, body) => EAssignOp(name, op, value, rc_mut_rec_transfer_value(body, local_names, ctx, shadowed)),
+    EHandle(body, arms) => EHandle(rc_mut_rec_transfer_value(body, local_names, ctx, shadowed), for arm in arms {
+      let mark = Array::length(shadowed)
+      let _ = collect_pattern_bindings(arm.0, shadowed)
+      let next = rc_mut_rec_transfer_value(arm.1, local_names, ctx, shadowed)
+      Array::truncate(shadowed, mark)
+      (arm.0, next)
+    }),
+    _ => e
+  }
+}
+
+/// Known borrow and passthrough sources already receive their own retain at
+/// the call. An unclassified call or mutable initializer can also return the
+/// owner; let the scope-end pointer comparison decide whether it did.
+fn rc_scope_unknown_result_may_be_owner(value: Expr, owner: String, local_names: Array[String], ctx: CompileCtx) -> Bool {
+  assign_value_mentions(value, owner) && !rc_scope_borrow_arg_reaches_owner(value, owner, local_names, ctx)
+}
+
+export fn rc_scope_tail_borrows_name(e: Expr, owner: String, local_names: Array[String], ctx: CompileCtx) -> Bool {
+  let operand = cl_return_operand(e)
+  match operand {
+    ELet(n, value, body, _) => {
+      rc_scope_tail_borrows_name(body, owner, local_names, ctx) || (rc_scope_borrow_arg_reaches_owner(value, owner, local_names, ctx) && rc_scope_tail_borrows_name(body, n, local_names, ctx))
+    },
+    ELetMut(n, value, body, _) => rc_scope_tail_borrows_name(body, owner, local_names, ctx) || (rc_scope_unknown_result_may_be_owner(value, owner, local_names, ctx) && rc_scope_tail_borrows_name(body, n, local_names, ctx)),
+    ELetRec(_, _, body) => rc_scope_tail_borrows_name(body, owner, local_names, ctx),
+    ESeq(_, body) => rc_scope_tail_borrows_name(body, owner, local_names, ctx),
+    EAssign(_, _, body) => rc_scope_tail_borrows_name(body, owner, local_names, ctx),
+    EAssignOp(_, _, _, body) => rc_scope_tail_borrows_name(body, owner, local_names, ctx),
+    EReturn(value) => rc_scope_tail_borrows_name(value, owner, local_names, ctx),
+    EIf(_, yes, no) => rc_scope_tail_borrows_name(yes, owner, local_names, ctx) || rc_scope_tail_borrows_name(no, owner, local_names, ctx),
+    EMatch(_, arms) => {
+      let mut found = false
+      for arm in arms {
+        if rc_scope_tail_borrows_name(arm.1, owner, local_names, ctx) {
+          found = true
+        }
+      }
+      found
+    },
+    EHandle(body, arms) => {
+      let mut found = rc_scope_tail_borrows_name(body, owner, local_names, ctx)
+      for arm in arms {
+        if rc_scope_tail_borrows_name(arm.1, owner, local_names, ctx) {
+          found = true
+        }
+      }
+      found
+    },
+    ECall(_, _, _) => rc_scope_borrow_arg_reaches_owner(operand, owner, local_names, ctx) || rc_scope_unknown_result_may_be_owner(operand, owner, local_names, ctx),
+    _ => rc_scope_borrow_arg_reaches_owner(operand, owner, local_names, ctx)
+  }
+}
+
+/// #3184: does the name `n`, stored into a slot that owns what it holds, name
+/// a VIEW -- a binding holding no reference of its own, whose value a
+/// container or scrutinee owns? The `let` lowering marks every such binding
+/// for its body the same way: a borrowed `let` (`let v = Array::get(xs, 0)`,
+/// a block ending in one, an alias of one) and a `for` element join
+/// `loop_borrowed_names`, and none of them joins `heap_binding_names`, which is
+/// the record of the bindings that DO own their value. A loop-carried name is
+/// in `loop_borrowed_names` too, but an owned one is a heap binding, and the
+/// plan answers for it (`assign_ident_store_dup`). A name that is neither --
+/// an `Int`, a `String` -- is retained through the guarded dup, which leaves
+/// an immediate or a fat pointer alone.
+fn assign_name_is_view(n: String, local_names: Array[String], ctx: CompileCtx) -> Bool {
+  find_local_slot(local_names, n) >= 0 && array_contains_str(ctx.loop_borrowed_names, n) && !array_contains_str(ctx.ref_cell_names, n) && !array_contains_str(ctx.heap_binding_names, n)
+}
+
+export fn assign_ident_is_view(value: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  match value {
+    EIdent(n, _) => ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && assign_name_is_view(n, local_names, ctx) && !assign_value_is_immediate(value, local_names, ctx),
+    _ => false
+  }
+}
+
+/// #3184: a value the slot classifiers already call an `Int`, a `Bool` or a
+/// `String` -- the tests the `let mut` lowering tracks a slot's kind with --
+/// holds no RC block, so a retain of it is a guarded no-op that still costs
+/// its instructions, and a `let mut` it initializes need not become a heap
+/// slot (whose every later store would re-apply the dup budget, all of it
+/// no-ops too). Measured: bench/exec/json_scan grew 143 B and 50,750 fuel
+/// from `let mut j2 = i` alone before this test.
+fn assign_value_is_immediate(value: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  expr_is_intish(value, local_names, ctx) || expr_is_boolish(value, local_names, ctx) || cc_expr_is_stringish(value, local_names, ctx)
+}
+
+/// #3184: did the plan ask this store to take a reference of its own
+/// (`PaStoreDup`: the value is an owned binding from outside the loop the
+/// store runs in)? Keyed by the occurrence's source offset, so an occurrence
+/// with none never matches -- the plan does not emit one for it either. An
+/// immediate (`assign_value_is_immediate`) is declined: the plan's row only
+/// kept the name's own release, and a value with no RC block has nothing a
+/// shared copy could outlive.
+export fn assign_ident_store_dup(value: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  match value {
+    EIdent(n, off) => if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && off >= 0 && find_local_slot(local_names, n) >= 0 && !array_contains_str(ctx.ref_cell_names, n) && !assign_value_is_immediate(value, local_names, ctx) {
+      let mut found = false
+      let mut i = 0
+      while !found && i < Array::length(ctx.rc_store_dup_names) {
+        if Array::get(ctx.rc_store_dup_offs, i) == off && Array::get(ctx.rc_store_dup_names, i) == n {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    } else {
+      false
+    },
+    _ => false
+  }
+}
+
+/// #3184: the slot a parameterized `loop` hands its value back through.
+/// `break v` desugars to `__loop_result = v; break` (parser_expr_primary.vibe's
+/// `desugar_loop_body`), and the loop's value -- `__loop_result` itself -- is
+/// taken as an owned one wherever it lands (value_spine_borrowed records a
+/// `let mut` binder as owned). The slot is initialized with `0` and stored at
+/// most once before the `break` leaves, so it holds nothing to release, but
+/// what it stores must be a reference of its own. A nested loop's slot is
+/// alpha-renamed (normalize's `__shadow_<n>_` prefix), and keeps its suffix.
+export fn is_loop_result_slot(name: String) -> Bool {
+  name == "__loop_result" || (String::starts_with(name, "__shadow_") && String::ends_with(name, "___loop_result"))
+}
+
+/// #3184: a WRAPPED store whose result spine ends in a view name -- `cur = {
+/// let v = Array::get(xs, 0); v }` or `cur = { f(); v }` -- is short a
+/// reference exactly as the bare `cur = v` is. A name the spine itself binds
+/// is a view when its `let` gave it no reference (no `heap_binding_names`
+/// entry, which the `let` lowering writes before this is asked); an owning
+/// binder promotes the escaping value at its own scope end already, or handed
+/// it over by transfer. A name from outside the spine is asked the question
+/// the bare store asks. The bare name itself is the caller's (retained before
+/// the old value is released), so it is declined here.
+export fn spine_leaf_ident_view(value: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool {
+  if is_eident(value) || !ctx.enable_rc {
+    false
+  } else {
+    let binders = array_empty()
+    let leaf = mib_spine_leaf(value, binders)
+    match leaf {
+      EIdent(n, _) => if array_contains_str(binders, n) {
+        !array_contains_str(ctx.heap_binding_names, n) && !array_contains_str(ctx.ref_cell_names, n)
+      } else {
+        assign_name_is_view(n, local_names, ctx)
+      },
+      _ => false
+    }
+  }
+}
+
+/// #3184: the branch tails of a conditional stored into an owning slot that
+/// hand back a VIEW, each wrapped in the `__loop_tail_retain` marker
+/// (compile_call emits the value and a guarded dup): a borrow-returning call,
+/// a projection, or a view name (`assign_name_is_view`). An owned tail -- a
+/// fresh value, an owned binding's transfer, a pattern binder the match
+/// lowering already retained for its consume -- is left alone, so each path
+/// stores exactly one reference. `inner_owned` distinguishes a borrowed `let`
+/// alias from a match binder that the arm already retained.
+export fn assign_retain_view_tails(e: Expr, local_names: Array[String], inner: Array[String], inner_owned: Array[Int], ctx: CompileCtx) -> Expr with Exception {
+  match e {
+    ECall(_, _, _) => if call_returns_borrow(e, local_names, ctx) && !callee_bound_in(e, inner) {
+      ECall(EIdent("__loop_tail_retain", -1), [e], -1)
+    } else {
+      e
+    },
+    EIdent(x, _) => {
+      let bi = find_local_slot(inner, x)
+      if (bi >= 0 && Array::get(inner_owned, bi) == 0) || (bi < 0 && assign_name_is_view(x, local_names, ctx)) {
+        ECall(EIdent("__loop_tail_retain", -1), [e], -1)
+      } else {
+        e
+      }
+    },
+    EDot(_, _, _, _) => {
+      let root = proj_root_ident(e)
+      if String::length(root) > 0 && !array_contains_str(inner, root) && !array_contains_str(ctx.ref_cell_names, root) {
+        ECall(EIdent("__loop_tail_retain", -1), [e], -1)
+      } else {
+        e
+      }
+    },
+    EIf(c, t, el) => EIf(c, assign_retain_view_tails(t, local_names, inner, inner_owned, ctx), assign_retain_view_tails(el, local_names, inner, inner_owned, ctx)),
+    EMatch(scrut, arms) => {
+      let out = array_empty()
+      let mut ai = 0
+      while ai < Array::length(arms) {
+        let (apat, abody) = Array::get(arms, ai)
+        let arm_inner = with_pattern_binders(inner, apat)
+        let arm_owned = Array::slice(inner_owned, 0, Array::length(inner_owned))
+        let _ = vsb_pad_owned(arm_inner, arm_owned, 1)
+        Array::push(out, (apat, assign_retain_view_tails(abody, local_names, arm_inner, arm_owned, ctx)))
+        ai = ai + 1
+      }
+      EMatch(scrut, out)
+    },
+    EHandle(hb, harms) => {
+      let out = array_empty()
+      let mut ai = 0
+      while ai < Array::length(harms) {
+        let (apat, abody) = Array::get(harms, ai)
+        let arm_inner = with_pattern_binders(inner, apat)
+        let arm_owned = Array::slice(inner_owned, 0, Array::length(inner_owned))
+        let _ = vsb_pad_owned(arm_inner, arm_owned, 1)
+        Array::push(out, (apat, assign_retain_view_tails(abody, local_names, arm_inner, arm_owned, ctx)))
+        ai = ai + 1
+      }
+      EHandle(assign_retain_view_tails(hb, local_names, inner, inner_owned, ctx), out)
+    },
+    ELet(n, v, b, soff) => {
+      let borrowed = !is_edot(v) && value_spine_borrowed(v, local_names, inner, inner_owned, ctx)
+      let next_owned = Array::slice(inner_owned, 0, Array::length(inner_owned))
+      Array::push(next_owned, if borrowed {
+        0
+      } else {
+        1
+      })
+      ELet(n, v, assign_retain_view_tails(b, local_names, with_name(inner, n), next_owned, ctx), soff)
+    },
+    ELetMut(n, v, b, soff) => {
+      let next_owned = Array::slice(inner_owned, 0, Array::length(inner_owned))
+      Array::push(next_owned, 1)
+      ELetMut(n, v, assign_retain_view_tails(b, local_names, with_name(inner, n), next_owned, ctx), soff)
+    },
+    ELetRec(n, v, b) => {
+      let borrowed = !is_edot(v) && value_spine_borrowed(v, local_names, inner, inner_owned, ctx)
+      let next_owned = Array::slice(inner_owned, 0, Array::length(inner_owned))
+      Array::push(next_owned, if borrowed {
+        0
+      } else {
+        1
+      })
+      ELetRec(n, v, assign_retain_view_tails(b, local_names, with_name(inner, n), next_owned, ctx))
+    },
+    ESeq(a, b) => ESeq(a, assign_retain_view_tails(b, local_names, inner, inner_owned, ctx)),
+    EAssign(n, v, b) => EAssign(n, v, assign_retain_view_tails(b, local_names, inner, inner_owned, ctx)),
+    EAssignOp(n, op, v, b) => EAssignOp(n, op, v, assign_retain_view_tails(b, local_names, inner, inner_owned, ctx)),
+    _ => e
+  }
+}
+
+/// #3184: the branch and block tails of a stored value that name an owned
+/// binding from outside the loop the store runs in, each wrapped in the
+/// `__loop_tail_retain` marker where the plan emitted a `PaStoreDup` row for
+/// that occurrence (`assign_ident_store_dup`). The walk is the one the plan
+/// marks the same tails with (perceus.vibe's `pe_mark_store_tails`), so the
+/// plan keeps the binding's own reference exactly where codegen retains.
+export fn assign_retain_store_dup_tails(e: Expr, local_names: Array[String], inner: Array[String], ctx: CompileCtx) -> Expr with Exception {
+  match e {
+    EIdent(x, _) => if !array_contains_str(inner, x) && assign_ident_store_dup(e, local_names, ctx) {
+      ECall(EIdent("__loop_tail_retain", -1), [e], -1)
+    } else {
+      e
+    },
+    EIf(c, t, el) => EIf(c, assign_retain_store_dup_tails(t, local_names, inner, ctx), assign_retain_store_dup_tails(el, local_names, inner, ctx)),
+    EMatch(scrut, arms) => {
+      let out = array_empty()
+      let mut ai = 0
+      while ai < Array::length(arms) {
+        let (apat, abody) = Array::get(arms, ai)
+        Array::push(out, (apat, assign_retain_store_dup_tails(abody, local_names, with_pattern_binders(inner, apat), ctx)))
+        ai = ai + 1
+      }
+      EMatch(scrut, out)
+    },
+    EHandle(hb, harms) => {
+      let out = array_empty()
+      let mut ai = 0
+      while ai < Array::length(harms) {
+        let (apat, abody) = Array::get(harms, ai)
+        Array::push(out, (apat, assign_retain_store_dup_tails(abody, local_names, with_pattern_binders(inner, apat), ctx)))
+        ai = ai + 1
+      }
+      EHandle(assign_retain_store_dup_tails(hb, local_names, inner, ctx), out)
+    },
+    ELet(n, v, b, soff) => ELet(n, v, assign_retain_store_dup_tails(b, local_names, with_name(inner, n), ctx), soff),
+    ELetMut(n, v, b, soff) => ELetMut(n, v, assign_retain_store_dup_tails(b, local_names, with_name(inner, n), ctx), soff),
+    ELetRec(n, v, b) => ELetRec(n, v, assign_retain_store_dup_tails(b, local_names, with_name(inner, n), ctx)),
+    ESeq(a, b) => ESeq(a, assign_retain_store_dup_tails(b, local_names, inner, ctx)),
+    EAssign(n, v, b) => EAssign(n, v, assign_retain_store_dup_tails(b, local_names, inner, ctx)),
+    EAssignOp(n, op, v, b) => EAssignOp(n, op, v, assign_retain_store_dup_tails(b, local_names, inner, ctx)),
+    _ => e
+  }
+}
+
+/// #3190: a `let` / `let mut` initializer is a store into its binder too. A
+/// branch or block tail of it naming an owned binding from outside the loop
+/// the `let` runs in -- `let mut c = if k { p } else { A(..) }`, `let c =
+/// match i { 0 => A(..), _ => p }`, `let c = { f(); p }` -- was planned as the
+/// transfer of `p`'s one reference, which the first iteration's release of
+/// `c` (or the owning use it was handed to) spent, and the next iteration read
+/// freed memory. The plan now takes each such tail as a `PaStoreDup` row
+/// (perceus.vibe's `pe_emit_store_value`), keeping `p`'s own reference, and
+/// this wraps exactly those tails in the `__loop_tail_retain` marker, so the
+/// binder holds a reference of its own on every path. A bare name is not
+/// rewritten: `let` takes it as an alias (PaAliasDup) and `let mut` retains it
+/// itself (`assign_ident_store_dup`). Asked with the binder's own slot masked,
+/// as its value compiles, so a same-spelled name is the outer binding the
+/// plan's row was keyed to.
+export fn let_retain_store_dup_tails(value: Expr, local_names: Array[String], ctx: CompileCtx) -> Expr with Exception {
+  if ctx.enable_rc && !is_eident(value) && Array::length(ctx.rc_store_dup_names) > 0 && store_dup_tail_present(value, ctx) {
+    assign_retain_store_dup_tails(value, local_names, array_empty(), ctx)
+  } else {
+    value
+  }
+}
+
+/// #3184: did one of the rewrites above retain a tail of this value in place?
+export fn assign_tails_retained(e: Expr) -> Bool {
+  match e {
+    ECall(EIdent(f, off), _, _) => f == "__loop_tail_retain" && off < 0,
+    EIf(_, t, el) => assign_tails_retained(t) || assign_tails_retained(el),
+    EMatch(_, arms) => assign_arm_tails_retained(arms),
+    EHandle(hb, harms) => assign_tails_retained(hb) || assign_arm_tails_retained(harms),
+    ELet(_, _, b, _) => assign_tails_retained(b),
+    ELetMut(_, _, b, _) => assign_tails_retained(b),
+    ELetRec(_, _, b) => assign_tails_retained(b),
+    ESeq(_, b) => assign_tails_retained(b),
+    EAssign(_, _, b) => assign_tails_retained(b),
+    EAssignOp(_, _, _, b) => assign_tails_retained(b),
+    _ => false
+  }
+}
+
+fn assign_arm_tails_retained(arms: Array[(Pat, Expr)]) -> Bool {
+  let mut found = false
+  let mut ai = 0
+  while !found && ai < Array::length(arms) {
+    let (_, abody) = Array::get(arms, ai)
+    found = assign_tails_retained(abody)
+    ai = ai + 1
+  }
+  found
+}
+
+/// #768 (heap-corruption root cause): a `let` whose value is an if/match and
+/// whose scope-end drop is planned (rc_drop_names) consumes ONE reference per
+/// EXECUTION -- but a branch tail that is a bare loop-borrowed ident (or a
+/// projection off one) is a BORROWED read of a loop-carried binding, and the
+/// static Perceus dup budget cannot cover per-iteration reads (same class as
+/// #706's call-arg case, which dups at consuming call sites). Without a dup the
+/// per-iteration drop eats the loop-carried reference itself: refcount reaches
+/// 0 while the outer structure still points at the block, the free-list reuses
+/// it, and the next allocation aliases live data (use-after-free observed as
+/// the ensure_grouped_source_bucket / loader_manifest_sources_test corruption:
+/// `let bucket = if cached { last } else { ensure(...) }` inside `while`).
+/// This rewrite wraps exactly those branch tails in a codegen-internal
+/// `__loop_tail_retain(x)` marker (compile_call emits value + guarded rc_dup),
+/// so the drop consumes the dup instead. Tails bound INSIDE the branch (fresh
+/// call results like the `ensure(...)` arm) are not loop-borrowed and stay
+/// unwrapped -- no new retention on the owned path. Guarded dup no-ops on
+/// scalars/non-RC values; worst case is the codebase-wide "leak, never corrupt"
+/// trade.
+export fn retain_wrap_branch_tails(e: Expr, local_names: Array[String], inner: Array[String], ctx: CompileCtx) -> Expr with Exception {
+  match e {
+    // #3103: a branch tail that CALLS a borrow-returning function
+    // (`Array::get(xs, i)`, `Map::get`, a user wrapper) hands back a view of
+    // an element its container still owns, exactly like a loop-borrowed
+    // ident. The plan budgets the binding's scope-end drop as if the if/match
+    // produced an owned reference, so without this retain the drop frees the
+    // element in place and the next read of the container (the next call, the
+    // next iteration) reaches a freed block. Unlike an ident, this holds in
+    // straight-line code too, which is why retain_wrap_let_value does not
+    // require a loop for it.
+    ECall(_, _, _) => if call_returns_borrow(e, local_names, ctx) && !callee_bound_in(e, inner) {
+      ECall(EIdent("__loop_tail_retain", -1), [e], -1)
+    } else {
+      e
+    },
+    EIdent(x, p) => if array_contains_str(ctx.loop_borrowed_names, x) && !array_contains_str(ctx.ref_cell_names, x) && !array_contains_str(inner, x) {
+      ECall(EIdent("__loop_tail_retain", -1), [EIdent(x, p)], -1)
+    } else {
+      e
+    },
+    EDot(_, _, _, _) => {
+      let root = proj_root_ident(e)
+      if String::length(root) > 0 && array_contains_str(ctx.loop_borrowed_names, root) && !array_contains_str(ctx.ref_cell_names, root) {
+        ECall(EIdent("__loop_tail_retain", -1), [e], -1)
+      } else {
+        e
+      }
+    },
+    EIf(c, t, el) => EIf(c, retain_wrap_branch_tails(t, local_names, inner, ctx), retain_wrap_branch_tails(el, local_names, inner, ctx)),
+    EMatch(scrut, arms) => {
+      if Array::length(arms) == 0 {
+        e
+      } else {
+        let out = array_empty()
+        let mut ai = 0
+        while ai < Array::length(arms) {
+          let (apat, abody) = Array::get(arms, ai)
+          Array::push(out, (apat, retain_wrap_branch_tails(abody, local_names, with_pattern_binders(inner, apat), ctx)))
+          ai = ai + 1
+        }
+        EMatch(scrut, out)
+      }
+    },
+    // #3108 review: a handler's value is its body's, or an arm's.
+    EHandle(hb, harms) => EHandle(retain_wrap_branch_tails(hb, local_names, inner, ctx), retain_wrap_arms(harms, local_names, inner, ctx)),
+    ELet(n, v, b, soff) => ELet(n, v, retain_wrap_branch_tails(b, local_names, with_name(inner, n), ctx), soff),
+    ELetMut(n, v, b, soff) => ELetMut(n, v, retain_wrap_branch_tails(b, local_names, with_name(inner, n), ctx), soff),
+    // #3108 review: `let rec` is a let form too; its binder is in scope for
+    // both its value and the body, so it joins the inner scope here.
+    ELetRec(n, v, b) => ELetRec(n, v, retain_wrap_branch_tails(b, local_names, with_name(inner, n), ctx)),
+    ESeq(a, b) => ESeq(a, retain_wrap_branch_tails(b, local_names, inner, ctx)),
+    EAssign(n, v, b) => EAssign(n, v, retain_wrap_branch_tails(b, local_names, inner, ctx)),
+    EAssignOp(n, op, v, b) => EAssignOp(n, op, v, retain_wrap_branch_tails(b, local_names, inner, ctx)),
+    _ => e
+  }
+}
+
+/// #768 (companion to retain_wrap_branch_tails): true when an if/match VALUE
+/// has at least one branch tail that is a BORROWED read -- a loop-borrowed /
+/// borrow-bound bare ident, a projection, or a borrow-returning call. A `let`
+/// bound to such a value is itself a (conditional) borrowed view, so it must be
+/// marked borrow-bound for its body scope exactly like #708 marks a direct
+/// `let x = Array::get(..)`: otherwise the borrow is laundered through the
+/// alias chain and a consuming call's #706/#708 arg dup never fires (observed:
+/// build_merged_stmts_inline's `let namespaced_stmts = if entry {
+/// export_renamed } else { namespace(...) }` passed to an owning callee, whose
+/// param drop freed the block `file_stmts` still owned -- the function-exit
+/// recursive drop then double-freed it, shadow-trapped at that exact site).
+/// The owned branch (fresh call result) sees at most an extra guarded dup at
+/// consuming sites -- the codebase-wide "leak, never corrupt" trade.
+export fn value_has_borrowed_branch_tail(e: Expr, local_names: Array[String], inner: Array[String], ctx: CompileCtx) -> Bool {
+  match e {
+    EIdent(x, _) => array_contains_str(ctx.loop_borrowed_names, x) && !array_contains_str(ctx.ref_cell_names, x) && !array_contains_str(inner, x),
+    EDot(_, _, _, _) => true,
+    // #3108 review: a callee a local or a branch-local binding shadows is
+    // that binding, not the borrow-returning function of the same spelling.
+    ECall(_, _, _) => call_returns_borrow(e, local_names, ctx) && !callee_bound_in(e, inner),
+    EIf(_, t, el) => value_has_borrowed_branch_tail(t, local_names, inner, ctx) || value_has_borrowed_branch_tail(el, local_names, inner, ctx),
+    EMatch(_, arms) => {
+      let mut found = false
+      let mut ai = 0
+      while ai < Array::length(arms) {
+        let (apat, abody) = Array::get(arms, ai)
+        if value_has_borrowed_branch_tail(abody, local_names, with_pattern_binders(inner, apat), ctx) {
+          found = true
+          ai = Array::length(arms)
+        } else {
+          ai = ai + 1
+        }
+      }
+      found
+    },
+    EHandle(hb, harms) => value_has_borrowed_branch_tail(hb, local_names, inner, ctx) || arms_have_borrowed_tail(harms, local_names, inner, ctx),
+    ELet(n, _, b, _) => value_has_borrowed_branch_tail(b, local_names, with_name(inner, n), ctx),
+    ELetMut(n, _, b, _) => value_has_borrowed_branch_tail(b, local_names, with_name(inner, n), ctx),
+    ELetRec(n, _, b) => value_has_borrowed_branch_tail(b, local_names, with_name(inner, n), ctx),
+    ESeq(_, b) => value_has_borrowed_branch_tail(b, local_names, inner, ctx),
+    EAssign(_, _, b) => value_has_borrowed_branch_tail(b, local_names, inner, ctx),
+    EAssignOp(_, _, _, b) => value_has_borrowed_branch_tail(b, local_names, inner, ctx),
+    _ => false
+  }
+}
+
+/// Binder names of one match-arm pattern, or `false` when the shape is one
+/// this cannot enumerate (`POr` and `PStruct` have no extractor in this
+/// package). The caller then declines the arm rather than walking it with an
+/// incomplete scope, which is the fail-closed direction: an unseen binder is
+/// exactly the shadow the scope check exists to catch.
+fn pvo_pat_binds(p: Pat, out: Array[String]) -> Bool with Exception {
+  if is_pbind(p) {
+    Array::push(out, get_pbind_name(p))
+    true
+  } else if is_pwild(p) || is_pint(p) || is_pbool(p) || is_pstring(p) {
+    true
+  } else if is_pctor(p) {
+    let args = get_pctor_args(p)
+    let mut ok = true
+    let mut i = 0
+    while i < Array::length(args) {
+      if pvo_pat_binds(Array::get(args, i), out) {
+        ()
+      } else {
+        ok = false
+      }
+      i = i + 1
+    }
+    ok
+  } else if is_ptuple(p) {
+    let ps = get_ptuple_pats(p)
+    let mut ok = true
+    let mut i = 0
+    while i < Array::length(ps) {
+      if pvo_pat_binds(Array::get(ps, i), out) {
+        ()
+      } else {
+        ok = false
+      }
+      i = i + 1
+    }
+    ok
+  } else {
+    false
+  }
+}
+
+/// #2389 per-path release: does this value hand the binding a reference the
+/// scope OWNS -- the one the ordinary rule would have planned a scope-end drop
+/// for, had the branch merge not zeroed the count?
+///
+/// Reads the value's RESULT SPINE recursively -- through block bodies (`let` /
+/// `;` chains) and conditional branches -- and requires EVERY leaf to answer
+/// yes. The recursion mirrors `value_has_borrowed_branch_tail` above, which is
+/// the existing precedent for reading a `let` value this way. At each leaf it
+/// is an ALLOW-LIST: a shape nobody enumerated fails closed, because a
+/// denylist over an open set of shapes cannot be finished (this test began as
+/// `expr_tag(value) != 8` and was holed twice in one review -- a call wrapped
+/// in a block, and an `if` whose branches are calls, are neither tag 8).
+///
+/// Admitted:
+///
+/// - an allocation made at the SITE: a tuple, a record, an array literal, a
+///   constructor call. Owned by construction.
+/// - a call to a NAMED function whose DECLARED return type is heap
+///   (`ctx.heap_ret_names`, #791's signature scan) and which neither returns a
+///   borrow (#707's `borrow_ret_names` / the intrinsic set) nor may return an
+///   interior view (#768's `borrow_view_ret`) -- and whose name is bound
+///   NOWHERE that reaches this call. All three of those tables are keyed by
+///   global name while the call dispatches to whatever the name resolves to
+///   at the site, so a parameter or a local closure shadowing a
+///   heap-returning global would otherwise be read through the global's
+///   contract. The `agg_ret` lookup below excludes a local for the same
+///   reason (#724 round 2).
+///
+///   Scope is read from TWO places because neither alone is complete.
+///   `local_names` is the post-compilation array, and holds the binders of
+///   any straight-line spine the value compiled through -- but a branch
+///   truncates it (`compile_expr`'s if lowering restores `names_len_before`
+///   before the else arm; `compile_match` does the same between arms), so a
+///   shadow introduced INSIDE an arm is already gone from it when this runs.
+///   `bound` is therefore rebuilt as the walk descends: each wrapper carries
+///   its own binder into its body and each arm its pattern binds into that
+///   arm, dropped again on the way out. An arm whose pattern this cannot
+///   enumerate declines rather than being walked with an incomplete scope.
+///   Measured: with the scope check removed, `let mk = (ys) -> Array::get(ys,
+///   0); let t = mk(xs)` under a heap-returning global `mk` emits the guarded
+///   drop for a binding holding an element `xs` owns (+18 B of code); no
+///   arrangement of it was found that turns that into a wrong answer, so the
+///   check is taken for the rule, not for a repro. That is the callee's own
+///   contract, read off its signature -- NOT the "any ECall is heap" default
+///   `classify_let_value_heap` falls back to. That default is an
+///   over-approximation deliberately chosen because a dup/drop no-ops on what
+///   it gets wrong (an even-tagged scalar, a string/bytes fat pointer). The
+///   drop this pass gives back is no such no-op, so it reads a contract or
+///   declines. `String` and `Bytes` are not heap to `type_expr_is_heap`, which
+///   is the same answer `__rt_rc_drop` gives them (it returns early on a fat
+///   pointer), so a `-> String` callee declines here and costs nothing.
+///
+/// Declined, each for its own reason: an INDIRECT call (there is no signature
+/// to read); an alias or a projection (their reference is acquired by the
+/// alias-dup / projection-dup machinery, whose own bookkeeping owns that
+/// question); a literal or an arithmetic value (it holds no reference at all,
+/// and `bench/exec/sort_ints.vibe`'s `let mid = (lo + hi) / 2` took a flag
+/// local, two stores and a guarded `rc_drop` for a heap figure that did not
+/// move -- 32,828 B either way -- and +2.84% fuel); a lambda; a loop; a
+/// `handle`.
+export fn path_value_owned(e: Expr, local_names: Array[String], bound: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  match e {
+    ETuple(_) => true,
+    EArray(_) => true,
+    ERecord(_, _, _) => true,
+    ECall(callee, _, _) => match callee {
+      EIdent(cn, _) => if is_ctor_call(e, ctx.ctor_table) {
+        true
+      } else {
+        find_local_slot(local_names, cn) < 0 && !array_contains_str(bound, cn) && bsearch_leftmost(ctx.heap_ret_names, cn) >= 0 && !is_borrow_ret_builtin(cn) && bsearch_leftmost(ctx.borrow_ret_names, cn) < 0 && bsearch_leftmost(ctx.borrow_view_ret, cn) < 0
+      },
+      _ => false
+    },
+    EIf(_, t, el) => path_value_owned(t, local_names, bound, ctx) && path_value_owned(el, local_names, bound, ctx),
+    // An arm-less match produces no value on any path, so there is nothing to
+    // own; `&&` over zero arms would answer true.
+    EMatch(_, arms) => if Array::length(arms) == 0 {
+      false
+    } else {
+      let mut ok = true
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (ap, ab) = Array::get(arms, i)
+        let mark = Array::length(bound)
+        if pvo_pat_binds(ap, bound) && path_value_owned(ab, local_names, bound, ctx) {
+          ()
+        } else {
+          ok = false
+        }
+        Array::truncate(bound, mark)
+        i = i + 1
+      }
+      ok
+    },
+    ELet(n, _, b, _) => {
+      let mark = Array::length(bound)
+      Array::push(bound, n)
+      let r = path_value_owned(b, local_names, bound, ctx)
+      Array::truncate(bound, mark)
+      r
+    },
+    ELetMut(n, _, b, _) => {
+      let mark = Array::length(bound)
+      Array::push(bound, n)
+      let r = path_value_owned(b, local_names, bound, ctx)
+      Array::truncate(bound, mark)
+      r
+    },
+    ELetRec(n, _, b) => {
+      let mark = Array::length(bound)
+      Array::push(bound, n)
+      let r = path_value_owned(b, local_names, bound, ctx)
+      Array::truncate(bound, mark)
+      r
+    },
+    ESeq(_, b) => path_value_owned(b, local_names, bound, ctx),
+    EAssign(_, _, b) => path_value_owned(b, local_names, bound, ctx),
+    EAssignOp(_, _, _, b) => path_value_owned(b, local_names, bound, ctx),
+    _ => false
+  }
+}
+
+/// #2733: does this value's RESULT SPINE hand the binding back a reference
+/// the scope does not own?
+///
+/// Every borrow test in this file reads the value's TOP node, so a WRAPPER --
+/// a block, i.e. an `ELet` / `ESeq` chain -- hides what the value actually
+/// produces. `classify_let_value_heap` consults a callee only at
+/// `expr_tag(value) == 8`, `value_has_borrowed_branch_tail` is consulted only
+/// for an if/match value node, and `pctx_mark_view_call` matches an `ECall`
+/// value only. The binding is then classified as owning a reference it never
+/// acquired, and its scope-end drop frees an element the container still
+/// owns -- silently, since `__rt_rc_drop` hands the block straight back to the
+/// free list for the next allocation to reuse.
+///
+/// ANY leaf answering yes is enough. One drop is emitted for the binding, so
+/// a single path that hands back a borrow makes that drop a premature free.
+/// Unowned leaves:
+///
+/// - an identifier without an owned reference. For an enclosing binding, use
+///   the heap ownership record used by the direct alias arm, excluding the
+///   borrowed bindings handled by `value_has_borrowed_branch_tail`. Perceus
+///   moves an owner's last reference into this result (or retains a non-last
+///   use); an alias of a borrowed value has no such reference. For an inner
+///   binder, `bound` / `bound_owned` carry the initializer's classification,
+///   keeping a chain (`let t = <borrow>` then a branch returning `t`) borrowed.
+/// - a projection (`EDot`): a field read is a view into its parent.
+/// - a call to a borrow-returning builtin or to `borrow_ret_names`, matching
+///   the direct-call arm of `classify_let_value_heap`. The planner separately
+///   handles `borrow_view_ret` on straight-line spines; that conservative
+///   may-view set is not a result-ownership contract for branch leaves.
+/// - a match arm whose pattern `pvo_pat_binds` cannot enumerate: an unseen
+///   binder is exactly the shadow this scope check exists to catch.
+///
+/// A leaf this cannot place keeps today's answer rather than flipping to
+/// borrowed. `classify_let_value_heap` already defaults an unresolved call to
+/// heap, and a drop on the scalar or string most of them return is a no-op;
+/// widening that default is a separate change with its own measurement.
+fn value_spine_borrowed(e: Expr, local_names: Array[String], bound: Array[String], bound_owned: Array[Int], ctx: CompileCtx) -> Bool with Exception {
+  match e {
+    EIdent(x, _) => {
+      let bi = find_local_slot(bound, x)
+      if bi < 0 {
+        !array_contains_str(ctx.heap_binding_names, x) || (array_contains_str(ctx.loop_borrowed_names, x) && !array_contains_str(ctx.ref_cell_names, x))
+      } else {
+        Array::get(bound_owned, bi) == 0
+      }
+    },
+    EDot(_, _, _, _) => true,
+    ECall(callee, _, _) => match callee {
+      EIdent(cn, _) => if is_ctor_call(e, ctx.ctor_table) {
+        false
+      } else if find_local_slot(bound, cn) >= 0 || find_local_slot(local_names, cn) >= 0 {
+        // Keep the existing owning-call ABI for callbacks. A local spelling
+        // cannot resolve through the global borrow-return tables.
+        false
+      } else {
+        is_borrow_ret_builtin(cn) || bsearch_leftmost(ctx.borrow_ret_names, cn) >= 0
+      },
+      _ => false
+    },
+    EIf(_, t, el) => value_spine_borrowed(t, local_names, bound, bound_owned, ctx) || value_spine_borrowed(el, local_names, bound, bound_owned, ctx),
+    EMatch(_, arms) => {
+      let mut found = false
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (ap, ab) = Array::get(arms, i)
+        let mark = Array::length(bound)
+        if pvo_pat_binds(ap, bound) {
+          // bind_match_pat retains a payload when the arm consumes it. A
+          // payload returned through this spine transfers that reference.
+          vsb_pad_owned(bound, bound_owned, 1)
+          if value_spine_borrowed(ab, local_names, bound, bound_owned, ctx) {
+            found = true
+          } else {
+            ()
+          }
+        } else {
+          found = true
+        }
+        Array::truncate(bound, mark)
+        Array::truncate(bound_owned, mark)
+        i = i + 1
+      }
+      found
+    },
+    ELet(n, v, b, _) => vsb_under_binder(n, v, b, local_names, bound, bound_owned, ctx),
+    // A MUTABLE binder carries no borrow-ness. Its value can be replaced
+    // after this walk records it -- `let mut t = <borrow>; t = <alloc>; t`
+    // hands back the allocation, and an `EAssign` walks its continuation, not
+    // its target -- so a flag taken from the initial value is a statement
+    // about a value the binding may no longer hold. Recording it as owned is
+    // today's answer and keeps the assignment from being able to invalidate
+    // anything: only an `ELetMut` binder is assignable, so no flag this walk
+    // does record can go stale. Measured at 80 B per iteration when it did;
+    // the shape is `via_mut` in fixtures/rc_reclaim_leak_test.vibe.
+    //
+    // It is still PUSHED, so that a leaf spelling it reads this binder and
+    // not an outer one this wrapper marked borrowed.
+    ELetMut(n, _, b, _) => {
+      let mark = Array::length(bound)
+      Array::push(bound, n)
+      Array::push(bound_owned, 1)
+      let r = value_spine_borrowed(b, local_names, bound, bound_owned, ctx)
+      Array::truncate(bound, mark)
+      Array::truncate(bound_owned, mark)
+      r
+    },
+    ELetRec(n, v, b) => vsb_under_binder(n, v, b, local_names, bound, bound_owned, ctx),
+    ESeq(_, b) => value_spine_borrowed(b, local_names, bound, bound_owned, ctx),
+    EAssign(_, _, b) => value_spine_borrowed(b, local_names, bound, bound_owned, ctx),
+    EAssignOp(_, _, _, b) => value_spine_borrowed(b, local_names, bound, bound_owned, ctx),
+    _ => false
+  }
+}
+
+/// Extend `bound_owned` to `bound`'s length with `flag`, so the two stay
+/// index-aligned after `pvo_pat_binds` has pushed an arm's binders.
+fn vsb_pad_owned(bound: Array[String], bound_owned: Array[Int], flag: Int) -> Int {
+  while Array::length(bound_owned) < Array::length(bound) {
+    Array::push(bound_owned, flag)
+  }
+  0
+}
+
+/// Walk a binder's body with `n` recorded as owned or borrowed according to
+/// its own value's spine. Pushed and truncated in lockstep with
+/// `bound_owned`, so a name that shadows an outer binder of the other kind
+/// answers for the inner one (`find_local_slot` takes the LAST match).
+fn vsb_under_binder(n: String, v: Expr, b: Expr, local_names: Array[String], bound: Array[String], bound_owned: Array[Int], ctx: CompileCtx) -> Bool with Exception {
+  // A bare projection is borrowed, but binding it emits an immediate retain
+  // in classify_let_value_heap. The new name therefore owns its reference.
+  let v_borrowed = !is_edot(v) && value_spine_borrowed(v, local_names, bound, bound_owned, ctx)
+  let mark = Array::length(bound)
+  Array::push(bound, n)
+  if v_borrowed {
+    Array::push(bound_owned, 0)
+  } else {
+    Array::push(bound_owned, 1)
+  }
+  let r = value_spine_borrowed(b, local_names, bound, bound_owned, ctx)
+  Array::truncate(bound, mark)
+  Array::truncate(bound_owned, mark)
+  r
+}
+
+fn retain_wrap_arms(arms: Array[(Pat, Expr)], local_names: Array[String], inner: Array[String], ctx: CompileCtx) -> Array[(Pat, Expr)] with Exception {
+  let out = array_empty()
+  let mut ai = 0
+  while ai < Array::length(arms) {
+    let (apat, abody) = Array::get(arms, ai)
+    Array::push(out, (apat, retain_wrap_branch_tails(abody, local_names, with_pattern_binders(inner, apat), ctx)))
+    ai = ai + 1
+  }
+  out
+}
+
+fn arms_have_borrowed_tail(arms: Array[(Pat, Expr)], local_names: Array[String], inner: Array[String], ctx: CompileCtx) -> Bool {
+  let mut found = false
+  let mut ai = 0
+  while ai < Array::length(arms) && !found {
+    let (apat, abody) = Array::get(arms, ai)
+    found = value_has_borrowed_branch_tail(abody, local_names, with_pattern_binders(inner, apat), ctx)
+    ai = ai + 1
+  }
+  found
+}
+
+fn arms_tail_call_borrow(arms: Array[(Pat, Expr)], local_names: Array[String], inner: Array[String], ctx: CompileCtx) -> Bool {
+  let mut found = false
+  let mut ai = 0
+  while ai < Array::length(arms) && !found {
+    let (apat, abody) = Array::get(arms, ai)
+    found = branch_tail_calls_borrow(abody, local_names, with_pattern_binders(inner, apat), ctx)
+    ai = ai + 1
+  }
+  found
+}
+
+/// #3108 review: the names a branch binds on the way down to its tail -- a
+/// `let` / `let mut` in the arm, a match pattern's binders. A tail call whose
+/// callee is one of them calls the LOCAL binding, not the top-level
+/// borrow-returning function of the same spelling, so it is left unretained
+/// (`local_names` covers only what was in scope at the enclosing `let`).
+fn callee_bound_in(e: Expr, inner: Array[String]) -> Bool {
+  match e {
+    ECall(EIdent(cn, _), _, _) => array_contains_str(inner, cn),
+    _ => false
+  }
+}
+
+fn with_name(inner: Array[String], n: String) -> Array[String] {
+  let out = Array::slice(inner, 0, Array::length(inner))
+  Array::push(out, n)
+  out
+}
+
+fn with_pattern_binders(inner: Array[String], pat: Pat) -> Array[String] {
+  let out = Array::slice(inner, 0, Array::length(inner))
+  collect_pattern_bindings(pat, out)
+  out
+}
+
+/// #3113: `value` with the owning-store markers `cl_own_cell_stmts` put on
+/// its result paths removed. Only the slot's CLASSIFICATION reads this (float /
+/// int / bool / string): a marker changes who owns the value, not what it is,
+/// and an intish initializer hidden behind one would send a later `==` on the
+/// slot down the generic path.
+export fn cet_strip_owned_markers(e: Expr) -> Expr {
+  match e {
+    ECall(EIdent(n, off), args, _) => if n == "__lambda_return_owned" && off < 0 && Array::length(args) == 1 {
+      cet_strip_owned_markers(Array::get(args, 0))
+    } else {
+      e
+    },
+    EIf(c, t, f) => EIf(c, cet_strip_owned_markers(t), cet_strip_owned_markers(f)),
+    EMatch(s, arms) => {
+      let out = array_empty()
+      for arm in arms {
+        Array::push(out, (arm.0, cet_strip_owned_markers(arm.1)))
+      }
+      EMatch(s, out)
+    },
+    EHandle(b, arms) => {
+      let out = array_empty()
+      for arm in arms {
+        Array::push(out, (arm.0, cet_strip_owned_markers(arm.1)))
+      }
+      EHandle(cet_strip_owned_markers(b), out)
+    },
+    ELet(n, v, b, off) => ELet(n, v, cet_strip_owned_markers(b), off),
+    ELetMut(n, v, b, off) => ELetMut(n, v, cet_strip_owned_markers(b), off),
+    ELetRec(n, v, b) => ELetRec(n, v, cet_strip_owned_markers(b)),
+    ESeq(a, b) => ESeq(a, cet_strip_owned_markers(b)),
+    EAssign(n, v, b) => EAssign(n, v, cet_strip_owned_markers(b)),
+    EAssignOp(n, op, v, b) => EAssignOp(n, op, v, cet_strip_owned_markers(b)),
+    _ => e
+  }
+}
+
+/// #3103: does any if/match branch tail of `e` call a borrow-returning
+/// function -- a tail retain_wrap_branch_tails' `ECall` arm retains?
+export fn branch_tail_calls_borrow(e: Expr, local_names: Array[String], inner: Array[String], ctx: CompileCtx) -> Bool {
+  match e {
+    ECall(_, _, _) => call_returns_borrow(e, local_names, ctx) && !callee_bound_in(e, inner),
+    EIf(_, t, el) => branch_tail_calls_borrow(t, local_names, inner, ctx) || branch_tail_calls_borrow(el, local_names, inner, ctx),
+    EMatch(_, arms) => {
+      let mut found = false
+      let mut ai = 0
+      while ai < Array::length(arms) {
+        let (apat, abody) = Array::get(arms, ai)
+        if branch_tail_calls_borrow(abody, local_names, with_pattern_binders(inner, apat), ctx) {
+          found = true
+          ai = Array::length(arms)
+        } else {
+          ai = ai + 1
+        }
+      }
+      found
+    },
+    EHandle(hb, harms) => branch_tail_calls_borrow(hb, local_names, inner, ctx) || arms_tail_call_borrow(harms, local_names, inner, ctx),
+    ELet(n, _, b, _) => branch_tail_calls_borrow(b, local_names, with_name(inner, n), ctx),
+    ELetMut(n, _, b, _) => branch_tail_calls_borrow(b, local_names, with_name(inner, n), ctx),
+    ELetRec(n, _, b) => branch_tail_calls_borrow(b, local_names, with_name(inner, n), ctx),
+    ESeq(_, b) => branch_tail_calls_borrow(b, local_names, inner, ctx),
+    EAssign(_, _, b) => branch_tail_calls_borrow(b, local_names, inner, ctx),
+    EAssignOp(_, _, _, b) => branch_tail_calls_borrow(b, local_names, inner, ctx),
+    _ => false
+  }
+}

@@ -7,6 +7,9 @@ import re
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from source_files import read_source_group
+
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "docs/generated/host-runtime-contract.json"
 EMITTER = ROOT / "lib/@vibe/compiler/codegen/wasi/linked_compile.vibe"
@@ -600,7 +603,7 @@ def main() -> None:
             die(f"imports occur in multiple bands ({key}): {sorted(overlap)}")
         all_names |= names
 
-    emitted, dynamic = validate_emitter_contract(manifest, EMITTER.read_text())
+    emitted, dynamic = validate_emitter_contract(manifest, read_source_group(EMITTER))
     emitted_names = set(emitted)
     expected_emitted = all_names
     if emitted_names != expected_emitted:
@@ -611,10 +614,10 @@ def main() -> None:
     if unknown_types:
         die(f"emitter uses undocumented type indices: {unknown_types}")
 
-    rust_text = RUST.read_text()
+    rust_text = read_source_group(RUST)
     rust = rust_imports(rust_text)
     rust_sig_count = validate_rust_signatures(rust_text, manifest)
-    node = node_imports(NODE.read_text())
+    node = node_imports(read_source_group(NODE))
     portable = bands["portableCore"]
     if not portable <= rust:
         die(f"viberun lacks portable imports: {sorted(portable-rust)}")
@@ -628,10 +631,10 @@ def main() -> None:
         die("component-adapter-only imports leaked into a standalone provider")
 
     gc_count = validate_gc_lists(
-        all_names, GC.read_text(), manifest.get("importTypes", {}), manifest.get("coreTypeSignatures", {})
+        all_names, read_source_group(GC), manifest.get("importTypes", {}), manifest.get("coreTypeSignatures", {})
     )
 
-    bound = validate_linear_bindings(EMITTER.read_text())
+    bound = validate_linear_bindings(read_source_group(EMITTER))
     ladder_count = validate_operation_ladder(LADDER.read_text(), bound)
 
     print(f"host-runtime-contract: ok ({len(emitted)} static imports; {len(dynamic)} dynamic patterns; {len(portable)} portable; {gc_count} gc host imports; {rust_sig_count} viberun signatures match the emitter; {len(bound)} linear builtin bindings; {ladder_count} operations reach their import)")

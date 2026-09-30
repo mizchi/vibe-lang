@@ -266,11 +266,7 @@ pub struct CommandRegistry {
 }
 
 impl CommandRegistry {
-    pub fn new(
-        engine: Engine,
-        manifest: CommandManifest,
-        precompiled: PrecompiledPolicy,
-    ) -> Self {
+    pub fn new(engine: Engine, manifest: CommandManifest, precompiled: PrecompiledPolicy) -> Self {
         Self {
             engine,
             manifest,
@@ -518,7 +514,9 @@ mod tests {
 
     #[test]
     fn manifest_refuses_an_empty_artifact_path() {
-        let err = manifest("vibe-commands-v1\ncheck\t\n").unwrap_err().to_string();
+        let err = manifest("vibe-commands-v1\ncheck\t\n")
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("names no artifact"), "{err}");
     }
 

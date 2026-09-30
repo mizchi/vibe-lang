@@ -104,6 +104,7 @@ function installTrustedRuntime() {
     "run_wasm_vibe_host_runner.sh",
     "run_wasm_vibe_host_runner_base.sh",
     "wasm_vibe_host_runner.js",
+  "wasm_vibe_host_runtime.js",
     "wasm_vibe_host_runner_http_worker.js",
     "wasm_vibe_host_runner_tcp_worker.js",
   ]) copyFileSync(`${POLICY}/scripts/${name}`, `${scripts}/${name}`);

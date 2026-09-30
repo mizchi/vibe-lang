@@ -1,0 +1,1883 @@
+// lib/@vibe/compiler/checker/checker_stmt.vibe — decl formal application errors.
+
+import ./checker_trait.vibe {
+  bound_entails_send, register_builtin_traits, register_builtin_traits_for, type_send_ok
+}
+
+import @vibe/core {
+  array_empty, struct MutMap
+}
+
+import @vibe/compiler/checker/diagnostics {
+  off_marker, off_marker_len
+}
+
+import ./checker_effects.vibe {
+  check_async_effects_stmts,
+  check_mutability_stmts,
+  check_perform_effects_stmts_env_published_sigs,
+  check_stdin_provider_direct_calls_stmts,
+  effect_error_to_string,
+  effect_shadow_key,
+  env_fn_sigs,
+  env_row_labels_from,
+  row_text_labels,
+  set_call_formal_bindings,
+  set_call_formal_marked_bindings,
+  set_row_nominal_types,
+  set_shadowed_builtin_type_names,
+  set_throw_site_kinds,
+  stmt_type_rows
+}
+
+import ./checker_pattern.vibe {
+  check_qualified_pattern_refs
+}
+
+import ./builtins.vibe {
+  lookup_builtin
+}
+
+import ./checker_spawnable.vibe {
+  closure_bare_callee_names, closure_free_names
+}
+
+import @vibe/compiler/core {
+  Expr,
+  ImportItem,
+  ImportKind,
+  Pat,
+  Stmt,
+  Subst,
+  Type,
+  TypeDef,
+  TypeEnv,
+  TypeExpr,
+  apply_type_constructor,
+  canonical_builtin_name,
+  collect_declared_type_names,
+  collect_exported_type_names,
+  collect_subst_bounds_pairs,
+  compiler_owned_type_arity,
+  env_bind,
+  env_cache,
+  env_flat_bindings,
+  env_lookup,
+  env_lookup_flat,
+  env_selectable_type_defs,
+  env_type_defs,
+  env_value_binding_with_origin,
+  env_with_reexport_surface_blockers,
+  exception_row_resolved,
+  expr_child_at,
+  expr_children,
+  expr_children_into,
+  expr_children_pop,
+  expr_children_push,
+  expr_children_top,
+  find_enum_typedef,
+  find_typedef,
+  generalize,
+  has_standard_effect_policy,
+  has_standard_host_provider,
+  is_exception_effect_name,
+  is_singleton_resource_kind,
+  lookup_registry_builtin,
+  overlapping_impl_target_for,
+  predeclared_resources,
+  prelude_ordering_stmt,
+  reject_user_iterator_serialized_boundaries,
+  resolve_builtin,
+  rewrite_import_alias_stmt,
+  runtime_prelude_dispatched_builtin_name,
+  sort_perm_by_names,
+  stmts_declare_prelude_ordering_shape,
+  stmts_shadow_prelude_ordering,
+  stmts_use_prelude_ordering,
+  subst_apply,
+  subst_lookup,
+  subst_resolves_to_double,
+  subst_resolves_to_string,
+  trait_defined,
+  trait_definition,
+  trait_impl_declared_for_ctor,
+  trait_is_marker,
+  type_constructor_name,
+  type_implements_trait,
+  type_to_string,
+  typed_forin_row_head,
+  typed_index_map_verdict,
+  typed_index_open_verdict,
+  typed_index_row_head,
+  typed_lowering_arg_offset,
+  typed_lowering_float_key,
+  typed_render_refuse_key,
+  typed_render_row_head
+}
+
+import ./checker.vibe {
+  TypedOccurrenceRoleLaneCapture,
+  attach_unlocated_decl_name_marker,
+  bind_function_dependency_contracts,
+  callee_formal_bindings,
+  callee_formal_marked_bindings,
+  check_assignable,
+  check_assignable_for,
+  check_assignable_set_end,
+  check_expr,
+  check_expr_capture,
+  collect_formal_applications_by,
+  constructor_dependency_row,
+  efn_head_bound_commit,
+  efn_head_bound_mark,
+  fn_return_env_name,
+  formal_application_error,
+  interp_is_shim_body,
+  interp_shim_marker,
+  is_array_builder_ty,
+  is_region_tagged_ty,
+  let_generalize,
+  local_let_types_begin,
+  local_let_types_end,
+  note_toplevel_generic_binding,
+  pat_binds_resume,
+  preserve_generic_instantiation,
+  publish_row_formals,
+  record_decl_exception_kinds,
+  refuse_generalized_field_reads,
+  refuse_unpublishable_exception_row,
+  reject_resume_outside_handler,
+  report_formal_applications,
+  report_formal_applications_across,
+  report_map_key_types,
+  report_unknown_type_names,
+  report_unknown_type_names_deferred_validation,
+  reset_eq_formal_vars,
+  reset_return_provenance_index,
+  reset_throw_payload_sites,
+  resolve_deferred_field_reads,
+  resolve_impl_self_field_reads,
+  resolve_trait_bound_self_reference,
+  scheme_formal_constrained,
+  set_generic_fn_decls,
+  throw_kind_of_type,
+  throw_payload_site_types,
+  trait_erased_type_param_env,
+  trait_reference_display,
+  ty_has_open_array_elem,
+  type_exception_rows_resolved,
+  typed_occurrence_capture_begin_statement,
+  typed_occurrence_capture_end_statement,
+  validate_trait_reference
+}
+
+import @vibe/ast {
+  impl_target_key, trait_ref_name, type_param_arity, type_param_name
+}
+
+import ./checked_expression_structure_core.vibe {
+  checked_expression_structure_rows
+}
+
+import ./checker_resolve.vibe {
+  resolve_type_expr, resolve_type_expr_shadowed, subst_type_params
+}
+
+import @vibe/compiler/normalize {
+  collect_trait_namespace_conflict_errors,
+  collect_undispatchable_trait_method_errors,
+  derive_imported_trait_namespace_operations,
+  derive_trait_namespace_operations,
+  desugar_handled_host_calls,
+  desugar_inspect_calls,
+  desugar_labeled_args,
+  desugar_railway_binds,
+  erase_railway_origin_markers,
+  inject_trait_method_generics,
+  synthesized_dict_field_trait,
+  unresolved_mut_labeled_calls
+}
+
+import @vibe/parser {
+  BinderAuthorityNode,
+  LocatedProgramBinderAuthority,
+  SourceBinder,
+  binder_authority_node_children,
+  binder_authority_node_slots,
+  binder_authority_slot_binder,
+  located_program_binder_authority_nodes,
+  located_program_binder_authority_program
+}
+
+import ./checker_stmt_imported_decl_kind.vibe {
+  int_array_contains, typedef_index_of_from
+}
+
+import ./checker_stmt_labeled_name_check_expr.vibe {
+  alias_expansion_node_limit, capped_type_node_add, recursive_alias_flags, string_array_contains_exact, type_param_index
+}
+
+/// Run the production whole-program check and retain every successful output
+/// the checker actually produces. This deliberately does not use the
+/// hover-only `check_program_type_table` path.
+/// #2141 (interim guard): reject a type-parameter binder that shares its
+/// spelling with a struct/enum declared in the SAME module. The desugar's
+/// generated generic helpers resolve type names by SPELLING
+/// (`dtd_type_param_names` subtracts declared type names program-wide), so a
+/// formal `T` next to a declared `struct T` makes
+/// `fn same[T](a: Array[T], b: Array[T]) { a == b }` compare with the
+/// STRUCT's semantics over non-struct elements -- `same([1,2], [1,3])`
+/// answered true with no diagnostic anywhere. Until that classification is
+/// scope-precise, the collision itself is rejected at the binder.
+///
+/// LOCAL declarations only, on purpose: a formal shadowing an IMPORTED type
+/// is measured behaviorally harmless (the helper over-binds and element
+/// comparison stays structural; pinned by
+/// derive_array_helper_interference_test.vibe), and rejecting it would break
+/// working programs whose dependency happens to export a colliding name.
+fn tps_local_type_names_into(stmts: Array[Stmt], out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SStruct(_, name, _, _, _, _) => Array::push(out, name),
+      SEnum(_, name, _, _, _) => Array::push(out, name),
+      // #2141: `module` blocks are rejected by the parser (#728), so source
+      // cannot produce an SModule -- recursed anyway so a synthetic or
+      // legacy producer stays covered.
+      SModule(_, _, body) => tps_local_type_names_into(body, out),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+fn tps_local_type_names(stmts: Array[Stmt]) -> Array[String] {
+  let out = array_empty()
+  tps_local_type_names_into(stmts, out)
+  out
+}
+
+fn tps_names_contains(names: Array[String], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(names) && !found {
+    if Array::get(names, i) == name {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn tps_report(tparams: Array[String], local_types: Array[String], where_label: String, anchor: String, errors: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(tparams) {
+    let tp = type_param_name(Array::get(tparams, i))
+    if tps_names_contains(local_types, tp) {
+      // The ` [@fn=name]` suffix is the #1941 side-channel marker: binder
+      // lists carry no offset of their own, so the diagnostic anchors on the
+      // declaration name and locate_type_error turns it into a real line:col
+      // at the CLI boundary (find_fn_anchor_off prefers `fn name`/`let name`
+      // and falls back to the name's first occurrence, which for a struct or
+      // enum label is its declaration). Attached only when the label names a
+      // real identifier -- a test's string title is not a word the locator
+      // can find, and an unresolved marker is stripped, never printed.
+      let located = if String::length(anchor) > 0 {
+        String::concat(" [@fn=", String::concat(anchor, "]"))
+      } else {
+        ""
+      }
+      Array::push(errors, String::concat("type parameter `", String::concat(tp, String::concat("` of ", String::concat(where_label, String::concat(" shadows the declared type `", String::concat(tp, String::concat("`; rename the type parameter or the declared type -- generated generic helpers resolve type names by spelling, so a shadowed formal silently takes the declared type's semantics (#2141)", located))))))))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
+fn tps_scan_expr(e: Expr, local_types: Array[String], where_label: String, anchor: String, errors: Array[String]) -> Unit {
+  match e {
+    EFn(tparams, _, _, _, _, _) => tps_report(tparams, local_types, where_label, anchor, errors),
+    _ => ()
+  }
+  let mark = expr_children_push(e)
+  let end = expr_children_top()
+  let mut i = mark
+  while i < end {
+    tps_scan_expr(expr_child_at(i), local_types, where_label, anchor, errors)
+    i = i + 1
+  }
+  expr_children_pop(mark)
+}
+
+fn tps_decl_label(kind: String, name: String) -> String {
+  String::concat(kind, String::concat(" `", String::concat(name, "`")))
+}
+
+/// #2141 (Codex P1 on #2183): the `__Vfp_` prefix is the desugar's re-spelling
+/// of a type-parameter -- `is_marked_formal_name` treats any matching spelling
+/// as compiler-generated, so a USER-DECLARED type borrowing the prefix
+/// (`struct __Vfp_Point`) would be classified as a variable and its arrays
+/// silently compared with erased equality. Reserve the prefix at the one place
+/// user source can introduce a colliding meaning: a type DECLARATION. Binders
+/// and annotations need no rule of their own -- a binder spelled `__Vfp_X` is
+/// genuinely a formal (nothing declared can collide once declarations are
+/// rejected), and an undeclared annotation is already an unknown type (#2125).
+/// Generated code never declares a `__Vfp_`-prefixed type (helpers are `let`
+/// functions; witness structs are `<Trait>Dict`), so the post-desugar merged
+/// re-check lane stays clean.
+fn tps_reserved_prefix_report(kind: String, name: String, errors: Array[String]) -> Unit {
+  if String::starts_with(name, "__Vfp_") {
+    Array::push(errors, String::concat(kind, String::concat(" `", String::concat(name, "` uses the reserved `__Vfp_` prefix (compiler-generated type-variable spellings) -- rename the type (#2141)"))))
+  } else {
+    ()
+  }
+}
+
+/// #2378: the `fn`s (declarations and bound lambdas) this file defines at a
+/// QUALIFIED name the builtin registry owns -- `export fn String::index_of`.
+/// Such a definition replaces that builtin for EVERY program that links the
+/// file as a dependency -- not the defining file, not the importer's import
+/// list, `export`ed or not: bare names are namespaced per file by the export
+/// merge (`name_exp_<path>`), and so is a `Trait::operation` whose trait is
+/// declared in the same file, but every other `Type::method` stays global
+/// because that is what receiver dispatch across files needs, and a builtin
+/// such as `String::index_of` lives in that same global namespace. Measured
+/// on the seed with a dependency defining `String::index_of` as `-999` and a
+/// caller importing only an unrelated name: a private `fn`, an exported
+/// `fn`, a private lambda and an exported lambda all answered -999 (in the
+/// original instance 0.8us -> 174us on a sparse search, and
+/// `String::split(s, "")` changed its ANSWER), and nothing said so.
+///
+/// Which qualified definitions stay GLOBAL is the merge's decision, and this
+/// mirrors it exactly rather than approximating it (Codex review on #2708):
+/// an exported definition is renamed by the export plan only when its head is
+/// a trait this file declares (`append_export_def_name`, plus the
+/// `Array::flatmap` / `Iterator` specialization); a private one is renamed by
+/// private namespacing only when its head is a type this file declares and
+/// does NOT export (`collect_private_value_renames` /
+/// `qualified_method_of_exported_type` -- a private `struct Fs` with a private
+/// `fn Fs::exists` is renamed with its type and can replace nothing). Every
+/// other qualified definition keeps its spelling in the linked program.
+///
+/// Which names are BUILTINS: the registry's rows, under the canonical
+/// spelling (a source alias such as `String::byte_at` counts, since a call
+/// resolves by what the source wrote), plus the runtime-prelude names codegen
+/// dispatches by spelling with no registry row
+/// (`runtime_prelude_dispatched_builtin_name`): their arms honor any
+/// definition in the merged function table, so a dependency's
+/// `fn Double::to_string` would be an unrequested override too. A
+/// fallback-typed name the registry does not list and no arm dispatches this
+/// way (`Array::map`, which `lib/@vibe/builtin/array.vibe` defines as a
+/// first-class value) is not collected.
+///
+/// NOT collected either: a bare name, and a `let` VALUE ALIAS at a qualified
+/// builtin name (`export let Fs::exists = exists` in lib/@vibe/fs/fs.vibe),
+/// which takes no part in the name-to-fn-def resolution a real definition
+/// hijacks. The ENTRY file's own shadow is left alone on purpose: it is
+/// explicit in the program being compiled, and
+/// `fixtures/to_string_shadowed_builtin_test.vibe` relies on it.
+///
+/// This is the pure half. The refusal is the loader's (runtime/
+/// typecheck_fs.vibe): a checked module's published environment carries one
+/// marker per name collected here, and the module that IMPORTS it -- the
+/// caller that never asked for the override -- is the one diagnosed, with
+/// the edit first. Keeping the marker in the environment is what makes the
+/// answer independent of whether the file was checked as a root or as a
+/// dependency, so a cached check can never turn a leak into a clean result.
+/// `scripts/check_builtin_shadowing.sh` keeps watching the tree for the
+/// bare-name and alias shapes this leaves alone.
+export fn collect_builtin_shadowing_names(stmts: Array[Stmt]) -> Array[String] {
+  let out = array_empty()
+  bfs_collect(stmts, out)
+  out
+}
+
+fn bfs_collect(stmts: Array[Stmt], out: Array[String]) -> Unit {
+  let trait_names = bfs_local_trait_names(stmts)
+  let declared_types = collect_declared_type_names(stmts)
+  let exported_types = collect_exported_type_names(stmts)
+  let export_items = bfs_export_items(stmts)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(exported, _, name, _, body) => bfs_note(exported || string_array_contains_exact(export_items, name), name, body, trait_names, declared_types, exported_types, out),
+      SModule(_, _, body) => bfs_collect(body, out),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+fn bfs_local_trait_names(stmts: Array[Stmt]) -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      STrait(_, tname, _, _, _, _) => Array::push(out, tname),
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// The names an `export { a, b }` list publishes: a private `let` named there
+/// travels with the export plan, like an `export let`.
+fn bfs_export_items(stmts: Array[Stmt]) -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SExport(items) => {
+        let mut j = 0
+        while j < Array::length(items) {
+          Array::push(out, Array::get(items, j))
+          j = j + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Does `name` (`head::member`) keep its spelling in the linked program?
+/// The merge's two rename passes, mirrored -- see the collector's doc.
+fn bfs_stays_global(exported: Bool, name: String, head: String, trait_names: Array[String], declared_types: Array[String], exported_types: Array[String]) -> Bool {
+  if exported {
+    !(string_array_contains_exact(trait_names, head) || (name == "Array::flatmap" && string_array_contains_exact(trait_names, "Iterator")))
+  } else {
+    string_array_contains_exact(exported_types, head) || !string_array_contains_exact(declared_types, head)
+  }
+}
+
+fn bfs_builtin_owned(name: String) -> Bool {
+  let canonical = canonical_builtin_name(name)
+  match lookup_registry_builtin(canonical) {
+    Some(_) => true,
+    None => runtime_prelude_dispatched_builtin_name(canonical)
+  }
+}
+
+fn bfs_note(exported: Bool, name: String, body: Expr, trait_names: Array[String], declared_types: Array[String], exported_types: Array[String], out: Array[String]) -> Unit {
+  let sep = String::index_of(name, "::")
+  if sep < 0 {
+    ()
+  } else {
+    match body {
+      EFn(_, _, _, _, _, _) => {
+        let head = String::substring(name, 0, sep)
+        if string_array_contains_exact(out, name) || !bfs_stays_global(exported, name, head, trait_names, declared_types, exported_types) {
+          ()
+        } else if bfs_builtin_owned(name) {
+          Array::push(out, name)
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+  }
+}
+
+/// PR #2708 review (Codex P1): the `__vibe_` prefix is the compiler's. Its
+/// generated definitions carry it -- the Double runtime prelude's
+/// `__vibe_double_to_string` / `__vibe_double_parse` and the String
+/// length-view prelude's `__vibe_string_unicode_length` /
+/// `__vibe_string_utf16_length` (codegen/common_base/*_runtime.vibe), which
+/// are appended to the program AFTER this check and found again by
+/// spelling -- so a program's own top-level definition spelled that way would
+/// be taken for the generated one. Measured: with `fn __vibe_double_to_string(
+/// d: Double) -> String { "hijacked" }` in the program, `Double::to_string(
+/// 1.5)` answered `hijacked`. Refusing the spelling here, with the edit
+/// first, is what makes a by-spelling presence test sound
+/// (`program_defines_top_level`).
+///
+/// #3189 review: `__hs_` is the compiler's for the same reason. The host
+/// stream reader the linked lowering injects -- `__hs_next`,
+/// `__hs_next_option`, the finisher `__hs_fin`, `__hs_close` -- is added
+/// under fixed names, called by those names, and pruned by name. A program's
+/// own top-level `__hs_fin` therefore shared a name with the injected one:
+/// the injected reader could call the program's function, and the prune kept
+/// both, so "did a read survive" could not be answered from the finisher.
+///
+/// Top-level binders only -- `let` / `fn`, `let mut`, a destructuring `let`,
+/// an extern, in a module body too: those are what a generated function's
+/// name is resolved against. A LOCAL binder is left alone because the
+/// compiler's own desugars introduce locals under these prefixes before the
+/// check runs (`__vibe_inspect_actual` and `__hs_src`,
+/// desugar_trait_dict.vibe) and a re-check of desugared statements must stay
+/// clean.
+fn collect_reserved_value_prefix_errors(stmts: Array[Stmt], errors: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, _) => rvp_report(name, errors),
+      SLetMut(name, _, _) => rvp_report(name, errors),
+      SExternLet(name, _) => rvp_report(name, errors),
+      SLetPat(pat, _) => rvp_report_pat(pat, errors),
+      SModule(_, _, body) => collect_reserved_value_prefix_errors(body, errors),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+fn rvp_report(name: String, errors: Array[String]) -> Unit {
+  if String::starts_with(name, "__vibe_") {
+    Array::push(errors, String::concat("rename `", String::concat(name, "`: the `__vibe_` prefix is reserved for definitions the compiler generates (the Double runtime prelude's `__vibe_double_to_string`, for one), and a program's own top-level definition spelled that way would silently take the generated one's place (#2652)")))
+  } else if String::starts_with(name, "__hs_") {
+    Array::push(errors, String::concat("rename `", String::concat(name, "`: the `__hs_` prefix is reserved for the host-stream reader the compiler generates (`__hs_next` and its finisher `__hs_fin`, for two), and a program's own top-level definition spelled that way would share a name with the generated one")))
+  } else {
+    ()
+  }
+}
+
+fn rvp_report_pat(pat: Pat, errors: Array[String]) -> Unit {
+  match pat {
+    PBind(name) => rvp_report(name, errors),
+    PCtor(_, items) => rvp_report_pats(items, errors),
+    PTuple(items) => rvp_report_pats(items, errors),
+    POr(a, b) => {
+      rvp_report_pat(a, errors)
+      rvp_report_pat(b, errors)
+    },
+    PStruct(_, fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, p) = Array::get(fields, i)
+        rvp_report_pat(p, errors)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+fn rvp_report_pats(items: Array[Pat], errors: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(items) {
+    rvp_report_pat(Array::get(items, i), errors)
+    i = i + 1
+  }
+}
+
+fn collect_reserved_type_prefix_errors(stmts: Array[Stmt], errors: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SStruct(_, name, _, _, _, _) => tps_reserved_prefix_report("struct", name, errors),
+      SEnum(_, name, _, _, _) => tps_reserved_prefix_report("enum", name, errors),
+      STypeAlias(_, name, _, _) => tps_reserved_prefix_report("type alias", name, errors),
+      // #2141: unreachable from source (#728 removed module blocks);
+      // recursed for any synthetic/legacy producer.
+      SModule(_, _, body) => collect_reserved_type_prefix_errors(body, errors),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+fn tps_scan_stmts(stmts: Array[Stmt], local_types: Array[String], errors: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SStruct(_, name, _, _, _, tparams) => tps_report(tparams, local_types, tps_decl_label("struct", name), name, errors),
+      SEnum(_, name, tparams, _, _) => tps_report(tparams, local_types, tps_decl_label("enum", name), name, errors),
+      SLet(_, _, name, _, e) => tps_scan_expr(e, local_types, tps_decl_label("declaration", name), name, errors),
+      SLetMut(name, _, e) => tps_scan_expr(e, local_types, tps_decl_label("declaration", name), name, errors),
+      SLetPat(_, e) => tps_scan_expr(e, local_types, "a `let` pattern binding", "", errors),
+      SExpr(e) => tps_scan_expr(e, local_types, "a top-level expression", "", errors),
+      STest(name, e) => tps_scan_expr(e, local_types, tps_decl_label("test", name), "", errors),
+      SBench(name, e) => tps_scan_expr(e, local_types, tps_decl_label("bench", name), "", errors),
+      // #2141: unreachable from source (#728 removed module blocks);
+      // recursed for any synthetic/legacy producer.
+      SModule(_, _, body) => tps_scan_stmts(body, local_types, errors),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+/// Mixed-kind only (`F` unapplied and `F[A]` applied on the same TypeExpr).
+/// Alias / effect / trait / struct-field `F[A]` is a well-kinded constructor
+/// use; `report_formal_applications` is the shared rule with fn signatures.
+fn fapp_report(te: TypeExpr, formals: Array[String], where_label: String, errors: Array[String]) -> Unit {
+  report_formal_applications(te, formals, where_label, errors)
+}
+
+/// #2286: the label for a struct FIELD diagnostic.
+///
+/// Normally ``field `f` of struct `S` ``. But when `S` is a witness struct the
+/// trait-dict desugar synthesized, that names a declaration the author never
+/// wrote and cannot act on -- and in the whole-program lane it is the only
+/// diagnostic emitted, because the trait statement is gone by the time this
+/// walk runs. So it carries the trait's label instead, the same
+/// ``the signature of `Store::lookup` `` that `vibe check` reports, and the
+/// two lanes stop disagreeing about the same file.
+///
+/// `synthesized_dict_field_trait` answers from what the desugar RECORDED, not
+/// from the `+ "Dict"` name convention. A hand-written `StoreDict` is never
+/// synthesized (the desugar's `struct_decl_exists` guard skips it), so it is
+/// absent from the record and keeps the field label -- by construction rather
+/// than by a name test, which is what #2276's attempt got wrong.
+///
+/// Keyed by (struct, FIELD): `flatten_traits` copies a supertrait's methods
+/// into the child's dict, so `ChildDict` carries fields only `Base` declares.
+/// Keying by struct alone reported ``the signature of `Child::lookup` `` for
+/// one of those -- a declaration that does not exist (Codex review on #2313).
+export fn struct_field_decl_label(struct_name: String, field_name: String) -> String {
+  let owning_trait = synthesized_dict_field_trait(struct_name, field_name)
+  if owning_trait == "" {
+    String::concat(String::concat(String::concat("field `", field_name), "` of struct `"), String::concat(struct_name, "`"))
+  } else {
+    fapp_decl_label(owning_trait, field_name)
+  }
+}
+
+export fn fapp_decl_label(owner: String, member: String) -> String {
+  String::concat(String::concat(String::concat("the signature of `", owner), String::concat("::", member)), "`")
+}
+
+/// Does this method declare a generic of its own with this name -- i.e. does it
+/// shadow a trait header parameter spelled the same way?
+fn fapp_method_binds_name(method_gens: Array[(String, Array[String], Array[(String, Array[String])])], mname: String, name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(method_gens) && !found {
+    let (gname, gtp, _) = Array::get(method_gens, i)
+    if gname == mname && fapp_formals_have_name(gtp, name) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Does any of `formals` bind this NAME? They are type-param keys (`A[_]`), so
+/// an exact string compare misses a kinded binder -- which is the shadow this
+/// question exists to find.
+fn fapp_formals_have_name(formals: Array[String], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(formals) && !found {
+    if type_param_name(Array::get(formals, i)) == name {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn fapp_applied_formals_across(tes: Array[TypeExpr], formals: Array[String]) -> Array[String] {
+  let applied = array_empty()
+  let is_formal = (head) -> {
+    string_array_contains_exact(formals, head)
+  }
+  let mut i = 0
+  while i < Array::length(tes) {
+    collect_formal_applications_by(Array::get(tes, i), is_formal, applied)
+    i = i + 1
+  }
+  applied
+}
+
+/// An applied formal (`F[A]`) in a trait method signature whose parameter is
+/// declared as a COMPLETE type. Such a trait can be declared but never
+/// implemented: measured, every impl head that supplies a constructor for it is
+/// rejected ("type parameter `F` of `Functor` expects a complete type, but
+/// `Array` is a constructor with 1 argument(s)"). The declaration is therefore
+/// where to say so, and the fix is to declare the parameter kinded -- a kinded
+/// `F[_]` applied as `F[A]` stays legal (#2351).
+fn fapp_unkinded_application_error(tname: String, mname: String, formal: String) -> String {
+  let head = String::concat(String::concat("constructor parameter `", formal), "` is applied in ")
+  let mid = String::concat(String::concat(", but `", formal), "` is declared as a complete type that no impl can satisfy")
+  let tail = String::concat(String::concat("; declare it as a type constructor -- spell it `", formal), String::concat(String::concat("[_]` in trait `", tname), "`'s parameter list"))
+  String::concat(String::concat(head, fapp_decl_label(tname, mname)), String::concat(mid, tail))
+}
+
+fn collect_decl_formal_application_errors(stmts: Array[Stmt], errors: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      STypeAlias(_, name, params, te) => fapp_report(te, params, String::concat(String::concat("the body of type alias `", name), "`"), errors),
+      SEffectDef(_, ename, eparams, ops) => {
+        let effect_tes = array_empty()
+        let mut oi = 0
+        while oi < Array::length(ops) {
+          let (_, opparams, opret) = Array::get(ops, oi)
+          let mut pi = 0
+          while pi < Array::length(opparams) {
+            Array::push(effect_tes, Array::get(opparams, pi))
+            pi = pi + 1
+          }
+          Array::push(effect_tes, opret)
+          oi = oi + 1
+        }
+        report_formal_applications_across(effect_tes, eparams, String::concat(String::concat("effect `", ename), "`"), errors)
+      },
+      STrait(_, tname, _, methods, method_gens, tparams) => {
+        // A header parameter's kind is aggregated across the whole trait, so
+        // it has to be aggregated over the methods that actually MENTION it.
+        // A method generic of the same name is a different binder with its own
+        // kind, and pooling both made
+        //
+        //   trait Scoped[A] { raw(A) -> A; project[A[_], B](A[B]) -> A[B] }
+        //
+        // look like one `A` used unapplied by `raw` and applied by `project`,
+        // reported as a mixed-kind error against a valid declaration (Codex
+        // review). One pass per header parameter, over the methods that do not
+        // rebind it.
+        let trait_label = String::concat(String::concat("trait `", tname), "`")
+        let mut hi = 0
+        while hi < Array::length(tparams) {
+          let header_key = Array::get(tparams, hi)
+          let header_name = type_param_name(header_key)
+          let visible_tes = array_empty()
+          let mut mj = 0
+          while mj < Array::length(methods) {
+            let (mname_j, mparams_j, mret_j) = Array::get(methods, mj)
+            if !fapp_method_binds_name(method_gens, mname_j, header_name) {
+              let mut pj = 0
+              while pj < Array::length(mparams_j) {
+                Array::push(visible_tes, Array::get(mparams_j, pj))
+                pj = pj + 1
+              }
+              Array::push(visible_tes, mret_j)
+            } else {
+              ()
+            }
+            mj = mj + 1
+          }
+          let header_only = array_empty()
+          Array::push(header_only, header_key)
+          report_formal_applications_across(visible_tes, header_only, trait_label, errors)
+          hi = hi + 1
+        }
+        let mut mi = 0
+        while mi < Array::length(methods) {
+          let (mname, mparams, mret) = Array::get(methods, mi)
+          // Method-local formals are checked per method. Header formals were
+          // checked across the whole trait above because their kind belongs
+          // to the trait declaration, not one member.
+          let formals = array_empty()
+          Array::push(formals, "Self")
+          let mut gi = 0
+          while gi < Array::length(method_gens) {
+            let (gname, gtp, _) = Array::get(method_gens, gi)
+            if gname == mname {
+              let mut gj = 0
+              while gj < Array::length(gtp) {
+                Array::push(formals, Array::get(gtp, gj))
+                gj = gj + 1
+              }
+            } else {
+              ()
+            }
+            gi = gi + 1
+          }
+          let method_tes = array_empty()
+          let mut pi = 0
+          while pi < Array::length(mparams) {
+            Array::push(method_tes, Array::get(mparams, pi))
+            pi = pi + 1
+          }
+          Array::push(method_tes, mret)
+          report_formal_applications_across(method_tes, formals, fapp_decl_label(tname, mname), errors)
+          let applied_method_formals = fapp_applied_formals_across(method_tes, formals)
+          let mut afi = 0
+          while afi < Array::length(applied_method_formals) {
+            let applied_name = Array::get(applied_method_formals, afi)
+            if applied_name == "Self" {
+              Array::push(errors, String::concat(String::concat("`Self` is a complete type and cannot be applied in ", fapp_decl_label(tname, mname)), "; write `Self`, not `Self[...]`"))
+            } else {
+              Array::push(errors, fapp_unkinded_application_error(tname, mname, applied_name))
+            }
+            afi = afi + 1
+          }
+          // Only the header parameters this method does NOT shadow. A method
+          // generic of the same name is a different binder with its own kind:
+          // `trait Scoped[A] { project[A[_], B](A[B]) -> A[B] }` applies the
+          // method's kinded `A`, not the header's complete-type `A`, and
+          // reporting it produced a diagnostic that told the author to write
+          // `A[_]` -- which is what they had written (Codex review).
+          let unshadowed_tparams = array_empty()
+          let mut ti = 0
+          while ti < Array::length(tparams) {
+            let tparam = Array::get(tparams, ti)
+            if !fapp_formals_have_name(formals, type_param_name(tparam)) {
+              Array::push(unshadowed_tparams, tparam)
+            } else {
+              ()
+            }
+            ti = ti + 1
+          }
+          let applied_header_formals = fapp_applied_formals_across(method_tes, unshadowed_tparams)
+          let mut ahi = 0
+          while ahi < Array::length(applied_header_formals) {
+            Array::push(errors, fapp_unkinded_application_error(tname, mname, Array::get(applied_header_formals, ahi)))
+            ahi = ahi + 1
+          }
+          mi = mi + 1
+        }
+      },
+      SModule(_, _, body) => collect_decl_formal_application_errors(body, errors),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+/// #3002: an exception kind that names a type parameter of its declaration
+/// (`fn boom[T](x: T) -> Int with Exception[T]`, or a parameter row
+/// `f: () -> Int with Exception[T]`). A row item is text and is never
+/// substituted at a call site, so every caller was refused with a hint that
+/// named the callee's formal. Refused where it is WRITTEN instead.
+fn collect_formal_exception_kind_errors(stmts: Array[Stmt], errors: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, EFn(tparams, _, params, ret, eff, _)) => if Array::length(tparams) > 0 {
+        let formals = array_empty()
+        let mut ti = 0
+        while ti < Array::length(tparams) {
+          Array::push(formals, type_param_name(Array::get(tparams, ti)))
+          ti = ti + 1
+        }
+        let rows = array_empty()
+        match eff {
+          Some(row) => Array::push(rows, row),
+          None => ()
+        }
+        let mut pi = 0
+        while pi < Array::length(params) {
+          match Array::get(params, pi) {
+            (_, Some(pte)) => fek_rows_in_texpr(pte, rows),
+            _ => ()
+          }
+          pi = pi + 1
+        }
+        match ret {
+          Some(rte) => fek_rows_in_texpr(rte, rows),
+          None => ()
+        }
+        let mut ri = 0
+        let mut reported = false
+        while ri < Array::length(rows) && !reported {
+          let (kind, formal) = fek_formal_kind_in_row(Array::get(rows, ri), formals)
+          if String::length(kind) > 0 {
+            reported = true
+            let mut m = String::concat("the exception kind `Exception[", String::concat(kind, String::concat("]` of '", String::concat(name, "' names its type parameter `"))))
+            m = String::concat(m, String::concat(formal, "`, but a row does not substitute a type parameter at a call site, so no caller could discharge it -- write a concrete kind (`Exception[String]`), or return the failure as a value (`Result[_, "))
+            m = String::concat(m, String::concat(formal, String::concat("]`) [@fn=", String::concat(name, "]"))))
+            Array::push(errors, m)
+          }
+          ri = ri + 1
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+/// Every effect row written inside a type expression (a function-typed
+/// parameter, a function nested in a tuple or an application).
+export fn fek_rows_in_texpr(te: TypeExpr, out: Array[String]) -> Unit {
+  match te {
+    TyFn(ps, r, eff) => {
+      match eff {
+        Some(row) => Array::push(out, row),
+        None => ()
+      }
+      let mut i = 0
+      while i < Array::length(ps) {
+        fek_rows_in_texpr(Array::get(ps, i), out)
+        i = i + 1
+      }
+      fek_rows_in_texpr(r, out)
+    },
+    TyApp(_, args) => {
+      let mut i = 0
+      while i < Array::length(args) {
+        fek_rows_in_texpr(Array::get(args, i), out)
+        i = i + 1
+      }
+    },
+    TyTuple(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        fek_rows_in_texpr(Array::get(items, i), out)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+fn fek_ident_char(c: Int) -> Bool {
+  (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || (c >= 48 && c <= 57) || c == 95
+}
+
+/// The first `Exception[..]` kind in a row's text that mentions one of
+/// `formals` as a whole identifier, and that formal; ("", "") when none does.
+fn fek_formal_kind_in_row(row: String, formals: Array[String]) -> (String, String) {
+  let head = "Exception["
+  let n = String::length(row)
+  let mut from = 0
+  let mut kind_out = ""
+  let mut formal_out = ""
+  let mut scanning = true
+  while scanning {
+    let rel = String::index_of(String::substring(row, from, n), head)
+    if rel < 0 {
+      scanning = false
+    } else {
+      let kopen = from + rel + String::length(head)
+      let mut j = kopen
+      let mut depth = 1
+      while j < n && depth > 0 {
+        let c = String::char_code_at(row, j)
+        if c == 91 {
+          depth = depth + 1
+        } else if c == 93 {
+          depth = depth - 1
+        }
+        j = j + 1
+      }
+      let close = if depth == 0 {
+        j - 1
+      } else {
+        n
+      }
+      let kind = String::substring(row, kopen, close)
+      let klen = String::length(kind)
+      let mut k = 0
+      while k < klen && String::length(formal_out) == 0 {
+        if fek_ident_char(String::char_code_at(kind, k)) {
+          let st = k
+          while k < klen && fek_ident_char(String::char_code_at(kind, k)) {
+            k = k + 1
+          }
+          let word = String::substring(kind, st, k)
+          let mut fi = 0
+          while fi < Array::length(formals) {
+            if Array::get(formals, fi) == word {
+              formal_out = word
+            }
+            fi = fi + 1
+          }
+        } else {
+          k = k + 1
+        }
+      }
+      if String::length(formal_out) > 0 {
+        kind_out = kind
+        scanning = false
+      } else {
+        from = if close < n {
+          close + 1
+        } else {
+          n
+        }
+        if from >= n {
+          scanning = false
+        }
+      }
+    }
+  }
+  (kind_out, formal_out)
+}
+
+/// #3053 (Codex on #3054): per top-level declaration, the builtin type names
+/// a binder inside it reuses as a type parameter. `tps_scan_stmts` already
+/// walks every binder's formals for #2141; asked about the builtin names
+/// instead of the declared ones, its reports name exactly the shadowed
+/// spellings. Keyed by `effect_shadow_key`, so the effects pass applies each
+/// declaration's set to that declaration alone.
+export fn builtin_named_type_params(stmts: Array[Stmt]) -> Array[(String, Array[String])] {
+  let out = array_empty()
+  let mut si = 0
+  while si < Array::length(stmts) {
+    let stmt = Array::get(stmts, si)
+    let hits = array_empty()
+    tps_scan_stmts([stmt], [
+      "Int",
+      "String",
+      "Bool",
+      "Double",
+      "Char",
+      "Bytes",
+      "Unit",
+      "Array",
+      "Option"
+    ], hits)
+    if Array::length(hits) > 0 {
+      let names = array_empty()
+      let mut i = 0
+      while i < Array::length(hits) {
+        let msg = Array::get(hits, i)
+        let a = String::index_of(msg, "`")
+        if a >= 0 {
+          let rest = String::substring(msg, a + 1, String::length(msg))
+          let b = String::index_of(rest, "`")
+          if b > 0 {
+            Array::push(names, String::substring(rest, 0, b))
+          }
+        }
+        i = i + 1
+      }
+      Array::push(out, (effect_shadow_key(stmt), names))
+    }
+    si = si + 1
+  }
+  out
+}
+
+/// #3095: the nominal type names -- structs and enums -- this module declares
+/// or imports under their own name. The effects pass reads such a word in a
+/// row as naming exactly one type, so two rows that spell different nominal
+/// heads name different types. A name any alias in scope also spells (`type
+/// P = Pt`, an imported alias) is left out, and so is every name an import
+/// item renames (`Box as B`), because the checker prints the type by its
+/// declared name while the row spells the local one -- unless this module
+/// declares its own struct / enum under the source name, which then owns it.
+export fn row_nominal_type_names(stmts: Array[Stmt], env: TypeEnv, defs: Array[TypeDef]) -> Array[String] {
+  let blocked = array_empty()
+  let candidates = array_empty()
+  let imported = array_empty()
+  let renamed = array_empty()
+  let mut ti = 0
+  while ti < Array::length(stmts) {
+    match Array::get(stmts, ti) {
+      SStruct(_, name, _, _, _, _) => Array::push(candidates, name),
+      SEnum(_, name, _, _, _) => Array::push(candidates, name),
+      STypeAlias(_, name, _, _) => Array::push(blocked, name),
+      SImport(_, items) => {
+        let mut ii = 0
+        while ii < Array::length(items) {
+          let item = Array::get(items, ii)
+          match item.alias {
+            Some(alias) => {
+              Array::push(renamed, item.name)
+              Array::push(blocked, alias)
+            },
+            None => Array::push(imported, item.name)
+          }
+          ii = ii + 1
+        }
+      },
+      _ => ()
+    }
+    ti = ti + 1
+  }
+  // A renamed import's source spelling is blocked only when no local
+  // struct / enum owns it: `struct Box` plus `import ./dep { Box as
+  // RemoteBox }` leaves a row's `Box` naming the local type (#3102 review).
+  let mut ri = 0
+  while ri < Array::length(renamed) {
+    let n = Array::get(renamed, ri)
+    if !tps_names_contains(candidates, n) {
+      Array::push(blocked, n)
+    }
+    ri = ri + 1
+  }
+  let nominal_defs = array_empty()
+  row_nominal_scan_defs(env_type_defs(env), blocked, nominal_defs)
+  row_nominal_scan_defs(defs, blocked, nominal_defs)
+  let mut ii = 0
+  while ii < Array::length(imported) {
+    let n = Array::get(imported, ii)
+    if tps_names_contains(nominal_defs, n) {
+      Array::push(candidates, n)
+    }
+    ii = ii + 1
+  }
+  let out = array_empty()
+  let mut ci = 0
+  while ci < Array::length(candidates) {
+    let n = Array::get(candidates, ci)
+    if !tps_names_contains(blocked, n) && !tps_names_contains(out, n) {
+      Array::push(out, n)
+    }
+    ci = ci + 1
+  }
+  out
+}
+
+fn row_nominal_scan_defs(defs: Array[TypeDef], blocked: Array[String], nominal_defs: Array[String]) -> Unit {
+  let mut di = 0
+  while di < Array::length(defs) {
+    match Array::get(defs, di) {
+      TDAlias(name, _, _) => Array::push(blocked, name),
+      TDStruct(name, _, _, _) => Array::push(nominal_defs, name),
+      TDEnum(name, _, _) => Array::push(nominal_defs, name),
+      _ => ()
+    }
+    di = di + 1
+  }
+}
+
+export fn collect_type_param_shadowing_errors(stmts: Array[Stmt], errors: Array[String]) -> Unit {
+  collect_formal_exception_kind_errors(stmts, errors)
+  collect_reserved_type_prefix_errors(stmts, errors)
+  collect_reserved_value_prefix_errors(stmts, errors)
+  collect_decl_formal_application_errors(stmts, errors)
+  let local_types = tps_local_type_names(stmts)
+  if Array::length(local_types) == 0 {
+    ()
+  } else {
+    tps_scan_stmts(stmts, local_types, errors)
+  }
+}
+
+export fn push_unique_error_strings(found: Array[String], errors: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(found) {
+    let message = Array::get(found, i)
+    if string_array_contains_exact(errors, message) {
+      ()
+    } else {
+      Array::push(errors, message)
+    }
+    i = i + 1
+  }
+}
+
+export fn insert_unique_error_strings(found: Array[String], errors: Array[String], at: Int) -> Unit {
+  if Array::length(found) == 0 {
+    ()
+  } else {
+    let suffix = Array::slice(errors, at, Array::length(errors))
+    Array::truncate(errors, at)
+    push_unique_error_strings(found, errors)
+    push_unique_error_strings(suffix, errors)
+  }
+}
+
+/// Checks every declaration payload after the current statement list's
+/// complete type-definition table exists. Each nested module invokes this from
+/// its own phase boundary, and a sibling completion invokes it again over the
+/// combined visible declarations. Without the completed table, a later alias
+/// can leave a `Map` key looking nominal and defer a diagnostic forever.
+export fn check_completed_decl_map_keys(stmts: Array[Stmt], defs: Array[TypeDef], errors: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let found = array_empty()
+    match Array::get(stmts, i) {
+      STypeAlias(_, name, params, te) => {
+        report_map_key_types(te, defs, params, String::concat(String::concat("the body of type alias `", name), "`"), found)
+      },
+      SStruct(_, name, fields, _, _, params) => {
+        let mut fi = 0
+        while fi < Array::length(fields) {
+          let (field_name, field_type) = Array::get(fields, fi)
+          report_map_key_types(field_type, defs, params, struct_field_decl_label(name, field_name), found)
+          fi = fi + 1
+        }
+      },
+      SEnum(_, name, params, variants, _) => {
+        let mut vi = 0
+        while vi < Array::length(variants) {
+          let (variant_name, payloads) = Array::get(variants, vi)
+          let mut pi = 0
+          while pi < Array::length(payloads) {
+            report_map_key_types(Array::get(payloads, pi), defs, params, String::concat(String::concat(String::concat("the payload of `", name), String::concat("::", variant_name)), "`"), found)
+            pi = pi + 1
+          }
+          vi = vi + 1
+        }
+      },
+      SSuberror(_, name, variants) => {
+        let mut vi = 0
+        while vi < Array::length(variants) {
+          let (variant_name, payloads) = Array::get(variants, vi)
+          let mut pi = 0
+          while pi < Array::length(payloads) {
+            report_map_key_types(Array::get(payloads, pi), defs, array_empty(), String::concat(String::concat(String::concat("the payload of `", name), String::concat("::", variant_name)), "`"), found)
+            pi = pi + 1
+          }
+          vi = vi + 1
+        }
+      },
+      SEffectDef(_, name, params, ops) => {
+        let mut oi = 0
+        while oi < Array::length(ops) {
+          let (op_name, op_params, op_ret) = Array::get(ops, oi)
+          let where_label = fapp_decl_label(name, op_name)
+          let mut pi = 0
+          while pi < Array::length(op_params) {
+            report_map_key_types(Array::get(op_params, pi), defs, params, where_label, found)
+            pi = pi + 1
+          }
+          report_map_key_types(op_ret, defs, params, where_label, found)
+          oi = oi + 1
+        }
+      },
+      _ => ()
+    }
+    push_unique_error_strings(found, errors)
+    i = i + 1
+  }
+}
+
+/// Counts the tree that `resolve_type_alias_params` would materialize without
+/// allocating it. Counts saturate above `limit`, including duplicated formal
+/// arguments, so a generic alias cannot hide the same exponential shape.
+fn substituted_type_node_count(ty: Type, params: Array[String], arg_counts: Array[Int], limit: Int) -> Int {
+  match ty {
+    CtNamed(name, args) => {
+      let param_idx = type_param_index(params, name)
+      if param_idx >= 0 && param_idx < Array::length(arg_counts) {
+        Array::get(arg_counts, param_idx)
+      } else {
+        let mut total = 1
+        let mut i = 0
+        while i < Array::length(args) && total <= limit {
+          total = capped_type_node_add(total, substituted_type_node_count(Array::get(args, i), params, arg_counts, limit), limit)
+          i = i + 1
+        }
+        total
+      }
+    },
+    CtArray(elem) => capped_type_node_add(1, substituted_type_node_count(elem, params, arg_counts, limit), limit),
+    CtOption(elem) => capped_type_node_add(1, substituted_type_node_count(elem, params, arg_counts, limit), limit),
+    CtTuple(elems) => {
+      let mut total = 1
+      let mut i = 0
+      while i < Array::length(elems) && total <= limit {
+        total = capped_type_node_add(total, substituted_type_node_count(Array::get(elems, i), params, arg_counts, limit), limit)
+        i = i + 1
+      }
+      total
+    },
+    CtFn(fn_params, ret, _) => {
+      let mut total = 1
+      let mut i = 0
+      while i < Array::length(fn_params) && total <= limit {
+        total = capped_type_node_add(total, substituted_type_node_count(Array::get(fn_params, i), params, arg_counts, limit), limit)
+        i = i + 1
+      }
+      if total <= limit {
+        total = capped_type_node_add(total, substituted_type_node_count(ret, params, arg_counts, limit), limit)
+      } else {
+        ()
+      }
+      total
+    },
+    CtForAll(_, _, body) => capped_type_node_add(1, substituted_type_node_count(body, array_empty(), array_empty(), limit), limit),
+    CtRecord(fields) => {
+      let mut total = 1
+      let mut i = 0
+      while i < Array::length(fields) && total <= limit {
+        let (_, field_type) = Array::get(fields, i)
+        total = capped_type_node_add(total, substituted_type_node_count(field_type, array_empty(), array_empty(), limit), limit)
+        i = i + 1
+      }
+      total
+    },
+    _ => 1
+  }
+}
+
+fn type_expr_arg_expansion_stats(args: Array[TypeExpr], defs: Array[TypeDef], shadow: Array[String], capped_aliases: Array[Int], limit: Int) -> Array[(Int, Int)] {
+  let stats = array_empty()
+  let mut i = 0
+  while i < Array::length(args) {
+    Array::push(stats, type_expr_expansion_stats(Array::get(args, i), defs, shadow, capped_aliases, limit))
+    i = i + 1
+  }
+  stats
+}
+
+fn type_expr_result_sizes(stats: Array[(Int, Int)]) -> Array[Int] {
+  let sizes = array_empty()
+  let mut i = 0
+  while i < Array::length(stats) {
+    Array::push(sizes, Array::get(stats, i).0)
+    i = i + 1
+  }
+  sizes
+}
+
+/// Combines eagerly evaluated children. Previously resolved child results stay
+/// live while the next child's transient allocation is evaluated.
+fn type_expr_children_expansion_stats(child_stats: Array[(Int, Int)], root_size: Int, limit: Int) -> (Int, Int) {
+  let mut result_sum = 0
+  let mut peak = 0
+  let mut i = 0
+  while i < Array::length(child_stats) && result_sum <= limit {
+    let child = Array::get(child_stats, i)
+    let child_peak = capped_type_node_add(result_sum, child.1, limit)
+    if child_peak > peak {
+      peak = child_peak
+    } else {
+      ()
+    }
+    result_sum = capped_type_node_add(result_sum, child.0, limit)
+    i = i + 1
+  }
+  let result_size = capped_type_node_add(root_size, result_sum, limit)
+  if result_size > peak {
+    peak = result_size
+  } else {
+    ()
+  }
+  (result_size, peak)
+}
+
+fn named_type_expr_expansion_stats(name: String, arg_stats: Array[(Int, Int)], defs: Array[TypeDef], shadow: Array[String], capped_aliases: Array[Int], limit: Int) -> (Int, Int) {
+  let arg_counts = type_expr_result_sizes(arg_stats)
+  let args = type_expr_children_expansion_stats(arg_stats, 0, limit)
+  if string_array_contains_exact(shadow, name) {
+    type_expr_children_expansion_stats(arg_stats, 1, limit)
+  } else {
+    let idx = typedef_index_of_from(defs, name, 0)
+    if idx >= 0 && int_array_contains(capped_aliases, idx) {
+      (limit + 1, limit + 1)
+    } else if idx >= 0 {
+      match Array::get(defs, idx) {
+        TDAlias(_, params, body) => {
+          // `resolve_type_expr_core_shadowed` eagerly materializes every
+          // argument before substituting the alias body, even when a formal is
+          // unused. Direct argument results and the cloned result coexist, but
+          // a nested argument's transient peak does not remain live afterward.
+          let result_size = substituted_type_node_count(body, params, arg_counts, limit)
+          let own_peak = capped_type_node_add(args.0, result_size, limit)
+          let peak = if args.1 > own_peak {
+            args.1
+          } else {
+            own_peak
+          }
+          (result_size, peak)
+        },
+        _ => type_expr_children_expansion_stats(arg_stats, 1, limit)
+      }
+    } else {
+      type_expr_children_expansion_stats(arg_stats, 1, limit)
+    }
+  }
+}
+
+/// Preflights resolved tree size and transient allocation peak with saturation.
+/// The first tuple field is the retained result size; the second is the peak.
+/// This must run
+/// before `resolve_type_expr_shadowed`: measuring the returned tree would
+/// already have paid the exponential allocation this guard exists to avoid.
+fn type_expr_expansion_stats(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], capped_aliases: Array[Int], limit: Int) -> (Int, Int) {
+  match te {
+    TyUnit => (1, 1),
+    TyName(name) => match resolve_builtin(name) {
+      Some(_) => (1, 1),
+      None => named_type_expr_expansion_stats(name, array_empty(), defs, shadow, capped_aliases, limit)
+    },
+    TyApp(name, args) => {
+      let arg_stats = type_expr_arg_expansion_stats(args, defs, shadow, capped_aliases, limit)
+      if name == "Array" && Array::length(arg_stats) == 1 {
+        type_expr_children_expansion_stats(arg_stats, 1, limit)
+      } else if name == "Option" && Array::length(arg_stats) == 1 {
+        type_expr_children_expansion_stats(arg_stats, 1, limit)
+      } else if name == "StringMap" && Array::length(arg_stats) == 1 && !string_array_contains_exact(shadow, name) && typedef_index_of_from(defs, name, 0) < 0 {
+        type_expr_children_expansion_stats(arg_stats, 2, limit)
+      } else {
+        named_type_expr_expansion_stats(name, arg_stats, defs, shadow, capped_aliases, limit)
+      }
+    },
+    TyTuple(elems) => type_expr_children_expansion_stats(type_expr_arg_expansion_stats(elems, defs, shadow, capped_aliases, limit), 1, limit),
+    TyFn(fn_params, ret, _) => {
+      let children = type_expr_arg_expansion_stats(fn_params, defs, shadow, capped_aliases, limit)
+      Array::push(children, type_expr_expansion_stats(ret, defs, shadow, capped_aliases, limit))
+      type_expr_children_expansion_stats(children, 1, limit)
+    }
+  }
+}
+
+export fn type_expr_expansion_node_count(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], capped_aliases: Array[Int], limit: Int) -> Int {
+  type_expr_expansion_stats(te, defs, shadow, capped_aliases, limit).1
+}
+
+export fn report_alias_expansion_limit(name: String, errors: Array[String]) -> Unit {
+  let message = String::concat(String::concat(String::concat("type alias expansion exceeds ", __to_string(alias_expansion_node_limit())), String::concat(" nodes for `", name)), "`; replace the shared alias DAG with a nominal struct or enum")
+  if string_array_contains_exact(errors, message) {
+    ()
+  } else {
+    Array::push(errors, message)
+  }
+}
+
+export fn errors_contain_alias_expansion_limit(errors: Array[String]) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(errors) && !found {
+    if String::starts_with(Array::get(errors, i), "type alias expansion exceeds ") {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// Re-resolves acyclic aliases from their source expressions until every
+/// dependency edge has had a chance to observe the completed body. Recursive
+/// declarations are skipped by statement identity, so a recursive alias in one
+/// scope cannot freeze an acyclic same-name alias in another; the alias-count
+/// bound cannot exponentially expand a cycle. Acyclic DAGs are preflighted
+/// against a node limit before allocation, then rejected with an actionable
+/// diagnostic instead of exhausting memory.
+export fn refresh_completed_alias_defs(stmts: Array[Stmt], defs: Array[TypeDef], from: Int, to: Int, errors: Array[String]) -> Unit {
+  let rounds = local_alias_def_count(defs, from, to)
+  let recursive = recursive_alias_flags(stmts)
+  let capped_aliases = array_empty()
+  let limit = alias_expansion_node_limit()
+  let mut round = 0
+  while round < rounds {
+    let taken = array_empty()
+    let mut i = Array::length(stmts) - 1
+    while i >= 0 {
+      match Array::get(stmts, i) {
+        STypeAlias(_, name, params, te) => {
+          let idx = completed_alias_index_reverse(defs, name, from, to, taken)
+          if idx >= 0 && !Array::get(recursive, i) && !int_array_contains(capped_aliases, idx) {
+            if type_expr_expansion_node_count(te, defs, params, capped_aliases, limit) > limit {
+              Array::push(capped_aliases, idx)
+              report_alias_expansion_limit(name, errors)
+            } else {
+              Array::set(defs, idx, TDAlias(name, params, type_exception_rows_resolved(resolve_type_expr_shadowed(te, defs, params))))
+            }
+          } else {
+            ()
+          }
+        },
+        _ => ()
+      }
+      i = i - 1
+    }
+    round = round + 1
+  }
+}
+
+/// Rebuilds declaration payloads that may have consumed an alias before that
+/// alias reached its completed body. Unlike alias definitions, enum payloads
+/// keep checker-local CtVar binder ids, so their original binder table is
+/// reused while resolving the source expressions again.
+export fn refresh_completed_payload_defs(stmts: Array[Stmt], defs: Array[TypeDef], type_def_binders: Array[Array[Int]], from: Int, to: Int) -> Unit {
+  let taken = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SStruct(_, name, fields, _, mut_fields, params) => {
+        let idx = completed_type_def_index(defs, TDStruct(name, array_empty(), mut_fields, params), from, to, taken)
+        if idx >= 0 {
+          let resolved = for field in fields {
+            let (field_name, field_type) = field
+            (field_name, type_exception_rows_resolved(resolve_type_expr_shadowed(field_type, defs, params)))
+          }
+          Array::set(defs, idx, TDStruct(name, resolved, mut_fields, params))
+        } else {
+          ()
+        }
+      },
+      SEnum(_, name, params, variants, _) => {
+        let idx = completed_type_def_index(defs, TDEnum(name, params, array_empty()), from, to, taken)
+        if idx >= 0 {
+          let binder_types = if idx < Array::length(type_def_binders) {
+            for binder in Array::get(type_def_binders, idx) {
+              CtVar(binder)
+            }
+          } else {
+            array_empty()
+          }
+          let resolved = for variant in variants {
+            let (variant_name, payloads) = variant
+            (variant_name, for payload in payloads {
+              subst_type_params(type_exception_rows_resolved(resolve_type_expr_shadowed(payload, defs, params)), params, binder_types)
+            })
+          }
+          Array::set(defs, idx, TDEnum(name, params, resolved))
+        } else {
+          ()
+        }
+      },
+      SSuberror(_, name, variants) => {
+        let idx = completed_type_def_index(defs, TDEnum(name, array_empty(), array_empty()), from, to, taken)
+        if idx >= 0 {
+          let resolved = for variant in variants {
+            let (variant_name, payloads) = variant
+            (variant_name, for payload in payloads {
+              resolve_type_expr(payload, defs)
+            })
+          }
+          Array::set(defs, idx, TDEnum(name, array_empty(), resolved))
+        } else {
+          ()
+        }
+      },
+      SEffectDef(_, name, params, ops) => {
+        let idx = completed_type_def_index(defs, TDEffect(name, array_empty(), params), from, to, taken)
+        if idx >= 0 {
+          let resolved = for op in ops {
+            let (op_name, op_params, ret) = op
+            (op_name, for param in op_params {
+              resolve_type_expr_shadowed(param, defs, params)
+            }, resolve_type_expr_shadowed(ret, defs, params))
+          }
+          Array::set(defs, idx, TDEffect(name, resolved, params))
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+fn replace_first_env_binding(env: TypeEnv, wanted: String, ty: Type, replaced: Array[Bool]) -> TypeEnv {
+  match env {
+    EnvEmpty => EnvEmpty,
+    EnvBind(name, binding, rest) => if !Array::get(replaced, 0) && name == wanted {
+      Array::set(replaced, 0, true)
+      EnvBind(name, env_value_binding_with_origin(ty, binding.origin), rest)
+    } else {
+      EnvBind(name, binding, replace_first_env_binding(rest, wanted, ty, replaced))
+    },
+    EnvTraitDef(name, supers, is_auto, methods, rest, params, method_gens) => EnvTraitDef(name, supers, is_auto, methods, replace_first_env_binding(rest, wanted, ty, replaced), params, method_gens),
+    EnvTraitImpl(name, target, rest) => EnvTraitImpl(name, target, replace_first_env_binding(rest, wanted, ty, replaced)),
+    EnvTraitImplGen(name, params, bounds, target, rest) => EnvTraitImplGen(name, params, bounds, target, replace_first_env_binding(rest, wanted, ty, replaced)),
+    EnvTypeDefs(node_defs, selectable, rest) => EnvTypeDefs(node_defs, selectable, replace_first_env_binding(rest, wanted, ty, replaced)),
+    EnvMutCell(name, escapes, rest) => EnvMutCell(name, escapes, replace_first_env_binding(rest, wanted, ty, replaced)),
+    EnvFlat(bindings) => EnvFlat(bindings),
+    EnvCached(names, bindings, rest) => EnvCached(names, bindings, replace_first_env_binding(rest, wanted, ty, replaced))
+  }
+}
+
+fn stmt_owns_equals_marker(stmt: Stmt, type_name: String) -> Bool {
+  match stmt {
+    SEnum(_, name, _, _, _) => name == type_name,
+    SSuberror(_, name, _) => name == type_name,
+    SStruct(_, name, _, _, _, _) => name == type_name,
+    _ => false
+  }
+}
+
+fn later_equals_owner_count(stmts: Array[Stmt], after: Int, type_name: String) -> Int {
+  let mut count = 0
+  let mut i = after + 1
+  while i < Array::length(stmts) {
+    if stmt_owns_equals_marker(Array::get(stmts, i), type_name) {
+      count = count + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  count
+}
+
+fn refresh_suberror_owned_bindings(env: TypeEnv, suberror_name: String, variants: Array[(String, Array[Type])], markers_to_skip: Int) -> TypeEnv {
+  let marker = String::concat(suberror_name, "::equals")
+  match env {
+    EnvEmpty => EnvEmpty,
+    EnvBind(name, binding, rest) => if name == marker {
+      if markers_to_skip > 0 {
+        EnvBind(name, binding, refresh_suberror_owned_bindings(rest, suberror_name, variants, markers_to_skip - 1))
+      } else {
+        let mut refreshed_rest = rest
+        let mut vi = Array::length(variants) - 1
+        while vi >= 0 {
+          let (variant_name, payloads) = Array::get(variants, vi)
+          let ctor_ty = if Array::length(payloads) == 0 {
+            CtEnum(suberror_name)
+          } else {
+            CtFn(payloads, CtEnum(suberror_name), constructor_dependency_row(Array::length(payloads)))
+          }
+          refreshed_rest = replace_first_env_binding(refreshed_rest, variant_name, ctor_ty, [
+            false
+          ])
+          if Array::length(payloads) > 0 {
+            refreshed_rest = replace_first_env_binding(refreshed_rest, fn_return_env_name(variant_name), CtEnum(suberror_name), [
+              false
+            ])
+          } else {
+            ()
+          }
+          vi = vi - 1
+        }
+        EnvBind(name, binding, refreshed_rest)
+      }
+    } else {
+      EnvBind(name, binding, refresh_suberror_owned_bindings(rest, suberror_name, variants, markers_to_skip))
+    },
+    EnvTraitDef(name, supers, is_auto, methods, rest, params, method_gens) => EnvTraitDef(name, supers, is_auto, methods, refresh_suberror_owned_bindings(rest, suberror_name, variants, markers_to_skip), params, method_gens),
+    EnvTraitImpl(name, target, rest) => EnvTraitImpl(name, target, refresh_suberror_owned_bindings(rest, suberror_name, variants, markers_to_skip)),
+    EnvTraitImplGen(name, params, bounds, target, rest) => EnvTraitImplGen(name, params, bounds, target, refresh_suberror_owned_bindings(rest, suberror_name, variants, markers_to_skip)),
+    EnvTypeDefs(node_defs, selectable, rest) => EnvTypeDefs(node_defs, selectable, refresh_suberror_owned_bindings(rest, suberror_name, variants, markers_to_skip)),
+    EnvMutCell(name, escapes, rest) => EnvMutCell(name, escapes, refresh_suberror_owned_bindings(rest, suberror_name, variants, markers_to_skip)),
+    EnvFlat(bindings) => EnvFlat(bindings),
+    EnvCached(names, bindings, rest) => EnvCached(names, bindings, refresh_suberror_owned_bindings(rest, suberror_name, variants, markers_to_skip))
+  }
+}
+
+export fn refresh_completed_suberror_env(stmts: Array[Stmt], env: TypeEnv, defs: Array[TypeDef], from: Int, to: Int) -> TypeEnv {
+  let taken = array_empty()
+  let mut refreshed = env
+  let mut i = Array::length(stmts) - 1
+  while i >= 0 {
+    match Array::get(stmts, i) {
+      SSuberror(_, name, _) => {
+        let idx = completed_type_def_index_reverse(defs, TDEnum(name, array_empty(), array_empty()), from, to, taken)
+        if idx >= 0 {
+          match Array::get(defs, idx) {
+            TDEnum(_, _, variants) => {
+              refreshed = refresh_suberror_owned_bindings(refreshed, name, variants, later_equals_owner_count(stmts, i, name))
+            },
+            _ => ()
+          }
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+    i = i - 1
+  }
+  refreshed
+}
+
+fn local_alias_def_count(defs: Array[TypeDef], from: Int, to: Int) -> Int {
+  let mut count = 0
+  let mut i = from
+  while i < to {
+    match Array::get(defs, i) {
+      TDAlias(_, _, _) => {
+        count = count + 1
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  count
+}
+
+/// The environment chain is newest-first, while `defs` is declaration order.
+/// Find the newest unclaimed local alias so replacing an `EnvTypeDefs` node
+/// preserves duplicate-name and cross-kind shadowing exactly.
+fn completed_alias_index_reverse(defs: Array[TypeDef], name: String, from: Int, to: Int, taken: Array[Int]) -> Int {
+  let mut i = to - 1
+  let mut found = 0 - 1
+  while i >= from && found < 0 {
+    let matches = match Array::get(defs, i) {
+      TDAlias(n, _, _) => n == name,
+      _ => false
+    }
+    if matches && !int_array_contains(taken, i) {
+      found = i
+    } else {
+      i = i - 1
+    }
+  }
+  if found >= 0 {
+    Array::push(taken, found)
+  } else {
+    ()
+  }
+  found
+}
+
+fn type_def_same_head(left: TypeDef, right: TypeDef) -> Bool {
+  match (left, right) {
+    (TDEnum(a, _, _), TDEnum(b, _, _)) => a == b,
+    (TDStruct(a, _, _, _), TDStruct(b, _, _, _)) => a == b,
+    (TDAlias(a, _, _), TDAlias(b, _, _)) => a == b,
+    (TDEffect(a, _, _), TDEffect(b, _, _)) => a == b,
+    (TDEffectSet(a, _), TDEffectSet(b, _)) => a == b,
+    _ => false
+  }
+}
+
+fn completed_type_def_index(defs: Array[TypeDef], probe: TypeDef, from: Int, to: Int, taken: Array[Int]) -> Int {
+  let mut i = from
+  let mut found = 0 - 1
+  while i < to && found < 0 {
+    if type_def_same_head(Array::get(defs, i), probe) && !int_array_contains(taken, i) {
+      found = i
+    } else {
+      i = i + 1
+    }
+  }
+  if found >= 0 {
+    Array::push(taken, found)
+  } else {
+    ()
+  }
+  found
+}
+
+fn completed_type_def_index_reverse(defs: Array[TypeDef], probe: TypeDef, from: Int, to: Int, taken: Array[Int]) -> Int {
+  let mut i = to - 1
+  let mut found = 0 - 1
+  while i >= from && found < 0 {
+    if type_def_same_head(Array::get(defs, i), probe) && !int_array_contains(taken, i) {
+      found = i
+    } else {
+      i = i - 1
+    }
+  }
+  if found >= 0 {
+    Array::push(taken, found)
+  } else {
+    ()
+  }
+  found
+}
+
+fn refresh_completed_type(ty: Type, defs: Array[TypeDef], shadow: Array[String], seen: Array[String]) -> Type {
+  match ty {
+    CtNamed(name, args) => {
+      let refreshed_args = for arg in args {
+        refresh_completed_type(arg, defs, shadow, seen)
+      }
+      if string_array_contains_exact(shadow, name) || string_array_contains_exact(seen, name) {
+        CtNamed(name, refreshed_args)
+      } else match find_typedef(defs, name) {
+        Some(TDAlias(_, params, target)) => {
+          let next_seen = Array::slice(seen, 0, Array::length(seen))
+          Array::push(next_seen, name)
+          refresh_completed_type(subst_type_params(target, params, refreshed_args), defs, shadow, next_seen)
+        },
+        _ => CtNamed(name, refreshed_args)
+      }
+    },
+    CtTuple(items) => CtTuple(for item in items {
+      refresh_completed_type(item, defs, shadow, seen)
+    }),
+    CtArray(item) => CtArray(refresh_completed_type(item, defs, shadow, seen)),
+    CtOption(item) => CtOption(refresh_completed_type(item, defs, shadow, seen)),
+    CtApplied(head, args) => apply_type_constructor(refresh_completed_type(head, defs, shadow, seen), for arg in args {
+      refresh_completed_type(arg, defs, shadow, seen)
+    }),
+    CtFn(params, ret, row) => CtFn(for param in params {
+      refresh_completed_type(param, defs, shadow, seen)
+    }, refresh_completed_type(ret, defs, shadow, seen), match row {
+      // #3028: a constructor's signature is refreshed here once the
+      // declarations are complete; its rows' kinds resolve with its payloads.
+      Some(r) => Some(exception_row_resolved(r)),
+      None => None
+    }),
+    CtForAll(vars, bounds, body) => CtForAll(vars, bounds, refresh_completed_type(body, defs, shadow, seen)),
+    CtRecord(fields) => CtRecord(for field in fields {
+      let (name, field_ty) = field
+      (name, refresh_completed_type(field_ty, defs, shadow, seen))
+    }),
+    _ => ty
+  }
+}
+
+fn refresh_completed_env_type_def(node_def: TypeDef, completed_def: TypeDef, defs: Array[TypeDef]) -> TypeDef {
+  match node_def {
+    TDAlias(name, params, old_body) => match completed_def {
+      TDAlias(_, _, body) => TDAlias(name, params, body),
+      _ => TDAlias(name, params, old_body)
+    },
+    TDStruct(name, fields, mut_fields, params) => TDStruct(name, for field in fields {
+      let (field_name, field_ty) = field
+      (field_name, refresh_completed_type(field_ty, defs, params, array_empty()))
+    }, mut_fields, params),
+    TDEnum(name, params, variants) => TDEnum(name, params, for variant in variants {
+      let (variant_name, payloads) = variant
+      (variant_name, for payload in payloads {
+        refresh_completed_type(payload, defs, params, array_empty())
+      })
+    }),
+    TDEffect(name, ops, params) => TDEffect(name, for op in ops {
+      let (op_name, op_params, ret) = op
+      (op_name, for param in op_params {
+        refresh_completed_type(param, defs, params, array_empty())
+      }, refresh_completed_type(ret, defs, params, array_empty()))
+    }, params),
+    TDEffectSet(name, members) => TDEffectSet(name, members)
+  }
+}
+
+fn refresh_alias_env_binding(env: TypeEnv, name: String, body: Type) -> TypeEnv {
+  match env {
+    EnvBind(bound_name, binding, rest) => if bound_name == name {
+      EnvBind(bound_name, env_value_binding_with_origin(body, binding.origin), rest)
+    } else {
+      env
+    },
+    EnvCached(names, bindings, rest) => EnvCached(names, bindings, refresh_alias_env_binding(rest, name, body)),
+    _ => env
+  }
+}
+
+fn refresh_type_env_prefix(env: TypeEnv, defs: Array[TypeDef]) -> TypeEnv {
+  match env {
+    EnvBind(name, binding, rest) => EnvBind(name, env_value_binding_with_origin(refresh_completed_type(binding.ty, defs, array_empty(), array_empty()), binding.origin), refresh_type_env_prefix(rest, defs)),
+    EnvTraitImpl(name, target, rest) => EnvTraitImpl(name, refresh_completed_type(target, defs, array_empty(), array_empty()), refresh_type_env_prefix(rest, defs)),
+    EnvTraitImplGen(name, params, bounds, target, rest) => EnvTraitImplGen(name, params, bounds, refresh_completed_type(target, defs, params, array_empty()), refresh_type_env_prefix(rest, defs)),
+    EnvMutCell(name, escapes, rest) => EnvMutCell(name, escapes, refresh_type_env_prefix(rest, defs)),
+    EnvCached(names, bindings, rest) => EnvCached(names, bindings, refresh_type_env_prefix(rest, defs)),
+    _ => env
+  }
+}
+
+/// Refreshes the completed local declaration payloads and their companion
+/// value signatures without restacking the environment. The exact local type
+/// count provides the boundary that keeps imported and outer nodes untouched.
+export fn refresh_completed_type_env(env: TypeEnv, defs: Array[TypeDef], from: Int, to: Int, taken: Array[Int], local_count: Int) -> TypeEnv {
+  if Array::length(taken) >= local_count {
+    env
+  } else match env {
+    EnvEmpty => EnvEmpty,
+    EnvBind(name, binding, rest) => EnvBind(name, binding, refresh_completed_type_env(rest, defs, from, to, taken, local_count)),
+    EnvTraitDef(name, supers, is_auto, methods, rest, params, method_gens) => EnvTraitDef(name, supers, is_auto, methods, refresh_completed_type_env(rest, defs, from, to, taken, local_count), params, method_gens),
+    EnvTraitImpl(name, target, rest) => EnvTraitImpl(name, target, refresh_completed_type_env(rest, defs, from, to, taken, local_count)),
+    EnvTraitImplGen(name, params, bounds, target, rest) => EnvTraitImplGen(name, params, bounds, target, refresh_completed_type_env(rest, defs, from, to, taken, local_count)),
+    EnvTypeDefs(node_defs, selectable, rest) => {
+      let refreshed = array_empty()
+      let mut refreshed_rest = rest
+      let mut refresh_prefix = false
+      let mut i = 0
+      while i < Array::length(node_defs) {
+        let node_def = Array::get(node_defs, i)
+        let idx = completed_type_def_index_reverse(defs, node_def, from, to, taken)
+        if idx >= 0 {
+          let completed_def = Array::get(defs, idx)
+          Array::push(refreshed, refresh_completed_env_type_def(node_def, completed_def, defs))
+          match completed_def {
+            TDAlias(name, _, body) => {
+              refreshed_rest = refresh_alias_env_binding(refreshed_rest, name, body)
+            },
+            _ => {
+              refresh_prefix = true
+            }
+          }
+        } else {
+          Array::push(refreshed, node_def)
+        }
+        i = i + 1
+      }
+      let completed_rest = if refresh_prefix {
+        refresh_type_env_prefix(refreshed_rest, defs)
+      } else {
+        refreshed_rest
+      }
+      EnvTypeDefs(refreshed, selectable, refresh_completed_type_env(completed_rest, defs, from, to, taken, local_count))
+    },
+    EnvMutCell(name, escapes, rest) => EnvMutCell(name, escapes, refresh_completed_type_env(rest, defs, from, to, taken, local_count)),
+    EnvFlat(bindings) => EnvFlat(bindings),
+    EnvCached(names, bindings, rest) => EnvCached(names, bindings, refresh_completed_type_env(rest, defs, from, to, taken, local_count))
+  }
+}

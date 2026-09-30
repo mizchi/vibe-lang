@@ -99,7 +99,8 @@ run_case neither neither "NEITHER lane"
 # renamed, which is the same "unchecked, not clean" failure #2248 is about. So
 # the exemption reads the arms, and this case proves it does: rename the gc
 # arm on a COPY and the gate must name `abort` rather than waving it through.
-GC_CALLSITE_REAL="lib/@vibe/compiler/codegen/gc/backend_call.vibe"
+GC_CALLSITE_REAL="$WORK/gc_original.vibe"
+python3 scripts/source_files.py lib/@vibe/compiler/codegen/gc/backend_call.vibe > "$GC_CALLSITE_REAL"
 GC_COPY="$WORK/backend_call.vibe"
 sed 's/fname == "abort"/fname == "abort_MUTATED"/' "$GC_CALLSITE_REAL" > "$GC_COPY"
 grep -qF 'fname == "abort_MUTATED"' "$GC_COPY" \

@@ -149,8 +149,8 @@ test("an invoke batch reports a guest exit as that target's status and runs on",
 test("the runner has no process.exit() call but the drain fallback", () => {
   // Comments are stripped first: this file's reasoning names the call, and
   // the check must see only code.
-  const code = fs
-    .readFileSync(RUNNER, "utf8")
+  const code = (fs
+    .readFileSync(path.join(__dirname, "wasm_vibe_host_runtime.js"), "utf8") + fs.readFileSync(RUNNER, "utf8"))
     .split("\n")
     .filter((line) => !/^\s*\/\//.test(line))
     .join("\n");

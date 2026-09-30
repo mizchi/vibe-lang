@@ -154,6 +154,8 @@ grep -q '^slept$' "$work/sleep.txt" || {
 }
 echo "ok: vibe.sleep, which this runner does implement, still runs"
 
+cp scripts/wasm_vibe_host_runtime.js "$work/wasm_vibe_host_runtime.js"
+
 # 3. RED, by source mutation: without the guard branch the same program prints
 #    `sum=0` and exits 0. A gate that cannot show the old behaviour returning is
 #    a gate that would keep passing if the branch were deleted (#2248).

@@ -1,0 +1,596 @@
+// lib/@vibe/compiler/codegen/expr/compile_call.vibe — call core.
+
+import ./compile_lambda.vibe {
+  cl_return_operand, rs_has_tail, rs_keep_bind, rs_map
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import @vibe/compiler/core {
+  Expr,
+  Pat,
+  Stmt,
+  TypeExpr,
+  bsearch_leftmost,
+  bytebuf_length,
+  bytebuf_new,
+  bytebuf_push,
+  bytebuf_push_section,
+  bytebuf_push_vec_header,
+  bytebuf_to_bytes,
+  canonical_builtin_name,
+  expr_children,
+  is_borrow_ret_builtin,
+  is_exception_operation_name,
+  is_exception_throw_operation,
+  leb128_encode_s64,
+  leb128_encode_u32,
+  namespace_exported_name,
+  sorted_names_of,
+  typed_lowering_arg_offset,
+  typed_lowering_float_key,
+  typed_render_refuse_key,
+  unrenderable_render_message
+}
+
+import @vibe/compiler/codegen/common_analysis {
+  collect_free_vars,
+  collect_pattern_bindings,
+  collect_strings_stmts,
+  emit_closure_call_tail,
+  emit_closure_resolve,
+  emit_i64_extend_i32_u,
+  is_mut_captured_in,
+  md_borrow_mask_of,
+  md_builtin_borrow_mask,
+  packed_dir_entries_to_array_expr,
+  proj_root_ident
+}
+
+import @vibe/compiler/perceus {
+  perceus_exit_fingerprint
+}
+
+import @vibe/compiler/codegen/common_base {
+  CompileCtx,
+  CtorTable,
+  FuncTable,
+  LambdaTable,
+  StrTable,
+  agg_expr_lookup,
+  agg_slot_lookup,
+  ctor_table_index_of,
+  double_parse_expr,
+  double_runtime_parse_name,
+  double_runtime_require,
+  double_runtime_to_string_name,
+  double_to_string_expr,
+  effect_name_to_tag,
+  effect_op_index,
+  emit_arith_wrap_int,
+  emit_binop_op,
+  emit_box_float,
+  emit_heap_grow_after_heap_set,
+  emit_i32_eq,
+  emit_i32_eqz,
+  emit_i32_ge_u,
+  emit_i32_gt_u,
+  emit_i32_mul,
+  emit_i32_ne,
+  emit_i32_sub,
+  emit_i64_load,
+  emit_i64_store,
+  emit_index_one,
+  emit_rc_dup_guarded,
+  emit_rc_word_inc_saturating,
+  emit_region_enter,
+  emit_region_exit,
+  emit_region_try_epilogue,
+  emit_region_try_prologue,
+  emit_str_ref,
+  emit_unbox_float,
+  expr_tag,
+  find_local_slot,
+  func_table_builtin_pos_of,
+  func_table_index_of,
+  func_table_user_index_of,
+  get_arm_body,
+  get_arm_pat,
+  get_ebinop_op,
+  get_efn_body,
+  get_eif_cond,
+  get_eif_else,
+  get_eif_then,
+  get_elet_body,
+  get_elet_name,
+  get_elet_val,
+  get_slet_expr,
+  get_slet_name,
+  int_parse_expr,
+  is_ctor_call,
+  is_efn,
+  is_eident,
+  is_etuple,
+  is_pbind,
+  is_pbool,
+  is_pctor,
+  is_pint,
+  is_pstring,
+  is_ptuple,
+  is_pwild,
+  is_slet,
+  region_depth_addr_of,
+  region_max_depth,
+  region_saves_base_of,
+  region_try_body_ld,
+  resolve_func,
+  resolve_local,
+  sized_bytes_new_expr,
+  str_table_index_of,
+  string_unicode_length_expr,
+  string_utf16_length_expr,
+  string_views_runtime_require,
+  string_views_runtime_unicode_name,
+  string_views_runtime_utf16_name,
+  struct_field_candidates,
+  struct_field_dispatch_cases
+}
+
+import @vibe/compiler/codegen/common_extractors {
+  array_contains_int,
+  array_contains_str,
+  emit_assignop_op,
+  emit_memory_copy,
+  find_catchall_idx,
+  get_earray_elems,
+  get_eassign_body,
+  get_eassign_name,
+  get_eassign_val,
+  get_eassignop_body,
+  get_eassignop_name,
+  get_eassignop_op,
+  get_eassignop_val,
+  get_ebinop_lhs,
+  get_ebinop_rhs,
+  get_ebool_value,
+  get_ecall_args,
+  get_ecall_callee,
+  get_ecall_off,
+  get_efloat_value,
+  get_efn_params,
+  get_eforin_body,
+  get_eforin_iter,
+  get_eforin_name,
+  get_eident_name,
+  get_eident_off,
+  get_eint_value,
+  get_eletmut_body,
+  get_eletmut_name,
+  get_eletmut_val,
+  get_eletrec_body,
+  get_eletrec_name,
+  get_eletrec_val,
+  get_eseq_first,
+  get_eseq_second,
+  get_estring_value,
+  get_etuple_elems,
+  get_eunaryop_expr,
+  get_eunaryop_op,
+  get_ewhile_body,
+  get_ewhile_cond,
+  get_match_arms,
+  get_match_scrutinee,
+  get_pbind_name,
+  get_pbool_value,
+  get_pctor_args,
+  get_pctor_name,
+  get_pint_value,
+  get_pstring_value,
+  get_ptuple_pats,
+  get_slet_export
+}
+
+import @vibe/compiler/codegen/wasm_emit {
+  emit_block_i64,
+  emit_block_void,
+  emit_br,
+  emit_br_if,
+  emit_call,
+  emit_call_indirect,
+  emit_code_section,
+  emit_code_section_with_locals,
+  emit_data_section,
+  emit_data_section_multi,
+  emit_drop,
+  emit_element_section_active,
+  emit_else,
+  emit_end,
+  emit_export_section,
+  emit_export_section_multi,
+  emit_exports_full,
+  emit_exports_with_memory,
+  emit_f64_abs,
+  emit_f64_add,
+  emit_f64_ceil,
+  emit_f64_const_bits,
+  emit_f64_const_lohi,
+  emit_f64_convert_i64_s,
+  emit_f64_div,
+  emit_f64_eq,
+  emit_f64_floor,
+  emit_f64_ge,
+  emit_f64_gt,
+  emit_f64_le,
+  emit_f64_lt,
+  emit_f64_max,
+  emit_f64_min,
+  emit_f64_mul,
+  emit_f64_ne,
+  emit_f64_neg,
+  emit_f64_reinterpret_i64,
+  emit_f64_sub,
+  emit_func_type_raw,
+  emit_function_section,
+  emit_global_get,
+  emit_global_section_i32_mut,
+  emit_global_set,
+  emit_header,
+  emit_i32_add,
+  emit_i32_const,
+  emit_i32_load,
+  emit_i32_load8_u,
+  emit_i32_shr_u,
+  emit_i32_store,
+  emit_i32_store8,
+  emit_i32_wrap_i64,
+  emit_i64_add,
+  emit_i64_and,
+  emit_i64_const,
+  emit_i64_div_s,
+  emit_i64_eq,
+  emit_i64_eqz,
+  emit_i64_extend_i32_s,
+  emit_i64_ge_s,
+  emit_i64_gt_s,
+  emit_i64_le_s,
+  emit_i64_lt_s,
+  emit_i64_mul,
+  emit_i64_ne,
+  emit_i64_or,
+  emit_i64_reinterpret_f64,
+  emit_i64_rem_s,
+  emit_i64_shl,
+  emit_i64_shr_s,
+  emit_i64_sub,
+  emit_i64_trunc_f64_s,
+  emit_i64_xor,
+  emit_i8x16_all_true,
+  emit_i8x16_bitmask,
+  emit_i8x16_eq,
+  emit_i8x16_ge_u,
+  emit_i8x16_le_u,
+  emit_i8x16_splat,
+  emit_if_i64,
+  emit_if_void,
+  emit_import_section_func,
+  emit_local_get,
+  emit_local_set,
+  emit_local_tee,
+  emit_loop_void,
+  emit_memory_section,
+  emit_name,
+  emit_return,
+  emit_table_section_funcref,
+  emit_type_section,
+  emit_type_section_multi,
+  emit_v128_and,
+  emit_v128_any_true,
+  emit_v128_const_splat_byte,
+  emit_v128_load,
+  emit_v128_not,
+  emit_v128_or,
+  emit_v128_store,
+  string_to_data
+}
+
+import ./compile_lambda.vibe {
+  compile_lambda
+}
+
+import ./compile_match.vibe {
+  compile_match
+}
+
+import ./compile_call_cc_ladder_names.vibe {
+  cc_is_borrow_ret_call,
+  cc_is_loop_borrowed_ident,
+  cc_is_projection,
+  cc_is_ref_cell_read,
+  cc_own_cell_compound_args,
+  compile_map_iter_get_checked
+}
+
+import ./compile_call_named_1.vibe {
+  cc_compile_named_1
+}
+
+import ./compile_call_named_3.vibe {
+  array_value_copy,
+  cc_truncate_release_kind,
+  frozen_array_conversion_copy,
+  http_client_surface_to_raw,
+  mutbytes_exit_copy,
+  mutlist_exit_copy
+}
+
+/// #2837: release `x[new_len .. len)` with the ordinary decrement
+/// (`__rt_rc_drop`, never a raw free), BEFORE the truncate stores the new
+/// length -- the destructor walks only the live prefix, so an element outside
+/// it is released here or never. A scalar element is a no-op inside the drop
+/// helper (it tests the tag), so an `Array[Int]` pays the walk and nothing
+/// else. Leaves the stack as it found it; the ordinary truncate call follows.
+fn cc_emit_truncate_release(buf: Bytes, args: Array[Expr], kind: Int, local_names: Array[String], next_local: Int, ctx: CompileCtx) -> Int with Exception {
+  let x_slot = find_local_slot(local_names, get_eident_name(Array::get(args, 0)))
+  let len_l = next_local
+  let idx_l = next_local + 1
+  while Array::length(local_names) < next_local + 2 {
+    Array::push(local_names, "")
+  }
+  // len_l = old length (untagged)
+  emit_local_get(buf, x_slot)
+  emit_i64_const(buf, -2)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_i32_load(buf, 2, 4)
+  emit_i64_extend_i32_u(buf)
+  emit_local_set(buf, len_l)
+  // idx_l = new length (untagged)
+  let n = Array::get(args, 1)
+  if kind == 1 {
+    emit_i64_const(buf, get_eint_value(n))
+  } else {
+    emit_local_get(buf, find_local_slot(local_names, get_eident_name(n)))
+    emit_i64_const(buf, 1)
+    emit_i64_shr_s(buf)
+  }
+  emit_local_set(buf, idx_l)
+  emit_block_void(buf)
+  emit_loop_void(buf)
+  emit_local_get(buf, idx_l)
+  emit_local_get(buf, len_l)
+  emit_i64_ge_s(buf)
+  emit_br_if(buf, 1)
+  emit_local_get(buf, idx_l)
+  emit_i64_const(buf, 0)
+  emit_i64_lt_s(buf)
+  emit_br_if(buf, 1)
+  // __rt_rc_drop(load_i64(data_ptr + idx * 8))
+  emit_local_get(buf, x_slot)
+  emit_i64_const(buf, -2)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_i32_load(buf, 2, 8)
+  emit_local_get(buf, idx_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 8)
+  emit_i32_mul(buf)
+  emit_i32_add(buf)
+  emit_i64_load(buf, 3, 0)
+  emit_call(buf, ctx.rc_drop_func_idx)
+  emit_local_get(buf, idx_l)
+  emit_i64_const(buf, 1)
+  emit_i64_add(buf)
+  emit_local_set(buf, idx_l)
+  emit_br(buf, 0)
+  emit_end(buf)
+  emit_end(buf)
+  next_local + 2
+}
+
+export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
+  if is_eident(callee) && get_eident_name(callee) == "__region_run" && Array::length(args) == 1 {
+    if ctx.region_ptr_addr >= 0 {
+      emit_region_enter(buf, ctx.region_ptr_addr)
+      if ctx.region_exn_tag >= 0 {
+        emit_region_try_prologue(buf, ctx.region_exn_tag)
+        let r = ce(buf, ECall(Array::get(args, 0), [EInt(0)], -1), local_names, next_local, ctx, region_try_body_ld(ld))
+        emit_region_try_epilogue(buf, ctx.region_ptr_addr, ctx.region_exn_tag)
+        r
+      } else {
+        let r = ce(buf, ECall(Array::get(args, 0), [EInt(0)], -1), local_names, next_local, ctx, ld)
+        emit_region_exit(buf, ctx.region_ptr_addr)
+        r
+      }
+    } else {
+      ce(buf, ECall(Array::get(args, 0), [EInt(0)], -1), local_names, next_local, ctx, ld)
+    }
+  } else if is_eident(callee) && get_eident_name(callee) == "MutList::empty" && Array::length(args) == 1 {
+    if ctx.region_arr_new_func_idx >= 0 {
+      emit_call(buf, ctx.region_arr_new_func_idx)
+      next_local
+    } else {
+      let no_args = Array::slice([EInt(0)], 0, 0)
+      ce(buf, ECall(EIdent("ArrayBuilder::new", -1), no_args, -1), local_names, next_local, ctx, ld)
+    }
+  } else if is_eident(callee) && (get_eident_name(callee) == "MutList::freeze" || get_eident_name(callee) == "MutList::to_array") && Array::length(args) == 1 {
+    ce(buf, mutlist_exit_copy(Array::get(args, 0)), local_names, next_local, ctx, ld)
+  } else if is_eident(callee) && get_eident_name(callee) == "MutBytes::empty" && Array::length(args) == 1 {
+    if ctx.region_bytes_new_func_idx >= 0 {
+      emit_call(buf, ctx.region_bytes_new_func_idx)
+      next_local
+    } else {
+      let no_args = Array::slice([EInt(0)], 0, 0)
+      ce(buf, ECall(EIdent("Bytes::new", -1), no_args, -1), local_names, next_local, ctx, ld)
+    }
+  } else if is_eident(callee) && get_eident_name(callee) == "MutBytes::to_bytes" && Array::length(args) == 1 {
+    ce(buf, mutbytes_exit_copy(Array::get(args, 0)), local_names, next_local, ctx, ld)
+  } else if is_eident(callee) && frozen_array_conversion_copy(get_eident_name(callee)) != "" && Array::length(args) == 1 && func_table_index_of(ctx.func_table, get_eident_name(callee)) >= 0 && !array_contains_str(local_names, get_eident_name(callee)) {
+    ce(buf, array_value_copy(Array::get(args, 0), frozen_array_conversion_copy(get_eident_name(callee))), local_names, next_local, ctx, ld)
+  } else if is_eident(callee) && get_eident_name(callee) == "Map::iter_get" && Array::length(args) == 2 && func_table_index_of(ctx.func_table, "Map::iter_get") < 0 && !array_contains_str(local_names, "Map::iter_get") {
+    compile_map_iter_get_checked(buf, Array::get(args, 0), Array::get(args, 1), local_names, next_local, ctx, ld, ce)
+  } else if is_eident(callee) && get_eident_name(callee) == "Array::truncate" && !array_contains_str(local_names, "Array::truncate") && cc_truncate_release_kind(args, local_names, ctx) > 0 {
+    // #2837: release the removed suffix first, then the ordinary truncate.
+    let nl = cc_emit_truncate_release(buf, args, cc_truncate_release_kind(args, local_names, ctx), local_names, next_local, ctx)
+    compile_call_core(buf, callee, args, local_names, nl, ctx, ld, ce)
+  } else {
+    compile_call_core(buf, callee, args, local_names, next_local, ctx, ld, ce)
+  }
+}
+
+fn compile_call_core(buf: Bytes, callee: Expr, raw_args: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
+  let args = cc_own_cell_compound_args(callee, raw_args, local_names, ctx)
+  if is_eident(callee) {
+    let source_name = get_eident_name(callee)
+    // Builtin aliases are source-compatible fallbacks, not reserved names.
+    // Preserve the same shadowing rule as the checker: resolve the original
+    // spelling first, and canonicalize only when no function/local binds it.
+    let source_is_bound = func_table_index_of(ctx.func_table, source_name) >= 0 || array_contains_str(local_names, source_name)
+    let fname00 = if source_is_bound {
+      source_name
+    } else {
+      canonical_builtin_name(source_name)
+    }
+    // #1508 second barrier: the five CLIENT-side `Http::*` builtins are
+    // checker-legal as direct spellings (checker/builtins_net.vibe), but only
+    // the raw dunder names lib/@vibe/http calls internally (#794) had codegen
+    // wiring -- a bare file calling `Http::request(..)` died here with
+    // "reached code generation unresolved". Lower the direct spellings onto
+    // the very same host imports. Guarded on the name not resolving to
+    // anything real: a unit bundling lib/@vibe/http binds these names to its
+    // value aliases (`export let Http::request = request`, #795), and a bound
+    // name must keep winning. Server-side ops (listen/accept/respond/...)
+    // stay perform-based and are NOT aliased.
+    let http_raw = http_client_surface_to_raw(fname00)
+    let fname0 = if String::length(http_raw) > 0 && func_table_index_of(ctx.func_table, fname00) < 0 && !array_contains_str(local_names, fname00) {
+      http_raw
+    } else {
+      fname00
+    }
+    // #1538: the eager `Stream::empty` / `once` / `map` / `filter` / `fold`
+    // aliases used to live here, backed by the Array machinery. They are
+    // retired -- ADR-0089 Decision 3 makes AsyncIter the one iteration story.
+    // The nominal `ByteStream` conversion pair keeps its own branches below.
+    //
+    // ADR-0090 Phase 1: MutList[T, r] is a checker-only phantom over the
+    // same growable-array runtime layout ArrayBuilder uses, so push aliases
+    // ArrayBuilder::push. `MutList::empty` / `freeze` / `to_array` and
+    // `__region_run` are rewritten in compile_call before dispatching here --
+    // in particular the two exits COPY (mutlist_exit_copy) instead of
+    // aliasing, so these freeze rows are only a fallback for a call that got
+    // past the checker with the wrong arity.
+    //
+    // #3129: the alias names the BUILTIN, not whatever the program calls by
+    // that spelling. A program's own `Array::length` used to capture
+    // `MutList::length(m)` (answered 77 for a three-element list). The
+    // target is looked up among the builtins only (`mut_alias_pos` below),
+    // and a program that defines the `Mut*` name itself keeps its own call.
+    let fname: String = if !String::starts_with(fname0, "Mut") || func_table_user_index_of(ctx.func_table, fname0, ctx.num_user_funcs) >= 0 {
+      fname0
+    } else if fname0 == "MutList::push" {
+      "ArrayBuilder::push"
+    } else if fname0 == "MutList::freeze" {
+      "ArrayBuilder::freeze"
+    } else if fname0 == "MutList::to_array" {
+      "ArrayBuilder::freeze"
+    } else if fname0 == "MutList::get" {
+      "Array::get"
+    } else if fname0 == "MutList::length" {
+      "Array::length"
+    } else if fname0 == "MutList::truncate" {
+      "Array::truncate"
+    } else if fname0 == "MutBytes::push" {
+      "Bytes::push"
+    } else if fname0 == "MutBytes::append" {
+      "Bytes::append"
+    } else if fname0 == "MutBytes::length" {
+      "Bytes::length"
+    } else {
+      fname0
+    }
+    // Only a target the program also defines needs the builtin-only lookup;
+    // otherwise the table holds one entry under that name and the ordinary
+    // lookup already answers the builtin. The ownership lookups of the
+    // resolved call then read the name the planner saw (`fname0`), not the
+    // program's function of the target's spelling.
+    let mut_alias_pos = if fname != fname0 && func_table_user_index_of(ctx.func_table, fname, ctx.num_user_funcs) >= 0 {
+      func_table_builtin_pos_of(ctx.func_table, fname, ctx.num_user_funcs)
+    } else {
+      -1
+    }
+    let fn_idx_in_list = if mut_alias_pos >= 0 {
+      mut_alias_pos
+    } else {
+      func_table_index_of(ctx.func_table, fname)
+    }
+    let resolved_name = if mut_alias_pos >= 0 {
+      fname0
+    } else {
+      fname
+    }
+    let mut local_idx_hint = -1
+    let mut li = Array::length(local_names) - 1
+    while li >= 0 {
+      if Array::get(local_names, li) == fname {
+        local_idx_hint = li
+        li = -1
+      } else {
+        li = li - 1
+      }
+    }
+    let prefer_bound_call = fn_idx_in_list >= 0 || local_idx_hint >= 0
+    let ctor_lookup_idx = ctor_table_index_of(ctx.ctor_table, fname)
+    cc_compile_named_1(buf, callee, args, local_names, next_local, ctx, ld, ce, fname, fn_idx_in_list, resolved_name, local_idx_hint, prefer_bound_call, ctor_lookup_idx, compile_call_core)
+  } else {
+    let num_args = Array::length(args)
+    let fn_val_local = next_local
+    let slot_local = next_local + 1
+    let env_local = next_local + 2
+    let mut nl = next_local + 3
+    Array::push(local_names, "__fn_val")
+    Array::push(local_names, "__slot")
+    Array::push(local_names, "__env")
+    nl = ce(buf, callee, local_names, nl, ctx, ld)
+    emit_local_set(buf, fn_val_local)
+    emit_closure_resolve(buf, fn_val_local, slot_local, env_local)
+    let mut ci = 0
+    while ci < num_args {
+      let carg = Array::get(args, ci)
+      nl = ce(buf, carg, local_names, nl, ctx, ld)
+      // #706: dup a loop-borrowed owning arg passed to a closure call.
+      // #708: also retain a projection / borrow-returning-call arg (see the
+      // matching comment on the other closure-call path above).
+      let is_loop_borrow3 = ctx.enable_rc && cc_is_loop_borrowed_ident(carg, ctx)
+      if ctx.enable_rc && (cc_is_projection(carg) || cc_is_ref_cell_read(carg, ctx) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow3) {
+        // #706 leak follow-up: log so the epilogue compensates (see above).
+        if is_loop_borrow3 {
+          Array::push(ctx.loop_consumed_names, get_eident_name(carg))
+        } else {
+          ()
+        }
+        Array::push(local_names, "__argdup")
+        emit_local_tee(buf, nl)
+        emit_rc_dup_guarded(buf, nl, ctx.rc_shadow, ctx.rc_dup_func_idx)
+        nl = nl + 1
+      } else {
+        ()
+      }
+      ci = ci + 1
+    }
+    emit_closure_call_tail(buf, env_local, slot_local, 9, num_args)
+    if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && is_efn(callee) {
+      // An immediately invoked lambda creates an owning closure value. The
+      // call consumes its arguments, but it does not consume the callee.
+      let result_local = nl
+      Array::push(local_names, "__immediate_call_result")
+      emit_local_set(buf, result_local)
+      emit_local_get(buf, fn_val_local)
+      emit_call(buf, ctx.rc_drop_func_idx)
+      emit_local_get(buf, result_local)
+      nl + 1
+    } else {
+      nl
+    }
+  }
+}

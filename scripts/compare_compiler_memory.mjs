@@ -66,7 +66,7 @@ export function collect({ root = ROOT, baseline, candidate, out, rounds = 4, sui
   const logs = join(out, "logs");
   mkdirSync(logs);
   const runner = join(root, "scripts/run_wasm_vibe_host_runner.sh");
-  const protocol = [SCRIPT, runner, join(root, "scripts/wasm_vibe_host_runner.js")].map(p => readFileSync(p));
+  const protocol = [SCRIPT, runner, join(root, "scripts/wasm_vibe_host_runtime.js"), join(root, "scripts/wasm_vibe_host_runner.js")].map(p => readFileSync(p));
   const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("VIBE_") && !k.startsWith("NODE_")));
   Object.assign(env, {
     PATH: `${dirname(process.execPath)}${delimiter}${process.env.PATH ?? ""}`,

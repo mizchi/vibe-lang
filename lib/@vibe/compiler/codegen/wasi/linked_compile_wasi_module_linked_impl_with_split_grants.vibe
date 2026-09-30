@@ -1,0 +1,2564 @@
+// lib/@vibe/compiler/codegen/wasi/linked_compile.vibe — wasi module linked impl with split grants.
+
+import @vibe/compiler/core {
+  Expr,
+  Pat,
+  Stmt,
+  TypeExpr,
+  apply_top_level_fn_alias_renames,
+  bsearch_leftmost,
+  builtin_iterator_namespace_from_marker,
+  builtin_iterator_serialized_boundary_markers,
+  builtin_registry,
+  builtin_shadow_entry_name,
+  builtin_shadow_source_name,
+  bytebuf_length,
+  bytebuf_new,
+  bytebuf_push,
+  bytebuf_push_buf,
+  bytebuf_push_section,
+  bytebuf_push_vec_header,
+  bytebuf_to_bytes,
+  collect_top_level_fn_alias_renames,
+  dce_keep_flags,
+  dce_stmts,
+  exception_effect_labels_equal,
+  executable_export_kept,
+  executable_export_kept_bytes,
+  executable_exports_stripped,
+  expr_child_at,
+  expr_children_pop,
+  expr_children_push,
+  expr_children_top,
+  fold_const_bool_params,
+  is_exception_effect_name,
+  is_runtime_scheduled_effect,
+  leb128_encode_s64,
+  leb128_encode_u32,
+  namespace_private_name,
+  namespace_rename_originals_reset,
+  rename_builtin_shadow_defs,
+  rewrite_import_alias_expr,
+  rewrite_top_level_fn_alias_refs,
+  sorted_names_of,
+  verify_lane_builtins,
+  wat_callee_names
+}
+
+import @vibe/ast {
+  TypeExpr::is_array_of_int, builtin_ref
+}
+
+import @vibe/core {
+  array_empty, struct MutMap, struct MutSet
+}
+
+import @vibe/compiler/normalize {
+  ModuleTraitFacts,
+  collect_explicit_derived_op_names,
+  collect_trivial_wrapper_names,
+  desugar_handled_host_calls,
+  desugar_inspect_calls,
+  desugar_trait_dicts_module,
+  desugar_trait_dicts_module_with_facts,
+  desugar_trait_dicts_with_typed_eq,
+  eq_deferred_requests_list,
+  eq_deferred_reset,
+  eq_invisible_nominals_list,
+  eq_invisible_nominals_reset,
+  eq_mint_deferred_into,
+  eq_synthesis_requests_list,
+  eq_typed_refusals_list,
+  hoisted_lambda_owner_key,
+  hoisted_lambda_owner_of_stmt,
+  lift_match_scrutinees,
+  module_trait_facts_none,
+  program_performs_host_operation,
+  unbox_tuple_loop_params,
+  uniquify_shadowed_bindings_fresh
+}
+
+import @vibe/compiler/perceus {
+  PerceusAction,
+  borrow_ret_link_parts,
+  borrow_ret_shadow_mask,
+  build_perceus_plan,
+  build_perceus_plan_pinned_split,
+  build_perceus_plan_with_params,
+  compute_borrow_returning_names,
+  compute_heap_returning,
+  compute_passthrough_returning,
+  compute_scalar_returning_names,
+  elaborate_heap_params,
+  fn_result_is_immediate,
+  pa_is_alias_dup,
+  pa_is_consume_mark,
+  pa_is_drop,
+  pa_is_dup,
+  pa_is_path_drop,
+  pa_is_reuse_token,
+  param_is_heap_in_body,
+  perceus_exit_rows,
+  perceus_field_release_rows,
+  perceus_pin_tables,
+  perceus_store_dup_rows,
+  perceus_truncate_rows
+}
+
+import @vibe/compiler/codegen/builtin_bodies {
+  array_capacity_error_message,
+  bytes_capacity_error_message,
+  div_zero_at_fragment,
+  div_zero_colon_fragment,
+  div_zero_div_message,
+  div_zero_rem_message,
+  gen_arr_concat_body,
+  gen_arr_get_body,
+  gen_arr_len_body,
+  gen_arr_new_body,
+  gen_arr_push_all_body,
+  gen_arr_push_body,
+  gen_arr_set_body,
+  gen_arr_slice_body,
+  gen_arr_truncate_body,
+  gen_arr_with_capacity_body,
+  gen_array_value_copy_body,
+  gen_bytes_append_body,
+  gen_bytes_blit_linear_body,
+  gen_bytes_compare_body,
+  gen_bytes_concat_body,
+  gen_bytes_count_byte_body,
+  gen_bytes_from_array_body,
+  gen_bytes_get_body,
+  gen_bytes_index_of_byte_body,
+  gen_bytes_index_of_bytes_body,
+  gen_bytes_last_index_of_byte_body,
+  gen_bytes_len_body,
+  gen_bytes_new_body,
+  gen_bytes_push_body,
+  gen_bytes_set_body,
+  gen_bytes_slice_body,
+  gen_bytes_to_array_body,
+  gen_bytes_with_capacity_body,
+  gen_compact_fingerprint_hash_body,
+  gen_div_zero_abort_body,
+  gen_eq_body,
+  gen_generic_add_body,
+  gen_generic_rel_diff_body,
+  gen_int_clz_body,
+  gen_int_ctz_body,
+  gen_int_popcount_body,
+  gen_map_build_index_body,
+  gen_map_cap_body,
+  gen_map_hash_body,
+  gen_map_index_insert_body,
+  gen_map_probe_index_body,
+  gen_oob_abort_body,
+  gen_print_i64_raw_body,
+  gen_rc_alloc_body,
+  gen_rc_drop_body,
+  gen_rc_dup_body,
+  gen_region_arr_new_body,
+  gen_region_bytes_new_body,
+  gen_simd_scan_alnum_body,
+  gen_simd_scan_line_end_body,
+  gen_simd_scan_string_special_body,
+  gen_simd_skip_ws_body,
+  gen_sources_proper_body,
+  gen_sources_stub_body,
+  gen_str_char_code_at_body,
+  gen_str_concat_body,
+  gen_str_eq_body,
+  gen_str_from_char_code_body,
+  gen_str_len_body,
+  gen_str_lex_diff_body,
+  gen_str_substring_body,
+  gen_string_contains_body,
+  gen_string_ends_with_body,
+  gen_string_index_of_body,
+  gen_string_join_body,
+  gen_string_last_index_of_body,
+  gen_string_split_body,
+  gen_string_starts_with_body,
+  gen_string_trim_body,
+  static_arr_len_body,
+  static_double_to_int_body,
+  static_fs_stub_body,
+  static_fs_write_bytes_stub_body,
+  static_identity_body,
+  static_int_to_double_body,
+  static_print_i64_body,
+  static_print_str_body,
+  static_str_eq_body,
+  static_str_len_body
+}
+
+import @vibe/compiler/codegen/reloc {
+  blind_kind_fn_value, blind_kind_table_slot_i32, blind_owner_lambda_index, blind_owner_pending
+}
+
+import @vibe/compiler/codegen/common_analysis {
+  bmask_has,
+  borrow_fixpoint_link_parts,
+  borrow_round0_link,
+  collect_free_vars,
+  collect_strings_stmts,
+  compute_borrow_disqualifiers,
+  compute_borrow_param_local_masks,
+  compute_borrow_param_user_fns,
+  compute_borrow_param_user_fns_round0,
+  compute_float_returning_names,
+  compute_may_return_view_fns,
+  count_lambda_sites_expr,
+  emit_closure_call_tail,
+  emit_closure_resolve,
+  emit_i64_extend_i32_u,
+  is_mut_captured_in,
+  may_return_view_link_parts,
+  md_borrow_mask_of,
+  md_builtin_borrow_mask,
+  mrv_declared_fn_names,
+  scope_tail_proj_root,
+  stmts_contain_exceptions,
+  unique_typed_lowering_offsets_in_stmts,
+  zero_alloc_check
+}
+
+import @vibe/compiler/codegen/common_base {
+  CodegenBodyCache,
+  CompileCtx,
+  CovState,
+  CtorTable,
+  DbgProv,
+  FuncTable,
+  LambdaTable,
+  LineMapState,
+  ModuleSplit,
+  StrTable,
+  agg_info_of_type_expr,
+  append_double_runtime,
+  append_hidden_attempt_constructors,
+  append_string_views_runtime,
+  await_poll_pass,
+  bcc_guard_synth_matches,
+  bcc_int_lists_equal,
+  bcc_layout_fp_bools,
+  bcc_layout_fp_ints,
+  bcc_layout_fp_string_matrix,
+  bcc_layout_fp_strings,
+  bcc_layout_fp_strings_upto,
+  bcc_string_lists_equal,
+  codegen_body_cache_discard,
+  codegen_body_cache_filter_src_below,
+  codegen_body_cache_find_at,
+  codegen_body_cache_find_named_at,
+  codegen_body_cache_merge,
+  codegen_body_cache_name_index,
+  codegen_body_cache_new,
+  codegen_body_cache_record,
+  codegen_body_cache_replay,
+  codegen_body_cache_slot_index,
+  collect_optional_perform_source_names,
+  compile_inline_wat_array_params,
+  compute_agg_returning,
+  ctor_sorted_index,
+  desugar_trait_dicts,
+  emit_binop_op,
+  emit_i32_eq,
+  emit_i32_eqz,
+  emit_i32_ge_u,
+  emit_i32_mul,
+  emit_i32_ne,
+  emit_i32_sub,
+  emit_i64_load,
+  emit_rc_dup_guarded,
+  emit_str_ref,
+  empty_dbg_prov,
+  erase_railway_origin_markers,
+  evidence_dict_pass_with_roots,
+  evidence_module_facts,
+  expr_tag,
+  fn_type_param_types,
+  forin_discard_pass,
+  get_arm_body,
+  get_arm_pat,
+  get_ebinop_op,
+  get_efn_body,
+  get_eif_cond,
+  get_eif_else,
+  get_eif_then,
+  get_elet_body,
+  get_elet_name,
+  get_elet_val,
+  get_slet_expr,
+  get_slet_name,
+  get_slet_type,
+  is_efn,
+  is_eident,
+  is_etuple,
+  is_pbind,
+  is_pbool,
+  is_pctor,
+  is_pint,
+  is_pstring,
+  is_ptuple,
+  is_pwild,
+  is_slet,
+  linemap_disabled,
+  linemap_flush_fn,
+  lookup_ctor,
+  lower_optional_performs,
+  lower_optional_performs_with_source_names,
+  module_split_none,
+  optional_perform_artifact_resolution,
+  rc_exit_push,
+  rc_shadow_base,
+  rc_shadow_heap_start,
+  region_exn_tag_linear,
+  region_max_depth,
+  region_saves_base_of,
+  resolve_func,
+  resolve_local,
+  rewrite_self_tail_calls,
+  source_declares_constructor,
+  str_table_index_of,
+  str_table_new,
+  suspend_cps_pass,
+  suspend_prepass_splits,
+  ty_head_names_formal,
+  unique_name_flags,
+  wrap_entry_exception_boundary,
+  wrap_entry_host_provider
+}
+
+import @vibe/compiler/codegen/common_extractors {
+  array_contains_str,
+  build_newline_offsets,
+  collect_int_div_sites,
+  emit_assignop_op,
+  emit_memory_copy,
+  find_catchall_idx,
+  get_earray_elems,
+  get_eassign_body,
+  get_eassign_name,
+  get_eassign_val,
+  get_eassignop_body,
+  get_eassignop_name,
+  get_eassignop_op,
+  get_eassignop_val,
+  get_ebinop_lhs,
+  get_ebinop_rhs,
+  get_ebool_value,
+  get_ecall_args,
+  get_ecall_callee,
+  get_efloat_value,
+  get_efn_params,
+  get_efn_tparams,
+  get_eforin_body,
+  get_eforin_iter,
+  get_eforin_name,
+  get_eident_name,
+  get_eint_value,
+  get_eletmut_body,
+  get_eletmut_name,
+  get_eletmut_val,
+  get_eletrec_body,
+  get_eletrec_name,
+  get_eletrec_val,
+  get_eseq_first,
+  get_eseq_second,
+  get_estring_value,
+  get_etuple_elems,
+  get_eunaryop_expr,
+  get_eunaryop_op,
+  get_ewhile_body,
+  get_ewhile_cond,
+  get_match_arms,
+  get_match_scrutinee,
+  get_pbind_name,
+  get_pbool_value,
+  get_pctor_args,
+  get_pctor_name,
+  get_pint_value,
+  get_pstring_value,
+  get_ptuple_pats,
+  get_slet_export
+}
+
+import @vibe/compiler/codegen/expr {
+  cc_host_future_named_raw_prefix, cc_host_stream_named_raw_prefix, cl_own_return_stmts, compile_expr
+}
+
+import @vibe/compiler/codegen/wasm_emit {
+  emit_block_i64,
+  emit_block_void,
+  emit_br,
+  emit_br_if,
+  emit_call,
+  emit_call_indirect,
+  emit_code_section,
+  emit_code_section_with_locals,
+  emit_data_section,
+  emit_data_section_multi,
+  emit_drop,
+  emit_element_section_active,
+  emit_element_section_active_runs,
+  emit_else,
+  emit_end,
+  emit_export_section,
+  emit_export_section_multi,
+  emit_exports_full,
+  emit_exports_with_memory,
+  emit_f64_add,
+  emit_f64_const_bits,
+  emit_f64_convert_i64_s,
+  emit_f64_div,
+  emit_f64_eq,
+  emit_f64_ge,
+  emit_f64_gt,
+  emit_f64_le,
+  emit_f64_lt,
+  emit_f64_mul,
+  emit_f64_ne,
+  emit_f64_neg,
+  emit_f64_reinterpret_i64,
+  emit_f64_sub,
+  emit_func_type_raw,
+  emit_function_name_section,
+  emit_function_section,
+  emit_global_get,
+  emit_global_section_i32_mut,
+  emit_global_set,
+  emit_header,
+  emit_heap_memory_grow_check,
+  emit_i32_add,
+  emit_i32_const,
+  emit_i32_load,
+  emit_i32_load8_u,
+  emit_i32_store,
+  emit_i32_store8,
+  emit_i32_wrap_i64,
+  emit_i64_add,
+  emit_i64_and,
+  emit_i64_const,
+  emit_i64_div_s,
+  emit_i64_eq,
+  emit_i64_eqz,
+  emit_i64_extend_i32_s,
+  emit_i64_ge_s,
+  emit_i64_gt_s,
+  emit_i64_le_s,
+  emit_i64_lt_s,
+  emit_i64_mul,
+  emit_i64_ne,
+  emit_i64_or,
+  emit_i64_reinterpret_f64,
+  emit_i64_rem_s,
+  emit_i64_shl,
+  emit_i64_shr_s,
+  emit_i64_store,
+  emit_i64_sub,
+  emit_i64_trunc_f64_s,
+  emit_i64_xor,
+  emit_if_i64,
+  emit_if_void,
+  emit_import_section_func,
+  emit_local_get,
+  emit_local_set,
+  emit_local_tee,
+  emit_loop_void,
+  emit_memory_section,
+  emit_name,
+  emit_return,
+  emit_table_section_funcref,
+  emit_type_section,
+  emit_type_section_multi,
+  emit_vibe_abi_custom_section,
+  string_to_data
+}
+
+import ./linked_diagnostics.vibe {
+  seed_builtin_diagnostic_strings
+}
+
+import ./linked_helpers.vibe {
+  collect_used_builtin_names, stmts_use_builtin
+}
+
+import ./linked_compile_function_bodies.vibe {
+  lc_build_function_bodies
+}
+
+import ./linked_compile_host_plan.vibe {
+  lc_build_host_plan
+}
+
+import ./linked_compile_lc_inject_async_sleep_boundary.vibe {
+  lc_analysis_exclude
+}
+
+import ./linked_compile_lc_pf_prune_module.vibe {
+  lc_build_name_origin_index, lc_build_string_pool, lc_defines_top_level, lc_late_dce_roots, lc_late_dce_wat_roots
+}
+
+import ./linked_compile_lc_rename_sleep_calls.vibe {
+  lc_build_iw_callees,
+  lc_entry_declares_async,
+  lc_fresh_bool_array,
+  lc_fresh_bytes_array,
+  lc_fresh_int_array,
+  lc_fresh_string_array,
+  lc_fresh_string_matrix,
+  push_ctor_float_fields,
+  struct_field_types
+}
+
+import ./linked_compile_lc_retarget_call.vibe {
+  lc_host_hooks_install, lc_program_defines_top_level, lc_program_keeps_stream_read, lc_settle_drop_stream_band, lc_stmts_call_host_future
+}
+
+import ./linked_compile_linkedhostplan.vibe {
+  LinkedBodyInputs, LinkedSectionInputs
+}
+
+import ./linked_compile_module_sections.vibe {
+  lc_emit_module_sections
+}
+
+import ./linked_compile_prelude_run_per_module.vibe {
+  effect_lowering_prelude_split_grants, lc_strip_subst_params, lc_strip_subst_ty
+}
+
+/// #2158: every linked compile, with the CHECKER's Double call-result offsets
+/// as an extra input.
+///
+/// Only the entries that (a) run a whole-program check and (b) parsed that
+/// program over ONE coherent offset space pass a non-empty array here.
+/// `compile_wasi_module_linked_impl` below forwards an empty one, which is the
+/// fail-closed default: an empty table classifies nothing, so those lanes keep
+/// the pre-#2158 syntactic answer byte for byte.
+/// The printer the split path needs, for a caller on the whole-program path.
+/// `module_split_none()` fails `module_split_usable`, so the split path is not
+/// reached and this is never called. It is NOT a printer and must not become
+/// one -- a caller that wants the split path passes a real one.
+export fn lc_render_unused(_s: Stmt) -> String {
+  ""
+}
+
+/// Pre-#2828-rung-2 arity: no launcher grants (fail-closed).
+export fn compile_wasi_module_linked_impl_with_typed_offsets(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], linked_imports: Array[(String, String, Int, Int)], library_mode: Bool, enable_rc: Bool, coverage: Bool, debug_trace: Bool, debug_break: Bool, rc_shadow: Bool, enable_late_dce: Bool, prov: DbgProv, body_cache_in: CodegenBodyCache, body_cache_out: CodegenBodyCache, slice_lo: Int, slice_hi: Int, checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int], checker_bool_render_offsets: Array[Int], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String]) -> Bytes with Exception {
+  compile_wasi_module_linked_impl_with_typed_offsets_grants(stmts, entry_name, srcs, linked_imports, library_mode, enable_rc, coverage, debug_trace, debug_break, rc_shadow, enable_late_dce, prov, body_cache_in, body_cache_out, slice_lo, slice_hi, checker_float_call_offsets, checker_int_render_offsets, checker_bool_render_offsets, checker_eq_offsets, checker_eq_type_keys, array_empty())
+}
+
+/// #2828 rung 2: the grant-carrying arity. The mvp and rc-shadow lanes
+/// both converge here, so this is where their grants rejoin the rc lane's.
+export fn compile_wasi_module_linked_impl_with_typed_offsets_grants(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], linked_imports: Array[(String, String, Int, Int)], library_mode: Bool, enable_rc: Bool, coverage: Bool, debug_trace: Bool, debug_break: Bool, rc_shadow: Bool, enable_late_dce: Bool, prov: DbgProv, body_cache_in: CodegenBodyCache, body_cache_out: CodegenBodyCache, slice_lo: Int, slice_hi: Int, checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int], checker_bool_render_offsets: Array[Int], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], grants: Array[(String, String)]) -> Bytes with Exception {
+  compile_wasi_module_linked_impl_with_split_grants(stmts, entry_name, srcs, linked_imports, library_mode, enable_rc, coverage, debug_trace, debug_break, rc_shadow, enable_late_dce, prov, body_cache_in, body_cache_out, slice_lo, slice_hi, checker_float_call_offsets, checker_int_render_offsets, checker_bool_render_offsets, checker_eq_offsets, checker_eq_type_keys, module_split_none(), lc_render_unused, grants)
+}
+
+/// #2575 item 2 step 3b: the same compile, given a `ModuleSplit`. The prelude
+/// runs per module where the split describes the statements and whole-program
+/// otherwise, and every guard fails open -- see `effect_lowering_prelude_split`.
+/// Pre-#2828-rung-2 arity: no launcher grants, so optional capabilities
+/// resolve `NotGranted`. Both existing callers keep using this.
+export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], linked_imports: Array[(String, String, Int, Int)], library_mode: Bool, enable_rc: Bool, coverage: Bool, debug_trace: Bool, debug_break: Bool, rc_shadow: Bool, enable_late_dce: Bool, prov: DbgProv, body_cache_in: CodegenBodyCache, body_cache_out: CodegenBodyCache, slice_lo: Int, slice_hi: Int, checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int], checker_bool_render_offsets: Array[Int], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], split: ModuleSplit, render: (Stmt) -> String) -> Bytes with Exception {
+  compile_wasi_module_linked_impl_with_split_grants(stmts, entry_name, srcs, linked_imports, library_mode, enable_rc, coverage, debug_trace, debug_break, rc_shadow, enable_late_dce, prov, body_cache_in, body_cache_out, slice_lo, slice_hi, checker_float_call_offsets, checker_int_render_offsets, checker_bool_render_offsets, checker_eq_offsets, checker_eq_type_keys, split, render, array_empty())
+}
+
+/// #2828 rung 2: the grant-carrying arity. See the delegate below.
+export fn compile_wasi_module_linked_impl_with_split_grants(stmts: Array[Stmt], entry_name_in: String, srcs: Array[(String, String)], linked_imports: Array[(String, String, Int, Int)], library_mode: Bool, enable_rc: Bool, coverage: Bool, debug_trace: Bool, debug_break: Bool, rc_shadow: Bool, enable_late_dce: Bool, prov: DbgProv, body_cache_in: CodegenBodyCache, body_cache_out: CodegenBodyCache, slice_lo: Int, slice_hi: Int, checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int], checker_bool_render_offsets: Array[Int], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], split: ModuleSplit, render: (Stmt) -> String, grants: Array[(String, String)]) -> Bytes with Exception {
+  // #3132 review: `--entry StringBuilder::new` can name the program's own
+  // function, which the rename moves to `StringBuilder::new$user`. Rename
+  // first (idempotent, the prelude repeats it) so every lookup and DCE root
+  // below sees one spelling; the export keeps the source one.
+  rename_builtin_shadow_defs(stmts)
+  let entry_name = builtin_shadow_entry_name(stmts, entry_name_in)
+  // #1536(c)/#1511(b): the whole effect-lowering prefix lives in
+  // effect_lowering_prelude (shared verbatim with `vibe check`); a first
+  // error there is exactly the throw each pass used to raise inline here.
+  let late_dce_has_entry = lc_defines_top_level(stmts, entry_name)
+  let late_dce_roots = lc_late_dce_roots(stmts, entry_name, library_mode || coverage || debug_trace || debug_break || rc_shadow)
+  let iw_names = lc_fresh_string_array()
+  let iw_wats = lc_fresh_string_array()
+  // #2388 step 2: everything the prelude APPENDS past this length is
+  // compiler-synthesized (derived comparators, monoify specializations, the
+  // __exn_kind_cell thunk, ...) -- the prelude is the container for every
+  // AST-mutating pass, so this boundary is exact. The let-name snapshot of
+  // the source prefix lets the padding step below verify, fail-safe, that
+  // no pass inserted or renamed ahead of the boundary before it trusts it.
+  let synth_boundary_stmt = Array::length(stmts)
+  let pre_prelude_let_names = lc_fresh_string_array()
+  // Interior-line breakpoints: the file each of those names came from, taken
+  // while the positions `prov.stmt_file_id` is indexed by are still the
+  // program's. See lc_dbg_file_of_fn -- after the prelude they are not.
+  let pre_prelude_let_files = lc_fresh_int_array()
+  let pre_prelude_let_stmts = lc_fresh_int_array()
+  // #2199: the two lanes that READ this snapshot, decided by the parameters
+  // alone so the scan below can be gated on them and the import reservations
+  // further down can reuse the same answer. `dbg_line_on` is the live
+  // `--break` probe; `linemap_on` is the static `vibe.linemap` table, which a
+  // production RC compile carries too.
+  let dbg_line_on = debug_break && Array::length(prov.files) > 0
+  let linemap_on = dbg_line_on || (Array::length(prov.files) > 0 && Array::length(prov.file_nls) > 0)
+  // The same, keyed by OWNER: what a lambda hoisted out of each statement
+  // would name itself after (`hoisted_lambda_owner_of_stmt`, the hoist's own
+  // arms rather than a mirror of them here).
+  //
+  // The condition is `linemap_on`, the predicate for "someone reads this",
+  // not a proxy for it. It used to be "prov carries any stmt_file_id", which
+  // was a PROXY for the break lane and correct only while the break lane was
+  // the only caller that filled provenance (#2575 item 2 gives the ordinary
+  // lane a real `stmt_file_id`); then `debug_break`, which was the same
+  // mistake one lane later -- the production linemap reads the owner index
+  // through `lc_dbg_file_of_fn` as well, and without these arrays a hoisted
+  // lambda from any file but the first resolved to file 0 and reported a
+  // fabricated path:line (Codex P2 on PR #2867). A compile with no newline
+  // tables (every in-process lane, `linked_compile_prov_inert_test`) still
+  // pays nothing; the FS lanes pay one `hoisted_lambda_owner_of_stmt` per
+  // top-level statement, ~9.9k of them on the compiler's own closure, and
+  // most of those return the declaration's own name with no allocation
+  // (`dlh_owner_key_of` kind 0).
+  let pre_prelude_owner_keys = lc_fresh_string_array()
+  let pre_prelude_owner_files = lc_fresh_int_array()
+  let dbg_prov_len = Array::length(prov.stmt_file_id)
+  let mut __sbn_i = 0
+  while __sbn_i < synth_boundary_stmt {
+    // Kept exactly parallel to the names: one push into each per recorded
+    // statement. A position the provenance does not cover (an empty
+    // `DbgProv`, every non-break build) records file 0, which the lookup
+    // never reads because `dbg_line_on` is false there.
+    let __sbn_file = if __sbn_i < dbg_prov_len {
+      Array::get(prov.stmt_file_id, __sbn_i)
+    } else {
+      0
+    }
+    if linemap_on {
+      // EVERY statement, including the ones with no name to be known by. A
+      // binderless `let _ = ..` holding an effectful local lambda gets an
+      // anonymous owner from its POSITION (`:s:<idx>`), which is why the index
+      // is passed: the recorder mints exactly that key, and a consumer that
+      // recorded nothing for it left the hoisted body at file 0 (Codex round on
+      // #2623). Same statement list, same index, so the two agree.
+      Array::push(pre_prelude_owner_keys, hoisted_lambda_owner_of_stmt(Array::get(stmts, __sbn_i), __sbn_i))
+      Array::push(pre_prelude_owner_files, __sbn_file)
+    } else {
+      ()
+    }
+    match Array::get(stmts, __sbn_i) {
+      SLet(_, _, __sbn_name, _, _) => {
+        Array::push(pre_prelude_let_names, __sbn_name)
+        Array::push(pre_prelude_let_files, __sbn_file)
+        Array::push(pre_prelude_let_stmts, __sbn_i)
+      },
+      // The test/bench lowering below rewrites these in place to
+      // `SLet(__test_<name>, ...)` / `SLet(__bench_<name>, ...)` before the
+      // padding step verifies the prefix, so record the POST-rewrite name.
+      STest(__sbn_tname, _) => {
+        Array::push(pre_prelude_let_names, String::concat("__test_", __sbn_tname))
+        Array::push(pre_prelude_let_files, __sbn_file)
+        Array::push(pre_prelude_let_stmts, __sbn_i)
+      },
+      SBench(__sbn_bname, _) => {
+        Array::push(pre_prelude_let_names, String::concat("__bench_", __sbn_bname))
+        Array::push(pre_prelude_let_files, __sbn_file)
+        Array::push(pre_prelude_let_stmts, __sbn_i)
+      },
+      _ => ()
+    }
+    __sbn_i = __sbn_i + 1
+  }
+  // #2669 step 2b: name -> source file, for the cross-compile body cache.
+  //
+  // Taken from the same pre-prelude snapshot the break lane resolves a
+  // function's file through, and for the same reason: after the prelude a
+  // statement's POSITION is no longer the program's, so a cached entry cannot
+  // be attributed to a file by where it sits. A name the snapshot does not
+  // cover (a synthesized definition, a pad) answers -1, and so does a name two
+  // files both declare -- an ambiguous owner is not an owner.
+  //
+  // `prov` has to cover the whole pre-prelude region for the ids to mean
+  // anything: `__sbn_file` above records 0 for a position the provenance does
+  // not reach, which would attribute every function to file 0. The FS lane
+  // always fills it; the in-process lanes do not, and there the map is empty
+  // and the widened filter keeps nothing.
+  let lc_fn_file_of = if dbg_prov_len >= synth_boundary_stmt {
+    lc_build_name_origin_index(pre_prelude_let_names, pre_prelude_let_files)
+  } else {
+    MutMap::new_string()
+  }
+  // Prefix limits use the original merged coordinates, before insertion or
+  // DCE compaction. A duplicate name cannot identify one source statement.
+  let lc_fn_stmt_of = lc_build_name_origin_index(pre_prelude_let_names, pre_prelude_let_stmts)
+  let prelude_errs = effect_lowering_prelude_split_grants(stmts, entry_name, linked_imports, iw_names, iw_wats, checker_eq_offsets, checker_eq_type_keys, split, render, grants)
+  if Array::length(prelude_errs) > 0 {
+    throw(Array::get(prelude_errs, 0))
+  } else {
+    ()
+  }
+  // #1666: prune what the PIPELINE generated, not just what the source wrote.
+  //
+  // `dce_stmts` already runs once, in `compile_file_fs_mode`'s "mvp" mode --
+  // but that is on the merged parse result, BEFORE `desugar_derives` exists.
+  // Every `T::equals` / `T::to_string` / `T::compare` / `__arr_*` helper the
+  // desugars emit is therefore created after the only reachability check and
+  // never faces one: an enum that is declared and never used still shipped its
+  // generated `equals` (measured: +247 bytes for a 5-variant enum, identical
+  // in "mvp" and "no-dce").
+  //
+  // This is the one place where that is answerable without ordering questions.
+  // `effect_lowering_prelude` above is the container for EVERY AST-mutating
+  // pass -- desugar_trait_dicts, the `lc_inject_*` injectors,
+  // evidence_dict_pass, suspend CPS -- and everything below only ANALYSES
+  // `stmts`. No reference can appear after this line, so reachability computed
+  // here is final. Placing it any earlier would have to answer "which later
+  // pass can reference a name that is unreachable right now".
+  //
+  // Pruning is skipped unless `entry_name` actually names a top-level
+  // definition. Rooting reachability at a name nothing defines makes the whole
+  // program unreachable, and the program then compiles to an empty module
+  // instead of reporting the real problem. Two ways in:
+  //
+  //   - `__no_entry__`: the component lanes' sentinel. A component's surface is
+  //     its export (`handler`), not an entry.
+  //   - a typo: `vibe build --entry mian` must still say "entry not found".
+  //     The gate pins exactly this (ADR-0069 entry hardening), and it is what
+  //     caught the first version of this guard, which special-cased only the
+  //     sentinel.
+  // #2721: removing unreachable declarations preserves the surviving bodies.
+  // Their original statement positions are retained in `lc_fn_stmt_of`, so
+  // DCE cannot move an edited body into the unchanged source-file prefix.
+  // The normal layout guards still decide whether those bodies can replay.
+  //
+  // #2497 unit 2: before pruning, fold the Bool parameters every call in the
+  // program fixes to one literal (`fold_const_bool_params`, core). The lane
+  // switches of this very function are the motivating case: the compile-only
+  // artifact passes `false` for every instrumented lane, so their arms fold
+  // away here and the helpers only they called lose their last call site,
+  // which `lc_pf_prune_module` below then removes. Gated exactly like the
+  // prune: the pass reasons about EVERY call site, so it needs the
+  // whole-program, entry-rooted compile, and a library (`library_mode`)
+  // exports every function, so no parameter of one is constant. The
+  // instrumented lanes are excluded the same way `lc_pf_prune_module` is
+  // (Codex review on #2569): coverage counts branch sites from the source
+  // `if`s, so folding one away would shrink the denominator and report a
+  // higher branch rate for the same program; a debug-break build maps
+  // interior lines onto the statements it emits, and a folded arm has none.
+  // Those builds are about observing the program as written, so they get it
+  // as written. The inline-wasm texts go along because the prelude has
+  // already replaced the `%wasm` marker bodies with a neutral literal, so a
+  // `(call $f ..)` in one of them is invisible to the pass's own scan.
+  //
+  // A folded body no longer matches its source text, so a fold still refuses
+  // the body-cache guards below (`late_dce_rewrote_bodies`): a replayed
+  // body from a compile whose other call sites passed a different literal
+  // would be silently wrong, and refusing the cache for that compile is the
+  // honest answer.
+  let mut late_dce_rewrote_bodies = false
+  if enable_late_dce && late_dce_has_entry {
+    let folded_param_reads = if library_mode || coverage || debug_trace || debug_break || rc_shadow {
+      0
+    } else {
+      fold_const_bool_params(stmts, entry_name, iw_wats)
+    }
+    lc_late_dce_wat_roots(late_dce_roots, stmts, iw_names, iw_wats)
+    let dce_pruned = dce_stmts(stmts, late_dce_roots)
+    // `stmts` is threaded onward by reference, so the pruned program has to
+    // replace its contents rather than rebind the name. `dce_stmts` builds a
+    // fresh array, so this never reads what it is overwriting.
+    Array::truncate(stmts, 0)
+    let mut dce_i = 0
+    while dce_i < Array::length(dce_pruned) {
+      Array::push(stmts, Array::get(dce_pruned, dce_i))
+      dce_i = dce_i + 1
+    }
+    late_dce_rewrote_bodies = folded_param_reads > 0
+  } else {
+    ()
+  }
+  // #3150 / #3189 review: whether a host STREAM read survived is a fact about
+  // the program the prune LEFT, like the host-future half below
+  // (`lc_stmts_call_host_future`). Asked before the prune it over-counts: the
+  // prelude injects the read path for every read WRITTEN, including one in an
+  // arm `fold_const_bool_params` just removed, and the hooks then armed a
+  // stream nothing reads -- a component with no host stream failed to build
+  // ("host_stream_cancel without a host stream"). Asked as "is `__hs_next`
+  // still defined" it under-counts (#3150): see lc_program_keeps_stream_read.
+  // Read BEFORE the analyses below so the settle rewrite is what they see.
+  let lc_stream_reads_survive = lc_program_keeps_stream_read(stmts)
+  if lc_stream_reads_survive {
+    ()
+  } else {
+    lc_settle_drop_stream_band(stmts)
+  }
+  // #2652: the Double runtime prelude (`__vibe_double_to_string` /
+  // `__vibe_double_parse`, codegen/common_base/double_runtime.vibe) joins the
+  // program HERE: after every AST-mutating pass and the reachability prune,
+  // so nothing rewrites or drops it, and before the analyses below, so the
+  // borrow masks, float-returning and heap-returning names see it like any
+  // other function. It is emitted only when the program can hold a Double,
+  // and the module-level late DCE removes it when nothing calls it.
+  append_double_runtime(stmts)
+  // PR #2708 review: the String length-view runtime prelude (WHATWG
+  // replacement decoding), appended under the same rules.
+  append_string_views_runtime(stmts)
+  // Named and anonymous callbacks share the owning return ABI. Rewrite named
+  // bodies before the analyses so direct calls receive that same contract.
+  // Read direct parameter passthroughs before cl_own_return_stmts can wrap
+  // their tails in compiler-internal owning-return markers.
+  let lc_passthrough_ret_params = compute_passthrough_returning(stmts)
+  let lc_owned_return_names = if enable_rc {
+    cl_own_return_stmts(stmts)
+  } else {
+    lc_fresh_string_array()
+  }
+  // #707: functions whose entire body is transitively a tail-call to a
+  // borrow-returning builtin (Array::get/Map::get/__index) -- e.g. a thin
+  // `peek(toks, pos) -> Array::get(toks, pos)` wrapper. Computed once over the
+  // whole merged program and threaded into every function's Perceus plan so a
+  // `let v = peek(...)` binding (including the match-scrutinee-lift's
+  // `let __m_scrut = peek(...)`, see normalize/index.vibe) is recognized the
+  // same as a direct `let v = Array::get(...)` one.
+  // Sorted immediately (membership-only from here on: cc_is_borrow_ret_call /
+  // classify_let_value_heap query it once per call site across the whole
+  // program) so those lookups are bsearch_leftmost instead of a linear scan
+  // -- same rationale as ctor_table.names_sorted above.
+  let lc_borrow_ret_names = sorted_names_of(compute_borrow_returning_names(stmts))
+  // ADR-0092 borrow-inference: program-wide source function borrow masks
+  // (read-only, never valued/aliased -- see compute_borrow_param_user_fns).
+  // Source-owned shadowable builtins remain present with mask zero when they
+  // consume every parameter. The entry fn and conventional entry names are
+  // excluded: the host invokes them without consulting the set.
+  //
+  // Slice 1 (#1282) inferred POSITION 0 only; this is the per-position
+  // generalization, so a fn that consumes param0 but only reads param2 now
+  // borrows param2. Bit 0 of every mask is exactly slice 1's set.
+  //
+  // ADR-0092 borrow-inference, per-use-paired accounting. The
+  // planner's invariant per binding: acquisitions (initial owned ref +
+  // dups) must equal releases (owned consumes + scope-end drop). A
+  // view-call binding (value = call to a lc_borrow_view_ret fn) holds NO
+  // initial owned reference, so (a) its LAST owned use must dup instead
+  // of spending the phantom initial ref (pe_use / the ELet alias mirror)
+  // and (b) its scope-end / seq-temp drop is suppressed unconditionally
+  // (pe_scope_end) -- not just when all its uses are borrows, which was
+  // the round-3 condition that left latent over-releases behind whenever
+  // a view binding also had owned consumes or was never used at all.
+  // Earlier isolated classes, still covered: fresh-result leak (marking
+  // restricted to compute_may_return_view_fns callees, intersected into
+  // lc_borrow_view_ret -- a fresh result from a may-return-view callee
+  // still leaks, bounded, safe direction), temp-argument leak (a POSITION
+  // ever passed a non-ident argument is disqualified via
+  // ca_collect_nonident_args), and the lexical-shadow holes (a local
+  // shadowing a borrow-set name is an ordinary owned call: pc_count /
+  // pc_emit / pctx_mark_view_call all guard on scope, mirroring
+  // compile_call's #875 local_idx_hint guard). Known conservative gaps:
+  // loop params bound to a view-call init are not marked (their
+  // back-edge rebinds make ownership flow-dependent), and a view call
+  // reaching a binding through an if/match VALUE position is unmarked
+  // (treated owned).
+  let lc_borrow_arg0_enabled = true
+  // Names arrive SORTED with the masks already aligned to them (the analysis
+  // sorts and re-reads the masks by name in one place, so no caller can
+  // misalign them). Sorting matters: every membership test on the borrow set
+  // -- pc_count / pc_emit per call site, compile_call's borrows_this per
+  // call, the md consume-count borrow test -- is a bsearch_leftmost instead
+  // of a 500+-name linear scan (profiled at ~35% of selfcompile CPU as
+  // array_contains_str + __rt_eq/__rt_str_eq/__rt_arr_get traffic).
+  let lc_borrow_param_mask = lc_fresh_int_array()
+  let lc_borrow_param_user_srt = if lc_borrow_arg0_enabled {
+    compute_borrow_param_user_fns(stmts, lc_analysis_exclude(entry_name), lc_borrow_param_mask)
+  } else {
+    lc_fresh_string_array()
+  }
+  // Fns whose RETURN may be an unowned interior view: these mark
+  // view_call_let in the planner (see PCtx.view_ret_user and the gate
+  // comment above). NOT intersected with the borrow-param set: a callee
+  // returns a view regardless of whether any of its params qualified for the
+  // borrowed ABI (e.g. a fn disqualified by a non-ident argument call site
+  // still hands back an interior view whose binding must not be dropped)
+  // -- the round-3 intersection left exactly those bindings with a
+  // release they never acquired.
+  let lc_borrow_view_ret = if lc_borrow_arg0_enabled {
+    sorted_names_of(compute_may_return_view_fns(stmts))
+  } else {
+    lc_fresh_string_array()
+  }
+  // #2386: the perceus pass keeps one cached context for these four tables
+  // and used to re-compare all four, whole, at every function; pin them once
+  // and present the token per function (and per lambda, via CompileCtx).
+  let lc_perceus_pin = perceus_pin_tables(lc_borrow_ret_names, lc_borrow_param_user_srt, lc_borrow_param_mask, lc_borrow_view_ret)
+  // #710: see CompileCtx.scalar_ret_names' doc comment (common_base/common_base.vibe).
+  let lc_scalar_ret_names = sorted_names_of(compute_scalar_returning_names(stmts))
+  let fn_names_list = lc_fresh_string_array()
+  // #2158: one shared walk, in common_analysis -- see its doc comment for why
+  // this is not inlined here any more (#2156 review).
+  let float_ret_fn_names = compute_float_returning_names(stmts)
+  // #2158: the checker's offset-keyed answer, narrowed to the offsets that name
+  // exactly ONE call node in the statements below. Deliberately computed HERE,
+  // after `effect_lowering_prelude` above has finished rewriting `stmts`, so
+  // the uniqueness is proven against the program codegen actually compiles
+  // rather than against whatever the entry handed the checker. Empty in, empty
+  // out, without a walk.
+  let float_call_offsets = unique_typed_lowering_offsets_in_stmts(stmts, checker_float_call_offsets)
+  // #2424: the Int (tag 3) and Bool (tag 5) render-argument tables are
+  // installed RAW, and the filter above must not be extended to them.
+  //
+  // What makes the raw install honest is the checker's agreement rule: an
+  // offset is filed only when EVERY typed occurrence there resolves to the
+  // wanted type, so a call offset shared with the `CtFn` occurrence of its
+  // callee is dropped on disagreement.
+  //
+  // The reason NOT to filter is stronger than "it is unnecessary" -- the
+  // filter and these tables disagree about what a key is, so applying it
+  // deletes rows (#2427). `count_typed_lowering_offsets_expr` counts `ECall`
+  // and `EDot` and deliberately not `EIdent`, since a call's own offset IS its
+  // callee identifier's offset. But tags 3 and 5 key an argument by
+  // `typed_lowering_arg_offset`, which DOES answer for `EIdent`, and a bare
+  // name is the commonest render argument there is. Measured, one row each:
+  //
+  //   inspect(v, ..)    name        1 -> 0   dropped
+  //   inspect(n(), ..)  call        1 -> 1   kept
+  //   inspect(s.a, ..)  projection  1 -> 1   kept
+  //
+  // `inspect(<name>, ..)` is the repo's preferred assertion idiom, so the
+  // symmetric-looking hardening would delete most of the channel at its most
+  // common site and restore the syntactic classifier tags 3 and 5 exist to
+  // replace (#2462, #2464). The Double table is immune because
+  // `typed_lowering_float_key` answers -1 for `EIdent` and never files a
+  // name-keyed row. Pinned by tests/typed_lowering_filter_key_space_test.vibe.
+  let int_render_offsets = checker_int_render_offsets
+  let bool_render_offsets = checker_bool_render_offsets
+  let fn_param_counts = lc_fresh_int_array()
+  let fn_needs_env_list = lc_fresh_bool_array()
+  let fn_stmt_indices = lc_fresh_int_array()
+  let thunk_names_list = lc_fresh_string_array()
+  let const_int_names_list = lc_fresh_string_array()
+  let const_int_values_list = lc_fresh_int_array()
+  let export_fn_names = lc_fresh_string_array()
+  let export_fn_user_indices = lc_fresh_int_array()
+  let test_fn_names = lc_fresh_string_array()
+  let empty_tp = array_empty()
+  let empty_bounds = array_empty()
+  let empty_params = array_empty()
+  let mut pi = 0
+  while pi < Array::length(stmts) {
+    match Array::get(stmts, pi) {
+      STest(tname, tbody) => {
+        let test_fn = String::concat("__test_", tname)
+        Array::push(test_fn_names, test_fn)
+        Array::set(stmts, pi, SLet(false, false, test_fn, None, EFn(empty_tp, empty_bounds, empty_params, None, None, ESeq(tbody, EInt(0)))))
+      },
+      SBench(bname, bbody) => {
+        let bench_fn = String::concat("__bench_", bname)
+        Array::push(test_fn_names, bench_fn)
+        Array::set(stmts, pi, SLet(false, false, bench_fn, None, EFn(empty_tp, empty_bounds, empty_params, None, None, ESeq(bbody, EInt(0)))))
+      },
+      SLet(sl_exp, sl_rec, sl_name, sl_ann, sl_expr) => match sl_expr {
+        EFn(tparams, _, params, ret, eff, body) => if Array::length(tparams) > 0 {
+          // #2141: re-spell the stripped formals in the annotations
+          // (`__Vfp_<name>`) BEFORE dropping the binder. This strip runs
+          // ahead of the __bi param-shape seeding below, so an annotation
+          // still spelling `T` would let a same-spelled (merged-in) struct
+          // claim the erased param and `a == b` field-compare raw scalars
+          // (measured: `eqv[T](1, 2)` answered true; the seeding gate alone
+          // could not see it -- the binder list was already empty here).
+          let params2 = lc_strip_subst_params(params, tparams)
+          let ret2 = match ret {
+            Some(rte) => Some(lc_strip_subst_ty(rte, tparams)),
+            None => None
+          }
+          Array::set(stmts, pi, SLet(sl_exp, sl_rec, sl_name, sl_ann, EFn(empty_tp, empty_bounds, params2, ret2, eff, body)))
+        }
+        ,
+        _ => ()
+      },
+      _ => ()
+    }
+    pi = pi + 1
+  }
+  if Array::length(test_fn_names) > 0 {
+    let mut has_entry = false
+    let mut ei = 0
+    while ei < Array::length(stmts) {
+      match Array::get(stmts, ei) {
+        SLet(is_exp, _, name, _, _) => if is_exp && name == entry_name {
+          has_entry = true
+        },
+        _ => ()
+      }
+      ei = ei + 1
+    }
+    if !has_entry {
+      ()
+    }
+  }
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let stmt = Array::get(stmts, i)
+    if is_slet(stmt) {
+      let name = get_slet_name(stmt)
+      let expr = get_slet_expr(stmt)
+      let is_export = get_slet_export(stmt)
+      let user_idx = Array::length(fn_names_list)
+      // #715: `expr_tag(expr)` hoisted out of the `else` branch below and
+      // computed here, unconditionally -- so it (like `is_efn(expr)` above)
+      // contributes to `expr`'s always-consumed prefix instead of only being
+      // paid for on the `else` path. This alone still leaves the `else`
+      // branch's own nested if asymmetric (`get_eint_value`=1 use vs the
+      // thunk fallback's 0), so the thunk fallback below also aliases `expr`
+      // once (`let __sf_thunk_expr = expr`) to match. With both asymmetries
+      // resolved, `then` and `else` each consume `expr` the same number of
+      // times, so pc_emit's EIf MIN-merge (#705) lands on the SAME remaining
+      // count regardless of which branch a given statement actually takes --
+      // previously the merge could permanently assume more consumption than
+      // a commonly-taken branch (int-constant or thunk statements, which are
+      // NOT rare like a false `is_efn` check on a real function body) really
+      // performed, skipping the loop-body scope-end drop and leaking `expr`
+      // (a heap Expr node) on every such statement.
+      let __sf_etag = expr_tag(expr)
+      if is_efn(expr) {
+        let params = get_efn_params(expr)
+        Array::push(fn_names_list, name)
+        Array::push(fn_param_counts, Array::length(params))
+        Array::push(fn_needs_env_list, true)
+        Array::push(fn_stmt_indices, i)
+      } else {
+        if (__sf_etag == 0) && !is_export {
+          Array::push(const_int_names_list, name)
+          Array::push(const_int_values_list, get_eint_value(expr))
+        } else {
+          let __sf_thunk_expr = expr
+          Array::push(fn_names_list, name)
+          Array::push(fn_param_counts, 0)
+          Array::push(fn_needs_env_list, true)
+          Array::push(fn_stmt_indices, i)
+          Array::push(thunk_names_list, name)
+        }
+      }
+      if is_export || library_mode {
+        Array::push(export_fn_names, name)
+        Array::push(export_fn_user_indices, user_idx)
+      }
+    }
+    i = i + 1
+  }
+  // #2388 step 2: pin the compiler-synthesized functions (derived
+  // comparators, monoify specializations, trait-operation dispatchers, the
+  // __exn_kind_cell thunk) to a capacity-based index region, the same move
+  // lambda_slot_base makes for table slots. Their callee indices are embedded
+  // as call immediates in bodies all over the program, and they are created
+  // by the effect_lowering_prelude either appended past the source program or
+  // INSERTED after the last trait/impl (see desugar_trait_dict's insertion
+  // scan), so any added source function shifts them.
+  //
+  // Classification is by NAME SET: every let name present before the prelude
+  // (with STest/SBench recorded under their later __test_/__bench_ spelling)
+  // is a source function; a function whose name the source never declared is
+  // prelude-synthesized. A misclassification cannot produce wrong code --
+  // the reorder below is a consistent permutation of the function index
+  // space applied before any index is consumed -- it can only cost layout
+  // stability, so no verification gate is needed. The one lane skipped is
+  // library_mode, which exports every function and gains nothing from edit
+  // stability.
+  //
+  // New order: [source functions][pads to a 1024 capacity][synthesized].
+  // Pads are trivial `() -> 0` statements appended past the program; every
+  // downstream consumer (lambda planning, body compile, Perceus, the name
+  // and type sections) treats them as ordinary tiny functions. They are
+  // never called, exported, or given table slots. Export user indices are
+  // recomputed by name after the reorder.
+  //
+  // Coverage builds also skip the reorder: cov_count = num_user_funcs is the
+  // function-coverage denominator and the vibe_cov section serializes every
+  // user-function name, so never-callable pads would report as up to 1023
+  // uncovered functions (measured: a one-test file answered
+  // "functions 2/1025"). Coverage is a measurement lane; edit-stable indices
+  // buy it nothing.
+  // #2388 step 3: the pin region's shape, exposed for the body-cache guards
+  // below (-1 = the reorder did not run, so no cross-compile reuse).
+  let mut pin_region_src_n = 0 - 1
+  let mut pin_region_capacity = 0 - 1
+  if !library_mode && !coverage {
+    let __pp_sorted = sorted_names_of(pre_prelude_let_names)
+    let __pin_total = Array::length(fn_names_list)
+    let __pin_src_idx = lc_fresh_int_array()
+    let __pin_synth_idx = lc_fresh_int_array()
+    let mut __pin_i = 0
+    while __pin_i < __pin_total {
+      if bsearch_leftmost(__pp_sorted, Array::get(fn_names_list, __pin_i)) >= 0 {
+        Array::push(__pin_src_idx, __pin_i)
+      } else {
+        Array::push(__pin_synth_idx, __pin_i)
+      }
+      __pin_i = __pin_i + 1
+    }
+    if Array::length(__pin_synth_idx) > 0 {
+      let __pin_src_n = Array::length(__pin_src_idx)
+      let __pin_capacity = ((__pin_src_n + 1023) / 1024) * 1024
+      pin_region_src_n = __pin_src_n
+      pin_region_capacity = __pin_capacity
+      let __new_names = lc_fresh_string_array()
+      let __new_params = lc_fresh_int_array()
+      let __new_env = lc_fresh_bool_array()
+      let __new_stmts = lc_fresh_int_array()
+      let mut __pin_s = 0
+      while __pin_s < __pin_src_n {
+        let __pin_from = Array::get(__pin_src_idx, __pin_s)
+        Array::push(__new_names, Array::get(fn_names_list, __pin_from))
+        Array::push(__new_params, Array::get(fn_param_counts, __pin_from))
+        Array::push(__new_env, Array::get(fn_needs_env_list, __pin_from))
+        Array::push(__new_stmts, Array::get(fn_stmt_indices, __pin_from))
+        __pin_s = __pin_s + 1
+      }
+      let mut __pin_p = __pin_src_n
+      while __pin_p < __pin_capacity {
+        // `#` is unspellable in identifiers (the same guarantee #active_region
+        // and the #region_N skolems rely on), so a user function can never
+        // collide with a pad name and no name lookup can resolve to a pad.
+        let __pad_name = String::concat("#slot_pad_", __to_string(__pin_p))
+        let __pad_stmt_idx = Array::length(stmts)
+        Array::push(stmts, SLet(false, false, __pad_name, None, EFn(empty_tp, empty_bounds, empty_params, None, None, EInt(0))))
+        Array::push(__new_names, __pad_name)
+        Array::push(__new_params, 0)
+        Array::push(__new_env, true)
+        Array::push(__new_stmts, __pad_stmt_idx)
+        __pin_p = __pin_p + 1
+      }
+      let mut __pin_y = 0
+      while __pin_y < Array::length(__pin_synth_idx) {
+        let __pin_from2 = Array::get(__pin_synth_idx, __pin_y)
+        Array::push(__new_names, Array::get(fn_names_list, __pin_from2))
+        Array::push(__new_params, Array::get(fn_param_counts, __pin_from2))
+        Array::push(__new_env, Array::get(fn_needs_env_list, __pin_from2))
+        Array::push(__new_stmts, Array::get(fn_stmt_indices, __pin_from2))
+        __pin_y = __pin_y + 1
+      }
+      Array::truncate(fn_names_list, 0)
+      Array::truncate(fn_param_counts, 0)
+      Array::truncate(fn_needs_env_list, 0)
+      Array::truncate(fn_stmt_indices, 0)
+      let mut __pin_w = 0
+      while __pin_w < Array::length(__new_names) {
+        Array::push(fn_names_list, Array::get(__new_names, __pin_w))
+        Array::push(fn_param_counts, Array::get(__new_params, __pin_w))
+        Array::push(fn_needs_env_list, Array::get(__new_env, __pin_w))
+        Array::push(fn_stmt_indices, Array::get(__new_stmts, __pin_w))
+        __pin_w = __pin_w + 1
+      }
+      // Exports were recorded with pre-reorder indices; re-resolve each by
+      // name against the reordered list (source names are unique in the
+      // merged program -- #716 mangling -- and synthesized names are never
+      // exported outside library_mode, which is excluded above).
+      let mut __pin_e = 0
+      while __pin_e < Array::length(export_fn_names) {
+        let __pin_ename = Array::get(export_fn_names, __pin_e)
+        let mut __pin_found = -1
+        let mut __pin_f = 0
+        while __pin_found < 0 && __pin_f < Array::length(fn_names_list) {
+          if Array::get(fn_names_list, __pin_f) == __pin_ename {
+            __pin_found = __pin_f
+          } else {
+            ()
+          }
+          __pin_f = __pin_f + 1
+        }
+        if __pin_found >= 0 {
+          Array::set(export_fn_user_indices, __pin_e, __pin_found)
+        } else {
+          ()
+        }
+        __pin_e = __pin_e + 1
+      }
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+  let ctor_names_list = lc_fresh_string_array()
+  let ctor_tags_list = lc_fresh_int_array()
+  let ctor_field_counts_list = lc_fresh_int_array()
+  let ctor_type_names_list = lc_fresh_string_array()
+  // Option and Attempt are checker-owned, so their constructors must exist in
+  // single-file codegen without an explicit @vibe/core enum declaration.
+  // They are fallbacks: a same-named source constructor keeps lexical
+  // precedence and its real payload layout.
+  let builtin_ctor_names = ["None", "Some", "NotGranted", "Errored", "Granted"]
+  let builtin_ctor_tags = [0, 1, 2, 3, 4]
+  let builtin_ctor_fields = [0, 1, 0, 1, 1]
+  let builtin_ctor_types = ["Option", "Option", "Attempt", "Attempt", "Attempt"]
+  let mut builtin_ctor_i = 0
+  while builtin_ctor_i < Array::length(builtin_ctor_names) {
+    let builtin_ctor_name = Array::get(builtin_ctor_names, builtin_ctor_i)
+    if !source_declares_constructor(stmts, builtin_ctor_name) {
+      Array::push(ctor_names_list, builtin_ctor_name)
+      Array::push(ctor_tags_list, Array::get(builtin_ctor_tags, builtin_ctor_i))
+      Array::push(ctor_field_counts_list, Array::get(builtin_ctor_fields, builtin_ctor_i))
+      Array::push(ctor_type_names_list, Array::get(builtin_ctor_types, builtin_ctor_i))
+    } else {
+      ()
+    }
+    builtin_ctor_i = builtin_ctor_i + 1
+  }
+  // #1062: sparse `ctor_idx * 64 + field_idx` entries for Double/Float-typed
+  // positional constructor fields (see CompileCtx.ctor_float_fields). Built
+  // alongside ctor_names_list/ctor_field_counts_list above so ctor_idx here
+  // always matches ctor_table_index_of's result for the same name.
+  let ctor_float_fields_list = lc_fresh_int_array()
+  let mut type_index = 1
+  let mut ei2 = 0
+  while ei2 < Array::length(stmts) {
+    match Array::get(stmts, ei2) {
+      SEnum(_, ename, _, variants, _) => {
+        type_index = type_index + 1
+        let mut vi = 0
+        while vi < Array::length(variants) {
+          let (vname, vfields) = Array::get(variants, vi)
+          Array::push(ctor_names_list, vname)
+          Array::push(ctor_tags_list, (type_index<<16)|vi)
+          Array::push(ctor_field_counts_list, Array::length(vfields))
+          Array::push(ctor_type_names_list, ename)
+          push_ctor_float_fields(ctor_float_fields_list, Array::length(ctor_names_list) - 1, vfields)
+          vi = vi + 1
+        }
+        0
+      },
+      SStruct(_, sname, sfields, _, _, _) => {
+        type_index = type_index + 1
+        Array::push(ctor_names_list, sname)
+        Array::push(ctor_tags_list, type_index<<16)
+        Array::push(ctor_field_counts_list, Array::length(sfields))
+        Array::push(ctor_type_names_list, sname)
+        push_ctor_float_fields(ctor_float_fields_list, Array::length(ctor_names_list) - 1, struct_field_types(sfields))
+        0
+      },
+      SSuberror(_, ename, variants) => {
+        // #786: a suberror is a single-typed enum whose constructors produce a
+        // throwable value; register its ctors in the ctor table like an enum's
+        // so `KeyInvalid("x")` allocates a tagged value instead of resolving to
+        // an undefined name at codegen.
+        type_index = type_index + 1
+        let mut vi = 0
+        while vi < Array::length(variants) {
+          let (vname, vfields) = Array::get(variants, vi)
+          Array::push(ctor_names_list, vname)
+          Array::push(ctor_tags_list, (type_index<<16)|vi)
+          Array::push(ctor_field_counts_list, Array::length(vfields))
+          Array::push(ctor_type_names_list, ename)
+          push_ctor_float_fields(ctor_float_fields_list, Array::length(ctor_names_list) - 1, vfields)
+          vi = vi + 1
+        }
+        0
+      },
+      _ => 0
+    }
+    ei2 = ei2 + 1
+  }
+  append_hidden_attempt_constructors(ctor_names_list, ctor_tags_list, ctor_field_counts_list, ctor_type_names_list)
+  let struct_names = lc_fresh_string_array()
+  let struct_field_names = lc_fresh_string_matrix()
+  let mut si = 0
+  while si < Array::length(stmts) {
+    match Array::get(stmts, si) {
+      SStruct(_, sname, sfields, _, _, _) => {
+        Array::push(struct_names, sname)
+        let fnames = lc_fresh_string_array()
+        let mut sfi = 0
+        while sfi < Array::length(sfields) {
+          let (fname, _) = Array::get(sfields, sfi)
+          Array::push(fnames, fname)
+          sfi = sfi + 1
+        }
+        Array::push(struct_field_names, fnames)
+        ()
+      },
+      _ => ()
+    }
+    si = si + 1
+  }
+  // Sorted ctor-name index (see CtorTable.names_sorted): built once here,
+  // shared by this table literal and every per-function ctor_table below.
+  let (lc_ctor_names_sorted, lc_ctor_names_sorted_pos) = ctor_sorted_index(ctor_names_list)
+  // #2386: the struct-name and constructor-type-name views agg_info_of_type_name
+  // binary-searches (see CtorTable.struct_names_sorted).
+  let (lc_struct_names_sorted, lc_struct_names_sorted_pos) = ctor_sorted_index(struct_names)
+  let (lc_type_names_sorted, _) = ctor_sorted_index(ctor_type_names_list)
+  // #724 round 2: (fn name -> declared aggregate return shape) table so
+  // `let a = f(..)` bindings participate in structural `==` (see
+  // compute_agg_returning in common_base).
+  let lc_agg_ret_names = lc_fresh_string_array()
+  let lc_agg_ret_infos = lc_fresh_int_array()
+  compute_agg_returning(stmts, CtorTable::{
+    names: ctor_names_list,
+    tags: ctor_tags_list,
+    field_counts: ctor_field_counts_list,
+    type_names: ctor_type_names_list,
+    struct_names: struct_names,
+    struct_field_names: struct_field_names,
+    struct_field_is_ref: array_empty(),
+    names_sorted: lc_ctor_names_sorted,
+    names_sorted_pos: lc_ctor_names_sorted_pos,
+    struct_names_sorted: lc_struct_names_sorted,
+    struct_names_sorted_pos: lc_struct_names_sorted_pos,
+    type_names_sorted: lc_type_names_sorted
+  }, lc_agg_ret_names, lc_agg_ret_infos)
+  let (lc_agg_ret_names_sorted, lc_agg_ret_names_sorted_pos) = ctor_sorted_index(lc_agg_ret_names)
+  // #791: program-wide (fn name) set for declared-heap-returning top-level
+  // functions (see compute_heap_returning in perceus/index.vibe). Consulted
+  // by classify_let_value_heap (compile_expr_tail.vibe) to classify
+  // `let`/`let mut` bindings whose value is a call by the CALLEE's own
+  // declared signature, instead of always over-approximating every call as
+  // heap.
+  // Sorted for bsearch_leftmost membership at the classify_let_value_heap call
+  // site (compile_expr_tail.vibe) -- same rationale as lc_borrow_ret_names above.
+  let lc_heap_ret_names = sorted_names_of(compute_heap_returning(stmts))
+  let num_user_funcs = Array::length(fn_names_list)
+  if num_user_funcs == 0 {
+    throw("no functions found to compile")
+  }
+  // #2388: lambda-slot region base -- num_user_funcs rounded up to the next
+  // multiple of 1024. Every closure-creation site embeds `base + planned_index`
+  // as an immediate; anchoring the base to a capacity ceiling instead of the
+  // exact function count means adding a named function (up to the ceiling)
+  // leaves every existing lambda-slot immediate byte-identical — the
+  // prefix-stability invariant per-module codegen caching builds on. Measured
+  // before this change (one added test in the entry): 581 of 4214 function
+  // bodies differed, every one only in a slot immediate.
+  let lambda_slot_base = ((num_user_funcs + 1023) / 1024) * 1024
+  let mut entry_user_idx = -1
+  let mut ei = 0
+  while ei < num_user_funcs {
+    if Array::get(fn_names_list, ei) == entry_name {
+      entry_user_idx = ei
+    }
+    ei = ei + 1
+  }
+  // ADR-0069 Phase 1: a missing entry is a compile error. Historically ANY
+  // unknown entry name fell through to the test-runner `_start` synthesis, so
+  // an entry typo silently produced a no-op module. Only the explicit
+  // `__no_entry__` sentinel (vibe test / bench) may synthesize the test runner
+  // now. Library mode passes a synthetic entry name it never calls, so it is
+  // exempt.
+  if entry_user_idx < 0 && !library_mode && entry_name != "__no_entry__" {
+    throw("entry `\{entry_name_in}` not found: no exported function named `\{entry_name_in}` (use __no_entry__ to build a test runner)")
+  }
+  // #2402: the empty string is seeded at pool slot 0, BEFORE the source
+  // strings. It is the one compiler-materialised string that user bodies
+  // embed (StringBuilder::freeze's join separator, ByteStream::to_string's
+  // accumulator); seeded after the source strings it moved whenever an edit
+  // added a novel literal, shifting the offset inside every unchanged body
+  // that embeds it and defeating cross-compile replay. "" is zero-length,
+  // so fronting it changes no other string's data offset. The remaining
+  // seeded strings (the #2199 OOB fragments below) stay where they are:
+  // only the generated builtin bodies reference them, and those are rebuilt
+  // by every compile.
+  // #1537: the program is linked here, @vibe/concurrent included, so this is
+  // where its host-waitable hooks can get the adapter's bodies -- when the
+  // entry boundary settles host futures (it injected `__entry_settle`), and
+  // the stream half when a stream read survived the prune
+  // (`lc_stream_reads_survive`, above).
+  lc_host_hooks_install(stmts, lc_program_defines_top_level(stmts, "__entry_settle") && lc_stmts_call_host_future(stmts), lc_program_defines_top_level(stmts, "__entry_settle") && lc_stream_reads_survive)
+  let used_builtin_names = collect_used_builtin_names(stmts, fn_names_list)
+  let need_array_capacity = Map::has_key(used_builtin_names, "Array::with_capacity")
+  let need_bytes_capacity = Map::has_key(used_builtin_names, "Bytes::with_capacity")
+  let (str_table_shared, src_str_base, heap_start, need_div_zero_abort) = lc_build_string_pool(stmts, srcs, need_array_capacity, need_bytes_capacity, rc_shadow)
+  let str_strs = str_table_shared.strs
+  let str_offsets = str_table_shared.offsets
+  let str_lengths = str_table_shared.lengths
+  let num_strings = Array::length(str_strs)
+  let num_src_pairs = Array::length(srcs)
+  let effect_names_list = lc_fresh_string_array()
+  let effect_op_keys_list = lc_fresh_string_array()
+  let effect_op_arities_list = array_empty()
+  let mut eff_collect_i = 0
+  while eff_collect_i < Array::length(stmts) {
+    match Array::get(stmts, eff_collect_i) {
+      SEffectDef(_, eff_name, _, ops) => {
+        if !is_exception_effect_name(eff_name) && !array_contains_str(effect_names_list, eff_name) {
+          Array::push(effect_names_list, eff_name)
+        } else {
+          ()
+        }
+        let mut op_i = 0
+        while op_i < Array::length(ops) {
+          let (op_name, op_params, _) = Array::get(ops, op_i)
+          Array::push(effect_op_keys_list, String::concat(String::concat(eff_name, "::"), op_name))
+          Array::push(effect_op_arities_list, Array::length(op_params))
+          op_i = op_i + 1
+        }
+      },
+      _ => ()
+    }
+    eff_collect_i = eff_collect_i + 1
+  }
+  // ADR-0076 追記34 V2: the per-effect replay regions (#553 -- perform
+  // counter / resume-memo control words + memo array, 131072 B per effect
+  // tag) are gone with the replay engine itself. Nothing reads or writes
+  // below-frontier effect words anymore (perform lowers to a direct
+  // builtin call or a bare throw; `resume` never reaches codegen), so the
+  // reserve is zero and the heap frontier moves down by (n_effects+1) *
+  // 128 KiB per module.
+  let eff_reserve = 0
+  // Function-level coverage (gated by `coverage`): a 1-byte-per-user-function
+  // hit bitmap placed in a dedicated reserve ABOVE the effect regions and BELOW
+  // the heap frontier, so it never collides with effect words or the live heap.
+  // `cov_base` is a compile-time-constant address baked into each function's
+  // prologue store. When coverage is off, cov_reserve is 0 and codegen output is
+  // byte-identical to the normal build (the self-host fixpoint is unaffected).
+  let cov_count = num_user_funcs
+  let cov_base = heap_start + eff_reserve
+  let cov_reserve = if coverage {
+    ((cov_count + 7) / 8) * 8
+  } else {
+    0
+  }
+  // #cov branch coverage: a second 1-byte-per-branch hit region directly above
+  // the function-hit region. Branch ids are assigned sequentially during codegen
+  // (CovState.next), so the count is not known up front — reserve a fixed cap.
+  // 65536 branches is generous headroom (the whole compiler has a few thousand).
+  // Off => branch_reserve is 0 and the layout/codegen is byte-identical.
+  let cov_branch_cap = 65536
+  let cov_branch_base = cov_base + cov_reserve
+  let cov_branch_reserve = if coverage {
+    cov_branch_cap
+  } else {
+    0
+  }
+  // Function-call execution trace (debugger / DAP P1 groundwork, gated by
+  // `debug_trace`). A dedicated region directly above the coverage regions and
+  // below the heap frontier holds a 4-byte counter cell followed by a fixed-cap
+  // log of i32 slots. Each user function's entry, in debug mode, appends its
+  // own user index to the log (counter-bounded). A `vibe.trace` custom section
+  // records the layout + function names so the runner can dump the entry
+  // sequence. Off => trace_reserve is 0 and the layout/codegen is byte-identical
+  // to a normal build (the self-host fixpoint is unaffected).
+  let trace_cap = 4096
+  let trace_counter_addr = cov_branch_base + cov_branch_reserve
+  let trace_log_base = trace_counter_addr + 4
+  let trace_reserve = if debug_trace {
+    4 + trace_cap * 4
+  } else {
+    0
+  }
+  // debugger argument inspection (DAP P2, gated by `debug_break`). A dedicated
+  // region directly above the trace region holds a 4-byte count cell followed by
+  // a fixed-cap array of i64 slots. At each user function entry, in break mode,
+  // the function's i64 parameters are spilled here (capped at dbgargs_cap) and
+  // the count cell is set, BEFORE calling the `vibe::dbg_break` host hook. The
+  // hook reads them out of guest memory and prints `args: [...]`. A
+  // `vibe.dbgargs` custom section publishes the two addresses to the runner.
+  // Off => dbgargs_reserve is 0 and the layout/codegen is byte-identical to a
+  // normal build (the self-host fixpoint is unaffected).
+  let dbgargs_cap = 16
+  let dbgargs_count_addr = trace_counter_addr + trace_reserve
+  let dbgargs_base = dbgargs_count_addr + 8
+  let dbgargs_reserve = if debug_break {
+    8 + dbgargs_cap * 8
+  } else {
+    0
+  }
+  // ADR-0092 (#1262) KPI follow-up 2: size-segregated free-list bins for
+  // small RC blocks. 32 bin heads (4 bytes each, sizes 16..264 step 8) live
+  // just below the bump base; the bump base moves up by the 128-byte table
+  // (rounded to 256 for alignment headroom). Linear memory is zero-page
+  // initialized and the data segments end below heap_start, so the bins
+  // start empty without an explicit memset. gen_rc_drop_body pushes
+  // small freed blocks onto their exact-size bin (O(1) exact fit on the
+  // alloc side); everything else stays on the legacy global-2 list with
+  // the bounded walk.
+  let rc_bins_base = heap_start + eff_reserve + cov_reserve + cov_branch_reserve + trace_reserve + dbgargs_reserve
+  let rc_bins_reserve = if enable_rc {
+    256
+  } else {
+    0
+  }
+  let cov_state = CovState::{
+    enabled: coverage,
+    base: cov_branch_base,
+    cap: cov_branch_cap,
+    next: [0],
+    cur_fn: [0],
+    owners: ArrayBuilder::freeze(ArrayBuilder::new())
+  }
+  // ADR-0090 (#1262): the region arena segment. `region r { body }` parses to
+  // `__region_run(lam)`, so its presence in the canonical free-name set is
+  // exactly "this module has a region".
+  //
+  // The arena is an INDEPENDENT bump segment, not a watermark over the main
+  // heap, and that separation is the whole point: the region body allocates
+  // ordinary heap values too (a tuple, a string) which are allowed to escape,
+  // and a watermark reset over the shared bump pointer would reclaim those.
+  // Only `MutList` storage goes here, and the sanctioned exits copy OUT of it
+  // (compile_call.vibe :: mutlist_exit_copy) before the segment is released.
+  //
+  // Layout: [bump ptr @+0][depth @+4][saved bump ptrs @+8, 64 levels][data].
+  // The control words live in linear memory rather than wasm globals so the
+  // save/restore needs no locals at the call site and no change to the global
+  // index formula (g_op_index / thunk globals are positional). Memory is
+  // zero-page initialized and the data segments end below heap_start, so a
+  // zero bump ptr means "never entered" and the bodies lazily seed it.
+  //
+  // Bump-lane only. Under RC a region block would carry an RC header and
+  // eventually reach the free list, which the bulk release invalidates; the
+  // RC lane keeps today's behavior (MutList == ArrayBuilder on the main heap)
+  // until the Perceus exemption lands. The bump lane is also where the arena
+  // is worth anything: it never frees, so bulk release is pure win.
+  let need_region_arena = Map::has_key(used_builtin_names, "__region_run") && !enable_rc
+  let region_ctl_base = heap_start + eff_reserve + cov_reserve + cov_branch_reserve + trace_reserve + dbgargs_reserve + rc_bins_reserve
+  let region_ptr_addr = if need_region_arena {
+    region_ctl_base
+  } else {
+    -1
+  }
+  // Derived through the common_base helpers so the emitter (compile_call.vibe,
+  // which only receives region_ptr_addr) and this layout cannot drift apart.
+  let region_saves_base = region_saves_base_of(region_ctl_base)
+  let region_data_base = ((region_saves_base + region_max_depth() * 4 + 7) / 8) * 8
+  // 256 KiB. Overflow is not an error: the arena bodies fall back to the main
+  // bump heap, which is exactly today's behavior, so a region that outgrows
+  // the segment gets no reclamation instead of getting corrupted.
+  let region_arena_bytes = 262144
+  let region_limit = region_data_base + region_arena_bytes
+  let region_reserve = if need_region_arena {
+    (region_data_base - region_ctl_base) + region_arena_bytes
+  } else {
+    0
+  }
+  let uses_stdin_provider_surface = lc_program_defines_top_level(stmts, "__stdin_provider_acquire_surface")
+  // #1539: these imports are component-internal, not a standalone core ABI.
+  // compile_source_wasi_only wraps only `run : () -> Int with Async`; reject
+  // every other entry explicitly rather than emitting an unsatisfied core.
+  if uses_stdin_provider_surface && (entry_name != "run" || !lc_entry_declares_async(stmts, entry_name)) {
+    throw("Stdin::read_via_stream requires an Async component entry named run; standalone core/library and non-Async entries cannot provide the stdin lifecycle")
+  } else {
+    ()
+  }
+  let linked_host_plan = lc_build_host_plan(dbg_line_on, debug_break, enable_rc, entry_name, linemap_on, linked_imports, need_div_zero_abort, need_region_arena, pre_prelude_let_files, pre_prelude_let_names, pre_prelude_owner_files, pre_prelude_owner_keys, rc_shadow, stmts, used_builtin_names)
+  let arr_concat_idx = linked_host_plan.arr_concat_idx
+  let arr_get_idx = linked_host_plan.arr_get_idx
+  let arr_len_idx = linked_host_plan.arr_len_idx
+  let arr_new_idx = linked_host_plan.arr_new_idx
+  let arr_push_all_idx = linked_host_plan.arr_push_all_idx
+  let arr_push_idx = linked_host_plan.arr_push_idx
+  let arr_set_idx = linked_host_plan.arr_set_idx
+  let arr_slice_idx = linked_host_plan.arr_slice_idx
+  let arr_truncate_idx = linked_host_plan.arr_truncate_idx
+  let array_capacity_idx = linked_host_plan.array_capacity_idx
+  let bytes_append_idx = linked_host_plan.bytes_append_idx
+  let bytes_blit_idx = linked_host_plan.bytes_blit_idx
+  let bytes_capacity_idx = linked_host_plan.bytes_capacity_idx
+  let bytes_compare_idx = linked_host_plan.bytes_compare_idx
+  let bytes_concat_idx = linked_host_plan.bytes_concat_idx
+  let bytes_count_byte_idx = linked_host_plan.bytes_count_byte_idx
+  let bytes_from_array_idx = linked_host_plan.bytes_from_array_idx
+  let bytes_get_idx = linked_host_plan.bytes_get_idx
+  let bytes_index_of_bytes_idx = linked_host_plan.bytes_index_of_bytes_idx
+  let bytes_index_of_idx = linked_host_plan.bytes_index_of_idx
+  let bytes_last_index_of_idx = linked_host_plan.bytes_last_index_of_idx
+  let bytes_len_idx = linked_host_plan.bytes_len_idx
+  let bytes_new_idx = linked_host_plan.bytes_new_idx
+  let bytes_push_idx = linked_host_plan.bytes_push_idx
+  let bytes_set_idx = linked_host_plan.bytes_set_idx
+  let bytes_slice_idx = linked_host_plan.bytes_slice_idx
+  let bytes_to_array_idx = linked_host_plan.bytes_to_array_idx
+  let compact_fingerprint_hash_idx = linked_host_plan.compact_fingerprint_hash_idx
+  let dbg_break_import_idx = linked_host_plan.dbg_break_import_idx
+  let dbg_line_import_idx = linked_host_plan.dbg_line_import_idx
+  let dbg_name_file = linked_host_plan.dbg_name_file
+  let dbg_owner_file = linked_host_plan.dbg_owner_file
+  let div_zero_abort_idx = linked_host_plan.div_zero_abort_idx
+  let double_to_int_idx = linked_host_plan.double_to_int_idx
+  let env_args_get_idx = linked_host_plan.env_args_get_idx
+  let env_args_get_import_idx = linked_host_plan.env_args_get_import_idx
+  let env_args_len_idx = linked_host_plan.env_args_len_idx
+  let env_args_len_import_idx = linked_host_plan.env_args_len_import_idx
+  let env_get_idx = linked_host_plan.env_get_idx
+  let env_get_import_idx = linked_host_plan.env_get_import_idx
+  let eq_idx = linked_host_plan.eq_idx
+  let frozen_array_copy_idx = linked_host_plan.frozen_array_copy_idx
+  let fs_append_idx = linked_host_plan.fs_append_idx
+  let fs_append_import_idx = linked_host_plan.fs_append_import_idx
+  let fs_chdir_idx = linked_host_plan.fs_chdir_idx
+  let fs_chdir_import_idx = linked_host_plan.fs_chdir_import_idx
+  let fs_copy_idx = linked_host_plan.fs_copy_idx
+  let fs_copy_import_idx = linked_host_plan.fs_copy_import_idx
+  let fs_exists_idx = linked_host_plan.fs_exists_idx
+  let fs_exists_import_idx = linked_host_plan.fs_exists_import_idx
+  let fs_exists_stub_idx = linked_host_plan.fs_exists_stub_idx
+  let fs_getcwd_idx = linked_host_plan.fs_getcwd_idx
+  let fs_getcwd_import_idx = linked_host_plan.fs_getcwd_import_idx
+  let fs_is_dir_idx = linked_host_plan.fs_is_dir_idx
+  let fs_is_dir_import_idx = linked_host_plan.fs_is_dir_import_idx
+  let fs_is_file_idx = linked_host_plan.fs_is_file_idx
+  let fs_is_file_import_idx = linked_host_plan.fs_is_file_import_idx
+  let fs_mkdir_idx = linked_host_plan.fs_mkdir_idx
+  let fs_mkdir_import_idx = linked_host_plan.fs_mkdir_import_idx
+  let fs_mkdir_p_idx = linked_host_plan.fs_mkdir_p_idx
+  let fs_mkdir_p_import_idx = linked_host_plan.fs_mkdir_p_import_idx
+  let fs_publish_immutable_text_idx = linked_host_plan.fs_publish_immutable_text_idx
+  let fs_publish_immutable_text_import_idx = linked_host_plan.fs_publish_immutable_text_import_idx
+  let fs_publish_immutable_text_stub_idx = linked_host_plan.fs_publish_immutable_text_stub_idx
+  let fs_read_bytes_idx = linked_host_plan.fs_read_bytes_idx
+  let fs_read_bytes_import_idx = linked_host_plan.fs_read_bytes_import_idx
+  let fs_read_dir_idx = linked_host_plan.fs_read_dir_idx
+  let fs_read_dir_import_idx = linked_host_plan.fs_read_dir_import_idx
+  let fs_read_file_idx = linked_host_plan.fs_read_file_idx
+  let fs_read_file_import_idx = linked_host_plan.fs_read_file_import_idx
+  let fs_read_file_stub_idx = linked_host_plan.fs_read_file_stub_idx
+  let fs_remove_file_idx = linked_host_plan.fs_remove_file_idx
+  let fs_remove_file_import_idx = linked_host_plan.fs_remove_file_import_idx
+  let fs_remove_idx = linked_host_plan.fs_remove_idx
+  let fs_remove_import_idx = linked_host_plan.fs_remove_import_idx
+  let fs_remove_tree_idx = linked_host_plan.fs_remove_tree_idx
+  let fs_remove_tree_import_idx = linked_host_plan.fs_remove_tree_import_idx
+  let fs_rename_idx = linked_host_plan.fs_rename_idx
+  let fs_rename_import_idx = linked_host_plan.fs_rename_import_idx
+  let fs_stat_token_idx = linked_host_plan.fs_stat_token_idx
+  let fs_stat_token_import_idx = linked_host_plan.fs_stat_token_import_idx
+  let fs_stat_token_stub_idx = linked_host_plan.fs_stat_token_stub_idx
+  let fs_write_bytes_idx = linked_host_plan.fs_write_bytes_idx
+  let fs_write_bytes_import_idx = linked_host_plan.fs_write_bytes_import_idx
+  let fs_write_bytes_stub_idx = linked_host_plan.fs_write_bytes_stub_idx
+  let fs_write_file_idx = linked_host_plan.fs_write_file_idx
+  let fs_write_file_import_idx = linked_host_plan.fs_write_file_import_idx
+  let fs_write_file_stub_idx = linked_host_plan.fs_write_file_stub_idx
+  let func_offset = linked_host_plan.func_offset
+  let generic_add_idx = linked_host_plan.generic_add_idx
+  let generic_rel_diff_idx = linked_host_plan.generic_rel_diff_idx
+  let heap_grow_check_idx = linked_host_plan.heap_grow_check_idx
+  let hf_all_names = linked_host_plan.hf_all_names
+  let hf_arg_push_idx = linked_host_plan.hf_arg_push_idx
+  let hf_arg_push_import_idx = linked_host_plan.hf_arg_push_import_idx
+  let hf_arm_idx = linked_host_plan.hf_arm_idx
+  let hf_arm_import_idx = linked_host_plan.hf_arm_import_idx
+  let hf_cancel_idx = linked_host_plan.hf_cancel_idx
+  let hf_cancel_import_idx = linked_host_plan.hf_cancel_import_idx
+  let hf_get_idx = linked_host_plan.hf_get_idx
+  let hf_get_import_idx = linked_host_plan.hf_get_import_idx
+  let hf_named_import_indices = linked_host_plan.hf_named_import_indices
+  let hf_named_names = linked_host_plan.hf_named_names
+  let hf_response_addresses = linked_host_plan.hf_response_addresses
+  let hf_response_arg_addresses = linked_host_plan.hf_response_arg_addresses
+  let hf_wait_any_idx = linked_host_plan.hf_wait_any_idx
+  let hf_wait_any_import_idx = linked_host_plan.hf_wait_any_import_idx
+  let hf_wait_idx = linked_host_plan.hf_wait_idx
+  let hf_wait_import_idx = linked_host_plan.hf_wait_import_idx
+  let hf_wit_names = linked_host_plan.hf_wit_names
+  let hs_arm_idx = linked_host_plan.hs_arm_idx
+  let hs_arm_import_idx = linked_host_plan.hs_arm_import_idx
+  let hs_cancel_idx = linked_host_plan.hs_cancel_idx
+  let hs_cancel_import_idx = linked_host_plan.hs_cancel_import_idx
+  let hs_claim_idx = linked_host_plan.hs_claim_idx
+  let hs_claim_import_idx = linked_host_plan.hs_claim_import_idx
+  let hs_close_idx = linked_host_plan.hs_close_idx
+  let hs_close_import_idx = linked_host_plan.hs_close_import_idx
+  let hs_named_import_indices = linked_host_plan.hs_named_import_indices
+  let hs_named_names = linked_host_plan.hs_named_names
+  let hs_read_idx = linked_host_plan.hs_read_idx
+  let hs_read_import_idx = linked_host_plan.hs_read_import_idx
+  let hsl_arm_idx = linked_host_plan.hsl_arm_idx
+  let hsl_arm_import_idx = linked_host_plan.hsl_arm_import_idx
+  let hsl_cancel_idx = linked_host_plan.hsl_cancel_idx
+  let hsl_cancel_import_idx = linked_host_plan.hsl_cancel_import_idx
+  let http_close_idx = linked_host_plan.http_close_idx
+  let http_close_import_idx = linked_host_plan.http_close_import_idx
+  let http_request_idx = linked_host_plan.http_request_idx
+  let http_request_import_idx = linked_host_plan.http_request_import_idx
+  let http_response_body_idx = linked_host_plan.http_response_body_idx
+  let http_response_body_import_idx = linked_host_plan.http_response_body_import_idx
+  let http_response_header_idx = linked_host_plan.http_response_header_idx
+  let http_response_header_import_idx = linked_host_plan.http_response_header_import_idx
+  let http_response_status_idx = linked_host_plan.http_response_status_idx
+  let http_response_status_import_idx = linked_host_plan.http_response_status_import_idx
+  let identity_idx = linked_host_plan.identity_idx
+  let int_clz_idx = linked_host_plan.int_clz_idx
+  let int_ctz_idx = linked_host_plan.int_ctz_idx
+  let int_popcount_idx = linked_host_plan.int_popcount_idx
+  let int_to_double_idx = linked_host_plan.int_to_double_idx
+  let linemap_off = linked_host_plan.linemap_off
+  let linemap_state = linked_host_plan.linemap_state
+  let linked_import_indices = linked_host_plan.linked_import_indices
+  let linked_import_names = linked_host_plan.linked_import_names
+  let map_build_index_idx = linked_host_plan.map_build_index_idx
+  let map_cap_idx = linked_host_plan.map_cap_idx
+  let map_hash_idx = linked_host_plan.map_hash_idx
+  let map_index_insert_idx = linked_host_plan.map_index_insert_idx
+  let map_probe_index_idx = linked_host_plan.map_probe_index_idx
+  let need_host_future_builtin = linked_host_plan.need_host_future_builtin
+  let need_http_request_builtin = linked_host_plan.need_http_request_builtin
+  let num_generated = linked_host_plan.num_generated
+  let num_imported_funcs = linked_host_plan.num_imported_funcs
+  let oob_abort_idx = linked_host_plan.oob_abort_idx
+  let print_i64_raw_idx = linked_host_plan.print_i64_raw_idx
+  let print_int_idx = linked_host_plan.print_int_idx
+  let print_str_idx = linked_host_plan.print_str_idx
+  let process_exit_idx = linked_host_plan.process_exit_idx
+  let process_exit_import_idx = linked_host_plan.process_exit_import_idx
+  let profiler_heap_bytes_idx = linked_host_plan.profiler_heap_bytes_idx
+  let profiler_heap_bytes_import_idx = linked_host_plan.profiler_heap_bytes_import_idx
+  let profiler_now_us_idx = linked_host_plan.profiler_now_us_idx
+  let profiler_now_us_import_idx = linked_host_plan.profiler_now_us_import_idx
+  let rc_alloc_idx = linked_host_plan.rc_alloc_idx
+  let rc_drop_idx = linked_host_plan.rc_drop_idx
+  let rc_dup_idx = linked_host_plan.rc_dup_idx
+  let region_arr_new_idx = linked_host_plan.region_arr_new_idx
+  let region_bytes_new_idx = linked_host_plan.region_bytes_new_idx
+  let resolve_path_idx = linked_host_plan.resolve_path_idx
+  let resolve_path_import_idx = linked_host_plan.resolve_path_import_idx
+  let serve_handler_has_host_stream = linked_host_plan.serve_handler_has_host_stream
+  let sh_capture_close_idx = linked_host_plan.sh_capture_close_idx
+  let sh_capture_close_import_idx = linked_host_plan.sh_capture_close_import_idx
+  let sh_capture_exit_code_idx = linked_host_plan.sh_capture_exit_code_idx
+  let sh_capture_exit_code_import_idx = linked_host_plan.sh_capture_exit_code_import_idx
+  let sh_capture_idx = linked_host_plan.sh_capture_idx
+  let sh_capture_import_idx = linked_host_plan.sh_capture_import_idx
+  let sh_capture_stderr_idx = linked_host_plan.sh_capture_stderr_idx
+  let sh_capture_stderr_import_idx = linked_host_plan.sh_capture_stderr_import_idx
+  let sh_capture_stdout_idx = linked_host_plan.sh_capture_stdout_idx
+  let sh_capture_stdout_import_idx = linked_host_plan.sh_capture_stdout_import_idx
+  let sh_idx = linked_host_plan.sh_idx
+  let sh_import_idx = linked_host_plan.sh_import_idx
+  let sh_lines_idx = linked_host_plan.sh_lines_idx
+  let sh_lines_import_idx = linked_host_plan.sh_lines_import_idx
+  let shadow_uaf_abort_idx = linked_host_plan.shadow_uaf_abort_idx
+  let simd_scan_alnum_idx = linked_host_plan.simd_scan_alnum_idx
+  let simd_scan_alnum_str_idx = linked_host_plan.simd_scan_alnum_str_idx
+  let simd_scan_line_end_str_idx = linked_host_plan.simd_scan_line_end_str_idx
+  let simd_scan_string_special_str_idx = linked_host_plan.simd_scan_string_special_str_idx
+  let simd_skip_ws_idx = linked_host_plan.simd_skip_ws_idx
+  let sleep_idx = linked_host_plan.sleep_idx
+  let sleep_import_idx = linked_host_plan.sleep_import_idx
+  let sleep_needs_component_adapter = linked_host_plan.sleep_needs_component_adapter
+  let sources_idx = linked_host_plan.sources_idx
+  let stderr_write_char_idx = linked_host_plan.stderr_write_char_idx
+  let stderr_write_char_import_idx = linked_host_plan.stderr_write_char_import_idx
+  let stderr_write_stream_idx = linked_host_plan.stderr_write_stream_idx
+  let stderr_write_stream_import_idx = linked_host_plan.stderr_write_stream_import_idx
+  let stdin_provider_acquire_idx = linked_host_plan.stdin_provider_acquire_idx
+  let stdin_provider_acquire_import_idx = linked_host_plan.stdin_provider_acquire_import_idx
+  let stdin_provider_close_idx = linked_host_plan.stdin_provider_close_idx
+  let stdin_provider_close_import_idx = linked_host_plan.stdin_provider_close_import_idx
+  let stdin_provider_read_idx = linked_host_plan.stdin_provider_read_idx
+  let stdin_provider_read_import_idx = linked_host_plan.stdin_provider_read_import_idx
+  let stdin_read_char_idx = linked_host_plan.stdin_read_char_idx
+  let stdin_read_char_import_idx = linked_host_plan.stdin_read_char_import_idx
+  let stdin_read_stream_idx = linked_host_plan.stdin_read_stream_idx
+  let stdin_read_stream_import_idx = linked_host_plan.stdin_read_stream_import_idx
+  let stdout_write_char_idx = linked_host_plan.stdout_write_char_idx
+  let stdout_write_char_import_idx = linked_host_plan.stdout_write_char_import_idx
+  let stdout_write_stream_idx = linked_host_plan.stdout_write_stream_idx
+  let stdout_write_stream_import_idx = linked_host_plan.stdout_write_stream_import_idx
+  let str_char_code_at_idx = linked_host_plan.str_char_code_at_idx
+  let str_concat_idx = linked_host_plan.str_concat_idx
+  let str_eq_idx = linked_host_plan.str_eq_idx
+  let str_from_char_code_idx = linked_host_plan.str_from_char_code_idx
+  let str_len_idx = linked_host_plan.str_len_idx
+  let str_lex_diff_idx = linked_host_plan.str_lex_diff_idx
+  let str_operand_abort_idx = linked_host_plan.str_operand_abort_idx
+  let str_substring_idx = linked_host_plan.str_substring_idx
+  let string_contains_idx = linked_host_plan.string_contains_idx
+  let string_ends_with_idx = linked_host_plan.string_ends_with_idx
+  let string_index_of_idx = linked_host_plan.string_index_of_idx
+  let string_join_idx = linked_host_plan.string_join_idx
+  let string_last_index_of_idx = linked_host_plan.string_last_index_of_idx
+  let string_split_idx = linked_host_plan.string_split_idx
+  let string_starts_with_idx = linked_host_plan.string_starts_with_idx
+  let string_trim_idx = linked_host_plan.string_trim_idx
+  let tcp_close_idx = linked_host_plan.tcp_close_idx
+  let tcp_close_import_idx = linked_host_plan.tcp_close_import_idx
+  let tcp_connect_idx = linked_host_plan.tcp_connect_idx
+  let tcp_connect_import_idx = linked_host_plan.tcp_connect_import_idx
+  let tcp_read_idx = linked_host_plan.tcp_read_idx
+  let tcp_read_import_idx = linked_host_plan.tcp_read_import_idx
+  let tcp_write_idx = linked_host_plan.tcp_write_idx
+  let tcp_write_import_idx = linked_host_plan.tcp_write_import_idx
+  let guard_import_names_now = sorted_names_of(Map::keys(used_builtin_names))
+  let mut __gim = 0
+  while __gim < Array::length(linked_import_names) {
+    Array::push(guard_import_names_now, Array::get(linked_import_names, __gim))
+    __gim = __gim + 1
+  }
+  // Global name-membership guard: compile_call's `prefer_bound_call` and the
+  // func-table lookups match the SPELLED name across the whole program, and
+  // only builtin-spelled names take those branches. Prefix defs are #716
+  // path-mangled (`_exp_`/`_dep_` marker), so the names that can flip such a
+  // branch are the unmangled source-region ones. `__test_`/`__bench_` blocks
+  // are excluded -- nothing calls a test by name -- which is what keeps the
+  // append-a-test edit inside the cache.
+  let guard_unmangled_now = if pin_region_capacity >= 0 {
+    let raw = lc_fresh_string_array()
+    let mut __gun = 0
+    while __gun < pin_region_src_n {
+      let __gname = Array::get(fn_names_list, __gun)
+      if !String::contains(__gname, "_exp_") && !String::contains(__gname, "_dep_") && !String::starts_with(__gname, "__test_") && !String::starts_with(__gname, "__bench_") {
+        Array::push(raw, __gname)
+      } else {
+        ()
+      }
+      __gun = __gun + 1
+    }
+    sorted_names_of(raw)
+  } else {
+    lc_fresh_string_array()
+  }
+  if pin_region_capacity >= 0 && !late_dce_rewrote_bodies {
+    Array::push(body_cache_out.guard_meta, pin_region_src_n)
+    Array::push(body_cache_out.guard_meta, pin_region_capacity)
+    Array::push(body_cache_out.guard_meta, lambda_slot_base)
+    Array::push(body_cache_out.guard_meta, num_imported_funcs)
+    Array::push(body_cache_out.guard_meta, num_generated)
+    let mut __gsy = pin_region_capacity
+    while __gsy < num_user_funcs {
+      Array::push(body_cache_out.guard_synth_names, Array::get(fn_names_list, __gsy))
+      Array::push(body_cache_out.guard_synth_stmts, Array::get(fn_stmt_indices, __gsy))
+      __gsy = __gsy + 1
+    }
+    let mut __gin = 0
+    while __gin < Array::length(guard_import_names_now) {
+      Array::push(body_cache_out.guard_import_names, Array::get(guard_import_names_now, __gin))
+      __gin = __gin + 1
+    }
+    // ADR-0092 borrow-parameter ABI (call-site sensitive: an edit anywhere
+    // can flip an unchanged function's owned/borrowed parameter, changing
+    // its drop obligations and every caller's dup obligations). Names are
+    // sorted with masks aligned by construction.
+    let mut __gbn = 0
+    while __gbn < Array::length(lc_borrow_param_user_srt) {
+      Array::push(body_cache_out.guard_borrow_names, Array::get(lc_borrow_param_user_srt, __gbn))
+      Array::push(body_cache_out.guard_borrow_masks, Array::get(lc_borrow_param_mask, __gbn))
+      __gbn = __gbn + 1
+    }
+    let mut __gum = 0
+    while __gum < Array::length(guard_unmangled_now) {
+      Array::push(body_cache_out.guard_unmangled_names, Array::get(guard_unmangled_now, __gum))
+      __gum = __gum + 1
+    }
+    // #2669 step 2b's `guard_layout` is recorded further down, once the
+    // lambda plan exists -- it is the last of the program-wide inputs to be
+    // computed.
+  }
+  // #2669 step 2a: which of THIS build's user function names identify one
+  // function. A name the current build duplicates cannot be used to find a
+  // body, whatever the cache happens to hold for it.
+  let lc_user_fn_names = lc_fresh_string_array()
+  let mut lc_ufn_i = 0
+  while lc_ufn_i < num_user_funcs {
+    Array::push(lc_user_fn_names, Array::get(fn_names_list, lc_ufn_i))
+    lc_ufn_i = lc_ufn_i + 1
+  }
+  let lc_name_unique = unique_name_flags(lc_user_fn_names)
+  let body_cache_in_ok = if Array::length(body_cache_in.fn_indices) == 0 {
+    true
+  } else if pin_region_capacity < 0 {
+    // This compile did not run the pin reorder. Either the stmts were
+    // already lowered by an earlier compile in this same process (#1259's
+    // replay/sliced lanes re-feed the SAME mutated array, whose layout is
+    // exactly the harvest's -- the earlier compile's pads and synthesized
+    // lets now read as source names, so the reorder is a no-op skip), or
+    // the program has no synthesized functions at all. In both cases the
+    // incoming cache came from this identical layout; the cross-compile
+    // lane never lands here, because a fresh closure compile always
+    // lowers, always synthesizes, and therefore always reorders.
+    true
+  } else if Array::length(body_cache_in.guard_meta) == 0 {
+    // Guard-less but non-empty under a reordering compile: only hand-built
+    // test caches look like this (a real harvest of a reordering compile
+    // records guards, and codegen_body_cache_filter_src_below empties a
+    // guard-less cache before it can cross compiles). Accept unchanged.
+    true
+  } else {
+    !late_dce_rewrote_bodies && Array::length(body_cache_in.guard_meta) == 5 && Array::get(body_cache_in.guard_meta, 0) == pin_region_src_n && Array::get(body_cache_in.guard_meta, 1) == pin_region_capacity && Array::get(body_cache_in.guard_meta, 2) == lambda_slot_base && Array::get(body_cache_in.guard_meta, 3) == num_imported_funcs && Array::get(body_cache_in.guard_meta, 4) == num_generated && Array::length(body_cache_in.guard_synth_names) == num_user_funcs - pin_region_capacity && bcc_guard_synth_matches(body_cache_in, fn_names_list, fn_stmt_indices, pin_region_capacity, num_user_funcs) && bcc_string_lists_equal(body_cache_in.guard_import_names, guard_import_names_now) && bcc_string_lists_equal(body_cache_in.guard_borrow_names, lc_borrow_param_user_srt) && bcc_int_lists_equal(body_cache_in.guard_borrow_masks, lc_borrow_param_mask) && bcc_string_lists_equal(body_cache_in.guard_unmangled_names, guard_unmangled_now)
+  }
+  let fn_indices_list = lc_fresh_int_array()
+  let fn_returns_list = lc_fresh_int_array()
+  let mut fi = 0
+  while fi < num_user_funcs {
+    Array::push(fn_indices_list, fi + func_offset)
+    Array::push(fn_returns_list, 1)
+    fi = fi + 1
+  }
+  let builtin_names_list = lc_fresh_string_array()
+  let builtin_param_counts = lc_fresh_int_array()
+  let builtin_needs_env_list = lc_fresh_bool_array()
+  let builtin_indices_list = lc_fresh_int_array()
+  let builtin_returns_list = lc_fresh_int_array()
+  // #415 B-1: the central registry DRIVES the linear lane's registration.
+  // Names, param counts, and returns come straight from builtin_registry()
+  // rows with in_linear = true; only the function INDEX is lane-local (the
+  // idx bindings computed above), resolved by the match below. Adding a
+  // linear builtin = one registry row + one match arm here (+ the import /
+  // body wiring); param-count and returns live ONLY in the registry.
+  // needs_env is false for every static builtin -- only the linked-import
+  // bridges appended after verify carry an env. vibe_rc_drop/vibe_rc_alloc
+  // register under RC builds only (mirrored by verify_lane_builtins'
+  // vibe_rc_ exemption).
+  let registry_rows = builtin_registry()
+  let mut reg_i = 0
+  while reg_i < Array::length(registry_rows) {
+    let (reg_name, reg_params, reg_returns, reg_linear, _) = Array::get(registry_rows, reg_i)
+    let reg_include = reg_linear && (enable_rc || !String::starts_with(reg_name, "vibe_rc_"))
+    if reg_include {
+      let reg_idx = match reg_name {
+        "Env::get" => env_get_idx,
+        "Env::args_len" => env_args_len_idx,
+        "Env::args_get" => env_args_get_idx,
+        "Fs::read_file" => fs_read_file_idx,
+        "Fs::exists" => fs_exists_idx,
+        "Fs::stat_token" => fs_stat_token_idx,
+        // #795: alias-collision-proof name, same import index as Fs::stat_token.
+        "vibe_fs_stat_token_raw" => fs_stat_token_idx,
+        "Fs::write_file" => fs_write_file_idx,
+        "Fs::publish_immutable_text" => fs_publish_immutable_text_idx,
+        "Fs::write_bytes" => fs_write_bytes_idx,
+        "Fs::read_bytes" => fs_read_bytes_idx,
+        // #729/#730: RAW half of Fs::readdir -- compile_call lowers the surface.
+        "vibe_fs_read_dir_raw" => fs_read_dir_idx,
+        "Fs::remove" => fs_remove_idx,
+        "Fs::remove_file" => fs_remove_file_idx,
+        "Fs::remove_tree" => fs_remove_tree_idx,
+        "Fs::mkdir_p" => fs_mkdir_p_idx,
+        "Fs::mkdir" => fs_mkdir_idx,
+        "Fs::chdir" => fs_chdir_idx,
+        "Fs::copy" => fs_copy_idx,
+        "Fs::append" => fs_append_idx,
+        "Fs::rename" => fs_rename_idx,
+        "Fs::is_dir" => fs_is_dir_idx,
+        "Fs::is_file" => fs_is_file_idx,
+        "Fs::getcwd" => fs_getcwd_idx,
+        "vibe_tcp_connect_raw" => tcp_connect_idx,
+        "vibe_tcp_read_raw" => tcp_read_idx,
+        "vibe_tcp_write_raw" => tcp_write_idx,
+        "vibe_tcp_close_raw" => tcp_close_idx,
+        // #794: HTTP client host ops (raw dunder surface names, see checker/builtins_net.vibe).
+        "vibe_http_request_raw" => http_request_idx,
+        "vibe_http_response_status_raw" => http_response_status_idx,
+        "vibe_http_response_header_raw" => http_response_header_idx,
+        "vibe_http_response_body_raw" => http_response_body_idx,
+        "vibe_http_close_raw" => http_close_idx,
+        "sh" => sh_idx,
+        // RAW half of sh_lines -- compile_call lowers the Array[String] surface.
+        "vibe_sh_lines_raw" => sh_lines_idx,
+        // #865: structured subprocess result (raw dunder names -- called
+        // directly from lib/@vibe/process/process.vibe, same convention as
+        // the vibe_http_*_raw names above).
+        "vibe_sh_capture_raw" => sh_capture_idx,
+        "vibe_sh_capture_exit_code_raw" => sh_capture_exit_code_idx,
+        "vibe_sh_capture_stdout_raw" => sh_capture_stdout_idx,
+        "vibe_sh_capture_stderr_raw" => sh_capture_stderr_idx,
+        "vibe_sh_capture_close_raw" => sh_capture_close_idx,
+        "vibe_process_exit_raw" => process_exit_idx,
+        "Stdin::read_stream" => stdin_read_stream_idx,
+        "Stdout::write_stream" => stdout_write_stream_idx,
+        "Stdout::write_char" => stdout_write_char_idx,
+        // #865: Stderr, same shapes as the Stdout pair above.
+        "Stderr::write_stream" => stderr_write_stream_idx,
+        "Stderr::write_char" => stderr_write_char_idx,
+        // #762: RAW host op behind Path::ref / Path::resolve.
+        "resolve_path" => resolve_path_idx,
+        "Profiler::now_us" => profiler_now_us_idx,
+        "Profiler::NowUs" => profiler_now_us_idx,
+        "Profiler::heap_bytes" => profiler_heap_bytes_idx,
+        "Profiler::HeapBytes" => profiler_heap_bytes_idx,
+        "sleep" => sleep_idx,
+        // #1227: row-free sibling, same host import.
+        "sleep_blocking" => sleep_idx,
+        "Stdin::read_char" => stdin_read_char_idx,
+        // #1460 Phase 1: the merged `Console` capability lowers onto the very
+        // same host imports as the three effects it replaces -- the precedent
+        // is `Profiler::now_us` / `Profiler::NowUs` above, two builtin names
+        // sharing one index. The stderr pair is spelled apart here because one
+        // effect cannot own two `write_stream` operations.
+        "Console::read_stream" => stdin_read_stream_idx,
+        "Console::read_char" => stdin_read_char_idx,
+        "Console::write_stream" => stdout_write_stream_idx,
+        "Console::write_char" => stdout_write_char_idx,
+        "Console::write_err_stream" => stderr_write_stream_idx,
+        "Console::write_err_char" => stderr_write_char_idx,
+        // ADR-0089 step 4: raw halves of host_future_get (component adapter
+        // imports, see the registry rows' comment).
+        "vibe_hf_get_raw" => hf_get_idx,
+        "vibe_hf_wait_raw" => hf_wait_idx,
+        "vibe_hf_arm_raw" => hf_arm_idx,
+        "vibe_hf_wait_any_raw" => hf_wait_any_idx,
+        "vibe_hs_arm_raw" => hs_arm_idx,
+        "vibe_hf_sleep_arm_raw" => hsl_arm_idx,
+        "vibe_hf_cancel_raw" => hf_cancel_idx,
+        "vibe_hs_cancel_raw" => hs_cancel_idx,
+        "vibe_hf_arg_push_raw" => hf_arg_push_idx,
+        "vibe_hf_sleep_cancel_raw" => hsl_cancel_idx,
+        "vibe_hs_claim_raw" => hs_claim_idx,
+        // ADR-0089 Decision 3: shared read half of the named host streams.
+        "vibe_hs_read_raw" => hs_read_idx,
+        // ADR-0089 Decision 3 follow-up: shared drop half of the named host
+        // streams (`host_stream_close` -> injected `__hs_close`).
+        "vibe_hs_close_raw" => hs_close_idx,
+        // #1539 direct public spellings and checker-hidden compiler wrappers
+        // share the same exact component-private targets.
+        "vibe_stdin_provider_acquire_raw" => stdin_provider_acquire_idx,
+        "vibe_stdin_provider_read_raw" => stdin_provider_read_idx,
+        "vibe_stdin_provider_close_raw" => stdin_provider_close_idx,
+        "Stdin::read_via_stream" => stdin_provider_acquire_idx,
+        "StdinStream::next" => stdin_provider_read_idx,
+        "StdinStream::close" => stdin_provider_close_idx,
+        "simd_skip_ws" => simd_skip_ws_idx,
+        "simd_scan_alnum" => simd_scan_alnum_idx,
+        "simd_scan_alnum_str" => simd_scan_alnum_str_idx,
+        "simd_scan_string_special_str" => simd_scan_string_special_str_idx,
+        "simd_scan_line_end_str" => simd_scan_line_end_str_idx,
+        // #746: backs String < > <= >= (desugar rewrites to str_lex_diff(a,b) <op> 0).
+        "str_lex_diff" => str_lex_diff_idx,
+        // #973: backs `<`/`>`/`<=`/`>=`/`+` on an erased `[T: Ord]`/`[T: Add]`
+        // generic operand (desugar_trait_dict.vibe rewrites the binop when the
+        // operand's static type is the bare unresolved type parameter).
+        "__generic_rel_diff" => generic_rel_diff_idx,
+        "__generic_add" => generic_add_idx,
+        "__compact_fingerprint_hash" => compact_fingerprint_hash_idx,
+        "print_int" => print_int_idx,
+        "print_str" => print_str_idx,
+        "String::length" => str_len_idx,
+        "String::equals" => str_eq_idx,
+        "String::concat" => str_concat_idx,
+        "array_new" => arr_new_idx,
+        "Array::length" => arr_len_idx,
+        "Array::get" => arr_get_idx,
+        "Array::push" => arr_push_idx,
+        "Array::push_all" => arr_push_all_idx,
+        "Array::set" => arr_set_idx,
+        "Double::to_int" => double_to_int_idx,
+        "Int::to_double" => int_to_double_idx,
+        "Int::popcount" => int_popcount_idx,
+        "Int::ctz" => int_ctz_idx,
+        "Int::clz" => int_clz_idx,
+        "String::char_code_at" => str_char_code_at_idx,
+        "String::from_char_code" => str_from_char_code_idx,
+        "String::substring" => str_substring_idx,
+        "Array::truncate" => arr_truncate_idx,
+        "String::join" => string_join_idx,
+        "eq" => eq_idx,
+        "String::ends_with" => string_ends_with_idx,
+        "String::last_index_of" => string_last_index_of_idx,
+        "String::index_of" => string_index_of_idx,
+        "Bytes::index_of_bytes" => bytes_index_of_bytes_idx,
+        "Bytes::index_of" => bytes_index_of_idx,
+        "Bytes::count" => bytes_count_byte_idx,
+        "Bytes::last_index_of" => bytes_last_index_of_idx,
+        "Bytes::compare" => bytes_compare_idx,
+        "String::contains" => string_contains_idx,
+        "String::starts_with" => string_starts_with_idx,
+        "String::split" => string_split_idx,
+        "String::trim" => string_trim_idx,
+        "compiler_sources" => sources_idx,
+        "ArrayBuilder::new" => arr_new_idx,
+        "ArrayBuilder::push" => arr_push_idx,
+        "ArrayBuilder::freeze" => identity_idx,
+        // #1733: map the builtin itself so function-value aliases retain the
+        // same copy boundary as direct calls.
+        "FrozenArray::from_array" => frozen_array_copy_idx,
+        "FrozenArray::to_array" => frozen_array_copy_idx,
+        "FrozenArray::get" => arr_get_idx,
+        "FrozenArray::length" => arr_len_idx,
+        "Array::slice" => arr_slice_idx,
+        "Array::concat" => arr_concat_idx,
+        "Bytes::new" => bytes_new_idx,
+        "Bytes::with_capacity" => bytes_capacity_idx,
+        "Array::with_capacity" => array_capacity_idx,
+        "Bytes::from_array" => bytes_from_array_idx,
+        "Bytes::to_array" => bytes_to_array_idx,
+        "Bytes::length" => bytes_len_idx,
+        "Bytes::get" => bytes_get_idx,
+        "Bytes::set" => bytes_set_idx,
+        "Bytes::push" => bytes_push_idx,
+        "Bytes::append" => bytes_append_idx,
+        "Bytes::blit" => bytes_blit_idx,
+        "Bytes::concat" => bytes_concat_idx,
+        "Bytes::slice" => bytes_slice_idx,
+        "__to_string" => identity_idx,
+        "vibe_rc_drop" => rc_drop_idx,
+        "vibe_rc_dup" => rc_dup_idx,
+        "vibe_rc_alloc" => rc_alloc_idx,
+        "vibe_heap_grow_check" => heap_grow_check_idx,
+        _ => 0 - 1
+      }
+      if reg_idx < 0 {
+        throw("builtin registry drift: no linear function-index mapping for builtin '\{reg_name}' (add a match arm in linked_compile.vibe, #415)")
+      } else {
+        ()
+      }
+      Array::push(builtin_names_list, reg_name)
+      Array::push(builtin_param_counts, reg_params)
+      Array::push(builtin_needs_env_list, false)
+      Array::push(builtin_indices_list, reg_idx)
+      Array::push(builtin_returns_list, reg_returns)
+    } else {
+      ()
+    }
+    reg_i = reg_i + 1
+  }
+  // #415 B-0: the static registration above must agree with the central
+  // registry (name set + params + returns, both directions). Placed BEFORE
+  // the linked_imports loop — those are user-declared effect bridges with
+  // dynamic names, not builtins.
+  verify_lane_builtins("linear", builtin_names_list, builtin_param_counts, builtin_returns_list)
+  // ADR-0089 (c) (#1218): the per-name host-future getters. Registered AFTER
+  // the registry cross-check above on purpose -- these names are minted from
+  // the PROGRAM (one per `host_future_named("...")` import name), so they
+  // cannot appear in the static builtin_registry() the check compares
+  // against. Shape is fixed and identical for all of them: `() -> Int`, no
+  // env, index = the reserved import (see hf_named_import_indices).
+  let mut hf_reg_i = 0
+  while hf_reg_i < Array::length(hf_all_names) {
+    Array::push(builtin_names_list, String::concat(cc_host_future_named_raw_prefix(), Array::get(hf_all_names, hf_reg_i)))
+    Array::push(builtin_param_counts, 0)
+    Array::push(builtin_needs_env_list, false)
+    Array::push(builtin_indices_list, Array::get(hf_named_import_indices, hf_reg_i))
+    Array::push(builtin_returns_list, 1)
+    hf_reg_i = hf_reg_i + 1
+  }
+  // ADR-0089 Decision 3 (#1218): the per-name host-stream getters --
+  // program-minted like the host-future getters above, same fixed shape
+  // (`() -> Int`, no env, index = the reserved import).
+  let mut hs_reg_i = 0
+  while hs_reg_i < Array::length(hs_named_names) {
+    Array::push(builtin_names_list, String::concat(cc_host_stream_named_raw_prefix(), Array::get(hs_named_names, hs_reg_i)))
+    Array::push(builtin_param_counts, 0)
+    Array::push(builtin_needs_env_list, false)
+    Array::push(builtin_indices_list, Array::get(hs_named_import_indices, hs_reg_i))
+    Array::push(builtin_returns_list, 1)
+    hs_reg_i = hs_reg_i + 1
+  }
+  let mut li_reg = 0
+  while li_reg < Array::length(linked_imports) {
+    let (_, lfn_name, lparams, lreturns) = Array::get(linked_imports, li_reg)
+    Array::push(builtin_names_list, lfn_name)
+    Array::push(builtin_param_counts, lparams)
+    Array::push(builtin_needs_env_list, true)
+    Array::push(builtin_indices_list, Array::get(linked_import_indices, li_reg))
+    Array::push(builtin_returns_list, lreturns)
+    li_reg = li_reg + 1
+  }
+  // #3115 review: read before the builtin names are appended below --
+  // afterwards `fn_names_list` always holds every builtin. A user entry comes
+  // first, so a call spelled like a builtin resolves to it. The truncate
+  // release rests on the builtin semantics of all five of these: a fresh
+  // `Array::with_capacity`, receivers that neither keep nor escape the array,
+  // and a truncate that actually shortens it.
+  let user_shadows_trunc_builtins = array_contains_str(fn_names_list, "Array::truncate") || array_contains_str(fn_names_list, "Array::with_capacity") || array_contains_str(fn_names_list, "Array::push") || array_contains_str(fn_names_list, "Array::length") || array_contains_str(fn_names_list, "Array::get")
+  let mut all_fn_i = 0
+  while all_fn_i < Array::length(builtin_names_list) {
+    Array::push(fn_names_list, Array::get(builtin_names_list, all_fn_i))
+    Array::push(fn_param_counts, Array::get(builtin_param_counts, all_fn_i))
+    Array::push(fn_needs_env_list, Array::get(builtin_needs_env_list, all_fn_i))
+    Array::push(fn_indices_list, Array::get(builtin_indices_list, all_fn_i))
+    Array::push(fn_returns_list, Array::get(builtin_returns_list, all_fn_i))
+    all_fn_i = all_fn_i + 1
+  }
+  // Bootstrap bridge for @vibe/cache: an older compiler sees and emits the
+  // ordinary Vibe fallback, while this compiler redirects that one private,
+  // package-mangled function to the direct byte-scanning builtin. Keep this
+  // exact: a prefix match would capture legal user functions such as
+  // `__compact_fingerprint_hash_custom` and silently replace their bodies.
+  let mut fingerprint_bridge_i = 0
+  while fingerprint_bridge_i < Array::length(fn_names_list) {
+    if Array::get(fn_names_list, fingerprint_bridge_i) == "__compact_fingerprint_hash_dep_lib__vibe_cache_cache_vibe" {
+      Array::set(fn_indices_list, fingerprint_bridge_i, compact_fingerprint_hash_idx)
+      Array::set(fn_needs_env_list, fingerprint_bridge_i, false)
+    } else {
+      ()
+    }
+    fingerprint_bridge_i = fingerprint_bridge_i + 1
+  }
+  let all_fn_names_list = fn_names_list
+  let all_fn_param_counts = fn_param_counts
+  let all_fn_needs_env_list = fn_needs_env_list
+  let all_fn_indices_list = fn_indices_list
+  let all_fn_returns_list = fn_returns_list
+  // #1100: sorted once here (not inside the per-function loop below, which
+  // would re-sort this same, unchanging array on every iteration) for
+  // func_table_index_of's O(log N) lookups.
+  let (all_fn_names_sorted, all_fn_names_sorted_pos) = ctor_sorted_index(all_fn_names_list)
+  // #2348: built once here, from the finalized func-table lists, and shared
+  // by every inline-wasm body the loop below assembles.
+  let iw_callees = lc_build_iw_callees(iw_names, all_fn_names_list, all_fn_indices_list, all_fn_param_counts, num_user_funcs)
+  let num_base_types = 9
+  let lt_w = LambdaTable::{
+    bodies: lc_fresh_bytes_array(),
+    param_counts: lc_fresh_int_array(),
+    captures: lc_fresh_string_matrix(),
+    meta_i32: lc_fresh_int_array(),
+    meta_i64: lc_fresh_int_array()
+  }
+  // #1107 Phase 4: module-wide recorder of funcref-table slots that codegen
+  // materializes as closure values (see CompileCtx.table_slots_used). Created
+  // once here — the per-body CompileCtx constructions below all share this
+  // array by reference — and consumed by the element-section emission, which
+  // registers only the recorded slots.
+  let table_slots_used = lc_fresh_int_array()
+  // #2669 slice 2: module-wide log of the references the instruction encoding
+  // does not expose -- function values and data pointers, which ride an
+  // ordinary-looking constant (see CompileCtx.blind_reloc_*). Created once and
+  // shared by reference into every per-body CompileCtx below, exactly like
+  // table_slots_used, and checked against the emitted bodies below
+  // (lc_verify_blind_relocs) before anything is allowed to depend on them.
+  let blind_owners = lc_fresh_int_array()
+  let blind_offsets = lc_fresh_int_array()
+  let blind_kinds = lc_fresh_int_array()
+  let blind_syms = lc_fresh_int_array()
+  let linked_function_bodies = lc_build_function_bodies(LinkedBodyInputs::{
+    all_fn_indices_list: all_fn_indices_list,
+    all_fn_names_list: all_fn_names_list,
+    all_fn_names_sorted: all_fn_names_sorted,
+    all_fn_names_sorted_pos: all_fn_names_sorted_pos,
+    all_fn_needs_env_list: all_fn_needs_env_list,
+    all_fn_param_counts: all_fn_param_counts,
+    all_fn_returns_list: all_fn_returns_list,
+    arr_get_idx: arr_get_idx,
+    arr_len_idx: arr_len_idx,
+    arr_new_idx: arr_new_idx,
+    arr_push_idx: arr_push_idx,
+    arr_slice_idx: arr_slice_idx,
+    blind_kinds: blind_kinds,
+    blind_offsets: blind_offsets,
+    blind_owners: blind_owners,
+    blind_syms: blind_syms,
+    body_cache_in: body_cache_in,
+    body_cache_in_ok: body_cache_in_ok,
+    body_cache_out: body_cache_out,
+    bool_render_offsets: bool_render_offsets,
+    bytes_append_idx: bytes_append_idx,
+    bytes_get_idx: bytes_get_idx,
+    bytes_len_idx: bytes_len_idx,
+    bytes_new_idx: bytes_new_idx,
+    bytes_push_idx: bytes_push_idx,
+    const_int_names_list: const_int_names_list,
+    const_int_values_list: const_int_values_list,
+    cov_base: cov_base,
+    cov_state: cov_state,
+    ctor_field_counts_list: ctor_field_counts_list,
+    ctor_float_fields_list: ctor_float_fields_list,
+    ctor_names_list: ctor_names_list,
+    ctor_tags_list: ctor_tags_list,
+    ctor_type_names_list: ctor_type_names_list,
+    dbg_break_import_idx: dbg_break_import_idx,
+    dbg_line_import_idx: dbg_line_import_idx,
+    dbg_line_on: dbg_line_on,
+    dbg_name_file: dbg_name_file,
+    dbg_owner_file: dbg_owner_file,
+    dbgargs_base: dbgargs_base,
+    dbgargs_cap: dbgargs_cap,
+    dbgargs_count_addr: dbgargs_count_addr,
+    div_zero_abort_idx: div_zero_abort_idx,
+    effect_names_list: effect_names_list,
+    effect_op_arities_list: effect_op_arities_list,
+    effect_op_keys_list: effect_op_keys_list,
+    entry_name: entry_name,
+    eq_idx: eq_idx,
+    fi: fi,
+    float_call_offsets: float_call_offsets,
+    float_ret_fn_names: float_ret_fn_names,
+    fn_names_list: fn_names_list,
+    fn_stmt_indices: fn_stmt_indices,
+    func_offset: func_offset,
+    heap_grow_check_idx: heap_grow_check_idx,
+    int_render_offsets: int_render_offsets,
+    iw_callees: iw_callees,
+    iw_names: iw_names,
+    iw_wats: iw_wats,
+    lambda_slot_base: lambda_slot_base,
+    late_dce_rewrote_bodies: late_dce_rewrote_bodies,
+    lc_agg_ret_infos: lc_agg_ret_infos,
+    lc_agg_ret_names: lc_agg_ret_names,
+    lc_agg_ret_names_sorted: lc_agg_ret_names_sorted,
+    lc_agg_ret_names_sorted_pos: lc_agg_ret_names_sorted_pos,
+    lc_borrow_param_mask: lc_borrow_param_mask,
+    lc_borrow_param_user_srt: lc_borrow_param_user_srt,
+    lc_borrow_ret_names: lc_borrow_ret_names,
+    lc_borrow_view_ret: lc_borrow_view_ret,
+    lc_ctor_names_sorted: lc_ctor_names_sorted,
+    lc_ctor_names_sorted_pos: lc_ctor_names_sorted_pos,
+    lc_fn_file_of: lc_fn_file_of,
+    lc_fn_stmt_of: lc_fn_stmt_of,
+    lc_heap_ret_names: lc_heap_ret_names,
+    lc_name_unique: lc_name_unique,
+    lc_owned_return_names: lc_owned_return_names,
+    lc_passthrough_ret_params: lc_passthrough_ret_params,
+    lc_perceus_pin: lc_perceus_pin,
+    lc_scalar_ret_names: lc_scalar_ret_names,
+    lc_struct_names_sorted: lc_struct_names_sorted,
+    lc_struct_names_sorted_pos: lc_struct_names_sorted_pos,
+    lc_type_names_sorted: lc_type_names_sorted,
+    library_mode: library_mode,
+    linemap_off: linemap_off,
+    linemap_on: linemap_on,
+    linemap_state: linemap_state,
+    lt_w: lt_w,
+    map_build_index_idx: map_build_index_idx,
+    map_cap_idx: map_cap_idx,
+    map_hash_idx: map_hash_idx,
+    map_index_insert_idx: map_index_insert_idx,
+    map_probe_index_idx: map_probe_index_idx,
+    need_array_capacity: need_array_capacity,
+    need_bytes_capacity: need_bytes_capacity,
+    need_div_zero_abort: need_div_zero_abort,
+    need_region_arena: need_region_arena,
+    num_src_pairs: num_src_pairs,
+    num_user_funcs: num_user_funcs,
+    oob_abort_idx: oob_abort_idx,
+    pi: pi,
+    pin_region_capacity: pin_region_capacity,
+    print_i64_raw_idx: print_i64_raw_idx,
+    print_str_idx: print_str_idx,
+    prov: prov,
+    rc_alloc_idx: rc_alloc_idx,
+    rc_bins_base: rc_bins_base,
+    rc_drop_idx: rc_drop_idx,
+    rc_dup_idx: rc_dup_idx,
+    region_arr_new_idx: region_arr_new_idx,
+    region_bytes_new_idx: region_bytes_new_idx,
+    region_data_base: region_data_base,
+    region_limit: region_limit,
+    region_ptr_addr: region_ptr_addr,
+    shadow_uaf_abort_idx: shadow_uaf_abort_idx,
+    slice_hi: slice_hi,
+    slice_lo: slice_lo,
+    src_str_base: src_str_base,
+    stmts: stmts,
+    str_char_code_at_idx: str_char_code_at_idx,
+    str_concat_idx: str_concat_idx,
+    str_eq_idx: str_eq_idx,
+    str_len_idx: str_len_idx,
+    str_lengths: str_lengths,
+    str_lex_diff_idx: str_lex_diff_idx,
+    str_offsets: str_offsets,
+    str_operand_abort_idx: str_operand_abort_idx,
+    str_strs: str_strs,
+    str_substring_idx: str_substring_idx,
+    str_table_shared: str_table_shared,
+    string_index_of_idx: string_index_of_idx,
+    struct_field_names: struct_field_names,
+    struct_names: struct_names,
+    table_slots_used: table_slots_used,
+    thunk_names_list: thunk_names_list,
+    trace_cap: trace_cap,
+    trace_counter_addr: trace_counter_addr,
+    trace_log_base: trace_log_base,
+    user_shadows_trunc_builtins: user_shadows_trunc_builtins
+  }, coverage, debug_break, debug_trace, enable_rc, rc_shadow)
+  let bodies = linked_function_bodies.bodies
+  let builtin_type_idxs = linked_function_bodies.builtin_type_idxs
+  let meta_i32 = linked_function_bodies.meta_i32
+  let meta_i64 = linked_function_bodies.meta_i64
+  let meta_v128 = linked_function_bodies.meta_v128
+  lc_emit_module_sections(LinkedSectionInputs::{
+    arr_concat_idx: arr_concat_idx,
+    arr_get_idx: arr_get_idx,
+    arr_len_idx: arr_len_idx,
+    arr_new_idx: arr_new_idx,
+    arr_push_all_idx: arr_push_all_idx,
+    arr_push_idx: arr_push_idx,
+    arr_set_idx: arr_set_idx,
+    arr_slice_idx: arr_slice_idx,
+    arr_truncate_idx: arr_truncate_idx,
+    array_capacity_idx: array_capacity_idx,
+    blind_kinds: blind_kinds,
+    blind_offsets: blind_offsets,
+    blind_owners: blind_owners,
+    blind_syms: blind_syms,
+    bodies: bodies,
+    builtin_type_idxs: builtin_type_idxs,
+    bytes_append_idx: bytes_append_idx,
+    bytes_blit_idx: bytes_blit_idx,
+    bytes_capacity_idx: bytes_capacity_idx,
+    bytes_compare_idx: bytes_compare_idx,
+    bytes_concat_idx: bytes_concat_idx,
+    bytes_count_byte_idx: bytes_count_byte_idx,
+    bytes_from_array_idx: bytes_from_array_idx,
+    bytes_get_idx: bytes_get_idx,
+    bytes_index_of_bytes_idx: bytes_index_of_bytes_idx,
+    bytes_index_of_idx: bytes_index_of_idx,
+    bytes_last_index_of_idx: bytes_last_index_of_idx,
+    bytes_len_idx: bytes_len_idx,
+    bytes_new_idx: bytes_new_idx,
+    bytes_push_idx: bytes_push_idx,
+    bytes_set_idx: bytes_set_idx,
+    bytes_slice_idx: bytes_slice_idx,
+    bytes_to_array_idx: bytes_to_array_idx,
+    compact_fingerprint_hash_idx: compact_fingerprint_hash_idx,
+    cov_base: cov_base,
+    cov_branch_base: cov_branch_base,
+    cov_branch_reserve: cov_branch_reserve,
+    cov_count: cov_count,
+    cov_reserve: cov_reserve,
+    cov_state: cov_state,
+    dbg_break_import_idx: dbg_break_import_idx,
+    dbg_line_import_idx: dbg_line_import_idx,
+    dbg_line_on: dbg_line_on,
+    dbgargs_base: dbgargs_base,
+    dbgargs_cap: dbgargs_cap,
+    dbgargs_count_addr: dbgargs_count_addr,
+    dbgargs_reserve: dbgargs_reserve,
+    div_zero_abort_idx: div_zero_abort_idx,
+    double_to_int_idx: double_to_int_idx,
+    eff_reserve: eff_reserve,
+    effect_names_list: effect_names_list,
+    enable_late_dce: enable_late_dce,
+    entry_name: entry_name,
+    entry_name_in: entry_name_in,
+    entry_user_idx: entry_user_idx,
+    env_args_get_import_idx: env_args_get_import_idx,
+    env_args_len_import_idx: env_args_len_import_idx,
+    env_get_import_idx: env_get_import_idx,
+    eq_idx: eq_idx,
+    export_fn_names: export_fn_names,
+    export_fn_user_indices: export_fn_user_indices,
+    fn_names_list: fn_names_list,
+    fn_param_counts: fn_param_counts,
+    fn_stmt_indices: fn_stmt_indices,
+    frozen_array_copy_idx: frozen_array_copy_idx,
+    fs_append_import_idx: fs_append_import_idx,
+    fs_chdir_import_idx: fs_chdir_import_idx,
+    fs_copy_import_idx: fs_copy_import_idx,
+    fs_exists_import_idx: fs_exists_import_idx,
+    fs_exists_stub_idx: fs_exists_stub_idx,
+    fs_getcwd_import_idx: fs_getcwd_import_idx,
+    fs_is_dir_import_idx: fs_is_dir_import_idx,
+    fs_is_file_import_idx: fs_is_file_import_idx,
+    fs_mkdir_import_idx: fs_mkdir_import_idx,
+    fs_mkdir_p_import_idx: fs_mkdir_p_import_idx,
+    fs_publish_immutable_text_import_idx: fs_publish_immutable_text_import_idx,
+    fs_publish_immutable_text_stub_idx: fs_publish_immutable_text_stub_idx,
+    fs_read_bytes_import_idx: fs_read_bytes_import_idx,
+    fs_read_dir_import_idx: fs_read_dir_import_idx,
+    fs_read_file_import_idx: fs_read_file_import_idx,
+    fs_read_file_stub_idx: fs_read_file_stub_idx,
+    fs_remove_file_import_idx: fs_remove_file_import_idx,
+    fs_remove_import_idx: fs_remove_import_idx,
+    fs_remove_tree_import_idx: fs_remove_tree_import_idx,
+    fs_rename_import_idx: fs_rename_import_idx,
+    fs_stat_token_import_idx: fs_stat_token_import_idx,
+    fs_stat_token_stub_idx: fs_stat_token_stub_idx,
+    fs_write_bytes_import_idx: fs_write_bytes_import_idx,
+    fs_write_bytes_stub_idx: fs_write_bytes_stub_idx,
+    fs_write_file_import_idx: fs_write_file_import_idx,
+    fs_write_file_stub_idx: fs_write_file_stub_idx,
+    func_offset: func_offset,
+    generic_add_idx: generic_add_idx,
+    generic_rel_diff_idx: generic_rel_diff_idx,
+    heap_grow_check_idx: heap_grow_check_idx,
+    heap_start: heap_start,
+    hf_all_names: hf_all_names,
+    hf_arg_push_import_idx: hf_arg_push_import_idx,
+    hf_arm_import_idx: hf_arm_import_idx,
+    hf_cancel_import_idx: hf_cancel_import_idx,
+    hf_get_import_idx: hf_get_import_idx,
+    hf_named_names: hf_named_names,
+    hf_response_addresses: hf_response_addresses,
+    hf_response_arg_addresses: hf_response_arg_addresses,
+    hf_wait_any_import_idx: hf_wait_any_import_idx,
+    hf_wait_import_idx: hf_wait_import_idx,
+    hf_wit_names: hf_wit_names,
+    hs_arm_import_idx: hs_arm_import_idx,
+    hs_cancel_import_idx: hs_cancel_import_idx,
+    hs_claim_import_idx: hs_claim_import_idx,
+    hs_close_import_idx: hs_close_import_idx,
+    hs_named_names: hs_named_names,
+    hs_read_import_idx: hs_read_import_idx,
+    hsl_arm_import_idx: hsl_arm_import_idx,
+    hsl_cancel_import_idx: hsl_cancel_import_idx,
+    http_close_import_idx: http_close_import_idx,
+    http_request_import_idx: http_request_import_idx,
+    http_response_body_import_idx: http_response_body_import_idx,
+    http_response_header_import_idx: http_response_header_import_idx,
+    http_response_status_import_idx: http_response_status_import_idx,
+    identity_idx: identity_idx,
+    int_clz_idx: int_clz_idx,
+    int_ctz_idx: int_ctz_idx,
+    int_popcount_idx: int_popcount_idx,
+    int_to_double_idx: int_to_double_idx,
+    lambda_slot_base: lambda_slot_base,
+    library_mode: library_mode,
+    linemap_on: linemap_on,
+    linemap_state: linemap_state,
+    linked_imports: linked_imports,
+    lt_w: lt_w,
+    meta_i32: meta_i32,
+    meta_i64: meta_i64,
+    meta_v128: meta_v128,
+    need_div_zero_abort: need_div_zero_abort,
+    need_host_future_builtin: need_host_future_builtin,
+    need_http_request_builtin: need_http_request_builtin,
+    num_base_types: num_base_types,
+    num_generated: num_generated,
+    num_imported_funcs: num_imported_funcs,
+    num_strings: num_strings,
+    num_user_funcs: num_user_funcs,
+    oob_abort_idx: oob_abort_idx,
+    print_i64_raw_idx: print_i64_raw_idx,
+    print_int_idx: print_int_idx,
+    print_str_idx: print_str_idx,
+    process_exit_import_idx: process_exit_import_idx,
+    profiler_heap_bytes_import_idx: profiler_heap_bytes_import_idx,
+    profiler_now_us_import_idx: profiler_now_us_import_idx,
+    prov: prov,
+    rc_alloc_idx: rc_alloc_idx,
+    rc_bins_reserve: rc_bins_reserve,
+    rc_drop_idx: rc_drop_idx,
+    rc_dup_idx: rc_dup_idx,
+    region_reserve: region_reserve,
+    resolve_path_import_idx: resolve_path_import_idx,
+    serve_handler_has_host_stream: serve_handler_has_host_stream,
+    sh_capture_close_import_idx: sh_capture_close_import_idx,
+    sh_capture_exit_code_import_idx: sh_capture_exit_code_import_idx,
+    sh_capture_import_idx: sh_capture_import_idx,
+    sh_capture_stderr_import_idx: sh_capture_stderr_import_idx,
+    sh_capture_stdout_import_idx: sh_capture_stdout_import_idx,
+    sh_import_idx: sh_import_idx,
+    sh_lines_import_idx: sh_lines_import_idx,
+    shadow_uaf_abort_idx: shadow_uaf_abort_idx,
+    simd_scan_alnum_idx: simd_scan_alnum_idx,
+    simd_scan_alnum_str_idx: simd_scan_alnum_str_idx,
+    simd_scan_line_end_str_idx: simd_scan_line_end_str_idx,
+    simd_scan_string_special_str_idx: simd_scan_string_special_str_idx,
+    simd_skip_ws_idx: simd_skip_ws_idx,
+    sleep_import_idx: sleep_import_idx,
+    sleep_needs_component_adapter: sleep_needs_component_adapter,
+    sources_idx: sources_idx,
+    stderr_write_char_import_idx: stderr_write_char_import_idx,
+    stderr_write_stream_import_idx: stderr_write_stream_import_idx,
+    stdin_provider_acquire_import_idx: stdin_provider_acquire_import_idx,
+    stdin_provider_close_import_idx: stdin_provider_close_import_idx,
+    stdin_provider_read_import_idx: stdin_provider_read_import_idx,
+    stdin_read_char_import_idx: stdin_read_char_import_idx,
+    stdin_read_stream_import_idx: stdin_read_stream_import_idx,
+    stdout_write_char_import_idx: stdout_write_char_import_idx,
+    stdout_write_stream_import_idx: stdout_write_stream_import_idx,
+    stmts: stmts,
+    str_char_code_at_idx: str_char_code_at_idx,
+    str_concat_idx: str_concat_idx,
+    str_eq_idx: str_eq_idx,
+    str_from_char_code_idx: str_from_char_code_idx,
+    str_len_idx: str_len_idx,
+    str_lex_diff_idx: str_lex_diff_idx,
+    str_offsets: str_offsets,
+    str_strs: str_strs,
+    str_substring_idx: str_substring_idx,
+    string_contains_idx: string_contains_idx,
+    string_ends_with_idx: string_ends_with_idx,
+    string_index_of_idx: string_index_of_idx,
+    string_join_idx: string_join_idx,
+    string_last_index_of_idx: string_last_index_of_idx,
+    string_split_idx: string_split_idx,
+    string_starts_with_idx: string_starts_with_idx,
+    string_trim_idx: string_trim_idx,
+    table_slots_used: table_slots_used,
+    tcp_close_import_idx: tcp_close_import_idx,
+    tcp_connect_import_idx: tcp_connect_import_idx,
+    tcp_read_import_idx: tcp_read_import_idx,
+    tcp_write_import_idx: tcp_write_import_idx,
+    test_fn_names: test_fn_names,
+    thunk_names_list: thunk_names_list,
+    trace_cap: trace_cap,
+    trace_counter_addr: trace_counter_addr,
+    trace_log_base: trace_log_base,
+    trace_reserve: trace_reserve
+  }, coverage, debug_break, debug_trace, enable_rc, rc_shadow)
+}

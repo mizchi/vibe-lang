@@ -1,0 +1,760 @@
+// Independent validation tasks; dependency orchestration lives in Taskfile.pkl.
+import "package://pkg.pkl-lang.org/github.com/mizchi/pkfire/pkfire@0.14.2#/Taskfile.pkl" as pkf
+
+import "common.pkl" as common
+
+local vibeSources = common.vibeSources
+local scriptSources = common.scriptSources
+local compilerProbeInputs = common.compilerProbeInputs
+
+formalCheck = new pkf.Task {
+  name = "formal-check"
+  description = "prove the Lean models and verify committed Oracle corpora"
+  cmd = "formal/check-oracle.sh"
+  inputs {
+    "formal/**/*.lean"
+    "formal/oracle/**"
+    "formal/examples/**"
+    "formal/check-oracle.sh"
+    "formal/lakefile.toml"
+    "formal/lake-manifest.json"
+    "formal/lean-toolchain"
+  }
+}
+
+formalIncrementalCheck = new pkf.Task {
+  name = "formal-incremental-check"
+  description = "prove the bounded Lean incremental invalidation model"
+  cmd = "cd formal && lake build --wfail VibeFormal.Proofs.IncrementalCorrect"
+  inputs {
+    "formal/VibeFormal/Compiler/Incremental.lean"
+    "formal/VibeFormal/Proofs/IncrementalCorrect.lean"
+    "formal/lakefile.toml"
+    "formal/lake-manifest.json"
+    "formal/lean-toolchain"
+  }
+}
+
+testIncrementalInvalidationOracle = new pkf.Task {
+  name = "test-incremental-invalidation-oracle"
+  description = "regenerate and validate the bounded Lean incremental invalidation corpus"
+  cmd = "formal/check-incremental-oracle.sh"
+  inputs {
+    "formal/IncrementalOracleMain.lean"
+    "formal/VibeFormal/Compiler/Incremental.lean"
+    "formal/VibeFormal/Proofs/IncrementalCorrect.lean"
+    "formal/oracle/incremental-invalidation.tsv"
+    "formal/check-incremental-oracle.sh"
+    "scripts/incremental_invalidation_oracle.mjs"
+  }
+}
+
+testIncrementalInvalidationTrace = new pkf.Task {
+  name = "test-incremental-invalidation-trace"
+  description = "parser/schema unit tests for the incremental invalidation trace sidecar"
+  cmd = "node --test scripts/incremental_invalidation_oracle.test.mjs"
+  inputs {
+    "scripts/incremental_invalidation_oracle.mjs"
+    "scripts/incremental_invalidation_oracle.test.mjs"
+  }
+}
+
+testHostRunnerExit = new pkf.Task {
+  name = "test-host-runner-exit"
+  description =
+    "node host runner ends every run through the normal exit path, never a hanging process.exit() (#3109)"
+  cmd = "node --test scripts/wasm_vibe_host_runner_exit.test.cjs"
+  inputs {
+    "scripts/wasm_vibe_host_runner.js"
+    "scripts/wasm_vibe_host_runtime.js"
+    "scripts/wasm_vibe_host_runner_exit.test.cjs"
+  }
+}
+
+testArtifactInputTrace = new pkf.Task {
+  name = "test-artifact-input-trace"
+  description = "strict parser/schema tests for the bounded artifact-input trace sidecar"
+  cmd = "node --test scripts/artifact_input_trace_oracle.test.mjs"
+  inputs {
+    "scripts/artifact_input_trace_oracle.mjs"
+    "scripts/artifact_input_trace_oracle.test.mjs"
+  }
+}
+
+testNormalizerScalarScan = new pkf.Task {
+  name = "test-normalizer-scalar-scan"
+  description =
+    "structural guard on desugar's dinsp_scan: scalar Bool modes, the mode-7 census cell, and full Expr/Pat arm coverage"
+  // #2538: this file existed for a week asserting a `dinsp_scan` shape two
+  // slices had already changed, and nothing noticed -- it was referenced by no
+  // pkf task, no gate lane and no CI job, so it was never protecting anything
+  // whatever it asserted. Wiring it is the half of that issue that keeps the
+  // next drift visible.
+  cmd = "node --test tests/normalizer_scalar_scan_compaction_test.mjs"
+  inputs {
+    "tests/normalizer_scalar_scan_compaction_test.mjs"
+    "tests/helpers/desugar_sources.mjs"
+    "lib/@vibe/compiler/normalize/desugar/**/*.vibe"
+    "lib/@vibe/ast/index.vpkg"
+  }
+}
+
+testDesugarModuleLayout = new pkf.Task {
+  name = "test-desugar-module-layout"
+  description = "desugar file size, bundle coverage, and labeled binder authority structure"
+  cmd =
+    "node --test tests/desugar_module_layout_test.mjs tests/labeled_arg_binder_authority_structure_test.mjs"
+  inputs {
+    "tests/desugar_module_layout_test.mjs"
+    "tests/labeled_arg_binder_authority_structure_test.mjs"
+    "tests/helpers/desugar_sources.mjs"
+    "lib/@vibe/compiler/normalize/**/*.{vibe,vpkg}"
+    "lib/@vibe/compiler/compiler_sources_manifest.tsv"
+    "lib/@vibe/parser/ast_detach.vibe"
+    "lib/@vibe/parser/index.vpkg"
+  }
+}
+
+testSelfcompileHeapPolicy = new pkf.Task {
+  name = "test-selfcompile-heap-policy"
+  description =
+    "fail-closed merge-base selfcompile heap policy, container, content-token, and fixed-workdir tests"
+  cmd =
+    "node --test scripts/selfcompile_heap_policy_container.test.mjs scripts/wasm_vibe_host_runner_stat_token.test.cjs scripts/selfcompile_heap_policy.test.mjs && bash scripts/selfcompile_kpi_work_dir_test.sh"
+  inputs {
+    "scripts/selfcompile_heap_policy.mjs"
+    "scripts/selfcompile_heap_policy.test.mjs"
+    "scripts/selfcompile_heap_policy_container.mjs"
+    "scripts/selfcompile_heap_policy_container.test.mjs"
+    "scripts/selfcompile_heap_policy_docker.mjs"
+    "scripts/selfcompile_heap_policy_docker_test.sh"
+    "scripts/selfcompile_heap_policy_hostile_wasm.mjs"
+    "scripts/selfcompile_heap_policy_policy_runner.sh"
+    "scripts/selfcompile_heap_policy_image.lock.json"
+    "scripts/selfcompile_heap_policy_seccomp.json"
+    "scripts/generate_bundle.sh"
+    "scripts/generations.sh"
+    "scripts/wasm_vibe_host_runner.js"
+    "scripts/wasm_vibe_host_runtime.js"
+    "scripts/wasm_vibe_host_runner_stat_token.test.cjs"
+    "scripts/selfcompile_kpi.sh"
+    "scripts/selfcompile_kpi_work_dir_test.sh"
+    "bench/perf/selfcompile_heap_policy.json"
+  }
+  cache = false
+}
+
+testCoverageDriverExposure = new pkf.Task {
+  name = "test-coverage-driver-exposure"
+  description = "exact-path coverage-driver exposure positive/negative integration test"
+  cmd = "bash tests/gates/tooling-accounting/coverage/coverage_driver_exposure_test.sh"
+  // Runs a wrapper under tests/gates/** that invokes the compiler, so the
+  // compiler identity is part of the answer (#2138 review, #2165).
+  inputs {
+    ...compilerProbeInputs
+    "tests/gates/tooling-accounting/coverage/coverage_driver_exposure_test.sh"
+    "scripts/coverage/cov_units.vibe"
+    "lib/@vibe/compiler/cli_adapter.vibe"
+    "lib/@vibe/compiler/entry/source_compile/wasi_only/merge_sources.vibe"
+    "lib/@vibe/compiler/entry/source_compile/wasi_only/index.vpkg"
+  }
+}
+
+formalSelfhostOracle = new pkf.Task {
+  name = "formal-selfhost-oracle"
+  description =
+    "compare the Lean call-typing Oracle with the current selfhost checker (manual, non-gating)"
+  cmd = "formal/check-oracle.sh && formal/examples/selfhost-call-oracle.sh \"$@\""
+  acceptsArgs = true
+  cache = false
+}
+
+formalSelfhostIncrementalOracle = new pkf.Task {
+  name = "formal-selfhost-incremental-oracle"
+  description =
+    "observe current selfhost invalidation against the bounded Lean corpus (pass stage2.wasm)"
+  cmd =
+    "formal/check-incremental-oracle.sh && node scripts/incremental_invalidation_oracle.mjs \"$@\""
+  acceptsArgs = true
+  cache = false
+}
+
+testParallelSchedulerPrototype = new pkf.Task {
+  name = "test-parallel-scheduler-prototype"
+  description =
+    "exercise the shared-nothing multi-worker scheduler and its Lean-shaped trace validator"
+  cmd = "node --test scripts/parallel_scheduler_prototype.test.mjs"
+  inputs {
+    "scripts/parallel_scheduler_*.mjs"
+    "formal/VibeFormal/Async/**/*.lean"
+    "formal/VibeFormal/Parallel/**/*.lean"
+    "formal/VibeFormal/Compiler/Scheduler.lean"
+    "formal/VibeFormal/Proofs/Parallel*.lean"
+    "formal/VibeFormal/Proofs/Scheduler*.lean"
+    "docs/internal/design/compiler-parallelism.md"
+    "docs/internal/design/concurrency.md"
+  }
+}
+
+testParallelSelfhostScheduler = new pkf.Task {
+  name = "test-parallel-selfhost-scheduler"
+  description = "run real selfhost parse/typecheck snapshots through the isolated worker scheduler"
+  cmd = "bash scripts/test_parallel_selfhost_scheduler.sh"
+  cache = false
+}
+
+testParallelFrontendWarm = new pkf.Task {
+  name = "test-parallel-frontend-warm"
+  description =
+    "#906 Phase 2: vibe build --jobs=N cache pre-warm is a byte-identical no-op or speedup, never a correctness change"
+  cmd = "bash scripts/test_parallel_frontend_warm.sh"
+  cache = false
+}
+
+testDocPathCitations = new pkf.Task {
+  name = "test-doc-path-citations"
+  description = "self-test for the doc path-citation check (fixed cases, synthetic tree)"
+  cmd = "bash scripts/check_doc_path_citations_test.sh"
+  inputs {
+    "scripts/check_doc_path_citations.sh"
+    "scripts/check_doc_path_citations_test.sh"
+  }
+}
+
+testDocClassification = new pkf.Task {
+  name = "test-doc-classification"
+  description = "self-test for the doc audience-classification check (synthetic tree)"
+  cmd = "bash scripts/check_doc_classification_test.sh"
+  inputs {
+    "scripts/check_doc_classification.sh"
+    "scripts/check_doc_classification_test.sh"
+  }
+}
+
+checkDocClassification = new pkf.Task {
+  name = "check-doc-classification"
+  description = "every document under docs/ is in exactly one audience class (#2562)"
+  cmd = "bash scripts/check_doc_classification.sh"
+  // docs/README.md carries the classification and docs/** is the corpus, so
+  // both are inputs: adding a document without a row has to re-ask the
+  // question rather than replay a cached "ok".
+  inputs {
+    "docs/**"
+    "scripts/check_doc_classification.sh"
+  }
+}
+
+checkDocPathCitations = new pkf.Task {
+  name = "check-doc-path-citations"
+  description = "every backticked file path in docs/ resolves, or is recorded as debt"
+  cmd = "bash scripts/check_doc_path_citations.sh"
+  // Ratchet, same shape as the architecture-debt one: the allowlist is an input
+  // so that editing it re-asks the question instead of replaying a cached "ok".
+  inputs {
+    "docs/**/*.md"
+    "scripts/check_doc_path_citations.sh"
+    "scripts/doc_path_citation_allowlist.txt"
+  }
+}
+
+lintArchitectureDebt = new pkf.Task {
+  name = "lint-architecture"
+  description = "structural debt ratchet: fail on new matches outside the recorded baseline"
+  cmd = "bash scripts/lint_architecture_debt.sh"
+  inputs {
+    ...vibeSources
+    ...scriptSources
+    "scripts/architecture_debt_rules.tsv"
+    "scripts/architecture_debt_allowlist.txt"
+  }
+}
+
+testReviewLintVibex = new pkf.Task {
+  name = "test-review-lint-vibex"
+  description = "run the review-derived vibe grep rule engine self-test"
+  cmd = "bash scripts/vibe_run.sh scripts/review_lint.vibex -- --self-test"
+  inputs { ...vibeSources; ...scriptSources }
+  cache = false
+}
+
+lintTrackedExperimentNames = new pkf.Task {
+  name = "lint-tracked-experiment-names"
+  description = "tracked throwaway/probe-like filenames need an explicit allowlist entry"
+  cmd = "bash scripts/lint_tracked_experiment_names.sh"
+  cache = false
+}
+
+checkHostRuntimeContract = new pkf.Task {
+  name = "check-host-runtime-contract"
+  description = "fail-closed conformance check for the documented vibe.* core host ABI"
+  cmd =
+    "python3 scripts/check_host_runtime_contract.py && python3 tests/gates/tooling-accounting/host-runtime/host_runtime_contract_test.py"
+  inputs {
+    "docs/generated/host-runtime-contract.json"
+    "scripts/check_host_runtime_contract.py"
+    "tests/gates/tooling-accounting/host-runtime/host_runtime_contract_test.py"
+    "lib/@vibe/compiler/codegen/wasi/linked_compile.vibe"
+    "lib/@vibe/compiler/codegen/gc/backend_body.vibe"
+    "runtime/viberun/src/main.rs"
+    "scripts/wasm_vibe_host_runner.js"
+    "scripts/wasm_vibe_host_runtime.js"
+  }
+}
+
+testHostCapabilityProbe = new pkf.Task {
+  name = "test-host-capability-probe"
+  description = "unit-test the host capability probe: refused vs a silent answer vs a trapping stub"
+  cmd = "node --test scripts/host_capability_probe.test.mjs"
+  cache = false
+}
+
+checkTaskfileFmt = new pkf.Task {
+  name = "check-taskfile-fmt"
+  description = "pkl formatting of the task definitions (mirrors the `validate Pkl configs` CI job)"
+  cmd = "pkf format --check Taskfile.pkl scripts/pkfire/common.pkl scripts/pkfire/quality_tasks.pkl"
+  inputs { "Taskfile.pkl"; "scripts/pkfire/common.pkl"; "scripts/pkfire/quality_tasks.pkl" }
+}
+
+checkFreezeSurface = new pkf.Task {
+  name = "check-freeze-surface"
+  description = "the frozen surface list resolves, and matches the cheatsheet's Key Builtins"
+  cmd = "bash scripts/check_freeze_surface.sh"
+  // ADDITIVE, not a replacement: this gate asks the COMPILER whether every
+  // promised symbol still resolves, so the compiler identity is half the
+  // question. Swapping the default inputs for the documents alone would let a
+  // compiler change drop a frozen builtin behind a cached pass -- the same
+  // under-invalidation as the doc-only case, pointed the other way. Inputs may
+  // over-approximate (a needless re-run is free); they may never under-.
+  inputs {
+    ...compilerProbeInputs
+    ...scriptSources
+    "docs/user/reference/stable-surface.md"
+    "docs/user/reference/cheatsheet.md"
+  }
+}
+
+checkBookLinks = new pkf.Task {
+  name = "check-book-links"
+  description = "every relative link in book/ resolves"
+  cmd = "bash scripts/check_book_links.sh"
+  // Pure text -- no compiler -- so lib/** genuinely is not an input here.
+  inputs {
+    ...scriptSources
+    "book/**/*.md"
+  }
+}
+
+checkBookOrder = new pkf.Task {
+  name = "check-book-order"
+  description = "chapter headings and Previous/Next follow book/SUMMARY.md, en and ja"
+  cmd = "bash scripts/check_book_order.sh"
+  inputs {
+    ...scriptSources
+    "book/**/*.md"
+  }
+}
+
+checkTaskInputs = new pkf.Task {
+  name = "check-task-inputs"
+  description = "a task that runs the compiler keys on the compiler"
+  cmd = "bash scripts/check_task_inputs.sh"
+  inputs {
+    ...scriptSources
+    "Taskfile.pkl"
+  }
+}
+
+checkFuzzCompilerIdentity = new pkf.Task {
+  name = "check-fuzz-compiler-identity"
+  description =
+    "the fuzz harness resolves its compiler strictly (HEAD's generation or a named artifact) instead of picking the newest by mtime"
+  cmd = "bash scripts/check_fuzz_compiler_identity.sh"
+  // Both probes die at compiler RESOLUTION and never compile anything, but
+  // `check_task_inputs.sh` reads the reachable scripts, and run_fuzz.sh does
+  // name the wasm runner. Spelling the extra inputs out must ADD to the
+  // defaults rather than replace them: a hand-written `new Task` inherits
+  // nothing, so an inputs list without this spread is a NARROWER cache key
+  // than no list at all, and a compiler change would replay a stale pass.
+  // Same reasoning as check-fuzz-stale-findings: one of this gate's probes
+  // mutates run_fuzz.sh so that it PROCEEDS, so the fuzzer's own dependencies
+  // are reachable from this task and belong in its key.
+  inputs {
+    ...compilerProbeInputs
+    "tests/fuzz/run_fuzz.sh"
+    // The gate reads BOTH entry points to the oracle since #2959, so both
+    // belong in its key. Measured with it missing: after a warm cache, an
+    // edit putting classify.sh back on the mtime default replayed
+    // `check-fuzz-compiler-identity: ok` from cache, while running the
+    // script directly rejected the same tree.
+    "tests/fuzz/classify.sh"
+    "tests/fuzz/gen_program.py"
+    "tests/fuzz/lib_oracle.sh"
+    "scripts/run_wasm_vibe_host_runner.sh"
+    "scripts/wasm_vibe_host_runner.js"
+    "scripts/wasm_vibe_host_runtime.js"
+    "scripts/resolve_stage2.sh"
+    "scripts/check_fuzz_compiler_identity.sh"
+    "scripts/check_fuzz_compiler_identity_test.sh"
+  }
+}
+
+checkFuzzClassify = new pkf.Task {
+  name = "check-fuzz-classify"
+  description =
+    "classify.sh reports an unlocated or invented-token diagnostic (DIAG_NO_LOCATION / DIAG_INTERNAL_TOKEN) and a wrong answer every lane shares (ORACLE_*) instead of passing them (#2979)"
+  cmd = "bash tests/fuzz/classify_test.sh"
+  // The compiler and both runtimes are STUBS here, so the verdict under test
+  // is fixed; but lib_oracle.sh names the real wasm runner as its default, so
+  // the compiler inputs stay in the key rather than argue about reachability.
+  inputs {
+    ...compilerProbeInputs
+    "tests/fuzz/classify.sh"
+    "tests/fuzz/classify_test.sh"
+    "tests/fuzz/lib_oracle.sh"
+    "scripts/resolve_stage2.sh"
+    "scripts/run_wasm_vibe_host_runner.sh"
+    "scripts/wasm_vibe_host_runner.js"
+    "scripts/wasm_vibe_host_runtime.js"
+  }
+}
+
+checkReleaseDraftPromote = new pkf.Task {
+  name = "check-release-draft-promote"
+  description =
+    "release.yml stages the release as a draft, promotes it, and verifies the published draft/prerelease/asset-count"
+  cmd = "bash scripts/check_release_draft_promote.sh"
+  inputs {
+    ".github/workflows/release.yml"
+    "scripts/check_release_draft_promote.sh"
+  }
+}
+
+checkGcHostImportCounts = new pkf.Task {
+  name = "check-gc-host-import-counts"
+  description =
+    "the gc backend's five encodings of the host-import list agree (hbo, host_imports, host_defs, vector header)"
+  cmd = "bash scripts/check_gc_host_import_counts.sh"
+  inputs {
+    "lib/@vibe/compiler/codegen/gc/backend_body.vibe"
+    ...scriptSources
+  }
+}
+
+checkImportReservation = new pkf.Task {
+  name = "check-import-reservation"
+  description =
+    "every user-callable capability spelling reserves the host import it lowers onto (#2905)"
+  cmd = "bash scripts/vibe_run.sh scripts/check_import_reservation.vibex"
+  inputs {
+    ...compilerProbeInputs
+    "lib/@vibe/compiler/codegen/wasi/linked_compile.vibe"
+    "lib/@vibe/compiler/core/builtin_registry.vibe"
+    ...scriptSources
+  }
+}
+
+checkDocCommands = new pkf.Task {
+  name = "check-doc-commands"
+  description = "commands shown in docs name tasks, scripts and env vars that exist"
+  cmd = "bash scripts/check_doc_commands.sh"
+  // Everything this gate READS, on both sides of the comparison: the documents
+  // it scans and the tree it resolves their references against. Under the
+  // default inputs it saw the documents but not tests/**, eval/** or
+  // install/**, so every VIBE_* lookup came back empty and 38 live variables
+  // were reported as unread -- the gate failing loudly rather than passing
+  // vacuously, but wrong either way.
+  inputs {
+    ...compilerProbeInputs
+    ...scriptSources
+    "Taskfile.pkl"
+    "*.md"
+    "docs/**/*.md"
+    "book/**/*.md"
+    // Every README in the tree, wherever it lives -- the gate now scans them
+    // all (#2138 review), so lib/@vibe/compiler/README.md going stale must
+    // invalidate this task the same way docs/ does. compilerProbeInputs covers
+    // lib/**/*.vibe but not lib/**/README.md.
+    "**/README.md"
+    // The launcher IS the verb list: the gate parses `vibe help` and the
+    // dispatch case out of it, so adding or removing a command has to
+    // re-run this comparison.
+    "runtime/vibe"
+    // Every glob the script SCANS, not a subset of it (#2138 review): it reads
+    // .js/.ts/.toml/.md under these roots too, so an env-var reader removed
+    // from scripts/wasm_vibe_host_runner.js would otherwise replay the old
+    // verdict. Inputs may over-approximate; they may never under-.
+    "scripts/**"
+    "tests/**"
+    "eval/**"
+    "install/**"
+    "scripts/doc_commands_allowlist.tsv"
+  }
+}
+
+checkVersionLadder = new pkf.Task {
+  name = "check-version-ladder"
+  description = "the release-notes ladder and the 1.0 freeze document agree"
+  cmd = "bash scripts/check_version_ladder.sh"
+  // Pure text, like check-book-links.
+  inputs {
+    ...scriptSources
+    "docs/user/getting-started/release-notes-*.md"
+    "docs/internal/project/release-roadmap.md"
+    "docs/user/reference/stable-surface.md"
+  }
+}
+
+checkCanonicalIteratorCalls = new pkf.Task {
+  name = "check-canonical-iterator-calls"
+  description = "tutorials and examples use the imported Iterator namespace"
+  cmd = "bash scripts/check_canonical_iterator_calls.sh"
+  inputs {
+    "book/**/*.vibe.md"
+    "examples/**/*.vibe"
+    "scripts/check_canonical_iterator_calls.sh"
+  }
+}
+
+checkAstBinaryTags = new pkf.Task {
+  name = "check-ast-binary-tags"
+  description = "the AST binary ABI's tag tables describe the AST this compiler actually has"
+  cmd = "bash scripts/check_ast_binary_tags.sh"
+  inputs {
+    "lib/@vibe/ast/index.vpkg"
+    "docs/internal/compiler/ast_binary_abi.md"
+    "scripts/check_ast_binary_tags.sh"
+  }
+}
+
+checkOffbuildTypecheck = new pkf.Task {
+  name = "check-offbuild-typecheck"
+  description =
+    "typecheck the lib/@vibe/compiler + lib/@vibe/cli sources the self-build fixpoint does not cover (~30s)"
+  cmd = "bash scripts/check_offbuild_typecheck.sh"
+  cache = false
+  inputs { ...vibeSources; ...scriptSources }
+}
+
+testParallelWarmPool = new pkf.Task {
+  name = "test-warm-pool"
+  description =
+    "warm-pool coordinator: byte-identical publish at -P 1/2/4/8, peak workers within the -P bound, no leaked workers"
+  cmd = "bash scripts/test_parallel_warm_pool_gate.sh"
+  cache = false
+  inputs { ...vibeSources; ...scriptSources }
+}
+
+testSchedulerTraceOracle = new pkf.Task {
+  name = "test-scheduler-oracle"
+  description =
+    "#1239 step 8: the real walk's trace satisfies Scheduler.lean's Project/Ready/Complete, and reaches the same store under permuted schedules"
+  cmd = "bash scripts/scheduler_trace_oracle.sh"
+  cache = false
+  inputs { ...vibeSources; ...scriptSources }
+}
+
+testPerfReport = new pkf.Task {
+  name = "test-perf-report"
+  cmd =
+    "node --test scripts/bench_report.test.mjs scripts/selfhost_build_metrics.test.mjs && bash scripts/vibe_run.sh scripts/coverage_bench_snapshot.vibex -- --self-test"
+  inputs {
+    ...compilerProbeInputs
+    "scripts/bench_report.mjs"
+    "scripts/bench_report.test.mjs"
+    "scripts/coverage_bench_snapshot.vibex"
+    "scripts/selfhost_build_metrics.mjs"
+    "scripts/selfhost_build_metrics.test.mjs"
+    // vibe_run.sh executes the .vibex self-test through this runner, which
+    // scriptSources (sh/mjs/vibex) does not cover (#3167 review).
+    "scripts/wasm_vibe_host_runner.js"
+    "scripts/wasm_vibe_host_runtime.js"
+    ...scriptSources
+  }
+}
+
+testCoverageScripts = new pkf.Task {
+  name = "test-coverage-scripts"
+  cmd =
+    "node --test scripts/coverage_suite_next_branches.test.mjs && python3 scripts/coverage_suite_report_test.py && bash scripts/vibe_run.sh scripts/coverage_tracks.vibex -- --self-test && bash scripts/vibe_run.sh scripts/select_test_shard.vibex -- --self-test && bash scripts/coverage_wasm_std_test.sh && bash tests/gates/tooling-accounting/coverage/coverage_drivers_test.sh && bash tests/gates/tooling-accounting/coverage/coverage_pipeline_contract_test.sh"
+  // Runs a wrapper under tests/gates/** that invokes the compiler, so the
+  // compiler identity is part of the answer (#2138 review, #2165).
+  inputs {
+    ...compilerProbeInputs
+    "scripts/**/*.mjs"
+    "scripts/coverage_suite_report.py"
+    "scripts/coverage_suite_report_test.py"
+    "scripts/coverage_tracks.vibex"
+    "scripts/select_test_shard.vibex"
+    // The runner vibe_run.sh executes the .vibex self-tests through.
+    "scripts/wasm_vibe_host_runner.js"
+    "scripts/wasm_vibe_host_runtime.js"
+    "scripts/coverage_corpus.sh"
+    ...scriptSources
+    "scripts/coverage_drivers.sh"
+    "scripts/coverage_local_merge_run.sh"
+    "tests/gates/tooling-accounting/coverage/coverage_drivers_test.sh"
+    "tests/gates/tooling-accounting/coverage/coverage_pipeline_contract_test.sh"
+  }
+}
+
+testPickCliFreshness = new pkf.Task {
+  name = "test-pick-cli-freshness"
+  description =
+    "runtime/vibe uses the AOT .cwasm only when neither the runner nor the compiler wasm is newer than it (Codex review of #2858)"
+  cmd = "bash scripts/test_pick_cli_freshness.sh"
+  // The gate drives a fake toolchain layout through the launcher and never
+  // executes a wasm; its verdict depends on the launcher and the script.
+  inputs {
+    ...compilerProbeInputs
+    ...scriptSources
+    "runtime/vibe"
+  }
+}
+
+testPickCliFreshnessSelfTest = new pkf.Task {
+  name = "test-pick-cli-freshness-self-test"
+  description =
+    "mutates pick_cli's freshness comparisons out of runtime/vibe and asserts test-pick-cli-freshness goes red"
+  cmd = "bash scripts/test_pick_cli_freshness_test.sh"
+  inputs {
+    ...compilerProbeInputs
+    ...scriptSources
+    "runtime/vibe"
+  }
+}
+
+testReleaseInstall = new pkf.Task {
+  name = "test-release-install"
+  description =
+    "release install and update against a synthetic file:// release: install.sh --version with bash+curl+tar, vibe self update, tampered assets refused (#2678)"
+  cmd = "bash tests/integration/install/release_install_test.sh"
+  inputs {
+    "tests/integration/install/release_install_test.sh"
+    "install/install.sh"
+    "runtime/vibe"
+    "scripts/vibe_pkg.sh"
+    "scripts/parallel_warm_pool.sh"
+  }
+}
+
+testSeedAssetIdentity = new pkf.Task {
+  name = "test-seed-asset-identity"
+  description =
+    "red/green for the seed-manifest identity guard: a manifest naming another seed must not ship under this tag"
+  cmd = "bash scripts/build_compiler_seed_assets_test.sh"
+  // The scratch tree holds a fake artifact and no generate_bundle.sh, so this
+  // verdict does not actually depend on compiler identity -- but the guard it
+  // copies does reach the compiler lexically, and check-task-inputs refuses to
+  // guess. Over-approximate rather than assert the exemption: the run is 0.1s.
+  inputs {
+    ...compilerProbeInputs
+    "scripts/build_compiler_seed_assets_test.sh"
+    "scripts/build_compiler_seed_assets.sh"
+  }
+}
+
+testReleaseBody = new pkf.Task {
+  name = "test-release-body"
+  description =
+    "red/green for the release-body builder: relative links absolutized at the tag, an unresolvable or escaping link refused"
+  cmd = "bash scripts/build_release_body_test.sh"
+  inputs {
+    "scripts/build_release_body_test.sh"
+    "scripts/build_release_body.sh"
+  }
+}
+
+testReleaseAssetsArgs = new pkf.Task {
+  name = "test-release-assets-args"
+  description =
+    "red/green for the release asset builder's tag validation: a pre-release tag is accepted, junk and a launcher/tag disagreement are refused"
+  cmd = "bash scripts/build_release_assets_test.sh"
+  inputs {
+    // The cases stop at argument handling and never reach a compiler, but the
+    // script under test does; an exemption asserted here is the gate's own
+    // failure mode, and replaying a 0.4s test costs less than being wrong.
+    ...compilerProbeInputs
+    "scripts/build_release_assets_test.sh"
+    "scripts/build_release_assets.sh"
+  }
+}
+
+testVibeLibrary = new pkf.Task {
+  name = "test-library"
+  // Smoke-run the selfhost-CLI-compilable subset of library `*_test.vibe`
+  // (lib/@vibex/wasm, lib/@vibe/builtin). The selfhost-only gate only covers the
+  // compiler self-compile, so this is the regression net for library modules
+  // (the MoonBit-host flaker suite was retired in #594). Allow-list lives in the
+  // script; also run in cli-install CI and the `cli` selfhost-gate shard.
+  cmd = "bash scripts/test_vibe_library.sh"
+  cache = false
+}
+
+testLocal = new pkf.Task {
+  name = "test-local"
+  description = "affected local tests via flaker"
+  cmd = "scripts/flaker_run.sh $@"
+  acceptsArgs = true
+  cache = false
+}
+
+testAffected = new pkf.Task {
+  name = "test-affected"
+  description = "tests reachable from the change via the real import graph (#988)"
+  cmd = "bash scripts/test_affected.sh $@"
+  acceptsArgs = true
+  cache = false
+}
+
+testCompareCompilerMemory = new pkf.Task {
+  name = "test-compare-compiler-memory"
+  cmd = "node --test scripts/compare_compiler_memory.test.mjs"
+  cache = false
+}
+
+testEditCycleKpi = new pkf.Task {
+  name = "test-edit-cycle-kpi"
+  description =
+    "validate incremental harness units: KPI telemetry, phase summaries, cache artifact reading"
+  cmd =
+    "node --test scripts/edit_cycle_kpi.test.mjs scripts/incremental_phase_summary.test.mjs scripts/cache_artifacts.test.mjs"
+  cache = false
+}
+
+checkTaskEnv = new pkf.Task {
+  name = "check-task-env"
+  description = "internal: report the LD_LIBRARY_PATH a task inherits, and run a system binary"
+  cmd =
+    "printf 'task-env: LD_LIBRARY_PATH=%s\\n' \"${LD_LIBRARY_PATH:-}\"; sort --version >/dev/null 2>&1 && echo 'task-env: sort ok' || echo 'task-env: sort FAILED'"
+  cache = false
+  visibility = "internal"
+}
+
+testCheckedModuleCacheParity = new pkf.Task {
+  name = "test-checked-module-cache-parity"
+  description =
+    "compare checked-module cache output and diagnostics; --units adds the complete unit corpus"
+  cmd = "bash scripts/checked_module_cache_parity.sh $@"
+  acceptsArgs = true
+  cache = false
+}
+
+testSelfhostUnit = new pkf.Task {
+  name = "test-unit"
+  description = "run every discovered *_test.vibe through the selfhost compiler (#531/#535)"
+  cmd = "bash scripts/unit_test_runner.sh $@"
+  acceptsArgs = true
+  cache = false
+}
+
+checkTutorialTranslationParity = new pkf.Task {
+  name = "check-tutorial-translation-parity"
+  description =
+    "every original tour chapter in book/en has a book/ja translation, and each pair runs the same programs"
+  cmd = "bash scripts/check_tutorial_translation_parity.sh"
+  // vibe_md.sh proves each file on its own; this is the part it cannot see.
+  // Two files that run the same programs record the same ```output blocks, so
+  // comparing those catches code drift between a chapter and its translation
+  // without diffing sources, which legitimately differ in their comments.
+  cache = false
+}

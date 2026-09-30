@@ -1,0 +1,1544 @@
+// lib/@vibe/compiler/checker/checker_effects.vibe — perform effects expr tx in.
+
+import @vibe/compiler/core {
+  BindingOrigin,
+  Expr,
+  Pat,
+  Stmt,
+  Type,
+  TypeDef,
+  TypeEnv,
+  TypeExpr,
+  canonical_builtin_name,
+  canonical_exception_effect_name,
+  entry_cache_safe_effects,
+  env_lookup,
+  env_lookup_binding,
+  env_name_index_at,
+  env_name_index_length,
+  env_type_definition_origin,
+  env_type_defs,
+  exception_effect_labels_equal,
+  exception_kinds_compatible,
+  exception_kinds_same,
+  exception_label_kind,
+  exception_throw_label_for_kind,
+  expr_child_at,
+  expr_children,
+  expr_children_into,
+  expr_children_pop,
+  expr_children_push,
+  expr_children_top,
+  find_typedef,
+  has_standard_host_provider,
+  is_entry_admitted_effect,
+  is_entry_cache_safe_operation,
+  is_entry_runtime_managed_effect,
+  is_exception_effect_name,
+  is_exception_label,
+  is_exception_throw_operation,
+  is_legacy_console_provider,
+  resolve_type_alias_params,
+  standard_host_provider_names,
+  strip_published_formal_suffixes,
+  test_bench_default_effects,
+  type_name_has_async_iterator_impl
+}
+
+import @vibe/core {
+  array_empty, struct MutMap
+}
+
+import @vibe/ast {
+  is_builtin_ref_offset, type_param_name
+}
+
+import ./builtins.vibe {
+  lookup_builtin
+}
+
+import ./builtin_call_arms.vibe {
+  builtin_call_arm
+}
+
+import ./checker_effects_decl_authorizes_effect.vibe {
+  decl_authorizes_effect,
+  decl_authorizes_op,
+  decl_authorizes_optional_op,
+  entry_user_operation_requires_handler,
+  kinded_exception_labels,
+  labels_without_exception_family,
+  perform_question_op_name,
+  required_grant_covering_op,
+  set_entry_user_effect_operations
+}
+
+import ./checker_effects_dh_call_to_binding.vibe {
+  closure_arg_declared,
+  error_row_checked,
+  labels_without_exception_family_marker,
+  make_contextual_row_error,
+  nested_type_rows,
+  no_param_row,
+  optional_grade_errors,
+  resolve_row_var_instantiation
+}
+
+import ./checker_effects_effect_error_to_string.vibe {
+  afe_ascribed_name_type,
+  afe_bind_local,
+  afe_bind_params,
+  afe_bind_value,
+  afe_bind_value_from,
+  afe_binds_local,
+  afe_callable_bodies,
+  afe_collect_callable_bodies,
+  afe_display_iter_head,
+  afe_expr_head_name,
+  afe_handler_arm_locals,
+  afe_mask_pat_binders,
+  afe_match_arm_locals,
+  afe_payload_call_stack,
+  afe_reachability_keys,
+  afe_reachability_stack,
+  afe_reachability_values,
+  afe_reset_entry_memos,
+  afe_set_field_types,
+  afe_type_binding_is_builtin_async_iter,
+  check_stdin_provider_direct_calls_stmts,
+  effect_opt_is_async,
+  is_async_primitive
+}
+
+import ./checker_effects_mutability_expr_into.vibe {
+  AfeLocals,
+  EffectError,
+  afe_builtin_async_iter_head,
+  afe_builtin_async_iter_import_names,
+  afe_no_locals,
+  afe_record_builtin_async_iter_imports,
+  append_eff_errs,
+  collect_pat_binds_into,
+  current_ret_fn_rows,
+  effect_param_base_name,
+  effect_row_has_label,
+  effect_row_inherit,
+  effect_row_labels,
+  effect_row_parse,
+  handle_arms_handle_async,
+  label_is_effect_var,
+  no_str_labels,
+  row_callback_scope_start_cell,
+  row_formal_scope,
+  row_scope_callback_marker,
+  row_scope_callback_start,
+  row_scope_decl_is_root,
+  row_scope_pop_marker,
+  row_scope_unknown,
+  struct_field_rows_for
+}
+
+import ./checker_effects_throw_payload_kind.vibe {
+  TkEnv,
+  builtin_call_effect,
+  builtin_call_op_label,
+  callee_has_marked_bindings,
+  clear_checker_published_tables,
+  collect_handle_effects,
+  effect_name_of_op,
+  entry_block_display_name,
+  exception_effect_labels,
+  instantiate_callee_label,
+  instantiate_callee_label_marked,
+  is_program_entry_name,
+  join_labels,
+  kinded_handle_marker,
+  labels_union,
+  lookup_fn_effs,
+  lookup_program_fn_effs,
+  lookup_program_fn_param_effs,
+  no_kind_binds,
+  no_param_effs,
+  program_fn_exists,
+  program_fn_index,
+  requirement_marked_cell,
+  row_mismatch_roots,
+  row_scope_pop,
+  source_definition_shadows_builtin,
+  throw_kind_bind,
+  throw_kind_bind_params,
+  throw_kind_bind_pat,
+  throw_payload_kind,
+  throw_report_label,
+  throw_required_label,
+  tparam_names,
+  under_kinded_handle
+}
+
+fn afe_has_builtin_async_iter_provenance(env: TypeEnv) -> Bool {
+  afe_type_binding_is_builtin_async_iter(env)
+}
+
+/// The iterand's type name when driving it with `for` awaits each step,
+/// otherwise None. Named so the diagnostic can point at `<T>::next`.
+fn afe_async_iterand(iter: Expr, env: TypeEnv, locals: AfeLocals) -> Option[String] {
+  match afe_expr_head_name(iter, env, locals) {
+    // #1341: the p3 host stream is async by construction and has no
+    // AsyncIterator impl to find -- its read primitive is the scalar
+    // `host_stream_next(s) -> Int with Async`, and the desugar builds the
+    // loop on that read directly (build_host_stream_for). The loop therefore
+    // parks once per byte, so the enclosing row must carry `Async` for exactly
+    // the reason #1358 gave for trait-based async iterators.
+    Some(tn) => {
+      let display = afe_display_iter_head(tn)
+      if display == "HostStream" || type_name_has_async_iterator_impl(env, display) {
+        Some(display)
+      } else if tn == afe_builtin_async_iter_head || (display == "AsyncIter" && afe_has_builtin_async_iter_provenance(env)) {
+        Some("AsyncIter")
+      } else {
+        None
+      }
+    },
+    None => None
+  }
+}
+
+fn afe_contains_for(expr: Expr) -> Bool {
+  match expr {
+    EForIn(_, _, _, _) => true,
+    _ => {
+      let children = expr_children(expr)
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(children) && !found {
+        found = afe_contains_for(Array::get(children, i))
+        i = i + 1
+      }
+      found
+    }
+  }
+}
+
+export fn check_async_effects_expr(expr: Expr, env: TypeEnv, in_async: Bool) -> Array[EffectError] {
+  // #2386 review: the memos are cleared before ANYTHING of this entry asks
+  // them -- `afe_set_field_types` below consults the `AsyncIter` provenance
+  // cell while building the field-type table, so a reset placed after it
+  // would let the previous entry's answer into this program's table.
+  afe_reset_entry_memos()
+  Array::truncate(afe_callable_bodies, 0)
+  Array::truncate(afe_payload_call_stack, 0)
+  Array::truncate(afe_reachability_keys, 0)
+  Array::truncate(afe_reachability_values, 0)
+  Array::truncate(afe_reachability_stack, 0)
+  check_async_effects_expr_lo(expr, env, in_async, afe_no_locals())
+}
+
+/// #1358: the same walk with a `name -> head type name` table for the bindings
+/// in scope, so an async `for` can be recognised through an ordinary local
+/// (`let it = Array::iter(xs); for x in it`) and through a typed parameter.
+fn check_async_effects_expr_lo(expr: Expr, env: TypeEnv, in_async: Bool, locals: AfeLocals) -> Array[EffectError] {
+  let out = array_empty()
+  check_async_effects_expr_lo_into(expr, env, in_async, locals, out)
+  out
+}
+
+fn check_async_effects_expr_lo_into(expr: Expr, env: TypeEnv, in_async: Bool, locals: AfeLocals, out: Array[EffectError]) -> Unit {
+  // Preserve the legacy preorder diagnostic order: inspect a call before its
+  // structural children, then delegate their enumeration to expr_children.
+  match expr {
+    // #3163: a local binding of the name (a parameter, a `let`, a loop
+    // variable) is what the call reaches, not the builtin of that spelling --
+    // `let await = (f: Future[Int]) -> "s"` does not perform `Async`.
+    ECall(EIdent(name, _), _, _) => if !in_async && !afe_binds_local(locals, name) && is_async_primitive(name, env) {
+      Array::push(out, EEEffectfulCallOutsideEffect(name))
+    } else {
+      ()
+    },
+    EForIn(_, _, iter, _) => match afe_async_iterand(iter, env, locals) {
+      Some(tn) => if !in_async {
+        Array::push(out, EEEffectfulCallOutsideEffect(String::concat(tn, "::next (a `for` over an async iterator awaits every step -- add `with Async` or wrap the loop in a handler for it)")))
+      } else {
+        ()
+      },
+      None => ()
+    },
+    _ => ()
+  }
+  match expr {
+    // Scope boundary: a lambda's explicit row replaces its enclosing Async
+    // context. All other expression forms retain the context unchanged.
+    EFn(_, _, params, _, effect, body) => {
+      check_async_effects_expr_lo_into(body, env, effect_opt_is_async(effect), afe_bind_params(locals, params, env), out)
+    },
+    EHandle(body, arms) => {
+      let discharges_async = handle_arms_handle_async(arms)
+      check_async_effects_expr_lo_into(body, env, in_async || discharges_async, locals, out)
+      let mut ai = 0
+      while ai < Array::length(arms) {
+        let (pat, arm_body) = Array::get(arms, ai)
+        // Resolving a binder's head walks the handled body for its performs,
+        // so it is paid only where a `for` could read one. The binders are
+        // bound either way (#3177): an arm's `await` is its own binder.
+        let arm_locals = if afe_contains_for(arm_body) {
+          afe_handler_arm_locals(body, pat, env, locals)
+        } else {
+          afe_mask_pat_binders(locals, pat)
+        }
+        check_async_effects_expr_lo_into(arm_body, env, in_async, arm_locals, out)
+        ai = ai + 1
+      }
+    },
+    // #3177: a match arm binds its pattern's names for its own body, like a
+    // `let`, a parameter or a `for` variable. Walked as a generic node, the
+    // arm body saw the outer scope, so a match-bound `await` called in a
+    // row-free lambda read as the builtin and demanded `Async`.
+    EMatch(scrut, arms) => {
+      check_async_effects_expr_lo_into(scrut, env, in_async, locals, out)
+      let mut mi = 0
+      while mi < Array::length(arms) {
+        let (pat, arm_body) = Array::get(arms, mi)
+        check_async_effects_expr_lo_into(arm_body, env, in_async, afe_match_arm_locals(scrut, pat, env, locals), out)
+        mi = mi + 1
+      }
+    },
+    // #3177: the state names of `loop (h = f) { .. }` are bound in its body;
+    // their initial values are read in the enclosing scope, and each name
+    // carries the head its initial value reveals (#3198 review).
+    ELoop(states, body) => {
+      let mut body_locals = locals
+      let mut li = 0
+      while li < Array::length(states) {
+        let (sname, sval) = Array::get(states, li)
+        check_async_effects_expr_lo_into(sval, env, in_async, locals, out)
+        body_locals = afe_bind_value_from(body_locals, locals, sname, sval, env)
+        li = li + 1
+      }
+      check_async_effects_expr_lo_into(body, env, in_async, body_locals, out)
+    },
+    // ELet/ELetMut are non-recursive: the value is resolved in the OUTER scope,
+    // and only the body sees the new binding. ELetRec's value may reference
+    // itself, so both sides see it.
+    ELet(name, val, body, _) => {
+      check_async_effects_expr_lo_into(val, env, in_async, locals, out)
+      check_async_effects_expr_lo_into(body, env, in_async, afe_bind_value(locals, name, val, env), out)
+    },
+    ELetMut(name, val, body, _) => {
+      check_async_effects_expr_lo_into(val, env, in_async, locals, out)
+      check_async_effects_expr_lo_into(body, env, in_async, afe_bind_value(locals, name, val, env), out)
+    },
+    ELetRec(name, val, body) => {
+      let rec_locals = afe_bind_value(locals, name, val, env)
+      check_async_effects_expr_lo_into(val, env, in_async, rec_locals, out)
+      check_async_effects_expr_lo_into(body, env, in_async, rec_locals, out)
+    },
+    EForIn(name, index_name, iter, body) => {
+      check_async_effects_expr_lo_into(iter, env, in_async, locals, out)
+      // The loop variables are ELEMENTS, never the iterator itself: bind them
+      // to nothing so they shadow any same-named outer entry.
+      let body_locals = match index_name {
+        Some(idx) => afe_bind_local(afe_bind_local(locals, name, None), idx, None),
+        None => afe_bind_local(locals, name, None)
+      }
+      check_async_effects_expr_lo_into(body, env, in_async, body_locals, out)
+    },
+    _ => {
+      let mark = expr_children_push(expr)
+      let end = expr_children_top()
+      let mut i = mark
+      while i < end {
+        check_async_effects_expr_lo_into(expr_child_at(i), env, in_async, locals, out)
+        i = i + 1
+      }
+      expr_children_pop(mark)
+    }
+  }
+}
+
+/// A function body runs in an `{Async}` context if EITHER the lambda's inline
+/// effect OR the binding's declared signature type carries `Async`.
+fn sig_type_is_async(topt: Option[TypeExpr]) -> Bool {
+  match topt {
+    Some(TyFn(_, _, eff)) => effect_opt_is_async(eff),
+    _ => false
+  }
+}
+
+fn check_async_effects_binding(ty: Option[TypeExpr], body: Expr, env: TypeEnv) -> Array[EffectError] {
+  let sig_async = sig_type_is_async(ty)
+  match body {
+    // #1358: descending straight into `fbody` skips the EFn arm, so bind this
+    // binding's own parameters here — otherwise `fn drain(s: AsyncIter[Int])`
+    // would not resolve `s` when its body loops over it.
+    EFn(_, _, params, _, eff, fbody) => check_async_effects_expr_lo(fbody, env, sig_async || effect_opt_is_async(eff), afe_bind_params(afe_no_locals(), merge_param_types_with_sig(ty, params), env)),
+    _ => check_async_effects_expr_lo(body, env, sig_async, afe_no_locals())
+  }
+}
+
+fn check_async_effects_stmt_lo(stmt: Stmt, env: TypeEnv) -> Array[EffectError] {
+  match stmt {
+    SLet(_, _, _, ty, body) => check_async_effects_binding(ty, body, env),
+    SLetMut(_, ty, body) => check_async_effects_binding(ty, body, env),
+    STest(_, body) => check_async_effects_expr_lo(body, env, false, afe_no_locals()),
+    SBench(_, body) => check_async_effects_expr_lo(body, env, false, afe_no_locals()),
+    SExpr(e) => check_async_effects_expr_lo(e, env, false, afe_no_locals()),
+    _ => array_empty()
+  }
+}
+
+export fn check_async_effects_stmt(stmt: Stmt, env: TypeEnv) -> Array[EffectError] {
+  // #2386 review: the memos are cleared before ANYTHING of this entry asks
+  // them -- `afe_set_field_types` below consults the `AsyncIter` provenance
+  // cell while building the field-type table, so a reset placed after it
+  // would let the previous entry's answer into this program's table.
+  afe_reset_entry_memos()
+  Array::truncate(afe_callable_bodies, 0)
+  Array::truncate(afe_payload_call_stack, 0)
+  Array::truncate(afe_reachability_keys, 0)
+  Array::truncate(afe_reachability_values, 0)
+  Array::truncate(afe_reachability_stack, 0)
+  check_async_effects_stmt_lo(stmt, env)
+}
+
+export fn check_async_effects_stmts(stmts: Array[Stmt], env: TypeEnv) -> Array[EffectError] {
+  // #2386 review: the memos are cleared before ANYTHING of this entry asks
+  // them -- `afe_set_field_types` below consults the `AsyncIter` provenance
+  // cell while building the field-type table, so a reset placed after it
+  // would let the previous entry's answer into this program's table.
+  afe_reset_entry_memos()
+  // Enforce direct-call-only before ordinary Async row checks. These errors are
+  // checker diagnostics, so no artifact reaches codegen for an opaque flow.
+  let errors = check_stdin_provider_direct_calls_stmts(stmts)
+  // #1341: rebuild the struct field-type table for THIS program before the
+  // walk, so a stale one from a previous module can never classify a
+  // same-named field here.
+  afe_set_field_types(stmts, env)
+  Array::truncate(afe_builtin_async_iter_import_names, 0)
+  afe_record_builtin_async_iter_imports(stmts)
+  Array::truncate(afe_callable_bodies, 0)
+  Array::truncate(afe_payload_call_stack, 0)
+  Array::truncate(afe_reachability_keys, 0)
+  Array::truncate(afe_reachability_values, 0)
+  Array::truncate(afe_reachability_stack, 0)
+  afe_collect_callable_bodies(stmts)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    append_eff_errs(errors, check_async_effects_stmt_lo(Array::get(stmts, i), env))
+    i = i + 1
+  }
+  errors
+}
+
+/// #885 review (Codex): a `let`/`let rec`/`let mut` binding can reuse the NAME
+/// of an in-scope callback-parameter overlay entry (e.g. rebinding `f` to an
+/// unrelated local pure closure). Without this, `lookup_fn_effs`'s first-match
+/// scan would still find the SHADOWED outer entry and reject a call to the
+/// new, unrelated binding as if it were the original effectful callback --
+/// a false positive on valid shadowing. Removes every overlay entry matching
+/// `name` before the shadowing binding's scope is pushed onto the stack.
+/// #885 review (Codex): shadow the overlay by EVERY name in `params`, in one
+/// pass — used at an EFn boundary where all of the lambda's own parameter
+/// names (not just the ones that become new overlay entries) must block a
+/// same-named inherited entry.
+export fn shadow_overlay_names(names: Array[String], effs: Array[Array[String]], params: Array[(String, Option[TypeExpr])]) -> (Array[String], Array[Array[String]]) {
+  let mut cur_names = names
+  let mut cur_effs = effs
+  let mut i = 0
+  while i < Array::length(params) {
+    let (pname, _) = Array::get(params, i)
+    let shadowed = shadow_overlay(cur_names, cur_effs, effect_param_base_name(pname))
+    cur_names = shadowed.0
+    cur_effs = shadowed.1
+    i = i + 1
+  }
+  (cur_names, cur_effs)
+}
+
+fn shadow_overlay(names: Array[String], effs: Array[Array[String]], name: String) -> (Array[String], Array[Array[String]]) {
+  let out_names = array_empty()
+  let out_effs = array_empty()
+  let mut i = 0
+  while i < Array::length(names) {
+    let entry = Array::get(names, i)
+    // #3155: an alias's target entry goes with the alias it describes.
+    if entry != name && !overlay_entry_is_alias_of(entry, name) {
+      Array::push(out_names, entry)
+      Array::push(out_effs, Array::get(effs, i))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  (out_names, out_effs)
+}
+
+export fn overlay_bind_empty(names: Array[String], effs: Array[Array[String]], name: String, fn_names: Array[String], fn_index: MutMap[String, Int]) -> (Array[String], Array[Array[String]]) {
+  let (sn, se) = shadow_overlay(names, effs, name)
+  // Most locals cannot fall through to a top-level function, so retaining an
+  // empty marker for every binding only lengthens every descendant snapshot.
+  // The marker is needed exactly when the fallback table contains this name.
+  if !program_fn_exists(fn_index, name) {
+    return (sn, se)
+  }
+  let out_names = [name]
+  let out_effs = [no_str_labels()]
+  let mut i = 0
+  while i < Array::length(sn) {
+    Array::push(out_names, Array::get(sn, i))
+    Array::push(out_effs, Array::get(se, i))
+    i = i + 1
+  }
+  (out_names, out_effs)
+}
+
+export fn overlay_bind_empty_names(names: Array[String], effs: Array[Array[String]], bound: Array[String], fn_names: Array[String], fn_index: MutMap[String, Int]) -> (Array[String], Array[Array[String]]) {
+  let mut cur_names = names
+  let mut cur_effs = effs
+  let mut i = 0
+  while i < Array::length(bound) {
+    let next = overlay_bind_empty(cur_names, cur_effs, Array::get(bound, i), fn_names, fn_index)
+    cur_names = next.0
+    cur_effs = next.1
+    i = i + 1
+  }
+  (cur_names, cur_effs)
+}
+
+export fn overlay_bind_empty_pat(names: Array[String], effs: Array[Array[String]], pat: Pat, fn_names: Array[String], fn_index: MutMap[String, Int]) -> (Array[String], Array[Array[String]]) {
+  let bound = array_empty()
+  collect_pat_binds_into(pat, bound)
+  overlay_bind_empty_names(names, effs, bound, fn_names, fn_index)
+}
+
+/// #885 (split off from #838, originally scoped out at #626): a function-typed
+/// PARAMETER (a callback, e.g. `f: (T) -> T with e`) is a call-graph leaf
+/// exactly like a named top-level function, but `fn_names`/`fn_effs` above is
+/// built ONLY from top-level `SLet`/`SLetMut` bindings, so invoking a callback
+/// PARAMETER directly (`f(x)` inside the wrapper that owns `f`) was invisible to
+/// the transitive check — no lookup ever matched `f`'s name, so nothing was
+/// required. This is a SEPARATE parallel-array "overlay" (ov_names/ov_effs),
+/// scoped to the function body currently being walked (extended when the walk
+/// descends into an `EFn`, carried unchanged through every other node), that
+/// records each in-scope function-typed parameter's declared effect labels.
+///
+/// Deliberately narrower than the general transitive check: callback-parameter
+/// labels are checked via `decl_authorizes_effect` WITHOUT the
+/// `label_is_effect_var` exemption used below for calls to NAMED top-level
+/// functions. That exemption exists to prevent a real unsoundness of its own —
+/// naively requiring the LITERAL row-variable token (e.g. `"e"`) to appear in
+/// the CALLER's declared row at a call site like `apply(inc, 41)` — since the
+/// caller has no way to know the row variable resolves to nothing without
+/// call-site effect-row UNIFICATION (matching the argument actually passed
+/// against the callee's parameter type), which this pass does not perform. This
+/// is exactly the naive fix rejected during #885's investigation: dropping the
+/// exemption globally broke `generic_effect_matrix_ok_passthrough_pure.vibe`.
+/// The callback-parameter case is different in kind: the row variable and the
+/// declared effect being compared live in the SAME function signature (the
+/// parameter's `with e` and the enclosing function's own `with e` are
+/// the identical token by construction — no cross-call-site instantiation is
+/// involved), so a literal-name check here is sound, not a naive shortcut.
+/// #1361: a LOCAL `let f = () -> T with E { .. }` is a call-graph leaf just
+/// like a top-level function or a callback PARAMETER (#885), but NEITHER table
+/// knew about it: `fn_names`/`fn_effs` is built only from top-level SLet/SLetMut
+/// bindings, and `build_param_overlay` only from function-typed parameters. So
+/// `f()` leaked nothing into the enclosing body, while the closure's own body
+/// satisfied its own declared row (the EFn arm's `effect_row_inherit`) — a
+/// function declaring `with Stdout` could reach `Env` through a local
+/// closure with no diagnostic at all, and file_entry_cacheable /
+/// file_tests_cacheable consequently judged such an entry cacheable (its stdout
+/// varies with the environment, so the doctest cache replayed a stale run).
+/// Registering the binding in the SAME overlay the callback case uses closes
+/// both at once, with the same semantics: the row leaks at the call site unless
+/// the caller declares it or a `handle` discharges it.
+///
+/// An annotated local binding (`let f: () -> T with E = ..`) is desugared to
+/// an ascription call (`((__asc: T) -> __asc)(e)`, ascribe_wrap). Its function
+/// row joins literal closures and bare-name aliases in this overlay.
+/// #1515: a local binding's row, when the VALUE is a bare NAME rather than a
+/// closure literal — `let f = eff` / `let g = f`, an ALIAS of something that
+/// already carries a row.
+///
+/// The `EFn` arm below (#1361) covers a literal with its own declared row, and
+/// #885's parameter overlay covers a row-carrying parameter, so an alias was the
+/// one shape left where the row vanished: `overlay_bind_local` shadowed the name
+/// out and re-registered nothing, and the walker's `ECall` arm then saw a name in
+/// no table at all and let the call through unchecked. Measured (and reproducing
+/// on the committed seed, so this predates #1451):
+///
+///   fn eff(s: String) -> Unit with Log::Emit { perform Log::Emit(s) }
+///   fn caller() -> Unit { let f = eff; f("boom") }   // compiled clean
+///
+/// while the direct `eff("boom")` and the parameter form were both correctly
+/// rejected. Resolution order matches `lookup_fn_effs`'s own: the OVERLAY first
+/// (an inner binding shadows an outer one), then the top-level call-graph map.
+fn alias_fn_overlay_labels(name: String, ov_names: Array[String], ov_effs: Array[Array[String]], fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int]) -> Array[String] {
+  match lookup_fn_effs(ov_names, ov_effs, name) {
+    Some(labels) => labels,
+    None => match lookup_program_fn_effs(fn_index, fn_effs, name) {
+      Some(labels) => labels,
+      None => no_str_labels()
+    }
+  }
+}
+
+/// #3155: a local alias of a TOP-LEVEL function (`let r = TaskGroup::run`,
+/// or an alias of such an alias) is registered with the target's row, and a
+/// row VARIABLE in that row belongs to the target's scheme -- not to the
+/// enclosing signature, as a callback parameter's does (#885). A call through
+/// the alias has to instantiate it the way the direct call does
+/// (`resolve_row_var_instantiation`); charging the bare token instead left
+/// `e` in `main`'s row as "unresolved effect row { e }". So the overlay also
+/// records the target, under a key no source name can spell (`#` is rejected
+/// in identifiers), and `shadow_overlay` drops that key with the alias.
+fn alias_target_key(name: String) -> String {
+  String::concat("#alias ", name)
+}
+
+fn overlay_entry_is_alias_of(entry: String, name: String) -> Bool {
+  String::length(entry) == String::length(name) + 7 && String::starts_with(entry, "#alias ") && String::ends_with(entry, name)
+}
+
+/// The top-level function a local alias names, read against the pre-shadow
+/// overlay: a bare name no local binds, or a local that is itself an alias.
+/// A local closure or a callback parameter has no target -- its row
+/// variables are the enclosing signature's own.
+export fn local_alias_target(val: Expr, ov_names: Array[String], ov_effs: Array[Array[String]], fn_index: MutMap[String, Int]) -> Option[String] {
+  match val {
+    EIdent(n, _) => match lookup_fn_effs(ov_names, ov_effs, n) {
+      Some(_) => overlay_alias_target(ov_names, ov_effs, n),
+      None => if program_fn_exists(fn_index, n) {
+        Some(n)
+      } else {
+        None
+      }
+    },
+    ECall(_, args, _) => match afe_ascribed_name_type(val) {
+      Some(_) => local_alias_target(Array::get(args, 0), ov_names, ov_effs, fn_index),
+      None => None
+    },
+    _ => None
+  }
+}
+
+export fn overlay_alias_target(ov_names: Array[String], ov_effs: Array[Array[String]], name: String) -> Option[String] {
+  match lookup_fn_effs(ov_names, ov_effs, alias_target_key(name)) {
+    Some(t) => if Array::length(t) == 1 {
+      Some(Array::get(t, 0))
+    } else {
+      None
+    },
+    None => None
+  }
+}
+
+fn local_fn_overlay_labels(val: Expr, ov_names: Array[String], ov_effs: Array[Array[String]], fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int]) -> Array[String] {
+  match val {
+    EFn(_, _, _, _, eff, _) => effect_row_labels(effect_row_parse(eff)),
+    EIdent(n, _) => alias_fn_overlay_labels(n, ov_names, ov_effs, fn_names, fn_effs, fn_index),
+    // A local annotation is lowered to `((__asc: T) -> __asc)(value)`.
+    // Its declared function row is the contract at calls through the binding.
+    _ => match afe_ascribed_name_type(val) {
+      Some(TyFn(_, _, eff)) => match local_alias_target(val, ov_names, ov_effs, fn_index) {
+        Some(target) => {
+          let declared = effect_row_labels(effect_row_parse(eff))
+          // `target` is the original top-level function identity. A later
+          // local binding with the same spelling must not replace its row.
+          let actual = match lookup_program_fn_effs(fn_index, fn_effs, target) {
+            Some(labels) => labels,
+            None => no_str_labels()
+          }
+          let mut carried = true
+          let mut i = 0
+          while i < Array::length(actual) {
+            if !effect_row_has_label(Some(declared), Array::get(actual, i)) {
+              carried = false
+            } else {
+              ()
+            }
+            i = i + 1
+          }
+          if carried {
+            declared
+          } else {
+            no_str_labels()
+          }
+        },
+        None => no_str_labels()
+      },
+      _ => no_str_labels()
+    }
+  }
+}
+
+/// Shadow `name` out of the inherited overlay (a local binding always hides an
+/// outer entry of the same name), then re-register it when its value is a
+/// row-declaring closure. The new entry goes FIRST so `lookup_fn_effs`'s
+/// first-match scan finds it.
+export fn overlay_bind_local(names: Array[String], effs: Array[Array[String]], name: String, val: Expr, fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int]) -> (Array[String], Array[Array[String]]) {
+  let shadowed = shadow_overlay(names, effs, name)
+  // #1515: resolve an ALIAS against the pre-shadow overlay -- `let f = f`
+  // rebinds to the OUTER `f`, so the lookup must see the entry the shadow is
+  // about to remove.
+  let labels = local_fn_overlay_labels(val, names, effs, fn_names, fn_effs, fn_index)
+  // #1723: an empty row is still a lexical binding. Keeping an explicit
+  // empty entry is what distinguishes "a pure local shadows this name" from
+  // "no local binding; consult the top-level function table".
+  if Array::length(labels) == 0 && !program_fn_exists(fn_index, name) {
+    return shadowed
+  }
+  let out_names = [name]
+  let out_effs = [labels]
+  // #3155: only a row can carry a variable to instantiate.
+  if Array::length(labels) > 0 {
+    match local_alias_target(val, names, effs, fn_index) {
+      Some(target) => {
+        Array::push(out_names, alias_target_key(name))
+        Array::push(out_effs, [target])
+      },
+      None => ()
+    }
+  } else {
+    ()
+  }
+  let (sn, se) = shadowed
+  let mut i = 0
+  while i < Array::length(sn) {
+    Array::push(out_names, Array::get(sn, i))
+    Array::push(out_effs, Array::get(se, i))
+    i = i + 1
+  }
+  (out_names, out_effs)
+}
+
+export fn build_param_overlay(params: Array[(String, Option[TypeExpr])], fn_names: Array[String], fn_index: MutMap[String, Int]) -> (Array[String], Array[Array[String]]) {
+  let names = array_empty()
+  let effs = array_empty()
+  let mut i = 0
+  while i < Array::length(params) {
+    let (pname, ptype) = Array::get(params, i)
+    let base_name = effect_param_base_name(pname)
+    let labels = match ptype {
+      Some(TyFn(_, _, eff)) => effect_row_labels(effect_row_parse(eff)),
+      _ => no_str_labels()
+    }
+    // #1723: all parameters are lexical bindings. A pure callback (or even a
+    // non-function parameter later rejected by typing) must mask a same-named
+    // top-level function during this independent effect walk.
+    if Array::length(labels) > 0 || program_fn_exists(fn_index, base_name) {
+      Array::push(names, base_name)
+      Array::push(effs, labels)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  (names, effs)
+}
+
+/// A `let apply: [T](f: (T) -> T with e, x: T) -> T = (f, x) -> { f(x) }`
+/// binding (separate top-level type annotation + untyped lambda) parses to an
+/// `EFn` whose OWN `params` carry no per-parameter `TypeExpr` at all (the types
+/// live only on the `SLet`'s `ty` field). `build_param_overlay` needs real
+/// per-parameter types to find a callback parameter's declared effect, so this
+/// fills in each untyped `EFn` parameter from `ty`'s `TyFn` parameter list at
+/// the SAME position — the two lists describe the same signature, so positional
+/// pairing is exact. An `EFn` parameter that already carries its own inline
+/// type (the `[T](f: (T) -> T with e, ...)` generic-literal spelling used
+/// elsewhere in this file) is left untouched; `ty` is consulted only to fill
+/// gaps, never to override.
+export fn merge_param_types_with_sig(ty: Option[TypeExpr], params: Array[(String, Option[TypeExpr])]) -> Array[(String, Option[TypeExpr])] {
+  match ty {
+    Some(TyFn(sig_params, _, _)) => {
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(params) {
+        let (pname, ptype) = Array::get(params, i)
+        let effective = match ptype {
+          Some(_) => ptype,
+          None => if i < Array::length(sig_params) {
+            Some(Array::get(sig_params, i))
+          } else {
+            None
+          }
+        }
+        Array::push(out, (pname, effective))
+        i = i + 1
+      }
+      out
+    },
+    _ => params
+  }
+}
+
+/// Transitive effect enforcement (#626): a call to a user function `G` that
+/// declares `with E` leaks E into the caller unless the caller declares E or
+/// the call is under a `handle ... with E`. Combined with the DIRECT discipline
+/// (every function that itself performs/invokes an effectful builtin must declare
+/// it — already enforced), this propagates effect requirements up the call graph
+/// level by level: every effectful leaf is annotated, so a one-level check at
+/// each call site is complete. `fn_names`/`fn_effs` is the call-graph map (empty
+/// => transitive check disabled, preserving the direct-only behavior).
+///
+/// `ov_names`/`ov_effs` (#885) is the SEPARATE callback-parameter overlay
+/// described above, scoped to the function body currently in view (empty at the
+/// program's top level and at any call site with no enclosing function-typed
+/// parameters in scope).
+export fn check_perform_effects_expr_tx(root: Expr, root_declared: Array[String], root_in_handle: Bool, fn_names: Array[String], fn_effs: Array[Array[String]], root_ov_names: Array[String], root_ov_effs: Array[Array[String]]) -> Array[EffectError] {
+  // #1485: the public entry keeps its 7-arg contract and supplies an EMPTY
+  // per-parameter table, which switches call-site row unification off and
+  // restores the pre-#1485 exemption. Callers of this entry are unit-test and
+  // non-stmts paths that have no call-graph parameter types to offer anyway.
+  // Nor has a checker pass published call bindings for this AST (Codex on
+  // #3055).
+  clear_checker_published_tables()
+  check_perform_effects_expr_tx_indexed(root, root_declared, root_in_handle, fn_names, fn_effs, program_fn_index(fn_names), root_ov_names, root_ov_effs)
+}
+
+/// The same entry with the program table's index supplied by the caller
+/// (#2386 review): the cacheability walks below run it once per test block
+/// of a file, and an index rebuilt per block is `blocks x table` of memory
+/// the bump lane never frees.
+export fn check_perform_effects_expr_tx_indexed(root: Expr, root_declared: Array[String], root_in_handle: Bool, fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], root_ov_names: Array[String], root_ov_effs: Array[Array[String]]) -> Array[EffectError] {
+  set_entry_user_effect_operations(array_empty())
+  check_perform_effects_expr_tx_in("", root, root_declared, root_in_handle, fn_names, fn_effs, fn_index, no_param_effs(), root_ov_names, root_ov_effs, no_kind_binds())
+}
+
+/// #639: the same walk with the enclosing top-level binding's NAME threaded in
+/// so row-mismatch diagnostics can blame the caller's declaration in the fix-it
+/// hint. The name is constant per walk (lambdas are anonymous), so it rides as
+/// a plain parameter, not on the work stack.
+fn pe_push(stack: Array[Expr], stack_ci: Array[Int], e: Expr, ci: Int) -> Unit {
+  Array::push(stack, e)
+  Array::push(stack_ci, ci)
+}
+
+fn pe_ctx(ctxs: Array[(Array[String], Bool, Array[String], Array[Array[String]], TkEnv)], declared: Array[String], in_handle: Bool, ov_names: Array[String], ov_effs: Array[Array[String]], kinds: TkEnv) -> Int {
+  Array::push(ctxs, (declared, in_handle, ov_names, ov_effs, kinds))
+  Array::length(ctxs) - 1
+}
+
+export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: Array[String], root_in_handle: Bool, fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], fn_param_effs: Array[Array[Array[String]]], root_ov_names: Array[String], root_ov_effs: Array[Array[String]], root_kinds: TkEnv) -> Array[EffectError] {
+  let errors = array_empty()
+  let scope_depth = Array::length(row_formal_scope)
+  Array::push(row_mismatch_roots, root_declared)
+  // The pending nodes and, in parallel, the index of the context each one is
+  // checked under. Children almost always inherit their parent's context, so
+  // a context is stored once and shared by index; pushing a per-node
+  // 6-tuple instead cost one heap allocation per AST node (~22 MB of the
+  // self-compile heap).
+  let stack: Array[Expr] = Array::slice([root], 0, 1)
+  let stack_ci: Array[Int] = Array::slice([0], 0, 1)
+  let ctxs = Array::slice([
+    (root_declared, root_in_handle, root_ov_names, root_ov_effs, root_kinds)
+  ], 0, 1)
+  while Array::length(stack) > 0 {
+    let n = Array::length(stack)
+    let expr = Array::get(stack, n - 1)
+    let ci = Array::get(stack_ci, n - 1)
+    let (declared, in_handle, ov_names, ov_effs, kinds) = Array::get(ctxs, ci)
+    Array::truncate(stack, n - 1)
+    Array::truncate(stack_ci, n - 1)
+    match expr {
+      ECall(callee, args, call_off) => {
+        match callee {
+          EIdent(name, callee_ident_off) => {
+            // #1723: the overlay is also the lexical-binding environment.
+            // Some([]) means a pure local binding; only None may fall through
+            // to the module-level function table.
+            let lexical_callee = lookup_fn_effs(ov_names, ov_effs, name)
+            // #3146: a call the compiler synthesized (`builtin_ref`) reaches
+            // the builtin even where the program defines the same name, so
+            // it carries the builtin's row, never that definition's.
+            let synthesized_builtin = is_builtin_ref_offset(callee_ident_off)
+            if name == "perform?" && Array::length(args) == 1 {
+              match perform_question_op_name(Array::get(args, 0)) {
+                Some(op_name) => {
+                  let lexical_operation = lookup_fn_effs(ov_names, ov_effs, op_name)
+                  // ADR-0088 strict grade match, both directions of "the
+                  // arm must be reachable" (Codex review on PR #2653): a
+                  // block runs with full authority, and a required grant of
+                  // the operation or its provider (`allows Fs +
+                  // Fs::read_file?`, or a block's ambient `Fs`) absorbs the
+                  // optional grade -- either way `NotGranted` cannot run.
+                  let required_cover = required_grant_covering_op(declared, op_name)
+                  if source_definition_shadows_builtin(op_name, lexical_operation, fn_names, fn_effs, fn_index) {
+                    Array::push(errors, EEPerformQuestionSourceShadow(op_name, call_off))
+                  } else if String::length(entry_block_display_name(fn_name)) > 0 {
+                    Array::push(errors, EEPerformQuestionAlwaysGranted(fn_name, op_name, "", call_off))
+                  } else if String::length(required_cover) > 0 {
+                    Array::push(errors, EEPerformQuestionAlwaysGranted(fn_name, op_name, required_cover, call_off))
+                  } else if decl_authorizes_optional_op(declared, op_name) {
+                    ()
+                  } else {
+                    Array::push(errors, EEPerformQuestionRequiresOptional(fn_name, op_name, call_off))
+                  }
+                },
+                // The operand is not a recognizable operation call, as in
+                // `perform? 1`. Reject it here so malformed source never
+                // reaches the lowering pass as an internal compiler error.
+                None => Array::push(errors, EEPerformQuestionInvalidOperand(call_off))
+              }
+              match Array::get(args, 0) {
+                ECall(_, opargs, _) => {
+                  let mut oi = 0
+                  while oi < Array::length(opargs) {
+                    pe_push(stack, stack_ci, Array::get(opargs, oi), ci)
+                    oi = oi + 1
+                  }
+                },
+                _ => ()
+              }
+            } else if name == "perform" && Array::length(args) == 1 {
+              match Array::get(args, 0) {
+                ECall(op_callee, opargs, _) => match op_callee {
+                  EIdent(op_name, _) => {
+                    let eff = effect_name_of_op(op_name)
+                    // ADR-0085 Phase 3 (#1344): for `throw(v)` the required
+                    // label carries the payload's exception KIND
+                    // (`Exception[IoError]::Throw`); every other operation
+                    // keeps its own name verbatim.
+                    let required_op = throw_required_label(op_name, opargs, kinds, call_off)
+                    // #640 Stage 2: `Error` is exempt from the DIRECT
+                    // discipline, exactly like the transitive slice below
+                    // (`teff != "Error"`) and builtin_call_effect's Error
+                    // carve-out — the throw row is pervasive (~970
+                    // un-annotated throw sites). `throw(x)` now parses to
+                    // `perform Exception::Throw(x)`, so without this exemption
+                    // every one of those sites would newly require
+                    // `with Exception`.
+                    // Codex review (PR #1161): report the qualified
+                    // operation (`op_name`, e.g. "Ask::Get"), not the
+                    // stripped base effect name -- per docs/internal/design/effectset.md's
+                    // operation-level diagnostic contract, a fix-it should
+                    // grant only the specific missing operation, not widen
+                    // to the whole effect (which would over-grant when a
+                    // sibling operation of the same effect is already
+                    // authorized at operation granularity, e.g. `with {
+                    // Ask::Other }` + a bare `perform Ask::Get`).
+                    //
+                    // `main` / `_start` only: a block's own `allows` row is
+                    // admitted up front (`entry_grant_errors`), and its ambient
+                    // default names every provider, so testing it here charged
+                    // a user effect that merely reuses a provider spelling
+                    // (`effect Console`, #1961) to the block. And a perform
+                    // whose qualified operation the enclosing `handle`
+                    // discharged (it is in `declared` by name) is not
+                    // undischarged, whatever the root row spells.
+                    if is_program_entry_name(fn_name) && !in_handle && !effect_row_has_label(Some(declared), op_name) && entry_user_operation_requires_handler(op_name) && decl_authorizes_op(root_declared, op_name) {
+                      Array::push(errors, EEUndischargedEntryEffect(fn_name, op_name, effect_name_of_op(op_name), call_off))
+                    } else if (!is_exception_effect_name(eff) || error_row_checked() || under_kinded_handle(declared)) && !in_handle && !decl_authorizes_op(declared, required_op) {
+                      // #2985 review (Codex P0): under a KINDED handler the
+                      // erased exemption is off -- this throw would be caught
+                      // by that arm and read at its kind.
+                      Array::push(errors, make_contextual_row_error(fn_name, declared, [
+                        throw_report_label(op_name, required_op, declared)
+                      ], call_off))
+                    } else {
+                      ()
+                    }
+                  },
+                  _ => ()
+                },
+                // #1157: a zero-arg operation (`Op -> T`, no parens) parses
+                // its `perform` argument as a bare `EIdent`, not an `ECall`
+                // — same direct-discipline check as the parenthesized form
+                // above, just without an args list to look past.
+                EIdent(op_name, _) => {
+                  let eff = effect_name_of_op(op_name)
+                  if is_program_entry_name(fn_name) && !in_handle && !effect_row_has_label(Some(declared), op_name) && entry_user_operation_requires_handler(op_name) && decl_authorizes_op(root_declared, op_name) {
+                    Array::push(errors, EEUndischargedEntryEffect(fn_name, op_name, effect_name_of_op(op_name), call_off))
+                  } else if (!is_exception_effect_name(eff) || error_row_checked()) && !in_handle && !decl_authorizes_op(declared, op_name) {
+                    Array::push(errors, make_contextual_row_error(fn_name, declared, [
+                      op_name
+                    ], call_off))
+                  } else {
+                    ()
+                  }
+                },
+                _ => ()
+              }
+            } else if !synthesized_builtin && source_definition_shadows_builtin(name, lexical_callee, fn_names, fn_effs, fn_index) {
+              // #2107: a source definition of this name wins, so the builtin's
+              // row is not the one to require -- the callee's OWN declared row
+              // is, and the transitive check below reads it. Codegen has the
+              // same rule for the print builtins (`cc_ft_has(ctx.func_table,
+              // fname)` in expr/compile_call.vibe, #929) and the gate pins it:
+              // `fn println(s: String) -> Unit { print("S\n") }` must compile
+              // and win over the builtin lowering. Without this the checker
+              // would demand `with Console` from callers of a user function that
+              // merely reuses the name.
+              ()
+            } else {
+              match builtin_call_effect(name) {
+                Some(eff) => {
+                  // #1343: authorize at OPERATION granularity as well as by the
+                  // bare effect. `with Fs` keeps working unchanged (the
+                  // effect check is tried first and is what every existing row
+                  // relies on); `with Fs::read_file` now also authorizes,
+                  // giving host capabilities the minimal-permission granularity
+                  // ADR-0071 defined and `perform Eff::Op` already had. Strictly
+                  // a widening -- nothing that compiled before can start failing.
+                  let op_label = builtin_call_op_label(name, eff)
+                  if !in_handle && !decl_authorizes_effect(declared, eff) && !decl_authorizes_effect(declared, op_label) && !decl_authorizes_op(declared, op_label) {
+                    // Report the OPERATION, per ADR-0071's diagnostic contract:
+                    // the fix-it should grant the one operation actually needed,
+                    // not widen the row to the whole effect (same rule the
+                    // perform path follows since Codex review on PR #1161).
+                    Array::push(errors, make_contextual_row_error(fn_name, declared, [
+                      op_label
+                    ], call_off))
+                  } else {
+                    ()
+                  }
+                },
+                None => ()
+              }
+            }
+            // Transitive (#626): calling a user function leaks its declared
+            // effects into this context unless declared here or under a handle.
+            // Scope = concrete RESOURCE effects (Fs/Env/Stdin/Stdout/...): the
+            // DIRECT discipline already excludes `Error` (the throw row is
+            // pervasive — nearly every function can throw) and `Async`
+            // (composition is allowed; the async pass governs it), so the
+            // transitive pass mirrors that exclusion. Effect-variable rows
+            // (polymorphic) impose nothing HERE — call-site resolution of what
+            // a row variable is instantiated to would need real effect-row
+            // unification (#885 tracks that separately); naively requiring the
+            // row-variable TOKEN itself in the caller's declared row produces
+            // false positives (see `generic_effect_matrix_ok_passthrough_pure`).
+            let top_level_callee = match lexical_callee {
+              Some(_) => None,
+              None => if synthesized_builtin {
+                None
+              } else {
+                lookup_program_fn_effs(fn_index, fn_effs, name)
+              }
+            }
+            match top_level_callee {
+              Some(callee_effs) => {
+                // #639: aggregate every effect this call site leaks into ONE
+                // set-difference diagnostic ("missing { Env, Fs }") instead of
+                // one error per label.
+                let missing = no_str_labels()
+                let mut ti = 0
+                while ti < Array::length(callee_effs) {
+                  // #3053: the callee's row as THIS call instantiates it.
+                  let teff = instantiate_callee_label(Array::get(callee_effs, ti), callee_ident_off, name)
+                  Array::set(requirement_marked_cell, 0, (teff, instantiate_callee_label_marked(Array::get(callee_effs, ti), callee_ident_off, name)))
+                  // #1343 (Codex P1 on PR #1359): `decl_authorizes_op`, not
+                  // `decl_authorizes_effect` -- once a callee can declare an
+                  // OPERATION row (`with Fs::read_file`), a caller holding
+                  // the WHOLE effect (`with Fs`) must authorize it. The
+                  // effect-only check compared labels literally, so the bare
+                  // `Fs` failed to cover `Fs::read_file` and calling such a
+                  // callee was rejected. decl_authorizes_op tries the base
+                  // effect name first, then the exact operation, so both
+                  // spellings of the caller's row work and nothing that
+                  // authorized before stops authorizing.
+                  if label_is_effect_var(teff) {
+                    // #1485: a row VARIABLE used to be skipped outright. It is
+                    // now resolved AT THIS CALL SITE from the arguments
+                    // actually passed to the parameters that carry it, and the
+                    // labels it turns out to denote are required like any
+                    // other. Unresolvable instantiations still fall through to
+                    // the old exemption (see resolve_row_var_instantiation).
+                    let callee_param_effs = match lookup_program_fn_param_effs(fn_index, fn_param_effs, name) {
+                      Some(pe) => pe,
+                      None => no_param_row()
+                    }
+                    match resolve_row_var_instantiation(teff, callee_param_effs, args, fn_names, fn_effs, fn_index, ov_names, ov_effs) {
+                      Some(inst) => {
+                        let mut ii = 0
+                        while ii < Array::length(inst) {
+                          let ieff = Array::get(inst, ii)
+                          // #3102 review: the label the variable resolved to
+                          // is judged on its own spelling, which was written
+                          // in the argument's scope -- so only a builtin word
+                          // in it names a certain type (marked mode 1).
+                          Array::set(requirement_marked_cell, 0, (ieff, ieff))
+                          // Same discipline the concrete branch below applies:
+                          // the exception row is row-transparent, and a
+                          // variable resolving to another variable is still
+                          // unresolved. #2967: `Async` is charged like any
+                          // other label.
+                          if String::length(ieff) > 0 && (!is_exception_effect_name(ieff) || error_row_checked() || under_kinded_handle(declared)) && !label_is_effect_var(ieff) && !in_handle && !decl_authorizes_op(declared, ieff) {
+                            Array::push(missing, ieff)
+                          } else {
+                            ()
+                          }
+                          ii = ii + 1
+                        }
+                      },
+                      None => ()
+                    }
+                  } else if String::length(teff) > 0 && (!is_exception_effect_name(teff) || error_row_checked() || under_kinded_handle(declared)) && !in_handle && !decl_authorizes_op(declared, teff) {
+                    Array::push(missing, teff)
+                  } else {
+                    ()
+                  }
+                  Array::set(requirement_marked_cell, 0, ("", ""))
+                  ti = ti + 1
+                }
+                if Array::length(missing) > 0 {
+                  Array::push(errors, make_contextual_row_error(fn_name, declared, missing, call_off))
+                } else {
+                  ()
+                }
+              },
+              None => ()
+            }
+            // #885: calling a function-typed PARAMETER (a callback) directly —
+            // e.g. `f(x)` inside the wrapper that declares `f: (T) -> T with
+            // { e }` — leaks `f`'s declared row into this context exactly like
+            // a named function call above, but UNLIKE that case a row-variable
+            // label here is NOT exempted: the parameter's `with e` and the
+            // enclosing function's own declared row live in the SAME
+            // signature, so the token `e` denotes the identical variable in
+            // both places (no cross-call-site instantiation to resolve), and
+            // literal-name membership is a sound check.
+            match lexical_callee {
+              Some(param_effs) => {
+                // #639: aggregated exactly like the named-callee case above.
+                let missing = no_str_labels()
+                let mut pi = 0
+                while pi < Array::length(param_effs) {
+                  // #3053 (Codex on #3055): a local generic lambda, or an
+                  // alias of one, is a lexical callee; its row is
+                  // instantiated at this call exactly like a top-level one.
+                  // A callback parameter records no instantiation, so its row
+                  // is returned as written.
+                  let peff = instantiate_callee_label(Array::get(param_effs, pi), callee_ident_off, name)
+                  // A callback parameter records no instantiation: its row
+                  // is the annotation as written (`row_label_args_differ`).
+                  let peff_marked = if callee_has_marked_bindings(callee_ident_off, name) {
+                    instantiate_callee_label_marked(Array::get(param_effs, pi), callee_ident_off, name)
+                  } else {
+                    String::concat("=", peff)
+                  }
+                  Array::set(requirement_marked_cell, 0, (peff, peff_marked))
+                  Array::set(row_callback_scope_start_cell, 0, row_scope_callback_start(name))
+                  // #3155: through an alias of a top-level function, a row
+                  // variable is the TARGET's and is instantiated from this
+                  // call's arguments exactly as the direct call does it --
+                  // including the same exemption when it cannot be read.
+                  let alias_target = if label_is_effect_var(peff) {
+                    overlay_alias_target(ov_names, ov_effs, name)
+                  } else {
+                    None
+                  }
+                  match alias_target {
+                    Some(target) => {
+                      let target_param_effs = match lookup_program_fn_param_effs(fn_index, fn_param_effs, target) {
+                        Some(pe) => pe,
+                        None => no_param_row()
+                      }
+                      match resolve_row_var_instantiation(peff, target_param_effs, args, fn_names, fn_effs, fn_index, ov_names, ov_effs) {
+                        Some(inst) => {
+                          let mut ii = 0
+                          while ii < Array::length(inst) {
+                            let ieff = Array::get(inst, ii)
+                            Array::set(requirement_marked_cell, 0, (ieff, ieff))
+                            if String::length(ieff) > 0 && (!is_exception_effect_name(ieff) || error_row_checked() || under_kinded_handle(declared)) && !label_is_effect_var(ieff) && !in_handle && !decl_authorizes_op(declared, ieff) {
+                              Array::push(missing, ieff)
+                            } else {
+                              ()
+                            }
+                            ii = ii + 1
+                          }
+                        },
+                        None => ()
+                      }
+                    },
+                    // #1343: same operation-awareness as the named-callee case
+                    // above -- a callback parameter whose row names an
+                    // operation is covered by a caller holding the whole effect.
+                    None => if String::length(peff) > 0 && (!is_exception_effect_name(peff) || error_row_checked() || under_kinded_handle(declared)) && !in_handle && !decl_authorizes_op(declared, peff) {
+                      Array::push(missing, peff)
+                    } else {
+                      ()
+                    }
+                  }
+                  Array::set(requirement_marked_cell, 0, ("", ""))
+                  Array::set(row_callback_scope_start_cell, 0, 1)
+                  pi = pi + 1
+                }
+                if Array::length(missing) > 0 {
+                  Array::push(errors, make_contextual_row_error(fn_name, declared, missing, call_off))
+                } else {
+                  ()
+                }
+              },
+              None => ()
+            }
+          },
+          _ => ()
+        }
+        match callee {
+          EIdent(cname, _) => if cname == "perform?" {
+            ()
+          } else {
+            pe_push(stack, stack_ci, callee, ci)
+            let mut ai = 0
+            while ai < Array::length(args) {
+              let arg = Array::get(args, ai)
+              match arg {
+                // Only a function literal can get a row of its own
+                // (`closure_arg_declared` answers `declared` for anything
+                // else), so only it needs a context of its own.
+                EFn(_, _, _, _, _, _) => pe_push(stack, stack_ci, arg, pe_ctx(ctxs, closure_arg_declared(arg, declared, cname, lookup_fn_effs(ov_names, ov_effs, cname), ai), in_handle, ov_names, ov_effs, kinds)),
+                _ => pe_push(stack, stack_ci, arg, ci)
+              }
+              ai = ai + 1
+            }
+          },
+          _ => {
+            // A callee that is not a name (a field, a call result) is one
+            // this pass cannot see, so a closure literal handed to it stays
+            // as strict as the body (closure_arg_declared).
+            pe_push(stack, stack_ci, callee, ci)
+            let mut bi = 0
+            while bi < Array::length(args) {
+              pe_push(stack, stack_ci, Array::get(args, bi), ci)
+              bi = bi + 1
+            }
+          }
+        }
+      },
+      EFn(tparams, _, params, fret, effect, body) => {
+        // ADR-0088: the grade check reaches a closure literal's annotations
+        // too -- its own row, its parameters' rows, its return type's rows --
+        // named after the enclosing binding (Codex review, PR #2653).
+        append_eff_errs(errors, optional_grade_errors(fn_name, labels_union(effect_row_labels(effect_row_parse(effect)), nested_type_rows(None, expr))))
+        // #761: an EXPLICITLY-annotated lambda (`(x) -> { .. } with E`) is
+        // checked against its own row E. An UN-annotated lambda's effect row is
+        // INFERRED, not declared, so checking its body against an empty row is
+        // wrong — it wrongly rejected an inline effectful lambda passed to a HOF
+        // param whose type declares the effect (bidirectional effect checking,
+        // e.g. `call_twice((c) -> { write_char(c) })`). Inherit the enclosing
+        // declared context instead: the lambda may use any effect available
+        // where it is written (its inferred row is surfaced in its type and
+        // re-checked at the call/handle site). Conservative — like the
+        // mutability pass, this can only miss errors, never invent them.
+        // #1451: a closure LITERAL also inherits the rows the enclosing binding's
+        // RETURN type declares for the function values it produces (see
+        // ret_fn_row_labels). Without this, `fn make() -> (String) -> Unit with E
+        // { (s) -> { perform E::Op(s) } }` charged the perform to `make`, whose
+        // own row is (correctly) empty -- the row belongs to the RETURNED value.
+        // Only literals get it; the enclosing body's own direct performs do not.
+        // #2985 review (Codex P0): a closure literal created and CALLED
+        // inside a kinded handle keeps the handle's strictness (its throws
+        // reach that arm: `let f = () -> Int { throw(7) }; f()` under
+        // `Exception[String]` read `7` as a String). Only a literal passed
+        // directly as a call ARGUMENT is relaxed, at the call site and only
+        // when the callee's signature shows it discharges the throws
+        // (closure_arg_declared).
+        let body_declared = effect_row_inherit(effect_row_parse(effect), labels_union(declared, current_ret_fn_rows()))
+        // #885: extend the callback-parameter overlay with THIS function's own
+        // function-typed parameters (if any carry a declared effect), scoped to
+        // its body. New entries are appended AHEAD of the inherited overlay so
+        // `lookup_fn_effs` (first-match) has a same-named inner parameter
+        // shadow an outer one.
+        //
+        // #885 review (Codex): shadowing must apply to EVERY one of this
+        // lambda's own parameter names, not just the ones that end up in
+        // local_names/local_effs (function-typed with a declared effect) --
+        // a parameter reusing an outer callback's name with a DIFFERENT type
+        // (e.g. plain `Int`, or a function type with no declared effect) must
+        // still block the inherited entry, or a call to the new, unrelated
+        // parameter is wrongly checked against the shadowed outer callback's
+        // effect row.
+        let shadowed = shadow_overlay_names(ov_names, ov_effs, params)
+        let (shadowed_ov_names, shadowed_ov_effs) = shadowed
+        let (local_names, local_effs) = build_param_overlay(params, fn_names, fn_index)
+        let body_ov_names = if Array::length(local_names) == 0 {
+          shadowed_ov_names
+        } else {
+          let merged = Array::slice(local_names, 0, Array::length(local_names))
+          let mut oi = 0
+          while oi < Array::length(shadowed_ov_names) {
+            Array::push(merged, Array::get(shadowed_ov_names, oi))
+            oi = oi + 1
+          }
+          merged
+        }
+        let body_ov_effs = if Array::length(local_effs) == 0 {
+          shadowed_ov_effs
+        } else {
+          let merged = Array::slice(local_effs, 0, Array::length(local_effs))
+          let mut oi = 0
+          while oi < Array::length(shadowed_ov_effs) {
+            Array::push(merged, Array::get(shadowed_ov_effs, oi))
+            oi = oi + 1
+          }
+          merged
+        }
+        // #1344 follow-up: a lambda's parameters enter the payload-kind scope
+        // from their annotations, exactly like a top-level function's.
+        // #3095: the body's formal scope. A lambda that declares its own row
+        // reads that row with its own formals in scope; one that inherits the
+        // enclosing row does not rebind the row's words, so it adds nothing --
+        // unless it also inherits the enclosing binding's RETURN-type rows,
+        // written outside every nested binder, which no scope can place.
+        let own_row = match effect_row_parse(effect) {
+          Some(_) => true,
+          None => false
+        }
+        let entry = array_empty()
+        let names = tparam_names(tparams)
+        let mut ni = 0
+        while ni < Array::length(names) {
+          if own_row {
+            Array::push(entry, Array::get(names, ni))
+          } else {
+            Array::push(entry, String::concat("@", Array::get(names, ni)))
+          }
+          ni = ni + 1
+        }
+        if !own_row && Array::length(current_ret_fn_rows()) > 0 && !row_scope_decl_is_root() {
+          Array::push(entry, row_scope_unknown())
+        }
+        let mut li = 0
+        while li < Array::length(local_names) {
+          Array::push(entry, row_scope_callback_marker(Array::get(local_names, li)))
+          li = li + 1
+        }
+        if Array::length(entry) > 0 {
+          Array::push(row_formal_scope, entry)
+          pe_push(stack, stack_ci, EIdent(row_scope_pop_marker(), 0 - 1), ci)
+        } else {
+          ()
+        }
+        pe_push(stack, stack_ci, body, pe_ctx(ctxs, body_declared, in_handle, body_ov_names, body_ov_effs, throw_kind_bind_params(kinds, params)))
+      },
+      EIdent(ident, _) => if ident == row_scope_pop_marker() {
+        row_scope_pop()
+      } else {
+        ()
+      },
+      EHandle(body, arms) => {
+        if Array::length(arms) == 0 {
+          Array::push(errors, EEEmptyHandle)
+        } else {
+          ()
+        }
+        let discharged = collect_handle_effects(arms)
+        // #2985 review (Codex P0): the exception channel carries no kind and
+        // codegen compiles only the FIRST exception arm, so a second one can
+        // never run -- `Exception[String]::Throw` + `Exception[Int]::Throw`
+        // routed an Int throw into the String arm (`14`). One exception arm
+        // per handle.
+        let exc_arms = exception_effect_labels(discharged)
+        if Array::length(exc_arms) > 1 {
+          Array::push(errors, EEMultipleExceptionArms(fn_name, join_labels(exc_arms)))
+        } else {
+          ()
+        }
+        // #2985 review (Codex P0): a kinded arm is a catch-all at run time,
+        // so the body must not raise any exception this handle does not
+        // name -- neither one the OUTER row would have let propagate (it
+        // would be caught here instead, and read at the wrong type) nor one
+        // of unresolved kind. The outer row's exception labels are dropped
+        // for the body and the marker makes the exception check exact. An
+        // ERASED arm is a new catch-all boundary: everything its body raises
+        // ends in it, so an enclosing kinded handle's marker is cleared.
+        let body_declared = if Array::length(kinded_exception_labels(discharged)) > 0 {
+          labels_union(labels_union(labels_without_exception_family(declared), discharged), [
+            kinded_handle_marker()
+          ])
+        } else if Array::length(exc_arms) > 0 {
+          labels_union(labels_without_exception_family_marker(declared), discharged)
+        } else {
+          labels_union(declared, discharged)
+        }
+        // Unknown wildcard arms stay conservative for the legacy surface,
+        // but a structurally empty handler must not gain that permission.
+        // Known discharge stays out of `in_handle`: that flag also skips the
+        // undeclared-effect check, so treating `handle Ask` as "inside a
+        // handle" lets `Logger` leak through (#626 criterion 2). Discharge
+        // of the named effect is already in `body_declared`.
+        let body_in_handle = if Array::length(arms) > 0 && Array::length(discharged) == 0 {
+          true
+        } else {
+          in_handle
+        }
+        pe_push(stack, stack_ci, body, pe_ctx(ctxs, body_declared, body_in_handle, ov_names, ov_effs, kinds))
+        let mut ai = 0
+        while ai < Array::length(arms) {
+          let (arm_pat, arm_body) = Array::get(arms, ai)
+          let (arm_ov_names, arm_ov_effs) = overlay_bind_empty_pat(ov_names, ov_effs, arm_pat, fn_names, fn_index)
+          pe_push(stack, stack_ci, arm_body, pe_ctx(ctxs, declared, in_handle, arm_ov_names, arm_ov_effs, throw_kind_bind_pat(kinds, arm_pat)))
+          ai = ai + 1
+        }
+      },
+      ELet(name, val, body, _) => {
+        // #885 review (Codex): `val` is evaluated in the OUTER scope (ELet is
+        // non-recursive), so only the body's overlay needs the new binding
+        // shadowed out. #1361: the same place registers a local closure's own
+        // declared row, so calling it from the body leaks that row.
+        let (body_ov_names, body_ov_effs) = overlay_bind_local(ov_names, ov_effs, name, val, fn_names, fn_effs, fn_index)
+        // #1344 follow-up: the local's payload kind is its initializer's, read
+        // in the OUTER scope for the same non-recursive reason.
+        let body_kinds = throw_kind_bind(kinds, name, throw_payload_kind(val, kinds))
+        pe_push(stack, stack_ci, val, ci)
+        pe_push(stack, stack_ci, body, pe_ctx(ctxs, declared, in_handle, body_ov_names, body_ov_effs, body_kinds))
+      },
+      ELetRec(name, val, body) => {
+        // #885 review (Codex): unlike ELet, `let rec` allows `val` itself to
+        // reference `name` (self-recursion), so both val and body need the
+        // shadow applied -- and, since #1361, the local closure's own row, so a
+        // recursive effectful closure is checked against it on both sides.
+        let (rec_ov_names, rec_ov_effs) = overlay_bind_local(ov_names, ov_effs, name, val, fn_names, fn_effs, fn_index)
+        // A `let rec` value is a function; there is no payload kind to read off
+        // it, so the name binds unresolvable on both sides (which is also what
+        // stops it resolving through a same-named top-level binding).
+        let rec_kinds = throw_kind_bind(kinds, name, "")
+        pe_push(stack, stack_ci, val, pe_ctx(ctxs, declared, in_handle, rec_ov_names, rec_ov_effs, rec_kinds))
+        pe_push(stack, stack_ci, body, pe_ctx(ctxs, declared, in_handle, rec_ov_names, rec_ov_effs, rec_kinds))
+      },
+      ELetMut(name, val, body, _) => {
+        // The initializer's row still contributes to ordinary effect-row
+        // checking. Handler evidence uses a separate mutable-alias guard.
+        let (body_ov_names, body_ov_effs) = overlay_bind_local(ov_names, ov_effs, name, val, fn_names, fn_effs, fn_index)
+        // A `mut` binding keeps one type for its whole life (an assignment of a
+        // different type is a type error), so its initializer's kind holds for
+        // the body just as ELet's does.
+        let body_kinds = throw_kind_bind(kinds, name, throw_payload_kind(val, kinds))
+        pe_push(stack, stack_ci, val, ci)
+        pe_push(stack, stack_ci, body, pe_ctx(ctxs, declared, in_handle, body_ov_names, body_ov_effs, body_kinds))
+      },
+      ESeq(a, b) => {
+        pe_push(stack, stack_ci, a, ci)
+        pe_push(stack, stack_ci, b, ci)
+      },
+      EIf(cond, then_e, else_e) => {
+        pe_push(stack, stack_ci, cond, ci)
+        pe_push(stack, stack_ci, then_e, ci)
+        pe_push(stack, stack_ci, else_e, ci)
+      },
+      EMatch(scrutinee, arms) => {
+        pe_push(stack, stack_ci, scrutinee, ci)
+        let mut ai = 0
+        while ai < Array::length(arms) {
+          let (arm_pat, arm_body) = Array::get(arms, ai)
+          let (arm_ov_names, arm_ov_effs) = overlay_bind_empty_pat(ov_names, ov_effs, arm_pat, fn_names, fn_index)
+          pe_push(stack, stack_ci, arm_body, pe_ctx(ctxs, declared, in_handle, arm_ov_names, arm_ov_effs, throw_kind_bind_pat(kinds, arm_pat)))
+          ai = ai + 1
+        }
+      },
+      EWhile(cond, body) => {
+        pe_push(stack, stack_ci, cond, ci)
+        pe_push(stack, stack_ci, body, ci)
+      },
+      ELoop(params, body) => {
+        // A loop parameter is re-bound by every `continue`, so its initializer's
+        // kind does not describe it for the whole body: it binds unresolvable.
+        let mut body_kinds = kinds
+        let loop_names = array_empty()
+        let mut i = 0
+        while i < Array::length(params) {
+          let (pname, init) = Array::get(params, i)
+          pe_push(stack, stack_ci, init, ci)
+          body_kinds = throw_kind_bind(body_kinds, pname, "")
+          Array::push(loop_names, pname)
+          i = i + 1
+        }
+        let (body_ov_names, body_ov_effs) = overlay_bind_empty_names(ov_names, ov_effs, loop_names, fn_names, fn_index)
+        pe_push(stack, stack_ci, body, pe_ctx(ctxs, declared, in_handle, body_ov_names, body_ov_effs, body_kinds))
+      },
+      EForIn(value_name, index_name, iter, body) => {
+        // The element (and optional index) binder has no syntactic kind here --
+        // it comes from the iterand's element type, which this untyped pass
+        // cannot see. Binding them unresolvable is what stops a same-named
+        // top-level binding answering for a loop variable.
+        let for_kinds = match index_name {
+          Some(iname) => throw_kind_bind(throw_kind_bind(kinds, value_name, ""), iname, ""),
+          None => throw_kind_bind(kinds, value_name, "")
+        }
+        pe_push(stack, stack_ci, iter, ci)
+        let (value_ov_names, value_ov_effs) = overlay_bind_empty(ov_names, ov_effs, value_name, fn_names, fn_index)
+        let for_overlay = match index_name {
+          Some(iname) => overlay_bind_empty(value_ov_names, value_ov_effs, iname, fn_names, fn_index),
+          None => (value_ov_names, value_ov_effs)
+        }
+        pe_push(stack, stack_ci, body, pe_ctx(ctxs, declared, in_handle, for_overlay.0, for_overlay.1, for_kinds))
+      },
+      EBinOp(_, left, right, _) => {
+        pe_push(stack, stack_ci, left, ci)
+        pe_push(stack, stack_ci, right, ci)
+      },
+      EReturn(e) => pe_push(stack, stack_ci, e, ci),
+      EUnaryOp(_, operand) => pe_push(stack, stack_ci, operand, ci),
+      EAssign(_, val, cont) => {
+        pe_push(stack, stack_ci, val, ci)
+        pe_push(stack, stack_ci, cont, ci)
+      },
+      EAssignOp(_, _, val, cont) => {
+        pe_push(stack, stack_ci, val, ci)
+        pe_push(stack, stack_ci, cont, ci)
+      },
+      EDot(obj, _, _, _) => pe_push(stack, stack_ci, obj, ci),
+      ETuple(elems) => {
+        let mut ei = 0
+        while ei < Array::length(elems) {
+          pe_push(stack, stack_ci, Array::get(elems, ei), ci)
+          ei = ei + 1
+        }
+      },
+      EArray(elems) => {
+        let mut ei = 0
+        while ei < Array::length(elems) {
+          pe_push(stack, stack_ci, Array::get(elems, ei), ci)
+          ei = ei + 1
+        }
+      },
+      ERecord(rec_sname, fields, _) => {
+        let mut fi = 0
+        while fi < Array::length(fields) {
+          let (fname, fval) = Array::get(fields, fi)
+          // #1451: a closure LITERAL stored into a field whose declared type
+          // carries a row may use that row -- the row belongs to the stored
+          // VALUE, not to the function assembling the record. Widened for the
+          // literal only: any OTHER field expression (a call that performs, say)
+          // keeps the enclosing `declared` and stays checked as before.
+          let field_declared = match fval {
+            EFn(_, _, _, _, _, _) => labels_union(declared, struct_field_rows_for(rec_sname, fname)),
+            _ => declared
+          }
+          pe_push(stack, stack_ci, fval, pe_ctx(ctxs, field_declared, in_handle, ov_names, ov_effs, kinds))
+          fi = fi + 1
+        }
+      },
+      EMap(fields) => {
+        let mut fi = 0
+        while fi < Array::length(fields) {
+          let (_, fval) = Array::get(fields, fi)
+          pe_push(stack, stack_ci, fval, ci)
+          fi = fi + 1
+        }
+      },
+      ELabeledArg(_, _, value) => pe_push(stack, stack_ci, value, ci),
+      ESpread(value) => pe_push(stack, stack_ci, value, ci),
+      EBreak(Some(value)) => pe_push(stack, stack_ci, value, ci),
+      EBreak(None) => (),
+      EContinue(args) => {
+        let mut ai = 0
+        while ai < Array::length(args) {
+          pe_push(stack, stack_ci, Array::get(args, ai), ci)
+          ai = ai + 1
+        }
+      },
+      // Scoped forms are handled above; any future non-scoped structural
+      // expression inherits this frame unchanged.
+      _ => {
+        let children = expr_children(expr)
+        let mut i = 0
+        while i < Array::length(children) {
+          pe_push(stack, stack_ci, Array::get(children, i), ci)
+          i = i + 1
+        }
+      }
+    }
+  }
+  Array::truncate(row_mismatch_roots, Array::length(row_mismatch_roots) - 1)
+  Array::truncate(row_formal_scope, scope_depth)
+  errors
+}

@@ -1,0 +1,62 @@
+import @vibe/compiler/refactor {
+  extract_function
+}
+
+fn refactor_byte_offset(text: String) -> Int with Exception {
+  if String::length(text) == 0 {
+    throw("refactor: offsets must be nonnegative decimal byte offsets")
+  } else {
+    ()
+  }
+  let mut value = 0
+  let mut i = 0
+  while i < String::length(text) {
+    let digit = String::char_code_at(text, i) - 48
+    if digit < 0 || digit > 9 || value > 214748364 || (value == 214748364 && digit > 7) {
+      throw("refactor: offsets must be nonnegative decimal byte offsets below 2147483648")
+    } else {
+      value = value * 10 + digit
+    }
+    i = i + 1
+  }
+  value
+}
+
+/// Preview validated edits on stdout; --write publishes the same result only
+/// after every range, binding, and type check has succeeded.
+export fn selfhost_cli_user_refactor_args(args: Array[String]) -> Int with Exception + Fs + Console {
+  let usage = "usage: vibe refactor extract-function <file.vibe> <start-byte> <end-byte> <name> [--write]"
+  if Array::length(args) == 2 && (Array::get(args, 1) == "--help" || Array::get(args, 1) == "-h") {
+    println(usage)
+    println("The range is half-open. The default prints the edited source; --write updates the file after validation.")
+    0
+  } else if Array::length(args) < 6 || Array::length(args) > 7 || Array::get(args, 1) != "extract-function" {
+    throw(usage)
+  } else {
+    let write = if Array::length(args) == 7 {
+      if Array::get(args, 6) != "--write" {
+        throw(usage)
+      } else {
+        true
+      }
+    } else {
+      false
+    }
+    let path = Array::get(args, 2)
+    let start = refactor_byte_offset(Array::get(args, 3))
+    let end = refactor_byte_offset(Array::get(args, 4))
+    let name = Array::get(args, 5)
+    let original = Fs::read_file(path)
+    let edited = extract_function(original, start, end, name)
+    if write {
+      if Fs::read_file(path) != original {
+        throw("refactor: the source changed during validation; retry against the current file")
+      } else {
+        Fs::write_file(path, edited)
+      }
+    } else {
+      print(edited)
+    }
+    0
+  }
+}

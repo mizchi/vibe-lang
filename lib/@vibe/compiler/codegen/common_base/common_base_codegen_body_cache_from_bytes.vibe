@@ -1,0 +1,2276 @@
+// lib/@vibe/compiler/codegen/common_base/common_base.vibe — codegen body cache from bytes.
+
+import @vibe/compiler/core {
+  Expr,
+  Pat,
+  Stmt,
+  TypeExpr,
+  __to_string,
+  apply_perm_strings,
+  bsearch_leftmost,
+  bytebuf_length,
+  bytebuf_new,
+  bytebuf_push,
+  bytebuf_push_buf,
+  bytebuf_to_bytes,
+  leb128_encode_u32,
+  sort_perm_by_names
+}
+
+import @vibe/ast {
+  type_param_name
+}
+
+import @vibe/core {
+  MutMap, array_empty
+}
+
+import @vibe/compiler/codegen/reloc {
+  blind_owner_pending
+}
+
+import @vibe/compiler/codegen/wasm_emit {
+  emit_block_i64,
+  emit_br,
+  emit_call,
+  emit_call_indirect,
+  emit_else,
+  emit_end,
+  emit_i32_add,
+  emit_i32_const,
+  emit_i32_load,
+  emit_i32_load8_u,
+  emit_i32_store,
+  emit_i32_store8,
+  emit_i32_wrap_i64,
+  emit_i64_add,
+  emit_i64_and,
+  emit_i64_const,
+  emit_i64_div_s,
+  emit_i64_eq,
+  emit_i64_eqz,
+  emit_i64_extend_i32_s,
+  emit_i64_ge_s,
+  emit_i64_gt_s,
+  emit_i64_le_s,
+  emit_i64_lt_s,
+  emit_i64_mul,
+  emit_i64_ne,
+  emit_i64_or,
+  emit_i64_rem_s,
+  emit_i64_shl,
+  emit_i64_shr_s,
+  emit_i64_store,
+  emit_i64_sub,
+  emit_i64_xor,
+  emit_if_void,
+  emit_local_get,
+  emit_local_set
+}
+
+import @vibe/compiler/normalize {
+  desugar_array_spread,
+  desugar_derives,
+  desugar_hoist_local_lambdas,
+  desugar_labeled_args,
+  desugar_railway_binds,
+  desugar_trait_dicts,
+  ensure_exn_kind_cell,
+  erase_railway_origin_markers,
+  exn_kind_read_expr,
+  exn_msg_read_expr,
+  inject_trait_method_generics,
+  unbox_tuple_loop_params,
+  wrap_entry_exception_boundary,
+  wrap_entry_host_provider
+}
+
+import ./common_base_compilectx.vibe {
+  CodegenBodyCache, CompileCtx, CtorTable, LambdaTable, LineMapState
+}
+
+import ./common_base_compilectxgc.vibe {
+  ctor_sorted_index,
+  ctor_table_index_of,
+  emit_i32_eqz,
+  emit_i32_mul,
+  emit_i32_ne,
+  emit_i32_sub,
+  op_i32_ge_u,
+  op_i32_gt_u,
+  op_i64_load,
+  op_i64_store
+}
+
+/// An empty cache. Threading one of these in means "compile everything, cache
+/// nothing" -- the pre-#1259 behaviour.
+export fn codegen_body_cache_new() -> CodegenBodyCache {
+  CodegenBodyCache::{
+    fn_indices: array_empty(),
+    fn_names: array_empty(),
+    fn_files: array_empty(),
+    fn_bodies: array_empty(),
+    fn_meta_i32: array_empty(),
+    fn_meta_i64: array_empty(),
+    fn_meta_v128: array_empty(),
+    lam_owner: array_empty(),
+    lam_indices: array_empty(),
+    lam_bodies: array_empty(),
+    lam_param_counts: array_empty(),
+    lam_captures: array_empty(),
+    lam_meta_i32: array_empty(),
+    lam_meta_i64: array_empty(),
+    slot_owner: array_empty(),
+    slot_values: array_empty(),
+    blind_fn: array_empty(),
+    blind_body: array_empty(),
+    blind_offsets: array_empty(),
+    blind_kinds: array_empty(),
+    blind_syms: array_empty(),
+    lm_owner: array_empty(),
+    lm_offsets: array_empty(),
+    lm_file_ids: array_empty(),
+    lm_lines: array_empty(),
+    fn_src_stmts: array_empty(),
+    guard_meta: array_empty(),
+    guard_synth_names: array_empty(),
+    guard_synth_stmts: array_empty(),
+    guard_import_names: array_empty(),
+    guard_borrow_names: array_empty(),
+    guard_borrow_masks: array_empty(),
+    guard_unmangled_names: array_empty(),
+    guard_layout: array_empty(),
+    guard_typed_lowering: array_empty(),
+    consumer_src_limit: array_empty(),
+    collect: [1]
+  }
+}
+
+/// An out-cache for a compile that will not read it: `record` is a no-op, so
+/// the compile allocates none of the per-function rows. Everything else --
+/// the guards a caller pushes directly, replay from an IN cache -- is
+/// unchanged, and reading this cache afterwards is what the name refuses.
+export fn codegen_body_cache_discard() -> CodegenBodyCache {
+  let c = codegen_body_cache_new()
+  Array::set(c.collect, 0, 0)
+  c
+}
+
+/// Position of `fn_index` in the cache, or -1. Linear scan.
+///
+/// The body loop no longer calls this -- running it once per function is
+/// quadratic, which is what `codegen_body_cache_slot_index` below replaced.
+/// It stays as the REFERENCE: the table is tested against this, key by key,
+/// so the fast lookup has an oracle rather than a second implementation
+/// nobody compares it to. Callers with a handful of lookups can use it
+/// directly and skip building a table.
+export fn codegen_body_cache_find(cache: CodegenBodyCache, fn_index: Int) -> Int {
+  let n = Array::length(cache.fn_indices)
+  let mut i = 0
+  let mut found = 0 - 1
+  while found < 0 && i < n {
+    if Array::get(cache.fn_indices, i) == fn_index {
+      found = i
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// #2388 step 3 follow-up: the same lookup in one read.
+///
+/// `codegen_body_cache_find` scans the whole cache per function, and the body
+/// loop calls it once per function -- quadratic in the function count, on the
+/// replay lane whose whole purpose is to make a warm compile cheap. #2388's
+/// prefix-stability probe counted 4,214 function bodies in the compiler's own
+/// closure, so a fully populated cache answers 4,214 questions with ~8.9
+/// million comparisons.
+///
+/// The key is a function INDEX, dense in [0, key_count), so a direct-address
+/// table answers each question in one read. `slot_of[k]` is the cache slot
+/// holding function k, or -1. FIRST occurrence wins, exactly like the scan: an
+/// entry is written only into a slot that is still -1.
+///
+/// The table is sized by the CALLER's key space, not by the largest index the
+/// cache happens to carry. `key_count` is what the caller can ask about --
+/// `num_user_funcs` at the body loop -- so the table is one Int per function
+/// and an entry outside that range is simply left out, unreachable rather than
+/// dropped: the scan cannot return it either without being asked with a key
+/// the caller never uses. Sizing it from the cache instead would let a torn or
+/// hand-built artifact carrying one absurd index (`2^40`) turn a lookup into
+/// an allocation the scan never made.
+///
+/// So the contract is exact and bounded: for every key in [0, key_count), this
+/// answers what `codegen_body_cache_find` answers, and
+/// `codegen_body_cache_find_at` answers -1 outside it.
+/// #2669 step 2a: the cache slot for the function NAMED `name`, or -1 when
+/// absent, or -2 when the name is carried by more than one entry.
+///
+/// Linear scan, and the REFERENCE for the sorted lookup below -- the same
+/// relationship `codegen_body_cache_find` has with `codegen_body_cache_find_at`.
+///
+/// Ambiguity is refused rather than resolved first-wins. Merged programs
+/// path-mangle private definitions (#716) so user function names should be
+/// unique, but "should be" is what #2705 discovered was false for generated
+/// names, and taking whichever came first there meant comparing a body
+/// against an unrelated one. A duplicated name is a miss, which costs a
+/// recompile; taking the first would cost correctness.
+export fn codegen_body_cache_find_named(cache: CodegenBodyCache, name: String) -> Int {
+  let n = Array::length(cache.fn_names)
+  let mut i = 0
+  let mut found = 0 - 1
+  let mut hits = 0
+  while i < n {
+    if Array::get(cache.fn_names, i) == name {
+      hits = hits + 1
+      if hits == 1 {
+        found = i
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if hits > 1 {
+    0 - 2
+  } else {
+    found
+  }
+}
+
+/// Sorted view of the cache's function names plus their original positions,
+/// built ONCE per compile. Without it the body loop would scan every entry
+/// for every function, which is quadratic -- the same reason
+/// `codegen_body_cache_slot_index` exists.
+export fn codegen_body_cache_name_index(cache: CodegenBodyCache) -> (Array[String], Array[Int]) {
+  ctor_sorted_index(cache.fn_names)
+}
+
+/// The cache slot for the function named `name`, via the sorted view. Same
+/// answer as `codegen_body_cache_find_named`, including the -2 for a
+/// duplicated name: `bsearch_leftmost` lands on the FIRST of a run of equal
+/// names, so a second one sitting next to it is what makes the name ambiguous.
+export fn codegen_body_cache_find_named_at(sorted: Array[String], positions: Array[Int], name: String) -> Int {
+  let s = bsearch_leftmost(sorted, name)
+  if s < 0 {
+    0 - 1
+  } else if s + 1 < Array::length(sorted) && Array::get(sorted, s + 1) == name {
+    0 - 2
+  } else {
+    Array::get(positions, s)
+  }
+}
+
+/// #2669 step 2a: one flag per name -- 1 when that name occurs EXACTLY once
+/// in `names`, 0 when it is duplicated.
+///
+/// A name identifies a function only while it is unique, and uniqueness has to
+/// be asked of the CURRENT build, not only of the cache. The cache can hold
+/// one of a duplicated pair and no more -- the prefix filter drops entries
+/// past the first changed file, and the pair can straddle that boundary -- at
+/// which point the cached name looks unique while the build still has two
+/// functions answering to it. Found by review on #2714, one round after the
+/// cache-side ambiguity.
+///
+/// Sorted once and scanned in one pass rather than compared pairwise, so this
+/// is O(n log n) for the whole table instead of O(n) per lookup.
+export fn unique_name_flags(names: Array[String]) -> Array[Int] {
+  let n = Array::length(names)
+  let out: Array[Int] = []
+  let mut i = 0
+  while i < n {
+    Array::push(out, 1)
+    i = i + 1
+  }
+  let (sorted, positions) = ctor_sorted_index(names)
+  let mut k = 0
+  while k + 1 < n {
+    if Array::get(sorted, k) == Array::get(sorted, k + 1) {
+      Array::set(out, Array::get(positions, k), 0)
+      Array::set(out, Array::get(positions, k + 1), 0)
+    } else {
+      ()
+    }
+    k = k + 1
+  }
+  out
+}
+
+export fn codegen_body_cache_slot_index(cache: CodegenBodyCache, key_count: Int) -> Array[Int] {
+  let out: Array[Int] = []
+  let mut j = 0
+  while j < key_count {
+    Array::push(out, 0 - 1)
+    j = j + 1
+  }
+  let n = Array::length(cache.fn_indices)
+  let mut i = 0
+  while i < n {
+    let k = Array::get(cache.fn_indices, i)
+    if k >= 0 && k < key_count && Array::get(out, k) < 0 {
+      Array::set(out, k, i)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// The cache slot holding `fn_index`, or -1. Same answer as
+/// `codegen_body_cache_find` for every key inside the table's range -- pinned
+/// against it as the oracle -- and -1 outside it.
+export fn codegen_body_cache_find_at(slot_index: Array[Int], fn_index: Int) -> Int {
+  if fn_index < 0 || fn_index >= Array::length(slot_index) {
+    0 - 1
+  } else {
+    Array::get(slot_index, fn_index)
+  }
+}
+
+/// Append function `fn_index`'s just-finished codegen output to `cache`.
+///
+/// Reads the LAST entry of `bodies` / `meta_i32` / `meta_i64` -- the loop has
+/// just pushed them -- and the lambda table slice `[lam_lo, lam_hi)`, which is
+/// exactly the range the plan assigned this function.
+export fn codegen_body_cache_record(cache: CodegenBodyCache, fn_index: Int, fn_name: String, fn_file: Int, src_stmt: Int, bodies: Array[Bytes], meta_i32: Array[Int], meta_i64: Array[Int], meta_v128: Array[Int], lt: LambdaTable, lam_lo: Int, lam_hi: Int, slots: Array[Int], slot_lo: Int, slot_hi: Int, blind_bodies: Array[Int], blind_offsets: Array[Int], blind_kinds: Array[Int], blind_syms: Array[Int], blind_lo: Int, blind_hi: Int, lm: LineMapState, lm_lo: Int) -> Unit {
+  // A cache nobody will read collects nothing: `n == 0` is already the
+  // "nothing to record" exit, so declining lands there (see `collect`).
+  let declined = Array::length(cache.collect) > 0 && Array::get(cache.collect, 0) == 0
+  let n = if declined {
+    0
+  } else {
+    Array::length(bodies)
+  }
+  if n == 0 {
+    ()
+  } else {
+    Array::push(cache.fn_indices, fn_index)
+    Array::push(cache.fn_names, fn_name)
+    Array::push(cache.fn_files, fn_file)
+    Array::push(cache.fn_src_stmts, src_stmt)
+    Array::push(cache.fn_bodies, Array::get(bodies, n - 1))
+    Array::push(cache.fn_meta_i32, Array::get(meta_i32, Array::length(meta_i32) - 1))
+    Array::push(cache.fn_meta_i64, Array::get(meta_i64, Array::length(meta_i64) - 1))
+    Array::push(cache.fn_meta_v128, Array::get(meta_v128, Array::length(meta_v128) - 1))
+    let mut li = lam_lo
+    while li < lam_hi {
+      Array::push(cache.lam_owner, fn_index)
+      Array::push(cache.lam_indices, li)
+      Array::push(cache.lam_bodies, Array::get(lt.bodies, li))
+      Array::push(cache.lam_param_counts, Array::get(lt.param_counts, li))
+      Array::push(cache.lam_captures, Array::get(lt.captures, li))
+      Array::push(cache.lam_meta_i32, Array::get(lt.meta_i32, li))
+      Array::push(cache.lam_meta_i64, Array::get(lt.meta_i64, li))
+      li = li + 1
+    }
+    let mut si = slot_lo
+    while si < slot_hi {
+      Array::push(cache.slot_owner, fn_index)
+      Array::push(cache.slot_values, Array::get(slots, si))
+      si = si + 1
+    }
+    // #2669 slice 3: same suffix rule as the slots. The body owner is stored
+    // as recorded rather than rewritten to fn_index -- a record made inside
+    // one of this function's lambdas names that lambda, and its offset means
+    // nothing against any other body.
+    let mut bi = blind_lo
+    while bi < blind_hi {
+      Array::push(cache.blind_fn, fn_index)
+      Array::push(cache.blind_body, Array::get(blind_bodies, bi))
+      Array::push(cache.blind_offsets, Array::get(blind_offsets, bi))
+      Array::push(cache.blind_kinds, Array::get(blind_kinds, bi))
+      Array::push(cache.blind_syms, Array::get(blind_syms, bi))
+      bi = bi + 1
+    }
+    let mut lmi = lm_lo
+    while lmi < Array::length(lm.offsets) {
+      Array::push(cache.lm_owner, fn_index)
+      Array::push(cache.lm_offsets, Array::get(lm.offsets, lmi))
+      Array::push(cache.lm_file_ids, Array::get(lm.file_ids, lmi))
+      Array::push(cache.lm_lines, Array::get(lm.lines, lmi))
+      lmi = lmi + 1
+    }
+  }
+}
+
+/// Concatenate two harvests. Used to reassemble the whole program from the
+/// per-slice caches a `--jobs N` run produces.
+///
+/// A plain append is enough because nothing in a cache entry is positional: a
+/// function is keyed by `fn_indices`, a lambda by its PLANNED index, and a
+/// table slot by its owning function. Replay looks each up by key and pushes
+/// in the body loop's order, so the order entries sit in here never reaches
+/// the output. Slices are expected to be disjoint; overlapping ones would give
+/// `codegen_body_cache_find` two candidates and it would take the first.
+export fn codegen_body_cache_merge(a: CodegenBodyCache, b: CodegenBodyCache) -> CodegenBodyCache {
+  let out = codegen_body_cache_new()
+  let mut si = 0
+  while si < 2 {
+    let src = if si == 0 {
+      a
+    } else {
+      b
+    }
+    let fn_n = Array::length(src.fn_indices)
+    let mut i = 0
+    while i < fn_n {
+      Array::push(out.fn_indices, Array::get(src.fn_indices, i))
+      Array::push(out.fn_names, Array::get(src.fn_names, i))
+      Array::push(out.fn_files, Array::get(src.fn_files, i))
+      Array::push(out.fn_src_stmts, Array::get(src.fn_src_stmts, i))
+      Array::push(out.fn_bodies, Array::get(src.fn_bodies, i))
+      Array::push(out.fn_meta_i32, Array::get(src.fn_meta_i32, i))
+      Array::push(out.fn_meta_i64, Array::get(src.fn_meta_i64, i))
+      Array::push(out.fn_meta_v128, Array::get(src.fn_meta_v128, i))
+      i = i + 1
+    }
+    let lam_n = Array::length(src.lam_owner)
+    let mut j = 0
+    while j < lam_n {
+      Array::push(out.lam_owner, Array::get(src.lam_owner, j))
+      Array::push(out.lam_indices, Array::get(src.lam_indices, j))
+      Array::push(out.lam_bodies, Array::get(src.lam_bodies, j))
+      Array::push(out.lam_param_counts, Array::get(src.lam_param_counts, j))
+      Array::push(out.lam_captures, Array::get(src.lam_captures, j))
+      Array::push(out.lam_meta_i32, Array::get(src.lam_meta_i32, j))
+      Array::push(out.lam_meta_i64, Array::get(src.lam_meta_i64, j))
+      j = j + 1
+    }
+    let slot_n = Array::length(src.slot_owner)
+    let mut k = 0
+    while k < slot_n {
+      Array::push(out.slot_owner, Array::get(src.slot_owner, k))
+      Array::push(out.slot_values, Array::get(src.slot_values, k))
+      k = k + 1
+    }
+    let blind_n = Array::length(src.blind_fn)
+    let mut m = 0
+    while m < blind_n {
+      Array::push(out.blind_fn, Array::get(src.blind_fn, m))
+      Array::push(out.blind_body, Array::get(src.blind_body, m))
+      Array::push(out.blind_offsets, Array::get(src.blind_offsets, m))
+      Array::push(out.blind_kinds, Array::get(src.blind_kinds, m))
+      Array::push(out.blind_syms, Array::get(src.blind_syms, m))
+      m = m + 1
+    }
+    let lm_n = Array::length(src.lm_owner)
+    let mut lmi = 0
+    while lmi < lm_n {
+      Array::push(out.lm_owner, Array::get(src.lm_owner, lmi))
+      Array::push(out.lm_offsets, Array::get(src.lm_offsets, lmi))
+      Array::push(out.lm_file_ids, Array::get(src.lm_file_ids, lmi))
+      Array::push(out.lm_lines, Array::get(src.lm_lines, lmi))
+      lmi = lmi + 1
+    }
+    si = si + 1
+  }
+  // Guards are compile-level facts, not per-entry data: slices harvested
+  // from the same compile carry identical guards, so take one side's
+  // (preferring a non-empty one) rather than concatenating.
+  let gsrc = if Array::length(a.guard_meta) > 0 {
+    a
+  } else {
+    b
+  }
+  bcc_copy_guards(gsrc, out)
+  out
+}
+
+/// #2388 step 3: does `cache`'s recorded synthesized region match the
+/// current compile's -- same names in the same order at the same merged-
+/// statement positions? `names`/`stmt_indices` are the post-reorder
+/// function lists, `[lo, hi)` the synthesized region.
+export fn bcc_guard_synth_matches(cache: CodegenBodyCache, names: Array[String], stmt_indices: Array[Int], lo: Int, hi: Int) -> Bool {
+  let mut ok = Array::length(cache.guard_synth_names) == hi - lo
+  let mut i = lo
+  while ok && i < hi {
+    if Array::get(cache.guard_synth_names, i - lo) != Array::get(names, i) || Array::get(cache.guard_synth_stmts, i - lo) != Array::get(stmt_indices, i) {
+      ok = false
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  ok
+}
+
+fn bcc_copy_guards(src: CodegenBodyCache, out: CodegenBodyCache) -> Unit {
+  let mut gi = 0
+  while gi < Array::length(src.guard_meta) {
+    Array::push(out.guard_meta, Array::get(src.guard_meta, gi))
+    gi = gi + 1
+  }
+  let mut gj = 0
+  while gj < Array::length(src.guard_synth_names) {
+    Array::push(out.guard_synth_names, Array::get(src.guard_synth_names, gj))
+    gj = gj + 1
+  }
+  let mut gk = 0
+  while gk < Array::length(src.guard_synth_stmts) {
+    Array::push(out.guard_synth_stmts, Array::get(src.guard_synth_stmts, gk))
+    gk = gk + 1
+  }
+  let mut gm = 0
+  while gm < Array::length(src.guard_import_names) {
+    Array::push(out.guard_import_names, Array::get(src.guard_import_names, gm))
+    gm = gm + 1
+  }
+  let mut gb = 0
+  while gb < Array::length(src.guard_borrow_names) {
+    Array::push(out.guard_borrow_names, Array::get(src.guard_borrow_names, gb))
+    gb = gb + 1
+  }
+  let mut gc = 0
+  while gc < Array::length(src.guard_borrow_masks) {
+    Array::push(out.guard_borrow_masks, Array::get(src.guard_borrow_masks, gc))
+    gc = gc + 1
+  }
+  let mut gu = 0
+  while gu < Array::length(src.guard_unmangled_names) {
+    Array::push(out.guard_unmangled_names, Array::get(src.guard_unmangled_names, gu))
+    gu = gu + 1
+  }
+  // #2669 step 2b. `consumer_src_limit` is deliberately NOT copied: it
+  // describes the build that decoded the cache, not the harvest the guards
+  // belong to, and a filtered or merged cache is handed to a consumer that
+  // sets it for itself.
+  let mut gw = 0
+  while gw < Array::length(src.guard_layout) {
+    Array::push(out.guard_layout, Array::get(src.guard_layout, gw))
+    gw = gw + 1
+  }
+  let mut gt = 0
+  while gt < Array::length(src.guard_typed_lowering) {
+    Array::push(out.guard_typed_lowering, Array::get(src.guard_typed_lowering, gt))
+    gt = gt + 1
+  }
+}
+
+/// #2388 step 3: exact int-list equality, the mask half of the borrow guard.
+export fn bcc_int_lists_equal(a: Array[Int], b: Array[Int]) -> Bool {
+  let mut ok = Array::length(a) == Array::length(b)
+  let mut i = 0
+  while ok && i < Array::length(a) {
+    if Array::get(a, i) != Array::get(b, i) {
+      ok = false
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  ok
+}
+
+/// #2388 step 3: exact string-list equality, used by the guard validation
+/// (synth-name and import-name lists must match elementwise, in order).
+export fn bcc_string_lists_equal(a: Array[String], b: Array[String]) -> Bool {
+  let mut ok = Array::length(a) == Array::length(b)
+  let mut i = 0
+  while ok && i < Array::length(a) {
+    if Array::get(a, i) != Array::get(b, i) {
+      ok = false
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  ok
+}
+
+/// #2669 step 2b: the `guard_layout` accumulator.
+///
+/// Each helper appends exactly ONE slot -- `[h1, h2]` -- so the slot order is
+/// positional, the length is a schema check, and a caller cannot append half a
+/// slot. Dual-modulus rolling hash, the same shape the artifact's payload
+/// checksum already uses.
+///
+/// Every element is followed by a separator byte, because the values being
+/// pinned decide OFFSETS: `["ab", "c"]` and `["a", "bc"]` have identical bytes
+/// and put "c" at different places, and a body embeds the place.
+fn bcc_fp_byte(fp: Array[Int], byte: Int) -> Unit {
+  Array::set(fp, 0, (Array::get(fp, 0) * 131 + byte) % 2147483647)
+  Array::set(fp, 1, (Array::get(fp, 1) * 137 + byte) % 2147483629)
+}
+
+fn bcc_fp_int(fp: Array[Int], v: Int) -> Unit {
+  // The WHOLE value: a sign byte and nine magnitude bytes, low first.
+  //
+  // Seven bytes was the first version and it was wrong -- 56 bits, against a
+  // 63-bit Int, so `0` and `1 << 56` fingerprinted alike. That is harmless for
+  // an index or a count and not harmless for `const_int_values`, where the
+  // pinned thing is a literal the program embeds: a folded constant edited
+  // between two such values would leave `guard_layout` equal and replay a body
+  // carrying the old number (Codex P1 on this PR).
+  //
+  // Nine bytes is 72 bits, which covers the 62-bit magnitude with room; the
+  // sign rides separately so `acc / 256` never has to mean anything for a
+  // negative, and the magnitude of the most negative Int is taken as
+  // `-(v + 1)` so it cannot overflow on the way in.
+  let neg = v < 0
+  let mut acc = if neg {
+    0 - (v + 1)
+  } else {
+    v
+  }
+  bcc_fp_byte(fp, if neg {
+    1
+  } else {
+    0
+  })
+  let mut k = 0
+  while k < 9 {
+    bcc_fp_byte(fp, acc&255)
+    acc = acc / 256
+    k = k + 1
+  }
+  bcc_fp_byte(fp, 255)
+}
+
+fn bcc_fp_string(fp: Array[Int], sv: String) -> Unit {
+  let len = String::length(sv)
+  let mut h1 = Array::get(fp, 0)
+  let mut h2 = Array::get(fp, 1)
+  let mut k = 0
+  while k < len {
+    let byte = String::char_code_at(sv, k)
+    h1 = (h1 * 131 + byte) % 2147483647
+    h2 = (h2 * 137 + byte) % 2147483629
+    k = k + 1
+  }
+  // Keep the byte encoding, including the separator, identical to bcc_fp_byte.
+  Array::set(fp, 0, (h1 * 131 + 255) % 2147483647)
+  Array::set(fp, 1, (h2 * 137 + 255) % 2147483629)
+}
+
+fn bcc_fp_new() -> Array[Int] {
+  [17, 29]
+}
+
+fn bcc_fp_emit(out: Array[Int], fp: Array[Int]) -> Unit {
+  Array::push(out, Array::get(fp, 0))
+  Array::push(out, Array::get(fp, 1))
+}
+
+/// One slot for an ordered string vector.
+export fn bcc_layout_fp_strings(out: Array[Int], xs: Array[String]) -> Unit {
+  bcc_layout_fp_strings_upto(out, xs, Array::length(xs))
+}
+
+/// One slot for the first `upto` elements of an ordered string vector.
+///
+/// The string pool uses this: what lies past `src_str_base` is the source
+/// path/content region, which only a generated builtin every compile rebuilds
+/// can reference. Folding it in would make any edit anywhere invalidate every
+/// cached body, which is the cost this step exists to remove.
+export fn bcc_layout_fp_strings_upto(out: Array[Int], xs: Array[String], upto: Int) -> Unit {
+  let fp = bcc_fp_new()
+  let n = if upto < Array::length(xs) {
+    upto
+  } else {
+    Array::length(xs)
+  }
+  bcc_fp_int(fp, n)
+  let mut i = 0
+  while i < n {
+    bcc_fp_string(fp, Array::get(xs, i))
+    i = i + 1
+  }
+  bcc_fp_emit(out, fp)
+}
+
+/// One slot for an ordered Int vector.
+export fn bcc_layout_fp_ints(out: Array[Int], xs: Array[Int]) -> Unit {
+  let fp = bcc_fp_new()
+  bcc_fp_int(fp, Array::length(xs))
+  let mut i = 0
+  while i < Array::length(xs) {
+    bcc_fp_int(fp, Array::get(xs, i))
+    i = i + 1
+  }
+  bcc_fp_emit(out, fp)
+}
+
+/// One slot for an ordered Bool vector.
+export fn bcc_layout_fp_bools(out: Array[Int], xs: Array[Bool]) -> Unit {
+  let fp = bcc_fp_new()
+  bcc_fp_int(fp, Array::length(xs))
+  let mut i = 0
+  while i < Array::length(xs) {
+    bcc_fp_int(fp, if Array::get(xs, i) {
+      1
+    } else {
+      0
+    })
+    i = i + 1
+  }
+  bcc_fp_emit(out, fp)
+}
+
+/// One slot for a vector of string vectors (a struct's field names, per type).
+export fn bcc_layout_fp_string_matrix(out: Array[Int], xs: Array[Array[String]]) -> Unit {
+  let fp = bcc_fp_new()
+  bcc_fp_int(fp, Array::length(xs))
+  let mut i = 0
+  while i < Array::length(xs) {
+    let inner = Array::get(xs, i)
+    bcc_fp_int(fp, Array::length(inner))
+    let mut j = 0
+    while j < Array::length(inner) {
+      bcc_fp_string(fp, Array::get(inner, j))
+      j = j + 1
+    }
+    i = i + 1
+  }
+  bcc_fp_emit(out, fp)
+}
+
+/// Replay cache entry `at` into the whole-program accumulators, in place of
+/// compiling that function.
+///
+/// The lambdas go back by plain append, which lands them at their planned
+/// indices exactly because functions are replayed in the same order they were
+/// planned: `lt.bodies` is `lam_lo` long when this runs. That is the same
+/// invariant the compile path relies on, so a replayed function and a compiled
+/// one leave the table identical.
+export fn codegen_body_cache_replay(cache: CodegenBodyCache, at: Int, bodies: Array[Bytes], meta_i32: Array[Int], meta_i64: Array[Int], meta_v128: Array[Int], lt: LambdaTable, slots: Array[Int], blind_bodies: Array[Int], blind_offsets: Array[Int], blind_kinds: Array[Int], blind_syms: Array[Int], lm: LineMapState, replay_bi: Int) -> Unit {
+  let owner = Array::get(cache.fn_indices, at)
+  Array::push(bodies, Array::get(cache.fn_bodies, at))
+  Array::push(meta_i32, Array::get(cache.fn_meta_i32, at))
+  Array::push(meta_i64, Array::get(cache.fn_meta_i64, at))
+  Array::push(meta_v128, Array::get(cache.fn_meta_v128, at))
+  let n = Array::length(cache.lam_owner)
+  let mut i = 0
+  while i < n {
+    if Array::get(cache.lam_owner, i) == owner {
+      Array::push(lt.bodies, Array::get(cache.lam_bodies, i))
+      Array::push(lt.param_counts, Array::get(cache.lam_param_counts, i))
+      Array::push(lt.captures, Array::get(cache.lam_captures, i))
+      Array::push(lt.meta_i32, Array::get(cache.lam_meta_i32, i))
+      Array::push(lt.meta_i64, Array::get(cache.lam_meta_i64, i))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  let sn = Array::length(cache.slot_owner)
+  let mut si = 0
+  while si < sn {
+    if Array::get(cache.slot_owner, si) == owner {
+      Array::push(slots, Array::get(cache.slot_values, si))
+    } else {
+      ()
+    }
+    si = si + 1
+  }
+  // #2669 slice 3: re-push this function's blind references, so a replaying
+  // build's log is the same one a compiling build would have produced. Until
+  // this existed, a replayed function contributed slots and no references,
+  // and the paired-count invariant had to stand down for it.
+  let bn = Array::length(cache.blind_fn)
+  let mut bi = 0
+  while bi < bn {
+    if Array::get(cache.blind_fn, bi) == owner {
+      Array::push(blind_bodies, Array::get(cache.blind_body, bi))
+      Array::push(blind_offsets, Array::get(cache.blind_offsets, bi))
+      Array::push(blind_kinds, Array::get(cache.blind_kinds, bi))
+      Array::push(blind_syms, Array::get(cache.blind_syms, bi))
+    } else {
+      ()
+    }
+    bi = bi + 1
+  }
+  // #2199: a disabled state is the compile declining to place this function's
+  // file (see `lc_dbg_file_placed`), so a replay into it drops the cached rows
+  // for the same reason a fresh compile of it records none -- the two paths
+  // have to agree, or `verify` compares a populated table against an empty one.
+  let ln = if lm.enabled {
+    Array::length(cache.lm_owner)
+  } else {
+    0
+  }
+  let mut lmi = 0
+  while lmi < ln {
+    if Array::get(cache.lm_owner, lmi) == owner {
+      Array::push(lm.funcs, replay_bi)
+      Array::push(lm.offsets, Array::get(cache.lm_offsets, lmi))
+      Array::push(lm.file_ids, Array::get(cache.lm_file_ids, lmi))
+      Array::push(lm.lines, Array::get(cache.lm_lines, lmi))
+    } else {
+      ()
+    }
+    lmi = lmi + 1
+  }
+}
+
+/// #2388 step 3: the subset of `cache` whose recorded merged-statement index
+/// is below `limit` -- the caller's proven-unchanged source prefix. Entries
+/// past the limit (edited modules, capacity pads, appended derived lets)
+/// are dropped and recompile. Prelude-synthesized functions can sit BELOW
+/// the limit (trait dispatchers are inserted after the last impl, which may
+/// be mid-prefix) while their content depends on the WHOLE program, so the
+/// filter also requires the entry to be in the recorded source-function
+/// region (`fn_index < guard_meta[0]`); a cache with no recorded guards
+/// filters to empty -- it was never meant to cross compiles. Returns a
+/// fresh cache carrying the input's guards; the input is not mutated.
+export fn codegen_body_cache_filter_src_below(cache: CodegenBodyCache, limit: Int) -> CodegenBodyCache {
+  bcc_filter_entries(cache, bcc_keep_flags_below(cache, limit))
+}
+
+/// Which entries `codegen_body_cache_filter_src_below` would keep, as a flag
+/// per entry. Split out so the two filters differ only in the QUESTION they
+/// ask about a statement, not in the bookkeeping that carries an entry's
+/// lambdas, slots and blind records along with it.
+fn bcc_keep_flags_below(cache: CodegenBodyCache, limit: Int) -> Array[Int] {
+  let src_region_n = bcc_src_region_n(cache)
+  let flags = array_empty()
+  let mut i = 0
+  while i < Array::length(cache.fn_indices) {
+    let src_stmt = Array::get(cache.fn_src_stmts, i)
+    if src_stmt >= 0 && src_stmt < limit && Array::get(cache.fn_indices, i) < src_region_n {
+      Array::push(flags, 1)
+    } else {
+      Array::push(flags, 0)
+    }
+    i = i + 1
+  }
+  flags
+}
+
+fn bcc_src_region_n(cache: CodegenBodyCache) -> Int {
+  if Array::length(cache.guard_meta) == 5 {
+    Array::get(cache.guard_meta, 0)
+  } else {
+    0
+  }
+}
+
+/// #2669 step 2b: the same subsetting, keyed on an UNCHANGED-FILE map instead
+/// of a prefix limit. `keep_file[f]` is 1 when file `f` of this build's file
+/// list is byte-identical to what the harvest recorded, wherever that file
+/// sits in merge order. The extra condition is the same one the prefix filter
+/// applies -- the entry must be in the recorded source-function region,
+/// because a prelude-synthesized function's content depends on the whole
+/// program however early it sits.
+///
+/// Keyed on the FILE and not on the statement position: see `fn_files`.
+///
+/// Widening WHICH entries survive does not by itself make them replayable:
+/// the prefix rule also supplied, for free, that nothing a kept body refers
+/// to could have moved. `guard_layout` is what replaces that, and the body
+/// loop narrows back to the prefix when it does not hold.
+export fn codegen_body_cache_filter_src_keep(cache: CodegenBodyCache, keep_file: Array[Int]) -> CodegenBodyCache {
+  let src_region_n = bcc_src_region_n(cache)
+  let flags = array_empty()
+  let mut i = 0
+  while i < Array::length(cache.fn_indices) {
+    let f = if i < Array::length(cache.fn_files) {
+      Array::get(cache.fn_files, i)
+    } else {
+      0 - 1
+    }
+    let in_kept_file = f >= 0 && f < Array::length(keep_file) && Array::get(keep_file, f) == 1
+    if in_kept_file && Array::get(cache.fn_indices, i) < src_region_n {
+      Array::push(flags, 1)
+    } else {
+      Array::push(flags, 0)
+    }
+    i = i + 1
+  }
+  bcc_filter_entries(cache, flags)
+}
+
+/// The subset of `cache` whose entry flag is 1, with each kept function's
+/// lambdas, funcref slots and blind references carried along and the guards
+/// copied verbatim. The input is not mutated.
+fn bcc_filter_entries(cache: CodegenBodyCache, keep_entry: Array[Int]) -> CodegenBodyCache {
+  let out = codegen_body_cache_new()
+  let keep_fn = array_empty()
+  let mut i = 0
+  while i < Array::length(cache.fn_indices) {
+    let src_stmt = Array::get(cache.fn_src_stmts, i)
+    if i < Array::length(keep_entry) && Array::get(keep_entry, i) == 1 {
+      let fni = Array::get(cache.fn_indices, i)
+      Array::push(keep_fn, fni)
+      Array::push(out.fn_indices, fni)
+      Array::push(out.fn_names, Array::get(cache.fn_names, i))
+      Array::push(out.fn_files, Array::get(cache.fn_files, i))
+      Array::push(out.fn_src_stmts, src_stmt)
+      Array::push(out.fn_bodies, Array::get(cache.fn_bodies, i))
+      Array::push(out.fn_meta_i32, Array::get(cache.fn_meta_i32, i))
+      Array::push(out.fn_meta_i64, Array::get(cache.fn_meta_i64, i))
+      Array::push(out.fn_meta_v128, Array::get(cache.fn_meta_v128, i))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  let mut j = 0
+  while j < Array::length(cache.lam_owner) {
+    let owner = Array::get(cache.lam_owner, j)
+    if array_contains_int_bcc(keep_fn, owner) {
+      Array::push(out.lam_owner, owner)
+      Array::push(out.lam_indices, Array::get(cache.lam_indices, j))
+      Array::push(out.lam_bodies, Array::get(cache.lam_bodies, j))
+      Array::push(out.lam_param_counts, Array::get(cache.lam_param_counts, j))
+      Array::push(out.lam_captures, Array::get(cache.lam_captures, j))
+      Array::push(out.lam_meta_i32, Array::get(cache.lam_meta_i32, j))
+      Array::push(out.lam_meta_i64, Array::get(cache.lam_meta_i64, j))
+    } else {
+      ()
+    }
+    j = j + 1
+  }
+  let mut m = 0
+  while m < Array::length(cache.blind_fn) {
+    let bowner = Array::get(cache.blind_fn, m)
+    if array_contains_int_bcc(keep_fn, bowner) {
+      Array::push(out.blind_fn, bowner)
+      Array::push(out.blind_body, Array::get(cache.blind_body, m))
+      Array::push(out.blind_offsets, Array::get(cache.blind_offsets, m))
+      Array::push(out.blind_kinds, Array::get(cache.blind_kinds, m))
+      Array::push(out.blind_syms, Array::get(cache.blind_syms, m))
+    } else {
+      ()
+    }
+    m = m + 1
+  }
+  let mut k = 0
+  while k < Array::length(cache.slot_owner) {
+    let sowner = Array::get(cache.slot_owner, k)
+    if array_contains_int_bcc(keep_fn, sowner) {
+      Array::push(out.slot_owner, sowner)
+      Array::push(out.slot_values, Array::get(cache.slot_values, k))
+    } else {
+      ()
+    }
+    k = k + 1
+  }
+  let mut lmi = 0
+  while lmi < Array::length(cache.lm_owner) {
+    let lowner = Array::get(cache.lm_owner, lmi)
+    if array_contains_int_bcc(keep_fn, lowner) {
+      Array::push(out.lm_owner, lowner)
+      Array::push(out.lm_offsets, Array::get(cache.lm_offsets, lmi))
+      Array::push(out.lm_file_ids, Array::get(cache.lm_file_ids, lmi))
+      Array::push(out.lm_lines, Array::get(cache.lm_lines, lmi))
+    } else {
+      ()
+    }
+    lmi = lmi + 1
+  }
+  bcc_copy_guards(cache, out)
+  out
+}
+
+fn array_contains_int_bcc(xs: Array[Int], v: Int) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(xs) {
+    if Array::get(xs, i) == v {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+//# CodegenBodyCache codec (#2388 step 3)
+
+// Length-prefixed binary layout, "VBC1" magic. Every integer is LEB128 of
+// (value + 1), so -1 (a recording site with no statement) round-trips and
+// any other negative -- which no field legitimately holds -- fails loudly at
+// encode time instead of corrupting the stream. Deserialize is fail-safe:
+// anything malformed returns None and the caller compiles from scratch; a
+// damaged artifact can cost a cache miss, never a wrong body.
+
+fn bcc_push_int(buf: Bytes, v: Int) -> Unit with Exception {
+  if v < 0 - 1 {
+    throw(String::concat("body-cache codec: negative field ", __to_string(v)))
+  } else {
+    ()
+  }
+  leb128_encode_u32(buf, v + 1)
+}
+
+fn bcc_push_int_array(buf: Bytes, xs: Array[Int]) -> Unit with Exception {
+  bcc_push_int(buf, Array::length(xs))
+  let mut i = 0
+  while i < Array::length(xs) {
+    bcc_push_int(buf, Array::get(xs, i))
+    i = i + 1
+  }
+}
+
+/// #2669 slice 3: an Int array whose values may be BELOW -1.
+///
+/// The plain codec above encodes `v + 1` as an unsigned LEB and throws for
+/// anything under -1, which is right for every column it was written for --
+/// those are indices and counts. `blind_body` is not: a record made inside a
+/// lambda names it as `blind_owner_of_lambda`, i.e. `-2 - lambda_idx`, so
+/// writing it through `bcc_push_int_array` aborted the harvest of any program
+/// with a function value inside a lambda. Found by review on #2710; the
+/// in-process replay test never serializes, so nothing else saw it.
+///
+/// Zigzag, written arithmetically rather than with shifts so it does not
+/// depend on the tagged Int's width: non-negative `v` maps to `2v`, negative
+/// to `-2v - 1`, which is a bijection onto the non-negatives the plain
+/// encoder already accepts.
+fn bcc_push_zigzag_int_array(buf: Bytes, xs: Array[Int]) -> Unit with Exception {
+  bcc_push_int(buf, Array::length(xs))
+  let mut i = 0
+  while i < Array::length(xs) {
+    let v = Array::get(xs, i)
+    let z = if v >= 0 {
+      v * 2
+    } else {
+      0 - v * 2 - 1
+    }
+    bcc_push_int(buf, z)
+    i = i + 1
+  }
+}
+
+fn bcc_push_bytes(buf: Bytes, b: Bytes) -> Unit with Exception {
+  bcc_push_int(buf, Bytes::length(b))
+  bytebuf_push_buf(buf, b)
+}
+
+fn bcc_push_bytes_array(buf: Bytes, xs: Array[Bytes]) -> Unit with Exception {
+  bcc_push_int(buf, Array::length(xs))
+  let mut i = 0
+  while i < Array::length(xs) {
+    bcc_push_bytes(buf, Array::get(xs, i))
+    i = i + 1
+  }
+}
+
+fn bcc_push_string(buf: Bytes, s: String) -> Unit with Exception {
+  bcc_push_int(buf, String::length(s))
+  let mut i = 0
+  while i < String::length(s) {
+    bytebuf_push(buf, String::char_code_at(s, i))
+    i = i + 1
+  }
+}
+
+fn bcc_push_string_array(buf: Bytes, xs: Array[String]) -> Unit with Exception {
+  bcc_push_int(buf, Array::length(xs))
+  let mut i = 0
+  while i < Array::length(xs) {
+    bcc_push_string(buf, Array::get(xs, i))
+    i = i + 1
+  }
+}
+
+fn bcc_push_string_arrays(buf: Bytes, xs: Array[Array[String]]) -> Unit with Exception {
+  bcc_push_int(buf, Array::length(xs))
+  let mut i = 0
+  while i < Array::length(xs) {
+    let inner = Array::get(xs, i)
+    bcc_push_int(buf, Array::length(inner))
+    let mut j = 0
+    while j < Array::length(inner) {
+      bcc_push_string(buf, Array::get(inner, j))
+      j = j + 1
+    }
+    i = i + 1
+  }
+}
+
+export fn codegen_body_cache_to_bytes(cache: CodegenBodyCache) -> Bytes with Exception {
+  let buf = bytebuf_new()
+  bytebuf_push(buf, 'V')
+  bytebuf_push(buf, 'B')
+  bytebuf_push(buf, 'C')
+  // Bumped on every stream change so an artifact written by an older compiler
+  // is REJECTED rather than read short: '1' -> '2' when #2669 slice 3 added
+  // the blind-reference arrays, '2' -> '3' when step 2a added fn_names. (The
+  // store is keyed on the codegen fingerprint too, so this is the second line
+  // of defence, not the first.) '3' -> '4' when step 2b added the layout
+  // guard, the typed-lowering guard and the per-entry source file that let
+  // replay reach past the leading prefix.
+  // '4' -> '5': fn_src_stmts now uses pre-prelude coordinates. Reading an
+  // old compacted position against a source-prefix boundary is unsound.
+  // '5' -> '6': per-function vibe.linemap rows, so a replayed body still
+  // contributes production trap provenance (#2199).
+  bytebuf_push(buf, '6')
+  bcc_push_int_array(buf, cache.fn_indices)
+  bcc_push_string_array(buf, cache.fn_names)
+  bcc_push_int_array(buf, cache.fn_files)
+  bcc_push_int_array(buf, cache.fn_src_stmts)
+  bcc_push_bytes_array(buf, cache.fn_bodies)
+  bcc_push_int_array(buf, cache.fn_meta_i32)
+  bcc_push_int_array(buf, cache.fn_meta_i64)
+  bcc_push_int_array(buf, cache.fn_meta_v128)
+  bcc_push_int_array(buf, cache.lam_owner)
+  bcc_push_int_array(buf, cache.lam_indices)
+  bcc_push_bytes_array(buf, cache.lam_bodies)
+  bcc_push_int_array(buf, cache.lam_param_counts)
+  bcc_push_string_arrays(buf, cache.lam_captures)
+  bcc_push_int_array(buf, cache.lam_meta_i32)
+  bcc_push_int_array(buf, cache.lam_meta_i64)
+  bcc_push_int_array(buf, cache.slot_owner)
+  bcc_push_int_array(buf, cache.slot_values)
+  bcc_push_int_array(buf, cache.blind_fn)
+  bcc_push_zigzag_int_array(buf, cache.blind_body)
+  bcc_push_int_array(buf, cache.blind_offsets)
+  bcc_push_int_array(buf, cache.blind_kinds)
+  bcc_push_int_array(buf, cache.blind_syms)
+  bcc_push_int_array(buf, cache.lm_owner)
+  bcc_push_int_array(buf, cache.lm_offsets)
+  bcc_push_int_array(buf, cache.lm_file_ids)
+  bcc_push_int_array(buf, cache.lm_lines)
+  bcc_push_int_array(buf, cache.guard_meta)
+  bcc_push_string_array(buf, cache.guard_synth_names)
+  bcc_push_int_array(buf, cache.guard_synth_stmts)
+  bcc_push_string_array(buf, cache.guard_import_names)
+  bcc_push_string_array(buf, cache.guard_borrow_names)
+  bcc_push_int_array(buf, cache.guard_borrow_masks)
+  bcc_push_string_array(buf, cache.guard_unmangled_names)
+  bcc_push_int_array(buf, cache.guard_layout)
+  bcc_push_int_array(buf, cache.guard_typed_lowering)
+  bytebuf_to_bytes(buf)
+}
+
+// Reader state: (value, next_pos), pos = -1 on malformed input. Every reader
+// checks bounds before consuming; a bad stream degrades to None at the top.
+fn bcc_read_int(b: Bytes, pos: Int) -> (Int, Int) {
+  let n = Bytes::length(b)
+  let mut p = pos
+  let mut shift = 0
+  let mut acc = 0
+  let mut done = false
+  let mut bad = false
+  while !done && !bad {
+    if p >= n || shift > 34 {
+      bad = true
+    } else {
+      let byte = Bytes::get(b, p)
+      p = p + 1
+      acc = acc|((byte&127)<<shift)
+      shift = shift + 7
+      if (byte&128) == 0 {
+        done = true
+      } else {
+        ()
+      }
+    }
+  }
+  if bad {
+    (0, 0 - 1)
+  } else {
+    (acc - 1, p)
+  }
+}
+
+fn bcc_read_int_array(b: Bytes, pos: Int, out: Array[Int]) -> Int {
+  let (count, p0) = bcc_read_int(b, pos)
+  if p0 < 0 || count < 0 {
+    0 - 1
+  } else {
+    let mut p = p0
+    let mut i = 0
+    while p >= 0 && i < count {
+      let (v, np) = bcc_read_int(b, p)
+      if np < 0 {
+        p = 0 - 1
+      } else {
+        Array::push(out, v)
+        p = np
+      }
+      i = i + 1
+    }
+    p
+  }
+}
+
+/// The inverse of bcc_push_zigzag_int_array.
+fn bcc_read_zigzag_int_array(b: Bytes, pos: Int, out: Array[Int]) -> Int {
+  let (count, p0) = bcc_read_int(b, pos)
+  if p0 < 0 || count < 0 {
+    0 - 1
+  } else {
+    let mut p = p0
+    let mut i = 0
+    while p >= 0 && i < count {
+      let (z, np) = bcc_read_int(b, p)
+      if np < 0 || z < 0 {
+        p = 0 - 1
+      } else {
+        let v = if z % 2 == 0 {
+          z / 2
+        } else {
+          0 - ((z + 1) / 2)
+        }
+        Array::push(out, v)
+        p = np
+      }
+      i = i + 1
+    }
+    p
+  }
+}
+
+fn bcc_read_bytes(b: Bytes, pos: Int) -> (Bytes, Int) {
+  let (len, p0) = bcc_read_int(b, pos)
+  if p0 < 0 || len < 0 || p0 + len > Bytes::length(b) {
+    (bytebuf_new(), 0 - 1)
+  } else {
+    (Bytes::slice(b, p0, p0 + len), p0 + len)
+  }
+}
+
+fn bcc_read_bytes_array(b: Bytes, pos: Int, out: Array[Bytes]) -> Int {
+  let (count, p0) = bcc_read_int(b, pos)
+  if p0 < 0 || count < 0 {
+    0 - 1
+  } else {
+    let mut p = p0
+    let mut i = 0
+    while p >= 0 && i < count {
+      let (v, np) = bcc_read_bytes(b, p)
+      if np < 0 {
+        p = 0 - 1
+      } else {
+        Array::push(out, v)
+        p = np
+      }
+      i = i + 1
+    }
+    p
+  }
+}
+
+fn bcc_read_string(b: Bytes, pos: Int) -> (String, Int) {
+  let (len, p0) = bcc_read_int(b, pos)
+  if p0 < 0 || len < 0 || p0 + len > Bytes::length(b) {
+    ("", 0 - 1)
+  } else {
+    let parts = array_empty()
+    let mut i = 0
+    while i < len {
+      Array::push(parts, String::from_byte(Bytes::get(b, p0 + i)))
+      i = i + 1
+    }
+    (String::join(parts, ""), p0 + len)
+  }
+}
+
+fn bcc_read_string_array(b: Bytes, pos: Int, out: Array[String]) -> Int {
+  let (count, p0) = bcc_read_int(b, pos)
+  if p0 < 0 || count < 0 {
+    0 - 1
+  } else {
+    let mut p = p0
+    let mut i = 0
+    while p >= 0 && i < count {
+      let (s, np) = bcc_read_string(b, p)
+      if np < 0 {
+        p = 0 - 1
+      } else {
+        Array::push(out, s)
+        p = np
+      }
+      i = i + 1
+    }
+    p
+  }
+}
+
+fn bcc_read_string_arrays(b: Bytes, pos: Int, out: Array[Array[String]]) -> Int {
+  let (count, p0) = bcc_read_int(b, pos)
+  if p0 < 0 || count < 0 {
+    0 - 1
+  } else {
+    let mut p = p0
+    let mut i = 0
+    while p >= 0 && i < count {
+      let (ilen, np0) = bcc_read_int(b, p)
+      if np0 < 0 || ilen < 0 {
+        p = 0 - 1
+      } else {
+        let inner = array_empty()
+        let mut p2 = np0
+        let mut j = 0
+        while p2 >= 0 && j < ilen {
+          let (s, np) = bcc_read_string(b, p2)
+          if np < 0 {
+            p2 = 0 - 1
+          } else {
+            Array::push(inner, s)
+            p2 = np
+          }
+          j = j + 1
+        }
+        if p2 < 0 {
+          p = 0 - 1
+        } else {
+          Array::push(out, inner)
+          p = p2
+        }
+      }
+      i = i + 1
+    }
+    p
+  }
+}
+
+export fn codegen_body_cache_from_bytes(b: Bytes) -> Option[CodegenBodyCache] {
+  if Bytes::length(b) < 4 || Bytes::get(b, 0) != 'V' || Bytes::get(b, 1) != 'B' || Bytes::get(b, 2) != 'C' || Bytes::get(b, 3) != '6' {
+    None
+  } else {
+    let out = codegen_body_cache_new()
+    let mut p = 4
+    p = bcc_read_int_array(b, p, out.fn_indices)
+    if p >= 0 {
+      p = bcc_read_string_array(b, p, out.fn_names)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_int_array(b, p, out.fn_files)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_int_array(b, p, out.fn_src_stmts)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_bytes_array(b, p, out.fn_bodies)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_int_array(b, p, out.fn_meta_i32)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_int_array(b, p, out.fn_meta_i64)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_int_array(b, p, out.fn_meta_v128)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_int_array(b, p, out.lam_owner)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_int_array(b, p, out.lam_indices)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_bytes_array(b, p, out.lam_bodies)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_int_array(b, p, out.lam_param_counts)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_string_arrays(b, p, out.lam_captures)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_int_array(b, p, out.lam_meta_i32)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_int_array(b, p, out.lam_meta_i64)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_int_array(b, p, out.slot_owner)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_int_array(b, p, out.slot_values)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_int_array(b, p, out.blind_fn)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_zigzag_int_array(b, p, out.blind_body)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_int_array(b, p, out.blind_offsets)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_int_array(b, p, out.blind_kinds)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_int_array(b, p, out.blind_syms)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_int_array(b, p, out.lm_owner)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_int_array(b, p, out.lm_offsets)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_int_array(b, p, out.lm_file_ids)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_int_array(b, p, out.lm_lines)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_int_array(b, p, out.guard_meta)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_string_array(b, p, out.guard_synth_names)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_int_array(b, p, out.guard_synth_stmts)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_string_array(b, p, out.guard_import_names)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_string_array(b, p, out.guard_borrow_names)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_int_array(b, p, out.guard_borrow_masks)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_string_array(b, p, out.guard_unmangled_names)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_int_array(b, p, out.guard_layout)
+    } else {
+      ()
+    }
+    if p >= 0 {
+      p = bcc_read_int_array(b, p, out.guard_typed_lowering)
+    } else {
+      ()
+    }
+    let fn_n = Array::length(out.fn_indices)
+    let lam_n = Array::length(out.lam_owner)
+    let guard_n = Array::length(out.guard_meta)
+    // A function index is a position in the program's function list, so a
+    // NEGATIVE one is not a function and the entry holding it is not a body
+    // this compile could replay. Refusing the whole cache is the established
+    // rule for this artifact (#2388: a stale entry may cause a miss, never a
+    // wrong body), and it is also what keeps `codegen_body_cache_slot_index`
+    // exactly equivalent to the scan it replaces -- a direct-address table
+    // has no slot for a negative key, so a cache that carried one would make
+    // the two lookups disagree.
+    let mut fni = 0
+    let mut fn_index_negative = false
+    while fni < fn_n {
+      if Array::get(out.fn_indices, fni) < 0 {
+        fn_index_negative = true
+      } else {
+        ()
+      }
+      fni = fni + 1
+    }
+    if p < 0 || fn_index_negative || Array::length(out.fn_names) != fn_n || Array::length(out.fn_files) != fn_n || Array::length(out.fn_src_stmts) != fn_n || Array::length(out.fn_bodies) != fn_n || Array::length(out.fn_meta_i32) != fn_n || Array::length(out.fn_meta_i64) != fn_n || Array::length(out.fn_meta_v128) != fn_n || Array::length(out.lam_indices) != lam_n || Array::length(out.lam_bodies) != lam_n || Array::length(out.lam_param_counts) != lam_n || Array::length(out.lam_captures) != lam_n || Array::length(out.lam_meta_i32) != lam_n || Array::length(out.lam_meta_i64) != lam_n || Array::length(out.slot_owner) != Array::length(out.slot_values) || Array::length(out.blind_body) != Array::length(out.blind_fn) || Array::length(out.blind_offsets) != Array::length(out.blind_fn) || Array::length(out.blind_kinds) != Array::length(out.blind_fn) || Array::length(out.blind_syms) != Array::length(out.blind_fn) || Array::length(out.lm_offsets) != Array::length(out.lm_owner) || Array::length(out.lm_file_ids) != Array::length(out.lm_owner) || Array::length(out.lm_lines) != Array::length(out.lm_owner) || (guard_n != 0 && guard_n != 5) || Array::length(out.guard_synth_names) != Array::length(out.guard_synth_stmts) || Array::length(out.guard_borrow_names) != Array::length(out.guard_borrow_masks) || Array::length(out.guard_layout) % 2 != 0 || Array::length(out.guard_typed_lowering) % 2 != 0 {
+      None
+    } else {
+      Some(out)
+    }
+  }
+}
+
+export fn emit_i32_ge_u(buf: Bytes) -> Unit {
+  bytebuf_push(buf, op_i32_ge_u)
+}
+
+export fn emit_i32_gt_u(buf: Bytes) -> Unit {
+  bytebuf_push(buf, op_i32_gt_u)
+}
+
+export fn emit_i64_load(buf: Bytes, align: Int, offset: Int) -> Unit {
+  bytebuf_push(buf, op_i64_load)
+  leb128_encode_u32(buf, align)
+  leb128_encode_u32(buf, offset)
+}
+
+export fn get_ebinop_op(expr: Expr) -> String with Exception {
+  match expr {
+    EBinOp(op, _, _, _) => op,
+    _ => throw("not EBinOp")
+  }
+}
+
+export fn get_elet_body(expr: Expr) -> Expr with Exception {
+  match expr {
+    ELet(_, _, body, _) => body,
+    _ => throw("not ELet")
+  }
+}
+
+/// #644: the let-statement's source offset (the `let` keyword token), -1 for
+/// synthesized lets. Break-mode codegen uses it as the dbg_line fallback when
+/// the bound value is a bare literal that carries no offset of its own.
+export fn get_elet_off(expr: Expr) -> Int with Exception {
+  match expr {
+    ELet(_, _, _, soff) => soff,
+    _ => throw("not ELet")
+  }
+}
+
+export fn get_eletmut_off(expr: Expr) -> Int with Exception {
+  match expr {
+    ELetMut(_, _, _, soff) => soff,
+    _ => throw("not ELetMut")
+  }
+}
+
+export fn get_elet_name(expr: Expr) -> String with Exception {
+  match expr {
+    ELet(name, _, _, _) => name,
+    _ => throw("not ELet")
+  }
+}
+
+export fn get_func_body(stmt: Stmt) -> Expr with Exception {
+  match stmt {
+    SLet(_, _, _, _, expr) => match expr {
+      EFn(_, _, _, _, _, body) => body,
+      _ => throw("get_func_body: not a function")
+    },
+    _ => throw("get_func_body: not a let statement")
+  }
+}
+
+export fn get_slet_expr(stmt: Stmt) -> Expr with Exception {
+  match stmt {
+    SLet(_, _, _, _, expr) => expr,
+    _ => throw("not SLet")
+  }
+}
+
+export fn get_slet_name(stmt: Stmt) -> String with Exception {
+  match stmt {
+    SLet(_, _, name, _, _) => name,
+    _ => throw("not SLet")
+  }
+}
+
+export fn get_slet_type(stmt: Stmt) -> Option[TypeExpr] {
+  match stmt {
+    SLet(_, _, _, ty, _) => ty,
+    _ => None
+  }
+}
+
+export fn resolve_local(names: Array[String], name: String, tag: String) -> Int with Exception {
+  let mut i = Array::length(names) - 1
+  let mut result = -1
+  while i >= 0 {
+    if Array::get(names, i) == name {
+      result = i
+      i = -1
+    } else {
+      i = i - 1
+    }
+  }
+  if result < 0 {
+    // A name reaching codegen unresolved is a CHECKER hole, not a user error:
+    // the checker either bound it or should have rejected it, and everything
+    // between accepted it. Every #1502 / #1510 / #1491 / #1521 / #1529 landed
+    // here, and the message said nothing a reader could act on -- no file, no
+    // line, and `locals=[__env,,__fn_val]` is pass state. Say whose bug it is.
+    throw(String::concat(String::concat(codegen_unresolved_name_prefix(), name), String::concat("` (local, @", String::concat(tag, codegen_unresolved_name_suffix()))))
+  }
+  result
+}
+
+/// Shared opening of the "a name survived type checking" internal error (see
+/// `resolve_local`). One spelling so the three codegen sites that can raise it
+/// -- linear locals, linear idents, and the gc backend -- cannot drift apart,
+/// and so a gate can pin the whole class by one string.
+export fn codegen_unresolved_name_prefix() -> String {
+  "internal compiler error: `"
+}
+
+export fn codegen_unresolved_name_suffix() -> String {
+  ") reached code generation unresolved. The type checker should have bound or rejected this name, so this is a bug in the compiler and not in your program -- please report the source that triggers it."
+}
+
+export fn emit_i64_store(buf: Bytes, align: Int, offset: Int) -> Unit {
+  bytebuf_push(buf, op_i64_store)
+  leb128_encode_u32(buf, align)
+  leb128_encode_u32(buf, offset)
+}
+
+export fn emit_box_float(buf: Bytes, ctx: CompileCtx, bits_local: Int, box_local: Int) -> Unit {
+  emit_local_set(buf, bits_local)
+  emit_i64_const(buf, 16)
+  emit_call(buf, ctx.rc_alloc_func_idx)
+  emit_local_set(buf, box_local)
+  emit_local_get(buf, box_local)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 16)
+  emit_i32_store(buf, 2, 0)
+  emit_local_get(buf, box_local)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 1)
+  emit_i32_store(buf, 2, 4)
+  emit_local_get(buf, box_local)
+  emit_i32_wrap_i64(buf)
+  emit_local_get(buf, bits_local)
+  emit_i64_store(buf, 3, 8)
+  emit_local_get(buf, box_local)
+  emit_i64_const(buf, 8)
+  emit_i64_add(buf)
+  emit_i64_const(buf, 1)
+  emit_i64_or(buf)
+}
+
+export fn find_func_stmt(stmts: Array[Stmt], name: String) -> Stmt with Exception {
+  let len = Array::length(stmts)
+  let mut i = 0
+  let mut found = -1
+  while i < len {
+    let stmt = Array::get(stmts, i)
+    match stmt {
+      SLet(_, _, sname, _, _) => if sname == name {
+        found = i
+        i = len
+      },
+      _ => ()
+    }
+    if found < 0 {
+      i = i + 1
+    }
+  }
+  if found < 0 {
+    throw(String::concat("function not found: ", name))
+  }
+  Array::get(stmts, found)
+}
+
+export fn emit_unbox_float(buf: Bytes) -> Unit {
+  emit_i64_const(buf, -2)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_i64_load(buf, 3, 0)
+}
+
+/// Push the i64 increment that advances an array INDEX counter by ONE LOGICAL
+/// element. Under RC a scalar Int is tagged `n << 1`, and the inline array loops
+/// compare their counter against `Array::length` (which returns a tagged length)
+/// and feed it to `Array::get` (which untags the index). So the counter must
+/// live in tagged space too — stepping by raw 2 (= logical 1). Without RC the
+/// counter is a raw index and steps by 1. Using a raw 1 under RC makes the loop
+/// run twice per element (each read/processed twice; #704).
+export fn emit_index_one(buf: Bytes, ctx: CompileCtx) -> Unit {
+  if ctx.enable_rc {
+    emit_i64_const(buf, 2)
+  } else {
+    emit_i64_const(buf, 1)
+  }
+}
+
+/// Guarded rc_dup of the heap value in `local_idx` (no-op for scalars/strings):
+/// if it is odd (a heap pointer) with a zero high word (not a string fat
+/// pointer), increment its rc_count at block-4. The single canonical copy — the
+/// codegen files (compile_expr_tail / _tail4 / _tail6 / compile_match /
+/// compile_lambda / compile_call / linked_compile) call this instead of keeping
+/// per-file duplicates.
+/// #715 recurrence guard: base address of the shadow-liveness byte table
+/// (1 byte per heap address at base+vptr) and the reservation pad that keeps
+/// it inside linear memory. Only referenced when compiling with rc_shadow.
+/// ADR-0090 (#1262) region arena control words, all derived from the bump
+/// pointer address so the layout lives in exactly one place:
+/// `[bump ptr @+0][depth @+4][saved bump ptrs @+8, region_max_depth levels]`.
+export fn region_depth_addr_of(region_ptr_addr: Int) -> Int {
+  region_ptr_addr + 4
+}
+
+export fn region_saves_base_of(region_ptr_addr: Int) -> Int {
+  region_ptr_addr + 8
+}
+
+/// Nesting levels the save table holds. A region entered deeper than this
+/// skips both the save and the release: it keeps allocating from the arena
+/// (correct, just unreclaimed) instead of scribbling past the table.
+export fn region_max_depth() -> Int {
+  64
+}
+
+/// ADR-0090 (#1262) arena bracket, SHARED by both backends. These lived as
+/// private fns in expr/compile_call.vibe while only the linear lane had an
+/// arena; the gc lane now brackets its own `__region_run` with the same two,
+/// so a change to the save/restore protocol cannot reach one lane only.
+/// Push the arena's saved-bump-pointer stack (ADR-0090, #1262). Emitted
+/// around the region body call, using only linear-memory control words so it
+/// needs no wasm local at the call site -- a synthesized local here would have
+/// to be declared in the enclosing function's local vector, which this
+/// rewrite has no way to reach.
+///
+/// Deeper than `region_max_depth()` the save is skipped, and the matching
+/// restore is skipped by the same test, so an over-deep region keeps
+/// allocating from the arena without reclaiming it. That is the same
+/// degradation as arena exhaustion: less reclamation, never a wrong answer.
+export fn emit_region_enter(buf: Bytes, region_ptr_addr: Int) -> Unit {
+  let depth_addr = region_depth_addr_of(region_ptr_addr)
+  let saves_base = region_saves_base_of(region_ptr_addr)
+  emit_i32_const(buf, region_max_depth())
+  emit_i32_const(buf, depth_addr)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_gt_u(buf)
+  emit_if_void(buf)
+  emit_i32_const(buf, saves_base)
+  emit_i32_const(buf, depth_addr)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_const(buf, 4)
+  emit_i32_mul(buf)
+  emit_i32_add(buf)
+  emit_i32_const(buf, region_ptr_addr)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_store(buf, 2, 0)
+  emit_end(buf)
+  emit_i32_const(buf, depth_addr)
+  emit_i32_const(buf, depth_addr)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_const(buf, 1)
+  emit_i32_add(buf)
+  emit_i32_store(buf, 2, 0)
+}
+
+/// The bulk release: reset the arena bump pointer to the watermark this
+/// region entered at. Emitted with the body's RESULT already on the stack --
+/// every instruction below consumes only its own operands, so the result
+/// rides through untouched. Sound because the sanctioned exits copied out of
+/// the segment before we get here (see `mutlist_exit_copy`), and because
+/// ordinary heap values built in the body live on the MAIN bump heap, which
+/// this does not touch.
+export fn emit_region_exit(buf: Bytes, region_ptr_addr: Int) -> Unit {
+  let depth_addr = region_depth_addr_of(region_ptr_addr)
+  let saves_base = region_saves_base_of(region_ptr_addr)
+  emit_i32_const(buf, depth_addr)
+  emit_i32_const(buf, depth_addr)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_const(buf, 1)
+  emit_i32_sub(buf)
+  emit_i32_store(buf, 2, 0)
+  emit_i32_const(buf, region_max_depth())
+  emit_i32_const(buf, depth_addr)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_gt_u(buf)
+  emit_if_void(buf)
+  emit_i32_const(buf, region_ptr_addr)
+  emit_i32_const(buf, saves_base)
+  emit_i32_const(buf, depth_addr)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_const(buf, 4)
+  emit_i32_mul(buf)
+  emit_i32_add(buf)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_store(buf, 2, 0)
+  emit_end(buf)
+}
+
+/// Exception throw tag on the linear backend (`throw` / EThrow /
+/// `perform Exception::Throw`). Same index EHandle catches in
+/// compile_expr_tail6.vibe.
+export fn region_exn_tag_linear() -> Int {
+  2
+}
+
+/// Exception throw tag on the gc backend. Same index EHandle / EThrow use
+/// in backend_expr.vibe.
+export fn region_exn_tag_gc() -> Int {
+  0
+}
+
+/// Label depth the region body sees inside the #1937 try_table wrap
+/// (outer block + catch block + try_table). `-1` stays "not tracking".
+export fn region_try_body_ld(ld: Int) -> Int {
+  if ld >= 0 {
+    ld + 3
+  } else {
+    -1
+  }
+}
+
+/// Open the #1937 unwind bracket. Caller compiles the body with
+/// `region_try_body_ld(ld)`, then `emit_region_try_epilogue`.
+///
+///   block (result i64)            ;; B_outer: body result
+///     block (result i64)          ;; B_catch: thrown payload
+///       try_table (result i64) [catch tag -> label 0]
+export fn emit_region_try_prologue(buf: Bytes, catch_tag: Int) -> Unit {
+  emit_block_i64(buf)
+  emit_block_i64(buf)
+  bytebuf_push(buf, 31)
+  bytebuf_push(buf, 126)
+  leb128_encode_u32(buf, 1)
+  bytebuf_push(buf, 0)
+  leb128_encode_u32(buf, catch_tag)
+  leb128_encode_u32(buf, 0)
+}
+
+/// Close the #1937 unwind bracket. Success: end try_table, skip the catch,
+/// then `emit_region_exit` (result rides). Catch: payload rides through
+/// `emit_region_exit` (memory only) and is rethrown on the same tag.
+export fn emit_region_try_epilogue(buf: Bytes, region_ptr_addr: Int, catch_tag: Int) -> Unit {
+  emit_end(buf)
+  emit_br(buf, 1)
+  emit_end(buf)
+  emit_region_exit(buf, region_ptr_addr)
+  bytebuf_push(buf, 8)
+  leb128_encode_u32(buf, catch_tag)
+  emit_end(buf)
+  emit_region_exit(buf, region_ptr_addr)
+}
+
+/// #2427: start of the shadow table. The HEAP MUST START ABOVE
+/// `rc_shadow_heap_start()` -- see the layout note there.
+export fn rc_shadow_base() -> Int {
+  268435456
+}
+
+/// Size of the shadow table. One 4-byte slot per 8-byte heap granule, so a
+/// reserve of R covers 2R of heap.
+///
+/// Derived, not chosen: the table must hold a slot for EVERY vptr the heap can
+/// reach, and the heap starts at `rc_shadow_base() + R`, so a bigger table also
+/// pushes the top vptr up. The binding case is the last 8-aligned block in the
+/// wasm32 space, `0xFFFFFFF8`, whose slot must end at or below the table's end:
+///
+///   rc_shadow_base() + 8 + (0xFFFFFFF8 - (rc_shadow_base() + R)) / 2 + 4
+///     <= rc_shadow_base() + R
+///
+/// which is `R >= (0xFFFFFFF8 - rc_shadow_base() + 24) / 3`. Rounded up to 16
+/// so the table and the heap start stay 16-aligned. Picking a round number
+/// instead put that last block's slot 4 bytes past the table, over the first
+/// heap block's RC header -- silent corruption from the tool that exists to
+/// catch it (#2487 review).
+export fn rc_shadow_reserve() -> Int {
+  (((4294967288 - rc_shadow_base() + 24) / 3 + 15) / 16) * 16
+}
+
+/// #2427: where the bump pointer starts under `VIBE_RC=shadow`.
+///
+/// The table used to sit at a FIXED 256 MiB while the heap started just above
+/// the static data and grew upward, so any program whose heap reached 256 MiB
+/// grew INTO the table: heap writes overwrote the freed-marks, and marks
+/// overwrote live heap data. Both directions are silent. Measured before the
+/// fix, a 30-line program with no RC bug at all (allocate ~400 MB of strings,
+/// then do ordinary concat traffic) answered `418804` under `VIBE_RC=1` and
+/// aborted under `VIBE_RC=shadow` with
+/// `drop of freed value at site 1650538809; freed at site 1717920867` -- both
+/// "sites" are ASCII bytes of the program's own padding string, read back out
+/// of the heap as if they were shadow state. That made the one tool for
+/// diagnosing an RC use-after-free useless on exactly the workloads that have
+/// one (`fixtures/rc_shadow_large_heap.vibe` is the pin).
+///
+/// So the heap starts ABOVE the table, and the slot index is scaled: a vptr is
+/// 8-aligned, so `(vptr - rc_shadow_heap_start()) / 2` gives one naturally
+/// aligned 4-byte slot per granule. The reserve is sized (see
+/// `rc_shadow_reserve`) so that every vptr up to the top of the wasm32 address
+/// space maps inside the table, which is why there is no in-range check here
+/// to get wrong and no way to fall off the end.
+export fn rc_shadow_heap_start() -> Int {
+  rc_shadow_base() + rc_shadow_reserve()
+}
+
+/// Constant folded into the slot address: `slot = (vptr >> 1) + bias`.
+/// The first two words of the table hold the sequence counter, so slots start
+/// at `rc_shadow_base() + 8`.
+export fn rc_shadow_slot_bias() -> Int {
+  rc_shadow_base() + 8 - rc_shadow_heap_start() / 2
+}
+
+/// Sequence counter in the first word of the table; slots start 8 bytes in.
+export fn rc_shadow_seq_addr() -> Int {
+  rc_shadow_base()
+}
+
+/// Consume an i32 vptr from the stack and leave the address of its 4-byte
+/// shadow slot. The slot holds `seq + 1` when freed and 0 when live, so the
+/// freed test is `i32.load` (nonzero) and the freeing sequence is
+/// `i32.load - 1`.
+///
+/// The flag costs no bits ON PURPOSE. Packing it as `(seq << 8) | 1` reads
+/// naturally and traps just as reliably -- the flag is exact either way -- but
+/// it silently truncates the sequence to 24 bits, and a compiler-sized shadow
+/// run passes 2^24 instrumented dup/drops easily. The trap would then fire
+/// correctly and name the WRONG freeing operation, which is the one thing this
+/// mode exists to get right (#2487 review).
+export fn emit_shadow_slot_from_vptr(buf: Bytes) -> Unit {
+  emit_i32_const(buf, 1)
+  // i32.shr_u (0x76) -- no emit helper exists
+  bytebuf_push(buf, 118)
+  emit_i32_const(buf, rc_shadow_slot_bias())
+  emit_i32_add(buf)
+}
+
+export fn emit_shadow_bump_seq(buf: Bytes) -> Unit {
+  emit_i32_const(buf, rc_shadow_seq_addr())
+  emit_i32_const(buf, rc_shadow_seq_addr())
+  emit_i32_load(buf, 2, 0)
+  emit_i32_const(buf, 1)
+  emit_i32_add(buf)
+  emit_i32_store(buf, 2, 0)
+}
+
+/// Print `<prefix><current_seq>; freed at site <stored>\n` then trap.
+/// `uaf_abort_idx < 0` keeps the historical bare `unreachable`.
+export fn emit_shadow_uaf_trap(buf: Bytes, push_vptr: () -> Unit, uaf_abort_idx: Int, prefix_fat: Int) -> Unit {
+  if uaf_abort_idx < 0 {
+    bytebuf_push(buf, 0)
+  } else {
+    // Both sequences are extended UNSIGNED. They are raw i32 counters and a
+    // long shadow run passes 2^31, where a signed extension prints the
+    // faulting site as negative next to a positive freeing site -- two
+    // numbers the reader cannot compare, which is the whole point of printing
+    // them together (#2487 review). wasm_emit exports only the signed form,
+    // and common_base cannot import common_analysis (which has the unsigned
+    // one) without a cycle, so the opcode is spelled out.
+    emit_i64_const(buf, prefix_fat)
+    emit_i32_const(buf, rc_shadow_seq_addr())
+    emit_i32_load(buf, 2, 0)
+    // i64.extend_i32_u (0xAD)
+    bytebuf_push(buf, 173)
+    push_vptr()
+    emit_shadow_slot_from_vptr(buf)
+    emit_i32_load(buf, 2, 0)
+    emit_i32_const(buf, 1)
+    emit_i32_sub(buf)
+    // i64.extend_i32_u (0xAD)
+    bytebuf_push(buf, 173)
+    emit_call(buf, uaf_abort_idx)
+  }
+}
+
+/// Stamp `seq + 1` into the block's slot: freed, at this sequence. One store,
+/// so the flag and the sequence can never disagree, and the whole 32-bit
+/// counter survives.
+///
+/// The stored value must never be 0, because 0 is the live sentinel and a
+/// freed block reading live is a MISSED detection -- silent, and in the one
+/// direction this mode exists to rule out. `emit_shadow_bump_seq` runs before
+/// any mark, so `seq >= 1` and `seq + 1 >= 2` for every ordinary run; the
+/// single hole is the counter wrapping at 2^32, where `seq + 1` is 0. A
+/// `select` substitutes 1 there, costing one compare on the mark path rather
+/// than on every dup/drop guard (marks are rarer). The only loss is that the
+/// wrap's freeing sequence reports as 0 instead of 0xFFFFFFFF (#2487 review).
+export fn emit_shadow_mark_freed(buf: Bytes, push_vptr: () -> Unit) -> Unit {
+  push_vptr()
+  emit_shadow_slot_from_vptr(buf)
+  // select(a=1, b=seq+1, c=(seq+1 == 0)) -- `seq + 1` is recomputed for the
+  // condition rather than spilled to a local, because this helper is emitted
+  // into bodies whose local layout it does not own.
+  emit_i32_const(buf, 1)
+  emit_shadow_seq_plus_one(buf)
+  emit_shadow_seq_plus_one(buf)
+  emit_i32_eqz(buf)
+  // select (0x1B)
+  bytebuf_push(buf, 27)
+  emit_i32_store(buf, 2, 0)
+}
+
+fn emit_shadow_seq_plus_one(buf: Bytes) -> Unit {
+  emit_i32_const(buf, rc_shadow_seq_addr())
+  emit_i32_load(buf, 2, 0)
+  emit_i32_const(buf, 1)
+  emit_i32_add(buf)
+}
+
+/// #720: the rc field is the LOW 24 BITS of the rc word (the class id lives in
+/// the high byte of the same word at vptr-1). A raw `store(load(addr)+1)` at
+/// rc == 0xFFFFFF carries into the class byte and wraps rc to 0 -- a couple of
+/// rc ops later the block frees itself with millions of references still
+/// outstanding. Hot shared structures (func/ctor tables, analysis accumulator
+/// arrays) cross 2^24 refs only on large compiles (the entry-dup budgets leak
+/// by design), which made the corruption look layout- and size-dependent.
+/// Saturate instead: once rc hits 0xFFFFFF the block is immortal (never
+/// incremented, never decremented, never freed -- see gen_rc_drop_body's
+/// matching skip). `push_addr` emits the i32 address of the rc word; it is
+/// invoked up to three times, so it must be a pure push.
+export fn emit_rc_word_inc_saturating(buf: Bytes, push_addr: () -> Unit) -> Unit {
+  push_addr()
+  emit_i32_load(buf, 2, 0)
+  emit_i32_const(buf, 16777215)
+  // i32.and (0x71) -- no emit_i32_and helper exists
+  bytebuf_push(buf, 113)
+  emit_i32_const(buf, 16777215)
+  emit_i32_ne(buf)
+  emit_if_void(buf)
+  push_addr()
+  push_addr()
+  emit_i32_load(buf, 2, 0)
+  emit_i32_const(buf, 1)
+  emit_i32_add(buf)
+  emit_i32_store(buf, 2, 0)
+  emit_end(buf)
+}
+
+/// ADR-0092 (#1262): the dup guard, OUT-OF-LINE -- `local.get v; call
+/// __rt_rc_dup`, ~5 B instead of the 72 B the inline form costs at every
+/// site. `dup_fn_idx < 0` falls back to the inline form, which is what the
+/// runtime helper itself is built from (gen_rc_dup_body) and what any
+/// emitter without a function table in reach still uses.
+///
+/// Why this is the size lever and borrow inference is not (all measured on
+/// the RC-built stage2, 2026-08-03): the RC binary carries **52,479** inline
+/// dup guards, each **exactly 72 B** (min == max over a 2000-site sample --
+/// the shape is fully deterministic). That is 3.78 MB of the 4.37 MB by
+/// which the RC stage2 exceeds the bump one, i.e. **86% of the entire RC
+/// size overhead is this one emitter**. Widening borrow inference removes
+/// guards, but even its unsound ceiling was only -5.8%; out-lining touches
+/// every guard that legitimately has to exist.
+///
+/// This is the MIRROR of the reverted #1274 experiment, which INLINED the
+/// drop fast path: that grew per-site code ~5 B -> ~70 B, failed the
+/// output-size ratchet, and bought no wall time. The direction that lost
+/// there is the direction that wins here.
+export fn emit_rc_dup_guarded(buf: Bytes, local_idx: Int, rc_shadow: Bool, dup_fn_idx: Int) -> Unit {
+  // Both arms use `buf` EXACTLY ONCE. That symmetry is load-bearing, not
+  // style: pc_emit merges an EIf's two arms by taking the MINIMUM use count
+  // (#705), so an arm that touches `buf` twice while the other touches it
+  // once gets a budget of one and releases two -- the over-release that
+  // corrupts the free list and surfaces later as an out-of-bounds access
+  // (#715). Writing the call form inline here cost exactly that: the
+  // all-RC bootstrap trapped in stage1 while every bump-built compiler
+  // emitting the same bytes was fine, because only an RC-built binary
+  // actually refcounts. Keep the two-instruction form in its own function.
+  if dup_fn_idx >= 0 {
+    emit_rc_dup_tagtest_call(buf, local_idx, dup_fn_idx)
+  } else {
+    emit_rc_dup_inline(buf, local_idx, rc_shadow, 0 - 1, 0)
+  }
+}
+
+/// `local.get v; call __rt_rc_dup` -- factored out so emit_rc_dup_guarded's
+/// arms stay use-count symmetric (see the note there).
+fn emit_rc_dup_call(buf: Bytes, local_idx: Int, dup_fn_idx: Int) -> Unit {
+  emit_local_get(buf, local_idx)
+  emit_call(buf, dup_fn_idx)
+}
+
+/// #1262: the immediate test INLINE, the rest of the guard out-of-line.
+///
+/// `emit_rc_dup_inline`'s FIRST test is `v & 1` -- odd = candidate heap
+/// pointer, even = tagged immediate (`Int` is `value << 1`, so every Int is
+/// even). For an immediate the whole helper is a no-op, yet the pure
+/// out-of-line form pays a full `call` to discover that. Measured cost of
+/// that discovery: **~2.7 ns per dup**, which made a trivial
+/// `fn add2(a: Int, b: Int) -> Int` in a hot loop run **6.4x** slower under
+/// RC than under bump (1052 -> 6750 ns / 1000 iterations) -- while the SAME
+/// call with constant (non-loop-borrowed, hence un-dup'd) arguments cost
+/// 1390 ns under BOTH modes. See docs/internal/design/side-effect-consolidation.md 2.8.
+///
+/// So: branch on the tag here, call only on the heap path.
+///
+///     local.get v; i64.const 1; i64.and; i32.wrap_i64
+///     if (void)  local.get v; call __rt_rc_dup  end
+///
+/// ~13 B per site against ~5 B for the bare call and 72 B for the full
+/// inline guard -- the third point between the two the size analysis above
+/// compares. The helper re-tests the tag on entry (it is built from
+/// `emit_rc_dup_inline`), so this is a pure fast-path skip: the emitted
+/// semantics are unchanged, including the VIBE_RC=shadow recurrence guard,
+/// which stays inside the helper.
+fn emit_rc_dup_tagtest_call(buf: Bytes, local_idx: Int, dup_fn_idx: Int) -> Unit {
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, 1)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_if_void(buf)
+  emit_local_get(buf, local_idx)
+  emit_call(buf, dup_fn_idx)
+  emit_end(buf)
+}
+
+/// The guard expanded in place. Kept as the single definition of what a dup
+/// MEANS: gen_rc_dup_body builds the out-of-line helper by calling this with
+/// local 0, so the two forms cannot drift apart.
+export fn emit_rc_dup_inline(buf: Bytes, local_idx: Int, rc_shadow: Bool, uaf_abort_idx: Int, prefix_fat: Int) -> Unit {
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, 1)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_if_void(buf)
+  emit_local_get(buf, local_idx)
+  emit_i64_const(buf, 32)
+  emit_i64_shr_s(buf)
+  emit_i64_eqz(buf)
+  emit_if_void(buf)
+  // #715 recurrence guard (VIBE_RC=shadow): trap if the shadow byte at
+  // RC_SHADOW_BASE+vptr says this block was already freed -- a dup-of-freed
+  // would otherwise increment the free-list NEXT link. #1987: the trap names
+  // the current seq and the freeing seq, not a bare unreachable.
+  if rc_shadow {
+    emit_shadow_bump_seq(buf)
+    emit_local_get(buf, local_idx)
+    emit_i64_const(buf, -2)
+    emit_i64_and(buf)
+    emit_i32_wrap_i64(buf)
+    emit_shadow_slot_from_vptr(buf)
+    emit_i32_load(buf, 2, 0)
+    emit_if_void(buf)
+    emit_shadow_uaf_trap(buf, () -> {
+      emit_local_get(buf, local_idx)
+      emit_i64_const(buf, -2)
+      emit_i64_and(buf)
+      emit_i32_wrap_i64(buf)
+    }, uaf_abort_idx, prefix_fat)
+    emit_end(buf)
+  } else {
+    ()
+  }
+  emit_rc_word_inc_saturating(buf, () -> {
+    emit_local_get(buf, local_idx)
+    emit_i64_const(buf, -2)
+    emit_i64_and(buf)
+    emit_i32_wrap_i64(buf)
+    emit_i32_const(buf, 4)
+    emit_i32_sub(buf)
+  })
+  emit_end(buf)
+  emit_end(buf)
+}
+
+export fn fn_type_param_types(ty: Option[TypeExpr]) -> Option[Array[TypeExpr]] {
+  match ty {
+    Some(t) =>
+    match t {
+      TyFn(args, _, _) => Some(args),
+      _ => None
+    },
+    None => None
+  }
+}
+
+export fn is_nullary_ctor_ident(value: Expr, ct: CtorTable) -> Bool {
+  match value {
+    EIdent(nm, _) => ctor_table_index_of(ct, nm) >= 0,
+    _ => false
+  }
+}
+
+export fn name_has_effect_prefix(full: String, eff: String) -> Bool {
+  let el = String::length(eff)
+  let fl = String::length(full)
+  if fl < el + 2 {
+    false
+  } else {
+    let mut ok = true
+    let mut j = 0
+    while j < el {
+      if String::char_code_at(full, j) != String::char_code_at(eff, j) {
+        ok = false
+        j = el
+      } else {
+        j = j + 1
+      }
+    }
+    ok && String::char_code_at(full, el) == 58 && String::char_code_at(full, el + 1) == 58
+  }
+}
+
+export fn effect_name_to_tag(effect_names: Array[String], full: String) -> Int {
+  let n = Array::length(effect_names)
+  let mut result = 3 + n
+  let mut i = 0
+  while i < n {
+    if name_has_effect_prefix(full, Array::get(effect_names, i)) {
+      result = 3 + i
+      i = n
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+
+export fn effect_op_declared_arity(keys: Array[String], arities: Array[Int], full: String) -> Int {
+  let n = Array::length(keys)
+  let mut result = -1
+  let mut i = 0
+  while i < n {
+    if Array::get(keys, i) == full {
+      result = Array::get(arities, i)
+      i = n
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+
+/// #665: index of a qualified op key (`Eff::Op`) in the global effect_op_keys
+/// table — the operation discriminant for multi-operation handler dispatch.
+export fn effect_op_index(keys: Array[String], full: String) -> Int {
+  let n = Array::length(keys)
+  let mut result = 0 - 1
+  let mut i = 0
+  while i < n {
+    if Array::get(keys, i) == full {
+      result = i
+      i = n
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+
+export fn emit_heap_grow_after_heap_set(buf: Bytes, ctx: CompileCtx) -> Unit {
+  if ctx.heap_grow_check_func_idx >= 0 {
+    emit_call(buf, ctx.heap_grow_check_func_idx)
+  } else {
+    ()
+  }
+}

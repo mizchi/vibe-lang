@@ -27,6 +27,8 @@ cd "$ROOT_DIR"
 
 python3 - "$@" <<'PY'
 import os, re, sys
+sys.path.insert(0, "scripts")
+from source_files import read_local_pkl, read_source_group
 
 # Every .md under docs/ and book/, every .md at the repository root, and every
 # README.md ANYWHERE in the tree.
@@ -67,7 +69,7 @@ for f in sorted(set(os.path.normpath(f) for f in files)):
     deduped.append(f)
 files = deduped
 
-tf = open("Taskfile.pkl", encoding="utf-8").read()
+tf = read_local_pkl("Taskfile.pkl")
 # Task names may contain '_' (experimental_wasmtime_stack_switching). A
 # character class that stops at the underscore truncates on BOTH sides -- the
 # Taskfile scan never learns the name and the doc scan cites a prefix nobody
@@ -147,7 +149,7 @@ for root in ("scripts", "lib", "tests", "eval", "install", "runtime"):
                 kept.append(ln)
             read_env |= set(ENVPAT.findall("\n".join(kept)))
 try:
-    read_env |= set(ENVPAT.findall(open("Taskfile.pkl", encoding="utf-8").read()))
+    read_env |= set(ENVPAT.findall(tf))
 except OSError:
     pass
 if len(read_env) < 20:
@@ -181,7 +183,7 @@ if case_block:
 # so a documented command must appear there or in the remaining host-only
 # case arms.
 try:
-    ud = open("lib/@vibe/compiler/user_dispatch.vibe", encoding="utf-8").read()
+    ud = read_source_group("lib/@vibe/compiler/user_dispatch.vibe")
     verbs |= set(re.findall(r'^    "([a-z][a-z0-9-]*)" =>', ud, re.M))
 except OSError:
     pass

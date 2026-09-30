@@ -1,0 +1,2258 @@
+// lib/@vibe/compiler/checker/checker.vibe — lambda expr.
+
+import @vibe/compiler/checker/annotations {
+  collect_formal_kind_uses,
+  collect_hkt_related_formals,
+  collect_hkt_related_formals_in_type,
+  fapp_applied_marker_prefix,
+  fapp_formal_marker_prefix,
+  fapp_unapplied_marker_prefix,
+  formal_application_error as annotations_formal_application_error,
+  formals_contain_source_name,
+  report_formal_applications_across as annotations_report_formal_applications_across,
+  report_kinded_formal_applications,
+  report_map_key_types as annotations_report_map_key_types,
+  report_mixed_kind_let_annotation,
+  report_one_type_argument_kind
+}
+
+import @vibe/compiler/checker/type_relations {
+  check_assignable as type_relations_check_assignable,
+  check_assignable_for as type_relations_check_assignable_for,
+  check_assignable_set_end as type_relations_check_assignable_set_end,
+  detect_narrowed_generic_mismatch_for,
+  head_kind,
+  row_labels,
+  type_fully_concrete,
+  type_is_ground
+}
+
+import @vibe/compiler/checker/resume {
+  arm_first_bare_tail,
+  arm_refs_resume_value,
+  arm_tail_all_return,
+  pat_binds_resume as resume_pat_binds_resume,
+  reject_resume_in_error_arm,
+  reject_resume_outside_handler as resume_reject_resume_outside_handler,
+  resume_walk_bind_pat
+}
+
+import @vibe/compiler/checker/diagnostics {
+  attach_unlocated_decl_name_marker as diagnostics_attach_unlocated_decl_name_marker, off_marker, off_marker_len
+}
+
+import @vibe/compiler/core {
+  Expr,
+  Pat,
+  Stmt,
+  Subst,
+  Type,
+  TypeDef,
+  TypeEnv,
+  TypeExpr,
+  apply_type_constructor,
+  array_receiver_reads,
+  builtin_value_form_arity,
+  canonical_builtin_name,
+  collect_tvars,
+  compiler_owned_type_arity,
+  env_bind,
+  env_bind_mut,
+  env_cache_binding,
+  env_has_reexport_surface_binding,
+  env_lookup,
+  env_name_index_at,
+  env_name_index_length,
+  env_type_defs,
+  exception_effect_kind,
+  exception_effect_labels_equal,
+  exception_kind_resolution,
+  exception_kind_resolution_count,
+  exception_kind_resolution_record,
+  exception_kind_resolutions_clear,
+  exception_label_kind,
+  exception_row_kinds,
+  exception_row_resolved,
+  expr_child_at,
+  expr_children,
+  expr_children_pop,
+  expr_children_push,
+  expr_children_top,
+  find_enum_typedef,
+  find_typedef,
+  fresh_var,
+  generalize,
+  generalize_except,
+  hkt_apply_ctor,
+  instantiate,
+  is_alias_constructor,
+  is_builtin_type_name,
+  is_exception_effect_name,
+  is_exception_label,
+  is_exception_throw_handler_name,
+  is_exception_throw_operation,
+  is_hkt_app,
+  let_rec_binding_anchor,
+  refine_trait_bounds_from_receiver,
+  registry_builtin_arity,
+  registry_builtin_param_type,
+  registry_builtin_scheme,
+  resolve_builtin,
+  resolve_type_alias_params,
+  resolve_type_constructor_args,
+  strip_published_formal_suffixes,
+  subst_add_bound,
+  subst_apply,
+  subst_apply_except,
+  subst_bounds_for,
+  subst_lookup,
+  trait_decl_params,
+  trait_defined,
+  trait_method_sig_binders_deep,
+  trait_method_sig_deep,
+  trait_supers,
+  type_constructor_name,
+  type_implements_trait,
+  type_name_has_iterator_impl,
+  type_to_string,
+  typed_lowering_arg_offset,
+  types_equal,
+  unify
+}
+
+import @vibe/ast {
+  impl_encode_name,
+  impl_method_owner_head,
+  index_site_offset,
+  is_builtin_ref_offset,
+  trait_ref_args,
+  trait_ref_from_key,
+  trait_ref_key,
+  trait_ref_name,
+  type_param_arity,
+  type_param_name
+}
+
+import @vibe/parser {
+  lex, parse_type, print_type_expr
+}
+
+import ./builtins.vibe {
+  lookup_builtin
+}
+
+import @vibe/core {
+  array_empty, str_lt, struct MutMap
+}
+
+import ./checker_exhaustive.vibe {
+  match_nonexhaustive_witness
+}
+
+import ./checker_pattern.vibe {
+  check_pattern, pat_has_unsupported_or_binding
+}
+
+import ./checker_resolve.vibe {
+  collect_unknown_type_names,
+  collect_unknown_type_names_regionwise,
+  is_wellknown_nominal_head,
+  resolve_type_expr,
+  resolve_type_expr_shadowed,
+  subst_type_params
+}
+
+import ./checker_spawnable.vibe {
+  check_spawnable_captures, closure_bare_callee_names, closure_capture_facts, closure_free_names, spawn_caps_marker, spawn_safe_marker
+}
+
+import ./builtin_call_arms.vibe {
+  builtin_call_arm, builtin_resolves_at
+}
+
+import ./checker_effects.vibe {
+  row_items_top_level, throw_payload_site_key
+}
+
+import ./checker_escape.vibe {
+  diag_report_into, expr_free_in, mut_binding_escapes
+}
+
+import ./checker_builtin_arg_head_rest.vibe {
+  add_param_capture_dependency,
+  bind_builtin_arg_var,
+  collect_internal_provenance,
+  inst_struct_field_ty,
+  param_marker_index,
+  type_can_carry_region,
+  type_has_param_marker,
+  type_name_prefix
+}
+
+import ./checker_closure_capture_row.vibe {
+  captured_escape_tvars, closure_capture_row, container_write_crosses_region, env_reachable_tvars, esc_ids_intersect, tail_expr_off
+}
+
+import ./checker_eq_unbounded_formal_msg.vibe {
+  check_assignable,
+  check_assignable_set_end,
+  direct_result_enum_payload_param_indices,
+  env_has_active_region,
+  interp_is_shim_body,
+  return_provenance_was_written,
+  row_variable_labels,
+  scheme_formal_head_bound,
+  string_lit_end
+}
+
+import ./checker_infer_binop_type.vibe {
+  TypedOccurrenceRoleLaneCapture, append_legacy_typed_occurrence, param_types_are_spawn_shaped, record_receiver_kind, resolve_tparams_in
+}
+
+import ./checker_merge_capture_provenance.vibe {
+  checker_string_array_has,
+  decimal_index,
+  deferred_field_reads,
+  direct_result_field_param_index,
+  direct_result_param_indices,
+  efn_substituted_formals,
+  eq_formal_group,
+  eq_formal_row_of,
+  eq_formal_vars,
+  eq_group_begin,
+  eq_group_end,
+  eq_group_is_open,
+  escape_tvars_into,
+  formal_shadow,
+  int_array_has,
+  merge_capture_provenance,
+  merge_provenance_row,
+  parse_tuple_index,
+  record_eq_formal_var,
+  type_mentions_named
+}
+
+import ./checker_throw_kind_of_type.vibe {
+  bind_trait_bound_self_reference,
+  bind_trait_bound_tparams,
+  formal_application_error,
+  formals_source_arity,
+  min_int,
+  railway_expr_off,
+  report_exception_kinds_in_row,
+  report_formal_applications,
+  report_unknown_type_names,
+  trait_reference_display,
+  validate_trait_reference
+}
+
+/// #3145: the same filing for an argument a builtin `Array::*` operation reads
+/// as an Array's backing store (`array_receiver_reads`), keyed by the callee's
+/// own offset. The trait-dictionary pass refuses the call when the argument's
+/// type never resolves, since on a Map it would read or write positionally.
+///
+/// `formal` says the argument is, at this site, a declared type parameter of
+/// an enclosing binder. The direct fast path then binds it to `Array[_]`
+/// (#3006) -- and that binding does not reach the binder's callers, so the
+/// final substitution would answer "an Array" for a `T` a caller instantiates
+/// with a Map (measured: `fn f[T](c: T) -> Int { Array::length(c) }` applied
+/// to a one-entry map compiled and answered 0). Such a site is filed as kind
+/// 6, which the extraction reads as open whatever the substitution says.
+export fn record_array_receiver(capture: Option[TypedOccurrenceRoleLaneCapture], name: String, callee_off: Int, arg_ty: Type, s: Subst, formal: Bool) -> Unit {
+  if callee_off >= 0 && array_receiver_reads(name) {
+    // A formal is filed as its own variable, which the extraction looks up
+    // in `scheme_constrained_formals`.
+    record_receiver_kind(capture, callee_off, if formal {
+      subst_apply(s, arg_ty)
+    } else {
+      arg_ty
+    }, subst_apply(s, arg_ty), if formal {
+      6
+    } else {
+      5
+    }, s)
+  } else {
+    ()
+  }
+}
+
+/// #3145 review: the key a two-array reader (`Array::concat`,
+/// `Array::push_all`) files its SECOND operand under -- one byte into the
+/// callee's name, where no other expression can start -- so the refusal can
+/// name the operand that is actually unresolved.
+export fn array_reader_second_key(callee_off: Int) -> Int {
+  if callee_off >= 0 {
+    callee_off + 1
+  } else {
+    0 - 1
+  }
+}
+
+/// #3145: the special `Array::*` arms' version of what the direct fast path
+/// does for its Array argument: file it (`record_array_receiver`, noting a
+/// declared formal), then bind a type VARIABLE to `Array[_]` (#3006), so an
+/// unannotated lambda parameter used only through these arms is an Array to
+/// its callers -- a Map argument is then a type error at the call -- rather
+/// than an open type the pass has to refuse.
+export fn bind_array_arg(capture: Option[TypedOccurrenceRoleLaneCapture], name: String, callee_off: Int, arg_ty: Type, s: Subst, c: Int) -> (Subst, Int) {
+  let formal = match subst_apply(s, arg_ty) {
+    CtVar(fv) => eq_formal_row_of(fv) >= 0,
+    _ => false
+  }
+  record_array_receiver(capture, name, callee_off, arg_ty, s, formal)
+  bind_builtin_arg_var(subst_apply(s, arg_ty), 9, s, c)
+}
+
+export fn tab_identifier_ty(tytab: Array[(Int, Type)], ident_off: Int, ty: Type, capture: Option[TypedOccurrenceRoleLaneCapture], lane: String) -> Unit {
+  append_legacy_typed_occurrence(tytab, ident_off, ty, capture, "Identifier", lane)
+}
+
+export fn tab_call_ty(tytab: Array[(Int, Type)], call_off: Int, ty: Type, capture: Option[TypedOccurrenceRoleLaneCapture], lane: String) -> Type {
+  if call_off >= 0 {
+    append_legacy_typed_occurrence(tytab, call_off, ty, capture, "CallResult", lane)
+  } else {
+    ()
+  }
+  ty
+}
+
+/// #418: enforce that `obj.field = x` (which desugars to
+/// `__set_field(obj, "field", x)`) only targets a `mut`-declared struct field.
+/// Runs as a pure side-effect over a *throwaway* errors/tytab so it never
+/// perturbs the main type/subst flow — it only type-checks `obj` to learn its
+/// struct name, looks up that struct's `mut` field set, and pushes a single
+/// diagnostic to the real `errors` when the written field is not `mut`.
+export fn field_write_mut_check(name: String, args: Array[Expr], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> Unit {
+  if name == "__set_field" && Array::length(args) == 3 {
+    // review-lint: allow-by-name-call-arm -- a `mut` check on the field-write sugar `obj.f = x`, which reaches here spelled `__set_field`; it types nothing, so it is not one of the #3179 call arms
+    match Array::get(args, 1) {
+      EString(field, _) => {
+        let throwaway = array_empty()
+        let throwtab = array_empty()
+        let (obj_ty, _, _) = ce(Array::get(args, 0), env, defs, s, c, throwaway, throwtab)
+        // #829: also recognise an INSTANTIATED generic struct receiver
+        // (`CtNamed(S, targs)`), so `mut`-field enforcement and the written-
+        // value type check cover generic structs too.
+        let recv_struct = match subst_apply(s, obj_ty) {
+          CtStruct(sn) => Some((sn, array_empty())),
+          CtNamed(sn, sargs) => Some((sn, sargs)),
+          _ => None
+        }
+        match recv_struct {
+          Some(recv_info) => {
+            let (sname, recv_targs) = recv_info
+            match find_typedef(defs, sname) {
+              Some(TDStruct(_, dfields, mut_names, s_tparams)) => {
+                let mut found = false
+                let mut i = 0
+                while i < Array::length(mut_names) {
+                  if Array::get(mut_names, i) == field {
+                    found = true
+                  } else {
+                    ()
+                  }
+                  i = i + 1
+                }
+                if found {
+                  ()
+                } else {
+                  Array::push(errors, String::concat("cannot assign to non-`mut` field `", String::concat(field, String::concat("` of struct ", sname))))
+                }
+                // The written value must match the field's declared type
+                // (`p.x = "s"` for `x: Int` was accepted). Ground-gated via
+                // check_assignable so a generic field type is not over-rejected.
+                let mut fty = CtUnknown
+                let mut has_field = false
+                let mut fi = 0
+                while fi < Array::length(dfields) {
+                  let (fn2, ft) = Array::get(dfields, fi)
+                  if fn2 == field {
+                    fty = ft
+                    has_field = true
+                  } else {
+                    ()
+                  }
+                  fi = fi + 1
+                }
+                if has_field {
+                  let (val_ty, _, _) = ce(Array::get(args, 2), env, defs, s, c, throwaway, throwtab)
+                  // #829: instantiate a generic field's declared type from the
+                  // receiver's type args so the written value is checked against
+                  // the CONCRETE field type; a non-applied receiver keeps the
+                  // raw (rigid) type, which check_assignable tolerates.
+                  let inst_fty = inst_struct_field_ty(fty, s_tparams, recv_targs)
+                  let _ = check_assignable(subst_apply(s, inst_fty), subst_apply(s, val_ty), s, errors, String::concat("type mismatch writing field `", String::concat(field, "`")), tail_expr_off(Array::get(args, 2)))
+                  ()
+                } else {
+                  ()
+                }
+              },
+              _ => ()
+            }
+          },
+          None => ()
+        }
+      },
+      _ => ()
+    }
+  } else {
+    ()
+  }
+}
+
+/// Argument positions retained by a mutable operation, encoded as a two-bit
+/// mask for positions 1 and 2. This is the single checker-owned inventory for
+/// shipped primitives and standard-library mutable wrappers; aliases are listed
+/// beside their canonical spelling.
+fn retaining_write_argument_mask(source_name: String) -> Int {
+  let name = canonical_builtin_name(source_name)
+  if name == "Array::push" || name == "ArrayBuilder::push" || name == "Array::push_all" || name == "Array::truncate" || name == "MutList::push" || name == "MutList::truncate" || name == "MutSet::add" || name == "HashSet::add" || name == "MutSortedSet::add" || name == "SortedSet::add" || name == "PriorityQueue::push" || name == "Deque::push_back" || name == "Deque::push_front" {
+    1
+  } else if name == "Array::set" || name == "FixedArray::set" || name == "FixedArray::unsafe_set" || name == "__set_field" {
+    2
+  } else if name == "MapBuilder::set" || name == "MutMap::set" || name == "HashMap::set" || name == "MutSortedMap::set" || name == "SortedMap::set" {
+    3
+  } else {
+    0
+  }
+}
+
+/// Mutable container operations are assignments with a non-syntactic target.
+/// Check every stored argument against the same region lifetime rule as
+/// `EAssign`; skip the duplicate type walk entirely outside a region.
+export fn retaining_write_region_check(name: String, args: Array[Expr], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> Unit {
+  // #2386: the name test is a compare ladder; the region test is a chain
+  // lookup. Asking the ladder first keeps the lookup off every call site
+  // whose callee retains nothing -- nearly all of them -- and the check
+  // itself does nothing for those either way.
+  if Array::length(args) > 0 && retaining_write_argument_mask(name) != 0 && env_has_active_region(env) {
+    let retained = retaining_write_argument_mask(name)
+    let mut value_index = 1
+    while value_index <= 2 {
+      let is_retained = if value_index == 1 {
+        retained == 1 || retained == 3
+      } else {
+        retained == 2 || retained == 3
+      }
+      if is_retained && value_index < Array::length(args) {
+        let throwaway = array_empty()
+        let throwtab = array_empty()
+        let (val_ty, s1, _) = ce(Array::get(args, value_index), env, defs, s, c, throwaway, throwtab)
+        if container_write_crosses_region(Array::get(args, 0), subst_apply(s1, val_ty), env) {
+          Array::push(errors, String::concat("region escapes its scope: a container write stores a value that captures this region into an outer binding", off_marker(tail_expr_off(Array::get(args, value_index)))))
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      value_index = value_index + 1
+    }
+  } else {
+    ()
+  }
+}
+
+/// Nominal struct identity intentionally omits field types. Reconstruct only
+/// the tail record literal's local let environment so a region-return check can
+/// inspect the actual field values without changing the public nominal type.
+fn named_record_provenance_key(name: String) -> String {
+  String::concat("__region_named_record__", name)
+}
+
+/// Bind the structural field types of a nominal record initializer under a
+/// checker-private key. Nominal identity remains `CtStruct`; only the region
+/// tail check reads this detached provenance view. Bare aliases copy the view.
+fn bind_named_record_provenance(name: String, val: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> TypeEnv {
+  match val {
+    ERecord(record_name, fields, _) => if record_name != "" {
+      let field_types = array_empty()
+      for field in fields {
+        let (field_name, value) = field
+        let throwaway = array_empty()
+        let throwtab = array_empty()
+        let (field_ty, field_s, _) = ce(value, env, defs, s, c, throwaway, throwtab)
+        Array::push(field_types, (field_name, subst_apply(field_s, field_ty)))
+      }
+      env_bind(env, named_record_provenance_key(name), CtRecord(field_types))
+    } else {
+      env
+    },
+    EIdent(alias, _) => match env_lookup(env, named_record_provenance_key(alias)) {
+      Some(provenance) => env_bind(env, named_record_provenance_key(name), provenance),
+      None => env
+    },
+    _ => env
+  }
+}
+
+fn named_record_tail_mentions_region(expr: Expr, env: TypeEnv, region_name: String) -> Bool {
+  match expr {
+    EIdent(name, _) => match env_lookup(env, named_record_provenance_key(name)) {
+      Some(provenance) => type_mentions_named(provenance, region_name),
+      None => false
+    },
+    EDot(obj, field, _, _) => match obj {
+      EIdent(name, _) => match env_lookup(env, named_record_provenance_key(name)) {
+        Some(CtRecord(fields)) => {
+          let mut found = false
+          for entry in fields {
+            let (field_name, field_ty) = entry
+            if field_name == field && type_mentions_named(field_ty, region_name) {
+              found = true
+            } else {
+              ()
+            }
+          }
+          found
+        },
+        _ => false
+      },
+      _ => false
+    },
+    _ => false
+  }
+}
+
+/// Nominal struct identity intentionally omits field types. Preserve a private
+/// structural view through local bindings and aliases so whole-value and field
+/// tails cannot erase region provenance.
+
+fn tail_returns_binding(expr: Expr, name: String) -> Bool {
+  match expr {
+    EIdent(found, _) => found == name,
+    ELet(_, _, body, _) => tail_returns_binding(body, name),
+    ELetMut(_, _, body, _) => tail_returns_binding(body, name),
+    ELetRec(_, _, body) => tail_returns_binding(body, name),
+    ESeq(_, right) => tail_returns_binding(right, name),
+    EIf(_, then_expr, else_expr) => tail_returns_binding(then_expr, name) || tail_returns_binding(else_expr, name),
+    _ => false
+  }
+}
+
+/// Region-provenance scanning runs after the expression has already passed
+/// ordinary checking. Ground literals cannot mention a region and cannot
+/// change substitution state, so re-entering the full checker for them only
+/// pays its large RC parameter-dup plan again.
+fn tail_region_check(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> (Type, Subst, Int) {
+  match expr {
+    EInt(_) => (CtInt, s, c),
+    EFloat(_) => (CtDouble, s, c),
+    EString(_, _) => (CtString, s, c),
+    EBool(_) => (CtBool, s, c),
+    EUnit => (CtUnit, s, c),
+    _ => ce(expr, env, defs, s, c, array_empty(), array_empty())
+  }
+}
+
+fn tail_region_closed_ground_fn(expr: Expr) -> Bool {
+  match expr {
+    EFn(tparams, tbounds, params, ret_ty, effect, body) => if Array::length(tparams) == 0 && Array::length(tbounds) == 0 && Array::length(params) == 0 && ret_ty == None && effect == None {
+      match body {
+        EInt(_) => true,
+        EFloat(_) => true,
+        EString(_, _) => true,
+        EBool(_) => true,
+        EUnit => true,
+        _ => false
+      }
+    } else {
+      false
+    },
+    _ => false
+  }
+}
+
+export fn tail_named_record_mentions_region(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, region_name: String, ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> Bool {
+  match expr {
+    ELet(name, val, body, _) => {
+      let (val_ty, s1, c1) = tail_region_check(val, env, defs, s, c, ce)
+      let next_env = bind_named_record_provenance(name, val, env_bind(env, name, val_ty), defs, s1, c1, ce)
+      (tail_returns_binding(body, name) && tail_named_record_mentions_region(val, env, defs, s, c, region_name, ce)) || tail_named_record_mentions_region(body, next_env, defs, s1, c1, region_name, ce)
+    },
+    ELetMut(name, val, body, _) => {
+      let (val_ty, s1, c1) = tail_region_check(val, env, defs, s, c, ce)
+      let next_env = bind_named_record_provenance(name, val, env_bind_mut(env, name, val_ty, false), defs, s1, c1, ce)
+      tail_named_record_mentions_region(body, next_env, defs, s1, c1, region_name, ce)
+    },
+    ESeq(left, right) => {
+      let (s1, c1) = if tail_region_closed_ground_fn(left) {
+        (s, c)
+      } else {
+        let (_, next_s, next_c) = tail_region_check(left, env, defs, s, c, ce)
+        (next_s, next_c)
+      }
+      tail_named_record_mentions_region(right, env, defs, s1, c1, region_name, ce)
+    },
+    ECall(callee, args, _) => {
+      let throwaway = array_empty()
+      let throwtab = array_empty()
+      let (callee_ty, s1, c1) = ce(callee, env, defs, s, c, throwaway, throwtab)
+      let mut builtin_constructor_found = false
+      match callee {
+        EIdent("Some", _) => for arg in args {
+          if tail_named_record_mentions_region(arg, env, defs, s1, c1, region_name, ce) {
+            builtin_constructor_found = true
+          }
+        },
+        _ => ()
+      }
+      match subst_apply(s1, callee_ty) {
+        CtFn(param_tys, ret_ty, callee_effect) => {
+          let resolved_ret = subst_apply(s1, ret_ty)
+          let mut found = false
+          let limit = min_int(Array::length(param_tys), Array::length(args))
+          let mut i = 0
+          while i < limit {
+            let markers = array_empty()
+            collect_internal_provenance(Array::get(param_tys, i), markers)
+            let mut depends = false
+            for marker_label in markers {
+              match param_marker_index(marker_label) {
+                Some(marker) => if type_has_param_marker(resolved_ret, marker) {
+                  depends = true
+                } else {
+                  ()
+                },
+                None => ()
+              }
+            }
+            if depends && tail_named_record_mentions_region(Array::get(args, i), env, defs, s1, c1, region_name, ce) {
+              found = true
+            }
+            i = i + 1
+          }
+          match callee_effect {
+            Some(row) => if String::contains(row, "#aliasparam[") {
+              for raw in String::split(row, ",") {
+                let label = String::trim(raw)
+                if String::starts_with(label, "#aliasparam[") {
+                  let close = String::index_of(label, "]")
+                  let mut index = 0
+                  let mut p = 12
+                  while p < close {
+                    index = index * 10 + (String::char_code_at(label, p) - 48)
+                    p = p + 1
+                  }
+                  if index >= 0 && index < Array::length(args) && tail_named_record_mentions_region(Array::get(args, index), env, defs, s1, c1, region_name, ce) {
+                    found = true
+                  }
+                }
+              }
+            } else {
+              ()
+            },
+            None => ()
+          }
+          match callee_effect {
+            Some(row) => for raw in String::split(row, ",") {
+              let label = String::trim(raw)
+              if String::starts_with(label, "#fieldparam[") {
+                let close = String::index_of(label, "]")
+                let mut index = 0
+                let mut p = 12
+                while p < close {
+                  index = index * 10 + (String::char_code_at(label, p) - 48)
+                  p = p + 1
+                }
+                if index >= 0 && index < Array::length(args) && tail_named_record_mentions_region(Array::get(args, index), env, defs, s1, c1, region_name, ce) {
+                  found = true
+                }
+              }
+            },
+            None => ()
+          }
+          match callee {
+            EIdent(callee_name, _) => match env_lookup(env, String::concat("__field_contract__", callee_name)) {
+              Some(CtNamed(index_text, _)) => {
+                let index = decimal_index(index_text)
+                if index >= 0 && index < Array::length(args) && tail_named_record_mentions_region(Array::get(args, index), env, defs, s1, c1, region_name, ce) {
+                  found = true
+                }
+              },
+              _ => ()
+            },
+            _ => ()
+          }
+          found || builtin_constructor_found
+        },
+        _ => builtin_constructor_found
+      }
+    },
+    ERecord(name, fields, _) => if name != "" {
+      let mut found = false
+      let mut s1 = s
+      let mut c1 = c
+      for field in fields {
+        let (_, value) = field
+        let throwaway = array_empty()
+        let throwtab = array_empty()
+        let (field_ty, next_s, next_c) = ce(value, env, defs, s1, c1, throwaway, throwtab)
+        if type_mentions_named(subst_apply(next_s, field_ty), region_name) {
+          found = true
+        } else {
+          ()
+        }
+        s1 = next_s
+        c1 = next_c
+      }
+      found
+    } else {
+      false
+    },
+    EArray(items) => {
+      let mut found = false
+      for item in items {
+        if tail_named_record_mentions_region(item, env, defs, s, c, region_name, ce) {
+          found = true
+        }
+      }
+      found
+    },
+    ETuple(items) => {
+      let mut found = false
+      for item in items {
+        if tail_named_record_mentions_region(item, env, defs, s, c, region_name, ce) {
+          found = true
+        }
+      }
+      found
+    },
+    _ => {
+      let throwaway = array_empty()
+      let throwtab = array_empty()
+      let (expr_ty, next_s, _) = ce(expr, env, defs, s, c, throwaway, throwtab)
+      named_record_tail_mentions_region(expr, env, region_name) || type_mentions_named(subst_apply(next_s, expr_ty), region_name)
+    }
+  }
+}
+
+fn expression_mentions_active_region_scan(expr: Expr, cur: TypeEnv, full: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> Bool {
+  match cur {
+    EnvEmpty => false,
+    EnvBind(name, binding, rest) => if name == "#active_region" {
+      match binding.ty {
+        CtNamed(region_name, _) => tail_named_record_mentions_region(expr, full, defs, s, c, region_name, ce) || expression_mentions_active_region_scan(expr, rest, full, defs, s, c, ce),
+        _ => expression_mentions_active_region_scan(expr, rest, full, defs, s, c, ce)
+      }
+    } else {
+      expression_mentions_active_region_scan(expr, rest, full, defs, s, c, ce)
+    },
+    EnvMutCell(_, _, rest) => expression_mentions_active_region_scan(expr, rest, full, defs, s, c, ce),
+    EnvTraitDef(_, _, _, _, rest, _, _) => expression_mentions_active_region_scan(expr, rest, full, defs, s, c, ce),
+    EnvTraitImpl(_, _, rest) => expression_mentions_active_region_scan(expr, rest, full, defs, s, c, ce),
+    EnvTraitImplGen(_, _, _, _, rest) => expression_mentions_active_region_scan(expr, rest, full, defs, s, c, ce),
+    EnvTypeDefs(_, _, rest) => expression_mentions_active_region_scan(expr, rest, full, defs, s, c, ce),
+    EnvCached(_, _, rest) => expression_mentions_active_region_scan(expr, rest, full, defs, s, c, ce),
+    EnvFlat(_) => false
+  }
+}
+
+export fn expression_mentions_active_region(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> Bool {
+  expression_mentions_active_region_scan(expr, env, env, defs, s, c, ce)
+}
+
+/// An arm pattern is a CATCH-ALL (makes a match exhaustive regardless of which
+/// constructors precede it) when it is a wildcard or a bare binding. `POr` is a
+/// catch-all if either side is.
+export fn pat_is_catchall(pat: Pat) -> Bool {
+  match pat {
+    PWild => true,
+    PBind(_) => true,
+    POr(l, r) => pat_is_catchall(l) || pat_is_catchall(r),
+    _ => false
+  }
+}
+
+/// Collect the constructor names a pattern matches at the TOP level (for enum
+/// exhaustiveness). `POr` contributes from both sides; other patterns none.
+/// #940 Phase 1: Bool-literal coverage names (`"true"` / `"false"`) for the
+/// flat Bool exhaustiveness check, walking or-patterns like
+/// collect_ctor_names_into does for ctor names.
+export fn collect_bool_pats_into(pat: Pat, acc: Array[String]) -> Unit {
+  match pat {
+    PBool(b) => if b {
+      Array::push(acc, "true")
+    } else {
+      Array::push(acc, "false")
+    },
+    POr(l, r) => {
+      collect_bool_pats_into(l, acc)
+      collect_bool_pats_into(r, acc)
+    },
+    _ => ()
+  }
+}
+
+export fn flat_names_contain(names: Array[String], target: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(names) && !found {
+    if Array::get(names, i) == target {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+export fn collect_ctor_names_into(pat: Pat, acc: Array[String]) -> Unit {
+  match pat {
+    PCtor(name, _) => Array::push(acc, name),
+    POr(l, r) => {
+      collect_ctor_names_into(l, acc)
+      collect_ctor_names_into(r, acc)
+    },
+    _ => ()
+  }
+}
+
+/// #2807: the edit for a NAMED field read on a tuple. A tuple's slots are
+/// reached positionally, so the message names an index rather than telling the
+/// reader to go find a struct.
+fn tuple_named_field_message(field: String, arity: Int) -> String {
+  String::concat("use a positional index such as `.0`; `.", String::concat(field, String::concat("` is not a tuple index, and a ", String::concat(__to_string(arity), "-tuple has no named fields"))))
+}
+
+/// #2807: the edit for a field read on an ENUM receiver. A variant's payload is
+/// reached by MATCHING, never by naming a field, so the message leads with that
+/// edit rather than with the generic "non-struct value" wording — the two
+/// receivers have different fixes. Shared by both spellings an enum reaches this
+/// check under: the bare `CtEnum(name)` a local declaration binds, and the
+/// `CtNamed(name, args)` an instantiated generic enum (`Wrap[Int]`) resolves to.
+fn enum_field_access_message(enum_name: String, field: String) -> String {
+  String::concat("match on ", String::concat(enum_name, String::concat(" to read a variant's payload; field access `.", String::concat(field, String::concat("` needs a struct, and ", String::concat(enum_name, " is an enum"))))))
+}
+
+/// #2820: the same shape for a BUILTIN receiver (`Array`, `Map`, `Bytes`,
+/// `String`, ...). A builtin container has no fields at all, so unlike the
+/// struct case there is no "you named the wrong one" reading -- the only edit
+/// that can give `.name` a meaning is a qualified call, which is also what the
+/// dot-call diagnostics on these receivers already recommend
+/// (``call it as `Array::length(...)` ``). Leading with that keeps one
+/// vocabulary across both.
+fn builtin_field_access_message(type_name: String, field: String) -> String {
+  String::concat("call `", String::concat(type_name, String::concat("::", String::concat(field, String::concat("(...)` if you meant a method; field access `.", String::concat(field, String::concat("` needs a struct, and ", String::concat(type_name, " is a builtin type"))))))))
+}
+
+/// #2848: the same shape for a receiver typed by a TYPE PARAMETER. Nothing a
+/// bound can say promises `T` a field -- there is no `HasField` bound, and a
+/// generic body is lowered once for every instantiation -- so the only edit
+/// that gives `.name` a meaning is naming the struct in the signature. Before
+/// this refusal the read typed as `CtUnknown` and codegen resolved the field
+/// by SPELLING against any struct in the program declaring it: measured on the
+/// committed seed, `struct Crate { payload: Int }` in scope and `fn read[T](m:
+/// T) -> Int { m.payload }` applied to `7` compiled clean and answered `0`,
+/// slot 0 of a tagged integer read through `Crate`'s offset; with no struct
+/// declaring the name the same program was clean in `vibe check` and died in
+/// the build with an unlocated `unknown struct field: v`.
+fn formal_field_access_message(tparam: String, field: String) -> String {
+  String::concat("write the struct that declares `", String::concat(field, String::concat("` in place of the type parameter `", String::concat(tparam, String::concat("`; field access `.", String::concat(field, String::concat("` needs a struct, and a bound on `", String::concat(tparam, "` cannot promise one"))))))))
+}
+
+/// #2848: the source name of the OPEN type parameter that unification variable
+/// `id` stands for under `s`, or "" when it stands for none. Inside a generic
+/// body a plain formal is a unification variable (#2130), so at a field-read
+/// site nothing else tells "the erased `T` of this declaration" from an
+/// ordinary not-yet-solved inference variable (`let xs = []`), which has to
+/// stay tolerated. The table `eq_formal_vars` records exactly the former, and
+/// the lookup follows the representative in both directions the way
+/// `eq_formal_names_for_var` does: unify may leave either the formal's own
+/// variable or a local's as the survivor. Only rows whose declaration is
+/// still open answer, for the reason `eq_formal_row_of` gives -- an auxiliary
+/// re-check can hand one variable id to two sibling binders.
+export fn open_formal_name_for_var(id: Int, s: Subst) -> String {
+  formal_name_for_var(id, s, true)
+}
+
+/// The lookup behind `open_formal_name_for_var`. `open_only = false` also
+/// answers from a binder whose declaration has already closed; that is what
+/// the program-end pass over `deferred_field_reads` needs, because by then
+/// every declaration is closed and a variable unified with a formal during
+/// its body still stands for that formal under the final substitution.
+fn formal_name_for_var(id: Int, s: Subst, open_only: Bool) -> String {
+  let mut i = Array::length(eq_formal_vars) - 1
+  let mut found = ""
+  while i >= 0 && found == "" {
+    let (vid, name) = Array::get(eq_formal_vars, i)
+    if !open_only || eq_group_is_open(Array::get(eq_formal_group, i)) {
+      if vid == id {
+        found = name
+      } else {
+        match subst_apply(s, CtVar(vid)) {
+          CtVar(rep) => if rep == id {
+            found = name
+          },
+          _ => ()
+        }
+      }
+    }
+    i = i - 1
+  }
+  found
+}
+
+/// #2848 (Codex on #2864): judge every pending field read in
+/// `deferred_field_reads` against the substitution as it stands now. A row
+/// whose variable resolves to a type parameter is refused with the formal
+/// message; one that resolves to any other type goes through
+/// `field_read_type`, the same arms the immediate check uses, so a receiver
+/// that turned out to be an `Option`, an enum or a struct lacking the field is
+/// refused exactly as if it had been annotated; a row that resolved to a
+/// struct carrying the field is simply dropped. A row whose variable is still
+/// unsolved is kept for a later pass -- an inner lambda's parameter is solved
+/// by a call in the ENCLOSING body, so the pass at the lambda's own end keeps
+/// it and the pass at the enclosing function's end judges it.
+///
+/// Called at the end of every function body (before its generic group closes,
+/// so `open_only` can hold) and once more with the program's final
+/// substitution (`open_only = false`, since every group has closed by then).
+/// Returns the substitution extended by every resolved read's result variable
+/// (see the table's doc); the rows are judged in recording order under the
+/// substitution as it grows, so a chained projection whose receiver is an
+/// earlier row's result resolves in the same pass.
+export fn resolve_deferred_field_reads(s: Subst, defs: Array[TypeDef], errors: Array[String], open_only: Bool) -> Subst {
+  let kept: Array[(Int, String, Int, Int, String, Int)] = []
+  let mut cur = s
+  let mut i = 0
+  while i < Array::length(deferred_field_reads) {
+    let (vid, field, field_off, dot_off, recv, result_id) = Array::get(deferred_field_reads, i)
+    match subst_apply(cur, CtVar(vid)) {
+      CtVar(rep) => {
+        let formal = formal_name_for_var(rep, cur, open_only)
+        if formal != "" {
+          Array::push(errors, String::concat(formal_field_access_message(formal, field), field_read_marker(field, field_off, dot_off)))
+        } else {
+          Array::push(kept, (vid, field, field_off, dot_off, recv, result_id))
+        }
+      },
+      resolved => {
+        let fty = field_read_type(resolved, field, defs, cur, errors, field_off, dot_off)
+        cur = unify_deferred_field_result(result_id, fty, cur, defs, field, field_off, dot_off, errors)
+      }
+    }
+    i = i + 1
+  }
+  Array::truncate(deferred_field_reads, 0)
+  let mut k = 0
+  while k < Array::length(kept) {
+    Array::push(deferred_field_reads, Array::get(kept, k))
+    k = k + 1
+  }
+  cur
+}
+
+/// The located anchor every field-read diagnostic carries: the field token
+/// when the AST has it, else the dot.
+fn field_read_marker(field: String, field_off: Int, dot_off: Int) -> String {
+  if field_off >= 0 {
+    off_marker_len(field_off, String::length(field))
+  } else {
+    off_marker(dot_off)
+  }
+}
+
+/// Bind a deferred read's result variable to the field type the resolved
+/// receiver gave it. `CtUnknown` means the receiver was refused (a diagnostic
+/// is already out) or is tolerated, and binds nothing. A variable the read's
+/// consumers already fixed to a different type is the mismatch the result
+/// variable exists to catch: `(p) -> { p.v }` handed to a `(Holder) -> String`
+/// parameter, with `v: Int`.
+///
+/// A mismatch against an UNRESOLVED nominal type is tolerated, the way every
+/// other unify site tolerates one (`check_assignable`, the `==` arm): a
+/// trait's erased type parameter reaches an impl method's return annotation
+/// as a bare `CtNamed("T", [])` that `relax_unknown_named` would relax to
+/// `CtUnknown` -- `impl Iterator for Counter { next(self) -> Option[(T,
+/// Counter)] { Some((self.at, ..)) } }` fixed the result variable to `T`
+/// before `self.at` resolved to `Int`, and the strict unify refused a program
+/// the seed accepts (measured: `for_over_iterator_impl_struct.vibe`). Before
+/// this pass the read typed `CtUnknown` and absorbed `T` silently, so
+/// tolerating exactly that shape is the status quo, not a widening.
+fn unify_deferred_field_result(result_id: Int, fty: Type, s: Subst, defs: Array[TypeDef], field: String, field_off: Int, dot_off: Int, errors: Array[String]) -> Subst {
+  match fty {
+    CtUnknown => s,
+    _ => match unify(CtVar(result_id), fty, s) {
+      Some(ns) => ns,
+      None => {
+        let existing = subst_apply(s, CtVar(result_id))
+        if type_mentions_unknown_named(existing, defs) || type_mentions_unknown_named(fty, defs) {
+          s
+        } else {
+          Array::push(errors, String::concat("field access `.", String::concat(field, String::concat("` has type ", String::concat(type_to_string(subst_apply(s, fty)), String::concat(" once its receiver is known, but the value was already used as ", String::concat(type_to_string(existing), field_read_marker(field, field_off, dot_off))))))))
+          s
+        }
+      }
+    }
+  }
+}
+
+/// Does `ty` mention a nominal type that resolves to nothing -- no typedef, no
+/// builtin -- i.e. one `relax_unknown_named` would relax to `CtUnknown`?
+fn type_mentions_unknown_named(ty: Type, defs: Array[TypeDef]) -> Bool {
+  match ty {
+    CtNamed(n, args) => {
+      let known = match find_typedef(defs, n) {
+        Some(_) => true,
+        None => match resolve_builtin(n) {
+          Some(_) => true,
+          None => false
+        }
+      }
+      if !known {
+        true
+      } else {
+        let mut i = 0
+        let mut found = false
+        while i < Array::length(args) && !found {
+          found = type_mentions_unknown_named(Array::get(args, i), defs)
+          i = i + 1
+        }
+        found
+      }
+    },
+    CtApplied(head, args) => {
+      let mut found = type_mentions_unknown_named(head, defs)
+      let mut i = 0
+      while i < Array::length(args) && !found {
+        found = type_mentions_unknown_named(Array::get(args, i), defs)
+        i = i + 1
+      }
+      found
+    },
+    CtArray(e) => type_mentions_unknown_named(e, defs),
+    CtOption(e) => type_mentions_unknown_named(e, defs),
+    CtTuple(es) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(es) && !found {
+        found = type_mentions_unknown_named(Array::get(es, i), defs)
+        i = i + 1
+      }
+      found
+    },
+    CtRecord(fields) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(fields) && !found {
+        let (_, fty) = Array::get(fields, i)
+        found = type_mentions_unknown_named(fty, defs)
+        i = i + 1
+      }
+      found
+    },
+    CtFn(ps, r, _) => {
+      let mut found = type_mentions_unknown_named(r, defs)
+      let mut i = 0
+      while i < Array::length(ps) && !found {
+        found = type_mentions_unknown_named(Array::get(ps, i), defs)
+        i = i + 1
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+/// #2848 (Codex on #2864, round 2): resolve the pending field reads on an IMPL
+/// METHOD's `self` against the impl's target, BEFORE the binding is
+/// generalized. `parse_impl_methods` lowers `impl Tr for Crate { m(self) {
+/// self.x } }` to `let Crate::m = (self) -> { self.x }` with `self`
+/// unannotated, so `self` is an unsolved variable in the body and would be
+/// quantified like any parameter -- the first cut of the generalization
+/// refusal took every `impl` in `lib/` reading a field of `self` with it.
+///
+/// Three things are decided by PROVENANCE, not by spelling (the lesson of
+/// `trait_erased_type_param_env`):
+///
+///   * the binding is an impl method only when a trait in scope declares a
+///     method of this name AND the env records an impl of that trait for the
+///     owner the binding names -- a qualified free function
+///     `fn Crate::read(self) -> Int { self.payload }` has no such impl, stays
+///     polymorphic in `self`, and is refused as an open receiver like any
+///     `let`-bound lambda (measured: `Crate::read(7)` would otherwise read the
+///     tagged integer through `Crate`'s offset);
+///   * the receiver's type is the impl's RECORDED target type, whatever its
+///     kind, so an enum or builtin target meets the enum / builtin refusal
+///     rather than being coerced into a struct that has no typedef;
+///   * the receiver is identified by its type VARIABLE -- the first
+///     parameter's, when that parameter is `self` -- so `let value = self;
+///     value.payload` is the same receiver as `self.payload`.
+///
+/// Rows that resolve bind their result variables (the field's real type
+/// reaches the method's return type before it is generalized); rows on other
+/// variables are left for `refuse_generalized_field_reads`.
+export fn resolve_impl_self_field_reads(binding_name: String, val: Expr, vt: Type, s: Subst, env: TypeEnv, defs: Array[TypeDef], errors: Array[String]) -> Subst {
+  let sep = String::index_of(binding_name, "::")
+  let self_first = match val {
+    EFn(_, _, params, _, _, _) => if Array::length(params) > 0 {
+      let (pname, _) = Array::get(params, 0)
+      pname == "self"
+    } else {
+      false
+    },
+    _ => false
+  }
+  if sep < 0 || !self_first {
+    s
+  } else {
+    let owner_full = String::substring(binding_name, 0, sep)
+    let owner = impl_method_owner_head(owner_full)
+    let method = String::substring(binding_name, sep + 2, String::length(binding_name))
+    match impl_method_target(env, env, owner, owner_full, method) {
+      None => s,
+      Some(target) => {
+        let self_rep = match subst_apply(s, vt) {
+          CtFn(ptypes, _, _) => if Array::length(ptypes) > 0 {
+            match subst_apply(s, Array::get(ptypes, 0)) {
+              CtVar(id) => id,
+              _ => 0 - 1
+            }
+          } else {
+            0 - 1
+          },
+          _ => 0 - 1
+        }
+        if self_rep < 0 {
+          s
+        } else {
+          let kept: Array[(Int, String, Int, Int, String, Int)] = []
+          let mut cur = s
+          let mut i = 0
+          while i < Array::length(deferred_field_reads) {
+            let (vid, field, field_off, dot_off, recv, result_id) = Array::get(deferred_field_reads, i)
+            let is_self = match subst_apply(cur, CtVar(vid)) {
+              CtVar(rep) => rep == self_rep,
+              _ => false
+            }
+            if is_self {
+              let fty = field_read_type(target, field, defs, cur, errors, field_off, dot_off)
+              cur = unify_deferred_field_result(result_id, fty, cur, defs, field, field_off, dot_off, errors)
+            } else {
+              Array::push(kept, (vid, field, field_off, dot_off, recv, result_id))
+            }
+            i = i + 1
+          }
+          Array::truncate(deferred_field_reads, 0)
+          let mut k = 0
+          while k < Array::length(kept) {
+            Array::push(deferred_field_reads, Array::get(kept, k))
+            k = k + 1
+          }
+          cur
+        }
+      }
+    }
+  }
+}
+
+/// The recorded target of an impl, for the trait declaring `method_name`,
+/// whose target's constructor is `type_name`; `None` when no trait in scope
+/// declares such a method with an impl for that type. Mirrors
+/// `collect_impl_erased_type_params`' walk, answering the target instead of
+/// the trait's erased parameters. `owner_full` is the binding's whole owner
+/// segment (`Box$impl$<trait>$<target key>` for an applied impl), which pins
+/// the trait when two in-scope traits declare the method (Codex on #2864,
+/// round 3): the encoded trait key it carries is the impl's own, so a
+/// candidate impl of another trait is not taken for it.
+fn impl_method_target(chain: TypeEnv, full: TypeEnv, type_name: String, owner_full: String, method_name: String) -> Option[Type] {
+  match chain {
+    EnvEmpty => None,
+    EnvBind(_, _, rest) => impl_method_target(rest, full, type_name, owner_full, method_name),
+    // Declared OR inherited: `impl Child for P` may define `base_m`, a method
+    // of `trait Child: Base`'s supertrait, and the env then records an impl of
+    // `Child` for `P`, not of `Base`. `trait_method_sig_deep` walks the
+    // supertraits (measured: `trait_supertrait_bound_struct.vibe` was refused
+    // as an open receiver with the flat `trait_methods_declare` test).
+    EnvTraitDef(trait_name, _, _, _, rest, _, _) => {
+      let declares = match trait_method_sig_deep(full, trait_name, method_name) {
+        Some(_) => true,
+        None => false
+      }
+      if declares {
+        match env_trait_impl_target_for(full, trait_name, type_name, owner_full) {
+          Some(target) => Some(target),
+          None => impl_method_target(rest, full, type_name, owner_full, method_name)
+        }
+      } else {
+        impl_method_target(rest, full, type_name, owner_full, method_name)
+      }
+    },
+    EnvTraitImpl(_, _, rest) => impl_method_target(rest, full, type_name, owner_full, method_name),
+    EnvTraitImplGen(_, _, _, _, rest) => impl_method_target(rest, full, type_name, owner_full, method_name),
+    EnvMutCell(_, _, rest) => impl_method_target(rest, full, type_name, owner_full, method_name),
+    EnvTypeDefs(_, _, rest) => impl_method_target(rest, full, type_name, owner_full, method_name),
+    EnvCached(_, _, rest) => impl_method_target(rest, full, type_name, owner_full, method_name),
+    EnvFlat(_) => None
+  }
+}
+
+/// Does the impl recorded under key `tn` (a bare trait name, or the
+/// `$trait$`-prefixed applied key) belong to the trait `trait_name` names
+/// AND, when the binding's owner carries an `$impl$` segment, to THAT impl?
+/// `EnvTraitDef` holds the trait's head name while an impl holds the key it
+/// was written with -- `impl Iter[Int] for PairIter` records the applied key,
+/// and `trait_defined` compares the same way (measured: comparing the raw key
+/// refused `fixtures/iterator_trait_alias_operations_test.vibe`'s `self.first`
+/// as an open receiver). The owner segment was built by `impl_method_owner`
+/// from the same key, so `impl_encode_name(tn)` between `$impl$` and `$`
+/// identifies the impl exactly; an owner with no segment is a plain impl of a
+/// bare trait for an unapplied target, and the head is all there is to match.
+fn impl_key_matches(tn: String, trait_name: String, owner_full: String) -> Bool {
+  if trait_ref_name(tn) != trait_name {
+    false
+  } else {
+    let seg = String::index_of(owner_full, "$impl$")
+    if seg < 0 {
+      true
+    } else {
+      let encoded = String::concat("$impl$", String::concat(impl_encode_name(tn), "$"))
+      String::index_of(owner_full, encoded) >= 0
+    }
+  }
+}
+
+/// `env_has_trait_impl_for`, answering the impl's recorded target type and
+/// matching the trait by `impl_key_matches`.
+fn env_trait_impl_target_for(env: TypeEnv, trait_name: String, type_name: String, owner_full: String) -> Option[Type] {
+  match env {
+    EnvEmpty => None,
+    EnvBind(_, _, rest) => env_trait_impl_target_for(rest, trait_name, type_name, owner_full),
+    EnvTraitDef(_, _, _, _, rest, _, _) => env_trait_impl_target_for(rest, trait_name, type_name, owner_full),
+    EnvTraitImpl(tn, target, rest) => if impl_key_matches(tn, trait_name, owner_full) && type_constructor_name(target) == type_name {
+      Some(target)
+    } else {
+      env_trait_impl_target_for(rest, trait_name, type_name, owner_full)
+    },
+    EnvTraitImplGen(tn, _, _, target, rest) => if impl_key_matches(tn, trait_name, owner_full) && type_constructor_name(target) == type_name {
+      Some(target)
+    } else {
+      env_trait_impl_target_for(rest, trait_name, type_name, owner_full)
+    },
+    EnvMutCell(_, _, rest) => env_trait_impl_target_for(rest, trait_name, type_name, owner_full),
+    EnvTypeDefs(_, _, rest) => env_trait_impl_target_for(rest, trait_name, type_name, owner_full),
+    EnvCached(_, _, rest) => env_trait_impl_target_for(rest, trait_name, type_name, owner_full),
+    EnvFlat(_) => None
+  }
+}
+
+/// #2848 (Codex on #2864): the edit for a field read whose receiver's type a
+/// `let`-bound function leaves OPEN. `let f = (p) -> { p.payload }` is
+/// generalized -- `p` is quantified, and each call instantiates a fresh copy
+/// -- so nothing a caller passes ever reaches the read that was checked, and
+/// `p`'s variable never resolves. The body is still lowered once, so the read
+/// has no offset to take; the only edit is the parameter's annotation.
+fn open_receiver_field_access_message(recv: String, field: String) -> String {
+  let subject = if recv == "" {
+    String::concat("the receiver of `.", String::concat(field, "`"))
+  } else {
+    String::concat("`", String::concat(recv, "`"))
+  }
+  String::concat("annotate ", String::concat(subject, String::concat(" with the struct that declares `", String::concat(field, String::concat("`; field access `.", String::concat(field, String::concat("` needs a struct, and this `let`-bound function leaves ", String::concat(subject, "'s type open for every caller"))))))))
+}
+
+/// #2848 (Codex on #2864): refuse every pending field read whose variable a
+/// `let` binding has just QUANTIFIED. Measured with the deferred pass alone:
+/// `fn read[T](m: T) -> Int { let f = (p) -> { p.payload }; f(m) }` still
+/// compiled clean and answered `0`, because `let_generalize` made `f`
+/// polymorphic in `p` and `f(m)` unified a fresh instance, never the recorded
+/// variable -- so no later pass could ever see it resolve. A quantified
+/// receiver is an implicit type parameter of the binding, and the same
+/// argument as for a declared one applies: the body is lowered once, and a
+/// field read on it resolves by spelling. Called right after each
+/// `let_generalize`; `gen` is the binding's generalized type, and only a
+/// `CtForAll` it produced can quantify anything.
+///
+/// The one quantified receiver that is NOT open -- an impl method's `self` --
+/// never reaches here: `resolve_impl_self_field_reads` resolves those rows
+/// against the impl's recorded target before the binding is generalized.
+export fn refuse_generalized_field_reads(gen: Type, s: Subst, errors: Array[String]) -> Unit {
+  match gen {
+    CtForAll(vars, _, _) => {
+      let kept: Array[(Int, String, Int, Int, String, Int)] = []
+      let mut i = 0
+      while i < Array::length(deferred_field_reads) {
+        let (vid, field, field_off, dot_off, recv, result_id) = Array::get(deferred_field_reads, i)
+        let quantified = match subst_apply(s, CtVar(vid)) {
+          CtVar(rep) => int_array_has(vars, rep),
+          _ => false
+        }
+        if quantified {
+          Array::push(errors, String::concat(open_receiver_field_access_message(recv, field), field_read_marker(field, field_off, dot_off)))
+        } else {
+          Array::push(kept, (vid, field, field_off, dot_off, recv, result_id))
+        }
+        i = i + 1
+      }
+      Array::truncate(deferred_field_reads, 0)
+      let mut k = 0
+      while k < Array::length(kept) {
+        Array::push(deferred_field_reads, Array::get(kept, k))
+        k = k + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+/// The type of `.field` on a receiver of type `resolved`, pushing a located
+/// refusal onto `errors` when the receiver cannot carry a field. Split out of
+/// the `EDot` arm so the SAME judgement can be re-run later for a receiver
+/// that was still an unsolved variable when the read was checked (#2848,
+/// `resolve_deferred_field_reads`): the arms below never see a `CtVar` from
+/// that caller, which resolves the pending variable first.
+export fn field_read_type(resolved: Type, field: String, defs: Array[TypeDef], s1: Subst, errors: Array[String], field_off: Int, dot_off: Int) -> Type {
+  match resolved {
+    CtStruct(sname) => match find_typedef(defs, sname) {
+      Some(td) => match td {
+        TDStruct(_, fields, _, _) => {
+          let rec find_field: (Int) -> Option[Type] = (i) -> {
+            if i >= Array::length(fields) {
+              None
+            } else {
+              let (fname, ftype) = Array::get(fields, i)
+              if fname == field {
+                Some(ftype)
+              } else find_field(i + 1)
+            }
+          }
+          match find_field(0) {
+            Some(ft) => ft,
+            None => {
+              Array::push(errors, String::concat(String::concat("unknown field '", String::concat(field, String::concat("' on struct ", sname))), if field_off >= 0 {
+                off_marker_len(field_off, String::length(field))
+              } else {
+                off_marker(dot_off)
+              }))
+              CtUnknown
+            }
+          }
+        },
+        _ => CtUnknown
+      },
+      None => CtUnknown
+    },
+    // #1839: field read on an anonymous record — resolve by name in
+    // the record's own field list (literal order). An unknown field
+    // is a located error; the codegen/desugar positional read would
+    // otherwise reach an out-of-range slot.
+    CtRecord(rec_fields) => {
+      let rec find_field_r: (Int) -> Option[Type] = (i) -> {
+        if i >= Array::length(rec_fields) {
+          None
+        } else {
+          let (fname, ftype) = Array::get(rec_fields, i)
+          if fname == field {
+            Some(ftype)
+          } else find_field_r(i + 1)
+        }
+      }
+      match find_field_r(0) {
+        Some(ft) => ft,
+        None => {
+          Array::push(errors, String::concat(String::concat("unknown field '", String::concat(field, String::concat("' on ", type_to_string(resolved)))), if field_off >= 0 {
+            off_marker_len(field_off, String::length(field))
+          } else {
+            off_marker(dot_off)
+          }))
+          CtUnknown
+        }
+      }
+    },
+    // #829: field read through an INSTANTIATED generic struct value —
+    // substitute the declared type params with the receiver's type args so
+    // `b.v` on `Box[Int]` is `Int` (previously the whole read was
+    // CtUnknown, letting `String::length(b.v)` compile to silent garbage).
+    // A CtNamed head that is not a known struct (Stream/i64/unresolved
+    // type params, cross-module names) stays tolerated as before.
+    CtNamed(gname, gargs) => match find_typedef(defs, gname) {
+      Some(td) => match td {
+        TDStruct(_, gfields, _, gtparams) => {
+          let rec find_field_g: (Int) -> Option[Type] = (i) -> {
+            if i >= Array::length(gfields) {
+              None
+            } else {
+              let (fname, ftype) = Array::get(gfields, i)
+              if fname == field {
+                Some(ftype)
+              } else find_field_g(i + 1)
+            }
+          }
+          match find_field_g(0) {
+            Some(ft) => inst_struct_field_ty(ft, gtparams, gargs),
+            None => {
+              Array::push(errors, String::concat(String::concat("unknown field '", String::concat(field, String::concat("' on struct ", gname))), if field_off >= 0 {
+                off_marker_len(field_off, String::length(field))
+              } else {
+                off_marker(dot_off)
+              }))
+              CtUnknown
+            }
+          }
+        },
+        // #2807, second spelling. An INSTANTIATED generic enum resolves
+        // to `CtNamed(name, args)`, not to `CtEnum(name)`, so it never
+        // reaches the non-struct arm below and was tolerated here. The
+        // typedef proves it is an enum, which is as solid a signal as
+        // the bare `CtEnum`. Measured on the pre-fix compiler at
+        // 4905ca8: `enum Wrap[T] { W(T); Empty }` with `struct Box {
+        // payload: Int }` in scope, `let e: Wrap[Int] = W(7)` and
+        // `e.payload` compiled clean and answered `7`.
+        //
+        // Only `TDEnum` is flagged, and an alias needs no arm of its
+        // own: a type annotation is elaborated through
+        // `resolve_type_expr` before it is ever bound, so `type PAlias
+        // = Parcel` with `let p: PAlias` arrives here already resolved
+        // to `CtEnum("Parcel")` and is refused by the arm below.
+        // Measured on the fixed compiler: it reports `match on Parcel`,
+        // naming the enum rather than the alias. The same elaboration
+        // is why an alias to a STRUCT already refused a foreign field
+        // (`unknown field 'foreign' on struct Holder`) before this
+        // change -- that half was never broken.
+        TDEnum(ename, _, _) => {
+          Array::push(errors, String::concat(enum_field_access_message(ename, field), if field_off >= 0 {
+            off_marker_len(field_off, String::length(field))
+          } else {
+            off_marker(dot_off)
+          }))
+          CtUnknown
+        },
+        _ => CtUnknown
+      },
+      // #2820, the `Map` half. A `StringMap[V]` annotation does not
+      // resolve to a type of its own: `resolve_type_expr_core_shadowed`
+      // rewrites it to `CtNamed("Map", [CtString, V])` when no source
+      // declaration claims the spelling, so a map receiver arrives HERE
+      // with no typedef and was tolerated, never reaching the non-struct
+      // arm below. `Map[K, V]` written directly lands the same way.
+      //
+      // The test is the compiler's OWN type-constructor registry at the
+      // ARITY it was applied with -- not the spelling, which #2820 asks
+      // this not to widen by. Two keys have to agree: the name is one
+      // `compiler_owned_type_arity` owns, and no `find_typedef` claims
+      // it (a user's `struct Map[K, V]` is legal -- #2475 only refuses a
+      // declaration at `Array` / `Option` arity 1 and `resolve_builtin`
+      // arity 0 -- and takes the `TDStruct` arm above, where its fields
+      // resolve normally).
+      //
+      // Arity >= 1 is what keeps a shadowing type FORMAL out. A type
+      // parameter may be named for a builtin, and UNAPPLIED it reaches
+      // here as `CtNamed(name, [])` -- measured, `fn read[Map](m: Map)`
+      // compiles clean -- so the length comparison alone excludes it,
+      // whatever the registry says about the name. Applied, a formal
+      // does not arrive at all: measured on both compilers,
+      // `fn read[Map](m: Map[String, Int])` is already rejected upstream
+      // by the kinded-formal check ("a constructor parameter takes one
+      // argument"), and at arity 1 `fn read[Array](m: Array[Int])
+      // { m.v }` resolves through `CtApplied` and stays clean, before
+      // and after this change alike.
+      //
+      // The cost, named rather than closed by guessing: the four
+      // arity-0 builtins (`StringBuilder`, `ByteStream`, `HostStream`,
+      // `PromptText`) stay tolerated, because at arity 0 the builtin
+      // and an unapplied formal are the same `CtNamed(name, [])` and
+      // refusing one refuses the other.
+      //
+      // #2848: a RIGID type formal. An unbounded formal that takes part
+      // in a higher-kinded application (`F` and `A` of `F[A]`) is bound
+      // in its body as `CtNamed("#hktformal.<name>", [])` rather than
+      // as a unification variable (the EFn arm, `hkt_related`), so it
+      // lands here with no typedef. The spelling can only come from a
+      // binder -- the parser refuses it in source -- so it is refused
+      // outright; the plain-formal twin, which arrives as `CtVar`, is
+      // refused in the non-struct arm below.
+      //
+      // Everything else this arm reaches stays tolerated: an
+      // unresolved cross-module name on the incremental per-file lane
+      // arrives as a bare `CtNamed(name, [])` too, and resolves later.
+      // A TYPE PARAMETER never takes that spelling inside its own body
+      // (it is a variable or the rigid spelling above), which is what
+      // lets the two be told apart here.
+      None => {
+        // Codex on #2864 (round 3): an APPLIED formal, `xs: F[A]`, is the
+        // `#hkt` application `CtNamed("#hkt", [head, args..])` whose head is
+        // the rigid `#hktformal.F` (or a variable standing for `F` when the
+        // binder is bounded). Measured on the stage2 from 825cca8,
+        // `fn read[F, A](xs: F[A]) -> Int { xs.payload }` applied to `[7]`
+        // compiled clean and answered 30064771306 -- an array header read
+        // through `Crate`'s offset. The head is the formal, so the read is
+        // refused naming it.
+        let applied_formal = if is_hkt_app(resolved) {
+          match Array::get(gargs, 0) {
+            CtNamed(hname, _) => if String::starts_with(hname, "#hktformal.") {
+              String::substring(hname, 11, String::length(hname))
+            } else {
+              ""
+            },
+            CtVar(hvid) => open_formal_name_for_var(hvid, s1),
+            _ => ""
+          }
+        } else {
+          ""
+        }
+        if String::starts_with(gname, "#hktformal.") {
+          Array::push(errors, String::concat(formal_field_access_message(String::substring(gname, 11, String::length(gname)), field), if field_off >= 0 {
+            off_marker_len(field_off, String::length(field))
+          } else {
+            off_marker(dot_off)
+          }))
+          CtUnknown
+        } else if applied_formal != "" {
+          Array::push(errors, String::concat(formal_field_access_message(applied_formal, field), field_read_marker(field, field_off, dot_off)))
+          CtUnknown
+        } else {
+          let owned_arity = match compiler_owned_type_arity(gname) {
+            Some(n) => n,
+            None => 0 - 1
+          }
+          if owned_arity >= 1 && Array::length(gargs) == owned_arity {
+            Array::push(errors, String::concat(builtin_field_access_message(gname, field), if field_off >= 0 {
+              off_marker_len(field_off, String::length(field))
+            } else {
+              off_marker(dot_off)
+            }))
+          } else {
+            ()
+          }
+          CtUnknown
+        }
+      }
+    },
+    // `t.N` tuple projection: the index must be in range, else it reads an
+    // out-of-bounds slot (`(1, 2).5` was accepted). When `field` is a
+    // numeric index and the tuple arity is known, bounds-check it.
+    CtTuple(elems) => match parse_tuple_index(field) {
+      Some(idx) => if idx >= 0 && idx < Array::length(elems) {
+        Array::get(elems, idx)
+      } else {
+        Array::push(errors, String::concat(String::concat("tuple index ", String::concat(field, String::concat(" out of range for a ", String::concat(__to_string(Array::length(elems)), "-tuple")))), if field_off >= 0 {
+          off_marker_len(field_off, String::length(field))
+        } else {
+          off_marker(dot_off)
+        }))
+        CtUnknown
+      },
+      // #2807: a field name that is not a numeric index at all was
+      // tolerated here, and codegen then resolved it by SPELLING
+      // against any struct declaring it. Measured on the pre-fix
+      // compiler at 4905ca8: `struct Crate { payload: Int }` in scope,
+      // `let t = (7, 8)` and `t.payload` compiled clean and answered
+      // `7` — slot 0 of the tuple, read through `Crate`'s offset.
+      //
+      // Only the VALUE position reaches this arm: a method call
+      // `t.f(x)` is `ECall(EDot(t, "f"), args)` and is typed by the
+      // ECall arm, so refusing here cannot take a call with it.
+      None => {
+        Array::push(errors, String::concat(tuple_named_field_message(field, Array::length(elems)), if field_off >= 0 {
+          off_marker_len(field_off, String::length(field))
+        } else {
+          off_marker(dot_off)
+        }))
+        CtUnknown
+      }
+    },
+    // Field access on a concrete NON-struct value (`o.x` where `o :
+    // Option[P]`, or a scalar / function) is a type error — only structs
+    // (and tuple `.N`) have fields. Unknown / named scrutinees are
+    // tolerated, and so is a type variable UNLESS it stands for a type
+    // parameter of an open generic declaration (#2848, below).
+    //
+    // #2848: a plain type formal is a unification variable inside its
+    // body (#2130), so a field read on `m: T` reached this arm as
+    // `CtVar`, was tolerated as an unsolved inference variable, and
+    // typed `CtUnknown`. Codegen then resolved the field by SPELLING
+    // against any struct declaring it -- #2807's shape one rung over.
+    // Measured on the committed seed: `struct Crate { payload: Int }`
+    // in scope, `fn read[T](m: T) -> Int { m.payload }` applied to `7`
+    // compiled clean on both lanes and answered `0`, slot 0 of a tagged
+    // integer read through `Crate`'s offset; with no struct declaring
+    // the name, `m.v` was clean in `vibe check` and died in the build
+    // with an unlocated `unknown struct field: v`. `eq_formal_vars`
+    // records which variables ARE formals (the #2474 table), so the
+    // refusal is keyed on that identity and an ordinary unsolved
+    // variable (`let xs = []`) keeps its tolerance. A bound does not
+    // rescue the read: no trait can promise a field, and a
+    // trait-bounded formal is the same variable with bounds attached.
+    //
+    // #2820: `CtString` / `CtBytes` / `CtArray` were excluded here, and
+    // the reason given was that "`.m` on them parses as a method call
+    // elsewhere, not a value-position EDot". That rationale is not
+    // merely stale -- the situation it guards against cannot occur. A
+    // dot-CALL is `ECall(EDot(recv, m), args)` and is typed by the
+    // callee-is-EDot arm of the ECall case above, which checks the
+    // RECEIVER alone and never recurses into the whole EDot node, so a
+    // call never reaches here to be refused. Measured on a stage2 built
+    // from 8c966c3, the two spellings are independent: with
+    // `fn Array::my_len(xs: Array[Int]) -> Int` declared, `xs.my_len()`
+    // compiles and answers 103 (the `String` twin, `s.shout()`, answers
+    // 204), while the same file's `xs.my_len` WITHOUT the parens was
+    // clean here and died in codegen with an unlocated `unknown struct
+    // field: my_len`. A method value is not a supported form on any
+    // receiver -- the struct twin `p.my_x` is already refused here,
+    // located, as `unknown field 'my_x' on struct Pt` -- so flagging
+    // the builtin receiver makes the two agree rather than taking a
+    // working program with it.
+    //
+    // What the exclusion did cost is the whole point of the CLI query
+    // surface: `.v` on an `Array` / `Map` / `Bytes` / `String` receiver
+    // was CLEAN in `vibe check` and rejected by the build with an
+    // unlocated `unknown struct field: v`, a message that also asserts
+    // the receiver is a struct whose field list lacks `v` when the truth
+    // is that the receiver has no fields at all. Empty output has to
+    // mean clean.
+    //
+    // #2807: `CtEnum` was missing from this list, so an ENUM receiver fell
+    // through to "tolerated" and the read typed as `CtUnknown`. Codegen
+    // then resolved the field by SPELLING against any struct in the
+    // program that declares it, and emitted the load. Measured on main at
+    // 4905ca8, with `struct Box { payload: Int }` in scope,
+    // `let e = B(7); e.payload` compiled clean on both lanes and answered
+    // `7` — the enum's payload read through an unrelated struct's offset.
+    // It is the offset, not the value: a second field `Box { first,
+    // second }` and `e.second` answered `0`, and the declared TYPE is
+    // taken on faith too — `struct Named { label: String }` with
+    // `String::length(e.label)` answered `14`, reading a tagged integer
+    // as a `(ptr|len)` string.
+    //
+    // The same absence is why `vibe check` and the build disagreed even
+    // when no struct claimed the name: `e.no_such_field` was clean here
+    // and died in codegen with an unlocated `unknown struct field`. One
+    // arm closes both halves.
+    other => {
+      // Codex on #2864 (round 3): an APPLIED formal -- `xs: F[A]` -- arrives
+      // as `CtApplied(head, args)` whose head is the rigid `#hktformal.F` or a
+      // variable standing for `F`. Measured on the stage2 from 825cca8,
+      // `fn read[F, A](xs: F[A]) -> Int { xs.payload }` applied to `[7]`
+      // compiled clean and answered 30064771306. The head is the formal, so
+      // the read is refused naming it.
+      let formal_receiver = match other {
+        CtVar(vid) => open_formal_name_for_var(vid, s1),
+        CtApplied(head, _) => match head {
+          CtVar(hvid) => open_formal_name_for_var(hvid, s1),
+          CtNamed(hname, _) => if String::starts_with(hname, "#hktformal.") {
+            String::substring(hname, 11, String::length(hname))
+          } else {
+            ""
+          },
+          _ => ""
+        },
+        _ => ""
+      }
+      let enum_receiver = match other {
+        CtEnum(_) => true,
+        _ => false
+      }
+      let builtin_receiver = match other {
+        CtString => true,
+        CtBytes => true,
+        CtArray(_) => true,
+        _ => false
+      }
+      let not_struct = match other {
+        CtInt => true,
+        CtDouble => true,
+        CtBool => true,
+        CtChar => true,
+        CtUnit => true,
+        CtOption(_) => true,
+        CtFn(_, _, _) => true,
+        CtEnum(_) => true,
+        CtString => true,
+        CtBytes => true,
+        CtArray(_) => true,
+        _ => false
+      }
+      if formal_receiver != "" {
+        Array::push(errors, String::concat(formal_field_access_message(formal_receiver, field), if field_off >= 0 {
+          off_marker_len(field_off, String::length(field))
+        } else {
+          off_marker(dot_off)
+        }))
+      } else if not_struct {
+        // The enum case gets its OWN message because its edit is a
+        // different one: a variant payload is reached by matching, not by
+        // naming a field. CLAUDE.md — the diagnostic leads with the edit.
+        let message = if enum_receiver {
+          enum_field_access_message(type_to_string(other), field)
+        } else if builtin_receiver {
+          // `type_name_prefix` and not `type_to_string`: the message
+          // names the QUALIFIED call to write instead, so it needs the
+          // bare head (`Array`), not the instantiation (`Array[Int]`).
+          builtin_field_access_message(type_name_prefix(other), field)
+        } else {
+          String::concat("field access `.", String::concat(field, "` on a non-struct value"))
+        }
+        Array::push(errors, String::concat(message, if field_off >= 0 {
+          off_marker_len(field_off, String::length(field))
+        } else {
+          off_marker(dot_off)
+        }))
+      } else {
+        ()
+      }
+      CtUnknown
+    }
+  }
+}
+
+export fn map_literal_ground(t: Type) -> Bool {
+  match t {
+    CtInt => true,
+    CtDouble => true,
+    CtBool => true,
+    CtString => true,
+    CtChar => true,
+    _ => false
+  }
+}
+
+// Check generic lambda binders and return values through the caller's recursive checker.
+export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture], lane: String, discarded_root: Bool, check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> (Type, Subst, Int) {
+  match expr {
+    EFn(tparams, tbounds, params, ret_ty, effect, body) => {
+      // An aliased re-export publishes a trait spelling but does not bind it
+      // in this module (#2310). The import projection retains an origin marker
+      // so this declaration site can report the invalid bound immediately,
+      // instead of accepting the generic function until a concrete call later
+      // fails with a misleading missing-impl error.
+      let mut rti = 0
+      while rti < Array::length(tbounds) {
+        let (_, declared_bounds) = Array::get(tbounds, rti)
+        let mut rbi = 0
+        while rbi < Array::length(declared_bounds) {
+          let bound = Array::get(declared_bounds, rbi)
+          if env_has_reexport_surface_binding(env, trait_ref_name(bound)) {
+            Array::push(errors, String::concat("unknown trait: ", trait_reference_display(bound)))
+          } else {
+            validate_trait_reference(env, bound, "bound", errors)
+          }
+          rbi = rbi + 1
+        }
+        rti = rti + 1
+      }
+      let tplen = Array::length(tparams)
+      let eq_gid = if tplen > 0 {
+        eq_group_begin()
+      } else {
+        0 - 1
+      }
+      let mut tp_env = env
+      let mut scheme_env = env
+      let mut s0 = s
+      let mut c0 = c
+      let tparam_ids = array_empty()
+      let hkt_related = array_empty()
+      let mut hki = 0
+      while hki < Array::length(params) {
+        match Array::get(params, hki) {
+          (_, Some(ste)) => {
+            collect_hkt_related_formals(ste, tparams, hkt_related)
+            collect_hkt_related_formals_in_type(resolve_type_expr_shadowed(ste, defs, tparams), tparams, hkt_related)
+          },
+          _ => ()
+        }
+        hki = hki + 1
+      }
+      match ret_ty {
+        Some(srte) => {
+          collect_hkt_related_formals(srte, tparams, hkt_related)
+          collect_hkt_related_formals_in_type(resolve_type_expr_shadowed(srte, defs, tparams), tparams, hkt_related)
+        },
+        None => ()
+      }
+      let mut tpi = 0
+      while tpi < tplen {
+        let tpkey = Array::get(tparams, tpi)
+        let tpname = type_param_name(tpkey)
+        match fresh_var(c0) {
+          (tv, nc) => {
+            let vid = nc - 1
+            Array::push(tparam_ids, vid)
+            let tblen = Array::length(tbounds)
+            let mut bounds = array_empty()
+            let mut tbi = 0
+            let mut found_bounds = false
+            while tbi < tblen {
+              let (bname, blist) = Array::get(tbounds, tbi)
+              if !found_bounds && bname == tpkey {
+                bounds = blist
+                found_bounds = true
+              }
+              tbi = tbi + 1
+            }
+            let marker = String::concat(fapp_formal_marker_prefix, tpname)
+            // HKT formals (`F`/`A` in `F[A]`) are rigid so F[A] is not
+            // assignable to F[B] or Array[Int]. Plain `T` and trait-bounded
+            // formals stay unification vars (#2130 local annotations, Iterator
+            // dispatch, region provenance).
+            let body_ty = if Array::length(bounds) == 0 && checker_string_array_has(hkt_related, tpname) {
+              CtNamed(String::concat("#hktformal.", tpname), array_empty())
+            } else {
+              tv
+            }
+            record_eq_formal_var(vid, tpname, type_param_arity(tpkey), eq_gid, match body_ty {
+              CtNamed(_, _) => true,
+              _ => false
+            })
+            // Mask both kind markers from an outer generic that used the same
+            // formal name. `CtBool` is an explicit false sentinel; the
+            // signature scan below shadows it with `CtUnit` for a present use.
+            tp_env = env_bind(env_bind(env_bind(env_bind(tp_env, tpname, body_ty), marker, CtUnit), String::concat(fapp_applied_marker_prefix, tpname), CtBool), String::concat(fapp_unapplied_marker_prefix, tpname), CtBool)
+            scheme_env = env_bind(env_bind(scheme_env, tpname, tv), marker, CtUnit)
+            c0 = nc
+          },
+          _ => ()
+        }
+        tpi = tpi + 1
+      }
+      tpi = 0
+      while tpi < tplen {
+        let tpkey = Array::get(tparams, tpi)
+        let tpname = type_param_name(tpkey)
+        let vid = Array::get(tparam_ids, tpi)
+        let tblen = Array::length(tbounds)
+        let mut bounds = array_empty()
+        let mut tbi = 0
+        let mut found_bounds = false
+        while tbi < tblen {
+          let (bname, blist) = Array::get(tbounds, tbi)
+          if !found_bounds && bname == tpkey {
+            bounds = blist
+            found_bounds = true
+          }
+          tbi = tbi + 1
+        }
+        let owned_bounds = for bound in bounds {
+          bind_trait_bound_tparams(bind_trait_bound_self_reference(bound, tpname), tparams, tparam_ids)
+        }
+        s0 = if Array::length(owned_bounds) == 0 {
+          s0
+        } else {
+          subst_add_bound(s0, vid, owned_bounds)
+        }
+        tpi = tpi + 1
+      }
+      let sig_applied = array_empty()
+      let sig_unapplied = array_empty()
+      let is_sig_tp = (n) -> {
+        formals_contain_source_name(tparams, n) && formals_source_arity(tparams, n) == 0
+      }
+      let mut spi = 0
+      while spi < Array::length(params) {
+        match Array::get(params, spi) {
+          (_, Some(ste)) => collect_formal_kind_uses(ste, is_sig_tp, sig_applied, sig_unapplied),
+          _ => ()
+        }
+        spi = spi + 1
+      }
+      match ret_ty {
+        Some(srte) => collect_formal_kind_uses(srte, is_sig_tp, sig_applied, sig_unapplied),
+        None => ()
+      }
+      let mut ski = 0
+      while ski < Array::length(sig_applied) {
+        let sfn = Array::get(sig_applied, ski)
+        if checker_string_array_has(sig_unapplied, sfn) {
+          Array::push(errors, formal_application_error(sfn, "the function signature"))
+        } else {
+          ()
+        }
+        tp_env = env_bind(tp_env, String::concat(fapp_applied_marker_prefix, sfn), CtUnit)
+        ski = ski + 1
+      }
+      ski = 0
+      while ski < Array::length(sig_unapplied) {
+        tp_env = env_bind(tp_env, String::concat(fapp_unapplied_marker_prefix, Array::get(sig_unapplied, ski)), CtUnit)
+        ski = ski + 1
+      }
+      let plen = Array::length(params)
+      let mut fn_env = env_bind(tp_env, "__capture_boundary__", CtUnit)
+      let mut s1 = s0
+      let mut c1 = c0
+      // #2125: the row VARIABLES this signature's own effect row declares.
+      // A region row variable is declared there and nowhere else --
+      // `fn fill(l: MutList[Int, r]) -> Unit with r` binds `r` by the row, so
+      // the annotations below must not read it as a type name (#1863's helper
+      // signatures are exactly this).
+      //
+      // Codex on #2147 (round 2): VARIABLES only. A concrete label in the same
+      // row binds nothing, and taking the whole row let
+      // `fn f(x: Async) -> Int with Async` keep `Async` as a wildcard
+      // `CtNamed` (measured) -- the very shape this issue is about.
+      let declared_row_binders = row_variable_labels(effect)
+      // A function's own `with` row names exception kinds; check them as types.
+      report_exception_kinds_in_row(effect, defs, tparams, fn_env, errors, true)
+      let param_types = array_empty()
+      let mut pi = 0
+      while pi < plen {
+        let (raw_name, ann) = Array::get(params, pi)
+        let nlen = String::length(raw_name)
+        let name = if nlen > 0 {
+          let lc = String::char_code_at(raw_name, nlen - 1)
+          if lc == '~' || lc == '?' {
+            raw_name[0: nlen - 1]
+          } else raw_name
+        } else raw_name
+        let (pt, ns, nc) = match ann {
+          Some(te) => {
+            // #1512: `tparams` shadow `defs`, so `resolve_tparams_in` below
+            // still finds `CtNamed(<tparam>, [])` to map onto the fresh var.
+            let resolved = resolve_type_expr_shadowed(te, defs, formal_shadow(te, env, tparams))
+            let pt2 = resolve_tparams_in(resolved, fn_env)
+            // #2125: an unresolvable name here becomes a wildcard at every
+            // call site, so `f("s")` and `f(1)` both pass the SAME slot.
+            //
+            // A `__dict_`-prefixed parameter is already rejected outright by
+            // the #1869 reserved-prefix rule (desugar_trait_dict.vibe), and
+            // that is the actionable edit -- reporting its annotation on top
+            // would only bury it, since a witness dictionary's type has no
+            // TypeDef either.
+            if String::starts_with(name, "__dict_") {
+              ()
+            } else {
+              report_unknown_type_names(te, defs, tparams, fn_env, declared_row_binders, String::concat(String::concat("parameter `", name), "`"), errors)
+              report_formal_applications(te, tparams, String::concat(String::concat("parameter `", name), "`"), errors)
+            }
+            (pt2, s1, c1)
+          },
+          None => {
+            let (tv, nc2) = fresh_var(c1)
+            (tv, s1, nc2)
+          }
+        }
+        let marked_pt = add_param_capture_dependency(pt, nc)
+        let marked_nc = nc + 1
+        fn_env = env_bind(fn_env, name, marked_pt)
+        fn_env = env_bind(fn_env, String::concat("__param_marker__", name), CtNamed(String::concat("#param[", String::concat(__to_string(nc), "]")), [
+        ]))
+        Array::push(param_types, marked_pt)
+        s1 = ns
+        c1 = marked_nc
+        pi = pi + 1
+      }
+      // #3152: inside a spawn-shaped function, its closure parameter is
+      // checked at every call site (the call branch keys on this same
+      // shape), so a spawned closure may capture or pass it on.
+      if plen >= 2 && param_types_are_spawn_shaped(param_types) {
+        let (last_raw, _) = Array::get(params, plen - 1)
+        let last_len = String::length(last_raw)
+        let last_name = if last_len > 0 {
+          let lc = String::char_code_at(last_raw, last_len - 1)
+          if lc == '~' || lc == '?' {
+            last_raw[0: last_len - 1]
+          } else last_raw
+        } else last_raw
+        fn_env = env_bind(fn_env, spawn_safe_marker(last_name), CtUnit)
+      } else {
+        ()
+      }
+      // Bind the function's annotated return type under a sentinel so an
+      // explicit `return e` inside the body can be checked against it (the body
+      // value is checked below, but `return` short-circuits and was otherwise
+      // unchecked — `() -> Int { return "x" }` was accepted). Nested functions
+      // rebind the sentinel, so `return` always targets the nearest enclosing
+      // function's type.
+      // #964 (Codex P2 on #941): an UNANNOTATED function must SHADOW the
+      // sentinel too (bind CtUnknown), not inherit the enclosing function's.
+      // `return` targets the nearest enclosing function, so a `return Ok(1)`
+      // inside an unannotated lambda nested in a `-> Option[Int]` fn belongs
+      // to the LAMBDA — checking it against the OUTER annotation wrongly
+      // rejected it once the #941 railway-conflict report landed. CtUnknown
+      // unifies with anything, so the EReturn check is inert for it.
+      let annotated_body_env = match ret_ty {
+        Some(rte) => {
+          // #2125: see the parameter arm above.
+          report_unknown_type_names(rte, defs, tparams, fn_env, declared_row_binders, "the return type", errors)
+          report_formal_applications(rte, tparams, "the return type", errors)
+          env_bind(fn_env, "__return__", resolve_tparams_in(resolve_type_expr_shadowed(rte, defs, formal_shadow(rte, env, tparams)), fn_env))
+        },
+        None => env_bind(fn_env, "__return__", CtUnknown)
+      }
+      let (return_provenance, return_c) = fresh_var(c1)
+      let return_env = env_bind(annotated_body_env, "__return_provenance__", return_provenance)
+      let top_level = match env_lookup(env, "#interp.top.fn") {
+        Some(CtBool) => true,
+        _ => false
+      }
+      // Only a direct top-level declaration is expanded by collect_show_shims.
+      // Consume the marker so a nested lambda cannot inherit the exemption.
+      let body_env = env_bind(env_bind(return_env, "#interp.top.fn", CtUnit), "#interp.shim.body", if top_level && interp_is_shim_body(params, body) {
+        CtBool
+      } else {
+        CtUnit
+      })
+      let (bt, s2_body, c2) = check_child(body, body_env, defs, s1, return_c, errors, tytab, capture, lane)
+      // #2848: a field read on a receiver that was unsolved when checked (an
+      // unannotated parameter of a lambda in this body) may have been solved
+      // by a call in this body. Judge it now, while this declaration's own
+      // formals are still open, so a parameter that became `T` is refused as
+      // `T` and one that became a concrete type gets the concrete verdict.
+      // The substitution comes back extended by the resolved reads' result
+      // variables, so the body type below already carries the field types.
+      let s2 = resolve_deferred_field_reads(s2_body, defs, errors, true)
+      if eq_gid >= 0 {
+        eq_group_end()
+      } else {
+        ()
+      }
+      let (base_ret, s3) = match ret_ty {
+        Some(te) => {
+          let resolved = resolve_type_expr_shadowed(te, defs, formal_shadow(te, env, tparams))
+          let resolved_ret = resolve_tparams_in(resolved, fn_env)
+          // #1451: check_assignable, not a raw `unify`, so the IMPLICIT
+          // tail-expression return follows the same rules as an EXPLICIT
+          // `return e` -- the EReturn arm already calls check_assignable with
+          // this exact label, so the two spellings of the same return disagreed.
+          //
+          // A closure LITERAL always synthesizes a PURE row (`CtFn(.., None)`):
+          // its row is not written at the literal, and the latent row is charged
+          // by the separate effect pass. A raw unify treats `None` vs
+          // `Some(row)` as a conflict (effect_names_compatible: "None (pure) vs
+          // Some(concrete) differ in set size"), so EVERY function returning an
+          // effectful function value was rejected -- including through Array /
+          // tuple / Option, since the mismatch is nested:
+          //   fn make() -> (String) -> Unit with Log::Emit {
+          //     (s) -> { perform Log::Emit(s) }        // expected .. got (?t0) -> ()
+          //   }
+          // check_assignable's structural retry tolerates exactly the
+          // pure->effectful direction and still reports the UNSOUND one (an
+          // effectful value flowing into a pure-typed slot) via
+          // effect_row_dropped, so this loosens nothing that was load-bearing.
+          // Anchor on the body's TAIL expression -- the value actually being
+          // returned. EString now carries a parser offset (#2831); other
+          // literals (EInt/EBool/EFloat) still have none, and the enclosing
+          // SLet/ELet then tags those with `[@fn=name]` so locate_type_error
+          // recovers the function name instead of a synthetic 0:0 range.
+          check_assignable_set_end(string_lit_end(body))
+          let ns = check_assignable(resolved_ret, bt, s2, errors, "return type mismatch", tail_expr_off(body))
+          (merge_capture_provenance(subst_apply(ns, resolved_ret), subst_apply(ns, bt)), ns)
+        },
+        None => (subst_apply(s2, bt), s2)
+      }
+      let mut final_ret = base_ret
+      match return_provenance {
+        CtVar(return_id) => if return_provenance_was_written(tytab, return_id) {
+          final_ret = merge_capture_provenance(final_ret, subst_apply(s3, return_provenance))
+        },
+        _ => ()
+      }
+      let capture_effect = closure_capture_row(effect, body, params, fn_env, s3)
+      let mut checked_effect = capture_effect
+      for index in direct_result_param_indices(body, params) {
+        let pty = if index >= 0 && index < Array::length(param_types) {
+          subst_apply(s3, Array::get(param_types, index))
+        } else {
+          CtUnit
+        }
+        if type_can_carry_region(pty) {
+          checked_effect = merge_provenance_row(checked_effect, Some(String::concat("#aliasparam[", String::concat(__to_string(index), "]"))))
+        }
+      }
+      let dependency_effect = match direct_result_field_param_index(body, params) {
+        Some(index) => if type_can_carry_region(if index >= 0 && index < Array::length(param_types) {
+          subst_apply(s3, Array::get(param_types, index))
+        } else {
+          CtUnit
+        }) {
+          merge_provenance_row(checked_effect, Some(String::concat("#fieldparam[", String::concat(__to_string(index), "]"))))
+        } else {
+          checked_effect
+        },
+        None => {
+          let mut enum_dependency_effect = checked_effect
+          for index in direct_result_enum_payload_param_indices(body, params, defs) {
+            if type_can_carry_region(if index >= 0 && index < Array::length(param_types) {
+              subst_apply(s3, Array::get(param_types, index))
+            } else {
+              CtUnit
+            }) {
+              enum_dependency_effect = merge_provenance_row(enum_dependency_effect, Some(String::concat("#fieldparam[", String::concat(__to_string(index), "]"))))
+            }
+          }
+          enum_dependency_effect
+        }
+      }
+      // #2455: a declared binder that has unified with a type variable
+      // reachable from a CAPTURED binding is not generic -- it IS the
+      // enclosing binding's own slot. `[T]() -> Array[T] { xs }` makes `T` the
+      // element variable of the enclosing `let xs = []`, and the `CtForAll`
+      // below then lets every call instantiate that ONE runtime array at a
+      // different type: #2447's silent-wrong class, one quantifier away.
+      //
+      // #2450's value restriction cannot reach this. `ty_has_open_array_elem`
+      // does not descend `CtForAll`, and a refined walk that descends while
+      // excluding the bound vars still misses it, because after unification
+      // the captured slot and the bound var ARE one id. The distinguishing
+      // fact -- "this variable originated in an enclosing binding's type" --
+      // is provenance, so it is read from the environment here rather than
+      // from the type. Rank-1: the binder is rejected at its own declaration,
+      // so no call site has to carry the provenance.
+      //
+      // Both edits in the message are spelled so that following them
+      // literally works. Codex P2 on #2458: an earlier wording said "drop the
+      // `[T]` binder", and doing exactly that to the demonstrated case leaves
+      // `T` in the return annotation, so the next answer is
+      // `unknown type `T`` -- a fix that does not fix, which is the one thing
+      // a diagnostic may not be. Measured, all three: dropping only `[T]`
+      // fails that way, dropping it WITH the signature `T`s checks clean, and
+      // moving the value inside checks clean.
+      let escaping = if tplen == 0 {
+        array_empty()
+      } else {
+        captured_escape_tvars(body, params, env, s3)
+      }
+      let mut esi = 0
+      while esi < tplen {
+        let evid = Array::get(tparam_ids, esi)
+        let binder_ids = array_empty()
+        escape_tvars_into(subst_apply(s3, CtVar(evid)), binder_ids)
+        let etpname = type_param_name(Array::get(tparams, esi))
+        let mut eci = 0
+        let mut ereported = false
+        while eci < Array::length(escaping) {
+          let (ecname, ecids) = Array::get(escaping, eci)
+          if !ereported && esc_ids_intersect(binder_ids, ecids) {
+            ereported = true
+            Array::push(errors, String::concat(String::concat(String::concat(String::concat(String::concat(String::concat(String::concat("move `", ecname), "` inside the lambda, or drop `["), etpname), "]` and every `"), etpname), "` in its signature: the captured `"), String::concat(String::concat(String::concat(String::concat(ecname, "` fixes `"), etpname), "`, so every call would use one value at a different type"), off_marker(railway_expr_off(body)))))
+          } else {
+            ()
+          }
+          eci = eci + 1
+        }
+        esi = esi + 1
+      }
+      let keep_ids = array_empty()
+      let mut ki0 = 0
+      while ki0 < Array::length(tparam_ids) {
+        let kid = Array::get(tparam_ids, ki0)
+        // Keep only still-open bindings. `type_is_ground` is false for every
+        // `CtNamed`, so it would leave `T := Box[Int]` quantified and `f(1)`
+        // would typecheck. `type_fully_concrete` zonks that and still keeps
+        // a nullary `#ctor.Array` / `#hktformal.F` / unbound vars. HKT
+        // constructor params are rigid in the body and simply unbound in s3.
+        let still_free = match subst_lookup(s3, kid) {
+          Some(t) => !type_fully_concrete(t) && !scheme_formal_head_bound(subst_apply(s3, t)),
+          None => true
+        }
+        if still_free {
+          Array::push(keep_ids, kid)
+        } else {
+          ()
+        }
+        ki0 = ki0 + 1
+      }
+      // #3149: a formal the body bound to a CONCRETE HEAD whose arguments are
+      // still open (`T := Array[?e]`, the binding an Array builtin makes,
+      // #3006) is substituted into the scheme like a fully concrete one, so a
+      // caller passing a Map is a type error at the call. The variables left
+      // inside it are quantified with the formals -- each call gets its own
+      // element -- except those still reachable from the environment, which
+      // belong to something else (#2459's rule).
+      let head_bound_vars = array_empty()
+      if tplen > 0 {
+        let mut hbi = 0
+        while hbi < tplen {
+          let hid = Array::get(tparam_ids, hbi)
+          if int_array_has(keep_ids, hid) {
+            ()
+          } else {
+            match subst_lookup(s3, hid) {
+              Some(t) => {
+                let tvs = collect_tvars(subst_apply(s3, t))
+                let mut tvi = 0
+                while tvi < Array::length(tvs) {
+                  let tv = Array::get(tvs, tvi)
+                  if int_array_has(head_bound_vars, tv) || int_array_has(tparam_ids, tv) {
+                    ()
+                  } else {
+                    Array::push(head_bound_vars, tv)
+                  }
+                  tvi = tvi + 1
+                }
+              },
+              None => ()
+            }
+          }
+          hbi = hbi + 1
+        }
+      } else {
+        ()
+      }
+      let head_bound_env = if Array::length(head_bound_vars) == 0 {
+        array_empty()
+      } else {
+        env_reachable_tvars(expr, env, s3, None)
+      }
+      let mut sfi = 0
+      while sfi < tplen {
+        let sfid = Array::get(tparam_ids, sfi)
+        if int_array_has(keep_ids, sfid) {
+          ()
+        } else {
+          Array::push(efn_substituted_formals, sfid)
+        }
+        sfi = sfi + 1
+      }
+      let inferred_ret = subst_apply_except(s3, final_ret, keep_ids)
+      let scheme_ret_raw = match ret_ty {
+        Some(te) => subst_apply_except(s3, resolve_tparams_in(resolve_type_expr_shadowed(te, defs, formal_shadow(te, env, tparams)), scheme_env), keep_ids),
+        None => inferred_ret
+      }
+      let scheme_ret = merge_capture_provenance(scheme_ret_raw, inferred_ret)
+      let scheme_params = array_empty()
+      let mut spi2 = 0
+      while spi2 < plen {
+        let inferred_pt = subst_apply_except(s3, Array::get(param_types, spi2), keep_ids)
+        match Array::get(params, spi2) {
+          (_, Some(pte)) => Array::push(scheme_params, merge_capture_provenance(subst_apply_except(s3, resolve_tparams_in(resolve_type_expr_shadowed(pte, defs, formal_shadow(pte, env, tparams)), scheme_env), keep_ids), inferred_pt)),
+          _ => Array::push(scheme_params, inferred_pt)
+        }
+        spi2 = spi2 + 1
+      }
+      let fn_ty = if tplen == 0 {
+        CtFn(param_types, final_ret, dependency_effect)
+      } else {
+        CtFn(scheme_params, scheme_ret, dependency_effect)
+      }
+      if tplen == 0 {
+        (fn_ty, s3, c2)
+      } else {
+        let var_bounds = array_empty()
+        let mut vbi = 0
+        while vbi < tplen {
+          let vid = Array::get(tparam_ids, vbi)
+          let bl = subst_bounds_for(s3, vid)
+          if Array::length(bl) != 0 {
+            Array::push(var_bounds, (vid, bl))
+          } else {
+            ()
+          }
+          vbi = vbi + 1
+        }
+        // #3149: the head-bound formals' own variables, quantified after the
+        // formals (so a positional reading of the first `tplen` ids is kept).
+        let scheme_ids = array_empty()
+        for tid in tparam_ids {
+          Array::push(scheme_ids, tid)
+        }
+        for hv in head_bound_vars {
+          if int_array_has(head_bound_env, hv) {
+            ()
+          } else {
+            Array::push(scheme_ids, hv)
+            Array::push(keep_ids, hv)
+            let hbl = subst_bounds_for(s3, hv)
+            if Array::length(hbl) != 0 {
+              Array::push(var_bounds, (hv, hbl))
+            } else {
+              ()
+            }
+          }
+        }
+        (CtForAll(scheme_ids, var_bounds, subst_apply_except(s3, fn_ty, keep_ids)), s3, c2)
+      }
+    },
+    _ => (CtUnknown, s, c)
+  }
+}

@@ -321,10 +321,35 @@ fn field(row: String, which: Int) -> String {
   }
 }
 
+// The manifest is the compiler's source inventory; read every linked module.
+// An overridden path remains a single mutation fixture for the gate self-test.
+fn linked_source(path: String) -> String with Fs {
+  let original = Fs::read_file(path)
+  if path != "lib/@vibe/compiler/codegen/wasi/linked_compile.vibe" {
+    original
+  } else {
+    let rows = String::split(Fs::read_file("lib/@vibe/compiler/compiler_sources_manifest.tsv"), "\n")
+    let mut source = original
+    let mut i = 0
+    while i < Array::length(rows) {
+      let row = Array::get(rows, i)
+      let tab = String::index_of(row, "\t")
+      if tab >= 0 {
+        let module_path = String::substring(row, tab + 1, String::length(row))
+        if String::starts_with(module_path, "codegen/wasi/linked_compile_") {
+          source = source + "\n" + Fs::read_file("lib/@vibe/compiler/" + module_path)
+        }
+      }
+      i = i + 1
+    }
+    source
+  }
+}
+
 fn main() -> Unit allows Env + Fs + Console + Stderr + Process {
   let linked_path = env_or("VIBE_IMPORT_RESERVATION_LINKED", "lib/@vibe/compiler/codegen/wasi/linked_compile.vibe")
   let registry_path = env_or("VIBE_IMPORT_RESERVATION_REGISTRY", "lib/@vibe/compiler/core/builtin_registry.vibe")
-  let linked = Fs::read_file(linked_path)
+  let linked = linked_source(linked_path)
   let registry_text = Fs::read_file(registry_path)
   let mapped = mapped_names(linked)
   if Array::length(mapped) == 0 {

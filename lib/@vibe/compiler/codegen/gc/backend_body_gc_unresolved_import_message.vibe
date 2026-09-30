@@ -1,0 +1,404 @@
+// lib/@vibe/compiler/codegen/gc/backend_body.vibe — gc unresolved import message.
+
+import @vibe/compiler/core {
+  Expr,
+  Pat,
+  Stmt,
+  TypeExpr,
+  builtin_registry,
+  builtin_shadow_entry_name,
+  bytebuf_length,
+  bytebuf_new,
+  bytebuf_push,
+  bytebuf_push_buf,
+  bytebuf_push_section,
+  bytebuf_push_vec_header,
+  bytebuf_to_bytes,
+  expr_children,
+  leb128_encode_s64,
+  leb128_encode_u32,
+  merged_offset_space_reset,
+  rename_builtin_shadow_defs,
+  rewrite_top_level_fn_alias_refs,
+  verify_lane_builtins
+}
+
+import @vibe/core {
+  array_empty, struct MutSet
+}
+
+import @vibe/compiler/codegen/common_analysis {
+  collect_free_vars,
+  collect_strings_stmts,
+  compute_float_returning_names,
+  emit_closure_call_tail,
+  emit_closure_resolve,
+  emit_i64_extend_i32_u,
+  is_mut_captured_in,
+  stmts_contain_exceptions
+}
+
+import @vibe/compiler/codegen/common_base {
+  CompileCtxGc,
+  CtorTable,
+  FuncTable,
+  LambdaTable,
+  agg_info_of_type_expr,
+  append_double_runtime,
+  append_hidden_attempt_constructors,
+  append_string_views_runtime,
+  codegen_unresolved_name_prefix,
+  compute_agg_returning,
+  ctor_sorted_index,
+  emit_binop_op,
+  emit_i32_eq,
+  emit_i32_eqz,
+  emit_i32_ge_u,
+  emit_i32_mul,
+  emit_i32_ne,
+  emit_i32_sub,
+  emit_i64_load,
+  emit_i64_store,
+  emit_str_ref,
+  evidence_dict_pass,
+  fn_type_param_types,
+  gc_slot_map_get,
+  lookup_ctor,
+  lower_optional_performs,
+  optional_perform_artifact_resolution,
+  region_exn_tag_gc,
+  region_max_depth,
+  region_saves_base_of,
+  resolve_func,
+  resolve_local,
+  rewrite_self_tail_calls,
+  scps_drop_orphaned_originals,
+  source_declares_constructor,
+  str_table_lite,
+  suspend_cps_pass,
+  ty_head_names_formal,
+  wrap_entry_exception_boundary
+}
+
+import @vibe/compiler/codegen/common_extractors {
+  array_contains_str, collect_int_div_sites, emit_assignop_op, emit_memory_copy, find_catchall_idx
+}
+
+import @vibe/compiler/codegen/wasm_emit {
+  emit_array_new,
+  emit_array_type_raw,
+  emit_block_i64,
+  emit_block_void,
+  emit_br,
+  emit_br_if,
+  emit_call,
+  emit_call_indirect,
+  emit_code_section,
+  emit_code_section_with_locals,
+  emit_data_section,
+  emit_data_section_multi,
+  emit_drop,
+  emit_element_section_active_runs,
+  emit_else,
+  emit_end,
+  emit_export_section,
+  emit_export_section_multi,
+  emit_exports_with_memory,
+  emit_f64_add,
+  emit_f64_const_bits,
+  emit_f64_convert_i64_s,
+  emit_f64_div,
+  emit_f64_eq,
+  emit_f64_ge,
+  emit_f64_gt,
+  emit_f64_le,
+  emit_f64_lt,
+  emit_f64_mul,
+  emit_f64_ne,
+  emit_f64_neg,
+  emit_f64_reinterpret_i64,
+  emit_f64_sub,
+  emit_func_type_raw,
+  emit_func_type_ref_result,
+  emit_function_section,
+  emit_global_get,
+  emit_global_section_i32_mut,
+  emit_global_set,
+  emit_header,
+  emit_i32_add,
+  emit_i32_const,
+  emit_i32_load,
+  emit_i32_load8_u,
+  emit_i32_store,
+  emit_i32_store8,
+  emit_i32_wrap_i64,
+  emit_i64_add,
+  emit_i64_and,
+  emit_i64_const,
+  emit_i64_div_s,
+  emit_i64_eq,
+  emit_i64_eqz,
+  emit_i64_extend_i32_s,
+  emit_i64_ge_s,
+  emit_i64_gt_s,
+  emit_i64_le_s,
+  emit_i64_lt_s,
+  emit_i64_mul,
+  emit_i64_ne,
+  emit_i64_or,
+  emit_i64_reinterpret_f64,
+  emit_i64_rem_s,
+  emit_i64_shl,
+  emit_i64_shr_s,
+  emit_i64_sub,
+  emit_i64_trunc_f64_s,
+  emit_i64_xor,
+  emit_if_i64,
+  emit_if_void,
+  emit_import_section_func,
+  emit_local_get,
+  emit_local_set,
+  emit_local_tee,
+  emit_loop_void,
+  emit_memory_section,
+  emit_name,
+  emit_return,
+  emit_struct_get,
+  emit_struct_new,
+  emit_struct_set,
+  emit_struct_type_raw,
+  emit_struct_type_raw_refs,
+  emit_table_section_funcref,
+  emit_type_section,
+  emit_type_section_multi,
+  emit_vibe_abi_custom_section,
+  string_to_data
+}
+
+import @vibe/compiler/codegen/builtin_bodies {
+  array_capacity_error_message,
+  bytes_capacity_error_message,
+  div_zero_at_fragment,
+  div_zero_div_message,
+  div_zero_rem_message,
+  gen_arr_push_body,
+  gen_arr_with_capacity_body,
+  gen_array_value_copy_body,
+  gen_bytes_append_body,
+  gen_bytes_blit_body,
+  gen_bytes_compare_body,
+  gen_bytes_concat_body,
+  gen_bytes_count_byte_body,
+  gen_bytes_fill_body,
+  gen_bytes_from_array_body,
+  gen_bytes_get_body,
+  gen_bytes_index_of_byte_body,
+  gen_bytes_index_of_bytes_body,
+  gen_bytes_last_index_of_byte_body,
+  gen_bytes_new_body,
+  gen_bytes_push_body,
+  gen_bytes_set_body,
+  gen_bytes_slice_body,
+  gen_bytes_to_array_body,
+  gen_bytes_with_capacity_body,
+  gen_div_zero_abort_body,
+  gen_eq_body,
+  gen_generic_add_body,
+  gen_generic_rel_diff_body,
+  gen_int_clz_body,
+  gen_int_ctz_body,
+  gen_int_popcount_body,
+  gen_region_arr_new_body,
+  gen_region_bytes_new_body,
+  gen_simd_scan_alnum_body,
+  gen_simd_scan_line_end_body,
+  gen_simd_scan_string_special_body,
+  gen_simd_skip_ws_body,
+  gen_str_eq_body,
+  gen_str_lex_diff_body,
+  gen_string_contains_body,
+  gen_string_ends_with_body,
+  gen_string_index_of_body,
+  gen_string_join_body,
+  gen_string_last_index_of_body,
+  gen_string_split_body,
+  gen_string_starts_with_body,
+  gen_string_trim_body
+}
+
+import ./backend_direct_abi_names.vibe {
+  gc_direct_abi_name_has_spelling_lowering
+}
+
+import ./backend_builtins_array_alloc.vibe {
+  gc_gen_arr_concat_body,
+  gc_gen_arr_len_body,
+  gc_gen_arr_new_body,
+  gc_gen_arr_push_all_body,
+  gc_gen_arr_slice_body,
+  gc_gen_arr_truncate_body
+}
+
+import ./backend_builtins_array_get.vibe {
+  gc_gen_arr_get_body
+}
+
+import ./backend_builtins_array_set.vibe {
+  gc_gen_arr_set_body
+}
+
+import ./backend_builtins_numeric.vibe {
+  gc_emit_int_to_string, gc_gen_double_to_int_body, gc_gen_identity_body, gc_gen_int_to_double_body, gc_gen_to_string_body
+}
+
+import ./backend_builtins_print.vibe {
+  gc_gen_print_i64_body, gc_gen_print_str_body
+}
+
+import ./backend_builtins_string.vibe {
+  gc_gen_str_concat_body, gc_gen_str_eq_body, gc_gen_str_len_body
+}
+
+import ./backend_builtins_string_extra.vibe {
+  gc_gen_str_char_code_at_body, gc_gen_str_from_char_code_body, gc_gen_str_substring_body
+}
+
+import ./backend_expr.vibe {
+  compile_expr_gc, gc_native_array_escape_gate
+}
+
+import @vibe/compiler/codegen/wasi {
+  collect_used_builtin_names
+}
+
+import ./backend_body_wasi_module_gc_impl.vibe {
+  compile_wasi_module_gc_impl
+}
+
+/// #1976: the names this file IMPORTS, as they are spelled here (the alias when
+/// there is one). Collected from the statement list rather than tracked through
+/// the pipeline: this is only read on the failure path.
+fn gc_imported_spellings(stmts: Array[Stmt]) -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SImport(_, items) => {
+        let mut j = 0
+        while j < Array::length(items) {
+          let item = Array::get(items, j)
+          let orig = item.name
+          let alias_opt = item.alias
+          match alias_opt {
+            Some(alias) => Array::push(out, alias),
+            None => Array::push(out, orig)
+          }
+          j = j + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// #1976: the codegen "unresolved name" internal error tells the reader that
+/// the compiler is at fault and asks them to report it. For ONE shape that is
+/// false and misleading: direct source compilation deliberately analyzes one
+/// file, so a name the file imported was never going to reach codegen. That is
+/// the direct mode's behaviour, not a bug. The filesystem compile path resolves
+/// imports before selecting this backend (#2376), so it never reaches this
+/// diagnostic for a valid import.
+///
+/// The rewrite is deliberately narrow. It fires only when the message is the
+/// unresolved-name error AND the name in it is one this file imports; anything
+/// else passes through untouched, because the genuine class this message exists
+/// for (#1502 / #1510 / #1491 / #1521 / #1529) is worth keeping visible.
+///
+/// Measured before writing this: an UNUSED import compiles fine here, and an
+/// imported struct or enum fails in the checker with its own (already clear)
+/// message. Only an imported function reaches this diagnostic.
+///
+/// The remediation keeps the GC backend selected and asks for filesystem
+/// loading. Dropping the backend would hide a parity problem instead of
+/// compiling the requested program on the requested backend.
+fn gc_unresolved_import_message(err: String, stmts: Array[Stmt]) -> Option[String] {
+  if !String::starts_with(err, codegen_unresolved_name_prefix()) {
+    None
+  } else {
+    let names = gc_imported_spellings(stmts)
+    let mut i = 0
+    let mut hit = ""
+    while i < Array::length(names) {
+      let n = Array::get(names, i)
+      if String::length(hit) == 0 && String::contains(err, String::concat("`", String::concat(n, "` (local, @gc"))) {
+        hit = n
+      }
+      i = i + 1
+    }
+    if String::length(hit) == 0 {
+      None
+    } else {
+      Some(String::concat("`", String::concat(hit, "` is imported, but this wasm-gc invocation is direct single-file mode, so the imported name cannot be reached.\n  Resolve the filesystem module graph before GC codegen: use `VIBE_TEST_BACKEND=gc vibe test` or set VIBE_FS_COMPILE=1 together with VIBE_BACKEND=gc.\n  (Direct single-file mode remains available for isolated sources; an unused import is fine.)")))
+    }
+  }
+}
+
+export fn gc_float_returning_names_pre_erasure(stmts: Array[Stmt]) -> Array[String] {
+  compute_float_returning_names(stmts)
+}
+
+/// #3144 round 4: `rename_builtin_shadow_defs` for the gc source driver
+/// (`entry/source_compile/gc_only`), which keeps out of `@vibe/compiler/core`
+/// and reaches the rename through this package. The driver runs it before the
+/// pre-erasure name tables above, so every table and the codegen that reads
+/// them spell a program's own `Array::length` the same way.
+export fn gc_rename_builtin_shadow_defs(stmts: Array[Stmt]) -> Unit {
+  rename_builtin_shadow_defs(stmts)
+}
+
+/// #3126 review: the gc source driver compiles ONE source, so no file's
+/// offsets are recorded; clear what a previous FS compile in this process
+/// left, or a division-by-zero site would be placed in that program's file.
+export fn gc_merged_offset_space_reset() -> Unit {
+  merged_offset_space_reset()
+}
+
+/// Top-level function declaration identities before lambda hoisting.
+export fn gc_top_level_function_names(stmts: Array[Stmt]) -> Array[String] {
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, EFn(_, _, _, _, _, _)) => Array::push(out, name),
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Add only declarations synthesized by lambda hoisting. The before-set is
+/// the provenance boundary: spelling is not authority because users may
+/// legally declare names beginning with `__hoisted_lam_`.
+export fn gc_add_hoisted_float_returning_names(stmts: Array[Stmt], before_names: Array[String], names: Array[String]) -> Unit {
+  let post_desugar = compute_float_returning_names(stmts)
+  let mut i = 0
+  while i < Array::length(post_desugar) {
+    let name = Array::get(post_desugar, i)
+    if !array_contains_str(before_names, name) && !array_contains_str(names, name) {
+      Array::push(names, name)
+    }
+    i = i + 1
+  }
+}
+
+export fn compile_wasi_module_gc(stmts: Array[Stmt], entry_name: String, generated_test_artifact: Bool, gc_to_string_is_wrapper: Bool, direct_abi_generic_names: Array[String], gc_float_ret_fn_names: Array[String], gc_float_call_offsets: Array[Int], gc_int_render_offsets: Array[Int], gc_bool_render_offsets: Array[Int]) -> Bytes with Exception {
+  handle {
+    compile_wasi_module_gc_impl(stmts, entry_name, generated_test_artifact, gc_to_string_is_wrapper, direct_abi_generic_names, gc_float_ret_fn_names, gc_float_call_offsets, gc_int_render_offsets, gc_bool_render_offsets)
+  } with { Exception::Throw(err) => match gc_unresolved_import_message(err, stmts) {
+    Some(better) => throw(better),
+    None => throw(err)
+  } }
+}

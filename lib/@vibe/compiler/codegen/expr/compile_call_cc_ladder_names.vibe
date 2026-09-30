@@ -1,0 +1,2277 @@
+// lib/@vibe/compiler/codegen/expr/compile_call.vibe — cc ladder names.
+
+import ./compile_lambda.vibe {
+  cl_return_operand, rs_has_tail, rs_keep_bind, rs_map
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import @vibe/compiler/core {
+  Expr,
+  Pat,
+  Stmt,
+  TypeExpr,
+  bsearch_leftmost,
+  bytebuf_length,
+  bytebuf_new,
+  bytebuf_push,
+  bytebuf_push_section,
+  bytebuf_push_vec_header,
+  bytebuf_to_bytes,
+  canonical_builtin_name,
+  expr_children,
+  is_borrow_ret_builtin,
+  is_exception_operation_name,
+  is_exception_throw_operation,
+  leb128_encode_s64,
+  leb128_encode_u32,
+  namespace_exported_name,
+  sorted_names_of,
+  typed_lowering_arg_offset,
+  typed_lowering_float_key,
+  typed_render_refuse_key,
+  unrenderable_render_message
+}
+
+import @vibe/compiler/codegen/common_analysis {
+  collect_free_vars,
+  collect_pattern_bindings,
+  collect_strings_stmts,
+  emit_closure_call_tail,
+  emit_closure_resolve,
+  emit_i64_extend_i32_u,
+  is_mut_captured_in,
+  md_borrow_mask_of,
+  md_builtin_borrow_mask,
+  packed_dir_entries_to_array_expr,
+  proj_root_ident
+}
+
+import @vibe/compiler/perceus {
+  perceus_exit_fingerprint
+}
+
+import @vibe/compiler/codegen/common_base {
+  CompileCtx,
+  CtorTable,
+  FuncTable,
+  LambdaTable,
+  StrTable,
+  agg_expr_lookup,
+  agg_slot_lookup,
+  ctor_table_index_of,
+  double_parse_expr,
+  double_runtime_parse_name,
+  double_runtime_require,
+  double_runtime_to_string_name,
+  double_to_string_expr,
+  effect_name_to_tag,
+  effect_op_index,
+  emit_arith_wrap_int,
+  emit_binop_op,
+  emit_box_float,
+  emit_heap_grow_after_heap_set,
+  emit_i32_eq,
+  emit_i32_eqz,
+  emit_i32_ge_u,
+  emit_i32_gt_u,
+  emit_i32_mul,
+  emit_i32_ne,
+  emit_i32_sub,
+  emit_i64_load,
+  emit_i64_store,
+  emit_index_one,
+  emit_rc_dup_guarded,
+  emit_rc_word_inc_saturating,
+  emit_region_enter,
+  emit_region_exit,
+  emit_region_try_epilogue,
+  emit_region_try_prologue,
+  emit_str_ref,
+  emit_unbox_float,
+  expr_tag,
+  find_local_slot,
+  func_table_builtin_pos_of,
+  func_table_index_of,
+  func_table_user_index_of,
+  get_arm_body,
+  get_arm_pat,
+  get_ebinop_op,
+  get_efn_body,
+  get_eif_cond,
+  get_eif_else,
+  get_eif_then,
+  get_elet_body,
+  get_elet_name,
+  get_elet_val,
+  get_slet_expr,
+  get_slet_name,
+  int_parse_expr,
+  is_ctor_call,
+  is_efn,
+  is_eident,
+  is_etuple,
+  is_pbind,
+  is_pbool,
+  is_pctor,
+  is_pint,
+  is_pstring,
+  is_ptuple,
+  is_pwild,
+  is_slet,
+  region_depth_addr_of,
+  region_max_depth,
+  region_saves_base_of,
+  region_try_body_ld,
+  resolve_func,
+  resolve_local,
+  sized_bytes_new_expr,
+  str_table_index_of,
+  string_unicode_length_expr,
+  string_utf16_length_expr,
+  string_views_runtime_require,
+  string_views_runtime_unicode_name,
+  string_views_runtime_utf16_name,
+  struct_field_candidates,
+  struct_field_dispatch_cases
+}
+
+import @vibe/compiler/codegen/common_extractors {
+  array_contains_int,
+  array_contains_str,
+  emit_assignop_op,
+  emit_memory_copy,
+  find_catchall_idx,
+  get_earray_elems,
+  get_eassign_body,
+  get_eassign_name,
+  get_eassign_val,
+  get_eassignop_body,
+  get_eassignop_name,
+  get_eassignop_op,
+  get_eassignop_val,
+  get_ebinop_lhs,
+  get_ebinop_rhs,
+  get_ebool_value,
+  get_ecall_args,
+  get_ecall_callee,
+  get_ecall_off,
+  get_efloat_value,
+  get_efn_params,
+  get_eforin_body,
+  get_eforin_iter,
+  get_eforin_name,
+  get_eident_name,
+  get_eident_off,
+  get_eint_value,
+  get_eletmut_body,
+  get_eletmut_name,
+  get_eletmut_val,
+  get_eletrec_body,
+  get_eletrec_name,
+  get_eletrec_val,
+  get_eseq_first,
+  get_eseq_second,
+  get_estring_value,
+  get_etuple_elems,
+  get_eunaryop_expr,
+  get_eunaryop_op,
+  get_ewhile_body,
+  get_ewhile_cond,
+  get_match_arms,
+  get_match_scrutinee,
+  get_pbind_name,
+  get_pbool_value,
+  get_pctor_args,
+  get_pctor_name,
+  get_pint_value,
+  get_pstring_value,
+  get_ptuple_pats,
+  get_slet_export
+}
+
+import @vibe/compiler/codegen/wasm_emit {
+  emit_block_i64,
+  emit_block_void,
+  emit_br,
+  emit_br_if,
+  emit_call,
+  emit_call_indirect,
+  emit_code_section,
+  emit_code_section_with_locals,
+  emit_data_section,
+  emit_data_section_multi,
+  emit_drop,
+  emit_element_section_active,
+  emit_else,
+  emit_end,
+  emit_export_section,
+  emit_export_section_multi,
+  emit_exports_full,
+  emit_exports_with_memory,
+  emit_f64_abs,
+  emit_f64_add,
+  emit_f64_ceil,
+  emit_f64_const_bits,
+  emit_f64_const_lohi,
+  emit_f64_convert_i64_s,
+  emit_f64_div,
+  emit_f64_eq,
+  emit_f64_floor,
+  emit_f64_ge,
+  emit_f64_gt,
+  emit_f64_le,
+  emit_f64_lt,
+  emit_f64_max,
+  emit_f64_min,
+  emit_f64_mul,
+  emit_f64_ne,
+  emit_f64_neg,
+  emit_f64_reinterpret_i64,
+  emit_f64_sub,
+  emit_func_type_raw,
+  emit_function_section,
+  emit_global_get,
+  emit_global_section_i32_mut,
+  emit_global_set,
+  emit_header,
+  emit_i32_add,
+  emit_i32_const,
+  emit_i32_load,
+  emit_i32_load8_u,
+  emit_i32_shr_u,
+  emit_i32_store,
+  emit_i32_store8,
+  emit_i32_wrap_i64,
+  emit_i64_add,
+  emit_i64_and,
+  emit_i64_const,
+  emit_i64_div_s,
+  emit_i64_eq,
+  emit_i64_eqz,
+  emit_i64_extend_i32_s,
+  emit_i64_ge_s,
+  emit_i64_gt_s,
+  emit_i64_le_s,
+  emit_i64_lt_s,
+  emit_i64_mul,
+  emit_i64_ne,
+  emit_i64_or,
+  emit_i64_reinterpret_f64,
+  emit_i64_rem_s,
+  emit_i64_shl,
+  emit_i64_shr_s,
+  emit_i64_sub,
+  emit_i64_trunc_f64_s,
+  emit_i64_xor,
+  emit_i8x16_all_true,
+  emit_i8x16_bitmask,
+  emit_i8x16_eq,
+  emit_i8x16_ge_u,
+  emit_i8x16_le_u,
+  emit_i8x16_splat,
+  emit_if_i64,
+  emit_if_void,
+  emit_import_section_func,
+  emit_local_get,
+  emit_local_set,
+  emit_local_tee,
+  emit_loop_void,
+  emit_memory_section,
+  emit_name,
+  emit_return,
+  emit_table_section_funcref,
+  emit_type_section,
+  emit_type_section_multi,
+  emit_v128_and,
+  emit_v128_any_true,
+  emit_v128_const_splat_byte,
+  emit_v128_load,
+  emit_v128_not,
+  emit_v128_or,
+  emit_v128_store,
+  string_to_data
+}
+
+import ./compile_lambda.vibe {
+  compile_lambda
+}
+
+import ./compile_match.vibe {
+  compile_match
+}
+
+import ./compile_call_cc_expr_is_floatish_syntactic.vibe {
+  cc_expr_is_floatish, cc_name_or_alias_shadowed, ts_int_returning_builtin_name, ts_pat_binds_nothing
+}
+
+//# Functions
+
+/// Map::has_key's original O(n) linear scan, factored out for the same reason
+/// as cc_map_get_linear_scan above. Leaves a raw untagged 0/1 i64 -- callers
+/// apply the RC bool-tag shift uniformly after picking either this or the
+/// probe-index path.
+export fn cc_map_has_linear_scan(buf: Bytes, map_local: Int, key_local: Int, count_local: Int, idx_local: Int, eq_idx: Int) -> Unit {
+  emit_i64_const(buf, 0)
+  emit_local_set(buf, idx_local)
+  emit_block_i64(buf)
+  emit_block_void(buf)
+  emit_loop_void(buf)
+  emit_local_get(buf, idx_local)
+  emit_local_get(buf, count_local)
+  emit_i64_ge_s(buf)
+  emit_br_if(buf, 1)
+  emit_local_get(buf, map_local)
+  emit_i32_wrap_i64(buf)
+  emit_local_get(buf, idx_local)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 16)
+  emit_i32_mul(buf)
+  emit_i32_add(buf)
+  emit_i64_load(buf, 3, 8)
+  emit_local_get(buf, key_local)
+  emit_call(buf, eq_idx)
+  emit_i32_wrap_i64(buf)
+  emit_if_void(buf)
+  emit_i64_const(buf, 1)
+  emit_br(buf, 3)
+  emit_end(buf)
+  emit_local_get(buf, idx_local)
+  emit_i64_const(buf, 1)
+  emit_i64_add(buf)
+  emit_local_set(buf, idx_local)
+  emit_br(buf, 0)
+  emit_end(buf)
+  emit_end(buf)
+  emit_i64_const(buf, 0)
+  emit_end(buf)
+}
+
+/// Map::get's original O(n) linear scan, factored out so the O(1)-average
+/// hash-index path (see ctx.map_probe_func_idx) can fall back to it verbatim
+/// for maps below the index-build threshold (index_ptr==0 at runtime) without
+/// duplicating the bytecode. `map_local` must already be untagged (map & -2)
+/// and `count_local` already loaded. Leaves the found value (or 0) as the
+/// single i64 result -- callers needing this as a sub-expression (e.g. inside
+/// another `if_i64`'s branch) can emit it directly; callers needing it as
+/// their own function's tail value can emit it as the last instruction.
+export fn cc_map_get_linear_scan(buf: Bytes, map_local: Int, key_local: Int, count_local: Int, idx_local: Int, eq_idx: Int) -> Unit {
+  emit_i64_const(buf, 0)
+  emit_local_set(buf, idx_local)
+  emit_block_i64(buf)
+  emit_block_void(buf)
+  emit_loop_void(buf)
+  emit_local_get(buf, idx_local)
+  emit_local_get(buf, count_local)
+  emit_i64_ge_s(buf)
+  emit_br_if(buf, 1)
+  emit_local_get(buf, map_local)
+  emit_i32_wrap_i64(buf)
+  emit_local_get(buf, idx_local)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 16)
+  emit_i32_mul(buf)
+  emit_i32_add(buf)
+  emit_i64_load(buf, 3, 8)
+  emit_local_get(buf, key_local)
+  emit_call(buf, eq_idx)
+  emit_i32_wrap_i64(buf)
+  emit_if_void(buf)
+  emit_local_get(buf, map_local)
+  emit_i32_wrap_i64(buf)
+  emit_local_get(buf, idx_local)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 16)
+  emit_i32_mul(buf)
+  emit_i32_add(buf)
+  emit_i64_load(buf, 3, 16)
+  emit_br(buf, 3)
+  emit_end(buf)
+  emit_local_get(buf, idx_local)
+  emit_i64_const(buf, 1)
+  emit_i64_add(buf)
+  emit_local_set(buf, idx_local)
+  emit_br(buf, 0)
+  emit_end(buf)
+  emit_end(buf)
+  // #2990: a miss traps instead of answering the zero bit pattern typed as the
+  // value type (`0`, `""`, an Array at address 0). `Map::has_key` is the guard.
+  bytebuf_push(buf, 0)
+  emit_end(buf)
+}
+
+/// A field projection `a.f` (EDot) passed as an argument to an owning user
+/// function (which drops its parameters) is a borrow of the source aggregate.
+/// Without a retain the callee's param-drop frees it while the source still
+/// references it — a double-free that corrupts the free list (e.g. derived
+/// `T::equals` passing `a.items` to the consuming `__arr_equals__` helper, #704).
+/// #929: non-throwing func-table membership probe (resolve_func throws on a
+/// missing name). The println/print fallback lowering below must yield to a
+/// SOURCE-provided definition (@vibe/io's println, or a user shadow) whenever
+/// one is merged into the program.
+export fn cc_ft_has(ft: FuncTable, name: String) -> Bool {
+  func_table_index_of(ft, name) >= 0
+}
+
+/// Perceus emits no action for bare projections, so this guarded dup is the only
+/// owner-increment. Scalars are no-ops; this is NOT applied to borrow-arg0
+/// builtins (Array::get/length etc.), which do not drop their argument.
+/// #1746: does the RC raw-ABI shim (the #705/#930/#1460 group below) actually
+/// apply to this call?
+///
+/// The shim rewrites the call for the HOST IMPORT's ABI -- it untags the Int
+/// argument and, for the void half, pushes the `Unit` the import does not
+/// return. Dispatching on the NAME alone assumed the name still denotes that
+/// import. A program defining its own top-level `fn sleep(ms: Int) -> Unit`
+/// resolves it to that function instead, and the shim then emitted
+/// `call <guest fn>` followed by the extra `i64.const 0` -- a module that
+/// FAILED VALIDATION with no diagnostic at all (measured under VIBE_RC=1;
+/// VIBE_RC=0 was fine, which is why no gate saw it).
+///
+/// The discriminator is the resolved function INDEX. User functions are laid
+/// out at `fi + func_offset` (linked_compile.vibe, where
+/// `func_offset = num_imported_funcs + num_generated`), so an index below
+/// `func_offset` is an import or a generated builtin body and anything at or
+/// above it is the program's own code. This is the same test the wasm-gc
+/// backend already uses to recover a user function's table slot
+/// (`fidx - ctx.func_offset`, gc/backend_expr.vibe).
+///
+/// The return COUNT does not work here, and measuring is what showed it: the
+/// count comes from the registry row's `CtUnit`, so the import reports 1 just
+/// as a guest `-> Unit` function does. Gating on it left the shim off the real
+/// import, and `sleep(400)` then took ~795ms instead of ~400ms -- the exact
+/// doubling #930 recorded when the shim was missing.
+///
+/// Only the two UNQUALIFIED names are reachable today: for the `::`-qualified
+/// names the checker demands their capability row at the call site and a plain
+/// guest function does not discharge it (`effect row mismatch for 'main':
+/// missing { Stdin::... }`). `sleep` and `sleep_blocking` get through because
+/// for an unqualified name the checker does honour the user's shadowing
+/// definition. The index test covers every name here anyway rather than
+/// relying on that.
+///
+/// #2903: `sleep_blocking` was missing from this list while `sleep` was in it,
+/// and the module declares `vibe.abi: host_import_abi=raw`, so both shipped
+/// core runners were right to pass the i64 through -- the EMITTER was the one
+/// violating its own declaration. It is not a spelling nobody writes: the
+/// suspend boundary's injected `__entry_settle` pays a sleep debt by calling
+/// `sleep_blocking`, so the ordinary `sleep(ms)` inside `allows Async` reached
+/// the host through it and slept 2x. Adding a name here is INERT unless it is
+/// also in `cc_ladder_names` below, which is binary-searched.
+export fn cc_raw_abi_shim_applies(ft: FuncTable, func_offset: Int, fname: String) -> Bool with Exception {
+  if fname == "Stdout::write_char" || fname == "Stderr::write_char" || fname == "Stdin::read_stream" || fname == "sleep" || fname == "sleep_blocking" || fname == "Console::write_char" || fname == "Console::write_err_char" || fname == "Console::read_stream" {
+    let (idx, _, _) = resolve_func(ft, fname)
+    idx < func_offset
+  } else {
+    false
+  }
+}
+
+/// Every callee name the special-case ladder of `compile_call_core` tests:
+/// each `fname == "..."` arm, the raw-ABI shim names `cc_raw_abi_shim_applies`
+/// tests, and the namespace-exported `to_string` wrapper (#1015). Sorted once
+/// per process for a leftmost binary search. A callee outside the set can
+/// fire none of the arms, so `compile_call_core` sends it to the resolved-call
+/// fallback without walking the ~150 string compares (#2386).
+/// `codegen_call_ladder_names_test.vibe` proves the list complete against the
+/// source text of this file.
+let cc_ladder_names_sorted: Array[String] = []
+
+fn cc_ladder_names() -> Array[String] {
+  if Array::length(cc_ladder_names_sorted) == 0 {
+    let names = [
+      "Array::all",
+      "Array::any",
+      "Array::concat",
+      "Array::filter",
+      "Array::find",
+      "Array::fold",
+      "Array::iter_eager",
+      "Array::map",
+      "Array::reverse",
+      "ByteStream::to_string",
+      "Bytes::blit",
+      "Bytes::fill",
+      "Bytes::new",
+      "Char::from_int",
+      "Char::to_int",
+      "Console::read_char",
+      "Console::read_stream",
+      "Console::write_char",
+      "Console::write_err_char",
+      "Double::abs",
+      "Double::ceil",
+      "Double::floor",
+      "Double::from_i64_bits",
+      "Double::from_i64_bits_lohi",
+      "Double::max",
+      "Double::min",
+      "Double::parse",
+      "Double::to_float",
+      "Double::to_i64_bits_hi",
+      "Double::to_i64_bits_lo",
+      "Double::to_int",
+      "Double::to_string",
+      "Env::args_get",
+      "Env::args_len",
+      "FixedArray::blit",
+      "FixedArray::get",
+      "FixedArray::length",
+      "FixedArray::make",
+      "FixedArray::set",
+      "FixedArray::unsafe_set",
+      "Float::to_double",
+      "Float::to_int",
+      "Float::to_string",
+      "Fs::exists",
+      "Fs::is_dir",
+      "Fs::is_file",
+      "Fs::readdir",
+      "Fs::stat_token",
+      "Future::pending",
+      "Future::ready",
+      "Future::resolve",
+      "Int64Array::get",
+      "Int64Array::length",
+      "Int64Array::make",
+      "Int64Array::set",
+      "Int::parse",
+      "Int::to_double",
+      "Int::to_float",
+      "Int::to_string",
+      "Map::__iter_get_unchecked",
+      "Map::delete",
+      "Map::get",
+      "Map::has",
+      "Map::has_key",
+      "Map::keys",
+      "Map::remove",
+      "Map::set",
+      "Map::size",
+      "Map::values",
+      "MapBuilder::freeze",
+      "MapBuilder::get",
+      "MapBuilder::has_key",
+      "MapBuilder::new",
+      "MapBuilder::set",
+      "Path::is_absolute",
+      "Path::ref",
+      "Path::resolve",
+      "Path::to_string",
+      "Profiler::HeapBytes",
+      "Profiler::NowUs",
+      "Profiler::heap_bytes",
+      "Profiler::now_us",
+      "Stderr::write_char",
+      "Stdin::read_char",
+      "Stdin::read_stream",
+      "Stdout::write_char",
+      "String::ends_with",
+      "String::last_index_of",
+      "String::to_bytes",
+      "String::unicode_length",
+      "String::utf16_length",
+      "String::utf8_length",
+      "StringBuilder::freeze",
+      "StringBuilder::new",
+      "StringBuilder::push",
+      "__float_bits",
+      "__index",
+      "__len",
+      "__lambda_return_owned",
+      "__loop_tail_retain",
+      "__rec_field",
+      "__set_field",
+      "__slice",
+      "__to_string",
+      "abort",
+      "add",
+      "assert",
+      "assert_eq",
+      "assert_true",
+      "await",
+      "eq",
+      "host_future_get",
+      "host_future_named",
+      // #2934: the namespaced spelling of `host_stream_close`, same signature
+      // (`(HostStream) -> Unit`). The checker admits both, this ladder and the
+      // dispatch below carried only the bare one, so `HostStream::close(s)`
+      // passed `vibe check` clean and then died with
+      // `internal compiler error: ... reached code generation unresolved`,
+      // while the bare twin explained itself. Found by sweeping every
+      // checker-admitted builtin with no registry row (0.1.0-rc.0 bug hunt).
+      "HostStream::close",
+      "host_stream_close",
+      "host_stream_named",
+      "host_stream_next",
+      // #2066: the response surface, lowered inline beside host_future_named.
+      "host_response_named",
+      "host_response_named_with",
+      "HostResponse::body",
+      "HostResponse::status",
+      "lt",
+      "map",
+      // #2913: the bare deprecated alias for `Map::has_key`. It was in
+      // `cc_builtin_call_ret_kind`'s boolean list and in all three gc tables,
+      // but in neither the ladder nor `compile_call_core` -- so the checker
+      // typed it, the classifier called it boolean, and the linear lowering
+      // had nothing, which is `internal compiler error: map_has (local,
+      // @call) reached code generation unresolved`. Its qualified sibling
+      // `Map::has`, deprecated by the same row in `builtin_name.vibe`,
+      // compiled on both lanes the whole time.
+      "map_has",
+      "mul",
+      "not",
+      "path",
+      "perform",
+      "print",
+      "println",
+      "resume",
+      "sh_lines",
+      "simd_skip_ws",
+      "sleep",
+      "sleep_blocking",
+      "sub",
+      "vibe_fs_stat_token_raw",
+      "vibe_http_close_raw",
+      "vibe_http_request_raw",
+      "vibe_http_response_body_raw",
+      "vibe_http_response_header_raw",
+      "vibe_http_response_status_raw",
+      "vibe_process_exit_raw",
+      "vibe_sh_capture_close_raw",
+      "vibe_sh_capture_exit_code_raw",
+      "vibe_sh_capture_raw",
+      "vibe_sh_capture_stderr_raw",
+      "vibe_sh_capture_stdout_raw",
+      "vibe_stdin_provider_read_raw",
+      "vibe_tcp_close_raw",
+      "vibe_tcp_connect_raw",
+      "vibe_tcp_read_raw",
+      "vibe_tcp_write_raw"
+    ]
+    Array::push(names, namespace_exported_name("lib/@vibe/builtin/builtin_traits.vibe", "to_string"))
+    let sorted = sorted_names_of(names)
+    let mut i = 0
+    while i < Array::length(sorted) {
+      Array::push(cc_ladder_names_sorted, Array::get(sorted, i))
+      i = i + 1
+    }
+  } else {
+    ()
+  }
+  cc_ladder_names_sorted
+}
+
+/// Does an arm of `compile_call_core`'s ladder test `name`?
+export fn cc_ladder_tests_name(name: String) -> Bool {
+  bsearch_leftmost(cc_ladder_names(), name) >= 0
+}
+
+export fn cc_is_projection(e: Expr) -> Bool {
+  match e {
+    EDot(_, _, _, _) => true,
+    _ => false
+  }
+}
+
+/// #3113: a read of a captured `let mut` loads the payload of its RC cell, and
+/// the cell keeps owning that payload -- so the read is a borrowed view,
+/// exactly like a projection. Handing it to an OWNING position (a consuming
+/// parameter, a constructor / tuple / array / record field) without a retain
+/// let the consumer free what the cell still held, and the cell's own drop
+/// then released it a second time. Neither the enclosing plan (the cell
+/// arm never applies it) nor a closure body's plan (captures are untracked)
+/// budgets a reference for such a read, so the site retains it itself.
+export fn cc_is_ref_cell_read(e: Expr, ctx: CompileCtx) -> Bool {
+  match e {
+    EIdent(n, _) => array_contains_str(ctx.ref_cell_names, n),
+    _ => false
+  }
+}
+
+/// A read of a captured cell, directly or through a projection off one, not
+/// shadowed on the way to it.
+fn cc_is_cell_read_path(e: Expr, shadow: Array[String], ctx: CompileCtx) -> Bool {
+  match e {
+    EIdent(n, _) => array_contains_str(ctx.ref_cell_names, n) && !array_contains_str(shadow, n),
+    EDot(obj, _, _, _) => cc_is_cell_read_path(obj, shadow, ctx),
+    _ => false
+  }
+}
+
+/// Retain every cell read on a result path (`rs_map`) of a COMPOUND argument.
+/// A bare cell read or projection is left to the per-site checks
+/// (`cc_is_ref_cell_read`, `cc_is_projection`); wrapping it here would hide it
+/// from them without changing the count.
+fn cc_retain_cell_tails(e: Expr, ctx: CompileCtx) -> Expr {
+  if rs_has_tail(e) {
+    rs_map(e, array_empty(), (x: Expr, shadow: Array[String]) -> Expr {
+      if cc_is_cell_read_path(x, shadow, ctx) {
+        ECall(EIdent("__loop_tail_retain", -1), [x], -1)
+      } else {
+        x
+      }
+    }, rs_keep_bind)
+  } else {
+    e
+  }
+}
+
+/// #3130 review: a captured cell read on a branch or block tail of an
+/// argument handed to an OWNING position -- `keep(sink, if c { d } else {
+/// fresh() })`, `Some(match k { 0 => d, _ => .. })` -- was passed without a
+/// reference of its own. The per-site retain recognizes only a bare read, so
+/// the consumer and the cell shared one reference and the value was freed
+/// twice. Retain those tails, but only where the callee owns the position:
+/// `cc_internal_borrow_mask` says which, and a callee that resolves to a
+/// local or is not a name at all is a closure, which owns every argument. A
+/// borrowed position is left alone -- retaining there would add a reference
+/// nothing releases.
+export fn cc_own_cell_compound_args(callee: Expr, args: Array[Expr], local_names: Array[String], ctx: CompileCtx) -> Array[Expr] {
+  if !ctx.enable_rc || Array::length(ctx.ref_cell_names) == 0 {
+    args
+  } else {
+    let mask = match callee {
+      EIdent(f, _) => if find_local_slot(local_names, f) >= 0 {
+        0
+      } else {
+        cc_internal_borrow_mask(f, ctx)
+      },
+      _ => 0
+    }
+    let out = array_empty()
+    let mut i = 0
+    while i < Array::length(args) {
+      let a = Array::get(args, i)
+      if cc_bmask_has(mask, i) {
+        Array::push(out, a)
+      } else {
+        Array::push(out, cc_retain_cell_tails(a, ctx))
+      }
+      i = i + 1
+    }
+    out
+  }
+}
+
+/// #3130 review: which argument positions of a callee BORROW (bit i set) --
+/// the complement is the positions that own the value they are handed.
+///
+/// A name spelled with `__` is not special by itself. Most of them are
+/// ordinary functions or closures a lowering synthesized (`__entry_k`,
+/// `__try_bind`, `__hs_fin`, the `__aw_*` and `__generic_*` helpers, the
+/// Double / String-view runtime preludes), and those own their arguments the
+/// way any call does, so they take the borrow mask like any other name. Only
+/// the internal builtins the ladder in `compile_call_core` lowers INLINE need
+/// a row of their own, because they have no signature for a mask to come from:
+///
+///   callee                  owning positions        what it does
+///   `__set_field(o, f, v)`  v                       stores v into o's field
+///   `__rec_field(o, i)`     none                    reads a field
+///   `__index(o, i)`         none                    reads an element / byte
+///   `__len(o)`              none                    reads a length
+///   `__slice(o, a, b)`      none                    copies a range out of o
+///   `__to_string(v)`        none                    renders v
+///   `__float_bits(v)`       none                    reinterprets a scalar
+///   `__lambda_return_owned(v)`, `__loop_tail_retain(v)`
+///                           none -- MARKERS. v is already a result path the
+///                           rewrite put the marker on, and the marker itself
+///                           decides whether to retain it; walking into v
+///                           again would retain it twice.
+///
+/// `__region_run` is lowered in `compile_call` before this runs, and its one
+/// argument is a lambda value, so it never reaches here with a cell read.
+fn cc_internal_borrow_mask(f: String, ctx: CompileCtx) -> Int {
+  if f == "__set_field" {
+    3
+  } else if f == "__rec_field" || f == "__index" || f == "__len" || f == "__slice" || f == "__to_string" || f == "__float_bits" || f == "__lambda_return_owned" || f == "__loop_tail_retain" {
+    // Every position borrows (bits 0..30).
+    2147483647
+  } else {
+    cc_borrow_mask(ctx, f)
+  }
+}
+
+/// #705: a borrow-RETURNING builtin call (`Array::get` / `Map::get` / `__index`)
+/// yields a borrowed view of a heap element — its refcount is NOT bumped, like a
+/// projection `a.f`. When that result is consumed in an OWNING position (a ctor
+/// field, or an owning call arg of a fn that drops its params), it must be
+/// rc_dup'd or the container's recursive drop and the consume double-free the
+/// same element (e.g. `chk(Array::get(ps, i))` recursing over a heap array, or
+/// `validate(s, Map::get(obj, key))`). Scalars are even so the guarded dup is a
+/// runtime no-op for `Array[Int]` etc.
+export fn cc_is_borrow_ret_call(e: Expr, ctx: CompileCtx) -> Bool {
+  match e {
+    ECall(callee, _, _) =>
+    match callee {
+      EIdent(f, _) => is_borrow_ret_builtin(f) || bsearch_leftmost(ctx.borrow_ret_names, f) >= 0,
+      _ => false
+    },
+    _ => false
+  }
+}
+
+/// #2682: may a call to `f` return a value that ALIASES one of its
+/// arguments -- a borrowed view rather than a fresh owned value? The
+/// borrow-returning builtins (Array::get / Map::get / __index), the user fns
+/// that tail-reach one of them (borrow_ret_names), and the user fns the
+/// may-return-view analysis flagged (borrow_view_ret).
+///
+/// #2752: `borrow_view_ret` is BINARY-searched, like `borrow_ret_names` beside
+/// it. Both are built the same way -- `sorted_names_of(compute_*(stmts))`,
+/// linked_compile.vibe:8498 and :8555 -- and the other reader of this very
+/// array already binary-searches it (compile_expr_tail.vibe). This one was the
+/// odd site out, scanning a sorted array linearly, and the profile put 269.4 ms
+/// there: 2.8% of a warm full-CLI build, 84.6% of all `array_contains_str`
+/// time, in one call.
+export fn cc_callee_may_return_view(f: String, ctx: CompileCtx) -> Bool {
+  is_borrow_ret_builtin(f) || bsearch_leftmost(ctx.borrow_ret_names, f) >= 0 || bsearch_leftmost(ctx.borrow_view_ret, f) >= 0
+}
+
+/// #2682: does `e` produce a fresh OWNED heap value that no binding holds --
+/// a call whose callee cannot return a view (a user fn, a constructor, an
+/// owning builtin), or an array / tuple / record literal? A scalar, string
+/// or bump-allocated result is harmless to release (rc_drop ignores even
+/// values and fat pointers), so a call's return type need not be known. An
+/// ident is owned by its binding, a projection and a borrow-returning call
+/// are views, and everything else stays as it was (a leak at worst).
+export fn cc_is_owned_temp(e: Expr, ctx: CompileCtx) -> Bool {
+  match e {
+    ECall(callee, _, _) => match callee {
+      EIdent(f, _) => !cc_callee_may_return_view(f, ctx),
+      _ => false
+    },
+    EArray(_) => true,
+    ETuple(_) => true,
+    ERecord(_, _, _) => true,
+    // #2683: a map literal (`Map::new()`, `Map::from_pairs(..)`) is an rc
+    // block on this lane; `Map::set(Map::new(), k, v)` handed one to a
+    // borrowed position and leaked 16 B per call.
+    EMap(_) => true,
+    _ => false
+  }
+}
+
+/// Is either operand of a comparison a `Double`? For the lowerings outside
+/// compile_expr that pick an integer compare by themselves (the `while`
+/// condition fast path): they cannot reach `expr_is_floatish` without an
+/// import cycle, so they ask this file's mirror of it.
+export fn cc_operands_floatish(l: Expr, r: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  cc_expr_is_floatish(l, local_names, ctx) || cc_expr_is_floatish(r, local_names, ctx)
+}
+
+/// #3135: the builtins whose inline lowering allocates a FRESH `Double` box on
+/// the RC lane. `Float::to_double` / `Double::to_float` are absent on purpose:
+/// they compile to their argument unchanged, so their result is the
+/// argument's box, and releasing it would free a value its binding still
+/// holds.
+fn cc_float_builtin_is_fresh(f: String) -> Bool {
+  f == "Int::to_double" || f == "Int::to_float" || f == "Double::abs" || f == "Double::floor" || f == "Double::ceil" || f == "Double::max" || f == "Double::min" || f == "Double::from_i64_bits" || f == "Double::from_i64_bits_lohi"
+}
+
+/// #3135: is the floatish operand `e` a fresh box that nothing else holds, so
+/// the consumer that unboxes it must release it? A call to a program function
+/// that cannot return a view (the same test `cc_is_owned_temp` applies: every
+/// such function returns an owned reference) or to a builtin that allocates.
+/// Anything else -- a name, a projection, a borrow-returning call, a branch --
+/// is left alone: a leak at worst, never a release of a value in use.
+fn cc_float_operand_is_owned_temp(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool {
+  match e {
+    ECall(callee, _, _) => match callee {
+      EIdent(f, _) => if cc_float_builtin_is_fresh(f) {
+        true
+      } else {
+        find_local_slot(local_names, f) < 0 && func_table_user_index_of(ctx.func_table, f, ctx.num_user_funcs) >= 0 && !cc_callee_may_return_view(f, ctx)
+      },
+      _ => false
+    },
+    _ => false
+  }
+}
+
+/// #3135: push the raw f64 bits (as an i64) of `e`, an operand a `Double`
+/// operation consumes -- an arithmetic or comparison operand, the argument of
+/// an inline `Double` builtin -- WITHOUT leaking the box it arrives in.
+///
+/// Off the RC lane a `Double` already is its bits, so this is `ce`. On it,
+/// every `Double` is a heap box (`emit_box_float`), and unboxing an operand
+/// used to be all a consumer did: the box of a literal (`d > 1.0`), of an
+/// intermediate result (`to_double(i) * 0.5 * 2.0`) and of a call's result
+/// were each allocated and never freed, 16 B apiece. Now
+///
+/// - a literal is its bits (an `f64.const`), with no box at all;
+/// - an arithmetic operator or a negation is computed on the bits of its own
+///   operands, so a chain allocates only the box its result finally needs;
+/// - a fresh box (`cc_float_operand_is_owned_temp`) is unboxed and released;
+/// - a name, a projection or anything else is unboxed and left to its owner.
+///   The Perceus plan counts a bare-name operand as a borrow
+///   (`pc_operand_count`), so the binding keeps the reference and its
+///   scope-end drop releases it.
+///
+/// A nested operator reached here is a `Double` operation whatever its
+/// syntax: the checker gives both operands of a `Double` operation one type.
+export fn emit_float_operand_bits(buf: Bytes, e: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
+  if !ctx.enable_rc {
+    ce(buf, e, local_names, next_local, ctx, ld)
+  } else {
+    match e {
+      EFloat(v) => {
+        emit_f64_const_lohi(buf, Double::to_i64_bits_lo(v), Double::to_i64_bits_hi(v))
+        emit_i64_reinterpret_f64(buf)
+        next_local
+      },
+      EBinOp(op, l, r, _) => if op == "+" || op == "-" || op == "*" || op == "/" {
+        let nl1 = emit_float_operand_bits(buf, l, local_names, next_local, ctx, ld, ce)
+        emit_f64_reinterpret_i64(buf)
+        let nl2 = emit_float_operand_bits(buf, r, local_names, nl1, ctx, ld, ce)
+        emit_f64_reinterpret_i64(buf)
+        if op == "+" {
+          emit_f64_add(buf)
+        } else if op == "-" {
+          emit_f64_sub(buf)
+        } else if op == "*" {
+          emit_f64_mul(buf)
+        } else {
+          emit_f64_div(buf)
+        }
+        emit_i64_reinterpret_f64(buf)
+        nl2
+      } else {
+        cc_float_operand_unbox(buf, e, local_names, next_local, ctx, ld, ce)
+      },
+      EUnaryOp(op, inner) => if op == "-" {
+        let nl = emit_float_operand_bits(buf, inner, local_names, next_local, ctx, ld, ce)
+        emit_f64_reinterpret_i64(buf)
+        emit_f64_neg(buf)
+        emit_i64_reinterpret_f64(buf)
+        nl
+      } else {
+        cc_float_operand_unbox(buf, e, local_names, next_local, ctx, ld, ce)
+      },
+      _ => cc_float_operand_unbox(buf, e, local_names, next_local, ctx, ld, ce)
+    }
+  }
+}
+
+/// The RC-lane fallback of `emit_float_operand_bits`: compile `e` to its box
+/// and load the bits, releasing the box when it is a fresh temporary.
+fn cc_float_operand_unbox(buf: Bytes, e: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
+  let nl = ce(buf, e, local_names, next_local, ctx, ld)
+  if ctx.rc_drop_func_idx >= 0 && cc_float_operand_is_owned_temp(e, local_names, ctx) {
+    Array::push(local_names, "__ftmp")
+    emit_local_tee(buf, nl)
+    emit_unbox_float(buf)
+    emit_local_get(buf, nl)
+    emit_call(buf, ctx.rc_drop_func_idx)
+    nl + 1
+  } else {
+    emit_unbox_float(buf)
+    nl
+  }
+}
+
+/// Is `e` provably a scalar (Int/Bool) by structure alone — an int/bool literal,
+/// a bitwise/shift/comparison/logical binop, or a logical `!`? Conservative: no
+/// ident-slot/type lookup and no arith ops (+,-,*,/ can be Float). Used to route
+/// an explicit `eq(a, b)` to a direct i64.eq when an operand is provably scalar,
+/// matching how the `==` binop dispatches intish operands (emit_eq_value). Without
+/// this, `eq(int, int)` falls through to the generic bound `eq` whose
+/// `looks_like_string`/str_eq fallback reads OOB on ints resembling fat-pointers
+/// (#678 residual) — e.g. leb128's `eq(val, 0)` trapped under RC (#705).
+export fn cc_arg_is_scalarish(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  let t = expr_tag(e)
+  // #2424: ask the checker first, exactly as `ts_known_int` does. Without
+  // this the two classifiers disagreed about the same channel: the renderer
+  // consumed the tag-3 table and the `eq` gate did not, so with
+  // `prefer_bound_call` true a call-shaped operand -- which no syntactic arm
+  // below accepts -- sent `eq(Array::get(xs, 0), Array::get(ys, 0))` to the
+  // bound `eq` and its string fallback. Measured: `64 << 32` vs `65 << 32`
+  // trapped on linear while the gc lane, whose classifier already reads the
+  // table, answered correctly.
+  if ts_offset_says_int(e, ctx) {
+    true
+  } else if t == 0 || t == 1 {
+    true
+  } else if t == 4 {
+    // #2422: a bare ident, answered from the same slot log `ts_known_int`
+    // reads. Without this an annotated `Int` PARAMETER was not scalar here, so
+    // `fn eqp(a: Int, b: Int) -> Bool { eq(a, b) }` reached the string
+    // fallback and read two large Ints as (ptr, len) pairs. Measured on the
+    // committed seed, so long-standing.
+    cc_ident_slot_kind(e, local_names, ctx) == 1
+  } else if t == 5 {
+    let op = get_ebinop_op(e)
+    op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>" || op == "%" || op == "<" || op == ">" || op == "<=" || op == ">=" || op == "==" || op == "!=" || op == "&&" || op == "||"
+  } else if t == 6 {
+    let uop = get_eunaryop_op(e)
+    // `!x` is Bool; `-x` is scalar iff its operand is (so a negative int literal
+    // like `-1`, which parses as unary minus of `1`, is detected as scalar).
+    // #2344: `~x` is an Int unconditionally -- it is a bit pattern, never a
+    // float or a string -- and it is exactly the shape the bound `eq`'s
+    // string fallback misreads: `~((0 - (64 << 32)) - 1)` has a zero low word,
+    // so two DISTINCT values both looked like the empty string and
+    // `eq(~a, ~b)` answered `true`.
+    uop == "!" || uop == "~" || (uop == "-" && cc_arg_is_scalarish(get_eunaryop_expr(e), local_names, ctx))
+  } else {
+    false
+  }
+}
+
+/// #950: declared return kind of a call whose callee resolves to a BUILTIN —
+/// 0 = unknown, 1 = Bool, 2 = String. This is the type-directed half of the
+/// interpolation display fix: `"\{String::contains(a, b)}"` printed 1/0 and
+/// `"\{String::join([], "-")}"` printed 0 (the packed empty-string encoding,
+/// misread as Int by __to_string's runtime string-pointer heuristic), because
+/// the display classifiers were purely syntactic and never consulted the
+/// builtin's declared return type.
+///
+/// Shadow-safety (the reason #784 deliberately skipped name-based
+/// classification): the func table lays out USER functions first (indices
+/// < ctx.num_user_funcs) and appends the registered builtins after them, and
+/// call emission resolves FIRST match (resolve_func) / prefers a bound call
+/// (prefer_bound_call). So the builtin's declared type only applies when the
+/// name is NOT locally bound AND its first func-table match (if any) is NOT a
+/// user function. A user/prelude shadow therefore classifies as 0 (unknown),
+/// exactly matching what the actual call emission dispatches to. Name sets
+/// mirror the checker's declared types (checker/checker.vibe
+/// direct_builtin_return / core/builtin_registry.vibe).
+export fn cc_builtin_call_ret_kind(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Int with Exception {
+  if expr_tag(e) == 8 {
+    let bcallee = get_ecall_callee(e)
+    if is_eident(bcallee) {
+      let cn = get_eident_name(bcallee)
+      let bn = canonical_builtin_name(cn)
+      let kind = if bn == "eq" || bn == "not" || bn == "String::equals" || bn == "String::contains" || bn == "String::starts_with" || bn == "String::ends_with" || bn == "Array::any" || bn == "Array::all" || bn == "Map::has_key" || bn == "Map::has" || bn == "map_has" || bn == "MapBuilder::has_key" || bn == "Path::is_absolute" || bn == "Fs::exists" || bn == "Fs::is_dir" || bn == "Fs::is_file" {
+        1
+      } else if bn == "__to_string" || bn == "Int::to_string" || bn == "Double::to_string" || bn == "Float::to_string" || bn == "String::concat" || bn == "String::substring" || bn == "String::trim" || bn == "String::from_char_code" || bn == "String::join" || bn == "Env::get" || bn == "Env::args_get" || bn == "Fs::read_file" || bn == "Fs::getcwd" || bn == "sh" {
+        2
+      } else {
+        0
+      }
+      // Same alias hole as the tag-8 arm, and older than it: this test used
+      // to look only at the CANONICAL name, so a user `fn String::from_byte`
+      // (canonical `String::from_char_code`) was not seen as a shadow.
+      if kind == 0 {
+        0
+      } else if cc_name_or_alias_shadowed(cn, bn, local_names, ctx) {
+        0
+      } else {
+        kind
+      }
+    } else {
+      0
+    }
+  } else {
+    0
+  }
+}
+
+/// #769 encoding, read as a whole: the per-slot kind logged in
+/// `ctx.int_local_slots` (`slot*4 + kind`, most-recent entry wins) for the
+/// local a bare ident names -- 0 = cleared, 1 = Int, 2 = String, 3 = Bool --
+/// or -1 when `e` is not an ident, names no local, or that slot has no entry.
+///
+/// The slot_is_* family in compile_expr_tail answers one kind each; this
+/// returns the kind itself so a caller that must distinguish Int from Bool
+/// (`ts_known_int`, #2406) can, and so the three ident arms in this file share
+/// one scan. Duplicated from compile_expr_tail rather than imported: that file
+/// imports this one, so importing back would be circular.
+export fn cc_ident_slot_kind(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Int with Exception {
+  if expr_tag(e) != 4 {
+    -1
+  } else {
+    let nm = get_eident_name(e)
+    let mut i = Array::length(local_names) - 1
+    let mut slot = -1
+    while i >= 0 {
+      if Array::get(local_names, i) == nm {
+        slot = i
+        i = -1
+      } else {
+        i = i - 1
+      }
+    }
+    if slot < 0 {
+      -1
+    } else {
+      let arr = ctx.int_local_slots
+      let mut j = Array::length(arr) - 1
+      let mut kind = -1
+      while j >= 0 {
+        let entry = Array::get(arr, j)
+        if entry / 4 == slot {
+          kind = entry % 4
+          j = -1
+        } else {
+          j = j - 1
+        }
+      }
+      kind
+    }
+  }
+}
+
+/// #950: is `e` statically a String? The stringish sibling of
+/// cc_expr_is_boolish below (same structure, same slot-log discipline: kind-2
+/// entries in ctx.int_local_slots track `let`-bound strings, see
+/// compile_expr_tail's slot_is_intish doc). Consumed by the `__to_string`
+/// dispatch: a statically-String segment IS the result, so it bypasses the
+/// runtime string-pointer heuristic — which misreads the packed empty-string
+/// encoding 0 (e.g. `String::join([], sep)`, ptr 0 / len 0) as Int 0 and
+/// printed "0" for a perfectly legal empty string.
+export fn cc_expr_is_stringish(raw_e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  let e = cl_return_operand(raw_e)
+  let tag = expr_tag(e)
+  if tag == 3 {
+    true
+  } else if tag == 4 {
+    // A bare ident `let`-bound to a stringish value — kind-2 entry in
+    // ctx.int_local_slots (slot*4 + kind).
+    cc_ident_slot_kind(e, local_names, ctx) == 2
+  } else if tag == 9 {
+    cc_expr_is_stringish(get_elet_body(e), local_names, ctx)
+  } else if tag == 10 {
+    cc_expr_is_stringish(get_eletrec_body(e), local_names, ctx)
+  } else if tag == 11 {
+    cc_expr_is_stringish(get_eletmut_body(e), local_names, ctx)
+  } else if tag == 14 {
+    cc_expr_is_stringish(get_eseq_second(e), local_names, ctx)
+  } else if tag == 7 {
+    cc_expr_is_stringish(get_eif_then(e), local_names, ctx) && cc_expr_is_stringish(get_eif_else(e), local_names, ctx)
+  } else if tag == 16 {
+    let arms = get_match_arms(e)
+    let alen2 = Array::length(arms)
+    if alen2 == 0 {
+      false
+    } else {
+      let mut all_str = true
+      let mut si2 = 0
+      while si2 < alen2 {
+        if !cc_expr_is_stringish(get_arm_body(Array::get(arms, si2)), local_names, ctx) {
+          all_str = false
+        } else {
+          ()
+        }
+        si2 = si2 + 1
+      }
+      all_str
+    }
+  } else if tag == 8 {
+    let bcallee = get_ecall_callee(e)
+    if is_efn(bcallee) && Array::length(get_ecall_args(e)) == 1 {
+      // `let s: String = e` ascription marker `((__asc: String) -> __asc)(e)`
+      // — honor the annotation (same shapes as the Bool arm in
+      // cc_expr_is_boolish below, incl. the uniquify-renamed form).
+      let fparams = get_efn_params(bcallee)
+      if Array::length(fparams) == 1 {
+        let (asc_name, asc_ty) = Array::get(fparams, 0)
+        (asc_name == "__asc" || (String::starts_with(asc_name, "__shadow_") && String::ends_with(asc_name, "___asc"))) && (match asc_ty {
+          Some(TyName(tn)) => tn == "String",
+          _ => false
+        })
+      } else {
+        false
+      }
+    } else {
+      cc_builtin_call_ret_kind(e, local_names, ctx) == 2
+    }
+  } else {
+    false
+  }
+}
+
+/// #784: is `e` statically — BY SHAPE — a Bool via an UNSHADOWABLE form? A bool
+/// literal, a comparison / logical binary op, or a `!` unary. These lower directly
+/// (operators bypass name resolution) so the classification is always correct.
+/// Used to route `"\{b}"` / `__to_string(b)` to a "true"/"false" formatter instead
+/// of the integer path (which prints 1/0, since Bool and Int share the tagged-int
+/// runtime representation). Purely syntactic, like `cc_expr_is_floatish`.
+///
+/// #950: calls to bool-returning BUILTINS are now classified through
+/// cc_builtin_call_ret_kind (see the tag-8 arm), which checks the same
+/// user-shadow conditions the actual call emission honors via
+/// `prefer_bound_call` — closing the gap #784 documented (a name-only match
+/// would have misformatted a shadowed function's result; the shadow-aware
+/// lookup does not). A bool bound to a local and then interpolated is covered
+/// by the kind-3 slot log. Never fires for an integer expression, so the
+/// pervasive `__to_string(<int>)` calls (lengths, offsets, ids) are untouched.
+/// #2462/#2464: does the CHECKER say this render/`eq` argument is a `Bool`?
+///
+/// Keyed by `typed_lowering_arg_offset` (@vibe/compiler/core), shared with the
+/// producer rather than restated here -- a consumer that spelled the key rule
+/// for itself would look up a key the producer never wrote and classify
+/// nothing, silently. Same shape as `ts_offset_says_int` one type over.
+fn bool_offset_says_bool(e: Expr, ctx: CompileCtx) -> Bool {
+  let off = typed_lowering_arg_offset(e)
+  off >= 0 && array_contains_int(ctx.bool_render_offsets, off)
+}
+
+export fn cc_expr_is_boolish(raw_e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  let e = cl_return_operand(raw_e)
+  let tag = expr_tag(e)
+  // #2462/#2464: an extra `||`, never a replacement -- the table can only ADD
+  // a classification the syntactic arms below missed, never remove one they
+  // made. It is what reaches the shapes no syntax can: a lambda's declared
+  // return type (#2462) and a Bool-returning builtin call (#2464).
+  if bool_offset_says_bool(e, ctx) {
+    true
+  } else if tag == 1 {
+    true
+  } else if tag == 4 {
+    // #769: a bare ident `let`-bound to a boolish value -- kind-3 entry in
+    // ctx.int_local_slots (slot*4 + kind, see compile_expr_tail's
+    // slot_is_intish). Closes the documented #785-P2 gap where
+    // `let b = true; "\{b}"` printed the raw integer.
+    cc_ident_slot_kind(e, local_names, ctx) == 3
+  } else if tag == 5 {
+    let op = get_ebinop_op(e)
+    op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">=" || op == "&&" || op == "||"
+  } else if tag == 6 {
+    get_eunaryop_op(e) == "!"
+  } else if tag == 16 {
+    // #815: an `is` expression desugars at parse time to a match whose arms
+    // all return Bool literals — classify such a match as boolish so
+    // `"\{opt is None}"` prints true/false instead of the raw 0/1.
+    // #825: arm bodies recurse through cc_expr_is_boolish (not just Bool
+    // literals), because the structural `==` dispatch on Option/Result/tuple
+    // lowers to nested matches whose leaf arms are `==`/`&&` chains and Bool
+    // literals — so `"\{Some(1) == Some(1)}"` prints true, not 1.
+    let arms = get_match_arms(e)
+    let alen2 = Array::length(arms)
+    if alen2 == 0 {
+      false
+    } else {
+      let mut all_bool = true
+      let mut bi2 = 0
+      while bi2 < alen2 {
+        if !cc_expr_is_boolish(get_arm_body(Array::get(arms, bi2)), local_names, ctx) {
+          all_bool = false
+        } else {
+          ()
+        }
+        bi2 = bi2 + 1
+      }
+      all_bool
+    }
+  } else if tag == 9 {
+    // #825: the normalize pass lifts a non-ident match scrutinee into
+    // `let __m_scrut_N = <e> in match ...` (lift_match_scrutinees), so a
+    // boolish match arrives here wrapped in a let — classify by the BODY.
+    // Same for the other body-position wrappers below.
+    cc_expr_is_boolish(get_elet_body(e), local_names, ctx)
+  } else if tag == 10 {
+    cc_expr_is_boolish(get_eletrec_body(e), local_names, ctx)
+  } else if tag == 11 {
+    cc_expr_is_boolish(get_eletmut_body(e), local_names, ctx)
+  } else if tag == 14 {
+    cc_expr_is_boolish(get_eseq_second(e), local_names, ctx)
+  } else if tag == 7 {
+    // An if-expression is boolish when BOTH branches are.
+    cc_expr_is_boolish(get_eif_then(e), local_names, ctx) && cc_expr_is_boolish(get_eif_else(e), local_names, ctx)
+  } else if tag == 8 {
+    // #815: the `==` desugar rewrites array equality to the compiler-emitted
+    // `__arr_equals__<key>` helper and struct/enum equality to `T::equals`
+    // (both Bool-returning), so the EBinOp shape above is gone by codegen.
+    // `__arr_equals__` is a reserved compiler prefix; `::equals` (2 args) is
+    // the == rewrite's exact output shape -- and deliberately NOT guarded by
+    // the user-function table, because the == rewrite emits a call to the
+    // user's own `T::equals` impl. A `not(...)` wrap (the `!=` rewrite's
+    // output) is classified only when its single argument is itself boolish,
+    // `not` is not locally shadowed, AND no USER function is named `not`.
+    //
+    // #2462/#2464 review: that last guard is new. This comment used to say a
+    // user global `not` returning non-Bool was "display-only and vanishingly
+    // rare"; measured, `fn not(x: Bool) -> Int { 42 }` rendered `not(true)` as
+    // "true" on linear -- a wrong value with no diagnostic, which is P0 by the
+    // repo's own scale, not a display nit. The gc lane got it RIGHT (42) only
+    // because it had no ECall arm at all, so porting the arm without the guard
+    // would have spread the bug rather than fixed one. The typed channel
+    // cannot rescue it either: it is an extra `||`, so it can only ADD a
+    // classification, never correct a syntactic `true`.
+    let bcallee = get_ecall_callee(e)
+    if is_eident(bcallee) {
+      let bcn = get_eident_name(bcallee)
+      String::starts_with(bcn, "__arr_equals__") || (String::ends_with(bcn, "::equals") && Array::length(get_ecall_args(e)) == 2) || (bcn == "not" && Array::length(get_ecall_args(e)) == 1 && find_local_slot(local_names, "not") < 0 && func_table_user_index_of(ctx.func_table, "not", ctx.num_user_funcs) < 0 && cc_expr_is_boolish(Array::get(get_ecall_args(e), 0), local_names, ctx)) || cc_builtin_call_ret_kind(e, local_names, ctx) == 1
+    } else if is_efn(bcallee) && Array::length(get_ecall_args(e)) == 1 {
+      // #815: `let x: Bool = e` parses to the ascription marker
+      // `((__asc: Bool) -> __asc)(e)` (see parser_expr_dispatch's
+      // ascribe_wrap) — honor the annotation so the binding's slot is logged
+      // boolish even when `e` itself is opaque.
+      // The SECOND and later ascriptions in one function arrive with the
+      // param renamed to `__shadow_<n>___asc` (normalize's
+      // uniquify_shadowed_bindings; per-function `seen` de-dup), so match
+      // that renamed form too — otherwise only the first annotated let per
+      // function was classified (#825 follow-up).
+      let fparams = get_efn_params(bcallee)
+      if Array::length(fparams) == 1 {
+        let (asc_name, asc_ty) = Array::get(fparams, 0)
+        (asc_name == "__asc" || (String::starts_with(asc_name, "__shadow_") && String::ends_with(asc_name, "___asc"))) && (match asc_ty {
+          Some(TyName(tn)) => tn == "Bool",
+          _ => false
+        })
+      } else {
+        false
+      }
+    } else {
+      false
+    }
+  } else {
+    false
+  }
+}
+
+/// #706: is `e` a bare reference to a value live-in to an enclosing loop (and not
+/// a `mut` ref-cell, whose reassignment already manages its own drop)? Passing
+/// such a value to a consuming (owning) parameter inside the loop frees it on the
+/// first iteration; dup'ing at the call site keeps the loop-carried reference
+/// alive across the back-edge. rc_dup is a no-op on scalars, so a scalar loop var
+/// caught here costs only a wasted (guarded) dup, not a correctness problem.
+export fn cc_is_loop_borrowed_ident(e: Expr, ctx: CompileCtx) -> Bool {
+  match e {
+    EIdent(name, _) =>
+    array_contains_str(ctx.loop_borrowed_names, name) && !array_contains_str(ctx.ref_cell_names, name),
+    _ => false
+  }
+}
+
+/// Emit checked Map key-slot access without synthesizing source-visible calls.
+/// The bounds check and trap must not resolve through user definitions of
+/// `Map::size` or `Array::get`.
+export fn compile_map_iter_get_checked(buf: Bytes, map_expr: Expr, index_expr: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
+  let map_l = next_local
+  let index_l = next_local + 1
+  let len_l = next_local + 2
+  // `[` cannot occur in a source identifier, so these slots cannot shadow
+  // or be shadowed by user bindings during name-to-local lookup.
+  Array::push(local_names, "[temp]__map_iter_get_map")
+  Array::push(local_names, "[temp]__map_iter_get_index")
+  Array::push(local_names, "[temp]__map_iter_get_len")
+  let mut nl = next_local + 3
+  nl = ce(buf, map_expr, local_names, nl, ctx, ld)
+  emit_local_set(buf, map_l)
+  nl = ce(buf, index_expr, local_names, nl, ctx, ld)
+  emit_local_set(buf, index_l)
+  emit_local_get(buf, map_l)
+  emit_i64_const(buf, -2)
+  emit_i64_and(buf)
+  emit_local_set(buf, map_l)
+  if ctx.enable_rc {
+    emit_local_get(buf, index_l)
+    emit_i64_const(buf, 1)
+    emit_i64_shr_s(buf)
+    emit_local_set(buf, index_l)
+  } else {
+    ()
+  }
+  emit_local_get(buf, map_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_load(buf, 2, 0)
+  emit_i64_extend_i32_u(buf)
+  emit_local_set(buf, len_l)
+  emit_local_get(buf, index_l)
+  emit_i64_const(buf, 0)
+  emit_i64_lt_s(buf)
+  emit_if_void(buf)
+  bytebuf_push(buf, 0)
+  emit_end(buf)
+  emit_local_get(buf, index_l)
+  emit_local_get(buf, len_l)
+  emit_i64_ge_s(buf)
+  emit_if_void(buf)
+  bytebuf_push(buf, 0)
+  emit_end(buf)
+  emit_local_get(buf, map_l)
+  emit_i32_wrap_i64(buf)
+  emit_local_get(buf, index_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 16)
+  emit_i32_mul(buf)
+  emit_i32_add(buf)
+  emit_i64_load(buf, 3, 8)
+  nl
+}
+
+/// The borrowed-parameter mask for a call to top-level fn `fname`: the
+/// authoritative source/user mask when present, otherwise the builtin mask.
+/// Lexical shadowing is handled by the caller (the #875 local_idx_hint guard
+/// already routes a shadowed name elsewhere).
+export fn cc_borrow_mask(ctx: CompileCtx, fname: String) -> Int {
+  md_borrow_mask_of(fname, ctx.borrow_param_user, ctx.borrow_param_mask)
+}
+
+/// #3128: does the program define its own top-level function under the name
+/// of a builtin that borrows its arguments? The borrow table carries a row
+/// for exactly those definitions (compute_borrow_param_user_fns), so the
+/// question is one binary search, and it agrees with the planner by
+/// construction: a call the planner planned against the program's function
+/// is compiled as a call to it.
+export fn cc_source_defines_borrow_builtin(ctx: CompileCtx, fname: String, fn_idx_in_list: Int) -> Bool {
+  fn_idx_in_list >= 0 && md_builtin_borrow_mask(fname) != 0 && bsearch_leftmost(ctx.borrow_param_user, fname) >= 0
+}
+
+export fn cc_bmask_has(mask: Int, i: Int) -> Bool {
+  i >= 0 && i < 32 && ((mask>>i)&1) == 1
+}
+
+/// #745: retain a borrowed argument that a STORING inline builtin (Map::set /
+/// MapBuilder::set key+value) keeps a reference to. The generic owning-call
+/// path already dups projection / borrow-returning-call / loop-borrowed args
+/// (see the `__argdup` sites below), but the inline-emitted builtins compile
+/// their args directly and skipped it — json's `build_json_map` stored
+/// `Array::get(vals, i)` un-retained, and once `vals` died the map's entry
+/// pointed at freed memory (ctor match on `Map::get` then read garbage).
+/// Expects the freshly compiled arg on the wasm stack; leaves it there.
+export fn cc_retain_stored_arg(buf: Bytes, carg: Expr, local_names: Array[String], nl: Int, ctx: CompileCtx) -> Int with Exception {
+  let is_loop_borrow = ctx.enable_rc && cc_is_loop_borrowed_ident(carg, ctx)
+  if ctx.enable_rc && (cc_is_projection(carg) || cc_is_ref_cell_read(carg, ctx) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow) {
+    // #706 leak follow-up: a loop-borrowed trigger needs the epilogue's
+    // compensating drop, same as the generic path's `__argdup` sites.
+    if is_loop_borrow {
+      Array::push(ctx.loop_consumed_names, get_eident_name(carg))
+    } else {
+      ()
+    }
+    Array::push(local_names, "__argdup")
+    emit_local_tee(buf, nl)
+    emit_rc_dup_guarded(buf, nl, ctx.rc_shadow, ctx.rc_dup_func_idx)
+    nl + 1
+  } else {
+    nl
+  }
+}
+
+/// #2671: ownership for the inline lowerings that read an array's elements
+/// (Array::map / filter / fold / iter_eager / any / all / find / reverse /
+/// concat). Each consumes its array argument -- the planner counts the
+/// position as owning, so the caller's reference arrives here -- and the
+/// closure-taking ones call a callback that OWNS its parameter (a lambda
+/// always does; a top-level fn used as a value is excluded from the borrow
+/// classification, compute_borrow_param_user_fns). The RC lane therefore
+/// owes the callback one reference per element it hands over and owes the
+/// array exactly one release. The lowerings used to do neither: the
+/// callback consumed an element the array still listed (a use-after-free
+/// the shadow lane catches), a rebuilding callback found the element unique
+/// and rewrote the CALLER's array in place (silently wrong: bump 128004000,
+/// RC 128068000 on the same program), and the shell was never freed (84 B
+/// per call on a two-element array).
+///
+/// Two paths, decided once per array by its rc word (cc_hof_unique_test):
+/// UNIQUE -- the elements are moved out with no retain (a rebuilding
+/// callback then sees a unique block and the reuse fusion fires), and the
+/// shell is released with its length zeroed so rc_drop frees it and its
+/// grown buffer without walking the moved elements (cc_hof_release_moved);
+/// SHARED -- every element handed over is retained first (cc_hof_give), the
+/// other owner's view stays intact, and the array reference is dropped
+/// normally at the end. A lowering that never moves an element (the
+/// predicates any / all / find) retains every element it hands over and
+/// drops the array normally (cc_hof_release_walking). The callback
+/// reference is released after the loop either way -- a bare fn value is
+/// even and rc_drop ignores it. Every emission is RC-only; the bump lane's
+/// bytes are untouched.
+///
+/// The generic owning-position retain (cc_retain_stored_arg's rule) for an
+/// argument already sitting in `local_idx`, plus one rule of its own: when
+/// the PLANNER classified position `pos` of this callee as BORROWED, the
+/// caller passed its reference without a dup and expects it back intact,
+/// so the lowering takes a reference of its own here. That happens when
+/// the program carries a source definition of the same name -- `@vibe/builtin`
+/// declares `let Array::map = ..` as a borrow-only loop, so every program
+/// that imports the package plans its `Array::map(xs, f)` calls as borrows
+/// while this ladder still intercepts the name and consumes. Without the
+/// retain the array was moved out from under the caller (the book's
+/// `Array::push(xs, 4)` after a map answered length 1).
+export fn cc_hof_retain_arg(buf: Bytes, carg: Expr, local_idx: Int, fname: String, pos: Int, ctx: CompileCtx) -> Unit with Exception {
+  let is_loop_borrow = ctx.enable_rc && cc_is_loop_borrowed_ident(carg, ctx)
+  let planner_borrows = ctx.enable_rc && cc_bmask_has(md_borrow_mask_of(fname, ctx.borrow_param_user, ctx.borrow_param_mask), pos)
+  if ctx.enable_rc && (cc_is_projection(carg) || cc_is_ref_cell_read(carg, ctx) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow || planner_borrows) {
+    if is_loop_borrow {
+      Array::push(ctx.loop_consumed_names, get_eident_name(carg))
+    } else {
+      ()
+    }
+    emit_rc_dup_guarded(buf, local_idx, ctx.rc_shadow, ctx.rc_dup_func_idx)
+  } else {
+    ()
+  }
+}
+
+/// uniq_l := 1 when the array block's rc word is exactly `1 | (5 << 24)`
+/// (one owner, class 5), else 0. A saturated (immortal) word lands on the
+/// shared path, where every step is a plain retain / release.
+export fn cc_hof_unique_test(buf: Bytes, arr_l: Int, uniq_l: Int, ctx: CompileCtx) -> Unit {
+  if ctx.enable_rc {
+    emit_local_get(buf, arr_l)
+    emit_i64_const(buf, -2)
+    emit_i64_and(buf)
+    emit_i32_wrap_i64(buf)
+    emit_i32_const(buf, 4)
+    emit_i32_sub(buf)
+    emit_i32_load(buf, 2, 0)
+    emit_i32_const(buf, 83886081)
+    emit_i32_eq(buf)
+    emit_i64_extend_i32_u(buf)
+    emit_local_set(buf, uniq_l)
+  } else {
+    ()
+  }
+}
+
+/// Hand `elem_l` over to something that will own it (a consuming callback,
+/// the result array): on the shared path retain it first; on the unique
+/// path it moves.
+export fn cc_hof_give(buf: Bytes, elem_l: Int, uniq_l: Int, ctx: CompileCtx) -> Unit {
+  if ctx.enable_rc {
+    emit_local_get(buf, uniq_l)
+    emit_i64_eqz(buf)
+    emit_if_void(buf)
+    emit_rc_dup_guarded(buf, elem_l, ctx.rc_shadow, ctx.rc_dup_func_idx)
+    emit_end(buf)
+  } else {
+    ()
+  }
+}
+
+/// The unique path's release of an element the lowering is NOT handing over
+/// (Array::filter's rejected element): the array's reference to it is spent
+/// here, since the shell is freed without walking its elements.
+export fn cc_hof_discard(buf: Bytes, elem_l: Int, uniq_l: Int, ctx: CompileCtx) -> Unit {
+  if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 {
+    emit_local_get(buf, uniq_l)
+    emit_i64_eqz(buf)
+    emit_i32_eqz(buf)
+    emit_if_void(buf)
+    emit_local_get(buf, elem_l)
+    emit_call(buf, ctx.rc_drop_func_idx)
+    emit_end(buf)
+  } else {
+    ()
+  }
+}
+
+/// Release the callback reference (`fn_l` < 0: no callback).
+fn cc_hof_release_fn(buf: Bytes, fn_l: Int, ctx: CompileCtx) -> Unit {
+  if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && fn_l >= 0 {
+    emit_local_get(buf, fn_l)
+    emit_call(buf, ctx.rc_drop_func_idx)
+  } else {
+    ()
+  }
+}
+
+/// Release an array whose elements were moved out on the unique path: zero
+/// its length first so rc_drop frees the shell (and a grown buffer) without
+/// walking them; on the shared path the drop is the ordinary decrement.
+export fn cc_hof_release_moved(buf: Bytes, arr_l: Int, uniq_l: Int, fn_l: Int, ctx: CompileCtx) -> Unit {
+  if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 {
+    emit_local_get(buf, uniq_l)
+    emit_i64_eqz(buf)
+    emit_i32_eqz(buf)
+    emit_if_void(buf)
+    emit_local_get(buf, arr_l)
+    emit_i64_const(buf, -2)
+    emit_i64_and(buf)
+    emit_i32_wrap_i64(buf)
+    emit_i32_const(buf, 0)
+    emit_i32_store(buf, 2, 4)
+    emit_end(buf)
+    emit_local_get(buf, arr_l)
+    emit_call(buf, ctx.rc_drop_func_idx)
+    cc_hof_release_fn(buf, fn_l, ctx)
+  } else {
+    ()
+  }
+}
+
+/// Release an array none of whose elements were moved (the predicates): the
+/// ordinary drop walks and releases them.
+export fn cc_hof_release_walking(buf: Bytes, arr_l: Int, fn_l: Int, ctx: CompileCtx) -> Unit {
+  if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 {
+    emit_local_get(buf, arr_l)
+    emit_call(buf, ctx.rc_drop_func_idx)
+    cc_hof_release_fn(buf, fn_l, ctx)
+  } else {
+    ()
+  }
+}
+
+/// Release the value a result slot holds before it is overwritten (the
+/// `None` a search lowering stages before its loop).
+export fn cc_hof_release_slot(buf: Bytes, slot_l: Int, ctx: CompileCtx) -> Unit {
+  if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 {
+    emit_local_get(buf, slot_l)
+    emit_call(buf, ctx.rc_drop_func_idx)
+  } else {
+    ()
+  }
+}
+
+/// #2683: allocate an RC-managed block for a Map (class 6), a MapBuilder
+/// handle (class 9) or a builder's storage (class 0, a leaf freed without a
+/// walk) on the RC lane. `push_payload` leaves the payload byte count on the
+/// stack as an i64; the block gets the 8-byte header (size word, then rc
+/// word `1 | class << 24`), and `ptr_l` ends up holding the UNTAGGED value
+/// pointer (base + 8) -- the address every Map lowering reads its fields
+/// from, and the address rc_drop's class arms expect. Tag it (`| 1`) when
+/// the value is handed out. Map and MapBuilder blocks used to be raw bump
+/// allocations in both lanes, even and invisible to the RC machinery: a
+/// MapBuilder leaked 144 B per `new`, every value stored in it with it, and
+/// the frozen Map on top (#2683). The bump lane keeps its raw allocation.
+export fn cc_map_alloc_rc(buf: Bytes, ptr_l: Int, class: Int, push_payload: () -> Unit, ctx: CompileCtx) -> Unit {
+  push_payload()
+  emit_i64_const(buf, 8)
+  emit_i64_add(buf)
+  emit_call(buf, ctx.rc_alloc_func_idx)
+  emit_local_set(buf, ptr_l)
+  emit_local_get(buf, ptr_l)
+  emit_i32_wrap_i64(buf)
+  push_payload()
+  emit_i64_const(buf, 8)
+  emit_i64_add(buf)
+  emit_i32_wrap_i64(buf)
+  emit_i32_store(buf, 2, 0)
+  emit_local_get(buf, ptr_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 1 + (class<<24))
+  emit_i32_store(buf, 2, 4)
+  emit_local_get(buf, ptr_l)
+  emit_i64_const(buf, 8)
+  emit_i64_add(buf)
+  emit_local_set(buf, ptr_l)
+  // A Map's side-index slot (vptr+4) must read as "no index" until an index
+  // is built: a block rc_alloc recycles is not zeroed.
+  if class == 6 {
+    emit_local_get(buf, ptr_l)
+    emit_i32_wrap_i64(buf)
+    emit_i32_const(buf, 0)
+    emit_i32_store(buf, 2, 4)
+  } else {
+    ()
+  }
+}
+
+/// #2683: hand a Map / MapBuilder value out of a lowering: tagged on the RC
+/// lane (an odd rc-block pointer the readers untag with `& -2`), raw on the
+/// bump lane.
+export fn cc_map_value_out(buf: Bytes, ptr_l: Int, ctx: CompileCtx) -> Unit {
+  emit_local_get(buf, ptr_l)
+  if ctx.enable_rc {
+    emit_i64_const(buf, 1)
+    emit_i64_or(buf)
+  } else {
+    ()
+  }
+}
+
+/// #2683: release a block a Map lowering holds through its UNTAGGED value
+/// pointer (a builder handle, a storage block): tag and drop.
+export fn cc_map_release_ptr(buf: Bytes, ptr_l: Int, ctx: CompileCtx) -> Unit {
+  if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 {
+    emit_local_get(buf, ptr_l)
+    emit_i64_const(buf, 1)
+    emit_i64_or(buf)
+    emit_call(buf, ctx.rc_drop_func_idx)
+  } else {
+    ()
+  }
+}
+
+/// #2683: a Map / MapBuilder lowering BORROWS its first argument, so an
+/// OWNED temporary handed there -- a literal, a call that returns a fresh
+/// map, a frozen builder (`Map::set(Map::new(), k, v)`) -- is nobody's to
+/// release: the #2682 rule, which the resolved-call path applies to the
+/// runtime-function builtins and these inline lowerings must apply
+/// themselves (16 B per call measured on the reclaim fixture). `ptr_l`
+/// holds the UNTAGGED pointer the lowering read from; re-tag and drop it
+/// after the last read. Not for a lowering that returns a view of the map
+/// (Map::get, MapBuilder::get), where the leak stays the safe side.
+export fn cc_map_release_temp_arg0(buf: Bytes, arg0: Expr, ptr_l: Int, ctx: CompileCtx) -> Unit {
+  if ctx.enable_rc && cc_is_owned_temp(arg0, ctx) {
+    cc_map_release_ptr(buf, ptr_l, ctx)
+  } else {
+    ()
+  }
+}
+
+/// ADR-0092 for maps (the reuse the #2683 accounting made possible). A
+/// `Map::set` / `Map::delete` CONSUMES its map: when the block is referenced
+/// exactly once (rc word == 1 | 6 << 24 -- a saturated, immortal block fails
+/// the test) the entry is replaced, appended or removed IN PLACE and the
+/// same block is the result; otherwise the copy path runs and the consumed
+/// reference is released. In place, an append that does not fit the
+/// block's capacity (read off its size word: rc_alloc hands back exactly
+/// the size asked for) moves the entries into a block of twice the
+/// capacity, and the side index is inserted into while it stays at or
+/// under half load, rebuilt otherwise. Leaves an i32 on the stack that is
+/// 1 when the class-6 block at UNTAGGED `ptr_l` is unique.
+export fn cc_map_emit_unique_test(buf: Bytes, ptr_l: Int) -> Unit {
+  emit_local_get(buf, ptr_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 4)
+  emit_i32_sub(buf)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_const(buf, 1 + (6<<24))
+  emit_i32_eq(buf)
+}
+
+/// Push the i32 address `map_l + idx_l * 16`: entry `idx_l`'s key sits at
+/// +8 and its value at +16 from it.
+fn cc_map_push_entry_addr(buf: Bytes, map_l: Int, idx_l: Int) -> Unit {
+  emit_local_get(buf, map_l)
+  emit_i32_wrap_i64(buf)
+  emit_local_get(buf, idx_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 16)
+  emit_i32_mul(buf)
+  emit_i32_add(buf)
+}
+
+/// Store `count + delta` into the map's count word.
+fn cc_map_store_count_plus(buf: Bytes, map_l: Int, cnt_l: Int, delta: Int) -> Unit {
+  emit_local_get(buf, map_l)
+  emit_i32_wrap_i64(buf)
+  emit_local_get(buf, cnt_l)
+  emit_i64_const(buf, delta)
+  emit_i64_add(buf)
+  emit_i32_wrap_i64(buf)
+  emit_i32_store(buf, 2, 0)
+}
+
+/// `pos_l` = the index of the entry holding `key_l`, or -1: through the side
+/// index when the map has one (`ip_l` receives it, 0 when absent), by a
+/// linear scan otherwise. `idx_l` is scratch.
+fn cc_map_find_pos(buf: Bytes, map_l: Int, key_l: Int, cnt_l: Int, idx_l: Int, pos_l: Int, ip_l: Int, eq_fi: Int, ctx: CompileCtx) -> Unit {
+  emit_local_get(buf, map_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_load(buf, 2, 4)
+  emit_i64_extend_i32_u(buf)
+  emit_local_set(buf, ip_l)
+  emit_i64_const(buf, -1)
+  emit_local_set(buf, pos_l)
+  if ctx.map_probe_func_idx >= 0 {
+    emit_local_get(buf, ip_l)
+    emit_i64_eqz(buf)
+    emit_if_void(buf)
+    cc_map_scan_pos(buf, map_l, key_l, cnt_l, idx_l, pos_l, eq_fi)
+    emit_else(buf)
+    emit_local_get(buf, map_l)
+    emit_local_get(buf, cnt_l)
+    emit_local_get(buf, key_l)
+    emit_call(buf, ctx.map_probe_func_idx)
+    emit_local_set(buf, pos_l)
+    emit_end(buf)
+  } else {
+    cc_map_scan_pos(buf, map_l, key_l, cnt_l, idx_l, pos_l, eq_fi)
+  }
+}
+
+fn cc_map_scan_pos(buf: Bytes, map_l: Int, key_l: Int, cnt_l: Int, idx_l: Int, pos_l: Int, eq_fi: Int) -> Unit {
+  emit_i64_const(buf, 0)
+  emit_local_set(buf, idx_l)
+  emit_block_void(buf)
+  emit_loop_void(buf)
+  emit_local_get(buf, idx_l)
+  emit_local_get(buf, cnt_l)
+  emit_i64_ge_s(buf)
+  emit_br_if(buf, 1)
+  cc_map_push_entry_addr(buf, map_l, idx_l)
+  emit_i64_load(buf, 3, 8)
+  emit_local_get(buf, key_l)
+  emit_call(buf, eq_fi)
+  emit_i32_wrap_i64(buf)
+  emit_if_void(buf)
+  emit_local_get(buf, idx_l)
+  emit_local_set(buf, pos_l)
+  emit_br(buf, 2)
+  emit_end(buf)
+  emit_local_get(buf, idx_l)
+  emit_i64_const(buf, 1)
+  emit_i64_add(buf)
+  emit_local_set(buf, idx_l)
+  emit_br(buf, 0)
+  emit_end(buf)
+  emit_end(buf)
+}
+
+/// Build a side index for the map's CURRENT count (already stored) and
+/// attach it. `tmp_l` is scratch.
+fn cc_map_rebuild_index(buf: Bytes, map_l: Int, tmp_l: Int, ctx: CompileCtx) -> Unit {
+  emit_local_get(buf, map_l)
+  emit_local_get(buf, map_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_load(buf, 2, 0)
+  emit_i64_extend_i32_u(buf)
+  emit_call(buf, ctx.map_build_index_func_idx)
+  emit_local_set(buf, tmp_l)
+  emit_local_get(buf, map_l)
+  emit_i32_wrap_i64(buf)
+  emit_local_get(buf, tmp_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_store(buf, 2, 4)
+}
+
+/// Release the side index at `ip_l`: a class-0 rc block referenced once.
+fn cc_map_free_index(buf: Bytes, ip_l: Int, ctx: CompileCtx) -> Unit {
+  emit_local_get(buf, ip_l)
+  emit_i64_const(buf, 1)
+  emit_i64_or(buf)
+  emit_call(buf, ctx.rc_drop_func_idx)
+}
+
+/// After an in-place append at old count `cnt_l` (the map's count word
+/// already holds cnt + 1, the new key is in `key_l`, `ip_l` is the index the
+/// map had): no index yet -> build one once the map holds 8 entries; an
+/// index -> insert while it stays at or under half load (the load
+/// __rt_map_cap_for sizes for), else release it and rebuild.
+fn cc_map_index_after_append(buf: Bytes, map_l: Int, key_l: Int, cnt_l: Int, ip_l: Int, tmp_l: Int, ctx: CompileCtx) -> Unit {
+  if ctx.map_build_index_func_idx >= 0 {
+    emit_local_get(buf, ip_l)
+    emit_i64_eqz(buf)
+    emit_if_void(buf)
+    emit_local_get(buf, cnt_l)
+    emit_i64_const(buf, 1)
+    emit_i64_add(buf)
+    emit_i64_const(buf, 8)
+    emit_i64_ge_s(buf)
+    emit_if_void(buf)
+    cc_map_rebuild_index(buf, map_l, tmp_l, ctx)
+    emit_end(buf)
+    emit_else(buf)
+    if ctx.map_index_insert_func_idx >= 0 && ctx.map_hash_func_idx >= 0 {
+      emit_local_get(buf, cnt_l)
+      emit_i64_const(buf, 1)
+      emit_i64_add(buf)
+      emit_i64_const(buf, 2)
+      emit_i64_mul(buf)
+      emit_local_get(buf, ip_l)
+      emit_i32_wrap_i64(buf)
+      emit_i64_load(buf, 3, 0)
+      emit_i64_const(buf, 1)
+      emit_i64_add(buf)
+      emit_i64_le_s(buf)
+      emit_if_void(buf)
+      emit_local_get(buf, ip_l)
+      emit_local_get(buf, key_l)
+      emit_call(buf, ctx.map_hash_func_idx)
+      emit_local_get(buf, ip_l)
+      emit_i32_wrap_i64(buf)
+      emit_i64_load(buf, 3, 0)
+      emit_i64_and(buf)
+      emit_local_get(buf, cnt_l)
+      emit_call(buf, ctx.map_index_insert_func_idx)
+      emit_else(buf)
+      cc_map_free_index(buf, ip_l, ctx)
+      cc_map_rebuild_index(buf, map_l, tmp_l, ctx)
+      emit_end(buf)
+    } else {
+      cc_map_free_index(buf, ip_l, ctx)
+      cc_map_rebuild_index(buf, map_l, tmp_l, ctx)
+    }
+    emit_end(buf)
+  } else {
+    ()
+  }
+}
+
+/// The in-place `Map::set` (see cc_map_emit_unique_test). `map_l` is the
+/// untagged unique block, `key_l` / `val_l` the owned key and value; the
+/// result block lands in `new_l`.
+export fn cc_map_set_in_place(buf: Bytes, map_l: Int, key_l: Int, val_l: Int, cnt_l: Int, new_l: Int, idx_l: Int, pos_l: Int, tmp_l: Int, ip_l: Int, cap_l: Int, eq_fi: Int, ctx: CompileCtx) -> Unit {
+  cc_map_find_pos(buf, map_l, key_l, cnt_l, idx_l, pos_l, ip_l, eq_fi, ctx)
+  emit_local_get(buf, pos_l)
+  emit_i64_const(buf, 0)
+  emit_i64_ge_s(buf)
+  emit_if_void(buf)
+  // replace: the old value goes, the stored key stays, the caller's key
+  // reference is unused
+  cc_map_push_entry_addr(buf, map_l, pos_l)
+  emit_i64_load(buf, 3, 16)
+  emit_call(buf, ctx.rc_drop_func_idx)
+  cc_map_push_entry_addr(buf, map_l, pos_l)
+  emit_local_get(buf, val_l)
+  emit_i64_store(buf, 3, 16)
+  emit_local_get(buf, key_l)
+  emit_call(buf, ctx.rc_drop_func_idx)
+  emit_local_get(buf, map_l)
+  emit_local_set(buf, new_l)
+  emit_else(buf)
+  // append: capacity = (size word - 16) / 16
+  emit_local_get(buf, map_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 8)
+  emit_i32_sub(buf)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_const(buf, 16)
+  emit_i32_sub(buf)
+  emit_i32_const(buf, 4)
+  emit_i32_shr_u(buf)
+  emit_i64_extend_i32_u(buf)
+  emit_local_set(buf, cap_l)
+  emit_local_get(buf, cnt_l)
+  emit_local_get(buf, cap_l)
+  emit_i64_lt_s(buf)
+  emit_if_void(buf)
+  cc_map_push_entry_addr(buf, map_l, cnt_l)
+  emit_local_get(buf, key_l)
+  emit_i64_store(buf, 3, 8)
+  cc_map_push_entry_addr(buf, map_l, cnt_l)
+  emit_local_get(buf, val_l)
+  emit_i64_store(buf, 3, 16)
+  cc_map_store_count_plus(buf, map_l, cnt_l, 1)
+  emit_local_get(buf, map_l)
+  emit_local_set(buf, new_l)
+  cc_map_index_after_append(buf, map_l, key_l, cnt_l, ip_l, tmp_l, ctx)
+  emit_else(buf)
+  // grow: a block of max(4, 2 * count) entries; the entries MOVE (no
+  // retains), the old block's count is zeroed and it is released with its
+  // index
+  emit_local_get(buf, cnt_l)
+  emit_i64_const(buf, 2)
+  emit_i64_mul(buf)
+  emit_local_set(buf, cap_l)
+  emit_local_get(buf, cap_l)
+  emit_i64_const(buf, 4)
+  emit_i64_lt_s(buf)
+  emit_if_void(buf)
+  emit_i64_const(buf, 4)
+  emit_local_set(buf, cap_l)
+  emit_end(buf)
+  cc_map_alloc_rc(buf, new_l, 6, () -> {
+    emit_local_get(buf, cap_l)
+    emit_i64_const(buf, 16)
+    emit_i64_mul(buf)
+    emit_i64_const(buf, 8)
+    emit_i64_add(buf)
+  }, ctx)
+  emit_local_get(buf, new_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 8)
+  emit_i32_add(buf)
+  emit_local_get(buf, map_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 8)
+  emit_i32_add(buf)
+  emit_local_get(buf, cnt_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 16)
+  emit_i32_mul(buf)
+  emit_memory_copy(buf)
+  cc_map_push_entry_addr(buf, new_l, cnt_l)
+  emit_local_get(buf, key_l)
+  emit_i64_store(buf, 3, 8)
+  cc_map_push_entry_addr(buf, new_l, cnt_l)
+  emit_local_get(buf, val_l)
+  emit_i64_store(buf, 3, 16)
+  cc_map_store_count_plus(buf, new_l, cnt_l, 1)
+  emit_i64_const(buf, 0)
+  emit_local_set(buf, ip_l)
+  cc_map_index_after_append(buf, new_l, key_l, cnt_l, ip_l, tmp_l, ctx)
+  emit_local_get(buf, map_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 0)
+  emit_i32_store(buf, 2, 0)
+  cc_map_release_ptr(buf, map_l, ctx)
+  emit_end(buf)
+  emit_end(buf)
+}
+
+/// The in-place `Map::delete` (see cc_map_emit_unique_test): the entry's key
+/// and value are released, the tail shifts down, the count drops by one
+/// and the side index, if any, is released and rebuilt (or dropped below 8
+/// entries). The map is the result whether or not the key was held. The
+/// key argument is borrowed, not owned.
+export fn cc_map_delete_in_place(buf: Bytes, map_l: Int, key_l: Int, cnt_l: Int, new_l: Int, idx_l: Int, pos_l: Int, tmp_l: Int, ip_l: Int, eq_fi: Int, ctx: CompileCtx) -> Unit {
+  cc_map_find_pos(buf, map_l, key_l, cnt_l, idx_l, pos_l, ip_l, eq_fi, ctx)
+  emit_local_get(buf, map_l)
+  emit_local_set(buf, new_l)
+  emit_local_get(buf, pos_l)
+  emit_i64_const(buf, 0)
+  emit_i64_ge_s(buf)
+  emit_if_void(buf)
+  cc_map_push_entry_addr(buf, map_l, pos_l)
+  emit_i64_load(buf, 3, 8)
+  emit_call(buf, ctx.rc_drop_func_idx)
+  cc_map_push_entry_addr(buf, map_l, pos_l)
+  emit_i64_load(buf, 3, 16)
+  emit_call(buf, ctx.rc_drop_func_idx)
+  cc_map_push_entry_addr(buf, map_l, pos_l)
+  emit_i32_const(buf, 8)
+  emit_i32_add(buf)
+  cc_map_push_entry_addr(buf, map_l, pos_l)
+  emit_i32_const(buf, 24)
+  emit_i32_add(buf)
+  emit_local_get(buf, cnt_l)
+  emit_i64_const(buf, 1)
+  emit_i64_sub(buf)
+  emit_local_get(buf, pos_l)
+  emit_i64_sub(buf)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 16)
+  emit_i32_mul(buf)
+  emit_memory_copy(buf)
+  cc_map_store_count_plus(buf, map_l, cnt_l, -1)
+  if ctx.map_build_index_func_idx >= 0 {
+    emit_local_get(buf, ip_l)
+    emit_i64_eqz(buf)
+    emit_i32_eqz(buf)
+    emit_if_void(buf)
+    cc_map_free_index(buf, ip_l, ctx)
+    emit_local_get(buf, cnt_l)
+    emit_i64_const(buf, 1)
+    emit_i64_sub(buf)
+    emit_i64_const(buf, 8)
+    emit_i64_ge_s(buf)
+    emit_if_void(buf)
+    cc_map_rebuild_index(buf, map_l, tmp_l, ctx)
+    emit_else(buf)
+    emit_local_get(buf, map_l)
+    emit_i32_wrap_i64(buf)
+    emit_i32_const(buf, 0)
+    emit_i32_store(buf, 2, 4)
+    emit_end(buf)
+    emit_end(buf)
+  } else {
+    ()
+  }
+  emit_end(buf)
+}
+
+/// A predicate owns its parameter but the array keeps its element: retain
+/// before the call, unconditionally.
+export fn cc_hof_lend(buf: Bytes, elem_l: Int, ctx: CompileCtx) -> Unit {
+  if ctx.enable_rc {
+    emit_rc_dup_guarded(buf, elem_l, ctx.rc_shadow, ctx.rc_dup_func_idx)
+  } else {
+    ()
+  }
+}
+
+/// #664/#678: is `e` statically a known integer that must NOT be run through
+/// `__to_string`'s string-pointer heuristic (which misreads a large int as an
+/// empty string)? An Int literal, a bitwise/shift/mod expression (those
+/// operators are never float or string), unary `~`, a direct call to a known
+/// Int-returning builtin, or a bare ident whose slot was `let`-bound to an Int.
+/// Covers `"\{1 << 40}"` and integer-literal interpolation.
+///
+/// #2406: the ident arm reads the kind EXACTLY (kind 1), not slot_is_intish's
+/// looser "bit 0 set" test. That predicate is also true for kind 3 (Bool),
+/// which shares Int's tagged runtime representation -- right for `==`, wrong
+/// here, where a bool must print "false" and not "0". The `__to_string` chain
+/// does try cc_expr_is_boolish before reaching this, so a kind-3 ident does not
+/// arrive today; reading the kind exactly is what keeps that ordering from
+/// being load-bearing.
+///
+/// Idents were excluded until #2406 on the grounds that a per-slot log is
+/// "unsound because slots are reused across scopes without updating it".
+/// Measured false: the log IS updated -- every `let`/`let mut` site relogs a
+/// reused slot (kind 0 clears it), and int_log_reset_above prunes at branch and
+/// arm boundaries. That is the same soundness argument expr_is_intish has
+/// relied on for its own ident arm since #678; this classifier just never
+/// asked. The consequence of not asking was silent: a `let`-bound integer with
+/// a zero low word rendered as the EMPTY STRING while the identical expression
+/// written inline rendered correctly.
+/// #2424: did the CHECKER say this exact node is an `Int`?
+///
+/// The answer the syntactic classifier below cannot compute. An extra `||`
+/// term, never a replacement: the table can only ADD a classification the
+/// slot log missed, never remove one it made. Both ends fail closed -- the
+/// checker refuses an offset whose typed occurrences disagree, and an offset
+/// that is simply absent classifies nothing -- so this leaves the pre-#2424
+/// behaviour exactly as it was wherever it does not fire.
+///
+/// The key comes from `typed_lowering_arg_offset` (@vibe/compiler/core), shared
+/// with the producer rather than restated here: a projection is keyed by its
+/// FIELD-NAME offset, and a consumer that spelled that rule for itself would
+/// read a key the producer never wrote and classify nothing, silently.
+fn ts_offset_says_int(e: Expr, ctx: CompileCtx) -> Bool {
+  let off = typed_lowering_arg_offset(e)
+  off >= 0 && array_contains_int(ctx.int_render_offsets, off)
+}
+
+/// #2987: did the CHECKER type this render argument as a shape the lowering
+/// below cannot print (an `Option`, `Array`, tuple, `Bytes` or record)?
+///
+/// The lowering knows two representations, a string pointer and an Int, and an
+/// argument of any other shape printed its allocation address with no
+/// diagnostic. Normalize has already expanded every such argument whose shape
+/// it could resolve, so a row here means it could not, and the build is
+/// refused rather than printing the address. Absent a row nothing changes.
+export fn ts_offset_refuses_render(e: Expr, ctx: CompileCtx) -> Bool {
+  let off = typed_lowering_arg_offset(e)
+  off >= 0 && array_contains_int(ctx.int_render_offsets, typed_render_refuse_key(off))
+}
+
+export fn ts_known_int(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  let tag = expr_tag(e)
+  if ts_offset_says_int(e, ctx) {
+    true
+  } else if tag == 0 {
+    true
+  } else if tag == 4 {
+    cc_ident_slot_kind(e, local_names, ctx) == 1
+  } else if tag == 5 {
+    let op = get_ebinop_op(e)
+    if op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>" || op == "%" {
+      // Int by the checker's own rule, whatever the operands are.
+      true
+    } else if op == "+" || op == "-" || op == "*" || op == "/" {
+      // #2422: these four are resolved from the OPERANDS (Int, then Double,
+      // then String for `+`, then a user impl), so excluding them outright --
+      // which this arm did -- left a statically-known Int falling through to
+      // the runtime string-pointer heuristic below. Measured on the committed
+      // seed, so this is long-standing and not new here:
+      //
+      //   let i = 64 << 32   let j = 1
+      //   "\{i + j}"  ->  "x " (garbage bytes)
+      //   "\{i * 1}"  ->  ""   (empty)
+      //
+      // versus "274877906945" / "274877906944" once the operands are read.
+      // Recursing is what makes them known: both leaves are Int, so the
+      // result is, while `1.5 + 2.5` stops at the float leaf and a String
+      // `+` (rewritten to String::concat before codegen anyway) stops at the
+      // string one.
+      ts_known_int(get_ebinop_lhs(e), local_names, ctx) && ts_known_int(get_ebinop_rhs(e), local_names, ctx)
+    } else {
+      false
+    }
+  } else if tag == 6 {
+    // #2344: `~` is Int by construction, and its result is exactly the shape
+    // the runtime string-pointer heuristic misreads -- `~((0 - (64 << 32)) - 1)`
+    // has a zero low word, so `__to_string` rendered it as the empty string.
+    // Unary `-` stays out: it may be a float negation, which the floatish
+    // branch above already routes to the Double formatter.
+    get_eunaryop_op(e) == "~"
+  } else if tag == 8 {
+    // #769 (#664 follow-up): a DIRECT call to a known Int-returning builtin is
+    // statically an Int -- force the integer path. The #664 runtime bound
+    // (`ptr + len <= memory_size`) is load-dependent: once the process has
+    // grown to hundreds of MB (a cold full-closure FS compile), a 61-bit
+    // `Fs::stat_token` hash whose high word lands below memory_size and whose
+    // low word keeps ptr+len in bounds passes the string-pointer heuristic and
+    // is emitted as GARBAGE BYTES (observed: a deterministic ~100MB
+    // persistent-source-groups cache row for one specific file, "invalid
+    // persistent source group cache group row" on re-read). The bound can
+    // never be airtight for 61-bit hashes; static knowledge is.
+    //
+    // #2585 review (Codex P1): the name must not be SHADOWED. This arm used to
+    // answer from the callee SPELLING alone, while `cc_builtin_call_ret_kind`
+    // in this same file has always required that no local and no user `fn`
+    // carry the name -- so with the supported declaration
+    // `fn String::length(s: String) -> String { s }` in scope,
+    // `__to_string(String::length("abc"))` answered `169651208193`. That was
+    // already wrong before the join arms below; what those arms did was
+    // PROPAGATE it into positions that had been right, because with no arm for
+    // a join the runtime heuristic returned the packed string unchanged:
+    // `__to_string(if c { String::length("aaa") } else { .. })` answered "aaa"
+    // and became "188978561025". Guarding here fixes the propagation and the
+    // original together, and it is the same guard, not a second spelling of it.
+    match get_ecall_callee(e) {
+      EIdent(cn, _) => {
+        let bn = canonical_builtin_name(cn)
+        ts_int_returning_builtin_name(bn) && !cc_name_or_alias_shadowed(cn, bn, local_names, ctx)
+      },
+      _ => false
+    }
+  } else if tag == 7 {
+    // #2585: the JOIN shapes. A join is an Int only when EVERY way out of it
+    // is -- the same AND semantics, and the same fail-closed direction, that
+    // cc_expr_is_floatish / _stringish / _boolish in this file have had since
+    // #825/#2432. `ts_known_int` was the one classifier of the four without
+    // them, so an `if` / `match` / block argument fell through to the runtime
+    // string-pointer heuristic below, which returns the operand UNCHANGED when
+    // the value looks like a packed `(ptr << 32) | len`.
+    //
+    // When that fires is NOT a threshold on the value alone. All three of the
+    // #664 bounds emitted below must hold: `abs = raw >>u 32 >= 64`, `abs <
+    // memory.size * 65536`, and `abs + (raw & 0xFFFFFFFF) <= memory.size *
+    // 65536`. Only the first is a property of `n`: a tagged Int is `n << 1`,
+    // so it needs `n >= 2^37`. The other two are LOAD-DEPENDENT, which is what
+    // the #664 comment further down says in its own words -- so `n >= 2^37` is
+    // necessary and not sufficient, and a value large enough to push `abs`
+    // past the module's memory size renders correctly even with the bug
+    // present (measured: 2^60 was right on the pre-fix compiler).
+    //
+    // Measured on stage2 AND on the committed seed, inside that window:
+    //
+    //   __to_string(if flag { 214748364804 } else { 0 })  ->  8 junk bytes
+    //   __to_string(if flag { 137438953472 } else { 0 })  ->  ""  (len 0)
+    //
+    // The junk is whatever the program's own data section holds at `abs`, so
+    // it differs per program -- "  =B at " in one probe, "h:" in the fixture
+    // beside this file -- and is not quotable as a fixed string. No
+    // diagnostic; the wasm-gc lane printed the number. Both arms are Int
+    // LITERALS in the first case, so nothing about the type was ambiguous; the
+    // shape simply had no arm here. The control, correct before and after:
+    // `__to_string(mk(xs))` -> "214748364804", a shape that already had one.
+    // Same class as #2422, which fixed it for `+ - * /` after the identical
+    // symptom (`"\{i + j}" -> "x "`).
+    ts_known_int(get_eif_then(e), local_names, ctx) && ts_known_int(get_eif_else(e), local_names, ctx)
+  } else if tag == 14 {
+    ts_known_int(get_eseq_second(e), local_names, ctx)
+  } else if tag == 9 {
+    ts_binder_known_int(get_elet_name(e), get_elet_val(e), get_elet_body(e), local_names, ctx)
+  } else if tag == 10 {
+    ts_binder_known_int(get_eletrec_name(e), get_eletrec_val(e), get_eletrec_body(e), local_names, ctx)
+  } else if tag == 11 {
+    ts_binder_known_int(get_eletmut_name(e), get_eletmut_val(e), get_eletmut_body(e), local_names, ctx)
+  } else if tag == 16 {
+    ts_arms_known_int(get_match_arms(e), local_names, ctx)
+  } else {
+    false
+  }
+}
+
+/// #2585: a `let` / `let rec` / `let mut` join arm, restricted to the ONE
+/// shape answerable WITHOUT an environment -- cc_expr_is_floatish's #2432
+/// reasoning, kept in the same words because it is the same constraint. The
+/// body is a single identifier and the binder immediately above it binds that
+/// exact name, so no inner scope can intervene and no outer binding of the
+/// same name is reachable; the binder's VALUE therefore answers for the body.
+/// Anything deeper -- `let x = 0; let z = x; z` -- is NOT answerable this way
+/// and stays open, falling back to the runtime heuristic exactly as before.
+/// Closing it needs the binding's TYPE (#2424's channel); the alternative, an
+/// environment carried through the descent, is the design AGENTS.md records
+/// going silently wrong (an outer `let v = 1` read for an inner `v` of another
+/// type).
+fn ts_binder_known_int(name: String, value: Expr, body: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  if expr_tag(body) == 4 && get_eident_name(body) == name {
+    ts_known_int(value, local_names, ctx)
+  } else {
+    false
+  }
+}
+
+/// #2585: every arm of a `match` in Int-operand position. AND semantics like
+/// the `if` arm, and `false` for an empty match rather than a vacuous `true`.
+///
+/// An arm whose pattern BINDS a name is not classified. `ts_known_int`'s
+/// identifier arm resolves through `local_names`, which does not yet carry the
+/// arm's own binders at classification time -- so `match o { Some(v) => v, .. }`
+/// would judge the arm's `v` against an OUTER `v` wherever one exists, and
+/// answer for the wrong binding. Refusing such an arm costs a fallback to the
+/// runtime heuristic, which is exactly today's behaviour and so cannot regress;
+/// answering it from the wrong binding would be the silently-wrong failure this
+/// change exists to remove. (The floatish / stringish / boolish siblings do not
+/// draw this distinction -- that is a pre-existing exposure, not one widened
+/// here.)
+fn ts_arms_known_int(arms: Array[(Pat, Expr)], local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  let n = Array::length(arms)
+  if n == 0 {
+    false
+  } else {
+    let mut all = true
+    let mut i = 0
+    while i < n {
+      let arm = Array::get(arms, i)
+      if ts_pat_binds_nothing(get_arm_pat(arm)) && ts_known_int(get_arm_body(arm), local_names, ctx) {
+        ()
+      } else {
+        all = false
+      }
+      i = i + 1
+    }
+    all
+  }
+}

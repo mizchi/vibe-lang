@@ -1,0 +1,1655 @@
+// lib/@vibe/compiler/codegen/wasi/linked_compile.vibe — lc rename sleep calls.
+
+import @vibe/compiler/core {
+  Expr,
+  Pat,
+  Stmt,
+  TypeExpr,
+  apply_top_level_fn_alias_renames,
+  bsearch_leftmost,
+  builtin_iterator_namespace_from_marker,
+  builtin_iterator_serialized_boundary_markers,
+  builtin_registry,
+  builtin_shadow_entry_name,
+  builtin_shadow_source_name,
+  bytebuf_length,
+  bytebuf_new,
+  bytebuf_push,
+  bytebuf_push_buf,
+  bytebuf_push_section,
+  bytebuf_push_vec_header,
+  bytebuf_to_bytes,
+  collect_top_level_fn_alias_renames,
+  dce_keep_flags,
+  dce_stmts,
+  exception_effect_labels_equal,
+  executable_export_kept,
+  executable_export_kept_bytes,
+  executable_exports_stripped,
+  expr_child_at,
+  expr_children_pop,
+  expr_children_push,
+  expr_children_top,
+  fold_const_bool_params,
+  is_exception_effect_name,
+  is_runtime_scheduled_effect,
+  leb128_encode_s64,
+  leb128_encode_u32,
+  namespace_private_name,
+  namespace_rename_originals_reset,
+  rename_builtin_shadow_defs,
+  rewrite_import_alias_expr,
+  rewrite_top_level_fn_alias_refs,
+  sorted_names_of,
+  verify_lane_builtins,
+  wat_callee_names
+}
+
+import @vibe/ast {
+  TypeExpr::is_array_of_int, builtin_ref
+}
+
+import @vibe/core {
+  array_empty, struct MutMap, struct MutSet
+}
+
+import @vibe/compiler/normalize {
+  ModuleTraitFacts,
+  collect_explicit_derived_op_names,
+  collect_trivial_wrapper_names,
+  desugar_handled_host_calls,
+  desugar_inspect_calls,
+  desugar_trait_dicts_module,
+  desugar_trait_dicts_module_with_facts,
+  desugar_trait_dicts_with_typed_eq,
+  eq_deferred_requests_list,
+  eq_deferred_reset,
+  eq_invisible_nominals_list,
+  eq_invisible_nominals_reset,
+  eq_mint_deferred_into,
+  eq_synthesis_requests_list,
+  eq_typed_refusals_list,
+  hoisted_lambda_owner_key,
+  hoisted_lambda_owner_of_stmt,
+  lift_match_scrutinees,
+  module_trait_facts_none,
+  program_performs_host_operation,
+  unbox_tuple_loop_params,
+  uniquify_shadowed_bindings_fresh
+}
+
+import @vibe/compiler/perceus {
+  PerceusAction,
+  borrow_ret_link_parts,
+  borrow_ret_shadow_mask,
+  build_perceus_plan,
+  build_perceus_plan_pinned_split,
+  build_perceus_plan_with_params,
+  compute_borrow_returning_names,
+  compute_heap_returning,
+  compute_passthrough_returning,
+  compute_scalar_returning_names,
+  elaborate_heap_params,
+  fn_result_is_immediate,
+  pa_is_alias_dup,
+  pa_is_consume_mark,
+  pa_is_drop,
+  pa_is_dup,
+  pa_is_path_drop,
+  pa_is_reuse_token,
+  param_is_heap_in_body,
+  perceus_exit_rows,
+  perceus_field_release_rows,
+  perceus_pin_tables,
+  perceus_store_dup_rows,
+  perceus_truncate_rows
+}
+
+import @vibe/compiler/codegen/builtin_bodies {
+  array_capacity_error_message,
+  bytes_capacity_error_message,
+  div_zero_at_fragment,
+  div_zero_colon_fragment,
+  div_zero_div_message,
+  div_zero_rem_message,
+  gen_arr_concat_body,
+  gen_arr_get_body,
+  gen_arr_len_body,
+  gen_arr_new_body,
+  gen_arr_push_all_body,
+  gen_arr_push_body,
+  gen_arr_set_body,
+  gen_arr_slice_body,
+  gen_arr_truncate_body,
+  gen_arr_with_capacity_body,
+  gen_array_value_copy_body,
+  gen_bytes_append_body,
+  gen_bytes_blit_linear_body,
+  gen_bytes_compare_body,
+  gen_bytes_concat_body,
+  gen_bytes_count_byte_body,
+  gen_bytes_from_array_body,
+  gen_bytes_get_body,
+  gen_bytes_index_of_byte_body,
+  gen_bytes_index_of_bytes_body,
+  gen_bytes_last_index_of_byte_body,
+  gen_bytes_len_body,
+  gen_bytes_new_body,
+  gen_bytes_push_body,
+  gen_bytes_set_body,
+  gen_bytes_slice_body,
+  gen_bytes_to_array_body,
+  gen_bytes_with_capacity_body,
+  gen_compact_fingerprint_hash_body,
+  gen_div_zero_abort_body,
+  gen_eq_body,
+  gen_generic_add_body,
+  gen_generic_rel_diff_body,
+  gen_int_clz_body,
+  gen_int_ctz_body,
+  gen_int_popcount_body,
+  gen_map_build_index_body,
+  gen_map_cap_body,
+  gen_map_hash_body,
+  gen_map_index_insert_body,
+  gen_map_probe_index_body,
+  gen_oob_abort_body,
+  gen_print_i64_raw_body,
+  gen_rc_alloc_body,
+  gen_rc_drop_body,
+  gen_rc_dup_body,
+  gen_region_arr_new_body,
+  gen_region_bytes_new_body,
+  gen_simd_scan_alnum_body,
+  gen_simd_scan_line_end_body,
+  gen_simd_scan_string_special_body,
+  gen_simd_skip_ws_body,
+  gen_sources_proper_body,
+  gen_sources_stub_body,
+  gen_str_char_code_at_body,
+  gen_str_concat_body,
+  gen_str_eq_body,
+  gen_str_from_char_code_body,
+  gen_str_len_body,
+  gen_str_lex_diff_body,
+  gen_str_substring_body,
+  gen_string_contains_body,
+  gen_string_ends_with_body,
+  gen_string_index_of_body,
+  gen_string_join_body,
+  gen_string_last_index_of_body,
+  gen_string_split_body,
+  gen_string_starts_with_body,
+  gen_string_trim_body,
+  static_arr_len_body,
+  static_double_to_int_body,
+  static_fs_stub_body,
+  static_fs_write_bytes_stub_body,
+  static_identity_body,
+  static_int_to_double_body,
+  static_print_i64_body,
+  static_print_str_body,
+  static_str_eq_body,
+  static_str_len_body
+}
+
+import @vibe/compiler/codegen/reloc {
+  blind_kind_fn_value, blind_kind_table_slot_i32, blind_owner_lambda_index, blind_owner_pending
+}
+
+import @vibe/compiler/codegen/common_analysis {
+  bmask_has,
+  borrow_fixpoint_link_parts,
+  borrow_round0_link,
+  collect_free_vars,
+  collect_strings_stmts,
+  compute_borrow_disqualifiers,
+  compute_borrow_param_local_masks,
+  compute_borrow_param_user_fns,
+  compute_borrow_param_user_fns_round0,
+  compute_float_returning_names,
+  compute_may_return_view_fns,
+  count_lambda_sites_expr,
+  emit_closure_call_tail,
+  emit_closure_resolve,
+  emit_i64_extend_i32_u,
+  is_mut_captured_in,
+  may_return_view_link_parts,
+  md_borrow_mask_of,
+  md_builtin_borrow_mask,
+  mrv_declared_fn_names,
+  scope_tail_proj_root,
+  stmts_contain_exceptions,
+  unique_typed_lowering_offsets_in_stmts,
+  zero_alloc_check
+}
+
+import @vibe/compiler/codegen/common_base {
+  CodegenBodyCache,
+  CompileCtx,
+  CovState,
+  CtorTable,
+  DbgProv,
+  FuncTable,
+  LambdaTable,
+  LineMapState,
+  ModuleSplit,
+  StrTable,
+  agg_info_of_type_expr,
+  append_double_runtime,
+  append_hidden_attempt_constructors,
+  append_string_views_runtime,
+  await_poll_pass,
+  bcc_guard_synth_matches,
+  bcc_int_lists_equal,
+  bcc_layout_fp_bools,
+  bcc_layout_fp_ints,
+  bcc_layout_fp_string_matrix,
+  bcc_layout_fp_strings,
+  bcc_layout_fp_strings_upto,
+  bcc_string_lists_equal,
+  codegen_body_cache_discard,
+  codegen_body_cache_filter_src_below,
+  codegen_body_cache_find_at,
+  codegen_body_cache_find_named_at,
+  codegen_body_cache_merge,
+  codegen_body_cache_name_index,
+  codegen_body_cache_new,
+  codegen_body_cache_record,
+  codegen_body_cache_replay,
+  codegen_body_cache_slot_index,
+  collect_optional_perform_source_names,
+  compile_inline_wat_array_params,
+  compute_agg_returning,
+  ctor_sorted_index,
+  desugar_trait_dicts,
+  emit_binop_op,
+  emit_i32_eq,
+  emit_i32_eqz,
+  emit_i32_ge_u,
+  emit_i32_mul,
+  emit_i32_ne,
+  emit_i32_sub,
+  emit_i64_load,
+  emit_rc_dup_guarded,
+  emit_str_ref,
+  empty_dbg_prov,
+  erase_railway_origin_markers,
+  evidence_dict_pass_with_roots,
+  evidence_module_facts,
+  expr_tag,
+  fn_type_param_types,
+  forin_discard_pass,
+  get_arm_body,
+  get_arm_pat,
+  get_ebinop_op,
+  get_efn_body,
+  get_eif_cond,
+  get_eif_else,
+  get_eif_then,
+  get_elet_body,
+  get_elet_name,
+  get_elet_val,
+  get_slet_expr,
+  get_slet_name,
+  get_slet_type,
+  is_efn,
+  is_eident,
+  is_etuple,
+  is_pbind,
+  is_pbool,
+  is_pctor,
+  is_pint,
+  is_pstring,
+  is_ptuple,
+  is_pwild,
+  is_slet,
+  linemap_disabled,
+  linemap_flush_fn,
+  lookup_ctor,
+  lower_optional_performs,
+  lower_optional_performs_with_source_names,
+  module_split_none,
+  optional_perform_artifact_resolution,
+  rc_exit_push,
+  rc_shadow_base,
+  rc_shadow_heap_start,
+  region_exn_tag_linear,
+  region_max_depth,
+  region_saves_base_of,
+  resolve_func,
+  resolve_local,
+  rewrite_self_tail_calls,
+  source_declares_constructor,
+  str_table_index_of,
+  str_table_new,
+  suspend_cps_pass,
+  suspend_prepass_splits,
+  ty_head_names_formal,
+  unique_name_flags,
+  wrap_entry_exception_boundary,
+  wrap_entry_host_provider
+}
+
+import @vibe/compiler/codegen/common_extractors {
+  array_contains_str,
+  build_newline_offsets,
+  collect_int_div_sites,
+  emit_assignop_op,
+  emit_memory_copy,
+  find_catchall_idx,
+  get_earray_elems,
+  get_eassign_body,
+  get_eassign_name,
+  get_eassign_val,
+  get_eassignop_body,
+  get_eassignop_name,
+  get_eassignop_op,
+  get_eassignop_val,
+  get_ebinop_lhs,
+  get_ebinop_rhs,
+  get_ebool_value,
+  get_ecall_args,
+  get_ecall_callee,
+  get_efloat_value,
+  get_efn_params,
+  get_efn_tparams,
+  get_eforin_body,
+  get_eforin_iter,
+  get_eforin_name,
+  get_eident_name,
+  get_eint_value,
+  get_eletmut_body,
+  get_eletmut_name,
+  get_eletmut_val,
+  get_eletrec_body,
+  get_eletrec_name,
+  get_eletrec_val,
+  get_eseq_first,
+  get_eseq_second,
+  get_estring_value,
+  get_etuple_elems,
+  get_eunaryop_expr,
+  get_eunaryop_op,
+  get_ewhile_body,
+  get_ewhile_cond,
+  get_match_arms,
+  get_match_scrutinee,
+  get_pbind_name,
+  get_pbool_value,
+  get_pctor_args,
+  get_pctor_name,
+  get_pint_value,
+  get_pstring_value,
+  get_ptuple_pats,
+  get_slet_export
+}
+
+import @vibe/compiler/codegen/expr {
+  cc_host_future_named_raw_prefix, cc_host_stream_named_raw_prefix, cl_own_return_stmts, compile_expr
+}
+
+import @vibe/compiler/codegen/wasm_emit {
+  emit_block_i64,
+  emit_block_void,
+  emit_br,
+  emit_br_if,
+  emit_call,
+  emit_call_indirect,
+  emit_code_section,
+  emit_code_section_with_locals,
+  emit_data_section,
+  emit_data_section_multi,
+  emit_drop,
+  emit_element_section_active,
+  emit_element_section_active_runs,
+  emit_else,
+  emit_end,
+  emit_export_section,
+  emit_export_section_multi,
+  emit_exports_full,
+  emit_exports_with_memory,
+  emit_f64_add,
+  emit_f64_const_bits,
+  emit_f64_convert_i64_s,
+  emit_f64_div,
+  emit_f64_eq,
+  emit_f64_ge,
+  emit_f64_gt,
+  emit_f64_le,
+  emit_f64_lt,
+  emit_f64_mul,
+  emit_f64_ne,
+  emit_f64_neg,
+  emit_f64_reinterpret_i64,
+  emit_f64_sub,
+  emit_func_type_raw,
+  emit_function_name_section,
+  emit_function_section,
+  emit_global_get,
+  emit_global_section_i32_mut,
+  emit_global_set,
+  emit_header,
+  emit_heap_memory_grow_check,
+  emit_i32_add,
+  emit_i32_const,
+  emit_i32_load,
+  emit_i32_load8_u,
+  emit_i32_store,
+  emit_i32_store8,
+  emit_i32_wrap_i64,
+  emit_i64_add,
+  emit_i64_and,
+  emit_i64_const,
+  emit_i64_div_s,
+  emit_i64_eq,
+  emit_i64_eqz,
+  emit_i64_extend_i32_s,
+  emit_i64_ge_s,
+  emit_i64_gt_s,
+  emit_i64_le_s,
+  emit_i64_lt_s,
+  emit_i64_mul,
+  emit_i64_ne,
+  emit_i64_or,
+  emit_i64_reinterpret_f64,
+  emit_i64_rem_s,
+  emit_i64_shl,
+  emit_i64_shr_s,
+  emit_i64_store,
+  emit_i64_sub,
+  emit_i64_trunc_f64_s,
+  emit_i64_xor,
+  emit_if_i64,
+  emit_if_void,
+  emit_import_section_func,
+  emit_local_get,
+  emit_local_set,
+  emit_local_tee,
+  emit_loop_void,
+  emit_memory_section,
+  emit_name,
+  emit_return,
+  emit_table_section_funcref,
+  emit_type_section,
+  emit_type_section_multi,
+  emit_vibe_abi_custom_section,
+  string_to_data
+}
+
+import ./linked_diagnostics.vibe {
+  seed_builtin_diagnostic_strings
+}
+
+import ./linked_helpers.vibe {
+  collect_used_builtin_names, stmts_use_builtin
+}
+
+//# Functions
+
+let wasm_page_size: Int = 65536
+
+// Fixed names below live only inside compiler-owned helper functions. Keeping
+// the lint waiver in the binder expression documents that no user expression
+// is placed under these binders.
+export fn lc_fixed_synthetic_name(name: String, _review_lint: String) -> String {
+  name
+}
+
+export fn lc_fresh_int_array() -> Array[Int] {
+  ArrayBuilder::freeze(ArrayBuilder::new())
+}
+
+export fn lc_fresh_bool_array() -> Array[Bool] {
+  ArrayBuilder::freeze(ArrayBuilder::new())
+}
+
+export fn lc_fresh_bytes_array() -> Array[Bytes] {
+  ArrayBuilder::freeze(ArrayBuilder::new())
+}
+
+/// #2388 (Codex round on #2623): run `oracle_apply_pass` on one module and
+/// record the keys it SYNTHESIZED into `synth_keys`.
+///
+/// Every pass, not just the trait-dict entry. `synth_keys` used to hold only
+/// what `desugar_trait_dicts_module` returned, so a helper minted by a LATER
+/// pass -- pass 7's `__stdin_provider_*_surface` is the measured case, appended
+/// to every module that references a stdin surface -- was never offered to the
+/// fold. The link then kept one copy per module while the keyed comparison
+/// counted them as ordinary `copies` alongside benign repeated markers, so
+/// `missing=0 content=0` could hold over a linked program that still carried
+/// duplicate definitions. A gate that cannot see its own blind spot reports
+/// the blind spot as success.
+///
+/// The diff is over the key SET rather than the tail, because a pass may
+/// insert rather than append (#2620 places a hoisted lambda next to its own
+/// declaration), and a tail diff would then attribute the wrong keys.
+/// #2575 item 2: the inputs the prelude's passes take BESIDES the statements.
+///
+/// Two passes read them, and the pass dispatch used to hard-code an empty
+/// value for both -- which is fine for a measurement that compares
+/// declarations and NOT for a production per-module driver:
+///
+///   pass 8  `lc_extract_inline_wasm(stmts, iw_names, iw_wats)` -- production
+///           COLLECTS the extracted module into the caller's arrays and hands
+///           them to codegen. Discarding them into fresh arrays loses every
+///           `inline_wasm` body.
+///   pass 9  `lc_waiter_hooks_available(stmts, linked_imports)` -- whether any
+///           linked import provides the waiter hooks decides how
+///           `await_poll_pass` lowers. Empty answers "no" regardless.
+///
+/// `prelude_env_none()` is the honest value where there is nothing to pass:
+/// the RC production lane hands `compile_wasi_module_linked_impl_*` an empty
+/// `linked_imports` anyway, so for THAT lane empty is production-faithful, and
+/// the inline-wasm arrays are empty for any program without `inline_wasm`.
+export struct PreludeEnv {
+  linked_imports: Array[(String, String, Int, Int)];
+  iw_names: Array[String];
+  iw_wats: Array[String];
+  // #2647 Codex round 3: the WHOLE-PROGRAM facts three more passes read, which
+  // a module's partition cannot answer for itself. `facts_known` says whether
+  // the caller supplied them; false means "compute locally", which is what the
+  // oracle lanes want and what a production caller must never take.
+  //
+  //   pass 2  `optional_perform_artifact_resolution` grants ambient authority
+  //           when the program contains a test-like block. A module without
+  //           the test block lowers `perform?` in an imported helper to
+  //           NotGranted where the whole program grants it -- an
+  //           AUTHORIZATION difference decided by how the program was
+  //           partitioned, which ADR-0084/0088 forbid.
+  //   pass 6  `rewrite_top_level_fn_alias_refs` needs the alias map; see
+  //           `collect_top_level_fn_alias_renames`.
+  //   pass 9  `await_poll_pass` takes two predicates -- does the program call
+  //           `host_future_*`, and do linked imports or local defs supply the
+  //           waiter hooks -- BOTH scans of the whole program.
+  facts_known: Bool;
+  optional_resolution: Array[(String, String)];
+  optional_source_names: Array[String];
+  alias_renames: Array[(String, String)];
+  calls_host_future: Bool;
+  waiter_hooks: Bool;
+  aw_note: String;
+  // #2647 Codex rounds 6-7: the two whole-program facts the TRAIT-DICT pass
+  // reads and a partition cannot supply. See `ModuleTraitFacts`.
+  trait_facts: ModuleTraitFacts
+}
+
+export fn lc_str_array_has(xs: Array[String], n: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(xs) && !found {
+    if Array::get(xs, i) == n {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// #2633: `<count>` when the two sets agree, else
+/// `<whole>/<union>:-<missing>+<extra>` naming the first of each difference.
+/// Set equality and not counts: two sets of the same size can still differ, and
+/// a comparison that could not tell them apart would report agreement for the
+/// one case this exists to detect.
+export fn lc_set_cmp(whole: Array[String], union: Array[String]) -> String {
+  // EVERY differing name, not the first of each side. A set difference reported
+  // as one name cannot be attributed to a cause, and the point of driving these
+  // to zero is knowing what the missing ones have in common.
+  let mut missing = ""
+  let mut i = 0
+  while i < Array::length(whole) {
+    let n = Array::get(whole, i)
+    if lc_str_array_has(union, n) {
+      ()
+    } else if missing == "" {
+      missing = n
+    } else {
+      missing = String::concat(missing, String::concat(" ", n))
+    }
+    i = i + 1
+  }
+  let mut extra = ""
+  let mut j = 0
+  while j < Array::length(union) {
+    let n = Array::get(union, j)
+    if lc_str_array_has(whole, n) {
+      ()
+    } else if extra == "" {
+      extra = n
+    } else {
+      extra = String::concat(extra, String::concat(" ", n))
+    }
+    j = j + 1
+  }
+  if missing == "" && extra == "" && Array::length(whole) == Array::length(union) {
+    Int::to_string(Array::length(whole))
+  } else {
+    String::concat(String::concat(Int::to_string(Array::length(whole)), String::concat("/", Int::to_string(Array::length(union)))), String::concat(String::concat(":-", missing), String::concat("+", extra)))
+  }
+}
+
+/// #2575 item 4: membership over a name set, as a map, so the comparison
+/// below is linear. `lc_str_array_has` is a scan, and these sets are 2700
+/// names each on the compiler's own closure.
+fn lc_name_index(names: Array[String]) -> MutMap[String, Int] {
+  let idx: MutMap[String, Int] = MutMap::new_string()
+  let mut i = 0
+  while i < Array::length(names) {
+    MutMap::set(idx, Array::get(names, i), 1)
+    i = i + 1
+  }
+  idx
+}
+
+/// #2575 item 4: `<count>` when the two sets agree, else
+/// `<whole>/<union>:-<missing count>:<first>+<extra count>:<first>`.
+///
+/// `lc_set_cmp`'s shape with both differences COUNTED. On the compiler's own
+/// closure the sizes alone read `2705/2626`, which invites subtraction -- and
+/// 79 is the NET, not the number of names each lane has that the other does
+/// not (167 and 88). The two directions mean opposite things here: a missing
+/// name is a module being conservative, an extra one is a module qualifying a
+/// function the whole program disqualified. A report that lets them cancel
+/// hides the unsound one behind the one that is merely slow.
+export fn lc_set_cmp_counted(whole: Array[String], union: Array[String]) -> String {
+  let whole_idx = lc_name_index(whole)
+  let union_idx = lc_name_index(union)
+  let mut missing = 0
+  let mut first_missing = ""
+  let mut i = 0
+  while i < Array::length(whole) {
+    let n = Array::get(whole, i)
+    if MutMap::has(union_idx, n) {
+      ()
+    } else {
+      missing = missing + 1
+      if first_missing == "" {
+        first_missing = n
+      } else {
+        ()
+      }
+    }
+    i = i + 1
+  }
+  let mut extra = 0
+  let mut first_extra = ""
+  let mut j = 0
+  while j < Array::length(union) {
+    let n = Array::get(union, j)
+    if MutMap::has(whole_idx, n) {
+      ()
+    } else {
+      extra = extra + 1
+      if first_extra == "" {
+        first_extra = n
+      } else {
+        ()
+      }
+    }
+    j = j + 1
+  }
+  if missing == 0 && extra == 0 && Array::length(whole) == Array::length(union) {
+    Int::to_string(Array::length(whole))
+  } else {
+    String::concat(String::concat(Int::to_string(Array::length(whole)), String::concat("/", Int::to_string(Array::length(union)))), String::concat(String::concat(String::concat(":-", Int::to_string(missing)), String::concat(":", first_missing)), String::concat(String::concat("+", Int::to_string(extra)), String::concat(":", first_extra))))
+  }
+}
+
+/// #2638: the first name whose OCCURRENCE COUNT differs between two lists,
+/// as `<name>:<whole>/<link>`, or "" when the two are the same multiset.
+///
+/// `lc_set_cmp_counted` compares MEMBERSHIP, so a name present in both lists a
+/// different number of times reads as `-0:+0:` with the sizes apart -- which
+/// is exactly what the link produces, because a per-module run synthesizes a
+/// program-level helper once per module that needs it and the whole-program
+/// run emits it once. Naming the multiset difference is what turns that gap
+/// from an unexplained three into a fact.
+export fn lc_multiset_first_diff(whole: Array[String], link: Array[String]) -> String {
+  let seen: MutMap[String, Int] = MutMap::new_string()
+  let mut out = ""
+  let mut i = 0
+  while i < Array::length(whole) {
+    let n = Array::get(whole, i)
+    if MutMap::has(seen, n) {
+      ()
+    } else {
+      MutMap::set(seen, n, 1)
+      let wn = lc_count_occurrences(whole, n)
+      let ln = lc_count_occurrences(link, n)
+      if wn != ln && out == "" {
+        out = String::concat(n, String::concat(":", String::concat(Int::to_string(wn), String::concat("/", Int::to_string(ln)))))
+      } else {
+        ()
+      }
+    }
+    i = i + 1
+  }
+  let mut j = 0
+  while j < Array::length(link) {
+    let n = Array::get(link, j)
+    if MutMap::has(seen, n) {
+      ()
+    } else {
+      MutMap::set(seen, n, 1)
+      let wn = lc_count_occurrences(whole, n)
+      let ln = lc_count_occurrences(link, n)
+      if wn != ln && out == "" {
+        out = String::concat(n, String::concat(":", String::concat(Int::to_string(wn), String::concat("/", Int::to_string(ln)))))
+      } else {
+        ()
+      }
+    }
+    j = j + 1
+  }
+  out
+}
+
+fn lc_count_occurrences(xs: Array[String], n: String) -> Int {
+  let mut c = 0
+  let mut i = 0
+  while i < Array::length(xs) {
+    if Array::get(xs, i) == n {
+      c = c + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  c
+}
+
+/// #2575 item 4: the borrow analysis answers with a NAME and a per-position
+/// MASK, and the mask is what decides the ABI. Comparing names alone reports
+/// agreement for a function both lanes list under different masks, which is
+/// exactly the disagreement that matters, so pair them.
+export fn lc_name_mask_pairs(names: Array[String], masks: Array[Int]) -> Array[String] {
+  let out = lc_fresh_string_array()
+  let mut i = 0
+  while i < Array::length(names) {
+    let m = if i < Array::length(masks) {
+      Int::to_string(Array::get(masks, i))
+    } else {
+      // The analysis returns the masks aligned to the sorted names, so a short
+      // list is a contract break rather than a missing entry. Reported instead
+      // of defaulted to 0: a 0 here reads as "borrows nothing", which is a
+      // real answer this lane would then be inventing.
+      "?"
+    }
+    Array::push(out, String::concat(Array::get(names, i), String::concat("#", m)))
+    i = i + 1
+  }
+  out
+}
+
+export fn lc_fresh_string_array() -> Array[String] {
+  ArrayBuilder::freeze(ArrayBuilder::new())
+}
+
+export fn lc_fresh_expr_array() -> Array[Expr] {
+  ArrayBuilder::freeze(ArrayBuilder::new())
+}
+
+fn lc_fresh_type_expr_array() -> Array[TypeExpr] {
+  ArrayBuilder::freeze(ArrayBuilder::new())
+}
+
+/// #644: an Int array of exactly `n` entries, all initialized to `fill`, so
+/// callers can index-assign (`Array::set`) into it before the real value at
+/// each index is known (linemap_hdrlen_by_bi below: one entry per user
+/// function, filled in `ci` order as each function's locals header is
+/// assembled).
+/// #2669 slice 2: LEB128, signed, at `p` in `body`. `i64.const` and
+/// `i32.const` immediates are both signed; reading one unsigned would agree
+/// exactly where small slot numbers live and disagree everywhere a check
+/// would matter, so the decode has to sign-extend.
+fn lc_read_sleb(body: Bytes, p: Int) -> Int with Exception {
+  let n = Bytes::length(body)
+  let mut acc = 0
+  let mut shift = 0
+  let mut i = p
+  let mut last = 0
+  let mut done = false
+  while !done {
+    if i >= n {
+      throw("blind reloc: constant runs past the end of the body")
+    } else {
+      ()
+    }
+    let byte = Bytes::get(body, i)
+    last = byte
+    acc = acc|((byte&127)<<shift)
+    shift = shift + 7
+    i = i + 1
+    if (byte&128) == 0 {
+      done = true
+    } else {
+      ()
+    }
+  }
+  if shift < 64 && (last&64) != 0 {
+    acc|(0 - (1<<shift))
+  } else {
+    acc
+  }
+}
+
+/// #2669 slice 2: every recorded reference must name the constant it claims.
+///
+/// See the call site for why this is not optional. `owners` are body ids -- a
+/// user function by index, a lambda as `blind_owner_of_lambda` -- and the
+/// offsets are relative to that body's instruction stream, which is what
+/// `bodies` holds (the locals header is prepended later, at code-section
+/// assembly).
+export fn lc_verify_blind_relocs(bodies: Array[Bytes], num_generated: Int, lambda_ci_base: Int, owners: Array[Int], offsets: Array[Int], kinds: Array[Int], syms: Array[Int]) -> Unit with Exception {
+  let n = Array::length(owners)
+  let mut k = 0
+  while k < n {
+    let owner = Array::get(owners, k)
+    // A record still owned by `pending` means a lambda body was compiled and
+    // its planned index never arrived, so the reference belongs to no body at
+    // all. Louder than leaving it to be misattributed.
+    if owner == blind_owner_pending {
+      throw("blind reloc: a recorded reference was never assigned an owner (a lambda body compiled without taking its planned index)")
+    } else {
+      ()
+    }
+    let ci = if owner >= 0 {
+      num_generated + owner
+    } else {
+      lambda_ci_base + blind_owner_lambda_index(owner)
+    }
+    // Late DCE replaces an unused GENERATED helper's body with a one-byte
+    // stub, which would leave a record naming it pointing into a body that no
+    // longer exists. None can: an owner is a user function or a lambda, and
+    // both map above num_generated. Checked, not assumed -- the two sites are
+    // far apart and only one of them would have to move.
+    if ci < num_generated || ci >= Array::length(bodies) {
+      throw(String::concat("blind reloc: owner maps outside the user code range: owner ", String::concat(__to_string(owner), String::concat(" -> code index ", __to_string(ci)))))
+    } else {
+      ()
+    }
+    let body = Array::get(bodies, ci)
+    let off = Array::get(offsets, k)
+    if off < 0 || off >= Bytes::length(body) {
+      throw(String::concat("blind reloc: offset outside the body: code index ", String::concat(__to_string(ci), String::concat(" offset ", __to_string(off)))))
+    } else {
+      ()
+    }
+    let kind = Array::get(kinds, k)
+    let sym = Array::get(syms, k)
+    let opcode = Bytes::get(body, off)
+    let want_op = if kind == blind_kind_fn_value {
+      66
+    } else if kind == blind_kind_table_slot_i32 {
+      65
+    } else {
+      throw(String::concat("blind reloc: unknown kind ", __to_string(kind)))
+    }
+    let want_val = if kind == blind_kind_fn_value {
+      (sym<<2)|2
+    } else {
+      sym
+    }
+    if opcode != want_op {
+      throw(String::concat("blind reloc: expected opcode ", String::concat(__to_string(want_op), String::concat(" at code index ", String::concat(__to_string(ci), String::concat(" offset ", String::concat(__to_string(off), String::concat(", found ", __to_string(opcode)))))))))
+    } else {
+      ()
+    }
+    let got = lc_read_sleb(body, off + 1)
+    if got != want_val {
+      throw(String::concat("blind reloc: constant at code index ", String::concat(__to_string(ci), String::concat(" offset ", String::concat(__to_string(off), String::concat(" decodes to ", String::concat(__to_string(got), String::concat(", recorded ", __to_string(want_val)))))))))
+    } else {
+      ()
+    }
+    k = k + 1
+  }
+}
+
+export fn lc_fresh_int_array_of_len(n: Int, fill: Int) -> Array[Int] {
+  let arr = lc_fresh_int_array()
+  let mut i = 0
+  while i < n {
+    Array::push(arr, fill)
+    i = i + 1
+  }
+  arr
+}
+
+/// #644: append a little-endian 4-byte encoding of `v` to `buf`. Used by the
+/// `vibe.linemap` custom section (see below), one of a family of ad hoc
+/// raw-int encodings this file already uses for debug sections (compare
+/// `vibe.dbgargs`'s address fields a few hundred lines up).
+fn bytebuf_push_i32le(buf: Bytes, v: Int) -> Unit {
+  bytebuf_push(buf, v&255)
+  bytebuf_push(buf, (v>>8)&255)
+  bytebuf_push(buf, (v>>16)&255)
+  bytebuf_push(buf, (v>>24)&255)
+}
+
+/// #1085: the positions a BUILTIN callee borrows (bit 0: arg0, bit 1: arg1 --
+/// #2345's `Bytes::index_of_bytes` / `Bytes::compare` read both operands),
+/// narrowed by a source definition of the same name. `bfns` / `bmasks` are the
+/// program's borrow table, which keeps an authoritative row for every source
+/// definition of a borrowing builtin's name (#3128): a call that resolves to
+/// that definition borrows only what the definition borrows. A user function
+/// with any other name stays 0 here, as before -- this walk counts its
+/// arguments as consumed, the conservative direction.
+fn lc_builtin_borrow_bits(f: String, bfns: Array[String], bmasks: Array[Int]) -> Int {
+  let builtin = md_builtin_borrow_mask(f)
+  if builtin == 0 {
+    0
+  } else {
+    builtin&md_borrow_mask_of(f, bfns, bmasks)
+  }
+}
+
+/// #1085: does `name` have a consuming occurrence OUTSIDE any loop body?
+/// The #725 single unconditional epilogue drop for a loop-consumed param
+/// is only sound when EVERY consuming occurrence is a loop-borrow site
+/// (per-iteration protective dup makes those net-zero, so the param's own
+/// reference always survives to the epilogue). A consuming occurrence
+/// outside a loop (e.g. `Array::set(buf, i, v)` in a sibling branch of
+/// the loop) transfers the own reference on the paths that execute it,
+/// and the unconditional drop then over-releases the stored value —
+/// use-after-free (issue #1085's minimal repro; the else arm does not
+/// even need to run). Occurrence rules mirror consume_count
+/// (common_analysis/perceus): borrow-arg0 idents, match/handle
+/// scrutinee idents, and call-callee idents do not consume. Loop bodies
+/// (EWhile / ELoop / EForIn) are skipped — occurrences there are the
+/// loop-borrow sites themselves. Branches use OR (existence), which
+/// over-approximates toward suppressing the epilogue drop: the loop-only
+/// path then leaks one reference, the safe direction.
+export fn lc_has_nonloop_consume(e: Expr, name: String, bfns: Array[String], bmasks: Array[Int]) -> Bool {
+  match e {
+    EIdent(n, _) => n == name,
+    ETuple(items) => lc_hnc_any(items, name, bfns, bmasks),
+    EArray(items) => lc_hnc_any(items, name, bfns, bmasks),
+    ERecord(_, fields, _) => {
+      let mut found = false
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, v) = Array::get(fields, i)
+        if lc_has_nonloop_consume(v, name, bfns, bmasks) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EMap(fields) => {
+      let mut found = false
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, v) = Array::get(fields, i)
+        if lc_has_nonloop_consume(v, name, bfns, bmasks) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EIf(c, t, el) => lc_has_nonloop_consume(c, name, bfns, bmasks) || lc_has_nonloop_consume(t, name, bfns, bmasks) || lc_has_nonloop_consume(el, name, bfns, bmasks),
+    ELet(_, v, b, _) => lc_has_nonloop_consume(v, name, bfns, bmasks) || lc_has_nonloop_consume(b, name, bfns, bmasks),
+    ELetRec(_, v, b) => lc_has_nonloop_consume(v, name, bfns, bmasks) || lc_has_nonloop_consume(b, name, bfns, bmasks),
+    ELetMut(_, v, b, _) => lc_has_nonloop_consume(v, name, bfns, bmasks) || lc_has_nonloop_consume(b, name, bfns, bmasks),
+    EAssign(_, v, b) => lc_has_nonloop_consume(v, name, bfns, bmasks) || lc_has_nonloop_consume(b, name, bfns, bmasks),
+    EAssignOp(_, _, v, b) => lc_has_nonloop_consume(v, name, bfns, bmasks) || lc_has_nonloop_consume(b, name, bfns, bmasks),
+    ESeq(a, b) => lc_has_nonloop_consume(a, name, bfns, bmasks) || lc_has_nonloop_consume(b, name, bfns, bmasks),
+    EMatch(s, arms) => {
+      let scr = match s {
+        EIdent(_, _) => false,
+        _ => lc_has_nonloop_consume(s, name, bfns, bmasks)
+      }
+      let mut found = scr
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, ab) = Array::get(arms, i)
+        if lc_has_nonloop_consume(ab, name, bfns, bmasks) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EHandle(s, arms) => {
+      let scr = match s {
+        EIdent(_, _) => false,
+        _ => lc_has_nonloop_consume(s, name, bfns, bmasks)
+      }
+      let mut found = scr
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, ab) = Array::get(arms, i)
+        if lc_has_nonloop_consume(ab, name, bfns, bmasks) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EWhile(c, _) => lc_has_nonloop_consume(c, name, bfns, bmasks),
+    ELoop(params, _) => {
+      let mut found = false
+      let mut i = 0
+      while i < Array::length(params) {
+        let (_, v) = Array::get(params, i)
+        if lc_has_nonloop_consume(v, name, bfns, bmasks) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EForIn(_, _, it, _) => lc_has_nonloop_consume(it, name, bfns, bmasks),
+    ECall(callee, args, _) => {
+      let borrow_bits = match callee {
+        EIdent(f, _) => lc_builtin_borrow_bits(f, bfns, bmasks),
+        _ => 0
+      }
+      let borrow0 = (borrow_bits&1) != 0
+      let borrow1 = (borrow_bits&2) != 0
+      let callee_c = match callee {
+        EIdent(_, _) => false,
+        _ => lc_has_nonloop_consume(callee, name, bfns, bmasks)
+      }
+      let mut found = callee_c
+      let mut i = 0
+      while i < Array::length(args) {
+        let skip_borrowed_head = ((borrow0 && i == 0) || (borrow1 && i == 1)) && (match Array::get(args, i) {
+          EIdent(_, _) => true,
+          _ => false
+        })
+        if skip_borrowed_head {
+          ()
+        } else if lc_has_nonloop_consume(Array::get(args, i), name, bfns, bmasks) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EBinOp(_, l, r, _) => lc_has_nonloop_consume(l, name, bfns, bmasks) || lc_has_nonloop_consume(r, name, bfns, bmasks),
+    EUnaryOp(_, x) => lc_has_nonloop_consume(x, name, bfns, bmasks),
+    EFn(_, _, _, _, _, fb) => lc_has_nonloop_consume(fb, name, bfns, bmasks),
+    EDot(x, _, _, _) => lc_has_nonloop_consume(x, name, bfns, bmasks),
+    ELabeledArg(_, _, v) => lc_has_nonloop_consume(v, name, bfns, bmasks),
+    EReturn(x) => lc_has_nonloop_consume(x, name, bfns, bmasks),
+    EBreak(opt) => match opt {
+      Some(v) => lc_has_nonloop_consume(v, name, bfns, bmasks),
+      None => false
+    },
+    EContinue(args) => lc_hnc_any(args, name, bfns, bmasks),
+    ESpread(x) => lc_has_nonloop_consume(x, name, bfns, bmasks),
+    _ => false
+  }
+}
+
+fn lc_hnc_any(items: Array[Expr], name: String, bfns: Array[String], bmasks: Array[Int]) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(items) {
+    if lc_has_nonloop_consume(Array::get(items, i), name, bfns, bmasks) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// #1062: positional field types for a struct declaration's field list,
+/// dropping the names -- SEnum/SSuberror variants are already unnamed
+/// (Array[TypeExpr]), but SStruct fields carry (name, type) pairs.
+export fn struct_field_types(sfields: Array[(String, TypeExpr)]) -> Array[TypeExpr] {
+  let out = lc_fresh_type_expr_array()
+  let mut i = 0
+  while i < Array::length(sfields) {
+    let (_, ft) = Array::get(sfields, i)
+    Array::push(out, ft)
+    i = i + 1
+  }
+  out
+}
+
+/// #1062: append `ctor_idx * 64 + field_idx` to `out` for every positional
+/// field in `field_types` whose declared type is Double/Float (same TyName
+/// check as the annotated-Float/Double-param seeding below). See
+/// CompileCtx.ctor_float_fields.
+export fn push_ctor_float_fields(out: Array[Int], ctor_idx: Int, field_types: Array[TypeExpr]) -> Unit {
+  let mut fi = 0
+  while fi < Array::length(field_types) {
+    match Array::get(field_types, fi) {
+      TyName(ftn) => if ftn == "Float" || ftn == "Double" {
+        Array::push(out, ctor_idx * 64 + fi)
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    fi = fi + 1
+  }
+}
+
+/// #2348: the inline-wasm callee table (name, wasm index, declared arity).
+fn lc_fresh_iw_callees() -> Array[(String, Int, Int)] {
+  array_empty()
+}
+
+export fn lc_fresh_string_matrix() -> Array[Array[String]] {
+  ArrayBuilder::freeze(ArrayBuilder::new())
+}
+
+export fn gen_heap_grow_check_body() -> Bytes {
+  let b = bytebuf_new()
+  emit_heap_memory_grow_check(b)
+  b
+}
+
+/// #805 (ADR-0072): collect the inline-wasm fns (`fn f(..) -> Int = wasm
+/// "..."`, carried as the parser-internal `%wasm("<WAT>")` marker body) into
+/// parallel name/WAT-text arrays and REPLACE each marker body with a neutral
+/// EInt(0) IN PLACE — so every downstream analysis (Perceus plans, borrow/
+/// scalar-return classification, string-table collection, coverage) sees an
+/// ordinary trivial body and the WAT text never leaks into the data section.
+/// The per-fn codegen loop then splices the assembled instruction bytes
+/// (compile_inline_wat_array_params) instead of running compile_expr for them.
+export fn lc_extract_inline_wasm(stmts: Array[Stmt], names: Array[String], wats: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(iw_exp, iw_rec, iw_name, iw_ann, iw_expr) => match iw_expr {
+        EFn(iw_tps, iw_tbs, iw_params, iw_ret, iw_eff, iw_body) => match iw_body {
+          ECall(iw_cal, iw_args, _) => match iw_cal {
+            EIdent(iw_cn, _) => if iw_cn == "%wasm" && Array::length(iw_args) == 1 {
+              match Array::get(iw_args, 0) {
+                EString(iw_wat, _) => {
+                  Array::push(names, iw_name)
+                  Array::push(wats, iw_wat)
+                  Array::set(stmts, i, SLet(iw_exp, iw_rec, iw_name, iw_ann, EFn(iw_tps, iw_tbs, iw_params, iw_ret, iw_eff, EInt(0))))
+                },
+                _ => ()
+              }
+            } else {
+              ()
+            },
+            _ => ()
+          },
+          _ => ()
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+/// #2348: the callee table a `(call $f ...)` inside an inline-wasm body may
+/// name — one `(source name, wasm function index, declared param count)` per
+/// inline-wasm fn in this module.
+///
+/// Only inline-wasm fns are listed, deliberately: calling an ordinary vibe fn
+/// would need this assembler to model an effect row, RC accounting and a real
+/// closure env, none of which it does. The scan is over the USER prefix of the
+/// func table (`[0, num_user_funcs)`, the layout func_table_user_index_of
+/// documents), so a builtin registered under the same name can never be
+/// resolved instead.
+export fn lc_build_iw_callees(iw_names: Array[String], ft_names: Array[String], ft_indices: Array[Int], ft_params: Array[Int], num_user_funcs: Int) -> Array[(String, Int, Int)] {
+  let out = lc_fresh_iw_callees()
+  let limit = if num_user_funcs < Array::length(ft_names) {
+    num_user_funcs
+  } else {
+    Array::length(ft_names)
+  }
+  let mut i = 0
+  while i < Array::length(iw_names) {
+    let want = Array::get(iw_names, i)
+    let mut j = 0
+    while j < limit {
+      if Array::get(ft_names, j) == want {
+        Array::push(out, (want, Array::get(ft_indices, j), Array::get(ft_params, j)))
+        j = limit
+      } else {
+        j = j + 1
+      }
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// #805 SIMD locals: assemble an inline-wasm fn's body bytes into `body_buf`
+/// and write its extra-local counts (i32, i64, v128) into the 3-slot
+/// `iw_extra_cell` -- zeros when the function is not inline wasm (iw_found
+/// < 0). The counts travel through a pre-existing cell array (the
+/// `lambda_plan_cell` pattern) instead of a fresh binding at the call site:
+/// the seed compiler loses a NEW `let` binding introduced at that nesting
+/// depth of the flattened module source ("unknown name" on every later
+/// reference, tuple/mut/plain-Int alike), while reads through an
+/// already-in-scope array provably survive (meta_i32 itself is one).
+export fn lc_compile_iw_body(body_buf: Bytes, fn_name_dbg: String, iw_wats: Array[String], iw_found: Int, iw_param_names: Array[String], iw_array_params: Array[String], param_count: Int, iw_extra_cell: Array[Int], iw_callees: Array[(String, Int, Int)]) -> Unit with Exception {
+  Array::set(iw_extra_cell, 0, 0)
+  Array::set(iw_extra_cell, 1, 0)
+  Array::set(iw_extra_cell, 2, 0)
+  if iw_found < 0 {
+    ()
+  } else {
+    // Declared `(local ...)` runs index from param_count (params + the
+    // closure-env slot), matching the i32/i64/v128 header runs the meta
+    // arrays receive at the code-section assembly.
+    let (iw_bytes, iw_n32, iw_n64, iw_nv) = compile_inline_wat_array_params(fn_name_dbg, Array::get(iw_wats, iw_found), iw_param_names, iw_array_params, param_count, iw_callees)
+    bytebuf_push_buf(body_buf, iw_bytes)
+    Array::set(iw_extra_cell, 0, iw_n32)
+    Array::set(iw_extra_cell, 1, iw_n64)
+    Array::set(iw_extra_cell, 2, iw_nv)
+  }
+}
+
+let default_wasi_memory_min_pages: Int = 64
+
+export fn wasi_memory_min_pages_for_heap(heap_start: Int) -> Int {
+  let needed_pages = (heap_start + wasm_page_size - 1) / wasm_page_size
+  if needed_pages > default_wasi_memory_min_pages {
+    needed_pages
+  } else {
+    default_wasi_memory_min_pages
+  }
+}
+
+/// ADR-0069: `Unit` in a declared return position — either the canonical
+/// TyUnit (`-> ()`) or the named spelling (`-> Unit`, what parse_type produces
+/// and what the `fn main {}` desugar emits).
+export fn linked_type_expr_is_unit(t: TypeExpr) -> Bool {
+  match t {
+    TyUnit => true,
+    TyName(n) => n == "Unit",
+    _ => false
+  }
+}
+
+/// #944 (ADR-0073 stage C, "entry boundary A"): does a declared row text
+/// contain the literal effect label "Error" as a whole token? Row text is a
+/// comma-separated label list ("Error", "Error, Fs", "Stdout, Error", ...);
+/// substring matching alone would false-positive on a user effect named
+/// e.g. "ErrorLog", so each comma-separated piece is trimmed and compared
+/// exactly.
+export fn lc_row_has_label(eff: Option[String], label: String) -> Bool {
+  match eff {
+    Some(row) => {
+      let mut found = false
+      let mut start = 0
+      let n = String::length(row)
+      let mut i = 0
+      while i <= n {
+        let at_sep = if i == n {
+          true
+        } else {
+          String::char_code_at(row, i) == 44
+        }
+        if at_sep {
+          // #1313 rebase fix: compare against the REQUESTED label, with
+          // alias-aware equality so `Error` still matches the `Exception`
+          // spelling. The rebase resolution had collapsed this to a bare
+          // is_exception_effect_name(token) -- ignoring `label` entirely --
+          // which made lc_row_has_label(eff, "Async") true only for
+          // Error-ish rows: the Async entry boundary was never injected,
+          // and gate 77's mixed-convention fixture compiled instead of
+          // being rejected (the exact compiler-gate failure on this PR).
+          if exception_effect_labels_equal(String::trim(String::substring(row, start, i)), label) {
+            found = true
+          } else {
+            ()
+          }
+          start = i + 1
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    None => false
+  }
+}
+
+fn lc_is_stdin_provider_surface(name: String) -> Bool {
+  name == "Stdin::read_via_stream" || name == "StdinStream::next" || name == "StdinStream::close" || name == "StdinStream::read_chunk"
+}
+
+fn lc_stdin_provider_value_error(name: String) -> String {
+  String::concat("stdin provider operations are direct-call-only; wrap `", String::concat(name, "` in an explicitly effectful function"))
+}
+
+/// Canonical post-merge validation for #1539. Import value aliases and
+/// qualified type heads have already been rewritten to their exact public
+/// provider names by the merge boundary. Each such name is legal only as the
+/// immediate EIdent callee of a direct ECall; arguments are still traversed.
+/// Returning the first source-order error keeps every compile lane on the same
+/// actionable diagnostic without rerunning type/effect checking.
+export fn lc_validate_stdin_provider_expr(expr: Expr) -> String {
+  match expr {
+    ECall(EIdent(name, _), args, _) => if lc_is_stdin_provider_surface(name) {
+      let mut i = 0
+      let mut err = ""
+      while i < Array::length(args) && err == "" {
+        err = lc_validate_stdin_provider_expr(Array::get(args, i))
+        i = i + 1
+      }
+      err
+    } else {
+      let mark = expr_children_push(expr)
+      let end = expr_children_top()
+      let mut i = mark
+      let mut err = ""
+      while i < end && err == "" {
+        err = lc_validate_stdin_provider_expr(expr_child_at(i))
+        i = i + 1
+      }
+      expr_children_pop(mark)
+      err
+    },
+    EIdent(name, _) => if lc_is_stdin_provider_surface(name) {
+      lc_stdin_provider_value_error(name)
+    } else {
+      ""
+    },
+    _ => {
+      let mark = expr_children_push(expr)
+      let end = expr_children_top()
+      let mut i = mark
+      let mut err = ""
+      while i < end && err == "" {
+        err = lc_validate_stdin_provider_expr(expr_child_at(i))
+        i = i + 1
+      }
+      expr_children_pop(mark)
+      err
+    }
+  }
+}
+
+export fn lc_entry_declares_async(stmts: Array[Stmt], entry_name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, EFn(_, _, _, _, eff, _)) => if name == entry_name && lc_row_has_label(eff, "Async") {
+        found = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// ADR-0089 Decision 1, increment 1 (#1218): make `sleep` a real
+/// `perform Async::Suspend` when the ENTRY's declared row carries `Async`,
+/// and give that program a default (entry-boundary) Async handler so the
+/// unhandled sequential case keeps today's blocking behavior.
+///
+/// The nominal-`Async`-row `sleep` builtin is the label pun ADR-0089
+/// Decision 1 exists to remove: its row cannot be discharged by a handler
+/// (it is not a `perform` -- measured in #1227), and it is opaque to the
+/// ADR-0076 suspend lowering (scps_calls_ok admits performs, pure
+/// builtins, ctors, needing/effect-free functions -- a row-carrying host
+/// builtin is none of those, re-measured 2026-08-01 after the #1230 loop
+/// widening moved that wall). Both problems disappear when the call IS a
+/// perform.
+///
+/// Mechanism (all-AST-synthesis, no checker change -- `sleep` keeps its
+/// builtin type `(Int) -> Unit with Async` at check time):
+///
+///   1. a top-level `let sleep = (ms) -> Unit with Async { if 0 < ms
+///      { let _ = perform Async::Suspend(0 - ms) } }` is injected;
+///      compile_call's prefer-bound rule (the same one a user-defined
+///      `await` rides) then routes every existing call site through it.
+///      The negative payload is @vibe/concurrent's sleep-debt convention
+///      (0 = yield, 1 = poll, negative = debt), so inside a
+///      `spawn_suspend` task the injected perform parks the task exactly
+///      like `sleep_wait` does today.
+///   2. `effect Async { Suspend(Int) -> Int }` is injected when the
+///      merged program does not already declare it (the effect passes
+///      need the declaration's operation list).
+///   3. the entry body is wrapped in `handle { .. } with Async {
+///      Suspend(req) => { if req < 0 { sleep_blocking(0 - req) }; resume(0)
+///      } }` -- same synthesis point and shape as the #944 Error boundary
+///      above. The arm is TAIL-RESUMPTIVE: in an entry-row-Async program
+///      with no suspend-class handler of its own this compiles on the
+///      cheap evidence path, and `sleep_blocking` (the row-free host
+///      sleep) preserves the blocking semantics. A program that ALSO
+///      spawns suspend-class tasks (`TaskGroup::spawn_suspend`) gets the
+///      suspend-class spelling of the same arm (`resume` bound first),
+///      placed inside the exception boundary (#2065 wall 2,
+///      async_boundary_spawn_suspend_test.vibe). A task awaiting a host
+///      future or reading a host stream parks on it (#1537,
+///      lc_host_hooks_install).
+///
+/// Keyed on the entry row (like lc_wrap_entry_error_boundary): programs
+/// whose entry row has no `Async` -- including the `__no_entry__`
+/// test-runner lane and library_mode -- are untouched and keep the
+/// blocking `vibe.sleep` builtin lowering. A user-defined top-level
+/// `sleep` also disables the injection (their definition already shadows
+/// the builtin).
+/// Does pattern `p` bind the name `sleep` (an arm under it sees a
+/// different `sleep`)?
+/// Does `p` bind `target`? Generalized from the `sleep`-only original when
+/// ADR-0089 (c)'s named-host-future collector needed the same shadow test
+/// for its own name (#1337 Codex review).
+export fn lc_pat_binds_name(p: Pat, target: String) -> Bool {
+  match p {
+    PBind(n) => n == target,
+    PCtor(_, ps) => lc_pats_bind_name(ps, target),
+    PTuple(ps) => lc_pats_bind_name(ps, target),
+    POr(a, b) => lc_pat_binds_name(a, target) || lc_pat_binds_name(b, target),
+    PStruct(_, fields) => {
+      let mut i = 0
+      let mut hit = false
+      while i < Array::length(fields) {
+        let (_, fp) = Array::get(fields, i)
+        if lc_pat_binds_name(fp, target) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    _ => false
+  }
+}
+
+export fn lc_pats_bind_name(ps: Array[Pat], target: String) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(ps) {
+    if lc_pat_binds_name(Array::get(ps, i), target) {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+fn lc_pat_binds_sleep(p: Pat) -> Bool {
+  lc_pat_binds_name(p, "sleep")
+}
+
+/// Rewrite calls to the BUILTIN `sleep` into calls to the injected
+/// `__slp_perform` (see lc_inject_async_sleep_boundary). `active` goes
+/// false for the subtree under any binder that shadows the name -- a local
+/// `sleep` binding is the user's own value and must keep resolving to it.
+///
+/// Why a rename instead of just naming the injected fn `sleep` (which the
+/// prefer-bound rule would route to): a top-level fn LITERALLY NAMED after
+/// a row-carrying builtin miscompiles today -- the evidence pass classifies
+/// the call site by the builtin's nominal row while codegen dispatches to
+/// the bound fn, and the emitted call's arity disagrees ("not enough
+/// arguments on the stack for call"). Measured on the pre-change compiler
+/// with a hand-written `fn sleep`; latent for any user doing the same
+/// (recorded in #1218). The fresh name sidesteps that double
+/// classification entirely.
+export fn lc_rename_sleep_calls(e: Expr, active: Bool) -> Expr {
+  match e {
+    ECall(callee, args, off) => {
+      let new_args = lc_fresh_expr_array()
+      let mut i = 0
+      while i < Array::length(args) {
+        Array::push(new_args, lc_rename_sleep_calls(Array::get(args, i), active))
+        i = i + 1
+      }
+      let new_callee = match callee {
+        EIdent(nm, coff) => if active && nm == "sleep" {
+          EIdent("__slp_perform", coff)
+        } else {
+          callee
+        },
+        _ => lc_rename_sleep_calls(callee, active)
+      }
+      ECall(new_callee, new_args, off)
+    },
+    ELet(x, v, b, off) => ELet(x, lc_rename_sleep_calls(v, active), lc_rename_sleep_calls(b, active && x != "sleep"), off),
+    ELetMut(x, v, b, off) => ELetMut(x, lc_rename_sleep_calls(v, active), lc_rename_sleep_calls(b, active && x != "sleep"), off),
+    ELetRec(x, v, b) => {
+      let inner = active && x != "sleep"
+      ELetRec(x, lc_rename_sleep_calls(v, inner), lc_rename_sleep_calls(b, inner))
+    },
+    ESeq(a, b) => ESeq(lc_rename_sleep_calls(a, active), lc_rename_sleep_calls(b, active)),
+    EIf(c, t, el) => EIf(lc_rename_sleep_calls(c, active), lc_rename_sleep_calls(t, active), lc_rename_sleep_calls(el, active)),
+    EMatch(s, arms) => {
+      let out: Array[(Pat, Expr)] = array_empty()
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (mp, mb) = Array::get(arms, i)
+        Array::push(out, (mp, lc_rename_sleep_calls(mb, active && !lc_pat_binds_sleep(mp))))
+        i = i + 1
+      }
+      EMatch(lc_rename_sleep_calls(s, active), out)
+    },
+    EHandle(b, arms) => {
+      let out: Array[(Pat, Expr)] = array_empty()
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (mp, mb) = Array::get(arms, i)
+        Array::push(out, (mp, lc_rename_sleep_calls(mb, active && !lc_pat_binds_sleep(mp))))
+        i = i + 1
+      }
+      EHandle(lc_rename_sleep_calls(b, active), out)
+    },
+    EFn(tps, tbs, params, ret, eff, b) => {
+      let mut shadowed = false
+      let mut i = 0
+      while i < Array::length(params) {
+        let (pn, _) = Array::get(params, i)
+        if pn == "sleep" {
+          shadowed = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      EFn(tps, tbs, params, ret, eff, lc_rename_sleep_calls(b, active && !shadowed))
+    },
+    EWhile(c, b) => EWhile(lc_rename_sleep_calls(c, active), lc_rename_sleep_calls(b, active)),
+    EForIn(x, ix, it, b) => {
+      let inner = active && x != "sleep"
+      EForIn(x, ix, lc_rename_sleep_calls(it, active), lc_rename_sleep_calls(b, inner))
+    },
+    ELoop(pairs, b) => {
+      let out: Array[(String, Expr)] = array_empty()
+      let mut inner = active
+      let mut i = 0
+      while i < Array::length(pairs) {
+        let (pn, pv) = Array::get(pairs, i)
+        if pn == "sleep" {
+          inner = false
+        } else {
+          ()
+        }
+        Array::push(out, (pn, lc_rename_sleep_calls(pv, active)))
+        i = i + 1
+      }
+      ELoop(out, lc_rename_sleep_calls(b, inner))
+    },
+    EBinOp(op, l, r, boff) => EBinOp(op, lc_rename_sleep_calls(l, active), lc_rename_sleep_calls(r, active), boff),
+    EUnaryOp(op, a) => EUnaryOp(op, lc_rename_sleep_calls(a, active)),
+    EAssign(x, v, b) => EAssign(x, lc_rename_sleep_calls(v, active), lc_rename_sleep_calls(b, active)),
+    EAssignOp(n, op, v, b) => EAssignOp(n, op, lc_rename_sleep_calls(v, active), lc_rename_sleep_calls(b, active)),
+    EReturn(a) => EReturn(lc_rename_sleep_calls(a, active)),
+    EDot(o, f, m, off) => EDot(lc_rename_sleep_calls(o, active), f, m, off),
+    ELabeledArg(l, s, v) => ELabeledArg(l, s, lc_rename_sleep_calls(v, active)),
+    EBreak(opt) => match opt {
+      Some(a) => EBreak(Some(lc_rename_sleep_calls(a, active))),
+      None => e
+    },
+    EContinue(args) => {
+      let out = lc_fresh_expr_array()
+      let mut i = 0
+      while i < Array::length(args) {
+        Array::push(out, lc_rename_sleep_calls(Array::get(args, i), active))
+        i = i + 1
+      }
+      EContinue(out)
+    },
+    ETuple(items) => {
+      let out = lc_fresh_expr_array()
+      let mut i = 0
+      while i < Array::length(items) {
+        Array::push(out, lc_rename_sleep_calls(Array::get(items, i), active))
+        i = i + 1
+      }
+      ETuple(out)
+    },
+    EArray(items) => {
+      let out = lc_fresh_expr_array()
+      let mut i = 0
+      while i < Array::length(items) {
+        Array::push(out, lc_rename_sleep_calls(Array::get(items, i), active))
+        i = i + 1
+      }
+      EArray(out)
+    },
+    ERecord(nm, fields, off) => {
+      let out: Array[(String, Expr)] = array_empty()
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (fn2, fv) = Array::get(fields, i)
+        Array::push(out, (fn2, lc_rename_sleep_calls(fv, active)))
+        i = i + 1
+      }
+      ERecord(nm, out, off)
+    },
+    EMap(fields) => {
+      let out: Array[(String, Expr)] = array_empty()
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (fk, fv) = Array::get(fields, i)
+        Array::push(out, (fk, lc_rename_sleep_calls(fv, active)))
+        i = i + 1
+      }
+      EMap(out)
+    },
+    ESpread(a) => ESpread(lc_rename_sleep_calls(a, active)),
+    _ => e
+  }
+}

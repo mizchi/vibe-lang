@@ -1,0 +1,2451 @@
+// lib/@vibe/compiler/codegen/expr/compile_call.vibe — named 3.
+
+import ./compile_lambda.vibe {
+  cl_return_operand, rs_has_tail, rs_keep_bind, rs_map
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import @vibe/compiler/core {
+  Expr,
+  Pat,
+  Stmt,
+  TypeExpr,
+  bsearch_leftmost,
+  bytebuf_length,
+  bytebuf_new,
+  bytebuf_push,
+  bytebuf_push_section,
+  bytebuf_push_vec_header,
+  bytebuf_to_bytes,
+  canonical_builtin_name,
+  expr_children,
+  is_borrow_ret_builtin,
+  is_exception_operation_name,
+  is_exception_throw_operation,
+  leb128_encode_s64,
+  leb128_encode_u32,
+  namespace_exported_name,
+  sorted_names_of,
+  typed_lowering_arg_offset,
+  typed_lowering_float_key,
+  typed_render_refuse_key,
+  unrenderable_render_message
+}
+
+import @vibe/compiler/codegen/common_analysis {
+  collect_free_vars,
+  collect_pattern_bindings,
+  collect_strings_stmts,
+  emit_closure_call_tail,
+  emit_closure_resolve,
+  emit_i64_extend_i32_u,
+  is_mut_captured_in,
+  md_borrow_mask_of,
+  md_builtin_borrow_mask,
+  packed_dir_entries_to_array_expr,
+  proj_root_ident
+}
+
+import @vibe/compiler/perceus {
+  perceus_exit_fingerprint
+}
+
+import @vibe/compiler/codegen/common_base {
+  CompileCtx,
+  CtorTable,
+  FuncTable,
+  LambdaTable,
+  StrTable,
+  agg_expr_lookup,
+  agg_slot_lookup,
+  ctor_table_index_of,
+  double_parse_expr,
+  double_runtime_parse_name,
+  double_runtime_require,
+  double_runtime_to_string_name,
+  double_to_string_expr,
+  effect_name_to_tag,
+  effect_op_index,
+  emit_arith_wrap_int,
+  emit_binop_op,
+  emit_box_float,
+  emit_heap_grow_after_heap_set,
+  emit_i32_eq,
+  emit_i32_eqz,
+  emit_i32_ge_u,
+  emit_i32_gt_u,
+  emit_i32_mul,
+  emit_i32_ne,
+  emit_i32_sub,
+  emit_i64_load,
+  emit_i64_store,
+  emit_index_one,
+  emit_rc_dup_guarded,
+  emit_rc_word_inc_saturating,
+  emit_region_enter,
+  emit_region_exit,
+  emit_region_try_epilogue,
+  emit_region_try_prologue,
+  emit_str_ref,
+  emit_unbox_float,
+  expr_tag,
+  find_local_slot,
+  func_table_builtin_pos_of,
+  func_table_index_of,
+  func_table_user_index_of,
+  get_arm_body,
+  get_arm_pat,
+  get_ebinop_op,
+  get_efn_body,
+  get_eif_cond,
+  get_eif_else,
+  get_eif_then,
+  get_elet_body,
+  get_elet_name,
+  get_elet_val,
+  get_slet_expr,
+  get_slet_name,
+  int_parse_expr,
+  is_ctor_call,
+  is_efn,
+  is_eident,
+  is_etuple,
+  is_pbind,
+  is_pbool,
+  is_pctor,
+  is_pint,
+  is_pstring,
+  is_ptuple,
+  is_pwild,
+  is_slet,
+  region_depth_addr_of,
+  region_max_depth,
+  region_saves_base_of,
+  region_try_body_ld,
+  resolve_func,
+  resolve_local,
+  sized_bytes_new_expr,
+  str_table_index_of,
+  string_unicode_length_expr,
+  string_utf16_length_expr,
+  string_views_runtime_require,
+  string_views_runtime_unicode_name,
+  string_views_runtime_utf16_name,
+  struct_field_candidates,
+  struct_field_dispatch_cases
+}
+
+import @vibe/compiler/codegen/common_extractors {
+  array_contains_int,
+  array_contains_str,
+  emit_assignop_op,
+  emit_memory_copy,
+  find_catchall_idx,
+  get_earray_elems,
+  get_eassign_body,
+  get_eassign_name,
+  get_eassign_val,
+  get_eassignop_body,
+  get_eassignop_name,
+  get_eassignop_op,
+  get_eassignop_val,
+  get_ebinop_lhs,
+  get_ebinop_rhs,
+  get_ebool_value,
+  get_ecall_args,
+  get_ecall_callee,
+  get_ecall_off,
+  get_efloat_value,
+  get_efn_params,
+  get_eforin_body,
+  get_eforin_iter,
+  get_eforin_name,
+  get_eident_name,
+  get_eident_off,
+  get_eint_value,
+  get_eletmut_body,
+  get_eletmut_name,
+  get_eletmut_val,
+  get_eletrec_body,
+  get_eletrec_name,
+  get_eletrec_val,
+  get_eseq_first,
+  get_eseq_second,
+  get_estring_value,
+  get_etuple_elems,
+  get_eunaryop_expr,
+  get_eunaryop_op,
+  get_ewhile_body,
+  get_ewhile_cond,
+  get_match_arms,
+  get_match_scrutinee,
+  get_pbind_name,
+  get_pbool_value,
+  get_pctor_args,
+  get_pctor_name,
+  get_pint_value,
+  get_pstring_value,
+  get_ptuple_pats,
+  get_slet_export
+}
+
+import @vibe/compiler/codegen/wasm_emit {
+  emit_block_i64,
+  emit_block_void,
+  emit_br,
+  emit_br_if,
+  emit_call,
+  emit_call_indirect,
+  emit_code_section,
+  emit_code_section_with_locals,
+  emit_data_section,
+  emit_data_section_multi,
+  emit_drop,
+  emit_element_section_active,
+  emit_else,
+  emit_end,
+  emit_export_section,
+  emit_export_section_multi,
+  emit_exports_full,
+  emit_exports_with_memory,
+  emit_f64_abs,
+  emit_f64_add,
+  emit_f64_ceil,
+  emit_f64_const_bits,
+  emit_f64_const_lohi,
+  emit_f64_convert_i64_s,
+  emit_f64_div,
+  emit_f64_eq,
+  emit_f64_floor,
+  emit_f64_ge,
+  emit_f64_gt,
+  emit_f64_le,
+  emit_f64_lt,
+  emit_f64_max,
+  emit_f64_min,
+  emit_f64_mul,
+  emit_f64_ne,
+  emit_f64_neg,
+  emit_f64_reinterpret_i64,
+  emit_f64_sub,
+  emit_func_type_raw,
+  emit_function_section,
+  emit_global_get,
+  emit_global_section_i32_mut,
+  emit_global_set,
+  emit_header,
+  emit_i32_add,
+  emit_i32_const,
+  emit_i32_load,
+  emit_i32_load8_u,
+  emit_i32_shr_u,
+  emit_i32_store,
+  emit_i32_store8,
+  emit_i32_wrap_i64,
+  emit_i64_add,
+  emit_i64_and,
+  emit_i64_const,
+  emit_i64_div_s,
+  emit_i64_eq,
+  emit_i64_eqz,
+  emit_i64_extend_i32_s,
+  emit_i64_ge_s,
+  emit_i64_gt_s,
+  emit_i64_le_s,
+  emit_i64_lt_s,
+  emit_i64_mul,
+  emit_i64_ne,
+  emit_i64_or,
+  emit_i64_reinterpret_f64,
+  emit_i64_rem_s,
+  emit_i64_shl,
+  emit_i64_shr_s,
+  emit_i64_sub,
+  emit_i64_trunc_f64_s,
+  emit_i64_xor,
+  emit_i8x16_all_true,
+  emit_i8x16_bitmask,
+  emit_i8x16_eq,
+  emit_i8x16_ge_u,
+  emit_i8x16_le_u,
+  emit_i8x16_splat,
+  emit_if_i64,
+  emit_if_void,
+  emit_import_section_func,
+  emit_local_get,
+  emit_local_set,
+  emit_local_tee,
+  emit_loop_void,
+  emit_memory_section,
+  emit_name,
+  emit_return,
+  emit_table_section_funcref,
+  emit_type_section,
+  emit_type_section_multi,
+  emit_v128_and,
+  emit_v128_any_true,
+  emit_v128_const_splat_byte,
+  emit_v128_load,
+  emit_v128_not,
+  emit_v128_or,
+  emit_v128_store,
+  string_to_data
+}
+
+import ./compile_lambda.vibe {
+  compile_lambda
+}
+
+import ./compile_match.vibe {
+  compile_match
+}
+
+import ./compile_call_cc_ladder_names.vibe {
+  cc_bmask_has,
+  cc_borrow_mask,
+  cc_callee_may_return_view,
+  cc_ft_has,
+  cc_hof_release_slot,
+  cc_hof_retain_arg,
+  cc_ident_slot_kind,
+  cc_is_borrow_ret_call,
+  cc_is_loop_borrowed_ident,
+  cc_is_owned_temp,
+  cc_is_projection,
+  cc_is_ref_cell_read,
+  cc_map_alloc_rc,
+  cc_map_delete_in_place,
+  cc_map_emit_unique_test,
+  cc_map_release_ptr,
+  cc_map_release_temp_arg0,
+  cc_map_value_out,
+  cc_raw_abi_shim_applies,
+  cc_retain_stored_arg
+}
+
+/// ADR-0090's sanctioned region exits, lowered as a real COPY out of the
+/// list's storage rather than the identity cast the rest of the FrozenArray
+/// surface uses.
+///
+/// `FrozenArray::from_array` / `to_array` are pure identity casts
+/// (docs/internal/design/compiler-parallelism.md) -- the Frozen claim is type-level, and the
+/// caller is trusted not to keep mutating the source. `MutList` cannot borrow
+/// that convention, for two reasons:
+///
+/// 1. **It is already observably wrong.** `let out = MutList::freeze(l);
+///    MutList::push(l, 3); out` sees the 3 -- a `FrozenArray` that changes
+///    under you, which is the silent-wrong direction. The list handle is
+///    still in scope at the exit, unlike the consuming builder idiom
+///    `ArrayBuilder::freeze` was written for.
+/// 2. **The arena needs it.** ADR-0090's release is a watermark reset over
+///    the whole region segment. An identity cast hands the caller a pointer
+///    INTO that segment, so the escaping value would dangle the moment the
+///    arena slice lands. "Escape only via freeze / copy-out" is exactly this
+///    copy; without it there is no sound release point.
+///
+/// The value is bound to a temp first so an effectful argument
+/// (`MutList::freeze(make_list(r))`) is evaluated once, not twice.
+export fn mutlist_exit_copy(arg: Expr) -> Expr {
+  array_value_copy(ECall(EIdent("ArrayBuilder::freeze", -1), [arg], -1), "__mutlist_exit")
+}
+
+/// ADR-0090 MutBytes: `MutBytes::to_bytes(mb)` -- the copy-out exit, for the
+/// same two reasons as mutlist_exit_copy above (an alias would observe later
+/// pushes, and the arena release would dangle it). `Bytes::slice(tmp, 0,
+/// Bytes::length(tmp))` allocates the copy via `Bytes::new`, which is always
+/// a main-heap bump, so the escaping value never points into the arena. The
+/// value is bound to a temp so an effectful argument is evaluated once.
+export fn mutbytes_exit_copy(arg: Expr) -> Expr {
+  let tmp = "__mutbytes_exit"
+  ELet(tmp, arg, ECall(EIdent("Bytes::slice", -1), [
+    EIdent(tmp, -1),
+    EInt(0),
+    ECall(EIdent("Bytes::length", -1), [EIdent(tmp, -1)], -1)
+  ], -1), -1)
+}
+
+/// `Array::slice(v, 0, Array::length(v))` -- a fresh array with the same
+/// elements. The value is bound to `tmp` first so an effectful argument is
+/// evaluated once, not twice.
+export fn array_value_copy(value: Expr, tmp: String) -> Expr {
+  ELet(tmp, value, ECall(EIdent("Array::slice", -1), [
+    EIdent(tmp, -1),
+    EInt(0),
+    ECall(EIdent("Array::length", -1), [EIdent(tmp, -1)], -1)
+  ], -1), -1)
+}
+
+/// #1733: `FrozenArray[T]` is not merely "an immutable array" -- it is a
+/// member of the Send allowlist (ADR-0082 / ADR-0068 / #906), and the reason
+/// it is Send-eligible is that it cannot change. Both of its conversions were
+/// pure identity casts (docs/internal/design/compiler-parallelism.md), so that claim did not
+/// hold in either direction:
+///
+///   from_array: `let f = FrozenArray::from_array(a)` then `Array::push(a, x)`
+///               changes `f`.
+///   to_array:   `let o = FrozenArray::to_array(f)` then `Array::push(o, x)`
+///               changes `f`.
+///
+/// Fixing only one of the two leaves the contract broken through the other,
+/// so both copy. `get` / `length` stay aliases of the Array bodies: they read,
+/// and reading cannot break immutability.
+///
+/// The cost is real -- freezing is now O(n) -- but it is paid only at the
+/// Frozen boundary. `ArrayBuilder::freeze` is untouched, so the
+/// build-then-freeze hot path (1,953 call sites in the compiler) is
+/// unaffected.
+export fn frozen_array_conversion_copy(name: String) -> String {
+  if name == "FrozenArray::from_array" {
+    "__frozen_in"
+  } else if name == "FrozenArray::to_array" {
+    "__frozen_out"
+  } else {
+    ""
+  }
+}
+
+/// ADR-0090 Phase 1 arity rewrites, applied before the main dispatch:
+/// - `__region_run(lam)` (the reserved lowering of `region r { body }`)
+///   runs the body closure immediately with a dummy region token (0). The
+///   token only exists for the checker's skolem escape scan; it has no
+///   runtime representation. When the module has an arena
+///   (`ctx.region_ptr_addr >= 0`), the call is bracketed by the arena
+///   watermark save/restore, including the #1937 try_table catch so a
+///   throw still runs exit then rethrows.
+/// - `MutList::empty(r)` allocates a fresh growable array, ignoring the
+///   region token argument. The token is not evaluated: by construction it
+///   is the pure region binder ident the parser emitted. With an arena it
+///   comes from the segment; without one it is `ArrayBuilder::new` as before.
+/// - `MutList::push(l, v)` needs no rewrite: it still aliases
+///   `ArrayBuilder::push`, whose body decides the regrow lane by asking
+///   whether the ARRAY's block is inside the arena segment. Which lane is a
+///   property of the array, not of the call site.
+/// - `MutList::freeze(l)` / `MutList::to_array(l)` copy out -- see
+///   `mutlist_exit_copy` for why these two do not share the identity cast,
+///   and why the arena has no sound release point without them.
+/// #3140: does this field assignment `x.f = v` release the value the field
+/// held? Only when the Perceus plan approved `x` (see `plan_setfield_release`)
+/// and `x` is an ordinary local here. Every other store keeps the
+/// non-releasing lowering: a leak, never a release of a value a view still
+/// reads.
+fn cc_setf_releases(args: Array[Expr], local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  if !ctx.enable_rc || ctx.rc_drop_func_idx < 0 || Array::length(args) != 3 || !is_eident(Array::get(args, 0)) {
+    false
+  } else {
+    let x = get_eident_name(Array::get(args, 0))
+    array_contains_str(ctx.rc_setf_release, x) && find_local_slot(local_names, x) >= 0 && !array_contains_str(ctx.ref_cell_names, x)
+  }
+}
+
+/// #3140: load the field at `off` of the untagged struct pointer in `obj_l`,
+/// store `val_l` over it, then release what was there. The release comes
+/// AFTER the store: when the new value is the old one (`x.f = x.f`, retained
+/// by the store), the decrement only returns the retain.
+fn cc_setf_swap(buf: Bytes, obj_l: Int, val_l: Int, old_l: Int, off: Int, ctx: CompileCtx) -> Unit {
+  emit_local_get(buf, obj_l)
+  emit_i32_wrap_i64(buf)
+  emit_i64_load(buf, 3, off)
+  emit_local_set(buf, old_l)
+  emit_local_get(buf, obj_l)
+  emit_i32_wrap_i64(buf)
+  emit_local_get(buf, val_l)
+  emit_i64_store(buf, 3, off)
+  emit_local_get(buf, old_l)
+  emit_call(buf, ctx.rc_drop_func_idx)
+}
+
+/// #3140: the releasing store at a fixed field offset.
+fn cc_setf_release_store(buf: Bytes, args: Array[Expr], off: Int, local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
+  let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+  emit_i64_const(buf, -2)
+  emit_i64_and(buf)
+  let obj_l = nl
+  Array::push(local_names, "__setf_obj")
+  emit_local_set(buf, obj_l)
+  nl = ce(buf, Array::get(args, 2), local_names, nl + 1, ctx, ld)
+  nl = cc_retain_stored_arg(buf, Array::get(args, 2), local_names, nl, ctx)
+  let val_l = nl
+  Array::push(local_names, "__setf_val")
+  emit_local_set(buf, val_l)
+  let old_l = nl + 1
+  Array::push(local_names, "__setf_old")
+  cc_setf_swap(buf, obj_l, val_l, old_l, off, ctx)
+  emit_i64_const(buf, 0)
+  nl + 2
+}
+
+/// #2837: may this `Array::truncate(x, n)` release the elements it removes?
+/// Only when the Perceus plan approved `x` (see `plan_truncate_release`) AND
+/// every binding the plan pinned for `x` is live around this site -- a pin
+/// the lowering did not honour withdraws the release rather than letting it
+/// free a view. Returns the untagged-count source: 1 for a literal, 2 for a
+/// local, 0 for "do not release".
+export fn cc_truncate_release_kind(args: Array[Expr], local_names: Array[String], ctx: CompileCtx) -> Int with Exception {
+  if !ctx.enable_rc || !ctx.rc_trunc_builtin || ctx.rc_drop_func_idx < 0 || Array::length(args) != 2 || !is_eident(Array::get(args, 0)) {
+    0
+  } else {
+    let x = get_eident_name(Array::get(args, 0))
+    let x_ok = array_contains_str(ctx.rc_trunc_release, x) && find_local_slot(local_names, x) >= 0 && !array_contains_str(ctx.ref_cell_names, x)
+    let mut pins_live = x_ok
+    let mut i = 0
+    while pins_live && i < Array::length(ctx.rc_trunc_pin_arrays) {
+      if Array::get(ctx.rc_trunc_pin_arrays, i) == x && !array_contains_str(ctx.rc_pins_live, Array::get(ctx.rc_trunc_pin_names, i)) {
+        pins_live = false
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    if !pins_live {
+      0
+    } else {
+      let n = Array::get(args, 1)
+      if expr_tag(n) == 0 {
+        1
+      } else if is_eident(n) && find_local_slot(local_names, get_eident_name(n)) >= 0 && !array_contains_str(ctx.ref_cell_names, get_eident_name(n)) {
+        2
+      } else {
+        0
+      }
+    }
+  }
+}
+
+export fn http_client_surface_to_raw(name: String) -> String {
+  match name {
+    "Http::request" => "vibe_http_request_raw",
+    "Http::response_status" => "vibe_http_response_status_raw",
+    "Http::response_header" => "vibe_http_response_header_raw",
+    "Http::response_body" => "vibe_http_response_body_raw",
+    "Http::close" => "vibe_http_close_raw",
+    _ => ""
+  }
+}
+
+/// The call shape a callee takes once no special-case arm of
+/// `compile_call_core` applies: a direct call when the name resolves to a
+/// func_table entry that no in-scope local shadows (#875), else a closure
+/// call through the local. Split out of the ladder so the name-set gate at
+/// the top of the ladder reaches it without walking the arms.
+export fn cc_compile_resolved_call(buf: Bytes, fname: String, args: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception, fn_idx_in_list: Int, local_idx_hint: Int) -> Int with Exception {
+  // #875: a name that is BOTH a func_table entry (some unrelated
+  // top-level/entry-file function reachable in this merged program) AND a
+  // properly in-scope LOCAL binding (e.g. a nested `let rec NAME = ...`
+  // closure) must resolve to the LOCAL — lexical scoping always wins.
+  // Before this guard, `fn_idx_in_list >= 0` alone gated the direct-call
+  // path below, so a local closure whose bare name happened to collide
+  // with some other reachable function (most commonly the compile
+  // entry file's own top-level helpers, which build_export_rename_plan
+  // deliberately leaves unqualified) was miscompiled into a direct call
+  // to that unrelated function instead of a closure_resolve/call_indirect
+  // to the actual in-scope value — a wasm-validation-time arity mismatch
+  // with no compile-time diagnostic. See #875.
+  //
+  // #3025: a top-level `let` whose value is not a syntactic lambda (`let g =
+  // mk()`, `let f = __dst0.0` from a destructuring `let`) is registered as a
+  // zero-parameter THUNK that computes and caches the value. Its func_table
+  // entry is the getter, not the function the value holds, so a direct call
+  // pushed the arguments and then the getter's own operand -- invalid wasm
+  // (`values remaining on stack`) with any argument, and the closure itself
+  // returned un-called with none. Read the value through the getter and call
+  // it as a closure instead, the way a non-identifier callee is called.
+  let is_thunk_value = fn_idx_in_list >= 0 && local_idx_hint < 0 && bsearch_leftmost(ctx.thunk_names, fname) >= 0
+  if fn_idx_in_list >= 0 && local_idx_hint < 0 && !is_thunk_value {
+    let fidx = Array::get(ctx.func_table.indices, fn_idx_in_list)
+    let has_ret = Array::get(ctx.func_table.returns, fn_idx_in_list)
+    let needs_env = Array::get(ctx.func_table.needs_env, fn_idx_in_list)
+    let mut nl = next_local
+    // Hoisted: one bsearch per CALL instead of one per argument.
+    let cc_bmask = cc_borrow_mask(ctx, fname)
+    // #2682: the locals holding an OWNED temporary handed to a BORROWED
+    // position, released after the call (see cc_is_owned_temp).
+    let tmp_drops: Array[Int] = []
+    let callee_views = cc_callee_may_return_view(fname, ctx)
+    let mut ci = 0
+    while ci < Array::length(args) {
+      let carg = Array::get(args, ci)
+      nl = ce(buf, carg, local_names, nl, ctx, ld)
+      // Retain a heap projection passed to an OWNING parameter (the callee
+      // drops its params). Skip arg0 of a borrow-arg0 builtin (Array::get /
+      // length / push / set, etc.): it does NOT drop that argument, so a dup
+      // there would never be matched and would leak one reference per call
+      // (#704). Mirrors `is_borrow_arg0_call` in perceus/index.vibe.
+      // ADR-0092 borrow-inference: a user fn's borrowed parameter gets
+      // the same call-site treatment as the builtin arg0 list, at ANY
+      // position -- the callee does not drop that argument, so the
+      // caller must not dup it.
+      let borrows_this = cc_bmask_has(cc_bmask, ci)
+      let is_loop_borrow1 = ctx.enable_rc && cc_is_loop_borrowed_ident(carg, ctx) && !borrows_this
+      if ctx.enable_rc && (cc_is_projection(carg) || cc_is_ref_cell_read(carg, ctx) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow1) && !borrows_this {
+        // #706 leak follow-up: this dup's matching consume is INSIDE the loop
+        // (the callee drops its own copy each iteration) and never touches
+        // the binding's own slot-held reference, so the function epilogue
+        // must emit one extra compensating drop for it. Log only the
+        // loop-borrow trigger — the projection/borrow-ret-call cases already
+        // have correct accounting via the existing rc_drops mechanism.
+        if is_loop_borrow1 {
+          Array::push(ctx.loop_consumed_names, get_eident_name(carg))
+        } else {
+          ()
+        }
+        Array::push(local_names, "__argdup")
+        emit_local_tee(buf, nl)
+        emit_rc_dup_guarded(buf, nl, ctx.rc_shadow, ctx.rc_dup_func_idx)
+        nl = nl + 1
+      } else {
+        ()
+      }
+      // #2682: a borrowed position does not take ownership, so an owned
+      // temporary handed to it (`Array::length(build_arr(3))`,
+      // `Array::length(Array::map(xs, f))`) was dropped by nobody -- 84 B
+      // per call for a three-element array, its elements with it. Park the
+      // temporary and release it after the call. A callee that may return
+      // a view of its argument (a borrow-returning builtin such as
+      // Array::get, or a user fn in the borrow_ret / view_ret sets) keeps
+      // the old behaviour: its result aliases the temporary, so releasing
+      // it would be a use-after-free, and the leak is the safe side.
+      if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && borrows_this && !callee_views && cc_is_owned_temp(carg, ctx) {
+        Array::push(local_names, "__argtmp")
+        emit_local_tee(buf, nl)
+        Array::push(tmp_drops, nl)
+        nl = nl + 1
+      } else {
+        ()
+      }
+      ci = ci + 1
+    }
+    if needs_env {
+      emit_i64_const(buf, 0)
+    }
+    emit_call(buf, fidx)
+    if has_ret == 0 {
+      emit_i64_const(buf, 0)
+    }
+    let mut ti = 0
+    while ti < Array::length(tmp_drops) {
+      emit_local_get(buf, Array::get(tmp_drops, ti))
+      emit_call(buf, ctx.rc_drop_func_idx)
+      ti = ti + 1
+    }
+    nl
+  } else {
+    let local_idx2 = if local_idx_hint >= 0 {
+      local_idx_hint
+    } else if is_thunk_value {
+      0 - 1
+    } else {
+      resolve_local(local_names, fname, "call")
+    }
+    let num_args = Array::length(args)
+    let fn_val_local = next_local
+    let slot_local = next_local + 1
+    let env_local = next_local + 2
+    let mut nl = next_local + 3
+    Array::push(local_names, "__fn_val")
+    Array::push(local_names, "__slot")
+    Array::push(local_names, "__env")
+    if is_thunk_value {
+      // #3025: the getter call, exactly what reading the name as a value
+      // emits (compile_expr's thunk arm).
+      emit_i64_const(buf, 0)
+      emit_call(buf, Array::get(ctx.func_table.indices, fn_idx_in_list))
+    } else {
+      emit_local_get(buf, local_idx2)
+    }
+    // #2012: a captured `let mut` local holds a cell address, not the
+    // function value. Load the i64 in the cell before closure_resolve
+    // or the cell pointer is used as a table index.
+    if !is_thunk_value && array_contains_str(ctx.ref_cell_names, fname) {
+      emit_i32_wrap_i64(buf)
+      emit_i64_load(buf, 3, 0)
+    } else {
+      ()
+    }
+    emit_local_set(buf, fn_val_local)
+    emit_closure_resolve(buf, fn_val_local, slot_local, env_local)
+    let mut ci = 0
+    while ci < num_args {
+      let carg = Array::get(args, ci)
+      nl = ce(buf, carg, local_names, nl, ctx, ld)
+      // #706: a closure consumes its args; dup a loop-borrowed owning arg so
+      // it survives the back-edge (mirrors the direct-call path above).
+      // #708: also retain a projection / borrow-returning-call arg here, same
+      // as the direct-call path (line ~2607) already does -- a closure param
+      // is dropped by the callee's own exit epilogue exactly like a direct
+      // call's owning param, so a bare borrowed view passed through (e.g. the
+      // recursive-descent parser's `parse_recur(tokens, ...)` family calling
+      // through a `let rec`-captured closure value) was double-freed the same
+      // way #704/#706's direct-call cases were, just one call-shape over.
+      let is_loop_borrow2 = ctx.enable_rc && cc_is_loop_borrowed_ident(carg, ctx)
+      if ctx.enable_rc && (cc_is_projection(carg) || cc_is_ref_cell_read(carg, ctx) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow2) {
+        // #706 leak follow-up: log so the epilogue compensates (see above).
+        if is_loop_borrow2 {
+          Array::push(ctx.loop_consumed_names, get_eident_name(carg))
+        } else {
+          ()
+        }
+        Array::push(local_names, "__argdup")
+        emit_local_tee(buf, nl)
+        emit_rc_dup_guarded(buf, nl, ctx.rc_shadow, ctx.rc_dup_func_idx)
+        nl = nl + 1
+      } else {
+        ()
+      }
+      ci = ci + 1
+    }
+    emit_closure_call_tail(buf, env_local, slot_local, 9, num_args)
+    if is_thunk_value && ctx.enable_rc && ctx.rc_drop_func_idx >= 0 {
+      // #3025: the thunk getter hands its caller a guarded-dup'd reference
+      // to the cached closure (linked_compile's thunk memoization), which
+      // this call owns. Release it once the call has returned, keeping the
+      // result -- otherwise every call leaked one reference (Codex on #3047).
+      let result_local = nl
+      Array::push(local_names, "__thunk_call_result")
+      emit_local_set(buf, result_local)
+      emit_local_get(buf, fn_val_local)
+      emit_call(buf, ctx.rc_drop_func_idx)
+      emit_local_get(buf, result_local)
+      nl + 1
+    } else {
+      nl
+    }
+  }
+}
+
+/// #3141: may an exit hand out `e` while every binding it leaves, except the
+/// ones this appends to `keep`, is released? The operand is compiled before
+/// the releases, so the question is only whether the value it produced can
+/// be a VIEW into something about to be released:
+///
+/// - a literal, an arithmetic / comparison result, an interpolation: no;
+/// - a name: its own reference, which the plan accounts for, when the name
+///   is an owned binding on the release stack, or a known Int / Bool /
+///   String (a fat pointer, never an RC block); a
+///   captured cell's read is its payload, so the cell is kept; any other
+///   local (a pattern binder, a borrowed view, ...) is not known -> false;
+/// - an owned-return marker: retained by its own lowering, so no;
+/// - a constructor or literal aggregate: whatever its items are;
+/// - a call whose callee cannot return a view: no, whatever its arguments;
+/// - a projection: its root is kept when the root is itself a binding on the
+///   release stack; a projection through anything else (a borrowed `let`, a
+///   pattern binder, a `for` element, a capture) may be a view into a
+///   binding the exit releases, which keeping the root's NAME would not
+///   protect -> false;
+/// - an `if`: whatever either branch is.
+///
+/// "On the release stack" means the entry is the local the name resolves to
+/// here (`rc_exit_owner_kind`): an owned `let` shadowed by a pattern binder
+/// or a `for` element of the same name does not vouch for the shadowing one.
+///
+/// Anything else answers false, and the exit then releases nothing -- the
+/// leak it had before, never a release of what the operand still reads.
+export fn rc_exit_operand_ok(e: Expr, local_names: Array[String], ctx: CompileCtx, keep: Array[String]) -> Bool with Exception {
+  match e {
+    EInt(_) => true,
+    EFloat(_) => true,
+    EBool(_) => true,
+    EUnit => true,
+    EString(_, _) => true,
+    EStringInterp(_) => true,
+    EIdent(n, _) => if find_local_slot(local_names, n) < 0 {
+      true
+    } else {
+      let kind = rc_exit_owner_kind(ctx, local_names, n)
+      if kind == 4 || kind == 6 {
+        Array::push(keep, n)
+        true
+      } else if kind >= 0 && kind <= 2 {
+        true
+      } else {
+        // An Int, a Bool, or a String -- a fat pointer rc_drop never
+        // releases, so no release below can free what it points at.
+        let sk = cc_ident_slot_kind(e, local_names, ctx)
+        sk == 1 || sk == 2 || sk == 3
+      }
+    },
+    EUnaryOp(op, _) => op == "!" || op == "-" || op == "~",
+    EBinOp(op, _, _, _) => op == "+" || op == "-" || op == "*" || op == "/" || op == "%" || op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>" || op == "<" || op == ">" || op == "<=" || op == ">=" || op == "==" || op == "!=" || op == "&&" || op == "||",
+    ETuple(items) => rc_exit_operands_ok(items, local_names, ctx, keep),
+    EArray(items) => rc_exit_operands_ok(items, local_names, ctx, keep),
+    // A struct literal is a fresh allocation like a tuple or an array: owned
+    // when every field value is (#3181 review -- `let mut r = R::{ .. }` left
+    // by an early exit had a plan drop but no stack entry, and leaked).
+    ERecord(_, fields, _) => rc_exit_record_fields_ok(fields, local_names, ctx, keep),
+    // A map literal (`Map::new()`, `Map::from_pairs(..)`) is the last fresh
+    // literal form, owned under the same rule; the classifier this mirrors is
+    // `cc_is_owned_temp` (#2683). A closure literal stays refused: its
+    // captures may be views of an owner this exit releases.
+    EMap(entries) => rc_exit_record_fields_ok(entries, local_names, ctx, keep),
+    EIf(_, t, f) => rc_exit_operand_ok(t, local_names, ctx, keep) && rc_exit_operand_ok(f, local_names, ctx, keep),
+    // Return normalization may wrap the tail in the internal owning marker.
+    // A mutable binding whose entire tail returns itself has no intervening
+    // write, so the exit can inspect the initializer's ownership instead.
+    ELetMut(name, value, tail, _) => match cl_return_operand(tail) {
+      EIdent(result, _) => result == name && rc_exit_operand_ok(value, local_names, ctx, keep),
+      _ => false
+    },
+    EDot(_, _, _, _) => {
+      let root = proj_root_ident(e)
+      if root == "" {
+        false
+      } else if find_local_slot(local_names, root) < 0 {
+        // A global: nothing an exit releases.
+        true
+      } else if rc_exit_owner_kind(ctx, local_names, root) < 0 {
+        false
+      } else {
+        Array::push(keep, root)
+        true
+      }
+    },
+    ECall(callee, args, _) => match callee {
+      EIdent(f, off) => if f == "__lambda_return_owned" && off < 0 && Array::length(args) == 1 {
+        let inner = Array::get(args, 0)
+        let mut inspect_inner = false
+        match inner {
+          ECall(EIdent(inner_name, _), _, _) => {
+            inspect_inner = false
+            if find_local_slot(local_names, inner_name) < 0 {
+              for row in ctx.passthrough_ret_params {
+                if row.0 == inner_name {
+                  inspect_inner = true
+                }
+              }
+            }
+          },
+          _ => ()
+        }
+        if inspect_inner {
+          rc_exit_operand_ok(inner, local_names, ctx, keep)
+        } else {
+          true
+        }
+      } else if find_local_slot(local_names, f) >= 0 {
+        false
+      } else if is_ctor_call(e, ctx.ctor_table) {
+        rc_exit_operands_ok(args, local_names, ctx, keep)
+      } else {
+        let mut source = -1
+        for row in ctx.passthrough_ret_params {
+          if row.0 == f {
+            source = row.1
+          }
+        }
+        if source >= 0 && source < Array::length(args) {
+          let arg = Array::get(args, source)
+          let root = proj_root_ident(arg)
+          if root != "" && array_contains_str(ctx.rc_exit_lets, root) {
+            Array::push(keep, root)
+            true
+          } else {
+            rc_exit_operand_ok(arg, local_names, ctx, keep)
+          }
+        } else {
+          !cc_callee_may_return_view(f, ctx)
+        }
+      },
+      _ => false
+    },
+    _ => false
+  }
+}
+
+fn rc_exit_record_fields_ok(fields: Array[(String, Expr)], local_names: Array[String], ctx: CompileCtx, keep: Array[String]) -> Bool with Exception {
+  let mut ok = true
+  let mut i = 0
+  while ok && i < Array::length(fields) {
+    let (_, v) = Array::get(fields, i)
+    ok = rc_exit_operand_ok(v, local_names, ctx, keep)
+    i = i + 1
+  }
+  ok
+}
+
+fn rc_exit_operands_ok(items: Array[Expr], local_names: Array[String], ctx: CompileCtx, keep: Array[String]) -> Bool with Exception {
+  let mut ok = true
+  let mut i = 0
+  while ok && i < Array::length(items) {
+    ok = rc_exit_operand_ok(Array::get(items, i), local_names, ctx, keep)
+    i = i + 1
+  }
+  ok
+}
+
+export fn rc_exit_mentions_name(e: Expr, name: String) -> Bool {
+  match e {
+    EIdent(n, _) => if n == name {
+      return true
+    },
+    // Interpolation stores source fragments rather than Expr children here.
+    // Treat it as dependent instead of overlooking a captured binder.
+    EStringInterp(_) => return true,
+    _ => ()
+  }
+  for child in expr_children(e) {
+    if rc_exit_mentions_name(child, name) {
+      return true
+    }
+  }
+  false
+}
+
+/// A factory argument may be evaluated before the recursive binder is
+/// released only when it cannot carry a view into that binder.
+fn rc_exit_independent_scalar_arg(e: Expr, name: String, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  match e {
+    EInt(_) => true,
+    EFloat(_) => true,
+    EBool(_) => true,
+    EString(_, _) => true,
+    EUnit => true,
+    EIdent(n, _) => if n == name {
+      false
+    } else {
+      let kind = cc_ident_slot_kind(e, local_names, ctx)
+      kind == 1 || kind == 2 || kind == 3
+    },
+    _ => false
+  }
+}
+
+/// Follow active immutable let sources before treating a returned binding as
+/// independent of the recursive owner. A parameter has no source row; an
+/// alias or a closure that captures the owner does.
+fn rc_exit_source_mentions_name(e: Expr, name: String, sources: Array[(String, Expr)], limit: Int) -> Bool {
+  match e {
+    EIdent(n, _) => {
+      if n == name {
+        return true
+      }
+      let mut i = limit - 1
+      while i >= 0 {
+        let row = Array::get(sources, i)
+        if row.0 == n {
+          return rc_exit_source_mentions_name(row.1, name, sources, i)
+        }
+        i = i - 1
+      }
+      false
+    },
+    EStringInterp(_) => true,
+    _ => {
+      for child in expr_children(e) {
+        if rc_exit_source_mentions_name(child, name, sources, limit) {
+          return true
+        }
+      }
+      false
+    }
+  }
+}
+
+/// A pattern-bound fallback is independent when its scrutinee is a scalar or
+/// a parameter. Parameters exist before this local recursive owner can be
+/// allocated; a mutable local or computed scrutinee may hold a view of it.
+export fn rc_exit_independent_pattern_source(e: Expr, name: String, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  if rc_exit_independent_scalar_arg(e, name, local_names, ctx) {
+    return true
+  }
+  match e {
+    EIdent(n, _) => {
+      let slot = find_local_slot(local_names, n)
+      n != name && slot >= 0 && slot < ctx.rc_exit_param_count && !rc_exit_source_mentions_name(e, name, ctx.rc_exit_result_stores, Array::length(ctx.rc_exit_result_stores))
+    },
+    _ => false
+  }
+}
+
+export fn rc_exit_fresh_independent_closure(e: Expr, name: String, local_names: Array[String], ctx: CompileCtx, shadowed: Array[String]) -> Bool with Exception {
+  match e {
+    EIdent(n, _) => {
+      let kind = rc_exit_owner_kind(ctx, local_names, n)
+      if array_contains_str(shadowed, n) {
+        true
+      } else {
+        n != name && kind >= 0 && kind <= 2 && !rc_exit_source_mentions_name(e, name, ctx.rc_exit_result_stores, Array::length(ctx.rc_exit_result_stores))
+      }
+    },
+    EFn(_, _, _, _, _, _) => !rc_exit_mentions_name(e, name),
+    ECall(EIdent("__lambda_return_owned", off), args, _) => if off < 0 && Array::length(args) == 1 {
+      rc_exit_fresh_independent_closure(Array::get(args, 0), name, local_names, ctx, shadowed)
+    } else {
+      false
+    },
+    ECall(EIdent(callee, _), args, _) => {
+      if find_local_slot(local_names, callee) >= 0 || cc_callee_may_return_view(callee, ctx) {
+        return false
+      }
+      for arg in args {
+        if !rc_exit_independent_scalar_arg(arg, name, local_names, ctx) {
+          return false
+        }
+      }
+      true
+    },
+    ELet(bound, value, tail, _) => {
+      if rc_exit_mentions_name(value, name) {
+        return false
+      }
+      let mark = Array::length(shadowed)
+      Array::push(shadowed, bound)
+      let fresh = rc_exit_fresh_independent_closure(tail, name, local_names, ctx, shadowed)
+      Array::truncate(shadowed, mark)
+      fresh
+    },
+    ELetMut(bound, value, tail, _) => {
+      if rc_exit_mentions_name(value, name) {
+        return false
+      }
+      let mark = Array::length(shadowed)
+      Array::push(shadowed, bound)
+      let fresh = rc_exit_fresh_independent_closure(tail, name, local_names, ctx, shadowed)
+      Array::truncate(shadowed, mark)
+      fresh
+    },
+    ELetRec(bound, value, tail) => {
+      if rc_exit_mentions_name(value, name) {
+        return false
+      }
+      let mark = Array::length(shadowed)
+      Array::push(shadowed, bound)
+      let fresh = rc_exit_fresh_independent_closure(tail, name, local_names, ctx, shadowed)
+      Array::truncate(shadowed, mark)
+      fresh
+    },
+    ESeq(head, tail) => !rc_exit_mentions_name(head, name) && rc_exit_fresh_independent_closure(tail, name, local_names, ctx, shadowed),
+    EAssign(target, value, tail) => target != name && !rc_exit_mentions_name(value, name) && rc_exit_fresh_independent_closure(tail, name, local_names, ctx, shadowed),
+    EAssignOp(target, _, value, tail) => target != name && !rc_exit_mentions_name(value, name) && rc_exit_fresh_independent_closure(tail, name, local_names, ctx, shadowed),
+    EIf(cond, yes, no) => !rc_exit_source_mentions_name(cond, name, ctx.rc_exit_result_stores, Array::length(ctx.rc_exit_result_stores)) && rc_exit_fresh_independent_closure(yes, name, local_names, ctx, shadowed) && rc_exit_fresh_independent_closure(no, name, local_names, ctx, shadowed),
+    EMatch(scrutinee, arms) => {
+      if rc_exit_source_mentions_name(scrutinee, name, ctx.rc_exit_result_stores, Array::length(ctx.rc_exit_result_stores)) || Array::length(arms) == 0 {
+        return false
+      }
+      let independent_source = rc_exit_independent_pattern_source(scrutinee, name, local_names, ctx)
+      for arm in arms {
+        let arm_shadowed: Array[String] = []
+        for bound in shadowed {
+          Array::push(arm_shadowed, bound)
+        }
+        if independent_source {
+          let _ = collect_pattern_bindings(arm.0, arm_shadowed)
+        }
+        if !rc_exit_fresh_independent_closure(arm.1, name, local_names, ctx, arm_shadowed) {
+          return false
+        }
+      }
+      true
+    },
+    _ => false
+  }
+}
+
+/// The kind of the innermost release-stack entry named `n`, or -1 -- and -1
+/// as well when that entry is not the local `n` resolves to here. A pattern
+/// binder, a `for` element or a borrowed `let` gets a local of its own but
+/// no entry, so the innermost ENTRY named `n` can be an outer binding the
+/// name no longer denotes; answering with its kind would vouch for a view.
+fn rc_exit_owner_kind(ctx: CompileCtx, local_names: Array[String], n: String) -> Int {
+  let names = ctx.rc_exit_stack_names
+  let slot = find_local_slot(local_names, n)
+  let mut i = Array::length(names) - 1
+  let mut kind = 0 - 1
+  while i >= 0 {
+    if Array::get(names, i) == n {
+      if Array::get(ctx.rc_exit_stack_info, i * 3 + 1) == slot {
+        kind = Array::get(ctx.rc_exit_stack_info, i * 3)
+      } else {
+        ()
+      }
+      i = 0 - 1
+    } else {
+      i = i - 1
+    }
+  }
+  kind
+}
+
+/// The plan's release count for binding `n` at exit `ord`, or 0.
+export fn rc_exit_plan_count(ctx: CompileCtx, ord: Int, n: String) -> Int {
+  let names = ctx.rc_exit_plan_names
+  let info = ctx.rc_exit_plan_info
+  let mut i = 0
+  let mut count = 0
+  while i < Array::length(names) {
+    if Array::get(info, i * 4) == 1 && Array::get(info, i * 4 + 1) == ord && Array::get(names, i) == n {
+      count = Array::get(info, i * 4 + 2)
+      i = Array::length(names)
+    } else {
+      i = i + 1
+    }
+  }
+  count
+}
+
+/// #3175: is wasm local `flag` the per-path release flag of a `let` in scope
+/// (and not, say, a reuse flag)?
+export fn rc_exit_is_path_flag(ctx: CompileCtx, flag: Int) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(ctx.rc_path_flag_locals) {
+    found = Array::get(ctx.rc_path_flag_locals, i) == flag
+    i = i + 1
+  }
+  found
+}
+
+/// Does exit `ord` of the plan have `kind`, `fingerprint` and innermost `let`
+/// `inner`? Anything else means plan and codegen numbered the exits apart.
+export fn rc_exit_site_matches(ctx: CompileCtx, ord: Int, kind: Int, fingerprint: Int, inner: String) -> Bool {
+  let names = ctx.rc_exit_plan_names
+  let info = ctx.rc_exit_plan_info
+  let mut i = 0
+  let mut found = false
+  let mut ok = false
+  while !found && i < Array::length(names) {
+    if Array::get(info, i * 4) == 0 && Array::get(info, i * 4 + 1) == ord {
+      found = true
+      ok = Array::get(info, i * 4 + 2) == kind && Array::get(info, i * 4 + 3) == fingerprint && Array::get(names, i) == inner
+    } else {
+      i = i + 1
+    }
+  }
+  ok
+}
+
+// Ordered named-call dispatch group.
+export fn cc_compile_named_3(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception, fname: String, fn_idx_in_list: Int, resolved_name: String, local_idx_hint: Int, prefer_bound_call: Bool, ctor_lookup_idx: Int, compile_call_core_fn: (Bytes, Expr, Array[Expr], Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception) -> Int with Exception {
+  if fname == "Map::delete" {
+    // Copies every entry whose key doesn't match into a fresh block (same
+    // raw i64 load/store technique Map::set uses for entries it preserves
+    // unmodified — no extra retain needed, matching that precedent). The
+    // new block is sized for the old entry count (an upper bound — at most
+    // one entry is dropped), and the trailing count field records however
+    // many entries were actually copied.
+    let (eq_fi_md, _, _) = resolve_func(ctx.func_table, "eq")
+    let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+    nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+    let map_l = nl
+    let key_l = nl + 1
+    let cnt_l = nl + 2
+    let new_l = nl + 3
+    let idx_l = nl + 4
+    let out_l = nl + 5
+    let tmp_l = nl + 6
+    let ip_l = nl + 7
+    Array::push(local_names, "__md_map")
+    Array::push(local_names, "__md_key")
+    Array::push(local_names, "__md_cnt")
+    Array::push(local_names, "__md_new")
+    Array::push(local_names, "__md_idx")
+    Array::push(local_names, "__md_out")
+    Array::push(local_names, "__md_tmp")
+    Array::push(local_names, "__md_ip")
+    emit_local_set(buf, key_l)
+    emit_local_set(buf, map_l)
+    // ADR-0092 for maps: consumed here, as in Map::set above.
+    cc_hof_retain_arg(buf, Array::get(args, 0), map_l, fname, 0, ctx)
+    emit_local_get(buf, map_l)
+    emit_i64_const(buf, -2)
+    emit_i64_and(buf)
+    emit_local_set(buf, map_l)
+    emit_local_get(buf, map_l)
+    emit_i32_wrap_i64(buf)
+    emit_i32_load(buf, 2, 0)
+    emit_i64_extend_i32_u(buf)
+    emit_local_set(buf, cnt_l)
+    let copy_path = () -> {
+      if ctx.enable_rc {
+        // #2683: an RC map block (class 6) sized for the old entry count.
+        cc_map_alloc_rc(buf, new_l, 6, () -> {
+          emit_local_get(buf, cnt_l)
+          emit_i64_const(buf, 16)
+          emit_i64_mul(buf)
+          emit_i64_const(buf, 8)
+          emit_i64_add(buf)
+        }, ctx)
+      } else {
+        emit_global_get(buf, 0)
+        emit_i64_extend_i32_u(buf)
+        emit_local_set(buf, new_l)
+        emit_global_get(buf, 0)
+        emit_local_get(buf, cnt_l)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 16)
+        emit_i32_mul(buf)
+        emit_i32_const(buf, 8)
+        emit_i32_add(buf)
+        emit_i32_add(buf)
+        emit_global_set(buf, 0)
+        emit_heap_grow_after_heap_set(buf, ctx)
+      }
+      emit_i64_const(buf, 0)
+      emit_local_set(buf, idx_l)
+      emit_i64_const(buf, 0)
+      emit_local_set(buf, out_l)
+      emit_block_void(buf)
+      emit_loop_void(buf)
+      emit_local_get(buf, idx_l)
+      emit_local_get(buf, cnt_l)
+      emit_i64_ge_s(buf)
+      emit_br_if(buf, 1)
+      emit_local_get(buf, map_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, idx_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 16)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_i64_load(buf, 3, 8)
+      emit_local_get(buf, key_l)
+      emit_call(buf, eq_fi_md)
+      emit_i32_wrap_i64(buf)
+      emit_if_void(buf)
+      emit_else(buf)
+      emit_local_get(buf, new_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, out_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 16)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_local_get(buf, map_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, idx_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 16)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_i64_load(buf, 3, 8)
+      // #2683: as in Map::set, the kept key is owned by both maps.
+      if ctx.enable_rc {
+        emit_local_tee(buf, tmp_l)
+        emit_rc_dup_guarded(buf, tmp_l, ctx.rc_shadow, ctx.rc_dup_func_idx)
+      } else {
+        ()
+      }
+      emit_i64_store(buf, 3, 8)
+      emit_local_get(buf, new_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, out_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 16)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_local_get(buf, map_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, idx_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 16)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_i64_load(buf, 3, 16)
+      // #2683: as in Map::set, the kept value is owned by both maps.
+      if ctx.enable_rc {
+        emit_local_tee(buf, tmp_l)
+        emit_rc_dup_guarded(buf, tmp_l, ctx.rc_shadow, ctx.rc_dup_func_idx)
+      } else {
+        ()
+      }
+      emit_i64_store(buf, 3, 16)
+      emit_local_get(buf, out_l)
+      emit_i64_const(buf, 1)
+      emit_i64_add(buf)
+      emit_local_set(buf, out_l)
+      emit_end(buf)
+      emit_local_get(buf, idx_l)
+      emit_i64_const(buf, 1)
+      emit_i64_add(buf)
+      emit_local_set(buf, idx_l)
+      emit_br(buf, 0)
+      emit_end(buf)
+      emit_end(buf)
+      emit_local_get(buf, new_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, out_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_store(buf, 2, 0)
+      // See the matching comment in Map::set above. idx_l is dead after the
+      // copy loop; out_l already holds the final count (just stored above),
+      // no need to re-load it.
+      if ctx.map_build_index_func_idx >= 0 {
+        emit_local_get(buf, out_l)
+        emit_i64_const(buf, 8)
+        emit_i64_ge_s(buf)
+        emit_if_void(buf)
+        emit_local_get(buf, new_l)
+        emit_local_get(buf, out_l)
+        emit_call(buf, ctx.map_build_index_func_idx)
+        emit_local_set(buf, idx_l)
+        emit_local_get(buf, new_l)
+        emit_i32_wrap_i64(buf)
+        emit_local_get(buf, idx_l)
+        emit_i32_wrap_i64(buf)
+        emit_i32_store(buf, 2, 4)
+        emit_end(buf)
+      } else {
+        ()
+      }
+    }
+    if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 {
+      cc_map_emit_unique_test(buf, map_l)
+      emit_if_void(buf)
+      cc_map_delete_in_place(buf, map_l, key_l, cnt_l, new_l, idx_l, out_l, tmp_l, ip_l, eq_fi_md, ctx)
+      emit_else(buf)
+      copy_path()
+      cc_map_release_ptr(buf, map_l, ctx)
+      emit_end(buf)
+    } else {
+      copy_path()
+    }
+    cc_map_value_out(buf, new_l, ctx)
+    nl + 8
+  }
+  else if fname == "MapBuilder::new" {
+    // #723-family fix: the builder used to be a FIXED 144-byte block
+    // ([count@0][entries@8+16i], 8-entry capacity) whose `set` appended
+    // with NO capacity check — the 9th entry silently overwrote whatever
+    // the bump allocator placed after the block (heap corruption whose
+    // symptom depends on layout; Json::parse of a >8-key object hit it).
+    // New shape: a HANDLE [count@0][cap@4][storage_ptr@8] with the entries
+    // (key@+0/value@+8 per 16-byte slot) in a separate storage block, so
+    // `set` can grow by reallocating storage through the handle. `freeze`
+    // copies the entries into a fresh plain Map block ([count@0]
+    // [entries@8+16i]), keeping Map layout compatibility. Blocks are raw
+    // bump allocations in BOTH RC and bump modes (the same convention as
+    // Map::set's output); the even, untagged handle value is invisible to
+    // the RC machinery.
+    let ptr_l = next_local
+    let st_l = next_local + 1
+    Array::push(local_names, "__mb_ptr")
+    Array::push(local_names, "__mb_st")
+    if ctx.enable_rc {
+      // #2683: the handle is an RC block of class 9 ([count][cap][storage
+      // value pointer]); its storage a separate class-0 leaf block sized
+      // for 8 entries. rc_drop's class-9 arm drops the stored values,
+      // releases the storage and frees the handle.
+      cc_map_alloc_rc(buf, ptr_l, 9, () -> {
+        emit_i64_const(buf, 16)
+      }, ctx)
+      cc_map_alloc_rc(buf, st_l, 0, () -> {
+        emit_i64_const(buf, 128)
+      }, ctx)
+      emit_local_get(buf, ptr_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 0)
+      emit_i32_store(buf, 2, 0)
+      emit_local_get(buf, ptr_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 8)
+      emit_i32_store(buf, 2, 4)
+      emit_local_get(buf, ptr_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, st_l)
+      emit_i64_store(buf, 3, 8)
+    } else {
+      emit_global_get(buf, 0)
+      emit_i64_extend_i32_u(buf)
+      emit_local_set(buf, ptr_l)
+      emit_global_get(buf, 0)
+      emit_i32_const(buf, 144)
+      emit_i32_add(buf)
+      emit_global_set(buf, 0)
+      emit_heap_grow_after_heap_set(buf, ctx)
+      emit_local_get(buf, ptr_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 0)
+      emit_i32_store(buf, 2, 0)
+      emit_local_get(buf, ptr_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 8)
+      emit_i32_store(buf, 2, 4)
+      emit_local_get(buf, ptr_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, ptr_l)
+      emit_i64_const(buf, 16)
+      emit_i64_add(buf)
+      emit_i64_store(buf, 3, 8)
+    }
+    cc_map_value_out(buf, ptr_l, ctx)
+    next_local + 2
+  }
+  else if fname == "MapBuilder::set" {
+    // Update-or-append: an existing key's value is updated in place (the
+    // gc lane always did this; the linear lane used to blind-append, so a
+    // duplicate key left BOTH entries and Map::get's first-match returned
+    // the STALE value — a silent cross-backend semantics divergence).
+    // Grows storage x2 when a genuine append finds it full — see the layout
+    // note on MapBuilder::new. The old grown storage block is leaked
+    // (bump discipline; geometric growth bounds the waste).
+    let (mbs_eq_fi, _, _) = resolve_func(ctx.func_table, "eq")
+    let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+    nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+    // MapBuilder::set STORES key and value — retain borrowed args (#745).
+    nl = cc_retain_stored_arg(buf, Array::get(args, 1), local_names, nl, ctx)
+    nl = ce(buf, Array::get(args, 2), local_names, nl, ctx, ld)
+    nl = cc_retain_stored_arg(buf, Array::get(args, 2), local_names, nl, ctx)
+    let mb_l = nl
+    let mk_l = nl + 1
+    let mv_l = nl + 2
+    let mc_l = nl + 3
+    let cap_l = nl + 4
+    let st_l = nl + 5
+    let ns_l = nl + 6
+    let mi_l = nl + 7
+    let found_l = nl + 8
+    Array::push(local_names, "__mbs_map")
+    Array::push(local_names, "__mbs_key")
+    Array::push(local_names, "__mbs_val")
+    Array::push(local_names, "__mbs_cnt")
+    Array::push(local_names, "__mbs_cap")
+    Array::push(local_names, "__mbs_st")
+    Array::push(local_names, "__mbs_ns")
+    Array::push(local_names, "__mbs_i")
+    Array::push(local_names, "__mbs_found")
+    emit_local_set(buf, mv_l)
+    emit_local_set(buf, mk_l)
+    emit_local_set(buf, mb_l)
+    emit_local_get(buf, mb_l)
+    emit_i64_const(buf, -2)
+    emit_i64_and(buf)
+    emit_local_set(buf, mb_l)
+    emit_local_get(buf, mb_l)
+    emit_i32_wrap_i64(buf)
+    emit_i32_load(buf, 2, 0)
+    emit_i64_extend_i32_u(buf)
+    emit_local_set(buf, mc_l)
+    emit_local_get(buf, mb_l)
+    emit_i32_wrap_i64(buf)
+    emit_i32_load(buf, 2, 4)
+    emit_i64_extend_i32_u(buf)
+    emit_local_set(buf, cap_l)
+    emit_local_get(buf, mb_l)
+    emit_i32_wrap_i64(buf)
+    emit_i64_load(buf, 3, 8)
+    emit_local_set(buf, st_l)
+    // search for an existing key (entries: key@+0, value@+8)
+    emit_i64_const(buf, 0)
+    emit_local_set(buf, mi_l)
+    emit_i64_const(buf, 0)
+    emit_local_set(buf, found_l)
+    emit_block_void(buf)
+    emit_loop_void(buf)
+    emit_local_get(buf, mi_l)
+    emit_local_get(buf, mc_l)
+    emit_i64_ge_s(buf)
+    emit_br_if(buf, 1)
+    emit_local_get(buf, st_l)
+    emit_i32_wrap_i64(buf)
+    emit_local_get(buf, mi_l)
+    emit_i32_wrap_i64(buf)
+    emit_i32_const(buf, 16)
+    emit_i32_mul(buf)
+    emit_i32_add(buf)
+    emit_i64_load(buf, 3, 0)
+    emit_local_get(buf, mk_l)
+    emit_call(buf, mbs_eq_fi)
+    emit_i32_wrap_i64(buf)
+    emit_if_void(buf)
+    // #2683: the value being replaced was owned by the builder; release
+    // it before the slot is overwritten (it used to leak).
+    if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 {
+      emit_local_get(buf, st_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, mi_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 16)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_i64_load(buf, 3, 8)
+      emit_call(buf, ctx.rc_drop_func_idx)
+    } else {
+      ()
+    }
+    emit_local_get(buf, st_l)
+    emit_i32_wrap_i64(buf)
+    emit_local_get(buf, mi_l)
+    emit_i32_wrap_i64(buf)
+    emit_i32_const(buf, 16)
+    emit_i32_mul(buf)
+    emit_i32_add(buf)
+    emit_local_get(buf, mv_l)
+    emit_i64_store(buf, 3, 8)
+    emit_i64_const(buf, 1)
+    emit_local_set(buf, found_l)
+    // #2683: the stored key stays; the caller's key was retained for
+    // storage and is not stored -- release it.
+    if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 {
+      emit_local_get(buf, mk_l)
+      emit_call(buf, ctx.rc_drop_func_idx)
+    } else {
+      ()
+    }
+    emit_br(buf, 2)
+    emit_end(buf)
+    emit_local_get(buf, mi_l)
+    emit_i64_const(buf, 1)
+    emit_i64_add(buf)
+    emit_local_set(buf, mi_l)
+    emit_br(buf, 0)
+    emit_end(buf)
+    emit_end(buf)
+    // not found: append (growing storage when full)
+    emit_local_get(buf, found_l)
+    emit_i64_eqz(buf)
+    emit_if_void(buf)
+    // grow when count == cap: fresh storage of cap*2 entries, copy, swap
+    emit_local_get(buf, mc_l)
+    emit_local_get(buf, cap_l)
+    emit_i64_eq(buf)
+    emit_if_void(buf)
+    if ctx.enable_rc {
+      // #2683: fresh class-0 storage of cap * 2 entries.
+      cc_map_alloc_rc(buf, ns_l, 0, () -> {
+        emit_local_get(buf, cap_l)
+        emit_i64_const(buf, 32)
+        emit_i64_mul(buf)
+      }, ctx)
+    } else {
+      emit_global_get(buf, 0)
+      emit_i64_extend_i32_u(buf)
+      emit_local_set(buf, ns_l)
+      emit_global_get(buf, 0)
+      emit_local_get(buf, cap_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 32)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_global_set(buf, 0)
+      emit_heap_grow_after_heap_set(buf, ctx)
+    }
+    emit_local_get(buf, ns_l)
+    emit_i32_wrap_i64(buf)
+    emit_local_get(buf, st_l)
+    emit_i32_wrap_i64(buf)
+    emit_local_get(buf, mc_l)
+    emit_i32_wrap_i64(buf)
+    emit_i32_const(buf, 16)
+    emit_i32_mul(buf)
+    emit_memory_copy(buf)
+    // #2683: the entries moved; the old storage is a leaf block, freed
+    // without a walk (it used to be leaked under bump discipline).
+    cc_map_release_ptr(buf, st_l, ctx)
+    emit_local_get(buf, mb_l)
+    emit_i32_wrap_i64(buf)
+    emit_local_get(buf, ns_l)
+    emit_i64_store(buf, 3, 8)
+    emit_local_get(buf, mb_l)
+    emit_i32_wrap_i64(buf)
+    emit_local_get(buf, cap_l)
+    emit_i32_wrap_i64(buf)
+    emit_i32_const(buf, 2)
+    emit_i32_mul(buf)
+    emit_i32_store(buf, 2, 4)
+    emit_local_get(buf, ns_l)
+    emit_local_set(buf, st_l)
+    emit_end(buf)
+    // append at storage + count*16: key@+0, value@+8
+    emit_local_get(buf, st_l)
+    emit_i32_wrap_i64(buf)
+    emit_local_get(buf, mc_l)
+    emit_i32_wrap_i64(buf)
+    emit_i32_const(buf, 16)
+    emit_i32_mul(buf)
+    emit_i32_add(buf)
+    emit_local_get(buf, mk_l)
+    emit_i64_store(buf, 3, 0)
+    emit_local_get(buf, st_l)
+    emit_i32_wrap_i64(buf)
+    emit_local_get(buf, mc_l)
+    emit_i32_wrap_i64(buf)
+    emit_i32_const(buf, 16)
+    emit_i32_mul(buf)
+    emit_i32_add(buf)
+    emit_local_get(buf, mv_l)
+    emit_i64_store(buf, 3, 8)
+    emit_local_get(buf, mb_l)
+    emit_i32_wrap_i64(buf)
+    emit_local_get(buf, mc_l)
+    emit_i64_const(buf, 1)
+    emit_i64_add(buf)
+    emit_i32_wrap_i64(buf)
+    emit_i32_store(buf, 2, 0)
+    emit_end(buf)
+    cc_map_release_temp_arg0(buf, Array::get(args, 0), mb_l, ctx)
+    emit_i64_const(buf, 0)
+    nl + 9
+  }
+  else if fname == "MapBuilder::freeze" {
+    // Copy the handle's entries into a fresh plain Map block — freeze can
+    // no longer be a passthrough since the builder is handle-indirect.
+    let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+    let fb_l = nl
+    let fc_l = nl + 1
+    let fm_l = nl + 2
+    let fi_l = nl + 3
+    let ft_l = nl + 4
+    Array::push(local_names, "__mbf_b")
+    Array::push(local_names, "__mbf_cnt")
+    Array::push(local_names, "__mbf_map")
+    Array::push(local_names, "__mbf_i")
+    Array::push(local_names, "__mbf_tmp")
+    // #2683: the builder is consumed here (an owning position, so the
+    // caller's reference arrives), unless the planner planned the position
+    // as borrowed -- then take a reference of our own, as the HOF
+    // lowerings do (cc_hof_retain_arg). The TAGGED value is retained;
+    // the untagged pointer the reads use is derived after.
+    emit_local_set(buf, fb_l)
+    cc_hof_retain_arg(buf, Array::get(args, 0), fb_l, fname, 0, ctx)
+    emit_local_get(buf, fb_l)
+    emit_i64_const(buf, -2)
+    emit_i64_and(buf)
+    emit_local_set(buf, fb_l)
+    emit_local_get(buf, fb_l)
+    emit_i32_wrap_i64(buf)
+    emit_i32_load(buf, 2, 0)
+    emit_i64_extend_i32_u(buf)
+    emit_local_set(buf, fc_l)
+    if ctx.enable_rc {
+      cc_map_alloc_rc(buf, fm_l, 6, () -> {
+        emit_local_get(buf, fc_l)
+        emit_i64_const(buf, 16)
+        emit_i64_mul(buf)
+        emit_i64_const(buf, 8)
+        emit_i64_add(buf)
+      }, ctx)
+    } else {
+      emit_global_get(buf, 0)
+      emit_i64_extend_i32_u(buf)
+      emit_local_set(buf, fm_l)
+      emit_global_get(buf, 0)
+      emit_local_get(buf, fc_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 16)
+      emit_i32_mul(buf)
+      emit_i32_const(buf, 8)
+      emit_i32_add(buf)
+      emit_i32_add(buf)
+      emit_global_set(buf, 0)
+      emit_heap_grow_after_heap_set(buf, ctx)
+    }
+    emit_local_get(buf, fm_l)
+    emit_i32_wrap_i64(buf)
+    emit_local_get(buf, fc_l)
+    emit_i32_wrap_i64(buf)
+    emit_i32_store(buf, 2, 0)
+    emit_local_get(buf, fm_l)
+    emit_i32_wrap_i64(buf)
+    emit_i32_const(buf, 8)
+    emit_i32_add(buf)
+    emit_local_get(buf, fb_l)
+    emit_i32_wrap_i64(buf)
+    emit_i64_load(buf, 3, 8)
+    emit_i32_wrap_i64(buf)
+    emit_local_get(buf, fc_l)
+    emit_i32_wrap_i64(buf)
+    emit_i32_const(buf, 16)
+    emit_i32_mul(buf)
+    emit_memory_copy(buf)
+    // #2683: the entries were copied. On the UNIQUE path (the handle's rc
+    // word is exactly `1 | 9 << 24`) they MOVE: the handle's count is
+    // zeroed so its release walks nothing, and the storage and handle are
+    // freed. On the shared path every copied value is retained (the
+    // builder keeps its references) and the handle is released normally.
+    if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 {
+      emit_local_get(buf, fb_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 4)
+      emit_i32_sub(buf)
+      emit_i32_load(buf, 2, 0)
+      emit_i32_const(buf, 1 + (9<<24))
+      emit_i32_eq(buf)
+      emit_if_void(buf)
+      emit_local_get(buf, fb_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 0)
+      emit_i32_store(buf, 2, 0)
+      emit_else(buf)
+      emit_i64_const(buf, 0)
+      emit_local_set(buf, fi_l)
+      emit_block_void(buf)
+      emit_loop_void(buf)
+      emit_local_get(buf, fi_l)
+      emit_local_get(buf, fc_l)
+      emit_i64_ge_s(buf)
+      emit_br_if(buf, 1)
+      emit_local_get(buf, fm_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, fi_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 16)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_i64_load(buf, 3, 8)
+      emit_local_set(buf, ft_l)
+      emit_rc_dup_guarded(buf, ft_l, ctx.rc_shadow, ctx.rc_dup_func_idx)
+      emit_local_get(buf, fm_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, fi_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_const(buf, 16)
+      emit_i32_mul(buf)
+      emit_i32_add(buf)
+      emit_i64_load(buf, 3, 16)
+      emit_local_set(buf, ft_l)
+      emit_rc_dup_guarded(buf, ft_l, ctx.rc_shadow, ctx.rc_dup_func_idx)
+      emit_local_get(buf, fi_l)
+      emit_i64_const(buf, 1)
+      emit_i64_add(buf)
+      emit_local_set(buf, fi_l)
+      emit_br(buf, 0)
+      emit_end(buf)
+      emit_end(buf)
+      emit_end(buf)
+      cc_map_release_ptr(buf, fb_l, ctx)
+    } else {
+      ()
+    }
+    // See the matching comment in Map::set above. fb_l (the builder handle)
+    // is dead after the memory_copy (and, on the RC lane, released above)
+    // -- reused here as scratch for the built index pointer.
+    if ctx.map_build_index_func_idx >= 0 {
+      emit_local_get(buf, fc_l)
+      emit_i64_const(buf, 8)
+      emit_i64_ge_s(buf)
+      emit_if_void(buf)
+      emit_local_get(buf, fm_l)
+      emit_local_get(buf, fc_l)
+      emit_call(buf, ctx.map_build_index_func_idx)
+      emit_local_set(buf, fb_l)
+      emit_local_get(buf, fm_l)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, fb_l)
+      emit_i32_wrap_i64(buf)
+      emit_i32_store(buf, 2, 4)
+      emit_end(buf)
+    } else {
+      ()
+    }
+    cc_map_value_out(buf, fm_l, ctx)
+    nl + 5
+  }
+  else if fname == "MapBuilder::has_key" {
+    // #1310: O(n) scan over the handle-indirect storage (same layout
+    // MapBuilder::set's search loop walks above), mirroring
+    // cc_map_has_linear_scan's block-i64 shape.
+    let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+    nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+    let (mhk_eq_fi, _, _) = resolve_func(ctx.func_table, "eq")
+    let mb_l = nl
+    let mk_l = nl + 1
+    let mc_l = nl + 2
+    let st_l = nl + 3
+    let mi_l = nl + 4
+    Array::push(local_names, "__mhk_map")
+    Array::push(local_names, "__mhk_key")
+    Array::push(local_names, "__mhk_cnt")
+    Array::push(local_names, "__mhk_st")
+    Array::push(local_names, "__mhk_i")
+    emit_local_set(buf, mk_l)
+    emit_local_set(buf, mb_l)
+    emit_local_get(buf, mb_l)
+    emit_i64_const(buf, -2)
+    emit_i64_and(buf)
+    emit_local_set(buf, mb_l)
+    emit_local_get(buf, mb_l)
+    emit_i32_wrap_i64(buf)
+    emit_i32_load(buf, 2, 0)
+    emit_i64_extend_i32_u(buf)
+    emit_local_set(buf, mc_l)
+    emit_local_get(buf, mb_l)
+    emit_i32_wrap_i64(buf)
+    emit_i64_load(buf, 3, 8)
+    emit_local_set(buf, st_l)
+    emit_i64_const(buf, 0)
+    emit_local_set(buf, mi_l)
+    emit_block_i64(buf)
+    emit_block_void(buf)
+    emit_loop_void(buf)
+    emit_local_get(buf, mi_l)
+    emit_local_get(buf, mc_l)
+    emit_i64_ge_s(buf)
+    emit_br_if(buf, 1)
+    emit_local_get(buf, st_l)
+    emit_i32_wrap_i64(buf)
+    emit_local_get(buf, mi_l)
+    emit_i32_wrap_i64(buf)
+    emit_i32_const(buf, 16)
+    emit_i32_mul(buf)
+    emit_i32_add(buf)
+    emit_i64_load(buf, 3, 0)
+    emit_local_get(buf, mk_l)
+    emit_call(buf, mhk_eq_fi)
+    emit_i32_wrap_i64(buf)
+    emit_if_void(buf)
+    emit_i64_const(buf, 1)
+    emit_br(buf, 3)
+    emit_end(buf)
+    emit_local_get(buf, mi_l)
+    emit_i64_const(buf, 1)
+    emit_i64_add(buf)
+    emit_local_set(buf, mi_l)
+    emit_br(buf, 0)
+    emit_end(buf)
+    emit_end(buf)
+    emit_i64_const(buf, 0)
+    emit_end(buf)
+    // Under RC a Bool is a TAGGED scalar (n << 1); see Map::has_key above.
+    if ctx.enable_rc {
+      emit_i64_const(buf, 1)
+      emit_i64_shl(buf)
+    } else {
+      ()
+    }
+    // mi_l is dead after the scan: park the answer there across the release.
+    emit_local_set(buf, mi_l)
+    cc_map_release_temp_arg0(buf, Array::get(args, 0), mb_l, ctx)
+    emit_local_get(buf, mi_l)
+    nl + 5
+  }
+  else if fname == "MapBuilder::get" {
+    // #1310: same scan as MapBuilder::has_key, but on a hit the found
+    // value is wrapped via a synthesized `Some(..)` call (same technique
+    // as int_parse_expr / Array::find's Option construction above) —
+    // unlike Map::get, this does NOT use the "0 on miss" raw-value
+    // convention.
+    let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+    nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+    let (mbg_eq_fi, _, _) = resolve_func(ctx.func_table, "eq")
+    let mb_l = nl
+    let mk_l = nl + 1
+    let mc_l = nl + 2
+    let st_l = nl + 3
+    let mi_l = nl + 4
+    let mv_l = nl + 5
+    let res_l = nl + 6
+    Array::push(local_names, "__mbg_map")
+    Array::push(local_names, "__mbg_key")
+    Array::push(local_names, "__mbg_cnt")
+    Array::push(local_names, "__mbg_st")
+    Array::push(local_names, "__mbg_i")
+    Array::push(local_names, "__mbg_val")
+    Array::push(local_names, "__mbg_res")
+    let mut nl2 = nl + 7
+    emit_local_set(buf, mk_l)
+    emit_local_set(buf, mb_l)
+    emit_local_get(buf, mb_l)
+    emit_i64_const(buf, -2)
+    emit_i64_and(buf)
+    emit_local_set(buf, mb_l)
+    emit_local_get(buf, mb_l)
+    emit_i32_wrap_i64(buf)
+    emit_i32_load(buf, 2, 0)
+    emit_i64_extend_i32_u(buf)
+    emit_local_set(buf, mc_l)
+    emit_local_get(buf, mb_l)
+    emit_i32_wrap_i64(buf)
+    emit_i64_load(buf, 3, 8)
+    emit_local_set(buf, st_l)
+    emit_i64_const(buf, 0)
+    emit_local_set(buf, mi_l)
+    nl2 = ce(buf, EIdent("None", -1), local_names, nl2, ctx, ld)
+    emit_local_set(buf, res_l)
+    emit_block_void(buf)
+    emit_loop_void(buf)
+    emit_local_get(buf, mi_l)
+    emit_local_get(buf, mc_l)
+    emit_i64_ge_s(buf)
+    emit_br_if(buf, 1)
+    emit_local_get(buf, st_l)
+    emit_i32_wrap_i64(buf)
+    emit_local_get(buf, mi_l)
+    emit_i32_wrap_i64(buf)
+    emit_i32_const(buf, 16)
+    emit_i32_mul(buf)
+    emit_i32_add(buf)
+    emit_i64_load(buf, 3, 0)
+    emit_local_get(buf, mk_l)
+    emit_call(buf, mbg_eq_fi)
+    emit_i32_wrap_i64(buf)
+    emit_if_void(buf)
+    emit_local_get(buf, st_l)
+    emit_i32_wrap_i64(buf)
+    emit_local_get(buf, mi_l)
+    emit_i32_wrap_i64(buf)
+    emit_i32_const(buf, 16)
+    emit_i32_mul(buf)
+    emit_i32_add(buf)
+    emit_i64_load(buf, 3, 8)
+    emit_local_set(buf, mv_l)
+    // The builder's storage array still owns this reference (retained by
+    // MapBuilder::set's cc_retain_stored_arg when it was stored) -- the
+    // `Some(..)` box below is a SECOND, independent owner, and ctor
+    // construction's arg-retention only dups a projection / borrow-
+    // returning-call / loop-borrowed shape (see the `ce`-mixed comment on
+    // that `if` in the ctor branch above), not a bare synthesized EIdent
+    // like `__mbg_val`. Without this dup a heap-valued V is freed once for
+    // two owners (double-free): the frozen builder and the returned
+    // Option both eventually drop it. Mirrors MapBuilder::set's own
+    // cc_retain_stored_arg dup on the way IN.
+    if ctx.enable_rc {
+      emit_rc_dup_guarded(buf, mv_l, ctx.rc_shadow, ctx.rc_dup_func_idx)
+    } else {
+      ()
+    }
+    nl2 = ce(buf, ECall(EIdent("Some", -1), [EIdent("__mbg_val", -1)], -1), local_names, nl2, ctx, ld)
+    // Same staged-`None` leak as Array::find's hit path (#2671): the
+    // nullary block res_l holds is released before the Some replaces it.
+    cc_hof_release_slot(buf, res_l, ctx)
+    emit_local_set(buf, res_l)
+    emit_br(buf, 2)
+    emit_end(buf)
+    emit_local_get(buf, mi_l)
+    emit_i64_const(buf, 1)
+    emit_i64_add(buf)
+    emit_local_set(buf, mi_l)
+    emit_br(buf, 0)
+    emit_end(buf)
+    emit_end(buf)
+    emit_local_get(buf, res_l)
+    nl2
+  }
+  else if !ctx.enable_rc && fname == "vibe_stdin_provider_read_raw" {
+    // #1539: the component-private provider ABI is tagged-i64 even on the
+    // default linear lane (the opaque provider ID itself stays tagged and
+    // is passed through unchanged). Decode its byte/EOF result for ordinary
+    // source Int semantics. RC already uses tagged Ints and needs no shim.
+    let (read_idx, _, _) = resolve_func(ctx.func_table, fname)
+    let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+    emit_call(buf, read_idx)
+    emit_i64_const(buf, 1)
+    emit_i64_shr_s(buf)
+    nl
+  }
+  else if ctx.enable_rc && (fname == "Env::args_len" || fname == "Env::args_get" || fname == "Fs::exists" || fname == "Fs::is_dir" || fname == "Fs::is_file" || fname == "Fs::stat_token" || fname == "vibe_fs_stat_token_raw" || fname == "Profiler::now_us" || fname == "Profiler::NowUs" || fname == "Profiler::heap_bytes" || fname == "Profiler::HeapBytes" || fname == "Stdin::read_char" || fname == "Console::read_char") {
+    // #705: the raw-ABI host imports speak UNTAGGED integers, but RC values
+    // are tagged (n<<1). These builtins alias their import function
+    // directly, so the generic call path handed the import a TAGGED index
+    // (`Env::args_get(1)` fetched argv[2] — the RC-built compiler wrote its
+    // output to a file named after the ENTRY argument) and treated raw int
+    // results as tagged (halving `Fs::stat_token`/`args_len`). Untag the
+    // int param / tag the int result around the call. String params and
+    // results are packed (ptr<<32)|len in both modes and pass through.
+    // (`sleep`'s (i64)->() import still lacks this shim — it is shadowable
+    // by user code and returns nothing; tracked with #705.)
+    // #768: Fs::is_dir / Fs::is_file were added without this shim -- their
+    // raw `1` (true) is ODD, so a later guarded rc_dup/rc_drop on a binding
+    // holding it mistook it for an RC pointer 0x0 and trapped OOB at
+    // address -4 (lib/@vibe/shell's find() BFS crash).
+    // #2905 (second half): `Console::read_char` ALIASES the same
+    // `vibe.stdin_read_char` import (linked_compile.vibe:11052 maps it to
+    // `stdin_read_char_idx`), so it needs the same result tag. #2911 gave it
+    // the import RESERVATION, which turned "builds clean, fails to validate"
+    // into a module that loads -- and then returned `host >> 1`, because
+    // nothing tagged the raw byte: 'A' (65) read back as 32, 200 as 100,
+    // 1 as 0. A loud failure became a silent wrong answer, which this
+    // repo's triage ranks WORSE, so the reservation fix was only half of it.
+    // Measured on a stage2 at 3260d45, RC lane, host stub returning a fixed
+    // byte; `Stdin::read_char` answered correctly at every value.
+    // The name must ALSO be in `cc_ladder_names` above: `cc_ladder_tests_name`
+    // is an early-out to the resolved-call fallback, so an arm here is
+    // UNREACHABLE for a name the ladder does not list (the #2903 trap).
+    let (hi_idx, _, _) = resolve_func(ctx.func_table, fname)
+    let mut nl = next_local
+    if Array::length(args) > 0 {
+      nl = ce(buf, Array::get(args, 0), local_names, nl, ctx, ld)
+      if fname == "Env::args_get" {
+        emit_i64_const(buf, 1)
+        emit_i64_shr_s(buf)
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    emit_call(buf, hi_idx)
+    if fname == "Env::args_get" {
+      ()
+    } else {
+      emit_i64_const(buf, 1)
+      emit_i64_shl(buf)
+    }
+    nl
+  }
+  else if ctx.enable_rc && (fname == "vibe_http_response_status_raw" || fname == "vibe_http_response_body_raw" || fname == "vibe_http_close_raw") {
+    // #794: same raw-ABI shim as the #705 block above for the HTTP client
+    // host imports. The handle param is a guest-tagged Int (untag it);
+    // response_status returns a raw Int (tag it). response_body returns a
+    // packed string (same in both modes) and close returns nothing --
+    // leaving a raw int result untagged would repeat the #768 Fs::is_dir
+    // odd-raw-value RC-pointer misread (raw handle 1 is odd).
+    let (hi_idx, _, _) = resolve_func(ctx.func_table, fname)
+    let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+    emit_i64_const(buf, 1)
+    emit_i64_shr_s(buf)
+    emit_call(buf, hi_idx)
+    if fname == "vibe_http_response_status_raw" {
+      emit_i64_const(buf, 1)
+      emit_i64_shl(buf)
+    } else if fname == "vibe_http_close_raw" {
+      // (i64) -> () import: the surrounding expression still expects a
+      // value, so push the Unit 0 the generic returns==0 path would.
+      emit_i64_const(buf, 0)
+    } else {
+      ()
+    }
+    nl
+  }
+  else if ctx.enable_rc && fname == "vibe_http_response_header_raw" {
+    // #794: (handle: Int -> untag, name: String -> pass) -> String (pass).
+    let (hi_idx, _, _) = resolve_func(ctx.func_table, fname)
+    let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+    emit_i64_const(buf, 1)
+    emit_i64_shr_s(buf)
+    nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+    emit_call(buf, hi_idx)
+    nl
+  }
+  else if ctx.enable_rc && fname == "vibe_http_request_raw" {
+    // #794: four packed-string params pass through; the raw Int handle
+    // result must be tagged (it is 1-based, so leaving it raw hands the RC
+    // machinery an odd non-pointer -- the exact #768 failure shape).
+    let (hi_idx, _, _) = resolve_func(ctx.func_table, fname)
+    let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+    nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+    nl = ce(buf, Array::get(args, 2), local_names, nl, ctx, ld)
+    nl = ce(buf, Array::get(args, 3), local_names, nl, ctx, ld)
+    emit_call(buf, hi_idx)
+    emit_i64_const(buf, 1)
+    emit_i64_shl(buf)
+    nl
+  }
+  else if ctx.enable_rc && fname == "vibe_sh_capture_raw" {
+    // #865: same raw-ABI shim shape as vibe_http_request_raw above -- one
+    // packed-string param passes through; the raw Int handle result must
+    // be tagged (untagged, it's the same #768 odd-raw-value RC-pointer
+    // misread the http/#705 shims above all guard against).
+    let (hi_idx, _, _) = resolve_func(ctx.func_table, fname)
+    let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+    emit_call(buf, hi_idx)
+    emit_i64_const(buf, 1)
+    emit_i64_shl(buf)
+    nl
+  }
+  else if ctx.enable_rc && (fname == "vibe_sh_capture_exit_code_raw" || fname == "vibe_sh_capture_stdout_raw" || fname == "vibe_sh_capture_stderr_raw" || fname == "vibe_sh_capture_close_raw" || fname == "vibe_process_exit_raw") {
+    // #865: same raw-ABI shim shape as the vibe_http_response_status_raw /
+    // vibe_http_response_body_raw / vibe_http_close_raw group above -- the
+    // handle param is a guest-tagged Int (untag it); exit_code returns a
+    // raw Int (tag it), stdout/stderr return packed strings (same in both
+    // modes, pass through), close returns nothing (push Unit 0).
+    // #903: vibe_process_exit_raw takes the same shape as close (one
+    // tagged-Int arg to untag, no meaningful return -- the host runner
+    // traps/exits before ever returning, but codegen still needs SOME
+    // Unit value on the stack for the (never-reached) fallthrough).
+    let (hi_idx, _, _) = resolve_func(ctx.func_table, fname)
+    let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+    emit_i64_const(buf, 1)
+    emit_i64_shr_s(buf)
+    emit_call(buf, hi_idx)
+    if fname == "vibe_sh_capture_exit_code_raw" {
+      emit_i64_const(buf, 1)
+      emit_i64_shl(buf)
+    } else if fname == "vibe_sh_capture_close_raw" || fname == "vibe_process_exit_raw" {
+      emit_i64_const(buf, 0)
+    } else {
+      ()
+    }
+    nl
+  }
+  else if ctx.enable_rc && cc_raw_abi_shim_applies(ctx.func_table, ctx.func_offset, fname) {
+    // #930: same raw-ABI shim shape as the #705 Fs::exists family and the
+    // #865 vibe_process_exit_raw case above -- these three were registered
+    // straight into the func table (linked_compile's name->import map) with
+    // NO shim, so the generic call path handed the host a guest-TAGGED int
+    // (write_char(65) wrote byte 130 -- "42" printed as "hd" -- and
+    // read_stream(n) read 2n bytes). Untag the int param; write_char's
+    // void import pushes Unit 0, read_stream's packed-string result passes
+    // through unchanged (same in both modes). `sleep` has the exact same
+    // gap -- #705's own comment flagged it ("still lacks this shim") --
+    // and slept for 2x the requested duration under RC (`sleep_ms(500)`
+    // took ~1000ms wall time) until folded into this group; same void
+    // shape as write_char.
+    let (hi_idx, _, _) = resolve_func(ctx.func_table, fname)
+    let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+    emit_i64_const(buf, 1)
+    emit_i64_shr_s(buf)
+    emit_call(buf, hi_idx)
+    // The read half returns a packed string; the write halves are void and
+    // need the Unit 0 pushed for them. #1460 keeps both spellings of the
+    // read on the value-returning side.
+    if fname == "Stdin::read_stream" || fname == "Console::read_stream" {
+      ()
+    } else {
+      emit_i64_const(buf, 0)
+    }
+    nl
+  }
+  else if ctx.enable_rc && fname == "vibe_tcp_connect_raw" {
+    // Same raw-ABI shim shape as the #705/#930 families above -- registered
+    // straight into the func table (linked_compile's name->import map) with
+    // no shim, so under RC the generic call path handed the host a
+    // guest-TAGGED port (tcp_connect("127.0.0.1", 7) dialed port 14). Host
+    // arg passes through (packed string); the tagged Int port must be
+    // untagged; the raw Int handle result must be tagged (same #768
+    // odd-raw-value RC-pointer-misread hazard the other handle-returning
+    // shims above guard against).
+    let (hi_idx, _, _) = resolve_func(ctx.func_table, fname)
+    let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+    nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+    emit_i64_const(buf, 1)
+    emit_i64_shr_s(buf)
+    emit_call(buf, hi_idx)
+    emit_i64_const(buf, 1)
+    emit_i64_shl(buf)
+    nl
+  }
+  else if ctx.enable_rc && fname == "vibe_tcp_read_raw" {
+    // Both params are guest-tagged Ints (handle, max_bytes) -- untag each;
+    // the packed-string result passes through unchanged (same in both modes).
+    let (hi_idx, _, _) = resolve_func(ctx.func_table, fname)
+    let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+    emit_i64_const(buf, 1)
+    emit_i64_shr_s(buf)
+    nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+    emit_i64_const(buf, 1)
+    emit_i64_shr_s(buf)
+    emit_call(buf, hi_idx)
+    nl
+  }
+  else if ctx.enable_rc && fname == "vibe_tcp_write_raw" {
+    // handle: Int -> untag; data: String -> pass; void import, push Unit 0.
+    let (hi_idx, _, _) = resolve_func(ctx.func_table, fname)
+    let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+    emit_i64_const(buf, 1)
+    emit_i64_shr_s(buf)
+    nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+    emit_call(buf, hi_idx)
+    emit_i64_const(buf, 0)
+    nl
+  }
+  else if ctx.enable_rc && fname == "vibe_tcp_close_raw" {
+    // handle: Int -> untag; void import, push Unit 0. Tolerates unknown
+    // handles host-side (a double-close must not kill the guest).
+    let (hi_idx, _, _) = resolve_func(ctx.func_table, fname)
+    let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+    emit_i64_const(buf, 1)
+    emit_i64_shr_s(buf)
+    emit_call(buf, hi_idx)
+    emit_i64_const(buf, 0)
+    nl
+  }
+  else if (fname == "println" || fname == "print") && !cc_ft_has(ctx.func_table, fname) {
+    // #929: the println/print checker builtins had NO linear-lane lowering
+    // at all -- builtin_registry marks them in_linear_table=false on the
+    // assumption that "a real prelude source function" serves the linear
+    // lane (see the FixedArray comment above), but that function lives in
+    // @vibe/io, so any program that does not import it died at codegen
+    // with "undefined variable (local): println @call". When no SOURCE
+    // definition is merged (the cc_ft_has guard keeps @vibe/io's println
+    // and user shadows winning), lower directly onto the Stdout host
+    // imports on BOTH lanes: the packed-string arg passes through to
+    // write_stream unchanged (same in both modes), and println appends a
+    // RAW newline byte via write_char -- a direct emit_call to the import
+    // index bypasses each lane's arg conversion (the RC/raw ABI hands the
+    // host raw ints anyway, and the non-RC lane's untagging lives in the
+    // generic call path we are NOT going through), so the raw byte value
+    // is correct on BOTH lanes. Import gating in linked_compile.vibe
+    // includes println/print for exactly this path.
+    let (ws_idx, _, _) = resolve_func(ctx.func_table, "Stdout::write_stream")
+    let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+    emit_call(buf, ws_idx)
+    if fname == "println" {
+      let (wc_idx, _, _) = resolve_func(ctx.func_table, "Stdout::write_char")
+      emit_i64_const(buf, 10)
+      emit_call(buf, wc_idx)
+    } else {
+      ()
+    }
+    emit_i64_const(buf, 0)
+    nl
+  }
+  else if fname == "__rec_field" {
+    let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+    let idx_expr = Array::get(args, 1)
+    let field_idx = get_eint_value(idx_expr)
+    emit_i64_const(buf, -2)
+    emit_i64_and(buf)
+    emit_i32_wrap_i64(buf)
+    emit_i64_load(buf, 3, 8 + field_idx * 8)
+    nl
+  }
+  else if fname == "__len" {
+    let (sl_idx, _, _) = resolve_func(ctx.func_table, "String::length")
+    let (bl_idx, _, _) = resolve_func(ctx.func_table, "Bytes::length")
+    let (al_idx, _, _) = resolve_func(ctx.func_table, "Array::length")
+    let obj_local = next_local
+    let ptr_local = next_local + 1
+    let cap_local = next_local + 2
+    Array::push(local_names, "__len_obj")
+    Array::push(local_names, "__len_ptr")
+    Array::push(local_names, "__len_cap")
+    let mut nl = next_local + 3
+    nl = ce(buf, Array::get(args, 0), local_names, nl, ctx, ld)
+    emit_local_set(buf, obj_local)
+    emit_local_get(buf, obj_local)
+    emit_i64_const(buf, 32)
+    emit_i64_shr_s(buf)
+    emit_i64_eqz(buf)
+    emit_if_i64(buf)
+    emit_local_get(buf, obj_local)
+    emit_local_set(buf, ptr_local)
+    emit_local_get(buf, ptr_local)
+    emit_i32_wrap_i64(buf)
+    emit_i32_load(buf, 2, 0)
+    emit_i64_extend_i32_u(buf)
+    emit_local_set(buf, cap_local)
+    emit_local_get(buf, cap_local)
+    emit_i32_wrap_i64(buf)
+    emit_i32_const(buf, 2147483647)
+    emit_i32_gt_u(buf)
+    emit_if_i64(buf)
+    emit_local_get(buf, obj_local)
+    emit_call(buf, bl_idx)
+    emit_else(buf)
+    emit_local_get(buf, obj_local)
+    emit_call(buf, al_idx)
+    emit_end(buf)
+    emit_else(buf)
+    emit_local_get(buf, obj_local)
+    emit_call(buf, sl_idx)
+    emit_end(buf)
+    nl
+  }
+  else if fname == "__index" {
+    let (sg_idx, _, _) = resolve_func(ctx.func_table, "String::char_code_at")
+    let (bg_idx, _, _) = resolve_func(ctx.func_table, "Bytes::get")
+    let (ag_idx, _, _) = resolve_func(ctx.func_table, "Array::get")
+    let obj_local = next_local
+    let idx_local = next_local + 1
+    let ptr_local = next_local + 2
+    let cap_local = next_local + 3
+    Array::push(local_names, "__index_obj")
+    Array::push(local_names, "__index_idx")
+    Array::push(local_names, "__index_ptr")
+    Array::push(local_names, "__index_cap")
+    let mut nl = next_local + 4
+    nl = ce(buf, Array::get(args, 0), local_names, nl, ctx, ld)
+    emit_local_set(buf, obj_local)
+    nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+    emit_local_set(buf, idx_local)
+    emit_local_get(buf, obj_local)
+    emit_i64_const(buf, 32)
+    emit_i64_shr_s(buf)
+    emit_i64_eqz(buf)
+    emit_if_i64(buf)
+    emit_local_get(buf, obj_local)
+    emit_local_set(buf, ptr_local)
+    emit_local_get(buf, ptr_local)
+    emit_i32_wrap_i64(buf)
+    emit_i32_load(buf, 2, 0)
+    emit_i64_extend_i32_u(buf)
+    emit_local_set(buf, cap_local)
+    emit_local_get(buf, cap_local)
+    emit_i32_wrap_i64(buf)
+    emit_i32_const(buf, 2147483647)
+    emit_i32_gt_u(buf)
+    emit_if_i64(buf)
+    emit_local_get(buf, obj_local)
+    emit_local_get(buf, idx_local)
+    emit_call(buf, bg_idx)
+    emit_else(buf)
+    emit_local_get(buf, obj_local)
+    emit_local_get(buf, idx_local)
+    emit_call(buf, ag_idx)
+    emit_end(buf)
+    emit_else(buf)
+    emit_local_get(buf, obj_local)
+    emit_local_get(buf, idx_local)
+    emit_call(buf, sg_idx)
+    emit_end(buf)
+    nl
+  }
+  else if fname == "__set_field" {
+    let field = get_estring_value(Array::get(args, 1))
+    let fc = String::char_code_at(field, 0)
+    let is_numeric = fc >= 48 && fc <= 57
+    if is_numeric {
+      let mut vi = 0
+      let mut vp = 0
+      while vp < String::length(field) {
+        vi = vi * 10 + (String::char_code_at(field, vp) - 48)
+        vp = vp + 1
+      }
+      if cc_setf_releases(args, local_names, ctx) {
+        cc_setf_release_store(buf, args, vi * 8, local_names, next_local, ctx, ld, ce)
+      } else {
+        let mut nl = next_local
+        nl = ce(buf, Array::get(args, 0), local_names, nl, ctx, ld)
+        emit_i64_const(buf, -2)
+        emit_i64_and(buf)
+        emit_i32_wrap_i64(buf)
+        nl = ce(buf, Array::get(args, 2), local_names, nl, ctx, ld)
+        nl = cc_retain_stored_arg(buf, Array::get(args, 2), local_names, nl, ctx)
+        emit_i64_store(buf, 3, vi * 8)
+        emit_i64_const(buf, 0)
+        nl
+      }
+    } else {
+      // #722: same struct-tag dispatch as the EDot read path
+      // (compile_expr_tail4.vibe) — a same-named `mut` field can live at a
+      // different slot in another struct, and the static first-match store
+      // would corrupt the wrong slot.
+      let cands = struct_field_candidates(ctx.ctor_table, field)
+      if Array::length(cands) == 0 {
+        throw(String::concat("unknown struct field: ", field))
+      }
+      let (_, idx0) = Array::get(cands, 0)
+      let dispatch = struct_field_dispatch_cases(cands)
+      if Array::length(dispatch) == 0 && cc_setf_releases(args, local_names, ctx) {
+        cc_setf_release_store(buf, args, 8 + idx0 * 8, local_names, next_local, ctx, ld, ce)
+      } else if Array::length(dispatch) == 0 {
+        let mut nl = next_local
+        nl = ce(buf, Array::get(args, 0), local_names, nl, ctx, ld)
+        emit_i64_const(buf, -2)
+        emit_i64_and(buf)
+        emit_i32_wrap_i64(buf)
+        nl = ce(buf, Array::get(args, 2), local_names, nl, ctx, ld)
+        nl = cc_retain_stored_arg(buf, Array::get(args, 2), local_names, nl, ctx)
+        emit_i64_store(buf, 3, 8 + idx0 * 8)
+        emit_i64_const(buf, 0)
+        nl
+      } else {
+        let mut nl = next_local
+        nl = ce(buf, Array::get(args, 0), local_names, nl, ctx, ld)
+        emit_i64_const(buf, -2)
+        emit_i64_and(buf)
+        let obj_l = nl
+        Array::push(local_names, "__setf_obj")
+        emit_local_set(buf, obj_l)
+        nl = ce(buf, Array::get(args, 2), local_names, nl + 1, ctx, ld)
+        nl = cc_retain_stored_arg(buf, Array::get(args, 2), local_names, nl, ctx)
+        let val_l = nl
+        Array::push(local_names, "__setf_val")
+        emit_local_set(buf, val_l)
+        // #3140: the slot differs per struct, so each arm swaps its own.
+        let release = cc_setf_releases(args, local_names, ctx)
+        let old_l = nl + 1
+        if release {
+          Array::push(local_names, "__setf_old")
+        } else {
+          ()
+        }
+        let mut di = 0
+        while di < Array::length(dispatch) {
+          let (dtag, didx) = Array::get(dispatch, di)
+          emit_local_get(buf, obj_l)
+          emit_i32_wrap_i64(buf)
+          emit_i32_load(buf, 2, 0)
+          emit_i32_const(buf, dtag)
+          emit_i32_eq(buf)
+          emit_if_void(buf)
+          if release {
+            cc_setf_swap(buf, obj_l, val_l, old_l, 8 + didx * 8, ctx)
+          } else {
+            emit_local_get(buf, obj_l)
+            emit_i32_wrap_i64(buf)
+            emit_local_get(buf, val_l)
+            emit_i64_store(buf, 3, 8 + didx * 8)
+          }
+          emit_else(buf)
+          di = di + 1
+        }
+        if release {
+          cc_setf_swap(buf, obj_l, val_l, old_l, 8 + idx0 * 8, ctx)
+        } else {
+          emit_local_get(buf, obj_l)
+          emit_i32_wrap_i64(buf)
+          emit_local_get(buf, val_l)
+          emit_i64_store(buf, 3, 8 + idx0 * 8)
+        }
+        let mut de = 0
+        while de < Array::length(dispatch) {
+          emit_end(buf)
+          de = de + 1
+        }
+        emit_i64_const(buf, 0)
+        if release {
+          nl + 2
+        } else {
+          nl + 1
+        }
+      }
+    }
+  }
+  else if fname == "FixedArray::length" || fname == "Int64Array::length" {
+    ce(buf, ECall(EIdent("Array::length", -1), args, -1), local_names, next_local, ctx, ld)
+  }
+  else if fname == "FixedArray::get" || fname == "Int64Array::get" {
+    ce(buf, ECall(EIdent("Array::get", -1), args, -1), local_names, next_local, ctx, ld)
+  }
+  else if fname == "FixedArray::set" || fname == "FixedArray::unsafe_set" || fname == "Int64Array::set" {
+    ce(buf, ECall(EIdent("Array::set", -1), args, -1), local_names, next_local, ctx, ld)
+  }
+  else if fname == "FixedArray::make" || fname == "Int64Array::make" {
+    let n_expr = Array::get(args, 0)
+    let init_expr = Array::get(args, 1)
+    let loop_body = ESeq(ECall(EIdent("Array::push", -1), [
+      EIdent("__fam_arr", -1),
+      EIdent("__fam_init", -1)
+    ], -1), EAssign("__fam_i", EBinOp("+", EIdent("__fam_i", -1), EInt(1), -1), EUnit))
+    let synth = ELet("__fam_n", n_expr, ELet("__fam_init", init_expr, ELetMut("__fam_arr", EArray(array_empty()), ELetMut("__fam_i", EInt(0), ESeq(EWhile(EBinOp("<", EIdent("__fam_i", -1), EIdent("__fam_n", -1), -1), loop_body), EIdent("__fam_arr", -1)), -1), -1), -1), -1)
+    // review-lint: allow-fixed-synthetic-name
+    ce(buf, synth, local_names, next_local, ctx, ld)
+  }
+  else if fname == "FixedArray::blit" {
+    // blit(dst, dst_off, src, src_off, len): element-by-element copy, same
+    // semantics as gc/backend_call.vibe's FixedArray::blit.
+    let dst_expr = Array::get(args, 0)
+    let doff_expr = Array::get(args, 1)
+    let src_expr = Array::get(args, 2)
+    let soff_expr = Array::get(args, 3)
+    let len_expr = Array::get(args, 4)
+    let loop_body = ESeq(ECall(EIdent("Array::set", -1), [
+      EIdent("__fb_dst", -1),
+      EBinOp("+", EIdent("__fb_doff", -1), EIdent("__fb_i", -1), -1),
+      ECall(EIdent("Array::get", -1), [
+        EIdent("__fb_src", -1),
+        EBinOp("+", EIdent("__fb_soff", -1), EIdent("__fb_i", -1), -1)
+      ], -1)
+    ], -1), EAssign("__fb_i", EBinOp("+", EIdent("__fb_i", -1), EInt(1), -1), EUnit))
+    let synth = ELet("__fb_dst", dst_expr, ELet("__fb_doff", doff_expr, ELet("__fb_src", src_expr, ELet("__fb_soff", soff_expr, ELet("__fb_len", len_expr, ELetMut("__fb_i", EInt(0), ESeq(EWhile(EBinOp("<", EIdent("__fb_i", -1), EIdent("__fb_len", -1), -1), loop_body), EUnit), -1), -1), -1), -1), -1), -1)
+    // review-lint: allow-fixed-synthetic-name
+    ce(buf, synth, local_names, next_local, ctx, ld)
+  }
+  else if fname == "Bytes::fill" {
+    // fill(dst, value, count): append `count` copies of `value` to dst.
+    // gc-only in the builtin registry; synthesized for the linear backend
+    // via Bytes::push (same technique as FixedArray::make).
+    let dst_expr = Array::get(args, 0)
+    let val_expr = Array::get(args, 1)
+    let count_expr = Array::get(args, 2)
+    let loop_body = ESeq(ECall(EIdent("Bytes::push", -1), [
+      EIdent("__bf2_dst", -1),
+      EIdent("__bf2_val", -1)
+    ], -1), EAssign("__bf2_i", EBinOp("+", EIdent("__bf2_i", -1), EInt(1), -1), EUnit))
+    let synth = ELet("__bf2_dst", dst_expr, ELet("__bf2_val", val_expr, ELet("__bf2_count", count_expr, ELetMut("__bf2_i", EInt(0), ESeq(EWhile(EBinOp("<", EIdent("__bf2_i", -1), EIdent("__bf2_count", -1), -1), loop_body), EUnit), -1), -1), -1), -1)
+    // review-lint: allow-fixed-synthetic-name
+    ce(buf, synth, local_names, next_local, ctx, ld)
+  }
+  else if fname == "Bytes::new" && Array::length(args) == 1 {
+    // Bytes::new(n): length-n zero-filled buffer (MoonBit semantics). The
+    // runtime bytes_new takes no operands, so the generic path used to emit
+    // the argument and then call it anyway — the operand stayed stranded on
+    // the value stack and the whole module failed validation at
+    // instantiation time. Synthesize new() + a zero-push loop instead.
+    ce(buf, sized_bytes_new_expr(Array::get(args, 0)), local_names, next_local, ctx, ld)
+  } else {
+    cc_compile_resolved_call(buf, resolved_name, args, local_names, next_local, ctx, ld, ce, fn_idx_in_list, local_idx_hint)
+  }
+}

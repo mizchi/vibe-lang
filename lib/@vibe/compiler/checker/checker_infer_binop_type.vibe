@@ -1,0 +1,2327 @@
+// lib/@vibe/compiler/checker/checker.vibe — infer binop type.
+
+import @vibe/compiler/checker/annotations {
+  collect_formal_kind_uses,
+  collect_hkt_related_formals,
+  collect_hkt_related_formals_in_type,
+  fapp_applied_marker_prefix,
+  fapp_formal_marker_prefix,
+  fapp_unapplied_marker_prefix,
+  formal_application_error as annotations_formal_application_error,
+  formals_contain_source_name,
+  report_formal_applications_across as annotations_report_formal_applications_across,
+  report_kinded_formal_applications,
+  report_map_key_types as annotations_report_map_key_types,
+  report_mixed_kind_let_annotation,
+  report_one_type_argument_kind
+}
+
+import @vibe/compiler/checker/type_relations {
+  check_assignable as type_relations_check_assignable,
+  check_assignable_for as type_relations_check_assignable_for,
+  check_assignable_set_end as type_relations_check_assignable_set_end,
+  detect_narrowed_generic_mismatch_for,
+  head_kind,
+  row_labels,
+  type_fully_concrete,
+  type_is_ground
+}
+
+import @vibe/compiler/checker/resume {
+  arm_first_bare_tail,
+  arm_refs_resume_value,
+  arm_tail_all_return,
+  pat_binds_resume as resume_pat_binds_resume,
+  reject_resume_in_error_arm,
+  reject_resume_outside_handler as resume_reject_resume_outside_handler,
+  resume_walk_bind_pat
+}
+
+import @vibe/compiler/checker/diagnostics {
+  attach_unlocated_decl_name_marker as diagnostics_attach_unlocated_decl_name_marker, off_marker, off_marker_len
+}
+
+import @vibe/compiler/core {
+  Expr,
+  Pat,
+  Stmt,
+  Subst,
+  Type,
+  TypeDef,
+  TypeEnv,
+  TypeExpr,
+  apply_type_constructor,
+  array_receiver_reads,
+  builtin_value_form_arity,
+  canonical_builtin_name,
+  collect_tvars,
+  compiler_owned_type_arity,
+  env_bind,
+  env_bind_mut,
+  env_cache_binding,
+  env_has_reexport_surface_binding,
+  env_lookup,
+  env_name_index_at,
+  env_name_index_length,
+  env_type_defs,
+  exception_effect_kind,
+  exception_effect_labels_equal,
+  exception_kind_resolution,
+  exception_kind_resolution_count,
+  exception_kind_resolution_record,
+  exception_kind_resolutions_clear,
+  exception_label_kind,
+  exception_row_kinds,
+  exception_row_resolved,
+  expr_child_at,
+  expr_children,
+  expr_children_pop,
+  expr_children_push,
+  expr_children_top,
+  find_enum_typedef,
+  find_typedef,
+  fresh_var,
+  generalize,
+  generalize_except,
+  hkt_apply_ctor,
+  instantiate,
+  is_alias_constructor,
+  is_builtin_type_name,
+  is_exception_effect_name,
+  is_exception_label,
+  is_exception_throw_handler_name,
+  is_exception_throw_operation,
+  is_hkt_app,
+  let_rec_binding_anchor,
+  refine_trait_bounds_from_receiver,
+  registry_builtin_arity,
+  registry_builtin_param_type,
+  registry_builtin_scheme,
+  resolve_builtin,
+  resolve_type_alias_params,
+  resolve_type_constructor_args,
+  strip_published_formal_suffixes,
+  subst_add_bound,
+  subst_apply,
+  subst_apply_except,
+  subst_bounds_for,
+  subst_lookup,
+  trait_decl_params,
+  trait_defined,
+  trait_method_sig_binders_deep,
+  trait_method_sig_deep,
+  trait_supers,
+  type_constructor_name,
+  type_implements_trait,
+  type_name_has_iterator_impl,
+  type_to_string,
+  typed_lowering_arg_offset,
+  types_equal,
+  unify
+}
+
+import @vibe/ast {
+  impl_encode_name,
+  impl_method_owner_head,
+  index_site_offset,
+  is_builtin_ref_offset,
+  trait_ref_args,
+  trait_ref_from_key,
+  trait_ref_key,
+  trait_ref_name,
+  type_param_arity,
+  type_param_name
+}
+
+import @vibe/parser {
+  lex, parse_type, print_type_expr
+}
+
+import ./builtins.vibe {
+  lookup_builtin
+}
+
+import @vibe/core {
+  array_empty, str_lt, struct MutMap
+}
+
+import ./checker_exhaustive.vibe {
+  match_nonexhaustive_witness
+}
+
+import ./checker_pattern.vibe {
+  check_pattern, pat_has_unsupported_or_binding
+}
+
+import ./checker_resolve.vibe {
+  collect_unknown_type_names,
+  collect_unknown_type_names_regionwise,
+  is_wellknown_nominal_head,
+  resolve_type_expr,
+  resolve_type_expr_shadowed,
+  subst_type_params
+}
+
+import ./checker_spawnable.vibe {
+  check_spawnable_captures, closure_bare_callee_names, closure_capture_facts, closure_free_names, spawn_caps_marker, spawn_safe_marker
+}
+
+import ./builtin_call_arms.vibe {
+  builtin_call_arm, builtin_resolves_at
+}
+
+import ./checker_effects.vibe {
+  row_items_top_level, throw_payload_site_key
+}
+
+import ./checker_escape.vibe {
+  diag_report_into, expr_free_in, mut_binding_escapes
+}
+
+import ./checker_builtin_arg_head_rest.vibe {
+  head_fold_char, is_logic_binop, is_order_binop
+}
+
+import ./checker_closure_capture_row.vibe {
+  tail_expr_off
+}
+
+import ./checker_eq_unbounded_formal_msg.vibe {
+  call_formal_key,
+  callee_formal_marked_texts,
+  callee_formal_texts,
+  callee_inst_types_cell,
+  check_assignable_for,
+  decl_formal_ids,
+  effect_fresh_targs,
+  eq_unbounded_formal_msg,
+  eq_unbounded_formals_in,
+  formal_var_binder_reps,
+  formal_var_display_subst,
+  formal_var_reps,
+  generic_decl_of_scheme,
+  published_row_formal_ids,
+  resolve_callee_formal_args,
+  scheme_var_types_from,
+  struct_field_names_match
+}
+
+import ./checker_merge_capture_provenance.vibe {
+  eq_formal_row_of, unsent_open_formal_vars
+}
+
+/// #3051: an exported generic binding is published with each formal its row
+/// names spelled `NAME$K`, K being the formal's index in the scheme's
+/// quantifier list. The row is the one part of a published type that names a
+/// formal by spelling rather than by variable, and it reaches the importer
+/// verbatim, so this is the whole transport: no interface field, no codec
+/// change. `type_to_string` renders the spelling back as `NAME`.
+export fn publish_row_formals(t: Type, val: Expr, env: TypeEnv, defs: Array[TypeDef]) -> Type {
+  // The declaration whose formals the row names: the value itself, or -- for
+  // `export let get = get0` -- the aliased binding's, whose formals sit at the
+  // same positions (Codex on #3056).
+  let decl = match val {
+    EFn(tps, _, params, ret, _, _) => if Array::length(tps) == 0 {
+      None
+    } else {
+      Some((tps, params, ret))
+    },
+    EIdent(src, _) => match env_lookup(env, src) {
+      Some(src_scheme) => generic_decl_of_scheme(src_scheme),
+      None => None
+    },
+    _ => None
+  }
+  match (t, decl) {
+    (CtForAll(vars, bounds, CtFn(sparams, sret, Some(row0))), Some((tps, params, ret))) => {
+      // An aliased row may already carry markers indexed against its source's
+      // quantifier list; they are respelled against this scheme's.
+      let row = strip_published_formal_suffixes(row0)
+      let name_ids: Array[(String, Int)] = []
+      decl_formal_ids(tps, params, ret, sparams, sret, defs, name_ids)
+      let renames: Array[(String, String)] = []
+      let mut ni = 0
+      while ni < Array::length(name_ids) {
+        let (n, id) = Array::get(name_ids, ni)
+        let mut vi = 0
+        while vi < Array::length(vars) {
+          if Array::get(vars, vi) == id {
+            Array::push(renames, (n, String::concat(n, String::concat("$", __to_string(vi)))))
+          }
+          vi = vi + 1
+        }
+        ni = ni + 1
+      }
+      if Array::length(renames) == 0 {
+        t
+      } else {
+        CtForAll(vars, bounds, CtFn(sparams, sret, Some(rename_row_bracket_words(row, renames))))
+      }
+    },
+    // An alias of an IMPORTED generic has no declaration here, only the
+    // source's published scheme, whose markers index the SOURCE's quantifier
+    // list. `let_generalize` quantifies the alias afresh, possibly in another
+    // order (`f[A, B](b: B, a: A)` aliased generalizes as `B, A`), so each
+    // marker is respelled against the variable it now stands for, found by
+    // position in the two signatures (Codex on #3056).
+    (CtForAll(vars, bounds, CtFn(sparams, sret, Some(row0))), None) => match val {
+      EIdent(src, _) => match env_lookup(env, src) {
+        Some(CtForAll(src_vars, _, src_body)) => CtForAll(vars, bounds, CtFn(sparams, sret, Some(respell_imported_markers(row0, src_vars, src_body, vars, CtFn(sparams, sret, None))))),
+        _ => t
+      },
+      _ => t
+    },
+    _ => t
+  }
+}
+
+/// `row` with each published marker `NAME$K`, K indexing `src_vars`, respelled
+/// `NAME$K2`, K2 indexing `vars` at the variable found in the same position of
+/// `body` as the source variable's in `src_body`. A marker with no such
+/// variable keeps its base name only.
+fn respell_imported_markers(row: String, src_vars: Array[Int], src_body: Type, vars: Array[Int], body: Type) -> String {
+  let marked: Array[(String, Int)] = []
+  published_row_formal_ids(Some(row), src_vars, marked)
+  if Array::length(marked) == 0 {
+    row
+  } else {
+    let pairs: Array[(Int, Type)] = []
+    scheme_var_types_from(src_body, body, pairs)
+    let renames: Array[(String, String)] = []
+    let mut mi = 0
+    while mi < Array::length(marked) {
+      let (w, src_id) = Array::get(marked, mi)
+      let base = String::substring(w, 0, String::last_index_of(w, "$"))
+      let mut pi = 0
+      while pi < Array::length(pairs) {
+        match Array::get(pairs, pi) {
+          (sid, CtVar(aid)) => if sid == src_id {
+            let mut vi = 0
+            while vi < Array::length(vars) {
+              if Array::get(vars, vi) == aid {
+                Array::push(renames, (base, String::concat(base, String::concat("$", __to_string(vi)))))
+              }
+              vi = vi + 1
+            }
+          },
+          _ => ()
+        }
+        pi = pi + 1
+      }
+      mi = mi + 1
+    }
+    rename_row_bracket_words(strip_published_formal_suffixes(row), renames)
+  }
+}
+
+/// `row` with every whole word inside a label's brackets renamed per
+/// `renames`; the effect names outside brackets are left alone.
+fn rename_row_bracket_words(row: String, renames: Array[(String, String)]) -> String {
+  let n = String::length(row)
+  let sb = StringBuilder::new()
+  let mut depth = 0
+  let mut start = 0 - 1
+  let mut i = 0
+  while i <= n {
+    let c = if i < n {
+      String::char_code_at(row, i)
+    } else {
+      0
+    }
+    let word_char = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 95
+    if word_char {
+      if start < 0 {
+        start = i
+      }
+    } else {
+      if start >= 0 {
+        let w = String::substring(row, start, i)
+        let mut rep = w
+        if depth > 0 {
+          let mut k = 0
+          while k < Array::length(renames) {
+            let (from, to) = Array::get(renames, k)
+            if from == w {
+              rep = to
+            }
+            k = k + 1
+          }
+        }
+        StringBuilder::push(sb, rep)
+        start = 0 - 1
+      }
+      if c == 91 {
+        depth = depth + 1
+      } else if c == 93 {
+        depth = depth - 1
+      }
+      if i < n {
+        StringBuilder::push(sb, String::substring(row, i, i + 1))
+      }
+    }
+    i = i + 1
+  }
+  StringBuilder::freeze(sb)
+}
+
+/// #3053: every recorded generic call's formal bindings under the final
+/// substitution, keyed by `call_formal_key`, for the effects pass
+/// to instantiate the callee's row at that call. Only the call's own scheme is
+/// read here: a call whose scheme has no recorded declaration contributes
+/// nothing, so its row stays as written (open) rather than being guessed.
+export fn callee_formal_bindings(defs: Array[TypeDef], s: Subst) -> Array[(String, Array[(String, String)])] {
+  let out: Array[(String, Array[(String, String)])] = []
+  let ds = formal_var_display_subst(s)
+  let mut i = 0
+  while i < Array::length(callee_inst_types_cell) {
+    let (off, scheme, inst, cname) = Array::get(callee_inst_types_cell, i)
+    // An empty entry is published too: it is evidence for a collision, so a
+    // key two merged sources share -- one call resolving a formal, the other
+    // not -- turns ambiguous rather than lending the first call's binding to
+    // the second (Codex on #3055).
+    let decl = generic_decl_of_scheme(scheme)
+    let texts = callee_formal_texts(decl, scheme, inst, defs, ds)
+    // #3095: a formal the call resolves only in part (`get([])` gives
+    // `Array[?]`) is printed with `_` for the open part rather than left as
+    // the callee's own spelling, so the requirement reads `State[Array[_]]`.
+    let marked = callee_formal_marked_texts(decl, scheme, inst, defs, s, formal_var_reps(s))
+    let mut mi = 0
+    while mi < Array::length(marked) {
+      let (mname, mtext) = Array::get(marked, mi)
+      let mut seen = false
+      let mut ti = 0
+      while ti < Array::length(texts) {
+        let (tn, _) = Array::get(texts, ti)
+        if tn == mname {
+          seen = true
+        }
+        ti = ti + 1
+      }
+      if !seen && mtext != "_" && !String::contains(mtext, "~") {
+        Array::push(texts, (mname, row_marked_type_display(mtext)))
+      }
+      mi = mi + 1
+    }
+    Array::push(out, (call_formal_key(off, cname), texts))
+    i = i + 1
+  }
+  out
+}
+
+/// A `row_marked_type_text` spelling as a reader writes it: the provenance
+/// marks dropped, `,` followed by a space.
+fn row_marked_type_display(m: String) -> String {
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < String::length(m) {
+    let c = String::char_code_at(m, i)
+    if c == 94 || c == 39 {
+      ()
+    } else if c == 44 {
+      StringBuilder::push(sb, ", ")
+    } else {
+      StringBuilder::push(sb, String::substring(m, i, i + 1))
+    }
+    i = i + 1
+  }
+  StringBuilder::freeze(sb)
+}
+
+/// #3095: `callee_formal_bindings` spelled for judging (`row_marked_type_text`),
+/// under the same keys. The effects pass reads a row's instantiation by its
+/// marked spelling only to decide whether a declared row certainly does NOT
+/// cover it; the printed spelling stays the one above.
+export fn callee_formal_marked_bindings(defs: Array[TypeDef], s: Subst) -> Array[(String, Array[(String, String)])] {
+  let out: Array[(String, Array[(String, String)])] = []
+  let reps = formal_var_binder_reps(s)
+  let mut i = 0
+  while i < Array::length(callee_inst_types_cell) {
+    let (off, scheme, inst, cname) = Array::get(callee_inst_types_cell, i)
+    let texts = callee_formal_marked_texts(generic_decl_of_scheme(scheme), scheme, inst, defs, s, reps)
+    Array::push(out, (call_formal_key(off, cname), texts))
+    i = i + 1
+  }
+  out
+}
+
+fn str_array_contains_name(xs: Array[String], x: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(xs) {
+    if Array::get(xs, i) == x {
+      found = true
+    }
+    i = i + 1
+  }
+  found
+}
+
+export fn check_handle_inst_vs_callee_rows(body: Expr, insts: Array[(String, Array[Type])], env: TypeEnv, defs: Array[TypeDef], s: Subst, errors: Array[String]) -> Unit {
+  if Array::length(insts) > 0 {
+    let calls: Array[(String, Int, String, String)] = []
+    handle_collect_direct_calls(body, " ", calls)
+    let mut ci = 0
+    while ci < Array::length(calls) {
+      let (cname, coff, shadowed, local_row) = Array::get(calls, ci)
+      let row = if String::length(local_row) > 0 {
+        Some(local_row)
+      } else {
+        match env_lookup(env, cname) {
+          Some(CtFn(_, _, r)) => r,
+          Some(CtForAll(_, _, CtFn(_, _, r))) => r,
+          _ => None
+        }
+      }
+      match row {
+        Some(rtext) => {
+          let items = split_row_top_level(rtext)
+          let mut ii = 0
+          while ii < Array::length(items) {
+            let item = String::trim(Array::get(items, ii))
+            let lb = String::index_of(item, "[")
+            if lb > 0 && String::ends_with(item, "]") {
+              let ename = String::substring(item, 0, lb)
+              let arg_text = String::substring(item, lb + 1, String::length(item) - 1)
+              let mut ki = 0
+              while ki < Array::length(insts) {
+                let (iname, haves) = Array::get(insts, ki)
+                // A nested handle of the same effect discharges this call
+                // itself; its own check compares it with its instantiation.
+                if iname == ename && !String::contains(shadowed, String::concat(" ", String::concat(ename, " "))) {
+                  // #3027: an argument naming one of the callee's own type
+                  // formals (`fn get[S]() -> S with State[S]`) means what that
+                  // formal is instantiated to at THIS call, read through the
+                  // declaration of the scheme the call instantiated.
+                  let wants = resolve_callee_formal_args(split_row_top_level(arg_text), env_lookup(env, cname), coff, defs, s)
+                  let have_text = if Array::length(haves) == 1 {
+                    type_to_string(Array::get(haves, 0))
+                  } else {
+                    let parts = array_empty()
+                    let mut hpi = 0
+                    while hpi < Array::length(haves) {
+                      Array::push(parts, type_to_string(Array::get(haves, hpi)))
+                      hpi = hpi + 1
+                    }
+                    String::join(parts, ", ")
+                  }
+                  let mut mismatch = false
+                  if Array::length(wants) == Array::length(haves) {
+                    let mut wi = 0
+                    while wi < Array::length(wants) {
+                      if effect_arg_mismatch(Array::get(haves, wi), Array::get(wants, wi), defs) {
+                        mismatch = true
+                      }
+                      wi = wi + 1
+                    }
+                  }
+                  if mismatch {
+                    // Name the requirement as this call resolves it: a
+                    // callee formal reads as the type it takes here.
+                    let shown_arg = String::join(wants, ", ")
+                    let shown_item = String::concat(ename, String::concat("[", String::concat(shown_arg, "]")))
+                    Array::push(errors, String::concat("handler instantiates `", String::concat(ename, String::concat("[", String::concat(have_text, String::concat("]` but the handled body requires `", String::concat(shown_item, String::concat("` (from `", String::concat(cname, String::concat("`) -- make the arms answer `", String::concat(shown_arg, String::concat("`, or handle `", String::concat(cname, String::concat("` with a handler for `", String::concat(shown_item, String::concat("`", off_marker(coff)))))))))))))))))
+                  }
+                } else {
+                  ()
+                }
+                ki = ki + 1
+              }
+            } else {
+              ()
+            }
+            ii = ii + 1
+          }
+        },
+        None => ()
+      }
+      ci = ci + 1
+    }
+  } else {
+    ()
+  }
+}
+
+/// Every direct call under `e`, with the effects a nested handle between it
+/// and this handle discharges (`shadowed`, space-delimited). A nested handle
+/// shadows only the effects its own arms name: a call inside it that needs
+/// another effect still reaches this handler (#3022 review). A lambda's body
+/// runs where the lambda is called, not here.
+fn handle_collect_direct_calls(e: Expr, shadowed: String, out: Array[(String, Int, String, String)]) -> Unit {
+  handle_collect_direct_calls_scoped(e, shadowed, " ", out)
+}
+
+/// `locals` holds every name bound between the handle and this node, space
+/// delimited. A call to one of them is not the top-level function the outer
+/// environment names, so its row is never read from the environment: it would
+/// be another binding's (#3022 review). A local LAMBDA is followed instead.
+fn handle_collect_direct_calls_scoped(e: Expr, shadowed: String, locals: String, out: Array[(String, Int, String, String)]) -> Unit {
+  match e {
+    ECall(EIdent(n, noff), _, _) => {
+      let key = String::concat(" ", String::concat(n, " "))
+      if !String::contains(locals, key) {
+        Array::push(out, (n, noff, shadowed, ""))
+      } else {
+        // A lambda bound inside the handled body runs HERE when called here:
+        // its declared row is compared, and its body is walked (#3022
+        // review). The innermost binding of `n` must be that lambda.
+        let pos = String::last_index_of(locals, key)
+        let targets = handle_local_lambdas_at(n, pos)
+        let mark = String::concat(n, String::concat("@", __to_string(pos)))
+        if Array::length(targets) > 0 && !handle_lambda_expanding(mark) {
+          Array::push(handle_lambda_expanding_cell, mark)
+          let mut ti = 0
+          while ti < Array::length(targets) {
+            match Array::get(targets, ti) {
+              EFn(_, _, fparams, _, feff, fbody) => {
+                match feff {
+                  Some(r) => Array::push(out, (n, noff, shadowed, r)),
+                  None => ()
+                }
+                let mut inner = locals
+                let mut pi = 0
+                while pi < Array::length(fparams) {
+                  let (pname, _) = Array::get(fparams, pi)
+                  inner = handle_locals_with(inner, pname)
+                  pi = pi + 1
+                }
+                handle_collect_direct_calls_scoped(fbody, shadowed, inner, out)
+              },
+              // `f = get_int` makes a call through `f` a call to `get_int`.
+              EIdent(g, _) => if !String::contains(locals, String::concat(" ", String::concat(g, " "))) {
+                Array::push(out, (g, noff, shadowed, ""))
+              },
+              _ => ()
+            }
+            ti = ti + 1
+          }
+          Array::truncate(handle_lambda_expanding_cell, Array::length(handle_lambda_expanding_cell) - 1)
+        }
+      }
+      handle_collect_direct_calls_children(e, shadowed, locals, out)
+    },
+    // An immediately invoked lambda runs its body right here, under this
+    // handler, unlike a stored one (#3022 review). Its parameters are locals.
+    ECall(EFn(_, _, fparams, _, _, fbody), fargs, _) => {
+      let mut ai = 0
+      while ai < Array::length(fargs) {
+        handle_collect_direct_calls_scoped(Array::get(fargs, ai), shadowed, locals, out)
+        ai = ai + 1
+      }
+      let mut inner = locals
+      let mut pi = 0
+      while pi < Array::length(fparams) {
+        let (pname, _) = Array::get(fparams, pi)
+        inner = handle_locals_with(inner, pname)
+        pi = pi + 1
+      }
+      handle_collect_direct_calls_scoped(fbody, shadowed, inner, out)
+    },
+    ELet(name, value, rest, _) => {
+      handle_collect_direct_calls_scoped(value, shadowed, locals, out)
+      let depth = handle_bind_local_lambda(name, locals, value)
+      handle_collect_direct_calls_scoped(rest, shadowed, handle_locals_with(locals, name), out)
+      Array::truncate(handle_local_lambdas_cell, depth)
+    },
+    ELetMut(name, value, rest, _) => {
+      handle_collect_direct_calls_scoped(value, shadowed, locals, out)
+      // A mutable local may be reassigned, so every value it is given in
+      // its scope is recorded, and a call follows each of them (#3022
+      // review).
+      let depth = handle_bind_local_lambda(name, locals, value)
+      let pos = String::length(locals) - 1
+      handle_bind_assigned_values(name, pos, rest)
+      handle_collect_direct_calls_scoped(rest, shadowed, handle_locals_with(locals, name), out)
+      Array::truncate(handle_local_lambdas_cell, depth)
+    },
+    ELetRec(name, value, rest) => {
+      let inner = handle_locals_with(locals, name)
+      let depth = handle_bind_local_lambda(name, locals, value)
+      handle_collect_direct_calls_scoped(value, shadowed, inner, out)
+      handle_collect_direct_calls_scoped(rest, shadowed, inner, out)
+      Array::truncate(handle_local_lambdas_cell, depth)
+    },
+    EForIn(name, second, iter, body) => {
+      handle_collect_direct_calls_scoped(iter, shadowed, locals, out)
+      let inner = match second {
+        Some(n2) => handle_locals_with(handle_locals_with(locals, name), n2),
+        None => handle_locals_with(locals, name)
+      }
+      handle_collect_direct_calls_scoped(body, shadowed, inner, out)
+    },
+    ELoop(binds, body) => {
+      let mut inner = locals
+      let mut bi = 0
+      while bi < Array::length(binds) {
+        let (bname, init) = Array::get(binds, bi)
+        handle_collect_direct_calls_scoped(init, shadowed, locals, out)
+        inner = handle_locals_with(inner, bname)
+        bi = bi + 1
+      }
+      handle_collect_direct_calls_scoped(body, shadowed, inner, out)
+    },
+    EMatch(scrut, arms) => {
+      handle_collect_direct_calls_scoped(scrut, shadowed, locals, out)
+      let mut ai = 0
+      while ai < Array::length(arms) {
+        let (apat, arm) = Array::get(arms, ai)
+        handle_collect_direct_calls_scoped(arm, shadowed, handle_locals_with_pat(locals, apat), out)
+        ai = ai + 1
+      }
+    },
+    EHandle(hbody, arms) => {
+      let mut inner = shadowed
+      let mut ai = 0
+      while ai < Array::length(arms) {
+        let (apat, arm) = Array::get(arms, ai)
+        match apat {
+          PCtor(pname, _) => {
+            let sep = String::index_of(pname, "::")
+            if sep > 0 {
+              let head = String::substring(pname, 0, sep)
+              let bi = String::index_of(head, "[")
+              let eff = if bi > 0 {
+                String::substring(head, 0, bi)
+              } else {
+                head
+              }
+              inner = String::concat(inner, String::concat(eff, " "))
+            }
+          },
+          _ => ()
+        }
+        // The arms run under THIS handler.
+        handle_collect_direct_calls_scoped(arm, shadowed, handle_locals_with_pat(locals, apat), out)
+        ai = ai + 1
+      }
+      handle_collect_direct_calls_scoped(hbody, inner, locals, out)
+    },
+    // A lambda VALUE runs wherever it is later called, not necessarily here.
+    EFn(_, _, _, _, _, _) => (),
+    _ => handle_collect_direct_calls_children(e, shadowed, locals, out)
+  }
+}
+
+fn handle_collect_direct_calls_children(e: Expr, shadowed: String, locals: String, out: Array[(String, Int, String, String)]) -> Unit {
+  let mark = expr_children_push(e)
+  let end = expr_children_top()
+  let mut i = mark
+  while i < end {
+    handle_collect_direct_calls_scoped(expr_child_at(i), shadowed, locals, out)
+    i = i + 1
+  }
+  expr_children_pop(mark)
+}
+
+/// Lambdas bound inside the handled body, as (name, position of ` name ` in
+/// `locals` when bound, the lambda). Pushed on entry to the binding's scope
+/// and truncated on exit, so a sibling scope never sees another's entry.
+let handle_local_lambdas_cell: Array[(String, Int, Expr)] = []
+
+/// `name@pos` marks for lambdas whose bodies are being walked, so a lambda
+/// that calls itself is walked once.
+let handle_lambda_expanding_cell: Array[String] = []
+
+/// #3125 / #3152: the `Spawnable` capture check needs the closure at the call,
+/// so it is keyed on the callee's TYPE, not its spelling. A function whose
+/// FIRST parameter is a `TaskGroup[r, e]` and whose LAST parameter is a
+/// closure is taken to run that closure in the group, and its closure
+/// argument is checked at every call: `TaskGroup::spawn`,
+/// `TaskGroup::spawn_suspend` and `Parallel::map` are the library's three, and
+/// a `let` alias, a renamed import, or a user wrapper with that shape answers
+/// the same way. Inside such a function the closure parameter is trusted
+/// (`spawn_safe_marker`), because every call site was checked. A function of
+/// this shape that runs its closure locally is checked anyway -- a
+/// conservative refusal, never a silent pass.
+export fn param_types_are_spawn_shaped(params: Array[Type]) -> Bool {
+  let n = Array::length(params)
+  if n < 2 {
+    false
+  } else {
+    let group_ok = match Array::get(params, 0) {
+      CtNamed(gn, gargs) => gn == "TaskGroup" && Array::length(gargs) == 2,
+      _ => false
+    }
+    let closure_ok = match Array::get(params, n - 1) {
+      CtFn(_, _, _) => true,
+      _ => false
+    }
+    group_ok && closure_ok
+  }
+}
+
+fn type_is_spawn_shaped(t: Type) -> Bool {
+  match t {
+    CtForAll(_, _, body) => type_is_spawn_shaped(body),
+    CtFn(params, _, _) => param_types_are_spawn_shaped(params),
+    _ => false
+  }
+}
+
+/// #3153: `TaskGroup::run`'s region-escape check, keyed on the callee's type
+/// like the spawn check: a function taking exactly one closure whose one
+/// parameter is a `TaskGroup[r, e]` (`((TaskGroup[r, e]) -> T) -> T`) is a
+/// nursery runner -- the only way to produce a `TaskGroup` is to be handed one
+/// by `TaskGroup::run` -- so a `let` alias, a renamed import, or a wrapper of
+/// that shape mints a fresh region per call exactly like the declaration.
+export fn type_is_run_shaped(t: Type) -> Bool {
+  match t {
+    CtForAll(ids, _, body) => run_shaped_body(body, ids),
+    _ => false
+  }
+}
+
+fn run_bound_contains(bound: Array[Int], id: Int) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(bound) {
+    if Array::get(bound, i) == id {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// The body of a runner scheme: `((TaskGroup[r, e]) -> T) -> T` where `r` is
+/// quantified by THIS scheme (#3156 review). A monomorphic helper over an
+/// enclosing function's region is not a runner -- only a region the callee
+/// binds can be minted fresh per call -- and a function whose result is not
+/// its callback's result (`((TaskGroup[r, e]) -> Int) -> String`) is not one
+/// either.
+fn run_shaped_body(t: Type, bound: Array[Int]) -> Bool {
+  match t {
+    CtFn(params, ret, _) => if Array::length(params) != 1 {
+      false
+    } else {
+      match Array::get(params, 0) {
+        CtFn(body_params, body_ret, _) => if Array::length(body_params) != 1 || !types_equal(ret, body_ret) {
+          false
+        } else {
+          match Array::get(body_params, 0) {
+            CtNamed(gn, gargs) => if gn == "TaskGroup" && Array::length(gargs) == 2 {
+              match Array::get(gargs, 0) {
+                CtVar(rid) => run_bound_contains(bound, rid),
+                _ => false
+              }
+            } else {
+              false
+            },
+            _ => false
+          }
+        },
+        _ => false
+      }
+    },
+    _ => false
+  }
+}
+
+/// Whether the name a call names resolves to a spawn-shaped function (see
+/// `param_types_are_spawn_shaped`).
+export fn callee_is_spawn_shaped(env: TypeEnv, s: Subst, name: String) -> Bool {
+  match env_lookup(env, name) {
+    Some(t) => type_is_spawn_shaped_under(s, t),
+    None => false
+  }
+}
+
+/// Whether the name a call names resolves to a run-shaped function (see
+/// `type_is_run_shaped`).
+export fn callee_is_run_shaped(env: TypeEnv, s: Subst, name: String) -> Bool {
+  match env_lookup(env, name) {
+    Some(t) => type_is_run_shaped(resolve_bare_var(s, t)),
+    None => false
+  }
+}
+
+/// `type_is_spawn_shaped` after the running substitution, applied only when
+/// the binding's type is still a bare variable -- the one shape the raw type
+/// cannot answer for, and the rare one, so ordinary lookups stay cheap.
+fn type_is_spawn_shaped_under(s: Subst, t: Type) -> Bool {
+  type_is_spawn_shaped(resolve_bare_var(s, t))
+}
+
+export fn resolve_bare_var(s: Subst, t: Type) -> Type {
+  match t {
+    CtVar(_) => subst_apply(s, t),
+    _ => t
+  }
+}
+
+/// Run the `Spawnable` capture check for one spawn-shaped call: `group_ty` is
+/// the type of its `TaskGroup` argument and `closure` its closure argument.
+export fn report_spawnable_violations(env: TypeEnv, s: Subst, defs: Array[TypeDef], group_ty: Type, closure: Expr, errors: Array[String], name: String, callee_off: Int) -> Unit {
+  match subst_apply(s, group_ty) {
+    CtNamed(tg_name, tg_args) => if tg_name == "TaskGroup" && Array::length(tg_args) == 2 {
+      let violations = check_spawnable_captures(env, s, defs, closure, Array::get(tg_args, 0), unsent_open_formal_vars(s))
+      let mut vi = 0
+      while vi < Array::length(violations) {
+        Array::push(errors, String::concat(Array::get(violations, vi), off_marker_len(callee_off, String::length(name))))
+        vi = vi + 1
+      }
+    } else {
+      ()
+    },
+    _ => ()
+  }
+}
+
+/// Whether a value of type `t` must not be handed on (#3125, #3153): the
+/// spawn check and the run check both run at a call, so a spawn- or
+/// run-shaped function reaching anything but a call or a local `let` would be
+/// applied where neither can see its closure.
+export fn type_is_call_checked(s: Subst, t: Type) -> Bool {
+  let r = resolve_bare_var(s, t)
+  type_is_spawn_shaped(r) || type_is_run_shaped(r)
+}
+
+/// #3125: set while the right-hand side of a local `let` is a bare name, and
+/// read (then cleared) by that name's `EIdent` check. A spawn-shaped value
+/// may be bound to a new name there, because calls through that name are
+/// checked by type; everywhere else (an argument, a field, a return value,
+/// an `if` branch) the value would reach a call the checker cannot see, so
+/// it is refused.
+export let spawn_value_let_rhs_cell: Array[Bool] = []
+
+/// Record `value` under `name` when it is a lambda or names a function
+/// (`let f = get_int`, #3022 review); returns the depth to truncate back to
+/// when the binding's scope ends.
+fn handle_bind_local_lambda(name: String, locals: String, value: Expr) -> Int {
+  let depth = Array::length(handle_local_lambdas_cell)
+  match value {
+    EFn(_, _, _, _, _, _) => Array::push(handle_local_lambdas_cell, (name, String::length(locals) - 1, value)),
+    EIdent(_, _) => Array::push(handle_local_lambdas_cell, (name, String::length(locals) - 1, value)),
+    _ => ()
+  }
+  depth
+}
+
+/// Every value recorded for the binding of `name` at `pos`: one for an
+/// immutable local, each assigned value for a `let mut`.
+fn handle_local_lambdas_at(name: String, pos: Int) -> Array[Expr] {
+  let found = array_empty()
+  let mut i = 0
+  while i < Array::length(handle_local_lambdas_cell) {
+    let (ln, lpos, lv) = Array::get(handle_local_lambdas_cell, i)
+    if ln == name && lpos == pos {
+      Array::push(found, lv)
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Record every value assigned to the `let mut` binding `name` (at `pos`)
+/// within its scope `e`: a lambda or a function name. A nested rebinding of
+/// the same name ends the search in that branch, since assignments below it
+/// target the inner binding.
+fn handle_bind_assigned_values(name: String, pos: Int, e: Expr) -> Unit {
+  match e {
+    EAssign(an, v, rest) => {
+      if an == name {
+        match v {
+          EFn(_, _, _, _, _, _) => Array::push(handle_local_lambdas_cell, (name, pos, v)),
+          EIdent(_, _) => Array::push(handle_local_lambdas_cell, (name, pos, v)),
+          _ => ()
+        }
+      }
+      handle_bind_assigned_values(name, pos, v)
+      handle_bind_assigned_values(name, pos, rest)
+    },
+    ELet(n2, v, rest, _) => {
+      handle_bind_assigned_values(name, pos, v)
+      if n2 != name {
+        handle_bind_assigned_values(name, pos, rest)
+      }
+    },
+    ELetMut(n2, v, rest, _) => {
+      handle_bind_assigned_values(name, pos, v)
+      if n2 != name {
+        handle_bind_assigned_values(name, pos, rest)
+      }
+    },
+    _ => {
+      let mark = expr_children_push(e)
+      let end = expr_children_top()
+      let mut i = mark
+      while i < end {
+        handle_bind_assigned_values(name, pos, expr_child_at(i))
+        i = i + 1
+      }
+      expr_children_pop(mark)
+    }
+  }
+}
+
+fn handle_lambda_expanding(mark: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(handle_lambda_expanding_cell) {
+    if Array::get(handle_lambda_expanding_cell, i) == mark {
+      found = true
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn handle_locals_with(locals: String, name: String) -> String {
+  String::concat(locals, String::concat(name, " "))
+}
+
+fn handle_locals_with_pat(locals: String, pat: Pat) -> String {
+  match pat {
+    PBind(name) => handle_locals_with(locals, name),
+    PCtor(_, subs) => {
+      let mut acc = locals
+      let mut i = 0
+      while i < Array::length(subs) {
+        acc = handle_locals_with_pat(acc, Array::get(subs, i))
+        i = i + 1
+      }
+      acc
+    },
+    PTuple(subs) => {
+      let mut acc = locals
+      let mut i = 0
+      while i < Array::length(subs) {
+        acc = handle_locals_with_pat(acc, Array::get(subs, i))
+        i = i + 1
+      }
+      acc
+    },
+    POr(l, r) => handle_locals_with_pat(handle_locals_with_pat(locals, l), r),
+    PStruct(_, fields) => {
+      let mut acc = locals
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fp) = Array::get(fields, i)
+        acc = handle_locals_with_pat(acc, fp)
+        i = i + 1
+      }
+      acc
+    },
+    _ => locals
+  }
+}
+
+/// Does the handler's resolved argument `have` disagree with the argument a
+/// callee's row spells as `want`? Compared: a spelling whose every name is a
+/// builtin or a struct or enum declared here -- `Int`, `Array[String]`, `B`,
+/// `Box[Int]` -- since such a spelling has one meaning. An alias, a type formal
+/// or an unresolved handler type is not judged (#3010, #3022 review).
+fn effect_arg_mismatch(have: Type, want0: String, defs: Array[TypeDef]) -> Bool {
+  // A non-generic alias means its target, so it is read through (#3022
+  // review): `with State[A]` for `type A = Int` compares as `State[Int]`.
+  let want = expand_alias_words(want0, defs, 0)
+  match builtin_scalar_type_of_name(want) {
+    Some(want_ty) => head_kind(have) != 0 && !scalar_types_same(have, want_ty),
+    None => {
+      let have_text = type_to_string(have)
+      if closed_type_spelling(want, defs) {
+        // The handler's type is judged only when it is itself closed.
+        !String::contains(have_text, "?") && closed_type_spelling(have_text, defs) && strip_spaces(have_text) != strip_spaces(want)
+      } else {
+        false
+      }
+    }
+  }
+}
+
+/// `t` with every name that is a non-generic alias declared here replaced by
+/// its target's spelling, repeatedly (bounded, so a malformed cycle stops).
+/// A generic alias is left as written, which keeps the spelling unjudged.
+fn expand_alias_words(t: String, defs: Array[TypeDef], depth: Int) -> String {
+  if depth > 8 {
+    t
+  } else {
+    let n = String::length(t)
+    let parts = array_empty()
+    let mut changed = false
+    let mut i = 0
+    while i < n {
+      let c = String::char_code_at(t, i)
+      if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
+        let st = i
+        while i < n && is_type_name_char(String::char_code_at(t, i)) {
+          i = i + 1
+        }
+        let w = String::substring(t, st, i)
+        match find_typedef(defs, w) {
+          Some(TDAlias(_, aparams, target)) => if Array::length(aparams) == 0 {
+            Array::push(parts, type_to_string(target))
+            changed = true
+          } else if i < n && String::char_code_at(t, i) == '[' {
+            // #3027: a generic alias applied to arguments (`Id[Int]` for
+            // `type Id[T] = T`) is its target with each parameter replaced
+            // by the matching argument.
+            let close = matching_bracket(t, i)
+            let args = split_row_top_level(String::substring(t, i + 1, close))
+            if close > i && Array::length(args) == Array::length(aparams) {
+              Array::push(parts, String::concat("(", String::concat(substitute_type_words(type_to_string(target), aparams, args), ")")))
+              i = close + 1
+              changed = true
+            } else {
+              Array::push(parts, w)
+            }
+          } else {
+            Array::push(parts, w)
+          },
+          _ => Array::push(parts, w)
+        }
+      } else {
+        Array::push(parts, String::substring(t, i, i + 1))
+        i = i + 1
+      }
+    }
+    let out = String::join(parts, "")
+    if changed {
+      expand_alias_words(out, defs, depth + 1)
+    } else {
+      out
+    }
+  }
+}
+
+/// The index of the `]` that closes the `[` at `open_at`, or -1.
+fn matching_bracket(t: String, open_at: Int) -> Int {
+  let n = String::length(t)
+  let mut depth = 0
+  let mut i = open_at
+  let mut found = 0 - 1
+  while i < n && found < 0 {
+    let c = String::char_code_at(t, i)
+    if c == '[' {
+      depth = depth + 1
+    } else if c == ']' {
+      depth = depth - 1
+      if depth == 0 {
+        found = i
+      }
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// `t` with each whole word equal to `params[k]` replaced by `args[k]`.
+fn substitute_type_words(t: String, params: Array[String], args: Array[String]) -> String {
+  let n = String::length(t)
+  let parts = array_empty()
+  let mut i = 0
+  while i < n {
+    let c = String::char_code_at(t, i)
+    if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
+      let st = i
+      while i < n && is_type_name_char(String::char_code_at(t, i)) {
+        i = i + 1
+      }
+      let w = String::substring(t, st, i)
+      let mut rep = w
+      let mut k = 0
+      while k < Array::length(params) {
+        if Array::get(params, k) == w {
+          rep = Array::get(args, k)
+        }
+        k = k + 1
+      }
+      Array::push(parts, rep)
+    } else {
+      Array::push(parts, String::substring(t, i, i + 1))
+      i = i + 1
+    }
+  }
+  String::join(parts, "")
+}
+
+/// Is `t` spelled only with builtin type names, structs or enums declared
+/// here, brackets, parentheses and commas?
+fn closed_type_spelling(t: String, defs: Array[TypeDef]) -> Bool {
+  let n = String::length(t)
+  let mut ok = n > 0
+  let mut i = 0
+  while i < n && ok {
+    let c = String::char_code_at(t, i)
+    if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
+      let st = i
+      while i < n && is_type_name_char(String::char_code_at(t, i)) {
+        i = i + 1
+      }
+      let w = String::substring(t, st, i)
+      if !(builtin_type_word(w) || declared_nominal(defs, w)) {
+        ok = false
+      }
+    } else if c == '[' || c == ']' || c == '(' || c == ')' || c == ',' || c == ' ' {
+      i = i + 1
+    } else {
+      ok = false
+    }
+  }
+  ok
+}
+
+fn is_type_name_char(c: Int) -> Bool {
+  (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
+}
+
+fn builtin_type_word(w: String) -> Bool {
+  w == "Int" || w == "String" || w == "Bool" || w == "Double" || w == "Char" || w == "Bytes" || w == "Array" || w == "Option"
+}
+
+/// Is `name` a struct or enum declared here? Such a name denotes one type
+/// constructor, so two different spellings of its applications never agree.
+fn declared_nominal(defs: Array[TypeDef], name: String) -> Bool {
+  match find_typedef(defs, name) {
+    Some(TDStruct(_, _, _, _)) => true,
+    Some(TDEnum(_, _, _)) => true,
+    _ => false
+  }
+}
+
+/// A row's items split at commas outside brackets and parentheses, trimmed.
+fn split_row_top_level(row: String) -> Array[String] {
+  let out = array_empty()
+  let mut depth = 0
+  let mut start = 0
+  let mut i = 0
+  let n = String::length(row)
+  while i < n {
+    let c = String::char_code_at(row, i)
+    if c == '[' || c == '(' {
+      depth = depth + 1
+    } else if c == ']' || c == ')' {
+      depth = depth - 1
+    } else if c == ',' && depth == 0 {
+      Array::push(out, String::trim(String::substring(row, start, i)))
+      start = i + 1
+    }
+    i = i + 1
+  }
+  Array::push(out, String::trim(String::substring(row, start, n)))
+  out
+}
+
+fn strip_spaces(t: String) -> String {
+  String::join(String::split(t, " "), "")
+}
+
+fn builtin_scalar_type_of_name(n: String) -> Option[Type] {
+  if n == "Int" {
+    Some(CtInt)
+  } else if n == "String" {
+    Some(CtString)
+  } else if n == "Bool" {
+    Some(CtBool)
+  } else if n == "Double" {
+    Some(CtDouble)
+  } else if n == "Unit" {
+    Some(CtUnit)
+  } else if n == "Bytes" {
+    Some(CtBytes)
+  } else {
+    None
+  }
+}
+
+fn scalar_types_same(a: Type, b: Type) -> Bool {
+  head_fold_char(head_kind(a)) == head_fold_char(head_kind(b)) && head_kind(a) != 0
+}
+
+export fn effect_inst_env_key(eff: String) -> String {
+  String::concat("$einst$", eff)
+}
+
+/// The instantiation an enclosing `handle` chose for `eff`, if this expression
+/// sits inside one. The arity guard makes a stale binding (the effect
+/// redeclared with a different parameter count between the handle and here)
+/// fall back to a fresh instantiation instead of substituting the wrong number
+/// of arguments.
+fn effect_inst_lookup(env: TypeEnv, eff: String, etps: Array[String]) -> Option[Array[Type]] {
+  match env_lookup(env, effect_inst_env_key(eff)) {
+    Some(t) => match t {
+      CtTuple(targs) => if Array::length(targs) == Array::length(etps) {
+        Some(targs)
+      } else {
+        None
+      },
+      _ => None
+    },
+    None => None
+  }
+}
+
+/// #1340 (Codex P1 on #1352): instantiate `eff`'s type params for ONE use
+/// site, reusing the enclosing handle's instantiation when there is one so the
+/// handled body and the arms that handle it share type variables. Falls back
+/// to fresh variables when the perform is NOT inside a handle of that effect —
+/// it is re-raised to the caller, whose own handle instantiates it.
+///
+/// This sharing is what makes `let s: String = perform Box::Get()` conflict
+/// with `Get => resume(123)`. Until the row-label set comparison was fixed
+/// (effect_label_sets_equal, same review) the link happened to fall out of
+/// unification instead; with that comparison corrected the two sides no longer
+/// meet on their own, so the instantiation has to be shared explicitly.
+export fn effect_instantiate(env: TypeEnv, eff: String, etps: Array[String], c: Int) -> (Array[Type], Int) {
+  match effect_inst_lookup(env, eff, etps) {
+    Some(targs) => (targs, c),
+    None => effect_fresh_targs(etps, c)
+  }
+}
+
+/// #813: is `eff` a DECLARED effect (TDEffect) in this module? Distinguishes
+/// "unknown op of a declared effect" (reportable) from builtin/imported
+/// effects the registry cannot see (skip).
+export fn effect_is_declared(defs: Array[TypeDef], eff: String) -> Bool {
+  match find_typedef(defs, eff) {
+    Some(td) => match td {
+      TDEffect(_, _, _) => true,
+      _ => false
+    },
+    None => false
+  }
+}
+
+/// Where the record literal WROTE the value for field `name`, or -1 when the
+/// field is absent or its value carries no offset (a literal -- see
+/// ADR-0108). The sibling of `lookup_actual_field_ty`: that one answers what
+/// type the literal gave a field, this one answers where to point when the
+/// answer is wrong.
+export fn lookup_field_expr_off(fields: Array[(String, Expr)], name: String) -> Int {
+  let mut i = 0
+  let mut out = 0 - 1
+  while i < Array::length(fields) {
+    let (fname, fval) = Array::get(fields, i)
+    if fname == name {
+      out = tail_expr_off(fval)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+export fn lookup_actual_field_ty(actual: Array[(String, Type)], name: String) -> Option[Type] {
+  let mut i = 0
+  let mut out = None
+  while i < Array::length(actual) {
+    let (an, at) = Array::get(actual, i)
+    if an == name {
+      out = Some(at)
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// True when `dfields` (a struct's declared fields) is a STRICT superset of the
+/// record literal's `actual` fields: every provided field name appears in the
+/// struct, and the struct declares strictly more fields. Used to flag a record
+/// that omits required fields.
+fn struct_is_strict_superset(dfields: Array[(String, Type)], actual: Array[(String, Type)]) -> Bool {
+  if Array::length(dfields) <= Array::length(actual) {
+    false
+  } else {
+    let mut i = 0
+    let mut all_in = true
+    while i < Array::length(actual) {
+      let (an, _) = Array::get(actual, i)
+      let mut found = false
+      let mut j = 0
+      while j < Array::length(dfields) {
+        let (dn, _) = Array::get(dfields, j)
+        if dn == an {
+          found = true
+        } else {
+          ()
+        }
+        j = j + 1
+      }
+      if !found {
+        all_in = false
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    all_in
+  }
+}
+
+/// Check a record literal's field VALUES against the declared field types of the
+/// (uniquely) matching struct definition — previously unchecked, so
+/// `S::{ x: "oops" }` for `struct S { x: Int }` was accepted. Conservative: if 0
+/// or >1 structs share the field-name set, skip (no struct could be determined).
+export fn check_record_fields(defs: Array[TypeDef], actual: Array[(String, Type)], s: Subst, errors: Array[String]) -> Subst {
+  let mut matchct = 0
+  let mut matched_fields = array_empty()
+  let mut di = 0
+  while di < Array::length(defs) {
+    match Array::get(defs, di) {
+      TDStruct(_, dfields, _, _) => if struct_field_names_match(dfields, actual) {
+        matchct = matchct + 1
+        matched_fields = dfields
+      },
+      _ => ()
+    }
+    di = di + 1
+  }
+  if matchct == 1 {
+    let mut out = s
+    let mut i = 0
+    while i < Array::length(matched_fields) {
+      let (fname, declared_ty) = Array::get(matched_fields, i)
+      match lookup_actual_field_ty(actual, fname) {
+        Some(actual_ty) => {
+          out = check_assignable_for(declared_ty, subst_apply(out, actual_ty), out, errors, "struct field type mismatch for ", fname, 0 - 1)
+        },
+        None => ()
+      }
+      i = i + 1
+    }
+    out
+  } else if matchct > 1 {
+    // Ambiguous: MORE than one struct declares exactly this field-name set
+    // (e.g. `S2 { name: Int; y: String }` vs `S3 { y: String; name: String }`).
+    // The literal is a valid construction of one of them, we just cannot tell
+    // which — skip value checking, and in particular do NOT fall through to
+    // the missing-field superset heuristic below: it used to fire here and
+    // report a bogus "missing field" against some unrelated superset struct
+    // (found by tests/fuzz/run_fuzz.sh, seeds 68/282).
+    s
+  } else {
+    // No struct has EXACTLY this field set. If exactly one struct is a strict
+    // SUPERSET (contains every provided field and at least one more), the record
+    // is that struct with fields MISSING — a real soundness hole, since the
+    // omitted fields would be left uninitialized. Reported only when the
+    // superset is unique (otherwise the intended struct is ambiguous → skip).
+    let mut supct = 0
+    let mut sup_name = ""
+    let mut sup_fields = array_empty()
+    let mut dj = 0
+    while dj < Array::length(defs) {
+      match Array::get(defs, dj) {
+        TDStruct(sname, dfields, _, _) => if struct_is_strict_superset(dfields, actual) {
+          supct = supct + 1
+          sup_name = sname
+          sup_fields = dfields
+        },
+        _ => ()
+      }
+      dj = dj + 1
+    }
+    if supct == 1 {
+      let mut fi = 0
+      while fi < Array::length(sup_fields) {
+        let (dn, _) = Array::get(sup_fields, fi)
+        match lookup_actual_field_ty(actual, dn) {
+          Some(_) => (),
+          None => Array::push(errors, String::concat("missing field `", String::concat(dn, String::concat("` in construction of struct ", sup_name))))
+        }
+        fi = fi + 1
+      }
+      s
+    } else {
+      s
+    }
+  }
+}
+
+/// #994: builtin data types that can appear as a dot-call RECEIVER's checked
+/// type (via `type_name_prefix` or a `CtNamed` head). An unresolved method on
+/// one of these is definitely bogus -- there is no "it might be an imported
+/// user type with the method defined elsewhere" escape hatch for a builtin.
+/// Deliberately excludes namespace-only builtins (Fs, Http, Socket, Stdout,
+/// ...) that are never a receiver VALUE's type, only ever called by
+/// `Module::fn` name -- including them here would risk false positives on
+/// legitimate qualified-import shortcut calls that happen to share a method
+/// name.
+/// #994 review: `Bool`/`Option`/`Result` are excluded even though they are
+/// builtin heads. lib/@vibe/builtin/{bool,option,result}.vibe extend them
+/// with real top-level `fn Bool::to_int` etc., and the *_type_import_test.vibe
+/// fixtures use the "import just the type, dot-call resolves the method via
+/// the merged program" idiom the #953 comment documents -- in an isolated
+/// per-file check (as these unit tests exercise) the extension fn isn't in
+/// `env` yet, so gating on this prefix here regressed 4 passing tests
+/// (`no method ... on Bool/Option/Result`) that only compile correctly once
+/// merged. No equivalent extension-via-type-import convention exists for the
+/// container types below (grep confirms no prelude file extends Array/Bytes/
+/// Map/...), so they keep the stricter check.
+/// #994 follow-up (Codex P1): `Int`/`Double`/`Char` were missing here even
+/// though `lib/@vibe/builtin/{int,double}.vibe` extend them with real fns
+/// (`Int::abs`, `Double::ceil`, ...) the same way Bool/Option/Result do.
+/// Unlike Bool/Option/Result, no test anywhere dot-calls one of those
+/// extension fns (grep across the repo for `.abs(`/`.gcd(`/`.ceil(`/... on a
+/// bare int/double/char value found zero hits), so there is no "import type
+/// only, resolve via merge" idiom to protect for these three -- adding them
+/// carries none of the regression risk that excluded Bool/Option/Result.
+/// Confirmed the gap empirically: `n.to_string()` for `n: Int` checks and
+/// "succeeds" (no parsed `fn Int::to_string` exists anywhere, only a
+/// checker-only `lookup_builtin` signature), then codegen dies with
+/// "unknown struct field: to_string" -- the exact class of bug #994 exists
+/// to catch.
+/// #3163: `Future` is listed too -- a guest future has no dot-callable
+/// methods of its own, and codegen compiles `f.m()` on one as a struct-field
+/// read and fails after `vibe check` answered clean.
+export fn is_known_builtin_receiver_prefix(prefix: String) -> Bool {
+  prefix == "String"
+  || prefix == "Bytes"
+  || prefix == "Array"
+  || prefix == "Map"
+  || prefix == "MapBuilder"
+  || prefix == "Int64Array"
+  || prefix == "FixedArray"
+  || prefix == "ArrayBuilder"
+  || prefix == "StringBuilder"
+  || prefix == "Int"
+  || prefix == "Double"
+  || prefix == "Char"
+  || prefix == "Future"
+}
+
+fn is_equality_binop(op: String) -> Bool {
+  op == "=="
+  || op == "!="
+}
+
+fn unify_binop_candidate(left_ty: Type, right_ty: Type, target_ty: Type, s: Subst) -> Option[Subst] {
+  match unify(left_ty, target_ty, s) {
+    Some(s1) => unify(right_ty, target_ty, s1),
+    None => None
+  }
+}
+
+fn unify_same_binop_operands(left_ty: Type, right_ty: Type, s: Subst) -> Option[(Type, Subst)] {
+  match unify(left_ty, right_ty, s) {
+    Some(s1) => Some((subst_apply(s1, left_ty), s1)),
+    None => None
+  }
+}
+
+fn infer_named_trait_binop(env: TypeEnv, left_ty: Type, right_ty: Type, trait_name: String, s: Subst) -> Option[(Type, Subst)] {
+  match unify_same_binop_operands(left_ty, right_ty, s) {
+    Some((resolved, s1)) => if type_implements_trait(env, s1, resolved, trait_name) {
+      Some((resolved, s1))
+    } else {
+      None
+    },
+    None => None
+  }
+}
+
+fn binop_str_arr_contains(arr: Array[String], val: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(arr) {
+    if Array::get(arr, i) == val {
+      found = true
+      i = Array::length(arr)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// #952: a bound generic type parameter (`[T: Ord]` / `[T: Add]`) is checked
+/// as a plain `CtVar(id)` carrying its trait bounds in the current `Subst`
+/// (recorded by `subst_add_bound` when the `EFn` type-param header is
+/// processed, read back via `subst_bounds_for`). The order/`+` binop paths
+/// below try `unify_binop_candidate(_, _, CtInt, s)` FIRST as a fast path for
+/// ordinary (unbound) local-var inference -- but `unify` treats ANY unbound
+/// `CtVar` as freely unifiable with `CtInt` (no bound check), so that fast
+/// path silently binds T := Int the first time `<`/`>`/`+` appears in a bound
+/// generic function's OWN body, before any call site is even seen. That
+/// poisons the substitution used to `generalize` the function's signature,
+/// turning `fn my_lt[T: Ord](a: T, b: T) -> Bool { a < b }` into a
+/// monomorphic `(Int, Int) -> Bool` -- so calling it with String args later
+/// fails with "expected Int, got String" even though `impl Ord for String`
+/// exists. `==`/`!=` never hit this because `is_equality_binop` only unifies
+/// the two operands against EACH OTHER (never against a concrete target
+/// type), so a bound CtVar is never concretized there.
+///
+/// Fix: when either operand resolves (post-subst) to a CtVar whose recorded
+/// bounds already include the needed trait, dispatch directly here -- unify
+/// the operands against EACH OTHER only (mirroring the Eq path) and skip the
+/// CtInt/CtDouble fast paths entirely, so the type parameter stays
+/// rigid/polymorphic through the rest of the definition check. An ordinary
+/// unbound CtVar (no recorded bounds -- the common unannotated-local-var
+/// inference case, e.g. `fn f(x) { x < 5 }`) is untouched: `rigid_bound_operand`
+/// returns false for it, so it still takes the existing
+/// CtInt/CtDouble/struct-Ord(Add) fast path exactly as before.
+fn rigid_bound_operand(ty: Type, s: Subst, trait_name: String) -> Bool {
+  match subst_apply(s, ty) {
+    CtVar(id) => binop_str_arr_contains(subst_bounds_for(s, id), trait_name),
+    _ => false
+  }
+}
+
+/// Bounds recorded on a var the operand-vs-operand unify just eliminated
+/// (post-subst it is no longer a CtVar) would otherwise be dropped: in
+/// `fn bad[T: Ord, U](a: T, b: U) { a < b }` unify may bind T := U, leaving
+/// the surviving U with NO recorded Ord bound, so generalize exports an
+/// unbounded (U, U) -> Bool and `bad(true, false)` sails through the
+/// call-site bound check. Collect each operand's pre-unify var bounds so
+/// they can be re-recorded on whatever survives.
+fn operand_var_bounds(ty: Type, s: Subst) -> Array[String] {
+  match subst_apply(s, ty) {
+    CtVar(id) => subst_bounds_for(s, id),
+    _ => array_empty()
+  }
+}
+
+fn rigid_trait_bound_binop(env: TypeEnv, left_ty: Type, right_ty: Type, trait_name: String, s: Subst) -> Option[(Type, Subst)] {
+  if rigid_bound_operand(left_ty, s, trait_name) || rigid_bound_operand(right_ty, s, trait_name) {
+    let lb = operand_var_bounds(left_ty, s)
+    let rb = operand_var_bounds(right_ty, s)
+    match unify_same_binop_operands(left_ty, right_ty, s) {
+      Some((resolved, s1)) => match subst_apply(s1, resolved) {
+        CtVar(id) => {
+          // Var survivor: transfer every bound either operand carried that
+          // the survivor does not already record, so generalize keeps them.
+          let have = subst_bounds_for(s1, id)
+          let missing = ArrayBuilder::new()
+          let mut i = 0
+          while i < Array::length(lb) + Array::length(rb) {
+            let cand = if i < Array::length(lb) {
+              Array::get(lb, i)
+            } else {
+              Array::get(rb, i - Array::length(lb))
+            }
+            if !binop_str_arr_contains(have, cand) {
+              // (duplicates between lb and rb are harmless -- bound lookups
+              // only ever ask "contains", never count)
+              ArrayBuilder::push(missing, cand)
+            } else {
+              ()
+            }
+            i = i + 1
+          }
+          let missing_arr = ArrayBuilder::freeze(missing)
+          if Array::length(missing_arr) > 0 {
+            Some((resolved, subst_add_bound(s1, id, missing_arr)))
+          } else {
+            Some((resolved, s1))
+          }
+        },
+        other => if type_implements_trait(env, s1, other, trait_name) {
+          // Concrete survivor (e.g. `a < "x"` forcing T := String): only
+          // accept when it actually implements the required trait --
+          // mirroring infer_named_trait_binop, which handled this shape
+          // before the rigid pre-step existed.
+          Some((resolved, s1))
+        } else {
+          None
+        }
+      },
+      None => None
+    }
+  } else {
+    None
+  }
+}
+
+/// `type mismatch in '<op>': <tail>`, carrying the operand anchor as the
+/// strippable `[@off=N]` marker. Every binop mismatch in `infer_binop_type`
+/// goes through here so none of them can silently go back to being unlocated:
+/// the offset is a parameter of the message, not an afterthought at one site.
+/// String::concat only (`+`/interpolation mis-codegen to NUL here).
+fn binop_mismatch_msg(op: String, tail: String, off: Int) -> String {
+  String::concat(String::concat("type mismatch in '", String::concat(op, tail)), off_marker(off))
+}
+
+/// `off` is the source anchor of the offending operator expression (the left
+/// operand's offset, falling back to the right's) -- see the EBinOp arm. -1
+/// when neither operand carries one, which is what a literal-only expression
+/// like `1 + "s"` gives: EInt/EString/EBool/EFloat have no offset slot in the
+/// AST (lib/@vibe/ast/index.vpkg), so there is nothing to point at. off_marker
+/// emits nothing for -1, leaving those messages exactly as they were.
+export fn infer_binop_type(op: String, left_ty: Type, right_ty: Type, env: TypeEnv, s: Subst, errors: Array[String], tytab: Array[(Int, Type)], off: Int) -> (Type, Subst) {
+  if is_logic_binop(op) {
+    match unify_binop_candidate(left_ty, right_ty, CtBool, s) {
+      Some(s1) => (CtBool, s1),
+      None => {
+        Array::push(errors, binop_mismatch_msg(op, "': operands must be Bool", off))
+        (CtUnknown, s)
+      }
+    }
+  }
+  else if is_equality_binop(op) {
+    match unify(left_ty, right_ty, s) {
+      Some(s1) => {
+        // #2474 (a): a formal with no `Eq` bound cannot be compared by
+        // content once the body is lowered (one lowering serves every
+        // instantiation), so refuse it here rather than answer by reference
+        // identity for an aggregate at run time.
+        let eq_resolved = subst_apply(s1, left_ty)
+        let unbounded: Array[(Int, String)] = []
+        eq_unbounded_formals_in(eq_resolved, s1, env, unbounded)
+        if Array::length(unbounded) > 0 {
+          Array::push(errors, eq_unbounded_formal_msg(op, eq_resolved, unbounded, s1, env, off))
+        } else {
+          ()
+        }
+        (CtBool, s1)
+      },
+      None => {
+        // Tolerate unresolved NOMINAL operands: a generic `[T]` callee's
+        // result reaches here as a rigid CtNamed type param when call-site
+        // instantiation can't ground it (#829) — e.g.
+        // `Array::get(ArrayView::to_array(v), 0) == 20`. Pre-fn-migration
+        // these positions were CtUnknown, so erroring regressed working
+        // code. Fully concrete mismatches still error.
+        let eq_l = subst_apply(s, left_ty)
+        let eq_r = subst_apply(s, right_ty)
+        let eq_has_named = match eq_l {
+          CtNamed(_, _) => true,
+          _ => match eq_r {
+            CtNamed(_, _) => true,
+            _ => false
+          }
+        }
+        if eq_has_named {
+          (CtBool, s)
+        } else {
+          Array::push(errors, binop_mismatch_msg(op, "': operands must have same type", off))
+          (CtUnknown, s)
+        }
+      }
+    }
+  }
+  else if is_order_binop(op) {
+    match rigid_trait_bound_binop(env, left_ty, right_ty, "Ord", s) {
+      Some((_, s1)) => (CtBool, s1),
+      None => match unify_binop_candidate(left_ty, right_ty, CtInt, s) {
+        Some(s1) => (CtBool, s1),
+        None => match unify_binop_candidate(left_ty, right_ty, CtDouble, s) {
+          Some(s1) => (CtBool, s1),
+          None => match infer_named_trait_binop(env, left_ty, right_ty, "Ord", s) {
+            Some((_, s1)) => (CtBool, s1),
+            None => {
+              Array::push(errors, binop_mismatch_msg(op, "': operands must be Int or Double", off))
+              (CtUnknown, s)
+            }
+          }
+        }
+      }
+    }
+  }
+  else if op == "+" {
+    match rigid_trait_bound_binop(env, left_ty, right_ty, "Add", s) {
+      Some((resolved, s1)) => (resolved, s1),
+      None => match unify_binop_candidate(left_ty, right_ty, CtInt, s) {
+        Some(s1) => (CtInt, s1),
+        None => match unify_binop_candidate(left_ty, right_ty, CtDouble, s) {
+          Some(s1) => (CtDouble, s1),
+          None => match unify_binop_candidate(left_ty, right_ty, CtString, s) {
+            Some(s1) => (CtString, s1),
+            None => match infer_named_trait_binop(env, left_ty, right_ty, "Add", s) {
+              Some((resolved, s1)) => (resolved, s1),
+              None => {
+                Array::push(errors, binop_mismatch_msg("+", "': operands must be Int, Double, or String", off))
+                (CtUnknown, s)
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  else if op == "-"
+  || op == "*"
+  || op == "/" {
+    let trait_name = if op == "-" {
+      "Sub"
+    } else if op == "*" {
+      "Mul"
+    } else {
+      "Div"
+    }
+    match unify_binop_candidate(left_ty, right_ty, CtInt, s) {
+      Some(s1) => (CtInt, s1),
+      None => match unify_binop_candidate(left_ty, right_ty, CtDouble, s) {
+        Some(s1) => (CtDouble, s1),
+        None => match infer_named_trait_binop(env, left_ty, right_ty, trait_name, s) {
+          Some((resolved, s1)) => (resolved, s1),
+          None => {
+            // #2206, #3041: a Unit LHS under `-` is almost always a
+            // line-leading `- x` (minus, then a space) glued onto the
+            // previous statement. Since #3041 a line-leading `-x` with no
+            // space is a prefix minus that starts a new expression, so only
+            // the spaced spelling still continues the line. The checker never
+            // sees line layout, so the clause states the language rule
+            // rather than claiming this line started with `-`; the base text
+            // stays a prefix so substring pins hold.
+            let minus_unit_lhs = if op == "-" {
+              match subst_apply(s, left_ty) {
+                CtUnit => true,
+                _ => false
+              }
+            } else {
+              false
+            }
+            let tail = if minus_unit_lhs {
+              "': operands must be Int or Double (the left operand is Unit -- a `-` followed by a space at the start of a line continues the previous line's expression; to start a new expression with a negative value, remove the space (`-1`, `-x`) or parenthesize the negated value, e.g. `(-1)`)"
+            } else {
+              "': operands must be Int or Double"
+            }
+            Array::push(errors, binop_mismatch_msg(op, tail, off))
+            (CtUnknown, s)
+          }
+        }
+      }
+    }
+  }
+  else if op == "%" {
+    match unify_binop_candidate(left_ty, right_ty, CtInt, s) {
+      Some(s1) => (CtInt, s1),
+      None => {
+        Array::push(errors, binop_mismatch_msg("%", "': operands must be Int", off))
+        (CtUnknown, s)
+      }
+    }
+  }
+  else if op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>" {
+    match unify_binop_candidate(left_ty, right_ty, CtInt, s) {
+      Some(s1) => (CtInt, s1),
+      None => {
+        Array::push(errors, binop_mismatch_msg(op, "': operands must be Int", off))
+        (CtUnknown, s)
+      }
+    }
+  }
+  else {
+    Array::push(errors, String::concat(String::concat("unknown operator: ", op), off_marker(off)))
+    (CtUnknown, s)
+  }
+}
+
+/// Recursively replace type-parameter names (those bound to a CtVar in `env`)
+/// with that CtVar, including ones nested inside Array/Option/Tuple/Fn/Named type
+/// args. Type constructors (enum/struct names, not bound to a CtVar) are kept and
+/// their args recursed. This lets a generic annotation like `Map[String, V]`
+/// resolve its inner `V` to the function's quantified var, so call sites can
+/// instantiate it (the previous shallow lookup only handled the outermost name).
+export fn resolve_tparams_in(ty: Type, env: TypeEnv) -> Type {
+  match ty {
+    CtNamed(name, args) => {
+      let ra = for a in args {
+        resolve_tparams_in(a, env)
+      }
+      match env_lookup(env, name) {
+        Some(t) => match t {
+          CtVar(_) => hkt_apply_ctor(t, ra),
+          CtNamed(n, _) => if String::starts_with(n, "#hktformal.") {
+            hkt_apply_ctor(t, ra)
+          } else {
+            CtNamed(name, ra)
+          },
+          _ => CtNamed(name, ra)
+        },
+        None => CtNamed(name, ra)
+      }
+    },
+    CtArray(e) => CtArray(resolve_tparams_in(e, env)),
+    CtOption(e) => CtOption(resolve_tparams_in(e, env)),
+    CtConstructor(_, _) => ty,
+    CtApplied(head, args) => apply_type_constructor(resolve_tparams_in(head, env), for arg in args {
+      resolve_tparams_in(arg, env)
+    }),
+    CtTuple(es) => CtTuple(for e in es {
+      resolve_tparams_in(e, env)
+    }),
+    CtFn(ps, ret, eff) => {
+      let resolve_params: (Array[Type]) -> Array[Type] = (types) -> {
+        let out = array_empty()
+        let mut i = 0
+        while i < Array::length(types) {
+          Array::push(out, resolve_tparams_in(Array::get(types, i), env))
+          i = i + 1
+        }
+        out
+      }
+      CtFn(resolve_params(ps), resolve_tparams_in(ret, env), eff)
+    },
+    _ => ty
+  }
+}
+
+// Internal append-time capture. It is allocated only by the explicit
+// observation entry points; ordinary checking carries None and keeps the
+// legacy `(offset, Type)` table as its only output.
+export struct TypedOccurrenceRoleLaneCapture {
+  entries: Array[(String, String)];
+  // #2391/#2425 KPI: with provenance_enabled = false, append_legacy records
+  // into THIS flag array instead of `entries` -- one Int (1 = a primary
+  // call result, 0 = anything else) per typed occurrence, so an
+  // entries-only capture allocates no per-occurrence tuple block at all.
+  // The wasm32 CLI-core build sits within a few MB of the 4GB linear-memory
+  // ceiling (tests/gates/bootstrap/stage2_oracles.sh), so the per-module
+  // capture has to stay allocation-free beyond this one flat array.
+  entries_flags: Array[Int];
+  // #2391 slice 2: String binop operand observations, recorded ONLY by
+  // entries-only captures (provenance_enabled = false). Two rows per
+  // relational/`+` binop with a located anchor -- one per operand -- so the
+  // extraction can ask "does either operand resolve to String" against the
+  // final substitution. Kind: 1 = relational (`<` `>` `<=` `>=`),
+  // 2 = `+`. Anchored on the same offset the diagnostic anchor uses
+  // (railway_expr_off of the left operand, right as fallback), which the
+  // FS merge's rewrite pass recomputes identically on the merged AST.
+  binop_offsets: Array[Int];
+  binop_kinds: Array[Int];
+  binop_types: Array[Type];
+  provenance_entries: Array[(Array[Int], Array[Int], String, String, Type)];
+  mut statement_path: Array[Int];
+  frame_paths: Array[Array[Int]];
+  frame_next_children: Array[Int];
+  frame_expected_children: Array[Int];
+  frame_direct_recorded: Array[Bool];
+  direct_entries: Array[(Array[Int], Array[Int], Type)];
+  direct_enabled: Bool;
+  // #2391/#2425: false = record ONLY the (role, lane) entries and skip the
+  // whole frame/provenance machinery. Every capture function below funnels
+  // through provenance_capture, so a disabled capture never allocates a
+  // per-expression path array or a per-occurrence provenance row -- that
+  // allocation, run once per module across a compiler-sized closure, grew
+  // the selfcompile bump high-water past the CI KPI heap gate (+11.5%).
+  // The Double call-result observation only needs entries aligned with
+  // typed_occurrences; `complete` is meaningless when this is false.
+  provenance_enabled: Bool;
+  mut frame_depth: Int;
+  mut complete: Bool
+}
+
+/// The single guard for the frame/provenance half of a capture: a capture
+/// constructed with provenance_enabled = false behaves as None for every
+/// function below, while append_legacy_typed_occurrence still records its
+/// (role, lane) entries.
+fn provenance_capture(capture: Option[TypedOccurrenceRoleLaneCapture]) -> Option[TypedOccurrenceRoleLaneCapture] {
+  match capture {
+    Some(c) => if c.provenance_enabled {
+      capture
+    } else {
+      None
+    },
+    None => None
+  }
+}
+
+/// Start one retained statement's expression root. This mutable state exists
+/// only for explicit provenance observations; the production checker passes
+/// None and performs no path allocation.
+export fn typed_occurrence_capture_begin_statement(capture: Option[TypedOccurrenceRoleLaneCapture], statement_path: Array[Int]) -> Unit {
+  match provenance_capture(capture) {
+    Some(c) => {
+      c.statement_path = Array::slice(statement_path, 0, Array::length(statement_path))
+      c.frame_depth = 0
+    },
+    None => ()
+  }
+}
+
+/// End a retained statement. Clearing the logical stack prevents a later
+/// statement from ever inheriting an expression coordinate.
+export fn typed_occurrence_capture_end_statement(capture: Option[TypedOccurrenceRoleLaneCapture]) -> Unit {
+  match provenance_capture(capture) {
+    Some(c) => {
+      // Every statement root must have exited before the statement boundary.
+      // Do not let a checker traversal-order divergence leak into the next
+      // statement as a plausible path.
+      if c.frame_depth != 0 {
+        c.complete = false
+        c.frame_depth = 0
+      } else {
+        ()
+      }
+    },
+    None => ()
+  }
+}
+
+export fn typed_occurrence_capture_enter_expression(capture: Option[TypedOccurrenceRoleLaneCapture], expr: Expr) -> Unit {
+  match provenance_capture(capture) {
+    Some(c) => {
+      let path = if c.frame_depth == 0 {
+        // The statement coordinate is captured independently at append time;
+        // each retained statement expression starts at structural root [].
+        array_empty()
+      } else {
+        let parent_index = c.frame_depth - 1
+        let parent_path = Array::get(c.frame_paths, parent_index)
+        let child_index = Array::get(c.frame_next_children, parent_index)
+        Array::set(c.frame_next_children, parent_index, child_index + 1)
+        let next_path = Array::slice(parent_path, 0, Array::length(parent_path))
+        Array::push(next_path, child_index)
+        next_path
+      }
+      if c.frame_depth < Array::length(c.frame_paths) {
+        Array::set(c.frame_paths, c.frame_depth, path)
+        Array::set(c.frame_next_children, c.frame_depth, 0)
+        Array::set(c.frame_expected_children, c.frame_depth, Array::length(expr_children(expr)))
+        Array::set(c.frame_direct_recorded, c.frame_depth, false)
+      } else {
+        Array::push(c.frame_paths, path)
+        Array::push(c.frame_next_children, 0)
+        Array::push(c.frame_expected_children, Array::length(expr_children(expr)))
+        Array::push(c.frame_direct_recorded, false)
+      }
+      c.frame_depth = c.frame_depth + 1
+    },
+    None => ()
+  }
+}
+
+export fn typed_occurrence_capture_exit_expression(capture: Option[TypedOccurrenceRoleLaneCapture]) -> Unit {
+  match provenance_capture(capture) {
+    Some(c) => {
+      if c.frame_depth > 0 {
+        let index = c.frame_depth - 1
+        if c.direct_enabled && (Array::get(c.frame_next_children, index) != Array::get(c.frame_expected_children, index) || !Array::get(c.frame_direct_recorded, index)) {
+          c.complete = false
+        } else {
+          ()
+        }
+        c.frame_depth = index
+      } else {
+        c.complete = false
+      }
+    },
+    None => ()
+  }
+}
+
+/// Account for structural children that checker semantics deliberately do not
+/// recurse into (for example a recognized call callee). The next actual
+/// recursive child then still receives its `expr_children` index.
+export fn typed_occurrence_capture_skip_children(capture: Option[TypedOccurrenceRoleLaneCapture], count: Int) -> Unit {
+  match provenance_capture(capture) {
+    Some(c) => {
+      if c.frame_depth > 0 {
+        let parent_index = c.frame_depth - 1
+        let next_child = Array::get(c.frame_next_children, parent_index)
+        if c.direct_enabled {
+          c.complete = false
+        } else {
+          ()
+        }
+        Array::set(c.frame_next_children, parent_index, next_child + count)
+      } else {
+        c.complete = false
+      }
+    },
+    None => ()
+  }
+}
+
+/// Represent a structural child that checker control flow enters iteratively
+/// rather than through `check_expr_capture`. This is needed for the right
+/// spine of sequence/let expressions and for specialized call traversal.
+export fn typed_occurrence_capture_enter_virtual_child(capture: Option[TypedOccurrenceRoleLaneCapture], expected_child: Int, expected_children: Int) -> Unit {
+  match provenance_capture(capture) {
+    Some(c) => {
+      if c.frame_depth > 0 {
+        let parent_index = c.frame_depth - 1
+        let actual_child = Array::get(c.frame_next_children, parent_index)
+        if actual_child != expected_child {
+          c.complete = false
+        } else {
+          ()
+        }
+        Array::set(c.frame_next_children, parent_index, actual_child + 1)
+        let parent_path = Array::get(c.frame_paths, parent_index)
+        let path = Array::slice(parent_path, 0, Array::length(parent_path))
+        Array::push(path, actual_child)
+        if c.frame_depth < Array::length(c.frame_paths) {
+          Array::set(c.frame_paths, c.frame_depth, path)
+          Array::set(c.frame_next_children, c.frame_depth, 0)
+          Array::set(c.frame_expected_children, c.frame_depth, expected_children)
+          Array::set(c.frame_direct_recorded, c.frame_depth, false)
+        } else {
+          Array::push(c.frame_paths, path)
+          Array::push(c.frame_next_children, 0)
+          Array::push(c.frame_expected_children, expected_children)
+          Array::push(c.frame_direct_recorded, false)
+        }
+        c.frame_depth = c.frame_depth + 1
+      } else {
+        c.complete = false
+      }
+    },
+    None => ()
+  }
+}
+
+/// Restore a virtual traversal stack to its entry depth. Any imbalance is
+/// incomplete rather than a fabricated provenance path.
+export fn typed_occurrence_capture_restore_frame_depth(capture: Option[TypedOccurrenceRoleLaneCapture], expected_depth: Int) -> Unit {
+  match provenance_capture(capture) {
+    Some(c) => {
+      if c.frame_depth < expected_depth {
+        c.complete = false
+      } else {
+        ()
+      }
+      while c.frame_depth > expected_depth {
+        let index = c.frame_depth - 1
+        if c.direct_enabled && (Array::get(c.frame_next_children, index) != Array::get(c.frame_expected_children, index) || !Array::get(c.frame_direct_recorded, index)) {
+          c.complete = false
+        } else {
+          ()
+        }
+        c.frame_depth = index
+      }
+      if c.frame_depth != expected_depth {
+        c.complete = false
+      } else {
+        ()
+      }
+    },
+    None => ()
+  }
+}
+
+export fn typed_occurrence_capture_record_direct_return(capture: Option[TypedOccurrenceRoleLaneCapture], ty: Type, lane: String) -> Unit {
+  match provenance_capture(capture) {
+    Some(c) => if c.direct_enabled {
+      if c.frame_depth <= 0 || lane != "Primary" {
+        c.complete = false
+      } else {
+        let index = c.frame_depth - 1
+        if Array::get(c.frame_direct_recorded, index) {
+          c.complete = false
+        } else {
+          let path = Array::get(c.frame_paths, index)
+          Array::push(c.direct_entries, (Array::slice(c.statement_path, 0, Array::length(c.statement_path)), Array::slice(path, 0, Array::length(path)), ty))
+          Array::set(c.frame_direct_recorded, index, true)
+        }
+      }
+    } else {
+      ()
+    },
+    None => ()
+  }
+}
+
+export fn typed_occurrence_capture_record_virtual_spine_returns(capture: Option[TypedOccurrenceRoleLaneCapture], start_depth: Int, ty: Type, lane: String) -> Unit {
+  match provenance_capture(capture) {
+    Some(c) => if c.direct_enabled {
+      let mut index = start_depth
+      while index < c.frame_depth {
+        if lane != "Primary" || Array::get(c.frame_direct_recorded, index) {
+          c.complete = false
+        } else {
+          let path = Array::get(c.frame_paths, index)
+          Array::push(c.direct_entries, (Array::slice(c.statement_path, 0, Array::length(c.statement_path)), Array::slice(path, 0, Array::length(path)), ty))
+          Array::set(c.frame_direct_recorded, index, true)
+        }
+        index = index + 1
+      }
+    } else {
+      ()
+    },
+    None => ()
+  }
+}
+
+export fn typed_occurrence_capture_frame_depth(capture: Option[TypedOccurrenceRoleLaneCapture]) -> Int {
+  match provenance_capture(capture) {
+    Some(c) => c.frame_depth,
+    None => -1
+  }
+}
+
+export fn append_legacy_typed_occurrence(tytab: Array[(Int, Type)], offset: Int, ty: Type, capture: Option[TypedOccurrenceRoleLaneCapture], role: String, lane: String) -> Unit {
+  // Keep this order strict: an observation is meaningful only after its legacy
+  // row exists. Negative offsets are filtered by the individual funnels.
+  Array::push(tytab, (offset, ty))
+  match capture {
+    Some(capture_entries) => {
+      if !capture_entries.provenance_enabled {
+        // #2391: entries-only mode -- one flag, no tuple, no provenance row,
+        // no completeness bookkeeping (see the field's note on the struct).
+        Array::push(capture_entries.entries_flags, if role == "CallResult" && lane == "Primary" {
+          1
+        } else {
+          0
+        })
+      } else if lane == "SyntheticRewrite" || lane == "AuxiliaryResumeValueRecheck" || capture_entries.frame_depth == 0 {
+        Array::push(capture_entries.entries, (role, lane))
+        capture_entries.complete = false
+      } else {
+        Array::push(capture_entries.entries, (role, lane))
+        let expression_path = Array::get(capture_entries.frame_paths, capture_entries.frame_depth - 1)
+        Array::push(capture_entries.provenance_entries, (Array::slice(capture_entries.statement_path, 0, Array::length(capture_entries.statement_path)), Array::slice(expression_path, 0, Array::length(expression_path)), role, lane, ty))
+      }
+    },
+    None => ()
+  }
+}
+
+/// #2391 slice 2: the CHANNEL anchor for a relational/`+` binop -- the offset
+/// the checker records a String binop under and the FS merge's rewrite pass
+/// recomputes to find it. Exported for exactly that reason: two
+/// implementations of this anchor would be a silent-wrong factory.
+///
+/// #2435 made this exact identity: a binop parsed from source carries its
+/// OPERATOR token's offset, every desugar rebuild threads it through, and
+/// that offset IS the anchor -- no walk, no collisions. A binop the
+/// compiler SYNTHESIZES (own offset -1, e.g. the `str_lex_diff(..) < 0`
+/// wrapper the syntactic tracker emits) answers -1: the record site's
+/// `anchor_off >= 0` guard drops it and the rewrite's table lookup misses,
+/// so a synthesized binop is absent from the channel but never wrongly
+/// rewritten. The operand walk that used to fill in -1 anchors (three
+/// Codex rounds of collision guards on #2429) was measured reached ONLY by
+/// synthesized non-String binops, where its answer was -1 or a junk anchor
+/// the verdict poison then had to discard -- so it was deleted rather than
+/// guarded. The poison in string_binop_offsets_from_capture stays: two
+/// checks of the SAME source binop (generic instantiations) can still
+/// classify differently and must degrade, never rewrite.
+export fn typed_lowering_binop_anchor(own_off: Int, left: Expr, right: Expr) -> Int {
+  own_off
+}
+
+/// #2391 slice 2: record a relational/`+`/equality binop's operand types
+/// under its CHANNEL anchor (typed_lowering_binop_anchor above --
+/// deliberately not the diagnostic anchor), for the typed String-lowering
+/// and typed-`==` channels. Entries-only captures only -- a provenance
+/// capture (LSP/analysis lanes) records nothing here, so those consumers see
+/// exactly the arrays they saw before. Every located binop of a recorded
+/// kind is pushed as two rows (one per operand type): the String extraction
+/// classifies a kind-1/2 binop as String when EITHER type resolves to
+/// String; the `==` extraction (kind 3, #2441) keeps a row only when BOTH
+/// operand types resolve to the same serializable TypeExpr. Both poison an
+/// anchor claimed by binops of the same kind with DIFFERENT classifications,
+/// so a residual anchor collision degrades to the syntactic classifiers
+/// instead of a wrong rewrite.
+export fn record_string_binop_operands(capture: Option[TypedOccurrenceRoleLaneCapture], op: String, own_off: Int, left: Expr, right: Expr, left_ty: Type, right_ty: Type) -> Unit {
+  match capture {
+    Some(c) => if !c.provenance_enabled {
+      let anchor_off = typed_lowering_binop_anchor(own_off, left, right)
+      let kind = if op == "+" {
+        2
+      } else if op == "<" || op == ">" || op == "<=" || op == ">=" {
+        1
+      } else if op == "==" || op == "!=" {
+        3
+      } else {
+        0
+      }
+      if kind > 0 && anchor_off >= 0 {
+        Array::push(c.binop_offsets, anchor_off)
+        Array::push(c.binop_kinds, kind)
+        Array::push(c.binop_types, left_ty)
+        Array::push(c.binop_offsets, anchor_off)
+        Array::push(c.binop_kinds, kind)
+        Array::push(c.binop_types, right_ty)
+      } else {
+        ()
+      }
+    } else {
+      ()
+    },
+    None => ()
+  }
+}
+
+/// #3133: record the receiver type of one `xs[k]` (`__index`) under its `[`
+/// offset, as kind 4 on the binop capture arrays (two identical rows, because
+/// every reader of those arrays walks them in pairs). Entries-only captures
+/// only, like the binop rows above. A receiver whose head is already an
+/// Array, String or Bytes is skipped: a resolved head never changes under a
+/// later substitution, and such an index is array indexing whatever else the
+/// checker learns -- so the per-module capture carries a row only where the
+/// answer is still open.
+export fn record_index_receiver(capture: Option[TypedOccurrenceRoleLaneCapture], bracket_off: Int, recv_ty: Type, resolved: Type, s: Subst) -> Unit {
+  record_receiver_kind(capture, bracket_off, recv_ty, resolved, 4, s)
+}
+
+/// #3156 review: the enclosing declaration's type formal that `t` reaches by
+/// following its variable chain (`t` itself, or a variable the substitution
+/// bound to one), or -1. Stops at the first non-variable, so a receiver whose
+/// raw type is already a concrete head never counts.
+fn receiver_formal_var(t: Type, s: Subst) -> Int {
+  let mut cur = t
+  let mut out = 0 - 1
+  let mut steps = 0
+  let mut done = false
+  while !done && steps < 64 {
+    match cur {
+      CtVar(v) => if eq_formal_row_of(v) >= 0 {
+        out = v
+        done = true
+      } else {
+        match subst_lookup(s, v) {
+          Some(next) => {
+            cur = next
+          },
+          None => {
+            done = true
+          }
+        }
+      },
+      _ => {
+        done = true
+      }
+    }
+    steps = steps + 1
+  }
+  out
+}
+
+/// #3145: `kind` 4 is an index read or write (#3133 / #3139); kind 5 is a
+/// builtin `Array::*` reader, whose extraction does not count a bare
+/// `CtUnknown` as open (see `index_receiver_rows_from_capture`).
+///
+/// #3156 review: a head the substitution settled is not settled for every
+/// CALLER when the receiver is an enclosing declaration's type formal. The
+/// body may have unified the formal with an Array (`require_array(x); x[0]`
+/// in `fn f[T](x: T)`), and that local binding reaches a caller only through
+/// the declaration's scheme (#3149) -- not a caller checked against the
+/// hoisted signature, nor one reaching an exported declaration through its
+/// contract. Such a site is filed as the formal itself, under the formal
+/// kinds (6, or 8 for a `for` iterand), so the extraction refuses it unless
+/// `scheme_formal_constrained` says every caller saw the constraint.
+export fn record_receiver_kind(capture: Option[TypedOccurrenceRoleLaneCapture], bracket_off: Int, recv_ty: Type, resolved: Type, kind: Int, s: Subst) -> Unit {
+  match capture {
+    Some(c) => if !c.provenance_enabled && bracket_off >= 0 {
+      let settled = match resolved {
+        CtArray(_) => true,
+        CtString => true,
+        CtBytes => true,
+        _ => false
+      }
+      let settled_formal = if settled {
+        receiver_formal_var(recv_ty, s)
+      } else {
+        0 - 1
+      }
+      let row_kind = if settled_formal < 0 {
+        kind
+      } else if kind == 7 || kind == 8 {
+        8
+      } else {
+        6
+      }
+      let row_ty = if settled_formal >= 0 {
+        CtVar(settled_formal)
+      } else {
+        recv_ty
+      }
+      if !settled || settled_formal >= 0 {
+        Array::push(c.binop_offsets, bracket_off)
+        Array::push(c.binop_kinds, row_kind)
+        Array::push(c.binop_types, row_ty)
+        Array::push(c.binop_offsets, bracket_off)
+        Array::push(c.binop_kinds, row_kind)
+        Array::push(c.binop_types, row_ty)
+      } else {
+        ()
+      }
+    } else {
+      ()
+    },
+    None => ()
+  }
+}

@@ -1,0 +1,1710 @@
+import ./loader_contract_source_fs.vibe {
+  vpkg_types_registry_texts
+}
+
+// lib/@vibe/compiler/loader/loader.vibe — source groups fs.
+
+import @vibe/compiler/syntax {
+  cfg_ambient_flags_csv, lex, lex_with_offsets, located_lex_message, parse_program, parse_program_preserving_located
+}
+
+import @vibe/core {
+  array_empty, hex_decode, hex_encode, struct MutMap
+}
+
+import @vibe/compiler/core {
+  Expr,
+  Source,
+  Stmt,
+  Subst,
+  Type,
+  TypeDef,
+  TypeEnv,
+  TypeExpr,
+  append_import_alias_rewritten_non_import_stmts_skipping,
+  contains_path,
+  dir_of_path,
+  ensure_regular_source_fs,
+  env_bind,
+  env_lookup,
+  external_lib_roots,
+  is_builtin_iterator_serialized_boundary_path,
+  is_contract_ext,
+  nearest_vpkg_path_fs,
+  normalize_path,
+  path_in_dir,
+  path_set_add,
+  path_set_contains,
+  path_set_new,
+  reject_user_iterator_serialized_boundaries,
+  resolve_import_path,
+  resolve_import_path_candidates,
+  resolve_import_path_probe,
+  text_mentions_unstable_package,
+  vibe_env_flag,
+  vpkg_path_in_dir
+}
+
+import @vibe/compiler/checker {
+  check_stmts
+}
+
+import @vibe/compiler/runtime/eval_loader {
+  collect_exports, load_and_parse
+}
+
+import ./header_cache.vibe {
+  contract_sibling_impl_raws, load_or_parse_module_header_fs_impl, merge_impl_raws_dedupe, parse_program_located_shared_fs
+}
+
+import @vibe/compiler/contract {
+  canonicalize_for_hash,
+  check_contract_with_reexported_types,
+  classify_contract_stmts,
+  collect_impl_type_defs,
+  contract_directory_shared_import_prefix_text,
+  contract_duplicate_decl_index,
+  contract_effect_names_line,
+  contract_effective_decls,
+  contract_facade_marker,
+  contract_facade_source,
+  contract_hash,
+  contract_hash_with,
+  contract_surface_lines,
+  contract_type_family_decl_positions,
+  contract_type_family_defs,
+  contract_type_provenance,
+  contract_types_module_line,
+  contract_types_module_text,
+  deps_missing_for_imports,
+  extract_package_deps,
+  extract_package_name,
+  extract_package_version,
+  extract_require_pins,
+  package_hash_from_sources,
+  package_hash_from_sources_with,
+  package_id_matches,
+  parse_contract_program,
+  parse_contract_program_spans,
+  replace_generated_hash_directive,
+  require_line_source_clause,
+  semver_parts,
+  verify_publish_bump,
+  vpkg_contract_effects_prefix,
+  vpkg_contract_effects_sibling_slot,
+  vpkg_shared_import_marker,
+  vpkg_types_contract_of_source,
+  vpkg_types_decl_marker
+}
+
+import ./ingestion_pipeline_telemetry.vibe {
+  ingestion_pipeline_telemetry_add
+}
+
+import ./manifest_sources.vibe {
+  build_grouped_sources_from_manifest_rows,
+  is_vpkg_companion_basename,
+  is_vpkg_direct_production_basename,
+  is_vpkg_explicit_only_basename,
+  load_manifest_full_sources,
+  try_collect_manifest_source_groups_fs,
+  try_collect_manifest_sources_fs,
+  try_load_manifest_rows
+}
+
+import ./manifest_sources.vibe {
+  build_grouped_sources_from_manifest_row_source_index,
+  build_manifest_path_index,
+  build_manifest_source_index,
+  filter_manifest_sources_by_path_index,
+  filter_manifest_sources_by_paths,
+  filter_manifest_sources_by_paths_linear,
+  filter_manifest_sources_by_source_index
+}
+
+import @vibe/compiler/cache {
+  build_source_groups_fingerprint_from_compact_fingerprints,
+  cache_read_source_fs,
+  cache_read_source_with_token_fs,
+  compact_source_fingerprint_memo,
+  compact_string_fingerprint,
+  fingerprint_file_fs,
+  normalize_persistent_cache_text,
+  persistent_contract_facade_cache_path,
+  persistent_module_header_cache_path,
+  persistent_source_group_cache_path,
+  persistent_source_list_cache_path,
+  persistent_vpkg_prefix_cache_path
+}
+
+import ./loader_contract_source_fs.vibe {
+  apply_vpkg_directory_shared_imports_fs,
+  copy_source_specs,
+  desugar_contract_source_fs,
+  empty_source_specs,
+  group_cache_row_paths,
+  grouped_source_paths,
+  ingest_source_text_fs,
+  load_source_if_cached_file_spec_matches,
+  loader_empty_grouped_sources,
+  loader_join_path,
+  loader_matches_cached_file_spec,
+  loader_resolve_path_fs,
+  parse_persistent_source_group_cache,
+  parse_persistent_source_list_cache,
+  path_basename,
+  persistent_resolution_context_fingerprint_fs,
+  push_grouped_source,
+  push_grouped_source_fingerprint,
+  resolution_context_is_valid,
+  resolve_path_in_sources,
+  source_cache_spec_paths,
+  source_paths,
+  validate_index_layout_fs,
+  validate_vibex_entry_source,
+  vpkg_types_registry_contracts,
+  vpkg_types_registry_paths
+}
+
+/// #740: manifest source loaders (manifest_sources.vibe) read RAW disk bytes;
+/// a .vibei contract reaching the grouped merge un-desugared left its imports
+/// unresolvable ("undefined variable (local): sha1 @call" — contract/index.vibe's
+/// @vibe/core import never rewrote). Ingest every collected source once here,
+/// the single point all collection branches (manifest, caches, recursive walk)
+/// flow through.
+fn grouped_sources_group_for_path(groups: Array[(String, Array[(String, String)])], path: String) -> String {
+  let mut found = ""
+  let mut gi = 0
+  while gi < Array::length(groups) && found == "" {
+    let (gname, sources) = Array::get(groups, gi)
+    let mut si = 0
+    while si < Array::length(sources) && found == "" {
+      let (sp, _) = Array::get(sources, si)
+      if sp == path {
+        found = gname
+      } else {
+        si = si + 1
+      }
+    }
+    gi = gi + 1
+  }
+  found
+}
+
+/// #1840/#1921: collect_merged_stmts already re-injects materialized vpkg
+/// types modules into a fixed source set. The typecheck walk seeds only
+/// what collect_source_groups_fs returns, so a compiler_sources_manifest
+/// that lists the contract but not `.vibe/build/vpkg_types/` left the stub
+/// in header deps and missing from the coordinator env cache.
+/// Attach the stub to the contract's existing group so manifest group order
+/// (entry last) stays intact.
+fn append_registered_vpkg_types_sources(groups: Array[(String, Array[(String, String)])]) -> Unit {
+  let mut ri = 0
+  while ri < Array::length(vpkg_types_registry_paths) {
+    let r_contract = Array::get(vpkg_types_registry_contracts, ri)
+    let r_path = Array::get(vpkg_types_registry_paths, ri)
+    let contract_group = grouped_sources_group_for_path(groups, r_contract)
+    let types_group = grouped_sources_group_for_path(groups, r_path)
+    if contract_group != "" && types_group == "" {
+      push_grouped_source(groups, contract_group, r_path, Array::get(vpkg_types_registry_texts, ri))
+    } else {
+      ()
+    }
+    ri = ri + 1
+  }
+}
+
+fn ingest_grouped_sources_fs(groups: Array[(String, Array[(String, String)])]) -> Array[(String, Array[(String, String)])] with Env + Exception + Fs {
+  let out = loader_empty_grouped_sources()
+  let mut gi = 0
+  while gi < Array::length(groups) {
+    let (gname, gsources) = Array::get(groups, gi)
+    let mut si = 0
+    while si < Array::length(gsources) {
+      let (spath, stext) = Array::get(gsources, si)
+      push_grouped_source(out, gname, spath, ingest_source_text_fs(spath, stext))
+      si = si + 1
+    }
+    gi = gi + 1
+  }
+  append_registered_vpkg_types_sources(out)
+  out
+}
+
+fn load_cached_sources_rec(specs: Array[(String, String, String)], index: Int, out: Array[(String, String)]) -> Option[Array[(String, String)]] with Env + Exception + Fs {
+  if index >= Array::length(specs) {
+    Some(out)
+  } else {
+    let (path, stat_token_text, source_fingerprint) = Array::get(specs, index)
+    match load_source_if_cached_file_spec_matches(path, stat_token_text, source_fingerprint) {
+      Some(source) => {
+        Array::push(out, (path, ingest_source_text_fs(path, source)))
+        load_cached_sources_rec(specs, index + 1, out)
+      },
+      None => None
+    }
+  }
+}
+
+fn load_cached_grouped_sources_rec(rows: Array[(String, String, String, String)], index: Int, out: Array[(String, Array[(String, String)])]) -> Option[Array[(String, Array[(String, String)])]] with Env + Exception + Fs {
+  if index >= Array::length(rows) {
+    Some(out)
+  } else {
+    let (group_name, path, stat_token_text, source_fingerprint) = Array::get(rows, index)
+    match load_source_if_cached_file_spec_matches(path, stat_token_text, source_fingerprint) {
+      Some(source) => {
+        push_grouped_source(out, group_name, path, ingest_source_text_fs(path, source))
+        load_cached_grouped_sources_rec(rows, index + 1, out)
+      },
+      None => None
+    }
+  }
+}
+
+fn load_cached_group_fingerprint_rec(rows: Array[(String, String, String, String)], index: Int, out: Array[(String, Array[(String, String)])]) -> Option[Array[(String, Array[(String, String)])]] with Env + Exception + Fs {
+  if index >= Array::length(rows) {
+    Some(out)
+  } else {
+    let (group_name, path, stat_token_text, source_fingerprint) = Array::get(rows, index)
+    if !(loader_matches_cached_file_spec(path, stat_token_text, source_fingerprint)) {
+      None
+    } else {
+      push_grouped_source_fingerprint(out, group_name, path, source_fingerprint)
+      load_cached_group_fingerprint_rec(rows, index + 1, out)
+    }
+  }
+}
+
+fn manifest_cache_is_valid(manifest: Option[(String, String, String)]) -> Bool with Env + Exception + Fs {
+  match manifest {
+    Some((path, stat_token_text, source_fingerprint)) =>
+    loader_matches_cached_file_spec(path, stat_token_text, source_fingerprint),
+    None => true
+  }
+}
+
+fn load_persistent_sources_cache_if_valid(entry_path: String) -> Option[Array[(String, String)]] with Env + Exception + Fs {
+  let cache_path = persistent_source_list_cache_path(entry_path)
+  if !(Fs::exists(cache_path)) {
+    None
+  } else {
+    let (_, manifest, specs, resctx) = parse_persistent_source_list_cache(normalize_persistent_cache_text(Fs::read_file(cache_path)))
+    if !(resolution_context_is_valid(resctx, entry_path, source_cache_spec_paths(specs))) {
+      None
+    } else if !(manifest_cache_is_valid(manifest)) {
+      None
+    } else {
+      load_cached_sources_rec(specs, 0, empty_source_specs())
+    }
+  }
+}
+
+fn load_persistent_source_groups_cache_if_valid(entry_path: String) -> Option[Array[(String, Array[(String, String)])]] with Env + Exception + Fs {
+  let cache_path = persistent_source_group_cache_path(entry_path)
+  if !(Fs::exists(cache_path)) {
+    None
+  } else {
+    let (_, manifest, rows, resctx) = parse_persistent_source_group_cache(normalize_persistent_cache_text(Fs::read_file(cache_path)))
+    if !(resolution_context_is_valid(resctx, entry_path, group_cache_row_paths(rows))) {
+      None
+    } else if !(manifest_cache_is_valid(manifest)) {
+      None
+    } else {
+      load_cached_grouped_sources_rec(rows, 0, loader_empty_grouped_sources())
+    }
+  }
+}
+
+fn manifest_path_of(manifest: Option[(String, String, String)]) -> Option[String] {
+  match manifest {
+    Some((path, _, _)) => Some(path),
+    None => None
+  }
+}
+
+fn load_persistent_source_groups_from_source_list_cache_if_valid(entry_path: String) -> Option[(Option[String], Array[(String, Array[(String, String)])])] with Env + Exception + Fs {
+  let cache_path = persistent_source_list_cache_path(entry_path)
+  if !(Fs::exists(cache_path)) {
+    None
+  } else {
+    let (_, manifest, specs, resctx) = parse_persistent_source_list_cache(normalize_persistent_cache_text(Fs::read_file(cache_path)))
+    if !(resolution_context_is_valid(resctx, entry_path, source_cache_spec_paths(specs))) {
+      None
+    } else if !(manifest_cache_is_valid(manifest)) {
+      None
+    } else {
+      match load_cached_sources_rec(specs, 0, empty_source_specs()) {
+        Some(sources) =>
+        match try_load_manifest_rows(entry_path) {
+          Some((base_dir, rows)) => {
+            let groups = build_grouped_sources_from_manifest_rows(base_dir, rows, sources)
+            // #801 bug 2: `sources` comes from the source-LIST cache, a
+            // SEPARATE persistent cache from the group cache being rebuilt
+            // here. Each cache independently passes its own resctx/manifest
+            // validity check, but that does not guarantee the two enumerate
+            // the SAME file set -- e.g. the list cache may have been seeded
+            // via a plain recursive walk (or an older manifest snapshot)
+            // that never reached every manifest-listed group.
+            // build_grouped_sources_from_manifest_rows silently drops any
+            // manifest row with no matching path in `sources`, so a
+            // stale/narrower list cache can make an entire group vanish
+            // with no signal (observed: lib/@vibe/core's vibe_core /
+            // index.vibei group dropped wholesale, 50/51 rows survived).
+            // Cross-validate the reconstruction against the manifest's own
+            // row count before trusting (and persisting) it: a short count
+            // means rows were dropped, so refuse this lane and let the
+            // caller fall through to a fresh manifest collection
+            // (try_collect_manifest_source_groups_fs) that rebuilds the
+            // correct groups directly from disk instead of silently
+            // caching/returning the incomplete graph.
+            if Array::length(flatten_group_sources(groups)) != Array::length(rows) {
+              None
+            } else {
+              Some((manifest_path_of(manifest), groups))
+            }
+          },
+          None => {
+            let groups = loader_empty_grouped_sources()
+            Array::push(groups, ("recursive", sources))
+            Some((None, groups))
+          }
+        },
+        None => None
+      }
+    }
+  }
+}
+
+export fn load_persistent_source_group_fingerprint_if_valid(entry_path: String) -> Option[String] with Env + Exception + Fs {
+  let cache_path = persistent_source_group_cache_path(entry_path)
+  if !(Fs::exists(cache_path)) {
+    None
+  } else {
+    let (_, manifest, rows, resctx) = parse_persistent_source_group_cache(normalize_persistent_cache_text(Fs::read_file(cache_path)))
+    if !(resolution_context_is_valid(resctx, entry_path, group_cache_row_paths(rows))) {
+      None
+    } else if !(manifest_cache_is_valid(manifest)) {
+      None
+    } else {
+      match load_cached_group_fingerprint_rec(rows, 0, loader_empty_grouped_sources()) {
+        Some(groups) => Some(build_source_groups_fingerprint_from_compact_fingerprints(groups)),
+        None => None
+      }
+    }
+  }
+}
+
+/// #769: O(N) build via StringBuilder. The previous `out = String::concat(out,
+/// row)` per row was O(N^2) over the row count -- on the heaviest standalone
+/// closures (cache_probe_cli_prepare_batch_bench_test pulls the whole compiler)
+/// the bump-allocated concat garbage blew past the 4GB wasm32 address space in
+/// ~3s (peak RSS 3.6GB measured) and memory.grow's ignored failure surfaced as
+/// a "memory access out of bounds" inside String::concat's memory.copy. Same
+/// fix and issue class as stable_cache_path's #366 note (lib/@vibe/cache).
+export fn build_persistent_sources_cache_text(entry_path: String, manifest_path: Option[String], sources: Array[(String, String)]) -> String with Env + Exception + Fs {
+  let sb = StringBuilder::new()
+  StringBuilder::push(sb, "version\t4\n")
+  StringBuilder::push(sb, "resctx\t")
+  StringBuilder::push(sb, persistent_resolution_context_fingerprint_fs(entry_path, source_paths(sources)))
+  StringBuilder::push(sb, "\n")
+  match manifest_path {
+    Some(path) => {
+      StringBuilder::push(sb, "manifest\t")
+      StringBuilder::push(sb, hex_encode(path))
+      StringBuilder::push(sb, "\t")
+      StringBuilder::push(sb, __to_string(Fs::stat_token(path)))
+      StringBuilder::push(sb, "\t")
+      StringBuilder::push(sb, fingerprint_file_fs(path))
+      StringBuilder::push(sb, "\n")
+    },
+    None => ()
+  }
+  let mut i = 0
+  while i < Array::length(sources) {
+    let (path, source) = Array::get(sources, i)
+    // #769: skip empty-path rows -- `Fs::stat_token("")` throws in the host
+    // (ENOENT stat ''), and a pathless row could never be validated on reload
+    // anyway. Empty paths have been observed reaching this writer through the
+    // recursive-collection lane (cache_probe_loader_manifest_groups_bench /
+    // collect_source_groups_fs on some entries); the row origin is tracked
+    // separately, but the writer must never crash the whole compile over it.
+    if String::length(path) == 0 {
+      ()
+    } else {
+      StringBuilder::push(sb, "source\t")
+      StringBuilder::push(sb, hex_encode(path))
+      StringBuilder::push(sb, "\t")
+      StringBuilder::push(sb, __to_string(Fs::stat_token(path)))
+      StringBuilder::push(sb, "\t")
+      StringBuilder::push(sb, compact_source_fingerprint_memo(path, source))
+      StringBuilder::push(sb, "\n")
+    }
+    i = i + 1
+  }
+  StringBuilder::freeze(sb)
+}
+
+/// #769: O(N) via StringBuilder, same rationale as
+/// build_persistent_sources_cache_text above.
+fn build_persistent_source_groups_cache_text(entry_path: String, manifest_path: Option[String], groups: Array[(String, Array[(String, String)])]) -> String with Env + Exception + Fs {
+  let sb = StringBuilder::new()
+  StringBuilder::push(sb, "version\t4\n")
+  StringBuilder::push(sb, "resctx\t")
+  StringBuilder::push(sb, persistent_resolution_context_fingerprint_fs(entry_path, grouped_source_paths(groups)))
+  StringBuilder::push(sb, "\n")
+  match manifest_path {
+    Some(path) => {
+      StringBuilder::push(sb, "manifest\t")
+      StringBuilder::push(sb, hex_encode(path))
+      StringBuilder::push(sb, "\t")
+      StringBuilder::push(sb, __to_string(Fs::stat_token(path)))
+      StringBuilder::push(sb, "\t")
+      StringBuilder::push(sb, fingerprint_file_fs(path))
+      StringBuilder::push(sb, "\n")
+    },
+    None => ()
+  }
+  let mut gi = 0
+  while gi < Array::length(groups) {
+    let (group_name, sources) = Array::get(groups, gi)
+    let mut si = 0
+    while si < Array::length(sources) {
+      let (path, source) = Array::get(sources, si)
+      // #769: skip empty-path rows (see build_persistent_sources_cache_text).
+      if String::length(path) == 0 {
+        ()
+      } else {
+        StringBuilder::push(sb, "group\t")
+        StringBuilder::push(sb, hex_encode(group_name))
+        StringBuilder::push(sb, "\t")
+        StringBuilder::push(sb, hex_encode(path))
+        StringBuilder::push(sb, "\t")
+        StringBuilder::push(sb, __to_string(Fs::stat_token(path)))
+        StringBuilder::push(sb, "\t")
+        StringBuilder::push(sb, compact_source_fingerprint_memo(path, source))
+        StringBuilder::push(sb, "\n")
+      }
+      si = si + 1
+    }
+    gi = gi + 1
+  }
+  StringBuilder::freeze(sb)
+}
+
+export fn load_or_parse_module_header_fs(path: String, source: String, parse_count: Int) -> (Array[String], Array[String], Int) with Env + Exception + Fs {
+  load_or_parse_module_header_fs_impl(path, source, parse_count)
+}
+
+fn store_persistent_sources_cache(entry_path: String, manifest_path: Option[String], sources: Array[(String, String)]) -> Unit with Env + Exception + Fs {
+  Fs::write_file(persistent_source_list_cache_path(entry_path), build_persistent_sources_cache_text(entry_path, manifest_path, sources))
+}
+
+fn store_persistent_source_groups_cache(entry_path: String, manifest_path: Option[String], groups: Array[(String, Array[(String, String)])]) -> Unit with Env + Exception + Fs {
+  Fs::write_file(persistent_source_group_cache_path(entry_path), build_persistent_source_groups_cache_text(entry_path, manifest_path, groups))
+}
+
+fn copy_grouped_sources(groups: Array[(String, Array[(String, String)])]) -> Array[(String, Array[(String, String)])] {
+  let out = loader_empty_grouped_sources()
+  let mut gi = 0
+  while gi < Array::length(groups) {
+    let (group_name, sources) = Array::get(groups, gi)
+    let copied_sources = copy_source_specs(sources)
+    Array::push(out, (group_name, copied_sources))
+    gi = gi + 1
+  }
+  out
+}
+
+fn flatten_group_sources(groups: Array[(String, Array[(String, String)])]) -> Array[(String, String)] {
+  let out = empty_source_specs()
+  let mut gi = 0
+  while gi < Array::length(groups) {
+    let (_, sources) = Array::get(groups, gi)
+    let mut si = 0
+    while si < Array::length(sources) {
+      Array::push(out, Array::get(sources, si))
+      si = si + 1
+    }
+    gi = gi + 1
+  }
+  out
+}
+
+fn special_manifest_sources(entry_path: String) -> Option[(String, Array[(String, String)])] {
+  let _ = entry_path
+  None
+}
+
+fn special_manifest_source_groups(entry_path: String) -> Option[(String, Array[(String, Array[(String, String)])])] {
+  let _ = entry_path
+  None
+}
+
+//# Helper functions
+
+/// Cache lookup helper
+fn cache_lookup(cache: Array[(String, TypeEnv)], path: String) -> Option[TypeEnv] {
+  let len = Array::length(cache)
+  let mut i = 0
+  let mut result = None
+  let mut done = false
+  while i < len {
+    if done {
+      i = len
+    } else {
+      let (p, e) = Array::get(cache, i)
+      if p == path {
+        result = Some(e)
+        done = true
+      }
+      i = i + 1
+    }
+  }
+  result
+}
+
+fn export_marker_name(name: String) -> String {
+  String::concat("__vibe_internal_export__:", name)
+}
+
+fn env_has_export_marker(env: TypeEnv, name: String) -> Bool {
+  match env_lookup(env, export_marker_name(name)) {
+    Some(_) => true,
+    None => false
+  }
+}
+
+fn bind_export_markers(env: TypeEnv, exports: Array[String]) -> TypeEnv {
+  let mut acc = env
+  let mut i = 0
+  while i < Array::length(exports) {
+    acc = env_bind(acc, export_marker_name(Array::get(exports, i)), CtUnit)
+    i = i + 1
+  }
+  acc
+}
+
+/// Bind imported names from a checked module's env
+fn bind_checked_imports(names: Array[ImportItem], i: Int, env: TypeEnv, mod_env: TypeEnv) -> TypeEnv {
+  if i >= Array::length(names) {
+    env
+  } else {
+    let item = Array::get(names, i)
+    let name = item.name
+    let alias = item.alias
+    let bound_name = match alias {
+      Some(a) => a,
+      None => name
+    }
+    let new_env = if env_has_export_marker(mod_env, name) {
+      match env_lookup(mod_env, name) {
+        Some(ty) => env_bind(env, bound_name, ty),
+        None => env
+      }
+    } else {
+      env
+    }
+    bind_checked_imports(names, i + 1, new_env, mod_env)
+  }
+}
+
+//# Module Loader
+
+/// Check a module and return its TypeEnv, resolving imports recursively.
+/// resolve_imports is inlined to avoid mutual recursion (vibe has no forward references).
+export fn check_module(source: String, path: String, sources: Array[(String, String)], loading: Array[String], checked_cache: Array[(String, TypeEnv)]) -> TypeEnv with Env + Exception {
+  // Check cache first
+  let cached = cache_lookup(checked_cache, path)
+  match cached {
+    Some(env) => env,
+    None => {
+      // Cycle detection
+      if contains_path(loading, path) {
+        throw(String::concat("import cycle detected: ", path))
+      }
+      let tokens = lex(source)
+      let stmts = parse_program(tokens)
+      let base_dir = dir_of_path(path)
+      // Cycle-detection stack: push self before recursing through this
+      // module's imports, truncate back when done. O(1) per frame vs.
+      // the previous `Array::concat(loading, [path])`, which copied the
+      // entire ancestor stack on every recursion and made nested module
+      // loads O(depth²) — same idiom as `runtime/typecheck_fs.vibe`
+      // (#366 truncate cutover).
+      let saved_loading_len = Array::length(loading)
+      Array::push(loading, path)
+      // Resolve imports using while loop
+      let mut import_env = EnvEmpty
+      let mut ri = 0
+      while ri < Array::length(stmts) {
+        let stmt = Array::get(stmts, ri)
+        import_env = match stmt {
+          SImport(raw_path, names) => if is_builtin_iterator_serialized_boundary_path(raw_path) {
+            import_env
+          } else {
+            match resolve_path_in_sources(base_dir, raw_path, sources) {
+              None => throw(String::concat("module not found: ", resolve_import_path(base_dir, raw_path))),
+              Some((resolved, mod_source)) => {
+                let mod_env = check_module(mod_source, resolved, sources, loading, checked_cache)
+                bind_checked_imports(names, 0, import_env, mod_env)
+              }
+            }
+          },
+          SReExport(raw_path, names) => {
+            match resolve_path_in_sources(base_dir, raw_path, sources) {
+              None => throw(String::concat("module not found: ", resolve_import_path(base_dir, raw_path))),
+              Some((resolved, mod_source)) => {
+                let mod_env = check_module(mod_source, resolved, sources, loading, checked_cache)
+                bind_checked_imports(names, 0, import_env, mod_env)
+              }
+            }
+          },
+          _ => import_env
+        }
+        ri = ri + 1
+      }
+      Array::truncate(loading, saved_loading_len)
+      // Type-check with imported env
+      let empty_defs = array_empty()
+      let check_errors = array_empty()
+      // (8th arg: the typed-hover tytab — unused in this lane. The stale
+      // 7-arg call only surfaced under the cold-cache whole-graph check,
+      // #740 fallout.)
+      let check_tytab = array_empty()
+      let (env, _, _) = check_stmts(stmts, 0, import_env, empty_defs, SubstEmpty, 0, check_errors, check_tytab)
+      // Cache result
+      let cached_env = bind_export_markers(env, collect_exports(stmts))
+      Array::push(checked_cache, (path, cached_env))
+      cached_env
+    }
+  }
+}
+
+/// #730 (D-2): both content-addressing hashes of a contract package, from its
+/// ORIGINAL on-disk texts (require lines included — they are part of the
+/// hashed content, which is what makes a direct pin fix the transitive
+/// closure). Paths in the package hash are package-relative ("index.vibei" +
+/// each impl's raw import spelling), so the hash is location-independent —
+/// the same function serves `vibe hash` on a working directory and store
+/// verification of an installed copy.
+fn collect_package_hash_inputs_fs(path: String) -> (Array[(String, String)], Array[(String, String)], Array[(String, Array[String])], Array[Stmt]) with Env + Exception + Fs {
+  validate_index_layout_fs(path)
+  let raw = cache_read_source_fs(path)
+  let (_, blanked) = extract_require_pins(raw)
+  let (decls, opaques, extra) = parse_contract_program(lex(blanked))
+  let (impl_raws0, type_defs) = classify_contract_stmts(extra)
+  let package_contract = normalize_path(path)
+  let dir = dir_of_path(package_contract)
+  // #730: mirror the ingestion's auto-discovery — the package hash must cover
+  // the same impl files the facade is built from. Discovered raws are
+  // "./<name>" and byte-sorted, so the hash stays location-independent and
+  // deterministic.
+  // #897/#855: mirror desugar_contract_source_fs's .vpkg implicit-membership
+  // merge exactly, so the hash always covers the same impl set the facade
+  // was built from (a mismatch here would make the content-addressed hash
+  // silently stale relative to what actually got conformance-checked).
+  let impl_raws = if String::ends_with(path, ".vpkg") {
+    merge_impl_raws_dedupe(impl_raws0, contract_sibling_impl_raws(dir))
+  } else if Array::length(impl_raws0) == 0 {
+    contract_sibling_impl_raws(dir)
+  } else {
+    impl_raws0
+  }
+  let sources = array_empty()
+  // #897 (ADR-0070 Phase 1): the package-hash key names the contract file by
+  // its OWN on-disk suffix rather than assuming "index.vibei" — `path` is
+  // already the resolved contract file (whichever of .vibei/.vpkg won), so
+  // its basename is read off directly instead of re-probing the filesystem.
+  // A directory that migrates from index.vibei to index.vpkg intentionally
+  // gets a different hash (the rename is a real content/identity change).
+  let contract_last_slash = String::last_index_of(path, "/")
+  let contract_basename = if contract_last_slash < 0 {
+    path
+  } else {
+    path[contract_last_slash + 1: String::length(path)]
+  }
+  // #1145 follow-up 3: `generated_hash` stores this package's own content
+  // hash -- feed it back into what gets hashed and the hash would depend on
+  // hash-writing history instead of on the file, so it's always blanked to
+  // empty here (a no-op for the common case where it's already empty; see
+  // canonicalize_for_hash's own comment).
+  Array::push(sources, (contract_basename, canonicalize_for_hash(raw)))
+  let mut ri = 0
+  if String::ends_with(package_contract, ".vpkg") {
+    let visited = path_set_new()
+    while ri < Array::length(impl_raws) {
+      let resolved = loader_resolve_path_fs(dir, Array::get(impl_raws, ri))
+      collect_package_hash_source_closure_fs(package_contract, dir, resolved, sources, visited)
+      ri = ri + 1
+    }
+  } else {
+    // Legacy .vibei hashing preserves its declared/direct implementation set.
+    while ri < Array::length(impl_raws) {
+      let iraw = Array::get(impl_raws, ri)
+      let resolved = loader_resolve_path_fs(dir, iraw)
+      ensure_regular_source_fs(resolved)
+      let itext = cache_read_source_fs(resolved)
+      Array::push(sources, (iraw, itext))
+      ri = ri + 1
+    }
+  }
+  (sources, decls, opaques, type_defs)
+}
+
+export fn contract_package_hashes_fs(path: String) -> (String, String) with Env + Exception + Fs {
+  contract_package_hashes_fs_algo(path, "b3")
+}
+
+export fn contract_package_hashes_fs_algo(path: String, algo: String) -> (String, String) with Env + Exception + Fs {
+  let (sources, decls, opaques, type_defs) = collect_package_hash_inputs_fs(path)
+  (package_hash_from_sources_with(algo, sources), contract_hash_with(algo, decls, opaques, type_defs))
+}
+
+fn verify_recorded_package_id_fs(importer: String, name: String, pin_hash: String, index_path: String, copy_kind: String) -> Unit with Env + Exception + Fs {
+  let (sources, _, _, _) = collect_package_hash_inputs_fs(index_path)
+  if package_id_matches(pin_hash, sources) {
+    ()
+  } else {
+    let actual = package_hash_from_sources(sources)
+    throw("pin mismatch for \{name}: \{importer} requires #\{pin_hash} but the \{copy_kind} copy is #\{actual}")
+  }
+}
+
+/// #1145 follow-up 3: computes this package's content hash the same way
+/// `vibe hash` does (contract_package_hashes_fs blanks the file's own
+/// `generated_hash` before hashing, so a stale value here never leaks into
+/// its own hash -- see that function's comment) and returns the file's full
+/// text with `generated_hash = ` rewritten to the computed pin. Read-only
+/// like every other fs-mode adapter entry point: the caller writes the
+/// result back wherever it wants (same convention as VIBE_FILL_PINS).
+/// Idempotent: re-running against the written-back file recomputes and
+/// returns the identical hash.
+export fn write_generated_hash_fs(path: String) -> String with Env + Exception + Fs {
+  let (pkg_hash, _ct_hash) = contract_package_hashes_fs(path)
+  replace_generated_hash_directive(Fs::read_file(path), "#\{pkg_hash}")
+}
+
+/// #730 (D-3): fill missing require pins OFFLINE from the workspace store.
+/// `require @x/y 1.2.3` becomes `require @x/y 1.2.3 = #pkg:b3:<hex>` when
+/// .vibe/store/@x/y/ is installed; a package absent from the store is an
+/// error (network fetch belongs to `vibe add`/`update`, never to fmt).
+/// Pinned lines pass through untouched, so the rewrite is idempotent.
+export fn fill_require_pins_fs(source: String) -> String with Env + Exception + Fs {
+  fill_require_pins_fs_mode(source, false)
+}
+
+/// repin=true rewrites EVERY require line to the store's current hash —
+/// `vibe dedupe --apply` (#730 D-4): after updating a store package, one
+/// pass re-points all pins in a file at the installed copies. With the
+/// by-name store there is one installed version per package, so repinning
+/// IS conflict resolution.
+export fn fill_require_pins_fs_mode(source: String, repin: Bool) -> String with Env + Exception + Fs {
+  fill_require_pins_impl(source, repin, false)
+}
+
+/// The `vibe fmt` lane's fill (#730 D-3): the same offline store lookup as
+/// fill_require_pins_fs, but TOTAL. fmt must format the body whatever the
+/// state of the store, so a package absent from the store leaves its
+/// require line verbatim instead of failing the run, and any error along
+/// the way (a malformed require line the head classifier will refuse
+/// anyway, a store copy the hasher rejects) returns the source unchanged.
+/// Not filling is not wrong -- the build still refuses to resolve an
+/// unpinned require -- whereas aborting the format over it would be; the
+/// strict lane (VIBE_FILL_PINS, above) keeps the loud answer for callers
+/// who asked for pins specifically.
+export fn fill_require_pins_lenient(source: String) -> String with Env + Fs {
+  handle {
+    fill_require_pins_impl(source, false, true)
+  } with { Exception::Throw(_) => source }
+}
+
+/// digits_to_int (behind semver_parts) folds digit runs with the wrapping
+/// 63-bit arithmetic every Int operation has (#1877), so a long-enough
+/// component wraps -- `^0.1.4611686018427387904` gets a NEGATIVE patch
+/// bound and an installed 0.1.0 "satisfies" it (#2260 round 6, measured).
+/// 18 decimal digits max out below 2^62-1, so components up to that length
+/// convert exactly; anything longer is unverifiable and never fills.
+fn semver_components_convert_exactly(v: String) -> Bool {
+  let start = if String::starts_with(v, "^") {
+    1
+  } else {
+    0
+  }
+  let parts = String::split(String::substring(v, start, String::length(v)), ".")
+  if Array::length(parts) != 3 {
+    false
+  } else {
+    String::length(Array::get(parts, 0)) <= 18 && String::length(Array::get(parts, 1)) <= 18 && String::length(Array::get(parts, 2)) <= 18
+  }
+}
+
+/// Does the store copy's declared version satisfy a require constraint?
+/// The grammar (ADR-0063 §6) has exactly two operators: none (exact match)
+/// and `^` (compatible range, npm caret semantics: the leftmost non-zero
+/// digit is the compatibility line -- same major and >= the triple; for
+/// major 0 same minor and >= patch; for 0.0.z the patch itself, so only
+/// the exact triple satisfies, #2260 round 5). An empty or non-triple
+/// declared version satisfies nothing -- unverifiable never fills.
+fn require_constraint_satisfied(constraint: String, version: String) -> Bool {
+  if !semver_components_convert_exactly(constraint) || !semver_components_convert_exactly(version) {
+    return false
+  }
+  match semver_parts(version) {
+    None => false,
+    Some(vparts) => {
+      let (vmaj, vmin, vpat) = vparts
+      if String::starts_with(constraint, "^") {
+        match semver_parts(String::substring(constraint, 1, String::length(constraint))) {
+          None => false,
+          Some(cparts) => {
+            let (cmaj, cmin, cpat) = cparts
+            if vmaj != cmaj {
+              false
+            } else if cmaj == 0 && cmin == 0 {
+              vmin == 0 && vpat == cpat
+            } else if cmaj == 0 {
+              vmin == cmin && vpat >= cpat
+            } else if vmin != cmin {
+              vmin > cmin
+            } else {
+              vpat >= cpat
+            }
+          }
+        }
+      } else {
+        constraint == version
+      }
+    }
+  }
+}
+
+// Which lines are require directives is decided by the loader's own header
+// scanner, not by a second region scan here (#2260 Codex round 3): the
+// scanner blanks every recognized directive line to spaces with byte length
+// preserved, so a line that starts with `require ` in the source and is
+// all-blank in the blanked output IS a recognized require directive --
+// including one sitting after `name =`/`version =`/`deps = { .. }` in an
+// `index.vpkg` header, which a "stop at the first non-require line" scan
+// (this function's previous shape) never reached. A `require`-looking line
+// the scanner did NOT blank (i.e. body text) is left alone.
+fn fill_require_pins_impl(source: String, repin: Bool, lenient: Bool) -> String with Env + Exception + Fs {
+  let (_, blanked) = extract_require_pins(source)
+  let sb = StringBuilder::new()
+  let len = String::length(source)
+  let mut pos = 0
+  while pos < len {
+    let mut nl = pos
+    while nl < len && String::char_code_at(source, nl) != 10 {
+      nl = nl + 1
+    }
+    let line = String::substring(source, pos, nl)
+    let trimmed = String::trim(line)
+    let mut emitted = false
+    if String::starts_with(trimmed, "require ") && String::length(String::trim(String::substring(blanked, pos, nl))) == 0 {
+      let (pins_one, _) = extract_require_pins(String::concat(trimmed, "\n"))
+      if Array::length(pins_one) == 1 {
+        let (pname, pver, ppin) = Array::get(pins_one, 0)
+        if ppin == "" || repin {
+          // #897: try the target spelling (.vpkg) first, then legacy
+          // .vibei, mirroring resolve_import_path_candidates' root ordering.
+          let store_index_vpkg = String::concat(".vibe/store/", String::concat(pname, "/index.vpkg"))
+          let store_index_vibei = String::concat(".vibe/store/", String::concat(pname, "/index.vibei"))
+          let store_index = if Fs::exists(store_index_vpkg) {
+            store_index_vpkg
+          } else {
+            store_index_vibei
+          }
+          if Fs::exists(store_index) {
+            // #2260 Codex round 4: the pin is the truth the build verifies,
+            // so writing the installed copy's hash beside a version it does
+            // not satisfy would make the build accept and run a release the
+            // source never asked for -- silently. Fill only when the store
+            // copy DECLARES a version and it satisfies the constraint; a
+            // versionless or mismatched copy leaves the line for `vibe
+            // add`/`update` (lenient) or reports both versions (strict).
+            let store_version = extract_package_version(Fs::read_file(store_index))
+            if require_constraint_satisfied(pver, store_version) {
+              let (pkg_hash, _) = contract_package_hashes_fs(store_index)
+              // #2676: keep the `from <source>` clause `vibe add` recorded.
+              StringBuilder::push(sb, String::concat("require \{pname} \{pver} = #\{pkg_hash}", require_line_source_clause(trimmed)))
+              emitted = true
+            } else if lenient {
+              ()
+            } else {
+              throw("cannot pin \{pname}: the store copy declares version '\{store_version}' which does not satisfy the required \{pver} (install the matching release with `vibe add`/`update`, or fix the require line)")
+            }
+          } else if lenient {
+            // fmt lane: leave the unpinned line for the build to reject;
+            // fetching belongs to `vibe add`/`update`, never to fmt.
+            ()
+          } else {
+            throw("cannot pin \{pname} offline: not installed in the store (.vibe/store/\{pname}/)")
+          }
+        } else ()
+      } else ()
+    } else ()
+    if emitted {
+      ()
+    } else {
+      StringBuilder::push(sb, line)
+    }
+    if nl < len {
+      StringBuilder::push(sb, "\n")
+    } else ()
+    pos = nl + 1
+  }
+  StringBuilder::freeze(sb)
+}
+
+/// #732 (Phase F): publish gate. Parse the previous and next contract
+/// surfaces and verify the claimed version bump is exactly what the diff
+/// requires (Elm-style machine-checked semver). Returns error strings;
+/// empty = the release claim is honest.
+export fn publish_check_fs(prev_contract_path: String, next_contract_path: String, prev_version: String, next_version: String) -> Array[String] with Exception + Fs {
+  let prev_raw = Fs::read_file(prev_contract_path)
+  let (_, prev_blanked) = extract_require_pins(prev_raw)
+  let (pd, po, pextra) = parse_contract_program(lex(prev_blanked))
+  let (_, ptypes) = classify_contract_stmts(pextra)
+  let next_raw = Fs::read_file(next_contract_path)
+  let (_, next_blanked) = extract_require_pins(next_raw)
+  let (nd, no, nextra) = parse_contract_program(lex(next_blanked))
+  let (_, ntypes) = classify_contract_stmts(nextra)
+  // #754: versions come from the PACKAGE-side `version x.y.z` directive when
+  // the caller does not pass them; a caller-passed version that contradicts
+  // the directive is its own error (a publish must not claim a version the
+  // package does not declare).
+  let prev_directive = extract_package_version(prev_raw)
+  let next_directive = extract_package_version(next_raw)
+  let errors = array_empty()
+  if prev_version != "" && prev_directive != "" && prev_version != prev_directive {
+    Array::push(errors, "previous version \{prev_version} contradicts the contract's version directive \{prev_directive}")
+  } else ()
+  if next_version != "" && next_directive != "" && next_version != next_directive {
+    Array::push(errors, "claimed version \{next_version} contradicts the contract's version directive \{next_directive}")
+  } else ()
+  let pv = if prev_version != "" {
+    prev_version
+  } else {
+    prev_directive
+  }
+  let nv = if next_version != "" {
+    next_version
+  } else {
+    next_directive
+  }
+  if pv == "" || nv == "" {
+    Array::push(errors, "publish versions unavailable: pass them explicitly or add a `version x.y.z` directive to the contract (#754)")
+    errors
+  } else if Array::length(errors) > 0 {
+    errors
+  } else {
+    verify_publish_bump(pv, nv, contract_surface_lines(pd, po, ptypes), contract_surface_lines(nd, no, ntypes))
+  }
+}
+
+/// #2676: the require pins that apply to `path`: those of its owning
+/// contract (the nearest enclosing index.vpkg -- the project's manifest, or
+/// a store package's own contract for its impl files) followed by the
+/// importer's own head. The verifiers keep the LAST match for a name, so a
+/// pin the importer spells itself still wins over the manifest's. A
+/// contract is its own owner and contributes nothing twice; a file with no
+/// enclosing index.vpkg keeps exactly its own pins.
+fn with_owner_pins_fs(path: String, own: Array[(String, String, String)]) -> Array[(String, String, String)] with Exception + Fs {
+  let owner = nearest_vpkg_path_fs(path)
+  if owner == "" || owner == path {
+    own
+  } else {
+    let (owner_pins, _) = extract_require_pins(cache_read_source_fs(owner))
+    let merged = array_empty()
+    let mut i = 0
+    while i < Array::length(owner_pins) {
+      Array::push(merged, Array::get(owner_pins, i))
+      i = i + 1
+    }
+    let mut j = 0
+    while j < Array::length(own) {
+      Array::push(merged, Array::get(own, j))
+      j = j + 1
+    }
+    merged
+  }
+}
+
+/// #730 (D-2): verify a store-resolved package against the importer's require
+/// pin. The store is laid out BY NAME (.vibe/store/@scope/name/) and trusted
+/// only through this hash check, so any mirror/copy mechanism is fine.
+fn verify_store_package_fs(importer: String, pins: Array[(String, String, String)], store_index_path: String) -> Unit with Env + Exception + Fs {
+  let prefix = ".vibe/store/"
+  // #897: `store_index_path` is already the RESOLVED dep (the caller reads
+  // it off the collected import graph), so its own suffix tells us which
+  // spelling won without re-probing the filesystem.
+  let suffix = if String::ends_with(store_index_path, "/index.vpkg") {
+    "/index.vpkg"
+  } else {
+    "/index.vibei"
+  }
+  let name = String::substring(store_index_path, String::length(prefix), String::length(store_index_path) - String::length(suffix))
+  let mut pin_hash = ""
+  let mut pin_found = false
+  let mut pi = 0
+  while pi < Array::length(pins) {
+    let (pname, _, phash) = Array::get(pins, pi)
+    if pname == name {
+      pin_hash = phash
+      pin_found = true
+    } else ()
+    pi = pi + 1
+  }
+  if pin_found {
+    ()
+  } else {
+    throw("no require pin for \{name} in \{importer} or its index.vpkg (add: require \{name} <x.y.z> = #<pkg-hash> to the project's index.vpkg; `vibe add` writes it, `vibe hash` computes it)")
+  }
+  if pin_hash == "" {
+    throw("unpinned require for \{name} in \{importer}: run `vibe fmt` (VIBE_FILL_PINS=1) to insert the pin from the store")
+  } else ()
+  if Fs::exists(store_index_path) {
+    ()
+  } else {
+    throw("package \{name} is not installed in the store (.vibe/store/\{name}/)")
+  }
+  verify_recorded_package_id_fs(importer, name, pin_hash, store_index_path, "store")
+}
+
+/// #751 (ADR-0065): a `lib/`-resolved package is the dev-mode lane — no
+/// require pin is demanded (that stays a store/release rule). But a pin is
+/// the truth WHEREVER resolution lands: when the importer does pin the name,
+/// the lib/ (or VIBE_LIB external root) copy must match it, or a stale
+/// checkout silently diverges from what the pin promises. Under
+/// VIBE_REQUIRE_PINS=1 (the release/publish freeze switch; `vibe run
+/// --freeze` maps to it) the pin stops being optional: dev-mode name
+/// resolution without a pin is an error.
+fn verify_lib_package_fs(importer: String, pins: Array[(String, String, String)], lib_index_path: String) -> Unit with Env + Exception + Fs {
+  // The package name starts at the "@" — works for both the workspace
+  // spelling ("lib/@scope/name/index.vibei") and an absolute VIBE_LIB root
+  // ("/home/u/.vibe/lib/@scope/name/index.vibei"), and (#897) either's
+  // `.vpkg`-suffixed alternate spelling. `lib_index_path` is already the
+  // RESOLVED dep, so its own suffix tells us which spelling won.
+  let suffix = if String::ends_with(lib_index_path, "/index.vpkg") {
+    "/index.vpkg"
+  } else {
+    "/index.vibei"
+  }
+  let at = String::last_index_of(lib_index_path, "@")
+  let name = String::substring(lib_index_path, at, String::length(lib_index_path) - String::length(suffix))
+  let mut pin_hash = ""
+  let mut pi = 0
+  while pi < Array::length(pins) {
+    let (pname, _, phash) = Array::get(pins, pi)
+    if pname == name {
+      pin_hash = phash
+    } else ()
+    pi = pi + 1
+  }
+  if pin_hash == "" {
+    if vibe_env_flag("VIBE_REQUIRE_PINS") {
+      throw("pin required for \{name} (VIBE_REQUIRE_PINS=1): \{importer} resolves it via the dev-mode lib lane; add `require \{name} <version> = #pkg:b3:<hash>` (or a legacy #pkg:sha1:<hash>)")
+    } else if !(Fs::exists(lib_index_path)) {
+      // #831: an unpinned lib/VIBE_LIB package reference with no installed
+      // copy used to fall through here silently and only fail later, deep
+      // inside the raw `Fs::read_file` primitive in `collect_sources_rec`
+      // (an uncaught host-level crash, not a diagnostic). Catch it here,
+      // at resolution time, with the same guidance shape as the pin-mismatch
+      // and store-install errors below/above.
+      throw("cannot resolve import \{name}: not found via lib/ or VIBE_LIB (looked for \{lib_index_path})")
+    } else ()
+  } else {
+    verify_recorded_package_id_fs(importer, name, pin_hash, lib_index_path, "lib/")
+  }
+}
+
+/// Package-owner boundary enforcement. `index.vpkg` is the sole boundary
+/// marker, and the nearest enclosing one owns a source. A contract itself is a
+/// public facade. Sources without an owner form a public compatibility space.
+/// Every owned implementation target requires the importer to have that same
+/// nearest owner, so nested -> parent and parent -> nested internal imports are
+/// both rejected.
+fn enforce_incoming_boundary_fs(importer: String, target: String) -> Unit with Exception + Fs {
+  if is_vpkg_companion_basename(path_basename(target)) {
+    throw("cannot import test/bench companion as a module target: \{target}")
+  } else ()
+  // #2676: a contract path is its own owner by construction. Asking the
+  // filesystem instead answers the ENCLOSING owner while the contract does
+  // not exist yet -- for `import @acme/base` in a package hashed before its
+  // dependency is in the store, that is the project's root index.vpkg -- and
+  // the import was refused here as a boundary crossing ("target owner is
+  // index.vpkg") instead of reaching the resolution-time "not found" / pin
+  // diagnostics that name the edit.
+  let target_owner = if is_contract_ext(target) {
+    target
+  } else {
+    nearest_vpkg_path_fs(target)
+  }
+  if target_owner == "" {
+    ()
+  } else if target == target_owner {
+    ()
+  } else {
+    let importer_owner = nearest_vpkg_path_fs(importer)
+    if importer_owner == target_owner {
+      ()
+    } else {
+      throw("cannot import \{target} across a package boundary; target owner is \{target_owner} (#729); import the owner contract instead")
+    }
+  }
+}
+
+fn package_relative_hash_key(package_dir: String, source_path: String) -> String with Exception {
+  let prefix = if package_dir == "" {
+    ""
+  } else if package_dir == "/" {
+    "/"
+  } else {
+    String::concat(package_dir, "/")
+  }
+  let relative = if prefix == "" {
+    source_path
+  } else if String::starts_with(source_path, prefix) {
+    source_path[String::length(prefix): String::length(source_path)]
+  } else {
+    throw("package hash source \{source_path} is outside package directory \{package_dir}")
+  }
+  String::concat("./", relative)
+}
+
+/// Collect the same-owner dependency closure rooted at direct production
+/// siblings. Explicit-only `_*.vibe` / `*.draft.vibe` sources are absent from
+/// discovery, but enter this closure when a production source imports them.
+/// Cross-package contracts remain represented by the importing source's text
+/// and require pin; their implementation bytes belong to their own hash.
+fn collect_package_hash_source_closure_fs(package_contract: String, package_dir: String, source_path: String, sources: Array[(String, String)], visited: Array[Array[String]]) -> Unit with Env + Exception + Fs {
+  if path_set_contains(visited, source_path) {
+    ()
+  } else {
+    path_set_add(visited, source_path)
+    validate_index_layout_fs(source_path)
+    let source = cache_read_source_fs(source_path)
+    Array::push(sources, (package_relative_hash_key(package_dir, source_path), source))
+    let (deps, _, _) = load_or_parse_module_header_fs(source_path, source, 0)
+    let mut i = 0
+    while i < Array::length(deps) {
+      let dep = Array::get(deps, i)
+      enforce_incoming_boundary_fs(source_path, dep)
+      let dep_owner = nearest_vpkg_path_fs(dep)
+      if dep_owner == package_contract && dep != package_contract {
+        collect_package_hash_source_closure_fs(package_contract, package_dir, dep, sources, visited)
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+  }
+}
+
+fn collect_sources_rec(path: String, sources: Array[(String, String)], visited: Array[Array[String]]) -> Unit with Env + Exception + Fs {
+  if path_set_contains(visited, path) {
+    ()
+  }
+  else {
+    path_set_add(visited, path)
+    // #831: safety net. `path` normally already passed the located,
+    // raw-import-spelling-aware existence check in
+    // header_cache.vibe's `resolve_checked_path_fs` before it ever became a
+    // dep here -- but this recursion is also entered directly for the
+    // top-level entry path (no importer, no located import site) and can
+    // replay a WARM persistent header cache written before that check
+    // existed (stale fallback dep). `Fs::read_file` is a raw host
+    // primitive: a missing file there is a JS-level throw from the host
+    // runner, not a guest `Error` effect, so it crosses the wasm/JS
+    // boundary uncaught and prints a low-level crash dump instead of a
+    // diagnostic. Guard it here too so no path through this recursion can
+    // still reach that raw primitive with a nonexistent file.
+    if !(Fs::exists(path)) {
+      throw("cannot resolve module: \{path} does not exist")
+    } else ()
+    validate_index_layout_fs(path)
+    let raw_source = cache_read_source_fs(path)
+    // #730 (D-2): require pin lines are a leading directive, extracted and
+    // blanked (offset-preserving) before anything parses the source.
+    let (own_pins, pin_blanked) = extract_require_pins(raw_source)
+    // #2676: the pins a store import is verified against are the importer's
+    // own head PLUS those of its owning contract (the nearest enclosing
+    // index.vpkg, ADR-0070): a project's root index.vpkg is its manifest,
+    // and `vibe add` writes the pin there, not into every file that
+    // imports the package.
+    let pins = with_owner_pins_fs(path, own_pins)
+    // #749: the facade MUST carry contract_facade_marker — every collected
+    // source is re-ingested at the collect_source_groups_fs chokepoint, and
+    // an unmarked facade re-enters desugar_contract_source_fs as if it were
+    // raw contract grammar (classify_contract_stmts rejects its re-export
+    // lines). This walk used to emit the bare facade; only the cold first
+    // pass reaches it, so the failure hid behind the runner's module-init
+    // re-run (#749).
+    let source = if is_contract_ext(path) {
+      String::concat(contract_facade_marker, desugar_contract_source_fs(path, pin_blanked))
+    } else {
+      // #897: directory-shared vpkg imports (see
+      // `apply_vpkg_directory_shared_imports_fs` above) apply here too --
+      // this cold walk builds `source` independently of `ingest_source_text_fs`
+      // (it needs `pins` separately, for pin verification below), so it must
+      // repeat the same ingestion step rather than silently skip it.
+      apply_vpkg_directory_shared_imports_fs(path, pin_blanked)
+    }
+    let (deps, _, _) = load_or_parse_module_header_fs(path, source, 0)
+    // First, recurse into dependencies (imports and re-exports)
+    let mut i = 0
+    while i < Array::length(deps) {
+      let dep = Array::get(deps, i)
+      enforce_incoming_boundary_fs(path, dep)
+      // Only a store PACKAGE reference (its contract) is pin-verified;
+      // paths inside an already-verified store package (its impl files)
+      // are covered by that package's hash.
+      if String::starts_with(dep, ".vibe/store/") && is_contract_ext(dep) {
+        verify_store_package_fs(path, pins, dep)
+      } else if is_contract_ext(dep) && String::last_index_of(dep, "@") >= 0 {
+        // #751: dev-mode lane (workspace lib/ OR a VIBE_LIB external root —
+        // any @-named package contract that is not the store) — pin
+        // optional but verified when present; VIBE_REQUIRE_PINS=1 demands it.
+        verify_lib_package_fs(path, pins, dep)
+      } else ()
+      collect_sources_rec(dep, sources, visited)
+      i = i + 1
+    }
+    // Then add this module (dependencies come first)
+    Array::push(sources, (path, source))
+  }
+}
+
+/// Recursively collect all source files from filesystem, following imports and re-exports.
+/// Returns Array[(path, source)] in dependency order (dependencies first).
+export fn collect_all_sources_fs(entry_path: String) -> Array[(String, String)] with Env + Exception + Fs {
+  match special_manifest_sources(entry_path) {
+    Some((manifest_path, sources)) => {
+      let _ = manifest_path
+      copy_source_specs(sources)
+    },
+    None => {
+      ingestion_pipeline_telemetry_add(0, 1)
+      match load_persistent_sources_cache_if_valid(entry_path) {
+        Some(sources) => {
+          ingestion_pipeline_telemetry_add(1, 1)
+          sources
+        },
+        None => {
+          ingestion_pipeline_telemetry_add(2, 1)
+          // Every source-list miss enters exactly one cold collection attempt,
+          // whether a fresh manifest wins or recursion is ultimately required.
+          ingestion_pipeline_telemetry_add(9, 1)
+          match try_collect_manifest_sources_fs(entry_path) {
+            Some((manifest_path, sources)) => {
+              store_persistent_sources_cache(entry_path, Some(manifest_path), sources)
+              sources
+            },
+            None => {
+              match try_load_manifest_rows(entry_path) {
+                Some((base_dir, rows)) => {
+                  let manifest_path = loader_join_path(base_dir, "compiler_sources_manifest.tsv")
+                  let preloaded_sources = load_manifest_full_sources(base_dir, rows)
+                  store_persistent_sources_cache(entry_path, Some(manifest_path), preloaded_sources)
+                  preloaded_sources
+                },
+                None => {
+                  let sources = array_empty()
+                  let visited = path_set_new()
+                  collect_sources_rec(entry_path, sources, visited)
+                  store_persistent_sources_cache(entry_path, None, sources)
+                  sources
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/// #740: the grouped merge (db_grouped_merged_source) treats the LAST
+/// flattened source as the export-rename plan entry — its exports stay
+/// UNRENAMED. Manifest collection returns sources in MANIFEST ROW ORDER, so a
+/// manifest-listed entry that is not the last needed row left some LATER dep
+/// exempt from renames instead of the entry: callers were rewritten to that
+/// dep's `_exp_<path>` names whose defs were never emitted ("undefined
+/// variable (local): ripple_get_fingerprint_exp_..." when FS-compiling
+/// runtime/typecheck_fs.vibe, row 152, whose ripple deps sit at rows 150-151).
+/// Centralized here (rather than in each collection branch) so groups
+/// reconstructed from PERSISTENT CACHES get the same ordering guarantee.
+/// No-op when the entry is already last (the plain recursive walk).
+fn move_entry_last_grouped(groups: Array[(String, Array[(String, String)])], entry_path: String) -> Array[(String, Array[(String, String)])] {
+  let glen = Array::length(groups)
+  let mut total = 0
+  let mut gi = 0
+  while gi < glen {
+    let (_, gsources) = Array::get(groups, gi)
+    total = total + Array::length(gsources)
+    gi = gi + 1
+  }
+  let mut seen = 0
+  let mut entry_is_last = false
+  let mut entry_found = false
+  let mut entry_source = ""
+  gi = 0
+  while gi < glen {
+    let (_, gsources) = Array::get(groups, gi)
+    let mut si = 0
+    while si < Array::length(gsources) {
+      seen = seen + 1
+      let (spath, stext) = Array::get(gsources, si)
+      if spath == entry_path {
+        entry_found = true
+        entry_source = stext
+        if seen == total {
+          entry_is_last = true
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      si = si + 1
+    }
+    gi = gi + 1
+  }
+  if !entry_found || entry_is_last {
+    groups
+  } else {
+    let out = loader_empty_grouped_sources()
+    gi = 0
+    while gi < glen {
+      let (gname, gsources) = Array::get(groups, gi)
+      let mut si = 0
+      while si < Array::length(gsources) {
+        let (spath, stext) = Array::get(gsources, si)
+        if spath == entry_path {
+          ()
+        } else {
+          push_grouped_source(out, gname, spath, stext)
+        }
+        si = si + 1
+      }
+      gi = gi + 1
+    }
+    push_grouped_source(out, "entry_last", entry_path, entry_source)
+    out
+  }
+}
+
+export fn collect_source_groups_fs(entry_path: String) -> Array[(String, Array[(String, String)])] with Env + Exception + Fs {
+  if String::ends_with(entry_path, ".vibex") {
+    ensure_regular_source_fs(entry_path)
+    validate_vibex_entry_source(entry_path, Fs::read_file(entry_path))
+  } else {
+    ()
+  }
+  let collected = match special_manifest_source_groups(entry_path) {
+    Some((manifest_path, groups)) => {
+      let _ = manifest_path
+      copy_grouped_sources(groups)
+    },
+    None => {
+      ingestion_pipeline_telemetry_add(3, 1)
+      match load_persistent_source_groups_cache_if_valid(entry_path) {
+        Some(groups) => {
+          ingestion_pipeline_telemetry_add(4, 1)
+          groups
+        },
+        None => {
+          ingestion_pipeline_telemetry_add(5, 1)
+          ingestion_pipeline_telemetry_add(6, 1)
+          ingestion_pipeline_telemetry_add(0, 1)
+          match load_persistent_source_groups_from_source_list_cache_if_valid(entry_path) {
+            Some((manifest_path, groups)) => {
+              ingestion_pipeline_telemetry_add(1, 1)
+              ingestion_pipeline_telemetry_add(7, 1)
+              store_persistent_source_groups_cache(entry_path, manifest_path, groups)
+              groups
+            },
+            None => {
+              ingestion_pipeline_telemetry_add(2, 1)
+              ingestion_pipeline_telemetry_add(8, 1)
+              match try_collect_manifest_source_groups_fs(entry_path) {
+                Some((manifest_path, groups)) => {
+                  store_persistent_source_groups_cache(entry_path, Some(manifest_path), groups)
+                  groups
+                },
+                None =>
+                match try_load_manifest_rows(entry_path) {
+                  Some((base_dir, rows)) => {
+                    let manifest_path = loader_join_path(base_dir, "compiler_sources_manifest.tsv")
+                    let preloaded_sources = load_manifest_full_sources(base_dir, rows)
+                    let groups = loader_empty_grouped_sources()
+                    let mut j = 0
+                    while j < Array::length(rows) {
+                      let (group_name, rel_path) = Array::get(rows, j)
+                      let path = loader_join_path(base_dir, rel_path)
+                      let mut found = ""
+                      let mut k = 0
+                      while k < Array::length(preloaded_sources) {
+                        if found == "" {
+                          let (source_path, source_text) = Array::get(preloaded_sources, k)
+                          if source_path == path {
+                            found = source_text
+                          }
+                        }
+                        k = k + 1
+                      }
+                      if found == "" {
+                        ()
+                      } else {
+                        push_grouped_source(groups, group_name, path, found)
+                      }
+                      j = j + 1
+                    }
+                    store_persistent_source_groups_cache(entry_path, Some(manifest_path), groups)
+                    groups
+                  },
+                  None => {
+                    let groups = loader_empty_grouped_sources()
+                    let recursive_sources = collect_all_sources_fs(entry_path)
+                    Array::push(groups, ("recursive", recursive_sources))
+                    store_persistent_source_groups_cache(entry_path, None, groups)
+                    groups
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  move_entry_last_grouped(ingest_grouped_sources_fs(collected), entry_path)
+}
+
+//# Module bundling — merge stmts from all modules in dependency order
+/// Given all sources (in dependency order), parse and merge their statements.
+/// Skips SImport, SReExport (already resolved). Keeps all definitions.
+/// #1584: an `import { x as y }` alias must be rewritten back to the
+/// original name before the import statement is dropped — the merged flat
+/// program only defines `x`, so a surviving `y` reference resolves to
+/// nothing and traps at runtime. append_import_alias_rewritten_* is the
+/// same shadow-aware rewrite the production FS merge applies; a file with
+/// no aliases takes its share-the-input fast path. A top-level `let`/`fn`
+/// whose name matches an alias shadows the import for the WHOLE file (the
+/// per-statement rewrite only suppresses the map inside the declaring
+/// statement), so those aliases are dropped from the map up front.
+export fn collect_merged_stmts(sources: Array[(String, String)]) -> Array[Stmt] with Exception {
+  // #1840: a fixed source set that contains an ingested contract's FACADE
+  // but not its materialized types module would lose the contract's type
+  // family entirely (the facade re-exports it; this merge skips
+  // import-family statements). Re-inject each registered types module whose
+  // originating contract is in THIS set and whose own path is not already a
+  // source (the FS-walk lanes collect the file itself — no duplication).
+  let sources_all = array_empty()
+  let mut ci = 0
+  while ci < Array::length(sources) {
+    Array::push(sources_all, Array::get(sources, ci))
+    ci = ci + 1
+  }
+  let mut ri = 0
+  while ri < Array::length(vpkg_types_registry_paths) {
+    let r_contract = Array::get(vpkg_types_registry_contracts, ri)
+    let r_path = Array::get(vpkg_types_registry_paths, ri)
+    let mut has_contract = false
+    let mut has_types = false
+    let mut pi = 0
+    while pi < Array::length(sources) {
+      let (sp, _) = Array::get(sources, pi)
+      if sp == r_contract {
+        has_contract = true
+      } else {
+        ()
+      }
+      if sp == r_path {
+        has_types = true
+      } else {
+        ()
+      }
+      pi = pi + 1
+    }
+    if has_contract && !has_types {
+      Array::push(sources_all, (r_path, Array::get(vpkg_types_registry_texts, ri)))
+    } else {
+      ()
+    }
+    ri = ri + 1
+  }
+  let merged = array_empty()
+  let mut si = 0
+  while si < Array::length(sources_all) {
+    let (_, src) = Array::get(sources_all, si)
+    // Use lex+parse_program directly (skip resolve_interp_stmt to reduce heap pressure)
+    let stmts = parse_program(lex(src))
+    let top_level_value_names = array_empty()
+    let mut ti = 0
+    while ti < Array::length(stmts) {
+      match Array::get(stmts, ti) {
+        SLet(_, _, name, _, _) => Array::push(top_level_value_names, name),
+        SLetMut(name, _, _) => Array::push(top_level_value_names, name),
+        _ => ()
+      }
+      ti = ti + 1
+    }
+    append_import_alias_rewritten_non_import_stmts_skipping(merged, stmts, top_level_value_names)
+    si = si + 1
+  }
+  merged
+}
+/// #847-style trap-free directory probe (see loader/header_cache.vibe's
+/// fs_is_directory for the full rationale): `Fs::readdir` TRAPS the whole
+/// wasm instance on a non-directory, so a real directory test is required
+/// before ever calling it speculatively. Appending "/." and testing with
+/// `Fs::exists` is safe on the frozen bootstrap seed (predates `Fs::is_dir`).
+fn vpkg_scan_is_directory(path: String) -> Bool with Fs {
+  Fs::exists(String::concat(path, "/."))
+}
+/// #897 (ADR-0070): directories this scan skips entirely -- not source, or
+/// not part of this repo's own migration surface (vendored/fetched content,
+/// build output, VCS metadata). Anything starting with "." already covers
+/// `.git`/`.vibe` (the content-addressed store lives under `.vibe/store/`).
+fn vpkg_scan_skip_dir(name: String) -> Bool {
+  (String::length(name) > 0 && String::char_code_at(name, 0) == '.') || name == "_build" || name == "node_modules" || name == "target" || name == "deps"
+}
+/// #897 (ADR-0070): recurse into every non-skipped directory under `root`,
+/// recording any directory that has `index.vibei` or plain `index.vibe` but
+/// NOT YET `index.vpkg` -- exactly the 76-directory migration surface ADR-
+/// 0070 counts. A directory with none of the three index files is not a
+/// package boundary and is out of scope. Unlike contract_sibling_impl_raws_
+/// rec (which stops at a nested boundary because its job is to list PLAIN
+/// impl files), this must recurse THROUGH boundaries too, since nested
+/// sub-packages are themselves part of the migration surface.
+fn vpkg_scan_rec(dir: String, out: Array[String]) -> Unit with Exception + Fs {
+  let has_vpkg = Fs::exists(String::concat(dir, "/index.vpkg"))
+  let has_vibei = Fs::exists(String::concat(dir, "/index.vibei"))
+  let has_vibe = Fs::exists(String::concat(dir, "/index.vibe"))
+  if !has_vpkg && (has_vibei || has_vibe) {
+    Array::push(out, dir)
+  } else {
+    ()
+  }
+  let names = Fs::readdir(dir)
+  let mut i = 0
+  while i < Array::length(names) {
+    let name = Array::get(names, i)
+    if !vpkg_scan_skip_dir(name) {
+      let full = String::concat(dir, String::concat("/", name))
+      if vpkg_scan_is_directory(full) {
+        vpkg_scan_rec(full, out)
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+/// find_missing_vpkg_dirs: (String) -> Array[String] with Exception + Fs
+export fn find_missing_vpkg_dirs(root: String) -> Array[String] with Exception + Fs {
+  let out = array_empty()
+  vpkg_scan_rec(root, out)
+  out
+}
+/// check_missing_vpkg_dirs: (String) -> Int with Exception + Fs
+/// #897/ADR-0070: `vibe check --missing-vpkg <root>` diagnostic. Reports (via
+/// throw, matching every other `vibe check` diagnostic's error-surfacing
+/// convention) every directory under `root` still on the old `index.vibei`
+/// or bare `index.vibe` spelling, so the migration's remaining scope is a
+/// single command away instead of manual auditing.
+export fn check_missing_vpkg_dirs(root: String) -> Int with Exception + Fs {
+  let missing = find_missing_vpkg_dirs(root)
+  if Array::length(missing) == 0 {
+    0
+  } else {
+    throw(String::concat("missing index.vpkg (#897) in: ", String::join(missing, ", ")))
+  }
+}
+/// #1145 follow-up 2: for the `index.vpkg` at `dir` (if any), checks that
+/// every external (`@scope/pkg`) import in its own production impl files
+/// (the same discovery `contract_package_hashes_fs` uses: explicit
+/// `import ./x.vibe {}` entries plus contract_sibling_impl_raws' auto-
+/// discovered siblings -- tests/benches excluded) has a matching `deps`
+/// entry. A package that predates the #1128 migration (no `name = `
+/// directive) has nothing to check yet -- `deps` declarations are opt-in
+/// until the bootstrap-bump migrates the remaining closure (#1145
+/// follow-up 1).
+fn package_deps_missing(dir: String) -> Array[String] with Env + Exception + Fs {
+  let vpkg_path = String::concat(dir, "/index.vpkg")
+  if !Fs::exists(vpkg_path) {
+    array_empty()
+  } else {
+    let raw = cache_read_source_fs(vpkg_path)
+    let name = extract_package_name(raw)
+    if name == "" {
+      array_empty()
+    } else {
+      let deps = extract_package_deps(raw)
+      let (_pins, blanked) = extract_require_pins(raw)
+      let (_decls, _opaques, extra) = parse_contract_program(lex(blanked))
+      let (impl_raws0, _type_defs) = classify_contract_stmts(extra)
+      let impl_raws = merge_impl_raws_dedupe(impl_raws0, contract_sibling_impl_raws(dir))
+      let impl_sources = array_empty()
+      let mut i = 0
+      while i < Array::length(impl_raws) {
+        let resolved = loader_resolve_path_fs(dir, Array::get(impl_raws, i))
+        Array::push(impl_sources, cache_read_source_fs(resolved))
+        i = i + 1
+      }
+      let missing = deps_missing_for_imports(deps, impl_sources)
+      let out = array_empty()
+      let mut mi = 0
+      while mi < Array::length(missing) {
+        Array::push(out, "\{dir}: import of \{Array::get(missing, mi)} not declared in deps")
+        mi = mi + 1
+      }
+      out
+    }
+  }
+}
+fn deps_missing_scan_rec(dir: String, out: Array[String]) -> Unit with Env + Exception + Fs {
+  let here = package_deps_missing(dir)
+  let mut hi = 0
+  while hi < Array::length(here) {
+    Array::push(out, Array::get(here, hi))
+    hi = hi + 1
+  }
+  let names = Fs::readdir(dir)
+  let mut i = 0
+  while i < Array::length(names) {
+    let name = Array::get(names, i)
+    if !vpkg_scan_skip_dir(name) {
+      let full = String::concat(dir, String::concat("/", name))
+      if vpkg_scan_is_directory(full) {
+        deps_missing_scan_rec(full, out)
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+/// find_deps_missing: (String) -> Array[String] with Exception + Fs
+/// #1145 follow-up 2: recursively scans every `index.vpkg` under `root` for
+/// deps declarations missing an entry that its own imports require.
+export fn find_deps_missing(root: String) -> Array[String] with Env + Exception + Fs {
+  let out = array_empty()
+  deps_missing_scan_rec(root, out)
+  out
+}
+/// check_deps_missing: (String) -> Int with Exception + Fs
+/// #1145 follow-up 2: `vibe check --deps-missing <root>` diagnostic.
+export fn check_deps_missing(root: String) -> Int with Env + Exception + Fs {
+  let missing = find_deps_missing(root)
+  if Array::length(missing) == 0 {
+    0
+  } else {
+    throw(String::concat("deps missing for imports (#1128/#1145): ", String::join(missing, "; ")))
+  }
+}

@@ -1,0 +1,1260 @@
+// lib/@vibe/compiler/perceus/perceus.vibe — pctx.
+
+import @vibe/compiler/codegen/common_analysis {
+  collect_free_vars, is_branching_value, md_borrow_mask_of, md_consume_count, md_consume_count_pre
+}
+
+import @vibe/core {
+  array_empty, struct MutSet
+}
+
+import @vibe/compiler/core {
+  Expr,
+  Pat,
+  Stmt,
+  TypeExpr,
+  borrow_ret_builtin_names,
+  bsearch_leftmost,
+  expr_child_at,
+  expr_children,
+  expr_children_pop,
+  expr_children_push,
+  expr_children_top,
+  is_exception_throw_operation,
+  sort_perm_by_names,
+  sorted_names_of
+}
+
+//# Types
+
+export enum PerceusActionKind {
+  PaDup;
+  PaDrop;
+  // A `dup` attributed to an *alias* binding `let a = t`: the source `t` is
+  // used in more than one owning position, so this alias takes a duplicated
+  // reference. Keyed by the ALIAS name `a` (not the source), which makes it
+  // occurrence-precise without tree-order bookkeeping: the codegen dups the
+  // source exactly at `let a = …`. (docs/spec/selfhost-rc-port.md)
+  PaAliasDup;
+  // ADR-0092 / #2389 reuse pairing. `PaReuseToken(name)` marks a binding
+  // whose planned drop is a candidate to become a reuse token when it is
+  // consumed by a match arm that decomposes it (all-PBind/PWild pattern,
+  // each PBind consumed exactly once, scrutinee otherwise unused);
+  // `PaReuseAlloc(name)` marks that the same arm's spine-tail constructor
+  // call has the SAME arity and may allocate from the token. Both carry the
+  // arity in `extra`. The pairing is a PLAN-side candidate: the RC codegen
+  // re-validates against the ctor table (constructor-ness, float fields)
+  // and stages the runtime rc==1 test; the bump and wasm-gc lanes ignore
+  // both kinds entirely, so a pair degrades to today's drop + fresh alloc.
+  PaReuseToken;
+  PaReuseAlloc;
+  // #2389 per-path release. A binding consumed on SOME branch of an `if` /
+  // `match` and not on the others keeps the merge's MINIMUM remaining count
+  // (#705, so the consuming path cannot double-free), which plans its
+  // scope-end drop away entirely -- and the paths that did not consume it
+  // then never release it. `PaPathDrop(name)` asks codegen for that drop
+  // back, guarded at run time by a per-binding flag local, and
+  // `PaConsumeMark(name)` -- one per occurrence that spends the binding's
+  // initial reference, keyed by the occurrence's source offset in
+  // `use_offset` -- is where codegen sets the flag. Flag set: the reference
+  // moved out on this path, skip the drop; flag clear: this path still holds
+  // it, drop it. The bump and wasm-gc lanes ignore both kinds, so the pair
+  // degrades to today's leak-direction behavior.
+  PaPathDrop;
+  PaConsumeMark;
+  // #2837 truncate reclamation (see `plan_truncate_release`).
+  // `PaTruncRelease(x)`: a truncate of the local array `x` may release the
+  // elements it removes. `PaViewPin(v)`, in the rows right after its array's
+  // release row: the binding `v`, which derives from that array and is live
+  // across one of its truncates, takes a reference of its own at its bind
+  // site and releases it at its scope end. `extra` is 1 when the release is
+  // sound only in a function whose result is an Int/Bool/Unit. The bump and
+  // wasm-gc lanes ignore both kinds, so they keep today's non-releasing
+  // truncate.
+  PaTruncRelease;
+  PaViewPin;
+  // #3140: `PaFieldRelease(x)`: a field assignment `x.f = v` on the local
+  // struct `x` may release the value the field held before the store (see
+  // `plan_setfield_release`). The bump and wasm-gc lanes ignore it, so they
+  // keep today's non-releasing store.
+  PaFieldRelease;
+  // #3141 early-exit release. An early `return` / `break` / `continue` /
+  // `throw` transfers control past the scope-end drops of every scope it
+  // leaves. The plan numbers the exits in walk order. `PaExitSite` is one
+  // exit: `use_offset` its ordinal, `binding_id` its kind (`pe_exit_*`),
+  // `extra` its operand's fingerprint (`perceus_exit_fingerprint`) and `name`
+  // the innermost enclosing `let` -- codegen checks all four against the exit
+  // it is compiling before it trusts any row of that exit. `PaExitDrop(x)`
+  // asks exit `use_offset` to release binding `x` `extra` times: the
+  // references `x` still holds there. The bump and wasm-gc lanes ignore both.
+  PaExitSite;
+  PaExitDrop;
+  // #3184: `PaStoreDup(src)`: the store `x = src` at the occurrence whose
+  // source offset is `use_offset` runs once per iteration of a loop `src` was
+  // declared outside of, so the slot takes a reference of its own there and
+  // `src` keeps its initial one (see `pe_store_dup`). The store is an
+  // assignment or a `let mut` initializer, or (#3190) a branch or block tail
+  // of one or of a `let` initializer. Codegen retains at that store; the bump
+  // and wasm-gc lanes ignore it.
+  PaStoreDup
+}
+
+// PerceusAction is defined transparently in this package's contract
+// (index.vpkg): its field layout (.kind/.name) is real public API surface
+// read directly by tests/perceus_rc_test.vibe. `binding_id` is the lexical
+// binding identity assigned by the count/emit passes; unlike `name`, it keeps
+// shadowed bindings distinct and is the contract needed for per-use RC
+// realization. Struct record literals and
+// field access resolve fine from impl units against the facade definition
+// (@vibe/process ShResult precedent, PR #920), so no local def is kept.
+
+export struct PCtx {
+  mut next_id: Int;
+  mut seq_id: Int;
+  // #2386: the token `perceus_pin_tables` handed out when it installed the
+  // four tables below, 0 when the cache holds tables nobody pinned. A caller
+  // presenting this token skips the four whole-table compares
+  // (`pctx_cache_matches`) that otherwise ran once per function.
+  mut pinned: Int;
+  // The four table fields are `mut` for one reason only: on a pctx_cache
+  // mismatch the cached PCtx is refilled in place by field assignment, which
+  // drops the previous tables -- replacing the whole PCtx through Array::set
+  // would leak it (the linear lane's arr_set stores without releasing the old
+  // element).
+  mut pctx_names: Array[String];
+  // ADR-0092 borrow-inference: sorted whole-program names with aligned borrow
+  // masks (compute_borrow_param_user_fns, common_analysis.vibe). A
+  // source-owned shadowable builtin is retained even with mask zero so its
+  // source ABI overrides the builtin contract. Same COPY discipline as
+  // pctx_names -- see pctx_new's doc comment.
+  mut borrow_param_user: Array[String];
+  // Aligned to borrow_param_user: bit i of entry k says parameter i of
+  // borrow_param_user[k] is borrowed. One bsearch on the names indexes
+  // straight into this. Same COPY discipline.
+  mut borrow_param_mask: Array[Int];
+  // User fns whose RETURN may be an unowned interior view
+  // (compute_may_return_view_fns; NOT intersected with borrow_param_user --
+  // see the linked_compile gate comment for why that intersection was a
+  // latent over-release). Only
+  // calls to THESE mark view_call_let: suppressing the scope-end drop for a
+  // fresh-returning callee's binding leaks its result (compiler-gate RC
+  // reclamation guard), while a view-returning callee's binding must not
+  // release a reference it never acquired. Same COPY discipline.
+  mut view_ret_user: Array[String];
+  // The per-plan working state below is `mut` so a cached PCtx (see
+  // pctx_cache) can be reset between plan builds by assigning fresh empty
+  // arrays -- assignment drops the previous plan's arrays instead of leaking
+  // their elements the way an in-place truncate would.
+  mut uses: Array[Int];
+  mut borrows: Array[Int];
+  mut scalar: Array[Bool];
+  mut remaining: Array[Int];
+  // True for a let-binding whose VALUE is a call to a borrow-arg0 fn (user
+  // set or builtin list) -- the class whose result may be an unowned
+  // interior view. With the borrow set empty this is never set, so the fix
+  // is inert while lc_borrow_arg0_enabled is off.
+  mut view_call_let: Array[Bool];
+  // ADR-0092 for maps (#2683 follow-up): the binding a view-call let VIEWS
+  // (`let v = Map::get(m, k)` records m's id under v's; -1 otherwise), so a
+  // self-reassignment of m can tell whether a live view still reads the
+  // value it is about to move.
+  mut view_src: Array[Int];
+  // The binding whose single owning occurrence in the current `x = f(.., x,
+  // ..)` value MOVES (see the EAssign arm of pc_emit); -1 outside one.
+  mut move_use_id: Int;
+  mut move_hit: Bool;
+  // #3114: per binding id, true when the binding holds a BORROWED VIEW --
+  // its value is a call to a borrow-returning callee (is_borrow_ret_fname:
+  // `Array::get`, `Map::get`, ...), a wrapper block whose result spine ends
+  // in a view (pv_spine_is_view), or a plain `let` alias of such a binding.
+  // Narrower than `scalar` on purpose: `scalar` also covers a `Double`
+  // literal, which codegen boxes on the heap, and a parameter that is merely
+  // not proven heap. Only a view holds no reference of its own, so only a
+  // view's alias may inherit "nothing to release".
+  mut borrowed_view: Array[Bool];
+  // #3114 review: per binding id, true when the binding's value is an
+  // `if` / `match` / `handle` (top node; is_branching_value, the predicate
+  // codegen asks too). Codegen gives such a binding a reference of
+  // its own -- it retains a borrowed branch tail (#768 / #3103) -- but only
+  // while the binding keeps its planned scope-end drop. A `let` alias that
+  // took the binding's reference by transfer removed that drop, so the
+  // retain never ran and the alias released a reference nobody took.
+  mut branch_value: Array[Bool];
+  // #3134: the first binding id declared inside the innermost enclosing
+  // `while` / `for` / `loop` body during pc_emit, or 0 outside any loop. A binding
+  // with a smaller id is LOOP-CARRIED: the body re-executes, so a textual
+  // "last use" of it inside the body runs once per iteration and cannot
+  // transfer the binding's one initial reference. The plan is otherwise
+  // loop-blind (codegen's #706 retains a loop-carried argument at a
+  // consuming call); this floor is what lets a `let` alias see the loop.
+  mut loop_floor: Int;
+  // #2389 per-path release. Per binding id, the bits below (PF_*); and the
+  // occurrences that spend a binding's initial reference, as three aligned
+  // arrays (id, source offset, name) filtered into PaConsumeMark rows once
+  // the whole body is walked and the split set is known.
+  mut decl_flags: Array[Int];
+  mut mark_ids: Array[Int];
+  mut mark_offs: Array[Int];
+  mut mark_names: Array[String];
+  // #3141: per binding id, how many of the references the binding holds the
+  // walk has consumed so far -- one per owning occurrence (a dup'd one
+  // consumes its dup, the last one the initial reference) and one per
+  // transfer into a `let` alias. Merged by MAX over branches, so at an exit
+  // it bounds what any path reaching that exit consumed.
+  mut cons: Array[Int];
+  // #3141: the next exit ordinal; the first binding id declared inside the
+  // innermost enclosing `handle` body (what a `throw` there leaves); the
+  // enclosing `let` names, innermost last; and each exit's candidate rows
+  // (aligned), resolved into `PaExitDrop` once the dup budget is known.
+  mut exit_ord: Int;
+  mut handle_floor: Int;
+  mut let_stack: Array[String];
+  mut exit_ids: Array[Int];
+  mut exit_ords: Array[Int];
+  mut exit_rems: Array[Int];
+  mut exit_cons: Array[Int];
+  mut exit_names: Array[String];
+  mut actions: Array[PerceusAction]
+}
+
+export struct HeapInferCtx {
+  ctors: Array[String];
+  heap_fns: Array[String];
+  // #2681: the top-level `let` bindings' heap-ness, read by arg_class when
+  // the local environment has no entry for a name (a local binding wins).
+  // Kept OUT of the threaded environment on purpose: `Map::set` copies its
+  // map, so seeding every top-level binding into the environment made each
+  // `let` and each lambda parameter the call analysis walked copy the whole
+  // module's bindings -- the bump-built compiler ran out of memory compiling
+  // the split CLI (compiler gate 3cli/3) before this was a separate lookup.
+  top_names: Array[String];
+  top_heaps: Array[Bool]
+}
+
+//# Functions
+
+fn zeros(n: Int) -> Array[Int] {
+  let out: Array[Int] = []
+  let mut i = 0
+  while i < n {
+    Array::push(out, 0)
+    i = i + 1
+  }
+  out
+}
+
+export fn int_max(a: Int, b: Int) -> Int {
+  if a > b {
+    a
+  } else {
+    b
+  }
+}
+
+export fn name_in(arr: Array[String], s: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(arr) {
+    if Array::get(arr, i) == s {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+// #2389 per-path release, `PCtx.decl_flags` bits.
+//
+// PF_LET is set only for a plain immutable `let`: a `let mut` local is
+// reassigned, so the value its slot holds at scope end is not the one the
+// consume moved out, and a `let rec` binds a closure to itself.
+export let pf_let: Int = 1
+
+export let pf_split: Int = 2
+
+export let pf_mark_bad: Int = 4
+
+export let pf_used_after: Int = 8
+
+// #3141 early-exit release. PF_EXIT_OWNER marks the declaration forms codegen
+// keeps a release-stack entry for -- a `let`, a `let mut` and a parameter --
+// so only they get a `PaExitDrop` row; a pattern binder, a `for` element or a
+// sequencing temp gets none, and still shadows an outer binding of its name.
+// PF_MUT_ASSIGNED marks a `let mut` whose body may store into it without
+// re-applying its dup budget (`pe_stores_tuple`).
+export let pf_exit_owner: Int = 16
+
+export let pf_mut_assigned: Int = 32
+
+export fn pe_flag_or(ctx: PCtx, id: Int, bit: Int) -> Unit {
+  if id >= 0 && id < Array::length(ctx.decl_flags) {
+    Array::set(ctx.decl_flags, id, Array::get(ctx.decl_flags, id)|bit)
+  } else {
+    ()
+  }
+}
+
+export fn pe_flag_has(ctx: PCtx, id: Int, bit: Int) -> Bool {
+  if id >= 0 && id < Array::length(ctx.decl_flags) {
+    (Array::get(ctx.decl_flags, id)&bit) != 0
+  } else {
+    false
+  }
+}
+
+export fn pe_push_for(ctx: PCtx, kind: PerceusActionKind, name: String, binding_id: Int, use_offset: Int) -> Int {
+  Array::push(ctx.actions, PerceusAction::{
+    kind: kind,
+    name: name,
+    binding_id: binding_id,
+    use_offset: use_offset,
+    extra: 0
+  })
+  0
+}
+
+export fn pr_push_reuse(actions: Array[PerceusAction], kind: PerceusActionKind, name: String, arity: Int) -> Unit {
+  Array::push(actions, PerceusAction::{
+    kind: kind,
+    name: name,
+    binding_id: 0 - 1,
+    use_offset: 0,
+    extra: arity
+  })
+}
+
+/// #2389 per-path release: record that this occurrence of `sid` spends the
+/// binding's INITIAL reference, so codegen can mark the path that took it. An
+/// occurrence with no source offset (a capture, the #1915 same-ident branch
+/// collapse) cannot be marked and disqualifies the binding rather than being
+/// ignored -- an unmarked consuming path would turn the leak this fixes into
+/// a release of a value already moved out.
+///
+/// Shared, because there are TWO places an occurrence can spend that
+/// reference and they are not one code path: `pe_use`, and the ELet alias arm
+/// (`let u = t`), which mirrors pe_use's dup condition and then decrements
+/// `remaining` directly. Recording it in pe_use alone left the alias transfer
+/// unmarked, so a split whose other arm was marked emitted the guarded drop
+/// and freed a value the alias had moved out -- measured as a silent wrong
+/// answer (36,000 became 26,000, no trap; `perceus_path_release_e2e_test`).
+export fn pe_note_initial_ref_spent(ctx: PCtx, sid: Int, name: String, use_offset: Int, spends: Bool) -> Unit {
+  if pe_flag_has(ctx, sid, pf_let) {
+    if spends {
+      if use_offset < 0 {
+        pe_flag_or(ctx, sid, pf_mark_bad)
+      } else {
+        Array::push(ctx.mark_ids, sid)
+        Array::push(ctx.mark_offs, use_offset)
+        Array::push(ctx.mark_names, name)
+      }
+    } else {
+      ()
+    }
+    // A use sequenced AFTER the merge that zeroed the count is planned as
+    // nothing (remaining is already 0) while the codegen may still consume
+    // there. Guarding the scope end would then release a moved value, so
+    // decline the binding instead. Also a backstop: `uses` is the count over
+    // the whole body, so a merge can only reach zero when one branch spent
+    // every budgeted use and none is left to come -- no shape was found that
+    // reaches this, and it costs one flag test.
+    if pe_flag_has(ctx, sid, pf_split) {
+      pe_flag_or(ctx, sid, pf_used_after)
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+}
+
+/// Perf: this snapshot runs in every branch/match arm of the perceus plan --
+/// the push-per-element version was the single largest __rt_arr_push caller in
+/// a full-closure compile profile (253ms of 439ms). Array::slice is one
+/// allocation + one memory.copy and yields an equally independent buffer.
+fn copy_ints(src: Array[Int]) -> Array[Int] {
+  Array::slice(src, 0, Array::length(src))
+}
+
+/// #2386: the branch snapshots `pc_count` / `pc_emit` take of the per-binding
+/// tables (`uses`, `borrows`, `remaining`) live on ONE scratch stack instead
+/// of a fresh array per `if` / `match` / `handle`. A snapshot is the offset
+/// of its first slot; the construct that took it truncates the stack back to
+/// its own first snapshot when it is done, so nested constructs stack and
+/// every slot a construct reads is below anything its children push.
+/// Measured: the per-construct copies were 49 ms of `__rt_arr_slice` (plus
+/// the `zeros` tables) in a cold self-compile, on both lanes.
+export let pc_scratch: Array[Int] = []
+
+/// Push a copy of `src`; answer its first slot.
+export fn pc_snap(src: Array[Int]) -> Int {
+  let mark = Array::length(pc_scratch)
+  let mut i = 0
+  while i < Array::length(src) {
+    Array::push(pc_scratch, Array::get(src, i))
+    i = i + 1
+  }
+  mark
+}
+
+/// Push a copy of the `n` scratch slots starting at `at`; answer the first.
+export fn pc_snap_slots(at: Int, n: Int) -> Int {
+  let mark = Array::length(pc_scratch)
+  let mut i = 0
+  while i < n {
+    Array::push(pc_scratch, Array::get(pc_scratch, at + i))
+    i = i + 1
+  }
+  mark
+}
+
+/// Push `n` zero slots; answer the first.
+export fn pc_snap_zeros(n: Int) -> Int {
+  let mark = Array::length(pc_scratch)
+  let mut i = 0
+  while i < n {
+    Array::push(pc_scratch, 0)
+    i = i + 1
+  }
+  mark
+}
+
+/// Copy the `n` slots at `at` back over the prefix of `dst`.
+export fn pc_snap_restore(dst: Array[Int], at: Int, n: Int) -> Unit {
+  let mut i = 0
+  while i < n {
+    Array::set(dst, i, Array::get(pc_scratch, at + i))
+    i = i + 1
+  }
+}
+
+export fn pa_is_dup(a: PerceusAction) -> Bool {
+  match a.kind {
+    PaDup => true,
+    _ => false
+  }
+}
+
+export fn pa_is_path_drop(a: PerceusAction) -> Bool {
+  match a.kind {
+    PaPathDrop => true,
+    _ => false
+  }
+}
+
+export fn pa_is_consume_mark(a: PerceusAction) -> Bool {
+  match a.kind {
+    PaConsumeMark => true,
+    _ => false
+  }
+}
+
+export fn pa_is_trunc_release(a: PerceusAction) -> Bool {
+  match a.kind {
+    PaTruncRelease => true,
+    _ => false
+  }
+}
+
+export fn pa_is_view_pin(a: PerceusAction) -> Bool {
+  match a.kind {
+    PaViewPin => true,
+    _ => false
+  }
+}
+
+export fn pa_is_exit_site(a: PerceusAction) -> Bool {
+  match a.kind {
+    PaExitSite => true,
+    _ => false
+  }
+}
+
+export fn pa_is_exit_drop(a: PerceusAction) -> Bool {
+  match a.kind {
+    PaExitDrop => true,
+    _ => false
+  }
+}
+
+export fn pa_is_field_release(a: PerceusAction) -> Bool {
+  match a.kind {
+    PaFieldRelease => true,
+    _ => false
+  }
+}
+
+export fn pa_is_store_dup(a: PerceusAction) -> Bool {
+  match a.kind {
+    PaStoreDup => true,
+    _ => false
+  }
+}
+
+export fn pa_is_reuse_token(a: PerceusAction) -> Bool {
+  match a.kind {
+    PaReuseToken => true,
+    _ => false
+  }
+}
+
+export fn pa_is_reuse_alloc(a: PerceusAction) -> Bool {
+  match a.kind {
+    PaReuseAlloc => true,
+    _ => false
+  }
+}
+
+export fn pat_names(pat: Pat, out: Array[String]) -> Int {
+  match pat {
+    PBind(name) => {
+      Array::push(out, name)
+      0
+    },
+    PCtor(_n, args) => {
+      let mut i = 0
+      while i < Array::length(args) {
+        pat_names(Array::get(args, i), out)
+        i = i + 1
+      }
+      0
+    },
+    PTuple(pats) => {
+      let mut i = 0
+      while i < Array::length(pats) {
+        pat_names(Array::get(pats, i), out)
+        i = i + 1
+      }
+      0
+    },
+    POr(l, _r) => pat_names(l, out),
+    PStruct(_n, fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        pat_names((Array::get(fields, i)).1, out)
+        i = i + 1
+      }
+      0
+    },
+    _ => 0
+  }
+}
+
+export fn pa_is_drop(a: PerceusAction) -> Bool {
+  match a.kind {
+    PaDrop => true,
+    _ => false
+  }
+}
+
+/// The planner's lexical scope: binding name -> binding id, innermost first.
+///
+/// This was a `Map[String, Int]`, but `Map` is an immutable association
+/// array whose `Map::set` copies every entry, and both walks (`pc_count`,
+/// `pc_emit`) extend the scope at every binder -- so planning a function cost
+/// bytes quadratic in its binder count, ~45 MB of the self-compile heap. A
+/// cons cell per binder answers the same lookups (latest binding of a name
+/// wins, as `Map::set` replacing an entry did) and extends in O(1); lookups
+/// were already a linear scan.
+export enum PScope {
+  PsNil;
+  PsBind(String, Int, PScope)
+}
+
+export fn ps_has(s: PScope, name: String) -> Bool {
+  ps_get(s, name) >= 0
+}
+
+/// The id bound to `name`, or -1 when it is not in scope. Ids are the
+/// planner's array indices, so they are never negative.
+export fn ps_get(s: PScope, name: String) -> Int {
+  let mut cur = s
+  let mut found = 0 - 1
+  let mut looking = true
+  while looking {
+    match cur {
+      PsBind(n, id, rest) => if n == name {
+        found = id
+        looking = false
+      } else {
+        cur = rest
+      },
+      PsNil => looking = false
+    }
+  }
+  found
+}
+
+/// #3141: the fingerprint of an exit's operand that codegen recomputes to
+/// check it is compiling the exit a `PaExitSite` row numbers: the first
+/// source offset a pre-order walk meets, or -1. Both sides read the same
+/// tree, so an exit keeps its value. What it cannot tell apart is two exits
+/// of one kind, in one `let` scope, with equal fingerprints (two bare
+/// `break`s, say): a numbering slip between exactly those goes unnoticed.
+export fn perceus_exit_fingerprint(e: Expr) -> Int {
+  let own = match e {
+    EIdent(_, off) => off,
+    EString(_, off) => off,
+    ECall(_, _, off) => off,
+    EBinOp(_, _, _, off) => off,
+    EDot(_, _, off, _) => off,
+    ELet(_, _, _, off) => off,
+    ELetMut(_, _, _, off) => off,
+    _ => 0 - 1
+  }
+  if own >= 0 {
+    own
+  } else {
+    let mark = expr_children_push(e)
+    let end = expr_children_top()
+    let mut i = mark
+    let mut found = 0 - 1
+    while i < end && found < 0 {
+      found = perceus_exit_fingerprint(expr_child_at(i))
+      i = i + 1
+    }
+    expr_children_pop(mark)
+    found
+  }
+}
+
+/// #3141 / #3175: does `e` store a tuple into `name` anywhere (`name = (..)`)? That
+/// is the one store that may not re-apply the slot's dup budget: when the
+/// tuple mentions the slot, compile_expr_tail's EAssign lowering takes the
+/// self-reusing path (`reassign_self_reusable`), which leaves the slot one
+/// reference. Every other store re-applies the whole budget. Syntactic,
+/// blind to shadowing and to whether the tuple mentions the slot, so it
+/// answers yes wherever that path could be taken -- the direction that
+/// withholds rows (`pf_mut_assigned`).
+///
+/// #3175: this used to answer for ANY store, so a `let mut` with a dup
+/// budget that was ever reassigned got no row, and an exit leaked it.
+export fn pe_stores_tuple(e: Expr, name: String) -> Bool {
+  let own = match e {
+    EAssign(n, ETuple(_), _) => n == name,
+    _ => false
+  }
+  if own {
+    true
+  } else {
+    let mark = expr_children_push(e)
+    let end = expr_children_top()
+    let mut i = mark
+    let mut found = false
+    while i < end && !found {
+      found = pe_stores_tuple(expr_child_at(i), name)
+      i = i + 1
+    }
+    expr_children_pop(mark)
+    found
+  }
+}
+
+/// #3141: the payload of `perform Exception::Throw(x)` -- `x`, or `EUnit`
+/// for a payload-less throw -- when `callee(args)` is one; codegen lowers
+/// exactly this shape to a wasm `throw` (compile_call's `perform` arm).
+export fn pe_throw_payload(scope: PScope, callee: Expr, args: Array[Expr]) -> Option[Expr] {
+  let is_perform = match callee {
+    EIdent(f, _) => f == "perform" && !ps_has(scope, "perform"),
+    _ => false
+  }
+  if is_perform && Array::length(args) > 0 {
+    let op = Array::get(args, 0)
+    let head = match op {
+      EIdent(n, _) => n,
+      ECall(op_callee, _, _) => match op_callee {
+        EIdent(n, _) => n,
+        _ => ""
+      },
+      _ => ""
+    }
+    if is_exception_throw_operation(head) {
+      match op {
+        ECall(_, op_args, _) => if Array::length(op_args) > 0 {
+          Some(Array::get(op_args, 0))
+        } else {
+          Some(EUnit)
+        },
+        _ => Some(EUnit)
+      }
+    } else {
+      None
+    }
+  } else {
+    None
+  }
+}
+
+/// #3141: record an exit. Every binding in scope declared at or after
+/// `floor` (0: the whole function; a loop's or a `handle` body's first id
+/// otherwise) that still holds a reference becomes a candidate row, resolved
+/// by `pe_emit_exit_rows` once the dup budget is known. Only the declaration
+/// forms codegen keeps a release-stack entry for are candidates
+/// (`pf_exit_owner`). A name shadowed further out is skipped, whatever
+/// shadows it: codegen addresses bindings by name, so a row for an inner
+/// pattern binder or `for` element would be applied to the outer binding.
+export fn pe_exit(ctx: PCtx, scope: PScope, kind: Int, floor: Int, operand: Expr) -> Unit {
+  let ord = ctx.exit_ord
+  ctx.exit_ord = ord + 1
+  let nl = Array::length(ctx.let_stack)
+  let inner = if nl > 0 {
+    Array::get(ctx.let_stack, nl - 1)
+  } else {
+    ""
+  }
+  Array::push(ctx.actions, PerceusAction::{
+    kind: PaExitSite,
+    name: inner,
+    binding_id: kind,
+    use_offset: ord,
+    extra: perceus_exit_fingerprint(operand)
+  })
+  let seen: Array[String] = []
+  let mut cur = scope
+  let mut walking = true
+  while walking {
+    match cur {
+      PsBind(n, id, rest) => {
+        if !name_in(seen, n) {
+          Array::push(seen, n)
+          // #3175: a split binding (see `pe_emit_exit_rows`) is a candidate
+          // with nothing remaining, too.
+          if id >= floor && id < Array::length(ctx.remaining) && pe_flag_has(ctx, id, pf_exit_owner) && (Array::get(ctx.remaining, id) > 0 || pe_flag_has(ctx, id, pf_split)) && !Array::get(ctx.scalar, id) && !Array::get(ctx.view_call_let, id) {
+            Array::push(ctx.exit_ids, id)
+            Array::push(ctx.exit_ords, ord)
+            Array::push(ctx.exit_rems, Array::get(ctx.remaining, id))
+            Array::push(ctx.exit_cons, Array::get(ctx.cons, id))
+            Array::push(ctx.exit_names, n)
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+        cur = rest
+      },
+      PsNil => walking = false
+    }
+  }
+}
+
+/// #3141: resolve the exits' candidate rows. At an exit a binding holds its
+/// initial reference plus every dup the plan budgeted (codegen realizes them
+/// all at the declaration), minus what the paths reaching the exit consumed
+/// -- at least `1 + dups - cons`, `cons` being the max over those paths. It
+/// also holds no more than `remaining` of them that the rest of the body
+/// would consume or drop. The smaller of the two is released; a binding
+/// with none left gets no row.
+///
+/// A `let mut` holds the same count for the value its slot holds NOW: every
+/// store gives the slot one reference plus the whole dup budget again
+/// (compile_expr_tail's ELetMut / EAssign lowering), and `cons` counts the
+/// consumes since the declaration, so it can only overstate what the paths
+/// since the last store took. The exception is a budget that a store does
+/// not re-apply -- the self-reusing tuple store leaves the slot one
+/// reference -- so an assigned `let mut` with a dup budget gets no row, and
+/// the leak it had before. With no budget every store leaves exactly one.
+export fn pe_emit_exit_rows(ctx: PCtx) -> Unit {
+  if Array::length(ctx.exit_ids) > 0 {
+    let dups = zeros(ctx.next_id)
+    let mut ai = 0
+    while ai < Array::length(ctx.actions) {
+      let a = Array::get(ctx.actions, ai)
+      if pa_is_dup(a) && a.binding_id >= 0 && a.binding_id < Array::length(dups) {
+        Array::set(dups, a.binding_id, Array::get(dups, a.binding_id) + 1)
+      } else {
+        ()
+      }
+      ai = ai + 1
+    }
+    let mut ei = 0
+    while ei < Array::length(ctx.exit_ids) {
+      let id = Array::get(ctx.exit_ids, ei)
+      let held = if id >= Array::length(dups) {
+        0
+      } else if Array::get(dups, id) > 0 && pe_flag_has(ctx, id, pf_mut_assigned) {
+        0
+      } else {
+        1 + Array::get(dups, id) - Array::get(ctx.exit_cons, ei)
+      }
+      let rem = Array::get(ctx.exit_rems, ei)
+      // #3175: nothing remaining means a branch merge zeroed the count
+      // against a sibling branch that kept the reference -- `if c { break d
+      // }; continue` consumes `d` on one path only. Such a binding is released
+      // at its scope end by the guarded path drop (`pe_emit_path_release`),
+      // and when it has one, nothing uses it between the merge and the scope
+      // end (`pf_used_after`), so an exit in between leaves it holding exactly
+      // what that drop releases. The row says so with a count of -1: release
+      // once, under the same path flag, which codegen requires.
+      let path_row = rem == 0 && pe_path_dropped(ctx, id)
+      let count = if path_row {
+        0 - 1
+      } else if held < rem {
+        held
+      } else {
+        rem
+      }
+      if count > 0 || path_row {
+        Array::push(ctx.actions, PerceusAction::{
+          kind: PaExitDrop,
+          name: Array::get(ctx.exit_names, ei),
+          binding_id: id,
+          use_offset: Array::get(ctx.exit_ords, ei),
+          extra: count
+        })
+      } else {
+        ()
+      }
+      ei = ei + 1
+    }
+  } else {
+    ()
+  }
+}
+
+/// #3141: copy a plan's exit rows out in the form codegen reads: one `names`
+/// entry and four `info` ints per row -- `[0, ordinal, kind, fingerprint]`
+/// for a `PaExitSite` (its name the innermost `let`) and `[1, ordinal, count,
+/// 0]` for a `PaExitDrop` (its name the binding).
+export fn perceus_exit_rows(plan: Array[PerceusAction], names: Array[String], info: Array[Int]) -> Unit {
+  let mut i = 0
+  while i < Array::length(plan) {
+    let a = Array::get(plan, i)
+    if pa_is_exit_site(a) {
+      Array::push(names, a.name)
+      Array::push(info, 0)
+      Array::push(info, a.use_offset)
+      Array::push(info, a.binding_id)
+      Array::push(info, a.extra)
+    } else if pa_is_exit_drop(a) {
+      Array::push(names, a.name)
+      Array::push(info, 1)
+      Array::push(info, a.use_offset)
+      Array::push(info, a.extra)
+      Array::push(info, 0)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
+/// #1915 mechanism 3 (see the EIf arm of pc_emit): both branches are the
+/// SAME bare identifier, so whichever branch executes performs the same
+/// single owned use — the emission pass walks it once instead of budgeting
+/// one dup per branch.
+export fn eif_same_ident_branches(then_e: Expr, else_e: Expr) -> Bool {
+  match then_e {
+    EIdent(tn, _) =>
+    match else_e {
+      EIdent(en, _) => tn == en,
+      _ => false
+    },
+    _ => false
+  }
+}
+
+/// #1915 mechanism 3, match form: every arm body is the SAME bare identifier
+/// and no arm pattern rebinds that name (a rebinding arm would resolve the
+/// mention to its own payload, so the arms would not share one use). Such a
+/// match performs exactly one owned use of that ident at runtime.
+export fn ematch_same_ident_arms(arms: Array[(Pat, Expr)]) -> Bool {
+  let mut nm = ""
+  let mut ok = Array::length(arms) > 1
+  let mut i = 0
+  while ok && i < Array::length(arms) {
+    let (p, body) = Array::get(arms, i)
+    match body {
+      EIdent(bn, _) => {
+        if nm == "" {
+          nm = bn
+        } else {
+          ()
+        }
+        if bn != nm {
+          ok = false
+        } else {
+          let pnames: Array[String] = []
+          pat_names(p, pnames)
+          if array_contains_str_pctx(pnames, nm) {
+            ok = false
+          } else {
+            ()
+          }
+        }
+      },
+      _ => {
+        ok = false
+      }
+    }
+    i = i + 1
+  }
+  ok && nm != ""
+}
+
+/// #3190: the source offsets of the bare names a same-ident match's arms
+/// hand back (`ematch_same_ident_arms`), in arm order.
+export fn ematch_arm_ident_offs(arms: Array[(Pat, Expr)]) -> Array[Int] {
+  let out: Array[Int] = []
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (_, body) = Array::get(arms, i)
+    match body {
+      EIdent(_, off) => Array::push(out, off),
+      _ => Array::push(out, 0 - 1)
+    }
+    i = i + 1
+  }
+  out
+}
+
+export fn next_seq_name(ctx: PCtx) -> String {
+  let nm = "__seq" + __to_string(ctx.seq_id)
+  ctx.seq_id = ctx.seq_id + 1
+  nm
+}
+
+/// #3137: the head of a sequence is DISCARDED. Codegen evaluates it and drops
+/// the value off the stack without releasing it (compile_expr_tail's ESeq
+/// arm), and a `for` in that position compiles in the no-collect form, which
+/// drops each BODY value the same way (`forin_is_discarded_seq_head`). A bare
+/// name on the result spine of such a value is therefore read in place, never
+/// consumed -- but the planner counted it as an owning use, so the binding's
+/// reference went to a release that never happens: `let d = A(..); for x in
+/// ns { d }; next` leaked `d` whole on every call, and so did a bare `d;`.
+///
+/// This rewrites exactly those leaves into the shape the planner already
+/// counts as a borrow -- a projection off the name, `EDot(x, "")` -- so the
+/// binding keeps its scope-end drop. It is PLAN-ONLY: codegen compiles the
+/// original tree, where the same leaf is a plain read. Only the spine is
+/// walked (let bodies, sequence tails, if branches, match arms, and -- #3162 --
+/// a `handle`'s body and each handler arm, whose values are the handle's
+/// value: compile_expr_tail6 branches both out of the handle's block, so the
+/// ESeq drop discards whichever one ran); a `for` is rewritten only as the
+/// head itself, the one position codegen compiles in the no-collect form.
+///
+/// A `while` BODY is discarded the same way wherever the loop stands
+/// (compile_expr_tail3 drops it after each iteration), so the EWhile arms of
+/// pc_emit / pc_count walk it through `pe_discarded_spine` too (#3162).
+export fn pe_discarded_head(e: Expr) -> Expr {
+  match e {
+    EForIn(n, ix, it, b) => EForIn(n, ix, it, pe_discarded_spine(b)),
+    _ => pe_discarded_spine(e)
+  }
+}
+
+export fn pe_discarded_spine(e: Expr) -> Expr {
+  match e {
+    EIdent(_, off) => EDot(e, "", off, 0 - 1),
+    ELet(n, v, b, off) => ELet(n, v, pe_discarded_spine(b), off),
+    ELetMut(n, v, b, off) => ELetMut(n, v, pe_discarded_spine(b), off),
+    ELetRec(n, v, b) => ELetRec(n, v, pe_discarded_spine(b)),
+    ESeq(a, b) => ESeq(a, pe_discarded_spine(b)),
+    EAssign(n, v, b) => EAssign(n, v, pe_discarded_spine(b)),
+    EAssignOp(n, op, v, b) => EAssignOp(n, op, v, pe_discarded_spine(b)),
+    EIf(c, t, f) => EIf(c, pe_discarded_spine(t), pe_discarded_spine(f)),
+    EMatch(sc, arms) => EMatch(sc, pe_discarded_arms(arms)),
+    EHandle(hb, arms) => EHandle(pe_discarded_spine(hb), pe_discarded_arms(arms)),
+    _ => e
+  }
+}
+
+fn pe_discarded_arms(arms: Array[(Pat, Expr)]) -> Array[(Pat, Expr)] {
+  let arms2: Array[(Pat, Expr)] = []
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (p, ab) = Array::get(arms, i)
+    Array::push(arms2, (p, pe_discarded_spine(ab)))
+    i = i + 1
+  }
+  arms2
+}
+
+export fn fn_param_names(params: Array[(String, Option[TypeExpr])]) -> Array[String] {
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(params) {
+    Array::push(out, (Array::get(params, i)).0)
+    i = i + 1
+  }
+  out
+}
+
+export fn array_contains_str_pctx(arr: Array[String], s: String) -> Bool {
+  // #1100: early-exit — this membership scan is one of the plan's hottest
+  // loops and used to keep scanning the whole array after a hit.
+  let n = Array::length(arr)
+  let mut i = 0
+  let mut found = false
+  while !found && i < n {
+    if Array::get(arr, i) == s {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// #707: is `fname` a call whose return value is a BORROWED VIEW sharing a
+/// call argument's refcount, rather than a fresh owned reference -- either one
+/// of the 3 builtins that read an element in place, or a user function whose
+/// own body is (transitively) nothing but a tail-call to one of those (see
+/// compute_borrow_returning_names). Bindings holding such a value must never
+/// be dup/drop'd themselves: the compiler-self-hosted-under-RC crash (#707)
+/// was exactly this -- `let peek = (toks, pos) -> Array::get(toks, pos)` was
+/// NOT recognized as borrow-returning (only a literal `Array::get` callee
+/// was), so `let __m_scrut = peek(toks, pos) in match __m_scrut { ... }`
+/// (the match-scrutinee-lift's desugaring, see normalize/index.vibe
+/// lift_match_scrutinees) planned a drop for `__m_scrut` as if it independently
+/// owned a reference -- double-freeing the array element peek merely borrowed.
+///
+/// #1237 perf: `ctx.pctx_names` holds exactly the whole-program
+/// borrow-returning-name set (see pctx_new). A genuine dedicated PCtx field
+/// for that set was tried once and hit an unexplained "memory access out of
+/// bounds" reading it back specifically when the whole compiler self-compiles
+/// under RC (see #707), so pctx_names remains the known-safe field to read it
+/// from. What changed is that pc_declare used to ALSO append every declared
+/// binding name to this same array, so the set had to be stored with a
+/// control-char prefix to stay distinguishable -- making each lookup here pay
+/// a String::concat and, on a miss (the common case), rescan every binding
+/// declared so far in the current function. pc_declare no longer touches
+/// pctx_names, so the names sit here unprefixed and a miss costs only the
+/// fixed set.
+export fn is_borrow_ret_fname(ctx: PCtx, fname: String) -> Bool {
+  // The computed set includes compiler-owned builtins and transitive wrappers,
+  // but excludes a builtin spelling when source owns that exact binding.
+  bsearch_leftmost(ctx.pctx_names, fname) >= 0
+}
+
+/// #707: fixed-point closure over top-level function definitions, starting
+/// from the 3 borrow-returning builtins: a function whose entire body is
+/// (after stripping let/seq/assign wrappers) a single tail-call to an
+/// already-known borrow-returning name is itself borrow-returning. Handles
+/// arbitrarily deep wrapper chains (`peek` -> `Array::get`,
+/// `peek2` -> `peek` -> `Array::get`, ...). Computed once over the whole
+/// merged program (see linked_compile.vibe) and threaded into every
+/// function's Perceus plan via build_perceus_plan_with_params.
+/// #707: does every value `e` can tail-produce come from a known
+/// borrow-returning name, or a "safe to never drop" fallback? Recurses through
+/// let/seq/assign wrappers and BOTH sides of if/match (a bare tail call alone
+/// missed `peek`'s actual shape: `if pos < len { Array::get(tokens, pos) }
+/// else TEof` -- a bounds-check guard around the real access, with a bare
+/// nullary-ctor-ish identifier as the out-of-range fallback). A bare EIdent
+/// tail (e.g. a sentinel like TEof) is accepted as safe even though it isn't
+/// proven borrow-returning: marking its binding "never dup/drop" can at worst
+/// leak that one value (the existing runtime dup/drop guards already no-op on
+/// non-heap-tagged values), never corrupt -- the failure mode this whole fix
+/// targets is a double-free from treating a genuinely-borrowed value as owned,
+/// not a leak from treating a small/rare owned value as borrowed.
+/// #1915 refinement: that fallback's reach was wrong. A bare ident branch tail
+/// is also the most common OWNED-return shape (`let out: Array[T] = []; ...
+/// if c { out } else { out }` builders), and "leak one small sentinel" became
+/// "leak one builder array per call, in every caller". So an ident tail is now
+/// RESOLVED through the wrapper-spine `let` bindings (spine_names/spine_vals,
+/// collected by collect_spine_let_vals): a binding provably holding an owned
+/// heap value (container literal, or a call to a non-borrow-returning name --
+/// the same verdicts an INLINE branch tail of that shape already gets from
+/// this walk) rejects the function, while a view binding, a parameter, a
+/// `let mut`, a shadowed name, or anything unresolvable keeps today's safe
+/// fallback. Resolution can only flip leak -> reclaim, never view -> owned:
+/// the owned verdicts mirror what the value expression would classify as if
+/// written inline in tail position.
+/// Iterative (NOT self-recursive) worklist walk over child expressions, rather
+/// than a `let rec` recursive-descent function. Also: the `ECall` case matches
+/// its callee via a NESTED constructor pattern one step at a time (`ECall(e,
+/// _, _)` then a separate `match e { EIdent(callee, _) => ... }`), never
+/// `ECall(EIdent(callee, _), _, _)` in one pattern. Both of these are
+/// load-bearing workarounds, not style: a `let rec` self-recursive version of
+/// this walk, AND a single-arm version using the nested `ECall(EIdent(...),
+/// _, _)` pattern, each independently reproduce a "memory access out of
+/// bounds" trap (reproducible under bump too -- not RC-specific) that is only
+/// exposed when this function runs over a derive(Ord)-generated `T::compare`
+/// body (a chain of `EIf(cmp, EInt(-1/1), ...)` with no further wrapper/call
+/// -- e.g. `struct P { x: Int; y: Int } derive(Ord)`). An equivalent shape
+/// recursing into an `Array::get` call / `EIdent` sentinel branch (`peek`'s
+/// actual body) does not crash either broken variant, and the crash persists
+/// even when the offending match arm is never reached at runtime for the
+/// crashing input -- so this is a codegen bug in this compiler triggered by
+/// those two source *shapes*, not a logic bug in this function's checks.
+/// True root cause not isolated; swap either workaround for the "more natural"
+/// form only after confirming compute_borrow_returning_names_test.vibe (or an
+/// equivalent derive(Ord) regression) still passes.
+/// #1915: collect the wrapper-spine `let` bindings (name -> value) of a
+/// function body so tail_is_borrow_ret_safe can resolve a bare ident branch
+/// tail to the value it names. Only immutable, once-bound spine lets are
+/// trusted; `let mut` / `let rec` targets, assignment targets, and re-bound
+/// (shadowed) names go to `excluded` -- resolution must never flip a genuine
+/// view to owned (the double-free direction), so anything ambiguous stays
+/// unresolvable. Iterative spine walk, mirroring strip_wrappers_for_borrow_ret.
+export fn collect_spine_let_vals(e0: Expr, names: Array[String], vals: Array[Expr], excluded: Array[String]) -> Int {
+  let mut e = e0
+  let mut looping = true
+  while looping {
+    looping = false
+    match e {
+      ELet(n, v, b, _) => {
+        if array_contains_str_pctx(names, n) || array_contains_str_pctx(excluded, n) {
+          Array::push(excluded, n)
+        } else {
+          Array::push(names, n)
+          Array::push(vals, v)
+        }
+        e = b
+        looping = true
+      },
+      ELetMut(n, _, b, _) => {
+        Array::push(excluded, n)
+        e = b
+        looping = true
+      },
+      ELetRec(n, _, b) => {
+        Array::push(excluded, n)
+        e = b
+        looping = true
+      },
+      ESeq(_, b) => {
+        e = b
+        looping = true
+      },
+      EAssign(n, _, b) => {
+        Array::push(excluded, n)
+        e = b
+        looping = true
+      },
+      EAssignOp(n, _, _, b) => {
+        Array::push(excluded, n)
+        e = b
+        looping = true
+      },
+      _ => ()
+    }
+  }
+  0
+}
+
+/// #1915: does the spine binding named `nm0` provably hold an OWNED heap
+/// value? Owned verdicts mirror what the same value expression would get as
+/// an INLINE branch tail in tail_is_borrow_ret_safe (container literal, call
+/// to a non-borrow-returning name); anything else -- excluded/absent names,
+/// view calls, `perform`, ident chains that leave the spine -- resolves to
+/// false, keeping the pre-#1915 safe fallback. The local-let ascription
+/// wrapper `((__asc: T) -> __asc)(v)` (ascribe_wrap, parser_expr_dispatch)
+/// is peeled first so an annotated binding classifies as its value. Callee
+/// matching is one step at a time, and both loops are iterative -- see the
+/// shape workarounds documented on tail_is_borrow_ret_safe.
+export fn spine_ident_returns_owned(known: MutSet[String], names: Array[String], vals: Array[Expr], excluded: Array[String], nm0: String) -> Bool {
+  let mut nm = nm0
+  let mut hops = 0
+  let mut owned = false
+  let mut done = false
+  // The ident chain visits a fresh spine binding per hop (a repeated name
+  // would have landed in `excluded` at collection), so the binding count
+  // bounds the walk -- no fixed cap that could silently truncate a long
+  // alias chain back into the safe (leaking) fallback.
+  while !done && hops <= Array::length(names) {
+    hops = hops + 1
+    if array_contains_str_pctx(excluded, nm) {
+      done = true
+    } else {
+      let mut idx = 0 - 1
+      let mut i = 0
+      while i < Array::length(names) {
+        if Array::get(names, i) == nm {
+          idx = i
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      if idx < 0 {
+        done = true
+      } else {
+        let mut v = Array::get(vals, idx)
+        let mut unwrapping = true
+        while unwrapping {
+          unwrapping = false
+          match v {
+            ECall(wc, wargs, _) =>
+            match wc {
+              EFn(_, _, wfps, _, _, wbody) => if Array::length(wfps) == 1 && Array::length(wargs) == 1 {
+                let (wpn, _) = Array::get(wfps, 0)
+                match wbody {
+                  EIdent(bn, _) => if bn == wpn {
+                    v = Array::get(wargs, 0)
+                    unwrapping = true
+                  } else {
+                    ()
+                  },
+                  _ => ()
+                }
+              } else {
+                ()
+              },
+              _ => ()
+            },
+            _ => ()
+          }
+        }
+        match v {
+          EArray(_) => {
+            owned = true
+            done = true
+          },
+          ETuple(_) => {
+            owned = true
+            done = true
+          },
+          ERecord(_, _, _) => {
+            owned = true
+            done = true
+          },
+          EMap(_) => {
+            owned = true
+            done = true
+          },
+          ECall(c2, _, _) =>
+          match c2 {
+            EIdent(f, _) => if f == "perform" || MutSet::has(known, f) {
+              done = true
+            } else {
+              owned = true
+              done = true
+            },
+            _ => {
+              done = true
+            }
+          },
+          EIdent(next_nm, _) => {
+            nm = next_nm
+          },
+          _ => {
+            done = true
+          }
+        }
+      }
+    }
+  }
+  owned
+}
+
+export fn pe_int_array_has(xs: Array[Int], v: Int) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(xs) {
+    if Array::get(xs, i) == v {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// #3175: does `pe_emit_path_release` give binding `id` its guarded path drop?
+/// The same test it applies, for the exit rows that mirror that drop.
+fn pe_path_dropped(ctx: PCtx, id: Int) -> Bool {
+  pe_flag_has(ctx, id, pf_split) && !pe_flag_has(ctx, id, pf_mark_bad) && !pe_flag_has(ctx, id, pf_used_after) && pe_int_array_has(ctx.mark_ids, id)
+}

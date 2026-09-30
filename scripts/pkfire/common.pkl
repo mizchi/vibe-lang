@@ -1,0 +1,49 @@
+// Source identity and factories shared by task modules.
+import "package://pkg.pkl-lang.org/github.com/mizchi/pkfire/pkfire@0.14.2#/Taskfile.pkl" as pkf
+
+// selfhost sources: top-level vibe/ was dissolved into lib/ (#766 Phase 2-4).
+// The MoonBit-host globs (moon.mod, src/**/*.mbt, src/**/moon.pkg) were
+// dropped with the rest of the retired host — they matched nothing.
+vibeSources: Listing<String> = new {
+  "lib/**/*.vibe"
+  "lib/**/*.vibei"
+  // #2138 review: a `.vpkg` is a package CONTRACT -- it decides what a package
+  // exports and therefore whether a dependent compiles at all. Leaving it out
+  // meant no task in this file invalidated on a contract edit: removing
+  // `lookup_builtin` from checker/index.vpkg changes whether a probe compiles,
+  // and every cached verdict would have been replayed over it.
+  "lib/**/*.vpkg"
+}
+
+scriptSources: Listing<String> = new {
+  "scripts/**/*.sh"
+  "scripts/**/*.js"
+  "scripts/**/*.cjs"
+  "scripts/**/*.py"
+  "scripts/**/*.pkl"
+  "scripts/**/*.mjs"
+  "scripts/**/*.vibex"
+}
+
+// Inputs shared by cached tasks whose verdict can come from the checkout
+// compiler. `vibeSources` covers the selfhost source, while the seed manifest selects the
+// bootstrap compiler that builds stage2. Omitting either can replay a cached
+// pass for a different compiler (#2165).
+compilerProbeInputs: Listing<String> = new {
+  ...vibeSources
+  "bootstrap/seed.json"
+  // Source-based gates resolve implementation modules through this reader.
+  "scripts/source_files.py"
+}
+
+// --- Helper factories ---
+
+/// Single-script wrapper — common pattern.
+function scriptTask(taskName: String, script: String): pkf.Task = new pkf.Task {
+  name = taskName
+  cmd = "bash \(script)"
+  // Some wrappers reach the compiler indirectly. Keying the shared factory on
+  // the complete compiler identity is a safe over-approximation and prevents
+  // those dynamic calls from bypassing the hand-written-task ratchet (#2165).
+  inputs { ...compilerProbeInputs; ...scriptSources }
+}

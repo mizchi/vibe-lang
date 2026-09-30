@@ -1,0 +1,1924 @@
+// lib/@vibe/compiler/runtime/typecheck_fs.vibe — ensure fingerprint fs impl.
+
+import @vibe/compiler/cache {
+  cache_read_source_fs,
+  cache_source_text_memo_reset,
+  compact_source_fingerprint_memo,
+  compact_source_fingerprint_memo_reset,
+  compact_string_fingerprint,
+  normalize_persistent_cache_text,
+  persistent_dep_list_cache_path,
+  persistent_leaf_fingerprint_cache_path,
+  persistent_type_env_cache_path,
+  persistent_typing_dependency_env_reuse_eligibility_path,
+  persistent_typing_dependency_env_reuse_sidecar_path,
+  typing_module_fingerprint
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import @vibe/ast {
+  TypeExpr,
+  TypeExpr::is_array_of_int,
+  impl_target_from_key,
+  impl_target_key,
+  trait_ref_args,
+  trait_ref_from_key,
+  trait_ref_key,
+  trait_ref_name,
+  type_param_arity,
+  type_param_name
+}
+
+import @vibe/compiler/checker {
+  CheckedProgram,
+  aggregate_export_names,
+  check_program,
+  check_program_type_table,
+  check_program_with_env_result,
+  check_program_with_projected_import_env_typed_lowering_located_observation,
+  collect_builtin_shadowing_names,
+  detect_redundant_namespace_imports,
+  detect_top_level_let_star,
+  detect_unbound_nonunit_returns,
+  detect_unused_imports,
+  export_local_nonvalue_kind,
+  import_item_kind_errors,
+  is_explicit_builtin_declaration,
+  report_unknown_type_names_deferred_validation,
+  typed_lowering_enc_offset,
+  typed_lowering_enc_tag,
+  typing_semantics_seed,
+  unresolved_aggregate_export_name,
+  unresolved_export_message,
+  validate_derives
+}
+
+import @vibe/compiler/checker/artifacts {
+  checked_exported_interface_artifact_from_checked_program,
+  checked_module_typing_artifact_v2_matches_exact_inputs,
+  encode_checked_module_typing_artifact_v2,
+  shadow_unattested_checked_module_typing_artifact_v2_from_checked_program
+}
+
+import @vibe/compiler/checker/artifacts/program {
+  encode_checked_program
+}
+
+import @vibe/compiler/checker/artifacts/module {
+  CheckedModuleArtifact
+}
+
+import @vibe/compiler/runtime/checked_module_cache {
+  checked_module_artifact_stmts,
+  checked_module_cache_input_identity,
+  checked_module_cache_mode,
+  checked_module_cache_reset,
+  commit_checked_module_artifact,
+  load_checked_module_artifact
+}
+
+import @vibe/compiler/core {
+  BindingOrigin,
+  EnvValueBinding,
+  Expr,
+  Stmt,
+  Type,
+  TypeDef,
+  TypeEnv,
+  bsearch_leftmost,
+  dir_of_path,
+  env_bind,
+  env_bind_with_origin,
+  env_flat_bindings,
+  env_lookup,
+  env_lookup_binding_including_surface,
+  env_lookup_flat,
+  env_preserve_type_definition_origins,
+  env_selectable_type_defs,
+  env_trait_def_names_into,
+  env_type_defs,
+  env_value_binding,
+  find_typedef,
+  has_standard_effect_policy,
+  is_alias_constructor,
+  is_builtin_iterator_serialized_boundary_path,
+  is_contract_ext,
+  is_exception_effect_name,
+  lookup_registry_builtin,
+  namespace_private_renamer_for_path,
+  normalize_path,
+  resolution_env_seed,
+  resolve_builtin,
+  resolve_import_path,
+  resolve_import_path_candidates,
+  str_lt,
+  typed_render_refuse_key,
+  unstable_package_note
+}
+
+import @vibe/compiler/codegen {
+  compile_inline_wat_array_params
+}
+
+import @vibe/compiler/entry/source_compile/wasi_only {
+  expand_interp_stmts
+}
+
+import @vibe/compiler/contract {
+  classify_contract_stmts,
+  contract_duplicate_decl_index,
+  contract_effective_decl_indices,
+  contract_effective_decls,
+  contract_parse_error_offset,
+  contract_type_provenance,
+  contract_types_item_names,
+  contract_unsupported_stmt_index,
+  extract_package_version,
+  extract_require_pins,
+  parse_contract_program,
+  parse_contract_program_spans,
+  vpkg_path_escape_one_line,
+  vpkg_types_contract_of_source,
+  vpkg_types_decl_pos_for_line
+}
+
+import @vibe/compiler/loader {
+  ast_cache_prefetch_count,
+  ast_cache_prefetch_count_reset,
+  ast_cache_prefetch_fs,
+  ingest_source_text_fs,
+  ingestion_pipeline_telemetry_add,
+  load_or_parse_module_header_fs,
+  parse_program_located_shared,
+  parse_program_located_shared_mark_semantic,
+  parse_program_located_shared_ran_parser,
+  parse_program_located_shared_semantic_pending,
+  vpkg_types_module_path_prefix
+}
+
+import @vibe/compiler/incremental {
+  RippleDb, ripple_get_deps, ripple_get_fingerprint, ripple_get_source, ripple_record_eval, ripple_set_source
+}
+
+import @vibe/compiler/module_graph {
+  plan_module_order
+}
+
+import @vibe/compiler/syntax {
+  Token,
+  lex_with_offsets,
+  lex_with_offsets_recovering,
+  offset_to_line_col,
+  parse_program_located,
+  parse_program_recovering,
+  print_type_expr,
+  token_to_string
+}
+
+import @vibe/compiler/runtime/eval_loader {
+  contains_str
+}
+
+import ./persistent_env_codec.vibe {
+  PersistentModuleCache,
+  load_persistent_dep_list,
+  load_persistent_leaf_fingerprint,
+  load_persistent_module_cache,
+  load_persistent_type_env,
+  parse_persistent_module_cache,
+  parse_persistent_type_env,
+  persistent_dep_list_text,
+  persistent_leaf_fingerprint_text,
+  persistent_module_cache_text,
+  persistent_type_env_cache_text
+}
+
+import ./typed_lowering_codec.vibe {
+  module_typed_lowering_text, parse_module_typed_lowering_offsets_text
+}
+
+import ./typecheck_fs_find_fn_anchor_off.vibe {
+  collect_module_diagnostics,
+  dep_visit_order,
+  diag_already_located,
+  ensure_env_cache_for_path,
+  incremental_typecheck_telemetry_add,
+  incremental_typecheck_telemetry_decide,
+  offset_line_col_prefix,
+  scheduler_trace_path,
+  typecheck_fs_lookup_string_pair,
+  typecheck_ident_run,
+  typing_dependency_env_reuse_valid_witness_memo_reset
+}
+
+import ./typecheck_fs_finish_typecheck_fs_impl.vibe {
+  locate_type_error, locate_type_error_lines, plan_deps_of, plan_import_graph_fs, step_module_fs
+}
+
+import ./typecheck_fs_interface_decl_lines.vibe {
+  module_plan_data_fs
+}
+
+import ./typecheck_fs_local_type_member_markers.vibe {
+  empty_stack, module_typed_lowering_memo_reset, typecheck_fs_empty_dep_fps, typecheck_fs_lookup_env_cache
+}
+
+fn artifact_input_trace_push_length_prefixed(out: StringBuilder, text: String) -> Unit {
+  StringBuilder::push(out, __to_string(String::length(text)))
+  StringBuilder::push(out, ":")
+  StringBuilder::push(out, text)
+}
+
+/// Exact module-plan evidence for the artifact-input observation sidecar.
+/// This deliberately reruns module_plan_data_fs after the production compile:
+/// it preserves planned order/ranks and every declared dependency occurrence
+/// (including duplicates), but never feeds a cache or reuse decision.
+export fn artifact_input_trace_dependency_plan_evidence_fs(entry_path: String) -> (String, Int, Int) with Env + Exception + Fs {
+  let (order, ranks, ordered_deps, _) = module_plan_data_fs(entry_path)
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "vibe-artifact-input-dependency-plan:v1\n")
+  artifact_input_trace_push_length_prefixed(out, __to_string(Array::length(order)))
+  let mut edge_occurrence_count = 0
+  let mut module_index = 0
+  while module_index < Array::length(order) {
+    // Fixed positional fields make this a canonical encoding of the actual
+    // planned graph, not the source-group collection order.
+    artifact_input_trace_push_length_prefixed(out, __to_string(module_index))
+    artifact_input_trace_push_length_prefixed(out, Array::get(order, module_index))
+    artifact_input_trace_push_length_prefixed(out, __to_string(Array::get(ranks, module_index)))
+    let deps = Array::get(ordered_deps, module_index)
+    artifact_input_trace_push_length_prefixed(out, __to_string(Array::length(deps)))
+    let mut dep_index = 0
+    while dep_index < Array::length(deps) {
+      artifact_input_trace_push_length_prefixed(out, Array::get(deps, dep_index))
+      edge_occurrence_count = edge_occurrence_count + 1
+      dep_index = dep_index + 1
+    }
+    module_index = module_index + 1
+  }
+  (compact_string_fingerprint(StringBuilder::freeze(out)), Array::length(order), edge_occurrence_count)
+}
+
+export fn module_plan_manifest_fs(entry_path: String) -> (String, Array[String]) with Env + Exception + Fs {
+  let (order, ranks, ordered_deps, ordered_sources) = module_plan_data_fs(entry_path)
+  let buf = StringBuilder::new()
+  StringBuilder::push(buf, "version\t1\n")
+  let n = Array::length(order)
+  let mut k = 0
+  while k < n {
+    let p = Array::get(order, k)
+    let index_text = __to_string(k)
+    StringBuilder::push(buf, "module\t")
+    StringBuilder::push(buf, index_text)
+    StringBuilder::push(buf, "\t")
+    StringBuilder::push(buf, __to_string(Array::get(ranks, k)))
+    StringBuilder::push(buf, "\t")
+    StringBuilder::push(buf, p)
+    StringBuilder::push(buf, "\n")
+    // Declaration order, duplicates KEPT: the driver derives both its
+    // deduped dependency set and its dependencyOccurrences list from this,
+    // exactly as it does from VIBE_LIST_DEPS's output today.
+    let deps = Array::get(ordered_deps, k)
+    let dlen = Array::length(deps)
+    let mut i = 0
+    while i < dlen {
+      StringBuilder::push(buf, "dep\t")
+      StringBuilder::push(buf, index_text)
+      StringBuilder::push(buf, "\t")
+      StringBuilder::push(buf, Array::get(deps, i))
+      StringBuilder::push(buf, "\n")
+      i = i + 1
+    }
+    k = k + 1
+  }
+  (StringBuilder::freeze(buf), ordered_sources)
+}
+/// True when one of `path`'s planned dependencies is in `failed` -- i.e. was
+/// itself diagnosed, or was blocked by this same rule.
+///
+/// A blocked module cannot be checked at all: its dependency has no
+/// fingerprint to fold into its cache key and no environment to import. It
+/// therefore contributes NO diagnostic of its own. Reporting one would be a
+/// cascade -- "unknown binding x", once per importer -- which is precisely the
+/// noise a canonical diagnostic set exists to be free of.
+///
+/// Transitivity comes from the wave order: blocked modules are pushed onto
+/// `failed` too, and every dependency of a module was stepped in a strictly
+/// earlier wave, so `failed` is already complete for `path` when this runs.
+fn module_is_blocked(plan_edges: Array[(String, Array[String])], failed: Array[String], path: String) -> Bool {
+  if Array::length(failed) == 0 {
+    false
+  } else {
+    match plan_deps_of(plan_edges, path) {
+      // No edge entry means the plan short-circuited this module (missing
+      // source, reusable fingerprint, persistent leaf cache) -- it has no
+      // dependencies to be blocked by.
+      None => false,
+      Some(deps) => {
+        let n = Array::length(deps)
+        let mut i = 0
+        let mut blocked = false
+        while i < n && !blocked {
+          if contains_str(failed, Array::get(deps, i)) {
+            blocked = true
+          } else {
+            i = i + 1
+          }
+        }
+        blocked
+      }
+    }
+  }
+}
+/// Canonical order for two collected diagnostics: normalized module path
+/// first, then the message.
+///
+/// #1239 step 5 specifies path -> source start/end -> diagnostic code ->
+/// message. Only the first and last of those exist today: check_module emits
+/// AT MOST ONE diagnostic per module (its Diagnosed arm builds a one-element
+/// array), so within a path there is nothing to break ties between, and there
+/// are no diagnostic codes yet. The message tiebreak is here anyway to keep
+/// the order TOTAL, so the day a worker returns several diagnostics for one
+/// module they sort deterministically instead of silently inheriting
+/// collection order.
+///
+/// str_lt, not `<`: canonical ordering must be true lexicographic. The builtin
+/// compares length first, which would make the order depend on path length
+/// (CLAUDE.md documents that footgun; @vibe/compiler/module_graph's plan_module_order avoids
+/// it the same way).
+fn module_diag_lt(a: (String, String), b: (String, String)) -> Bool {
+  if a.0 == b.0 {
+    str_lt(a.1, b.1)
+  } else {
+    str_lt(a.0, b.0)
+  }
+}
+/// Insertion sort into canonical order. One diagnostic per failing module, and
+/// a build with enough failing modules for O(N^2) to matter has bigger
+/// problems than the sort.
+fn sort_module_diagnostics(diags: Array[(String, String)]) -> Array[(String, String)] {
+  let out: Array[(String, String)] = []
+  let n = Array::length(diags)
+  let mut i = 0
+  while i < n {
+    let entry = Array::get(diags, i)
+    Array::push(out, entry)
+    let mut j = Array::length(out) - 1
+    while j > 0 && module_diag_lt(entry, Array::get(out, j - 1)) {
+      Array::set(out, j, Array::get(out, j - 1))
+      Array::set(out, j - 1, entry)
+      j = j - 1
+    }
+    i = i + 1
+  }
+  out
+}
+/// The collected set as one error string: canonical order, exact duplicates
+/// dropped, one diagnostic per line. A single collected diagnostic is
+/// therefore byte-identical to what the fail-fast walk would have thrown --
+/// which is what makes collection mode a superset of the default rather than
+/// a different output format.
+/// The `project` half of a scheduler trace: one row per planned module, with
+/// its rank and its dependency list. This IS Scheduler.lean's `Project` --
+/// `dependencies` and `rank` -- serialized, so the oracle can check
+/// `dependencyRankLt` against the same graph the walk actually stepped rather
+/// than against one it re-derived.
+fn scheduler_trace_project(buf: StringBuilder, order: Array[String], ranks: Array[Int], plan_edges: Array[(String, Array[String])]) -> Unit {
+  let n = Array::length(order)
+  let mut i = 0
+  while i < n {
+    let p = Array::get(order, i)
+    StringBuilder::push(buf, "project\t")
+    StringBuilder::push(buf, p)
+    StringBuilder::push(buf, "\t")
+    StringBuilder::push(buf, __to_string(Array::get(ranks, i)))
+    // A module the plan short-circuited (missing source, reusable
+    // fingerprint, persistent leaf cache) has no edge entry and so no
+    // dependencies -- which is exactly what it is to the scheduler: a leaf
+    // that is Ready from the start.
+    match plan_deps_of(plan_edges, p) {
+      None => (),
+      Some(deps) => {
+        let dlen = Array::length(deps)
+        let mut d = 0
+        while d < dlen {
+          StringBuilder::push(buf, "\t")
+          StringBuilder::push(buf, Array::get(deps, d))
+          d = d + 1
+        }
+      }
+    }
+    StringBuilder::push(buf, "\n")
+    i = i + 1
+  }
+} fn join_module_diagnostics(diags: Array[(String, String)]) -> String {
+  let sorted = sort_module_diagnostics(diags)
+  let msgs = array_empty()
+  let n = Array::length(sorted)
+  let mut i = 0
+  while i < n {
+    let entry = Array::get(sorted, i)
+    Array::push(msgs, entry.1)
+    i = i + 1
+  }
+  String::join(dedupe_diagnostics(msgs), "\n")
+}
+/// The import-DAG walk, as the wave loop a coordinator dispatches from
+/// (#1239 step 4(D)).
+///
+/// plan_import_graph_fs resolves the graph and plan_module_order ranks it
+/// (step 4(A), both already in place); this consumes that order instead of
+/// re-deriving one by recursive descent. Every module of rank k depends only
+/// on modules of rank < k, so a rank is a WAVE: its modules are independent
+/// of each other by construction, and each one's dependency fingerprints are
+/// already recorded by the time the wave runs.
+///
+/// What that buys, beyond the recursion going away (this compiler has
+/// exhausted the wasm stack on a recursive whole-program walk before -- see
+/// analyze_calls's #556 note in perceus/perceus.vibe): the remaining step
+/// 4(D) blocker is gone. Dispatching a wave out-of-process is now a change to
+/// the inner loop, not a restructuring of the walk.
+///
+/// #1259: the wave loop is also where diagnostics are COLLECTED rather than
+/// fired off one at a time. A wave's modules are independent by construction,
+/// so one of them being diagnosed says nothing about its siblings -- they
+/// still have every input they need. Collection therefore falls out of the
+/// wave structure: diagnose, mark the module failed, keep stepping the rest of
+/// the wave, and skip only the modules that actually depend on a failure. See
+/// collect_module_diagnostics (off by default).
+///
+/// dep_visit_order (the #906 Phase 0 nondeterminism probe, seeded by
+/// VIBE_DEP_ORDER_SEED) now permutes the order WITHIN a wave rather than a
+/// node's dependency visit order. That is the stronger property and the one
+/// that matters: it is exactly the choice a parallel coordinator makes
+/// differently from run to run, and scripts/dep_order_oracle.sh asserts the
+/// compiled output is byte-identical across seeds regardless.
+export fn ensure_fingerprint_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
+  // #2391: the float-offsets memo lives for exactly one walk -- every module
+  // this walk accepts re-binds its row (from the check, the combined entry, or the
+  // TDRE9 target), and the FS merge consumes the rows right after the walk
+  // returns. Resetting here is what rules out a row surviving from an
+  // earlier compile of a since-edited file, without any eviction policy that
+  // could drop a row the ACTIVE compile still needs.
+  module_typed_lowering_memo_reset()
+  typing_dependency_env_reuse_valid_witness_memo_reset()
+  checked_module_cache_reset()
+  // #2386: the source-text fingerprint memo spans one compile too.
+  compact_source_fingerprint_memo_reset()
+  let (plan_leaf_fps, plan_edges, planned_parse_count, plan_diags) = plan_import_graph_fs(rdb, dep_source_cache, parse_count, path)
+  // #1239 step 4(A): an import cycle is rejected HERE -- before a single
+  // module is checked, committed, or written to the persistent cache --
+  // instead of incidentally, partway through the walk, on whichever module a
+  // DFS happened to re-enter first.
+  let (order, ranks) = plan_module_order(plan_edges, path)
+  incremental_typecheck_telemetry_add(0, Array::length(order))
+  let fps = typecheck_fs_empty_dep_fps()
+  let mut db = rdb
+  let mut envc = env_cache
+  let mut dsc = dep_source_cache
+  let mut pc = planned_parse_count
+  // #1259: empty unless collection is on, in which case `failed` holds every
+  // module that was diagnosed OR blocked by one, and `diags` the (path,
+  // message) pairs to sort at the end.
+  let failed = empty_stack()
+  let diags: Array[(String, String)] = []
+  // A module that failed to PLAN (a syntax error in its own source -- see
+  // plan_import_graph_fs) is already terminal: it has no dependency list, so
+  // it is a leaf to the schedule and nothing about it can be checked. Seed it
+  // as failed before the loop so the wave skips it and module_is_blocked
+  // catches its importers. Always empty when collection is off, since planning
+  // rethrows in that mode.
+  let mut pdi = 0
+  while pdi < Array::length(plan_diags) {
+    let entry = Array::get(plan_diags, pdi)
+    Array::push(failed, entry.0)
+    Array::push(diags, entry)
+    pdi = pdi + 1
+  }
+  // #1259 (#1239 step 8): the scheduler trace. Off unless
+  // VIBE_SCHEDULER_TRACE named a file.
+  let trace_path = scheduler_trace_path()
+  let tracing = String::length(trace_path) > 0
+  let trace = StringBuilder::new()
+  if tracing {
+    scheduler_trace_project(trace, order, ranks, plan_edges)
+  } else {
+    ()
+  }
+  let n = Array::length(order)
+  let mut i = 0
+  while i < n {
+    // `order` is sorted by rank, so one wave is a contiguous run.
+    let r = Array::get(ranks, i)
+    let mut j = i
+    while j < n && Array::get(ranks, j) == r {
+      j = j + 1
+    }
+    let wave = j - i
+    let visit = dep_visit_order(wave)
+    let mut k = 0
+    while k < wave {
+      let m = Array::get(order, i + Array::get(visit, k))
+      // `contains_str(failed, m)` first: a module that failed to plan is
+      // already in `failed` and has no edge entry, so module_is_blocked alone
+      // would let it through to a step that cannot succeed.
+      if contains_str(failed, m) || module_is_blocked(plan_edges, failed, m) {
+        incremental_typecheck_telemetry_add(4, 1)
+        Array::push(failed, m)
+      } else {
+        // Snapshots of the accumulators as of ENTRY to this module's step.
+        // The handler needs values it can close over, and they are also the
+        // right state to carry forward when the step raises: a module that
+        // does not check commits nothing.
+        let cur_db = db
+        let cur_envc = envc
+        let cur_dsc = dsc
+        let cur_pc = pc
+        let raised = empty_stack()
+        let (fp, next_db, next_envc, next_dsc, next_pc) = handle {
+          step_module_fs(plan_leaf_fps, plan_edges, fps, cur_db, cur_envc, cur_dsc, cur_pc, m)
+        } with { Exception::Throw(msg) => {
+          Array::push(raised, msg)
+          (String::concat("diagnosed:", m), cur_db, cur_envc, cur_dsc, cur_pc)
+        } }
+        if Array::length(raised) > 0 {
+          let msg = Array::get(raised, 0)
+          // Re-raised OUTSIDE the handler, so this is ordinary propagation
+          // and not a throw from within a handler body. Two cases never
+          // become collected diagnostics:
+          //
+          //   - fail-fast mode, the default: identical message, identical
+          //     partial state, raised one frame later than before
+          //   - an internal invariant violation (the `type_db:` prefix, the
+          //     two unreachable arms in step_module_fs / commit_with_deps_fs)
+          //     -- infrastructure failure, not something the user's program
+          //     said, so it must stay fatal even while collecting
+          if !collect_module_diagnostics() || String::starts_with(msg, "type_db: ") {
+            throw(msg)
+          } else {
+            incremental_typecheck_telemetry_add(4, 1)
+            Array::push(failed, m)
+            Array::push(diags, (m, msg))
+          }
+        } else {
+          // A successful recheck commits exactly one full-module parse;
+          // any successful no-body-parse path leaves `pc` unchanged. This
+          // includes in-memory and persistent reuse; it is intentionally not
+          // a per-cache-class hit count. Count the classification here, at the
+          // same publish point used by scheduler tracing, so every planned
+          // module belongs to rechecked, reused, or failed/blocked.
+          if next_pc > cur_pc {
+            incremental_typecheck_telemetry_add(1, 1)
+            incremental_typecheck_telemetry_decide(m, "rechecked")
+          } else {
+            incremental_typecheck_telemetry_add(2, 1)
+            incremental_typecheck_telemetry_decide(m, "reused")
+          }
+          db = next_db
+          envc = next_envc
+          dsc = next_dsc
+          pc = next_pc
+          Array::push(fps, (m, fp))
+          // One Step.run, recorded where the result is PUBLISHED -- the same
+          // point `BuildState.finish` sits at in the model. Recording it
+          // before the step would let a trace claim a module completed that
+          // then raised.
+          //
+          // Codex review P1: the fingerprint alone is NOT the JobResult. It is
+          // build_fingerprint(source, dep_fps) -- a pure function of the source
+          // graph, computed before the module is even checked -- so comparing
+          // fingerprints across schedules compares content-addressed cache KEYS
+          // that are schedule-independent by construction, and StoreCorrect
+          // would have held even if two schedules produced different TypeEnvs.
+          // The env hash is what makes that comparison mean anything: it is the
+          // checked environment the module actually published, serialized the
+          // same way commit_module_outcome writes it to the persistent cache.
+          //
+          // "-" is for the arms that publish no environment (a reusable cached
+          // fingerprint, or a persistent leaf-fingerprint hit). Both are cache
+          // hits, so on the cold cache dir the oracle uses they should be rare
+          // -- scheduler_trace_oracle.sh fails if too many steps carry "-",
+          // since a trace of all-"-" would be back to comparing keys.
+          if tracing {
+            let env_hash = match typecheck_fs_lookup_env_cache(next_envc, m) {
+              Some(env) => compact_string_fingerprint(persistent_type_env_cache_text(env)),
+              None => "-"
+            }
+            StringBuilder::push(trace, "step\t")
+            StringBuilder::push(trace, m)
+            StringBuilder::push(trace, "\t")
+            StringBuilder::push(trace, fp)
+            StringBuilder::push(trace, "\t")
+            StringBuilder::push(trace, env_hash)
+            StringBuilder::push(trace, "\n")
+          } else {
+            ()
+          }
+        }
+      }
+      k = k + 1
+    }
+    i = j
+  }
+  if tracing {
+    Fs::write_file(trace_path, StringBuilder::freeze(trace))
+  } else {
+    ()
+  }
+  // Before the root lookup: with the root itself diagnosed or blocked there is
+  // no fingerprint and no environment for it, and reporting "missing:" for a
+  // module whose real problem is a type error two levels down would bury the
+  // diagnostics this whole pass exists to produce.
+  if Array::length(diags) > 0 {
+    throw(join_module_diagnostics(diags))
+  } else {
+    ()
+  }
+  let root_fingerprint = match typecheck_fs_lookup_string_pair(fps, path) {
+    Some(f) => f,
+    // The root is always interned by plan_module_order, so it is always
+    // stepped; this is the empty-graph shape rather than a miss.
+    None => String::concat("missing:", path)
+  }
+  let final_env_cache = ensure_env_cache_for_path(db, envc, path)
+  incremental_typecheck_telemetry_add(3, pc - parse_count)
+  (root_fingerprint, db, final_env_cache, dsc, pc)
+}
+/// #946: drop exact duplicates from a diagnostics list, preserving first-seen
+/// order. Each entry already embeds its location ("line L:C: msg"), so string
+/// equality IS (position, message) identity. O(N^2) — diagnostic lists are tiny.
+fn dedupe_diagnostics(diags: Array[String]) -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(diags) {
+    let d = Array::get(diags, i)
+    if contains_str(out, d) {
+      ()
+    } else {
+      Array::push(out, d)
+    }
+    i = i + 1
+  }
+  out
+}
+/// #946(4): find every top-level `fn f(..) -> Int = wasm "<WAT>"` definition
+/// (parsed as `SLet(_, _, name, _, EFn(_, _, params, _, _, ECall(EIdent("%wasm",
+/// _), [EString(wat, -1)], _)))` — see lc_extract_inline_wasm in
+/// codegen/wasi/linked_compile.vibe, whose extraction pattern this mirrors
+/// read-only (no mutation: diagnostics discards `stmts` after this scan, and
+/// running it before codegen would blow away the marker codegen depends on).
+/// Returns (fn_name, wat_text, param_names) triples in declaration order.
+fn collect_inline_wasm_fns(stmts: Array[Stmt]) -> Array[(String, String, Array[String], Array[String])] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, iw_name, _, iw_expr) => match iw_expr {
+        EFn(_, _, iw_params, _, _, iw_body) => match iw_body {
+          ECall(iw_cal, iw_args, _) => match iw_cal {
+            EIdent(iw_cn, _) => if iw_cn == "%wasm" && Array::length(iw_args) == 1 {
+              match Array::get(iw_args, 0) {
+                EString(iw_wat, _) => {
+                  let pnames = array_empty()
+                  // #2348 part 2: the `Array[Int]` params, so this lane
+                  // assembles the body the way codegen does -- a `local.set`
+                  // on an array param is refused here too, and not first seen
+                  // at build time.
+                  let parrays = array_empty()
+                  let mut pi = 0
+                  while pi < Array::length(iw_params) {
+                    let (pn, pt) = Array::get(iw_params, pi)
+                    Array::push(pnames, pn)
+                    match pt {
+                      Some(ptv) => if TypeExpr::is_array_of_int(ptv) {
+                        Array::push(parrays, pn)
+                      } else {
+                        ()
+                      },
+                      None => ()
+                    }
+                    pi = pi + 1
+                  }
+                  Array::push(out, (iw_name, iw_wat, pnames, parrays))
+                },
+                _ => ()
+              }
+            } else {
+              ()
+            },
+            _ => ()
+          },
+          _ => ()
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+/// #2348: the callee table for the CHECK lane -- one entry per inline-wasm fn
+/// in this module, carrying its position where codegen carries a wasm function
+/// index (see check_inline_wasm_fns for why that is sound here).
+fn check_iw_callee_table(fns: Array[(String, String, Array[String], Array[String])]) -> Array[(String, Int, Int)] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(fns) {
+    let (fn_name, _wat, pnames, _parrays) = Array::get(fns, i)
+    Array::push(out, (fn_name, i, Array::length(pnames)))
+    i = i + 1
+  }
+  out
+}
+
+/// #946(4): validate every inline-wasm fn body (the same assembler entry
+/// codegen uses) and return the FIRST located error, or None when
+/// every inline-wasm fn assembles cleanly. `compile` surfaced these (e.g. a bad
+/// SIMD lane index) as a located error while `vibe diagnostics` reported clean
+/// — diagnostics only ran the typechecker, never this codegen-adjacent
+/// validation. Stops at the first error (matches collect_all_diagnostics'
+/// existing "one located type error" granularity below).
+export fn check_inline_wasm_fns(stmts: Array[Stmt]) -> Option[String] {
+  let fns = collect_inline_wasm_fns(stmts)
+  let n = Array::length(fns)
+  // #2348: the same callee table codegen builds, so `vibe check` accepts
+  // exactly the `(call $f ...)` bodies codegen accepts. The wasm function
+  // INDEX is not knowable here -- module layout is decided in
+  // linked_compile.vibe -- so each entry carries its position in this list.
+  // That is sound because the assembled bytes are discarded below (`let _`):
+  // this lane checks that the callee resolves and the arity matches, and
+  // nothing reads the index it encoded.
+  let iw_callees = check_iw_callee_table(fns)
+  let mut i = 0
+  let mut result = None
+  let mut done = false
+  while !done {
+    if i >= n {
+      done = true
+    } else {
+      let (fn_name, wat, pnames, parrays) = Array::get(fns, i)
+      let outcome = handle {
+        let _ = compile_inline_wat_array_params(fn_name, wat, pnames, parrays, Array::length(pnames) + 1, iw_callees)
+        None
+      } with { Exception::Throw(msg) => Some(msg) }
+      match outcome {
+        Some(msg) => {
+          result = Some(msg)
+          done = true
+        },
+        None => {
+          i = i + 1
+        }
+      }
+    }
+  }
+  result
+}
+/// Does the k-line prefix of `lines` make the package-header scanner throw
+/// exactly `pin_err`? The locator's probe (see collect_all_diagnostics):
+/// asking the loader itself, instead of mirroring its grammar, is what keeps
+/// the located line from drifting (#2253 rounds 3-6).
+fn header_prefix_throws(lines: Array[String], k: Int, pin_err: String) -> Bool {
+  let sb = StringBuilder::new()
+  let mut j = 0
+  while j < k {
+    if j > 0 {
+      StringBuilder::push(sb, "\n")
+    } else {
+      ()
+    }
+    StringBuilder::push(sb, Array::get(lines, j))
+    j = j + 1
+  }
+  let m = handle {
+    let (_pins2, _blanked2) = extract_require_pins(StringBuilder::freeze(sb))
+    ""
+  } with { Exception::Throw(m2) => m2 }
+  m == pin_err
+}
+
+/// Collect ALL diagnostics for `source` as located (`line:col`) message strings.
+/// Lexer errors come first (#946): the recovering lexer records every offending
+/// position instead of throwing, so a lex-broken file reports located lexer
+/// diagnostics rather than an empty ("clean") result. Only when the lex is clean
+/// does the recovering parser gather every top-level syntax error; only if the
+/// parse is also clean does it run the type checker and report the (single,
+/// located) type error. Identical (position, message) pairs are deduped.
+/// Returns [] when the source lexes, parses, and checks cleanly.
+/// Foundation for `vibe check` / LSP multi-diagnostic reporting.
+/// #2297: every single-file consumer gets the ADR-0068 opt-in verdict from
+/// HERE, rather than the adapter computing it separately and splicing it into
+/// two of the three surfaces. `vibe check --single-file` reported it, its
+/// `--json` form reported it because the adapter handed it over, and the live
+/// LSP -- which calls `collect_all_diagnostics` and nothing else -- did not.
+/// Measured before this: `publishDiagnostics` on a buffer whose only content
+/// is `import @vibe/concurrent` carried the unused-import warning and no
+/// opt-in error at all.
+///
+/// `allow_unstable` is a parameter, not an `Env::get` in here: this function is
+/// pure, and the read belongs at the edge. For a long-lived LSP server that
+/// edge is server start -- authority is settled in the earliest phase and does
+/// not change during a run (ADR-0075/0084/0088), so re-reading it per didOpen
+/// would be the odd choice.
+///
+/// This arity keeps the path unknown, which costs the `.vpkg` contract grammar
+/// (see `collect_all_diagnostics_with_unstable_for_path` below). A caller that
+/// HAS a path should pass it.
+export fn collect_all_diagnostics_with_unstable(source: String, allow_unstable: Bool) -> Array[String] with Exception {
+  collect_all_diagnostics_with_unstable_for_path("", source, allow_unstable)
+}
+
+/// #2297, with `input_path` so the scan reads the buffer with the grammar it
+/// actually has (Codex review on #2313).
+///
+/// The first version passed `""` and the raw source, documented as safe on the
+/// grounds that a buffer is never a `.vpkg` facade. Both halves of that were
+/// wrong:
+///
+///   - an editor DOES open `index.vpkg`. With an empty path
+///     `checked_warning_stmts` takes its `parse_program_recovering` branch
+///     instead of `parse_contract_program`, the contract header fails to
+///     parse, the scan returns `None`, and a contract importing
+///     `@vibe/concurrent` gets no opt-in warning at all.
+///   - a buffer may carry a leading `require ... = #pkg:sha1:` head.
+///     `collect_all_diagnostics` blanks it before parsing (#2227); scanning
+///     the RAW text reaches the parser with the directive intact, which is a
+///     parse error, so the scan returns `None` and drops the diagnostic.
+///
+/// `extract_require_pins` blanks to spaces and preserves byte length, so the
+/// positions this scan reports stay exact.
+export fn collect_all_diagnostics_with_unstable_for_path(input_path: String, source: String, allow_unstable: Bool) -> Array[String] with Exception {
+  let msgs = collect_all_diagnostics_for_path(input_path, source)
+  if allow_unstable {
+    msgs
+  } else {
+    // The scan must never COST diagnostics. `collect_all_diagnostics` above
+    // uses the RECOVERING lexer and returns a lex error as a diagnostic;
+    // `unstable_import_diagnostics` uses `lex_with_offsets`, which throws on
+    // one. Letting that throw escape took the whole call down, and
+    // `lsp_diagnostics_safe_with_unstable` turns a throw into `[]` -- so a
+    // buffer with any syntax error published as CLEAN. Measured: an invalid
+    // character reported one error before this function existed and none
+    // after (Codex review on #2313).
+    //
+    // A file that does not lex has no import declarations worth scanning, so
+    // degrading this half to "no unstable diagnostics" loses nothing, while
+    // the lexer's own diagnostics -- the ones the reader needs first -- survive.
+    let extra = handle {
+      let (_pins, pin_blanked) = extract_require_pins(source)
+      unstable_import_diagnostics(input_path, pin_blanked, pin_blanked)
+    } with { Exception::Throw(_) => array_empty() }
+    let mut i = 0
+    while i < Array::length(extra) {
+      Array::push(msgs, Array::get(extra, i))
+      i = i + 1
+    }
+    msgs
+  }
+}
+
+/// #2314: no path, so a `.vpkg` buffer is read as statements. Callers that
+/// HAVE a path should use `collect_all_diagnostics_for_path`.
+export fn collect_all_diagnostics(source: String) -> Array[String] with Exception {
+  collect_all_diagnostics_for_path("", source)
+}
+
+export fn collect_all_diagnostics_for_path(input_path: String, source: String) -> Array[String] with Exception {
+  // #2227, round 3 of the book-review eval: a leading `require @scope/name
+  // x.y.z = #pkg:sha1:` head is a loader directive that every build-lane
+  // ingestion blanks before parsing -- but this single-file lane parsed the
+  // RAW buffer and answered `unexpected token: =` for a file the build
+  // accepts. Blank it the same way; the blanked twin is offset-preserving,
+  // so every position below stays exact. A head the loader itself rejects
+  // becomes the diagnostic, the same answer the import lane gives.
+  let (pin_blanked, pin_err) = handle {
+    let (_pins, blanked) = extract_require_pins(source)
+    (blanked, "")
+  } with { Exception::Throw(m) => (source, m) }
+  if pin_err != "" {
+    // #2253 review rounds 3-4/6: the loader's message carries no position,
+    // and the JSON lane renders an unlocated diagnostic as the synthetic 0:0
+    // range. Two rounds of parsing the MESSAGE for the offending line drifted
+    // from the header grammar each time (parenthesized vs plain `: ` tails,
+    // then require-only line classification vs the scanner's comments /
+    // version / deps blocks). Ask the scanner itself instead: probe it with
+    // line-prefixes of the source and anchor at the SMALLEST prefix that
+    // throws this exact message -- the scanner is line-oriented, so that
+    // prefix's last line is where its own scan stopped. No grammar mirror, so
+    // nothing to drift; an error only raised at a block opener (unterminated
+    // block) anchors on the opener, which is the actionable line. The
+    // predicate "a k-line prefix throws pin_err" is monotone in k (once the
+    // throwing line is included, every longer prefix stops at that same line
+    // with the same message, deterministically), so binary search finds the
+    // boundary in O(log n) probes with no length cap (round 6: the previous
+    // linear probe capped at 256 lines and left a longer header bare). The
+    // probe runs on the error path only.
+    let lines = String::split(source, "\n")
+    let nlines = Array::length(lines)
+    // The full-source prefix reproduces pin_err by construction; confirm it
+    // anyway so a violated assumption answers bare instead of wrong.
+    let mut hit_line = 0 - 1
+    if nlines > 0 && header_prefix_throws(lines, nlines, pin_err) {
+      let mut lo = 0
+      let mut hi = nlines
+      while hi - lo > 1 {
+        let mid = (lo + hi) / 2
+        if header_prefix_throws(lines, mid, pin_err) {
+          hi = mid
+        } else {
+          lo = mid
+        }
+      }
+      hit_line = hi - 1
+    } else {
+      ()
+    }
+    if hit_line >= 0 {
+      return [
+        String::concat("line ", String::concat(__to_string(hit_line + 1), String::concat(":1: ", pin_err)))
+      ]
+    } else {
+      return [pin_err]
+    }
+  } else {
+    ()
+  }
+  // #2317: the version directive is BLANKED out of `pin_blanked` (measured --
+  // `scan_package_header` blanks every directive it recognizes), so the
+  // effective-declaration filter has to be told it from the RAW source. Read
+  // it here, where that source is still in hand; a header the scanner itself
+  // rejects has already returned above, so this cannot throw a second time.
+  let pkg_version = handle {
+    extract_package_version(source)
+  } with { Exception::Throw(_) => "" }
+  collect_all_diagnostics_on(input_path, pin_blanked, pkg_version)
+}
+
+/// #2314, the LSP half of #2280: a `.vpkg` is a list of BODYLESS declarations,
+/// not statement grammar. Reading it with `parse_program_recovering` answered
+/// `expected { but got eof` about `lib/@vibe/random/index.vpkg` and about every
+/// other contract the build consumes -- a diagnostic that asserts something
+/// untrue about the file, which this repo ranks above crashing.
+///
+/// A contract stops at its own grammar. It does NOT go on to `check_program` /
+/// `expand_interp_stmts` / the unused-import walk: those read a program, and a
+/// contract is a declaration surface whose implementations live in sibling
+/// files this lane cannot see. `vibe check` WITHOUT `--single-file` is the
+/// verb that answers the cross-file half (`contract violation: contract
+/// declaration 'x' has no implementation`, #2280) -- reporting a subset here
+/// is honest; inventing the rest from one buffer is not.
+/// Does `msg` report hitting end of input?
+///
+/// The two spellings the parsers actually produce, and only those:
+///
+///   - `expected <what> but got eof` (parser_base, via `tk_name(TEof)`);
+///   - `unexpected eof in block` (parser_expr_dispatch).
+///
+/// The first version tested for `" eof"`, which is too loose (Codex review on
+/// #2315): `parse_contract_program` also throws `unsupported # directive in a
+/// contract file: eof (only #deprecated is allowed)`, and that contains
+/// `" eof"` too -- so `#eof` would have been anchored as a truncation, at the
+/// last real token instead of at its own `#`.
+///
+/// That message DOES reach here. This comment used to claim the opposite, on
+/// the grounds that the lane pin-blanks the header first and the blanking
+/// erases a `#` directive line before the parser sees it. Measured (#2316):
+/// `extract_require_pins` does not erase it. `scan_package_header` blanks only
+/// the directives it recognizes; a `#` line matches none of them, so it takes
+/// the scanner's final branch, which ends the header scan and copies the line
+/// through VERBATIM. Both lanes report the directive, and the buffer lane
+/// anchors it -- `line 9:2` for a `#eof` on line 9, where the import lane has
+/// no position at all.
+///
+/// Neither marker below can come out of a directive name: a name is a single
+/// token and cannot contain a space.
+/// The recovering lexer's errors, each located and deduped.
+///
+/// Shared by the program branch and the contract branch of
+/// `collect_all_diagnostics_on` (#2314 review): a contract lexes with exactly
+/// the same rules as a program, so a second copy of this would be a second
+/// answer to one question.
+///
+/// #997 review (Codex): a handful of lexer throw sites (the `\(expr)`
+/// interpolation-removal message, and #997's own scientific-notation /
+/// incomplete-exponent messages) embed their OWN precise `line L:C: ` prefix
+/// directly in the message, because `lex_err_offsets` always records the START
+/// offset of the enclosing `lex_one_token` call -- wrong for a throw raised
+/// partway through a multi-char token (at the `e`/`E`, not the token's first
+/// digit). Blindly prepending the generic outer `loc` on top of an
+/// already-self-located message produced a doubled/conflicting location
+/// (`line 1:9: line 1:18: ...`, confirmed empirically via `vibe diagnostics`
+/// on `123456789e10`). Skip the outer prefix for messages that already start
+/// with "line " -- they're self-located and the outer offset would only be
+/// redundant or wrong.
+///
+/// This also collapses a separate pre-existing duplication: a
+/// non-quote-delimited lex error (anything but a broken string/char literal)
+/// resumes ONE character past the failure and retries, so a multi-digit
+/// scientific-notation literal re-throws the SAME underlying error once per
+/// remaining digit (9 identical reports for `123456789e10`) -- previously each
+/// got a DIFFERENT (wrong) outer offset, defeating the exact-string dedup
+/// below. With the outer prefix suppressed, all 9 become byte-identical and
+/// collapse to the single correctly-located report.
+fn located_lex_errors(source: String, lex_err_offsets: Array[Int], lex_err_msgs: Array[String]) -> Array[String] with Exception {
+  let located = array_empty()
+  let mut i = 0
+  while i < Array::length(lex_err_msgs) {
+    let msg = Array::get(lex_err_msgs, i)
+    let entry = if String::starts_with(msg, "line ") {
+      msg
+    } else {
+      let off = Array::get(lex_err_offsets, i)
+      let (line, col) = offset_to_line_col(source, off)
+      let loc = String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), ": "))))
+      String::concat(loc, msg)
+    }
+    Array::push(located, entry)
+    i = i + 1
+  }
+  dedupe_diagnostics(located)
+}
+
+/// #2317: the contract checks a single buffer CAN decide, beyond the grammar.
+///
+/// `parse_contract_program` plus `classify_contract_stmts` answer "is this
+/// shaped like a contract". They do not answer everything the loader does, but
+/// derive names and type-head provenance need only the parsed contract. Before
+/// these checks the buffer lane reported clean for contracts the build refused:
+///
+///   struct P { x: Int } derive(Foo)  -> unknown trait: Foo
+///   struct P { x: Intt }              -> unknown type Intt in field x
+///
+/// Both rules call checker/contract-owned functions: `validate_derives`, the
+/// checker's unknown-type walker, and `contract_type_provenance`. There is no
+/// second builtin-name or import-kind table here for the lanes to disagree on.
+///
+/// Unknown type messages are declaration-granular, matching the materialized
+/// types module's source mapping: `stmt_at` carries the parser's token index and
+/// `starts` converts it to the contract's byte offset. The message itself names
+/// the field or payload, so the reported edit remains actionable.
+fn contract_type_shadow(stmts: Array[Stmt], type_defs: Array[Stmt], opaque_names: Array[(String, Array[String])]) -> Array[String] {
+  let out = contract_types_item_names(type_defs)
+  let provenance = contract_type_provenance(stmts, opaque_names)
+  let mut i = 0
+  while i < Array::length(provenance) {
+    let (name, _) = Array::get(provenance, i)
+    Array::push(out, name)
+    i = i + 1
+  }
+  out
+}
+
+fn contract_decl_shadow(base: Array[String], params: Array[String]) -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(base) {
+    Array::push(out, Array::get(base, i))
+    i = i + 1
+  }
+  let mut pi = 0
+  while pi < Array::length(params) {
+    Array::push(out, Array::get(params, pi))
+    pi = pi + 1
+  }
+  out
+}
+
+fn contract_append_decl_errors(source: String, starts: Array[Int], stmt_at: Array[Int], stmt_index: Int, raw: Array[String], out: Array[String]) -> Unit {
+  let mut off = 0 - 1
+  if stmt_index >= 0 && stmt_index < Array::length(stmt_at) {
+    let tok = Array::get(stmt_at, stmt_index)
+    if tok >= 0 && tok < Array::length(starts) {
+      off = Array::get(starts, tok)
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+  let mut i = 0
+  while i < Array::length(raw) {
+    Array::push(out, located_at_offset(source, off, Array::get(raw, i)))
+    i = i + 1
+  }
+}
+
+fn contract_semantic_errors(source: String, tokens: Array[Token], starts: Array[Int], stmts: Array[Stmt], stmt_at: Array[Int], opaque_names: Array[(String, Array[String])], type_defs: Array[Stmt]) -> Array[String] with Exception {
+  let out = array_empty()
+  let derive_names = contract_derive_name_table(tokens, starts)
+  let derive_taken = contract_taken_flags(derive_names)
+  let base_shadow = contract_type_shadow(stmts, type_defs, opaque_names)
+  let no_defs: Array[TypeDef] = []
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SStruct(_, name, fields, derives, _, params) => {
+        contract_derive_errors(source, derive_names, derive_taken, derives, out)
+        let raw = array_empty()
+        let shadow = contract_decl_shadow(base_shadow, params)
+        let mut fi = 0
+        while fi < Array::length(fields) {
+          let (fname, fte) = Array::get(fields, fi)
+          let where_label = String::concat(String::concat(String::concat("field `", fname), String::concat("` of struct `", name)), "`")
+          report_unknown_type_names_deferred_validation(fte, no_defs, shadow, EnvEmpty, array_empty(), where_label, raw)
+          fi = fi + 1
+        }
+        contract_append_decl_errors(source, starts, stmt_at, i, raw, out)
+      },
+      SEnum(_, name, params, variants, derives) => {
+        contract_derive_errors(source, derive_names, derive_taken, derives, out)
+        let raw = array_empty()
+        let shadow = contract_decl_shadow(base_shadow, params)
+        let mut vi = 0
+        while vi < Array::length(variants) {
+          let (vname, vtypes) = Array::get(variants, vi)
+          let mut ti = 0
+          while ti < Array::length(vtypes) {
+            let where_label = String::concat(String::concat(String::concat("the payload of `", name), String::concat("::", vname)), "`")
+            report_unknown_type_names_deferred_validation(Array::get(vtypes, ti), no_defs, shadow, EnvEmpty, array_empty(), where_label, raw)
+            ti = ti + 1
+          }
+          vi = vi + 1
+        }
+        contract_append_decl_errors(source, starts, stmt_at, i, raw, out)
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// `validate_derives`, with each message anchored on the offending trait name.
+///
+/// The checker's messages are bare (`unknown trait: Foo`), because on the
+/// import lane something downstream locates them. Returned bare from here they
+/// render at the synthetic 0:0 and an editor cannot highlight the derive clause
+/// (Codex review on #2320). The trait name appears verbatim in the buffer, so
+/// the same locator the duplicate uses places it -- first occurrence, since a
+/// derive names it once.
+fn contract_derive_errors(source: String, derive_names: Array[(String, Int)], derive_taken: Array[Bool], derives: Array[String], out: Array[String]) -> Unit {
+  let raw = array_empty()
+  validate_derives(derives, raw)
+  let mut i = 0
+  while i < Array::length(raw) {
+    let msg = Array::get(raw, i)
+    let marker = "unknown trait: "
+    let mi = String::index_of(msg, marker)
+    if mi < 0 {
+      Array::push(out, msg)
+    } else {
+      let sstart = mi + String::length(marker)
+      let send = typecheck_ident_run(msg, sstart)
+      if send <= sstart {
+        Array::push(out, msg)
+      } else {
+        let tname = String::substring(msg, sstart, send)
+        Array::push(out, located_at_offset(source, contract_take_anchor(derive_names, derive_taken, tname), msg))
+      }
+    }
+    i = i + 1
+  }
+}
+
+/// Every trait name appearing inside a `derive(..)` clause, in source order.
+/// One pass, so a clause naming several traits yields several entries and a
+/// second clause continues the list -- both of which a per-query scan missed.
+fn contract_derive_name_table(tokens: Array[Token], starts: Array[Int]) -> Array[(String, Int)] {
+  let out = array_empty()
+  let n = Array::length(tokens)
+  let lim = Array::length(starts)
+  let mut i = 0
+  while i < n {
+    let is_derive = match Array::get(tokens, i) {
+      TDerive => true,
+      _ => false
+    }
+    if is_derive {
+      let opens = match Array::get(tokens, i + 1) {
+        TLParen => true,
+        _ => false
+      }
+      if opens {
+        let mut d = i + 2
+        let mut scanning = true
+        while scanning && d < n {
+          match Array::get(tokens, d) {
+            TRParen => {
+              scanning = false
+            },
+            TIdent(tname) => {
+              if d < lim {
+                Array::push(out, (tname, Array::get(starts, d)))
+              } else {
+                ()
+              }
+              d = d + 1
+            },
+            _ => {
+              d = d + 1
+            }
+          }
+        }
+        i = d
+      } else {
+        i = i + 1
+      }
+    } else {
+      i = i + 1
+    }
+  }
+  out
+}
+
+/// The offset of the next unconsumed entry named `name`, or -1. `taken` marks
+/// entries already spent, so repeated reports of one name walk forward instead
+/// of all landing on the same occurrence.
+fn contract_take_anchor(table: Array[(String, Int)], taken: Array[Bool], name: String) -> Int {
+  let mut i = 0
+  let mut at = 0 - 1
+  while i < Array::length(table) && at < 0 {
+    let (entry_name, entry_off) = Array::get(table, i)
+    if entry_name == name && !Array::get(taken, i) {
+      Array::set(taken, i, true)
+      at = entry_off
+    } else {
+      i = i + 1
+    }
+  }
+  at
+}
+
+/// A `false` for every entry of `table`.
+fn contract_taken_flags(table: Array[(String, Int)]) -> Array[Bool] {
+  let out: Array[Bool] = []
+  let mut i = 0
+  while i < Array::length(table) {
+    Array::push(out, false)
+    i = i + 1
+  }
+  out
+}
+
+/// Byte offset of `name` where it appears INSIDE a `derive(..)` clause, or -1.
+///
+/// The same reasoning: the trait name can occur anywhere else in the buffer,
+/// so the anchor is the occurrence that sits between `derive (` and the
+/// matching `)`.
+
+/// `msg` prefixed with the position at `off`, or bare when `off` is -1 --
+/// degraded, never wrong, the same rule the parse anchor states for itself.
+fn located_at_offset(source: String, off: Int, msg: String) -> String {
+  if off >= 0 {
+    String::concat(offset_line_col_prefix(source, off), msg)
+  } else {
+    msg
+  }
+}
+
+/// One located diagnostic for a contract parse failure.
+fn contract_parse_diagnostic(source: String, tokens: Array[Token], starts: Array[Int], msg: String) -> Array[String] with Exception {
+  if diag_already_located(msg) {
+    return [msg]
+  } else {
+    ()
+  }
+  let off = handle {
+    contract_parse_error_offset(tokens, starts, msg)
+  } with { Exception::Throw(_) => 0 - 1 }
+  if off >= 0 {
+    [String::concat(offset_line_col_prefix(source, off), msg)]
+  } else {
+    // Bare rather than wrong: `locate_type_error` will render this at the
+    // synthetic 0:0, which is what an unlocatable diagnostic already does
+    // everywhere else in this lane.
+    locate_type_error_lines(source, msg)
+  }
+}
+
+/// #2317: anchor a `classify_contract_stmts` rejection on the statement it
+/// rejected.
+///
+/// `parse_contract_program_spans` carries the token index each statement
+/// started at, and `contract_unsupported_stmt_index` asks the classifier which
+/// statement it stops on -- so the position is READ, not searched for. The
+/// three search-based attempts in the #2315 review each produced a
+/// non-monotone predicate that binary search could resolve to valid code.
+///
+/// Falls back to unlocated rather than to a guess, the same as every other
+/// diagnostic this lane cannot place.
+fn contract_classify_diagnostic(source: String, starts: Array[Int], stmts: Array[Stmt], stmt_at: Array[Int], msg: String) -> Array[String] with Exception {
+  if diag_already_located(msg) {
+    return [msg]
+  } else {
+    ()
+  }
+  let idx = contract_unsupported_stmt_index(stmts)
+  if idx >= 0 && idx < Array::length(stmt_at) {
+    let tok = Array::get(stmt_at, idx)
+    if tok >= 0 && tok < Array::length(starts) {
+      return [
+        String::concat(offset_line_col_prefix(source, Array::get(starts, tok)), msg)
+      ]
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+  locate_type_error_lines(source, msg)
+}
+
+/// #2317: anchor a duplicate declaration on the REPEAT, not on the first one.
+///
+/// The offsets are recorded against the RAW declaration list, so the effective
+/// index is mapped through `contract_effective_decl_indices` rather than by
+/// counting name occurrences. Counting is wrong when a FILTERED entry shares
+/// the name -- a dropped legacy `let version: String` beside two effective
+/// `version` declarations makes the count skip one, and the anchor lands on
+/// the declaration the reader wants to keep (Codex review on #2328).
+///
+/// `decl_at` holds TOKEN indices; `starts` converts one to a byte offset.
+///
+/// Falls back to unlocated rather than to a guess, as every other diagnostic
+/// this lane cannot place does.
+fn contract_duplicate_diagnostic(source: String, starts: Array[Int], decls: Array[(String, String)], eff_idx: Array[Int], decl_at: Array[Int], dup_at: Int) -> Array[String] with Exception {
+  let (dup_name, _) = Array::get(decls, dup_at)
+  let msg = String::concat(String::concat("contract declares '", dup_name), "' more than once; remove the repeated declaration (#2317)")
+  if dup_at >= 0 && dup_at < Array::length(eff_idx) {
+    let raw_i = Array::get(eff_idx, dup_at)
+    if raw_i >= 0 && raw_i < Array::length(decl_at) {
+      let tok = Array::get(decl_at, raw_i)
+      if tok >= 0 && tok < Array::length(starts) {
+        return [
+          String::concat(offset_line_col_prefix(source, Array::get(starts, tok)), msg)
+        ]
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+  locate_type_error_lines(source, msg)
+}
+
+fn collect_all_diagnostics_on(input_path: String, source: String, pkg_version: String) -> Array[String] with Exception {
+  if is_contract_ext(input_path) {
+    // A contract LEXES like a program, so it gets the recovering lexer and
+    // every lex error, the same as the branch below (#2314 review). Only the
+    // GRAMMAR above the tokens differs.
+    let (ctokens, cstarts, _cends, clex_offs, clex_msgs) = lex_with_offsets_recovering(source)
+    if Array::length(clex_msgs) > 0 {
+      return located_lex_errors(source, clex_offs, clex_msgs)
+    } else {
+      ()
+    }
+    // `parse_contract_program` throws on the first error -- there is no
+    // recovering contract parser, so a contract with two broken declarations
+    // reports one. That is NOT a loss from this change: the authoritative
+    // import lane (`vibe check`, the verb #2280 fixed) reports one too --
+    // measured, `expected type but got fn` for a contract with two of them,
+    // and unlocated at that. What the recovering STATEMENT parser used to
+    // report here was several errors that were each false about the file,
+    // which is the bug this section exists to remove. Multi-error recovery
+    // for contract grammar is a real improvement, and it belongs in both
+    // lanes at once rather than only in this one.
+    // Parsing is not the whole contract grammar: `parse_contract_program`
+    // accepts statements a contract may not CONTAIN, and the loader rejects
+    // those separately via `classify_contract_stmts` (#729). Discarding the
+    // statements reported `export let x: Int = "s"` as clean here while the
+    // build refused it (Codex review on #2315) -- and the statement-grammar
+    // branch this replaces did catch it, through `check_program`. So run the
+    // classifier the loader runs, on the statements the parse produced.
+    return handle {
+      let (cdecls_raw, copaques, cstmts, cstmt_at, cdecl_at) = parse_contract_program_spans(ctokens)
+      // The classifier is caught SEPARATELY from the parse. Both throw
+      // unlocated messages, but they need different anchors: a parse error
+      // belongs at the token the parser stopped on, a rejected statement at
+      // that statement's own first token (#2317). Letting one handler take
+      // both left the classifier's message at the synthetic 0:0 -- the reader
+      // is told the contract is broken and not told where.
+      let (cls_err, ctype_defs) = handle {
+        let (_raws, type_defs) = classify_contract_stmts(cstmts)
+        ("", type_defs)
+      } with { Exception::Throw(m) => (m, array_empty()) }
+      if cls_err != "" {
+        contract_classify_diagnostic(source, cstarts, cstmts, cstmt_at, cls_err)
+      } else {
+        // #2317: the loader's own effective-declaration list, not a second
+        // reading of it -- `contract_effective_decls` drops exactly what the
+        // build drops (a legacy `let version: String` under a real `version`
+        // directive), so the two lanes cannot disagree about which shapes
+        // count. Measured: declared twice, that one IS accepted by the build.
+        let cdecls = contract_effective_decls(cdecls_raw, pkg_version)
+        let ceff_idx = contract_effective_decl_indices(cdecls_raw, pkg_version)
+        let dup_at = contract_duplicate_decl_index(cdecls)
+        if dup_at >= 0 {
+          contract_duplicate_diagnostic(source, cstarts, cdecls, ceff_idx, cdecl_at, dup_at)
+        } else {
+          contract_semantic_errors(source, ctokens, cstarts, cstmts, cstmt_at, copaques, ctype_defs)
+        }
+      }
+    } with { Exception::Throw(msg) => contract_parse_diagnostic(source, ctokens, cstarts, msg) }
+  } else {
+    ()
+  }
+  let (tokens, starts, _ends, lex_err_offsets, lex_err_msgs) = lex_with_offsets_recovering(source)
+  if Array::length(lex_err_msgs) > 0 {
+    // Report ONLY the lexer errors: the recovered token stream has holes, so
+    // parse/type diagnostics on it would be follow-on noise.
+    //
+    // #997 review (Codex): a handful of lexer throw sites (the `\(expr)`
+    // interpolation-removal message, and #997's own scientific-notation /
+    // incomplete-exponent messages) embed their OWN precise `line L:C: `
+    // prefix directly in the message, because `lex_err_offsets` here always
+    // records the START offset of the enclosing `lex_one_token` call --
+    // wrong for a throw raised partway through a multi-char token (at the
+    // `e`/`E`, not the token's first digit). Blindly prepending the generic
+    // outer `loc` on top of an already-self-located message produced a
+    // doubled/conflicting location (`line 1:9: line 1:18: ...`, confirmed
+    // empirically via `vibe diagnostics` on `123456789e10`). Skip the outer
+    // prefix for messages that already start with "line " -- they're
+    // self-located and the outer offset would only be redundant or wrong.
+    //
+    // This also incidentally collapses a separate pre-existing duplication:
+    // a non-quote-delimited lex error (anything but a broken string/char
+    // literal) resumes ONE character past the failure and retries, so a
+    // multi-digit scientific-notation literal re-throws the SAME underlying
+    // error once per remaining digit (9 identical reports for
+    // `123456789e10`) -- previously each got a DIFFERENT (wrong) outer
+    // offset, defeating `dedupe_diagnostics`'s exact-string dedup below.
+    // With the outer prefix suppressed, all 9 become byte-identical and
+    // collapse to the single correctly-located report.
+    located_lex_errors(source, lex_err_offsets, lex_err_msgs)
+  } else {
+    let (stmts, parse_diags) = parse_program_recovering(tokens, starts, source)
+    if Array::length(parse_diags) > 0 {
+      dedupe_diagnostics(parse_diags)
+    } else {
+      // #3044: read the `let*` spine BEFORE checking -- the check lowers the
+      // parser's `__try_bind` sentinel in place, after which a `let*` is an
+      // ordinary match.
+      let let_star_warns = detect_top_level_let_star(stmts)
+      handle {
+        let _env = check_program(stmts)
+        // #1948: full `vibe check` rejects a missing Show renderer here via
+        // check_linked_file -> expand_interp_stmts. The single-file lane
+        // must run the same pass or it reports clean for the same source.
+        expand_interp_stmts(stmts)
+        // #946(4): the type checker never touches inline-wasm bodies (they're
+        // opaque `%wasm(...)` marker calls until codegen extracts them — see
+        // collect_inline_wasm_fns above), so a clean typecheck says nothing
+        // about whether e.g. a SIMD lane index is in range. Run that codegen-
+        // adjacent validation here too so `compile`'s located inline-wasm
+        // errors aren't invisible to diagnostics.
+        match check_inline_wasm_fns(stmts) {
+          Some(msg) => locate_type_error_lines(source, msg),
+          None => {
+            // #1129 + companion "unbound non-Unit return value" request:
+            // both are warning-level (never affect exit status -- `vibe
+            // diagnostics` "is a report, not a failure", see cli_adapter.vibe),
+            // only surfaced once the program is already known to type-check
+            // and codegen-validate cleanly.
+            let extra = array_empty()
+            let import_warns = detect_unused_imports(stmts)
+            let mut wi = 0
+            while wi < Array::length(import_warns) {
+              let (_, _, wmsg) = Array::get(import_warns, wi)
+              Array::push(extra, locate_type_error(source, String::concat("warning: ", wmsg)))
+              wi = wi + 1
+            }
+            let redundant_import_warns = detect_redundant_namespace_imports(stmts)
+            let mut rwi = 0
+            while rwi < Array::length(redundant_import_warns) {
+              let (_, _, wmsg) = Array::get(redundant_import_warns, rwi)
+              Array::push(extra, locate_type_error(source, String::concat("warning: ", wmsg)))
+              rwi = rwi + 1
+            }
+            let mut lwi = 0
+            while lwi < Array::length(let_star_warns) {
+              let (_, _, wmsg) = Array::get(let_star_warns, lwi)
+              Array::push(extra, locate_type_error(source, String::concat("warning: ", wmsg)))
+              lwi = lwi + 1
+            }
+            // #1340 (ADR-0071): the #1302 "generic effect declarations are
+            // unchecked" declaration-site warning is retired — generic
+            // effects now register their operation signatures (instantiated
+            // per perform/handle site), so the hole it flagged no longer
+            // exists.
+            let (warn_tytab, warn_subst) = check_program_type_table(stmts)
+            let return_warns = detect_unbound_nonunit_returns(stmts, warn_tytab, warn_subst)
+            let mut ri = 0
+            while ri < Array::length(return_warns) {
+              Array::push(extra, locate_type_error(source, String::concat("warning: ", Array::get(return_warns, ri))))
+              ri = ri + 1
+            }
+            extra
+          }
+        }
+      } with { Exception::Throw(msg) => locate_type_error_lines(source, msg) }
+    }
+  }
+}
+
+//# ADR-0068 single-file import scan (#2297)
+//#
+//# Moved here from cli_support.vibe so `collect_all_diagnostics` can include
+//# it. Direction is forced: cli_support imports THIS package, so it cannot be
+//# called in place from here.
+
+export fn checked_warning_stmts(input_path: String, source: String) -> Option[Array[Stmt]] with Exception {
+  let (tokens, starts, _ends) = lex_with_offsets(source)
+  checked_warning_stmts_lexed(input_path, source, tokens, starts)
+}
+
+/// `checked_warning_stmts` over tokens the caller already has for `source`.
+fn checked_warning_stmts_lexed(input_path: String, source: String, tokens: Array[Token], starts: Array[Int]) -> Option[Array[Stmt]] with Exception {
+  if is_contract_ext(input_path) {
+    handle {
+      let (_, _, stmts) = parse_contract_program(tokens)
+      Some(stmts)
+    } with { Exception::Throw(_) => None }
+  } else {
+    let (stmts, parse_diags) = parse_program_recovering(tokens, starts, source)
+    if Array::length(parse_diags) > 0 {
+      None
+    } else {
+      Some(stmts)
+    }
+  }
+}
+
+/// UNSTABLE-surface diagnostics (ADR-0068). One line per import of a package
+/// whose design is not settled, so a reader is told at the keyboard rather
+/// than only in docs/user/reference/stable-surface.md section 6.
+///
+/// `@vibe/concurrent` is the whole list today: `Nursery`, `Task`,
+/// `Sender`/`Receiver`, `TaskGroup::run` / `spawn` / `spawn_suspend`, and the
+/// `Send` rule are ADR-0068, still `proposed`. The `Async` effect itself is
+/// NOT here -- ADR-0012 is accepted and `with Async` ships in builtin
+/// signatures a user can reach (`StdinStream::next`). The unstable part is
+/// the concurrency model built on top, not the row vocabulary.
+
+/// Byte offset of the `import` keyword that introduces `pkg`, or -1.
+///
+/// TOKENS, not text. Three separate review findings came from trying to
+/// recover this position by reading the source as lines, and each fix only
+/// moved the hole (#2277 review):
+///
+///   - "a line starting with `import` that contains the package name" pointed
+///     at `import @vibe/core { .. } // @vibe/concurrent`, a stable import that
+///     merely mentions it in a comment;
+///   - requiring the path to be the token right after `import` ON THAT LINE
+///     then missed `import\n  @vibe/concurrent { .. }`, valid source whose
+///     path is on the next line, and fell back to line 1 -- an unrelated
+///     declaration.
+///
+/// The lexer already answers this exactly, and `token_to_string` reaches it
+/// through the contract without needing the opaque `Token`'s constructors. A
+/// string literal cannot masquerade either: it renders as `TString("...")`,
+/// never `TIdent(...)`.
+/// `cursor` holds the token index to resume from, and is advanced past each
+/// match. Without it every `SImport` for the same package rescanned from zero
+/// and got the FIRST declaration's offset, so a file importing
+/// `@vibe/concurrent` twice with disjoint item lists reported both diagnostics
+/// at the first import's coordinates -- and the second one names a line whose
+/// text the reader would find nothing wrong with (#2277 review).
+///
+/// A single monotonic cursor is enough even across different package paths:
+/// statements are visited in source order, and each declaration's tokens
+/// appear in that same order, so nothing a later statement needs sits behind
+/// the cursor.
+fn unstable_import_offset(tokens: Array[Token], starts: Array[Int], pkg: String, cursor: Array[Int]) -> Int {
+  let n = Array::length(starts)
+  let mut i = Array::get(cursor, 0)
+  while i + 1 < n {
+    // #2386: match the token constructors; rendering every token to a
+    // string and comparing the text allocated once per token of every
+    // file on the checker lane.
+    match Array::get(tokens, i) {
+      TImport => match Array::get(tokens, i + 1) {
+        TIdent(name) => if name == pkg {
+          Array::set(cursor, 0, i + 1)
+          return Array::get(starts, i)
+        } else {
+          ()
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  0 - 1
+}
+
+/// 1-based line of a byte offset. Offset -1 (the token scan found nothing)
+/// falls back to line 1: a miss costs a position, never a verdict.
+/// 1-based BYTE column of an offset (ADR-0108: columns are bytes). An
+/// indented import -- inside an `SModule` block, say -- starts past the line
+/// start, and reporting a hardcoded column 1 pointed the text form, and every
+/// editor consuming the JSON/LSP form, at the indentation instead of the
+/// `import` token (#2277 review). Offset -1 (nothing found) is column 1, which
+/// pairs with the line-1 fallback.
+fn unstable_col_of_offset(source: String, off: Int) -> Int {
+  if off < 0 {
+    1
+  } else {
+    let n = String::length(source)
+    let limit = if off < n {
+      off
+    } else {
+      n
+    }
+    let mut start = 0
+    let mut i = 0
+    while i < limit {
+      if String::byte_at(source, i) == 10 {
+        start = i + 1
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    limit - start + 1
+  }
+}
+
+fn unstable_line_of_offset(source: String, off: Int) -> Int {
+  let n = String::length(source)
+  let mut line = 1
+  let mut i = 0
+  while i < off && i < n {
+    if String::byte_at(source, i) == 10 {
+      line = line + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  line
+}
+
+/// One import's diagnostic, if the package it names is unstable.
+///
+/// Imports only. A re-export of a PACKAGE (`export @vibe/concurrent { .. }`)
+/// would depend on it the same way, but that syntax does not exist: the parser
+/// builds `SReExport` for `TDot`/`TDotDot` paths alone and answers a package
+/// path with "unexpected token in export" (measured). Adding an `SReExport` arm
+/// here would be a branch nothing can reach, which reads as coverage without
+/// being any. Gate 108 pins the boundary from the outside instead, so the day
+/// that syntax lands the gate fails rather than passing silently (#2277 review).
+//# #2289: telling an INHERITED unstable import from one written in the file.
+//#
+//# Ingestion prepends a directory's shared `index.vpkg` imports, so when a
+//# sibling ALSO spells its own import of the same package the ingested
+//# statement list holds two `SImport`s and the physical file holds one. The
+//# offset cursor only ever sees the physical file, so walking in statement
+//# order let the synthetic import -- which is first -- consume the physical
+//# one's offset. The reader was told to delete their own `import` line, and
+//# deleting it revealed a second error for the contract import that had never
+//# been mentioned. A diagnostic has to name the edit that fixes it.
+//#
+//# Order cannot decide this, but COUNT can: the synthetic prefix always comes
+//# first and physical declarations always come last, so of `N` occurrences the
+//# first `N - P` are inherited and the remaining `P` take the physical offsets
+//# in order, exactly as the cursor does today. The three helpers below compute
+//# that deficit; `unstable_decl_diagnostic` spends it.
+
+/// Prefix of the note an INHERITED import carries. Shared between the note
+/// itself and the dedupe below so the two cannot drift: keying the dedupe off a
+/// separately typed substring would silently stop collapsing the day this
+/// wording changed, and the failure mode there is a diagnostic flood rather
+/// than an error, so nothing would catch it.
+export let unstable_inherited_marker: String = "this file inherits `"
+
+/// Index of `needle` in `hay`, or -1. Used for the parallel
+/// `(pkgs, deficits)` arrays and for the report dedupe below.
+export fn unstable_index_of_str(hay: Array[String], needle: String) -> Int {
+  let mut i = 0
+  let mut found = 0 - 1
+  while i < Array::length(hay) {
+    if Array::get(hay, i) == needle {
+      found = i
+      i = Array::length(hay)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// Distinct unstable package paths imported anywhere in `stmts`, `module`
+/// bodies included -- the same shapes `unstable_stmt_diagnostics` visits, so
+/// the two walks cannot disagree about what counts as an import.
+fn unstable_collect_pkgs(stmts: Array[Stmt], pkgs: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SImport(path, _) => if unstable_package_note(path) != "" && unstable_index_of_str(pkgs, path) < 0 {
+        Array::push(pkgs, path)
+      } else {
+        ()
+      },
+      SModule(_, _, body) => unstable_collect_pkgs(body, pkgs),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+/// Occurrences of `pkg` in the INGESTED statements (synthetic + physical).
+fn unstable_count_pkg_stmts(stmts: Array[Stmt], pkg: String) -> Int {
+  let mut i = 0
+  let mut n = 0
+  while i < Array::length(stmts) {
+    let add = match Array::get(stmts, i) {
+      SImport(path, _) => if path == pkg {
+        1
+      } else {
+        0
+      },
+      SModule(_, _, body) => unstable_count_pkg_stmts(body, pkg),
+      _ => 0
+    }
+    n = n + add
+    i = i + 1
+  }
+  n
+}
+
+/// Occurrences of `pkg` in the PHYSICAL file's tokens.
+///
+/// Driven by `unstable_import_offset` over a private cursor rather than by a
+/// second copy of its `TImport` / `TIdent(pkg)` test. A copy would be a
+/// proxy: the count decides which occurrences are inherited, and if the two
+/// matchers ever disagreed about a spelling -- `import\t@vibe/concurrent` is
+/// exactly the shape that broke an earlier version of this scan -- the
+/// deficit would be off by one and a physical import would be reported as
+/// inherited, silently. Sharing the matcher makes that impossible instead of
+/// unlikely.
+/// Do the tokens carry `import` of ANY unstable package? The same
+/// `TImport` / `TIdent(pkg)` shape `unstable_import_offset` matches, with
+/// the package test `unstable_collect_pkgs` applies to a parsed import, so
+/// the three cannot disagree about what counts.
+fn unstable_tokens_import_any(tokens: Array[Token], starts: Array[Int]) -> Bool {
+  let n = Array::length(starts)
+  let mut i = 0
+  let mut found = false
+  while !found && i + 1 < n {
+    match Array::get(tokens, i) {
+      TImport => match Array::get(tokens, i + 1) {
+        TIdent(name) => if unstable_package_note(name) != "" {
+          found = true
+        } else {
+          ()
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn unstable_count_pkg_tokens(tokens: Array[Token], starts: Array[Int], pkg: String) -> Int {
+  let probe = [0]
+  let mut count = 0
+  while unstable_import_offset(tokens, starts, pkg, probe) >= 0 {
+    count = count + 1
+  }
+  count
+}
+
+fn unstable_decl_diagnostic(path: String, source: String, tokens: Array[Token], starts: Array[Int], out: Array[String], cursor: Array[Int], pkgs: Array[String], deficits: Array[Int]) -> Unit {
+  let note = unstable_package_note(path)
+  if note != "" {
+    // #2289: spend the inherited occurrences first. Each one reports with no
+    // location, which is what makes the `where_note` below say the import is
+    // inherited instead of pointing at a line the reader would find their own
+    // import on.
+    let slot = unstable_index_of_str(pkgs, path)
+    let inherited = slot >= 0 && Array::get(deficits, slot) > 0
+    let off = if inherited {
+      Array::set(deficits, slot, Array::get(deficits, slot) - 1)
+      0 - 1
+    } else {
+      unstable_import_offset(tokens, starts, path, cursor)
+    }
+    let where_note = if off < 0 {
+      String::concat(unstable_inherited_marker, String::concat(path, "` from its directory's index.vpkg (it is not written here). "))
+    } else {
+      ""
+    }
+    let line = unstable_line_of_offset(source, off)
+    let col = unstable_col_of_offset(source, off)
+    // `line L:C:` -- the numeric prefix every other diagnostic in the
+    // tree uses, and the ONLY spelling `lsp_parse_diag_line` accepts. A
+    // readable `:col C:` was measured to make the JSON form fall back to
+    // column 1 (`lsp_parse_uint_or("col 3", 1)`), so the text and JSON
+    // answers disagreed about where to put the cursor (#2277 review).
+    Array::push(out, String::concat("line ", String::concat(Int::to_string(line), String::concat(":", String::concat(Int::to_string(col), String::concat(": ", String::concat(where_note, note)))))))
+  } else {
+    ()
+  }
+}
+
+fn unstable_stmt_diagnostics(stmts: Array[Stmt], source: String, tokens: Array[Token], starts: Array[Int], out: Array[String], cursor: Array[Int], pkgs: Array[String], deficits: Array[Int]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SImport(path, _) => unstable_decl_diagnostic(path, source, tokens, starts, out, cursor, pkgs, deficits),
+      // An import nested in a `module` block is still this file's dependency.
+      SModule(_, _, body) => unstable_stmt_diagnostics(body, source, tokens, starts, out, cursor, pkgs, deficits),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+/// The gate itself, over ONE file's own bytes, read off the PARSED import
+/// statements rather than the line spelling.
+///
+/// The first version matched `String::starts_with(line, "import ")` and sliced
+/// a fixed 7 bytes, so `import\t@vibe/concurrent { .. }` was skipped entirely
+/// and `import  @vibe/concurrent { .. }` (two spaces) yielded an empty package
+/// name -- both valid source the lexer accepts, and both a silent bypass
+/// (#2277 review). An opt-in boundary that whitespace can cross is not one.
+///
+/// Only the ENTRY file is scanned: a transitive dependency's own imports are
+/// its author's choice, not this file's, and reporting them would be noise
+/// nobody here can act on. A source that does not parse yields nothing -- it
+/// cannot compile either, and the parse error is what the reader needs first.
+
+/// Detection and LOCATION come from different texts on purpose.
+///
+/// `detected` is the INGESTED snapshot -- what the build compiles. `located` is
+/// the file's own bytes. They differ when a directory's `index.vpkg` declares a
+/// shared import that a sibling entry inherits without spelling it: the import
+/// is real, the build rejects it, and it appears nowhere in the file. Scanning
+/// the physical source for the VERDICT let `vibe check` call such an entry
+/// clean while the build refused it -- the two-verbs-disagree defect this gate
+/// exists to prevent (#2277 review).
+///
+/// So the verdict is the ingested text's, and the position is the physical
+/// file's when the import is physically there. When it is not, there is no
+/// honest line to give, and the note says where the import actually comes from
+/// instead of pointing at a line the reader would find nothing on (#1445).
+export fn unstable_import_diagnostics(input_path: String, detected: String, located: String) -> Array[String] with Exception {
+  let out = array_empty()
+  let (tokens, starts, _ends) = lex_with_offsets(located)
+  // #2386: when the ingested text IS the physical text, the statements the
+  // parse would yield come from exactly these tokens, so a physical token
+  // scan that finds no `import` of an unstable package proves the parse
+  // would report nothing -- and the compiler's own sources reach here by
+  // MENTIONING the package in comments (2.4 MB of them, each lexed twice and
+  // parsed per compile before this). The same tokens also serve the parse
+  // when it is needed, instead of lexing the same text a second time. A
+  // text that ingestion changed (an inherited import, a contract facade)
+  // keeps the full path: its statements are not the physical tokens.
+  let same_text = detected == located
+  let stmts_opt = if same_text {
+    if unstable_tokens_import_any(tokens, starts) {
+      checked_warning_stmts_lexed(input_path, detected, tokens, starts)
+    } else {
+      None
+    }
+  } else {
+    checked_warning_stmts(input_path, detected)
+  }
+  match stmts_opt {
+    Some(stmts) => {
+      // #2289: count before walking. The deficit per package is
+      // (imports in the INGESTED statements) - (imports in the PHYSICAL
+      // tokens); the walk below spends it on the leading occurrences, which
+      // are the synthetic ones ingestion prepended.
+      let pkgs: Array[String] = array_empty()
+      let deficits: Array[Int] = array_empty()
+      unstable_collect_pkgs(stmts, pkgs)
+      let mut pi = 0
+      while pi < Array::length(pkgs) {
+        let pkg = Array::get(pkgs, pi)
+        let declared = unstable_count_pkg_stmts(stmts, pkg)
+        let physical = unstable_count_pkg_tokens(tokens, starts, pkg)
+        Array::push(deficits, if declared > physical {
+          declared - physical
+        } else {
+          0
+        })
+        pi = pi + 1
+      }
+      unstable_stmt_diagnostics(stmts, located, tokens, starts, out, [0], pkgs, deficits)
+    },
+    None => ()
+  }
+  out
+}

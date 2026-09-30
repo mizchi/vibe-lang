@@ -72,7 +72,8 @@ fi
 # live step, so the test breaks if the rule stops being enforced rather than if
 # some synthetic sample drifts.
 lanecopy="$tmp/mid_run.sh"
-cp tests/gates/mid/run.sh "$lanecopy"
+lane_source="tests/gates/mid/retired_v128_intrinsics_stay_retired.sh"
+cp "$lane_source" "$lanecopy"
 python3 - "$lanecopy" <<'PYEOF'
 import sys
 p = sys.argv[1]
@@ -81,13 +82,13 @@ old = '"$vdir/retired_v128.vibe" "$vdir/v128.wasm" __no_entry__ >"$vdir/out.txt"
 assert s.count(old) == 1, "the guarded step this Red case removes has moved"
 open(p, 'w').write(s.replace(old, old[:-len(" || true")], 1))
 PYEOF
-cp tests/gates/mid/run.sh "$tmp/mid_run.orig.sh"
-cp "$lanecopy" tests/gates/mid/run.sh
+cp "$lane_source" "$tmp/mid_run.orig.sh"
+cp "$lanecopy" "$lane_source"
 set +e
 bash scripts/check_gate_registry.sh >/tmp/gate_registry_test.out 2>&1
 unguarded_rc=$?
 set -e
-cp "$tmp/mid_run.orig.sh" tests/gates/mid/run.sh
+cp "$tmp/mid_run.orig.sh" "$lane_source"
 if [ "$unguarded_rc" -eq 0 ]; then
   echo "FAIL: an unguarded compile-then-check step was accepted" >&2
   fail=1

@@ -58,7 +58,13 @@ known_lane() {
 
 lane_sources() {
   local lane="$1"
-  printf '%s\n' "$(gate_lane_script "$lane")"
+  local script child
+  script="$(gate_lane_script "$lane")"
+  printf '%s\n' "$script"
+  # Lane entrypoints explicitly source ordered sections in the same shell.
+  while IFS= read -r child; do
+    printf '%s\n' "$ROOT_DIR/$child"
+  done < <(sed -n 's/^source "\$ROOT_DIR\/\(tests\/gates\/[^" ]*\)"$/\1/p' "$script")
   if [ "$lane" = "bootstrap" ]; then
     printf '%s\n' "$ROOT_DIR/tests/gates/bootstrap/preflight.sh"
   fi

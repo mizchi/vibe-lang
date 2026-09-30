@@ -1,0 +1,1102 @@
+// lib/@vibe/compiler/checker/checker.vibe — closure capture row.
+
+import @vibe/compiler/checker/annotations {
+  collect_formal_kind_uses,
+  collect_hkt_related_formals,
+  collect_hkt_related_formals_in_type,
+  fapp_applied_marker_prefix,
+  fapp_formal_marker_prefix,
+  fapp_unapplied_marker_prefix,
+  formal_application_error as annotations_formal_application_error,
+  formals_contain_source_name,
+  report_formal_applications_across as annotations_report_formal_applications_across,
+  report_kinded_formal_applications,
+  report_map_key_types as annotations_report_map_key_types,
+  report_mixed_kind_let_annotation,
+  report_one_type_argument_kind
+}
+
+import @vibe/compiler/checker/type_relations {
+  check_assignable as type_relations_check_assignable,
+  check_assignable_for as type_relations_check_assignable_for,
+  check_assignable_set_end as type_relations_check_assignable_set_end,
+  detect_narrowed_generic_mismatch_for,
+  head_kind,
+  row_labels,
+  type_fully_concrete,
+  type_is_ground
+}
+
+import @vibe/compiler/checker/resume {
+  arm_first_bare_tail,
+  arm_refs_resume_value,
+  arm_tail_all_return,
+  pat_binds_resume as resume_pat_binds_resume,
+  reject_resume_in_error_arm,
+  reject_resume_outside_handler as resume_reject_resume_outside_handler,
+  resume_walk_bind_pat
+}
+
+import @vibe/compiler/checker/diagnostics {
+  attach_unlocated_decl_name_marker as diagnostics_attach_unlocated_decl_name_marker, off_marker, off_marker_len
+}
+
+import @vibe/compiler/core {
+  Expr,
+  Pat,
+  Stmt,
+  Subst,
+  Type,
+  TypeDef,
+  TypeEnv,
+  TypeExpr,
+  apply_type_constructor,
+  array_receiver_reads,
+  builtin_value_form_arity,
+  canonical_builtin_name,
+  collect_tvars,
+  compiler_owned_type_arity,
+  env_bind,
+  env_bind_mut,
+  env_cache_binding,
+  env_has_reexport_surface_binding,
+  env_lookup,
+  env_name_index_at,
+  env_name_index_length,
+  env_type_defs,
+  exception_effect_kind,
+  exception_effect_labels_equal,
+  exception_kind_resolution,
+  exception_kind_resolution_count,
+  exception_kind_resolution_record,
+  exception_kind_resolutions_clear,
+  exception_label_kind,
+  exception_row_kinds,
+  exception_row_resolved,
+  expr_child_at,
+  expr_children,
+  expr_children_pop,
+  expr_children_push,
+  expr_children_top,
+  find_enum_typedef,
+  find_typedef,
+  fresh_var,
+  generalize,
+  generalize_except,
+  hkt_apply_ctor,
+  instantiate,
+  is_alias_constructor,
+  is_builtin_type_name,
+  is_exception_effect_name,
+  is_exception_label,
+  is_exception_throw_handler_name,
+  is_exception_throw_operation,
+  is_hkt_app,
+  let_rec_binding_anchor,
+  refine_trait_bounds_from_receiver,
+  registry_builtin_arity,
+  registry_builtin_param_type,
+  registry_builtin_scheme,
+  resolve_builtin,
+  resolve_type_alias_params,
+  resolve_type_constructor_args,
+  strip_published_formal_suffixes,
+  subst_add_bound,
+  subst_apply,
+  subst_apply_except,
+  subst_bounds_for,
+  subst_lookup,
+  trait_decl_params,
+  trait_defined,
+  trait_method_sig_binders_deep,
+  trait_method_sig_deep,
+  trait_supers,
+  type_constructor_name,
+  type_implements_trait,
+  type_name_has_iterator_impl,
+  type_to_string,
+  typed_lowering_arg_offset,
+  types_equal,
+  unify
+}
+
+import @vibe/ast {
+  impl_encode_name,
+  impl_method_owner_head,
+  index_site_offset,
+  is_builtin_ref_offset,
+  trait_ref_args,
+  trait_ref_from_key,
+  trait_ref_key,
+  trait_ref_name,
+  type_param_arity,
+  type_param_name
+}
+
+import @vibe/parser {
+  lex, parse_type, print_type_expr
+}
+
+import ./builtins.vibe {
+  lookup_builtin
+}
+
+import @vibe/core {
+  array_empty, str_lt, struct MutMap
+}
+
+import ./checker_exhaustive.vibe {
+  match_nonexhaustive_witness
+}
+
+import ./checker_pattern.vibe {
+  check_pattern, pat_has_unsupported_or_binding
+}
+
+import ./checker_resolve.vibe {
+  collect_unknown_type_names,
+  collect_unknown_type_names_regionwise,
+  is_wellknown_nominal_head,
+  resolve_type_expr,
+  resolve_type_expr_shadowed,
+  subst_type_params
+}
+
+import ./checker_spawnable.vibe {
+  check_spawnable_captures, closure_bare_callee_names, closure_capture_facts, closure_free_names, spawn_caps_marker, spawn_safe_marker
+}
+
+import ./builtin_call_arms.vibe {
+  builtin_call_arm, builtin_resolves_at
+}
+
+import ./checker_effects.vibe {
+  row_items_top_level, throw_payload_site_key
+}
+
+import ./checker_escape.vibe {
+  diag_report_into, expr_free_in, mut_binding_escapes
+}
+
+import ./checker_builtin_arg_head_rest.vibe {
+  collect_internal_provenance, is_array_builder_ty, is_future_cell_ty, is_region_tagged_ty, ty_has_open_array_elem
+}
+
+import ./checker_eq_unbounded_formal_msg.vibe {
+  env_has_active_region
+}
+
+import ./checker_merge_capture_provenance.vibe {
+  append_row_label, checker_string_array_has, esc_int_has, escape_tvars_into, expression_aliases_outer_binding, type_mentions_named
+}
+
+import ./checker_throw_kind_of_type.vibe {
+  railway_expr_off
+}
+
+/// Source anchor for a function BODY's implicit return -- the value the return
+/// type is checked against. `railway_expr_off` walks into an `ESeq`'s FIRST
+/// arm, which is the right anchor for a desugar operand but the wrong one here:
+/// in `{ setup(); compute() }` the return value is `compute()`, so a diagnostic
+/// anchored on `setup()` would point at a line that is not the problem. Descend
+/// to the tail first, then reuse the ordinary walk.
+///
+/// A statement body is not only `ESeq`: `let`/`let mut` parse as an `ELet`
+/// whose THIRD field is the rest of the block, so `{ let _ = setup(); mk() }`
+/// is `ELet(_, setup(), mk(), _)` and stopping at `ESeq` alone would miss the
+/// tail entirely (and, via railway_expr_off's ELet-less fallback, report no
+/// location at all).
+export fn tail_expr_off(e: Expr) -> Int {
+  match e {
+    ESeq(_, rest) => tail_expr_off(rest),
+    ELet(_, _, rest, _) => tail_expr_off(rest),
+    ELetRec(_, _, rest) => tail_expr_off(rest),
+    ELetMut(_, _, rest, _) => tail_expr_off(rest),
+    _ => railway_expr_off(e)
+  }
+}
+
+/// #1947: classify a two-arm match as a lowered railway. The pre-check
+/// desugar (`lower_try_op` / `lower_try_bind`) is the only producer of
+/// these shapes. Origin markers, not source shape: `__try_v` is postfix
+/// `?`, `__try_none` is `let*`. A user-written
+/// `match o { Some(v) => ..., None => None }` is never a railway, even
+/// when `compile_source` used `parse_program` and every offset is -1.
+///   0 = not a railway desugar
+///   1 = postfix `?`  (`Some(__try_v) => __try_v, None => return None`)
+///   2 = `let*`       (`Some(name) => rest, None => __try_none`)
+fn railway_pat_none(p: Pat) -> Bool {
+  match p {
+    PCtor(n, args) => n == "None" && Array::length(args) == 0,
+    _ => false
+  }
+}
+
+fn railway_pat_is_some_try_v(p: Pat) -> Bool {
+  match p {
+    PCtor(n, args) => n == "Some" && Array::length(args) == 1 && match Array::get(args, 0) {
+      PBind(name) => name == "__try_v",
+      _ => false
+    },
+    _ => false
+  }
+}
+
+fn railway_pat_is_some_bind(p: Pat) -> Bool {
+  match p {
+    PCtor(n, args) => n == "Some" && Array::length(args) == 1 && match Array::get(args, 0) {
+      PBind(_) => true,
+      _ => false
+    },
+    _ => false
+  }
+}
+
+export fn railway_is_ident(e: Expr, want: String) -> Bool {
+  match e {
+    EIdent(n, _) => n == want,
+    _ => false
+  }
+}
+
+/// `let*` lowers the failure arm to `__try_none` (see `lower_try_bind`).
+/// Type it as the prelude `None` constructor; the name itself is only an
+/// origin marker.
+export fn railway_ident_lookup_name(name: String) -> String {
+  if name == "__try_none" {
+    "None"
+  } else {
+    name
+  }
+}
+
+/// #2433: a builtin ident is a first-class value iff it is NOT a function.
+///
+/// #2274 keyed this on the linear FUNC-TABLE row (`in_linear`), on the reading
+/// that a builtin with a real emitted body has a pointer to take. It does not.
+/// The two tables are different tables: the func table maps a builtin name to
+/// its function INDEX for direct `call`, while the value produced for a
+/// first-class function is an INDIRECT-table slot, and the indirect table is
+/// populated from user functions and lambdas only (`linked_compile.vibe`:
+/// `tei < num_user_funcs` -> `func_offset + tei`, else a lambda). Builtin
+/// bodies sit in the generated-helper index block BELOW `func_offset`, so
+/// `table_slot = fidx - ctx.func_offset` is negative for every one of them,
+/// and they carry no closure-env parameter, so the `closure_type_base + n`
+/// signature would not match even if a slot existed.
+///
+/// Measured on stage2 before this change, all three failure modes with no
+/// source location: `let f = eq` emitted a module the runtime rejected
+/// (`invalid signature index: 11`, the arity-2 closure type nothing else in
+/// the program registered); with a same-arity lambda present so the type
+/// existed, `let f = eq` and `let h = String::length` -- an `in_linear` row,
+/// so #2274 called it a value -- both trapped with `table index is out of
+/// bounds`; `let g = not` reached codegen as an unresolved ident and asked the
+/// user to report a compiler bug.
+///
+/// So the honest predicate is the type, not the registration: a builtin typed
+/// `CtFn` has no value form on any lane. Everything else does and is
+/// unaffected -- a nullary constructor (`None`, and a user enum's `Red`) is
+/// not a `CtFn` and lowers through the `ctor_table` arm of `compile_expr`,
+/// which is why #2274's bare-name exemption existed and why dropping that
+/// exemption is safe now that the test is the type.
+/// #1733 / #2442 is the exception, and it is not a taste call: both lanes
+/// materialize a PURE builtin as an eta-expanded LAMBDA
+/// (`builtin_value_closure`), which is an ordinary closure with an ordinary
+/// table slot, so those really are values.
+/// `builtin_value_form_arity` in `core/builtin_name.vibe` is the single source
+/// of truth both lanes read, so this cannot drift from the lowering.
+///
+/// Two conditions, and each is decided by the side that owns it. The EFFECT
+/// row is read off the type the checker itself inferred, because that is the
+/// authority for effects: an effectful builtin materialized as a value would
+/// carry its row on the binding's function type and would have to be demanded
+/// again at the indirect call, and until that exists `let f = Fs::read_file`
+/// launders authority (ADR-0075/0084/0088). The ARITY must AGREE between the
+/// registry and that same type -- a value form is emitted with the registry's
+/// parameter count, so granting one the checker types differently would move a
+/// check-time error into a runtime signature mismatch.
+export fn builtin_ident_is_value(name: String, t: Type) -> Bool {
+  match t {
+    CtFn(params, _, eff) => match eff {
+      Some(_) => false,
+      None => builtin_value_form_arity(name) == Array::length(params)
+    },
+    _ => true
+  }
+}
+
+/// #2451: the TYPE a builtin value form binds -- the registry row instantiated
+/// with fresh variables for this occurrence, when the row has any.
+///
+/// `lookup_builtin` answers with the ERASED row (every open position back to
+/// `CtUnknown`), which is right for every other consumer and useless here: it
+/// says nothing about which positions are the same type, so a value form typed
+/// from it accepts anything. Measured before this: `let get = Array::get` then
+/// `let s: String = get([1], 0)` checked CLEAN and printed garbage, while the
+/// direct `Array::get([1], 0)` was correctly rejected with
+/// `expected String, got Int`.
+///
+/// Instantiating HERE and not generalizing the binding is deliberate: the
+/// binding is monomorphic, which is what an unannotated `let` gets for a user
+/// function too. It is enough for soundness -- the argument fixes the variable
+/// and the annotation is then checked against it -- and it keeps the value
+/// form from being MORE polymorphic than anything else a `let` can hold.
+///
+/// A row with no variables (`String::concat`) instantiates to itself, so this
+/// is a no-op for every concrete builtin.
+/// #3149: a branch typed `Option[?a]` with the payload still a VARIABLE
+/// (a `None`) takes the payload of a sibling branch typed `Option[..]`. The
+/// branch-agreement checks for `if` / `match` are ground-gated (a `match`
+/// only cross-checks arms at all when its first arm is a scalar), so without
+/// this `match f { true => None, false => Some(xs) }` kept the `None` arm's
+/// open payload and the value's real type was lost. Refinement only: a
+/// failed unification leaves the substitution as it was and reports nothing.
+export fn refine_open_option_branch(result: Type, other: Type, s: Subst) -> Subst {
+  let open_payload = match subst_apply(s, result) {
+    CtOption(inner) => match inner {
+      CtVar(_) => true,
+      _ => false
+    },
+    _ => false
+  }
+  let other_option = match subst_apply(s, other) {
+    CtOption(_) => true,
+    _ => false
+  }
+  if open_payload && other_option {
+    match unify(result, other, s) {
+      Some(s2) => s2,
+      None => s
+    }
+  } else {
+    s
+  }
+}
+
+export fn builtin_ident_value_type(name: String, erased: Type, c: Int) -> (Type, Int) {
+  match registry_builtin_scheme(canonical_builtin_name(name)) {
+    Some(scheme) => {
+      let (ty, c1, _bounds) = instantiate(scheme, c)
+      (ty, c1)
+    },
+    // #3149: `None` is `Option[?a]` with a fresh `?a` per occurrence, not
+    // `Option[unknown]`: the unknown absorbed every unification, so a `match`
+    // or `if` whose first branch was `None` typed as `Option[unknown]` and
+    // lost the other branch's type (`Array::length(callee_effs)` in
+    // checker_effects.vibe reached its Array reader with no type).
+    None => if name == "None" {
+      (CtOption(CtVar(c)), c + 1)
+    } else {
+      (erased, c)
+    }
+  }
+}
+
+fn call_only_builtin_param_list(n: Int) -> String {
+  if n <= 0 {
+    ""
+  } else if n == 1 {
+    "a"
+  } else if n == 2 {
+    "a, b"
+  } else if n == 3 {
+    "a, b, c"
+  } else {
+    "a, b, c, ..."
+  }
+}
+
+/// Actionable diagnostic for a call-only builtin used as a value. Names the
+/// call form and the wrap form so the reader does not have to invent either,
+/// and so this is never the codegen ICE that asked them to file a compiler bug.
+export fn call_only_builtin_ident_error(name: String, ty: Type, ident_off: Int) -> String {
+  let n = match ty {
+    CtFn(params, _, _) => Array::length(params),
+    _ => 0
+  }
+  let params = call_only_builtin_param_list(n)
+  let call_form = if n <= 0 {
+    String::concat(name, "()")
+  } else {
+    String::concat(name, String::concat("(", String::concat(params, ")")))
+  }
+  let wrap_form = if n <= 0 {
+    String::concat("() -> ", call_form)
+  } else {
+    String::concat("(", String::concat(params, String::concat(") -> ", call_form)))
+  }
+  let head = String::concat(String::concat("`", name), "` is a builtin operation, not a value")
+  let why = builtin_value_form_refusal_reason(name, ty)
+  let how = String::concat(" -- call it (`", String::concat(call_form, String::concat("`), or wrap it (`", String::concat(wrap_form, "`) to pass it as a function"))))
+  String::concat(head, String::concat(why, String::concat(how, off_marker_len(ident_off, String::length(name)))))
+}
+
+/// #2442: say WHY this name has no value form, so the reader can tell a
+/// permanent boundary from a gap. Three reasons, and they call for different
+/// things: an effect row means the wrap form is the ANSWER (it puts the call
+/// back at a site where the row is checked against the caller's capability),
+/// while the other two mean the wrap form is a workaround for something the
+/// compiler cannot express yet.
+///
+/// The fourth reason is gone. An UNQUALIFIED name used to be refused here
+/// because the lambda-site planner had no scope and could not tell a local of
+/// the same name apart; #2442 gave it one (and moved the value-form arm below
+/// the constants and the constructors in both backends), so a bare name is now
+/// judged by its registry row like every other.
+fn builtin_value_form_refusal_reason(name: String, ty: Type) -> String {
+  let canonical = canonical_builtin_name(name)
+  match ty {
+    CtFn(_, _, eff) => match eff {
+      Some(row) => String::concat(" (it performs `", String::concat(row, "`, and an effect row is only checked where the call is written)")),
+      None => if registry_builtin_arity(canonical) >= 0 {
+        // #2451: a row whose openness is a real type VARIABLE says which
+        // positions are the same type and now HAS a value form, so what is
+        // left here is a position still spelled as an unconstrained unknown.
+        //
+        // The message must NOT say which KIND of unknown it is (Codex review
+        // on #2453). The registry distinguishes an internal handle
+        // (`reg_opaque`, `Map::get`'s map) from a merely-unwritten
+        // relationship (`reg_any`, the `FixedArray::*` rows) in its SOURCE
+        // only -- both produce `CtUnknown`, which is exactly what that file's
+        // own comment says is "documentation the type system cannot express".
+        // An earlier spelling here claimed "an internal handle" for every such
+        // row, which reported `FixedArray::get` as something it is not. A
+        // diagnostic that names a cause the compiler cannot actually observe
+        // is worse than one that names the class.
+        " (its signature has a position the compiler leaves open -- an internal handle, or an element type it does not yet relate to the result -- so a value form could not say what it takes or returns)"
+      } else {
+        " (the compiler has no registry row for it, so it has no arity to expand)"
+      }
+    },
+    _ => ""
+  }
+}
+
+fn railway_is_return_none(e: Expr) -> Bool {
+  match e {
+    EReturn(inner) => railway_is_ident(inner, "None"),
+    _ => false
+  }
+}
+
+export fn railway_kind_from_match(scrutinee: Expr, arms: Array[(Pat, Expr)]) -> Int {
+  if Array::length(arms) != 2 {
+    0
+  } else {
+    let (p0, b0) = Array::get(arms, 0)
+    let (p1, b1) = Array::get(arms, 1)
+    if !railway_pat_none(p1) {
+      0
+    } else if railway_pat_is_some_try_v(p0) && railway_is_ident(b0, "__try_v") && railway_is_return_none(b1) {
+      1
+    } else if railway_pat_is_some_bind(p0) && railway_is_ident(b1, "__try_none") {
+      2
+    } else {
+      0
+    }
+  }
+}
+
+fn railway_none_off_from_arms(arms: Array[(Pat, Expr)]) -> Int {
+  if Array::length(arms) < 2 {
+    0 - 1
+  } else {
+    let (_, b1) = Array::get(arms, 1)
+    match b1 {
+      EReturn(inner) => railway_expr_off(inner),
+      _ => railway_expr_off(b1)
+    }
+  }
+}
+
+fn type_is_option_head(t: Type) -> Bool {
+  match t {
+    CtOption(_) => true,
+    CtNamed(n, _) => n == "Option",
+    _ => false
+  }
+}
+
+export fn type_is_concrete_non_option(t: Type) -> Bool {
+  if type_is_option_head(t) {
+    false
+  } else {
+    match t {
+      CtUnknown => false,
+      CtVar(_) => false,
+      CtNamed(_, _) => type_fully_concrete(t),
+      _ => true
+    }
+  }
+}
+
+export fn railway_origin_env(env: TypeEnv, kind: Int) -> TypeEnv {
+  if kind == 1 {
+    env_bind(env, "__railway_q__", CtUnit)
+  } else if kind == 2 {
+    env_bind(env, "__railway_star__", CtUnit)
+  } else {
+    env
+  }
+}
+
+fn railway_op_spelling(kind: Int) -> String {
+  if kind == 1 {
+    "?"
+  } else {
+    "let*"
+  }
+}
+
+export fn railway_anchor_off(arms: Array[(Pat, Expr)], scrutinee: Expr) -> Int {
+  let none_off = railway_none_off_from_arms(arms)
+  if none_off >= 0 {
+    none_off
+  } else {
+    railway_expr_off(scrutinee)
+  }
+}
+
+fn railway_wrong_context_msg(kind: Int, off: Int) -> String {
+  let op = railway_op_spelling(kind)
+  let head = String::concat("`", String::concat(op, "` requires an Option-returning function; change the return type to Option[...], or handle the Option with `match` instead of `"))
+  String::concat(head, String::concat(op, String::concat("`", off_marker(off))))
+}
+
+export fn railway_not_option_msg(kind: Int, got: String, off: Int) -> String {
+  let op = railway_op_spelling(kind)
+  let head = String::concat("`", String::concat(op, "` unwraps an Option; this expression is "))
+  let mid = String::concat(got, " — handle it with `match`, or only use `")
+  let tail = String::concat(op, String::concat("` on an Option value", off_marker(off)))
+  String::concat(head, String::concat(mid, tail))
+}
+
+/// #3044: `let*` leaves its enclosing BLOCK, so in a function that does not
+/// return an Option the edit depends on where the block sits, which this
+/// check cannot see: a nested block wraps its own result, the function body
+/// needs the function to return an Option (Codex on #3061).
+fn railway_let_star_block_msg(off: Int) -> String {
+  String::concat("`let*` leaves its enclosing block with None, so that block must produce an Option — wrap the block's result in Some(...); if the block is the function body, make the function return Option[...] and write `let x = e?` instead", off_marker(off))
+}
+
+fn railway_wrap_some_msg(off: Int) -> String {
+  String::concat("`let*` short-circuits with None, so the rest of the block must also produce an Option — wrap the result in Some(...)", off_marker(off))
+}
+
+export fn report_railway_after_arms(kind: Int, env: TypeEnv, s: Subst, result_ty: Type, arms: Array[(Pat, Expr)], scrutinee: Expr, errors: Array[String]) -> Unit {
+  let off = railway_anchor_off(arms, scrutinee)
+  if kind == 1 {
+    match env_lookup(env, "__return__") {
+      Some(rt) => if type_is_concrete_non_option(subst_apply(s, rt)) {
+        Array::push(errors, railway_wrong_context_msg(1, off))
+      } else {
+        ()
+      },
+      None => ()
+    }
+  } else if kind == 2 {
+    // #3044: `let*` leaves its enclosing BLOCK, not the function, so an
+    // Option-valued block inside a function returning `Int` is legal -- the
+    // reason `let*` exists next to `?`. Only a block whose own value is not an
+    // Option is a railway error here; which message fits depends on whether
+    // the function could return the `None` either. A top-level block that is
+    // an Option in a non-Option function is the ordinary return mismatch.
+    if type_is_concrete_non_option(subst_apply(s, result_ty)) {
+      let fn_not_option = match env_lookup(env, "__return__") {
+        Some(rt) => type_is_concrete_non_option(subst_apply(s, rt)),
+        None => false
+      }
+      if fn_not_option {
+        Array::push(errors, railway_let_star_block_msg(off))
+      } else {
+        Array::push(errors, railway_wrap_some_msg(off))
+      }
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+}
+
+/// The free variables of a value, each RESOLVED through the substitution.
+///
+/// Collecting from `subst_apply(s, ty)` is not the same thing and is wrong for
+/// a scheme: `subst_apply` and `subst_apply_except` BOTH return a `CtForAll`
+/// untouched (`CtForAll(_, _, _) => ty` in core/types.vibe), so a scheme's free
+/// variable comes back with the id it was written with. Codex P1 on #2460
+/// found what that costs: unify a captured slot `k` with another open slot `j`
+/// -- `link(xs, ys)` for a `fn link[T](a: Array[T], b: Array[T])` -- BEFORE
+/// `let g2 = g`, and the alias's type resolves to `j` while the scan still
+/// reports the stale `k`. `generalize_except` then quantifies `j`, and the
+/// captured array takes an Int and a String again with no diagnostic.
+/// Measured: clean before this, rejected after, with the same program minus
+/// the `link` call rejected either way.
+///
+/// So collect the ids as WRITTEN, then resolve each one. An unbound id
+/// resolves to itself, and for a non-scheme type this is exactly collecting
+/// from the zonked type.
+fn escape_tvars_zonked_into(ty: Type, s: Subst, out: Array[Int]) -> Unit {
+  let raw = array_empty()
+  escape_tvars_into(ty, raw)
+  let mut i = 0
+  while i < Array::length(raw) {
+    escape_tvars_into(subst_apply(s, CtVar(Array::get(raw, i))), out)
+    i = i + 1
+  }
+}
+
+export fn esc_ids_intersect(a: Array[Int], b: Array[Int]) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(a) && !hit {
+    if esc_int_has(b, Array::get(a, i)) {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+/// #2455: a closure's own parameter, under either optional-argument spelling
+/// (`x~` / `x?`), is not a capture. `closure_free_names` strips these itself;
+/// the bare-callee scan beside it does not, so the same normalization is
+/// applied here.
+fn esc_name_is_param(name: String, params: Array[(String, Option[TypeExpr])]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(params) && !found {
+    let (raw_name, _) = Array::get(params, i)
+    let nlen = String::length(raw_name)
+    let pname = if nlen > 0 {
+      let last = String::char_code_at(raw_name, nlen - 1)
+      if last == '~' || last == '?' {
+        raw_name[0: nlen - 1]
+      } else {
+        raw_name
+      }
+    } else {
+      raw_name
+    }
+    if pname == name {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// #2459: the type NAMES an annotation mentions, minus the ones the annotated
+/// lambda binds itself. A type parameter is bound in the value environment
+/// under its own name (the `EFn` arm does `env_bind(tp_env, tpname, ..)`), so
+/// once the names are in hand the ordinary lookup finds the outer binder's
+/// variable and nothing else is needed.
+fn esc_collect_type_names(te: TypeExpr, skip: Array[String], out: Array[String]) -> Unit {
+  match te {
+    TyName(n) => if checker_string_array_has(skip, n) || checker_string_array_has(out, n) {
+      ()
+    } else {
+      Array::push(out, n)
+    },
+    TyApp(n, args) => {
+      if checker_string_array_has(skip, n) || checker_string_array_has(out, n) {
+        ()
+      } else {
+        Array::push(out, n)
+      }
+      let mut i = 0
+      while i < Array::length(args) {
+        esc_collect_type_names(Array::get(args, i), skip, out)
+        i = i + 1
+      }
+    },
+    TyFn(ps, r, _) => {
+      let mut i = 0
+      while i < Array::length(ps) {
+        esc_collect_type_names(Array::get(ps, i), skip, out)
+        i = i + 1
+      }
+      esc_collect_type_names(r, skip, out)
+    },
+    TyTuple(elems) => {
+      let mut i = 0
+      while i < Array::length(elems) {
+        esc_collect_type_names(Array::get(elems, i), skip, out)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+/// #2459: every type name written in an ANNOTATION anywhere inside a value.
+///
+/// Codex P1 on #2460. `env_reachable_tvars`'s own doc says a variable enters a
+/// value's type "through a name it mentions, a parameter, or an annotation",
+/// and then only read the names -- so a lambda that mentions an enclosing type
+/// parameter ONLY in its signature looked independent:
+///
+///     fn outer[T](x: T) -> Int {
+///       let f = (v: T) -> Array[T] { [v] }
+///       let a = f(1)
+///       let b = f("s")          // accepted
+///     }
+///
+/// Measured, this is a regression introduced by narrowing the value
+/// restriction for `CtFn`: on `cacbf4d51` the old `ty_has_open_array_elem`
+/// conservatism refused the binding for its `Array` shape and covered this by
+/// accident. Adding `let _ = x` inside the lambda -- a VALUE of type `T` --
+/// made the old scan see it, which is the A/B that isolates the annotation
+/// path.
+///
+/// A lambda's OWN binders are skipped: `[S](v: S) -> Array[S]` owns `S`, and
+/// reading a shadowed outer `S` would monomorphize a genuinely generic lambda.
+///
+/// `EFn` and `ERecord` are the ONLY `Expr` nodes carrying a `TypeExpr`
+/// (lib/@vibe/ast/index.vpkg), so this walk is complete for expressions rather
+/// than complete-for-now. Codex found the `ERecord` half as a P2 on #2460 --
+/// `expr_children` visits an `ERecord`'s field expressions and drops its
+/// type-argument list, so `let make = () -> { Box[T]::{ value: None } }` inside
+/// `fn outer[T]` mentioned `T` nowhere this scan could see. That one predates
+/// this PR (measured clean on `cacbf4d51` too); enumerating the enum rather
+/// than patching the reported site is what makes the pair of them the end of
+/// it.
+fn esc_annotation_type_names(e: Expr, out: Array[String]) -> Unit {
+  match e {
+    ERecord(_, _, targs) => {
+      // A record literal's type arguments are written at a site the lambda
+      // does not bind, so there is nothing to skip here.
+      let mut ti = 0
+      while ti < Array::length(targs) {
+        esc_collect_type_names(Array::get(targs, ti), array_empty(), out)
+        ti = ti + 1
+      }
+    },
+    EFn(tparams, _, params, ret_ty, _, _) => {
+      let skip = for tpk in tparams {
+        type_param_name(tpk)
+      }
+      let mut i = 0
+      while i < Array::length(params) {
+        match Array::get(params, i) {
+          (_, Some(te)) => esc_collect_type_names(te, skip, out),
+          _ => ()
+        }
+        i = i + 1
+      }
+      match ret_ty {
+        Some(te) => esc_collect_type_names(te, skip, out),
+        None => ()
+      }
+    },
+    _ => ()
+  }
+  let kids = expr_children(e)
+  let mut ci = 0
+  while ci < Array::length(kids) {
+    esc_annotation_type_names(Array::get(kids, ci), out)
+    ci = ci + 1
+  }
+}
+
+/// #2459: the type variables an expression can reach THROUGH THE ENVIRONMENT
+/// -- the free names it mentions (including bare callees, per #2455), looked
+/// up in `env` and zonked. A variable can only have entered the expression's
+/// type through a name it mentions, a parameter, or an annotation, so this is
+/// a sound over-approximation of "free in the environment" for the value being
+/// bound, and it costs one walk of the right-hand side instead of a scan of
+/// the whole environment.
+///
+/// `self_name` is the binding being defined. A `let rec` binds a placeholder
+/// for its own recursive uses BEFORE the body is checked and unifies it with
+/// the signature afterwards, so at generalization time the recursive name
+/// carries the very variables being generalized; reading them as
+/// environment-owned would monomorphize every recursive generic function.
+export fn env_reachable_tvars(val: Expr, env: TypeEnv, s: Subst, self_name: Option[String]) -> Array[Int] {
+  let out = array_empty()
+  let names = closure_free_names(val, array_empty())
+  for callee in closure_bare_callee_names(val) {
+    if checker_string_array_has(names, callee) {
+      ()
+    } else {
+      Array::push(names, callee)
+    }
+  }
+  // A type parameter is bound in this same environment under its own name, so
+  // an annotation that mentions one is read exactly like a value name.
+  let ann_names = array_empty()
+  esc_annotation_type_names(val, ann_names)
+  for tn in ann_names {
+    if checker_string_array_has(names, tn) {
+      ()
+    } else {
+      Array::push(names, tn)
+    }
+  }
+  let mut i = 0
+  while i < Array::length(names) {
+    let name = Array::get(names, i)
+    let is_self = match self_name {
+      Some(sn) => sn == name,
+      None => false
+    }
+    if is_self {
+      ()
+    } else {
+      match env_lookup(env, name) {
+        Some(raw_ty) => escape_tvars_zonked_into(raw_ty, s, out),
+        None => ()
+      }
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// #2459 / #2461: the two independent reasons not to generalize a `let`.
+///
+/// (A) The VALUE RESTRICTION: the binding HOLDS a mutable container, so its
+///     element variable must stay a monotype -- `let xs = []` is one array,
+///     and quantifying its element would let two uses disagree about it
+///     (#938, #2447).
+/// (B) The ENVIRONMENT RESTRICTION: a variable that is free in the enclosing
+///     environment belongs to something else and is not this binding's to
+///     quantify (#2459).
+///
+/// (A) is about what the value IS; (B) is about where its variables CAME
+/// FROM. Conflating them is what made both neighbouring bugs: (A) was applied
+/// to a FUNCTION type, where the array is produced per call rather than held,
+/// so `let mk2 = mk` on a perfectly generic `mk[T](v: T) -> Array[T]` was
+/// refused (#2461); and (B) was missing, so `let g2 = g` quantified a captured
+/// slot (#2459). A function value holds a container only when it CAPTURED one,
+/// which is (B)'s question, not (A)'s -- so the `CtFn` case is decided by
+/// environment reachability and every other case by (A) as before.
+export fn let_generalize(val: Expr, vt: Type, env: TypeEnv, defs: Array[TypeDef], s: Subst, self_name: Option[String]) -> Type {
+  let vt_resolved = subst_apply(s, vt)
+  if Array::length(collect_tvars(vt_resolved)) == 0 {
+    // Nothing to quantify; skip the right-hand-side walk entirely. Most
+    // bindings in a real program land here.
+    generalize(s, vt)
+  } else {
+    let env_ids = env_reachable_tvars(val, env, s, self_name)
+    let holds_container = is_array_builder_ty(vt_resolved) || is_region_tagged_ty(vt_resolved) || ty_has_open_array_elem(vt_resolved) || is_future_cell_ty(vt_resolved, defs, 0)
+    let restricted = if !holds_container {
+      false
+    } else {
+      match vt_resolved {
+        CtFn(_, _, _) => esc_ids_intersect(collect_tvars(vt_resolved), env_ids),
+        _ => true
+      }
+    }
+    if restricted {
+      vt
+    } else {
+      generalize_except(s, vt, env_ids)
+    }
+  }
+}
+
+/// #2455: each name this closure CAPTURES from an enclosing scope, paired with
+/// the still-open type variables of the value bound to it.
+///
+/// A RECURSIVE binding does not need excluding here, measured both spellings
+/// (`let rec f = [T](..)` and a top-level `fn f[T](..)`) and both uses (a call
+/// and a bare value reference): an unannotated recursive name is bound to a
+/// placeholder variable that is unified with the signature only AFTER the body
+/// is checked, so while this runs it shares no id with the binders; an
+/// annotated one is a `CtForAll`, which the walk above does not descend. The
+/// controls are pinned in tests/generic_binder_escape_test.vibe -- a sentinel
+/// excluding the name being defined was written first and deleted, because no
+/// input could be found that made it change an answer.
+export fn captured_escape_tvars(body: Expr, params: Array[(String, Option[TypeExpr])], env: TypeEnv, s: Subst) -> Array[(String, Array[Int])] {
+  let out = array_empty()
+  let names = closure_free_names(body, params)
+  // A DIRECTLY CALLED capture is a capture. `closure_free_names` skips the
+  // callee of an `ECall(EIdent(..))`, so `put(v)` recorded nothing while
+  // `let p = put\np(v)` recorded `put` -- the binder laundered the escape
+  // exactly when the value was spelled as a call. Codex P1 on #2458;
+  // measured, all three of `[T](v: T) -> Array[T] { put(v) }` (clean),
+  // the same closure without the binder (rejected), and the value spelling
+  // with the binder (rejected). `closure_capture_row` reads the same two
+  // sources for the same reason.
+  for callee in closure_bare_callee_names(body) {
+    if esc_name_is_param(callee, params) || checker_string_array_has(names, callee) {
+      ()
+    } else {
+      Array::push(names, callee)
+    }
+  }
+  let mut i = 0
+  while i < Array::length(names) {
+    let name = Array::get(names, i)
+    match env_lookup(env, name) {
+      Some(raw_ty) => {
+        let ids = array_empty()
+        escape_tvars_into(subst_apply(s, raw_ty), ids)
+        if Array::length(ids) == 0 {
+          ()
+        } else {
+          Array::push(out, (name, ids))
+        }
+      },
+      None => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Add closure-capture provenance to the checked row. The labels beginning
+/// with `#` are not effects and cannot be written by source; core/types keeps
+/// them through ordinary substitution while excluding them from effect-set
+/// compatibility. A captured inference variable is dependent provenance:
+/// `#capture[v]` resolves to `#region_n` only if call-site unification binds v
+/// to a region-tagged type. This is what makes helper functions structural
+/// rather than another literal-name pattern.
+export fn closure_capture_row(effect: Option[String], body: Expr, params: Array[(String, Option[TypeExpr])], env: TypeEnv, s: Subst) -> Option[String] {
+  let labels = match effect {
+    Some(row) => for raw in String::split(row, ",") {
+      String::trim(raw)
+    },
+    None => array_empty()
+  }
+  let active_region = env_has_active_region(env)
+  let captured_names = closure_free_names(body, params)
+  let seen_names = array_empty()
+  let mut i = 0
+  while i < Array::length(captured_names) {
+    let name = Array::get(captured_names, i)
+    if !checker_string_array_has(seen_names, name) {
+      Array::push(seen_names, name)
+      match env_lookup(env, name) {
+        Some(raw_ty) => {
+          let ty = subst_apply(s, raw_ty)
+          let provenance = array_empty()
+          collect_internal_provenance(ty, provenance)
+          let vars = collect_tvars(ty)
+          for label in provenance {
+            append_row_label(labels, label)
+          }
+          for var_id in vars {
+            append_row_label(labels, String::concat("#capture[", String::concat(__to_string(var_id), "]")))
+          }
+        },
+        None => ()
+      }
+    }
+    i = i + 1
+  }
+  for callee in closure_bare_callee_names(body) {
+    let mut is_param = false
+    for param in params {
+      let (raw_name, _) = param
+      let nlen = String::length(raw_name)
+      let param_name = if nlen > 0 {
+        let last = String::char_code_at(raw_name, nlen - 1)
+        if last == '~' || last == '?' {
+          raw_name[0: nlen - 1]
+        } else raw_name
+      } else raw_name
+      if callee == param_name {
+        is_param = true
+      }
+    }
+    match env_lookup(env, callee) {
+      Some(raw_ty) => {
+        let ty = subst_apply(s, raw_ty)
+        let provenance = array_empty()
+        collect_internal_provenance(ty, provenance)
+        for label in provenance {
+          if String::starts_with(label, "#param[") || (active_region && String::starts_with(label, "#region_")) {
+            append_row_label(labels, label)
+          }
+        }
+        if is_param {
+          for var_id in collect_tvars(ty) {
+            append_row_label(labels, String::concat("#capture[", String::concat(__to_string(var_id), "]")))
+          }
+        }
+      },
+      None => ()
+    }
+  }
+  if Array::length(labels) == 0 {
+    None
+  } else {
+    Some(String::join(labels, ", "))
+  }
+}
+
+fn type_mentions_active_region(ty: Type, env: TypeEnv) -> Bool {
+  match env {
+    EnvEmpty => false,
+    EnvBind(name, binding, rest) => if name == "#active_region" {
+      match binding.ty {
+        CtNamed(region_name, _) => type_mentions_named(ty, region_name) || type_mentions_active_region(ty, rest),
+        _ => type_mentions_active_region(ty, rest)
+      }
+    } else {
+      type_mentions_active_region(ty, rest)
+    },
+    EnvTraitDef(_, _, _, _, rest, _, _) => type_mentions_active_region(ty, rest),
+    EnvTraitImpl(_, _, rest) => type_mentions_active_region(ty, rest),
+    EnvMutCell(_, _, rest) => type_mentions_active_region(ty, rest),
+    EnvTraitImplGen(_, _, _, _, rest) => type_mentions_active_region(ty, rest),
+    EnvTypeDefs(_, _, rest) => type_mentions_active_region(ty, rest),
+    EnvCached(_, _, rest) => type_mentions_active_region(ty, rest),
+    EnvFlat(_) => false
+  }
+}
+
+/// A target declared before the relevant active-region marker can outlive the
+/// region; a target found first in the environment chain is region-local.
+export fn assignment_crosses_region(name: String, ty: Type, env: TypeEnv) -> Bool {
+  match env {
+    EnvEmpty => false,
+    EnvBind(n, binding, rest) => if n == name {
+      false
+    } else if n == "#active_region" {
+      match binding.ty {
+        CtNamed(region_name, _) => type_mentions_named(ty, region_name) || assignment_crosses_region(name, ty, rest),
+        _ => assignment_crosses_region(name, ty, rest)
+      }
+    } else {
+      assignment_crosses_region(name, ty, rest)
+    },
+    EnvMutCell(n, _, rest) => if n == name {
+      false
+    } else {
+      assignment_crosses_region(name, ty, rest)
+    },
+    EnvTraitDef(_, _, _, _, rest, _, _) => assignment_crosses_region(name, ty, rest),
+    EnvTraitImpl(_, _, rest) => assignment_crosses_region(name, ty, rest),
+    EnvTraitImplGen(_, _, _, _, rest) => assignment_crosses_region(name, ty, rest),
+    EnvTypeDefs(_, _, rest) => assignment_crosses_region(name, ty, rest),
+    EnvCached(_, _, rest) => assignment_crosses_region(name, ty, rest),
+    EnvFlat(_) => false
+  }
+}
+
+/// A mutable aggregate inherits the lifetime of its binding. Writes through a
+/// region-local binding are safe; a binding outside the active region must not
+/// retain a value whose closure provenance names that region.
+export fn container_write_crosses_region(target: Expr, ty: Type, env: TypeEnv) -> Bool {
+  match target {
+    EIdent(name, _) => assignment_crosses_region(name, ty, env) || match env_lookup(env, String::concat("__region_outer_alias__", name)) {
+      Some(_) => type_mentions_active_region(ty, env),
+      None => false
+    },
+    EDot(obj, _, _, _) => container_write_crosses_region(obj, ty, env),
+    ECall(EIdent("__index", _), args, _) => if Array::length(args) > 0 {
+      container_write_crosses_region(Array::get(args, 0), ty, env)
+    } else {
+      false
+    },
+    ECall(_, _, _) => expression_aliases_outer_binding(target, env) && type_mentions_active_region(ty, env),
+    _ => false
+  }
+}

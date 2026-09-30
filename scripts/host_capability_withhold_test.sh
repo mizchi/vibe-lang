@@ -164,6 +164,8 @@ if grep -q '^read: ' "$work/run.out"; then
   exit 1
 fi
 
+cp scripts/wasm_vibe_host_runtime.js "$work/wasm_vibe_host_runtime.js"
+
 # 3. Red: without the withhold branch, the SAME invocation must succeed.
 python3 - "$mutated" <<'PY'
 import pathlib

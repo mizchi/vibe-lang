@@ -1,0 +1,2500 @@
+// lib/@vibe/compiler/codegen/gc/backend_body.vibe — wasi module gc impl.
+
+import @vibe/compiler/core {
+  Expr,
+  Pat,
+  Stmt,
+  TypeExpr,
+  builtin_registry,
+  builtin_shadow_entry_name,
+  bytebuf_length,
+  bytebuf_new,
+  bytebuf_push,
+  bytebuf_push_buf,
+  bytebuf_push_section,
+  bytebuf_push_vec_header,
+  bytebuf_to_bytes,
+  expr_children,
+  leb128_encode_s64,
+  leb128_encode_u32,
+  merged_offset_space_reset,
+  rename_builtin_shadow_defs,
+  rewrite_top_level_fn_alias_refs,
+  verify_lane_builtins
+}
+
+import @vibe/core {
+  array_empty, struct MutSet
+}
+
+import @vibe/compiler/codegen/common_analysis {
+  collect_free_vars,
+  collect_strings_stmts,
+  compute_float_returning_names,
+  emit_closure_call_tail,
+  emit_closure_resolve,
+  emit_i64_extend_i32_u,
+  is_mut_captured_in,
+  stmts_contain_exceptions
+}
+
+import @vibe/compiler/codegen/common_base {
+  CompileCtxGc,
+  CtorTable,
+  FuncTable,
+  LambdaTable,
+  agg_info_of_type_expr,
+  append_double_runtime,
+  append_hidden_attempt_constructors,
+  append_string_views_runtime,
+  codegen_unresolved_name_prefix,
+  compute_agg_returning,
+  ctor_sorted_index,
+  emit_binop_op,
+  emit_i32_eq,
+  emit_i32_eqz,
+  emit_i32_ge_u,
+  emit_i32_mul,
+  emit_i32_ne,
+  emit_i32_sub,
+  emit_i64_load,
+  emit_i64_store,
+  emit_str_ref,
+  evidence_dict_pass,
+  fn_type_param_types,
+  gc_slot_map_get,
+  lookup_ctor,
+  lower_optional_performs,
+  optional_perform_artifact_resolution,
+  region_exn_tag_gc,
+  region_max_depth,
+  region_saves_base_of,
+  resolve_func,
+  resolve_local,
+  rewrite_self_tail_calls,
+  scps_drop_orphaned_originals,
+  source_declares_constructor,
+  str_table_lite,
+  suspend_cps_pass,
+  ty_head_names_formal,
+  wrap_entry_exception_boundary
+}
+
+import @vibe/compiler/codegen/common_extractors {
+  array_contains_str, collect_int_div_sites, emit_assignop_op, emit_memory_copy, find_catchall_idx
+}
+
+import @vibe/compiler/codegen/wasm_emit {
+  emit_array_new,
+  emit_array_type_raw,
+  emit_block_i64,
+  emit_block_void,
+  emit_br,
+  emit_br_if,
+  emit_call,
+  emit_call_indirect,
+  emit_code_section,
+  emit_code_section_with_locals,
+  emit_data_section,
+  emit_data_section_multi,
+  emit_drop,
+  emit_element_section_active_runs,
+  emit_else,
+  emit_end,
+  emit_export_section,
+  emit_export_section_multi,
+  emit_exports_with_memory,
+  emit_f64_add,
+  emit_f64_const_bits,
+  emit_f64_convert_i64_s,
+  emit_f64_div,
+  emit_f64_eq,
+  emit_f64_ge,
+  emit_f64_gt,
+  emit_f64_le,
+  emit_f64_lt,
+  emit_f64_mul,
+  emit_f64_ne,
+  emit_f64_neg,
+  emit_f64_reinterpret_i64,
+  emit_f64_sub,
+  emit_func_type_raw,
+  emit_func_type_ref_result,
+  emit_function_section,
+  emit_global_get,
+  emit_global_section_i32_mut,
+  emit_global_set,
+  emit_header,
+  emit_i32_add,
+  emit_i32_const,
+  emit_i32_load,
+  emit_i32_load8_u,
+  emit_i32_store,
+  emit_i32_store8,
+  emit_i32_wrap_i64,
+  emit_i64_add,
+  emit_i64_and,
+  emit_i64_const,
+  emit_i64_div_s,
+  emit_i64_eq,
+  emit_i64_eqz,
+  emit_i64_extend_i32_s,
+  emit_i64_ge_s,
+  emit_i64_gt_s,
+  emit_i64_le_s,
+  emit_i64_lt_s,
+  emit_i64_mul,
+  emit_i64_ne,
+  emit_i64_or,
+  emit_i64_reinterpret_f64,
+  emit_i64_rem_s,
+  emit_i64_shl,
+  emit_i64_shr_s,
+  emit_i64_sub,
+  emit_i64_trunc_f64_s,
+  emit_i64_xor,
+  emit_if_i64,
+  emit_if_void,
+  emit_import_section_func,
+  emit_local_get,
+  emit_local_set,
+  emit_local_tee,
+  emit_loop_void,
+  emit_memory_section,
+  emit_name,
+  emit_return,
+  emit_struct_get,
+  emit_struct_new,
+  emit_struct_set,
+  emit_struct_type_raw,
+  emit_struct_type_raw_refs,
+  emit_table_section_funcref,
+  emit_type_section,
+  emit_type_section_multi,
+  emit_vibe_abi_custom_section,
+  string_to_data
+}
+
+import @vibe/compiler/codegen/builtin_bodies {
+  array_capacity_error_message,
+  bytes_capacity_error_message,
+  div_zero_at_fragment,
+  div_zero_div_message,
+  div_zero_rem_message,
+  gen_arr_push_body,
+  gen_arr_with_capacity_body,
+  gen_array_value_copy_body,
+  gen_bytes_append_body,
+  gen_bytes_blit_body,
+  gen_bytes_compare_body,
+  gen_bytes_concat_body,
+  gen_bytes_count_byte_body,
+  gen_bytes_fill_body,
+  gen_bytes_from_array_body,
+  gen_bytes_get_body,
+  gen_bytes_index_of_byte_body,
+  gen_bytes_index_of_bytes_body,
+  gen_bytes_last_index_of_byte_body,
+  gen_bytes_new_body,
+  gen_bytes_push_body,
+  gen_bytes_set_body,
+  gen_bytes_slice_body,
+  gen_bytes_to_array_body,
+  gen_bytes_with_capacity_body,
+  gen_div_zero_abort_body,
+  gen_eq_body,
+  gen_generic_add_body,
+  gen_generic_rel_diff_body,
+  gen_int_clz_body,
+  gen_int_ctz_body,
+  gen_int_popcount_body,
+  gen_region_arr_new_body,
+  gen_region_bytes_new_body,
+  gen_simd_scan_alnum_body,
+  gen_simd_scan_line_end_body,
+  gen_simd_scan_string_special_body,
+  gen_simd_skip_ws_body,
+  gen_str_eq_body,
+  gen_str_lex_diff_body,
+  gen_string_contains_body,
+  gen_string_ends_with_body,
+  gen_string_index_of_body,
+  gen_string_join_body,
+  gen_string_last_index_of_body,
+  gen_string_split_body,
+  gen_string_starts_with_body,
+  gen_string_trim_body
+}
+
+import ./backend_direct_abi_names.vibe {
+  gc_direct_abi_name_has_spelling_lowering
+}
+
+import ./backend_builtins_array_alloc.vibe {
+  gc_gen_arr_concat_body,
+  gc_gen_arr_len_body,
+  gc_gen_arr_new_body,
+  gc_gen_arr_push_all_body,
+  gc_gen_arr_slice_body,
+  gc_gen_arr_truncate_body
+}
+
+import ./backend_builtins_array_get.vibe {
+  gc_gen_arr_get_body
+}
+
+import ./backend_builtins_array_set.vibe {
+  gc_gen_arr_set_body
+}
+
+import ./backend_builtins_numeric.vibe {
+  gc_emit_int_to_string, gc_gen_double_to_int_body, gc_gen_identity_body, gc_gen_int_to_double_body, gc_gen_to_string_body
+}
+
+import ./backend_builtins_print.vibe {
+  gc_gen_print_i64_body, gc_gen_print_str_body
+}
+
+import ./backend_builtins_string.vibe {
+  gc_gen_str_concat_body, gc_gen_str_eq_body, gc_gen_str_len_body
+}
+
+import ./backend_builtins_string_extra.vibe {
+  gc_gen_str_char_code_at_body, gc_gen_str_from_char_code_body, gc_gen_str_substring_body
+}
+
+import ./backend_expr.vibe {
+  compile_expr_gc, gc_native_array_escape_gate
+}
+
+import @vibe/compiler/codegen/wasi {
+  collect_used_builtin_names
+}
+
+import ./backend_body_gc_direct_abi_expr_kind.vibe {
+  emit_gc_direct_func_type,
+  gb_strip_param_label_marker,
+  gc_add_ref_twins,
+  gc_direct_abi_expr_kind,
+  gc_direct_abi_expr_mentions_name,
+  gc_direct_abi_is_native_array_type,
+  gc_direct_abi_name_in,
+  gc_direct_abi_name_index_exact,
+  gc_direct_abi_name_is_exported,
+  gc_direct_abi_tail_is_bare_array,
+  gc_direct_abi_type_mentions_array,
+  gc_gen_to_string_int_body,
+  gc_reject_inline_wasm,
+  gc_stmts_need_to_string_int,
+  gc_str_fat,
+  gc_type_expr_is_unit
+}
+
+export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String, generated_test_artifact: Bool, gc_to_string_is_wrapper: Bool, direct_abi_generic_names: Array[String], gc_float_ret_fn_names: Array[String], gc_float_call_offsets: Array[Int], gc_int_render_offsets: Array[Int], gc_bool_render_offsets: Array[Int]) -> Bytes with Exception {
+  // #3132: a program's own `Array::length` / `Map::keys` / ... moves aside
+  // before this lane's passes and lookups use the builtin names (see
+  // rename_builtin_shadow_defs). Idempotent after the desugar ran it.
+  rename_builtin_shadow_defs(stmts)
+  // #3132 review: `--entry StringBuilder::new` can name the program's own
+  // function, now spelled `StringBuilder::new$user`. Lookups use that
+  // spelling; the export keeps the source one.
+  let entry_name = builtin_shadow_entry_name(stmts, entry_name_in)
+  // #805: inline-wasm fns are linear-backend only — reject before any work.
+  gc_reject_inline_wasm(stmts)
+  // #2652: the Double runtime prelude (codegen/common_base/double_runtime.vibe),
+  // appended to a program that can hold a Double before this lane's own passes
+  // and analyses read the statements -- the gc mirror of the linked lane's hook.
+  append_double_runtime(stmts)
+  append_string_views_runtime(stmts)
+  // ADR-0088 / #2236: the gc lane has its own lowering convergence point and
+  // uses the same artifact-wide test authority or fail-closed default as the
+  // linear lane.
+  let optional_resolution = optional_perform_artifact_resolution(stmts, entry_name, generated_test_artifact, array_empty())
+  lower_optional_performs(stmts, optional_resolution)
+  gc_add_ref_twins(stmts)
+  // #1015: `gc_to_string_is_wrapper` is a PARAMETER, not computed here --
+  // see the doc comment on gc_to_string_resolves_to_show_wrapper (which
+  // MUST run before strip_generic_type_params, and this function's own
+  // `stmts` have typically already been stripped by the time callers reach
+  // here).
+  // Top-level `let f = g` function aliases: retarget references to the final
+  // EFn def so calls do not route through a 0-param thunk registration
+  // (invalid wasm for any call arity). See import_alias_rewrite.vibe.
+  rewrite_top_level_fn_alias_refs(stmts)
+  wrap_entry_exception_boundary(stmts, entry_name)
+  // #tco: see codegen/common_base/self_tail_call.vibe's doc comment (same
+  // rewrite as the linear backend's call site in codegen/wasi/linked_compile.vibe).
+  rewrite_self_tail_calls(stmts)
+  // ADR-0076 Phase 2/3 (#817), 段階導入計画 step 6: same evidence-dict AST
+  // rewrite as the linear backend's call site in
+  // codegen/wasi/linked_compile.vibe -- both passes only ever rewrite
+  // EHandle/perform into ordinary ERecord/EFn/EDot/ECall nodes (a plain
+  // closure-record dict threaded as an extra parameter), never touching
+  // linear-memory pointers/offsets, so the rewritten AST is exactly as
+  // backend-agnostic as any other desugaring here. A handle/perform this
+  // pass cannot prove eligible (row-polymorphic helper, non-tail-resumptive
+  // arm, etc.) is left untouched and still hits backend_expr.vibe's/
+  // backend_call.vibe's existing "only `with Exception`/known builtins"
+  // fallback exactly as before -- this only shrinks what falls through to
+  // that fallback, it does not change the fallback itself. No-op on
+  // programs with no eligible handle (identical to the linear backend's
+  // unconditional call site), so this is strictly additive for gc codegen.
+  // #3009: the suspend CPS pass (a handler arm that captures `resume` as a
+  // value) runs first, as in the linear prelude. The gc lane never ran it,
+  // so such a site reached codegen with `resume` unresolved.
+  let scps_errs = suspend_cps_pass(stmts)
+  if Array::length(scps_errs) > 0 {
+    throw(Array::get(scps_errs, 0))
+  } else {
+    ()
+  }
+  // #3064: this lane compiles every top-level function and has no
+  // reachability prune, so an original the suspend lowering replaced by its
+  // clone everywhere would reach codegen with its raw `perform`.
+  scps_drop_orphaned_originals(stmts)
+  let edp_errs = evidence_dict_pass(stmts, entry_name)
+  if Array::length(edp_errs) > 0 {
+    throw(Array::get(edp_errs, 0))
+  } else {
+    ()
+  }
+  let fn_names_list = array_empty()
+  let fn_param_counts = array_empty()
+  let fn_needs_env_list = array_empty()
+  let user_func_stmts = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let stmt = Array::get(stmts, i)
+    match stmt {
+      SLet(_, _, name, _, expr) => match expr {
+        EFn(_, _, params, _, _, _) => {
+          Array::push(fn_names_list, name)
+          Array::push(fn_param_counts, Array::length(params))
+          Array::push(fn_needs_env_list, true)
+          Array::push(user_func_stmts, stmt)
+          0
+        },
+        _ => 0
+      }
+      ,
+      _ => 0
+    }
+    i = i + 1
+  }
+  // #1541: derive one conservative module-wide ABI decision before emitting
+  // any body or type. Any unsupported Array signature/use clears the complete
+  // table, leaving the pre-existing tagged-i64 backend byte-for-byte in charge
+  // of user function boundaries. Partial evidence is never consumed.
+  let gc_direct_abi_names_l = array_empty()
+  let gc_direct_abi_param_refs_l = array_empty()
+  let gc_direct_abi_return_refs_l = array_empty()
+  let mut gc_direct_abi_ok = true
+  let mut dai = 0
+  while dai < Array::length(user_func_stmts) {
+    match Array::get(user_func_stmts, dai) {
+      SLet(_, _, dai_name, dai_ann, dai_value) => match dai_value {
+        EFn(dai_tparams, _, dai_params, dai_ret_ann, _, _) => {
+          let param_refs = array_empty()
+          let sig_params = match dai_ann {
+            Some(TyFn(ps, _, _)) => if Array::length(ps) == Array::length(dai_params) {
+              Some(ps)
+            } else {
+              None
+            },
+            _ => None
+          }
+          let mut has_ref = false
+          let mut pi = 0
+          while pi < Array::length(dai_params) {
+            let pty = match sig_params {
+              Some(ps) => Some(Array::get(ps, pi)),
+              None => {
+                let (_, own_ann) = Array::get(dai_params, pi)
+                own_ann
+              }
+            }
+            let is_ref = match pty {
+              Some(t) => gc_direct_abi_is_native_array_type(t),
+              None => false
+            }
+            match pty {
+              Some(t) => if gc_direct_abi_type_mentions_array(t) && !is_ref {
+                gc_direct_abi_ok = false
+              } else {
+                ()
+              },
+              None => ()
+            }
+            Array::push(param_refs, is_ref)
+            if is_ref {
+              has_ref = true
+            } else {
+              ()
+            }
+            pi = pi + 1
+          }
+          let ret_ty = match dai_ann {
+            Some(TyFn(_, ret, _)) => Some(ret),
+            _ => dai_ret_ann
+          }
+          let return_ref = match ret_ty {
+            Some(t) => gc_direct_abi_is_native_array_type(t),
+            None => false
+          }
+          match ret_ty {
+            Some(t) => if gc_direct_abi_type_mentions_array(t) && !return_ref {
+              gc_direct_abi_ok = false
+            } else {
+              ()
+            },
+            None => ()
+          }
+          if return_ref {
+            has_ref = true
+          } else {
+            ()
+          }
+          // A generic signature cannot enter the reference lane. Two binders
+          // must be consulted, and neither subsumes the other:
+          //   * `dai_tparams` is the POST-strip binder. It is non-empty only
+          //     for the impl methods `inject_method_generics` re-generifies
+          //     AFTER `strip_generic_type_params` ran.
+          //   * `direct_abi_generic_names` is the PRE-erasure name list, the
+          //     only surviving evidence for source-level generics.
+          // Concrete Array[Int] is additionally required above; a surviving
+          // type parameter in the element position has already made
+          // gc_direct_abi_ok false.
+          let dai_is_generic = Array::length(dai_tparams) > 0 || gc_direct_abi_name_in(direct_abi_generic_names, dai_name)
+          if dai_is_generic && has_ref {
+            gc_direct_abi_ok = false
+          } else {
+            ()
+          }
+          // A spelling-routed collision fails the WHOLE component closed even
+          // with no reference in its signature, and that is not overcaution:
+          // backend_call intercepts `Array::get`/`Array::set`/`Array::length`
+          // by spelling to reach native receivers, so a user declaration with
+          // one of those names makes the interception itself wrong -- for the
+          // #1329 local lane too, which does not need this island at all.
+          if gc_direct_abi_name_has_spelling_lowering(dai_name) {
+            gc_direct_abi_ok = false
+          } else {
+            ()
+          }
+          // The CLI entry and every public declaration cross a host boundary
+          // whose ABI is tagged i64, so they cannot carry a reference. They
+          // simply stay OFF the island and keep the signature they always had;
+          // the rest of the component is unaffected. This used to fail the
+          // whole component closed, which meant a single `export` -- the normal
+          // shape of a library module -- disabled the lane for everything.
+          //
+          // Nothing is smuggled past this. An export is not in the evidence
+          // table, so handing a reference to one is an unsupported crossing
+          // that `gc_direct_abi_expr_kind` still rejects component-wide, and a
+          // value coming BACK from one is kind 0 and never becomes a native
+          // local. The export fallback fixture pins exactly that: it pipes a
+          // private reference through the exported declaration and still emits
+          // no native literal.
+          if (dai_name == entry_name || gc_direct_abi_name_is_exported(stmts, dai_name)) && has_ref {
+            ()
+          } else if has_ref {
+            Array::push(gc_direct_abi_names_l, dai_name)
+            Array::push(gc_direct_abi_param_refs_l, param_refs)
+            Array::push(gc_direct_abi_return_refs_l, return_ref)
+          } else {
+            ()
+          }
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+    dai = dai + 1
+  }
+  if gc_direct_abi_ok && Array::length(gc_direct_abi_names_l) > 0 {
+    let mut si = 0
+    while si < Array::length(user_func_stmts) {
+      match Array::get(user_func_stmts, si) {
+        SLet(_, _, si_name, _, EFn(_, _, si_params, _, _, si_body)) => {
+          let native_params = array_empty()
+          let sig_idx = gc_direct_abi_name_index_exact(gc_direct_abi_names_l, si_name)
+          if sig_idx >= 0 {
+            let refs = Array::get(gc_direct_abi_param_refs_l, sig_idx)
+            let mut spi = 0
+            while spi < Array::length(refs) {
+              if Array::get(refs, spi) {
+                let (pname, _) = Array::get(si_params, spi)
+                Array::push(native_params, pname)
+              } else {
+                ()
+              }
+              spi = spi + 1
+            }
+          } else {
+            ()
+          }
+          let si_return_ref = sig_idx >= 0 && Array::get(gc_direct_abi_return_refs_l, sig_idx)
+          let body_kind = gc_direct_abi_expr_kind(si_body, native_params, gc_direct_abi_names_l, gc_direct_abi_param_refs_l, gc_direct_abi_return_refs_l, si_return_ref)
+          let expected_kind = if si_return_ref {
+            1
+          } else {
+            0
+          }
+          if body_kind != expected_kind {
+            gc_direct_abi_ok = false
+          } else {
+            ()
+          }
+          // A ref result whose value is a bare literal has no proof behind it:
+          // the lowering emits an ordinary linear array, and the emitted
+          // function would claim `(result (ref null $array))` while returning
+          // i64. Fail the component closed instead of shipping wasm that fails
+          // validation.
+          if si_return_ref && gc_direct_abi_tail_is_bare_array(si_body) {
+            gc_direct_abi_ok = false
+          } else {
+            ()
+          }
+        },
+        _ => ()
+      }
+      si = si + 1
+    }
+    // Computed module globals share `_start`'s raw i64 frame and must not
+    // observe a typed function, even if the reference is consumed immediately.
+    let mut gi = 0
+    while gi < Array::length(stmts) {
+      match Array::get(stmts, gi) {
+        SLet(_, _, _, _, value) => match value {
+          EFn(_, _, _, _, _, _) => (),
+          _ => if gc_direct_abi_expr_mentions_name(value, gc_direct_abi_names_l) {
+            gc_direct_abi_ok = false
+          } else {
+            ()
+          }
+        },
+        _ => ()
+      }
+      gi = gi + 1
+    }
+  } else {
+    ()
+  }
+  if !gc_direct_abi_ok {
+    Array::truncate(gc_direct_abi_names_l, 0)
+    Array::truncate(gc_direct_abi_param_refs_l, 0)
+    Array::truncate(gc_direct_abi_return_refs_l, 0)
+  } else {
+    ()
+  }
+  // Attempt is checker-owned just like Option. Keep the built-in constructor
+  // table identical to the linear backend so single-file codegen can emit the
+  // result of `perform?` without importing an enum declaration first.
+  let ctor_names_list = array_empty()
+  let ctor_tags_list = array_empty()
+  let ctor_field_counts_list = array_empty()
+  let ctor_type_names_list = array_empty()
+  let builtin_ctor_names = ["None", "Some", "NotGranted", "Errored", "Granted"]
+  let builtin_ctor_tags = [0, 1, 2, 3, 4]
+  let builtin_ctor_fields = [0, 1, 0, 1, 1]
+  let builtin_ctor_types = ["Option", "Option", "Attempt", "Attempt", "Attempt"]
+  let mut builtin_ctor_i = 0
+  while builtin_ctor_i < Array::length(builtin_ctor_names) {
+    let builtin_ctor_name = Array::get(builtin_ctor_names, builtin_ctor_i)
+    if !source_declares_constructor(stmts, builtin_ctor_name) {
+      Array::push(ctor_names_list, builtin_ctor_name)
+      Array::push(ctor_tags_list, Array::get(builtin_ctor_tags, builtin_ctor_i))
+      Array::push(ctor_field_counts_list, Array::get(builtin_ctor_fields, builtin_ctor_i))
+      Array::push(ctor_type_names_list, Array::get(builtin_ctor_types, builtin_ctor_i))
+    } else {
+      ()
+    }
+    builtin_ctor_i = builtin_ctor_i + 1
+  }
+  let mut type_index = 1
+  let mut ei2 = 0
+  while ei2 < Array::length(stmts) {
+    match Array::get(stmts, ei2) {
+      SEnum(_, ename, _, variants, _) => {
+        type_index = type_index + 1
+        let mut vi = 0
+        while vi < Array::length(variants) {
+          let (vname, vfields) = Array::get(variants, vi)
+          Array::push(ctor_names_list, vname)
+          Array::push(ctor_tags_list, (type_index<<16)|vi)
+          Array::push(ctor_field_counts_list, Array::length(vfields))
+          Array::push(ctor_type_names_list, ename)
+          vi = vi + 1
+        }
+        0
+      },
+      SStruct(_, sname, sfields, _, _, _) => {
+        type_index = type_index + 1
+        Array::push(ctor_names_list, sname)
+        Array::push(ctor_tags_list, type_index<<16)
+        Array::push(ctor_field_counts_list, Array::length(sfields))
+        Array::push(ctor_type_names_list, sname)
+        0
+      },
+      // #817 gc-backend follow-up (2026-07-23): mirrors linked_compile.vibe's
+      // own SSuberror case exactly -- a suberror is a single-typed enum
+      // whose constructors produce a throwable value; register its ctors in
+      // the ctor table like an enum's so `KeyInvalid("x")` allocates a
+      // tagged value instead of hitting backend_call.vibe's "unknown
+      // constructor or function" error. This case was simply never added
+      // when the gc backend's own ctor-registration loop was written
+      // (SEnum/SStruct only) -- found via gc-backend coverage testing.
+      SSuberror(_, ename, variants) => {
+        type_index = type_index + 1
+        let mut vi = 0
+        while vi < Array::length(variants) {
+          let (vname, vfields) = Array::get(variants, vi)
+          Array::push(ctor_names_list, vname)
+          Array::push(ctor_tags_list, (type_index<<16)|vi)
+          Array::push(ctor_field_counts_list, Array::length(vfields))
+          Array::push(ctor_type_names_list, ename)
+          vi = vi + 1
+        }
+        0
+      },
+      _ => 0
+    }
+    ei2 = ei2 + 1
+  }
+  append_hidden_attempt_constructors(ctor_names_list, ctor_tags_list, ctor_field_counts_list, ctor_type_names_list)
+  // Sorted ctor-name index (see CtorTable.names_sorted): built once here,
+  // shared by every CtorTable literal below.
+  let (gc_ctor_names_sorted, gc_ctor_names_sorted_pos) = ctor_sorted_index(ctor_names_list)
+  // #538: module-level literal constants (Int / Bool / String). The user-func
+  // walk keeps only EFn lets; scalar lets like `let op_call = 16` previously
+  // vanished and every reference threw "undefined variable".
+  let gc_const_names_l = array_empty()
+  let gc_const_kinds_l = array_empty()
+  let gc_const_ivals_l = array_empty()
+  let gc_const_svals_l = array_empty()
+  let gc_global_names_l = array_empty()
+  let gc_global_exprs_l = array_empty()
+  let mut gci = 0
+  while gci < Array::length(stmts) {
+    match Array::get(stmts, gci) {
+      SLet(_, _, cname, _, cval) => match cval {
+        EInt(iv) => {
+          Array::push(gc_const_names_l, cname)
+          Array::push(gc_const_kinds_l, 0)
+          Array::push(gc_const_ivals_l, iv)
+          Array::push(gc_const_svals_l, "")
+        },
+        EBool(bv) => {
+          Array::push(gc_const_names_l, cname)
+          Array::push(gc_const_kinds_l, 0)
+          Array::push(gc_const_ivals_l, if bv {
+            1
+          } else {
+            0
+          })
+          Array::push(gc_const_svals_l, "")
+        },
+        EString(sv, _) => {
+          Array::push(gc_const_names_l, cname)
+          Array::push(gc_const_kinds_l, 1)
+          Array::push(gc_const_ivals_l, 0)
+          Array::push(gc_const_svals_l, sv)
+        },
+        EFn(_, _, _, _, _, _) => (),
+        _ => {
+          // Computed module-level value: a mutable i64 global initialized at
+          // the top of _start (B12 port).
+          Array::push(gc_global_names_l, cname)
+          Array::push(gc_global_exprs_l, cval)
+        }
+      },
+      _ => ()
+    }
+    gci = gci + 1
+  }
+  let struct_names = array_empty()
+  let struct_field_names = array_empty()
+  let struct_field_is_ref = array_empty()
+  let mut si = 0
+  while si < Array::length(stmts) {
+    match Array::get(stmts, si) {
+      SStruct(_, sname, sfields, _, _, _) => {
+        Array::push(struct_names, sname)
+        let fnames = array_empty()
+        let mut sfi = 0
+        while sfi < Array::length(sfields) {
+          let (fname, _) = Array::get(sfields, sfi)
+          Array::push(fnames, fname)
+          sfi = sfi + 1
+        }
+        Array::push(struct_field_names, fnames)
+        // #1542: which of this struct's fields are declared as a reference-lane
+        // array. The field's wasm type follows from its DECLARED type, so this
+        // has to be collected here beside the names rather than inferred from a
+        // literal at the binding site.
+        let frefs = array_empty()
+        let mut sfr = 0
+        while sfr < Array::length(sfields) {
+          let (_, fty) = Array::get(sfields, sfr)
+          Array::push(frefs, gc_direct_abi_is_native_array_type(fty))
+          sfr = sfr + 1
+        }
+        Array::push(struct_field_is_ref, frefs)
+        ()
+      },
+      _ => ()
+    }
+    si = si + 1
+  }
+  // #2386: the struct-name and constructor-type-name views agg_info_of_type_name
+  // binary-searches (see CtorTable.struct_names_sorted).
+  let (gc_struct_names_sorted, gc_struct_names_sorted_pos) = ctor_sorted_index(struct_names)
+  let (gc_type_names_sorted, _) = ctor_sorted_index(ctor_type_names_list)
+  let num_user_funcs = Array::length(fn_names_list)
+  if num_user_funcs == 0 {
+    throw("no functions found to compile")
+  }
+  let mut entry_user_idx = -1
+  let mut ei = 0
+  while ei < num_user_funcs {
+    if Array::get(fn_names_list, ei) == entry_name {
+      entry_user_idx = ei
+    }
+    ei = ei + 1
+  }
+  if entry_user_idx < 0 {
+    throw(String::concat("entry function not found: ", entry_name_in))
+  }
+  // Share one scope-aware scan across conditional bodies and host imports.
+  let used_builtins = collect_used_builtin_names(stmts, fn_names_list)
+  let need_array_capacity = Map::has_key(used_builtins, "Array::with_capacity")
+  let str_strs = collect_strings_stmts(stmts)
+  // #538: StringBuilder::freeze joins with "" and println appends "\n"; both
+  // must exist in the string table even when the program has no such literal.
+  if !array_contains_str(str_strs, "") {
+    Array::push(str_strs, "")
+  }
+  if !array_contains_str(str_strs, "\n") {
+    Array::push(str_strs, "\n")
+  }
+  // Keep the optional allocator's diagnostic out of unrelated modules too.
+  let array_capacity_error_slot = Array::length(str_strs)
+  if need_array_capacity {
+    Array::push(str_strs, array_capacity_error_message())
+  }
+  let capacity_error_slot = Array::length(str_strs)
+  Array::push(str_strs, bytes_capacity_error_message())
+  // #3126: the division-by-zero line's fragments and each site's whole
+  // `path:line:col` (this lane has no integer printer to assemble one), only
+  // when the program has a guarded `/` or `%`. `collect_strings_stmts`
+  // dedupes its own output; these are checked against it.
+  let div_sites: Array[String] = []
+  let need_div_zero_abort = collect_int_div_sites(stmts, div_sites, MutSet::new_string(), true)
+  if need_div_zero_abort {
+    let div_strs = [
+      div_zero_div_message(),
+      div_zero_rem_message(),
+      div_zero_at_fragment()
+    ]
+    let mut __dsi = 0
+    while __dsi < Array::length(div_sites) {
+      Array::push(div_strs, Array::get(div_sites, __dsi))
+      __dsi = __dsi + 1
+    }
+    let mut __dpi = 0
+    while __dpi < Array::length(div_strs) {
+      if !array_contains_str(str_strs, Array::get(div_strs, __dpi)) {
+        Array::push(str_strs, Array::get(div_strs, __dpi))
+      } else {
+        ()
+      }
+      __dpi = __dpi + 1
+    }
+  } else {
+    ()
+  }
+  let num_strings = Array::length(str_strs)
+  let data_base = 64
+  let str_offsets = array_empty()
+  let str_lengths = array_empty()
+  let mut str_pos = data_base
+  let mut si = 0
+  while si < num_strings {
+    let s = Array::get(str_strs, si)
+    let slen = String::length(s)
+    Array::push(str_offsets, str_pos)
+    Array::push(str_lengths, slen)
+    str_pos = str_pos + slen
+    si = si + 1
+  }
+  let heap_start = ((str_pos + 7) / 8) * 8
+  // ADR-0090 (#1262) tier 2 on this lane: the region arena.
+  //
+  // Worth doing here even though this is the GC lane, and that is not the
+  // obvious call. `MutList` / `MutBytes` storage on this backend is NOT a
+  // wasm-gc object -- gc_gen_arr_new_body bumps GLOBAL 0, the same
+  // linear-memory heap the linear backend uses, and this lane never frees it
+  // (no RC: see the Map::size comment in backend_call.vibe). That is exactly
+  // the condition that makes the arena pure win on linear's bump lane, so the
+  // collector does not subsume it.
+  //
+  // Layout and control words are the shared ones (region_saves_base_of /
+  // region_max_depth in common_base) so the two lanes cannot drift:
+  // `[bump ptr @+0][depth @+4][saved bump ptrs @+8, 64 levels][data]`.
+  // Simpler than linear's base, which carves out effect / coverage / trace /
+  // rc-bin reserves first; this lane has none of those, so the arena sits
+  // directly at heap_start and the ordinary heap starts above it.
+  //
+  // Unconditional when the module has a region: linear gates on `!enable_rc`
+  // because an RC block would reach a free list that the bulk release
+  // invalidates, and this lane has no RC lane to guard against.
+  let need_region_arena = Map::has_key(used_builtins, "__region_run")
+  let region_exn_tag = if stmts_contain_exceptions(stmts) {
+    region_exn_tag_gc()
+  } else {
+    -1
+  }
+  let region_ctl_base = heap_start
+  let region_saves_base = region_saves_base_of(region_ctl_base)
+  let region_data_base = ((region_saves_base + region_max_depth() * 4 + 7) / 8) * 8
+  // 256 KiB, same as linear. Overflow is not an error: the arena bodies fall
+  // back to the main bump heap, which is this lane's current behavior, so a
+  // region that outgrows the segment gets no reclamation rather than wrong
+  // answers.
+  let region_arena_bytes = 262144
+  let region_limit = region_data_base + region_arena_bytes
+  let region_ptr_addr = if need_region_arena {
+    region_ctl_base
+  } else {
+    -1
+  }
+  // The ordinary bump heap starts ABOVE the segment when there is one.
+  let gc_heap_start = if need_region_arena {
+    region_limit
+  } else {
+    heap_start
+  }
+  // The control words are written by plain i32.store with no grow check (that
+  // is the point -- the save/restore needs no locals at the call site), so the
+  // memory must already cover them. emit_heap_memory_grow_check only guards
+  // the bump allocations above.
+  let mem_min_pages = if need_region_arena {
+    (region_limit + 65535) / 65536 + 1
+  } else {
+    1
+  }
+  // The two arena allocators are appended only when the module has a region
+  // (see the push site near the end of the builtin table). They go LAST so
+  // every `hbo + N` ordinal above keeps its meaning in both shapes.
+  //
+  // This count is fixed HERE, before any body is pushed, so it cannot be
+  // `Array::length(bodies)` -- it is stale by construction, exactly like the
+  // linear lane's max_builtin_func_idx. Adding a body without bumping it does
+  // not fail at codegen: the module fails wasm VALIDATION on a function index
+  // past the end. Written as base + arena so appending is one edit, not two.
+  // #2344 raised the base 48 -> 51 for Int::popcount / ctz / clz.
+  let gc_unconditional_body_count = 57
+  let capacity_extra = if need_array_capacity {
+    1
+  } else {
+    0
+  }
+  // #2405 follow-up: the shared integer renderer, pushed only when the module
+  // has a statically-int `__to_string` argument. Conditional for the same
+  // reason the arena pair below is: a module that never needs it should not
+  // carry ~182 bytes of it (six of the nine bench/exec samples are in that
+  // group and stay byte-identical).
+  let need_to_string_int = gc_stmts_need_to_string_int(stmts)
+  let ts_int_extra = if need_to_string_int {
+    1
+  } else {
+    0
+  }
+  // #3126: the division-by-zero abort, pushed only when the program has a
+  // guarded `/` or `%` -- after the integer renderer, before the arena pair.
+  let div_zero_extra = if need_div_zero_abort {
+    1
+  } else {
+    0
+  }
+  // #3158: the erased-generic `[T: Add]` / `[T: Ord]` dispatch pair, pushed
+  // only when desugar_trait_dicts emitted a call to either (the gc lane runs
+  // that pass too). Conditional for the same size reason as the renderer.
+  // Pushed after the #3126 abort body, so its indices add `div_zero_extra`.
+  let need_generic_dispatch = Map::has_key(used_builtins, "__generic_add") || Map::has_key(used_builtins, "__generic_rel_diff")
+  let generic_extra = if need_generic_dispatch {
+    2
+  } else {
+    0
+  }
+  let num_generated = if need_region_arena {
+    gc_unconditional_body_count + capacity_extra + ts_int_extra + div_zero_extra + generic_extra + 2
+  } else {
+    gc_unconditional_body_count + capacity_extra + ts_int_extra + div_zero_extra + generic_extra
+  }
+  // #538: host imports (module "vibe", tagged-i64 ABI -- the same raw ABI the
+  // linear backend and the node host runner speak). Gated as a GROUP: pure
+  // modules stay import-free (runnable on bare wasmtime); a module touching
+  // any Env::/Fs::/Stdin::/Stdout:: builtin imports ALL of them at indices
+  // 1..19,
+  // shifting every generated-body index by that count (hbo).
+  //
+  // `hbo` IS that count. FIVE places encode this list -- use_host, host_defs,
+  // host_imports, the `bytebuf_push_vec_header(imp_content, N)` literal that
+  // counts them (N is hbo + 1, for fd_write), and hbo itself. This comment said
+  // FOUR until #2758 added an import, updated the three it names plus the
+  // vector header, and left hbo behind: every generated body shifted by one and
+  // EVERY `Fs::remove*` call on the gc lane died with "not enough arguments on
+  // the stack for call (need 1, got 0)" -- including the two this change never
+  // touched, which is what says the cause is the shared offset and not the new
+  // builtin. Moving one without the others is silently
+  // wrong: the first build that appended imports but left hbo behind produced
+  // modules that validated nowhere ("not enough arguments on the stack for
+  // call"), because every generated-body index still pointed low.
+  let use_host = Map::has_key(used_builtins, "Env::get") || Map::has_key(used_builtins, "Env::args_len") || Map::has_key(used_builtins, "Env::args_get") || Map::has_key(used_builtins, "Fs::read_file") || Map::has_key(used_builtins, "Fs::exists") || Map::has_key(used_builtins, "Fs::stat_token") || Map::has_key(used_builtins, "Fs::write_file") || Map::has_key(used_builtins, "Fs::publish_immutable_text") || Map::has_key(used_builtins, "Fs::write_bytes") || Map::has_key(used_builtins, "Fs::read_bytes") || Map::has_key(used_builtins, "Profiler::now_us") || Map::has_key(used_builtins, "Fs::remove") || Map::has_key(used_builtins, "Fs::remove_file") || Map::has_key(used_builtins, "Fs::remove_tree") || Map::has_key(used_builtins, "Fs::rename") || Map::has_key(used_builtins, "Fs::is_dir") || Map::has_key(used_builtins, "Fs::is_file") || Map::has_key(used_builtins, "Stdout::write_stream") || Map::has_key(used_builtins, "Stdout::write_char") || Map::has_key(used_builtins, "Console::write_stream") || Map::has_key(used_builtins, "Console::write_char") || Map::has_key(used_builtins, "Fs::readdir") || Map::has_key(used_builtins, "Stdin::read_char") || Map::has_key(used_builtins, "Stdin::read_stream") || Map::has_key(used_builtins, "vibe_process_exit_raw") || Map::has_key(used_builtins, "Stderr::write_stream")
+  let hbo = if use_host {
+    24
+  } else {
+    0
+  }
+  let func_offset = 1 + hbo + num_generated
+  // ADR-0090 (#1262): generated body ordinals are ONE-BASED -- host imports
+  // occupy indices 1..hbo, so the first pushed body sits at `hbo + 1` and the
+  // last at `hbo + num_generated` (the body match table above ends with
+  // `"simd_scan_line_end_str" => 48` when no arena is present). The two arena
+  // allocators are the last two pushes.
+  //
+  // Getting this off by one does not fail loudly at codegen: it produces a
+  // module that fails wasm VALIDATION with "not enough arguments on the stack
+  // for call", which is the same symptom the hbo comment above describes.
+  // Derived from num_generated rather than written as literals so appending
+  // another body cannot silently point these at someone else's code.
+  // The optional capacity allocator precedes the integer renderer. The arena
+  // pair stays last, with its indices derived from the total generated count.
+  let to_string_int_idx = if need_to_string_int {
+    hbo + gc_unconditional_body_count + capacity_extra + 1
+  } else {
+    -1
+  }
+  let div_zero_abort_idx = if need_div_zero_abort {
+    hbo + gc_unconditional_body_count + capacity_extra + ts_int_extra + 1
+  } else {
+    0 - 1
+  }
+  let region_arr_new_idx = if need_region_arena {
+    hbo + num_generated - 1
+  } else {
+    -1
+  }
+  let region_bytes_new_idx = if need_region_arena {
+    hbo + num_generated
+  } else {
+    -1
+  }
+  // #415 B-1: the central registry DRIVES the gc lane's registration too.
+  // (name, params, returns) come from builtin_registry() rows with in_gc =
+  // true; only the gc GENERATED-BODY INDEX is lane-local, resolved by the
+  // match below. Adding a gc builtin = one registry row + one match arm (+
+  // its generated body); param-count and returns live ONLY in the registry.
+  let builtin_defs = array_empty()
+  let gc_registry_rows = builtin_registry()
+  let mut gc_reg_i = 0
+  while gc_reg_i < Array::length(gc_registry_rows) {
+    let (gc_name, gc_params, gc_returns, _, gc_in_gc) = Array::get(gc_registry_rows, gc_reg_i)
+    if gc_in_gc {
+      let gc_body_idx = match gc_name {
+        "print_int" => 1,
+        "print_str" => 2,
+        "String::length" => 3,
+        "String::equals" => 4,
+        "String::concat" => 5,
+        "array_new" => 6,
+        "Array::length" => 7,
+        "Array::get" => 8,
+        "Array::push" => 9,
+        "Array::set" => 10,
+        "Double::to_int" => 11,
+        "Int::to_double" => 12,
+        "Int::popcount" => 49,
+        "Int::ctz" => 50,
+        "Int::clz" => 51,
+        "Bytes::index_of_bytes" => 52,
+        "Bytes::index_of" => 53,
+        "Bytes::count" => 54,
+        "Bytes::last_index_of" => 55,
+        "Bytes::compare" => 56,
+        "String::char_code_at" => 13,
+        "String::from_char_code" => 14,
+        "String::substring" => 15,
+        "ArrayBuilder::new" => 6,
+        "ArrayBuilder::push" => 9,
+        "ArrayBuilder::freeze" => 16,
+        // #1733: append-only body 46 copies in both directions, including
+        // function-value aliases, without shifting existing gc ordinals.
+        "FrozenArray::from_array" => 46,
+        "FrozenArray::to_array" => 46,
+        "FrozenArray::get" => 8,
+        "FrozenArray::length" => 7,
+        "Array::slice" => 38,
+        "Array::concat" => 39,
+        "Array::truncate" => 40,
+        "Array::push_all" => 41,
+        "str_lex_diff" => 42,
+        // #3158: pushed after the optional renderer and the optional #3126
+        // abort body (see need_generic_dispatch).
+        "__generic_rel_diff" => gc_unconditional_body_count + capacity_extra + ts_int_extra + div_zero_extra + 1,
+        "__generic_add" => gc_unconditional_body_count + capacity_extra + ts_int_extra + div_zero_extra + 2,
+        "eq" => 29,
+        "not" => 6,
+        "String::join" => 35,
+        "String::ends_with" => 33,
+        "String::last_index_of" => 34,
+        "String::starts_with" => 32,
+        "String::contains" => 31,
+        "String::index_of" => 30,
+        "String::split" => 36,
+        "String::trim" => 37,
+        "Bytes::new" => 18,
+        "Bytes::with_capacity" => 57,
+        "Array::with_capacity" => gc_unconditional_body_count + 1,
+        "Bytes::length" => 7,
+        "Bytes::get" => 19,
+        "Bytes::set" => 20,
+        "Bytes::push" => 21,
+        "Bytes::append" => 22,
+        "Bytes::concat" => 23,
+        "Bytes::slice" => 24,
+        "Bytes::from_array" => 25,
+        "Bytes::to_array" => 26,
+        "Bytes::blit" => 27,
+        "Bytes::fill" => 28,
+        // #1331 調査: `Bytes` は両レーンとも linear memory にあり、SIMD は
+        // その linear memory 上で成立する (v128.load はメモリアドレスを取る
+        // 命令で、wasm-gc の配列はアドレス可能ではない)。つまり gc レーンで
+        // 動かない理由は無く、単に未登録だっただけ。ボディは linear と同一の
+        // 生成器を共有する。
+        "simd_skip_ws" => 43,
+        "simd_scan_alnum" => 44,
+        "simd_scan_alnum_str" => 45,
+        "simd_scan_string_special_str" => 47,
+        "simd_scan_line_end_str" => 48,
+        "Double::from_i64_bits" => 16,
+        // #538 P4.5: identity wraps the trait-dict desugar emits around float
+        // `==` operands (and int->float widening); all no-ops in the raw-bits
+        // i64 world, same as the linear lane's compile_call identity handling.
+        "Double::to_float" => 16,
+        "Float::to_double" => 16,
+        "Char::to_int" => 16,
+        "Char::from_int" => 16,
+        "Int::to_float" => 12,
+        "FixedArray::make" => 6,
+        "FixedArray::length" => 6,
+        "FixedArray::get" => 6,
+        "FixedArray::set" => 6,
+        "FixedArray::unsafe_set" => 6,
+        "FixedArray::blit" => 6,
+        "Int64Array::make" => 6,
+        "Int64Array::length" => 6,
+        "Int64Array::get" => 6,
+        "Int64Array::set" => 6,
+        "StringBuilder::new" => 6,
+        "StringBuilder::push" => 6,
+        "StringBuilder::freeze" => 6,
+        "Map::get" => 6,
+        "Map::keys" => 6,
+        "MapBuilder::new" => 6,
+        "MapBuilder::set" => 6,
+        "MapBuilder::freeze" => 6,
+        "MapBuilder::has_key" => 6,
+        "MapBuilder::get" => 6,
+        "__to_string" => 17,
+        "assert" => 6,
+        "assert_true" => 6,
+        "assert_eq" => 6,
+        "println" => 6,
+        "print" => 6,
+        "map_has" => 6,
+        _ => 0 - 1
+      }
+      if gc_body_idx < 0 {
+        throw("builtin registry drift: no gc body-index mapping for builtin '\{gc_name}' (add a match arm in backend_body.vibe, #415)")
+      } else {
+        ()
+      }
+      Array::push(builtin_defs, (gc_name, gc_params, gc_body_idx, gc_returns))
+    } else {
+      ()
+    }
+    gc_reg_i = gc_reg_i + 1
+  }
+  // #415 B-0: builtin_defs must agree with the central registry (name set +
+  // params + returns, both directions). The table is static, so this is a
+  // full bidirectional check — a builtin added to the linear lane without an
+  // explicit gc decision (or vice versa) fails every gc build by name.
+  let __reg_names = array_empty()
+  let __reg_params = array_empty()
+  let __reg_returns = array_empty()
+  let mut __ri = 0
+  while __ri < Array::length(builtin_defs) {
+    let (rbname, rbparams, _, rbreturns) = Array::get(builtin_defs, __ri)
+    Array::push(__reg_names, rbname)
+    Array::push(__reg_params, rbparams)
+    Array::push(__reg_returns, rbreturns)
+    __ri = __ri + 1
+  }
+  verify_lane_builtins("gc", __reg_names, __reg_params, __reg_returns)
+  let mut __bi = 0
+  while __bi < Array::length(builtin_defs) {
+    let (bname, bparams, _, _) = Array::get(builtin_defs, __bi)
+    Array::push(fn_names_list, bname)
+    Array::push(fn_param_counts, bparams)
+    Array::push(fn_needs_env_list, false)
+    __bi = __bi + 1
+  }
+  let fn_indices_list = array_empty()
+  let fn_returns_list = array_empty()
+  let mut fi = 0
+  while fi < num_user_funcs {
+    Array::push(fn_indices_list, fi + func_offset)
+    Array::push(fn_returns_list, 1)
+    fi = fi + 1
+  }
+  let mut __bi2 = 0
+  while __bi2 < Array::length(builtin_defs) {
+    let (_, _, bwasm_idx, breturns) = Array::get(builtin_defs, __bi2)
+    Array::push(fn_indices_list, bwasm_idx + hbo)
+    Array::push(fn_returns_list, breturns)
+    __bi2 = __bi2 + 1
+  }
+  // #538: host-import builtins at absolute import indices 1..9.
+  if use_host {
+    let host_defs = [
+      ("Env::get", 1, 1, 1),
+      ("Env::args_len", 0, 2, 1),
+      ("Env::args_get", 1, 3, 1),
+      ("Fs::read_file", 1, 4, 1),
+      ("Fs::exists", 1, 5, 1),
+      ("Fs::stat_token", 1, 6, 1),
+      ("Fs::write_file", 2, 7, 0),
+      ("Fs::publish_immutable_text", 2, 8, 1),
+      ("Fs::write_bytes", 2, 9, 0),
+      ("Fs::read_bytes", 1, 10, 1),
+      ("Profiler::now_us", 0, 11, 1),
+      // #1262: appended, never inserted -- the indices above are absolute, so
+      // an insertion would silently repoint every existing call.
+      //
+      // `Fs::readdir` is deliberately absent. It returns Array[String] and the
+      // linear lane lowers that surface at the call site on top of the raw
+      // import ("RAW half of Fs::readdir -- compile_call lowers the surface");
+      // wiring only the import gives an empty array on the gc lane (measured:
+      // linear 3 entries, gc 0). `Stdin::read_char` / `Stdin::read_stream` are
+      // absent for a different reason -- they wire identically to these, but
+      // stdin reaches neither lane in the test harness, so both return EOF and
+      // agreement proves nothing. Shipping wiring that is only EOF-verified is
+      // how a silently-wrong builtin gets in.
+      ("Fs::remove", 1, 12, 0),
+      ("Fs::rename", 2, 13, 0),
+      ("Fs::is_dir", 1, 14, 1),
+      ("Fs::is_file", 1, 15, 1),
+      ("Stdout::write_stream", 1, 16, 0),
+      // #1262: registered under the RAW name, not `Fs::readdir`. The surface
+      // returns Array[String] while the import (`fs_read_dir_nul`) returns the
+      // entries NUL-joined (#2957) as one packed string; compile_call_gc
+      // rewrites the surface onto this
+      // name (shared with the linear lane via packed_dir_entries_to_array_expr).
+      ("vibe_fs_read_dir_raw", 1, 17, 1),
+      // #1262: held back in #1823 because the harness fed neither lane any
+      // stdin, so both returned EOF and agreement proved nothing. The feed is
+      // `VIBE_STDIN_BYTES` (an env var, not piped stdin) -- with it these are
+      // verifiable against linear on real input, so they land here now.
+      ("Stdin::read_char", 0, 18, 1),
+      ("Stdin::read_stream", 1, 19, 1),
+      // #1262: `vibe.process_exit (i64) -> ()` -- void, same shape as
+      // Fs::remove / Stdout::write_stream. This was the gc self-build's
+      // stopping point: the flat compiler source calls it (cli_adapter.vibe
+      // ends `main` with it), so codegen hit an unresolved name here while
+      // every builtin LOWERING was already in place.
+      ("vibe_process_exit_raw", 1, 20, 0),
+      // The shared uncaught-exception boundary diagnoses on stderr before
+      // trapping. Keep this append-only so every older absolute import index
+      // remains stable.
+      ("Stderr::write_stream", 1, 21, 0),
+      // #2738: the NON-recursive remove. Appended, per the rule above, so
+      // every older absolute import index stays put.
+      ("Fs::remove_file", 1, 22, 0),
+      // #2758: the RECURSIVE remove, split out of `Fs::remove` so that one
+      // builtin means one thing on both hosts. Appended for the same reason.
+      ("Fs::remove_tree", 1, 23, 0),
+      // write_char is its own import. Appended so indices 1..23 stay put.
+      ("Stdout::write_char", 1, 24, 0),
+      // Same imports as the Stdout rows. Not new host functions, so hbo
+      // does not move for these two names.
+      ("Console::write_stream", 1, 16, 0),
+      ("Console::write_char", 1, 24, 0)
+    ]
+    let mut __hd = 0
+    while __hd < Array::length(host_defs) {
+      let (hname, hparams, hidx, hret) = Array::get(host_defs, __hd)
+      Array::push(fn_names_list, hname)
+      Array::push(fn_param_counts, hparams)
+      Array::push(fn_needs_env_list, false)
+      Array::push(fn_indices_list, hidx)
+      Array::push(fn_returns_list, hret)
+      __hd = __hd + 1
+    }
+  } else {
+    ()
+  }
+  let ft_names = array_empty()
+  let ft_indices = array_empty()
+  // #724 round 2: (fn name -> declared aggregate return shape) table for
+  // `let a = f(..)` structural `==` (see compute_agg_returning).
+  let gc_agg_ret_names_l = array_empty()
+  let gc_agg_ret_infos_l = array_empty()
+  compute_agg_returning(stmts, CtorTable::{
+    names: ctor_names_list,
+    tags: ctor_tags_list,
+    field_counts: ctor_field_counts_list,
+    type_names: ctor_type_names_list,
+    struct_names: struct_names,
+    struct_field_names: struct_field_names,
+    struct_field_is_ref: struct_field_is_ref,
+    names_sorted: gc_ctor_names_sorted,
+    names_sorted_pos: gc_ctor_names_sorted_pos,
+    struct_names_sorted: gc_struct_names_sorted,
+    struct_names_sorted_pos: gc_struct_names_sorted_pos,
+    type_names_sorted: gc_type_names_sorted
+  }, gc_agg_ret_names_l, gc_agg_ret_infos_l)
+  let (gc_agg_ret_names_sorted_l, gc_agg_ret_names_sorted_pos_l) = ctor_sorted_index(gc_agg_ret_names_l)
+  let ft_params = array_empty()
+  let ft_returns = array_empty()
+  let ft_needs_env = array_empty()
+  let mut ft_copy_i = 0
+  while ft_copy_i < Array::length(fn_names_list) {
+    Array::push(ft_names, Array::get(fn_names_list, ft_copy_i))
+    Array::push(ft_indices, Array::get(fn_indices_list, ft_copy_i))
+    Array::push(ft_params, Array::get(fn_param_counts, ft_copy_i))
+    Array::push(ft_returns, Array::get(fn_returns_list, ft_copy_i))
+    Array::push(ft_needs_env, Array::get(fn_needs_env_list, ft_copy_i))
+    ft_copy_i = ft_copy_i + 1
+  }
+  let refcell_type_idx = 10
+  // This private i64 array is only used by the always-run native-GC smoke
+  // below. Its reference is dropped before user code, so it cannot cross the
+  // universal i64 ABI or change capture/escape representation.
+  let gc_native_alloc_probe_array_type_idx = 11
+  // Mutable i64 array used solely by non-escaping user local literals.
+  let gc_native_array_type_idx = 12
+  // `(func (result (ref null $native_i64_array)))`. Not a callable signature:
+  // it exists so a structured instruction can name a typed-reference result in
+  // its blocktype, which the binary format spells only as a type index. Kept a
+  // base type (rather than appended per module) so its index is a constant the
+  // body emitters can use -- bodies are generated before the type section is
+  // laid out. `emit_if_type_index` requires it to stay below 64.
+  let gc_native_array_block_type_idx = 13
+  // #1702: one wasm-gc struct type per FIELD COUNT, `(struct (mut i64) x N)`.
+  // Cells stay tagged i64 exactly like the native array's -- this changes where
+  // a non-escaping local record LIVES, not how its fields are represented.
+  //
+  // These sit BEFORE the closure types, and that ordering is forced: bodies are
+  // generated before the type section is laid out, so any index a body names
+  // must be a constant here. The struct count is known now (it comes from the
+  // declared structs); `num_closure_types` is only known after the walk.
+  // #1542: one wasm struct type per DECLARED STRUCT, not per field count. A
+  // field declared `Array[Int]` gets `(mut (ref null $array))` rather than
+  // `(mut i64)`, so two structs with the same arity no longer share a type --
+  // the shape depends on which fields carry references.
+  let gc_native_struct_count = Array::length(struct_field_names)
+  let gc_native_struct_type_base = 14
+  let closure_type_base = 14 + gc_native_struct_count
+  let fresh_bytes_array: () -> Array[Bytes] = () -> {
+    ArrayBuilder::freeze(ArrayBuilder::new())
+  }
+  // #1332: module-level, parallel to lt_w.bodies. Shared by reference into
+  // every lambda ctx (backend_lambda_ctx.vibe) so nested lambdas append here
+  // too; record_lambda_meta_gc is the single writer.
+  let gc_lambda_native_array_locals_l = array_empty()
+  let lt_w = LambdaTable::{
+    bodies: fresh_bytes_array(),
+    param_counts: array_empty(),
+    captures: array_empty(),
+    meta_i32: array_empty(),
+    meta_i64: array_empty()
+  }
+  let bodies = fresh_bytes_array()
+  let meta_i32 = array_empty()
+  let meta_i64 = array_empty()
+  let user_ref_local_indices_all = array_empty()
+  // #1332: PARAM COUNT PER BODY, parallel to `bodies`.
+  //
+  // The code section previously recovered this as `ft_params[ci -
+  // num_generated] + 1`, which silently assumes every body with a typed-local
+  // row is a USER FUNCTION. That assumption is what #1427 tripped over (the
+  // `_start` body is not one), and lambdas are not user functions either -- so
+  // enabling typed locals for lambda bodies without fixing this would
+  // reintroduce the same class of bug one row over.
+  //
+  // Every `Array::push(bodies, ...)` site pushes here too. Generated builtin
+  // bodies push -1: they never carry a typed-local row, and the declaration
+  // pass throws rather than guessing if one ever appears.
+  let body_param_counts = array_empty()
+  // Absolute local slots of typed native-array locals, one entry per user
+  // body; ref-cell metadata remains separate because it is still i64.
+  let user_native_array_local_indices_all = array_empty()
+  // #1702: parallel to the above; each entry is a slot -> struct-index map so
+  // the code section can give a struct local its own `(ref null $S_N)`.
+  let user_native_struct_decl_all = array_empty()
+  // #415 B-1: one call = one gc builtin body — body bytes, extra local
+  // counts, the (always empty here) user-ref locals row, and the
+  // function-section type index together. The function section splices
+  // gc_builtin_type_idxs in this same order; the count mismatch guard below
+  // still applies.
+  let gc_builtin_type_idxs = array_empty()
+  let push_gc_builtin: (Bytes, Int, Int, Int) -> Unit = (body, m32, m64, type_idx) -> {
+    Array::push(bodies, body)
+    Array::push(meta_i32, m32)
+    Array::push(meta_i64, m64)
+    Array::push(user_ref_local_indices_all, array_empty())
+    Array::push(user_native_array_local_indices_all, array_empty())
+    Array::push(user_native_struct_decl_all, array_empty())
+    Array::push(body_param_counts, -1)
+    Array::push(gc_builtin_type_idxs, type_idx)
+  }
+  push_gc_builtin(gc_gen_print_i64_body(), 3, 1, 1)
+  push_gc_builtin(gc_gen_print_str_body(), 2, 0, 1)
+  push_gc_builtin(gc_gen_str_len_body(), 0, 0, 3)
+  // #748: strings live in linear memory with the same packed layout in the
+  // gc lane, so the SIMD chunk-compare generator is shared verbatim
+  // (chunk_limit local -> meta_i32 6).
+  push_gc_builtin(gen_str_eq_body(), 6, 0, 4)
+  push_gc_builtin(gc_gen_str_concat_body(), 6, 0, 4)
+  push_gc_builtin(gc_gen_arr_new_body(), 1, 0, 5)
+  push_gc_builtin(gc_gen_arr_len_body(), 0, 0, 3)
+  push_gc_builtin(gc_gen_arr_get_body(), 1, 0, 4)
+  // ADR-0090 (#1262) tier 2: use the LINEAR lane's shared arr_push body
+  // instead of this lane's duplicate, because that one already decides the
+  // regrow lane by a runtime range check on the ARRAY's block ("is it inside
+  // the arena segment?"), which is the property that matters here.
+  //
+  // This is not cosmetic. With the gc-local body, MutList storage came from
+  // the arena but every doubling regrow buffer still went to the main heap,
+  // and the regrow buffers are the BULK of a region's cost: measured on
+  // fixtures/region_arena_bounded.vibe (200 regions x 500 elements),
+  // 1,635,208 B reclaimed nothing at all versus linear's 16,204 B. The
+  // arena was correct and inert.
+  //
+  // enable_rc=false: this lane has no RC (same reason every other shared
+  // generator here is called with false). The arena form needs one extra
+  // i32 local for the arena bump pointer, exactly as on linear.
+  push_gc_builtin(gen_arr_push_body(false, -1, false, region_ptr_addr, region_data_base, region_limit), if need_region_arena {
+    7
+  } else {
+    6
+  }, 0, 6)
+  push_gc_builtin(gc_gen_arr_set_body(), 1, 0, 7)
+  push_gc_builtin(gc_gen_double_to_int_body(), 0, 0, 3)
+  push_gc_builtin(gc_gen_int_to_double_body(), 0, 0, 3)
+  push_gc_builtin(gc_gen_str_char_code_at_body(), 1, 0, 4)
+  push_gc_builtin(gc_gen_str_from_char_code_body(), 1, 0, 3)
+  // #3067: the shared clamping body needs one i64 local (the length).
+  push_gc_builtin(gc_gen_str_substring_body(), 2, 1, 8)
+  push_gc_builtin(gc_gen_identity_body(), 0, 0, 3)
+  // Body 17 (__to_string): runtime string-vs-int dispatch, NOT identity —
+  // interpolation routes every `\{x}` here (see gc_gen_to_string_body).
+  push_gc_builtin(gc_gen_to_string_body(), 0, 5, 3)
+  push_gc_builtin(gen_bytes_new_body(), 1, 0, 5)
+  // #2199: oob_abort_idx < 0 keeps the historical bare-trap form -- the gc
+  // lane has no __rt_oob_abort helper (its own Array OOB is the engine's
+  // native `out of bounds array access` trap, which already names the shape).
+  push_gc_builtin(gen_bytes_get_body(false, 0 - 1, 0 - 1), 1, 0, 4)
+  push_gc_builtin(gen_bytes_set_body(false, 0 - 1, 0 - 1), 1, 0, 7)
+  // ADR-0090 (#1262) tier 2: the Bytes half of the regrow lane. Same shape
+  // and same reason as arr_push above -- the replacement buffer must follow
+  // the BUFFER'S OWN block, so MutBytes and ordinary Bytes share one body
+  // and the decision is a runtime range check, not a call-site property.
+  //
+  // Passing -1 here (which compiles the arena branch out) is exactly the bug
+  // the Array side had: MutBytes headers came from the segment while every
+  // replacement buffer past the initial 64 bytes came from the main bump
+  // heap and survived the watermark restore. Measured on
+  // fixtures/region_bytes_arena_bounded.vibe: 182,408 B with -1 against
+  // linear's 8,008 B. The arena form needs one extra i32 local, as on linear.
+  push_gc_builtin(gen_bytes_push_body(false, region_ptr_addr, region_data_base, region_limit), if need_region_arena {
+    7
+  } else {
+    6
+  }, 0, 6)
+  push_gc_builtin(gen_bytes_append_body(region_ptr_addr, region_data_base, region_limit), if need_region_arena {
+    9
+  } else {
+    8
+  }, 0, 6)
+  push_gc_builtin(gen_bytes_concat_body(hbo + 18, hbo + 22), 0, 1, 4)
+  push_gc_builtin(gen_bytes_slice_body(false, hbo + 18, hbo + 19, hbo + 21), 2, 1, 8)
+  push_gc_builtin(gen_bytes_from_array_body(false, hbo + 7, hbo + 8, hbo + 18, hbo + 21), 2, 1, 3)
+  push_gc_builtin(gen_bytes_to_array_body(false, hbo + 6, hbo + 9, hbo + 7, hbo + 19), 2, 1, 3)
+  push_gc_builtin(gen_bytes_blit_body(false, hbo + 19, hbo + 21), 2, 0, 9)
+  push_gc_builtin(gen_bytes_fill_body(false, hbo + 21), 2, 0, 7)
+  // #538: generic eq (i64 fast path + looks-like-string guarded content eq)
+  // -- Map::get/has_key/MapBuilder::set resolve "eq" from the func table, and
+  // before this existed the placeholder index called array_new, which returns
+  // a fresh non-zero pointer: every key comparison was TRUE (silent wrong Map
+  // results). The gc string repr is the same packed (offset<<32)|len as the
+  // linear backend, so the linear bodies are reused verbatim below.
+  push_gc_builtin(gen_eq_body(hbo + 4), 0, 0, 4)
+  push_gc_builtin(gen_string_index_of_body(false, hbo + 3, hbo + 15, hbo + 4), 8, 0, 4)
+  push_gc_builtin(gen_string_contains_body(false, hbo + 30), 0, 0, 4)
+  push_gc_builtin(gen_string_starts_with_body(false, hbo + 3, hbo + 15, hbo + 4), 2, 1, 4)
+  push_gc_builtin(gen_string_ends_with_body(false, hbo + 3, hbo + 15, hbo + 4), 2, 1, 4)
+  push_gc_builtin(gen_string_last_index_of_body(false, hbo + 3, hbo + 15, hbo + 4), 3, 1, 4)
+  push_gc_builtin(gen_string_join_body(false, hbo + 7, hbo + 8, hbo + 5), 9, 1, 4)
+  push_gc_builtin(gen_string_split_body(false, hbo + 6, hbo + 9, hbo + 3, hbo + 15, hbo + 30), 4, 1, 4)
+  push_gc_builtin(gen_string_trim_body(false, hbo + 3, hbo + 13, hbo + 15), 4, 0, 3)
+  // #3078: one more i64 local (the length the shared clamp reads).
+  push_gc_builtin(gc_gen_arr_slice_body(hbo + 6, hbo + 7, hbo + 8, hbo + 9), 0, 3, 8)
+  push_gc_builtin(gc_gen_arr_concat_body(hbo + 6, hbo + 7, hbo + 8, hbo + 9), 0, 3, 4)
+  push_gc_builtin(gc_gen_arr_truncate_body(), 0, 0, 6)
+  push_gc_builtin(gc_gen_arr_push_all_body(hbo + 7, hbo + 8, hbo + 9), 0, 2, 6)
+  // #746: same packed-string layout as the linear lane, generator shared
+  // verbatim (untagged ints in the gc lane -> enable_rc=false).
+  push_gc_builtin(gen_str_lex_diff_body(false), 7, 0, 4)
+  // #1331 調査で見つかった穴: `Bytes::blit`/`fill` は gc にあるのに SIMD
+  // スキャンだけ linear 専用だった。generator は linear と同一 (gc レーンは
+  // 他の Bytes builtin と同じく enable_rc=false)、型は 8 = (i64,i64,i64)->i64。
+  // 追加は必ず末尾に置くこと -- 上の `hbo + N` は push 順の序数なので、
+  // 途中に挿入すると既存の参照が全てずれる。
+  push_gc_builtin(gen_simd_skip_ws_body(false), 2, 2, 8)
+  push_gc_builtin(gen_simd_scan_alnum_body(false, false), 1, 3, 8)
+  push_gc_builtin(gen_simd_scan_alnum_body(false, true), 1, 3, 8)
+  // #1733: append only -- all hbo + N references above depend on the existing
+  // ordinals. Array::length is body 7 and Array::slice is body 38.
+  push_gc_builtin(gen_array_value_copy_body(hbo + 7, hbo + 38), 0, 0, 3)
+  push_gc_builtin(gen_simd_scan_string_special_body(false), 1, 3, 8)
+  push_gc_builtin(gen_simd_scan_line_end_body(false), 1, 3, 8)
+  // #2344: the scalar bit primitives, appended per the #1733 append-only rule
+  // so no `hbo + N` above moves. Body ordinals are ONE-BASED (see the comment
+  // on region_arr_new_idx), so these are 49 / 50 / 51 and the match arms below
+  // say so. `false` = the gc lane is never RC, so the bodies skip the tag
+  // dance; no extra locals, type 3 is (i64) -> (i64).
+  push_gc_builtin(gen_int_popcount_body(false), 0, 0, 3)
+  push_gc_builtin(gen_int_ctz_body(false), 0, 0, 3)
+  push_gc_builtin(gen_int_clz_body(false), 0, 0, 3)
+  push_gc_builtin(gen_bytes_index_of_bytes_body(hbo + 30), 2, 0, 4)
+  push_gc_builtin(gen_bytes_index_of_byte_body(false), 1, 3, 4)
+  push_gc_builtin(gen_bytes_count_byte_body(false), 1, 4, 4)
+  push_gc_builtin(gen_bytes_last_index_of_byte_body(false), 1, 3, 4)
+  push_gc_builtin(gen_bytes_compare_body(false), 2, 4, 4)
+  push_gc_builtin(gen_bytes_with_capacity_body(false, hbo + 2, (Array::get(str_offsets, capacity_error_slot)<<32)|Array::get(str_lengths, capacity_error_slot)), 2, 0, 3)
+  if need_array_capacity {
+    push_gc_builtin(gen_arr_with_capacity_body(false, -1, hbo + 2, (Array::get(str_offsets, array_capacity_error_slot)<<32)|Array::get(str_lengths, array_capacity_error_slot)), 3, 0, 3)
+  }
+  // #2405 follow-up: immediately after the unconditional bodies and
+  // before the arena pair -- `to_string_int_idx` above encodes exactly that.
+  // Same shape as the runtime-dispatching `__to_string` body (one i64 param,
+  // five i64 locals, type index 3), minus the string heuristic.
+  if need_to_string_int {
+    push_gc_builtin(gc_gen_to_string_int_body(), 0, 5, 3)
+  } else {
+    ()
+  }
+  // #3126: `div_zero_abort_idx` above encodes this position. `print_str` is
+  // body 2 (`hbo + 2`, as the capacity allocator above passes it).
+  if need_div_zero_abort {
+    push_gc_builtin(gen_div_zero_abort_body(hbo + 2, 0 - 1, gc_str_fat(str_strs, str_offsets, str_lengths, div_zero_div_message()), gc_str_fat(str_strs, str_offsets, str_lengths, div_zero_rem_message()), gc_str_fat(str_strs, str_offsets, str_lengths, div_zero_at_fragment()), 0, gc_str_fat(str_strs, str_offsets, str_lengths, "\n")), 0, 0, 7)
+  } else {
+    ()
+  }
+  // #3158: the linear lane's erased-generic dispatch bodies, shared verbatim:
+  // gc strings are the same packed (offset<<32)|len and gc ints are untagged
+  // (enable_rc=false keeps the #1877 wrap renormalization in `+`). Their
+  // callees are str_lex_diff (body 42) and String::concat (body 5); type 4 is
+  // (i64, i64) -> i64 and neither body needs a local beyond its params.
+  // Pushed after the #3126 abort body; the match arms above add
+  // `div_zero_extra` for exactly that reason.
+  if need_generic_dispatch {
+    push_gc_builtin(gen_generic_rel_diff_body(false, hbo + 42), 0, 0, 4)
+    push_gc_builtin(gen_generic_add_body(false, hbo + 5), 0, 0, 4)
+  } else {
+    ()
+  }
+  // ADR-0090 (#1262) tier 2: the arena allocators, appended LAST and only
+  // when the module has a region -- `num_generated` above counts them the
+  // same way, so ordinals 0..48 (every `hbo + N` reference above) are
+  // untouched either way. The generators are the linear lane's, unchanged:
+  // they take the layout as parameters, so the two lanes cannot drift on the
+  // segment's shape.
+  if need_region_arena {
+    push_gc_builtin(gen_region_arr_new_body(region_ptr_addr, region_data_base, region_limit), 2, 0, 5)
+    push_gc_builtin(gen_region_bytes_new_body(region_ptr_addr, region_data_base, region_limit), 2, 0, 5)
+  } else {
+    ()
+  }
+  // #1109 gc parity (linear twin: linked_compile.vibe's table_slots_used):
+  // module-wide recorder of funcref-table slots codegen actually
+  // materializes as closure values. Created once here -- every CompileCtxGc
+  // constructed below (per-function and the globals-init ctx) shares this
+  // array by reference -- and consumed by the element-section emission,
+  // which registers only the recorded slots (see CompileCtx.table_slots_used
+  // in common_base.vibe for the full rationale).
+  let table_slots_used = array_empty()
+  let mut bi = 0
+  while bi < num_user_funcs {
+    let stmt = Array::get(user_func_stmts, bi)
+    match stmt {
+      SLet(_, _, gc_fn_name, gc_fn_ann, expr) => match expr {
+        EFn(gc_fn_tparams, _, params, _, _, body) => {
+          let body_buf = bytebuf_new()
+          let local_names = array_empty()
+          let gc_agg_slots_f = array_empty()
+          let mut ppi = 0
+          while ppi < Array::length(params) {
+            let (pname, _) = Array::get(params, ppi)
+            Array::push(local_names, gb_strip_param_label_marker(pname))
+            ppi = ppi + 1
+          }
+          Array::push(local_names, "[gc-temp]__env")
+          let param_count = Array::length(params) + 1
+          // #724 round 2: seed the aggregate-shape log from annotated params.
+          // #744 gc mirror: seed float tracking from annotated Float/Double
+          // params in the same walk (linear tracks these via float_local_slots).
+          // #1015 gc mirror: seed bool tracking from annotated Bool params in
+          // the same walk (linear tracks these via int_local_slots kind 3) --
+          // without this a Bool-typed top-level fn param passed to
+          // `to_string(b)` is an untracked bare EIdent and mis-renders `true`
+          // as `"1"` through the generic runtime dispatch (Bool and Int share
+          // the same gc-lane numeric representation, no distinguishing tag).
+          // #1032: gc_float_slots_f/gc_bool_slots_f are both tracked by SLOT
+          // INDEX (not name) -- `psi` IS the param's slot in local_names
+          // (params are pushed there in order starting at 0, just above this
+          // loop).
+          let gc_float_slots_f = array_empty()
+          let gc_bool_slots_f = array_empty()
+          let gc_int_slots_f = array_empty()
+          let gc_sig_ptypes = fn_type_param_types(gc_fn_ann)
+          let mut psi = 0
+          while psi < Array::length(params) {
+            let pann = match gc_sig_ptypes {
+              Some(pts) => if Array::length(pts) == Array::length(params) {
+                Some(Array::get(pts, psi))
+              } else {
+                let (_, pa) = Array::get(params, psi)
+                pa
+              },
+              None => {
+                let (_, pa) = Array::get(params, psi)
+                pa
+              }
+            }
+            match pann {
+              Some(pte) => {
+                // #2141: a param annotated with the fn's own formal is erased
+                // -- see ty_head_names_formal (the linear lane's twin gate).
+                let pinfo = if ty_head_names_formal(pte, gc_fn_tparams) {
+                  0
+                } else {
+                  agg_info_of_type_expr(CtorTable::{
+                    names: ctor_names_list,
+                    tags: ctor_tags_list,
+                    field_counts: ctor_field_counts_list,
+                    type_names: ctor_type_names_list,
+                    struct_names: struct_names,
+                    struct_field_names: struct_field_names,
+                    struct_field_is_ref: struct_field_is_ref,
+                    names_sorted: gc_ctor_names_sorted,
+                    names_sorted_pos: gc_ctor_names_sorted_pos,
+                    struct_names_sorted: gc_struct_names_sorted,
+                    struct_names_sorted_pos: gc_struct_names_sorted_pos,
+                    type_names_sorted: gc_type_names_sorted
+                  }, pte)
+                }
+                if pinfo > 0 {
+                  Array::push(gc_agg_slots_f, psi * 256 + pinfo)
+                } else {
+                  ()
+                }
+                // #2422: Int-typed params, the same gap the linear lane had
+                // (see linked_compile.vibe). `bc_expr_is_intish` resolves an
+                // ident through this log, so without an entry an annotated
+                // Int param reached `__to_string` and `eq` unclassified.
+                match pte {
+                  TyName(ptn) => if ptn == "Float" || ptn == "Double" {
+                    Array::push(gc_float_slots_f, psi)
+                  } else if ptn == "Bool" {
+                    Array::push(gc_bool_slots_f, psi)
+                  } else if ptn == "Int" {
+                    Array::push(gc_int_slots_f, psi)
+                  } else {
+                    ()
+                  },
+                  _ => ()
+                }
+              },
+              None => ()
+            }
+            psi = psi + 1
+          }
+          let ref_cell_names_f = array_empty()
+          let ref_local_indices_f = array_empty()
+          let direct_sig_idx = gc_direct_abi_name_index_exact(gc_direct_abi_names_l, gc_fn_name)
+          let direct_param_slots_f = array_empty()
+          let direct_return_ref_f = direct_sig_idx >= 0 && Array::get(gc_direct_abi_return_refs_l, direct_sig_idx)
+          if direct_sig_idx >= 0 {
+            let direct_refs = Array::get(gc_direct_abi_param_refs_l, direct_sig_idx)
+            let mut dri = 0
+            while dri < Array::length(direct_refs) {
+              if Array::get(direct_refs, dri) {
+                Array::push(direct_param_slots_f, dri)
+              } else {
+                ()
+              }
+              dri = dri + 1
+            }
+          } else {
+            ()
+          }
+          let ft = FuncTable::{
+            names: ft_names,
+            indices: ft_indices,
+            params: ft_params,
+            returns: ft_returns,
+            needs_env: ft_needs_env,
+            // #1100: GC backend keeps its own resolve_func-independent
+            // lookups (gc_resolve_builtin_last etc., out of scope here) --
+            // func_table_index_of falls back to a linear scan when
+            // names_sorted's length doesn't match names'.
+            names_sorted: array_empty(),
+            names_sorted_pos: array_empty()
+          }
+          let st = str_table_lite(str_strs, str_offsets, str_lengths)
+          let ct = CtorTable::{
+            names: ctor_names_list,
+            tags: ctor_tags_list,
+            field_counts: ctor_field_counts_list,
+            type_names: ctor_type_names_list,
+            struct_names: struct_names,
+            struct_field_names: struct_field_names,
+            struct_field_is_ref: struct_field_is_ref,
+            names_sorted: gc_ctor_names_sorted,
+            names_sorted_pos: gc_ctor_names_sorted_pos,
+            struct_names_sorted: gc_struct_names_sorted,
+            struct_names_sorted_pos: gc_struct_names_sorted_pos,
+            type_names_sorted: gc_type_names_sorted
+          }
+          let func_ctx = CompileCtxGc::{
+            func_table: ft,
+            str_table: st,
+            lambda_table: lt_w,
+            num_user_funcs: num_user_funcs,
+            func_offset: func_offset,
+            ref_cell_names: ref_cell_names_f,
+            ref_local_indices: ref_local_indices_f,
+            refcell_type_idx: refcell_type_idx,
+            closure_type_base: closure_type_base,
+            gc_ctor_table: ct,
+            gc_const_names: gc_const_names_l,
+            gc_const_kinds: gc_const_kinds_l,
+            gc_const_ivals: gc_const_ivals_l,
+            gc_const_svals: gc_const_svals_l,
+            gc_global_names: gc_global_names_l,
+            gc_float_locals: gc_float_slots_f,
+            gc_float_ret_fns: gc_float_ret_fn_names,
+            gc_float_call_offsets: gc_float_call_offsets,
+            gc_int_render_offsets: gc_int_render_offsets,
+            gc_bool_render_offsets: gc_bool_render_offsets,
+            gc_bool_locals: gc_bool_slots_f,
+            gc_int_locals: gc_int_slots_f,
+            gc_to_string_int_func_idx: to_string_int_idx,
+            gc_div_zero_abort_func_idx: div_zero_abort_idx,
+            gc_native_array_locals: direct_param_slots_f,
+            gc_native_array_local_types: array_empty(),
+            gc_native_array_type_idx: gc_native_array_type_idx,
+            gc_native_array_block_type_idx: gc_native_array_block_type_idx,
+            gc_native_struct_scope: array_empty(),
+            gc_native_struct_decl: array_empty(),
+            gc_native_struct_type_base: gc_native_struct_type_base,
+            gc_native_array_frame_ok: true,
+            gc_lambda_native_array_locals: gc_lambda_native_array_locals_l,
+            gc_direct_abi_names: gc_direct_abi_names_l,
+            gc_direct_abi_param_refs: gc_direct_abi_param_refs_l,
+            gc_direct_abi_return_refs: gc_direct_abi_return_refs_l,
+            gc_direct_abi_current_return_ref: direct_return_ref_f,
+            gc_to_string_is_show_wrapper: gc_to_string_is_wrapper,
+            gc_agg_local_slots: gc_agg_slots_f,
+            gc_agg_ret_names: gc_agg_ret_names_l,
+            gc_agg_ret_infos: gc_agg_ret_infos_l,
+            gc_agg_ret_names_sorted: gc_agg_ret_names_sorted_l,
+            gc_agg_ret_names_sorted_pos: gc_agg_ret_names_sorted_pos_l,
+            table_slots_used: table_slots_used,
+            gc_region_ptr_addr: region_ptr_addr,
+            gc_region_arr_new_func_idx: region_arr_new_idx,
+            gc_region_bytes_new_func_idx: region_bytes_new_idx,
+            gc_region_exn_tag: region_exn_tag
+          }
+          let final_nl = compile_expr_gc(body_buf, body, local_names, param_count, func_ctx, -1)
+          Array::push(bodies, body_buf)
+          let extra = if final_nl > param_count {
+            final_nl - param_count
+          } else {
+            0
+          }
+          Array::push(meta_i32, 0)
+          Array::push(meta_i64, extra)
+          Array::push(user_ref_local_indices_all, ref_local_indices_f)
+          Array::push(user_native_array_local_indices_all, func_ctx.gc_native_array_local_types)
+          Array::push(user_native_struct_decl_all, func_ctx.gc_native_struct_decl)
+          Array::push(body_param_counts, param_count)
+        },
+        _ => throw("expected function")
+      }
+      ,
+      _ => throw("expected let statement")
+    }
+    bi = bi + 1
+  }
+  let start_body = bytebuf_new()
+  let entry_func_idx = entry_user_idx + func_offset
+  let entry_params = Array::get(ft_params, entry_user_idx)
+  if entry_params != 0 {
+    throw("WASI entry function must take 0 parameters")
+  }
+  // #538: initialize computed module-level globals (statement order) before
+  // the entry runs. Compiled with a fresh local frame; lambdas created here
+  // land in lt_w like any other (num_lambdas is computed AFTER this).
+  //
+  // #3023: the initializers live in their own guarded function, not inline in
+  // `_start`. Hosts invoke the exported entry (`main` / `cli_main`) or a
+  // per-block `__test_*` / `__bench_*` export DIRECTLY, without `_start` --
+  // that is the node runner's and `vibe run`'s contract, because the linear
+  // lane initializes a module-level value lazily on first read. With the
+  // initializers only in `_start`, every such invoke read a zero global: the
+  // entry boundary's exception-kind cell became address 0 and an uncaught
+  // throw trapped `memory access out of bounds` instead of printing
+  // `vibe: uncaught error: ...`. Each exported function now calls this init
+  // first; a flag global (index 1 + #globals) makes the second call a no-op.
+  let has_global_init = Array::length(gc_global_names_l) > 0
+  let init_flag_global_idx = 1 + Array::length(gc_global_names_l)
+  let init_body = bytebuf_new()
+  let mut start_extra_locals = 0
+  if has_global_init {
+    emit_global_get(init_body, init_flag_global_idx)
+    emit_i32_eqz(init_body)
+    emit_if_void(init_body)
+    emit_i32_const(init_body, 1)
+    emit_global_set(init_body, init_flag_global_idx)
+  } else {
+    ()
+  }
+  if has_global_init {
+    let init_ref_cells = array_empty()
+    let init_ref_idx = array_empty()
+    let init_ctx = CompileCtxGc::{
+      func_table: FuncTable::{
+        names: ft_names,
+        indices: ft_indices,
+        params: ft_params,
+        returns: ft_returns,
+        needs_env: ft_needs_env,
+        names_sorted: array_empty(),
+        names_sorted_pos: array_empty()
+      },
+      str_table: str_table_lite(str_strs, str_offsets, str_lengths),
+      lambda_table: lt_w,
+      num_user_funcs: num_user_funcs,
+      func_offset: func_offset,
+      ref_cell_names: init_ref_cells,
+      ref_local_indices: init_ref_idx,
+      refcell_type_idx: refcell_type_idx,
+      closure_type_base: closure_type_base,
+      gc_ctor_table: CtorTable::{
+        names: ctor_names_list,
+        tags: ctor_tags_list,
+        field_counts: ctor_field_counts_list,
+        type_names: ctor_type_names_list,
+        struct_names: struct_names,
+        struct_field_names: struct_field_names,
+        struct_field_is_ref: struct_field_is_ref,
+        names_sorted: gc_ctor_names_sorted,
+        names_sorted_pos: gc_ctor_names_sorted_pos,
+        struct_names_sorted: gc_struct_names_sorted,
+        struct_names_sorted_pos: gc_struct_names_sorted_pos,
+        type_names_sorted: gc_type_names_sorted
+      },
+      gc_const_names: gc_const_names_l,
+      gc_const_kinds: gc_const_kinds_l,
+      gc_const_ivals: gc_const_ivals_l,
+      gc_const_svals: gc_const_svals_l,
+      gc_global_names: gc_global_names_l,
+      gc_float_locals: array_empty(),
+      gc_float_ret_fns: gc_float_ret_fn_names,
+      gc_float_call_offsets: gc_float_call_offsets,
+      gc_int_render_offsets: gc_int_render_offsets,
+      gc_bool_render_offsets: gc_bool_render_offsets,
+      gc_bool_locals: array_empty(),
+      gc_int_locals: array_empty(),
+      gc_to_string_int_func_idx: to_string_int_idx,
+      gc_div_zero_abort_func_idx: div_zero_abort_idx,
+      gc_native_array_locals: array_empty(),
+      gc_native_array_local_types: array_empty(),
+      // Module-level initializers compile into `_start`, which is registered
+      // below with an unconditionally EMPTY native-local row -- so a slot the
+      // native path claimed here would be declared `i64` while the body used
+      // it as an array reference, and the module would fail validation
+      // outright (`let result = { let xs = [1]; Array::get(xs, 0) }` reproduced
+      // it: "local.set[0] expected type i64, found array.new_default").
+      //
+      // Propagating the row instead is NOT a drop-in alternative, for two
+      // independent reasons:
+      //   * the declaration pass reaches a body's param count via
+      //     `ft_params[ci - num_generated]`, which only maps for USER
+      //     functions -- `_start` is not one; and
+      //   * every global initializer is compiled into the SAME local frame
+      //     (`init_locals` / `start_extra_locals` is a max over them), so one
+      //     slot can be a native array in one initializer and an i64 in the
+      //     next, which no single declaration can satisfy.
+      //
+      // Disable it for THIS FRAME only. #1332 split the frame half out of the
+      // type-index sentinel: lambdas created inside an initializer compile
+      // into their own frames with their own emitted rows, so they must NOT
+      // inherit this (they set frame_ok back to true in
+      // backend_lambda_ctx.vibe). Still one predicate, read in one place.
+      gc_native_array_type_idx: gc_native_array_type_idx,
+      gc_native_array_block_type_idx: gc_native_array_block_type_idx,
+      // Module initializers share _start's frame, whose typed-local row is
+      // never emitted (same reason the array lane stays off here).
+      gc_native_struct_scope: array_empty(),
+      gc_native_struct_decl: array_empty(),
+      gc_native_struct_type_base: 0 - 1,
+      gc_native_array_frame_ok: false,
+      gc_lambda_native_array_locals: gc_lambda_native_array_locals_l,
+      // `_start` stays entirely outside the private direct-call ABI island.
+      gc_direct_abi_names: gc_direct_abi_names_l,
+      gc_direct_abi_param_refs: gc_direct_abi_param_refs_l,
+      gc_direct_abi_return_refs: gc_direct_abi_return_refs_l,
+      gc_direct_abi_current_return_ref: false,
+      gc_to_string_is_show_wrapper: gc_to_string_is_wrapper,
+      gc_agg_local_slots: array_empty(),
+      gc_agg_ret_names: gc_agg_ret_names_l,
+      gc_agg_ret_infos: gc_agg_ret_infos_l,
+      gc_agg_ret_names_sorted: gc_agg_ret_names_sorted_l,
+      gc_agg_ret_names_sorted_pos: gc_agg_ret_names_sorted_pos_l,
+      table_slots_used: table_slots_used,
+      gc_region_ptr_addr: region_ptr_addr,
+      gc_region_arr_new_func_idx: region_arr_new_idx,
+      gc_region_bytes_new_func_idx: region_bytes_new_idx,
+      gc_region_exn_tag: region_exn_tag
+    }
+    let init_locals = array_empty()
+    let mut ginit = 0
+    while ginit < Array::length(gc_global_names_l) {
+      let gexpr = Array::get(gc_global_exprs_l, ginit)
+      let g_nl = compile_expr_gc(init_body, gexpr, init_locals, Array::length(init_locals), init_ctx, -1)
+      emit_global_set(init_body, 1 + ginit)
+      if g_nl > start_extra_locals {
+        start_extra_locals = g_nl
+      }
+      if Array::length(init_locals) > start_extra_locals {
+        start_extra_locals = Array::length(init_locals)
+      }
+      ginit = ginit + 1
+    }
+    // Closes the flag guard opened above.
+    emit_end(init_body)
+  }
+  // Match the linear backend: an entry annotated `-> Unit` (including the
+  // `fn main {}` desugaring) should discard its tagged Unit result, not pass
+  // it to the historical integer-print helper.
+  let mut entry_returns_unit = false
+  let mut eri = 0
+  while eri < Array::length(stmts) {
+    match Array::get(stmts, eri) {
+      SLet(_, _, name, annotation, value) => if name == entry_name {
+        let annotation_is_unit = match annotation {
+          Some(TyFn(_, ret, _)) => gc_type_expr_is_unit(ret),
+          _ => false
+        }
+        let lambda_is_unit = match value {
+          EFn(_, _, _, Some(ret), _, _) => gc_type_expr_is_unit(ret),
+          _ => false
+        }
+        if annotation_is_unit || lambda_is_unit {
+          entry_returns_unit = true
+        }
+      },
+      _ => ()
+    }
+    eri = eri + 1
+  }
+  // First vertical slice toward native GC allocation: exercise a private
+  // struct and array at startup, then drop both references. All user values,
+  // function signatures, captures, and escaped values remain i64/linear.
+  emit_i64_const(start_body, 0)
+  emit_struct_new(start_body, refcell_type_idx)
+  emit_drop(start_body)
+  emit_i64_const(start_body, 0)
+  emit_i32_const(start_body, 1)
+  emit_array_new(start_body, gc_native_alloc_probe_array_type_idx)
+  emit_drop(start_body)
+  // Lambdas are all created by now (the global initializers above were the
+  // last compile), so the init function's index -- placed after them -- is
+  // known here.
+  let num_lambdas = Array::length(lt_w.bodies)
+  let init_func_idx = func_offset + num_user_funcs + 1 + num_lambdas
+  if has_global_init {
+    emit_call(start_body, init_func_idx)
+    // #3023: every function a host can invoke without `_start` runs the
+    // guarded init first. User body `j` sits after the generated builtins.
+    let num_builtin_bodies = Array::length(gc_builtin_type_idxs)
+    let mut xi = 0
+    while xi < num_user_funcs {
+      let xname = Array::get(fn_names_list, xi)
+      if xi == entry_user_idx || String::starts_with(xname, "__bench_") || String::starts_with(xname, "__test_") {
+        let guarded = bytebuf_new()
+        emit_call(guarded, init_func_idx)
+        bytebuf_push_buf(guarded, Array::get(bodies, num_builtin_bodies + xi))
+        Array::set(bodies, num_builtin_bodies + xi, guarded)
+      } else {
+        ()
+      }
+      xi = xi + 1
+    }
+  } else {
+    ()
+  }
+  emit_i64_const(start_body, 0)
+  emit_call(start_body, entry_func_idx)
+  if entry_returns_unit {
+    emit_drop(start_body)
+  } else {
+    emit_call(start_body, 1 + hbo)
+  }
+  Array::push(bodies, start_body)
+  Array::push(meta_i32, 0)
+  Array::push(meta_i64, 0)
+  Array::push(user_ref_local_indices_all, array_empty())
+  Array::push(user_native_array_local_indices_all, array_empty())
+  Array::push(user_native_struct_decl_all, array_empty())
+  // `_start` takes no parameters (enforced above), so its extra locals begin
+  // at slot 0.
+  Array::push(body_param_counts, 0)
+  let mut li = 0
+  while li < num_lambdas {
+    Array::push(bodies, Array::get(lt_w.bodies, li))
+    Array::push(meta_i32, Array::get(lt_w.meta_i32, li))
+    Array::push(meta_i64, Array::get(lt_w.meta_i64, li))
+    Array::push(user_ref_local_indices_all, array_empty())
+    // #1332: the lambda's own typed-local row, recorded parallel to
+    // lt_w.bodies by record_lambda_meta_gc.
+    Array::push(user_native_array_local_indices_all, Array::get(gc_lambda_native_array_locals_l, li))
+    Array::push(user_native_struct_decl_all, array_empty())
+    // lt_w.param_counts already counts the trailing `__env` parameter.
+    Array::push(body_param_counts, Array::get(lt_w.param_counts, li))
+    li = li + 1
+  }
+  if has_global_init {
+    // #3023: the guarded module init, at `init_func_idx` (after the lambdas).
+    // No parameters, so its extra locals begin at slot 0, as `_start`'s did.
+    Array::push(bodies, init_body)
+    Array::push(meta_i32, 0)
+    Array::push(meta_i64, start_extra_locals)
+    Array::push(user_ref_local_indices_all, array_empty())
+    Array::push(user_native_array_local_indices_all, array_empty())
+    Array::push(user_native_struct_decl_all, array_empty())
+    Array::push(body_param_counts, 0)
+  } else {
+    ()
+  }
+  let mut max_closure_arity = -1
+  let mut lai = 0
+  while lai < num_lambdas {
+    let lpc = Array::get(lt_w.param_counts, lai) - 1
+    if lpc > max_closure_arity {
+      max_closure_arity = lpc
+    }
+    lai = lai + 1
+  }
+  let mut uai2 = 0
+  while uai2 < num_user_funcs {
+    let upc = Array::get(ft_params, uai2)
+    if upc > max_closure_arity {
+      max_closure_arity = upc
+    }
+    uai2 = uai2 + 1
+  }
+  let num_closure_types = if max_closure_arity >= 0 {
+    max_closure_arity + 1
+  } else {
+    0
+  }
+  let num_base_types = 14 + gc_native_struct_count
+  let gc_direct_type_indices = array_empty()
+  let mut gc_direct_type_count = 0
+  let mut dti = 0
+  while dti < num_user_funcs {
+    // #1722: EXACT. This asks whether THIS function gets a typed signature, so
+    // it must not answer for the function's ref twin -- doing so gave the
+    // exported original a `(ref null $array)` type while its body was compiled
+    // on the tagged-i64 lane, which is a module that fails validation.
+    let sig_idx = gc_direct_abi_name_index_exact(gc_direct_abi_names_l, Array::get(fn_names_list, dti))
+    if sig_idx >= 0 {
+      Array::push(gc_direct_type_indices, num_base_types + num_closure_types + gc_direct_type_count)
+      gc_direct_type_count = gc_direct_type_count + 1
+    } else {
+      Array::push(gc_direct_type_indices, -1)
+    }
+    dti = dti + 1
+  }
+  let type_content = bytebuf_new()
+  bytebuf_push_vec_header(type_content, num_base_types + num_closure_types + gc_direct_type_count)
+  emit_func_type_raw(type_content, [127, 127, 127, 127], [127])
+  emit_func_type_raw(type_content, [126], array_empty())
+  emit_func_type_raw(type_content, array_empty(), array_empty())
+  emit_func_type_raw(type_content, [126], [126])
+  emit_func_type_raw(type_content, [126, 126], [126])
+  emit_func_type_raw(type_content, array_empty(), [126])
+  emit_func_type_raw(type_content, [126, 126], array_empty())
+  emit_func_type_raw(type_content, [126, 126, 126], array_empty())
+  emit_func_type_raw(type_content, [126, 126, 126], [126])
+  emit_func_type_raw(type_content, [126, 126, 126, 126], array_empty())
+  emit_struct_type_raw(type_content, [126], [1])
+  emit_array_type_raw(type_content, 126, 0)
+  emit_array_type_raw(type_content, 126, 1)
+  emit_func_type_ref_result(type_content, gc_native_array_type_idx)
+  // #1702: `(struct (mut i64) x N)` for N = 1..max, so an N-field record uses
+  // gc_native_struct_type_base + <ctor-table struct index>.
+  let mut nst = 0
+  while nst < gc_native_struct_count {
+    let nst_decl = Array::get(struct_field_names, nst)
+    let nst_refs = Array::get(struct_field_is_ref, nst)
+    let nst_fields = array_empty()
+    let nst_muts = array_empty()
+    let mut nstf = 0
+    while nstf < Array::length(nst_decl) {
+      if Array::get(nst_refs, nstf) {
+        // -1 marks a typed reference field; emit_struct_type_raw_refs spells it
+        // as `(ref null $native_i64_array)` instead of a value type byte.
+        Array::push(nst_fields, 0 - 1)
+      } else {
+        Array::push(nst_fields, 126)
+      }
+      Array::push(nst_muts, 1)
+      nstf = nstf + 1
+    }
+    emit_struct_type_raw_refs(type_content, nst_fields, nst_muts, gc_native_array_type_idx)
+    nst = nst + 1
+  }
+  let mut cti = 0
+  while cti < num_closure_types {
+    let num_params = cti + 1
+    let ct_params = array_empty()
+    let mut cpti = 0
+    while cpti < num_params {
+      Array::push(ct_params, 126)
+      cpti = cpti + 1
+    }
+    emit_func_type_raw(type_content, ct_params, [126])
+    cti = cti + 1
+  }
+  let mut dte = 0
+  while dte < num_user_funcs {
+    if Array::get(gc_direct_type_indices, dte) >= 0 {
+      // #1722: EXACT, same reason -- this emits THIS function's type.
+      let sig_idx = gc_direct_abi_name_index_exact(gc_direct_abi_names_l, Array::get(fn_names_list, dte))
+      emit_gc_direct_func_type(type_content, Array::get(gc_direct_abi_param_refs_l, sig_idx), Array::get(gc_direct_abi_return_refs_l, sig_idx), gc_native_array_type_idx)
+    } else {
+      ()
+    }
+    dte = dte + 1
+  }
+  let out = bytebuf_new()
+  emit_header(out)
+  // #1814: the gc lane speaks the SAME raw tagged-i64 host ABI as the linear
+  // lane, but it never said so. The node host runner picks its encoding from
+  // this section when `VIBE_IMPORT_ABI` is unset (`detectHostImportAbi`), and
+  // with no section it falls back to "tagged" -- so every host-import result
+  // came back decoded under the wrong convention while the module itself was
+  // fine. Measured: `Fs::exists` on a MISSING path returned true, and
+  // `String::length(Fs::read_file(f))` returned 65537 for a 6-byte file. Both
+  // agree with linear the moment this section exists (or `VIBE_IMPORT_ABI=raw`
+  // is forced), which is what identified the cause.
+  emit_vibe_abi_custom_section(out, "raw")
+  bytebuf_push_section(out, 1, type_content)
+  if use_host {
+    // fd_write + the ten "vibe" host imports (types: 3=(i64)->i64,
+    // 4=(i64,i64)->i64, 5=()->i64, 6=(i64,i64)->()) -- the linear backend's
+    // raw tagged ABI.
+    let imp_content = bytebuf_new()
+    // COUNT THE LIST BELOW, PLUS ONE for fd_write. This is a literal beside a
+    // list, so adding an entry without touching it emits a vector header that
+    // under-counts and the module dies at instantiation with "section was
+    // shorter than expected size" -- measured, exactly that, when #2758 added
+    // fs_remove_tree and left this at 23.
+    bytebuf_push_vec_header(imp_content, 25)
+    emit_name(imp_content, "wasi_snapshot_preview1")
+    emit_name(imp_content, "fd_write")
+    bytebuf_push(imp_content, 0)
+    leb128_encode_u32(imp_content, 0)
+    let host_imports = [
+      ("env-get", 3),
+      ("args-len", 5),
+      ("args-get", 3),
+      ("fs_read_file", 3),
+      ("fs_exists", 3),
+      ("fs_stat_token", 3),
+      ("fs_write_file", 6),
+      ("fs_publish_immutable_text", 4),
+      ("fs_write_bytes", 6),
+      ("fs_read_bytes", 3),
+      ("profile-now-us", 5),
+      // Same order as host_defs above; type indices are the shared base types
+      // (1 = (i64)->(), 3 = (i64)->i64, 6 = (i64,i64)->()).
+      ("fs_remove", 1),
+      ("fs_rename", 6),
+      ("fs_is_dir", 3),
+      ("fs_is_file", 3),
+      ("stdout_write_stream", 1),
+      ("fs_read_dir_nul", 3),
+      ("stdin_read_char", 5),
+      ("stdin_read_stream", 3),
+      ("process_exit", 1),
+      ("stderr_write_stream", 1),
+      ("fs_remove_file", 1),
+      ("fs_remove_tree", 1),
+      ("stdout_write_char", 1)
+    ]
+    let mut __hi = 0
+    while __hi < Array::length(host_imports) {
+      let (hin, hit) = Array::get(host_imports, __hi)
+      emit_name(imp_content, "vibe")
+      emit_name(imp_content, hin)
+      bytebuf_push(imp_content, 0)
+      leb128_encode_u32(imp_content, hit)
+      __hi = __hi + 1
+    }
+    bytebuf_push_section(out, 2, imp_content)
+  } else {
+    emit_import_section_func(out, "wasi_snapshot_preview1", "fd_write", 0)
+  }
+  let func_type_indices = array_empty()
+  // #415 B-1: builtin type indices are declared next to each body push
+  // (push_gc_builtin above) — splice them here in the same order.
+  let mut gbti = 0
+  while gbti < Array::length(gc_builtin_type_idxs) {
+    Array::push(func_type_indices, Array::get(gc_builtin_type_idxs, gbti))
+    gbti = gbti + 1
+  }
+  let mut fti = 0
+  while fti < num_user_funcs {
+    let direct_type_idx = Array::get(gc_direct_type_indices, fti)
+    if direct_type_idx >= 0 {
+      Array::push(func_type_indices, direct_type_idx)
+    } else {
+      let upc = Array::get(ft_params, fti)
+      Array::push(func_type_indices, closure_type_base + upc)
+    }
+    fti = fti + 1
+  }
+  Array::push(func_type_indices, 2)
+  let mut lfi = 0
+  while lfi < num_lambdas {
+    let lam_user_params = Array::get(lt_w.param_counts, lfi) - 1
+    Array::push(func_type_indices, closure_type_base + lam_user_params)
+    lfi = lfi + 1
+  }
+  if has_global_init {
+    // The guarded module init: () -> ().
+    Array::push(func_type_indices, 2)
+  } else {
+    ()
+  }
+  if Array::length(func_type_indices) != Array::length(bodies) {
+    throw("gc codegen internal error: function section and code section count mismatch")
+  } else {
+    ()
+  }
+  emit_function_section(out, func_type_indices)
+  let total_table_entries = num_user_funcs + num_lambdas
+  if total_table_entries > 0 {
+    emit_table_section_funcref(out, total_table_entries)
+  }
+  emit_memory_section(out, mem_min_pages)
+  // #538: exception tag (id 13 section sits between memory and global).
+  // #721-style gating: throw-free modules stay tag-free and run on engines
+  // without the exceptions proposal.
+  let gc_uses_exceptions = stmts_contain_exceptions(stmts)
+  if gc_uses_exceptions {
+    let tag_content = bytebuf_new()
+    leb128_encode_u32(tag_content, 1)
+    bytebuf_push(tag_content, 0)
+    leb128_encode_u32(tag_content, 1)
+    bytebuf_push_section(out, 13, tag_content)
+  } else {
+    ()
+  }
+  if Array::length(gc_global_names_l) == 0 {
+    emit_global_section_i32_mut(out, gc_heap_start)
+  } else {
+    // global 0: i32 mut heap pointer; globals 1..N: i64 mut computed values;
+    // global N+1: i32 mut "module init ran" flag (#3023, init_flag_global_idx).
+    let g_content = bytebuf_new()
+    bytebuf_push_vec_header(g_content, 2 + Array::length(gc_global_names_l))
+    bytebuf_push(g_content, 127)
+    bytebuf_push(g_content, 1)
+    emit_i32_const(g_content, gc_heap_start)
+    emit_end(g_content)
+    let mut ggi = 0
+    while ggi < Array::length(gc_global_names_l) {
+      bytebuf_push(g_content, 126)
+      bytebuf_push(g_content, 1)
+      emit_i64_const(g_content, 0)
+      emit_end(g_content)
+      ggi = ggi + 1
+    }
+    bytebuf_push(g_content, 127)
+    bytebuf_push(g_content, 1)
+    emit_i32_const(g_content, 0)
+    emit_end(g_content)
+    bytebuf_push_section(out, 6, g_content)
+  }
+  let start_func_idx = func_offset + num_user_funcs
+  // #538 P4.5: export the entry function and __heap_ptr alongside _start.
+  // The host runner's raw-ABI string allocation (args-get / env-get /
+  // fs_read_file results) heap-bumps through the exported __heap_ptr global;
+  // without it the runner falls back to an end-of-memory arena that the
+  // guest's own bump allocator grows into and clobbers mid-compile.
+  // #1701: per-block `__test_<name>` / `__bench_<name>` exports, mirroring the
+  // linear backend (codegen/wasi/linked_compile.vibe). Without them `vibe bench`
+  // has nothing to call on this lane: the synthesized `_start` runs every block
+  // in one go, so the runner found no entry point, timed nothing, and printed a
+  // single nameless line of invented numbers.
+  //
+  // Only `__no_entry__` test/bench builds produce these names, so ordinary
+  // builds -- including the compiler's own self-compile -- keep the exact export
+  // set they had. The wasm index of user function `j` is `j + func_offset`, the
+  // same mapping the linear twin uses.
+  //
+  // This does NOT make `export let` work on the gc lane; that surface is still
+  // unimplemented here, and widening it interacts with the #1541 export rule.
+  let block_export_names = array_empty()
+  let block_export_indices = array_empty()
+  let mut bxi = 0
+  while bxi < num_user_funcs {
+    let bname = Array::get(fn_names_list, bxi)
+    if String::starts_with(bname, "__bench_") || String::starts_with(bname, "__test_") {
+      Array::push(block_export_names, bname)
+      Array::push(block_export_indices, bxi + func_offset)
+    } else {
+      ()
+    }
+    bxi = bxi + 1
+  }
+  let export_content = bytebuf_new()
+  let export_entry_too = entry_name != "_start"
+  bytebuf_push_vec_header(export_content, Array::length(block_export_names) + (if export_entry_too {
+    4
+  } else {
+    3
+  }) + (if gc_uses_exceptions {
+    2
+  } else {
+    0
+  }))
+  emit_name(export_content, "_start")
+  bytebuf_push(export_content, 0)
+  leb128_encode_u32(export_content, start_func_idx)
+  if export_entry_too {
+    emit_name(export_content, entry_name_in)
+    bytebuf_push(export_content, 0)
+    leb128_encode_u32(export_content, entry_func_idx)
+  } else {
+    ()
+  }
+  emit_name(export_content, "memory")
+  bytebuf_push(export_content, 2)
+  leb128_encode_u32(export_content, 0)
+  emit_name(export_content, "__heap_ptr")
+  bytebuf_push(export_content, 3)
+  leb128_encode_u32(export_content, 0)
+  if gc_uses_exceptions {
+    emit_name(export_content, "error")
+    bytebuf_push(export_content, 4)
+    leb128_encode_u32(export_content, 0)
+    emit_name(export_content, "__exception_throw_tag")
+    bytebuf_push(export_content, 4)
+    leb128_encode_u32(export_content, 0)
+  } else {
+    ()
+  }
+  let mut bxe = 0
+  while bxe < Array::length(block_export_names) {
+    emit_name(export_content, Array::get(block_export_names, bxe))
+    bytebuf_push(export_content, 0)
+    leb128_encode_u32(export_content, Array::get(block_export_indices, bxe))
+    bxe = bxe + 1
+  }
+  bytebuf_push_section(out, 7, export_content)
+  if total_table_entries > 0 {
+    // #1109 gc parity (linear twin: linked_compile.vibe's element-section
+    // rebuild, ~3841-3886): register ONLY the slots codegen recorded a
+    // closure value for (table_slots_used), not every user function +
+    // lambda. A slot no closure carries can never be call_indirect'ed, so it
+    // stays ref.null; slot numbering and the declared table size are
+    // untouched. Run-compressed active segments skip the gaps.
+    let slot_used_flags = array_empty()
+    let mut sfi = 0
+    while sfi < total_table_entries {
+      Array::push(slot_used_flags, false)
+      sfi = sfi + 1
+    }
+    let mut tsu = 0
+    while tsu < Array::length(table_slots_used) {
+      let ts = Array::get(table_slots_used, tsu)
+      if ts >= 0 && ts < total_table_entries {
+        Array::set(slot_used_flags, ts, true)
+      } else {
+        ()
+      }
+      tsu = tsu + 1
+    }
+    let table_slots = array_empty()
+    let table_func_indices = array_empty()
+    let mut tei = 0
+    while tei < total_table_entries {
+      if Array::get(slot_used_flags, tei) {
+        Array::push(table_slots, tei)
+        Array::push(table_func_indices, if tei < num_user_funcs {
+          func_offset + tei
+        } else {
+          start_func_idx + 1 + (tei - num_user_funcs)
+        })
+      } else {
+        ()
+      }
+      tei = tei + 1
+    }
+    if Array::length(table_slots) > 0 {
+      emit_element_section_active_runs(out, table_slots, table_func_indices)
+    } else {
+      ()
+    }
+  }
+  let code_content = bytebuf_new()
+  bytebuf_push_vec_header(code_content, Array::length(bodies))
+  let mut ci = 0
+  while ci < Array::length(bodies) {
+    let body = Array::get(bodies, ci)
+    let func_buf = bytebuf_new()
+    let ni32 = Array::get(meta_i32, ci)
+    let ni64 = Array::get(meta_i64, ci)
+    let ref_indices = Array::get(user_ref_local_indices_all, ci)
+    let native_indices = Array::get(user_native_array_local_indices_all, ci)
+    let native_struct_decl = Array::get(user_native_struct_decl_all, ci)
+    let mut num_native_struct_locals = 0
+    let mut nsdi = 0
+    while nsdi < Array::length(native_struct_decl) {
+      if Array::get(native_struct_decl, nsdi) >= 0 {
+        num_native_struct_locals = num_native_struct_locals + 1
+      } else {
+        ()
+      }
+      nsdi = nsdi + 1
+    }
+    let num_ref_locals = Array::length(ref_indices)
+    let num_native_array_locals = Array::length(native_indices)
+    // Only the fast-path test below may use the COMBINED count. The array-lane
+    // scan further down indexes `native_indices` and must stay bounded by that
+    // list's own length -- the two were interchangeable until struct locals
+    // started contributing to the total (#1702).
+    let num_native_locals = num_native_array_locals + num_native_struct_locals
+    if num_ref_locals == 0 && num_native_locals == 0 {
+      if ni32 == 0 {
+        if ni64 == 0 {
+          leb128_encode_u32(func_buf, 0)
+        } else {
+          leb128_encode_u32(func_buf, 1)
+          leb128_encode_u32(func_buf, ni64)
+          bytebuf_push(func_buf, 126)
+        }
+      } else {
+        if ni64 == 0 {
+          leb128_encode_u32(func_buf, 1)
+          leb128_encode_u32(func_buf, ni32)
+          bytebuf_push(func_buf, 127)
+        } else {
+          leb128_encode_u32(func_buf, 2)
+          leb128_encode_u32(func_buf, ni32)
+          bytebuf_push(func_buf, 127)
+          leb128_encode_u32(func_buf, ni64)
+          bytebuf_push(func_buf, 126)
+        }
+      }
+    } else {
+      let param_count_for_body = Array::get(body_param_counts, ci)
+      if param_count_for_body < 0 {
+        // A generated builtin body grew a typed-local row. Its extra locals
+        // are declared from a fixed shape here, so there is no honest slot
+        // numbering to fall back on -- fail loudly instead of emitting a
+        // module whose local types do not match its body (#1332).
+        throw("gc backend: generated builtin body has a typed-local row")
+      } else {
+        ()
+      }
+      let num_extra = ni64
+      leb128_encode_u32(func_buf, num_extra)
+      let mut rli = 0
+      while rli < num_extra {
+        let actual_local_idx = param_count_for_body + rli
+        let mut is_ref = false
+        let mut ri = 0
+        while ri < num_ref_locals {
+          if Array::get(ref_indices, ri) == actual_local_idx {
+            is_ref = true
+          }
+          ri = ri + 1
+        }
+        let mut is_native_array = false
+        let mut nai = 0
+        while nai < num_native_array_locals {
+          if Array::get(native_indices, nai) == actual_local_idx {
+            is_native_array = true
+          }
+          nai = nai + 1
+        }
+        // #1702: a struct local's wasm type depends on its FIELD COUNT, so the
+        // slot is looked up in the map rather than tested for membership.
+        let ns_decl_struct_idx = gc_slot_map_get(native_struct_decl, actual_local_idx)
+        leb128_encode_u32(func_buf, 1)
+        // #538 ref cells remain linear-memory i64 cells. Only proven local
+        // literals use a nullable typed GC reference.
+        let _ = is_ref
+        if is_native_array {
+          bytebuf_push(func_buf, 99)
+          leb128_encode_u32(func_buf, gc_native_array_type_idx)
+        } else if ns_decl_struct_idx >= 0 {
+          bytebuf_push(func_buf, 99)
+          leb128_encode_u32(func_buf, gc_native_struct_type_base + ns_decl_struct_idx)
+        } else {
+          bytebuf_push(func_buf, 126)
+        }
+        rli = rli + 1
+      }
+    }
+    bytebuf_push_buf(func_buf, body)
+    bytebuf_push(func_buf, 11)
+    leb128_encode_u32(code_content, bytebuf_length(func_buf))
+    bytebuf_push_buf(code_content, func_buf)
+    ci = ci + 1
+  }
+  bytebuf_push_section(out, 10, code_content)
+  if num_strings > 0 {
+    let data_offsets = array_empty()
+    let data_bufs = fresh_bytes_array()
+    let mut di = 0
+    while di < num_strings {
+      Array::push(data_offsets, Array::get(str_offsets, di))
+      Array::push(data_bufs, string_to_data(Array::get(str_strs, di)))
+      di = di + 1
+    }
+    emit_data_section_multi(out, data_offsets, data_bufs)
+  }
+  bytebuf_to_bytes(out)
+}

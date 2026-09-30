@@ -1,0 +1,2603 @@
+// lib/@vibe/compiler/codegen/wasi/linked_compile.vibe — module sections.
+
+import @vibe/compiler/core {
+  Expr,
+  Pat,
+  Stmt,
+  TypeExpr,
+  apply_top_level_fn_alias_renames,
+  bsearch_leftmost,
+  builtin_iterator_namespace_from_marker,
+  builtin_iterator_serialized_boundary_markers,
+  builtin_registry,
+  builtin_shadow_entry_name,
+  builtin_shadow_source_name,
+  bytebuf_length,
+  bytebuf_new,
+  bytebuf_push,
+  bytebuf_push_buf,
+  bytebuf_push_section,
+  bytebuf_push_vec_header,
+  bytebuf_to_bytes,
+  collect_top_level_fn_alias_renames,
+  dce_keep_flags,
+  dce_stmts,
+  exception_effect_labels_equal,
+  executable_export_kept,
+  executable_export_kept_bytes,
+  executable_exports_stripped,
+  expr_child_at,
+  expr_children_pop,
+  expr_children_push,
+  expr_children_top,
+  fold_const_bool_params,
+  is_exception_effect_name,
+  is_runtime_scheduled_effect,
+  leb128_encode_s64,
+  leb128_encode_u32,
+  namespace_private_name,
+  namespace_rename_originals_reset,
+  rename_builtin_shadow_defs,
+  rewrite_import_alias_expr,
+  rewrite_top_level_fn_alias_refs,
+  sorted_names_of,
+  verify_lane_builtins,
+  wat_callee_names
+}
+
+import @vibe/ast {
+  TypeExpr::is_array_of_int, builtin_ref
+}
+
+import @vibe/core {
+  array_empty, struct MutMap, struct MutSet
+}
+
+import @vibe/compiler/normalize {
+  ModuleTraitFacts,
+  collect_explicit_derived_op_names,
+  collect_trivial_wrapper_names,
+  desugar_handled_host_calls,
+  desugar_inspect_calls,
+  desugar_trait_dicts_module,
+  desugar_trait_dicts_module_with_facts,
+  desugar_trait_dicts_with_typed_eq,
+  eq_deferred_requests_list,
+  eq_deferred_reset,
+  eq_invisible_nominals_list,
+  eq_invisible_nominals_reset,
+  eq_mint_deferred_into,
+  eq_synthesis_requests_list,
+  eq_typed_refusals_list,
+  hoisted_lambda_owner_key,
+  hoisted_lambda_owner_of_stmt,
+  lift_match_scrutinees,
+  module_trait_facts_none,
+  program_performs_host_operation,
+  unbox_tuple_loop_params,
+  uniquify_shadowed_bindings_fresh
+}
+
+import @vibe/compiler/perceus {
+  PerceusAction,
+  borrow_ret_link_parts,
+  borrow_ret_shadow_mask,
+  build_perceus_plan,
+  build_perceus_plan_pinned_split,
+  build_perceus_plan_with_params,
+  compute_borrow_returning_names,
+  compute_heap_returning,
+  compute_passthrough_returning,
+  compute_scalar_returning_names,
+  elaborate_heap_params,
+  fn_result_is_immediate,
+  pa_is_alias_dup,
+  pa_is_consume_mark,
+  pa_is_drop,
+  pa_is_dup,
+  pa_is_path_drop,
+  pa_is_reuse_token,
+  param_is_heap_in_body,
+  perceus_exit_rows,
+  perceus_field_release_rows,
+  perceus_pin_tables,
+  perceus_store_dup_rows,
+  perceus_truncate_rows
+}
+
+import @vibe/compiler/codegen/builtin_bodies {
+  array_capacity_error_message,
+  bytes_capacity_error_message,
+  div_zero_at_fragment,
+  div_zero_colon_fragment,
+  div_zero_div_message,
+  div_zero_rem_message,
+  gen_arr_concat_body,
+  gen_arr_get_body,
+  gen_arr_len_body,
+  gen_arr_new_body,
+  gen_arr_push_all_body,
+  gen_arr_push_body,
+  gen_arr_set_body,
+  gen_arr_slice_body,
+  gen_arr_truncate_body,
+  gen_arr_with_capacity_body,
+  gen_array_value_copy_body,
+  gen_bytes_append_body,
+  gen_bytes_blit_linear_body,
+  gen_bytes_compare_body,
+  gen_bytes_concat_body,
+  gen_bytes_count_byte_body,
+  gen_bytes_from_array_body,
+  gen_bytes_get_body,
+  gen_bytes_index_of_byte_body,
+  gen_bytes_index_of_bytes_body,
+  gen_bytes_last_index_of_byte_body,
+  gen_bytes_len_body,
+  gen_bytes_new_body,
+  gen_bytes_push_body,
+  gen_bytes_set_body,
+  gen_bytes_slice_body,
+  gen_bytes_to_array_body,
+  gen_bytes_with_capacity_body,
+  gen_compact_fingerprint_hash_body,
+  gen_div_zero_abort_body,
+  gen_eq_body,
+  gen_generic_add_body,
+  gen_generic_rel_diff_body,
+  gen_int_clz_body,
+  gen_int_ctz_body,
+  gen_int_popcount_body,
+  gen_map_build_index_body,
+  gen_map_cap_body,
+  gen_map_hash_body,
+  gen_map_index_insert_body,
+  gen_map_probe_index_body,
+  gen_oob_abort_body,
+  gen_print_i64_raw_body,
+  gen_rc_alloc_body,
+  gen_rc_drop_body,
+  gen_rc_dup_body,
+  gen_region_arr_new_body,
+  gen_region_bytes_new_body,
+  gen_simd_scan_alnum_body,
+  gen_simd_scan_line_end_body,
+  gen_simd_scan_string_special_body,
+  gen_simd_skip_ws_body,
+  gen_sources_proper_body,
+  gen_sources_stub_body,
+  gen_str_char_code_at_body,
+  gen_str_concat_body,
+  gen_str_eq_body,
+  gen_str_from_char_code_body,
+  gen_str_len_body,
+  gen_str_lex_diff_body,
+  gen_str_substring_body,
+  gen_string_contains_body,
+  gen_string_ends_with_body,
+  gen_string_index_of_body,
+  gen_string_join_body,
+  gen_string_last_index_of_body,
+  gen_string_split_body,
+  gen_string_starts_with_body,
+  gen_string_trim_body,
+  static_arr_len_body,
+  static_double_to_int_body,
+  static_fs_stub_body,
+  static_fs_write_bytes_stub_body,
+  static_identity_body,
+  static_int_to_double_body,
+  static_print_i64_body,
+  static_print_str_body,
+  static_str_eq_body,
+  static_str_len_body
+}
+
+import @vibe/compiler/codegen/reloc {
+  blind_kind_fn_value, blind_kind_table_slot_i32, blind_owner_lambda_index, blind_owner_pending
+}
+
+import @vibe/compiler/codegen/common_analysis {
+  bmask_has,
+  borrow_fixpoint_link_parts,
+  borrow_round0_link,
+  collect_free_vars,
+  collect_strings_stmts,
+  compute_borrow_disqualifiers,
+  compute_borrow_param_local_masks,
+  compute_borrow_param_user_fns,
+  compute_borrow_param_user_fns_round0,
+  compute_float_returning_names,
+  compute_may_return_view_fns,
+  count_lambda_sites_expr,
+  emit_closure_call_tail,
+  emit_closure_resolve,
+  emit_i64_extend_i32_u,
+  is_mut_captured_in,
+  may_return_view_link_parts,
+  md_borrow_mask_of,
+  md_builtin_borrow_mask,
+  mrv_declared_fn_names,
+  scope_tail_proj_root,
+  stmts_contain_exceptions,
+  unique_typed_lowering_offsets_in_stmts,
+  zero_alloc_check
+}
+
+import @vibe/compiler/codegen/common_base {
+  CodegenBodyCache,
+  CompileCtx,
+  CovState,
+  CtorTable,
+  DbgProv,
+  FuncTable,
+  LambdaTable,
+  LineMapState,
+  ModuleSplit,
+  StrTable,
+  agg_info_of_type_expr,
+  append_double_runtime,
+  append_hidden_attempt_constructors,
+  append_string_views_runtime,
+  await_poll_pass,
+  bcc_guard_synth_matches,
+  bcc_int_lists_equal,
+  bcc_layout_fp_bools,
+  bcc_layout_fp_ints,
+  bcc_layout_fp_string_matrix,
+  bcc_layout_fp_strings,
+  bcc_layout_fp_strings_upto,
+  bcc_string_lists_equal,
+  codegen_body_cache_discard,
+  codegen_body_cache_filter_src_below,
+  codegen_body_cache_find_at,
+  codegen_body_cache_find_named_at,
+  codegen_body_cache_merge,
+  codegen_body_cache_name_index,
+  codegen_body_cache_new,
+  codegen_body_cache_record,
+  codegen_body_cache_replay,
+  codegen_body_cache_slot_index,
+  collect_optional_perform_source_names,
+  compile_inline_wat_array_params,
+  compute_agg_returning,
+  ctor_sorted_index,
+  desugar_trait_dicts,
+  emit_binop_op,
+  emit_i32_eq,
+  emit_i32_eqz,
+  emit_i32_ge_u,
+  emit_i32_mul,
+  emit_i32_ne,
+  emit_i32_sub,
+  emit_i64_load,
+  emit_rc_dup_guarded,
+  emit_str_ref,
+  empty_dbg_prov,
+  erase_railway_origin_markers,
+  evidence_dict_pass_with_roots,
+  evidence_module_facts,
+  expr_tag,
+  fn_type_param_types,
+  forin_discard_pass,
+  get_arm_body,
+  get_arm_pat,
+  get_ebinop_op,
+  get_efn_body,
+  get_eif_cond,
+  get_eif_else,
+  get_eif_then,
+  get_elet_body,
+  get_elet_name,
+  get_elet_val,
+  get_slet_expr,
+  get_slet_name,
+  get_slet_type,
+  is_efn,
+  is_eident,
+  is_etuple,
+  is_pbind,
+  is_pbool,
+  is_pctor,
+  is_pint,
+  is_pstring,
+  is_ptuple,
+  is_pwild,
+  is_slet,
+  linemap_disabled,
+  linemap_flush_fn,
+  lookup_ctor,
+  lower_optional_performs,
+  lower_optional_performs_with_source_names,
+  module_split_none,
+  optional_perform_artifact_resolution,
+  rc_exit_push,
+  rc_shadow_base,
+  rc_shadow_heap_start,
+  region_exn_tag_linear,
+  region_max_depth,
+  region_saves_base_of,
+  resolve_func,
+  resolve_local,
+  rewrite_self_tail_calls,
+  source_declares_constructor,
+  str_table_index_of,
+  str_table_new,
+  suspend_cps_pass,
+  suspend_prepass_splits,
+  ty_head_names_formal,
+  unique_name_flags,
+  wrap_entry_exception_boundary,
+  wrap_entry_host_provider
+}
+
+import @vibe/compiler/codegen/common_extractors {
+  array_contains_str,
+  build_newline_offsets,
+  collect_int_div_sites,
+  emit_assignop_op,
+  emit_memory_copy,
+  find_catchall_idx,
+  get_earray_elems,
+  get_eassign_body,
+  get_eassign_name,
+  get_eassign_val,
+  get_eassignop_body,
+  get_eassignop_name,
+  get_eassignop_op,
+  get_eassignop_val,
+  get_ebinop_lhs,
+  get_ebinop_rhs,
+  get_ebool_value,
+  get_ecall_args,
+  get_ecall_callee,
+  get_efloat_value,
+  get_efn_params,
+  get_efn_tparams,
+  get_eforin_body,
+  get_eforin_iter,
+  get_eforin_name,
+  get_eident_name,
+  get_eint_value,
+  get_eletmut_body,
+  get_eletmut_name,
+  get_eletmut_val,
+  get_eletrec_body,
+  get_eletrec_name,
+  get_eletrec_val,
+  get_eseq_first,
+  get_eseq_second,
+  get_estring_value,
+  get_etuple_elems,
+  get_eunaryop_expr,
+  get_eunaryop_op,
+  get_ewhile_body,
+  get_ewhile_cond,
+  get_match_arms,
+  get_match_scrutinee,
+  get_pbind_name,
+  get_pbool_value,
+  get_pctor_args,
+  get_pctor_name,
+  get_pint_value,
+  get_pstring_value,
+  get_ptuple_pats,
+  get_slet_export
+}
+
+import @vibe/compiler/codegen/expr {
+  cc_host_future_named_raw_prefix, cc_host_stream_named_raw_prefix, cl_own_return_stmts, compile_expr
+}
+
+import @vibe/compiler/codegen/wasm_emit {
+  emit_block_i64,
+  emit_block_void,
+  emit_br,
+  emit_br_if,
+  emit_call,
+  emit_call_indirect,
+  emit_code_section,
+  emit_code_section_with_locals,
+  emit_data_section,
+  emit_data_section_multi,
+  emit_drop,
+  emit_element_section_active,
+  emit_element_section_active_runs,
+  emit_else,
+  emit_end,
+  emit_export_section,
+  emit_export_section_multi,
+  emit_exports_full,
+  emit_exports_with_memory,
+  emit_f64_add,
+  emit_f64_const_bits,
+  emit_f64_convert_i64_s,
+  emit_f64_div,
+  emit_f64_eq,
+  emit_f64_ge,
+  emit_f64_gt,
+  emit_f64_le,
+  emit_f64_lt,
+  emit_f64_mul,
+  emit_f64_ne,
+  emit_f64_neg,
+  emit_f64_reinterpret_i64,
+  emit_f64_sub,
+  emit_func_type_raw,
+  emit_function_name_section,
+  emit_function_section,
+  emit_global_get,
+  emit_global_section_i32_mut,
+  emit_global_set,
+  emit_header,
+  emit_heap_memory_grow_check,
+  emit_i32_add,
+  emit_i32_const,
+  emit_i32_load,
+  emit_i32_load8_u,
+  emit_i32_store,
+  emit_i32_store8,
+  emit_i32_wrap_i64,
+  emit_i64_add,
+  emit_i64_and,
+  emit_i64_const,
+  emit_i64_div_s,
+  emit_i64_eq,
+  emit_i64_eqz,
+  emit_i64_extend_i32_s,
+  emit_i64_ge_s,
+  emit_i64_gt_s,
+  emit_i64_le_s,
+  emit_i64_lt_s,
+  emit_i64_mul,
+  emit_i64_ne,
+  emit_i64_or,
+  emit_i64_reinterpret_f64,
+  emit_i64_rem_s,
+  emit_i64_shl,
+  emit_i64_shr_s,
+  emit_i64_store,
+  emit_i64_sub,
+  emit_i64_trunc_f64_s,
+  emit_i64_xor,
+  emit_if_i64,
+  emit_if_void,
+  emit_import_section_func,
+  emit_local_get,
+  emit_local_set,
+  emit_local_tee,
+  emit_loop_void,
+  emit_memory_section,
+  emit_name,
+  emit_return,
+  emit_table_section_funcref,
+  emit_type_section,
+  emit_type_section_multi,
+  emit_vibe_abi_custom_section,
+  string_to_data
+}
+
+import ./linked_diagnostics.vibe {
+  seed_builtin_diagnostic_strings
+}
+
+import ./linked_helpers.vibe {
+  collect_used_builtin_names, stmts_use_builtin
+}
+
+import ./linked_compile_lc_pf_prune_module.vibe {
+  lc_linemap_put_magic, lc_pf_prune_module
+}
+
+import ./linked_compile_lc_rename_sleep_calls.vibe {
+  lc_fresh_bool_array,
+  lc_fresh_bytes_array,
+  lc_fresh_int_array,
+  lc_fresh_int_array_of_len,
+  lc_fresh_string_array,
+  lc_verify_blind_relocs,
+  linked_type_expr_is_unit,
+  wasi_memory_min_pages_for_heap
+}
+
+import ./linked_compile_linkedhostplan.vibe {
+  LinkedSectionInputs
+}
+
+// Serialize the completed module tables and diagnostic sections.
+// Keep lane flags explicit so constant-parameter folding can remove disabled code.
+export fn lc_emit_module_sections(input: LinkedSectionInputs, coverage: Bool, debug_break: Bool, debug_trace: Bool, enable_rc: Bool, rc_shadow: Bool) -> Bytes with Exception {
+  let arr_concat_idx = input.arr_concat_idx
+  let arr_get_idx = input.arr_get_idx
+  let arr_len_idx = input.arr_len_idx
+  let arr_new_idx = input.arr_new_idx
+  let arr_push_all_idx = input.arr_push_all_idx
+  let arr_push_idx = input.arr_push_idx
+  let arr_set_idx = input.arr_set_idx
+  let arr_slice_idx = input.arr_slice_idx
+  let arr_truncate_idx = input.arr_truncate_idx
+  let array_capacity_idx = input.array_capacity_idx
+  let blind_kinds = input.blind_kinds
+  let blind_offsets = input.blind_offsets
+  let blind_owners = input.blind_owners
+  let blind_syms = input.blind_syms
+  let bodies = input.bodies
+  let builtin_type_idxs = input.builtin_type_idxs
+  let bytes_append_idx = input.bytes_append_idx
+  let bytes_blit_idx = input.bytes_blit_idx
+  let bytes_capacity_idx = input.bytes_capacity_idx
+  let bytes_compare_idx = input.bytes_compare_idx
+  let bytes_concat_idx = input.bytes_concat_idx
+  let bytes_count_byte_idx = input.bytes_count_byte_idx
+  let bytes_from_array_idx = input.bytes_from_array_idx
+  let bytes_get_idx = input.bytes_get_idx
+  let bytes_index_of_bytes_idx = input.bytes_index_of_bytes_idx
+  let bytes_index_of_idx = input.bytes_index_of_idx
+  let bytes_last_index_of_idx = input.bytes_last_index_of_idx
+  let bytes_len_idx = input.bytes_len_idx
+  let bytes_new_idx = input.bytes_new_idx
+  let bytes_push_idx = input.bytes_push_idx
+  let bytes_set_idx = input.bytes_set_idx
+  let bytes_slice_idx = input.bytes_slice_idx
+  let bytes_to_array_idx = input.bytes_to_array_idx
+  let compact_fingerprint_hash_idx = input.compact_fingerprint_hash_idx
+  let cov_base = input.cov_base
+  let cov_branch_base = input.cov_branch_base
+  let cov_branch_reserve = input.cov_branch_reserve
+  let cov_count = input.cov_count
+  let cov_reserve = input.cov_reserve
+  let cov_state = input.cov_state
+  let dbg_break_import_idx = input.dbg_break_import_idx
+  let dbg_line_import_idx = input.dbg_line_import_idx
+  let dbg_line_on = input.dbg_line_on
+  let dbgargs_base = input.dbgargs_base
+  let dbgargs_cap = input.dbgargs_cap
+  let dbgargs_count_addr = input.dbgargs_count_addr
+  let dbgargs_reserve = input.dbgargs_reserve
+  let div_zero_abort_idx = input.div_zero_abort_idx
+  let double_to_int_idx = input.double_to_int_idx
+  let eff_reserve = input.eff_reserve
+  let effect_names_list = input.effect_names_list
+  let enable_late_dce = input.enable_late_dce
+  let entry_name = input.entry_name
+  let entry_name_in = input.entry_name_in
+  let entry_user_idx = input.entry_user_idx
+  let env_args_get_import_idx = input.env_args_get_import_idx
+  let env_args_len_import_idx = input.env_args_len_import_idx
+  let env_get_import_idx = input.env_get_import_idx
+  let eq_idx = input.eq_idx
+  let export_fn_names = input.export_fn_names
+  let export_fn_user_indices = input.export_fn_user_indices
+  let fn_names_list = input.fn_names_list
+  let fn_param_counts = input.fn_param_counts
+  let fn_stmt_indices = input.fn_stmt_indices
+  let frozen_array_copy_idx = input.frozen_array_copy_idx
+  let fs_append_import_idx = input.fs_append_import_idx
+  let fs_chdir_import_idx = input.fs_chdir_import_idx
+  let fs_copy_import_idx = input.fs_copy_import_idx
+  let fs_exists_import_idx = input.fs_exists_import_idx
+  let fs_exists_stub_idx = input.fs_exists_stub_idx
+  let fs_getcwd_import_idx = input.fs_getcwd_import_idx
+  let fs_is_dir_import_idx = input.fs_is_dir_import_idx
+  let fs_is_file_import_idx = input.fs_is_file_import_idx
+  let fs_mkdir_import_idx = input.fs_mkdir_import_idx
+  let fs_mkdir_p_import_idx = input.fs_mkdir_p_import_idx
+  let fs_publish_immutable_text_import_idx = input.fs_publish_immutable_text_import_idx
+  let fs_publish_immutable_text_stub_idx = input.fs_publish_immutable_text_stub_idx
+  let fs_read_bytes_import_idx = input.fs_read_bytes_import_idx
+  let fs_read_dir_import_idx = input.fs_read_dir_import_idx
+  let fs_read_file_import_idx = input.fs_read_file_import_idx
+  let fs_read_file_stub_idx = input.fs_read_file_stub_idx
+  let fs_remove_file_import_idx = input.fs_remove_file_import_idx
+  let fs_remove_import_idx = input.fs_remove_import_idx
+  let fs_remove_tree_import_idx = input.fs_remove_tree_import_idx
+  let fs_rename_import_idx = input.fs_rename_import_idx
+  let fs_stat_token_import_idx = input.fs_stat_token_import_idx
+  let fs_stat_token_stub_idx = input.fs_stat_token_stub_idx
+  let fs_write_bytes_import_idx = input.fs_write_bytes_import_idx
+  let fs_write_bytes_stub_idx = input.fs_write_bytes_stub_idx
+  let fs_write_file_import_idx = input.fs_write_file_import_idx
+  let fs_write_file_stub_idx = input.fs_write_file_stub_idx
+  let func_offset = input.func_offset
+  let generic_add_idx = input.generic_add_idx
+  let generic_rel_diff_idx = input.generic_rel_diff_idx
+  let heap_grow_check_idx = input.heap_grow_check_idx
+  let heap_start = input.heap_start
+  let hf_all_names = input.hf_all_names
+  let hf_arg_push_import_idx = input.hf_arg_push_import_idx
+  let hf_arm_import_idx = input.hf_arm_import_idx
+  let hf_cancel_import_idx = input.hf_cancel_import_idx
+  let hf_get_import_idx = input.hf_get_import_idx
+  let hf_named_names = input.hf_named_names
+  let hf_response_addresses = input.hf_response_addresses
+  let hf_response_arg_addresses = input.hf_response_arg_addresses
+  let hf_wait_any_import_idx = input.hf_wait_any_import_idx
+  let hf_wait_import_idx = input.hf_wait_import_idx
+  let hf_wit_names = input.hf_wit_names
+  let hs_arm_import_idx = input.hs_arm_import_idx
+  let hs_cancel_import_idx = input.hs_cancel_import_idx
+  let hs_claim_import_idx = input.hs_claim_import_idx
+  let hs_close_import_idx = input.hs_close_import_idx
+  let hs_named_names = input.hs_named_names
+  let hs_read_import_idx = input.hs_read_import_idx
+  let hsl_arm_import_idx = input.hsl_arm_import_idx
+  let hsl_cancel_import_idx = input.hsl_cancel_import_idx
+  let http_close_import_idx = input.http_close_import_idx
+  let http_request_import_idx = input.http_request_import_idx
+  let http_response_body_import_idx = input.http_response_body_import_idx
+  let http_response_header_import_idx = input.http_response_header_import_idx
+  let http_response_status_import_idx = input.http_response_status_import_idx
+  let identity_idx = input.identity_idx
+  let int_clz_idx = input.int_clz_idx
+  let int_ctz_idx = input.int_ctz_idx
+  let int_popcount_idx = input.int_popcount_idx
+  let int_to_double_idx = input.int_to_double_idx
+  let lambda_slot_base = input.lambda_slot_base
+  let library_mode = input.library_mode
+  let linemap_on = input.linemap_on
+  let linemap_state = input.linemap_state
+  let linked_imports = input.linked_imports
+  let lt_w = input.lt_w
+  let meta_i32 = input.meta_i32
+  let meta_i64 = input.meta_i64
+  let meta_v128 = input.meta_v128
+  let need_div_zero_abort = input.need_div_zero_abort
+  let need_host_future_builtin = input.need_host_future_builtin
+  let need_http_request_builtin = input.need_http_request_builtin
+  let num_base_types = input.num_base_types
+  let num_generated = input.num_generated
+  let num_imported_funcs = input.num_imported_funcs
+  let num_strings = input.num_strings
+  let num_user_funcs = input.num_user_funcs
+  let oob_abort_idx = input.oob_abort_idx
+  let print_i64_raw_idx = input.print_i64_raw_idx
+  let print_int_idx = input.print_int_idx
+  let print_str_idx = input.print_str_idx
+  let process_exit_import_idx = input.process_exit_import_idx
+  let profiler_heap_bytes_import_idx = input.profiler_heap_bytes_import_idx
+  let profiler_now_us_import_idx = input.profiler_now_us_import_idx
+  let prov = input.prov
+  let rc_alloc_idx = input.rc_alloc_idx
+  let rc_bins_reserve = input.rc_bins_reserve
+  let rc_drop_idx = input.rc_drop_idx
+  let rc_dup_idx = input.rc_dup_idx
+  let region_reserve = input.region_reserve
+  let resolve_path_import_idx = input.resolve_path_import_idx
+  let serve_handler_has_host_stream = input.serve_handler_has_host_stream
+  let sh_capture_close_import_idx = input.sh_capture_close_import_idx
+  let sh_capture_exit_code_import_idx = input.sh_capture_exit_code_import_idx
+  let sh_capture_import_idx = input.sh_capture_import_idx
+  let sh_capture_stderr_import_idx = input.sh_capture_stderr_import_idx
+  let sh_capture_stdout_import_idx = input.sh_capture_stdout_import_idx
+  let sh_import_idx = input.sh_import_idx
+  let sh_lines_import_idx = input.sh_lines_import_idx
+  let shadow_uaf_abort_idx = input.shadow_uaf_abort_idx
+  let simd_scan_alnum_idx = input.simd_scan_alnum_idx
+  let simd_scan_alnum_str_idx = input.simd_scan_alnum_str_idx
+  let simd_scan_line_end_str_idx = input.simd_scan_line_end_str_idx
+  let simd_scan_string_special_str_idx = input.simd_scan_string_special_str_idx
+  let simd_skip_ws_idx = input.simd_skip_ws_idx
+  let sleep_import_idx = input.sleep_import_idx
+  let sleep_needs_component_adapter = input.sleep_needs_component_adapter
+  let sources_idx = input.sources_idx
+  let stderr_write_char_import_idx = input.stderr_write_char_import_idx
+  let stderr_write_stream_import_idx = input.stderr_write_stream_import_idx
+  let stdin_provider_acquire_import_idx = input.stdin_provider_acquire_import_idx
+  let stdin_provider_close_import_idx = input.stdin_provider_close_import_idx
+  let stdin_provider_read_import_idx = input.stdin_provider_read_import_idx
+  let stdin_read_char_import_idx = input.stdin_read_char_import_idx
+  let stdin_read_stream_import_idx = input.stdin_read_stream_import_idx
+  let stdout_write_char_import_idx = input.stdout_write_char_import_idx
+  let stdout_write_stream_import_idx = input.stdout_write_stream_import_idx
+  let stmts = input.stmts
+  let str_char_code_at_idx = input.str_char_code_at_idx
+  let str_concat_idx = input.str_concat_idx
+  let str_eq_idx = input.str_eq_idx
+  let str_from_char_code_idx = input.str_from_char_code_idx
+  let str_len_idx = input.str_len_idx
+  let str_lex_diff_idx = input.str_lex_diff_idx
+  let str_offsets = input.str_offsets
+  let str_strs = input.str_strs
+  let str_substring_idx = input.str_substring_idx
+  let string_contains_idx = input.string_contains_idx
+  let string_ends_with_idx = input.string_ends_with_idx
+  let string_index_of_idx = input.string_index_of_idx
+  let string_join_idx = input.string_join_idx
+  let string_last_index_of_idx = input.string_last_index_of_idx
+  let string_split_idx = input.string_split_idx
+  let string_starts_with_idx = input.string_starts_with_idx
+  let string_trim_idx = input.string_trim_idx
+  let table_slots_used = input.table_slots_used
+  let tcp_close_import_idx = input.tcp_close_import_idx
+  let tcp_connect_import_idx = input.tcp_connect_import_idx
+  let tcp_read_import_idx = input.tcp_read_import_idx
+  let tcp_write_import_idx = input.tcp_write_import_idx
+  let test_fn_names = input.test_fn_names
+  let thunk_names_list = input.thunk_names_list
+  let trace_cap = input.trace_cap
+  let trace_counter_addr = input.trace_counter_addr
+  let trace_log_base = input.trace_log_base
+  let trace_reserve = input.trace_reserve
+  let num_lambdas = Array::length(lt_w.bodies)
+  let start_body = bytebuf_new()
+  let entry_func_idx = if entry_user_idx >= 0 {
+    entry_user_idx + func_offset
+  } else {
+    -1
+  }
+  // ADR-0069: the synthesized `_start` prints the entry's Int return via
+  // print_int (the historical `let main: () -> Int` convention), but a
+  // Unit-returning entry (`fn main {}` desugars to `() -> Unit`, and any
+  // explicit `let main: () -> Unit`) must NOT print — the old behavior
+  // appended a stray `0` line after the program's own output. Detect Unit
+  // from the entry's declared return type: the EFn return annotation or the
+  // binding's `: (..) -> Unit` type annotation.
+  let mut entry_returns_unit = false
+  if entry_user_idx >= 0 {
+    let mut eri = 0
+    while eri < Array::length(stmts) {
+      match Array::get(stmts, eri) {
+        SLet(_, _, ename, eann, eval) => if ename == entry_name {
+          let ann_unit = match eann {
+            Some(TyFn(_, ann_ret, _)) => linked_type_expr_is_unit(ann_ret),
+            _ => false
+          }
+          let ret_unit = match eval {
+            EFn(_, _, _, efn_ret, _, _) => match efn_ret {
+              Some(rt) => linked_type_expr_is_unit(rt),
+              None => false
+            },
+            _ => false
+          }
+          if ann_unit || ret_unit {
+            entry_returns_unit = true
+          }
+        },
+        _ => ()
+      }
+      eri = eri + 1
+    }
+  }
+  if entry_user_idx >= 0 {
+    let entry_params = Array::get(fn_param_counts, entry_user_idx)
+    if entry_params != 0 {
+      throw("WASI entry function must take 0 parameters")
+    }
+    emit_i64_const(start_body, 0)
+    emit_call(start_body, entry_func_idx)
+    if entry_returns_unit {
+      emit_drop(start_body)
+    } else {
+      emit_call(start_body, print_int_idx)
+    }
+  } else {
+    let mut sti = 0
+    while sti < Array::length(test_fn_names) {
+      let stname = Array::get(test_fn_names, sti)
+      let mut __stj = 0
+      let mut __stf = -1
+      while __stj < Array::length(fn_names_list) {
+        if Array::get(fn_names_list, __stj) == stname {
+          __stf = __stj
+        }
+        __stj = __stj + 1
+      }
+      if __stf >= 0 {
+        emit_i64_const(start_body, 0)
+        emit_call(start_body, func_offset + __stf)
+        emit_drop(start_body)
+      }
+      sti = sti + 1
+    }
+  }
+  Array::push(bodies, start_body)
+  Array::push(meta_i32, 0)
+  Array::push(meta_i64, 0)
+  Array::push(meta_v128, 0)
+  let run_body = bytebuf_new()
+  if entry_func_idx >= 0 {
+    emit_i64_const(run_body, 0)
+    emit_call(run_body, entry_func_idx)
+  } else {
+    let mut rti = 0
+    while rti < Array::length(test_fn_names) {
+      let tname = Array::get(test_fn_names, rti)
+      let mut __rtj = 0
+      let mut __rtf = -1
+      while __rtj < Array::length(fn_names_list) {
+        if Array::get(fn_names_list, __rtj) == tname {
+          __rtf = __rtj
+        }
+        __rtj = __rtj + 1
+      }
+      if __rtf >= 0 {
+        emit_i64_const(run_body, 0)
+        emit_call(run_body, func_offset + __rtf)
+        emit_drop(run_body)
+      }
+      rti = rti + 1
+    }
+    emit_i64_const(run_body, 0)
+  }
+  Array::push(bodies, run_body)
+  Array::push(meta_i32, 0)
+  Array::push(meta_i64, 0)
+  Array::push(meta_v128, 0)
+  let mut li = 0
+  while li < num_lambdas {
+    Array::push(bodies, Array::get(lt_w.bodies, li))
+    Array::push(meta_i32, Array::get(lt_w.meta_i32, li))
+    Array::push(meta_i64, Array::get(lt_w.meta_i64, li))
+    Array::push(meta_v128, 0)
+    li = li + 1
+  }
+  // #2669 slice 2: where lambda bodies begin in `bodies`. DERIVED from the
+  // array that was just filled rather than spelled as
+  // `num_generated + num_user_funcs + 2` -- the `+ 2` would be a silent
+  // assumption about `_start` and `run`, and a third synthesized body would
+  // misattribute every recorded lambda reference. Nothing appends to `bodies`
+  // after this point.
+  let lambda_ci_base = Array::length(bodies) - num_lambdas
+  // #2669 slice 2: CHECK every recorded reference against the byte it names.
+  //
+  // A wrong record is the worst thing this mechanism can produce and the
+  // hardest to notice. The references it holds are the ones nothing in the
+  // bytes marks as references, so a stale offset does not fail to resolve --
+  // it resolves, rewrites an unrelated operand, and the module still
+  // validates. There is no later stage that could catch it.
+  //
+  // So it is checked here, on every compile, against the bodies as emitted:
+  // the opcode at the offset must be the one the kind implies, and the
+  // constant there must decode to exactly what the record says the reference
+  // is. Thousands of records on a compiler-sized program, a couple of byte
+  // reads and one LEB decode each.
+  lc_verify_blind_relocs(bodies, num_generated, lambda_ci_base, blind_owners, blind_offsets, blind_kinds, blind_syms)
+  let mut max_closure_arity = -1
+  let mut lai = 0
+  while lai < num_lambdas {
+    let lpc = Array::get(lt_w.param_counts, lai) - 1
+    if lpc > max_closure_arity {
+      max_closure_arity = lpc
+    }
+    lai = lai + 1
+  }
+  let mut uai = 0
+  while uai < num_user_funcs {
+    let upc = Array::get(fn_param_counts, uai)
+    if upc > max_closure_arity {
+      max_closure_arity = upc
+    }
+    uai = uai + 1
+  }
+  let mut iai = 0
+  while iai < Array::length(linked_imports) {
+    let (_, _, ipc, _) = Array::get(linked_imports, iai)
+    if ipc > max_closure_arity {
+      max_closure_arity = ipc
+    }
+    iai = iai + 1
+  }
+  let num_closure_types = if max_closure_arity >= 0 {
+    max_closure_arity + 1
+  } else {
+    0
+  }
+  // Interior-line breakpoints (span-arc step5): when active, the `vibe::dbg_line`
+  // import needs an `(i32) -> ()` func type. No existing base type is `(i32)->()`
+  // (type 1 is `(i64)->()`), so append one new type AFTER all base + closure
+  // types at index `num_base_types + num_closure_types`. This is strictly beyond
+  // every linked-import type index (which use `num_base_types + lparams`, bounded
+  // by num_closure_types), so existing indices are unshifted. -1 when off.
+  let dbg_line_type_idx = if dbg_line_on {
+    num_base_types + num_closure_types
+  } else {
+    -1
+  }
+  let extra_dbg_types = if dbg_line_on {
+    1
+  } else {
+    0
+  }
+  // #794: `vibe.http_request` needs an `(i64,i64,i64,i64) -> i64` func type.
+  // No base type has 4 i64 params, and closure types are data-dependent (only
+  // present up to the max closure arity in the unit), so append one dedicated
+  // type AFTER base + closure + dbg types when the import is live. Off =>
+  // byte-identical type section (fixpoint-safe).
+  let http_request_type_idx = if need_http_request_builtin {
+    num_base_types + num_closure_types + extra_dbg_types
+  } else {
+    -1
+  }
+  let extra_http_types = if need_http_request_builtin {
+    1
+  } else {
+    0
+  }
+  let bytes_blit_type_idx = num_base_types + num_closure_types + extra_dbg_types + extra_http_types
+  Array::set(builtin_type_idxs, bytes_blit_idx - num_imported_funcs, bytes_blit_type_idx)
+  let type_content = bytebuf_new()
+  bytebuf_push_vec_header(type_content, bytes_blit_type_idx + 1)
+  emit_func_type_raw(type_content, [127, 127, 127, 127], [127])
+  emit_func_type_raw(type_content, [126], array_empty())
+  emit_func_type_raw(type_content, array_empty(), array_empty())
+  emit_func_type_raw(type_content, [126], [126])
+  emit_func_type_raw(type_content, [126, 126], [126])
+  emit_func_type_raw(type_content, array_empty(), [126])
+  emit_func_type_raw(type_content, [126, 126], array_empty())
+  emit_func_type_raw(type_content, [126, 126, 126], array_empty())
+  emit_func_type_raw(type_content, [126, 126, 126], [126])
+  let mut cti = 0
+  while cti < num_closure_types {
+    let num_params = cti + 1
+    let ct_params = lc_fresh_int_array()
+    let mut cpti = 0
+    while cpti < num_params {
+      Array::push(ct_params, 126)
+      cpti = cpti + 1
+    }
+    emit_func_type_raw(type_content, ct_params, [126])
+    cti = cti + 1
+  }
+  // Interior-line breakpoints: append the `(i32, i32) -> ()` type for
+  // `vibe::dbg_line` (127 = i32; params = file_id, line). Only when active, so the
+  // type section is byte-identical off.
+  if dbg_line_on {
+    emit_func_type_raw(type_content, [127, 127], array_empty())
+  } else {
+    ()
+  }
+  // Append optional HTTP and byte-range types without shifting the base
+  // or closure type indices.
+  if need_http_request_builtin {
+    emit_func_type_raw(type_content, [126, 126, 126, 126], [126])
+  } else {
+    ()
+  }
+  emit_func_type_raw(type_content, [126, 126, 126, 126], array_empty())
+  let out = bytebuf_new()
+  emit_header(out)
+  emit_vibe_abi_custom_section(out, "raw")
+  // #cov: emit a `vibe_cov` custom section describing the function-hit bitmap.
+  // Layout of the payload: i32 LE cov_base, i32 LE cov_count, then the
+  // user-function names (one per line, in bitmap-index order). The consumer
+  // reads memory[cov_base .. cov_base+cov_count] after running and maps each
+  // hit byte back to a name. Only present in coverage builds.
+  if coverage {
+    let cov_content = bytebuf_new()
+    let cov_name = "vibe_cov"
+    leb128_encode_u32(cov_content, String::length(cov_name))
+    let mut cni = 0
+    while cni < String::length(cov_name) {
+      bytebuf_push(cov_content, String::char_code_at(cov_name, cni))
+      cni = cni + 1
+    }
+    bytebuf_push(cov_content, cov_base&255)
+    bytebuf_push(cov_content, (cov_base>>8)&255)
+    bytebuf_push(cov_content, (cov_base>>16)&255)
+    bytebuf_push(cov_content, (cov_base>>24)&255)
+    bytebuf_push(cov_content, cov_count&255)
+    bytebuf_push(cov_content, (cov_count>>8)&255)
+    bytebuf_push(cov_content, (cov_count>>16)&255)
+    bytebuf_push(cov_content, (cov_count>>24)&255)
+    let mut covni = 0
+    while covni < num_user_funcs {
+      let covnm = Array::get(fn_names_list, covni)
+      let covnml = String::length(covnm)
+      let mut covci = 0
+      while covci < covnml {
+        bytebuf_push(cov_content, String::char_code_at(covnm, covci))
+        covci = covci + 1
+      }
+      bytebuf_push(cov_content, 10)
+      covni = covni + 1
+    }
+    bytebuf_push_section(out, 0, cov_content)
+    // #cov branch: a `vibe_cov_branch` custom section describing the branch-hit
+    // bitmap. Payload: i32 LE branch_base, i32 LE branch_count, then
+    // branch_count i32 LE entries giving the owning user-function index per
+    // branch id (in id order). The consumer reads memory[base .. base+count]
+    // after running and attributes each hit branch to its function (names from
+    // the `vibe_cov` section), so it can report per-function branch coverage.
+    let covb_content = bytebuf_new()
+    let covb_name = "vibe_cov_branch"
+    leb128_encode_u32(covb_content, String::length(covb_name))
+    let mut covbni = 0
+    while covbni < String::length(covb_name) {
+      bytebuf_push(covb_content, String::char_code_at(covb_name, covbni))
+      covbni = covbni + 1
+    }
+    let covb_count = Array::get(cov_state.next, 0)
+    bytebuf_push(covb_content, cov_branch_base&255)
+    bytebuf_push(covb_content, (cov_branch_base>>8)&255)
+    bytebuf_push(covb_content, (cov_branch_base>>16)&255)
+    bytebuf_push(covb_content, (cov_branch_base>>24)&255)
+    bytebuf_push(covb_content, covb_count&255)
+    bytebuf_push(covb_content, (covb_count>>8)&255)
+    bytebuf_push(covb_content, (covb_count>>16)&255)
+    bytebuf_push(covb_content, (covb_count>>24)&255)
+    let mut covbi = 0
+    while covbi < covb_count {
+      let owner = Array::get(cov_state.owners, covbi)
+      bytebuf_push(covb_content, owner&255)
+      bytebuf_push(covb_content, (owner>>8)&255)
+      bytebuf_push(covb_content, (owner>>16)&255)
+      bytebuf_push(covb_content, (owner>>24)&255)
+      covbi = covbi + 1
+    }
+    bytebuf_push_section(out, 0, covb_content)
+  } else {
+    ()
+  }
+  // debugger trace (DAP P1 groundwork): emit a `vibe.trace` custom section
+  // describing the in-memory trace log. Payload layout: i32 LE counter_addr,
+  // i32 LE log_base, i32 LE cap, then the user-function names (one per line, in
+  // user-index order — the same list the name section uses). The runner reads
+  // memory[counter_addr] for the count, then `count` i32 entries from log_base,
+  // and maps each index to a name. Only present in debug-trace builds.
+  if debug_trace {
+    let tr_content = bytebuf_new()
+    let tr_name = "vibe.trace"
+    leb128_encode_u32(tr_content, String::length(tr_name))
+    let mut trni = 0
+    while trni < String::length(tr_name) {
+      bytebuf_push(tr_content, String::char_code_at(tr_name, trni))
+      trni = trni + 1
+    }
+    bytebuf_push(tr_content, trace_counter_addr&255)
+    bytebuf_push(tr_content, (trace_counter_addr>>8)&255)
+    bytebuf_push(tr_content, (trace_counter_addr>>16)&255)
+    bytebuf_push(tr_content, (trace_counter_addr>>24)&255)
+    bytebuf_push(tr_content, trace_log_base&255)
+    bytebuf_push(tr_content, (trace_log_base>>8)&255)
+    bytebuf_push(tr_content, (trace_log_base>>16)&255)
+    bytebuf_push(tr_content, (trace_log_base>>24)&255)
+    bytebuf_push(tr_content, trace_cap&255)
+    bytebuf_push(tr_content, (trace_cap>>8)&255)
+    bytebuf_push(tr_content, (trace_cap>>16)&255)
+    bytebuf_push(tr_content, (trace_cap>>24)&255)
+    let mut trni2 = 0
+    while trni2 < num_user_funcs {
+      let trnm = Array::get(fn_names_list, trni2)
+      let trnml = String::length(trnm)
+      let mut trci = 0
+      while trci < trnml {
+        bytebuf_push(tr_content, String::char_code_at(trnm, trci))
+        trci = trci + 1
+      }
+      bytebuf_push(tr_content, 10)
+      trni2 = trni2 + 1
+    }
+    bytebuf_push_section(out, 0, tr_content)
+  } else {
+    ()
+  }
+  // Value ABI metadata consumed by the host-future/host-stream/sleep component
+  // adapter. A future/stream getter, the validated serve handler signature, OR
+  // an async `run` entry that sleeps (#1342) selects that composer. A raw
+  // stream read alone does not: ordinary/library code may read a HostStream
+  // without being componentized. Ordinary core wasm therefore remains
+  // byte-identical. Payload: i32 LE tag_mode.
+  if need_host_future_builtin || serve_handler_has_host_stream || Array::length(hf_all_names) > 0 || Array::length(hs_named_names) > 0 || sleep_needs_component_adapter {
+    let tm_content = bytebuf_new()
+    let tm_name = "vibe.tagmode"
+    leb128_encode_u32(tm_content, String::length(tm_name))
+    let mut tmni = 0
+    while tmni < String::length(tm_name) {
+      bytebuf_push(tm_content, String::char_code_at(tm_name, tmni))
+      tmni = tmni + 1
+    }
+    let tm_value = if enable_rc {
+      1
+    } else {
+      0
+    }
+    bytebuf_push(tm_content, tm_value)
+    bytebuf_push(tm_content, 0)
+    bytebuf_push(tm_content, 0)
+    bytebuf_push(tm_content, 0)
+    bytebuf_push_section(out, 0, tm_content)
+  } else {
+    ()
+  }
+  // debugger argument inspection (DAP P2): emit a `vibe.dbgargs` custom section
+  // publishing the addresses + value ABI the runner reads. Payload layout:
+  // i32 LE dbgargs_count_addr, i32 LE dbgargs_base, i32 LE tag_mode. At a
+  // breakpoint the runner reads memory[count_addr] (i32) for the arg count, then
+  // that many i64 values from dbgargs_base, decoding each per tag_mode:
+  //   tag_mode 0 (enable_rc off): values are plain untagged i64 ints.
+  //   tag_mode 1 (enable_rc on):  values are 1-bit tagged — low bit 0 => int
+  //                               (raw >> 1), low bit 1 => heap pointer (hex).
+  // Only present in break builds.
+  if debug_break {
+    let da_content = bytebuf_new()
+    let da_name = "vibe.dbgargs"
+    leb128_encode_u32(da_content, String::length(da_name))
+    let mut dani = 0
+    while dani < String::length(da_name) {
+      bytebuf_push(da_content, String::char_code_at(da_name, dani))
+      dani = dani + 1
+    }
+    bytebuf_push(da_content, dbgargs_count_addr&255)
+    bytebuf_push(da_content, (dbgargs_count_addr>>8)&255)
+    bytebuf_push(da_content, (dbgargs_count_addr>>16)&255)
+    bytebuf_push(da_content, (dbgargs_count_addr>>24)&255)
+    bytebuf_push(da_content, dbgargs_base&255)
+    bytebuf_push(da_content, (dbgargs_base>>8)&255)
+    bytebuf_push(da_content, (dbgargs_base>>16)&255)
+    bytebuf_push(da_content, (dbgargs_base>>24)&255)
+    let da_tag_mode = if enable_rc {
+      1
+    } else {
+      0
+    }
+    bytebuf_push(da_content, da_tag_mode&255)
+    bytebuf_push(da_content, (da_tag_mode>>8)&255)
+    bytebuf_push(da_content, (da_tag_mode>>16)&255)
+    bytebuf_push(da_content, (da_tag_mode>>24)&255)
+    bytebuf_push_section(out, 0, da_content)
+  } else {
+    ()
+  }
+  // debugger named-parameter inspection (DAP P4): emit a `vibe.dbgnames` custom
+  // section listing, per user function (in user-index order — the same order as
+  // the name section / fn_names_list / vibe.dbgargs spill), that function's name
+  // followed by its parameter names. One record per function, terminated by
+  // newline (10); within a record fields are tab-delimited (9): the first field
+  // is the function name, the remaining fields are the parameter names. A
+  // function with no params emits just its name + newline. Names are capped at
+  // dbgargs_cap to match the spilled value count. The runner keys a map by
+  // function name so entering-function F's names can be paired with F's spilled
+  // values to print `args: [name=value]`. Only present in break builds; off =>
+  // byte-identical to a normal build (fixpoint preserved).
+  if debug_break {
+    let dn_content = bytebuf_new()
+    let dn_name = "vibe.dbgnames"
+    leb128_encode_u32(dn_content, String::length(dn_name))
+    let mut dnni = 0
+    while dnni < String::length(dn_name) {
+      bytebuf_push(dn_content, String::char_code_at(dn_name, dnni))
+      dnni = dnni + 1
+    }
+    let mut dnfi = 0
+    while dnfi < num_user_funcs {
+      let dn_fnname = Array::get(fn_names_list, dnfi)
+      let mut dn_fci = 0
+      while dn_fci < String::length(dn_fnname) {
+        bytebuf_push(dn_content, String::char_code_at(dn_fnname, dn_fci))
+        dn_fci = dn_fci + 1
+      }
+      let dn_stmt = Array::get(stmts, Array::get(fn_stmt_indices, dnfi))
+      let dn_expr = get_slet_expr(dn_stmt)
+      if is_efn(dn_expr) {
+        let dn_params = get_efn_params(dn_expr)
+        let dn_np = Array::length(dn_params)
+        let dn_n = if dn_np > dbgargs_cap {
+          dbgargs_cap
+        } else {
+          dn_np
+        }
+        let mut dn_pi = 0
+        while dn_pi < dn_n {
+          let (dn_pname_raw, _) = Array::get(dn_params, dn_pi)
+          let dn_pnl = String::length(dn_pname_raw)
+          let dn_pname = if dn_pnl > 0 {
+            let dn_plc = String::char_code_at(dn_pname_raw, dn_pnl - 1)
+            if dn_plc == '~' || dn_plc == '?' {
+              dn_pname_raw[0: dn_pnl - 1]
+            } else {
+              dn_pname_raw
+            }
+          } else {
+            dn_pname_raw
+          }
+          bytebuf_push(dn_content, 9)
+          let mut dn_ci = 0
+          while dn_ci < String::length(dn_pname) {
+            bytebuf_push(dn_content, String::char_code_at(dn_pname, dn_ci))
+            dn_ci = dn_ci + 1
+          }
+          dn_pi = dn_pi + 1
+        }
+      } else {
+        // #715: `dn_expr` is a fresh per-iteration owned binding (like
+        // `__bi_expr` in the main codegen loop above), and -- unlike
+        // `__bi_expr` -- `is_efn(dn_expr)` is NOT overwhelmingly true here:
+        // `fn_stmt_indices` legitimately mixes real functions with non-
+        // function "thunk" entries (constant initializers), so this `else`
+        // is a common, not rare, runtime path. An empty `else { () }` uses
+        // `dn_expr` zero times while `then` uses it once (via
+        // `get_efn_params`), so `pc_emit`'s EIf MIN-merge (#705) permanently
+        // carries the `then`-consumed (lower) remaining forward even on the
+        // iterations that really take this branch -- the loop-body scope-end
+        // drop for `dn_expr` is then skipped based on that borrowed count,
+        // leaking `dn_expr` on every thunk entry. Call `is_efn` again here,
+        // discarding the result, purely to consume `dn_expr` exactly once --
+        // matching `then`'s single consuming use so both branches leave the
+        // same remaining count and the plan's assumption holds either way.
+        is_efn(dn_expr)
+      }
+      bytebuf_push(dn_content, 10)
+      dnfi = dnfi + 1
+    }
+    bytebuf_push_section(out, 0, dn_content)
+  } else {
+    ()
+  }
+  // Interior-line breakpoints / production trap provenance: emit a
+  // `vibe.dbgfiles` custom section listing the source PATHS in file-id order,
+  // one per line (terminated by newline 10). The runner indexes this table to
+  // recover the file for a linemap file id: a trap prints the path (#2199,
+  // editable, and unambiguous between two packages' `index.vibe`), while a
+  // `--break <file>:<line>` spec is matched against its basename.
+  // Present whenever linemap is on AND at least one record will be emitted.
+  // An empty named section is waste (#2199).
+  if linemap_on && Array::length(linemap_state.grp_fn) > 0 {
+    let df_content = bytebuf_new()
+    let df_name = "vibe.dbgfiles"
+    leb128_encode_u32(df_content, String::length(df_name))
+    let mut dfni = 0
+    while dfni < String::length(df_name) {
+      bytebuf_push(df_content, String::char_code_at(df_name, dfni))
+      dfni = dfni + 1
+    }
+    let mut dffi = 0
+    while dffi < Array::length(prov.files) {
+      let df_base = Array::get(prov.files, dffi)
+      let mut df_ci = 0
+      while df_ci < String::length(df_base) {
+        bytebuf_push(df_content, String::char_code_at(df_base, df_ci))
+        df_ci = df_ci + 1
+      }
+      bytebuf_push(df_content, 10)
+      dffi = dffi + 1
+    }
+    bytebuf_push_section(out, 0, df_content)
+  } else {
+    ()
+  }
+  bytebuf_push_section(out, 1, type_content)
+  let import_content = bytebuf_new()
+  bytebuf_push_vec_header(import_content, num_imported_funcs)
+  emit_name(import_content, "wasi_snapshot_preview1")
+  emit_name(import_content, "fd_write")
+  bytebuf_push(import_content, 0)
+  leb128_encode_u32(import_content, 0)
+  if env_get_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "env-get")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  }
+  if env_args_len_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "args-len")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 5)
+  }
+  if env_args_get_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "args-get")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  }
+  if fs_read_file_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "fs_read_file")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  }
+  if fs_exists_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "fs_exists")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  }
+  if fs_stat_token_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "fs_stat_token")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  }
+  if fs_write_file_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "fs_write_file")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 6)
+  }
+  if fs_publish_immutable_text_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "fs_publish_immutable_text")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 4)
+  }
+  if fs_write_bytes_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "fs_write_bytes")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 6)
+  }
+  // #632: fs_read_bytes — emitted right after fs_write_bytes to match its
+  // reserved index. Type 3 is `(i64) -> i64` (same as fs_read_file).
+  if fs_read_bytes_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "fs_read_bytes")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  }
+  // #729/#730: fs_read_dir_nul — emitted right after fs_read_bytes to match
+  // its reserved index. Type 3 is `(i64) -> i64` (same as fs_read_file).
+  if fs_read_dir_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "fs_read_dir_nul")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  }
+  if profiler_now_us_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "profile-now-us")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 5)
+  }
+  // `vibe.profile-heap-bytes () -> i64` — emitted right after profile-now-us
+  // to match its reserved index. Type 5 is `() -> i64` (same as now-us).
+  if profiler_heap_bytes_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "profile-heap-bytes")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 5)
+  }
+  // `vibe.sleep (i64) -> ()` — reserved index after profiler, matching the
+  // allocation order above. Type 1 is `(i64) -> ()`.
+  if sleep_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "sleep")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 1)
+  } else {
+    ()
+  }
+  // `vibe.stdin_read_char () -> i64` — after sleep, matching allocation order.
+  // Type 5 is `() -> i64` (same as profile-now-us).
+  if stdin_read_char_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "stdin_read_char")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 5)
+  } else {
+    ()
+  }
+  // ADR-0089 step 4: `vibe.host_future_get () -> i64` (type 5) and
+  // `vibe.host_future_wait (i64) -> i64` (type 3) — after stdin_read_char,
+  // matching allocation order. Component-adapter-provided imports (spec
+  // §3.13/§3.14); i64 values are guest-tagged on the wire (the adapter
+  // shifts), like every generic-path vibe.* Int.
+  if hf_get_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "host_future_get")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 5)
+  } else {
+    ()
+  }
+  if hf_wait_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "host_future_wait")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  } else {
+    ()
+  }
+  if hf_arm_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "host_future_arm")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  } else {
+    ()
+  }
+  if hf_wait_any_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "host_future_wait_any")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 5)
+  } else {
+    ()
+  }
+  if hs_arm_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "host_stream_arm")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  } else {
+    ()
+  }
+  if hsl_arm_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "host_sleep_arm")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  } else {
+    ()
+  }
+  if hf_cancel_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "host_future_cancel")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  } else {
+    ()
+  }
+  if hs_cancel_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "host_stream_cancel")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  } else {
+    ()
+  }
+  if hf_arg_push_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "host_arg_push")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  } else {
+    ()
+  }
+  if hsl_cancel_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "host_sleep_cancel")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  } else {
+    ()
+  }
+  if hs_claim_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "host_stream_claim")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  } else {
+    ()
+  }
+  // ADR-0089 (c) (#1218): `vibe.host_future_get$<name> () -> i64` (type 5)
+  // per named host future -- after the anonymous pair, in the same sorted
+  // order the indices were reserved in. The `$<name>` suffix is what the
+  // composer reads back to build the component-level import of that name.
+  let mut hf_emit_i = 0
+  while hf_emit_i < Array::length(hf_named_names) {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, String::concat("host_future_get$", Array::get(hf_named_names, hf_emit_i)))
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 5)
+    hf_emit_i = hf_emit_i + 1
+  }
+  // #2064: then `vibe.wit_future_get$<address>` (type 5) per WIT function
+  // address (`cc_is_wit_future_address`), the metadata import the composer
+  // turns into an import of that versioned INTERFACE rather than a root
+  // function. Same type, same wait half; reserved after the root names, the
+  // order `hf_all_names` fixed.
+  let mut hf_wit_emit_i = 0
+  while hf_wit_emit_i < Array::length(hf_wit_names) {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, String::concat("wit_future_get$", Array::get(hf_wit_names, hf_wit_emit_i)))
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 5)
+    hf_wit_emit_i = hf_wit_emit_i + 1
+  }
+  // #2066: then `vibe.wit_response_get$<address>` (type 5) per WIT response,
+  // the metadata import the composer turns into a `types` + API interface
+  // pair whose function returns `future<response>`. Same wait half.
+  // Responses taking the string argument the guest pushed through
+  // `vibe.host_arg_push` come first, in hf_all_names' order.
+  let mut hf_resp_arg_emit_i = 0
+  while hf_resp_arg_emit_i < Array::length(hf_response_arg_addresses) {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, String::concat("wit_response_arg_get$", Array::get(hf_response_arg_addresses, hf_resp_arg_emit_i)))
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 5)
+    hf_resp_arg_emit_i = hf_resp_arg_emit_i + 1
+  }
+  let mut hf_resp_emit_i = 0
+  while hf_resp_emit_i < Array::length(hf_response_addresses) {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, String::concat("wit_response_get$", Array::get(hf_response_addresses, hf_resp_emit_i)))
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 5)
+    hf_resp_emit_i = hf_resp_emit_i + 1
+  }
+  // ADR-0089 Decision 3 (#1218): `vibe.host_stream_read (i64) -> i64` (type
+  // 3), then `vibe.host_stream_get$<name> () -> i64` (type 5) per named
+  // host stream -- after the host-future imports, in the same sorted order
+  // the indices were reserved in. Component-adapter-provided (spec §3.18);
+  // the `$<name>` suffix is what the composer reads back to build the
+  // component-level `stream<u8>` import of that name.
+  if hs_read_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "host_stream_read")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  } else {
+    ()
+  }
+  // ADR-0089 Decision 3 follow-up (#1218): `vibe.host_stream_close
+  // (i64) -> i64` (type 3), reserved right after the read half and emitted
+  // in that order. Present only when the program actually closes a stream,
+  // so draining programs stay byte-identical.
+  if hs_close_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "host_stream_close")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  } else {
+    ()
+  }
+  // #1539: the dedicated stdin provider route uses exact names and tagged
+  // i64s. It is intentionally separate from generic HostStream imports.
+  if stdin_provider_acquire_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "stdin_provider_acquire")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 5)
+  } else {
+    ()
+  }
+  if stdin_provider_read_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "stdin_provider_read")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  } else {
+    ()
+  }
+  if stdin_provider_close_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "stdin_provider_close")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  } else {
+    ()
+  }
+  let mut hs_emit_i = 0
+  while hs_emit_i < Array::length(hs_named_names) {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, String::concat("host_stream_get$", Array::get(hs_named_names, hs_emit_i)))
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 5)
+    hs_emit_i = hs_emit_i + 1
+  }
+  // `vibe.sh (i64) -> i64` and `vibe.sh_lines (i64) -> i64` — reserved after
+  // stdin_read_char (before dbg_break), matching allocation order. Type 3 is
+  // `(i64) -> i64` (same as fs_read_file / fs_read_dir).
+  if sh_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "sh")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  } else {
+    ()
+  }
+  if sh_lines_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "sh_lines")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  } else {
+    ()
+  }
+  // `vibe.stdin_read_stream (i64) -> i64` (type 3, like fs_read_file), then the
+  // two void `vibe.stdout_write_stream` / `vibe.stdout_write_char (i64) -> ()`
+  // (type 1, like sleep) — reserved after sh_lines (before dbg_break), matching
+  // allocation order.
+  if stdin_read_stream_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "stdin_read_stream")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  } else {
+    ()
+  }
+  if stdout_write_stream_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "stdout_write_stream")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 1)
+  } else {
+    ()
+  }
+  if stdout_write_char_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "stdout_write_char")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 1)
+  } else {
+    ()
+  }
+  // `vibe.resolve_path (i64) -> i64` (type 3, like fs_read_file) — reserved after
+  // stdout_write_char (before dbg_break), matching allocation order.
+  if resolve_path_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "resolve_path")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  } else {
+    ()
+  }
+  // #768: `vibe.fs_remove (i64) -> ()` (type 1, like sleep) — reserved after
+  // resolve_path (before dbg_break), matching allocation order.
+  if fs_remove_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "fs_remove")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 1)
+  } else {
+    ()
+  }
+  // #2738: `vibe.fs_remove_file (i64) -> ()` (type 1, like fs_remove) --
+  // reserved immediately after fs_remove, matching allocation order above.
+  if fs_remove_file_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "fs_remove_file")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 1)
+  } else {
+    ()
+  }
+  // #2758: `vibe.fs_remove_tree (i64) -> ()` (type 1, like fs_remove) --
+  // reserved immediately after fs_remove_file, matching allocation order above.
+  if fs_remove_tree_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "fs_remove_tree")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 1)
+  } else {
+    ()
+  }
+  // #768: `vibe.fs_mkdir_p (i64) -> ()` (type 1, like fs_remove) — reserved
+  // after fs_remove (before dbg_break), matching allocation order.
+  if fs_mkdir_p_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "fs_mkdir_p")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 1)
+  } else {
+    ()
+  }
+  // #768: `vibe.fs_mkdir (i64) -> ()` (type 1, like fs_remove) — reserved
+  // after fs_mkdir_p, matching allocation order.
+  if fs_mkdir_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "fs_mkdir")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 1)
+  } else {
+    ()
+  }
+  // #768: `vibe.fs_chdir (i64) -> ()` (type 1, like fs_remove) — reserved
+  // after fs_mkdir, matching allocation order.
+  if fs_chdir_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "fs_chdir")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 1)
+  } else {
+    ()
+  }
+  // #768: `vibe.fs_copy (i64, i64) -> ()` (type 6, like fs_write_file).
+  if fs_copy_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "fs_copy")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 6)
+  } else {
+    ()
+  }
+  // #768: `vibe.fs_append (i64, i64) -> ()` (type 6, like fs_write_file).
+  if fs_append_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "fs_append")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 6)
+  } else {
+    ()
+  }
+  // #768: `vibe.fs_rename (i64, i64) -> ()` (type 6, like fs_write_file).
+  if fs_rename_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "fs_rename")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 6)
+  } else {
+    ()
+  }
+  // #768: `vibe.fs_is_dir (i64) -> i64` (type 3, like fs_exists/fs_read_file).
+  if fs_is_dir_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "fs_is_dir")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  } else {
+    ()
+  }
+  // #768: `vibe.fs_is_file (i64) -> i64` (type 3, like fs_exists).
+  if fs_is_file_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "fs_is_file")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  } else {
+    ()
+  }
+  // #768: `vibe.fs_getcwd () -> i64` (type 5, like profile-now-us).
+  if fs_getcwd_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "fs_getcwd")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 5)
+  } else {
+    ()
+  }
+  // `vibe.tcp_connect (i64,i64) -> i64` (type 4, like http_response_header).
+  if tcp_connect_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "tcp_connect")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 4)
+  } else {
+    ()
+  }
+  // `vibe.tcp_read (i64,i64) -> i64` (type 4, like http_response_header).
+  if tcp_read_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "tcp_read")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 4)
+  } else {
+    ()
+  }
+  // `vibe.tcp_write (i64,i64) -> ()` (type 6, like fs_write_file).
+  if tcp_write_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "tcp_write")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 6)
+  } else {
+    ()
+  }
+  // `vibe.tcp_close (i64) -> ()` (type 1, like fs_remove).
+  if tcp_close_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "tcp_close")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 1)
+  } else {
+    ()
+  }
+  // #794: `vibe.http_request (i64,i64,i64,i64) -> i64` — the dedicated type
+  // appended after base/closure/dbg types (http_request_type_idx).
+  if http_request_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "http_request")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, http_request_type_idx)
+  } else {
+    ()
+  }
+  // #794: `vibe.http_response_status (i64) -> i64` (type 3, like fs_exists).
+  if http_response_status_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "http_response_status")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  } else {
+    ()
+  }
+  // #794: `vibe.http_response_header (i64, i64) -> i64` (type 4).
+  if http_response_header_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "http_response_header")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 4)
+  } else {
+    ()
+  }
+  // #794: `vibe.http_response_body (i64) -> i64` (type 3, like fs_read_file).
+  if http_response_body_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "http_response_body")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  } else {
+    ()
+  }
+  // #794: `vibe.http_close (i64) -> ()` (type 1, like fs_remove).
+  if http_close_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "http_close")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 1)
+  } else {
+    ()
+  }
+  // #865: `vibe.sh_capture (i64) -> i64` (type 3, like fs_read_file) -- runs
+  // the command once and returns a handle.
+  if sh_capture_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "sh_capture")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  } else {
+    ()
+  }
+  // #865: `vibe.sh_capture_exit_code (i64) -> i64` (type 3, like fs_exists).
+  if sh_capture_exit_code_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "sh_capture_exit_code")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  } else {
+    ()
+  }
+  // #865: `vibe.sh_capture_stdout (i64) -> i64` (type 3, like fs_read_file).
+  if sh_capture_stdout_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "sh_capture_stdout")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  } else {
+    ()
+  }
+  // #865: `vibe.sh_capture_stderr (i64) -> i64` (type 3, like fs_read_file).
+  if sh_capture_stderr_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "sh_capture_stderr")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 3)
+  } else {
+    ()
+  }
+  // #865: `vibe.sh_capture_close (i64) -> ()` (type 1, like fs_remove).
+  if sh_capture_close_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "sh_capture_close")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 1)
+  } else {
+    ()
+  }
+  // #903/#865: `vibe.process_exit (i64) -> ()` (type 1, like fs_remove).
+  if process_exit_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "process_exit")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 1)
+  } else {
+    ()
+  }
+  // #865: `vibe.stderr_write_stream (i64) -> ()` / `vibe.stderr_write_char
+  // (i64) -> ()` (type 1, like Stdout's pair).
+  if stderr_write_stream_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "stderr_write_stream")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 1)
+  } else {
+    ()
+  }
+  if stderr_write_char_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "stderr_write_char")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 1)
+  } else {
+    ()
+  }
+  if dbg_break_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "dbg_break")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 2)
+  }
+  // Interior-line breakpoints (span-arc step5): emit the `vibe::dbg_line` import
+  // descriptor here, AFTER dbg_break and BEFORE the linked imports, matching its
+  // reserved import index order. Type index is the appended `(i32) -> ()` type.
+  if dbg_line_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "dbg_line")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, dbg_line_type_idx)
+  } else {
+    ()
+  }
+  let mut li_emit = 0
+  while li_emit < Array::length(linked_imports) {
+    let (lmod, lfn, lparams, _) = Array::get(linked_imports, li_emit)
+    emit_name(import_content, lmod)
+    emit_name(import_content, lfn)
+    bytebuf_push(import_content, 0)
+    let type_idx = num_base_types + lparams
+    leb128_encode_u32(import_content, type_idx)
+    li_emit = li_emit + 1
+  }
+  bytebuf_push_section(out, 2, import_content)
+  let func_type_indices = lc_fresh_int_array()
+  // #415 B-1: the builtin type indices are declared next to each body push
+  // (push_builtin above), in the exact bodies order — splice them here where
+  // a hand-maintained bare number list used to mirror that order from ~1,400
+  // lines away.
+  let mut bti = 0
+  while bti < Array::length(builtin_type_idxs) {
+    Array::push(func_type_indices, Array::get(builtin_type_idxs, bti))
+    bti = bti + 1
+  }
+  let mut fti = 0
+  while fti < num_user_funcs {
+    let upc = Array::get(fn_param_counts, fti)
+    Array::push(func_type_indices, num_base_types + upc)
+    fti = fti + 1
+  }
+  Array::push(func_type_indices, 2)
+  Array::push(func_type_indices, 5)
+  let mut lfi = 0
+  while lfi < num_lambdas {
+    let lam_user_params = Array::get(lt_w.param_counts, lfi) - 1
+    Array::push(func_type_indices, num_base_types + lam_user_params)
+    lfi = lfi + 1
+  }
+  if Array::length(func_type_indices) != Array::length(bodies) {
+    throw("WASI codegen internal error: function section and code section count mismatch")
+  }
+  emit_function_section(out, func_type_indices)
+  // #2388: lambdas sit at [lambda_slot_base, +num_lambdas) — see the
+  // lambda_slot_base doc on CompileCtx. Slots in the reserved gap
+  // [num_user_funcs, lambda_slot_base) are never used and stay ref.null.
+  let total_table_entries = if num_user_funcs + num_lambdas > 0 {
+    lambda_slot_base + num_lambdas
+  } else {
+    0
+  }
+  if total_table_entries > 0 {
+    emit_table_section_funcref(out, total_table_entries)
+  }
+  // #2427: under `VIBE_RC=shadow` the bump pointer starts ABOVE the shadow
+  // table (`rc_shadow_heap_start()`), so the minimum memory has to cover the
+  // table AND everything below it. Adding the reserve to the ordinary heap
+  // base -- what this did before -- sized the memory correctly but left the
+  // heap growing straight into the table.
+  //
+  // The table's base is a constant, so the regions BELOW the heap -- static
+  // string data from offset 64, then the effect/coverage/trace/rc-bin/region
+  // reserves -- have to end below it. They do for every module in this tree
+  // (the largest, the generated cli_adapter bundle, holds about 25 MB of
+  // string literals against a 256 MiB base), but a module with a few hundred
+  // MB of literals would put its own data inside the table: guards would read
+  // literal bytes as freed marks and marks would overwrite the literals.
+  // Refuse instead. The fix if this ever fires is to derive the base from
+  // `fixed_top` and thread it through the builtin body generators the way
+  // `bins_base` already is -- not to widen the constant, which cannot help
+  // because the heap start rides on it (see `rc_shadow_reserve`).
+  let fixed_top = heap_start + eff_reserve + cov_reserve + cov_branch_reserve + trace_reserve + dbgargs_reserve + rc_bins_reserve + region_reserve
+  if rc_shadow && fixed_top > rc_shadow_base() {
+    throw("VIBE_RC=shadow is unavailable for this module: its static data and fixed reserves end at " + Int::to_string(fixed_top) + " bytes, past the shadow table base at " + Int::to_string(rc_shadow_base()) + ". Compile it with VIBE_RC=1 instead, or shrink the module's string literals.")
+  } else {
+    ()
+  }
+  emit_memory_section(out, wasi_memory_min_pages_for_heap(if rc_shadow {
+    rc_shadow_heap_start()
+  } else {
+    fixed_top
+  }))
+  // #721: emit the tag section only when something can reference a tag --
+  // EThrow (`throw 2`), EHandle (try_table over tags 0-3), or a declared
+  // effect (per-effect tags at index 4+). Pure-compute modules then carry no
+  // exceptions machinery at all, which keeps V8 off its slower exnref module
+  // path (~35% wall on call-heavy code; wasmtime is indifferent).
+  let uses_exceptions = Array::length(effect_names_list) > 0 || stmts_contain_exceptions(stmts)
+  if uses_exceptions {
+    let tag_content = bytebuf_new()
+    let num_tags = Array::length(effect_names_list) + 4
+    bytebuf_push_vec_header(tag_content, num_tags)
+    let mut tag_emit_i = 0
+    while tag_emit_i < num_tags {
+      bytebuf_push(tag_content, 0)
+      leb128_encode_u32(tag_content, 1)
+      tag_emit_i = tag_emit_i + 1
+    }
+    bytebuf_push_section(out, 13, tag_content)
+  } else {
+    ()
+  }
+  let global_content = bytebuf_new()
+  // Base globals (bump ptr, effect state, ..., g_op_index) plus two i64
+  // globals per module-level thunk (memo value + init flag) appended last —
+  // see the thunk-body memoization above for the index formula.
+  let tg_num_thunks = Array::length(thunk_names_list)
+  if enable_rc {
+    bytebuf_push_vec_header(global_content, 7 + tg_num_thunks * 2)
+  } else {
+    bytebuf_push_vec_header(global_content, 6 + tg_num_thunks * 2)
+  }
+  bytebuf_push(global_content, 127)
+  bytebuf_push(global_content, 1)
+  // #2427: global 0 is the bump pointer. Under shadow RC it starts above the
+  // shadow table so the two regions cannot overlap; the fixed regions below
+  // (static strings, rc bins, region arena) keep their computed addresses.
+  emit_i32_const(global_content, if rc_shadow {
+    rc_shadow_heap_start()
+  } else {
+    fixed_top
+  })
+  emit_end(global_content)
+  bytebuf_push(global_content, 126)
+  bytebuf_push(global_content, 1)
+  emit_i64_const(global_content, 0)
+  emit_end(global_content)
+  if enable_rc {
+    bytebuf_push(global_content, 127)
+    bytebuf_push(global_content, 1)
+    emit_i32_const(global_content, 0)
+    emit_end(global_content)
+  }
+  bytebuf_push(global_content, 126)
+  bytebuf_push(global_content, 1)
+  emit_i64_const(global_content, 0)
+  emit_end(global_content)
+  bytebuf_push(global_content, 126)
+  bytebuf_push(global_content, 1)
+  emit_i64_const(global_content, 0)
+  emit_end(global_content)
+  bytebuf_push(global_content, 127)
+  bytebuf_push(global_content, 1)
+  emit_i32_const(global_content, heap_start)
+  emit_end(global_content)
+  // #665: g_op_index (i64, mut) — operation index of the perform unwinding to a
+  // handler, for multi-operation dispatch. Appended last; index = rc ? 6 : 5.
+  bytebuf_push(global_content, 126)
+  bytebuf_push(global_content, 1)
+  emit_i64_const(global_content, 0)
+  emit_end(global_content)
+  let mut tg_gi = 0
+  while tg_gi < tg_num_thunks * 2 {
+    bytebuf_push(global_content, 126)
+    bytebuf_push(global_content, 1)
+    emit_i64_const(global_content, 0)
+    emit_end(global_content)
+    tg_gi = tg_gi + 1
+  }
+  bytebuf_push_section(out, 6, global_content)
+  let start_func_idx = func_offset + num_user_funcs
+  let run_func_idx = start_func_idx + 1
+  let all_export_names = lc_fresh_string_array()
+  let all_export_indices = lc_fresh_int_array()
+  if !library_mode {
+    Array::push(all_export_names, "_start")
+    Array::push(all_export_indices, start_func_idx)
+  }
+  if !library_mode && entry_func_idx >= 0 && !array_contains_str(all_export_names, entry_name_in) {
+    Array::push(all_export_names, entry_name_in)
+    Array::push(all_export_indices, entry_func_idx)
+  }
+  let mut exi = 0
+  while exi < Array::length(export_fn_names) {
+    // #3132 review: a definition renamed aside for being named like a builtin
+    // the compiler calls (`Array::length` -> `Array::length$user`) is still
+    // exported under the name the program wrote.
+    let ename = builtin_shadow_source_name(Array::get(export_fn_names, exi))
+    let skip_export = library_mode && ename == entry_name_in
+    if !skip_export && !array_contains_str(all_export_names, ename) {
+      Array::push(all_export_names, ename)
+      Array::push(all_export_indices, Array::get(export_fn_user_indices, exi) + func_offset)
+    }
+    exi = exi + 1
+  }
+  // Per-block test/bench: export each `__test_<name>` / `__bench_<name>` function
+  // so a runner can invoke one block at a time (instead of running the whole
+  // `_start`, which loops over every block). This is what gives merged builds
+  // (#819) per-block failure attribution and a per-block timeout -- once N files
+  // share one module, `_start` has no granularity left unless each block is
+  // separately addressable. Only `__no_entry__` test/bench builds populate
+  // test_fn_names, so normal builds (incl. the compiler self-compile) are
+  // byte-identical. The wasm index of a user function at user-index `j` is
+  // `j + func_offset`.
+  let mut bxi = 0
+  while bxi < Array::length(test_fn_names) {
+    let bname = Array::get(test_fn_names, bxi)
+    let bexportable = String::starts_with(bname, "__bench_") ||
+    String::starts_with(bname, "__test_")
+    if bexportable && !array_contains_str(all_export_names, bname) {
+      let mut bj = 0
+      let mut bfound = 0 - 1
+      while bj < num_user_funcs {
+        if Array::get(fn_names_list, bj) == bname {
+          bfound = bj
+          bj = num_user_funcs
+        } else {
+          bj = bj + 1
+        }
+      }
+      if bfound >= 0 {
+        Array::push(all_export_names, bname)
+        Array::push(all_export_indices, bfound + func_offset)
+      }
+    }
+    bxi = bxi + 1
+  }
+  let export_content = bytebuf_new()
+  // #721: exception tag exports exist only when the tag section does. `error`
+  // is the entry-boundary tag; `__exception_throw_tag` is the language-level
+  // Exception::Throw tag used by handle expressions and host imports.
+  let export_count = Array::length(all_export_names) + 1 +
+  (if library_mode {
+    0
+  } else {
+    1 + (if uses_exceptions {
+      2
+    } else {
+      0
+    })
+  })
+  bytebuf_push_vec_header(export_content, export_count)
+  let mut efi = 0
+  while efi < Array::length(all_export_names) {
+    emit_name(export_content, Array::get(all_export_names, efi))
+    bytebuf_push(export_content, 0)
+    leb128_encode_u32(export_content, Array::get(all_export_indices, efi))
+    efi = efi + 1
+  }
+  emit_name(export_content, "memory")
+  bytebuf_push(export_content, 2)
+  leb128_encode_u32(export_content, 0)
+  if !library_mode {
+    emit_name(export_content, "__heap_ptr")
+    bytebuf_push(export_content, 3)
+    leb128_encode_u32(export_content, 0)
+    if uses_exceptions {
+      emit_name(export_content, "error")
+      bytebuf_push(export_content, 4)
+      leb128_encode_u32(export_content, 0)
+      emit_name(export_content, "__exception_throw_tag")
+      bytebuf_push(export_content, 4)
+      leb128_encode_u32(export_content, 2)
+    } else {
+      ()
+    }
+  }
+  bytebuf_push_section(out, 7, export_content)
+  if total_table_entries > 0 {
+    // #1107 Phase 4: register ONLY the slots codegen recorded a closure value
+    // for (table_slots_used — see CompileCtx). A slot no closure carries can
+    // never be call_indirect'ed, so it stays ref.null; slot numbering and the
+    // declared table size are untouched. Run-compressed active segments skip
+    // the gaps (emit_element_section_active_runs). This also shrinks the DCE
+    // root set a downstream optimizer (vibe-opt, wasm-opt) must respect —
+    // previously every user function + lambda was elem-rooted.
+    let slot_used_flags = lc_fresh_bool_array()
+    let mut sfi = 0
+    while sfi < total_table_entries {
+      Array::push(slot_used_flags, false)
+      sfi = sfi + 1
+    }
+    let mut tsu = 0
+    while tsu < Array::length(table_slots_used) {
+      let ts = Array::get(table_slots_used, tsu)
+      if ts >= 0 && ts < total_table_entries {
+        Array::set(slot_used_flags, ts, true)
+      } else {
+        ()
+      }
+      tsu = tsu + 1
+    }
+    let table_slots = lc_fresh_int_array()
+    let table_func_indices = lc_fresh_int_array()
+    let mut tei = 0
+    while tei < total_table_entries {
+      if Array::get(slot_used_flags, tei) {
+        Array::push(table_slots, tei)
+        Array::push(table_func_indices, if tei < num_user_funcs {
+          func_offset + tei
+        } else {
+          run_func_idx + 1 + (tei - lambda_slot_base)
+        })
+      } else {
+        ()
+      }
+      tei = tei + 1
+    }
+    if Array::length(table_slots) > 0 {
+      emit_element_section_active_runs(out, table_slots, table_func_indices)
+    } else {
+      ()
+    }
+  }
+  // Binary-size: replace the bodies of generated runtime helpers that no
+  // reachable body ever calls with a 1-instruction `unreachable` stub. The
+  // helper index block [num_imported_funcs, func_offset) is emitted
+  // unconditionally (every call site references FIXED indices computed above),
+  // so helpers cannot simply be omitted — but an unreferenced body can shrink
+  // to `unreachable` without moving any index. Reachability is a worklist
+  // byte-scan over final body bytes for `call`(0x10)/`ref.func`(0xd2)
+  // immediates that decode into the helper range, seeded from every
+  // non-helper body (user fns + entry glue + lambdas; the funcref table only
+  // holds user/lambda indices). A stray 0x10 inside some other immediate can
+  // only FALSE-POSITIVE (keeps an unused helper) — never drops a used one,
+  // since every real call's opcode byte is also visited. Skipped for
+  // instrumentation builds so debug tooling sees unmodified bodies.
+  if !coverage && !debug_trace && !debug_break && !rc_shadow {
+    let builtin_used = lc_fresh_bool_array()
+    let mut sbu_i = 0
+    while sbu_i < num_generated {
+      Array::push(builtin_used, false)
+      sbu_i = sbu_i + 1
+    }
+    let scan_queue = lc_fresh_int_array()
+    let mut sbr = num_generated
+    while sbr < Array::length(bodies) {
+      Array::push(scan_queue, sbr)
+      sbr = sbr + 1
+    }
+    let mut sq_i = 0
+    while sq_i < Array::length(scan_queue) {
+      let sb_body = Array::get(bodies, Array::get(scan_queue, sq_i))
+      sq_i = sq_i + 1
+      let sb_len = Bytes::length(sb_body)
+      let mut sb_p = 0
+      while sb_p < sb_len {
+        let sb_op = Bytes::get(sb_body, sb_p)
+        if sb_op == 16 || sb_op == 210 {
+          let mut sb_q = sb_p + 1
+          let mut sb_v = 0
+          let mut sb_shift = 0
+          let mut sb_more = true
+          let mut sb_valid = false
+          while sb_more && sb_q < sb_len && sb_shift < 35 {
+            let sb_byte = Bytes::get(sb_body, sb_q)
+            sb_v = sb_v|((sb_byte&127)<<sb_shift)
+            sb_q = sb_q + 1
+            if (sb_byte&128) == 0 {
+              sb_more = false
+              sb_valid = true
+            } else {
+              sb_shift = sb_shift + 7
+            }
+          }
+          if sb_valid && sb_v >= num_imported_funcs && sb_v < func_offset {
+            let sb_pos = sb_v - num_imported_funcs
+            if !Array::get(builtin_used, sb_pos) {
+              Array::set(builtin_used, sb_pos, true)
+              Array::push(scan_queue, sb_pos)
+            } else {
+              ()
+            }
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+        sb_p = sb_p + 1
+      }
+    }
+    let mut sb_k = 0
+    while sb_k < num_generated {
+      if !Array::get(builtin_used, sb_k) {
+        let sb_stub = bytebuf_new()
+        bytebuf_push(sb_stub, 0)
+        Array::set(bodies, sb_k, sb_stub)
+        Array::set(meta_i32, sb_k, 0)
+        Array::set(meta_i64, sb_k, 0)
+      } else {
+        ()
+      }
+      sb_k = sb_k + 1
+    }
+  } else {
+    ()
+  }
+  let code_content = bytebuf_new()
+  bytebuf_push_vec_header(code_content, Array::length(bodies))
+  // #644: per-user-function locals-declaration header length, in `bodies`
+  // ci-order (`bi = ci - num_generated`, the same relationship `func_offset`
+  // encodes for the final wasm function index). Captured below as each
+  // func_buf's locals header is assembled, BEFORE `body` (the raw
+  // instruction stream body_buf compiled with linemap_state) is appended --
+  // this is exactly the byte count linked_compile needs to add to a
+  // body_buf-relative linemap offset to match wasmtime's
+  // `FrameInfo::func_offset()`, which measures from the first byte of the
+  // code entry (the locals header), not the first instruction.
+  let linemap_hdrlen_by_bi = if linemap_state.enabled {
+    lc_fresh_int_array_of_len(num_user_funcs, 0)
+  } else {
+    lc_fresh_int_array()
+  }
+  if Array::length(meta_v128) != Array::length(bodies) {
+    throw(String::concat("meta_v128/bodies misalignment: ", String::concat(__to_string(Array::length(meta_v128)), String::concat(" vs ", __to_string(Array::length(bodies))))))
+  } else {
+    ()
+  }
+  let mut ci = 0
+  while ci < Array::length(bodies) {
+    // ADR-0090 dogfood (#1770): each function's code buffer is built, copied
+    // into code_content, and discarded -- the buffer itself never escapes the
+    // iteration. Backing it with the region arena reclaims the buffer AND its
+    // doubling regrows wholesale at the region end instead of leaking them on
+    // the bump heap (one buffer per emitted function, the hottest
+    // build-and-discard site in a self-compile). The bytebuf_* helpers are
+    // unchanged: arena vs main-heap regrow is a property of the buffer's own
+    // block (gen_bytes_push_body / gen_bytes_append_body), not of the call
+    // site, so a MutBytes flows through them as-is. Needs the
+    // mutbytes-2026-08-15 seed (#1801/#1808).
+    region r {
+      let body = Array::get(bodies, ci)
+      let func_buf = MutBytes::empty(r)
+      let ni32 = Array::get(meta_i32, ci)
+      let ni64 = Array::get(meta_i64, ci)
+      // #805 SIMD locals: a third v128 (0x7B) run after the i32/i64 runs.
+      // Zero for every function except inline-wasm fns declaring v128 locals,
+      // so the header bytes are unchanged wherever the feature is unused.
+      let nv128 = Array::get(meta_v128, ci)
+      let mut ngroups = 0
+      if ni32 > 0 {
+        ngroups = ngroups + 1
+      } else {
+        ()
+      }
+      if ni64 > 0 {
+        ngroups = ngroups + 1
+      } else {
+        ()
+      }
+      if nv128 > 0 {
+        ngroups = ngroups + 1
+      } else {
+        ()
+      }
+      leb128_encode_u32(func_buf, ngroups)
+      if ni32 > 0 {
+        leb128_encode_u32(func_buf, ni32)
+        bytebuf_push(func_buf, 127)
+      } else {
+        ()
+      }
+      if ni64 > 0 {
+        leb128_encode_u32(func_buf, ni64)
+        bytebuf_push(func_buf, 126)
+      } else {
+        ()
+      }
+      if nv128 > 0 {
+        leb128_encode_u32(func_buf, nv128)
+        bytebuf_push(func_buf, 123)
+      } else {
+        ()
+      }
+      if linemap_state.enabled {
+        let lm_bi = ci - num_generated
+        if lm_bi >= 0 && lm_bi < num_user_funcs {
+          Array::set(linemap_hdrlen_by_bi, lm_bi, bytebuf_length(func_buf))
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      bytebuf_push_buf(func_buf, body)
+      bytebuf_push(func_buf, 11)
+      leb128_encode_u32(code_content, bytebuf_length(func_buf))
+      bytebuf_push_buf(code_content, func_buf)
+    }
+    ci = ci + 1
+  }
+  bytebuf_push_section(out, 10, code_content)
+  // #644 / #2199: `vibe.linemap` custom section -- a 4-byte format marker,
+  // then four unsigned LEB deltas per unique (func, offset): func_delta,
+  // offset_delta, file_id, line.
+  // Duplicate offsets are collapsed. The offset is shifted by that
+  // function's locals-header length (linemap_hdrlen_by_bi) so it lands
+  // exactly where wasmtime's FrameInfo::func_offset() measures from. Emitted
+  // when linemap_state is enabled AND at least one record exists (production
+  // trap provenance, and debug-break). Empty tables are not announced: a
+  // named section of zero records is pure waste (#2199).
+  //
+  // The marker is what makes the name mean one format. #644's table under
+  // this same name was 16-byte little-endian records, and those bytes decode
+  // as LEB quadruples without complaint -- a module built by any compiler
+  // older than #2199 (the committed seed, which is what `vibe test` runs by
+  // default) would have reported fabricated functions, offsets, files and
+  // lines to the new readers. A reader that does not find `VLM1` has a table
+  // it cannot read, and reports no location at all (Codex P2 on PR #2867).
+  //
+  // #2874: the rows arrive as flushed GROUPS (`linemap_flush_fn`), one per
+  // user function, not as four module-wide tables. A group's payload is
+  // already in the encoding the section wants except for its first row's
+  // offset, which is the only field the locals-header rebase moves -- so this
+  // writes the function delta and that one rebased absolute, then blits the
+  // group verbatim.
+  //
+  // The delta encoding needs each emitted group's function index to be
+  // greater than the last emitted one, which is how the rows are produced:
+  // `cur_fn` is set once per `bi` at the top of the body loop and `bi` only
+  // climbs. A group the header table cannot place is skipped whole, exactly
+  // as its rows were skipped one at a time before, and skipping does not
+  // advance `prev_f`.
+  if linemap_state.enabled && Array::length(linemap_state.grp_fn) > 0 {
+    let lm_content = bytebuf_new()
+    let lm_name = "vibe.linemap"
+    leb128_encode_u32(lm_content, String::length(lm_name))
+    let mut lmni = 0
+    while lmni < String::length(lm_name) {
+      bytebuf_push(lm_content, String::char_code_at(lm_name, lmni))
+      lmni = lmni + 1
+    }
+    lc_linemap_put_magic(lm_content)
+    let hdr_n = Array::length(linemap_hdrlen_by_bi)
+    let lm_ng = Array::length(linemap_state.grp_fn)
+    let lm_stream_n = bytebuf_length(linemap_state.stream)
+    let mut prev_f = 0
+    let mut have = false
+    let mut lm_g = 0
+    while lm_g < lm_ng {
+      let lm_bi = Array::get(linemap_state.grp_fn, lm_g)
+      let lm_lo = Array::get(linemap_state.grp_start, lm_g)
+      let lm_hi = if lm_g + 1 < lm_ng {
+        Array::get(linemap_state.grp_start, lm_g + 1)
+      } else {
+        lm_stream_n
+      }
+      if lm_bi >= 0 && lm_bi < hdr_n {
+        let lm_func_idx = func_offset + lm_bi
+        let lm_off = Array::get(linemap_state.grp_first_off, lm_g) + Array::get(linemap_hdrlen_by_bi, lm_bi)
+        leb128_encode_u32(lm_content, if have {
+          lm_func_idx - prev_f
+        } else {
+          lm_func_idx
+        })
+        leb128_encode_u32(lm_content, lm_off)
+        Bytes::blit(lm_content, linemap_state.stream, lm_lo, lm_hi)
+        prev_f = lm_func_idx
+        have = true
+      } else {
+        ()
+      }
+      lm_g = lm_g + 1
+    }
+    bytebuf_push_section(out, 0, lm_content)
+  } else {
+    ()
+  }
+  if num_strings > 0 {
+    let data_offsets = lc_fresh_int_array()
+    let data_bufs = lc_fresh_bytes_array()
+    let mut di = 0
+    while di < num_strings {
+      Array::push(data_offsets, Array::get(str_offsets, di))
+      Array::push(data_bufs, string_to_data(Array::get(str_strs, di)))
+      di = di + 1
+    }
+    emit_data_section_multi(out, data_offsets, data_bufs)
+  }
+  // Name section (debugger P0 / ADR-0035): name the user functions so wasm
+  // backtraces and tooling show `main` etc. instead of `<wasm function N>`.
+  // User functions occupy consecutive indices starting at `func_offset`.
+  // #768: emit ONLY the first num_user_funcs entries -- fn_names_list also
+  // carries the builtin/runtime names appended for call resolution (Env::get,
+  // Fs::read_file, ...), but those bodies live at LOW indices (below
+  // func_offset). Emitting the whole list consecutively shifted every
+  // post-user name: `_start` was labeled `Env::get` in crash stacks, which
+  // repeatedly sent debugging to functions the trace never touched. `_start`
+  // and `run` sit right after the user block, so name them explicitly.
+  // #799: name the GENERATED runtime helpers too. Profilers (node --cpu-prof)
+  // attributed the hottest samples to anonymous wasm-function[N] frames
+  // because only user functions carried name-section entries; the generated
+  // string/array/bytes helpers occupy the consecutive index range
+  // [num_imported_funcs, func_offset). Unassigned slots (lambda-arity pads
+  // etc.) keep the generic "__rt_gen" label.
+  let gen_sec_names = lc_fresh_string_array()
+  let mut gsn_i = 0
+  while gsn_i < num_generated {
+    Array::push(gen_sec_names, "__rt_gen")
+    gsn_i = gsn_i + 1
+  }
+  Array::set(gen_sec_names, print_int_idx - num_imported_funcs, "__rt_print_int")
+  Array::set(gen_sec_names, print_str_idx - num_imported_funcs, "__rt_print_str")
+  Array::set(gen_sec_names, str_len_idx - num_imported_funcs, "__rt_str_len")
+  Array::set(gen_sec_names, str_eq_idx - num_imported_funcs, "__rt_str_eq")
+  Array::set(gen_sec_names, str_concat_idx - num_imported_funcs, "__rt_str_concat")
+  Array::set(gen_sec_names, arr_new_idx - num_imported_funcs, "__rt_arr_new")
+  Array::set(gen_sec_names, arr_len_idx - num_imported_funcs, "__rt_arr_len")
+  Array::set(gen_sec_names, arr_get_idx - num_imported_funcs, "__rt_arr_get")
+  Array::set(gen_sec_names, arr_push_idx - num_imported_funcs, "__rt_arr_push")
+  Array::set(gen_sec_names, arr_set_idx - num_imported_funcs, "__rt_arr_set")
+  Array::set(gen_sec_names, double_to_int_idx - num_imported_funcs, "__rt_double_to_int")
+  Array::set(gen_sec_names, int_to_double_idx - num_imported_funcs, "__rt_int_to_double")
+  Array::set(gen_sec_names, int_popcount_idx - num_imported_funcs, "__rt_int_popcount")
+  Array::set(gen_sec_names, int_ctz_idx - num_imported_funcs, "__rt_int_ctz")
+  Array::set(gen_sec_names, int_clz_idx - num_imported_funcs, "__rt_int_clz")
+  Array::set(gen_sec_names, bytes_index_of_bytes_idx - num_imported_funcs, "__rt_bytes_index_of_bytes")
+  Array::set(gen_sec_names, bytes_index_of_idx - num_imported_funcs, "__rt_bytes_index_of_byte")
+  Array::set(gen_sec_names, bytes_count_byte_idx - num_imported_funcs, "__rt_bytes_count_byte")
+  Array::set(gen_sec_names, bytes_last_index_of_idx - num_imported_funcs, "__rt_bytes_last_index_of_byte")
+  Array::set(gen_sec_names, bytes_compare_idx - num_imported_funcs, "__rt_bytes_compare")
+  Array::set(gen_sec_names, bytes_blit_idx - num_imported_funcs, "__rt_bytes_blit")
+  Array::set(gen_sec_names, array_capacity_idx - num_imported_funcs, "__rt_arr_with_capacity")
+  Array::set(gen_sec_names, bytes_capacity_idx - num_imported_funcs, "__rt_bytes_with_capacity")
+  Array::set(gen_sec_names, str_char_code_at_idx - num_imported_funcs, "__rt_str_char_code_at")
+  Array::set(gen_sec_names, str_from_char_code_idx - num_imported_funcs, "__rt_str_from_char_code")
+  Array::set(gen_sec_names, str_substring_idx - num_imported_funcs, "__rt_str_substring")
+  Array::set(gen_sec_names, identity_idx - num_imported_funcs, "__rt_identity")
+  Array::set(gen_sec_names, arr_slice_idx - num_imported_funcs, "__rt_arr_slice")
+  Array::set(gen_sec_names, frozen_array_copy_idx - num_imported_funcs, "__rt_frozen_array_copy")
+  Array::set(gen_sec_names, arr_concat_idx - num_imported_funcs, "__rt_arr_concat")
+  Array::set(gen_sec_names, arr_truncate_idx - num_imported_funcs, "__rt_arr_truncate")
+  Array::set(gen_sec_names, string_join_idx - num_imported_funcs, "__rt_string_join")
+  Array::set(gen_sec_names, fs_read_file_stub_idx - num_imported_funcs, "__rt_stub_a")
+  Array::set(gen_sec_names, fs_exists_stub_idx - num_imported_funcs, "__rt_stub_b")
+  Array::set(gen_sec_names, fs_stat_token_stub_idx - num_imported_funcs, "__rt_stub_c")
+  Array::set(gen_sec_names, fs_write_file_stub_idx - num_imported_funcs, "__rt_stub_d")
+  Array::set(gen_sec_names, fs_publish_immutable_text_stub_idx - num_imported_funcs, "__rt_stub_e")
+  Array::set(gen_sec_names, fs_write_bytes_stub_idx - num_imported_funcs, "__rt_stub_f")
+  Array::set(gen_sec_names, eq_idx - num_imported_funcs, "__rt_eq")
+  Array::set(gen_sec_names, string_ends_with_idx - num_imported_funcs, "__rt_string_ends_with")
+  Array::set(gen_sec_names, string_last_index_of_idx - num_imported_funcs, "__rt_string_last_index_of")
+  Array::set(gen_sec_names, arr_push_all_idx - num_imported_funcs, "__rt_arr_push_all")
+  Array::set(gen_sec_names, string_index_of_idx - num_imported_funcs, "__rt_string_index_of")
+  Array::set(gen_sec_names, string_contains_idx - num_imported_funcs, "__rt_string_contains")
+  Array::set(gen_sec_names, string_starts_with_idx - num_imported_funcs, "__rt_string_starts_with")
+  Array::set(gen_sec_names, string_split_idx - num_imported_funcs, "__rt_string_split")
+  Array::set(gen_sec_names, string_trim_idx - num_imported_funcs, "__rt_string_trim")
+  Array::set(gen_sec_names, sources_idx - num_imported_funcs, "__rt_sources")
+  Array::set(gen_sec_names, bytes_new_idx - num_imported_funcs, "__rt_bytes_new")
+  Array::set(gen_sec_names, bytes_len_idx - num_imported_funcs, "__rt_bytes_len")
+  Array::set(gen_sec_names, bytes_get_idx - num_imported_funcs, "__rt_bytes_get")
+  Array::set(gen_sec_names, bytes_set_idx - num_imported_funcs, "__rt_bytes_set")
+  Array::set(gen_sec_names, bytes_push_idx - num_imported_funcs, "__rt_bytes_push")
+  Array::set(gen_sec_names, bytes_append_idx - num_imported_funcs, "__rt_bytes_append")
+  Array::set(gen_sec_names, bytes_concat_idx - num_imported_funcs, "__rt_bytes_concat")
+  Array::set(gen_sec_names, bytes_slice_idx - num_imported_funcs, "__rt_bytes_slice")
+  Array::set(gen_sec_names, bytes_from_array_idx - num_imported_funcs, "__rt_bytes_from_array")
+  Array::set(gen_sec_names, bytes_to_array_idx - num_imported_funcs, "__rt_bytes_to_array")
+  if enable_rc {
+    Array::set(gen_sec_names, rc_drop_idx - num_imported_funcs, "__rt_rc_drop")
+    Array::set(gen_sec_names, rc_dup_idx - num_imported_funcs, "__rt_rc_dup")
+    Array::set(gen_sec_names, rc_alloc_idx - num_imported_funcs, "__rt_rc_alloc")
+  } else {
+    ()
+  }
+  Array::set(gen_sec_names, heap_grow_check_idx - num_imported_funcs, "__rt_heap_grow_check")
+  Array::set(gen_sec_names, simd_skip_ws_idx - num_imported_funcs, "__rt_simd_skip_ws")
+  Array::set(gen_sec_names, simd_scan_alnum_idx - num_imported_funcs, "__rt_simd_scan_alnum")
+  Array::set(gen_sec_names, simd_scan_alnum_str_idx - num_imported_funcs, "__rt_simd_scan_alnum_str")
+  Array::set(gen_sec_names, simd_scan_string_special_str_idx - num_imported_funcs, "__rt_simd_scan_string_special_str")
+  Array::set(gen_sec_names, simd_scan_line_end_str_idx - num_imported_funcs, "__rt_simd_scan_line_end_str")
+  Array::set(gen_sec_names, str_lex_diff_idx - num_imported_funcs, "__rt_str_lex_diff")
+  Array::set(gen_sec_names, generic_rel_diff_idx - num_imported_funcs, "__rt_generic_rel_diff")
+  Array::set(gen_sec_names, generic_add_idx - num_imported_funcs, "__rt_generic_add")
+  Array::set(gen_sec_names, compact_fingerprint_hash_idx - num_imported_funcs, "__rt_compact_fingerprint_hash")
+  Array::set(gen_sec_names, print_i64_raw_idx - num_imported_funcs, "__rt_print_i64_raw")
+  Array::set(gen_sec_names, oob_abort_idx - num_imported_funcs, "__rt_oob_abort")
+  if rc_shadow {
+    Array::set(gen_sec_names, shadow_uaf_abort_idx - num_imported_funcs, "__rt_shadow_uaf_abort")
+  } else {
+    ()
+  }
+  if need_div_zero_abort {
+    Array::set(gen_sec_names, div_zero_abort_idx - num_imported_funcs, "__rt_div_zero_abort")
+  } else {
+    ()
+  }
+  let name_sec_names = gen_sec_names
+  let mut usn_i = 0
+  while usn_i < num_user_funcs {
+    Array::push(name_sec_names, Array::get(fn_names_list, usn_i))
+    usn_i = usn_i + 1
+  }
+  Array::push(name_sec_names, "_start")
+  Array::push(name_sec_names, "run")
+  emit_function_name_section(out, name_sec_names, num_imported_funcs)
+  // #2359: drop unreachable functions and renumber. Same build gating as the
+  // body-stubbing pass above (instrumented builds must see unmodified
+  // bodies), plus `enable_late_dce` so the no-DCE lane keeps its contract.
+  if enable_late_dce && !coverage && !debug_trace && !debug_break && !rc_shadow {
+    lc_pf_prune_module(bytebuf_to_bytes(out), entry_name, executable_exports_stripped())
+  } else {
+    bytebuf_to_bytes(out)
+  }
+}

@@ -24,6 +24,11 @@ LC_REAL="lib/@vibe/compiler/codegen/wasi/linked_compile.vibe"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
+python3 scripts/source_files.py "$CC_REAL" > "$WORK/cc_original.vibe"
+python3 scripts/source_files.py "$LC_REAL" > "$WORK/lc_original.vibe"
+CC_REAL="$WORK/cc_original.vibe"
+LC_REAL="$WORK/lc_original.vibe"
+
 pass=0
 fail=0
 
@@ -40,7 +45,7 @@ mutate_const() {
       gsub(/^[ \t]+|[ \t]+$/, "", line)
       if (line ~ /^-?[0-9]+$/) { print "  " val; grab = 0; print_line = 0 }
     }
-    $0 ~ ("^fn " want "\\(\\) -> Int \\{") { grab = 1 }
+    $0 ~ ("^(export )?fn " want "\\(\\) -> Int \\{") { grab = 1 }
     print_line == 1 { print }
   ' "$1" > "$2"
 }
@@ -92,7 +97,7 @@ expect_fail "lowering lc_hs_req_base into the future band is rejected" \
 
 # --- 5. an unreadable constant must FAIL, not skip. Silence and safety are
 #        indistinguishable, and the gate exists because nobody was looking. ---
-sed 's/^fn comp_hf_max_handles() -> Int {/fn comp_hf_handle_cap() -> Int {/' \
+sed 's/comp_hf_max_handles() -> Int {/comp_hf_handle_cap() -> Int {/' \
   "$CC_REAL" > "$WORK/cc5.vibe"
 expect_fail "a renamed constant fails rather than silently skipping" \
   "$WORK/cc5.vibe" "$LC_REAL" "$CC_REAL" "$LC_REAL"

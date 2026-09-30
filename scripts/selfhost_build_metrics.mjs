@@ -114,7 +114,7 @@ export function collect({ root = ROOT, compiler, mode = "prelude", rounds = 1, r
     // Include the harness and runner in the measurement ABI. Compiler/source
     // changes are the subject of the series, so record their identity without
     // requiring it to match the main baseline.
-    const protocol = [readFileSync(SCRIPT), ...[PROBE, "scripts/run_wasm_vibe_host_runner.sh", "scripts/wasm_vibe_host_runner.js"].map(p => readFileSync(join(root, p)))];
+    const protocol = [readFileSync(SCRIPT), ...[PROBE, "scripts/run_wasm_vibe_host_runner.sh", "scripts/wasm_vibe_host_runtime.js", "scripts/wasm_vibe_host_runner.js"].map(p => readFileSync(join(root, p)))];
     return {
       schema: 1, protocol_sha256: hash(Buffer.concat(protocol)),
       compiler_sha256: hash(readFileSync(compiler)), probe_sha256: hash(readFileSync(probe)),

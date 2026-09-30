@@ -1,0 +1,1086 @@
+// lib/@vibe/compiler/codegen/common_analysis/common_analysis.vibe — is mut captured in.
+
+import @vibe/compiler/core {
+  Expr,
+  Pat,
+  Stmt,
+  Type,
+  TypeDef,
+  TypeExpr,
+  bsearch_leftmost,
+  builtin_allocates,
+  builtin_registry,
+  builtin_value_form_arity,
+  bytebuf_push,
+  canonical_builtin_name,
+  expr_child_at,
+  expr_children,
+  expr_children_pop,
+  expr_children_push,
+  expr_children_top,
+  is_borrow_ret_builtin,
+  is_exception_throw_operation,
+  resolve_type_expr_core_shadowed,
+  runtime_prelude_dispatched_builtin_name,
+  sorted_names_of,
+  type_to_string
+}
+
+import @vibe/core {
+  array_empty, struct MutMap, struct MutSet
+}
+
+import @vibe/compiler/codegen/common_extractors {
+  array_contains_str
+}
+
+import @vibe/compiler/codegen/wasm_emit {
+  emit_call_indirect,
+  emit_else,
+  emit_end,
+  emit_i32_load,
+  emit_i32_wrap_i64,
+  emit_i64_and,
+  emit_i64_const,
+  emit_i64_eq,
+  emit_i64_or,
+  emit_i64_shl,
+  emit_i64_shr_s,
+  emit_if_void,
+  emit_local_get,
+  emit_local_set
+}
+
+import ./common_analysis_free_vars_expr_sc.vibe {
+  capture_body_mentions_name, collect_free_vars, collect_pattern_bindings
+}
+
+import ./common_analysis_za_walk.vibe {
+  bmask_has, bp_param_base_name
+}
+
+/// Check if a mutable variable is captured by any nested EFn in the given expression
+export fn is_mut_captured_in(expr: Expr, name: String) -> Bool {
+  match expr {
+    EIdent(_, _) => false,
+    EInt(_) => false,
+    EBool(_) => false,
+    EFloat(_) => false,
+    EString(_, _) => false,
+    EUnit => false,
+    EBinOp(_, lhs, rhs, _) => is_mut_captured_in(lhs, name) || is_mut_captured_in(rhs, name),
+    EUnaryOp(_, operand) => is_mut_captured_in(operand, name),
+    EIf(cond, then_e, else_e) => is_mut_captured_in(cond, name) || is_mut_captured_in(then_e, name) || is_mut_captured_in(else_e, name),
+    ECall(callee, args, _) => if is_mut_captured_in(callee, name) {
+      true
+    }
+    else {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(args) {
+        if is_mut_captured_in(Array::get(args, i), name) {
+          found = true
+        }
+        i = i + 1
+      }
+      found
+    },
+    ELet(n, value, body, _) => if n == name {
+      is_mut_captured_in(value, name)
+    }
+    else {
+      is_mut_captured_in(value, name) || is_mut_captured_in(body, name)
+    },
+    ELetRec(n, value, body) => if n == name {
+      false
+    }
+    else {
+      is_mut_captured_in(value, name) || is_mut_captured_in(body, name)
+    },
+    ELetMut(n, value, body, _) => if n == name {
+      is_mut_captured_in(value, name)
+    }
+    else {
+      is_mut_captured_in(value, name) || is_mut_captured_in(body, name)
+    },
+    EAssign(_, value, body) => is_mut_captured_in(value, name) || is_mut_captured_in(body, name),
+    EAssignOp(_, _, value, body) => is_mut_captured_in(value, name) || is_mut_captured_in(body, name),
+    ESeq(first, second) => is_mut_captured_in(first, name) || is_mut_captured_in(second, name),
+    EWhile(cond, body) => is_mut_captured_in(cond, name) || is_mut_captured_in(body, name),
+    EForIn(_, _, iter_e, body) => is_mut_captured_in(iter_e, name) || is_mut_captured_in(body, name),
+    ETuple(elems) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(elems) {
+        if is_mut_captured_in(Array::get(elems, i), name) {
+          found = true
+        }
+        i = i + 1
+      }
+      found
+    },
+    EArray(elems) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(elems) {
+        if is_mut_captured_in(Array::get(elems, i), name) {
+          found = true
+        }
+        i = i + 1
+      }
+      found
+    },
+    EMatch(scrutinee, arms) => if is_mut_captured_in(scrutinee, name) {
+      true
+    }
+    else {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(arms) {
+        let (_, arm_expr) = Array::get(arms, i)
+        if is_mut_captured_in(arm_expr, name) {
+          found = true
+        }
+        i = i + 1
+      }
+      found
+    },
+    EFn(_, _, params, _, _, fn_body) => {
+      // Check if name is shadowed by params
+      let mut shadowed = false
+      let mut pi = 0
+      while pi < Array::length(params) {
+        let (pname, _) = Array::get(params, pi)
+        if pname == name {
+          shadowed = true
+        }
+        pi = pi + 1
+      }
+      if shadowed || !capture_body_mentions_name(fn_body, name) {
+        false
+      }
+      else {
+        // Check if name is free in this EFn
+        let param_names = array_empty()
+        let mut pi2 = 0
+        while pi2 < Array::length(params) {
+          let (pname2, _) = Array::get(params, pi2)
+          Array::push(param_names, pname2)
+          pi2 = pi2 + 1
+        }
+        let fv = collect_free_vars(fn_body, param_names, array_empty())
+        if array_contains_str(fv, name) {
+          true
+        }
+        else {
+          // Also check recursively for deeper nesting
+          is_mut_captured_in(fn_body, name)
+        }
+      }
+    },
+    // #1262 (Codex review, PR #1685, P2): these carried sub-expressions and
+    // returned `false` anyway, so a closure in a `break` PAYLOAD
+    // (`break(() -> Int { x })`) or a `continue` argument captured a `let mut`
+    // that was never boxed -- the closure then snapshots the value instead of
+    // sharing the cell, which is a silently wrong read, not a crash. Same
+    // class and same fix as the #629 step 2 arms below. Recursing is always
+    // sound here (over-detection only boxes more), and it also restores the
+    // contract `vibe escapes --strict` advertises: the strict lane's output is
+    // a SUBSET of this one's. Found because the strict predicate reported a
+    // break-payload capture this one did not.
+    EBreak(opt) => match opt {
+      Some(inner) => is_mut_captured_in(inner, name),
+      None => false
+    },
+    EContinue(args) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(args) {
+        if is_mut_captured_in(Array::get(args, i), name) {
+          found = true
+        }
+        i = i + 1
+      }
+      found
+    },
+    EReturn(msg) => is_mut_captured_in(msg, name),
+    // #629 step 2: forms that carry sub-expressions which may hold a capturing
+    // closure. Previously these fell through to `_ => false`, so a mut captured
+    // by a closure INSIDE a struct/record literal, handler, loop, projection,
+    // labeled argument, map literal, or spread was not detected — the cell was
+    // left a stack-local and the closure captured it by value (snapshot),
+    // silently losing the shared mutation. Recursing here is always sound
+    // (over-detection only boxes more).
+    ERecord(_, fields, _) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(fields) {
+        let (_, fval) = Array::get(fields, i)
+        if is_mut_captured_in(fval, name) {
+          found = true
+        }
+        i = i + 1
+      }
+      found
+    },
+    EMap(entries) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(entries) {
+        let (_, mval) = Array::get(entries, i)
+        if is_mut_captured_in(mval, name) {
+          found = true
+        }
+        i = i + 1
+      }
+      found
+    },
+    EHandle(body, arms) => if is_mut_captured_in(body, name) {
+      true
+    } else {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(arms) {
+        let (_, arm_expr) = Array::get(arms, i)
+        if is_mut_captured_in(arm_expr, name) {
+          found = true
+        }
+        i = i + 1
+      }
+      found
+    },
+    ELoop(params, body) => if is_mut_captured_in(body, name) {
+      true
+    } else {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(params) {
+        let (_, init) = Array::get(params, i)
+        if is_mut_captured_in(init, name) {
+          found = true
+        }
+        i = i + 1
+      }
+      found
+    },
+    EDot(obj, _, _, _) => is_mut_captured_in(obj, name),
+    ELabeledArg(_, _, inner) => is_mut_captured_in(inner, name),
+    ESpread(inner) => is_mut_captured_in(inner, name),
+    _ => false
+  }
+}
+
+/// Region-lifetime decision for a `let mut name` cell (#629 region inference).
+/// Returns true when the cell must be heap-boxed because its region lifetime can
+/// extend beyond the binding block (a capturing closure may escape); false keeps
+/// it a plain stack-local (region = lexical block). Both backends gate boxing on
+/// this single predicate (linear compile_expr_tail / wasm-gc backend_expr).
+///
+/// Step 1 baseline: a mut captured by ANY nested closure is conservatively
+/// treated as escaping — identical to the prior `is_mut_captured_in` gate, so
+/// behavior is unchanged. Later steps refine this into a real escape analysis
+/// (a capture whose closure provably cannot escape its binding scope stays
+/// stack-local). The predicate stays conservative: when escape cannot be ruled
+/// out it returns true (box), which is always sound.
+export fn mut_needs_ref_cell(body: Expr, name: String) -> Bool {
+  is_mut_captured_in(body, name)
+}
+
+/// Builtins whose arg0 is BORROWED (read in place, not consumed/dropped). Kept
+/// in sync with is_borrow_arg0_call in perceus/index.vibe.
+/// Kept as a compare chain on purpose (#2479 measured the alternative): a
+/// module-level `MutSet` lookup hashes the whole callee name per call site,
+/// while `__rt_str_eq` length-gates almost every mismatch, and the set form
+/// measured SLOWER (0.09 s -> 0.14 s warm inclusive).
+/// `Map::set` and `Map::delete` are NOT in this list (ADR-0092 for maps,
+/// #2683 follow-up): they CONSUME their map. A uniquely referenced source
+/// is updated in place and becomes the result; a shared one is copied and
+/// released. Listing them here would pass the caller's reference through
+/// unspent and pin every map to the copy path.
+/// `__set_field` (a field assignment `x.f = v`) IS listed (#3140): it writes
+/// through its receiver and returns Unit, and its lowering never consumed the
+/// receiver (cc_internal_borrow_mask), so counting the position as owning
+/// planned a reference for it that nothing released -- the struct leaked.
+export fn md_is_borrow_arg0_call(f: String) -> Bool {
+  f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::truncate" || f == "Array::push" || f == "Array::push_all" || f == "ArrayBuilder::push" || f == "MutList::push" || f == "MutList::get" || f == "MutList::length" || f == "MutList::truncate" || f == "MutBytes::push" || f == "MutBytes::length" || f == "StringBuilder::push" || f == "MapBuilder::set" || f == "MapBuilder::has_key" || f == "MapBuilder::get" || f == "Map::get" || f == "Map::iter_get" || f == "Map::__iter_get_unchecked" || f == "Map::keys" || f == "Map::values" || f == "Map::size" || f == "Map::has_key" || f == "Map::has" || f == "Bytes::push" || f == "Bytes::set" || f == "Bytes::get" || f == "Bytes::length" || f == "Bytes::index_of" || f == "Bytes::count" || f == "Bytes::last_index_of" || f == "Bytes::index_of_bytes" || f == "Bytes::compare" || f == "FrozenArray::get" || f == "FrozenArray::length" || f == "FixedArray::get" || f == "FixedArray::set" || f == "FixedArray::length" || f == "String::join" || f == "eq" || f == "__rec_field" || f == "__set_field" || md_is_double_reader(f)
+}
+
+/// #3135: the `Double` builtins whose inline lowering reads the box of its
+/// argument and releases nothing (`emit_float_operand_bits`). Counted as
+/// owning, a bare-name argument handed its reference to a reader that never
+/// dropped it, and the binding's box leaked. `Double::max` / `Double::min`
+/// read both operands (md_is_borrow_arg1_call).
+fn md_is_double_reader(f: String) -> Bool {
+  f == "Double::to_int" || f == "Float::to_int" || f == "Double::abs" || f == "Double::floor" || f == "Double::ceil" || f == "Double::max" || f == "Double::min" || f == "Double::to_i64_bits_lo" || f == "Double::to_i64_bits_hi"
+}
+fn md_max(a: Int, b: Int) -> Int {
+  if a > b {
+    a
+  } else {
+    b
+  }
+}
+
+/// How many times is `name` consumed (owning position) along the LONGEST control
+/// path of `e`? Used to balance the rc of a value that is referenced but NOT
+/// owned at its definition site — a matched ctor field (a borrowed view sharing
+/// the scrutinee's refcount; compile_match) or a captured free variable (a
+/// borrowed view of the defining scope's binding; compile_lambda). Each owning
+/// consume of such a value decrements a refcount it does not own, so the value
+/// must be dup'd once PER consume or it is freed more times than dup'd -> double
+/// free. Sequential children SUM; alternative children (if-branches, match/handle
+/// arms) take the MAX, so the count is an upper bound on the consumes of any
+/// executed path (>= actual everywhere -> never under-dup -> no double free;
+/// tight on straight-line code -> no over-dup leak). MUST enumerate every Expr
+/// variant (modeled on fold_expr): skipping recursion into a child could miss a
+/// real consume and wrongly suppress the dup. A bare `EIdent(name)` passed as
+/// arg0 of a borrow-arg0 builtin does not consume (it is read in place).
+/// Builtin-only view of md_consume_count_b (empty user borrow set): kept as
+/// the stable 2-arg entry for callers with no CompileCtx in reach (and the
+/// borrow-set computation itself, which must not consume its own output).
+export fn md_consume_count(e: Expr, name: String) -> Int {
+  let md_no_user_fns: Array[String] = []
+  let md_no_user_masks: Array[Int] = []
+  md_cc_go(e, name, md_no_user_fns, md_no_user_masks)
+}
+
+/// Occurrences of the identifier `name` anywhere in `e`.
+export fn md_ident_occurrences(e: Expr, name: String) -> Int {
+  match e {
+    EIdent(n, _) => if n == name {
+      1
+    } else {
+      0
+    },
+    _ => {
+      let kids = expr_children(e)
+      let mut acc = 0
+      let mut i = 0
+      while i < Array::length(kids) {
+        acc = acc + md_ident_occurrences(Array::get(kids, i), name)
+        i = i + 1
+      }
+      acc
+    }
+  }
+}
+
+/// ADR-0092 for maps (#2683 follow-up): is `value`, the right-hand side of
+/// `name = value`, a call that takes `name` exactly once, as a direct
+/// argument at an owning position, and nowhere else? The planner moves that
+/// occurrence (perceus.vibe pe_self_reassign_moves is this predicate with
+/// lexical shadowing of the callee honoured); the assignment lowering keeps
+/// its loop-carried dup off the same occurrence, so a unique map reaches
+/// Map::set's in-place path from a loop accumulator too.
+export fn md_self_reassign_move_arg(value: Expr, name: String, bfns: Array[String], bmasks: Array[Int]) -> Bool {
+  match value {
+    ECall(callee, args, _) => match callee {
+      EIdent(f, _) => if f == name {
+        false
+      } else {
+        let bmask = md_borrow_mask_of(f, bfns, bmasks)
+        let mut direct = 0
+        let mut i = 0
+        while i < Array::length(args) {
+          match Array::get(args, i) {
+            EIdent(x, _) => if x == name && ((bmask>>i)&1) == 0 {
+              direct = direct + 1
+            } else {
+              ()
+            },
+            _ => ()
+          }
+          i = i + 1
+        }
+        direct == 1 && md_ident_occurrences(value, name) == 1
+      },
+      _ => false
+    },
+    _ => false
+  }
+}
+
+/// #2345: and which take a borrowed SECOND operand. `Bytes::index_of_bytes`
+/// and `Bytes::compare` read both of their `Bytes` arguments and drop neither,
+/// so bit 1 belongs in the mask beside bit 0. The arg0 predicate above cannot
+/// say this -- it is one bit -- which is why this is a separate list rather
+/// than a wider version of that one.
+fn md_is_borrow_arg1_call(f: String) -> Bool {
+  f == "Bytes::index_of_bytes" || f == "Bytes::compare" || f == "Double::max" || f == "Double::min"
+}
+
+/// Which parameter positions of callee `f` are borrowed. A name present in
+/// `bfns` is authoritative, including a zero mask: source definitions of a
+/// shadowable builtin must be allowed to consume arguments that the compiler
+/// builtin only borrows. Otherwise the builtin mask is used. `bfns` is sorted
+/// and `bmasks` is aligned to it (compute_borrow_param_user_fns).
+export fn md_borrow_mask_of(f: String, bfns: Array[String], bmasks: Array[Int]) -> Int {
+  let bi = bsearch_leftmost(bfns, f)
+  if bi >= 0 && bi < Array::length(bmasks) {
+    Array::get(bmasks, bi)
+  } else {
+    md_builtin_borrow_mask(f)
+  }
+}
+
+/// The borrowed-parameter mask of the COMPILER builtin spelled `f`, with no
+/// source definition consulted: bit 0 from md_is_borrow_arg0_call, bit 1
+/// from md_is_borrow_arg1_call. Non-zero exactly for the names whose
+/// spelling alone would make a call site borrow, which is why
+/// compute_borrow_param_user_fns keeps an authoritative row for every source
+/// definition of one of them (#3128).
+export fn md_builtin_borrow_mask(f: String) -> Int {
+  let m0 = if md_is_borrow_arg0_call(f) {
+    1
+  } else {
+    0
+  }
+  if md_is_borrow_arg1_call(f) {
+    m0|2
+  } else {
+    m0
+  }
+}
+
+/// All names locally BOUND anywhere inside `e` -- let/let mut/let rec
+/// binders, fn params, match/handle pattern binds, loop params, for-in
+/// binders. Used by md_consume_count_b to disable the user-borrow-set
+/// callee test for any name a local binding could shadow (Codex P1 on
+/// #1282): scope-blind bfns matching would treat a call to a same-named
+/// LOCAL closure as borrowed-arg0 and omit the compensating dup -- a
+/// use-after-free direction. Presence anywhere in the body (not just
+/// enclosing scopes) over-approximates shadowing; the failure direction of
+/// the approximation is an extra dup (bounded leak), never a missing one.
+export fn md_collect_shadow_names(e: Expr, out: Array[String]) -> Int {
+  match e {
+    EInt(_) => 0,
+    EFloat(_) => 0,
+    EString(_, _) => 0,
+    EBool(_) => 0,
+    EUnit => 0,
+    EStringInterp(_) => 0,
+    EIdent(_, _) => 0,
+    ETuple(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        md_collect_shadow_names(Array::get(items, i), out)
+        i = i + 1
+      }
+      0
+    },
+    EArray(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        md_collect_shadow_names(Array::get(items, i), out)
+        i = i + 1
+      }
+      0
+    },
+    ERecord(_, fields, _) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, v) = Array::get(fields, i)
+        md_collect_shadow_names(v, out)
+        i = i + 1
+      }
+      0
+    },
+    EMap(fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, v) = Array::get(fields, i)
+        md_collect_shadow_names(v, out)
+        i = i + 1
+      }
+      0
+    },
+    EIf(c, t, el) => {
+      md_collect_shadow_names(c, out)
+      md_collect_shadow_names(t, out)
+      md_collect_shadow_names(el, out)
+    },
+    EWhile(c, b) => {
+      md_collect_shadow_names(c, out)
+      md_collect_shadow_names(b, out)
+    },
+    ELet(n, v, b, _) => {
+      Array::push(out, n)
+      md_collect_shadow_names(v, out)
+      md_collect_shadow_names(b, out)
+    },
+    ELetRec(n, v, b) => {
+      Array::push(out, n)
+      md_collect_shadow_names(v, out)
+      md_collect_shadow_names(b, out)
+    },
+    ELetMut(n, v, b, _) => {
+      Array::push(out, n)
+      md_collect_shadow_names(v, out)
+      md_collect_shadow_names(b, out)
+    },
+    EAssign(_, v, b) => {
+      md_collect_shadow_names(v, out)
+      md_collect_shadow_names(b, out)
+    },
+    EAssignOp(_, _, v, b) => {
+      md_collect_shadow_names(v, out)
+      md_collect_shadow_names(b, out)
+    },
+    ESeq(a, b) => {
+      md_collect_shadow_names(a, out)
+      md_collect_shadow_names(b, out)
+    },
+    EMatch(s, arms) => {
+      md_collect_shadow_names(s, out)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (pt, v) = Array::get(arms, i)
+        collect_pattern_bindings(pt, out)
+        md_collect_shadow_names(v, out)
+        i = i + 1
+      }
+      0
+    },
+    EHandle(s, arms) => {
+      md_collect_shadow_names(s, out)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (pt, v) = Array::get(arms, i)
+        collect_pattern_bindings(pt, out)
+        md_collect_shadow_names(v, out)
+        i = i + 1
+      }
+      0
+    },
+    ELoop(params, b) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        let pr = Array::get(params, i)
+        Array::push(out, pr.0)
+        md_collect_shadow_names(pr.1, out)
+        i = i + 1
+      }
+      md_collect_shadow_names(b, out)
+    },
+    EForIn(vn, idx, it, b) => {
+      Array::push(out, vn)
+      match idx {
+        Some(ix) => {
+          Array::push(out, ix)
+          ()
+        },
+        None => ()
+      }
+      md_collect_shadow_names(it, out)
+      md_collect_shadow_names(b, out)
+    },
+    ECall(callee, args, _) => {
+      md_collect_shadow_names(callee, out)
+      let mut i = 0
+      while i < Array::length(args) {
+        md_collect_shadow_names(Array::get(args, i), out)
+        i = i + 1
+      }
+      0
+    },
+    EBinOp(_, l, r, _) => {
+      md_collect_shadow_names(l, out)
+      md_collect_shadow_names(r, out)
+    },
+    EUnaryOp(_, x) => md_collect_shadow_names(x, out),
+    EFn(_, _, params, _, _, body) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        let pr = Array::get(params, i)
+        Array::push(out, bp_param_base_name(pr.0))
+        i = i + 1
+      }
+      md_collect_shadow_names(body, out)
+    },
+    EDot(x, _, _, _) => md_collect_shadow_names(x, out),
+    ELabeledArg(_, _, v) => md_collect_shadow_names(v, out),
+    EReturn(x) => md_collect_shadow_names(x, out),
+    EBreak(opt) => match opt {
+      Some(v) => md_collect_shadow_names(v, out),
+      None => 0
+    },
+    EContinue(args) => {
+      let mut i = 0
+      while i < Array::length(args) {
+        md_collect_shadow_names(Array::get(args, i), out)
+        i = i + 1
+      }
+      0
+    },
+    ESpread(x) => md_collect_shadow_names(x, out)
+  }
+}
+
+// The binder walk calls no user code and cannot re-enter this query. Reuse
+// its work array; clear the names before returning so no AST strings survive
+// between queries. Returned masks must remain independent of this scratch.
+let md_shadow_names_scratch: Array[String] = []
+
+/// The shadow-honoring half of md_consume_count_b, split out so callers
+/// that count MANY names against the SAME body (compile_match's per-field
+/// bind loops, compile_lambda's capture loop) can run the binder prepass
+/// ONCE per body instead of once per name -- the per-name form showed up
+/// directly in selfcompile wall time.
+///
+/// Shadows are neutralized by ZEROING the offending entry's mask rather
+/// than by removing its name: a zero mask already means "no position of
+/// this callee is borrowed", which is exactly what a shadowing local
+/// deserves, and it leaves `bfns` shareable so names and masks can never
+/// drift out of alignment. Returns `bmasks` itself (no copy) when the body
+/// shadows no member.
+/// PRECONDITION: `bfns` is sorted and `bmasks` is aligned to it
+/// (compute_borrow_param_user_fns produces both together; membership here
+/// is bsearch_leftmost).
+export fn md_shadow_zeroed_bmasks(e: Expr, bfns: Array[String], bmasks: Array[Int]) -> Array[Int] {
+  if Array::length(bfns) == 0 {
+    bmasks
+  } else {
+    let sh = md_shadow_names_scratch
+    md_collect_shadow_names(e, sh)
+    let mut any_hit = false
+    let mut si = 0
+    while si < Array::length(sh) {
+      if bsearch_leftmost(bfns, Array::get(sh, si)) >= 0 {
+        any_hit = true
+      } else {
+        ()
+      }
+      si = si + 1
+    }
+    let result = if !any_hit {
+      bmasks
+    } else {
+      let bmasks2: Array[Int] = []
+      let mut bi = 0
+      while bi < Array::length(bfns) {
+        let bn = Array::get(bfns, bi)
+        let m = if bi < Array::length(bmasks) {
+          Array::get(bmasks, bi)
+        } else {
+          0
+        }
+        Array::push(bmasks2, if array_contains_str(sh, bn) {
+          0
+        } else {
+          m
+        })
+        bi = bi + 1
+      }
+      bmasks2
+    }
+    Array::truncate(sh, 0)
+    result
+  }
+}
+
+/// md_consume_count against masks ALREADY zeroed by
+/// md_shadow_zeroed_bmasks for this same body. The hoisted form of
+/// md_consume_count_b -- pass the raw masks here only if they are empty.
+export fn md_consume_count_pre(e: Expr, name: String, bfns: Array[String], bmasks_zeroed: Array[Int]) -> Int {
+  md_cc_go(e, name, bfns, bmasks_zeroed)
+}
+
+/// Count only consumes for which codegen has not already emitted a retain at
+/// the occurrence. A store-dup row is keyed by both name and source offset.
+export fn md_consume_count_pre_store(e: Expr, name: String, bfns: Array[String], bmasks_zeroed: Array[Int], store_names: Array[String], store_offs: Array[Int]) -> Int {
+  md_cc_go_store(e, name, bfns, bmasks_zeroed, store_names, store_offs)
+}
+
+/// md_consume_count with the USER borrow-param set threaded through the
+/// ECall borrow test. Lexical shadows are honored conservatively (Codex
+/// P1 on #1282): any bfns name that also appears as a LOCAL binder
+/// anywhere in `e` has its mask zeroed for this body, so a call to a
+/// same-named local closure counts as an owning consume (compile_call and
+/// the planner give lexical bindings precedence, so the dup it forces is
+/// matched by the closure call's real consume; for the rare body that
+/// binds the name but still calls the top-level fn, the extra dup is a
+/// bounded leak -- never a missing one). One-shot form; loops over many
+/// names against one body should hoist md_shadow_zeroed_bmasks instead.
+export fn md_consume_count_b(e: Expr, name: String, bfns: Array[String], bmasks: Array[Int]) -> Int {
+  md_cc_go(e, name, bfns, md_shadow_zeroed_bmasks(e, bfns, bmasks))
+}
+
+fn md_store_dup_occurrence(name: String, off: Int, store_names: Array[String], store_offs: Array[Int]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && off >= 0 && i < Array::length(store_offs) {
+    found = Array::get(store_offs, i) == off && Array::get(store_names, i) == name
+    i = i + 1
+  }
+  found
+}
+
+fn md_cc_go(e: Expr, name: String, bfns: Array[String], bmasks: Array[Int]) -> Int {
+  md_cc_go_store(e, name, bfns, bmasks, [], [])
+}
+
+/// An operator's operand: a bare name is read in place, anything else is
+/// walked for the consumes inside it.
+fn md_cc_operand_store(e: Expr, name: String, bfns: Array[String], bmasks: Array[Int], store_names: Array[String], store_offs: Array[Int]) -> Int {
+  match e {
+    EIdent(_, _) => 0,
+    _ => md_cc_go_store(e, name, bfns, bmasks, store_names, store_offs)
+  }
+}
+
+fn md_cc_go_store(e: Expr, name: String, bfns: Array[String], bmasks: Array[Int], store_names: Array[String], store_offs: Array[Int]) -> Int {
+  match e {
+    EInt(_) => 0,
+    EFloat(_) => 0,
+    EString(_, _) => 0,
+    EBool(_) => 0,
+    EUnit => 0,
+    EStringInterp(_) => 0,
+    EIdent(n, off) => if n == name && !md_store_dup_occurrence(n, off, store_names, store_offs) {
+      1
+    } else {
+      0
+    },
+    ETuple(items) => {
+      let mut acc = 0
+      let mut i = 0
+      while i < Array::length(items) {
+        acc = acc + md_cc_go_store(Array::get(items, i), name, bfns, bmasks, store_names, store_offs)
+        i = i + 1
+      }
+      acc
+    },
+    EArray(items) => {
+      let mut acc = 0
+      let mut i = 0
+      while i < Array::length(items) {
+        acc = acc + md_cc_go_store(Array::get(items, i), name, bfns, bmasks, store_names, store_offs)
+        i = i + 1
+      }
+      acc
+    },
+    ERecord(_, fields, _) => {
+      let mut acc = 0
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, v) = Array::get(fields, i)
+        acc = acc + md_cc_go_store(v, name, bfns, bmasks, store_names, store_offs)
+        i = i + 1
+      }
+      acc
+    },
+    EMap(fields) => {
+      let mut acc = 0
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, v) = Array::get(fields, i)
+        acc = acc + md_cc_go_store(v, name, bfns, bmasks, store_names, store_offs)
+        i = i + 1
+      }
+      acc
+    },
+    EIf(c, t, el) =>
+    md_cc_go_store(c, name, bfns, bmasks, store_names, store_offs) + md_max(md_cc_go_store(t, name, bfns, bmasks, store_names, store_offs), md_cc_go_store(el, name, bfns, bmasks, store_names, store_offs)),
+    ELet(_, v, b, _) => md_cc_go_store(v, name, bfns, bmasks, store_names, store_offs) + md_cc_go_store(b, name, bfns, bmasks, store_names, store_offs),
+    ELetRec(_, v, b) => md_cc_go_store(v, name, bfns, bmasks, store_names, store_offs) + md_cc_go_store(b, name, bfns, bmasks, store_names, store_offs),
+    ELetMut(_, v, b, _) => md_cc_go_store(v, name, bfns, bmasks, store_names, store_offs) + md_cc_go_store(b, name, bfns, bmasks, store_names, store_offs),
+    EAssign(_, v, b) => md_cc_go_store(v, name, bfns, bmasks, store_names, store_offs) + md_cc_go_store(b, name, bfns, bmasks, store_names, store_offs),
+    EAssignOp(_, _, v, b) => md_cc_go_store(v, name, bfns, bmasks, store_names, store_offs) + md_cc_go_store(b, name, bfns, bmasks, store_names, store_offs),
+    ESeq(a, b) => md_cc_go_store(a, name, bfns, bmasks, store_names, store_offs) + md_cc_go_store(b, name, bfns, bmasks, store_names, store_offs),
+    EMatch(s, arms) => {
+      let mut mx = 0
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, v) = Array::get(arms, i)
+        mx = md_max(mx, md_cc_go_store(v, name, bfns, bmasks, store_names, store_offs))
+        i = i + 1
+      }
+      // A bare `match name { .. }` BORROWS the scrutinee (its fields become
+      // borrowed views reclaimed by the owner's recursive drop); it does not
+      // consume `name`. Counting it as a consume would over-dup a re-matched
+      // borrowed tail (e.g. deeply-nested `match restN`), leaking/corrupting
+      // the chain. A non-ident scrutinee may still consume `name` in a
+      // sub-expression, so recurse there.
+      let scr = match s {
+        EIdent(_, _) => 0,
+        _ => md_cc_go_store(s, name, bfns, bmasks, store_names, store_offs)
+      }
+      scr + mx
+    },
+    EHandle(s, arms) => {
+      let mut mx = 0
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, v) = Array::get(arms, i)
+        mx = md_max(mx, md_cc_go_store(v, name, bfns, bmasks, store_names, store_offs))
+        i = i + 1
+      }
+      let scr = match s {
+        EIdent(_, _) => 0,
+        _ => md_cc_go_store(s, name, bfns, bmasks, store_names, store_offs)
+      }
+      scr + mx
+    },
+    EWhile(c, b) => md_cc_go_store(c, name, bfns, bmasks, store_names, store_offs) + md_cc_go_store(b, name, bfns, bmasks, store_names, store_offs),
+    ELoop(params, b) => {
+      let mut acc = md_cc_go_store(b, name, bfns, bmasks, store_names, store_offs)
+      let mut i = 0
+      while i < Array::length(params) {
+        let (_, v) = Array::get(params, i)
+        acc = acc + md_cc_go_store(v, name, bfns, bmasks, store_names, store_offs)
+        i = i + 1
+      }
+      acc
+    },
+    EForIn(_, _, it, b) => md_cc_go_store(it, name, bfns, bmasks, store_names, store_offs) + md_cc_go_store(b, name, bfns, bmasks, store_names, store_offs),
+    ECall(callee, args, _) => {
+      let bmask = match callee {
+        EIdent(f, _) => md_borrow_mask_of(f, bfns, bmasks),
+        _ => 0
+      }
+      // A bare-ident CALLEE is invoked, not consumed — calling a function or a
+      // captured closure (incl. a recursive closure's own self-reference) does
+      // not drop it. Counting `f(..)` as a consume of `f` over-dups the captured
+      // closure once per call (#705: a nested self-recursive closure's self-
+      // capture corrupted under RC). Only a non-ident callee can consume `name`
+      // in a sub-expression.
+      let callee_c = match callee {
+        EIdent(_, _) => 0,
+        _ => md_cc_go_store(callee, name, bfns, bmasks, store_names, store_offs)
+      }
+      let mut acc = callee_c
+      let mut ri = 0
+      while ri < Array::length(args) {
+        let a = Array::get(args, ri)
+        // A bare ident at a BORROWED position is read, not consumed. A
+        // non-ident there still has to be walked: its subexpressions can
+        // consume `name` even though the argument value itself is borrowed
+        // (and such a position is disqualified from the borrow set anyway).
+        acc = acc + (if bmask_has(bmask, ri) {
+          match a {
+            EIdent(_, _) => 0,
+            _ => md_cc_go_store(a, name, bfns, bmasks, store_names, store_offs)
+          }
+        } else {
+          md_cc_go_store(a, name, bfns, bmasks, store_names, store_offs)
+        })
+        ri = ri + 1
+      }
+      acc
+    },
+    // #3135: an operator reads its operands in place and releases neither (a
+    // `Double` is unboxed, `==` compares where the value lies), so a bare
+    // name there is read, not consumed -- the Perceus plan counts it as a
+    // borrow too (`pc_operand_count`).
+    EBinOp(_, l, r, _) => md_cc_operand_store(l, name, bfns, bmasks, store_names, store_offs) + md_cc_operand_store(r, name, bfns, bmasks, store_names, store_offs),
+    EUnaryOp(_, x) => md_cc_operand_store(x, name, bfns, bmasks, store_names, store_offs),
+    EFn(_, _, _, _, _, body) => md_cc_go_store(body, name, bfns, bmasks, store_names, store_offs),
+    EDot(x, _, _, _) => md_cc_go_store(x, name, bfns, bmasks, store_names, store_offs),
+    ELabeledArg(_, _, v) => md_cc_go_store(v, name, bfns, bmasks, store_names, store_offs),
+    EReturn(x) => md_cc_go_store(x, name, bfns, bmasks, store_names, store_offs),
+    EBreak(opt) => match opt {
+      Some(v) => md_cc_go_store(v, name, bfns, bmasks, store_names, store_offs),
+      None => 0
+    },
+    EContinue(args) => {
+      let mut acc = 0
+      let mut i = 0
+      while i < Array::length(args) {
+        acc = acc + md_cc_go_store(Array::get(args, i), name, bfns, bmasks, store_names, store_offs)
+        i = i + 1
+      }
+      acc
+    },
+    ESpread(x) => md_cc_go_store(x, name, bfns, bmasks, store_names, store_offs)
+  }
+}
+
+/// The `md_consume_count(e, n) == 0` question for every name of a body in ONE
+/// walk. `hits[i]` becomes 1 when `names[i]` has any counted consume in `e`
+/// under exactly md_cc_go's rules: a bare callee is invoked, a bare ident at
+/// a borrowed argument position or as a match/handle scrutinee is read, an
+/// interpolation is opaque, everything else is walked. A slot that is 1 on
+/// entry is never queried, so a caller pre-marks the positions it will not
+/// ask about, and the walk stops as soon as no slot is pending. #2386: the
+/// borrow-param inference asks this per parameter of every top-level fn;
+/// one walk per body replaces one per parameter, and the callee mask lookup
+/// (md_borrow_mask_of, most of md_cc_go's cost) runs once per call site
+/// instead of once per parameter. The exact count stays with md_cc_go, whose
+/// callers emit one dup per consume.
+export fn md_consumed_any(e: Expr, names: Array[String], bfns: Array[String], bmasks: Array[Int], hits: Array[Int]) -> Unit {
+  md_ca_go(e, names, bfns, bmasks, hits)
+}
+
+fn md_ca_pending(hits: Array[Int]) -> Bool {
+  let mut i = 0
+  let mut pending = false
+  while !pending && i < Array::length(hits) {
+    if Array::get(hits, i) == 0 {
+      pending = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  pending
+}
+
+fn md_ca_ident(n: String, names: Array[String], hits: Array[Int]) -> Unit {
+  let mut i = 0
+  while i < Array::length(names) {
+    if Array::get(hits, i) == 0 && Array::get(names, i) == n {
+      Array::set(hits, i, 1)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
+fn md_ca_list(items: Array[Expr], names: Array[String], bfns: Array[String], bmasks: Array[Int], hits: Array[Int]) -> Unit {
+  let mut i = 0
+  while i < Array::length(items) {
+    md_ca_go(Array::get(items, i), names, bfns, bmasks, hits)
+    i = i + 1
+  }
+}
+
+fn md_ca_fields(fields: Array[(String, Expr)], names: Array[String], bfns: Array[String], bmasks: Array[Int], hits: Array[Int]) -> Unit {
+  let mut i = 0
+  while i < Array::length(fields) {
+    let (_, v) = Array::get(fields, i)
+    md_ca_go(v, names, bfns, bmasks, hits)
+    i = i + 1
+  }
+}
+
+fn md_ca_arms(arms: Array[(Pat, Expr)], names: Array[String], bfns: Array[String], bmasks: Array[Int], hits: Array[Int]) -> Unit {
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (_, v) = Array::get(arms, i)
+    md_ca_go(v, names, bfns, bmasks, hits)
+    i = i + 1
+  }
+}
+
+/// Enumerated like md_cc_go (no `_ =>` for the recursive shapes): a new
+/// `Expr` variant is a compile error here, not a silently unscanned subtree.
+fn md_ca_go(e: Expr, names: Array[String], bfns: Array[String], bmasks: Array[Int], hits: Array[Int]) -> Unit {
+  if !md_ca_pending(hits) {
+    ()
+  } else {
+    match e {
+      EInt(_) => (),
+      EFloat(_) => (),
+      EString(_, _) => (),
+      EBool(_) => (),
+      EUnit => (),
+      EStringInterp(_) => (),
+      EIdent(n, _) => md_ca_ident(n, names, hits),
+      ETuple(items) => md_ca_list(items, names, bfns, bmasks, hits),
+      EArray(items) => md_ca_list(items, names, bfns, bmasks, hits),
+      ERecord(_, fields, _) => md_ca_fields(fields, names, bfns, bmasks, hits),
+      EMap(fields) => {
+        let mut i = 0
+        while i < Array::length(fields) {
+          let (_, v) = Array::get(fields, i)
+          md_ca_go(v, names, bfns, bmasks, hits)
+          i = i + 1
+        }
+      },
+      EIf(c, t, el) => {
+        md_ca_go(c, names, bfns, bmasks, hits)
+        md_ca_go(t, names, bfns, bmasks, hits)
+        md_ca_go(el, names, bfns, bmasks, hits)
+      },
+      ELet(_, v, b, _) => {
+        md_ca_go(v, names, bfns, bmasks, hits)
+        md_ca_go(b, names, bfns, bmasks, hits)
+      },
+      ELetRec(_, v, b) => {
+        md_ca_go(v, names, bfns, bmasks, hits)
+        md_ca_go(b, names, bfns, bmasks, hits)
+      },
+      ELetMut(_, v, b, _) => {
+        md_ca_go(v, names, bfns, bmasks, hits)
+        md_ca_go(b, names, bfns, bmasks, hits)
+      },
+      EAssign(_, v, b) => {
+        md_ca_go(v, names, bfns, bmasks, hits)
+        md_ca_go(b, names, bfns, bmasks, hits)
+      },
+      EAssignOp(_, _, v, b) => {
+        md_ca_go(v, names, bfns, bmasks, hits)
+        md_ca_go(b, names, bfns, bmasks, hits)
+      },
+      ESeq(a, b) => {
+        md_ca_go(a, names, bfns, bmasks, hits)
+        md_ca_go(b, names, bfns, bmasks, hits)
+      },
+      EMatch(s, arms) => {
+        md_ca_arms(arms, names, bfns, bmasks, hits)
+        match s {
+          EIdent(_, _) => (),
+          _ => md_ca_go(s, names, bfns, bmasks, hits)
+        }
+      },
+      EHandle(s, arms) => {
+        md_ca_arms(arms, names, bfns, bmasks, hits)
+        match s {
+          EIdent(_, _) => (),
+          _ => md_ca_go(s, names, bfns, bmasks, hits)
+        }
+      },
+      EWhile(c, b) => {
+        md_ca_go(c, names, bfns, bmasks, hits)
+        md_ca_go(b, names, bfns, bmasks, hits)
+      },
+      ELoop(params, b) => {
+        md_ca_go(b, names, bfns, bmasks, hits)
+        md_ca_fields(params, names, bfns, bmasks, hits)
+      },
+      EForIn(_, _, it, b) => {
+        md_ca_go(it, names, bfns, bmasks, hits)
+        md_ca_go(b, names, bfns, bmasks, hits)
+      },
+      ECall(callee, args, _) => {
+        let bmask = match callee {
+          EIdent(f, _) => md_borrow_mask_of(f, bfns, bmasks),
+          _ => 0
+        }
+        match callee {
+          EIdent(_, _) => (),
+          _ => md_ca_go(callee, names, bfns, bmasks, hits)
+        }
+        let mut ri = 0
+        while ri < Array::length(args) {
+          let a = Array::get(args, ri)
+          if bmask_has(bmask, ri) {
+            match a {
+              EIdent(_, _) => (),
+              _ => md_ca_go(a, names, bfns, bmasks, hits)
+            }
+          } else {
+            md_ca_go(a, names, bfns, bmasks, hits)
+          }
+          ri = ri + 1
+        }
+      },
+      EBinOp(_, l, r, _) => {
+        md_ca_go(l, names, bfns, bmasks, hits)
+        md_ca_go(r, names, bfns, bmasks, hits)
+      },
+      EUnaryOp(_, x) => md_ca_go(x, names, bfns, bmasks, hits),
+      EFn(_, _, _, _, _, body) => md_ca_go(body, names, bfns, bmasks, hits),
+      EDot(x, _, _, _) => md_ca_go(x, names, bfns, bmasks, hits),
+      ELabeledArg(_, _, v) => md_ca_go(v, names, bfns, bmasks, hits),
+      EReturn(x) => md_ca_go(x, names, bfns, bmasks, hits),
+      EBreak(opt) => match opt {
+        Some(v) => md_ca_go(v, names, bfns, bmasks, hits),
+        None => ()
+      },
+      EContinue(args) => md_ca_list(args, names, bfns, bmasks, hits),
+      ESpread(x) => md_ca_go(x, names, bfns, bmasks, hits)
+    }
+  }
+}

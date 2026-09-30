@@ -1,0 +1,1599 @@
+// lib/@vibe/compiler/codegen/common_base/common_base.vibe — compilectxgc.
+
+import @vibe/compiler/core {
+  Expr,
+  Pat,
+  Stmt,
+  TypeExpr,
+  __to_string,
+  apply_perm_strings,
+  bsearch_leftmost,
+  bytebuf_length,
+  bytebuf_new,
+  bytebuf_push,
+  bytebuf_push_buf,
+  bytebuf_to_bytes,
+  leb128_encode_u32,
+  sort_perm_by_names
+}
+
+import @vibe/ast {
+  type_param_name
+}
+
+import @vibe/core {
+  MutMap, array_empty
+}
+
+import @vibe/compiler/codegen/reloc {
+  blind_owner_pending
+}
+
+import @vibe/compiler/codegen/wasm_emit {
+  emit_block_i64,
+  emit_br,
+  emit_call,
+  emit_call_indirect,
+  emit_else,
+  emit_end,
+  emit_i32_add,
+  emit_i32_const,
+  emit_i32_load,
+  emit_i32_load8_u,
+  emit_i32_store,
+  emit_i32_store8,
+  emit_i32_wrap_i64,
+  emit_i64_add,
+  emit_i64_and,
+  emit_i64_const,
+  emit_i64_div_s,
+  emit_i64_eq,
+  emit_i64_eqz,
+  emit_i64_extend_i32_s,
+  emit_i64_ge_s,
+  emit_i64_gt_s,
+  emit_i64_le_s,
+  emit_i64_lt_s,
+  emit_i64_mul,
+  emit_i64_ne,
+  emit_i64_or,
+  emit_i64_rem_s,
+  emit_i64_shl,
+  emit_i64_shr_s,
+  emit_i64_store,
+  emit_i64_sub,
+  emit_i64_xor,
+  emit_if_void,
+  emit_local_get,
+  emit_local_set
+}
+
+import @vibe/compiler/normalize {
+  desugar_array_spread,
+  desugar_derives,
+  desugar_hoist_local_lambdas,
+  desugar_labeled_args,
+  desugar_railway_binds,
+  desugar_trait_dicts,
+  ensure_exn_kind_cell,
+  erase_railway_origin_markers,
+  exn_kind_read_expr,
+  exn_msg_read_expr,
+  inject_trait_method_generics,
+  unbox_tuple_loop_params,
+  wrap_entry_exception_boundary,
+  wrap_entry_host_provider
+}
+
+import ./common_base_compilectx.vibe {
+  CompileCtx, CtorTable, FuncTable, LambdaTable, StrTable
+}
+
+/// #2669 slice 2: record one reference the instruction encoding does not
+/// expose, at the byte `buf` is about to receive.
+///
+/// The offset is where the CONSTANT'S OPCODE goes, not where its immediate
+/// starts. That is deliberate: a consumer can assert the byte it finds there
+/// is the opcode it expects (`0x42` for i64.const, `0x41` for i32.const)
+/// before rewriting, so an off-by-one is caught rather than silently
+/// patching an operand of the previous instruction.
+///
+/// A no-op when the owner cell is empty -- every ctx built outside a body
+/// loop that harvests these, including the whole gc lane.
+export fn blind_reloc_record(ctx: CompileCtx, buf: Bytes, kind: Int, sym: Int) -> Unit {
+  if Array::length(ctx.blind_reloc_owner_cell) > 0 {
+    Array::push(ctx.blind_reloc_owners, Array::get(ctx.blind_reloc_owner_cell, 0))
+    Array::push(ctx.blind_reloc_offsets, Bytes::length(buf))
+    Array::push(ctx.blind_reloc_kinds, kind)
+    Array::push(ctx.blind_reloc_syms, sym)
+  } else {
+    ()
+  }
+}
+
+/// Give every still-`pending` record appended since `lo` the owner `owner`.
+///
+/// A lambda's index comes from the frozen plan AFTER its body is compiled, so
+/// the records that body made cannot know their owner when they are written.
+/// Records from a NESTED lambda in the same range were already reassigned by
+/// that lambda's own call, which is why the pending test -- not the range
+/// alone -- decides.
+export fn blind_reloc_assign_pending(ctx: CompileCtx, lo: Int, owner: Int) -> Unit {
+  let n = Array::length(ctx.blind_reloc_owners)
+  let mut i = lo
+  while i < n {
+    if Array::get(ctx.blind_reloc_owners, i) == blind_owner_pending {
+      Array::set(ctx.blind_reloc_owners, i, owner)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
+export struct CompileCtxGc {
+  func_table: FuncTable;
+  str_table: StrTable;
+  lambda_table: LambdaTable;
+  num_user_funcs: Int;
+  func_offset: Int;
+  ref_cell_names: Array[String];
+  ref_local_indices: Array[Int];
+  refcell_type_idx: Int;
+  closure_type_base: Int;
+  // Named gc_ctor_table, NOT ctor_table: codegen resolves record fields by
+  // name-first-match across ALL struct declarations (compile_expr_tail4 EDot),
+  // so a field name shared with CompileCtx at a DIFFERENT position reads the
+  // wrong slot. CompileCtx.ctor_table sits at index 6; this one is index 9 --
+  // sharing the name made every gc-lane ctor lookup read ref_local_indices
+  // (empty) instead of the table. See the field-collision issue for the
+  // root-cause fix direction.
+  gc_ctor_table: CtorTable;
+  // #538: module-level literal constants (`let op_call = 16` etc.). Kind 0 =
+  // Int/Bool (value in gc_const_ivals), kind 1 = String (value in
+  // gc_const_svals, rendered via the string table). All fields gc_-prefixed
+  // for the same collision reason as gc_ctor_table (CompileCtx carries
+  // const_int_names/const_int_values at different slots).
+  gc_const_names: Array[String];
+  gc_const_kinds: Array[Int];
+  gc_const_ivals: Array[Int];
+  gc_const_svals: Array[String];
+  // #538: module-level COMPUTED values (`let t = Bytes::from_array([..])`):
+  // one mutable i64 wasm global each (index 1 + position; global 0 is the
+  // heap pointer), initialized at the top of _start in statement order.
+  gc_global_names: Array[String];
+  // #538 P4.5: locals KNOWN to hold f64 raw bits (shape-tracked at let-bind:
+  // float literal / Int::to_double / float arithmetic). Fresh per function
+  // (like ref_cell_names). Arithmetic on a floatish operand emits real f64
+  // ops — the unconditional i64 ops silently zeroed float-literal parsing
+  // (lexer parse_frac_digits) when the gc-compiled compiler ran. Best-effort:
+  // annotated Double params and tuple-destructured floats are NOT tracked.
+  //
+  // #1032: tracked by local SLOT INDEX (not name -- this used to be
+  // Array[String], name-keyed and unpruned, which let a name reused with a
+  // different type across sibling branches keep its stale classification;
+  // see gc_bool_locals below, which had and fixed the identical bug for
+  // #1015). Entries are pruned at every branch/match-arm/for-in scope-exit
+  // boundary via gc_slot_log_reset_above(ctx.gc_float_locals, floor), the
+  // same discipline gc_bool_locals and gc_agg_local_slots already follow at
+  // those same boundaries (see backend_expr.vibe's EIf/for-in/handle and
+  // backend_match.vibe's match-arm truncation sites). Without this, `if c {
+  // let x = 1.5; .. } else { let x = 1; f(x) }` would misclassify the else
+  // branch's `x` (a DIFFERENT binding that happens to reuse the same
+  // now-freed slot) as floatish too.
+  gc_float_locals: Array[Int];
+  // #2158 (gc twin of float_ret_fns): names of user functions whose DECLARED
+  // return type is Double/Float. gc_float_locals above only knows LOCALS, so
+  // a call `half(5.0)` was invisible to both gc floatish classifiers and
+  // `__to_string` fell through to the runtime formatter, which reads the f64
+  // bits as an Int. Same silent-wrong the linear lane had; fixing only linear
+  // left it live under VIBE_TEST_BACKEND=gc (#2156 review).
+  gc_float_ret_fns: Array[String];
+  // Checker-confirmed Double expression offsets. GC consults this only for
+  // ECall nodes, so generic functions are classified per instantiation
+  // instead of once by their erased declaration name (#2182 review).
+  gc_float_call_offsets: Array[Int];
+  // #2424: the gc twin of CompileCtx.int_render_offsets.
+  gc_int_render_offsets: Array[Int];
+  // #2462/#2464: the gc twin of CompileCtx.bool_render_offsets.
+  gc_bool_render_offsets: Array[Int];
+  // #1015: gc twin of the linear lane's int_local_slots kind-3 (boolish)
+  // tracking -- locals (params/lets) KNOWN to hold a Bool. Bool and Int
+  // share the same gc-lane numeric representation (no distinguishing
+  // runtime type tag between them, mirroring the linear backend), so the
+  // generic runtime `__to_string` dispatch cannot tell them apart; this
+  // set lets `bc_expr_is_boolish`/`gc_expr_is_boolish` recognize a
+  // Bool-typed identifier statically instead, the same way `gc_float_locals`
+  // lets floatish idents take the f64 path.
+  //
+  // Tracked by local SLOT INDEX (not name; see gc_float_locals above, which
+  // follows the same design): entries are pruned at every
+  // branch/match-arm/for-in scope-exit boundary via
+  // gc_slot_log_reset_above(ctx.gc_bool_locals, floor), the exact same
+  // "slot >= floor is about to be reused by a sibling scope, drop stale
+  // entries" discipline agg_log_reset_above already applies to
+  // gc_agg_local_slots at those same boundaries (see backend_expr.vibe's
+  // EIf/for-in/handle and backend_match.vibe's match-arm truncation sites).
+  // Without this, `if c { let b = true; to_string(b) } else { let b = 1;
+  // to_string(b) }` would misclassify the else branch's `b` (a DIFFERENT
+  // binding that happens to reuse the same now-freed slot) as boolish too.
+  gc_bool_locals: Array[Int];
+  // #2405: the same slot log for INT-bound locals. `__to_string` on this lane
+  // resolves to a builtin that decides Int-vs-String by a heuristic on the bit
+  // pattern, so a local holding a large Int (`64 << 32` reads as ptr 64,
+  // len 0) was returned unchanged and rendered as the EMPTY STRING. A literal
+  // or an arithmetic expression is classified by shape alone; a bare ident is
+  // not, which is why it needs a slot log exactly as boolish and floatish do.
+  // Pruned at the same scope boundaries and for the same reason.
+  gc_int_locals: Array[Int];
+  /// #2405 follow-up: wasm index of the shared integer renderer
+  /// (`gc_gen_to_string_int_body`), or -1 when this module does not carry it.
+  ///
+  /// -1 is not a fallback the call site can get wrong: it emits the renderer
+  /// INLINE instead, which is what it did before this index existed. The two
+  /// can only disagree in that direction -- the pre-pass that decides whether
+  /// to push the body classifies by shape alone, while the call site also
+  /// reads the `gc_int_locals` slot log -- so a call is never emitted to a
+  /// body that was not pushed.
+  gc_to_string_int_func_idx: Int;
+  // #3126: the gc lane's `__rt_div_zero_abort` (see CompileCtx), -1 when the
+  // module has no guarded `/` or `%`.
+  gc_div_zero_abort_func_idx: Int;
+  // Native wasm-gc array references are permitted only for a proven-local
+  // literal binding. `gc_native_array_locals` is the current lexical set used
+  // by call lowering; it is pruned when slots are reused by sibling scopes.
+  // `gc_native_array_local_types` is append-only so body emission can declare
+  // every typed local, including one that only existed in a branch.
+  gc_native_array_locals: Array[Int];
+  gc_native_array_local_types: Array[Int];
+  /// The MODULE's native i64-array type index, or -1 if this compile has none.
+  /// A property of the module, never of the frame -- see
+  /// gc_native_array_frame_ok for the per-frame half.
+  gc_native_array_type_idx: Int;
+  gc_native_array_block_type_idx: Int;
+  // #1702: slot -> ctor-table struct index for locals holding a
+  // `(struct (mut i64) x N)` reference. `_scope` is pruned at branch/arm
+  // boundaries like the other slot logs; `_decl` is never pruned, because the
+  // code section still has to declare every typed slot the body allocated.
+  gc_native_struct_scope: Array[Int];
+  gc_native_struct_decl: Array[Int];
+  // Index of `(struct (mut i64))`; an N-field record uses base + (N - 1).
+  // Negative disables the lane (lambda frames, module initializers).
+  gc_native_struct_type_base: Int;
+  /// Whether THIS frame's own locals may hold a native array reference.
+  ///
+  /// These two facts used to share the `gc_native_array_type_idx >= 0`
+  /// sentinel, which conflated "the module has no array type" with "this
+  /// particular body cannot declare typed locals". That conflation leaked:
+  /// `_start` sets the frame half false (its slots are shared across every
+  /// module initializer, and its typed-local row is never emitted), and a
+  /// lambda CREATED INSIDE an initializer then inherited the sentinel and
+  /// silently lost native lowering even though a lambda compiles into its own
+  /// independent frame with its own emitted row (#1332, Codex review).
+  ///
+  /// Kept as one predicate read in one place (backend_expr.vibe's ELet/EArray
+  /// gate); this only stops it from meaning two different things.
+  gc_native_array_frame_ok: Bool;
+  // #1332: one typed-local row PER RECORDED LAMBDA, parallel to
+  // LambdaTable.bodies. A lambda body compiles into its own local frame, so
+  // its typed slots cannot live in the enclosing function's row -- but the
+  // code section declares lambda locals from a module-level array, which is
+  // why lambda bodies previously had to keep the linear fallback.
+  //
+  // Shared BY REFERENCE through make_lambda_ctx_gc (same discipline as
+  // table_slots_used below): a nested lambda records itself DURING its
+  // parent's compile, so both must append to the one module-level array or
+  // the rows stop lining up with LambdaTable.bodies. Appended in
+  // record_lambda_meta_gc, which is the single writer of that table.
+  gc_lambda_native_array_locals: Array[Array[Int]];
+  // #1541: conservative, module-wide direct-call reference ABI evidence.
+  // Empty tables mean the whole module fell back to the tagged-i64 ABI.
+  // When populated, rows are parallel: each named top-level function has one
+  // parameter-reference row and one result-reference flag. Only direct calls
+  // may consume this evidence; closures, globals, generics, aggregates, and
+  // unsupported control-flow crossings make the producer leave all rows empty.
+  gc_direct_abi_names: Array[String];
+  gc_direct_abi_param_refs: Array[Array[Bool]];
+  gc_direct_abi_return_refs: Array[Bool];
+  // Per-body result expectation. This is true only while compiling a proven
+  // direct-ABI function whose wasm result is `(ref null $native_i64_array)`.
+  gc_direct_abi_current_return_ref: Bool;
+  // #1015: computed ONCE per compile (backend_body.vibe's
+  // gc_to_string_resolves_to_show_wrapper, before any CompileCtxGc is
+  // constructed) and copied unchanged into every ctx thereafter (including
+  // lambda ctxs, backend_lambda_ctx.vibe). True iff this program's own
+  // top-level `to_string` (if any) structurally matches the Show-bounded
+  // generic forwarding wrapper `to_string[T: Show](x: T) -> String {
+  // __to_string(x) }`. Gates backend_call.vibe's "to_string" call-site fast
+  // path -- required so a SAME-file user-defined `fn to_string(x: Bool) ->
+  // String { "custom" }` (a real, different function) is not silently
+  // replaced by the Bool/Float formatter (code review, #1015): the gc
+  // lane's single-file compile model rules out cross-file name collisions
+  // (unlike linear, which needs a mangled-name match), but not this
+  // same-file case.
+  gc_to_string_is_show_wrapper: Bool;
+  // #724: gc twin of CompileCtx.agg_local_slots (same encoding + pruning
+  // discipline) so the gc lane's structural ==/!= also covers non-literal
+  // aggregate bindings. gc_-prefixed per the #722 field-collision convention.
+  gc_agg_local_slots: Array[Int];
+  // #724 round 2: gc twins of agg_ret_names/agg_ret_infos.
+  gc_agg_ret_names: Array[String];
+  gc_agg_ret_infos: Array[Int];
+  // #2386: gc twins of CompileCtx.agg_ret_names_sorted / _pos.
+  gc_agg_ret_names_sorted: Array[String];
+  gc_agg_ret_names_sorted_pos: Array[Int];
+  // #1109 gc parity: gc twin of CompileCtx.table_slots_used (see that
+  // field's doc comment for the full rationale) -- append-only recorder of
+  // every funcref-table slot the gc lane's own closure codegen
+  // (backend_expr.vibe's named-fn-as-value branch, backend_lambda_body.vibe's
+  // closure construction) actually materializes as a closure value. The gc
+  // lane uses the SAME tagged-i64 funcref-table + heap-allocated
+  // closure-header scheme as linear (backend_lambda_emit.vibe), so the same
+  // "record used slots, rebuild the element section from exactly that set"
+  // approach applies unchanged.
+  table_slots_used: Array[Int];
+  // ADR-0090 (#1262) tier 2: gc twins of CompileCtx's region arena fields.
+  // Same meaning and same `-1 == no arena in this module` convention, so the
+  // two lanes' `__region_run` / `MutList::empty` / `MutBytes::empty` arms read
+  // identically. See the layout note in gc/backend_body.vibe for why this
+  // lane wants an arena at all despite being the GC lane.
+  gc_region_ptr_addr: Int;
+  gc_region_arr_new_func_idx: Int;
+  gc_region_bytes_new_func_idx: Int;
+  // #1937: gc twin of CompileCtx.region_exn_tag (0 on this lane, or -1).
+  gc_region_exn_tag: Int
+}
+
+//# Functions
+
+/// #678: prune the integer-slot log so it carries NO entry for any slot index
+/// >= `floor`. Called right after `local_names` is truncated to `floor` at a
+/// branch / match-arm / for-in boundary, where those high slots are about to be
+/// reused by the sibling scope. A `let`/`let mut` reusing a slot re-logs its own
+/// int-ness, but a NON-`let` binder (match-arm / catch-all / for-in pattern var)
+/// logs nothing — so without this prune its slot would still read the previous
+/// sibling's stale `int=1` and a string bound there would wrongly take the
+/// `i64.eq` path. Compacts the array IN PLACE (entries are unordered, so a plain
+/// truncate-by-count will not do): keep entries for slots < floor, then truncate.
+/// No temporary allocation — this runs at every branch / arm boundary while
+/// compiling, and a fresh array per call piles up on the bump/RC heap during one
+/// big function and can trip a heap-marginal compile.
+export fn int_log_reset_above(ctx: CompileCtx, floor: Int) -> Unit {
+  let arr = ctx.int_local_slots
+  let n = Array::length(arr)
+  let mut w = 0
+  let mut i = 0
+  while i < n {
+    let e = Array::get(arr, i)
+    // #769: entries are slot*4 + kind now (see slot_is_intish).
+    if e / 4 < floor {
+      Array::set(arr, w, e)
+      w = w + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  Array::truncate(arr, w)
+}
+
+/// #1062 follow-up: the float-log twin of `int_log_reset_above`, for exactly
+/// the same reason. `bind_match_pat` now logs a pattern-bound constructor
+/// field into `float_local_slots` when its declared type is Double/Float (see
+/// CompileCtx.ctor_float_fields), but a NON-float field bound at the SAME
+/// local slot by a SIBLING match arm (arms share slot numbers -- `local_names`
+/// is truncated back to `names_len_at_match` before every arm, see the call
+/// sites in compile_match.vibe) never logs anything to override a stale
+/// float=1 entry a PRIOR arm left at that slot. Left unpruned, that stale
+/// entry survives via float_local_slots' normal "most recent entry per slot
+/// wins" lookup (slot_is_floatish) and makes the later arm's plain Int/String
+/// field take the f64 reinterpret-bits arithmetic path -- silently corrupting
+/// ordinary integer arithmetic (discovered when re-enabling the ctor-float
+/// check caused ~37 unrelated selfhost unit-test regressions: the compiler's
+/// own AST enums, e.g. Expr/Pat/Token, mix a Double-carrying variant
+/// (EFloat/PFloat/TFloat) with many non-float siblings matched in the same
+/// `match`, at the same rotating slot numbers). Same compaction discipline as
+/// int_log_reset_above: keep entries for slots < floor, truncate the rest.
+export fn float_log_reset_above(ctx: CompileCtx, floor: Int) -> Unit {
+  let arr = ctx.float_local_slots
+  let n = Array::length(arr)
+  let mut w = 0
+  let mut i = 0
+  while i < n {
+    let e = Array::get(arr, i)
+    // Entries are slot*2 + flag (see slot_is_floatish).
+    if e / 2 < floor {
+      Array::set(arr, w, e)
+      w = w + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  Array::truncate(arr, w)
+}
+
+/// #724: prune the aggregate-shape log (see CompileCtx.agg_local_slots) at the
+/// same branch/arm boundaries as int_log_reset_above — a slot reused by a
+/// non-`let` binder must not be read as a stale tuple/ctor, or the structural
+/// comparator would walk a non-aggregate value.
+export fn agg_log_reset_above(arr: Array[Int], floor: Int) -> Unit {
+  let n = Array::length(arr)
+  let mut w = 0
+  let mut i = 0
+  while i < n {
+    let e = Array::get(arr, i)
+    if e / 256 < floor {
+      Array::set(arr, w, e)
+      w = w + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  Array::truncate(arr, w)
+}
+
+/// #1015: gc-lane twin of int_log_reset_above, for a PLAIN slot-indexed array
+/// (no packed kind -- e.g. CompileCtxGc.gc_bool_locals, which unlike
+/// CompileCtx.int_local_slots tracks exactly one thing, so entries are raw
+/// slot ints rather than slot*4+kind). Same discipline: called right after
+/// `local_names` is truncated to `floor` at a branch/match-arm/for-in
+/// boundary, so a stale entry for a slot about to be reused by a sibling
+/// scope does not leak into that sibling's classification of an unrelated
+/// binding landing on the same freed slot.
+/// #1702: slot -> payload map, indexed BY SLOT rather than a list of slots.
+///
+/// The native ARRAY lane can use a plain slot list because every entry has the
+/// same wasm type. A struct local also has to carry WHICH struct it holds (the
+/// wasm type follows from the field count, and field access needs the declared
+/// order). Keeping that as a second array parallel to a slot list does not
+/// survive `gc_slot_log_reset_above`: pruning one and not the other silently
+/// pairs a slot with the wrong struct. Indexing by slot removes the pairing --
+/// reset is positional and there is nothing to keep in step. Absent slots
+/// read as -1.
+/// #1542: does struct `struct_idx` declare `field` as a reference-lane array?
+/// Lives here rather than beside either use because the binding site, the read
+/// lowering and the receiver test all have to agree; a private copy per file is
+/// how the #1722 lookups drifted.
+export fn gc_ctor_field_is_ref(ct: CtorTable, struct_idx: Int, field: String) -> Bool {
+  if struct_idx < 0 || struct_idx >= Array::length(ct.struct_field_is_ref) {
+    false
+  } else {
+    let declared = Array::get(ct.struct_field_names, struct_idx)
+    let refs = Array::get(ct.struct_field_is_ref, struct_idx)
+    let mut i = 0
+    let mut found = false
+    while i < Array::length(declared) {
+      if Array::get(declared, i) == field && Array::get(refs, i) {
+        found = true
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    found
+  }
+}
+
+/// Slot of `field` within struct `struct_idx`, or -1.
+export fn gc_ctor_field_slot(ct: CtorTable, struct_idx: Int, field: String) -> Int {
+  if struct_idx < 0 || struct_idx >= Array::length(ct.struct_field_names) {
+    0 - 1
+  } else {
+    let declared = Array::get(ct.struct_field_names, struct_idx)
+    let mut i = 0
+    let mut found = 0 - 1
+    while i < Array::length(declared) {
+      if found < 0 && Array::get(declared, i) == field {
+        found = i
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    found
+  }
+}
+
+export fn gc_slot_map_set(map: Array[Int], slot: Int, value: Int) -> Unit {
+  while Array::length(map) <= slot {
+    Array::push(map, 0 - 1)
+  }
+  Array::set(map, slot, value)
+}
+
+export fn gc_slot_map_get(map: Array[Int], slot: Int) -> Int {
+  if slot < 0 || slot >= Array::length(map) {
+    0 - 1
+  } else {
+    Array::get(map, slot)
+  }
+}
+
+/// Positional twin of `gc_slot_log_reset_above`: clear every slot at or above
+/// `floor` so a sibling scope reusing those numbers for ordinary i64 bindings
+/// does not inherit this scope's classification.
+export fn gc_slot_map_reset_above(map: Array[Int], floor: Int) -> Unit {
+  let mut i = if floor < 0 {
+    0
+  } else {
+    floor
+  }
+  while i < Array::length(map) {
+    Array::set(map, i, 0 - 1)
+    i = i + 1
+  }
+}
+
+export fn gc_slot_log_reset_above(arr: Array[Int], floor: Int) -> Unit {
+  let n = Array::length(arr)
+  let mut w = 0
+  let mut i = 0
+  while i < n {
+    let e = Array::get(arr, i)
+    if e < floor {
+      Array::set(arr, w, e)
+      w = w + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  Array::truncate(arr, w)
+}
+
+/// #672 (post-#724): dual-array twin of agg_log_reset_above — prunes
+/// agg_local_slots AND its parallel agg_local_exprs in lockstep (same
+/// keep/drop decision, driven by the slots array, applied to both), so the
+/// two arrays stay the same length / index-aligned after a branch/arm
+/// boundary prunes stale entries. See CompileCtx.agg_local_exprs.
+export fn agg_log_reset_above2(arr: Array[Int], exprs: Array[Expr], floor: Int) -> Unit {
+  let n = Array::length(arr)
+  let mut w = 0
+  let mut i = 0
+  while i < n {
+    let e = Array::get(arr, i)
+    if e / 256 < floor {
+      Array::set(arr, w, e)
+      Array::set(exprs, w, Array::get(exprs, i))
+      w = w + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  Array::truncate(arr, w)
+  Array::truncate(exprs, w)
+}
+
+/// #724: most-recent aggregate-shape entry for `slot` — `kind*64 + n`
+/// (kind 1 = tuple/arity, 2 = ctor/field count), or -1 when untracked /
+/// overridden by a non-aggregate rebind.
+export fn agg_slot_lookup(arr: Array[Int], slot: Int) -> Int {
+  let mut i = Array::length(arr) - 1
+  let mut out = 0 - 1
+  while i >= 0 {
+    let e = Array::get(arr, i)
+    if e / 256 == slot {
+      out = e % 256
+      i = 0 - 1
+    } else {
+      i = i - 1
+    }
+  }
+  if out == 0 {
+    0 - 1
+  } else {
+    out
+  }
+}
+
+/// #672 (post-#724): companion to agg_slot_lookup — the shape-literal Expr
+/// paired with the most-recent tracked entry for `slot` (same rightmost-match
+/// scan), or EInt(0) when the slot has no entry at all. Callers only read the
+/// result after agg_slot_lookup has confirmed a kind 1 (tuple) or kind 2
+/// (ctor/record) entry exists for the slot, so the EInt(0) fallback is never
+/// actually consulted as a shape in practice — it just keeps this total.
+export fn agg_expr_lookup(arr: Array[Int], exprs: Array[Expr], slot: Int) -> Expr {
+  let mut i = Array::length(arr) - 1
+  let mut out = EInt(0)
+  while i >= 0 {
+    let e = Array::get(arr, i)
+    if e / 256 == slot {
+      out = Array::get(exprs, i)
+      i = 0 - 1
+    } else {
+      i = i - 1
+    }
+  }
+  out
+}
+
+/// #724 round 2: aggregate-shape classification from a DECLARED TypeExpr —
+/// the static dual of the shape log below, used for function RETURN types
+/// (`let a = mk_pt(...)` — the value shape is invisible at the ELet, but the
+/// callee's signature names it) and annotated params. Same `kind*64 + n`
+/// encoding; n = 63 is the "dynamic field count" sentinel: enum-typed values
+/// have a variant-dependent argc, so the comparator reads argc@4 from the
+/// value at runtime instead of unrolling a static count.
+/// The struct index of `tname` in `ct.struct_names`, -1 when absent: through
+/// the sorted view when it is in sync with the array, else the linear scan.
+fn struct_table_index_of(ct: CtorTable, tname: String) -> Int {
+  if Array::length(ct.struct_names_sorted) != Array::length(ct.struct_names) {
+    let mut si = 0
+    let mut out = 0 - 1
+    while si < Array::length(ct.struct_names) {
+      if Array::get(ct.struct_names, si) == tname {
+        out = si
+        si = Array::length(ct.struct_names)
+      } else {
+        si = si + 1
+      }
+    }
+    out
+  } else {
+    let slot = bsearch_leftmost(ct.struct_names_sorted, tname)
+    if slot < 0 {
+      0 - 1
+    } else {
+      Array::get(ct.struct_names_sorted_pos, slot)
+    }
+  }
+}
+
+/// Does some constructor in `ct` declare `tname` as its type? Through the
+/// sorted view when in sync, else the linear scan.
+fn ctor_type_names_contain(ct: CtorTable, tname: String) -> Bool {
+  if Array::length(ct.type_names_sorted) != Array::length(ct.type_names) {
+    let mut ti = 0
+    let mut found = false
+    while ti < Array::length(ct.type_names) {
+      if Array::get(ct.type_names, ti) == tname {
+        found = true
+        ti = Array::length(ct.type_names)
+      } else {
+        ti = ti + 1
+      }
+    }
+    found
+  } else {
+    bsearch_leftmost(ct.type_names_sorted, tname) >= 0
+  }
+}
+
+export fn agg_info_of_type_name(ct: CtorTable, tname: String) -> Int {
+  let si = struct_table_index_of(ct, tname)
+  let out = if si >= 0 {
+    128 + Array::length(Array::get(ct.struct_field_names, si))
+  } else {
+    0
+  }
+  if out > 0 {
+    out
+  } else {
+    let is_enum = ctor_type_names_contain(ct, tname)
+    if is_enum {
+      128 + 63
+    } else {
+      0
+    }
+  }
+}
+
+export fn agg_info_of_type_expr(ct: CtorTable, te: TypeExpr) -> Int {
+  match te {
+    TyTuple(tels) => 64 + Array::length(tels),
+    TyName(tname) => agg_info_of_type_name(ct, tname),
+    TyApp(tname, _) => agg_info_of_type_name(ct, tname),
+    _ => 0
+  }
+}
+
+/// #2141: does `te`'s head name one of `tparams`? An annotation naming an
+/// enclosing binder's formal describes an ERASED value -- when the merged
+/// program also declares a struct under that spelling, annotation-driven
+/// shape seeding must not claim it, or `==` field-compares raw scalars.
+export fn ty_head_names_formal(te: TypeExpr, tparams: Array[String]) -> Bool {
+  let head = match te {
+    TyName(n) => n,
+    TyApp(n, _) => n,
+    _ => ""
+  }
+  if String::length(head) == 0 {
+    false
+  } else {
+    let mut i = 0
+    let mut found = false
+    while i < Array::length(tparams) && !found {
+      if type_param_name(Array::get(tparams, i)) == head {
+        found = true
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    found
+  }
+}
+
+/// #724 round 2: program-wide (fn name -> aggregate return shape) table,
+/// filled from each top-level `let f: (..) -> R = (..) -> {..}`'s declared
+/// return type (the SLet annotation's TyFn ret, falling back to the EFn's
+/// own return annotation). The `==` codegen consults it for `let a = f(..)`
+/// bindings. Structural, all-lane-safe knowledge — unannotated returns stay
+/// untracked (generic-eq fallback), preserving backend parity.
+export fn compute_agg_returning(stmts: Array[Stmt], ct: CtorTable, out_names: Array[String], out_infos: Array[Int]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, ann, value) => match value {
+        EFn(efn_tparams, _, _, fn_ret, _, _) => {
+          let ret = match ann {
+            Some(at) => match at {
+              TyFn(_, r, _) => Some(r),
+              _ => fn_ret
+            },
+            None => fn_ret
+          }
+          match ret {
+            Some(rte) => {
+              // #2141: a return type naming the fn's own formal is erased --
+              // see ty_head_names_formal.
+              let info = if ty_head_names_formal(rte, efn_tparams) {
+                0
+              } else {
+                agg_info_of_type_expr(ct, rte)
+              }
+              if info > 0 {
+                Array::push(out_names, name)
+                Array::push(out_infos, info)
+              } else {
+                ()
+              }
+            },
+            None => ()
+          }
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+export fn agg_ret_lookup(names: Array[String], infos: Array[Int], fname: String) -> Int {
+  let mut i = 0
+  let mut out = 0 - 1
+  while i < Array::length(names) {
+    if Array::get(names, i) == fname {
+      out = Array::get(infos, i)
+      i = Array::length(names)
+    } else {
+      i = i + 1
+    }
+  }
+  out
+}
+
+/// #2386: agg_ret_lookup through the sorted view ctor_sorted_index built over
+/// the same `names` (`sorted` + `pos`); -1 for a function the table does not
+/// list. The FIRST row of a name wins, exactly as agg_ret_lookup's scan
+/// answers: the sort is stable, so the leftmost slot of a repeated name
+/// carries its smallest position.
+export fn agg_ret_lookup_indexed(sorted: Array[String], pos: Array[Int], infos: Array[Int], fname: String) -> Int {
+  let slot = bsearch_leftmost(sorted, fname)
+  if slot < 0 {
+    0 - 1
+  } else {
+    Array::get(infos, Array::get(pos, slot))
+  }
+}
+
+/// #3141: push one entry on an early-exit release stack
+/// (`CompileCtx.rc_exit_stack_names` / `rc_exit_stack_info`). `kind`:
+///
+///   0  an owned `let`: released as many times as the plan's `PaExitDrop`
+///      row for the exit says (none: nothing)
+///   1  an owned parameter: the same
+///   2  a borrowed parameter: one fewer (its caller keeps the initial one)
+///   4  a captured `let mut` cell: once (its scope end drops it on every path)
+///   5  a #2837 view pin: once (the pin is a reference of its own)
+///   6  an owned `let rec`: the plan's count, except its own returned value
+///      transfers the binding's reference to the caller
+///   100 a loop body starts (`break` / `continue` stop here)
+///   101 a `handle` body starts (`throw` stops here)
+///
+/// `flag` is a local the scope end guards its drop on (non-zero: the value
+/// was consumed on this path), or -1.
+export fn rc_exit_push(names: Array[String], info: Array[Int], name: String, kind: Int, local: Int, flag: Int) -> Unit {
+  Array::push(names, name)
+  Array::push(info, kind)
+  Array::push(info, local)
+  Array::push(info, flag)
+}
+
+/// #3141: pop the early-exit release stack back to `mark` entries.
+export fn rc_exit_truncate(ctx: CompileCtx, mark: Int) -> Unit {
+  Array::truncate(ctx.rc_exit_stack_names, mark)
+  Array::truncate(ctx.rc_exit_stack_info, mark * 3)
+}
+
+/// #724: non-throwing last-match local lookup (resolve_local throws on a
+/// missing name, which is wrong for OPTIONAL classification — a bare ident
+/// can name a global function or ctor instead of a local).
+export fn find_local_slot(names: Array[String], name: String) -> Int {
+  let mut i = Array::length(names) - 1
+  let mut result = 0 - 1
+  while i >= 0 {
+    if Array::get(names, i) == name {
+      result = i
+      i = 0 - 1
+    } else {
+      i = i - 1
+    }
+  }
+  result
+}
+
+/// #724: aggregate-shape info for a bare-ident operand of `==`/`!=`:
+/// resolves the ident's CURRENT slot and returns its latest log entry
+/// (`kind*64 + n`), or -1 for non-idents / untracked slots.
+export fn agg_info_of_ident(arr: Array[Int], e: Expr, local_names: Array[String]) -> Int {
+  match e {
+    EIdent(nm, _) => {
+      let slot = find_local_slot(local_names, nm)
+      if slot >= 0 {
+        agg_slot_lookup(arr, slot)
+      } else {
+        0 - 1
+      }
+    },
+    _ => 0 - 1
+  }
+}
+
+/// #672 (post-#724): companion to agg_info_of_ident — the tracked shape-
+/// literal Expr for a bare-ident operand (same ident -> slot resolution), or
+/// EInt(0) when the ident is not a tracked slot. Callers gate on
+/// agg_info_of_ident's kind first, same discipline as agg_expr_lookup.
+export fn agg_expr_of_ident(arr: Array[Int], exprs: Array[Expr], e: Expr, local_names: Array[String]) -> Expr {
+  match e {
+    EIdent(nm, _) => {
+      let slot = find_local_slot(local_names, nm)
+      if slot >= 0 {
+        agg_expr_lookup(arr, exprs, slot)
+      } else {
+        EInt(0)
+      }
+    },
+    _ => EInt(0)
+  }
+}
+
+export fn is_efn(expr: Expr) -> Bool {
+  match expr {
+    EFn(_, _, _, _, _, _) => true,
+    _ => false
+  }
+}
+
+export fn is_pint(p: Pat) -> Bool {
+  match p {
+    PInt(_) => true,
+    _ => false
+  }
+}
+
+export fn is_pfloat(p: Pat) -> Bool {
+  match p {
+    PFloat(_) => true,
+    _ => false
+  }
+}
+
+export fn is_slet(stmt: Stmt) -> Bool {
+  match stmt {
+    SLet(_, _, _, _, _) => true,
+    _ => false
+  }
+}
+
+export fn expr_tag(expr: Expr) -> Int {
+  match expr {
+    EInt(_) => 0,
+    EBool(_) => 1,
+    EFloat(_) => 2,
+    EString(_, _) => 3,
+    EIdent(_, _) => 4,
+    EBinOp(_, _, _, _) => 5,
+    EUnaryOp(_, _) => 6,
+    EIf(_, _, _) => 7,
+    ECall(_, _, _) => 8,
+    ELet(_, _, _, _) => 9,
+    ELetRec(_, _, _) => 10,
+    ELetMut(_, _, _, _) => 11,
+    EAssign(_, _, _) => 12,
+    EAssignOp(_, _, _, _) => 13,
+    ESeq(_, _) => 14,
+    ETuple(_) => 15,
+    EMatch(_, _) => 16,
+    EArray(_) => 17,
+    EForIn(_, _, _, _) => 18,
+    EWhile(_, _) => 19,
+    EBreak(_) => 20,
+    EContinue(_) => 21,
+    EUnit => 22,
+    EFn(_, _, _, _, _, _) => 24,
+    ELoop(_, _) => 25,
+    EReturn(_) => 26,
+    _ => -1
+  }
+}
+
+export fn is_pbind(p: Pat) -> Bool {
+  match p {
+    PBind(_) => true,
+    _ => false
+  }
+}
+
+export fn is_pbool(p: Pat) -> Bool {
+  match p {
+    PBool(_) => true,
+    _ => false
+  }
+}
+
+export fn is_pctor(p: Pat) -> Bool {
+  match p {
+    PCtor(_, _) => true,
+    _ => false
+  }
+}
+
+export fn is_pwild(p: Pat) -> Bool {
+  match p {
+    PWild => true,
+    _ => false
+  }
+}
+
+export fn is_earray(expr: Expr) -> Bool {
+  match expr {
+    EArray(_) => true,
+    _ => false
+  }
+}
+
+export fn is_eident(expr: Expr) -> Bool {
+  match expr {
+    EIdent(_, _) => true,
+    _ => false
+  }
+}
+
+export fn is_etuple(expr: Expr) -> Bool {
+  match expr {
+    ETuple(_) => true,
+    _ => false
+  }
+}
+
+export fn is_ptuple(p: Pat) -> Bool {
+  match p {
+    PTuple(_) => true,
+    _ => false
+  }
+}
+
+let op_i32_eq: Int = 70
+
+let op_i32_ne: Int = 71
+
+export fn is_erecord(expr: Expr) -> Bool {
+  match expr {
+    ERecord(_, _, _) => true,
+    _ => false
+  }
+}
+
+export fn is_pstring(p: Pat) -> Bool {
+  match p {
+    PString(_) => true,
+    _ => false
+  }
+}
+
+let op_i32_eqz: Int = 69
+
+let op_i32_mul: Int = 108
+
+let op_i32_sub: Int = 107
+
+export fn emit_i32_eq(buf: Bytes) -> Unit {
+  bytebuf_push(buf, op_i32_eq)
+}
+
+export fn emit_i32_ne(buf: Bytes) -> Unit {
+  bytebuf_push(buf, op_i32_ne)
+}
+
+export fn get_arm_pat(arm: (Pat, Expr)) -> Pat {
+  let (p, _) = arm
+  p
+}
+
+export fn lookup_ctor(ctor_names: Array[String], name: String, i: Int) -> Int {
+  if i >= Array::length(ctor_names) {
+    -1
+  }
+  else if Array::get(ctor_names, i) == name {
+    i
+  }
+  else lookup_ctor(ctor_names, name, i + 1)
+}
+
+/// Build CtorTable.names_sorted / names_sorted_pos from the name list: a
+/// stable sort permutation, so equal names keep insertion order and the
+/// leftmost binary-search hit maps to the same index the linear scan found.
+export fn ctor_sorted_index(names: Array[String]) -> (Array[String], Array[Int]) {
+  let perm = sort_perm_by_names(names)
+  (apply_perm_strings(names, perm), perm)
+}
+
+/// Compiler-owned fallback constructors must not outrank a constructor from
+/// the compiled source. The checker permits local constructors to shadow
+/// imported/compiler-owned names, so both codegen lanes use this predicate
+/// before seeding Option and Attempt fallbacks.
+export fn source_declares_constructor(stmts: Array[Stmt], name: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(stmts) && !found {
+    found = match Array::get(stmts, i) {
+      SEnum(_, _, _, variants, _) => {
+        let mut present = false
+        let mut j = 0
+        while j < Array::length(variants) && !present {
+          let (variant_name, _) = Array::get(variants, j)
+          present = variant_name == name
+          j = j + 1
+        }
+        present
+      },
+      SStruct(_, struct_name, _, _, _, _) => struct_name == name,
+      SSuberror(_, _, variants) => {
+        let mut present = false
+        let mut j = 0
+        while j < Array::length(variants) && !present {
+          let (variant_name, _) = Array::get(variants, j)
+          present = variant_name == name
+          j = j + 1
+        }
+        present
+      },
+      SModule(_, _, body) => source_declares_constructor(body, name),
+      _ => false
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Append the compiler-private constructor spellings used by `perform?` with
+/// the exact representation of the linked `Attempt` enum. A merged @vibe/core
+/// enum receives ordinary program type tags, so fixed fallback tags are only
+/// correct when no enum declaration was linked into this compilation.
+export fn append_hidden_attempt_constructors(names: Array[String], tags: Array[Int], field_counts: Array[Int], type_names: Array[String]) -> Unit {
+  let public_names = ["NotGranted", "Errored", "Granted"]
+  let hidden_names = [
+    "$vibe_attempt_not_granted",
+    "$vibe_attempt_errored",
+    "$vibe_attempt_granted"
+  ]
+  let fallback_tags = [2, 3, 4]
+  let fallback_fields = [0, 1, 1]
+  let mut hi = 0
+  while hi < Array::length(hidden_names) {
+    let public_name = Array::get(public_names, hi)
+    let mut resolved_tag = Array::get(fallback_tags, hi)
+    let mut resolved_fields = Array::get(fallback_fields, hi)
+    let mut ci = 0
+    while ci < Array::length(names) {
+      if Array::get(names, ci) == public_name && Array::get(type_names, ci) == "Attempt" {
+        resolved_tag = Array::get(tags, ci)
+        resolved_fields = Array::get(field_counts, ci)
+        ci = Array::length(names)
+      } else {
+        ci = ci + 1
+      }
+    }
+    Array::push(names, Array::get(hidden_names, hi))
+    Array::push(tags, resolved_tag)
+    Array::push(field_counts, resolved_fields)
+    Array::push(type_names, "Attempt")
+    hi = hi + 1
+  }
+}
+
+/// O(log N) replacement for `lookup_ctor(ct.names, name, 0)` at CtorTable
+/// call sites. Falls back to the linear scan when the sorted view is absent
+/// (defensive: a table built without ctor_sorted_index stays correct).
+export fn ctor_table_index_of(ct: CtorTable, name: String) -> Int {
+  if Array::length(ct.names_sorted) != Array::length(ct.names) {
+    lookup_ctor(ct.names, name, 0)
+  } else {
+    let slot = bsearch_leftmost(ct.names_sorted, name)
+    if slot < 0 {
+      -1
+    } else {
+      Array::get(ct.names_sorted_pos, slot)
+    }
+  }
+}
+
+/// #1062: is constructor `ctor_idx`'s positional field `field_idx` declared
+/// Double/Float? See CompileCtx.ctor_float_fields for the encoding.
+export fn ctor_field_is_float(ctx: CompileCtx, ctor_idx: Int, field_idx: Int) -> Bool {
+  let arr = ctx.ctor_float_fields
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(arr) {
+    let e = Array::get(arr, i)
+    if e / 64 == ctor_idx && e % 64 == field_idx {
+      found = true
+      i = Array::length(arr)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// #722: candidates for a NAME-based struct field access. Returns
+/// (ctor_tag, field_idx) for every struct whose field list contains `field`,
+/// in struct-declaration order. Field resolution used to take the FIRST
+/// struct containing the name (type-blind), so a same-named field living at
+/// a DIFFERENT slot in a later struct silently read the wrong slot — which
+/// program shapes hit this depended on the declaration set/order, i.e. the
+/// flat-bundle vs FS-linked lane divergence observed in #722. Callers keep
+/// the first candidate as the static fast path when every candidate agrees
+/// on the slot, and otherwise dispatch at runtime on the value's ctor tag
+/// (struct construction — both the `S::{...}` ctor path and the set-matched
+/// bare-record path — stamps the struct's unique tag at value+0).
+export fn struct_field_candidates(ct: CtorTable, field: String) -> Array[(Int, Int)] {
+  let out = array_empty()
+  let mut si = 0
+  while si < Array::length(ct.struct_names) {
+    let fnames = Array::get(ct.struct_field_names, si)
+    let mut fi = 0
+    while fi < Array::length(fnames) {
+      if Array::get(fnames, fi) == field {
+        let ci = ctor_table_index_of(ct, Array::get(ct.struct_names, si))
+        let tag = if ci >= 0 {
+          Array::get(ct.tags, ci)
+        } else {
+          -1
+        }
+        Array::push(out, (tag, fi))
+        fi = Array::length(fnames)
+      } else {
+        fi = fi + 1
+      }
+    }
+    si = si + 1
+  }
+  out
+}
+
+/// #722: the subset of `candidates` (beyond the first) whose slot index
+/// DISAGREES with the first candidate's — exactly the cases the static
+/// first-match resolution used to miscompile. Empty result = the static
+/// fast path is sound; non-empty = the caller must emit a runtime tag
+/// dispatch over these, with candidate 0 as the untagged/legacy fallback.
+export fn struct_field_dispatch_cases(cands: Array[(Int, Int)]) -> Array[(Int, Int)] {
+  let (_, idx0) = Array::get(cands, 0)
+  let out = array_empty()
+  let mut i = 1
+  while i < Array::length(cands) {
+    let (tag_i, idx_i) = Array::get(cands, i)
+    if idx_i != idx0 && tag_i >= 0 {
+      Array::push(out, (tag_i, idx_i))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// #722: resolve a bare record literal to a struct by exact field-name-set
+/// match (the same rule the checker uses — `S::{...}` drops the name at
+/// parse time in some construction paths, and hand-built ASTs build ERecord
+/// directly). Returns the struct index or -1. Callers use it to lay the
+/// record out in the struct's DECLARED field order and stamp the struct's
+/// ctor tag, making bare records byte-compatible with `S::{...}` ctor-path
+/// construction (which already reorders to declared order).
+export fn struct_index_by_field_set(ct: CtorTable, lit_names: Array[String]) -> Int {
+  let mut si = 0
+  let mut found = -1
+  while si < Array::length(ct.struct_names) {
+    let fnames = Array::get(ct.struct_field_names, si)
+    if Array::length(fnames) == Array::length(lit_names) {
+      let mut all = true
+      let mut fi = 0
+      while fi < Array::length(fnames) {
+        let dn = Array::get(fnames, fi)
+        let mut present = false
+        let mut li = 0
+        while li < Array::length(lit_names) {
+          if Array::get(lit_names, li) == dn {
+            present = true
+            li = Array::length(lit_names)
+          } else {
+            li = li + 1
+          }
+        }
+        if present {
+          fi = fi + 1
+        } else {
+          all = false
+          fi = Array::length(fnames)
+        }
+      }
+      if all {
+        found = si
+        si = Array::length(ct.struct_names)
+      } else {
+        si = si + 1
+      }
+    } else {
+      si = si + 1
+    }
+  }
+  found
+}
+
+/// #722: ctor tag for struct index `si`, or 0 (the legacy anonymous-record
+/// type id) when the struct is not in the ctor table.
+export fn struct_tag_by_index(ct: CtorTable, si: Int) -> Int {
+  let ci = ctor_table_index_of(ct, Array::get(ct.struct_names, si))
+  if ci >= 0 {
+    Array::get(ct.tags, ci)
+  } else {
+    0
+  }
+}
+
+export let op_i32_ge_u: Int = 79
+
+export let op_i32_gt_u: Int = 75
+
+export let op_i64_load: Int = 41
+
+export fn emit_i32_eqz(buf: Bytes) -> Unit {
+  bytebuf_push(buf, op_i32_eqz)
+}
+
+export fn emit_i32_mul(buf: Bytes) -> Unit {
+  bytebuf_push(buf, op_i32_mul)
+}
+
+export fn emit_i32_sub(buf: Bytes) -> Unit {
+  bytebuf_push(buf, op_i32_sub)
+}
+
+export fn emit_str_ref(buf: Bytes, offset: Int, length: Int) -> Unit {
+  emit_i64_const(buf, offset)
+  emit_i64_const(buf, 32)
+  emit_i64_shl(buf)
+  emit_i64_const(buf, length)
+  emit_i64_or(buf)
+}
+
+export fn get_arm_body(arm: (Pat, Expr)) -> Expr {
+  let (_, b) = arm
+  b
+}
+
+export fn get_efn_body(expr: Expr) -> Expr with Exception {
+  match expr {
+    EFn(_, _, _, _, _, body) => body,
+    _ => throw("not EFn")
+  }
+}
+
+export fn get_eif_cond(expr: Expr) -> Expr with Exception {
+  match expr {
+    EIf(c, _, _) => c,
+    _ => throw("not EIf")
+  }
+}
+
+export fn get_eif_else(expr: Expr) -> Expr with Exception {
+  match expr {
+    EIf(_, _, e) => e,
+    _ => throw("not EIf")
+  }
+}
+
+export fn get_eif_then(expr: Expr) -> Expr with Exception {
+  match expr {
+    EIf(_, t, _) => t,
+    _ => throw("not EIf")
+  }
+}
+
+export fn get_elet_val(expr: Expr) -> Expr with Exception {
+  match expr {
+    ELet(_, val, _, _) => val,
+    _ => throw("not ELet")
+  }
+}
+
+export fn is_ctor_call(value: Expr, ct: CtorTable) -> Bool {
+  match value {
+    ECall(callee, _, _) => match callee {
+      EIdent(nm, _) => ctor_table_index_of(ct, nm) >= 0,
+      _ => false
+    },
+    _ => false
+  }
+}
+
+export let op_i64_store: Int = 55
+
+/// #1100: O(log N) replacement for the linear scan over `ft.names` this and
+/// several other call sites (compile_call.vibe's cc_ft_has/cc_ft_first_idx/
+/// fn_idx_in_list/op_is_builtin, compile_expr.vibe's ident-not-local fallback)
+/// used to each do independently -- func_table.names commonly holds several
+/// hundred entries (every builtin plus every user/linked function) and these
+/// scans run once per identifier/call resolved during codegen, the single
+/// largest attributed self-time bucket in a full-closure compile's
+/// --cpu-prof (see .claude/skills/compiler-perf-profiling). Mirrors
+/// ctor_table_index_of exactly, including its defensive linear-scan fallback
+/// for a table built without the sorted view. FIRST-match semantics are
+/// preserved exactly: bsearch_leftmost returns the leftmost slot of an equal
+/// run in the STABLE sort, which is the same entry a forward linear scan
+/// would stop at first (see sorted_index.vibe's stability contract).
+export fn func_table_index_of(ft: FuncTable, name: String) -> Int {
+  if Array::length(ft.names_sorted) != Array::length(ft.names) {
+    let len = Array::length(ft.names)
+    let mut i = 0
+    let mut found = -1
+    while i < len {
+      if Array::get(ft.names, i) == name {
+        found = i
+        i = len
+      } else {
+        i = i + 1
+      }
+    }
+    found
+  } else {
+    let slot = bsearch_leftmost(ft.names_sorted, name)
+    if slot < 0 {
+      -1
+    } else {
+      Array::get(ft.names_sorted_pos, slot)
+    }
+  }
+}
+
+/// #2309: is `name` a function the PROGRAM defines, rather than only a
+/// generated builtin registered under that name?
+///
+/// `func_table_index_of` cannot answer this. When a user shadows a builtin the
+/// table holds BOTH entries under one name, and that lookup returns whichever
+/// its branch reaches first -- the linear first-match branch finds the user's,
+/// the `bsearch_leftmost` branch finds whichever the sort happened to order
+/// first. Depending on that is depending on sort stability for a correctness
+/// answer.
+///
+/// The table encodes the distinction positionally instead, on BOTH backends:
+/// `fn_names_list` is filled from the program and only then are `builtin_defs`
+/// appended (linked_compile.vibe, gc/backend_body.vibe), and user function `j`
+/// sits at wasm index `j + func_offset`. So the user entries are exactly the
+/// prefix `[0, num_user_funcs)`, and scanning it is exact by construction.
+export fn func_table_user_index_of(ft: FuncTable, name: String, num_user_funcs: Int) -> Int {
+  let n = Array::length(ft.names)
+  let limit = if num_user_funcs < n {
+    num_user_funcs
+  } else {
+    n
+  }
+  let mut i = 0
+  let mut found = 0 - 1
+  while i < limit {
+    if Array::get(ft.names, i) == name {
+      found = i
+      i = limit
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// #2483: the wasm index of the generated BUILTIN registered as `name`, or
+/// -1. The complement of func_table_user_index_of: builtins are appended
+/// after the program's functions, so the builtin entry is the match at a
+/// table position >= num_user_funcs. Needed where codegen wants the runtime
+/// helper itself regardless of a same-named program function -- the prelude
+/// defines `String::equals`, so in any closure that carries it a lookup by
+/// name may answer the program's entry (a different arity on the linked
+/// lane), and `==` never meant that function. O(log N) through the sorted
+/// view (duplicates of one name are adjacent there), linear before the view
+/// exists.
+export fn func_table_builtin_index_of(ft: FuncTable, name: String, num_user_funcs: Int) -> Int {
+  let pos = func_table_builtin_pos_of(ft, name, num_user_funcs)
+  if pos < 0 {
+    0 - 1
+  } else {
+    Array::get(ft.indices, pos)
+  }
+}
+
+/// The TABLE POSITION (not the wasm index) of the generated builtin
+/// registered as `name`, or -1 -- what `func_table_index_of` answers, but
+/// never a same-named program function. #3129: the `MutList::*` /
+/// `MutBytes::*` aliases dispatch to `Array::*` / `ArrayBuilder::push` /
+/// `Bytes::*` through this, so a program's own `Array::length` does not
+/// capture `MutList::length(m)`.
+export fn func_table_builtin_pos_of(ft: FuncTable, name: String, num_user_funcs: Int) -> Int {
+  let n = Array::length(ft.names)
+  let base = if num_user_funcs < 0 {
+    0
+  } else {
+    num_user_funcs
+  }
+  let mut found = 0 - 1
+  if Array::length(ft.names_sorted) == n && n > 0 {
+    let mut slot = bsearch_leftmost(ft.names_sorted, name)
+    while slot >= 0 && slot < n && Array::get(ft.names_sorted, slot) == name {
+      let pos = Array::get(ft.names_sorted_pos, slot)
+      if pos >= base {
+        found = pos
+        slot = n
+      } else {
+        slot = slot + 1
+      }
+    }
+  } else {
+    let mut i = base
+    while i < n {
+      if Array::get(ft.names, i) == name {
+        found = i
+        i = n
+      } else {
+        i = i + 1
+      }
+    }
+  }
+  found
+}
+
+export fn resolve_func(ft: FuncTable, name: String) -> (Int, Int, Int) with Exception {
+  let found = func_table_index_of(ft, name)
+  if found < 0 {
+    throw(String::concat("undefined function: ", name))
+  };
+  (Array::get(ft.indices, found), Array::get(ft.params, found), Array::get(ft.returns, found))
+}
+
+/// #1877: Int is 63-bit (-2^62 .. 2^62-1) and arithmetic overflow wraps as
+/// 63-bit two's complement on EVERY backend. The width follows the actual
+/// runtime representation: the RC lane's tagged `n<<1` holds exactly 63
+/// payload bits, so its `+`/`-`/`<<`/`/`/unary-minus wrap there for free
+/// (i64 overflow of the tagged value IS the 63-bit wrap of the payload),
+/// and its `*` lands there too once the untag shift runs BEFORE the
+/// multiply ((t>>1)*u = tagged(a*b) — the old post-multiply untag
+/// pre-wrapped the 4ab intermediate one bit early, at 62). Only the
+/// untagged lanes (bump, gc) — which would otherwise wrap at i64's 64 bits
+/// and silently disagree — pay a renormalization: sign-extend the result
+/// from bit 62, two branch-free instructions.
+export fn emit_wrap63_untagged(buf: Bytes) -> Unit {
+  emit_i64_const(buf, 1)
+  emit_i64_shl(buf)
+  emit_i64_const(buf, 1)
+  emit_i64_shr_s(buf)
+}
+
+/// Post-op renormalization for one Int arithmetic op. RC emits nothing (its
+/// representation wraps at 63 bits naturally — see above); untagged lanes
+/// renormalize after `+`/`-`/`*`/`/`/`<<` (add reaches ±2^63, `/` only via
+/// MIN/-1, `<<`/`*` arbitrarily). `%`/`>>`/bitops are closed over in-range
+/// sign-extended values and need nothing on any lane. Chain-INTERIOR renorms
+/// are elided by both untagged backends (compile_int_operand /
+/// gc_compile_int_operand): a result feeding another wrapping op skips its
+/// renorm, because the renorm rewrites only bit 63 and the wrapping consumer
+/// derives bits 0..62 from operand bits 0..62 alone.
+export fn emit_arith_wrap_int(buf: Bytes, enable_rc: Bool, op: String) -> Unit {
+  if enable_rc {
+    ()
+  } else if op == "+" || op == "-" || op == "*" || op == "/" || op == "<<" {
+    emit_wrap63_untagged(buf)
+  } else {
+    ()
+  }
+}
+
+/// #2978: a shift COUNT saturates at 63, the Int's width. Wasm reduces the
+/// count mod 64 -- the width of the i64 REPRESENTATION -- so `1 << 63` was `0`
+/// and `1 << 64` came back as `1`, with a negative count wrapping the same way.
+/// With the count clamped (unsigned, so a negative count is huge), every lane
+/// answers `x << n == 0` and `x >> n == (x < 0 ? -1 : 0)` for `n >= 63` or
+/// `n < 0`. Expects the untagged count on the stack; `tmp` is a scratch i64
+/// local the caller owns.
+export fn emit_shift_count_clamp(buf: Bytes, tmp: Int) -> Unit {
+  emit_local_set(buf, tmp)
+  emit_local_get(buf, tmp)
+  emit_i64_const(buf, 63)
+  emit_local_get(buf, tmp)
+  emit_i64_const(buf, 63)
+  // i64.lt_u (0x54): keep the count while it is below 63, unsigned.
+  bytebuf_push(buf, 84)
+  // select (0x1B)
+  bytebuf_push(buf, 27)
+}
+
+export fn emit_binop_op(buf: Bytes, op: String) -> Unit with Exception {
+  if op == "+" {
+    emit_i64_add(buf)
+  }
+  else if op == "-" {
+    emit_i64_sub(buf)
+  }
+  else if op == "*" {
+    emit_i64_mul(buf)
+  }
+  else if op == "/" {
+    emit_i64_div_s(buf)
+  }
+  else if op == "%" {
+    emit_i64_rem_s(buf)
+  }
+  else if op == "&" {
+    emit_i64_and(buf)
+  }
+  else if op == "|" {
+    emit_i64_or(buf)
+  }
+  else if op == "^" {
+    emit_i64_xor(buf)
+  }
+  else if op == "<<" {
+    emit_i64_shl(buf)
+  }
+  else if op == ">>" {
+    emit_i64_shr_s(buf)
+  }
+  else if op == "==" {
+    emit_i64_eq(buf); emit_i64_extend_i32_s(buf)
+  }
+  else if op == "!=" {
+    emit_i64_ne(buf); emit_i64_extend_i32_s(buf)
+  }
+  else if op == "<" {
+    emit_i64_lt_s(buf); emit_i64_extend_i32_s(buf)
+  }
+  else if op == ">" {
+    emit_i64_gt_s(buf); emit_i64_extend_i32_s(buf)
+  }
+  else if op == "<=" {
+    emit_i64_le_s(buf); emit_i64_extend_i32_s(buf)
+  }
+  else if op == ">=" {
+    emit_i64_ge_s(buf); emit_i64_extend_i32_s(buf)
+  }
+  else if op == "&&" {
+    emit_i64_and(buf)
+  }
+  else if op == "||" {
+    emit_i64_or(buf)
+  }
+  else {
+    throw(String::concat("unsupported binop: ", op))
+  }
+}

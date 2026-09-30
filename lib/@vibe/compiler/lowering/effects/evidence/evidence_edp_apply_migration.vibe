@@ -1,0 +1,1681 @@
+// lib/@vibe/compiler/lowering/effects/evidence/evidence.vibe — edp apply migration.
+
+import @vibe/compiler/core {
+  Expr,
+  Pat,
+  Stmt,
+  TypeExpr,
+  builtin_shadow_source_name,
+  dce_keep_flags,
+  expr_child_at,
+  expr_children,
+  expr_children_pop,
+  expr_children_push,
+  expr_children_top,
+  is_exception_effect_name,
+  is_exception_throw_operation,
+  sort_perm_by_names
+}
+
+import @vibe/core {
+  array_empty, eq_string, hash_string, struct MutMap, struct MutSet
+}
+
+import @vibe/compiler/lowering/effects/direct {
+  idp_is_pure_builtin_call, idp_note_program_decls, idp_pure_builtin_names
+}
+
+import @vibe/compiler/lowering/effects/queries {
+  EdpReadQuery,
+  edp_argcond_note,
+  edp_argcond_note_binders,
+  edp_argcond_reset,
+  edp_callee_is_resolvable,
+  edp_effect_name_of,
+  edp_efn_eligible_for_migration,
+  edp_empty_bool_array,
+  edp_handle_matches_effect,
+  edp_has_unsafe_construct,
+  edp_is_pure_builtin_call,
+  edp_name_is_host_raw_shape,
+  edp_pat_binds,
+  edp_pat_qname,
+  edp_performing_names,
+  edp_resolve_effect_names_into,
+  edp_row_is_exactly,
+  edp_rq_exprs,
+  edp_rq_fold,
+  edp_split_qualified,
+  edp_str_array_contains,
+  edp_strip_tilde,
+  edp_user_perform_effect_of,
+  scps_ty_has_fn
+}
+
+import ./evidence_ecall_arg_idents_expr.vibe {
+  edp_any_row_typed_param,
+  edp_binding_used_in,
+  edp_collect_ecall_arg_idents,
+  edp_collect_ecall_arg_idents_with_keep,
+  edp_count_ident_uses,
+  edp_count_ident_uses_stmts,
+  edp_count_safe_closure_bindings_stmts,
+  edp_usage_ctor_for,
+  edp_usage_ctor_loop,
+  edp_usage_ctor_mask,
+  edp_usage_ctor_params,
+  edp_usage_ctor_pat
+}
+
+import ./evidence_handle_effect_names_expr.vibe {
+  edp_append_ctor_inert_names,
+  edp_append_effect_irrelevant_row_fns,
+  edp_append_free_host_inert_names,
+  edp_append_perform_free_row_fns,
+  edp_append_self_discharging_row_fns,
+  edp_append_visible_pure_lambda_names,
+  edp_expr_binds_name,
+  edp_fn_is_self_discharging_inert,
+  edp_pat_bind_names,
+  edp_strip_tail_resume
+}
+
+import ./evidence_poison_expr.vibe {
+  edp_collect_handle_sites_expr,
+  edp_collect_poison_stmts,
+  edp_dict_param_name,
+  edp_dict_struct_name,
+  edp_efn_row_carries,
+  edp_es_collect_into,
+  edp_filter_unpoisoned,
+  edp_find_fn_params_and_body,
+  edp_make_dict_struct_stmt,
+  edp_params_have_dict,
+  edp_pure_fn_names,
+  edp_row_lit_scan,
+  edp_row_typed_param_names,
+  edp_strip_effect_prefix,
+  edp_struct_decl_exists,
+  edp_type_is_fn_row_exactly,
+  empty_str_array
+}
+
+export fn edp_all_sites_eligible(stmts: Array[Stmt], ename: String, needing: Array[String], handle_sites: Array[(Expr, Array[(Pat, Expr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], row_labels: Array[Array[String]]) -> Bool {
+  if Array::length(handle_sites) == 0 {
+    // Nothing discharges `ename` anywhere -- by the checker's own
+    // soundness a `needing` function could never actually run, so there is
+    // nothing to gain (and nothing unsound about skipping); leave it alone.
+    false
+  } else {
+    let pure_fns = edp_pure_fn_names(fn_defs)
+    edp_append_free_host_inert_names(stmts, pure_fns)
+    edp_append_ctor_inert_names(stmts, pure_fns)
+    edp_append_visible_pure_lambda_names(stmts, pure_fns)
+    edp_append_self_discharging_row_fns(stmts, fn_defs, ename, pure_fns, row_labels)
+    edp_append_perform_free_row_fns(stmts, fn_defs, ename, pure_fns, row_labels)
+    edp_append_effect_irrelevant_row_fns(stmts, fn_defs, ename, pure_fns, row_labels)
+    let es_names = array_empty()
+    let es_members_list = array_empty()
+    edp_es_collect_into(stmts, es_names, es_members_list)
+    // ADR-0076 追記34 V1: type-directed widening. When the program holds
+    // row-E closure VALUES, names directly bound to row-E literals are
+    // safe callees everywhere (the sweep gives every such literal the
+    // __ev_E param), and each fn's own row-E-typed params are safe inside
+    // that fn — no call-site proofs. Row-E literal BODIES join the safety
+    // check below (each is compiled with the same widened set).
+    let td_binds_raw = empty_str_array()
+    let td_lits = array_empty()
+    edp_row_lit_scan(stmts, ename, needing, es_names, es_members_list, td_binds_raw, td_lits)
+    // #1116 Codex P1: drop names that are ALSO bound to a non-evidence
+    // value in some other scope — widening those program-wide would
+    // rewrite an unrelated same-named call at the wrong arity.
+    // #1875 R3: the poison set exists solely to filter td_binds_raw, so
+    // with no candidate names the whole-program binder walk (every binder
+    // in the merged program, linearly deduped) has nothing to filter --
+    // skip it. The common case for a real used effect (performs + handles,
+    // no row-typed closure literals) is exactly this.
+    let td_poison = empty_str_array()
+    if Array::length(td_binds_raw) > 0 {
+      edp_collect_poison_stmts(stmts, ename, needing, es_names, es_members_list, td_poison)
+    } else {
+      ()
+    }
+    let td_binds = edp_filter_unpoisoned(td_binds_raw, td_poison)
+    let td_mode = Array::length(td_binds) > 0 || Array::length(td_lits) > 0 || edp_any_row_typed_param(stmts, fn_defs, ename, es_names, es_members_list)
+    // Handle sites are checked PER TOP-LEVEL STATEMENT (not from the flat
+    // `handle_sites` list, which carries no owner attribution): a site
+    // inside a self-discharging owner function may call that owner's own
+    // proven-safe closure-typed parameters (#1070 second slice,
+    // edp_handle_owner_cps), which extends the safe-call set for exactly
+    // that statement's sites and no others -- per-owner scoping matters
+    // (#1074 review: name-only matching without scoping is how the
+    // shadowing bug happened).
+    let mut ok = true
+    // #1875 R3: the per-statement safe-call set (owner closure-param proof
+    // + type-directed widening + two concats) only matters for statements
+    // that actually CONTAIN a site of `ename` -- gate the whole body behind
+    // a read-only containment query so the thousands of site-free
+    // statements cost no allocation here.
+    let hq = RQHandlesEffect(ename)
+    let mut hsi = 0
+    while hsi < Array::length(stmts) {
+      // ADR-0076 追記34 V2: non-SLet site-bearing statements (test/bench
+      // blocks, top-level exprs, `let mut`) get the base safe-call set --
+      // no owner-closure-param extension (that proof is tied to a named
+      // fn's own params) and the bare td_binds widening.
+      let sval_opt = match Array::get(stmts, hsi) {
+        SLet(_, _, _, _, sv) => Some(sv),
+        SLetMut(_, _, sv) => Some(sv),
+        SExpr(sv) => Some(sv),
+        STest(_, sv) => Some(sv),
+        SBench(_, sv) => Some(sv),
+        _ => None
+      }
+      match sval_opt {
+        Some(sval) => if edp_rq_fold(hq, sval) > 0 {
+          let hext = match Array::get(stmts, hsi) {
+            SLet(_, _, snm, _, _) => match sval {
+              EFn(_, _, sparams, _, _, sbody) => edp_closure_param_names_only(edp_handle_owner_cps(stmts, snm, sparams, sbody, ename, needing, pure_fns, es_names, es_members_list)),
+              _ => empty_str_array()
+            },
+            _ => empty_str_array()
+          }
+          let tdext = if td_mode {
+            match sval {
+              EFn(_, _, sparams2, _, _, _) => Array::concat(td_binds, edp_row_typed_param_names(sparams2, ename, es_names, es_members_list)),
+              _ => td_binds
+            }
+          } else {
+            empty_str_array()
+          }
+          let call_safe_h = Array::concat(Array::concat(needing, hext), tdext)
+          let sites = array_empty()
+          edp_collect_handle_sites_expr(sval, ename, sites)
+          let mut hi = 0
+          while hi < Array::length(sites) {
+            let (body, _) = Array::get(sites, hi)
+            if edp_has_unsafe_construct(body, call_safe_h, ename, pure_fns) {
+              ok = false
+            } else {
+              ()
+            }
+            hi = hi + 1
+          }
+        } else {
+          ()
+        },
+        None => ()
+      }
+      hsi = hsi + 1
+    }
+    let mut ni = 0
+    while ni < Array::length(needing) {
+      let nm = Array::get(needing, ni)
+      match edp_find_fn_params_and_body(stmts, fn_defs, nm) {
+        // #1070 (general case): a call to this function's OWN closure-
+        // typed parameter is treated exactly like a call to another
+        // needing function (dict forwarding), but ONLY for the specific
+        // parameter positions edp_own_closure_params has proven safe
+        // across every call site in the whole program -- see that
+        // function's own doc comment and edp_apply_migration's mirrored
+        // computation (must use the same stmts view; this eligibility
+        // check runs strictly before either is mutated for `ename`).
+        Some((gparams, b)) => {
+          let own_cp = edp_own_closure_params(stmts, nm, gparams, ename, needing, pure_fns, es_names, es_members_list)
+          let tdext2 = if td_mode {
+            Array::concat(td_binds, edp_row_typed_param_names(gparams, ename, es_names, es_members_list))
+          } else {
+            empty_str_array()
+          }
+          let call_safe = Array::concat(Array::concat(needing, edp_closure_param_names_only(own_cp)), tdext2)
+          if edp_has_unsafe_construct(b, call_safe, ename, pure_fns) {
+            ok = false
+          } else {
+            ()
+          }
+        },
+        None => {
+          ok = false
+        }
+      }
+      ni = ni + 1
+    }
+    // ADR-0076 追記34 V1: every row-E literal's BODY must be compilable
+    // under the same widened set (its own row-E params + the bound names).
+    let mut tli = 0
+    while tli < Array::length(td_lits) {
+      match Array::get(td_lits, tli) {
+        EFn(_, _, lparams, _, _, lbody) => {
+          let lsafe = Array::concat(Array::concat(needing, td_binds), edp_row_typed_param_names(lparams, ename, es_names, es_members_list))
+          if edp_has_unsafe_construct(lbody, lsafe, ename, pure_fns) {
+            ok = false
+          } else {
+            ()
+          }
+        },
+        _ => ()
+      }
+      tli = tli + 1
+    }
+    ok
+  }
+}
+
+/// A closure-typed parameter position is safe to widen only if EVERY
+/// candidate identifier found at that position (across the whole program)
+/// is itself: used EXACTLY once anywhere (so no OTHER use could depend on
+/// the pre-migration arity), and bound to at least one individually-
+/// eligible closure literal. See this section's opening comment for why
+/// both sides must hold.
+fn edp_closure_param_universally_safe(stmts: Array[Stmt], gname: String, pi: Int, ename: String, needing: Array[String], pure_fns: Array[String], es_names: Array[String], es_members_list: Array[Array[String]]) -> Bool {
+  let candidates = edp_collect_ecall_arg_idents(stmts, gname, pi)
+  let mut i = 0
+  let mut ok = true
+  while i < Array::length(candidates) {
+    let xn = Array::get(candidates, i)
+    if xn == "##edp_unsafe##" {
+      ok = false
+    } else if edp_count_ident_uses_stmts(stmts, xn) != 1 {
+      ok = false
+    } else if edp_count_safe_closure_bindings_stmts(stmts, xn, ename, needing, pure_fns, es_names, es_members_list) < 1 {
+      ok = false
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  ok
+}
+
+/// For a needing function's own params, the (name, position) pairs of
+/// closure-typed parameters that edp_closure_param_universally_safe has
+/// cleared -- these are treated exactly like another needing function's
+/// name when rewriting this function's own body (dict forwarded the same
+/// way via edp_prepend_dict_arg).
+fn edp_own_closure_params(stmts: Array[Stmt], gname: String, gparams: Array[(String, Option[TypeExpr])], ename: String, needing: Array[String], pure_fns: Array[String], es_names: Array[String], es_members_list: Array[Array[String]]) -> Array[(String, Int)] {
+  let out = array_empty()
+  let mut pi = 0
+  while pi < Array::length(gparams) {
+    let (pname, pty) = Array::get(gparams, pi)
+    if edp_type_is_fn_row_exactly(pty, ename, es_names, es_members_list) && edp_closure_param_universally_safe(stmts, gname, pi, ename, needing, pure_fns, es_names, es_members_list) {
+      Array::push(out, (edp_strip_tilde(pname), pi))
+    } else {
+      ()
+    }
+    pi = pi + 1
+  }
+  out
+}
+
+fn edp_closure_param_names_only(pairs: Array[(String, Int)]) -> Array[String] {
+  for p in pairs {
+    let (n, _) = p
+    n
+  }
+}
+
+// --- #1070 (general case, second slice -- docs/internal/design/effect-evidence-passing.md
+// 追記25): a function that establishes its OWN `handle ... with ename` and
+// calls an opaque closure-typed PARAMETER inside that handle's body,
+// WITHOUT itself carrying `ename` in its declared row (it fully discharges
+// the effect locally, so edp_needing_names never classifies it as needing
+// and edp_own_closure_params never applies to it). The self-hosted
+// `vibe lsp`'s original `lsp_run_with_handler` (#1077) was exactly this
+// shape, and it trapped ("indirect call type mismatch") under real
+// wasmtime while passing under the Node dev-runner.
+//
+// Treatment mirrors edp_own_closure_params exactly -- prove BOTH sides
+// (every flowing closure literal AND every call through the parameter)
+// before touching either; see that section's opening comment for why
+// one-sided rewriting is unsound -- with two EXTRA guards the
+// needing-owner case gets for free from the type system:
+//
+// (1) the owner must never be referenced as a bare VALUE anywhere in the
+//     program (edp_fn_used_as_value): `let alias = owner` followed by
+//     `alias(other_closure)` invokes the owner through a name
+//     edp_collect_ecall_arg_idents cannot see, so `other_closure` would
+//     never be migrated while the owner's rewritten handle body
+//     unconditionally passes the dict -- an arity mismatch. A NEEDING
+//     owner is protected from this by its own row: any call to it,
+//     however aliased, must sit in an `ename`-authorized context that
+//     eligibility already scans (the aliased call is then flagged as an
+//     unknown-name call there). A self-discharging owner has NO row, so
+//     its calls can sit in completely pure code no eligibility scan ever
+//     visits -- requiring zero value references is the only sound option.
+//
+// (2) every use of the parameter inside the owner's body must be a DIRECT
+//     CALL located inside one of the owner's own `ename`-handle bodies
+//     (edp_param_uses_confined_to_handle_calls). A needing owner's WHOLE
+//     body gets rewritten (every call through the param receives the
+//     forwarded dict), but here only the handle bodies are rewritten --
+//     a use outside them (a call before the handle, a reference in a
+//     handler arm, a pass-along to another function) would keep the old
+//     arity against a closure that HAS been migrated.
+
+fn edp_count_direct_calls(expr: Expr, name: String) -> Int {
+  edp_rq_fold(RQDirectCalls(name), expr)
+}
+
+/// Guard (1): a reference to this top-level binding as a value, excluding
+/// direct calls and occurrences owned by a lexical binder of the same name.
+fn edp_fn_value_used_in(expr: Expr, fname: String, ctors: Array[String]) -> Bool {
+  match expr {
+    EIdent(name, _) => name == fname,
+    ECall(EIdent(_, _), args, _) => edp_fn_value_used_in_exprs(args, fname, ctors),
+    ELet(name, value, body, _) => {
+      let inner = edp_usage_ctor_mask(ctors, name)
+      let in_value = if edp_binding_used_in(body, name, inner) {
+        edp_fn_value_used_in(value, fname, ctors)
+      } else {
+        edp_fn_value_used_in_unused_value(value, fname, ctors)
+      }
+      in_value || (name != fname && edp_fn_value_used_in(body, fname, inner))
+    },
+    ELetMut(name, value, body, _) => {
+      let inner = edp_usage_ctor_mask(ctors, name)
+      let in_value = if edp_binding_used_in(body, name, inner) {
+        edp_fn_value_used_in(value, fname, ctors)
+      } else {
+        edp_fn_value_used_in_unused_value(value, fname, ctors)
+      }
+      in_value || (name != fname && edp_fn_value_used_in(body, fname, inner))
+    },
+    ELetRec(name, value, body) => if name == fname {
+      false
+    } else {
+      let inner = edp_usage_ctor_mask(ctors, name)
+      let in_value = if edp_binding_used_in(body, name, inner) {
+        edp_fn_value_used_in(value, fname, inner)
+      } else {
+        edp_fn_value_used_in_unused_value(value, fname, inner)
+      }
+      in_value || edp_fn_value_used_in(body, fname, inner)
+    },
+    EFn(_, _, params, _, _, body) => {
+      let mut shadowed = false
+      for param in params {
+        let (name, _) = param
+        shadowed = shadowed || edp_strip_tilde(name) == fname
+      }
+      !shadowed && edp_fn_value_used_in(body, fname, edp_usage_ctor_params(ctors, params))
+    },
+    EMatch(scrutinee, arms) => edp_fn_value_used_in(scrutinee, fname, ctors) || edp_fn_value_used_in_arms(arms, fname, ctors),
+    EHandle(body, arms) => edp_fn_value_used_in(body, fname, ctors) || edp_fn_value_used_in_arms(arms, fname, ctors),
+    EForIn(name, index_name, iter, body) => edp_fn_value_used_in(iter, fname, ctors) || (name != fname && index_name != Some(fname) && edp_fn_value_used_in(body, fname, edp_usage_ctor_for(ctors, name, index_name))),
+    ELoop(pairs, body) => {
+      let mut found = false
+      let mut shadowed = false
+      for pair in pairs {
+        let (name, value) = pair
+        found = found || edp_fn_value_used_in(value, fname, ctors)
+        shadowed = shadowed || name == fname
+      }
+      found || (!shadowed && edp_fn_value_used_in(body, fname, edp_usage_ctor_loop(ctors, pairs)))
+    },
+    _ => edp_fn_value_used_in_exprs(expr_children(expr), fname, ctors)
+  }
+}
+
+fn edp_fn_value_used_in_unused_value(expr: Expr, fname: String, ctors: Array[String]) -> Bool {
+  match expr {
+    EFn(_, _, _, _, _, _) => false,
+    EIdent(_, _) => false,
+    ECall(EIdent(name, _), args, _) => if edp_str_array_contains(ctors, name) {
+      edp_fn_value_used_in_unused_exprs(args, fname, ctors)
+    } else {
+      edp_fn_value_used_in(expr, fname, ctors)
+    },
+    EArray(items) => edp_fn_value_used_in_unused_exprs(items, fname, ctors),
+    ETuple(items) => edp_fn_value_used_in_unused_exprs(items, fname, ctors),
+    ERecord(_, fields, _) => {
+      let mut found = false
+      for field in fields {
+        let (_, value) = field
+        found = found || edp_fn_value_used_in_unused_value(value, fname, ctors)
+      }
+      found
+    },
+    EMap(fields) => {
+      let mut found = false
+      for field in fields {
+        let (_, value) = field
+        found = found || edp_fn_value_used_in_unused_value(value, fname, ctors)
+      }
+      found
+    },
+    _ => edp_fn_value_used_in(expr, fname, ctors)
+  }
+}
+
+fn edp_fn_value_used_in_unused_exprs(exprs: Array[Expr], fname: String, ctors: Array[String]) -> Bool {
+  let mut found = false
+  for expr in exprs {
+    found = found || edp_fn_value_used_in_unused_value(expr, fname, ctors)
+  }
+  found
+}
+
+fn edp_fn_value_used_in_exprs(exprs: Array[Expr], fname: String, ctors: Array[String]) -> Bool {
+  let mut found = false
+  for expr in exprs {
+    found = found || edp_fn_value_used_in(expr, fname, ctors)
+  }
+  found
+}
+
+fn edp_fn_value_used_in_arms(arms: Array[(Pat, Expr)], fname: String, ctors: Array[String]) -> Bool {
+  let mut found = false
+  for arm in arms {
+    let (pat, body) = arm
+    let bound: Array[String] = []
+    edp_pat_binds(pat, bound)
+    found = found || (!edp_str_array_contains(bound, fname) && edp_fn_value_used_in(body, fname, edp_usage_ctor_pat(ctors, pat)))
+  }
+  found
+}
+
+fn edp_fn_used_as_value(stmts: Array[Stmt], fname: String) -> Bool {
+  let ctors: Array[String] = []
+  edp_append_ctor_inert_names(stmts, ctors)
+  let mut found = false
+  for stmt in stmts {
+    match stmt {
+      SLet(_, _, _, _, expr) => found = found || edp_fn_value_used_in(expr, fname, ctors),
+      SLetMut(_, _, expr) => found = found || edp_fn_value_used_in(expr, fname, ctors),
+      SExpr(expr) => found = found || edp_fn_value_used_in(expr, fname, ctors),
+      STest(_, expr) => found = found || edp_fn_value_used_in(expr, fname, ctors),
+      SBench(_, expr) => found = found || edp_fn_value_used_in(expr, fname, ctors),
+      _ => ()
+    }
+  }
+  found
+}
+
+fn edp_fn_used_as_value_live(stmts: Array[Stmt], fname: String, keep: Array[Bool]) -> Bool {
+  let live: Array[Stmt] = []
+  let mut i = 0
+  while i < Array::length(stmts) {
+    if i < Array::length(keep) && Array::get(keep, i) {
+      Array::push(live, Array::get(stmts, i))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  edp_fn_used_as_value(live, fname)
+}
+
+/// Guard (2): every occurrence of `pname` in `body` is a direct call AND
+/// sits inside one of `body`'s own `ename`-handle bodies. Requires at
+/// least one use -- a never-used parameter has nothing to gain from
+/// widening. Nested same-effect handles would double-count uses here
+/// (edp_collect_handle_sites_expr collects both levels), failing the
+/// equality -- conservative, and such shapes are ineligible anyway
+/// (edp_has_unsafe_construct rejects same-effect nesting).
+fn edp_param_uses_confined_to_handle_calls(body: Expr, pname: String, ename: String) -> Bool {
+  let total = edp_count_ident_uses(body, pname)
+  let sites = array_empty()
+  edp_collect_handle_sites_expr(body, ename, sites)
+  let mut uses_in = 0
+  let mut calls_in = 0
+  let mut i = 0
+  while i < Array::length(sites) {
+    let (hb, _) = Array::get(sites, i)
+    uses_in = uses_in + edp_count_ident_uses(hb, pname)
+    calls_in = calls_in + edp_count_direct_calls(hb, pname)
+    i = i + 1
+  }
+  total > 0 && total == uses_in && uses_in == calls_in
+}
+
+/// The (name, position) pairs of `fname`'s closure-typed parameters that
+/// clear every guard above plus the same universal call-site proof the
+/// needing-owner path uses. `fname` must NOT itself be needing (needing
+/// owners take the edp_own_closure_params path; a needing owner containing
+/// a same-effect handle is ineligible regardless).
+/// PERF (#1082 review, caught by scripts/profile_compile.sh): guard order
+/// matters enormously here. This function runs for EVERY top-level
+/// function x EVERY effect (edp_any_handle_owner_cp, the per-stmt
+/// eligibility loop, and apply's analysis phase), and `edp_fn_used_as_value`
+/// walks the WHOLE program -- running it unconditionally made
+/// edp_count_ident_uses/edp_count_direct_calls 61% of total compile CPU
+/// (76.8s wall for codegen_lexer_test vs ~8s before). The overwhelming
+/// majority of functions have no closure-typed parameter with the exact
+/// row at all, so every whole-program scan is gated behind the cheap,
+/// function-local checks (param row match, then per-param body-local
+/// shadow/confinement) and runs at most once per surviving owner.
+export fn edp_handle_owner_cps(stmts: Array[Stmt], fname: String, fparams: Array[(String, Option[TypeExpr])], fbody: Expr, ename: String, needing: Array[String], pure_fns: Array[String], es_names: Array[String], es_members_list: Array[Array[String]]) -> Array[(String, Int)] {
+  let out = array_empty()
+  let mut has_row_param = false
+  let mut hp = 0
+  while hp < Array::length(fparams) {
+    let (_, hpty) = Array::get(fparams, hp)
+    if edp_type_is_fn_row_exactly(hpty, ename, es_names, es_members_list) {
+      has_row_param = true
+    } else {
+      ()
+    }
+    hp = hp + 1
+  }
+  if !has_row_param || edp_str_array_contains(needing, fname) {
+    out
+  } else {
+    // Body-local pre-filters per param, BEFORE the whole-program scans.
+    let local_ok = array_empty()
+    let mut pi = 0
+    while pi < Array::length(fparams) {
+      let (pname_raw, pty) = Array::get(fparams, pi)
+      let pname = edp_strip_tilde(pname_raw)
+      if edp_type_is_fn_row_exactly(pty, ename, es_names, es_members_list) && !edp_expr_binds_name(fbody, pname) && edp_param_uses_confined_to_handle_calls(fbody, pname, ename) {
+        Array::push(local_ok, (pname, pi))
+      } else {
+        ()
+      }
+      pi = pi + 1
+    }
+    if Array::length(local_ok) == 0 {
+      out
+    } else if edp_fn_used_as_value(stmts, fname) {
+      out
+    } else {
+      let mut li = 0
+      while li < Array::length(local_ok) {
+        let (pname, ppos) = Array::get(local_ok, li)
+        if edp_closure_param_universally_safe(stmts, fname, ppos, ename, needing, pure_fns, es_names, es_members_list) {
+          Array::push(out, (pname, ppos))
+        } else {
+          ()
+        }
+        li = li + 1
+      }
+      out
+    }
+  }
+}
+
+/// Migrates ONE closure literal binding (top-level SLet or nested ELet/
+/// ELetRec named `xname`) in place: prepends the evidence-dict parameter
+/// and rewrites its body exactly like a top-level needing function's own
+/// definition (edp_rewrite_needing_fn). Only actually mutates if the
+/// binding's value is still individually eligible at the point this runs
+/// (edp_maybe_migrate_efn) -- a defensive re-check, not just trusting the
+/// caller's earlier edp_closure_param_universally_safe verdict.
+/// ADR-0076 追記34 V1: unconditionally migrate every row-E closure literal
+/// (bottom-up: nested literals first). `call_safe` already carries needing
+/// + the literal-bound names; each literal's own row-E params are added
+/// per literal.
+fn edp_sweep_row_lits_stmts(stmts: Array[Stmt], ename: String, dict_pname: String, call_safe: Array[String], es_names: Array[String], es_members_list: Array[Array[String]]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(exported, is_rec, nm, ty, expr) => match expr {
+        // Top-level fn VALUES are the needing rewrite's domain; sweep
+        // only their bodies' nested literals.
+        EFn(tps, tbs, params, ret, eff, fb) => Array::set(stmts, i, SLet(exported, is_rec, nm, ty, EFn(tps, tbs, params, ret, eff, edp_sweep_row_lits_expr(fb, ename, dict_pname, call_safe, es_names, es_members_list)))),
+        _ => Array::set(stmts, i, SLet(exported, is_rec, nm, ty, edp_sweep_row_lits_expr(expr, ename, dict_pname, call_safe, es_names, es_members_list)))
+      },
+      SLetMut(nm, ty, expr) => Array::set(stmts, i, SLetMut(nm, ty, edp_sweep_row_lits_expr(expr, ename, dict_pname, call_safe, es_names, es_members_list))),
+      SExpr(expr) => Array::set(stmts, i, SExpr(edp_sweep_row_lits_expr(expr, ename, dict_pname, call_safe, es_names, es_members_list))),
+      STest(tn, expr) => Array::set(stmts, i, STest(tn, edp_sweep_row_lits_expr(expr, ename, dict_pname, call_safe, es_names, es_members_list))),
+      SBench(bn, expr) => Array::set(stmts, i, SBench(bn, edp_sweep_row_lits_expr(expr, ename, dict_pname, call_safe, es_names, es_members_list))),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+fn edp_sweep_row_lits_expr(e: Expr, ename: String, dict_pname: String, call_safe: Array[String], es_names: Array[String], es_members_list: Array[Array[String]]) -> Expr {
+  match e {
+    EFn(tps, tbs, params, ret, eff, body) => {
+      let body2 = edp_sweep_row_lits_expr(body, ename, dict_pname, call_safe, es_names, es_members_list)
+      let node2 = EFn(tps, tbs, params, ret, eff, body2)
+      if edp_efn_row_carries(node2, ename, es_names, es_members_list) {
+        let lsafe = Array::concat(call_safe, edp_row_typed_param_names(params, ename, es_names, es_members_list))
+        let new_params = Array::concat([
+          (dict_pname, Some(TyName(edp_dict_struct_name(ename))))
+        ], params)
+        EFn(tps, tbs, new_params, ret, eff, edp_rewrite_needing_body(body2, ename, dict_pname, lsafe))
+      } else {
+        node2
+      }
+    },
+    ELet(n, v, b, off) => ELet(n, edp_sweep_row_lits_expr(v, ename, dict_pname, call_safe, es_names, es_members_list), edp_sweep_row_lits_expr(b, ename, dict_pname, call_safe, es_names, es_members_list), off),
+    ELetRec(n, v, b) => ELetRec(n, edp_sweep_row_lits_expr(v, ename, dict_pname, call_safe, es_names, es_members_list), edp_sweep_row_lits_expr(b, ename, dict_pname, call_safe, es_names, es_members_list)),
+    ELetMut(n, v, b, off) => ELetMut(n, edp_sweep_row_lits_expr(v, ename, dict_pname, call_safe, es_names, es_members_list), edp_sweep_row_lits_expr(b, ename, dict_pname, call_safe, es_names, es_members_list), off),
+    ESeq(a, b) => ESeq(edp_sweep_row_lits_expr(a, ename, dict_pname, call_safe, es_names, es_members_list), edp_sweep_row_lits_expr(b, ename, dict_pname, call_safe, es_names, es_members_list)),
+    EIf(c, t, el) => EIf(edp_sweep_row_lits_expr(c, ename, dict_pname, call_safe, es_names, es_members_list), edp_sweep_row_lits_expr(t, ename, dict_pname, call_safe, es_names, es_members_list), edp_sweep_row_lits_expr(el, ename, dict_pname, call_safe, es_names, es_members_list)),
+    EMatch(sc, arms) => EMatch(edp_sweep_row_lits_expr(sc, ename, dict_pname, call_safe, es_names, es_members_list), for a in arms {
+      let (pp, ex) = a
+      (pp, edp_sweep_row_lits_expr(ex, ename, dict_pname, call_safe, es_names, es_members_list))
+    }),
+    EHandle(bd, arms) => EHandle(edp_sweep_row_lits_expr(bd, ename, dict_pname, call_safe, es_names, es_members_list), for a in arms {
+      let (pp, ex) = a
+      (pp, edp_sweep_row_lits_expr(ex, ename, dict_pname, call_safe, es_names, es_members_list))
+    }),
+    ECall(callee, args, off) => ECall(edp_sweep_row_lits_expr(callee, ename, dict_pname, call_safe, es_names, es_members_list), for a in args {
+      edp_sweep_row_lits_expr(a, ename, dict_pname, call_safe, es_names, es_members_list)
+    }, off),
+    EWhile(c, b) => EWhile(edp_sweep_row_lits_expr(c, ename, dict_pname, call_safe, es_names, es_members_list), edp_sweep_row_lits_expr(b, ename, dict_pname, call_safe, es_names, es_members_list)),
+    EForIn(n, idx, it, b) => EForIn(n, idx, edp_sweep_row_lits_expr(it, ename, dict_pname, call_safe, es_names, es_members_list), edp_sweep_row_lits_expr(b, ename, dict_pname, call_safe, es_names, es_members_list)),
+    ELoop(pairs, b) => ELoop(for pr in pairs {
+      let (n, v) = pr
+      (n, edp_sweep_row_lits_expr(v, ename, dict_pname, call_safe, es_names, es_members_list))
+    }, edp_sweep_row_lits_expr(b, ename, dict_pname, call_safe, es_names, es_members_list)),
+    EBinOp(op, l, r, boff) => EBinOp(op, edp_sweep_row_lits_expr(l, ename, dict_pname, call_safe, es_names, es_members_list), edp_sweep_row_lits_expr(r, ename, dict_pname, call_safe, es_names, es_members_list), boff),
+    EUnaryOp(op, x) => EUnaryOp(op, edp_sweep_row_lits_expr(x, ename, dict_pname, call_safe, es_names, es_members_list)),
+    EAssign(n, v, c) => EAssign(n, edp_sweep_row_lits_expr(v, ename, dict_pname, call_safe, es_names, es_members_list), edp_sweep_row_lits_expr(c, ename, dict_pname, call_safe, es_names, es_members_list)),
+    EAssignOp(n, op, v, c) => EAssignOp(n, op, edp_sweep_row_lits_expr(v, ename, dict_pname, call_safe, es_names, es_members_list), edp_sweep_row_lits_expr(c, ename, dict_pname, call_safe, es_names, es_members_list)),
+    EReturn(x) => EReturn(edp_sweep_row_lits_expr(x, ename, dict_pname, call_safe, es_names, es_members_list)),
+    EDot(o, f, o1, o2) => EDot(edp_sweep_row_lits_expr(o, ename, dict_pname, call_safe, es_names, es_members_list), f, o1, o2),
+    ELabeledArg(l, n, v) => ELabeledArg(l, n, edp_sweep_row_lits_expr(v, ename, dict_pname, call_safe, es_names, es_members_list)),
+    EBreak(opt) => EBreak(match opt {
+      Some(x) => Some(edp_sweep_row_lits_expr(x, ename, dict_pname, call_safe, es_names, es_members_list)),
+      None => None
+    }),
+    EContinue(args) => EContinue(for a in args {
+      edp_sweep_row_lits_expr(a, ename, dict_pname, call_safe, es_names, es_members_list)
+    }),
+    ETuple(items) => ETuple(for a in items {
+      edp_sweep_row_lits_expr(a, ename, dict_pname, call_safe, es_names, es_members_list)
+    }),
+    EArray(items) => EArray(for a in items {
+      edp_sweep_row_lits_expr(a, ename, dict_pname, call_safe, es_names, es_members_list)
+    }),
+    ERecord(n, fields, tas) => ERecord(n, for f in fields {
+      let (fn2, v) = f
+      (fn2, edp_sweep_row_lits_expr(v, ename, dict_pname, call_safe, es_names, es_members_list))
+    }, tas),
+    EMap(fields) => EMap(for f in fields {
+      let (fn2, v) = f
+      (fn2, edp_sweep_row_lits_expr(v, ename, dict_pname, call_safe, es_names, es_members_list))
+    }),
+    ESpread(x) => ESpread(edp_sweep_row_lits_expr(x, ename, dict_pname, call_safe, es_names, es_members_list)),
+    _ => e
+  }
+}
+
+fn edp_maybe_migrate_efn(expr: Expr, ename: String, dict_pname: String, needing: Array[String], pure_fns: Array[String], es_names: Array[String], es_members_list: Array[Array[String]]) -> Option[Expr] {
+  match expr {
+    // 追記34: a literal the type-directed sweep already migrated FOR THIS
+    // EFFECT must not be double-prepended by the proof-path revisit
+    // (#1116 Codex P1: effect-specific — a `with A + B` literal already
+    // carrying `__ev_A` still needs `__ev_B`).
+    EFn(tps, tbs, params, ret, eff, body) => if edp_params_have_dict(params, dict_pname) {
+      None
+    } else if edp_efn_eligible_for_migration(expr, ename, needing, pure_fns, es_names, es_members_list) {
+      let new_params = Array::concat([
+        (dict_pname, Some(TyName(edp_dict_struct_name(ename))))
+      ], params)
+      let new_body = edp_rewrite_needing_body(body, ename, dict_pname, needing)
+      Some(EFn(tps, tbs, new_params, ret, eff, new_body))
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
+fn edp_migrate_closure_binding_stmts(stmts: Array[Stmt], xname: String, ename: String, dict_pname: String, needing: Array[String], pure_fns: Array[String], es_names: Array[String], es_members_list: Array[Array[String]]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(exported, is_rec, nm, ty, expr) => if nm == xname {
+        match edp_maybe_migrate_efn(expr, ename, dict_pname, needing, pure_fns, es_names, es_members_list) {
+          Some(new_expr) => Array::set(stmts, i, SLet(exported, is_rec, nm, ty, new_expr)),
+          None => ()
+        }
+      } else {
+        Array::set(stmts, i, SLet(exported, is_rec, nm, ty, edp_migrate_closure_binding_expr(expr, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)))
+      },
+      SLetMut(nm2, ty2, expr) => Array::set(stmts, i, SLetMut(nm2, ty2, edp_migrate_closure_binding_expr(expr, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list))),
+      SExpr(expr) => Array::set(stmts, i, SExpr(edp_migrate_closure_binding_expr(expr, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list))),
+      STest(tn, expr) => Array::set(stmts, i, STest(tn, edp_migrate_closure_binding_expr(expr, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list))),
+      SBench(bn, expr) => Array::set(stmts, i, SBench(bn, edp_migrate_closure_binding_expr(expr, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list))),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+fn edp_migrate_closure_binding_expr(expr: Expr, xname: String, ename: String, dict_pname: String, needing: Array[String], pure_fns: Array[String], es_names: Array[String], es_members_list: Array[Array[String]]) -> Expr {
+  match expr {
+    ELet(n, v, b, off) => if n == xname {
+      match edp_maybe_migrate_efn(v, ename, dict_pname, needing, pure_fns, es_names, es_members_list) {
+        Some(nv) => ELet(n, nv, edp_migrate_closure_binding_expr(b, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list), off),
+        None => ELet(n, edp_migrate_closure_binding_expr(v, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list), edp_migrate_closure_binding_expr(b, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list), off)
+      }
+    } else {
+      ELet(n, edp_migrate_closure_binding_expr(v, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list), edp_migrate_closure_binding_expr(b, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list), off)
+    },
+    ELetRec(n, v, b) => if n == xname {
+      match edp_maybe_migrate_efn(v, ename, dict_pname, needing, pure_fns, es_names, es_members_list) {
+        Some(nv) => ELetRec(n, nv, edp_migrate_closure_binding_expr(b, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)),
+        None => ELetRec(n, edp_migrate_closure_binding_expr(v, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list), edp_migrate_closure_binding_expr(b, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list))
+      }
+    } else {
+      ELetRec(n, edp_migrate_closure_binding_expr(v, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list), edp_migrate_closure_binding_expr(b, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list))
+    },
+    EFn(tps, tbs, params, ret, eff, body) => EFn(tps, tbs, params, ret, eff, edp_migrate_closure_binding_expr(body, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)),
+    EHandle(body, arms) => EHandle(edp_migrate_closure_binding_expr(body, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list), for a in arms {
+      let (p, ex) = a
+      (p, edp_migrate_closure_binding_expr(ex, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list))
+    }),
+    EIf(c, t, e) => EIf(edp_migrate_closure_binding_expr(c, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list), edp_migrate_closure_binding_expr(t, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list), edp_migrate_closure_binding_expr(e, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)),
+    EMatch(s, arms) => EMatch(edp_migrate_closure_binding_expr(s, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list), for a in arms {
+      let (p, ex) = a
+      (p, edp_migrate_closure_binding_expr(ex, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list))
+    }),
+    EWhile(c, b) => EWhile(edp_migrate_closure_binding_expr(c, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list), edp_migrate_closure_binding_expr(b, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)),
+    EForIn(n, idx, it, b) => EForIn(n, idx, edp_migrate_closure_binding_expr(it, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list), edp_migrate_closure_binding_expr(b, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)),
+    ELoop(pairs, b) => ELoop(for p in pairs {
+      let (n, v) = p
+      (n, edp_migrate_closure_binding_expr(v, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list))
+    }, edp_migrate_closure_binding_expr(b, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)),
+    ELetMut(n, v, b, off) => ELetMut(n, edp_migrate_closure_binding_expr(v, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list), edp_migrate_closure_binding_expr(b, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list), off),
+    ESeq(a, b) => ESeq(edp_migrate_closure_binding_expr(a, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list), edp_migrate_closure_binding_expr(b, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)),
+    EAssign(n, v, c) => EAssign(n, edp_migrate_closure_binding_expr(v, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list), edp_migrate_closure_binding_expr(c, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)),
+    EAssignOp(n, op, v, c) => EAssignOp(n, op, edp_migrate_closure_binding_expr(v, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list), edp_migrate_closure_binding_expr(c, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)),
+    EDot(o, f, off1, off2) => EDot(edp_migrate_closure_binding_expr(o, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list), f, off1, off2),
+    ECall(callee, args, off) => ECall(callee, for a in args {
+      edp_migrate_closure_binding_expr(a, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)
+    }, off),
+    EBinOp(op, l, r, boff) => EBinOp(op, edp_migrate_closure_binding_expr(l, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list), edp_migrate_closure_binding_expr(r, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list), boff),
+    EUnaryOp(op, e2) => EUnaryOp(op, edp_migrate_closure_binding_expr(e2, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)),
+    ELabeledArg(l, n, v) => ELabeledArg(l, n, edp_migrate_closure_binding_expr(v, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)),
+    EReturn(e2) => EReturn(edp_migrate_closure_binding_expr(e2, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)),
+    EBreak(opt) => EBreak(match opt {
+      Some(e2) => Some(edp_migrate_closure_binding_expr(e2, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)),
+      None => None
+    }),
+    EContinue(args) => EContinue(for a in args {
+      edp_migrate_closure_binding_expr(a, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)
+    }),
+    ETuple(elems) => ETuple(for e2 in elems {
+      edp_migrate_closure_binding_expr(e2, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)
+    }),
+    EArray(elems) => EArray(for e2 in elems {
+      edp_migrate_closure_binding_expr(e2, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)
+    }),
+    ERecord(n, fields, tas) => ERecord(n, for f in fields {
+      let (fn2, v) = f
+      (fn2, edp_migrate_closure_binding_expr(v, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list))
+    }, tas),
+    EMap(fields) => EMap(for f in fields {
+      let (fn2, v) = f
+      (fn2, edp_migrate_closure_binding_expr(v, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list))
+    }),
+    ESpread(e2) => ESpread(edp_migrate_closure_binding_expr(e2, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)),
+    _ => expr
+  }
+}
+
+// --- applying an eligible migration.
+
+export fn edp_apply_migration(stmts: Array[Stmt], ename: String, ops: Array[(String, Array[TypeExpr], TypeExpr)], needing: Array[String], handle_sites: Array[(Expr, Array[(Pat, Expr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], row_labels: Array[Array[String]], keep: Array[Bool], errs: Array[String]) -> Unit {
+  edp_set_declared_op_order(ename, ops)
+  let dict_pname = edp_dict_param_name(ename)
+  let dict_tyname = edp_dict_struct_name(ename)
+  let pure_fns = edp_pure_fn_names(fn_defs)
+  edp_append_free_host_inert_names(stmts, pure_fns)
+  edp_append_ctor_inert_names(stmts, pure_fns)
+  edp_append_visible_pure_lambda_names(stmts, pure_fns)
+  edp_append_self_discharging_row_fns(stmts, fn_defs, ename, pure_fns, row_labels)
+  edp_append_perform_free_row_fns(stmts, fn_defs, ename, pure_fns, row_labels)
+  edp_append_effect_irrelevant_row_fns(stmts, fn_defs, ename, pure_fns, row_labels)
+  let es_names = array_empty()
+  let es_members_list = array_empty()
+  edp_es_collect_into(stmts, es_names, es_members_list)
+  // #1070 (general case): compute + commit closure-parameter migrations
+  // for EVERY needing function BEFORE any needing function's own
+  // params/body are rewritten below -- edp_collect_ecall_arg_idents scans
+  // call sites by ARGUMENT POSITION, which would be silently thrown off
+  // by an earlier needing-to-needing dict-forwarding rewrite prepending
+  // an argument to some OTHER call in between. Doing every function's
+  // read-only analysis (and Part B's closure-literal rewrites, which only
+  // ever touch OTHER statements -- the literals themselves, never a call
+  // site's argument list) in one pass up front, strictly before the
+  // rewrite loop that follows, keeps every position-based scan looking at
+  // the same unshifted view edp_all_sites_eligible already vetted this
+  // against.
+  let own_cp_map = array_empty()
+  let mut ni0 = 0
+  while ni0 < Array::length(needing) {
+    let gname = Array::get(needing, ni0)
+    match edp_find_fn_params_and_body(stmts, fn_defs, gname) {
+      Some((gparams, _)) => {
+        let own_cp = edp_own_closure_params(stmts, gname, gparams, ename, needing, pure_fns, es_names, es_members_list)
+        Array::push(own_cp_map, own_cp)
+        let mut cpi = 0
+        while cpi < Array::length(own_cp) {
+          let (_, ppos) = Array::get(own_cp, cpi)
+          let candidates = edp_collect_ecall_arg_idents(stmts, gname, ppos)
+          let mut ci = 0
+          while ci < Array::length(candidates) {
+            let xn = Array::get(candidates, ci)
+            // Same needing-membership guard as the handle-owner loop
+            // below (see its comment): a candidate that is itself a
+            // needing top-level function gets the identical migration
+            // from edp_rewrite_needing_fn; migrating it here too would
+            // double-prepend the dict parameter.
+            if xn == "##edp_unsafe##" || edp_str_array_contains(needing, xn) {
+              ()
+            } else {
+              edp_migrate_closure_binding_stmts(stmts, xn, ename, dict_pname, needing, pure_fns, es_names, es_members_list)
+            }
+            ci = ci + 1
+          }
+          cpi = cpi + 1
+        }
+      },
+      None => Array::push(own_cp_map, array_empty())
+    }
+    ni0 = ni0 + 1
+  }
+  // #1070 second slice (edp_handle_owner_cps): the same up-front
+  // analyze-then-commit for SELF-DISCHARGING owners' closure params.
+  // Phase 1 is strictly read-only across ALL statements (mirroring the
+  // exact unmutated view edp_all_sites_eligible vetted) before Phase 2
+  // migrates any closure literal -- a literal bound inside one owner's
+  // body can be an argument to a DIFFERENT owner, so interleaving
+  // analysis with mutation could diverge from what eligibility saw.
+  let hcp_by_stmt = array_empty()
+  let mut hsi0 = 0
+  while hsi0 < Array::length(stmts) {
+    match Array::get(stmts, hsi0) {
+      SLet(_, _, snm, _, sval) => match sval {
+        EFn(_, _, sparams, _, _, sbody) => Array::push(hcp_by_stmt, (snm, edp_handle_owner_cps(stmts, snm, sparams, sbody, ename, needing, pure_fns, es_names, es_members_list))),
+        _ => Array::push(hcp_by_stmt, ("", array_empty()))
+      },
+      _ => Array::push(hcp_by_stmt, ("", array_empty()))
+    }
+    hsi0 = hsi0 + 1
+  }
+  let mut hsi1 = 0
+  while hsi1 < Array::length(hcp_by_stmt) {
+    let (howner, hcps) = Array::get(hcp_by_stmt, hsi1)
+    // `keep` indexes the original statement list. A dead owner's call site
+    // cannot select a runtime call convention, so it cannot justify refusing
+    // an otherwise live entry program.
+    if hsi1 < Array::length(keep) && Array::get(keep, hsi1) {
+      // A self-discharging owner used as a value cannot widen its closure
+      // parameter. A live call through that value may still pass a plain
+      // self-discharging function, which would trap at the indirect call.
+      if Array::length(hcps) == 0 && !edp_str_array_contains(needing, howner) {
+        match Array::get(stmts, hsi1) {
+          SLet(_, _, _, _, EFn(_, _, params, _, _, body)) => {
+            let mut pi = 0
+            while pi < Array::length(params) {
+              let (pname, pty) = Array::get(params, pi)
+              if edp_type_is_fn_row_exactly(pty, ename, es_names, es_members_list) && edp_param_uses_confined_to_handle_calls(body, edp_strip_tilde(pname), ename) && edp_fn_used_as_value_live(stmts, howner, keep) {
+                let msg = String::concat("call `", String::concat(howner, String::concat("` directly: it handles `", String::concat(ename, "` while calling an effectful function parameter, so using this handler owner as a value cannot safely select the closure call convention"))))
+                if !edp_str_array_contains(errs, msg) {
+                  Array::push(errs, msg)
+                } else {
+                  ()
+                }
+              } else {
+                ()
+              }
+              pi = pi + 1
+            }
+          },
+          _ => ()
+        }
+      } else {
+        ()
+      }
+      let mut hcpi = 0
+      while hcpi < Array::length(hcps) {
+        let (_, ppos) = Array::get(hcps, hcpi)
+        let hc_candidates = edp_collect_ecall_arg_idents_with_keep(stmts, howner, ppos, keep)
+        let mut hci = 0
+        while hci < Array::length(hc_candidates) {
+          let xn = Array::get(hc_candidates, hci)
+          // A candidate that is ALSO a needing top-level function (a
+          // capture-free closure literal hoisted by dlh_hoist_expr with its
+          // row backfilled -- 追記20 -- becomes exactly that) must NOT be
+          // migrated here: the needing-function rewrite loop below performs
+          // the IDENTICAL migration (same dict param, same body rewrite),
+          // and running both would prepend the dict parameter twice --
+          // caught live by gate 40al (effect_inline_lambda_literal_hof_arg,
+          // whose with_log argument hoists to a top-level needing fn).
+          if xn == "##edp_unsafe##" || edp_str_array_contains(needing, xn) {
+            ()
+          } else if edp_fn_is_self_discharging_inert(stmts, fn_defs, xn, ename, pure_fns) {
+            let msg = String::concat("pass an explicitly row-annotated closure that calls `", String::concat(xn, String::concat("` when passing it to a handled function parameter; `", String::concat(xn, String::concat("` handles `", String::concat(ename, "` itself and has the plain call convention"))))))
+            if edp_str_array_contains(errs, msg) {
+              ()
+            } else {
+              Array::push(errs, msg)
+            }
+          } else {
+            edp_migrate_closure_binding_stmts(stmts, xn, ename, dict_pname, needing, pure_fns, es_names, es_members_list)
+          }
+          hci = hci + 1
+        }
+        hcpi = hcpi + 1
+      }
+    }
+    hsi1 = hsi1 + 1
+  }
+  // Rewrite each needing function's own definition in place: prepend the
+  // evidence-dict parameter, and rewrite its body to call through it
+  // (direct performs) / forward it (calls to other needing functions, and
+  // -- per own_cp_map above -- calls through its own closure-typed
+  // parameters that were just proven safe to widen).
+  // ADR-0076 追記34 V1 (type-directed sweep): migrate EVERY row-E closure
+  // literal in place — prepend __ev_E and rewrite the body — and widen the
+  // safe-call sets with the literal-bound names + each fn's own
+  // row-E-typed params. Runs BEFORE the needing rewrites so those see the
+  // already-swept literals (the __ev_ first-param guard makes any later
+  // proof-path re-visit a no-op).
+  let td_binds_raw = empty_str_array()
+  let td_lits0 = array_empty()
+  edp_row_lit_scan(stmts, ename, needing, es_names, es_members_list, td_binds_raw, td_lits0)
+  // #1116 Codex P1: same shadow-poison filter as eligibility (both views
+  // must agree on the widened set, or apply widens what eligibility did
+  // not vet). #1875 R3: and the same skip -- no candidates, nothing to
+  // filter, no binder walk.
+  let td_poison0 = empty_str_array()
+  if Array::length(td_binds_raw) > 0 {
+    edp_collect_poison_stmts(stmts, ename, needing, es_names, es_members_list, td_poison0)
+  } else {
+    ()
+  }
+  let td_binds = edp_filter_unpoisoned(td_binds_raw, td_poison0)
+  let td_mode = Array::length(td_binds) > 0 || Array::length(td_lits0) > 0 || edp_any_row_typed_param(stmts, fn_defs, ename, es_names, es_members_list)
+  if td_mode {
+    let td_safe = Array::concat(needing, td_binds)
+    edp_sweep_row_lits_stmts(stmts, ename, dict_pname, td_safe, es_names, es_members_list)
+  } else {
+    ()
+  }
+  let mut ni = 0
+  while ni < Array::length(needing) {
+    let nm = Array::get(needing, ni)
+    let own_cp = Array::get(own_cp_map, ni)
+    let tdw = if td_mode {
+      match edp_find_fn_params_and_body(stmts, fn_defs, nm) {
+        Some((gparams2, _)) => Array::concat(td_binds, edp_row_typed_param_names(gparams2, ename, es_names, es_members_list)),
+        None => td_binds
+      }
+    } else {
+      empty_str_array()
+    }
+    let call_safe = Array::concat(Array::concat(needing, edp_closure_param_names_only(own_cp)), tdw)
+    edp_rewrite_needing_fn(stmts, fn_defs, nm, ename, dict_pname, dict_tyname, call_safe)
+    ni = ni + 1
+  }
+  // Rewrite each handle site: synthesize a fresh evidence dict from its
+  // arms, splice direct performs the same way Phase 2 does, pass the dict
+  // at calls to needing functions, and drop the EHandle wrapper. Single
+  // pass over `stmts`, rewriting each matching EHandle node the moment it
+  // is found -- see edp_find_rewrite_handles's doc comment for why this
+  // replaced an earlier collect-then-re-find-by-equality design.
+  // #1875 R3: edp_find_rewrite_handles only changes statements that contain
+  // a matching handle site -- everywhere else it is an identity rebuild of
+  // the whole expression tree. Gate each statement behind the read-only
+  // containment query (same superset argument as eligibility's loop: the
+  // query traverses arms of non-matching handles too, so it can never miss
+  // a statement the rewrite would touch).
+  let apq = RQHandlesEffect(ename)
+  let mut si = 0
+  while si < Array::length(stmts) {
+    match Array::get(stmts, si) {
+      SLet(exported, is_rec, name, ty, expr) => if edp_rq_fold(apq, expr) > 0 {
+        // Extend the safe-call set with THIS statement's own proven
+        // closure params (if it is a self-discharging owner) so its
+        // handle bodies' calls through them get the dict literal
+        // prepended -- scoped to this statement only, mirroring the
+        // per-owner eligibility check exactly.
+        let (_, hcps2) = Array::get(hcp_by_stmt, si)
+        let tdh = if td_mode {
+          match expr {
+            EFn(_, _, sparams3, _, _, _) => Array::concat(td_binds, edp_row_typed_param_names(sparams3, ename, es_names, es_members_list)),
+            _ => td_binds
+          }
+        } else {
+          empty_str_array()
+        }
+        let needing_h = Array::concat(Array::concat(needing, edp_closure_param_names_only(hcps2)), tdh)
+        Array::set(stmts, si, SLet(exported, is_rec, name, ty, edp_find_rewrite_handles(expr, ename, needing_h)))
+      } else {
+        ()
+      },
+      // ADR-0076 追記34 V2: non-SLet site-bearing statements, mirroring
+      // eligibility's own coverage (base needing + bare td_binds; no
+      // owner-closure-param extension).
+      SLetMut(nm2, ty2, expr) => if edp_rq_fold(apq, expr) > 0 {
+        let tdh2 = if td_mode {
+          td_binds
+        } else {
+          empty_str_array()
+        }
+        Array::set(stmts, si, SLetMut(nm2, ty2, edp_find_rewrite_handles(expr, ename, Array::concat(needing, tdh2))))
+      } else {
+        ()
+      },
+      SExpr(expr) => if edp_rq_fold(apq, expr) > 0 {
+        let tdh2 = if td_mode {
+          td_binds
+        } else {
+          empty_str_array()
+        }
+        Array::set(stmts, si, SExpr(edp_find_rewrite_handles(expr, ename, Array::concat(needing, tdh2))))
+      } else {
+        ()
+      },
+      STest(tn2, expr) => if edp_rq_fold(apq, expr) > 0 {
+        let tdh2 = if td_mode {
+          td_binds
+        } else {
+          empty_str_array()
+        }
+        Array::set(stmts, si, STest(tn2, edp_find_rewrite_handles(expr, ename, Array::concat(needing, tdh2))))
+      } else {
+        ()
+      },
+      SBench(bn2, expr) => if edp_rq_fold(apq, expr) > 0 {
+        let tdh2 = if td_mode {
+          td_binds
+        } else {
+          empty_str_array()
+        }
+        Array::set(stmts, si, SBench(bn2, edp_find_rewrite_handles(expr, ename, Array::concat(needing, tdh2))))
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    si = si + 1
+  }
+  // Register the dict struct type once (idempotent, mirrors
+  // desugar_trait_dict.vibe's own struct_decl_exists guard).
+  if edp_struct_decl_exists(stmts, dict_tyname) {
+    ()
+  } else {
+    Array::push(stmts, edp_make_dict_struct_stmt(ename, ops))
+  }
+}
+
+fn edp_rewrite_needing_fn(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], name: String, ename: String, dict_pname: String, dict_tyname: String, needing: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(fn_defs) {
+    let (idx, exported, is_rec, nm, ty, _) = Array::get(fn_defs, i)
+    if nm == name {
+      match Array::get(stmts, idx) {
+        // ADR-0076 追記34 V2: effect-specific idempotency guard (#1116's
+        // edp_params_have_dict), mirroring edp_maybe_migrate_efn's own --
+        // a def already carrying THIS effect's dict parameter must not be
+        // rewritten again (double param prepend + double dict forwarding
+        // at its needing calls). Belt to edp_collect_effect_defs' name
+        // dedup braces: either alone prevents the duplicate-SEffectDef
+        // double apply, together they keep it structurally impossible.
+        SLet(_, _, _, _, EFn(tps, tbs, params, ret, eff, body)) => if edp_params_have_dict(params, dict_pname) {
+          ()
+        } else {
+          let new_params = Array::concat([
+            (dict_pname, Some(TyName(dict_tyname)))
+          ], params)
+          let new_body = edp_rewrite_needing_body(body, ename, dict_pname, needing)
+          Array::set(stmts, idx, SLet(exported, is_rec, nm, ty, EFn(tps, tbs, new_params, ret, eff, new_body)))
+        },
+        _ => ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
+/// Rewrite a needing function's own body: a direct `perform E::Op(args)`
+/// becomes a call through the received dict parameter's `Op` field; a call
+/// to another needing function has the SAME received dict parameter
+/// forwarded as its new leading argument (mirrors desugar_trait_dict.vibe's
+/// find_dict_for_trait forwarding). By this point edp_has_unsafe_construct
+/// has already verified this body contains nothing else that could hide a
+/// perform (no EFn/EHandle/EDot/other calls), so this traversal only needs
+/// to handle the shapes that check allows through -- but it must still visit
+/// EVERY position edp_has_unsafe_construct visits, not just the ones a bare
+/// tail-position perform happens to need. This traversal used to be missing
+/// several of those positions -- ELet/ELetMut/ELetRec/EAssign/EAssignOp's
+/// value/RHS slot, EIf's condition, EMatch's scrutinee, and EWhile/EForIn/
+/// ELoop/EUnaryOp/ELabeledArg/EBreak/EContinue/ETuple/EArray/ERecord/EMap/
+/// ESpread entirely (falling to the `_ => expr` passthrough) -- even though
+/// edp_has_unsafe_construct's OWN traversal (the eligibility check that
+/// gates whether this rewrite runs at all) already recursed into every one
+/// of them. A perform reached only through one of those positions -- most
+/// simply, bound via `let` (`let a = perform Ask::Get; ...`) rather than
+/// written as a bare tail expression -- therefore passed eligibility
+/// (nothing unsafe about it, by has_unsafe_construct's own correct
+/// judgment) but was silently left un-rewritten: still a raw `perform`,
+/// throwing a tag the enclosing handle site no longer catches once this
+/// migration drops it -- producing an uncaught-exception crash at runtime
+/// despite a clean compile. Found via runtime instrumentation (temporary
+/// exported per-effect tags decoded the escaping exception as the MIGRATED
+/// effect's own tag, not a foreign one -- see
+/// fixtures/effect_handle_call_evidence_let_bound.vibe) while investigating
+/// an unrelated multi-effect-row crash; independent of that investigation
+/// and reproducible with a single exact-match effect, so this was a real,
+/// already-shipped soundness gap, not something specific to the multi-
+/// effect experiment that led to finding it.
+fn edp_rewrite_needing_body(expr: Expr, ename: String, dict_pname: String, needing: Array[String]) -> Expr {
+  match expr {
+    // A closure literal's body is rewritten the same way its enclosing
+    // needing function's body is (edp_has_unsafe_construct already
+    // verified this is safe); the closure's own params/type params/
+    // return type/declared row are untouched, only its body. A perform
+    // of `ename` found inside resolves through `dict_pname` via ordinary
+    // lexical capture from the enclosing scope.
+    //
+    // UNLESS the literal already carries its own dict param: the
+    // type-directed sweep (edp_sweep_row_lits_expr) runs first and gives
+    // every row-`ename` literal an `__ev_ename` of its OWN, rewriting the
+    // body against it. That param shadows the enclosing one, so the body
+    // is already complete -- walking in again would forward the dict a
+    // SECOND time at each needing call and hand the callee one argument
+    // too many. This is the `__ev_` first-param guard edp_rewrite_needing_fn
+    // already uses for the same reason, applied to the nested case.
+    EFn(tps, tbs, params, ret, eff, body) => if edp_params_have_dict(params, dict_pname) {
+      expr
+    } else {
+      EFn(tps, tbs, params, ret, eff, edp_rewrite_needing_body(body, ename, dict_pname, needing))
+    },
+    // A nested EHandle for a DIFFERENT effect than `ename` is safe to
+    // recurse into (edp_has_unsafe_construct already verified this, both
+    // for its body and its arms -- see that function's doc comment); one
+    // matching `ename` itself is unconditionally unsafe and therefore
+    // never reaches this rewrite (eligibility already rejected it), so
+    // leave it structurally unchanged if somehow encountered defensively.
+    EHandle(body, arms) => if edp_handle_matches_effect(arms, ename) {
+      // #2500 item 2, mirroring edp_rewrite_handle_body (追記 10 requires the
+      // two to agree): inside a needing function, a handle for `ename`
+      // discharges its own body, so that body is rewritten as a site against
+      // the inner arms rather than through this function's dict parameter.
+      // The arms themselves run outside it and keep using the dict.
+      edp_rewrite_handle_site(body, for a in arms {
+        let (p, ex) = a
+        (p, edp_rewrite_needing_body(ex, ename, dict_pname, needing))
+      }, ename, needing)
+    } else {
+      EHandle(edp_rewrite_needing_body(body, ename, dict_pname, needing), for a in arms {
+        let (p, ex) = a
+        (p, edp_rewrite_needing_body(ex, ename, dict_pname, needing))
+      })
+    },
+    EIf(c, t, e) => EIf(edp_rewrite_needing_body(c, ename, dict_pname, needing), edp_rewrite_needing_body(t, ename, dict_pname, needing), edp_rewrite_needing_body(e, ename, dict_pname, needing)),
+    EMatch(s, arms) => EMatch(edp_rewrite_needing_body(s, ename, dict_pname, needing), for a in arms {
+      let (p, ex) = a
+      (p, edp_rewrite_needing_body(ex, ename, dict_pname, needing))
+    }),
+    EWhile(c, b) => EWhile(edp_rewrite_needing_body(c, ename, dict_pname, needing), edp_rewrite_needing_body(b, ename, dict_pname, needing)),
+    EForIn(n, idx, it, b) => EForIn(n, idx, edp_rewrite_needing_body(it, ename, dict_pname, needing), edp_rewrite_needing_body(b, ename, dict_pname, needing)),
+    ELoop(pairs, b) => ELoop(for p in pairs {
+      let (n, v) = p
+      (n, edp_rewrite_needing_body(v, ename, dict_pname, needing))
+    }, edp_rewrite_needing_body(b, ename, dict_pname, needing)),
+    ELet(n, v, b, off) => ELet(n, edp_rewrite_needing_body(v, ename, dict_pname, needing), edp_rewrite_needing_body(b, ename, dict_pname, needing), off),
+    ELetMut(n, v, b, off) => ELetMut(n, edp_rewrite_needing_body(v, ename, dict_pname, needing), edp_rewrite_needing_body(b, ename, dict_pname, needing), off),
+    ELetRec(n, v, b) => ELetRec(n, edp_rewrite_needing_body(v, ename, dict_pname, needing), edp_rewrite_needing_body(b, ename, dict_pname, needing)),
+    ESeq(a, b) => ESeq(edp_rewrite_needing_body(a, ename, dict_pname, needing), edp_rewrite_needing_body(b, ename, dict_pname, needing)),
+    EAssign(n, v, c) => EAssign(n, edp_rewrite_needing_body(v, ename, dict_pname, needing), edp_rewrite_needing_body(c, ename, dict_pname, needing)),
+    EAssignOp(n, op, v, c) => EAssignOp(n, op, edp_rewrite_needing_body(v, ename, dict_pname, needing), edp_rewrite_needing_body(c, ename, dict_pname, needing)),
+    EReturn(e2) => EReturn(edp_rewrite_needing_body(e2, ename, dict_pname, needing)),
+    // A bare `.field` read (NOT a call through it -- ECall's own EDot
+    // callee case never recurses through here, `_ => true`/its rewrite
+    // counterpart's `_ => ECall(...)` catch it independently) only needs
+    // its object expression rewritten; the field name is a bare string.
+    EDot(o, f, off1, off2) => EDot(edp_rewrite_needing_body(o, ename, dict_pname, needing), f, off1, off2),
+    ECall(callee, args, off) => match callee {
+      EIdent(nm, _) => if nm == "perform" && Array::length(args) == 1 {
+        edp_rewrite_perform_via_dict(Array::get(args, 0), ename, dict_pname, needing)
+      } else if edp_str_array_contains(needing, nm) {
+        ECall(callee, edp_prepend_dict_arg(dict_pname, edp_rewrite_needing_body_exprs(args, ename, dict_pname, needing)), off)
+      } else {
+        ECall(callee, edp_rewrite_needing_body_exprs(args, ename, dict_pname, needing), off)
+      },
+      _ => ECall(callee, edp_rewrite_needing_body_exprs(args, ename, dict_pname, needing), off)
+    },
+    EBinOp(op, l, r, boff) => EBinOp(op, edp_rewrite_needing_body(l, ename, dict_pname, needing), edp_rewrite_needing_body(r, ename, dict_pname, needing), boff),
+    EUnaryOp(op, e2) => EUnaryOp(op, edp_rewrite_needing_body(e2, ename, dict_pname, needing)),
+    ELabeledArg(l, n, v) => ELabeledArg(l, n, edp_rewrite_needing_body(v, ename, dict_pname, needing)),
+    EBreak(opt) => EBreak(match opt {
+      Some(e2) => Some(edp_rewrite_needing_body(e2, ename, dict_pname, needing)),
+      None => None
+    }),
+    EContinue(args) => EContinue(edp_rewrite_needing_body_exprs(args, ename, dict_pname, needing)),
+    ETuple(elems) => ETuple(edp_rewrite_needing_body_exprs(elems, ename, dict_pname, needing)),
+    EArray(elems) => EArray(edp_rewrite_needing_body_exprs(elems, ename, dict_pname, needing)),
+    ERecord(n, fields, tas) => ERecord(n, for f in fields {
+      let (fn2, v) = f
+      (fn2, edp_rewrite_needing_body(v, ename, dict_pname, needing))
+    }, tas),
+    EMap(fields) => EMap(for f in fields {
+      let (fn2, v) = f
+      (fn2, edp_rewrite_needing_body(v, ename, dict_pname, needing))
+    }),
+    ESpread(e2) => ESpread(edp_rewrite_needing_body(e2, ename, dict_pname, needing)),
+    _ => expr
+  }
+}
+
+fn edp_rewrite_needing_body_exprs(exprs: Array[Expr], ename: String, dict_pname: String, needing: Array[String]) -> Array[Expr] {
+  for e in exprs {
+    edp_rewrite_needing_body(e, ename, dict_pname, needing)
+  }
+}
+
+fn edp_prepend_dict_arg(dict_pname: String, args: Array[Expr]) -> Array[Expr] {
+  Array::concat([EIdent(dict_pname, -1)], args)
+}
+
+/// A needing function's declared row is exactly `ename`, but it may still
+/// contain a `perform` for a DIFFERENT effect that is exempt from row
+/// declaration -- `Error` (#640 Stage 2: `perform Exception::Throw`/`throw`
+/// never needs a declared `with Exception` row). Only a perform whose
+/// qualified operation name's own effect prefix is `ename` gets rewritten
+/// into a dict-field call; anything else (in practice, only Error) is left
+/// completely untouched and falls through to its own existing codegen
+/// (Error compiles unconditionally to a throw/trap, needing no evidence
+/// dict or handler machinery at all, regardless of context).
+fn edp_qname_is_for_effect(qname: String, ename: String) -> Bool {
+  let (eff_opt, _) = edp_split_qualified(qname)
+  match eff_opt {
+    Some(e) => e == ename,
+    None => false
+  }
+}
+
+fn edp_rewrite_perform_via_dict(operand: Expr, ename: String, dict_pname: String, needing: Array[String]) -> Expr {
+  match operand {
+    EIdent(qname, _) => if edp_qname_is_for_effect(qname, ename) {
+      ECall(EDot(EIdent(dict_pname, -1), edp_strip_effect_prefix(qname, ename), -1, -1), array_empty(), -1)
+    } else {
+      ECall(EIdent("perform", -1), [operand], -1)
+    },
+    ECall(op_callee, op_args, _) => match op_callee {
+      EIdent(qname, _) => if edp_qname_is_for_effect(qname, ename) {
+        ECall(EDot(EIdent(dict_pname, -1), edp_strip_effect_prefix(qname, ename), -1, -1), edp_rewrite_needing_body_exprs(op_args, ename, dict_pname, needing), -1)
+      } else {
+        ECall(EIdent("perform", -1), [
+          ECall(op_callee, edp_rewrite_needing_body_exprs(op_args, ename, dict_pname, needing), -1)
+        ], -1)
+      },
+      _ => ECall(EIdent("perform", -1), [operand], -1)
+    },
+    _ => ECall(EIdent("perform", -1), [operand], -1)
+  }
+}
+
+// --- rewriting a handle site.
+
+fn edp_rewrite_handle_site(body: Expr, arms: Array[(Pat, Expr)], ename: String, needing: Array[String]) -> Expr {
+  let op_names = for a in arms {
+    let (p, _) = a
+    edp_pat_qname(p)
+  }
+  let bind_names = for a in arms {
+    let (p, _) = a
+    edp_pat_bind_names(p)
+  }
+  let prepared_bodies = for a in arms {
+    let (_, ex) = a
+    edp_strip_tail_resume(ex)
+  }
+  let dict_literal = edp_build_dict_literal(ename, op_names, bind_names, prepared_bodies)
+  edp_rewrite_handle_body(body, ename, op_names, bind_names, prepared_bodies, dict_literal, needing)
+}
+
+/// The effect being migrated and its DECLARED operations `(name, arity)`,
+/// in declaration order -- set by `edp_apply_migration`, read by
+/// `edp_build_dict_literal`. Pass state, overwritten per effect; the literal
+/// builder consults it only for the effect it names.
+let edp_declared_op_effect: Array[String] = [""]
+let edp_declared_op_names: Array[String] = []
+let edp_declared_op_arities: Array[Int] = []
+
+fn edp_set_declared_op_order(ename: String, ops: Array[(String, Array[TypeExpr], TypeExpr)]) -> Unit {
+  Array::set(edp_declared_op_effect, 0, ename)
+  Array::truncate(edp_declared_op_names, 0)
+  Array::truncate(edp_declared_op_arities, 0)
+  let mut i = 0
+  while i < Array::length(ops) {
+    let (opname, params, _) = Array::get(ops, i)
+    Array::push(edp_declared_op_names, opname)
+    Array::push(edp_declared_op_arities, Array::length(params))
+    i = i + 1
+  }
+}
+
+/// The dictionary literal a handle site passes down.
+///
+/// ITS FIELDS ARE IN THE EFFECT'S DECLARATION ORDER, not the arms' order. A
+/// needing function receives the dictionary as the `__EvDict_<E>` struct
+/// (`edp_make_dict_struct_stmt`, declaration order) and reads an operation
+/// by that struct's slot, while this literal is an anonymous record whose
+/// slots are its FIELD order. Built in arm order, the two disagreed whenever
+/// a handler listed its arms in a different order than the effect declared
+/// them. Measured on main at 0f0ba36, with `effect E { A(Int) -> Int;
+/// B(Int) -> Int }`, a callee performing `E::A(1)` and a handler written
+///
+///     E::B(x) => resume(x + 1000);
+///     E::A(x) => resume(x + 1)
+///
+/// answered `1001` -- the `B` arm ran for an `A` perform, silently. With
+/// differing signatures the same program trapped (`null function or function
+/// signature mismatch`).
+///
+/// An operation the handler has no arm for gets a closure that traps: the
+/// slot must exist for the ones after it to line up, and reaching it means a
+/// perform this handler cannot answer (it used to read past the record).
+fn edp_build_dict_literal(ename: String, op_names: Array[String], bind_names: Array[Array[String]], prepared_bodies: Array[Expr]) -> Expr {
+  let fields = array_empty()
+  if Array::get(edp_declared_op_effect, 0) == ename && Array::length(edp_declared_op_names) > 0 {
+    let mut d = 0
+    while d < Array::length(edp_declared_op_names) {
+      let declared = Array::get(edp_declared_op_names, d)
+      let mut arm = -1
+      let mut i = 0
+      while i < Array::length(op_names) {
+        if arm < 0 && edp_strip_effect_prefix(Array::get(op_names, i), ename) == declared {
+          arm = i
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      if arm >= 0 {
+        Array::push(fields, (declared, edp_dict_arm_closure(Array::get(bind_names, arm), Array::get(prepared_bodies, arm))))
+      } else {
+        let params = array_empty()
+        let mut a = 0
+        while a < Array::get(edp_declared_op_arities, d) {
+          Array::push(params, (String::concat("__ev_unhandled_", __to_string(a)), None))
+          a = a + 1
+        }
+        let trap = ECall(EIdent("assert_true", -1), [EBool(false)], -1)
+        Array::push(fields, (declared, EFn(empty_str_array(), array_empty(), params, None, None, trap)))
+      }
+      d = d + 1
+    }
+  } else {
+    let mut i = 0
+    while i < Array::length(op_names) {
+      let bare = edp_strip_effect_prefix(Array::get(op_names, i), ename)
+      Array::push(fields, (bare, edp_dict_arm_closure(Array::get(bind_names, i), Array::get(prepared_bodies, i))))
+      i = i + 1
+    }
+  }
+  ERecord("", fields, array_empty())
+}
+
+fn edp_dict_arm_closure(binds: Array[String], body: Expr) -> Expr {
+  let params = for n in binds {
+    (n, None)
+  }
+  EFn(empty_str_array(), array_empty(), params, None, None, body)
+}
+
+fn edp_table_lookup(op_names: Array[String], qname: String) -> Int {
+  let mut i = 0
+  let mut found = -1
+  while i < Array::length(op_names) {
+    if Array::get(op_names, i) == qname {
+      found = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn edp_bind_args(bind_names: Array[String], actual_args: Array[Expr], prepared_body: Expr) -> Expr {
+  let n = Array::length(bind_names)
+  let mut result = prepared_body
+  let mut i = n - 1
+  while i >= 0 {
+    if i < Array::length(actual_args) {
+      result = ELet(Array::get(bind_names, i), Array::get(actual_args, i), result, -1)
+    } else {
+      ()
+    }
+    i = i - 1
+  }
+  result
+}
+
+/// Same completeness requirement as edp_rewrite_needing_body (see that
+/// function's doc comment): the handle body's own eligibility was checked
+/// with edp_has_unsafe_construct too (edp_all_sites_eligible calls it on
+/// each handle site's body), so this traversal must visit every position
+/// that check visits or a perform/needing-call reachable only through
+/// EWhile/EForIn/ELoop/EUnaryOp/ELabeledArg/EBreak/EContinue/ETuple/EArray/
+/// ERecord/EMap/ESpread would pass eligibility but silently stay
+/// unrewritten, same failure mode.
+fn edp_rewrite_handle_body(expr: Expr, ename: String, op_names: Array[String], bind_names_list: Array[Array[String]], prepared_bodies: Array[Expr], dict_literal: Expr, needing: Array[String]) -> Expr {
+  match expr {
+    // Same closure-literal handling as edp_rewrite_needing_body: a
+    // `perform ename::Op` inside a closure defined within this handle's
+    // body is spliced the same way as anywhere else in the body (pure
+    // AST substitution of the arm's prepared body, not a runtime
+    // reference -- see edp_splice_perform -- so it's exactly as valid
+    // wherever the closure ends up being called, sync or later).
+    //
+    // Same `__ev_` guard as there, and for the same reason: a literal the
+    // type-directed sweep already migrated takes its own dict param and
+    // forwards THAT at its needing calls, so prepending this handle's
+    // synthesized dict literal on top would pass one argument too many.
+    // Only visible when the literal CALLS a needing fn -- a body that just
+    // performs has no call left for this arm to prepend to, which is why
+    // the perform-only shape (effect_needing_value_annotated.vibe) always
+    // worked and the calling shape emitted an invalid module.
+    EFn(tps, tbs, params, ret, eff, body) => if edp_params_have_dict(params, edp_dict_param_name(ename)) {
+      expr
+    } else {
+      EFn(tps, tbs, params, ret, eff, edp_rewrite_handle_body(body, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing))
+    },
+    // Same nested-EHandle handling as edp_rewrite_needing_body: recurse
+    // into a DIFFERENT effect's nested handle (splicing any `perform
+    // ename::Op` found inside it exactly like anywhere else in this
+    // handle's own body); one matching `ename` itself never reaches here
+    // (eligibility already rejected it as unconditionally unsafe).
+    EHandle(body, arms) => if edp_handle_matches_effect(arms, ename) {
+      // #2500 item 2: an inner handle for `ename` shadows this one for its
+      // own BODY, so that body must not see this handle's arms -- it is
+      // rewritten as its own site, against its own arms. The inner ARMS run
+      // outside the inner handle's coverage, so a `perform ename::Op` there
+      // still belongs to THIS handle and is rewritten here first.
+      // Splicing the outer arm into the inner body instead would be a wrong
+      // ANSWER rather than a refusal (fixtures/effect_handle_nested_test.vibe
+      // would give 2 where it must give 101), which is why the order is
+      // spelled out rather than left to the traversal.
+      edp_rewrite_handle_site(body, for a in arms {
+        let (p, ex) = a
+        (p, edp_rewrite_handle_body(ex, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing))
+      }, ename, needing)
+    } else {
+      EHandle(edp_rewrite_handle_body(body, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), for a in arms {
+        let (p, ex) = a
+        (p, edp_rewrite_handle_body(ex, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing))
+      })
+    },
+    EIf(c, t, e) => EIf(edp_rewrite_handle_body(c, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), edp_rewrite_handle_body(t, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), edp_rewrite_handle_body(e, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
+    EMatch(s, arms) => EMatch(edp_rewrite_handle_body(s, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), for a in arms {
+      let (p, ex) = a
+      (p, edp_rewrite_handle_body(ex, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing))
+    }),
+    EWhile(c, b) => EWhile(edp_rewrite_handle_body(c, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), edp_rewrite_handle_body(b, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
+    EForIn(n, idx, it, b) => EForIn(n, idx, edp_rewrite_handle_body(it, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), edp_rewrite_handle_body(b, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
+    ELoop(pairs, b) => ELoop(for p in pairs {
+      let (n, v) = p
+      (n, edp_rewrite_handle_body(v, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing))
+    }, edp_rewrite_handle_body(b, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
+    ELet(n, v, b, off) => ELet(n, edp_rewrite_handle_body(v, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), edp_rewrite_handle_body(b, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), off),
+    ELetMut(n, v, b, off) => ELetMut(n, edp_rewrite_handle_body(v, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), edp_rewrite_handle_body(b, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), off),
+    ELetRec(n, v, b) => ELetRec(n, edp_rewrite_handle_body(v, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), edp_rewrite_handle_body(b, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
+    ESeq(a, b) => ESeq(edp_rewrite_handle_body(a, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), edp_rewrite_handle_body(b, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
+    EAssign(n, v, c) => EAssign(n, edp_rewrite_handle_body(v, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), edp_rewrite_handle_body(c, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
+    EAssignOp(n, op, v, c) => EAssignOp(n, op, edp_rewrite_handle_body(v, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), edp_rewrite_handle_body(c, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
+    EReturn(e2) => EReturn(edp_rewrite_handle_body(e2, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
+    // Same bare-`.field`-read handling as edp_rewrite_needing_body: only
+    // the object expression can hide anything that needs rewriting.
+    EDot(o, f, off1, off2) => EDot(edp_rewrite_handle_body(o, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), f, off1, off2),
+    ECall(callee, args, off) => match callee {
+      EIdent(nm, _) => if nm == "perform" && Array::length(args) == 1 {
+        edp_splice_perform(Array::get(args, 0), op_names, bind_names_list, prepared_bodies)
+      } else if edp_str_array_contains(needing, nm) {
+        ECall(callee, edp_prepend_expr(dict_literal, edp_rewrite_handle_body_exprs(args, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)), off)
+      } else {
+        ECall(callee, edp_rewrite_handle_body_exprs(args, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), off)
+      },
+      _ => ECall(callee, edp_rewrite_handle_body_exprs(args, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), off)
+    },
+    EBinOp(op, l, r, boff) => EBinOp(op, edp_rewrite_handle_body(l, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), edp_rewrite_handle_body(r, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), boff),
+    EUnaryOp(op, e2) => EUnaryOp(op, edp_rewrite_handle_body(e2, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
+    ELabeledArg(l, n, v) => ELabeledArg(l, n, edp_rewrite_handle_body(v, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
+    EBreak(opt) => EBreak(match opt {
+      Some(e2) => Some(edp_rewrite_handle_body(e2, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
+      None => None
+    }),
+    EContinue(args) => EContinue(edp_rewrite_handle_body_exprs(args, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
+    ETuple(elems) => ETuple(edp_rewrite_handle_body_exprs(elems, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
+    EArray(elems) => EArray(edp_rewrite_handle_body_exprs(elems, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
+    ERecord(n, fields, tas) => ERecord(n, for f in fields {
+      let (fn2, v) = f
+      (fn2, edp_rewrite_handle_body(v, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing))
+    }, tas),
+    EMap(fields) => EMap(for f in fields {
+      let (fn2, v) = f
+      (fn2, edp_rewrite_handle_body(v, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing))
+    }),
+    ESpread(e2) => ESpread(edp_rewrite_handle_body(e2, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
+    _ => expr
+  }
+}
+
+fn edp_rewrite_handle_body_exprs(exprs: Array[Expr], ename: String, op_names: Array[String], bind_names_list: Array[Array[String]], prepared_bodies: Array[Expr], dict_literal: Expr, needing: Array[String]) -> Array[Expr] {
+  for e in exprs {
+    edp_rewrite_handle_body(e, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)
+  }
+}
+
+fn edp_prepend_expr(v: Expr, args: Array[Expr]) -> Array[Expr] {
+  Array::concat([v], args)
+}
+
+fn edp_splice_perform(operand: Expr, op_names: Array[String], bind_names_list: Array[Array[String]], prepared_bodies: Array[Expr]) -> Expr {
+  match operand {
+    EIdent(qname, _) => edp_splice_or_leave(qname, array_empty(), operand, op_names, bind_names_list, prepared_bodies),
+    ECall(op_callee, op_args, _) => match op_callee {
+      EIdent(qname, _) => edp_splice_or_leave(qname, op_args, operand, op_names, bind_names_list, prepared_bodies),
+      _ => ECall(EIdent("perform", -1), [operand], -1)
+    },
+    _ => ECall(EIdent("perform", -1), [operand], -1)
+  }
+}
+
+fn edp_splice_or_leave(qname: String, actual_args: Array[Expr], original_operand: Expr, op_names: Array[String], bind_names_list: Array[Array[String]], prepared_bodies: Array[Expr]) -> Expr {
+  let idx = edp_table_lookup(op_names, qname)
+  if idx < 0 {
+    ECall(EIdent("perform", -1), [original_operand], -1)
+  } else {
+    edp_bind_args(Array::get(bind_names_list, idx), actual_args, Array::get(prepared_bodies, idx))
+  }
+}
+
+/// Find every `EHandle` whose arms discharge `ename` and rewrite it via
+/// edp_rewrite_handle_site, in the SAME traversal that finds it -- no
+/// separate "collect, then re-find by structural equality" step.
+///
+/// An earlier version collected handle sites (edp_collect_handle_sites)
+/// and re-located each one afterward via a hand-rolled structural-equality
+/// check (edp_same_handle/edp_expr_eq) covering only a handful of Expr
+/// constructors (EIdent/ECall/ESeq/ELet/EBinOp/EAssign/EInt). Any handle
+/// body containing an Expr shape outside that list -- EIf being the first
+/// one actually hit -- made edp_expr_eq silently return false for the
+/// handle's own body compared against itself, so edp_replace_handle_in_
+/// stmts never found a match and left the ORIGINAL, unmodified handle body
+/// in place. Meanwhile edp_rewrite_needing_fn (which locates functions by
+/// NAME via fn_defs, not by re-matching an Expr) had already prepended the
+/// evidence-dict parameter to the needing function's signature regardless
+/// -- producing exactly the inconsistent state that crashed at the wasm
+/// level ("not enough arguments on the stack for call"): a callee expecting
+/// N+1 params, called from an unrewritten site still passing N. This was
+/// the actual root cause of the branch-nested-call bug (docs/effect-
+/// evidence-passing.md "追記 4"/"追記 6"), not the EIf/local_names
+/// interaction originally suspected -- runtime instrumentation of
+/// compile_call.vibe's local_idx_hint/fn_idx_in_list dispatch (which
+/// correctly selected the direct-call path) ruled that out.
+///
+/// This single-pass design can't have that failure mode: a handle is
+/// rewritten the moment it's found, so there is no second "find it again"
+/// step to fail. By this point (called only from edp_apply_migration,
+/// itself only reached when edp_all_sites_eligible returned true for
+/// `ename`), EVERY handle whose arms discharge `ename` anywhere in the
+/// whole program is already known-eligible, so unconditionally rewriting
+/// every occurrence found here is sound -- eligibility, not this
+/// traversal, is what decides whether rewriting was safe to attempt at
+/// all.
+fn edp_find_rewrite_handles(expr: Expr, ename: String, needing: Array[String]) -> Expr {
+  match expr {
+    EHandle(body, arms) => if edp_handle_matches_effect(arms, ename) {
+      edp_rewrite_handle_site(body, arms, ename, needing)
+    } else {
+      EHandle(edp_find_rewrite_handles(body, ename, needing), for a in arms {
+        let (p, ex) = a
+        (p, edp_find_rewrite_handles(ex, ename, needing))
+      })
+    },
+    EFn(tps, tbs, params, ret, eff, b) => EFn(tps, tbs, params, ret, eff, edp_find_rewrite_handles(b, ename, needing)),
+    ELet(n, v, b, off) => ELet(n, edp_find_rewrite_handles(v, ename, needing), edp_find_rewrite_handles(b, ename, needing), off),
+    ELetMut(n, v, b, off) => ELetMut(n, edp_find_rewrite_handles(v, ename, needing), edp_find_rewrite_handles(b, ename, needing), off),
+    ELetRec(n, v, b) => ELetRec(n, edp_find_rewrite_handles(v, ename, needing), edp_find_rewrite_handles(b, ename, needing)),
+    ESeq(a, b) => ESeq(edp_find_rewrite_handles(a, ename, needing), edp_find_rewrite_handles(b, ename, needing)),
+    EIf(c, t, e) => EIf(edp_find_rewrite_handles(c, ename, needing), edp_find_rewrite_handles(t, ename, needing), edp_find_rewrite_handles(e, ename, needing)),
+    EMatch(s, arms) => EMatch(edp_find_rewrite_handles(s, ename, needing), for a in arms {
+      let (p, ex) = a
+      (p, edp_find_rewrite_handles(ex, ename, needing))
+    }),
+    EWhile(c, b) => EWhile(edp_find_rewrite_handles(c, ename, needing), edp_find_rewrite_handles(b, ename, needing)),
+    EForIn(n, idx, it, b) => EForIn(n, idx, edp_find_rewrite_handles(it, ename, needing), edp_find_rewrite_handles(b, ename, needing)),
+    ECall(callee, args, off) => ECall(edp_find_rewrite_handles(callee, ename, needing), for a in args {
+      edp_find_rewrite_handles(a, ename, needing)
+    }, off),
+    EBinOp(op, l, r, boff) => EBinOp(op, edp_find_rewrite_handles(l, ename, needing), edp_find_rewrite_handles(r, ename, needing), boff),
+    EUnaryOp(op, e2) => EUnaryOp(op, edp_find_rewrite_handles(e2, ename, needing)),
+    EAssign(n, v, c) => EAssign(n, edp_find_rewrite_handles(v, ename, needing), edp_find_rewrite_handles(c, ename, needing)),
+    EAssignOp(n, op, v, c) => EAssignOp(n, op, edp_find_rewrite_handles(v, ename, needing), edp_find_rewrite_handles(c, ename, needing)),
+    EDot(o, f, off1, off2) => EDot(edp_find_rewrite_handles(o, ename, needing), f, off1, off2),
+    ELabeledArg(l, n, v) => ELabeledArg(l, n, edp_find_rewrite_handles(v, ename, needing)),
+    EReturn(e2) => EReturn(edp_find_rewrite_handles(e2, ename, needing)),
+    EBreak(opt) => EBreak(match opt {
+      Some(e2) => Some(edp_find_rewrite_handles(e2, ename, needing)),
+      None => None
+    }),
+    EContinue(args) => EContinue(for a in args {
+      edp_find_rewrite_handles(a, ename, needing)
+    }),
+    ETuple(elems) => ETuple(for a in elems {
+      edp_find_rewrite_handles(a, ename, needing)
+    }),
+    EArray(elems) => EArray(for a in elems {
+      edp_find_rewrite_handles(a, ename, needing)
+    }),
+    ERecord(n, fields, tas) => ERecord(n, for f in fields {
+      let (fn2, v) = f
+      (fn2, edp_find_rewrite_handles(v, ename, needing))
+    }, tas),
+    EMap(fields) => EMap(for f in fields {
+      let (fn2, v) = f
+      (fn2, edp_find_rewrite_handles(v, ename, needing))
+    }),
+    ESpread(e2) => ESpread(edp_find_rewrite_handles(e2, ename, needing)),
+    ELoop(pairs, b) => ELoop(for p in pairs {
+      let (n, v) = p
+      (n, edp_find_rewrite_handles(v, ename, needing))
+    }, edp_find_rewrite_handles(b, ename, needing)),
+    _ => expr
+  }
+}

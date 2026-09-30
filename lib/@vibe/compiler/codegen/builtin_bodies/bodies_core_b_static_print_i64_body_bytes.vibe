@@ -1,0 +1,1797 @@
+// lib/@vibe/compiler/codegen/builtin_bodies/bodies_core_b.vibe — static print i64 body bytes.
+
+import @vibe/compiler/core {
+  Expr,
+  Pat,
+  Stmt,
+  TypeExpr,
+  bytebuf_length,
+  bytebuf_new,
+  bytebuf_push,
+  bytebuf_push_section,
+  bytebuf_push_vec_header,
+  bytebuf_to_bytes,
+  leb128_encode_s64,
+  leb128_encode_u32
+}
+
+import @vibe/compiler/codegen/common_analysis {
+  collect_free_vars, collect_strings_stmts, emit_closure_call_tail, emit_closure_resolve, emit_i64_extend_i32_u, is_mut_captured_in
+}
+
+import @vibe/compiler/codegen/common_base {
+  CompileCtx,
+  CtorTable,
+  FuncTable,
+  LambdaTable,
+  StrTable,
+  emit_binop_op,
+  emit_i32_eq,
+  emit_i32_eqz,
+  emit_i32_ge_u,
+  emit_i32_gt_u,
+  emit_i32_mul,
+  emit_i32_ne,
+  emit_i32_sub,
+  emit_i64_load,
+  emit_i64_store,
+  emit_str_ref,
+  expr_tag,
+  get_arm_body,
+  get_arm_pat,
+  get_ebinop_op,
+  get_efn_body,
+  get_eif_cond,
+  get_eif_else,
+  get_eif_then,
+  get_elet_body,
+  get_elet_name,
+  get_elet_val,
+  get_slet_expr,
+  get_slet_name,
+  is_efn,
+  is_eident,
+  is_etuple,
+  is_pbind,
+  is_pbool,
+  is_pctor,
+  is_pint,
+  is_pstring,
+  is_ptuple,
+  is_pwild,
+  is_slet,
+  lookup_ctor,
+  resolve_func,
+  resolve_local
+}
+
+import @vibe/compiler/codegen/common_extractors {
+  array_contains_str,
+  emit_assignop_op,
+  emit_memory_copy,
+  emit_memory_fill,
+  find_catchall_idx,
+  get_earray_elems,
+  get_eassign_body,
+  get_eassign_name,
+  get_eassign_val,
+  get_eassignop_body,
+  get_eassignop_name,
+  get_eassignop_op,
+  get_eassignop_val,
+  get_ebinop_lhs,
+  get_ebinop_rhs,
+  get_ebool_value,
+  get_ecall_args,
+  get_ecall_callee,
+  get_efloat_value,
+  get_efn_params,
+  get_eforin_body,
+  get_eforin_iter,
+  get_eforin_name,
+  get_eident_name,
+  get_eint_value,
+  get_eletmut_body,
+  get_eletmut_name,
+  get_eletmut_val,
+  get_eletrec_body,
+  get_eletrec_name,
+  get_eletrec_val,
+  get_eseq_first,
+  get_eseq_second,
+  get_estring_value,
+  get_etuple_elems,
+  get_eunaryop_expr,
+  get_eunaryop_op,
+  get_ewhile_body,
+  get_ewhile_cond,
+  get_match_arms,
+  get_match_scrutinee,
+  get_pbind_name,
+  get_pbool_value,
+  get_pctor_args,
+  get_pctor_name,
+  get_pint_value,
+  get_pstring_value,
+  get_ptuple_pats,
+  get_slet_export,
+  str_table_lookup
+}
+
+import @vibe/compiler/codegen/wasm_emit {
+  emit_block_i64,
+  emit_block_void,
+  emit_br,
+  emit_br_if,
+  emit_call,
+  emit_call_indirect,
+  emit_code_section,
+  emit_code_section_with_locals,
+  emit_data_section,
+  emit_data_section_multi,
+  emit_drop,
+  emit_element_section_active,
+  emit_else,
+  emit_end,
+  emit_export_section,
+  emit_export_section_multi,
+  emit_exports_full,
+  emit_exports_with_memory,
+  emit_f64_add,
+  emit_f64_const_bits,
+  emit_f64_const_lohi,
+  emit_f64_convert_i64_s,
+  emit_f64_div,
+  emit_f64_eq,
+  emit_f64_ge,
+  emit_f64_gt,
+  emit_f64_le,
+  emit_f64_lt,
+  emit_f64_mul,
+  emit_f64_ne,
+  emit_f64_neg,
+  emit_f64_reinterpret_i64,
+  emit_f64_sub,
+  emit_func_type_raw,
+  emit_function_section,
+  emit_global_get,
+  emit_global_section_i32_mut,
+  emit_global_set,
+  emit_header,
+  emit_heap_memory_grow_check,
+  emit_i32_add,
+  emit_i32_const,
+  emit_i32_load,
+  emit_i32_load8_u,
+  emit_i32_store,
+  emit_i32_store8,
+  emit_i32_wrap_i64,
+  emit_i64_add,
+  emit_i64_and,
+  emit_i64_clz,
+  emit_i64_const,
+  emit_i64_ctz,
+  emit_i64_div_s,
+  emit_i64_eq,
+  emit_i64_eqz,
+  emit_i64_extend_i32_s,
+  emit_i64_ge_s,
+  emit_i64_gt_s,
+  emit_i64_le_s,
+  emit_i64_lt_s,
+  emit_i64_mul,
+  emit_i64_ne,
+  emit_i64_or,
+  emit_i64_popcnt,
+  emit_i64_reinterpret_f64,
+  emit_i64_rem_s,
+  emit_i64_shl,
+  emit_i64_shr_s,
+  emit_i64_shr_u,
+  emit_i64_sub,
+  emit_i64_trunc_f64_s,
+  emit_i64_xor,
+  emit_i8x16_bitmask,
+  emit_i8x16_eq,
+  emit_i8x16_splat,
+  emit_if_i64,
+  emit_if_void,
+  emit_import_section_func,
+  emit_local_get,
+  emit_local_set,
+  emit_local_tee,
+  emit_loop_void,
+  emit_memory_section,
+  emit_name,
+  emit_return,
+  emit_table_section_funcref,
+  emit_type_section,
+  emit_type_section_multi,
+  emit_v128_any_true,
+  emit_v128_load,
+  string_to_data
+}
+
+import ./bodies_core_b_gen_bytes_compare_body.vibe {
+  static_arr_slice_body_bytes
+}
+
+import ./bodies_core_b_gen_string_join_body.vibe {
+  gen_double_to_int_body
+}
+
+export fn static_arr_slice_body() -> Bytes {
+  static_arr_slice_body_bytes
+}
+
+let static_print_i64_body_bytes: Bytes = Bytes::from_array([
+  65,
+  46,
+  33,
+  2,
+  65,
+  47,
+  65,
+  10,
+  58,
+  0,
+  0,
+  32,
+  0,
+  66,
+  0,
+  83,
+  33,
+  1,
+  32,
+  1,
+  4,
+  126,
+  66,
+  0,
+  32,
+  0,
+  125,
+  5,
+  32,
+  0,
+  11,
+  33,
+  4,
+  32,
+  4,
+  80,
+  4,
+  64,
+  32,
+  2,
+  65,
+  48,
+  58,
+  0,
+  0,
+  32,
+  2,
+  65,
+  1,
+  107,
+  33,
+  2,
+  11,
+  2,
+  64,
+  3,
+  64,
+  32,
+  4,
+  80,
+  13,
+  1,
+  32,
+  4,
+  66,
+  10,
+  129,
+  167,
+  33,
+  3,
+  32,
+  2,
+  32,
+  3,
+  65,
+  48,
+  106,
+  58,
+  0,
+  0,
+  32,
+  2,
+  65,
+  1,
+  107,
+  33,
+  2,
+  32,
+  4,
+  66,
+  10,
+  127,
+  33,
+  4,
+  12,
+  0,
+  11,
+  11,
+  32,
+  1,
+  4,
+  64,
+  32,
+  2,
+  65,
+  45,
+  58,
+  0,
+  0,
+  32,
+  2,
+  65,
+  1,
+  107,
+  33,
+  2,
+  11,
+  65,
+  0,
+  32,
+  2,
+  65,
+  1,
+  106,
+  54,
+  2,
+  0,
+  65,
+  4,
+  65,
+  47,
+  32,
+  2,
+  107,
+  54,
+  2,
+  0,
+  65,
+  1,
+  65,
+  0,
+  65,
+  1,
+  65,
+  8,
+  16,
+  0,
+  26
+])
+
+export fn static_print_i64_body() -> Bytes {
+  static_print_i64_body_bytes
+}
+
+let static_print_str_body_bytes: Bytes = Bytes::from_array([
+  32,
+  0,
+  66,
+  32,
+  135,
+  167,
+  33,
+  1,
+  32,
+  0,
+  167,
+  33,
+  2,
+  65,
+  0,
+  32,
+  1,
+  54,
+  2,
+  0,
+  65,
+  4,
+  32,
+  2,
+  54,
+  2,
+  0,
+  65,
+  1,
+  65,
+  0,
+  65,
+  1,
+  65,
+  8,
+  16,
+  0,
+  26
+])
+
+export fn static_print_str_body() -> Bytes {
+  static_print_str_body_bytes
+}
+
+export fn gen_fs_write_bytes_stub_body() -> Bytes {
+  let b = bytebuf_new()
+  b
+}
+
+let static_arr_concat_body_bytes: Bytes = Bytes::from_array([
+  32,
+  0,
+  167,
+  33,
+  2,
+  32,
+  1,
+  167,
+  33,
+  3,
+  32,
+  2,
+  40,
+  2,
+  4,
+  33,
+  4,
+  32,
+  3,
+  40,
+  2,
+  4,
+  33,
+  5,
+  32,
+  2,
+  40,
+  2,
+  8,
+  33,
+  6,
+  32,
+  3,
+  40,
+  2,
+  8,
+  33,
+  7,
+  32,
+  4,
+  32,
+  5,
+  106,
+  33,
+  8,
+  35,
+  0,
+  34,
+  9,
+  65,
+  12,
+  32,
+  8,
+  65,
+  3,
+  116,
+  106,
+  106,
+  36,
+  0,
+  32,
+  9,
+  32,
+  8,
+  54,
+  2,
+  0,
+  32,
+  9,
+  32,
+  8,
+  54,
+  2,
+  4,
+  32,
+  9,
+  65,
+  12,
+  106,
+  33,
+  10,
+  32,
+  9,
+  32,
+  10,
+  54,
+  2,
+  8,
+  32,
+  10,
+  32,
+  6,
+  32,
+  4,
+  65,
+  3,
+  116,
+  252,
+  10,
+  0,
+  0,
+  32,
+  10,
+  32,
+  4,
+  65,
+  3,
+  116,
+  106,
+  32,
+  7,
+  32,
+  5,
+  65,
+  3,
+  116,
+  252,
+  10,
+  0,
+  0,
+  32,
+  9,
+  173
+])
+
+export fn static_arr_concat_body() -> Bytes {
+  static_arr_concat_body_bytes
+}
+
+let static_str_concat_body_bytes: Bytes = Bytes::from_array([
+  32,
+  0,
+  66,
+  255,
+  255,
+  255,
+  255,
+  15,
+  131,
+  167,
+  33,
+  2,
+  32,
+  1,
+  66,
+  255,
+  255,
+  255,
+  255,
+  15,
+  131,
+  167,
+  33,
+  3,
+  32,
+  0,
+  66,
+  32,
+  135,
+  167,
+  33,
+  4,
+  32,
+  1,
+  66,
+  32,
+  135,
+  167,
+  33,
+  5,
+  32,
+  2,
+  32,
+  3,
+  106,
+  33,
+  7,
+  35,
+  0,
+  34,
+  6,
+  32,
+  7,
+  106,
+  36,
+  0,
+  32,
+  6,
+  32,
+  4,
+  32,
+  2,
+  252,
+  10,
+  0,
+  0,
+  32,
+  6,
+  32,
+  2,
+  106,
+  32,
+  5,
+  32,
+  3,
+  252,
+  10,
+  0,
+  0,
+  32,
+  6,
+  173,
+  66,
+  32,
+  134,
+  32,
+  7,
+  173,
+  132
+])
+
+export fn static_str_concat_body() -> Bytes {
+  static_str_concat_body_bytes
+}
+
+export fn gen_string_last_index_of_body(enable_rc: Bool, str_len_idx: Int, str_substring_idx: Int, str_eq_idx: Int) -> Bytes {
+  let b = bytebuf_new()
+  emit_local_get(b, 0)
+  emit_call(b, str_len_idx)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
+  emit_i32_wrap_i64(b)
+  emit_local_set(b, 2)
+  emit_local_get(b, 1)
+  emit_call(b, str_len_idx)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+  }
+  emit_i32_wrap_i64(b)
+  emit_local_set(b, 3)
+  emit_local_get(b, 3)
+  emit_local_get(b, 2)
+  bytebuf_push(b, 75)
+  emit_if_i64(b)
+  emit_i64_const(b, -1)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
+  emit_else(b)
+  emit_local_get(b, 2)
+  emit_local_get(b, 3)
+  emit_i32_sub(b)
+  emit_local_set(b, 4)
+  emit_block_i64(b)
+  emit_block_void(b)
+  emit_loop_void(b)
+  emit_local_get(b, 4)
+  emit_i32_const(b, 0)
+  bytebuf_push(b, 72)
+  emit_br_if(b, 1)
+  emit_local_get(b, 0)
+  emit_local_get(b, 4)
+  emit_i64_extend_i32_u(b)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
+  emit_local_get(b, 4)
+  emit_local_get(b, 3)
+  emit_i32_add(b)
+  emit_i64_extend_i32_u(b)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
+  emit_call(b, str_substring_idx)
+  emit_local_set(b, 5)
+  emit_local_get(b, 5)
+  emit_local_get(b, 1)
+  emit_call(b, str_eq_idx)
+  emit_i32_wrap_i64(b)
+  emit_if_void(b)
+  emit_local_get(b, 4)
+  emit_i64_extend_i32_u(b)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
+  emit_br(b, 3)
+  emit_end(b)
+  emit_local_get(b, 4)
+  emit_i32_const(b, 1)
+  emit_i32_sub(b)
+  emit_local_set(b, 4)
+  emit_br(b, 0)
+  emit_end(b)
+  emit_end(b)
+  emit_i64_const(b, -1)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
+  emit_end(b)
+  emit_end(b)
+  b
+}
+
+export fn gen_sources_stub_body(arr_new_idx: Int) -> Bytes {
+  let b = bytebuf_new()
+  emit_call(b, arr_new_idx)
+  b
+}
+
+let static_arr_push_all_body_bytes: Bytes = Bytes::from_array([
+  32,
+  0,
+  167,
+  33,
+  2,
+  32,
+  1,
+  167,
+  33,
+  3,
+  32,
+  2,
+  40,
+  2,
+  4,
+  33,
+  4,
+  32,
+  3,
+  40,
+  2,
+  4,
+  33,
+  5,
+  32,
+  2,
+  40,
+  2,
+  8,
+  33,
+  6,
+  32,
+  3,
+  40,
+  2,
+  8,
+  33,
+  7,
+  32,
+  2,
+  40,
+  2,
+  0,
+  33,
+  8,
+  32,
+  4,
+  32,
+  5,
+  106,
+  32,
+  8,
+  75,
+  4,
+  64,
+  32,
+  4,
+  32,
+  5,
+  106,
+  65,
+  2,
+  108,
+  33,
+  9,
+  35,
+  0,
+  34,
+  10,
+  32,
+  9,
+  65,
+  8,
+  108,
+  106,
+  36,
+  0,
+  32,
+  10,
+  32,
+  6,
+  32,
+  4,
+  65,
+  8,
+  108,
+  252,
+  10,
+  0,
+  0,
+  32,
+  2,
+  32,
+  9,
+  54,
+  2,
+  0,
+  32,
+  2,
+  32,
+  10,
+  54,
+  2,
+  8,
+  32,
+  10,
+  33,
+  6,
+  11,
+  32,
+  6,
+  32,
+  4,
+  65,
+  3,
+  116,
+  106,
+  32,
+  7,
+  32,
+  5,
+  65,
+  3,
+  116,
+  252,
+  10,
+  0,
+  0,
+  32,
+  2,
+  32,
+  4,
+  32,
+  5,
+  106,
+  54,
+  2,
+  4
+])
+
+export fn static_arr_push_all_body() -> Bytes {
+  static_arr_push_all_body_bytes
+}
+
+/// #997: this used to be a precomputed constant (`local.get 0; f64.reinterpret_i64;
+/// i64.trunc_f64_s`, byte-for-byte identical to the pre-fix `gen_double_to_int_body`)
+/// -- now that the body needs to guard against the NaN/out-of-range trap, it
+/// delegates to `gen_double_to_int_body` instead of hand-encoding the longer
+/// branchy byte sequence twice.
+export fn static_double_to_int_body() -> Bytes {
+  gen_double_to_int_body()
+}
+
+let static_int_to_double_body_bytes: Bytes = Bytes::from_array([32, 0, 185, 189])
+
+export fn static_int_to_double_body() -> Bytes {
+  static_int_to_double_body_bytes
+}
+
+let static_str_substring_body_bytes: Bytes = Bytes::from_array([
+  32,
+  0,
+  66,
+  32,
+  135,
+  167,
+  33,
+  3,
+  32,
+  2,
+  32,
+  1,
+  125,
+  167,
+  33,
+  4,
+  32,
+  3,
+  32,
+  1,
+  167,
+  106,
+  173,
+  66,
+  32,
+  134,
+  32,
+  4,
+  173,
+  132
+])
+
+export fn static_str_substring_body() -> Bytes {
+  static_str_substring_body_bytes
+}
+
+export fn gen_sources_proper_body(num_sources: Int, str_offsets: Array[Int], str_lengths: Array[Int], src_str_base: Int, arr_new_idx: Int, arr_push_idx: Int) -> Bytes {
+  let b = bytebuf_new()
+  emit_call(b, arr_new_idx)
+  emit_local_set(b, 1)
+  let mut si = 0
+  while si < num_sources {
+    let path_idx = src_str_base + si * 2
+    let content_idx = src_str_base + si * 2 + 1
+    let path_off = Array::get(str_offsets, path_idx)
+    let path_len = Array::get(str_lengths, path_idx)
+    let content_off = Array::get(str_offsets, content_idx)
+    let content_len = Array::get(str_lengths, content_idx)
+    emit_global_get(b, 0)
+    emit_local_tee(b, 0)
+    emit_i32_const(b, 16)
+    emit_i32_add(b)
+    emit_global_set(b, 0)
+    emit_heap_memory_grow_check(b)
+    emit_local_get(b, 0)
+    let path_ref = (path_off<<32)|path_len
+    emit_i64_const(b, path_ref)
+    emit_i64_store(b, 3, 0)
+    emit_local_get(b, 0)
+    let content_ref = (content_off<<32)|content_len
+    emit_i64_const(b, content_ref)
+    emit_i64_store(b, 3, 8)
+    emit_local_get(b, 1)
+    emit_local_get(b, 0)
+    emit_i64_extend_i32_u(b)
+    emit_call(b, arr_push_idx)
+    si = si + 1
+  }
+  emit_local_get(b, 1)
+  b
+}
+
+let static_str_char_code_at_body_bytes: Bytes = Bytes::from_array([
+  // #811 bounds-check prefix: local.get 1; i32.wrap; local.get 0; i32.wrap
+  // (low word = length); i32.ge_u; if; unreachable; end
+  32,
+  1,
+  167,
+  32,
+  0,
+  167,
+  79,
+  4,
+  64,
+  0,
+  11,
+  32,
+  0,
+  66,
+  32,
+  135,
+  167,
+  33,
+  2,
+  32,
+  2,
+  32,
+  1,
+  167,
+  106,
+  45,
+  0,
+  0,
+  173
+])
+
+export fn static_str_char_code_at_body() -> Bytes {
+  static_str_char_code_at_body_bytes
+}
+
+let static_str_from_char_code_body_bytes: Bytes = Bytes::from_array([
+  35,
+  0,
+  34,
+  1,
+  65,
+  1,
+  106,
+  36,
+  0,
+  32,
+  1,
+  32,
+  0,
+  167,
+  58,
+  0,
+  0,
+  32,
+  1,
+  173,
+  66,
+  32,
+  134,
+  66,
+  1,
+  132
+])
+
+export fn static_str_from_char_code_body() -> Bytes {
+  static_str_from_char_code_body_bytes
+}
+
+let static_fs_write_bytes_stub_body_bytes: Bytes = Bytes::new()
+
+export fn static_fs_write_bytes_stub_body() -> Bytes {
+  static_fs_write_bytes_stub_body_bytes
+}
+
+//# Map hash index (O(1)-average Map::get/has_key)
+//
+// Map[K,V] keys are always String (checker/builtins_map.vibe hardcodes
+// CtString for every Map:: op's key param). The existing Map runtime layout
+// ([count:i32 @0][{key:i64,value:i64} entries @8...], insertion order) is
+// unchanged -- Map::keys/values must keep insertion order (json_stringify.vibe
+// depends on it for stable key order). This adds a side hash index, built
+// fresh whenever the entries array is finalized (Map::set/delete,
+// MapBuilder::freeze already do an O(n) copy for persistence, so building an
+// index alongside costs no new asymptotic complexity on writes) and consulted
+// by Map::get/has_key for O(1)-average lookups instead of the O(n) scan.
+// Open addressing + Robin Hood displacement, modeled directly on
+// moonbitlang/core's hashmap.mbt (the user's own reference: PSL-tracked
+// entries, early-exit on `probe_distance > entry.psl`, grow-free here since
+// capacity is sized upfront from the final count). Index slots are 8 bytes:
+// [psl:i32 @0][entry_idx:i32 @4], entry_idx==-1 = empty. Stored at the Map's
+// header offset+4 (confirmed always-zero padding on every existing Map --
+// nothing reads/writes it today), so index_ptr==0 unambiguously means "no
+// index" and callers fall back to the untouched linear scan.
+//
+// Hash: an xxHash32-style accumulator, same algorithm as moonbitlang/core's
+// builtin/hasher.mbt (GPRIME1..5, consume4/consume1, avalanche finalize) --
+// vibe strings are raw bytes (gen_str_char_code_at_body loads i32.load8_u),
+// so this processes the string's bytes directly (moonbit's `combine_bytes`
+// shape) rather than per-codepoint. The accumulator is kept masked to 32
+// bits (always non-negative as an i64), so `i64.shr_s` is safe to use in
+// place of a native unsigned shift throughout.
+
+/// acc := (acc + val*prime) & 0xFFFFFFFF, stored back into local `acc_l`.
+fn mh_add_mul(b: Bytes, acc_l: Int, val_l: Int, prime: Int) -> Unit {
+  emit_local_get(b, acc_l)
+  emit_local_get(b, val_l)
+  emit_i64_const(b, prime)
+  emit_i64_mul(b)
+  emit_i64_add(b)
+  emit_i64_const(b, 4294967295)
+  emit_i64_and(b)
+  emit_local_set(b, acc_l)
+}
+
+/// acc := rotl32(acc, r) & 0xFFFFFFFF, stored back into local `acc_l`.
+fn mh_rotl(b: Bytes, acc_l: Int, r: Int) -> Unit {
+  emit_local_get(b, acc_l)
+  emit_i64_const(b, r)
+  emit_i64_shl(b)
+  emit_local_get(b, acc_l)
+  emit_i64_const(b, 32 - r)
+  emit_i64_shr_s(b)
+  emit_i64_or(b)
+  emit_i64_const(b, 4294967295)
+  emit_i64_and(b)
+  emit_local_set(b, acc_l)
+}
+
+/// acc := (acc * prime) & 0xFFFFFFFF, stored back into local `acc_l`.
+fn mh_mul_prime(b: Bytes, acc_l: Int, prime: Int) -> Unit {
+  emit_local_get(b, acc_l)
+  emit_i64_const(b, prime)
+  emit_i64_mul(b)
+  emit_i64_const(b, 4294967295)
+  emit_i64_and(b)
+  emit_local_set(b, acc_l)
+}
+
+/// acc := (acc ^ (acc >>> r)) & 0xFFFFFFFF, stored back into local `acc_l`.
+fn mh_xor_shr(b: Bytes, acc_l: Int, r: Int) -> Unit {
+  emit_local_get(b, acc_l)
+  emit_local_get(b, acc_l)
+  emit_i64_const(b, r)
+  emit_i64_shr_s(b)
+  emit_i64_xor(b)
+  emit_i64_const(b, 4294967295)
+  emit_i64_and(b)
+  emit_local_set(b, acc_l)
+}
+
+/// __rt_map_hash(s: String) -> Int  [type 3: (i64) -> i64]
+/// local0 = s (param). Extra i32: local1=base_ptr, local2=len, local3=cur.
+/// Extra i64: local4=acc, local5=chunk/byte scratch. meta=(3,2).
+export fn gen_map_hash_body() -> Bytes {
+  let b = bytebuf_new()
+  let base_l = 1
+  let len_l = 2
+  let cur_l = 3
+  let acc_l = 4
+  let val_l = 5
+  // base_ptr = high32(s), len = low32(s) -- same unpack as gen_str_len_body /
+  // gen_str_char_code_at_body.
+  emit_local_get(b, 0)
+  emit_i64_const(b, 32)
+  emit_i64_shr_s(b)
+  emit_i32_wrap_i64(b)
+  emit_local_set(b, base_l)
+  emit_local_get(b, 0)
+  emit_i64_const(b, 4294967295)
+  emit_i64_and(b)
+  emit_i32_wrap_i64(b)
+  emit_local_set(b, len_l)
+  emit_i32_const(b, 0)
+  emit_local_set(b, cur_l)
+  emit_i64_const(b, 0x165667B1)
+  emit_local_set(b, acc_l)
+  // 4-byte chunk loop: while cur+4 <= len
+  emit_block_void(b)
+  emit_loop_void(b)
+  emit_local_get(b, cur_l)
+  emit_i32_const(b, 4)
+  emit_i32_add(b)
+  emit_local_get(b, len_l)
+  emit_i32_gt_u(b)
+  emit_br_if(b, 1)
+  emit_local_get(b, base_l)
+  emit_local_get(b, cur_l)
+  emit_i32_add(b)
+  emit_i32_load(b, 0, 0)
+  emit_i64_extend_i32_u(b)
+  emit_local_set(b, val_l)
+  mh_add_mul(b, acc_l, val_l, 0xC2B2AE3D)
+  mh_rotl(b, acc_l, 17)
+  mh_mul_prime(b, acc_l, 0x27D4EB2F)
+  emit_local_get(b, cur_l)
+  emit_i32_const(b, 4)
+  emit_i32_add(b)
+  emit_local_set(b, cur_l)
+  emit_br(b, 0)
+  emit_end(b)
+  emit_end(b)
+  // remainder loop: while cur < len (one byte at a time)
+  emit_block_void(b)
+  emit_loop_void(b)
+  emit_local_get(b, cur_l)
+  emit_local_get(b, len_l)
+  emit_i32_ge_u(b)
+  emit_br_if(b, 1)
+  emit_local_get(b, base_l)
+  emit_local_get(b, cur_l)
+  emit_i32_add(b)
+  emit_i32_load8_u(b, 0, 0)
+  emit_i64_extend_i32_u(b)
+  emit_local_set(b, val_l)
+  mh_add_mul(b, acc_l, val_l, 0x165667B1)
+  mh_rotl(b, acc_l, 11)
+  mh_mul_prime(b, acc_l, 0x9E3779B1)
+  emit_local_get(b, cur_l)
+  emit_i32_const(b, 1)
+  emit_i32_add(b)
+  emit_local_set(b, cur_l)
+  emit_br(b, 0)
+  emit_end(b)
+  emit_end(b)
+  // avalanche finalize
+  mh_xor_shr(b, acc_l, 15)
+  mh_mul_prime(b, acc_l, 0x85EBCA77)
+  mh_xor_shr(b, acc_l, 13)
+  mh_mul_prime(b, acc_l, 0xC2B2AE3D)
+  emit_local_get(b, acc_l)
+  emit_local_get(b, acc_l)
+  emit_i64_const(b, 16)
+  emit_i64_shr_s(b)
+  emit_i64_xor(b)
+  emit_i64_const(b, 4294967295)
+  emit_i64_and(b)
+  b
+}
+
+/// Reduce the nonnegative dividend on the stack modulo 2^31-fold, using
+/// the now-dead accumulator local as scratch. Here fold is 1 or 19.
+///
+/// x = low + 2^31*high is congruent to low + fold*high. Single-byte updates
+/// need one fold. A batch needs one for h1 and two for h2 (bounds below).
+/// These leave less than 2*p, so one conditional subtraction suffices.
+fn compact_fp_reduce31(b: Bytes, acc_l: Int, fold: Int, modulus: Int, passes: Int) -> Unit {
+  let mut pass = 0
+  while pass < passes {
+    emit_local_set(b, acc_l)
+    emit_local_get(b, acc_l)
+    emit_i64_const(b, 2147483647)
+    emit_i64_and(b)
+    emit_local_get(b, acc_l)
+    emit_i64_const(b, 31)
+    emit_i64_shr_u(b)
+    if fold != 1 {
+      emit_i64_const(b, fold)
+      emit_i64_mul(b)
+    }
+    emit_i64_add(b)
+    pass = pass + 1
+  }
+  emit_local_set(b, acc_l)
+  emit_local_get(b, acc_l)
+  emit_i64_const(b, modulus)
+  emit_i64_ge_s(b)
+  emit_if_void(b)
+  emit_local_get(b, acc_l)
+  emit_i64_const(b, modulus)
+  emit_i64_sub(b)
+  emit_local_set(b, acc_l)
+  emit_end(b)
+}
+
+/// Expand four recurrences into a^4*h + sum(a^(3-j)*(byte[j]+1)).
+/// The second hash also adds cur*sum(weights) + sum(j*weight[j]); reduce
+/// those coefficients before multiplying by the full u32 position.
+/// With maximal residues, bytes and position, the dividends are bounded by
+/// 632433764675730270 and 7195933874556280348 respectively, both below 2^63.
+/// One h1 fold is at most 2441983567; two h2 folds are at most 2147484217.
+/// Each is below twice its modulus. No arithmetic or buffer read wraps.
+fn compact_fp_batch4(b: Bytes, base_l: Int, cur_l: Int, acc_l: Int, a: Int, modulus: Int, fold: Int, position: Bool) -> Unit {
+  // These powers are computed by the emitter, never by the generated loop.
+  let a2 = (a * a) % modulus
+  let a3 = (a2 * a) % modulus
+  let a4 = (a3 * a) % modulus
+  let weights = [a3, a2, a, 1]
+  emit_local_get(b, acc_l)
+  emit_i64_const(b, a4)
+  emit_i64_mul(b)
+  let mut j = 0
+  while j < 4 {
+    emit_local_get(b, base_l)
+    emit_local_get(b, cur_l)
+    emit_i32_add(b)
+    emit_i32_load8_u(b, 0, j)
+    emit_i64_extend_i32_u(b)
+    emit_i64_const(b, 1)
+    emit_i64_add(b)
+    let weight = Array::get(weights, j)
+    if weight != 1 {
+      emit_i64_const(b, weight)
+      emit_i64_mul(b)
+    }
+    emit_i64_add(b)
+    j = j + 1
+  }
+  if position {
+    emit_local_get(b, cur_l)
+    emit_i64_extend_i32_u(b)
+    emit_i64_const(b, (a3 + a2 + a + 1) % modulus)
+    emit_i64_mul(b)
+    emit_i64_add(b)
+    emit_i64_const(b, (a2 + 2 * a + 3) % modulus)
+    emit_i64_add(b)
+  }
+  compact_fp_reduce31(b, acc_l, fold, modulus, if fold == 1 {
+    1
+  } else {
+    2
+  })
+}
+
+/// Direct byte scanner for @vibe/cache::compact_string_fingerprint. Both
+/// 31-bit hashes are packed into one Int so the source-level wrapper can keep
+/// the historical `len:h1:h2` cache-key format without scanning twice.
+export fn gen_compact_fingerprint_hash_body(enable_rc: Bool) -> Bytes {
+  let b = bytebuf_new()
+  let base_l = 1
+  let len_l = 2
+  let cur_l = 3
+  let h1_l = 4
+  let h2_l = 5
+  emit_local_get(b, 0)
+  emit_i64_const(b, 32)
+  emit_i64_shr_s(b)
+  emit_i32_wrap_i64(b)
+  emit_local_set(b, base_l)
+  emit_local_get(b, 0)
+  emit_i64_const(b, 4294967295)
+  emit_i64_and(b)
+  emit_i32_wrap_i64(b)
+  emit_local_set(b, len_l)
+  emit_i32_const(b, 0)
+  emit_local_set(b, cur_l)
+  emit_i64_const(b, 17)
+  emit_local_set(b, h1_l)
+  emit_i64_const(b, 29)
+  emit_local_set(b, h2_l)
+  emit_block_void(b)
+  emit_loop_void(b)
+  // Compare 4 > len-cur so the boundary cannot wrap at a u32 length.
+  emit_i32_const(b, 4)
+  emit_local_get(b, len_l)
+  emit_local_get(b, cur_l)
+  emit_i32_sub(b)
+  emit_i32_gt_u(b)
+  emit_br_if(b, 1)
+  compact_fp_batch4(b, base_l, cur_l, h1_l, 131, 2147483647, 1, false)
+  compact_fp_batch4(b, base_l, cur_l, h2_l, 65599, 2147483629, 19, true)
+  emit_local_get(b, cur_l)
+  emit_i32_const(b, 4)
+  emit_i32_add(b)
+  emit_local_set(b, cur_l)
+  emit_br(b, 0)
+  emit_end(b)
+  emit_end(b)
+  // The last zero to three bytes retain the single-byte recurrence.
+  emit_block_void(b)
+  emit_loop_void(b)
+  emit_local_get(b, cur_l)
+  emit_local_get(b, len_l)
+  emit_i32_ge_u(b)
+  emit_br_if(b, 1)
+  emit_local_get(b, h1_l)
+  emit_i64_const(b, 131)
+  emit_i64_mul(b)
+  emit_local_get(b, base_l)
+  emit_local_get(b, cur_l)
+  emit_i32_add(b)
+  emit_i32_load8_u(b, 0, 0)
+  emit_i64_extend_i32_u(b)
+  emit_i64_add(b)
+  emit_i64_const(b, 1)
+  emit_i64_add(b)
+  compact_fp_reduce31(b, h1_l, 1, 2147483647, 1)
+  emit_local_get(b, h2_l)
+  emit_i64_const(b, 65599)
+  emit_i64_mul(b)
+  emit_local_get(b, base_l)
+  emit_local_get(b, cur_l)
+  emit_i32_add(b)
+  emit_i32_load8_u(b, 0, 0)
+  emit_i64_extend_i32_u(b)
+  emit_i64_add(b)
+  emit_local_get(b, cur_l)
+  emit_i64_extend_i32_u(b)
+  emit_i64_add(b)
+  emit_i64_const(b, 1)
+  emit_i64_add(b)
+  compact_fp_reduce31(b, h2_l, 19, 2147483629, 1)
+  emit_local_get(b, cur_l)
+  emit_i32_const(b, 1)
+  emit_i32_add(b)
+  emit_local_set(b, cur_l)
+  emit_br(b, 0)
+  emit_end(b)
+  emit_end(b)
+  emit_local_get(b, h1_l)
+  emit_i64_const(b, 31)
+  emit_i64_shl(b)
+  emit_local_get(b, h2_l)
+  emit_i64_or(b)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_shl(b)
+  }
+  b
+}
+
+/// __rt_map_cap_for(count: Int) -> Int  [type 3: (i64) -> i64]
+/// capacity = next_pow2(max(8, count*2)) -- keeps the index table at <=50%
+/// load factor (same policy as moonbitlang/core's default_init_capacity=8 /
+/// grow-at-half). local0 = count (param). Extra i64: local1 = working n.
+export fn gen_map_cap_body() -> Bytes {
+  let b = bytebuf_new()
+  let n_l = 1
+  emit_local_get(b, 0)
+  emit_i64_const(b, 2)
+  emit_i64_mul(b)
+  emit_local_set(b, n_l)
+  emit_local_get(b, n_l)
+  emit_i64_const(b, 8)
+  emit_i64_lt_s(b)
+  emit_if_i64(b)
+  emit_i64_const(b, 8)
+  emit_else(b)
+  emit_local_get(b, n_l)
+  emit_end(b)
+  emit_local_set(b, n_l)
+  emit_local_get(b, n_l)
+  emit_i64_const(b, 1)
+  emit_i64_sub(b)
+  emit_local_set(b, n_l)
+  emit_local_get(b, n_l)
+  emit_local_get(b, n_l)
+  emit_i64_const(b, 1)
+  emit_i64_shr_s(b)
+  emit_i64_or(b)
+  emit_local_set(b, n_l)
+  emit_local_get(b, n_l)
+  emit_local_get(b, n_l)
+  emit_i64_const(b, 2)
+  emit_i64_shr_s(b)
+  emit_i64_or(b)
+  emit_local_set(b, n_l)
+  emit_local_get(b, n_l)
+  emit_local_get(b, n_l)
+  emit_i64_const(b, 4)
+  emit_i64_shr_s(b)
+  emit_i64_or(b)
+  emit_local_set(b, n_l)
+  emit_local_get(b, n_l)
+  emit_local_get(b, n_l)
+  emit_i64_const(b, 8)
+  emit_i64_shr_s(b)
+  emit_i64_or(b)
+  emit_local_set(b, n_l)
+  emit_local_get(b, n_l)
+  emit_local_get(b, n_l)
+  emit_i64_const(b, 16)
+  emit_i64_shr_s(b)
+  emit_i64_or(b)
+  emit_local_set(b, n_l)
+  emit_local_get(b, n_l)
+  emit_i64_const(b, 1)
+  emit_i64_add(b)
+  b
+}
+
+/// __rt_map_index_insert(index_ptr, initial_slot, entry_idx) -> Unit
+/// [type 7: (i64,i64,i64) -> ()]
+/// Index table layout: [mask:i64 @+0][slots: {psl:i32,entry_idx:i32} @+8...]
+/// -- the mask lives in an 8-byte header so this (and probe, below) can take
+/// one fewer param and reuse an existing type shape instead of needing a new
+/// one. Robin Hood insertion of ONE (entry_idx, psl=0) pair, starting the
+/// probe at `initial_slot`. Displaces (and continues inserting) whichever
+/// existing entry has a smaller psl, exactly mirroring moonbitlang/core's
+/// MutMap::push_away. Always terminates via `return` (the caller sizes the
+/// table so an empty slot is always reachable within `mask+1` probes).
+/// local0=index_ptr, local1=slot, local2=entry_idx (params). Extra i32:
+/// local3=slot_addr. Extra i64: local4=mask, local5=psl, local6=cur_psl,
+/// local7=cur_entry_idx. meta=(1,4).
+export fn gen_map_index_insert_body() -> Bytes {
+  let b = bytebuf_new()
+  let idxptr_l = 0
+  let slot_l = 1
+  let entry_l = 2
+  let addr_l = 3
+  let mask_l = 4
+  let psl_l = 5
+  let cur_psl_l = 6
+  let cur_entry_l = 7
+  emit_local_get(b, idxptr_l)
+  emit_i32_wrap_i64(b)
+  emit_i64_load(b, 3, 0)
+  emit_local_set(b, mask_l)
+  emit_i64_const(b, 0)
+  emit_local_set(b, psl_l)
+  emit_loop_void(b)
+  emit_local_get(b, idxptr_l)
+  emit_i32_wrap_i64(b)
+  emit_i32_const(b, 8)
+  emit_i32_add(b)
+  emit_local_get(b, slot_l)
+  emit_i32_wrap_i64(b)
+  emit_i32_const(b, 8)
+  emit_i32_mul(b)
+  emit_i32_add(b)
+  emit_local_set(b, addr_l)
+  emit_local_get(b, addr_l)
+  emit_i32_load(b, 2, 4)
+  emit_i64_extend_i32_s(b)
+  emit_local_set(b, cur_entry_l)
+  emit_local_get(b, cur_entry_l)
+  emit_i64_const(b, -1)
+  emit_i64_eq(b)
+  emit_if_void(b)
+  emit_local_get(b, addr_l)
+  emit_local_get(b, psl_l)
+  emit_i32_wrap_i64(b)
+  emit_i32_store(b, 2, 0)
+  emit_local_get(b, addr_l)
+  emit_local_get(b, entry_l)
+  emit_i32_wrap_i64(b)
+  emit_i32_store(b, 2, 4)
+  emit_return(b)
+  emit_end(b)
+  emit_local_get(b, addr_l)
+  emit_i32_load(b, 2, 0)
+  emit_i64_extend_i32_u(b)
+  emit_local_set(b, cur_psl_l)
+  emit_local_get(b, psl_l)
+  emit_local_get(b, cur_psl_l)
+  emit_i64_gt_s(b)
+  emit_if_void(b)
+  emit_local_get(b, addr_l)
+  emit_local_get(b, psl_l)
+  emit_i32_wrap_i64(b)
+  emit_i32_store(b, 2, 0)
+  emit_local_get(b, addr_l)
+  emit_local_get(b, entry_l)
+  emit_i32_wrap_i64(b)
+  emit_i32_store(b, 2, 4)
+  emit_local_get(b, cur_psl_l)
+  emit_i64_const(b, 1)
+  emit_i64_add(b)
+  emit_local_set(b, psl_l)
+  emit_local_get(b, cur_entry_l)
+  emit_local_set(b, entry_l)
+  emit_else(b)
+  emit_local_get(b, psl_l)
+  emit_i64_const(b, 1)
+  emit_i64_add(b)
+  emit_local_set(b, psl_l)
+  emit_end(b)
+  emit_local_get(b, slot_l)
+  emit_i64_const(b, 1)
+  emit_i64_add(b)
+  emit_local_get(b, mask_l)
+  emit_i64_and(b)
+  emit_local_set(b, slot_l)
+  emit_br(b, 0)
+  emit_end(b)
+  b
+}
+
+/// __rt_map_build_index(base, count) -> Int  [type 4: (i64,i64) -> i64]
+/// Bump-allocates a fresh (capacity*8 + 8)-byte index table: an 8-byte
+/// [mask:i64] header (see gen_map_index_insert_body's layout comment)
+/// followed by capacity 0xFF-filled slots (every slot's entry_idx reads as
+/// -1/empty). Inserts every existing entry (base+8..) into it via
+/// __rt_map_index_insert. Called after Map::set/Map::delete/
+/// MapBuilder::freeze finalize the (insertion-order) entries array -- the
+/// O(n) work here is no worse than the copy those callers already do.
+/// Returns the index table pointer (pointing at the mask header, i.e. the
+/// same pointer __rt_map_index_insert/__rt_map_probe_index expect).
+/// local0=base, local1=count (params). Extra i64: local2=capacity,
+/// local3=bytes_needed (slots only, excludes the 8-byte header),
+/// local4=idx_ptr, local5=i, local6=key, local7=h, local8=mask. meta=(0,7).
+///
+/// #2683: on the RC lane (`rc_alloc_idx >= 0`) the table is an RC leaf block
+/// (class 0, rc 1) allocated through rc_alloc, so the Map's class-6 rc_drop
+/// arm can push it onto its size bin with the entries block; the returned
+/// pointer is the block's value pointer, the same shape the callers store at
+/// vptr+4. The bump lane (`rc_alloc_idx < 0`) keeps the raw allocation.
+export fn gen_map_build_index_body(hash_fn_idx: Int, cap_fn_idx: Int, insert_fn_idx: Int, heap_grow_check_idx: Int, rc_alloc_idx: Int) -> Bytes {
+  let b = bytebuf_new()
+  let base_l = 0
+  let count_l = 1
+  let cap_l = 2
+  let bytes_l = 3
+  let idxptr_l = 4
+  let i_l = 5
+  let key_l = 6
+  let h_l = 7
+  let mask_l = 8
+  emit_local_get(b, count_l)
+  emit_call(b, cap_fn_idx)
+  emit_local_set(b, cap_l)
+  emit_local_get(b, cap_l)
+  emit_i64_const(b, 8)
+  emit_i64_mul(b)
+  emit_local_set(b, bytes_l)
+  if rc_alloc_idx >= 0 {
+    // block = rc_alloc(slots + 8 (mask) + 8 (header)); size word, rc word 1
+    // (class 0); idx_ptr = block + 8.
+    emit_local_get(b, bytes_l)
+    emit_i64_const(b, 16)
+    emit_i64_add(b)
+    emit_call(b, rc_alloc_idx)
+    emit_local_set(b, idxptr_l)
+    emit_local_get(b, idxptr_l)
+    emit_i32_wrap_i64(b)
+    emit_local_get(b, bytes_l)
+    emit_i32_wrap_i64(b)
+    emit_i32_const(b, 16)
+    emit_i32_add(b)
+    emit_i32_store(b, 2, 0)
+    emit_local_get(b, idxptr_l)
+    emit_i32_wrap_i64(b)
+    emit_i32_const(b, 1)
+    emit_i32_store(b, 2, 4)
+    emit_local_get(b, idxptr_l)
+    emit_i64_const(b, 8)
+    emit_i64_add(b)
+    emit_local_set(b, idxptr_l)
+  } else {
+    emit_global_get(b, 0)
+    emit_i64_extend_i32_u(b)
+    emit_local_set(b, idxptr_l)
+    emit_global_get(b, 0)
+    emit_local_get(b, bytes_l)
+    emit_i32_wrap_i64(b)
+    emit_i32_const(b, 8)
+    emit_i32_add(b)
+    emit_i32_add(b)
+    emit_global_set(b, 0)
+    emit_call(b, heap_grow_check_idx)
+  }
+  emit_local_get(b, idxptr_l)
+  emit_i32_wrap_i64(b)
+  emit_i32_const(b, 8)
+  emit_i32_add(b)
+  emit_i32_const(b, 255)
+  emit_local_get(b, bytes_l)
+  emit_i32_wrap_i64(b)
+  emit_memory_fill(b)
+  emit_local_get(b, cap_l)
+  emit_i64_const(b, 1)
+  emit_i64_sub(b)
+  emit_local_set(b, mask_l)
+  emit_local_get(b, idxptr_l)
+  emit_i32_wrap_i64(b)
+  emit_local_get(b, mask_l)
+  emit_i64_store(b, 3, 0)
+  emit_i64_const(b, 0)
+  emit_local_set(b, i_l)
+  emit_block_void(b)
+  emit_loop_void(b)
+  emit_local_get(b, i_l)
+  emit_local_get(b, count_l)
+  emit_i64_ge_s(b)
+  emit_br_if(b, 1)
+  emit_local_get(b, base_l)
+  emit_i32_wrap_i64(b)
+  emit_local_get(b, i_l)
+  emit_i32_wrap_i64(b)
+  emit_i32_const(b, 16)
+  emit_i32_mul(b)
+  emit_i32_add(b)
+  emit_i64_load(b, 3, 8)
+  emit_local_set(b, key_l)
+  emit_local_get(b, key_l)
+  emit_call(b, hash_fn_idx)
+  emit_local_set(b, h_l)
+  emit_local_get(b, idxptr_l)
+  emit_local_get(b, h_l)
+  emit_local_get(b, mask_l)
+  emit_i64_and(b)
+  emit_local_get(b, i_l)
+  emit_call(b, insert_fn_idx)
+  emit_local_get(b, i_l)
+  emit_i64_const(b, 1)
+  emit_i64_add(b)
+  emit_local_set(b, i_l)
+  emit_br(b, 0)
+  emit_end(b)
+  emit_end(b)
+  emit_local_get(b, idxptr_l)
+  b
+}
+
+/// __rt_map_probe_index(base, count, key) -> Int  [type 8: (i64,i64,i64) -> i64]
+/// Robin Hood lookup: returns the matching entry's index (0..count-1), or -1
+/// if absent. Assumes the caller already confirmed index_ptr (at base+4) is
+/// nonzero -- callers without an index (small maps, see the count>=8
+/// threshold at the Map::get/has_key call sites) use the untouched linear
+/// scan instead. Reads mask straight from the index table's header (see
+/// gen_map_index_insert_body's layout comment) instead of recomputing
+/// capacity, so this needs no cap_fn dependency. local0=base, local1=count
+/// (unused, kept for a uniform call signature with the linear-scan
+/// fallback's arg list), local2=key (params). Extra i32: local3=slot_addr.
+/// Extra i64: local4=mask, local5=index_ptr, local6=h, local7=slot,
+/// local8=i (probe count, bounded by mask+1), local9=cur_entry_idx,
+/// local10=cur_psl, local11=cand_key. meta=(1,8).
+export fn gen_map_probe_index_body(hash_fn_idx: Int, eq_fn_idx: Int) -> Bytes {
+  let b = bytebuf_new()
+  let base_l = 0
+  let key_l = 2
+  let addr_l = 3
+  let mask_l = 4
+  let idxptr_l = 5
+  let h_l = 6
+  let slot_l = 7
+  let i_l = 8
+  let cur_entry_l = 9
+  let cur_psl_l = 10
+  let cand_key_l = 11
+  emit_local_get(b, base_l)
+  emit_i32_wrap_i64(b)
+  emit_i32_load(b, 2, 4)
+  emit_i64_extend_i32_u(b)
+  emit_local_set(b, idxptr_l)
+  emit_local_get(b, idxptr_l)
+  emit_i32_wrap_i64(b)
+  emit_i64_load(b, 3, 0)
+  emit_local_set(b, mask_l)
+  emit_local_get(b, key_l)
+  emit_call(b, hash_fn_idx)
+  emit_local_set(b, h_l)
+  emit_local_get(b, h_l)
+  emit_local_get(b, mask_l)
+  emit_i64_and(b)
+  emit_local_set(b, slot_l)
+  emit_i64_const(b, 0)
+  emit_local_set(b, i_l)
+  emit_block_void(b)
+  emit_loop_void(b)
+  emit_local_get(b, i_l)
+  emit_local_get(b, mask_l)
+  emit_i64_gt_s(b)
+  emit_br_if(b, 1)
+  emit_local_get(b, idxptr_l)
+  emit_i32_wrap_i64(b)
+  emit_i32_const(b, 8)
+  emit_i32_add(b)
+  emit_local_get(b, slot_l)
+  emit_i32_wrap_i64(b)
+  emit_i32_const(b, 8)
+  emit_i32_mul(b)
+  emit_i32_add(b)
+  emit_local_set(b, addr_l)
+  emit_local_get(b, addr_l)
+  emit_i32_load(b, 2, 4)
+  emit_i64_extend_i32_s(b)
+  emit_local_set(b, cur_entry_l)
+  emit_local_get(b, cur_entry_l)
+  emit_i64_const(b, -1)
+  emit_i64_eq(b)
+  emit_br_if(b, 1)
+  emit_local_get(b, addr_l)
+  emit_i32_load(b, 2, 0)
+  emit_i64_extend_i32_u(b)
+  emit_local_set(b, cur_psl_l)
+  emit_local_get(b, i_l)
+  emit_local_get(b, cur_psl_l)
+  emit_i64_gt_s(b)
+  emit_br_if(b, 1)
+  emit_local_get(b, base_l)
+  emit_i32_wrap_i64(b)
+  emit_local_get(b, cur_entry_l)
+  emit_i32_wrap_i64(b)
+  emit_i32_const(b, 16)
+  emit_i32_mul(b)
+  emit_i32_add(b)
+  emit_i64_load(b, 3, 8)
+  emit_local_set(b, cand_key_l)
+  emit_local_get(b, cand_key_l)
+  emit_local_get(b, key_l)
+  emit_call(b, eq_fn_idx)
+  emit_i32_wrap_i64(b)
+  emit_if_void(b)
+  emit_local_get(b, cur_entry_l)
+  emit_return(b)
+  emit_end(b)
+  emit_local_get(b, i_l)
+  emit_i64_const(b, 1)
+  emit_i64_add(b)
+  emit_local_set(b, i_l)
+  emit_local_get(b, slot_l)
+  emit_i64_const(b, 1)
+  emit_i64_add(b)
+  emit_local_get(b, mask_l)
+  emit_i64_and(b)
+  emit_local_set(b, slot_l)
+  emit_br(b, 0)
+  emit_end(b)
+  emit_end(b)
+  emit_i64_const(b, -1)
+  b
+}

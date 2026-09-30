@@ -11,7 +11,7 @@ function fixture(t, change = () => {}) {
   const root = mkdtempSync(join(tmpdir(), "compiler-memory-test-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   mkdirSync(join(root, "scripts"));
-  for (const name of ["run_wasm_vibe_host_runner.sh", "wasm_vibe_host_runner.js"]) writeFileSync(join(root, "scripts", name), "runner");
+  for (const name of ["run_wasm_vibe_host_runner.sh", "wasm_vibe_host_runtime.js", "wasm_vibe_host_runner.js"]) writeFileSync(join(root, "scripts", name), "runner");
   writeFileSync(join(root, "baseline.wasm"), wasm);
   writeFileSync(join(root, "candidate-with-a-longer-name.wasm"), wasm);
   const calls = [];

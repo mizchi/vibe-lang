@@ -1,0 +1,2364 @@
+// lib/@vibe/compiler/codegen/wasi/linked_compile.vibe — prelude run per module.
+
+import @vibe/compiler/core {
+  Expr,
+  Pat,
+  Stmt,
+  TypeExpr,
+  apply_top_level_fn_alias_renames,
+  bsearch_leftmost,
+  builtin_iterator_namespace_from_marker,
+  builtin_iterator_serialized_boundary_markers,
+  builtin_registry,
+  builtin_shadow_entry_name,
+  builtin_shadow_source_name,
+  bytebuf_length,
+  bytebuf_new,
+  bytebuf_push,
+  bytebuf_push_buf,
+  bytebuf_push_section,
+  bytebuf_push_vec_header,
+  bytebuf_to_bytes,
+  collect_top_level_fn_alias_renames,
+  dce_keep_flags,
+  dce_stmts,
+  exception_effect_labels_equal,
+  executable_export_kept,
+  executable_export_kept_bytes,
+  executable_exports_stripped,
+  expr_child_at,
+  expr_children_pop,
+  expr_children_push,
+  expr_children_top,
+  fold_const_bool_params,
+  is_exception_effect_name,
+  is_runtime_scheduled_effect,
+  leb128_encode_s64,
+  leb128_encode_u32,
+  namespace_private_name,
+  namespace_rename_originals_reset,
+  rename_builtin_shadow_defs,
+  rewrite_import_alias_expr,
+  rewrite_top_level_fn_alias_refs,
+  sorted_names_of,
+  verify_lane_builtins,
+  wat_callee_names
+}
+
+import @vibe/ast {
+  TypeExpr::is_array_of_int, builtin_ref
+}
+
+import @vibe/core {
+  array_empty, struct MutMap, struct MutSet
+}
+
+import @vibe/compiler/normalize {
+  ModuleTraitFacts,
+  collect_explicit_derived_op_names,
+  collect_trivial_wrapper_names,
+  desugar_handled_host_calls,
+  desugar_inspect_calls,
+  desugar_trait_dicts_module,
+  desugar_trait_dicts_module_with_facts,
+  desugar_trait_dicts_with_typed_eq,
+  eq_deferred_requests_list,
+  eq_deferred_reset,
+  eq_invisible_nominals_list,
+  eq_invisible_nominals_reset,
+  eq_mint_deferred_into,
+  eq_synthesis_requests_list,
+  eq_typed_refusals_list,
+  hoisted_lambda_owner_key,
+  hoisted_lambda_owner_of_stmt,
+  lift_match_scrutinees,
+  module_trait_facts_none,
+  program_performs_host_operation,
+  unbox_tuple_loop_params,
+  uniquify_shadowed_bindings_fresh
+}
+
+import @vibe/compiler/perceus {
+  PerceusAction,
+  borrow_ret_link_parts,
+  borrow_ret_shadow_mask,
+  build_perceus_plan,
+  build_perceus_plan_pinned_split,
+  build_perceus_plan_with_params,
+  compute_borrow_returning_names,
+  compute_heap_returning,
+  compute_passthrough_returning,
+  compute_scalar_returning_names,
+  elaborate_heap_params,
+  fn_result_is_immediate,
+  pa_is_alias_dup,
+  pa_is_consume_mark,
+  pa_is_drop,
+  pa_is_dup,
+  pa_is_path_drop,
+  pa_is_reuse_token,
+  param_is_heap_in_body,
+  perceus_exit_rows,
+  perceus_field_release_rows,
+  perceus_pin_tables,
+  perceus_store_dup_rows,
+  perceus_truncate_rows
+}
+
+import @vibe/compiler/codegen/builtin_bodies {
+  array_capacity_error_message,
+  bytes_capacity_error_message,
+  div_zero_at_fragment,
+  div_zero_colon_fragment,
+  div_zero_div_message,
+  div_zero_rem_message,
+  gen_arr_concat_body,
+  gen_arr_get_body,
+  gen_arr_len_body,
+  gen_arr_new_body,
+  gen_arr_push_all_body,
+  gen_arr_push_body,
+  gen_arr_set_body,
+  gen_arr_slice_body,
+  gen_arr_truncate_body,
+  gen_arr_with_capacity_body,
+  gen_array_value_copy_body,
+  gen_bytes_append_body,
+  gen_bytes_blit_linear_body,
+  gen_bytes_compare_body,
+  gen_bytes_concat_body,
+  gen_bytes_count_byte_body,
+  gen_bytes_from_array_body,
+  gen_bytes_get_body,
+  gen_bytes_index_of_byte_body,
+  gen_bytes_index_of_bytes_body,
+  gen_bytes_last_index_of_byte_body,
+  gen_bytes_len_body,
+  gen_bytes_new_body,
+  gen_bytes_push_body,
+  gen_bytes_set_body,
+  gen_bytes_slice_body,
+  gen_bytes_to_array_body,
+  gen_bytes_with_capacity_body,
+  gen_compact_fingerprint_hash_body,
+  gen_div_zero_abort_body,
+  gen_eq_body,
+  gen_generic_add_body,
+  gen_generic_rel_diff_body,
+  gen_int_clz_body,
+  gen_int_ctz_body,
+  gen_int_popcount_body,
+  gen_map_build_index_body,
+  gen_map_cap_body,
+  gen_map_hash_body,
+  gen_map_index_insert_body,
+  gen_map_probe_index_body,
+  gen_oob_abort_body,
+  gen_print_i64_raw_body,
+  gen_rc_alloc_body,
+  gen_rc_drop_body,
+  gen_rc_dup_body,
+  gen_region_arr_new_body,
+  gen_region_bytes_new_body,
+  gen_simd_scan_alnum_body,
+  gen_simd_scan_line_end_body,
+  gen_simd_scan_string_special_body,
+  gen_simd_skip_ws_body,
+  gen_sources_proper_body,
+  gen_sources_stub_body,
+  gen_str_char_code_at_body,
+  gen_str_concat_body,
+  gen_str_eq_body,
+  gen_str_from_char_code_body,
+  gen_str_len_body,
+  gen_str_lex_diff_body,
+  gen_str_substring_body,
+  gen_string_contains_body,
+  gen_string_ends_with_body,
+  gen_string_index_of_body,
+  gen_string_join_body,
+  gen_string_last_index_of_body,
+  gen_string_split_body,
+  gen_string_starts_with_body,
+  gen_string_trim_body,
+  static_arr_len_body,
+  static_double_to_int_body,
+  static_fs_stub_body,
+  static_fs_write_bytes_stub_body,
+  static_identity_body,
+  static_int_to_double_body,
+  static_print_i64_body,
+  static_print_str_body,
+  static_str_eq_body,
+  static_str_len_body
+}
+
+import @vibe/compiler/codegen/reloc {
+  blind_kind_fn_value, blind_kind_table_slot_i32, blind_owner_lambda_index, blind_owner_pending
+}
+
+import @vibe/compiler/codegen/common_analysis {
+  bmask_has,
+  borrow_fixpoint_link_parts,
+  borrow_round0_link,
+  collect_free_vars,
+  collect_strings_stmts,
+  compute_borrow_disqualifiers,
+  compute_borrow_param_local_masks,
+  compute_borrow_param_user_fns,
+  compute_borrow_param_user_fns_round0,
+  compute_float_returning_names,
+  compute_may_return_view_fns,
+  count_lambda_sites_expr,
+  emit_closure_call_tail,
+  emit_closure_resolve,
+  emit_i64_extend_i32_u,
+  is_mut_captured_in,
+  may_return_view_link_parts,
+  md_borrow_mask_of,
+  md_builtin_borrow_mask,
+  mrv_declared_fn_names,
+  scope_tail_proj_root,
+  stmts_contain_exceptions,
+  unique_typed_lowering_offsets_in_stmts,
+  zero_alloc_check
+}
+
+import @vibe/compiler/codegen/common_base {
+  CodegenBodyCache,
+  CompileCtx,
+  CovState,
+  CtorTable,
+  DbgProv,
+  FuncTable,
+  LambdaTable,
+  LineMapState,
+  ModuleSplit,
+  StrTable,
+  agg_info_of_type_expr,
+  append_double_runtime,
+  append_hidden_attempt_constructors,
+  append_string_views_runtime,
+  await_poll_pass,
+  bcc_guard_synth_matches,
+  bcc_int_lists_equal,
+  bcc_layout_fp_bools,
+  bcc_layout_fp_ints,
+  bcc_layout_fp_string_matrix,
+  bcc_layout_fp_strings,
+  bcc_layout_fp_strings_upto,
+  bcc_string_lists_equal,
+  codegen_body_cache_discard,
+  codegen_body_cache_filter_src_below,
+  codegen_body_cache_find_at,
+  codegen_body_cache_find_named_at,
+  codegen_body_cache_merge,
+  codegen_body_cache_name_index,
+  codegen_body_cache_new,
+  codegen_body_cache_record,
+  codegen_body_cache_replay,
+  codegen_body_cache_slot_index,
+  collect_optional_perform_source_names,
+  compile_inline_wat_array_params,
+  compute_agg_returning,
+  ctor_sorted_index,
+  desugar_trait_dicts,
+  emit_binop_op,
+  emit_i32_eq,
+  emit_i32_eqz,
+  emit_i32_ge_u,
+  emit_i32_mul,
+  emit_i32_ne,
+  emit_i32_sub,
+  emit_i64_load,
+  emit_rc_dup_guarded,
+  emit_str_ref,
+  empty_dbg_prov,
+  erase_railway_origin_markers,
+  evidence_dict_pass_with_roots,
+  evidence_module_facts,
+  expr_tag,
+  fn_type_param_types,
+  forin_discard_pass,
+  get_arm_body,
+  get_arm_pat,
+  get_ebinop_op,
+  get_efn_body,
+  get_eif_cond,
+  get_eif_else,
+  get_eif_then,
+  get_elet_body,
+  get_elet_name,
+  get_elet_val,
+  get_slet_expr,
+  get_slet_name,
+  get_slet_type,
+  is_efn,
+  is_eident,
+  is_etuple,
+  is_pbind,
+  is_pbool,
+  is_pctor,
+  is_pint,
+  is_pstring,
+  is_ptuple,
+  is_pwild,
+  is_slet,
+  linemap_disabled,
+  linemap_flush_fn,
+  lookup_ctor,
+  lower_optional_performs,
+  lower_optional_performs_with_source_names,
+  module_split_none,
+  optional_perform_artifact_resolution,
+  rc_exit_push,
+  rc_shadow_base,
+  rc_shadow_heap_start,
+  region_exn_tag_linear,
+  region_max_depth,
+  region_saves_base_of,
+  resolve_func,
+  resolve_local,
+  rewrite_self_tail_calls,
+  source_declares_constructor,
+  str_table_index_of,
+  str_table_new,
+  suspend_cps_pass,
+  suspend_prepass_splits,
+  ty_head_names_formal,
+  unique_name_flags,
+  wrap_entry_exception_boundary,
+  wrap_entry_host_provider
+}
+
+import @vibe/compiler/codegen/common_extractors {
+  array_contains_str,
+  build_newline_offsets,
+  collect_int_div_sites,
+  emit_assignop_op,
+  emit_memory_copy,
+  find_catchall_idx,
+  get_earray_elems,
+  get_eassign_body,
+  get_eassign_name,
+  get_eassign_val,
+  get_eassignop_body,
+  get_eassignop_name,
+  get_eassignop_op,
+  get_eassignop_val,
+  get_ebinop_lhs,
+  get_ebinop_rhs,
+  get_ebool_value,
+  get_ecall_args,
+  get_ecall_callee,
+  get_efloat_value,
+  get_efn_params,
+  get_efn_tparams,
+  get_eforin_body,
+  get_eforin_iter,
+  get_eforin_name,
+  get_eident_name,
+  get_eint_value,
+  get_eletmut_body,
+  get_eletmut_name,
+  get_eletmut_val,
+  get_eletrec_body,
+  get_eletrec_name,
+  get_eletrec_val,
+  get_eseq_first,
+  get_eseq_second,
+  get_estring_value,
+  get_etuple_elems,
+  get_eunaryop_expr,
+  get_eunaryop_op,
+  get_ewhile_body,
+  get_ewhile_cond,
+  get_match_arms,
+  get_match_scrutinee,
+  get_pbind_name,
+  get_pbool_value,
+  get_pctor_args,
+  get_pctor_name,
+  get_pint_value,
+  get_pstring_value,
+  get_ptuple_pats,
+  get_slet_export
+}
+
+import @vibe/compiler/codegen/expr {
+  cc_host_future_named_raw_prefix, cc_host_stream_named_raw_prefix, cl_own_return_stmts, compile_expr
+}
+
+import @vibe/compiler/codegen/wasm_emit {
+  emit_block_i64,
+  emit_block_void,
+  emit_br,
+  emit_br_if,
+  emit_call,
+  emit_call_indirect,
+  emit_code_section,
+  emit_code_section_with_locals,
+  emit_data_section,
+  emit_data_section_multi,
+  emit_drop,
+  emit_element_section_active,
+  emit_element_section_active_runs,
+  emit_else,
+  emit_end,
+  emit_export_section,
+  emit_export_section_multi,
+  emit_exports_full,
+  emit_exports_with_memory,
+  emit_f64_add,
+  emit_f64_const_bits,
+  emit_f64_convert_i64_s,
+  emit_f64_div,
+  emit_f64_eq,
+  emit_f64_ge,
+  emit_f64_gt,
+  emit_f64_le,
+  emit_f64_lt,
+  emit_f64_mul,
+  emit_f64_ne,
+  emit_f64_neg,
+  emit_f64_reinterpret_i64,
+  emit_f64_sub,
+  emit_func_type_raw,
+  emit_function_name_section,
+  emit_function_section,
+  emit_global_get,
+  emit_global_section_i32_mut,
+  emit_global_set,
+  emit_header,
+  emit_heap_memory_grow_check,
+  emit_i32_add,
+  emit_i32_const,
+  emit_i32_load,
+  emit_i32_load8_u,
+  emit_i32_store,
+  emit_i32_store8,
+  emit_i32_wrap_i64,
+  emit_i64_add,
+  emit_i64_and,
+  emit_i64_const,
+  emit_i64_div_s,
+  emit_i64_eq,
+  emit_i64_eqz,
+  emit_i64_extend_i32_s,
+  emit_i64_ge_s,
+  emit_i64_gt_s,
+  emit_i64_le_s,
+  emit_i64_lt_s,
+  emit_i64_mul,
+  emit_i64_ne,
+  emit_i64_or,
+  emit_i64_reinterpret_f64,
+  emit_i64_rem_s,
+  emit_i64_shl,
+  emit_i64_shr_s,
+  emit_i64_store,
+  emit_i64_sub,
+  emit_i64_trunc_f64_s,
+  emit_i64_xor,
+  emit_if_i64,
+  emit_if_void,
+  emit_import_section_func,
+  emit_local_get,
+  emit_local_set,
+  emit_local_tee,
+  emit_loop_void,
+  emit_memory_section,
+  emit_name,
+  emit_return,
+  emit_table_section_funcref,
+  emit_type_section,
+  emit_type_section_multi,
+  emit_vibe_abi_custom_section,
+  string_to_data
+}
+
+import ./linked_diagnostics.vibe {
+  seed_builtin_diagnostic_strings
+}
+
+import ./linked_helpers.vibe {
+  collect_used_builtin_names, stmts_use_builtin
+}
+
+import ./linked_compile_lc_inject_async_sleep_boundary.vibe {
+  lc_analysis_exclude,
+  lc_aw_note_available,
+  lc_entry_module_of,
+  lc_inject_async_sleep_boundary,
+  lc_waiter_hooks_available,
+  link_collision_message,
+  link_fold_duplicate_definitions_report,
+  link_key_is_definition,
+  oracle_apply_pass,
+  oracle_export_block_names,
+  oracle_head,
+  oracle_interface_form,
+  oracle_is_interface_stmt_with,
+  oracle_keyed_line,
+  oracle_order_residual,
+  oracle_pass_name,
+  oracle_realign,
+  oracle_stmt_key
+}
+
+import ./linked_compile_lc_pf_prune_module.vibe {
+  lc_defines_top_level, lc_late_dce_roots
+}
+
+import ./linked_compile_lc_rename_sleep_calls.vibe {
+  PreludeEnv,
+  lc_extract_inline_wasm,
+  lc_fresh_int_array,
+  lc_fresh_string_array,
+  lc_multiset_first_diff,
+  lc_name_mask_pairs,
+  lc_set_cmp,
+  lc_set_cmp_counted,
+  lc_str_array_has
+}
+
+import ./linked_compile_lc_retarget_call.vibe {
+  lc_inject_stdin_surface_wrappers, lc_stmts_call_host_future, lc_validate_stdin_provider_stmts
+}
+
+import ./linked_compile_linkedhostplan.vibe {
+  PreludeTail,
+  lc_apply_pass_recording,
+  lc_collect_stdin_provider_diag,
+  lc_collect_zero_alloc_diag,
+  lc_concat_into,
+  lc_concat_ints_into,
+  lc_ctx_unresolved_into,
+  lc_tag_of_path,
+  lc_union_into,
+  prelude_env_none,
+  prelude_tail_new,
+  prelude_tail_rank_of,
+  prelude_tail_record
+}
+
+/// #1536(c) / #1511(b): the ADR-0076 effect-lowering pass prefix of
+/// compile_wasi_module_linked_impl, split out so `vibe check` can run the
+/// EXACT eligibility judgement codegen applies (suspend CPS split +
+/// evidence-passing migration) without producing wasm — sharing the code is
+/// what guarantees check and codegen can never disagree on what is eligible.
+/// Returns the errors instead of throwing; an empty result means every pass
+/// accepted the program and `stmts` now holds the lowered form the rest of
+/// codegen consumes. All of these passes REWRITE `stmts` in place — a
+/// check-lane caller must pass a merged AST it is about to discard.
+/// `iw_names`/`iw_wats` receive the extracted inline-wasm texts (the compile
+/// path emits them later; check discards them).
+
+/// #2141: the lc prelude's own generic strip (above) must re-spell stripped
+/// formals in annotations -- twin of preprocess_strip.vibe's strip_subst_ty.
+export fn lc_strip_subst_ty(ty: TypeExpr, formals: Array[String]) -> TypeExpr {
+  match ty {
+    TyName(n) => if lc_strip_names_contains(formals, n) {
+      TyName(String::concat("__Vfp_", n))
+    } else {
+      ty
+    },
+    TyApp(n, args) => {
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(args) {
+        Array::push(out, lc_strip_subst_ty(Array::get(args, i), formals))
+        i = i + 1
+      }
+      if lc_strip_names_contains(formals, n) {
+        TyApp(String::concat("__Vfp_", n), out)
+      } else {
+        TyApp(n, out)
+      }
+    },
+    TyTuple(ts) => {
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(ts) {
+        Array::push(out, lc_strip_subst_ty(Array::get(ts, i), formals))
+        i = i + 1
+      }
+      TyTuple(out)
+    },
+    _ => ty
+  }
+}
+
+fn lc_strip_names_contains(names: Array[String], n: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(names) && !found {
+    if Array::get(names, i) == n {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+export fn lc_strip_subst_params(params: Array[(String, Option[TypeExpr])], formals: Array[String]) -> Array[(String, Option[TypeExpr])] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(params) {
+    let (pname, pann) = Array::get(params, i)
+    let pann2 = match pann {
+      Some(te) => Some(lc_strip_subst_ty(te, formals)),
+      None => None
+    }
+    Array::push(out, (pname, pann2))
+    i = i + 1
+  }
+  out
+}
+
+/// Whether this split can be run, checked against the statements it claims to
+/// describe. Every arm FAILS OPEN to the whole-program prelude, which is slower
+/// and right; the failure this refuses is a per-module run over a map that does
+/// not match the program, which attributes statements to the wrong modules
+/// SILENTLY and produces a wrong program rather than an error.
+///
+/// The closure arm is the caller's refusal channel. `oracle_import_closure`
+/// reports how many edges it could not resolve, and a caller with a non-zero
+/// count passes an empty closure so this returns false: a dropped edge narrows
+/// a module's context, and narrowing silently is worse than not splitting.
+fn module_split_usable(split: ModuleSplit, stmt_count: Int) -> Bool {
+  if split.file_count <= 0 || Array::length(split.stmt_file_id) != stmt_count || Array::length(split.import_closure) != split.file_count {
+    false
+  } else {
+    // Every INDEX, not just the lengths (#2647 Codex P2). A `ModuleSplit` is
+    // publicly constructible, so the two out-of-range cases are reachable and
+    // neither is a refusal on its own: an out-of-range `stmt_file_id` reaches
+    // `Array::get(parts, id)` and TRAPS, and an out-of-range closure member is
+    // silently skipped by the context loop, which narrows that module's
+    // context -- the one failure mode that produces a wrong program rather
+    // than a slow one. Both become "not usable" here, which is the whole-
+    // program prelude.
+    let mut ok = true
+    let mut i = 0
+    let mut prev = 0 - 1
+    while i < stmt_count {
+      let id = Array::get(split.stmt_file_id, i)
+      if id < 0 || id >= split.file_count {
+        ok = false
+      } else {
+        ()
+      }
+      // NON-DECREASING (#2647 Codex round 2). The link partitions by module and
+      // emits the parts in module order, so a map that revisits an earlier
+      // module -- `[0, 1, 0]` -- REORDERS the statements the source wrote. That
+      // is not hypothetical: `prelude_split_bytes_test.vibe` feeds exactly that
+      // shape through the oracle entry and reads `ORDER residual=2 of=4`, so
+      // the failure had a demonstration in this tree while this guard still
+      // accepted the input.
+      //
+      // Non-decreasing is the property that makes partition-by-module
+      // order-preserving, and it is what the merge produces anyway: the map is
+      // a run-length decode of per-file statement counts.
+      if id < prev {
+        ok = false
+      } else {
+        ()
+      }
+      prev = id
+      i = i + 1
+    }
+    let mut fi = 0
+    while fi < split.file_count {
+      let row = Array::get(split.import_closure, fi)
+      let mut j = 0
+      while j < Array::length(row) {
+        let cj = Array::get(row, j)
+        if cj < 0 || cj >= split.file_count {
+          ok = false
+        } else {
+          ()
+        }
+        j = j + 1
+      }
+      fi = fi + 1
+    }
+    // TRANSITIVELY CLOSED, or not usable (#2647 Codex round 9).
+    //
+    // A production closure is DIRECT EDGES ONLY, and it has to be: closing it
+    // transitively hands a module the declarations of its dependencies'
+    // PRIVATE imports, which no real compile of that module exposes.
+    // `oracle_import_closure` says so at length and takes the under-
+    // approximation deliberately -- and says, correctly, that it "can hide a
+    // difference as well as manufacture one".
+    //
+    // That is a fair trade for a MEASUREMENT and not for CODEGEN. When A
+    // imports B and B re-exports C's bounded generic, A's partition never sees
+    // C's trait, so the witness argument is not added at A's call while C's
+    // generic is rewritten to require it: an arity-mismatched call, or invalid
+    // wasm. Closing only across re-export edges would be the exact rule, and
+    // the loader's header scan cannot express it -- it returns a module's deps
+    // and its export NAMES, with no record of which deps a dep re-exports.
+    //
+    // So this asks the question the closure CAN answer: is everything
+    // reachable from a module already something that module names directly? If
+    // it is, no re-export can be hiding behind an edge. Two modules that see
+    // each other pass; A -> B -> C where A does not name C does not.
+    // Self-containment is a SUFFICIENT condition, not the rule (#2658). The
+    // rule is that a module sees its direct imports plus what those RE-EXPORT,
+    // and an exact re-export closure does NOT satisfy self-containment: A's
+    // row holds C, re-exported through B, but not C's own private imports.
+    //
+    // So a caller that built the closure from the loader's re-export relation
+    // says so, and one that did not gets the conservative test -- everything
+    // reachable must already be named, which no re-export can hide behind.
+    // `closure_exact` rides the split because that is what already threads
+    // from the producer through every layer to here; a parallel parameter
+    // would have to be added to a 22-argument signature and its callers to
+    // say the same thing.
+    if ok && !split.closure_exact && !lc_closure_self_contained(split.import_closure) {
+      ok = false
+    } else {
+      ()
+    }
+    ok
+  }
+}
+
+fn lc_row_holds(row: Array[Int], v: Int) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while !found && i < Array::length(row) {
+    if Array::get(row, i) == v {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+//# One step suffices: requiring every module's row to already contain
+//# everything its own deps reach means, applied to every module, that the
+//# relation is transitively closed.
+export fn lc_closure_self_contained(closure: Array[Array[Int]]) -> Bool {
+  let n = Array::length(closure)
+  let mut ok = true
+  let mut i = 0
+  while ok && i < n {
+    let row = Array::get(closure, i)
+    let mut j = 0
+    while ok && j < Array::length(row) {
+      let dep_row = Array::get(closure, Array::get(row, j))
+      let mut k = 0
+      while ok && k < Array::length(dep_row) {
+        let reach = Array::get(dep_row, k)
+        if reach == i || lc_row_holds(row, reach) {
+          ()
+        } else {
+          ok = false
+        }
+        k = k + 1
+      }
+      j = j + 1
+    }
+    i = i + 1
+  }
+  ok
+}
+
+//# Does any EXPORTED function omit its return annotation?
+//#
+//# A dependency reaches another module as an INTERFACE: `oracle_interface_form`
+//# keeps the declaration and replaces the body with `EUnit`. That is right for
+//# everything a context is needed for -- names, types, trait shapes -- and
+//# wrong for exactly one thing. `collect_fn_returns` derives a function's
+//# return SENTINEL from the body's TAIL when the declaration carries no `ret`,
+//# so erasing the body makes an unannotated exported function that returns a
+//# pull closure stop looking like one: a caller's `for x in make_pull()` keeps
+//# the array-oriented `EForIn` and traps applying it (#2647 Codex round 9).
+//#
+//# Declined syntactically rather than fixed by carrying the checker's inferred
+//# shape into the interface. The interface form is built from statements
+//# alone, and reaching for the checker's inference would make this entry
+//# depend on a phase it runs before.
+export fn lc_exported_fn_without_return_annotation(stmts: Array[Stmt]) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while !found && i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(exported, _, _, _, value) => if exported {
+        match value {
+          EFn(_, _, _, ret, _, _) => match ret {
+            None => {
+              found = true
+            },
+            Some(_) => ()
+          },
+          _ => ()
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+let prelude_split_completed_modules: Array[Int] = [0]
+
+/// Modules lowered by the last successful production split. Zero means the
+/// split fell back or failed; constructing a ModuleSplit alone proves neither.
+export fn prelude_split_last_module_count() -> Int {
+  Array::get(prelude_split_completed_modules, 0)
+}
+
+/// The prelude, per module where the split allows it and whole-program
+/// otherwise.
+///
+/// On the split path `stmts` is REPLACED IN PLACE by the linked result, because
+/// every caller holds the array and reads it after the prelude returns. The
+/// validators' messages are the error list, exactly as the whole-program path
+/// collects them.
+///
+/// `render` is a parameter for the same reason the oracle entries take one:
+/// the link CONTENT-CHECKS two definitions that share a declaration key before
+/// folding them, which needs a statement printer, and that lives in
+/// `@vibe/parser` -- not a dependency of this package, and not one it should
+/// acquire. A production caller has to supply it, which is a real cost of the
+/// split path and is why it is named here rather than hidden behind a default.
+/// #2828 rung 2: same pass, with the launcher's frozen capability grants.
+/// The un-suffixed name below keeps its arity and passes an empty table, so
+/// every existing caller -- including the ~20 in the split tests -- is
+/// unchanged and still fail-closed.
+export fn effect_lowering_prelude_split_grants(stmts: Array[Stmt], entry_name: String, linked_imports: Array[(String, String, Int, Int)], iw_names: Array[String], iw_wats: Array[String], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], split: ModuleSplit, render: (Stmt) -> String, grants: Array[(String, String)]) -> Array[String] with Exception {
+  Array::set(prelude_split_completed_modules, 0, 0)
+  // #3132: WHOLE-PROGRAM and first, before the program is partitioned and
+  // before any pass synthesizes a call by a builtin's name. A module holding
+  // only a call to a program's own `Array::length` cannot tell it from the
+  // builtin. Renames in place, so the split's statement indices still hold.
+  rename_builtin_shadow_defs(stmts)
+  // #1962: a program that performs a host operation takes the whole-program
+  // prelude. The entry host provider (pass 11) must see every perform, and a
+  // partition sees an imported helper only through its interface -- split, the
+  // entry would get no arm for a perform in the helper and the program would
+  // die unhandled exactly as before the provider existed (Codex on #3059).
+  let errs = if module_split_usable(split, Array::length(stmts)) && !lc_exported_fn_without_return_annotation(stmts) && !program_performs_host_operation(stmts) {
+    // WHOLE-PROGRAM, and first, exactly as `effect_lowering_prelude` runs it:
+    // the check is interprocedural, and it short-circuits the entire prelude
+    // when it fires. Running it per module instead REJECTS VALID CODE -- a
+    // `#zero_alloc` function whose allocation-free callee lives in another
+    // module reads "not proven allocation-free" from a partition that does not
+    // contain the callee's body (#2647 Codex round 2).
+    let za_msg = zero_alloc_check(stmts)
+    if za_msg != "" {
+      let only = lc_fresh_string_array()
+      Array::push(only, za_msg)
+      only
+    } else {
+      effect_lowering_prelude_split_checked(stmts, entry_name, linked_imports, iw_names, iw_wats, checker_eq_offsets, checker_eq_type_keys, split, render, grants)
+    }
+  } else {
+    effect_lowering_prelude_grants(stmts, entry_name, linked_imports, iw_names, iw_wats, checker_eq_offsets, checker_eq_type_keys, grants)
+  }
+  // #3144 round 4: WHOLE-PROGRAM again, after every pass. A pass that computes
+  // a definition's name (a trait witness field is `<Type>::<method>`) writes
+  // the source spelling of a renamed definition; this run points it at the
+  // definition. Compiler-written builtin references carry `builtin_ref` and
+  // are left alone. One top-level scan when nothing is renamed.
+  rename_builtin_shadow_defs(stmts)
+  errs
+}
+
+/// Pre-#2828-rung-2 arity: no launcher grants, so every optional capability
+/// resolves `NotGranted` exactly as before. Kept so the existing callers --
+/// the production `_with_split` path for lanes other than `vibe run`, and the
+/// split tests -- need no edit.
+export fn effect_lowering_prelude_split(stmts: Array[Stmt], entry_name: String, linked_imports: Array[(String, String, Int, Int)], iw_names: Array[String], iw_wats: Array[String], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], split: ModuleSplit, render: (Stmt) -> String) -> Array[String] with Exception {
+  effect_lowering_prelude_split_grants(stmts, entry_name, linked_imports, iw_names, iw_wats, checker_eq_offsets, checker_eq_type_keys, split, render, array_empty())
+}
+
+/// The split prelude past the whole-program zero-allocation check, which its
+/// caller has already run.
+fn effect_lowering_prelude_split_checked(stmts: Array[Stmt], entry_name: String, linked_imports: Array[(String, String, Int, Int)], iw_names: Array[String], iw_wats: Array[String], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], split: ModuleSplit, render: (Stmt) -> String, grants: Array[(String, String)]) -> Array[String] with Exception {
+  {
+    let link = prelude_link_state_new()
+    // THE WHOLE-PROGRAM FACTS, taken here -- before the program is partitioned
+    // and while it is still the program (#2647 Codex round 3). Each one is a
+    // scan a module's partition would answer differently, and each difference
+    // is silent: an authority narrowed, a call left pointing at a thunk, a
+    // poll loop lowered for a program that does not call `host_future_*`.
+    let env = PreludeEnv::{
+      linked_imports: linked_imports,
+      iw_names: iw_names,
+      iw_wats: iw_wats,
+      facts_known: true,
+      // ADR-0088 L2 (#2828 rung 2): the launcher's frozen grant table. Empty
+      // is the pre-rung-2 behaviour and stays fail-closed -- every lane but
+      // the one `vibe run` takes still passes `array_empty()`.
+      optional_resolution: optional_perform_artifact_resolution(stmts, entry_name, false, grants),
+      optional_source_names: collect_optional_perform_source_names(stmts),
+      alias_renames: collect_top_level_fn_alias_renames(stmts),
+      calls_host_future: lc_stmts_call_host_future(stmts),
+      waiter_hooks: lc_waiter_hooks_available(stmts, linked_imports),
+      aw_note: lc_aw_note_available(stmts, linked_imports),
+      trait_facts: ModuleTraitFacts::{
+        wrapper_names: collect_trivial_wrapper_names(stmts),
+        explicit_ops: collect_explicit_derived_op_names(stmts)
+      }
+    }
+    let linked = prelude_run_per_module(stmts, split.stmt_file_id, split.file_count, entry_name, checker_eq_offsets, checker_eq_type_keys, split.import_closure, render, link, None, env, 1, lc_fresh_string_array())
+    // A COLLISION IS AN ERROR HERE (#2647 Codex P1). `prelude_run_per_module`
+    // links with the REPORTING fold, which keeps the first definition and
+    // records the conflict -- right for a measurement, which wants to know how
+    // many modules disagree and about what. Production must not pick a body:
+    // two modules that synthesized one declaration key with different bodies
+    // is a compile error, and the caller throws on the first message.
+    //
+    // NOT PINNED BY A PROGRAM, and that is not for want of trying: no program
+    // in this tree produces a collision (the compiler's own 365-module closure
+    // reads `collisions=0`, which is why the reporting fold exists at all). So
+    // this arm was red-tested by MUTATION instead -- `Array::push(collisions0,
+    // "RED_TEST_FAKE_COLLISION")` right after the fold, which makes the split
+    // entry return a non-empty error list and leave `stmts` at its original
+    // length; with this block removed it installs the linked program and
+    // reports nothing. Repeat that edit to re-check it.
+    if Array::length(link.collisions) > 0 {
+      Array::push(link.diags, link_collision_message(link.collisions))
+    } else {
+      ()
+    }
+    if Array::length(link.diags) > 0 {
+      // The whole-program path returns its errors with `stmts` half-rewritten
+      // and the caller throws on the first; leaving `stmts` untouched here is
+      // the same contract, reached without installing a program no one should
+      // compile.
+      link.diags
+    } else {
+      Array::truncate(stmts, 0)
+      let mut i = 0
+      while i < Array::length(linked) {
+        Array::push(stmts, Array::get(linked, i))
+        i = i + 1
+      }
+      Array::set(prelude_split_completed_modules, 0, split.file_count)
+      link.diags
+    }
+  }
+}
+
+/// Pre-#2828-rung-2 arity: no launcher grants (fail-closed). Kept for the
+/// ~20 existing callers, tests included.
+export fn effect_lowering_prelude(stmts: Array[Stmt], entry_name: String, linked_imports: Array[(String, String, Int, Int)], iw_names: Array[String], iw_wats: Array[String], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String]) -> Array[String] with Exception {
+  effect_lowering_prelude_grants(stmts, entry_name, linked_imports, iw_names, iw_wats, checker_eq_offsets, checker_eq_type_keys, array_empty())
+}
+
+/// #2828 rung 2: the grant-carrying arity. THIS is the one a small program
+/// reaches -- `effect_lowering_prelude_split_grants` falls back here whenever
+/// `module_split_usable` says no, which is the common case for a single-file
+/// `vibe run`. Wiring only the split site left every such program resolving
+/// `NotGranted` while the table travelled the whole chain unread; measured,
+/// that is exactly what happened on the first build of this rung.
+export fn effect_lowering_prelude_grants(stmts: Array[Stmt], entry_name: String, linked_imports: Array[(String, String, Int, Int)], iw_names: Array[String], iw_wats: Array[String], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], grants: Array[(String, String)]) -> Array[String] with Exception {
+  // #3132: before any pass below synthesizes a call by a builtin's name (see
+  // rename_builtin_shadow_defs). Idempotent, so the split path's fallback
+  // into here costs one top-level scan.
+  rename_builtin_shadow_defs(stmts)
+  let errs = lc_fresh_string_array()
+  // ADR-0091 Phase 1: enforce `#zero_alloc` markers before any lowering
+  // rewrites the marked bodies. No-op when no marker is present.
+  let za_msg = zero_alloc_check(stmts)
+  if za_msg != "" {
+    Array::push(errs, za_msg)
+  } else {
+    // #1571: expand `inspect(value, content)` into its
+    // `__to_string`/`println`/`assert_true` form. The checker runs this too
+    // (checker_stmt.vibe), but on the statement array IT was handed --
+    // parse_program_with_path hands out a fresh array per caller, so the
+    // merged program codegen compiles has never seen that pass. Idempotent
+    // (nothing named `inspect` survives it), same as desugar_labeled_args's
+    // check-then-codegen double run.
+    desugar_inspect_calls(stmts)
+    // #1962 (Option 1): a direct host-builtin call inside a `handle` whose arms
+    // name the same operation becomes `perform <Op>(..)`, so the handler
+    // intercepts it. Runs HERE as well as in the checker for the reason the
+    // comment above gives: codegen compiles a fresh parse, which has never
+    // seen the checker's array. Wiring it only into the checker left the pass
+    // fully inert end to end while its own unit tests passed -- measured.
+    // Before `lower_optional_performs`, so the performs it introduces are
+    // part of the surface every later effect pass sees.
+    desugar_handled_host_calls(stmts)
+    // ADR-0088 / #2236: resolve the optional-capability surface before any
+    // effect or builtin analysis sees the `perform?` marker. Test artifacts
+    // keep ambient full authority across their reachable helpers; every other
+    // non-interactive artifact freezes absent build/apply facts to NotGranted.
+    // The pass accepts an explicit table for the launcher ladder.
+    let optional_resolution = optional_perform_artifact_resolution(stmts, entry_name, false, grants)
+    lower_optional_performs(stmts, optional_resolution)
+    // #1947: merged FS programs are a fresh parse; check erased its own
+    // array. Drop leftover `__try_none` markers before codegen.
+    erase_railway_origin_markers(stmts)
+    // Method-bearing-trait dictionary passing (#641 PR-3). Universal codegen
+    // convergence point — runs here on the fully merged program before generic
+    // type params are stripped (just below). No-op unless a method-bearing trait
+    // is declared, and idempotent if an earlier pipeline stage already desugared.
+    desugar_trait_dicts_with_typed_eq(stmts, checker_eq_offsets, checker_eq_type_keys)
+    // #1262: split eligible tuple-literal `let mut`s (what every `loop (s = ..)`
+    // lowers to) into scalar `let mut`s -- no per-iteration tuple box. Runs on
+    // both linear entries (compile_module has the same call); gc/interp lanes
+    // keep the boxed form, and the rewrite is semantics-preserving so the
+    // cross-lane differential gates still agree.
+    unbox_tuple_loop_params(stmts)
+    // The fully merged AST now carries canonical import value names and
+    // qualified type heads. Validate provider direct-call-only syntax here,
+    // before top-level alias retargeting could erase a value position and before
+    // wrapper injection can introduce any raw provider ABI.
+    let provider_value_err = lc_validate_stdin_provider_stmts(stmts)
+    if provider_value_err != "" {
+      Array::push(errs, provider_value_err)
+    } else {
+      ()
+    }
+    // Top-level `let f = g` function aliases: retarget references to the final
+    // EFn def so calls do not route through the 0-param thunk registration
+    // below (invalid wasm for any call arity). See import_alias_rewrite.vibe.
+    if Array::length(errs) == 0 {
+      rewrite_top_level_fn_alias_refs(stmts)
+      let _ = lc_inject_stdin_surface_wrappers(stmts)
+    } else {
+      ()
+    }
+    // #805: inline-wasm fns — extract WAT texts + neutralize marker bodies
+    // BEFORE any analysis below (see lc_extract_inline_wasm's doc comment).
+    lc_extract_inline_wasm(stmts, iw_names, iw_wats)
+    // #tco: rewrite a top-level function's self-tail-recursive calls into the
+    // same ELetMut/EWhile/EBreak/EContinue shape `loop (...) { continue(...) }`
+    // already lowers to (see self_tail_call.vibe) -- zero wasm call-stack
+    // growth per recursive step instead of an unbounded `call`. No-op unless a
+    // function is directly self-tail-recursive; runs before the borrow/scalar-
+    // return analyses below so they see the rewritten (loop-shaped) body.
+    // #1230 (docs/internal/design/wasi-p3-async.md M1b-3c): expand `await(f)` into the
+    // suspend-and-retry loop a PENDING future needs. Runs right after
+    // desugar_trait_dicts (which is what produces the `await(..)` call of an
+    // async-iterator `for` loop) and BEFORE every effect pass below, so the
+    // `perform Async::Suspend(1)` it synthesizes is seen by them exactly like a
+    // hand-written one -- lowering `await` inside compile_call, where it used to
+    // live, is past the point where a perform can still be handled.
+    // waiter_hooks (ADR-0089 #1218): when @vibe/concurrent's direct-wake
+    // hooks are callable (linked imports or local defs), poll rounds route
+    // through __aw_wait so a Future::resolve can wake the awaiter directly.
+    await_poll_pass(stmts, lc_stmts_call_host_future(stmts), lc_waiter_hooks_available(stmts, linked_imports), lc_aw_note_available(stmts, linked_imports))
+    rewrite_self_tail_calls(stmts)
+    // #944 (ADR-0073 stage C): entry-boundary Error handler -- see
+    // wrap_entry_exception_boundary's doc comment. Runs BEFORE the effect
+    // passes below so the synthesized handle is visible to them like any
+    // hand-written one, and before collect_used_builtin_names so the
+    // diagnostic's Stderr host import is collected.
+    // #1962: the standard host provider, innermost, so an escaping exception
+    // still reaches the boundary above it. Same placement reason: the effect
+    // passes below must see its `handle` like a hand-written one.
+    wrap_entry_host_provider(stmts, entry_name)
+    wrap_entry_exception_boundary(stmts, entry_name)
+    let async_sleep_boundary_err = lc_inject_async_sleep_boundary(stmts, entry_name)
+    if async_sleep_boundary_err != "" {
+      Array::push(errs, async_sleep_boundary_err)
+    } else {
+      // ADR-0076 (#817) Phase 2: inline `perform` calls that are structurally
+      // reachable-only-via-tail-resumptive-handler-arms directly into their
+      // handler arm body (single-shot fast path). Conservative: bails out
+      // per-handle whenever the handled body contains anything (nested
+      // `handle`, closures, or calls to named functions) that could hide a
+      // perform outside this direct scan, leaving those to evidence_dict_pass
+      // below (which, since 追記34 V2 removed the replay engine, hard-errors on
+      // any live non-Error handle it cannot migrate).
+      // ADR-0076 Phase 3a (#817, docs/internal/design/effect-evidence-passing.md 追記27):
+      // depth-0 suspend CPS for handle sites whose arms capture `resume` as a
+      // first-class value (the suspend class -- ADR-0068's Async::suspend
+      // shape). Runs BEFORE the Phase 2 / evidence passes below so they only
+      // ever see the sites this pass left alone (a transformed site has no
+      // EHandle left at all). A triggered-but-ineligible site is a hard
+      // compile error -- a value-referencing arm cannot compile on the replay
+      // path, so silent fallback is not an option.
+      let scps_errs = suspend_cps_pass(stmts)
+      if Array::length(scps_errs) > 0 {
+        Array::push(errs, Array::get(scps_errs, 0))
+      } else {
+        // ADR-0076 (#817) Phase 3, first slice: evidence-dict threading for the
+        // narrow case Phase 2 above cannot reach on its own -- a handle body that
+        // calls a named top-level function which itself performs the handled
+        // effect (docs/internal/design/effect-evidence-passing.md "追記 2", evidence_dict_pass's
+        // own doc comment in common_base/inline_direct_perform.vibe -- appended to
+        // that existing cross-file-registered file rather than a new one, to
+        // avoid the bootstrap flatten gotcha documented in docs/internal/design/effectset.md).
+        // Runs after Phase 2 so it only sees the handles Phase 2 did
+        // not already fully inline; whole-program-conservative and strictly
+        // additive (per-effect all-or-nothing), so it never touches a handle or
+        // function Phase 2 already resolved or that this pass cannot prove safe.
+        let edp_errs = evidence_dict_pass_with_roots(stmts, lc_late_dce_roots(stmts, entry_name, false))
+        if Array::length(edp_errs) > 0 {
+          Array::push(errs, Array::get(edp_errs, 0))
+        } else {
+          ()
+        }
+      }
+    }
+  }
+  // #1916: normalize discard-position `for` loops into the ESeq-head shape
+  // the linear lowering compiles without the comprehension result array.
+  // Last on purpose: every effect pass above sees the original tree, and by
+  // now the non-residual `for` shapes are already Unit-valued whiles (#1679).
+  if Array::length(errs) == 0 {
+    forin_discard_pass(stmts)
+  } else {
+    ()
+  }
+  // #3144 round 4: the passes above may write a renamed definition's source
+  // spelling by computing it (see rename_builtin_shadow_defs).
+  rename_builtin_shadow_defs(stmts)
+  errs
+}
+
+/// `first_pass` is 0 for the ORACLE and 1 for the production split entry
+/// (#2647 Codex round 4). The two start from different programs: the oracle is
+/// handed a PRE-PRELUDE merge and has to run `elaborate_heap_params` itself,
+/// while `effect_lowering_prelude*` is called from
+/// `compile_wasi_module_linked_impl_*`, whose caller already ran it -- and
+/// `effect_lowering_prelude` itself never does (its first act is
+/// `zero_alloc_check`). Running pass 0 on the split path therefore ran it a
+/// SECOND time, per module, where the whole-program path runs it once on the
+/// whole program. Worse per module than whole-program twice: the pass builds
+/// its `heap_fns` and `ctors` tables from the statements it sees, so a caller
+/// partition cannot classify a heap value returned by an imported function and
+/// omits the annotation the merged run adds -- a different ownership
+/// classification reaching Perceus and codegen.
+fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int, entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], import_closure: Array[Array[Int]], render: (Stmt) -> String, link: PreludeLinkState, observations: Option[PreludeObservations], env: PreludeEnv, first_pass: Int, module_paths: Array[String]) -> Array[Stmt] with Exception {
+  // WHICH module owns the entry, derived rather than assumed (#2647 Codex
+  // round 4). This was `file_count - 1`, which is true of the merge -- a root's
+  // dependencies come first -- but nothing in `ModuleSplit` records it and
+  // nothing validates it. A split that puts the entry anywhere else passed the
+  // guard and then handed `entry_name` to the WRONG partition, so pass 11
+  // never wrapped the real entry and an `Exception`-row entry lowered
+  // differently from the whole-program path.
+  //
+  // -1 when no statement declares `entry_name` (`__no_entry__`, a library
+  // build): then no module is the entry module, which is what passing "" to
+  // every one of them already meant.
+  let entry_fid = lc_entry_module_of(c, c_file_id, entry_name, file_count)
+  // #2575 item 4: the three analyses `linked_compile` runs between the prelude
+  // and codegen are sampled per module here, and on the whole program by the
+  // caller, at the same point in the pass order. `lc_analysis_exclude` is the
+  // ONE spelling of the exclude list, and the same list on both lanes is
+  // deliberate: the real compile excludes by name regardless of module, so
+  // deriving it per module from `part_entry` would let the exclude list, rather
+  // than the program, produce a difference.
+  let an_exclude = lc_analysis_exclude(entry_name)
+  // This lane's boundary: the deferral and refusal registries accumulate across
+  // the modules below, which is what `eq_mint_deferred_into` reads at the link,
+  // so they are cleared HERE rather than per module. Without it they also
+  // carried every earlier program's entries (#2642 review, Codex P2).
+  eq_deferred_reset()
+  let parts: Array[Array[Stmt]] = []
+  let mut fi = 0
+  while fi < file_count {
+    Array::push(parts, array_empty())
+    fi = fi + 1
+  }
+  let mut si = 0
+  while si < Array::length(c) {
+    let part = Array::get(parts, Array::get(c_file_id, si))
+    Array::push(part, Array::get(c, si))
+    si = si + 1
+  }
+  // The keys the per-module run SYNTHESIZED, from EVERY pass -- the only keys
+  // the link may fold. A declaration the source wrote is never offered to it,
+  // so a definition the whole program legitimately carries twice cannot be
+  // collapsed.
+  let synth_keys = link.synth_keys
+  // Everything before the trait-dict entry, per module.
+  fi = 0
+  while fi < file_count {
+    let part_entry = if fi == entry_fid {
+      entry_name
+    } else {
+      ""
+    }
+    // Before pass 0, where production runs it: `zero_alloc_check` is the first
+    // thing `effect_lowering_prelude` does, on the body the source wrote.
+    // The per-module answer, for the MEASUREMENT only (#2647 Codex round 2).
+    // `zero_alloc_check` is interprocedural -- `za_walk` walks callee bodies
+    // out of the `fn_names` / `fn_bodies` table built from the statements it
+    // was handed -- so a module's partition, which does not contain an
+    // imported callee's body, reports that callee as not proven
+    // allocation-free. Reported here so `DIAGS prelude=` keeps SHOWING that
+    // difference; `effect_lowering_prelude_split` runs the real check on the
+    // whole program, where production runs it.
+    match observations {
+      Some(st) => {
+        lc_collect_zero_alloc_diag(Array::get(parts, fi), st.validator_diags)
+      },
+      None => ()
+    }
+    let mut j = first_pass
+    while j < 4 {
+      lc_apply_pass_recording(j, Array::get(parts, fi), part_entry, checker_eq_offsets, checker_eq_type_keys, synth_keys, link.tail, link.diags, env)
+      j = j + 1
+    }
+    fi = fi + 1
+  }
+  let ifaces: Array[Array[Stmt]] = []
+  let mut pf = 0
+  while pf < file_count {
+    let src = Array::get(parts, pf)
+    let dst: Array[Stmt] = []
+    let src_export_block = oracle_export_block_names(src)
+    let mut ps = 0
+    while ps < Array::length(src) {
+      if oracle_is_interface_stmt_with(Array::get(src, ps), src_export_block) {
+        Array::push(dst, oracle_interface_form(Array::get(src, ps)))
+      } else {
+        ()
+      }
+      ps = ps + 1
+    }
+    Array::push(ifaces, dst)
+    pf = pf + 1
+  }
+  // #2633: which module each mangle tag belongs to, so an unresolved name can
+  // be asked WHERE it was defined and whether that module is in the closure of
+  // the one that used it.
+  //
+  // Built from the module PATHS through the merge's own mangler when the
+  // caller supplies them (the oracle does; production passes none because it
+  // emits no CTX line). Reading a tag off the path is exact; recovering it by
+  // parsing a declaration NAME is not, and doing so let an entry module
+  // register a tag derived from a legal source identifier -- which then made
+  // the membership test below certify the very name it was added to reject
+  // (Codex round 3 on #2701).
+  match observations {
+    Some(st) => {
+      let ctx_amb = st.an_ctx_amb
+      let mut tf = 0
+      while tf < file_count {
+        // The ENTRY module is excluded, and that is the fix rather than a
+        // shortcut (Codex round 3 on #2701). Entry declarations are never stamped,
+        // so any tag recovered from one is spurious by construction -- a legal
+        // `render_exp_cache_vibe` yields `cache_vibe`, which would then be
+        // registered as a real tag and make the membership test certify the very
+        // name it exists to reject. Skipping it needs no new information: the
+        // entry module is already identified, as `entry_fid`.
+        // From the module's PATH through the merge's own mangler. Every attempt to
+        // recover a tag by PARSING a declaration name failed, in both directions
+        // and then in neither: the first marker is wrong when a source name
+        // contains one, the last is wrong when the PATH contains one, and
+        // agreement across declarations is wrong when two declarations SHARE a
+        // marker-bearing suffix -- a case that is genuinely indistinguishable from
+        // the legitimate one (Codex rounds 3, 5 and 6 on #2701/#2704). There is no
+        // parsing rule, so the tag comes from provenance instead.
+        let t = if tf == entry_fid {
+          ""
+        } else if tf >= Array::length(module_paths) {
+          // No provenance for this module, so it gets no tag and its stamped
+          // names are not judged. COUNTED rather than guessed: the alternative is
+          // parsing a name for its tag, which three review rounds established has
+          // no correct rule.
+          Array::set(ctx_amb, 0, Array::get(ctx_amb, 0) + 1)
+          ""
+        } else {
+          lc_tag_of_path(Array::get(module_paths, tf))
+        }
+        if t != "" && !MutMap::has(st.tag_owner, t) {
+          MutMap::set(st.tag_owner, t, tf)
+        } else {
+          ()
+        }
+        tf = tf + 1
+      }
+    },
+    None => ()
+  }
+  // The trait-dict entry with that interface, then the rest of the prelude,
+  // per module.
+  // #2634: the union of the synthesis requests each module made.
+  // #2633: the union of what each module reports just before the evidence pass.
+  fi = 0
+  while fi < file_count {
+    let part_entry = if fi == entry_fid {
+      entry_name
+    } else {
+      ""
+    }
+    let part = Array::get(parts, fi)
+    let own_keys: MutMap[String, Int] = MutMap::new_string()
+    let mut ok = 0
+    while ok < Array::length(part) {
+      MutMap::set(own_keys, oracle_stmt_key(Array::get(part, ok)), 1)
+      ok = ok + 1
+    }
+    // The module's OWN resolved import closure, from the loader's header scan
+    // (#2388). This used to be "every other file", which is wider than a real
+    // per-module compile sees, and made this oracle's green the weaker claim:
+    // no module needed anything the WHOLE PROGRAM did not have. With real
+    // edges it is the claim that matters: no module needed anything IT
+    // IMPORTS did not have.
+    //
+    // The closure is the CALLER'S, and the two callers pass different ones.
+    // This comment previously asserted one rule for both and was wrong about
+    // each: it said "transitive, because a module sees what its dependencies
+    // re-export" (the justification `oracle_import_closure` now calls wrong as
+    // implemented -- a transitive closure hands A the declarations of a module
+    // B imports PRIVATELY), and the correction then over-swung to "direct-only,
+    // and the loader cannot express re-export" (Codex on #2700), which
+    // misdescribes production and denies machinery that already exists.
+    //
+    //   production  `exact_import_closure` (#2658) -- direct imports PLUS
+    //               everything reachable across RE-EXPORT edges only, with the
+    //               re-export subset taken from the LOADER
+    //               (`module_reexport_deps_fs`). Exact, and necessary: a module
+    //               that cannot see what its dependency re-exports lowers a
+    //               call to a bounded generic without the witness argument.
+    //   oracle      `exact_import_closure` TOO, since #2633. It measured on
+    //               `oracle_import_closure` (DIRECT edges only) until then, to
+    //               avoid the one failure mode that makes a green meaningless
+    //               -- being given context a module does not have. But a
+    //               re-export edge is not that: it is context a real compile of
+    //               that module HAS, so measuring without it made the oracle
+    //               solve a harder problem than the thing it models. The
+    //               objection that rule was written for is a TRANSITIVE closure
+    //               (A imports B, B imports C privately), which reaches neither.
+    //
+    // Adopting it took the per-module lane to full agreement on the compiler's
+    // own closure (369 modules): `keyed content` 1 -> 0 and `CTX
+    // unresolved_exp` 83 -> 0, with `missing`/`extra`/`collisions` already 0 and
+    // `seen=25556` unchanged. The direct-only figures are a stricter lower bound
+    // on what a module needs and are recorded at the call site in
+    // `prelude_module_full_oracle_report_fs`.
+    //
+    // An index out of range is a caller that built the closure over a
+    // different file space, which would silently hand a module some other
+    // module's context, so it is refused rather than defaulted.
+    if Array::length(import_closure) != file_count {
+      throw(String::concat("prelude oracle: the import closure has ", String::concat(Int::to_string(Array::length(import_closure)), String::concat(" rows for ", String::concat(Int::to_string(file_count), " modules")))))
+    } else {
+      ()
+    }
+    let visible = Array::get(import_closure, fi)
+    let ctx: Array[Stmt] = []
+    let mut vj = 0
+    while vj < Array::length(visible) {
+      let cj = Array::get(visible, vj)
+      if cj == fi || cj < 0 || cj >= file_count {
+        ()
+      } else {
+        let other = Array::get(ifaces, cj)
+        let mut ci = 0
+        while ci < Array::length(other) {
+          let cs = Array::get(other, ci)
+          if MutMap::has(own_keys, oracle_stmt_key(cs)) {
+            ()
+          } else {
+            Array::push(ctx, cs)
+          }
+          ci = ci + 1
+        }
+      }
+      vj = vj + 1
+    }
+    // #2633: what this module was GIVEN against what it USES, before anything
+    // reads the context.
+    match observations {
+      Some(st) => {
+        Array::push(st.an_ctx_sizes, Array::length(ctx))
+        lc_ctx_unresolved_into(part, ctx, st.an_ctx_unresolved, st.an_ctx_unresolved_exp, visible, st.tag_owner, fi, st.an_ctx_cls, ifaces)
+      },
+      None => ()
+    }
+    let synthesized = desugar_trait_dicts_module_with_facts(part, ctx, "f\{fi}", checker_eq_offsets, checker_eq_type_keys, env.trait_facts)
+    match observations {
+      Some(st) => {
+        lc_union_into(st.requests, eq_synthesis_requests_list())
+        lc_union_into(st.refusals, eq_typed_refusals_list())
+        lc_union_into(st.deferrals, eq_deferred_requests_list())
+      },
+      None => ()
+    }
+    let mut sy = 0
+    while sy < Array::length(synthesized) {
+      // The keys this module SYNTHESIZED, recorded before the rest of the
+      // prelude runs over them. They are the only keys the link may fold: a
+      // declaration the source wrote is never offered to it, so a definition
+      // the whole program legitimately carries twice cannot be collapsed.
+      Array::push(synth_keys, oracle_stmt_key(Array::get(synthesized, sy)))
+      // Rank 4: `desugar_trait_dicts_module` is the trait-dict pass, and what
+      // it RETURNS is what the whole-program entry appends at the end of the
+      // program. Its own in-place growth (the trait namespace operations, put
+      // right after their trait) is not in this array and keeps its position.
+      prelude_tail_record(link.tail, oracle_stmt_key(Array::get(synthesized, sy)), 4)
+      Array::push(part, Array::get(synthesized, sy))
+      sy = sy + 1
+    }
+    // PASSES 5..11 PER MODULE. The cut is at 12, not 15 (#2647 Codex round 3).
+    //
+    // #2633 moved 15 and 16 to the link: `evidence_dict_pass` decides from a
+    // union over the whole program -- declared effects union every effect
+    // label a handle site names, and "zero performs ANYWHERE" -- and that
+    // dependence runs BACKWARDS along the import graph, so no module can make
+    // the decision its own way and have the results link.
+    //
+    // Pass 12 has the same shape and was missed: `lc_inject_async_sleep_boundary`
+    // fires only when the entry's row carries `Async` AND the program calls
+    // `sleep` / `host_future_*` / a host-stream op. Those two live in different
+    // modules routinely, so neither partition sees both and NO machinery is
+    // injected -- a program that links cleanly and suspends differently. It
+    // cannot be served by a precomputed fact the way 2, 6 and 9 are, because
+    // what it injects has to be visible to 13 and 14, so 12, 13 and 14 join 15
+    // and 16 at the link.
+    //
+    // What the split still buys: 0..11 is most of the prelude, and it is the
+    // half a per-module cache can reuse.
+    let mut j2 = 5
+    while j2 < 12 {
+      lc_apply_pass_recording(j2, part, part_entry, checker_eq_offsets, checker_eq_type_keys, synth_keys, link.tail, link.diags, env)
+      // After pass 5, where production runs it.
+      if j2 == 5 {
+        lc_collect_stdin_provider_diag(part, link.diags)
+      } else {
+        ()
+      }
+      j2 = j2 + 1
+    }
+    match observations {
+      Some(st) => {
+        // This module's facts after every pass it runs. The caller samples the
+        // whole lane at the SAME point (after pass 11), so the two are comparable;
+        // before this cut both sampled after 14.
+        let (evd, evh, evp) = evidence_module_facts(part)
+        lc_union_into(st.declared, evd)
+        lc_union_into(st.handled, evh)
+        lc_union_into(st.performed, evp)
+        // #2575 item 4: this module's answer to the three analyses, from its own
+        // statements alone -- the counterpart of the whole-lane sample the caller
+        // takes, at the same point in the pass order. All three are
+        // INTERPROCEDURAL, so the two lanes can differ in EITHER direction and the
+        // directions do not mean the same thing; the caller's comment says which is
+        // which.
+        let part_bmask = lc_fresh_int_array()
+        let part_bfns = compute_borrow_param_user_fns(part, an_exclude, part_bmask)
+        lc_union_into(st.an_bret, sorted_names_of(compute_borrow_returning_names(part)))
+        lc_union_into(st.an_bfns, part_bfns)
+        lc_union_into(st.an_pairs, lc_name_mask_pairs(part_bfns, part_bmask))
+        lc_union_into(st.an_view, sorted_names_of(compute_may_return_view_fns(part)))
+        // #2638: and what this module would PUBLISH. Its body-local round-0 masks
+        // are computed with both program-wide unions empty, so nothing here is
+        // disqualified yet; its own half of those unions goes alongside. No body
+        // of another module is read on this path, which is what makes the link's
+        // answer below a per-module driver's answer rather than a re-run.
+        let part_local_masks = lc_fresh_int_array()
+        let part_shadow = lc_fresh_int_array()
+        let part_local_names = compute_borrow_param_local_masks(part, part_local_masks, part_shadow)
+        lc_concat_into(st.an_local_names, part_local_names)
+        lc_concat_ints_into(st.an_local_masks, part_local_masks)
+        compute_borrow_disqualifiers(part, st.an_valued, st.an_nonident_fns, st.an_nonident_pos)
+        // #2638: and this module's half of the borrow-returning SEED. The whole
+        // program's is the OR, so it publishes like the disqualifiers above.
+        Array::push(st.an_bret_shadow, borrow_ret_shadow_mask(part))
+        // #2638: and its own top-level fn NAMES -- `mrv_fresh` needs the program's
+        // set to tell a user-fn call from a builtin, and that set is a union.
+        lc_concat_into(st.an_mrv_names, mrv_declared_fn_names(part))
+      },
+      None => ()
+    }
+    fi = fi + 1
+  }
+  match observations {
+    Some(st) => {
+      // Final ownership closes the complete call graph against globally
+      // collected disqualifiers. The report compares body-local round-0 facts
+      // separately; this solver does not need a round-0 snapshot.
+      let ph_r01mask = lc_fresh_int_array()
+      let ph_r01 = borrow_fixpoint_link_parts(parts, st.an_valued, st.an_nonident_fns, st.an_nonident_pos, an_exclude, ph_r01mask)
+      // #2638: and the borrow-returning set, as a fixpoint over the MODULES. This
+      // one genuinely iterates at the link -- whether a module can classify `f`
+      // depends on a callee in another module having entered the set, which is
+      // only known after that module's round.
+      let mut ph_bshadow = 0
+      let mut bsi = 0
+      while bsi < Array::length(st.an_bret_shadow) {
+        ph_bshadow = ph_bshadow|Array::get(st.an_bret_shadow, bsi)
+        bsi = bsi + 1
+      }
+      let mut apx = 0
+      while apx < Array::length(parts) {
+        Array::push(st.an_parts, Array::get(parts, apx))
+        apx = apx + 1
+      }
+      Array::push(st.an_bret_seed, ph_bshadow)
+      lc_concat_into(st.an_bret_link, sorted_names_of(borrow_ret_link_parts(parts, ph_bshadow)))
+      // #2638: and the may-return-view set, the last of the four. Same link-driven
+      // rounds; the whole-program pass keeps its worklist (see the link's doc).
+      lc_concat_into(st.an_view_link, sorted_names_of(may_return_view_link_parts(parts, st.an_mrv_names)))
+      lc_concat_into(st.an_r01_names, ph_r01)
+      lc_concat_ints_into(st.an_r01_masks, ph_r01mask)
+    },
+    None => ()
+  }
+  // ASSEMBLY (#2575 item 2 step 3). Concatenating the modules is the obvious
+  // thing and produces the whole program's declarations in a DIFFERENT ORDER:
+  // a module's appended helpers close that module, so they precede the next
+  // module's source statements, while the whole-program lane appends every one
+  // at the end of the program in pass order.
+  //
+  // So assemble in two waves. Wave 1 is every statement no pass appended --
+  // what the source wrote, plus what a pass inserted next to an existing
+  // declaration -- in module order, which is the merged program's own order.
+  // Wave 2 is the appended ones, by PASS RANK first and module order within,
+  // which is the order the whole-program lane produces them in.
+  //
+  // Measured on the compiler's own 365-module closure:
+  //
+  //                        order_diff   order_first   ORDER residual
+  //   concatenated               9869            24       0 of 9698
+  //   two waves                   212          9700       0 of 9701
+  //
+  // `order_first=9700` with 9701 source statements: no difference occurs
+  // before the end of the SOURCE program. What is left is the ~213 synthesized
+  // helpers permuted among themselves in the tail -- one pass emits almost all
+  // of them and discovers them in a global traversal on one lane and module by
+  // module on the other. They are top-level definitions that forward reference
+  // freely, so the permutation is inert. `missing=0 extra=0 content=0
+  // renames=0` hold throughout, so this moves only declarations whose placement
+  // the lanes disagreed on and nothing the source wrote.
+  let tail_rank: MutMap[String, Int] = MutMap::new_string()
+  let mut tk = 0
+  while tk < Array::length(link.tail.keys) {
+    MutMap::set(tail_rank, Array::get(link.tail.keys, tk), Array::get(link.tail.passes, tk))
+    tk = tk + 1
+  }
+  let buckets: Array[Array[Stmt]] = []
+  let mut bi = 0
+  while bi < 18 {
+    Array::push(buckets, array_empty())
+    bi = bi + 1
+  }
+  let trial: Array[Stmt] = []
+  fi = 0
+  while fi < file_count {
+    let part = Array::get(parts, fi)
+    let mut oi = 0
+    while oi < Array::length(part) {
+      let cur = Array::get(part, oi)
+      let rank = prelude_tail_rank_of(tail_rank, oracle_stmt_key(cur))
+      if rank < 0 {
+        Array::push(trial, cur)
+      } else {
+        Array::push(Array::get(buckets, rank), cur)
+      }
+      oi = oi + 1
+    }
+    fi = fi + 1
+  }
+  bi = 0
+  while bi < 18 {
+    let bucket = Array::get(buckets, bi)
+    let mut bj = 0
+    while bj < Array::length(bucket) {
+      Array::push(trial, Array::get(bucket, bj))
+      bj = bj + 1
+    }
+    bi = bi + 1
+  }
+  // MINT (#2634). Before the fold: every helper some module knew it needed and
+  // declined to build, generated here against the CONCATENATED program -- which
+  // has every declaration a module lacked, by construction. Measured, this is
+  // what a module deferring rather than guessing buys: the need travels upward
+  // instead of vanishing.
+  let minted = eq_mint_deferred_into(trial)
+  // The whole-program phases, run once on the linked program: 12 and 14 read
+  // facts no module has, and 13 and 15 follow them to keep the order.
+  // (#2500 deleted pass 14, `inline_direct_performs`; the three that
+  // outlived it kept their order and closed the gap.)
+  let mut lj = 12
+  while lj < 16 {
+    oracle_apply_pass(lj, trial, entry_name, checker_eq_offsets, checker_eq_type_keys, link.diags, env)
+    lj = lj + 1
+  }
+  // LINK. Up to here `trial` is the modules concatenated, which holds one copy
+  // of each program-level helper per module that needed it. Folding them is
+  // what a per-module driver's link step does (#2575 item 3), and doing it
+  // here is what makes the comparison below the real question -- not "do the
+  // modules agree with the whole program before linking", but "does the
+  // LINKED program equal the whole-program one". A collision throws rather
+  // than picking a body.
+  // The REPORTING fold, not the throwing one: at this granularity a collision
+  // is the measurement's ANSWER, and stopping at the first would say "some
+  // module disagrees" without saying how many or about what. Production keeps
+  // the throw.
+  // #2638 FOURTH CONTROL, and the one that settles what the other three left
+  // open. `trial` is the parts concatenated WITH passes 12-16 and the mint
+  // applied, but BEFORE the fold; `linked` is the same thing folded. So
+  // `trial` vs `linked` isolates the FOLD, and `trial` vs the raw parts
+  // isolates the LINK-ONLY PASSES. Measured because the obvious reading of the
+  // first three controls -- that the duplicates cost the residue -- turned out
+  // to be wrong: filtering the parts to what the fold keeps changed nothing.
+  match observations {
+    Some(st) => {
+      let an_bret_trial_one: Array[Array[Stmt]] = []
+      Array::push(an_bret_trial_one, trial)
+      lc_concat_into(st.an_bret_trial, sorted_names_of(borrow_ret_link_parts(an_bret_trial_one, borrow_ret_shadow_mask(trial))))
+      lc_concat_into(st.an_view_trial, sorted_names_of(may_return_view_link_parts(an_bret_trial_one, mrv_declared_fn_names(trial))))
+    },
+    None => ()
+  }
+  let (linked, collisions0) = link_fold_duplicate_definitions_report(trial, synth_keys, render)
+  lc_union_into(link.collisions, collisions0)
+  match observations {
+    Some(st) => {
+      // #2388 (Codex round on #2623): a definition key that still repeats in the
+      // LINKED program. `dup_defs` in the keyed line counts repeats in the WHOLE
+      // program -- legitimate ones the fold must not touch -- and says nothing
+      // about what the fold left behind. Without this, a helper some pass minted
+      // per module and never offered to the fold survives as an ordinary `copies`
+      // row and the line still reads `missing=0 content=0`.
+      let linked_dup_keys = st.linked_dup_keys
+      let mut linked_dups = 0
+      let seen_def: MutMap[String, Int] = MutMap::new_string()
+      let mut ld = 0
+      while ld < Array::length(linked) {
+        let key = oracle_stmt_key(Array::get(linked, ld))
+        if link_key_is_definition(key) {
+          if MutMap::has(seen_def, key) {
+            // EXTRA OCCURRENCES, the same unit as the keyed line's `dup_defs`, so
+            // the two are directly comparable: equal means the link removed none
+            // of the definitions the whole program legitimately carries twice.
+            // Counted as distinct keys they read 4 against 5 and looked like a
+            // discrepancy -- `effect:Profiler` is declared THREE times.
+            linked_dups = linked_dups + 1
+            if lc_str_array_has(linked_dup_keys, key) {
+              ()
+            } else {
+              Array::push(linked_dup_keys, key)
+            }
+          } else {
+            MutMap::set(seen_def, key, 1)
+          }
+        } else {
+          ()
+        }
+        ld = ld + 1
+      }
+      Array::set(st.counts, 0, minted)
+      Array::set(st.counts, 1, linked_dups)
+      Array::set(st.counts, 2, Array::length(trial))
+    },
+    None => ()
+  }
+  // The lane is over (#2647 Codex round 6). The merge rename table is built
+  // per file BEFORE the prelude and read by every module's derive generators,
+  // so it is cleared once here rather than inside `dtd_run` -- where a
+  // per-module driver would have emptied it after the first module and left
+  // every later one rendering `Point_dep_<path>` for `Point`.
+  namespace_rename_originals_reset()
+  linked
+}
+
+/// Outputs required to assemble and validate the lowered program.
+/// Comparison data and retained pre-link bodies belong to PreludeObservations.
+struct PreludeLinkState {
+  synth_keys: Array[String];
+  tail: PreludeTail;
+  collisions: Array[String];
+  diags: Array[String]
+}
+
+fn prelude_link_state_new() -> PreludeLinkState {
+  PreludeLinkState::{
+    synth_keys: lc_fresh_string_array(),
+    tail: prelude_tail_new(),
+    collisions: lc_fresh_string_array(),
+    diags: lc_fresh_string_array()
+  }
+}
+
+/// Optional oracle data. Production never constructs or fills this record.
+/// `counts` is `[minted, linked_dups, split_len]`.
+struct PreludeObservations {
+  tag_owner: MutMap[String, Int];
+  // Diagnostics from the per-module VALIDATOR runs, kept apart from `diags`
+  // because they are the measurement's answer and not the prelude's: the
+  // oracle unions both, and `effect_lowering_prelude_split` returns only
+  // `diags` (#2647 Codex round 2).
+  validator_diags: Array[String];
+  linked_dup_keys: Array[String];
+  requests: Array[String];
+  refusals: Array[String];
+  deferrals: Array[String];
+  declared: Array[String];
+  handled: Array[String];
+  performed: Array[String];
+  // #2575 item 4: the union of each module's answer to the three analyses that
+  // run between the prelude and codegen -- borrow-returning names, borrow-param
+  // functions, their name#mask pairs, and may-return-view names. The caller
+  // holds the whole-program side and compares.
+  an_bret: Array[String];
+  an_bfns: Array[String];
+  an_pairs: Array[String];
+  an_view: Array[String];
+  // #2638: what a per-module driver would PUBLISH rather than answer -- each
+  // module's body-local round-0 masks, and its half of the two facts the
+  // borrow inference reads as a union over the whole program. The link
+  // (`borrow_round0_link`) turns these into round 0 for the program without
+  // re-reading a body, and the caller compares that against the whole-program
+  // reference. Concatenated, not unioned: the masks are parallel arrays.
+  an_local_names: Array[String];
+  an_local_masks: Array[Int];
+  an_valued: Array[String];
+  an_nonident_fns: Array[String];
+  an_nonident_pos: Array[Int];
+  // #2638: each module's source-shadow bits, a union like the two above.
+  // #2638: the same for the borrow-RETURNING seed, and that analysis' linked
+  // answer (a fixpoint the link drives across the modules).
+  an_bret_shadow: Array[Int];
+  // The OR the split lane actually seeded with, so the caller can compare it
+  // against the whole program's instead of assuming they agree.
+  an_bret_seed: Array[Int];
+  // #2633: per-module context sizes, and the mangled cross-module names a
+  // module uses that its context did not give it.
+  an_ctx_sizes: Array[Int];
+  an_ctx_unresolved: Array[String];
+  // #2633: [in closure, outside closure, definer unknown, filtered out of the
+  // owner's interface, present in it but skipped by the context loop] for the
+  // unresolved EXPORTED names.
+  an_ctx_cls: Array[Int];
+  an_ctx_unresolved_exp: Array[Int];
+  an_ctx_amb: Array[Int];
+  // #2638: the two fixpoints over `trial` -- concatenated, link-passes applied,
+  // NOT folded. Isolates the fold from the link-only passes.
+  an_bret_trial: Array[String];
+  an_view_trial: Array[String];
+  // #2638: the modules' declared fn names (a union), and the may-return-view
+  // set the link computed from them.
+  an_mrv_names: Array[String];
+  an_view_link: Array[String];
+  // The module parts themselves, so the caller can run its own controls
+  // against the SAME statements the split lane answered from.
+  an_parts: Array[Array[Stmt]];
+  an_bret_link: Array[String];
+  // The final borrow-parameter fixed point over globally linked facts and
+  // the module bodies. The r01 field spelling is retained for oracle output
+  // compatibility. Filled where the parts live, in `prelude_run_per_module`.
+  an_r01_names: Array[String];
+  an_r01_masks: Array[Int];
+  counts: Array[Int]
+}
+
+fn prelude_observations_new() -> PreludeObservations {
+  PreludeObservations::{
+    tag_owner: MutMap::new_string(),
+    validator_diags: lc_fresh_string_array(),
+    linked_dup_keys: lc_fresh_string_array(),
+    requests: lc_fresh_string_array(),
+    refusals: lc_fresh_string_array(),
+    deferrals: lc_fresh_string_array(),
+    declared: lc_fresh_string_array(),
+    handled: lc_fresh_string_array(),
+    performed: lc_fresh_string_array(),
+    an_bret: lc_fresh_string_array(),
+    an_bfns: lc_fresh_string_array(),
+    an_pairs: lc_fresh_string_array(),
+    an_view: lc_fresh_string_array(),
+    an_local_names: lc_fresh_string_array(),
+    an_local_masks: lc_fresh_int_array(),
+    an_valued: lc_fresh_string_array(),
+    an_nonident_fns: lc_fresh_string_array(),
+    an_nonident_pos: lc_fresh_int_array(),
+    an_bret_shadow: lc_fresh_int_array(),
+    an_bret_seed: lc_fresh_int_array(),
+    an_ctx_sizes: lc_fresh_int_array(),
+    an_ctx_unresolved: lc_fresh_string_array(),
+    an_ctx_cls: [0, 0, 0, 0, 0, 0],
+    an_ctx_unresolved_exp: [],
+    an_ctx_amb: [0],
+    an_bret_trial: lc_fresh_string_array(),
+    an_view_trial: lc_fresh_string_array(),
+    an_mrv_names: lc_fresh_string_array(),
+    an_view_link: lc_fresh_string_array(),
+    an_parts: [],
+    an_bret_link: lc_fresh_string_array(),
+    an_r01_names: lc_fresh_string_array(),
+    an_r01_masks: lc_fresh_int_array(),
+    counts: [0, 0, 0]
+  }
+}
+
+export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file_id: Array[Int], file_count: Int, entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], import_closure: Array[Array[Int]], render: (Stmt) -> String, module_paths: Array[String]) -> String with Exception {
+  let entry_fid = file_count - 1
+  // #2637 review (Codex P2): production runs `fold_const_bool_params` and
+  // `dce_stmts` BETWEEN the prelude and the three analyses sampled below, and
+  // `late_dce_has_entry` is the necessary condition for either
+  // (`compile_wasi_module_linked_impl_with_typed_offsets`). A folded constant
+  // Bool argument can delete a consuming branch and change a borrow MASK, and
+  // DCE can delete a generated helper outright, so a sample taken before them
+  // describes a program the real compile does not analyse.
+  //
+  // Read HERE, from the unmutated `a`, because production reads it before the
+  // prelude too -- the passes append and rewrite, so asking after them is a
+  // different question.
+  //
+  // The oracle cannot reproduce those transforms: `dce_stmts` is rooted at the
+  // ENTRY, and the split lane has no per-module entry -- every module's
+  // exports are roots for its dependents, so there is no module-local answer
+  // to root it at. So when the condition holds the four columns report
+  // `unmeasured` rather than a number: a count taken at the wrong point would
+  // read exactly like one taken at the right one.
+  let an_dce_entry = lc_defines_top_level(a, entry_name)
+  // #2631: which nominals each lane could not see. A raw `==` on a non-scalar
+  // name that is not a type formal compares an aggregate by reference, so this
+  // is the property, not a statistic about it.
+  eq_invisible_nominals_reset()
+  // #2388: the VALIDATORS, which produce diagnostics rather than rewrites and
+  // are therefore invisible to a declaration comparison. Run on the whole
+  // program here and on each module below; a per-module run sees less and could
+  // miss a violation or invent one, and nothing else in this report would say
+  // so.
+  let diag_w = lc_fresh_string_array()
+  lc_collect_zero_alloc_diag(a, diag_w)
+  let mut k = 0
+  let ev_req_w = lc_fresh_string_array()
+  let ev_ref_w = lc_fresh_string_array()
+  let ev_def_w = lc_fresh_string_array()
+  while k < 12 {
+    oracle_apply_pass(k, a, entry_name, checker_eq_offsets, checker_eq_type_keys, diag_w, prelude_env_none())
+    // #2634: sampled right after pass 4 (`desugar_trait_dicts_with_typed_eq`),
+    // which is where a container comparator or a generic specialization is
+    // requested AND emitted. The per-module side samples at the same point --
+    // after its own trait-dict pass -- so the two are comparable. Sampling the
+    // whole lane after all 17 passes instead would have compared a registry
+    // that kept accumulating against one that did not, and any difference
+    // would have been the sample points rather than the program.
+    if k == 4 {
+      lc_union_into(ev_req_w, eq_synthesis_requests_list())
+      lc_union_into(ev_ref_w, eq_typed_refusals_list())
+      lc_union_into(ev_def_w, eq_deferred_requests_list())
+    } else {
+      ()
+    }
+    // After pass 5, where production runs it, and where the split lane samples
+    // it too.
+    if k == 5 {
+      lc_collect_stdin_provider_diag(a, diag_w)
+    } else {
+      ()
+    }
+    k = k + 1
+  }
+  // #2633: sampled HERE, immediately before pass 15 (`evidence_dict_pass`) and
+  // after every pass that precedes it. Sampling earlier would be vacuous --
+  // the modules partition the merged program, so any purely syntactic fact
+  // unions trivially -- and sampling later reads a program whose handles the
+  // evidence pass has already erased or migrated. The question is whether the
+  // passes BEFORE it leave each module carrying the same facts the whole
+  // program carries.
+  let (ev_decl_w, ev_handled_w, ev_perf_w) = evidence_module_facts(a)
+  while k < 17 {
+    oracle_apply_pass(k, a, entry_name, checker_eq_offsets, checker_eq_type_keys, diag_w, prelude_env_none())
+    k = k + 1
+  }
+  // #2575 item 4: the three whole-program analyses `linked_compile` runs
+  // between the prelude and codegen. Sampled HERE on both lanes -- after all
+  // 17 passes -- which is where the real compile runs them WHEN late DCE does
+  // not intervene; `an_dce_entry` above is that condition, and the line says
+  // which case it measured rather than leaving the reader to assume.
+  //
+  // Unlike the evidence facts above, all three are INTERPROCEDURAL -- each
+  // reads the classification of callees that may live in another module -- so
+  // the two lanes can differ in either direction and the directions do not
+  // mean the same thing.
+  //
+  // All three iterate to a fixed point. Borrow-parameter inference narrows
+  // globally eligible positions through a reverse call graph; module-local
+  // results cannot substitute for the shared link-time solution. `link_round01`
+  // keeps its established report spelling but compares the final masks.
+  //
+  //   whole has a name the union lacks -- a module was conservative about a
+  //     callee it cannot see. Slower, sound.
+  //   the union has a name whole lacks -- a module QUALIFIED a function the
+  //     whole program disqualified. `ca_collect_nonident_args` disqualifies a
+  //     callee from a CALL SITE, which may live in another module, so this
+  //     direction is reachable and it is the unsound one.
+  let an_exclude = lc_analysis_exclude(entry_name)
+  let an_bret_w = sorted_names_of(compute_borrow_returning_names(a))
+  // #2638 CONTROL. The same link, handed the whole program as a SINGLE part.
+  // If this is a bare count the link's iteration is exact and any residue in
+  // `link_bret` comes from the parts being different statements -- not from
+  // the fixpoint failing to decompose. Without it the two causes are
+  // indistinguishable, and "the analysis does not decompose" is the more
+  // interesting and more wrong of the two.
+  // #2638: the same two controls for the view set -- the rule over the merged
+  // program, and over the split lane's ASSEMBLED output. `bret` needed them to
+  // tell a decomposition failure from a statement difference, and there is no
+  // reason to believe this analysis differs without measuring it.
+  let an_view_one: Array[Array[Stmt]] = []
+  Array::push(an_view_one, a)
+  let an_view_self = sorted_names_of(may_return_view_link_parts(an_view_one, mrv_declared_fn_names(a)))
+  let an_bret_one: Array[Array[Stmt]] = []
+  Array::push(an_bret_one, a)
+  let an_bret_self = sorted_names_of(borrow_ret_link_parts(an_bret_one, borrow_ret_shadow_mask(a)))
+  let an_bmask_w = lc_fresh_int_array()
+  let an_bfns_w = compute_borrow_param_user_fns(a, an_exclude, an_bmask_w)
+  // #2638: round 0 ALONE for the whole program. The reference the link below
+  // is measured against -- the split lane never sees this, it sees only what
+  // each module published.
+  let an_r0mask_w = lc_fresh_int_array()
+  let an_r0_w = compute_borrow_param_user_fns_round0(a, an_exclude, an_r0mask_w)
+  let an_view_w = sorted_names_of(compute_may_return_view_fns(a))
+  let whole_invisible = eq_invisible_nominals_list()
+  eq_invisible_nominals_reset()
+  let link = prelude_link_state_new()
+  let st = prelude_observations_new()
+  let linked = prelude_run_per_module(c, c_file_id, file_count, entry_name, checker_eq_offsets, checker_eq_type_keys, import_closure, render, link, Some(st), prelude_env_none(), 0, module_paths)
+  let split_invisible = eq_invisible_nominals_list()
+  let ev_req_u = st.requests
+  let ev_ref_u = st.refusals
+  let ev_def_u = st.deferrals
+  let ev_decl_u = st.declared
+  let ev_handled_u = st.handled
+  let ev_perf_u = st.performed
+  let diag_u = lc_fresh_string_array()
+  lc_union_into(diag_u, link.diags)
+  lc_union_into(diag_u, st.validator_diags)
+  // #2575 item 4: the split lane's answers to the same three analyses, one
+  // union over the modules, taken by the driver at the same point in its pass
+  // order.
+  let an_bret_u = st.an_bret
+  let an_bfns_u = st.an_bfns
+  // #2638: THE LINK. Round 0 for the whole program from the modules'
+  // published facts -- their body-local masks and the union of their
+  // disqualifiers -- with no body of any module re-read. If this equals the
+  // whole-program reference, round 0 decomposes. Callees qualified locally
+  // but disqualified by a call in another module are exactly what
+  // the union of `nonident` removes.
+  let an_r0mask_link = lc_fresh_int_array()
+  let an_r0_link = borrow_round0_link(st.an_local_names, st.an_local_masks, st.an_valued, st.an_nonident_fns, st.an_nonident_pos, an_exclude, an_r0mask_link)
+  // #2638 phase B's answer, computed by the split lane itself (it owns the
+  // module parts) and only READ here for the comparison.
+  // #2638 SECOND CONTROL. The link over the ASSEMBLED program -- what the
+  // split lane actually produces after folding the modules' 167 duplicate
+  // declarations. Between this and `link_bret_self` the residue in
+  // `link_bret` is attributed: if this is a bare count, splitting the rounds
+  // across 365 parts is what costs it; if it carries the same residue, the
+  // parts' STATEMENTS do, and the fixpoint is exonerated either way only by
+  // saying which.
+  // #2638 THIRD CONTROL. The parts CONCATENATED into one part -- same
+  // statements as `link_bret` sees, same duplicates, but ONE round structure
+  // instead of 365. Against `link_bret_asm` (the same statements FOLDED) this
+  // says whether the residue is the 167 duplicate declarations or the
+  // splitting of the rounds. Two arguments predicted different answers here,
+  // so it is measured rather than reasoned.
+  let an_bret_cat: Array[Stmt] = []
+  let mut bci = 0
+  while bci < Array::length(st.an_parts) {
+    let bp = Array::get(st.an_parts, bci)
+    let mut bcj = 0
+    while bcj < Array::length(bp) {
+      Array::push(an_bret_cat, Array::get(bp, bcj))
+      bcj = bcj + 1
+    }
+    bci = bci + 1
+  }
+  let an_bret_cat_one: Array[Array[Stmt]] = []
+  Array::push(an_bret_cat_one, an_bret_cat)
+  let an_bret_catr = sorted_names_of(borrow_ret_link_parts(an_bret_cat_one, borrow_ret_shadow_mask(an_bret_cat)))
+  let an_view_asm_one: Array[Array[Stmt]] = []
+  Array::push(an_view_asm_one, linked)
+  let an_view_asm = sorted_names_of(may_return_view_link_parts(an_view_asm_one, mrv_declared_fn_names(linked)))
+  let an_bret_asm_one: Array[Array[Stmt]] = []
+  Array::push(an_bret_asm_one, linked)
+  let an_bret_asm = sorted_names_of(borrow_ret_link_parts(an_bret_asm_one, borrow_ret_shadow_mask(linked)))
+  let an_r01_link = st.an_r01_names
+  let an_r01mask_link = st.an_r01_masks
+  let an_pairs_u = st.an_pairs
+  let an_view_u = st.an_view
+  let collisions = link.collisions
+  let linked_dup_keys = st.linked_dup_keys
+  let minted = Array::get(st.counts, 0)
+  let linked_dups = Array::get(st.counts, 1)
+  let trial_len = Array::get(st.counts, 2)
+  let head = String::concat(String::concat("FULL stmts=", Int::to_string(Array::length(a))), String::concat(" split=", Int::to_string(trial_len)))
+  let mid = String::concat(String::concat(" linked=", Int::to_string(Array::length(linked))), String::concat(" folded=", Int::to_string(trial_len - Array::length(linked))))
+  let split_invisible = eq_invisible_nominals_list()
+  let tail = String::concat(String::concat(String::concat(" modules=", Int::to_string(file_count)), String::concat(" collisions=", Int::to_string(Array::length(collisions)))), String::concat(String::concat(" invisible_whole=", Int::to_string(Array::length(whole_invisible))), String::concat(String::concat(" invisible_split=", Int::to_string(Array::length(split_invisible))), String::concat(" linked_dups=", String::concat(Int::to_string(linked_dups), "\n")))))
+  let ev_line = String::concat(String::concat(String::concat("EVIDENCE declared=", lc_set_cmp(ev_decl_w, ev_decl_u)), String::concat(" handled=", lc_set_cmp(ev_handled_w, ev_handled_u))), String::concat(" performed=", String::concat(lc_set_cmp(ev_perf_w, ev_perf_u), "\n")))
+  // #2634: does the per-module run ASK for the same helpers? A `missing` row
+  // means the split emitted nothing; this says whether it never recorded the
+  // need or recorded it and did not emit. Different causes, different fixes.
+  // #2634: helpers the whole program asks for that NO module records in either
+  // form -- neither requested nor deferred.
+  //
+  // This counter was called `unmintable` and read as "no link could mint
+  // these". That reading was WRONG, and the implementation disproved it:
+  // `emit_recorded_structural_eq` loops to a fixpoint, so minting a deferred
+  // specialization records its nested instantiations and mints those too.
+  // Both entries here were recovered that way. What it actually measures is
+  // what no module recorded DIRECTLY, which is a weaker and more useful thing:
+  // a need that reaches the link only through another need.
+  let ev_req_covered = lc_fresh_string_array()
+  lc_union_into(ev_req_covered, ev_req_u)
+  lc_union_into(ev_req_covered, ev_def_u)
+  let mut mint_missing = 0
+  let mut mint_first = ""
+  let mut mi = 0
+  while mi < Array::length(ev_req_w) {
+    let n = Array::get(ev_req_w, mi)
+    if lc_str_array_has(ev_req_covered, n) {
+      ()
+    } else {
+      mint_missing = mint_missing + 1
+      if mint_first == "" {
+        mint_first = n
+      } else {
+        mint_first = String::concat(mint_first, String::concat(" ", n))
+      }
+    }
+    mi = mi + 1
+  }
+  let mint_names = if mint_first == "" {
+    ""
+  } else {
+    String::concat(":", mint_first)
+  }
+  // Renamed from `validators=` (#2647 Codex P1): it compared the two VALIDATOR
+  // diagnostics only, because the three passes that reject by returning a
+  // message were discarded. Both lanes collect all of them now, so the counter
+  // is the prelude's whole error list and the name says so.
+  let diag_line = String::concat("DIAGS prelude=", String::concat(lc_set_cmp(diag_w, diag_u), "\n"))
+  let req_a = String::concat(String::concat("SYNTH requests=", lc_set_cmp(ev_req_w, ev_req_u)), String::concat(" typed_refused=", lc_set_cmp(ev_ref_w, ev_ref_u)))
+  let req_b = String::concat(String::concat(" deferred=", Int::to_string(Array::length(ev_def_u))), String::concat(" minted=", Int::to_string(minted)))
+  let req_c = String::concat(String::concat(" indirect=", Int::to_string(mint_missing)), String::concat(mint_names, "\n"))
+  let req_line = String::concat(String::concat(String::concat(req_a, req_b), req_c), diag_line)
+  let an_head = String::concat("ANALYSIS dce_entry=", if an_dce_entry {
+    "1"
+  } else {
+    "0"
+  })
+  let an_cols = if an_dce_entry {
+    " borrow_ret=unmeasured borrow_fns=unmeasured borrow_masks=unmeasured view_ret=unmeasured link_round0=unmeasured link_round0_masks=unmeasured link_round0_occ=unmeasured link_round01=unmeasured link_round01_masks=unmeasured link_round01_occ=unmeasured link_bret=unmeasured link_bret_occ=unmeasured link_bret_self=unmeasured link_bret_asm=unmeasured link_bret_seed=unmeasured link_bret_cat=unmeasured link_view=unmeasured link_view_self=unmeasured link_view_asm=unmeasured link_bret_trial=unmeasured link_view_trial=unmeasured"
+  } else {
+    String::concat(String::concat(String::concat(" borrow_ret=", lc_set_cmp_counted(an_bret_w, an_bret_u)), String::concat(" borrow_fns=", lc_set_cmp_counted(an_bfns_w, an_bfns_u))), String::concat(String::concat(" borrow_masks=", lc_set_cmp_counted(lc_name_mask_pairs(an_bfns_w, an_bmask_w), an_pairs_u)), String::concat(String::concat(" view_ret=", lc_set_cmp_counted(an_view_w, an_view_u)), String::concat(String::concat(" link_round0=", lc_set_cmp_counted(an_r0_w, an_r0_link)), String::concat(String::concat(" link_round0_masks=", lc_set_cmp_counted(lc_name_mask_pairs(an_r0_w, an_r0mask_w), lc_name_mask_pairs(an_r0_link, an_r0mask_link))), String::concat(String::concat(" link_round0_occ=", lc_multiset_first_diff(an_r0_w, an_r0_link)), String::concat(String::concat(" link_round01=", lc_set_cmp_counted(an_bfns_w, an_r01_link)), String::concat(String::concat(" link_round01_masks=", lc_set_cmp_counted(lc_name_mask_pairs(an_bfns_w, an_bmask_w), lc_name_mask_pairs(an_r01_link, an_r01mask_link))), String::concat(String::concat(" link_round01_occ=", lc_multiset_first_diff(an_bfns_w, an_r01_link)), String::concat(String::concat(" link_bret=", lc_set_cmp_counted(an_bret_w, st.an_bret_link)), String::concat(String::concat(" link_bret_occ=", lc_multiset_first_diff(an_bret_w, st.an_bret_link)), String::concat(String::concat(" link_bret_self=", lc_set_cmp_counted(an_bret_w, an_bret_self)), String::concat(String::concat(" link_bret_asm=", lc_set_cmp_counted(an_bret_w, an_bret_asm)), String::concat(String::concat(" link_bret_seed=", String::concat(Int::to_string(match Array::length(st.an_bret_seed) {
+      0 => 0 - 1,
+      _ => Array::get(st.an_bret_seed, 0)
+    }), String::concat("/", Int::to_string(borrow_ret_shadow_mask(a))))), String::concat(String::concat(" link_bret_cat=", lc_set_cmp_counted(an_bret_w, an_bret_catr)), String::concat(String::concat(" link_view=", lc_set_cmp_counted(an_view_w, st.an_view_link)), String::concat(String::concat(" link_view_self=", lc_set_cmp_counted(an_view_w, an_view_self)), String::concat(String::concat(" link_view_asm=", lc_set_cmp_counted(an_view_w, an_view_asm)), String::concat(String::concat(" link_bret_trial=", lc_set_cmp_counted(an_bret_w, st.an_bret_trial)), String::concat(" link_view_trial=", lc_set_cmp_counted(an_view_w, st.an_view_trial)))))))))))))))))))))
+  }
+  // #2633: the context instrument. `decls` is the total number of declarations
+  // handed to modules, `zero` how many modules got none, and `unresolved` the
+  // mangled cross-module names a module uses that its context did not supply --
+  // empty meaning every one was given.
+  let mut ctx_decls = 0
+  let mut ctx_zero = 0
+  let mut cxi = 0
+  while cxi < Array::length(st.an_ctx_sizes) {
+    let n = Array::get(st.an_ctx_sizes, cxi)
+    ctx_decls = ctx_decls + n
+    if n == 0 {
+      ctx_zero = ctx_zero + 1
+    } else {
+      ()
+    }
+    cxi = cxi + 1
+  }
+  // Split by SPELLING, which is the whole point: `_exp_` is an EXPORTED
+  // declaration, so a module that uses one and was not given it is a context
+  // gap. `_dep_` is private to its defining module, which
+  // `oracle_is_interface_stmt` excludes on purpose -- a module referring to one
+  // is a different finding (a private name reaching across a module boundary),
+  // not a gap in what the contract publishes.
+  let mut ctx_unres_exp = 0
+  let mut ctx_unres_dep = 0
+  let mut first_exp = ""
+  let mut first_dep = ""
+  let mut cui = 0
+  while cui < Array::length(st.an_ctx_unresolved) {
+    let n = Array::get(st.an_ctx_unresolved, cui)
+    if cui < Array::length(st.an_ctx_unresolved_exp) && Array::get(st.an_ctx_unresolved_exp, cui) == 1 {
+      ctx_unres_exp = ctx_unres_exp + 1
+      if first_exp == "" {
+        first_exp = n
+      } else {
+        ()
+      }
+    } else {
+      ctx_unres_dep = ctx_unres_dep + 1
+      if first_dep == "" {
+        first_dep = n
+      } else {
+        ()
+      }
+    }
+    cui = cui + 1
+  }
+  let mut ctx_line = "CTX decls="
+  ctx_line = String::concat(ctx_line, Int::to_string(ctx_decls))
+  ctx_line = String::concat(ctx_line, " modules=")
+  ctx_line = String::concat(ctx_line, Int::to_string(Array::length(st.an_ctx_sizes)))
+  ctx_line = String::concat(ctx_line, " zero=")
+  ctx_line = String::concat(ctx_line, Int::to_string(ctx_zero))
+  ctx_line = String::concat(ctx_line, " unresolved_exp=")
+  ctx_line = String::concat(ctx_line, Int::to_string(ctx_unres_exp))
+  ctx_line = String::concat(ctx_line, ":")
+  ctx_line = String::concat(ctx_line, first_exp)
+  ctx_line = String::concat(ctx_line, " unresolved_dep=")
+  ctx_line = String::concat(ctx_line, Int::to_string(ctx_unres_dep))
+  ctx_line = String::concat(ctx_line, ":")
+  ctx_line = String::concat(ctx_line, first_dep)
+  ctx_line = String::concat(ctx_line, " exp_in_closure=")
+  ctx_line = String::concat(ctx_line, Int::to_string(Array::get(st.an_ctx_cls, 0)))
+  ctx_line = String::concat(ctx_line, " exp_outside=")
+  ctx_line = String::concat(ctx_line, Int::to_string(Array::get(st.an_ctx_cls, 1)))
+  ctx_line = String::concat(ctx_line, " exp_unknown=")
+  ctx_line = String::concat(ctx_line, Int::to_string(Array::get(st.an_ctx_cls, 2)))
+  ctx_line = String::concat(ctx_line, " filt_not_published=")
+  ctx_line = String::concat(ctx_line, Int::to_string(Array::get(st.an_ctx_cls, 3)))
+  ctx_line = String::concat(ctx_line, " filt_own_key_skip=")
+  ctx_line = String::concat(ctx_line, Int::to_string(Array::get(st.an_ctx_cls, 4)))
+  // The denominator for both `unresolved` counts: merge-stamped names this
+  // scan actually looked at. `unresolved_*=0` with `seen=0` says the scan
+  // matched nothing and the zeros mean nothing.
+  ctx_line = String::concat(ctx_line, " seen=")
+  ctx_line = String::concat(ctx_line, Int::to_string(Array::get(st.an_ctx_cls, 5)))
+  // Modules with no path provenance, whose tag is therefore unknown and whose
+  // stamped names go unjudged. Reported rather than guessed: a wrong tag moves
+  // rows between `unresolved_exp` and `unresolved_dep`, the one distinction
+  // this line exists to make.
+  ctx_line = String::concat(ctx_line, " amb=")
+  ctx_line = String::concat(ctx_line, Int::to_string(Array::get(st.an_ctx_amb, 0)))
+  ctx_line = String::concat(ctx_line, "\n")
+  let an_line = String::concat(String::concat(String::concat(an_head, an_cols), "\n"), ctx_line)
+  let line = String::concat(String::concat(head, mid), tail)
+  let mut collision_lines = ""
+  let mut ldi = 0
+  while ldi < Array::length(linked_dup_keys) && ldi < 20 {
+    collision_lines = String::concat(collision_lines, String::concat("  linked_dup ", String::concat(Array::get(linked_dup_keys, ldi), "\n")))
+    ldi = ldi + 1
+  }
+  let mut coi = 0
+  while coi < Array::length(collisions) && coi < 20 {
+    collision_lines = String::concat(collision_lines, String::concat("  collision ", String::concat(Array::get(collisions, coi), "\n")))
+    coi = coi + 1
+  }
+  let mut ini = 0
+  let mut invisible_lines = ""
+  while ini < Array::length(split_invisible) && ini < 20 {
+    invisible_lines = String::concat(invisible_lines, String::concat("  invisible ", String::concat(Array::get(split_invisible, ini), "\n")))
+    ini = ini + 1
+  }
+  let line2 = String::concat(String::concat(line, collision_lines), invisible_lines)
+  let (order_residual, order_residual_len) = oracle_order_residual(a, linked, link.synth_keys)
+  let order_line = String::concat(String::concat("  ORDER residual=", Int::to_string(order_residual)), String::concat(" of=", String::concat(Int::to_string(order_residual_len), "\n")))
+  String::concat(String::concat(String::concat(String::concat(String::concat(line2, oracle_keyed_line(a, linked, render)), order_line), ev_line), an_line), req_line)
+}
+
+export fn prelude_pass_module_oracle_step(k: Int, a: Array[Stmt], c: Array[Stmt], c_file_id: Array[Int], file_count: Int, entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], render: (Stmt) -> String) -> String with Exception {
+  let entry_fid = file_count - 1
+  let mut file_of = c_file_id
+  let mut j = 0
+  while j < k {
+    let old_keys: Array[String] = []
+    let mut qi = 0
+    while qi < Array::length(c) {
+      Array::push(old_keys, oracle_stmt_key(Array::get(c, qi)))
+      qi = qi + 1
+    }
+    oracle_apply_pass(j, c, entry_name, checker_eq_offsets, checker_eq_type_keys, lc_fresh_string_array(), prelude_env_none())
+    file_of = oracle_realign(old_keys, file_of, c)
+    j = j + 1
+  }
+  let n = Array::length(c)
+  let parts: Array[Array[Stmt]] = []
+  let mut fi = 0
+  while fi < file_count {
+    Array::push(parts, array_empty())
+    fi = fi + 1
+  }
+  let mut si = 0
+  while si < n {
+    let part = Array::get(parts, Array::get(file_of, si))
+    Array::push(part, Array::get(c, si))
+    si = si + 1
+  }
+  // The whole program goes first: for the per-module entry the context is
+  // the other files' POST-pass interface (a dependency is compiled before
+  // its dependents, so a dependent sees its threaded signatures), taken
+  // from `a` and limited to keys that existed before the pass (a
+  // synthesized statement belongs to its own module's output, not to a
+  // sibling's context).
+  oracle_apply_pass(k, a, entry_name, checker_eq_offsets, checker_eq_type_keys, lc_fresh_string_array(), prelude_env_none())
+  let pre_keys: MutMap[String, Int] = MutMap::new_string()
+  let mut pk = 0
+  while pk < Array::length(c) {
+    MutMap::set(pre_keys, oracle_stmt_key(Array::get(c, pk)), 1)
+    pk = pk + 1
+  }
+  // Each file's interface, taken BEFORE any module run: a module run rewrites
+  // its own part in place (a threaded signature is skipped by `build_gens` as
+  // already done), and a dependent must see the pre-pass, contract form.
+  let ifaces: Array[Array[Stmt]] = []
+  let mut pf = 0
+  while pf < file_count {
+    let src = Array::get(parts, pf)
+    let dst: Array[Stmt] = []
+    let src_export_block = oracle_export_block_names(src)
+    let mut ps = 0
+    while ps < Array::length(src) {
+      if oracle_is_interface_stmt_with(Array::get(src, ps), src_export_block) {
+        Array::push(dst, oracle_interface_form(Array::get(src, ps)))
+      } else {
+        ()
+      }
+      ps = ps + 1
+    }
+    Array::push(ifaces, dst)
+    pf = pf + 1
+  }
+  let trial: Array[Stmt] = []
+  let trial_file: Array[Int] = []
+  fi = 0
+  while fi < file_count {
+    let part_entry = if fi == entry_fid {
+      entry_name
+    } else {
+      ""
+    }
+    let part = Array::get(parts, fi)
+    if k == 4 {
+      // The one pass with a per-module entry: the module's statements plus the
+      // other files' interface, synthesized program-level statements appended
+      // after the module's own.
+      let own_keys: MutMap[String, Int] = MutMap::new_string()
+      let mut ok = 0
+      while ok < Array::length(part) {
+        MutMap::set(own_keys, oracle_stmt_key(Array::get(part, ok)), 1)
+        ok = ok + 1
+      }
+      // The other files' PRE-pass interface: `build_gens` registers a bounded
+      // generic only from its unthreaded signature (a threaded one is
+      // skipped as already done), which is also the form a `.vpkg` contract
+      // carries.
+      let ctx: Array[Stmt] = []
+      let mut cj = 0
+      while cj < file_count {
+        // Every other file -- wider than a real per-module compile sees; the
+        // full-sequence oracle above records the two narrower rules that were
+        // measured and why neither holds at file granularity.
+        if cj == fi {
+          ()
+        } else {
+          let other = Array::get(ifaces, cj)
+          let mut ci = 0
+          while ci < Array::length(other) {
+            let cs = Array::get(other, ci)
+            if MutMap::has(own_keys, oracle_stmt_key(cs)) {
+              ()
+            } else {
+              Array::push(ctx, cs)
+            }
+            ci = ci + 1
+          }
+        }
+        cj = cj + 1
+      }
+      // The oracle's module identity is the file index: it is what makes two
+      // files' nameless top-level statements distinguishable here, the way a
+      // module path would in a real per-module run (#2388).
+      let synthesized = desugar_trait_dicts_module(part, ctx, "f\{fi}", checker_eq_offsets, checker_eq_type_keys)
+      let mut sy = 0
+      while sy < Array::length(synthesized) {
+        Array::push(part, Array::get(synthesized, sy))
+        sy = sy + 1
+      }
+    } else {
+      oracle_apply_pass(k, part, part_entry, checker_eq_offsets, checker_eq_type_keys, lc_fresh_string_array(), prelude_env_none())
+    }
+    let mut oi = 0
+    while oi < Array::length(part) {
+      Array::push(trial, Array::get(part, oi))
+      Array::push(trial_file, fi)
+      oi = oi + 1
+    }
+    fi = fi + 1
+  }
+  let nn = Array::length(a)
+  let nt = Array::length(trial)
+  let lim = if nn < nt {
+    nn
+  } else {
+    nt
+  }
+  let mut diffs = 0
+  let mut first = 0 - 1
+  let mut first_whole = ""
+  let mut first_split = ""
+  let mut ci = 0
+  while ci < lim {
+    // Structural `==` on Stmt (ADR-0097): no allocation. The printer is
+    // used only to show the first difference -- rendering every statement
+    // through String::concat pushed the bump high-water to 3.6 GB on this
+    // corpus (measured 2026-09-06) and tripped the 4 GB ceiling.
+    if Array::get(a, ci) == Array::get(trial, ci) {
+      ()
+    } else {
+      diffs = diffs + 1
+      if first < 0 {
+        first = ci
+        first_whole = oracle_head(render(Array::get(a, ci)))
+        first_split = oracle_head(render(Array::get(trial, ci)))
+      } else {
+        ()
+      }
+    }
+    ci = ci + 1
+  }
+  if nn != nt {
+    diffs = diffs + (if nn > nt {
+      nn - nt
+    } else {
+      nt - nn
+    })
+    if first < 0 {
+      first = lim
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+  let first_file = if first >= 0 && first < Array::length(trial_file) {
+    Array::get(trial_file, first)
+  } else {
+    0 - 1
+  }
+  let status = if diffs == 0 {
+    "same"
+  } else {
+    "differs"
+  }
+  let line = String::concat("PASS ", String::concat(oracle_pass_name(k), String::concat(" stmts=", String::concat(Int::to_string(nn), String::concat(" split=", String::concat(Int::to_string(nt), String::concat(" diff=", String::concat(Int::to_string(diffs), String::concat(" first=", String::concat(Int::to_string(first), String::concat(" file=", String::concat(Int::to_string(first_file), String::concat(" status=", String::concat(status, "\n"))))))))))))))
+  // The keyed comparison is the verdict for any pass that SYNTHESIZES
+  // program-level statements: per-module they land at each module's position
+  // and may repeat, so a positional `differs` says nothing about whether the
+  // two runs produced the same declarations. It used to be printed for the
+  // trait-dict pass only, which left every other pass's `differs` unreadable
+  // (#2388: `evidence_dict_pass` differed by the position of one synthesized
+  // dict struct, and there was no line saying so).
+  let line2 = if k == 4 || diffs > 0 {
+    String::concat(line, oracle_keyed_line(a, trial, render))
+  } else {
+    line
+  }
+  if diffs > 0 {
+    String::concat(line2, String::concat("  whole: ", String::concat(first_whole, String::concat("\n  split: ", String::concat(first_split, "\n")))))
+  } else {
+    line2
+  }
+}

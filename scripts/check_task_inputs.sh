@@ -19,13 +19,15 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
-python3 - "$@" <<'PY'
-import re, sys, os
+python3 - "$ROOT_DIR/scripts" "$@" <<'PY'
+import json, re, sys, os, subprocess
+sys.path.insert(0, sys.argv[1])
+from source_files import read_local_pkl
 
 # Overridable so the self-test can drive synthetic task blocks.
 TASKFILE = os.environ.get("TASK_INPUTS_TASKFILE", "Taskfile.pkl")
 INPUT_ROOT = os.environ.get("TASK_INPUTS_ROOT", ".")
-src = open(TASKFILE, encoding="utf-8").read()
+src = read_local_pkl(TASKFILE)
 
 def active_pkl(text):
     """Drop Pkl comments without treating comment markers in strings as syntax."""
@@ -123,7 +125,7 @@ active_src = active_pkl(src)
 # The shared compiler-probe input set is safe only while it contains both
 # halves of the compiler identity: selfhost sources and the bootstrap seed.
 probe_inputs_m = re.search(
-    r"local\s+compilerProbeInputs(?:\s*:[^=]+)?\s*=\s*new\s*\{(.*?)\}",
+    r"(?:local\s+)?compilerProbeInputs(?:\s*:[^=]+)?\s*=\s*new\s*\{(.*?)\}",
     active_src,
     re.S,
 )
@@ -137,7 +139,7 @@ probe_inputs_safe = bool(
 # scriptTask wrappers are deliberately classified as a group: some execute the
 # compiler through several shell layers, which text inspection cannot prove
 # individually. The shared factory must therefore carry the complete identity.
-script_task_decl = re.search(r"local\s+function\s+scriptTask\b", active_src)
+script_task_decl = re.search(r"(?:local\s+)?function\s+scriptTask\b", active_src)
 script_task_inputs = None
 if script_task_decl:
     brace = active_src.find("{", script_task_decl.end())
@@ -227,9 +229,9 @@ def reaches_compiler(script, seen=None):
 # the complete compiler identity checked above.
 fails = []
 checked = 0
-for m in re.finditer(r"new Task \{", active_src):
+for m in re.finditer(r"new (?:\w+\.)?Task \{", active_src):
     start = m.start()
-    depth, k = 0, start + len("new Task ") - 1
+    depth, k = 0, m.end() - 1
     while True:
         if active_src[k] == "{": depth += 1
         elif active_src[k] == "}":
@@ -266,6 +268,29 @@ for m in re.finditer(r"new Task \{", active_src):
     if not has_compiler_inputs:
         why = "declares no `inputs` at all" if not inputs_m else "does not include a complete compiler input set"
         fails.append((name, hot[0], why))
+
+# Imported modules have their own binding scopes. A concatenated declaration
+# scan cannot prove that a root alias still refers to the shared input set.
+# Ask Pkl for the concrete task values before accepting a modular Taskfile.
+root_source = active_pkl(open(TASKFILE, encoding="utf-8").read())
+if re.search(r'^import "(?![^"\n]*:)[^"\n]+"', root_source, re.M):
+    try:
+        evaluated = json.loads(subprocess.check_output(
+            [os.environ.get("PKL_BIN", "pkl"), "eval", TASKFILE, "-f", "json"],
+            text=True,
+        ))
+    except (OSError, subprocess.CalledProcessError, json.JSONDecodeError) as error:
+        print(f"check-task-inputs: FAIL: cannot evaluate modular task inputs: {error}", file=sys.stderr)
+        sys.exit(1)
+    factory_names = set(re.findall(r'scriptTask\(\s*"([^"\n]+)"', active_src))
+    required = {"lib/**/*.vibe", "lib/**/*.vpkg", "bootstrap/seed.json"}
+    for name, task in evaluated["tasks"].items():
+        if task.get("cache") is False:
+            continue
+        cmd = task.get("cmd") or ""
+        hot = [s for s in SCRIPT_PATH_RE.findall(cmd) if AGGREGATOR_RE.search(s) or reaches_compiler(s)]
+        if (hot or name in factory_names) and not required.issubset(task.get("inputs", [])):
+            fails.append((name, hot[0] if hot else "scriptTask", "evaluates to an incomplete compiler input set"))
 
 for name, script, why in fails:
     print(f"check-task-inputs: FAIL: task `{name}` runs {script}, which reaches the compiler,",

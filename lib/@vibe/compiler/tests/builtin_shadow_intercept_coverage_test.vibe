@@ -23,6 +23,30 @@ import @vibe/compiler/core {
 
 //# Functions
 
+/// Read the facade and every implementation row from the compiler manifest.
+/// New split files join this scan automatically, so an empty facade cannot
+/// make an intercept coverage check pass without inspecting its arms.
+fn codegen_source_group(path: String) -> String with Fs {
+  let stem = String::substring(path, 0, String::length(path) - 5)
+  let prefix = String::concat(stem, "_")
+  let mut source = Fs::read_file(path)
+  let manifest = Fs::read_file("lib/@vibe/compiler/compiler_sources_manifest.tsv")
+  for row in String::split(manifest, "\n") {
+    let columns = String::split(row, "\t")
+    if Array::length(columns) == 2 {
+      let member = String::concat("lib/@vibe/compiler/", Array::get(columns, 1))
+      if String::starts_with(member, prefix) && String::ends_with(member, ".vibe") {
+        source = String::concat(String::concat(source, "\n"), Fs::read_file(member))
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+  }
+  source
+}
+
 /// Every `<needle>"<literal>"` in `src` outside a `//` comment line. The
 /// literals are plain callee spellings, so the first `"` after the opening one
 /// closes it.
@@ -80,7 +104,7 @@ fn honours_source_definition(name: String) -> Bool {
 /// The spellings `path`'s arms compare against that no rename covers,
 /// `;`-joined (empty = every intercept yields to a program's own function).
 fn uncovered(path: String) -> String with Fs {
-  let src = Fs::read_file(path)
+  let src = codegen_source_group(path)
   let seen: Array[String] = []
   let lits = compared_literals(src, "fname == \"")
   for lit in compared_literals(src, "get_eident_name(callee) == \"") {
@@ -111,7 +135,7 @@ test "every builtin spelling the gc call arms intercept is moved aside" {
 
 test "the scan sees the arms it guards" {
   // A scan that found nothing would pass vacuously.
-  let src = Fs::read_file("lib/@vibe/compiler/codegen/expr/compile_call.vibe")
+  let src = codegen_source_group("lib/@vibe/compiler/codegen/expr/compile_call.vibe")
   let lits = compared_literals(src, "fname == \"")
   inspect(Array::length(lits) > 140, content = "true")
   inspect(Array::any(lits, (l) -> l == "Array::map"), content = "true")

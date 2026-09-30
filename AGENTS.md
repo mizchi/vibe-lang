@@ -455,6 +455,17 @@ selfhost-only (#594) 以降、ソースはすべて vibe (`.vibe`)。旧 MoonBit
   もう存在しない** — 詳細は [docs/internal/project/adding-modules.md](docs/internal/project/adding-modules.md)
 - `Taskfile.pkl` - pkfire タスク定義
 
+### Source file size
+
+Keep maintained source files at **3,000 lines or fewer**. Split by responsibility
+and dependency order; preserve package contracts, effects, binding identity,
+and execution order. Extract a large function into typed phases before splitting
+its containing file. Generated compiler bundles are build outputs and are
+excluded from this limit.
+
+`pkf run check-source-file-size` enforces the limit for Vibe, Rust, JavaScript,
+TypeScript, Python, shell, and Pkl source. It also runs in `release-check` and CI.
+
 ### 変更の入れ先
 
 vibe compiler の実装は `lib/@vibe/compiler/` と `lib/@vibe/cli/` が source of

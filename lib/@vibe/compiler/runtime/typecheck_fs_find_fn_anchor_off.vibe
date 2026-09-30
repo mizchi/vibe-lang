@@ -1,0 +1,1826 @@
+// lib/@vibe/compiler/runtime/typecheck_fs.vibe — find fn anchor off.
+
+import @vibe/compiler/cache {
+  cache_read_source_fs,
+  cache_source_text_memo_reset,
+  compact_source_fingerprint_memo,
+  compact_source_fingerprint_memo_reset,
+  compact_string_fingerprint,
+  normalize_persistent_cache_text,
+  persistent_dep_list_cache_path,
+  persistent_leaf_fingerprint_cache_path,
+  persistent_type_env_cache_path,
+  persistent_typing_dependency_env_reuse_eligibility_path,
+  persistent_typing_dependency_env_reuse_sidecar_path,
+  typing_module_fingerprint
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import @vibe/ast {
+  TypeExpr,
+  TypeExpr::is_array_of_int,
+  impl_target_from_key,
+  impl_target_key,
+  trait_ref_args,
+  trait_ref_from_key,
+  trait_ref_key,
+  trait_ref_name,
+  type_param_arity,
+  type_param_name
+}
+
+import @vibe/compiler/checker {
+  CheckedProgram,
+  aggregate_export_names,
+  check_program,
+  check_program_type_table,
+  check_program_with_env_result,
+  check_program_with_projected_import_env_typed_lowering_located_observation,
+  collect_builtin_shadowing_names,
+  detect_redundant_namespace_imports,
+  detect_top_level_let_star,
+  detect_unbound_nonunit_returns,
+  detect_unused_imports,
+  export_local_nonvalue_kind,
+  import_item_kind_errors,
+  is_explicit_builtin_declaration,
+  report_unknown_type_names_deferred_validation,
+  typed_lowering_enc_offset,
+  typed_lowering_enc_tag,
+  typing_semantics_seed,
+  unresolved_aggregate_export_name,
+  unresolved_export_message,
+  validate_derives
+}
+
+import @vibe/compiler/checker/artifacts {
+  checked_exported_interface_artifact_from_checked_program,
+  checked_module_typing_artifact_v2_matches_exact_inputs,
+  encode_checked_module_typing_artifact_v2,
+  shadow_unattested_checked_module_typing_artifact_v2_from_checked_program
+}
+
+import @vibe/compiler/checker/artifacts/program {
+  encode_checked_program
+}
+
+import @vibe/compiler/checker/artifacts/module {
+  CheckedModuleArtifact
+}
+
+import @vibe/compiler/runtime/checked_module_cache {
+  checked_module_artifact_stmts,
+  checked_module_cache_input_identity,
+  checked_module_cache_mode,
+  checked_module_cache_reset,
+  commit_checked_module_artifact,
+  load_checked_module_artifact
+}
+
+import @vibe/compiler/core {
+  BindingOrigin,
+  EnvValueBinding,
+  Expr,
+  Stmt,
+  Type,
+  TypeDef,
+  TypeEnv,
+  bsearch_leftmost,
+  dir_of_path,
+  env_bind,
+  env_bind_with_origin,
+  env_flat_bindings,
+  env_lookup,
+  env_lookup_binding_including_surface,
+  env_lookup_flat,
+  env_preserve_type_definition_origins,
+  env_selectable_type_defs,
+  env_trait_def_names_into,
+  env_type_defs,
+  env_value_binding,
+  find_typedef,
+  has_standard_effect_policy,
+  is_alias_constructor,
+  is_builtin_iterator_serialized_boundary_path,
+  is_contract_ext,
+  is_exception_effect_name,
+  lookup_registry_builtin,
+  namespace_private_renamer_for_path,
+  normalize_path,
+  resolution_env_seed,
+  resolve_builtin,
+  resolve_import_path,
+  resolve_import_path_candidates,
+  str_lt,
+  typed_render_refuse_key,
+  unstable_package_note
+}
+
+import @vibe/compiler/codegen {
+  compile_inline_wat_array_params
+}
+
+import @vibe/compiler/entry/source_compile/wasi_only {
+  expand_interp_stmts
+}
+
+import @vibe/compiler/contract {
+  classify_contract_stmts,
+  contract_duplicate_decl_index,
+  contract_effective_decl_indices,
+  contract_effective_decls,
+  contract_parse_error_offset,
+  contract_type_provenance,
+  contract_types_item_names,
+  contract_unsupported_stmt_index,
+  extract_package_version,
+  extract_require_pins,
+  parse_contract_program,
+  parse_contract_program_spans,
+  vpkg_path_escape_one_line,
+  vpkg_types_contract_of_source,
+  vpkg_types_decl_pos_for_line
+}
+
+import @vibe/compiler/loader {
+  ast_cache_prefetch_count,
+  ast_cache_prefetch_count_reset,
+  ast_cache_prefetch_fs,
+  ingest_source_text_fs,
+  ingestion_pipeline_telemetry_add,
+  load_or_parse_module_header_fs,
+  parse_program_located_shared,
+  parse_program_located_shared_mark_semantic,
+  parse_program_located_shared_ran_parser,
+  parse_program_located_shared_semantic_pending,
+  vpkg_types_module_path_prefix
+}
+
+import @vibe/compiler/incremental {
+  RippleDb, ripple_get_deps, ripple_get_fingerprint, ripple_get_source, ripple_record_eval, ripple_set_source
+}
+
+import @vibe/compiler/module_graph {
+  plan_module_order
+}
+
+import @vibe/compiler/syntax {
+  Token,
+  lex_with_offsets,
+  lex_with_offsets_recovering,
+  offset_to_line_col,
+  parse_program_located,
+  parse_program_recovering,
+  print_type_expr,
+  token_to_string
+}
+
+import @vibe/compiler/runtime/eval_loader {
+  contains_str
+}
+
+import ./persistent_env_codec.vibe {
+  PersistentModuleCache,
+  load_persistent_dep_list,
+  load_persistent_leaf_fingerprint,
+  load_persistent_module_cache,
+  load_persistent_type_env,
+  parse_persistent_module_cache,
+  parse_persistent_type_env,
+  persistent_dep_list_text,
+  persistent_leaf_fingerprint_text,
+  persistent_module_cache_text,
+  persistent_type_env_cache_text
+}
+
+import ./typed_lowering_codec.vibe {
+  module_typed_lowering_text, parse_module_typed_lowering_offsets_text
+}
+
+import ./typecheck_fs_local_type_member_markers.vibe {
+  module_typed_lowering_memo_get_by_fp, module_typed_lowering_memo_put, typecheck_fs_empty_dep_fps, typecheck_fs_lookup_env_cache
+}
+
+export fn typecheck_fs_upsert_env_cache(cache: Array[(String, TypeEnv)], path: String, env: TypeEnv) -> Array[(String, TypeEnv)] {
+  let len = Array::length(cache)
+  let mut i = 0
+  let mut found = false
+  while i < len && !found {
+    let (p, _) = Array::get(cache, i)
+    if p == path {
+      Array::set(cache, i, (path, env))
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  if !found {
+    Array::push(cache, (path, env))
+  }
+  cache
+}
+
+export fn ensure_env_cache_for_path(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], path: String) -> Array[(String, TypeEnv)] with Env + Exception + Fs {
+  match typecheck_fs_lookup_env_cache(env_cache, path) {
+    Some(_) => env_cache,
+    None =>
+    match ripple_get_fingerprint(rdb, path) {
+      Some(fingerprint) =>
+      match load_persistent_type_env(fingerprint) {
+        Some(cached_env) => typecheck_fs_upsert_env_cache(env_cache, path, cached_env),
+        None => env_cache
+      },
+      None => env_cache
+    }
+  }
+}
+
+export fn ensure_env_cache_for_paths(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], paths: Array[String]) -> Array[(String, TypeEnv)] with Env + Exception + Fs {
+  let mut cache = env_cache
+  let mut i = 0
+  while i < Array::length(paths) {
+    cache = ensure_env_cache_for_path(rdb, cache, Array::get(paths, i))
+    i = i + 1
+  }
+  cache
+}
+
+export fn is_vpkg_types_stub_path(path: String) -> Bool {
+  String::index_of(path, ".vibe/build/vpkg_types/") >= 0
+}
+
+/// Shallow copy of a (path, source) cache.
+///
+/// plan_import_graph_fs has to resolve dependencies against its OWN copy:
+/// upsert_string_pair below MUTATES the array it is handed and returns that
+/// same array, and resolve_deps_for_source_fs upserts on every miss. Planning
+/// against the caller's cache therefore marked every module's current source
+/// as already-seen before the walk even started -- and the walk reads exactly
+/// that to decide whether a module's cached fingerprint is still valid, so an
+/// edited source reused its stale type env (caught by
+/// type_db_cross_module_test's "source update bypasses current-run cache").
+export fn copy_string_pairs(pairs: Array[(String, String)]) -> Array[(String, String)] {
+  let out = typecheck_fs_empty_dep_fps()
+  let mut i = 0
+  let len = Array::length(pairs)
+  while i < len {
+    Array::push(out, Array::get(pairs, i))
+    i = i + 1
+  }
+  out
+}
+
+export fn typecheck_fs_lookup_string_pair(pairs: Array[(String, String)], key: String) -> Option[String] {
+  let len = Array::length(pairs)
+  let mut i = 0
+  let mut result = None
+  let mut done = false
+  while !done {
+    if i >= len {
+      done = true
+    } else {
+      let (k, v) = Array::get(pairs, i)
+      if k == key {
+        result = Some(v)
+        done = true
+      } else {
+        i = i + 1
+      }
+    }
+  }
+  result
+}
+
+export fn typecheck_fs_upsert_string_pair(pairs: Array[(String, String)], key: String, value: String) -> Array[(String, String)] {
+  let len = Array::length(pairs)
+  let mut i = 0
+  let mut found = false
+  while i < len && !found {
+    let (k, _) = Array::get(pairs, i)
+    if k == key {
+      Array::set(pairs, i, (key, value))
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  if !found {
+    Array::push(pairs, (key, value))
+  }
+  pairs
+}
+
+/// --- #906 Phase 0: ready-order oracle -----------------------------------
+///
+/// The import-DAG walk below visits a module's dependencies in DECLARATION
+/// order. Phase 2 will hand ready modules to workers, at which point the
+/// visit order becomes whatever the scheduler picks -- so the property that
+/// has to hold before any of that is built is "the order dependencies are
+/// visited cannot change the output". This seed makes that property
+/// TESTABLE today, with no real parallelism: a non-zero seed permutes each
+/// node's dependency visit order deterministically, and
+/// scripts/dep_order_oracle.sh asserts the compiled wasm is byte-identical
+/// across seeds.
+///
+/// The switch rides in a module-level cell rather than a parameter for the
+/// same reason set_error_row_checked (checker/checker_effects.vibe) does:
+/// the typecheck walk is pure (no Env row) and threading a config value
+/// through every frame of a recursion that already carries five accumulators
+/// would be far more invasive than the thing being tested.
+///
+/// Seed 0 (the default, and what every production build uses) is the
+/// identity permutation -- byte-for-byte the pre-#906 walk.
+let dep_order_seed_cell: Array[Int] = array_empty()
+
+export fn set_dep_order_seed(seed: Int) -> Unit {
+  Array::truncate(dep_order_seed_cell, 0)
+  Array::push(dep_order_seed_cell, seed)
+}
+
+fn dep_order_seed() -> Int {
+  if Array::length(dep_order_seed_cell) > 0 {
+    Array::get(dep_order_seed_cell, 0)
+  } else {
+    0
+  }
+}
+
+/// --- #1259: scheduler trace, for the real-path differential oracle -------
+///
+/// #1239 step 8 asks that the REAL compile path's execution trace be matched
+/// against formal/VibeFormal/Compiler/Scheduler.lean. Until now only a
+/// synthetic worker was (scripts/parallel_selfhost_checker.mjs), which can
+/// only show the model is self-consistent -- never that the compiler is an
+/// instance of it.
+///
+/// When VIBE_SCHEDULER_TRACE names a file, the walk records what the Lean
+/// model needs and nothing else. Two row kinds:
+///
+///   project<TAB><path><TAB><rank>[<TAB><dep>...]   the planned graph
+///   step<TAB><path><TAB><fingerprint>              in EXECUTION order
+///
+/// `project` rows are `Project.dependencies` and `Project.rank`; `step` rows
+/// are the `Step.run` sequence, and their order is the interleaving a
+/// scheduler chose (VIBE_DEP_ORDER_SEED permutes it within a wave). The
+/// fingerprint is the published `JobResult`. scripts/scheduler_trace_oracle.sh
+/// checks the four properties that model states -- see it for which row
+/// proves which.
+///
+/// Accumulated in memory and written once, not appended per module: the row
+/// order IS the execution order, so a partial file from an aborted run would
+/// read as a legitimate shorter schedule rather than as a truncated one.
+let scheduler_trace_cell: Array[String] = array_empty()
+
+export fn set_scheduler_trace_path(path: String) -> Unit {
+  Array::truncate(scheduler_trace_cell, 0)
+  Array::push(scheduler_trace_cell, path)
+}
+
+export fn scheduler_trace_path() -> String {
+  if Array::length(scheduler_trace_cell) > 0 {
+    Array::get(scheduler_trace_cell, 0)
+  } else {
+    ""
+  }
+}
+
+/// --- #1259: cross-module diagnostic collection ---------------------------
+///
+/// Whether the import-DAG walk COLLECTS a diagnostic per failing module
+/// instead of failing fast on the first one. This is #1239 step 5's missing
+/// prerequisite: step 5 asks for diagnostics sorted into a canonical order and
+/// compared across `--jobs=1/2/4`, and until now there was never more than one
+/// diagnostic to sort -- commit_module_outcome threw on the first.
+///
+/// OFF by default, and off is byte-for-byte the pre-#1259 walk: the same
+/// message, raised for the same module, with the same partial cache state
+/// behind it. `VIBE_DIAGNOSTICS_ALL=1` (read in cli_adapter.vibe alongside the
+/// other mode switches, so every lane agrees) turns it on.
+///
+/// Default-off is a deliberate compatibility choice, not indecision. Turning
+/// collection on changes two observable things at once -- the error text grows
+/// from one diagnostic to N, and modules that a fail-fast walk never reached
+/// now get checked and their environments committed to the persistent cache --
+/// and flipping the default is a separate decision from having the mechanism
+/// and its determinism gate.
+///
+/// The switch rides in a module-level cell for the same reason
+/// dep_order_seed_cell above does.
+let collect_diagnostics_cell: Array[Bool] = array_empty()
+
+export fn set_collect_module_diagnostics(on: Bool) -> Unit {
+  Array::truncate(collect_diagnostics_cell, 0)
+  Array::push(collect_diagnostics_cell, on)
+}
+
+export fn collect_module_diagnostics() -> Bool {
+  if Array::length(collect_diagnostics_cell) > 0 {
+    Array::get(collect_diagnostics_cell, 0)
+  } else {
+    false
+  }
+}
+
+/// --- Incremental typecheck telemetry --------------------------------------
+///
+/// A check invocation may opt into these deterministic work counters through
+/// the CLI's `VIBE_INCREMENTAL_TELEMETRY_OUT` sidecar. They deliberately count
+/// only this fs TypeDb walk: loader/source-group work and the later linked
+/// inline-wasm validation are outside the cache boundary this telemetry is
+/// meant to characterize. With telemetry disabled (the default), no sidecar is
+/// written and the counter updates below are inert.
+///
+/// Counter order:
+///   0 modules planned
+///   1 modules rechecked
+///   2 modules reused
+///   3 parse operations
+///   4 modules failed or blocked (nonzero only in collected-diagnostics walks)
+///   5 current-source parse executions (ModuleJob parse memo misses)
+///   6 checker executions
+///   7 modules reused by conservative fingerprint authority
+///   8 modules reused by validated TDRE9 dependency transport authority
+///   9 modules reused by the complete checked-module artifact
+///  10 non-walk parse operations (the build's merge lane and friends)
+///
+/// `ast_cache_prefetches` is NOT one of these. It is kept by the loader, in
+/// `ast_cache_prefetch_fs` itself, and read here at emission: that function
+/// has two call sites with different timing, and a count written at one of
+/// them reads 0 for work the other did (Codex on #2771, P2).
+///
+/// `parse_operations` is parser work, not a unique-module count: a cold
+/// module can need one header parse during planning and one full parse for its
+/// typecheck. This is the same parse-count unit the TypeDb already exposes.
+///
+/// It counts PLANNING AND THE WALK, and nothing else -- which is the whole
+/// story for a check and was never the whole story for a build (#2766). The
+/// merge/flatten lane parses through `parse_program_with_path`, outside this
+/// walk, so a warm build read `parse_operations: 0` while parsing every
+/// source in its closure. That work is counter 10; the two are disjoint and
+/// neither subsumes the other.
+///
+/// They also count different EVENTS, which is deliberate and easy to misread
+/// from the names. `parse_operations` counts a header computed from source
+/// whether or not the shared memo answered (`load_or_parse_module_header_fs_impl`
+/// says so in as many words, since #2386), so it is a measure of the work the
+/// pipeline ASKED FOR. Counter 10 counts a parser run, asked of the memo
+/// afterwards, so a memo or AST-cache hand-out does not inflate it: that is
+/// the number the per-file AST cache is supposed to move, and a counter that
+/// still ticked on a cache hit could not show it moving.
+let incremental_typecheck_telemetry_enabled_cell: Array[Bool] = array_empty()
+
+let incremental_typecheck_telemetry_counters: Array[Int] = array_empty()
+
+// Per-module decisions accompany the aggregate counters only when the
+// invalidation trace sidecar is requested. They are observations of the
+// current TypeDb walk, not a proposed cache-key policy.
+let incremental_typecheck_telemetry_decisions: Array[(String, String)] = []
+
+// These intentionally live only for the successful check that requested the
+// sidecar. They are never read by a cache lookup, incorporated into a cache
+// key, or persisted in a cache format. The ordinary generated compiler-source
+// fingerprint still changes whenever this compiler source changes.
+let incremental_interface_trace_enabled_cell: Array[Bool] = array_empty()
+let incremental_interface_trace_observations: Array[(String, String)] = []
+let incremental_checked_env_trace_observations: Array[(String, String)] = []
+let incremental_persistent_type_env_transport_trace_observations: Array[(String, String)] = [
+]
+
+// TDRE9 aliases only an exact v9 decoded TypeEnv when every direct dependency
+// transport environment is unchanged. It is not a CheckedProgram or typed-IR
+// transport; v9 retains kinded applications, constructor-bound self references,
+// and binding provenance
+// in the TypeEnv declaration, trait, and impl chain. The empty cell is
+// conservative for direct FS consumers. The CLI check-only lane explicitly
+// enables production reuse after validating its per-invocation policy; build,
+// codegen, and other FS consumers remain off pending compact publication.
+let experimental_typing_dependency_env_reuse_enabled_cell: Array[Bool] = array_empty()
+
+export fn set_experimental_typing_dependency_env_reuse_enabled(enabled: Bool) -> Unit {
+  Array::truncate(experimental_typing_dependency_env_reuse_enabled_cell, 0)
+  Array::push(experimental_typing_dependency_env_reuse_enabled_cell, enabled)
+}
+
+export fn experimental_typing_dependency_env_reuse_enabled() -> Bool {
+  if Array::length(experimental_typing_dependency_env_reuse_enabled_cell) > 0 {
+    Array::get(experimental_typing_dependency_env_reuse_enabled_cell, 0)
+  } else {
+    false
+  }
+}
+
+fn incremental_typecheck_telemetry_enabled() -> Bool {
+  if Array::length(incremental_typecheck_telemetry_enabled_cell) > 0 {
+    Array::get(incremental_typecheck_telemetry_enabled_cell, 0)
+  } else {
+    false
+  }
+}
+
+export fn set_incremental_typecheck_telemetry_enabled(enabled: Bool) -> Unit {
+  Array::truncate(incremental_typecheck_telemetry_enabled_cell, 0)
+  Array::push(incremental_typecheck_telemetry_enabled_cell, enabled)
+  Array::truncate(incremental_typecheck_telemetry_counters, 0)
+  Array::truncate(incremental_typecheck_telemetry_decisions, 0)
+  ast_cache_prefetch_count_reset()
+  let mut i = 0
+  while i < 11 {
+    Array::push(incremental_typecheck_telemetry_counters, 0)
+    i = i + 1
+  }
+}
+
+/// Enable the observation-only interface identity for one check invocation.
+/// The CLI calls this only for VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT.
+export fn set_incremental_interface_trace_enabled(enabled: Bool) -> Unit {
+  Array::truncate(incremental_interface_trace_enabled_cell, 0)
+  Array::push(incremental_interface_trace_enabled_cell, enabled)
+  Array::truncate(incremental_interface_trace_observations, 0)
+  Array::truncate(incremental_checked_env_trace_observations, 0)
+  Array::truncate(incremental_persistent_type_env_transport_trace_observations, 0)
+}
+
+export fn incremental_interface_trace_enabled() -> Bool {
+  if Array::length(incremental_interface_trace_enabled_cell) > 0 {
+    Array::get(incremental_interface_trace_enabled_cell, 0)
+  } else {
+    false
+  }
+}
+
+export fn incremental_typecheck_telemetry_add(index: Int, amount: Int) -> Unit {
+  if incremental_typecheck_telemetry_enabled() {
+    Array::set(incremental_typecheck_telemetry_counters, index, Array::get(incremental_typecheck_telemetry_counters, index) + amount)
+  } else {
+    ()
+  }
+}
+
+export fn incremental_typecheck_telemetry_decide(path: String, decision: String) -> Unit {
+  if incremental_typecheck_telemetry_enabled() {
+    Array::push(incremental_typecheck_telemetry_decisions, (path, decision))
+  } else {
+    ()
+  }
+}
+
+export fn incremental_interface_trace_observe(path: String, interface_identity: String, checked_env_identity: String, persistent_type_env_transport_identity: String) -> Unit {
+  if incremental_interface_trace_enabled() {
+    typecheck_fs_upsert_string_pair(incremental_interface_trace_observations, path, interface_identity)
+    typecheck_fs_upsert_string_pair(incremental_checked_env_trace_observations, path, checked_env_identity)
+    typecheck_fs_upsert_string_pair(incremental_persistent_type_env_transport_trace_observations, path, persistent_type_env_transport_identity)
+    ()
+  } else {
+    ()
+  }
+}
+
+export fn incremental_interface_trace_observation_of(path: String) -> Option[String] {
+  typecheck_fs_lookup_string_pair(incremental_interface_trace_observations, path)
+}
+
+export fn incremental_checked_env_trace_observation_of(path: String) -> Option[String] {
+  typecheck_fs_lookup_string_pair(incremental_checked_env_trace_observations, path)
+}
+
+export fn incremental_persistent_type_env_transport_trace_observation_of(path: String) -> Option[String] {
+  typecheck_fs_lookup_string_pair(incremental_persistent_type_env_transport_trace_observations, path)
+}
+
+export fn incremental_typecheck_telemetry_decision_of(path: String) -> Option[String] {
+  let mut i = 0
+  let mut result = None
+  while i < Array::length(incremental_typecheck_telemetry_decisions) {
+    let (candidate, decision) = Array::get(incremental_typecheck_telemetry_decisions, i)
+    if candidate == path {
+      result = Some(decision)
+      i = Array::length(incremental_typecheck_telemetry_decisions)
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+
+fn incremental_typecheck_telemetry_counter(index: Int) -> Int {
+  if incremental_typecheck_telemetry_enabled() {
+    Array::get(incremental_typecheck_telemetry_counters, index)
+  } else {
+    0
+  }
+}
+
+/// Stable sidecar payload. Keep this manual rendering rather than depending on
+/// a JSON library in the hot compiler package: all values are non-negative
+/// integers and the fixed key order makes the result byte-for-byte
+/// deterministic for an identical walk.
+export fn incremental_typecheck_telemetry_v1_json() -> String {
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "{\"schema\":1,\"modules_planned\":")
+  StringBuilder::push(out, __to_string(incremental_typecheck_telemetry_counter(0)))
+  StringBuilder::push(out, ",\"modules_rechecked\":")
+  StringBuilder::push(out, __to_string(incremental_typecheck_telemetry_counter(1)))
+  StringBuilder::push(out, ",\"modules_reused\":")
+  StringBuilder::push(out, __to_string(incremental_typecheck_telemetry_counter(2)))
+  StringBuilder::push(out, ",\"parse_operations\":")
+  StringBuilder::push(out, __to_string(incremental_typecheck_telemetry_counter(3)))
+  StringBuilder::push(out, ",\"modules_failed_or_blocked\":")
+  StringBuilder::push(out, __to_string(incremental_typecheck_telemetry_counter(4)))
+  StringBuilder::push(out, "}")
+  StringBuilder::freeze(out)
+}
+
+export fn incremental_typecheck_telemetry_json() -> String {
+  let artifact_mode = checked_module_cache_mode() != "off"
+  let out = StringBuilder::new()
+  StringBuilder::push(out, if artifact_mode {
+    "{\"schema\":5,\"modules_planned\":"
+  } else {
+    "{\"schema\":4,\"modules_planned\":"
+  })
+  StringBuilder::push(out, __to_string(incremental_typecheck_telemetry_counter(0)))
+  StringBuilder::push(out, ",\"modules_rechecked\":")
+  StringBuilder::push(out, __to_string(incremental_typecheck_telemetry_counter(1)))
+  StringBuilder::push(out, ",\"modules_reused\":")
+  StringBuilder::push(out, __to_string(incremental_typecheck_telemetry_counter(2)))
+  StringBuilder::push(out, ",\"parse_operations\":")
+  StringBuilder::push(out, __to_string(incremental_typecheck_telemetry_counter(3)))
+  StringBuilder::push(out, ",\"modules_failed_or_blocked\":")
+  StringBuilder::push(out, __to_string(incremental_typecheck_telemetry_counter(4)))
+  StringBuilder::push(out, ",\"current_source_parse_executions\":")
+  StringBuilder::push(out, __to_string(incremental_typecheck_telemetry_counter(5)))
+  StringBuilder::push(out, ",\"checker_executions\":")
+  StringBuilder::push(out, __to_string(incremental_typecheck_telemetry_counter(6)))
+  StringBuilder::push(out, ",\"modules_reused_conservative_fingerprint\":")
+  StringBuilder::push(out, __to_string(incremental_typecheck_telemetry_counter(7)))
+  StringBuilder::push(out, ",\"modules_reused_dependency_transport_env\":")
+  StringBuilder::push(out, __to_string(incremental_typecheck_telemetry_counter(8)))
+  if artifact_mode {
+    StringBuilder::push(out, ",\"modules_reused_checked_module_artifact\":")
+    StringBuilder::push(out, __to_string(incremental_typecheck_telemetry_counter(9)))
+  }
+  StringBuilder::push(out, ",\"non_walk_parse_operations\":")
+  StringBuilder::push(out, __to_string(incremental_typecheck_telemetry_counter(10)))
+  StringBuilder::push(out, ",\"ast_cache_prefetches\":")
+  StringBuilder::push(out, __to_string(ast_cache_prefetch_count()))
+  StringBuilder::push(out, "}")
+  StringBuilder::freeze(out)
+}
+
+// The wire spelling below is deliberately independent of the persistent
+// TypeEnv codec. It is a versioned *observation* format, and its length
+// prefixes make names/types unambiguous without depending on source printing.
+export fn interface_segment(text: String) -> String {
+  String::concat(__to_string(String::length(text)), String::concat(":", text))
+}
+
+export fn interface_sorted_unique(items: Array[String]) -> Array[String] {
+  let out = Array::slice(items, 0, Array::length(items))
+  let mut i = 1
+  while i < Array::length(out) {
+    let key = Array::get(out, i)
+    let mut j = i
+    while j > 0 && str_lt(key, Array::get(out, j - 1)) {
+      Array::set(out, j, Array::get(out, j - 1))
+      j = j - 1
+    }
+    Array::set(out, j, key)
+    i = i + 1
+  }
+  let unique = array_empty()
+  let mut k = 0
+  while k < Array::length(out) {
+    if k == 0 || Array::get(out, k) != Array::get(out, k - 1) {
+      Array::push(unique, Array::get(out, k))
+    } else {
+      ()
+    }
+    k = k + 1
+  }
+  unique
+}
+
+export fn interface_effect_set_with_vars(effect_name: Option[String], ids: Array[Int], names: Array[String]) -> String {
+  match effect_name {
+    None => "[]",
+    Some(raw) => {
+      let labels = array_empty()
+      let pieces = String::split(raw, ",")
+      let mut i = 0
+      while i < Array::length(pieces) {
+        let label = String::trim(Array::get(pieces, i))
+        if String::starts_with(label, "#capture[") {
+          let close = String::index_of(label, "]")
+          let mut capture_id = 0
+          let mut p = 9
+          while p < close {
+            capture_id = capture_id * 10 + (String::char_code_at(label, p) - 48)
+            p = p + 1
+          }
+          let mut found = false
+          let mut vi = 0
+          while vi < Array::length(ids) && !found {
+            if Array::get(ids, vi) == capture_id {
+              Array::push(labels, String::concat("#capture[", String::concat(Array::get(names, vi), "]")))
+              found = true
+            } else {
+              vi = vi + 1
+            }
+          }
+        } else if String::starts_with(label, "#region_") || String::starts_with(label, "#param[") || String::starts_with(label, "#aliasparam[") || String::starts_with(label, "#fieldparam[") {
+          ()
+        } else if String::length(label) > 0 {
+          Array::push(labels, label)
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      String::concat("[", String::concat(String::join(interface_sorted_unique(labels), ","), "]"))
+    }
+  }
+}
+/// A permutation of [0, n) as a visit order. Identity when no seed is set.
+/// Otherwise a seeded Fisher-Yates using a small LCG -- deterministic for a
+/// given (seed, n), so a failing oracle run is exactly reproducible.
+export fn dep_visit_order(n: Int) -> Array[Int] {
+  let order = array_empty()
+  let mut i = 0
+  while i < n {
+    Array::push(order, i)
+    i = i + 1
+  }
+  let seed = dep_order_seed()
+  if seed == 0 || n < 2 {
+    order
+  } else {
+    // LCG (Numerical Recipes constants), kept inside 31 bits so the 62-bit
+    // Int never overflows and the sequence is identical on every backend.
+    let mut state = seed
+    let mut j = n - 1
+    while j > 0 {
+      state = (state * 1664525 + 1013904223)&2147483647
+      let k = state % (j + 1)
+      let tmp = Array::get(order, j)
+      Array::set(order, j, Array::get(order, k))
+      Array::set(order, k, tmp)
+      j = j - 1
+    }
+    order
+  }
+}
+/// #2386: the ModuleJob parse goes through the loader's shared located-parse
+/// memo (`parse_program_located_shared`, header_cache.vibe), which the header
+/// pass fills during planning -- on a cold compile every module used to be
+/// lexed and parsed twice, once for its header and once here (#1100 measured
+/// the merge's third parse at 102 MB of a ~850 MB cold selfcompile; this
+/// removes the second). The contract is the memo's: keyed by (path, EXACT
+/// source text), a shallow top-level copy on every hand-out, a throwing
+/// parse never memoized, bounded for the daemon.
+///
+/// `current_source_parse_executions` (counter 5, and ingestion slot 15)
+/// keeps its observable: one per FIRST semantic use of a (path, text) in
+/// the process. With the walk's own memo that was exactly "this check
+/// parsed" -- the header pass never filled it, so the first check of a text
+/// always parsed, and a later check of the same text never did. The parser
+/// may now have run in planning instead, so the count is taken from the
+/// memo's consumed flag rather than from whether the parser ran here; the
+/// typing-env-reuse oracle and the cache probe pin it per scenario. Counted
+/// before the parse and marked after a successful one, as before: a
+/// throwing parse counts and is asked again.
+export fn parse_program_with_path_impl(path: String, source: String, observe_current_source_parse: Bool) -> Array[Stmt] with Exception {
+  let first_use = observe_current_source_parse && parse_program_located_shared_semantic_pending(path, source)
+  if first_use {
+    incremental_typecheck_telemetry_add(5, 1)
+    ingestion_pipeline_telemetry_add(15, 1)
+  } else {
+    ()
+  }
+  let stmts = parse_program_located_shared(path, source)
+  if first_use {
+    parse_program_located_shared_mark_semantic(path, source)
+  } else {
+    ()
+  }
+  stmts
+}
+
+/// The NON-WALK parse entry: the build's merge/flatten lane, plus the handful
+/// of import-env and interface-observation sites. The TypeDb walk calls
+/// `parse_program_with_path_impl` directly instead, with the current-source
+/// observable on.
+///
+/// #2766: a parser run reached through here is counted separately
+/// (`non_walk_parse_operations`). `parse_operations` spans planning and the
+/// walk and nothing else, which is truthful for a CHECK and was read as a
+/// statement about a BUILD -- a warm build reported 0 parses while the merge
+/// lane parsed every source in the closure. The counter that was 0 is still
+/// 0 and still means what it says; the work it never covered now has its own.
+export fn parse_program_with_path(path: String, source: String) -> Array[Stmt] with Exception {
+  match checked_module_artifact_stmts(path, source) {
+    Some(stmts) => stmts,
+    None => {
+      let stmts = parse_program_with_path_impl(path, source, false)
+      // Asked AFTER the call and of the memo, not of this function: the point
+      // is whether the PARSER ran, so a memo or AST-cache hand-out must not
+      // count. A throwing parse does not reach here, the same way the walk's
+      // own counter treats one.
+      if parse_program_located_shared_ran_parser() {
+        incremental_typecheck_telemetry_add(10, 1)
+      } else {
+        ()
+      }
+      stmts
+    }
+  }
+}
+
+export fn store_persistent_type_env(fingerprint: String, env: TypeEnv) -> String with Env + Exception + Fs {
+  let text = persistent_module_cache_text(env, module_typed_lowering_memo_get_by_fp(fingerprint))
+  Fs::write_file(persistent_type_env_cache_path(fingerprint), text)
+  text
+}
+
+// TDRE9 binds the logical checker input, conservative fingerprint, and
+// exact canonical v10 disk record, including lowering rows. Dependency inputs
+// and worker transport continue to use TypeEnv v9 independently of storage.
+// The target text is intentionally not replaced by a compact fingerprint:
+// cache corruption must not turn a fingerprint collision into checker reuse.
+let typing_dependency_env_reuse_alias_v9_tag: String = "TDRE9A"
+let typing_dependency_env_reuse_witness_v9_tag: String = "TDRE9W"
+
+/// One `<byte length>:<text>` segment, pushed into a builder as its pieces
+/// (#2945). The TDRE9 texts embed a module's verbatim source and its
+/// dependencies' exact env texts, so they are as large as the source closure
+/// they describe (the CLI's generated adapter bundle alone is 30 MB).
+/// Materializing each segment with nested `String::concat` copied that text
+/// once per level before the builder copied it again; pushing the pieces
+/// leaves the single copy `freeze` makes, and the bytes are identical.
+fn push_typing_reuse_segment(out: StringBuilder, text: String) -> Unit {
+  StringBuilder::push(out, __to_string(String::length(text)))
+  StringBuilder::push(out, ":")
+  StringBuilder::push(out, text)
+}
+
+fn parse_typing_reuse_segment(text: String, pos: Int) -> Option[(String, Int)] {
+  let total = String::length(text)
+  let mut cursor = pos
+  let mut n = 0
+  let mut saw_digit = false
+  let mut valid = pos >= 0 && pos < total
+  while valid && cursor < total && String::char_code_at(text, cursor) != ':' {
+    let code = String::char_code_at(text, cursor)
+    if code < '0' || code > '9' || n > total / 10 {
+      valid = false
+    } else {
+      n = n * 10 + (code - '0')
+      saw_digit = true
+      cursor = cursor + 1
+    }
+  }
+  if !valid || !saw_digit || cursor >= total || String::char_code_at(text, cursor) != ':' {
+    None
+  } else {
+    let start = cursor + 1
+    let end = start + n
+    if end < start || end > total {
+      None
+    } else {
+      Some((String::substring(text, start, end), end))
+    }
+  }
+}
+
+fn typing_dependency_reuse_binding_text(tag: String, input_key: String, target_fingerprint: String, target_text: String) -> String {
+  let out = StringBuilder::new()
+  StringBuilder::push(out, tag)
+  push_typing_reuse_segment(out, input_key)
+  push_typing_reuse_segment(out, target_fingerprint)
+  push_typing_reuse_segment(out, target_text)
+  StringBuilder::freeze(out)
+}
+
+fn parse_typing_dependency_reuse_binding(text: String, tag: String) -> Option[(String, String, String)] {
+  if !String::starts_with(text, tag) {
+    None
+  } else {
+    match parse_typing_reuse_segment(text, String::length(tag)) {
+      Some((input_key, after_input)) =>
+      match parse_typing_reuse_segment(text, after_input) {
+        Some((target_fingerprint, after_target)) =>
+        match parse_typing_reuse_segment(text, after_target) {
+          Some((target_text, end)) =>
+          if end == String::length(text) && String::length(input_key) > 0 && String::length(target_fingerprint) > 0 && String::length(target_text) > 0 {
+            Some((input_key, target_fingerprint, target_text))
+          } else {
+            None
+          },
+          None => None
+        },
+        None => None
+      },
+      None => None
+    }
+  }
+}
+
+/// Exact logical input to check_module: canonical owner path, byte-exact owner
+/// source, effective typing semantics, resolution authority, and every resolved direct dependency row of
+/// ModuleJob.dep_envs in its actual array order. finish_typecheck_fs_impl builds
+/// this table once with project_exact_dependency_envs and gives the same value
+/// to both check_module and TDRE9 lookup/publication, so ambient coordinator
+/// cache rows are neither checker-visible nor part of this canonical text.
+export fn typing_dependency_transport_input_key(path: String, source: String, semantics_seed: String, dep_envs: Array[(String, TypeEnv)]) -> String with Env {
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "vibe-typing-dependency-transport-env:v9")
+  push_typing_reuse_segment(out, normalize_path(path))
+  push_typing_reuse_segment(out, source)
+  push_typing_reuse_segment(out, semantics_seed)
+  push_typing_reuse_segment(out, resolution_env_seed())
+  push_typing_reuse_segment(out, __to_string(Array::length(dep_envs)))
+  let mut i = 0
+  while i < Array::length(dep_envs) {
+    let (dep_path, dep_env) = Array::get(dep_envs, i)
+    push_typing_reuse_segment(out, dep_path)
+    push_typing_reuse_segment(out, persistent_type_env_cache_text(dep_env))
+    i = i + 1
+  }
+  StringBuilder::freeze(out)
+}
+
+/// Decode both outputs strictly and require canonical re-encoding to equal
+/// the raw file and the exact witness/alias text. Ordinary cache loading may
+/// normalize a legacy host prefix; reuse bindings require byte equality.
+fn load_canonical_typing_dependency_env_reuse_target(target_fingerprint: String, expected_target_text: String) -> Option[PersistentModuleCache] with Env + Fs {
+  let target_path = persistent_type_env_cache_path(target_fingerprint)
+  if !Fs::exists(target_path) {
+    None
+  } else {
+    handle {
+      let raw_target_text = Fs::read_file(target_path)
+      match parse_persistent_module_cache(raw_target_text) {
+        Some(record) => {
+          let canonical_target_text = persistent_module_cache_text(record.env, record.lowering)
+          if raw_target_text == canonical_target_text && raw_target_text == expected_target_text {
+            Some(record)
+          } else {
+            None
+          }
+        },
+        None => None
+      }
+    } with { Exception::Throw(_) => None }
+  }
+}
+
+fn typing_dependency_env_reuse_witness_binding(fingerprint: String) -> Option[(String, String)] with Env + Fs {
+  let witness_path = persistent_typing_dependency_env_reuse_eligibility_path(fingerprint)
+  if !Fs::exists(witness_path) {
+    None
+  } else {
+    match parse_typing_dependency_reuse_binding(Fs::read_file(witness_path), typing_dependency_env_reuse_witness_v9_tag) {
+      Some((input_key, target_fingerprint, target_text)) =>
+      if target_fingerprint != fingerprint {
+        None
+      } else {
+        match load_canonical_typing_dependency_env_reuse_target(target_fingerprint, target_text) {
+          Some(_) => Some((input_key, target_text)),
+          None => None
+        }
+      },
+      None => None
+    }
+  }
+}
+
+/// #2945: the dependency fingerprints whose witness this walk has already
+/// validated. Without it the eligibility walk re-read and re-validated a
+/// dependency's witness once per DEPENDENT: the witness embeds the
+/// dependency's verbatim source and its own dependencies' env texts, and
+/// validating it reads, decodes and re-encodes the target record too, so a
+/// widely imported module was paid for hundreds of times. Measured on a cold
+/// `vibe check lib/@vibe/cli/entry.vibe` (427 modules), that walk alone
+/// allocated 882 MB of a 4 GiB address space.
+///
+/// Only POSITIVE answers are kept, and only for one walk
+/// (`ensure_fingerprint_fs_impl` resets it with the other per-walk memos). A
+/// positive answer only admits the alias lookup: that lookup still validates
+/// the exact alias/witness/target binding of the module being reused, and
+/// the dependency envs in its input key come from this walk's memory, not
+/// from the dependency's witness, so remembering a validation cannot turn a
+/// file torn after it into a reuse. A negative answer is re-asked, so a
+/// witness published later in the walk is still seen.
+let typing_dependency_env_reuse_valid_witness_memo: Array[String] = []
+
+export fn typing_dependency_env_reuse_valid_witness_memo_reset() -> Unit {
+  Array::truncate(typing_dependency_env_reuse_valid_witness_memo, 0)
+}
+
+fn typing_dependency_env_reuse_eligibility_is_valid(fingerprint: String) -> Bool with Env + Fs {
+  if contains_str(typing_dependency_env_reuse_valid_witness_memo, fingerprint) {
+    true
+  } else {
+    match typing_dependency_env_reuse_witness_binding(fingerprint) {
+      Some(_) => {
+        Array::push(typing_dependency_env_reuse_valid_witness_memo, fingerprint)
+        true
+      },
+      None => false
+    }
+  }
+}
+
+/// Eligibility is transitively witnessed by successful canonical v10 module
+/// commits. Missing, malformed, stale, torn, or cross-spliced witnesses fail
+/// closed before the alias lookup.
+export fn typing_dependency_env_reuse_is_eligible(dep_fps: Array[(String, String)]) -> Bool with Env + Fs {
+  let mut i = 0
+  let mut deps_eligible = true
+  while deps_eligible && i < Array::length(dep_fps) {
+    let (_dep_path, dep_fingerprint) = Array::get(dep_fps, i)
+    if typing_dependency_env_reuse_eligibility_is_valid(dep_fingerprint) {
+      ()
+    } else {
+      deps_eligible = false
+    }
+    i = i + 1
+  }
+  deps_eligible
+}
+
+export fn publish_typing_dependency_env_reuse_eligibility(input_key: String, fingerprint: String, target_text: String) -> Unit with Env + Fs {
+  let witness_text = typing_dependency_reuse_binding_text(typing_dependency_env_reuse_witness_v9_tag, input_key, fingerprint, target_text)
+  Fs::write_file(persistent_typing_dependency_env_reuse_eligibility_path(fingerprint), witness_text)
+}
+
+export fn load_typing_dependency_env_reuse_target(path: String, input_key: String) -> Option[(String, String, TypeEnv)] with Env + Fs {
+  let sidecar_path = persistent_typing_dependency_env_reuse_sidecar_path(input_key)
+  if !Fs::exists(sidecar_path) {
+    None
+  } else {
+    match parse_typing_dependency_reuse_binding(Fs::read_file(sidecar_path), typing_dependency_env_reuse_alias_v9_tag) {
+      Some((alias_input_key, target_fingerprint, target_text)) =>
+      if alias_input_key != input_key {
+        None
+      } else {
+        // Validate the raw target before consulting the separately published
+        // witness. Only an exact three-way alias/witness/target binding reuses.
+        match load_canonical_typing_dependency_env_reuse_target(target_fingerprint, target_text) {
+          Some(record) =>
+          match typing_dependency_env_reuse_witness_binding(target_fingerprint) {
+            Some((witness_input_key, witness_target_text)) =>
+            if witness_input_key == input_key && witness_target_text == target_text {
+              match record.lowering {
+                Some((offsets, eq_offs, eq_keys)) => {
+                  module_typed_lowering_memo_put(path, target_fingerprint, offsets, eq_offs, eq_keys)
+                  Some((target_fingerprint, target_text, record.env))
+                },
+                None => None
+              }
+            } else {
+              None
+            },
+            None => None
+          },
+          None => None
+        }
+      },
+      None => None
+    }
+  }
+}
+
+export fn write_typing_dependency_env_reuse_sidecar(input_key: String, target_fingerprint: String, target_text: String) -> Unit with Env + Fs {
+  let alias_text = typing_dependency_reuse_binding_text(typing_dependency_env_reuse_alias_v9_tag, input_key, target_fingerprint, target_text)
+  Fs::write_file(persistent_typing_dependency_env_reuse_sidecar_path(input_key), alias_text)
+}
+
+export fn write_persistent_dep_list_if_missing(path: String, source: String, deps: Array[String]) -> Unit with Env + Fs {
+  let dep_cache_path = persistent_dep_list_cache_path(path, compact_source_fingerprint_memo(path, source))
+  if !(Fs::exists(dep_cache_path)) {
+    Fs::write_file(dep_cache_path, persistent_dep_list_text(deps))
+  } else {
+    ()
+  }
+}
+/// Span of an identifier run starting at `start` (returns the end offset).
+export fn typecheck_ident_run(s: String, start: Int) -> Int {
+  let len = String::length(s)
+  let mut e = start
+  let mut go = true
+  while go && e < len {
+    let c = String::char_code_at(s, e)
+    let is_id = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
+    if is_id {
+      e = e + 1
+    } else {
+      go = false
+    }
+  }
+  e
+}
+/// Best-effort `line:col` for a type error: pull the symbol out of
+/// `unknown name: X` and locate its first occurrence in the source. Real
+/// expression-level spans (AST node positions) remain future work; this gives
+/// the common case a line number in both CLI and LSP (which parses the prefix).
+/// Built with String::concat only (not `+`) to avoid this NUL fragility.
+/// Prefix `msg` with the source `line:col` of the symbol that follows `marker`
+/// in `msg` (if both are found); otherwise return `msg` unchanged.
+fn locate_by_marker(source: String, msg: String, marker: String) -> String {
+  let mi = String::index_of(msg, marker)
+  if mi < 0 {
+    msg
+  } else {
+    let sstart = mi + String::length(marker)
+    let send = typecheck_ident_run(msg, sstart)
+    if send <= sstart {
+      msg
+    } else {
+      let sym = String::substring(msg, sstart, send)
+      let off = String::index_of(source, sym)
+      if off < 0 {
+        msg
+      } else {
+        let (line, col) = offset_to_line_col(source, off)
+        let loc = String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), ": "))))
+        String::concat(loc, msg)
+      }
+    }
+  }
+}
+/// The exact text between `marker` and the NEXT `'` in `msg` -- unlike
+/// `locate_by_marker`'s `typecheck_ident_run` (which only captures plain
+/// identifier chars), this captures the quoted substring verbatim, so a
+/// symbol like `@shell` (not a bare identifier) comes out whole. Returns ""
+/// if `marker` or the closing quote isn't found.
+fn extract_quoted_after(msg: String, marker: String) -> String {
+  let mi = String::index_of(msg, marker)
+  if mi < 0 {
+    ""
+  } else {
+    let rest = String::substring(msg, mi + String::length(marker), String::length(msg))
+    let rel_end = String::index_of(rest, "'")
+    if rel_end < 0 {
+      ""
+    } else {
+      String::substring(rest, 0, rel_end)
+    }
+  }
+}
+/// First occurrence of `sym` in `source` at or after char offset `from`
+/// (clamped into range), or -1.
+fn index_of_after(source: String, sym: String, from: Int) -> Int {
+  if String::length(sym) == 0 {
+    0 - 1
+  } else {
+    let start = if from < 0 {
+      0
+    } else if from > String::length(source) {
+      String::length(source)
+    } else {
+      from
+    }
+    let rel = String::index_of(String::substring(source, start, String::length(source)), sym)
+    if rel < 0 {
+      0 - 1
+    } else {
+      start + rel
+    }
+  }
+}
+/// #1205 Codex review: a plain first-occurrence search for the bare
+/// name/alias (the #1204 approach) can land on an EARLIER, unrelated
+/// occurrence of the same spelling -- a comment or string mentioning the
+/// name before the import statement itself, or another import of the same
+/// name from a different path. `detect_unused_imports`' own message embeds
+/// the import's PATH too (`imported name 'X' from 'PATH' ..` / `import alias
+/// '@A' for 'PATH' ..`) -- a path is far less likely to collide with
+/// unrelated text than a short bare identifier, so anchor on the path's OWN
+/// first occurrence and search for the name/alias only from there forward:
+/// the import statement's own occurrence of its item names always comes
+/// shortly after its own path in the source. Degrades to an unanchored
+/// search (starting from offset 0) if the path itself can't be found, which
+/// is no worse than the #1204 behavior this replaces.
+fn locate_unused_import_msg(source: String, msg: String) -> String {
+  let name_marker = "imported name '"
+  let alias_marker = "import alias '"
+  let is_alias = String::index_of(msg, alias_marker) >= 0
+  if not(is_alias) && String::index_of(msg, name_marker) < 0 {
+    msg
+  } else {
+    let sym = if is_alias {
+      extract_quoted_after(msg, alias_marker)
+    } else {
+      extract_quoted_after(msg, name_marker)
+    }
+    let path = if is_alias {
+      extract_quoted_after(msg, "' for '")
+    } else {
+      extract_quoted_after(msg, "' from '")
+    }
+    if sym == "" {
+      msg
+    } else {
+      let anchor = if path == "" {
+        0
+      } else {
+        let p = String::index_of(source, path)
+        if p < 0 {
+          0
+        } else {
+          p
+        }
+      }
+      let off = index_of_after(source, sym, anchor)
+      if off < 0 {
+        msg
+      } else {
+        String::concat(offset_line_col_prefix(source, off), msg)
+      }
+    }
+  }
+}
+/// Does `msg` already carry a `line N:C` location?
+///
+/// Two shapes reach the final locate pass already located:
+///   `line 3:3-4: <msg>`                 -- located, not yet path-prefixed
+///   `/path/to/mod.vibe: line 3:3-4: ..` -- located AND path-prefixed by the
+///                                          per-module pass (see the
+///                                          `job.path + ": "` concat below)
+///
+/// The second shape used to slip past the guard, which only tested for the
+/// location at index 0. A path-prefixed message then went through the
+/// first-occurrence heuristic AGAIN -- against the ENTRY module's source, which
+/// is not necessarily the source the error came from -- and got a SECOND,
+/// earlier location glued to its front:
+///
+///   error: line 1:12: /tmp/x.vibe: line 3:3-4: function arity mismatch for g
+///          ^^^^^^^^^ g's DECLARATION      ^^^^^^^^ the actual call site
+///
+/// Both locations are real positions of `g`, so nothing looks malformed; the
+/// first one is simply the wrong one, and it is the one a reader (or an LSP
+/// parsing `^line N:C`) takes. Reporting a confident wrong location is worse
+/// than reporting none, so recognize the path-prefixed shape too.
+///
+/// Recognized by SHAPE, at any position: `line <digits>:<digits>` sitting
+/// either at the start of the message or right after a `: ` delimiter. An
+/// earlier revision anchored on the FIRST `: ` on the theory that a path cannot
+/// contain one -- but `: ` is legal in a POSIX path (`/tmp/foo: bar/x.vibe`),
+/// and there the anchor lands inside the path, the guard returns false, and the
+/// heuristic prepends its wrong location again: the exact bug this is here to
+/// stop (#1628 review, Codex P2). Scanning every candidate makes the answer
+/// depend on the message's shape rather than on assumptions about path
+/// contents.
+///
+/// Erring toward "already located" is the safe direction. A false positive
+/// costs a location the heuristic might have guessed; a false negative
+/// reinstates a CONFIDENTLY WRONG one. Missing information beats misinformation
+/// (docs/internal/project/issue-triage.md ranks silent-wrong above every other failure).
+export fn diag_already_located(msg: String) -> Bool {
+  let lead = "line "
+  let lead_len = String::length(lead)
+  let total = String::length(msg)
+  let mut cursor = 0
+  let mut found = false
+  while !found && cursor < total {
+    let rel = String::index_of(String::substring(msg, cursor, total), lead)
+    if rel < 0 {
+      cursor = total
+    } else {
+      let at = cursor + rel
+      // Delimited: message start, or the `: ` a path prefix ends with. Without
+      // this, prose containing the word "line " would match on shape alone.
+      let delimited = if at == 0 {
+        true
+      } else {
+        at >= 2 && String::char_code_at(msg, at - 2) == ':' && String::char_code_at(msg, at - 1) == ' '
+      }
+      if delimited && location_shape_at(msg, at + lead_len) {
+        found = true
+      } else {
+        cursor = at + lead_len
+      }
+    }
+  }
+  found
+}
+
+/// Does `msg` read as `<digits>:<digits>` starting at `start`? The `line `
+/// keyword alone is too weak a signal (it occurs in ordinary prose); the
+/// digit-colon-digit shape after it is what makes a location a location.
+fn location_shape_at(msg: String, start: Int) -> Bool {
+  let total = String::length(msg)
+  let mut i = start
+  while i < total && parse_offset_digits(msg, i, i + 1) >= 0 {
+    i = i + 1
+  }
+  if i == start || i >= total {
+    false
+  } else if String::char_code_at(msg, i) != ':' {
+    false
+  } else {
+    i + 1 < total && parse_offset_digits(msg, i + 1, i + 2) >= 0
+  }
+}
+
+/// A path character. `.` `/` `@` `-` continue a path; a space or `{` ends it.
+/// `import @vibe/core` must not match inside `import @vibe/core/checker`.
+fn import_path_char(c: Int) -> Bool {
+  loc_ident_char(c) || c == '/' || c == '.' || c == '@' || c == '-'
+}
+
+fn import_stmt_end(source: String, from: Int) -> Int {
+  let slen = String::length(source)
+  let mut i = from
+  while i < slen && (String::char_code_at(source, i) == ' ' || String::char_code_at(source, i) == '\t') {
+    i = i + 1
+  }
+  if i < slen && String::char_code_at(source, i) == '{' {
+    let mut j = i + 1
+    while j < slen && String::char_code_at(source, j) != '}' {
+      j = j + 1
+    }
+    if j < slen {
+      j + 1
+    } else {
+      slen
+    }
+  } else {
+    let mut j = from
+    while j < slen && String::char_code_at(source, j) != '\n' {
+      j = j + 1
+    }
+    j
+  }
+}
+
+/// Name offsets of `kw path` statements that are not inside a comment or a
+/// string. Zero or several means the diagnostic stays unlocated: a comment
+/// that quotes the import, a longer path that only starts with this one, and
+/// an import plus a re-export of the same path are all confident wrong
+/// columns if the first hit wins.
+fn import_kind_name_offs(source: String, kw: String, path: String, sym: String) -> Array[Int] {
+  let out: Array[Int] = []
+  let slen = String::length(source)
+  let klen = String::length(kw)
+  let plen = String::length(path)
+  let mut i = 0
+  let mut in_line = false
+  let mut in_str = false
+  while i < slen {
+    let c = String::char_code_at(source, i)
+    if in_line {
+      if c == '\n' {
+        in_line = false
+      } else {
+        ()
+      }
+      i = i + 1
+    } else if in_str {
+      if c == '\\' {
+        i = i + 2
+      } else if c == '"' {
+        in_str = false
+        i = i + 1
+      } else {
+        i = i + 1
+      }
+    } else if c == '"' {
+      in_str = true
+      i = i + 1
+    } else if c == '/' && i + 1 < slen && String::char_code_at(source, i + 1) == '/' {
+      in_line = true
+      i = i + 2
+    } else if loc_word_at(source, i, kw) {
+      let mut path_at = i + klen
+      while path_at < slen && (String::char_code_at(source, path_at) == ' ' || String::char_code_at(source, path_at) == '\t') {
+        path_at = path_at + 1
+      }
+      let path_end = path_at + plen
+      if path_at + plen <= slen && String::substring(source, path_at, path_end) == path && (path_end >= slen || !import_path_char(String::char_code_at(source, path_end))) {
+        let stmt_end = import_stmt_end(source, path_end)
+        let off = index_word_after(source, sym, path_end)
+        if off >= 0 && off < stmt_end {
+          Array::push(out, off)
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      i = i + 1
+    } else {
+      i = i + 1
+    }
+  }
+  out
+}
+
+/// `import kind mismatch: `Name` ... (from 'path')`. The name is searched
+/// only inside the one `import` / `export` of that path. A comment, a longer
+/// path, or two statements that both contain the name leave the message
+/// unlocated.
+fn locate_import_kind_msg(source: String, msg: String) -> String {
+  let marker = "import kind mismatch: `"
+  if String::index_of(msg, marker) < 0 {
+    msg
+  } else {
+    let sym = extract_until_code(msg, marker, 96)
+    let path = extract_quoted_after(msg, " (from '")
+    if sym == "" || path == "" {
+      msg
+    } else {
+      let imported = import_kind_name_offs(source, "import", path, sym)
+      let exported = import_kind_name_offs(source, "export", path, sym)
+      let mut offs = imported
+      let mut ei = 0
+      while ei < Array::length(exported) {
+        Array::push(offs, Array::get(exported, ei))
+        ei = ei + 1
+      }
+      if Array::length(offs) != 1 {
+        msg
+      } else {
+        String::concat(offset_line_col_prefix(source, Array::get(offs, 0)), msg)
+      }
+    }
+  }
+}
+
+fn extract_until_code(msg: String, marker: String, end_code: Int) -> String {
+  let mi = String::index_of(msg, marker)
+  if mi < 0 {
+    ""
+  } else {
+    let start = mi + String::length(marker)
+    let mut i = start
+    let total = String::length(msg)
+    while i < total && String::char_code_at(msg, i) != end_code {
+      i = i + 1
+    }
+    if i <= start || i >= total {
+      ""
+    } else {
+      String::substring(msg, start, i)
+    }
+  }
+}
+
+fn index_word_after(source: String, sym: String, from: Int) -> Int {
+  let mut off = index_of_after(source, sym, from)
+  while off >= 0 && !loc_word_at(source, off, sym) {
+    off = index_of_after(source, sym, off + 1)
+  }
+  off
+}
+
+/// First-occurrence heuristic locator (the original behavior). Kept separate so
+/// the offset-marker path can fall through to it on the marker-stripped message.
+export fn locate_type_error_heuristic(source: String, msg: String) -> String {
+  // Already located (e.g. a parse error that bubbled here)? leave it.
+  if diag_already_located(msg) {
+    msg
+  } else {
+    let with_name = locate_by_marker(source, msg, "unknown name: ")
+    if with_name != msg {
+      with_name
+    } else {
+      let with_arity = locate_by_marker(source, msg, "function arity mismatch for ")
+      if with_arity != msg {
+        with_arity
+      } else {
+        let with_field = locate_by_marker(source, msg, "unknown field ")
+        if with_field != msg {
+          with_field
+        } else {
+          let with_ctor = locate_by_marker(source, msg, "unknown constructor ")
+          if with_ctor != msg {
+            with_ctor
+          } else {
+            // #1204/#1205: detect_unused_imports' two message shapes (named
+            // import / package alias), path-anchored -- see
+            // locate_unused_import_msg's own doc comment.
+            let with_import = locate_unused_import_msg(source, msg)
+            if with_import != msg {
+              with_import
+            } else {
+              let with_kind = locate_import_kind_msg(source, msg)
+              if with_kind != msg {
+                with_kind
+              } else {
+                let with_inline_wasm = locate_by_marker(source, msg, "inline wasm (fn ")
+                if with_inline_wasm != msg {
+                  // #946(4): inline-wasm codegen errors ("inline wasm (fn
+                  // <name>): ...") carry no [@off=] marker (the offset they DO
+                  // carry is a WAT-text offset, not a source char offset) --
+                  // locate by the enclosing fn's name instead, same
+                  // first-occurrence heuristic as the other markers.
+                  with_inline_wasm
+                } else {
+                  // #2762: `declare or import <name> in this module, ...`. The
+                  // first-occurrence heuristic is EXACT here rather than a
+                  // guess: the message is emitted only when nothing in the
+                  // module declares or imports the name, so its first
+                  // occurrence in the source is its `export { }` entry.
+                  locate_by_marker(source, msg, "declare or import ")
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+/// Build the `line L:col C: ` prefix for a source char offset (same format as
+/// locate_by_marker). String::concat only — the `+`/interpolation NUL
+/// hazard applies here too.
+export fn offset_line_col_prefix(source: String, off: Int) -> String {
+  let (line, col) = offset_to_line_col(source, off)
+  String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), ": "))))
+}
+/// Build a `line L:colC-E: ` RANGE prefix from a (start, end) char-offset span.
+/// When start and end fall on the same source line this carries the exact end
+/// column so the LSP can highlight the precise token (incl. qualified names);
+/// when end is on a later line (or not greater than start) it degrades to the
+/// point prefix. Backward compatible: `line L:` still leads, so existing
+/// `grep -F "line N:"` assertions keep matching. String::concat only.
+export fn offset_line_col_range_prefix(source: String, start: Int, endo: Int) -> String {
+  let (l1, c1) = offset_to_line_col(source, start)
+  let (l2, c2) = offset_to_line_col(source, endo)
+  if l1 == l2 && endo > start {
+    String::concat("line ", String::concat(__to_string(l1), String::concat(":", String::concat(__to_string(c1), String::concat("-", String::concat(__to_string(c2), ": "))))))
+  } else {
+    offset_line_col_prefix(source, start)
+  }
+}
+/// Parse a non-negative decimal integer from msg[start..end). Returns -1 if the
+/// span is empty or contains a non-digit (callers then fall through to the text
+/// heuristic).
+export fn parse_offset_digits(msg: String, start: Int, end: Int) -> Int {
+  if end <= start {
+    -1
+  } else {
+    let mut i = start
+    let mut acc = 0
+    let mut ok = true
+    while ok && i < end {
+      let c = String::char_code_at(msg, i)
+      if c >= '0' && c <= '9' {
+        acc = acc * 10 + (c - '0')
+        i = i + 1
+      } else {
+        ok = false
+      }
+    }
+    if ok {
+      acc
+    } else {
+      -1
+    }
+  }
+}
+/// Whole-word identifier character (ASCII letter / digit / underscore).
+fn loc_ident_char(c: Int) -> Bool {
+  c >= 97 && c <= 122 || (c >= 65 && c <= 90) || (c >= 48 && c <= 57) || c == 95
+}
+
+fn loc_space_char(c: Int) -> Bool {
+  c == 32 || c == 9 || c == 10 || c == 13
+}
+
+fn loc_skip_ws_back(source: String, off: Int) -> Int {
+  let mut i = off
+  while i > 0 && loc_space_char(String::char_code_at(source, i - 1)) {
+    i = i - 1
+  }
+  i
+}
+
+fn loc_word_at(source: String, off: Int, name: String) -> Bool {
+  let nlen = String::length(name)
+  let slen = String::length(source)
+  if nlen == 0 || off < 0 || off + nlen > slen {
+    false
+  } else if String::substring(source, off, off + nlen) != name {
+    false
+  } else {
+    let left_ok = off == 0 || !loc_ident_char(String::char_code_at(source, off - 1))
+    let right_ok = off + nlen == slen || !loc_ident_char(String::char_code_at(source, off + nlen))
+    left_ok && right_ok
+  }
+}
+
+fn loc_kw_before(source: String, off: Int, kw: String) -> Bool {
+  let i = loc_skip_ws_back(source, off)
+  let klen = String::length(kw)
+  if i < klen {
+    false
+  } else if String::substring(source, i - klen, i) != kw {
+    false
+  } else {
+    i - klen == 0 || !loc_ident_char(String::char_code_at(source, i - klen - 1))
+  }
+}
+
+/// Recover the source offset of a declaration name tagged `[@fn=name]`.
+/// Prefer a `fn name` declaration, then `let name` / `let mut name`, then a
+/// plain whole-word occurrence. -1 when the name cannot be found.
+///
+/// #2244 review: the scan is a raw-text heuristic, and three failure modes
+/// made it confidently wrong -- a comment or string literal spelling the
+/// declaration (`// let v used to be ...`) anchored the diagnostic at the
+/// comment, a shadowed binder anchored at the FIRST `let v` rather than
+/// the failing one, and a cross-kind collision (`fn v` at top level while
+/// the failing binding is a local `let v`) anchored at the unrelated fn --
+/// the marker records only the NAME, so the kind cannot break the tie.
+/// So the scan skips `//` comments and string literals, and it anchors
+/// only when exactly ONE declaration of the name exists across BOTH
+/// declaration kinds (`fn name` and `let name` combined), falling back to
+/// a bare occurrence only when it is the name's sole appearance. Anything
+/// ambiguous (shadowing, re-declaration, fn/let collision) returns -1 and
+/// the message stays unlocated -- missing information beats misinformation.
+export fn find_fn_anchor_off(source: String, name: String) -> Int {
+  let nlen = String::length(name)
+  if nlen == 0 {
+    0 - 1
+  } else {
+    let slen = String::length(source)
+    let mut i = 0
+    let mut fn_off = 0 - 1
+    let mut fn_count = 0
+    let mut let_off = 0 - 1
+    let mut let_count = 0
+    let mut first_off = 0 - 1
+    let mut occ_count = 0
+    // #2244 round 7: a string literal's TEXT never hosts a declaration,
+    // but its `\{...}` interpolation fragments are parsed as expression
+    // code and can declare the very binder this anchor is looking for --
+    // skipping whole literals handed a same-named outside declaration
+    // sole ownership. So the scan is a small mode machine: string text is
+    // skipped, `\{` re-enters code scanning until the fragment's matching
+    // `}` (brace-counted; nested strings and fragments push further), and
+    // `//` comments are skipped in code positions only.
+    let mut in_string = false
+    let depths = [0]
+    let mut frag_top = 0
+    while i < slen {
+      let c = String::char_code_at(source, i)
+      if in_string {
+        if c == 92 {
+          if i + 1 < slen && String::char_code_at(source, i + 1) == 123 {
+            in_string = false
+            frag_top = frag_top + 1
+            if frag_top >= Array::length(depths) {
+              Array::push(depths, 1)
+            } else {
+              Array::set(depths, frag_top, 1)
+            }
+            i = i + 2
+          } else {
+            i = i + 2
+          }
+        } else if c == 34 {
+          in_string = false
+          i = i + 1
+        } else {
+          i = i + 1
+        }
+      } else if c == 47 && i + 1 < slen && String::char_code_at(source, i + 1) == 47 {
+        // `//` line comment: skip to end of line.
+        while i < slen && String::char_code_at(source, i) != 10 {
+          i = i + 1
+        }
+      } else if c == 39 {
+        // #2244 round 9: a character literal's byte can be `"` -- letting
+        // it reach the branch below flipped string mode and swallowed the
+        // declarations after it (measured: `let q = '\"'` before the
+        // binder handed a same-named outside fn the anchor). Skip the
+        // literal, honoring one `\` escape. Inside a fragment this stays
+        // brace-parity with the lexer: a `'}'`/`'\"'` there does not lex
+        // (scan_interp_end counts raw bytes the same way), so no compiling
+        // program puts a counted byte inside a fragment char literal.
+        i = i + 1
+        if i < slen && String::char_code_at(source, i) == 92 {
+          i = i + 2
+        } else {
+          i = i + 1
+        }
+        if i < slen && String::char_code_at(source, i) == 39 {
+          i = i + 1
+        } else {
+          ()
+        }
+      } else if c == 35 && i + 1 < slen && String::char_code_at(source, i + 1) == 124 {
+        // #2244 round 11 (measured: `let s = #|raw text` compiles): a
+        // `#|` line is a RAW multiline-string segment running to end of
+        // line -- its text can spell declarations and quotes, and reading
+        // it as code both counted a fake declaration and flipped string
+        // mode (anchoring INSIDE the raw text). Skip the whole line; each
+        // continuation line's own `#|` is skipped the same way when the
+        // scan reaches it, so the indent-match rule needs no bookkeeping.
+        while i < slen && String::char_code_at(source, i) != 10 {
+          i = i + 1
+        }
+      } else if c == 114 && i + 1 < slen && String::char_code_at(source, i + 1) == 34 && (i == 0 || !loc_ident_char(String::char_code_at(source, i - 1))) {
+        // #2244 round 10 (measured: `let q = r"\"` compiles): a
+        // whole-token `r` before `"` opens a RAW string, which the lexer
+        // ends at the next quote with no escape processing -- the
+        // escape-honoring string mode below would read a trailing
+        // backslash as escaping the closing quote and swallow the
+        // declarations after it. Skip to the next quote verbatim; no
+        // interpolation fires inside a raw string for the same reason.
+        i = i + 2
+        while i < slen && String::char_code_at(source, i) != 34 {
+          i = i + 1
+        }
+        i = i + 1
+      } else if c == 34 {
+        in_string = true
+        i = i + 1
+      } else if frag_top > 0 && c == 123 {
+        Array::set(depths, frag_top, Array::get(depths, frag_top) + 1)
+        i = i + 1
+      } else if frag_top > 0 && c == 125 {
+        let d = Array::get(depths, frag_top) - 1
+        if d == 0 {
+          // The fragment closed; the enclosing string resumes.
+          frag_top = frag_top - 1
+          in_string = true
+        } else {
+          Array::set(depths, frag_top, d)
+        }
+        i = i + 1
+      } else if i + nlen <= slen && loc_word_at(source, i, name) {
+        occ_count = occ_count + 1
+        if first_off < 0 {
+          first_off = i
+        } else {
+          ()
+        }
+        // #2244 review round 6 (measured: `let r#v = 1` compiles): a
+        // raw-identifier binder lexes to the bare name, so the occurrence
+        // matches -- but the `r#` prefix sat between the name and its
+        // keyword, making the scan count it as a bare occurrence and hand
+        // a same-named plain declaration sole ownership. Probe the keyword
+        // from before a whole-word `r#` so raw spellings count as the
+        // declarations they are.
+        let decl_probe = if i >= 2 && String::char_code_at(source, i - 1) == 35 && String::char_code_at(source, i - 2) == 114 && (i - 2 == 0 || !loc_ident_char(String::char_code_at(source, i - 3))) {
+          i - 2
+        } else {
+          i
+        }
+        if loc_kw_before(source, decl_probe, "fn") {
+          fn_count = fn_count + 1
+          if fn_off < 0 {
+            fn_off = i
+          } else {
+            ()
+          }
+        } else {
+          // #2244 round 8: `rec` joins `mut` as an intervening keyword --
+          // `let rec v` is a declaration of `v` (both spell 3 bytes, so
+          // one backtrack serves them).
+          // #3073: a nominal type's declaration anchors the same way, so a
+          // `[@fn=Outer]` refusal about a `struct Outer` lands on its name.
+          let is_let_decl = if loc_kw_before(source, decl_probe, "let") || loc_kw_before(source, decl_probe, "struct") || loc_kw_before(source, decl_probe, "enum") || loc_kw_before(source, decl_probe, "suberror") {
+            true
+          } else if loc_kw_before(source, decl_probe, "mut") || loc_kw_before(source, decl_probe, "rec") {
+            let before_name = loc_skip_ws_back(source, decl_probe)
+            loc_kw_before(source, before_name - 3, "let")
+          } else {
+            false
+          }
+          if is_let_decl {
+            let_count = let_count + 1
+            if let_off < 0 {
+              let_off = i
+            } else {
+              ()
+            }
+          } else {
+            ()
+          }
+        }
+        i = i + nlen
+      } else {
+        i = i + 1
+      }
+    }
+    let decl_count = fn_count + let_count
+    if decl_count == 1 {
+      if fn_count == 1 {
+        fn_off
+      } else {
+        let_off
+      }
+    } else if decl_count == 0 && occ_count == 1 {
+      first_off
+    } else {
+      0 - 1
+    }
+  }
+}

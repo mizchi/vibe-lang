@@ -14,6 +14,7 @@ const SCRIPTS = [
   "selfcompile_heap_policy_policy_runner.sh",
   "generations.sh", "generate_bundle.sh", "trace_lib.sh",
   "wasm_vibe_host_runner.js",
+  "wasm_vibe_host_runtime.js",
   "wasm_vibe_host_runner_http_worker.js", "wasm_vibe_host_runner_tcp_worker.js",
 ];
 

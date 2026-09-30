@@ -21,7 +21,7 @@ done
 
 require() {
   local pattern="$1" file="$2" message="$3"
-  if ! grep -qE -- "$pattern" "$file"; then
+  if ! python3 "$(dirname "$0")/source_files.py" "$file" | grep -E -- "$pattern" >/dev/null; then
     echo "guest-profile contract: $message" >&2
     failed=1
   fi
@@ -29,7 +29,7 @@ require() {
 
 forbid() {
   local pattern="$1" file="$2" message="$3"
-  if grep -qE -- "$pattern" "$file"; then
+  if python3 "$(dirname "$0")/source_files.py" "$file" | grep -E -- "$pattern" >/dev/null; then
     echo "guest-profile contract: $message" >&2
     failed=1
   fi
