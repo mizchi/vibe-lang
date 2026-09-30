@@ -18,6 +18,11 @@ gotchas — this document is the human-readable overview of the same territory.
 
 ## Development
 
+With rustup, this checkout selects the stable Rust release and Wasm targets
+in `rust-toolchain.toml` automatically. The Nix development shell uses the
+same file. Run `rustup toolchain install` to install the selected toolchain
+and `rustup show` to inspect it.
+
 ```bash
 pkf run                # default: release-check (full sign-off)
 pkf run test           # operation gate — the main pre-commit check

@@ -24,9 +24,10 @@
           overlays = [ (import rust-overlay) ];
         };
 
-        # Rust 1.93+ required for wasmtime 45+.
-        rustToolchain = pkgs.rust-bin.stable."1.93.0".default.override {
-          targets = [ "wasm32-wasip1" "wasm32-wasip2" ];
+        # Share the stable Rust pin and Wasm targets with rustup and CI.
+        rustConfig = (builtins.fromTOML (builtins.readFile ./rust-toolchain.toml)).toolchain;
+        rustToolchain = pkgs.rust-bin.stable.${rustConfig.channel}.default.override {
+          targets = rustConfig.targets;
         };
 
         wasmtimeVersion = "47.0.2";
