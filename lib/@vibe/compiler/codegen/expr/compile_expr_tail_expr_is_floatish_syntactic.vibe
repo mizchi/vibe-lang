@@ -1,0 +1,899 @@
+// lib/@vibe/compiler/codegen/expr/compile_expr_tail.vibe — expr is floatish syntactic.
+
+import @vibe/compiler/core {
+  Expr, Pat, Stmt, TypeExpr, bytebuf_length, bytebuf_push, typed_lowering_arg_offset, typed_lowering_float_key
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import @vibe/compiler/codegen/common_analysis {
+  collect_free_vars, collect_free_vars_indexed, proj_root_ident
+}
+
+import @vibe/compiler/codegen/common_base {
+  CompileCtx,
+  CtorTable,
+  FuncTable,
+  LambdaTable,
+  LineMapState,
+  StrTable,
+  agg_expr_lookup,
+  agg_slot_lookup,
+  emit_i32_eqz,
+  emit_i32_mul,
+  emit_i32_ne,
+  emit_i32_sub,
+  expr_tag,
+  find_local_slot,
+  func_table_user_index_of,
+  get_arm_body,
+  get_ebinop_op,
+  get_efn_body,
+  get_eif_else,
+  get_eif_then,
+  get_elet_body,
+  get_elet_name,
+  get_elet_val,
+  is_efn,
+  is_eident,
+  is_etuple
+}
+
+import @vibe/compiler/codegen/common_extractors {
+  array_contains_int,
+  array_contains_str,
+  first_offset,
+  get_ebinop_lhs,
+  get_ebinop_rhs,
+  get_ecall_args,
+  get_ecall_callee,
+  get_ecall_off,
+  get_efn_params,
+  get_eident_name,
+  get_eint_value,
+  get_eletmut_body,
+  get_eletmut_name,
+  get_eletmut_val,
+  get_eletrec_body,
+  get_eletrec_name,
+  get_eletrec_val,
+  get_eseq_second,
+  get_etuple_elems,
+  get_eunaryop_expr,
+  get_eunaryop_op,
+  get_match_arms,
+  offset_to_line
+}
+
+import @vibe/compiler/perceus {
+  perceus_loop_result_slot
+}
+
+import @vibe/compiler/codegen/wasm_emit {
+  emit_call,
+  emit_end,
+  emit_global_get,
+  emit_global_set,
+  emit_i32_const,
+  emit_i32_load,
+  emit_i32_store,
+  emit_i32_wrap_i64,
+  emit_i64_and,
+  emit_i64_const,
+  emit_if_void,
+  emit_local_get
+}
+
+import ./compile_call.vibe {
+  cc_builtin_call_ret_kind, cc_fn_returns_float, compile_call
+}
+
+import ./compile_expr_tail2.vibe {
+  compile_expr_tail2
+}
+
+import ./compile_lambda.vibe {
+  cl_return_operand
+}
+
+import ./compile_match.vibe {
+  compile_match
+}
+
+/// #644 / #2199: append one (owning function, body-relative byte offset, file
+/// id, line) entry to `lm` for the `vibe.linemap` custom section. Called at
+/// statement boundaries and at call sites so a trap inside a bounds-checked
+/// builtin attributes the ACCESS, not a helper. No-op when `lm` is disabled
+/// (no file newline tables, and every lambda-derived ctx).
+fn linemap_record(lm: LineMapState, buf: Bytes, file_id: Int, line: Int) -> Unit {
+  if lm.enabled {
+    let off = bytebuf_length(buf)
+    let fn_i = Array::get(lm.cur_fn, 0)
+    let n = Array::length(lm.offsets)
+    let same_fn = n > 0 && Array::get(lm.funcs, n - 1) == fn_i
+    if same_fn && Array::get(lm.offsets, n - 1) == off {
+      // Same (func, offset) as the previous probe: keep ONE row and let the
+      // later record win so a call-site OOB attributes the access, not the
+      // enclosing statement (#2199 size).
+      Array::set(lm.file_ids, n - 1, file_id)
+      Array::set(lm.lines, n - 1, line)
+    } else if same_fn && Array::get(lm.file_ids, n - 1) == file_id && Array::get(lm.lines, n - 1) == line {
+      // A row that answers what the row already covering this offset answers.
+      // Resolution is "the last row at or before the target", so every offset
+      // this one would cover resolves to the same (file, line) without it.
+      // Dropping it is what keeps the enclosing-site re-assert
+      // (`linemap_leave_call_site`) free on the common case where a call and
+      // its arguments are written on one line.
+      ()
+    } else {
+      Array::push(lm.funcs, fn_i)
+      Array::push(lm.offsets, off)
+      Array::push(lm.file_ids, file_id)
+      Array::push(lm.lines, line)
+    }
+  } else {
+    ()
+  }
+}
+
+/// #2199: record the current body offset against `expr`'s source line, so a
+/// trap in a callee can resolve the caller's frame, and make that line the
+/// ENCLOSING SITE while `expr` is compiled. Returns the site that was in
+/// effect, which `linemap_leave_call_site` takes back. No-op (and 0) when
+/// linemap is off or the expression has no source offset.
+export fn linemap_enter_call_site(buf: Bytes, expr: Expr, ctx: CompileCtx) -> Int {
+  if ctx.linemap.enabled {
+    let prev = Array::get(ctx.linemap.site, 0)
+    let off = first_offset(expr)
+    if off >= 0 {
+      let line = offset_to_line(ctx.dbg_line_nl, off)
+      linemap_record(ctx.linemap, buf, ctx.dbg_line_file_id, line)
+      Array::set(ctx.linemap.site, 0, line)
+    } else {
+      ()
+    }
+    prev
+  } else {
+    0
+  }
+}
+
+/// The other half. `prev` becomes the site again AND is recorded here, at the
+/// offset the finished call left behind.
+///
+/// This is the row an enclosing call's trap resolves to: arguments are
+/// compiled before the call instruction, so a call in one of them
+/// (`Array::get(xs, compute_index())`) is the last row before the outer
+/// `call` and would otherwise own it -- the array access reported at
+/// `compute_index()`'s line (Codex P2 on PR #2867). A statement sets the site
+/// too, so the last call in a statement restores the statement's own line
+/// rather than leaving the innermost callee's.
+///
+/// Free where nothing moved: `linemap_record` drops a row that answers
+/// identically to the one already in place, which is every call whose
+/// arguments are written on its own line.
+///
+/// Where a statement is a bare call, nothing records a statement site for it,
+/// so the restored site is the PREVIOUS statement's line. That row covers only
+/// the bytes between this call and the next recorded site -- stack cleanup and
+/// the function epilogue, which contain no call to trap in.
+export fn linemap_leave_call_site(buf: Bytes, ctx: CompileCtx, prev: Int) -> Unit {
+  if ctx.linemap.enabled {
+    Array::set(ctx.linemap.site, 0, prev)
+    if prev > 0 {
+      linemap_record(ctx.linemap, buf, ctx.dbg_line_file_id, prev)
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+}
+
+/// #644: like emit_dbg_line_for, but with the STATEMENT's own source offset as
+/// the fallback anchor. `let a = 1` binds a bare literal whose subexpression
+/// carries no offset (first_offset = -1) -- the ELet/ELetMut node's stmt offset
+/// (the `let` keyword token) still locates the line, so the probe is emitted
+/// and the line is breakpoint-able.
+///
+/// #2199: linemap recording is independent of the live dbg_line probe. A
+/// production compile records the statement even when `dbg_line_idx < 0`.
+export fn emit_dbg_line_stmt(buf: Bytes, value: Expr, stmt_off: Int, ctx: CompileCtx) -> Unit {
+  let voff = first_offset(value)
+  let off = if voff >= 0 {
+    voff
+  } else {
+    stmt_off
+  }
+  if off >= 0 && ctx.linemap.enabled {
+    let line = offset_to_line(ctx.dbg_line_nl, off)
+    linemap_record(ctx.linemap, buf, ctx.dbg_line_file_id, line)
+    // #2199: and this statement is the enclosing site until the next one, so
+    // the last call in it restores THIS line rather than leaving the
+    // innermost callee's behind for whatever the statement emits after it.
+    Array::set(ctx.linemap.site, 0, line)
+  } else {
+    ()
+  }
+  if ctx.dbg_line_idx >= 0 && off >= 0 {
+    let line = offset_to_line(ctx.dbg_line_nl, off)
+    emit_i32_const(buf, ctx.dbg_line_file_id)
+    emit_i32_const(buf, line)
+    emit_call(buf, ctx.dbg_line_idx)
+  } else {
+    ()
+  }
+}
+
+export fn is_edot(e: Expr) -> Bool {
+  match e {
+    EDot(_, _, _, _) => true,
+    _ => false
+  }
+}
+
+export fn efn_is_capturing(value: Expr, ctx: CompileCtx) -> Bool with Exception {
+  let params = get_efn_params(value)
+  let pnames = array_empty()
+  let mut pi = 0
+  while pi < Array::length(params) {
+    let (pn, _) = Array::get(params, pi)
+    Array::push(pnames, pn)
+    pi = pi + 1
+  }
+  let caps = collect_free_vars_indexed(get_efn_body(value), pnames, ctx.capture_name_index)
+  Array::length(caps) > 0
+}
+
+export fn slot_is_floatish(ctx: CompileCtx, slot: Int) -> Bool {
+  let arr = ctx.float_local_slots
+  let mut j = Array::length(arr) - 1
+  let mut result = false
+  while j >= 0 {
+    let entry = Array::get(arr, j)
+    if entry / 2 == slot {
+      result = (entry % 2) == 1
+      j = -1
+    } else {
+      j = j - 1
+    }
+  }
+  result
+}
+
+/// #678: is the local in `slot` known to hold an Int/Bool? Mirrors
+/// slot_is_floatish over ctx.int_local_slots. #769 encoding: `slot*4 + kind`,
+/// kind 0 = cleared (reclassifying rebind of a reused slot), 1 = Int, 2 =
+/// String (#950), 3 = Bool -- bit 0 still means "intish" (both 1 and 3), so
+/// every pre-existing intish consumer is unchanged, while kind 3 additionally
+/// lets `__to_string` format a bool-bound IDENT as "true"/"false" (the
+/// #784/#785-P2 gap: `let b = true; "\{b}"` printed the raw integer) and kind
+/// 2 routes a string-bound IDENT down `__to_string`'s identity path (the #950
+/// gap: `let j = String::join([], "-"); "\{j}"` printed "0", the packed
+/// empty-string encoding misread as an Int). Most-recent entry wins; the log
+/// is pruned at branch/arm boundaries (int_log_reset_above) so a slot reused
+/// by a non-`let` binder reads false here rather than a stale entry.
+export fn slot_is_intish(ctx: CompileCtx, slot: Int) -> Bool {
+  let arr = ctx.int_local_slots
+  let mut j = Array::length(arr) - 1
+  let mut result = false
+  while j >= 0 {
+    let entry = Array::get(arr, j)
+    if entry / 4 == slot {
+      result = (entry % 2) == 1
+      j = -1
+    } else {
+      j = j - 1
+    }
+  }
+  result
+}
+
+/// #769: is the local in `slot` known to hold specifically a Bool (kind 3)?
+fn slot_is_boolish(ctx: CompileCtx, slot: Int) -> Bool {
+  let arr = ctx.int_local_slots
+  let mut j = Array::length(arr) - 1
+  let mut result = false
+  while j >= 0 {
+    let entry = Array::get(arr, j)
+    if entry / 4 == slot {
+      result = (entry % 4) == 3
+      j = -1
+    } else {
+      j = j - 1
+    }
+  }
+  result
+}
+
+/// #950: is the local in `slot` known to hold specifically a String (kind 2)?
+/// Consulted only by the rebind-clear logic at the `let`/`let mut` logging
+/// sites (a non-string rebind of a previously-stringish slot must log a
+/// kind-0 override, or a later bare-ident read would see the stale kind-2
+/// entry and take __to_string's identity path on a non-string value).
+export fn slot_is_stringish(ctx: CompileCtx, slot: Int) -> Bool {
+  let arr = ctx.int_local_slots
+  let mut j = Array::length(arr) - 1
+  let mut result = false
+  while j >= 0 {
+    let entry = Array::get(arr, j)
+    if entry / 4 == slot {
+      result = (entry % 4) == 2
+      j = -1
+    } else {
+      j = j - 1
+    }
+  }
+  result
+}
+
+/// #2462/#2464: does the CHECKER say this render/`eq` argument is a `Bool`?
+/// Keyed by `typed_lowering_arg_offset`, the producer's own key -- see
+/// `bool_offset_says_bool` in compile_call.vibe, the twin of this.
+fn tail_offset_says_bool(e: Expr, ctx: CompileCtx) -> Bool {
+  let off = typed_lowering_arg_offset(e)
+  off >= 0 && array_contains_int(ctx.bool_render_offsets, off)
+}
+
+/// #769: does `e` statically evaluate to a Bool? Bool literals, comparison /
+/// logical operators, `!`, and -- via the kind-3 slot log above -- a bare ident
+/// `let`-bound to a boolish value. Syntactic over-approximation like
+/// expr_is_intish; consumers use it only to pick "true"/"false" formatting.
+export fn expr_is_boolish(raw_e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  let e = cl_return_operand(raw_e)
+  let tag = expr_tag(e)
+  // #2462/#2464: the checker's answer first, as an extra `||` -- same channel
+  // and same key as `cc_expr_is_boolish`'s arm in compile_call.vibe. These two
+  // copies must agree; a table consulted by only one of them is a coin flip on
+  // which copy a given site reaches.
+  if tail_offset_says_bool(e, ctx) {
+    true
+  } else if tag == 1 {
+    true
+  } else if tag == 4 {
+    let nm = get_eident_name(e)
+    let mut i = Array::length(local_names) - 1
+    let mut slot = -1
+    while i >= 0 {
+      if Array::get(local_names, i) == nm {
+        slot = i
+        i = -1
+      } else {
+        i = i - 1
+      }
+    }
+    if slot >= 0 {
+      slot_is_boolish(ctx, slot)
+    } else {
+      false
+    }
+  } else if tag == 5 {
+    let op = get_ebinop_op(e)
+    op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">=" || op == "&&" || op == "||"
+  } else if tag == 6 {
+    get_eunaryop_op(e) == "!"
+  } else if tag == 16 {
+    // #815: an `is` expression desugars at parse time to a match whose arms
+    // all return Bool literals — classify such a match as boolish so
+    // `"\{opt is None}"` prints true/false instead of the raw 0/1.
+    // #825: arm bodies recurse through expr_is_boolish (not just Bool
+    // literals), because the structural `==` dispatch on Option/Result/tuple
+    // lowers to nested matches whose leaf arms are `==`/`&&` chains and Bool
+    // literals — so `"\{Some(1) == Some(1)}"` prints true, not 1.
+    let arms = get_match_arms(e)
+    let alen2 = Array::length(arms)
+    if alen2 == 0 {
+      false
+    } else {
+      let mut all_bool = true
+      let mut bi2 = 0
+      while bi2 < alen2 {
+        if !expr_is_boolish(get_arm_body(Array::get(arms, bi2)), local_names, ctx) {
+          all_bool = false
+        } else {
+          ()
+        }
+        bi2 = bi2 + 1
+      }
+      all_bool
+    }
+  } else if tag == 9 {
+    // #825: the normalize pass lifts a non-ident match scrutinee into
+    // `let __m_scrut_N = <e> in match ...` (lift_match_scrutinees), so a
+    // boolish match arrives here wrapped in a let — classify by the BODY.
+    // Same for the other body-position wrappers below.
+    expr_is_boolish(get_elet_body(e), local_names, ctx)
+  } else if tag == 10 {
+    expr_is_boolish(get_eletrec_body(e), local_names, ctx)
+  } else if tag == 11 {
+    expr_is_boolish(get_eletmut_body(e), local_names, ctx)
+  } else if tag == 14 {
+    expr_is_boolish(get_eseq_second(e), local_names, ctx)
+  } else if tag == 7 {
+    // An if-expression is boolish when BOTH branches are.
+    expr_is_boolish(get_eif_then(e), local_names, ctx) && expr_is_boolish(get_eif_else(e), local_names, ctx)
+  } else if tag == 8 {
+    // #815: the `==` desugar rewrites array equality to the compiler-emitted
+    // `__arr_equals__<key>` helper and struct/enum equality to `T::equals`
+    // (both Bool-returning), so the EBinOp shape above is gone by codegen.
+    // `__arr_equals__` is a reserved compiler prefix; `::equals` (2 args) is
+    // the == rewrite's exact output shape. A `not(...)` wrap (the `!=`
+    // rewrite's output) is classified only when its single argument is itself
+    // boolish, `not` is not locally shadowed, AND no USER function is named
+    // `not` -- see the cc_expr_is_boolish twin in compile_call.vibe for what
+    // that last guard fixed and why the typed channel could not.
+    let bcallee = get_ecall_callee(e)
+    if is_eident(bcallee) {
+      let bcn = get_eident_name(bcallee)
+      String::starts_with(bcn, "__arr_equals__") || (String::ends_with(bcn, "::equals") && Array::length(get_ecall_args(e)) == 2) || (bcn == "not" && Array::length(get_ecall_args(e)) == 1 && find_local_slot(local_names, "not") < 0 && func_table_user_index_of(ctx.func_table, "not", ctx.num_user_funcs) < 0 && expr_is_boolish(Array::get(get_ecall_args(e), 0), local_names, ctx)) || cc_builtin_call_ret_kind(e, local_names, ctx) == 1
+    } else if is_efn(bcallee) && Array::length(get_ecall_args(e)) == 1 {
+      // #815: `let x: Bool = e` parses to the ascription marker
+      // `((__asc: Bool) -> __asc)(e)` (ELet carries no type field, see
+      // parser_expr_dispatch's ascribe_wrap) — honor the annotation so the
+      // binding's slot is logged boolish even when `e` itself is opaque.
+      // The SECOND and later ascriptions in one function arrive with the
+      // param renamed to `__shadow_<n>___asc` (normalize's
+      // uniquify_shadowed_bindings; per-function `seen` de-dup), so match
+      // that renamed form too — otherwise only the first annotated let per
+      // function was classified (#825 follow-up).
+      let fparams = get_efn_params(bcallee)
+      if Array::length(fparams) == 1 {
+        let (asc_name, asc_ty) = Array::get(fparams, 0)
+        (asc_name == "__asc" || (String::starts_with(asc_name, "__shadow_") && String::ends_with(asc_name, "___asc"))) && (match asc_ty {
+          Some(TyName(tn)) => tn == "Bool",
+          _ => false
+        })
+      } else {
+        false
+      }
+    } else {
+      false
+    }
+  } else {
+    false
+  }
+}
+
+/// Blocker-3 (ADR-0055): does `e` statically evaluate to an f64 bit pattern?
+/// Syntactic over-approximation (the AST is untyped): float literals, float
+/// arithmetic / comparison over floatish operands, float-producing conversions,
+/// and — crucially — a *variable* bound to a floatish value (tracked in
+/// ctx.float_local_slots as `let`s compile). This lets `let x = 1.5; x + y`
+/// take the f64 path. Shared by compile_expr (binop/unary instruction choice)
+/// and the `let` handler below (which populates float_local_slots).
+/// #2424: did the CHECKER say this exact node is a `Double`?
+///
+/// The Double twin of the Int render/`eq` term. Same contract, same fail-closed
+/// ends: an extra term in FRONT of the syntactic classifier, never a
+/// replacement, so the table can only add a classification the shape rules
+/// missed. The key is `typed_lowering_float_key` (@vibe/compiler/core), shared
+/// with the producer rather than restated here: a projection answers with its
+/// FIELD-NAME offset, and a bare NAME answers -1, because a call node's offset
+/// is its callee identifier's offset and this array carries call results. Its
+/// doc comment carries the whole argument.
+///
+/// This is what closes the row `float_call_offsets` structurally could not: a
+/// Double-typed STRUCT FIELD. That table is keyed by CALL offsets, so it had no
+/// projection arm at all, and measured before this change `b.ratio` on a
+/// `struct DBox { ratio: Double }` rendered `256` on the RC lane and trapped on
+/// gc, while the same Double through a tuple element or a plain `let` answered
+/// `1.5`. Tag 4 rows arrive in the SAME array (see split_typed_lowering_offsets)
+/// because both answer one question, and they agree on calls: a call node's
+/// `typed_lowering_arg_offset` IS its call offset.
+fn tail_offset_says_float(e: Expr, ctx: CompileCtx) -> Bool {
+  let off = typed_lowering_float_key(e)
+  off >= 0 && array_contains_int(ctx.float_call_offsets, off)
+}
+
+export fn expr_is_floatish(raw_e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  let e = cl_return_operand(raw_e)
+  tail_offset_says_float(e, ctx) || expr_is_floatish_syntactic(e, local_names, ctx)
+}
+
+fn expr_is_floatish_syntactic(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  // fbox (#797): `t.N` tuple projection survives to codegen as EDot (expr_tag
+  // -1), NOT as __rec_field (that lowering is only produced for tuple
+  // DESTRUCTURING and record-pattern desugars). Heap fields store floats as
+  // raw f64 bits (boxed under RC), so the reader must recover float-ness
+  // statically -- without this, `let t = (1.5, 2.5); t.0 + t.1` integer-adds
+  // two bit patterns into NaN and Double::to_int traps. The #724 agg log
+  // keeps the backing ETuple expression per slot; recurse into the projected
+  // element. Untracked bindings stay false (same over-approximation as the
+  // rest of this predicate).
+  let dot_float = match e {
+    EDot(dobj, dfield, _, _) => {
+      let fc = String::char_code_at(dfield, 0)
+      if fc >= 48 && fc <= 57 && is_eident(dobj) {
+        let slot = find_local_slot(local_names, get_eident_name(dobj))
+        if slot >= 0 {
+          let info = agg_slot_lookup(ctx.agg_local_slots, slot)
+          if info >= 0 && info / 64 == 1 {
+            let backing = agg_expr_lookup(ctx.agg_local_slots, ctx.agg_local_exprs, slot)
+            if is_etuple(backing) {
+              let elems = get_etuple_elems(backing)
+              let mut k = 0
+              let mut fp = 0
+              while fp < String::length(dfield) {
+                k = k * 10 + (String::char_code_at(dfield, fp) - 48)
+                fp = fp + 1
+              }
+              if k >= 0 && k < Array::length(elems) {
+                expr_is_floatish(Array::get(elems, k), local_names, ctx)
+              } else {
+                false
+              }
+            } else {
+              false
+            }
+          } else {
+            false
+          }
+        } else {
+          false
+        }
+      } else {
+        false
+      }
+    },
+    _ => false
+  }
+  let tag = expr_tag(e)
+  if dot_float {
+    true
+  } else if tag == 2 {
+    true
+  } else if tag == 4 {
+    let nm = get_eident_name(e)
+    let len = Array::length(local_names)
+    let mut i = len - 1
+    let mut slot = -1
+    while i >= 0 {
+      if Array::get(local_names, i) == nm {
+        slot = i
+        i = -1
+      } else {
+        i = i - 1
+      }
+    }
+    if slot >= 0 {
+      slot_is_floatish(ctx, slot)
+    } else {
+      false
+    }
+  } else if tag == 5 {
+    let op = get_ebinop_op(e)
+    // #744: arithmetic only. A float COMPARISON (`n < 0.0`) yields a Bool —
+    // including `<`/`>`/`<=`/`>=` here marked a let-bound comparison result
+    // as floatish, and a later `neg && ...` on that Bool took the float binop
+    // path and threw "unsupported float binop: &&".
+    if op == "+" || op == "-" || op == "*" || op == "/" {
+      expr_is_floatish(get_ebinop_lhs(e), local_names, ctx) || expr_is_floatish(get_ebinop_rhs(e), local_names, ctx)
+    } else {
+      false
+    }
+  } else if tag == 6 {
+    let op = get_eunaryop_op(e)
+    if op == "-" {
+      expr_is_floatish(get_eunaryop_expr(e), local_names, ctx)
+    } else {
+      false
+    }
+  } else if tag == 7 || tag == 9 || tag == 10 || tag == 11 || tag == 14 || tag == 16 {
+    // #2426 follow-up (Codex review on #2430): a Double that arrives through a
+    // JOIN was invisible here, so `let a = if c { 0.0 } else { 1.0 }` left the
+    // slot unclassified and `a == b` fell back to a raw bit compare -- on
+    // every lane, RC included. Measured before this change: the `if`, `match`
+    // and block forms all answered `0.0 == -0.0` false and `nan == nan` true.
+    //
+    // The arms are the ones `expr_is_boolish`, in this same file, has had since #825
+    // -- if / match / the three let wrappers the normalize pass introduces /
+    // sequence -- with the same AND semantics, which is the fail-closed
+    // direction: a join is a Double only when EVERY way out of it is.
+    if tag == 7 {
+      expr_is_floatish(get_eif_then(e), local_names, ctx) && expr_is_floatish(get_eif_else(e), local_names, ctx)
+    } else if tag == 9 {
+      // A join arm that ends in its OWN binder -- `if c { let x = 0.0; x }` --
+      // is the shape a bare body recursion misses, because the body is
+      // `EIdent(x)` and `x` has no slot at classification time (Codex review
+      // on #2432). It is answerable WITHOUT an environment: the body is a
+      // single identifier and the `let` immediately above it binds that exact
+      // name, so no inner scope can intervene and no outer binding of the same
+      // name is reachable. Anything further -- `let x = 0.0; let z = x; z` --
+      // is NOT answerable this way and stays open, measured: it still compares
+      // by raw bits on all three lanes. Closing it needs the binding's TYPE,
+      // which is #2424's channel; the alternative, an environment carried
+      // through the descent, is the design CLAUDE.md records going silently
+      // wrong (an outer `let v = 1` read for an inner `v` of another type).
+      let jb9 = get_elet_body(e)
+      if expr_tag(jb9) == 4 && get_eident_name(jb9) == get_elet_name(e) {
+        expr_is_floatish(get_elet_val(e), local_names, ctx)
+      } else {
+        expr_is_floatish(jb9, local_names, ctx)
+      }
+    } else if tag == 10 {
+      let jb10 = get_eletrec_body(e)
+      if expr_tag(jb10) == 4 && get_eident_name(jb10) == get_eletrec_name(e) {
+        expr_is_floatish(get_eletrec_val(e), local_names, ctx)
+      } else {
+        expr_is_floatish(jb10, local_names, ctx)
+      }
+    } else if tag == 11 {
+      let jb11 = get_eletmut_body(e)
+      if expr_tag(jb11) == 4 && get_eident_name(jb11) == get_eletmut_name(e) {
+        expr_is_floatish(get_eletmut_val(e), local_names, ctx)
+      } else {
+        expr_is_floatish(jb11, local_names, ctx)
+      }
+    } else if tag == 14 {
+      expr_is_floatish(get_eseq_second(e), local_names, ctx)
+    } else {
+      let jarms = get_match_arms(e)
+      let jn = Array::length(jarms)
+      if jn == 0 {
+        false
+      } else {
+        let mut jall = true
+        let mut ji = 0
+        while ji < jn {
+          if !expr_is_floatish(get_arm_body(Array::get(jarms, ji)), local_names, ctx) {
+            jall = false
+          } else {
+            ()
+          }
+          ji = ji + 1
+        }
+        jall
+      }
+    }
+  } else if tag == 8 {
+    let callee = get_ecall_callee(e)
+    if array_contains_int(ctx.float_call_offsets, get_ecall_off(e)) {
+      // #2158: the CHECKER said this exact call node's result is a Double.
+      // The twin of the term cc_expr_is_floatish (compile_call.vibe) adds --
+      // this file holds the linear lane's SECOND hand-written copy of the
+      // classifier, and #2158 already had to be fixed twice for exactly that
+      // reason, so both copies get it. See CompileCtx.float_call_offsets.
+      //
+      // Asked before the callee shape, for the reason its twin records: the
+      // table is offset-keyed, so nesting it under `is_eident` hid it from
+      // every call whose callee is not a name.
+      true
+    } else if is_eident(callee) {
+      let fname = get_eident_name(callee)
+      if fname == "Int::to_double" || fname == "Int::to_float" || fname == "Float::to_double" || fname == "Double::to_float" || fname == "Double::from_i64_bits" {
+        true
+      } else if cc_fn_returns_float(local_names, ctx, fname) {
+        // #2158: a call to a user function DECLARED `-> Double` / `-> Float`.
+        // Without this, `let a = half(5.0)` left the slot unclassified, so a
+        // later `${a}` fell through to __to_string's runtime bit-pattern
+        // heuristic and printed the f64 bits as an Int.
+        true
+      } else if fname == "__rec_field" {
+        // fbox (#797): `t.0` on a TRACKED tuple-literal binding (`let t =
+        // (1.5, 2.5)`). Heap fields store floats as RAW f64 bits, so the
+        // reader must recover float-ness statically -- without this, `t.0 +
+        // t.1` integer-adds two bit patterns into NaN and `Double::to_int`
+        // traps ("invalid conversion to integer"). The #724 agg log already
+        // keeps the backing ETuple expression per slot; recurse into the
+        // projected element. Non-literal / untracked bindings stay false
+        // (same over-approximation as the rest of this predicate).
+        let args = get_ecall_args(e)
+        if Array::length(args) == 2 && is_eident(Array::get(args, 0)) && expr_tag(Array::get(args, 1)) == 0 {
+          let slot = find_local_slot(local_names, get_eident_name(Array::get(args, 0)))
+          if slot >= 0 {
+            let info = agg_slot_lookup(ctx.agg_local_slots, slot)
+            if info >= 0 && info / 64 == 1 {
+              let backing = agg_expr_lookup(ctx.agg_local_slots, ctx.agg_local_exprs, slot)
+              if is_etuple(backing) {
+                let elems = get_etuple_elems(backing)
+                let k = get_eint_value(Array::get(args, 1))
+                if k >= 0 && k < Array::length(elems) {
+                  expr_is_floatish(Array::get(elems, k), local_names, ctx)
+                } else {
+                  false
+                }
+              } else {
+                false
+              }
+            } else {
+              false
+            }
+          } else {
+            false
+          }
+        } else {
+          false
+        }
+      } else {
+        false
+      }
+    } else if is_efn(callee) && Array::length(get_ecall_args(e)) == 1 {
+      // #1153/#1185 (+ #1207 Codex review P2): `let x: Double = e` / `let x:
+      // Float = e` parses to the ascription marker `((__asc: Double) ->
+      // __asc)(e)` (parser_expr_dispatch's ascribe_wrap) -- mirrors
+      // expr_is_boolish's identical `is_efn(callee)` case for `Bool` (#815),
+      // just never extended to Float/Double. Without this, an explicitly-
+      // annotated Double/Float `let` is invisible to float_local_slots:
+      // under RC a float is a BOXED heap value (#704), so a `==`/`!=`
+      // between two such misclassified slots falls through emit_eq_value's
+      // generic `eq` fallback, which compares the two DISTINCT boxes by
+      // pointer rather than unboxing and comparing values -- silently
+      // `false` for equal doubles. The same misclassification also feeds
+      // `__to_string`/string interpolation, which then reads the boxed
+      // pointer as if it were a plain Int (#1153: garbage output).
+      // Matches the COMPLETE synthetic identity-lambda shape (no type
+      // params, no declared return type, no effect row, body exactly
+      // `EIdent(<the param's own name>, _)`) -- the same precision
+      // checker.vibe's `ascription_lambda_ann` uses for this identical
+      // marker -- so a hand-written IIFE that merely happens to name its
+      // param `__asc`/`__shadow_*___asc` (e.g. `((__asc: Double) -> String
+      // { "hello" })(1.0)`) isn't misread as this marker.
+      match callee {
+        EFn(tparams, _, params, ret_ty, effect, body) => if Array::length(tparams) == 0 && Array::length(params) == 1 && (match ret_ty {
+          None => true,
+          Some(_) => false
+        }) && (match effect {
+          None => true,
+          Some(_) => false
+        }) {
+          let (asc_name, asc_ty) = Array::get(params, 0)
+          if asc_name == "__asc" || (String::starts_with(asc_name, "__shadow_") && String::ends_with(asc_name, "___asc")) {
+            match body {
+              EIdent(bname, _) => if bname == asc_name {
+                match asc_ty {
+                  Some(TyName(tn)) => tn == "Double" || tn == "Float",
+                  _ => false
+                }
+              } else {
+                false
+              },
+              _ => false
+            }
+          } else {
+            false
+          }
+        } else {
+          false
+        },
+        _ => false
+      }
+    } else {
+      false
+    }
+  } else {
+    false
+  }
+}
+
+/// #678: is `e` unambiguously an integer/bool scalar — never a string or float?
+/// Such an operand makes `==`/`!=` a direct i64.eq instead of the polymorphic
+/// `eq` builtin, whose string fall-back misreads a large integer as a string
+/// fat-pointer `(ptr<<32)|len` (two unequal ints with a zero low word compare
+/// EQUAL). Integral by SHAPE: literals, bitwise/comparison/logical operators,
+/// non-float arithmetic. A bare identifier is integral when its slot was bound
+/// to a definitely-integral value (ctx.int_local_slots, the dual of
+/// expr_is_floatish) — sound because that log is pruned at every branch/arm
+/// boundary (int_log_reset_above), so a slot reused by a non-`let` binder
+/// holding a string is never read as int. Unclassified operands (a call return,
+/// an untracked param/capture) stay false and fall back to the bounds-guarded
+/// `eq` — the narrow remaining residual.
+export fn expr_is_intish(raw_e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  let e = cl_return_operand(raw_e)
+  let tag = expr_tag(e)
+  if tag == 0 {
+    true
+  } else if tag == 1 {
+    true
+  } else if tag == 4 {
+    let nm = get_eident_name(e)
+    let len = Array::length(local_names)
+    let mut i = len - 1
+    let mut slot = -1
+    while i >= 0 {
+      if Array::get(local_names, i) == nm {
+        slot = i
+        i = -1
+      } else {
+        i = i - 1
+      }
+    }
+    if slot >= 0 {
+      slot_is_intish(ctx, slot)
+    } else {
+      false
+    }
+  } else if tag == 5 {
+    let op = get_ebinop_op(e)
+    if op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>" || op == "%" || op == "<" || op == ">" || op == "<=" || op == ">=" || op == "==" || op == "!=" || op == "&&" || op == "||" {
+      true
+    } else if op == "+" || op == "-" || op == "*" || op == "/" {
+      !expr_is_floatish(e, local_names, ctx)
+    } else {
+      false
+    }
+  } else if tag == 6 {
+    let op = get_eunaryop_op(e)
+    // `~` is Int by construction -- the checker admits no other operand type --
+    // so it is intish unconditionally, unlike unary `-`, which may be a float
+    // negation. Without this the generic `eq` path reads the operand as a
+    // (ptr|len) string: `~a == ~b` answered `true` for distinct integers whose
+    // low 32 bits are zero, and `__to_string` printed them empty (#2344).
+    op == "!" || op == "~"
+  } else {
+    false
+  }
+}
+
+export fn assign_value_mentions(value: Expr, name: String) -> Bool {
+  let empty1 = array_empty()
+  let empty2 = array_empty()
+  array_contains_str(collect_free_vars(value, empty1, empty2), name)
+}
+
+export fn reassign_carry_safe(e: Expr, name: String) -> Bool {
+  if !assign_value_mentions(e, name) {
+    true
+  } else {
+    match e {
+      EIdent(_, _) => true,
+      EDot(_, _, _, _) => proj_root_ident(e) == name,
+      EBinOp(_, l, r, _) => reassign_carry_safe(l, name) && reassign_carry_safe(r, name),
+      EUnaryOp(_, x) => reassign_carry_safe(x, name),
+      _ => false
+    }
+  }
+}
+
+fn emit_rc_value_ptr_i32(buf: Bytes, local_idx: Int, tagged: Bool) -> Unit {
+  emit_local_get(buf, local_idx)
+  if tagged {
+    emit_i64_const(buf, -2)
+    emit_i64_and(buf)
+  } else {
+    ()
+  }
+  emit_i32_wrap_i64(buf)
+}
+
+export fn emit_rc_drop_local(buf: Bytes, local_idx: Int, tagged: Bool) -> Unit {
+  // #720: a saturated rc (low 24 bits == 0xFFFFFF) marks an immortal block
+  // (see emit_rc_word_inc_saturating) -- never decrement, never free.
+  emit_rc_value_ptr_i32(buf, local_idx, tagged)
+  emit_i32_const(buf, 4)
+  emit_i32_sub(buf)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_const(buf, 16777215)
+  bytebuf_push(buf, 113)
+  emit_i32_const(buf, 16777215)
+  emit_i32_ne(buf)
+  emit_if_void(buf)
+  emit_rc_value_ptr_i32(buf, local_idx, tagged)
+  emit_i32_const(buf, 4)
+  emit_i32_sub(buf)
+  emit_rc_value_ptr_i32(buf, local_idx, tagged)
+  emit_i32_const(buf, 4)
+  emit_i32_sub(buf)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_const(buf, 1)
+  emit_i32_sub(buf)
+  emit_i32_store(buf, 2, 0)
+  emit_rc_value_ptr_i32(buf, local_idx, tagged)
+  emit_i32_const(buf, 4)
+  emit_i32_sub(buf)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_const(buf, 256)
+  emit_i32_mul(buf)
+  emit_i32_eqz(buf)
+  emit_if_void(buf)
+  emit_rc_value_ptr_i32(buf, local_idx, tagged)
+  emit_i32_const(buf, 4)
+  emit_i32_sub(buf)
+  emit_global_get(buf, 2)
+  emit_i32_store(buf, 2, 0)
+  emit_rc_value_ptr_i32(buf, local_idx, tagged)
+  emit_global_set(buf, 2)
+  emit_end(buf)
+  emit_end(buf)
+}

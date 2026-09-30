@@ -1,0 +1,1864 @@
+// lib/@vibe/compiler/checker/checker.vibe — eq unbounded formal msg.
+
+import @vibe/compiler/checker/annotations {
+  collect_formal_kind_uses
+}
+
+import @vibe/compiler/checker/type_relations {
+  check_assignable as type_relations_check_assignable,
+  check_assignable_for as type_relations_check_assignable_for,
+  check_assignable_set_end as type_relations_check_assignable_set_end,
+  detect_narrowed_generic_mismatch_for,
+  head_kind,
+  row_labels,
+  type_fully_concrete,
+  type_is_ground
+}
+
+import @vibe/compiler/checker/resume {
+  arm_first_bare_tail
+}
+
+import @vibe/compiler/checker/diagnostics {
+  off_marker, off_marker_len
+}
+
+import @vibe/compiler/core {
+  Expr,
+  Pat,
+  Stmt,
+  Subst,
+  Type,
+  TypeDef,
+  TypeEnv,
+  TypeExpr,
+  compiler_owned_type_arity,
+  env_bind,
+  env_lookup,
+  env_type_defs,
+  find_typedef,
+  fresh_var,
+  instantiate,
+  subst_apply,
+  type_to_string,
+  unify
+}
+
+import @vibe/ast {
+  type_param_name
+}
+
+import @vibe/parser {
+  lex
+}
+
+import ./builtins.vibe {
+  lookup_builtin
+}
+
+import @vibe/core {
+  array_empty, struct MutMap
+}
+
+import ./checker_exhaustive.vibe {
+  match_nonexhaustive_witness
+}
+
+import ./checker_pattern.vibe {
+  check_pattern
+}
+
+import ./checker_resolve.vibe {
+  resolve_type_expr, resolve_type_expr_shadowed
+}
+
+import ./checker_spawnable.vibe {
+  check_spawnable_captures
+}
+
+import ./builtin_call_arms.vibe {
+  builtin_call_arm
+}
+
+import ./checker_effects.vibe {
+  row_items_top_level
+}
+
+import ./checker_escape.vibe {
+  diag_report_into
+}
+
+import ./checker_merge_capture_provenance.vibe {
+  checker_string_array_has,
+  collect_result_param_indices,
+  direct_result_field_param_index,
+  direct_result_param_index,
+  eq_formal_arity,
+  eq_formal_binder_spelling,
+  eq_formal_depth,
+  eq_formal_group,
+  eq_formal_name_shadowed_within,
+  eq_formal_names_for_var,
+  eq_formal_rigid_outer_exists,
+  eq_formal_rigid_row,
+  eq_formal_row_of,
+  eq_formal_vars,
+  eq_group_distance,
+  int_array_has,
+  interp_erased_formal,
+  return_provenance_index,
+  return_provenance_key,
+  type_is_ground_except
+}
+
+import ./checker_throw_kind_of_type.vibe {
+  formals_source_arity
+}
+
+// The entire body must be a direct pass-through. Such calls are expanded at
+// their use sites by trait lowering; adding a prefix or binding ends this case.
+//
+// #2773: exported so `check_stmts`'s hoist can mark the top-level shim NAMES
+// with the same rule that grants the body its exemption. A second copy of this
+// predicate is exactly the shape that made #1978 miscompile -- two mirrors that
+// agree until they do not.
+export fn interp_is_shim_body(params: Array[(String, Option[TypeExpr])], body: Expr) -> Bool {
+  if Array::length(params) != 1 {
+    false
+  } else {
+    let (pname, _) = Array::get(params, 0)
+    match body {
+      ECall(EIdent("__to_string", _), args, _) => if Array::length(args) == 1 {
+        match Array::get(args, 0) {
+          EIdent(name, _) => name == pname,
+          _ => false
+        }
+      } else {
+        false
+      },
+      _ => false
+    }
+  }
+}
+
+/// #2773: the env key `check_stmts`'s hoist marks a top-level rendering shim
+/// with. Spelled by this function on both sides, so the writer and the reader
+/// cannot drift apart.
+export fn interp_shim_marker(name: String) -> String {
+  String::concat("#interp.shim.fn.", name)
+}
+
+/// Whether `name` is a top-level rendering shim in this statement list.
+export fn interp_name_is_shim(env: TypeEnv, name: String) -> Bool {
+  match env_lookup(env, interp_shim_marker(name)) {
+    Some(CtBool) => true,
+    _ => false
+  }
+}
+
+export fn check_interp_formal(ty: Type, s: Subst, env: TypeEnv, errors: Array[String], off: Int) -> Unit {
+  let shim = match env_lookup(env, "#interp.shim.body") {
+    Some(CtBool) => true,
+    _ => false
+  }
+  if !shim {
+    let name = interp_erased_formal(ty, s, env)
+    if name != "" {
+      let edit = String::concat("pass an explicit renderer `(", String::concat(name, ") -> String`, or interpolate at a concrete type: type parameter `"))
+      Array::push(errors, String::concat(edit, String::concat(name, String::concat("` is erased here and has no renderer witness; a marker `Show` bound does not provide one", off_marker(off)))))
+    }
+  }
+  if interp_mentions_bytes(subst_apply(s, ty), s, env) {
+    Array::push(errors, String::concat("cannot interpolate a `Bytes` value: `Bytes` has no renderer -- convert it first: `let a: Array[Int] = Bytes::to_array(b)`, then interpolate `a` (#2987)", off_marker(off)))
+  }
+  if interp_mentions_fn(subst_apply(s, ty), s, env) {
+    Array::push(errors, String::concat("cannot interpolate a function value: a function has no text form, and rendering it would print a memory address -- interpolate what it returns (`f(x)`), or a description you write (#3075)", off_marker(off)))
+  }
+}
+
+/// #3075: a function value (bare or inside the containers the renderer
+/// descends) has no rendering; it printed its table index or closure address
+/// (`Some(<address>)` for `Some((x: Int) -> x + 1)`).
+fn interp_mentions_fn(ty: Type, s: Subst, env: TypeEnv) -> Bool {
+  match ty {
+    CtFn(_, _, _) => true,
+    CtForAll(_, _, inner) => interp_mentions_fn(inner, s, env),
+    CtVar(id) => match subst_apply(s, CtVar(id)) {
+      CtVar(_) => false,
+      other => interp_mentions_fn(other, s, env)
+    },
+    CtArray(element) => interp_mentions_fn(element, s, env),
+    CtOption(element) => interp_mentions_fn(element, s, env),
+    CtTuple(items) => {
+      let mut found = false
+      let mut i = 0
+      while i < Array::length(items) && !found {
+        found = interp_mentions_fn(Array::get(items, i), s, env)
+        i = i + 1
+      }
+      found
+    },
+    // #3092: a nominal type's arguments reach the renderer too
+    // (`Box[(Int) -> Int]` rendered `Box { v: 1 }`).
+    CtNamed(n, args) => interp_mentions_fn_any(interp_rendered_args(env, n, args), s, env),
+    CtApplied(head, args) => interp_mentions_fn(head, s, env) || interp_mentions_fn_any(args, s, env),
+    _ => false
+  }
+}
+
+fn interp_mentions_fn_any(items: Array[Type], s: Subst, env: TypeEnv) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(items) && !found {
+    found = interp_mentions_fn(Array::get(items, i), s, env)
+    i = i + 1
+  }
+  found
+}
+
+/// #3092: the type arguments of `n[args]` its fields or payloads actually
+/// read. A phantom parameter (`struct Label[T] { text: String }`) is not
+/// rendered, so a function or `Bytes` there is no reason to refuse. A
+/// nominal with no declaration in scope keeps every argument, and the
+/// declarations are read only when there are arguments to filter.
+fn interp_rendered_args(env: TypeEnv, n: String, args: Array[Type]) -> Array[Type] {
+  if Array::length(args) == 0 {
+    args
+  } else {
+    interp_rendered_args_of(find_typedef(env_type_defs(env), n), args)
+  }
+}
+
+fn interp_rendered_args_of(decl: Option[TypeDef], args: Array[Type]) -> Array[Type] {
+  match decl {
+    Some(TDStruct(_, fields, _, tparams)) => {
+      let tys: Array[Type] = []
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fty) = Array::get(fields, i)
+        Array::push(tys, fty)
+        i = i + 1
+      }
+      interp_args_read_by(tparams, args, tys)
+    },
+    Some(TDEnum(_, tparams, variants)) => {
+      let tys: Array[Type] = []
+      let mut i = 0
+      while i < Array::length(variants) {
+        let (_, payload) = Array::get(variants, i)
+        let mut j = 0
+        while j < Array::length(payload) {
+          Array::push(tys, Array::get(payload, j))
+          j = j + 1
+        }
+        i = i + 1
+      }
+      interp_args_read_by(tparams, args, tys)
+    },
+    _ => args
+  }
+}
+
+fn interp_args_read_by(tparams: Array[String], args: Array[Type], tys: Array[Type]) -> Array[Type] {
+  if Array::length(tparams) != Array::length(args) {
+    args
+  } else {
+    let kept: Array[Type] = []
+    let mut i = 0
+    while i < Array::length(args) {
+      let p = Array::get(tparams, i)
+      let mut used = false
+      let mut k = 0
+      while k < Array::length(tys) && !used {
+        used = interp_type_mentions_param(Array::get(tys, k), p)
+        k = k + 1
+      }
+      if used {
+        Array::push(kept, Array::get(args, i))
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    kept
+  }
+}
+
+/// Whether `t` mentions the type parameter `p`. A shape not walked here
+/// answers `true`, so an unrecognised field keeps its argument.
+fn interp_type_mentions_param(t: Type, p: String) -> Bool {
+  match t {
+    CtNamed(n, targs) => (n == p && Array::length(targs) == 0) || interp_types_mention_param(targs, p),
+    CtArray(e) => interp_type_mentions_param(e, p),
+    CtOption(e) => interp_type_mentions_param(e, p),
+    CtTuple(items) => interp_types_mention_param(items, p),
+    CtApplied(h, targs) => interp_type_mentions_param(h, p) || interp_types_mention_param(targs, p),
+    CtInt => false,
+    CtDouble => false,
+    CtBool => false,
+    CtString => false,
+    CtChar => false,
+    CtBytes => false,
+    CtUnit => false,
+    CtEnum(_) => false,
+    CtStruct(_) => false,
+    _ => true
+  }
+}
+
+fn interp_types_mention_param(ts: Array[Type], p: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(ts) && !found {
+    found = interp_type_mentions_param(Array::get(ts, i), p)
+    i = i + 1
+  }
+  found
+}
+
+/// #2987: `Bytes` has no renderer, and nothing can be derived for a builtin,
+/// so interpolating one (bare or inside a container) printed its allocation
+/// address. Walk the shapes the interpolation renderer descends.
+fn interp_mentions_bytes(ty: Type, s: Subst, env: TypeEnv) -> Bool {
+  match ty {
+    CtBytes => true,
+    CtVar(id) => match subst_apply(s, CtVar(id)) {
+      CtVar(_) => false,
+      other => interp_mentions_bytes(other, s, env)
+    },
+    CtArray(element) => interp_mentions_bytes(element, s, env),
+    CtOption(element) => interp_mentions_bytes(element, s, env),
+    CtTuple(items) => {
+      let mut found = false
+      let mut i = 0
+      while i < Array::length(items) && !found {
+        found = interp_mentions_bytes(Array::get(items, i), s, env)
+        i = i + 1
+      }
+      found
+    },
+    // #3092: a nominal type's arguments reach the renderer too
+    // (`Box[(Int) -> Int]` rendered `Box { v: 1 }`).
+    CtNamed(n, args) => interp_mentions_bytes_any(interp_rendered_args(env, n, args), s, env),
+    CtApplied(head, args) => interp_mentions_bytes(head, s, env) || interp_mentions_bytes_any(args, s, env),
+    _ => false
+  }
+}
+
+fn interp_mentions_bytes_any(items: Array[Type], s: Subst, env: TypeEnv) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(items) && !found {
+    found = interp_mentions_bytes(Array::get(items, i), s, env)
+    i = i + 1
+  }
+  found
+}
+
+fn eq_formals_has_name(items: Array[(Int, String)], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(items) {
+    let (_, n) = Array::get(items, i)
+    if n == name {
+      found = true
+      i = Array::length(items)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// Collect (by name) every type parameter `ty` mentions that carries no `Eq`
+/// bound, walking the shapes a comparator would have to descend: containers,
+/// tuples, anonymous records, applied heads, and the rigid `#hktformal.`
+/// spelling an HKT-related formal takes. A function type never compares, so
+/// it is not descended.
+export fn eq_unbounded_formals_in(ty: Type, s: Subst, env: TypeEnv, out: Array[(Int, String)]) -> Unit {
+  match ty {
+    CtVar(id) => eq_formal_names_for_var(id, s, env, out),
+    CtNamed(n, args) => {
+      if String::starts_with(n, "#hktformal.") {
+        // A rigid HKT formal has no variable id; -1 keeps it distinct from
+        // every recorded binder and dedups by spelling.
+        let fname = String::substring(n, 11, String::length(n))
+        if !eq_formals_has_name(out, fname) {
+          Array::push(out, (0 - 1, fname))
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      let mut i = 0
+      while i < Array::length(args) {
+        eq_unbounded_formals_in(Array::get(args, i), s, env, out)
+        i = i + 1
+      }
+    },
+    CtArray(e) => eq_unbounded_formals_in(e, s, env, out),
+    CtOption(e) => eq_unbounded_formals_in(e, s, env, out),
+    CtTuple(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        eq_unbounded_formals_in(Array::get(items, i), s, env, out)
+        i = i + 1
+      }
+    },
+    CtRecord(rfields) => {
+      let mut i = 0
+      while i < Array::length(rfields) {
+        let (_, fty) = Array::get(rfields, i)
+        eq_unbounded_formals_in(fty, s, env, out)
+        i = i + 1
+      }
+    },
+    CtApplied(head, args) => {
+      eq_unbounded_formals_in(head, s, env, out)
+      let mut i = 0
+      while i < Array::length(args) {
+        eq_unbounded_formals_in(Array::get(args, i), s, env, out)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+/// Render `ty` with every still-unsolved recorded formal spelled by its source
+/// name (`Option[T]`, not `Option[?t4]`). Only unsolved formals are rebound:
+/// one that a local annotation already instantiated must keep printing as
+/// what it became.
+fn eq_formal_display_type(ty: Type, s: Subst) -> String {
+  let mut ds = s
+  let mut i = 0
+  while i < Array::length(eq_formal_vars) {
+    let (vid, name) = Array::get(eq_formal_vars, i)
+    match subst_apply(s, CtVar(vid)) {
+      CtVar(rid) => {
+        ds = SubstBind(rid, CtNamed(name, array_empty()), ds)
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  type_to_string(subst_apply(ds, ty))
+}
+
+fn joined_names(names: Array[String], sep: String) -> String {
+  let mut out = ""
+  let mut i = 0
+  while i < Array::length(names) {
+    out = if i == 0 {
+      Array::get(names, i)
+    } else {
+      String::concat(out, String::concat(sep, Array::get(names, i)))
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Where an edit goes, by its declaration's distance from the site.
+fn eq_group_place(d: Int) -> String {
+  if d <= 0 {
+    "the inner binder"
+  } else if d == 1 {
+    "the enclosing declaration"
+  } else {
+    String::concat("the declaration ", String::concat(__to_string(d), " binders out"))
+  }
+}
+
+fn eq_group_mention(d: Int) -> String {
+  if d <= 0 {
+    " (the inner binder's)"
+  } else if d == 1 {
+    " (an enclosing declaration's)"
+  } else {
+    String::concat(" (", String::concat(eq_group_place(d), "'s)"))
+  }
+}
+
+/// #2474 (a): the diagnostic for `==` / `!=` on an operand type that mentions
+/// a type parameter with no `Eq` bound. Leads with the edit: the bound, or a
+/// concrete type. Measured before this check existed, every aggregate
+/// instantiation of such a site (`Double`, `Array`, tuple, struct, enum,
+/// `Option`, `Bytes`) answered `false` for equal values while `Int` / `String`
+/// answered correctly -- a silent wrong answer that depended on the caller.
+///
+/// Rendered PER DECLARATION (Codex on #2529 / #2530): every offending binder
+/// is resolved to the table row of the declaration that introduced it, rows
+/// are grouped by declaration, each group becomes one bracket spelled at the
+/// binders' own kinds, and when more than one declaration is involved each
+/// bracket says which declaration it belongs on, by distance from the site.
+/// A single declaration collapses into one unqualified bracket.
+export fn eq_unbounded_formal_msg(op: String, resolved: Type, formals: Array[(Int, String)], s: Subst, env: TypeEnv, off: Int) -> String {
+  // 1. entries -> table rows (a rigid mention fans out to every open
+  //    higher-kinded binder of that spelling), in table order.
+  let rows: Array[Int] = []
+  let rigid_hints: Array[String] = []
+  let mut fi = 0
+  while fi < Array::length(formals) {
+    let (vid, name) = Array::get(formals, fi)
+    if vid < 0 {
+      let r = eq_formal_rigid_row(name)
+      if r >= 0 && !int_array_has(rows, r) {
+        Array::push(rows, r)
+        if eq_formal_rigid_outer_exists(name, r) && !checker_string_array_has(rigid_hints, name) {
+          Array::push(rigid_hints, name)
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+    } else {
+      let r = eq_formal_row_of(vid)
+      if r >= 0 && !int_array_has(rows, r) {
+        Array::push(rows, r)
+      } else {
+        ()
+      }
+    }
+    fi = fi + 1
+  }
+  let sorted: Array[Int] = []
+  let mut si = 0
+  while si < Array::length(eq_formal_vars) {
+    if int_array_has(rows, si) {
+      Array::push(sorted, si)
+    } else {
+      ()
+    }
+    si = si + 1
+  }
+  // 2. the declarations involved, in first-appearance order.
+  let groups: Array[Int] = []
+  let mut gi = 0
+  while gi < Array::length(sorted) {
+    let g = Array::get(eq_formal_group, Array::get(sorted, gi))
+    if !int_array_has(groups, g) {
+      Array::push(groups, g)
+    } else {
+      ()
+    }
+    gi = gi + 1
+  }
+  let multi = Array::length(groups) > 1
+  // One owning declaration that is not the site's own: every edit goes there,
+  // however many formals it has (Codex on #2530: `[T, U]` outside, `[V]`
+  // inside, `(x, y) == (x, y)` -- an unplaced `[T: Eq, U: Eq]` would be read
+  // as an edit on the visible inner binder, which only declares two new
+  // shadowing formals).
+  let sole_group_enclosing = Array::length(groups) == 1 && eq_group_distance(Array::get(groups, 0)) > 0
+  // 3. mentions and per-declaration brackets.
+  let mentions: Array[String] = []
+  let mut mi = 0
+  while mi < Array::length(sorted) {
+    let r = Array::get(sorted, mi)
+    let (_, name) = Array::get(eq_formal_vars, r)
+    let d = eq_group_distance(Array::get(eq_formal_group, r))
+    Array::push(mentions, String::concat("`", String::concat(name, String::concat("`", if multi {
+      eq_group_mention(d)
+    } else {
+      ""
+    }))))
+    mi = mi + 1
+  }
+  let brackets: Array[String] = []
+  let mut bi = 0
+  while bi < Array::length(groups) {
+    let g = Array::get(groups, bi)
+    let spelled: Array[String] = []
+    let mut ri = 0
+    while ri < Array::length(sorted) {
+      let r = Array::get(sorted, ri)
+      if Array::get(eq_formal_group, r) == g {
+        let (_, name) = Array::get(eq_formal_vars, r)
+        Array::push(spelled, String::concat(eq_formal_binder_spelling(name, Array::get(eq_formal_arity, r)), ": Eq"))
+      } else {
+        ()
+      }
+      ri = ri + 1
+    }
+    let bracket = String::concat("`[", String::concat(joined_names(spelled, ", "), "]`"))
+    Array::push(brackets, if multi || sole_group_enclosing {
+      String::concat(bracket, String::concat(" on ", eq_group_place(eq_group_distance(g))))
+    } else {
+      bracket
+    })
+    bi = bi + 1
+  }
+  // 4. the sentence. One binder of one enclosing declaration keeps the
+  //    dedicated wording that says the visible binder is not the one to edit.
+  let params = if Array::length(sorted) == 1 {
+    let r0 = Array::get(sorted, 0)
+    let (_, name0) = Array::get(eq_formal_vars, r0)
+    let d0 = eq_group_distance(Array::get(eq_formal_group, r0))
+    if d0 > 0 && eq_formal_name_shadowed_within(name0, d0) {
+      String::concat("the type parameter `", String::concat(name0, String::concat("` of an enclosing declaration has no `Eq` bound (an inner binder also spelled `", String::concat(name0, "` shadows it here, so the bound belongs on the outer one)"))))
+    } else if d0 > 0 {
+      String::concat("the type parameter `", String::concat(name0, "` of an enclosing declaration has no `Eq` bound"))
+    } else {
+      String::concat("the type parameter `", String::concat(name0, "` has no `Eq` bound"))
+    }
+  } else if Array::length(sorted) == 0 {
+    // Every mention resolved to no open binder (cannot happen for a recorded
+    // formal; kept so the message never indexes an empty table).
+    "a type parameter has no `Eq` bound"
+  } else if sole_group_enclosing {
+    String::concat("the type parameters ", String::concat(joined_names(mentions, ", "), " of an enclosing declaration have no `Eq` bound"))
+  } else {
+    String::concat("the type parameters ", String::concat(joined_names(mentions, ", "), " have no `Eq` bound"))
+  }
+  let hint = if Array::length(rigid_hints) > 0 {
+    String::concat("; an enclosing declaration also spells `", String::concat(joined_names(rigid_hints, "`, `"), "` as a higher-kinded binder, and a compared value captured from there needs the bound on that declaration as well"))
+  } else {
+    ""
+  }
+  let bound_clause = if Array::length(brackets) == 0 {
+    String::concat("declare the `Eq` bound", hint)
+  } else {
+    String::concat("declare the bound (", String::concat(joined_names(brackets, ", "), String::concat(")", hint)))
+  }
+  String::concat("`", String::concat(op, String::concat("` compares two values of type `", String::concat(eq_formal_display_type(resolved, s), String::concat("`, but ", String::concat(params, String::concat(", so they cannot be compared by content here; ", String::concat(bound_clause, String::concat(" or compare at a concrete type", off_marker(off))))))))))
+}
+
+export fn mark_return_provenance_written(id: Int) -> Unit {
+  MutMap::set(Array::get(return_provenance_index, 0), __to_string(return_provenance_key(id)), 1)
+}
+
+/// True iff a ReturnProvenance row for `id` was pushed to the type table of
+/// the check in progress (the table itself is the authority the index
+/// mirrors; it is kept as the parameter for that reason).
+export fn return_provenance_was_written(tytab: Array[(Int, Type)], id: Int) -> Bool {
+  let _ = tytab
+  MutMap::has(Array::get(return_provenance_index, 0), __to_string(return_provenance_key(id)))
+}
+
+fn is_enum_ctor_name(name: String, defs: Array[TypeDef]) -> Bool {
+  let separator = String::last_index_of(name, "::")
+  let member = if separator >= 0 {
+    String::substring(name, separator + 2, String::length(name))
+  } else {
+    name
+  }
+  let mut found = name == "Some"
+  for type_def in defs {
+    match type_def {
+      TDEnum(_, _, variants) => {
+        for variant in variants {
+          let (variant_name, _) = variant
+          if variant_name == member {
+            found = true
+          }
+        }
+        ()
+      },
+      _ => ()
+    }
+  }
+  found
+}
+
+export fn direct_result_enum_payload_param_indices(body: Expr, params: Array[(String, Option[TypeExpr])], defs: Array[TypeDef]) -> Array[Int] {
+  let found = array_empty()
+  match body {
+    ECall(EIdent(ctor_name, _), args, _) => {
+      let alias_names = array_empty()
+      let alias_indices = array_empty()
+      for call_arg in args {
+        collect_result_param_indices(call_arg, params, alias_names, alias_indices, found)
+      }
+      if Array::length(found) > 0 && !is_enum_ctor_name(ctor_name, defs) {
+        Array::truncate(found, 0)
+      }
+    },
+    _ => ()
+  }
+  found
+}
+
+export fn bind_function_dependency_contracts(env: TypeEnv, name: String, value: Expr) -> TypeEnv {
+  match value {
+    EFn(_, _, params, _, _, body) => {
+      let with_alias = match direct_result_param_index(body, params) {
+        Some(index) => env_bind(env, String::concat("__alias_contract__", name), CtNamed(__to_string(index), [
+        ])),
+        None => env
+      }
+      match direct_result_field_param_index(body, params) {
+        Some(index) => env_bind(with_alias, String::concat("__field_contract__", name), CtNamed(__to_string(index), [
+        ])),
+        None => with_alias
+      }
+    },
+    _ => env
+  }
+}
+
+export fn env_has_active_region(env: TypeEnv) -> Bool {
+  // Only the real region skolem (a CtNamed bound by the `region` checker path)
+  // counts as active. env_cache seeds every acceleration index with a negative
+  // CtUnit-typed `#active_region` entry so this common query answers from
+  // the index instead of walking the whole chain on a miss; that marker (and
+  // any other non-CtNamed value) means NO active region.
+  match env_lookup(env, "#active_region") {
+    Some(ty) => match ty {
+      CtNamed(_, _) => true,
+      _ => false
+    },
+    None => false
+  }
+}
+
+/// The surface slice forms lower to `__slice(receiver, start, end)`. Runtime
+/// dispatch supports exactly these three receiver representations and returns
+/// the same representation (including an Array's element slot).
+export fn slice_result_type(receiver: Type) -> Type {
+  match receiver {
+    CtString => CtString,
+    CtBytes => CtBytes,
+    CtArray(elem) => CtArray(elem),
+    _ => CtUnknown
+  }
+}
+
+/// Unknown is retained only when checking THIS receiver expression already
+/// emitted a diagnostic. `CtUnknown` is also a legitimate result of tolerant
+/// builtins such as `iter_get`, so accepting every unknown receiver would leave
+/// `iter_get(xs, 0)[:]` to unsafe runtime representation dispatch (#1682).
+/// A fresh/generic/named type has no Sliceable bound in the language either.
+export fn slice_receiver_is_invalid(receiver: Type, receiver_had_error: Bool) -> Bool {
+  match receiver {
+    CtString => false,
+    CtBytes => false,
+    CtArray(_) => false,
+    CtUnknown => !receiver_had_error,
+    _ => true
+  }
+}
+
+/// `ByteStream` is `CtNamed` (head_kind 0 = tolerated), so the Array
+/// builtins' receiver head check let `Array::length(stream)` / `Array::get(s,
+/// 0)` through — observably leaking the eager Array-backed representation
+/// (ADR-0012) into user programs. Recognise a Stream receiver so the Array
+/// head-check sites can reject it explicitly; head_kind itself is unchanged
+/// (other CtNamed heads stay tolerated, the #826 discipline).
+/// #2454: a `FrozenArray::*` receiver that is not a FrozenArray.
+///
+/// The three arms below recover the element type by pattern-matching the
+/// receiver and falling back to a tolerant `CtUnknown` -- which cannot report,
+/// so an `Array[Int]` receiver checked clean and the phantom distinction (#906)
+/// was not held apart in either direction. Ground-gated like every other
+/// receiver head check here: head 0 means "unresolved, tolerate", so a generic
+/// or still-open receiver stays accepted and only a certain wrong head is
+/// rejected. Head 18 is FrozenArray.
+///
+/// The message leads with the edit, not with the phantom-type theory.
+export fn reject_non_frozen_receiver(recv: Type, name: String, callee_off: Int, errors: Array[String]) -> Unit {
+  let k = head_kind(recv)
+  if k != 0 && k != 18 {
+    Array::push(errors, String::concat("argument type mismatch for ", String::concat(name, String::concat(": receiver type ", String::concat(type_to_string(recv), String::concat(" is not a FrozenArray -- freeze it first with FrozenArray::from_array(x)", off_marker_len(callee_off, String::length(name))))))))
+  } else {
+    ()
+  }
+}
+
+export fn is_bytestream_named_type(t: Type) -> Bool {
+  match t {
+    CtNamed(n, _) => n == "ByteStream",
+    _ => false
+  }
+}
+
+/// #3149: a generic formal's binding (already zonked) whose HEAD is a
+/// concrete constructor -- `Array[?e]`, `Option[?e]`, a tuple, a declared or
+/// builtin nominal `N[..]` -- even though some argument is still open. The
+/// scheme substitutes such a formal rather than leaving it quantified. A
+/// variable head, a compiler-internal `#ctor.` / `#hktformal.` spelling, a
+/// function type, or anything containing one keeps the old answer.
+export fn scheme_formal_head_bound(t: Type) -> Bool {
+  match t {
+    CtArray(e) => !scheme_type_mentions_internal(e),
+    CtOption(e) => !scheme_type_mentions_internal(e),
+    CtTuple(items) => {
+      let mut ok = true
+      for it in items {
+        if scheme_type_mentions_internal(it) {
+          ok = false
+        } else {
+          ()
+        }
+      }
+      ok
+    },
+    CtNamed(n, args) => !String::starts_with(n, "#") && Array::length(args) > 0 && !scheme_type_mentions_internal(t),
+    _ => false
+  }
+}
+
+fn scheme_type_mentions_internal(t: Type) -> Bool {
+  match t {
+    CtNamed(n, args) => if String::starts_with(n, "#") {
+      true
+    } else {
+      let mut hit = false
+      for a in args {
+        if scheme_type_mentions_internal(a) {
+          hit = true
+        } else {
+          ()
+        }
+      }
+      hit
+    },
+    CtArray(e) => scheme_type_mentions_internal(e),
+    CtOption(e) => scheme_type_mentions_internal(e),
+    CtTuple(items) => {
+      let mut hit = false
+      for it in items {
+        if scheme_type_mentions_internal(it) {
+          hit = true
+        } else {
+          ()
+        }
+      }
+      hit
+    },
+    CtFn(_, _, _) => true,
+    CtForAll(_, _, _) => true,
+    CtApplied(_, _) => true,
+    CtConstructor(_, _) => true,
+    CtUnknown => true,
+    CtRecord(_) => true,
+    _ => false
+  }
+}
+
+/// True when every declared field type of a struct is ground (the struct is not
+/// generic). `S::{ ... }` for such a struct can safely be typed `CtStruct(S)`.
+/// #3112: a monomorphic struct whose only non-ground field types are the
+/// builtin nominal host types. Such a name is never a type parameter (the
+/// struct declares none) nor an unresolved spelling, so the literal keeps its
+/// struct type; before, `Reply::{ resp: r }` with `resp: HostResponse` typed
+/// as `?`, and every check downstream of it -- the spawn-capture one-owner
+/// rule among them -- saw nothing.
+export fn struct_fields_ground_builtin_named(dfields: Array[(String, Type)]) -> Bool {
+  let mut ok = true
+  let mut i = 0
+  while i < Array::length(dfields) {
+    let (_, ft) = Array::get(dfields, i)
+    if !type_is_ground_except(ft, ["HostResponse", "HostStream", "ByteStream"]) {
+      ok = false
+    }
+    i = i + 1
+  }
+  ok
+}
+
+///
+/// #3138: a NOMINAL field type (`StringMap[V]`, a declared struct or enum, any
+/// compiler-owned container) is ground when its name is a known type and its
+/// arguments are ground. `type_is_ground` answers false for every `CtNamed`,
+/// because a bare unknown name is also how a rigid type parameter reads; here
+/// the declarations are at hand, so the two can be told apart. Before this, a
+/// struct with one such field typed its literal as CtUnknown, and every use of
+/// the value was unchecked (`let s: String = Holder::{ tbl: m }` was clean).
+///
+/// `tparams` are the struct's own formals. A formal reads as a bare
+/// `CtNamed`, so one spelled like a declared type (`struct Box[T]` beside an
+/// imported `struct T`) is NOT that type: without this exclusion `Box::{ value:
+/// 42 }` was typed `CtStruct(Box)`, its instantiation was dropped, and
+/// `b.value` read as the imported `T` -- `let t: T = b.value` checked clean.
+export fn struct_fields_ground(dfields: Array[(String, Type)], defs: Array[TypeDef], tparams: Array[String]) -> Bool {
+  let mut ok = true
+  let mut i = 0
+  while i < Array::length(dfields) {
+    let (_, ft) = Array::get(dfields, i)
+    if !struct_field_type_ground(ft, defs, tparams) {
+      ok = false
+    }
+    i = i + 1
+  }
+  ok
+}
+
+fn struct_field_type_ground(t: Type, defs: Array[TypeDef], tparams: Array[String]) -> Bool {
+  match t {
+    CtNamed(n, args) => {
+      let known = if formals_source_arity(tparams, n) >= 0 {
+        false
+      } else {
+        match compiler_owned_type_arity(n) {
+          Some(arity) => arity == Array::length(args),
+          None => match find_typedef(defs, n) {
+            Some(TDStruct(_, _, _, tps)) => Array::length(tps) == Array::length(args),
+            Some(TDEnum(_, tps, _)) => Array::length(tps) == Array::length(args),
+            _ => false
+          }
+        }
+      }
+      let mut ok = known
+      let mut i = 0
+      while ok && i < Array::length(args) {
+        ok = struct_field_type_ground(Array::get(args, i), defs, tparams)
+        i = i + 1
+      }
+      ok
+    },
+    CtTuple(items) => {
+      let mut ok = true
+      let mut i = 0
+      while ok && i < Array::length(items) {
+        ok = struct_field_type_ground(Array::get(items, i), defs, tparams)
+        i = i + 1
+      }
+      ok
+    },
+    CtArray(e) => struct_field_type_ground(e, defs, tparams),
+    CtOption(e) => struct_field_type_ground(e, defs, tparams),
+    CtFn(ps, r, _) => {
+      let mut ok = struct_field_type_ground(r, defs, tparams)
+      let mut i = 0
+      while ok && i < Array::length(ps) {
+        ok = struct_field_type_ground(Array::get(ps, i), defs, tparams)
+        i = i + 1
+      }
+      ok
+    },
+    _ => type_is_ground(t)
+  }
+}
+
+/// #2147 review (round 2): the row entries that are effect VARIABLES -- the
+/// only entries a row declares as binders. Mirrors `is_effect_var_name`
+/// (core/types.vibe), which is file-private there; three other copies in the
+/// tree already spell it out the same way.
+fn row_label_is_variable(label: String) -> Bool {
+  let len = String::length(label)
+  if len == 1 {
+    // A source-level effect variable: a single lowercase letter (`with e`).
+    String::char_code_at(label, 0) >= 97 && String::char_code_at(label, 0) <= 122
+  } else if len >= 2 {
+    // A FRESH effect variable minted by `instantiate` (`$N`).
+    String::char_code_at(label, 0) == 36
+  } else {
+    false
+  }
+}
+
+export fn row_variable_labels(row: Option[String]) -> Array[String] {
+  let out = array_empty()
+  let labels = row_labels(row)
+  let mut i = 0
+  while i < Array::length(labels) {
+    let label = Array::get(labels, i)
+    if row_label_is_variable(label) {
+      Array::push(out, label)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+// Forward the established checker API to its owning package.
+export fn check_assignable(expected: Type, actual: Type, s: Subst, errors: Array[String], what: String, off: Int) -> Subst {
+  type_relations_check_assignable(expected, actual, s, errors, what, off)
+}
+
+export fn check_assignable_set_end(end: Int) -> Unit {
+  type_relations_check_assignable_set_end(end)
+}
+
+export fn string_lit_end(e: Expr) -> Int {
+  match e {
+    EString(s, off) => if off >= 0 {
+      off + 2 + String::length(s)
+    } else {
+      0 - 1
+    },
+    ESeq(_, rest) => string_lit_end(rest),
+    ELet(_, _, rest, _) => string_lit_end(rest),
+    ELetRec(_, _, rest) => string_lit_end(rest),
+    ELetMut(_, _, rest, _) => string_lit_end(rest),
+    _ => 0 - 1
+  }
+}
+
+// Forward the established checker API to its owning package.
+export fn check_assignable_for(expected: Type, actual: Type, s: Subst, errors: Array[String], what_head: String, what_tail: String, off: Int) -> Subst {
+  type_relations_check_assignable_for(expected, actual, s, errors, what_head, what_tail, off)
+}
+
+/// #844: `resolve_type_expr` types a BARE (unparameterized) reference to a
+/// generic struct annotation (`let x: Box = ...`) as bare `CtStruct("Box")`,
+/// discarding the struct's real type arguments -- and `unify`'s
+/// `CtStruct`/`CtNamed` bridge (core/types.vibe, #829/#843) then lets that bare
+/// annotation re-unify by NAME ALONE with any later, unrelated instantiation
+/// (`let y: Box[String] = x`), silently re-narrowing a laundered value. Fixing
+/// that erasure at its source (threading fresh type variables through
+/// `resolve_type_expr`) touches its ~20 call sites across the whole checker
+/// and was judged too wide-blast-radius to land in one pass (#844); this is
+/// the narrower, additive half of the fix that IS safe to land: when BOTH the
+/// expected annotation and the actual value are already a fully concrete,
+/// SAME-NAME `CtNamed` instantiation (arity > 0) and their arguments do not
+/// unify, report the mismatch directly -- bypassing `check_assignable`'s
+/// `type_is_ground` gate, which (deliberately, to stay lenient for genuinely
+/// rigid/uninstantiated type parameters elsewhere) treats every `CtNamed` as
+/// non-ground and so never reports this shape at all. Gated on
+/// `type_fully_concrete` on BOTH sides so a still-polymorphic case (either
+/// side embedding an unresolved rigid parameter or unbound type variable, e.g.
+/// a trait-generic `LazyIter[T]` return before `T` is resolved) is never
+/// flagged -- only a same-name mismatch where both sides are already fully
+/// resolved concrete types.
+export fn detect_narrowed_generic_mismatch(expected: Type, actual: Type, s: Subst, errors: Array[String], what: String, off: Int) -> Subst {
+  detect_narrowed_generic_mismatch_for(expected, actual, s, errors, what, "", off)
+}
+
+/// #844: when a `let`-style annotation is a BARE (unparameterized) reference to
+/// a generic struct (`resolve_type_expr` resolves it to bare `CtStruct(name)`,
+/// discarding type args) and the RHS's ACTUAL inferred type is already a
+/// concrete instantiation of that SAME struct (`CtNamed(name, args)`, arity >
+/// 0, from #829's struct-literal instantiation), prefer recording the RHS's
+/// real instantiated type for the binding instead of the erasing bare
+/// annotation. This does not change what the CURRENT statement accepts (the
+/// bare annotation already tolerates any instantiation via the unify bridge,
+/// unchanged here) -- it only changes what a LATER statement observes when it
+/// looks the binding up, so a subsequent re-narrowing annotation
+/// (`detect_narrowed_generic_mismatch` above) has real type information to
+/// compare against instead of an erased placeholder.
+export fn preserve_generic_instantiation(resolved: Type, actual: Type) -> Type {
+  match resolved {
+    CtStruct(rname) => match actual {
+      CtNamed(aname, aargs) => if rname == aname && Array::length(aargs) > 0 {
+        actual
+      } else {
+        resolved
+      },
+      _ => resolved
+    },
+    _ => resolved
+  }
+}
+
+/// Struct construction `S::{ ... }` drops the name `S` at parse time (becomes a
+/// bare ERecord), so the struct is resolved by matching the field-name SET. True
+/// when `declared` and `actual` have the same field names.
+export fn struct_field_names_match(declared: Array[(String, Type)], actual: Array[(String, Type)]) -> Bool {
+  if Array::length(declared) != Array::length(actual) {
+    false
+  } else {
+    let mut i = 0
+    let mut ok = true
+    while i < Array::length(declared) {
+      let (dn, _) = Array::get(declared, i)
+      let mut found = false
+      let mut j = 0
+      while j < Array::length(actual) {
+        let (an, _) = Array::get(actual, j)
+        if an == dn {
+          found = true
+        }
+        j = j + 1
+      }
+      if !found {
+        ok = false
+      }
+      i = i + 1
+    }
+    ok
+  }
+}
+
+/// #813: look up a qualified operation name ("Eff::Op") in the declared-effect
+/// registry (TDEffect defs). None when the name is unqualified, the effect is
+/// undeclared/builtin/generic, or the op is unknown WITHIN a declared effect is
+/// reported separately by the callers — this returns None only when there is
+/// nothing to validate against (pre-#813 behavior).
+export fn effect_op_sig(defs: Array[TypeDef], qname: String) -> Option[(Array[Type], Type)] {
+  let ci = String::index_of(qname, "::")
+  if ci < 0 {
+    None
+  } else {
+    let eff = String::substring(qname, 0, ci)
+    let op = String::substring(qname, ci + 2, String::length(qname))
+    match find_typedef(defs, eff) {
+      Some(td) => match td {
+        TDEffect(_, ops, _) => {
+          let mut oi = 0
+          let mut found = None
+          while oi < Array::length(ops) {
+            let (oname, oparams, oret) = Array::get(ops, oi)
+            if oname == op {
+              found = Some((oparams, oret))
+            } else {
+              ()
+            }
+            oi = oi + 1
+          }
+          found
+        },
+        _ => None
+      },
+      None => None
+    }
+  }
+}
+
+/// #1340 (ADR-0071): a declared effect's type params (empty for non-generic
+/// effects and for anything absent from the registry). The op signatures
+/// returned by effect_op_sig mention these as rigid `CtNamed(param, [])`
+/// names — every consumer must substitute them (fresh inference vars per
+/// use site) before checking against them.
+export fn effect_tparams(defs: Array[TypeDef], eff: String) -> Array[String] {
+  match find_typedef(defs, eff) {
+    Some(td) => match td {
+      TDEffect(_, _, etps) => etps,
+      _ => array_empty()
+    },
+    None => array_empty()
+  }
+}
+
+/// #1340: instantiate a generic effect's declared type params with fresh
+/// inference vars. Returns (fresh args, next counter).
+export fn effect_fresh_targs(etps: Array[String], c: Int) -> (Array[Type], Int) {
+  let out = array_empty()
+  let mut c1 = c
+  let mut i = 0
+  while i < Array::length(etps) {
+    let (tv, nc) = fresh_var(c1)
+    Array::push(out, tv)
+    c1 = nc
+    i = i + 1
+  }
+  (out, c1)
+}
+
+/// #1340 (Codex P1 on #1352): the reserved TypeEnv key under which an
+/// enclosing `handle` publishes the instantiation it chose for a generic
+/// effect. `$` cannot start a source identifier (it is already the marker for
+/// compiler-generated effect variables), so this never collides with a user
+/// binding, and riding the ordinary lexical env gives nested handles the right
+/// scoping for free: the innermost handle of an effect wins.
+/// #3010: a handle instantiates each generic effect it discharges ONCE
+/// (`henv_shared`), and a `perform` in the body reads that instantiation -- but
+/// a CALL whose declared row names the effect at a concrete argument
+/// (`counter() with State[Int]`) was never compared with it, so a `Get` arm
+/// answering a String discharged `State[Int]` and `+ 1` ran on the string.
+///
+/// Each direct callee's row item `Eff[Arg]` is compared with the handle's
+/// resolved argument. Only a scalar `Arg` spelled as its builtin name is
+/// compared (an alias or a structured argument could be spelled differently
+/// and still be the same type), and only when the handle's argument has
+/// resolved to a ground type -- this refuses nothing it cannot name exactly.
+/// #3027: the top-level generic functions of the module being checked, as
+/// (name, type formals, parameters, return annotation). Set at each module
+/// check's start; read by the handle check to map a formal named in a
+/// callee's row to the type variable it instantiates.
+let generic_fn_decls_cell: Array[(String, Array[String], Array[(String, Option[TypeExpr])], Option[TypeExpr])] = [
+]
+
+/// #3027: (callee offset, scheme, instantiated type) for each call of a
+/// generic binding, recorded where the call position instantiates the scheme.
+export let callee_inst_types_cell: Array[(Int, Type, Type, String)] = []
+
+/// #3027: every generic binding's annotations, keyed by the scheme it was
+/// bound with -- a top-level declaration (its hoisted signature and its
+/// checked one) and a local generic lambda alike. A call finds its callee's
+/// declaration by the scheme it instantiated, never by name: a local lambda
+/// that shadows a top-level function of the same name has formals of its own,
+/// in its own order, and a name lookup paired them against the wrong
+/// signature (Codex on #3039); a local lambda with no declaration at all left
+/// its formal unresolved, and an open spelling is never judged, so a handler
+/// of the wrong type was accepted (Codex on #3047).
+let generic_scheme_decls_cell: Array[(Type, Array[String], Array[(String, Option[TypeExpr])], Option[TypeExpr])] = [
+]
+
+export fn note_toplevel_generic_binding(name: String, val: Expr, bound: Option[Type], env: TypeEnv) -> Unit {
+  match bound {
+    Some(CtForAll(vs, bs, body)) => {
+      let mut declared = false
+      let mut i = 0
+      while i < Array::length(generic_fn_decls_cell) {
+        let (dn, tps, params, ret) = Array::get(generic_fn_decls_cell, i)
+        if dn == name {
+          declared = true
+          Array::push(generic_scheme_decls_cell, (CtForAll(vs, bs, body), tps, params, ret))
+        }
+        i = i + 1
+      }
+      if !declared {
+        note_generic_alias(val, CtForAll(vs, bs, body), env)
+      }
+    },
+    _ => ()
+  }
+}
+
+/// A local `let` bound to a generic lambda, or to an alias of one: its scheme
+/// and the declaration its formals are read through.
+export fn note_local_generic_binding(val: Expr, bound: Type, env: TypeEnv) -> Unit {
+  match val {
+    EFn(tps, _, params, ret, _, _) => if Array::length(tps) > 0 {
+      match bound {
+        CtForAll(_, _, _) => Array::push(generic_scheme_decls_cell, (bound, tps, params, ret)),
+        _ => ()
+      }
+    },
+    _ => note_generic_alias(val, bound, env)
+  }
+}
+
+/// `let get = get0` generalizes `get0`'s scheme afresh, so the new scheme has
+/// no declaration of its own; it takes its source's, whose formals sit at the
+/// same positions (Codex on #3047 -- the alias left the row formal open, and
+/// an open spelling is never judged).
+fn note_generic_alias(val: Expr, bound: Type, env: TypeEnv) -> Unit {
+  match (val, bound) {
+    (EIdent(src, _), CtForAll(_, _, _)) => match env_lookup(env, src) {
+      Some(src_scheme) => match generic_decl_of_scheme(src_scheme) {
+        Some((tps, params, ret)) => Array::push(generic_scheme_decls_cell, (bound, tps, params, ret)),
+        None => ()
+      },
+      None => ()
+    },
+    _ => ()
+  }
+}
+
+export fn set_generic_fn_decls(stmts: Array[Stmt]) -> Unit {
+  Array::truncate(generic_fn_decls_cell, 0)
+  Array::truncate(callee_inst_types_cell, 0)
+  Array::truncate(generic_scheme_decls_cell, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, EFn(tps, _, params, ret, _, _)) => if Array::length(tps) > 0 {
+        Array::push(generic_fn_decls_cell, (name, tps, params, ret))
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+export fn generic_decl_of_scheme(scheme: Type) -> Option[(Array[String], Array[(String, Option[TypeExpr])], Option[TypeExpr])] {
+  let mut decl = None
+  let mut di = 0
+  while di < Array::length(generic_scheme_decls_cell) {
+    let (dscheme, tps, dparams, dret) = Array::get(generic_scheme_decls_cell, di)
+    if dscheme == scheme {
+      decl = Some((tps, dparams, dret))
+    }
+    di = di + 1
+  }
+  decl
+}
+
+/// Each argument that is exactly one of the callee's type formals, replaced by
+/// the concrete type that formal takes at the call at `coff`; every other
+/// argument, and any formal that cannot be resolved, is left as written.
+export fn resolve_callee_formal_args(wants: Array[String], env_scheme: Option[Type], coff: Int, defs: Array[TypeDef], s: Subst) -> Array[String] {
+  let mut call = None
+  let mut ti = 0
+  while ti < Array::length(callee_inst_types_cell) {
+    let (toff, tscheme, tty, _) = Array::get(callee_inst_types_cell, ti)
+    if toff == coff {
+      call = Some((tscheme, tty))
+    }
+    ti = ti + 1
+  }
+  match call {
+    Some((call_scheme, inst)) => {
+      // The call's own scheme comes first: it is the binding the call really
+      // resolved to, so a lambda declared inside the handled body -- even one
+      // shadowing a top-level generic of the same name, which the handle's
+      // environment still answers with (Codex on #3047) -- is read through
+      // its own declaration. A top-level declaration's call position can read
+      // a binding other than the one recorded, so when the call's scheme has
+      // no declaration the environment's is the fallback.
+      let (decl, scheme) = match generic_decl_of_scheme(call_scheme) {
+        Some(d) => (Some(d), call_scheme),
+        None => match env_scheme {
+          Some(es) => (generic_decl_of_scheme(es), es),
+          None => (None, call_scheme)
+        }
+      }
+      let texts = callee_formal_texts(decl, scheme, inst, defs, s)
+      let out = array_empty()
+      let mut wi = 0
+      while wi < Array::length(wants) {
+        let w = String::trim(Array::get(wants, wi))
+        let mut rep = w
+        let mut ni = 0
+        while ni < Array::length(texts) {
+          let (fname, text) = Array::get(texts, ni)
+          if fname == w {
+            rep = text
+          }
+          ni = ni + 1
+        }
+        Array::push(out, rep)
+        wi = wi + 1
+      }
+      out
+    },
+    None => wants
+  }
+}
+
+/// Each of a generic callee's formals that its instantiation at one call
+/// resolves to a concrete type, paired with that type's spelling. A formal the
+/// call leaves unresolved (the spelling still holds a `?`) is omitted, so a
+/// reader keeps it open rather than judging it.
+export fn callee_formal_texts(decl: Option[(Array[String], Array[(String, Option[TypeExpr])], Option[TypeExpr])], scheme: Type, inst: Type, defs: Array[TypeDef], s: Subst) -> Array[(String, String)] {
+  let out: Array[(String, String)] = []
+  let (name_ids, id_tys) = callee_formal_ids(decl, scheme, inst, defs)
+  let mut ni = 0
+  while ni < Array::length(name_ids) {
+    let (fname, fid) = Array::get(name_ids, ni)
+    let mut ki = 0
+    while ki < Array::length(id_tys) {
+      let (kid, kty) = Array::get(id_tys, ki)
+      if kid == fid {
+        let text = match subst_apply(s, kty) {
+          // A constructor is written by its name in a row (`Read[Array]`).
+          CtConstructor(cn, _) => cn,
+          other => type_to_string(other)
+        }
+        if !String::contains(text, "?") {
+          Array::push(out, (fname, text))
+        }
+      }
+      ki = ki + 1
+    }
+    ni = ni + 1
+  }
+  out
+}
+
+/// The callee's formals (name -> scheme variable id) and the type this call
+/// gives each scheme variable, shared by `callee_formal_texts` and
+/// `callee_formal_marked_texts`.
+fn callee_formal_ids(decl: Option[(Array[String], Array[(String, Option[TypeExpr])], Option[TypeExpr])], scheme: Type, inst: Type, defs: Array[TypeDef]) -> (Array[(String, Int)], Array[(Int, Type)]) {
+  // formal name -> scheme variable id, from the declaration when this
+  // module has one ...
+  let name_ids: Array[(String, Int)] = []
+  // scheme variable id -> the type this call gives it.
+  let id_tys: Array[(Int, Type)] = []
+  match (scheme, inst) {
+    (CtForAll(vars, _, CtFn(sparams, sret, srow)), CtFn(iparams, iret, _)) => {
+      match decl {
+        Some((tps, dparams, dret)) => decl_formal_ids(tps, dparams, dret, sparams, sret, defs, name_ids),
+        None => ()
+      }
+      // ... and from the scheme's own row, where a published binding spells
+      // each formal by its quantifier index (#3051, `publish_row_formals`), so
+      // an IMPORTED callee needs no declaration.
+      published_row_formal_ids(srow, vars, name_ids)
+      let mut qi = 0
+      while qi < Array::length(sparams) && qi < Array::length(iparams) {
+        scheme_var_types_from(Array::get(sparams, qi), Array::get(iparams, qi), id_tys)
+        qi = qi + 1
+      }
+      scheme_var_types_from(sret, iret, id_tys)
+    },
+    _ => ()
+  }
+  (name_ids, id_tys)
+}
+
+/// #3095: each formal of a generic callee paired with the type this call
+/// gives it, spelled for the effects pass to JUDGE rather than to print
+/// (`row_marked_type_text`). Unlike `callee_formal_texts`, every formal is
+/// paired: one the call leaves unresolved, or that only the row names, is `_`
+/// -- it may still become any type, so it can never make a row refuse --
+/// instead of keeping the callee's own spelling, which read as a caller formal
+/// of the same name (`fn clear[S]() with State[S]` called under `fn
+/// caller[S](..) with State[Int]` was refused with `missing { State[S] }`).
+export fn callee_formal_marked_texts(decl: Option[(Array[String], Array[(String, Option[TypeExpr])], Option[TypeExpr])], scheme: Type, inst: Type, defs: Array[TypeDef], s: Subst, reps: Array[(Int, String)]) -> Array[(String, String)] {
+  let out: Array[(String, String)] = []
+  let (name_ids, id_tys) = callee_formal_ids(decl, scheme, inst, defs)
+  let mut ni = 0
+  while ni < Array::length(name_ids) {
+    let (fname, fid) = Array::get(name_ids, ni)
+    let mut text = "_"
+    let mut ki = 0
+    while ki < Array::length(id_tys) {
+      let (kid, kty) = Array::get(id_tys, ki)
+      if kid == fid {
+        text = row_marked_type_text(subst_apply(s, kty), reps)
+      }
+      ki = ki + 1
+    }
+    Array::push(out, (fname, text))
+    ni = ni + 1
+  }
+  // A declared formal no parameter or result mentions (`fn clear[S]() with
+  // State[S]`) has no scheme position at all.
+  match decl {
+    Some((tps, _, _)) => {
+      let mut ti = 0
+      while ti < Array::length(tps) {
+        let tp = Array::get(tps, ti)
+        let mut seen = false
+        let mut oi = 0
+        while oi < Array::length(out) {
+          let (on, _) = Array::get(out, oi)
+          if on == tp {
+            seen = true
+          }
+          oi = oi + 1
+        }
+        if !seen {
+          Array::push(out, (tp, "_"))
+        }
+        ti = ti + 1
+      }
+    },
+    None => ()
+  }
+  out
+}
+
+/// #3095: a type spelled so the effects pass can tell where each word came
+/// from. `'S$1` is a generic binder's rigid formal (`reps`), qualified by the
+/// binder's generic depth (#3101: `formal_var_binder_reps`); a formal with no
+/// variable -- one spelled like a builtin, `'Int` -- carries no depth. `^Name` a builtin or
+/// nominal type the checker resolved, `_` a type still open (an inference
+/// variable: any instantiation may fill it) and `~` a part the pass must not
+/// judge (a function or record type, a higher-kinded application). Aliases
+/// are already expanded here, so no word of this text is an alias.
+fn row_marked_type_text(t: Type, reps: Array[(Int, String)]) -> String {
+  match t {
+    CtInt => "^Int",
+    CtDouble => "^Double",
+    CtBool => "^Bool",
+    CtString => "^String",
+    CtChar => "^Char",
+    CtUnit => "^Unit",
+    CtBytes => "^Bytes",
+    CtUnknown => "_",
+    CtVar(id) => {
+      let mut name = ""
+      let mut i = 0
+      while i < Array::length(reps) {
+        let (r, n) = Array::get(reps, i)
+        if r == id {
+          name = n
+        }
+        i = i + 1
+      }
+      if String::length(name) > 0 {
+        String::concat("'", name)
+      } else {
+        "_"
+      }
+    },
+    CtArray(e) => String::concat("^Array[", String::concat(row_marked_type_text(e, reps), "]")),
+    CtOption(e) => String::concat("^Option[", String::concat(row_marked_type_text(e, reps), "]")),
+    CtTuple(es) => if Array::length(es) == 0 {
+      "^Unit"
+    } else {
+      let parts = array_empty()
+      let mut i = 0
+      while i < Array::length(es) {
+        Array::push(parts, row_marked_type_text(Array::get(es, i), reps))
+        i = i + 1
+      }
+      String::concat("(", String::concat(String::join(parts, ","), ")"))
+    },
+    CtStruct(n) => row_marked_nominal(n, []),
+    CtEnum(n) => row_marked_nominal(n, []),
+    CtNamed(n, args) => {
+      let parts = array_empty()
+      let mut i = 0
+      while i < Array::length(args) {
+        Array::push(parts, row_marked_type_text(Array::get(args, i), reps))
+        i = i + 1
+      }
+      row_marked_nominal(n, parts)
+    },
+    _ => "~"
+  }
+}
+
+fn row_marked_nominal(n: String, parts: Array[String]) -> String {
+  if String::length(n) == 0 || String::contains(n, "#") || String::contains(n, ".") || String::contains(n, "$") || String::contains(n, ":") {
+    "~"
+  } else if Array::length(parts) == 0 && (n == "Int" || n == "String" || n == "Bool" || n == "Double" || n == "Char" || n == "Bytes" || n == "Unit") {
+    // A builtin has its own constructor (`CtInt`, ...); a bare `CtNamed` spelled
+    // like one is a rigid formal that reuses the name (`[Int](v: Int)`).
+    String::concat("'", n)
+  } else if Array::length(parts) == 0 {
+    String::concat("^", n)
+  } else {
+    String::concat("^", String::concat(n, String::concat("[", String::concat(String::join(parts, ","), "]"))))
+  }
+}
+
+/// Pair each formal the declaration annotates with the scheme variable at the
+/// same position.
+export fn decl_formal_ids(tps: Array[String], dparams: Array[(String, Option[TypeExpr])], dret: Option[TypeExpr], sparams: Array[Type], sret: Type, defs: Array[TypeDef], out: Array[(String, Int)]) -> Unit {
+  let mut pi = 0
+  while pi < Array::length(dparams) && pi < Array::length(sparams) {
+    let (_, pann) = Array::get(dparams, pi)
+    match pann {
+      Some(te) => formal_ids_from(resolve_type_expr_shadowed(te, defs, tps), Array::get(sparams, pi), tps, out),
+      None => ()
+    }
+    pi = pi + 1
+  }
+  match dret {
+    Some(te) => formal_ids_from(resolve_type_expr_shadowed(te, defs, tps), sret, tps, out),
+    None => ()
+  }
+}
+
+/// Each `NAME$K` word in a published row, paired with the scheme's K-th
+/// quantified variable.
+export fn published_row_formal_ids(row: Option[String], vars: Array[Int], out: Array[(String, Int)]) -> Unit {
+  match row {
+    Some(r) => {
+      let n = String::length(r)
+      let mut start = 0 - 1
+      let mut i = 0
+      while i <= n {
+        let c = if i < n {
+          String::char_code_at(r, i)
+        } else {
+          0
+        }
+        let word_char = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 95 || c == 36
+        if word_char {
+          if start < 0 {
+            start = i
+          }
+        } else if start >= 0 {
+          let w = String::substring(r, start, i)
+          let k = published_formal_index(w)
+          if k >= 0 && k < Array::length(vars) {
+            Array::push(out, (w, Array::get(vars, k)))
+          }
+          start = 0 - 1
+        }
+        i = i + 1
+      }
+    },
+    None => ()
+  }
+}
+
+/// K for a word spelled `NAME$K` (NAME non-empty, K all digits), else -1.
+/// `$` cannot occur in a source identifier (the lexer's identifier class is
+/// letters, digits and `_`), so no user-written type name can be read as a
+/// published formal (Codex on #3056).
+fn published_formal_index(w: String) -> Int {
+  let at = String::last_index_of(w, "$")
+  if at <= 0 {
+    0 - 1
+  } else {
+    let digits = String::substring(w, at + 1, String::length(w))
+    let nd = String::length(digits)
+    if nd == 0 {
+      0 - 1
+    } else {
+      let mut k = 0
+      let mut ok = true
+      let mut i = 0
+      while i < nd {
+        let c = String::char_code_at(digits, i)
+        if c >= 48 && c <= 57 {
+          k = k * 10 + (c - 48)
+        } else {
+          ok = false
+        }
+        i = i + 1
+      }
+      if ok {
+        k
+      } else {
+        0 - 1
+      }
+    }
+  }
+}
+
+/// The key a call's formal bindings travel under: the callee identifier's
+/// offset AND its spelling, so two merged sources' calls at the same offset
+/// collide only when they also name the same callee (Codex on #3055).
+export fn call_formal_key(off: Int, name: String) -> String {
+  String::concat(__to_string(off), String::concat(":", name))
+}
+
+/// #3053: `s` extended so that each still-unsolved variable a generic
+/// binder's formal stands for in its body is spelled by the formal's name.
+/// A call inside `fn caller[S](x: S)` that passes `x` instantiates the
+/// callee at the caller's `S`; left a variable, its spelling holds a `?`, the
+/// binding was dropped, and the callee's row kept its OWN formal as written --
+/// which matched a caller formal of the same spelling (`get(y)` with `y: T`
+/// read as `State[S]` under `with State[S]`). A variable two binders' rows
+/// claim under different names (an auxiliary re-check can allocate one id
+/// twice, see `eq_formal_row_of`) is left unsolved, so it can only keep the
+/// old answer.
+export fn formal_var_display_subst(s: Subst) -> Subst {
+  let reps = formal_var_reps(s)
+  let mut ds = s
+  let mut k = 0
+  while k < Array::length(reps) {
+    let (rid, name) = Array::get(reps, k)
+    ds = SubstBind(rid, CtNamed(name, array_empty()), ds)
+    k = k + 1
+  }
+  ds
+}
+
+/// The still-unsolved variables generic binders' formals stand for, each with
+/// the formal's name; a variable claimed under two names is left out.
+export fn formal_var_reps(s: Subst) -> Array[(Int, String)] {
+  formal_var_reps_in(s, false)
+}
+
+/// #3101: `formal_var_reps` with each formal's name qualified by its binder
+/// (`S$0` for a top-level `[S]`, `S$1` for a lambda's `[S]` inside it), for
+/// the effects pass to JUDGE with: an outer and an inner formal of one
+/// spelling are two types, and only the binder tells them apart. A variable
+/// two binders claim is then a clash even when they share a spelling, so it is
+/// left open (`_`) rather than read as either. A binder whose declaration is
+/// not open when recorded has no depth and is left out.
+export fn formal_var_binder_reps(s: Subst) -> Array[(Int, String)] {
+  formal_var_reps_in(s, true)
+}
+
+fn formal_var_reps_in(s: Subst, qualified: Bool) -> Array[(Int, String)] {
+  let reps: Array[(Int, String)] = []
+  let clashes: Array[Int] = []
+  let mut i = 0
+  while i < Array::length(eq_formal_vars) {
+    let (vid, bare) = Array::get(eq_formal_vars, i)
+    let depth = Array::get(eq_formal_depth, i)
+    let name = if !qualified {
+      bare
+    } else if depth < 0 {
+      ""
+    } else {
+      String::concat(bare, String::concat("$", __to_string(depth)))
+    }
+    match subst_apply(s, CtVar(vid)) {
+      CtVar(rid) => {
+        let mut seen = false
+        let mut j = 0
+        while j < Array::length(reps) {
+          let (r, n) = Array::get(reps, j)
+          if r == rid {
+            seen = true
+            if n != name {
+              Array::push(clashes, rid)
+            }
+          }
+          j = j + 1
+        }
+        if !seen {
+          Array::push(reps, (rid, name))
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  let out: Array[(Int, String)] = []
+  let mut k = 0
+  while k < Array::length(reps) {
+    let (rid, name) = Array::get(reps, k)
+    let mut clash = false
+    let mut c = 0
+    while c < Array::length(clashes) {
+      if Array::get(clashes, c) == rid {
+        clash = true
+      }
+      c = c + 1
+    }
+    if !clash {
+      Array::push(out, (rid, name))
+    }
+    k = k + 1
+  }
+  out
+}
+
+/// Pair each formal named in the annotation with the scheme variable at the
+/// same position of `t`. The annotation arrives RESOLVED with the formals
+/// shadowed, so a formal is a bare `CtNamed(formal, [])` and an alias has
+/// already been expanded: `-> Id[S]` for `type Id[T] = T` is paired as `S`,
+/// which a walk over the written `TyApp` could not see (Codex on #3039).
+fn formal_ids_from(rt: Type, t: Type, formals: Array[String], out: Array[(String, Int)]) -> Unit {
+  match rt {
+    CtNamed(n, xs) => if Array::length(xs) == 0 && formal_named(formals, n) {
+      match t {
+        CtVar(id) => Array::push(out, (n, id)),
+        _ => ()
+      }
+    } else if formal_named(formals, n) {
+      // A higher-kinded formal applied to arguments (`F[Int]` for `F[_]`)
+      // meets the scheme's applied variable (Codex on #3055).
+      match t {
+        CtApplied(CtVar(id), ys) => {
+          Array::push(out, (n, id))
+          formal_ids_from_all(xs, ys, formals, out)
+        },
+        _ => ()
+      }
+    } else {
+      match t {
+        CtNamed(_, ys) => formal_ids_from_all(xs, ys, formals, out),
+        _ => ()
+      }
+    },
+    // A higher-kinded formal (`F[_]`), applied as `F[Int]` (Codex on #3055).
+    CtApplied(h, xs) => match t {
+      CtApplied(th, ys) => {
+        match (h, th) {
+          (CtNamed(n, hargs), CtVar(id)) => if Array::length(hargs) == 0 && formal_named(formals, n) {
+            Array::push(out, (n, id))
+          },
+          (CtConstructor(n, _), CtVar(id)) => if formal_named(formals, n) {
+            Array::push(out, (n, id))
+          },
+          _ => ()
+        }
+        formal_ids_from_all(xs, ys, formals, out)
+      },
+      _ => ()
+    },
+    CtArray(e) => match t {
+      CtArray(te) => formal_ids_from(e, te, formals, out),
+      _ => ()
+    },
+    CtOption(e) => match t {
+      CtOption(te) => formal_ids_from(e, te, formals, out),
+      _ => ()
+    },
+    CtTuple(xs) => match t {
+      CtTuple(ys) => formal_ids_from_all(xs, ys, formals, out),
+      _ => ()
+    },
+    CtFn(xs, r, _) => match t {
+      CtFn(ys, tr, _) => {
+        formal_ids_from_all(xs, ys, formals, out)
+        formal_ids_from(r, tr, formals, out)
+      },
+      _ => ()
+    },
+    _ => ()
+  }
+}
+
+/// Is `n` one of `formals`? A kinded binder (`F[_]`) is keyed by
+/// `type_param_key`, so the comparison reads the formal's spelled name.
+fn formal_named(formals: Array[String], n: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(formals) && !found {
+    let f = Array::get(formals, i)
+    if f == n || type_param_name(f) == n {
+      found = true
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn formal_ids_from_all(xs: Array[Type], ys: Array[Type], formals: Array[String], out: Array[(String, Int)]) -> Unit {
+  let mut i = 0
+  while i < Array::length(xs) && i < Array::length(ys) {
+    formal_ids_from(Array::get(xs, i), Array::get(ys, i), formals, out)
+    i = i + 1
+  }
+}
+
+/// Pair each variable of the scheme type `st` with the type at the same
+/// position of its instantiation `it`.
+export fn scheme_var_types_from(st: Type, it: Type, out: Array[(Int, Type)]) -> Unit {
+  match st {
+    CtVar(id) => Array::push(out, (id, it)),
+    // A higher-kinded variable applied to arguments: the instantiation's
+    // head is the constructor it stands for (Codex on #3055).
+    CtApplied(CtVar(id), xs) => match it {
+      CtArray(e) => {
+        Array::push(out, (id, CtConstructor("Array", 1)))
+        if Array::length(xs) == 1 {
+          scheme_var_types_from(Array::get(xs, 0), e, out)
+        }
+      },
+      CtOption(e) => {
+        Array::push(out, (id, CtConstructor("Option", 1)))
+        if Array::length(xs) == 1 {
+          scheme_var_types_from(Array::get(xs, 0), e, out)
+        }
+      },
+      CtNamed(n, ys) => {
+        Array::push(out, (id, CtConstructor(n, Array::length(ys))))
+        let mut i = 0
+        while i < Array::length(xs) && i < Array::length(ys) {
+          scheme_var_types_from(Array::get(xs, i), Array::get(ys, i), out)
+          i = i + 1
+        }
+      },
+      CtApplied(h, ys) => {
+        Array::push(out, (id, h))
+        let mut i = 0
+        while i < Array::length(xs) && i < Array::length(ys) {
+          scheme_var_types_from(Array::get(xs, i), Array::get(ys, i), out)
+          i = i + 1
+        }
+      },
+      _ => ()
+    },
+    CtArray(e) => match it {
+      CtArray(ie) => scheme_var_types_from(e, ie, out),
+      _ => ()
+    },
+    CtOption(e) => match it {
+      CtOption(ie) => scheme_var_types_from(e, ie, out),
+      _ => ()
+    },
+    CtTuple(xs) => match it {
+      CtTuple(ys) => {
+        let mut i = 0
+        while i < Array::length(xs) && i < Array::length(ys) {
+          scheme_var_types_from(Array::get(xs, i), Array::get(ys, i), out)
+          i = i + 1
+        }
+      },
+      _ => ()
+    },
+    CtNamed(_, xs) => match it {
+      CtNamed(_, ys) => {
+        let mut i = 0
+        while i < Array::length(xs) && i < Array::length(ys) {
+          scheme_var_types_from(Array::get(xs, i), Array::get(ys, i), out)
+          i = i + 1
+        }
+      },
+      _ => ()
+    },
+    CtFn(xs, r, _) => match it {
+      CtFn(ys, ir, _) => {
+        let mut i = 0
+        while i < Array::length(xs) && i < Array::length(ys) {
+          scheme_var_types_from(Array::get(xs, i), Array::get(ys, i), out)
+          i = i + 1
+        }
+        scheme_var_types_from(r, ir, out)
+      },
+      _ => ()
+    },
+    _ => ()
+  }
+}

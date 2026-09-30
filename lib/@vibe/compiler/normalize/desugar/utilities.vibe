@@ -1,0 +1,249 @@
+// Utilities.
+
+import @vibe/compiler/lowering/trait_namespaces {
+  collect_trait_namespace_conflict_errors as namespace_collect_trait_namespace_conflict_errors,
+  derive_imported_trait_namespace_operations as namespace_derive_imported_trait_namespace_operations,
+  derive_trait_namespace_operations as namespace_derive_trait_namespace_operations,
+  inject_trait_method_generics_reporting_change as namespace_inject_trait_method_generics_reporting_change,
+  inject_trait_method_generics_with_reporting_change as namespace_inject_trait_method_generics_with_reporting_change
+}
+
+import @vibe/compiler/core {
+  Expr, Stmt, TypeEnv, TypeExpr
+}
+
+import @vibe/ast {
+  trait_ref_name
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import ./state.vibe {
+  dtd_own_growth, dtd_own_limit, dtd_synth_dict_fields
+}
+
+import ./typed_row_queries.vibe {
+  dtd_own_end
+}
+
+// Dictionary-passing desugaring for method-bearing traits (#641 PR-3
+// components 3+4). Runs pre-check, after string-interpolation expansion. It is
+// INERT unless the program declares a trait with method signatures, so all
+// existing code (and the compiler's own selfbuild) is untouched.
+//
+// For a method-bearing `trait Tr { m(Self) -> R; ... }` it:
+//   1. synthesizes a witness struct `TrDict { m: (Self) -> R; ... }`,
+//   2. for each top-level generic `f = [T: Tr](.. x: T ..) -> Ret { body }`
+//      that is bounded by `Tr`, prepends a hidden dict parameter
+//      `__dict_Tr_T: TrDict[T]` and rewrites `T::m(args)` in the body to
+//      `(__dict_Tr_T.m)(args)`,
+//   3. at every call site `f(.. recv ..)` synthesizes the witness
+//      `TrDict::{ m: C::m, ... }` from the concrete receiver type C (the impl's
+//      `C::m` free functions from PR-1) and threads it in.
+//
+// First slice (#641 PR-3; the plan document was deleted once it landed —
+// see the issue thread for the staging): single type parameter
+// per bound that appears directly as a parameter type (`x: T`), concrete call
+// sites whose receiver type is syntactically determinable (primitive literals
+// and struct literals). Anything outside this leaves the call unrewritten, so a
+// missing dictionary surfaces as a loud arity error rather than a miscompile.
+
+export fn empty_expr_array() -> Array[Expr] {
+  array_empty()
+}
+
+export fn empty_str_array() -> Array[String] {
+  array_empty()
+}
+
+/// #2128: empty environments for `arm_binder_var_types`'s environment-free
+/// entry point. Not "no answer" -- `infer_arg_type_name` still resolves
+/// literals and names already recorded in `var_types` from them.
+export fn empty_struct_sets() -> Array[(String, Array[String])] {
+  array_empty()
+}
+
+export fn empty_fn_returns() -> Array[(String, String)] {
+  array_empty()
+}
+
+export fn local_fn_return_key(name: String) -> String {
+  String::concat("__local_fn_return$", name)
+}
+
+/// #886: empty explicit-type-argument list for constructed ERecord nodes
+/// (dict witnesses / trait defaults never carry explicit struct type args).
+export fn empty_ty_args() -> Array[TypeExpr] {
+  array_empty()
+}
+
+export fn empty_type_exprs() -> Array[TypeExpr] {
+  array_empty()
+}
+
+/// Method names declared by a trait, in declaration order.
+export fn method_names_of_sigs(methods: Array[(String, Array[TypeExpr], TypeExpr)]) -> Array[String] {
+  let out = empty_str_array()
+  let mut i = 0
+  while i < Array::length(methods) {
+    let (mname, _, _) = Array::get(methods, i)
+    Array::push(out, mname)
+    i = i + 1
+  }
+  out
+}
+
+export fn str_array_contains(arr: Array[String], val: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(arr) {
+    if Array::get(arr, i) == val {
+      found = true
+      i = Array::length(arr)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+export fn is_residual_eager_for_type(name: String) -> Bool {
+  str_array_contains(["Array", "String", "Map"], name)
+}
+
+/// Split a qualified `Head::member` into Some((head, member)) on the FIRST `::`.
+export fn split_qualified(name: String) -> Option[(String, String)] {
+  let idx = String::index_of(name, "::")
+  if idx < 0 {
+    None
+  } else {
+    let head = String::substring(name, 0, idx)
+    let member = String::substring(name, idx + 2, String::length(name))
+    Some((head, member))
+  }
+}
+
+/// The dict struct name for a trait, e.g. `Measurable` -> `MeasurableDict`.
+export fn dict_struct_name(trait_name: String) -> String {
+  String::concat(trait_ref_name(trait_name), "Dict")
+}
+
+export fn dtd_synth_dict_reset() -> Unit {
+  Array::truncate(dtd_synth_dict_fields, 0)
+}
+
+/// The trait that DECLARES `field_name` in the synthesized dict struct
+/// `struct_name`, or "" when `struct_name` is not one this program's desugar
+/// produced (or has no such field).
+export fn synthesized_dict_field_trait(struct_name: String, field_name: String) -> String {
+  let mut i = 0
+  let mut found = ""
+  while i < Array::length(dtd_synth_dict_fields) {
+    let (sname, fname, tname) = Array::get(dtd_synth_dict_fields, i)
+    if sname == struct_name && fname == field_name {
+      found = tname
+      i = Array::length(dtd_synth_dict_fields)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// Trait header parameters keyed by the source trait name. Dictionary structs
+/// mirror these binders so a field such as `F[A]` remains well-kinded after
+/// the trait declaration itself has been erased.
+export fn collect_trait_type_params(stmts: Array[Stmt]) -> Array[(String, Array[String])] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      STrait(_, tname, _, _, _, tparams) => Array::push(out, (tname, tparams)),
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+export fn lookup_trait_type_params(entries: Array[(String, Array[String])], trait_name: String) -> Array[String] {
+  let mut i = 0
+  let mut result = empty_str_array()
+  while i < Array::length(entries) {
+    let (name, params) = Array::get(entries, i)
+    if name == trait_ref_name(trait_name) {
+      result = params
+      i = Array::length(entries)
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+
+// ---- rank-1 method generics (#684) ----
+//
+// A trait method may declare its own type parameters, `m: [X: Show](Self, X) ->
+// R`. The binder lives on the TRAIT method only (STrait's 5th field); the impl
+// `impl Tr for C { m = (self, x) -> {..} }` does NOT repeat it and parses to a
+// top-level `SLet(_, _, "C::m", _, EFn([], [], [(self,None),(x,None)], ..))`.
+// `inject_method_generics` re-attaches the trait method's `[X: Show]` binder to
+// the impl's free function and annotates the unannotated params with the trait
+// method's declared param types. After injection `build_gens` sees `x: X`,
+// registers `C::m` as a Show-bounded generic, and the existing dict-passing
+// machinery threads/synthesizes the `Show` witness at qualified call sites.
+
+fn empty_method_gens() -> Array[(String, Array[String], Array[(String, Array[String])])] {
+  array_empty()
+}
+
+fn inject_trait_method_generics_with_reporting_change(stmts: Array[Stmt], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])]) -> Bool {
+  namespace_inject_trait_method_generics_with_reporting_change(stmts, traits, dtd_own_end(stmts))
+}
+
+export fn collect_trait_namespace_conflict_errors(stmts: Array[Stmt], env: TypeEnv) -> Array[String] {
+  namespace_collect_trait_namespace_conflict_errors(stmts, env)
+}
+
+export fn derive_trait_namespace_operations(stmts: Array[Stmt]) -> Unit {
+  let added = namespace_derive_trait_namespace_operations(stmts, dtd_own_end(stmts))
+  Array::set(dtd_own_growth, 0, Array::get(dtd_own_growth, 0) + added)
+  if Array::get(dtd_own_limit, 0) >= 0 {
+    Array::set(dtd_own_limit, 0, Array::get(dtd_own_limit, 0) + added)
+  }
+}
+
+export fn derive_imported_trait_namespace_operations(stmts: Array[Stmt], env: TypeEnv) -> Unit {
+  namespace_derive_imported_trait_namespace_operations(stmts, env)
+}
+
+export fn inject_trait_method_generics_with(stmts: Array[Stmt], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])]) -> Unit {
+  let _changed = inject_trait_method_generics_with_reporting_change(stmts, traits)
+  ()
+}
+
+export fn inject_trait_method_generics_reporting_change(stmts: Array[Stmt]) -> Bool {
+  namespace_inject_trait_method_generics_reporting_change(stmts, dtd_own_end(stmts))
+}
+
+export fn inject_trait_method_generics(stmts: Array[Stmt]) -> Unit {
+  let _changed = inject_trait_method_generics_reporting_change(stmts)
+  ()
+}
+
+export fn concat_expr_arrays(a: Array[Expr], b: Array[Expr]) -> Array[Expr] {
+  let out = empty_expr_array()
+  let mut i = 0
+  while i < Array::length(a) {
+    Array::push(out, Array::get(a, i))
+    i = i + 1
+  }
+  let mut j = 0
+  while j < Array::length(b) {
+    Array::push(out, Array::get(b, j))
+    j = j + 1
+  }
+  out
+}

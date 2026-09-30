@@ -1,0 +1,185 @@
+// Function returns.
+
+import @vibe/compiler/core {
+  Expr, Stmt, TypeExpr, sort_perm_by_names
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import ./binding_shape_inference.vibe {
+  infer_shape
+}
+
+import ./binding_shape_queries.vibe {
+  shape_is_composite
+}
+
+import ./equality_shape_queries.vibe {
+  fn_eq_shape_key
+}
+
+import ./equality_type_shapes.vibe {
+  ty_to_eq_shape
+}
+
+import ./formal_scope.vibe {
+  mark_formal_name
+}
+
+import ./type_name_occurrences.vibe {
+  ty_mentions_name_in
+}
+
+import ./type_names.vibe {
+  collect_fn_impl_return_key, collect_fn_return_marker, collect_struct_field_types, fn_body_tail_expr, fn_return_head_of, type_alias_key
+}
+
+import ./utilities.vibe {
+  str_array_contains
+}
+
+fn collect_fn_eq_return_shape(out: Array[(String, String)], fname: String, tparams: Array[String], ret: Option[TypeExpr], fbody: Expr) -> Unit {
+  let sh = match ret {
+    Some(rt) => if ty_mentions_name_in(rt, tparams) {
+      ""
+    } else {
+      ty_to_eq_shape(rt)
+    },
+    None => if Array::length(tparams) > 0 {
+      ""
+    } else {
+      infer_shape(fn_body_tail_expr(fbody), array_empty(), array_empty(), out)
+    }
+  }
+  if shape_is_composite(sh) {
+    Array::push(out, (fn_eq_shape_key(fname), sh))
+  } else {
+    ()
+  }
+}
+
+export fn collect_fn_returns(stmts: Array[Stmt]) -> Array[(String, String)] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, fname, _, body) => match body {
+        EFn(tparams, _, fparams, ret, _, fbody) => {
+          // #2141: a return head naming the fn's OWN formal is an erased
+          // value at every call site -- record it re-spelled so a same-spelled
+          // (merged-in) declared type can never claim the call's result for
+          // struct dispatch or a struct renderer (see subst_formals_ty).
+          let head = fn_return_head_of(ret, fbody)
+          let head2 = if str_array_contains(tparams, head) {
+            mark_formal_name(head)
+          } else {
+            head
+          }
+          Array::push(out, (fname, head2))
+          collect_fn_return_marker(out, fname, tparams, fparams, ret, fbody)
+          collect_fn_impl_return_key(out, fname, tparams, ret)
+          collect_fn_eq_return_shape(out, fname, tparams, ret, fbody)
+        },
+        _ => ()
+      },
+      // `fn name(..) -> R { .. }` declares parse to SFnDecl, not SLet (see
+      // parse_fn_stmt_general) -- without this case every `fn`-declared
+      // function (the more common spelling) was invisible here, silently
+      // missing from the `for`/async-vs-sync desugar and other fn_returns
+      // consumers below.
+      SFnDecl(_, fname, body, _, _) => match body {
+        EFn(tparams, _, fparams, ret, _, fbody) => {
+          // #2141: same re-spelling as the SLet arm above.
+          let head = fn_return_head_of(ret, fbody)
+          let head2 = if str_array_contains(tparams, head) {
+            mark_formal_name(head)
+          } else {
+            head
+          }
+          Array::push(out, (fname, head2))
+          collect_fn_return_marker(out, fname, tparams, fparams, ret, fbody)
+          collect_fn_impl_return_key(out, fname, tparams, ret)
+          collect_fn_eq_return_shape(out, fname, tparams, ret, fbody)
+        },
+        _ => ()
+      },
+      // #672: map each enum variant constructor to its enum name, so a
+      // `let t = Node(...)` binding resolves `t`'s type for the `==` dispatch
+      // (infer_arg_type_name reads ctor calls through fn_returns).
+      SEnum(_, ename, _, variants, _) => {
+        let mut vi = 0
+        while vi < Array::length(variants) {
+          let (vname, _) = Array::get(variants, vi)
+          Array::push(out, (vname, ename))
+          vi = vi + 1
+        }
+      },
+      // #1502: `type C = Color` under the reserved `type C` key, so
+      // `qual_ctor_member` can normalize an alias qualifier to the enum it
+      // names. Only a head-bearing target is recorded -- a tuple/fn alias can
+      // never name an enum.
+      STypeAlias(_, aname, _, te) => match te {
+        TyName(n) => {
+          Array::push(out, (type_alias_key(aname), n))
+        },
+        TyApp(n, _) => {
+          Array::push(out, (type_alias_key(aname), n))
+        },
+        _ => ()
+      },
+      // #1502: `import ./m { E as F }` is the same renaming from the other
+      // direction. A BACKSTOP, not the primary path: in the lanes that run
+      // import_alias_rewrite.vibe the head is already rewritten to `E` before
+      // this pass, and the merged stmt list has no `SImport` left to read. It
+      // earns its place for the lanes that skip that rewrite (gc_only.vibe),
+      // where the alias does still reach here.
+      SImport(_, items) => {
+        let mut ii = 0
+        while ii < Array::length(items) {
+          let item = Array::get(items, ii)
+          let orig = item.name
+          let alias_opt = item.alias
+          match alias_opt {
+            Some(alias) => {
+              Array::push(out, (type_alias_key(alias), orig))
+            },
+            None => ()
+          }
+          ii = ii + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  // #1341: struct FIELD type heads ride along under the reserved
+  // `Struct.field` key (struct_field_type_key). Must be pushed BEFORE the
+  // sort below -- fn_exists/fn_return_type binary-search this table, so an
+  // entry appended afterwards would be invisible. (That is exactly how the
+  // first cut of this failed: the seeding call landed in a different
+  // collector whose result is not what infer_arg_type_name reads.)
+  collect_struct_field_types(stmts, out)
+  // Perf: this table holds every top-level fn + enum variant of the merged
+  // compile (thousands of entries) and fn_exists/fn_return_type consulted it
+  // LINEARLY per expression during the rewrite. Sort once (STABLE, so the
+  // leftmost duplicate stays the linear scan's "first match") and let the
+  // helpers below binary-search. Nothing outside those helpers reads the
+  // table positionally, so the order change is invisible.
+  let names = array_empty()
+  let mut ni = 0
+  while ni < Array::length(out) {
+    let (n, _) = Array::get(out, ni)
+    Array::push(names, n)
+    ni = ni + 1
+  }
+  let perm = sort_perm_by_names(names)
+  let sorted = array_empty()
+  let mut pi = 0
+  while pi < Array::length(perm) {
+    Array::push(sorted, Array::get(out, Array::get(perm, pi)))
+    pi = pi + 1
+  }
+  sorted
+}

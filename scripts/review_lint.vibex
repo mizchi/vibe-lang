@@ -15,7 +15,9 @@ import @vibe/json {
 import @vibe/process {
   sh_capture
 }
-import @vibex/argparse { flag, option_or }
+import @vibex/argparse {
+  flag, option_or
+}
 
 fn shell_quote(s: String) -> String {
   // Repository and mktemp paths cannot contain a single quote in the
@@ -309,7 +311,7 @@ fn report_gc_direct_abi_drift(raw: String, names_source: String, emit: Bool) -> 
     // listing them would instead claim a user declaration with those names is
     // unsafe. Measured before suppressing, not assumed.
     let suppressed = gc_drift_suppressed(path, line)
-    if String::contains(path, "codegen/gc/backend_call.vibe") && !suppressed && !String::contains(names_source, literal) {
+    if String::contains(path, "codegen/gc/backend_call") && String::ends_with(path, ".vibe") && !suppressed && !String::contains(names_source, literal) {
       if emit {
         report_finding(path, line, Json::string(Json::field(hit, "text")), "gc dispatches " + literal + " by spelling but gc_direct_abi_names() does not list it; the lambda capture scan will collect it as a free variable and codegen will fail on it")
       } else {
@@ -479,7 +481,7 @@ fn report_gc_bare_builtin_hits(raw: String, ledger: String, emit: Bool) -> Int w
 fn builtin_shadow_names_source(root: String) -> String with Fs {
   // Same three-candidate lookup as gc_direct_abi_names_source, for the same
   // reason: a staged snapshot need not contain the list's file.
-  let suffix = "/core/import_alias_rewrite.vibe"
+  let suffix = "/core/import_alias_rewrite_export_rename_plan.vibe"
   let in_subtree = root + suffix
   let in_snapshot = root + "/lib/@vibe/compiler" + suffix
   let in_worktree = "lib/@vibe/compiler" + suffix
@@ -673,8 +675,12 @@ fn effect_compare_hit(path: String, literal: String) -> String {
   "[{\"path\":\"" + path + "\",\"line\":0,\"text\":\"lbl == " + literal + "\",\"captures\":{\"name\":{\"text\":\"" + literal + "\"}}}]"
 }
 
+fn gc_dispatch_hit_path(path: String, literal: String) -> String {
+  "[{\"path\":\"" + path + "\",\"line\":9,\"text\":\"fname == " + literal + "\",\"captures\":{\"name\":{\"text\":\"" + literal + "\"}}}]"
+}
+
 fn gc_dispatch_hit(literal: String) -> String {
-  "[{\"path\":\"/repo/lib/@vibe/compiler/codegen/gc/backend_call.vibe\",\"line\":9,\"text\":\"fname == " + literal + "\",\"captures\":{\"name\":{\"text\":\"" + literal + "\"}}}]"
+  gc_dispatch_hit_path("/repo/lib/@vibe/compiler/codegen/gc/backend_call.vibe", literal)
 }
 
 // Written to disk rather than pointed at a repository line: keying the
@@ -766,6 +772,9 @@ fn self_test() -> Int with Fs + Stderr {
     1
   } else if report_gc_direct_abi_drift(gc_dispatch_hit("\\\"Array::brand_new\\\""), gc_names_sample, false) != 1 {
     Stderr::write_stream("review-lint self-test: gc direct-ABI drift was not reported\n")
+    1
+  } else if report_gc_direct_abi_drift(gc_dispatch_hit_path("/repo/lib/@vibe/compiler/codegen/gc/backend_call_named_1.vibe", "\\\"Array::brand_new\\\""), gc_names_sample, false) != 1 {
+    Stderr::write_stream("review-lint self-test: gc direct-ABI drift in a split implementation was not reported\n")
     1
   } else if report_gc_direct_abi_drift(gc_dispatch_hit("\\\"Array::length\\\""), gc_names_sample, false) != 0 {
     Stderr::write_stream("review-lint self-test: a listed gc dispatch name was reported as drift\n")

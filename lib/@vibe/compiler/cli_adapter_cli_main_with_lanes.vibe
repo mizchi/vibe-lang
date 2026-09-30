@@ -1,0 +1,2150 @@
+// lib/@vibe/compiler/cli_adapter.vibe — cli main with lanes.
+
+import @vibe/compiler/entry/source_compile/wasi_only {
+  comp_emit_component_wasm_command,
+  comp_emit_component_wasm_stream_handler,
+  comp_emit_component_wasm_string_handler,
+  coverage_driver_program_source_fs,
+  maybe_wrap_stdin_provider_core,
+  merged_program_source_fs,
+  reject_stdin_provider_core
+}
+
+import @vibe/compiler/entry/source_compile/gc_only {
+  compile_generated_source_gc_only
+}
+
+import ./user_dispatch.vibe {
+  run_user_dispatch_args, user_dispatch_is_verb
+}
+
+import @vibe/compiler/runtime {
+  alloc_spans,
+  binding_occurrences,
+  build_funcmap_from_source,
+  build_module_source_from_source,
+  collect_all_diagnostics_with_unstable_for_path,
+  doc_at_source,
+  escape_spans,
+  escape_spans_strict,
+  grep_collect_files,
+  grep_file_list_banner,
+  grep_list_files,
+  grep_read_file_list,
+  grep_scan_files_report,
+  incremental_invalidation_trace_json,
+  incremental_typecheck_telemetry_json,
+  locate_type_error,
+  locate_type_error_lines,
+  module_plan_manifest_fs,
+  rc_classify_source,
+  rc_plan_source,
+  run_module_job_dir,
+  run_publish_env_cache_dir,
+  set_collect_module_diagnostics,
+  set_dep_order_seed,
+  set_experimental_typing_dependency_env_reuse_enabled,
+  set_incremental_interface_trace_enabled,
+  set_incremental_typecheck_telemetry_enabled,
+  set_scheduler_trace_path,
+  symbol_spans_fs_report,
+  symbol_spans_locate_failure,
+  symbol_spans_with_docs_for_path,
+  type_at_source
+}
+
+import @vibe/compiler/cache {
+  ingestion_fingerprint_telemetry_json, set_ingestion_fingerprint_telemetry_enabled
+}
+
+import @vibe/compiler/runtime/checked_module_cache {
+  set_checked_module_cache_mode
+}
+
+import @vibe/compiler/loader {
+  collect_source_groups_fs,
+  contract_package_hashes_fs,
+  contract_package_hashes_fs_algo,
+  fill_require_pins_fs_mode,
+  fill_require_pins_lenient,
+  find_deps_missing,
+  find_missing_vpkg_dirs,
+  ingest_source_text_fs,
+  ingestion_pipeline_telemetry_json,
+  load_or_parse_module_header_fs,
+  publish_check_fs,
+  set_ingestion_pipeline_telemetry_enabled,
+  write_generated_hash_fs
+}
+
+import @vibe/compiler/entry/compiler/file_compile {
+  compile_file_fs_mode, entry_cacheable_for_fs
+}
+
+import @vibe/compiler/normalize {
+  normalize_source
+}
+
+import @vibe/compiler/fmt {
+  format_source, source_header_end
+}
+
+import ./inspect_update.vibe {
+  compute_updated_source
+}
+
+import ./wit_gen.vibe {
+  serve_handler_param_names, serve_handler_takes_body_stream, validate_serve_handler, wit_from_program
+}
+
+import @vibe/compiler/syntax {
+  lex, located_lex_message, parse_program
+}
+
+import ./cli_support.vibe {
+  check_builtin_shadowing_warnings_from_source_groups,
+  check_deprecated_warnings_from_source_groups,
+  check_let_star_warnings_from_source_groups,
+  check_linked_file_source_groups,
+  check_redundant_import_warnings_from_source_groups,
+  check_unstable_surface_warnings_from_closure,
+  check_unstable_surface_warnings_from_path,
+  command_component_compile_mode,
+  command_component_entry,
+  configure_cfg_flags,
+  executable_exports_stripped,
+  strip_executable_wasm_env,
+  unstable_closure_reset,
+  unstable_surface_diagnostics,
+  verify_culprit_off_marker_fs_fail_closed
+}
+
+import @vibe/compiler/core {
+  merged_offset_space_reset, set_executable_exports_stripped
+}
+
+import @vibe/lsp {
+  lsp_diagnostics_json_of_messages, lsp_diagnostics_json_string, lsp_main
+}
+
+import @vibe/compiler/checker {
+  set_error_row_checked
+}
+
+import ./cli_adapter_fs_lane_request.vibe {
+  adapter_basename_no_vibe,
+  adapter_grep_named_files,
+  adapter_no_warnings,
+  adapter_parse_error_of,
+  adapter_path_has_suffix,
+  adapter_program_parses,
+  adapter_split_nonempty_lines,
+  adapter_string_to_bytes,
+  cli_adapter_FsLane,
+  cli_adapter_SsLane,
+  cli_adapter_join_alloc_spans,
+  cli_adapter_join_dep_paths,
+  cli_adapter_join_symbol_spans,
+  cli_adapter_join_symbol_spans_with_path,
+  cli_adapter_line_terminated,
+  cli_adapter_parse_int_or,
+  derived_output_sidecar,
+  fs_lane_compile_full,
+  fs_lane_compile_production,
+  fs_lane_is_instrumented,
+  fs_lane_request,
+  fs_path_is_unresolved_link,
+  fs_paths_name_same_file,
+  join_binding_occurrences,
+  join_escape_spans,
+  join_lines,
+  own_host_string,
+  profile_plan_main,
+  read_arg_or_env,
+  ss_lane_compile_full,
+  ss_lane_compile_production,
+  ss_lane_is_instrumented,
+  ss_lane_request
+}
+
+/// What does the telemetry destination collide with? "" when nothing.
+///
+/// One list, asked at both guards, because every entry names something this
+/// invocation would DELETE (the clear) or OVERWRITE (the publication):
+///
+///   - the compile INPUT -- the clear deletes the entry source, and no later
+///     refusal returns it;
+///   - the compile OUTPUT -- the publication replaces the wasm with JSON while
+///     the invocation still reports success;
+///   - `<output>.diag` and `<output>.funcmap`, which the compiler derives and
+///     owns. `runtime/vibe` removes `<output>.diag` once it sees a non-empty
+///     artifact, so a telemetry sidecar published there is deleted by the very
+///     build that was asked to produce it; a `.funcmap` collision replaces the
+///     map that annotates runtime backtraces;
+///   - `VIBE_ARTIFACT_INPUT_TRACE_OUT`, whose own validation admits a telemetry
+///     request beside it, so both sidecars can be asked for at one path and the
+///     second write silently replaces the first observation.
+///
+/// A DIRECTORY is refused outright. A sidecar is a FILE, so a directory
+/// destination is a mistake however it is handled -- and #2738 is what it used
+/// to cost: the clears reached for `Fs::remove`, which is recursive, so a
+/// destination naming `lib` deleted the tree and the run continued to exit 0.
+/// The clears now call `Fs::remove_file`, which cannot remove a directory, so
+/// this refusal is no longer the only thing between a typo and a deleted tree
+/// -- it is the layer that says so instead of silently doing nothing.
+///
+/// A SYMLINK anywhere in the comparison is refused rather than guessed. The
+/// identity test cannot resolve one, so "different tokens" would mean "not the
+/// same file" when it may well be -- which is how a measured run deleted a real
+/// source through a symlinked entry. The refusal names the edit, and it costs
+/// only an opt-in observation.
+fn telemetry_destination_conflict(destination: String, input: String, output: String, trace: String,) -> String with Fs {
+  if destination == "" {
+    ""
+  } else if Fs::is_dir(destination) {
+    "a directory -- a sidecar is a file"
+  } else if fs_path_is_unresolved_link(destination) || fs_path_is_unresolved_link(input) || fs_path_is_unresolved_link(output) {
+    "a path reached through a symlink, which the identity check cannot resolve -- pass the real path"
+  } else if fs_paths_name_same_file(destination, input) {
+    "the compile input path"
+  } else if fs_paths_name_same_file(destination, output) {
+    "the compile output path"
+  } else if fs_paths_name_same_file(destination, derived_output_sidecar(output, ".diag")) {
+    "the compiler's <output>.diag sidecar"
+  } else if fs_paths_name_same_file(destination, derived_output_sidecar(output, ".funcmap")) {
+    "the compiler's <output>.funcmap sidecar"
+  } else if fs_paths_name_same_file(destination, trace) {
+    "VIBE_ARTIFACT_INPUT_TRACE_OUT"
+  } else {
+    ""
+  }
+}
+
+/// Throw if the destination collides, with a message that names the edit.
+fn refuse_telemetry_destination_conflict(destination: String, input: String, output: String, trace: String,) -> Unit with Fs + Exception {
+  let conflict = telemetry_destination_conflict(destination, input, output, trace)
+  if conflict != "" {
+    throw(String::concat("VIBE_INCREMENTAL_TELEMETRY_OUT must not name ", conflict))
+  } else {
+    ()
+  }
+}
+
+fn has_control_character(value: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < String::length(value) {
+    let c = String::char_code_at(value, i)
+    if (c >= 0 && c <= 31) || c == 127 {
+      found = true
+    } else if c == 194 && i + 1 < String::length(value) {
+      let next = String::char_code_at(value, i + 1)
+      if next >= 128 && next <= 159 {
+        found = true
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn profile_memory_mark(enabled: Bool) -> Unit with Env {
+  if enabled {
+    let _ = Env::get("VIBE_PROFILE_MEMORY_MARK")
+    ()
+  } else {
+    ()
+  }
+}
+
+/// #cfg activation on the single-file lane, kept for the byte-offset property:
+/// VIBE_CFG=flag1,flag2 appends `#cfg_enable(flag)` directive lines to the
+/// source (appending at the END keeps every original byte offset, so
+/// diagnostics/spans are unaffected). The ambient set configured by
+/// configure_cfg_flags already activates the same flags for every parse; this
+/// stays so the single-file source itself records what it was built with.
+fn apply_cfg_env(source: String, cfg_csv: String) -> String {
+  if cfg_csv == "" {
+    source
+  } else {
+    let parts = String::split(cfg_csv, ",")
+    let mut out = source
+    let mut i = 0
+    while i < Array::length(parts) {
+      let flag = String::trim(Array::get(parts, i))
+      if String::length(flag) > 0 {
+        out = String::concat(out, String::concat("\n#cfg_enable(", String::concat(flag, ")")))
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    out
+  }
+}
+
+/// Remove a ` [@off=...]` side-channel marker WITHOUT resolving it. The marker
+/// is internal transport for a source offset (#1514); a lane that does not know
+/// which source text the offset indexes (the FS-compile lane compiles MERGED
+/// module text) must degrade to the unlocated message -- never print the raw
+/// marker (#1445's leaked `[@off=135]` is the failure mode this guards against).
+fn strip_side_marker(msg: String, marker: String) -> String {
+  let mut out = msg
+  let mut mi = String::index_of(out, marker)
+  while mi >= 0 {
+    let inner_start = mi + String::length(marker)
+    let rest = String::substring(out, inner_start, String::length(out))
+    let rel = String::index_of(rest, "]")
+    if rel < 0 {
+      out = String::substring(out, 0, mi)
+    } else {
+      out = String::concat(String::substring(out, 0, mi), String::substring(out, inner_start + rel + 1, String::length(out)))
+    }
+    mi = String::index_of(out, marker)
+  }
+  out
+}
+
+fn strip_off_marker(msg: String) -> String {
+  strip_side_marker(strip_side_marker(strip_side_marker(msg, " [@off="), " [@fn="), " [@assign-target")
+}
+
+/// On a parse/type/codegen error the checker throws a formatted diagnostic
+/// String. Surface it to tooling by writing it to an `<output>.diag` sidecar so
+/// the `vibe` launcher can print a real message instead of an opaque wasm trap.
+/// Returns a non-zero exit code. (#594 usability / docs/internal/project/release-roadmap.md.)
+/// Always strips an unresolved ` [@off=...]` marker -- see strip_off_marker.
+fn emit_compile_diag(output_path: String, msg: String) -> Int with Fs {
+  Fs::write_file(String::concat(output_path, ".diag"), strip_off_marker(msg))
+  1
+}
+
+/// #1514: the same sidecar, but with the ` [@off=N]` marker resolved to a real
+/// `line:col` against the source the offsets are relative to.
+///
+/// The COMPILE path never located its diagnostics -- only the typecheck path
+/// calls `locate_type_error` -- so every checker diagnostic that reached a user
+/// through `vibe build` / `vibe run` arrived positionless. `source` here is
+/// exactly what `check_program` was run on (the single-source lane passes its
+/// post-`apply_cfg_env` text; the offsets in the marker index into it), so there
+/// is no ambiguity about the basis.
+///
+/// Marker-gated on purpose: with no marker this is byte-identical to
+/// `emit_compile_diag`. `locate_type_error` would otherwise fall through to its
+/// first-occurrence HEURISTIC, which can name a plausible-but-wrong line — worse
+/// than no position at all, and it would silently change every existing
+/// compile-path message. Only a diagnostic that states where it came from gets a
+/// position from this.
+fn emit_compile_diag_located(output_path: String, msg: String, source: String) -> Int with Fs {
+  if String::contains(msg, " [@off=") || String::contains(msg, " [@fn=") || String::contains(msg, " [@assign-target]") {
+    emit_compile_diag(output_path, String::join(locate_type_error_lines(source, msg), "\n"))
+  } else {
+    emit_compile_diag(output_path, msg)
+  }
+}
+
+/// #1596: FS/build compile helpers own their grouped-source snapshot internally
+/// and currently expose only Bytes/Throw, not that snapshot. Rereading after a
+/// failure cannot prove marker ownership under concurrent edits. Fail closed in
+/// this lane until the compile API transports source identity: preserve the
+/// actionable culprit name and strip the unresolved marker, never invent an
+/// entry-file location. `vibe check` retains locations because it passes one
+/// exact grouped-source snapshot through checking and verification.
+fn emit_compile_diag_fs_located(output_path: String, msg: String, _input_path: String) -> Int with Fs {
+  emit_compile_diag(output_path, verify_culprit_off_marker_fs_fail_closed(msg))
+}
+
+/// debugger テーマ3 / M2: best-effort `.funcmap` sidecar beside the compiled wasm.
+/// Maps each ENTRY-file top-level function to its 1-based source line so the
+/// `vibe run` launcher can annotate trap backtrace frames with (file:line). The
+/// wasm "name" section (debugger P0) already names the frames; this adds lines.
+///
+/// Best-effort: a failure to build/write the funcmap must NOT fail the compile —
+/// the wasm write already returned 0. So we wrap the work in its own handler and
+/// swallow any Exception::Throw. Entry-file functions only (imported modules: future
+/// work).
+/// Returns 0 (the value is consumed at the call site so the call is never DCE'd:
+/// it is a discarded `Unit` side-effect otherwise, which aggressive DCE in the
+/// seed compiler may drop).
+fn write_funcmap_sidecar(input_path: String, output_path: String) -> Int with Fs + Exception {
+  let src = Fs::read_file(input_path)
+  let text = build_funcmap_from_source(src)
+  Fs::write_bytes(String::concat(output_path, ".funcmap"), adapter_string_to_bytes(text))
+  0
+}
+
+/// #537 `vibe compile --wit`: emit the WIT world for the file's effect surface
+/// (exported functions -> world exports; their `with E` rows -> world
+/// imports). Imports resolved from FS. Contract: docs/internal/design/effect-wit-mapping.md.
+/// The Error handle is this function's tail (the proven adapter shape) rather
+/// than a `return handle` inside cli_main's dispatch chain.
+/// Entry-file-only surface scan (v1): exports and effect declarations are read
+/// from the entry file itself; effects declared only in imported modules render
+/// as host-capability comments (documented in docs/internal/design/effect-wit-mapping.md).
+fn adapter_emit_wit(input_path: String, output_path: String) -> Int with Fs + Env {
+  handle {
+    let entry_stmts = parse_program(lex(Fs::read_file(input_path)))
+    let wit = wit_from_program(entry_stmts, entry_stmts, adapter_basename_no_vibe(input_path))
+    Fs::write_bytes(output_path, adapter_string_to_bytes(wit))
+    0
+  } with { Exception::Throw(msg) => emit_compile_diag(output_path, msg) }
+}
+
+/// #537 `vibe serve` artifact step: validate the wasi-http P3 handler contract,
+/// compile the file, and wrap it into a component exporting
+///   handler: func(method, url, headers, body: string) -> string
+/// The runner layer (runtime/vibe serve) composes the result with the P3 HTTP
+/// adapter and launches `wasmtime serve` — artifact generation stays in the
+/// compiler, serving stays in the runner. VIBE_SERVE_WIT_OUT optionally writes
+/// the WIT world sidecar.
+fn adapter_serve_component(input_path: String, output_path: String) -> Int with Fs + Env {
+  handle {
+    // ADR-0068 gate, BEFORE any compile work -- the same gate the FS-compile
+    // branch applies, for the same reason. `vibe serve` reaches this function
+    // through its own `VIBE_SERVE_COMPONENT` branch, which returns before that
+    // one, so without this a handler importing `@vibe/concurrent` produced a
+    // DEPLOYABLE component while `vibe check` rejected the identical file
+    // (#2277 review). An artifact-producing verb that accepts what the check
+    // verb refuses is the worst direction for that disagreement to run.
+    let serve_opt_in = Env::get("VIBE_UNSTABLE") == "1"
+    let serve_unstable = if serve_opt_in {
+      adapter_no_warnings()
+    } else {
+      check_unstable_surface_warnings_from_path(input_path)
+    }
+    // #2289: report EVERY unstable import, not `Array::get(.., 0)`. A file can
+    // depend on the package twice -- once inherited from its directory's
+    // index.vpkg, once spelled physically -- and each needs a separate edit.
+    // Emitting only the first told the reader to make one of the two changes,
+    // and making it revealed the other. This is the same rule #1567 settled
+    // for parse errors: the collection already holds them all, so dropping
+    // every one but the first costs an edit-and-rerun cycle per extra
+    // diagnostic. Five sibling call sites below do the same.
+    if Array::length(serve_unstable) > 0 {
+      return emit_compile_diag(output_path, String::join(serve_unstable, "\n"))
+    } else {
+      ()
+    }
+    // #2284: the entry check above cannot see a MODULE the handler imports, and
+    // the closure is only known once the loader has walked it -- so reset here
+    // and re-ask below, before the component is written. `vibe serve` needs its
+    // own copy of that discipline because it returns before the FS-compile
+    // branch that carries the other one (#2302 review).
+    unstable_closure_reset()
+    let entry_stmts = parse_program(lex(Fs::read_file(input_path)))
+    validate_serve_handler(entry_stmts)
+    // No command entry: the component surface is `handler`. `__no_entry__`
+    // is the explicit sentinel — any other unknown entry name is a compile
+    // error since ADR-0069.
+    let core = compile_file_fs_mode(input_path, "__no_entry__", "no-dce")
+    // The complete answer, from the closure that compile actually loaded, and
+    // BEFORE the component is emitted. Placement matters: emitting first let
+    // the handler-purity check speak instead -- an unstable dependency drags
+    // in `vibe.sleep`, so the reader was told the handler is impure rather
+    // than that the dependency needs an opt-in. The gate has to win over the
+    // diagnostics that are downstream consequences of it (#2302 review).
+    let serve_closure_unstable = if serve_opt_in {
+      adapter_no_warnings()
+    } else {
+      check_unstable_surface_warnings_from_closure()
+    }
+    if Array::length(serve_closure_unstable) > 0 {
+      return emit_compile_diag(output_path, String::join(serve_closure_unstable, "\n"))
+    } else {
+      ()
+    }
+    // #1540 scope 4: a `body: HostStream` handler goes down the stream lane
+    // (async lift + a component `stream<u8>` param) so it can read the body
+    // as it arrives; everything else keeps the sync lift and the collected
+    // String. validate_serve_handler has already rejected every other shape.
+    let component = if serve_handler_takes_body_stream(entry_stmts) {
+      comp_emit_component_wasm_stream_handler(core, "handler", "handler", serve_handler_param_names())
+    } else {
+      comp_emit_component_wasm_string_handler(core, "handler", "handler", serve_handler_param_names())
+    }
+    Fs::write_bytes(output_path, component)
+    let wit_out = Env::get("VIBE_SERVE_WIT_OUT")
+    if wit_out != "" {
+      Fs::write_bytes(wit_out, adapter_string_to_bytes(wit_from_program(entry_stmts, entry_stmts, adapter_basename_no_vibe(input_path))))
+    } else {
+      ()
+    }
+    0
+  } with { Exception::Throw(msg) => emit_compile_diag(output_path, msg) }
+}
+
+/// `vibe build --component` as the LAUNCHER drives it.
+///
+/// `runtime/vibe` talks to this adapter through positional arguments plus a
+/// `VIBE_*` selector, never a verb, so the `build --component` arm in
+/// lib/@vibe/cli/dispatch.vibe is unreachable from the public launcher. Left
+/// at that, `vibe build --component f.vibe` reported success and wrote an
+/// ordinary CORE module -- the flag silently discarded, which is the
+/// silently-wrong failure this project ranks worst (Codex review of #2861).
+///
+/// Shaped after `adapter_serve_component`, which componentizes for the same
+/// reason and carries the same ADR-0068 gates: a verb that PRODUCES an
+/// artifact must not accept what `vibe check` refuses, and the closure gate
+/// has to be re-asked after the loader has walked it.
+fn adapter_command_component(input_path: String, output_path: String) -> Int with Fs + Env {
+  handle {
+    let opt_in = Env::get("VIBE_UNSTABLE") == "1"
+    let entry_unstable = if opt_in {
+      adapter_no_warnings()
+    } else {
+      check_unstable_surface_warnings_from_path(input_path)
+    }
+    if Array::length(entry_unstable) > 0 {
+      return emit_compile_diag(output_path, String::join(entry_unstable, "\n"))
+    } else {
+      ()
+    }
+    unstable_closure_reset()
+    // The surface is the lifted export, so the codegen entry is the library
+    // sentinel -- but the DCE root is `vibe_command`, which is a real root.
+    // `no-dce` (what this used before) kept the whole closure: a command
+    // calling `check_linked_file` came to 40.4 MB, 7.8 times this adapter.
+    // `dce-root` prunes from the command and still emits a library (2.6 MB).
+    let core = compile_file_fs_mode(input_path, command_component_entry(), command_component_compile_mode())
+    let closure_unstable = if opt_in {
+      adapter_no_warnings()
+    } else {
+      check_unstable_surface_warnings_from_closure()
+    }
+    if Array::length(closure_unstable) > 0 {
+      return emit_compile_diag(output_path, String::join(closure_unstable, "\n"))
+    } else {
+      ()
+    }
+    Fs::write_bytes(output_path, comp_emit_component_wasm_command(core, "vibe_command", "run"))
+    0
+  } with { Exception::Throw(msg) => emit_compile_diag(output_path, adapter_command_component_edit(input_path, msg)) }
+}
+
+/// The wrap's message names what it found in the core; this adds the edit.
+/// Kept identical in substance to the user CLI's `command_component_edit` so
+/// the two lanes answer a missing entry the same way.
+fn adapter_command_component_edit(input_path: String, message: String) -> String {
+  "build --component \{input_path}: \{message}; a command module exports exactly `export fn vibe_command(args: String) -> String` and returns the `vibe-command-result-v1` frame (`command_ok` / `command_result` in @vibe/command)"
+}
+
+fn configure_typing_dependency_env_reuse_policy() -> Unit with Exception + Env {
+  let disable = Env::get("VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE")
+  let invalidation_trace_out = Env::get("VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT")
+  if disable != "" && disable != "1" {
+    throw("VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE must be exactly 1 when set")
+  } else {
+    // An invalidation trace forces reuse off so the trace stays
+    // observation-only.
+    set_experimental_typing_dependency_env_reuse_enabled(disable != "1" && invalidation_trace_out == "")
+  }
+}
+
+/// The env-mode CLI body, parameterized by its lane tables (#2497). `cli_main`
+/// installs the full tables; `cli_main_compile_only` the production ones. The
+/// tables are the ONLY difference between the two artifacts, so every other
+/// switch (command selectors, VIBE_CFG, VIBE_UNSTABLE, the trusted-source
+/// boundary) behaves identically on both.
+fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String) -> (Bytes, String) with Exception + Fs + Env, ss_lanes: (cli_adapter_SsLane, String, String, Bool) -> Bytes with Exception) -> Int with Exception + Fs + Env + Profiler + Stdin + Console {
+  // Reset the process-wide TDRE8 cell before every invocation. Only the
+  // check-only branch may enable it after strict policy validation below;
+  // build/codegen lanes stay conservative, and a prior check in a long-lived
+  // instance cannot leak its policy into a later invocation.
+  //
+  // #2510 criterion 5, OPT-IN and off by default:
+  // `VIBE_UNSTABLE_TYPING_DEP_ENV_REUSE_COMPILE=1` lets a COMPILE take the
+  // same reuse the check lane has as production default (TDRE9; TDRE8 is the
+  // retired protocol v23 replaced), so the reset below reads the opt-in rather
+  // than a bare `false`.
+  //
+  // The measurement that asks for it: with reuse on, a one-leaf edit to the
+  // compiler's own closure re-checks exactly ONE of 197 planned modules
+  // (`modules_rechecked: 1`, 130 reused through the dependency-transport env
+  // and 66 through the conservative fingerprint). With it off -- which is what
+  // every build does today -- the same edit costs the compile 331.4 MB in its
+  // check phase, MORE than a cold check's 269.2 MB, while an unchanged warm
+  // build spends 11.3 MB there (`scripts/compile_phase_memory.sh`). That one
+  // phase is the whole gap between a warm build and a cold one.
+  //
+  // MEASURED 2026-09-12, and it is a REGRESSION -- this stays off, and the
+  // reason is no longer "unproven". Same corpus, same heap-mark instrument,
+  // reproduced to the byte across two invocations
+  // (`scripts/compile_phase_memory.sh`), check phase:
+  //
+  //              off (default)      on
+  //   cold           270.9 MB   1647.1 MB
+  //   unchanged       11.4 MB     11.4 MB
+  //   leaf-edited    344.9 MB    812.7 MB
+  //
+  // 2.4x worse on the very edit it was meant to fix, 6.1x cold. The COLD row
+  // BOUNDS it: a cold compile can reuse nothing, so all of that 1.38 GB is the
+  // transport machinery running for a read that cannot succeed. The unchanged
+  // row is identical in both lanes, so the reuse arm is not even reached
+  // there; the conservative fingerprint short-circuits it.
+  //
+  // It does NOT say the cost is publication. On a miss the enabled lane pays
+  // in two places: `finish_typecheck_fs_impl` runs
+  // `typing_dependency_env_reuse_is_eligible`, builds
+  // `typing_dependency_transport_input_key` (verbatim source plus each
+  // dependency's exact env text) and calls
+  // `load_typing_dependency_env_reuse_target`, which misses for every module
+  // on a cold compile; then `commit_module_outcome` runs the eligibility walk
+  // again, builds the same large key AGAIN, and publishes the eligibility and
+  // sidecar. The eligibility walk is not a cheap predicate: per dependency it
+  // is `Fs::exists` + `Fs::read_file` + a binding parse +
+  // `load_canonical_typing_dependency_env_reuse_target`. Four terms, two of
+  // them paid twice per module, all inside that one number, and nothing
+  // measured here separates them.
+  //
+  // Nothing measured here shows it is WRONG, and nothing shows it is RIGHT
+  // either. With the body cache off so a replayed body cannot mask a
+  // difference, a compile's output is byte-identical with the flag on and off
+  // at both temperatures -- but the cold comparison has no reuse hit to get
+  // wrong, and the edited one appends a COMMENT, so the program's meaning is
+  // unchanged and a stale reused env answers the same as a fresh one. Neither
+  // exercises a reuse hit on a program whose meaning changed, which is the
+  // case that could be silently wrong. So this is kept as the instrument that
+  // produced the table, not as a switch anyone should flip.
+  //
+  // The deletion condition is therefore BOTH halves, and the correctness half
+  // is not discharged. It needs an oracle that actually reaches a reuse HIT,
+  // which most edit shapes cannot: the input key is the module's VERBATIM
+  // source plus each dependency's exact env text
+  // (`typing_dependency_transport_input_key`), so editing the module under
+  // test changes its own key and editing a dependency's INTERFACE changes
+  // every consumer's key -- both MISS and are freshly checked, and an oracle
+  // built from them passes whether or not the reuse arm is correct.
+  //
+  // The shape that hits is a dependency-body edit that changes MEANING while
+  // leaving the dependency's public `TypeEnv` text identical: the consumer's
+  // key is then unchanged, the hit happens, and the question is whether the
+  // compile-only state it republishes (the typed-lowering offsets, #2391) is
+  // still right. The public env being equal is exactly what makes the hit
+  // happen and exactly why the public env cannot detect the problem.
+  //
+  // So: that edit shape, a check that the unchanged consumer really recorded
+  // a dependency-transport hit (or the oracle is vacuous again), and the wasm
+  // compared against reuse disabled. AND the transport ceasing to cost more
+  // than the read saves, which needs the four-term split above measured
+  // first. A compile consumes more of a module's check than the public env
+  // carries (the typed-lowering offsets the reuse arm republishes, #2391),
+  // and "the check lane proves it" was a claim about the check lane. #2728.
+  //
+  // It is read in EXPRESSION position and named in `OBSERVATION_ONLY`
+  // (`scripts/check_selector_precedence.sh`) for the same reason
+  // `VIBE_UNSTABLE` is: it picks no verb, it modifies whichever lane was
+  // already selected, and a caller sets it deliberately -- entering
+  // `VIBE_SELECTOR_ORDER` would make `selector_clears_before` strip it on the
+  // compile lanes it exists for.
+  set_experimental_typing_dependency_env_reuse_enabled(Env::get("VIBE_UNSTABLE_TYPING_DEP_ENV_REUSE_COMPILE") == "1")
+  // #2513: the `#cfg` flag set, for every module this invocation parses and
+  // for every cache key it touches. Set before ANY lane runs, like the
+  // switches below.
+  configure_cfg_flags()
+  // #944 (ADR-0073 stage B): checked-Error row discipline is ON by
+  // default -- `Exception::Throw` propagates to the caller's row like any
+  // other effect, dischargeable via `handle .. with Exception`.
+  // `VIBE_CHECK_ERROR_ROW=0` is the temporary opt-out escape hatch for
+  // downstream code that hasn't annotated yet. Set before ANY compile
+  // path runs so every lane (file compile, FS compile, diagnostics, lsp)
+  // sees the same mode.
+  let artifact_input_trace_checked_error_row_mode = if Env::get("VIBE_CHECK_ERROR_ROW") == "0" {
+    "unchecked"
+  } else {
+    "checked"
+  }
+  let checked_error_row = artifact_input_trace_checked_error_row_mode == "checked"
+  // This is the sole process-wide authority for both checker behavior and its
+  // cache identity. Long-lived CLI hosts reset it on every invocation.
+  set_error_row_checked(checked_error_row)
+  // #906 Phase 0: dependency-visit-order oracle. A non-zero seed permutes
+  // each node's dep visit order (set_dep_order_seed, runtime/typecheck_fs.vibe);
+  // the compiled output must stay byte-identical across seeds, which is what
+  // scripts/dep_order_oracle.sh asserts. Unset (or 0) is the identity
+  // permutation -- the production walk -- so this is inert unless a test
+  // sets it. Read here with the other mode switches so every lane (file
+  // compile, FS compile, diagnostics) sees the same order.
+  let dep_seed_text = Env::get("VIBE_DEP_ORDER_SEED")
+  // Canonical trace spelling is the effective parsed decimal, so absent,
+  // invalid, and zero spellings collapse to the production default `0`.
+  let artifact_input_trace_dep_order_seed = match Int::parse(dep_seed_text) {
+    Some(dep_seed) => if dep_seed == 0 {
+      "0"
+    } else {
+      __to_string(dep_seed)
+    },
+    None => "0"
+  }
+  if dep_seed_text == "" {
+    ()
+  } else {
+    match Int::parse(dep_seed_text) {
+      Some(dep_seed) => set_dep_order_seed(dep_seed),
+      None => ()
+    }
+  }
+  // #1259: report EVERY module's diagnostic, in canonical order, instead of
+  // stopping at the first. Read here with the other mode switches so the fs
+  // compile and `vibe check` lanes agree -- check_linked_file routes its
+  // typecheck through check_file_fs_mode / db_typecheck_fs (#946 P1), so both
+  // reach the collecting walk. Off (the default) is byte-for-byte the previous
+  // walk -- see set_collect_module_diagnostics in runtime/typecheck_fs.vibe
+  // for why flipping the default is a separate decision from having the
+  // mechanism.
+  //
+  // SCOPE (Codex review of PR #1264): this collects what the WALK sees, which
+  // is every module's type error and, since that review, its own syntax error
+  // too. It is not yet every diagnostic a build can produce: both CLI lanes
+  // run collect_source_groups_fs first, which parses every reachable file
+  // before db_typecheck_fs is called, so a syntax error still fails the build
+  // at that earlier point and only the first one is reported. Collecting
+  // there is a loader change, not a walk change.
+  let artifact_input_trace_diagnostics_mode = if Env::get("VIBE_DIAGNOSTICS_ALL") == "1" {
+    "all"
+  } else {
+    "fail-fast"
+  }
+  // Presentation/scheduling policy is not a successful typing identity, but
+  // its process-wide cell still needs an explicit per-invocation reset.
+  set_collect_module_diagnostics(artifact_input_trace_diagnostics_mode == "all")
+  // #1259 (#1239 step 8): dump the walk's planned graph and its actual step
+  // sequence for scripts/scheduler_trace_oracle.sh, which checks them against
+  // Scheduler.lean's Project / Ready / StoreCorrect / Complete. Read with the
+  // other mode switches so it covers the fs compile lane, which is the one
+  // that walks an import graph at all.
+  let scheduler_trace = Env::get("VIBE_SCHEDULER_TRACE")
+  if scheduler_trace == "" {
+    ()
+  } else {
+    set_scheduler_trace_path(scheduler_trace)
+  }
+  // #2510: the incremental typecheck telemetry request joins the shared
+  // clear-then-validate discipline rather than re-deriving it in a branch.
+  // Cleared HERE, before any validation below can throw and before every
+  // one-shot early return, for the reason the ingestion pair states two blocks
+  // down: a malformed sibling request must not leave this one's stale sidecar
+  // looking like the failed invocation's result.
+  //
+  // Four review rounds were spent moving a per-branch copy of this around, and
+  // each round found a failure point earlier or later than the last. The
+  // mechanism already existed; the fix was to use it.
+  let fs_telemetry_out = Env::get("VIBE_INCREMENTAL_TELEMETRY_OUT")
+  // #2510: an observation must never be able to destroy what it observes. The
+  // destination is a file this invocation DELETES below and WRITES ~600 lines
+  // further down, so every path it could name and destroy is refused here --
+  // the list, and why each entry is on it, is on
+  // `telemetry_destination_conflict`.
+  //
+  // Refused BEFORE the clear rather than after it. Measured with the refusal
+  // sitting further down: the request was rejected AND the artifact it named
+  // was already gone, because the clear had removed it -- so the refusal held
+  // for the write and not for the delete, which is the destruction it exists
+  // to prevent minus the compile. read_arg_or_env is total (it returns "" when
+  // neither the positional argument nor the variable is set), so probing the
+  // paths this early is safe on the lanes that have no input or output
+  // argument at all.
+  refuse_telemetry_destination_conflict(fs_telemetry_out, own_host_string(read_arg_or_env(0, "VIBE_INPUT")), own_host_string(read_arg_or_env(1, "VIBE_OUTPUT")), Env::get("VIBE_ARTIFACT_INPUT_TRACE_OUT"),)
+  if fs_telemetry_out != "" && Fs::exists(fs_telemetry_out) {
+    Fs::remove_file(fs_telemetry_out)
+  } else {
+    ()
+  }
+  // Set from the env on every invocation, not merely enabled: a long-lived
+  // instance that served a telemetry request must not leave counting on for
+  // the next caller. The check-only branch may enable it again for its own
+  // invalidation-trace reason, and runs later, so it still wins there.
+  set_incremental_typecheck_telemetry_enabled(fs_telemetry_out != "")
+  // Validate an artifact-input trace request before ANY CLI-mode return. This
+  // must precede LSP and every one-shot special/check path so none can leave a
+  // stale sidecar or silently ignore a request intended for the one exact
+  // cached bump/WASI lane below.
+  let artifact_input_trace_out = Env::get("VIBE_ARTIFACT_INPUT_TRACE_OUT")
+  if artifact_input_trace_out != "" {
+    if Fs::exists(artifact_input_trace_out) {
+      Fs::remove_file(artifact_input_trace_out)
+    } else {
+      ()
+    }
+    if Env::get("VIBE_ARTIFACT_INPUT_TRACE_NONCE") == "" {
+      throw("VIBE_ARTIFACT_INPUT_TRACE_OUT requires VIBE_ARTIFACT_INPUT_TRACE_NONCE")
+    } else if Env::get("VIBE_FS_COMPILE") != "1" || Env::get("VIBE_RC") != "0" || Env::get("VIBE_LSP") == "1" || Env::get("VIBE_CHECK_ONLY") == "1" || Env::get("VIBE_COVERAGE") == "1" || Env::get("VIBE_DEBUG_BREAK") == "1" || Env::get("VIBE_DEBUG") == "1" || Env::get("VIBE_TESTMETA_OUT") != "" || Env::get("VIBE_HASH") == "1" || Env::get("VIBE_HASH_WRITE") == "1" || Env::get("VIBE_MISSING_VPKG_SCAN") == "1" || Env::get("VIBE_DEPS_MISSING_SCAN") == "1" || Env::get("VIBE_FILL_PINS") == "1" || Env::get("VIBE_PUBLISH_CHECK") == "1" || Env::get("VIBE_MODULE_JOB_DIR") == "1" || Env::get("VIBE_PUBLISH_ENV_CACHE") == "1" || Env::get("VIBE_LIST_DEPS") == "1" || Env::get("VIBE_MODULE_PLAN") == "1" {
+      throw("artifact-input trace requires the exact uninstrumented VIBE_FS_COMPILE=1, VIBE_RC=0 file_compile cached bump lane")
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+  // #1379: this compiler-owned sidecar measures only fingerprint_file_fs.
+  // Remove a requested output before EVERY early return, then accept it only
+  // on check-only runs with a non-empty control-free nonce. It is separate
+  // from runner-owned host_fs_scope, whose units remain aggregate raw bytes.
+  let ingestion_telemetry_out = Env::get("VIBE_INGESTION_TELEMETRY_OUT")
+  let ingestion_telemetry_nonce = Env::get("VIBE_INGESTION_TELEMETRY_NONCE")
+  let ingestion_pipeline_out = Env::get("VIBE_INGESTION_PIPELINE_TELEMETRY_OUT")
+  let ingestion_pipeline_nonce = Env::get("VIBE_INGESTION_PIPELINE_TELEMETRY_NONCE")
+  // Clear every requested ingestion observation before validating either one:
+  // a malformed sibling request must not leave the other's stale sidecar.
+  if ingestion_telemetry_out != "" && Fs::exists(ingestion_telemetry_out) {
+    Fs::remove_file(ingestion_telemetry_out)
+  } else {
+    ()
+  }
+  if ingestion_pipeline_out != "" && Fs::exists(ingestion_pipeline_out) {
+    Fs::remove_file(ingestion_pipeline_out)
+  } else {
+    ()
+  }
+  if ingestion_telemetry_out != "" {
+    if Env::get("VIBE_CHECK_ONLY") != "1" {
+      throw("VIBE_INGESTION_TELEMETRY_OUT requires VIBE_CHECK_ONLY=1")
+    } else if ingestion_telemetry_nonce == "" || has_control_character(ingestion_telemetry_nonce) {
+      throw("VIBE_INGESTION_TELEMETRY_OUT requires a non-empty control-free VIBE_INGESTION_TELEMETRY_NONCE")
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+  if ingestion_pipeline_out != "" {
+    if Env::get("VIBE_CHECK_ONLY") != "1" {
+      throw("VIBE_INGESTION_PIPELINE_TELEMETRY_OUT requires VIBE_CHECK_ONLY=1")
+    } else if ingestion_pipeline_nonce == "" || has_control_character(ingestion_pipeline_nonce) {
+      throw("VIBE_INGESTION_PIPELINE_TELEMETRY_OUT requires a non-empty control-free VIBE_INGESTION_PIPELINE_TELEMETRY_NONCE")
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+  // Validate after shared sidecar cleanup, so an invalid cache mode cannot
+  // leave an earlier invocation's telemetry looking like this one's result.
+  // Complete checked-module reuse is measured through the same FS lane.
+  // Verify checks afresh and compares transport; on consumes validated hits.
+  let checked_module_mode = Env::get("VIBE_CHECKED_MODULE_CACHE")
+  set_checked_module_cache_mode(if checked_module_mode == "" {
+    "off"
+  } else {
+    checked_module_mode
+  })
+  // `vibe lsp` (self-hosted, #lsp-selfhost): takes over stdin/stdout
+  // directly as a long-running JSON-RPC server -- unlike every other mode
+  // below, it never reads VIBE_INPUT/VIBE_OUTPUT or writes to output_path.
+  // Checked first so it never touches the one-shot input/output-file
+  // machinery the rest of this function assumes.
+  if Env::get("VIBE_LSP") == "1" {
+    return lsp_main(Env::get("VIBE_UNSTABLE") == "1")
+  }
+  let input_path = own_host_string(read_arg_or_env(0, "VIBE_INPUT"))
+  let output_path = own_host_string(read_arg_or_env(1, "VIBE_OUTPUT"))
+  let entry_name = own_host_string(read_arg_or_env(2, "VIBE_ENTRY"))
+  let mark_memory = Env::get("VIBE_PROFILE_MEMORY_MARKS") == "1"
+  // #730 (D-2) / #2829: `vibe hash` — print a contract package's
+  // content-addressing hashes. New writes are `pkg:b3:<64hex>` /
+  // `ct:b3:<64hex>`. VIBE_HASH_ALGO=sha1 is the legacy-read verifier for
+  // historical pins; it is not the default write path.
+  if Env::get("VIBE_HASH") == "1" {
+    return handle {
+      let algo = Env::get("VIBE_HASH_ALGO")
+      let (pkg_hash, ct_hash) = if algo == "sha1" {
+        contract_package_hashes_fs_algo(input_path, "sha1")
+      } else {
+        contract_package_hashes_fs(input_path)
+      }
+      Fs::write_file(output_path, "package #\{pkg_hash}\ncontract \{ct_hash}\n")
+      0
+    } with { Exception::Throw(msg) => emit_compile_diag(output_path, msg) }
+  } else ()
+  // #1145 follow-up 3: `vibe hash --write <index.vpkg>` -- computes the
+  // same package content hash as VIBE_HASH above and writes the file's full
+  // text, with `generated_hash = ` rewritten to the computed pin, to the
+  // output path. input_path itself is left untouched (same read-only
+  // convention as VIBE_FILL_PINS above); the launcher copies output_path
+  // over the real target in place.
+  if Env::get("VIBE_HASH_WRITE") == "1" {
+    return handle {
+      let rewritten = write_generated_hash_fs(input_path)
+      Fs::write_file(output_path, rewritten)
+      0
+    } with { Exception::Throw(msg) => emit_compile_diag(output_path, msg) }
+  } else ()
+  // #897 (ADR-0070): `vibe check --missing-vpkg <root>` -- recursively scan
+  // `input_path` (a directory) for every boundary directory still on the
+  // old `index.vibei`/bare `index.vibe` spelling. Writes "ok: none missing"
+  // on a clean tree, or the newline-joined list of directories on the same
+  // diag sidecar every other check diagnostic uses, matching VIBE_HASH's
+  // shape immediately above.
+  if Env::get("VIBE_MISSING_VPKG_SCAN") == "1" {
+    return handle {
+      let missing = find_missing_vpkg_dirs(input_path)
+      if Array::length(missing) == 0 {
+        Fs::write_file(output_path, "ok: no directories missing index.vpkg under \{input_path}\n")
+      } else {
+        Fs::write_file(output_path, String::concat(String::join(missing, "\n"), "\n"))
+      }
+      0
+    } with { Exception::Throw(msg) => emit_compile_diag(output_path, msg) }
+  } else ()
+  // #1145 follow-up 2: `vibe check --deps-missing <root>` -- recursively
+  // scan `input_path` for #1128-migrated `index.vpkg` files (ones with a
+  // `name = ` directive) whose own production imports reference an
+  // external package absent from their `deps` block. Same "ok: none" /
+  // newline-joined-list shape as VIBE_MISSING_VPKG_SCAN immediately above.
+  if Env::get("VIBE_DEPS_MISSING_SCAN") == "1" {
+    return handle {
+      let missing = find_deps_missing(input_path)
+      if Array::length(missing) == 0 {
+        Fs::write_file(output_path, "ok: no missing deps declarations under \{input_path}\n")
+      } else {
+        Fs::write_file(output_path, String::concat(String::join(missing, "\n"), "\n"))
+      }
+      0
+    } with { Exception::Throw(msg) => emit_compile_diag(output_path, msg) }
+  } else ()
+  // #730 (D-3): `vibe fmt` pin insertion — fill unpinned require lines
+  // OFFLINE from the workspace store and write the completed source to the
+  // output path. Idempotent; pinned form is the canonical form.
+  if Env::get("VIBE_FILL_PINS") == "1" {
+    return handle {
+      let filled = fill_require_pins_fs_mode(Fs::read_file(input_path), Env::get("VIBE_REPIN") == "1")
+      Fs::write_file(output_path, filled)
+      0
+    } with { Exception::Throw(msg) => emit_compile_diag(output_path, msg) }
+  } else ()
+  // #732 (Phase F): `vibe publish` semver gate. input = the NEXT contract;
+  // VIBE_PUBLISH_PREV / _PREV_VERSION / _VERSION describe the previous
+  // release. Writes "ok" on an honest bump; a dishonest claim is a diag.
+  if Env::get("VIBE_PUBLISH_CHECK") == "1" {
+    return handle {
+      let perrors = publish_check_fs(Env::get("VIBE_PUBLISH_PREV"), input_path, Env::get("VIBE_PUBLISH_PREV_VERSION"), Env::get("VIBE_PUBLISH_VERSION"))
+      if Array::length(perrors) > 0 {
+        throw(String::join(perrors, "; "))
+      } else ()
+      Fs::write_file(output_path, "ok\n")
+      0
+    } with { Exception::Throw(msg) => emit_compile_diag(output_path, msg) }
+  } else ()
+  // #946(3): `vibe check` — parse + typecheck ONLY (imports resolved from the
+  // FS, same as VIBE_FS_COMPILE below), no codegen and no entry-function
+  // requirement. Before this, `vibe check` reused the full VIBE_FS_COMPILE
+  // (build) path, so an empty-or-comments-only file failed check with
+  // "no functions found to compile" (a real build/codegen constraint — you
+  // cannot emit a runnable wasm module with zero functions) while `vibe
+  // diagnostics` reported the SAME file clean: two contradictory judgments on
+  // one input. check_linked_file (Gate v2 #492) already implements the
+  // correct check-only semantics (it stops before codegen, so it has no
+  // notion of "no functions" or "missing entry" — both are build-only
+  // concerns) but was never wired to this CLI verb. Writes "ok\n" on a clean
+  // parse+typecheck; a parse/type error goes to the `.diag` sidecar, same
+  // convention as every other adapter mode.
+  // #906 Phase 2: worker mode. `input_path` is a JOB DIRECTORY, not a
+  // source file, and it is the worker's entire filesystem sandbox --
+  // see run_module_job_dir (runtime/typecheck_fs.vibe) for its layout.
+  //
+  // This is checked BEFORE VIBE_CHECK_ONLY because the two answer different
+  // questions: check-only resolves a module's imports off the real
+  // filesystem, which is precisely what a worker must not do. A worker
+  // receives its dependencies' environments as values in the job.
+  if Env::get("VIBE_MODULE_JOB_DIR") == "1" {
+    return handle {
+      run_module_job_dir(input_path)
+      0
+    } with {
+      // A throw here is an infrastructure failure (unreadable or malformed
+      // job dir), NOT a compiler diagnostic -- run_module_job_dir already
+      // turned every diagnostic into a value in the job dir. The
+      // coordinator must be able to tell those apart, so this goes to the
+      // .diag sidecar and a nonzero exit, leaving no outcome.txt behind.
+      Exception::Throw(msg) => emit_compile_diag(output_path, msg)
+    }
+  } else ()
+  // #906 Phase 2 (real-build wiring): batch publish for a host-side
+  // parallel pre-warm driver. `input_path` is a directory holding
+  // `manifest.txt` plus each row's env file -- see run_publish_env_cache_dir
+  // (runtime/typecheck_fs.vibe) for the exact layout and why the driver
+  // hands this off instead of writing the real cache path itself.
+  if Env::get("VIBE_PUBLISH_ENV_CACHE") == "1" {
+    return handle {
+      run_publish_env_cache_dir(input_path)
+      Fs::write_file(output_path, "ok\n")
+      0
+    } with { Exception::Throw(msg) => emit_compile_diag(output_path, msg) }
+  } else ()
+  // #906: resolved-dependency discovery for a HOST-SIDE project DAG walker.
+  // A host driver building ModuleJob values for the worker transport needs
+  // each file's direct dependencies as RESOLVED paths, in the same
+  // declaration order ensure_fingerprint_fs_go itself would see them --
+  // getting either wrong doesn't fail loudly, it silently walks the wrong
+  // graph. This calls load_or_parse_module_header_fs, the exact primitive
+  // resolve_deps_for_source_fs (runtime/typecheck_fs.vibe) uses, rather
+  // than re-deriving import resolution on the host: a second
+  // implementation of "how an import path resolves" is exactly the drift
+  // risk the #906 fingerprint fix (ModuleJob.dep_fps) closed for cache
+  // keys, and the same risk here would silently walk the wrong graph
+  // instead. One resolved path per line; empty for a leaf module.
+  if Env::get("VIBE_LIST_DEPS") == "1" {
+    return handle {
+      let source = Fs::read_file(input_path)
+      // #1168 (Codex review, PR #1171): deps AND the hand-back source below
+      // must both derive from the INGESTED text, not the raw file bytes --
+      // ingest_source_text_fs can PREPEND imports a raw .vibe file never
+      // had (apply_vpkg_directory_shared_imports_fs, a directory-shared
+      // import inherited from an enclosing index.vpkg) or rewrite a
+      // contract's raw grammar into its desugared facade entirely. Deriving
+      // deps from raw source while handing back ingested source (as an
+      // earlier version of this fix did) would silently drop such an
+      // inherited import from the dependency graph: the worker gets a
+      // source that references it but no environment to resolve it
+      // against. ensure_fingerprint_fs_go's serial recursion never has this
+      // split -- resolve_deps_for_source_fs and check_module both operate
+      // on the SAME already-ingested `source` (ripple_get_source) -- so
+      // matching that here is what keeps this host-side path equivalent to
+      // the serial walk instead of an approximation of it.
+      let ingested = ingest_source_text_fs(input_path, source)
+      let (deps, _exports, _parse_count) = load_or_parse_module_header_fs(input_path, ingested, 0)
+      Fs::write_file(output_path, String::concat(String::join(deps, "\n"), "\n"))
+      // Hand back the SAME ingested source a parallel host driver must use
+      // to build this module's ModuleJob for the job-dir worker: check_module
+      // parses source with the ordinary module grammar, which a raw .vpkg
+      // contract (its own bodyless-decl/`export` grammar) is never valid
+      // input for. Piggybacking on the existing VIBE_LIST_DEPS spawn (rather
+      // than a second subprocess call per file) keeps #1170's discovery-loop
+      // parallelization win intact.
+      Fs::write_file(String::concat(output_path, ".src"), ingested)
+      0
+    } with { Exception::Throw(msg) => emit_compile_diag(output_path, msg) }
+  } else ()
+  // #1239 step 4(D): discovery AND ordering in ONE call.
+  //
+  // What this replaced split the work a coordinator needs -- resolve each
+  // module's imports, then rank the resulting graph -- across one spawn per
+  // module plus one more for the ordering (VIBE_LIST_DEPS above, once per
+  // module, then an ordering-only `VIBE_PLAN_MODULE_ORDER` mode over the
+  // collected edges). That per-module spawn is what dominated the whole
+  // path: on this repo's codegen_lexer_test.vibe graph (166 modules) the
+  // discovery loop measured 17.4s serially and 5.1s at 4-way concurrency,
+  // against 0.8s for this mode. Same graph, same canonical order -- the
+  // ordering still comes from plan_module_order, so there is still exactly
+  // one implementation of the rule.
+  //
+  // #1259 removed the ordering-only mode outright. It took resolved edges as
+  // TSV and emitted `<rank>\t<path>`, which was the right shape while
+  // discovery lived in the driver; once discovery moved in here it had no
+  // caller left but its own gate. The rule it exposed is covered in-process
+  // by lib/@vibe/compiler/module_graph/module_order_test.vibe (11 cases: diamond, longest
+  // path, strict rank descent, visit-order invariance, cycles, self-import,
+  // unreachable modules), so deleting the mode cost no coverage -- only a
+  // supported env-var surface that nothing called.
+  //
+  // The whole-graph counterpart to VIBE_LIST_DEPS above --
+  // one call instead of one per module, and already in the canonical rank
+  // order a coordinator dispatches from. See module_plan_manifest_fs
+  // (compiler/runtime/typecheck_fs.vibe) for why the order comes from the
+  // compiler rather than the driver.
+  //
+  //   <output_path>            version / module / dep rows (manifest)
+  //   <output_path>.<i>.src    module i's ingested source
+  //
+  // `i` is the module's index in the manifest's canonical order, so a driver
+  // that reads the manifest already knows every source file's name without
+  // sanitizing paths -- which is what VIBE_LIST_DEPS's per-file `.src`
+  // companion needs a collision-proof unique id for (#1170).
+  if Env::get("VIBE_MODULE_PLAN") == "1" {
+    return handle {
+      let (manifest, sources) = module_plan_manifest_fs(input_path)
+      let mut i = 0
+      while i < Array::length(sources) {
+        Fs::write_file(String::concat(output_path, String::concat(".", String::concat(__to_string(i), ".src"))), Array::get(sources, i))
+        i = i + 1
+      }
+      // The manifest is written LAST, same commit-marker discipline as the
+      // job dir's outcome.txt: a driver that sees it knows every .src it
+      // names is already complete.
+      Fs::write_file(output_path, manifest)
+      0
+    } with { Exception::Throw(msg) => emit_compile_diag(output_path, msg) }
+  } else ()
+  if Env::get("VIBE_CHECK_ONLY") == "1" {
+    return handle {
+      // TDRE8 is production-default only for the proven check/edit-cycle lane.
+      // This call also resets policy on every check-only invocation, including
+      // strict opt-out and observation-only trace runs.
+      configure_typing_dependency_env_reuse_policy()
+      // Telemetry remains opt-in even though TDRE8 reuse is now the default
+      // for this check-only lane. The counters cover only the db_typecheck_fs walk
+      // inside check_linked_file; the second linked inline-wasm validation is
+      // intentionally outside this incremental-cache telemetry boundary.
+      let telemetry_out = Env::get("VIBE_INCREMENTAL_TELEMETRY_OUT")
+      let invalidation_trace_out = Env::get("VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT")
+      let invalidation_trace_nonce = Env::get("VIBE_INCREMENTAL_INVALIDATION_TRACE_NONCE")
+      if telemetry_out != "" {
+        // Never leave a previous successful run looking like telemetry for a
+        // failed check. The sidecar is published only after check_linked_file.
+        if Fs::exists(telemetry_out) {
+          Fs::remove_file(telemetry_out)
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      if invalidation_trace_out != "" {
+        // A nonce prevents a caller from mistaking a stale successful sidecar
+        // for this check. Do this before the check and publish only afterwards.
+        if Fs::exists(invalidation_trace_out) {
+          Fs::remove_file(invalidation_trace_out)
+        } else {
+          ()
+        }
+        if invalidation_trace_nonce == "" {
+          throw("VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT requires VIBE_INCREMENTAL_INVALIDATION_TRACE_NONCE")
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      if telemetry_out != "" || invalidation_trace_out != "" {
+        set_incremental_typecheck_telemetry_enabled(true)
+      } else {
+        ()
+      }
+      // Reset before the check even when not requested: a long-lived direct
+      // caller cannot leak observations into a later requested check.
+      set_ingestion_fingerprint_telemetry_enabled(ingestion_telemetry_out != "")
+      set_ingestion_pipeline_telemetry_enabled(ingestion_pipeline_out != "")
+      // This has no cache behavior: it only makes the successful walk carry
+      // a canonical public-interface observation into the requested sidecar.
+      set_incremental_interface_trace_enabled(invalidation_trace_out != "")
+      // #2284: the closure record is filled by the loader during this call,
+      // and read by the gate below. Reset first so it describes THIS check.
+      unstable_closure_reset()
+      let checked_source_groups = check_linked_file_source_groups(input_path)
+      if telemetry_out != "" {
+        Fs::write_file(telemetry_out, incremental_typecheck_telemetry_json())
+      } else {
+        ()
+      }
+      if invalidation_trace_out != "" {
+        Fs::write_file(invalidation_trace_out, incremental_invalidation_trace_json(input_path, invalidation_trace_nonce))
+      } else {
+        ()
+      }
+      // Publish after successful checker work and before the final success
+      // marker. A sidecar write failure therefore fails this check, never
+      // leaves a stale/partial success observation.
+      if ingestion_telemetry_out != "" {
+        Fs::write_file(ingestion_telemetry_out, ingestion_fingerprint_telemetry_json(ingestion_telemetry_nonce))
+      } else {
+        ()
+      }
+      // #deprecated marker warnings (#1262 / ADR-0101): non-fatal `warning:`
+      // lines BEFORE the final `ok` marker. The launcher forwards them to
+      // stderr and still reports success; an older launcher only tests the
+      // file for non-emptiness, so extra lines stay backward compatible.
+      let dep_warns = check_deprecated_warnings_from_source_groups(input_path, checked_source_groups)
+      let out_text = StringBuilder::new()
+      let mut wi = 0
+      while wi < Array::length(dep_warns) {
+        StringBuilder::push(out_text, Array::get(dep_warns, wi))
+        StringBuilder::push(out_text, "\n")
+        wi = wi + 1
+      }
+      let redundant_import_warns = check_redundant_import_warnings_from_source_groups(input_path, checked_source_groups)
+      let mut rwi = 0
+      while rwi < Array::length(redundant_import_warns) {
+        StringBuilder::push(out_text, Array::get(redundant_import_warns, rwi))
+        StringBuilder::push(out_text, "\n")
+        rwi = rwi + 1
+      }
+      // #3044: a `let*` where `?` is the one spelling (a function body's
+      // top-level block).
+      let let_star_warns = check_let_star_warnings_from_source_groups(input_path, checked_source_groups)
+      let mut lwi = 0
+      while lwi < Array::length(let_star_warns) {
+        StringBuilder::push(out_text, Array::get(let_star_warns, lwi))
+        StringBuilder::push(out_text, "\n")
+        lwi = lwi + 1
+      }
+      // #2378: a qualified `fn` definition of a builtin name replaces that
+      // builtin at the program's own call sites, including in files that
+      // never import it, and until now nothing said so -- which is the
+      // "silently wrong" property that made it P0. (The calls the compiler
+      // synthesizes by that name still reach the builtin, #3132 / #3180.)
+      // A WARNING rather than a rejection: it breaks no
+      // existing program, and the reject-vs-warn choice stays open above it.
+      let builtin_shadow_warns = check_builtin_shadowing_warnings_from_source_groups(input_path, checked_source_groups)
+      let mut bwi = 0
+      while bwi < Array::length(builtin_shadow_warns) {
+        StringBuilder::push(out_text, Array::get(builtin_shadow_warns, bwi))
+        StringBuilder::push(out_text, "\n")
+        bwi = bwi + 1
+      }
+      // Unstable-surface warnings (ADR-0068). `docs/user/reference/stable-surface.md`
+      // section 6 used to claim this surface "is reached only through
+      // `@build.unstable`, an explicit flag, or an ADR still marked
+      // `proposed`" -- and `@build.unstable` appeared NOWHERE else in the
+      // tree, there was no such flag, and an ADR's status is bookkeeping a
+      // reader never sees. `TaskGroup::run` compiled with `vibe check` clean
+      // and no marker of any kind. This is the missing half.
+      //
+      // An ERROR, not a warning, and the escalation is deliberate: the surface
+      // has no external users yet. Measured -- exactly 14 files carry a
+      // column-1 `import @vibe/concurrent`, all of them in this repository
+      // (13 fixtures + 1 eval probe), and NONE under lib/, so the bootstrap
+      // chain never touches it. Refusing now costs 14 opt-ins; refusing after
+      // someone depends on it costs them a rewrite.
+      //
+      // The FS-compile branch carries the same gate, because a build that
+      // accepts what the check rejects is worse than either answer alone.
+      //
+      // `VIBE_UNSTABLE=1` opts in, read in EXPRESSION position like the
+      // other observation-only knobs: `check_selector_precedence.sh` derives
+      // the adapter's BRANCH order from statement-position `if Env::get(..)`,
+      // and a selector that picks no verb must not enter that order (it would
+      // then take a position in every arm's derived clear list). Read HERE and
+      // not in cli_support so the warning collectors stay pure functions of
+      // (path, sources) -- the same reason every other selector is an adapter
+      // concern.
+      let unstable_warns = if Env::get("VIBE_UNSTABLE") == "1" {
+        adapter_no_warnings()
+      } else {
+        check_unstable_surface_warnings_from_closure()
+      }
+      if Array::length(unstable_warns) > 0 {
+        return emit_compile_diag(output_path, String::join(unstable_warns, "\n"))
+      } else {
+        ()
+      }
+      StringBuilder::push(out_text, "ok\n")
+      Fs::write_file(output_path, StringBuilder::freeze(out_text))
+      // Publish this successful-check observation strictly after the final
+      // output. If that authoritative write fails, no pipeline sidecar exists.
+      if ingestion_pipeline_out != "" {
+        Fs::write_file(ingestion_pipeline_out, ingestion_pipeline_telemetry_json(ingestion_pipeline_nonce))
+      } else {
+        ()
+      }
+      0
+    } with { Exception::Throw(msg) => emit_compile_diag(output_path, msg) }
+  } else ()
+  // #594 Stage 3 (debug): file-mode compile resolving imports from the FS.
+  if Env::get("VIBE_FS_COMPILE") == "1" {
+    // #cov: `vibe test/run --coverage` sets VIBE_COVERAGE=1 so the user file (and
+    // its imports) is compiled with function/branch hit instrumentation; running
+    // the produced wasm fills the bitmap that the runner reads via VIBE_COV_OUT.
+    // #2510: the sidecar was already cleared, validated and the counters armed
+    // in the shared request block above. What is left here is the pair that
+    // cannot live there: publish LAST on the success path, and remove again on
+    // any throw.
+    return handle {
+      // Request validation and stale-sidecar deletion happened before every
+      // CLI early return above. This branch now only consumes the validated
+      // request while preserving the ordinary compile-path selection below.
+      //
+      // ADR-0068 gate, BEFORE any compile work. `vibe check` and this branch
+      // must agree: a build that accepts what the check rejects is the same
+      // "two verbs, two answers" defect #1567 fixed for check/diagnostics, and
+      // it is worse here because the accepting verb is the one that ships.
+      // `VIBE_UNSTABLE=1` opts in.
+      let unstable_opt_in = Env::get("VIBE_UNSTABLE") == "1"
+      // The entry's own import, rejected before any compile work is done. The
+      // closure check below is the complete one; this one keeps the common
+      // rejection fast.
+      let fs_unstable = if unstable_opt_in {
+        adapter_no_warnings()
+      } else {
+        check_unstable_surface_warnings_from_path(input_path)
+      }
+      if Array::length(fs_unstable) > 0 {
+        return emit_compile_diag(output_path, String::join(fs_unstable, "\n"))
+      } else {
+        ()
+      }
+      // #2284: the loader records every module of the resolved closure as it
+      // ingests it, so the complete answer is only available AFTER the compile
+      // has loaded them. Reset here so the record describes THIS compile --
+      // the unit-test batch runs many compiles in one daemon.
+      unstable_closure_reset()
+      // #3090: likewise the merged offset space an interpolation refusal is
+      // located against. A refusal thrown before this compile merges must not
+      // be read against the previous compile's files.
+      merged_offset_space_reset()
+      // #2510: the incremental typecheck telemetry, for a COMPILE. It used to
+      // be reachable only from the `VIBE_CHECK_ONLY` branch, which made "how
+      // many modules did this compile re-check?" unanswerable from the CLI --
+      // and that is the number criterion 5 is steered by: a leaf-edited
+      // compile pays 351.3 MB in its check phase against an unchanged build's
+      // 11.9 MB, and nothing said whether that was one module or two hundred.
+      //
+      // The counters are not check-only: the compile path reaches them through
+      // `prepare_file_fs_from_source_groups_persistent_cached` ->
+      // `db_typecheck_fs` -> `ensure_fingerprint_fs_impl`, which is where
+      // `modules_planned` is added. So this reports the real walk rather than
+      // a lane that happens to look similar.
+      //
+      let artifact_input_trace_nonce = Env::get("VIBE_ARTIFACT_INPUT_TRACE_NONCE")
+      let fs_lane = fs_lane_request(mark_memory, artifact_input_trace_out, artifact_input_trace_nonce, artifact_input_trace_checked_error_row_mode, artifact_input_trace_diagnostics_mode, artifact_input_trace_dep_order_seed)
+      // Record the lane that will actually produce `bytes`; raw Env presence
+      // is not an artifact property when selectors are combined.
+      let fs_coverage_selected = match fs_lane {
+        FsLaneCoverage => true,
+        _ => false
+      }
+      let fs_gc_selected = match fs_lane {
+        FsLaneGc => true,
+        _ => false
+      }
+      // #2497 unit 2: tell codegen (the constant-Bool fold and the module
+      // pruner) which exports will still be exports once this executable is
+      // stripped below; an instrumented lane is never stripped, never folded
+      // and never pruned.
+      set_executable_exports_stripped(!fs_lane_is_instrumented(fs_lane) && executable_exports_stripped(entry_name))
+      let (bytes, artifact_input_trace) = fs_lanes(fs_lane, input_path, entry_name)
+      set_executable_exports_stripped(false)
+      // Captured at the walk's boundary, PUBLISHED at the compile's. Reading
+      // the counters here keeps them describing the typing walk and nothing
+      // after it; writing here would publish a fresh sidecar for a compile the
+      // closure gate or the artifact write below still rejects (Codex P2).
+      let fs_telemetry_json = if fs_telemetry_out != "" {
+        incremental_typecheck_telemetry_json()
+      } else {
+        ""
+      }
+      // Binary-size (#1100): release executables ship without the name
+      // section / module-linking exports. Instrumented builds (coverage /
+      // trace / break / rc-shadow) are debug artifacts whose tooling reads
+      // both, so they stay untouched; so do `__no_entry__` test/bench builds
+      // (gated inside strip_executable_wasm_env).
+      let fs_instrumented = fs_lane_is_instrumented(fs_lane)
+      let core_bytes = if fs_instrumented {
+        bytes
+      } else {
+        strip_executable_wasm_env(bytes, entry_name)
+      }
+      // #1539: file-mode compilation bypasses the source preprocess wrapper.
+      // Never publish its component-private provider ABI as a standalone core:
+      // instrumentation lanes fail before the write, while the ordinary lane
+      // safely composes the exact parsed imports after executable stripping.
+      let out_bytes = if fs_gc_selected {
+        core_bytes
+      } else if fs_instrumented {
+        reject_stdin_provider_core(core_bytes, if fs_coverage_selected {
+          "VIBE_COVERAGE=1"
+        } else {
+          "this instrumentation mode"
+        })
+      } else {
+        maybe_wrap_stdin_provider_core(core_bytes, entry_name)
+      }
+      // #2284: gate before the ARTIFACT, not before the compile. The entry
+      // pre-check above cannot see a sibling that carries the import, and the
+      // closure is only known once the loader has walked it. A rejected build
+      // wastes the compile, which is the right trade for not paying a second
+      // full traversal on every build.
+      let closure_unstable = if unstable_opt_in {
+        adapter_no_warnings()
+      } else {
+        check_unstable_surface_warnings_from_closure()
+      }
+      if Array::length(closure_unstable) > 0 {
+        return emit_compile_diag(output_path, String::join(closure_unstable, "\n"))
+      } else {
+        ()
+      }
+      Fs::write_bytes(output_path, out_bytes)
+      // #1553: this observes the executable-strip + primary-output boundary.
+      // It is intentionally not called "final": optional sidecars below are
+      // still observable work and fs_compile_complete marks their completion.
+      if mark_memory {
+        let _ = Env::get("VIBE_PROFILE_MEMORY_MARK:write_output")
+        ()
+      } else {
+        ()
+      }
+      // Best-effort `.funcmap` sidecar (entry-file top-level funcs -> line). A
+      // failure to build/write it must NOT fail the compile (the wasm is already
+      // written), so swallow any Exception::Throw here. The discarded result is bound
+      // so the call is not DCE'd as a dead Unit side-effect.
+      let _funcmap_rc = handle {
+        write_funcmap_sidecar(input_path, output_path)
+      } with { Exception::Throw(_) => 0 }
+      // #819 (Codex review, PR #1214): entry-function cacheability sidecar
+      // for scripts/vibe_md.vibex's doctest execute-cache -- same
+      // best-effort shape as the funcmap sidecar just above (a failure here
+      // must not fail an otherwise-successful compile). Written only when
+      // requested, so unrelated compiles (vibe test/run/build without this
+      // env var) pay no extra parse.
+      let entry_testmeta_out = Env::get("VIBE_ENTRY_TESTMETA_OUT")
+      let _entry_meta_rc = if entry_testmeta_out != "" {
+        handle {
+          let cacheable = entry_cacheable_for_fs(input_path, entry_name)
+          Fs::write_file(entry_testmeta_out, if cacheable {
+            "1"
+          } else {
+            "0"
+          })
+          0
+        } with { Exception::Throw(_) => 0 }
+      } else {
+        0
+      }
+      // The compiler artifact is committed first; this requested observation
+      // sidecar is deliberately the final publication operation.
+      if artifact_input_trace_out != "" {
+        Fs::write_file(artifact_input_trace_out, artifact_input_trace)
+      } else {
+        ()
+      }
+      // Successful FS compilation is now complete, including optional
+      // sidecar publication. This is a coarse completion boundary only; it
+      // deliberately does not infer a normalize or link sub-phase.
+      if mark_memory {
+        let _ = Env::get("VIBE_PROFILE_MEMORY_MARK:fs_compile_complete")
+        ()
+      } else {
+        ()
+      }
+      // #2510: published LAST, past every sidecar including the
+      // failure-propagating artifact-input trace, and past the completion mark
+      // so an opt-in observation never lands inside the phase numbers it
+      // exists to explain. The counters were captured at the typing walk's
+      // boundary, so publishing here does not widen what they describe.
+      //
+      // Re-checked HERE as well as before the compile. The early refusal can
+      // only compare spellings for paths that already exist, and on a first
+      // build neither the artifact nor its derived sidecars nor the
+      // artifact-input trace is on disk yet, so an aliasing destination
+      // spelled any other way passes it. They exist by now, which is exactly
+      // what makes the identity comparison exact -- and it is exactly when
+      // they exist that writing here would destroy one of them. Refusing costs
+      // a failed build; writing would cost a wasm silently replaced by JSON,
+      // or a requested trace silently replaced by counters, under a zero exit.
+      if fs_telemetry_out == "" {
+        ()
+      } else {
+        refuse_telemetry_destination_conflict(fs_telemetry_out, input_path, output_path, Env::get("VIBE_ARTIFACT_INPUT_TRACE_OUT"),)
+        Fs::write_file(fs_telemetry_out, fs_telemetry_json)
+      }
+      0
+    } with {
+      // #1514: the evidence-passing culprit marker's offsets index whichever
+      // MODULE the offending handle lives in; resolve against the entry file
+      // only when the span provably spells the culprit there (see
+      // emit_compile_diag_fs_located). Everything else degrades to the
+      // stripped, unlocated message as before.
+      Exception::Throw(msg) => {
+        // #2510: a throw anywhere above -- including from a sidecar published
+        // after the telemetry write -- must not leave observations behind. This
+        // is what makes "a sidecar only exists for a compile that produced one"
+        // independent of where the write sits.
+        if fs_telemetry_out != "" && Fs::exists(fs_telemetry_out) {
+          Fs::remove_file(fs_telemetry_out)
+        } else {
+          ()
+        }
+        emit_compile_diag_fs_located(output_path, msg, input_path)
+      }
+    }
+  }
+  // #2149 `vibe fmt`: format a source file and write the result. Same
+  // (input, output) interface as `vibe normalize` below.
+  //
+  // The GUARD is the reason this is not a bare call to format_source. The
+  // formatter turned source that compiles into source that does not on four
+  // separate occasions (#945, #1429, #1505, #1821), and `--check` then
+  // reported the wreckage as correctly formatted. So the output is PARSED:
+  // if the input was a program and the output is not, the rewrite is
+  // discarded and the run reports non-zero. That question has a bounded
+  // answer, and it holds for the next spelling nobody has thought of yet.
+  //
+  // Ported from lib/@vibe/cli/fmt_entry.vibe rather than restated: this is
+  // the path an installed user runs, where no CI fmt gate is watching.
+  //
+  // On refusal the INPUT is written back, so the caller always has a valid
+  // file at output_path; the non-zero return is what says "I refused": 2 when
+  // the input does not parse (the parse error is in the `.diag` sidecar), 1
+  // when the formatted output does not parse and the input did. The runner
+  // exits 0 whatever this returns and prints the value as the last stdout
+  // line, so runtime/vibe's `fmt` arm reads that line -- discarding it is how
+  // a refusal once looked exactly like "nothing to change" (#1821).
+  if Env::get("VIBE_FMT") == "1" {
+    let src = Fs::read_file(input_path)
+    // #730 (D-3): pinned form is canonical, so fmt completes an unpinned
+    // `require` directive with `= #hash` when the workspace store can
+    // answer offline (best-effort; an uninstalled package leaves its line
+    // verbatim -- fetching belongs to `vibe add`/`update`). `.vpkg` headers
+    // included (#2260 round 3).
+    let fmt_pre = fill_require_pins_lenient(src)
+    // format_source dispatches on the extension: `.vpkg` package contracts
+    // get the canonical header writer, plain vibe sources get the verbatim
+    // require-head split (#1435, #2253 round 6).
+    let formatted = format_source(input_path, fmt_pre)
+    // A `.vpkg` header is not vibe syntax, so a whole-file parse never
+    // succeeds for one and the questions below would say nothing. format_vpkg
+    // already refuses to touch a header it cannot read -- the same policy
+    // reached by a different route (#1435).
+    //
+    // Two questions, both asked of the BODY (a require-pin head is not vibe
+    // syntax either and is reattached verbatim, so source and output start
+    // their body at the same boundary -- source_header_end; -1 refused and 0
+    // absent both mean "the body is the whole file"). First: does the INPUT
+    // parse? If not it is not a program, and no spelling is minted for it
+    // (#2636: `cond ? a : b` was reflowed into text that still did not parse,
+    // which `--check` then certified. lib/@vibe/cli/fmt_entry.vibe refused
+    // that first; this branch -- the route an installed user takes -- kept
+    // formatting under an older "no worse" promise until Codex found it on
+    // #2708). The parse error goes to the `.diag` sidecar and the verdict is
+    // 2, which runtime/vibe's `fmt` arm reports as "does not parse" with the
+    // edit named, not as a formatter bug. Second: does the OUTPUT parse? A
+    // rewrite that breaks a program that parsed is the formatter's own
+    // defect, verdict 1.
+    let fmt_head_end = if adapter_path_has_suffix(input_path, ".vpkg") {
+      0
+    } else {
+      let e = source_header_end(fmt_pre)
+      if e > 0 {
+        e
+      } else {
+        0
+      }
+    }
+    let fmt_body = String::substring(fmt_pre, fmt_head_end, String::length(fmt_pre))
+    let fmt_formatted_body = String::substring(formatted, fmt_head_end, String::length(formatted))
+    let fmt_is_vpkg = adapter_path_has_suffix(input_path, ".vpkg")
+    let fmt_input_error = if fmt_is_vpkg {
+      ""
+    } else {
+      adapter_parse_error_of(fmt_body)
+    }
+    if String::length(fmt_input_error) > 0 {
+      let _ = emit_compile_diag(output_path, String::concat("vibe fmt: refusing to format ", String::concat(input_path, String::concat(": it does not parse\n  ", fmt_input_error))))
+      Fs::write_bytes(output_path, adapter_string_to_bytes(src))
+      return 2
+    }
+    if !fmt_is_vpkg && !adapter_program_parses(fmt_formatted_body) {
+      Fs::write_bytes(output_path, adapter_string_to_bytes(src))
+      return 1
+    }
+    Fs::write_bytes(output_path, adapter_string_to_bytes(formatted))
+    return 0
+  }
+  // #594 `vibe normalize`: canonicalize a source file (module flatten + DCE +
+  // section layout) and write the result. Same (input, output) interface.
+  if Env::get("VIBE_NORMALIZE") == "1" {
+    let normalized = normalize_source(Fs::read_file(input_path))
+    Fs::write_bytes(output_path, adapter_string_to_bytes(normalized))
+    return 0
+  }
+  // `vibe test --update` (#1061 follow-up, #1235 review): patch a failing
+  // inspect() call's stale `content` literal to the actual value diagnosed
+  // by a prior run of the SAME test file. VIBE_INSPECT_UPDATE_STDOUT names
+  // the file holding that prior run's captured stdout (println's mismatch
+  // diagnostic, "inspect mismatch:\n  actual: ...\n  expected: ..."). Writes
+  // the ORIGINAL source back unchanged when no recognizable mismatch
+  // matches an actual inspect(...) call's content argument -- the caller
+  // (runtime/vibe's `test --update` loop) detects "nothing to do" by
+  // comparing output_path against input_path, same as VIBE_NORMALIZE's
+  // --check above.
+  if Env::get("VIBE_INSPECT_UPDATE") == "1" {
+    let src = Fs::read_file(input_path)
+    let captured = Fs::read_file(Env::get("VIBE_INSPECT_UPDATE_STDOUT"))
+    let patched = match compute_updated_source(src, captured) {
+      Some(new_src) => new_src,
+      None => src
+    }
+    Fs::write_bytes(output_path, adapter_string_to_bytes(patched))
+    return 0
+  }
+  // `vibe type-at`: typed hover (first LSP consumer of real EIdent offsets).
+  // VIBE_TYPE_LINE/COL are 1-based (matching offset_to_line_col). Writes the
+  // inferred type string of the identifier at that position, or empty when there
+  // is no env-visible ident there (see type_at.vibe LIMITATION note).
+  if Env::get("VIBE_TYPE_AT") == "1" {
+    let src = Fs::read_file(input_path)
+    let line = cli_adapter_parse_int_or(Env::get("VIBE_TYPE_LINE"), 1)
+    let col = cli_adapter_parse_int_or(Env::get("VIBE_TYPE_COL"), 1)
+    let ty = type_at_source(src, line, col)
+    Fs::write_bytes(output_path, adapter_string_to_bytes(cli_adapter_line_terminated(ty)))
+    return 0
+  }
+  // `vibe doc-at`: Rust-`///`-style doc comment lookup (#854), same
+  // VIBE_TYPE_LINE/COL 1-based position convention as VIBE_TYPE_AT. Writes the
+  // `///` doc text attached to the identifier's declaration, or empty when
+  // there is none (see doc_at.vibe LIMITATION: single-file scope, same as
+  // type_at_source/binding_occurrences).
+  if Env::get("VIBE_DOC_AT") == "1" {
+    let src = Fs::read_file(input_path)
+    let line = cli_adapter_parse_int_or(Env::get("VIBE_TYPE_LINE"), 1)
+    let col = cli_adapter_parse_int_or(Env::get("VIBE_TYPE_COL"), 1)
+    let doc = doc_at_source(src, line, col)
+    Fs::write_bytes(output_path, adapter_string_to_bytes(cli_adapter_line_terminated(doc)))
+    return 0
+  }
+  // `vibe binding-at`: AST-accurate binding occurrences (scope-precision rename /
+  // references groundwork). VIBE_TYPE_LINE/COL are 1-based. Writes one `START END`
+  // line per source span of the identifier under the cursor, or empty when there
+  // is no identifier there (see binding_at.vibe LIMITATION: name-based, no
+  // shadowing analysis yet).
+  if Env::get("VIBE_BINDING_AT") == "1" {
+    let src = Fs::read_file(input_path)
+    let line = cli_adapter_parse_int_or(Env::get("VIBE_TYPE_LINE"), 1)
+    let col = cli_adapter_parse_int_or(Env::get("VIBE_TYPE_COL"), 1)
+    let occ = binding_occurrences(src, line, col)
+    Fs::write_bytes(output_path, adapter_string_to_bytes(cli_adapter_line_terminated(join_binding_occurrences(occ))))
+    return 0
+  }
+  // `vibe symbols`: AST-accurate declaration outline. Writes one
+  // `NAME KIND START END` line per declared symbol (KIND = LSP SymbolKind int,
+  // START/END = BYTE offsets of the name, 0-based half-open -- ADR-0108, and
+  // measured: `main` after two 4-byte emoji reports the byte offset, not the
+  // codepoint one), or empty when the file declares none.
+  // Powers document-outline / go-to-definition without a text-regex scan.
+  //
+  // #946: `symbol_spans` throws (e.g. a lexer error on an unsupported
+  // character) was never caught here, so a genuine crash and "file declares
+  // no symbols" both produced the exact same empty `output_path` — the CLI
+  // launcher had no way to tell an editor "the outline failed" from "there's
+  // nothing to show". Route a thrown Error to the same `.diag` sidecar
+  // convention as VIBE_CHECK_ONLY below: `output_path` itself (the outline
+  // wire format LSP clients parse) is untouched on failure, so this can't
+  // emit a "plausible but wrong" symbol list.
+  //
+  // #2381: `VIBE_SYMBOLS_WITH_PATH=1` answers the same question over a whole
+  // TREE instead, one `PATH NAME KIND START END [DOC]` per declaration --
+  // `input_path` may then be a directory. The launcher turns it on whenever
+  // the invocation can produce lines from more than one file (several paths,
+  // or a directory) and for an explicit `--with-path`, so the field order a
+  // caller sees never depends on how many files happened to match.
+  if Env::get("VIBE_SYMBOLS") == "1" {
+    return handle {
+      if Env::get("VIBE_SYMBOLS_WITH_PATH") == "1" {
+        let (rows, failures) = symbol_spans_fs_report(input_path)
+        Fs::write_bytes(output_path, adapter_string_to_bytes(cli_adapter_line_terminated(cli_adapter_join_symbol_spans_with_path(rows))))
+        // The rows that WERE read still go to stdout; the files that could not
+        // be read go to the same `.diag` sidecar a thrown Error uses, so the
+        // launcher reports them on stderr and exits non-zero. Aborting the
+        // whole sweep at the first bad file would lose the answer the batch
+        // mode exists for -- one unparseable file under `lib/` took the entire
+        // 966-file sweep with it -- and dropping it silently is the partial
+        // inventory that reads as complete.
+        if Array::length(failures) > 0 {
+          let _ = emit_compile_diag(output_path, String::join(failures, "\n"))
+          ()
+        } else {
+          ()
+        }
+      } else {
+        // #2898: the EXTENSION picks the grammar. A `.vpkg` is the package
+        // contract -- a list of bodyless declarations, and the one file that
+        // IS a package's public API -- so reading it with statement grammar
+        // answered `unexpected token: type` about a file the build accepts.
+        let src = Fs::read_file(input_path)
+        let syms = handle {
+          symbol_spans_with_docs_for_path(input_path, src)
+        } with { Exception::Throw(msg) => throw(symbol_spans_locate_failure(input_path, src, msg)) }
+        Fs::write_bytes(output_path, adapter_string_to_bytes(cli_adapter_line_terminated(cli_adapter_join_symbol_spans(syms))))
+      }
+      0
+    } with { Exception::Throw(msg) => emit_compile_diag(output_path, msg) }
+  }
+  // `vibe escapes` (#1262): the `let mut` bindings that ESCAPE their declaring
+  // scope via closure capture -- exactly the ones codegen lowers to a heap ref
+  // cell instead of a wasm local, and exactly the ones whose writes are
+  // observable from outside the scope that declared them. One
+  // `NAME START END` line each (char offsets of the binding's own name);
+  // empty output means every `let mut` in the file stays a plain local.
+  // A report, not a failure: this changes no typing and is never an error.
+  // Same `.diag` sidecar convention as VIBE_SYMBOLS for a lex/parse failure,
+  // so "the query broke" stays distinguishable from "nothing escapes".
+  //
+  // `VIBE_ESCAPES_STRICT=1` (`vibe escapes --strict`) answers the ENFORCEMENT
+  // side of the same question instead: the checker's strict predicate, which
+  // subtracts binder shadowing (checker/checker_escape.vibe), i.e. the fact
+  // `TypeEnv` carries since ADR-0100 (1). The default lane stays the LOWERING
+  // answer -- "does codegen box this?" -- and over-reports on purpose. Ask the
+  // default one about cost, the strict one about authority.
+  if Env::get("VIBE_ESCAPES") == "1" {
+    return handle {
+      let src = Fs::read_file(input_path)
+      let esc = if Env::get("VIBE_ESCAPES_STRICT") == "1" {
+        escape_spans_strict(src)
+      } else {
+        escape_spans(src)
+      }
+      Fs::write_bytes(output_path, adapter_string_to_bytes(cli_adapter_line_terminated(join_escape_spans(esc))))
+      0
+    } with { Exception::Throw(msg) => emit_compile_diag(output_path, msg) }
+  }
+  // `vibe rc-classify` / `vibe rc-plan` (issue 1981): the same classifier
+  // sets and Perceus plan linked_compile computes after
+  // effect_lowering_prelude. Empty output = nothing special. A thrown
+  // Error goes to the `.diag` sidecar so "the query broke" stays
+  // distinguishable from "no special sets / no actions".
+  if Env::get("VIBE_RC_CLASSIFY") == "1" {
+    return handle {
+      let src = Fs::read_file(input_path)
+      Fs::write_bytes(output_path, adapter_string_to_bytes(cli_adapter_line_terminated(rc_classify_source(src))))
+      0
+    } with { Exception::Throw(msg) => emit_compile_diag(output_path, msg) }
+  }
+  if Env::get("VIBE_RC_PLAN") == "1" {
+    return handle {
+      let src = Fs::read_file(input_path)
+      Fs::write_bytes(output_path, adapter_string_to_bytes(cli_adapter_line_terminated(rc_plan_source(src, Env::get("VIBE_RC_PLAN_FN")))))
+      0
+    } with { Exception::Throw(msg) => emit_compile_diag(output_path, msg) }
+  }
+  // `vibe allocs` (ADR-0091 / #1262): every heap-allocating site, one
+  // `FN KIND OFFSET` line each. Empty output means this file allocates
+  // nothing -- so a lex/parse failure must NOT come back as empty; it goes to
+  // the `.diag` sidecar like every other query here.
+  if Env::get("VIBE_ALLOCS") == "1" {
+    return handle {
+      let src = Fs::read_file(input_path)
+      Fs::write_bytes(output_path, adapter_string_to_bytes(cli_adapter_line_terminated(cli_adapter_join_alloc_spans(alloc_spans(src)))))
+      0
+    } with { Exception::Throw(msg) => emit_compile_diag(output_path, msg) }
+  }
+  // `vibe deps` (#988): the resolved import closure of `input_path` -- one
+  // repo-relative path per line, the entry itself excluded, dependency before
+  // dependent. Empty output means the file imports nothing.
+  //
+  // This is the SAME collection the build performs (collect_source_groups_fs),
+  // not a re-derived graph, so it cannot drift from what the compiler actually
+  // resolves. It also rides the incremental build's persistent header cache
+  // (keyed by path + source fingerprint), so re-asking after an unrelated edit
+  // re-parses only the files that changed.
+  //
+  // An unresolvable import IS an error and goes to the `.diag` sidecar (same
+  // convention as VIBE_SYMBOLS), because a caller selecting tests from a
+  // truncated dep list would silently under-select.
+  //
+  // `VIBE_DEPS_DIRECT=1` (`vibe deps --direct`) reports ONE HOP instead: the
+  // file's own resolved imports. That is the form a dependency index wants,
+  // because its cache invalidation then matches the compiler's own -- a file's
+  // direct deps are a function of that file's text alone (which is exactly what
+  // load_or_parse_module_header_fs keys its persistent cache on), so editing
+  // one file re-queries one file. Transitive closures do not have that
+  // property: any edit anywhere in a closure invalidates the whole closure.
+  // Callers that want the closure can walk the direct edges themselves.
+  if Env::get("VIBE_DEPS") == "1" {
+    return handle {
+      if Env::get("VIBE_DEPS_DIRECT") == "1" {
+        // Ingest first, exactly as the collection walk does: a `.vpkg`
+        // contract's imports live in its DESUGARED facade, and a directory
+        // with shared vpkg imports injects them into each member. Reading the
+        // raw bytes instead would under-report both.
+        let raw = Fs::read_file(input_path)
+        let source = ingest_source_text_fs(input_path, raw)
+        let (deps, _, _) = load_or_parse_module_header_fs(input_path, source, 0)
+        Fs::write_bytes(output_path, adapter_string_to_bytes(cli_adapter_line_terminated(join_lines(deps))))
+      } else {
+        let groups = collect_source_groups_fs(input_path)
+        Fs::write_bytes(output_path, adapter_string_to_bytes(cli_adapter_line_terminated(cli_adapter_join_dep_paths(groups, input_path))))
+      }
+      0
+    } with { Exception::Throw(msg) => emit_compile_diag(output_path, msg) }
+  }
+  // `vibe grep` (#1572): AST pattern search. `input_path` is the root to sweep
+  // (a file or a directory); the pattern and the filters arrive as env vars so
+  // this keeps the same (input, output) interface every other query mode uses.
+  // A report, not a failure: no match is empty output (`[]` in JSON), and only
+  // a bad PATTERN or filter is an error -- routed to the `.diag` sidecar, the
+  // same convention VIBE_SYMBOLS uses, so `output_path` never carries a
+  // plausible-but-wrong result list.
+  // #2914: the file list the sweep WOULD visit, so a driver can partition it
+  // across processes without re-deriving the skip policy (see grep_list_files).
+  // Checked before the sweep itself so it never runs one.
+  if Env::get("VIBE_GREP_LIST_FILES") == "1" {
+    return handle {
+      Fs::write_bytes(output_path, adapter_string_to_bytes(cli_adapter_line_terminated(String::concat(grep_file_list_banner(), String::concat("\n", grep_list_files(input_path))))))
+      0
+    } with { Exception::Throw(msg) => emit_compile_diag(output_path, msg) }
+  }
+  if Env::get("VIBE_GREP") == "1" {
+    return handle {
+      // `VIBE_GREP_FILE_LIST` names a file of newline-separated paths: ONE
+      // chunk of a partitioned sweep. Absent, the list is the whole walk of
+      // `input_path`, which is the unchanged single-process behaviour.
+      //
+      // ONE call site for both, because two of them let `VIBE_GREP_RESUME` be
+      // honoured on one path and SILENTLY IGNORED on the other -- which is
+      // what the first version did, and what the budget gate's self-test
+      // caught by mutating the flag on and seeing nothing change. A switch
+      // that does nothing in one mode and everything in the other is the
+      // shape this repo ranks above crashing.
+      let chunk_list = Env::get("VIBE_GREP_FILE_LIST")
+      let sweep_files = if chunk_list != "" {
+        grep_read_file_list(chunk_list)
+      } else {
+        grep_collect_files(input_path)
+      }
+      let resume_out = if Env::get("VIBE_GREP_RESUME") == "1" {
+        String::concat(output_path, ".resume")
+      } else {
+        ""
+      }
+      let (text, warnings) = grep_scan_files_report(sweep_files, Env::get("VIBE_GREP_PATTERN"), adapter_split_nonempty_lines(Env::get("VIBE_GREP_WHERE")), adapter_split_nonempty_lines(Env::get("VIBE_GREP_WHERE_ROW")), Env::get("VIBE_GREP_ONLY"), Env::get("VIBE_GREP_JSON") == "1", adapter_grep_named_files(input_path), resume_out)
+      // #2133: both are line-oriented (`path:line:col: <match>` one per line,
+      // and one warning per line), so both terminate their last record. JSON
+      // mode gets the trailing newline too, which is conventional and which no
+      // JSON reader notices.
+      Fs::write_bytes(output_path, adapter_string_to_bytes(cli_adapter_line_terminated(text)))
+      Fs::write_bytes(String::concat(output_path, ".warn"), adapter_string_to_bytes(cli_adapter_line_terminated(warnings)))
+      0
+    } with { Exception::Throw(msg) => emit_compile_diag(output_path, msg) }
+  }
+  // `vibe diagnostics`: collect ALL syntax errors (recovering parser) or the
+  // single located type error, one per line. A report, not a failure — always
+  // returns 0 (empty output means clean).
+  // #820 sub-item 1: `VIBE_DIAGNOSTICS_JSON=1` (`vibe diagnostics --json`)
+  // emits the same diagnostics as a JSON array instead, reusing the LSP
+  // server's existing "line L:C: message" -> Diagnostic parser
+  // (lsp_diagnostics_json_string) so there is exactly one structured
+  // diagnostic shape shared by the editor protocol and the CLI.
+  if Env::get("VIBE_DIAGNOSTICS") == "1" {
+    let src = Fs::read_file(input_path)
+    // ADR-0068 opt-in, in the buffer lane too. This is the mode `vibe check
+    // --single-file` and the editor use, and it does not resolve imports -- so
+    // an UNUSED `import @vibe/concurrent` analyzed clean here while `vibe check`
+    // and `vibe build` both rejected the same buffer (#2277 review). The gate is
+    // a property of the declaration, not of the imported names being reached, so
+    // it belongs in every lane that reads the file. Scanned on the buffer's own
+    // text: this lane exists for unsaved buffers, and ingestion would answer
+    // about the file on disk instead.
+    //
+    // ONE collector for both halves (#2314 review). This used to call
+    // `unstable_surface_diagnostics(input_path, src)` beside the base set, and
+    // that second scan read the RAW buffer -- so for a `.vpkg` whose header it
+    // could not parse, `checked_warning_stmts` returned `None` and the opt-in
+    // error was dropped. It was invisible only because the base set was
+    // answering `expected { but got eof` about the same file; removing that
+    // false error would have left the contract reporting NOTHING. Measured
+    // before this: the LSP (which already used the combined collector)
+    // reported the opt-in for such a contract and this lane did not.
+    let all_diags = handle {
+      collect_all_diagnostics_with_unstable_for_path(input_path, src, Env::get("VIBE_UNSTABLE") == "1")
+    } with { Exception::Throw(_) => adapter_no_warnings() }
+    if Env::get("VIBE_DIAGNOSTICS_JSON") == "1" {
+      // The JSON form is what the editor consumes; dropping the opt-in
+      // diagnostic here would make the LSP the one surface that still accepts
+      // the unstable import (#2277 review).
+      Fs::write_bytes(output_path, adapter_string_to_bytes(lsp_diagnostics_json_of_messages(src, all_diags)))
+    } else {
+      Fs::write_bytes(output_path, adapter_string_to_bytes(cli_adapter_line_terminated(join_lines(all_diags))))
+    }
+    return 0
+  }
+  // #726: emit the MERGED whole program as source text. `input_path` is an
+  // entry file whose imports resolve from the FS; the output is the flat
+  // source produced by the real merge machinery (export-rename plan +
+  // private namespacing), replacing the Python flattener in
+  // scripts/generate_bundle.sh. The flatten step compiles the
+  // COMMITTED flat module source with the seed (the same robust single-file
+  // lane as stage1) and runs this mode on it — the previous standalone-tool
+  // approach FS-compiled the whole 200-file graph with the seed, which hits
+  // a deterministic cold-cache OOB inside the FIXED seed binary
+  // (build_persistent_sources_cache_text; unreachable in this lane).
+  // Adding this adapter -> merge_sources import edge is safe now that the
+  // committed bundle is itself merge-built (zero duplicate defs, no
+  // first-match roulette to reshuffle).
+  // #1633 internal coverage-driver exposure. This is deliberately a separate
+  // mode from VIBE_EMIT_MERGED_SOURCE: ordinary flatten output remains byte-
+  // for-byte governed by merged_program_source_fs, while this mode appends one
+  // driver after resolving its exact-file value imports through the same
+  // production rename plan. It is not surfaced as an end-user CLI command.
+  if Env::get("VIBE_EMIT_COVERAGE_DRIVER_SOURCE") == "1" {
+    return handle {
+      if Env::get("VIBE_EMIT_MERGED_SOURCE") == "1" {
+        throw("VIBE_EMIT_COVERAGE_DRIVER_SOURCE cannot be combined with VIBE_EMIT_MERGED_SOURCE")
+      } else {
+        ()
+      }
+      let driver_path = own_host_string(Env::get("VIBE_COVERAGE_DRIVER_PATH"))
+      if driver_path == "" {
+        throw("VIBE_EMIT_COVERAGE_DRIVER_SOURCE requires VIBE_COVERAGE_DRIVER_PATH")
+      } else {
+        ()
+      }
+      if entry_name == "" {
+        throw("VIBE_EMIT_COVERAGE_DRIVER_SOURCE requires the driver entry name")
+      } else {
+        ()
+      }
+      let merged_src = coverage_driver_program_source_fs(input_path, driver_path)
+      // Prune before the pinned seed type-checks the result. The full no-DCE
+      // compiler contains intentionally dormant generic scaffolding that is
+      // not a valid standalone program; the driver and every exact target it
+      // reaches remain in the emitted ordinary source.
+      let driver_src = build_module_source_from_source(merged_src, entry_name)
+      Fs::write_file(output_path, driver_src)
+      0
+    } with { Exception::Throw(msg) => emit_compile_diag(output_path, msg) }
+  }
+  if Env::get("VIBE_EMIT_MERGED_SOURCE") == "1" {
+    return handle {
+      let merged_src = merged_program_source_fs(input_path)
+      Fs::write_file(output_path, merged_src)
+      0
+    } with { Exception::Throw(msg) => emit_compile_diag(output_path, msg) }
+  }
+  // #537 `vibe compile --wit`: emit the WIT world for the file's effect
+  // surface (exported functions -> world exports; their `with E` rows ->
+  // world imports). Same (input, output) interface; imports resolved from FS.
+  // Contract: docs/internal/design/effect-wit-mapping.md.
+  if Env::get("VIBE_EMIT_WIT") == "1" {
+    return adapter_emit_wit(input_path, output_path)
+  }
+  // #537 `vibe serve` artifact step: validate the wasi-http P3 handler
+  // contract, compile the file, and wrap it into a component exporting
+  //   handler: func(method, url, headers, body: string) -> string
+  // The runner layer (runtime/vibe serve / scripts) composes the result with
+  // the P3 HTTP adapter and launches `wasmtime serve` — artifact generation
+  // stays in the compiler, serving stays in the runner.
+  if Env::get("VIBE_SERVE_COMPONENT") == "1" {
+    return adapter_serve_component(input_path, output_path)
+  }
+  // `vibe build --component` (docs/internal/design/component-lazy-dispatch.md).
+  // Immediately after the serve wrap: both produce a component from a library
+  // build, and keeping them adjacent keeps the launcher's derived clear list
+  // for the two identical but for each other.
+  if Env::get("VIBE_BUILD_COMPONENT") == "1" {
+    return adapter_command_component(input_path, output_path)
+  }
+  let source = Fs::read_file(input_path)
+  // ADR-0068 gate for the SINGLE-SOURCE lane. `VIBE_TEST_BACKEND=gc` and
+  // `VIBE_BENCH_BACKEND=gc` reach compilation through here -- `runtime/vibe`
+  // clears `VIBE_FS_COMPILE` and selects the backend -- so this lane compiled
+  // and RAN a file with an unstable import while every check form rejected the
+  // same declaration (#2277 review). Measured: `vibe test` said the file was
+  // refused, `VIBE_TEST_BACKEND=gc vibe test` said `1 passed`.
+  //
+  // The entry's own bytes, with no ingestion: this lane resolves no imports, so
+  // there is no ingested text to differ from them.
+  let bare_unstable = if Env::get("VIBE_UNSTABLE") == "1" {
+    adapter_no_warnings()
+  } else {
+    // #2938: this gate LEXES (`unstable_import_diagnostics` ->
+    // `lex_with_offsets`), and it runs BEFORE the compile's own handler
+    // exists, so a lexer error left this lane as an uncaught throw: the host
+    // printed `vibe: uncaught error: unexpected character: \` and trapped,
+    // and no `.diag` was written at all. A TYPE error in the same file, on the
+    // same lane, produced `line 2:16-22: binding type mismatch ...` on the
+    // sidecar -- two kinds of rejection, one of them indistinguishable from a
+    // compiler crash. The differential fuzzer classifies exactly that (no
+    // artifact, no diag) as COMPILE_CRASH, which is why 135 of 300 mutated
+    // programs were findings.
+    //
+    // The FS lane's wrapper already swallows here, and says why: "An
+    // unreadable or uningestable entry is the compile's error to report, in
+    // its own words" (`check_unstable_surface_warnings_from_path`). This lane
+    // called the collector directly and inherited no such guard. Falling
+    // through leaves the compile below to report it from inside its handler,
+    // which writes a LOCATED diagnostic.
+    //
+    // Nothing is weakened: a file that cannot be lexed has no imports to
+    // admit, so there is no unstable surface for this gate to miss.
+    handle {
+      unstable_surface_diagnostics(input_path, source)
+    } with { Exception::Throw(_) => adapter_no_warnings() }
+  }
+  if Array::length(bare_unstable) > 0 {
+    return emit_compile_diag(output_path, String::join(bare_unstable, "\n"))
+  } else {
+    ()
+  }
+  profile_memory_mark(mark_memory)
+  // #594 Stage 1b: emit-module-source mode. VIBE_EMIT_MODULE_SOURCE=1 reuses the
+  // same (input, output, entry) interface but, instead of compiling, writes the
+  // flat module source for `entry_name` (DCE from the entry, surviving statements
+  // emitted as their original source text). This is the replacement for
+  // the MoonBit host `emit-module-source`, so the flat-source step needs no host.
+  if Env::get("VIBE_EMIT_MODULE_SOURCE") == "1" {
+    let module_source = build_module_source_from_source(source, entry_name)
+    Fs::write_bytes(output_path, adapter_string_to_bytes(module_source))
+    profile_memory_mark(mark_memory)
+    0
+  } else {
+    // ADR-0055 #493 cutover toggle: `ss_lane_request` takes the RC path on
+    // `rc_flag != "0"`, so UNSET selects RC and only an explicit VIBE_RC=0
+    // selects the legacy bump path. Measured on the same input through the
+    // seed: unset and VIBE_RC=1 both produce 2,814,912 bytes, VIBE_RC=0
+    // produces 1,969,067.
+    // #1514: bound OUTSIDE the handle so the `Throw` arm -- a sibling scope, not
+    // the handled body -- can name it when resolving a diagnostic's offset.
+    let source_cfg = apply_cfg_env(source, Env::get("VIBE_CFG"))
+    handle {
+      let rc_flag = Env::get("VIBE_RC")
+      // Compiler-generated flat/module source carries reserved provenance
+      // statements. Trust is out-of-band: ordinary source bytes can never
+      // opt themselves into this lane.
+      let trusted_generated = Env::get("VIBE_INTERNAL_TRUSTED_SOURCE") == "1"
+      let ss_lane = ss_lane_request(rc_flag)
+      // Same announcement as the FS lane: the stage self-build and the
+      // compile-only artifact are this lane's flat module sources, in which
+      // every function is spelled `export`.
+      set_executable_exports_stripped(!ss_lane_is_instrumented(ss_lane) && executable_exports_stripped(entry_name))
+      let bytes = ss_lanes(ss_lane, source_cfg, entry_name, trusted_generated)
+      set_executable_exports_stripped(false)
+      profile_memory_mark(mark_memory)
+      // Binary-size (#1100): same release strip as the FS-compile lane above.
+      // This single-source lane builds the compiler's own stage wasm
+      // (generations.sh), so the dist CLI sheds its name section and the
+      // 700+ `*_exp_lib__*` module-linking exports here. gc / coverage /
+      // rc-shadow lanes stay untouched (parity and debug tooling).
+      let ss_instrumented = ss_lane_is_instrumented(ss_lane)
+      let ss_out_bytes = if ss_instrumented {
+        bytes
+      } else {
+        strip_executable_wasm_env(bytes, entry_name)
+      }
+      Fs::write_bytes(output_path, ss_out_bytes)
+      profile_memory_mark(mark_memory)
+      0
+    } with {
+      // #1514: `source_cfg` is the exact text `check_program` ran on, so a
+      // marker-carrying diagnostic can be resolved to line:col here.
+      // #2938: `emit_compile_diag_located` locates a message that carries an
+      // `[@off=` marker, which a TYPE error has and a LEXER error does not -- so
+      // this lane wrote `unexpected character: \` with no position while
+      // `vibe check` on the same file answered `line 2:13:`. `located_lex_message`
+      // returns anything else untouched, so the marker path is unaffected.
+      Exception::Throw(msg) => emit_compile_diag_located(output_path, located_lex_message(source_cfg, msg), source_cfg)
+    }
+  }
+}
+
+/// #1137: run the production CLI via a real `fn main -> Unit` (ADR-0075's
+/// convention every other tool uses) instead of the raw `cli_main` ABI, so
+/// `runtime/vibe`'s default `_start` invocation gets a genuine process exit
+/// code -- `cli_main`'s own `Int` return would only be PRINTED by the
+/// auto-synthesized `_start` (ADR-0069), same gap `lib/@vibe/cli/main.vibex`
+/// (PR #1217) closed for the OTHER, unrelated same-named `cli_main`.
+///
+/// Deliberately declared HERE, alongside `cli_main` in this same file
+/// (cli_adapter.vibe is the merge/flatten tool's designated entry, #726's
+/// `VIBE_EMIT_MERGED_SOURCE` mode keeps only the entry file's OWN top-level
+/// exports publicly named -- everything else gets private-namespace-mangled
+/// into `*_exp_lib__*` names). A separate file that imports `cli_main` would
+/// make `cli_adapter.vibe` a mere dependency of whatever new file became the
+/// entry instead, and `cli_main` -- the self-hosting bootstrap's own
+/// `--invoke cli_main` build-tool ABI (ADR-0069) -- would be silently
+/// renamed out of existence in the flattened source. Keeping both exports in
+/// the entry file itself avoids the whole reachability-root problem: no
+/// bundle-manifest changes, no bootstrap bump, no seed-entry change needed.
+///
+/// Ordinary `export fn` form, NOT the `fn main { ... }` parser sugar:
+/// compiler source itself must stay compilable by the currently-pinned
+/// seed, and ADR-0069 notes `fn main` sugar in compiler source needs a seed
+/// bump first. `_start` synthesis (linked_compile.vibe) detects a
+/// Unit-returning entry from the plain declared return type -- sugar
+/// agnostic -- so this gets the same no-print / real-exit-code `_start`
+/// without needing the sugar or a seed bump.
+export fn main() -> Unit allows Exception + Fs + Env + Stdin + Console + Stderr + Process + Profiler {
+  // `runtime/vibe` sets VIBE_HOST_ACTION_OUT on EVERY verb it forwards (the
+  // verb may plan a host action), so the verb test has to come before the
+  // legacy `profile` planner, which reads the same variable.
+  let code = if user_dispatch_is_verb(host_argv_first()) {
+    cli_main()
+  } else if Env::get("VIBE_HOST_ACTION_OUT") == "" {
+    cli_main()
+  } else {
+    profile_plan_main()
+  }
+  if code != 0 {
+    vibe_process_exit_raw(code)
+  } else {
+    ()
+  }
+}
+
+/// argv[0] as the host handed it, "" when there is none.
+fn host_argv_first() -> String with Env {
+  if Env::args_len() == 0 {
+    ""
+  } else {
+    own_host_string(Env::args_get(0))
+  }
+}
+
+/// The whole argv as an owned array, for the verb dispatcher.
+fn host_argv() -> Array[String] with Env {
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Env::args_len() {
+    Array::push(out, own_host_string(Env::args_get(i)))
+    i = i + 1
+  }
+  out
+}
+
+/// The full env-mode CLI: every lane table entry.
+///
+/// A first argument that names a user verb (`test`, `check`, `grep`, ...)
+/// goes to the verb dispatcher `runtime/vibe` talks to (#2858); anything
+/// else is the positional `<src> <out> <entry>` adapter protocol selected by
+/// `VIBE_*` variables. A verb cannot collide with a source path: a verb has no
+/// `/` and no `.vibe` suffix, and the positional protocol always names a
+/// file. The verb branch discharges its own exception to stderr + exit 1,
+/// where the launcher used to print the adapter's `.diag` sidecar.
+///
+/// The verb branch EXITS with its code rather than returning it: the seed
+/// names `cli_main` as this artifact's entry, so the synthesized `_start`
+/// calls it and PRINTS the returned Int (the positional protocol's callers
+/// read `.diag` sidecars and send stdout to /dev/null, so it never showed).
+/// `runtime/vibe` reads the process status and passes stdout through, so
+/// returning would append a stray `0` (or `1`, with exit status 0) to every
+/// verb's output -- `vibe check`'s empty-means-clean output included.
+export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Console + Stderr + Process + Profiler {
+  if user_dispatch_is_verb(host_argv_first()) {
+    // #2513: the `#cfg` flag set for every module this invocation parses;
+    // cli_main_with_lanes does the same for the positional protocol.
+    configure_cfg_flags()
+    // The checked effect-row mode is the CLI default and a process-wide cell
+    // that defaults to UNCHECKED until an invocation sets it; the positional
+    // protocol sets it in cli_main_with_lanes, so the verb route sets it here
+    // before any lane runs (Codex review of #2858). `VIBE_CHECK_ERROR_ROW=0`
+    // is the documented opt-out, the same spelling as there.
+    set_error_row_checked(Env::get("VIBE_CHECK_ERROR_ROW") != "0")
+    // The checked-module cache mode is the same kind of per-invocation cell
+    // (cli_main_with_lanes sets it for the positional protocol).
+    let checked_module_mode = Env::get("VIBE_CHECKED_MODULE_CACHE")
+    set_checked_module_cache_mode(if checked_module_mode == "" {
+      "off"
+    } else {
+      checked_module_mode
+    })
+    let code = run_user_dispatch_args(host_argv())
+    vibe_process_exit_raw(code)
+    code
+  } else {
+    cli_main_with_lanes(fs_lane_compile_full, ss_lane_compile_full)
+  }
+}
+
+/// #2497: the compile-only artifact's entry. Same CLI, production lane tables
+/// only; a request for any other lane is refused by name. Built by
+/// scripts/build_compile_only.sh from the module source that
+/// scripts/generate_bundle.sh emits rooted at `main_compile_only`, so the gc
+/// backend, the instrumentation compiles and the rc-shadow lane are not merely
+/// unreachable at run time but absent from the wasm (pinned by
+/// scripts/check_compile_only_lanes.sh). Declared in this file for the same
+/// reason `main` is: only the entry file's own exports keep their public
+/// names through the flatten.
+export fn cli_main_compile_only() -> Int with Exception + Fs + Env + Profiler + Stdin + Console {
+  cli_main_with_lanes(fs_lane_compile_production, ss_lane_compile_production)
+}
+
+export fn main_compile_only() -> Unit with Exception + Fs + Env + Process + Profiler + Stdin + Console {
+  let code = cli_main_compile_only()
+  if code != 0 {
+    vibe_process_exit_raw(code)
+  } else {
+    ()
+  }
+}

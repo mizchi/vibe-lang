@@ -1,0 +1,73 @@
+// Equality type shapes.
+
+import @vibe/compiler/core {
+  TypeExpr
+}
+
+import ./equality_aliases.vibe {
+  eq_expand_alias_ty
+}
+
+import ./equality_registry.vibe {
+  builtin_string_map_applied
+}
+
+import ./formal_scope.vibe {
+  subst_scope_formals_ty
+}
+
+/// A parameter ANNOTATION rendered into the recursive shape grammar
+/// (`shape_key`'s: Name / `(s1,..)` / `[s]` / "" unknown). Only shapes this
+/// pass can compare are produced; anything else collapses to "" (unknown).
+export fn ty_to_eq_shape(t: TypeExpr) -> String {
+  ty_to_eq_shape_expanded(eq_expand_alias_ty(subst_scope_formals_ty(t)))
+}
+
+fn ty_to_eq_shape_expanded(t: TypeExpr) -> String {
+  match t {
+    TyName(n) => n,
+    TyUnit => "{u}",
+    TyTuple(ts) => if Array::length(ts) == 0 {
+      ""
+    } else {
+      let mut acc = "("
+      let mut i = 0
+      while i < Array::length(ts) {
+        let sub = ty_to_eq_shape_expanded(Array::get(ts, i))
+        acc = if i == 0 {
+          String::concat(acc, sub)
+        } else {
+          String::concat(acc, String::concat(",", sub))
+        }
+        i = i + 1
+      }
+      String::concat(acc, ")")
+    },
+    TyApp(n, args) => if n == "Array" && Array::length(args) == 1 {
+      String::concat("[", String::concat(ty_to_eq_shape_expanded(Array::get(args, 0)), "]"))
+    } else if n == "Option" && Array::length(args) == 1 {
+      String::concat("{o:", String::concat(ty_to_eq_shape_expanded(Array::get(args, 0)), "}"))
+    } else if n == "Result" && Array::length(args) == 2 {
+      String::concat("{r:", String::concat(ty_to_eq_shape_expanded(Array::get(args, 0)), String::concat(",", String::concat(ty_to_eq_shape_expanded(Array::get(args, 1)), "}"))))
+    } else if builtin_string_map_applied(n, args) {
+      String::concat("{m:String,", String::concat(ty_to_eq_shape_expanded(Array::get(args, 0)), "}"))
+    } else if n == "Map" && Array::length(args) == 2 {
+      // #2218: a Map shape, so an ANNOTATED binding (`let m: Map[String, Int]`)
+      // or a typed parameter reaches `eq_for_typed`'s Map arm the same way an
+      // `Array[T]` one reaches its Array arm. Without this the type is known
+      // and the answer still came from the raw `==`.
+      String::concat("{m:", String::concat(ty_to_eq_shape_expanded(Array::get(args, 0)), String::concat(",", String::concat(ty_to_eq_shape_expanded(Array::get(args, 1)), "}"))))
+    } else if Array::length(args) > 0 {
+      let mut acc = String::concat("{g:", n)
+      let mut i = 0
+      while i < Array::length(args) {
+        acc = String::concat(acc, String::concat(",", ty_to_eq_shape_expanded(Array::get(args, i))))
+        i = i + 1
+      }
+      String::concat(acc, "}")
+    } else {
+      n
+    },
+    _ => ""
+  }
+}

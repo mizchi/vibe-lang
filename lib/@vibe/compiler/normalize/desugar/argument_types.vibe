@@ -1,0 +1,445 @@
+// Argument types.
+
+import @vibe/compiler/core {
+  Expr, TypeExpr
+}
+
+import ./binding_shape_queries.vibe {
+  array_elem_type_of, constructor_binding_is_masked, tuple_shape_parts
+}
+
+import ./constructor_annotations.vibe {
+  dtd_tuple_parts_of_shape
+}
+
+import ./equality_shape_queries.vibe {
+  eq_shape_key
+}
+
+import ./formal_scope.vibe {
+  formal_in_scope
+}
+
+import ./shape_environment.vibe {
+  shape_key, tuple_shape_key
+}
+
+import ./tuple_shape_encoding.vibe {
+  dtd_shape_is_tuple
+}
+
+import ./type_names.vibe {
+  anon_record_inferred,
+  ctor_enum_of_name,
+  dtd_builtin_arith_agreement,
+  dtd_name_is_constructor_shaped,
+  dtd_tuple_index_of,
+  field_sets_match,
+  fn_exists,
+  fn_return_type,
+  is_concrete_or_known_type_name,
+  lookup_var_type,
+  struct_field_type_key,
+  struct_set_has
+}
+
+import ./utilities.vibe {
+  empty_str_array, local_fn_return_key
+}
+
+/// #2128: `<name>.<i>` on a name whose tuple shape `tuple_shape_bind` recorded
+/// -> element `i`'s type name. `None` when the field is not an index, the name
+/// has no recorded tuple shape, the index is out of range, or the element's
+/// type was not inferable (recorded as an EMPTY entry -- see
+/// `tuple_shape_parts`, which preserves those so the entry count equals the
+/// arity).
+fn dtd_tuple_elem_type_name(obj: Expr, field: String, var_types: Array[(String, String)]) -> Option[String] {
+  match obj {
+    EIdent(n, _) => if constructor_binding_is_masked(var_types, n) {
+      None
+    } else match dtd_tuple_index_of(field) {
+      Some(idx) => {
+        let parts = match lookup_var_type(var_types, tuple_shape_key(n)) {
+          Some(sentinel) => tuple_shape_parts(sentinel),
+          // The recursive record answers for a name the per-tuple sentinel
+          // never covered (one bound from an array element, say); the equality
+          // sentinel answers for a tuple PARAMETER, which seeds only that one.
+          None => {
+            let from_shape = dtd_tuple_parts_of_shape(lookup_var_type(var_types, shape_key(n)))
+            if Array::length(from_shape) > 0 {
+              from_shape
+            } else {
+              dtd_tuple_parts_of_shape(lookup_var_type(var_types, eq_shape_key(n)))
+            }
+          }
+        }
+        {
+          if idx >= 0 && idx < Array::length(parts) {
+            let elem = Array::get(parts, idx)
+            // A composite element is a SHAPE, not a type name -- `t.0.1` is not
+            // a spelling this resolves, and handing a shape to the `<` rewrite
+            // would name a type that does not exist.
+            if String::length(elem) == 0 || dtd_shape_is_tuple(elem) {
+              None
+            } else {
+              Some(elem)
+            }
+          } else {
+            None
+          }
+        }
+      },
+      None => None
+    },
+    _ => None
+  }
+}
+
+/// #2410: the result type of an arithmetic `EBinOp`, but ONLY when it is one
+/// the checker resolves to a builtin itself.
+///
+/// `+ - * /` are operand-typed: the checker tries Int, then Double, then (for
+/// `+`) String, and only then a user `Add`/`Sub`/`Mul`/`Div` impl. The first
+/// three give a result equal to the operand type, so recursing into both
+/// operands and requiring them to agree answers exactly. The trait case does
+/// NOT: `infer_named_trait_binop` returns the impl's resolved output, which a
+/// trait is free to declare different from its input, so a user type answers
+/// None here rather than a guess. Guessing would be worse than the None this
+/// replaces -- a wrong name synthesizes a witness for the wrong impl, where
+/// None only fails to synthesize one.
+fn dtd_binop_builtin_operand_type(bl: Expr, br: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
+  let lt = dtd_type_name_or_empty(bl, struct_sets, var_types, fn_returns)
+  let rt = dtd_type_name_or_empty(br, struct_sets, var_types, fn_returns)
+  dtd_builtin_arith_agreement(lt, rt)
+}
+
+/// `infer_arg_type_name` with the unknown case flattened to "" -- the same
+/// convention `dtd_scalar_shape` uses in this file, so an agreement test is a
+/// string comparison rather than two nested `Option` matches.
+fn dtd_type_name_or_empty(e: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
+  match infer_arg_type_name(e, struct_sets, var_types, fn_returns) {
+    Some(t) => t,
+    None => ""
+  }
+}
+
+export fn infer_arg_type_name(arg: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
+  match arg {
+    EInt(_) => Some("Int"),
+    EBool(_) => Some("Bool"),
+    EString(_, _) => Some("String"),
+    EFloat(_) => Some("Double"),
+    // String `+` chains: `"a" + b + "c"` infers String when EITHER side does
+    // (the checker enforces both sides are String when one is). This both
+    // types the concat rewrite below and lets a `let u = a + "x"` binding
+    // record u -> String for downstream `u + ...`. Other `+` operands stay
+    // None (no behavior change for numeric/unknown).
+    // Each operand is inferred ONCE. The String test used to infer both
+    // operands and then hand them to dtd_binop_builtin_operand_type, which
+    // inferred both again -- four walks per `+` node, two of each child, so
+    // a left-nested chain cost 2^n walks: `let y = x + x + ... ` with 23
+    // operands compiled in 5.3 s and 24 ran the compiler out of memory
+    // (#2680). The tail position and an unbound chain never reach this
+    // inference, which is why only the bound spelling crashed.
+    EBinOp(bop, bl, br, _) => if bop == "+" {
+      let lt = dtd_type_name_or_empty(bl, struct_sets, var_types, fn_returns)
+      let rt = dtd_type_name_or_empty(br, struct_sets, var_types, fn_returns)
+      if lt == "String" || rt == "String" {
+        Some("String")
+      } else {
+        dtd_builtin_arith_agreement(lt, rt)
+      }
+    } else if bop == "-" || bop == "*" || bop == "/" {
+      dtd_binop_builtin_operand_type(bl, br, struct_sets, var_types, fn_returns)
+    } else if bop == "%" || bop == "&" || bop == "|" || bop == "^" || bop == "<<" || bop == ">>" {
+      // The checker types these as Int whatever the operands are (`operands
+      // must be Int`), so if the program checks at all, the result is Int.
+      Some("Int")
+    } else if bop == "==" || bop == "!=" || bop == "<" || bop == ">" || bop == "<=" || bop == ">=" || bop == "&&" || bop == "||" {
+      Some("Bool")
+    } else {
+      None
+    },
+    // An array literal dispatches to an `impl [T] Trait for Array` witness
+    // (#5 generic impls): its constructor is "Array" regardless of element type.
+    EArray(_) => Some("Array"),
+    // Same for a `map { ... }` literal: constructor "Map" (lets a let-bound
+    // map resolve an `impl ... for Map` witness at a generic call site).
+    EMap(_) => Some("Map"),
+    // A variable's recorded type, else a (possibly qualified) nullary
+    // constructor's enum name (`Green`/`Color::Green` -> `Color`) so that a
+    // `let a = Green` / `let a = Color::Green` binding resolves for `==`. The
+    // builtin nullary `None` resolves to the structural shape "Option" so a
+    // `let a = None; ... a == b` dispatches structurally (#695).
+    EIdent(name, _) => if name == "None" {
+      Some("Option")
+    } else {
+      match lookup_var_type(var_types, name) {
+        Some(t) => Some(t),
+        // #2527: only a constructor-shaped name may fall through to the flat
+        // program-wide table -- see dtd_name_is_constructor_shaped.
+        None => if dtd_name_is_constructor_shaped(name) {
+          ctor_enum_of_name(fn_returns, name)
+        } else {
+          None
+        }
+      }
+    },
+    // #1341 (Codex P1 on #1369): a PROJECTION (`h.s`). The object's type name
+    // plus the field name give the field's declared type head, via the
+    // reserved fn_returns key seeded by collect_struct_field_types. Without
+    // this, `for b in h.s` over a host stream fell through to the array loop
+    // and iterated the 2-word `[state, handle]` cell -- returning 4 instead of
+    // the body's bytes, with no diagnostic. It also makes `let s = h.s`
+    // record `s -> HostStream` (extend_var_types runs infer_arg_type_name on
+    // the bound value), so the bind-then-loop spelling works too.
+    // #2128: a TUPLE projection (`t.0`) first. `struct_field_type_key` only
+    // knows declared struct fields, so a tuple element fell through to None --
+    // and an untyped operand is exactly what makes `<` compile to a raw i64
+    // compare on the (ptr<<32)|len string repr, i.e. an ADDRESS comparison.
+    // Measured: `let t = ("bbb", "aaa"); t.0 < t.1` answered by address, so
+    // `a == b` and `a < b` could both be true for the same pair. The element
+    // type is already recorded by `tuple_shape_bind`; this is the read side.
+    EDot(obj, field, _, _) => match dtd_tuple_elem_type_name(obj, field, var_types) {
+      Some(elem) => Some(elem),
+      None => match infer_arg_type_name(obj, struct_sets, var_types, fn_returns) {
+        Some(otype) => fn_return_type(fn_returns, struct_field_type_key(otype, field)),
+        None => None
+      }
+    },
+    // A call-valued iterable (`for x in lazy_iter_arr([..])`) or data ctor
+    // (`Sh::Circle(5)`): its type is the head of the callee's return type. The
+    // builtin `Some`/`Ok`/`Err` constructors resolve to "Option"/"Result" so a
+    // bare `==` on them dispatches structurally (#695).
+    ECall(callee, cargs, _) => match callee {
+      EIdent("Some", _) => Some("Option"),
+      EIdent("Ok", _) => Some("Result"),
+      EIdent("Err", _) => Some("Result"),
+      // #1199 bug 1: `Array::get(arr, i)` / `arr[i]` (parses to `__index(arr,
+      // i)`, #760(3)) on an Array-typed PARAMETER whose element type
+      // seed_var_types recorded (array_elem_key) resolves to that element
+      // type -- so `let v = Array::get(values, 0); some_hash_bounded_call(v)`
+      // can find v's type the same way a direct `f[T: Hash](v: T)` parameter
+      // already could. Without this, infer_arg_type_name fell through to the
+      // generic EIdent(fname,_) => ctor_enum_of_name arm below, which knows
+      // nothing about "Array::get"/"__index" and returns None -- silently
+      // failing synth_dicts and emitting a call short its dictionary
+      // argument(s) (invalid wasm) instead of a resolved or forwarded dict.
+      EIdent("Array::get", _) => if Array::length(cargs) == 2 {
+        match Array::get(cargs, 0) {
+          EIdent(arrname, _) => array_elem_type_of(var_types, arrname),
+          _ => None
+        }
+      } else {
+        None
+      },
+      EIdent("__index", _) => if Array::length(cargs) == 2 {
+        match Array::get(cargs, 0) {
+          EIdent(arrname, _) => array_elem_type_of(var_types, arrname),
+          _ => None
+        }
+      } else {
+        None
+      },
+      // String-returning builtins (not in fn_returns): lets a
+      // `String::concat(a, b) + c` / `__to_string(n) + s` operand type as
+      // String for the concat rewrite.
+      // #1341: the p3 host stream. Not in fn_returns (it is a builtin), and
+      // its nominal type is what routes `for b in s` to the host read below
+      // instead of to the array loop -- which used to iterate the 2-word cell.
+      //
+      // Codex P1 on #1369: projections (`for b in h.s`) are covered too --
+      // see the EDot arm above, which reads the field's declared head from
+      // the `Struct.field` entries collect_struct_field_types seeds into
+      // fn_returns. Before that they fell back to the array loop and summed
+      // the 2-word cell (measured: 4).
+      //
+      // Still true, and NOT closed here: the nominal type is a ROUTING KEY,
+      // not an enforced barrier. `take_int(s)` with `s: HostStream`
+      // type-checks (a `CtNamed` head is tolerated at argument positions,
+      // nominal_head_conflict's concreteness gate), so applying an eager
+      // Stream combinator to a host stream is not itself a type error.
+      // Tightening argument-position nominal checking is cross-cutting work
+      // beyond HostStream. Tracked on #1341.
+      EIdent("host_stream_named", _) => Some("HostStream"),
+      EIdent("HostResponse::body", _) => Some("HostStream"),
+      EIdent("String::concat", _) => Some("String"),
+      EIdent("String::join", _) => Some("String"),
+      EIdent("String::substring", _) => Some("String"),
+      EIdent("String::trim", _) => Some("String"),
+      EIdent("String::replace", _) => Some("String"),
+      EIdent("String::from_char_code", _) => Some("String"),
+      EIdent("__to_string", _) => Some("String"),
+      // Bytes-returning builtins (not in fn_returns): Bytes has no literal
+      // syntax, so `let b = Bytes::new()` is how every Bytes value is born --
+      // recording b -> Bytes is what lets a bare `b1 == b2` dispatch to the
+      // structural `__bytes_equals` (#1526) instead of the identity `eq`.
+      EIdent("Bytes::new", _) => Some("Bytes"),
+      EIdent("Bytes::with_capacity", _) => Some("Bytes"),
+      EIdent("Bytes::concat", _) => Some("Bytes"),
+      EIdent("Bytes::slice", _) => Some("Bytes"),
+      // Map-returning builtins (not in fn_returns): lets `let m2 = Map::set(m,
+      // k, v)` record m2 -> Map so a later `m2[k]` takes the #760(3) Map::get
+      // rewrite. (A `map { }` literal is already classified as Map above.)
+      EIdent("Map::set", _) => Some("Map"),
+      EIdent("Map::remove", _) => Some("Map"),
+      EIdent("Map::insert", _) => Some("Map"),
+      EIdent("Map::delete", _) => Some("Map"),
+      EIdent("MapBuilder::freeze", _) => Some("Map"),
+      // Nominal ByteStream values retain an internal materialized lowering on
+      // the linear backend. Classify them separately from guest AsyncIter so the
+      // for-loop classification lowers it to the plain array loop instead of
+      // the pull-closure loop (#822: the pull desugar called the stream value
+      // as a closure — call_indirect on an array pointer = table OOB trap).
+      EIdent("String::to_bytes", _) => Some("ByteStream"),
+      EIdent(fname, _) => match lookup_var_type(var_types, local_fn_return_key(fname)) {
+        Some(head) => Some(head),
+        None => if constructor_binding_is_masked(var_types, fname) {
+          None
+        } else if fname == "Array::with_capacity" && !fn_exists(fn_returns, fname) {
+          // A reserved array needs the same witness head as an array literal.
+          // Local bindings and entry-file definitions retain their own result.
+          Some("Array")
+        } else {
+          ctor_enum_of_name(fn_returns, fname)
+        }
+      },
+      // `let x: T = e` is desugared to `((__asc: T) -> __asc)(e)` (ascribe_wrap);
+      // recover the operand's type head from the annotation so an annotated
+      // `let a: Option[Int] = None` records `a -> "Option"` for `==` dispatch.
+      EFn(_, _, params, _, _, _) => if Array::length(params) == 1 {
+        let (_, ann) = Array::get(params, 0)
+        match ann {
+          Some(TyName(n)) => Some(n),
+          Some(TyApp(n, _)) => Some(n),
+          _ => None
+        }
+      } else {
+        None
+      },
+      // #864: a UFCS method-chain call `x.method(args)` as the callee here means
+      // `arg` itself IS `x.method(args)` (e.g. the receiver of an outer
+      // `.and_then(...)` in `x.and_then(f).and_then(g)`, or a `let`-bound
+      // `let b = x.and_then(f)` whose type feeds a later `b.is_ok()`). Without
+      // this case the match fell through to `_ => None`, so the result type of
+      // ANY UFCS call went untracked -- the EDot call-position rewrite below
+      // (see the `as_recv_method` match on `EDot(obj, m, ...)`) then can't
+      // infer the OUTER call's receiver type either, leaves the outer
+      // `.method(...)` as a bare EDot, and codegen's EDot fallback (which only
+      // understands genuine struct-field projections) throws "unknown struct
+      // field: <method>" even though the checker -- which performs proper
+      // type-directed `T::method` resolution independently in checker.vibe's
+      // `EDot(obj, method, ...)` arm -- already accepted the same expression
+      // as type-correct. Mirror that checker resolution here: infer the
+      // receiver's type, then look up the qualified `Type::method` return
+      // type, falling back to the bare method name (prelude functions like
+      // `Result::and_then` / `and_then` register both forms in `fn_returns`).
+      EDot(dobj, dmethod, _, _) => {
+        let recv_tn = infer_arg_type_name(dobj, struct_sets, var_types, fn_returns)
+        let qual_rt = match recv_tn {
+          Some(tn) => fn_return_type(fn_returns, String::concat(tn, String::concat("::", dmethod))),
+          None => None
+        }
+        match qual_rt {
+          Some(rt) => Some(rt),
+          None => fn_return_type(fn_returns, dmethod)
+        }
+      },
+      _ => None
+    },
+    // #1529: when the literal NAMES its struct (`IntBox::{ v: 7 }`), that name
+    // IS the answer. Re-deriving it from the field set picks the first struct
+    // with a matching shape, which is a DIFFERENT type as soon as two structs
+    // share a field set (`struct Plain { v: Int }` next to `struct IntBox
+    // { v: Int }`). The wrong name found no `impl` for the trait, synth_dicts
+    // silently produced nothing, and the call went out one argument short --
+    // surfacing only at instantiate as `not enough arguments on the stack for
+    // call`, naming neither the struct nor the call. Declaration order looked
+    // like the trigger because it decides which same-shaped struct is first.
+    //
+    // #1839: the ANONYMOUS form (`ERecord("", ..)` — the explicit `record`
+    // keyword) is structural and no longer captured by a same-field-set
+    // struct anywhere (checker / codegen keep it literal-order, tag 0), so
+    // reporting a struct NAME for it here would route `==` / to_string /
+    // UFCS dispatch to that struct's methods, which would read the wrong
+    // slots. Shape matching remains only for a NAMED literal whose name the
+    // merged defs no longer contain (merge-layer private-struct rename).
+    // #2266: `-999999` is EUnaryOp("-", EInt), not EInt. Without this arm the
+    // expected side of `assert_eq(s, -999999)` rendered `<unprintable>`.
+    // #2344: `~` is Int by construction, so it does NOT recurse into the
+    // operand the way `-` / `+` do -- their result type is the operand's,
+    // while `~` is an Int whatever it wraps. Without this arm a user-trait
+    // call `show(~5)` reached codegen with no witness and produced invalid
+    // wasm; `show(-5)` and `show(5)` were fine, which is what isolates it.
+    EUnaryOp(op, inner) => if op == "~" {
+      Some("Int")
+    } else if op == "-" || op == "+" {
+      infer_arg_type_name(inner, struct_sets, var_types, fn_returns)
+    } else {
+      None
+    },
+    ERecord(rn, fields, _) => if String::length(rn) == 0 {
+      None
+    } else if struct_set_has(struct_sets, rn) {
+      Some(rn)
+    } else {
+      let names = empty_str_array()
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (fname, _) = Array::get(fields, i)
+        Array::push(names, fname)
+        i = i + 1
+      }
+      let mut j = 0
+      let mut result = None
+      while j < Array::length(struct_sets) {
+        let (sname, sfields) = Array::get(struct_sets, j)
+        if field_sets_match(names, sfields) {
+          result = Some(sname)
+          j = Array::length(struct_sets)
+        } else {
+          j = j + 1
+        }
+      }
+      result
+    },
+    _ => None
+  }
+}
+
+/// #973: does either operand's inferred static type look like an ERASED
+/// generic type parameter (`[T: Ord]` / `[T: Add]`) rather than a concrete
+/// type `infer_arg_type_name` already has type-specific handling for? Routes
+/// `<`/`>`/`<=`/`>=`/`+` through a runtime tag-check dispatch instead of the
+/// hardcoded numeric binop when the checker (#952) lets a bound-but-unresolved
+/// `T` survive to codegen with NO monomorphization and NO witness dict — Ord
+/// and Add are method-less marker traits (`export trait Ord` with an empty
+/// body; see builtin_traits.vibe), so `build_gens` never threads either one a
+/// dict (only method-bearing bounds get one), leaving nothing concrete to key
+/// a String-vs-Int rewrite off at this site. Without this, `x < lo` inside a
+/// `fn ord_clamp[T: Ord](x: T, lo: T, ..)` body compiled a raw signed i64
+/// compare, which orders a heap String's packed `(ptr<<32)|len` value by
+/// POINTER, not content (#973's `ord_clamp("m", "a", "z")` repro).
+export fn is_erased_generic_operand(l: Expr, r: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Bool {
+  // #2141: an enclosing binder's formal is erased even when the (merged)
+  // program declares a same-spelled type -- the formal shadows it, so the
+  // concrete-name fast paths must not fire.
+  let lg = match infer_arg_type_name(l, struct_sets, var_types, fn_returns) {
+    Some(t) => formal_in_scope(t) || !is_concrete_or_known_type_name(t, struct_sets),
+    None => false
+  }
+  let rg = match infer_arg_type_name(r, struct_sets, var_types, fn_returns) {
+    Some(t) => formal_in_scope(t) || !is_concrete_or_known_type_name(t, struct_sets),
+    None => false
+  }
+  lg || rg
+}
+
+/// Prefer the anonymous-record sentinel for a `let` value, falling back to the
+/// ordinary type inference used for trait dispatch / `==` / the Map-index rewrite.
+export fn anon_or_infer(val: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
+  match anon_record_inferred(val, struct_sets) {
+    Some(s) => Some(s),
+    None => infer_arg_type_name(val, struct_sets, var_types, fn_returns)
+  }
+}

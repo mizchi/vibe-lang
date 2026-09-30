@@ -11,6 +11,9 @@
 ///   pkf graph --format tree                   # visualize dependencies
 amends "package://pkg.pkl-lang.org/github.com/mizchi/pkfire/pkfire@0.14.2#/Taskfile.pkl"
 
+import "scripts/pkfire/common.pkl" as common
+import "scripts/pkfire/quality_tasks.pkl" as quality
+
 // --- Configuration (env vars, mirroring the former justfile defaults) ---
 
 // #2877: clear the nix wrapper's LD_LIBRARY_PATH for every task.
@@ -49,46 +52,11 @@ defaults {
   }
 }
 
-// selfhost sources: top-level vibe/ was dissolved into lib/ (#766 Phase 2-4).
-// The MoonBit-host globs (moon.mod, src/**/*.mbt, src/**/moon.pkg) were
-// dropped with the rest of the retired host — they matched nothing.
-local vibeSources: Listing<String> = new {
-  "lib/**/*.vibe"
-  "lib/**/*.vibei"
-  // #2138 review: a `.vpkg` is a package CONTRACT -- it decides what a package
-  // exports and therefore whether a dependent compiles at all. Leaving it out
-  // meant no task in this file invalidated on a contract edit: removing
-  // `lookup_builtin` from checker/index.vpkg changes whether a probe compiles,
-  // and every cached verdict would have been replayed over it.
-  "lib/**/*.vpkg"
-}
-
-local scriptSources: Listing<String> = new {
-  "scripts/**/*.sh"
-  "scripts/**/*.mjs"
-  "scripts/**/*.vibex"
-}
-
-// Inputs shared by cached tasks whose verdict can come from the checkout
-// compiler. `vibeSources` covers the selfhost source, while the seed manifest selects the
-// bootstrap compiler that builds stage2. Omitting either can replay a cached
-// pass for a different compiler (#2165).
-local compilerProbeInputs: Listing<String> = new {
-  ...vibeSources
-  "bootstrap/seed.json"
-}
-
-// --- Helper factories ---
-
-/// Single-script wrapper — common pattern.
-local function scriptTask(taskName: String, script: String): Task = new Task {
-  name = taskName
-  cmd = "bash \(script)"
-  // Some wrappers reach the compiler indirectly. Keying the shared factory on
-  // the complete compiler identity is a safe over-approximation and prevents
-  // those dynamic calls from bypassing the hand-written-task ratchet (#2165).
-  inputs { ...compilerProbeInputs; ...scriptSources }
-}
+local vibeSources = common.vibeSources
+local scriptSources = common.scriptSources
+local compilerProbeInputs = common.compilerProbeInputs
+local function scriptTask(taskName: String, script: String): Task =
+  common.scriptTask(taskName, script)
 
 // CI-only slices use fixed artifact paths so pkfire can hash the exact stage2
 // they consume and safely replay successful verdicts from its CAS.
@@ -144,190 +112,35 @@ local preCommit = new Task {
   cache = false
 }
 
-local formalCheck = new Task {
-  name = "formal-check"
-  description = "prove the Lean models and verify committed Oracle corpora"
-  cmd = "formal/check-oracle.sh"
-  inputs {
-    "formal/**/*.lean"
-    "formal/oracle/**"
-    "formal/examples/**"
-    "formal/check-oracle.sh"
-    "formal/lakefile.toml"
-    "formal/lake-manifest.json"
-    "formal/lean-toolchain"
-  }
-}
+local formalCheck = quality.formalCheck
 
-local formalIncrementalCheck = new Task {
-  name = "formal-incremental-check"
-  description = "prove the bounded Lean incremental invalidation model"
-  cmd = "cd formal && lake build --wfail VibeFormal.Proofs.IncrementalCorrect"
-  inputs {
-    "formal/VibeFormal/Compiler/Incremental.lean"
-    "formal/VibeFormal/Proofs/IncrementalCorrect.lean"
-    "formal/lakefile.toml"
-    "formal/lake-manifest.json"
-    "formal/lean-toolchain"
-  }
-}
+local formalIncrementalCheck = quality.formalIncrementalCheck
 
-local testIncrementalInvalidationOracle = new Task {
-  name = "test-incremental-invalidation-oracle"
-  description = "regenerate and validate the bounded Lean incremental invalidation corpus"
-  cmd = "formal/check-incremental-oracle.sh"
-  inputs {
-    "formal/IncrementalOracleMain.lean"
-    "formal/VibeFormal/Compiler/Incremental.lean"
-    "formal/VibeFormal/Proofs/IncrementalCorrect.lean"
-    "formal/oracle/incremental-invalidation.tsv"
-    "formal/check-incremental-oracle.sh"
-    "scripts/incremental_invalidation_oracle.mjs"
-  }
-}
+local testIncrementalInvalidationOracle = quality.testIncrementalInvalidationOracle
 
-local testIncrementalInvalidationTrace = new Task {
-  name = "test-incremental-invalidation-trace"
-  description = "parser/schema unit tests for the incremental invalidation trace sidecar"
-  cmd = "node --test scripts/incremental_invalidation_oracle.test.mjs"
-  inputs {
-    "scripts/incremental_invalidation_oracle.mjs"
-    "scripts/incremental_invalidation_oracle.test.mjs"
-  }
-}
+local testIncrementalInvalidationTrace = quality.testIncrementalInvalidationTrace
 
-local testHostRunnerExit = new Task {
-  name = "test-host-runner-exit"
-  description =
-    "node host runner ends every run through the normal exit path, never a hanging process.exit() (#3109)"
-  cmd = "node --test scripts/wasm_vibe_host_runner_exit.test.cjs"
-  inputs {
-    "scripts/wasm_vibe_host_runner.js"
-    "scripts/wasm_vibe_host_runner_exit.test.cjs"
-  }
-}
+local testHostRunnerExit = quality.testHostRunnerExit
 
-local testArtifactInputTrace = new Task {
-  name = "test-artifact-input-trace"
-  description = "strict parser/schema tests for the bounded artifact-input trace sidecar"
-  cmd = "node --test scripts/artifact_input_trace_oracle.test.mjs"
-  inputs {
-    "scripts/artifact_input_trace_oracle.mjs"
-    "scripts/artifact_input_trace_oracle.test.mjs"
-  }
-}
+local testArtifactInputTrace = quality.testArtifactInputTrace
 
-local testNormalizerScalarScan = new Task {
-  name = "test-normalizer-scalar-scan"
-  description =
-    "structural guard on desugar_trait_dict's dinsp_scan: scalar Bool modes, the mode-7 census cell, and full Expr/Pat arm coverage"
-  // #2538: this file existed for a week asserting a `dinsp_scan` shape two
-  // slices had already changed, and nothing noticed -- it was referenced by no
-  // pkf task, no gate lane and no CI job, so it was never protecting anything
-  // whatever it asserted. Wiring it is the half of that issue that keeps the
-  // next drift visible.
-  cmd = "node --test tests/normalizer_scalar_scan_compaction_test.mjs"
-  inputs {
-    "tests/normalizer_scalar_scan_compaction_test.mjs"
-    "lib/@vibe/compiler/normalize/desugar_trait_dict.vibe"
-    "lib/@vibe/ast/index.vpkg"
-  }
-}
+local testNormalizerScalarScan = quality.testNormalizerScalarScan
 
-local testSelfcompileHeapPolicy = new Task {
-  name = "test-selfcompile-heap-policy"
-  description =
-    "fail-closed merge-base selfcompile heap policy, container, content-token, and fixed-workdir tests"
-  cmd =
-    "node --test scripts/selfcompile_heap_policy_container.test.mjs scripts/wasm_vibe_host_runner_stat_token.test.cjs scripts/selfcompile_heap_policy.test.mjs && bash scripts/selfcompile_kpi_work_dir_test.sh"
-  inputs {
-    "scripts/selfcompile_heap_policy.mjs"
-    "scripts/selfcompile_heap_policy.test.mjs"
-    "scripts/selfcompile_heap_policy_container.mjs"
-    "scripts/selfcompile_heap_policy_container.test.mjs"
-    "scripts/selfcompile_heap_policy_docker.mjs"
-    "scripts/selfcompile_heap_policy_docker_test.sh"
-    "scripts/selfcompile_heap_policy_hostile_wasm.mjs"
-    "scripts/selfcompile_heap_policy_policy_runner.sh"
-    "scripts/selfcompile_heap_policy_image.lock.json"
-    "scripts/selfcompile_heap_policy_seccomp.json"
-    "scripts/generate_bundle.sh"
-    "scripts/generations.sh"
-    "scripts/wasm_vibe_host_runner.js"
-    "scripts/wasm_vibe_host_runner_stat_token.test.cjs"
-    "scripts/selfcompile_kpi.sh"
-    "scripts/selfcompile_kpi_work_dir_test.sh"
-    "bench/perf/selfcompile_heap_policy.json"
-  }
-  cache = false
-}
+local testDesugarModuleLayout = quality.testDesugarModuleLayout
 
-local testCoverageDriverExposure = new Task {
-  name = "test-coverage-driver-exposure"
-  description = "exact-path coverage-driver exposure positive/negative integration test"
-  cmd = "bash tests/gates/tooling-accounting/coverage/coverage_driver_exposure_test.sh"
-  // Runs a wrapper under tests/gates/** that invokes the compiler, so the
-  // compiler identity is part of the answer (#2138 review, #2165).
-  inputs {
-    ...compilerProbeInputs
-    "tests/gates/tooling-accounting/coverage/coverage_driver_exposure_test.sh"
-    "scripts/coverage/cov_units.vibe"
-    "lib/@vibe/compiler/cli_adapter.vibe"
-    "lib/@vibe/compiler/entry/source_compile/wasi_only/merge_sources.vibe"
-    "lib/@vibe/compiler/entry/source_compile/wasi_only/index.vpkg"
-  }
-}
+local testSelfcompileHeapPolicy = quality.testSelfcompileHeapPolicy
 
-local formalSelfhostOracle = new Task {
-  name = "formal-selfhost-oracle"
-  description =
-    "compare the Lean call-typing Oracle with the current selfhost checker (manual, non-gating)"
-  cmd = "formal/check-oracle.sh && formal/examples/selfhost-call-oracle.sh \"$@\""
-  acceptsArgs = true
-  cache = false
-}
+local testCoverageDriverExposure = quality.testCoverageDriverExposure
 
-local formalSelfhostIncrementalOracle = new Task {
-  name = "formal-selfhost-incremental-oracle"
-  description =
-    "observe current selfhost invalidation against the bounded Lean corpus (pass stage2.wasm)"
-  cmd =
-    "formal/check-incremental-oracle.sh && node scripts/incremental_invalidation_oracle.mjs \"$@\""
-  acceptsArgs = true
-  cache = false
-}
+local formalSelfhostOracle = quality.formalSelfhostOracle
 
-local testParallelSchedulerPrototype = new Task {
-  name = "test-parallel-scheduler-prototype"
-  description =
-    "exercise the shared-nothing multi-worker scheduler and its Lean-shaped trace validator"
-  cmd = "node --test scripts/parallel_scheduler_prototype.test.mjs"
-  inputs {
-    "scripts/parallel_scheduler_*.mjs"
-    "formal/VibeFormal/Async/**/*.lean"
-    "formal/VibeFormal/Parallel/**/*.lean"
-    "formal/VibeFormal/Compiler/Scheduler.lean"
-    "formal/VibeFormal/Proofs/Parallel*.lean"
-    "formal/VibeFormal/Proofs/Scheduler*.lean"
-    "docs/internal/design/compiler-parallelism.md"
-    "docs/internal/design/concurrency.md"
-  }
-}
+local formalSelfhostIncrementalOracle = quality.formalSelfhostIncrementalOracle
 
-local testParallelSelfhostScheduler = new Task {
-  name = "test-parallel-selfhost-scheduler"
-  description = "run real selfhost parse/typecheck snapshots through the isolated worker scheduler"
-  cmd = "bash scripts/test_parallel_selfhost_scheduler.sh"
-  cache = false
-}
+local testParallelSchedulerPrototype = quality.testParallelSchedulerPrototype
 
-local testParallelFrontendWarm = new Task {
-  name = "test-parallel-frontend-warm"
-  description =
-    "#906 Phase 2: vibe build --jobs=N cache pre-warm is a byte-identical no-op or speedup, never a correctness change"
-  cmd = "bash scripts/test_parallel_frontend_warm.sh"
-  cache = false
-}
+local testParallelSelfhostScheduler = quality.testParallelSelfhostScheduler
+
+local testParallelFrontendWarm = quality.testParallelFrontendWarm
 
 local jobsKpi = new Task {
   name = "jobs-kpi"
@@ -340,63 +153,15 @@ local jobsKpi = new Task {
 // Not `scriptTask`: the rules table and the baseline are inputs too, and
 // `scriptSources` only globs scripts/**/*.sh. Without them, editing the
 // allowlist replays a cached "ok" and the ratchet answers a stale question.
-local testDocPathCitations = new Task {
-  name = "test-doc-path-citations"
-  description = "self-test for the doc path-citation check (fixed cases, synthetic tree)"
-  cmd = "bash scripts/check_doc_path_citations_test.sh"
-  inputs {
-    "scripts/check_doc_path_citations.sh"
-    "scripts/check_doc_path_citations_test.sh"
-  }
-}
+local testDocPathCitations = quality.testDocPathCitations
 
-local testDocClassification = new Task {
-  name = "test-doc-classification"
-  description = "self-test for the doc audience-classification check (synthetic tree)"
-  cmd = "bash scripts/check_doc_classification_test.sh"
-  inputs {
-    "scripts/check_doc_classification.sh"
-    "scripts/check_doc_classification_test.sh"
-  }
-}
+local testDocClassification = quality.testDocClassification
 
-local checkDocClassification = new Task {
-  name = "check-doc-classification"
-  description = "every document under docs/ is in exactly one audience class (#2562)"
-  cmd = "bash scripts/check_doc_classification.sh"
-  // docs/README.md carries the classification and docs/** is the corpus, so
-  // both are inputs: adding a document without a row has to re-ask the
-  // question rather than replay a cached "ok".
-  inputs {
-    "docs/**"
-    "scripts/check_doc_classification.sh"
-  }
-}
+local checkDocClassification = quality.checkDocClassification
 
-local checkDocPathCitations = new Task {
-  name = "check-doc-path-citations"
-  description = "every backticked file path in docs/ resolves, or is recorded as debt"
-  cmd = "bash scripts/check_doc_path_citations.sh"
-  // Ratchet, same shape as the architecture-debt one: the allowlist is an input
-  // so that editing it re-asks the question instead of replaying a cached "ok".
-  inputs {
-    "docs/**/*.md"
-    "scripts/check_doc_path_citations.sh"
-    "scripts/doc_path_citation_allowlist.txt"
-  }
-}
+local checkDocPathCitations = quality.checkDocPathCitations
 
-local lintArchitectureDebt = new Task {
-  name = "lint-architecture"
-  description = "structural debt ratchet: fail on new matches outside the recorded baseline"
-  cmd = "bash scripts/lint_architecture_debt.sh"
-  inputs {
-    ...vibeSources
-    ...scriptSources
-    "scripts/architecture_debt_rules.tsv"
-    "scripts/architecture_debt_allowlist.txt"
-  }
-}
+local lintArchitectureDebt = quality.lintArchitectureDebt
 local testLintArchitecture =
   scriptTask("test-lint-architecture", "scripts/lint_architecture_debt_test.sh")
 local lintReviewRegressions =
@@ -414,13 +179,7 @@ local checkBuiltinEmits = scriptTask("check-builtin-emits", "scripts/check_built
 local testCheckBuiltinEmits =
   scriptTask("test-check-builtin-emits", "scripts/check_builtin_emits_test.sh")
 local testPreCommit = scriptTask("test-pre-commit", "scripts/precommit_test.sh")
-local testReviewLintVibex = new Task {
-  name = "test-review-lint-vibex"
-  description = "run the review-derived vibe grep rule engine self-test"
-  cmd = "bash scripts/vibe_run.sh scripts/review_lint.vibex -- --self-test"
-  inputs { ...vibeSources; ...scriptSources }
-  cache = false
-}
+local testReviewLintVibex = quality.testReviewLintVibex
 // NOT scriptTask: that factory keys on compiler sources plus
 // `scripts/**/*.{sh,mjs,vibex}`, and this lint reads neither of those things.
 // It walks the git index for every probe-like path under `scripts/` AND
@@ -435,12 +194,7 @@ local testReviewLintVibex = new Task {
 // scan widens. The lint is 0.15s. Not caching it cannot be wrong, and this
 // PR's own rule is to remove the structure that needs the bookkeeping rather
 // than to keep the bookkeeping correct.
-local lintTrackedExperimentNames = new Task {
-  name = "lint-tracked-experiment-names"
-  description = "tracked throwaway/probe-like filenames need an explicit allowlist entry"
-  cmd = "bash scripts/lint_tracked_experiment_names.sh"
-  cache = false
-}
+local lintTrackedExperimentNames = quality.lintTrackedExperimentNames
 // These four read GENERATED ARTIFACTS, which `scriptTask` does not key on: its
 // inputs are the compiler identity plus `scripts/**`, so a changed wasm, corpus
 // or loader manifest is invisible to the cache and a stale verdict could replay
@@ -564,21 +318,7 @@ local checkSelfhostPortableBoundary =
 // had to distinguish.
 local testSelfhostPortableBoundary =
   scriptTask("test-portable-boundary", "scripts/check_portable_boundary_test.sh")
-local checkHostRuntimeContract = new Task {
-  name = "check-host-runtime-contract"
-  description = "fail-closed conformance check for the documented vibe.* core host ABI"
-  cmd =
-    "python3 scripts/check_host_runtime_contract.py && python3 tests/gates/tooling-accounting/host-runtime/host_runtime_contract_test.py"
-  inputs {
-    "docs/generated/host-runtime-contract.json"
-    "scripts/check_host_runtime_contract.py"
-    "tests/gates/tooling-accounting/host-runtime/host_runtime_contract_test.py"
-    "lib/@vibe/compiler/codegen/wasi/linked_compile.vibe"
-    "lib/@vibe/compiler/codegen/gc/backend_body.vibe"
-    "runtime/viberun/src/main.rs"
-    "scripts/wasm_vibe_host_runner.js"
-  }
-}
+local checkHostRuntimeContract = quality.checkHostRuntimeContract
 // #2825 step 1 (docs/internal/design/capability-host-contract.md). ADR-0088's amendment makes
 // `perform?` an instantiate-time branch, so a module declares the ungranted
 // arm's host import and a host has to be able to WITHHOLD a capability: link
@@ -627,6 +367,7 @@ local testHostAsyncImportUnsupported = new Task {
     ...compilerProbeInputs
     ...scriptSources
     "scripts/wasm_vibe_host_runner.js"
+    "scripts/wasm_vibe_host_runtime.js"
   }
   deps { selfhostGeneration }
 }
@@ -639,6 +380,7 @@ local testHostCapabilityWithhold = new Task {
     ...compilerProbeInputs
     ...scriptSources
     "scripts/wasm_vibe_host_runner.js"
+    "scripts/wasm_vibe_host_runtime.js"
     // Mirror what `ensure_viberun.sh`'s `src_hash` hashes -- every file under
     // src/ plus both manifests -- so the two cannot disagree about which
     // binary this gate is entitled to replay a verdict for. Keying on
@@ -668,12 +410,7 @@ local testHostCapabilityWithhold = new Task {
 // The probe reads what a host did with a withheld import off a real artifact.
 // Its own unit tests build modules by hand, so a failure is about the probe
 // and not about whatever the compiler emitted that day.
-local testHostCapabilityProbe = new Task {
-  name = "test-host-capability-probe"
-  description = "unit-test the host capability probe: refused vs a silent answer vs a trapping stub"
-  cmd = "node --test scripts/host_capability_probe.test.mjs"
-  cache = false
-}
+local testHostCapabilityProbe = quality.testHostCapabilityProbe
 local checkVibeFmt = scriptTask("check-vibe-fmt", "scripts/check_vibe_fmt.sh")
 // The `validate Pkl configs` CI job runs `pkf format --check Taskfile.pkl`,
 // and that was the ONLY place it ran: `release-check` checks .vibe formatting
@@ -682,12 +419,7 @@ local checkVibeFmt = scriptTask("check-vibe-fmt", "scripts/check_vibe_fmt.sh")
 // every local gate and failed in CI. Registered here so the same answer is
 // available before pushing. No pkl-missing guard: `pkf` cannot read this file
 // without pkl in the first place.
-local checkTaskfileFmt = new Task {
-  name = "check-taskfile-fmt"
-  description = "pkl formatting of Taskfile.pkl (mirrors the `validate Pkl configs` CI job)"
-  cmd = "pkf format --check Taskfile.pkl"
-  inputs { "Taskfile.pkl" }
-}
+local checkTaskfileFmt = quality.checkTaskfileFmt
 // #1587: every fixture carrying `test` blocks is run by some lane, or listed
 // with a reason. Registered standalone (~2s, pure shell) so it can be run
 // against a fixture rename on its own; NOT a release-check dep, because
@@ -698,39 +430,14 @@ local checkFixtureExecution =
 // `scriptSources`/`vibeSources` hash neither. With a cached pass, a CI run that
 // restores ~/.cache/pkfire would replay it after a cheatsheet edit -- the gate
 // answering about a document it did not read (#2138 review).
-local checkFreezeSurface = new Task {
-  name = "check-freeze-surface"
-  description = "the frozen surface list resolves, and matches the cheatsheet's Key Builtins"
-  cmd = "bash scripts/check_freeze_surface.sh"
-  // ADDITIVE, not a replacement: this gate asks the COMPILER whether every
-  // promised symbol still resolves, so the compiler identity is half the
-  // question. Swapping the default inputs for the documents alone would let a
-  // compiler change drop a frozen builtin behind a cached pass -- the same
-  // under-invalidation as the doc-only case, pointed the other way. Inputs may
-  // over-approximate (a needless re-run is free); they may never under-.
-  inputs {
-    ...compilerProbeInputs
-    ...scriptSources
-    "docs/user/reference/stable-surface.md"
-    "docs/user/reference/cheatsheet.md"
-  }
-}
+local checkFreezeSurface = quality.checkFreezeSurface
 // ADR-0109: one version number, checked wherever it is written (launcher,
 // release notes, roadmap ladder, stable-surface doc). Pure text -- no compiler.
 // The book is the onboarding surface; a broken chapter link ends a reader's
 // visit. Pure text -- no compiler.
 // NOT `scriptTask`: the book IS the subject. A cached pass replayed after a
 // chapter edit is a link check that never saw the links (#2138 review).
-local checkBookLinks = new Task {
-  name = "check-book-links"
-  description = "every relative link in book/ resolves"
-  cmd = "bash scripts/check_book_links.sh"
-  // Pure text -- no compiler -- so lib/** genuinely is not an input here.
-  inputs {
-    ...scriptSources
-    "book/**/*.md"
-  }
-}
+local checkBookLinks = quality.checkBookLinks
 local testCheckBookLinks = scriptTask("test-check-book-links", "scripts/check_book_links_test.sh")
 // A resolving link and a correct one are different questions. check-book-links
 // answers the first; this answers the second, against book/SUMMARY.md as the
@@ -738,15 +445,7 @@ local testCheckBookLinks = scriptTask("test-check-book-links", "scripts/check_bo
 // naming the SUMMARY neighbours, in BOTH languages.
 // NOT `scriptTask`, for the same reason as check-book-links: the book is the
 // subject, so a cached pass replayed after a chapter edit checks nothing.
-local checkBookOrder = new Task {
-  name = "check-book-order"
-  description = "chapter headings and Previous/Next follow book/SUMMARY.md, en and ja"
-  cmd = "bash scripts/check_book_order.sh"
-  inputs {
-    ...scriptSources
-    "book/**/*.md"
-  }
-}
+local checkBookOrder = quality.checkBookOrder
 // The book's ```vibe skip blocks each claim a rejection and quote a
 // diagnostic, and the doctest harness cannot look at them -- it runs `vibe
 // run` blocks and skips these by definition. One had rotted into
@@ -797,6 +496,12 @@ local testVibeMdGuard = new Task {
 // column answers about an earlier position, and empty reads as clean).
 local checkSourceRangeContract =
   scriptTask("check-source-ranges", "scripts/check_source_range_contract.sh")
+local checkSourceFileSize = new Task {
+  name = "check-source-file-size"
+  description = "limit maintained source files to 3000 lines"
+  cmd = "node scripts/check_source_file_size.mjs"
+  cache = false
+}
 local testCheckSourceRangeContract =
   scriptTask("test-check-source-ranges", "scripts/check_source_range_contract_test.sh")
 // #2134: the host's JS stack, not the compiler, caps how many top-level
@@ -826,15 +531,7 @@ local testCheckSourceRangeContract =
 // Taskfile.pkl is this gate's SUBJECT, so it is an input -- the same rule the
 // gate itself enforces, which it was breaking (#2138 review). A task added with
 // incomplete inputs would otherwise pass on a replayed verdict.
-local checkTaskInputs = new Task {
-  name = "check-task-inputs"
-  description = "a task that runs the compiler keys on the compiler"
-  cmd = "bash scripts/check_task_inputs.sh"
-  inputs {
-    ...scriptSources
-    "Taskfile.pkl"
-  }
-}
+local checkTaskInputs = quality.checkTaskInputs
 local testCheckTaskInputs =
   scriptTask("test-check-task-inputs", "scripts/check_task_inputs_test.sh")
 // Every command a document SHOWS a reader must name things that exist.
@@ -944,70 +641,14 @@ local checkFuzzStaleFindings = new Task {
     "tests/fuzz/lib_oracle.sh"
     "scripts/run_wasm_vibe_host_runner.sh"
     "scripts/wasm_vibe_host_runner.js"
+    "scripts/wasm_vibe_host_runtime.js"
     "scripts/resolve_stage2.sh"
   }
   deps { selfhostGeneration }
 }
-local checkFuzzCompilerIdentity = new Task {
-  name = "check-fuzz-compiler-identity"
-  description =
-    "the fuzz harness resolves its compiler strictly (HEAD's generation or a named artifact) instead of picking the newest by mtime"
-  cmd = "bash scripts/check_fuzz_compiler_identity.sh"
-  // Both probes die at compiler RESOLUTION and never compile anything, but
-  // `check_task_inputs.sh` reads the reachable scripts, and run_fuzz.sh does
-  // name the wasm runner. Spelling the extra inputs out must ADD to the
-  // defaults rather than replace them: a hand-written `new Task` inherits
-  // nothing, so an inputs list without this spread is a NARROWER cache key
-  // than no list at all, and a compiler change would replay a stale pass.
-  // Same reasoning as check-fuzz-stale-findings: one of this gate's probes
-  // mutates run_fuzz.sh so that it PROCEEDS, so the fuzzer's own dependencies
-  // are reachable from this task and belong in its key.
-  inputs {
-    ...compilerProbeInputs
-    "tests/fuzz/run_fuzz.sh"
-    // The gate reads BOTH entry points to the oracle since #2959, so both
-    // belong in its key. Measured with it missing: after a warm cache, an
-    // edit putting classify.sh back on the mtime default replayed
-    // `check-fuzz-compiler-identity: ok` from cache, while running the
-    // script directly rejected the same tree.
-    "tests/fuzz/classify.sh"
-    "tests/fuzz/gen_program.py"
-    "tests/fuzz/lib_oracle.sh"
-    "scripts/run_wasm_vibe_host_runner.sh"
-    "scripts/wasm_vibe_host_runner.js"
-    "scripts/resolve_stage2.sh"
-    "scripts/check_fuzz_compiler_identity.sh"
-    "scripts/check_fuzz_compiler_identity_test.sh"
-  }
-}
-local checkFuzzClassify = new Task {
-  name = "check-fuzz-classify"
-  description =
-    "classify.sh reports an unlocated or invented-token diagnostic (DIAG_NO_LOCATION / DIAG_INTERNAL_TOKEN) and a wrong answer every lane shares (ORACLE_*) instead of passing them (#2979)"
-  cmd = "bash tests/fuzz/classify_test.sh"
-  // The compiler and both runtimes are STUBS here, so the verdict under test
-  // is fixed; but lib_oracle.sh names the real wasm runner as its default, so
-  // the compiler inputs stay in the key rather than argue about reachability.
-  inputs {
-    ...compilerProbeInputs
-    "tests/fuzz/classify.sh"
-    "tests/fuzz/classify_test.sh"
-    "tests/fuzz/lib_oracle.sh"
-    "scripts/resolve_stage2.sh"
-    "scripts/run_wasm_vibe_host_runner.sh"
-    "scripts/wasm_vibe_host_runner.js"
-  }
-}
-local checkReleaseDraftPromote = new Task {
-  name = "check-release-draft-promote"
-  description =
-    "release.yml stages the release as a draft, promotes it, and verifies the published draft/prerelease/asset-count"
-  cmd = "bash scripts/check_release_draft_promote.sh"
-  inputs {
-    ".github/workflows/release.yml"
-    "scripts/check_release_draft_promote.sh"
-  }
-}
+local checkFuzzCompilerIdentity = quality.checkFuzzCompilerIdentity
+local checkFuzzClassify = quality.checkFuzzClassify
+local checkReleaseDraftPromote = quality.checkReleaseDraftPromote
 local checkVibexEntryLex = new Task {
   name = "check-vibex-entry-lex"
   description =
@@ -1383,16 +1024,7 @@ local testCheckHostSemanticParity = new Task {
 // different non-instantiable modules in sequence, and the file's own comment
 // had already recorded a third occurrence while naming only four of the five.
 // Reads the source, so it needs no generation and costs nothing.
-local checkGcHostImportCounts = new Task {
-  name = "check-gc-host-import-counts"
-  description =
-    "the gc backend's five encodings of the host-import list agree (hbo, host_imports, host_defs, vector header)"
-  cmd = "bash scripts/check_gc_host_import_counts.sh"
-  inputs {
-    "lib/@vibe/compiler/codegen/gc/backend_body.vibe"
-    ...scriptSources
-  }
-}
+local checkGcHostImportCounts = quality.checkGcHostImportCounts
 local testCheckGcHostImportCounts =
   scriptTask(
     "test-check-gc-host-import-counts",
@@ -1406,18 +1038,7 @@ local testCheckGcHostImportCounts =
 // success, and emits a module wasmtime refuses to validate. Each fix was
 // "remember to add the name in the other place", which is exactly the step
 // that keeps being missed. Reads the two sources, so it needs no generation.
-local checkImportReservation = new Task {
-  name = "check-import-reservation"
-  description =
-    "every user-callable capability spelling reserves the host import it lowers onto (#2905)"
-  cmd = "bash scripts/vibe_run.sh scripts/check_import_reservation.vibex"
-  inputs {
-    ...compilerProbeInputs
-    "lib/@vibe/compiler/codegen/wasi/linked_compile.vibe"
-    "lib/@vibe/compiler/core/builtin_registry.vibe"
-    ...scriptSources
-  }
-}
+local checkImportReservation = quality.checkImportReservation
 local testCheckImportReservation =
   scriptTask("test-check-import-reservation", "scripts/check_import_reservation_test.sh")
 // The `_test.sh` spelling check_gate_self_tests.sh discovers; it execs the
@@ -1459,43 +1080,7 @@ local testCheckCompileOnlyLanes = new Task {
   // gate builds, and sibling dependencies run concurrently.
   deps { checkCompileOnlyLanes }
 }
-local checkDocCommands = new Task {
-  name = "check-doc-commands"
-  description = "commands shown in docs name tasks, scripts and env vars that exist"
-  cmd = "bash scripts/check_doc_commands.sh"
-  // Everything this gate READS, on both sides of the comparison: the documents
-  // it scans and the tree it resolves their references against. Under the
-  // default inputs it saw the documents but not tests/**, eval/** or
-  // install/**, so every VIBE_* lookup came back empty and 38 live variables
-  // were reported as unread -- the gate failing loudly rather than passing
-  // vacuously, but wrong either way.
-  inputs {
-    ...compilerProbeInputs
-    ...scriptSources
-    "Taskfile.pkl"
-    "*.md"
-    "docs/**/*.md"
-    "book/**/*.md"
-    // Every README in the tree, wherever it lives -- the gate now scans them
-    // all (#2138 review), so lib/@vibe/compiler/README.md going stale must
-    // invalidate this task the same way docs/ does. compilerProbeInputs covers
-    // lib/**/*.vibe but not lib/**/README.md.
-    "**/README.md"
-    // The launcher IS the verb list: the gate parses `vibe help` and the
-    // dispatch case out of it, so adding or removing a command has to
-    // re-run this comparison.
-    "runtime/vibe"
-    // Every glob the script SCANS, not a subset of it (#2138 review): it reads
-    // .js/.ts/.toml/.md under these roots too, so an env-var reader removed
-    // from scripts/wasm_vibe_host_runner.js would otherwise replay the old
-    // verdict. Inputs may over-approximate; they may never under-.
-    "scripts/**"
-    "tests/**"
-    "eval/**"
-    "install/**"
-    "scripts/doc_commands_allowlist.tsv"
-  }
-}
+local checkDocCommands = quality.checkDocCommands
 local checkPackageSiblingScope = new Task {
   name = "check-package-sibling-scope"
   description = "export + contract entry + explicit ./import are all required to reach a sibling"
@@ -1672,18 +1257,7 @@ local checkDeclarationScale =
 // NOT `scriptTask`: reads docs/user/getting-started/release-notes-* and
 // docs/user/reference/stable-surface.md, so the notes and freeze document are
 // inputs -- otherwise adding one replays a cached pass (#2138 review).
-local checkVersionLadder = new Task {
-  name = "check-version-ladder"
-  description = "the release-notes ladder and the 1.0 freeze document agree"
-  cmd = "bash scripts/check_version_ladder.sh"
-  // Pure text, like check-book-links.
-  inputs {
-    ...scriptSources
-    "docs/user/getting-started/release-notes-*.md"
-    "docs/internal/project/release-roadmap.md"
-    "docs/user/reference/stable-surface.md"
-  }
-}
+local checkVersionLadder = quality.checkVersionLadder
 local testCheckVersionLadder =
   scriptTask("test-check-version-ladder", "scripts/check_version_ladder_test.sh")
 local testCheckFreezeSurface =
@@ -1692,31 +1266,13 @@ local checkMethodStyleNaming =
   scriptTask("check-method-naming", "scripts/lint_method_style_naming.sh")
 local testCheckMethodStyleNaming =
   scriptTask("test-check-method-naming", "scripts/lint_method_style_naming_test.sh")
-local checkCanonicalIteratorCalls = new Task {
-  name = "check-canonical-iterator-calls"
-  description = "tutorials and examples use the imported Iterator namespace"
-  cmd = "bash scripts/check_canonical_iterator_calls.sh"
-  inputs {
-    "book/**/*.vibe.md"
-    "examples/**/*.vibe"
-    "scripts/check_canonical_iterator_calls.sh"
-  }
-}
+local checkCanonicalIteratorCalls = quality.checkCanonicalIteratorCalls
 local testCheckCanonicalIteratorCalls =
   scriptTask(
     "test-check-canonical-iterator-calls",
     "scripts/check_canonical_iterator_calls_test.sh",
   )
-local checkAstBinaryTags = new Task {
-  name = "check-ast-binary-tags"
-  description = "the AST binary ABI's tag tables describe the AST this compiler actually has"
-  cmd = "bash scripts/check_ast_binary_tags.sh"
-  inputs {
-    "lib/@vibe/ast/index.vpkg"
-    "docs/internal/compiler/ast_binary_abi.md"
-    "scripts/check_ast_binary_tags.sh"
-  }
-}
+local checkAstBinaryTags = quality.checkAstBinaryTags
 local testCheckAstBinaryTags =
   scriptTask("test-check-ast-binary-tags", "scripts/check_ast_binary_tags_test.sh")
 local testGenerateSelfhostBundle =
@@ -1727,14 +1283,7 @@ local testGenerateSelfhostBundle =
 // #1259 -- the fixpoint covers compiler_sources_manifest.tsv and nothing else,
 // so this is the only check that a signature change reached the CLI/entry
 // sources outside it (twice missed, ten unit-test files each time).
-local checkOffbuildTypecheck = new Task {
-  name = "check-offbuild-typecheck"
-  description =
-    "typecheck the lib/@vibe/compiler + lib/@vibe/cli sources the self-build fixpoint does not cover (~30s)"
-  cmd = "bash scripts/check_offbuild_typecheck.sh"
-  cache = false
-  inputs { ...vibeSources; ...scriptSources }
-}
+local checkOffbuildTypecheck = quality.checkOffbuildTypecheck
 local testComponentLazyDispatch =
   scriptTask("test-component-lazy-dispatch", "scripts/test_component_lazy_dispatch_gate.sh")
 local testComponentLazyDispatchSelfTest =
@@ -1773,28 +1322,14 @@ local testInterleavedTasksProbe =
 // Uncached for the same reason as bench-module-job-pool below: the assertion
 // is that what the warm-pool coordinator publishes does not depend on how much
 // of it ran at once, and re-running that on an unchanged tree is the point.
-local testParallelWarmPool = new Task {
-  name = "test-warm-pool"
-  description =
-    "warm-pool coordinator: byte-identical publish at -P 1/2/4/8, peak workers within the -P bound, no leaked workers"
-  cmd = "bash scripts/test_parallel_warm_pool_gate.sh"
-  cache = false
-  inputs { ...vibeSources; ...scriptSources }
-}
+local testParallelWarmPool = quality.testParallelWarmPool
 
 // Uncached for the same reason as test-warm-pool: the assertion is that the
 // store the walk reaches does not depend on the schedule it took to get
 // there, and re-running that on an unchanged tree is the point. #1259 --
 // this is the first check that runs the REAL compile path against
 // formal/VibeFormal/Compiler/Scheduler.lean rather than a synthetic worker.
-local testSchedulerTraceOracle = new Task {
-  name = "test-scheduler-oracle"
-  description =
-    "#1239 step 8: the real walk's trace satisfies Scheduler.lean's Project/Ready/Complete, and reaches the same store under permuted schedules"
-  cmd = "bash scripts/scheduler_trace_oracle.sh"
-  cache = false
-  inputs { ...vibeSources; ...scriptSources }
-}
+local testSchedulerTraceOracle = quality.testSchedulerTraceOracle
 
 // Uncached (like kpi-selfcompile) because neither of the two things this
 // asserts is a function of the file inputs. The hard assertion is a race
@@ -1823,47 +1358,9 @@ local testWasiStdinProviderSource =
 local testSimdEmitWasmtime =
   scriptTask("test-simd-emit-wasmtime", "scripts/test_simd_emit_wasmtime.sh")
 
-local testPerfReport = new Task {
-  name = "test-perf-report"
-  cmd =
-    "node --test scripts/bench_report.test.mjs scripts/selfhost_build_metrics.test.mjs && bash scripts/vibe_run.sh scripts/coverage_bench_snapshot.vibex -- --self-test"
-  inputs {
-    ...compilerProbeInputs
-    "scripts/bench_report.mjs"
-    "scripts/bench_report.test.mjs"
-    "scripts/coverage_bench_snapshot.vibex"
-    "scripts/selfhost_build_metrics.mjs"
-    "scripts/selfhost_build_metrics.test.mjs"
-    // vibe_run.sh executes the .vibex self-test through this runner, which
-    // scriptSources (sh/mjs/vibex) does not cover (#3167 review).
-    "scripts/wasm_vibe_host_runner.js"
-    ...scriptSources
-  }
-}
+local testPerfReport = quality.testPerfReport
 
-local testCoverageScripts = new Task {
-  name = "test-coverage-scripts"
-  cmd =
-    "node --test scripts/coverage_suite_next_branches.test.mjs && python3 scripts/coverage_suite_report_test.py && bash scripts/vibe_run.sh scripts/coverage_tracks.vibex -- --self-test && bash scripts/vibe_run.sh scripts/select_test_shard.vibex -- --self-test && bash scripts/coverage_wasm_std_test.sh && bash tests/gates/tooling-accounting/coverage/coverage_drivers_test.sh && bash tests/gates/tooling-accounting/coverage/coverage_pipeline_contract_test.sh"
-  // Runs a wrapper under tests/gates/** that invokes the compiler, so the
-  // compiler identity is part of the answer (#2138 review, #2165).
-  inputs {
-    ...compilerProbeInputs
-    "scripts/**/*.mjs"
-    "scripts/coverage_suite_report.py"
-    "scripts/coverage_suite_report_test.py"
-    "scripts/coverage_tracks.vibex"
-    "scripts/select_test_shard.vibex"
-    // The runner vibe_run.sh executes the .vibex self-tests through.
-    "scripts/wasm_vibe_host_runner.js"
-    "scripts/coverage_corpus.sh"
-    ...scriptSources
-    "scripts/coverage_drivers.sh"
-    "scripts/coverage_local_merge_run.sh"
-    "tests/gates/tooling-accounting/coverage/coverage_drivers_test.sh"
-    "tests/gates/tooling-accounting/coverage/coverage_pipeline_contract_test.sh"
-  }
-}
+local testCoverageScripts = quality.testCoverageScripts
 
 local refreshSelfhostBatchWeights =
   scriptTask("refresh-batch-weights", "scripts/refresh_batch_weight_seed.sh")
@@ -1919,43 +1416,9 @@ local testVibeRootSmoke = new Task {
   }
 }
 local testVibeTest = scriptTask("test-vibe-test", "scripts/vibe_test_smoke.sh")
-local testPickCliFreshness = new Task {
-  name = "test-pick-cli-freshness"
-  description =
-    "runtime/vibe uses the AOT .cwasm only when neither the runner nor the compiler wasm is newer than it (Codex review of #2858)"
-  cmd = "bash scripts/test_pick_cli_freshness.sh"
-  // The gate drives a fake toolchain layout through the launcher and never
-  // executes a wasm; its verdict depends on the launcher and the script.
-  inputs {
-    ...compilerProbeInputs
-    ...scriptSources
-    "runtime/vibe"
-  }
-}
-local testPickCliFreshnessSelfTest = new Task {
-  name = "test-pick-cli-freshness-self-test"
-  description =
-    "mutates pick_cli's freshness comparisons out of runtime/vibe and asserts test-pick-cli-freshness goes red"
-  cmd = "bash scripts/test_pick_cli_freshness_test.sh"
-  inputs {
-    ...compilerProbeInputs
-    ...scriptSources
-    "runtime/vibe"
-  }
-}
-local testReleaseInstall = new Task {
-  name = "test-release-install"
-  description =
-    "release install and update against a synthetic file:// release: install.sh --version with bash+curl+tar, vibe self update, tampered assets refused (#2678)"
-  cmd = "bash tests/integration/install/release_install_test.sh"
-  inputs {
-    "tests/integration/install/release_install_test.sh"
-    "install/install.sh"
-    "runtime/vibe"
-    "scripts/vibe_pkg.sh"
-    "scripts/parallel_warm_pool.sh"
-  }
-}
+local testPickCliFreshness = quality.testPickCliFreshness
+local testPickCliFreshnessSelfTest = quality.testPickCliFreshnessSelfTest
+local testReleaseInstall = quality.testReleaseInstall
 // #2834: the seed-release workflow's Adopt step inherits `seed.name` from
 // whichever source_ref was dispatched -- `generations.sh adopt` rewrites it
 // only when given --name. A dispatch whose source_ref predates the bump
@@ -1963,21 +1426,7 @@ local testReleaseInstall = new Task {
 // tag. Nothing in-tree reads that field, so only a guard can catch it; this is
 // the red/green that proves the guard fires. Inputs are just the guard and its
 // test -- it runs against a scratch tree and never touches the compiler.
-local testSeedAssetIdentity = new Task {
-  name = "test-seed-asset-identity"
-  description =
-    "red/green for the seed-manifest identity guard: a manifest naming another seed must not ship under this tag"
-  cmd = "bash scripts/build_compiler_seed_assets_test.sh"
-  // The scratch tree holds a fake artifact and no generate_bundle.sh, so this
-  // verdict does not actually depend on compiler identity -- but the guard it
-  // copies does reach the compiler lexically, and check-task-inputs refuses to
-  // guess. Over-approximate rather than assert the exemption: the run is 0.1s.
-  inputs {
-    ...compilerProbeInputs
-    "scripts/build_compiler_seed_assets_test.sh"
-    "scripts/build_compiler_seed_assets.sh"
-  }
-}
+local testSeedAssetIdentity = quality.testSeedAssetIdentity
 // The release BODY is built from the shipped release notes rather than from
 // `generate_release_notes` (72 merged PRs for 0.1.0). Its links are relative
 // -- written to be read inside docs/ -- so they are absolutized at the tag,
@@ -1985,16 +1434,7 @@ local testSeedAssetIdentity = new Task {
 // immutable releases, so a dead link in a body is permanent. Nothing else
 // runs build_release_body.sh; release.yml invokes it only on a `v*` tag push,
 // which is the one moment it must not be the first execution.
-local testReleaseBody = new Task {
-  name = "test-release-body"
-  description =
-    "red/green for the release-body builder: relative links absolutized at the tag, an unresolvable or escaping link refused"
-  cmd = "bash scripts/build_release_body_test.sh"
-  inputs {
-    "scripts/build_release_body_test.sh"
-    "scripts/build_release_body.sh"
-  }
-}
+local testReleaseBody = quality.testReleaseBody
 // #2914: `vibe grep` answered `exit 0` with no output for a tree-wide typed
 // sweep that was in fact TRAPPING (`RuntimeError: memory access out of
 // bounds`). The runner recorded the failure with `status=$?` inside
@@ -2007,20 +1447,7 @@ local testReleaseBody = new Task {
 // which is the one moment the workflow cannot be rehearsed, while
 // check_version_ladder.sh had accepted that spelling all along. Argument
 // handling only: the build itself is ~4 minutes and needs a compiler.
-local testReleaseAssetsArgs = new Task {
-  name = "test-release-assets-args"
-  description =
-    "red/green for the release asset builder's tag validation: a pre-release tag is accepted, junk and a launcher/tag disagreement are refused"
-  cmd = "bash scripts/build_release_assets_test.sh"
-  inputs {
-    // The cases stop at argument handling and never reach a compiler, but the
-    // script under test does; an exemption asserted here is the gate's own
-    // failure mode, and replaying a 0.4s test costs less than being wrong.
-    ...compilerProbeInputs
-    "scripts/build_release_assets_test.sh"
-    "scripts/build_release_assets.sh"
-  }
-}
+local testReleaseAssetsArgs = quality.testReleaseAssetsArgs
 local testEnsureSeed = scriptTask("test-ensure-seed", "scripts/ensure_seed_test.sh")
 local testVibeFmt = scriptTask("test-vibe-fmt", "scripts/vibe_fmt_smoke.sh")
 // #2271: `vibe fmt` reported a file as unformatted when the FORMATTER ENTRY
@@ -2052,24 +1479,9 @@ local test = new Task {
   deps { testParallelSchedulerPrototype }
 }
 
-local testVibeLibrary = new Task {
-  name = "test-library"
-  // Smoke-run the selfhost-CLI-compilable subset of library `*_test.vibe`
-  // (lib/@vibex/wasm, lib/@vibe/builtin). The selfhost-only gate only covers the
-  // compiler self-compile, so this is the regression net for library modules
-  // (the MoonBit-host flaker suite was retired in #594). Allow-list lives in the
-  // script; also run in cli-install CI and the `cli` selfhost-gate shard.
-  cmd = "bash scripts/test_vibe_library.sh"
-  cache = false
-}
+local testVibeLibrary = quality.testVibeLibrary
 
-local testLocal = new Task {
-  name = "test-local"
-  description = "affected local tests via flaker"
-  cmd = "scripts/flaker_run.sh $@"
-  acceptsArgs = true
-  cache = false
-}
+local testLocal = quality.testLocal
 
 // #988: affected tests from the compiler's OWN resolved import graph, no
 // flaker involved. `test-local` picks by DIRECTORY (flaker.toml's `simple`
@@ -2077,13 +1489,7 @@ local testLocal = new Task {
 // editing lib/@vibe/compiler/core/types.vibe reaches 217 of 575 entries and
 // selects 0. This walks `vibe deps` edges upward instead, and falls back to
 // the full battery whenever it cannot prove an answer.
-local testAffected = new Task {
-  name = "test-affected"
-  description = "tests reachable from the change via the real import graph (#988)"
-  cmd = "bash scripts/test_affected.sh $@"
-  acceptsArgs = true
-  cache = false
-}
+local testAffected = quality.testAffected
 
 local testFull = new Task {
   name = "test-full"
@@ -2364,11 +1770,7 @@ local checkedModuleCacheCost = new Task {
   deps { selfhostGeneration }
 }
 
-local testCompareCompilerMemory = new Task {
-  name = "test-compare-compiler-memory"
-  cmd = "node --test scripts/compare_compiler_memory.test.mjs"
-  cache = false
-}
+local testCompareCompilerMemory = quality.testCompareCompilerMemory
 
 // The incremental-build KPI at three project sizes (#1959 line). Opt-in and
 // never cached, like the other measurements; CI runs it inside bench_metrics
@@ -2393,14 +1795,7 @@ local editCycleKpi = new Task {
   cache = false
 }
 
-local testEditCycleKpi = new Task {
-  name = "test-edit-cycle-kpi"
-  description =
-    "validate incremental harness units: KPI telemetry, phase summaries, cache artifact reading"
-  cmd =
-    "node --test scripts/edit_cycle_kpi.test.mjs scripts/incremental_phase_summary.test.mjs scripts/cache_artifacts.test.mjs"
-  cache = false
-}
+local testEditCycleKpi = quality.testEditCycleKpi
 
 local testRelocCrossbuild = new Task {
   name = "test-reloc-crossbuild"
@@ -2450,14 +1845,7 @@ local selfhostPostGenerationGate = new Task {
 // so asking anything other than pkf would be testing a different environment.
 // `sort` is the binary the original instance broke on; any system binary that
 // reaches the dynamic loader would do.
-local checkTaskEnv = new Task {
-  name = "check-task-env"
-  description = "internal: report the LD_LIBRARY_PATH a task inherits, and run a system binary"
-  cmd =
-    "printf 'task-env: LD_LIBRARY_PATH=%s\\n' \"${LD_LIBRARY_PATH:-}\"; sort --version >/dev/null 2>&1 && echo 'task-env: sort ok' || echo 'task-env: sort FAILED'"
-  cache = false
-  visibility = "internal"
-}
+local checkTaskEnv = quality.checkTaskEnv
 
 local checkTaskEnvSanitized =
   scriptTask("check-task-env-sanitized", "scripts/check_task_env_sanitized.sh")
@@ -2467,27 +1855,14 @@ local testCheckTaskEnvSanitized =
 
 // === HTTP / selfhost gates ===
 
-local testCheckedModuleCacheParity = new Task {
-  name = "test-checked-module-cache-parity"
-  description =
-    "compare checked-module cache output and diagnostics; --units adds the complete unit corpus"
-  cmd = "bash scripts/checked_module_cache_parity.sh $@"
-  acceptsArgs = true
-  cache = false
-}
+local testCheckedModuleCacheParity = quality.testCheckedModuleCacheParity
 
 // Selfhost unit-test runner (#531/#535): compile+run every discovered
 // *_test.vibe (examples/, lib/, fixtures/) through the selfhost compiler --
 // no allowlist file (#1231), just a small documented EXCLUDE_PATTERNS list
 // in the script itself. `--scan` reports pass/fail for everything discovered,
 // including excluded files (to check if an exclusion can be dropped).
-local testSelfhostUnit = new Task {
-  name = "test-unit"
-  description = "run every discovered *_test.vibe through the selfhost compiler (#531/#535)"
-  cmd = "bash scripts/unit_test_runner.sh $@"
-  acceptsArgs = true
-  cache = false
-}
+local testSelfhostUnit = quality.testSelfhostUnit
 
 // Phase 2 of the selfhost Perceus RC port (docs/spec/selfhost-rc-port.md):
 // unit-test the ported analysis pass in isolation via the native vibe CLI.
@@ -2803,17 +2178,7 @@ local vibeMdTutorialGated = new Task {
   deps { selfhostGeneration }
 }
 
-local checkTutorialTranslationParity = new Task {
-  name = "check-tutorial-translation-parity"
-  description =
-    "every original tour chapter in book/en has a book/ja translation, and each pair runs the same programs"
-  cmd = "bash scripts/check_tutorial_translation_parity.sh"
-  // vibe_md.sh proves each file on its own; this is the part it cannot see.
-  // Two files that run the same programs record the same ```output blocks, so
-  // comparing those catches code drift between a chapter and its translation
-  // without diffing sources, which legitimately differ in their comments.
-  cache = false
-}
+local checkTutorialTranslationParity = quality.checkTutorialTranslationParity
 
 local checkBookConsole = new Task {
   name = "check-book-console"
@@ -2972,6 +2337,7 @@ local releaseCheck = new Task {
     testCheckMethodStyleNaming
     checkMethodStyleNaming
     testNormalizerScalarScan
+    testDesugarModuleLayout
     testCheckCanonicalIteratorCalls
     checkCanonicalIteratorCalls
     testCheckAstBinaryTags
@@ -2986,6 +2352,7 @@ local releaseCheck = new Task {
     checkBookSkipBlocks
     testVibeMdGuard
     checkSourceRangeContract
+    checkSourceFileSize
     testCheckSourceRangeContract
     checkDeclarationScale
     checkCliLineTermination
@@ -3070,6 +2437,7 @@ tasks {
   testHostRunnerExit
   testArtifactInputTrace
   testNormalizerScalarScan
+  testDesugarModuleLayout
   testSelfcompileHeapPolicy
   testCoverageDriverExposure
   formalSelfhostOracle
@@ -3139,6 +2507,7 @@ tasks {
   testCheckBookLinks
   testVibeMdGuard
   checkSourceRangeContract
+  checkSourceFileSize
   testCheckSourceRangeContract
   checkDeclarationScale
   checkCliLineTermination

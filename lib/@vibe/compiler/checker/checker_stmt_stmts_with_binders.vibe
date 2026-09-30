@@ -1,0 +1,1910 @@
+// lib/@vibe/compiler/checker/checker_stmt.vibe — stmts with binders.
+
+import ./checker_trait.vibe {
+  bound_entails_send
+}
+
+import @vibe/core {
+  array_empty, struct MutMap
+}
+
+import @vibe/compiler/checker/diagnostics {
+  off_marker
+}
+
+import ./checker_effects.vibe {
+  check_async_effects_stmts
+}
+
+import ./checker_pattern.vibe {
+  check_qualified_pattern_refs
+}
+
+import ./builtins.vibe {
+  lookup_builtin
+}
+
+import ./checker_spawnable.vibe {
+  closure_bare_callee_names, closure_free_names
+}
+
+import @vibe/compiler/core {
+  Expr,
+  ImportItem,
+  ImportKind,
+  Pat,
+  Stmt,
+  Subst,
+  Type,
+  TypeDef,
+  TypeEnv,
+  TypeExpr,
+  env_bind,
+  env_lookup,
+  env_with_reexport_surface_blockers,
+  find_typedef,
+  overlapping_impl_target_for,
+  prelude_ordering_stmt,
+  stmts_declare_prelude_ordering_shape,
+  stmts_shadow_prelude_ordering,
+  stmts_use_prelude_ordering,
+  subst_apply,
+  type_to_string
+}
+
+import ./checker.vibe {
+  TypedOccurrenceRoleLaneCapture,
+  attach_unlocated_decl_name_marker,
+  bind_function_dependency_contracts,
+  check_assignable,
+  check_assignable_for,
+  check_assignable_set_end,
+  check_expr,
+  check_expr_capture,
+  constructor_dependency_row,
+  efn_head_bound_commit,
+  efn_head_bound_mark,
+  interp_is_shim_body,
+  interp_shim_marker,
+  let_generalize,
+  note_toplevel_generic_binding,
+  pat_binds_resume,
+  preserve_generic_instantiation,
+  publish_row_formals,
+  record_decl_exception_kinds,
+  refuse_generalized_field_reads,
+  refuse_unpublishable_exception_row,
+  reject_resume_outside_handler,
+  report_formal_applications_across,
+  report_map_key_types,
+  report_unknown_type_names,
+  report_unknown_type_names_deferred_validation,
+  resolve_impl_self_field_reads,
+  trait_erased_type_param_env,
+  trait_reference_display,
+  type_exception_rows_resolved,
+  typed_occurrence_capture_begin_statement,
+  typed_occurrence_capture_end_statement,
+  validate_trait_reference
+}
+
+import @vibe/ast {
+  trait_ref_name, type_param_arity
+}
+
+import ./checked_expression_structure_core.vibe {
+  checked_expression_structure_rows
+}
+
+import ./checker_resolve.vibe {
+  resolve_type_expr, resolve_type_expr_shadowed, subst_type_params
+}
+
+import @vibe/compiler/normalize {
+  collect_trait_namespace_conflict_errors
+}
+
+import @vibe/parser {
+  BinderAuthorityNode, LocatedProgramBinderAuthority, SourceBinder
+}
+
+import ./checker_stmt_decl_formal_application_errors.vibe {
+  check_completed_decl_map_keys,
+  errors_contain_alias_expansion_limit,
+  fapp_decl_label,
+  insert_unique_error_strings,
+  push_unique_error_strings,
+  refresh_completed_alias_defs,
+  refresh_completed_payload_defs,
+  refresh_completed_suberror_env,
+  refresh_completed_type_env,
+  report_alias_expansion_limit,
+  struct_field_decl_label,
+  type_expr_expansion_node_count
+}
+
+import ./checker_stmt_imported_decl_kind.vibe {
+  bind_stmt_imports,
+  builtin_spelling_decl_error,
+  collect_deferred_type_name_sentinels,
+  collect_trait_dict_erasures,
+  decl_report_shadow,
+  deferred_names_for_decl,
+  duplicate_ctor_errors,
+  duplicate_value_decl_errors,
+  own_typedef_slot,
+  preclaim_local_type_defs,
+  top_level_reject_msg,
+  trait_dict_erasure_for
+}
+
+import ./checker_stmt_labeled_name_check_expr.vibe {
+  alias_expansion_node_limit,
+  bind_annotation_return,
+  bind_fn_return,
+  bind_value_or_annotation_return,
+  collect_referenced_names_stmts,
+  collect_visible_type_stmts,
+  find_other_enum_declaring_variant,
+  hoist_te_applies_formal,
+  hoisted_fn_signature,
+  labeled_param_base_name,
+  reorder_type_decls_first,
+  stmt_is_type_decl,
+  struct_derives_has,
+  validate_derives
+}
+
+import ./checker_stmt_push_source_scope_names.vibe {
+  CheckerStatementCapture,
+  capture_statement_root_type,
+  capture_statement_rows,
+  checker_observation_checkpoint,
+  copy_ints,
+  es_append_imported_tables,
+  es_collect_tables,
+  es_detect_cycle,
+  es_qualified_collision,
+  impl_target_declared_arity,
+  impl_target_mentions,
+  resource_decl_errors,
+  restore_checker_observation,
+  statement_capture_is_root,
+  top_stmt_expr_off
+}
+
+/// #3042 (ADR-0118): check the prelude `enum Ordering { Less; Equal; Greater }
+/// derive (Eq, Ord, Show)` ahead of a module, so `Ordering`, its constructors,
+/// its exhaustiveness and `Ordering::{equals, to_string, compare}` resolve
+/// without an import, as `Option` does. It is checked as the ordinary
+/// declaration it is (the same `SEnum` arm a source declaration takes), into
+/// `defs` BEFORE `local_defs_start`, so the module's own declarations stay
+/// local to it and a constructor collision is only ever reported between two
+/// of the module's own enums.
+///
+/// Skipped when the module does not mention the prelude at all
+/// (`module_uses_prelude_ordering`), when it declares `Ordering` or a `Less` /
+/// `Equal` / `Greater` constructor itself (its own declaration wins, as a local
+/// enum shadows an imported one), and when an import already supplied the
+/// enum.
+/// Answers the environment, the new `local_defs_start` and the next free type
+/// variable id.
+export fn seed_prelude_ordering(stmts: Array[Stmt], env: TypeEnv, defs: Array[TypeDef], type_def_binders: Array[Array[Int]], local_defs_start: Int, c: Int, errors: Array[String], tytab: Array[(Int, Type)]) -> (TypeEnv, Int, Int) {
+  if stmts_shadow_prelude_ordering(stmts) {
+    report_prelude_ordering_conflict(stmts, errors)
+    (env, local_defs_start, c)
+  } else if !module_uses_prelude_ordering(stmts) {
+    (env, local_defs_start, c)
+  } else if env_binds_foreign_ordering_value(env) {
+    // An import bound a VALUE named `Ordering` (a function, a constant, an
+    // alias): `module_uses_prelude_ordering` counted the reference to it, but
+    // it is not the type, and seeding the prelude would overwrite it.
+    report_ordering_conflict_with(stmts, errors, "but this module imports a `Less` / `Equal` / `Greater` constructor or an `Ordering` of another type; import that type qualified or rename it")
+    (env, local_defs_start, c)
+  } else if env_binds_any_prelude_ordering_ctor(env) {
+    // An import bound at least one of the constructor names. Only the
+    // prelude-shaped enum may stand in for the prelude: an unrelated imported
+    // enum with a `Less`, an `Equal` or a `Greater` would otherwise be what a
+    // derived `compare` builds, or be overwritten by the prelude's binding.
+    if env_binds_prelude_ordering_ctors(env) && defs_ordering_is_prelude_shaped(defs) {
+      (bind_prelude_ordering_values(env), local_defs_start, c)
+    } else {
+      report_ordering_conflict_with(stmts, errors, "but this module imports a `Less` / `Equal` / `Greater` constructor or an `Ordering` of another type; import that type qualified or rename it")
+      (env, local_defs_start, c)
+    }
+  } else match find_typedef(defs, "Ordering") {
+    // An import carried the declaration in only to make a signature
+    // intelligible (`import @vibe/builtin { int_compare }`): the type is
+    // known, its constructors and derived operations are not bound yet. That
+    // holds only for the prelude-shaped enum; any other imported `Ordering`
+    // has no `Less` / `Equal` / `Greater` to bind.
+    Some(_) => if defs_ordering_is_prelude_shaped(defs) {
+      (bind_prelude_ordering_values(env), local_defs_start, c)
+    } else {
+      report_ordering_conflict_with(stmts, errors, "but this module imports a `Less` / `Equal` / `Greater` constructor or an `Ordering` of another type; import that type qualified or rename it")
+      (env, local_defs_start, c)
+    },
+    None => {
+      let prelude = array_empty()
+      Array::push(prelude, prelude_ordering_stmt())
+      let (seeded, _, next_c) = check_stmts_with_binders(prelude, 0, env, defs, type_def_binders, local_defs_start, SubstEmpty, c, errors, tytab, None, None, None, false, false)
+      (seeded, Array::length(defs), next_c)
+    }
+  }
+}
+
+/// #3042: does `env` bind the name `Ordering` to something other than the
+/// type itself -- an imported function or value spelled like it?
+fn env_binds_foreign_ordering_value(env: TypeEnv) -> Bool {
+  match env_lookup(env, "Ordering") {
+    Some(ty) => !type_is_ordering(ty),
+    None => false
+  }
+}
+
+/// #3042: is any of `Less` / `Equal` / `Greater` already bound in `env`?
+fn env_binds_any_prelude_ordering_ctor(env: TypeEnv) -> Bool {
+  let mut any = false
+  for name in ["Less", "Equal", "Greater"] {
+    match env_lookup(env, name) {
+      Some(_) => any = true,
+      None => ()
+    }
+  }
+  any
+}
+
+/// #3042: is the `Ordering` in `defs` exactly the prelude's
+/// `enum Ordering { Less; Equal; Greater }` -- no parameters, three payloadless
+/// variants in that order?
+fn defs_ordering_is_prelude_shaped(defs: Array[TypeDef]) -> Bool {
+  match find_typedef(defs, "Ordering") {
+    Some(TDEnum(_, params, variants)) => Array::length(params) == 0 && Array::length(variants) == 3 && typedef_variant_is(variants, 0, "Less") && typedef_variant_is(variants, 1, "Equal") && typedef_variant_is(variants, 2, "Greater"),
+    _ => false
+  }
+}
+
+fn typedef_variant_is(variants: Array[(String, Array[Type])], i: Int, expected: String) -> Bool {
+  let (name, fields) = Array::get(variants, i)
+  name == expected && Array::length(fields) == 0
+}
+
+/// Does this module mention the prelude `Ordering` at all -- by syntax
+/// (`stmts_use_prelude_ordering`: `derive (Ord)`, a constructor as a value or
+/// a pattern) or in a type annotation? A module that does not is checked
+/// exactly as before the prelude existed, so its outputs (`type_defs`, the
+/// environment it publishes) carry no `Ordering` it never asked for. A value
+/// of the type can still flow through it untouched, as any enum's can.
+fn module_uses_prelude_ordering(stmts: Array[Stmt]) -> Bool {
+  if stmts_use_prelude_ordering(stmts) {
+    true
+  } else {
+    let used = array_empty()
+    collect_referenced_names_stmts(stmts, used)
+    let mut found = false
+    let mut i = 0
+    while !found && i < Array::length(used) {
+      let name = Array::get(used, i)
+      found = name == "Ordering" || String::starts_with(name, "Ordering::")
+      i = i + 1
+    }
+    found
+  }
+}
+
+/// Does `env` already record an impl of `trait_name` for `Ordering`?
+fn env_has_ordering_impl(env: TypeEnv, trait_name: String) -> Bool {
+  match env {
+    EnvEmpty => false,
+    EnvBind(_, _, rest) => env_has_ordering_impl(rest, trait_name),
+    EnvTraitDef(_, _, _, _, rest, _, _) => env_has_ordering_impl(rest, trait_name),
+    EnvTraitImpl(tn, target, rest) => (tn == trait_name && type_is_ordering(target)) || env_has_ordering_impl(rest, trait_name),
+    EnvTraitImplGen(tn, _, _, target, rest) => (tn == trait_name && type_is_ordering(target)) || env_has_ordering_impl(rest, trait_name),
+    EnvMutCell(_, _, rest) => env_has_ordering_impl(rest, trait_name),
+    EnvTypeDefs(_, _, rest) => env_has_ordering_impl(rest, trait_name),
+    EnvCached(_, _, rest) => env_has_ordering_impl(rest, trait_name),
+    EnvFlat(_) => false
+  }
+}
+
+fn type_is_ordering(ty: Type) -> Bool {
+  match ty {
+    CtEnum(name) => name == "Ordering",
+    CtNamed(name, _) => name == "Ordering",
+    CtConstructor(name, _) => name == "Ordering",
+    _ => false
+  }
+}
+
+fn bind_prelude_ordering_values(env: TypeEnv) -> TypeEnv {
+  let ordering = CtEnum("Ordering")
+  let mut out = env
+  // Only what the import left unbound: an operation the dependency exported
+  // keeps its own signature (the lowering refuses a hand-written one on a
+  // prelude-shaped `Ordering`, so the two cannot disagree at run time).
+  for pair in [
+    ("Ordering", ordering),
+    ("Less", ordering),
+    ("Equal", ordering),
+    ("Greater", ordering),
+    ("Ordering::equals", CtFn([ordering, ordering], CtBool, None)),
+    ("Ordering::compare", CtFn([ordering, ordering], ordering, None)),
+    ("Ordering::to_string", CtFn([ordering], CtString, None))
+  ] {
+    let (name, ty) = pair
+    match env_lookup(out, name) {
+      Some(_) => (),
+      None => out = env_bind(out, name, ty)
+    }
+  }
+  // The prelude derives `Eq` and `Show`, so the type satisfies those bounds
+  // here exactly as the seeded declaration would.
+  if !env_has_ordering_impl(out, "Eq") {
+    out = EnvTraitImpl("Eq", ordering, out)
+  }
+  if !env_has_ordering_impl(out, "Show") {
+    out = EnvTraitImpl("Show", ordering, out)
+  }
+  out
+}
+
+/// #3042: `derive (Ord)` generates `compare` returning the prelude `Ordering`
+/// and builds `Less` / `Equal` / `Greater` values. A module that declares
+/// those names differently has no such enum to build, so the derive is refused
+/// here with the rename that fixes it, instead of lowering a `compare` whose
+/// constructors belong to some other type.
+fn report_prelude_ordering_conflict(stmts: Array[Stmt], errors: Array[String]) -> Unit {
+  if stmts_declare_prelude_ordering_shape(stmts) {
+    ()
+  } else {
+    report_ordering_conflict_with(stmts, errors, "but this module declares its own `Ordering` or one of those constructors; rename that declaration")
+  }
+}
+
+/// #3042: do `Less` / `Equal` / `Greater` all name the prelude-shaped
+/// `Ordering` in `env`? False when any of them resolves to another type.
+fn env_binds_prelude_ordering_ctors(env: TypeEnv) -> Bool {
+  let mut ok = true
+  for name in ["Less", "Equal", "Greater"] {
+    match env_lookup(env, name) {
+      Some(CtEnum(owner)) => if owner != "Ordering" {
+        ok = false
+      },
+      _ => ok = false
+    }
+  }
+  ok
+}
+
+/// Refuse the first `derive (Ord)` in `stmts`, naming why the prelude
+/// `Ordering` it needs is unavailable (`why` finishes the sentence).
+fn report_ordering_conflict_with(stmts: Array[Stmt], errors: Array[String], why: String) -> Unit {
+  let mut i = 0
+  let mut reported = false
+  while !reported && i < Array::length(stmts) {
+    let derived_ord = match Array::get(stmts, i) {
+      SStruct(_, name, _, derives, _, _) => if struct_derives_has(derives, "Ord") {
+        Some(name)
+      } else None,
+      SEnum(_, name, _, _, derives) => if struct_derives_has(derives, "Ord") {
+        Some(name)
+      } else None,
+      _ => None
+    }
+    match derived_ord {
+      Some(name) => {
+        Array::push(errors, String::concat("`derive (Ord)` on `", String::concat(name, String::concat("` generates `compare` returning the prelude `Ordering` (`Less` / `Equal` / `Greater`), ", why))))
+        reported = true
+      },
+      None => ()
+    }
+    i = i + 1
+  }
+}
+
+/// Does this binder carry a higher-kinded formal? A DECLARED one (`[F[_]]`)
+/// records its arity in the key; an inferred one shows up as a formal in
+/// application-head position.
+fn hoist_has_hkt_formal(tparams: Array[String], params: Array[(String, Option[TypeExpr])], ret: Option[TypeExpr]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(tparams) && !found {
+    if type_param_arity(Array::get(tparams, i)) > 0 {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  let mut pi = 0
+  while pi < Array::length(params) && !found {
+    match Array::get(params, pi) {
+      (_, Some(te)) => if hoist_te_applies_formal(te, tparams) {
+        found = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    pi = pi + 1
+  }
+  if found {
+    ()
+  } else {
+    match ret {
+      Some(te) => if hoist_te_applies_formal(te, tparams) {
+        found = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+  }
+  found
+}
+
+/// One slot of a hoisted SCHEME: resolved with the binder's formals shadowing
+/// `defs`, then mapped onto this scheme's own variables. Same two-step every
+/// other generic binder in this file uses (see the `SEnum` constructor
+/// signatures); an unannotated slot stays `CtUnknown`.
+fn hoisted_scheme_slot(annotation: Option[TypeExpr], tparams: Array[String], vars: Array[Type], defs: Array[TypeDef]) -> Type {
+  match annotation {
+    Some(type_expr) => subst_type_params(resolve_type_expr_shadowed(type_expr, defs, tparams), tparams, vars),
+    _ => CtUnknown
+  }
+}
+
+/// The declared bounds, re-keyed from formal name to this scheme's variable id.
+fn hoisted_scheme_bounds(tparams: Array[String], tbounds: Array[(String, Array[String])], ids: Array[Int]) -> Array[(Int, Array[String])] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(tbounds) {
+    let (bname, blist) = Array::get(tbounds, i)
+    let mut j = 0
+    while j < Array::length(tparams) {
+      if Array::get(tparams, j) == bname {
+        Array::push(out, (Array::get(ids, j), blist))
+      } else {
+        ()
+      }
+      j = j + 1
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// #2610: a generic top-level `fn` hoists as a real SCHEME.
+///
+/// #2607 made the hoist mask a generic signature per SLOT rather than whole, so
+/// a forward call's arity and concrete return type are checked. The slots that
+/// MENTION a formal still read as unannotated, and for a function whose
+/// parameters are generic that is every argument -- so
+///
+///   fn caller() -> Int { len("not an array") }
+///   fn len[T](xs: Array[T]) -> Int { Array::length(xs) }
+///
+/// compiled and printed `0`, while the same call written BELOW the definition
+/// was rejected (`argument type mismatch for len: expected Array[?t4], got
+/// String`). Source order decided the verdict, one slot further in than before.
+///
+/// A single pre-binding shared by every call site cannot be a concrete `CtFn`,
+/// but it can be a `CtForAll`: fresh variables for the binder's formals, the
+/// declared bounds attached, and each call site instantiates its own copy --
+/// exactly what the binding's own statement produces when it is reached. This
+/// consumes counter ids, so it returns the next counter with the type.
+///
+/// Two shapes keep the #2607 mask and consume nothing: a higher-kinded formal
+/// (see `hoist_has_hkt_formal`), and an optional or labeled parameter, where a
+/// legitimate call may omit an argument and a strict arity would be a false
+/// error (#2318's surviving exclusion).
+fn hoisted_fn_scheme(value: Expr, defs: Array[TypeDef], c: Int) -> (Type, Int) {
+  match value {
+    EFn(tparams, tbounds, params, ret, eff, _body) => {
+      let tplen = Array::length(tparams)
+      if tplen == 0 || hoist_has_hkt_formal(tparams, params, ret) {
+        (hoisted_fn_signature(value, defs), c)
+      } else {
+        let ids = array_empty()
+        let vars = array_empty()
+        let mut vi = 0
+        while vi < tplen {
+          let vid = c + vi
+          Array::push(ids, vid)
+          Array::push(vars, CtVar(vid))
+          vi = vi + 1
+        }
+        let ptys = array_empty()
+        let mut usable = true
+        let mut i = 0
+        while i < Array::length(params) {
+          let (pname, pann) = Array::get(params, i)
+          if labeled_param_base_name(pname) != pname {
+            usable = false
+          } else {
+            Array::push(ptys, hoisted_scheme_slot(pann, tparams, vars, defs))
+          }
+          i = i + 1
+        }
+        if usable {
+          (CtForAll(ids, hoisted_scheme_bounds(tparams, tbounds, ids), CtFn(ptys, hoisted_scheme_slot(ret, tparams, vars, defs), eff)), c + tplen)
+        } else {
+          (CtUnknown, c)
+        }
+      }
+    },
+    _ => (CtUnknown, c)
+  }
+}
+
+/// The type to pre-bind for a hoisted `SLet`: its annotation when it has one,
+/// otherwise a `fn`'s own signature (#2318), otherwise the HEAD its value
+/// spells, otherwise unknown.
+///
+/// #3139: an unannotated top-level array literal (`let tbl = [5, 6]`) or
+/// builtin map literal (`Map::new()` / `Map::from_pairs(..)`, an `EMap`) hoists as
+/// `Array[?]` / `StringMap[?]` -- the container head, element left unknown
+/// exactly as before. A reference placed ABOVE the declaration used to see
+/// `CtUnknown`, so the index lowering (#3133 / #3139) could not tell the
+/// array from a map there and refused the site; the compiler's own flat
+/// source reads `__exn_kind_cell` that way. The head is what the literal
+/// syntactically IS, so it can only be right; the element stays as permissive
+/// as the old `CtUnknown`.
+/// #3149: the names of this list's GENERIC value declarations that an earlier
+/// statement mentions (any free name or bare callee, shadowing ignored -- a
+/// false hit only keeps the conservative answer).
+fn string_array_has(items: Array[String], wanted: String) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(items) && !hit {
+    hit = Array::get(items, i) == wanted
+    i = i + 1
+  }
+  hit
+}
+
+fn generic_forward_referenced_names(stmts: Array[Stmt], idx: Int) -> Array[String] {
+  let generic_names = array_empty()
+  let mut gi = idx
+  while gi < Array::length(stmts) {
+    match Array::get(stmts, gi) {
+      SLet(_, _, gname, _, EFn(gtps, _, _, _, _, _)) => if Array::length(gtps) > 0 {
+        Array::push(generic_names, gname)
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    gi = gi + 1
+  }
+  let out = array_empty()
+  if Array::length(generic_names) == 0 {
+    out
+  } else {
+    let seen = MutMap::new_string()
+    let mut si = idx
+    while si < Array::length(stmts) {
+      let stmt = Array::get(stmts, si)
+      match stmt {
+        SLet(_, _, sname, _, _) => if string_array_has(generic_names, sname) && MutMap::has(seen, sname) {
+          Array::push(out, sname)
+        } else {
+          ()
+        },
+        _ => ()
+      }
+      let body = match stmt {
+        SLet(_, _, _, _, v) => Some(v),
+        SLetMut(_, _, v) => Some(v),
+        SLetPat(_, v) => Some(v),
+        STest(_, b) => Some(b),
+        SBench(_, b) => Some(b),
+        SExpr(e) => Some(e),
+        _ => None
+      }
+      match body {
+        Some(b) => {
+          for n in closure_free_names(b, array_empty()) {
+            MutMap::set(seen, n, 1)
+          }
+          for n in closure_bare_callee_names(b) {
+            MutMap::set(seen, n, 1)
+          }
+        },
+        None => ()
+      }
+      si = si + 1
+    }
+    out
+  }
+}
+
+fn hoisted_value_type(annotation: Option[TypeExpr], value: Expr, defs: Array[TypeDef], c: Int) -> (Type, Int) {
+  match annotation {
+    Some(type_expr) => (resolve_type_expr(type_expr, defs), c),
+    None => match value {
+      EArray(_) => (CtArray(CtUnknown), c),
+      // The parser builds `Map::new()` and `Map::from_pairs([..])` as `EMap`.
+      EMap(_) => (CtNamed("Map", [CtString, CtUnknown]), c),
+      _ => hoisted_fn_scheme(value, defs, c)
+    }
+  }
+}
+
+fn hoist_merged_source_values(stmts: Array[Stmt], start: Int, env: TypeEnv, defs: Array[TypeDef], c: Int) -> (TypeEnv, Int) {
+  let mut out = env
+  let mut next_c = c
+  let mut i = start
+  while i < Array::length(stmts) && !(Array::get(stmts, i) is SReExportSourceBoundary(_, _)) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, annotation, value) => {
+        let (ty, nc) = hoisted_value_type(annotation, value, defs, next_c)
+        next_c = nc
+        out = env_bind(out, name, ty)
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  (out, next_c)
+}
+
+/// Map the stable type-declaration schedule back to the retained statement
+/// coordinates. `checked_stmts` stays in source/post-desugar order even though
+/// declaration checking is scheduled type-first.
+fn reordered_type_decl_positions(stmts: Array[Stmt], start: Int) -> Array[Int] {
+  let out = array_empty()
+  let mut i = 0
+  while i < start {
+    Array::push(out, i)
+    i = i + 1
+  }
+  while i < Array::length(stmts) {
+    if stmt_is_type_decl(Array::get(stmts, i)) {
+      Array::push(out, i)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  let mut j = start
+  while j < Array::length(stmts) {
+    if !stmt_is_type_decl(Array::get(stmts, j)) {
+      Array::push(out, j)
+    } else {
+      ()
+    }
+    j = j + 1
+  }
+  out
+}
+
+fn next_type_def_binder_id(type_def_binders: Array[Array[Int]], floor: Int) -> Int {
+  let mut next = floor
+  let mut i = 0
+  while i < Array::length(type_def_binders) {
+    let binders = Array::get(type_def_binders, i)
+    let mut j = 0
+    while j < Array::length(binders) {
+      let candidate = Array::get(binders, j) + 1
+      if candidate > next {
+        next = candidate
+      } else {
+        ()
+      }
+      j = j + 1
+    }
+    i = i + 1
+  }
+  next
+}
+
+export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[TypeDef], type_def_binders: Array[Array[Int]], local_defs_start: Int, s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], statement_parent_path: Option[Array[Int]], capture: Option[CheckerStatementCapture], role_lane_capture: Option[TypedOccurrenceRoleLaneCapture], imports_already_projected: Bool, validate_completed_decls: Bool) -> (TypeEnv, Subst, Int) {
+  let stmts = reorder_type_decls_first(raw_stmts, i)
+  let completed_decl_error_insert_at = Array::length(errors)
+  let observation_checkpoint = checker_observation_checkpoint(capture, role_lane_capture, tytab)
+  // Retained coordinates exist solely for the opt-in observation. Keep the
+  // ordinary checker path free of its position-map allocation.
+  let retained_positions = match capture {
+    Some(_) => Some(reordered_type_decl_positions(raw_stmts, i)),
+    None => match role_lane_capture {
+      Some(_) => Some(reordered_type_decl_positions(raw_stmts, i)),
+      None => None
+    }
+  }
+  let mut idx = i
+  // #2125: see preclaim_local_type_defs.
+  let preclaim_from = Array::length(defs)
+  preclaim_local_type_defs(stmts, idx, defs, type_def_binders)
+  let mut local_defs_end = preclaim_from
+  // #2125 (field enforcement): see collect_trait_dict_erasures. Computed from
+  // the statement LIST because reorder_type_decls_first hoists a synthesized
+  // `<Trait>Dict` struct above its trait declaration, so the env cannot
+  // answer at the struct's own check point.
+  let trait_dict_erasures = collect_trait_dict_erasures(stmts)
+  let deferred_type_names = collect_deferred_type_name_sentinels(stmts)
+  // Slots this list's declarations have already taken (see own_typedef_slot).
+  let taken_type_def_slots = array_empty()
+  let mut cur_env = env
+  let mut cur_s = s
+  let mut cur_c = c
+  // A nested module extends the definition table after earlier outer/module
+  // values have already been checked. Record that condition so the root can
+  // rebuild the value environment once from the completed type graph.
+  let mut nested_defs_extended = false
+  // #602: hoist top-level binding signatures so a `let` may reference another
+  // top-level `let` defined later in the same statement list (a forward
+  // reference). Without this, checking the earlier binding's body raised
+  // "unknown name" and aborted the whole compile with an opaque trap.
+  // check_stmts is only used for program / module statement lists — local
+  // `let`s are ELet expressions checked in check_expr — so this does not affect
+  // block scoping. An annotated binding hoists its declared type; an
+  // un-annotated one hoists as CtUnknown (its precise type is filled in when its
+  // own statement is reached, which shadows this pre-binding). Pre-binding only
+  // adds names, and a later real binding shadows it, so ordered
+  // (backward-reference) code is checked exactly as before.
+  let mut hoist_i = idx
+  while hoist_i < Array::length(stmts) {
+    match Array::get(stmts, hoist_i) {
+      SLet(_, _, hname, hann, hval) => {
+        let (ht, hnc) = hoisted_value_type(hann, hval, defs, cur_c)
+        cur_c = hnc
+        cur_env = env_bind(cur_env, hname, ht)
+        note_toplevel_generic_binding(hname, hval, Some(ht), cur_env)
+        // #2773: mark a top-level rendering shim's NAME, by the same predicate
+        // that grants its body the `check_interp_formal` exemption. The body
+        // stands down because the shim is expanded at each call site, where the
+        // argument type survives; the call site (checker.vibe's named-call arm)
+        // is what re-asks the question. Marked in the HOIST rather than when
+        // the declaration is reached, because a shim may be declared below the
+        // call that uses it and the exemption must not depend on which.
+        match hval {
+          EFn(_, _, hparams, _, _, hbody) => if interp_is_shim_body(hparams, hbody) {
+            cur_env = env_bind(cur_env, interp_shim_marker(hname), CtBool)
+          } else {
+            ()
+          },
+          _ => ()
+        }
+      },
+      _ => ()
+    }
+    hoist_i = hoist_i + 1
+  }
+  // ADR-0071 step 2 (#755): collect every effectset (name -> raw member
+  // list) and effect (name -> operation names) declared in THIS statement
+  // list up front, mirroring the hoist_i pre-pass above, so a later
+  // SEffectSet arm below can run es_detect_cycle/es_qualified_collision
+  // regardless of declaration order (an effectset may reference another one
+  // defined later in the same file, exactly like the SLet forward-reference
+  // case this hoist mirrors). Shared with collect_async_effect_errors below
+  // (step 3's row-expansion pass) via es_collect_tables so both walks stay
+  // in sync from one implementation.
+  let (es_names, es_members_list, ed_names, ed_ops_list) = es_collect_tables(stmts, idx)
+  es_append_imported_tables(defs, es_names, es_members_list, ed_names, ed_ops_list)
+  // ADR-0075 Phase 2 (#1343): resource identity rules need the WHOLE list
+  // (duplicate detection), so they run here rather than in the SResource arm
+  // below -- which is why that arm has nothing left to do.
+  resource_decl_errors(stmts, idx, errors)
+  // #1464: same shape -- duplicate value declarations need the WHOLE list.
+  duplicate_value_decl_errors(stmts, idx, errors)
+  // #3149: the generic declarations some EARLIER statement of this list
+  // already references. Such a caller was checked against the hoisted
+  // signature, which knows nothing the body adds, so those declarations'
+  // formals never count as constrained (see `scheme_constrained_formals`).
+  let generic_forward_used = generic_forward_referenced_names(stmts, idx)
+  // #942 (Codex P2 on #969): if any top-level declaration in this statement
+  // list binds the name `resume` (fn/let — fn decls are lowered to SLet
+  // before the checker — let-pattern, extern let, or an import), codegen's
+  // prefer_bound_call routes every `resume(x)` in the file to that BOUND
+  // function (a global name match, see codegen/expr/compile_call.vibe), so
+  // the #942 misuse walks must stand down for the whole list.
+  let mut resume_shadowed_top = false
+  let mut rst_i = idx
+  while rst_i < Array::length(stmts) {
+    match Array::get(stmts, rst_i) {
+      SLet(_, _, rstname, _, _) => if rstname == "resume" {
+        resume_shadowed_top = true
+      } else {
+        ()
+      },
+      SLetMut(rstname, _, _) => if rstname == "resume" {
+        resume_shadowed_top = true
+      } else {
+        ()
+      },
+      SExternLet(rstname, _) => if rstname == "resume" {
+        resume_shadowed_top = true
+      } else {
+        ()
+      },
+      SLetPat(rstpat, _) => if pat_binds_resume(rstpat) {
+        resume_shadowed_top = true
+      } else {
+        ()
+      },
+      SImport(_, rstnames) => {
+        let mut rn_i = 0
+        while rn_i < Array::length(rstnames) {
+          let item = Array::get(rstnames, rn_i)
+          let rn_name = item.name
+          let rn_alias = item.alias
+          let rn_bound = match rn_alias {
+            Some(a) => a,
+            None => rn_name
+          }
+          if rn_bound == "resume" {
+            resume_shadowed_top = true
+          } else {
+            ()
+          }
+          rn_i = rn_i + 1
+        }
+      },
+      SReExport(_, rstnames) => {
+        let mut rn_i = 0
+        while rn_i < Array::length(rstnames) {
+          let item = Array::get(rstnames, rn_i)
+          let rn_name = item.name
+          let rn_alias = item.alias
+          // A plain re-export can resolve to the dependency's merged
+          // definition. An alias is publication-only and introduces no local
+          // binder, so it must not shadow the special `resume` call (#2287).
+          if rn_name == "resume" && rn_alias == None {
+            resume_shadowed_top = true
+          } else {
+            ()
+          }
+          rn_i = rn_i + 1
+        }
+      },
+      _ => ()
+    }
+    rst_i = rst_i + 1
+  }
+  while idx < Array::length(stmts) {
+    let env = cur_env
+    let s = cur_s
+    let c = cur_c
+    let stmt = Array::get(stmts, idx)
+    let defs_before_stmt = Array::length(defs)
+    // Do not construct paths or read the legacy append boundary on the normal
+    // checker path. The parent/current coordinate is observation-only.
+    let statement_path = match capture {
+      Some(_) => match retained_positions {
+        Some(positions) => match statement_parent_path {
+          Some(parent_path) => {
+            let path = copy_ints(parent_path)
+            Array::push(path, Array::get(positions, idx))
+            Some(path)
+          },
+          None => None
+        },
+        None => None
+      },
+      None => match role_lane_capture {
+        Some(_) => match retained_positions {
+          Some(positions) => match statement_parent_path {
+            Some(parent_path) => {
+              let path = copy_ints(parent_path)
+              Array::push(path, Array::get(positions, idx))
+              Some(path)
+            },
+            None => None
+          },
+          None => None
+        },
+        None => None
+      }
+    }
+    match statement_path {
+      Some(path) => typed_occurrence_capture_begin_statement(role_lane_capture, path),
+      None => ()
+    }
+    let capture_start = match capture {
+      Some(StatementTypedOccurrences(_)) => Some(Array::length(tytab)),
+      _ => None
+    }
+    // #942 (ADR-0050): resume-misuse walk — a call-position `resume(...)`
+    // outside any handler arm is rejected, and inside a (non-Error) arm it
+    // must sit in tail position. Runs on a throwaway lane per statement
+    // (only ADDS diagnostics; inference flow untouched). SModule bodies are
+    // covered by the recursive check_stmts call below. `resume_shadowed_top`
+    // (computed above): when a top-level declaration binds the name `resume`,
+    // codegen's prefer_bound_call routes every `resume(x)` to the bound
+    // function, so the misuse walk stands down (Codex P2 on #969).
+    match stmt {
+      SLet(_, _, _, _, rv) => reject_resume_outside_handler(rv, resume_shadowed_top, errors),
+      SLetMut(_, _, rv) => reject_resume_outside_handler(rv, resume_shadowed_top, errors),
+      SLetPat(_, rv) => reject_resume_outside_handler(rv, resume_shadowed_top, errors),
+      STest(_, rb) => reject_resume_outside_handler(rb, resume_shadowed_top, errors),
+      SBench(_, rb) => reject_resume_outside_handler(rb, resume_shadowed_top, errors),
+      SExpr(re) => reject_resume_outside_handler(re, resume_shadowed_top, errors),
+      _ => ()
+    }
+    let (new_env, s1, c1) = match stmt {
+      SLet(exported, is_rec, name, ann, val) => {
+        let err_before = Array::length(errors)
+        // #2125: an `impl` method is parsed as `let <Type>::<method> = ..`
+        // (parser.vibe's parse_impl_methods), and its signature may spell the
+        // trait's own erased type parameter with no binder of its own. Bind
+        // those names -- and only the ones an actual impl licenses -- into the
+        // environment the VALUE is checked in, never `env1` below, so they
+        // cannot reach a published or cached environment.
+        let val_env = env_bind(trait_erased_type_param_env(env, name), "#interp.top.fn", match val {
+          EFn(_, _, _, _, _, _) => CtBool,
+          _ => CtUnit
+        })
+        let head_bound_mark = efn_head_bound_mark()
+        let (vt, ns0, nc) = if is_rec {
+          check_expr_capture(val, env_bind(val_env, name, CtUnknown), defs, s, c, errors, tytab, role_lane_capture, "Primary")
+        } else {
+          check_expr_capture(val, val_env, defs, s, c, errors, tytab, role_lane_capture, "Primary")
+        }
+        // #3149: an exported declaration may be called through a contract,
+        // and a forward-referenced one was called against its hoisted
+        // signature; only the rest has every caller checked against the
+        // scheme its body produced.
+        efn_head_bound_commit(head_bound_mark, !exported && !string_array_has(generic_forward_used, name))
+        attach_unlocated_decl_name_marker(errors, err_before, name)
+        // The value must be assignable to a declared annotation (previously
+        // unchecked — `let x: Int = "s"` was accepted).
+        let (ns, t) = match ann {
+          Some(te) => {
+            let resolved_te = resolve_type_expr(te, defs)
+            let actual_v = subst_apply(ns0, vt)
+            // #844/#981: `check_assignable` itself now reports the same-name
+            // concrete generic instantiation mismatch (its tolerate branch
+            // calls `detect_narrowed_generic_mismatch` — see checker.vibe),
+            // so the explicit second call this site used to make would
+            // double-report the same diagnostic — dropped.
+            // Anchor on the VALUE being bound, not the annotation: `let x: Int
+            // = f()` is wrong at `f()`, and that is also where the edit goes.
+            // -1 (unlocated, as before) for a literal RHS -- EInt/EString/
+            // EBool/EFloat carry no offset in the AST.
+            let ann_err_before = Array::length(errors)
+            // #2125: a top-level binding's annotation. Reported HERE and not
+            // at the forward-reference hoist above, which runs before any
+            // declaration in this list has been walked -- at that point every
+            // locally declared alias and effect name is still absent from
+            // `defs` and would be reported as unknown. Inside the
+            // `ann_err_before` window so the binder name anchors it.
+            report_unknown_type_names(te, defs, array_empty(), env, array_empty(), String::concat(String::concat("the annotation of `", name), "`"), errors)
+            // Give the binding mismatch an END so the range covers the whole
+            // literal, not just its first byte: `locate_type_error` emits the
+            // `C-E` form only when both ends are known.
+            //
+            // This end is the DECODED length, so it is short by one byte per
+            // escape. `locate_type_error` corrects it: it holds the offset AND
+            // the source text, so it reads the lexer's own token span
+            // (`string_token_end`, #2868). Nothing is lost by computing the
+            // cheap estimate here -- the correction never shortens a range --
+            // and the checker has no source text at this point to do better.
+            match val {
+              EString(s, soff) => if soff >= 0 {
+                check_assignable_set_end(soff + 2 + String::length(s))
+              } else {
+                ()
+              },
+              _ => ()
+            }
+            let ns_b = check_assignable_for(resolved_te, actual_v, ns0, errors, "binding type mismatch for ", name, top_stmt_expr_off(val))
+            // #1941: a literal value carries no offset, so anchor the binder
+            // name instead of emitting the one unlocated diagnostic left in
+            // this lane.
+            attach_unlocated_decl_name_marker(errors, ann_err_before, name)
+            // Prefer the RHS's real instantiated type over the erasing bare
+            // annotation when `resolved_te` is a bare generic-struct
+            // reference that `actual_v` already concretely instantiates, so a
+            // LATER statement's lookup of this binding sees real type args
+            // instead of an erased placeholder (see
+            // `preserve_generic_instantiation`'s doc comment in checker.vibe).
+            (ns_b, preserve_generic_instantiation(resolved_te, subst_apply(ns_b, vt)))
+          },
+          None => {
+            // #2459: the SAME decision as the `ELet` / `ELetRec` arms in
+            // checker.vibe, and it is now spelled once. This site carried its
+            // own copy of the predicate, so a top-level `let g2 = g` kept
+            // quantifying a captured slot after both local arms stopped --
+            // three places for one rule is how they drift apart.
+            // #2848: an impl method's `self` is unannotated here and would be
+            // quantified below; resolve its field reads against the impl's
+            // recorded target first (provenance from the env, not the name).
+            let ns_self = resolve_impl_self_field_reads(name, val, vt, ns0, env, defs, errors)
+            let gen = let_generalize(val, vt, env, defs, ns_self, None)
+            // #2848: see the ELet arm in checker.vibe.
+            refuse_generalized_field_reads(gen, ns_self, errors)
+            (ns_self, gen)
+          }
+        }
+        // #3033: the binding is published with its rows' exception kinds
+        // resolved, so an importer compares the types they name rather than
+        // an alias it cannot see. An exported row whose kind no row can spell
+        // is refused instead.
+        if exported {
+          refuse_unpublishable_exception_row(t, name, name, defs, errors)
+        } else {
+          ()
+        }
+        // #3051: an exported generic binding spells the formals its row names
+        // by quantifier index, so an importer can instantiate them at a call.
+        // #3057: a PRIVATE alias (`let h = f`) is respelled the same way. Its
+        // scheme is generalized afresh, possibly in another order, while the
+        // row it copied still indexes the SOURCE's quantifier list, so a call
+        // of `h` would read each marker as the wrong formal.
+        let is_alias = match val {
+          EIdent(_, _) => true,
+          _ => false
+        }
+        let published = if exported || is_alias {
+          publish_row_formals(type_exception_rows_resolved(t), val, env, defs)
+        } else {
+          type_exception_rows_resolved(t)
+        }
+        let env1 = bind_function_dependency_contracts(env_bind(env, name, published), name, val)
+        capture_statement_root_type(capture, statement_path, "SLet", vt)
+        (bind_value_or_annotation_return(env1, name, val, ann, defs), ns, nc)
+      },
+      SLetMut(name, ann, val) => {
+        // ADR-0069 Phase 1: top level is declarations only. A top-level
+        // `let mut` was never soundly implemented (the linear backend
+        // miscompiles cross-function references); reject it, but keep
+        // checking/binding below for error recovery.
+        Array::push(errors, top_level_reject_msg("top-level `let mut` bindings are not allowed; move it into fn main", val))
+        let err_before = Array::length(errors)
+        let (vt, ns0, nc) = check_expr_capture(val, env, defs, s, c, errors, tytab, role_lane_capture, "Primary")
+        attach_unlocated_decl_name_marker(errors, err_before, name)
+        let ns = match ann {
+          Some(te) => check_assignable_for(resolve_type_expr(te, defs), subst_apply(ns0, vt), ns0, errors, "binding type mismatch for ", name, 0 - 1),
+          None => ns0
+        }
+        let t = match ann {
+          Some(te) => resolve_type_expr(te, defs),
+          None => vt
+        }
+        let env1 = env_bind(env, name, t)
+        capture_statement_root_type(capture, statement_path, "SLetMut", vt)
+        (bind_value_or_annotation_return(env1, name, val, ann, defs), ns, nc)
+      },
+      SLetPat(pat, val) => {
+        let (vt, ns, nc) = check_expr_capture(val, env, defs, s, c, errors, tytab, role_lane_capture, "Primary")
+        let new_env = match pat {
+          PTuple(pats) => match vt {
+            CtTuple(types) => {
+              let mut e = env
+              let mut pi = 0
+              while pi < Array::length(pats) {
+                match Array::get(pats, pi) {
+                  PBind(name) => if pi < Array::length(types) {
+                    e = env_bind(e, name, Array::get(types, pi))
+                  } else {
+                    e = env_bind(e, name, CtUnknown)
+                  },
+                  _ => ()
+                }
+                pi = pi + 1
+              }
+              e
+            },
+            _ => {
+              // A tuple pattern can only destructure a tuple value. `let (a, b) =
+              // 5` was accepted and bound `a`/`b` to garbage. When the value
+              // resolves to a concrete NON-tuple type (a scalar, array, option,
+              // fn, struct, enum), this is a real error. Type vars / unknown /
+              // named (generic) values stay tolerated.
+              let concrete_non_tuple = match subst_apply(ns, vt) {
+                CtInt => true,
+                CtDouble => true,
+                CtBool => true,
+                CtString => true,
+                CtChar => true,
+                CtUnit => true,
+                CtBytes => true,
+                CtArray(_) => true,
+                CtOption(_) => true,
+                CtFn(_, _, _) => true,
+                CtStruct(_) => true,
+                CtEnum(_) => true,
+                _ => false
+              }
+              if concrete_non_tuple {
+                Array::push(errors, "tuple pattern cannot destructure a non-tuple value")
+              } else {
+                ()
+              }
+              let mut e = env
+              let mut pi = 0
+              while pi < Array::length(pats) {
+                match Array::get(pats, pi) {
+                  PBind(name) => {
+                    e = env_bind(e, name, CtUnknown)
+                  },
+                  _ => ()
+                }
+                pi = pi + 1
+              }
+              e
+            }
+          },
+          PBind(name) => env_bind(env, name, vt),
+          PStruct(_, fields) => {
+            let mut e = env
+            let mut fi = 0
+            while fi < Array::length(fields) {
+              let (_, fpat) = Array::get(fields, fi)
+              match fpat {
+                PBind(name) => {
+                  e = env_bind(e, name, CtUnknown)
+                },
+                _ => ()
+              }
+              fi = fi + 1
+            }
+            e
+          },
+          _ => env
+        }
+        capture_statement_root_type(capture, statement_path, "SLetPat", vt)
+        (new_env, ns, nc)
+      },
+      SEnum(exported, name, params, variants, enum_derives) => {
+        validate_derives(enum_derives, errors)
+        builtin_spelling_decl_error("enum", name, Array::length(params), errors)
+        duplicate_ctor_errors("enum", name, variants, errors)
+        let param_len = Array::length(params)
+        let param_var_ids = array_empty()
+        let param_var_types = array_empty()
+        let mut pi = 0
+        while pi < param_len {
+          let vid = c + pi
+          Array::push(param_var_ids, vid)
+          Array::push(param_var_types, CtVar(vid))
+          pi = pi + 1
+        }
+        let ctor_result_type = if param_len == 0 {
+          CtEnum(name)
+        } else {
+          CtNamed(name, param_var_types)
+        }
+        let ctor_bounds = array_empty()
+        let resolved_variants = array_empty()
+        // The local TDEnum uses this check's ids; published authority retains
+        // the name-parameterized shape and rebinds it at each importer.
+        let published_variants = array_empty()
+        let enum_payload_tes = array_empty()
+        let mut fvi = 0
+        while fvi < Array::length(variants) {
+          let (_, payloads) = Array::get(variants, fvi)
+          let mut fpi = 0
+          while fpi < Array::length(payloads) {
+            Array::push(enum_payload_tes, Array::get(payloads, fpi))
+            fpi = fpi + 1
+          }
+          fvi = fvi + 1
+        }
+        report_formal_applications_across(enum_payload_tes, params, String::concat(String::concat("enum `", name), "`"), errors)
+        // #2125: this enum's slot in `defs` is already claimed (see
+        // preclaim_local_type_defs), so a recursive occurrence of `name` in
+        // its own payloads resolves to `CtEnum(name)` instead of falling
+        // through to `CtNamed(name, [])`. The ctor-signature loop below
+        // resolves the same payload text AFTER the registration and therefore
+        // already saw the resolved form; the two disagreed.
+        let self_def_index = own_typedef_slot(defs, type_def_binders, taken_type_def_slots, name, preclaim_from, TDEnum(name, params, array_empty()))
+        Array::set(type_def_binders, self_def_index, param_var_ids)
+        // #3028: the payload rows' exception kinds resolve before the
+        // payloads and the constructor signatures below are built from them.
+        record_decl_exception_kinds([stmt], defs, env, errors, false)
+        let mut vi = 0
+        while vi < Array::length(variants) {
+          let (vname, vtypes) = Array::get(variants, vi)
+          let resolved_vtypes = array_empty()
+          let named_vtypes = array_empty()
+          let mut ti = 0
+          while ti < Array::length(vtypes) {
+            // #2125: an unknown name in a payload otherwise becomes a wildcard
+            // `CtNamed` -- same hole as the annotation sites.
+            report_unknown_type_names_deferred_validation(Array::get(vtypes, ti), defs, decl_report_shadow(params, array_empty(), deferred_names_for_decl(deferred_type_names, name)), env, array_empty(), String::concat(String::concat(String::concat("the payload of `", name), String::concat("::", vname)), "`"), errors)
+            // #1512: `params` shadow `defs`, so the substitution below still
+            // finds `CtNamed(<param>, [])` when an import bound that name.
+            // #3028: a function row in a payload is published with its
+            // exception kinds resolved, as a binding's is.
+            let named_vt = type_exception_rows_resolved(resolve_type_expr_shadowed(Array::get(vtypes, ti), defs, params))
+            Array::push(named_vtypes, named_vt)
+            Array::push(resolved_vtypes, subst_type_params(named_vt, params, param_var_types))
+            ti = ti + 1
+          }
+          Array::push(resolved_variants, (vname, resolved_vtypes))
+          Array::push(published_variants, (vname, named_vtypes))
+          vi = vi + 1
+        }
+        Array::set(defs, self_def_index, TDEnum(name, params, resolved_variants))
+        let mut env1 = env_bind(env, name, CtEnum(name))
+        let mut ci2 = 0
+        while ci2 < Array::length(variants) {
+          let (vname, vtypes) = Array::get(variants, ci2)
+          // #1078: a variant name already declared by a DIFFERENT enum in
+          // this (possibly whole-program-merged) unit is a hard error.
+          // The checker env is flat and name-keyed with last-registered-
+          // wins shadowing, and qualified CONSTRUCTION is not supported
+          // syntax -- so a bare `Mk(..)` in code written against the
+          // earlier enum silently resolves to this one's signature,
+          // producing an arity/argument-type mismatch pointing at the
+          // WRONG declaration (or, same-signature, a silent wrong-tag
+          // miscompile). Two unrelated packages only meet in one unit via
+          // the merge/flatten lane, which is exactly how #1078 was hit
+          // (@vibe/json's RpcMessage vs another merged package).
+          match find_other_enum_declaring_variant(defs, local_defs_start, name, vname) {
+            Some(other) => Array::push(errors, String::concat(String::concat(String::concat(String::concat("constructor name collision: ", vname), " is declared by both "), other), String::concat(" and ", String::concat(name, " in the same compiled unit; bare constructor references are ambiguous (qualified construction is not supported) -- rename one variant")))),
+            None => ()
+          }
+          let ctor_ty = if Array::length(vtypes) == 0 {
+            ctor_result_type
+          } else {
+            let resolved_args = array_empty()
+            let mut ai = 0
+            while ai < Array::length(vtypes) {
+              // #1512: shadow `params` here too -- this resolves the SAME
+              // variant payloads as the `TDEnum` above, independently, and the
+              // `subst_type_params` right here needs the rigid formal to survive.
+              // #3028: the constructor's signature carries the payload's
+              // resolved exception kinds, the ones the TDEnum above holds.
+              let arg_ty = subst_type_params(type_exception_rows_resolved(resolve_type_expr_shadowed(Array::get(vtypes, ai), defs, params)), params, param_var_types)
+              Array::push(resolved_args, arg_ty)
+              ai = ai + 1
+            }
+            CtFn(resolved_args, ctor_result_type, constructor_dependency_row(Array::length(resolved_args)))
+          }
+          let exported_ctor_ty = if param_len == 0 {
+            ctor_ty
+          } else {
+            CtForAll(param_var_ids, ctor_bounds, ctor_ty)
+          }
+          env1 = env_bind(env1, vname, exported_ctor_ty)
+          match ctor_ty {
+            CtFn(_, ret, _) => {
+              let exported_ret_ty = if param_len == 0 {
+                ret
+              } else {
+                CtForAll(param_var_ids, ctor_bounds, ret)
+              }
+              env1 = bind_fn_return(env1, vname, exported_ret_ty)
+            },
+            _ => ()
+          }
+          ci2 = ci2 + 1
+        }
+        // #672: pre-bind the generated structural `E::equals` (every enum gets
+        // one) so `==` dispatch call sites resolve at check time.
+        let env_eq = env_bind(env1, String::concat(name, "::equals"), CtFn([
+          ctor_result_type,
+          ctor_result_type
+        ], CtBool, None))
+        // #2523: the enum half of the `derive (Eq)` registration below the
+        // struct one -- same reason, same shape.
+        let env_eq_impl = if struct_derives_has(enum_derives, "Eq") {
+          EnvTraitImpl("Eq", ctor_result_type, env_eq)
+        } else {
+          env_eq
+        }
+        // #638: pre-bind the signatures the enum-derive desugar will generate, so
+        // `E::compare` / `E::to_string` / `E::default` resolve at check time (the
+        // FS-compile path checks before the codegen-time desugar runs).
+        let env_ord = if struct_derives_has(enum_derives, "Ord") {
+          env_bind(env_eq_impl, String::concat(name, "::compare"), CtFn([
+            ctor_result_type,
+            ctor_result_type
+          ], CtEnum("Ordering"), None))
+        } else {
+          env_eq_impl
+        }
+        let env_show = if struct_derives_has(enum_derives, "Show") || struct_derives_has(enum_derives, "Hash") {
+          let env_show_base = if struct_derives_has(enum_derives, "Show") {
+            EnvTraitImpl("Show", ctor_result_type, env_ord)
+          } else {
+            env_ord
+          }
+          env_bind(env_show_base, String::concat(name, "::to_string"), CtFn([
+            ctor_result_type
+          ], CtString, None))
+        } else {
+          env_ord
+        }
+        // #694: `derive(Hash)` generates `E::hash_key(Self) -> String` (the
+        // structural Map key), so pre-bind its signature at check time too, AND
+        // register `impl Hash for E` so a `[K: Hash]` bound is satisfied by the
+        // derived enum.
+        let env_hash = if struct_derives_has(enum_derives, "Hash") {
+          let env_h = EnvTraitImpl("Hash", ctor_result_type, env_show)
+          env_bind(env_h, String::concat(name, "::hash_key"), CtFn([
+            ctor_result_type
+          ], CtString, None))
+        } else {
+          env_show
+        }
+        // #1847: like Hash above, ALSO register `impl Default for E` so a
+        // `[T: Default]` bound is satisfied by the derived enum (previously
+        // only the `E::default` signature was bound, so the bound check
+        // reported `no impl Default for E`).
+        let env_default = if struct_derives_has(enum_derives, "Default") {
+          let env_d = EnvTraitImpl("Default", ctor_result_type, env_hash)
+          env_bind(env_d, String::concat(name, "::default"), CtFn(array_empty(), ctor_result_type, None))
+        } else {
+          env_hash
+        }
+        (EnvTypeDefs([TDEnum(name, params, published_variants)], if exported {
+          [name]
+        } else {
+          array_empty()
+        }, env_default), s, c + param_len)
+      },
+      SSuberror(exported, name, variants) => {
+        // #786: a `suberror Name(payload...)` declaration is structurally a
+        // single-typed enum whose constructors produce a throwable value. It
+        // was parsed (SSuberror) but never bound, so `KeyInvalid("x")` was an
+        // "unknown name". Register it exactly like a no-type-param enum: record
+        // a TDEnum def (so `match` + type resolution work) and bind each
+        // constructor name as `CtFn(payload, CtEnum(name))`. `throw` accepts the
+        // resulting value (its param is CtUnknown, see builtins_misc).
+        // #2475 (Codex on #2819): a suberror registers a TDEnum and binds its
+        // constructors exactly as an enum does, so `suberror Int(String)`
+        // recreates the same unnameable nominal type. It carries no type
+        // parameters, hence arity 0.
+        builtin_spelling_decl_error("suberror", name, 0, errors)
+        duplicate_ctor_errors("suberror", name, variants, errors)
+        let ctor_result_type = CtEnum(name)
+        let resolved_variants = array_empty()
+        let mut vi = 0
+        // #2125: see the SEnum arm.
+        let self_suberr_index = own_typedef_slot(defs, type_def_binders, taken_type_def_slots, name, preclaim_from, TDEnum(name, array_empty(), array_empty()))
+        while vi < Array::length(variants) {
+          let (vname, vtypes) = Array::get(variants, vi)
+          let resolved_vtypes = array_empty()
+          let mut ti = 0
+          while ti < Array::length(vtypes) {
+            let payload_type = Array::get(vtypes, ti)
+            Array::push(resolved_vtypes, resolve_type_expr(payload_type, defs))
+            ti = ti + 1
+          }
+          Array::push(resolved_variants, (vname, resolved_vtypes))
+          vi = vi + 1
+        }
+        Array::set(defs, self_suberr_index, TDEnum(name, array_empty(), resolved_variants))
+        let mut env1 = env_bind(env, name, CtEnum(name))
+        let mut ci2 = 0
+        while ci2 < Array::length(variants) {
+          let (vname, vtypes) = Array::get(variants, ci2)
+          let ctor_ty = if Array::length(vtypes) == 0 {
+            ctor_result_type
+          } else {
+            let resolved_args = array_empty()
+            let mut ai = 0
+            while ai < Array::length(vtypes) {
+              Array::push(resolved_args, resolve_type_expr(Array::get(vtypes, ai), defs))
+              ai = ai + 1
+            }
+            CtFn(resolved_args, ctor_result_type, constructor_dependency_row(Array::length(resolved_args)))
+          }
+          env1 = env_bind(env1, vname, ctor_ty)
+          match ctor_ty {
+            CtFn(_, ret, _) => {
+              env1 = bind_fn_return(env1, vname, ret)
+            },
+            _ => ()
+          }
+          ci2 = ci2 + 1
+        }
+        let env_eq = env_bind(env1, String::concat(name, "::equals"), CtFn([
+          ctor_result_type,
+          ctor_result_type
+        ], CtBool, None))
+        // #3070: published as the SEnum arm publishes an enum. Without the
+        // `EnvTypeDefs` node the declaration never reached the module's
+        // public env: `export suberror K` answered "imported name 'K' is not
+        // exported", and `export { K }` let the import through with no
+        // TypeDef behind it, so `with Exception[K]` in the importer said
+        // ``unknown type `K` in an exception kind``.
+        (EnvTypeDefs([TDEnum(name, array_empty(), resolved_variants)], if exported {
+          [name]
+        } else {
+          array_empty()
+        }, env_eq), s, c)
+      },
+      SStruct(exported, name, field_defs, derives, mut_fields, tparams) => {
+        validate_derives(derives, errors)
+        builtin_spelling_decl_error("struct", name, Array::length(tparams), errors)
+        let resolved_fields = array_empty()
+        let field_tes = array_empty()
+        // #2125: this struct's slot is already claimed before its own field
+        // types are resolved, so a recursive occurrence resolves to
+        // `CtStruct(name)`.
+        let self_struct_index = own_typedef_slot(defs, type_def_binders, taken_type_def_slots, name, preclaim_from, TDStruct(name, array_empty(), mut_fields, tparams))
+        // #3033: the field rows' exception kinds resolve before the fields are.
+        record_decl_exception_kinds([stmt], defs, env, errors, false)
+        let mut fi = 0
+        while fi < Array::length(field_defs) {
+          let (fname, ftype_expr) = Array::get(field_defs, fi)
+          // #2125: an unknown name in a field type otherwise becomes a
+          // wildcard `CtNamed` -- same hole as the annotation sites. A
+          // synthesized `<Trait>Dict` witness struct spells `Self` and the
+          // trait's erased params verbatim (whole-program lanes re-check the
+          // desugar's output); those are shadowed under the provenance
+          // `collect_trait_dict_erasures` establishes.
+          let dict_erased = trait_dict_erasure_for(trait_dict_erasures, name, fname)
+          let report_shadow = decl_report_shadow(tparams, dict_erased, deferred_names_for_decl(deferred_type_names, name))
+          report_unknown_type_names_deferred_validation(ftype_expr, defs, report_shadow, env, array_empty(), struct_field_decl_label(name, fname), errors)
+          Array::push(field_tes, ftype_expr)
+          // #1512: `tparams` shadow `defs` -- the #829 comment below assumes a
+          // param name resolves to a rigid `CtNamed(param, [])` because no
+          // typedef/builtin claims it, which an import alias otherwise breaks.
+          // #3033: a function row in a field is published with its exception
+          // kinds resolved, as a binding's is.
+          let ftype = type_exception_rows_resolved(resolve_type_expr_shadowed(ftype_expr, defs, tparams))
+          Array::push(resolved_fields, (fname, ftype))
+          fi = fi + 1
+        }
+        // Mixed-kind is a property of the whole struct (`raw: F` next to
+        // `inner: F[Int]`), not of one field TypeExpr.
+        report_formal_applications_across(field_tes, tparams, String::concat(String::concat("struct `", name), "`"), errors)
+        // #829: record the declared type params — a param name resolves above
+        // to a rigid `CtNamed(param, [])` (no such typedef/builtin), which is
+        // exactly what the checker's literal instantiation substitutes.
+        Array::set(defs, self_struct_index, TDStruct(name, resolved_fields, mut_fields, tparams))
+        let field_types = array_empty()
+        let mut fj = 0
+        while fj < Array::length(resolved_fields) {
+          let (_, fty) = Array::get(resolved_fields, fj)
+          Array::push(field_types, fty)
+          fj = fj + 1
+        }
+        let env1 = env_bind(env, name, CtFn(field_types, CtStruct(name), None))
+        // #638: pre-bind the signatures of the structural functions that the
+        // derive desugar will generate, so `Type::compare` / `Type::to_string`
+        // resolve at check time (the FS-compile path checks before the
+        // codegen-time desugar runs).
+        let env2 = if struct_derives_has(derives, "Ord") {
+          env_bind(env1, String::concat(name, "::compare"), CtFn([
+            CtStruct(name),
+            CtStruct(name)
+          ], CtEnum("Ordering"), None))
+        } else {
+          env1
+        }
+        let env3 = if struct_derives_has(derives, "Show") || struct_derives_has(derives, "Hash") {
+          let env_show_base = if struct_derives_has(derives, "Show") {
+            EnvTraitImpl("Show", CtStruct(name), env2)
+          } else {
+            env2
+          }
+          env_bind(env_show_base, String::concat(name, "::to_string"), CtFn([
+            CtStruct(name)
+          ], CtString, None))
+        } else {
+          env2
+        }
+        // #672: every struct gets a generated structural `T::equals` (the `==`
+        // dispatch relies on it), so pre-bind its signature unconditionally.
+        let env4_base = env_bind(env3, String::concat(name, "::equals"), CtFn([
+          CtStruct(name),
+          CtStruct(name)
+        ], CtBool, None))
+        // #2523: register `impl Eq for T` for a `derive (Eq)` struct, so a
+        // `[T: Eq]` bound is satisfied by the derived type -- the same shape
+        // `derive (Hash)` uses below. `Eq` is method-bearing now, and the
+        // witness the bound dispatches through is the `T::equals` bound
+        // immediately above; without this row the bound failed with
+        // ``no impl `Eq` for `Pt` `` while the comparator sat right there.
+        //
+        // Only with the derive, not for every struct: `T::equals` exists
+        // unconditionally (#672), so registering it unconditionally would
+        // make EVERY struct satisfy `[T: Eq]` without anyone asking.
+        let env4 = if struct_derives_has(derives, "Eq") {
+          EnvTraitImpl("Eq", CtStruct(name), env4_base)
+        } else {
+          env4_base
+        }
+        // #694: `derive(Hash)` generates `T::hash_key(Self) -> String` (the
+        // structural Map key), so pre-bind its signature at check time too, AND
+        // register `impl Hash for T` so a `[K: Hash]` bound (e.g. `get_by`) is
+        // satisfied by the derived type.
+        let env_hash = if struct_derives_has(derives, "Hash") {
+          let env_h = EnvTraitImpl("Hash", CtStruct(name), env4)
+          env_bind(env_h, String::concat(name, "::hash_key"), CtFn([
+            CtStruct(name)
+          ], CtString, None))
+        } else {
+          env4
+        }
+        // #638: `derive(Default)` generates `T::default() -> T` (a zero-arg fn,
+        // so the CtFn parameter list is empty). #1847: like Hash above, ALSO
+        // register `impl Default for T` so a `[T: Default]` bound is satisfied
+        // by the derived type.
+        let env5 = if struct_derives_has(derives, "Default") {
+          let env_d = EnvTraitImpl("Default", CtStruct(name), env_hash)
+          env_bind(env_d, String::concat(name, "::default"), CtFn(array_empty(), CtStruct(name), None))
+        } else {
+          env_hash
+        }
+        (EnvTypeDefs([TDStruct(name, resolved_fields, mut_fields, tparams)], if exported {
+          [name]
+        } else {
+          array_empty()
+        }, bind_fn_return(env5, name, CtStruct(name))), s, c)
+      },
+      STypeAlias(exported, name, params, te) => {
+        builtin_spelling_decl_error("type alias", name, Array::length(params), errors)
+        // #2290: map-key and builtin-arity validation is deferred to
+        // check_completed_decl_map_keys. At this point a later alias is not
+        // in `defs`, so judging ownership here made valid programs depend on
+        // declaration order. Preflight before resolving too: dependency-first
+        // alias declarations can already carry a completed exponential DAG at
+        // this initial registration point, before the completion refresh runs.
+        let t = if type_expr_expansion_node_count(te, defs, params, array_empty(), alias_expansion_node_limit()) > alias_expansion_node_limit() {
+          report_alias_expansion_limit(name, errors)
+          CtNamed(name, array_empty())
+        } else {
+          // #3028: the body's function rows are published with their
+          // exception kinds resolved, as a binding's are. The kinds are
+          // checked and recorded once the declarations are complete
+          // (`record_decl_exception_kinds`), and the body is re-resolved then.
+          record_decl_exception_kinds([stmt], defs, env, errors, false)
+          type_exception_rows_resolved(resolve_type_expr_shadowed(te, defs, params))
+        }
+        // Record the alias (with its formal params) so an applied use
+        // `Name[Arg]` expands via subst in resolve_type_expr's TyApp case.
+        Array::push(defs, TDAlias(name, params, t))
+        Array::push(type_def_binders, array_empty())
+        (EnvTypeDefs([TDAlias(name, params, t)], if exported {
+          [name]
+        } else {
+          array_empty()
+        }, env_bind(env, name, t)), s, c)
+      },
+      SExternLet(name, te) => {
+        report_map_key_types(te, defs, array_empty(), String::concat(String::concat("extern declaration `", name), "`"), errors)
+        let t = resolve_type_expr(te, defs)
+        let env1 = env_bind(env, name, t)
+        (bind_annotation_return(env1, name, Some(te), defs), s, c)
+      },
+      STest(_, body) => {
+        let (vt, ns, nc) = check_expr_capture(body, env, defs, s, c, errors, tytab, role_lane_capture, "Primary")
+        capture_statement_root_type(capture, statement_path, "STest", vt)
+        (env, ns, nc)
+      },
+      SBench(_, body) => {
+        let (vt, ns, nc) = check_expr_capture(body, env, defs, s, c, errors, tytab, role_lane_capture, "Primary")
+        capture_statement_root_type(capture, statement_path, "SBench", vt)
+        (env, ns, nc)
+      },
+      SExpr(expr) => {
+        // ADR-0091 Phase 1: canonical `#zero_alloc` and legacy `@zero_alloc`
+        // normalize here as one top-level expression marker. It is an attribute
+        // marker for the following fn declaration, consumed by the
+        // codegen-stage allocation check (common_analysis.vibe's
+        // zero_alloc_check) -- skip both the ADR-0069 reject below and name
+        // resolution (the `@`-spelled ident resolves nowhere).
+        let is_zero_alloc_marker = match expr {
+          EIdent(id_name, _) => String::starts_with(id_name, "@zero_alloc"),
+          _ => false
+        }
+        if is_zero_alloc_marker {
+          (env, s, c)
+        } else {
+          // ADR-0069 Phase 1: top level is declarations only. A top-level
+          // expression statement was silently DROPPED by the linear backend;
+          // reject it (still type-check the expression for error recovery).
+          Array::push(errors, top_level_reject_msg("top-level expressions are not allowed; move it into fn main", expr))
+          let (vt, ns, nc) = check_expr_capture(expr, env, defs, s, c, errors, tytab, role_lane_capture, "Primary")
+          capture_statement_root_type(capture, statement_path, "SExpr", vt)
+          (env, ns, nc)
+        }
+      },
+      SModule(_, _, body) => {
+        // `statement_path` is None in ordinary checking, so nested modules
+        // recurse without allocating retained path state.
+        let (_, nested_s, nested_c) = check_stmts_with_binders(body, 0, env, defs, type_def_binders, local_defs_start, s, c, errors, tytab, statement_path, capture, role_lane_capture, false, false)
+        // Preserve the historical checker flow when this opt-in observation is
+        // absent. The root observation alone needs nested substitutions to
+        // canonicalize its nested raw types; module bindings remain lexical.
+        if statement_capture_is_root(capture) {
+          (env, nested_s, nested_c)
+        } else {
+          (env, s, c)
+        }
+      },
+      SImport(_, names) => if imports_already_projected {
+        (env, s, c)
+      } else {
+        (bind_stmt_imports(env, names), s, c)
+      },
+      SReExport(_, names) => if imports_already_projected {
+        (env, s, c)
+      } else {
+        (bind_stmt_imports(env, names), s, c)
+      },
+      SReExportSourceBoundary(_, surface_only_names) => {
+        let blocked = env_with_reexport_surface_blockers(env, surface_only_names)
+        match hoist_merged_source_values(stmts, idx + 1, blocked, defs, c) {
+          (hoisted_env, hoisted_c) => (hoisted_env, s, hoisted_c)
+        }
+      },
+      SAliasDecl(_, _) => (env, s, c)
+      ,
+      STrait(_, name, supers, methods, method_gens, tparams) => {
+        let mut mi = 0
+        while mi < Array::length(methods) {
+          let (mname, mparams, mret) = Array::get(methods, mi)
+          let shadow = Array::slice(["Self"], 0, 1)
+          let mut ti = 0
+          while ti < Array::length(tparams) {
+            Array::push(shadow, Array::get(tparams, ti))
+            ti = ti + 1
+          }
+          let mut gi = 0
+          while gi < Array::length(method_gens) {
+            let (gname, gtparams, _) = Array::get(method_gens, gi)
+            if gname == mname {
+              let mut gj = 0
+              while gj < Array::length(gtparams) {
+                Array::push(shadow, Array::get(gtparams, gj))
+                gj = gj + 1
+              }
+            } else {
+              ()
+            }
+            gi = gi + 1
+          }
+          let where_label = fapp_decl_label(name, mname)
+          let mut pi = 0
+          while pi < Array::length(mparams) {
+            report_map_key_types(Array::get(mparams, pi), defs, shadow, where_label, errors)
+            pi = pi + 1
+          }
+          report_map_key_types(mret, defs, shadow, where_label, errors)
+          mi = mi + 1
+        }
+        let is_open = false
+        (EnvTraitDef(name, supers, is_open, methods, env, tparams, method_gens), s, c)
+      },
+      SImpl(tparams, tbounds, trait_name, target_expr) => {
+        validate_trait_reference(env, trait_name, "impl head", errors)
+        let type_name = match target_expr {
+          TyName(name) => name,
+          TyApp(name, _) => name,
+          _ => ""
+        }
+        // ADR-0068: `Send` is compiler-judged (structural); user impls
+        // would let a non-sendable type cross task/channel boundaries.
+        if trait_ref_name(trait_name) == "Send" {
+          Array::push(errors, "`Send` is a compiler-judged structural marker and cannot be implemented; remove `impl Send`")
+        } else {
+          ()
+        }
+        let implicit_target_params = match target_expr {
+          TyName(name) => match impl_target_declared_arity(defs, name) {
+            Some(arity) => arity > 0 && arity == Array::length(tparams),
+            None => false
+          },
+          _ => false
+        }
+        let mut tpi = 0
+        while tpi < Array::length(tparams) {
+          let tparam = Array::get(tparams, tpi)
+          if !implicit_target_params && !impl_target_mentions(target_expr, tparam) {
+            Array::push(errors, String::concat("impl type parameter `", String::concat(tparam, "` is not used in its target; remove it, or use it in the target type")))
+          } else {
+            ()
+          }
+          tpi = tpi + 1
+        }
+        let target_arity = match target_expr {
+          TyApp(_, args) => Array::length(args),
+          _ => Array::length(tparams)
+        }
+        if target_arity > 0 {
+          match impl_target_declared_arity(defs, type_name) {
+            Some(want) => if want != target_arity {
+              Array::push(errors, String::concat("type `", String::concat(type_name, String::concat("` expects ", String::concat(__to_string(want), String::concat(" type argument(s), got ", String::concat(__to_string(target_arity), " in impl target")))))))
+            } else {
+              ()
+            },
+            None => ()
+          }
+        } else {
+          ()
+        }
+        let target = resolve_type_expr_shadowed(target_expr, defs, tparams)
+        match overlapping_impl_target_for(env, trait_name, tparams, target) {
+          Some(existing_target) => Array::push(errors, String::concat("overlapping impls for `", String::concat(trait_reference_display(trait_name), String::concat("`: existing target `", String::concat(type_to_string(existing_target), String::concat("` overlaps new target `", String::concat(type_to_string(target), "`"))))))),
+          None => ()
+        }
+        // A generic impl `impl [T] Trait for C[T]` (type parameters present) is
+        // registered as `EnvTraitImplGen` so trait resolution can match the
+        // family `C[..]` against a concrete `C[K]`. A plain impl stays a
+        // nominal `EnvTraitImpl`. The complete target is retained so concrete
+        // specializations and reordered generic parameters cannot widen.
+        let new_env = if Array::length(tparams) > 0 {
+          EnvTraitImplGen(trait_name, tparams, tbounds, target, env)
+        } else {
+          EnvTraitImpl(trait_name, target, env)
+        }
+        (new_env, s, c)
+      },
+      SEffectDef(exported, ename, eparams, ops) => {
+        // #813: register the effect's operation signatures (resolved to
+        // checker Types) so perform arguments, handler arm names/arity/
+        // payload binds, and resume values can be validated. #1340
+        // (ADR-0071): generic effects register too — a declared type param
+        // has no typedef/builtin, so resolve_type_expr turns it into a rigid
+        // `CtNamed(param, [])` inside the signatures (the same convention
+        // TDStruct uses, #829), and the perform/handle consumers substitute
+        // those names with fresh inference vars per use site.
+        let resolved_ops = array_empty()
+        let mut oi = 0
+        while oi < Array::length(ops) {
+          let (opname, opparams, opret) = Array::get(ops, oi)
+          let rp = array_empty()
+          let mut pi = 0
+          while pi < Array::length(opparams) {
+            // #1512: `eparams` shadow `defs` -- the rigid-`CtNamed` convention
+            // the comment above relies on is only true while no import alias
+            // has claimed the formal's name.
+            let op_param = Array::get(opparams, pi)
+            Array::push(rp, resolve_type_expr_shadowed(op_param, defs, eparams))
+            pi = pi + 1
+          }
+          Array::push(resolved_ops, (opname, rp, resolve_type_expr_shadowed(opret, defs, eparams)))
+          oi = oi + 1
+        }
+        Array::push(defs, TDEffect(ename, resolved_ops, eparams))
+        Array::push(type_def_binders, array_empty())
+        (EnvTypeDefs([TDEffect(ename, resolved_ops, eparams)], if exported {
+          [ename]
+        } else {
+          array_empty()
+        }, env), s, c)
+      },
+      SEffectSet(exported, esname, esmembers) => {
+        // ADR-0071 (#755): the ADR's Decision section calls out two specific
+        // invalid-definition cases by name -- a cycle through member
+        // references, and a qualified name colliding with an operation of
+        // the same effect (shared member namespace) -- rejected here with
+        // their own specific diagnostics via the resolver-core helpers
+        // above (using the whole-list pre-pass tables, order-independent).
+        // A definition that is neither is now ACCEPTED (step 3): its
+        // members are used to expand any `with EffectsetName` row item
+        // that references it, via es_expand_stmts_effect_rows in
+        // collect_async_effect_errors below -- an accepted effectset
+        // genuinely has capability now, unlike step 2's placeholder
+        // "not yet supported" rejection for every definition regardless of
+        // validity. What full resolution does NOT yet cover: handler-level
+        // operation-level discharge (step 4), contract/WIT operation-level
+        // surface (step 5), and expanding a row inside a function
+        // PARAMETER's own type (the #885 callback-overlay case) -- those
+        // remain unimplemented, not silently wrong, since nothing consumes
+        // an effectset there yet.
+        if es_qualified_collision(ed_names, ed_ops_list, esname) {
+          Array::push(errors, String::concat("effectset '", String::concat(esname, "' collides with an operation of the same name declared on its effect (operations and effectsets share the effect-row member namespace) -- rename the effectset or the operation")))
+        } else {
+          match es_detect_cycle(es_names, es_members_list, esname, array_empty()) {
+            Some(msg) => Array::push(errors, msg),
+            None => ()
+          }
+        }
+        (EnvTypeDefs([TDEffectSet(esname, esmembers)], if exported {
+          [esname]
+        } else {
+          array_empty()
+        }, env), s, c)
+      },
+      _ => (env, s, c)
+    }
+    // #3027: the handler check resolves a generic callee's formals only
+    // through the scheme a top-level declaration bound (see
+    // note_toplevel_generic_binding).
+    match stmt {
+      SLet(_, _, noted_name, _, noted_val) => note_toplevel_generic_binding(noted_name, noted_val, env_lookup(new_env, noted_name), env),
+      _ => ()
+    }
+    match capture {
+      Some(StatementTypedOccurrences(entries)) => match stmt {
+        SModule(_, _, _) => (),
+        _ => match (capture_start, statement_path) {
+          (Some(start), Some(path)) => capture_statement_rows(entries, tytab, start, path),
+          _ => ()
+        }
+      },
+      _ => ()
+    }
+    typed_occurrence_capture_end_statement(role_lane_capture)
+    cur_env = new_env
+    cur_s = s1
+    cur_c = c1
+    // #2290: the stable partition puts every type declaration first. Validate
+    // alias bodies at that phase boundary: `defs` is now complete for this
+    // statement list, while no value/signature use-site diagnostic has run
+    // yet. A type-only list validates after its final declaration.
+    if stmt_is_type_decl(stmt) && (idx + 1 >= Array::length(stmts) || !stmt_is_type_decl(Array::get(stmts, idx + 1))) {
+      local_defs_end = Array::length(defs)
+      // #3028 / #3033: the exception kinds in declaration rows resolve now,
+      // so the refreshes below publish them resolved.
+      record_decl_exception_kinds(stmts, defs, cur_env, errors, true)
+      refresh_completed_alias_defs(stmts, defs, preclaim_from, local_defs_end, errors)
+      refresh_completed_payload_defs(stmts, defs, type_def_binders, preclaim_from, local_defs_end)
+      cur_env = refresh_completed_suberror_env(stmts, cur_env, defs, preclaim_from, local_defs_end)
+      cur_env = refresh_completed_type_env(cur_env, defs, preclaim_from, local_defs_end, array_empty(), local_defs_end - preclaim_from)
+    } else {
+      match stmt {
+        // A nested module shares `defs` with this statement list. Its type
+        // declarations can settle aliases and payloads in any already-checked
+        // sibling scope, so refresh and validate the combined visible range.
+        SModule(_, _, _) => {
+          let visible_types = array_empty()
+          collect_visible_type_stmts(stmts, idx + 1, visible_types)
+          let visible_defs_end = Array::length(defs)
+          if visible_defs_end > defs_before_stmt {
+            nested_defs_extended = true
+            record_decl_exception_kinds(visible_types, defs, cur_env, array_empty(), false)
+            refresh_completed_alias_defs(visible_types, defs, preclaim_from, visible_defs_end, errors)
+            refresh_completed_payload_defs(visible_types, defs, type_def_binders, preclaim_from, visible_defs_end)
+            cur_env = refresh_completed_suberror_env(stmts, cur_env, defs, preclaim_from, local_defs_end)
+            cur_env = refresh_completed_type_env(cur_env, defs, preclaim_from, local_defs_end, array_empty(), local_defs_end - preclaim_from)
+          } else {
+            ()
+          }
+        },
+        _ => ()
+      }
+    }
+    idx = idx + 1
+  }
+  if validate_completed_decls {
+    let visible_types = array_empty()
+    collect_visible_type_stmts(stmts, Array::length(stmts), visible_types)
+    let visible_defs_end = Array::length(defs)
+    let completed_decl_errors = array_empty()
+    refresh_completed_alias_defs(visible_types, defs, preclaim_from, visible_defs_end, completed_decl_errors)
+    refresh_completed_payload_defs(visible_types, defs, type_def_binders, preclaim_from, visible_defs_end)
+    cur_env = refresh_completed_suberror_env(stmts, cur_env, defs, preclaim_from, local_defs_end)
+    cur_env = refresh_completed_type_env(cur_env, defs, preclaim_from, local_defs_end, array_empty(), local_defs_end - preclaim_from)
+    // Map-key validation eagerly resolves alias arguments. Once alias
+    // expansion has already been rejected, replaying those same expressions
+    // here can perform the forbidden allocation while only collecting a
+    // secondary diagnostic. Preserve the actionable expansion error and stop
+    // this completed-declaration diagnostic lane from re-expanding it.
+    if errors_contain_alias_expansion_limit(completed_decl_errors) {
+      ()
+    } else {
+      check_completed_decl_map_keys(visible_types, defs, completed_decl_errors)
+    }
+    if nested_defs_extended {
+      // The first pass is required to discover the complete shared definition
+      // graph. Re-run the root list against a copy of that graph so every value
+      // statement -- outer or nested -- sees completed aliases from its first
+      // lookup, and so later bindings inherit rebuilt rather than wildcard
+      // types. The copied tables keep this verification pass from appending
+      // duplicate declarations to the authoritative result.
+      let recheck_defs = Array::slice(defs, 0, Array::length(defs))
+      let recheck_binders = Array::slice(type_def_binders, 0, Array::length(type_def_binders))
+      let recheck_errors = array_empty()
+      let recheck_c = next_type_def_binder_id(recheck_binders, c)
+      restore_checker_observation(observation_checkpoint, capture, role_lane_capture, tytab)
+      let (rechecked_env, rechecked_s, rechecked_c) = check_stmts_with_binders(raw_stmts, i, env, recheck_defs, recheck_binders, local_defs_start, SubstEmpty, recheck_c, recheck_errors, tytab, statement_parent_path, capture, role_lane_capture, imports_already_projected, false)
+      // First-pass statement diagnostics may have judged a compiler-owned
+      // spelling before a nested declaration claimed it. Replace that whole
+      // lane with the completed declaration diagnostics plus the completed
+      // second-pass statement diagnostics; incoming caller diagnostics stay
+      // ahead of this check's insertion boundary.
+      Array::truncate(errors, completed_decl_error_insert_at)
+      push_unique_error_strings(completed_decl_errors, errors)
+      push_unique_error_strings(recheck_errors, errors)
+      cur_env = rechecked_env
+      cur_s = rechecked_s
+      cur_c = rechecked_c
+    } else {
+      insert_unique_error_strings(completed_decl_errors, errors, completed_decl_error_insert_at)
+    }
+  } else {
+    ()
+  }
+  (cur_env, cur_s, cur_c)
+}

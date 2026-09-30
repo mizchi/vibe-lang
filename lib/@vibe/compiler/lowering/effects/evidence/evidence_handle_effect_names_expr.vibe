@@ -1,0 +1,1705 @@
+// lib/@vibe/compiler/lowering/effects/evidence/evidence.vibe — handle effect names expr.
+
+import @vibe/compiler/core {
+  Expr, Pat, Stmt, TypeExpr, dce_keep_flags, expr_children, is_exception_effect_name, sort_perm_by_names
+}
+
+import @vibe/core {
+  array_empty, eq_string, hash_string, struct MutMap, struct MutSet
+}
+
+import @vibe/compiler/lowering/effects/direct {
+  idp_is_pure_builtin_call
+}
+
+import @vibe/compiler/lowering/effects/queries {
+  EdpReadQuery,
+  edp_argcond_note,
+  edp_argcond_note_binders,
+  edp_argcond_reset,
+  edp_callee_is_resolvable,
+  edp_handle_matches_effect,
+  edp_has_unsafe_construct,
+  edp_is_pure_builtin_call,
+  edp_name_is_host_raw_shape,
+  edp_pat_qname,
+  edp_rq_fold,
+  edp_split_qualified,
+  edp_str_array_contains,
+  scps_ty_has_fn
+}
+
+import ./evidence_poison_expr.vibe {
+  edp_collect_handle_sites_expr,
+  edp_find_fn_body,
+  edp_needing_names_tab,
+  edp_performs_user_effect_expr,
+  edp_row_labels_have_var,
+  empty_str_array
+}
+
+/// A culprit callee that went through edp_alpha_rename_shadowed carries a
+/// `__edpsh_<N>_` prefix that exists nowhere in the user's source; report the
+/// original spelling (the rename preserves the node's offset, and the binder's
+/// source text IS the original name, so the un-mangled spelling and its span
+/// both match the file). The CALLER must gate on the rename census — a name
+/// the user spelled with this prefix themselves goes through verbatim (Codex
+/// review, PR #1594); this helper only does the string surgery.
+export fn edp_unmangle_shadow_name(nm: String) -> String {
+  let prefix = "__edpsh_"
+  if String::index_of(nm, prefix) == 0 {
+    let rest = String::substring(nm, String::length(prefix), String::length(nm))
+    let us = String::index_of(rest, "_")
+    if us > 0 {
+      String::substring(rest, us + 1, String::length(rest))
+    } else {
+      nm
+    }
+  } else {
+    nm
+  }
+}
+
+/// #1591/#1595 follow-up culprit: the live handle's body only calls a named
+/// top-level `fn` -- a shape the ineligibility diagnostic's enumeration says
+/// is allowed -- but that callee's own body is a bare same-effect `handle`
+/// whose handler ARM re-performs the effect. Such a callee is dropped from
+/// `needing` (edp_drop_self_discharging_needing) yet NOT call-inert
+/// (edp_fn_is_self_discharging_inert rejects it for exactly this arm), so
+/// the caller's handle stays ineligible -- and without this scan the error
+/// carried no culprit at all (the call is resolvable, so
+/// edp_first_opaque_call_info finds nothing). Returns (callee name, source
+/// byte offset of the call) or ("", -1). Mirrors
+/// edp_live_handle_opaque_info's walk shape but only needs the first
+/// matching call in the first `ename` handle body.
+fn edp_dirty_selfdischarge_callee_expr(expr: Expr, ename: String, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> (Bool, String, Int) {
+  match expr {
+    EHandle(body, arms) => if edp_handle_matches_effect(arms, ename) {
+      edp_dirty_selfdischarge_call_in(body, ename, stmts, fn_defs)
+    } else {
+      edp_dirty_selfdischarge_callee_exprs(expr_children(expr), ename, stmts, fn_defs)
+    },
+    _ => edp_dirty_selfdischarge_callee_exprs(expr_children(expr), ename, stmts, fn_defs)
+  }
+}
+
+fn edp_dirty_selfdischarge_callee_exprs(es: Array[Expr], ename: String, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> (Bool, String, Int) {
+  let mut i = 0
+  let mut found = false
+  let mut nm = ""
+  let mut off = -1
+  while i < Array::length(es) && !found {
+    let (f, n, o) = edp_dirty_selfdischarge_callee_expr(Array::get(es, i), ename, stmts, fn_defs)
+    found = f
+    nm = n
+    off = o
+    i = i + 1
+  }
+  (found, nm, off)
+}
+
+/// Inside an `ename` handle's BODY: the first call to a top-level fn whose
+/// own body is a bare same-effect handle with an arm that re-performs.
+fn edp_dirty_selfdischarge_call_in(expr: Expr, ename: String, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> (Bool, String, Int) {
+  match expr {
+    ECall(callee, args, off) => match callee {
+      EIdent(nm, ioff) => if edp_callee_is_dirty_selfdischarge(nm, ename, stmts, fn_defs) {
+        (true, nm, if ioff >= 0 {
+          ioff
+        } else {
+          off
+        })
+      } else {
+        edp_dirty_selfdischarge_call_in_exprs(args, ename, stmts, fn_defs)
+      },
+      _ => edp_dirty_selfdischarge_call_in_exprs(expr_children(expr), ename, stmts, fn_defs)
+    },
+    _ => edp_dirty_selfdischarge_call_in_exprs(expr_children(expr), ename, stmts, fn_defs)
+  }
+}
+
+fn edp_dirty_selfdischarge_call_in_exprs(es: Array[Expr], ename: String, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> (Bool, String, Int) {
+  let mut i = 0
+  let mut found = false
+  let mut nm = ""
+  let mut off = -1
+  while i < Array::length(es) && !found {
+    let (f, n, o) = edp_dirty_selfdischarge_call_in(Array::get(es, i), ename, stmts, fn_defs)
+    found = f
+    nm = n
+    off = o
+    i = i + 1
+  }
+  (found, nm, off)
+}
+
+fn edp_callee_is_dirty_selfdischarge(nm: String, ename: String, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> Bool {
+  match edp_find_fn_body(stmts, fn_defs, nm) {
+    Some(body) => match body {
+      EHandle(_, arms) => if edp_handle_matches_effect(arms, ename) {
+        let mut dirty = false
+        let mut ai = 0
+        while ai < Array::length(arms) {
+          let (_, ab) = Array::get(arms, ai)
+          if edp_performs_user_effect_expr(ab, ename) {
+            dirty = true
+          } else {
+            ()
+          }
+          ai = ai + 1
+        }
+        dirty
+      } else {
+        false
+      },
+      _ => false
+    },
+    None => false
+  }
+}
+
+/// Stmt-level driver for the dirty self-discharge culprit; same walk order
+/// and dead-`fn` exemption as edp_live_handle_opaque_info.
+export fn edp_live_handle_dirty_selfdischarge(stmts: Array[Stmt], keep: Array[Bool], ename: String, fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> (String, Int) {
+  let mut i = 0
+  let mut found = false
+  let mut nm = ""
+  let mut off = -1
+  while i < Array::length(stmts) && !found {
+    let expr_opt = match Array::get(stmts, i) {
+      SLet(_, _, _, _, expr) => {
+        let dead_fn = match expr {
+          EFn(_, _, _, _, _, _) => if i < Array::length(keep) {
+            !Array::get(keep, i)
+          } else {
+            false
+          },
+          _ => false
+        }
+        if dead_fn {
+          None
+        } else {
+          Some(expr)
+        }
+      },
+      SLetMut(_, _, expr) => Some(expr),
+      SExpr(expr) => Some(expr),
+      STest(_, expr) => Some(expr),
+      SBench(_, expr) => Some(expr),
+      _ => None
+    }
+    match expr_opt {
+      Some(expr) => {
+        let (f, n, o) = edp_dirty_selfdischarge_callee_expr(expr, ename, stmts, fn_defs)
+        found = f
+        nm = n
+        off = o
+      },
+      None => ()
+    }
+    i = i + 1
+  }
+  (nm, off)
+}
+
+/// Drop any `needing` name whose OWN top-level definition `keep` (from
+/// `dce_keep_flags`, computed against the real entry point) marks
+/// unreachable -- a needing function that can never actually run at runtime
+/// can never need the evidence dict at runtime either, so excluding it from
+/// `needing` changes nothing observable, REGARDLESS of whether its body
+/// would otherwise have been judged "safe" by edp_has_unsafe_construct.
+///
+/// Why this can never cause a silent miscompile even if `keep`'s
+/// reachability analysis is ever imprecise: `keep` is used ONLY to shrink
+/// `needing` here, never to delete anything from `stmts` (dce_stmts itself
+/// is not called). If `keep` ever under-approximates unreachability (wrongly
+/// calls something dead that's actually still called somewhere), the
+/// excluded function's own body -- if it directly performs the migrated
+/// effect -- is simply left un-rewritten. That still-literal `perform` node
+/// then hits exactly the same fallback every genuinely-ineligible perform
+/// already hits today: the linear backend's pre-existing replay codegen
+/// (still correct, just not the fast evidence-dict path), or the gc
+/// backend's pre-existing "unsupported perform" hard compile error (loud,
+/// not silent). Both are the SAME failure modes this pass already produces
+/// for any effect it declines to migrate -- this filter can only ever
+/// recover eligibility that dead code would otherwise block, never regress
+/// a case that worked before it existed.
+export fn edp_drop_unreachable_needing(needing: Array[String], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], keep: Array[Bool]) -> Array[String] {
+  let out = array_empty()
+  let mut ni = 0
+  while ni < Array::length(needing) {
+    let nm = Array::get(needing, ni)
+    if edp_needing_name_reachable(nm, fn_defs, keep) {
+      Array::push(out, nm)
+    } else {
+      ()
+    }
+    ni = ni + 1
+  }
+  out
+}
+
+/// Does `expr` bind (shadow) `name` anywhere within it? Full-coverage
+/// traversal mirroring edp_rewrite_needing_body's own node coverage, plus
+/// match/handle arm pattern binders (which edp_rewrite_needing_body itself
+/// doesn't need to examine, but shadow detection does). See
+/// edp_drop_shadowed_needing's own doc comment for why this exists.
+export fn edp_expr_binds_name(expr: Expr, name: String) -> Bool {
+  edp_rq_fold(RQEdpBindsName(name), expr) > 0
+}
+
+/// Drop any `needing` name that's shadowed ANYWHERE in the program (any
+/// nested `let`/`let mut`/`let rec`, EFn parameter, match/handle arm
+/// pattern binder, for-loop name, or loop parameter reusing the same
+/// identifier as a top-level "needing" function). edp_rewrite_needing_body
+/// matches a call's callee by NAME ONLY (`edp_str_array_contains(needing,
+/// nm)`, line ~1952) with no scope tracking -- a local binding that
+/// shadows a needing function's name would get the evidence-dict argument
+/// prepended to ITS calls too, even though the local closure/value was
+/// never rewritten to accept that extra parameter, producing an arity
+/// mismatch / invalid generated call (#1074 PR review,
+/// chatgpt-codex-connector P1: "Respect local shadowing when forwarding
+/// evidence"). Deliberately whole-program-conservative rather than
+/// precisely scope-threaded, matching edp_drop_self_discharging_needing's
+/// own established pattern immediately below: losing eligibility for the
+/// rare needing function whose name is ALSO reused as a shadowing binder
+/// elsewhere is an acceptable trade for guaranteed correctness.
+export fn edp_drop_shadowed_needing(needing: Array[String], stmts: Array[Stmt]) -> Array[String] {
+  let out = array_empty()
+  let mut ni = 0
+  while ni < Array::length(needing) {
+    let nm = Array::get(needing, ni)
+    let mut shadowed = false
+    let mut si = 0
+    while si < Array::length(stmts) && !shadowed {
+      let sv_opt = match Array::get(stmts, si) {
+        SLet(_, _, _, _, sv) => Some(sv),
+        SLetMut(_, _, sv) => Some(sv),
+        SExpr(sv) => Some(sv),
+        STest(_, sv) => Some(sv),
+        SBench(_, sv) => Some(sv),
+        _ => None
+      }
+      match sv_opt {
+        Some(sv) => if edp_expr_binds_name(sv, nm) {
+          shadowed = true
+        } else {
+          ()
+        },
+        None => ()
+      }
+      si = si + 1
+    }
+    if shadowed {
+      ()
+    } else {
+      Array::push(out, nm)
+    }
+    ni = ni + 1
+  }
+  out
+}
+
+/// Drop any `needing` name whose OWN entire body is BARE `handle {..} with
+/// ename {..}` -- e.g. `fixtures/effect_effectset_expansion.vibe`'s `main`,
+/// declared `with Ask + Ask::Get` purely to satisfy a checker requirement
+/// unrelated to evidence_dict_pass ("a `handle ... with Effect` expression's
+/// enclosing declared row must authorize the whole effect name" -- see that
+/// fixture's own doc comment), whose body never performs `ename` OUTSIDE the
+/// handle it already fully discharges. `edp_needing_names` has no way to see
+/// that distinction (it only reads the row string), so such a function was
+/// always included in `needing`; `edp_has_unsafe_construct`, entirely
+/// correctly for the GENERAL case, then flags a same-effect `EHandle` as
+/// unsafe ("nested handling of the SAME effect inside itself is not a shape
+/// this pass targets" -- see its own doc comment) -- but here that "nested"
+/// handle IS the function's own whole body, not something hidden inside a
+/// call chain this pass can't already see. It is ALREADY discovered and
+/// rewritten independently via edp_collect_handle_sites/edp_find_rewrite_
+/// handles (which scan every EHandle for `ename` in `stmts` directly, not
+/// through `needing`), so dropping such a function from `needing` loses
+/// nothing -- it never needed the dict passed to IT (nothing in its body
+/// can observably require one once its own handle is excluded from
+/// consideration), it only ever PROVIDES one for its own nested call(s).
+///
+/// Deliberately narrow: only the exact bare-EHandle-as-whole-body shape
+/// qualifies (no ESeq prefix, no wrapping ELet, etc.) -- anything else keeps
+/// the function in `needing` and falls back to the existing (already sound)
+/// conservative treatment, exactly as before this change existed.
+///
+/// #1595: this drop is only HALF of the treatment. Removing the fn from
+/// `needing` also removes the membership that made calls TO it safe in
+/// edp_has_unsafe_construct, so any row-carrying CALLER of a dropped fn
+/// went ineligible and sank the whole effect anyway. The other half is
+/// edp_append_self_discharging_row_fns (calls to such a fn are inert,
+/// appended into `pure_fns` at every safety-scan construction site) --
+/// with the extra arm condition documented on
+/// edp_fn_is_self_discharging_inert.
+export fn edp_drop_self_discharging_needing(needing: Array[String], stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], ename: String, base_inert: Array[String]) -> Array[String] {
+  let out = array_empty()
+  let mut ni = 0
+  while ni < Array::length(needing) {
+    let nm = Array::get(needing, ni)
+    let drop = match edp_find_fn_body(stmts, fn_defs, nm) {
+      Some(body) => edp_body_is_self_discharge(body, ename, base_inert, array_empty()),
+      None => false
+    }
+    if drop {
+      ()
+    } else {
+      Array::push(out, nm)
+    }
+    ni = ni + 1
+  }
+  out
+}
+
+/// #2500: the `EHandle`-as-whole-body shape above is what the doc comment
+/// on edp_drop_self_discharging_needing calls "deliberately narrow", and
+/// measuring the direct-inline pass's removal is what showed the cost: a
+/// body of `let r = handle {..} with E {..}; r` -- or `let n = 0; handle
+/// {..}` -- discharges E exactly as completely, and every such function
+/// stayed in `needing`, where its own handle then read as an unsafe nested
+/// handle and sank the WHOLE effect's migration. It is not a rare spelling:
+/// `dlh_hoist_expr` backfills a hoisted local closure's row from the
+/// performs in its body (including ones its own handle discharges), so a
+/// lambda that a hand-written `fn` would carry no row for arrives here
+/// declared `with E`. fixtures/effect_stateful_collect_test.vibe and
+/// fixtures/effect_rewrite_comparison_test.vibe are both that shape.
+///
+/// The spine walked here is ELet / ELetMut / ESeq only, and every part that
+/// is NOT itself such a handle must be provably irrelevant to `ename` by
+/// the same two predicates the rest of this pass uses -- no direct perform
+/// and nothing edp_has_unsafe_construct rejects. `let x = perform E::Op(1);
+/// handle {..}` therefore stays in `needing`, conservatively, exactly as
+/// before. At least one handle must be reached, so a body that merely never
+/// performs E is not mistaken for one that discharges it (that case is
+/// edp_fn_is_perform_free's).
+///
+/// `out` collects the handles reached, for edp_fn_is_self_discharging_inert
+/// to apply its arm conditions to; the drop side passes a throwaway array.
+fn edp_body_is_self_discharge(body: Expr, ename: String, base_inert: Array[String], out: Array[(Expr, Array[(Pat, Expr)])]) -> Bool {
+  edp_sd_spine(body, ename, base_inert, out) && Array::length(out) > 0
+}
+
+fn edp_sd_spine(body: Expr, ename: String, base_inert: Array[String], out: Array[(Expr, Array[(Pat, Expr)])]) -> Bool {
+  match body {
+    EHandle(hbody, arms) => if edp_handle_matches_effect(arms, ename) {
+      Array::push(out, (hbody, arms))
+      true
+    } else {
+      // A handle for a DIFFERENT effect is transparent to `ename`: it
+      // neither discharges nor performs it, so the spine continues through
+      // its body. Its ARMS are not -- they run outside their own handle's
+      // coverage, so a `perform ename` there escapes to the caller and the
+      // function really does need the dict. fixtures/
+      // effect_rewrite_comparison_test.vibe is this shape: `handle { handle
+      // {..} with UserDb {..} } with Validate {..}`, self-discharging for
+      // both names but, before this arm, for neither.
+      edp_sd_part(hbody, ename, base_inert, out) && edp_sd_arms(arms, ename, base_inert, out)
+    },
+    ELet(_, v, b, _) => edp_sd_part(v, ename, base_inert, out) && edp_sd_part(b, ename, base_inert, out),
+    ELetMut(_, v, b, _) => edp_sd_part(v, ename, base_inert, out) && edp_sd_part(b, ename, base_inert, out),
+    ESeq(a, b) => edp_sd_part(a, ename, base_inert, out) && edp_sd_part(b, ename, base_inert, out),
+    _ => false
+  }
+}
+
+fn edp_sd_arms(arms: Array[(Pat, Expr)], ename: String, base_inert: Array[String], out: Array[(Expr, Array[(Pat, Expr)])]) -> Bool {
+  let mut ok = true
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (_, ab) = Array::get(arms, i)
+    if edp_sd_part(ab, ename, base_inert, out) {
+      ()
+    } else {
+      ok = false
+    }
+    i = i + 1
+  }
+  ok
+}
+
+fn edp_sd_part(e: Expr, ename: String, base_inert: Array[String], out: Array[(Expr, Array[(Pat, Expr)])]) -> Bool {
+  if edp_sd_spine(e, ename, base_inert, out) {
+    true
+  } else {
+    !edp_performs_user_effect_expr(e, ename) && !edp_has_unsafe_construct(e, empty_str_array(), ename, base_inert)
+  }
+}
+
+fn edp_needing_name_reachable(name: String, fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], keep: Array[Bool]) -> Bool {
+  let mut fi = 0
+  let mut result = true
+  let mut found = false
+  while fi < Array::length(fn_defs) {
+    let (idx, _, _, nm, _, _) = Array::get(fn_defs, fi)
+    if nm == name && !found {
+      found = true
+      result = if idx >= 0 && idx < Array::length(keep) {
+        Array::get(keep, idx)
+      } else {
+        true
+      }
+    } else {
+      ()
+    }
+    fi = fi + 1
+  }
+  result
+}
+
+/// #2065 wall 1 (ADR-0076 追記34): is this row-VARIABLE callee FIRST ORDER,
+/// so its variable cannot be instantiated to the migrated effect?
+///
+/// The evidence-side port of `scps_callee_first_order`
+/// (lowering/effects/suspend/suspend.vibe), which the suspend pass has
+/// shipped since #1536. The argument is the one written there: when every
+/// declared parameter is annotated and no annotation mentions a function
+/// type anywhere, no argument can carry a row, so the callee's row variable
+/// can only be instantiated to the EMPTY row. The call therefore cannot
+/// perform `ename` whatever the call site looks like -- which is exactly the
+/// claim `pure_fns` membership makes (see edp_has_unsafe_construct).
+///
+/// Stricter than the suspend rule in one place, deliberately. Suspend reads
+/// PARAMETERS only; this also refuses a declared RETURN type that mentions a
+/// function type. Both passes ask the same question of a CALL, but this
+/// pass's V1 guard is specifically about row-carrying closure VALUES, and a
+/// callee that hands one back is a shape nobody has measured against the
+/// guard. Refusing it keeps the classification absent rather than wrong, and
+/// costs nothing for the callees this unblocks: they return a bare type
+/// parameter.
+///
+/// Fails closed on everything else -- a callee with no top-level definition
+/// in scope, an unannotated parameter, or a function type at any depth
+/// (`Array[(Int) -> Int with e]` counts, via scps_ty_has_fn's TyApp/TyTuple
+/// recursion). A HIGHER-ORDER row-variable callee keeps the old rejection;
+/// widening that needs the call-site argument-inertness rule the suspend
+/// pass also has (`scps_callee_fn_args_inert`), which is not ported here.
+fn edp_callee_first_order(stmts: Array[Stmt], name: String) -> Bool {
+  let mut found = false
+  let mut ok = false
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, snm, _, EFn(_, _, params, fret, _, _)) => if snm == name {
+        found = true
+        let mut all = true
+        let mut pi = 0
+        while pi < Array::length(params) {
+          let (_, pty) = Array::get(params, pi)
+          match pty {
+            Some(t) => if scps_ty_has_fn(t) {
+              all = false
+            } else {
+              ()
+            },
+            None => {
+              all = false
+            }
+          }
+          pi = pi + 1
+        }
+        match fret {
+          Some(rt) => if scps_ty_has_fn(rt) {
+            all = false
+          } else {
+            ()
+          },
+          None => ()
+        }
+        ok = all
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found && ok
+}
+
+/// #2065: which parameters of this callee are FUNCTION-typed, when every
+/// parameter is annotated and the declared return type mentions no function
+/// (the same stricter-than-suspend return rule as `edp_callee_first_order`);
+/// `None` otherwise, which keeps the call-site rule from ever admitting it.
+fn edp_callee_fn_param_mask(stmts: Array[Stmt], name: String) -> Option[Array[Bool]] {
+  let mut out = None
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, snm, _, EFn(_, _, params, fret, _, _)) => if snm == name {
+        let mask: Array[Bool] = []
+        let mut all = true
+        let mut pi = 0
+        while pi < Array::length(params) {
+          let (_, pty) = Array::get(params, pi)
+          match pty {
+            Some(t) => Array::push(mask, scps_ty_has_fn(t)),
+            None => {
+              all = false
+            }
+          }
+          pi = pi + 1
+        }
+        let ret_ok = match fret {
+          Some(rt) => !scps_ty_has_fn(rt),
+          None => true
+        }
+        out = if all && ret_ok {
+          Some(mask)
+        } else {
+          None
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Is this callee withheld from `pure_fns` because its row mentions a
+/// VARIABLE the pass cannot rule out?
+///
+/// A row variable can be instantiated with the handled effect at the call
+/// site, and the perform then happens inside the callee where the handler
+/// cannot see it -- unless the callee is first order, which rules that
+/// instantiation out (edp_callee_first_order).
+///
+/// One predicate, two readers: edp_append_effect_irrelevant_row_fns acts on
+/// it and edp_rowvar_withheld_callees reports it to the diagnostic. A second
+/// copy of this condition would be a second thing to keep in step, and the
+/// message would start naming callees the pass did not actually withhold.
+fn edp_rowvar_callee_withheld(stmts: Array[Stmt], labels: Array[String], name: String) -> Bool {
+  edp_row_labels_have_var(labels) && !edp_callee_first_order(stmts, name)
+}
+
+/// The callees `edp_append_effect_irrelevant_row_fns` withheld for `ename`,
+/// in declaration order -- the names the V1 guard's message points the
+/// reader at (#2065).
+export fn edp_rowvar_withheld_callees(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], ename: String, row_labels: Array[Array[String]]) -> Array[String] {
+  let out = empty_str_array()
+  let mut i = 0
+  while i < Array::length(fn_defs) {
+    let (_, _, _, name, _, _) = Array::get(fn_defs, i)
+    let labels = Array::get(row_labels, i)
+    if Array::length(labels) == 0 {
+      ()
+    } else if edp_str_array_contains(labels, ename) {
+      ()
+    } else if edp_rowvar_callee_withheld(stmts, labels, name) {
+      if edp_str_array_contains(out, name) {
+        ()
+      } else {
+        Array::push(out, name)
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+export fn edp_append_effect_irrelevant_row_fns(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], ename: String, pure_fns: Array[String], row_labels: Array[Array[String]]) -> Unit {
+  // #2065: the callees withheld below ONLY for being higher-order are
+  // recorded for the call-site argument-inertness rule (queries.vibe,
+  // edp_argcond_admits), which admits a call to one whose function-typed
+  // arguments cannot perform `ename`.
+  edp_argcond_reset(ename)
+  edp_argcond_note_binders(stmts)
+  let base_len = Array::length(pure_fns)
+  let mut names: Array[String] = []
+  let mut i = 0
+  while i < Array::length(fn_defs) {
+    let (_, _, _, name, _, _) = Array::get(fn_defs, i)
+    let labels = Array::get(row_labels, i)
+    if Array::length(labels) == 0 {
+      // Row-free: edp_pure_fn_names already listed it.
+      ()
+    } else if edp_str_array_contains(labels, ename) {
+      // Carries the effect: the needing / perform-free / self-discharging
+      // machinery decides this one, and it must keep deciding it.
+      ()
+    } else if edp_rowvar_callee_withheld(stmts, labels, name) {
+      match edp_callee_fn_param_mask(stmts, name) {
+        Some(mask) => edp_argcond_note(ename, name, mask),
+        None => ()
+      }
+    } else {
+      // Copy the existing prefix only when a row can contribute a name.
+      if Array::length(names) == 0 {
+        names = Array::slice(pure_fns, 0, base_len)
+      }
+      Array::push(names, name)
+    }
+    i = i + 1
+  }
+  if Array::length(names) > base_len {
+    // A stable sort puts any existing entry before candidates of the same
+    // name, and the first candidate before its duplicates. Mark only those
+    // first occurrences, then append in original order. The result keeps
+    // the existing prefix exactly, without a growing linear membership scan.
+    let order = sort_perm_by_names(names)
+    let append_flags = Bytes::new()
+    Bytes::fill(append_flags, 0, Array::length(names) - base_len)
+    i = 0
+    while i < Array::length(order) {
+      let slot = Array::get(order, i)
+      if slot >= base_len && (i == 0 || Array::get(names, slot) != Array::get(names, Array::get(order, i - 1))) {
+        Bytes::set(append_flags, slot - base_len, 1)
+      }
+      i = i + 1
+    }
+    i = base_len
+    while i < Array::length(names) {
+      if Bytes::get(append_flags, i - base_len) == 1 {
+        Array::push(pure_fns, Array::get(names, i))
+      }
+      i = i + 1
+    }
+  }
+}
+
+/// ADR-0076 追記34 V2: a row-E function that provably cannot PERFORM E --
+/// no `perform E::op` anywhere in its body and every call inert (pure
+/// builtin / row-free top-level fn / free host-raw name; an unknown,
+/// local-value, or needing callee disqualifies) -- needs no evidence dict
+/// at runtime, so it is kept OUT of `needing` (edp_plan_migrations) and
+/// calls to it are inert (appended into `pure_fns` at every safety-scan
+/// construction site). This is what lets a host-discharge wrapper like
+/// lib/@vibe/fs's `stat_token` (row Fs, body = one raw host call) keep
+/// being invoked NAKED from a test while its perform-based siblings'
+/// mock handles migrate the same effect: migrating it would prepend a
+/// dict parameter that its uncovered call sites can never supply (arity
+/// break at runtime, caught live by index_import_test's stat_token test).
+/// Single pass in candidate order, no fixpoint -- a perform-free fn whose
+/// only blemish is calling a LATER-listed perform-free sibling stays
+/// needing (conservative; both the plan filter and the pure_fns appends
+/// iterate the same order over the same base, so their verdicts agree).
+fn edp_fn_is_perform_free(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], nm: String, ename: String, base_inert: Array[String]) -> Bool {
+  match edp_find_fn_body(stmts, fn_defs, nm) {
+    Some(body) => !edp_performs_user_effect_expr(body, ename) && !edp_has_unsafe_construct(body, empty_str_array(), ename, base_inert),
+    None => false
+  }
+}
+
+export fn edp_append_perform_free_row_fns(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], ename: String, pure_fns: Array[String], row_labels: Array[Array[String]]) -> Unit {
+  // #1875 R2: candidates from the pre-parsed row label table -- this fn
+  // used to rebuild the effectset tables AND re-parse every row string on
+  // every call (once per effect, inside the migration planner's loop).
+  let candidates = edp_needing_names_tab(fn_defs, row_labels, ename)
+  let mut i = 0
+  while i < Array::length(candidates) {
+    let nm = Array::get(candidates, i)
+    if edp_str_array_contains(pure_fns, nm) {
+      ()
+    } else if edp_fn_is_perform_free(stmts, fn_defs, nm, ename, pure_fns) {
+      Array::push(pure_fns, nm)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
+/// #1595: a row-E function whose ENTIRE body is a bare `handle {..} with
+/// ename {..}` that its own handler arms cannot leak `ename` out of is
+/// inert to CALL, exactly like a perform-free row fn (see
+/// edp_fn_is_perform_free above): every perform of `ename` reachable
+/// through the call is discharged inside the callee by its own handle
+/// (which edp_collect_handle_sites discovers and migrates independently),
+/// so nothing about the call needs this pass's attention -- no dict to
+/// forward (the callee was dropped from `needing` by
+/// edp_drop_self_discharging_needing for the same reason) and no perform
+/// that could escape into the caller's context. Without this second half,
+/// the drop was self-defeating for any self-discharging fn that had a
+/// CALLER carrying the same row: the drop removed the callee from
+/// `needing`, which removed the very membership that made calls to it safe
+/// in edp_has_unsafe_construct, so the caller went ineligible and sank the
+/// whole effect's migration -- #1595's repro (`main` with row
+/// `Ask + Ask::Get` calling self-discharging `selfd`) is exactly that.
+///
+/// The arm condition is what keeps this narrower than the drop itself: an
+/// arm CAN legally re-perform `ename` (arms run outside their own handle's
+/// coverage, so that perform escapes to the caller), and an arm making a
+/// call this pass cannot resolve could hide the same thing. Either
+/// disqualifies the fn from call-inertness (its callers then stay
+/// ineligible and fail loudly, same as before this change) while the drop
+/// still applies. `resume(...)` stays safe -- a resumed continuation
+/// re-enters the handled body, which the fn's own handle still covers.
+export fn edp_fn_is_self_discharging_inert(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], nm: String, ename: String, base_inert: Array[String]) -> Bool {
+  match edp_find_fn_body(stmts, fn_defs, nm) {
+    // #2500: same spine as edp_body_is_self_discharge, so the drop and this
+    // call-inertness verdict stay the pair #1595 requires -- widening one
+    // alone is what that issue's repro already showed to be self-defeating.
+    // The arm conditions below are unchanged and now run over EVERY handle
+    // the spine reached, not just a whole-body one.
+    Some(body) => {
+      let sd_handles = array_empty()
+      if edp_body_is_self_discharge(body, ename, base_inert, sd_handles) {
+        let mut ok = true
+        let mut hi = 0
+        while hi < Array::length(sd_handles) {
+          let (_, arms) = Array::get(sd_handles, hi)
+          let mut ai = 0
+          while ai < Array::length(arms) {
+            let (_, ab) = Array::get(arms, ai)
+            if edp_performs_user_effect_expr(ab, ename) || edp_has_unsafe_construct(ab, empty_str_array(), ename, base_inert) {
+              ok = false
+            } else {
+              ()
+            }
+            ai = ai + 1
+          }
+          hi = hi + 1
+        }
+        ok
+      } else {
+        false
+      }
+    },
+    None => false
+  }
+}
+
+/// #1595: append every self-discharging call-inert row fn (see
+/// edp_fn_is_self_discharging_inert) into `pure_fns`, mirroring
+/// edp_append_perform_free_row_fns' shape -- called at the SAME
+/// construction sites, in the SAME position (after the host-inert append,
+/// before the perform-free append, so a caller whose only row-E reach is
+/// a call to a self-discharging fn is itself classified perform-free and
+/// kept out of `needing` too -- #1595's `main` needs exactly that to keep
+/// its entry arity). Single pass, same-order determinism argument as
+/// edp_fn_is_perform_free's doc comment.
+export fn edp_append_self_discharging_row_fns(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], ename: String, pure_fns: Array[String], row_labels: Array[Array[String]]) -> Unit {
+  // #1875 R2: candidates from the pre-parsed row label table -- this fn
+  // used to rebuild the effectset tables AND re-parse every row string on
+  // every call (once per effect, inside the migration planner's loop).
+  let candidates = edp_needing_names_tab(fn_defs, row_labels, ename)
+  let mut i = 0
+  while i < Array::length(candidates) {
+    let nm = Array::get(candidates, i)
+    if edp_str_array_contains(pure_fns, nm) {
+      ()
+    } else if edp_fn_is_self_discharging_inert(stmts, fn_defs, nm, ename, pure_fns) {
+      Array::push(pure_fns, nm)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
+export fn edp_append_free_host_inert_names(stmts: Array[Stmt], pure_fns: Array[String]) -> Unit {
+  let top_names = empty_str_array()
+  let mut ti = 0
+  while ti < Array::length(stmts) {
+    match Array::get(stmts, ti) {
+      SLet(_, _, nm, _, _) => Array::push(top_names, nm),
+      SLetMut(nm, _, _) => Array::push(top_names, nm),
+      _ => ()
+    }
+    ti = ti + 1
+  }
+  let found = empty_str_array()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, expr) => edp_collect_host_raw_callees(expr, found),
+      SLetMut(_, _, expr) => edp_collect_host_raw_callees(expr, found),
+      SExpr(expr) => edp_collect_host_raw_callees(expr, found),
+      STest(_, expr) => edp_collect_host_raw_callees(expr, found),
+      SBench(_, expr) => edp_collect_host_raw_callees(expr, found),
+      _ => ()
+    }
+    i = i + 1
+  }
+  let mut fi = 0
+  while fi < Array::length(found) {
+    let nm = Array::get(found, fi)
+    if edp_str_array_contains(top_names, nm) || edp_str_array_contains(pure_fns, nm) {
+      ()
+    } else {
+      Array::push(pure_fns, nm)
+    }
+    fi = fi + 1
+  }
+}
+
+/// #2856: data CONSTRUCTORS are inert for this pass.
+///
+/// `edp_callee_is_resolvable` admits `perform`, `resume`, a pure builtin, a
+/// host-raw callee, an inert fn, or a top-level `fn` -- and nothing else. A
+/// call to `Some(b)`, or to a user enum-s `Yes(b)`, matched none of them, so it
+/// counted as an OPAQUE CALL and every `handle` covering it was refused.
+/// Applying a constructor allocates a tagged value: it can neither perform an
+/// effect nor invoke a function-typed argument, which is exactly the criterion
+/// this set encodes.
+///
+/// Measured on a stage2 at e8468ed, entry `run`, one line changed between rows:
+///
+///   let o = Some(7)                  in a body with `Async` -> refused
+///   match Yes(b) { .. }  (user enum) in a body with `Async` -> refused
+///   either of those with no `Async` row                     -> compiles
+///
+/// This is what #2856 reported as "`HostStream::next` is invisible to the Async
+/// handle pass". Its row returns `Option[Int]`, so the spelling that failed is
+/// the one whose value is built with `Some` -- the qualified name was never the
+/// difference. Measured: the BARE `host_stream_next` wrapped in a function that
+/// returns `Option[Int]` fails identically, and `HostStream::close` (no Option,
+/// no Async) compiles through the qualified spelling.
+///
+/// A top-level value binding of the same name WINS, exactly as in
+/// `edp_append_free_host_inert_names` just above: the call then resolves to the
+/// binding, which this pass must keep judging by the ordinary rules. Local
+/// shadowing is already handled upstream -- the `__edpsh_` rename walk is what
+/// makes a flat name set safe here, and it is the same guarantee `fn_names`
+/// relies on.
+export fn edp_append_ctor_inert_names(stmts: Array[Stmt], pure_fns: Array[String]) -> Unit {
+  let top_names = empty_str_array()
+  let mut ti = 0
+  while ti < Array::length(stmts) {
+    match Array::get(stmts, ti) {
+      SLet(_, _, nm, _, _) => Array::push(top_names, nm),
+      SLetMut(nm, _, _) => Array::push(top_names, nm),
+      _ => ()
+    }
+    ti = ti + 1
+  }
+  let found = empty_str_array()
+  // The compiler-provided constructors have no declaration in the program.
+  // `None` is nullary, so it is never a CALLEE and needs no row here.
+  Array::push(found, "Some")
+  Array::push(found, "Ok")
+  Array::push(found, "Err")
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SEnum(_, _, _, ctors, _) => {
+        let mut ci = 0
+        while ci < Array::length(ctors) {
+          let (cn, _) = Array::get(ctors, ci)
+          Array::push(found, cn)
+          ci = ci + 1
+        }
+      },
+      SSuberror(_, _, ctors) => {
+        let mut ci = 0
+        while ci < Array::length(ctors) {
+          let (cn, _) = Array::get(ctors, ci)
+          Array::push(found, cn)
+          ci = ci + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  let mut fi = 0
+  while fi < Array::length(found) {
+    let nm = Array::get(found, fi)
+    if edp_str_array_contains(top_names, nm) || edp_str_array_contains(pure_fns, nm) {
+      ()
+    } else {
+      Array::push(pure_fns, nm)
+    }
+    fi = fi + 1
+  }
+}
+
+/// #3124: a `let` whose value is a rowless lambda literal is as visible as a
+/// pure top-level `fn`. `let bump = (x: Int) -> Int { x + 1 }` used to make
+/// `handle { bump(ask_once()) }` opaque, even though `bump` performs nothing
+/// and the perform is the argument, written inside the handle.
+///
+/// Only a body this pass can already see through joins the inert set: a pure
+/// builtin, a name already inert, or another lambda added on an earlier pass
+/// of the fixpoint. A call to `perform`, to a parameter, or to a function
+/// with a row stays out, so that lambda is still an opaque callee. A declared
+/// effect row on the lambda itself stays out too. Two lambdas that share a
+/// spelling are inert only when every one of those bodies is: the first pure
+/// `side` must not cover a later `side` whose body performs.
+fn edp_lambda_row_absent(eff: Option[String]) -> Bool {
+  match eff {
+    None => true,
+    Some(row) => row == ""
+  }
+}
+
+fn edp_note_lambda_candidate(name: String, val: Expr, names: Array[String], bodies: Array[Expr]) -> Unit {
+  match val {
+    // The whole literal, not just its body: the purity check needs the
+    // parameters to know which callee spellings the body rebinds.
+    EFn(_, _, _, _, eff, _) => if edp_lambda_row_absent(eff) {
+      Array::push(names, name)
+      Array::push(bodies, val)
+    } else {
+      ()
+    },
+    _ => ()
+  }
+}
+
+/// Collect candidate lambdas AND tally every binder spelling in the same
+/// walk (`bcount`), so the sole-binder check below costs no second pass over
+/// the program (a separate walk measured +2.4% self-compile allocation).
+fn edp_collect_lambda_candidates_expr(expr: Expr, names: Array[String], bodies: Array[Expr], bcount: MutMap[String, Int]) -> Unit {
+  edp_tally_node_binders(expr, bcount)
+  match expr {
+    ELet(name, val, body, _) => {
+      edp_note_lambda_candidate(name, val, names, bodies)
+      edp_collect_lambda_candidates_expr(val, names, bodies, bcount)
+      edp_collect_lambda_candidates_expr(body, names, bodies, bcount)
+    },
+    _ => {
+      let kids = expr_children(expr)
+      let mut i = 0
+      while i < Array::length(kids) {
+        edp_collect_lambda_candidates_expr(Array::get(kids, i), names, bodies, bcount)
+        i = i + 1
+      }
+    }
+  }
+}
+
+fn edp_tally(bcount: MutMap[String, Int], nm: String) -> Unit {
+  let prev = match MutMap::get(bcount, nm) {
+    Some(c) => c,
+    None => 0
+  }
+  MutMap::set(bcount, nm, prev + 1)
+}
+
+/// The binders introduced AT this node (not below it): the same cases as
+/// edp_collect_binders, without its recursion.
+fn edp_tally_node_binders(expr: Expr, bcount: MutMap[String, Int]) -> Unit {
+  match expr {
+    ELet(n, _, _, _) => edp_tally(bcount, n),
+    ELetRec(n, _, _) => edp_tally(bcount, n),
+    ELetMut(n, _, _, _) => edp_tally(bcount, n),
+    EFn(_, _, params, _, _, _) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        let (pn, _) = Array::get(params, i)
+        edp_tally(bcount, pn)
+        i = i + 1
+      }
+    },
+    EMatch(_, arms) => edp_tally_arm_binders(arms, bcount),
+    EHandle(_, arms) => edp_tally_arm_binders(arms, bcount),
+    ELoop(binds, _) => {
+      let mut i = 0
+      while i < Array::length(binds) {
+        let (bn, _) = Array::get(binds, i)
+        edp_tally(bcount, bn)
+        i = i + 1
+      }
+    },
+    EForIn(n, idx, _, _) => {
+      edp_tally(bcount, n)
+      match idx {
+        Some(ix) => edp_tally(bcount, ix),
+        None => ()
+      }
+    },
+    _ => ()
+  }
+}
+
+fn edp_tally_arm_binders(arms: Array[(Pat, Expr)], bcount: MutMap[String, Int]) -> Unit {
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (pat, _) = Array::get(arms, i)
+    edp_tally_pat_binders(pat, bcount)
+    i = i + 1
+  }
+}
+
+fn edp_tally_pat_binders(pat: Pat, bcount: MutMap[String, Int]) -> Unit {
+  match pat {
+    PBind(n) => edp_tally(bcount, n),
+    PCtor(_, subs) => {
+      let mut i = 0
+      while i < Array::length(subs) {
+        edp_tally_pat_binders(Array::get(subs, i), bcount)
+        i = i + 1
+      }
+    },
+    PTuple(subs) => {
+      let mut i = 0
+      while i < Array::length(subs) {
+        edp_tally_pat_binders(Array::get(subs, i), bcount)
+        i = i + 1
+      }
+    },
+    POr(x, y) => {
+      edp_tally_pat_binders(x, bcount)
+      edp_tally_pat_binders(y, bcount)
+    },
+    PStruct(_, fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fp) = Array::get(fields, i)
+        edp_tally_pat_binders(fp, bcount)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+/// Binders of a statement the candidate walk does not enter. These kinds
+/// are rare, so the separate walker's cost stays off the common path, but a
+/// spelling bound only here must still count -- or it would be admitted.
+fn edp_tally_other_stmt_binders(stmt: Stmt, bcount: MutMap[String, Int]) -> Unit {
+  let scratch = empty_str_array()
+  match stmt {
+    SExternLet(nm, _) => Array::push(scratch, nm),
+    SLetPat(pat, expr) => {
+      edp_collect_pat_binders(pat, scratch)
+      edp_collect_binders(expr, scratch)
+    },
+    SExample(_, expr) => edp_collect_binders(expr, scratch),
+    SFnDecl(_, nm, expr, _, _) => {
+      Array::push(scratch, nm)
+      edp_collect_binders(expr, scratch)
+    },
+    SModule(_, _, inner) => {
+      let mut i = 0
+      while i < Array::length(inner) {
+        match Array::get(inner, i) {
+          SLet(_, _, nm, _, expr) => {
+            Array::push(scratch, nm)
+            edp_collect_binders(expr, scratch)
+          },
+          SLetMut(nm, _, expr) => {
+            Array::push(scratch, nm)
+            edp_collect_binders(expr, scratch)
+          },
+          SExpr(expr) => edp_collect_binders(expr, scratch),
+          STest(_, expr) => edp_collect_binders(expr, scratch),
+          SBench(_, expr) => edp_collect_binders(expr, scratch),
+          other => edp_tally_other_stmt_binders(other, bcount)
+        }
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+  let mut k = 0
+  while k < Array::length(scratch) {
+    edp_tally(bcount, Array::get(scratch, k))
+    k = k + 1
+  }
+}
+
+fn edp_exprs_visible_pure(es: Array[Expr], pure_fns: Array[String], bound: Array[String]) -> Bool {
+  let mut i = 0
+  let mut ok = true
+  while i < Array::length(es) && ok {
+    if edp_expr_visible_pure(Array::get(es, i), pure_fns, bound) {
+      ()
+    } else {
+      ok = false
+    }
+    i = i + 1
+  }
+  ok
+}
+
+/// `bound` is every spelling the lambda under test binds for itself -- its
+/// parameters and each name bound anywhere in its body. A call to one of
+/// those reaches that binding, not whatever the flat inert set means by the
+/// spelling, so it is never visibly pure. Without this, `apply = (side:
+/// (Int) -> Int, n: Int) -> Int { side(n) }` next to a pure top-level `fn
+/// side` was read as inert: a callback that performed the handled effect
+/// then compiled and answered wrong (a trap on the gc lane), while the same
+/// program without the top-level fn was refused (#3167 review).
+fn edp_expr_visible_pure(expr: Expr, pure_fns: Array[String], bound: Array[String]) -> Bool {
+  match expr {
+    ECall(callee, args, _) => match callee {
+      EIdent(nm, _) => if nm == "perform" || edp_str_array_contains(bound, nm) {
+        false
+      } else if edp_is_pure_builtin_call(nm) || edp_str_array_contains(pure_fns, nm) {
+        edp_exprs_visible_pure(args, pure_fns, bound)
+      } else {
+        false
+      },
+      _ => false
+    },
+    _ => edp_exprs_visible_pure(expr_children(expr), pure_fns, bound)
+  }
+}
+
+/// A candidate lambda literal is visibly pure when its body is, with every
+/// spelling the literal binds (parameters and inner binders) excluded from
+/// the inert set. Flow-insensitive on purpose: a binder anywhere in the
+/// literal covers the whole literal, which can only refuse more.
+fn edp_lambda_visible_pure(lam: Expr, pure_fns: Array[String]) -> Bool {
+  match lam {
+    EFn(_, _, _, _, _, body) => {
+      let bound = empty_str_array()
+      edp_collect_binders(lam, bound)
+      edp_expr_visible_pure(body, pure_fns, bound)
+    },
+    _ => false
+  }
+}
+
+/// Every spelling bound anywhere in `expr`: let / let rec / let mut names,
+/// lambda parameters, match and handler arm patterns, loop and for-in
+/// variables. Over-collecting only makes the purity check refuse more.
+/// The candidate spellings that ONLY candidate lambdas bind, anywhere in the
+/// program. The inert set is keyed by spelling and consulted at every call
+/// site with no notion of scope, so admitting a pure `let side = ..` made
+/// EVERY `side(..)` inert -- including a call through an unrelated closure
+/// PARAMETER named `side` inside a handle elsewhere, whose callback could
+/// perform the handled effect and then reach the wrong handler (#3167
+/// review). Rather than track binding identity through every consumer of the
+/// set, a spelling is admitted only when no other binder shares it: every
+/// parameter, `let`, pattern, loop variable and top-level definition of that
+/// spelling must itself be a candidate lambda. `bcount` is tallied during the
+/// candidate walk itself (edp_collect_lambda_candidates_expr), so this costs
+/// one map lookup per candidate rather than another pass over the program.
+fn edp_lambda_only_spellings(cand_names: Array[String], bcount: MutMap[String, Int]) -> MutSet[String] {
+  let cand: MutMap[String, Int] = MutMap::new_string()
+  let mut i = 0
+  while i < Array::length(cand_names) {
+    edp_tally(cand, Array::get(cand_names, i))
+    i = i + 1
+  }
+  let out: MutSet[String] = MutSet::with_capacity(hash_string, eq_string, Array::length(cand_names) * 10 / 7 + 1)
+  let mut j = 0
+  while j < Array::length(cand_names) {
+    let nm = Array::get(cand_names, j)
+    let c = match MutMap::get(cand, nm) {
+      Some(v) => v,
+      None => 0
+    }
+    let b = match MutMap::get(bcount, nm) {
+      Some(v) => v,
+      None => 0
+    }
+    if b == c {
+      MutSet::add(out, nm)
+    } else {
+      ()
+    }
+    j = j + 1
+  }
+  out
+}
+
+fn edp_collect_binders(expr: Expr, out: Array[String]) -> Unit {
+  match expr {
+    ELet(n, _, _, _) => Array::push(out, n),
+    ELetRec(n, _, _) => Array::push(out, n),
+    ELetMut(n, _, _, _) => Array::push(out, n),
+    EFn(_, _, params, _, _, _) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        let (pn, _) = Array::get(params, i)
+        Array::push(out, pn)
+        i = i + 1
+      }
+    },
+    EMatch(_, arms) => edp_collect_arm_binders(arms, out),
+    EHandle(_, arms) => edp_collect_arm_binders(arms, out),
+    ELoop(binds, _) => {
+      let mut i = 0
+      while i < Array::length(binds) {
+        let (bn, _) = Array::get(binds, i)
+        Array::push(out, bn)
+        i = i + 1
+      }
+    },
+    EForIn(n, idx, _, _) => {
+      Array::push(out, n)
+      match idx {
+        Some(ix) => Array::push(out, ix),
+        None => ()
+      }
+    },
+    _ => ()
+  }
+  let kids = expr_children(expr)
+  let mut k = 0
+  while k < Array::length(kids) {
+    edp_collect_binders(Array::get(kids, k), out)
+    k = k + 1
+  }
+}
+
+fn edp_collect_arm_binders(arms: Array[(Pat, Expr)], out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (pat, _) = Array::get(arms, i)
+    edp_collect_pat_binders(pat, out)
+    i = i + 1
+  }
+}
+
+fn edp_collect_pat_binders(pat: Pat, out: Array[String]) -> Unit {
+  match pat {
+    PBind(n) => Array::push(out, n),
+    PCtor(_, subs) => edp_collect_pats_binders(subs, out),
+    PTuple(subs) => edp_collect_pats_binders(subs, out),
+    POr(a, b) => {
+      edp_collect_pat_binders(a, out)
+      edp_collect_pat_binders(b, out)
+    },
+    PStruct(_, fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fp) = Array::get(fields, i)
+        edp_collect_pat_binders(fp, out)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+fn edp_collect_pats_binders(pats: Array[Pat], out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(pats) {
+    edp_collect_pat_binders(Array::get(pats, i), out)
+    i = i + 1
+  }
+}
+
+fn edp_name_bodies_all_pure(name: String, names: Array[String], bodies: Array[Expr], pure_fns: Array[String]) -> Bool {
+  let mut i = 0
+  let mut ok = true
+  while i < Array::length(names) {
+    if Array::get(names, i) == name && !edp_lambda_visible_pure(Array::get(bodies, i), pure_fns) {
+      ok = false
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  ok
+}
+
+export fn edp_append_visible_pure_lambda_names(stmts: Array[Stmt], pure_fns: Array[String]) -> Unit {
+  let names = empty_str_array()
+  let bodies: Array[Expr] = []
+  let bcount: MutMap[String, Int] = MutMap::new_string()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, nm, _, expr) => {
+        edp_tally(bcount, nm)
+        edp_note_lambda_candidate(nm, expr, names, bodies)
+        edp_collect_lambda_candidates_expr(expr, names, bodies, bcount)
+      },
+      SLetMut(nm, _, expr) => {
+        edp_tally(bcount, nm)
+        edp_collect_lambda_candidates_expr(expr, names, bodies, bcount)
+      },
+      SExpr(expr) => edp_collect_lambda_candidates_expr(expr, names, bodies, bcount),
+      STest(_, expr) => edp_collect_lambda_candidates_expr(expr, names, bodies, bcount),
+      SBench(_, expr) => edp_collect_lambda_candidates_expr(expr, names, bodies, bcount),
+      other => edp_tally_other_stmt_binders(other, bcount)
+    }
+    i = i + 1
+  }
+  let sole = edp_lambda_only_spellings(names, bcount)
+  let mut grew = true
+  while grew {
+    grew = false
+    let mut j = 0
+    while j < Array::length(names) {
+      let nm = Array::get(names, j)
+      if edp_str_array_contains(pure_fns, nm) || !MutSet::has(sole, nm) {
+        ()
+      } else if edp_name_bodies_all_pure(nm, names, bodies, pure_fns) {
+        Array::push(pure_fns, nm)
+        grew = true
+      } else {
+        ()
+      }
+      j = j + 1
+    }
+  }
+}
+
+fn edp_collect_host_raw_callees(expr: Expr, out: Array[String]) -> Unit {
+  match expr {
+    ECall(callee, args, _) => {
+      match callee {
+        EIdent(nm, _) => if edp_name_is_host_raw_shape(nm) && !edp_str_array_contains(out, nm) {
+          Array::push(out, nm)
+        } else {
+          ()
+        },
+        _ => edp_collect_host_raw_callees(callee, out)
+      }
+      let mut i = 0
+      while i < Array::length(args) {
+        edp_collect_host_raw_callees(Array::get(args, i), out)
+        i = i + 1
+      }
+    },
+    EFn(_, _, _, _, _, b) => edp_collect_host_raw_callees(b, out),
+    EHandle(b, arms) => {
+      edp_collect_host_raw_callees(b, out)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, ex) = Array::get(arms, i)
+        edp_collect_host_raw_callees(ex, out)
+        i = i + 1
+      }
+    },
+    EIf(c, t, e2) => {
+      edp_collect_host_raw_callees(c, out)
+      edp_collect_host_raw_callees(t, out)
+      edp_collect_host_raw_callees(e2, out)
+    },
+    EMatch(s, arms) => {
+      edp_collect_host_raw_callees(s, out)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, ex) = Array::get(arms, i)
+        edp_collect_host_raw_callees(ex, out)
+        i = i + 1
+      }
+    },
+    EWhile(c, b) => {
+      edp_collect_host_raw_callees(c, out)
+      edp_collect_host_raw_callees(b, out)
+    },
+    EForIn(_, _, it, b) => {
+      edp_collect_host_raw_callees(it, out)
+      edp_collect_host_raw_callees(b, out)
+    },
+    ELoop(pairs, b) => {
+      let mut i = 0
+      while i < Array::length(pairs) {
+        let (_, v) = Array::get(pairs, i)
+        edp_collect_host_raw_callees(v, out)
+        i = i + 1
+      }
+      edp_collect_host_raw_callees(b, out)
+    },
+    ELet(_, v, b, _) => {
+      edp_collect_host_raw_callees(v, out)
+      edp_collect_host_raw_callees(b, out)
+    },
+    ELetMut(_, v, b, _) => {
+      edp_collect_host_raw_callees(v, out)
+      edp_collect_host_raw_callees(b, out)
+    },
+    ELetRec(_, v, b) => {
+      edp_collect_host_raw_callees(v, out)
+      edp_collect_host_raw_callees(b, out)
+    },
+    ESeq(a, b) => {
+      edp_collect_host_raw_callees(a, out)
+      edp_collect_host_raw_callees(b, out)
+    },
+    EAssign(_, v, c) => {
+      edp_collect_host_raw_callees(v, out)
+      edp_collect_host_raw_callees(c, out)
+    },
+    EAssignOp(_, _, v, c) => {
+      edp_collect_host_raw_callees(v, out)
+      edp_collect_host_raw_callees(c, out)
+    },
+    EReturn(e2) => edp_collect_host_raw_callees(e2, out),
+    EDot(o, _, _, _) => edp_collect_host_raw_callees(o, out),
+    EBinOp(_, l, r, _) => {
+      edp_collect_host_raw_callees(l, out)
+      edp_collect_host_raw_callees(r, out)
+    },
+    EUnaryOp(_, e2) => edp_collect_host_raw_callees(e2, out),
+    ELabeledArg(_, _, v) => edp_collect_host_raw_callees(v, out),
+    EBreak(opt) => match opt {
+      Some(e2) => edp_collect_host_raw_callees(e2, out),
+      None => ()
+    },
+    EContinue(args) => {
+      let mut i = 0
+      while i < Array::length(args) {
+        edp_collect_host_raw_callees(Array::get(args, i), out)
+        i = i + 1
+      }
+    },
+    ETuple(elems) => {
+      let mut i = 0
+      while i < Array::length(elems) {
+        edp_collect_host_raw_callees(Array::get(elems, i), out)
+        i = i + 1
+      }
+    },
+    EArray(elems) => {
+      let mut i = 0
+      while i < Array::length(elems) {
+        edp_collect_host_raw_callees(Array::get(elems, i), out)
+        i = i + 1
+      }
+    },
+    ERecord(_, fields, _) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, v) = Array::get(fields, i)
+        edp_collect_host_raw_callees(v, out)
+        i = i + 1
+      }
+    },
+    EMap(fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, v) = Array::get(fields, i)
+        edp_collect_host_raw_callees(v, out)
+        i = i + 1
+      }
+    },
+    ESpread(e2) => edp_collect_host_raw_callees(e2, out),
+    _ => ()
+  }
+}
+
+// --- per-arm preparation (identical shape to inline_direct_perform.vibe).
+
+export fn edp_pat_bind_names(pat: Pat) -> Array[String] {
+  match pat {
+    PCtor(_, subpats) => for p in subpats {
+      match p {
+        PBind(n) => n,
+        _ => "_"
+      }
+    },
+    _ => empty_str_array()
+  }
+}
+
+export fn edp_strip_tail_resume(expr: Expr) -> Expr {
+  match expr {
+    EIf(c, t, e) => EIf(c, edp_strip_tail_resume(t), edp_strip_tail_resume(e)),
+    EMatch(s, arms) => EMatch(s, edp_strip_tail_resume_arms(arms)),
+    ELet(n, v, b, off) => ELet(n, v, edp_strip_tail_resume(b), off),
+    ELetMut(n, v, b, off) => ELetMut(n, v, edp_strip_tail_resume(b), off),
+    ELetRec(n, v, b) => ELetRec(n, v, edp_strip_tail_resume(b)),
+    ESeq(a, b) => ESeq(a, edp_strip_tail_resume(b)),
+    EAssign(n, v, c) => EAssign(n, v, edp_strip_tail_resume(c)),
+    EAssignOp(n, op, v, c) => EAssignOp(n, op, v, edp_strip_tail_resume(c)),
+    EReturn(e2) => EReturn(edp_strip_tail_resume(e2)),
+    ECall(callee, args, _) => match callee {
+      EIdent(nm, _) => if nm == "resume" && Array::length(args) == 1 {
+        Array::get(args, 0)
+      } else {
+        expr
+      },
+      _ => expr
+    },
+    _ => expr
+  }
+}
+
+fn edp_strip_tail_resume_arms(arms: Array[(Pat, Expr)]) -> Array[(Pat, Expr)] {
+  for a in arms {
+    let (p, ex) = a
+    (p, edp_strip_tail_resume(ex))
+  }
+}
+
+// --- the migration for one effect.
+
+/// Every top-level `EHandle` (searched via the same whole-program recursive
+/// descent as the eligibility/rewrite passes) whose arms discharge `ename`
+/// -- identified by the qualified prefix on the first arm's pattern, since a
+/// `handle ... with Effect { ... }` block's arms are always all for the same
+/// effect (ADR-0050).
+/// ADR-0076 追記34 V2: `test`/`bench` blocks and top-level expressions are
+/// site-bearing statements too. They were invisible to collection (and to
+/// eligibility / apply, which mirror this stmt coverage) for as long as the
+/// replay engine silently absorbed their handles; with replay gone they
+/// migrate like any SLet body -- and the whole-program claims the closure-
+/// param proofs make (edp_own_closure_params: "across every call site in
+/// the whole program") now actually see every statement kind.
+export fn edp_collect_handle_sites(stmts: Array[Stmt], ename: String) -> Array[(Expr, Array[(Pat, Expr)])] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, expr) => edp_collect_handle_sites_expr(expr, ename, out),
+      SLetMut(_, _, expr) => edp_collect_handle_sites_expr(expr, ename, out),
+      SExpr(expr) => edp_collect_handle_sites_expr(expr, ename, out),
+      STest(_, expr) => edp_collect_handle_sites_expr(expr, ename, out),
+      SBench(_, expr) => edp_collect_handle_sites_expr(expr, ename, out),
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Every effect label named by a handle site anywhere in `stmts` (deduped,
+/// appended into `out`). `Error` is excluded -- it is the one handler class
+/// that still has real codegen (compile_expr_tail6) and must never be
+/// erased. Feeds the vacuous-handle elimination candidate list so
+/// checker-builtin effect labels (no SEffectDef) are considered too; see
+/// evidence_dict_pass's own comment.
+export fn edp_collect_handle_effect_names(stmts: Array[Stmt], out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, expr) => edp_collect_handle_effect_names_expr(expr, out),
+      SLetMut(_, _, expr) => edp_collect_handle_effect_names_expr(expr, out),
+      SExpr(expr) => edp_collect_handle_effect_names_expr(expr, out),
+      STest(_, expr) => edp_collect_handle_effect_names_expr(expr, out),
+      SBench(_, expr) => edp_collect_handle_effect_names_expr(expr, out),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+fn edp_collect_handle_effect_names_expr(expr: Expr, out: Array[String]) -> Unit {
+  match expr {
+    EHandle(body, arms) => {
+      if Array::length(arms) > 0 {
+        let (p, _) = Array::get(arms, 0)
+        let qname = edp_pat_qname(p)
+        let (eff_opt, _) = edp_split_qualified(qname)
+        match eff_opt {
+          Some(e) => if is_exception_effect_name(e) || edp_str_array_contains(out, e) {
+            ()
+          } else {
+            Array::push(out, e)
+          },
+          None => ()
+        }
+      } else {
+        ()
+      }
+      edp_collect_handle_effect_names_expr(body, out)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, ex) = Array::get(arms, i)
+        edp_collect_handle_effect_names_expr(ex, out)
+        i = i + 1
+      }
+    },
+    EFn(_, _, _, _, _, b) => edp_collect_handle_effect_names_expr(b, out),
+    EIf(c, t, e2) => {
+      edp_collect_handle_effect_names_expr(c, out)
+      edp_collect_handle_effect_names_expr(t, out)
+      edp_collect_handle_effect_names_expr(e2, out)
+    },
+    EMatch(s, arms) => {
+      edp_collect_handle_effect_names_expr(s, out)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, ex) = Array::get(arms, i)
+        edp_collect_handle_effect_names_expr(ex, out)
+        i = i + 1
+      }
+    },
+    EWhile(c, b) => {
+      edp_collect_handle_effect_names_expr(c, out)
+      edp_collect_handle_effect_names_expr(b, out)
+    },
+    EForIn(_, _, it, b) => {
+      edp_collect_handle_effect_names_expr(it, out)
+      edp_collect_handle_effect_names_expr(b, out)
+    },
+    ELoop(pairs, b) => {
+      let mut i = 0
+      while i < Array::length(pairs) {
+        let (_, v) = Array::get(pairs, i)
+        edp_collect_handle_effect_names_expr(v, out)
+        i = i + 1
+      }
+      edp_collect_handle_effect_names_expr(b, out)
+    },
+    ELet(_, v, b, _) => {
+      edp_collect_handle_effect_names_expr(v, out)
+      edp_collect_handle_effect_names_expr(b, out)
+    },
+    ELetMut(_, v, b, _) => {
+      edp_collect_handle_effect_names_expr(v, out)
+      edp_collect_handle_effect_names_expr(b, out)
+    },
+    ELetRec(_, v, b) => {
+      edp_collect_handle_effect_names_expr(v, out)
+      edp_collect_handle_effect_names_expr(b, out)
+    },
+    ESeq(a, b) => {
+      edp_collect_handle_effect_names_expr(a, out)
+      edp_collect_handle_effect_names_expr(b, out)
+    },
+    EAssign(_, v, c) => {
+      edp_collect_handle_effect_names_expr(v, out)
+      edp_collect_handle_effect_names_expr(c, out)
+    },
+    EAssignOp(_, _, v, c) => {
+      edp_collect_handle_effect_names_expr(v, out)
+      edp_collect_handle_effect_names_expr(c, out)
+    },
+    EReturn(e2) => edp_collect_handle_effect_names_expr(e2, out),
+    EDot(o, _, _, _) => edp_collect_handle_effect_names_expr(o, out),
+    ECall(callee, args, _) => {
+      edp_collect_handle_effect_names_expr(callee, out)
+      let mut i = 0
+      while i < Array::length(args) {
+        edp_collect_handle_effect_names_expr(Array::get(args, i), out)
+        i = i + 1
+      }
+    },
+    EBinOp(_, l, r, _) => {
+      edp_collect_handle_effect_names_expr(l, out)
+      edp_collect_handle_effect_names_expr(r, out)
+    },
+    EUnaryOp(_, e2) => edp_collect_handle_effect_names_expr(e2, out),
+    ELabeledArg(_, _, v) => edp_collect_handle_effect_names_expr(v, out),
+    EBreak(opt) => match opt {
+      Some(e2) => edp_collect_handle_effect_names_expr(e2, out),
+      None => ()
+    },
+    EContinue(args) => {
+      let mut i = 0
+      while i < Array::length(args) {
+        edp_collect_handle_effect_names_expr(Array::get(args, i), out)
+        i = i + 1
+      }
+    },
+    ETuple(elems) => {
+      let mut i = 0
+      while i < Array::length(elems) {
+        edp_collect_handle_effect_names_expr(Array::get(elems, i), out)
+        i = i + 1
+      }
+    },
+    EArray(elems) => {
+      let mut i = 0
+      while i < Array::length(elems) {
+        edp_collect_handle_effect_names_expr(Array::get(elems, i), out)
+        i = i + 1
+      }
+    },
+    ERecord(_, fields, _) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, v) = Array::get(fields, i)
+        edp_collect_handle_effect_names_expr(v, out)
+        i = i + 1
+      }
+    },
+    EMap(fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, v) = Array::get(fields, i)
+        edp_collect_handle_effect_names_expr(v, out)
+        i = i + 1
+      }
+    },
+    ESpread(e2) => edp_collect_handle_effect_names_expr(e2, out),
+    _ => ()
+  }
+}

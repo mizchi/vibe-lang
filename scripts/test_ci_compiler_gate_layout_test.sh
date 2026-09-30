@@ -293,4 +293,35 @@ assert setup > lane, f'not misordered: setup={setup} lane={lane}'
 "
 expect_reject "pkfire installed after the selftests lane is rejected" "before its dependency is installed"
 
-echo "test_ci_compiler_gate_layout_test: ok (control + 17 cases)"
+# Modular task input checks evaluate Pkl; both presence and order matter.
+for mutation in missing late conditional; do
+  mutate "
+start = s.index('      - name: Provision Pkl for modular task input checks')
+end = s.index('      - name: Install ripgrep', start)
+block = s[start:end]
+s = s[:start] + s[end:]
+if '$mutation' == 'late':
+    pos = s.index('      - name: doc-commands gate')
+    s = s[:pos] + block + s[pos:]
+elif '$mutation' == 'conditional':
+    block = block.replace('        uses:', '        if: false\\n        uses:', 1)
+    s = s[:start] + block + s[start:]
+" "Pkl dependency $mutation" "
+steps = doc['jobs']['structural-lint']['steps']
+setup = [n for n, st in enumerate(steps) if st.get('uses') == './.github/actions/setup-vibe']
+gate = next(n for n, st in enumerate(steps) if 'check_task_inputs_test.sh' in str(st.get('run', '')))
+if '$mutation' == 'missing':
+    assert not setup, setup
+elif '$mutation' == 'late':
+    assert setup[0] > gate, (setup, gate)
+else:
+    assert steps[setup[0]].get('if') is False, steps[setup[0]]
+"
+  if [ "$mutation" = late ]; then
+    expect_reject "Pkl installed after task input checks is rejected" "before its dependency is installed"
+  else
+    expect_reject "Pkl dependency $mutation is rejected" "never provisions Pkl"
+  fi
+done
+
+echo "test_ci_compiler_gate_layout_test: ok (control + 20 cases)"

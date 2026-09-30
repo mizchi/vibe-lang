@@ -42,6 +42,8 @@ LAUNCHER="${2:-runtime/vibe}"
 
 python3 - "$ADAPTER" "$LAUNCHER" "$MODE" "$ENFORCED" <<'PY'
 import re, sys
+sys.path.insert(0, "scripts")
+from source_files import read_source_group
 
 adapter, launcher, mode, enforced = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4].split()
 
@@ -73,7 +75,7 @@ OBSERVATION_ONLY = {"VIBE_DIAGNOSTICS_ALL", "VIBE_PROFILE_MEMORY_MARKS", "VIBE_U
 # caller believed they had measured the gc lane.
 order = []
 expr_seen = []
-for line in open(adapter, encoding="utf-8"):
+for line in read_source_group(adapter).splitlines():
     m = re.match(r'\s*(?:\} else )?if Env::get\("(VIBE_[A-Z_]+)"\) == "1" \{', line)
     if m:
         if m.group(1) != "VIBE_RC" and m.group(1) not in order:

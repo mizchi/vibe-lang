@@ -88,7 +88,7 @@ class GcHostListTest(unittest.TestCase):
     GC = ROOT / "lib/@vibe/compiler/codegen/gc/backend_body.vibe"
 
     def setUp(self):
-        self.text = self.GC.read_text()
+        self.text = module.read_source_group(self.GC)
         manifest = json.loads((ROOT / "docs/generated/host-runtime-contract.json").read_text())
         self.names = set()
         for band in ("portableCore", "nodeCoreOnly", "viberunDebugOnly", "componentAdapterOnly"):
@@ -359,7 +359,7 @@ class RustProviderSignatureTest(unittest.TestCase):
     RUST = ROOT / "runtime/viberun/src/main.rs"
 
     def setUp(self):
-        self.text = self.RUST.read_text()
+        self.text = module.read_source_group(self.RUST)
         self.manifest = json.loads((ROOT / "docs/generated/host-runtime-contract.json").read_text())
         # One real provider, used as the mutation site by the cases below.
         self.anchor = "|mut caller: Caller<'_, HostState>, path: i64| -> Result<i64> {"
@@ -403,7 +403,7 @@ class OperationIdentityTest(unittest.TestCase):
     """#1962 criterion 4: operation -> builtin -> linear import, pinned per row."""
 
     def setUp(self):
-        self.linked = (ROOT / "lib/@vibe/compiler/codegen/wasi/linked_compile.vibe").read_text()
+        self.linked = module.read_source_group(ROOT / "lib/@vibe/compiler/codegen/wasi/linked_compile.vibe")
         self.ladder = (ROOT / "lib/@vibe/compiler/core/builtin_name.vibe").read_text()
 
     def assert_mutation_fails(self, check, mutated):

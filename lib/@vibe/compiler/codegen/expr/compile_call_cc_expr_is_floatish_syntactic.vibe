@@ -1,0 +1,652 @@
+// lib/@vibe/compiler/codegen/expr/compile_call.vibe — cc expr is floatish syntactic.
+
+import ./compile_lambda.vibe {
+  cl_return_operand
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import @vibe/compiler/core {
+  Expr, Pat, Stmt, TypeExpr, canonical_builtin_name, typed_lowering_arg_offset, typed_lowering_float_key
+}
+
+import @vibe/compiler/codegen/common_analysis {
+  collect_free_vars
+}
+
+import @vibe/compiler/perceus {
+  perceus_exit_fingerprint
+}
+
+import @vibe/compiler/codegen/common_base {
+  CompileCtx,
+  CtorTable,
+  FuncTable,
+  LambdaTable,
+  StrTable,
+  agg_expr_lookup,
+  agg_slot_lookup,
+  double_to_string_expr,
+  expr_tag,
+  find_local_slot,
+  func_table_index_of,
+  get_arm_body,
+  get_ebinop_op,
+  get_eif_else,
+  get_eif_then,
+  get_elet_body,
+  get_elet_name,
+  get_elet_val,
+  is_efn,
+  is_eident,
+  is_etuple,
+  is_pbool,
+  is_pctor,
+  is_pint,
+  is_pstring,
+  is_pwild,
+  resolve_func
+}
+
+import @vibe/compiler/codegen/common_extractors {
+  array_contains_int,
+  get_ebinop_lhs,
+  get_ebinop_rhs,
+  get_ecall_args,
+  get_ecall_callee,
+  get_ecall_off,
+  get_eident_name,
+  get_eint_value,
+  get_eletmut_body,
+  get_eletmut_name,
+  get_eletmut_val,
+  get_eletrec_body,
+  get_eletrec_name,
+  get_eletrec_val,
+  get_eseq_second,
+  get_etuple_elems,
+  get_eunaryop_expr,
+  get_eunaryop_op,
+  get_match_arms
+}
+
+import @vibe/compiler/codegen/wasm_emit {
+  emit_block_i64
+}
+
+import ./compile_lambda.vibe {
+  compile_lambda
+}
+
+import ./compile_match.vibe {
+  compile_match
+}
+
+/// #745: local mirror of compile_expr_tail's expr_is_floatish/slot_is_floatish
+/// (importing them here would be a cycle: compile_expr_tail imports this file).
+/// Used to route `eq(a, b)` with a float operand onto the unbox + f64.eq path
+/// under RC — the scalar i64.eq below compares BOX POINTERS for boxed floats,
+/// so `eq(0.0125, 0.0125)` came out false and the assert trapped.
+fn cc_slot_is_floatish(ctx: CompileCtx, slot: Int) -> Bool {
+  let arr = ctx.float_local_slots
+  let mut j = Array::length(arr) - 1
+  let mut result = false
+  while j >= 0 {
+    let entry = Array::get(arr, j)
+    if entry / 2 == slot {
+      result = (entry % 2) == 1
+      j = -1
+    } else {
+      j = j - 1
+    }
+  }
+  result
+}
+
+/// #2158: is `fname` a user function DECLARED to return Double/Float?
+///
+/// The table is built once, in the pre-pass in wasi/linked_compile.vibe, so
+/// this is a linear scan over a small list rather than a type lookup --
+/// codegen has no types to look up (see CompileCtx.float_ret_fns).
+///
+/// `local_names` is not optional: the table is keyed by NAME, and a local
+/// binding of the same name shadows the top-level declaration. Without this
+/// check, `fn value() -> Double` at the top level made `let value = () -> Int
+/// { 1 }; __to_string(value())` render the Int through the float path and
+/// print 0 -- a silently wrong answer this predicate itself introduced
+/// (#2156 review). Taking `local_names` as a parameter rather than leaving
+/// the check to each caller is what keeps the next call site from repeating
+/// it; codegen already has two hand-written copies of the floatish
+/// classifier, which is how #2158 needed fixing twice.
+export fn cc_fn_returns_float(local_names: Array[String], ctx: CompileCtx, fname: String) -> Bool {
+  if find_local_slot(local_names, fname) >= 0 {
+    false
+  } else {
+    let arr = ctx.float_ret_fns
+    let mut i = Array::length(arr) - 1
+    let mut found = false
+    while i >= 0 {
+      if Array::get(arr, i) == fname {
+        found = true
+        i = -1
+      } else {
+        i = i - 1
+      }
+    }
+    found
+  }
+}
+
+/// #2424: did the CHECKER say this exact node is a `Double`?
+///
+/// The Double twin of the Int render/`eq` term. Same contract, same fail-closed
+/// ends: an extra term in FRONT of the syntactic classifier, never a
+/// replacement, so the table can only add a classification the shape rules
+/// missed. The key is `typed_lowering_float_key` (@vibe/compiler/core), shared
+/// with the producer rather than restated here: a projection answers with its
+/// FIELD-NAME offset, and a bare NAME answers -1, because a call node's offset
+/// is its callee identifier's offset and this array carries call results. Its
+/// doc comment carries the whole argument.
+///
+/// This is what closes the row `float_call_offsets` structurally could not: a
+/// Double-typed STRUCT FIELD. That table is keyed by CALL offsets, so it had no
+/// projection arm at all, and measured before this change `b.ratio` on a
+/// `struct DBox { ratio: Double }` rendered `256` on the RC lane and trapped on
+/// gc, while the same Double through a tuple element or a plain `let` answered
+/// `1.5`. Tag 4 rows arrive in the SAME array (see split_typed_lowering_offsets)
+/// because both answer one question, and they agree on calls: a call node's
+/// `typed_lowering_arg_offset` IS its call offset.
+fn cc_offset_says_float(e: Expr, ctx: CompileCtx) -> Bool {
+  let off = typed_lowering_float_key(e)
+  off >= 0 && array_contains_int(ctx.float_call_offsets, off)
+}
+
+export fn cc_expr_is_floatish(raw_e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  let e = cl_return_operand(raw_e)
+  cc_offset_says_float(e, ctx) || cc_expr_is_floatish_syntactic(e, local_names, ctx)
+}
+
+fn cc_expr_is_floatish_syntactic(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  // fbox (#797): mirror of expr_is_floatish's EDot tuple-projection case --
+  // `t.N` on a tracked tuple-literal binding recurses into the backing
+  // ETuple element via the #724 agg log.
+  let dot_float = match e {
+    EDot(dobj, dfield, _, _) => {
+      let fc = String::char_code_at(dfield, 0)
+      if fc >= 48 && fc <= 57 && is_eident(dobj) {
+        let slot = find_local_slot(local_names, get_eident_name(dobj))
+        if slot >= 0 {
+          let info = agg_slot_lookup(ctx.agg_local_slots, slot)
+          if info >= 0 && info / 64 == 1 {
+            let backing = agg_expr_lookup(ctx.agg_local_slots, ctx.agg_local_exprs, slot)
+            if is_etuple(backing) {
+              let elems = get_etuple_elems(backing)
+              let mut k = 0
+              let mut fp = 0
+              while fp < String::length(dfield) {
+                k = k * 10 + (String::char_code_at(dfield, fp) - 48)
+                fp = fp + 1
+              }
+              if k >= 0 && k < Array::length(elems) {
+                cc_expr_is_floatish(Array::get(elems, k), local_names, ctx)
+              } else {
+                false
+              }
+            } else {
+              false
+            }
+          } else {
+            false
+          }
+        } else {
+          false
+        }
+      } else {
+        false
+      }
+    },
+    _ => false
+  }
+  let tag = expr_tag(e)
+  if dot_float {
+    true
+  } else if tag == 2 {
+    true
+  } else if tag == 4 {
+    let nm = get_eident_name(e)
+    let len = Array::length(local_names)
+    let mut i = len - 1
+    let mut slot = -1
+    while i >= 0 {
+      if Array::get(local_names, i) == nm {
+        slot = i
+        i = -1
+      } else {
+        i = i - 1
+      }
+    }
+    if slot >= 0 {
+      cc_slot_is_floatish(ctx, slot)
+    } else {
+      false
+    }
+  } else if tag == 5 {
+    let op = get_ebinop_op(e)
+    if op == "+" || op == "-" || op == "*" || op == "/" {
+      cc_expr_is_floatish(get_ebinop_lhs(e), local_names, ctx) || cc_expr_is_floatish(get_ebinop_rhs(e), local_names, ctx)
+    } else {
+      false
+    }
+  } else if tag == 6 {
+    let op = get_eunaryop_op(e)
+    if op == "-" {
+      cc_expr_is_floatish(get_eunaryop_expr(e), local_names, ctx)
+    } else {
+      false
+    }
+  } else if tag == 7 || tag == 9 || tag == 10 || tag == 11 || tag == 14 || tag == 16 {
+    // #2426 follow-up (Codex review on #2430): a Double that arrives through a
+    // JOIN was invisible here, so `let a = if c { 0.0 } else { 1.0 }` left the
+    // slot unclassified and `a == b` fell back to a raw bit compare -- on
+    // every lane, RC included. Measured before this change: the `if`, `match`
+    // and block forms all answered `0.0 == -0.0` false and `nan == nan` true.
+    //
+    // The arms are the ones `cc_expr_is_boolish`, in this same file, has had since #825
+    // -- if / match / the three let wrappers the normalize pass introduces /
+    // sequence -- with the same AND semantics, which is the fail-closed
+    // direction: a join is a Double only when EVERY way out of it is.
+    if tag == 7 {
+      cc_expr_is_floatish(get_eif_then(e), local_names, ctx) && cc_expr_is_floatish(get_eif_else(e), local_names, ctx)
+    } else if tag == 9 {
+      // A join arm that ends in its OWN binder -- `if c { let x = 0.0; x }` --
+      // is the shape a bare body recursion misses, because the body is
+      // `EIdent(x)` and `x` has no slot at classification time (Codex review
+      // on #2432). It is answerable WITHOUT an environment: the body is a
+      // single identifier and the `let` immediately above it binds that exact
+      // name, so no inner scope can intervene and no outer binding of the same
+      // name is reachable. Anything further -- `let x = 0.0; let z = x; z` --
+      // is NOT answerable this way and stays open, measured: it still compares
+      // by raw bits on all three lanes. Closing it needs the binding's TYPE,
+      // which is #2424's channel; the alternative, an environment carried
+      // through the descent, is the design CLAUDE.md records going silently
+      // wrong (an outer `let v = 1` read for an inner `v` of another type).
+      let jb9 = get_elet_body(e)
+      if expr_tag(jb9) == 4 && get_eident_name(jb9) == get_elet_name(e) {
+        cc_expr_is_floatish(get_elet_val(e), local_names, ctx)
+      } else {
+        cc_expr_is_floatish(jb9, local_names, ctx)
+      }
+    } else if tag == 10 {
+      let jb10 = get_eletrec_body(e)
+      if expr_tag(jb10) == 4 && get_eident_name(jb10) == get_eletrec_name(e) {
+        cc_expr_is_floatish(get_eletrec_val(e), local_names, ctx)
+      } else {
+        cc_expr_is_floatish(jb10, local_names, ctx)
+      }
+    } else if tag == 11 {
+      let jb11 = get_eletmut_body(e)
+      if expr_tag(jb11) == 4 && get_eident_name(jb11) == get_eletmut_name(e) {
+        cc_expr_is_floatish(get_eletmut_val(e), local_names, ctx)
+      } else {
+        cc_expr_is_floatish(jb11, local_names, ctx)
+      }
+    } else if tag == 14 {
+      cc_expr_is_floatish(get_eseq_second(e), local_names, ctx)
+    } else {
+      let jarms = get_match_arms(e)
+      let jn = Array::length(jarms)
+      if jn == 0 {
+        false
+      } else {
+        let mut jall = true
+        let mut ji = 0
+        while ji < jn {
+          if !cc_expr_is_floatish(get_arm_body(Array::get(jarms, ji)), local_names, ctx) {
+            jall = false
+          } else {
+            ()
+          }
+          ji = ji + 1
+        }
+        jall
+      }
+    }
+  } else if tag == 8 {
+    let callee = get_ecall_callee(e)
+    if array_contains_int(ctx.float_call_offsets, get_ecall_off(e)) {
+      // #2158: the CHECKER said this exact call node's result is a Double.
+      //
+      // Asked BEFORE the callee shape is dispatched on, because the table is
+      // keyed by the call node's own source OFFSET and knows nothing about the
+      // callee. Nesting it under `is_eident` made it unreachable for a call
+      // whose callee is not a name -- an IIFE `(() -> { 2.5 })()` had its
+      // offset recorded by the checker and never read, and printed `204`, the
+      // f64 bits (#2226 review, measured).
+      //
+      // Strictly ADDITIVE -- an extra term in front of the syntactic tests
+      // below, never a replacement for them, so this can only add a Double
+      // classification and never remove one. It reaches the shapes the
+      // name-keyed `float_ret_fns` structurally cannot: a generic instantiated
+      // at Double, a call through a local alias or a lambda binding,
+      // `Array::get` on an `Array[Double]`. Retiring the name table is #2166
+      // and is deliberately NOT this change.
+      //
+      // No `local_names` guard is needed (unlike cc_fn_returns_float below):
+      // being offset-keyed, a local binding that shadows a top-level
+      // `-> Double` function is a different call node at a different offset
+      // and cannot collide with it.
+      true
+    } else if is_eident(callee) {
+      let fname = get_eident_name(callee)
+      if fname == "Int::to_double" || fname == "Int::to_float" || fname == "Float::to_double" || fname == "Double::to_float" || fname == "Double::from_i64_bits" {
+        true
+      } else if cc_fn_returns_float(local_names, ctx, fname) {
+        // #2158: a call to a user function DECLARED `-> Double` / `-> Float`.
+        // Without this the call fell through to the runtime bit-pattern
+        // heuristic, so `"\{half(5.0)}"` rendered the f64 as an integer --
+        // compiling clean and printing a plausible wrong number. The declared
+        // return type was right there in the signature; codegen just had no
+        // table to read it from. CompileCtx.float_ret_fns is that table.
+        true
+      } else if fname == "__rec_field" {
+        // fbox (#797): mirror of expr_is_floatish's tuple-projection case --
+        // `t.0` on a tracked tuple-literal binding recurses into the backing
+        // ETuple element via the #724 agg log (heap fields hold raw f64 bits,
+        // so the reader must recover float-ness statically).
+        let args = get_ecall_args(e)
+        if Array::length(args) == 2 && is_eident(Array::get(args, 0)) && expr_tag(Array::get(args, 1)) == 0 {
+          let slot = find_local_slot(local_names, get_eident_name(Array::get(args, 0)))
+          if slot >= 0 {
+            let info = agg_slot_lookup(ctx.agg_local_slots, slot)
+            if info >= 0 && info / 64 == 1 {
+              let backing = agg_expr_lookup(ctx.agg_local_slots, ctx.agg_local_exprs, slot)
+              if is_etuple(backing) {
+                let elems = get_etuple_elems(backing)
+                let k = get_eint_value(Array::get(args, 1))
+                if k >= 0 && k < Array::length(elems) {
+                  cc_expr_is_floatish(Array::get(elems, k), local_names, ctx)
+                } else {
+                  false
+                }
+              } else {
+                false
+              }
+            } else {
+              false
+            }
+          } else {
+            false
+          }
+        } else {
+          false
+        }
+      } else {
+        false
+      }
+    } else if is_efn(callee) && Array::length(get_ecall_args(e)) == 1 {
+      // #1153/#1185 (+ #1207 Codex review P2): mirror of expr_is_floatish's
+      // identical ascribe_wrap case (compile_expr_tail.vibe) for this
+      // file's local copy -- see that fix's comment for the full mechanism
+      // and for why the match requires the COMPLETE synthetic identity-
+      // lambda shape (no type params, no declared return type, no effect
+      // row, body exactly `EIdent(<the param's own name>, _)`), not just
+      // the param's own name/type.
+      match callee {
+        EFn(tparams, _, params, ret_ty, effect, body) => if Array::length(tparams) == 0 && Array::length(params) == 1 && (match ret_ty {
+          None => true,
+          Some(_) => false
+        }) && (match effect {
+          None => true,
+          Some(_) => false
+        }) {
+          let (asc_name, asc_ty) = Array::get(params, 0)
+          if asc_name == "__asc" || (String::starts_with(asc_name, "__shadow_") && String::ends_with(asc_name, "___asc")) {
+            match body {
+              EIdent(bname, _) => if bname == asc_name {
+                match asc_ty {
+                  Some(TyName(tn)) => tn == "Double" || tn == "Float",
+                  _ => false
+                }
+              } else {
+                false
+              },
+              _ => false
+            }
+          } else {
+            false
+          }
+        } else {
+          false
+        },
+        _ => false
+      }
+    } else {
+      false
+    }
+  } else {
+    false
+  }
+}
+
+/// #950: FIRST-match index of `name` in the func table, or -1 on a miss.
+/// Mirrors resolve_func's scan (first match wins) without throwing, so a
+/// classifier can ask "which entry would actually serve this call?".
+fn cc_ft_first_idx(ft: FuncTable, name: String) -> Int {
+  func_table_index_of(ft, name)
+}
+
+/// #769's list of Int-returning builtins, lifted out of `ts_known_int`'s tag-8
+/// arm so the shadow guard beside it reads as one condition rather than a
+/// chain with a trailing `&&`.
+export fn ts_int_returning_builtin_name(bn: String) -> Bool {
+  bn == "Fs::stat_token" || bn == "vibe_fs_stat_token_raw" || bn == "Profiler::now_us" || bn == "Profiler::heap_bytes" || bn == "Env::args_len" || bn == "String::length" || bn == "String::unicode_length" || bn == "String::utf16_length" || bn == "String::utf8_length" || bn == "Array::length" || bn == "Bytes::length" || bn == "String::char_code_at" || bn == "String::index_of" || bn == "String::last_index_of" || bn == "Stdin::read_char"
+}
+
+/// #2585 review (Codex P1): does the source shadow this builtin name?
+///
+/// The two tests: a LOCAL of the same name (the call resolves to a closure
+/// value, not the builtin), or a USER `fn` of that name in the func table
+/// (`fi < num_user_funcs` -- the builtin entries sit above that boundary).
+/// Shadowing a qualified builtin name is supported and exercised in-tree;
+/// `borrow_returning_names_test.vibe` declares `fn Map::iter_get` exactly this
+/// way and asserts the source declaration is what wins.
+export fn cc_single_name_shadowed(n: String, local_names: Array[String], ctx: CompileCtx) -> Bool {
+  if find_local_slot(local_names, n) >= 0 {
+    true
+  } else {
+    let fi = cc_ft_first_idx(ctx.func_table, n)
+    fi >= 0 && fi < ctx.num_user_funcs
+  }
+}
+
+/// #2585 review (Codex P1, second round): the test must use the SOURCE
+/// spelling as well as the canonical one.
+///
+/// `canonical_builtin_name` folds source-compatible aliases onto one internal
+/// name (`String::byte_at` -> `String::char_code_at`, ADR-0098 Phase 1), but a
+/// call resolves by what the source WROTE. So a user `fn String::byte_at(..)
+/// -> String` sits in the func table under `String::byte_at`, while a test on
+/// the canonical name alone looks for `String::char_code_at`, finds nothing,
+/// and classifies the call as the Int-returning builtin it is not.
+///
+/// Measured on main at `cfc01cc`, with that declaration in scope:
+///
+///   __to_string(String::byte_at("abc", 0))                 -> 156766306305
+///   __to_string(if c { String::byte_at("aaa", 0) } else .. -> 156766306305
+///   the same shadow spelled String::char_code_at           -> "abc"
+///   unshadowed Array::length                               -> "3"
+///
+/// i.e. the packed string pointer through the integer formatter, silently,
+/// exactly where the canonical spelling was already handled.
+///
+/// BOTH names are tested because either spelling can carry the definition.
+/// Over-guarding costs only the pre-#2585 fallback (the runtime string-pointer
+/// heuristic), which is the fail-closed direction.
+export fn cc_name_or_alias_shadowed(cn: String, bn: String, local_names: Array[String], ctx: CompileCtx) -> Bool {
+  if cc_single_name_shadowed(cn, local_names, ctx) {
+    true
+  } else if bn == cn {
+    false
+  } else {
+    cc_single_name_shadowed(bn, local_names, ctx)
+  }
+}
+
+/// #2585: a pattern that introduces no binding, so an arm body under it can be
+/// classified against the enclosing `local_names` with no scope of its own. A
+/// nullary constructor binds nothing either, but `is_pctor` cannot say whether
+/// its sub-patterns do, so it stays out -- conservative, and the arms that
+/// matter for an Int join (`0 =>`, `true =>`, `_ =>`) are all here.
+export fn ts_pat_binds_nothing(p: Pat) -> Bool {
+  is_pwild(p) || is_pint(p) || is_pbool(p) || is_pstring(p)
+}
+
+/// A synthesized `EString` literal is NOT in the compile unit's string table
+/// (same constraint double_to_string_expr documents) — a flag label is only
+/// known at codegen time, so it can't have been pre-interned like a literal
+/// from the original source. Build it char-by-char via `String::from_char_code`
+/// + `String::concat` instead, exactly like double_to_string_expr's `ch_minus`
+/// / `ch_dot` pieces. `s` must be non-empty (callers only pass " -<label>").
+/// #1230 (docs/internal/design/wasi-p3-async.md M1b-3b→M1b-3c): the runtime shape of
+/// `Future[T]` — the two-element array `[state, payload]`.
+///
+/// Slot 0 is the state, slot 1 the value. Only `ready` (0) exists today: every
+/// in-tree future source (`Future::ready` and
+/// user code that returns `Future[T]` by calling `Future::ready`) resolves
+/// eagerly, so `await` reads slot 1 unconditionally. Carrying the state slot
+/// now is what lets a PENDING source be added without a second representation
+/// change: `await` grows a branch on slot 0 instead of a new memory layout.
+///
+/// The previous encoding was the payload itself (`await` and `Future::ready`
+/// both compiled to the identity), which left no room to distinguish the two.
+fn future_state_ready() -> Int {
+  0
+}
+
+/// A ready `Future[T]` carrying `payload` — synthesized as ordinary source so
+/// the array follows the same (RC) value conventions as any other literal.
+export fn future_ready_expr(payload: Expr) -> Expr {
+  EArray([EInt(future_state_ready()), payload])
+}
+
+/// ADR-0089 (c) (#1218): the raw-builtin name that carries a NAMED host
+/// future's component import name. One name = one core import
+/// (`vibe.host_future_get$<name>`) = one component import, so the suffix is
+/// part of the callee name rather than a runtime argument. Shared with
+/// linked_compile (import reservation + registration) and component_codegen
+/// (import-name recovery) through this one spelling.
+export fn cc_host_future_named_raw_prefix() -> String {
+  "vibe_hf_get_raw$"
+}
+
+/// ADR-0089 Decision 3 (#1218): the stream sibling of
+/// cc_host_future_named_raw_prefix -- the raw-builtin name that carries a
+/// NAMED host stream's component import name. One name = one core import
+/// (`vibe.host_stream_get$<name>`) = one component import. Shared with
+/// linked_compile (import reservation + registration) and component_codegen
+/// (import-name recovery) through this one spelling.
+export fn cc_host_stream_named_raw_prefix() -> String {
+  "vibe_hs_get_raw$"
+}
+
+/// #2064: a WIT function address, `<ns>:<pkg>/<iface>@<version>#<func>` --
+/// the versioned interface the function lives in, then its name. Such a
+/// future is imported from that INTERFACE rather than as a root function:
+/// linked_compile emits it as `vibe.wit_future_get$<address>`, which the
+/// composer turns into the versioned instance import. The interface half is
+/// what the composer requires (`:`, `/` and `@`, lower case, digits, `-`, `.`);
+/// the function half is a label like any other import name.
+export fn cc_is_wit_future_address(s: String) -> Bool {
+  let hash = String::index_of(s, "#")
+  if hash <= 0 || hash != String::last_index_of(s, "#") {
+    false
+  } else {
+    let iface = String::substring(s, 0, hash)
+    let func = String::substring(s, hash + 1, String::length(s))
+    let colon = String::index_of(iface, ":")
+    let slash = String::index_of(iface, "/")
+    let at = String::index_of(iface, "@")
+    let mut ok = colon > 0 && slash > colon + 1 && at > slash + 1 && at < String::length(iface) - 1
+    let mut i = 0
+    while ok && i < String::length(iface) {
+      let c = String::char_code_at(iface, i)
+      let allowed = (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 45 || c == 46 || c == 58 || c == 47 || c == 64
+      if !allowed {
+        ok = false
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    ok && cc_is_valid_host_future_name(func)
+  }
+}
+
+/// A component import name must be a lower kebab-case identifier
+/// (`[a-z][a-z0-9-]*`) -- the component-model's own `label` shape, and what
+/// keeps the derived core import name unambiguous when component_codegen
+/// splits it back off at the `$`.
+export fn cc_is_valid_host_future_name(s: String) -> Bool {
+  let n = String::length(s)
+  if n == 0 {
+    false
+  } else {
+    let mut i = 0
+    let mut ok = true
+    while i < n {
+      let c = String::char_code_at(s, i)
+      let is_lower = c >= 97 && c <= 122
+      let is_digit = c >= 48 && c <= 57
+      let is_dash = c == 45
+      let allowed = if i == 0 {
+        is_lower
+      } else {
+        is_lower || is_digit || is_dash
+      }
+      if !allowed {
+        ok = false
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    ok
+  }
+}
+
+fn uninterned_string_expr(s: String, i: Int) -> Expr {
+  let ch = ECall(EIdent("String::from_char_code", -1), [
+    EInt(String::char_code_at(s, i))
+  ], -1)
+  if i >= String::length(s) - 1 {
+    ch
+  } else {
+    ECall(EIdent("String::concat", -1), [ch, uninterned_string_expr(s, i + 1)], -1)
+  }
+}
+
+/// #777: `sh_lines(cmd, flag1 = boolExpr1, flag2 = boolExpr2, ...)` — extra
+/// labeled boolean args (beyond the command string) become `-<label>`
+/// appended to the command when the labeled expression is true, so callers
+/// can write `sh_lines("ls", a = true)` instead of building the flag string
+/// by hand. NOTE: argument labels are NOT part of a general keyword-argument
+/// feature here — labels are purely decorative for ordinary calls (args
+/// still bind positionally), so this reads the literal label text directly
+/// off the `ELabeledArg` AST node rather than relying on any label-based
+/// rebinding machinery (there isn't one).
+export fn sh_lines_flag_cmd(acc: Expr, args: Array[Expr], i: Int) -> Expr {
+  if i >= Array::length(args) {
+    acc
+  } else {
+    let next_acc = match Array::get(args, i) {
+      ELabeledArg(label, _, cond) => EIf(cond, ECall(EIdent("String::concat", -1), [
+        acc,
+        uninterned_string_expr(String::concat(" -", label), 0)
+      ], -1), acc),
+      _ => acc
+    }
+    sh_lines_flag_cmd(next_acc, args, i + 1)
+  }
+}

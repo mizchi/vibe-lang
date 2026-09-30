@@ -1,0 +1,228 @@
+// Interpolation witnesses.
+
+import @vibe/compiler/core {
+  Expr, TypeExpr
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import ./argument_types.vibe {
+  infer_arg_type_name
+}
+
+import ./formal_scope.vibe {
+  formal_in_scope
+}
+
+import ./lambda_return_shapes.vibe {
+  dtd_interp_lamret_key, dtd_interp_lamret_of, dtd_show_witness_dict
+}
+
+import ./renderer_scope.vibe {
+  in_show_shim_body
+}
+
+import ./shape_environment.vibe {
+  clone_var_types
+}
+
+import ./state.vibe {
+  dtd_show_self_fn, dtd_show_shims
+}
+
+import ./trait_bounds.vibe {
+  dtd_bound_entails_eq,
+  dtd_eq_witness_method,
+  dtd_erased_interp_msg,
+  dtd_formal_innermost_is_nested,
+  dtd_formal_is_shadowed,
+  dtd_trait_has_self_eq_method,
+  dtd_unthreaded_interp_msg
+}
+
+import ./type_names.vibe {
+  fn_exists, lookup_var_type
+}
+
+import ./utilities.vibe {
+  str_array_contains
+}
+
+/// Record a LOCAL lambda's return formal on the binding's environment, so a
+/// call to it later in the SAME BODY can relate the return to its argument.
+///
+/// The recorder in `dtd_interp_record_shape` covers a lambda bound INSIDE the
+/// interpolated expression; this covers the ordinary case, a `let` earlier in
+/// the enclosing function, which that walk never visits. Measured: with only
+/// the recorder, `let idf = [U](u: U) -> U { u }` followed by `"\{idf(a)}"`
+/// still printed a 3-digit pointer decimal.
+///
+/// A rebinding MASKS, and only when there is something to mask -- the same rule
+/// `extend_var_types` learned in round 3. Without it an inner `idf` with a
+/// different signature would answer from the outer one, which is a false
+/// refusal rather than a missed one.
+export fn dtd_interp_bind_lamret(var_types: Array[(String, String)], name: String, value: Expr) -> Array[(String, String)] {
+  let key = dtd_interp_lamret_key(name)
+  let lr = dtd_interp_lamret_of_value(value, var_types)
+  if String::length(lr) > 0 {
+    let out = clone_var_types(var_types)
+    Array::push(out, (key, lr))
+    out
+  } else {
+    match lookup_var_type(var_types, key) {
+      Some(_) => {
+        let out = clone_var_types(var_types)
+        Array::push(out, (key, ""))
+        out
+      },
+      None => var_types
+    }
+  }
+}
+
+/// The lambda-return record a VALUE carries, through the value-preserving forms.
+///
+/// #2745 (Codex, P1 round 22 on #2761): `let g = if true { f } else { f }` fell
+/// to the mask, so `g(a)` lost what `f` knew. The same descent
+/// `dtd_interp_lamret_body_param` makes for a lambda's body, for the same
+/// reason -- "the value of an `if` is the value of a branch" is one statement,
+/// and every place that needs it should read it rather than restate it.
+fn dtd_interp_lamret_of_value(value: Expr, var_types: Array[(String, String)]) -> String {
+  match value {
+    EFn(tps, _, params, ret, _, fbody) => dtd_interp_lamret_of(tps, params, ret, fbody),
+    // #2745 (Codex, P1 round 18 on #2761): `let g = idf` fell to the mask, so
+    // `g(a)` could not relate its result to `a`. I had claimed on the round-15
+    // thread that an alias inherits this record "with no arm of its own" --
+    // true only of an alias written INSIDE an interpolation, which the shape
+    // recorder handles; a `let` at statement level comes through here, and
+    // here there was no arm. The claim was wrong as stated and this is the arm.
+    EIdent(src, _) => match lookup_var_type(var_types, dtd_interp_lamret_key(src)) {
+      Some(t) => t,
+      None => ""
+    },
+    EIf(_, conseq, alt) => {
+      let ft = dtd_interp_lamret_of_value(conseq, var_types)
+      if String::length(ft) > 0 {
+        ft
+      } else {
+        dtd_interp_lamret_of_value(alt, var_types)
+      }
+    },
+    // Round 24 (Codex, P1 on #2761): `let g = match true { true => f, false => f }`
+    // dropped the record seeded for `f`, so `g(a)` could not relate its result
+    // to `a` and a struct printed its tagged pointer (measured on `d69127c`,
+    // `_start` -> 3). Round 22 gave this function the `EIf` descent for exactly
+    // the same reason; `match` is the other spelling of "the value of this is
+    // the value of a branch", and leaving one of the two out is how the pair
+    // that round 15's `__index` bug was made of keeps recurring.
+    EMatch(_, arms) => {
+      let mut ai = 0
+      let mut found = ""
+      while ai < Array::length(arms) {
+        let (_, abody) = Array::get(arms, ai)
+        if String::length(found) == 0 {
+          found = dtd_interp_lamret_of_value(abody, var_types)
+        } else {
+          ()
+        }
+        ai = ai + 1
+      }
+      found
+    },
+    ESeq(_, last) => dtd_interp_lamret_of_value(last, var_types),
+    // Round 25 (Codex, P2 on #2761): a wrapper that SHADOWS a function whose
+    // record lives outside it. With an outer `f: (T) -> T`,
+    // `let g = { let f = (x: Int) -> Int { x }; f }` read the body in the outer
+    // environment, so `g` was recorded as returning `T` and `"\{g(7)}"` -- a
+    // wholly concrete interpolation -- was REFUSED.
+    //
+    // This is round 3's lesson in a third place: an unknown, or a different
+    // known, must SHADOW rather than be inherited. The binder is bound to its
+    // own value's record before the body is read, and "" when it has none,
+    // because `lookup_var_type` scans backward and appending is what shadows.
+    ELet(n, v, b, _) => dtd_interp_lamret_of_value(b, dtd_interp_lamret_scope(var_types, n, v)),
+    ELetMut(n, v, b, _) => dtd_interp_lamret_of_value(b, dtd_interp_lamret_scope(var_types, n, v)),
+    // A `let rec` binder is in scope for its own value, so the body reads the
+    // same binding the value does.
+    ELetRec(n, v, b) => dtd_interp_lamret_of_value(b, dtd_interp_lamret_scope(var_types, n, v)),
+    _ => ""
+  }
+}
+
+/// `var_types` with `n` bound to its own value's return record -- "" when the
+/// value has none, which MASKS an outer binding of the same spelling.
+fn dtd_interp_lamret_scope(var_types: Array[(String, String)], n: String, v: Expr) -> Array[(String, String)] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(var_types) {
+    Array::push(out, Array::get(var_types, i))
+    i = i + 1
+  }
+  Array::push(out, (dtd_interp_lamret_key(n), dtd_interp_lamret_of_value(v, var_types)))
+  out
+}
+
+export fn dtd_check_unthreaded_interp(resolved: Option[String], head: String, traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], fn_returns: Array[(String, String)]) -> Unit with Exception {
+  match resolved {
+    Some(_) => (),
+    None => if !in_show_shim_body() && formal_in_scope(head) && dtd_formal_innermost_is_nested(head) && !fn_exists(fn_returns, String::concat(head, "::to_string")) {
+      throw(dtd_unthreaded_interp_msg(head))
+    } else {
+      ()
+    }
+  }
+}
+
+// #2840: a top-level formal is erased too. Only a body that is exactly a
+// rendering shim can defer to its direct call sites; taking it as a value is
+// refused separately, since that would retain the erased implementation.
+export fn dtd_check_top_interp(arg: Expr, dict_binds: Array[(String, String, String, Array[String])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Unit with Exception {
+  match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
+    Some(head) => if formal_in_scope(head) && !dtd_formal_innermost_is_nested(head) && !str_array_contains(dtd_show_shims, Array::get(dtd_show_self_fn, 0)) {
+      match dtd_show_witness_dict(dict_binds, traits, head) {
+        Some(_) => (),
+        None => throw(dtd_erased_interp_msg(head))
+      }
+    },
+    None => ()
+  }
+}
+
+/// #2523: the dict parameter to dispatch `==` / `!=` through, or None.
+///
+/// Fires ONLY when the operand type names a type FORMAL in scope whose bound
+/// trait carries the comparison witness. A concrete operand keeps the
+/// structural lowering the ladder below gives it and costs nothing: this is the
+/// one shape that had no answer, because a generic body is lowered exactly once
+/// and so cannot hold a per-instantiation comparator. Without it `x == y` under
+/// a bound reached `dtd_typed_eq_residual` and stayed a raw binop -- REFERENCE
+/// identity, measured as two equal `Pt` answering `false` while the adjacent
+/// `T::equals(x, y)` answered `true` off the same dictionary.
+///
+/// Three conditions narrow it, and all three were measured as holes rather than
+/// imagined: the dictionary's bound must ENTAIL `Eq`
+/// (`dtd_bound_entails_eq`), the witness must be declared `(Self, Self) -> Bool`
+/// (`dtd_trait_has_self_eq_method`), and the formal's spelling must not be
+/// rebound by a nested binder (`dtd_formal_is_shadowed`). The checker can
+/// establish none of them -- it admits `x == y` from the bound's spelling alone
+/// (#2474) and never sees the call this pass synthesizes.
+export fn dtd_eq_witness_dict(dict_binds: Array[(String, String, String, Array[String])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], t: String) -> Option[String] {
+  if !formal_in_scope(t) || dtd_formal_is_shadowed(t) {
+    None
+  } else {
+    let mut i = 0
+    let mut result = None
+    while i < Array::length(dict_binds) {
+      let (tp, trait_name, dict_pname, methods) = Array::get(dict_binds, i)
+      if tp == t && dtd_bound_entails_eq(trait_name) && str_array_contains(methods, dtd_eq_witness_method()) && dtd_trait_has_self_eq_method(traits, trait_name, dtd_eq_witness_method()) {
+        result = Some(dict_pname)
+        i = Array::length(dict_binds)
+      } else {
+        i = i + 1
+      }
+    }
+    result
+  }
+}

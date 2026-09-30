@@ -51,16 +51,17 @@ done
 # integer. Anything else (a computed body, a renamed function, a missing one)
 # yields the empty string and fails below rather than defaulting.
 read_const() {
-  awk -v want="$1" '
-    $0 ~ ("^fn " want "\\(\\) -> Int \\{") { grab = 1; next }
+  python3 "$ROOT_DIR/scripts/source_files.py" "$2" | awk -v want="$1" '
+    done == 1 { next }
+    $0 ~ ("^(export )?fn " want "\\(\\) -> Int \\{") { grab = 1; next }
     grab == 1 {
       line = $0
       gsub(/^[ \t]+|[ \t]+$/, "", line)
       if (line == "" || line ~ /^\/\//) { next }
       if (line ~ /^-?[0-9]+$/) { print line }
-      exit
+      done = 1
     }
-  ' "$2"
+  '
 }
 
 hf_value="$(read_const comp_hf_value_base "$CC")"

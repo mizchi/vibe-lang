@@ -1,0 +1,367 @@
+// Iteration.
+
+import @vibe/compiler/core {
+  Expr, Pat, __to_string
+}
+
+import @vibe/ast {
+  builtin_ref
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import ./argument_types.vibe {
+  infer_arg_type_name
+}
+
+import ./inspect_rewrite.vibe {
+  dinsp_fresh_name
+}
+
+import ./type_names.vibe {
+  fn_exists, fn_return_is_fn_type, fn_return_type, struct_set_has
+}
+
+import ./utilities.vibe {
+  is_residual_eager_for_type
+}
+
+/// Desugar `for x in it { body }` over a struct iterator type `C` into a loop
+/// driven by the functional `C::next(self) -> Option[(T, Self)]`:
+///
+///   let mut __iter_cur = it
+///   let mut __iter_go = true
+///   while __iter_go {
+///     match C::next(__iter_cur) {
+///       Some((x, __iter_rest)) => { __iter_cur = __iter_rest; body },
+///       None => { __iter_go = false }
+///     }
+///   }
+///
+/// Nested loops shadow the `__iter_*` names correctly (ELetMut scoping). The
+/// optional index binding is not supported for iterators (first slice).
+///
+/// `ctype` supplies the `C::next` namespace and `should_await` selects whether
+/// that call is wrapped in `await`. All internal binders are minted fresh
+/// against the iterand and body so user names that resemble lowering details
+/// cannot be captured.
+fn build_iter_for_with(name: String, ctype: String, should_await: Bool, iter: Expr, body: Expr) -> Expr {
+  let src_name = dinsp_fresh_name("__iter_src", iter, body)
+  let cur_name = dinsp_fresh_name("__iter_cur", iter, body)
+  let go_name = dinsp_fresh_name("__iter_go", iter, body)
+  let rest_name = dinsp_fresh_name("__iter_rest", iter, body)
+  let raw_next = ECall(EIdent(String::concat(ctype, "::next"), -1), [
+    EIdent(cur_name, -1)
+  ], -1)
+  let nextcall = if should_await {
+    // #3198 review: a compiler-synthesized `await` means the builtin even
+    // where the program binds `await` locally (the await lowering honours
+    // that binding for the calls the program wrote).
+    ECall(builtin_ref("await"), [raw_next], -1)
+  } else {
+    raw_next
+  }
+  let some_arm = (PCtor("Some", [PTuple([PBind(name), PBind(rest_name)])]), EAssign(cur_name, EIdent(rest_name, -1), body))
+  let none_arm = (PCtor("None", array_empty()), EAssign(go_name, EBool(false), EUnit))
+  let loop_body = EMatch(nextcall, [some_arm, none_arm])
+  // Bind the iterand through an immutable `__iter_src` and initialize the
+  // mutable cursor from that ident, rather than from `iter` directly. The
+  // cursor is consumed by `C::next(__iter_cur)` and then reassigned each
+  // iteration; initializing it from a fresh heap value (e.g. a struct literal
+  // `for x in Range::{..}`) made that consume-then-reassign double-free the
+  // initial value under RC. Seeding from a stable binding mirrors the working
+  // `let r = ..; for x in r` shape so the ownership accounting balances (#704).
+  ELet(src_name, iter, ELetMut(cur_name, EIdent(src_name, -1), ELetMut(go_name, EBool(true), EWhile(EIdent(go_name, -1), loop_body), -1), -1), -1)
+}
+
+fn build_iter_for(name: String, ctype: String, iter: Expr, body: Expr) -> Expr {
+  build_iter_for_with(name, ctype, false, iter, body)
+}
+
+/// #736: `for x in xs` over a USER type implementing the indexed Iterable
+/// protocol (`C::iter_length(Self) -> Int` + `C::iter_get(Self, Int) -> T`,
+/// e.g. @vibe/core's List) desugars to an index-driven loop:
+///
+///   let __iter_src = xs
+///   let __iter_n = C::iter_length(__iter_src)
+///   let mut __iter_i = 0
+///   while __iter_i < __iter_n {
+///     let x = C::iter_get(__iter_src, __iter_i)
+///     body
+///     __iter_i = __iter_i + 1
+///   }
+///
+/// The iterand is seeded through an immutable `__iter_src` for the same RC
+/// ownership reason as build_iter_for_with (#704). Unlike the next-protocol
+/// desugar, the optional index binding IS supported here (the loop counter is
+/// the index): `for x, i in xs` binds `i` to the current `__iter_i`. The loop
+/// is a statement (no per-iteration result collection).
+fn build_indexed_iter_for(name: String, idx: Option[String], ctype: String, iter: Expr, body: Expr) -> Expr {
+  let src_name = dinsp_fresh_name("__iter_src", iter, body)
+  let len_name = dinsp_fresh_name("__iter_n", iter, body)
+  let index_name = dinsp_fresh_name("__iter_i", iter, body)
+  let get_call = ECall(EIdent(String::concat(ctype, "::iter_get"), -1), [
+    EIdent(src_name, -1),
+    EIdent(index_name, -1)
+  ], -1)
+  let len_call = ECall(EIdent(String::concat(ctype, "::iter_length"), -1), [
+    EIdent(src_name, -1)
+  ], -1)
+  let incr = EAssign(index_name, EBinOp("+", EIdent(index_name, -1), EInt(1), -1), EUnit)
+  let bound_body = match idx {
+    Some(iname) => ELet(iname, EIdent(index_name, -1), body, -1),
+    None => body
+  }
+  let loop_body = ELet(name, get_call, ESeq(bound_body, incr), -1)
+  ELet(src_name, iter, ELet(len_name, len_call, ELetMut(index_name, EInt(0), EWhile(EBinOp("<", EIdent(index_name, -1), EIdent(len_name, -1), -1), loop_body), -1), -1), -1)
+}
+
+/// `for` over an async iterator type `C` whose
+/// `C::next(self) -> Future[Option[(T, Self)]] with Async`: identical to the
+/// sync loop but each step `await`s the next-future. `await` is the M1a builtin
+/// (`await(Future[T]) -> T`); on the synchronous ready-future codegen it unwraps
+/// in place, so this also runs on the linear backend today.
+/// #1341 (ADR-0089 D3): `for b in <host stream>`. The p3 host stream has no
+/// `next` returning `Future[Option[T]]` -- its read primitive is the scalar
+/// `host_stream_next(s) -> Int with Async`, which yields the next byte or
+/// -1 once the writer is gone (spec §3.18). So this loop is built directly on
+/// that read rather than on the AsyncIter protocol:
+///
+///   let __hs_src = <iter>
+///   let mut __hs_b = host_stream_next(__hs_src)
+///   while 0 <= __hs_b {
+///     let <name> = __hs_b
+///     <body>
+///     __hs_b = host_stream_next(__hs_src)
+///   }
+///
+/// which is exactly the hand-written while loop the named-hoststreams gate has
+/// been running since #1339 -- so this introduces no new codegen, only the
+/// surface. Each read parks and resumes on its own (`Suspend(handle + 2048)`),
+/// which is why the enclosing row must carry `Async`; the checker requires
+/// that separately (checker_effects, #1358/#1341).
+///
+/// No index binding: `for b, i in s` over a host stream would have to count
+/// reads, and a byte offset is not the same thing as a position in a
+/// re-iterable collection. Left unsupported rather than given a plausible
+/// wrong meaning.
+fn build_host_stream_for(name: String, iter: Expr, body: Expr) -> Expr {
+  let src_name = dinsp_fresh_name("__hs_src", iter, body)
+  let byte_name = dinsp_fresh_name("__hs_b", iter, body)
+  let read_call = ECall(EIdent("host_stream_next", -1), [EIdent(src_name, -1)], -1)
+  let advance = EAssign(byte_name, read_call, EUnit)
+  let loop_body = ELet(name, EIdent(byte_name, -1), ESeq(body, advance), -1)
+  ELet(src_name, iter, ELetMut(byte_name, read_call, EWhile(EBinOp("<=", EInt(0), EIdent(byte_name, -1), -1), loop_body), -1), -1)
+}
+
+fn build_await_iter_for(name: String, ctype: String, iter: Expr, body: Expr) -> Expr {
+  build_iter_for_with(name, ctype, true, iter, body)
+}
+
+/// `for x in pull { body }` over a pull closure `pull : () -> Option[T]`
+/// (host-state async iterator, e.g. `stdin_stream`): drive `pull()` to `None`.
+/// This is the M2c-3 pull model, moved here from the parser so `for` shares
+/// one type-directed desugar with the trait iterators (a struct `C` with a
+/// `C::next` drives the iterator loop above; anything else — a pull closure or a
+/// call whose return type is unknown — falls back to this).
+fn build_pull_for_in(value_name: String, index_name: Option[String], iterable: Expr, body: Expr) -> Expr {
+  let continue_name = dinsp_fresh_name("__pull_continue", iterable, body)
+  let next_name = dinsp_fresh_name("__pull_next", iterable, body)
+  let some_arm = match index_name {
+    Some(ix) => ESeq(body, EAssign(ix, EBinOp("+", EIdent(ix, -1), EInt(1), -1), EUnit)),
+    None => ESeq(body, EUnit)
+  }
+  let loop_body = EMatch(ECall(EIdent(next_name, -1), array_empty(), -1), [
+    (PCtor("Some", [PBind(value_name)]), some_arm),
+    (PCtor("None", array_empty()), EAssign(continue_name, EBool(false), EUnit))
+  ])
+  let core_loop = ELetMut(continue_name, EBool(true), EWhile(EIdent(continue_name, -1), loop_body), -1)
+  let with_index = match index_name {
+    Some(ix) => ELetMut(ix, EInt(0), core_loop, -1),
+    None => core_loop
+  }
+  ELet(next_name, iterable, with_index, -1)
+}
+
+/// Does `fname`'s recorded return-type head indicate an async iterator
+/// (`next() -> Future[Option[..]]`)? Drives the `await`-wrapped loop choice.
+fn fn_return_is_future(fn_returns: Array[(String, String)], fname: String) -> Bool {
+  match fn_return_type(fn_returns, fname) {
+    Some(head) => head == "Future",
+    None => false
+  }
+}
+
+/// #827: is `inner` positively a pull-closure source? The pull loop binds the
+/// iteratee as `__pull_next` and CALLS it, so lowering anything that is not a
+/// function value that way is a call_indirect on a non-function pointer — an
+/// out-of-bounds table trap at runtime. Only two shapes are accepted: a lambda
+/// literal, and a call to a known function that positively RETURNS A FUNCTION
+/// (the closure-returning sources like
+/// `stdin_stream: (Int) -> (() -> Option[String])`).
+///
+/// #1350 (Codex P1) tightened the second shape. It used to accept any known
+/// function reaching this point, on the reasoning that a named return head
+/// would have classified in the Some branch instead -- true while only
+/// `for await` could get here, but wrong once plain `for` shares the path: an
+/// UNANNOTATED `let values = () -> { [40, 2] }` also has no head, and its
+/// array was then called as a closure. Requiring the recorded head to be the
+/// function-type sentinel separates "returns a function" from "return
+/// annotation omitted"; the latter falls back to the array loop, as it did
+/// before this classification was shared.
+fn for_await_is_pull_source(inner: Expr, fn_returns: Array[(String, String)]) -> Bool {
+  match inner {
+    EFn(_, _, _, _, _, _) => true,
+    ECall(callee, _, _) => match callee {
+      EIdent(fname, _) => fn_return_is_fn_type(fn_returns, fname),
+      _ => false
+    },
+    _ => false
+  }
+}
+
+/// #1350: the trait-free arm of the for-loop classification. Without a
+/// declared trait there are no `impl ::next` methods to dispatch, so a plain
+/// `for x in e` keeps its EForIn (array) lowering -- but the two ASYNC shapes
+/// still classify here, because they never needed the trait machinery and
+/// their consumers are trait-free files (the prelude's AsyncIter terminals,
+/// @vibe/console's pull streams). This is the `for await` path's old
+/// "runs regardless of whether a trait is declared" property, kept after the
+/// syntax went away.
+///
+/// #827's hazard is gone by construction rather than by diagnostic: the
+/// UNCLASSIFIED fallback is now the array loop (correct for the eager
+/// Array-backed `Stream`, ADR-0012), not the pull loop that used to
+/// call_indirect an array pointer. The pull loop fires only on a POSITIVE
+/// function-shaped classification.
+export fn classify_trait_free_for_loop(name: String, idx: Option[String], iter: Expr, riter: Expr, rbody: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
+  match infer_arg_type_name(iter, struct_sets, var_types, fn_returns) {
+    Some(tn) => if tn == "HostStream" {
+      build_host_stream_for(name, riter, rbody)
+    } else if fn_exists(fn_returns, String::concat(tn, "::next")) && fn_return_is_future(fn_returns, String::concat(tn, "::next")) {
+      build_await_iter_for(name, tn, riter, rbody)
+    } else {
+      classify_indexed_for_loop(name, idx, iter, riter, rbody, struct_sets, var_types, fn_returns)
+    },
+    None => if for_await_is_pull_source(iter, fn_returns) {
+      build_pull_for_in(name, idx, riter, rbody)
+    } else {
+      EForIn(name, idx, riter, rbody)
+    }
+  }
+}
+
+/// `for x in iter { body }`: iterator (`::next`) / iterable (`::iter`) / array
+/// classification. `riter` / `rbody` are already rewritten.
+/// #736: the indexed-Iterable slice of for-loop classification, USER types only
+/// (struct_sets gate — Array/String/Map keep the builtin EForIn lowering even
+/// though the prelude's Iterable impls define e.g. `Array::iter_length`). Split
+/// out of classify_sync_for_loop because it needs no declared trait (the
+/// protocol is plain named `C::iter_length`/`C::iter_get` functions, e.g.
+/// @vibe/core's List), so it also runs for trait-free programs where the
+/// next/iter classification stays gated off.
+fn classify_indexed_for_loop(name: String, idx: Option[String], iter: Expr, riter: Expr, rbody: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
+  match infer_arg_type_name(iter, struct_sets, var_types, fn_returns) {
+    Some(tn) => if struct_set_has(struct_sets, tn) {
+      if fn_exists(fn_returns, String::concat(tn, "::iter_length")) && fn_exists(fn_returns, String::concat(tn, "::iter_get")) {
+        build_indexed_iter_for(name, idx, tn, riter, rbody)
+      } else {
+        // #2152: a declared struct/enum with NO iteration protocol used to
+        // fall through to the residual EForIn array loop, which read the
+        // value as an array pointer -- one iteration binding garbage, no
+        // diagnostic. The checker cannot own this rejection: its env may
+        // not see an `impl Iterator` living in a dependency (the classifier
+        // comment at its `for` arm says why it answers `CtStruct => 0`
+        // without a protocol check). THIS pass runs on the merged sources,
+        // so every protocol function the program has is in `fn_returns` --
+        // a miss here is a real miss, and it throws instead of iterating
+        // garbage.
+        throw(String::concat(for_no_protocol_msg(tn), for_iterand_off_marker(iter)))
+      }
+    } else {
+      EForIn(name, idx, riter, rbody)
+    },
+    None => EForIn(name, idx, riter, rbody)
+  }
+}
+
+/// #2152: the rejection message for a `for` over a declared type with no
+/// iteration protocol. Leads with the edits that make the loop work.
+fn for_no_protocol_msg(tn: String) -> String {
+  String::concat("cannot iterate a `", String::concat(tn, String::concat("` value in `for`: define `", String::concat(tn, String::concat("::iter_length` + `", String::concat(tn, String::concat("::iter_get`, or `impl Iterator for ", String::concat(tn, String::concat("` with a `next` method, or loop over an Array of its elements -- `", String::concat(tn, "` declares no iteration protocol, so the loop has nothing to draw elements from (#2152)"))))))))))
+}
+
+/// #2152 (Codex P2 on the PR): transport the iterand's source offset as the
+/// standard ` [@off=N]` side-channel marker when the AST carries one.
+/// Measured 2026-08-21: the compile entries parse with the PLAIN
+/// `parse_program(lex(..))` (no starts array => every node's offset is -1,
+/// the pitfall cli_support.vibe documents for read_program), so in those
+/// lanes this is a no-op today -- the marker resolves as soon as a lane
+/// parses located (the check walk already does; wiring compile is #1514 /
+/// #1567's job). Safe by construction either way: emit_compile_diag strips
+/// an unresolved marker, so it can never leak (#1445's failure mode) or name
+/// a wrong position against merged module text (#1596's fail-closed rule).
+fn for_iterand_off_marker(iter: Expr) -> String {
+  let off = match iter {
+    EIdent(_, o) => o,
+    ECall(_, _, o) => o,
+    EDot(_, _, o, _) => o,
+    _ => 0 - 1
+  }
+  if off >= 0 {
+    String::concat(" [@off=", String::concat(__to_string(off), "]"))
+  } else {
+    ""
+  }
+}
+
+/// `for x in iter { body }` -- the ONE for-loop classification (#1350 folded
+/// the `for await` variant in here).
+///
+/// The async/sync choice is made from the iterand's type, exactly as the old
+/// `for await` path made it: a `C::next` returning `Future[..]` drives the
+/// await-wrapped loop, a plain `C::next` the sync one. That is why the
+/// syntactic marker could go -- it never carried information this pass did
+/// not already have, it only duplicated what the effect row states.
+///
+/// One shape is admitted here that the old sync path rejected: a PULL CLOSURE
+/// (`() -> Option[T]`, e.g. `stdin_stream(4)`), which the `for await` path
+/// classified via for_await_is_pull_source. The classification is positive
+/// (lambda literal, or a call to a known top-level fn with a non-named return
+/// head) and it only fires where the sync path used to emit `EForIn` over a
+/// function value -- a call_indirect on a non-array pointer, i.e. a runtime
+/// trap. So this strictly turns a trap into a working loop (#827's own
+/// reasoning, now applied to the single surface).
+export fn classify_sync_for_loop(name: String, idx: Option[String], iter: Expr, riter: Expr, rbody: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
+  match infer_arg_type_name(iter, struct_sets, var_types, fn_returns) {
+    Some(tn) => if is_residual_eager_for_type(tn) {
+      // These eager builtins own the residual EForIn lowering. A public
+      // conversion such as `Array::iter(xs) -> AsyncIter[T]` must only run
+      // when it is called explicitly; its mere presence must not change every
+      // `for x in xs` into the named `C::iter` protocol.
+      classify_indexed_for_loop(name, idx, iter, riter, rbody, struct_sets, var_types, fn_returns)
+    } else if tn == "HostStream" {
+      build_host_stream_for(name, riter, rbody)
+    } else if fn_exists(fn_returns, String::concat(tn, "::next")) {
+      if fn_return_is_future(fn_returns, String::concat(tn, "::next")) {
+        build_await_iter_for(name, tn, riter, rbody)
+      } else {
+        build_iter_for(name, tn, riter, rbody)
+      }
+    } else {
+      match fn_return_type(fn_returns, String::concat(tn, "::iter")) {
+        Some(itertype) => build_iter_for(name, itertype, ECall(EIdent(String::concat(tn, "::iter"), -1), [
+          riter
+        ], -1), rbody),
+        None => classify_indexed_for_loop(name, idx, iter, riter, rbody, struct_sets, var_types, fn_returns)
+      }
+    },
+    None => if for_await_is_pull_source(iter, fn_returns) {
+      build_pull_for_in(name, idx, riter, rbody)
+    } else {
+      EForIn(name, idx, riter, rbody)
+    }
+  }
+}

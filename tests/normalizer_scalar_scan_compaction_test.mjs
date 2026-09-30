@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { readDesugarSources } from "./helpers/desugar_sources.mjs";
 
-const source = fs.readFileSync(new URL("../lib/@vibe/compiler/normalize/desugar_trait_dict.vibe", import.meta.url), "utf8");
+const source = readDesugarSources();
 const astContract = fs.readFileSync(new URL("../lib/@vibe/ast/index.vpkg", import.meta.url), "utf8");
 
 // Mask non-code without changing offsets. Search indexes from this text are safe

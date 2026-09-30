@@ -1,0 +1,296 @@
+// Parameter annotations.
+
+import @vibe/compiler/core {
+  TypeExpr
+}
+
+import @vibe/ast {
+  impl_target_key
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import ./binding_shape_queries.vibe {
+  array_elem_key, shape_is_composite
+}
+
+import ./constructor_annotations.vibe {
+  expand_seed_constructor_alias, seed_ctor_payload, texpr_shape
+}
+
+import ./equality_shape_queries.vibe {
+  eq_shape_key
+}
+
+import ./equality_type_shapes.vibe {
+  ty_to_eq_shape
+}
+
+import ./labeled_args.vibe {
+  strip_label_tilde
+}
+
+import ./lambda_return_shapes.vibe {
+  dtd_interp_lamret_elem, dtd_interp_lamret_key, dtd_interp_lamret_pair, dtd_interp_lamret_tuple, dtd_interp_lamret_type
+}
+
+import ./shape_environment.vibe {
+  constructor_head_key, shape_key
+}
+
+import ./state.vibe {
+  dtd_eq_type_aliases
+}
+
+import ./type_name_occurrences.vibe {
+  ty_mentions_name_in
+}
+
+import ./utilities.vibe {
+  str_array_contains
+}
+
+import ./witness_targets.vibe {
+  impl_target_var_key
+}
+
+/// Seed a var-type environment from a function's parameters whose annotation is
+/// a bare type name `T` — concrete (`Point`) for call-site dict synthesis, or a
+/// type parameter (`T`) for generic->generic dict forwarding. The distinction is
+/// made at use time against the in-scope dict bindings. Both kinds are tracked;
+/// `tparams` prevents a same-spelled formal from expanding through a global alias.
+export fn seed_var_types(params: Array[(String, Option[TypeExpr])], tparams: Array[String], base: Array[(String, String)]) -> Array[(String, String)] {
+  // A parameter shadows every outer binding of its name. An unannotated one
+  // records nothing below, so the outer entry used to stay visible: a lambda
+  // parameter `m` shadowing an outer `m: StringMap[Int]` had its `m[0]`
+  // rewritten to `Map::get` by the spelling (#3133 review). Drop the outer
+  // entries -- the plain name and the keys derived from it -- first.
+  let shadowed = array_empty()
+  for param in params {
+    let (raw_pname, _) = param
+    let pname = strip_label_tilde(raw_pname)
+    Array::push(shadowed, pname)
+    Array::push(shadowed, shape_key(pname))
+    Array::push(shadowed, eq_shape_key(pname))
+    Array::push(shadowed, constructor_head_key(pname))
+    Array::push(shadowed, dtd_interp_lamret_key(pname))
+  }
+  let out = array_empty()
+  let mut b = 0
+  while b < Array::length(base) {
+    let (bn, _) = Array::get(base, b)
+    if !str_array_contains(shadowed, bn) {
+      Array::push(out, Array::get(base, b))
+    } else {
+      ()
+    }
+    b = b + 1
+  }
+  let mut i = 0
+  while i < Array::length(params) {
+    let (raw_pname, ann) = Array::get(params, i)
+    // #2991: a labeled (`x~`) or optional (`x?`) parameter keeps its marker on
+    // the NAME at this stage, while the body refers to it as `x`. Seeding under
+    // the marked spelling recorded a type nobody looks up, so `\{b}` on a
+    // `b?: Int` parameter -- declared `Option[Int]` by the parser -- fell
+    // through to the runtime renderer and printed an address.
+    let pname = strip_label_tilde(raw_pname)
+    // Generic array/tuple parameters must expand here so their elements can
+    // use witness dictionaries. The later erased codegen path cannot do so.
+    match ann {
+      Some(te) => if ty_mentions_name_in(te, tparams) {
+        let sh = texpr_shape(te)
+        if shape_is_composite(sh) {
+          Array::push(out, (shape_key(pname), sh))
+        }
+      },
+      None => ()
+    }
+    // #2745 (Codex, P1 round 20 on #2761): a FUNCTION-VALUED parameter.
+    // `[T](a: T, f: (T) -> T) { "\{f(a)}" }` reached leaf inference, which
+    // cannot infer a call through a parameter, and printed a 3-digit pointer
+    // decimal. The parameter's declared type says what the call returns, so
+    // recording it here puts the answer in the same place a local lambda's
+    // goes -- no new reader, and a rebinding masks it like the rest.
+    // Round 23 (Codex, P1): the arm above read `TyName` only, so an AGGREGATE
+    // return -- `f: (T) -> Array[T]` -- recorded nothing and
+    // `Array::get(f(a), 0)` lost `T`. A parameter's annotation names its
+    // element or its positions just as plainly as its scalar return, and since
+    // round 23 every marker carries a declared type name as a source, so the
+    // two shapes go in the same slots a local lambda's do and need no reader of
+    // their own.
+    match ann {
+      Some(TyFn(_, fret, _)) => match fret {
+        TyName(rh) => Array::push(out, (dtd_interp_lamret_key(pname), dtd_interp_lamret_type(rh))),
+        TyApp(rc, rargs) => if rc == "Array" && Array::length(rargs) == 1 {
+          match Array::get(rargs, 0) {
+            TyName(eh) => Array::push(out, (dtd_interp_lamret_key(pname), dtd_interp_lamret_elem(dtd_interp_lamret_type(eh)))),
+            _ => ()
+          }
+        } else {
+          ()
+        },
+        TyTuple(rts) => {
+          let mut ri = 0
+          let mut pairs = ""
+          while ri < Array::length(rts) {
+            match Array::get(rts, ri) {
+              // Every position is recorded, concrete ones included: what makes
+              // a name erased is the guard in `dtd_interp_lamret_src_formal`,
+              // and answering that here would be a second copy of it.
+              TyName(eh) => {
+                let entry = dtd_interp_lamret_pair(ri, dtd_interp_lamret_type(eh))
+                pairs = if String::length(pairs) == 0 {
+                  entry
+                } else {
+                  String::concat(pairs, String::concat(",", entry))
+                }
+              },
+              _ => ()
+            }
+            ri = ri + 1
+          }
+          if String::length(pairs) > 0 {
+            Array::push(out, (dtd_interp_lamret_key(pname), dtd_interp_lamret_tuple(Array::length(rts), pairs)))
+          } else {
+            ()
+          }
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+    match ann {
+      // `__rc_heap` is the planner's heap marker (perceus.vibe
+      // inferred_heap_type), put on a parameter elaborate_heap_params
+      // classified heap; this pass runs after that elaboration on the RC
+      // lane. It is not a type: seeded, its previous spelling (the empty
+      // tuple) made `x == y` on such a parameter a trivially true tuple
+      // comparison (#2681 follow-up), and a nominal seeded by name would
+      // have witnesses and comparators looked up under it. Unannotated is
+      // what the parameter is to this pass.
+      Some(TyName(tn)) => if tn == "__rc_heap" {
+        ()
+      } else {
+        Array::push(out, (pname, tn))
+        // A nullary alias can hide a structural parameter type just as a
+        // TyApp annotation can. Preserve a same-spelled in-scope formal before
+        // expanding through the global alias table.
+        if !ty_mentions_name_in(TyName(tn), tparams) {
+          let esh = ty_to_eq_shape(TyName(tn))
+          if shape_is_composite(esh) {
+            Array::push(out, (eq_shape_key(pname), esh))
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+      },
+      // A generic struct annotation `x: LazyIter[T]` -> track the head name so
+      // `for x in <param>` over a generic iterator type resolves (#636).
+      // #1199 bug 1: for `x: Array[T]` specifically, ALSO record T under the
+      // array_elem_key sentinel -- without it, `Array::get(x, i)` /
+      // `x[i]` has no recorded type (infer_arg_type_name has nothing to look
+      // up), so a downstream `[K: Hash]`-bounded call fed that value can't
+      // resolve or forward a witness dictionary and synth_dicts fails,
+      // silently emitting a call short the dict argument(s) -- invalid wasm
+      // ("not enough arguments on the stack"), not a compile error. Only the
+      // single-bare-type-arg shape is handled (matches every other bare-name
+      // inference in this file); nested/nested-generic element types are
+      // left untracked, same conservative scope as the rest of
+      // infer_arg_type_name.
+      Some(TyApp(tn, targs)) => {
+        let constructor_head = match expand_seed_constructor_alias(TyApp(tn, targs), tparams, Array::length(dtd_eq_type_aliases) + 1) {
+          TyApp(head, _) => head,
+          TyName(head) => head,
+          _ => tn
+        }
+        // Keep the exact annotation head for equality, rendering, and operator
+        // lowering. Constructor dispatch gets a dedicated canonical alias head.
+        Array::push(out, (pname, tn))
+        if constructor_head != tn {
+          Array::push(out, (constructor_head_key(pname), constructor_head))
+        } else {
+          ()
+        }
+        if !ty_mentions_name_in(TyApp(tn, targs), tparams) {
+          Array::push(out, (impl_target_var_key(pname), impl_target_key(TyApp(tn, targs))))
+        } else {
+          ()
+        }
+        // Equality needs the complete annotation, not only its head. Keep the
+        // recursive shape for every monomorphic aggregate parameter so nested
+        // Array/Option/Result paths do not fall back to word identity.
+        if !ty_mentions_name_in(TyApp(tn, targs), tparams) {
+          let esh = ty_to_eq_shape(TyApp(tn, targs))
+          if shape_is_composite(esh) {
+            Array::push(out, (eq_shape_key(pname), esh))
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+        if tn == "Array" && Array::length(targs) == 1 {
+          match Array::get(targs, 0) {
+            TyName(elem) => Array::push(out, (array_elem_key(pname), elem)),
+            _ => ()
+          }
+        } else if tn == "Option" && Array::length(targs) == 1 {
+          // #1445 cause 3: `o: Option[P]` -- the HEAD alone ("Option") is what
+          // reaches `var_types`, so a `match o { Some(v) => "\{v}" }` had no
+          // type for `v` at all and fell to the ADR-0058 pointer heuristic.
+          // The annotation still has `P` right here; record it against the
+          // ctor so the match arm can bind it.
+          //
+          // #1445 残件: recorded as a SHAPE, not a bare name, so a payload that
+          // is itself a container resolves too. `o: Option[Array[P]]` records
+          // `[P]`; `arm_binder_var_types` already routes a composite payload to
+          // the recursive renderer. Measured before this: that binder printed a
+          // pointer decimal while `Option[P]` rendered fine -- the `TyName`-only
+          // match silently recorded nothing for the nested case.
+          seed_ctor_payload(out, pname, "Some", Array::get(targs, 0))
+        } else if tn == "Result" && Array::length(targs) == 2 {
+          seed_ctor_payload(out, pname, "Ok", Array::get(targs, 0))
+          seed_ctor_payload(out, pname, "Err", Array::get(targs, 1))
+        } else {
+          ()
+        }
+      },
+      // #1445: a concrete tuple ANNOTATION (`t: (Int, P)`) records
+      // no RENDER sentinel here. Generic shapes are seeded above. Measured: an annotated tuple
+      // parameter already renders structurally, and it renders NESTED tuples
+      // too (`(Int, (Int, P))` -> `(5, (7, P { x: 6 }))`) -- it goes through
+      // a real TypeExpr, so it beats the flat per-element name list this
+      // pass's sentinel can carry. Recording those would only divert renders
+      // to a weaker path.
+      //
+      // #1526 (ADR-0097): the `==` dispatch is a different consumer with no
+      // such better path -- a tuple PARAMETER compared with `==` fell to the
+      // codegen's FLAT depth-1 walk (no literal in scope), whose Array
+      // elements identity-compare. Record the annotation's shape under the
+      // eq-only `__eqshape$` sentinel; interp_expand never reads it, so the
+      // measured render behavior above is untouched.
+      // A shape naming one of the fn's own TYPE PARAMETERS is not seeded: it
+      // would key a monomorphic `__arr_equals__<tyvar>` helper on the
+      // parameter's NAME (the Codex P1 class on the bare-`==` path), and the
+      // erased comparison it would compile to is the status quo anyway.
+      Some(TyTuple(tts)) => if ty_mentions_name_in(TyTuple(tts), tparams) {
+        ()
+      } else {
+        let esh = ty_to_eq_shape(TyTuple(tts))
+        if String::length(esh) > 0 {
+          Array::push(out, (eq_shape_key(pname), esh))
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}

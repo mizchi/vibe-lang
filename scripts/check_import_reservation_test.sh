@@ -30,6 +30,9 @@ REGISTRY="$ROOT_DIR/lib/@vibe/compiler/core/builtin_registry.vibe"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/vibe_import_reservation_selftest.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
+python3 scripts/source_files.py "$LINKED" > "$WORK/original_linked.vibe"
+LINKED="$WORK/original_linked.vibe"
+
 fail() { echo "import-reservation-selftest: FAIL: $1" >&2; exit 1; }
 
 # --- GREEN: the gate passes on the tree. ------------------------------------

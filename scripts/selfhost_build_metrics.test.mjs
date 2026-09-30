@@ -10,7 +10,7 @@ import { collect } from "./selfhost_build_metrics.mjs";
 function fixture(fn) {
   const root = mkdtempSync(join(tmpdir(), "selfhost-metrics-"));
   mkdirSync(join(root, "scripts"));
-  for (const file of ["prelude_split_memory.vibex", "run_wasm_vibe_host_runner.sh", "wasm_vibe_host_runner.js"]) {
+  for (const file of ["prelude_split_memory.vibex", "run_wasm_vibe_host_runner.sh", "wasm_vibe_host_runtime.js", "wasm_vibe_host_runner.js"]) {
     writeFileSync(join(root, "scripts", file), file);
   }
   writeFileSync(join(root, "stage2.wasm"), "stage2");

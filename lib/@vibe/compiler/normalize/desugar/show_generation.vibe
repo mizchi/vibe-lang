@@ -1,0 +1,93 @@
+// Show generation.
+
+import @vibe/compiler/core {
+  Expr, Stmt, TypeExpr, namespace_rename_original
+}
+
+import @vibe/ast {
+  builtin_ref
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import ./derive_operations.vibe {
+  arr_to_string_name, field_show_expr, qualified_name, show_for_typed
+}
+
+import ./formal_scope.vibe {
+  arr_helper_tparams
+}
+
+import ./name_encoding.vibe {
+  concat2
+}
+
+import ./utilities.vibe {
+  empty_expr_array
+}
+
+/// `let __arr_to_string__<key> = (a: Array[t]) -> String {
+///    "[" ++ join(show(a[0]), ", ", show(a[1]), ...) ++ "]" }` — a monomorphic,
+/// fully-recursive array to-string. Element rendering goes through
+/// `show_for_typed`, so `Array[Foo]` / `Array[Array[Int]]` recurse structurally
+/// instead of pointer-stringifying aggregate elements. (#694 Layer 2.) When the
+/// element type is a type variable the helper is generic over it instead —
+/// see the `dtd_type_param_names` block above (#2136).
+export fn gen_arr_to_string_fn(elem_ty: TypeExpr, known_types: Array[String]) -> Stmt {
+  let elem_get = ECall(builtin_ref("Array::get"), Array::slice([
+    EIdent("a", -1),
+    EIdent("__as_i", -1)
+  ], 0, 2), -1)
+  let elem_show = show_for_typed(elem_ty, elem_get, known_types)
+  // `__as_acc = __as_acc ++ (if i == 0 { "" } else { ", " }) ++ show(a[i])`
+  let sep = EIf(EBinOp("==", EIdent("__as_i", -1), EInt(0), -1), EString("", -1), EString(", ", -1))
+  let append = concat2(concat2(EIdent("__as_acc", -1), sep), elem_show)
+  let set_acc = EAssign("__as_acc", append, EUnit)
+  let incr = EAssign("__as_i", EBinOp("+", EIdent("__as_i", -1), EInt(1), -1), EUnit)
+  let loop_body = ESeq(set_acc, incr)
+  let while_loop = EWhile(EBinOp("<", EIdent("__as_i", -1), ECall(builtin_ref("Array::length"), Array::slice([
+    EIdent("a", -1)
+  ], 0, 1), -1), -1), loop_body)
+  let closed = concat2(EIdent("__as_acc", -1), EString("]", -1))
+  let body = ELetMut("__as_i", EInt(0), ELetMut("__as_acc", EString("[", -1), ESeq(while_loop, closed), -1), -1)
+  // review-lint: allow-fixed-synthetic-name
+  let arr_ty = TyApp("Array", Array::slice([elem_ty], 0, 1))
+  let params = Array::slice([("a", Some(arr_ty))], 0, 1)
+  let tparams = arr_helper_tparams(elem_ty)
+  let no_tb = array_empty()
+  SLet(false, false, arr_to_string_name(elem_ty), None, EFn(tparams, no_tb, params, Some(TyName("String")), None, body))
+}
+
+/// `let P::to_string = (self: P) -> String { "P { x: " ++ show(x) ++ ", ... }" }`
+export fn gen_show_fn(tname: String, fields: Array[(String, TypeExpr)], known_types: Array[String]) -> Stmt {
+  let segs = empty_expr_array()
+  // #2205: this pass runs after the module-merge rename, so `tname` may be
+  // the mangled `Point_dep_<path>` spelling -- render the SOURCE name (the
+  // generated fn's own name stays mangled; only the string the user sees
+  // recovers the original).
+  Array::push(segs, EString(String::concat(namespace_rename_original(tname), " { "), -1))
+  let mut i = 0
+  while i < Array::length(fields) {
+    let (fname, fty) = Array::get(fields, i)
+    let sep = if i == 0 {
+      ""
+    } else ", "
+    Array::push(segs, EString(String::concat(sep, String::concat(fname, ": ")), -1))
+    Array::push(segs, field_show_expr(fname, fty, known_types))
+    i = i + 1
+  }
+  Array::push(segs, EString(" }", -1))
+  // fold right: concat(seg0, concat(seg1, ... segN))
+  let mut body = Array::get(segs, Array::length(segs) - 1)
+  let mut j = Array::length(segs) - 2
+  while j >= 0 {
+    body = concat2(Array::get(segs, j), body)
+    j = j - 1
+  }
+  let params = Array::slice([("self", Some(TyName(tname)))], 0, 1)
+  let no_tp = array_empty()
+  let no_tb = array_empty()
+  SLet(false, false, qualified_name(tname, "to_string"), None, EFn(no_tp, no_tb, params, Some(TyName("String")), None, body))
+}

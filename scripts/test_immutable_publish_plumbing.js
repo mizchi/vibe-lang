@@ -7,7 +7,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { spawn } = require("node:child_process");
+const { execFileSync, spawn } = require("node:child_process");
 const { publishImmutableTextSync } = require("./wasm_vibe_host_runner.js");
 
 if (process.argv[2] === "--publish-child") {
@@ -17,7 +17,7 @@ if (process.argv[2] === "--publish-child") {
 }
 
 const root = path.resolve(__dirname, "..");
-const read = (file) => fs.readFileSync(path.join(root, file), "utf8");
+const read = (file) => execFileSync("python3", [path.join(root, "scripts/source_files.py"), path.join(root, file)], { encoding: "utf8" });
 const includes = (file, text) =>
   assert.ok(read(file).includes(text), `${file} must contain ${text}`);
 

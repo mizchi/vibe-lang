@@ -1,0 +1,1743 @@
+// lib/@vibe/compiler/checker/checker_stmt.vibe — unknown effect label errors.
+
+import ./checker_trait.vibe {
+  bound_entails_send, register_builtin_traits_for, type_send_ok
+}
+
+import @vibe/core {
+  array_empty, struct MutMap
+}
+
+import @vibe/compiler/checker/diagnostics {
+  off_marker
+}
+
+import ./checker_effects.vibe {
+  check_async_effects_stmts,
+  check_mutability_stmts,
+  check_perform_effects_stmts_env_published_sigs,
+  check_stdin_provider_direct_calls_stmts,
+  effect_error_to_string,
+  env_fn_sigs,
+  env_row_labels_from,
+  row_text_labels,
+  set_throw_site_kinds,
+  stmt_type_rows
+}
+
+import ./checker_pattern.vibe {
+  check_qualified_pattern_refs
+}
+
+import ./builtins.vibe {
+  lookup_builtin
+}
+
+import ./checker_spawnable.vibe {
+  closure_bare_callee_names
+}
+
+import @vibe/compiler/core {
+  Expr,
+  ImportItem,
+  ImportKind,
+  Pat,
+  Stmt,
+  Subst,
+  Type,
+  TypeDef,
+  TypeEnv,
+  TypeExpr,
+  collect_subst_bounds_pairs,
+  compiler_owned_type_arity,
+  env_lookup,
+  env_type_defs,
+  expr_child_at,
+  expr_children,
+  expr_children_into,
+  expr_children_pop,
+  expr_children_push,
+  expr_children_top,
+  has_standard_effect_policy,
+  has_standard_host_provider,
+  is_exception_effect_name,
+  lookup_registry_builtin,
+  rewrite_import_alias_stmt,
+  subst_apply,
+  trait_defined,
+  trait_definition,
+  trait_impl_declared_for_ctor,
+  trait_is_marker,
+  type_constructor_name,
+  type_implements_trait,
+  type_to_string
+}
+
+import ./checker.vibe {
+  TypedOccurrenceRoleLaneCapture,
+  check_expr,
+  reset_eq_formal_vars,
+  reset_throw_payload_sites,
+  resolve_trait_bound_self_reference,
+  set_generic_fn_decls,
+  throw_kind_of_type,
+  throw_payload_site_types,
+  trait_reference_display
+}
+
+import @vibe/ast {
+  type_param_arity, type_param_name
+}
+
+import ./checked_expression_structure_core.vibe {
+  checked_expression_structure_rows
+}
+
+import ./checker_resolve.vibe {
+  resolve_type_expr
+}
+
+import @vibe/compiler/normalize {
+  desugar_labeled_args, unresolved_mut_labeled_calls
+}
+
+import @vibe/parser {
+  BinderAuthorityNode, LocatedProgramBinderAuthority, SourceBinder
+}
+
+import ./checker_stmt_decl_formal_application_errors.vibe {
+  fek_rows_in_texpr
+}
+
+import ./checker_stmt_imported_decl_kind.vibe {
+  es_expand_stmts_effect_rows
+}
+
+import ./checker_stmt_labeled_name_check_expr.vibe {
+  collect_labeled_check_fns, labeled_name_check_expr, labeled_name_marker, struct_derives_has
+}
+
+import ./checker_stmt_push_source_scope_names.vibe {
+  es_append_imported_tables, es_collect_tables
+}
+
+import ./checker_stmt_stmts_with_binders.vibe {
+  check_stmts_with_binders
+}
+
+/// #1503: `no impl `Eq` for `Array[Int]`` is flatly false when the program
+/// declares that impl three lines above -- what actually happened is that the
+/// impl was found and then refused by the marker-trait gate (a marker trait has
+/// no methods, so it dispatches to the builtin `==` / `<`, and those are
+/// REFERENCE equality on `Array` / `Bytes`: a bare `[1, 2] == [1, 2]` is
+/// `false`). Say so, and name the edit that fixes it.
+///
+/// Returns "" when no impl for this trait mentions the type's constructor, i.e.
+/// when "no impl" is the whole truth.
+fn unsatisfied_bound_hint(env: TypeEnv, trait_name: String, resolved: Type) -> String {
+  if trait_reference_display(trait_name) == "Add" && marker_cmp_bound_is_unsound(env, trait_name, resolved) {
+    // #3158 review: the `+` twin of the comparison messages below.
+    let display = trait_reference_display(trait_name)
+    let shown = type_to_string(resolved)
+    let declared = String::concat(": an `impl ", String::concat(display, String::concat(" for ", String::concat(shown, "` may be declared, but `"))))
+    let why = String::concat(display, String::concat("` is a marker trait (declared with no methods) so `+` on the erased type adds `Int`s and joins `String`s and nothing else -- on a `", String::concat(shown, "` it adds the raw representation, not the value")))
+    let cost = " -- honouring the impl would make the sum silently wrong (`1.5 + 2.25` answered `0`)"
+    let edit = String::concat(". Add at the concrete type (take a `", String::concat(shown, "` parameter) instead of through the bound, or pass the addition in as a function"))
+    String::concat(declared, String::concat(why, String::concat(cost, edit)))
+  } else if trait_impl_declared_for_ctor(env, trait_name, resolved) && trait_is_marker(env, trait_name) {
+    let display = trait_reference_display(trait_name)
+    let ctor = type_constructor_name(resolved)
+    // String::concat rather than `\{}` interpolation, for the reason recorded
+    // at the SResource diagnostic above.
+    let declared = String::concat(": an `impl ", String::concat(display, String::concat(" for ", String::concat(ctor, "` IS declared, but `"))))
+    let why = String::concat(display, String::concat("` is a marker trait (declared with no methods) so it dispatches to the builtin `==` / `<`, and those compare `", String::concat(ctor, "` by REFERENCE")))
+    let cost = " -- honouring the impl would make the comparison silently wrong: two equal values answer `false`, and one value compared with itself answers `true`"
+    let edit = String::concat(". Give `", String::concat(display, "` at least one method so the impl dispatches through the witness dictionary, or drop the bound"))
+    String::concat(declared, String::concat(why, String::concat(cost, edit)))
+  } else if marker_cmp_bound_is_unsound(env, trait_name, resolved) {
+    // #2895: the branch above can NEVER fire for a primitive.
+    // `trait_impl_declared_for_ctor` keys on `type_constructor_name`, whose
+    // `_ => ""` arm covers `CtDouble`, and an empty head returns false. So
+    // `Double` -- the one primitive the guard now rejects -- got the bare
+    // ``no impl `Eq` for `Double` ``, which is the misleading half on its own:
+    // the prelude DOES declare `impl Eq for Double`.
+    //
+    // The edit differs from the struct case too. Nobody can add a method to
+    // the prelude's `Eq` from their own program, so the actionable advice is
+    // to compare at the concrete type instead of through the bound.
+    let display = trait_reference_display(trait_name)
+    let shown = type_to_string(resolved)
+    let declared = String::concat(": an `impl ", String::concat(display, String::concat(" for ", String::concat(shown, "` IS declared by the prelude, but `"))))
+    let why = String::concat(display, String::concat("` is a marker trait (declared with no methods) so it dispatches to the builtin `==` / `<`, and a `", String::concat(shown, "` is not a tagged immediate -- those read the BOX, not the number")))
+    let cost = " -- honouring the impl would make the comparison silently wrong: two equal values answer `false`, and `<` answers the same way in both directions"
+    let edit = String::concat(". Compare at the concrete type (take a `", String::concat(shown, "` parameter) instead of through the bound, or drop the bound"))
+    String::concat(declared, String::concat(why, String::concat(cost, edit)))
+  } else {
+    ""
+  }
+}
+
+/// #2523: does the builtin `==` / `<` compare a value of this type by VALUE?
+///
+/// NOT simply "the scalars `lib/@vibe/builtin/builtin_traits.vibe` registers
+/// marker impls for", which is what this used to say and what put `Double` on
+/// the list. Everything else -- `Array`, `Bytes`, a tuple, an `Option`, a
+/// declared struct or enum -- is compared by REFERENCE where the type has been
+/// erased, which is the whole reason this predicate exists.
+///
+/// **`Double` is NOT on the list** (#2895). It has a marker impl like the other
+/// four, so it read as safe, and it is the one type that guard waved through
+/// while being exactly the failure the guard exists to prevent. Measured on the
+/// committed seed and on a stage2 from this branch, identical both ways:
+///
+///   bare[T: Eq](1.5, 1.5)       FALSE   <- two equal Doubles
+///   bare[T: Eq](0.0, 0.0)       FALSE
+///   1.5 == 1.5  (concrete)      true    <- the contrast
+///   lt[T: Ord](2.5, 1.5)        TRUE    <- and Ord is worse: both
+///   gt[T: Ord](2.5, 1.5)        FALSE      directions answer the same way
+///
+/// A `Double` is not a tagged immediate the way an `Int` is, so the raw
+/// comparison the erased bound falls back to reads the box, not the number.
+///
+/// Erring toward `false` costs a correct program a diagnostic, which the gates
+/// see; erring toward `true` keeps a silently wrong answer, which nothing sees.
+/// `Double` was the standing proof of the second half.
+fn marker_cmp_is_by_value(ty: Type) -> Bool {
+  match ty {
+    CtInt => true,
+    CtBool => true,
+    CtChar => true,
+    CtString => true,
+    CtNamed(name, args) => Array::length(args) == 0 && (name == "Int" || name == "Bool" || name == "Char" || name == "String"),
+    _ => false
+  }
+}
+
+/// #2523: would satisfying this bound make the comparison silently wrong?
+///
+/// `Eq` and `Ord` are declared in `@vibe/builtin` as MARKER traits -- `export
+/// trait Eq` with no methods -- so there is no dictionary for `[T: Eq]`'s `==`
+/// to dispatch through and it lowers to the builtin comparison. That is right
+/// for the five scalars the markers register impls for, and REFERENCE identity
+/// for anything else.
+///
+/// So a user `impl Eq for Pt` turned a clear error into a wrong answer.
+/// Measured on the production linear/RC lane with `fn bare[T: Eq](x: T, y: T)
+/// { x == y }`: `bare(p1, p2)` on two EQUAL, distinct `Pt` answered `false`
+/// and `bare(p1, p1)` on the same object answered `true`, while `p1 == p2` at a
+/// concrete site and `Pt::equals(p1, p2)` both answered `true`. The comparator
+/// exists and works; the bound simply never reaches it.
+///
+/// What is refused is the BOUND at this instantiation, not the impl. That is
+/// what keeps it narrow: `impl Eq for Pt` remains a legal declaration (a marker
+/// impl can be a tag), a concrete `p1 == p2` still compares structurally, and
+/// only the instantiation that would answer by identity is rejected. The edit
+/// is named by `unsatisfied_bound_hint`, which has said exactly this since
+/// #1503 and until now could only fire when the bound failed for some other
+/// reason.
+///
+/// A program whose own `Eq` carries a method is not a marker, dispatches
+/// through a real witness dictionary, and is left alone -- that is the shape
+/// ADR-0097 wants, and landing it deletes this guard.
+fn marker_cmp_bound_is_unsound(env: TypeEnv, trait_bound: String, resolved: Type) -> Bool {
+  let display = trait_reference_display(trait_bound)
+  if display != "Eq" && display != "Ord" && display != "Add" {
+    false
+  } else if not(trait_is_marker(env, trait_bound)) {
+    false
+  } else if display == "Add" {
+    not(marker_add_is_by_value(resolved))
+  } else {
+    not(marker_cmp_is_by_value(resolved))
+  }
+}
+
+/// #3158 review: does the erased `+` an `[T: Add]` body lowers to
+/// (`__generic_add`) add a value of this type correctly?
+///
+/// `Add` is a marker trait too, so `a + b` over an erased `T` cannot dispatch
+/// through a witness: it lowers to `__generic_add`, which concatenates two
+/// packed strings and otherwise runs a raw `i64.add`. That is right for `Int`
+/// (a tagged immediate) and `String`, and wrong for everything else. The
+/// prelude declares `impl Add for Double`, and measured on main at 18a0dcef3,
+/// `add2[T: Add](1.5, 2.25)` printed `add=0` on the linear lane: the raw add of
+/// two boxes. A user `impl Add for Pt` would add two pointers the same way.
+fn marker_add_is_by_value(ty: Type) -> Bool {
+  match ty {
+    CtInt => true,
+    CtString => true,
+    CtNamed(name, args) => Array::length(args) == 0 && (name == "Int" || name == "String"),
+    _ => false
+  }
+}
+
+/// #641 PR-2: enforce trait bounds. After inference, every bounded type variable
+/// recorded in the final substitution that resolved to a CONCRETE type must
+/// satisfy its bounds. Unresolved (still-polymorphic) vars are inherited by the
+/// caller, not violated, so they are skipped. One `no impl `Trait` for `Type``
+/// error per unsatisfied bound (matches fixtures/err_type_trait_*bound* messages).
+/// Import projection supplies the selected trait authority and implementations,
+/// so this is enforced identically for standalone and FS/import checking.
+/// #2831: the collected diagnostics, in order, without exact repeats.
+///
+/// Several collectors run over the same statements and can reach the same
+/// conclusion; one duplicated line in a report is a reader wondering which of
+/// the two they are meant to fix. Order is preserved -- first occurrence wins
+/// -- so the message that used to be the only one reported is still line 1.
+export fn dedupe_error_lines(msgs: Array[String]) -> Array[String] {
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(msgs) {
+    let msg = Array::get(msgs, i)
+    let mut seen = false
+    let mut j = 0
+    while !seen && j < Array::length(out) {
+      if Array::get(out, j) == msg {
+        seen = true
+      } else {
+        ()
+      }
+      j = j + 1
+    }
+    if seen {
+      ()
+    } else {
+      Array::push(out, msg)
+    }
+    i = i + 1
+  }
+  out
+}
+
+export fn push_error_strings(msgs: Array[String], errors: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(msgs) {
+    Array::push(errors, Array::get(msgs, i))
+    i = i + 1
+  }
+}
+
+export fn check_program_bounds(env: TypeEnv, s: Subst, defs: Array[TypeDef], errors: Array[String]) -> Unit {
+  let pairs = collect_subst_bounds_pairs(s)
+  let n = Array::length(pairs)
+  let mut i = 0
+  while i < n {
+    let (vid, bounds) = Array::get(pairs, i)
+    let resolved = subst_apply(s, CtVar(vid))
+    match resolved {
+      CtVar(_) => (),
+      CtUnknown => (),
+      _ => {
+        let bn = Array::length(bounds)
+        let mut bi = 0
+        while bi < bn {
+          let b = Array::get(bounds, bi)
+          let resolved_bound = resolve_trait_bound_self_reference(b, resolved, s, defs)
+          let sat = if resolved_bound == "" {
+            true
+          } else if resolved_bound == "Send" {
+            // ADR-0068: `Send` is judged structurally from the type
+            // definitions (type_send_ok), not from user impls.
+            type_send_ok(env, s, defs, resolved)
+          } else if marker_cmp_bound_is_unsound(env, resolved_bound, resolved) {
+            // #2523: a marker `Eq` / `Ord` cannot make a non-scalar compare by
+            // content, so no impl may satisfy it here.
+            false
+          } else {
+            type_implements_trait(env, s, resolved, resolved_bound)
+          }
+          if resolved_bound != "" && not(sat) {
+            Array::push(errors, String::concat("no impl `", String::concat(trait_reference_display(resolved_bound), String::concat("` for `", String::concat(type_to_string(resolved), String::concat("`", unsatisfied_bound_hint(env, resolved_bound, resolved)))))))
+          } else if resolved_bound != "" && resolved_bound != "Send" && bound_entails_send(env, resolved_bound) && not(type_send_ok(env, s, defs, resolved)) {
+            // #3156 review: a bound that EXTENDS `Send` (`trait Work: Send`)
+            // counts as Send inside the generic body (`type_send_ok`), so
+            // its instantiation must be Send too -- an impl of `Work` alone
+            // does not make a type Send, since `Send` has no user impls.
+            Array::push(errors, String::concat("no impl `Send` for `", String::concat(type_to_string(resolved), String::concat("`: `", String::concat(trait_reference_display(resolved_bound), "` extends `Send`, so a type used at it must be Send -- pass a Send value (no `Array`, `Bytes`, closure or `mut` field)")))))
+          }
+          bi = bi + 1
+        }
+      }
+    }
+    i = i + 1
+  }
+}
+
+/// #1340 (ADR-0071): validate a generic-instantiation row item
+/// (`State[Int]`) against the module's effect declarations. The base must
+/// not be an effectset, and when it names a DECLARED effect it must have
+/// exactly one type parameter matched by exactly one bracket argument
+/// (multi-param instantiations are rejected at parse; empty brackets are
+/// rejected here). Unknown bases are skipped — imported effects are
+/// invisible here, the same permissive stance the containment checker
+/// takes.
+fn geff_arg_kind_arity(name: String, ctor_names: Array[String], ctor_arities: Array[Int], formal_keys: Array[String]) -> Int {
+  match compiler_owned_type_arity(name) {
+    Some(arity) => arity,
+    None => {
+      let mut i = 0
+      let mut found = 0 - 1
+      while i < Array::length(ctor_names) {
+        if Array::get(ctor_names, i) == name {
+          found = Array::get(ctor_arities, i)
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      if found >= 0 {
+        found
+      } else {
+        let mut j = 0
+        let mut farity = 0 - 1
+        while j < Array::length(formal_keys) {
+          if type_param_name(Array::get(formal_keys, j)) == name {
+            farity = type_param_arity(Array::get(formal_keys, j))
+          } else {
+            ()
+          }
+          j = j + 1
+        }
+        if farity >= 0 {
+          farity
+        } else {
+          0
+        }
+      }
+    }
+  }
+}
+
+fn geff_row_targ_errors_into(row: Option[String], ed_names: Array[String], ed_tpcounts: Array[Int], ed_tparities: Array[Int], es_names: Array[String], ctor_names: Array[String], ctor_arities: Array[Int], formal_keys: Array[String], errors: Array[String]) -> Unit {
+  match row {
+    None => (),
+    Some(r) => {
+      let raw = String::split(r, ",")
+      let mut i = 0
+      while i < Array::length(raw) {
+        let label = String::trim(Array::get(raw, i))
+        let bi = String::index_of(label, "[")
+        if bi > 0 {
+          let base = label[0: bi]
+          let inner = String::trim(label[bi + 1: String::length(label) - 1])
+          let mut is_es = false
+          let mut esi = 0
+          while esi < Array::length(es_names) {
+            if Array::get(es_names, esi) == base {
+              is_es = true
+            } else {
+              ()
+            }
+            esi = esi + 1
+          }
+          if is_es {
+            Array::push(errors, String::concat("effect row item `", String::concat(label, String::concat("`: `", String::concat(base, "` is an effectset — effectset instantiation in a row is not supported yet (ADR-0071)")))))
+          } else if String::length(inner) == 0 {
+            Array::push(errors, String::concat("effect row item `", String::concat(label, "` needs a type argument between the brackets")))
+          } else {
+            let mut edi = 0
+            let mut tpc = 0 - 1
+            let mut expected_kind = 0
+            while edi < Array::length(ed_names) {
+              if Array::get(ed_names, edi) == base {
+                tpc = Array::get(ed_tpcounts, edi)
+                expected_kind = Array::get(ed_tparities, edi)
+              } else {
+                ()
+              }
+              edi = edi + 1
+            }
+            if tpc == 0 {
+              Array::push(errors, String::concat("effect row item `", String::concat(label, String::concat("`: effect ", String::concat(base, " declares no type parameters")))))
+            } else if tpc > 1 {
+              Array::push(errors, String::concat("effect row item `", String::concat(label, String::concat("`: effect ", String::concat(base, String::concat(" declares ", String::concat(__to_string(tpc), " type parameters; a row item supports exactly one type argument for now")))))))
+            } else if expected_kind > 0 {
+              let actual_kind = geff_arg_kind_arity(inner, ctor_names, ctor_arities, formal_keys)
+              if actual_kind != expected_kind {
+                Array::push(errors, String::concat("effect row item `", String::concat(label, String::concat("`: effect ", String::concat(base, String::concat(" expects a constructor with ", String::concat(__to_string(expected_kind), String::concat(" argument(s), but `", String::concat(inner, String::concat("` has ", String::concat(__to_string(actual_kind), " -- pass a bare constructor with the required arity")))))))))))
+              } else {
+                ()
+              }
+            } else {
+              ()
+            }
+          }
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+    }
+  }
+}
+
+/// #1340: walk the same row slots es_expand_stmts_effect_rows covers — a
+/// top-level binding's declared TyFn rows (including nested function types
+/// in parameter/return position) and an EFn value's inline row + parameter
+/// annotations. Nested closure literals inside bodies are not walked (same
+/// coverage boundary as the effectset expansion pass).
+fn geff_check_texpr_rows(te: TypeExpr, ed_names: Array[String], ed_tpcounts: Array[Int], ed_tparities: Array[Int], es_names: Array[String], ctor_names: Array[String], ctor_arities: Array[Int], formal_keys: Array[String], errors: Array[String]) -> Unit {
+  match te {
+    TyFn(params, ret, eff) => {
+      geff_row_targ_errors_into(eff, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, formal_keys, errors)
+      let mut i = 0
+      while i < Array::length(params) {
+        geff_check_texpr_rows(Array::get(params, i), ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, formal_keys, errors)
+        i = i + 1
+      }
+      geff_check_texpr_rows(ret, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, formal_keys, errors)
+    },
+    TyApp(_, args) => {
+      let mut i = 0
+      while i < Array::length(args) {
+        geff_check_texpr_rows(Array::get(args, i), ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, formal_keys, errors)
+        i = i + 1
+      }
+    },
+    TyTuple(elems) => {
+      let mut i = 0
+      while i < Array::length(elems) {
+        geff_check_texpr_rows(Array::get(elems, i), ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, formal_keys, errors)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+fn geff_check_opt_texpr_rows(te: Option[TypeExpr], ed_names: Array[String], ed_tpcounts: Array[Int], ed_tparities: Array[Int], es_names: Array[String], ctor_names: Array[String], ctor_arities: Array[Int], formal_keys: Array[String], errors: Array[String]) -> Unit {
+  match te {
+    Some(t) => geff_check_texpr_rows(t, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, formal_keys, errors),
+    None => ()
+  }
+}
+
+fn geff_expr_formals(e: Expr) -> Array[String] {
+  match e {
+    EFn(tparams, _, _, _, _, _) => tparams,
+    _ => array_empty()
+  }
+}
+
+fn geff_check_value_rows(e: Expr, ed_names: Array[String], ed_tpcounts: Array[Int], ed_tparities: Array[Int], es_names: Array[String], ctor_names: Array[String], ctor_arities: Array[Int], errors: Array[String]) -> Unit {
+  match e {
+    EFn(tparams, _, params, ret, eff, _) => {
+      geff_row_targ_errors_into(eff, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, tparams, errors)
+      let mut i = 0
+      while i < Array::length(params) {
+        let (_, pty) = Array::get(params, i)
+        geff_check_opt_texpr_rows(pty, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, tparams, errors)
+        i = i + 1
+      }
+      geff_check_opt_texpr_rows(ret, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, tparams, errors)
+    },
+    _ => ()
+  }
+}
+
+fn geff_validate_row_targs(stmts: Array[Stmt], errors: Array[String]) -> Unit {
+  let ed_names = array_empty()
+  let ed_tpcounts = array_empty()
+  let ed_tparities = array_empty()
+  let es_names = array_empty()
+  let ctor_names = array_empty()
+  let ctor_arities = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SEffectDef(_, ename, eparams, _) => {
+        Array::push(ed_names, ename)
+        Array::push(ed_tpcounts, Array::length(eparams))
+        let first_arity = if Array::length(eparams) > 0 {
+          type_param_arity(Array::get(eparams, 0))
+        } else {
+          0
+        }
+        Array::push(ed_tparities, first_arity)
+      },
+      SEffectSet(_, esname, _) => Array::push(es_names, esname),
+      SStruct(_, sname, _, _, _, tparams) => {
+        Array::push(ctor_names, sname)
+        Array::push(ctor_arities, Array::length(tparams))
+      },
+      SEnum(_, ename, tparams, _, _) => {
+        Array::push(ctor_names, ename)
+        Array::push(ctor_arities, Array::length(tparams))
+      },
+      STypeAlias(_, aname, tparams, _) => {
+        Array::push(ctor_names, aname)
+        Array::push(ctor_arities, Array::length(tparams))
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  let mut j = 0
+  while j < Array::length(stmts) {
+    match Array::get(stmts, j) {
+      SLet(_, _, _, ty, body) => {
+        let formals = geff_expr_formals(body)
+        geff_check_opt_texpr_rows(ty, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, formals, errors)
+        geff_check_value_rows(body, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, errors)
+      },
+      SLetMut(_, ty, body) => {
+        let formals = geff_expr_formals(body)
+        geff_check_opt_texpr_rows(ty, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, formals, errors)
+        geff_check_value_rows(body, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, errors)
+      },
+      _ => ()
+    }
+    j = j + 1
+  }
+}
+
+/// Canonicalize only the imported `StdinStream as S` type head before the
+/// ordinary checker runs. This makes `S::next(..)` the same exact direct-call
+/// AST as `StdinStream::next(..)`, so existing Async authority checks apply;
+/// value imports remain distinct and are rejected at the merged compile
+/// boundary rather than becoming first-class provider operations.
+fn canonicalize_stdin_provider_type_import_heads_reporting_change(stmts: Array[Stmt]) -> Bool {
+  let aliases: Array[(String, String)] = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SImport(_, items) => {
+        let mut j = 0
+        while j < Array::length(items) {
+          let item = Array::get(items, j)
+          let original = item.name
+          let alias_opt = item.alias
+          match alias_opt {
+            Some(alias) => if original == "StdinStream" {
+              Array::push(aliases, (alias, original))
+            } else {
+              ()
+            },
+            None => ()
+          }
+          j = j + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  let mut changed = false
+  if Array::length(aliases) > 0 {
+    let mut k = 0
+    while k < Array::length(stmts) {
+      match Array::get(stmts, k) {
+        SImport(_, _) => (),
+        _ => {
+          Array::set(stmts, k, rewrite_import_alias_stmt(Array::get(stmts, k), aliases))
+          changed = true
+        }
+      }
+      k = k + 1
+    }
+  } else {
+    ()
+  }
+  changed
+}
+
+export fn canonicalize_stdin_provider_type_import_heads(stmts: Array[Stmt]) -> Unit {
+  let _changed = canonicalize_stdin_provider_type_import_heads_reporting_change(stmts)
+  ()
+}
+
+/// #3086: a VALUE binder spelled like a constructor in scope.
+///
+/// Every `Some(..)` / `None` / `Ok(..)` in an expression resolves to the
+/// constructor in the checker, whatever is bound under that spelling -- but
+/// codegen resolved the same call to the user's binding in some forms and to
+/// the constructor in others. Measured on main at 9b14231, so the answer was a
+/// function of how the binding was written:
+///
+///   - builtin `Some`: `fn Some` and a local `let Some` were silently ignored
+///     (the built-in ran); a top-level `let Some = mk` and
+///     `import ./m { mk as Some }` made codegen call `mk` while the checker
+///     typed an `Option` -- `b.v` was refused as "a non-struct value" while
+///     the value WAS the struct, and interpolating it trapped.
+///   - a user variant (`enum Res { Ok(Int); Err(String) }`) with a top-level
+///     `fn Ok(x: Int) -> Int`, a local `let Ok = (x) -> x + 1` or a parameter
+///     named `Ok`: the checker typed `Ok(1) + 1` as the function's `Int`,
+///     codegen built the VARIANT, and the sum printed a heap address
+///     (`257` on linear, `210` on gc) -- silently.
+///
+/// So the binder is refused, and the message leads with the rename. A
+/// qualified variant (`Res::Ok`), a lowercase name, and a constructor that is
+/// only USED are untouched.
+export fn collect_constructor_binder_errors(stmts: Array[Stmt], env: TypeEnv, errors: Array[String]) -> Unit {
+  let names: Array[String] = ["Some", "None"]
+  let owners: Array[String] = ["", ""]
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SEnum(_, ename, _, variants, _) => cb_push_variants(names, owners, ename, variants),
+      SSuberror(_, ename, variants) => cb_push_variants(names, owners, ename, variants),
+      _ => ()
+    }
+    i = i + 1
+  }
+  let imported = env_type_defs(env)
+  let mut d = 0
+  while d < Array::length(imported) {
+    match Array::get(imported, d) {
+      TDEnum(ename, _, variants) => {
+        let mut v = 0
+        while v < Array::length(variants) {
+          let (vname, _) = Array::get(variants, v)
+          Array::push(names, vname)
+          Array::push(owners, ename)
+          v = v + 1
+        }
+      },
+      _ => ()
+    }
+    d = d + 1
+  }
+  let mut s = 0
+  while s < Array::length(stmts) {
+    match Array::get(stmts, s) {
+      SLet(_, _, name, _, value) => {
+        cb_check(name, "declaration", 0 - 1, name, names, owners, errors)
+        cb_walk(value, name, names, owners, errors)
+      },
+      SLetMut(name, _, value) => {
+        cb_check(name, "declaration", 0 - 1, name, names, owners, errors)
+        cb_walk(value, name, names, owners, errors)
+      },
+      SFnDecl(_, name, value, _, _) => {
+        cb_check(name, "declaration", 0 - 1, name, names, owners, errors)
+        cb_walk(value, name, names, owners, errors)
+      },
+      SImport(_, items) => {
+        let mut k = 0
+        while k < Array::length(items) {
+          let item = Array::get(items, k)
+          match item.alias {
+            // Anchored at the IMPORTED name: the alias is used throughout
+            // the file, so it cannot locate the import, while an aliased
+            // name normally appears once -- on this import line.
+            Some(alias) => cb_check(alias, "import alias", 0 - 1, item.name, names, owners, errors),
+            None => ()
+          }
+          k = k + 1
+        }
+      },
+      STest(tname, body) => cb_walk(body, tname, names, owners, errors),
+      SBench(bname, body) => cb_walk(body, bname, names, owners, errors),
+      SExpr(body) => cb_walk(body, "", names, owners, errors),
+      _ => ()
+    }
+    s = s + 1
+  }
+}
+
+fn cb_push_variants(names: Array[String], owners: Array[String], ename: String, variants: Array[(String, Array[TypeExpr])]) -> Unit {
+  let mut v = 0
+  while v < Array::length(variants) {
+    let (vname, _) = Array::get(variants, v)
+    Array::push(names, vname)
+    Array::push(owners, ename)
+    v = v + 1
+  }
+}
+
+/// The binders an expression introduces, then its children.
+fn cb_walk(e: Expr, owner: String, names: Array[String], owners: Array[String], errors: Array[String]) -> Unit {
+  match e {
+    ELet(n, _, _, off) => cb_check(n, "binding", off, owner, names, owners, errors),
+    ELetMut(n, _, _, off) => cb_check(n, "binding", off, owner, names, owners, errors),
+    ELetRec(n, _, _) => cb_check(n, "binding", 0 - 1, owner, names, owners, errors),
+    EForIn(v, k, _, _) => {
+      cb_check(v, "loop variable", 0 - 1, owner, names, owners, errors)
+      match k {
+        Some(kn) => cb_check(kn, "loop variable", 0 - 1, owner, names, owners, errors),
+        None => ()
+      }
+    },
+    EFn(_, _, params, _, _, _) => {
+      let mut p = 0
+      while p < Array::length(params) {
+        let (pname, _) = Array::get(params, p)
+        cb_check(cb_param_base(pname), "parameter", 0 - 1, owner, names, owners, errors)
+        p = p + 1
+      }
+    },
+    _ => ()
+  }
+  let mark = expr_children_push(e)
+  let end = expr_children_top()
+  let mut i = mark
+  while i < end {
+    cb_walk(expr_child_at(i), owner, names, owners, errors)
+    i = i + 1
+  }
+  expr_children_pop(mark)
+}
+
+/// A labeled (`x~`) or optional (`x?`) parameter keeps its marker on the name.
+fn cb_param_base(name: String) -> String {
+  let n = String::length(name)
+  if n > 1 && (String::ends_with(name, "~") || String::ends_with(name, "?")) {
+    String::substring(name, 0, n - 1)
+  } else {
+    name
+  }
+}
+
+fn cb_check(name: String, kind: String, off: Int, owner: String, names: Array[String], owners: Array[String], errors: Array[String]) -> Unit {
+  let mut idx = 0 - 1
+  let mut i = 0
+  while i < Array::length(names) && idx < 0 {
+    if Array::get(names, i) == name {
+      idx = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if idx >= 0 {
+    let enum_name = Array::get(owners, idx)
+    let what = if name == "Some" && String::length(enum_name) == 0 {
+      "the built-in `Option` constructor"
+    } else if String::length(enum_name) == 0 {
+      "the built-in empty `Option` value"
+    } else {
+      String::concat("a constructor of `", String::concat(enum_name, "`"))
+    }
+    let where_ = if off >= 0 {
+      off_marker(off)
+    } else {
+      String::concat(" [@fn=", String::concat(owner, "]"))
+    }
+    let msg = "rename this \{kind} `\{name}` (a lowercase name, such as one saying what it computes): `\{name}` is \{what}, and every `\{name}` in an expression means the constructor, so the binding would be ignored or would change what `\{name}` evaluates to"
+    Array::push(errors, String::concat(msg, where_))
+  } else {
+    ()
+  }
+}
+
+/// #3073: `derive (Ord)` / `derive (Show)` over a field or payload whose
+/// declared type provides no `compare` / `to_string`.
+///
+/// The derive desugar compares (renders) such a field through `Inner::compare`
+/// (`Inner::to_string`), because `Inner` is a declared type. When `Inner` does
+/// not derive the trait and nothing defines the operation, that call names no
+/// function: `vibe check` reported the file clean and the build then stopped
+/// with an internal compiler error (`Inner::compare` reached code generation
+/// unresolved). Refuse the derive here instead, at the deriving type, naming
+/// the edit.
+///
+/// `derive (Eq)` has no such hole -- every struct and enum gets a structural
+/// `T::equals` -- so it is not checked. Only a field whose type IS a declared
+/// nominal (`Inner`, `Box[Int]`) is examined: that is the one position the
+/// desugar calls `T::compare` / `T::to_string` on.
+export fn collect_derive_field_errors(stmts: Array[Stmt], env: TypeEnv, errors: Array[String]) -> Unit {
+  let declared: Array[String] = []
+  let declared_derives: Array[Array[String]] = []
+  let defined: Array[String] = []
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SStruct(_, name, _, derives, _, _) => {
+        Array::push(declared, name)
+        Array::push(declared_derives, derives)
+      },
+      SEnum(_, name, _, _, derives) => {
+        Array::push(declared, name)
+        Array::push(declared_derives, derives)
+      },
+      SSuberror(_, name, _) => {
+        Array::push(declared, name)
+        Array::push(declared_derives, [])
+      },
+      SLet(_, _, name, _, _) => Array::push(defined, name),
+      SFnDecl(_, name, _, _, _) => Array::push(defined, name),
+      SImpl(_, _, trait_name, target) => match target {
+        TyName(n) => Array::push(defined, String::concat(n, String::concat("::#impl", trait_name))),
+        TyApp(n, _) => Array::push(defined, String::concat(n, String::concat("::#impl", trait_name))),
+        _ => ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  let imported = env_type_defs(env)
+  let mut d = 0
+  while d < Array::length(imported) {
+    match Array::get(imported, d) {
+      TDStruct(n, _, _, _) => dfe_push_imported(declared, declared_derives, n),
+      TDEnum(n, _, _) => dfe_push_imported(declared, declared_derives, n),
+      _ => ()
+    }
+    d = d + 1
+  }
+  let mut s = 0
+  while s < Array::length(stmts) {
+    match Array::get(stmts, s) {
+      SStruct(_, name, fields, derives, _, tparams) => {
+        let mut f = 0
+        while f < Array::length(fields) {
+          let (fname, fty) = Array::get(fields, f)
+          dfe_check(name, derives, tparams, String::concat("field `", String::concat(fname, "`")), fty, declared, declared_derives, defined, env, errors)
+          f = f + 1
+        }
+      },
+      SEnum(_, name, tparams, variants, derives) => {
+        let mut v = 0
+        while v < Array::length(variants) {
+          let (vname, payloads) = Array::get(variants, v)
+          let mut p = 0
+          while p < Array::length(payloads) {
+            dfe_check(name, derives, tparams, String::concat("payload of `", String::concat(vname, "`")), Array::get(payloads, p), declared, declared_derives, defined, env, errors)
+            p = p + 1
+          }
+          v = v + 1
+        }
+      },
+      _ => ()
+    }
+    s = s + 1
+  }
+}
+
+/// An imported declaration's derives are not carried by its TypeDef; its
+/// generated operations are bound in `env` instead, which `dfe_provides` reads.
+fn dfe_push_imported(declared: Array[String], declared_derives: Array[Array[String]], name: String) -> Unit {
+  let mut i = 0
+  let mut seen = false
+  while i < Array::length(declared) && !seen {
+    seen = Array::get(declared, i) == name
+    i = i + 1
+  }
+  if seen {
+    ()
+  } else {
+    Array::push(declared, name)
+    Array::push(declared_derives, [])
+  }
+}
+
+fn dfe_check(owner: String, derives: Array[String], tparams: Array[String], what: String, fty: TypeExpr, declared: Array[String], declared_derives: Array[Array[String]], defined: Array[String], env: TypeEnv, errors: Array[String]) -> Unit {
+  let head = match fty {
+    TyName(n) => n,
+    TyApp(n, _) => n,
+    _ => ""
+  }
+  if String::length(head) == 0 || head == owner || str_array_has(tparams, head) {
+    ()
+  } else {
+    let mut idx = 0 - 1
+    let mut i = 0
+    while i < Array::length(declared) && idx < 0 {
+      if Array::get(declared, i) == head {
+        idx = i
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    if idx >= 0 {
+      dfe_check_trait(owner, derives, "Ord", "compare", what, head, Array::get(declared_derives, idx), defined, env, errors)
+      dfe_check_trait(owner, derives, "Show", "to_string", what, head, Array::get(declared_derives, idx), defined, env, errors)
+    } else {
+      ()
+    }
+  }
+}
+
+fn dfe_check_trait(owner: String, derives: Array[String], trait_name: String, op: String, what: String, head: String, head_derives: Array[String], defined: Array[String], env: TypeEnv, errors: Array[String]) -> Unit {
+  if !struct_derives_has(derives, trait_name) {
+    ()
+  } else {
+    let qualified = String::concat(head, String::concat("::", op))
+    // `derive (Hash)` also generates `to_string` (see the SStruct arm).
+    let derived = struct_derives_has(head_derives, trait_name) || (trait_name == "Show" && struct_derives_has(head_derives, "Hash"))
+    let written = str_array_has(defined, qualified) || str_array_has(defined, String::concat(head, String::concat("::#impl", trait_name)))
+    let imported = match env_lookup(env, qualified) {
+      Some(_) => true,
+      None => false
+    }
+    if derived || written || imported {
+      ()
+    } else {
+      Array::push(errors, "add `derive (\{trait_name})` to `\{head}` (or define `\{qualified}`): `derive (\{trait_name})` on `\{owner}` goes through `\{qualified}` for its \{what}, and `\{head}` provides none [@fn=\{owner}]")
+    }
+  }
+}
+
+fn str_array_has(xs: Array[String], v: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(xs) && !found {
+    found = Array::get(xs, i) == v
+    i = i + 1
+  }
+  found
+}
+
+/// Reject stdin provider operation values before inference can replace the
+/// actionable safety diagnostic with a secondary type mismatch. This syntactic
+/// gate intentionally precedes artifact production and generic effect flow.
+export fn collect_stdin_provider_direct_call_errors(stmts: Array[Stmt], errors: Array[String]) -> Unit {
+  let direct_errors = check_stdin_provider_direct_calls_stmts(stmts)
+  let mut i = 0
+  while i < Array::length(direct_errors) {
+    Array::push(errors, effect_error_to_string(Array::get(direct_errors, i)))
+    i = i + 1
+  }
+}
+
+/// #3017: resolve every recorded `throw` payload type under the final
+/// substitution and hand the kinds to the effects pass.
+export fn publish_throw_site_kinds(final_s: Subst) -> Unit {
+  let raw = throw_payload_site_types()
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(raw) {
+    let (k, t) = Array::get(raw, i)
+    Array::push(out, (k, throw_kind_of_type(subst_apply(final_s, t))))
+    i = i + 1
+  }
+  set_throw_site_kinds(out)
+}
+
+/// #3045: the effect row label `Mut` (bare or applied, `Mut[..]`) is reserved
+/// for a future marker of argument mutation. An empty row promises no host
+/// capability and no algebraic effect; it does NOT promise that values
+/// reachable from the arguments stay unmutated, and a later opt-in marker
+/// must be able to take this spelling without colliding with a user effect.
+/// So a row naming it, and a user `effect Mut` / `effectset Mut`, are refused.
+let reserved_mut_label: String = "Mut"
+
+let reserved_mut_row_message: String = "remove `Mut` from the row: the label is reserved for a future marker of argument mutation, and a function may already mutate values reachable from its arguments without declaring anything"
+
+let reserved_mut_decl_message: String = "rename this declaration: `Mut` is reserved for a future marker of argument mutation and cannot name an effect or an effectset"
+
+fn row_names_reserved_mut(row: String) -> Bool {
+  let labels = row_text_labels(row)
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(labels) && !found {
+    if uel_head(Array::get(labels, i)) == reserved_mut_label {
+      found = true
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// #2968: an effect label in a written row that names nothing -- no declared
+/// or imported `effect`, no `effectset`, no standard provider, no builtin
+/// effect, no row variable -- was an opaque label nothing could perform, so a
+/// typo (`with Excepton`) became a new effect instead of a diagnostic. The
+/// same for `E::op` where `E` is declared and has no operation `op`, or `E` is
+/// a builtin provider with no such builtin. Checked on top-level declarations'
+/// rows (their own and their function-typed parameters') and on handler arms.
+fn collect_unknown_effect_label_errors(stmts: Array[Stmt], env_sigs: (Array[String], Array[Array[String]], Array[Array[Array[String]]]), es_names: Array[String], ed_names: Array[String], ed_ops: Array[Array[String]], errors: Array[String]) -> Unit {
+  let local_names = array_empty()
+  let type_names = array_empty()
+  let mut ln = 0
+  while ln < Array::length(stmts) {
+    match Array::get(stmts, ln) {
+      SLet(_, _, lname, _, _) => Array::push(local_names, lname),
+      SLetMut(lname, _, _) => Array::push(local_names, lname),
+      SSuberror(_, tname, _) => Array::push(type_names, tname),
+      SEnum(_, tname, _, _, _) => Array::push(type_names, tname),
+      SStruct(_, tname, _, _, _, _) => Array::push(type_names, tname),
+      _ => ()
+    }
+    ln = ln + 1
+  }
+  let env_labels = env_row_labels_from(env_sigs, local_names)
+  // A package contract's effect and effectset names reach its sibling
+  // implementation files through the loader's in-band carrier
+  // (`contract_effect_names_line`); the declarations themselves stay in the
+  // facade, which a sibling cannot import.
+  let mut pi = 0
+  while pi < Array::length(stmts) {
+    match Array::get(stmts, pi) {
+      SLet(_, _, cname, _, EString(names, _)) => if String::starts_with(cname, "__vpkg_contract_effects_") {
+        // `Name=Op1,Op2` is a declared effect with its operations; a bare
+        // name is an effectset.
+        let parts = String::split(names, " ")
+        let mut ni = 0
+        while ni < Array::length(parts) {
+          let part = Array::get(parts, ni)
+          let eq = String::index_of(part, "=")
+          if eq > 0 {
+            let ops = array_empty()
+            let raw_ops = String::split(String::substring(part, eq + 1, String::length(part)), ",")
+            let mut ri = 0
+            while ri < Array::length(raw_ops) {
+              if String::length(Array::get(raw_ops, ri)) > 0 {
+                Array::push(ops, Array::get(raw_ops, ri))
+              }
+              ri = ri + 1
+            }
+            Array::push(ed_names, String::substring(part, 0, eq))
+            Array::push(ed_ops, ops)
+          } else if String::length(part) > 0 {
+            Array::push(es_names, part)
+          }
+          ni = ni + 1
+        }
+      },
+      _ => ()
+    }
+    pi = pi + 1
+  }
+  let mut reported = false
+  let mut di = 0
+  while di < Array::length(stmts) && !reported {
+    let declared = match Array::get(stmts, di) {
+      SEffectDef(_, dname, _, _) => dname,
+      SEffectSet(_, dname, _) => dname,
+      _ => ""
+    }
+    if declared == reserved_mut_label {
+      reported = true
+      Array::push(errors, String::concat(reserved_mut_decl_message, String::concat(" [@fn=", String::concat(declared, "]"))))
+    } else {
+      // `effectset Writes = { Mut }` would alias the reserved label under
+      // another name (Codex on #3061).
+      match Array::get(stmts, di) {
+        SEffectSet(_, sname, members) => {
+          let mut mi = 0
+          while mi < Array::length(members) && !reported {
+            if uel_head(Array::get(members, mi)) == reserved_mut_label {
+              reported = true
+              Array::push(errors, String::concat(reserved_mut_row_message, String::concat(" (in the members of effectset '", String::concat(sname, String::concat("')", String::concat(" [@fn=", String::concat(sname, "]")))))))
+            }
+            mi = mi + 1
+          }
+        },
+        _ => ()
+      }
+    }
+    di = di + 1
+  }
+  // #3045: a row inside a TYPE or a signature -- an alias target, a struct
+  // field, an enum or suberror payload, a trait or effect operation, an
+  // extern binding -- reaches every value of that type, so the reservation
+  // covers it too (Codex on #3061). `stmt_type_rows` is the one list of
+  // those declarations the effect checker already keeps (a top-level `let
+  // mut` is refused outright, ADR-0069). Only the reserved label is
+  // reported; unknown labels in declarations keep their existing handling.
+  let mut ti = 0
+  while ti < Array::length(stmts) && !reported {
+    let (decl_name, decl_labels) = stmt_type_rows(Array::get(stmts, ti))
+    let mut dli = 0
+    while dli < Array::length(decl_labels) && !reported {
+      if uel_head(Array::get(decl_labels, dli)) == reserved_mut_label {
+        reported = true
+        Array::push(errors, String::concat(reserved_mut_row_message, String::concat(" (in the declaration of '", String::concat(decl_name, String::concat("')", String::concat(" [@fn=", String::concat(decl_name, "]")))))))
+      }
+      dli = dli + 1
+    }
+    ti = ti + 1
+  }
+  let mut i = 0
+  while i < Array::length(stmts) && !reported {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, ty, body) => {
+        let rows = array_empty()
+        match ty {
+          Some(te) => fek_rows_in_texpr(te, rows),
+          None => ()
+        }
+        match body {
+          EFn(_, _, params, ret, eff, _) => {
+            match eff {
+              Some(row) => Array::push(rows, row),
+              None => ()
+            }
+            let mut pi = 0
+            while pi < Array::length(params) {
+              match Array::get(params, pi) {
+                (_, Some(pte)) => fek_rows_in_texpr(pte, rows),
+                _ => ()
+              }
+              pi = pi + 1
+            }
+            match ret {
+              Some(rte) => fek_rows_in_texpr(rte, rows),
+              None => ()
+            }
+          },
+          _ => ()
+        }
+        let mut ri = 0
+        while ri < Array::length(rows) && !reported {
+          let labels = row_text_labels(Array::get(rows, ri))
+          let mut li = 0
+          while li < Array::length(labels) && !reported {
+            let msg = unknown_effect_label_message(Array::get(labels, li), es_names, ed_names, ed_ops, env_labels, type_names)
+            // The entry's grant check names a missing provider operation
+            // with its own edit (`allows Console`), so it answers for `main`.
+            if String::length(msg) > 0 && !(name == "main" && String::starts_with(msg, "effect `")) {
+              reported = true
+              Array::push(errors, String::concat(msg, String::concat(String::concat(" (in the row of '", String::concat(name, "')")), String::concat(" [@fn=", String::concat(name, "]")))))
+            }
+            li = li + 1
+          }
+          ri = ri + 1
+        }
+        if !reported {
+          let arm_msg = unknown_effect_arm_in_expr(body, es_names, ed_names, ed_ops, env_labels, type_names)
+          if String::length(arm_msg) > 0 {
+            reported = true
+            Array::push(errors, String::concat(arm_msg, String::concat(" [@fn=", String::concat(name, "]"))))
+          }
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  // #3045: a closure inside a `test`, a `bench` or a top-level expression
+  // carries a row like one inside a binding (Codex on #3061). Only the
+  // reserved label is reported from these bodies; other unknown labels there
+  // keep their existing handling.
+  let mut bi = 0
+  while bi < Array::length(stmts) && !reported {
+    let (owner, bbody) = match Array::get(stmts, bi) {
+      STest(tname, tbody) => (tname, Some(tbody)),
+      SBench(bname, bbody0) => (bname, Some(bbody0)),
+      SExpr(ebody) => ("", Some(ebody)),
+      _ => ("", None)
+    }
+    match bbody {
+      Some(b) => {
+        let bmsg = unknown_effect_arm_in_expr(b, es_names, ed_names, ed_ops, env_labels, type_names)
+        if String::starts_with(bmsg, reserved_mut_row_message) {
+          reported = true
+          Array::push(errors, String::concat(bmsg, String::concat(" [@fn=", String::concat(owner, "]"))))
+        }
+      },
+      None => ()
+    }
+    bi = bi + 1
+  }
+}
+
+fn uel_contains(xs: Array[String], x: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(xs) && !found {
+    if Array::get(xs, i) == x {
+      found = true
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// The effect head of a label: `Fs::read_file?` -> `Fs`, `Exception[E]` -> `Exception`.
+fn uel_head(raw: String) -> String {
+  // An optional grade (`Fs?`, `Fs::read_file?`) names the same effect.
+  let label = if String::ends_with(raw, "?") {
+    String::substring(raw, 0, String::length(raw) - 1)
+  } else {
+    raw
+  }
+  let ci = String::index_of(label, "::")
+  let h = if ci > 0 {
+    String::substring(label, 0, ci)
+  } else {
+    label
+  }
+  let bi = String::index_of(h, "[")
+  if bi > 0 {
+    String::substring(h, 0, bi)
+  } else {
+    h
+  }
+}
+
+fn uel_head_known(head: String, es_names: Array[String], ed_names: Array[String], env_labels: Array[String]) -> Bool {
+  if uel_contains(ed_names, head) || uel_contains(es_names, head) {
+    true
+  } else if has_standard_effect_policy(head) || head == "AsyncIter" || head == "Random" {
+    // #1963: `Async`, `Exception` and `Error` are standard policy labels, so
+    // the owner above already answers for them; only the two heads with no
+    // standard policy are named here.
+    true
+  } else {
+    let mut i = 0
+    let mut found = false
+    while i < Array::length(env_labels) && !found {
+      if uel_head(Array::get(env_labels, i)) == head {
+        found = true
+      }
+      i = i + 1
+    }
+    found
+  }
+}
+
+fn uel_edit_distance(a: String, b: String) -> Int {
+  let la = String::length(a)
+  let lb = String::length(b)
+  let prev = array_empty()
+  let mut j = 0
+  while j <= lb {
+    Array::push(prev, j)
+    j = j + 1
+  }
+  let mut i = 1
+  while i <= la {
+    let cur = array_empty()
+    Array::push(cur, i)
+    let mut k = 1
+    while k <= lb {
+      let cost = if String::char_code_at(a, i - 1) == String::char_code_at(b, k - 1) {
+        0
+      } else {
+        1
+      }
+      let del = Array::get(prev, k) + 1
+      let ins = Array::get(cur, k - 1) + 1
+      let sub = Array::get(prev, k - 1) + cost
+      let m1 = if del < ins {
+        del
+      } else {
+        ins
+      }
+      Array::push(cur, if m1 < sub {
+        m1
+      } else {
+        sub
+      })
+      k = k + 1
+    }
+    let mut c = 0
+    while c <= lb {
+      Array::set(prev, c, Array::get(cur, c))
+      c = c + 1
+    }
+    i = i + 1
+  }
+  Array::get(prev, lb)
+}
+
+fn uel_suggestion(head: String, es_names: Array[String], ed_names: Array[String]) -> String {
+  let cands = array_empty()
+  let builtin = [
+    "Exception",
+    "Async",
+    "Fs",
+    "Env",
+    "Stdin",
+    "Stdout",
+    "Stderr",
+    "Console",
+    "Process",
+    "Profiler",
+    "Http",
+    "Socket"
+  ]
+  let mut i = 0
+  while i < Array::length(builtin) {
+    Array::push(cands, Array::get(builtin, i))
+    i = i + 1
+  }
+  i = 0
+  while i < Array::length(ed_names) {
+    Array::push(cands, Array::get(ed_names, i))
+    i = i + 1
+  }
+  i = 0
+  while i < Array::length(es_names) {
+    Array::push(cands, Array::get(es_names, i))
+    i = i + 1
+  }
+  let mut best = ""
+  let mut best_d = 3
+  i = 0
+  while i < Array::length(cands) {
+    let c = Array::get(cands, i)
+    let d = uel_edit_distance(head, c)
+    if d < best_d {
+      best_d = d
+      best = c
+    }
+    i = i + 1
+  }
+  best
+}
+
+fn unknown_effect_label_message(label: String, es_names: Array[String], ed_names: Array[String], ed_ops: Array[Array[String]], env_labels: Array[String], type_names: Array[String]) -> String {
+  let head = uel_head(label)
+  let first = if String::length(head) > 0 {
+    String::char_code_at(head, 0)
+  } else {
+    0
+  }
+  if first < 65 || first > 90 {
+    // A row variable (`e`) or something this scan does not classify.
+    ""
+  } else if head == reserved_mut_label {
+    // #3045: checked before "known", so a user `effect Mut` (refused on its
+    // own by `reserved_mut_decl_message`) cannot make the label legal.
+    reserved_mut_row_message
+  } else if !uel_head_known(head, es_names, ed_names, env_labels) && uel_contains(type_names, head) {
+    String::concat("`", String::concat(head, String::concat("` is a type, not an effect: a function that throws it declares `with Exception[", String::concat(head, "]`"))))
+  } else if !uel_head_known(head, es_names, ed_names, env_labels) {
+    let sug = uel_suggestion(head, es_names, ed_names)
+    let fix = if String::length(sug) > 0 {
+      String::concat("did you mean `", String::concat(sug, "`? Otherwise declare it"))
+    } else {
+      "declare it"
+    }
+    String::concat("unknown effect `", String::concat(head, String::concat("`: ", String::concat(fix, String::concat(" (`effect ", String::concat(head, " { .. }`) or import it"))))))
+  } else {
+    let ci = String::index_of(label, "::")
+    if ci > 0 && String::index_of(head, "[") < 0 {
+      let raw_op = String::substring(label, ci + 2, String::length(label))
+      let op = if String::ends_with(raw_op, "?") {
+        String::substring(raw_op, 0, String::length(raw_op) - 1)
+      } else {
+        raw_op
+      }
+      let mut di = 0
+      let mut declared_idx = 0 - 1
+      while di < Array::length(ed_names) {
+        if Array::get(ed_names, di) == head && declared_idx < 0 {
+          declared_idx = di
+        }
+        di = di + 1
+      }
+      if declared_idx >= 0 {
+        // #1963: the exception owner, not `head == "Exception"`, so the
+        // erased `Error` spelling is the same effect here as everywhere else.
+        if uel_contains(Array::get(ed_ops, declared_idx), op) || is_exception_effect_name(head) {
+          ""
+        } else {
+          String::concat("effect `", String::concat(head, String::concat("` has no such operation `", String::concat(op, "`"))))
+        }
+      } else if has_standard_host_provider(head) {
+        let qn = String::concat(head, String::concat("::", op))
+        if lookup_builtin(qn) != None || lookup_registry_builtin(qn) != None || uel_contains(env_labels, qn) {
+          ""
+        } else {
+          String::concat("effect `", String::concat(head, String::concat("` has no such operation `", String::concat(op, "`"))))
+        }
+      } else {
+        // The head is known only through imported rows. When those rows name
+        // the whole effect (or it is an effectset) every operation is
+        // plausible; when they name only operations, those are the ones this
+        // module has evidence for, and any other is unverified (#3022 review).
+        let qn = String::concat(head, String::concat("::", op))
+        let prefix = String::concat(head, "::")
+        let seen = array_empty()
+        let mut ei = 0
+        while ei < Array::length(env_labels) {
+          let el = Array::get(env_labels, ei)
+          if String::starts_with(el, prefix) && !uel_contains(seen, el) {
+            Array::push(seen, el)
+          }
+          ei = ei + 1
+        }
+        if uel_contains(env_labels, head) || uel_contains(es_names, head) || uel_contains(env_labels, qn) || Array::length(seen) == 0 {
+          ""
+        } else {
+          String::concat("operation `", String::concat(qn, String::concat("` is not known here: import the `", String::concat(head, String::concat("` effect declaration, or use an operation this module sees (`", String::concat(String::join(seen, "`, `"), "`)"))))))
+        }
+      }
+    } else {
+      ""
+    }
+  }
+}
+
+/// The first handler arm (`E::Op(..) => ..`) under `expr` whose effect is unknown.
+fn unknown_effect_arm_in_expr(expr: Expr, es_names: Array[String], ed_names: Array[String], ed_ops: Array[Array[String]], env_labels: Array[String], type_names: Array[String]) -> String {
+  let stack = [expr]
+  let mut out = ""
+  while Array::length(stack) > 0 && String::length(out) == 0 {
+    let e = Array::get(stack, Array::length(stack) - 1)
+    Array::truncate(stack, Array::length(stack) - 1)
+    match e {
+      EHandle(_, arms) => {
+        let mut ai = 0
+        while ai < Array::length(arms) && String::length(out) == 0 {
+          let (pat, _) = Array::get(arms, ai)
+          match pat {
+            PCtor(pname, _) => if String::index_of(pname, "::") > 0 {
+              let msg = unknown_effect_label_message(pname, es_names, ed_names, ed_ops, env_labels, type_names)
+              if String::length(msg) > 0 {
+                out = String::concat(msg, " (in a handler arm)")
+              }
+            },
+            _ => ()
+          }
+          ai = ai + 1
+        }
+      },
+      // #3045: the reserved `Mut` label is refused on a closure's own row
+      // too, not only on a top-level declaration's -- and in the function
+      // types its parameters and result are annotated with (Codex on #3061).
+      EFn(_, _, cparams, cret, crow, _) => {
+        let crows = array_empty()
+        match crow {
+          Some(r) => Array::push(crows, r),
+          None => ()
+        }
+        let mut cpi = 0
+        while cpi < Array::length(cparams) {
+          match Array::get(cparams, cpi) {
+            (_, Some(cpte)) => fek_rows_in_texpr(cpte, crows),
+            _ => ()
+          }
+          cpi = cpi + 1
+        }
+        match cret {
+          Some(crte) => fek_rows_in_texpr(crte, crows),
+          None => ()
+        }
+        let mut cri = 0
+        while cri < Array::length(crows) && String::length(out) == 0 {
+          if row_names_reserved_mut(Array::get(crows, cri)) {
+            out = String::concat(reserved_mut_row_message, " (in a closure's row)")
+          }
+          cri = cri + 1
+        }
+      },
+      _ => ()
+    }
+    // Straight onto the work stack, in the order `expr_children` lists them,
+    // without a child array per node.
+    expr_children_into(e, stack)
+  }
+  out
+}
+
+/// The builtin traits whose seeded impl rows `register_builtin_traits_for`
+/// leaves out for this program. `Show` keeps the shape test below. `Signed`
+/// and `Default` (#3187) are withheld whenever a trait of that name is in
+/// sight at all -- declared by the program, or arriving through the projected
+/// import env -- because that declaration governs its own impls. A seeded
+/// `impl Default for Double` beside a program's own method-bearing `Default`
+/// with no `Double` impl would satisfy `[T: Default]` at `Double` and then
+/// dispatch `Double::default`, which nobody wrote; and an import of
+/// `@vibe/core`'s `Default` brings that module's impls with it.
+export fn builtin_seed_withheld(stmts: Array[Stmt], env: TypeEnv) -> Array[String] {
+  let out: Array[String] = []
+  if !builtin_show_seed_allowed(stmts, env) {
+    Array::push(out, "Show")
+  }
+  let guarded: Array[String] = ["Signed", "Default"]
+  for name in guarded {
+    if trait_defined(env, name) || stmts_declare_trait(stmts, name) {
+      Array::push(out, name)
+    }
+  }
+  out
+}
+
+fn stmts_declare_trait(stmts: Array[Stmt], name: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while !found && i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      STrait(_, tname, _, _, _, _) => if tname == name {
+        found = true
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Whether the builtin scalar `Show` impls may be seeded: only when every
+/// `Show` in sight -- declared here or arriving through the projected import
+/// env -- is the builtin shape: no supertraits and exactly
+/// `to_string(Self) -> String`. A program's own or an imported `Show` of any
+/// other shape would otherwise be satisfied at `Int` by an impl nobody wrote
+/// (#3022 review).
+fn builtin_show_seed_allowed(stmts: Array[Stmt], env: TypeEnv) -> Bool {
+  let mut ok = true
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      STrait(_, tname, supers, methods, _, _) => if tname == "Show" && !(Array::length(supers) == 0 && show_methods_have_to_string(methods)) {
+        ok = false
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  if ok {
+    match trait_definition(env, "Show") {
+      Some((supers, methods, _, _)) => Array::length(supers) == 0 && show_methods_have_to_string(methods),
+      None => true
+    }
+  } else {
+    false
+  }
+}
+
+/// Is this exactly the builtin shape, `to_string(Self) -> String` and nothing
+/// else? The seeded scalar impls are dictionaries built from the builtin
+/// `Int::to_string` and friends, so any other method, arity or result type
+/// would be served by a function of the wrong signature (#3022 review).
+fn show_methods_have_to_string(methods: Array[(String, Array[TypeExpr], TypeExpr)]) -> Bool {
+  if Array::length(methods) == 1 {
+    let (mname, params, ret) = Array::get(methods, 0)
+    mname == "to_string" && Array::length(params) == 1 && match (Array::get(params, 0), ret) {
+      (TyName("Self"), TyName("String")) => true,
+      _ => false
+    }
+  } else {
+    false
+  }
+}
+
+/// Append `Async`-escape diagnostics (an async primitive used outside an
+/// `{Async}` context) to the type-error list, but only when type checking is
+/// otherwise clean so we surface the real error first.
+export fn collect_async_effect_errors(stmts: Array[Stmt], env: TypeEnv, defs: Array[TypeDef], frozen_errors: Array[String]) -> Unit {
+  if Array::length(frozen_errors) == 0 {
+    let eff_errs = check_async_effects_stmts(stmts, env)
+    let mut i = 0
+    while i < Array::length(eff_errs) {
+      Array::push(frozen_errors, effect_error_to_string(Array::get(eff_errs, i)))
+      i = i + 1
+    }
+    if Array::length(frozen_errors) == 0 {
+      // #1340 (ADR-0071): generic-instantiation row items are validated
+      // against the effect declarations before the containment pass sees
+      // them (which compares instantiation-insensitively by base name).
+      geff_validate_row_targs(stmts, frozen_errors)
+    }
+    if Array::length(frozen_errors) == 0 {
+      // ADR-0071 step 3 (#755): expand any effectset-name token in a
+      // top-level binding's OWN declared effect row into its flat
+      // leaf-label set BEFORE the (otherwise unmodified)
+      // check_perform_effects_stmts_env sees it -- `with AskAll`
+      // becomes e.g. `with Ask`, so the existing string-label
+      // containment machinery authorizes what AskAll actually expands to
+      // instead of requiring callers to re-declare it verbatim. Pure AST
+      // rewrite local to this file (see es_expand_stmts_effect_rows);
+      // check_perform_effects_stmts_env itself is untouched.
+      let (perform_es_names, perform_es_members_list, perform_ed_names, perform_ed_ops) = es_collect_tables(stmts, 0)
+      es_append_imported_tables(env_type_defs(env), perform_es_names, perform_es_members_list, perform_ed_names, perform_ed_ops)
+      // #2968: a row label must name an effect something declares.
+      // The checker's type-definition table can hold effect declarations the
+      // env's own type-def list does not; count those as known too.
+      let known_es = Array::slice(perform_es_names, 0, Array::length(perform_es_names))
+      let known_es_members = Array::slice(perform_es_members_list, 0, Array::length(perform_es_members_list))
+      let known_ed = Array::slice(perform_ed_names, 0, Array::length(perform_ed_names))
+      let known_ed_ops = Array::slice(perform_ed_ops, 0, Array::length(perform_ed_ops))
+      es_append_imported_tables(defs, known_es, known_es_members, known_ed, known_ed_ops)
+      // One walk of the env's function rows serves both the label check and
+      // the perform pass's two tables (env_fn_sigs).
+      let env_sigs = env_fn_sigs(env)
+      collect_unknown_effect_label_errors(stmts, env_sigs, known_es, known_ed, known_ed_ops, frozen_errors)
+      let expanded_stmts = es_expand_stmts_effect_rows(stmts, perform_es_names, perform_es_members_list)
+      let perform_errs = if Array::length(frozen_errors) == 0 {
+        check_perform_effects_stmts_env_published_sigs(expanded_stmts, env, env_sigs)
+      } else {
+        array_empty()
+      }
+      let mut j = 0
+      while j < Array::length(perform_errs) {
+        Array::push(frozen_errors, effect_error_to_string(Array::get(perform_errs, j)))
+        j = j + 1
+      }
+    }
+    if Array::length(frozen_errors) == 0 {
+      let mut_errs = check_mutability_stmts(stmts)
+      let mut k = 0
+      while k < Array::length(mut_errs) {
+        Array::push(frozen_errors, effect_error_to_string(Array::get(mut_errs, k)))
+        k = k + 1
+      }
+    }
+  }
+}
+
+fn labeled_name_check_stmt(stmt: Stmt, tbl: Array[(String, Array[String])], errors: Array[String], pre_desugar: Bool) -> Unit {
+  match stmt {
+    SLet(_, _, _, _, body) => labeled_name_check_expr(body, tbl, array_empty(), errors, pre_desugar),
+    SFnDecl(_, _, body, _, _) => labeled_name_check_expr(body, tbl, array_empty(), errors, pre_desugar),
+    SLetMut(_, _, body) => labeled_name_check_expr(body, tbl, array_empty(), errors, pre_desugar),
+    STest(_, body) => labeled_name_check_expr(body, tbl, array_empty(), errors, pre_desugar),
+    SBench(_, body) => labeled_name_check_expr(body, tbl, array_empty(), errors, pre_desugar),
+    SExpr(e) => labeled_name_check_expr(e, tbl, array_empty(), errors, pre_desugar),
+    SLetPat(_, e) => labeled_name_check_expr(e, tbl, array_empty(), errors, pre_desugar),
+    SModule(_, _, ms) => {
+      let mut i = 0
+      while i < Array::length(ms) {
+        labeled_name_check_stmt(Array::get(ms, i), tbl, errors, pre_desugar)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+/// #1001: `pre_desugar` selects which of the two labeled-call checks runs (see
+/// `labeled_name_check_expr`'s `pre_desugar` branch): `true` for the mixed-
+/// argument-modes check, called BEFORE `desugar_labeled_args` in
+/// `check_program`/`check_program_with_env` so it still sees each call's
+/// original argument list; `false` (the pre-existing behavior) for the
+/// unknown/out-of-order label checks, which must run AFTER desugar so a
+/// validly-reordered fully-labeled call is not misjudged against its
+/// original call-site order.
+export fn check_labeled_arg_names_stmts(stmts: Array[Stmt], errors: Array[String], pre_desugar: Bool) -> Unit {
+  if pre_desugar {
+    ()
+  } else {
+    report_unresolved_mut_labeled_calls(errors)
+  }
+  let tbl = collect_labeled_check_fns(stmts)
+  if Array::length(tbl) == 0 {
+    ()
+  } else {
+    let mut i = 0
+    while i < Array::length(stmts) {
+      labeled_name_check_stmt(Array::get(stmts, i), tbl, errors, pre_desugar)
+      i = i + 1
+    }
+  }
+}
+
+/// #1994: a labeled call whose callee is a `let mut` binding that the program
+/// assigns lambdas with DIFFERENT parameter names. `desugar_labeled_args` walks
+/// past it -- there is no single declared order to reorder into -- and codegen
+/// then binds the arguments in written order, which is the right answer only
+/// when the written order happens to match whichever lambda runs. Report it
+/// here rather than let it compile: the walk in this file cannot find these on
+/// its own, because it validates against a table of top-level functions and
+/// deliberately skips every locally-bound callee.
+fn report_unresolved_mut_labeled_calls(errors: Array[String]) -> Unit {
+  let sites = unresolved_mut_labeled_calls()
+  let mut i = 0
+  while i < Array::length(sites) {
+    let (fname, off) = Array::get(sites, i)
+    let marker = labeled_name_marker(off, String::length(fname))
+    Array::push(errors, String::concat("cannot resolve labeled arguments for ", String::concat(fname, String::concat(": a branch, loop or closure assigns it a lambda with different parameter names, so a label does not name a position here — call ", String::concat(fname, String::concat(" positionally, or give every lambda assigned to ", String::concat(fname, String::concat(" the same parameter names", marker))))))))
+    i = i + 1
+  }
+}
+
+/// Compatibility statement checker. It intentionally preserves the historical
+/// signature; production result APIs use the provenance-aware internal helper.
+export fn check_stmts(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)]) -> (TypeEnv, Subst, Int) {
+  // Same reason as check_expr: a compatibility entry that starts its own
+  // variable numbering must not see formals from an earlier standalone check.
+  reset_eq_formal_vars()
+  reset_throw_payload_sites()
+  set_generic_fn_decls(raw_stmts)
+  let ignored_type_def_binders = array_empty()
+  // #1455: this compatibility entry point is handed a caller-owned `defs`
+  // that never contains seeded imported enums, so every declaration in it is
+  // local and the #1078 scan starts at 0.
+  check_stmts_with_binders(raw_stmts, i, env, defs, ignored_type_def_binders, 0, s, c, errors, tytab, None, None, None, false, true)
+}

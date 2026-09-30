@@ -1,0 +1,358 @@
+// lib/@vibe/compiler/lowering/effects/suspend/suspend.vibe — cps effs expr.
+
+import @vibe/ast {
+  builtin_ref
+}
+
+import @vibe/compiler/core {
+  Expr, Pat, Stmt, TypeExpr, registry_safe_mut_builtin_names
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import @vibe/compiler/lowering/effects/direct {
+  idp_arms_discharge_error
+}
+
+import @vibe/compiler/lowering/effects/evidence {
+  edp_collect_effect_defs
+}
+
+import @vibe/compiler/lowering/effects/queries {
+  EdpReadQuery, edp_str_array_contains, scps_arm_refs_resume_value, scps_pat_binds_resume
+}
+
+export fn scps_locals_with(locals: Array[String], nm: String) -> Array[String] {
+  let out = Array::slice(locals, 0, Array::length(locals))
+  Array::push(out, nm)
+  out
+}
+
+export fn scps_locals_with_params(locals: Array[String], params: Array[(String, Option[TypeExpr])]) -> Array[String] {
+  let out = Array::slice(locals, 0, Array::length(locals))
+  let mut i = 0
+  while i < Array::length(params) {
+    let (pnm, _) = Array::get(params, i)
+    Array::push(out, pnm)
+    i = i + 1
+  }
+  out
+}
+
+export fn scps_pat_collect_binds(p: Pat, acc: Array[String]) -> Unit {
+  match p {
+    PBind(n) => Array::push(acc, n),
+    PCtor(_, ps) => scps_pats_collect_binds(ps, acc),
+    PTuple(ps) => scps_pats_collect_binds(ps, acc),
+    POr(a, b) => {
+      scps_pat_collect_binds(a, acc)
+      scps_pat_collect_binds(b, acc)
+    },
+    PStruct(_, fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fp) = Array::get(fields, i)
+        scps_pat_collect_binds(fp, acc)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+fn scps_pats_collect_binds(ps: Array[Pat], acc: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(ps) {
+    scps_pat_collect_binds(Array::get(ps, i), acc)
+    i = i + 1
+  }
+}
+
+/// The arguments a discharging callee does NOT answer for (see the
+/// concrete-row arm of `scps_inert_taint`). A closure literal or a bare name --
+/// a value, not a computation -- is exempt only in a position whose declared
+/// parameter type is a function carrying `eff`: the callee's concrete row
+/// without `eff` then means it handles what that value performs. A name is
+/// what a literal becomes once lifted (`__hoisted_lam_..`, or its step clone
+/// `__scps_cps_Async_..` for a step-source parameter). Everything else is
+/// returned for the ordinary scan, and so is every argument when the callee
+/// cannot be found.
+/// #1537: a declared parameter type that can only hold data -- the scalar
+/// builtins, and `Array` / `Option` / tuples of them. A value of such a type
+/// is not a closure, so it cannot smuggle a step-compiled one into the call.
+/// An allowlist rather than "no function type": a type parameter, an alias or
+/// a struct may still carry a closure.
+export fn scps_ty_is_plain_data(t: TypeExpr) -> Bool {
+  match t {
+    TyName(n) => n == "Int" || n == "String" || n == "Bool" || n == "Double" || n == "Char" || n == "Bytes",
+    TyApp(h, targs) => (h == "Array" || h == "Option") && scps_tys_are_plain_data(targs),
+    TyTuple(ts) => scps_tys_are_plain_data(ts),
+    TyUnit => true,
+    _ => false
+  }
+}
+
+fn scps_tys_are_plain_data(ts: Array[TypeExpr]) -> Bool {
+  let mut ok = true
+  let mut i = 0
+  while i < Array::length(ts) {
+    if !scps_ty_is_plain_data(Array::get(ts, i)) {
+      ok = false
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  ok
+}
+
+/// #1537: `args` with every bare identifier in a plain-data slot of the
+/// top-level function `name` replaced by `()`, slot for slot. A captured name
+/// of unknown provenance taints because it may alias a step-compiled closure;
+/// in a slot whose declared type is plain data it cannot be one (the checker
+/// has already matched the argument to that type), so it carries nothing the
+/// suspend lowering must see.
+export fn scps_plain_data_args_cleared(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), name: String, args: Array[Expr]) -> Array[Expr] {
+  let (stmts, _, _, _, _, _) = ctx
+  let mut params: Array[(String, Option[TypeExpr])] = []
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, snm, _, EFn(_, _, ps, _, _, _)) => if snm == name {
+        params = ps
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  let out: Array[Expr] = []
+  let mut k = 0
+  while k < Array::length(args) {
+    let a = Array::get(args, k)
+    let plain_ident = match a {
+      EIdent(_, _) => k < Array::length(params) && match Array::get(params, k).1 {
+        Some(t) => scps_ty_is_plain_data(t),
+        None => false
+      },
+      _ => false
+    }
+    Array::push(out, if plain_ident {
+      EUnit
+    } else {
+      a
+    })
+    k = k + 1
+  }
+  out
+}
+
+/// Additional builtins that are safe in a SUSPEND-lowered body but are
+/// deliberately NOT on idp_pure_builtin_names: they MUTATE (Array::push /
+/// Array::set / builder ops) or trap (assert), so adding them to the
+/// shared list would newly change which handles Phase 2's INLINE pass
+/// (and evidence_dict_pass) migrate off the replay path -- a behavior
+/// change for replay-pinned fixtures this pass has no business making.
+/// For the suspend lowering the only property that matters is the same
+/// one the pure list encodes: checker-verified effect `None` and no
+/// function-typed parameter, so the call can neither perform the handled
+/// effect itself nor invoke a user closure that might. Each name below
+/// was checked against the checker's builtin tables on those two axes.
+///
+fn scps_safe_mut_names_build() -> Array[String] {
+  let out = registry_safe_mut_builtin_names()
+  // parser-desugar internals: `o.f = v` → __set_field(o, "f", v) and
+  // `a[i]` → __index(a, i). Map::set / Map::delete have no registry row.
+  Array::push(out, "Map::set")
+  Array::push(out, "Map::delete")
+  Array::push(out, "__set_field")
+  Array::push(out, "__index")
+  out
+}
+
+/// Registry names come from the row's is_safe_mut flag (#2584). Extras
+/// below are not registry rows. Module-level so the predicate -- which
+/// runs per named callee of every suspend-lowered body -- does not rebuild
+/// it per query, and so the classification census reads the same table the
+/// predicate scans.
+let scps_safe_mut_builtin_name_table: Array[String] = scps_safe_mut_names_build()
+
+/// A fresh copy of the table for a reader that only needs the names (the
+/// classification census). Never hand out the table itself: a caller that
+/// pushed into it would widen what a suspend-lowered body may call.
+export fn scps_safe_mut_builtin_names() -> Array[String] {
+  Array::slice(scps_safe_mut_builtin_name_table, 0, Array::length(scps_safe_mut_builtin_name_table))
+}
+
+export fn scps_is_safe_mut_builtin(nm: String) -> Bool {
+  let names = scps_safe_mut_builtin_name_table
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(names) {
+    if Array::get(names, i) == nm {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+// --- closure-CPS (追記31 Vertical B) whole-program phases.
+//
+// Phase 1 (collector): the set of effects with at least one TRIGGERED
+// handle site anywhere -- the "CPS-mode" effects. Only these can require
+// literal step-splitting.
+
+export fn scps_collect_cps_effs_expr(e: Expr, out: Array[String]) -> Unit {
+  match e {
+    EHandle(b, arms) => {
+      scps_collect_cps_effs_expr(b, out)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (p, ex) = Array::get(arms, i)
+        if scps_arm_refs_resume_value(ex, scps_pat_binds_resume(p)) {
+          match p {
+            PCtor(q, _) => {
+              let ci = String::index_of(q, "::")
+              if ci > 0 {
+                let qe = String::substring(q, 0, ci)
+                if edp_str_array_contains(out, qe) {
+                  ()
+                } else {
+                  Array::push(out, qe)
+                }
+              } else {
+                ()
+              }
+            },
+            _ => ()
+          }
+        } else {
+          ()
+        }
+        scps_collect_cps_effs_expr(ex, out)
+        i = i + 1
+      }
+    },
+    EFn(_, _, _, _, _, b) => scps_collect_cps_effs_expr(b, out),
+    ELet(_, v, b, _) => {
+      scps_collect_cps_effs_expr(v, out)
+      scps_collect_cps_effs_expr(b, out)
+    },
+    ELetMut(_, v, b, _) => {
+      scps_collect_cps_effs_expr(v, out)
+      scps_collect_cps_effs_expr(b, out)
+    },
+    ELetRec(_, v, b) => {
+      scps_collect_cps_effs_expr(v, out)
+      scps_collect_cps_effs_expr(b, out)
+    },
+    ESeq(a, b) => {
+      scps_collect_cps_effs_expr(a, out)
+      scps_collect_cps_effs_expr(b, out)
+    },
+    EIf(c, t, el) => {
+      scps_collect_cps_effs_expr(c, out)
+      scps_collect_cps_effs_expr(t, out)
+      scps_collect_cps_effs_expr(el, out)
+    },
+    EMatch(s, arms) => {
+      scps_collect_cps_effs_expr(s, out)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, ex) = Array::get(arms, i)
+        scps_collect_cps_effs_expr(ex, out)
+        i = i + 1
+      }
+    },
+    ECall(callee, args, _) => {
+      scps_collect_cps_effs_expr(callee, out)
+      let mut i = 0
+      while i < Array::length(args) {
+        scps_collect_cps_effs_expr(Array::get(args, i), out)
+        i = i + 1
+      }
+    },
+    EWhile(c, b) => {
+      scps_collect_cps_effs_expr(c, out)
+      scps_collect_cps_effs_expr(b, out)
+    },
+    EForIn(_, _, it, b) => {
+      scps_collect_cps_effs_expr(it, out)
+      scps_collect_cps_effs_expr(b, out)
+    },
+    ELoop(pairs, b) => {
+      let mut i = 0
+      while i < Array::length(pairs) {
+        let (_, v) = Array::get(pairs, i)
+        scps_collect_cps_effs_expr(v, out)
+        i = i + 1
+      }
+      scps_collect_cps_effs_expr(b, out)
+    },
+    EBinOp(_, l, r, _) => {
+      scps_collect_cps_effs_expr(l, out)
+      scps_collect_cps_effs_expr(r, out)
+    },
+    EUnaryOp(_, x) => scps_collect_cps_effs_expr(x, out),
+    EAssign(_, v, c) => {
+      scps_collect_cps_effs_expr(v, out)
+      scps_collect_cps_effs_expr(c, out)
+    },
+    EAssignOp(_, _, v, c) => {
+      scps_collect_cps_effs_expr(v, out)
+      scps_collect_cps_effs_expr(c, out)
+    },
+    EReturn(x) => scps_collect_cps_effs_expr(x, out),
+    EDot(o, _, _, _) => scps_collect_cps_effs_expr(o, out),
+    ELabeledArg(_, _, v) => scps_collect_cps_effs_expr(v, out),
+    EBreak(opt) => match opt {
+      Some(x) => scps_collect_cps_effs_expr(x, out),
+      None => ()
+    },
+    EContinue(args) => {
+      let mut i = 0
+      while i < Array::length(args) {
+        scps_collect_cps_effs_expr(Array::get(args, i), out)
+        i = i + 1
+      }
+    },
+    ETuple(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        scps_collect_cps_effs_expr(Array::get(items, i), out)
+        i = i + 1
+      }
+    },
+    EArray(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        scps_collect_cps_effs_expr(Array::get(items, i), out)
+        i = i + 1
+      }
+    },
+    ERecord(_, fields, _) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, v) = Array::get(fields, i)
+        scps_collect_cps_effs_expr(v, out)
+        i = i + 1
+      }
+    },
+    EMap(fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, v) = Array::get(fields, i)
+        scps_collect_cps_effs_expr(v, out)
+        i = i + 1
+      }
+    },
+    ESpread(x) => scps_collect_cps_effs_expr(x, out),
+    _ => ()
+  }
+}

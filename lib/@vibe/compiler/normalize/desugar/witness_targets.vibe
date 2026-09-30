@@ -1,0 +1,444 @@
+// Witness targets.
+
+import @vibe/compiler/lowering/trait_namespaces {
+  lookup_trait_sigs
+}
+
+import @vibe/compiler/core {
+  Expr, Stmt, TypeExpr, builtin_value_form_arity, expr_child_at, expr_children_pop, expr_children_push, expr_children_top
+}
+
+import @vibe/ast {
+  impl_target_from_key, impl_target_key, trait_ref_from_key, trait_ref_key, type_param_arity, type_param_name
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import ./argument_types.vibe {
+  infer_arg_type_name
+}
+
+import ./binding_shape_inference.vibe {
+  generic_record_inferred_args
+}
+
+import ./binding_shape_queries.vibe {
+  dtd_ascribed_type
+}
+
+import ./callable_names.vibe {
+  impl_target_fn_key
+}
+
+import ./equality_aliases.vibe {
+  eq_expand_alias_ty
+}
+
+import ./state.vibe {
+  dtd_eq_injected
+}
+
+import ./trait_bounds.vibe {
+  dtd_bound_entails_eq, dtd_eq_witness_method, dtd_eq_witness_trait, encode_constructor_recv_index, find_constructor_recv_index
+}
+
+import ./type_names.vibe {
+  fn_return_type, lookup_var_type
+}
+
+export fn collect_constructor_recvs(tparams: Array[String], params: Array[(String, Option[TypeExpr])], stmts: Array[Stmt]) -> Array[(String, Int)] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(tparams) {
+    let tp = Array::get(tparams, i)
+    if type_param_arity(tp) > 0 {
+      let name = type_param_name(tp)
+      let cidx = find_constructor_recv_index(params, name, stmts)
+      if cidx >= 0 {
+        Array::push(out, (name, encode_constructor_recv_index(cidx)))
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+export fn push_constructor_subst(substs: Array[(String, String)], formal: String, actual: String) -> Unit {
+  Array::push(substs, (formal, actual))
+}
+
+fn replace_trait_constructor_arg(te: TypeExpr, formal: String, actual: String) -> TypeExpr {
+  match te {
+    TyName(name) => if name == formal {
+      TyName(actual)
+    } else {
+      te
+    },
+    TyApp(name, args) => TyApp(if name == formal {
+      actual
+    } else {
+      name
+    }, for arg in args {
+      replace_trait_constructor_arg(arg, formal, actual)
+    }),
+    TyTuple(items) => TyTuple(for item in items {
+      replace_trait_constructor_arg(item, formal, actual)
+    }),
+    TyFn(params, ret, effect) => TyFn(for param in params {
+      replace_trait_constructor_arg(param, formal, actual)
+    }, replace_trait_constructor_arg(ret, formal, actual), effect),
+    TyUnit => TyUnit
+  }
+}
+
+/// Resolve constructor formals in an applied bound (`Mappable[F]` ->
+/// `Mappable[Array]`, `Accepts[Apply[F, Int]]` -> `Accepts[Array[Int]]`)
+/// once call-site receivers identify them.
+export fn specialize_trait_constructors(trait_name: String, substs: Array[(String, String)]) -> String {
+  match trait_ref_from_key(trait_name) {
+    Some(reference) => {
+      let mut out = reference
+      let mut i = 0
+      while i < Array::length(substs) {
+        let (formal, actual) = Array::get(substs, i)
+        out = replace_trait_constructor_arg(out, formal, actual)
+        i = i + 1
+      }
+      trait_ref_key(eq_expand_alias_ty(out))
+    },
+    None => trait_name
+  }
+}
+
+fn specialize_trait_constructor(trait_name: String, formal: String, actual: String) -> String {
+  let substs = array_empty()
+  Array::push(substs, (formal, actual))
+  specialize_trait_constructors(trait_name, substs)
+}
+
+/// The first element of an array-literal receiver (for a bounded generic impl
+/// `impl [T: Bound] Trait for Array`, the element determines T's witness).
+export fn first_array_elem(e: Expr) -> Option[Expr] {
+  match e {
+    EArray(elems) => if Array::length(elems) > 0 {
+      Some(Array::get(elems, 0))
+    } else None,
+    _ => None
+  }
+}
+
+export fn impl_target_var_key(name: String) -> String {
+  String::concat("$impl_target$", name)
+}
+
+export fn infer_impl_target_expr(arg: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[TypeExpr] {
+  match dtd_ascribed_type(arg) {
+    Some(ascribed) => Some(ascribed),
+    None => match arg {
+      EInt(_) => Some(TyName("Int")),
+      EBool(_) => Some(TyName("Bool")),
+      EString(_, _) => Some(TyName("String")),
+      EFloat(_) => Some(TyName("Double")),
+      EArray(items) => if Array::length(items) == 0 {
+        None
+      } else {
+        match infer_impl_target_expr(Array::get(items, 0), struct_sets, var_types, fn_returns) {
+          Some(elem_type) => {
+            let mut i = 1
+            let mut same = true
+            while i < Array::length(items) && same {
+              same = match infer_impl_target_expr(Array::get(items, i), struct_sets, var_types, fn_returns) {
+                Some(next) => impl_target_key(next) == impl_target_key(elem_type),
+                None => false
+              }
+              i = i + 1
+            }
+            if same {
+              Some(TyApp("Array", [elem_type]))
+            } else {
+              None
+            }
+          },
+          None => None
+        }
+      },
+      ERecord(name, rfields, type_args) => if name != "" {
+        if Array::length(type_args) > 0 {
+          Some(TyApp(name, type_args))
+        } else {
+          // #3008: a generic struct literal without explicit arguments keeps
+          // them when every formal is read off a field declared exactly that
+          // formal -- otherwise the `[T: Eq]` witness is built for the bare
+          // head and compares the erased field by reference.
+          match generic_record_inferred_args(name, rfields, struct_sets, var_types, fn_returns) {
+            Some(args) => Some(TyApp(name, args)),
+            None => Some(TyName(name))
+          }
+        }
+      } else {
+        None
+      },
+      EIdent(name, _) => match lookup_var_type(var_types, impl_target_var_key(name)) {
+        Some(key) => impl_target_from_key(key),
+        None => match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
+          Some(head) => Some(TyName(head)),
+          None => None
+        }
+      },
+      ECall(EIdent("Some", _), args, _) => if Array::length(args) == 1 {
+        match infer_impl_target_expr(Array::get(args, 0), struct_sets, var_types, fn_returns) {
+          Some(payload) => Some(TyApp("Option", [payload])),
+          None => None
+        }
+      } else {
+        None
+      },
+      ECall(EIdent(name, _), _, _) => match fn_return_type(fn_returns, impl_target_fn_key(name)) {
+        Some(key) => impl_target_from_key(key),
+        None => match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
+          Some(head) => Some(TyName(head)),
+          None => None
+        }
+      },
+      _ => match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
+        Some(head) => Some(TyName(head)),
+        None => None
+      }
+    }
+  }
+}
+
+fn infer_impl_target_key(arg: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
+  match infer_impl_target_expr(arg, struct_sets, var_types, fn_returns) {
+    Some(target) => Some(impl_target_key(target)),
+    None => None
+  }
+}
+
+/// In-place form of `bind_impl_target_key` for `bind_let_env`: `out` is the
+/// environment the binding extends, already cloned by the caller.
+export fn bind_impl_target_key_into(out: Array[(String, String)], name: String, value: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Unit {
+  match infer_impl_target_key(value, struct_sets, out, fn_returns) {
+    Some(key) => Array::push(out, (impl_target_var_key(name), key)),
+    None => ()
+  }
+}
+
+/// Build the witness `ERecord` for a concrete type `cname` implementing
+/// `trait_name`. Codegen resolves it to the dict struct structurally by field
+/// names.
+///
+/// For a plain impl each method field is the free function `C::method`. For a
+/// BOUNDED generic impl (`impl [T: Bound] Trait for C`) the method
+/// `C::method` was threaded to take its own `Bound` dictionary for the element
+/// type, so the field is instead a closure that supplies that nested dictionary:
+///   { method: (__w) -> C::method(<element Bound dict>, __w) }
+/// The element dict is built recursively from the array literal's first element
+/// (`arg_expr`) — a dictionary-of-dictionaries (#5 Increment B). If the element
+/// type is missing from an Array target, require an annotation before emitting
+/// a call without its nested dictionary. Other unresolved witnesses return None.
+/// #2872: a witness slot holds a VALUE, and a builtin is not one until it is
+/// eta-expanded -- its body lives below `func_offset` and takes no closure
+/// env, so a dictionary field pointing at it directly is not callable.
+///
+/// A third verbatim copy of `builtin_value_closure`, which is file-local in
+/// both backends for the reason `compile_lambda.vibe` records on its own
+/// duplicate: a brand-new cross-file export and its first cross-file caller in
+/// one commit are silently dropped by the merge/flatten tool. The ARITY comes
+/// from `builtin_value_form_arity`, the shared predicate the checker and both
+/// backends already read, so this cannot disagree with the value form they
+/// emit for the same name.
+fn dtd_builtin_value_closure(name: String, arity: Int) -> Expr {
+  let params: Array[(String, Option[TypeExpr])] = []
+  let args: Array[Expr] = []
+  let mut i = 0
+  while i < arity {
+    let param = String::concat("__builtin_value_arg", Int::to_string(i))
+    Array::push(params, (param, None))
+    Array::push(args, EIdent(param, -1))
+    i = i + 1
+  }
+  EFn(array_empty(), array_empty(), params, None, None, ECall(EIdent(name, -1), args, -1))
+}
+
+/// #2872: the witness for a trait method an impl declares no body for, when
+/// the fallback `<Type>::<method>` is a BUILTIN rather than a user function.
+///
+/// `build_concrete_dict_for_target` already falls back to `<Type>::<method>` --
+/// that is what lets a `derive (Eq)` struct satisfy a bodyless impl, measured
+/// working. It asks `fn_exists`, which knows only user functions, so a name
+/// the language does provide (`String::equals` is a real builtin) answered NO
+/// and the dictionary was left with a hole. The call was then emitted one
+/// argument short: invalid wasm, after a clean `vibe check`.
+///
+/// Reusing `builtin_value_form_arity` is what makes this safe rather than a
+/// second opinion about which builtins are usable as values: it refuses an
+/// effectful row (a value form would launder authority, ADR-0075/0084/0088)
+/// and a row with an unconstrained position (nothing could relate what the
+/// witness takes to what it returns), which are exactly the builtins that must
+/// not sit in a witness slot either.
+export fn dtd_builtin_witness(name: String) -> Option[Expr] {
+  let arity = builtin_value_form_arity(name)
+  if arity >= 0 {
+    Some(dtd_builtin_value_closure(name, arity))
+  } else {
+    None
+  }
+}
+
+/// #2523: whether ANY statement in the merged program declares `trait <name>`.
+///
+/// `dtd_trait_declared_here` stops at `dtd_own_end`, which is the right window
+/// for a question about the module being rewritten. This one is deliberately
+/// wider: it guards an INJECTION, so a `trait Eq` anywhere -- including one an
+/// imported module declares -- must suppress it. Guessing wrong in that
+/// direction would overwrite a program's own marker `Eq` with the prelude's
+/// signature and dispatch its `==` through a witness it never wrote.
+export fn dtd_trait_declared_anywhere(stmts: Array[Stmt], trait_name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(stmts) && !found {
+    match Array::get(stmts, i) {
+      STrait(_, n, _, _, _, _) => if n == trait_name {
+        found = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// #2523: did this run inject the builtin `Eq` into the lowering's trait
+/// table? Module-level because `build_concrete_dict_for_target` has no access
+/// to `stmts` -- the same idiom `dtd_own_limit` and `dtd_ctx_len` already use.
+export fn dtd_eq_was_injected() -> Bool {
+  Array::get(dtd_eq_injected, 0)
+}
+
+/// #2523: does any binder in this program carry an `Eq` bound?
+///
+/// Injecting unconditionally perturbs programs that never mention the bound:
+/// measured, `lib/@vibe/core/list_test.vibe` -- no `[T: Eq]` generic anywhere,
+/// it only iterates -- failed with `internal compiler error: Int::next (local,
+/// @call) reached code generation unresolved`. A method-bearing trait nothing
+/// asks for still changes `flatten_traits`, the supertrait map and the
+/// trait-namespace derivation. The pass already holds this principle a few
+/// lines below the injection site: "Witness dict structs are only needed when
+/// method-bearing traits exist."
+fn dtd_program_has_eq_bound(stmts: Array[Stmt]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, v) => found = dtd_expr_has_eq_bound(v),
+      SImpl(_, tbounds, _, _) => found = dtd_bounds_have_eq(tbounds),
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn dtd_bounds_have_eq(tbounds: Array[(String, Array[String])]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(tbounds) {
+    let (_, bs) = Array::get(tbounds, i)
+    let mut j = 0
+    while !found && j < Array::length(bs) {
+      if dtd_bound_entails_eq(Array::get(bs, j)) {
+        found = true
+      } else {
+        ()
+      }
+      j = j + 1
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn dtd_expr_has_eq_bound(e: Expr) -> Bool {
+  let direct = match e {
+    EFn(_, tbounds, _, _, _, _) => dtd_bounds_have_eq(tbounds),
+    _ => false
+  }
+  if direct {
+    true
+  } else {
+    // The shared scratch stack, not a fresh child array per node: this
+    // walk visits the whole program (~7 MB of `expr_children` arrays).
+    let mark = expr_children_push(e)
+    let top = expr_children_top()
+    let mut i = mark
+    let mut found = false
+    while !found && i < top {
+      found = dtd_expr_has_eq_bound(expr_child_at(i))
+      i = i + 1
+    }
+    expr_children_pop(mark)
+    found
+  }
+}
+
+export fn dtd_inject_builtin_eq(stmts: Array[Stmt], traits_raw: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])]) -> Unit {
+  Array::set(dtd_eq_injected, 0, false)
+  if dtd_trait_declared_anywhere(stmts, dtd_eq_witness_trait()) || !dtd_program_has_eq_bound(stmts) {
+    ()
+  } else {
+    match lookup_trait_sigs(traits_raw, dtd_eq_witness_trait()) {
+      Some(_) => (),
+      None => {
+        let sigs: Array[(String, Array[TypeExpr], TypeExpr)] = [
+          (dtd_eq_witness_method(), [TyName("Self"), TyName("Self")], TyName("Bool"))
+        ]
+        Array::push(traits_raw, (dtd_eq_witness_trait(), sigs))
+        Array::set(dtd_eq_injected, 0, true)
+      }
+    }
+  }
+}
+
+/// #2523: the `equals` witness for a bodyless `impl Eq for <scalar>`.
+///
+/// The prelude declares `impl Eq for Int` / `Double` / `Bool` / `Char` /
+/// `String` and gives none of them a body, because a body would bind
+/// `Int::equals` at the top level of every program (the prelude is merged in)
+/// and a program declaring its own `impl <Trait> for Int { equals }` then
+/// fails with `duplicate declaration: Int::equals` -- measured, and several
+/// fixtures write exactly that impl.
+///
+/// `String` needs nothing here: `String::equals` is a real builtin and #2872's
+/// arm above already reaches it. The other four have no `<Type>::equals`
+/// builtin at all, so the witness is synthesized as a two-parameter lambda
+/// whose body is `a == b` with the parameters ANNOTATED at the concrete type.
+///
+/// Annotated is the whole point. `==` lowers by the type it can see (#2128:
+/// without one, `String`'s `<` compares addresses), so an annotated body gets
+/// the same lowering the concrete site `1 == 1` gets, by construction rather
+/// than by a second implementation of equality that could drift from it. It
+/// cannot recurse into itself either: `dtd_eq_witness_dict` fires only when an
+/// operand's type names a type FORMAL in scope, and these are concrete.
+export fn dtd_scalar_eq_witness(cname: String, m: String) -> Option[Expr] {
+  if m != dtd_eq_witness_method() {
+    None
+  } else if cname != "Int" && cname != "Double" && cname != "Bool" && cname != "Char" {
+    None
+  } else {
+    let params: Array[(String, Option[TypeExpr])] = [
+      ("__scalar_eq_a", Some(TyName(cname))),
+      ("__scalar_eq_b", Some(TyName(cname)))
+    ]
+    let body = EBinOp("==", EIdent("__scalar_eq_a", -1), EIdent("__scalar_eq_b", -1), -1)
+    Some(EFn(array_empty(), array_empty(), params, Some(TyName("Bool")), None, body))
+  }
+}

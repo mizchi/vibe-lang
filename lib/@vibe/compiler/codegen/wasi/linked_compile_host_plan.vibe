@@ -1,0 +1,1755 @@
+// lib/@vibe/compiler/codegen/wasi/linked_compile.vibe — host plan.
+
+import @vibe/compiler/core {
+  Expr, Pat, Stmt, TypeExpr, builtin_registry, bytebuf_new
+}
+
+import @vibe/ast {
+  TypeExpr::is_array_of_int
+}
+
+import @vibe/core {
+  struct MutMap, struct MutSet
+}
+
+import @vibe/compiler/normalize {
+  ModuleTraitFacts
+}
+
+import @vibe/compiler/perceus {
+  PerceusAction
+}
+
+import @vibe/compiler/codegen/builtin_bodies {
+  gen_generic_rel_diff_body, gen_map_hash_body, gen_oob_abort_body
+}
+
+import @vibe/compiler/codegen/reloc {
+  blind_kind_fn_value
+}
+
+import @vibe/compiler/codegen/common_analysis {
+  bmask_has
+}
+
+import @vibe/compiler/codegen/common_base {
+  CodegenBodyCache, CompileCtx, CovState, CtorTable, DbgProv, FuncTable, LambdaTable, LineMapState, ModuleSplit, StrTable, linemap_disabled
+}
+
+import @vibe/compiler/codegen/common_extractors {
+  array_contains_str
+}
+
+import @vibe/compiler/codegen/expr {
+  cc_host_future_named_raw_prefix
+}
+
+import @vibe/compiler/codegen/wasm_emit {
+  emit_block_i64
+}
+
+import ./linked_diagnostics.vibe {
+  seed_builtin_diagnostic_strings
+}
+
+import ./linked_helpers.vibe {
+  collect_used_builtin_names
+}
+
+import ./linked_compile_lc_pf_prune_module.vibe {
+  lc_dbg_build_file_index
+}
+
+import ./linked_compile_lc_rename_sleep_calls.vibe {
+  lc_entry_declares_async, lc_fresh_int_array, lc_fresh_string_array
+}
+
+import ./linked_compile_lc_retarget_call.vibe {
+  lc_collect_host_future_names, lc_collect_host_stream_names, lc_serve_handler_takes_host_stream
+}
+
+import ./linked_compile_linkedhostplan.vibe {
+  LinkedHostPlan
+}
+
+// Reserve host imports and generated builtin indices in their existing order.
+export fn lc_build_host_plan(dbg_line_on: Bool, debug_break: Bool, enable_rc: Bool, entry_name: String, linemap_on: Bool, linked_imports: Array[(String, String, Int, Int)], need_div_zero_abort: Bool, need_region_arena: Bool, pre_prelude_let_files: Array[Int], pre_prelude_let_names: Array[String], pre_prelude_owner_files: Array[Int], pre_prelude_owner_keys: Array[String], rc_shadow: Bool, stmts: Array[Stmt], used_builtin_names: Map[String, Bool]) -> LinkedHostPlan with Exception {
+  let need_env_get_builtin = Map::has_key(used_builtin_names, "Env::get")
+  let need_env_args_len_builtin = Map::has_key(used_builtin_names, "Env::args_len")
+  let need_env_args_get_builtin = Map::has_key(used_builtin_names, "Env::args_get")
+  let need_fs_read_file_builtin = Map::has_key(used_builtin_names, "Fs::read_file")
+  let need_fs_exists_builtin = Map::has_key(used_builtin_names, "Fs::exists")
+  // #795: vibe_fs_stat_token_raw is the alias-collision-proof surface for the
+  // same import (lib/@vibe/fs/fs.vibe calls it; see checker/builtins_fs.vibe).
+  let need_fs_stat_token_builtin = Map::has_key(used_builtin_names, "Fs::stat_token") || Map::has_key(used_builtin_names, "vibe_fs_stat_token_raw")
+  let need_fs_write_file_builtin = Map::has_key(used_builtin_names, "Fs::write_file")
+  // Atomically publish text only when the target is absent. Kept unused by
+  // compiler sources until the future cache-publisher PR adopts it.
+  let need_fs_publish_immutable_text_builtin = Map::has_key(used_builtin_names, "Fs::publish_immutable_text")
+  let need_fs_write_bytes_builtin = Map::has_key(used_builtin_names, "Fs::write_bytes")
+  // #632: `Fs::read_bytes(path) -> Bytes` — the binary-exact read counterpart of
+  // Fs::write_bytes, a `vibe.fs_read_bytes (i64) -> i64` host import (type 3,
+  // same shape as fs_read_file). Gated on use so non-users reserve no import
+  // (fixpoint-safe). Lets the persistent artifact cache store/load wasm raw.
+  let need_fs_read_bytes_builtin = Map::has_key(used_builtin_names, "Fs::read_bytes")
+  // #729/#730: `Fs::readdir(path) -> Array[String]` — a `vibe.fs_read_dir_nul
+  // (i64) -> i64` host import (type 3, same packed-string shape as
+  // fs_read_file: the host returns the byte-sorted entry NAMES NUL-joined as
+  // ONE string, no host-side array building). NUL, not "\n", because a POSIX
+  // name may contain a newline but never a NUL byte (#2957); `vibe.fs_read_dir`
+  // is the "\n"-joined predecessor the runners keep for modules built before
+  // it, so this must never emit that name again. compile_call lowers the
+  // Array[String] surface to `String::split` over that string. Gated on use
+  // (fixpoint-safe). Unblocks contract-package sibling auto-discovery and the
+  // global store walk.
+  let need_fs_readdir_builtin = Map::has_key(used_builtin_names, "Fs::readdir")
+  let need_profiler_now_us_builtin = Map::has_key(used_builtin_names, "Profiler::now_us")
+  // `Profiler::heap_bytes() -> Int`: a `vibe.profile-heap-bytes () -> i64`
+  // host import (type 5, same shape as profile-now-us). Returns the guest's
+  // current bump-heap pointer (`__heap_ptr`) so vibe code can attribute its
+  // own allocation growth per phase, mirroring how now_us attributes time.
+  // Gated on use so non-users reserve no import (fixpoint-safe).
+  let need_profiler_heap_bytes_builtin = Map::has_key(used_builtin_names, "Profiler::heap_bytes")
+  // `sleep(ms)` (Async): a `vibe.sleep (i64) -> ()` host import. The host
+  // implements it as an async function so the guest fiber genuinely
+  // suspends/resumes (docs/internal/design/wasi-p3-async.md §2.3, examples/async_host).
+  // Gated on use, so programs without `sleep` reserve no import (fixpoint-safe).
+  let need_sleep_builtin = Map::has_key(used_builtin_names, "sleep") || Map::has_key(used_builtin_names, "sleep_blocking")
+  // `Stdin::read_char() -> Int`: a value-returning `vibe.stdin_read_char () ->
+  // i64` host import. Implemented async by the host (it can suspend the guest
+  // until a char is available), so this is the data-consuming analog of `sleep`
+  // — the shape of a host async source (HTTP body byte, stdin char). Gated on
+  // use (fixpoint-safe).
+  // #2905: `Console::read_char` lowers onto this very import (the map below
+  // sends it to `stdin_read_char_idx`), so it has to RESERVE it too. Every
+  // other Console spelling ORs both names here; this one did not, so a
+  // program using only `Console::read_char` reserved nothing, the index fell
+  // back to the never-called stub, and the call reached a target of a
+  // different arity -- a module that BUILDS CLEAN and then fails to validate
+  // ("not enough arguments on the stack for call (need 1, got 0)").
+  let need_stdin_read_char_builtin = Map::has_key(used_builtin_names, "Stdin::read_char") || Map::has_key(used_builtin_names, "Console::read_char")
+  // ADR-0089 step 4 (#1218): host-future imports -- `vibe.host_future_get
+  // () -> i64` (the tagged readable-end handle) and `vibe.host_future_wait
+  // (i64) -> i64` (park on the handle via waitable-set.wait, return the
+  // resolved value). Only the component adapter module implements them
+  // (spec §3.13/§3.14); a plain-wasm host cannot. One flag gates BOTH:
+  // `host_future_get` in user code implies the boundary's `__entry_settle`
+  // needs the wait half, and the raw names appear in injected AST after
+  // collect (the injection runs before this collect, so they land in
+  // used_builtin_names either way). Gated on use (fixpoint-safe).
+  // ADR-0089 (c) (#1218): the program's NAMED host futures (sorted, deduped).
+  // Each one gets its own `vibe.host_future_get$<name>` core import; they all
+  // share the single `vibe.host_future_wait` half, so having any of them
+  // implies need_host_future_builtin below.
+  // #2064: root names and WIT function addresses are emitted by two loops
+  // (two declared import patterns in docs/generated/host-runtime-contract.json),
+  // so they are kept apart; `hf_all_names` is both, in emission order, for
+  // the index reservation and registration that must follow that order.
+  let hf_collected_names = lc_collect_host_future_names(stmts)
+  let hf_named_names = lc_fresh_string_array()
+  let hf_wit_names = lc_fresh_string_array()
+  // #2066: WIT responses, still carrying their `!` marker (the builtin name
+  // compile_call minted includes it); the emission loop strips it.
+  let hf_response_names = lc_fresh_string_array()
+  let hf_response_addresses = lc_fresh_string_array()
+  // #2066: responses whose function takes a string argument (`!?` marker),
+  // imported as `wit_response_arg_get$<address>`.
+  let hf_response_arg_names = lc_fresh_string_array()
+  let hf_response_arg_addresses = lc_fresh_string_array()
+  let mut hf_split_i = 0
+  while hf_split_i < Array::length(hf_collected_names) {
+    let hf_split_name = Array::get(hf_collected_names, hf_split_i)
+    if String::starts_with(hf_split_name, "!?") {
+      Array::push(hf_response_arg_names, hf_split_name)
+      Array::push(hf_response_arg_addresses, String::substring(hf_split_name, 2, String::length(hf_split_name)))
+    } else if String::starts_with(hf_split_name, "!") {
+      Array::push(hf_response_names, hf_split_name)
+      Array::push(hf_response_addresses, String::substring(hf_split_name, 1, String::length(hf_split_name)))
+    } else if String::index_of(hf_split_name, "#") > 0 {
+      Array::push(hf_wit_names, hf_split_name)
+    } else {
+      Array::push(hf_named_names, hf_split_name)
+    }
+    hf_split_i = hf_split_i + 1
+  }
+  let hf_all_names = Array::concat(Array::concat(Array::concat(hf_named_names, hf_wit_names), hf_response_arg_names), hf_response_names)
+  // The ANONYMOUS `vibe.host_future_get` import is reserved only for the
+  // anonymous surface: a program that awaits `host_future_named("price")`
+  // alone must import `price`, not a `get-future` nothing calls (an unused
+  // import is still an import the host has to satisfy).
+  let need_host_future_builtin = Map::has_key(used_builtin_names, "host_future_get") || Map::has_key(used_builtin_names, "vibe_hf_get_raw")
+  // The WAIT half is shared by every host future: `__entry_settle`'s
+  // waitable arm parks on a handle without caring where it came from.
+  let need_host_future_wait_builtin = need_host_future_builtin || Map::has_key(used_builtin_names, "vibe_hf_wait_raw") || Array::length(hf_all_names) > 0
+  // #1537: the group-wide wait (arm + wait-any), used only by the bodies
+  // lc_host_hooks_install gives @vibe/concurrent's hooks.
+  let need_host_future_arm_builtin = Map::has_key(used_builtin_names, "vibe_hf_arm_raw")
+  let need_host_future_wait_any_builtin = Map::has_key(used_builtin_names, "vibe_hf_wait_any_raw")
+  let need_host_stream_arm_builtin = Map::has_key(used_builtin_names, "vibe_hs_arm_raw")
+  let need_host_sleep_arm_builtin = Map::has_key(used_builtin_names, "vibe_hf_sleep_arm_raw")
+  let need_host_sleep_cancel_builtin = Map::has_key(used_builtin_names, "vibe_hf_sleep_cancel_raw")
+  let need_host_future_cancel_builtin = Map::has_key(used_builtin_names, "vibe_hf_cancel_raw")
+  let need_host_stream_cancel_builtin = Map::has_key(used_builtin_names, "vibe_hs_cancel_raw")
+  // #2066: the push is SYNTHESIZED by the `host_response_named_with`
+  // lowering, after the used-name collect ran over the source, so the
+  // request-parameter responses the collector found demand it too.
+  let need_host_arg_push_builtin = Map::has_key(used_builtin_names, "vibe_hf_arg_push_raw") || Array::length(hf_response_arg_names) > 0
+  // #2066: `HostResponse::body` lowers to the claim, also after the collect,
+  // so any response in the program demands it.
+  let need_host_claim_builtin = Map::has_key(used_builtin_names, "vibe_hs_claim_raw") || Array::length(hf_response_arg_names) > 0 || Array::length(hf_response_names) > 0
+  // ADR-0089 Decision 3 (#1218): the program's NAMED host streams (sorted,
+  // deduped). Each gets its own `vibe.host_stream_get$<name>` core import;
+  // they all share the single `vibe.host_stream_read` half (park is per
+  // read, but the read body only needs the handle), which the injected
+  // `__entry_settle` stream arm calls -- the injection runs before the
+  // used-name collect, so the raw name also lands in used_builtin_names.
+  let hs_named_names = lc_collect_host_stream_names(stmts)
+  let need_host_stream_read_builtin = Map::has_key(used_builtin_names, "vibe_hs_read_raw") || Array::length(hs_named_names) > 0
+  let serve_handler_has_host_stream = lc_serve_handler_takes_host_stream(stmts, entry_name)
+  // #1342: an `() -> Int with Async` entry named `run` that sleeps is routed
+  // to the adapter-backed composition too (its `vibe.sleep` import is
+  // satisfied by the adapter's sleep half), so its core has to publish the
+  // value convention the adapter decodes the ms argument with (ADR-0106).
+  // Keyed on the same pair the router keys on, so an ordinary program that
+  // sleeps is not componentized and its bytes do not move.
+  let sleep_needs_component_adapter = need_sleep_builtin && entry_name == "run" && lc_entry_declares_async(stmts, entry_name)
+  // ADR-0089 Decision 3 follow-up (#1218): the shared CLOSE half. Gated on
+  // ACTUAL use (unlike the read half, which every named stream implies) so
+  // a program that always drains to EOS reserves no extra import and its
+  // module bytes are unchanged -- the injected `__hs_close` is the only
+  // caller, and it only exists when the source called `host_stream_close`.
+  let need_host_stream_close_builtin = Map::has_key(used_builtin_names, "vibe_hs_close_raw")
+  // #1539 public names and checker-hidden raw names share the exact three
+  // component-private import targets. Gate each half independently.
+  let need_stdin_provider_acquire_builtin = Map::has_key(used_builtin_names, "vibe_stdin_provider_acquire_raw") || Map::has_key(used_builtin_names, "Stdin::read_via_stream")
+  let need_stdin_provider_read_builtin = Map::has_key(used_builtin_names, "vibe_stdin_provider_read_raw") || Map::has_key(used_builtin_names, "StdinStream::next")
+  let need_stdin_provider_close_builtin = Map::has_key(used_builtin_names, "vibe_stdin_provider_close_raw") || Map::has_key(used_builtin_names, "StdinStream::close")
+  // Process effect host imports: `sh(cmd)` runs a shell command (returns 0) and
+  // `sh_lines(cmd)` returns its stdout "\n"-joined as ONE string (same packed
+  // ABI as fs_read_dir; compile_call lowers the Array[String] surface to a
+  // String::split). Both `vibe.sh` / `vibe.sh_lines (i64) -> i64` host imports,
+  // gated on use so non-users reserve no import (fixpoint-safe). Revives the
+  // process/time/shell stdlib whose functions call these.
+  let need_sh_builtin = Map::has_key(used_builtin_names, "sh")
+  let need_sh_lines_builtin = Map::has_key(used_builtin_names, "sh_lines")
+  // #865: structured subprocess result host imports -- `vibe_sh_capture_raw`
+  // runs the command once (handle), the three accessors read the cached
+  // {exit_code, stdout, stderr}, `vibe_sh_capture_close_raw` frees it. Same
+  // handle+accessor shape as the #794 HTTP client imports below. Gated on
+  // use, same fixpoint-safety discipline as sh/sh_lines above.
+  let need_sh_capture_builtin = Map::has_key(used_builtin_names, "vibe_sh_capture_raw")
+  let need_sh_capture_exit_code_builtin = Map::has_key(used_builtin_names, "vibe_sh_capture_exit_code_raw")
+  let need_sh_capture_stdout_builtin = Map::has_key(used_builtin_names, "vibe_sh_capture_stdout_raw")
+  let need_sh_capture_stderr_builtin = Map::has_key(used_builtin_names, "vibe_sh_capture_stderr_raw")
+  let need_sh_capture_close_builtin = Map::has_key(used_builtin_names, "vibe_sh_capture_close_raw")
+  // #903/#865: `Process::exit(code) -> Unit` -- propagates the guest's exit
+  // code to the real OS process exit status via the host runner's
+  // exit-trap mechanism (never returns in practice, but is typed Unit --
+  // there's no `Never` type). `vibe.process_exit (i64) -> ()` host import,
+  // void like Fs::remove/sh_capture_close, gated on use (fixpoint-safe).
+  let need_process_exit_builtin = Map::has_key(used_builtin_names, "vibe_process_exit_raw")
+  // Stdin/Stdout host effects for vibe/io: `Stdin::read_stream(n) -> String`
+  // (`vibe.stdin_read_stream (i64) -> i64`, value-returning like fs_read_file),
+  // `Stdout::write_stream(s) -> Unit` and `Stdout::write_char(c) -> Unit`
+  // (`vibe.stdout_write_stream` / `vibe.stdout_write_char (i64) -> ()`, void like
+  // sleep). All gated on use so non-users reserve no import (fixpoint-safe) —
+  // the compiler's own build uses none, so its bytes are unchanged. Revives the
+  // io stdlib whose read/print/println/write_char helpers call these builtins.
+  // #1460 Phase 1: the `Console::*` spellings share these imports rather than
+  // reserving their own. The linear host ABI is `vibe.<snake_name>` -- the
+  // module is the literal "vibe" and the field comes from the operation, so
+  // it never carried the effect label and merging Stdin/Stdout/Stderr into
+  // `Console` is a source-and-checker rename with NO ABI consequence. Reusing
+  // the imports also keeps the compiler's own bytes unchanged while both name
+  // sets are live, which is what makes the pre-seed-bump build a fixpoint.
+  let need_stdin_read_stream_builtin = Map::has_key(used_builtin_names, "Stdin::read_stream") || Map::has_key(used_builtin_names, "Console::read_stream")
+  // #929: the println/print BUILTIN lowering (compile_call.vibe) synthesizes
+  // calls onto these two imports when no source-provided println/print is
+  // merged, so their use also gates the imports in. collect_used_builtin_names
+  // only counts FREE names -- a program using @vibe/io's (or its own) println
+  // fn does not trip this, exactly matching the lowering's cc_ft_has guard.
+  let used_print_builtin = Map::has_key(used_builtin_names, "println") || Map::has_key(used_builtin_names, "print")
+  let need_stdout_write_stream_builtin = Map::has_key(used_builtin_names, "Stdout::write_stream") || Map::has_key(used_builtin_names, "Console::write_stream") || used_print_builtin
+  let need_stdout_write_char_builtin = Map::has_key(used_builtin_names, "Stdout::write_char") || Map::has_key(used_builtin_names, "Console::write_char") || used_print_builtin
+  // #865: `Stderr::write_stream(s) -> Unit` / `Stderr::write_char(c) -> Unit`
+  // (`vibe.stderr_write_stream` / `vibe.stderr_write_char (i64) -> ()`, void
+  // like stdout's), same shapes/gating as the Stdout pair above.
+  let need_stderr_write_stream_builtin = Map::has_key(used_builtin_names, "Stderr::write_stream") || Map::has_key(used_builtin_names, "Console::write_err_stream")
+  let need_stderr_write_char_builtin = Map::has_key(used_builtin_names, "Stderr::write_char") || Map::has_key(used_builtin_names, "Console::write_err_char")
+  // #762: `Path::ref` / `Path::resolve` both lower (compile_call) to the
+  // `resolve_path` host import — resolve a path to absolute against the process
+  // CWD. `vibe.resolve_path (i64) -> i64`, value-returning like fs_read_file,
+  // gated on either surface name so non-users reserve no import (fixpoint-safe).
+  let need_resolve_path_builtin = Map::has_key(used_builtin_names, "Path::ref") || Map::has_key(used_builtin_names, "Path::resolve")
+  // #768: `Fs::remove(path) -> Unit` — a `vibe.fs_remove (i64) -> ()` host
+  // import (type 1, like sleep/stdout_write_char). Checker-recognized since
+  // `builtins_fs.vibe`'s `lookup_fs_remove` but never wired to codegen, so any
+  // caller hit "undefined variable (local): Fs::remove @call". Gated on use so
+  // non-users reserve no import (fixpoint-safe).
+  let need_fs_remove_builtin = Map::has_key(used_builtin_names, "Fs::remove")
+  // #2738: `Fs::remove_file(path) -> Unit` -- the NON-recursive sibling of
+  // Fs::remove. Same `(i64) -> ()` shape and the same gating, so a non-user
+  // reserves no import.
+  let need_fs_remove_file_builtin = Map::has_key(used_builtin_names, "Fs::remove_file")
+  // #2758: `Fs::remove_tree(path) -> Unit` -- the RECURSIVE remove, split out
+  // of `Fs::remove` so one builtin means one thing on both hosts. Same
+  // `(i64) -> ()` shape and the same gating, so a non-user reserves no import.
+  let need_fs_remove_tree_builtin = Map::has_key(used_builtin_names, "Fs::remove_tree")
+  // #768: `Fs::mkdir_p(path) -> Unit` (recursive mkdir) — same shape/import
+  // type as Fs::remove. Same gap: checker-recognized (builtins_fs.vibe's
+  // lookup_fs_mkdir_p) but had no codegen wiring at all.
+  let need_fs_mkdir_p_builtin = Map::has_key(used_builtin_names, "Fs::mkdir_p")
+  // #768: the rest of lib/@vibe/shell/commands.vibe's Fs surface — same
+  // "checker-legal (or newly made so), zero codegen wiring" gap as
+  // Fs::remove/Fs::mkdir_p, and the JS host runner already implements all of
+  // fs_mkdir/fs_chdir/fs_copy/fs_append/fs_rename/fs_is_dir/fs_is_file/
+  // fs_getcwd. Fs::mkdir (non-recursive, distinct from Fs::mkdir_p) was
+  // likewise checker-legal but had no codegen wiring at all.
+  let need_fs_mkdir_builtin = Map::has_key(used_builtin_names, "Fs::mkdir")
+  let need_fs_chdir_builtin = Map::has_key(used_builtin_names, "Fs::chdir")
+  let need_fs_copy_builtin = Map::has_key(used_builtin_names, "Fs::copy")
+  let need_fs_append_builtin = Map::has_key(used_builtin_names, "Fs::append")
+  let need_fs_rename_builtin = Map::has_key(used_builtin_names, "Fs::rename")
+  let need_fs_is_dir_builtin = Map::has_key(used_builtin_names, "Fs::is_dir")
+  let need_fs_is_file_builtin = Map::has_key(used_builtin_names, "Fs::is_file")
+  let need_fs_getcwd_builtin = Map::has_key(used_builtin_names, "Fs::getcwd")
+  // Socket::tcp_connect/tcp_read/tcp_write/tcp_close -- same "checker-legal
+  // (builtins/declarations.vibe + builtin_registry.vibe), zero codegen
+  // wiring" gap as the Fs::* additions above: the checker accepts these
+  // calls (lib/@vibe/socket/tcp.vibe's low-level layer), but linked_compile
+  // never emitted the host imports, so any real caller hit "undefined
+  // variable (local): Socket::tcp_connect @call". Gated on use so non-users
+  // reserve no import (fixpoint-safe).
+  let need_tcp_connect_builtin = Map::has_key(used_builtin_names, "vibe_tcp_connect_raw")
+  let need_tcp_read_builtin = Map::has_key(used_builtin_names, "vibe_tcp_read_raw")
+  let need_tcp_write_builtin = Map::has_key(used_builtin_names, "vibe_tcp_write_raw")
+  let need_tcp_close_builtin = Map::has_key(used_builtin_names, "vibe_tcp_close_raw")
+  // #794: HTTP client host imports. lib/@vibe/http's client functions call
+  // the `__http_*_raw` builtins (dunder names so units bundling the package's
+  // index.vibe -- which exports alias functions literally named
+  // `Http::request` etc. -- cannot capture the ident, see #795). Each lowers
+  // to a `vibe.http_*` host import, gated on use (fixpoint-safe: the compiler
+  // itself uses none, so its bytes are unchanged).
+  // #1508: the direct surface spellings (`Http::request` in a bare file that
+  // does not import lib/@vibe/http -- the shape a `test .. with Http::request`
+  // block uses) also reserve the import: compile_call lowers them onto the
+  // same raw names (http_client_surface_to_raw).
+  let need_http_request_builtin = Map::has_key(used_builtin_names, "vibe_http_request_raw") || Map::has_key(used_builtin_names, "Http::request")
+  let need_http_response_status_builtin = Map::has_key(used_builtin_names, "vibe_http_response_status_raw") || Map::has_key(used_builtin_names, "Http::response_status")
+  let need_http_response_header_builtin = Map::has_key(used_builtin_names, "vibe_http_response_header_raw") || Map::has_key(used_builtin_names, "Http::response_header")
+  let need_http_response_body_builtin = Map::has_key(used_builtin_names, "vibe_http_response_body_raw") || Map::has_key(used_builtin_names, "Http::response_body")
+  let need_http_close_builtin = Map::has_key(used_builtin_names, "vibe_http_close_raw") || Map::has_key(used_builtin_names, "Http::close")
+  let mut next_import_idx = 1
+  let env_get_import_idx = if need_env_get_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let env_args_len_import_idx = if need_env_args_len_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let env_args_get_import_idx = if need_env_args_get_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let fs_read_file_import_idx = if need_fs_read_file_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let fs_exists_import_idx = if need_fs_exists_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let fs_stat_token_import_idx = if need_fs_stat_token_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let fs_write_file_import_idx = if need_fs_write_file_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let fs_publish_immutable_text_import_idx = if need_fs_publish_immutable_text_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let fs_write_bytes_import_idx = if need_fs_write_bytes_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  // #632: reserved immediately after fs_write_bytes; the import emission below
+  // must stay in this same order so the index matches the descriptor.
+  let fs_read_bytes_import_idx = if need_fs_read_bytes_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  // #729/#730: reserved immediately after fs_read_bytes; the import emission
+  // below must stay in this same order so the index matches the descriptor.
+  let fs_read_dir_import_idx = if need_fs_readdir_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let profiler_now_us_import_idx = if need_profiler_now_us_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  // reserved immediately after profile-now-us; the import emission below must
+  // stay in this same order so the index matches the descriptor.
+  let profiler_heap_bytes_import_idx = if need_profiler_heap_bytes_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let sleep_import_idx = if need_sleep_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let stdin_read_char_import_idx = if need_stdin_read_char_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  // reserved immediately after stdin_read_char; the import emission below
+  // must stay in this same order so the indices match the descriptors.
+  let hf_get_import_idx = if need_host_future_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let hf_wait_import_idx = if need_host_future_wait_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let hf_arm_import_idx = if need_host_future_arm_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let hf_wait_any_import_idx = if need_host_future_wait_any_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let hs_arm_import_idx = if need_host_stream_arm_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let hsl_arm_import_idx = if need_host_sleep_arm_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let hf_cancel_import_idx = if need_host_future_cancel_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let hs_cancel_import_idx = if need_host_stream_cancel_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let hf_arg_push_import_idx = if need_host_arg_push_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  // #1537: `host_sleep_cancel` -- a task group ending with its timer still
+  // pending cancels the timer's subtask rather than hold its handle.
+  let hsl_cancel_import_idx = if need_host_sleep_cancel_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  // #2066: `host_stream_claim` -- a response body's one-time claim.
+  let hs_claim_import_idx = if need_host_claim_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  // ADR-0089 (c) (#1218): one `vibe.host_future_get$<name> () -> i64` import
+  // per NAMED host future, reserved right after the anonymous pair in the
+  // sorted name order lc_collect_host_future_names fixed. Parallel arrays
+  // (name -> index) rather than a Map: the emission loop below walks the
+  // same order, and a handful of names never justifies a Map.
+  let hf_named_import_indices = lc_fresh_int_array()
+  let mut hf_named_i = 0
+  while hf_named_i < Array::length(hf_all_names) {
+    Array::push(hf_named_import_indices, next_import_idx)
+    next_import_idx = next_import_idx + 1
+    hf_named_i = hf_named_i + 1
+  }
+  // ADR-0089 Decision 3 (#1218): the shared `vibe.host_stream_read
+  // (i64) -> i64` import, then one `vibe.host_stream_get$<name> () -> i64`
+  // per named host stream, in the sorted order lc_collect_host_stream_names
+  // fixed -- reserved right after the host-future imports; the emission
+  // below walks the same order.
+  let hs_read_import_idx = if need_host_stream_read_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let hs_close_import_idx = if need_host_stream_close_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  // #1539: exact private provider imports follow the generic host-stream
+  // pair. This is a separate lifecycle/authority band, not HostStream.
+  let stdin_provider_acquire_import_idx = if need_stdin_provider_acquire_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let stdin_provider_read_import_idx = if need_stdin_provider_read_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let stdin_provider_close_import_idx = if need_stdin_provider_close_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let hs_named_import_indices = lc_fresh_int_array()
+  let mut hs_named_i = 0
+  while hs_named_i < Array::length(hs_named_names) {
+    Array::push(hs_named_import_indices, next_import_idx)
+    next_import_idx = next_import_idx + 1
+    hs_named_i = hs_named_i + 1
+  }
+  // reserved immediately after the host-stream imports; the import emission
+  // below must stay in this same order so the index matches the descriptor.
+  let sh_import_idx = if need_sh_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let sh_lines_import_idx = if need_sh_lines_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  // reserved immediately after sh_lines; the import emission below must stay in
+  // this same order so the index matches the descriptor.
+  let stdin_read_stream_import_idx = if need_stdin_read_stream_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let stdout_write_stream_import_idx = if need_stdout_write_stream_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let stdout_write_char_import_idx = if need_stdout_write_char_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  // reserved immediately after stdout_write_char; the import emission below must
+  // stay in this same order so the index matches the descriptor.
+  let resolve_path_import_idx = if need_resolve_path_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  // #768: reserved immediately after resolve_path; the import emission below
+  // must stay in this same order so the index matches the descriptor.
+  let fs_remove_import_idx = if need_fs_remove_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  // #2738: reserved immediately after fs_remove; the import emission below must
+  // stay in this same order so the index matches the descriptor.
+  let fs_remove_file_import_idx = if need_fs_remove_file_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  // #2758: reserved immediately after fs_remove_file; the import emission below
+  // must stay in this same order so the index matches the descriptor.
+  let fs_remove_tree_import_idx = if need_fs_remove_tree_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  // #768: reserved immediately after fs_remove; the import emission below must
+  // stay in this same order so the index matches the descriptor.
+  let fs_mkdir_p_import_idx = if need_fs_mkdir_p_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  // #768: reserved immediately after fs_mkdir_p, in this fixed order; the
+  // import emission below must match.
+  let fs_mkdir_import_idx = if need_fs_mkdir_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let fs_chdir_import_idx = if need_fs_chdir_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let fs_copy_import_idx = if need_fs_copy_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let fs_append_import_idx = if need_fs_append_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let fs_rename_import_idx = if need_fs_rename_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let fs_is_dir_import_idx = if need_fs_is_dir_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let fs_is_file_import_idx = if need_fs_is_file_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let fs_getcwd_import_idx = if need_fs_getcwd_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  // Socket imports -- reserved after fs_getcwd (before HTTP), in the same
+  // order as their emission below.
+  let tcp_connect_import_idx = if need_tcp_connect_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let tcp_read_import_idx = if need_tcp_read_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let tcp_write_import_idx = if need_tcp_write_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let tcp_close_import_idx = if need_tcp_close_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  // #794: HTTP client imports -- reserved after fs_getcwd (before dbg_break),
+  // in the same order as their emission below.
+  let http_request_import_idx = if need_http_request_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let http_response_status_import_idx = if need_http_response_status_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let http_response_header_import_idx = if need_http_response_header_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let http_response_body_import_idx = if need_http_response_body_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let http_close_import_idx = if need_http_close_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  // #865: `Process::capture` host imports -- reserved after http_close
+  // (before dbg_break), in the same order as their emission below. All five
+  // reuse EXISTING base func types (3 = `(i64)->i64`, 1 = `(i64)->()`), so no
+  // new type-section entry is needed (unlike #794's http_request).
+  let sh_capture_import_idx = if need_sh_capture_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let sh_capture_exit_code_import_idx = if need_sh_capture_exit_code_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let sh_capture_stdout_import_idx = if need_sh_capture_stdout_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let sh_capture_stderr_import_idx = if need_sh_capture_stderr_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let sh_capture_close_import_idx = if need_sh_capture_close_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  // #903/#865: `Process::exit(code)` host import -- void like Fs::remove
+  // (type 1), reserved after sh_capture_close, before Stderr.
+  let process_exit_import_idx = if need_process_exit_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  // #865: `Stderr::write_stream` / `Stderr::write_char` host imports --
+  // reserved after sh_capture_close (before dbg_break), same shapes as the
+  // Stdout pair (type 3 value-returning is N/A here; both are void type 1).
+  let stderr_write_stream_import_idx = if need_stderr_write_stream_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let stderr_write_char_import_idx = if need_stderr_write_char_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  // debugger breakpoint (DAP P1): in break mode emit a conditional `vibe::dbg_break`
+  // host import (() -> ()) called at each user-function entry. Default OFF, so
+  // num_imported_funcs / func_offset are unchanged for normal builds (fixpoint).
+  let dbg_break_import_idx = if debug_break {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  // Interior-line breakpoints (span-arc step5): in break mode with per-file
+  // provenance, reserve a `vibe::dbg_line (i32 file_id, i32 line) -> ()` host
+  // import called at each statement boundary. Each function's line is mapped
+  // against ITS OWN source file (prov.file_nls[file_id]) so multi-file entries
+  // work. Gated on `debug_break && prov has files`, so default builds reserve
+  // nothing and stay byte-identical.
+  // #2199: production trap provenance. A compact `vibe.linemap` is emitted
+  // whenever we have file names AND newline tables, independent of debug-break
+  // probes. Empty `file_nls` (the inert map `linked_compile_prov_inert_test`
+  // carries) keeps the section off, so that compile stays byte-identical.
+  // `dbg_line_on` / `linemap_on` are computed with the pre-prelude snapshot
+  // above, which is gated on them.
+  //
+  // Pre-prelude name -> file, the identity that survives the prelude, and
+  // pre-prelude owner key -> file for the definitions the prelude synthesizes.
+  // BOTH are built on the same condition: the owner index is what places a
+  // hoisted lambda, and a production linemap that had the name index without
+  // it filed every hoisted body under file 0.
+  let dbg_name_file: MutMap[String, Int] = if linemap_on {
+    lc_dbg_build_file_index(pre_prelude_let_names, pre_prelude_let_files)
+  } else {
+    MutMap::new_string()
+  }
+  let dbg_owner_file: MutMap[String, Int] = if linemap_on {
+    lc_dbg_build_file_index(pre_prelude_owner_keys, pre_prelude_owner_files)
+  } else {
+    MutMap::new_string()
+  }
+  let dbg_line_import_idx = if dbg_line_on {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  let linked_import_indices = lc_fresh_int_array()
+  let linked_import_names = lc_fresh_string_array()
+  let mut li_i = 0
+  while li_i < Array::length(linked_imports) {
+    let (_, lfn_name, _, _) = Array::get(linked_imports, li_i)
+    Array::push(linked_import_indices, next_import_idx)
+    Array::push(linked_import_names, lfn_name)
+    next_import_idx = next_import_idx + 1
+    li_i = li_i + 1
+  }
+  let num_imported_funcs = next_import_idx
+  // #644 / #2199: static (wasm code offset -> file/line) recorder for the
+  // `vibe.linemap` custom section, shared by reference across every
+  // top-level function's CompileCtx (mirrors cov_state above). Enabled for
+  // production trap provenance whenever newline tables are present, and
+  // also for debug-break (the live `--break`/dbg_line hook).
+  let linemap_state = LineMapState::{
+    enabled: linemap_on,
+    cur_fn: [0],
+    funcs: lc_fresh_int_array(),
+    offsets: lc_fresh_int_array(),
+    file_ids: lc_fresh_int_array(),
+    lines: lc_fresh_int_array(),
+    stream: bytebuf_new(),
+    grp_fn: lc_fresh_int_array(),
+    grp_first_off: lc_fresh_int_array(),
+    grp_start: lc_fresh_int_array(),
+    site: [0]
+  }
+  // #2199: the state handed to a function whose file this compile cannot
+  // place. `record` is a no-op on it, so such a body contributes no rows --
+  // one instance for the whole module, because nothing is ever written to it.
+  let linemap_off = linemap_disabled()
+  let print_int_idx = num_imported_funcs
+  let print_str_idx = print_int_idx + 1
+  let str_len_idx = print_str_idx + 1
+  let str_eq_idx = str_len_idx + 1
+  let str_concat_idx = str_eq_idx + 1
+  let arr_new_idx = str_concat_idx + 1
+  let arr_len_idx = arr_new_idx + 1
+  let arr_get_idx = arr_len_idx + 1
+  let arr_push_idx = arr_get_idx + 1
+  let arr_set_idx = arr_push_idx + 1
+  let double_to_int_idx = arr_set_idx + 1
+  let int_to_double_idx = double_to_int_idx + 1
+  let str_char_code_at_idx = int_to_double_idx + 1
+  let str_from_char_code_idx = str_char_code_at_idx + 1
+  let str_substring_idx = str_from_char_code_idx + 1
+  let identity_idx = str_substring_idx + 1
+  let arr_slice_idx = identity_idx + 1
+  let frozen_array_copy_idx = arr_slice_idx + 1
+  let arr_concat_idx = frozen_array_copy_idx + 1
+  let arr_truncate_idx = arr_concat_idx + 1
+  let string_join_idx = arr_truncate_idx + 1
+  let fs_read_file_stub_idx = string_join_idx + 1
+  let fs_exists_stub_idx = fs_read_file_stub_idx + 1
+  let fs_stat_token_stub_idx = fs_exists_stub_idx + 1
+  let fs_write_file_stub_idx = fs_stat_token_stub_idx + 1
+  let fs_publish_immutable_text_stub_idx = fs_write_file_stub_idx + 1
+  let fs_write_bytes_stub_idx = fs_publish_immutable_text_stub_idx + 1
+  let eq_idx = fs_write_bytes_stub_idx + 1
+  let string_ends_with_idx = eq_idx + 1
+  let string_last_index_of_idx = string_ends_with_idx + 1
+  let arr_push_all_idx = string_last_index_of_idx + 1
+  let string_index_of_idx = arr_push_all_idx + 1
+  let string_contains_idx = string_index_of_idx + 1
+  let string_starts_with_idx = string_contains_idx + 1
+  let string_split_idx = string_starts_with_idx + 1
+  let string_trim_idx = string_split_idx + 1
+  let sources_idx = string_trim_idx + 1
+  let bytes_new_idx = sources_idx + 1
+  let bytes_len_idx = bytes_new_idx + 1
+  let bytes_get_idx = bytes_len_idx + 1
+  let bytes_set_idx = bytes_get_idx + 1
+  let bytes_push_idx = bytes_set_idx + 1
+  let bytes_append_idx = bytes_push_idx + 1
+  let bytes_concat_idx = bytes_append_idx + 1
+  let bytes_slice_idx = bytes_concat_idx + 1
+  let bytes_from_array_idx = bytes_slice_idx + 1
+  let bytes_to_array_idx = bytes_from_array_idx + 1
+  let rc_drop_idx = bytes_to_array_idx + 1
+  let rc_alloc_idx = rc_drop_idx + 1
+  // ADR-0092 (#1262): out-of-line dup helper. Slot order here MUST match the
+  // push_builtin order below.
+  let rc_dup_idx = rc_alloc_idx + 1
+  let heap_grow_check_idx = if enable_rc {
+    rc_dup_idx + 1
+  } else {
+    bytes_to_array_idx + 1
+  }
+  let simd_skip_ws_idx = heap_grow_check_idx + 1
+  let simd_scan_alnum_idx = simd_skip_ws_idx + 1
+  let simd_scan_alnum_str_idx = simd_scan_alnum_idx + 1
+  let simd_scan_string_special_str_idx = simd_scan_alnum_str_idx + 1
+  let simd_scan_line_end_str_idx = simd_scan_string_special_str_idx + 1
+  let str_lex_diff_idx = simd_scan_line_end_str_idx + 1
+  // #973: erased-generic `[T: Ord]`/`[T: Add]` runtime dispatch (see the doc
+  // comment on gen_generic_rel_diff_body). The gc lane registers the same
+  // bodies (gc/backend_body.vibe, #3158).
+  let generic_rel_diff_idx = str_lex_diff_idx + 1
+  let generic_add_idx = generic_rel_diff_idx + 1
+  let compact_fingerprint_hash_idx = generic_add_idx + 1
+  // Map[String,V] O(1)-average get/has_key (side hash index, see the doc
+  // comment on gen_map_hash_body in builtin_bodies/bodies_core_b.vibe).
+  // Linear lane only -- gc lane's Map stays the existing O(n) scan.
+  let map_hash_idx = compact_fingerprint_hash_idx + 1
+  let map_cap_idx = map_hash_idx + 1
+  let map_index_insert_idx = map_cap_idx + 1
+  let map_build_index_idx = map_index_insert_idx + 1
+  let map_probe_index_idx = map_build_index_idx + 1
+  // #2199: the formatted OOB abort pair -- __rt_print_i64_raw (decimal, no
+  // trailing newline) and __rt_oob_abort(prefix, idx, len). Registered after
+  // the map builtins; the trap-site builtins above call oob_abort_idx by
+  // number, which is order-independent.
+  let print_i64_raw_idx = map_probe_index_idx + 1
+  let oob_abort_idx = print_i64_raw_idx + 1
+  // #2344: the scalar bit primitives. Appended HERE, after the last
+  // unconditional builtin, because this chain is positional -- inserting
+  // anywhere earlier renumbers every builtin below it.
+  let int_popcount_idx = oob_abort_idx + 1
+  let int_ctz_idx = int_popcount_idx + 1
+  let int_clz_idx = int_ctz_idx + 1
+  let bytes_index_of_bytes_idx = int_clz_idx + 1
+  let bytes_index_of_idx = bytes_index_of_bytes_idx + 1
+  let bytes_count_byte_idx = bytes_index_of_idx + 1
+  let bytes_last_index_of_idx = bytes_count_byte_idx + 1
+  let bytes_compare_idx = bytes_last_index_of_idx + 1
+  let bytes_blit_idx = bytes_compare_idx + 1
+  let bytes_capacity_idx = bytes_blit_idx + 1
+  let array_capacity_idx = bytes_capacity_idx + 1
+  // #1987: shadow-only UAF abort reuses gen_oob_abort_body with a different
+  // middle fragment. Off when rc_shadow is false so a normal RC build stays
+  // byte-identical (ADR-0062).
+  let shadow_uaf_abort_idx = if rc_shadow {
+    array_capacity_idx + 1
+  } else {
+    0 - 1
+  }
+  // #2427: shadow-only "this operand is not a string" abort. Same
+  // gen_oob_abort_body with its own middle fragment, registered right after
+  // the UAF abort so a non-shadow build's indices are untouched.
+  let str_operand_abort_idx = if rc_shadow {
+    shadow_uaf_abort_idx + 1
+  } else {
+    0 - 1
+  }
+  // ADR-0090 (#1262) region arena bodies. Registered LAST and only when the
+  // module has a region, so a module without one is byte-identical to what it
+  // was before the arena existed (and max_builtin_func_idx below follows).
+  // #3126: the division-by-zero abort, registered only when the program has
+  // an `Int` `/` or `%` whose divisor may be zero, so a module without one
+  // keeps its function indices. After the shadow aborts, before the arena pair.
+  let div_zero_abort_idx = if need_div_zero_abort {
+    (if rc_shadow {
+      str_operand_abort_idx
+    } else {
+      array_capacity_idx
+    }) + 1
+  } else {
+    0 - 1
+  }
+  let region_arr_new_idx = if need_region_arena {
+    (if need_div_zero_abort {
+      div_zero_abort_idx
+    } else if rc_shadow {
+      str_operand_abort_idx
+    } else {
+      array_capacity_idx
+    }) + 1
+  } else {
+    -1
+  }
+  let region_bytes_new_idx = if need_region_arena {
+    region_arr_new_idx + 1
+  } else {
+    -1
+  }
+  let env_get_idx = if env_get_import_idx >= 0 {
+    env_get_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let env_args_len_idx = if env_args_len_import_idx >= 0 {
+    env_args_len_import_idx
+  } else {
+    fs_exists_stub_idx
+  }
+  let env_args_get_idx = if env_args_get_import_idx >= 0 {
+    env_args_get_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let fs_read_file_idx = if fs_read_file_import_idx >= 0 {
+    fs_read_file_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let fs_exists_idx = if fs_exists_import_idx >= 0 {
+    fs_exists_import_idx
+  } else {
+    fs_exists_stub_idx
+  }
+  let fs_stat_token_idx = if fs_stat_token_import_idx >= 0 {
+    fs_stat_token_import_idx
+  } else {
+    fs_stat_token_stub_idx
+  }
+  let fs_write_file_idx = if fs_write_file_import_idx >= 0 {
+    fs_write_file_import_idx
+  } else {
+    fs_write_file_stub_idx
+  }
+  let fs_publish_immutable_text_idx = if fs_publish_immutable_text_import_idx >= 0 {
+    fs_publish_immutable_text_import_idx
+  } else {
+    fs_publish_immutable_text_stub_idx
+  }
+  let fs_write_bytes_idx = if fs_write_bytes_import_idx >= 0 {
+    fs_write_bytes_import_idx
+  } else {
+    fs_write_bytes_stub_idx
+  }
+  // #632: no dedicated stub — when read_bytes is unused the builtin index just
+  // needs SOME valid never-called slot, so reuse the fs_read_file stub (a
+  // `(i64)->i64` placeholder). The real call site only exists when the import is
+  // reserved.
+  let fs_read_bytes_idx = if fs_read_bytes_import_idx >= 0 {
+    fs_read_bytes_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  // #729/#730: like read_bytes, no dedicated stub — unused readdir reuses the
+  // fs_read_file stub (a `(i64)->i64` never-called placeholder).
+  let fs_read_dir_idx = if fs_read_dir_import_idx >= 0 {
+    fs_read_dir_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let profiler_now_us_idx = if profiler_now_us_import_idx >= 0 {
+    profiler_now_us_import_idx
+  } else {
+    env_args_len_idx
+  }
+  // Profiler::heap_bytes call target: the import when reserved, else a
+  // never-called `() -> i64` stub (mirrors now_us's fallback).
+  let profiler_heap_bytes_idx = if profiler_heap_bytes_import_idx >= 0 {
+    profiler_heap_bytes_import_idx
+  } else {
+    env_args_len_idx
+  }
+  // `sleep` call target: the import when reserved, else a never-called stub
+  // (the builtin is only emitted as a call when the program uses `sleep`, which
+  // is exactly when the import is reserved).
+  let sleep_idx = if sleep_import_idx >= 0 {
+    sleep_import_idx
+  } else {
+    env_args_len_idx
+  }
+  let stdin_read_char_idx = if stdin_read_char_import_idx >= 0 {
+    stdin_read_char_import_idx
+  } else {
+    env_args_len_idx
+  }
+  // ADR-0089 step 4: host-future call targets -- the imports when reserved,
+  // else never-called stubs of the matching shapes (`() -> i64` /
+  // `(i64) -> i64`; the real call sites only exist when the program uses
+  // host_future_get, which is exactly when the imports are reserved).
+  let hf_get_idx = if hf_get_import_idx >= 0 {
+    hf_get_import_idx
+  } else {
+    env_args_len_idx
+  }
+  let hf_wait_idx = if hf_wait_import_idx >= 0 {
+    hf_wait_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let hf_arm_idx = if hf_arm_import_idx >= 0 {
+    hf_arm_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let hf_wait_any_idx = if hf_wait_any_import_idx >= 0 {
+    hf_wait_any_import_idx
+  } else {
+    env_args_len_idx
+  }
+  let hs_arm_idx = if hs_arm_import_idx >= 0 {
+    hs_arm_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let hsl_arm_idx = if hsl_arm_import_idx >= 0 {
+    hsl_arm_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let hf_cancel_idx = if hf_cancel_import_idx >= 0 {
+    hf_cancel_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let hs_cancel_idx = if hs_cancel_import_idx >= 0 {
+    hs_cancel_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let hf_arg_push_idx = if hf_arg_push_import_idx >= 0 {
+    hf_arg_push_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let hsl_cancel_idx = if hsl_cancel_import_idx >= 0 {
+    hsl_cancel_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let hs_claim_idx = if hs_claim_import_idx >= 0 {
+    hs_claim_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  // ADR-0089 Decision 3: the shared host-stream READ half, same stub
+  // discipline as hf_wait (`(i64) -> i64`; the call site only exists when
+  // the import is reserved).
+  let hs_read_idx = if hs_read_import_idx >= 0 {
+    hs_read_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  // ADR-0089 Decision 3 follow-up: the shared host-stream CLOSE half, same
+  // stub discipline (`(i64) -> i64`; the injected `__hs_close` call site
+  // only exists when the import is reserved).
+  let hs_close_idx = if hs_close_import_idx >= 0 {
+    hs_close_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  // #1539 private stdin-provider call targets. Their shapes match the
+  // existing never-called ()->i64 and (i64)->i64 fallbacks.
+  let stdin_provider_acquire_idx = if stdin_provider_acquire_import_idx >= 0 {
+    stdin_provider_acquire_import_idx
+  } else {
+    env_args_len_idx
+  }
+  let stdin_provider_read_idx = if stdin_provider_read_import_idx >= 0 {
+    stdin_provider_read_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let stdin_provider_close_idx = if stdin_provider_close_import_idx >= 0 {
+    stdin_provider_close_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  // sh / sh_lines call targets: the import when reserved, else the fs_read_file
+  // stub (a `(i64)->i64` never-called placeholder) — the real call site only
+  // exists when the import is reserved (i.e. when the program uses sh/sh_lines).
+  let sh_idx = if sh_import_idx >= 0 {
+    sh_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let sh_lines_idx = if sh_lines_import_idx >= 0 {
+    sh_lines_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  // Stdin::read_stream / Stdout::write_stream / Stdout::write_char call targets:
+  // the import when reserved, else a never-called stub (read_stream is
+  // value-returning like sh -> fs_read_file stub; the void write ops mirror
+  // sleep's fallback to env_args_len). The real call site only exists when the
+  // matching import is reserved (i.e. when the program uses io).
+  let stdin_read_stream_idx = if stdin_read_stream_import_idx >= 0 {
+    stdin_read_stream_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let stdout_write_stream_idx = if stdout_write_stream_import_idx >= 0 {
+    stdout_write_stream_import_idx
+  } else {
+    env_args_len_idx
+  }
+  let stdout_write_char_idx = if stdout_write_char_import_idx >= 0 {
+    stdout_write_char_import_idx
+  } else {
+    env_args_len_idx
+  }
+  // resolve_path call target: the import when reserved, else the fs_read_file
+  // stub (a `(i64)->i64` never-called placeholder — same shape).
+  let resolve_path_idx = if resolve_path_import_idx >= 0 {
+    resolve_path_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  // #768: Fs::remove call target — the import when reserved, else a
+  // never-called stub (void return, so mirrors sleep_idx/stdout_write_char_idx's
+  // fallback to env_args_len_idx).
+  let fs_remove_idx = if fs_remove_import_idx >= 0 {
+    fs_remove_import_idx
+  } else {
+    env_args_len_idx
+  }
+  // #2738: Fs::remove_file call target -- same fallback shape as fs_remove_idx.
+  let fs_remove_file_idx = if fs_remove_file_import_idx >= 0 {
+    fs_remove_file_import_idx
+  } else {
+    env_args_len_idx
+  }
+  // #2758: Fs::remove_tree call target -- same fallback shape as fs_remove_idx.
+  let fs_remove_tree_idx = if fs_remove_tree_import_idx >= 0 {
+    fs_remove_tree_import_idx
+  } else {
+    env_args_len_idx
+  }
+  // #768: Fs::mkdir_p call target — same fallback shape as fs_remove_idx.
+  let fs_mkdir_p_idx = if fs_mkdir_p_import_idx >= 0 {
+    fs_mkdir_p_import_idx
+  } else {
+    env_args_len_idx
+  }
+  // #768: void Fs ops (mkdir/chdir/copy/append/rename) — same fallback shape
+  // as fs_remove_idx/fs_mkdir_p_idx.
+  let fs_mkdir_idx = if fs_mkdir_import_idx >= 0 {
+    fs_mkdir_import_idx
+  } else {
+    env_args_len_idx
+  }
+  let fs_chdir_idx = if fs_chdir_import_idx >= 0 {
+    fs_chdir_import_idx
+  } else {
+    env_args_len_idx
+  }
+  let fs_copy_idx = if fs_copy_import_idx >= 0 {
+    fs_copy_import_idx
+  } else {
+    env_args_len_idx
+  }
+  let fs_append_idx = if fs_append_import_idx >= 0 {
+    fs_append_import_idx
+  } else {
+    env_args_len_idx
+  }
+  let fs_rename_idx = if fs_rename_import_idx >= 0 {
+    fs_rename_import_idx
+  } else {
+    env_args_len_idx
+  }
+  // #768: value-returning Fs ops (is_dir/is_file bool, getcwd string) —
+  // fallback to the fs_read_file stub (an `(i64)->i64`-shaped never-called
+  // placeholder), same as other value-returning fallbacks above.
+  let fs_is_dir_idx = if fs_is_dir_import_idx >= 0 {
+    fs_is_dir_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let fs_is_file_idx = if fs_is_file_import_idx >= 0 {
+    fs_is_file_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let fs_getcwd_idx = if fs_getcwd_import_idx >= 0 {
+    fs_getcwd_import_idx
+  } else {
+    env_args_len_idx
+  }
+  // Socket: never-called placeholders when unused, like the Fs fallbacks
+  // above -- tcp_connect/tcp_read return a value (Int handle / String),
+  // tcp_write/tcp_close are void (Unit).
+  let tcp_connect_idx = if tcp_connect_import_idx >= 0 {
+    tcp_connect_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let tcp_read_idx = if tcp_read_import_idx >= 0 {
+    tcp_read_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let tcp_write_idx = if tcp_write_import_idx >= 0 {
+    tcp_write_import_idx
+  } else {
+    env_args_len_idx
+  }
+  let tcp_close_idx = if tcp_close_import_idx >= 0 {
+    tcp_close_import_idx
+  } else {
+    env_args_len_idx
+  }
+  // #794: never-called placeholders when unused, like the Fs fallbacks above.
+  let http_request_idx = if http_request_import_idx >= 0 {
+    http_request_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let http_response_status_idx = if http_response_status_import_idx >= 0 {
+    http_response_status_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let http_response_header_idx = if http_response_header_import_idx >= 0 {
+    http_response_header_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let http_response_body_idx = if http_response_body_import_idx >= 0 {
+    http_response_body_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let http_close_idx = if http_close_import_idx >= 0 {
+    http_close_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  // #865: never-called placeholders when unused, like the http fallbacks
+  // above. The four value-returning ops fall back to the fs_read_file stub
+  // (a `(i64)->i64` never-called placeholder); the void close op falls back
+  // to env_args_len_idx, mirroring fs_remove_idx/http_close_idx's own choice.
+  let sh_capture_idx = if sh_capture_import_idx >= 0 {
+    sh_capture_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let sh_capture_exit_code_idx = if sh_capture_exit_code_import_idx >= 0 {
+    sh_capture_exit_code_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let sh_capture_stdout_idx = if sh_capture_stdout_import_idx >= 0 {
+    sh_capture_stdout_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let sh_capture_stderr_idx = if sh_capture_stderr_import_idx >= 0 {
+    sh_capture_stderr_import_idx
+  } else {
+    fs_read_file_stub_idx
+  }
+  let sh_capture_close_idx = if sh_capture_close_import_idx >= 0 {
+    sh_capture_close_import_idx
+  } else {
+    env_args_len_idx
+  }
+  // #903/#865: Process::exit call target -- void op, same fallback shape as
+  // fs_remove_idx/sh_capture_close_idx.
+  let process_exit_idx = if process_exit_import_idx >= 0 {
+    process_exit_import_idx
+  } else {
+    env_args_len_idx
+  }
+  // #865: Stderr::write_stream / Stderr::write_char call targets -- void ops,
+  // same fallback shape as stdout_write_stream_idx/stdout_write_char_idx.
+  let stderr_write_stream_idx = if stderr_write_stream_import_idx >= 0 {
+    stderr_write_stream_import_idx
+  } else {
+    env_args_len_idx
+  }
+  let stderr_write_char_idx = if stderr_write_char_import_idx >= 0 {
+    stderr_write_char_import_idx
+  } else {
+    env_args_len_idx
+  }
+  // The #2199 OOB abort pair (print_i64_raw_idx / oob_abort_idx) are the new
+  // last-registered builtins -- this MUST track whatever push_builtin call
+  // is last, independently of the bodies/meta_i32/meta_i64/builtin_type_idxs
+  // array bookkeeping above (num_generated/func_offset below are derived
+  // from THIS constant, not from Array::length(bodies), so adding builtins
+  // without updating this stale-by-construction line silently shifts every
+  // user-function call target in the module by the number of builtins added).
+  let max_builtin_func_idx = if need_region_arena {
+    region_bytes_new_idx
+  } else if need_div_zero_abort {
+    // #3126: registered after the shadow aborts, so it is last when present.
+    div_zero_abort_idx
+  } else if rc_shadow {
+    // #2427: the str-operand abort is registered after the UAF abort, so it,
+    // not shadow_uaf_abort_idx, is the last builtin on the shadow lane.
+    str_operand_abort_idx
+  } else {
+    // Capacity allocation is the last unconditional builtin. This must
+    // agree with the push order or all user-function indices shift.
+    array_capacity_idx
+  }
+  let num_generated = (max_builtin_func_idx - num_imported_funcs) + 1
+  let func_offset = num_imported_funcs + num_generated
+  // #2388 step 3: record the layout facts this compile's bodies are emitted
+  // against, and validate an incoming cross-compile cache against the same
+  // facts. A cached body's immediates assume the pin region's shape, the
+  // lambda-slot base, the host-import/generated-builtin index layout below
+  // func_offset, and the synthesized functions' names AND merged-statement
+  // positions (their positions decide the statement-ordered pre-pass tables
+  // -- string pool, signatures -- every body offset is computed from). The
+  // import vector is pinned by the sorted used-builtin-name SET, not its
+  // size: the gated imports are assigned indices by a fixed sequence of
+  // has_key tests, so two different sets of equal size would assign each
+  // import a different index while every count still matched. Any mismatch
+  // makes replay unsound, so the cache is dropped wholesale: a miss costs a
+  // recompile, never a wrong body.
+  LinkedHostPlan::{
+    arr_concat_idx: arr_concat_idx,
+    arr_get_idx: arr_get_idx,
+    arr_len_idx: arr_len_idx,
+    arr_new_idx: arr_new_idx,
+    arr_push_all_idx: arr_push_all_idx,
+    arr_push_idx: arr_push_idx,
+    arr_set_idx: arr_set_idx,
+    arr_slice_idx: arr_slice_idx,
+    arr_truncate_idx: arr_truncate_idx,
+    array_capacity_idx: array_capacity_idx,
+    bytes_append_idx: bytes_append_idx,
+    bytes_blit_idx: bytes_blit_idx,
+    bytes_capacity_idx: bytes_capacity_idx,
+    bytes_compare_idx: bytes_compare_idx,
+    bytes_concat_idx: bytes_concat_idx,
+    bytes_count_byte_idx: bytes_count_byte_idx,
+    bytes_from_array_idx: bytes_from_array_idx,
+    bytes_get_idx: bytes_get_idx,
+    bytes_index_of_bytes_idx: bytes_index_of_bytes_idx,
+    bytes_index_of_idx: bytes_index_of_idx,
+    bytes_last_index_of_idx: bytes_last_index_of_idx,
+    bytes_len_idx: bytes_len_idx,
+    bytes_new_idx: bytes_new_idx,
+    bytes_push_idx: bytes_push_idx,
+    bytes_set_idx: bytes_set_idx,
+    bytes_slice_idx: bytes_slice_idx,
+    bytes_to_array_idx: bytes_to_array_idx,
+    compact_fingerprint_hash_idx: compact_fingerprint_hash_idx,
+    dbg_break_import_idx: dbg_break_import_idx,
+    dbg_line_import_idx: dbg_line_import_idx,
+    dbg_name_file: dbg_name_file,
+    dbg_owner_file: dbg_owner_file,
+    div_zero_abort_idx: div_zero_abort_idx,
+    double_to_int_idx: double_to_int_idx,
+    env_args_get_idx: env_args_get_idx,
+    env_args_get_import_idx: env_args_get_import_idx,
+    env_args_len_idx: env_args_len_idx,
+    env_args_len_import_idx: env_args_len_import_idx,
+    env_get_idx: env_get_idx,
+    env_get_import_idx: env_get_import_idx,
+    eq_idx: eq_idx,
+    frozen_array_copy_idx: frozen_array_copy_idx,
+    fs_append_idx: fs_append_idx,
+    fs_append_import_idx: fs_append_import_idx,
+    fs_chdir_idx: fs_chdir_idx,
+    fs_chdir_import_idx: fs_chdir_import_idx,
+    fs_copy_idx: fs_copy_idx,
+    fs_copy_import_idx: fs_copy_import_idx,
+    fs_exists_idx: fs_exists_idx,
+    fs_exists_import_idx: fs_exists_import_idx,
+    fs_exists_stub_idx: fs_exists_stub_idx,
+    fs_getcwd_idx: fs_getcwd_idx,
+    fs_getcwd_import_idx: fs_getcwd_import_idx,
+    fs_is_dir_idx: fs_is_dir_idx,
+    fs_is_dir_import_idx: fs_is_dir_import_idx,
+    fs_is_file_idx: fs_is_file_idx,
+    fs_is_file_import_idx: fs_is_file_import_idx,
+    fs_mkdir_idx: fs_mkdir_idx,
+    fs_mkdir_import_idx: fs_mkdir_import_idx,
+    fs_mkdir_p_idx: fs_mkdir_p_idx,
+    fs_mkdir_p_import_idx: fs_mkdir_p_import_idx,
+    fs_publish_immutable_text_idx: fs_publish_immutable_text_idx,
+    fs_publish_immutable_text_import_idx: fs_publish_immutable_text_import_idx,
+    fs_publish_immutable_text_stub_idx: fs_publish_immutable_text_stub_idx,
+    fs_read_bytes_idx: fs_read_bytes_idx,
+    fs_read_bytes_import_idx: fs_read_bytes_import_idx,
+    fs_read_dir_idx: fs_read_dir_idx,
+    fs_read_dir_import_idx: fs_read_dir_import_idx,
+    fs_read_file_idx: fs_read_file_idx,
+    fs_read_file_import_idx: fs_read_file_import_idx,
+    fs_read_file_stub_idx: fs_read_file_stub_idx,
+    fs_remove_file_idx: fs_remove_file_idx,
+    fs_remove_file_import_idx: fs_remove_file_import_idx,
+    fs_remove_idx: fs_remove_idx,
+    fs_remove_import_idx: fs_remove_import_idx,
+    fs_remove_tree_idx: fs_remove_tree_idx,
+    fs_remove_tree_import_idx: fs_remove_tree_import_idx,
+    fs_rename_idx: fs_rename_idx,
+    fs_rename_import_idx: fs_rename_import_idx,
+    fs_stat_token_idx: fs_stat_token_idx,
+    fs_stat_token_import_idx: fs_stat_token_import_idx,
+    fs_stat_token_stub_idx: fs_stat_token_stub_idx,
+    fs_write_bytes_idx: fs_write_bytes_idx,
+    fs_write_bytes_import_idx: fs_write_bytes_import_idx,
+    fs_write_bytes_stub_idx: fs_write_bytes_stub_idx,
+    fs_write_file_idx: fs_write_file_idx,
+    fs_write_file_import_idx: fs_write_file_import_idx,
+    fs_write_file_stub_idx: fs_write_file_stub_idx,
+    func_offset: func_offset,
+    generic_add_idx: generic_add_idx,
+    generic_rel_diff_idx: generic_rel_diff_idx,
+    heap_grow_check_idx: heap_grow_check_idx,
+    hf_all_names: hf_all_names,
+    hf_arg_push_idx: hf_arg_push_idx,
+    hf_arg_push_import_idx: hf_arg_push_import_idx,
+    hf_arm_idx: hf_arm_idx,
+    hf_arm_import_idx: hf_arm_import_idx,
+    hf_cancel_idx: hf_cancel_idx,
+    hf_cancel_import_idx: hf_cancel_import_idx,
+    hf_get_idx: hf_get_idx,
+    hf_get_import_idx: hf_get_import_idx,
+    hf_named_import_indices: hf_named_import_indices,
+    hf_named_names: hf_named_names,
+    hf_response_addresses: hf_response_addresses,
+    hf_response_arg_addresses: hf_response_arg_addresses,
+    hf_wait_any_idx: hf_wait_any_idx,
+    hf_wait_any_import_idx: hf_wait_any_import_idx,
+    hf_wait_idx: hf_wait_idx,
+    hf_wait_import_idx: hf_wait_import_idx,
+    hf_wit_names: hf_wit_names,
+    hs_arm_idx: hs_arm_idx,
+    hs_arm_import_idx: hs_arm_import_idx,
+    hs_cancel_idx: hs_cancel_idx,
+    hs_cancel_import_idx: hs_cancel_import_idx,
+    hs_claim_idx: hs_claim_idx,
+    hs_claim_import_idx: hs_claim_import_idx,
+    hs_close_idx: hs_close_idx,
+    hs_close_import_idx: hs_close_import_idx,
+    hs_named_import_indices: hs_named_import_indices,
+    hs_named_names: hs_named_names,
+    hs_read_idx: hs_read_idx,
+    hs_read_import_idx: hs_read_import_idx,
+    hsl_arm_idx: hsl_arm_idx,
+    hsl_arm_import_idx: hsl_arm_import_idx,
+    hsl_cancel_idx: hsl_cancel_idx,
+    hsl_cancel_import_idx: hsl_cancel_import_idx,
+    http_close_idx: http_close_idx,
+    http_close_import_idx: http_close_import_idx,
+    http_request_idx: http_request_idx,
+    http_request_import_idx: http_request_import_idx,
+    http_response_body_idx: http_response_body_idx,
+    http_response_body_import_idx: http_response_body_import_idx,
+    http_response_header_idx: http_response_header_idx,
+    http_response_header_import_idx: http_response_header_import_idx,
+    http_response_status_idx: http_response_status_idx,
+    http_response_status_import_idx: http_response_status_import_idx,
+    identity_idx: identity_idx,
+    int_clz_idx: int_clz_idx,
+    int_ctz_idx: int_ctz_idx,
+    int_popcount_idx: int_popcount_idx,
+    int_to_double_idx: int_to_double_idx,
+    linemap_off: linemap_off,
+    linemap_state: linemap_state,
+    linked_import_indices: linked_import_indices,
+    linked_import_names: linked_import_names,
+    map_build_index_idx: map_build_index_idx,
+    map_cap_idx: map_cap_idx,
+    map_hash_idx: map_hash_idx,
+    map_index_insert_idx: map_index_insert_idx,
+    map_probe_index_idx: map_probe_index_idx,
+    need_host_future_builtin: need_host_future_builtin,
+    need_http_request_builtin: need_http_request_builtin,
+    num_generated: num_generated,
+    num_imported_funcs: num_imported_funcs,
+    oob_abort_idx: oob_abort_idx,
+    print_i64_raw_idx: print_i64_raw_idx,
+    print_int_idx: print_int_idx,
+    print_str_idx: print_str_idx,
+    process_exit_idx: process_exit_idx,
+    process_exit_import_idx: process_exit_import_idx,
+    profiler_heap_bytes_idx: profiler_heap_bytes_idx,
+    profiler_heap_bytes_import_idx: profiler_heap_bytes_import_idx,
+    profiler_now_us_idx: profiler_now_us_idx,
+    profiler_now_us_import_idx: profiler_now_us_import_idx,
+    rc_alloc_idx: rc_alloc_idx,
+    rc_drop_idx: rc_drop_idx,
+    rc_dup_idx: rc_dup_idx,
+    region_arr_new_idx: region_arr_new_idx,
+    region_bytes_new_idx: region_bytes_new_idx,
+    resolve_path_idx: resolve_path_idx,
+    resolve_path_import_idx: resolve_path_import_idx,
+    serve_handler_has_host_stream: serve_handler_has_host_stream,
+    sh_capture_close_idx: sh_capture_close_idx,
+    sh_capture_close_import_idx: sh_capture_close_import_idx,
+    sh_capture_exit_code_idx: sh_capture_exit_code_idx,
+    sh_capture_exit_code_import_idx: sh_capture_exit_code_import_idx,
+    sh_capture_idx: sh_capture_idx,
+    sh_capture_import_idx: sh_capture_import_idx,
+    sh_capture_stderr_idx: sh_capture_stderr_idx,
+    sh_capture_stderr_import_idx: sh_capture_stderr_import_idx,
+    sh_capture_stdout_idx: sh_capture_stdout_idx,
+    sh_capture_stdout_import_idx: sh_capture_stdout_import_idx,
+    sh_idx: sh_idx,
+    sh_import_idx: sh_import_idx,
+    sh_lines_idx: sh_lines_idx,
+    sh_lines_import_idx: sh_lines_import_idx,
+    shadow_uaf_abort_idx: shadow_uaf_abort_idx,
+    simd_scan_alnum_idx: simd_scan_alnum_idx,
+    simd_scan_alnum_str_idx: simd_scan_alnum_str_idx,
+    simd_scan_line_end_str_idx: simd_scan_line_end_str_idx,
+    simd_scan_string_special_str_idx: simd_scan_string_special_str_idx,
+    simd_skip_ws_idx: simd_skip_ws_idx,
+    sleep_idx: sleep_idx,
+    sleep_import_idx: sleep_import_idx,
+    sleep_needs_component_adapter: sleep_needs_component_adapter,
+    sources_idx: sources_idx,
+    stderr_write_char_idx: stderr_write_char_idx,
+    stderr_write_char_import_idx: stderr_write_char_import_idx,
+    stderr_write_stream_idx: stderr_write_stream_idx,
+    stderr_write_stream_import_idx: stderr_write_stream_import_idx,
+    stdin_provider_acquire_idx: stdin_provider_acquire_idx,
+    stdin_provider_acquire_import_idx: stdin_provider_acquire_import_idx,
+    stdin_provider_close_idx: stdin_provider_close_idx,
+    stdin_provider_close_import_idx: stdin_provider_close_import_idx,
+    stdin_provider_read_idx: stdin_provider_read_idx,
+    stdin_provider_read_import_idx: stdin_provider_read_import_idx,
+    stdin_read_char_idx: stdin_read_char_idx,
+    stdin_read_char_import_idx: stdin_read_char_import_idx,
+    stdin_read_stream_idx: stdin_read_stream_idx,
+    stdin_read_stream_import_idx: stdin_read_stream_import_idx,
+    stdout_write_char_idx: stdout_write_char_idx,
+    stdout_write_char_import_idx: stdout_write_char_import_idx,
+    stdout_write_stream_idx: stdout_write_stream_idx,
+    stdout_write_stream_import_idx: stdout_write_stream_import_idx,
+    str_char_code_at_idx: str_char_code_at_idx,
+    str_concat_idx: str_concat_idx,
+    str_eq_idx: str_eq_idx,
+    str_from_char_code_idx: str_from_char_code_idx,
+    str_len_idx: str_len_idx,
+    str_lex_diff_idx: str_lex_diff_idx,
+    str_operand_abort_idx: str_operand_abort_idx,
+    str_substring_idx: str_substring_idx,
+    string_contains_idx: string_contains_idx,
+    string_ends_with_idx: string_ends_with_idx,
+    string_index_of_idx: string_index_of_idx,
+    string_join_idx: string_join_idx,
+    string_last_index_of_idx: string_last_index_of_idx,
+    string_split_idx: string_split_idx,
+    string_starts_with_idx: string_starts_with_idx,
+    string_trim_idx: string_trim_idx,
+    tcp_close_idx: tcp_close_idx,
+    tcp_close_import_idx: tcp_close_import_idx,
+    tcp_connect_idx: tcp_connect_idx,
+    tcp_connect_import_idx: tcp_connect_import_idx,
+    tcp_read_idx: tcp_read_idx,
+    tcp_read_import_idx: tcp_read_import_idx,
+    tcp_write_idx: tcp_write_idx,
+    tcp_write_import_idx: tcp_write_import_idx
+  }
+}

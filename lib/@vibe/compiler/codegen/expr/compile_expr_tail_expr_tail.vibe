@@ -1,0 +1,1520 @@
+// lib/@vibe/compiler/codegen/expr/compile_expr_tail.vibe — expr tail.
+
+import @vibe/compiler/core {
+  Expr, Pat, Stmt, TypeExpr
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import @vibe/compiler/codegen/common_analysis {
+  collect_free_vars_indexed_self,
+  emit_i64_extend_i32_u,
+  is_branching_value,
+  md_consume_count_b,
+  md_self_reassign_move_arg,
+  mut_needs_ref_cell,
+  proj_root_ident,
+  scope_tail_ident,
+  scope_tail_proj_root
+}
+
+import @vibe/compiler/codegen/common_base {
+  CompileCtx,
+  CtorTable,
+  FuncTable,
+  LambdaTable,
+  LineMapState,
+  StrTable,
+  agg_expr_lookup,
+  agg_ret_lookup_indexed,
+  agg_slot_lookup,
+  emit_arith_wrap_int,
+  emit_heap_grow_after_heap_set,
+  emit_i64_load,
+  emit_i64_store,
+  emit_rc_dup_guarded,
+  expr_tag,
+  find_local_slot,
+  get_efn_body,
+  get_elet_body,
+  get_elet_name,
+  get_elet_off,
+  get_elet_val,
+  get_eletmut_off,
+  is_ctor_call,
+  is_efn,
+  is_eident,
+  is_erecord,
+  is_etuple,
+  is_nullary_ctor_ident,
+  rc_exit_push,
+  rc_exit_truncate,
+  resolve_local
+}
+
+import @vibe/compiler/codegen/common_extractors {
+  array_contains_str,
+  emit_assignop_op,
+  first_offset,
+  get_eassign_body,
+  get_eassign_name,
+  get_eassign_val,
+  get_eassignop_body,
+  get_eassignop_name,
+  get_eassignop_op,
+  get_eassignop_val,
+  get_ecall_args,
+  get_ecall_callee,
+  get_efn_params,
+  get_eident_name,
+  get_eletmut_body,
+  get_eletmut_name,
+  get_eletmut_val,
+  get_eletrec_body,
+  get_eletrec_name,
+  get_eletrec_val,
+  get_eseq_first,
+  get_eseq_second,
+  get_etuple_elems,
+  get_match_scrutinee
+}
+
+import @vibe/compiler/perceus {
+  perceus_loop_result_slot
+}
+
+import @vibe/compiler/codegen/wasm_emit {
+  emit_call,
+  emit_drop,
+  emit_end,
+  emit_global_get,
+  emit_global_set,
+  emit_i32_add,
+  emit_i32_const,
+  emit_i32_store,
+  emit_i32_store8,
+  emit_i32_wrap_i64,
+  emit_i64_add,
+  emit_i64_and,
+  emit_i64_const,
+  emit_i64_eq,
+  emit_i64_eqz,
+  emit_i64_or,
+  emit_if_void,
+  emit_local_get,
+  emit_local_set,
+  emit_local_tee
+}
+
+import ./compile_call.vibe {
+  cc_expr_is_stringish, compile_call, rc_exit_break_result_owns_rec, rc_exit_end_store, rc_exit_note_store, rc_exit_value_owned
+}
+
+import ./compile_expr_tail2.vibe {
+  compile_expr_tail2, compile_forin_loop
+}
+
+import ./compile_lambda.vibe {
+  compile_lambda, forin_is_discarded_seq_head
+}
+
+import ./compile_match.vibe {
+  compile_match
+}
+
+import ./compile_expr_tail_classify_let_value_heap.vibe {
+  assign_ident_is_view,
+  assign_ident_store_dup,
+  assign_retain_store_dup_tails,
+  assign_retain_view_tails,
+  assign_slot_short_after_store,
+  assign_tails_retained,
+  branch_tail_calls_borrow,
+  call_returns_borrow,
+  cet_record_local_slot,
+  cet_strip_owned_markers,
+  cet_strip_param_label_marker,
+  classify_let_value_heap,
+  emit_assignop_rc_mul_pre,
+  emit_assignop_rc_tag_fix,
+  emit_dbg_line_for,
+  emit_int_div_zero_guard,
+  is_loop_result_slot,
+  let_retain_store_dup_tails,
+  mib_spine_leaf,
+  path_value_owned,
+  rc_mut_rec_transfer_value,
+  rc_scope_tail_borrows_name,
+  reassign_fresh_scalar_array,
+  reassign_self_reusable,
+  retain_wrap_branch_tails,
+  seq_discard_owns_result,
+  seq_lambda_returns_owned,
+  seq_local_call_owns_result,
+  spine_leaf_ident_view,
+  spine_leaf_unowned,
+  value_has_borrowed_branch_tail
+}
+
+import ./compile_expr_tail_expr_is_floatish_syntactic.vibe {
+  assign_value_mentions,
+  emit_dbg_line_stmt,
+  emit_rc_drop_local,
+  expr_is_boolish,
+  expr_is_floatish,
+  expr_is_intish,
+  is_edot,
+  slot_is_floatish,
+  slot_is_intish,
+  slot_is_stringish
+}
+
+/// #768: apply the branch-tail retain rewrite (see retain_wrap_branch_tails)
+/// when this binding's scope-end drop is planned AND we are inside a loop
+/// (loop_borrowed_names non-empty -- empty outside loops and under bump, so
+/// codegen elsewhere is byte-identical). Only if/match values are rewritten;
+/// the top-level node kind is preserved, so classification of the ORIGINAL
+/// `value` below stays valid.
+///
+/// #3103: a branch tail that calls a borrow-returning function needs the
+/// retain whether or not a loop encloses the `let` -- nothing else gives the
+/// binding the reference its planned drop spends -- so such a tail triggers
+/// the rewrite outside a loop too. A value with no such tail keeps the
+/// loop-only gate, so its codegen is unchanged.
+fn retain_wrap_let_value(value: Expr, name: String, local_names: Array[String], ctx: CompileCtx) -> Expr with Exception {
+  if ctx.enable_rc && is_branching_value(value) && array_contains_str(ctx.rc_drop_names, name) && (Array::length(ctx.loop_borrowed_names) > 0 || branch_tail_calls_borrow(value, local_names, array_empty(), ctx)) {
+    retain_wrap_branch_tails(value, local_names, array_empty(), ctx)
+  } else {
+    value
+  }
+}
+
+export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, compile_expr: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
+  let __tag = expr_tag(expr)
+  if __tag == 9 {
+    let name = get_elet_name(expr)
+    let value = get_elet_val(expr)
+    let body = get_elet_body(expr)
+    let local_idx = next_local
+    emit_dbg_line_stmt(buf, value, get_elet_off(expr), ctx)
+    // #1120 Codex review (P1): the slot is pushed BEFORE the value compiles
+    // (its index must be reserved), but a NON-RECURSIVE `let` binder is not
+    // in scope inside its own initializer -- `let add = (x, y) -> Int {
+    // add(x, y) }` deliberately means the BUILTIN add. Mask the name for the
+    // duration of the value so nothing resolves to (or, since #1114, treats
+    // as an enclosing shadow and captures) the not-yet-initialized slot; the
+    // INDEX stays allocated, only the name is hidden, and it is restored
+    // before the body compiles. `let rec` keeps its name visible -- that is
+    // what makes self-reference work (see ctx.pending_letrec_self_name).
+    cet_record_local_slot(local_names, local_idx)
+    Array::set(local_names, local_idx, "")
+    // #3190: the tails the plan's `PaStoreDup` rows name retain in place
+    // (`let_retain_store_dup_tails`). The rewritten value is also what the
+    // ownership classifiers below read, so a retained tail is an owned one;
+    // the slot's KIND (float / int / aggregate) is still read off `value`.
+    // A binder another branch of which still hands back a view stays
+    // borrow-bound (`value_borrow_like` below), and its owning uses retain
+    // again: on the retained branch that leaks one reference, where not
+    // retaining it would let a store of the binder (`cur = c`, which takes a
+    // heap binding as owned) release the reference the plan left with `p`.
+    let value_sd = let_retain_store_dup_tails(value, local_names, ctx)
+    let nl = compile_expr(buf, retain_wrap_let_value(value_sd, name, local_names, ctx), local_names, next_local + 1, ctx, ld)
+    let seq_owned_return = seq_lambda_returns_owned(value, local_names, ctx)
+    Array::set(local_names, local_idx, name)
+    emit_local_set(buf, local_idx)
+    if seq_owned_return {
+      Array::push(ctx.seq_owned_return_slots, local_idx * 2 + 1)
+    } else if seq_local_call_owns_result(ctx, local_idx) {
+      Array::push(ctx.seq_owned_return_slots, local_idx * 2)
+    }
+    // #3113: a read of a captured cell arrives behind an owning-store marker
+    // (cl_own_cell_stmts); classify the slot from the value it wraps.
+    let class_value = cet_strip_owned_markers(value)
+    let val_is_float = expr_is_floatish(class_value, local_names, ctx)
+    if val_is_float {
+      Array::push(ctx.float_local_slots, local_idx * 2 + 1)
+    } else if slot_is_floatish(ctx, local_idx) {
+      Array::push(ctx.float_local_slots, local_idx * 2)
+    }
+    // #678: log whether this binding holds a definitely-integral value, so a
+    // later bare-ident `==` on it bypasses the string-pointer-misreading `eq`.
+    // Always (re)log when the slot was previously classified, so a rebind of a
+    // reused slot overrides the earlier entry. #769/#950 encoding: slot*4 +
+    // kind (0 clear / 1 int / 2 string / 3 bool) -- see slot_is_intish.
+    if expr_is_boolish(class_value, local_names, ctx) {
+      Array::push(ctx.int_local_slots, local_idx * 4 + 3)
+    } else if expr_is_intish(class_value, local_names, ctx) {
+      Array::push(ctx.int_local_slots, local_idx * 4 + 1)
+    } else if cc_expr_is_stringish(class_value, local_names, ctx) {
+      Array::push(ctx.int_local_slots, local_idx * 4 + 2)
+    } else if slot_is_intish(ctx, local_idx) || slot_is_stringish(ctx, local_idx) {
+      Array::push(ctx.int_local_slots, local_idx * 4)
+    }
+    // #724: log this binding's AGGREGATE shape (tuple arity / ctor-record
+    // field count) so `a == b` with both sides bound takes the structural
+    // comparators. kind*64+n; 0 overrides a reused slot. See
+    // CompileCtx.agg_local_slots.
+    let agg_entry = if is_etuple(value) {
+      64 + Array::length(get_etuple_elems(value))
+    } else if is_ctor_call(value, ctx.ctor_table) {
+      let cargs = get_ecall_args(value)
+      // `S::{ ... }` sugar arrives as ECall(S, [ERecord]) — the runtime
+      // field count is the record's, not the call arity.
+      let fcnt = if Array::length(cargs) == 1 {
+        match Array::get(cargs, 0) {
+          ERecord(_, rfields, _) => Array::length(rfields),
+          _ => Array::length(cargs)
+        }
+      } else {
+        Array::length(cargs)
+      }
+      128 + fcnt
+    } else if is_nullary_ctor_ident(value, ctx.ctor_table) {
+      128
+    } else if is_erecord(value) {
+      // Records are [tag@0][len@4][fields@8+] since #722, walkable like ctors.
+      match value {
+        ERecord(_, rfields, _) => 128 + Array::length(rfields),
+        _ => 0
+      }
+    } else if expr_tag(value) == 8 {
+      // #724 round 2: `let a = f(..)` — classify by f's DECLARED return type
+      // (agg_ret table). Only for a global fn name (a local shadowing `f`
+      // makes this a closure call of unknown type).
+      match get_ecall_callee(value) {
+        EIdent(cfn, _) => if find_local_slot(local_names, cfn) < 0 {
+          let rinfo = agg_ret_lookup_indexed(ctx.agg_ret_names_sorted, ctx.agg_ret_names_sorted_pos, ctx.agg_ret_infos, cfn)
+          if rinfo > 0 {
+            rinfo
+          } else {
+            0
+          }
+        } else {
+          0
+        },
+        _ => 0
+      }
+    } else if is_eident(value) {
+      // Alias of a tracked binding: propagate its shape.
+      let src_slot = find_local_slot(local_names, get_eident_name(value))
+      if src_slot >= 0 {
+        let src_info = agg_slot_lookup(ctx.agg_local_slots, src_slot)
+        if src_info > 0 {
+          src_info
+        } else {
+          0
+        }
+      } else {
+        0
+      }
+    } else {
+      0
+    }
+    // #672 (post-#724): the shape LITERAL backing `agg_entry`, kept in
+    // lockstep with agg_local_slots (see CompileCtx.agg_local_exprs) so a
+    // both-sides-tracked `a == b` can recurse into NESTED aggregate elements
+    // (e.g. `let a = ((1,2),3)`) instead of only comparing the top-level
+    // shape. An alias propagates its SOURCE's shape expr (not just the
+    // kind+n int); everything else that isn't a literal (call-result via
+    // agg_ret, round-2 param/return tracking) has no literal to recurse
+    // into, so it stores the inert EInt(0) placeholder — those tracked
+    // slots still get correct TOP-level structural comparison (unchanged
+    // from before this change) but nested elements under them keep the
+    // pre-existing generic-eq fallback.
+    let agg_shape_expr = if is_etuple(value) {
+      value
+    } else if is_ctor_call(value, ctx.ctor_table) {
+      value
+    } else if is_nullary_ctor_ident(value, ctx.ctor_table) {
+      value
+    } else if is_erecord(value) {
+      value
+    } else if is_eident(value) {
+      let src_slot = find_local_slot(local_names, get_eident_name(value))
+      if src_slot >= 0 {
+        agg_expr_lookup(ctx.agg_local_slots, ctx.agg_local_exprs, src_slot)
+      } else {
+        EInt(0)
+      }
+    } else {
+      EInt(0)
+    }
+    Array::push(ctx.agg_local_slots, local_idx * 256 + agg_entry)
+    Array::push(ctx.agg_local_exprs, agg_shape_expr)
+    let (rc_kind, is_borrow_ret_ext) = classify_let_value_heap(buf, value_sd, name, local_idx, local_names, ctx)
+    // #3114: `let w = v` over a borrow-bound `v` that left `w` owning nothing
+    // (rc_kind 0: the Perceus plan inherits `v`'s no-reference class, so `w`
+    // has no scope-end drop) is the same borrowed view under another name.
+    // Mark it borrow-bound for its body like `v`, so a consuming call, a
+    // push, or a return retains it exactly as it would retain `v`. Read here,
+    // before the #712 mask below removes `name` -- `let v = v` must still see
+    // the outer `v`.
+    let alias_borrow_like = ctx.enable_rc && rc_kind == 0 && is_eident(value) && array_contains_str(ctx.loop_borrowed_names, get_eident_name(value)) && !array_contains_str(ctx.ref_cell_names, get_eident_name(value))
+    if ctx.enable_rc && rc_kind > 0 {
+      let mut dbi = 0
+      while dbi < Array::length(ctx.rc_dup_names) {
+        if Array::get(ctx.rc_dup_names, dbi) == name {
+          emit_rc_dup_guarded(buf, local_idx, ctx.rc_shadow, ctx.rc_dup_func_idx)
+        } else {
+          ()
+        }
+        dbi = dbi + 1
+      }
+    } else {
+      ()
+    }
+    // #2837 dup-on-escape: the plan pinned this binding because it derives
+    // from a local array a truncate may now release while the binding is
+    // still live. Take a reference of its own here and give it back at the
+    // scope end below, so the value outlives the truncate exactly as long as
+    // the binding does. Balanced on every path that reaches the scope end; a
+    // path that leaves early (return, break) keeps it, which leaks. The name
+    // goes on the live stack the truncate lowering checks before releasing.
+    let view_pin = ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && array_contains_str(ctx.rc_trunc_pin_names, name)
+    let pins_mark = Array::length(ctx.rc_pins_live)
+    if view_pin {
+      emit_rc_dup_guarded(buf, local_idx, ctx.rc_shadow, ctx.rc_dup_func_idx)
+      Array::push(ctx.rc_pins_live, name)
+    } else {
+      ()
+    }
+    // #712: this `let` may SHADOW an outer loop-borrowed identifier of the same
+    // name (e.g. `while ... { let x = ...; f(x) }` rebinding `x` inside a loop
+    // whose header already loop-borrowed an outer `x`, #706). cc_is_loop_borrowed_ident
+    // (compile_call.vibe) matches by NAME ONLY, so without this an owning call on
+    // the INNER `x` would be mistaken for a reference to the OUTER loop-carried
+    // one -- a spurious rc_dup now, and (via loop_consumed_names) a spurious extra
+    // epilogue rc_drop for a parameter this `let` never touches. Mask every
+    // existing occurrence of `name` out of loop_borrowed_names for exactly the
+    // scope of `body`, then restore the same count after; membership is all
+    // `array_contains_str` ever tests, so compacting out of order is safe.
+    let mut lb_shadow_removed = 0
+    if ctx.enable_rc {
+      let lb_arr = ctx.loop_borrowed_names
+      let lb_n = Array::length(lb_arr)
+      let mut lb_w = 0
+      let mut lb_i = 0
+      while lb_i < lb_n {
+        let e = Array::get(lb_arr, lb_i)
+        if e == name {
+          lb_shadow_removed = lb_shadow_removed + 1
+        } else {
+          Array::set(lb_arr, lb_w, e)
+          lb_w = lb_w + 1
+        }
+        lb_i = lb_i + 1
+      }
+      Array::truncate(lb_arr, lb_w)
+    } else {
+      ()
+    }
+    // #708 follow-up: scope `name` into loop_borrowed_names for exactly the
+    // extent of `body`'s compilation (push before, truncate after), so a bare
+    // later reference to a borrow-bound name gets the same retain-before-
+    // owning-call treatment a loop-carried parameter already gets. Safe to do
+    // even outside a loop (loop_borrowed_names is otherwise empty there, and
+    // this push/truncate pair never leaks past this let's own body).
+    let lb_mark = Array::length(ctx.loop_borrowed_names)
+    // #768: an if/match value with a borrowed branch tail makes this binding a
+    // (conditional) borrowed view too -- mark it borrow-bound for the body
+    // scope so consuming calls dup it (see value_has_borrowed_branch_tail).
+    // #3190: a tail the plan's store row retained holds a reference of its
+    // own, so it is read off `value_sd`, where it is no longer a bare name.
+    let value_borrow_like = ctx.enable_rc && is_branching_value(value) && value_has_borrowed_branch_tail(value_sd, local_names, array_empty(), ctx)
+    if ctx.enable_rc && (is_borrow_ret_ext || value_borrow_like || alias_borrow_like) {
+      Array::push(ctx.loop_borrowed_names, name)
+    } else {
+      ()
+    }
+    // ADR-0092 Phase 1 (drop-guided reuse): when this binding's planned
+    // scope-end drop can move to last use inside a body that is EXACTLY
+    // `match name { ... }`, stage the fusion — allocate a flag local
+    // (0 = not reused on the taken path) and expose (name, flag) to
+    // compile_match via the ctx stacks (push/truncate, loop_borrowed_names
+    // discipline). An arm that consumes the unique block in place sets the
+    // flag; the scope-end drop below is then guarded on it, so every path
+    // still consumes exactly one reference.
+    let reuse_fusion = ctx.enable_rc && rc_kind > 0 && ctx.rc_drop_func_idx >= 0 && array_contains_str(ctx.rc_drop_names, name) && expr_tag(body) == 16 && is_eident(get_match_scrutinee(body)) && get_eident_name(get_match_scrutinee(body)) == name
+    let reuse_flag_l = if reuse_fusion {
+      Array::push(local_names, "__reuse_flag")
+      emit_i64_const(buf, 0)
+      emit_local_set(buf, nl)
+      Array::push(ctx.reuse_scrutinee_names, name)
+      Array::push(ctx.reuse_flag_locals, nl)
+      nl
+    } else {
+      0 - 1
+    }
+    let nl_after_reuse = if reuse_fusion {
+      nl + 1
+    } else {
+      nl
+    }
+    // #2389 per-path release: a branch merge planned this binding's scope-end
+    // drop away because SOME branch spends its initial reference, so the
+    // branches that do not spend it never release the value. Give the drop
+    // back, guarded by a flag local the plan's marked occurrences set (see
+    // compile_expr's EIdent case) -- 0 at the scope end means this path still
+    // holds the reference. Disjoint from the reuse fusion above by
+    // construction: a path-drop binding has no planned PaDrop, which that
+    // fusion requires.
+    //
+    // Two conditions beyond the plan's own, both about whether the INITIAL
+    // reference is one this binding really holds:
+    //
+    // - not a borrow-bound binding (#708/#768: a borrow-returning call, or an
+    //   if/match whose branch tail is borrowed). It holds a reference it never
+    //   acquired, exactly as the ordinary scope-end drop below leaves it to
+    //   loop_borrowed_names.
+    // - every leaf of the value's RESULT SPINE is a reference this scope owns
+    //   (`path_value_owned` above, an allow-list read through block bodies and
+    //   conditional branches).
+    //
+    // - not an Int-valued binding: it holds no reference at all, so a guarded
+    //   drop over it is pure instruction cost. Redundant under the allow-list
+    //   for the forms it admits, kept because it is the reason a value holding
+    //   no reference must never be guarded (see `path_value_owned`).
+    //
+    // - the flag local's index is the one `local_names` is about to record it
+    //   at. `local_names` is indexed BY wasm local index, and the value's own
+    //   compile may have taken scratch locals without naming them, so the
+    //   allocation below pads up to `nl_after_reuse` first. Padding cannot fix
+    //   the other direction: an array already LONGER than the index would put
+    //   the flag's name at one position and its slot at another, and from
+    //   there every later binding reads a slot that is not its own -- wrong
+    //   values, no trap. No shape was found that reaches it; it costs one
+    //   comparison and turns a silent aliasing bug into a declined binding.
+    //
+    // Ordered so the plan-row membership test comes BEFORE the spine walk:
+    // `&&` short-circuits (compile_expr's own lowering for it does), and
+    // `rc_path_drop_names` holds only the split bindings of the function being
+    // compiled -- so a `let` that is not in it, which is almost every `let` in
+    // the program and every one on the bump lane, never pays for
+    // `path_value_owned`. Every operand is pure, so the order is a cost
+    // choice only.
+    //
+    // The binding's OWN slot is masked for the scope read, exactly as it is
+    // masked while the value compiles above (#1120): a non-recursive `let`
+    // binder is not in scope inside its own initializer, so `let mk = mk(i)`
+    // calls the GLOBAL `mk`. `local_names[local_idx]` has been restored by
+    // now, so without the mask `find_local_slot` finds this binding itself and
+    // declines a result the callee's contract says is owned -- the safe
+    // direction, but it keeps the leak this pass exists to remove. Measured:
+    // with the mask removed, `let mk = mk(3)` under a heap-returning global
+    // `mk` compiles 18 B smaller, which is the guarded drop not being emitted.
+    let pd_candidate = ctx.enable_rc && rc_kind > 0 && ctx.rc_drop_func_idx >= 0 && !is_borrow_ret_ext && !value_borrow_like && array_contains_str(ctx.rc_path_drop_names, name)
+    let path_value_ok = if pd_candidate {
+      let pd_self = Array::get(local_names, local_idx)
+      Array::set(local_names, local_idx, "")
+      let r = path_value_owned(value, local_names, array_empty(), ctx)
+      Array::set(local_names, local_idx, pd_self)
+      r
+    } else {
+      false
+    }
+    let path_drop = pd_candidate && path_value_ok && !expr_is_intish(value, local_names, ctx) && Array::length(local_names) <= nl_after_reuse
+    let path_flag_l = if path_drop {
+      // The flag takes a wasm local of its own, so `local_names` gains its
+      // entry here -- through the same helper the scope-end promotion below
+      // uses, which is what keeps the two copies of this discipline from
+      // drifting apart again (#2792 was one of them forgetting). `path_drop`
+      // above already established that the array does not run PAST this index,
+      // the one direction padding cannot repair.
+      cet_record_local_slot(local_names, nl_after_reuse)
+      emit_i64_const(buf, 0)
+      emit_local_set(buf, nl_after_reuse)
+      Array::push(ctx.rc_path_flag_names, name)
+      Array::push(ctx.rc_path_flag_locals, nl_after_reuse)
+      nl_after_reuse
+    } else {
+      0 - 1
+    }
+    let nl_body = if path_drop {
+      nl_after_reuse + 1
+    } else {
+      nl_after_reuse
+    }
+    // #3141: what an early exit out of `body` releases for this binding. An
+    // owned binding (not borrow-bound: it holds a reference only when it
+    // acquired one, the same test the scope-end drop and the dups above
+    // make) releases what the plan says it still holds, guarded on the flag
+    // its scope-end drop is guarded on; a view pin is a reference of its own.
+    let xmark = Array::length(ctx.rc_exit_stack_names)
+    if ctx.enable_rc {
+      Array::push(ctx.rc_exit_lets, name)
+      if ctx.rc_drop_func_idx >= 0 && rc_kind > 0 && !is_borrow_ret_ext && !value_borrow_like && !alias_borrow_like {
+        rc_exit_push(ctx.rc_exit_stack_names, ctx.rc_exit_stack_info, name, 0, local_idx, if path_drop {
+          path_flag_l
+        } else if reuse_fusion {
+          reuse_flag_l
+        } else {
+          0 - 1
+        })
+      } else {
+        ()
+      }
+      if view_pin {
+        rc_exit_push(ctx.rc_exit_stack_names, ctx.rc_exit_stack_info, name, 5, local_idx, 0 - 1)
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    let source_mark = Array::length(ctx.rc_exit_result_stores)
+    if ctx.enable_rc {
+      Array::push(ctx.rc_exit_result_stores, (name, value))
+    }
+    let nl2 = compile_expr(buf, body, local_names, nl_body, ctx, ld)
+    Array::truncate(ctx.rc_exit_result_stores, source_mark)
+    if ctx.enable_rc {
+      rc_exit_truncate(ctx, xmark)
+      Array::truncate(ctx.rc_exit_lets, Array::length(ctx.rc_exit_lets) - 1)
+    } else {
+      ()
+    }
+    if view_pin {
+      Array::truncate(ctx.rc_pins_live, pins_mark)
+    } else {
+      ()
+    }
+    if path_drop {
+      Array::truncate(ctx.rc_path_flag_names, Array::length(ctx.rc_path_flag_names) - 1)
+      Array::truncate(ctx.rc_path_flag_locals, Array::length(ctx.rc_path_flag_locals) - 1)
+      emit_local_get(buf, path_flag_l)
+      emit_i64_eqz(buf)
+      emit_if_void(buf)
+      emit_local_get(buf, local_idx)
+      emit_call(buf, ctx.rc_drop_func_idx)
+      emit_end(buf)
+    } else {
+      ()
+    }
+    if reuse_fusion {
+      Array::truncate(ctx.reuse_scrutinee_names, Array::length(ctx.reuse_scrutinee_names) - 1)
+      Array::truncate(ctx.reuse_flag_locals, Array::length(ctx.reuse_flag_locals) - 1)
+    } else {
+      ()
+    }
+    if ctx.enable_rc && (is_borrow_ret_ext || value_borrow_like || alias_borrow_like) {
+      Array::truncate(ctx.loop_borrowed_names, lb_mark)
+    } else {
+      ()
+    }
+    // #712: restore the shadow-masked occurrences now that `body` (the only
+    // scope where `name` shadows the outer loop-borrowed binding) is compiled.
+    let mut lb_restore_i = 0
+    while lb_restore_i < lb_shadow_removed {
+      Array::push(ctx.loop_borrowed_names, name)
+      lb_restore_i = lb_restore_i + 1
+    }
+    let nl_let = if ctx.enable_rc && rc_kind > 0 && array_contains_str(ctx.rc_drop_names, name) {
+      if reuse_fusion {
+        // ADR-0092: drop only when no arm consumed the block via reuse.
+        emit_local_get(buf, reuse_flag_l)
+        emit_i64_eqz(buf)
+        emit_if_void(buf)
+        emit_local_get(buf, local_idx)
+        emit_call(buf, ctx.rc_drop_func_idx)
+        emit_end(buf)
+        nl2
+      } else if ctx.rc_drop_func_idx >= 0 && scope_tail_proj_root(body) == name {
+        emit_local_set(buf, nl2)
+        emit_rc_dup_guarded(buf, nl2, ctx.rc_shadow, ctx.rc_dup_func_idx)
+        emit_local_get(buf, local_idx)
+        emit_call(buf, ctx.rc_drop_func_idx)
+        emit_local_get(buf, nl2)
+        cet_record_local_slot(local_names, nl2)
+        nl2 + 1
+      } else {
+        if ctx.rc_drop_func_idx >= 0 {
+          // ADR-0092 note: an inline shared-decrement drop fast path was
+          // tried here and at the fn epilogues (PR #1274) -- it measured
+          // FLAT on the selfcompile KPI (the allocator, not drop call
+          // overhead, dominated) while growing every drop site ~5B -> ~70B,
+          // which failed the output-size ratchet (+14% closure_indirect).
+          // Reverted to the plain runtime call; the allocator-side wins
+          // (bounded walk + size bins) carry the measured improvement.
+          emit_local_get(buf, local_idx)
+          emit_call(buf, ctx.rc_drop_func_idx)
+        } else if rc_kind == 1 {
+          emit_rc_drop_local(buf, local_idx, false)
+        } else {
+          emit_rc_drop_local(buf, local_idx, true)
+        }
+        nl2
+      }
+    } else {
+      nl2
+    }
+    // #2837: release the pin taken at the bind site. The body's value stays
+    // on the stack underneath, as it does for the scope-end drop above.
+    if view_pin {
+      emit_local_get(buf, local_idx)
+      emit_call(buf, ctx.rc_drop_func_idx)
+    } else {
+      ()
+    }
+    nl_let
+  } else if __tag == 10 {
+    let name = get_eletrec_name(expr)
+    let value = get_eletrec_val(expr)
+    let body = get_eletrec_body(expr)
+    let local_idx = next_local
+    cet_record_local_slot(local_names, local_idx)
+    Array::set(local_names, local_idx, name)
+    // #875 fix 2: hint compile_lambda (the immediate, sole callee that
+    // compiling an EFn value dispatches to) that NAME is this closure's own
+    // let-rec binding, so its capture computation force-includes NAME even if
+    // NAME collides with an unrelated entry in ctx.capture_name_index. Only
+    // set when `value` is actually an EFn (a non-lambda let-rec value, e.g.
+    // `let rec x = some_expr`, has no self-capture concept); compile_lambda
+    // consumes and clears this immediately, so it cannot leak to any other
+    // lambda compiled afterward. See CompileCtx.pending_letrec_self_name.
+    if is_efn(value) {
+      Array::truncate(ctx.pending_letrec_self_name, 0)
+      Array::push(ctx.pending_letrec_self_name, name)
+    } else {
+      ()
+    }
+    let nl = compile_expr(buf, value, local_names, next_local + 1, ctx, ld)
+    emit_local_set(buf, local_idx)
+    if seq_lambda_returns_owned(value, local_names, ctx) {
+      Array::push(ctx.seq_owned_return_slots, local_idx * 2 + 1)
+    } else if seq_local_call_owns_result(ctx, local_idx) {
+      Array::push(ctx.seq_owned_return_slots, local_idx * 2)
+    }
+    if is_efn(value) {
+      let params = get_efn_params(value)
+      let fn_body = get_efn_body(value)
+      // #1899: strip the label marker, exactly as compile_lambda does. This
+      // recomputation has to agree with its `captures` or self_cap_idx points
+      // at the wrong slot -- so fixing only one side is worse than fixing
+      // neither.
+      let param_names_bp = array_empty()
+      let mut bpi = 0
+      while bpi < Array::length(params) {
+        let (pn, _) = Array::get(params, bpi)
+        Array::push(param_names_bp, cet_strip_param_label_marker(pn))
+        bpi = bpi + 1
+      }
+      // #875 fix 2: same force-include as compile_lambda's own capture
+      // computation above -- this is a REDUNDANT recomputation (must match
+      // compile_lambda's `captures` exactly to find the right self_cap_idx
+      // slot), so it needs the same self_name override, passed directly
+      // since `name` is already in scope here (no ctx hint needed at this
+      // call site).
+      // #1114: `local_names` (the enclosing scope) must be passed here too --
+      // this recomputation has to match compile_lambda's `captures` EXACTLY
+      // or self_cap_idx points at the wrong slot.
+      let caps = collect_free_vars_indexed_self(fn_body, param_names_bp, ctx.capture_name_index, name, local_names)
+      let mut self_cap_idx = -1
+      let mut bci = 0
+      while bci < Array::length(caps) {
+        if Array::get(caps, bci) == name {
+          self_cap_idx = bci
+        }
+        bci = bci + 1
+      }
+      if self_cap_idx >= 0 {
+        emit_local_get(buf, local_idx)
+        emit_i64_const(buf, -4)
+        emit_i64_and(buf)
+        emit_i32_wrap_i64(buf)
+        emit_local_get(buf, local_idx)
+        emit_i64_store(buf, 3, 8 + self_cap_idx * 8)
+      }
+      0
+    } else {
+      0
+    }
+    // Perceus plans the recursive binding as an owner, but unlike ELet this
+    // arm used to leave its final reference alive. Its self capture is weak;
+    // releasing the binder at scope end therefore also frees the closure.
+    let exit_mark = Array::length(ctx.rc_exit_stack_names)
+    let owns_closure = ctx.enable_rc && is_efn(value)
+    if owns_closure {
+      Array::push(ctx.rc_exit_lets, name)
+    } else {
+      ()
+    }
+    if owns_closure && ctx.rc_drop_func_idx >= 0 && array_contains_str(ctx.rc_drop_names, name) {
+      rc_exit_push(ctx.rc_exit_stack_names, ctx.rc_exit_stack_info, name, 6, local_idx, 0 - 1)
+    } else {
+      ()
+    }
+    let nl2 = compile_expr(buf, body, local_names, nl, ctx, ld)
+    if owns_closure {
+      rc_exit_truncate(ctx, exit_mark)
+      Array::truncate(ctx.rc_exit_lets, Array::length(ctx.rc_exit_lets) - 1)
+    } else {
+      ()
+    }
+    if owns_closure && ctx.rc_drop_func_idx >= 0 && array_contains_str(ctx.rc_drop_names, name) {
+      if scope_tail_ident(body) == name || rc_scope_tail_borrows_name(body, name, local_names, ctx) {
+        emit_local_set(buf, nl2)
+        // A branch can return this closure on only one path. Retain the
+        // result only when it is the binder about to be released.
+        emit_local_get(buf, nl2)
+        emit_local_get(buf, local_idx)
+        emit_i64_eq(buf)
+        emit_if_void(buf)
+        emit_rc_dup_guarded(buf, nl2, ctx.rc_shadow, ctx.rc_dup_func_idx)
+        emit_end(buf)
+        emit_local_get(buf, local_idx)
+        emit_call(buf, ctx.rc_drop_func_idx)
+        emit_local_get(buf, nl2)
+        cet_record_local_slot(local_names, nl2)
+        nl2 + 1
+      } else {
+        emit_local_get(buf, local_idx)
+        emit_call(buf, ctx.rc_drop_func_idx)
+        nl2
+      }
+    } else {
+      nl2
+    }
+  } else if __tag == 11 {
+    let name = get_eletmut_name(expr)
+    let value = get_eletmut_val(expr)
+    let body = get_eletmut_body(expr)
+    let local_idx = next_local
+    emit_dbg_line_stmt(buf, value, get_eletmut_off(expr), ctx)
+    cet_record_local_slot(local_names, local_idx)
+    // #1120 Codex review (P1): same non-recursive-binder masking as ELet
+    // above -- `let mut add = (x, y) -> Int { add(x, y) }` means the BUILTIN
+    // add. Keep it masked through initializer ownership classification too;
+    // restore it before compiling the body, where the binder IS in scope.
+    Array::set(local_names, local_idx, "")
+    // #3113: a captured cell's initializer arrives wrapped in owning-store
+    // markers (cl_own_cell_stmts). They change who owns the value, never its
+    // representation, so the slot is classified from the unwrapped value.
+    let class_value = cet_strip_owned_markers(value)
+    if seq_lambda_returns_owned(class_value, local_names, ctx) {
+      Array::push(ctx.seq_owned_return_slots, local_idx * 2 + 1)
+    } else if seq_local_call_owns_result(ctx, local_idx) {
+      Array::push(ctx.seq_owned_return_slots, local_idx * 2)
+    }
+    if expr_is_floatish(class_value, local_names, ctx) {
+      Array::push(ctx.float_local_slots, local_idx * 2 + 1)
+    } else if slot_is_floatish(ctx, local_idx) {
+      Array::push(ctx.float_local_slots, local_idx * 2)
+    }
+    // #678: track integral mutable bindings too (an Int local stays Int across
+    // reassignments — the checker forbids changing its type), so a bare-ident
+    // `==` on it uses the direct i64 path. #769/#950: slot*4 + kind encoding,
+    // bool tracked as kind 3, string as kind 2 (a mut Bool/String stays that
+    // type across reassignments too).
+    if expr_is_boolish(class_value, local_names, ctx) {
+      Array::push(ctx.int_local_slots, local_idx * 4 + 3)
+    } else if expr_is_intish(class_value, local_names, ctx) {
+      Array::push(ctx.int_local_slots, local_idx * 4 + 1)
+    } else if cc_expr_is_stringish(class_value, local_names, ctx) {
+      Array::push(ctx.int_local_slots, local_idx * 4 + 2)
+    } else if slot_is_intish(ctx, local_idx) || slot_is_stringish(ctx, local_idx) {
+      Array::push(ctx.int_local_slots, local_idx * 4)
+    }
+    if mut_needs_ref_cell(body, name) {
+      Array::push(ctx.ref_cell_names, name)
+      if ctx.enable_rc && ctx.rc_alloc_func_idx >= 0 && ctx.rc_drop_func_idx >= 0 {
+        // #699 RC-managed ref cell: a captured `let mut` is heap-boxed for
+        // by-reference sharing; under RC make that box an RC object so it is
+        // reclaimed instead of leaking. Layout [alloc_size@0][rc_count@4 +
+        // class8@7][payload@8]; the cell local holds vptr=block+8 (even) so the
+        // read/write/assign-op sites are byte-identical to the raw-box path. The
+        // capturing closure dups it (compile_lambda.vibe) and drops it via the
+        // class-7 owned-capture recursion (gen_rc_drop_body); the defining scope
+        // drops it inline below. The class-8 drop releases the payload with
+        // the cell (__rt_rc_drop), so the cell OWNS one reference to it:
+        // #3113 made every store an owned one (cl_own_cell_stmts marks the
+        // initializer and each assignment, the assignment releases the value
+        // it replaces) and every read that leaves for an owning place a
+        // retained one (cc_is_ref_cell_read).
+        //
+        // ADR-0092 (#1262): this used to ALSO require
+        // `expr_is_intish(value, ..)`, which made the two sides of the ref-cell
+        // contract disagree. `Array::push(ctx.ref_cell_names, name)` above is
+        // UNCONDITIONAL, and compile_lambda keys the RC-owned-capture treatment
+        // (odd tagging + emit_rc_word_inc_saturating at box-4 + the class-7
+        // recursive __rt_rc_drop) purely off `ref_cell_names`. A non-intish
+        // init -- `let mut x = -1` is enough, since expr_is_intish only accepts
+        // `!` among unary ops -- took the raw 8-byte HEADERLESS box below while
+        // the closure kept treating it as an RC object. That incremented a
+        // nonexistent rc word in whatever preceded the box, and later pushed a
+        // headerless pointer onto the free list; the allocator's walk then
+        // followed a wild link and trapped far away (the long-standing
+        // "all-RC bootstrap" OOB). Every captured `let mut` under RC now gets a
+        // real header, so no headerless box can ever be treated as RC-owned.
+        emit_i64_const(buf, 16)
+        emit_call(buf, ctx.rc_alloc_func_idx)
+        emit_local_set(buf, local_idx)
+        emit_local_get(buf, local_idx)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 16)
+        emit_i32_store(buf, 2, 0)
+        emit_local_get(buf, local_idx)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 1)
+        emit_i32_store(buf, 2, 4)
+        emit_local_get(buf, local_idx)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 8)
+        emit_i32_store8(buf, 0, 7)
+        emit_local_get(buf, local_idx)
+        emit_i64_const(buf, 8)
+        emit_i64_add(buf)
+        emit_local_set(buf, local_idx)
+        emit_local_get(buf, local_idx)
+        emit_i32_wrap_i64(buf)
+        let nl = compile_expr(buf, if ctx.enable_rc {
+          rc_mut_rec_transfer_value(value, local_names, ctx, [])
+        } else {
+          value
+        }, local_names, next_local + 1, ctx, ld)
+        Array::set(local_names, local_idx, name)
+        emit_i64_store(buf, 3, 0)
+        // #3141: the scope end below drops the cell on every path, so an
+        // early exit out of the body drops it too.
+        let xmark = Array::length(ctx.rc_exit_stack_names)
+        rc_exit_push(ctx.rc_exit_stack_names, ctx.rc_exit_stack_info, name, 4, local_idx, 0 - 1)
+        let nl2 = compile_expr(buf, body, local_names, nl, ctx, ld)
+        rc_exit_truncate(ctx, xmark)
+        emit_local_get(buf, local_idx)
+        emit_i64_const(buf, 1)
+        emit_i64_or(buf)
+        emit_call(buf, ctx.rc_drop_func_idx)
+        nl2
+      } else {
+        emit_global_get(buf, 0)
+        emit_i64_extend_i32_u(buf)
+        emit_local_tee(buf, local_idx)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 8)
+        emit_i32_add(buf)
+        emit_global_set(buf, 0)
+        emit_heap_grow_after_heap_set(buf, ctx)
+        emit_local_get(buf, local_idx)
+        emit_i32_wrap_i64(buf)
+        let nl = compile_expr(buf, if ctx.enable_rc {
+          rc_mut_rec_transfer_value(value, local_names, ctx, [])
+        } else {
+          value
+        }, local_names, next_local + 1, ctx, ld)
+        Array::set(local_names, local_idx, name)
+        emit_i64_store(buf, 3, 0)
+        let nl2 = compile_expr(buf, body, local_names, nl, ctx, ld)
+        nl2
+      }
+    } else {
+      // #768: same branch-tail retain rewrite as ELet (see retain_wrap_let_value).
+      // #3190: and the same retain of the tails the plan's store rows name
+      // (`let_retain_store_dup_tails`), read by the ownership classifiers
+      // below as the ELet arm reads it.
+      let value_sd = let_retain_store_dup_tails(value, local_names, ctx)
+      let value_for_compile = retain_wrap_let_value(value_sd, name, local_names, ctx)
+      let nl = compile_expr(buf, if ctx.enable_rc {
+        rc_mut_rec_transfer_value(value_for_compile, local_names, ctx, [])
+      } else {
+        value_for_compile
+      }, local_names, next_local + 1, ctx, ld)
+      emit_local_set(buf, local_idx)
+      // #791: classify AFTER the value is compiled + stored (local_idx now
+      // holds it), matching ELet's ordering -- classify_let_value_heap's
+      // is_edot/is_eident-alias branches emit an immediate guarded dup
+      // against local_idx, which only makes sense once it holds the fresh
+      // value. See classify_let_value_heap's doc comment for why ELetMut
+      // needs the identical (not just overlapping) classification ELet
+      // uses -- this used to be a narrower, hand-duplicated condition list
+      // that repeatedly drifted out of sync with ELet's (the #715/#791 bug
+      // family); sharing one function makes that drift impossible.
+      let (_mut_rc_kind, _mut_is_borrow_ret_ext) = classify_let_value_heap(buf, value_sd, name, local_idx, local_names, ctx)
+      // #3168: a parameterized loop's result slot starts as a `0`
+      // placeholder, which classifies it scalar, while each `break v` stores
+      // a value of the loop's type. Classified from the placeholder, a store
+      // neither retained a borrowed value (`break Array::get(xs, 0)` handed
+      // out an element its array still owned, and the consumer's release
+      // freed it) nor did the scope end release the value of a loop whose
+      // result is discarded. It is an owning slot like any heap `let mut`:
+      // the EAssign lowering retains an unowned store, and the scope end
+      // drops what it holds when the plan says the result is not handed out
+      // (`perceus_loop_result_slot`, which classifies the slot the same way).
+      let loop_slot = ctx.enable_rc && perceus_loop_result_slot(name, value, body)
+      if loop_slot && !array_contains_str(ctx.heap_binding_names, name) {
+        Array::push(ctx.heap_binding_names, name)
+      } else {
+        ()
+      }
+      if loop_slot {
+        Array::push(ctx.rc_loop_result_slots, name)
+      } else {
+        ()
+      }
+      // A borrowed call initializes an owning mutable slot. Its later value
+      // may be a fresh allocation, so keeping the initializer's borrow flag
+      // would suppress both the slot's drop and a wrapper result's drop.
+      // Retain now: even an unassigned slot may be returned through a wrapper
+      // without taking a reference away from the original container.
+      // pc_count's ELetMut arm supplies the matching ordinary owning plan.
+      // The initializer may WRAP the call. This must fire on exactly the
+      // values `pc_count`'s ELetMut arm plans as owning, so it reads the same
+      // straight-line spine leaf rather than `_mut_is_borrow_ret_ext`, whose
+      // wrapper answer is broader (branches, projections, aliases) than the
+      // plan's.
+      let spine_retained = ctx.enable_rc && spine_leaf_unowned(value, local_names, ctx)
+      if spine_retained {
+        emit_rc_dup_guarded(buf, local_idx, ctx.rc_shadow, ctx.rc_dup_func_idx)
+        Array::push(ctx.heap_binding_names, name)
+      } else {
+        ()
+      }
+      // #3184: an initializer that NAMES a view (`let mut cur = v`, `v` a
+      // borrowed `let` or a `for` element), or one the plan asks to retain
+      // (`PaStoreDup`: an owned binding from outside the loop this `let mut`
+      // is declared in), gives the slot a reference of its own, exactly as a
+      // store of the same value does (the EAssign arm). The plan already
+      // treats the slot as owning; without the retain its scope end, or the
+      // owning use its value was handed to, released the view's owner's
+      // reference.
+      let init_retained = ctx.enable_rc && !spine_retained && (assign_ident_is_view(value, local_names, ctx) || assign_ident_store_dup(value, local_names, ctx))
+      if init_retained {
+        emit_rc_dup_guarded(buf, local_idx, ctx.rc_shadow, ctx.rc_dup_func_idx)
+        if array_contains_str(ctx.heap_binding_names, name) {
+          ()
+        } else {
+          Array::push(ctx.heap_binding_names, name)
+        }
+      } else {
+        ()
+      }
+      // #3141: may an early exit out of `body` release this slot? Only when
+      // it holds a reference of its own -- retained just above, or a heap
+      // value the exit operand's test vouches for (read here, while the
+      // binder is still masked) -- so that every store after this one keeps
+      // the slot owning (compile_expr_tail's EAssign arm, and the plan's
+      // `pe_emit_exit_rows` for what it then holds).
+      let exit_owned = ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && (spine_retained || init_retained || (_mut_rc_kind > 0 && rc_exit_value_owned(ctx, local_names, value_sd)))
+      // `let mut peek = peek(xs, 0)` calls the outer `peek`. Both ownership
+      // classifiers above must see that same scope, even though the value
+      // has already been stored so their retains can target local_idx.
+      Array::set(local_names, local_idx, name)
+      // A mutable binding may hold a different value on every path through
+      // its body. Move its planned dups to the owning use sites only when
+      // every row has an identifiable source occurrence.
+      let mut_use_mark = Array::length(ctx.rc_mut_use_names)
+      let mut mut_use_sites = ctx.enable_rc && !array_contains_str(ctx.ref_cell_names, name)
+      let mut mdi = 0
+      while mdi < Array::length(ctx.rc_dup_names) {
+        if Array::get(ctx.rc_dup_names, mdi) == name && Array::get(ctx.rc_dup_offsets, mdi) < 0 {
+          mut_use_sites = false
+        } else {
+          ()
+        }
+        mdi = mdi + 1
+      }
+      // An early exit spends the plan's remaining dup budget at once. Keep
+      // that budget at the binding/store sites when this binding has an exit
+      // drop row; no use-site dup has run yet on an exit before those uses.
+      let mut mei = 0
+      while mei < Array::length(ctx.rc_exit_plan_names) {
+        if Array::get(ctx.rc_exit_plan_names, mei) == name && Array::get(ctx.rc_exit_plan_info, mei * 4) == 1 {
+          mut_use_sites = false
+        } else {
+          ()
+        }
+        mei = mei + 1
+      }
+      if mut_use_sites {
+        Array::push(ctx.rc_mut_use_names, name)
+      } else {
+        ()
+      }
+      // #715: the ELet path (tag 9) emits every dup the Perceus plan budgeted
+      // for a binding (ctx.rc_dup_names) at its declaration site -- this
+      // ELetMut path never did, while the matching scope-end drop below DID
+      // fire. A `let mut found = None; while .. { match found { .. } }; found`
+      // accumulator (checker_effects.vibe's lookup_fn_effs) gets a planned
+      // dup from the #706 borrow-retention bump (the bare `match found`
+      // borrow) plus a planned scope-end drop; with the dup silently skipped,
+      // the tail-returned Option's only reference was consumed by the return
+      // AND by the drop -- the caller's lifted `__m_scrut_N` scrutinee then
+      // recursively re-dropped the freed block (byte-exact double-free
+      // confirmed by the drop-site-stamped shadow diagnostic: first free at
+      // this branch's scope-end drop, second inside
+      // check_perform_effects_expr_tx). The guarded dup no-ops on scalars, so
+      // over-emission for a scalar-planned name is harmless.
+      if ctx.enable_rc && !mut_use_sites {
+        let mut mdbi = 0
+        while mdbi < Array::length(ctx.rc_dup_names) {
+          if Array::get(ctx.rc_dup_names, mdbi) == name {
+            emit_rc_dup_guarded(buf, local_idx, ctx.rc_shadow, ctx.rc_dup_func_idx)
+          } else {
+            ()
+          }
+          mdbi = mdbi + 1
+        }
+      } else {
+        ()
+      }
+      // #3141: an early exit out of `body` releases what the slot holds at
+      // that point, as many times as the plan's row says.
+      let xmark = Array::length(ctx.rc_exit_stack_names)
+      if exit_owned {
+        rc_exit_push(ctx.rc_exit_stack_names, ctx.rc_exit_stack_info, name, 0, local_idx, 0 - 1)
+      } else {
+        ()
+      }
+      let source_mark = Array::length(ctx.rc_exit_result_stores)
+      if ctx.enable_rc {
+        Array::push(ctx.rc_exit_result_stores, (name, value_sd))
+      }
+      let nl2 = compile_expr(buf, body, local_names, nl, ctx, ld)
+      Array::truncate(ctx.rc_exit_result_stores, source_mark)
+      Array::truncate(ctx.rc_mut_use_names, mut_use_mark)
+      if exit_owned {
+        rc_exit_truncate(ctx, xmark)
+      } else {
+        ()
+      }
+      if loop_slot {
+        Array::truncate(ctx.rc_loop_result_slots, Array::length(ctx.rc_loop_result_slots) - 1)
+      } else {
+        ()
+      }
+      if ctx.enable_rc && array_contains_str(ctx.heap_binding_names, name) && array_contains_str(ctx.rc_drop_names, name) && ctx.rc_drop_func_idx >= 0 {
+        if scope_tail_proj_root(body) == name {
+          emit_local_set(buf, nl2)
+          emit_rc_dup_guarded(buf, nl2, ctx.rc_shadow, ctx.rc_dup_func_idx)
+          emit_local_get(buf, local_idx)
+          emit_call(buf, ctx.rc_drop_func_idx)
+          emit_local_get(buf, nl2)
+          cet_record_local_slot(local_names, nl2)
+          nl2 + 1
+        } else {
+          emit_local_get(buf, local_idx)
+          emit_call(buf, ctx.rc_drop_func_idx)
+          nl2
+        }
+      } else {
+        nl2
+      }
+    }
+  } else if __tag == 12 {
+    let name = get_eassign_name(expr)
+    let value = get_eassign_val(expr)
+    let body = get_eassign_body(expr)
+    let idx = resolve_local(local_names, name, "assign")
+    if seq_lambda_returns_owned(cet_strip_owned_markers(value), local_names, ctx) {
+      Array::push(ctx.seq_owned_return_slots, idx * 2 + 1)
+    } else if seq_local_call_owns_result(ctx, idx) {
+      Array::push(ctx.seq_owned_return_slots, idx * 2)
+    }
+    if array_contains_str(ctx.ref_cell_names, name) && ctx.enable_rc && ctx.rc_drop_func_idx >= 0 {
+      // #3113: the RC cell owns its payload (its drop releases it), and
+      // cl_own_cell_stmts has already made the stored value an owned one. So
+      // the assignment replaces one owned reference with another: compute the
+      // new value first -- it may read the cell -- then store it and release
+      // the old payload, which no longer has an owner.
+      let vnl = compile_expr(buf, rc_mut_rec_transfer_value(value, local_names, ctx, [
+      ]), local_names, next_local, ctx, ld)
+      // Expression compilation can reserve unnamed scratch slots; claim two
+      // past them, the way the lambda-return marker does.
+      let new_l = vnl
+      let old_l = vnl + 1
+      cet_record_local_slot(local_names, old_l)
+      let nl = vnl + 2
+      emit_local_set(buf, new_l)
+      emit_local_get(buf, idx)
+      emit_i32_wrap_i64(buf)
+      emit_i64_load(buf, 3, 0)
+      emit_local_set(buf, old_l)
+      emit_local_get(buf, idx)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, new_l)
+      emit_i64_store(buf, 3, 0)
+      emit_local_get(buf, old_l)
+      emit_call(buf, ctx.rc_drop_func_idx)
+      compile_expr(buf, body, local_names, nl, ctx, ld)
+    } else if array_contains_str(ctx.ref_cell_names, name) {
+      emit_local_get(buf, idx)
+      emit_i32_wrap_i64(buf)
+      let nl = compile_expr(buf, if ctx.enable_rc {
+        rc_mut_rec_transfer_value(value, local_names, ctx, [])
+      } else {
+        value
+      }, local_names, next_local, ctx, ld)
+      emit_i64_store(buf, 3, 0)
+      compile_expr(buf, body, local_names, nl, ctx, ld)
+    } else {
+      let is_heap_mut = ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && array_contains_str(ctx.heap_binding_names, name)
+      let is_self = assign_value_mentions(value, name)
+      if is_heap_mut && is_self && reassign_self_reusable(value, name) {
+        let old_temp = next_local
+        let scratch = next_local + 1
+        let base = next_local + 2
+        emit_local_get(buf, idx)
+        emit_local_set(buf, old_temp)
+        let elems = get_etuple_elems(value)
+        let mut ei = 0
+        while ei < Array::length(elems) {
+          let elem = Array::get(elems, ei)
+          if (is_eident(elem) && get_eident_name(elem) == name) || (is_edot(elem) && proj_root_ident(elem) == name) {
+            let _ = compile_expr(buf, elem, local_names, base, ctx, ld)
+            emit_local_set(buf, scratch)
+            emit_rc_dup_guarded(buf, scratch, ctx.rc_shadow, ctx.rc_dup_func_idx)
+          } else {
+            ()
+          }
+          ei = ei + 1
+        }
+        let nl = compile_expr(buf, value, local_names, base, ctx, ld)
+        emit_local_set(buf, idx)
+        emit_local_get(buf, old_temp)
+        emit_call(buf, ctx.rc_drop_func_idx)
+        // #3141: an early exit in the continuation must not release what
+        // the stored value may still read (see rc_exit_note_store).
+        let xtok = rc_exit_note_store(ctx, local_names, value)
+        let rnl = compile_expr(buf, body, local_names, nl, ctx, ld)
+        rc_exit_end_store(ctx, xtok)
+        rnl
+      } else {
+        // #3184: a slot that owns what it holds must take a reference of its
+        // own when the stored name holds none -- a borrowed `let`, a `for`
+        // element, an alias of either (`assign_name_is_view`) -- or when the
+        // plan says the store runs once per iteration of a loop the name's
+        // owner was declared outside of (`PaStoreDup`, see perceus.vibe's
+        // `pe_store_dup`). Otherwise the owner's scope end releases the value
+        // the slot still holds: `let v = Array::get(xs, 0); cur = v` in a loop
+        // body left `cur` on a block the body's drop of `xs` freed, and
+        // `cur = p` freed `p` on the second iteration. The retain is taken
+        // through the name's own local BEFORE the old value is released, so a
+        // name viewing into the slot's old value survives that release.
+        let slot_owning = is_heap_mut || (ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && is_loop_result_slot(name))
+        let store_retain = !is_self && ((slot_owning && assign_ident_is_view(value, local_names, ctx)) || assign_ident_store_dup(value, local_names, ctx))
+        // #3184: a branch or block tail of the value is a store of its own:
+        // one naming an owned binding from outside the loop retains where the
+        // plan's `PaStoreDup` row says (`assign_retain_store_dup_tails`,
+        // whatever the slot -- the plan kept the binding's own reference), and
+        // a conditional stored into an owning slot retains the branches that
+        // hand back a view, and only those (`assign_retain_view_tails`).
+        let value = if ctx.enable_rc && !is_eident(value) && Array::length(ctx.rc_store_dup_names) > 0 {
+          assign_retain_store_dup_tails(value, local_names, array_empty(), ctx)
+        } else {
+          value
+        }
+        let value = if slot_owning && !is_self && is_branching_value(mib_spine_leaf(value, array_empty())) {
+          assign_retain_view_tails(value, local_names, array_empty(), array_empty(), ctx)
+        } else {
+          value
+        }
+        // A tail retained in place takes its reference as the value is
+        // computed, so the slot's old value -- which a view may read into --
+        // is released after it, with the new value on the stack, instead of
+        // before.
+        let tails_retained = assign_tails_retained(value)
+        if store_retain {
+          emit_rc_dup_guarded(buf, find_local_slot(local_names, get_eident_name(value)), ctx.rc_shadow, ctx.rc_dup_func_idx)
+        } else {
+          ()
+        }
+        if is_heap_mut && !is_self && !tails_retained {
+          emit_local_get(buf, idx)
+          emit_call(buf, ctx.rc_drop_func_idx)
+        } else {
+          ()
+        }
+        // ADR-0092 for maps: `x = f(.., x, ..)` MOVES x's current value into
+        // the call (perceus.vibe pe_self_reassign_moves) -- the loop-carried
+        // dup that cc_is_loop_borrowed_ident would add to that occurrence
+        // is off for the right-hand side (name masked out of
+        // loop_borrowed_names, restored after, the #712 mechanism): the
+        // old value is consumed and the binding takes the result, so
+        // nothing carries across the back-edge but the new value.
+        let self_moves = is_heap_mut && is_self && md_self_reassign_move_arg(value, name, ctx.borrow_param_user, ctx.borrow_param_mask)
+        let mut sm_removed = 0
+        if self_moves {
+          let lb_arr = ctx.loop_borrowed_names
+          let lb_n = Array::length(lb_arr)
+          let mut lb_w = 0
+          let mut lb_i = 0
+          while lb_i < lb_n {
+            let e = Array::get(lb_arr, lb_i)
+            if e == name {
+              sm_removed = sm_removed + 1
+            } else {
+              Array::set(lb_arr, lb_w, e)
+              lb_w = lb_w + 1
+            }
+            lb_i = lb_i + 1
+          }
+          Array::truncate(lb_arr, lb_w)
+        } else {
+          ()
+        }
+        let value_for_compile = if ctx.enable_rc && slot_owning {
+          rc_mut_rec_transfer_value(value, local_names, ctx, [])
+        } else {
+          value
+        }
+        let nl = compile_expr(buf, value_for_compile, local_names, next_local, ctx, ld)
+        while sm_removed > 0 {
+          Array::push(ctx.loop_borrowed_names, name)
+          sm_removed = sm_removed - 1
+        }
+        if is_heap_mut && !is_self && tails_retained {
+          emit_local_get(buf, idx)
+          emit_call(buf, ctx.rc_drop_func_idx)
+        } else {
+          ()
+        }
+        // An owning mutable slot must acquire a borrowed replacement just
+        // as it acquires a borrowed initializer. Otherwise its next drop
+        // would release the container's reference instead of its own.
+        //
+        // #2760: both clauses above read the value's TOP node, so a WRAPPER
+        // -- a block, i.e. an `ELet` / `ESeq` chain -- was neither, and
+        // `x = { let k = 0; Array::get(xs, k) }` stored a borrow into a slot
+        // that stays owning. Its drop then freed an element the container
+        // still owned, and the next read of that element answered with
+        // whatever allocation reused the block: `total(xs[0])` read 15
+        // instead of 7 on the production default lane, no trap. The spine
+        // walk answers for BOTH unowned leaf kinds at once; it is a third
+        // clause rather than a replacement so the top-node answers, including
+        // the shapes it declines, are untouched.
+        //
+        // #2786: a SELF-MENTIONING right-hand side needs the same spine walk,
+        // gated on the plan rather than on the mention. `is_self` is
+        // `assign_value_mentions` -- "the value has `name` as a free variable",
+        // ANY mention -- so it lumps together a wrapper that merely READS the
+        // slot on the way to an unrelated borrow and one whose stored value
+        // comes out of the slot itself. Only the first is short a reference.
+        //
+        // `x = { Array::length(x); Array::get(xss, 0) }` stores a borrow of
+        // `xss` into a slot whose scope-end drop is planned, and nothing gave
+        // that slot a reference: the drop releases what `xss` still owns, the
+        // free list takes the block twice, and the next allocation traps in
+        // `__rt_rc_alloc`. Measured on `b7cd8c1`, still the issue's own repro.
+        //
+        // What separates it from the shapes that must NOT be retained is
+        // `assign_slot_short_after_store` -- see its comment for the plans, and
+        // for why the value's own consume count answers the wrong question here.
+        // Whether the mention is at a borrowed or an owning position is NOT the
+        // test, which is the correction #2786's body needed: the two shapes it
+        // contrasts, `Array::length(x)` and `let t0 = total(x)`, are separated
+        // by what the PLAN records for the slot and not by the position, and the
+        // second of them is short a reference too in the spelling the leak lane
+        // carries.
+        //
+        // #3184: the loop-result slot (`break v` is `__loop_result = v;
+        // break`) owns what it stores too -- the loop's value is handed on as
+        // an owned one -- so a view stored there is retained like one stored
+        // into an owning slot; it drops nothing, as it holds only its `0`
+        // initializer until the store. And a WRAPPED name is a view as well:
+        // `cur = { let v = Array::get(xs, 0); v }` (`spine_leaf_ident_view`).
+        let replacement_unowned = if !slot_owning {
+          false
+        } else if is_self {
+          is_heap_mut && (call_returns_borrow(value, local_names, ctx) || (spine_leaf_unowned(value, local_names, ctx) && assign_slot_short_after_store(name, body, ctx)))
+        } else {
+          is_edot(value) || call_returns_borrow(value, local_names, ctx) || spine_leaf_unowned(value, local_names, ctx) || spine_leaf_ident_view(value, local_names, ctx)
+        }
+        // #2786, the release half. A slot that ACQUIRES its replacement has to
+        // let go of what it held, or the retain trades a use-after-free for a
+        // leak of the same size. The `!is_self` path above already drops the old
+        // value before the store; this path cannot, because the value it is
+        // about to evaluate may READ the slot -- which is what `is_self` means --
+        // so the drop moves after the store and reads a saved copy.
+        //
+        // Measured at N=20000 on the issue's own shape, `x = { Array::length(x);
+        // Array::get(xss, 0) }`: 2,160,328 B with the retain alone against 436 B
+        // on main, where the heap only stayed flat because the unbalanced drop
+        // was handing the container's blocks back to the allocator -- the answer
+        // was wrong (10 against the bump lane's 70) and the heap looked thrifty
+        // for the same reason. With the release: 412 B, the same as the
+        // `!is_self` spelling of the same program.
+        //
+        // TWO conditions, and neither is belt-and-braces. The value must not
+        // have CONSUMED the slot (`let k = sink(x)`), or the saved copy is
+        // already dead and this drop is the second one. And the stored value must
+        // not be derived FROM the slot (`x = { Array::length(x); pick(x) }`, a
+        // user borrow-returning function, the only spelling whose type can match
+        // the slot's own) -- releasing there frees exactly the reference just
+        // stored. No battery shape reaches the second guard, because the plan
+        // budgets a dup for a self-derived leaf and the arithmetic above declines
+        // it first (measured: `dup 1, drop 1` for both `pick(x)` spellings, and
+        // `dup 2, drop 1` once a consuming use is added). It is kept because the
+        // property is structural -- a slot cannot release what it just stored --
+        // and not because a measurement pins it.
+        //
+        // #3135: an OPERATOR result needs the same release though it is owned.
+        // `acc = acc + x` on a `Double` reads the slot as a borrow (the plan's
+        // `pc_operand_count`) and stores a fresh box, so nothing consumed the
+        // box the slot held and every such reassignment leaked 16 B. An
+        // operator's result is never derived from its operands' blocks (an
+        // Int, a Bool or a fresh box), so the second guard does not apply to
+        // it; the consume count still does.
+        let leaf = mib_spine_leaf(value, array_empty())
+        let fresh_operator_leaf = match leaf {
+          EBinOp(_, _, _, _) => true,
+          EUnaryOp(_, _) => true,
+          _ => false
+        }
+        let fresh_scalar_array_leaf = reassign_fresh_scalar_array(leaf, local_names, ctx)
+        let release_old = is_self && (replacement_unowned || fresh_operator_leaf || fresh_scalar_array_leaf) && is_heap_mut && ctx.rc_drop_func_idx >= 0 && md_consume_count_b(value, name, ctx.borrow_param_user, ctx.borrow_param_mask) == 0 && (fresh_operator_leaf || fresh_scalar_array_leaf || !assign_value_mentions(leaf, name))
+        let nl_after = if release_old {
+          emit_local_get(buf, idx)
+          emit_local_set(buf, nl)
+          cet_record_local_slot(local_names, nl)
+          nl + 1
+        } else {
+          nl
+        }
+        emit_local_set(buf, idx)
+        // #3168: a parameterized loop's result slot owns what its `break v`
+        // stores, and the loop hands that on (or its scope end releases it).
+        // A value the exit operand's test cannot vouch for as owned -- a
+        // borrowed `let` alias, a pattern binder, a `for` element -- is
+        // retained, the direction that can only leak.
+        let conditional_break_rec = is_loop_result_slot(name) && rc_exit_break_result_owns_rec(get_eassign_val(expr), local_names, ctx)
+        let slot_retain = is_heap_mut && !replacement_unowned && !store_retain && !tails_retained && array_contains_str(ctx.rc_loop_result_slots, name) && !conditional_break_rec && !rc_exit_value_owned(ctx, local_names, value)
+        if replacement_unowned || slot_retain {
+          emit_rc_dup_guarded(buf, idx, ctx.rc_shadow, ctx.rc_dup_func_idx)
+        } else {
+          ()
+        }
+        if release_old {
+          emit_local_get(buf, nl)
+          emit_call(buf, ctx.rc_drop_func_idx)
+        } else {
+          ()
+        }
+        // #715/#791: the Perceus plan's dup budget for a `let mut` binding
+        // (ctx.rc_dup_names occurrences) is applied ONCE, to the INITIAL value
+        // at the declaration site -- but the scope-end drop and every
+        // remaining owning use consume the binding's CURRENT value. After a
+        // reassignment, the freshly stored value carries only its own single
+        // reference; without re-applying the budget here, the tail use plus
+        // the scope-end drop over-consume it by exactly the planned dup count
+        // (checker_effects.vibe's lookup_fn_effs: `let mut found = None;
+        // ... found = Some(..) ...; found` -- the returned Some was freed by
+        // the binding's scope-end drop while the caller still held it; the
+        // #706 borrow-retention bump from the bare `match found` is what put
+        // the +1 in the budget). Worst case this over-retains (a leak) when
+        // part of the budget was already spent before the reassign -- the
+        // codebase-wide "leak/no-op at worst, never corrupt" trade.
+        //
+        // #791: this budget reapplication was gated on `!is_self`, so a
+        // SELF-referential reassignment (`s = f(s, ...)`, e.g. a loop
+        // accumulator `s = Set::add(s, i)`) never got it -- only the narrow
+        // `reassign_self_reusable` tuple-element branch above has its own
+        // protection, and non-tuple self-reassignment (an ECall RHS, the
+        // common accumulator shape) falls through to this same `else` with
+        // no compensating dup at all. The freshly stored value then carries
+        // only the single reference `f` returned, so the FIRST subsequent
+        // owning use of `s` (which internally drops its param) frees it
+        // prematurely; later uses read/reuse the freed block, corrupting
+        // memory once an intervening allocation reuses it (2+ further uses
+        // needed to observe it -- 1 further use still "works" because
+        // nothing has overwritten the freed-but-untouched memory yet).
+        // Reproduced/diagnosed via #791 (examples/set_test.vibe "multiple
+        // adds"): `let mut s = Set::new(); while ... { s = Set::add(s, i) };
+        // assert(Set::size(s)==20); assert(Set::contains(s,0));
+        // assert(Set::contains(s,19))` traps under RC1 -- `Set::size`/
+        // `Set::contains` take `s` by projection only (`s.items`), which
+        // Perceus's use-counting doesn't count as an owning use, so both
+        // functions unconditionally drop `s` in their epilogue; the caller
+        // must dup before every non-last such call, exactly like the
+        // `!is_self` case already handles. Applying the same budget here
+        // (mirroring the `!is_self` path) fixes it: at worst an extra dup on
+        // an already-dead reference (a leak, per the trade-off above), never
+        // a missing one.
+        if ctx.enable_rc && is_heap_mut && !array_contains_str(ctx.rc_mut_use_names, name) {
+          let mut adbi = 0
+          while adbi < Array::length(ctx.rc_dup_names) {
+            if Array::get(ctx.rc_dup_names, adbi) == name {
+              emit_rc_dup_guarded(buf, idx, ctx.rc_shadow, ctx.rc_dup_func_idx)
+            } else {
+              ()
+            }
+            adbi = adbi + 1
+          }
+        } else {
+          ()
+        }
+        // #3141: an early exit in the continuation must not release what the
+        // stored value may still read (see rc_exit_note_store) -- unless the
+        // slot retained it above and so holds a reference of its own.
+        let xtok = if replacement_unowned || store_retain || slot_retain {
+          0 - 1
+        } else {
+          rc_exit_note_store(ctx, local_names, value)
+        }
+        let result_store_mark = Array::length(ctx.rc_exit_result_stores)
+        if ctx.enable_rc && is_loop_result_slot(name) {
+          Array::push(ctx.rc_exit_result_stores, (name, get_eassign_val(expr)))
+        }
+        let rnl = compile_expr(buf, body, local_names, nl_after, ctx, ld)
+        Array::truncate(ctx.rc_exit_result_stores, result_store_mark)
+        rc_exit_end_store(ctx, xtok)
+        rnl
+      }
+    }
+  } else if __tag == 13 {
+    let name = get_eassignop_name(expr)
+    let op = get_eassignop_op(expr)
+    let value = get_eassignop_val(expr)
+    let body = get_eassignop_body(expr)
+    let idx = resolve_local(local_names, name, "assignop")
+    if (op == "+" || op == "-" || op == "*" || op == "/") && (slot_is_floatish(ctx, idx) || expr_is_floatish(value, local_names, ctx)) {
+      // Reuse the ordinary Double binop and assignment paths. They unbox the
+      // operands, rebox the result under RC, and release the old owned slot.
+      compile_expr(buf, EAssign(name, EBinOp(op, EIdent(name, -1), value, -1), body), local_names, next_local, ctx, ld)
+    } else if array_contains_str(ctx.ref_cell_names, name) {
+      emit_local_get(buf, idx)
+      emit_i32_wrap_i64(buf)
+      emit_local_get(buf, idx)
+      emit_i32_wrap_i64(buf)
+      emit_i64_load(buf, 3, 0)
+      emit_assignop_rc_mul_pre(buf, ctx.enable_rc, op)
+      let nl = emit_int_div_zero_guard(buf, op, value, first_offset(value), ctx, local_names, compile_expr(buf, value, local_names, next_local, ctx, ld))
+      emit_assignop_op(buf, op)
+      emit_assignop_rc_tag_fix(buf, ctx.enable_rc, op)
+      emit_arith_wrap_int(buf, ctx.enable_rc, op)
+      emit_i64_store(buf, 3, 0)
+      compile_expr(buf, body, local_names, nl, ctx, ld)
+    } else {
+      emit_local_get(buf, idx)
+      emit_assignop_rc_mul_pre(buf, ctx.enable_rc, op)
+      let nl = emit_int_div_zero_guard(buf, op, value, first_offset(value), ctx, local_names, compile_expr(buf, value, local_names, next_local, ctx, ld))
+      emit_assignop_op(buf, op)
+      emit_assignop_rc_tag_fix(buf, ctx.enable_rc, op)
+      emit_arith_wrap_int(buf, ctx.enable_rc, op)
+      emit_local_set(buf, idx)
+      compile_expr(buf, body, local_names, nl, ctx, ld)
+    }
+  } else if __tag == 14 {
+    let first = get_eseq_first(expr)
+    let second = get_eseq_second(expr)
+    emit_dbg_line_for(buf, first, ctx)
+    // #1916: a `for` at the head of a sequence is statement-shaped (same
+    // classification the checker uses, #1679) -- its comprehension result is
+    // discarded right here by the emit_drop below, so compile it in the
+    // no-collect form instead of materializing an array nobody reads.
+    // `forin_is_discarded_seq_head` is shared with the captured-cell marker
+    // (cl_own_cells), which must not retain a body value this form drops.
+    let nl = if forin_is_discarded_seq_head(first) {
+      compile_forin_loop(buf, first, local_names, next_local, ctx, ld, compile_expr, false)
+    } else {
+      compile_expr(buf, first, local_names, next_local, ctx, ld)
+    }
+    if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && seq_discard_owns_result(first, local_names, ctx) {
+      emit_call(buf, ctx.rc_drop_func_idx)
+    } else {
+      emit_drop(buf)
+    }
+    compile_expr(buf, second, local_names, nl, ctx, ld)
+  } else {
+    compile_expr_tail2(buf, expr, local_names, next_local, ctx, ld, compile_expr)
+  }
+}

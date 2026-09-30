@@ -1,0 +1,1424 @@
+// lib/@vibe/compiler/checker/checker_effects.vibe — dh call to binding.
+
+import @vibe/compiler/core {
+  BindingOrigin,
+  Expr,
+  Pat,
+  Stmt,
+  Type,
+  TypeDef,
+  TypeEnv,
+  TypeExpr,
+  env_lookup,
+  expr_children,
+  expr_children_into,
+  has_standard_host_provider,
+  is_exception_label,
+  test_bench_default_effects
+}
+
+import @vibe/core {
+  array_empty, struct MutMap
+}
+
+import @vibe/ast {
+  is_builtin_ref_offset
+}
+
+import ./builtins.vibe {
+  lookup_builtin
+}
+
+import ./builtin_call_arms.vibe {
+  builtin_call_arm
+}
+
+import ./checker_effects_decl_authorizes_effect.vibe {
+  authority_is_optional,
+  decl_authorizes_op,
+  entry_handler_labels,
+  entry_unadmitted_labels,
+  entry_unresolved_labels,
+  entry_user_operation_requires_handler,
+  is_instantiate_authority,
+  kinded_exception_labels,
+  labels_without_exception_family,
+  optional_grant_for,
+  row_has_erased_exception,
+  standard_provider_owns_operation,
+  strip_authority_grade
+}
+
+import ./checker_effects_effect_error_to_string.vibe {
+  afe_ascribed_name_type
+}
+
+import ./checker_effects_mutability_expr_into.vibe {
+  EffectError,
+  append_eff_errs,
+  collect_pat_binds_into,
+  effect_param_base_name,
+  effect_row_has_label,
+  effect_row_labels,
+  effect_row_parse,
+  label_is_effect_var,
+  no_str_labels,
+  ret_fn_row_labels_into,
+  row_label_base,
+  str_list_has
+}
+
+import ./checker_effects_throw_payload_kind.vibe {
+  effect_name_of_op,
+  exception_effect_labels,
+  fn_binding_effects,
+  fn_binding_param_effects,
+  is_entry_point_name,
+  is_program_entry_name,
+  join_labels,
+  kinded_handle_marker,
+  labels_union,
+  lookup_fn_effs,
+  lookup_program_fn_effs,
+  make_row_mismatch,
+  no_param_effs,
+  program_fn_index,
+  sort_labels,
+  under_kinded_handle
+}
+
+/// The declared row a call ARGUMENT is walked under. Under a kinded handle
+/// a closure literal passed straight to a callee is walked under the row the
+/// callee's PARAMETER declares for it, as far as exceptions go:
+///
+/// - a parameter row admitting the erased `Exception` (`TaskGroup::spawn`'s
+///   `() -> T with Exception + e`, `Parallel::map`'s `(T) -> U with Exception
+///   + e`) takes any kind, so the literal is walked the ordinary gradual way
+///   (marker dropped, erased label restored); what comes back OUT of the call
+///   is the callee's own declared row, which the transitive check charges to
+///   the strict body like any other call (`Exception[TaskError]` passes an
+///   `Exception[TaskError]` arm, an erased `with Exception` is refused);
+/// - a parameter row naming kinds (`f: () -> Int with Exception[K]`) lets the
+///   literal throw exactly those kinds, still strictly -- the callee's own
+///   arm for `K` catches everything the literal raises;
+/// - a parameter row with no exception label (`f: () -> Int with e`) absorbs
+///   nothing: whatever the literal throws rides the row variable back into
+///   the body, so the literal stays as strict as the body.
+///
+/// A callee this pass cannot see -- a callback parameter (its parameter rows
+/// are not in the overlay), a builtin, a field or call result -- keeps the
+/// literal as strict as the body.
+///
+/// #2985 review (Codex P0, second round): the first version relaxed EVERY
+/// literal argument. An unannotated literal handed to
+/// `invoke[e](f: () -> Int with e) -> Int with e` throws straight back into
+/// the enclosing body through `e`, and the row-variable instantiation bails
+/// on such a literal (its row IS the lexical charge the relaxation dropped),
+/// so `throw(7)` in it reached an `Exception[String]` arm and read as a
+/// String (`14`). The parameter's row decides now, not the argument's shape.
+/// What this deliberately trusts is the callee's DECLARED row: a helper
+/// declared `with Exception[String]` whose body calls a `with Exception`
+/// callback is accepted at its own definition by the gradual rule and so
+/// can raise a kind it does not declare -- a definition-site hole reachable
+/// through a named or an annotated argument as well, filed separately.
+export fn closure_arg_declared(arg: Expr, declared: Array[String], callee: String, lexical_callee: Option[Array[String]], index: Int) -> Array[String] {
+  match arg {
+    EFn(_, _, _, _, _, _) => if !under_kinded_handle(declared) {
+      // #3013: outside a kinded handle the literal inherited the ENCLOSING row,
+      // so `takes_int(() -> Int { throw("hello") })` inside a function declaring
+      // `Exception[String]` passed although `takes_int`'s parameter declares
+      // `Exception[Int]` -- the String landed in `takes_int`'s `Int` arm. A
+      // named argument is refused for this by the type checker. When the
+      // parameter's row names exception KINDS, those kinds are what the
+      // literal's body may throw; every other label still comes from the
+      // enclosing row, as before.
+      match lexical_callee {
+        Some(_) => declared,
+        None => match MutMap::get(Array::get(callee_sig_index, 0), callee) {
+          None => declared,
+          Some(si) => {
+            let prows = Array::get(callee_sig_param_effs, si)
+            if index >= Array::length(prows) {
+              declared
+            } else {
+              let prow = Array::get(prows, index)
+              let kinds = exception_effect_labels(prow)
+              if !row_has_erased_exception(prow) && Array::length(kinds) > 0 {
+                labels_union(labels_union(labels_without_exception_family(declared), [
+                  kinded_handle_marker()
+                ]), kinds)
+              } else {
+                declared
+              }
+            }
+          }
+        }
+      }
+    } else {
+      match lexical_callee {
+        Some(_) => declared,
+        None => match MutMap::get(Array::get(callee_sig_index, 0), callee) {
+          None => declared,
+          Some(si) => {
+            let prows = Array::get(callee_sig_param_effs, si)
+            if index >= Array::length(prows) {
+              declared
+            } else {
+              let prow = Array::get(prows, index)
+              if row_has_erased_exception(prow) {
+                labels_union(labels_without_exception_family_marker(declared), [
+                  "Exception"
+                ])
+              } else {
+                let kinds = exception_effect_labels(prow)
+                if Array::length(kinds) > 0 {
+                  labels_union(labels_union(labels_without_exception_family(declared), [
+                    kinded_handle_marker()
+                  ]), kinds)
+                } else {
+                  declared
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    _ => declared
+  }
+}
+
+export fn make_contextual_row_error(fn_name: String, declared: Array[String], missing: Array[String], off: Int) -> EffectError {
+  // #2985 review (Codex P0): under a kinded exception handler the body's
+  // exception requirements are checked exactly (see kinded_handle_marker);
+  // a missing exception label there is not "add it to the row" -- the row
+  // may well have it -- but "this handle would catch it".
+  let strict_kinded = effect_row_has_label(Some(declared), kinded_handle_marker())
+  let missing_exc = if strict_kinded {
+    let out = no_str_labels()
+    let mut mi = 0
+    while mi < Array::length(missing) {
+      let ml = Array::get(missing, mi)
+      if is_exception_label(ml) {
+        Array::push(out, ml)
+      } else {
+        ()
+      }
+      mi = mi + 1
+    }
+    out
+  } else {
+    no_str_labels()
+  }
+  if Array::length(missing_exc) > 0 {
+    EEKindedHandleCatchesAll(fn_name, join_labels(kinded_exception_labels(declared)), join_labels(sort_labels(missing_exc)), off)
+  } else {
+    make_contextual_row_error_plain(fn_name, labels_without_exception_family_marker(declared), missing, off)
+  }
+}
+
+/// `labels` without the kinded-handle marker (the exception labels stay).
+export fn labels_without_exception_family_marker(labels: Array[String]) -> Array[String] {
+  let out = no_str_labels()
+  let mut i = 0
+  while i < Array::length(labels) {
+    let l = Array::get(labels, i)
+    if l == kinded_handle_marker() {
+      ()
+    } else {
+      Array::push(out, l)
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn make_contextual_row_error_plain(fn_name: String, declared: Array[String], missing: Array[String], off: Int) -> EffectError {
+  let unresolved = entry_unresolved_labels(missing)
+  let bad = entry_unadmitted_labels(missing)
+  let (optional_op, optional_grant) = optional_grant_for(declared, missing)
+  if String::length(optional_grant) > 0 {
+    // ADR-0088 strict grade match: an optional grant never authorizes a
+    // required call, and the edit is either the `perform?` form or the
+    // required grade -- not "add it to the row", which it already is.
+    EEOptionalGrantForRequiredCall(fn_name, optional_op, optional_grant, off)
+  } else if is_entry_point_name(fn_name) && Array::length(unresolved) > 0 {
+    // An entry -- `main`, or a `test` / `bench` / `example` block -- has no
+    // caller: a label nothing can bring in is not "missing from the row", it
+    // is undischargeable, and the edit is `handle`, not `allows`.
+    EEUnresolvedEntryEffectRow(fn_name, join_labels(unresolved), off)
+  } else if is_entry_point_name(fn_name) && Array::length(bad) > 0 {
+    EEUndischargedEntryEffect(fn_name, join_labels(bad), join_labels(entry_handler_labels(bad)), off)
+  } else {
+    make_row_mismatch(fn_name, declared, missing, off)
+  }
+}
+
+export fn first_expr_offset(root: Expr) -> Int {
+  let stack = Array::slice([root], 0, 1)
+  let mut first = 0 - 1
+  while Array::length(stack) > 0 {
+    let n = Array::length(stack)
+    let expr = Array::get(stack, n - 1)
+    Array::truncate(stack, n - 1)
+    let off = match expr {
+      EIdent(_, x) => x,
+      ELet(_, _, _, x) => x,
+      ELetMut(_, _, _, x) => x,
+      ECall(_, _, x) => x,
+      EDot(_, _, x, _) => x,
+      _ => 0 - 1
+    }
+    if off >= 0 && (first < 0 || off < first) {
+      first = off
+    } else {
+      ()
+    }
+    expr_children_into(expr, stack)
+  }
+  first
+}
+
+/// ADR-0088: an entry's row is its GRANT (`fn main allows ..`, `test "x"
+/// allows ..`; the legacy `with` spelling reads the same). Every label must
+/// have an owner the run can bring in -- a standard host provider, or the
+/// entry / runtime policy (`Exception`, `Async`) -- because nothing above the
+/// entry could handle it. A user effect that reaches the boundary is rejected
+/// with the `handle` edit (#1683); a row variable has no caller to instantiate
+/// it. Past those, a grant is the run's contract, so an operation it names
+/// must exist: `allows Console::Get` on a program that declares no `effect
+/// Console` used to be admitted by the provider prefix alone and granted
+/// nothing. One policy for `main` / `_start` and for the `test` / `bench` /
+/// `example` blocks (Codex review on PR #2653: the block row used to pass
+/// straight into the walk, so `test "x" allows Ask::Get` authorized a
+/// `perform` no handler would ever catch).
+export fn entry_grant_errors(entry_name: String, labels: Array[String], off: Int) -> Array[EffectError] {
+  let errors = array_empty()
+  let unresolved = entry_unresolved_labels(labels)
+  let bad = entry_unadmitted_labels(labels)
+  if Array::length(unresolved) > 0 || Array::length(bad) > 0 {
+    if Array::length(unresolved) > 0 {
+      Array::push(errors, EEUnresolvedEntryEffectRow(entry_name, join_labels(unresolved), off))
+    } else {
+      Array::push(errors, EEUndischargedEntryEffect(entry_name, join_labels(bad), join_labels(entry_handler_labels(bad)), off))
+    }
+  } else {
+    let mut li = 0
+    while li < Array::length(labels) {
+      let core = strip_authority_grade(Array::get(labels, li))
+      if String::index_of(core, "::") >= 0 && has_standard_host_provider(core) && !entry_user_operation_requires_handler(core) && !standard_provider_owns_operation(core) {
+        Array::push(errors, EEUnknownProviderOperation(entry_name, core))
+      } else {
+        ()
+      }
+      li = li + 1
+    }
+  }
+  errors
+}
+
+export fn check_entry_declared_effects(fn_name: String, ty: Option[TypeExpr], body: Expr) -> Array[EffectError] {
+  let errors = array_empty()
+  if is_program_entry_name(fn_name) {
+    let inspect_body = match body {
+      EFn(_, _, _, _, _, fbody) => fbody,
+      _ => body
+    }
+    append_eff_errs(errors, entry_grant_errors(fn_name, fn_binding_effects(ty, body), first_expr_offset(inspect_body)))
+  } else {
+    ()
+  }
+  errors
+}
+
+/// The callee signatures a call ARGUMENT's row is decided by
+/// (closure_arg_declared). The program table (`fn_names` / `fn_effs` /
+/// `fn_param_effs`) records what the transitive check needs -- every
+/// top-level binding of the module, and of the env only the bindings with a
+/// non-empty row, those with no parameter rows (#1485 keeps imports on its
+/// exemption). The argument rule needs an imported callee's PARAMETER rows
+/// (`TaskGroup::spawn`'s `() -> T with Exception + e` is the one that
+/// licenses the relaxation), so it reads this separate table --
+/// the same module bindings plus EVERY function binding of the env, module
+/// first so a same-named import is shadowed the way lookups shadow it. Set
+/// at every entry of the pass, and cleared by the entries with no env, so
+/// no table survives into the next module (the throw_kind_cell rule).
+let callee_sig_index: Array[MutMap[String, Int]] = [MutMap::new_string()]
+
+let callee_sig_effs: Array[Array[String]] = array_empty()
+
+let callee_sig_param_effs: Array[Array[Array[String]]] = array_empty()
+
+export fn set_callee_sigs(stmts: Array[Stmt], env: TypeEnv) -> Unit {
+  let loc_names = array_empty()
+  let loc_effs = array_empty()
+  let loc_peffs = no_param_effs()
+  build_perform_fn_effs(stmts, env, loc_names, loc_effs, loc_peffs)
+  set_callee_sigs_from(loc_names, loc_effs, loc_peffs, env_fn_sigs(env))
+}
+
+/// `set_callee_sigs` from tables the caller already built: this module's own
+/// bindings (`build_perform_fn_effs`) followed by every function binding of
+/// the env (`env_fn_sigs`). The effect pass needs both halves for its program
+/// table too, so it builds each once and hands them here.
+export fn set_callee_sigs_from(loc_names: Array[String], loc_effs: Array[Array[String]], loc_peffs: Array[Array[Array[String]]], env_sigs: (Array[String], Array[Array[String]], Array[Array[Array[String]]])) -> Unit {
+  Array::truncate(callee_sig_effs, 0)
+  Array::truncate(callee_sig_param_effs, 0)
+  let names = array_empty()
+  let mut i = 0
+  while i < Array::length(loc_names) {
+    Array::push(names, Array::get(loc_names, i))
+    Array::push(callee_sig_effs, Array::get(loc_effs, i))
+    Array::push(callee_sig_param_effs, Array::get(loc_peffs, i))
+    i = i + 1
+  }
+  let (env_names, env_effs, env_peffs) = env_sigs
+  let mut j = 0
+  while j < Array::length(env_names) {
+    Array::push(names, Array::get(env_names, j))
+    Array::push(callee_sig_effs, Array::get(env_effs, j))
+    Array::push(callee_sig_param_effs, Array::get(env_peffs, j))
+    j = j + 1
+  }
+  Array::set(callee_sig_index, 0, program_fn_index(names))
+}
+
+/// `param_type_effect_labels` over a checked `Type`: the row a function-typed
+/// parameter declares, nothing for any other parameter.
+fn type_param_effect_labels(pty: Type) -> Array[String] {
+  match pty {
+    CtFn(_, _, peff) => effect_row_labels(effect_row_parse(peff)),
+    _ => no_str_labels()
+  }
+}
+
+/// `fn_binding_param_effects` over a checked function `Type`, positionally.
+fn fn_type_param_effects(params: Array[Type]) -> Array[Array[String]] {
+  let out = no_param_row()
+  let mut i = 0
+  while i < Array::length(params) {
+    Array::push(out, type_param_effect_labels(Array::get(params, i)))
+    i = i + 1
+  }
+  out
+}
+
+/// One callee's "no parameter rows known" entry.
+export fn no_param_row() -> Array[Array[String]] {
+  array_empty()
+}
+
+/// #3016: union one label of a named argument's row into a row variable's
+/// instantiation -- unless a CONCRETE label of the same parameter row already
+/// authorizes it (`Exception` covers `Exception[String]`, `Fs` covers
+/// `Fs::read_file`). The callee handles or declares that label itself, so it
+/// never reaches the variable, and charging it to the caller asked `main` to
+/// declare an exception that could not reach it.
+fn rv_union_label(out: Array[String], lbl: String, concrete: Array[String]) -> Unit {
+  if effect_row_has_label(Some(out), lbl) {
+    ()
+  } else if Array::length(concrete) > 0 && decl_authorizes_op(concrete, lbl) {
+    ()
+  } else {
+    Array::push(out, lbl)
+  }
+}
+
+/// The labels of a parameter row that are not row variables.
+fn rv_concrete_labels(row: Array[String]) -> Array[String] {
+  let out = no_str_labels()
+  let mut i = 0
+  while i < Array::length(row) {
+    let lbl = Array::get(row, i)
+    if label_is_effect_var(lbl) {
+      ()
+    } else {
+      Array::push(out, lbl)
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// #1485: what a callee's row VARIABLE is instantiated to at ONE call site.
+///
+/// `row_var` is a row-variable label from the callee's declared row (e.g. `"e"` of
+/// `apply: [T](f: (T) -> T with e, x: T) -> T with e`). For every parameter
+/// whose own type declares that same variable, the argument actually passed
+/// there is resolved to its declared row, and the union of those rows is what
+/// the variable binds to here.
+///
+/// Returns None when the instantiation cannot be determined, and the caller
+/// then keeps the pre-#1485 exemption. That happens when a contributing
+/// argument is anything other than a name this pass can look up, or a closure
+/// literal that DECLARES its row (#2078) -- a call result, a field access, an
+/// unannotated lambda. Bailing out there is what keeps the
+/// change one-directional: a call site either gains a requirement that is
+/// justified by a row we actually read, or is left exactly as it was. It never
+/// guesses, so it cannot produce the false positives that sank the naive fix
+/// (`generic_effect_matrix_ok_passthrough_pure`, where `apply(inc, 41)` passes
+/// a PURE function and must keep requiring nothing).
+export fn resolve_row_var_instantiation(row_var: String, callee_param_effs: Array[Array[String]], args: Array[Expr], fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], ov_names: Array[String], ov_effs: Array[Array[String]]) -> Option[Array[String]] {
+  let out = no_str_labels()
+  let mut i = 0
+  let mut bailed = false
+  let mut saw_param = false
+  while i < Array::length(callee_param_effs) {
+    if effect_row_has_label(Some(Array::get(callee_param_effs, i)), row_var) {
+      saw_param = true
+      let concrete = rv_concrete_labels(Array::get(callee_param_effs, i))
+      if i < Array::length(args) {
+        match Array::get(args, i) {
+          EIdent(argname, _) => {
+            // A named argument: its row is whatever the call-graph map or the
+            // in-scope callback overlay records for it. An argument naming
+            // nothing either table knows (an import this pass cannot see) is a
+            // bail-out, not an empty row -- treating "unknown" as "pure" would
+            // silently authorize the very leak this is closing.
+            // #1723: argument names obey the same lexical precedence as the
+            // callee itself. An explicit empty overlay entry is a pure local
+            // shadow, not permission to consult a same-named top-level fn.
+            match lookup_fn_effs(ov_names, ov_effs, argname) {
+              Some(argeffs) => {
+                let mut k = 0
+                while k < Array::length(argeffs) {
+                  let lbl = Array::get(argeffs, k)
+                  rv_union_label(out, lbl, concrete)
+                  k = k + 1
+                }
+              },
+              None => match lookup_program_fn_effs(fn_index, fn_effs, argname) {
+                Some(argeffs2) => {
+                  let mut k2 = 0
+                  while k2 < Array::length(argeffs2) {
+                    let lbl2 = Array::get(argeffs2, k2)
+                    rv_union_label(out, lbl2, concrete)
+                    k2 = k2 + 1
+                  }
+                },
+                None => {
+                  bailed = true
+                }
+              }
+            }
+          },
+          EFn(_, _, _, _, eff, _) => match effect_row_parse(eff) {
+            // #2078: a closure literal that DECLARES its row needs no
+            // guessing -- the row is written at the argument position. It was
+            // bailing here, and the two mechanisms that would otherwise catch
+            // it both stand down for this exact shape: an explicit annotation
+            // suppresses the lexical charge to the enclosing function (an
+            // unannotated literal's `perform` still lands there, which is why
+            // that case keeps bailing below), and the named-argument arm above
+            // never sees a literal. The result was a program that performs an
+            // effect with no handler and no declared row anywhere, compiles
+            // clean, and traps at runtime.
+            Some(lambda_effs) => {
+              let mut li = 0
+              while li < Array::length(lambda_effs) {
+                let llbl = Array::get(lambda_effs, li)
+                rv_union_label(out, llbl, concrete)
+                li = li + 1
+              }
+            },
+            // An INFERRED row (`None`, structurally distinct from `Some([])`)
+            // inherits its surrounding context, so reading it here would be
+            // the guess this function exists not to make. Bail and keep the
+            // pre-#1485 exemption; the enclosing function's own row check is
+            // what covers this shape.
+            None => {
+              bailed = true
+            }
+          },
+          _ => {
+            bailed = true
+          }
+        }
+      } else {
+        bailed = true
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if bailed || !saw_param {
+    None
+  } else {
+    Some(out)
+  }
+}
+
+/// #2107: the ambient test grant, for a `test` / `bench` body that has already
+/// been lowered to a function.
+///
+/// The wasm-gc lane rewrites `test "x" { .. }` into `let __test_x = () -> { .. }`
+/// BEFORE the check (entry/source_compile/gc_only) -- it has to, because a
+/// `handle` inside a test block is only eligible for the ADR-0076 direct-perform
+/// lowering once the block is a named top-level fn. The STest / SBench arms in
+/// check_perform_effects_stmt_tx therefore never see those bodies, and without
+/// this the identical source checks differently on the two lanes: on gc every
+/// assertion in a test wanted `with Stdout` from a function with no row to
+/// declare.
+///
+/// Keyed on the name because the alternative -- writing the row onto the
+/// synthesized function -- changes what CODEGEN reads, and the eligibility pass
+/// above reads exactly that. The two prefixes are compiler-synthesized and
+/// reserved; `cli_support.vibe`, `codegen/wasi/linked_compile.vibe` and
+/// `codegen/gc/backend_body.vibe` already key off them the same way. The test's
+/// own `with` row (#1508) is looked up under its original name, so
+/// `test "x" allows Http` keeps widening the grant after lowering.
+export fn lowered_test_ambient_effects(fn_name: String) -> Array[String] {
+  let n = String::length(fn_name)
+  if String::starts_with(fn_name, "__test_") {
+    test_ambient_effects(String::substring(fn_name, 7, n))
+  } else if String::starts_with(fn_name, "__bench_") {
+    test_ambient_effects(String::substring(fn_name, 8, n))
+  } else {
+    no_str_labels()
+  }
+}
+
+/// ADR-0088: every row a binding's TYPES write besides its own -- the rows of
+/// function-typed parameters (`cb: () -> Unit with Fs::read_file?`), of the
+/// return type, and of anything nested under `Array[_]` / a tuple /
+/// `Option[_]`, in either spelling of the signature (the annotation `ty`, the
+/// `EFn` literal's own parameter and return annotations). Collected with the
+/// walk `ret_fn_row_labels` uses, so the grade check sees them all: a `?` on a
+/// user effect in a callback's row is the same claim about nothing as on the
+/// binding's own row (Codex review, PR #2653). `ty` may be `None` for a bare
+/// closure literal.
+export fn nested_type_rows(ty: Option[TypeExpr], body: Expr) -> Array[String] {
+  let out = no_str_labels()
+  match ty {
+    Some(te) => ret_fn_row_labels_into(te, out),
+    None => ()
+  }
+  match body {
+    EFn(_, _, params, fret, _, _) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        let (_, pty) = Array::get(params, i)
+        match pty {
+          Some(pte) => ret_fn_row_labels_into(pte, out),
+          None => ()
+        }
+        i = i + 1
+      }
+      match fret {
+        Some(rte) => ret_fn_row_labels_into(rte, out),
+        None => ()
+      }
+    },
+    _ => ()
+  }
+  out
+}
+
+fn variant_payload_rows_into(variants: Array[(String, Array[TypeExpr])], out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(variants) {
+    let (_, payload) = Array::get(variants, i)
+    let mut pi = 0
+    while pi < Array::length(payload) {
+      ret_fn_row_labels_into(Array::get(payload, pi), out)
+      pi = pi + 1
+    }
+    i = i + 1
+  }
+}
+
+fn signature_rows_into(sigs: Array[(String, Array[TypeExpr], TypeExpr)], out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(sigs) {
+    let (_, params, ret) = Array::get(sigs, i)
+    let mut pi = 0
+    while pi < Array::length(params) {
+      ret_fn_row_labels_into(Array::get(params, pi), out)
+      pi = pi + 1
+    }
+    ret_fn_row_labels_into(ret, out)
+    i = i + 1
+  }
+}
+
+/// ADR-0088: the rows written by the function types of a declaration that is
+/// not a binding -- a type alias, a struct's fields, an enum's or suberror's
+/// payloads, a trait's or an effect's operation signatures, an extern binding
+/// -- paired with the declaration's name for the diagnostic. The grade check
+/// runs on them so `type Callback = () -> Int with Ask::Get?` is refused like
+/// the same row on a binding (Codex review, PR #2653). `("", [])` for any
+/// other statement; bindings are covered by `nested_type_rows`.
+export fn stmt_type_rows(stmt: Stmt) -> (String, Array[String]) {
+  let out = no_str_labels()
+  let owner = match stmt {
+    STypeAlias(_, name, _, te) => {
+      ret_fn_row_labels_into(te, out)
+      name
+    },
+    SStruct(_, name, fields, _, _, _) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fte) = Array::get(fields, i)
+        ret_fn_row_labels_into(fte, out)
+        i = i + 1
+      }
+      name
+    },
+    SEnum(_, name, _, variants, _) => {
+      variant_payload_rows_into(variants, out)
+      name
+    },
+    SSuberror(_, name, variants) => {
+      variant_payload_rows_into(variants, out)
+      name
+    },
+    STrait(_, name, _, methods, _, _) => {
+      signature_rows_into(methods, out)
+      name
+    },
+    SEffectDef(_, name, _, ops) => {
+      signature_rows_into(ops, out)
+      name
+    },
+    SExternLet(name, te) => {
+      ret_fn_row_labels_into(te, out)
+      name
+    },
+    _ => ""
+  }
+  (owner, out)
+}
+
+/// ADR-0088: the labels of `labels` that carry the Optional grade on
+/// something that is not a host capability. Grades on `Exception`, `Async`
+/// and user effects are refused; the entry-admission and handler checks
+/// then see the plain label.
+export fn optional_grade_errors(fn_name: String, labels: Array[String]) -> Array[EffectError] {
+  let errors = array_empty()
+  let mut i = 0
+  while i < Array::length(labels) {
+    let label = Array::get(labels, i)
+    if authority_is_optional(label) && !is_instantiate_authority(label) {
+      Array::push(errors, EEOptionalGradeNotCapability(fn_name, label))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  errors
+}
+
+/// #761: a `test {}` / `bench {}` block is a program entry point — it runs under
+/// the runtime host, which is the ambient handler for the HOST resource effects
+/// (Fs/Env/Stdin/Stdout/Process/Profiler). So a test may invoke a host-effectful
+/// function (directly, transitively, or as an unqualified builtin) without a
+/// `handle`, exactly as `main` does. This grant was already de-facto true for
+/// IMPORTED effectful functions (they are absent from the transitive fn_effs map,
+/// so calling them never flagged), but LOCALLY-defined ones (in fn_effs) and
+/// direct builtin/perform host effects were wrongly rejected — an asymmetry.
+/// Seeding the test/bench declared row with the host set removes it. NON-host
+/// (user-defined) effects still require a handler: performing one at runtime with
+/// no host handler would trap, so leaving it flagged is correct. Purity/caching
+/// is judged separately by file_tests_cacheable (empty declared row), so a test
+/// that reaches a host effect still correctly counts as impure/non-cacheable.
+/// #944 (ADR-0073 implementation bridge): checked-Error mode. The accepted
+/// owner decision makes `Exception::Throw` a fully checked semantic operation
+/// (direct throw and `with Exception` callees propagate to the caller's
+/// row; discharge via `handle ... with Exception`). Stage A landed this
+/// opt-in (`VIBE_CHECK_ERROR_ROW=1`, default off, preserving the old
+/// exemption byte-for-byte) while the tree still carried hundreds of
+/// row-less throw sites (#640 measured ~970); stage B annotated those and
+/// flipped the DEFAULT to checked, leaving `VIBE_CHECK_ERROR_ROW=0` as a
+/// temporary opt-OUT escape hatch (wired in cli_adapter.vibe) for any
+/// downstream code that hasn't annotated yet. The switch rides in a
+/// module-level memo cell (fixtures/module_let_memo_test.vibe pattern)
+/// because the effect discipline has no configuration threading and the
+/// checker itself is pure (no Env row).
+///
+/// Scope note: builtin_call_effect's own Error carve-out (a BUILTIN whose
+/// declared row is Error) is deliberately NOT flipped by this switch --
+/// which builtins should carry a semantic Error row is a separate
+/// sub-decision tracked on #944.
+let error_row_mode_cell: Array[Int] = array_empty()
+
+export fn set_error_row_checked(on: Bool) -> Unit {
+  Array::truncate(error_row_mode_cell, 0)
+  Array::push(error_row_mode_cell, if on {
+    1
+  } else {
+    0
+  })
+}
+
+export fn error_row_checked() -> Bool {
+  Array::length(error_row_mode_cell) > 0 && Array::get(error_row_mode_cell, 0) == 1
+}
+
+/// Canonical cache identity for the actual process-wide checker mode. Direct
+/// callers that do not configure the cell are unchecked, matching
+/// error_row_checked(); CLI callers set the cell explicitly every invocation.
+export fn typing_semantics_seed() -> String {
+  if error_row_checked() {
+    "checked"
+  } else {
+    "unchecked"
+  }
+}
+
+// Test/bench default rows are derived from core/standard_effect_policy.vibe
+// (`test_bench_default_effects`) rather than a local literal. Each item's
+// existing operation-granularity evidence is retained in the policy table.
+// 根拠 (Fs/Env の使用 operation 分布、Stdin の推移的要求、Process に退避先の
+// 綴りが無いこと) も表側のコメントへ移した。
+
+/// #1508: `(test name, row text)` from the parse's `STestEffectRows` marker.
+/// A module cell for the same reason the marker exists at all: the row has to
+/// reach the two `STest` / `SBench` arms below without widening either node.
+let test_effect_row_tbl: Array[(String, String)] = array_empty()
+
+fn test_row_has_label(labels: Array[String], target: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(labels) {
+    if Array::get(labels, i) == target {
+      found = true
+      i = Array::length(labels)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+export fn set_test_effect_rows(stmts: Array[Stmt]) -> Unit {
+  Array::truncate(test_effect_row_tbl, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      STestEffectRows(rows) => {
+        let mut ri = 0
+        while ri < Array::length(rows) {
+          Array::push(test_effect_row_tbl, Array::get(rows, ri))
+          ri = ri + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+/// The ambient row a `test` / `bench` body is checked against: the policy
+/// default (`core/standard_effect_policy.vibe`) plus whatever the declaration's
+/// own `with` clause added.
+///
+/// A declared row WIDENS rather than replaces. `Exception` and the Stdout/Fs
+/// family are what `assert` and ordinary test scaffolding need, and making
+/// `with Http` silently drop them would mean every such test had to restate the
+/// whole default -- which `docs/internal/design/test-example-capabilities.md` asks for in
+/// its "row は完全に明示する" note, but that reads as a rule for a future
+/// `with ()` form; taking it now would break every existing test that adds a
+/// row. Recorded on #1508.
+export fn test_ambient_effects(name: String) -> Array[String] {
+  let base = test_bench_default_effects()
+  let extra = test_declared_row_labels(name)
+  let mut ei = 0
+  while ei < Array::length(extra) {
+    let label = Array::get(extra, ei)
+    if test_row_has_label(base, label) {
+      ()
+    } else {
+      Array::push(base, label)
+    }
+    ei = ei + 1
+  }
+  base
+}
+
+/// The labels a `test` / `bench` block's own `allows` row writes (with any
+/// effectset already expanded), without the ambient default. Empty when the
+/// block declares no row.
+export fn test_declared_row_labels(name: String) -> Array[String] {
+  let out = no_str_labels()
+  let mut i = 0
+  while i < Array::length(test_effect_row_tbl) {
+    let (n, row) = Array::get(test_effect_row_tbl, i)
+    if n == name {
+      let extra = effect_row_labels(effect_row_parse(Some(row)))
+      let mut ei = 0
+      while ei < Array::length(extra) {
+        Array::push(out, Array::get(extra, ei))
+        ei = ei + 1
+      }
+      i = Array::length(test_effect_row_tbl)
+    } else {
+      i = i + 1
+    }
+  }
+  out
+}
+
+/// #812: seed the transitive call-graph map with the checker ENV's bindings.
+/// fn_names/fn_effs was built from the CURRENT module's top-level statements
+/// only, so a caller could invoke an IMPORTED `with Fs` function without
+/// declaring Fs and reach the filesystem at runtime — while the identical
+/// shape with a local callee was rejected. An imported binding's CtFn carries
+/// its declared effect row in the env; add every effect-bearing env binding
+/// AFTER the local rows (lookup_fn_effs is first-match, so a same-name local
+/// row still shadows the env row). Effect-free bindings are skipped — an
+/// absent row and an empty row enforce the same (nothing).
+/// `every_fn` (the callee-signature table, set_callee_sigs) records every
+/// function binding with its parameter rows; the program table keeps the
+/// #1485 shape below.
+fn push_env_fn_eff(name: String, ty: Type, fn_names: Array[String], fn_effs: Array[Array[String]], fn_param_effs: Array[Array[Array[String]]], every_fn: Bool) -> Unit {
+  let fnty = match ty {
+    CtForAll(_, _, body) => body,
+    _ => ty
+  }
+  match fnty {
+    CtFn(params, _, eff) => {
+      let labels = effect_row_labels(effect_row_parse(eff))
+      if every_fn {
+        Array::push(fn_names, name)
+        Array::push(fn_effs, labels)
+        Array::push(fn_param_effs, fn_type_param_effects(params))
+      } else if Array::length(labels) > 0 {
+        Array::push(fn_names, name)
+        Array::push(fn_effs, labels)
+        // #1485: the three arrays are index-aligned, so SOMETHING is pushed
+        // for every binding. #3014: an env-seeded (imported) binding's
+        // parameter rows come from its checked `Type` -- an empty entry
+        // exempted its row variable, so an unhandled effect passed by name
+        // through an imported row-polymorphic helper compiled and trapped.
+        Array::push(fn_param_effs, fn_type_param_effects(params))
+      } else {
+        ()
+      }
+    },
+    _ => ()
+  }
+}
+
+/// #2968: every label an env (imported) function's row or parameter rows
+/// write. A module may spell an effect it reaches only through an imported
+/// function's row without importing the effect declaration itself, so these
+/// count as known when a row label is validated.
+export fn env_row_labels(env: TypeEnv, local_names: Array[String]) -> Array[String] {
+  env_row_labels_from(env_fn_sigs(env), local_names)
+}
+
+/// Every function binding of an env with its row and parameter rows, in env
+/// order (`seed_env_fn_effs` with `every_fn`). Walking the env parses every
+/// imported binding's row, and one module's effect pass needs the answer
+/// three times -- the callee-signature table, the program table (its
+/// non-empty rows), and the unknown-label check -- so it is built once per
+/// pass and threaded (`env_fn_sigs` / `*_from`).
+export fn env_fn_sigs(env: TypeEnv) -> (Array[String], Array[Array[String]], Array[Array[Array[String]]]) {
+  let names = no_str_labels()
+  let effs = array_empty()
+  let peffs = no_param_effs()
+  seed_env_fn_effs(env, names, effs, peffs, true)
+  (names, effs, peffs)
+}
+
+export fn env_row_labels_from(sigs: (Array[String], Array[Array[String]], Array[Array[Array[String]]]), local_names: Array[String]) -> Array[String] {
+  let (names, effs, peffs) = sigs
+  let out = no_str_labels()
+  let mut i = 0
+  while i < Array::length(effs) {
+    // The checked env also binds this module's own declarations; their rows
+    // are what is being validated, so they cannot vouch for themselves.
+    let mut own = false
+    let mut oi = 0
+    while oi < Array::length(local_names) {
+      if Array::get(local_names, oi) == Array::get(names, i) {
+        own = true
+      }
+      oi = oi + 1
+    }
+    if !own {
+      let row = Array::get(effs, i)
+      let mut j = 0
+      while j < Array::length(row) {
+        Array::push(out, Array::get(row, j))
+        j = j + 1
+      }
+      let prow = Array::get(peffs, i)
+      let mut k = 0
+      while k < Array::length(prow) {
+        let pr = Array::get(prow, k)
+        let mut m = 0
+        while m < Array::length(pr) {
+          Array::push(out, Array::get(pr, m))
+          m = m + 1
+        }
+        k = k + 1
+      }
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// #2968: the labels of one written row (`Fs + Exception[E] + e`).
+export fn row_text_labels(row: String) -> Array[String] {
+  effect_row_labels(effect_row_parse(Some(row)))
+}
+
+fn seed_env_fn_effs(env: TypeEnv, fn_names: Array[String], fn_effs: Array[Array[String]], fn_param_effs: Array[Array[Array[String]]], every_fn: Bool) -> Unit {
+  let mut cur = env
+  let mut looping = true
+  while looping {
+    match cur {
+      EnvBind(name, binding, rest) => {
+        push_env_fn_eff(name, binding.ty, fn_names, fn_effs, fn_param_effs, every_fn)
+        cur = rest
+      },
+      EnvTraitDef(_, _, _, _, rest, _, _) => {
+        cur = rest
+      },
+      EnvTraitImpl(_, _, rest) => {
+        cur = rest
+      },
+      EnvMutCell(_, _, rest) => {
+        cur = rest
+      },
+      EnvTraitImplGen(_, _, _, _, rest) => {
+        cur = rest
+      },
+      EnvCached(_, _, rest) => {
+        cur = rest
+      },
+      EnvTypeDefs(_, _, rest) => {
+        cur = rest
+      },
+      EnvFlat(entries) => {
+        let mut ei = 0
+        while ei < Array::length(entries) {
+          let (ename, binding) = Array::get(entries, ei)
+          push_env_fn_eff(ename, binding.ty, fn_names, fn_effs, fn_param_effs, every_fn)
+          ei = ei + 1
+        }
+        looping = false
+      },
+      EnvEmpty => {
+        looping = false
+      }
+    }
+  }
+}
+
+export fn build_perform_fn_effs(stmts: Array[Stmt], env: TypeEnv, fn_names: Array[String], fn_effs: Array[Array[String]], fn_param_effs: Array[Array[Array[String]]]) -> Unit {
+  let mut m = 0
+  while m < Array::length(stmts) {
+    match Array::get(stmts, m) {
+      SLet(_, _, name, None, EIdent(src, _)) => {
+        // #3057: an unannotated top-level ALIAS (`let h = f`) has no row of
+        // its own to read; it calls with its source's. It used to be recorded
+        // with an empty row, which shadowed the env's entry, so every effect
+        // a call of `h` performs was dropped -- `f`'s `with Tick` compiled
+        // in a pure caller.
+        let (effs, peffs) = toplevel_alias_effects(stmts, env, name, src, 8)
+        Array::push(fn_names, name)
+        Array::push(fn_effs, effs)
+        Array::push(fn_param_effs, peffs)
+      },
+      SLet(_, _, name, ty, body) => {
+        Array::push(fn_names, name)
+        Array::push(fn_effs, fn_binding_effects(ty, body))
+        Array::push(fn_param_effs, fn_binding_param_effects(ty, body))
+      },
+      SLetMut(name, ty, body) => {
+        Array::push(fn_names, name)
+        Array::push(fn_effs, fn_binding_effects(ty, body))
+        Array::push(fn_param_effs, fn_binding_param_effects(ty, body))
+      },
+      _ => ()
+    }
+    m = m + 1
+  }
+}
+
+/// #3057: the row (and per-parameter rows) a call of the top-level alias
+/// `name` carries, `src` being the name it aliases. A source declared in this
+/// module is read from its own declaration, following alias chains; any other
+/// source (an import) is read from the checked type of `name` itself, whose
+/// row the checker respelled against the alias's own quantifiers
+/// (`publish_row_formals`), so a call's formal bindings line up with it.
+fn toplevel_alias_effects(stmts: Array[Stmt], env: TypeEnv, name: String, src: String, fuel: Int) -> (Array[String], Array[Array[String]]) {
+  let mut local = None
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match local {
+      Some(_) => (),
+      None => match Array::get(stmts, i) {
+        SLet(_, _, n, ty, body) => if n == src {
+          local = Some((ty, body))
+        },
+        SLetMut(n, ty, body) => if n == src {
+          local = Some((ty, body))
+        },
+        _ => ()
+      }
+    }
+    i = i + 1
+  }
+  match local {
+    Some((None, EIdent(next, _))) => if fuel > 0 {
+      toplevel_alias_effects(stmts, env, name, next, fuel - 1)
+    } else {
+      env_binding_effects(env, name)
+    },
+    Some((ty, body)) => (fn_binding_effects(ty, body), fn_binding_param_effects(ty, body)),
+    None => env_binding_effects(env, name)
+  }
+}
+
+/// The row and per-parameter rows of `name`'s checked type in `env`; nothing
+/// for a name the env does not bind to a function.
+fn env_binding_effects(env: TypeEnv, name: String) -> (Array[String], Array[Array[String]]) {
+  let fnty = match env_lookup(env, name) {
+    Some(CtForAll(_, _, body)) => Some(body),
+    other => other
+  }
+  match fnty {
+    Some(CtFn(params, _, eff)) => (effect_row_labels(effect_row_parse(eff)), fn_type_param_effects(params)),
+    _ => (no_str_labels(), array_empty())
+  }
+}
+
+//# #1347: a `handle` that can never fire (the handler-switch footgun)
+//
+// A continuation captured by handler H carries H with it: the suspend
+// lowering bakes H's driver into the closure it hands to the arm
+// (`resume = (rv) -> .. __scps_driveN(k(rv))`, inline_direct_perform.vibe),
+// so invoking that stored continuation later re-enters H no matter what
+// handles enclose the invocation. Wrapping the call in a NEW
+// `handle .. with E { .. }` therefore switches nothing — the new arms are
+// simply dead. That is the semantics (first-class continuations are
+// handler-carrying); the defect #1347 reports is that it was SILENT.
+//
+// The suspend lowering already rejects the same shape when the WRAPPING
+// handle is itself suspend-class ("the handle body calls something this
+// suspend lowering cannot see through"). Only the tail-resumptive spelling
+// slipped through, so this restores the symmetry — measured on the two
+// spellings of one program, which differed solely in the wrapping arm.
+//
+// Flagged iff all three hold:
+//   1. the program performs E somewhere (so E is live, not a label pun);
+//   2. this handle's body cannot STATICALLY reach any perform of E;
+//   3. this handle's body calls an OPAQUE value — a plain lowercase local
+//      that is not a top-level binding or a builtin, i.e. exactly the
+//      `k(())` of a stored continuation.
+//
+// All three are load-bearing against real in-tree sites. Without (1),
+// `entry.vibe`'s `Profiler` handle (which wraps the whole CLI dispatch —
+// an opaque call) and `cache_underlying.vibe`'s module-private `effect Env`
+// label pun are flagged: nothing performs those labels, and today's
+// vacuous-handle elimination erases them deliberately. Without (3),
+// `http_e2e_test`'s client-only `Http` handle is flagged: `Http` IS
+// performed by the server wrappers elsewhere, but that body reaches only
+// direct host calls, which resolve. (2) is what spares the legitimate
+// coroutine handle, whose body performs the effect directly.
+//
+// Every uncertainty resolves toward NOT flagging: an unresolved callee, a
+// row variable, a nested handle, or a row-carrying closure literal all
+// count as "may reach", so this pass rejects only handles it can prove
+// dead.
+
+fn dh_effect_of_perform_arg(arg: Expr) -> String {
+  match arg {
+    ECall(EIdent(op_name, _), _, _) => effect_name_of_op(op_name),
+    EIdent(op_name, _) => effect_name_of_op(op_name),
+    _ => ""
+  }
+}
+
+/// The effect of `expr` if it is a `perform` call, else "".
+export fn dh_perform_effect(expr: Expr) -> String {
+  match expr {
+    ECall(EIdent(name, _), args, _) => if name == "perform" && Array::length(args) == 1 {
+      dh_effect_of_perform_arg(Array::get(args, 0))
+    } else {
+      ""
+    },
+    _ => ""
+  }
+}
+
+fn dh_collect_performed_into(expr: Expr, acc: Array[String]) -> Unit {
+  let eff = dh_perform_effect(expr)
+  if String::length(eff) > 0 && !effect_row_has_label(Some(acc), eff) {
+    Array::push(acc, eff)
+  } else {
+    ()
+  }
+  let children = expr_children(expr)
+  let mut i = 0
+  while i < Array::length(children) {
+    dh_collect_performed_into(Array::get(children, i), acc)
+    i = i + 1
+  }
+}
+
+/// Every effect the program performs, anywhere. Collected once (rather than
+/// re-scanning per handle site) because a large program has many handles.
+export fn dh_collect_performed_effects(stmts: Array[Stmt]) -> Array[String] {
+  let acc = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, body) => dh_collect_performed_into(body, acc),
+      SLetMut(_, _, body) => dh_collect_performed_into(body, acc),
+      SExpr(e) => dh_collect_performed_into(e, acc),
+      STest(_, body) => dh_collect_performed_into(body, acc),
+      SBench(_, body) => dh_collect_performed_into(body, acc),
+      _ => ()
+    }
+    i = i + 1
+  }
+  acc
+}
+
+export fn dh_declared_effects(stmts: Array[Stmt]) -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SEffectDef(_, name, _, _) => if effect_row_has_label(Some(out), name) {
+        ()
+      } else {
+        Array::push(out, name)
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// True when any label in `labels` could denote `ename` — base-name match, or
+/// a row VARIABLE (which may be instantiated to anything, so it counts).
+export fn dh_labels_may_be(labels: Array[String], ename: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(labels) {
+    let l = Array::get(labels, i)
+    if label_is_effect_var(l) || row_label_base(effect_name_of_op(l)) == ename {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Does this type annotation mention a function row carrying `ename`? An
+/// ANNOTATED local binding (`let apply: (String) -> String with Transform
+/// = (s) -> { .. }`) is desugared to an ascription call before this walk runs
+/// (`((__asc: T) -> __asc)(e)`, ascribe_wrap), so its row survives only in the
+/// ascription lambda's PARAMETER annotation -- see fixtures/effect_crossfn_test
+/// .vibe, where the handled body's only callee is such a binding.
+export fn dh_texpr_may_be(t: TypeExpr, ename: String) -> Bool {
+  match t {
+    TyFn(ps, ret, eff) => if dh_labels_may_be(effect_row_labels(effect_row_parse(eff)), ename) {
+      true
+    } else {
+      dh_texprs_may_be(ps, ename) || dh_texpr_may_be(ret, ename)
+    },
+    TyApp(_, args) => dh_texprs_may_be(args, ename),
+    TyTuple(elems) => dh_texprs_may_be(elems, ename),
+    _ => false
+  }
+}
+
+fn dh_texprs_may_be(ts: Array[TypeExpr], ename: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(ts) && !found {
+    found = dh_texpr_may_be(Array::get(ts, i), ename)
+    i = i + 1
+  }
+  found
+}
+
+export fn dh_params_may_be(params: Array[(String, Option[TypeExpr])], ename: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(params) && !found {
+    let (_, pty) = Array::get(params, i)
+    found = match pty {
+      Some(t) => dh_texpr_may_be(t, ename),
+      None => false
+    }
+    i = i + 1
+  }
+  found
+}
+
+export fn dh_value_alias_name(value: Expr) -> Option[String] {
+  match value {
+    EIdent(source, _) => Some(source),
+    ECall(_, args, _) => match afe_ascribed_name_type(value) {
+      Some(_) => dh_value_alias_name(Array::get(args, 0)),
+      None => None
+    },
+    _ => None
+  }
+}
+
+fn dh_value_aliases_binding(value: Expr, name: String) -> Bool {
+  match dh_value_alias_name(value) {
+    Some(source) => source == name,
+    None => false
+  }
+}
+
+export fn dh_call_to_binding(expr: Expr, name: String) -> Option[Int] {
+  match expr {
+    ECall(EIdent(nm, off), _, _) => if nm == name {
+      Some(off)
+    } else {
+      dh_call_to_binding_in(expr_children(expr), name)
+    },
+    ELet(nm, value, body, _) => match dh_call_to_binding(value, name) {
+      Some(off) => Some(off),
+      None => {
+        let through_alias = if dh_value_aliases_binding(value, name) {
+          dh_call_to_binding(body, nm)
+        } else {
+          None
+        }
+        match through_alias {
+          Some(off) => Some(off),
+          None => if nm == name {
+            None
+          } else {
+            dh_call_to_binding(body, name)
+          }
+        }
+      }
+    },
+    ELetMut(nm, value, body, _) => match dh_call_to_binding(value, name) {
+      Some(off) => Some(off),
+      None => if nm == name {
+        None
+      } else {
+        dh_call_to_binding(body, name)
+      }
+    },
+    ELetRec(nm, value, body) => if nm == name {
+      None
+    } else {
+      match dh_call_to_binding(value, name) {
+        Some(off) => Some(off),
+        None => match if dh_value_aliases_binding(value, name) {
+          dh_call_to_binding(body, nm)
+        } else {
+          None
+        } {
+          Some(off) => Some(off),
+          None => dh_call_to_binding(body, name)
+        }
+      }
+    },
+    EFn(_, _, params, _, _, body) => {
+      let mut shadows = false
+      for param in params {
+        let (pn, _) = param
+        if effect_param_base_name(pn) == name {
+          shadows = true
+        } else {
+          ()
+        }
+      }
+      if shadows {
+        None
+      } else {
+        dh_call_to_binding(body, name)
+      }
+    },
+    EMatch(scrutinee, arms) => match dh_call_to_binding(scrutinee, name) {
+      Some(off) => Some(off),
+      None => dh_call_to_binding_arms(arms, name)
+    },
+    EHandle(body, arms) => match dh_call_to_binding(body, name) {
+      Some(off) => Some(off),
+      None => dh_call_to_binding_arms(arms, name)
+    },
+    EForIn(nm, index_name, iter, body) => match dh_call_to_binding(iter, name) {
+      Some(off) => Some(off),
+      None => if nm == name || index_name == Some(name) {
+        None
+      } else {
+        dh_call_to_binding(body, name)
+      }
+    },
+    ELoop(pairs, body) => {
+      let mut hit: Option[Int] = None
+      let mut shadows = false
+      for pair in pairs {
+        let (pn, value) = pair
+        match hit {
+          Some(_) => (),
+          None => {
+            hit = dh_call_to_binding(value, name)
+          }
+        }
+        if pn == name {
+          shadows = true
+        } else {
+          ()
+        }
+      }
+      match hit {
+        Some(_) => hit,
+        None => if shadows {
+          None
+        } else {
+          dh_call_to_binding(body, name)
+        }
+      }
+    },
+    _ => dh_call_to_binding_in(expr_children(expr), name)
+  }
+}
+
+fn dh_call_to_binding_arms(arms: Array[(Pat, Expr)], name: String) -> Option[Int] {
+  let mut hit: Option[Int] = None
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (pat, body) = Array::get(arms, i)
+    let bound: Array[String] = []
+    collect_pat_binds_into(pat, bound)
+    if !str_list_has(bound, name) {
+      match hit {
+        Some(_) => (),
+        None => {
+          hit = dh_call_to_binding(body, name)
+        }
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+fn dh_call_to_binding_in(exprs: Array[Expr], name: String) -> Option[Int] {
+  let mut hit: Option[Int] = None
+  let mut i = 0
+  while i < Array::length(exprs) {
+    match hit {
+      Some(_) => (),
+      None => {
+        hit = dh_call_to_binding(Array::get(exprs, i), name)
+      }
+    }
+    i = i + 1
+  }
+  hit
+}

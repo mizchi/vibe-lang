@@ -1,0 +1,2243 @@
+// lib/@vibe/compiler/core/types.vibe — types equal.
+
+import ./ast.vibe {
+  Expr, Pat, Stmt, TypeExpr
+}
+
+import ./expr_children.vibe {
+  expr_child_at
+}
+
+import @vibe/ast {
+  trait_ref_from_key, trait_ref_key, trait_ref_name, type_param_arity
+}
+
+import ./exception_effect.vibe {
+  exception_label_kind, is_exception_label
+}
+
+import ./sorted_index.vibe {
+  apply_perm_strings
+}
+
+import ./env_name_index.vibe {
+  EnvNameIndex
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import ./types_env_cache.vibe {
+  Subst,
+  Type,
+  TypeDef,
+  TypeEnv,
+  apply_type_constructor,
+  find_typedef,
+  hkt_app_name,
+  hkt_ctor_prefix,
+  int_array_contains,
+  make_alias_constructor,
+  resolve_type_alias_params,
+  subst_lookup,
+  trait_supers,
+  type_expr_name_is_shadowed,
+  type_expr_shadowed_arity,
+  zonk_hkt
+}
+
+export fn array_has_int(arr: Array[Int], val: Int, i: Int) -> Bool {
+  if i >= Array::length(arr) {
+    false
+  }
+  else if Array::get(arr, i) == val {
+    true
+  }
+  else array_has_int(arr, val, i + 1)
+}
+
+fn int_array_has(arr: Array[Int], v: Int) -> Bool {
+  let slen = Array::length(arr)
+  let mut si = 0
+  let mut sfound = false
+  let mut sdone = false
+  while !sdone {
+    if si >= slen {
+      sdone = true
+    } else if Array::get(arr, si) == v {
+      sfound = true
+      sdone = true
+    } else {
+      si = si + 1
+    }
+  }
+  sfound
+}
+
+/// A row minted by `instantiate` (`$N`), as opposed to a source binder (`e`).
+/// `is_effect_var_name` accepts both, which is right where the question is
+/// "is this a variable at all" and wrong where it is "may this binding be
+/// undone" -- undoing a source-to-source unification loses a constraint the
+/// body proved.
+fn is_fresh_effect_var_name(name: String) -> Bool {
+  String::length(name) >= 2 && String::char_code_at(name, 0) == 36
+}
+
+fn is_effect_var_name(name: String) -> Bool {
+  let len = String::length(name)
+  if len == 1 {
+    // a source-level effect variable: a single lowercase letter (`with e`)
+    String::char_code_at(name, 0) >= 97 && String::char_code_at(name, 0) <= 122
+  } else if len >= 2 {
+    // a FRESH effect variable minted by `instantiate` (`$N`): no real effect
+    // name starts with `$`, so this marker is unambiguous.
+    String::char_code_at(name, 0) == 36
+  } else {
+    false
+  }
+}
+
+/// Resolve an effect variable name through the effect-binding chain (transitively
+/// following var->var links). Returns the bound effect-label string ("" = pure)
+/// or None if the variable is unbound.
+fn subst_eff_lookup(s: Subst, name: String) -> Option[String] {
+  let mut cur = s
+  let mut out = None
+  let mut done = false
+  while !done {
+    match cur {
+      SubstEmpty => {
+        done = true
+      },
+      SubstBind(_, _, rest) => {
+        cur = rest
+      },
+      SubstBound(_, _, rest) => {
+        cur = rest
+      },
+      SubstCached(_, _, rest) => {
+        cur = rest
+      },
+      SubstEffBind(v, val, rest) => if v == name {
+        out = Some(val)
+        done = true
+      } else {
+        cur = rest
+      }
+    }
+  }
+  match out {
+    Some(val) => if is_effect_var_name(val) {
+      match subst_eff_lookup(s, val) {
+        Some(v2) => Some(v2),
+        None => Some(val)
+      }
+    } else {
+      Some(val)
+    },
+    None => None
+  }
+}
+
+/// Resolve a CtFn effect annotation through the effect-binding chain: a bound
+/// effect variable becomes its binding (an empty binding "" collapses to the
+/// pure row `None`); anything else is returned unchanged.
+fn resolve_effect_opt(s: Subst, eff: Option[String]) -> Option[String] {
+  match eff {
+    None => None,
+    Some(row) => if String::index_of(row, ",") < 0 && String::trim(row) == row && !is_effect_var_name(row) && !String::starts_with(row, "#capture[") {
+      Some(row)
+    } else {
+      let labels = String::split(row, ",")
+      let resolved = array_empty()
+      let mut i = 0
+      while i < Array::length(labels) {
+        let label = String::trim(Array::get(labels, i))
+        if is_effect_var_name(label) {
+          match subst_eff_lookup(s, label) {
+            Some(bound) => if String::length(bound) > 0 {
+              for part in String::split(bound, ",") {
+                let trimmed = String::trim(part)
+                if String::length(trimmed) > 0 {
+                  Array::push(resolved, trimmed)
+                }
+              }
+              ()
+            },
+            None => Array::push(resolved, label)
+          }
+        } else if String::starts_with(label, "#capture[") {
+          let close = String::index_of(label, "]")
+          let mut id = 0
+          let mut p = 9
+          while p < close {
+            id = id * 10 + (String::char_code_at(label, p) - 48)
+            p = p + 1
+          }
+          match subst_lookup(s, id) {
+            Some(bound_ty) => {
+              let resolved_ty = subst_apply(s, bound_ty)
+              let region_names = array_empty()
+              collect_region_skolems_in_type(resolved_ty, region_names)
+              if Array::length(region_names) > 0 {
+                for region_name in region_names {
+                  if !string_array_contains(resolved, region_name) {
+                    Array::push(resolved, region_name)
+                  }
+                }
+              } else match resolved_ty {
+                CtVar(new_id) => Array::push(resolved, String::concat("#capture[", String::concat(__to_string(new_id), "]"))),
+                _ => ()
+              }
+            },
+            None => Array::push(resolved, label)
+          }
+        } else if String::length(label) > 0 {
+          Array::push(resolved, label)
+        }
+        i = i + 1
+      }
+      if Array::length(resolved) == 0 {
+        None
+      } else {
+        Some(String::join(resolved, ", "))
+      }
+    }
+  }
+}
+
+/// Apply the closed part of an effect substitution while publishing a generic
+/// scheme. A source binder can temporarily unify with a fresh inference row
+/// (`e -> $82`) while its body is checked; publishing `$82` loses the binder
+/// that `instantiate` must freshen at each call site. Preserve the original
+/// label for every still-open result, while retaining concrete labels learned
+/// beside it. A fully closed binding (`e -> Log`) is applied normally.
+export fn resolve_effect_opt_preserving_open(s: Subst, eff: Option[String]) -> Option[String] {
+  match eff {
+    None => None,
+    Some(row) => {
+      let out = array_empty()
+      for raw in String::split(row, ",") {
+        let original = String::trim(raw)
+        match resolve_effect_opt(s, Some(original)) {
+          Some(resolved_row) => for resolved_raw in String::split(resolved_row, ",") {
+            let resolved = String::trim(resolved_raw)
+            // Restore the source spelling ONLY over a fresh `$N`. When one
+            // source binder resolves to ANOTHER source binder, the body proved
+            // they are the same row, and republishing the original made them
+            // independent again:
+            //
+            //   fn cast[T, e, f](g: (T) -> T with e) -> (T) -> T with f { g }
+            //
+            // published `with e` for the argument and `with f` for the result,
+            // so a caller could bind the callback to one concrete effect and
+            // the value it returns to another -- misrepresenting the
+            // callback's authority, with no diagnostic (Codex review).
+            let published = if is_effect_var_name(original) && is_fresh_effect_var_name(resolved) {
+              original
+            } else {
+              resolved
+            }
+            if String::length(published) > 0 && !string_array_contains(out, published) {
+              Array::push(out, published)
+            } else {
+              ()
+            }
+          },
+          None => ()
+        }
+      }
+      if Array::length(out) == 0 {
+        None
+      } else {
+        Some(String::join(out, ", "))
+      }
+    }
+  }
+}
+
+/// Region provenance is carried in a function's checked row as an internal
+/// unforgeable label. It is not a runtime effect: the row is simply the one
+/// structured slot already preserved by substitution, generalization and
+/// containers. `#capture[n]` is dependent on inference variable n and becomes
+/// the concrete `#region_n` label when that variable is unified with a
+/// region-tagged type.
+fn string_array_contains(items: Array[String], wanted: String) -> Bool {
+  let mut found = false
+  for item in items {
+    if item == wanted {
+      found = true
+    }
+  }
+  found
+}
+
+fn collect_region_skolems_in_type(ty: Type, out: Array[String]) -> Unit {
+  match ty {
+    CtNamed(name, args) => if String::starts_with(name, "#region_") {
+      if !string_array_contains(out, name) {
+        Array::push(out, name)
+      }
+    } else {
+      for arg in args {
+        collect_region_skolems_in_type(arg, out)
+      }
+    },
+    CtFn(params, ret, eff) => {
+      match eff {
+        Some(row) => {
+          for raw in String::split(row, ",") {
+            let label = String::trim(raw)
+            if String::starts_with(label, "#region_") && !string_array_contains(out, label) {
+              Array::push(out, label)
+            }
+          }
+        },
+        None => ()
+      }
+      for param in params {
+        collect_region_skolems_in_type(param, out)
+      }
+      collect_region_skolems_in_type(ret, out)
+    },
+    CtArray(elem) => collect_region_skolems_in_type(elem, out),
+    CtOption(elem) => collect_region_skolems_in_type(elem, out),
+    CtTuple(items) => {
+      for item in items {
+        collect_region_skolems_in_type(item, out)
+      }
+    },
+    CtRecord(fields) => {
+      for field in fields {
+        let (_, field_ty) = field
+        collect_region_skolems_in_type(field_ty, out)
+      }
+    },
+    CtForAll(_, _, body) => collect_region_skolems_in_type(body, out),
+    _ => ()
+  }
+}
+
+/// #2158: does `ty` resolve to `Double` under `s`, WITHOUT building the
+/// substituted type?
+///
+/// `subst_apply` below answers the same question, but it rebuilds the whole
+/// type structure to do it: for a call result that resolves to a function type
+/// or a parameterized nominal, that is a full recursive allocation discarded
+/// one comparison later. The Double call-result observation asks this question
+/// once per located call result, so on a merged program the size of the
+/// compiler the rebuild dominated everything -- measured on
+/// `lib/@vibe/compiler/tests/compiler_fs_test.vibe`, whose import closure is
+/// the whole compiler: 6.1s to compile before the observation was wired in,
+/// 77.5s with it going through `subst_apply`.
+///
+/// Following the VARIABLE chain is the whole job. `CtDouble` takes no
+/// arguments, so a type that is not already `CtDouble` at its head cannot
+/// become one by substituting inside it -- there is nothing below the head to
+/// look at. Cycle handling matches `subst_apply`'s: a variable already seen
+/// ends the walk instead of looping.
+export fn subst_resolves_to_double(s: Subst, ty: Type) -> Bool {
+  let mut cur = ty
+  let seen = array_empty()
+  let mut done = false
+  let mut result = false
+  while !done {
+    match cur {
+      CtDouble => {
+        result = true
+        done = true
+      },
+      CtVar(vid) => if int_array_has(seen, vid) {
+        done = true
+      } else {
+        Array::push(seen, vid)
+        match subst_lookup(s, vid) {
+          Some(next) => {
+            cur = next
+          },
+          None => {
+            done = true
+          }
+        }
+      },
+      _ => {
+        done = true
+      }
+    }
+  }
+  result
+}
+
+/// #2391 slice 2: the String sibling of the head query above, with the same
+/// cost contract -- follow the variable chain only, never rebuild the type.
+/// `CtString` takes no arguments, so a type that is not `CtString` at its
+/// head cannot become one by substituting inside it. A String reached only
+/// through a type alias head stays unclassified; the consumer degrades to the
+/// syntactic classifier for that site, which can miss but never answer wrong.
+export fn subst_resolves_to_string(s: Subst, ty: Type) -> Bool {
+  let mut cur = ty
+  let seen = array_empty()
+  let mut done = false
+  let mut result = false
+  while !done {
+    match cur {
+      CtString => {
+        result = true
+        done = true
+      },
+      CtVar(vid) => if int_array_has(seen, vid) {
+        done = true
+      } else {
+        Array::push(seen, vid)
+        match subst_lookup(s, vid) {
+          Some(next) => {
+            cur = next
+          },
+          None => {
+            done = true
+          }
+        }
+      },
+      _ => {
+        done = true
+      }
+    }
+  }
+  result
+}
+
+export fn subst_apply(s: Subst, ty: Type) -> Type {
+  match ty {
+    CtInt => ty,
+    CtBool => ty,
+    CtString => ty,
+    CtUnit => ty,
+    CtDouble => ty,
+    CtChar => ty,
+    CtBytes => ty,
+    CtUnknown => ty,
+    CtConstructor(_, _) => ty,
+    CtVar(_) => {
+      let mut cur = ty
+      let mut out = ty
+      let mut done = false
+      let mut seen = array_empty()
+      while !done {
+        match cur {
+          CtVar(vid) => if int_array_has(seen, vid) {
+            out = cur
+            done = true
+          } else {
+            Array::push(seen, vid)
+            match subst_lookup(s, vid) {
+              Some(next) => {
+                cur = next
+                out = next
+              },
+              None => {
+                out = cur
+                done = true
+              }
+            }
+          },
+          _ => {
+            out = subst_apply(s, cur)
+            done = true
+          }
+        }
+      }
+      out
+    },
+    CtFn(params, ret, effect_name) => {
+      let apply_params: (Array[Type]) -> Array[Type] = (items) -> {
+        let out = array_empty()
+        let mut i = 0
+        while i < Array::length(items) {
+          Array::push(out, subst_apply(s, Array::get(items, i)))
+          i = i + 1
+        }
+        out
+      }
+      CtFn(apply_params(params), subst_apply(s, ret), resolve_effect_opt(s, effect_name))
+    },
+    CtArray(elem) => CtArray(subst_apply(s, elem)),
+    CtOption(elem) => CtOption(subst_apply(s, elem)),
+    CtApplied(head, args) => apply_type_constructor(subst_apply(s, head), for arg in args {
+      subst_apply(s, arg)
+    }),
+    CtTuple(elems) => CtTuple(for e in elems {
+      subst_apply(s, e)
+    }),
+    CtRecord(rfields) => CtRecord(for rf in rfields {
+      let (rfn, rft) = rf
+      (rfn, subst_apply(s, rft))
+    }),
+    CtNamed(name, args) => zonk_hkt(CtNamed(name, for arg in args {
+      subst_apply(s, arg)
+    })),
+    CtForAll(_, _, _) => ty,
+    _ => ty
+  }
+}
+
+export fn trait_defined(env: TypeEnv, name: String) -> Bool {
+  match env {
+    EnvEmpty => false,
+    EnvBind(_, _, rest) => trait_defined(rest, name),
+    EnvTraitDef(tname, _, _, _, rest, _, _) => if tname == trait_ref_name(name) {
+      true
+    } else trait_defined(rest, name),
+    EnvTraitImpl(_, _, rest) => trait_defined(rest, name),
+    EnvMutCell(_, _, rest) => trait_defined(rest, name),
+    EnvTraitImplGen(_, _, _, _, rest) => trait_defined(rest, name),
+    EnvTypeDefs(_, _, rest) => trait_defined(rest, name),
+    EnvFlat(_) => false,
+    EnvCached(_, _, rest) => trait_defined(rest, name)
+  }
+}
+
+/// Every trait name the chain defines, innermost first, in one walk. The
+/// answer to `trait_defined(env, n)` for any `n` is whether this list holds
+/// `trait_ref_name(n)`; a caller with many names to ask (the import
+/// projection asks per imported name, per bound label and per supertrait)
+/// walks the chain once and probes the list instead of walking it per name
+/// (#2386). Stops where trait_defined stops: an EnvFlat is terminal.
+export fn env_trait_def_names(env: TypeEnv) -> Array[String] {
+  let out = array_empty()
+  env_trait_def_names_into(env, out)
+  out
+}
+
+/// env_trait_def_names into a caller-owned row: `out` is emptied and refilled,
+/// so a caller that asks per edge can reuse one row and allocate nothing.
+export fn env_trait_def_names_into(env: TypeEnv, out: Array[String]) -> Unit {
+  Array::truncate(out, 0)
+  let mut cur = env
+  let mut done = false
+  while !done {
+    match cur {
+      EnvEmpty => {
+        done = true
+      },
+      EnvBind(_, _, rest) => {
+        cur = rest
+      },
+      EnvTraitDef(tname, _, _, _, rest, _, _) => {
+        Array::push(out, tname)
+        cur = rest
+      },
+      EnvTraitImpl(_, _, rest) => {
+        cur = rest
+      },
+      EnvMutCell(_, _, rest) => {
+        cur = rest
+      },
+      EnvTraitImplGen(_, _, _, _, rest) => {
+        cur = rest
+      },
+      EnvTypeDefs(_, _, rest) => {
+        cur = rest
+      },
+      EnvFlat(_) => {
+        done = true
+      },
+      EnvCached(_, _, rest) => {
+        cur = rest
+      }
+    }
+  }
+}
+
+export fn trait_decl_params(env: TypeEnv, name: String) -> Option[Array[String]] {
+  match env {
+    EnvEmpty => None,
+    EnvBind(_, _, rest) => trait_decl_params(rest, name),
+    EnvTraitDef(tname, _, _, _, rest, params, _) => if tname == trait_ref_name(name) {
+      Some(params)
+    } else {
+      trait_decl_params(rest, name)
+    },
+    EnvTraitImpl(_, _, rest) => trait_decl_params(rest, name),
+    EnvMutCell(_, _, rest) => trait_decl_params(rest, name),
+    EnvTraitImplGen(_, _, _, _, rest) => trait_decl_params(rest, name),
+    EnvTypeDefs(_, _, rest) => trait_decl_params(rest, name),
+    EnvFlat(_) => None,
+    EnvCached(_, _, rest) => trait_decl_params(rest, name)
+  }
+}
+
+/// #1429: render a stored effect row in the SOURCE spelling. Rows are stored
+/// comma-joined; the syntax is `+`-separated. Only for text a reader may
+/// copy back into their code -- the contract engine's own signature strings
+/// (contract.vibe's fn_sig_text) deliberately stay braced, see the note there.
+fn row_to_source_spelling(row: String) -> String {
+  let parts = String::split(row, ", ")
+  let n = Array::length(parts)
+  let mut acc = ""
+  let mut i = 0
+  while i < n {
+    acc = if i == 0 {
+      Array::get(parts, i)
+    } else {
+      String::concat(acc, String::concat(" + ", Array::get(parts, i)))
+    }
+    i = i + 1
+  }
+  acc
+}
+
+export fn type_to_string(ty: Type) -> String {
+  match ty {
+    CtInt => "Int",
+    CtDouble => "Double",
+    CtBool => "Bool",
+    CtString => "String",
+    CtChar => "Char",
+    CtUnit => "()",
+    CtBytes => "Bytes",
+    CtVar(id) => "?t\{id}",
+    CtConstructor(name, arity) => String::concat(name, String::concat("/", __to_string(arity))),
+    CtApplied(head, args) => {
+      let parts = for arg in args {
+        type_to_string(arg)
+      }
+      String::concat(type_to_string(head), String::concat("[", String::concat(String::join(parts, ", "), "]")))
+    },
+    CtForAll(vars, _, body) => {
+      let vlen = Array::length(vars)
+      let mut vi = 0
+      let mut vacc = ""
+      while vi < vlen {
+        let v = String::concat("?t", __to_string(Array::get(vars, vi)))
+        let next = if vi > 0 {
+          String::concat(vacc, String::concat(" ", v))
+        } else v
+        vacc = next
+        vi = vi + 1
+      }
+      String::concat("forall ", String::concat(vacc, String::concat(". ", type_to_string(body))))
+    },
+    CtUnknown => "?",
+    CtArray(elem) => String::concat("Array[", String::concat(type_to_string(elem), "]")),
+    CtOption(elem) => String::concat("Option[", String::concat(type_to_string(elem), "]")),
+    CtEnum(name) => name,
+    // #1539: the checker identity is deliberately unspellable so source
+    // structs/types cannot forge a provider token. Diagnostics expose only
+    // the public nominal spelling.
+    CtStruct(name) => if name == "#vibe_stdin_stream" {
+      "StdinStream"
+    } else {
+      name
+    },
+    CtNamed(name, args) => if name == hkt_app_name() && Array::length(args) >= 1 {
+      let z = zonk_hkt(ty)
+      match z {
+        CtNamed(n2, _) => if n2 == hkt_app_name() {
+          let head_s = type_to_string(Array::get(args, 0))
+          let parts = array_empty()
+          let mut pi = 1
+          while pi < Array::length(args) {
+            Array::push(parts, type_to_string(Array::get(args, pi)))
+            pi = pi + 1
+          }
+          let mut i = 0
+          let mut joined = ""
+          while i < Array::length(parts) {
+            joined = if i > 0 {
+              String::concat(joined, String::concat(", ", Array::get(parts, i)))
+            } else Array::get(parts, i)
+            i = i + 1
+          }
+          String::concat(head_s, String::concat("[", String::concat(joined, "]")))
+        } else {
+          type_to_string(z)
+        },
+        _ => type_to_string(z)
+      }
+    } else if String::starts_with(name, hkt_ctor_prefix()) {
+      name[String::length(hkt_ctor_prefix()): String::length(name)]
+    } else if String::starts_with(name, "#hktformal.") {
+      name[String::length("#hktformal."): String::length(name)]
+    } else if Array::length(args) == 0 {
+      name
+    } else {
+      let parts = for arg in args {
+        type_to_string(arg)
+      }
+      let mut i = 0
+      let mut joined = ""
+      while i < Array::length(parts) {
+        joined = if i > 0 {
+          String::concat(joined, String::concat(", ", Array::get(parts, i)))
+        } else Array::get(parts, i)
+        i = i + 1
+      }
+      String::concat(name, String::concat("[", String::concat(joined, "]")))
+    },
+    CtTuple(elems) => {
+      let parts = for e in elems {
+        type_to_string(e)
+      }
+      let mut i = 0
+      let mut joined = ""
+      while i < Array::length(parts) {
+        joined = if i > 0 {
+          String::concat(joined, String::concat(", ", Array::get(parts, i)))
+        } else Array::get(parts, i)
+        i = i + 1
+      }
+      String::concat("(", String::concat(joined, ")"))
+    },
+    CtRecord(rfields) => {
+      let mut ri = 0
+      let mut rjoined = ""
+      while ri < Array::length(rfields) {
+        let (rfn, rft) = Array::get(rfields, ri)
+        let rpart = String::concat(rfn, String::concat(": ", type_to_string(rft)))
+        rjoined = if ri > 0 {
+          String::concat(rjoined, String::concat(", ", rpart))
+        } else rpart
+        ri = ri + 1
+      }
+      String::concat("record { ", String::concat(rjoined, " }"))
+    },
+    CtFn(params, ret, effect_name) => {
+      let parts = for p in params {
+        type_to_string(p)
+      }
+      let mut i = 0
+      let mut joined = ""
+      while i < Array::length(parts) {
+        joined = if i > 0 {
+          String::concat(joined, String::concat(", ", Array::get(parts, i)))
+        } else Array::get(parts, i)
+        i = i + 1
+      }
+      let ret_text = type_to_string(ret)
+      let base = String::concat("(", String::concat(joined, String::concat(") -> ", ret_text)))
+      match semantic_effect_opt(effect_name) {
+        // #1429: this text lands in type-mismatch messages, so it has to be
+        // the spelling the reader would type. Rows are stored comma-joined;
+        // the syntax is `+`-separated.
+        // #3051: a published row spells a formal `NAME$K`; the reader
+        // wrote `NAME`.
+        Some(name) => String::concat(base, String::concat(" with ", strip_published_formal_suffixes(row_to_source_spelling(name)))),
+        None => base
+      }
+    }
+  }
+}
+
+/// `text` with every `NAME$K` word (K all digits) written `NAME` -- the
+/// spelling a published row gives a formal (`publish_row_formals`, #3051).
+export fn strip_published_formal_suffixes(text: String) -> String {
+  if !String::contains(text, "$") {
+    text
+  } else {
+    let n = String::length(text)
+    let sb = StringBuilder::new()
+    let mut start = 0 - 1
+    let mut i = 0
+    while i <= n {
+      let c = if i < n {
+        String::char_code_at(text, i)
+      } else {
+        0
+      }
+      let word_char = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 95 || c == 36
+      if word_char {
+        if start < 0 {
+          start = i
+        }
+      } else {
+        if start >= 0 {
+          let w = String::substring(text, start, i)
+          let at = String::last_index_of(w, "$")
+          let digits = if at > 0 {
+            String::substring(w, at + 1, String::length(w))
+          } else {
+            ""
+          }
+          let mut all_digits = String::length(digits) > 0
+          let mut di = 0
+          while di < String::length(digits) {
+            let dc = String::char_code_at(digits, di)
+            if dc < 48 || dc > 57 {
+              all_digits = false
+            }
+            di = di + 1
+          }
+          if all_digits {
+            StringBuilder::push(sb, String::substring(w, 0, at))
+          } else {
+            StringBuilder::push(sb, w)
+          }
+          start = 0 - 1
+        }
+        if i < n {
+          StringBuilder::push(sb, String::substring(text, i, i + 1))
+        }
+      }
+      i = i + 1
+    }
+    StringBuilder::freeze(sb)
+  }
+}
+
+fn empty_type_args() -> Array[Type] {
+  array_empty()
+}
+
+export fn env_lookup_flat(bindings: Array[(String, Type)], name: String) -> Option[Type] {
+  let len = Array::length(bindings)
+  let mut i = 0
+  let mut result = None
+  let mut done = false
+  while !done {
+    if i >= len {
+      done = true
+    } else {
+      let (n, ty) = Array::get(bindings, i)
+      if n == name {
+        result = Some(ty)
+        done = true
+      } else {
+        i = i + 1
+      }
+    }
+  }
+  result
+}
+
+/// #2125: nominal heads the compiler owns itself. They resolve to
+/// `CtNamed(name, args)` with no `TypeDef` behind them and no entry in
+/// `resolve_builtin`, so they are indistinguishable from a typo by lookup
+/// alone and have to be named.
+///
+/// This list is EMPIRICAL, not a design: it is what Red runs of
+/// `collect_unknown_type_names` over `lib/**` and `fixtures/**` reported as
+/// unresolved while the tree compiled clean. Adding a compiler-owned type
+/// without adding it here makes every annotation that mentions it an error,
+/// which is a loud failure, not a silent one -- `PromptText` joined the list
+/// that way (`declare PromptText::new(String) -> PromptText`,
+/// builtins/declarations.vibe, names a type `resolve_builtin` does not carry).
+///
+/// Lives in core so the contract sentinel (`ctm_deferred_type_names`, #2164)
+/// and the checker share one predicate. `resolve_builtin` answers for
+/// builtin *values* (and a handful of scalar type names); this answers for
+/// the remaining type heads.
+export fn compiler_owned_type_arity(name: String) -> Option[Int] {
+  if name == "Array" || name == "Option" || name == "Future" || name == "Task" || name == "ArrayBuilder" || name == "FrozenArray" || name == "FixedArray" || name == "MutBytes" || name == "StringMap" {
+    Some(1)
+  } else if name == "Map" || name == "MapBuilder" || name == "Attempt" || name == "TaskGroup" || name == "MutList" {
+    Some(2)
+  } else if name == "TaskHandle" || name == "Sender" || name == "Receiver" || name == "MutMap" {
+    Some(3)
+  } else if name == "ByteStream" || name == "HostStream" || name == "HostResponse" || name == "StringBuilder" || name == "PromptText" {
+    Some(0)
+  } else {
+    None
+  }
+}
+
+export fn resolve_builtin(name: String) -> Option[Type] {
+  if name == "Int" || name == "i32" {
+    Some(CtInt)
+  }
+  else if name == "Double" || name == "f64" || name == "Float" || name == "f32" {
+    // This type system has no distinct 32-bit float: `Float` is
+    // unified with `Double` (codegen is f64-only, and float literals such as
+    // `0.0f` are already typed CtDouble). Without this, `Float` resolved to an
+    // opaque CtNamed and `x < 0.0f` mismatched (Float vs Double).
+    Some(CtDouble)
+  }
+  else if name == "Bool" {
+    Some(CtBool)
+  }
+  else if name == "String" {
+    Some(CtString)
+  }
+  else if name == "Char" {
+    Some(CtChar)
+  }
+  else if name == "Unit" {
+    Some(CtUnit)
+  }
+  else if name == "Bytes" {
+    Some(CtBytes)
+  }
+  else if name == "StdinStream" {
+    // #1539: compiler-owned opaque scalar token. CtStruct with an unspellable
+    // identity is concrete (unlike a nullary CtNamed) while remaining
+    // impossible for source declarations or literals to manufacture.
+    Some(CtStruct("#vibe_stdin_stream"))
+  }
+  else if name == "i64"
+  || name == "u8"
+  || name == "u16"
+  || name == "u32"
+  || name == "u64"
+  || name == "i16"
+  || name == "v128" {
+    Some(CtNamed(name, empty_type_args()))
+  }
+  else None
+}
+
+/// True when `name` is a compiler-owned type head: either a `resolve_builtin`
+/// scalar or a `compiler_owned_type_arity` nominal. Used by the contract
+/// types-module sentinel so `StringMap` / `Map` / `MutMap` stop exempting
+/// every transparent field in the module (#2164).
+export fn is_builtin_type_name(name: String) -> Bool {
+  match resolve_builtin(name) {
+    Some(_) => true,
+    None => match compiler_owned_type_arity(name) {
+      Some(_) => true,
+      None => false
+    }
+  }
+}
+
+/// #2442: does this type mention `CtUnknown` anywhere?
+///
+/// The registry spells a polymorphic builtin's type with `reg_any()`, which is
+/// `CtUnknown`, and every occurrence is INDEPENDENT -- the registry has no way
+/// to say that the element in `Array::get`'s parameter and its result are the
+/// same type. Direct calls survive that because they have dedicated
+/// refinements; a first-class VALUE exposes the raw row and loses the
+/// relationship. Measured on this compiler, `let get = Array::get` then
+/// `let s: String = get([1], 0)` checked CLEAN and printed garbage, while the
+/// direct `Array::get([1], 0)` was correctly rejected with `expected String,
+/// got Int`. So a row that mentions an unknown has no sound value form, and
+/// `registry_builtin_pure_arity` refuses it.
+///
+/// Arms are enumerated with no wildcard on purpose: a new `Type` constructor
+/// must fail this match rather than default to "no unknown here", which would
+/// admit a row silently. Same arm list as `type_clone` below.
+export fn type_has_unknown(ty: Type) -> Bool {
+  match ty {
+    CtInt => false,
+    CtDouble => false,
+    CtBool => false,
+    CtString => false,
+    CtChar => false,
+    CtUnit => false,
+    CtBytes => false,
+    CtUnknown => true,
+    CtVar(_) => false,
+    CtConstructor(_, _) => false,
+    CtApplied(head, args) => type_has_unknown(head) || types_have_unknown(args),
+    CtEnum(_) => false,
+    CtStruct(_) => false,
+    CtArray(e) => type_has_unknown(e),
+    CtOption(e) => type_has_unknown(e),
+    CtTuple(es) => types_have_unknown(es),
+    CtFn(ps, ret, _) => types_have_unknown(ps) || type_has_unknown(ret),
+    CtNamed(_, ts) => types_have_unknown(ts),
+    CtForAll(_, _, body) => type_has_unknown(body),
+    CtRecord(fields) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(fields) {
+        let (_, t) = Array::get(fields, i)
+        if type_has_unknown(t) {
+          found = true
+          i = Array::length(fields)
+        } else {
+          i = i + 1
+        }
+      }
+      found
+    }
+  }
+}
+
+/// #2451: the type with every `CtVar` replaced by `CtUnknown`.
+///
+/// The builtin registry writes an open position as `reg_var(n)` when the row
+/// really means "this position and that position are the SAME type"
+/// (`Array::get`'s element and result), and `reg_any()` when it means "any
+/// value type is legal here and nothing relates it to anything else". Only the
+/// value-form path reads the variables; every other consumer of a registry row
+/// -- the direct-call fast path, the effect walk, the contract checker, the
+/// codegen lookups -- reads the ERASED view, which is byte-for-byte the row
+/// those consumers saw before variables existed. That is what keeps a change
+/// to the registry's expressiveness from being a change to what the compiler
+/// accepts.
+///
+/// Arms are enumerated with no wildcard for the same reason `type_has_unknown`
+/// above does it: a new `Type` constructor must fail this match rather than
+/// pass a variable through unerased.
+export fn type_erase_vars(ty: Type) -> Type {
+  match ty {
+    CtInt => ty,
+    CtDouble => ty,
+    CtBool => ty,
+    CtString => ty,
+    CtChar => ty,
+    CtUnit => ty,
+    CtBytes => ty,
+    CtUnknown => ty,
+    CtVar(_) => CtUnknown,
+    CtConstructor(_, _) => ty,
+    CtApplied(head, args) => CtApplied(type_erase_vars(head), types_erase_vars(args)),
+    CtEnum(_) => ty,
+    CtStruct(_) => ty,
+    CtArray(e) => CtArray(type_erase_vars(e)),
+    CtOption(e) => CtOption(type_erase_vars(e)),
+    CtTuple(es) => CtTuple(types_erase_vars(es)),
+    CtFn(ps, ret, eff) => CtFn(types_erase_vars(ps), type_erase_vars(ret), eff),
+    CtNamed(n, ts) => CtNamed(n, types_erase_vars(ts)),
+    // A scheme's variables are BOUND by its own binder, not open positions, so
+    // erasing them would destroy the scheme rather than hide a relationship.
+    // Registry rows are never schemes -- `registry_builtin_scheme` is what
+    // BUILDS one, from a row this has already left alone.
+    CtForAll(_, _, _) => ty,
+    CtRecord(fields) => CtRecord(for field in fields {
+      let (fname, ft) = field
+      (fname, type_erase_vars(ft))
+    })
+  }
+}
+
+fn types_erase_vars(ts: Array[Type]) -> Array[Type] {
+  for t in ts {
+    type_erase_vars(t)
+  }
+}
+
+/// #2451: every distinct `CtVar` id mentioned by a type, in first-occurrence
+/// order. Used to close a registry row into a `CtForAll` scheme, so each use
+/// site instantiates its own copy of the row's variables.
+export fn collect_type_var_ids(ty: Type, out: Array[Int]) -> Unit {
+  match ty {
+    CtInt => (),
+    CtDouble => (),
+    CtBool => (),
+    CtString => (),
+    CtChar => (),
+    CtUnit => (),
+    CtBytes => (),
+    CtUnknown => (),
+    CtVar(id) => if int_array_contains(out, id) {
+      ()
+    } else {
+      Array::push(out, id)
+    },
+    CtConstructor(_, _) => (),
+    CtApplied(head, args) => {
+      collect_type_var_ids(head, out)
+      collect_types_var_ids(args, out)
+    },
+    CtEnum(_) => (),
+    CtStruct(_) => (),
+    CtArray(e) => collect_type_var_ids(e, out),
+    CtOption(e) => collect_type_var_ids(e, out),
+    CtTuple(es) => collect_types_var_ids(es, out),
+    CtFn(ps, ret, _) => {
+      collect_types_var_ids(ps, out)
+      collect_type_var_ids(ret, out)
+    },
+    CtNamed(_, ts) => collect_types_var_ids(ts, out),
+    CtForAll(_, _, body) => collect_type_var_ids(body, out),
+    CtRecord(fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, ft) = Array::get(fields, i)
+        collect_type_var_ids(ft, out)
+        i = i + 1
+      }
+    }
+  }
+}
+
+fn collect_types_var_ids(ts: Array[Type], out: Array[Int]) -> Unit {
+  let mut i = 0
+  while i < Array::length(ts) {
+    collect_type_var_ids(Array::get(ts, i), out)
+    i = i + 1
+  }
+}
+
+fn types_have_unknown(ts: Array[Type]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(ts) {
+    if type_has_unknown(Array::get(ts, i)) {
+      found = true
+      i = Array::length(ts)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+fn named_constructor_or_resolved(name: String, defs: Array[TypeDef], resolved: Type) -> Type {
+  match declared_type_constructor_arity(defs, name) {
+    Some(arity) => if arity > 0 {
+      CtConstructor(name, arity)
+    } else {
+      resolved
+    },
+    None => resolved
+  }
+}
+
+fn reify_named_constructor(name: String, defs: Array[TypeDef], shadow: Array[String], resolved: Type) -> Type {
+  let shadow_arity = type_expr_shadowed_arity(shadow, name)
+  if shadow_arity > 0 {
+    resolved
+  } else {
+    match find_typedef(defs, name) {
+      Some(td) => match td {
+        TDAlias(_, alias_params, body) => if Array::length(alias_params) > 0 {
+          make_alias_constructor(alias_params, body)
+        } else {
+          named_constructor_or_resolved(name, defs, resolved)
+        },
+        _ => named_constructor_or_resolved(name, defs, resolved)
+      },
+      None => named_constructor_or_resolved(name, defs, resolved)
+    }
+  }
+}
+
+fn type_def_params(td: TypeDef) -> Array[String] {
+  match td {
+    TDEnum(_, params, _) => params,
+    TDStruct(_, _, _, params) => params,
+    TDAlias(_, params, _) => params,
+    TDEffect(_, _, params) => params,
+    TDEffectSet(_, _) => array_empty()
+  }
+}
+
+fn declared_type_constructor_arity(defs: Array[TypeDef], name: String) -> Option[Int] {
+  match find_typedef(defs, name) {
+    Some(td) => Some(Array::length(type_def_params(td))),
+    None => match compiler_owned_type_arity(name) {
+      Some(arity) => Some(arity),
+      None => match resolve_builtin(name) {
+        Some(_) => Some(0),
+        None => None
+      }
+    }
+  }
+}
+
+/// Reify bare constructor arguments according to the kind declared by the
+/// receiving type parameter. A shadowed constructor variable stays nominal so
+/// checker binding can replace its head with a CtVar; concrete constructors
+/// carry their declared arity explicitly across alias substitution and caches.
+/// Parameterized aliases expand to the constructor of their body (`Vec` for
+/// `type Vec[T] = Array[T]` becomes Array) rather than a nominal head.
+export fn resolve_type_constructor_args(params: Array[String], source_args: Array[TypeExpr], resolved_args: Array[Type], defs: Array[TypeDef], shadow: Array[String]) -> Array[Type] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(resolved_args) {
+    let resolved = Array::get(resolved_args, i)
+    if i < Array::length(params) && type_param_arity(Array::get(params, i)) > 0 && i < Array::length(source_args) {
+      match Array::get(source_args, i) {
+        TyName(name) => Array::push(out, reify_named_constructor(name, defs, shadow, resolved)),
+        _ => Array::push(out, resolved)
+      }
+    } else {
+      Array::push(out, resolved)
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Resolve a source type expression while preserving the enclosing type
+/// binders. This is the shared semantic authority used by the checker and by
+/// typed classification in later compiler passes.
+export fn resolve_type_expr_core_shadowed(te: TypeExpr, defs: Array[TypeDef], shadow: Array[String]) -> Type {
+  match te {
+    TyUnit => CtUnit,
+    TyName(name) => if type_expr_name_is_shadowed(shadow, name) {
+      CtNamed(name, array_empty())
+    } else {
+      match resolve_builtin(name) {
+        Some(t) => t,
+        None => match find_typedef(defs, name) {
+          Some(td) => match td {
+            TDEnum(n, _, _) => CtEnum(n),
+            TDStruct(n, _, _, _) => CtStruct(n),
+            TDAlias(_, _, t) => t,
+            TDEffect(_, _, _) => CtNamed(name, array_empty()),
+            TDEffectSet(_, _) => CtNamed(name, array_empty())
+          },
+          None => CtNamed(name, array_empty())
+        }
+      }
+    },
+    TyApp(name, args) => {
+      let raw_args = for a in args {
+        resolve_type_expr_core_shadowed(a, defs, shadow)
+      }
+      if type_expr_name_is_shadowed(shadow, name) {
+        let arity = type_expr_shadowed_arity(shadow, name)
+        if arity > 0 {
+          CtApplied(CtNamed(name, array_empty()), raw_args)
+        } else {
+          CtNamed(name, raw_args)
+        }
+      } else if name == "Array" && Array::length(raw_args) == 1 {
+        CtArray(Array::get(raw_args, 0))
+      } else if name == "Option" && Array::length(raw_args) == 1 {
+        CtOption(Array::get(raw_args, 0))
+      } else if name == "StringMap" && Array::length(raw_args) == 1 {
+        // #2263: the concrete name for the builtin map, which is String-keyed
+        // (`Map[K, V]`'s generality is not implemented and the name is
+        // reserved for it). Resolved here rather than declared as a prelude
+        // alias because a prelude type is not in scope without an import
+        // (measured: a bare `Byte` parameter answers "unknown type"), and
+        // resolving it to the SAME type the ops take keeps every `Map::` op
+        // working on a `StringMap[V]` value with no second op family. A
+        // user declaration of the name still wins -- generic binders are
+        // covered by the shadow test above, and source declarations by defs.
+        match find_typedef(defs, name) {
+          Some(td) => match td {
+            TDAlias(_, params, body) => resolve_type_alias_params(body, params, resolve_type_constructor_args(params, args, raw_args, defs, shadow)),
+            _ => CtNamed(name, raw_args)
+          },
+          None => CtNamed("Map", [CtString, Array::get(raw_args, 0)])
+        }
+      } else {
+        match find_typedef(defs, name) {
+          Some(td) => match td {
+            TDAlias(_, params, body) => resolve_type_alias_params(body, params, resolve_type_constructor_args(params, args, raw_args, defs, shadow)),
+            _ => CtNamed(name, resolve_type_constructor_args(type_def_params(td), args, raw_args, defs, shadow))
+          },
+          None => CtNamed(name, raw_args)
+        }
+      }
+    },
+    TyTuple(elems) => CtTuple(for e in elems {
+      resolve_type_expr_core_shadowed(e, defs, shadow)
+    }),
+    TyFn(params, ret, effect_name) => CtFn(for p in params {
+      resolve_type_expr_core_shadowed(p, defs, shadow)
+    }, resolve_type_expr_core_shadowed(ret, defs, shadow), effect_name)
+  }
+}
+
+export fn subst_add_bound(s: Subst, id: Int, bounds: Array[String]) -> Subst {
+  SubstBound(id, bounds, s)
+}
+
+fn empty_var_bounds() -> Array[(Int, Array[String])] {
+  array_empty()
+}
+
+export fn int_bounds_has_id(pairs: Array[(Int, Array[String])], id: Int, i: Int) -> Bool {
+  if i >= Array::length(pairs) {
+    false
+  } else {
+    let (pid, _) = Array::get(pairs, i)
+    if pid == id {
+      true
+    } else {
+      int_bounds_has_id(pairs, id, i + 1)
+    }
+  }
+}
+
+export fn int_bounds_lookup(pairs: Array[(Int, Array[String])], id: Int, i: Int) -> Array[String] {
+  if i >= Array::length(pairs) {
+    array_empty()
+  } else {
+    let (pid, bounds) = Array::get(pairs, i)
+    if pid == id {
+      bounds
+    } else {
+      int_bounds_lookup(pairs, id, i + 1)
+    }
+  }
+}
+
+fn int_int_lookup_or(pairs: Array[(Int, Int)], key: Int, fallback: Int, i: Int) -> Int {
+  if i >= Array::length(pairs) {
+    fallback
+  } else {
+    let (k, v) = Array::get(pairs, i)
+    if k == key {
+      v
+    } else {
+      int_int_lookup_or(pairs, key, fallback, i + 1)
+    }
+  }
+}
+
+/// #626 criterion 4: collect the distinct effect-VARIABLE names appearing in a
+/// type scheme body (lone `with e` annotations), so `instantiate` can mint a
+/// fresh variable per use site and effect polymorphism survives unification.
+fn collect_effect_vars_walk(t: Type, out: Array[String]) -> Int {
+  match t {
+    CtFn(params, ret, eff) => {
+      match eff {
+        Some(row) => {
+          for raw in String::split(row, ",") {
+            let name = String::trim(raw)
+            if is_effect_var_name(name) {
+              let mut seen = false
+              let mut k = 0
+              while k < Array::length(out) {
+                if Array::get(out, k) == name {
+                  seen = true
+                }
+                k = k + 1
+              }
+              if !seen {
+                Array::push(out, name)
+              }
+            }
+          }
+        },
+        None => ()
+      }
+      for p in params {
+        let _ = collect_effect_vars_walk(p, out)
+      }
+      collect_effect_vars_walk(ret, out)
+    },
+    CtArray(elem) => collect_effect_vars_walk(elem, out),
+    CtOption(elem) => collect_effect_vars_walk(elem, out),
+    CtRecord(rfields) => {
+      for rf in rfields {
+        let (_, rft) = rf
+        let _ = collect_effect_vars_walk(rft, out)
+      }
+      0
+    },
+    CtTuple(elems) => {
+      for e in elems {
+        let _ = collect_effect_vars_walk(e, out)
+      }
+      0
+    },
+    CtNamed(_, args) => {
+      for a in args {
+        let _ = collect_effect_vars_walk(a, out)
+      }
+      0
+    },
+    CtForAll(_, _, body) => collect_effect_vars_walk(body, out),
+    _ => 0
+  }
+}
+
+fn rename_eff_name(name: String, pairs: Array[(String, String)]) -> String {
+  let mut i = 0
+  let mut out = name
+  while i < Array::length(pairs) {
+    let (k, v) = Array::get(pairs, i)
+    if k == name {
+      out = v
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn rename_effect_row(row: String, pairs: Array[(String, String)]) -> String {
+  let labels = array_empty()
+  for raw in String::split(row, ",") {
+    Array::push(labels, rename_eff_name(String::trim(raw), pairs))
+  }
+  String::join(labels, ", ")
+}
+
+fn rename_effect_vars(t: Type, pairs: Array[(String, String)]) -> Type {
+  match t {
+    CtFn(params, ret, eff) => {
+      let new_params = array_empty()
+      let mut i = 0
+      while i < Array::length(params) {
+        Array::push(new_params, rename_effect_vars(Array::get(params, i), pairs))
+        i = i + 1
+      }
+      let new_eff = match eff {
+        Some(row) => Some(rename_effect_row(row, pairs)),
+        None => None
+      }
+      CtFn(new_params, rename_effect_vars(ret, pairs), new_eff)
+    },
+    CtArray(elem) => CtArray(rename_effect_vars(elem, pairs)),
+    CtOption(elem) => CtOption(rename_effect_vars(elem, pairs)),
+    CtTuple(elems) => {
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(elems) {
+        Array::push(out, rename_effect_vars(Array::get(elems, i), pairs))
+        i = i + 1
+      }
+      CtTuple(out)
+    },
+    CtRecord(rfields) => {
+      let rout = array_empty()
+      let mut ri = 0
+      while ri < Array::length(rfields) {
+        let (rfn, rft) = Array::get(rfields, ri)
+        Array::push(rout, (rfn, rename_effect_vars(rft, pairs)))
+        ri = ri + 1
+      }
+      CtRecord(rout)
+    },
+    CtNamed(name, args) => {
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(args) {
+        Array::push(out, rename_effect_vars(Array::get(args, i), pairs))
+        i = i + 1
+      }
+      CtNamed(name, out)
+    },
+    _ => t
+  }
+}
+
+fn trait_bound_vid_prefix() -> String {
+  "#tpvid."
+}
+
+export fn parse_trait_bound_vid(name: String) -> Option[Int] {
+  let prefix = trait_bound_vid_prefix()
+  if !String::starts_with(name, prefix) {
+    None
+  } else {
+    let rest = String::substring(name, String::length(prefix), String::length(name))
+    if String::length(rest) == 0 {
+      None
+    } else {
+      let mut i = 0
+      let mut n = 0
+      let mut ok = true
+      while i < String::length(rest) && ok {
+        let c = String::char_code_at(rest, i)
+        if c >= '0' && c <= '9' {
+          n = n * 10 + c - '0'
+        } else {
+          ok = false
+        }
+        i = i + 1
+      }
+      if ok {
+        Some(n)
+      } else {
+        None
+      }
+    }
+  }
+}
+
+fn remap_trait_bound_vid_expr(te: TypeExpr, id_map: Array[(Int, Int)]) -> TypeExpr {
+  match te {
+    TyName(name) => match parse_trait_bound_vid(name) {
+      Some(old_id) => TyName(String::concat(trait_bound_vid_prefix(), __to_string(int_int_lookup_or(id_map, old_id, old_id, 0)))),
+      None => te
+    },
+    TyApp(name, args) => {
+      let head = match parse_trait_bound_vid(name) {
+        Some(old_id) => String::concat(trait_bound_vid_prefix(), __to_string(int_int_lookup_or(id_map, old_id, old_id, 0))),
+        None => name
+      }
+      TyApp(head, for arg in args {
+        remap_trait_bound_vid_expr(arg, id_map)
+      })
+    },
+    TyTuple(items) => TyTuple(for item in items {
+      remap_trait_bound_vid_expr(item, id_map)
+    }),
+    TyFn(params, ret, effect) => TyFn(for param in params {
+      remap_trait_bound_vid_expr(param, id_map)
+    }, remap_trait_bound_vid_expr(ret, id_map), effect),
+    TyUnit => TyUnit
+  }
+}
+
+fn remap_trait_bound_vids(key: String, id_map: Array[(Int, Int)]) -> String {
+  match trait_ref_from_key(key) {
+    Some(reference) => trait_ref_key(remap_trait_bound_vid_expr(reference, id_map)),
+    None => key
+  }
+}
+
+export fn instantiate(ty: Type, c: Int) -> (Type, Int, Array[(Int, Array[String])]) {
+  match ty {
+    CtForAll(bound_vars, var_bounds, body) => {
+      let blen = Array::length(bound_vars)
+      let id_map = array_empty()
+      let mut bi = 0
+      let mut bacc = SubstEmpty
+      // #743: fresh ids must not overlap the scheme's OLD bound ids. An
+      // IMPORTED scheme carries bound-var ids from the EXPORTING module's
+      // counter domain (FS-compile checks modules separately and caches
+      // their envs), so the importing module's counter c can be ≤ an old id.
+      // A fresh id equal to another old bound id makes subst_apply's
+      // transitive var resolution chain old→fresh→fresh' and COLLAPSES two
+      // distinct scheme vars into one — `Err` from the prelude instantiated
+      // as `(E) -> Result[E, E]` whenever exactly one extra type var had
+      // been allocated before the use site (json_parse's #743).
+      let mut bnc = c
+      let mut bmax_i = 0
+      while bmax_i < blen {
+        let bold = Array::get(bound_vars, bmax_i)
+        if bold >= bnc {
+          bnc = bold + 1
+        } else {
+          ()
+        }
+        bmax_i = bmax_i + 1
+      }
+      while bi < blen {
+        let old_id = Array::get(bound_vars, bi)
+        Array::push(id_map, (old_id, bnc))
+        bacc = SubstBind(old_id, CtVar(bnc), bacc)
+        bnc = bnc + 1
+        bi = bi + 1
+      }
+      let inst_s = bacc
+      let id_map2 = id_map
+      let c1 = bnc
+      let new_bounds = array_empty()
+      for var_bound in var_bounds {
+        let (old_id, bounds) = var_bound
+        let new_id = int_int_lookup_or(id_map2, old_id, old_id, 0)
+        let remapped = for bound in bounds {
+          remap_trait_bound_vids(bound, id_map2)
+        }
+        Array::push(new_bounds, (new_id, remapped))
+      };
+      let inst_body = subst_apply(inst_s, body)
+      // #626 criterion 4: freshen the scheme's effect variables so each use site
+      // gets its own variable. Without this, binding `e` at one call site would
+      // leak to every other call (effect polymorphism would collapse to the
+      // first concrete effect). Fresh names are `$<counter>` (never a real
+      // effect name), threaded through the same counter as type variables.
+      let eff_vars = array_empty()
+      let _ = collect_effect_vars_walk(inst_body, eff_vars)
+      let eff_pairs = array_empty()
+      let mut ev_i = 0
+      let mut ev_c = c1
+      while ev_i < Array::length(eff_vars) {
+        let ev = Array::get(eff_vars, ev_i)
+        Array::push(eff_pairs, (ev, String::concat("$", __to_string(ev_c))))
+        ev_c = ev_c + 1
+        ev_i = ev_i + 1
+      }
+      let final_body = if Array::length(eff_pairs) == 0 {
+        inst_body
+      } else {
+        rename_effect_vars(inst_body, eff_pairs)
+      }
+      (final_body, ev_c, new_bounds)
+    },
+    _ => (ty, c, empty_var_bounds())
+  }
+}
+
+export fn trait_is_subtrait(env: TypeEnv, sub: String, super_name: String) -> Bool {
+  if sub == super_name {
+    true
+  }
+  else {
+    let supers = trait_supers(env, sub)
+    let slen = Array::length(supers)
+    let mut si = 0
+    let mut sresult = false
+    let mut sdone = false
+    while !sdone {
+      if si >= slen {
+        sdone = true
+      } else {
+        let s = Array::get(supers, si)
+        if s == super_name {
+          sresult = true
+          sdone = true
+        } else if trait_is_subtrait(env, s, super_name) {
+          sresult = true
+          sdone = true
+        } else {
+          si = si + 1
+        }
+      }
+    }
+    sresult
+  }
+}
+
+fn collect_tvars_walk(t: Type, out: Array[Int]) -> Int {
+  match t {
+    CtVar(id) => {
+      if !array_has_int(out, id, 0) {
+        Array::push(out, id)
+      }
+      0
+    },
+    CtFn(params, ret, _) => {
+      for p in params {
+        let _ = collect_tvars_walk(p, out)
+      }
+      collect_tvars_walk(ret, out)
+    },
+    CtArray(elem) => collect_tvars_walk(elem, out),
+    CtOption(elem) => collect_tvars_walk(elem, out),
+    CtRecord(rfields) => {
+      for rf in rfields {
+        let (_, rft) = rf
+        let _ = collect_tvars_walk(rft, out)
+      }
+      0
+    },
+    CtTuple(elems) => {
+      for e in elems {
+        let _ = collect_tvars_walk(e, out)
+      }
+      0
+    },
+    // #829: type variables inside an APPLIED named type's arguments (e.g. the
+    // `V` in `MutSortedMap[K, V]` when only `K` is mentioned by a parameter) must
+    // be quantified too. They used to be skipped, leaving the scheme with a
+    // FREE variable whose id is from the exporting module's counter domain —
+    // an id-collision landmine (#743's hazard, but for free vars, which
+    // `instantiate` does not rename): once generic struct types became real
+    // (`CtNamed(S, args)` instead of CtUnknown), a collision bound an
+    // importing module's own type param through the shared free var.
+    CtNamed(_, args) => {
+      for a in args {
+        let _ = collect_tvars_walk(a, out)
+      }
+      0
+    },
+    CtConstructor(_, _) => 0,
+    CtApplied(head, args) => {
+      let _ = collect_tvars_walk(head, out)
+      for arg in args {
+        let _ = collect_tvars_walk(arg, out)
+      }
+      0
+    },
+    CtForAll(_, _, body) => collect_tvars_walk(body, out),
+    _ => 0
+  }
+}
+
+export fn collect_tvars(ty: Type) -> Array[Int] {
+  let out = array_empty()
+  let _ = collect_tvars_walk(ty, out)
+  out
+}
+
+fn empty_env_bindings() -> Array[(String, Type)] {
+  array_empty()
+}
+
+export fn env_flat_bindings(env: TypeEnv) -> Array[(String, Type)] {
+  let out = empty_env_bindings()
+  match env {
+    EnvFlat(bindings) => {
+      let mut i = 0
+      while i < Array::length(bindings) {
+        let (name, binding) = Array::get(bindings, i)
+        Array::push(out, (name, binding.ty))
+        i = i + 1
+      }
+      out
+    },
+    _ => {
+      let mut cur = env
+      let mut done = false
+      while !done {
+        match cur {
+          EnvEmpty => {
+            done = true
+          },
+          EnvBind(name, binding, rest) => {
+            Array::push(out, (name, binding.ty))
+            cur = rest
+          },
+          EnvTraitDef(_, _, _, _, rest, _, _) => {
+            cur = rest
+          },
+          EnvTraitImpl(_, _, rest) => {
+            cur = rest
+          },
+          EnvMutCell(_, _, rest) => {
+            cur = rest
+          },
+          EnvTraitImplGen(_, _, _, _, rest) => {
+            cur = rest
+          },
+          EnvTypeDefs(_, _, rest) => {
+            cur = rest
+          },
+          EnvFlat(bindings) => {
+            let mut j = 0
+            while j < Array::length(bindings) {
+              let (name, binding) = Array::get(bindings, j)
+              Array::push(out, (name, binding.ty))
+              j = j + 1
+            }
+            done = true
+          },
+          EnvCached(_, _, rest) => {
+            cur = rest
+          }
+        }
+      }
+      out
+    }
+  }
+}
+
+fn string_array_equal(left: Array[String], right: Array[String]) -> Bool {
+  let len = Array::length(left)
+  let mut i = 0
+  let mut result = true
+  let mut done = false
+  while !done {
+    if i >= len {
+      done = true
+    } else if Array::get(left, i) != Array::get(right, i) {
+      result = false
+      done = true
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+
+fn option_string_equal(left: Option[String], right: Option[String]) -> Bool {
+  match left {
+    Some(left_name) => match right {
+      Some(right_name) => left_name == right_name,
+      None => false
+    },
+    None => match right {
+      Some(_) => false,
+      None => true
+    }
+  }
+}
+
+/// #626 criterion 3: an effect annotation `with A + B` is an unordered SET,
+/// but `collect_effect_names` joins it source-order into one string ("A, B"),
+/// so `{ A, B }` and `{ B, A }` serialize to different strings. Split the
+/// comma-separated annotation back into its labels (trimmed, deduplicated) so
+/// equality can be decided on the set, not the raw ordered string.
+fn effect_label_list(eff: Option[String]) -> Array[String] {
+  let out = array_empty()
+  match eff {
+    None => out,
+    Some(s) => {
+      let raw = String::split(s, ",")
+      let mut i = 0
+      while i < Array::length(raw) {
+        let label = String::trim(Array::get(raw, i))
+        if String::length(label) > 0 {
+          let mut seen = false
+          let mut j = 0
+          while j < Array::length(out) {
+            if Array::get(out, j) == label {
+              seen = true
+            }
+            j = j + 1
+          }
+          if !seen {
+            Array::push(out, label)
+          }
+        }
+        i = i + 1
+      }
+      out
+    }
+  }
+}
+
+/// #1340 (ADR-0071): a generic instantiation label (`State[Int]`) compares
+/// by its base effect name in row set-equality — mixing spellings
+/// (`with State` vs `with State[Int]`) must not fail fn-type
+/// unification. For bracketless labels this is exact equality, so
+/// pre-#1340 rows are unchanged. Instantiation-precise row identity is the
+/// remaining ADR-0071 OperationRef-normalization work.
+///
+/// ADR-0085 (#1344): the exception effect is the one generic effect that does
+/// NOT collapse to its base — `Exception[IoError]` and `Exception[ParseError]`
+/// must stay distinct here or the two rows unify and check_assignable never
+/// reaches its dropped-label report. The ERASED spellings (`Exception`,
+/// `Error`, and either one's `::Throw`) all normalize to `Exception` (#1461
+/// flipped this from `Error`), which is what keeps `with Exception` and
+/// `with Exception` interchangeable exactly as the #1279 bridge made them --
+/// the canonical side of that pair moved, the pairing did not. An erased row
+/// and a kinded row do differ
+/// here, but that only routes them into check_assignable's structural retry,
+/// where effect_row_dropped tolerates them (an erased label is kind-compatible
+/// with every kind) — so no pre-#1344 program changes verdict.
+fn effect_label_base_name(label: String) -> String {
+  if is_exception_label(label) {
+    let kind = exception_label_kind(label)
+    if String::length(kind) == 0 {
+      "Exception"
+    } else {
+      String::concat("Exception[", String::concat(kind, "]"))
+    }
+  } else {
+    let bi = String::index_of(label, "[")
+    if bi > 0 {
+      String::substring(label, 0, bi)
+    } else {
+      label
+    }
+  }
+}
+
+/// #1340 (Codex P1 on #1352): reduce a label list to its BASE names, deduped.
+/// effect_label_list dedupes by EXACT label, which is what made "same length +
+/// one-way membership" a sound set-equality test. Comparing by base name
+/// breaks that invariant on its own -- `{ State[Int], State[String] }` is two
+/// exact labels but ONE base -- so `{ State[Int], State[String] }` vs
+/// `{ State, Fs }` would match on length AND find every left base on the
+/// right, silently accepting a row that drops `Fs`. Deduping by base first
+/// restores the invariant: both sides become genuine base-name sets.
+fn effect_label_base_set(labels: Array[String]) -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(labels) {
+    let raw = Array::get(labels, i)
+    let provenance = String::starts_with(raw, "#region_") || String::starts_with(raw, "#capture[") || String::starts_with(raw, "#param[") || String::starts_with(raw, "#aliasparam[") || String::starts_with(raw, "#fieldparam[")
+    let base = effect_label_base_name(raw)
+    let mut seen = false
+    let mut j = 0
+    while j < Array::length(out) {
+      if Array::get(out, j) == base {
+        seen = true
+      }
+      j = j + 1
+    }
+    if !seen && !provenance {
+      Array::push(out, base)
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn effect_label_sets_equal(left: Option[String], right: Option[String]) -> Bool {
+  let ls = effect_label_base_set(effect_label_list(left))
+  let rs = effect_label_base_set(effect_label_list(right))
+  if Array::length(ls) != Array::length(rs) {
+    false
+  } else {
+    let mut i = 0
+    let mut ok = true
+    while i < Array::length(ls) {
+      let label = Array::get(ls, i)
+      let mut found = false
+      let mut j = 0
+      while j < Array::length(rs) {
+        if Array::get(rs, j) == label {
+          found = true
+        }
+        j = j + 1
+      }
+      if !found {
+        ok = false
+      }
+      i = i + 1
+    }
+    ok
+  }
+}
+
+fn effect_opt_is_var(eff: Option[String]) -> Bool {
+  let labels = effect_label_list(eff)
+  let mut count = 0
+  let mut variable = false
+  for label in labels {
+    if !String::starts_with(label, "#region_") && !String::starts_with(label, "#capture[") && !String::starts_with(label, "#param[") && !String::starts_with(label, "#aliasparam[") && !String::starts_with(label, "#fieldparam[") {
+      count = count + 1
+      variable = is_effect_var_name(label)
+    }
+  }
+  count == 1 && variable
+}
+
+fn semantic_effect_opt(eff: Option[String]) -> Option[String] {
+  match eff {
+    None => None,
+    Some(row) => if String::index_of(row, ",") < 0 && String::trim(row) == row && !String::starts_with(row, "#") {
+      Some(row)
+    } else {
+      let labels = effect_label_list(eff)
+      let semantic = array_empty()
+      for label in labels {
+        if !String::starts_with(label, "#region_") && !String::starts_with(label, "#capture[") && !String::starts_with(label, "#param[") && !String::starts_with(label, "#aliasparam[") && !String::starts_with(label, "#fieldparam[") {
+          Array::push(semantic, label)
+        }
+      }
+      if Array::length(semantic) == 0 {
+        None
+      } else {
+        Some(String::join(semantic, ", "))
+      }
+    }
+  }
+}
+
+fn effect_names_compatible(left: Option[String], right: Option[String]) -> Bool {
+  if option_string_equal(left, right) {
+    true
+  } else if effect_opt_is_var(left) {
+    // #626 criterion 4: an effect variable is NO LONGER a wildcard. It equals
+    // only itself (handled by `option_string_equal` above); a variable vs a
+    // different effect is reported NOT-equal here so that `unify`'s structural
+    // `types_equal` fast path falls through to the `CtFn` arm, where
+    // `unify_effects` records the actual binding (and detects a later conflict).
+    false
+  } else if effect_opt_is_var(right) {
+    false
+  } else {
+    // Neither side is an effect variable: decide on the unordered label set, so
+    // `{ A, B }` and `{ B, A }` (and `{ A, A }` vs `{ A }`) are compatible
+    // (criterion 3). `None` (pure) vs `Some(concrete)` differ in set size and
+    // stay incompatible.
+    effect_label_sets_equal(left, right)
+  }
+}
+
+/// Unify two effect annotations, binding an effect VARIABLE to the other side
+/// (#626 criterion 4 — no longer an unconditional wildcard). Returns the extended
+/// substitution, or None on a genuine effect-set conflict.
+export fn unify_effects(ea: Option[String], eb: Option[String], s: Subst) -> Option[Subst] {
+  let ra = semantic_effect_opt(resolve_effect_opt(s, ea))
+  let rb = semantic_effect_opt(resolve_effect_opt(s, eb))
+  let a_is_var = match ra {
+    Some(n) => is_effect_var_name(n),
+    None => false
+  }
+  let b_is_var = match rb {
+    Some(n) => is_effect_var_name(n),
+    None => false
+  }
+  if a_is_var {
+    match ra {
+      Some(av) => if Some(av) == rb {
+        Some(s)
+      } else {
+        let bval = match rb {
+          Some(bv) => bv,
+          None => ""
+        }
+        Some(SubstEffBind(av, bval, s))
+      },
+      None => Some(s)
+    }
+  } else if b_is_var {
+    match rb {
+      Some(bv) => {
+        let aval = match ra {
+          Some(av) => av,
+          None => ""
+        }
+        Some(SubstEffBind(bv, aval, s))
+      },
+      None => Some(s)
+    }
+  } else if effect_names_compatible(ra, rb) {
+    Some(s)
+  } else {
+    None
+  }
+}
+
+export fn types_equal(a: Type, b: Type) -> Bool {
+  match a {
+    CtInt => match b {
+      CtInt => true,
+      _ => false
+    },
+    CtDouble => match b {
+      CtDouble => true,
+      _ => false
+    },
+    CtBool => match b {
+      CtBool => true,
+      _ => false
+    },
+    CtString => match b {
+      CtString => true,
+      _ => false
+    },
+    CtChar => match b {
+      CtChar => true,
+      _ => false
+    },
+    CtUnit => match b {
+      CtUnit => true,
+      _ => false
+    },
+    CtBytes => match b {
+      CtBytes => true,
+      _ => false
+    },
+    CtUnknown => match b {
+      CtUnknown => true,
+      _ => false
+    },
+    CtVar(aid) => match b {
+      CtVar(bid) => (aid == bid),
+      _ => false
+    },
+    CtConstructor(aname, aarity) => match b {
+      CtConstructor(bname, barity) => aname == bname && aarity == barity,
+      _ => false
+    },
+    CtApplied(ahead, aargs) => match b {
+      CtApplied(bhead, bargs) => if Array::length(aargs) != Array::length(bargs) || !types_equal(ahead, bhead) {
+        false
+      } else {
+        let mut ai = 0
+        let mut equal = true
+        while ai < Array::length(aargs) && equal {
+          equal = types_equal(Array::get(aargs, ai), Array::get(bargs, ai))
+          ai = ai + 1
+        }
+        equal
+      },
+      _ => false
+    },
+    CtArray(aelem) => match b {
+      CtArray(belem) => types_equal(aelem, belem),
+      _ => false
+    },
+    CtOption(aelem) => match b {
+      CtOption(belem) => types_equal(aelem, belem),
+      _ => false
+    },
+    CtEnum(aname) => match b {
+      CtEnum(bname) => aname == bname,
+      // A bare named type `CtNamed(X, [])` (zero type args) denotes the same
+      // type as the enum `CtEnum(X)`. Cross-module imports can resolve a
+      // self-referential enum ctor field type to one form and a function
+      // annotation to the other; bridge them so they unify.
+      CtNamed(bname, bargs) => aname == bname && Array::length(bargs) == 0,
+      _ => false
+    },
+    CtStruct(aname) => match b {
+      CtStruct(bname) => aname == bname,
+      CtNamed(bname, bargs) => aname == bname && Array::length(bargs) == 0,
+      _ => false
+    },
+    CtNamed(aname, aargs) => match b {
+      CtEnum(bname) => aname == bname && Array::length(aargs) == 0,
+      CtStruct(bname) => aname == bname && Array::length(aargs) == 0,
+      CtNamed(bname, bargs) =>
+      if aname != bname {
+        false
+      } else if Array::length(aargs) != Array::length(bargs) {
+        false
+      } else {
+        let tae_len = Array::length(aargs)
+        let mut tae_i = 0
+        let mut tae_result = true
+        let mut tae_done = false
+        while !tae_done {
+          if tae_i >= tae_len {
+            tae_done = true
+          } else {
+            if types_equal(Array::get(aargs, tae_i), Array::get(bargs, tae_i)) {
+              tae_i = tae_i + 1
+            } else {
+              tae_result = false
+              tae_done = true
+            }
+          }
+        }
+        tae_result
+      },
+      _ => false
+    },
+    CtTuple(aelems) => match b {
+      CtTuple(belems) =>
+      if Array::length(aelems) != Array::length(belems) {
+        false
+      } else {
+        let tae_len2 = Array::length(aelems)
+        let mut tae_i2 = 0
+        let mut tae_result2 = true
+        let mut tae_done2 = false
+        while !tae_done2 {
+          if tae_i2 >= tae_len2 {
+            tae_done2 = true
+          } else {
+            if types_equal(Array::get(aelems, tae_i2), Array::get(belems, tae_i2)) {
+              tae_i2 = tae_i2 + 1
+            } else {
+              tae_result2 = false
+              tae_done2 = true
+            }
+          }
+        }
+        tae_result2
+      },
+      _ => false
+    },
+    // #1839: records are structural with LITERAL field order (order IS the
+    // runtime slot layout), so equality is order-sensitive: same names in the
+    // same positions with equal types.
+    CtRecord(arf) => match b {
+      CtRecord(brf) =>
+      if Array::length(arf) != Array::length(brf) {
+        false
+      } else {
+        let rql = Array::length(arf)
+        let mut rqi = 0
+        let mut rq_result = true
+        let mut rq_done = false
+        while !rq_done {
+          if rqi >= rql {
+            rq_done = true
+          } else {
+            let (afn, aft) = Array::get(arf, rqi)
+            let (bfn, bft) = Array::get(brf, rqi)
+            if afn == bfn && types_equal(aft, bft) {
+              rqi = rqi + 1
+            } else {
+              rq_result = false
+              rq_done = true
+            }
+          }
+        }
+        rq_result
+      },
+      _ => false
+    },
+    CtFn(aparams, aret, aeffect) => match b {
+      CtFn(bparams, bret, beffect) =>
+      if Array::length(aparams) != Array::length(bparams) {
+        false
+      } else if effect_names_compatible(aeffect, beffect) {
+        let tae_len3 = Array::length(aparams)
+        let mut tae_i3 = 0
+        let mut tae_result3 = true
+        let mut tae_done3 = false
+        while !tae_done3 {
+          if tae_i3 >= tae_len3 {
+            tae_done3 = true
+          } else {
+            if types_equal(Array::get(aparams, tae_i3), Array::get(bparams, tae_i3)) {
+              tae_i3 = tae_i3 + 1
+            } else {
+              tae_result3 = false
+              tae_done3 = true
+            }
+          }
+        }
+        if tae_result3 {
+          types_equal(aret, bret)
+        } else {
+          false
+        }
+      } else {
+        false
+      },
+      _ => false
+    },
+    CtForAll(avars, abounds, abody) => match b {
+      CtForAll(bvars, bbounds, bbody) => if Array::length(avars) != Array::length(bvars) {
+        false
+      } else if Array::length(abounds) != Array::length(bbounds) {
+        false
+      } else {
+        let vlen = Array::length(avars)
+        let mut vi = 0
+        let mut vresult = true
+        let mut vdone = false
+        while !vdone {
+          if vi >= vlen {
+            vdone = true
+          } else if Array::get(avars, vi) != Array::get(bvars, vi) {
+            vresult = false
+            vdone = true
+          } else {
+            vi = vi + 1
+          }
+        }
+        if vresult {
+          let fbe_len = Array::length(abounds)
+          let mut fbe_i = 0
+          let mut fbe_result = true
+          let mut fbe_done = false
+          while !fbe_done {
+            if fbe_i >= fbe_len {
+              fbe_done = true
+            } else {
+              let (lvar, lbounds) = Array::get(abounds, fbe_i)
+              let (rvar, rbounds) = Array::get(bbounds, fbe_i)
+              if lvar != rvar {
+                fbe_result = false
+                fbe_done = true
+              } else if Array::length(lbounds) != Array::length(rbounds) {
+                fbe_result = false
+                fbe_done = true
+              } else {
+                if string_array_equal(lbounds, rbounds) {
+                  fbe_i = fbe_i + 1
+                } else {
+                  fbe_result = false
+                  fbe_done = true
+                }
+              }
+            }
+          }
+          if fbe_result {
+            types_equal(abody, bbody)
+          } else {
+            false
+          }
+        } else {
+          false
+        }
+      }
+      ,
+      _ => false
+    }
+  }
+}
+
+/// `Char` is a transparent alias of `Int`: char literals (`'A'`) lex to integer
+/// tokens (TInt, see lexer.vibe lex_char), so a value of Char and a value of Int
+/// share one runtime representation and must unify freely — a `Char` annotation
+/// accepts an int value and vice versa (`'A' == 65`, `c + 1`, char_test).
+export fn type_application_view(ty: Type) -> Option[(Type, Array[Type])] {
+  match ty {
+    CtApplied(head, args) => Some((head, args)),
+    CtArray(elem) => Some((CtConstructor("Array", 1), [elem])),
+    CtOption(elem) => Some((CtConstructor("Option", 1), [elem])),
+    CtNamed(name, args) => if Array::length(args) > 0 {
+      Some((CtConstructor(name, Array::length(args)), args))
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
+export fn char_int_compatible(ta: Type, tb: Type) -> Bool {
+  match ta {
+    CtChar => match tb {
+      CtInt => true,
+      _ => false
+    },
+    CtInt => match tb {
+      CtChar => true,
+      _ => false
+    },
+    _ => false
+  }
+}

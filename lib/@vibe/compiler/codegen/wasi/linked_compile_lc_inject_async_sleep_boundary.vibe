@@ -1,0 +1,1905 @@
+// lib/@vibe/compiler/codegen/wasi/linked_compile.vibe — lc inject async sleep boundary.
+
+import @vibe/compiler/core {
+  Expr, Pat, Stmt, TypeExpr, apply_top_level_fn_alias_renames, is_runtime_scheduled_effect, rewrite_top_level_fn_alias_refs
+}
+
+import @vibe/ast {
+  TypeExpr::is_array_of_int, builtin_ref
+}
+
+import @vibe/core {
+  array_empty, struct MutMap, struct MutSet
+}
+
+import @vibe/compiler/normalize {
+  ModuleTraitFacts, desugar_inspect_calls, desugar_trait_dicts_module, desugar_trait_dicts_with_typed_eq, unbox_tuple_loop_params
+}
+
+import @vibe/compiler/perceus {
+  PerceusAction, elaborate_heap_params
+}
+
+import @vibe/compiler/codegen/builtin_bodies {
+  array_capacity_error_message
+}
+
+import @vibe/compiler/codegen/reloc {
+  blind_kind_fn_value
+}
+
+import @vibe/compiler/codegen/common_analysis {
+  bmask_has
+}
+
+import @vibe/compiler/codegen/common_base {
+  CodegenBodyCache,
+  CompileCtx,
+  CovState,
+  CtorTable,
+  DbgProv,
+  FuncTable,
+  LambdaTable,
+  LineMapState,
+  ModuleSplit,
+  StrTable,
+  await_poll_pass,
+  erase_railway_origin_markers,
+  evidence_dict_pass_with_roots,
+  forin_discard_pass,
+  lower_optional_performs,
+  lower_optional_performs_with_source_names,
+  optional_perform_artifact_resolution,
+  rewrite_self_tail_calls,
+  suspend_cps_pass,
+  suspend_prepass_splits,
+  wrap_entry_exception_boundary,
+  wrap_entry_host_provider
+}
+
+import @vibe/compiler/codegen/common_extractors {
+  array_contains_str
+}
+
+import @vibe/compiler/codegen/expr {
+  cc_host_future_named_raw_prefix
+}
+
+import @vibe/compiler/codegen/wasm_emit {
+  emit_block_i64
+}
+
+import ./linked_diagnostics.vibe {
+  seed_builtin_diagnostic_strings
+}
+
+import ./linked_helpers.vibe {
+  collect_used_builtin_names
+}
+
+import ./linked_compile_lc_pf_prune_module.vibe {
+  lc_late_dce_roots
+}
+
+import ./linked_compile_lc_rename_sleep_calls.vibe {
+  PreludeEnv,
+  lc_extract_inline_wasm,
+  lc_fixed_synthetic_name,
+  lc_fresh_expr_array,
+  lc_fresh_string_array,
+  lc_rename_sleep_calls,
+  lc_row_has_label
+}
+
+import ./linked_compile_lc_retarget_call.vibe {
+  lc_expr_has_async_handle,
+  lc_expr_has_spawn_suspend,
+  lc_hs_req_base,
+  lc_inject_stdin_surface_wrappers,
+  lc_is_exception_boundary_arms,
+  lc_is_hook_name,
+  lc_mark_calls,
+  lc_program_defines_top_level,
+  lc_rename_hs_maybe_close,
+  lc_rename_hs_next_calls,
+  lc_rename_hs_option_next_calls,
+  lc_rename_sleep_scoped,
+  lc_resolve_boundary_name,
+  lc_retarget_call,
+  lc_stmts_call_host_future,
+  lc_wrap_host_stream_params,
+  lc_ws_handle_base,
+  lc_ws_slot_count
+}
+
+/// #3131 (Codex on #3091): a WIT call takes one of the adapter's 512 result
+/// slots and keeps it until the future is awaited or cancelled, so a program
+/// that dropped 512 futures trapped on its next, otherwise valid, call. A
+/// dropped future is invisible to the program, so the slot is reclaimed here
+/// instead: every WIT future cell (a handle of 1024 or more) is recorded under
+/// its slot as it is made (`__ws_track`), `__aw_pay` marks the cell it awaits
+/// (`__ws_claim`), and when a call finds every slot taken the oldest cell
+/// nobody is awaiting is cancelled -- its slot freed -- and poisoned (state 9).
+/// Awaiting it later traps with `__aw_pay`'s message rather than reading the
+/// call that reused its slot. With every slot awaited, the call still traps,
+/// as before: 512 futures really are in flight.
+///
+/// #3164: room is made BEFORE the call (`__ws_room`, placed by
+/// lc_ws_tracked_getter), not after it. Made after, it had to spare the slot
+/// the call had just taken, so with 511 slots awaited and the 512th call's
+/// future dropped nothing could be reclaimed, and the NEXT call trapped in the
+/// adapter's getter although that dropped future was there to evict.
+fn lc_ws_track_inject(stmts: Array[Stmt]) -> Unit {
+  let get = (a: Expr, i: Expr) -> ECall(builtin_ref("Array::get"), [a, i], -1)
+  let set = (a: Expr, i: Expr, v: Expr) -> ECall(builtin_ref("Array::set"), [
+    a,
+    i,
+    v
+  ], -1)
+  let len = (a: Expr) -> ECall(builtin_ref("Array::length"), [a], -1)
+  let push = (a: Expr, v: Expr) -> ECall(builtin_ref("Array::push"), [a, v], -1)
+  let cells = EIdent("__ws_cells", -1)
+  let seqs = EIdent("__ws_seq", -1)
+  let ctr = EIdent("__ws_ctr", -1)
+  let int_ty = TyName("Int")
+  // Typed, not inferred: the RC lane retains a cell stored in __ws_cells only
+  // when it knows the parameter is a heap array.
+  let cell_ty = TyApp("Array", [int_ty])
+  Array::push(stmts, SLet(false, false, lc_fixed_synthetic_name("__ws_cells", "review-lint: allow-fixed-synthetic-name"), Some(TyApp("Array", [
+    TyApp("Array", [int_ty])
+  ])), EArray(lc_fresh_expr_array())))
+  Array::push(stmts, SLet(false, false, lc_fixed_synthetic_name("__ws_seq", "review-lint: allow-fixed-synthetic-name"), Some(TyApp("Array", [
+    int_ty
+  ])), EArray(lc_fresh_expr_array())))
+  Array::push(stmts, SLet(false, false, lc_fixed_synthetic_name("__ws_ctr", "review-lint: allow-fixed-synthetic-name"), Some(TyApp("Array", [
+    int_ty
+  ])), EArray([EInt(0)])))
+  // __ws_room(): a call is about to take a slot. If the table is full, evict
+  // the oldest unclaimed cell so the call finds one free. Every candidate is
+  // an existing cell: the call's own has not been made yet.
+  let ri = EIdent("__wsr_i", -1)
+  let rlive = EIdent("__wsr_live", -1)
+  let rbest = EIdent("__wsr_best", -1)
+  let rbq = EIdent("__wsr_bq", -1)
+  let rc = EIdent("__wsr_c", -1)
+  let rq = EIdent("__wsr_q", -1)
+  // A slot's liveness is its own record, not only its cell's state: seq > 0
+  // is an unclaimed cell still holding its slot -- landed, pending, or
+  // overwritten by `Future::resolve`, which frees nothing (Codex on #3091);
+  // -1 is claimed, holding its slot whatever its cell says until the adapter
+  // frees it -- a wait or a cancel, each followed by `__ws_freed` (a cell
+  // resolved while its waiter is parked still holds the call, Codex on
+  // #3091); -2 is free (a placeholder, already reclaimed, or freed).
+  let rst = get(rc, EInt(0))
+  let unclaimed = EBinOp("&&", EBinOp("<", EInt(0), rq, -1), EBinOp("!=", rst, EInt(9), -1), -1)
+  let holds = EBinOp("||", unclaimed, EBinOp("==", rq, EInt(0 - 1), -1), -1)
+  let better = EBinOp("&&", unclaimed, EBinOp("||", EBinOp("<", rbest, EInt(0), -1), EBinOp("<", rq, rbq, -1), -1), -1)
+  let take = EAssign("__wsr_best", ri, EAssign("__wsr_bq", rq, EUnit))
+  let count = EAssign("__wsr_live", EBinOp("+", rlive, EInt(1), -1), EIf(better, take, EUnit))
+  let per_slot = ELet("__wsr_c", get(cells, ri), ELet("__wsr_q", get(seqs, ri), EIf(holds, count, EUnit), -1), -1)
+  // review-lint: allow-fixed-synthetic-name (the injected __ws_* helpers' own scopes)
+  let scan = EWhile(EBinOp("<", ri, len(cells), -1), ESeq(per_slot, EAssign("__wsr_i", EBinOp("+", ri, EInt(1), -1), EUnit)))
+  let victim = EIdent("__wsr_v", -1)
+  // The handle is the SLOT's (1024 + slot), not read from the cell:
+  // `Future::resolve` overwrites the cell's handle word with its value.
+  let cancel = ECall(builtin_ref("vibe_hf_cancel_raw"), [
+    EBinOp("+", rbest, EInt(lc_ws_handle_base()), -1)
+  ], -1)
+  // A cell `Future::resolve` already answered keeps its value; only a cell
+  // still waiting on the host is poisoned.
+  let poison = EIf(EBinOp("==", get(victim, EInt(0)), EInt(2), -1), set(victim, EInt(0), EInt(9)), EUnit)
+  let evict = ELet("__wsr_v", get(cells, rbest), ELet("__wsr_x", cancel, ESeq(set(seqs, rbest, EInt(0 - 2)), poison), -1), -1)
+  // review-lint: allow-fixed-synthetic-name (the injected __ws_* helpers' own scopes)
+  let full = EBinOp("&&", EBinOp("<", EInt(lc_ws_slot_count() - 1), rlive, -1), EBinOp("<", EInt(0 - 1), rbest, -1), -1)
+  // An Int, so it can stand as an argument evaluated just before the getter.
+  let room_body = ELetMut("__wsr_i", EInt(0), ELetMut("__wsr_live", EInt(0), ELetMut("__wsr_best", EInt(0 - 1), ELetMut("__wsr_bq", EInt(0), ESeq(scan, ESeq(EIf(full, evict, EUnit), EInt(0))), -1), -1), -1), -1)
+  // review-lint: allow-fixed-synthetic-name (the injected __ws_room's own scope)
+  let room_params: Array[(String, Option[TypeExpr])] = []
+  Array::push(stmts, SLet(false, false, lc_fixed_synthetic_name("__ws_room", "review-lint: allow-fixed-synthetic-name"), None, EFn(lc_fresh_string_array(), array_empty(), room_params, Some(int_ty), None, room_body)))
+  // __ws_room_arg(s): make room, then pass the getter's last argument `s`
+  // through -- the room is made after every argument is evaluated.
+  let room_arg_body = ELet("__wsa_u", ECall(EIdent("__ws_room", -1), lc_fresh_expr_array(), -1), EIdent("__wsa_s", -1), -1)
+  // review-lint: allow-fixed-synthetic-name (the injected __ws_room_arg's own scope)
+  let room_arg_params: Array[(String, Option[TypeExpr])] = [
+    ("__wsa_s", Some(TyName("String")))
+  ]
+  Array::push(stmts, SLet(false, false, lc_fixed_synthetic_name("__ws_room_arg", "review-lint: allow-fixed-synthetic-name"), None, EFn(lc_fresh_string_array(), array_empty(), room_arg_params, Some(TyName("String")), None, room_arg_body)))
+  // __ws_track(r, f): record a WIT cell under its slot. `r` is the room the
+  // call made beforehand (lc_ws_tracked_getter), already spent.
+  let tf = EIdent("__wst_f", -1)
+  let th = EIdent("__wst_h", -1)
+  let ts = EIdent("__wst_s", -1)
+  let grow = EWhile(EBinOp("<", len(cells), EBinOp("+", ts, EInt(1), -1), -1), ESeq(push(cells, EArray([
+    EInt(0),
+    EInt(0)
+  ])), push(seqs, EInt(0 - 2))))
+  let bump = set(ctr, EInt(0), EBinOp("+", get(ctr, EInt(0)), EInt(1), -1))
+  let record = ESeq(set(cells, ts, tf), set(seqs, ts, get(ctr, EInt(0))))
+  let track = ELet("__wst_s", EBinOp("-", th, EInt(lc_ws_handle_base()), -1), ESeq(grow, ESeq(bump, record)), -1)
+  // review-lint: allow-fixed-synthetic-name (the injected __ws_* helpers' own scopes)
+  let is_slot = EBinOp("&&", EBinOp("==", get(tf, EInt(0)), EInt(2), -1), EBinOp("<", EInt(lc_ws_handle_base() - 1), th, -1), -1)
+  let track_body = ELet("__wst_h", get(tf, EInt(1)), ESeq(EIf(is_slot, track, EUnit), tf), -1)
+  // review-lint: allow-fixed-synthetic-name (the injected __ws_track's own scope)
+  let track_params: Array[(String, Option[TypeExpr])] = [
+    ("__wst_r", Some(int_ty)),
+    ("__wst_f", Some(cell_ty))
+  ]
+  Array::push(stmts, SLet(false, false, lc_fixed_synthetic_name("__ws_track", "review-lint: allow-fixed-synthetic-name"), None, EFn(lc_fresh_string_array(), array_empty(), track_params, Some(cell_ty), None, track_body)))
+  // __ws_claim(f): the cell is awaited; never evict it.
+  let cf = EIdent("__wsc_f", -1)
+  let cs = EIdent("__wsc_s", -1)
+  let claimed = EBinOp("&&", EBinOp("==", get(cf, EInt(0)), EInt(2), -1), EBinOp("<", EInt(lc_ws_handle_base() - 1), get(cf, EInt(1)), -1), -1)
+  let mark = ELet("__wsc_s", EBinOp("-", get(cf, EInt(1)), EInt(lc_ws_handle_base()), -1), EIf(EBinOp("<", cs, len(seqs), -1), set(seqs, cs, EInt(0 - 1)), EUnit), -1)
+  // review-lint: allow-fixed-synthetic-name (the injected __ws_claim's own scope)
+  let claim_params: Array[(String, Option[TypeExpr])] = [
+    ("__wsc_f", Some(cell_ty))
+  ]
+  Array::push(stmts, SLet(false, false, lc_fixed_synthetic_name("__ws_claim", "review-lint: allow-fixed-synthetic-name"), None, EFn(lc_fresh_string_array(), array_empty(), claim_params, Some(TyName("Int")), None, ESeq(EIf(claimed, mark, EUnit), EInt(0)))))
+  // __ws_freed(q, v): the adapter just freed the slot of payload `q` (handle
+  // + 2) by a wait or a cancel; mark it free and pass the answer `v` through.
+  let fq = EIdent("__wsf_q", -1)
+  let fs = EIdent("__wsf_s", -1)
+  let in_band = EBinOp("&&", EBinOp("<", EInt(0 - 1), fs, -1), EBinOp("<", fs, len(seqs), -1), -1)
+  let free_body = ELet("__wsf_s", EBinOp("-", fq, EInt(lc_ws_handle_base() + 2), -1), ESeq(EIf(in_band, set(seqs, fs, EInt(0 - 2)), EUnit), EIdent("__wsf_v", -1)), -1)
+  // review-lint: allow-fixed-synthetic-name (the injected __ws_freed's own scope)
+  let free_params: Array[(String, Option[TypeExpr])] = [
+    ("__wsf_q", Some(int_ty)),
+    ("__wsf_v", Some(int_ty))
+  ]
+  Array::push(stmts, SLet(false, false, lc_fixed_synthetic_name("__ws_freed", "review-lint: allow-fixed-synthetic-name"), None, EFn(lc_fresh_string_array(), array_empty(), free_params, Some(int_ty), None, free_body)))
+  // Every WIT getter's cell goes through __ws_track, and __aw_pay (synthesized
+  // earlier by await_poll_pass) claims the cell it is about to wait on.
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(ex, isrec, name, ty, EFn(tps, tbs, params, ret, eff, body)) => if name == "__aw_pay" {
+        let claim = ECall(EIdent("__ws_claim", -1), [
+          EIdent(Array::get(params, 0).0, -1)
+        ], -1)
+        Array::set(stmts, i, SLet(ex, isrec, name, ty, EFn(tps, tbs, params, ret, eff, ELet("__awp_k", claim, body, -1))))
+        // review-lint: allow-fixed-synthetic-name (the injected __aw_pay's own scope)
+      } else if name == "__ws_track" || name == "__ws_room" || name == "__ws_room_arg" || name == "__ws_claim" || name == "__ws_freed" {
+        ()
+      } else {
+        Array::set(stmts, i, SLet(ex, isrec, name, ty, EFn(tps, tbs, params, ret, eff, lc_ws_wrap_getters(body))))
+      },
+      SLet(ex, isrec, name, ty, v) => Array::set(stmts, i, SLet(ex, isrec, name, ty, lc_ws_wrap_getters(v))),
+      SLetMut(name, ty, v) => Array::set(stmts, i, SLetMut(name, ty, lc_ws_wrap_getters(v))),
+      STest(name, v) => Array::set(stmts, i, STest(name, lc_ws_wrap_getters(v))),
+      SBench(name, v) => Array::set(stmts, i, SBench(name, lc_ws_wrap_getters(v))),
+      SExpr(v) => Array::set(stmts, i, SExpr(lc_ws_wrap_getters(v))),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+/// The getters whose handle can be a WIT slot, each handed to `__ws_track`
+/// (shadow-aware, lc_retarget_call; the shape is lc_ws_tracked_getter's).
+fn lc_ws_wrap_getters(e: Expr) -> Expr {
+  let a = lc_retarget_call(e, true, "host_future_named", "__ws_track", true)
+  let b = lc_retarget_call(a, true, "host_response_named", "__ws_track", true)
+  lc_retarget_call(b, true, "host_response_named_with", "__ws_track", true)
+}
+
+/// #1537: the name @vibe/concurrent's `__aw_note` has in this program, or ""
+/// when it cannot call it: a linked import, a local definition, or -- in a
+/// merged program -- the library's export under its module suffix
+/// (lc_is_hook_name).
+export fn lc_aw_note_available(stmts: Array[Stmt], linked_imports: Array[(String, String, Int, Int)]) -> String {
+  lc_concurrent_hook_name(stmts, linked_imports, "__aw_note")
+}
+
+/// The name @vibe/concurrent's hook `base` has in this program, or "": a
+/// linked import, a local definition, or -- in a merged program -- the
+/// library's export under its module suffix (lc_is_hook_name).
+fn lc_concurrent_hook_name(stmts: Array[Stmt], linked_imports: Array[(String, String, Int, Int)], base: String) -> String {
+  let mut found = ""
+  let mut li = 0
+  while li < Array::length(linked_imports) {
+    let (_, lname, _, _) = Array::get(linked_imports, li)
+    if lname == base {
+      found = lname
+    } else {
+      ()
+    }
+    li = li + 1
+  }
+  let mut si = 0
+  while si < Array::length(stmts) {
+    match Array::get(stmts, si) {
+      SLet(_, _, nm, _, _) => if nm == base || lc_is_hook_name(nm, base) {
+        found = nm
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    si = si + 1
+  }
+  found
+}
+
+export fn lc_waiter_hooks_available(stmts: Array[Stmt], linked_imports: Array[(String, String, Int, Int)]) -> Bool {
+  let mut has_wait = false
+  let mut has_notify = false
+  let mut li = 0
+  while li < Array::length(linked_imports) {
+    let (_, lname, _, _) = Array::get(linked_imports, li)
+    if lname == "__aw_wait" {
+      has_wait = true
+    } else {
+      ()
+    }
+    if lname == "__aw_notify_resolve" {
+      has_notify = true
+    } else {
+      ()
+    }
+    li = li + 1
+  }
+  let mut si = 0
+  while si < Array::length(stmts) {
+    match Array::get(stmts, si) {
+      SLet(_, _, nm, _, _) => {
+        if nm == "__aw_wait" {
+          has_wait = true
+        } else {
+          ()
+        }
+        if nm == "__aw_notify_resolve" {
+          has_notify = true
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+    si = si + 1
+  }
+  has_wait && has_notify
+}
+
+export fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String) -> String {
+  let boundary_name = lc_resolve_boundary_name(stmts, entry_name)
+  let mut entry_has_async = false
+  let mut user_defines_sleep = false
+  let mut has_async_decl = false
+  let mut has_async_handle = false
+  let mut user_defines_host_future = false
+  // ADR-0089 Decision 3 follow-up (#1218): tracked SEPARATELY from
+  // calls_host_stream, because the injected `__hs_close` is what references
+  // `vibe_hs_close_raw` -- injecting it for every stream program would
+  // reserve the close import in programs that only ever drain, which is
+  // exactly the byte-compat property this surface is supposed to keep.
+  // The public Option-returning helper is a second suspend function. Keep it
+  // out of raw-scalar programs: besides preserving their component bytes, the
+  // suspend pass must not classify an unused helper as another boundary path.
+  let mut user_defines_host_stream = false
+  let mut has_spawn_suspend = false
+  // #2386: the five call keys come out of ONE walk per top-level body
+  // (lc_mark_calls) instead of eleven; the flags are read off `boundary_hits`
+  // after the loop. Index order is the targets' order. ADR-0089 (#1218):
+  // `host_future_named` fires the same machinery as `host_future_get` (the
+  // boundary's `__entry_settle` waitable arm and the wait import are shared;
+  // only the per-name GET import differs), and any of the five stream names
+  // implies the stream settle arm plus the shared `vibe.host_stream_read`
+  // import -- hence the ORs below.
+  let boundary_targets: Array[String] = [
+    "sleep",
+    "host_future_get",
+    "host_future_named",
+    "host_stream_named",
+    "host_stream_next",
+    "host_stream_close",
+    "HostStream::next",
+    "HostStream::close",
+    "host_response_named",
+    "host_response_named_with"
+  ]
+  let boundary_hits: Array[Bool] = [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    false
+  ]
+  let mut has_aw_poll = false
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, EFn(_, _, _, _, eff, fbody)) => {
+        if name == boundary_name && lc_row_has_label(eff, "Async") {
+          entry_has_async = true
+        } else {
+          ()
+        }
+        if name == "sleep" {
+          user_defines_sleep = true
+        } else {
+          ()
+        }
+        if name == "__aw_poll" {
+          has_aw_poll = true
+        } else {
+          ()
+        }
+        if lc_expr_has_async_handle(fbody) {
+          has_async_handle = true
+        } else {
+          ()
+        }
+        lc_mark_calls(fbody, boundary_targets, boundary_hits, false)
+        if name == "host_future_get" || name == "host_future_named" || name == "host_response_named" || name == "host_response_named_with" {
+          user_defines_host_future = true
+        } else {
+          ()
+        }
+        if name == "host_stream_named" || name == "host_stream_next" || name == "host_stream_close" || name == "HostStream::next" || name == "HostStream::close" {
+          user_defines_host_stream = true
+        } else {
+          ()
+        }
+        if lc_expr_has_spawn_suspend(fbody) {
+          has_spawn_suspend = true
+        } else {
+          ()
+        }
+      },
+      SLet(_, _, name, _, sv) => {
+        if name == "sleep" {
+          user_defines_sleep = true
+        } else {
+          ()
+        }
+        if name == "host_future_get" || name == "host_future_named" || name == "host_response_named" || name == "host_response_named_with" {
+          user_defines_host_future = true
+        } else {
+          ()
+        }
+        if name == "host_stream_named" || name == "host_stream_next" || name == "host_stream_close" || name == "HostStream::next" || name == "HostStream::close" {
+          user_defines_host_stream = true
+        } else {
+          ()
+        }
+        if lc_expr_has_async_handle(sv) {
+          has_async_handle = true
+        } else {
+          ()
+        }
+        lc_mark_calls(sv, boundary_targets, boundary_hits, false)
+      },
+      SLetMut(_, _, mv) => {
+        if lc_expr_has_async_handle(mv) {
+          has_async_handle = true
+        } else {
+          ()
+        }
+        lc_mark_calls(mv, boundary_targets, boundary_hits, false)
+      },
+      SLetPat(_, pv) => {
+        if lc_expr_has_async_handle(pv) {
+          has_async_handle = true
+        } else {
+          ()
+        }
+        lc_mark_calls(pv, boundary_targets, boundary_hits, false)
+      },
+      SExpr(se) => {
+        if lc_expr_has_async_handle(se) {
+          has_async_handle = true
+        } else {
+          ()
+        }
+        lc_mark_calls(se, boundary_targets, boundary_hits, false)
+      },
+      STest(_, te) => {
+        if lc_expr_has_async_handle(te) {
+          has_async_handle = true
+        } else {
+          ()
+        }
+        lc_mark_calls(te, boundary_targets, boundary_hits, false)
+      },
+      SBench(_, be) => {
+        if lc_expr_has_async_handle(be) {
+          has_async_handle = true
+        } else {
+          ()
+        }
+        lc_mark_calls(be, boundary_targets, boundary_hits, false)
+      },
+      // #1963: the policy owner, not a literal compare (a declaration name is
+      // bare, so this is behaviour-preserving).
+      SEffectDef(_, ename, _, _) => if is_runtime_scheduled_effect(ename) {
+        has_async_decl = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  // A builtin name bound by a top-level `let mut` or destructuring shadows
+  // the builtin as surely as a plain `let` does (Codex on #3059).
+  if lc_program_defines_top_level(stmts, "sleep") {
+    user_defines_sleep = true
+  } else {
+    ()
+  }
+  if lc_program_defines_top_level(stmts, "host_future_get") || lc_program_defines_top_level(stmts, "host_future_named") || lc_program_defines_top_level(stmts, "host_response_named") || lc_program_defines_top_level(stmts, "host_response_named_with") {
+    user_defines_host_future = true
+  } else {
+    ()
+  }
+  if lc_program_defines_top_level(stmts, "host_stream_named") || lc_program_defines_top_level(stmts, "host_stream_next") || lc_program_defines_top_level(stmts, "host_stream_close") {
+    user_defines_host_stream = true
+  } else {
+    ()
+  }
+  let calls_sleep = Array::get(boundary_hits, 0)
+  let calls_host_future = Array::get(boundary_hits, 1) || Array::get(boundary_hits, 2) || Array::get(boundary_hits, 8) || Array::get(boundary_hits, 9)
+  let calls_host_stream = Array::get(boundary_hits, 3) || Array::get(boundary_hits, 4) || Array::get(boundary_hits, 5) || Array::get(boundary_hits, 6) || Array::get(boundary_hits, 7)
+  let calls_host_stream_close = Array::get(boundary_hits, 5) || Array::get(boundary_hits, 7)
+  let calls_host_stream_option_next = Array::get(boundary_hits, 6)
+  // #1342: key the guard on the machinery that is actually INJECTED, not on
+  // "the program mentions one of these names somewhere". The three predicates
+  // below are the same ones the injection uses further down, hoisted so the
+  // guard cannot disagree with it -- previously the guard omitted the
+  // `!user_defines_*` half, so a program supplying its own `sleep` was told it
+  // was mixing conventions with a boundary that was never going to be built.
+  let sleep_machinery = calls_sleep && !user_defines_sleep && (entry_has_async || has_async_handle)
+  let hf_machinery = calls_host_future && !user_defines_host_future && entry_has_async
+  let hs_machinery = calls_host_stream && !user_defines_host_stream && entry_has_async
+  // #2065 wall 2: a SLEEP-only boundary no longer refuses spawn_suspend. The
+  // mismatch was only a spelling (the boundary arm is tail-resumptive because
+  // it writes `resume(v)` in callee position); when the program spawns
+  // suspend-class tasks the arm binds `resume` first, which makes the same
+  // handler suspend-class, and `TaskGroup::spawn_suspend` discharges its
+  // tasks' `Async` (its own row has none) so the body handed to
+  // `TaskGroup::run` is Async-free at the call site. A task that awaits a
+  // host future, or reads a host stream, parks on the handle (#1537, ADR-0089
+  // D2's third park kind): @vibe/concurrent's `__conc_host_*` hooks get the
+  // adapter's bodies (lc_host_hooks_install).
+  //
+  // Keying (#1218, tightened after gate 19 regressed on the first cut):
+  //
+  //   sleep machinery (retarget + optional boundary): the program must
+  //   actually CALL `sleep` somewhere. The first cut keyed on the entry
+  //   row alone, which wrapped every Async-row entry in the boundary
+  //   handle -- and the evidence migration then demanded eligibility of
+  //   the WHOLE entry body. Gate 19's for-await program (Async row, trait
+  //   dict calls, zero sleeps) was ineligible and failed to compile, a
+  //   regression for programs that never needed the machinery at all.
+  //
+  //   effect-decl injection: needed by the sleep machinery, and ALSO when
+  //   awaits expanded (__aw_poll present, injected by await_poll_pass just
+  //   before this) into a program that handles Async -- the migration of
+  //   that handle needs the declaration's operation list.
+  //
+  // Increment 2 keying is unchanged within the sleep machinery: a
+  // `handle ... with Async` anywhere also enables the retarget (the
+  // checker lets such a handle discharge the builtin row, so its body's
+  // sleeps MUST become performs the handler can receive); the boundary
+  // wrap itself stays entry-row-keyed.
+  // sleep_machinery / hf_machinery / hs_machinery are computed ABOVE now, so
+  // the guard and the injection cannot drift apart (#1342). Their original
+  // rationale:
+  //
+  // ADR-0089 step 4 (#1218): the host-future machinery -- a program that
+  // calls `host_future_get` under an Async-row entry gets the boundary
+  // handler (with the waitable settle arm below) even with zero sleeps.
+  // Entry-row-keyed only: under a user `handle ... with Async` the
+  // Suspend(handle + 2) payload reaches that handler instead, where the
+  // in-guest scheduler parks it as a poller (deadlock trap -- no
+  // completion source exists in-guest, spec §3.13).
+  //
+  // ADR-0089 Decision 3 (#1218): the host-stream machinery -- same keying
+  // discipline as hf_machinery (entry-row-keyed only; under a user
+  // `handle ... with Async` the stream payload would reach a handler with
+  // no read source, where the in-guest scheduler's poller arm turns it
+  // into a deterministic deadlock trap, spec §3.13).
+  let decl_needed = !has_async_decl && (sleep_machinery || hf_machinery || hs_machinery || (has_aw_poll && has_async_handle))
+  if decl_needed {
+    let ops: Array[(String, Array[TypeExpr], TypeExpr)] = [
+      ("Suspend", [TyName("Int")], TyName("Int"))
+    ]
+    Array::push(stmts, SEffectDef(false, "Async", lc_fresh_string_array(), ops))
+  } else {
+    ()
+  }
+  if !sleep_machinery {
+    ()
+  } else {
+    let ms = EIdent("__slp_ms", -1)
+    let suspend = ECall(EIdent("perform", -1), [
+      ECall(EIdent("Async::Suspend", -1), [EBinOp("-", EInt(0), ms, -1)], -1)
+    ], -1)
+    let sleep_body = EIf(EBinOp("<", EInt(0), ms, -1), ELet("__slp_w", suspend, EUnit, -1), EUnit)
+    // review-lint: allow-fixed-synthetic-name
+    let sleep_params: Array[(String, Option[TypeExpr])] = [
+      ("__slp_ms", Some(TyName("Int")))
+    ]
+    Array::push(stmts, SLet(false, false, lc_fixed_synthetic_name("__slp_perform", "review-lint: allow-fixed-synthetic-name"), None, EFn(lc_fresh_string_array(), array_empty(), sleep_params, Some(TyName("Unit")), Some("Async"), sleep_body)))
+    // Retarget `sleep(..)` calls to the injected fn -- see
+    // lc_rename_sleep_calls for why the fn cannot itself be named `sleep`.
+    // Codex P1 on #1312: which WALK depends on whether the boundary is
+    // installed. Under an Async-row entry the boundary catches every
+    // otherwise-unhandled perform, so the program-wide (shadow-aware)
+    // rewrite is sound. Without it, only positions guaranteed a handler
+    // are rewritten (lc_rename_sleep_scoped) -- everything else keeps the
+    // blocking builtin rather than gaining a perform nothing handles.
+    let rename_stmt_expr = (rexpr: Expr) -> Expr {
+      if entry_has_async {
+        lc_rename_sleep_calls(rexpr, true)
+      } else {
+        // A TOP-LEVEL fn's own EFn node is not a rewrite context in scoped
+        // mode -- only nested closure LITERALS are. An Async-row top-level
+        // fn (e.g. `fn delay() with Async { sleep(1) }`) may be called
+        // from row-free code with no handler in sight, so its sleeps must
+        // keep the blocking builtin; a row-annotated literal, by contrast,
+        // is step-split by Vertical B and its performs always bubble to
+        // the handler that drives it.
+        match rexpr {
+          EFn(rtps, rtbs, rparams, rret, reff, rbody) => EFn(rtps, rtbs, rparams, rret, reff, lc_rename_sleep_scoped(rbody)),
+          _ => lc_rename_sleep_scoped(rexpr)
+        }
+      }
+    }
+    let mut r = 0
+    while r < Array::length(stmts) {
+      match Array::get(stmts, r) {
+        SLet(rex, rrec, rname, rty, rexpr) => if rname == "__slp_perform" {
+          ()
+        } else {
+          Array::set(stmts, r, SLet(rex, rrec, rname, rty, rename_stmt_expr(rexpr)))
+        },
+        SLetMut(mname, mty, mexpr) => {
+          Array::set(stmts, r, SLetMut(mname, mty, rename_stmt_expr(mexpr)))
+        },
+        STest(tname, texpr) => {
+          // The unit-test lane (__no_entry__) compiles STest bodies as
+          // entries of their own; a sleep inside one must retarget exactly
+          // like fn-body sleeps or it stays an opaque builtin call that the
+          // suspend lowering rejects (found live: the spawn_suspend +
+          // plain-sleep test failed Vertical-B eligibility until this arm
+          // existed). Same stmt coverage as await_poll_pass.
+          Array::set(stmts, r, STest(tname, rename_stmt_expr(texpr)))
+        },
+        SBench(bname, bexpr) => {
+          Array::set(stmts, r, SBench(bname, rename_stmt_expr(bexpr)))
+        },
+        SExpr(sexpr) => {
+          Array::set(stmts, r, SExpr(rename_stmt_expr(sexpr)))
+        },
+        _ => ()
+      }
+      r = r + 1
+    }
+  }
+  if !hs_machinery {
+    ()
+  } else {
+    // ADR-0089 Decision 3 (#1218): the read half of the host-stream
+    // surface. `host_stream_next(s)` retargets to the injected
+    // `__hs_next`, which performs `Async::Suspend` with the reserved
+    // STREAM payload band (handle + lc_hs_req_base(); the future band is
+    // handle + 2, and the composer's adapter caps handles at 1023, so
+    // the bands can never overlap). The entry boundary's stream arm
+    // resumes with the byte the adapter read -- or -1 at end of stream,
+    // which the row-free finisher `__hs_fin` latches into the cell
+    // (state 3 -> 0) so every later read returns -1 without performing.
+    // The perform sits on a let-spine with a row-free tail call, the
+    // same shape as __aw_poll's pay/settle chain, so the suspend CPS
+    // split accepts it.
+    let hsn_s = EIdent("__hsn_s", -1)
+    let hsn_state = ECall(EIdent("Array::get", -1), [hsn_s, EInt(0)], -1)
+    let hsn_hnd = ECall(EIdent("Array::get", -1), [hsn_s, EInt(1)], -1)
+    let hsn_suspend = ECall(EIdent("perform", -1), [
+      ECall(EIdent("Async::Suspend", -1), [
+        EBinOp("+", hsn_hnd, EInt(lc_hs_req_base()), -1)
+      ], -1)
+    ], -1)
+    let hsn_read = ELet("__hsn_v", hsn_suspend, ECall(EIdent("__hs_fin", -1), [
+      // review-lint: allow-fixed-synthetic-name
+      hsn_s,
+      EIdent("__hsn_v", -1)
+    ], -1), -1)
+    // #2066 (Codex on #3091): a stream has ONE owner. Every read -- including
+    // one that finds the stream already closed and answers end of stream
+    // without parking -- first claims the cell for the running task, so a
+    // second task reaching it through a closure a helper returned traps
+    // instead of splitting its bytes or reading a sibling's close as EOF.
+    let hsn_claim = lc_concurrent_hook_name(stmts, array_empty(), "__conc_stream_claim")
+    let hsn_open = EIf(EBinOp("==", hsn_state, EInt(3), -1), hsn_read, EBinOp("-", EInt(0), EInt(1), -1))
+    let hsn_body = if hsn_claim != "" {
+      ELet("__hsn_c", ECall(EIdent(hsn_claim, -1), [hsn_s], -1), hsn_open, -1)
+      // review-lint: allow-fixed-synthetic-name (the injected __hs_next's own scope)
+    } else {
+      hsn_open
+    }
+    let hsn_params: Array[(String, Option[TypeExpr])] = [("__hsn_s", None)]
+    Array::push(stmts, SLet(false, false, lc_fixed_synthetic_name("__hs_next", "review-lint: allow-fixed-synthetic-name"), None, EFn(lc_fresh_string_array(), array_empty(), hsn_params, Some(TyName("Int")), Some("Async"), hsn_body)))
+    // #1955: public source protocol. Authority remains in the Async row and
+    // the stateful HostStream handle is consumed in place, so no Future or
+    // redundant Self value is returned.
+    if calls_host_stream_option_next {
+      let hso_s = EIdent("__hso_s", -1)
+      let hso_v = EIdent("__hso_v", -1)
+      let hso_raw = EIdent("__hso_raw", -1)
+      let hso_state = ECall(EIdent("Array::get", -1), [hso_s, EInt(0)], -1)
+      let hso_hnd = ECall(EIdent("Array::get", -1), [hso_s, EInt(1)], -1)
+      let hso_suspend = ECall(EIdent("perform", -1), [
+        ECall(EIdent("Async::Suspend", -1), [
+          EBinOp("+", hso_hnd, EInt(lc_hs_req_base()), -1)
+        ], -1)
+      ], -1)
+      let hso_finished = ECall(EIdent("__hs_fin", -1), [hso_s, hso_v], -1)
+      let hso_option = EIf(EBinOp("<", hso_raw, EInt(0), -1), EIdent("None", -1), ECall(EIdent("Some", -1), [
+        hso_raw
+      ], -1))
+      let hso_settle = ELet(lc_fixed_synthetic_name("__hso_raw", "review-lint: allow-fixed-synthetic-name"), hso_finished, hso_option, -1)
+      let hso_read = ELet(lc_fixed_synthetic_name("__hso_v", "review-lint: allow-fixed-synthetic-name"), hso_suspend, hso_settle, -1)
+      let hso_open = EIf(EBinOp("==", hso_state, EInt(3), -1), hso_read, EIdent("None", -1))
+      // #2066 (Codex on #3091): the public `HostStream::next` spelling claims
+      // the cell for the running task exactly as `__hs_next` does.
+      let hso_body = if hsn_claim != "" {
+        ELet("__hso_c", ECall(EIdent(hsn_claim, -1), [hso_s], -1), hso_open, -1)
+        // review-lint: allow-fixed-synthetic-name (the injected __hs_next_option's own scope)
+      } else {
+        hso_open
+      }
+      let hso_params: Array[(String, Option[TypeExpr])] = [("__hso_s", None)]
+      let hso_fn = EFn(lc_fresh_string_array(), array_empty(), hso_params, Some(TyApp("Option", [
+        TyName("Int")
+      ])), Some("Async"), hso_body)
+      let hso_binding = SLet(false, false, lc_fixed_synthetic_name("__hs_next_option", "review-lint: allow-fixed-synthetic-name"), None, hso_fn)
+      Array::push(stmts, hso_binding)
+    } else {
+      ()
+    }
+    let hsf_s = EIdent("__hsf_s", -1)
+    let hsf_v = EIdent("__hsf_v", -1)
+    let hsf_close = ECall(EIdent("Array::set", -1), [hsf_s, EInt(0), EInt(0)], -1)
+    let hsf_body = EIf(EBinOp("<", hsf_v, EInt(0), -1), ESeq(hsf_close, EBinOp("-", EInt(0), EInt(1), -1)), hsf_v)
+    let hsf_params: Array[(String, Option[TypeExpr])] = [
+      ("__hsf_s", None),
+      ("__hsf_v", None)
+    ]
+    Array::push(stmts, SLet(false, false, lc_fixed_synthetic_name("__hs_fin", "review-lint: allow-fixed-synthetic-name"), None, EFn(lc_fresh_string_array(), array_empty(), hsf_params, Some(TyName("Int")), None, hsf_body)))
+    // ADR-0089 Decision 3 follow-up (#1218): the DROP half. The read half
+    // releases the readable end only once it reaches end of stream, so a
+    // guest that stops reading early (`take the first 4 bytes`) used to
+    // pin that handle for the component instance's whole lifetime -- the
+    // limitation recorded at the end of spec §3.18.
+    //
+    // `host_stream_close(s)` retargets to this injected `__hs_close`,
+    // which is ROW-FREE: dropping a readable end is a canon call that
+    // never blocks, so unlike the read there is no perform, no reserved
+    // band and no boundary settle arm -- it calls the adapter directly.
+    //
+    // The cell's state word is what makes it idempotent and safe: the
+    // drop happens only for state 3 (open host stream), and the same
+    // write that closes the cell (3 -> 0) is what stops a second close --
+    // or a later read, which returns -1 through `__hs_next`'s state test
+    // -- from reaching the adapter again. A double `stream.drop-readable`
+    // on one handle would trap host-side, so this is load-bearing, not
+    // just tidy.
+    let hsc_s = EIdent("__hsc_s", -1)
+    let hsc_state = ECall(EIdent("Array::get", -1), [hsc_s, EInt(0)], -1)
+    let hsc_hnd = ECall(EIdent("Array::get", -1), [hsc_s, EInt(1)], -1)
+    let hsc_drop = ECall(EIdent("vibe_hs_close_raw", -1), [hsc_hnd], -1)
+    let hsc_mark = ECall(EIdent("Array::set", -1), [hsc_s, EInt(0), EInt(0)], -1)
+    let hsc_close = ELet("__hsc_r", hsc_drop, hsc_mark, -1)
+    // review-lint: allow-fixed-synthetic-name
+    // #2066 (Codex on #3091): closing is a use of the stream too. The running
+    // task claims the cell first, so a closer handed out beside a reader
+    // cannot drop another task's stream under it.
+    let hsc_claim = lc_concurrent_hook_name(stmts, array_empty(), "__conc_stream_claim")
+    let hsc_guarded = if hsc_claim != "" {
+      ELet("__hsc_c", ECall(EIdent(hsc_claim, -1), [hsc_s], -1), hsc_close, -1)
+      // review-lint: allow-fixed-synthetic-name (the injected __hs_close's own scope)
+    } else {
+      hsc_close
+    }
+    let hsc_body = EIf(EBinOp("==", hsc_state, EInt(3), -1), hsc_guarded, EUnit)
+    // review-lint: allow-fixed-synthetic-name
+    let hsc_params: Array[(String, Option[TypeExpr])] = [("__hsc_s", None)]
+    // Injected ONLY when the source actually closes. `__hs_close`'s body is
+    // the sole reference to `vibe_hs_close_raw`, and the import is gated on
+    // that name being used -- so injecting it unconditionally would hand
+    // the close import (and the adapter's drop func) to every draining
+    // program too, silently changing bytes that are pinned elsewhere.
+    if calls_host_stream_close {
+      Array::push(stmts, SLet(false, false, lc_fixed_synthetic_name("__hs_close", "review-lint: allow-fixed-synthetic-name"), None, EFn(lc_fresh_string_array(), array_empty(), hsc_params, Some(TyName("Unit")), None, hsc_body)))
+    } else {
+      ()
+    }
+    // Program-wide retarget (shadow-aware): the machinery is
+    // entry-row-keyed, so the boundary catches every otherwise-unhandled
+    // perform -- the same soundness argument as the sleep rewrite's
+    // entry_has_async arm. Both surfaces are rewritten here, each by its
+    // own pass (shadowing is per-name, see lc_rename_hs_close_calls).
+    let mut hsr = 0
+    while hsr < Array::length(stmts) {
+      match Array::get(stmts, hsr) {
+        SLet(hrex, hrrec, hrname, hrty, hrexpr) => if hrname == "__hs_next" || hrname == "__hs_next_option" || hrname == "__hs_fin" || hrname == "__hs_close" {
+          ()
+        } else {
+          let with_raw_next = lc_rename_hs_next_calls(hrexpr, true)
+          let with_option_next = if calls_host_stream_option_next {
+            lc_rename_hs_option_next_calls(with_raw_next, true)
+          } else {
+            with_raw_next
+          }
+          Array::set(stmts, hsr, SLet(hrex, hrrec, hrname, hrty, lc_rename_hs_maybe_close(calls_host_stream_close, with_option_next, true)))
+        },
+        SLetMut(hmname, hmty, hmexpr) => {
+          Array::set(stmts, hsr, SLetMut(hmname, hmty, lc_rename_hs_maybe_close(calls_host_stream_close, lc_rename_hs_option_next_calls(lc_rename_hs_next_calls(hmexpr, true), true), true)))
+        },
+        STest(htname, htexpr) => {
+          Array::set(stmts, hsr, STest(htname, lc_rename_hs_maybe_close(calls_host_stream_close, lc_rename_hs_option_next_calls(lc_rename_hs_next_calls(htexpr, true), true), true)))
+        },
+        SBench(hbname, hbexpr) => {
+          Array::set(stmts, hsr, SBench(hbname, lc_rename_hs_maybe_close(calls_host_stream_close, lc_rename_hs_option_next_calls(lc_rename_hs_next_calls(hbexpr, true), true), true)))
+        },
+        SExpr(hsexpr) => {
+          Array::set(stmts, hsr, SExpr(lc_rename_hs_maybe_close(calls_host_stream_close, lc_rename_hs_option_next_calls(lc_rename_hs_next_calls(hsexpr, true), true), true)))
+        },
+        _ => ()
+      }
+      hsr = hsr + 1
+    }
+  }
+  if hf_machinery {
+    lc_ws_track_inject(stmts)
+  } else {
+    ()
+  }
+  // #3192: the boundary takes the suspend-class spelling whenever the program
+  // step-compiles a closure for `Async`, not only when it spawns suspendable
+  // tasks: an `Async` closure literal the entry calls beside a
+  // `TaskGroup::run` is compiled to the step convention, which the
+  // tail-resumptive spelling cannot call, so the convention guard refused
+  // exactly these programs. A program whose only `Async` handler would be
+  // this boundary step-compiles nothing, so it keeps the tail-resumptive one.
+  let step_boundary = has_spawn_suspend || (entry_has_async && (sleep_machinery || hf_machinery || hs_machinery) && suspend_prepass_splits(stmts, "Async"))
+  if entry_has_async && (sleep_machinery || hf_machinery || hs_machinery) {
+    let req = EIdent("__entry_slp_req", -1)
+    // ADR-0089 D2 (#1218): the boundary is tail-resumptive -- nothing
+    // else can run between the perform and the resume -- so a POLL-WAIT
+    // payload (req == 1, __aw_poll's retry convention) can never be
+    // satisfied here: resuming it would re-poll the same unresolved
+    // future forever, a silent livelock. Trap deterministically instead
+    // (`assert` lowers to `unreachable` on false -- an unshadowable
+    // inline builtin, see compile_call.vibe's #1095 note), mirroring the
+    // scheduler's own deadlock-trap rule (conc_require in
+    // @vibe/concurrent). Sleep debts (req < 0) settle by blocking;
+    // cooperative yields (req == 0) resume for free.
+    //
+    // ADR-0089 step 4 (#1218): a WAITABLE payload (req >= 2, the reserved
+    // band -- req - 2 is a host future handle from `host_future_get`) IS
+    // satisfiable here, unlike the poll-wait: `vibe_hf_wait_raw` performs
+    // the future.read -> BLOCKED -> waitable.join -> waitable-set.wait
+    // sequence in the component adapter (spec §3.13), where the CANONICAL
+    // ABI suspends the whole task until the host resolves the future --
+    // so a tail-resumptive arm that blocks in it is exactly right. The
+    // arm resumes with the value that landed in the read buffer, and
+    // __aw_poll's settle writes it into the future cell. Emitted via a
+    // synthesized row-free `__entry_settle` fn only when the program
+    // calls `host_future_get`, so sleep-only boundaries keep their
+    // original (byte-identical) inline arm.
+    let arm = if hf_machinery || hs_machinery {
+      let q = EIdent("__entry_hf_q", -1)
+      let raw_wait = ECall(EIdent("vibe_hf_wait_raw", -1), [
+        EBinOp("-", q, EInt(2), -1)
+      ], -1)
+      // #3131: the wait frees a WIT slot; record it (lc_ws_track_inject).
+      let wait_call = if hf_machinery {
+        ECall(EIdent("__ws_freed", -1), [q, raw_wait], -1)
+      } else {
+        raw_wait
+      }
+      let trap_zero = ESeq(ECall(EIdent("assert", -1), [
+        EBinOp("==", q, EInt(0), -1)
+      ], -1), EInt(0))
+      let low = if sleep_machinery {
+        EIf(EBinOp("<", q, EInt(0), -1), ESeq(ECall(EIdent("sleep_blocking", -1), [
+          EBinOp("-", EInt(0), q, -1)
+        ], -1), EInt(0)), trap_zero)
+      } else {
+        trap_zero
+      }
+      let mid = if hf_machinery {
+        EIf(EBinOp("<", EInt(1), q, -1), wait_call, low)
+      } else {
+        low
+      }
+      // ADR-0089 Decision 3 (#1218): the STREAM band (q >= 2048, q -
+      // lc_hs_req_base() = the readable end's handle) settles by one
+      // blocking `vibe_hs_read_raw` -- the adapter's stream.read +
+      // waitable-set.wait when it blocks -- resuming with the byte, or
+      // -1 at end of stream. Emitted only under hs_machinery so future-
+      // and sleep-only boundaries keep their bytes.
+      let settle_body = if hs_machinery {
+        let hs_read_call = ECall(EIdent("vibe_hs_read_raw", -1), [
+          EBinOp("-", q, EInt(lc_hs_req_base()), -1)
+        ], -1)
+        EIf(EBinOp("<", EInt(lc_hs_req_base() - 1), q, -1), hs_read_call, mid)
+      } else {
+        mid
+      }
+      let settle_params: Array[(String, Option[TypeExpr])] = [
+        ("__entry_hf_q", Some(TyName("Int")))
+      ]
+      Array::push(stmts, SLet(false, false, lc_fixed_synthetic_name("__entry_settle", "review-lint: allow-fixed-synthetic-name"), None, EFn(lc_fresh_string_array(), array_empty(), settle_params, Some(TyName("Int")), None, settle_body)))
+      let settled = ECall(EIdent("__entry_settle", -1), [req], -1)
+      if step_boundary {
+        // #1537: the suspend-class spelling, as in the sleep-only arm
+        // below -- bind `resume` first, so this handler takes the step
+        // convention the spawned tasks use.
+        let k_resumed = ECall(EIdent("__entry_k", -1), [
+          EIdent("__entry_slp_v", -1)
+        ], -1)
+        ELet(lc_fixed_synthetic_name("__entry_slp_v", "review-lint: allow-fixed-synthetic-name"), settled, ELet(lc_fixed_synthetic_name("__entry_k", "review-lint: allow-fixed-synthetic-name"), EIdent("resume", -1), k_resumed, -1), -1)
+      } else {
+        let resumed = ECall(EIdent("resume", -1), [EIdent("__entry_slp_v", -1)], -1)
+        ELet(lc_fixed_synthetic_name("__entry_slp_v", "review-lint: allow-fixed-synthetic-name"), settled, resumed, -1)
+      }
+    } else {
+      let settle = EIf(EBinOp("<", req, EInt(0), -1), ECall(EIdent("sleep_blocking", -1), [
+        EBinOp("-", EInt(0), req, -1)
+      ], -1), ECall(EIdent("assert", -1), [EBinOp("<", req, EInt(1), -1)], -1))
+      if step_boundary {
+        // #2065 wall 2: suspend-class spelling -- see the guard above.
+        ESeq(settle, ELet(lc_fixed_synthetic_name("__entry_k", "review-lint: allow-fixed-synthetic-name"), EIdent("resume", -1), ECall(EIdent("__entry_k", -1), [
+          EInt(0)
+        ], -1), -1))
+      } else {
+        ESeq(settle, ECall(EIdent("resume", -1), [EInt(0)], -1))
+      }
+    }
+    let mut j = 0
+    while j < Array::length(stmts) {
+      match Array::get(stmts, j) {
+        SLet(exported, is_rec, name, ty, EFn(tps, tbs, params, ret, eff, body)) => if name == boundary_name {
+          // The cell rebinding goes INSIDE the handler: it is ordinary code
+          // that runs on entry, not something the boundary needs to see.
+          let with_cells = if hs_machinery {
+            lc_wrap_host_stream_params(params, body)
+          } else {
+            body
+          }
+          let async_arms: Array[(Pat, Expr)] = [
+            (PCtor("Async::Suspend", [
+              PBind(lc_fixed_synthetic_name("__entry_slp_req", "review-lint: allow-fixed-synthetic-name"))
+            ]), arm)
+          ]
+          // #2065 wall 2: a suspend-class boundary goes INSIDE the entry's
+          // exception boundary. The suspend lowering refuses a handle nested
+          // in its handled body, and the exception boundary (installed
+          // first) would otherwise be exactly that. Inside-out is the shape
+          // `TaskGroup::spawn_suspend` already uses -- the abortive
+          // Exception handle outside, the CPS-lowered Async handle inside --
+          // so a throw from the body still reaches the boundary diagnostic.
+          let wrapped = if step_boundary {
+            match with_cells {
+              EHandle(inner, earms) => if lc_is_exception_boundary_arms(earms) {
+                EHandle(EHandle(inner, async_arms), earms)
+              } else {
+                EHandle(with_cells, async_arms)
+              },
+              _ => EHandle(with_cells, async_arms)
+            }
+          } else {
+            EHandle(with_cells, async_arms)
+          }
+          Array::set(stmts, j, SLet(exported, is_rec, name, ty, EFn(tps, tbs, params, ret, eff, wrapped)))
+        } else {
+          ()
+        },
+        _ => ()
+      }
+      j = j + 1
+    }
+  } else {
+    ()
+  }
+  ""
+}
+
+// #2388 measurement: is each pre-codegen pass sound to run on one module at
+// a time? For every pass of the prelude (and the heap-parameter elaboration
+// in front of it) the oracle runs the pass twice from the same state: once
+// on the whole merged program, once on each source file's statements alone
+// (the entry name reaches only the entry file), then renders both results
+// statement by statement. A pass whose per-file result renders identically
+// to its whole-program result is per-module-sound on this corpus; the first
+// differing statement is reported so the reason can be classified.
+// Provenance survives a pass that inserts statements by re-aligning the
+// per-statement file ids on stable statement keys (a declaration's kind and
+// name): an inserted statement belongs to the file of the statement before
+// it, which is also where a per-module run would put it.
+/// A type as a key, for telling one impl of a trait from another. Keying an
+/// impl by its TRAIT alone (what this did) collapses every `impl Eq for ...` in
+/// a program onto `impl:Eq`, and a key that repeats is skipped by the content
+/// comparison -- so a per-module run could drop or change an implementation and
+/// still read `missing=0 content=0` (Codex P1 on #2622).
+fn oracle_type_key(t: TypeExpr) -> String {
+  match t {
+    TyName(n) => n,
+    TyApp(n, args) => {
+      let out = StringBuilder::new()
+      StringBuilder::push(out, n)
+      StringBuilder::push(out, "[")
+      let mut i = 0
+      while i < Array::length(args) {
+        if i > 0 {
+          StringBuilder::push(out, ",")
+        } else {
+          ()
+        }
+        StringBuilder::push(out, oracle_type_key(Array::get(args, i)))
+        i = i + 1
+      }
+      StringBuilder::push(out, "]")
+      StringBuilder::freeze(out)
+    },
+    TyTuple(elems) => {
+      let out = StringBuilder::new()
+      StringBuilder::push(out, "(")
+      let mut i = 0
+      while i < Array::length(elems) {
+        if i > 0 {
+          StringBuilder::push(out, ",")
+        } else {
+          ()
+        }
+        StringBuilder::push(out, oracle_type_key(Array::get(elems, i)))
+        i = i + 1
+      }
+      StringBuilder::push(out, ")")
+      StringBuilder::freeze(out)
+    },
+    TyFn(params, ret, eff) => {
+      let out = StringBuilder::new()
+      StringBuilder::push(out, "fn(")
+      let mut i = 0
+      while i < Array::length(params) {
+        if i > 0 {
+          StringBuilder::push(out, ",")
+        } else {
+          ()
+        }
+        StringBuilder::push(out, oracle_type_key(Array::get(params, i)))
+        i = i + 1
+      }
+      StringBuilder::push(out, ")->")
+      StringBuilder::push(out, oracle_type_key(ret))
+      match eff {
+        Some(row) => {
+          StringBuilder::push(out, " with ")
+          StringBuilder::push(out, row)
+        },
+        None => ()
+      }
+      StringBuilder::freeze(out)
+    },
+    TyUnit => "Unit"
+  }
+}
+
+export fn oracle_stmt_key(s: Stmt) -> String {
+  match s {
+    SLet(_, _, n, _, _) => String::concat("let:", n),
+    SLetMut(n, _, _) => String::concat("letmut:", n),
+    SEnum(_, n, _, _, _) => String::concat("enum:", n),
+    SSuberror(_, n, _) => String::concat("suberror:", n),
+    SStruct(_, n, _, _, _, _) => String::concat("struct:", n),
+    STypeAlias(_, n, _, _) => String::concat("alias:", n),
+    STrait(_, n, _, _, _, _) => String::concat("trait:", n),
+    SImpl(_, _, n, ty) => String::concat("impl:", String::concat(n, String::concat(":", oracle_type_key(ty)))),
+    SExternLet(n, _) => String::concat("extern:", n),
+    SImport(p, _) => String::concat("import:", p),
+    STest(n, _) => String::concat("test:", n),
+    SBench(n, _) => String::concat("bench:", n),
+    SExample(n, _) => String::concat("example:", n),
+    SExpr(_) => "expr",
+    SExport(_) => "export",
+    SReExport(p, _) => String::concat("reexport:", p),
+    SAliasDecl(a, _) => String::concat("aliasdecl:", a),
+    SReExportSourceBoundary(_, _) => "reexport_boundary",
+    SQualifiedPatternRefs(_) => "qualified_pattern_refs",
+    STestEffectRows(_) => "test_effect_rows",
+    SLetPat(_, _) => "letpat",
+    SModule(_, n, _) => String::concat("module:", n),
+    SEffectDef(_, n, _, _) => String::concat("effect:", n),
+    SEffectSet(_, n, _) => String::concat("effectset:", n),
+    SResource(n, _) => String::concat("resource:", n),
+    SFnDecl(_, n, _, _, _) => String::concat("fndecl:", n)
+  }
+}
+
+export fn oracle_realign(old_keys: Array[String], old_file: Array[Int], new_stmts: Array[Stmt]) -> Array[Int] {
+  let out: Array[Int] = []
+  let n_old = Array::length(old_keys)
+  let mut i = 0
+  let mut j = 0
+  let mut last_file = 0
+  while j < Array::length(new_stmts) {
+    let k = oracle_stmt_key(Array::get(new_stmts, j))
+    if i < n_old && Array::get(old_keys, i) == k {
+      last_file = Array::get(old_file, i)
+      Array::push(out, last_file)
+      i = i + 1
+      j = j + 1
+    } else if i + 1 < n_old && Array::get(old_keys, i + 1) == k {
+      i = i + 1
+    } else {
+      Array::push(out, last_file)
+      j = j + 1
+    }
+  }
+  out
+}
+
+export fn oracle_pass_name(k: Int) -> String {
+  match k {
+    0 => "elaborate_heap_params",
+    1 => "desugar_inspect_calls",
+    2 => "lower_optional_performs",
+    3 => "erase_railway_origin_markers",
+    4 => "desugar_trait_dicts_with_typed_eq",
+    5 => "unbox_tuple_loop_params",
+    6 => "rewrite_top_level_fn_alias_refs",
+    7 => "lc_inject_stdin_surface_wrappers",
+    8 => "lc_extract_inline_wasm",
+    9 => "await_poll_pass",
+    10 => "rewrite_self_tail_calls",
+    11 => "wrap_entry_exception_boundary",
+    12 => "lc_inject_async_sleep_boundary",
+    13 => "suspend_cps_pass",
+    14 => "evidence_dict_pass",
+    _ => "forin_discard_pass"
+  }
+}
+
+/// One prelude pass, by index, with the ERRORS it returns collected into
+/// `errs` (#2647 Codex P1).
+///
+/// Three passes reject a program by RETURNING a message rather than throwing --
+/// `lc_inject_async_sleep_boundary` (12), `suspend_cps_pass` (13) and
+/// `evidence_dict_pass` (15) -- and this used to discard all three into `let _
+/// =`. For a measurement that compares declarations that is merely incomplete;
+/// for `effect_lowering_prelude_split`, whose return value IS the caller's
+/// error list, it is silently wrong: a program `effect_lowering_prelude`
+/// rejects would compile.
+///
+/// Pass 7 (`lc_inject_stdin_surface_wrappers`) stays discarded because the
+/// whole-program path discards it too; the point is to match that path, not to
+/// collect everything available.
+export fn oracle_apply_pass(k: Int, stmts: Array[Stmt], entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], errs: Array[String], env: PreludeEnv) -> Unit with Exception {
+  match k {
+    0 => {
+      // elaborate_heap_params returns a fresh array; the oracle keeps every
+      // program in place, so its result is copied back into `stmts`.
+      let out = elaborate_heap_params(stmts)
+      Array::truncate(stmts, 0)
+      let mut oi = 0
+      while oi < Array::length(out) {
+        Array::push(stmts, Array::get(out, oi))
+        oi = oi + 1
+      }
+    },
+    1 => desugar_inspect_calls(stmts),
+    2 => if env.facts_known {
+      // BOTH halves are whole-program (#2647 Codex rounds 3 and 4): the
+      // resolution decides whether ambient authority is granted, and the
+      // source-shadow name set decides whether a `perform?` spelling names a
+      // SOURCE function rather than a registered capability. A partition
+      // answers each differently, and each wrong answer is silent.
+      lower_optional_performs_with_source_names(stmts, env.optional_resolution, env.optional_source_names)
+    } else {
+      let res = optional_perform_artifact_resolution(stmts, entry_name, false, array_empty())
+      lower_optional_performs(stmts, res)
+    },
+    3 => erase_railway_origin_markers(stmts),
+    4 => desugar_trait_dicts_with_typed_eq(stmts, checker_eq_offsets, checker_eq_type_keys),
+    5 => unbox_tuple_loop_params(stmts),
+    6 => if env.facts_known {
+      apply_top_level_fn_alias_renames(stmts, env.alias_renames)
+    } else {
+      rewrite_top_level_fn_alias_refs(stmts)
+    },
+    7 => {
+      let _ = lc_inject_stdin_surface_wrappers(stmts)
+      ()
+    },
+    8 => lc_extract_inline_wasm(stmts, env.iw_names, env.iw_wats),
+    9 => if env.facts_known {
+      await_poll_pass(stmts, env.calls_host_future, env.waiter_hooks, env.aw_note)
+    } else {
+      await_poll_pass(stmts, lc_stmts_call_host_future(stmts), lc_waiter_hooks_available(stmts, env.linked_imports), lc_aw_note_available(stmts, env.linked_imports))
+    },
+    10 => rewrite_self_tail_calls(stmts),
+    11 => {
+      wrap_entry_host_provider(stmts, entry_name)
+      wrap_entry_exception_boundary(stmts, entry_name)
+    },
+    12 => {
+      let sleep_msg = lc_inject_async_sleep_boundary(stmts, entry_name)
+      if sleep_msg != "" {
+        Array::push(errs, sleep_msg)
+      } else {
+        ()
+      }
+    },
+    13 => {
+      let scps_errs = suspend_cps_pass(stmts)
+      if Array::length(scps_errs) > 0 {
+        Array::push(errs, Array::get(scps_errs, 0))
+      } else {
+        ()
+      }
+    },
+    14 => {
+      let edp_errs = evidence_dict_pass_with_roots(stmts, lc_late_dce_roots(stmts, entry_name, false))
+      if Array::length(edp_errs) > 0 {
+        Array::push(errs, Array::get(edp_errs, 0))
+      } else {
+        ()
+      }
+    },
+    _ => forin_discard_pass(stmts)
+  }
+}
+
+export fn oracle_head(s: String) -> String {
+  let n = String::length(s)
+  if n > 160 {
+    String::substring(s, 0, 160)
+  } else {
+    s
+  }
+}
+
+/// #2388: a module's dependency interface as the per-module pass sees it --
+/// what another file contributes without its bodies being compiled here:
+/// EXPORTED type, trait, suberror and impl declarations, and exported
+/// top-level definitions (a function's signature drives witness threading at a
+/// call site and the exception kind of a throw whose payload it returns; an
+/// explicit `T::op` suppresses a derive). Bodies ride along unread: the
+/// module entry never rewrites or emits a context statement, which is the
+/// bodyless form a `.vpkg` contract carries.
+///
+/// The export test is the point. This used to admit PRIVATE declarations too,
+/// which made the oracle more permissive than any real driver -- `index.vpkg`
+/// is the bodyless PUBLIC boundary, so a pass reading a dependency's private
+/// declaration stayed green here while a per-module compile could not see it
+/// (Codex P1 on #2622).
+/// #2633: the names a module exports through a BARE EXPORT BLOCK
+/// (`export { a, b }`) rather than through a flag on the declaration.
+///
+/// vibe has both spellings and they are not interchangeable at the source:
+/// `lib/@vibe/parser/polyfill.vibe` uses the block deliberately, because a
+/// contract-undeclared `export let` would be a conformance violation, and
+/// `parser_expr.vibe` REFUSES `export let <pattern> = ..` outright and tells
+/// the author to use a block. So the block is not an oddity to tolerate, it is
+/// the required spelling in cases the flag cannot express.
+///
+/// The merge honours both -- it stamps a block-exported name `_exp_` -- and
+/// the interface filter honoured only the flag, so those declarations were
+/// modelled as published by nothing. Measured: that was ALL 35 of the
+/// in-closure context misses.
+export fn oracle_export_block_names(stmts: Array[Stmt]) -> MutMap[String, Int] {
+  let out: MutMap[String, Int] = MutMap::new_string()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SExport(names) => {
+        let mut j = 0
+        while j < Array::length(names) {
+          MutMap::set(out, Array::get(names, j), 1)
+          j = j + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// The interface test, against a module's export-block names as well as the
+/// per-declaration flag.
+export fn oracle_is_interface_stmt_with(s: Stmt, block: MutMap[String, Int]) -> Bool {
+  if oracle_is_interface_stmt(s) {
+    true
+  } else {
+    match s {
+      SLet(_, _, n, _, _) => MutMap::has(block, n),
+      SFnDecl(_, n, _, _, _) => MutMap::has(block, n),
+      _ => false
+    }
+  }
+}
+
+fn oracle_is_interface_stmt(s: Stmt) -> Bool {
+  match s {
+    SEnum(exported, _, _, _, _) => exported,
+    SStruct(exported, _, _, _, _, _) => exported,
+    STypeAlias(exported, _, _, _) => exported,
+    SSuberror(exported, _, _) => exported,
+    STrait(exported, _, _, _, _, _) => exported,
+    // An impl carries no export flag and is not addressed by name: trait
+    // resolution is global, and a contract that dropped a dependency's impls
+    // would make its bounded generics unusable.
+    SImpl(_, _, _, _) => true,
+    SLet(exported, _, _, _, _) => exported,
+    // A top-level mutable binding is never part of a package's surface.
+    SLetMut(_, _, _) => false,
+    _ => false
+  }
+}
+
+/// The interface form of a context statement: a function loses its body
+/// (`EUnit`), the shape a `.vpkg` contract carries, so no body-reading
+/// collector (the trivial-wrapper inliner above all) can see through the
+/// interface.
+///
+/// A function with NO return annotation used to keep its body, on the argument
+/// that a contract would carry the checker's elaborated return type -- which
+/// the pass reads off the body's tail expression (`fn_return_head_of`,
+/// `collect_fn_eq_return_shape`) -- and the oracle had no other spelling of
+/// it. That made the simulated interface wider than the real boundary (Codex
+/// P1 on #2622). Measured with the bodies dropped anyway: the compiler closure
+/// reads `missing=0 extra=0 copies=328 content=0 renames=0`, unchanged, so on
+/// this corpus nothing was reading them and the interface can be what a
+/// contract actually is. A module that DID need the elaborated return type
+/// would now show up as a difference, which is the point.
+export fn oracle_interface_form(s: Stmt) -> Stmt {
+  match s {
+    SLet(exported, is_rec, name, ty, EFn(tps, bounds, params, ret, eff, _)) => SLet(exported, is_rec, name, ty, EFn(tps, bounds, params, ret, eff, EUnit)),
+    // A non-function value loses its initializer too. `export let config:
+    // Config = …` used to go into the context whole, and `dtd_run` reads
+    // initializers (`collect_local_binder_names`,
+    // `collect_toplevel_constructor_vars`), so the split run could make a
+    // rewrite by inspecting a dependency's implementation -- which a `.vpkg`,
+    // carrying `let config: Config` and nothing else, does not expose (Codex
+    // P1 on #2622).
+    SLet(exported, is_rec, name, ty, _) => SLet(exported, is_rec, name, ty, EUnit),
+    _ => s
+  }
+}
+
+/// Whether two renderings differ only at generated fresh-name counters
+/// (`__teq_l12_0` vs `__teq_l2_0`, `__me_ks22`, `_exn_payload100` vs
+/// `_exn_payload10`). Anything else is a real content difference.
+fn oracle_rename_only(rw: String, rs: String) -> Bool {
+  oracle_strip_counters(rw) == oracle_strip_counters(rs)
+}
+
+/// The rendering with every generated counter removed: a digit run right
+/// after `__teq_l` / `__teq_r` / `__me_` / `__ae_` / `__be_` / `_exn_payload`
+/// (the names the pass mints from program-wide counters). Comparing the
+/// stripped renderings sees a real difference AFTER a renamed binder, which
+/// a first-difference test does not.
+fn oracle_strip_counters(s: String) -> String {
+  let out = StringBuilder::new()
+  let n = String::length(s)
+  let mut i = 0
+  while i < n {
+    StringBuilder::push(out, String::substring(s, i, i + 1))
+    i = i + 1
+    // After the '_' that ends one of the prefixes, skip a digit run.
+    let tail_from = if i > 12 {
+      i - 12
+    } else {
+      0
+    }
+    let tail = String::substring(s, tail_from, i)
+    if String::ends_with(tail, "__teq_l") || String::ends_with(tail, "__teq_r") || String::ends_with(tail, "__me_k") || String::ends_with(tail, "__me_ks") || String::ends_with(tail, "__me_i") || String::ends_with(tail, "__me_ok") || String::ends_with(tail, "__ae_i") || String::ends_with(tail, "__ae_ok") || String::ends_with(tail, "__be_i") || String::ends_with(tail, "__be_ok") || String::ends_with(tail, "_exn_payload") {
+      while i < n && String::char_code_at(s, i) >= 48 && String::char_code_at(s, i) <= 57 {
+        i = i + 1
+      }
+    } else {
+      ()
+    }
+  }
+  StringBuilder::freeze(out)
+}
+
+/// Compare the whole-program result `a` and the per-module result `trial` by
+/// declaration key rather than by position: per-module synthesis lands at each
+/// module's position and may repeat a helper per module, which a link-time
+/// dedup by name folds, so position and count are not the verdict. Keys that
+/// repeat within `a` are skipped (a repeated key cannot be matched). Returns
+/// `keyed missing=<in a only> extra=<in trial only> copies=<repeats in trial>
+/// content=<same key, different content, not a fresh-name rename>
+/// renames=<same key, fresh-name renames only> dup_keys=<statements the
+/// comparison cannot speak for, because their key repeats in `a`>` plus the
+/// first missing key and the first content-differing key.
+/// #2575 item 2 step 3: the SHAPE of the order difference, which the positional
+/// count on the keyed line cannot express.
+///
+/// `order_diff` counts positions, and at scale nearly every position differs --
+/// which reads as "the linked program is scrambled" and is not what happens.
+/// Each module's synthesized helpers close THAT MODULE rather than the program,
+/// so every statement after the first module's helpers is SHIFTED, and a
+/// positional comparison reports one shift once per statement after it.
+///
+/// So delete the synthesized declarations from both sequences and compare what
+/// is left. `residual=0` says the statements the source wrote are in the same
+/// order on both lanes and the only thing that moved is where the synthesized
+/// ones sit; a non-zero residual says something the source wrote moved too,
+/// which is a different and much worse claim.
+export fn oracle_order_residual(a: Array[Stmt], linked: Array[Stmt], synth_keys: Array[String]) -> (Int, Int) {
+  let synth: MutMap[String, Int] = MutMap::new_string()
+  let mut si = 0
+  while si < Array::length(synth_keys) {
+    MutMap::set(synth, Array::get(synth_keys, si), 1)
+    si = si + 1
+  }
+  let left = oracle_keys_without(a, synth)
+  let right = oracle_keys_without(linked, synth)
+  let lim = if Array::length(left) < Array::length(right) {
+    Array::length(left)
+  } else {
+    Array::length(right)
+  }
+  let mut diff = if Array::length(left) > Array::length(right) {
+    Array::length(left) - Array::length(right)
+  } else {
+    Array::length(right) - Array::length(left)
+  }
+  let mut i = 0
+  while i < lim {
+    if Array::get(left, i) == Array::get(right, i) {
+      ()
+    } else {
+      diff = diff + 1
+    }
+    i = i + 1
+  }
+  (diff, Array::length(left))
+}
+
+fn oracle_keys_without(stmts: Array[Stmt], drop: MutMap[String, Int]) -> Array[String] {
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let key = oracle_stmt_key(Array::get(stmts, i))
+    if MutMap::has(drop, key) {
+      ()
+    } else {
+      Array::push(out, key)
+    }
+    i = i + 1
+  }
+  out
+}
+
+export fn oracle_keyed_line(a: Array[Stmt], trial: Array[Stmt], render: (Stmt) -> String) -> String {
+  let wmap: MutMap[String, Int] = MutMap::new_string()
+  let mut dup_defs = 0
+  let mut first_dup_def = ""
+  let mut ki = 0
+  while ki < Array::length(a) {
+    let key = oracle_stmt_key(Array::get(a, ki))
+    if MutMap::has(wmap, key) {
+      MutMap::set(wmap, key, 0 - 1)
+      // A key that repeats in the WHOLE program and names a definition is the
+      // one shape a link-time fold must not touch: the program really does
+      // carry two of them, so folding by name alone deletes one.
+      if link_key_is_definition(key) {
+        dup_defs = dup_defs + 1
+        // Every one, not just the first. `dup_defs` is compared against
+        // `linked_dups` -- the definition keys the LINK left duplicated -- and
+        // a count that differs by one with only the first name printed cannot
+        // say which key accounts for the difference.
+        if String::length(first_dup_def) == 0 {
+          first_dup_def = key
+        } else {
+          first_dup_def = String::concat(first_dup_def, String::concat(",", key))
+        }
+      } else {
+        ()
+      }
+    } else {
+      MutMap::set(wmap, key, ki)
+    }
+    ki = ki + 1
+  }
+  // Statements whose key is not unique in the whole-program result. Their
+  // content is NOT compared (there is no single node to compare against) and
+  // one occurrence in the trial answers for all of them, so the rest of the
+  // line is a verdict about everything except these. Reported rather than left
+  // implicit: a reader who does not know the number cannot tell how much of
+  // the program `content=0` covers (Codex P1 on #2622). Shapes with no name of
+  // their own -- a bare expression statement, a destructuring `let` -- are
+  // what is left here now that an impl is keyed by trait AND type.
+  let mut dup_keys = 0
+  ki = 0
+  while ki < Array::length(a) {
+    match MutMap::get(wmap, oracle_stmt_key(Array::get(a, ki))) {
+      Some(widx) => if widx < 0 {
+        dup_keys = dup_keys + 1
+      } else {
+        ()
+      },
+      None => ()
+    }
+    ki = ki + 1
+  }
+  // #2575 item 2 step 3: ORDER, which everything else on this line is blind
+  // to. The comparison above is keyed, so a declaration that MOVED reads
+  // identical -- and the two lanes do place things differently: the split lane
+  // appends a module's synthesized helpers at the end of THAT MODULE's
+  // statements, the whole-program lane appends every one at the end of the
+  // program. Same declarations, same bodies, different positions.
+  //
+  // `order_diff` counts the positions whose key differs, plus the length
+  // excess if the two differ in length; `order_first` is the first such
+  // position, or -1 when the sequences agree. A driver that wants the split
+  // path to be a drop-in has to drive this to 0, and it is not 0 today --
+  // pinned on a two-module program by `prelude_split_bytes_test.vibe`.
+  let mut order_diff = 0
+  let mut order_first = 0 - 1
+  let order_lim = if Array::length(a) < Array::length(trial) {
+    Array::length(a)
+  } else {
+    Array::length(trial)
+  }
+  let mut oix = 0
+  while oix < order_lim {
+    if oracle_stmt_key(Array::get(a, oix)) == oracle_stmt_key(Array::get(trial, oix)) {
+      ()
+    } else {
+      order_diff = order_diff + 1
+      if order_first < 0 {
+        order_first = oix
+      } else {
+        ()
+      }
+    }
+    oix = oix + 1
+  }
+  let order_excess = if Array::length(a) > Array::length(trial) {
+    Array::length(a) - Array::length(trial)
+  } else {
+    Array::length(trial) - Array::length(a)
+  }
+  order_diff = order_diff + order_excess
+  if order_first < 0 && order_excess > 0 {
+    order_first = order_lim
+  } else {
+    ()
+  }
+  let seen: MutMap[String, Int] = MutMap::new_string()
+  let mut extra = 0
+  let mut copies = 0
+  let mut content = 0
+  let mut renames = 0
+  let mut first_copy = ""
+  let mut first_content = ""
+  let mut content_keys = ""
+  let mut ti = 0
+  while ti < Array::length(trial) {
+    let st = Array::get(trial, ti)
+    let key = oracle_stmt_key(st)
+    match MutMap::get(wmap, key) {
+      Some(widx) => {
+        if MutMap::has(seen, key) {
+          copies = copies + 1
+          // `copies=N` with no example is a number nobody can act on: a
+          // synthesized helper the link folds and a nameless statement that
+          // simply repeats both land in it, and they mean opposite things.
+          if String::length(first_copy) == 0 {
+            first_copy = key
+          } else {
+            ()
+          }
+        } else {
+          MutMap::set(seen, key, 1)
+        }
+        if widx < 0 || Array::get(a, widx) == st {
+          ()
+        } else if oracle_rename_only(render(Array::get(a, widx)), render(st)) {
+          // Includes an identical rendering: the nodes then differ only in
+          // fields the printer does not show, i.e. synthetic offsets (the
+          // namespace operations derive theirs from the trait's statement
+          // index, which is module-local in a per-module run).
+          renames = renames + 1
+        } else {
+          content = content + 1
+          // The NAME of every differing declaration, alongside the three
+          // rendered excerpts below. The excerpts are what make a difference
+          // diagnosable and are too long to print nine of; the names are what
+          // make the residue attributable to a cause, which is the thing
+          // driving it to zero needs.
+          if String::length(content_keys) == 0 {
+            content_keys = key
+          } else if content <= 24 {
+            content_keys = String::concat(content_keys, String::concat(",", key))
+          } else {
+            ()
+          }
+          if content <= 3 {
+            let rw = render(Array::get(a, widx))
+            let rs = render(st)
+            let lim = if String::length(rw) < String::length(rs) {
+              String::length(rw)
+            } else {
+              String::length(rs)
+            }
+            let mut p = 0
+            while p < lim && String::char_code_at(rw, p) == String::char_code_at(rs, p) {
+              p = p + 1
+            }
+            let from = if p > 100 {
+              p - 100
+            } else {
+              0
+            }
+            let wto = if p + 100 < String::length(rw) {
+              p + 100
+            } else {
+              String::length(rw)
+            }
+            let sto = if p + 100 < String::length(rs) {
+              p + 100
+            } else {
+              String::length(rs)
+            }
+            first_content = String::concat(first_content, String::concat("\n    ", String::concat(key, String::concat(" at=", String::concat(Int::to_string(p), String::concat("\n    whole<", String::concat(String::substring(rw, from, wto), String::concat(">\n    split<", String::concat(String::substring(rs, from, sto), ">")))))))))
+          } else {
+            ()
+          }
+        }
+      },
+      None => {
+        extra = extra + 1
+      }
+    }
+    ti = ti + 1
+  }
+  let mut missing = 0
+  let mut first_missing = ""
+  ki = 0
+  while ki < Array::length(a) {
+    let key = oracle_stmt_key(Array::get(a, ki))
+    if MutMap::has(seen, key) {
+      ()
+    } else {
+      missing = missing + 1
+      // EVERY key, not the first. A residue that names one row cannot be
+      // attributed to a cause -- the whole point of driving this to zero is
+      // knowing which family each remaining row belongs to, and "the first one
+      // is an evidence dictionary" was read as "they all are" once already.
+      if String::length(first_missing) == 0 {
+        first_missing = key
+      } else if missing <= 24 {
+        first_missing = String::concat(first_missing, String::concat(",", key))
+      } else {
+        ()
+      }
+    }
+    ki = ki + 1
+  }
+  String::concat("  keyed missing=", String::concat(Int::to_string(missing), String::concat(" extra=", String::concat(Int::to_string(extra), String::concat(" copies=", String::concat(Int::to_string(copies), String::concat(" content=", String::concat(Int::to_string(content), String::concat(" renames=", String::concat(Int::to_string(renames), String::concat(" order_diff=", String::concat(Int::to_string(order_diff), String::concat(" order_first=", String::concat(Int::to_string(order_first), String::concat(" dup_keys=", String::concat(Int::to_string(dup_keys), String::concat(" dup_defs=", String::concat(Int::to_string(dup_defs), String::concat(" dup_def_keys=", String::concat(first_dup_def, String::concat(" first_copy=", String::concat(first_copy, String::concat(" missing_keys=", String::concat(first_missing, String::concat(" content_keys=", String::concat(content_keys, String::concat(" first_content=", String::concat(first_content, "\n"))))))))))))))))))))))))))))
+}
+
+/// One step of the oracle: pass `k`. `a` is the whole-program state after
+/// passes 0..k-1 (advanced in place here by pass k); `c` is a FRESH merge of
+/// the same program with its per-statement file ids, brought to the same
+/// pre-pass state here and then split by file for the trial. The two never
+/// share a node: a pass may drop what it replaces, and a trial that shared
+/// nodes with `a` corrupted the whole-program rendering (measured 2026-09-06).
+/// Returns one grep-able line, `PASS <name> stmts=<whole> split=<trial>
+/// diff=<count> first=<index> file=<id> status=same|differs`, followed on a
+/// difference by the two renderings' heads. `render` is the AST printer (this
+/// package cannot reach @vibe/compiler/syntax; the caller passes it).
+/// #2388: the WHOLE prelude per module, in one run.
+///
+/// `prelude_pass_module_oracle_step` answers "is pass k per-module-safe when
+/// every earlier pass ran whole-program" -- it advances the split side through
+/// 0..k-1 as one program and only splits for pass k. The driver this epic is
+/// heading for needs the stronger property: each module goes through EVERY
+/// pass alone, and the results are linked. A pass can be safe under the first
+/// question and not under the second, because per-module output of an earlier
+/// pass is what a later one then reads.
+///
+/// So this splits ONCE and never runs a pass whole-program on the split side.
+/// The one pass with a per-module entry (`desugar_trait_dicts_module`) gets
+/// each module's dependency interface, taken after the passes before it have
+/// run per module -- the same pre-pass, declaration-only form the step oracle
+/// uses, and the form a `.vpkg` contract carries.
+///
+/// Returns `FULL stmts=<whole> split=<trial>` plus the keyed line, which is the
+/// verdict: per-module synthesis lands at each module's position and repeats a
+/// program-level helper per module, so position and count are not the answer.
+/// #2388 / #2575 item 3: the LINK step of a per-module prelude -- fold the
+/// program-level helpers each module synthesized for itself into one.
+///
+/// A module compiled alone emits every helper it needs (`__arr_equals__*`, a
+/// derived comparator of a shared type, the exception-kind cell), so a program
+/// linked from N modules holds N copies of each.
+///
+/// `foldable_keys` are the declaration keys some module reported as
+/// SYNTHESIZED (`desugar_trait_dicts_module` returns that set). Only those
+/// fold. This is not a refinement of folding by name -- it is what makes the
+/// fold sound at all, and folding by name alone was measured WRONG on the
+/// compiler's own closure: two definition keys repeat in the whole program
+/// there (`effect:Source` first), so a by-name fold deleted one of each and
+/// the linked program came out two statements short of the whole-program one.
+/// A source declaration cannot be folded now, because the caller never offers
+/// it, so that failure is unreachable rather than guarded against.
+///
+/// The fold is also CONTENT-CHECKED. Two definitions that share a name and
+/// differ are not a copy -- they are the collision the hoisted-lambda owner
+/// key exists to prevent (#2618), where a link that concatenates modules
+/// silently keeps one of two different bodies. This throws instead, naming the
+/// key: at link time a wrong body is the worst possible outcome and a miss is
+/// free. Measured on the closure, 74 folds and no throw: every duplicate pair
+/// the compiler's own modules produce is byte-identical.
+///
+/// Copies are compared by RENDERING, not by structural `==`. True copies
+/// routinely differ in synthetic offsets -- a helper synthesized by module 7
+/// carries offsets derived from module 7's statement index -- which `==` on
+/// `Stmt` reports as different nodes while the program they describe is the
+/// same. Rendering costs a string per statement, so it is paid only where a
+/// foldable key actually repeats, never on the whole program (rendering a
+/// 4,567 statement program twice pushed the bump high-water to 3.6 GB,
+/// measured 2026-09-06).
+/// The refusal a synthesis collision earns, in ONE place: the throwing fold
+/// below raises it, and `effect_lowering_prelude_split` -- which links with the
+/// REPORTING fold, because a measurement wants every colliding key rather than
+/// the first -- reports it as the prelude error its caller throws (#2647 Codex
+/// P1). Two spellings of one refusal is how the two lanes come to disagree
+/// about whether a program compiles.
+export fn link_collision_message(collisions: Array[String]) -> String {
+  String::concat("link: two different definitions of ", String::concat(Array::get(collisions, 0), String::concat(" -- a per-module synthesis collision, which a link that concatenates modules would resolve by silently keeping one of them; colliding keys: ", Int::to_string(Array::length(collisions)))))
+}
+
+export fn link_fold_duplicate_definitions(stmts: Array[Stmt], foldable_keys: Array[String], render: (Stmt) -> String) -> Array[Stmt] with Exception {
+  let (out, collisions) = link_fold_duplicate_definitions_report(stmts, foldable_keys, render)
+  if Array::length(collisions) > 0 {
+    throw(link_collision_message(collisions))
+  } else {
+    ()
+  }
+  out
+}
+
+/// The same fold, REPORTING the colliding keys instead of throwing on the
+/// first one. `link_fold_duplicate_definitions` is a thin wrapper over this,
+/// so the production lane cannot come to disagree with what a measurement of
+/// it reports.
+///
+/// The split exists because a collision is an ANSWER to the per-module
+/// question, not only a failure of it: a driver that produces N of them needs
+/// to see all N to tell one systematic cause from N unrelated ones, and a run
+/// that stops at the first cannot. Production still refuses to pick a body.
+export fn link_fold_duplicate_definitions_report(stmts: Array[Stmt], foldable_keys: Array[String], render: (Stmt) -> String) -> (Array[Stmt], Array[String]) {
+  let foldable: MutMap[String, Int] = MutMap::new_string()
+  let mut fk = 0
+  while fk < Array::length(foldable_keys) {
+    MutMap::set(foldable, Array::get(foldable_keys, fk), 1)
+    fk = fk + 1
+  }
+  let first_at: MutMap[String, Int] = MutMap::new_string()
+  let reported: MutMap[String, Int] = MutMap::new_string()
+  let collisions: Array[String] = []
+  let out: Array[Stmt] = []
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let s = Array::get(stmts, i)
+    let k = oracle_stmt_key(s)
+    if link_key_is_definition(k) && MutMap::has(foldable, k) {
+      match MutMap::get(first_at, k) {
+        Some(at) => {
+          let kept = Array::get(out, at)
+          if kept == s || render(kept) == render(s) {
+            ()
+          } else {
+            if MutMap::has(reported, k) {
+              ()
+            } else {
+              MutMap::set(reported, k, 1)
+              Array::push(collisions, k)
+            }
+          }
+        },
+        None => {
+          MutMap::set(first_at, k, Array::length(out))
+          Array::push(out, s)
+        }
+      }
+    } else {
+      Array::push(out, s)
+    }
+    i = i + 1
+  }
+  (out, collisions)
+}
+
+/// Whether a declaration key names something, so two statements carrying it
+/// could be the same definition. The keys `oracle_stmt_key` returns for
+/// statements that bind no name are fixed strings, and every one of them
+/// repeats in an ordinary program.
+export fn link_key_is_definition(k: String) -> Bool {
+  !(k == "expr" || k == "export" || k == "letpat" || k == "reexport_boundary" || k == "qualified_pattern_refs" || k == "test_effect_rows")
+}
+
+/// #2575 item 2: the per-module prelude driver, ONE implementation.
+///
+/// Split the merged program by module, run every pre-codegen pass on each
+/// module alone with its import closure as context, concatenate, mint what no
+/// module could build, run the whole-program-only passes once, and fold the
+/// per-module synthesis. Returns the linked statements.
+///
+/// Extracted from the oracle so that the oracle and any production caller
+/// cannot come to disagree about what "per module" means. That is not a
+/// hypothetical: nearly every defect on this line was a second implementation
+/// covering a different subset of the first (`lc_dbg_file_of_owner` mirroring
+/// the hoist's arms, the invisible-nominal recorder covering one arm of a
+/// dispatch, `synth_keys` covering one pass). A driver duplicated between a
+/// measurement and the thing it measures is that shape at the worst possible
+/// scale -- the measurement would certify a program the production lane does
+/// not produce.
+///
+/// The production caller supplies only link state. The oracle also supplies
+/// observations; every comparison analysis is conditional on that record.
+/// The functions the borrow-param analysis leaves alone: the program entry, and
+/// the three names a host or runtime may call directly.
+///
+/// ONE spelling, because three places ask the question -- production, and the
+/// oracle's two lanes, which compare their answers to each other. A list that
+/// drifted between them would let the EXCLUDE LIST, rather than the program,
+/// produce a difference, and the comparison exists to detect the program's.
+export fn lc_analysis_exclude(entry_name: String) -> Array[String] {
+  [entry_name, "main", "_start", "cli_main"]
+}
+
+/// The module id of the statement declaring `entry_name`, falling back to the
+/// LAST module when no statement declares it.
+///
+/// The fallback is deliberate and is the previous behavior: `__no_entry__` (a
+/// library build, and what the oracle fixtures use) names no declaration, and
+/// handing the name to the last module is what every measurement on this line
+/// was taken under. Changing that too would move the oracle's answers for a
+/// reason unrelated to the bug, which is an entry declared in some module
+/// OTHER than the last one.
+export fn lc_entry_module_of(c: Array[Stmt], c_file_id: Array[Int], entry_name: String, file_count: Int) -> Int {
+  if entry_name == "" {
+    file_count - 1
+  } else {
+    let mut i = 0
+    let mut found = 0 - 1
+    while i < Array::length(c) && i < Array::length(c_file_id) {
+      if found < 0 {
+        match Array::get(c, i) {
+          SLet(_, _, name, _, EFn(_, _, _, _, _, _)) => if name == entry_name {
+            found = Array::get(c_file_id, i)
+          } else {
+            ()
+          },
+          _ => ()
+        }
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    if found < 0 {
+      file_count - 1
+    } else {
+      found
+    }
+  }
+}

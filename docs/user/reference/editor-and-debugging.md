@@ -5,6 +5,7 @@ interactive debugger, both driven by the same `vibe` launcher you installed
 (see [install.md](../getting-started/install.md)). This guide covers:
 
 - [Language Server (`vibe lsp`)](#language-server-vibe-lsp)
+- [Extract a function](#extract-a-function)
 - [Editor query primitives](#editor-query-primitives)
 - [Structural search (`vibe grep`)](#structural-search-vibe-grep)
 - [Interactive debugging (`vibe run --break` / `--trace`)](#interactive-debugging)
@@ -38,6 +39,26 @@ Diagnostics rely on a *fresh* compiler wasm built at install time (the seed
 fallback has no diagnostics path). `install/install.sh` builds that fresh
 compiler by default; if you only have the committed seed, hover/diagnostics
 degrade gracefully to empty rather than erroring.
+
+### Extract a function
+
+```bash
+vibe refactor extract-function example.vibe 42 57 calculate
+vibe refactor extract-function example.vibe 42 57 calculate --write
+```
+
+Select one complete expression using a half-open range of UTF-8 byte offsets.
+The default prints the complete edited source. `--write` updates the file after
+validation. The extracted function receives each captured local binding once,
+with its inferred type. Comments and other source text are preserved.
+
+Extraction uses the parser's expression ranges and the checker's binding
+provenance, so shadowed variables remain distinct. The original and generated
+programs must both pass type checking. Invalid ranges, existing names, mutable
+captures, assignments, and escaping `return`, `break`, or `continue` are refused.
+The initial implementation supports standalone files with complete binding
+information; imports and declaration shapes without that information are
+refused. A capture whose type cannot be resolved needs an annotation first.
 
 ### Editor query primitives
 

@@ -1,0 +1,1022 @@
+// Trait bounds.
+
+import @vibe/compiler/lowering/trait_namespaces {
+  dict_param_name, expand_constructor_alias, lookup_trait_sigs, trait_operation_is_derived_binding
+}
+
+import @vibe/compiler/core {
+  Expr, Stmt, TypeEnv, TypeExpr, expr_children, trait_method_sig_binders_deep
+}
+
+import @vibe/ast {
+  impl_method_owner, impl_target_key, trait_ref_args, trait_ref_from_key, trait_ref_name, type_param_name
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import ./formal_scope.vibe {
+  formal_in_scope
+}
+
+import ./state.vibe {
+  dtd_scope_formal_bounds, dtd_scope_formal_nested, dtd_scope_formals, dtd_show_self_fn, dtd_trait_supers
+}
+
+import ./type_names.vibe {
+  fn_exists
+}
+
+import ./utilities.vibe {
+  dict_struct_name, empty_str_array, method_names_of_sigs, split_qualified, str_array_contains
+}
+
+/// The hidden bounds threaded into a generic: (type-param, trait, receiver
+/// parameter index). Empty registry sentinel for arrays of these.
+export fn empty_threaded() -> Array[(String, String, Int)] {
+  array_empty()
+}
+
+export fn empty_dict_binds() -> Array[(String, String, String, Array[String])] {
+  array_empty()
+}
+
+/// Whether this EFn was already transformed by a prior run of this pass
+/// (idempotency guard against desugaring the same stmts twice while bounds
+/// are still present).
+///
+/// Codex P1 on #1869 (twice): a bare `starts_with(pname, "__dict_")` prefix
+/// test let a USER-WRITTEN parameter that merely borrows the prefix
+/// (`__dict_dummy: Int` is a legal identifier) exempt the whole function from
+/// threading AND from the #1858 witness-carrier validation — and a name-only
+/// exact match still left the same hole for a parameter spelled exactly
+/// `__dict_<Trait>_<Tparam>`. So the guard now demands the FULL generated
+/// shape from `thread_dict_params`: first parameter named
+/// `__dict_<Trait>_<Tparam>` AND annotated `<Trait>Dict[<Tparam>]`, for one
+/// of THIS function's own bound pairs (the transform preserves `bounds`, see
+/// rewrite_stmt's SLet arm). User source cannot pass this at check time: the
+/// `<Trait>Dict` witness struct is synthesized by this pass, which runs after
+/// checking, so a hand-written `x: DefaultDict[T]` annotation is an unknown
+/// type to the checker while the genuinely generated shape (re-checked or
+/// re-desugared downstream) matches exactly.
+fn type_expr_arrays_equal(left: Array[TypeExpr], right: Array[TypeExpr]) -> Bool {
+  if Array::length(left) != Array::length(right) {
+    false
+  } else {
+    let mut i = 0
+    let mut equal = true
+    while i < Array::length(left) && equal {
+      equal = impl_target_key(Array::get(left, i)) == impl_target_key(Array::get(right, i))
+      i = i + 1
+    }
+    equal
+  }
+}
+
+export fn already_threaded(bounds: Array[(String, Array[String])], params: Array[(String, Option[TypeExpr])]) -> Bool {
+  if Array::length(params) == 0 {
+    false
+  } else {
+    let (pname, ann) = Array::get(params, 0)
+    match ann {
+      Some(TyApp(dname, targs)) => {
+        let mut found = false
+        let mut bi = 0
+        while bi < Array::length(bounds) {
+          let (tp, trait_list) = Array::get(bounds, bi)
+          let tpname = type_param_name(tp)
+          let mut ti = 0
+          while ti < Array::length(trait_list) {
+            let tr = Array::get(trait_list, ti)
+            let trait_args = trait_ref_args(tr)
+            let args_match = if Array::length(trait_args) > 0 {
+              type_expr_arrays_equal(targs, trait_args)
+            } else if Array::length(targs) == 1 {
+              match Array::get(targs, 0) {
+                TyName(tn) => tn == tpname,
+                _ => false
+              }
+            } else {
+              false
+            }
+            if tr != "" && args_match && pname == dict_param_name(tr, tpname) && dname == dict_struct_name(tr) {
+              found = true
+              ti = Array::length(trait_list)
+              bi = Array::length(bounds) - 1
+            } else {
+              ti = ti + 1
+            }
+          }
+          bi = bi + 1
+        }
+        found
+      },
+      _ => false
+    }
+  }
+}
+
+/// Index of the first parameter whose annotation is exactly the type parameter
+/// `tp` (`x: T`). -1 when `T` does not appear directly as a parameter type.
+export fn find_recv_index(params: Array[(String, Option[TypeExpr])], tp: String) -> Int {
+  let mut i = 0
+  let mut idx = -1
+  while i < Array::length(params) {
+    let (_, ann) = Array::get(params, i)
+    match ann {
+      Some(TyName(n)) => if n == tp {
+        idx = i
+        i = Array::length(params)
+      } else {
+        i = i + 1
+      },
+      _ => {
+        i = i + 1
+      }
+    }
+  }
+  idx
+}
+
+/// #1199 bug 1: index of the first parameter whose annotation is `Array[tp]`
+/// (`x: Array[T]`) -- the sibling of find_recv_index for a type param that
+/// appears as an Array's element rather than directly. -1 when `T` doesn't
+/// appear that way either. build_gens tries this ONLY after find_recv_index
+/// fails, so a function with BOTH a direct `x: T` param and an `xs: Array[T]`
+/// param keeps preferring the direct (cheaper, unambiguous) receiver.
+export fn find_array_elem_recv_index(params: Array[(String, Option[TypeExpr])], tp: String) -> Int {
+  let mut i = 0
+  let mut idx = -1
+  while i < Array::length(params) {
+    let (_, ann) = Array::get(params, i)
+    match ann {
+      Some(TyApp("Array", targs)) => if Array::length(targs) == 1 {
+        match Array::get(targs, 0) {
+          TyName(n) => if n == tp {
+            idx = i
+            i = Array::length(params)
+          } else {
+            i = i + 1
+          },
+          _ => {
+            i = i + 1
+          }
+        }
+      } else {
+        i = i + 1
+      },
+      _ => {
+        i = i + 1
+      }
+    }
+  }
+  idx
+}
+
+/// Index of the first parameter whose annotation applies constructor `tp`,
+/// for example `xs: F[A]` for a kinded `F[_]` binder.
+export fn find_constructor_recv_index(params: Array[(String, Option[TypeExpr])], tp: String, stmts: Array[Stmt]) -> Int {
+  let mut i = 0
+  let mut idx = -1
+  while i < Array::length(params) {
+    let (_, ann) = Array::get(params, i)
+    match ann {
+      Some(raw_ann) => match expand_constructor_alias(raw_ann, stmts, Array::length(stmts) + 1) {
+        TyApp(head, _) => if head == tp {
+          idx = i
+          i = Array::length(params)
+        } else {
+          i = i + 1
+        },
+        _ => {
+          i = i + 1
+        }
+      },
+      _ => {
+        i = i + 1
+      }
+    }
+  }
+  idx
+}
+
+/// #1199 bug 1: `threaded`'s recv_idx field packs TWO distinct receiver kinds
+/// into one Int rather than widening the tuple everywhere it's threaded
+/// (9 call sites across this file): `idx >= 0` is a DIRECT receiver
+/// (`x: T`, unchanged, existing behavior) and `idx <= -2` is an
+/// ARRAY-ELEMENT receiver (`xs: Array[T]`) with the real param index encoded
+/// as `-idx - 2` (index 0 -> -2, 1 -> -3, ...) -- -1 stays reserved for the
+/// pre-existing "no inferable receiver, dict supplied via a generic-impl
+/// witness" sentinel (build_gens' gimpl_types branch). Only synth_dicts
+/// (the sole recv_idx consumer that reads more than the trait name) needs
+/// to decode this.
+export fn encode_array_elem_recv_index(idx: Int) -> Int {
+  0 - idx - 2
+}
+
+export fn is_array_elem_recv_index(idx: Int) -> Bool {
+  idx <= (0 - 2) && idx > (0 - 1000000)
+}
+
+export fn decode_array_elem_recv_index(idx: Int) -> Int {
+  0 - idx - 2
+}
+
+/// Constructor receivers use a disjoint negative range. `-1` remains the
+/// generic-impl sentinel and the small negative range remains Array-element
+/// receivers for compatibility with the existing packed representation.
+export fn encode_constructor_recv_index(idx: Int) -> Int {
+  0 - 1000000 - idx
+}
+
+export fn is_constructor_recv_index(idx: Int) -> Bool {
+  idx <= (0 - 1000000)
+}
+
+export fn decode_constructor_recv_index(idx: Int) -> Int {
+  0 - 1000000 - idx
+}
+
+/// The constructor formal that owns a generic function's result, after
+/// expanding aliases such as `Apply[F, A] = F[A]`. Nested-call witness
+/// recovery must follow this formal's receiver rather than whichever
+/// constructor bound was declared first.
+export fn return_constructor_param(ret: Option[TypeExpr], threaded: Array[(String, String, Int)], stmts: Array[Stmt]) -> String {
+  match ret {
+    Some(raw_ret) => match expand_constructor_alias(raw_ret, stmts, Array::length(stmts) + 1) {
+      TyApp(head, _) => {
+        let mut i = 0
+        let mut result = ""
+        while i < Array::length(threaded) {
+          let (type_param, _, recv_idx) = Array::get(threaded, i)
+          if type_param == head && is_constructor_recv_index(recv_idx) {
+            result = head
+            i = Array::length(threaded)
+          } else {
+            i = i + 1
+          }
+        }
+        result
+      },
+      _ => ""
+    },
+    None => ""
+  }
+}
+
+/// Build the registry of top-level generics that need dictionary threading:
+/// each is a (function name, threaded-bounds) pair. A bound is threaded only
+/// when its trait is method-bearing and the type parameter appears directly as
+/// a parameter type.
+/// The type-constructor head of a qualified name (`Array::show2` -> "Array"),
+/// or "" if unqualified.
+export fn qualified_head(name: String) -> String {
+  match split_qualified(name) {
+    Some(parts) => {
+      let (head, _) = parts
+      head
+    },
+    None => ""
+  }
+}
+
+/// Method owners of bounded generic impls (`impl [T: Bound] Trait for C[T]`).
+/// Their methods carry the bound `T` even though it appears nested in the
+/// receiver (`self: C[T]`), so they must be threaded a witness dict (the normal
+/// "type param is a direct parameter" rule misses them).
+fn collect_generic_impl_owners(stmts: Array[Stmt]) -> Array[String] {
+  let out = empty_str_array()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SImpl(tparams, tbounds, trait_name, target) => if Array::length(tparams) > 0 {
+        let mut has_bound = false
+        let mut bi = 0
+        while bi < Array::length(tbounds) {
+          let (_, bs) = Array::get(tbounds, bi)
+          let mut bj = 0
+          while bj < Array::length(bs) {
+            if Array::get(bs, bj) != "" {
+              has_bound = true
+            } else {
+              ()
+            }
+            bj = bj + 1
+          }
+          bi = bi + 1
+        }
+        if has_bound {
+          Array::push(out, impl_method_owner(tparams, trait_name, target))
+        } else {
+          ()
+        }
+      } else (),
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// #1858: definition-side witness-carrier validation, run by the CHECKER (both
+/// check_program pipelines) so `vibe check` reports what would otherwise
+/// surface as a codegen ICE ("`T::default` reached code generation
+/// unresolved").
+///
+/// A top-level generic `f = [T: Tr](params)` whose body references `T::m` (a
+/// method of the method-bearing trait `Tr`) can only be dispatched when this
+/// pass can thread a witness dictionary for `T` — and build_gens above derives
+/// that ability purely from the signature: a parameter of type `T`
+/// (find_recv_index), a parameter of type `Array[T]`
+/// (find_array_elem_recv_index, #1199), or the function being a bounded
+/// generic-impl method (collect_generic_impl_owners — its dict arrives with the
+/// impl witness instead). A bounded generic with NONE of those is never
+/// registered in `gens`, its body is never rewritten, and `T::m` reaches
+/// codegen unresolved. This function is the checker-facing mirror of exactly
+/// that condition — if build_gens grows a new receiver kind, this must learn
+/// it too, which is why it lives next to build_gens rather than in the
+/// checker.
+///
+/// `env` supplies the trait method tables (trait_method_sig_binders_deep), so
+/// traits imported from another module (e.g. @vibe/core's `Default`) are
+/// covered, not just same-file declarations. Marker traits have no methods, so
+/// no `T::m` can name one and the scan stays inert for them — same reason the
+/// checker's own `resolve_trait_method_ident` never resolves through a marker
+/// bound.
+export fn collect_undispatchable_trait_method_errors(stmts: Array[Stmt], env: TypeEnv) -> Array[String] {
+  let out = empty_str_array()
+  let gimpl_owners = collect_generic_impl_owners(stmts)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, fname, _, body) => match body {
+        EFn(_, bounds, params, _, _, fbody) => {
+          // Codex P1 on #1869 (round 2): the `__dict_` parameter-name prefix
+          // is RESERVED for the dict-passing desugar's generated witness
+          // parameters. The ordinary source check runs before desugaring, but
+          // compile/merge idempotence can revisit the exact generated
+          // `Trait::operation` wrapper after dictionary lowering. Only that
+          // structurally exact forwarding wrapper is exempt. Rejecting every
+          // other spelling is what makes already_threaded's shape test sound:
+          // a user parameter named `__dict_<Trait>_<T>` could otherwise fake
+          // threading and resurrect the check-clean/codegen-ICE hole.
+          let generated_trait_operation = match split_qualified(fname) {
+            Some(parts) => {
+              let (trait_name, method_name) = parts
+              trait_operation_is_derived_binding(Array::get(stmts, i), fname, trait_name, method_name)
+            },
+            None => false
+          }
+          let mut pi = 0
+          while pi < Array::length(params) {
+            let (pname, _) = Array::get(params, pi)
+            if String::starts_with(pname, "__dict_") && !generated_trait_operation {
+              let rmsg = String::concat(fname, String::concat(": parameter `", String::concat(pname, "` uses the reserved `__dict_` prefix (compiler-generated witness dictionaries) — rename the parameter.")))
+              if str_array_contains(out, rmsg) {
+                ()
+              } else {
+                Array::push(out, rmsg)
+              }
+            } else {
+              ()
+            }
+            pi = pi + 1
+          }
+          let mut bi = 0
+          while bi < Array::length(bounds) {
+            let (tp, trait_list) = Array::get(bounds, bi)
+            let tpname = type_param_name(tp)
+            let has_carrier = find_recv_index(params, tpname) >= 0 || find_constructor_recv_index(params, tpname, stmts) >= 0 || find_array_elem_recv_index(params, tpname) >= 0 || str_array_contains(gimpl_owners, qualified_head(fname))
+            if has_carrier {
+              ()
+            } else {
+              push_undispatchable_refs(fbody, fname, tpname, trait_list, env, out)
+            }
+            bi = bi + 1
+          }
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Scan one carrier-less bound's function body for `tp::member` references
+/// that name a method of one of the bound traits, pushing one actionable
+/// diagnostic per distinct reference. Values and calls are both caught — an
+/// unrewritten `T::m` is equally unresolvable either way.
+fn push_undispatchable_refs(e: Expr, fname: String, tp: String, trait_list: Array[String], env: TypeEnv, out: Array[String]) -> Unit {
+  match e {
+    EIdent(nm, _) => match split_qualified(nm) {
+      Some(parts) => {
+        let (head, member) = parts
+        if head == tp {
+          let mut ti = 0
+          let mut reported = false
+          while ti < Array::length(trait_list) {
+            let tr = Array::get(trait_list, ti)
+            if !reported && tr != "" {
+              match trait_method_sig_binders_deep(env, tr, member) {
+                Some(_) => {
+                  reported = true
+                  let msg = String::concat(fname, String::concat(": `", String::concat(nm, String::concat("` cannot be dispatched here: no parameter of `", String::concat(fname, String::concat("` carries the `[", String::concat(tp, String::concat(": ", String::concat(tr, String::concat("]` witness. Add a parameter of type `", String::concat(tp, String::concat("` (or `Array[", String::concat(tp, String::concat("]`) so call sites can supply the impl, or call `", String::concat(member, "` on a concrete type instead.")))))))))))))))
+                  if str_array_contains(out, msg) {
+                    ()
+                  } else {
+                    Array::push(out, msg)
+                  }
+                },
+                None => ()
+              }
+            }
+            ti = ti + 1
+          }
+        } else {
+          ()
+        }
+      },
+      None => ()
+    },
+    _ => ()
+  }
+  let kids = expr_children(e)
+  let mut ki = 0
+  while ki < Array::length(kids) {
+    push_undispatchable_refs(Array::get(kids, ki), fname, tp, trait_list, env, out)
+    ki = ki + 1
+  }
+}
+
+export fn impl_pattern_binding(bindings: Array[(String, TypeExpr)], name: String) -> Option[TypeExpr] {
+  let mut i = 0
+  let mut result = None
+  while i < Array::length(bindings) {
+    let (bound_name, bound_type) = Array::get(bindings, i)
+    if bound_name == name {
+      result = Some(bound_type)
+      i = Array::length(bindings)
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+
+fn impl_pattern_param(params: Array[String], name: String) -> Bool {
+  str_array_contains(params, name)
+}
+
+export fn impl_target_pattern_matches(pattern: TypeExpr, actual: TypeExpr, params: Array[String], bindings: Array[(String, TypeExpr)]) -> Bool {
+  match pattern {
+    TyName(name) => if impl_pattern_param(params, name) {
+      match impl_pattern_binding(bindings, name) {
+        Some(bound) => impl_target_key(bound) == impl_target_key(actual),
+        None => {
+          Array::push(bindings, (name, actual))
+          true
+        }
+      }
+    } else {
+      match actual {
+        TyName(actual_name) => name == actual_name,
+        _ => false
+      }
+    },
+    TyApp(name, args) => match actual {
+      TyApp(actual_name, actual_args) => if name == actual_name && Array::length(args) == Array::length(actual_args) {
+        let mut i = 0
+        let mut ok = true
+        while i < Array::length(args) && ok {
+          ok = impl_target_pattern_matches(Array::get(args, i), Array::get(actual_args, i), params, bindings)
+          i = i + 1
+        }
+        ok
+      } else {
+        false
+      },
+      _ => false
+    },
+    TyFn(fn_params, ret, effect) => match actual {
+      TyFn(actual_params, actual_ret, actual_effect) => if effect == actual_effect && Array::length(fn_params) == Array::length(actual_params) {
+        let mut i = 0
+        let mut ok = true
+        while i < Array::length(fn_params) && ok {
+          ok = impl_target_pattern_matches(Array::get(fn_params, i), Array::get(actual_params, i), params, bindings)
+          i = i + 1
+        }
+        ok && impl_target_pattern_matches(ret, actual_ret, params, bindings)
+      } else {
+        false
+      },
+      _ => false
+    },
+    TyTuple(items) => match actual {
+      TyTuple(actual_items) => if Array::length(items) == Array::length(actual_items) {
+        let mut i = 0
+        let mut ok = true
+        while i < Array::length(items) && ok {
+          ok = impl_target_pattern_matches(Array::get(items, i), Array::get(actual_items, i), params, bindings)
+          i = i + 1
+        }
+        ok
+      } else {
+        false
+      },
+      _ => false
+    },
+    TyUnit => match actual {
+      TyUnit => true,
+      _ => false
+    }
+  }
+}
+
+/// Whether erasing this target's arguments leaves a sound match for every
+/// application of its constructor head. This is limited to a permutation of
+/// the impl formals: constrained or repeated patterns must retain their full
+/// applied target before they can dispatch.
+export fn generic_impl_target_is_total(target: TypeExpr, params: Array[String]) -> Bool {
+  match target {
+    TyApp(_, args) => if Array::length(args) != Array::length(params) {
+      false
+    } else {
+      let seen = empty_str_array()
+      let mut i = 0
+      let mut total = true
+      while i < Array::length(args) && total {
+        match Array::get(args, i) {
+          TyName(name) => if impl_pattern_param(params, name) && !str_array_contains(seen, name) {
+            Array::push(seen, name)
+          } else {
+            total = false
+          },
+          _ => {
+            total = false
+          }
+        }
+        i = i + 1
+      }
+      total && Array::length(seen) == Array::length(params)
+    },
+    _ => false
+  }
+}
+
+export fn impl_trait_pattern_matches(template_key: String, actual_key: String, params: Array[String], bindings: Array[(String, TypeExpr)]) -> Bool {
+  if template_key == actual_key {
+    true
+  } else if trait_ref_name(template_key) != trait_ref_name(actual_key) {
+    false
+  } else {
+    match trait_ref_from_key(template_key) {
+      Some(template) => match trait_ref_from_key(actual_key) {
+        Some(actual) => impl_target_pattern_matches(template, actual, params, bindings),
+        None => false
+      },
+      None => false
+    }
+  }
+}
+
+export fn type_expr_mentions_param(ty: TypeExpr, params: Array[String]) -> Bool {
+  match ty {
+    TyName(name) => str_array_contains(params, name),
+    TyApp(head, args) => if str_array_contains(params, head) {
+      true
+    } else {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(args) && !found {
+        found = type_expr_mentions_param(Array::get(args, i), params)
+        i = i + 1
+      }
+      found
+    },
+    TyFn(fn_params, ret, _) => {
+      let mut i = 0
+      let mut found = type_expr_mentions_param(ret, params)
+      while i < Array::length(fn_params) && !found {
+        found = type_expr_mentions_param(Array::get(fn_params, i), params)
+        i = i + 1
+      }
+      found
+    },
+    TyTuple(items) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(items) && !found {
+        found = type_expr_mentions_param(Array::get(items, i), params)
+        i = i + 1
+      }
+      found
+    },
+    TyUnit => false
+  }
+}
+
+export fn trait_ref_mentions_param(trait_name: String, params: Array[String]) -> Bool {
+  match trait_ref_from_key(trait_name) {
+    Some(reference) => type_expr_mentions_param(reference, params),
+    None => false
+  }
+}
+
+export fn substitute_impl_bindings(ty: TypeExpr, bindings: Array[(String, TypeExpr)]) -> TypeExpr {
+  match ty {
+    TyName(name) => match impl_pattern_binding(bindings, name) {
+      Some(bound) => bound,
+      None => ty
+    },
+    TyApp(head, args) => TyApp(head, for arg in args {
+      substitute_impl_bindings(arg, bindings)
+    }),
+    TyFn(params, ret, effect) => TyFn(for param in params {
+      substitute_impl_bindings(param, bindings)
+    }, substitute_impl_bindings(ret, bindings), effect),
+    TyTuple(items) => TyTuple(for item in items {
+      substitute_impl_bindings(item, bindings)
+    }),
+    TyUnit => TyUnit
+  }
+}
+
+/// Find the dict parameter for `head::member` in the current `dict_binds`.
+/// Match is by spelling. Nested lambdas overlay their own binds on the
+/// enclosing ones (rewrite_expr EFn); a rebound formal drops the outer row
+/// so this cannot return an enclosing dictionary for the same spelling.
+export fn find_dict_for_method(dict_binds: Array[(String, String, String, Array[String])], head: String, member: String) -> Option[String] {
+  let mut i = 0
+  let mut result = None
+  while i < Array::length(dict_binds) {
+    let (tp, _, dict_pname, methods) = Array::get(dict_binds, i)
+    if tp == head && str_array_contains(methods, member) {
+      result = Some(dict_pname)
+      i = Array::length(dict_binds)
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+
+/// Find the in-scope dict parameter bound to type-param `tparam` for `trait_name`
+/// (used to forward a caller's own witness into a generic->generic call).
+export fn find_dict_for_trait(dict_binds: Array[(String, String, String, Array[String])], tparam: String, trait_name: String) -> Option[String] {
+  let mut i = 0
+  let mut result = None
+  while i < Array::length(dict_binds) {
+    let (tp, tr, dict_pname, _) = Array::get(dict_binds, i)
+    if tp == tparam && tr == trait_name {
+      result = Some(dict_pname)
+      i = Array::length(dict_binds)
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+
+/// The comparison witness's spelling (ADR-0097's `equals(Self, Self) -> Bool`).
+/// One place, because the operator rung below and any later `derive (Eq)`
+/// registration must agree on it.
+export fn dtd_eq_witness_method() -> String {
+  "equals"
+}
+
+/// The trait the witness must come from.
+export fn dtd_eq_witness_trait() -> String {
+  "Eq"
+}
+
+export fn dtd_trait_supers_set(supers_map: Array[(String, Array[String])]) -> Unit {
+  Array::truncate(dtd_trait_supers, 0)
+  let mut i = 0
+  while i < Array::length(supers_map) {
+    Array::push(dtd_trait_supers, Array::get(supers_map, i))
+    i = i + 1
+  }
+}
+
+fn dtd_supers_of(name: String) -> Array[String] {
+  let mut i = 0
+  let mut out = empty_str_array()
+  while i < Array::length(dtd_trait_supers) {
+    let (tname, supers) = Array::get(dtd_trait_supers, i)
+    if tname == name {
+      out = supers
+      i = Array::length(dtd_trait_supers)
+    } else {
+      i = i + 1
+    }
+  }
+  out
+}
+
+/// Does this bound entail `Eq` -- is it `Eq`, or does it inherit it?
+///
+/// This mirrors the checker's `bound_entails_eq` (`checker.vibe`), and must: the
+/// checker admits `x == y` on a formal exactly when its bound entails `Eq`, so a
+/// narrower rule here rejects a witness the program was promised.
+///
+/// Codex on #2739 measured both sides of that. Keying on the method alone let an
+/// unrelated `Weird` with its own `equals` hijack scalar equality
+/// (`same(1, 1)` answered `false`). Keying on the NAME `Eq` then rejected a real
+/// witness: with `trait Key: Eq`, `flatten_traits` puts the inherited `equals`
+/// in `KeyDict`, so `[T: Key]` has a perfectly good dictionary -- and requiring
+/// the immediate name sent two equal, distinct structs back to reference
+/// identity (`via_key` answered `false` where the method-only scan answered
+/// `true`). Entailment is the rule that admits the second without admitting the
+/// first; there is nothing extra to thread, because the sub-trait's own
+/// dictionary already carries the method.
+export fn dtd_bound_entails_eq(trait_name: String) -> Bool {
+  dtd_trait_entails(trait_name, dtd_eq_witness_trait())
+}
+
+/// Does `sub` entail `super_name` -- is it that trait, or does it inherit from
+/// it, transitively?
+///
+/// The general form of the walk `dtd_bound_entails_eq` used to spell inline.
+/// A second caller arrived with #2872: a generic impl of a SUB-trait supplies
+/// the super-trait's methods too (`flatten_traits` copies the sigs down, and
+/// the impl block declares them), so the witness for the super-trait's
+/// dictionary is that impl's generated function -- found only if the trait
+/// match admits entailment rather than requiring the immediate name.
+export fn dtd_trait_entails(sub: String, super_name: String) -> Bool {
+  let target = trait_ref_name(super_name)
+  let pending = [trait_ref_name(sub)]
+  let seen = empty_str_array()
+  let mut found = false
+  while !found && Array::length(pending) > 0 {
+    let cur = Array::get(pending, Array::length(pending) - 1)
+    Array::truncate(pending, Array::length(pending) - 1)
+    if cur == target {
+      found = true
+    } else if str_array_contains(seen, cur) {
+      ()
+    } else {
+      Array::push(seen, cur)
+      let supers = dtd_supers_of(cur)
+      let mut i = 0
+      while i < Array::length(supers) {
+        Array::push(pending, trait_ref_name(Array::get(supers, i)))
+        i = i + 1
+      }
+    }
+  }
+  found
+}
+
+fn dtd_ty_is_bool(te: TypeExpr) -> Bool {
+  match te {
+    TyName(n) => n == "Bool",
+    _ => false
+  }
+}
+
+fn dtd_ty_is_self(te: TypeExpr) -> Bool {
+  match te {
+    TyName(n) => n == "Self",
+    _ => false
+  }
+}
+
+/// Does `trait_name` declare `method` with the shape a comparison witness
+/// needs -- `(Self, Self) -> Bool`?
+///
+/// Both parameters must be spelled `Self`, not merely counted. Codex on #2734
+/// measured the hole: `trait Eq { equals(Int, Int) -> Bool }` with a constant
+/// body answered `true` for two DIFFERENT `Pt`, because the rung handed erased
+/// `Pt` values to a method declared over `Int`. The checker cannot catch it --
+/// it admits `x == y` from the bound's spelling alone (#2474) and never sees
+/// the call this pass synthesizes -- so the shape is this predicate's to
+/// establish. A witness over anything but `Self` falls through to the ladder.
+export fn dtd_trait_has_self_eq_method(traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], trait_name: String, method: String) -> Bool {
+  match lookup_trait_sigs(traits, trait_ref_name(trait_name)) {
+    None => false,
+    Some(sigs) => {
+      let mut i = 0
+      let mut ok = false
+      while i < Array::length(sigs) {
+        let (m, params, ret) = Array::get(sigs, i)
+        if m == method {
+          ok = Array::length(params) == 2 && dtd_ty_is_self(Array::get(params, 0)) && dtd_ty_is_self(Array::get(params, 1)) && dtd_ty_is_bool(ret)
+          i = Array::length(sigs)
+        } else {
+          i = i + 1
+        }
+      }
+      ok
+    }
+  }
+}
+
+/// Is this formal's spelling bound by more than one binder in scope?
+///
+/// `dtd_scope_formals` is a stack of spellings, and `dict_binds` describes only
+/// the transformed generic's OWN binder -- a nested generic lambda pushes its
+/// formals onto the same stack while `rewrite_expr` keeps passing the outer
+/// dictionaries down. So a lambda that reuses the outer spelling makes
+/// `find_dict_for_method` answer with a dictionary for an unrelated type.
+///
+/// Codex on #2734 measured that too: `fn outer[T: Eq]` at `Pt` containing
+/// `let inner = [T: Eq](a: T, b: T) -> Bool { a == b }` invoked as
+/// `inner(7, 8)` answered `true`, having compared two Ints through
+/// `Pt::equals`. A lambda binder gets no dictionary of its own (threading them
+/// is separate work), so there is no right dictionary to pick here and the
+/// honest move is to decline: the operand falls through to the ladder and keeps
+/// the answer it had before this rung existed.
+export fn dtd_formal_is_shadowed(n: String) -> Bool {
+  let mut i = 0
+  let mut seen = 0
+  while i < Array::length(dtd_scope_formals) {
+    if Array::get(dtd_scope_formals, i) == n {
+      seen = seen + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  seen > 1
+}
+
+/// #2737: the bound the INNERMOST binder of `n` declared, and whether that bound
+/// promises `member`.
+///
+/// `flatten_traits` runs at this pass's entry and copies a supertrait's methods
+/// into the sub-trait's sigs, so an inherited method counts -- the same reading
+/// `dtd_bound_entails_eq` relies on (#2739).
+fn dtd_formal_bound_promises(traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], n: String, member: String) -> Bool {
+  let mut i = Array::length(dtd_scope_formals)
+  let mut keys = empty_str_array()
+  let mut found = false
+  while i > 0 && !found {
+    i = i - 1
+    if Array::get(dtd_scope_formals, i) == n {
+      keys = Array::get(dtd_scope_formal_bounds, i)
+      found = true
+    } else {
+      ()
+    }
+  }
+  let mut j = 0
+  let mut promises = false
+  while j < Array::length(keys) {
+    match lookup_trait_sigs(traits, trait_ref_name(Array::get(keys, j))) {
+      Some(sigs) => if str_array_contains(method_names_of_sigs(sigs), member) {
+        promises = true
+        j = Array::length(keys)
+      } else {
+        j = j + 1
+      },
+      None => j = j + 1
+    }
+  }
+  promises
+}
+
+/// #2737: was the INNERMOST binder of `n` pushed by a lambda (`rewrite_expr`'s
+/// EFn arm) rather than by the top-level threaded path?
+///
+/// The refusal names an edit that only makes sense for a lambda ("move it to a
+/// top-level declaration"), so it is gated on the fact rather than on the
+/// absence of a dictionary, which is a different thing that merely coincides.
+export fn dtd_formal_innermost_is_nested(n: String) -> Bool {
+  let mut i = Array::length(dtd_scope_formals)
+  let mut nested = false
+  let mut found = false
+  while i > 0 && !found {
+    i = i - 1
+    if Array::get(dtd_scope_formals, i) == n {
+      nested = Array::get(dtd_scope_formal_nested, i)
+      found = true
+    } else {
+      ()
+    }
+  }
+  found && nested
+}
+
+/// #2737: the program dispatched `<tp>::<member>` where `tp`'s own binder
+/// declared a bound promising `member`, and no dictionary in scope can serve it.
+///
+/// Only a TOP-LEVEL generic is threaded (`build_gens` / `thread_dict_params`);
+/// `rewrite_expr`'s EFn arm rebuilds a nested lambda with its bounds untouched
+/// and never extends `dict_binds`, so a bound written on a lambda binder is
+/// accepted by the parser and the checker and then honoured by nothing.
+///
+/// Refusing is not a choice between a diagnostic and a working program -- it is a
+/// choice between a diagnostic and undefined behaviour. Left alone, the call
+/// keeps its written spelling, which resolves to no function, and codegen lowers
+/// it to a table call on a bogus index. Measured on main at 8f70aa1, the same
+/// `U::equals(a, b)` inside a nested `[U: Eq]` lambda applied to `7, 8`:
+///
+///   two impls in the program     `true`  -- landed on `Pt::equals`
+///   three impls in the program   trap: null function or signature mismatch
+///   no enclosing generic         trap: null function or signature mismatch
+///
+/// So the answer was a function of the module's function-table layout. The
+/// shadowing case #2737 reports is the same defect reached by a second route:
+/// there `find_dict_for_method` did find a dictionary, the enclosing binder's,
+/// and dispatched an `Int` through `Pt::equals`.
+///
+/// The edit named is the one that works today, not the feature: a top-level
+/// binder's bound IS threaded. Threading a lambda binder's own bound is the rest
+/// of #2737.
+fn dtd_unthreaded_bound_msg(tp: String, member: String) -> String {
+  // Codex round 3, P2: AGENTS.md's diagnostic rule is that a message LEADS with
+  // the edit that fixes it. This one led with the failure and buried the edit
+  // behind the reason, so the edit now comes first and the reason follows it.
+  // `check_lambda_bound_refusal.sh` asserts that ORDER, not just the presence of
+  // both -- a property stated once and then re-broken by the next rewrite is the
+  // pattern this PR already hit twice.
+  //
+  // The `(#2737)` reference stays. AGENTS.md excludes "internal terms (pass
+  // names, ADR numbers)", and an issue number is neither; the neighbouring
+  // diagnostics carry one (`(#2141)` and `(#1445)` are shipped and pinned by
+  // tests), and it is how a reader reaches the full context.
+  let mut base = String::concat("move the lambda that binds `", tp)
+  base = String::concat(base, "` to a top-level `fn` / `let` declaration, or call `")
+  base = String::concat(base, member)
+  base = String::concat(base, "` at a concrete type: `")
+  base = String::concat(base, tp)
+  base = String::concat(base, "::")
+  base = String::concat(base, member)
+  base = String::concat(base, "` has no witness here -- only a top-level binder threads a bound's dictionary (#2737)")
+  let self_fn = Array::get(dtd_show_self_fn, 0)
+  if String::length(self_fn) > 0 {
+    String::concat(base, String::concat(" [@fn=", String::concat(self_fn, "]")))
+  } else {
+    base
+  }
+}
+
+/// Raise `dtd_unthreaded_bound_msg` when `resolved` found nothing and the head is
+/// a bound-carrying formal -- i.e. when the fallthrough would be an unresolved
+/// name. A concrete function of the qualified spelling wins (the #2141 case: a
+/// formal whose spelling collides with a declared type that really does have the
+/// method), and a formal whose bound does not promise `member` is left alone, so
+/// this fires only where the program asked for a witness and nothing can answer.
+export fn dtd_check_unthreaded_dispatch(resolved: Option[String], head: String, member: String, qualified: String, traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], fn_returns: Array[(String, String)]) -> Unit with Exception {
+  match resolved {
+    Some(_) => (),
+    None => if formal_in_scope(head) && dtd_formal_innermost_is_nested(head) && !fn_exists(fn_returns, qualified) && dtd_formal_bound_promises(traits, head, member) {
+      throw(dtd_unthreaded_bound_msg(head, member))
+    } else {
+      ()
+    }
+  }
+}
+
+/// #2737: the interpolation flavour of `dtd_unthreaded_bound_msg`. The author
+/// wrote `"\{x}"`, not `T::to_string`, so the message names that.
+///
+/// This rung needs the refusal for the same reason the explicit ones do, which is
+/// not obvious: interpolation has a total builtin renderer, so it looks like a
+/// rung that can fall through honestly. It cannot. The renderer reads the value's
+/// representation, and a formal-typed value is ERASED -- measured on main at
+/// 8f70aa1, a `Qt` interpolated inside a nested `[T: Show]` lambda printed `Pt!`
+/// (the enclosing binder's witness, a lie about the type), and with the
+/// dictionary withheld it printed `284`, the tagged pointer. Neither is the value.
+/// Concrete scalar operands use `interp_shape`. A formal remains erased even
+/// when a caller supplies a scalar; its binder must provide the witness.
+export fn dtd_unthreaded_interp_msg(tp: String) -> String {
+  let mut base = String::concat("move the lambda that binds `", tp)
+  base = String::concat(base, "` to a top-level `fn` / `let` declaration, or interpolate at a concrete type: a value of type parameter `")
+  base = String::concat(base, tp)
+  base = String::concat(base, "` has no `Show` witness here -- only a top-level binder threads a bound's dictionary (#2737)")
+  let self_fn = Array::get(dtd_show_self_fn, 0)
+  if String::length(self_fn) > 0 {
+    String::concat(base, String::concat(" [@fn=", String::concat(self_fn, "]")))
+  } else {
+    base
+  }
+}
+
+/// The method a `Show`-shaped bound must declare for a value to be renderable
+/// through a witness. Named once, next to `dtd_eq_witness_method`, so the two
+/// refusals and the dictionary lookup cannot drift apart on the spelling.
+fn dtd_show_witness_method() -> String {
+  "to_string"
+}
+
+/// A formal without a renderer witness cannot be interpolated safely, whether
+/// its binder is a lambda or a top-level declaration (#2745, #2840).
+/// Lifting an unbounded lambda does not fix this: top-level generic bodies are
+/// not specialized. A direct rendering shim defers to its call sites; adding
+/// any other expression removes that exception. An explicit renderer works at
+/// either binder level, including for scalar-only callers.
+export fn dtd_erased_interp_msg(tp: String) -> String {
+  let edit = String::concat("pass an explicit renderer `(", String::concat(tp, ") -> String`, or interpolate at a concrete type: type parameter `"))
+  let mut base = String::concat(edit, tp)
+  base = String::concat(base, "` is erased here and has no renderer witness; a marker `Show` bound does not provide one")
+  let self_fn = Array::get(dtd_show_self_fn, 0)
+  if String::length(self_fn) > 0 {
+    String::concat(base, String::concat(" [@fn=", String::concat(self_fn, "]")))
+  } else {
+    base
+  }
+}

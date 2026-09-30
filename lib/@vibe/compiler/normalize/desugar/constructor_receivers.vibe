@@ -1,0 +1,424 @@
+// Constructor receivers.
+
+import @vibe/compiler/core {
+  Expr, Pat, Stmt, expr_child_at, expr_children, expr_children_pop, expr_children_push, expr_children_top
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import ./argument_types.vibe {
+  infer_arg_type_name
+}
+
+import ./constructor_environments.vibe {
+  constructor_env_has_binding, extend_constructor_var_types
+}
+
+import ./constructor_inference.vibe {
+  infer_arg_elem_type_name
+}
+
+import ./generic_dispatch.vibe {
+  lookup_gen_entry
+}
+
+import ./models.vibe {
+  DictGen
+}
+
+import ./renderer_scope.vibe {
+  collect_pat_binders
+}
+
+import ./shape_environment.vibe {
+  constructor_binding_has_evidence, constructor_head_key, constructor_mask_key
+}
+
+import ./state.vibe {
+  dtd_constructor_local_returns, dtd_constructor_tracking
+}
+
+import ./trait_bounds.vibe {
+  decode_constructor_recv_index, is_constructor_recv_index
+}
+
+import ./type_names.vibe {
+  fn_returns_has_type, resolve_alias_head, struct_set_has
+}
+
+import ./utilities.vibe {
+  empty_str_array, local_fn_return_key, str_array_contains
+}
+
+/// #1064 (Codex review on the original fix): a railway-bound name's real type
+/// is `val`'s PAYLOAD, not `val`'s own wrapper type -- conflating them broke
+/// plain scalar payloads (the common case: `let* rv = half(x)`, `half: Int ->
+/// Option[Int]`, `rv: Int`). But when `val` is a LITERAL nested constructor
+/// (`let* outer = Some(Some(1))`), the payload genuinely IS an Option/Result
+/// value, so `outer` DOES need a var_types entry -- otherwise a follow-up
+/// `let* inner = outer` chaining through the bare identifier can't tell it
+/// apart from a Result and defaults to the wrong (Ok/Err) arms. Recurse ONE
+/// level into a literal `Some(x)`/`Ok(x)` (never `Err(x)` -- Err's own
+/// payload is the error value, never itself railway-chained) to recover the
+/// payload's head type for exactly this literal-nesting shape; every other
+/// `val` shape (a call to a user function, a bare identifier, ...) has no
+/// recoverable payload type here (`fn_returns` only carries a call's return
+/// head, not its type arguments) and stays untracked, same as the plain
+/// scalar fix.
+export fn railway_bind_payload_type(val: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
+  match val {
+    ECall(callee, inner_args, _) => match callee {
+      EIdent(cname, _) => if (cname == "Some" || cname == "Ok") && Array::length(inner_args) == 1 {
+        infer_arg_type_name(Array::get(inner_args, 0), struct_sets, var_types, fn_returns)
+      } else {
+        None
+      },
+      _ => None
+    },
+    _ => None
+  }
+}
+
+/// Shared rewrite env keeps a historical name fallback for rendering; constructor
+/// recovery still sees the mask so a stale outer witness cannot be selected.
+export fn constructor_rewrite_var_types(var_types: Array[(String, String)], name: String, inferred: Option[String]) -> Array[(String, String)] {
+  match inferred {
+    Some(tname) => extend_constructor_var_types(var_types, name, Some(tname)),
+    None => if !constructor_binding_has_evidence(var_types, name) && !constructor_env_has_binding(var_types, name) {
+      var_types
+    } else {
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(var_types) {
+        let entry = Array::get(var_types, i)
+        let (entry_name, _) = entry
+        if entry_name == constructor_mask_key(name) || entry_name == constructor_head_key(name) || entry_name == local_fn_return_key(name) {
+          ()
+        } else {
+          Array::push(out, entry)
+        }
+        i = i + 1
+      }
+      Array::push(out, (constructor_mask_key(name), ""))
+      out
+    }
+  }
+}
+
+export fn constructor_for_body_var_types(iter: Expr, value_name: String, index_name: Option[String], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
+  let value_vars = constructor_rewrite_var_types(var_types, value_name, infer_arg_elem_type_name(iter, struct_sets, var_types, fn_returns))
+  match index_name {
+    Some(name) => constructor_rewrite_var_types(value_vars, name, Some("Int")),
+    None => value_vars
+  }
+}
+
+fn gen_uses_constructor_receiver(gen: DictGen) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(gen.threaded) && !found {
+    let (_, _, recv_idx) = Array::get(gen.threaded, i)
+    found = is_constructor_recv_index(recv_idx)
+    i = i + 1
+  }
+  found
+}
+
+// A call can use a constructor witness only if its resolved generic entry
+// threads one. Avoid walking every expression when the table has none.
+export fn gens_use_constructor_receiver(gens: Array[DictGen]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(gens) && !found {
+    found = gen_uses_constructor_receiver(Array::get(gens, i))
+    i = i + 1
+  }
+  found
+}
+
+/// Whether a binding directly stores a constructor-indexed generic call. Only
+/// these values need extended constructor inference; block/match/handler results
+/// are inferred when they are used directly as witness receivers.
+export fn result_uses_constructor_witness(expr: Expr, gens: Array[DictGen]) -> Bool {
+  Array::get(dtd_constructor_tracking, 0) && match expr {
+    ECall(EIdent(name, _), _, _) => match lookup_gen_entry(gens, name) {
+      Some(gen) => gen_uses_constructor_receiver(gen),
+      None => false
+    },
+    _ => false
+  }
+}
+
+fn collect_constructor_receiver_names(expr: Expr) -> Unit {
+  match expr {
+    EIdent(name, _) => if str_array_contains(dtd_constructor_local_returns, name) {
+      ()
+    } else {
+      Array::push(dtd_constructor_local_returns, name)
+    },
+    _ => ()
+  }
+  let children = expr_children(expr)
+  let mut i = 0
+  while i < Array::length(children) {
+    collect_constructor_receiver_names(Array::get(children, i))
+    i = i + 1
+  }
+}
+
+fn record_constructor_receiver_names(gen: DictGen, args: Array[Expr]) -> Unit {
+  let mut i = 0
+  while i < Array::length(gen.constructor_recvs) {
+    let (_, encoded_index) = Array::get(gen.constructor_recvs, i)
+    let index = decode_constructor_recv_index(encoded_index)
+    if index >= 0 && index < Array::length(args) {
+      collect_constructor_receiver_names(Array::get(args, index))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
+fn expr_uses_constructor_witness(expr: Expr, gens: Array[DictGen]) -> Bool {
+  let here = match expr {
+    ECall(EIdent(name, _), args, _) => match lookup_gen_entry(gens, name) {
+      Some(gen) => if gen_uses_constructor_receiver(gen) {
+        record_constructor_receiver_names(gen, args)
+        true
+      } else {
+        false
+      },
+      None => false
+    },
+    _ => false
+  }
+  let mark = expr_children_push(expr)
+  let end = expr_children_top()
+  let mut i = mark
+  let mut found = here
+  while i < end {
+    if expr_uses_constructor_witness(expr_child_at(i), gens) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  expr_children_pop(mark)
+  found
+}
+
+export fn stmts_use_constructor_witness(stmts: Array[Stmt], gens: Array[DictGen]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(stmts) {
+    let current = match Array::get(stmts, i) {
+      SLet(_, _, _, _, expr) => expr_uses_constructor_witness(expr, gens),
+      SLetMut(_, _, expr) => expr_uses_constructor_witness(expr, gens),
+      SLetPat(_, expr) => expr_uses_constructor_witness(expr, gens),
+      STest(_, expr) => expr_uses_constructor_witness(expr, gens),
+      SBench(_, expr) => expr_uses_constructor_witness(expr, gens),
+      SExample(_, expr) => expr_uses_constructor_witness(expr, gens),
+      SExpr(expr) => expr_uses_constructor_witness(expr, gens),
+      SFnDecl(_, _, expr, requires, ensures) => expr_uses_constructor_witness(expr, gens) || expr_list_uses_constructor_witness(requires, gens) || expr_list_uses_constructor_witness(ensures, gens),
+      SModule(_, _, body) => stmts_use_constructor_witness(body, gens),
+      _ => false
+    }
+    if current {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn expr_list_uses_constructor_witness(exprs: Array[Expr], gens: Array[DictGen]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(exprs) {
+    if expr_uses_constructor_witness(Array::get(exprs, i), gens) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn constructor_receiver_pattern_is_needed(pat: Pat) -> Bool {
+  let binders = empty_str_array()
+  collect_pat_binders(pat, binders)
+  let mut i = 0
+  let mut needed = false
+  while i < Array::length(binders) && !needed {
+    needed = str_array_contains(dtd_constructor_local_returns, Array::get(binders, i))
+    i = i + 1
+  }
+  needed
+}
+
+fn constructor_receiver_arms_need_scrutinee(arms: Array[(Pat, Expr)]) -> Bool {
+  let mut i = 0
+  let mut needed = false
+  while i < Array::length(arms) && !needed {
+    let (pat, _) = Array::get(arms, i)
+    needed = constructor_receiver_pattern_is_needed(pat)
+    i = i + 1
+  }
+  needed
+}
+
+fn propagate_constructor_receiver_names_expr(expr: Expr) -> Unit {
+  match expr {
+    ELet(name, value, _, _) => if str_array_contains(dtd_constructor_local_returns, name) {
+      collect_constructor_receiver_names(value)
+    } else {
+      ()
+    },
+    ELetRec(name, value, _) => if str_array_contains(dtd_constructor_local_returns, name) {
+      collect_constructor_receiver_names(value)
+    } else {
+      ()
+    },
+    ELetMut(name, value, _, _) => if str_array_contains(dtd_constructor_local_returns, name) {
+      collect_constructor_receiver_names(value)
+    } else {
+      ()
+    },
+    EAssign(name, value, _) => if str_array_contains(dtd_constructor_local_returns, name) {
+      collect_constructor_receiver_names(value)
+    } else {
+      ()
+    },
+    EAssignOp(name, _, value, _) => if str_array_contains(dtd_constructor_local_returns, name) {
+      collect_constructor_receiver_names(value)
+    } else {
+      ()
+    },
+    EForIn(value_name, key_name, iter, _) => if str_array_contains(dtd_constructor_local_returns, value_name) || match key_name {
+      Some(name) => str_array_contains(dtd_constructor_local_returns, name),
+      None => false
+    } {
+      collect_constructor_receiver_names(iter)
+    } else {
+      ()
+    },
+    ELoop(params, _) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        let (name, initial) = Array::get(params, i)
+        if str_array_contains(dtd_constructor_local_returns, name) {
+          collect_constructor_receiver_names(initial)
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+    },
+    EMatch(scrutinee, arms) => if constructor_receiver_arms_need_scrutinee(arms) {
+      collect_constructor_receiver_names(scrutinee)
+    } else {
+      ()
+    },
+    EHandle(body, arms) => if constructor_receiver_arms_need_scrutinee(arms) {
+      collect_constructor_receiver_names(body)
+    } else {
+      ()
+    },
+    _ => ()
+  }
+  let children = expr_children(expr)
+  let mut i = 0
+  while i < Array::length(children) {
+    propagate_constructor_receiver_names_expr(Array::get(children, i))
+    i = i + 1
+  }
+}
+
+export fn propagate_constructor_receiver_names(stmts: Array[Stmt]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, expr) => {
+        if str_array_contains(dtd_constructor_local_returns, name) {
+          collect_constructor_receiver_names(expr)
+        } else {
+          ()
+        }
+        propagate_constructor_receiver_names_expr(expr)
+      },
+      SLetMut(name, _, expr) => {
+        if str_array_contains(dtd_constructor_local_returns, name) {
+          collect_constructor_receiver_names(expr)
+        } else {
+          ()
+        }
+        propagate_constructor_receiver_names_expr(expr)
+      },
+      SLetPat(pat, expr) => {
+        if constructor_receiver_pattern_is_needed(pat) {
+          collect_constructor_receiver_names(expr)
+        } else {
+          ()
+        }
+        propagate_constructor_receiver_names_expr(expr)
+      },
+      STest(_, expr) => propagate_constructor_receiver_names_expr(expr),
+      SBench(_, expr) => propagate_constructor_receiver_names_expr(expr),
+      SExample(_, expr) => propagate_constructor_receiver_names_expr(expr),
+      SExpr(expr) => propagate_constructor_receiver_names_expr(expr),
+      SFnDecl(_, _, expr, requires, ensures) => {
+        propagate_constructor_receiver_names_expr(expr)
+        let mut ri = 0
+        while ri < Array::length(requires) {
+          propagate_constructor_receiver_names_expr(Array::get(requires, ri))
+          ri = ri + 1
+        }
+        let mut ei = 0
+        while ei < Array::length(ensures) {
+          propagate_constructor_receiver_names_expr(Array::get(ensures, ei))
+          ei = ei + 1
+        }
+      },
+      SModule(_, _, body) => propagate_constructor_receiver_names(body),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+/// #672: a qualified constructor `Enum::Variant` -> the unqualified variant
+/// `Variant`, when `member` is a constructor of enum `head` (variants are bound
+/// unqualified, and codegen's ctor table is keyed unqualified). `head` MUST be a
+/// known user enum/struct (`struct_sets` includes enum names) — this is the gate
+/// that keeps builtin qualified calls like `String::join` / `Array::map` alone
+/// even when a same-named function (`join`/`map`) happens to return that type.
+export fn qual_ctor_member(head: String, member: String, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Option[String] {
+  // #1502: an alias qualifier (`type C = Color` -> `C::Red`) is normalized to
+  // the enum it names before the gate. Without this the checker accepts
+  // `C::Red` (it follows `TDAlias`) while this pass leaves the name qualified,
+  // and codegen -- whose ctor table is keyed unqualified -- dies with
+  // `undefined variable (ident): C::Red`. A non-alias head resolves to itself.
+  let head = resolve_alias_head(fn_returns, head)
+  if struct_set_has(struct_sets, head) {
+    // #1491: ask whether `member` is recorded as a constructor of THIS enum,
+    // not what `member`'s first table entry returns. Constructor names collide
+    // across enums (`enum Color { Red }` next to an imported `enum Paint
+    // { Red }`), and the first-match form answered about the wrong enum, left
+    // the name qualified, and handed codegen -- whose ctor table is keyed
+    // unqualified -- `undefined variable (ident): Color::Red`.
+    if fn_returns_has_type(fn_returns, member, head) {
+      Some(member)
+    } else {
+      None
+    }
+  } else {
+    None
+  }
+}

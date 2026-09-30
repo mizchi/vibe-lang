@@ -1,0 +1,349 @@
+// lib/@vibe/compiler/codegen/wasi/linked_compile.vibe — wasi module sliced impl.
+
+import @vibe/compiler/core {
+  Expr, Pat, Stmt, TypeExpr
+}
+
+import @vibe/ast {
+  TypeExpr::is_array_of_int
+}
+
+import @vibe/core {
+  array_empty, struct MutMap, struct MutSet
+}
+
+import @vibe/compiler/normalize {
+  ModuleTraitFacts
+}
+
+import @vibe/compiler/perceus {
+  PerceusAction, elaborate_heap_params
+}
+
+import @vibe/compiler/codegen/builtin_bodies {
+  array_capacity_error_message
+}
+
+import @vibe/compiler/codegen/reloc {
+  blind_kind_fn_value
+}
+
+import @vibe/compiler/codegen/common_analysis {
+  bmask_has
+}
+
+import @vibe/compiler/codegen/common_base {
+  CodegenBodyCache,
+  CompileCtx,
+  CovState,
+  CtorTable,
+  DbgProv,
+  FuncTable,
+  LambdaTable,
+  LineMapState,
+  ModuleSplit,
+  StrTable,
+  codegen_body_cache_discard,
+  codegen_body_cache_merge,
+  codegen_body_cache_new,
+  empty_dbg_prov,
+  module_split_none
+}
+
+import @vibe/compiler/codegen/common_extractors {
+  array_contains_str
+}
+
+import @vibe/compiler/codegen/expr {
+  cc_host_future_named_raw_prefix
+}
+
+import @vibe/compiler/codegen/wasm_emit {
+  emit_block_i64
+}
+
+import ./linked_diagnostics.vibe {
+  seed_builtin_diagnostic_strings
+}
+
+import ./linked_helpers.vibe {
+  collect_used_builtin_names
+}
+
+import ./linked_compile_wasi_module_linked_impl_with_split_grants.vibe {
+  compile_wasi_module_linked_impl_with_split_grants,
+  compile_wasi_module_linked_impl_with_typed_offsets,
+  compile_wasi_module_linked_impl_with_typed_offsets_grants,
+  lc_render_unused
+}
+
+/// #2158: the historical signature. Every caller that has no checker offsets to
+/// give -- which is every caller but the two `*_with_typed_offsets` entries
+/// below -- goes through here and gets an empty table, so its output is
+/// unchanged.
+export fn compile_wasi_module_linked_impl(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], linked_imports: Array[(String, String, Int, Int)], library_mode: Bool, enable_rc: Bool, coverage: Bool, debug_trace: Bool, debug_break: Bool, rc_shadow: Bool, enable_late_dce: Bool, prov: DbgProv, body_cache_in: CodegenBodyCache, body_cache_out: CodegenBodyCache, slice_lo: Int, slice_hi: Int) -> Bytes with Exception {
+  compile_wasi_module_linked_impl_with_typed_offsets(stmts, entry_name, srcs, linked_imports, library_mode, enable_rc, coverage, debug_trace, debug_break, rc_shadow, enable_late_dce, prov, body_cache_in, body_cache_out, slice_lo, slice_hi, array_empty(), array_empty(), array_empty(), array_empty(), array_empty())
+}
+
+export fn compile_wasi_module_rc_impl(stmts_in: Array[Stmt], entry_name: String) -> Bytes with Exception {
+  let stmts = elaborate_heap_params(stmts_in)
+  compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, true, false, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_discard(), 0, 0 - 1)
+}
+
+/// #2158: `compile_wasi_module_rc_impl` plus the checker's Double call-result
+/// offsets. This is the lane `vibe test` and `vibe run` take by default -- the
+/// adapter routes anything but an explicit `VIBE_RC=0` here, so a fix wired
+/// only into the bump sibling would never be reached by either command.
+///
+/// `elaborate_heap_params` rewrites the statements before codegen sees them;
+/// the offsets are filtered for uniqueness inside the linked impl, AFTER that
+/// rewrite, so its output is what the guarantee is proven against.
+export fn compile_wasi_module_rc_impl_with_typed_offsets(stmts_in: Array[Stmt], entry_name: String, checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int], checker_bool_render_offsets: Array[Int], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String]) -> Bytes with Exception {
+  let stmts = elaborate_heap_params(stmts_in)
+  compile_wasi_module_linked_impl_with_typed_offsets(stmts, entry_name, array_empty(), array_empty(), false, true, false, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_discard(), 0, 0 - 1, checker_float_call_offsets, checker_int_render_offsets, checker_bool_render_offsets, checker_eq_offsets, checker_eq_type_keys)
+}
+
+/// #2388 step 3: compile_wasi_module_rc_impl with the body caches threaded
+/// through -- `body_cache_in` entries replay instead of compiling (the body
+/// loop already consults it, #1259), and `body_cache_out` harvests this
+/// compile's bodies for the caller to persist. Everything else matches the
+/// plain RC lane flag for flag.
+export fn compile_wasi_module_rc_cached_impl(stmts_in: Array[Stmt], entry_name: String, body_cache_in: CodegenBodyCache, body_cache_out: CodegenBodyCache) -> Bytes with Exception {
+  let stmts = elaborate_heap_params(stmts_in)
+  compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, true, false, false, false, false, true, empty_dbg_prov(), body_cache_in, body_cache_out, 0, 0 - 1)
+}
+
+/// #2391: `compile_wasi_module_rc_cached_impl` plus the checker's Double
+/// call-result offsets (#2158), so the body-cached FS lane compiles the same
+/// program the ordinary rc lane does and their outputs stay byte-comparable.
+export fn compile_wasi_module_rc_cached_impl_with_typed_offsets(stmts_in: Array[Stmt], entry_name: String, body_cache_in: CodegenBodyCache, body_cache_out: CodegenBodyCache, checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int], checker_bool_render_offsets: Array[Int], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String]) -> Bytes with Exception {
+  compile_wasi_module_rc_cached_impl_with_prov(stmts_in, entry_name, body_cache_in, body_cache_out, empty_dbg_prov(), checker_float_call_offsets, checker_int_render_offsets, checker_bool_render_offsets, checker_eq_offsets, checker_eq_type_keys)
+}
+
+/// #2575 item 2: the same RC production compile, given the merged program's
+/// statement-to-module map.
+///
+/// `prov` carries `files` (one basename per module) and `stmt_file_id` (one
+/// module id per merged PRE-PRELUDE top-level statement). Empty `file_nls`
+/// keeps production `vibe.linemap` off (`linked_compile_prov_inert_test.vibe`
+/// pins that compile byte-identical). Non-empty newline tables are #2199's
+/// production trap provenance: the section is emitted without debug-break
+/// probes. A per-module prelude still does not read `file_nls`.
+/// Pre-#2828-rung-2 arity: no launcher grants (fail-closed).
+export fn compile_wasi_module_rc_cached_impl_with_prov(stmts_in: Array[Stmt], entry_name: String, body_cache_in: CodegenBodyCache, body_cache_out: CodegenBodyCache, prov: DbgProv, checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int], checker_bool_render_offsets: Array[Int], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String]) -> Bytes with Exception {
+  compile_wasi_module_rc_cached_impl_with_prov_grants(stmts_in, entry_name, body_cache_in, body_cache_out, prov, checker_float_call_offsets, checker_int_render_offsets, checker_bool_render_offsets, checker_eq_offsets, checker_eq_type_keys, array_empty())
+}
+
+/// #2828 rung 2: the grant-carrying arity, on the lane `vibe run` takes.
+export fn compile_wasi_module_rc_cached_impl_with_prov_grants(stmts_in: Array[Stmt], entry_name: String, body_cache_in: CodegenBodyCache, body_cache_out: CodegenBodyCache, prov: DbgProv, checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int], checker_bool_render_offsets: Array[Int], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], grants: Array[(String, String)]) -> Bytes with Exception {
+  compile_wasi_module_rc_cached_impl_with_split_grants(stmts_in, entry_name, body_cache_in, body_cache_out, prov, checker_float_call_offsets, checker_int_render_offsets, checker_bool_render_offsets, checker_eq_offsets, checker_eq_type_keys, module_split_none(), lc_render_unused, grants)
+}
+
+/// #2575 item 2 step 3b: the RC production compile with the module split wired
+/// in.
+///
+/// `elaborate_heap_params` runs HERE, once on the merged program, and the
+/// prelude's per-module loop starts at pass 1 for exactly that reason (#2647
+/// Codex round 4). It pushes one statement per input statement, so
+/// `split.stmt_file_id` -- built from the MERGE's counts, before this call --
+/// still indexes the array the prelude receives.
+/// `linked_compile_prov_inert_test.vibe` pins that alignment, because an edit
+/// there would silently misattribute every statement rather than fail.
+/// Pre-#2828-rung-2 arity: no launcher grants (fail-closed).
+export fn compile_wasi_module_rc_cached_impl_with_split(stmts_in: Array[Stmt], entry_name: String, body_cache_in: CodegenBodyCache, body_cache_out: CodegenBodyCache, prov: DbgProv, checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int], checker_bool_render_offsets: Array[Int], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], split: ModuleSplit, render: (Stmt) -> String) -> Bytes with Exception {
+  compile_wasi_module_rc_cached_impl_with_split_grants(stmts_in, entry_name, body_cache_in, body_cache_out, prov, checker_float_call_offsets, checker_int_render_offsets, checker_bool_render_offsets, checker_eq_offsets, checker_eq_type_keys, split, render, array_empty())
+}
+
+/// #2828 rung 2: the grant-carrying arity.
+export fn compile_wasi_module_rc_cached_impl_with_split_grants(stmts_in: Array[Stmt], entry_name: String, body_cache_in: CodegenBodyCache, body_cache_out: CodegenBodyCache, prov: DbgProv, checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int], checker_bool_render_offsets: Array[Int], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], split: ModuleSplit, render: (Stmt) -> String, grants: Array[(String, String)]) -> Bytes with Exception {
+  let stmts = elaborate_heap_params(stmts_in)
+  compile_wasi_module_linked_impl_with_split_grants(stmts, entry_name, array_empty(), array_empty(), false, true, false, false, false, false, true, prov, body_cache_in, body_cache_out, 0, 0 - 1, checker_float_call_offsets, checker_int_render_offsets, checker_bool_render_offsets, checker_eq_offsets, checker_eq_type_keys, split, render, grants)
+}
+
+/// Preserve the post-lowering AST for the explicit `no-dce` compile mode.
+export fn compile_wasi_module_no_dce_impl(stmts: Array[Stmt], entry_name: String) -> Bytes with Exception {
+  compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, false, false, false, false, false, false, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_discard(), 0, 0 - 1)
+}
+
+/// #2158: `compile_wasi_module_no_dce_impl` plus the checker's Double
+/// call-result offsets. This is the `vibe test` / `vibe run` FS lane
+/// (`compile_file_fs_mode`, entry/compiler/file_compile/file_compile.vibe).
+export fn compile_wasi_module_no_dce_impl_with_typed_offsets(stmts: Array[Stmt], entry_name: String, checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int], checker_bool_render_offsets: Array[Int], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String]) -> Bytes with Exception {
+  compile_wasi_module_linked_impl_with_typed_offsets(stmts, entry_name, array_empty(), array_empty(), false, false, false, false, false, false, false, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_discard(), 0, 0 - 1, checker_float_call_offsets, checker_int_render_offsets, checker_bool_render_offsets, checker_eq_offsets, checker_eq_type_keys)
+}
+
+/// #715 recurrence guard: RC + shadow-liveness instrumentation (VIBE_RC=shadow).
+export fn compile_wasi_module_rc_shadow_impl(stmts_in: Array[Stmt], entry_name: String) -> Bytes with Exception {
+  let stmts = elaborate_heap_params(stmts_in)
+  compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, true, false, false, false, true, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_discard(), 0, 0 - 1)
+}
+
+/// #2391 (#2425 review round 4): shadow-instrumented RC with the checker's
+/// Double call-result offsets, so VIBE_RC=shadow compiles the same program
+/// the production rc lane does.
+/// Pre-#2828-rung-2 arity: no launcher grants (fail-closed).
+export fn compile_wasi_module_rc_shadow_impl_with_typed_offsets(stmts_in: Array[Stmt], entry_name: String, checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int], checker_bool_render_offsets: Array[Int], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String]) -> Bytes with Exception {
+  compile_wasi_module_rc_shadow_impl_with_typed_offsets_grants(stmts_in, entry_name, checker_float_call_offsets, checker_int_render_offsets, checker_bool_render_offsets, checker_eq_offsets, checker_eq_type_keys, array_empty())
+}
+
+/// #2828 rung 2: the grant-carrying arity (rc-shadow lane).
+export fn compile_wasi_module_rc_shadow_impl_with_typed_offsets_grants(stmts_in: Array[Stmt], entry_name: String, checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int], checker_bool_render_offsets: Array[Int], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], grants: Array[(String, String)]) -> Bytes with Exception {
+  let stmts = elaborate_heap_params(stmts_in)
+  compile_wasi_module_linked_impl_with_typed_offsets_grants(stmts, entry_name, array_empty(), array_empty(), false, true, false, false, false, true, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_discard(), 0, 0 - 1, checker_float_call_offsets, checker_int_render_offsets, checker_bool_render_offsets, checker_eq_offsets, checker_eq_type_keys, grants)
+}
+
+/// #1259 step 7: compile the module twice -- once compiling every body and
+/// harvesting it, once replaying every harvested body -- and return the
+/// REPLAYED module, throwing if the two disagree.
+///
+/// This is the only caller that exercises the replay path, and it exists to
+/// keep the two halves honest: a replayed function must be indistinguishable
+/// from a compiled one, not merely plausible. It caught the first real
+/// divergence -- `table_slots_used` is appended during compilation and read
+/// only after the body loop, so a replayed build emitted a smaller element
+/// section until the cache started carrying those entries too.
+///
+/// Deliberately not on any production path: it is strictly slower than
+/// compiling once. Callers are the round-trip test and the gate.
+/// #1259 step 8: compile the bodies in two disjoint slices, merge the two
+/// harvests, replay the merged cache, and return the result -- throwing if it
+/// differs from a straight single-pass compile.
+///
+/// This is the property a `--jobs N` build rests on, reduced to something a
+/// single process can check: a body compiled while its neighbours were NOT
+/// compiled must be the same bytes as one compiled with all of them. It holds
+/// only because everything that used to make a body depend on its neighbours
+/// was hoisted ahead of the loop -- the lambda index plan (#1275/#1277), the
+/// shared fresh-name counters, and the string table -- so a slice sees exactly
+/// the state the whole run would have given it.
+///
+/// Splitting at the halfway point is arbitrary but not vacuous: it puts the
+/// boundary inside the function list, so the second worker starts at a nonzero
+/// planned lambda base.
+///
+/// Test/gate only; it compiles the program three times.
+export fn compile_wasi_module_sliced_impl(stmts: Array[Stmt], entry_name: String) -> Bytes with Exception {
+  let whole = compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, false, false, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_discard(), 0, 0 - 1)
+  let probe = codegen_body_cache_new()
+  let _probe_bytes = compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, false, false, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), probe, 0, 0 - 1)
+  let nfns = Array::length(probe.fn_indices)
+  let mid = nfns / 2
+  let low = codegen_body_cache_new()
+  let high = codegen_body_cache_new()
+  let _low_bytes = compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, false, false, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), low, 0, mid)
+  let _high_bytes = compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, false, false, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), high, mid, 0 - 1)
+  let merged = codegen_body_cache_merge(low, high)
+  let nmerged = Array::length(merged.fn_indices)
+  if nmerged != nfns {
+    throw(String::concat("codegen slice merge lost functions: whole ", String::concat(__to_string(nfns), String::concat(", merged ", __to_string(nmerged)))))
+  } else {
+    ()
+  }
+  let sliced = compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, false, false, false, false, false, true, empty_dbg_prov(), merged, codegen_body_cache_new(), 0, 0 - 1)
+  let wn = Bytes::length(whole)
+  let sn = Bytes::length(sliced)
+  if wn != sn {
+    throw(String::concat("codegen slice length mismatch: whole ", String::concat(__to_string(wn), String::concat(" B, sliced ", String::concat(__to_string(sn), " B")))))
+  } else {
+    ()
+  }
+  let mut i = 0
+  let mut bad = 0 - 1
+  while bad < 0 && i < wn {
+    if Bytes::get(whole, i) != Bytes::get(sliced, i) {
+      bad = i
+    } else {
+      i = i + 1
+    }
+  }
+  if bad >= 0 {
+    throw(String::concat("codegen slice byte mismatch at offset ", __to_string(bad)))
+  } else {
+    ()
+  }
+  sliced
+}
+
+export fn compile_wasi_module_replayed_impl(stmts: Array[Stmt], entry_name: String) -> Bytes with Exception {
+  let harvest = codegen_body_cache_new()
+  let compiled = compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, false, false, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), harvest, 0, 0 - 1)
+  let replayed = compile_wasi_module_linked_impl(stmts, entry_name, array_empty(), array_empty(), false, false, false, false, false, false, true, empty_dbg_prov(), harvest, codegen_body_cache_new(), 0, 0 - 1)
+  let ln = Bytes::length(compiled)
+  let rn = Bytes::length(replayed)
+  if ln != rn {
+    throw(String::concat("codegen replay length mismatch: compiled ", String::concat(__to_string(ln), String::concat(" B, replayed ", String::concat(__to_string(rn), " B")))))
+  } else {
+    ()
+  }
+  let mut i = 0
+  let mut bad = 0 - 1
+  while bad < 0 && i < ln {
+    if Bytes::get(compiled, i) != Bytes::get(replayed, i) {
+      bad = i
+    } else {
+      i = i + 1
+    }
+  }
+  if bad >= 0 {
+    throw(String::concat("codegen replay byte mismatch at offset ", __to_string(bad)))
+  } else {
+    ()
+  }
+  replayed
+}
+
+export fn compile_wasi_module_with_sources_impl(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)]) -> Bytes with Exception {
+  compile_wasi_module_linked_impl(stmts, entry_name, srcs, array_empty(), false, false, false, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_discard(), 0, 0 - 1)
+}
+
+/// #2158: `compile_wasi_module_with_sources_impl` plus the checker's Double
+/// call-result offsets. This is the single-source lane
+/// (`compile_source_wasi_only`, entry/source_compile/wasi_only/preprocess_compile.vibe),
+/// where one text means one offset space with nothing to collide.
+/// Pre-#2828-rung-2 arity: no launcher grants (fail-closed).
+export fn compile_wasi_module_with_sources_impl_with_typed_offsets(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int], checker_bool_render_offsets: Array[Int], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String]) -> Bytes with Exception {
+  compile_wasi_module_with_sources_impl_with_typed_offsets_grants(stmts, entry_name, srcs, checker_float_call_offsets, checker_int_render_offsets, checker_bool_render_offsets, checker_eq_offsets, checker_eq_type_keys, array_empty())
+}
+
+/// #2828 rung 2: the grant-carrying arity (mvp lane).
+export fn compile_wasi_module_with_sources_impl_with_typed_offsets_grants(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int], checker_bool_render_offsets: Array[Int], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], grants: Array[(String, String)]) -> Bytes with Exception {
+  compile_wasi_module_linked_impl_with_typed_offsets_grants(stmts, entry_name, srcs, array_empty(), false, false, false, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_discard(), 0, 0 - 1, checker_float_call_offsets, checker_int_render_offsets, checker_bool_render_offsets, checker_eq_offsets, checker_eq_type_keys, grants)
+}
+
+/// Coverage build (#cov): compile with function-level hit instrumentation +
+/// `vibe_cov` custom section. Same as compile_wasi_module_with_sources_impl but
+/// with coverage enabled.
+export fn compile_wasi_module_with_sources_coverage_impl(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)]) -> Bytes with Exception {
+  compile_wasi_module_linked_impl(stmts, entry_name, srcs, array_empty(), false, true, true, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_discard(), 0, 0 - 1)
+}
+
+/// Trace build (debugger / DAP P1 groundwork): compile with function-call
+/// execution-trace instrumentation + `vibe.trace` custom section. Same as
+/// compile_wasi_module_with_sources_impl but with debug_trace enabled.
+export fn compile_wasi_module_with_sources_trace_impl(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)]) -> Bytes with Exception {
+  compile_wasi_module_linked_impl(stmts, entry_name, srcs, array_empty(), false, true, false, true, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_discard(), 0, 0 - 1)
+}
+
+/// Break build (debugger / DAP P1): compile with `vibe::dbg_break` host-hook
+/// instrumentation at each user function entry. Same as
+/// compile_wasi_module_with_sources_impl but with debug_break enabled.
+export fn compile_wasi_module_with_sources_break_impl(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], prov: DbgProv) -> Bytes with Exception {
+  compile_wasi_module_linked_impl(stmts, entry_name, srcs, array_empty(), false, true, false, false, true, false, true, prov, codegen_body_cache_new(), codegen_body_cache_discard(), 0, 0 - 1)
+}
+
+/// #2391 (#2425 review round 4): the instrumented builds compile the same
+/// program the production lanes do, so they take the same checker Double
+/// call-result offsets -- otherwise a coverage/trace/shadow/break build of a
+/// program whose Doubles need the channel silently renders raw f64 bits
+/// where the ordinary build renders numbers.
+export fn compile_wasi_module_with_sources_coverage_impl_with_typed_offsets(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int], checker_bool_render_offsets: Array[Int], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String]) -> Bytes with Exception {
+  compile_wasi_module_linked_impl_with_typed_offsets(stmts, entry_name, srcs, array_empty(), false, true, true, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_discard(), 0, 0 - 1, checker_float_call_offsets, checker_int_render_offsets, checker_bool_render_offsets, checker_eq_offsets, checker_eq_type_keys)
+}
+
+export fn compile_wasi_module_with_sources_trace_impl_with_typed_offsets(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int], checker_bool_render_offsets: Array[Int], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String]) -> Bytes with Exception {
+  compile_wasi_module_linked_impl_with_typed_offsets(stmts, entry_name, srcs, array_empty(), false, true, false, true, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_discard(), 0, 0 - 1, checker_float_call_offsets, checker_int_render_offsets, checker_bool_render_offsets, checker_eq_offsets, checker_eq_type_keys)
+}
+
+export fn compile_wasi_module_with_sources_break_impl_with_typed_offsets(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], prov: DbgProv, checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int], checker_bool_render_offsets: Array[Int], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String]) -> Bytes with Exception {
+  compile_wasi_module_linked_impl_with_typed_offsets(stmts, entry_name, srcs, array_empty(), false, true, false, false, true, false, true, prov, codegen_body_cache_new(), codegen_body_cache_discard(), 0, 0 - 1, checker_float_call_offsets, checker_int_render_offsets, checker_bool_render_offsets, checker_eq_offsets, checker_eq_type_keys)
+}

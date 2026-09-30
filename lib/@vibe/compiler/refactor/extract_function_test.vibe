@@ -1,0 +1,67 @@
+import ./extract_function.vibe {
+  extract_function
+}
+
+fn extract_named(source: String, selection: String, name: String) -> String with Exception {
+  let start = String::index_of(source, selection)
+  handle {
+    extract_function(source, start, start + String::length(selection), name)
+  } with { Exception::Throw(message) => throw(String::concat(selection, String::concat(": ", message))) }
+}
+
+fn extraction_error(source: String, selection: String, name: String) -> String {
+  handle {
+    let _ = extract_named(source, selection, name)
+    ""
+  } with { Exception::Throw(message) => message }
+}
+
+test "extract a complete expression with typed parameters" {
+  let source = "fn score(x: Int, y: Int) -> Int { x * 2 + y }\n"
+  let result = extract_named(source, "x * 2 + y", "weighted")
+  inspect(result, "fn score(x: Int, y: Int) -> Int { weighted(x, y) }\n\nlet weighted = (x: Int, y: Int) -> {\nx * 2 + y\n}\n")
+}
+
+test "captures resolve to the inner binding and appear only once" {
+  let source = "let x = \"outer\"\nfn score(x: Int) -> Int { x + x }\n"
+  let result = extract_named(source, "x + x", "twice")
+  assert(String::contains(result, "let twice = (x: Int)"))
+  assert(String::contains(result, "twice(x)"))
+}
+
+test "a selected block keeps its internal bindings" {
+  let source = "fn score(x: Int) -> Int { if true { let y = x + 1; y * 2 } else { 0 } }\n"
+  let result = extract_named(source, "{ let y = x + 1; y * 2 }", "calculate")
+  assert(String::contains(result, "let calculate = (x: Int)"))
+  assert(!String::contains(result, "y: Int"))
+}
+
+test "source slices preserve comments and UTF-8 bytes" {
+  let source = "// 日本語\r\nfn score(x: Int) -> Int { x + // keep\r\n  1 }\r\n"
+  let result = extract_named(source, "x + // keep\r\n  1", "increment")
+  assert(String::contains(result, "// 日本語\r\n"))
+  assert(String::contains(result, "x + // keep\r\n  1"))
+}
+
+test "a valid expression fragment that is not an AST subtree is refused" {
+  let source = "fn score(x: Int, y: Int) -> Int { y * x + 1 }\n"
+  assert(String::contains(extraction_error(source, "x + 1", "increment"), "complete expression"))
+}
+
+test "mutable captures and escaping control flow are refused" {
+  let mutable = "fn score() -> Int { let mut x = 1; x + 2 }\n"
+  assert(String::contains(extraction_error(mutable, "x + 2", "increment"), "mutable"))
+  let returning = "fn score(x: Int) -> Int { if x > 0 { return x }; 0 }\n"
+  assert(String::contains(extraction_error(returning, "if x > 0 { return x }", "positive"), "control flow"))
+}
+
+test "name collisions, invalid names, and invalid byte ranges are refused" {
+  let source = "fn score(x: Int) -> Int { x + 1 }\n"
+  assert(String::contains(extraction_error(source, "x + 1", "score"), "already"))
+  assert(String::contains(extraction_error(source, "x + 1", "if"), "identifier"))
+  let error = handle {
+    let _ = extract_function(source, -1, 2, "increment")
+    ""
+  } with { Exception::Throw(message) => message }
+  assert(String::contains(error, "range"))
+}

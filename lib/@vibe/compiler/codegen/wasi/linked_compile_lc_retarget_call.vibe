@@ -1,0 +1,2021 @@
+// lib/@vibe/compiler/codegen/wasi/linked_compile.vibe — lc retarget call.
+
+import @vibe/compiler/core {
+  Expr, Pat, Stmt, TypeExpr, fold_const_bool_params, rewrite_import_alias_expr, sorted_names_of
+}
+
+import @vibe/ast {
+  TypeExpr::is_array_of_int
+}
+
+import @vibe/core {
+  array_empty, struct MutMap, struct MutSet
+}
+
+import @vibe/compiler/normalize {
+  ModuleTraitFacts
+}
+
+import @vibe/compiler/perceus {
+  PerceusAction
+}
+
+import @vibe/compiler/codegen/builtin_bodies {
+  array_capacity_error_message
+}
+
+import @vibe/compiler/codegen/reloc {
+  blind_kind_fn_value
+}
+
+import @vibe/compiler/codegen/common_analysis {
+  bmask_has
+}
+
+import @vibe/compiler/codegen/common_base {
+  CodegenBodyCache,
+  CompileCtx,
+  CovState,
+  CtorTable,
+  DbgProv,
+  FuncTable,
+  LambdaTable,
+  LineMapState,
+  ModuleSplit,
+  StrTable,
+  await_poll_pass,
+  wrap_entry_exception_boundary
+}
+
+import @vibe/compiler/codegen/common_extractors {
+  array_contains_str
+}
+
+import @vibe/compiler/codegen/expr {
+  cc_host_future_named_raw_prefix
+}
+
+import @vibe/compiler/codegen/wasm_emit {
+  emit_block_i64
+}
+
+import ./linked_diagnostics.vibe {
+  seed_builtin_diagnostic_strings
+}
+
+import ./linked_helpers.vibe {
+  collect_used_builtin_names
+}
+
+import ./linked_compile_lc_pf_prune_module.vibe {
+  lc_defines_top_level
+}
+
+import ./linked_compile_lc_rename_sleep_calls.vibe {
+  lc_fresh_expr_array,
+  lc_fresh_string_array,
+  lc_pat_binds_name,
+  lc_pats_bind_name,
+  lc_rename_sleep_calls,
+  lc_row_has_label,
+  lc_validate_stdin_provider_expr
+}
+
+export fn lc_validate_stdin_provider_stmts(stmts: Array[Stmt]) -> String {
+  let mut i = 0
+  let mut err = ""
+  while i < Array::length(stmts) && err == "" {
+    err = match Array::get(stmts, i) {
+      SLet(_, _, _, _, body) => lc_validate_stdin_provider_expr(body),
+      SLetMut(_, _, body) => lc_validate_stdin_provider_expr(body),
+      STest(_, body) => lc_validate_stdin_provider_expr(body),
+      SBench(_, body) => lc_validate_stdin_provider_expr(body),
+      SExample(_, body) => lc_validate_stdin_provider_expr(body),
+      SExpr(body) => lc_validate_stdin_provider_expr(body),
+      SLetPat(_, body) => lc_validate_stdin_provider_expr(body),
+      SModule(_, _, inner) => lc_validate_stdin_provider_stmts(inner),
+      _ => ""
+    }
+    i = i + 1
+  }
+  err
+}
+
+/// Does any of `names` occur as an identifier in `stmts`? Same statement
+/// coverage as collect_used_builtin_names_into (SLet / SLetMut / STest /
+/// SBench / SExpr, recursing into SModule); the expression side is
+/// lc_mark_calls in mentions mode. Stops after the first statement that hits.
+fn lc_stmts_mention_any(stmts: Array[Stmt], names: Array[String]) -> Bool {
+  let hits: Array[Bool] = []
+  let mut n = 0
+  while n < Array::length(names) {
+    Array::push(hits, false)
+    n = n + 1
+  }
+  let mut hit = false
+  let mut i = 0
+  while !hit && i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, e) => lc_mark_calls(e, names, hits, true),
+      SLetMut(_, _, e) => lc_mark_calls(e, names, hits, true),
+      STest(_, e) => lc_mark_calls(e, names, hits, true),
+      SBench(_, e) => lc_mark_calls(e, names, hits, true),
+      SExpr(e) => lc_mark_calls(e, names, hits, true),
+      SModule(_, _, inner) => if lc_stmts_mention_any(inner, names) {
+        Array::set(hits, 0, true)
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    let mut k = 0
+    while k < Array::length(hits) {
+      if Array::get(hits, k) {
+        hit = true
+      } else {
+        ()
+      }
+      k = k + 1
+    }
+    i = i + 1
+  }
+  hit
+}
+
+export fn lc_inject_stdin_surface_wrappers(stmts: Array[Stmt]) -> Bool {
+  let public_names = [
+    "Stdin::read_via_stream",
+    "StdinStream::next",
+    "StdinStream::close",
+    "StdinStream::read_chunk"
+  ]
+  let raw_names = [
+    "__stdin_provider_acquire_surface",
+    "__stdin_provider_next_surface",
+    "__stdin_provider_close_surface",
+    "__stdin_provider_read_chunk_surface"
+  ]
+  let aliases: Array[(String, String)] = [
+    (Array::get(public_names, 0), Array::get(raw_names, 0)),
+    (Array::get(public_names, 1), Array::get(raw_names, 1)),
+    (Array::get(public_names, 2), Array::get(raw_names, 2)),
+    (Array::get(public_names, 3), Array::get(raw_names, 3))
+  ]
+  // #2386: this used to run collect_used_builtin_names over the WHOLE
+  // program (131 ms warm on the compiler closure) and read four keys out of
+  // the map. With an empty fn_names list that walk counts every identifier
+  // occurrence that is not locally bound, and a `::`-qualified name cannot
+  // be bound locally, so "any of the four names occurs as an identifier" is
+  // the same question, answered by a stoppable presence scan.
+  let needed = lc_stmts_mention_any(stmts, public_names)
+  if needed {
+    let mut i = 0
+    while i < Array::length(stmts) {
+      match Array::get(stmts, i) {
+        SLet(ex, is_rec, name, ty, body) => Array::set(stmts, i, SLet(ex, is_rec, name, ty, rewrite_import_alias_expr(body, aliases))),
+        SLetMut(name, ty, body) => Array::set(stmts, i, SLetMut(name, ty, rewrite_import_alias_expr(body, aliases))),
+        STest(name, body) => Array::set(stmts, i, STest(name, rewrite_import_alias_expr(body, aliases))),
+        SBench(name, body) => Array::set(stmts, i, SBench(name, rewrite_import_alias_expr(body, aliases))),
+        SExpr(body) => Array::set(stmts, i, SExpr(rewrite_import_alias_expr(body, aliases))),
+        SLetPat(pat, body) => Array::set(stmts, i, SLetPat(pat, rewrite_import_alias_expr(body, aliases))),
+        _ => ()
+      }
+      i = i + 1
+    }
+    let no_params: Array[(String, Option[TypeExpr])] = array_empty()
+    let next_param: Array[(String, Option[TypeExpr])] = [
+      ("__stdin_stream", Some(TyName("StdinStream")))
+    ]
+    let close_param: Array[(String, Option[TypeExpr])] = [
+      ("__stdin_stream", Some(TyName("StdinStream")))
+    ]
+    let read_chunk_params: Array[(String, Option[TypeExpr])] = [
+      ("__stdin_stream", Some(TyName("StdinStream"))),
+      ("__stdin_chunk_size", Some(TyName("Int")))
+    ]
+    let acquire_body = ECall(EIdent("vibe_stdin_provider_acquire_raw", -1), lc_fresh_expr_array(), -1)
+    let next_body = ECall(EIdent("vibe_stdin_provider_read_raw", -1), [
+      EIdent("__stdin_stream", -1)
+    ], -1)
+    let close_body = ESeq(ECall(EIdent("vibe_stdin_provider_close_raw", -1), [
+      EIdent("__stdin_stream", -1)
+    ], -1), EUnit)
+    // One-byte String::from_char_code construction preserves every u8 value,
+    // including NUL and bytes that are not valid standalone UTF-8. The raw
+    // route is validated before conversion so an ABI violation traps instead
+    // of being silently truncated by store8.
+    let chunk_read = ECall(EIdent("vibe_stdin_provider_read_raw", -1), [
+      EIdent("__stdin_stream", -1)
+    ], -1)
+    let chunk_byte_valid = EBinOp("&&", EBinOp("<=", EInt(0), EIdent("__stdin_chunk_byte", -1), -1), EBinOp("<=", EIdent("__stdin_chunk_byte", -1), EInt(255), -1), -1)
+    let chunk_push = ESeq(ECall(EIdent("StringBuilder::push", -1), [
+      EIdent("__stdin_chunk_builder", -1),
+      ECall(EIdent("String::from_char_code", -1), [
+        EIdent("__stdin_chunk_byte", -1)
+      ], -1)
+    ], -1), EAssign("__stdin_chunk_len", EBinOp("+", EIdent("__stdin_chunk_len", -1), EInt(1), -1), EUnit))
+    let chunk_accept = EIf(chunk_byte_valid, chunk_push, ECall(EIdent("assert_true", -1), [
+      EBool(false)
+    ], -1))
+    let chunk_step = ELet("__stdin_chunk_byte", chunk_read, EIf(EBinOp("==", EIdent("__stdin_chunk_byte", -1), EInt(0 - 1), -1), EAssign("__stdin_chunk_eof", EBool(true), EUnit), chunk_accept), -1)
+    // review-lint: allow-fixed-synthetic-name
+    let chunk_loop_cond = EBinOp("&&", EBinOp("<", EIdent("__stdin_chunk_len", -1), EIdent("__stdin_chunk_size", -1), -1), EBinOp("==", EIdent("__stdin_chunk_eof", -1), EBool(false), -1), -1)
+    let chunk_result = EIf(EBinOp("==", EIdent("__stdin_chunk_len", -1), EInt(0), -1), ECall(EIdent("None", -1), array_empty(), -1), ECall(EIdent("Some", -1), [
+      ECall(EIdent("StringBuilder::freeze", -1), [
+        EIdent("__stdin_chunk_builder", -1)
+      ], -1)
+    ], -1))
+    let positive_pull = ELet("__stdin_chunk_builder", ECall(EIdent("StringBuilder::new", -1), array_empty(), -1), ELetMut("__stdin_chunk_len", EInt(0), ELetMut("__stdin_chunk_eof", EBool(false), ESeq(EWhile(chunk_loop_cond, chunk_step), chunk_result), -1), -1), -1)
+    // review-lint: allow-fixed-synthetic-name -- existing conversion temporaries preserved by the module split
+    let read_chunk_ret = TyApp("Option", [TyName("String")])
+    let read_chunk_body = EIf(EBinOp("<=", EIdent("__stdin_chunk_size", -1), EInt(0), -1), ECall(EIdent("None", -1), array_empty(), -1), positive_pull)
+    Array::push(stmts, SLet(false, false, Array::get(raw_names, 0), None, EFn(lc_fresh_string_array(), array_empty(), no_params, Some(TyName("StdinStream")), None, acquire_body)))
+    Array::push(stmts, SLet(false, false, Array::get(raw_names, 1), None, EFn(lc_fresh_string_array(), array_empty(), next_param, Some(TyName("Int")), None, next_body)))
+    Array::push(stmts, SLet(false, false, Array::get(raw_names, 2), None, EFn(lc_fresh_string_array(), array_empty(), close_param, Some(TyName("Unit")), None, close_body)))
+    Array::push(stmts, SLet(false, false, Array::get(raw_names, 3), None, EFn(lc_fresh_string_array(), array_empty(), read_chunk_params, Some(read_chunk_ret), None, read_chunk_body)))
+  } else {
+    ()
+  }
+  needed
+}
+
+/// Rewrite calls to a surface builtin into calls to its injected fn (the
+/// stream sibling of lc_rename_sleep_calls, same shadow discipline: `active`
+/// goes false under any binder that shadows the source name). The fresh name
+/// sidesteps the nominal-row double-classification hazard documented on
+/// lc_rename_sleep_calls.
+///
+/// Parameterized over (surface, injected) so the host read
+/// `host_stream_next` -> `__hs_next` and host close
+/// `host_stream_close` -> `__hs_close` share one TOTAL walk. A second copy of a
+/// 150-line total walk is exactly the kind of thing that drifts and silently
+/// stops covering a container.
+fn lc_rename_hs_call(e: Expr, active: Bool, from_name: String, to_name: String) -> Expr {
+  lc_retarget_call(e, active, from_name, to_name, false)
+}
+
+/// Shadow-aware call retarget: every call of `from_name` that still names the
+/// top-level builtin is renamed to `to_name`, or -- with `wrap` -- kept and
+/// handed to `to_name` as a WIT getter (`lc_ws_tracked_getter`).
+export fn lc_retarget_call(e: Expr, active: Bool, from_name: String, to_name: String, wrap: Bool) -> Expr {
+  match e {
+    ECall(callee, args, off) => {
+      let new_args = lc_fresh_expr_array()
+      let mut i = 0
+      while i < Array::length(args) {
+        Array::push(new_args, lc_retarget_call(Array::get(args, i), active, from_name, to_name, wrap))
+        i = i + 1
+      }
+      match callee {
+        EIdent(nm, coff) => if active && nm == from_name {
+          if wrap {
+            lc_ws_tracked_getter(to_name, callee, new_args, off)
+          } else {
+            ECall(EIdent(to_name, coff), new_args, off)
+          }
+        } else {
+          ECall(callee, new_args, off)
+        },
+        _ => ECall(lc_retarget_call(callee, active, from_name, to_name, wrap), new_args, off)
+      }
+    },
+    ELet(x, v, b, off) => ELet(x, lc_retarget_call(v, active, from_name, to_name, wrap), lc_retarget_call(b, active && x != from_name, from_name, to_name, wrap), off),
+    ELetMut(x, v, b, off) => ELetMut(x, lc_retarget_call(v, active, from_name, to_name, wrap), lc_retarget_call(b, active && x != from_name, from_name, to_name, wrap), off),
+    ELetRec(x, v, b) => {
+      let inner = active && x != from_name
+      ELetRec(x, lc_retarget_call(v, inner, from_name, to_name, wrap), lc_retarget_call(b, inner, from_name, to_name, wrap))
+    },
+    ESeq(a, b) => ESeq(lc_retarget_call(a, active, from_name, to_name, wrap), lc_retarget_call(b, active, from_name, to_name, wrap)),
+    EIf(c, t, el) => EIf(lc_retarget_call(c, active, from_name, to_name, wrap), lc_retarget_call(t, active, from_name, to_name, wrap), lc_retarget_call(el, active, from_name, to_name, wrap)),
+    EMatch(s, arms) => {
+      let out: Array[(Pat, Expr)] = array_empty()
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (mp, mb) = Array::get(arms, i)
+        Array::push(out, (mp, lc_retarget_call(mb, active && !lc_pat_binds_name(mp, from_name), from_name, to_name, wrap)))
+        i = i + 1
+      }
+      EMatch(lc_retarget_call(s, active, from_name, to_name, wrap), out)
+    },
+    EHandle(b, arms) => {
+      let out: Array[(Pat, Expr)] = array_empty()
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (mp, mb) = Array::get(arms, i)
+        Array::push(out, (mp, lc_retarget_call(mb, active && !lc_pat_binds_name(mp, from_name), from_name, to_name, wrap)))
+        i = i + 1
+      }
+      EHandle(lc_retarget_call(b, active, from_name, to_name, wrap), out)
+    },
+    EFn(tps, tbs, params, ret, eff, b) => {
+      let mut shadowed = false
+      let mut i = 0
+      while i < Array::length(params) {
+        let (pn, _) = Array::get(params, i)
+        if pn == from_name {
+          shadowed = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      EFn(tps, tbs, params, ret, eff, lc_retarget_call(b, active && !shadowed, from_name, to_name, wrap))
+    },
+    EWhile(c, b) => EWhile(lc_retarget_call(c, active, from_name, to_name, wrap), lc_retarget_call(b, active, from_name, to_name, wrap)),
+    EForIn(x, ix, it, b) => {
+      let inner = active && x != from_name
+      EForIn(x, ix, lc_retarget_call(it, active, from_name, to_name, wrap), lc_retarget_call(b, inner, from_name, to_name, wrap))
+    },
+    ELoop(pairs, b) => {
+      let out: Array[(String, Expr)] = array_empty()
+      let mut inner = active
+      let mut i = 0
+      while i < Array::length(pairs) {
+        let (pn, pv) = Array::get(pairs, i)
+        if pn == from_name {
+          inner = false
+        } else {
+          ()
+        }
+        Array::push(out, (pn, lc_retarget_call(pv, active, from_name, to_name, wrap)))
+        i = i + 1
+      }
+      ELoop(out, lc_retarget_call(b, inner, from_name, to_name, wrap))
+    },
+    EBinOp(op, l, r, boff) => EBinOp(op, lc_retarget_call(l, active, from_name, to_name, wrap), lc_retarget_call(r, active, from_name, to_name, wrap), boff),
+    EUnaryOp(op, a) => EUnaryOp(op, lc_retarget_call(a, active, from_name, to_name, wrap)),
+    EAssign(x, v, b) => EAssign(x, lc_retarget_call(v, active, from_name, to_name, wrap), lc_retarget_call(b, active, from_name, to_name, wrap)),
+    EAssignOp(n, op, v, b) => EAssignOp(n, op, lc_retarget_call(v, active, from_name, to_name, wrap), lc_retarget_call(b, active, from_name, to_name, wrap)),
+    EReturn(a) => EReturn(lc_retarget_call(a, active, from_name, to_name, wrap)),
+    EDot(o, f, m, off) => EDot(lc_retarget_call(o, active, from_name, to_name, wrap), f, m, off),
+    ELabeledArg(l, s, v) => ELabeledArg(l, s, lc_retarget_call(v, active, from_name, to_name, wrap)),
+    EBreak(opt) => match opt {
+      Some(a) => EBreak(Some(lc_retarget_call(a, active, from_name, to_name, wrap))),
+      None => e
+    },
+    EContinue(args) => {
+      let out = lc_fresh_expr_array()
+      let mut i = 0
+      while i < Array::length(args) {
+        Array::push(out, lc_retarget_call(Array::get(args, i), active, from_name, to_name, wrap))
+        i = i + 1
+      }
+      EContinue(out)
+    },
+    ETuple(items) => {
+      let out = lc_fresh_expr_array()
+      let mut i = 0
+      while i < Array::length(items) {
+        Array::push(out, lc_retarget_call(Array::get(items, i), active, from_name, to_name, wrap))
+        i = i + 1
+      }
+      ETuple(out)
+    },
+    EArray(items) => {
+      let out = lc_fresh_expr_array()
+      let mut i = 0
+      while i < Array::length(items) {
+        Array::push(out, lc_retarget_call(Array::get(items, i), active, from_name, to_name, wrap))
+        i = i + 1
+      }
+      EArray(out)
+    },
+    ERecord(nm, fields, off) => {
+      let out: Array[(String, Expr)] = array_empty()
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (fn2, fv) = Array::get(fields, i)
+        Array::push(out, (fn2, lc_retarget_call(fv, active, from_name, to_name, wrap)))
+        i = i + 1
+      }
+      ERecord(nm, out, off)
+    },
+    EMap(fields) => {
+      let out: Array[(String, Expr)] = array_empty()
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (fk, fv) = Array::get(fields, i)
+        Array::push(out, (fk, lc_retarget_call(fv, active, from_name, to_name, wrap)))
+        i = i + 1
+      }
+      EMap(out)
+    },
+    ESpread(a) => ESpread(lc_retarget_call(a, active, from_name, to_name, wrap)),
+    _ => e
+  }
+}
+
+export fn lc_rename_hs_next_calls(e: Expr, active: Bool) -> Expr {
+  lc_rename_hs_call(e, active, "host_stream_next", "__hs_next")
+}
+
+export fn lc_rename_hs_option_next_calls(e: Expr, active: Bool) -> Expr {
+  lc_rename_hs_call(e, active, "HostStream::next", "__hs_next_option")
+}
+
+/// ADR-0089 Decision 3 follow-up (#1218): the CLOSE retarget, run as its own
+/// pass right after the read one. Separate passes rather than one walk with
+/// two name tests because shadowing is per-name: `let host_stream_next = ..`
+/// must not disable the close rewrite, and vice versa.
+fn lc_rename_hs_close_calls(e: Expr, active: Bool) -> Expr {
+  lc_rename_hs_call(lc_rename_hs_call(e, active, "host_stream_close", "__hs_close"), active, "HostStream::close", "__hs_close")
+}
+
+/// The close retarget, skipped entirely when the program never closes. The
+/// skip is not an optimisation: `__hs_close` is only injected under the same
+/// condition, so rewriting a call to it when it does not exist would produce
+/// an unresolved name instead of the precise compile_call diagnostic.
+export fn lc_rename_hs_maybe_close(enabled: Bool, e: Expr, active: Bool) -> Expr {
+  if enabled {
+    lc_rename_hs_close_calls(e, active)
+  } else {
+    e
+  }
+}
+
+/// Deep scan: does `e` contain a `handle ... with Async` (an EHandle with a
+/// qualified `Async::<Op>` arm pattern)? Increment 2's codegen key: such a
+/// handle discharges the builtin `Async` row at check time
+/// (checker_effects.vibe's EHandle arm), so the sleep->perform retarget
+/// must fire for these programs too or the user's handler would never see
+/// the operations it demonstrably handles.
+export fn lc_expr_has_async_handle(e: Expr) -> Bool {
+  match e {
+    EHandle(b, arms) => {
+      let mut hit = false
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (p, ab) = Array::get(arms, i)
+        match p {
+          PCtor(cname, _) => if String::starts_with(cname, "Async::") {
+            hit = true
+          } else {
+            ()
+          },
+          _ => ()
+        }
+        if lc_expr_has_async_handle(ab) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit || lc_expr_has_async_handle(b)
+    },
+    ELet(_, v, b, _) => lc_expr_has_async_handle(v) || lc_expr_has_async_handle(b),
+    ELetMut(_, v, b, _) => lc_expr_has_async_handle(v) || lc_expr_has_async_handle(b),
+    ELetRec(_, v, b) => lc_expr_has_async_handle(v) || lc_expr_has_async_handle(b),
+    ESeq(a, b) => lc_expr_has_async_handle(a) || lc_expr_has_async_handle(b),
+    EIf(c, t, el) => lc_expr_has_async_handle(c) || lc_expr_has_async_handle(t) || lc_expr_has_async_handle(el),
+    EMatch(s, arms) => {
+      let mut hit = lc_expr_has_async_handle(s)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, ab) = Array::get(arms, i)
+        if lc_expr_has_async_handle(ab) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    EFn(_, _, _, _, _, b) => lc_expr_has_async_handle(b),
+    EWhile(c, b) => lc_expr_has_async_handle(c) || lc_expr_has_async_handle(b),
+    EForIn(_, _, it, b) => lc_expr_has_async_handle(it) || lc_expr_has_async_handle(b),
+    ELoop(pairs, b) => {
+      let mut hit = lc_expr_has_async_handle(b)
+      let mut i = 0
+      while i < Array::length(pairs) {
+        let (_, pv) = Array::get(pairs, i)
+        if lc_expr_has_async_handle(pv) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    // Codex P2 on #1312: record/map fields and break/continue values are
+    // expression containers too -- a handler stored in a struct field must
+    // key the machinery, or the checker-accepted program silently keeps
+    // the blocking builtin.
+    ERecord(_, fields, _) => lc_pairs_have_async_handle(fields),
+    EMap(fields) => lc_pairs_have_async_handle(fields),
+    EBreak(opt) => match opt {
+      Some(a) => lc_expr_has_async_handle(a),
+      None => false
+    },
+    EContinue(args) => lc_exprs_have_async_handle(args),
+    ECall(callee, args, _) => {
+      let mut hit = lc_expr_has_async_handle(callee)
+      let mut i = 0
+      while i < Array::length(args) {
+        if lc_expr_has_async_handle(Array::get(args, i)) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    EBinOp(_, l, r, _) => lc_expr_has_async_handle(l) || lc_expr_has_async_handle(r),
+    EUnaryOp(_, a) => lc_expr_has_async_handle(a),
+    EAssign(_, v, b) => lc_expr_has_async_handle(v) || lc_expr_has_async_handle(b),
+    EAssignOp(_, _, v, b) => lc_expr_has_async_handle(v) || lc_expr_has_async_handle(b),
+    EReturn(a) => lc_expr_has_async_handle(a),
+    EDot(o, _, _, _) => lc_expr_has_async_handle(o),
+    ELabeledArg(_, _, v) => lc_expr_has_async_handle(v),
+    ETuple(items) => lc_exprs_have_async_handle(items),
+    EArray(items) => lc_exprs_have_async_handle(items),
+    ESpread(a) => lc_expr_has_async_handle(a),
+    _ => false
+  }
+}
+
+fn lc_exprs_have_async_handle(es: Array[Expr]) -> Bool {
+  let mut hit = false
+  let mut i = 0
+  while i < Array::length(es) {
+    if lc_expr_has_async_handle(Array::get(es, i)) {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+fn lc_pairs_have_async_handle(pairs: Array[(String, Expr)]) -> Bool {
+  let mut hit = false
+  let mut i = 0
+  while i < Array::length(pairs) {
+    let (_, v) = Array::get(pairs, i)
+    if lc_expr_has_async_handle(v) {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+/// Deep scan: which of `targets` does `e` call with the bare identifier as
+/// the callee? Shadow-BLIND on purpose -- this is only the cheap enablement
+/// key for the sleep / host-future machinery below (the retarget walk
+/// itself is shadow-aware), and a false positive merely enables machinery
+/// that then rewrites nothing.
+///
+/// #2386: ONE walk marks every `targets[k]` found in `e` (`hits[k] = true`;
+/// `hits` is never cleared, so one array accumulates across bodies). With
+/// `mentions = false` a name counts only in callee position -- the question
+/// `lc_expr_calls_name` answered, and `lc_inject_async_sleep_boundary` used
+/// to ask it eleven times per top-level body, one full walk per name; the
+/// traversal was the cost, not the compares (69 ms warm on the compiler
+/// closure, 98% of it self time in the walker). With `mentions = true` any
+/// identifier occurrence counts (`lc_stmts_mention_any`). The arms are
+/// exactly the ones the per-name predicate walked (every `Expr` variant;
+/// the leaves fall to `_`), so every single-target answer is unchanged, and
+/// the walk allocates nothing.
+export fn lc_mark_calls(e: Expr, targets: Array[String], hits: Array[Bool], mentions: Bool) -> Unit {
+  match e {
+    EIdent(nm, _) => if mentions {
+      lc_mark_call_name(nm, targets, hits)
+    } else {
+      ()
+    },
+    ECall(callee, args, _) => {
+      match callee {
+        EIdent(nm, _) => lc_mark_call_name(nm, targets, hits),
+        _ => lc_mark_calls(callee, targets, hits, mentions)
+      }
+      let mut i = 0
+      while i < Array::length(args) {
+        lc_mark_calls(Array::get(args, i), targets, hits, mentions)
+        i = i + 1
+      }
+    },
+    ELet(_, v, b, _) => {
+      lc_mark_calls(v, targets, hits, mentions)
+      lc_mark_calls(b, targets, hits, mentions)
+    },
+    ELetMut(_, v, b, _) => {
+      lc_mark_calls(v, targets, hits, mentions)
+      lc_mark_calls(b, targets, hits, mentions)
+    },
+    ELetRec(_, v, b) => {
+      lc_mark_calls(v, targets, hits, mentions)
+      lc_mark_calls(b, targets, hits, mentions)
+    },
+    ESeq(a, b) => {
+      lc_mark_calls(a, targets, hits, mentions)
+      lc_mark_calls(b, targets, hits, mentions)
+    },
+    EIf(c, t, el) => {
+      lc_mark_calls(c, targets, hits, mentions)
+      lc_mark_calls(t, targets, hits, mentions)
+      lc_mark_calls(el, targets, hits, mentions)
+    },
+    EMatch(s, arms) => {
+      lc_mark_calls(s, targets, hits, mentions)
+      lc_mark_calls_arms(arms, targets, hits, mentions)
+    },
+    EHandle(b, arms) => {
+      lc_mark_calls(b, targets, hits, mentions)
+      lc_mark_calls_arms(arms, targets, hits, mentions)
+    },
+    EFn(_, _, _, _, _, b) => lc_mark_calls(b, targets, hits, mentions),
+    EWhile(c, b) => {
+      lc_mark_calls(c, targets, hits, mentions)
+      lc_mark_calls(b, targets, hits, mentions)
+    },
+    EForIn(_, _, it, b) => {
+      lc_mark_calls(it, targets, hits, mentions)
+      lc_mark_calls(b, targets, hits, mentions)
+    },
+    ELoop(pairs, b) => {
+      lc_mark_calls(b, targets, hits, mentions)
+      lc_mark_calls_fields(pairs, targets, hits, mentions)
+    },
+    EBinOp(_, l, r, _) => {
+      lc_mark_calls(l, targets, hits, mentions)
+      lc_mark_calls(r, targets, hits, mentions)
+    },
+    EUnaryOp(_, a) => lc_mark_calls(a, targets, hits, mentions),
+    EAssign(_, v, b) => {
+      lc_mark_calls(v, targets, hits, mentions)
+      lc_mark_calls(b, targets, hits, mentions)
+    },
+    EAssignOp(_, _, v, b) => {
+      lc_mark_calls(v, targets, hits, mentions)
+      lc_mark_calls(b, targets, hits, mentions)
+    },
+    EReturn(a) => lc_mark_calls(a, targets, hits, mentions),
+    EDot(o, _, _, _) => lc_mark_calls(o, targets, hits, mentions),
+    ELabeledArg(_, _, v) => lc_mark_calls(v, targets, hits, mentions),
+    ETuple(items) => lc_mark_calls_exprs(items, targets, hits, mentions),
+    EArray(items) => lc_mark_calls_exprs(items, targets, hits, mentions),
+    // #1337 Codex review: these four containers were missing, so a call
+    // nested in a record/map literal or a break/continue argument was
+    // invisible to every key computed from this walk. Harmless for the
+    // sleep key (a miss only leaves the blocking builtin in place), but NOT
+    // for the host-future key, which must agree with
+    // lc_expr_collect_hf_names -- reserving a per-name import while the
+    // boundary machinery stays off leaves the await with nothing to settle
+    // it.
+    ERecord(_, fields, _) => lc_mark_calls_fields(fields, targets, hits, mentions),
+    EMap(fields) => lc_mark_calls_fields(fields, targets, hits, mentions),
+    EBreak(opt) => match opt {
+      Some(a) => lc_mark_calls(a, targets, hits, mentions),
+      None => ()
+    },
+    EContinue(args) => lc_mark_calls_exprs(args, targets, hits, mentions),
+    ESpread(a) => lc_mark_calls(a, targets, hits, mentions),
+    _ => ()
+  }
+}
+
+fn lc_mark_call_name(nm: String, targets: Array[String], hits: Array[Bool]) -> Unit {
+  let mut k = 0
+  while k < Array::length(targets) {
+    if nm == Array::get(targets, k) {
+      Array::set(hits, k, true)
+    } else {
+      ()
+    }
+    k = k + 1
+  }
+}
+
+fn lc_mark_calls_arms(arms: Array[(Pat, Expr)], targets: Array[String], hits: Array[Bool], mentions: Bool) -> Unit {
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (_, ab) = Array::get(arms, i)
+    lc_mark_calls(ab, targets, hits, mentions)
+    i = i + 1
+  }
+}
+
+fn lc_mark_calls_fields(fields: Array[(String, Expr)], targets: Array[String], hits: Array[Bool], mentions: Bool) -> Unit {
+  let mut i = 0
+  while i < Array::length(fields) {
+    let (_, fv) = Array::get(fields, i)
+    lc_mark_calls(fv, targets, hits, mentions)
+    i = i + 1
+  }
+}
+
+fn lc_mark_calls_exprs(es: Array[Expr], targets: Array[String], hits: Array[Bool], mentions: Bool) -> Unit {
+  let mut i = 0
+  while i < Array::length(es) {
+    lc_mark_calls(Array::get(es, i), targets, hits, mentions)
+    i = i + 1
+  }
+}
+
+/// ADR-0089 (c) (#1218): every component import name a `host_future_named`
+/// call in `e` asks for, appended to `out`.
+///
+/// Two properties this walk MUST have, both learned the hard way (Codex
+/// review on #1337):
+///
+///  - TOTAL over expression containers. A missed container is not a missed
+///    optimisation here: compile_call still lowers the nested call to
+///    `vibe_hf_get_raw$<name>`, but with no name collected there is no
+///    import and no func-table entry, so the program fails to compile
+///    (measured: `let r = record { p: host_future_named("price") }` gave
+///    `undefined variable (local): vibe_hf_get_raw$price`). Hence this
+///    mirrors lc_rename_sleep_calls -- the file's one traversal that is
+///    already total -- rather than the deliberately shadow-blind
+///    lc_mark_calls.
+///  - SHADOW-AWARE (`active`). A local named `host_future_named` makes the
+///    call an ordinary closure call that compile_call does not lower, so
+///    collecting its argument would reserve a component import the program
+///    never uses -- and an unused import is still one the host must
+///    satisfy. Same `active` discipline, and the same binder set, as
+///    lc_rename_sleep_calls.
+///
+/// A non-literal argument is left alone here and rejected with a precise
+/// message by compile_call's lowering, which is the one place that knows it
+/// is compiling that call.
+fn lc_expr_collect_hf_names(e: Expr, active: Bool, target: String, out: Array[String]) -> Unit {
+  match e {
+    ECall(callee, args, _) => {
+      match callee {
+        EIdent(nm, _) => if active && nm == target && Array::length(args) == (if target == "host_response_named_with" {
+          2
+        } else {
+          1
+        }) {
+          // #2066: a response rides the named-future list under a `!` marker
+          // (compile_call mints `vibe_hf_get_raw$!<address>` for it), and a
+          // response taking a string argument under `!?`.
+          match Array::get(args, 0) {
+            EString(s, _) => Array::push(out, if target == "host_response_named" {
+              String::concat("!", s)
+            } else if target == "host_response_named_with" {
+              String::concat("!?", s)
+            } else {
+              s
+            }),
+            _ => ()
+          }
+        } else {
+          ()
+        },
+        _ => lc_expr_collect_hf_names(callee, active, target, out)
+      }
+      lc_exprs_collect_hf_names(args, active, target, out)
+    },
+    ELet(x, v, b, _) => {
+      lc_expr_collect_hf_names(v, active, target, out)
+      lc_expr_collect_hf_names(b, active && x != target, target, out)
+    },
+    ELetMut(x, v, b, _) => {
+      lc_expr_collect_hf_names(v, active, target, out)
+      lc_expr_collect_hf_names(b, active && x != target, target, out)
+    },
+    ELetRec(x, v, b) => {
+      let inner = active && x != target
+      lc_expr_collect_hf_names(v, inner, target, out)
+      lc_expr_collect_hf_names(b, inner, target, out)
+    },
+    ESeq(a, b) => {
+      lc_expr_collect_hf_names(a, active, target, out)
+      lc_expr_collect_hf_names(b, active, target, out)
+    },
+    EIf(c, t, el) => {
+      lc_expr_collect_hf_names(c, active, target, out)
+      lc_expr_collect_hf_names(t, active, target, out)
+      lc_expr_collect_hf_names(el, active, target, out)
+    },
+    EMatch(s, arms) => {
+      lc_expr_collect_hf_names(s, active, target, out)
+      lc_arms_collect_hf_names(arms, active, target, out)
+    },
+    EHandle(b, arms) => {
+      lc_expr_collect_hf_names(b, active, target, out)
+      lc_arms_collect_hf_names(arms, active, target, out)
+    },
+    EFn(_, _, params, _, _, b) => {
+      let mut shadowed = false
+      let mut i = 0
+      while i < Array::length(params) {
+        let (pn, _) = Array::get(params, i)
+        if pn == target {
+          shadowed = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      lc_expr_collect_hf_names(b, active && !shadowed, target, out)
+    },
+    EWhile(c, b) => {
+      lc_expr_collect_hf_names(c, active, target, out)
+      lc_expr_collect_hf_names(b, active, target, out)
+    },
+    EForIn(x, _, it, b) => {
+      lc_expr_collect_hf_names(it, active, target, out)
+      lc_expr_collect_hf_names(b, active && x != target, target, out)
+    },
+    ELoop(pairs, b) => {
+      let mut inner = active
+      let mut i = 0
+      while i < Array::length(pairs) {
+        let (pn, pv) = Array::get(pairs, i)
+        if pn == target {
+          inner = false
+        } else {
+          ()
+        }
+        lc_expr_collect_hf_names(pv, active, target, out)
+        i = i + 1
+      }
+      lc_expr_collect_hf_names(b, inner, target, out)
+    },
+    EBinOp(_, l, r, _) => {
+      lc_expr_collect_hf_names(l, active, target, out)
+      lc_expr_collect_hf_names(r, active, target, out)
+    },
+    EUnaryOp(_, a) => lc_expr_collect_hf_names(a, active, target, out),
+    EAssign(_, v, b) => {
+      lc_expr_collect_hf_names(v, active, target, out)
+      lc_expr_collect_hf_names(b, active, target, out)
+    },
+    EAssignOp(_, _, v, b) => {
+      lc_expr_collect_hf_names(v, active, target, out)
+      lc_expr_collect_hf_names(b, active, target, out)
+    },
+    EReturn(a) => lc_expr_collect_hf_names(a, active, target, out),
+    EDot(o, _, _, _) => lc_expr_collect_hf_names(o, active, target, out),
+    ELabeledArg(_, _, v) => lc_expr_collect_hf_names(v, active, target, out),
+    EBreak(opt) => match opt {
+      Some(a) => lc_expr_collect_hf_names(a, active, target, out),
+      None => ()
+    },
+    EContinue(args) => lc_exprs_collect_hf_names(args, active, target, out),
+    ETuple(items) => lc_exprs_collect_hf_names(items, active, target, out),
+    EArray(items) => lc_exprs_collect_hf_names(items, active, target, out),
+    ERecord(_, fields, _) => lc_fields_collect_hf_names(fields, active, target, out),
+    EMap(fields) => lc_fields_collect_hf_names(fields, active, target, out),
+    ESpread(a) => lc_expr_collect_hf_names(a, active, target, out),
+    _ => ()
+  }
+}
+
+fn lc_exprs_collect_hf_names(es: Array[Expr], active: Bool, target: String, out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(es) {
+    lc_expr_collect_hf_names(Array::get(es, i), active, target, out)
+    i = i + 1
+  }
+}
+
+fn lc_fields_collect_hf_names(fields: Array[(String, Expr)], active: Bool, target: String, out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(fields) {
+    let (_, fv) = Array::get(fields, i)
+    lc_expr_collect_hf_names(fv, active, target, out)
+    i = i + 1
+  }
+}
+
+fn lc_arms_collect_hf_names(arms: Array[(Pat, Expr)], active: Bool, target: String, out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (ap, ab) = Array::get(arms, i)
+    lc_expr_collect_hf_names(ab, active && !lc_pat_binds_name(ap, target), target, out)
+    i = i + 1
+  }
+}
+
+/// Codex P2 on #1339: does the program define a TOP-LEVEL binding with this
+/// name? compile_call's prefer-bound rule routes calls to such a definition
+/// instead of the builtin lowering, so the import collectors below must not
+/// mint component imports from them (an unused `vibe.host_*` import would
+/// force an unrelated program into the host-future/stream composition).
+/// LOCAL bindings that shadow the name stay shadow-blind here -- the
+/// documented hf-collector tradeoff: compile_call resolves those correctly
+/// and the worst case is an unused import, never a wrong call target.
+export fn lc_program_defines_top_level(stmts: Array[Stmt], name: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, nm, _, _) => if nm == name {
+        found = true
+      } else {
+        ()
+      },
+      SLetMut(nm, _, _) => if nm == name {
+        found = true
+      } else {
+        ()
+      },
+      // A top-level destructuring binds the name too (Codex on #3059).
+      SLetPat(p, _) => if lc_pat_binds_name(p, name) {
+        found = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// ADR-0089 (c) (#1218): the program's named host futures, deduplicated and
+/// SORTED. The order decides core import indices and the composer's
+/// component import order, so it must depend only on the name SET -- not on
+/// where in the program each call happens to sit (which would make the same
+/// program compile to different bytes after an unrelated reorder).
+///
+/// `host_future_named` and `host_response_named` are collected in separate
+/// walks, each shadow-aware for its OWN name: a program's own
+/// `host_response_named` must not mint a response import while its
+/// `host_future_named` calls still do (Codex on #3059).
+export fn lc_collect_host_future_names(stmts: Array[Stmt]) -> Array[String] {
+  let raw = array_empty()
+  if lc_program_defines_top_level(stmts, "host_future_named") {
+    ()
+  } else {
+    lc_collect_host_future_names_go(stmts, "host_future_named", raw)
+  }
+  if lc_program_defines_top_level(stmts, "host_response_named") {
+    ()
+  } else {
+    lc_collect_host_future_names_go(stmts, "host_response_named", raw)
+  }
+  if lc_program_defines_top_level(stmts, "host_response_named_with") {
+    ()
+  } else {
+    lc_collect_host_future_names_go(stmts, "host_response_named_with", raw)
+  }
+  lc_sorted_unique_names(raw)
+}
+
+fn lc_collect_host_future_names_go(stmts: Array[Stmt], target: String, raw: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, v) => lc_expr_collect_hf_names(v, true, target, raw),
+      SLetMut(_, _, v) => lc_expr_collect_hf_names(v, true, target, raw),
+      SExpr(v) => lc_expr_collect_hf_names(v, true, target, raw),
+      STest(_, v) => lc_expr_collect_hf_names(v, true, target, raw),
+      SBench(_, v) => lc_expr_collect_hf_names(v, true, target, raw),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+fn lc_sorted_unique_names(raw: Array[String]) -> Array[String] {
+  let sorted = sorted_names_of(raw)
+  let out = array_empty()
+  let mut k = 0
+  while k < Array::length(sorted) {
+    let nm = Array::get(sorted, k)
+    if k == 0 || Array::get(sorted, k - 1) != nm {
+      Array::push(out, nm)
+    } else {
+      ()
+    }
+    k = k + 1
+  }
+  out
+}
+
+/// ADR-0089 Decision 3 (#1218): base of the reserved STREAM band in the
+/// `Async::Suspend` payload convention. Existing bands: negative = sleep
+/// debt, 0 = cooperative yield, 1 = poll wait, [2, 1025] = host-FUTURE
+/// waitable (handle + 2; the composer's adapter caps handles at 1023).
+/// A stream read parks with `handle + lc_hs_req_base()`, so the stream
+/// band is [2048, 3071] -- disjoint from the future band by construction,
+/// not by runtime discipline.
+export fn lc_hs_req_base() -> Int {
+  2048
+}
+
+/// ADR-0089 Decision 3 (#1218): every component import name a
+/// `host_stream_named` call in `e` asks for, appended to `out`. The stream
+/// sibling of lc_expr_collect_hf_names, with the SAME two hard
+/// requirements that walk documents (#1337/#1339 Codex reviews): TOTAL
+/// over expression containers (a missed container is a missing import and
+/// a compile failure, not a missed optimisation) and SHADOW-AWARE
+/// (`active` goes false under any binder named `host_stream_named` --
+/// compile_call routes those calls to the binding, so collecting their
+/// argument would mint an import the program never uses). A non-literal
+/// argument is left alone here and rejected with a precise message by
+/// compile_call's lowering.
+fn lc_expr_collect_hs_names(e: Expr, active: Bool, out: Array[String]) -> Unit {
+  match e {
+    ECall(callee, args, _) => {
+      match callee {
+        EIdent(nm, _) => if active && nm == "host_stream_named" && Array::length(args) == 1 {
+          match Array::get(args, 0) {
+            EString(s, _) => Array::push(out, s),
+            _ => ()
+          }
+        } else {
+          ()
+        },
+        _ => lc_expr_collect_hs_names(callee, active, out)
+      }
+      lc_exprs_collect_hs_names(args, active, out)
+    },
+    ELet(x, v, b, _) => {
+      lc_expr_collect_hs_names(v, active, out)
+      lc_expr_collect_hs_names(b, active && x != "host_stream_named", out)
+    },
+    ELetMut(x, v, b, _) => {
+      lc_expr_collect_hs_names(v, active, out)
+      lc_expr_collect_hs_names(b, active && x != "host_stream_named", out)
+    },
+    ELetRec(x, v, b) => {
+      let inner = active && x != "host_stream_named"
+      lc_expr_collect_hs_names(v, inner, out)
+      lc_expr_collect_hs_names(b, inner, out)
+    },
+    ESeq(a, b) => {
+      lc_expr_collect_hs_names(a, active, out)
+      lc_expr_collect_hs_names(b, active, out)
+    },
+    EIf(c, t, el) => {
+      lc_expr_collect_hs_names(c, active, out)
+      lc_expr_collect_hs_names(t, active, out)
+      lc_expr_collect_hs_names(el, active, out)
+    },
+    EMatch(s, arms) => {
+      lc_expr_collect_hs_names(s, active, out)
+      lc_arms_collect_hs_names(arms, active, out)
+    },
+    EHandle(b, arms) => {
+      lc_expr_collect_hs_names(b, active, out)
+      lc_arms_collect_hs_names(arms, active, out)
+    },
+    EFn(_, _, params, _, _, b) => {
+      let mut shadowed = false
+      let mut i = 0
+      while i < Array::length(params) {
+        let (pn, _) = Array::get(params, i)
+        if pn == "host_stream_named" {
+          shadowed = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      lc_expr_collect_hs_names(b, active && !shadowed, out)
+    },
+    EWhile(c, b) => {
+      lc_expr_collect_hs_names(c, active, out)
+      lc_expr_collect_hs_names(b, active, out)
+    },
+    EForIn(x, _, it, b) => {
+      lc_expr_collect_hs_names(it, active, out)
+      lc_expr_collect_hs_names(b, active && x != "host_stream_named", out)
+    },
+    ELoop(pairs, b) => {
+      let mut inner = active
+      let mut i = 0
+      while i < Array::length(pairs) {
+        let (pn, pv) = Array::get(pairs, i)
+        if pn == "host_stream_named" {
+          inner = false
+        } else {
+          ()
+        }
+        lc_expr_collect_hs_names(pv, active, out)
+        i = i + 1
+      }
+      lc_expr_collect_hs_names(b, inner, out)
+    },
+    EBinOp(_, l, r, _) => {
+      lc_expr_collect_hs_names(l, active, out)
+      lc_expr_collect_hs_names(r, active, out)
+    },
+    EUnaryOp(_, a) => lc_expr_collect_hs_names(a, active, out),
+    EAssign(_, v, b) => {
+      lc_expr_collect_hs_names(v, active, out)
+      lc_expr_collect_hs_names(b, active, out)
+    },
+    EAssignOp(_, _, v, b) => {
+      lc_expr_collect_hs_names(v, active, out)
+      lc_expr_collect_hs_names(b, active, out)
+    },
+    EReturn(a) => lc_expr_collect_hs_names(a, active, out),
+    EDot(o, _, _, _) => lc_expr_collect_hs_names(o, active, out),
+    ELabeledArg(_, _, v) => lc_expr_collect_hs_names(v, active, out),
+    EBreak(opt) => match opt {
+      Some(a) => lc_expr_collect_hs_names(a, active, out),
+      None => ()
+    },
+    EContinue(args) => lc_exprs_collect_hs_names(args, active, out),
+    ETuple(items) => lc_exprs_collect_hs_names(items, active, out),
+    EArray(items) => lc_exprs_collect_hs_names(items, active, out),
+    ERecord(_, fields, _) => lc_fields_collect_hs_names(fields, active, out),
+    EMap(fields) => lc_fields_collect_hs_names(fields, active, out),
+    ESpread(a) => lc_expr_collect_hs_names(a, active, out),
+    _ => ()
+  }
+}
+
+fn lc_exprs_collect_hs_names(es: Array[Expr], active: Bool, out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(es) {
+    lc_expr_collect_hs_names(Array::get(es, i), active, out)
+    i = i + 1
+  }
+}
+
+fn lc_fields_collect_hs_names(fields: Array[(String, Expr)], active: Bool, out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(fields) {
+    let (_, fv) = Array::get(fields, i)
+    lc_expr_collect_hs_names(fv, active, out)
+    i = i + 1
+  }
+}
+
+fn lc_arms_collect_hs_names(arms: Array[(Pat, Expr)], active: Bool, out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (ap, ab) = Array::get(arms, i)
+    lc_expr_collect_hs_names(ab, active && !lc_pat_binds_name(ap, "host_stream_named"), out)
+    i = i + 1
+  }
+}
+
+/// ADR-0089 Decision 3 (#1218): the program's named host streams,
+/// deduplicated and SORTED -- same order discipline as
+/// lc_collect_host_future_names (core import indices and the composer's
+/// component import order depend only on the name SET), same top-level
+/// shadow guard (Codex P2 on #1339).
+export fn lc_collect_host_stream_names(stmts: Array[Stmt]) -> Array[String] {
+  if lc_program_defines_top_level(stmts, "host_stream_named") {
+    array_empty()
+  } else {
+    lc_collect_host_stream_names_go(stmts)
+  }
+}
+
+fn lc_collect_host_stream_names_go(stmts: Array[Stmt]) -> Array[String] {
+  let raw = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, v) => lc_expr_collect_hs_names(v, true, raw),
+      SLetMut(_, _, v) => lc_expr_collect_hs_names(v, true, raw),
+      SExpr(v) => lc_expr_collect_hs_names(v, true, raw),
+      STest(_, v) => lc_expr_collect_hs_names(v, true, raw),
+      SBench(_, v) => lc_expr_collect_hs_names(v, true, raw),
+      _ => ()
+    }
+    i = i + 1
+  }
+  let sorted = sorted_names_of(raw)
+  let out = array_empty()
+  let mut k = 0
+  while k < Array::length(sorted) {
+    let nm = Array::get(sorted, k)
+    if k == 0 || Array::get(sorted, k - 1) != nm {
+      Array::push(out, nm)
+    } else {
+      ()
+    }
+    k = k + 1
+  }
+  out
+}
+
+/// Program-level host-future key (ADR-0089 step 4, #1218), for the passes that
+/// need the key BEFORE lc_inject_async_sleep_boundary's own scan runs
+/// (await_poll_pass selects the waitable-aware __aw_poll form with it).
+export fn lc_stmts_call_host_future(stmts: Array[Stmt]) -> Bool {
+  // #2386: the names in one walk per statement (lc_mark_calls); ADR-0089
+  // (c): `host_future_named` fires the same machinery as `host_future_get`,
+  // and so does a WIT response (#2066) -- its future is the same cell.
+  let hf_targets: Array[String] = [
+    "host_future_get",
+    "host_future_named",
+    "host_response_named",
+    "host_response_named_with"
+  ]
+  let hf_hits: Array[Bool] = [false, false, false, false]
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, v) => lc_mark_calls(v, hf_targets, hf_hits, false),
+      SLetMut(_, _, v) => lc_mark_calls(v, hf_targets, hf_hits, false),
+      SExpr(v) => lc_mark_calls(v, hf_targets, hf_hits, false),
+      STest(_, v) => lc_mark_calls(v, hf_targets, hf_hits, false),
+      SBench(_, v) => lc_mark_calls(v, hf_targets, hf_hits, false),
+      _ => ()
+    }
+    i = i + 1
+  }
+  Array::get(hf_hits, 0) || Array::get(hf_hits, 1) || Array::get(hf_hits, 2) || Array::get(hf_hits, 3)
+}
+
+/// #3150 / #3189 review: does a host-stream READ survive in `stmts`? Asked
+/// after the reachability prune, which keeps every definition the source
+/// wrote and drops each GENERATED one that nothing kept still calls -- the
+/// injected read path among them, once `fold_const_bool_params` has removed
+/// the arm that held the only read.
+///
+/// The answer comes from a call edge, not from the readers' names. Every read
+/// goes through the injected finisher `__hs_fin`: the injected `__hs_next` and
+/// `__hs_next_option` call it, and so does each step clone the suspend
+/// lowering makes of them, because a clone is a transformed copy of that
+/// body. Nothing else calls it, and no program can define it: the checker
+/// reserves the `__hs_` prefix for top-level definitions
+/// (`collect_reserved_value_prefix_errors`). So the finisher survives the
+/// prune exactly when a read does.
+///
+/// Recognizing the reads by their spelling could not be made sound, because
+/// both a source name and a generated one can carry that spelling:
+/// - Counting only `__hs_next` / `__hs_next_option` under-counts: a read on a
+///   CPS spine calls the clone, and the prune then drops the original. That
+///   was #3150, where the hooks kept their stubs and every such read answered
+///   0.
+/// - Adding the clones by the suffix `___hs_next` over-counts. A source
+///   `fn __scps_cps_Async_helper___hs_next` matches it, and so does the clone
+///   the lowering makes of a source Async helper named `helper___hs_next`.
+///   Either one kept the hooks armed after the real read was folded away, and
+///   the build was refused ("host_stream_cancel without a host stream").
+export fn lc_program_keeps_stream_read(stmts: Array[Stmt]) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(stmts) && !found {
+    match Array::get(stmts, i) {
+      SLet(_, _, nm, _, _) => if nm == "__hs_fin" {
+        found = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// #3189 review: the entry boundary's settle keeps its STREAM band only while
+/// a read survives (lc_program_keeps_stream_read). The prelude gave
+/// `__entry_settle` the band because a read was written; once the prune has
+/// removed every read, no stream payload can reach the band, and its
+/// `vibe_hs_read_raw` call alone still imported `host_stream_read` -- which
+/// the composer cannot satisfy without a host stream (measured: a component
+/// that failed validation, "module instantiation argument `vibe` does not
+/// export an item named `host_stream_read`").
+export fn lc_settle_drop_stream_band(stmts: Array[Stmt]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(e, r, name, t, EFn(tps, tbs, params, ret, eff, body)) => if name == "__entry_settle" {
+        Array::set(stmts, i, SLet(e, r, name, t, EFn(tps, tbs, params, ret, eff, lc_drop_stream_band(body))))
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+/// The band is the `if` whose taken arm is the stream read (the settle body
+/// built in lc_inject_async_sleep_boundary); it is replaced by its else arm.
+/// A let-spine or sequence a later pass wrapped around it is walked; anything
+/// else is left as it is.
+fn lc_drop_stream_band(e: Expr) -> Expr {
+  match e {
+    EIf(c, t, el) => if lc_is_stream_read_call(t) {
+      el
+    } else {
+      EIf(c, lc_drop_stream_band(t), lc_drop_stream_band(el))
+    },
+    ELet(n, v, b, off) => ELet(n, v, lc_drop_stream_band(b), off),
+    ESeq(a, b) => ESeq(a, lc_drop_stream_band(b)),
+    _ => e
+  }
+}
+
+fn lc_is_stream_read_call(e: Expr) -> Bool {
+  match e {
+    ECall(EIdent(nm, _), _, _) => nm == "vibe_hs_read_raw",
+    _ => false
+  }
+}
+
+/// True when `target` appears as a binder or identifier reference. The
+/// retarget's synthetic target must avoid both: a duplicate top-level binding
+/// changes an existing definition, while a nested binding captures the newly
+/// rewritten call. This deliberately walks every expression shape, rather
+/// than treating the `__sn_next` spelling as a private namespace.
+fn lc_pat_mentions_name(p: Pat, target: String) -> Bool {
+  match p {
+    PBind(n) => n == target,
+    PCtor(_, ps) => lc_pats_bind_name(ps, target),
+    PTuple(ps) => lc_pats_bind_name(ps, target),
+    POr(a, b) => lc_pat_mentions_name(a, target) || lc_pat_mentions_name(b, target),
+    PStruct(_, fields) => {
+      let mut i = 0
+      let mut hit = false
+      while i < Array::length(fields) {
+        let (_, fp) = Array::get(fields, i)
+        if lc_pat_mentions_name(fp, target) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    _ => false
+  }
+}
+
+fn lc_expr_mentions_name(e: Expr, target: String) -> Bool {
+  match e {
+    EIdent(n, _) => n == target,
+    EFn(_, _, params, _, _, b) => {
+      let mut hit = lc_expr_mentions_name(b, target)
+      let mut i = 0
+      while i < Array::length(params) {
+        let (pn, _) = Array::get(params, i)
+        if pn == target {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    ELet(n, v, b, _) => n == target || lc_expr_mentions_name(v, target) || lc_expr_mentions_name(b, target),
+    ELetMut(n, v, b, _) => n == target || lc_expr_mentions_name(v, target) || lc_expr_mentions_name(b, target),
+    ELetRec(n, v, b) => n == target || lc_expr_mentions_name(v, target) || lc_expr_mentions_name(b, target),
+    ESeq(a, b) => lc_expr_mentions_name(a, target) || lc_expr_mentions_name(b, target),
+    EIf(c, t, el) => lc_expr_mentions_name(c, target) || lc_expr_mentions_name(t, target) || lc_expr_mentions_name(el, target),
+    EMatch(s, arms) => lc_expr_mentions_name(s, target) || lc_arms_mention_name(arms, target),
+    EHandle(b, arms) => lc_expr_mentions_name(b, target) || lc_arms_mention_name(arms, target),
+    EWhile(c, b) => lc_expr_mentions_name(c, target) || lc_expr_mentions_name(b, target),
+    EForIn(n, ix, it, b) => n == target || lc_option_name_equals(ix, target) || lc_expr_mentions_name(it, target) || lc_expr_mentions_name(b, target),
+    ELoop(pairs, b) => lc_pairs_mention_name(pairs, target) || lc_expr_mentions_name(b, target),
+    EAssign(n, v, b) => n == target || lc_expr_mentions_name(v, target) || lc_expr_mentions_name(b, target),
+    EAssignOp(n, _, v, b) => n == target || lc_expr_mentions_name(v, target) || lc_expr_mentions_name(b, target),
+    EReturn(a) => lc_expr_mentions_name(a, target),
+    EDot(o, _, _, _) => lc_expr_mentions_name(o, target),
+    ECall(callee, args, _) => lc_expr_mentions_name(callee, target) || lc_exprs_mention_name(args, target),
+    EBinOp(_, l, r, _) => lc_expr_mentions_name(l, target) || lc_expr_mentions_name(r, target),
+    EUnaryOp(_, a) => lc_expr_mentions_name(a, target),
+    ELabeledArg(_, _, v) => lc_expr_mentions_name(v, target),
+    EBreak(opt) => match opt {
+      Some(a) => lc_expr_mentions_name(a, target),
+      None => false
+    },
+    EContinue(args) => lc_exprs_mention_name(args, target),
+    ETuple(items) => lc_exprs_mention_name(items, target),
+    EArray(items) => lc_exprs_mention_name(items, target),
+    ERecord(_, fields, _) => lc_fields_mention_name(fields, target),
+    EMap(fields) => lc_fields_mention_name(fields, target),
+    ESpread(a) => lc_expr_mentions_name(a, target),
+    _ => false
+  }
+}
+
+fn lc_exprs_mention_name(es: Array[Expr], target: String) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(es) {
+    if lc_expr_mentions_name(Array::get(es, i), target) {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+fn lc_arms_mention_name(arms: Array[(Pat, Expr)], target: String) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(arms) {
+    let (p, b) = Array::get(arms, i)
+    if lc_pat_mentions_name(p, target) || lc_expr_mentions_name(b, target) {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+fn lc_pairs_mention_name(pairs: Array[(String, Expr)], target: String) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(pairs) {
+    let (n, v) = Array::get(pairs, i)
+    if n == target || lc_expr_mentions_name(v, target) {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+fn lc_fields_mention_name(fields: Array[(String, Expr)], target: String) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(fields) {
+    let (_, v) = Array::get(fields, i)
+    if lc_expr_mentions_name(v, target) {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+fn lc_option_name_equals(opt: Option[String], target: String) -> Bool {
+  match opt {
+    Some(n) => n == target,
+    None => false
+  }
+}
+
+/// ADR-0089 (#1218, resolve -> direct wake): can this program call the
+/// @vibe/concurrent direct-wake await hooks? Both names must be callable
+/// -- as linked imports (the auto-want in linked_artifacts registers them
+/// whenever the entry imports anything from a file exporting them) or as
+/// local top-level defs (single-file fixtures). Requiring the PAIR keeps
+/// the failure mode one-sided: a notify without registrations is a no-op,
+/// while a registration without any notify channel would lean on the
+/// pump's fallback valve every round.
+/// `name` is the hook `base`, as declared or under the export namespace a
+/// linked package's definitions carry (`<base>_exp_<path>`).
+/// Is `name` @vibe/concurrent's export `base`, as the merge spells it
+/// (`<base>_exp_<sanitized path>`)? The sanitized path must END at the
+/// package's own implementation file, so an unrelated function that merely
+/// starts with the hook's name (`__conc_host_arm_exp_helper`) is never
+/// rewritten (Codex on #3059). That file is
+/// `@vibe/concurrent/experimental/concurrent.vibe`: the stable
+/// `@vibe/concurrent` only re-exports it.
+export fn lc_is_hook_name(name: String, base: String) -> Bool {
+  String::starts_with(name, String::concat(base, "_exp_")) && String::ends_with(name, "_vibe_concurrent_experimental_concurrent_vibe")
+}
+
+/// #1537: give @vibe/concurrent's host-waitable hooks the component
+/// adapter's bodies. The library ships them meaning "no host waitables"
+/// (`__conc_host_arm` answers -1, so a task parks as a poller); a program
+/// whose entry boundary settles host futures gets `vibe_hf_arm_raw` /
+/// `vibe_hf_wait_any_raw` / `vibe_hf_wait_raw` instead, so only such a
+/// program imports them.
+export fn lc_host_hooks_install(stmts: Array[Stmt], hf_machinery: Bool, hs_machinery: Bool) -> Unit {
+  // #3131: a take or a cancel frees a WIT result slot; the slot reclaim
+  // (lc_ws_track_inject) is told through `__ws_freed` when it is injected.
+  let ws_freed = hf_machinery && lc_program_defines_top_level(stmts, "__ws_freed")
+  if hf_machinery || hs_machinery {
+    let mut i = 0
+    while i < Array::length(stmts) {
+      match Array::get(stmts, i) {
+        SLet(e, r, name, t, EFn(tps, tbs, params, ret, eff, _)) => {
+          let param = if Array::length(params) > 0 {
+            EIdent(Array::get(params, 0).0, -1)
+          } else {
+            EInt(0)
+          }
+          let replaced = if lc_is_hook_name(name, "__conc_host_arm") {
+            Some(lc_host_hook_dispatch(param, hf_machinery, hs_machinery, "vibe_hf_arm_raw", "vibe_hs_arm_raw"))
+          } else if lc_is_hook_name(name, "__conc_host_wait_any") {
+            Some(ECall(EIdent("vibe_hf_wait_any_raw", -1), lc_fresh_expr_array(), -1))
+          } else if lc_is_hook_name(name, "__conc_host_sleep_arm") {
+            Some(ECall(EIdent("vibe_hf_sleep_arm_raw", -1), [param], -1))
+          } else if lc_is_hook_name(name, "__conc_host_sleep_cancel") {
+            Some(ECall(EIdent("vibe_hf_sleep_cancel_raw", -1), [param], -1))
+          } else if lc_is_hook_name(name, "__conc_host_cancel") {
+            Some(lc_host_cancel_body(param, hf_machinery, hs_machinery, ws_freed))
+          } else if lc_is_hook_name(name, "__conc_host_take") {
+            Some(lc_host_hook_dispatch_freeing(param, hf_machinery, hs_machinery, "vibe_hf_wait_raw", "vibe_hs_read_raw", ws_freed))
+          } else {
+            None
+          }
+          match replaced {
+            Some(body) => Array::set(stmts, i, SLet(e, r, name, t, EFn(tps, tbs, params, ret, eff, body))),
+            None => ()
+          }
+        },
+        _ => ()
+      }
+      i = i + 1
+    }
+  } else {
+    ()
+  }
+}
+
+/// A hook body over a suspend PAYLOAD: the stream band (handle +
+/// lc_hs_req_base()) goes to `stream_fn`, the future band (handle + 2) to
+/// `future_fn`. Only the halves this program has are named, so a program
+/// without host streams never references the stream imports, and vice versa.
+fn lc_host_hook_dispatch(payload: Expr, hf_machinery: Bool, hs_machinery: Bool, future_fn: String, stream_fn: String) -> Expr {
+  let future_call = ECall(EIdent(future_fn, -1), [
+    EBinOp("-", payload, EInt(2), -1)
+  ], -1)
+  let stream_call = ECall(EIdent(stream_fn, -1), [
+    EBinOp("-", payload, EInt(lc_hs_req_base()), -1)
+  ], -1)
+  if hf_machinery && hs_machinery {
+    EIf(EBinOp("<", EInt(lc_hs_req_base() - 1), payload, -1), stream_call, future_call)
+  } else if hs_machinery {
+    stream_call
+  } else {
+    future_call
+  }
+}
+
+/// #3164: `track(room, getter(..))`, where `room` makes room in the WIT slot
+/// table (`__ws_room`) when the getter takes a slot -- a WIT response, or a
+/// named future whose name is a WIT address (it has a `#`, the test the import
+/// emission uses) -- and is `0` otherwise. Arguments are evaluated left to
+/// right, so the room is made just before the getter runs. A getter with an
+/// argument of its own (the response request's string) makes room through
+/// that LAST argument instead (`__ws_room_arg`): evaluated first, the room
+/// could be spent by a WIT call inside the argument before this getter took
+/// it.
+fn lc_ws_tracked_getter(track: String, callee: Expr, args: Array[Expr], off: Int) -> Expr {
+  let nm = match callee {
+    EIdent(n, _) => n,
+    _ => ""
+  }
+  let wit_address = Array::length(args) > 0 && match Array::get(args, 0) {
+    EString(s, _) => String::index_of(s, "#") > 0,
+    _ => false
+  }
+  let takes_slot = nm == "host_response_named" || nm == "host_response_named_with" || (nm == "host_future_named" && wit_address)
+  let n = Array::length(args)
+  if takes_slot && nm == "host_response_named_with" && n == 2 {
+    let args2 = Array::slice(args, 0, n)
+    Array::set(args2, 1, ECall(EIdent("__ws_room_arg", -1), [
+      Array::get(args, 1)
+    ], -1))
+    ECall(EIdent(track, -1), [EInt(0), ECall(callee, args2, off)], off)
+  } else if takes_slot {
+    ECall(EIdent(track, -1), [
+      ECall(EIdent("__ws_room", -1), lc_fresh_expr_array(), -1),
+      ECall(callee, args, off)
+    ], off)
+  } else {
+    ECall(EIdent(track, -1), [EInt(0), ECall(callee, args, off)], off)
+  }
+}
+
+/// The adapter's WIT slot handle base and slot count
+/// (component_codegen's comp_ws_handle_base / comp_ws_max_slot + 1).
+export fn lc_ws_handle_base() -> Int {
+  1024
+}
+
+export fn lc_ws_slot_count() -> Int {
+  512
+}
+
+/// #1537: `__conc_host_cancel`'s body. A future's read is cancelled and its
+/// handle released (`vibe_hf_cancel_raw`), and so is a stream's
+/// (`vibe_hs_cancel_raw`): a host stream cannot be captured by another task,
+/// so the cancelled task was its only reader.
+fn lc_host_cancel_body(payload: Expr, hf_machinery: Bool, hs_machinery: Bool, ws_freed: Bool) -> Expr {
+  lc_host_hook_dispatch_freeing(payload, hf_machinery, hs_machinery, "vibe_hf_cancel_raw", "vibe_hs_cancel_raw", ws_freed)
+}
+
+/// lc_host_hook_dispatch for a hook that FREES the future it names (a take or
+/// a cancel): with `ws_freed`, the future half reports the freed WIT slot as
+/// `__ws_freed(payload, <call>)`.
+fn lc_host_hook_dispatch_freeing(payload: Expr, hf_machinery: Bool, hs_machinery: Bool, future_fn: String, stream_fn: String, ws_freed: Bool) -> Expr {
+  if ws_freed {
+    let future_call = ECall(EIdent("__ws_freed", -1), [
+      payload,
+      ECall(EIdent(future_fn, -1), [EBinOp("-", payload, EInt(2), -1)], -1)
+    ], -1)
+    if hs_machinery {
+      let stream_call = ECall(EIdent(stream_fn, -1), [
+        EBinOp("-", payload, EInt(lc_hs_req_base()), -1)
+      ], -1)
+      EIf(EBinOp("<", EInt(lc_hs_req_base() - 1), payload, -1), stream_call, future_call)
+    } else {
+      future_call
+    }
+  } else {
+    lc_host_hook_dispatch(payload, hf_machinery, hs_machinery, future_fn, stream_fn)
+  }
+}
+
+/// Codex P1 on #1312: the SCOPED sleep retarget for programs whose entry
+/// row does NOT carry Async (so no boundary handler is installed). A
+/// program-wide rewrite there is unsound: a `handle ... with Async`
+/// anywhere enabled it, and a sleep in a function never driven by that
+/// handler (e.g. an Async-row `fn delay` called from a row-free main)
+/// became a perform NOTHING handles -- where the builtin used to block
+/// correctly. This walker rewrites only the positions whose performs are
+/// guaranteed a handler:
+///
+///   - the lexical BODY of a `handle ... with Async` (the handler itself),
+///   - the body of an Async-ROW closure LITERAL (Vertical B step-splits
+///     those, and their steps bubble to whichever handler drives them --
+///     spawn_suspend's task bodies are exactly this shape).
+///
+/// Everything else keeps the blocking builtin, i.e. exactly the
+/// pre-ADR-0089-D1 behavior. Under an Async-row entry the caller uses the
+/// full walk instead: the injected boundary makes program-wide rewriting
+/// sound there.
+export fn lc_rename_sleep_scoped(e: Expr) -> Expr {
+  match e {
+    EHandle(b, arms) => {
+      let mut is_async_handle = false
+      let out: Array[(Pat, Expr)] = array_empty()
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (p, ab) = Array::get(arms, i)
+        match p {
+          PCtor(cname, _) => if String::starts_with(cname, "Async::") {
+            is_async_handle = true
+          } else {
+            ()
+          },
+          _ => ()
+        }
+        Array::push(out, (p, lc_rename_sleep_scoped(ab)))
+        i = i + 1
+      }
+      if is_async_handle {
+        EHandle(lc_rename_sleep_calls(b, true), out)
+      } else {
+        EHandle(lc_rename_sleep_scoped(b), out)
+      }
+    },
+    EFn(tps, tbs, params, ret, eff, b) => if lc_row_has_label(eff, "Async") {
+      EFn(tps, tbs, params, ret, eff, lc_rename_sleep_calls(b, true))
+    } else {
+      EFn(tps, tbs, params, ret, eff, lc_rename_sleep_scoped(b))
+    },
+    ELet(x, v, b, off) => ELet(x, lc_rename_sleep_scoped(v), lc_rename_sleep_scoped(b), off),
+    ELetMut(x, v, b, off) => ELetMut(x, lc_rename_sleep_scoped(v), lc_rename_sleep_scoped(b), off),
+    ELetRec(x, v, b) => ELetRec(x, lc_rename_sleep_scoped(v), lc_rename_sleep_scoped(b)),
+    ESeq(a, b) => ESeq(lc_rename_sleep_scoped(a), lc_rename_sleep_scoped(b)),
+    EIf(c, t, el) => EIf(lc_rename_sleep_scoped(c), lc_rename_sleep_scoped(t), lc_rename_sleep_scoped(el)),
+    EMatch(s, arms) => {
+      let out: Array[(Pat, Expr)] = array_empty()
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (mp, mb) = Array::get(arms, i)
+        Array::push(out, (mp, lc_rename_sleep_scoped(mb)))
+        i = i + 1
+      }
+      EMatch(lc_rename_sleep_scoped(s), out)
+    },
+    EWhile(c, b) => EWhile(lc_rename_sleep_scoped(c), lc_rename_sleep_scoped(b)),
+    EForIn(x, ix, it, b) => EForIn(x, ix, lc_rename_sleep_scoped(it), lc_rename_sleep_scoped(b)),
+    ELoop(pairs, b) => {
+      let out: Array[(String, Expr)] = array_empty()
+      let mut i = 0
+      while i < Array::length(pairs) {
+        let (pn, pv) = Array::get(pairs, i)
+        Array::push(out, (pn, lc_rename_sleep_scoped(pv)))
+        i = i + 1
+      }
+      ELoop(out, lc_rename_sleep_scoped(b))
+    },
+    ECall(callee, args, off) => {
+      let out = lc_fresh_expr_array()
+      let mut i = 0
+      while i < Array::length(args) {
+        Array::push(out, lc_rename_sleep_scoped(Array::get(args, i)))
+        i = i + 1
+      }
+      ECall(lc_rename_sleep_scoped(callee), out, off)
+    },
+    EBinOp(op, l, r, boff) => EBinOp(op, lc_rename_sleep_scoped(l), lc_rename_sleep_scoped(r), boff),
+    EUnaryOp(op, a) => EUnaryOp(op, lc_rename_sleep_scoped(a)),
+    EAssign(x, v, b) => EAssign(x, lc_rename_sleep_scoped(v), lc_rename_sleep_scoped(b)),
+    EAssignOp(n, op, v, b) => EAssignOp(n, op, lc_rename_sleep_scoped(v), lc_rename_sleep_scoped(b)),
+    EReturn(a) => EReturn(lc_rename_sleep_scoped(a)),
+    EDot(o, f, m, off) => EDot(lc_rename_sleep_scoped(o), f, m, off),
+    ELabeledArg(l, s, v) => ELabeledArg(l, s, lc_rename_sleep_scoped(v)),
+    EBreak(opt) => match opt {
+      Some(a) => EBreak(Some(lc_rename_sleep_scoped(a))),
+      None => e
+    },
+    EContinue(args) => {
+      let out = lc_fresh_expr_array()
+      let mut i = 0
+      while i < Array::length(args) {
+        Array::push(out, lc_rename_sleep_scoped(Array::get(args, i)))
+        i = i + 1
+      }
+      EContinue(out)
+    },
+    ETuple(items) => {
+      let out = lc_fresh_expr_array()
+      let mut i = 0
+      while i < Array::length(items) {
+        Array::push(out, lc_rename_sleep_scoped(Array::get(items, i)))
+        i = i + 1
+      }
+      ETuple(out)
+    },
+    EArray(items) => {
+      let out = lc_fresh_expr_array()
+      let mut i = 0
+      while i < Array::length(items) {
+        Array::push(out, lc_rename_sleep_scoped(Array::get(items, i)))
+        i = i + 1
+      }
+      EArray(out)
+    },
+    ERecord(nm, fields, off) => {
+      let out: Array[(String, Expr)] = array_empty()
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (fn2, fv) = Array::get(fields, i)
+        Array::push(out, (fn2, lc_rename_sleep_scoped(fv)))
+        i = i + 1
+      }
+      ERecord(nm, out, off)
+    },
+    EMap(fields) => {
+      let out: Array[(String, Expr)] = array_empty()
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (fk, fv) = Array::get(fields, i)
+        Array::push(out, (fk, lc_rename_sleep_scoped(fv)))
+        i = i + 1
+      }
+      EMap(out)
+    },
+    ESpread(a) => ESpread(lc_rename_sleep_scoped(a)),
+    _ => e
+  }
+}
+
+/// The arm set `wrap_entry_exception_boundary` installs: exactly one arm, on
+/// `Exception::Throw`.
+export fn lc_is_exception_boundary_arms(arms: Array[(Pat, Expr)]) -> Bool {
+  if Array::length(arms) != 1 {
+    false
+  } else {
+    match Array::get(arms, 0).0 {
+      PCtor(name, _) => name == "Exception::Throw",
+      _ => false
+    }
+  }
+}
+
+export fn lc_expr_has_spawn_suspend(e: Expr) -> Bool {
+  match e {
+    ECall(EIdent(name, _), args, _) => {
+      if name == "TaskGroup::spawn_suspend" || name == "spawn_suspend" {
+        true
+      } else {
+        lc_exprs_have_spawn_suspend(args)
+      }
+    },
+    // #3182: the function taken as a value (`let sp =
+    // TaskGroup::spawn_suspend`) spawns wherever the alias is called. No local
+    // binder can spell a qualified name, so this one is the library's.
+    EIdent(name, _) => name == "TaskGroup::spawn_suspend",
+    ECall(callee, args, _) => lc_expr_has_spawn_suspend(callee) || lc_exprs_have_spawn_suspend(args),
+    ELet(_, value, body, _) => lc_expr_has_spawn_suspend(value) || lc_expr_has_spawn_suspend(body),
+    ELetMut(_, value, body, _) => lc_expr_has_spawn_suspend(value) || lc_expr_has_spawn_suspend(body),
+    ELetRec(_, value, body) => lc_expr_has_spawn_suspend(value) || lc_expr_has_spawn_suspend(body),
+    ESeq(a, b) => lc_expr_has_spawn_suspend(a) || lc_expr_has_spawn_suspend(b),
+    EIf(c, t, el) => lc_expr_has_spawn_suspend(c) || lc_expr_has_spawn_suspend(t) || lc_expr_has_spawn_suspend(el),
+    EFn(_, _, _, _, _, body) => lc_expr_has_spawn_suspend(body),
+    // #1342: the arms below were missing, which made the guard depend on WHERE
+    // the call sits rather than whether it is there. Measured: `let h =
+    // TaskGroup::spawn_suspend(..)` was found and rejected, while
+    // `TaskGroup::spawn_suspend(..) + n` -- the same program, the call moved
+    // into an operand -- compiled. A partial walk is the worst shape for a
+    // guard: it reads as "this is checked" while answering a narrower question.
+    EBinOp(_, l, r, _) => lc_expr_has_spawn_suspend(l) || lc_expr_has_spawn_suspend(r),
+    EUnaryOp(_, a) => lc_expr_has_spawn_suspend(a),
+    EAssign(_, v, b) => lc_expr_has_spawn_suspend(v) || lc_expr_has_spawn_suspend(b),
+    EAssignOp(_, _, v, b) => lc_expr_has_spawn_suspend(v) || lc_expr_has_spawn_suspend(b),
+    EWhile(c, b) => lc_expr_has_spawn_suspend(c) || lc_expr_has_spawn_suspend(b),
+    EForIn(_, _, it, b) => lc_expr_has_spawn_suspend(it) || lc_expr_has_spawn_suspend(b),
+    ELoop(pairs, b) => lc_pairs_have_spawn_suspend(pairs) || lc_expr_has_spawn_suspend(b),
+    EMatch(sc, arms) => lc_expr_has_spawn_suspend(sc) || lc_arms_have_spawn_suspend(arms),
+    EHandle(b, arms) => lc_expr_has_spawn_suspend(b) || lc_arms_have_spawn_suspend(arms),
+    EReturn(a) => lc_expr_has_spawn_suspend(a),
+    EBreak(opt) => match opt {
+      Some(a) => lc_expr_has_spawn_suspend(a),
+      None => false
+    },
+    EContinue(args) => lc_exprs_have_spawn_suspend(args),
+    ETuple(items) => lc_exprs_have_spawn_suspend(items),
+    EArray(items) => lc_exprs_have_spawn_suspend(items),
+    ERecord(_, fields, _) => lc_pairs_have_spawn_suspend(fields),
+    EMap(fields) => lc_pairs_have_spawn_suspend(fields),
+    ESpread(a) => lc_expr_has_spawn_suspend(a),
+    EDot(o, _, _, _) => lc_expr_has_spawn_suspend(o),
+    ELabeledArg(_, _, v) => lc_expr_has_spawn_suspend(v),
+    _ => false
+  }
+}
+
+fn lc_pairs_have_spawn_suspend(pairs: Array[(String, Expr)]) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(pairs) {
+    let (_, v) = Array::get(pairs, i)
+    if lc_expr_has_spawn_suspend(v) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn lc_arms_have_spawn_suspend(arms: Array[(Pat, Expr)]) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (_, b) = Array::get(arms, i)
+    if lc_expr_has_spawn_suspend(b) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn lc_exprs_have_spawn_suspend(es: Array[Expr]) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(es) {
+    if lc_expr_has_spawn_suspend(Array::get(es, i)) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// #1540 scope 3: which function the Async boundary wraps.
+///
+/// Normally that is `entry_name`. The component lanes compile with the
+/// `__no_entry__` sentinel, though -- a component's surface is its EXPORT, not
+/// an entry -- so nothing ever matched and the boundary could not be built at
+/// all: a serve handler that reads a host stream failed with "requires an
+/// Async-row entry" no matter how it was written.
+///
+/// When there is no entry, the boundary is the exported Async function, and
+/// only when there is EXACTLY ONE. Two of them have no single boundary, and
+/// picking one silently would wrap the wrong function's suspends -- so that
+/// case keeps the old behaviour (no boundary, and the same loud error) rather
+/// than guess.
+export fn lc_resolve_boundary_name(stmts: Array[Stmt], entry_name: String) -> String {
+  if lc_defines_top_level(stmts, entry_name) {
+    entry_name
+  } else {
+    let mut found = ""
+    let mut count = 0
+    let mut i = 0
+    while i < Array::length(stmts) {
+      match Array::get(stmts, i) {
+        SLet(exported, _, name, _, EFn(_, _, _, _, eff, _)) => if exported && lc_row_has_label(eff, "Async") {
+          found = name
+          count = count + 1
+        } else {
+          ()
+        },
+        _ => ()
+      }
+      i = i + 1
+    }
+    if count == 1 {
+      found
+    } else {
+      entry_name
+    }
+  }
+}
+
+/// #1540 scope 3: rebind each `HostStream` PARAMETER to the state-3 cell the
+/// read path expects.
+///
+/// A host stream reaches vibe code as `[3, handle]` -- state 3 plus the
+/// readable end's handle -- which `host_stream_named` builds in codegen. A
+/// parameter arrives as the bare handle instead, since that is what the
+/// component ABI hands over, so `host_stream_next(body)` would read state and
+/// handle out of an integer.
+///
+/// The fix is local: shadow the parameter with the cell at the top of the
+/// body, so everything below sees the same shape a named stream produces. This
+/// runs inside the codegen-side lowering prelude, after typechecking, which is
+/// why the cell can be an ordinary array literal here.
+export fn lc_wrap_host_stream_params(params: Array[(String, Option[TypeExpr])], body: Expr) -> Expr {
+  let mut out = body
+  let mut i = Array::length(params)
+  while i > 0 {
+    i = i - 1
+    let (pname, pty) = Array::get(params, i)
+    match pty {
+      Some(TyName("HostStream")) => {
+        out = ELet(pname, EArray([EInt(3), EIdent(pname, -1)]), out, -1)
+      },
+      _ => ()
+    }
+  }
+  out
+}
+
+fn lc_type_is_named(ty: TypeExpr, expected: String) -> Bool {
+  match ty {
+    TyName(name) => name == expected,
+    _ => false
+  }
+}
+
+fn lc_serve_stream_signature(param_types: Array[TypeExpr], ret: TypeExpr, eff: Option[String]) -> Bool {
+  Array::length(param_types) == 4 && lc_type_is_named(Array::get(param_types, 0), "String") && lc_type_is_named(Array::get(param_types, 1), "String") && lc_type_is_named(Array::get(param_types, 2), "String") && lc_type_is_named(Array::get(param_types, 3), "HostStream") && lc_type_is_named(ret, "String") && match eff {
+    Some(row) => lc_row_has_label(Some(row), "Async"),
+    None => false
+  }
+}
+
+/// Mirror `vibe serve`'s signature-selected stream lane. The CLI names the
+/// exported `handler` directly after validation; it does not ask the generic
+/// `__no_entry__` Async-boundary resolver, which may be ambiguous when the
+/// file exports another Async helper. Conversely an ordinary explicit entry
+/// with a HostStream parameter is not a serve adapter boundary.
+export fn lc_serve_handler_takes_host_stream(stmts: Array[Stmt], entry_name: String) -> Bool {
+  if entry_name != "__no_entry__" {
+    return false
+  }
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(exported, _, "handler", ann, body) => if exported {
+        match ann {
+          Some(TyFn(param_types, ret, eff)) => {
+            found = lc_serve_stream_signature(param_types, ret, eff)
+          },
+          Some(_) => (),
+          None => match body {
+            EFn(_, _, params, ret_opt, eff, _) => {
+              let param_types = array_empty()
+              let mut complete = true
+              let mut pi = 0
+              while pi < Array::length(params) {
+                let (_, pty) = Array::get(params, pi)
+                match pty {
+                  Some(ty) => Array::push(param_types, ty),
+                  None => {
+                    complete = false
+                  }
+                }
+                pi = pi + 1
+              }
+              match ret_opt {
+                Some(ret) => if complete {
+                  found = lc_serve_stream_signature(param_types, ret, eff)
+                } else {
+                  ()
+                },
+                None => ()
+              }
+            },
+            _ => ()
+          }
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}

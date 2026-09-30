@@ -56,6 +56,7 @@ fi
 # --- the mutation -----------------------------------------------------------
 MUT="$WORK/wasm_vibe_host_runner.js"
 cp scripts/wasm_vibe_host_runner.js "$MUT"
+cp scripts/wasm_vibe_host_runtime.js "$WORK/wasm_vibe_host_runtime.js"
 python3 - "$MUT" <<'PY'
 import sys
 p = sys.argv[1]

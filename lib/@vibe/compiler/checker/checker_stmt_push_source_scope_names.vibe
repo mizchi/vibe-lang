@@ -1,0 +1,1310 @@
+// lib/@vibe/compiler/checker/checker_stmt.vibe — push source scope names.
+
+import ./checker_trait.vibe {
+  bound_entails_send
+}
+
+import @vibe/core {
+  array_empty, struct MutMap
+}
+
+import @vibe/compiler/checker/diagnostics {
+  off_marker
+}
+
+import ./checker_effects.vibe {
+  check_async_effects_stmts
+}
+
+import ./checker_pattern.vibe {
+  check_qualified_pattern_refs
+}
+
+import ./builtins.vibe {
+  lookup_builtin
+}
+
+import ./checker_spawnable.vibe {
+  closure_bare_callee_names
+}
+
+import @vibe/compiler/core {
+  Expr,
+  ImportItem,
+  ImportKind,
+  Pat,
+  Stmt,
+  Subst,
+  Type,
+  TypeDef,
+  TypeEnv,
+  TypeExpr,
+  compiler_owned_type_arity,
+  env_flat_bindings,
+  env_lookup_flat,
+  expr_children,
+  find_typedef,
+  has_standard_effect_policy,
+  is_singleton_resource_kind,
+  lookup_registry_builtin,
+  predeclared_resources,
+  reject_user_iterator_serialized_boundaries,
+  resolve_builtin
+}
+
+import ./checker.vibe {
+  TypedOccurrenceRoleLaneCapture
+}
+
+import @vibe/ast {
+  impl_target_key
+}
+
+import ./checked_expression_structure_core.vibe {
+  checked_expression_structure_rows
+}
+
+import ./checker_resolve.vibe {
+  resolve_type_expr
+}
+
+import @vibe/compiler/normalize {
+  collect_trait_namespace_conflict_errors
+}
+
+import @vibe/parser {
+  BinderAuthorityNode, LocatedProgramBinderAuthority, SourceBinder
+}
+
+import ./checker_stmt_labeled_name_check_expr.vibe {
+  string_array_contains_exact
+}
+
+/// Validate a parsed raw-source API input before any checker or lowering pass
+/// can interpret compiler-only source-boundary metadata as trusted provenance.
+export fn validate_user_source_stmts(stmts: Array[Stmt]) -> Unit with Exception {
+  reject_user_iterator_serialized_boundaries(stmts)
+}
+
+/// The names an aggregate `export { .. }` lists, in source order.
+///
+/// Unlike the interface identity's value-name list this is the RAW `SExport` list and
+/// nothing else -- no re-exports, no declaration-exported names, no sort. It
+/// answers one question: which declarations does this module publish WITHOUT
+/// carrying `export` on the declaration itself.
+export fn aggregate_export_names(stmts: Array[Stmt]) -> Array[String] {
+  let names = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SExport(items) => {
+        let mut j = 0
+        while j < Array::length(items) {
+          Array::push(names, Array::get(items, j))
+          j = j + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  names
+}
+
+/// The interface identity pushes every name an `SExport` lists,
+/// whatever namespace it belongs to, and the identity then demands a
+/// flat binding for each -- so a name with none threw on a program that checks
+/// clean without the trace (#2744).
+///
+/// Measured 2026-09-13, one probe module per kind against a stage1 built from
+/// the head, with the invalidation trace on. Almost every kind already carries
+/// a flat binding and so takes the `value:` row: a private struct, a private
+/// enum, a private type alias, a builtin declaration (`export { Option }`, the
+/// shape `lib/@vibe/builtin/option.vibe` opens with), an IMPORTED trait
+/// republished by name, and a re-export (`export ./dep.vibe { Trait }`) all
+/// observed clean. Exactly three kinds have none, all of them declared
+/// LOCALLY: a trait, an effect and an effectset. A name this module does not
+/// declare at all keeps throwing, which is the fail-closed answer.
+///
+/// So the classification is syntactic -- the module's own statements -- rather
+/// than a second environment query. The three throwing kinds are precisely the
+/// ones a local declaration identifies, and reading the statements cannot
+/// disagree with an environment it never consults.
+///
+/// The row records MEMBERSHIP in the export surface, not the declaration's
+/// content: an aggregate export is the one thing that moves the published
+/// surface without touching any declaration's own text (adding
+/// `export { Marker }` to a private `trait Marker` publishes its impls --
+/// measured: a consumer's `[T: Marker]` bound is satisfied only with it). The
+/// content is already carried, for a private declaration too, by the witness
+/// set's `include_private` row -- which ALSO moves for this exact edit, pinned
+/// as `aggregate-export=moved` in `trait_witness_set_fingerprint_test.vibe`.
+/// So the row is not what makes such an edit invalidate. It is what keeps this
+/// identity a faithful description of the export surface, and what tells this
+/// fix apart from a silent skip.
+export fn export_local_nonvalue_kind(stmts: Array[Stmt], name: String) -> Option[String] {
+  let mut i = 0
+  let mut found = None
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      STrait(_, decl_name, _, _, _, _) => if decl_name == name {
+        found = Some("trait")
+      } else {
+        ()
+      },
+      SEffectDef(_, decl_name, _, _) => if decl_name == name {
+        found = Some("effect")
+      } else {
+        ()
+      },
+      SEffectSet(_, decl_name, _) => if decl_name == name {
+        found = Some("effectset")
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// #2762: which compiler-provided names a module may republish with an
+/// aggregate `export { }`.
+///
+/// Moved here from typecheck_fs.vibe, where it was private (Codex P1 round 3
+/// on #2806). It is the predicate
+/// `checked_module_public_env_with_reexport_declarations` uses to mint
+/// publication authority for a name no module declares, so it is ALSO the
+/// exact set such an export may name: publish anything outside it and the
+/// published environment simply omits the name, leaving the export the silent
+/// no-op #2762 exists to remove. The checker is where both callers can reach
+/// it -- `runtime` depends on `checker`, and `core/types.vibe` cannot host it
+/// because `core/builtin_registry.vibe` imports types, so the edge would be a
+/// cycle.
+export fn is_explicit_builtin_declaration(name: String) -> Bool {
+  if String::index_of(name, "::") > 0 {
+    // A QUALIFIED name needs the MEMBER to exist -- the qualifier being a
+    // builtin type, or being `Option` / `Random`, is not enough (#2762 rounds
+    // 4 and 5, Codex). Before this, `resolve_builtin(qualifier)` and the
+    // `Option` / `Random` arms each returned true for ANY member spelling, and
+    // because publication mints its `CtUnknown` marker from this same
+    // predicate a consumer could then import a member nothing defines:
+    // measured on pristine main at f8d0b24, `export { String::NotARealBuiltin }`
+    // was accepted and `import ./dep.vibe { String::NotARealBuiltin }`
+    // SUCCEEDED. Pre-existing, inherited by the refusal rather than introduced
+    // by it.
+    //
+    // Which oracle knows is measured, not assumed (B / R / P are
+    // `lookup_builtin` / `lookup_registry_builtin` / `has_standard_effect_policy`):
+    //
+    // | name | B | R | P |
+    // |---|---|---|---|
+    // | `Fs::read_file`, `Env::get`, `Console::write_stream` | yes | yes | yes |
+    // | `Array::get`, `Map::get`, `String::contains`, `Int::clz` | yes | yes | no |
+    // | `Int::to_string`, `String::unicode_length` | yes | NO | no |
+    // | `String::NotARealBuiltin`, `Option::NotReal`, `Array::NotReal` | no | no | no |
+    //
+    // So the registry alone would refuse `Int::to_string`, which
+    // `lib/@vibe/builtin/int.vibe` really does publish -- the first attempt at
+    // this clause did exactly that.
+    //
+    // `Option::map` and its siblings answer on NO oracle and are still fine:
+    // they are ordinary `export fn Option::map` DECLARATIONS in
+    // `lib/@vibe/builtin/option.vibe`, so they resolve through the module's own
+    // binding and never reach this predicate. Round 4 of the review kept the
+    // `Option` arm on the opposite belief -- that tightening it would refuse a
+    // real member -- which was simply wrong, and round 5 found the hole it left.
+    lookup_builtin(name) != None || lookup_registry_builtin(name) != None || has_standard_effect_policy(name)
+  } else if name == "Option" || name == "Random" {
+    // The bare TYPES keep their special case: `lib/@vibe/builtin/option.vibe`
+    // opens with `export { Option }`, and neither name is in `resolve_builtin`.
+    true
+  } else match resolve_builtin(name) {
+    Some(_) => true,
+    None => if has_standard_effect_policy(name) {
+      true
+    } else match lookup_registry_builtin(name) {
+      Some(_) => true,
+      None => false
+    }
+  }
+}
+
+/// #2762: does this module resolve `name`, as something its export surface can
+/// publish?
+///
+/// The two halves are the two places a publishable name can live, measured
+/// 2026-09-15 one probe module per kind against a stage2 built from the head,
+/// with the invalidation trace on -- all ten observed clean:
+///
+/// | `export { X }` where X is | resolves via |
+/// |---|---|
+/// | a private `struct` / `enum` / `type` alias | flat binding |
+/// | a private `let` / `fn` | flat binding |
+/// | a builtin (`export { Option }`, the shape `lib/@vibe/builtin/option.vibe` opens with) | flat binding |
+/// | an imported value, or an imported trait republished by name | flat binding |
+/// | a LOCAL `trait` / `effect` / `effectset` | `export_local_nonvalue_kind` |
+///
+/// A name that is none of the three is nothing at all, which is the case #2762
+/// refuses.
+///
+/// THE THIRD CLAUSE is about WHICH env the caller has, not about a third kind
+/// of declaration. The table above was measured against the PUBLISHED env,
+/// where a compiler-provided name does carry a flat binding -- that is what
+/// `prepend_explicit_builtin_value_markers` and the `EnvTypeDefs` transport
+/// node exist for. The FLAT single-source lanes have no publication, so they
+/// pass the RAW checked env, where `Option` has no binding at all: measured on
+/// the first attempt at the flat-lane fix, `fixtures/typecheck/
+/// export_aggregate_builtin_ok.vibe` -- the shape
+/// `lib/@vibe/builtin/option.vibe` opens with -- was REFUSED, while it compiled
+/// on every FS lane. The green fixture caught it before it shipped, which is
+/// what that fixture is for.
+///
+/// The clause asks `is_explicit_builtin_declaration` -- the SAME predicate
+/// publication uses to mint authority for a name no module declares -- and not
+/// a broader set of builtin oracles. Round 3 of Codex's review on #2806 caught
+/// the difference: the first attempt asked `compiler_owned_type_arity`,
+/// `resolve_builtin` and `lookup_builtin`, and the first of those is WIDER than
+/// publication. Measured, `export { StringMap }` was then ACCEPTED while a
+/// consumer writing `import ./dep.vibe { StringMap }` still got
+/// `imported name 'StringMap' is not exported by './dep.vibe'` -- the silent
+/// no-op #2762 exists to remove, preserved for exactly the container builtins.
+///
+/// One predicate, both callers, so the refusal and publication cannot disagree
+/// about what a module can publish. Measured over the tree: `Option` is the
+/// only compiler-provided name any module aggregate-exports
+/// (`lib/@vibe/builtin/option.vibe`), and it is named explicitly there.
+export fn export_name_resolves(stmts: Array[Stmt], bindings: Array[(String, Type)], name: String) -> Bool {
+  env_lookup_flat(bindings, name) != None || export_local_nonvalue_kind(stmts, name) != None || is_explicit_builtin_declaration(name)
+}
+
+/// #2762: the first name an aggregate `export { .. }` publishes that this
+/// module neither declares nor imports, or `None`.
+///
+/// The RAW `SExport` list and nothing else. A bogus RE-export
+/// (`export ./dep.vibe { NoSuchThing }`) is already refused, by the import
+/// resolution the FS loader performs -- measured, it reports
+/// `imported name 'NoSuchThing' is not exported by './dep.vibe'` against the
+/// re-exporting module, which is the right module and the right message.
+/// Widening this to every published value name would re-report that case under
+/// an `export { }` message it did not come from.
+///
+/// First name, not all of them: the caller throws, and the checker reports one
+/// type error at a time. Source order, so which one it is does not depend on
+/// the environment.
+///
+/// THE CORPUS, which #2762 left unmeasured because a regex scan could not
+/// answer it. Measured 2026-09-15 with the compiler's own name resolution, by
+/// running this refusal over the tree: 74 files carry an aggregate
+/// `export { }`, and exactly ONE named something the module does not have --
+/// `lib/@vibe/compiler/compiler.vibe`, whose list still carried `version` from
+/// the era when that file declared `export let version: String = "0.0.1"`. It
+/// is a no-op, measured on main before the fix: deleting the row leaves
+/// `import @vibe/compiler { version }` resolving exactly as before, because the
+/// facade synthesizes that binding from the `.vpkg` header's `version`
+/// directive (#1054) rather than from the export list -- which is why
+/// `contract_effective_decls` drops a legacy bodyless `let version: String`
+/// too. The row was deleted with this fix.
+export fn unresolved_aggregate_export_name(stmts: Array[Stmt], env: TypeEnv) -> Option[String] {
+  unresolved_aggregate_export_name_excluding(stmts, env, array_empty())
+}
+
+/// #2762 (Codex P1 round 3 on #2806): the same question, with `synthesized`
+/// naming bindings a LOWERING introduced rather than the author.
+///
+/// The gc lane runs `lower_test_blocks_gc` before its check -- deliberately,
+/// so a `handle` written inside a test block stays eligible for the ADR-0076
+/// direct-perform lowering -- and that pass REPLACES each `test "probe"` with
+/// a private `SLet("__test_probe", ..)`. The checked env therefore binds a
+/// name the source never declared, and `export { __test_probe }` looked
+/// resolved: measured, the gc lane ACCEPTED it while the FS lane refused it,
+/// which is the lane disagreement this issue is about.
+///
+/// The excluded set is the list `lower_test_blocks_gc` itself built while
+/// rewriting, threaded out and back in -- not a `__test_` prefix test. A
+/// spelling rule would be a second text that has to keep agreeing with that
+/// pass, and it would refuse a user's own `fn __test_probe`, which is a real
+/// declaration and which the test below pins as still accepted (the prefix is
+/// not reserved: only `__vibe_` and `__hs_` are, per
+/// `collect_reserved_value_prefix_errors`).
+export fn unresolved_aggregate_export_name_excluding(stmts: Array[Stmt], env: TypeEnv, synthesized: Array[String]) -> Option[String] {
+  let bindings = env_flat_bindings(env)
+  let names = aggregate_export_names(stmts)
+  let mut i = 0
+  let mut found = None
+  while i < Array::length(names) {
+    let name = Array::get(names, i)
+    // A synthesized name is REPORTED, not skipped: the whole point is that the
+    // env binds it while the source does not declare it, so it must not be
+    // allowed to answer for the export. Written as a skip on the first
+    // attempt, which made the gc lane accept `export { __test_probe }` again --
+    // the test below caught it.
+    if found == None && (string_array_contains_exact(synthesized, name) || !export_name_resolves(stmts, bindings, name)) {
+      found = Some(name)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// #2762: the refusal's text. The EDIT leads (CLAUDE.md), the reason follows
+/// the `;`, and `name` is bare rather than backquoted so
+/// `locate_type_error_heuristic` can carry a `line L:col C:` prefix.
+///
+/// That prefix is the same FIRST-OCCURRENCE heuristic every other marker in
+/// that ladder uses, with the same exposure: a comment or a string literal
+/// mentioning the name earlier in the file claims the position (measured -- the
+/// refusal fixture's own header did exactly that until its prose was
+/// reworded). `SExport(Array[String])` carries no offset, so there is no exact
+/// span to prefer; this is not an approximation of one the AST could have
+/// given. What the condition DOES guarantee is that no *declaration* of the
+/// name can be sitting in front of the export, because the message is emitted
+/// only when the module has none.
+export fn unresolved_export_message(name: String) -> String {
+  String::concat("declare or import ", String::concat(name, " in this module, or remove it from the `export { }` list; the export publishes a name this module does not have, so a consumer importing it fails at its own import"))
+}
+
+/// #2762 (Codex P1 round 2 on #2806): the FLAT single-source lane's door.
+///
+/// The refusal first lived in the FS worker lane, then moved to publication --
+/// which covered the FS lanes and the in-memory TypeDb walk, but not the flat
+/// single-source compile (`compile_source_wasi*`, `compile_source_gc_only`,
+/// `compile_source_wasi_only`). Those never publish an export surface, because
+/// they have no consumer to publish to: measured on the branch with the
+/// publication fix in place, `export { NotDeclaredAnywhere }` still COMPILED
+/// there while `vibe check`, `vibe test` (linear and gc) and `vibe run` all
+/// refused it. `cli_adapter.vibe` states the rule this breaks in its own words:
+/// "a build that accepts what the check rejects is the same 'two verbs, two
+/// answers' defect #1567 fixed ... and it is worse here because the accepting
+/// verb is the one that ships" (ADR-0068).
+///
+/// Called only for USER source -- the same gate `validate_user_source_stmts`
+/// sits behind -- because a compiler-GENERATED statement graph is merged and
+/// renamed, and its export list is not the user's text.
+export fn validate_user_source_exports(stmts: Array[Stmt], env: TypeEnv) -> Unit with Exception {
+  validate_user_source_exports_excluding(stmts, env, array_empty())
+}
+
+/// #2762: the gc lane's door, which must discount the bindings its own
+/// test-block lowering introduced -- see
+/// `unresolved_aggregate_export_name_excluding`.
+export fn validate_user_source_exports_excluding(stmts: Array[Stmt], env: TypeEnv, synthesized: Array[String]) -> Unit with Exception {
+  match unresolved_aggregate_export_name_excluding(stmts, env, synthesized) {
+    Some(name) => throw(unresolved_export_message(name)),
+    None => ()
+  }
+}
+
+/// #2808: the names a `let`-pattern binding introduces. `PCtor`'s head is a
+/// reference to a constructor, not a binding, so only `PBind` contributes.
+fn push_pat_bound_names(p: Pat, out: Array[String]) -> Unit {
+  match p {
+    PBind(name) => Array::push(out, name),
+    PCtor(_, args) => {
+      let mut i = 0
+      while i < Array::length(args) {
+        push_pat_bound_names(Array::get(args, i), out)
+        i = i + 1
+      }
+    },
+    PTuple(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        push_pat_bound_names(Array::get(items, i), out)
+        i = i + 1
+      }
+    },
+    POr(a, b) => {
+      push_pat_bound_names(a, out)
+      push_pat_bound_names(b, out)
+    },
+    PStruct(_, fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, field_pat) = Array::get(fields, i)
+        push_pat_bound_names(field_pat, out)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+/// An import item binds its ALIAS when it has one. Both are pushed anyway:
+/// the set is a superset on purpose, and a file that writes
+/// `import ./dep.vibe { foo as bar }` and then `export { foo }` is a
+/// different mistake from the one this predicate reports -- publication, which
+/// has the real environment, is where it belongs.
+fn push_import_item_scope_names(items: Array[ImportItem], out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(items) {
+    let item = Array::get(items, i)
+    Array::push(out, item.name)
+    match item.alias {
+      Some(alias) => Array::push(out, alias),
+      None => ()
+    }
+    i = i + 1
+  }
+}
+
+/// #2808: every name ONE user source file puts in its own scope, as that
+/// file's own statements spell it.
+///
+/// The env-based predicates above cannot answer for the FILE-BASED merged
+/// entries. `compile_file_wasi_only`, `compile_file_wasi_library` and
+/// `compile_file_wasi_linked_artifacts` flatten a whole import closure into
+/// ONE statement array and call `check_program` once, so there is no
+/// per-module environment to ask; and by then declarations have been
+/// namespace-renamed while each `SExport` keeps its written spelling, so
+/// asking the merged array would refuse every legitimate aggregate export --
+/// the same reason #2806 gates its own validation on "user source, not a
+/// generated statement graph".
+///
+/// So this reads the file's TEXT instead: every name a declaration
+/// introduces, plus every name an import item lands in scope under. It is
+/// deliberately a SUPERSET of what the module can actually publish -- an
+/// enum's variants, a trait's methods, an effect's operations, BOTH halves of
+/// an alias and both an import item's written name and its alias are all
+/// counted, and `SModule` bodies are walked -- because a syntactic answer and
+/// the env's answer must not be able to disagree in the direction that
+/// refuses working code. What it is exact about is the one case #2808 is: a
+/// name that appears NOWHERE in the file.
+///
+/// Measured 2026-09-18 over the tree, one ingest + parse per file: 1320 files
+/// under `lib/`, and the predicate refuses NONE of them. The compiler's own
+/// closure is the same answer from the other direction --
+/// `merged_program_source_fs("lib/@vibe/compiler/cli_adapter.vibe")`, the
+/// flatten `scripts/generate_bundle.sh` performs, still produces its 10.0 MB
+/// of merged source with this hook in the collector.
+fn push_source_scope_names(stmts: Array[Stmt], out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, _) => Array::push(out, name),
+      SLetMut(name, _, _) => Array::push(out, name),
+      SLetPat(pat, _) => push_pat_bound_names(pat, out),
+      SEnum(_, name, _, variants, _) => {
+        Array::push(out, name)
+        let mut j = 0
+        while j < Array::length(variants) {
+          let (variant_name, _) = Array::get(variants, j)
+          Array::push(out, variant_name)
+          j = j + 1
+        }
+      },
+      SSuberror(_, name, variants) => {
+        Array::push(out, name)
+        let mut j = 0
+        while j < Array::length(variants) {
+          let (variant_name, _) = Array::get(variants, j)
+          Array::push(out, variant_name)
+          j = j + 1
+        }
+      },
+      SStruct(_, name, _, _, _, _) => Array::push(out, name),
+      STypeAlias(_, name, _, _) => Array::push(out, name),
+      STrait(_, name, _, methods, _, _) => {
+        Array::push(out, name)
+        let mut j = 0
+        while j < Array::length(methods) {
+          let (method_name, _, _) = Array::get(methods, j)
+          Array::push(out, method_name)
+          j = j + 1
+        }
+      },
+      SEffectDef(_, name, _, ops) => {
+        Array::push(out, name)
+        let mut j = 0
+        while j < Array::length(ops) {
+          let (op_name, _, _) = Array::get(ops, j)
+          Array::push(out, op_name)
+          j = j + 1
+        }
+      },
+      SEffectSet(_, name, _) => Array::push(out, name),
+      SExternLet(name, _) => Array::push(out, name),
+      SFnDecl(_, name, _, _, _) => Array::push(out, name),
+      SAliasDecl(local, target) => {
+        Array::push(out, local)
+        Array::push(out, target)
+      },
+      SResource(local, target) => {
+        Array::push(out, local)
+        Array::push(out, target)
+      },
+      SImport(_, items) => push_import_item_scope_names(items, out),
+      SReExport(_, items) => push_import_item_scope_names(items, out),
+      SModule(_, name, body) => {
+        Array::push(out, name)
+        push_source_scope_names(body, out)
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+/// #2808: the first name this file's aggregate `export { }` publishes that the
+/// file itself neither declares nor imports, or `None`.
+///
+/// Source order, like `unresolved_aggregate_export_name`, so which one it is
+/// does not depend on anything but the text. The builtin clause is the same
+/// predicate publication mints authority from, so `export { Option }` -- the
+/// shape `lib/@vibe/builtin/option.vibe` opens with -- keeps answering here
+/// too.
+export fn unresolved_aggregate_export_name_in_source(stmts: Array[Stmt]) -> Option[String] {
+  let names = aggregate_export_names(stmts)
+  if Array::length(names) == 0 {
+    None
+  } else {
+    let scope = array_empty()
+    push_source_scope_names(stmts, scope)
+    let mut i = 0
+    let mut found = None
+    while i < Array::length(names) {
+      let name = Array::get(names, i)
+      if found == None && !string_array_contains_exact(scope, name) && !is_explicit_builtin_declaration(name) {
+        found = Some(name)
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    found
+  }
+}
+
+/// #2808: the same refusal text, with the FILE named.
+///
+/// The merged entries compile an import closure of many files under one
+/// command, so "in this module" has no referent for the reader -- the edit is
+/// in one specific file and the message has to say which. The sentence itself
+/// is `unresolved_export_message`'s, so the two lanes cannot drift into
+/// describing the same defect differently.
+export fn unresolved_export_message_in_file(name: String, path: String) -> String {
+  String::concat(unresolved_export_message(name), String::concat(" (in ", String::concat(path, ")")))
+}
+
+/// #2808: the file-based merged entries' door. Called on each user source file
+/// BEFORE the closure is flattened, which is the only point at which the
+/// file's own export list and its own declarations are both still readable.
+export fn validate_source_file_exports(path: String, stmts: Array[Stmt]) -> Unit with Exception {
+  match unresolved_aggregate_export_name_in_source(stmts) {
+    Some(name) => throw(unresolved_export_message_in_file(name, path)),
+    None => ()
+  }
+}
+
+/// Declared arity of a type constructor used by an impl target. Keep builtin
+/// container authority here; user declarations come from defs.
+export fn impl_target_declared_arity(defs: Array[TypeDef], name: String) -> Option[Int] {
+  match find_typedef(defs, name) {
+    Some(td) => match td {
+      TDEnum(_, params, _) => Some(Array::length(params)),
+      TDStruct(_, _, _, params) => Some(Array::length(params)),
+      TDAlias(_, params, _) => Some(Array::length(params)),
+      TDEffect(_, _, params) => Some(Array::length(params)),
+      TDEffectSet(_, _) => Some(0)
+    },
+    None => match compiler_owned_type_arity(name) {
+      Some(arity) => Some(arity),
+      None => match resolve_builtin(name) {
+        Some(_) => Some(0),
+        None => None
+      }
+    }
+  }
+}
+
+export fn impl_target_mentions(target: TypeExpr, wanted: String) -> Bool {
+  match target {
+    TyName(name) => name == wanted,
+    TyApp(name, args) => if name == wanted {
+      true
+    } else {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(args) && !found {
+        found = impl_target_mentions(Array::get(args, i), wanted)
+        i = i + 1
+      }
+      found
+    },
+    TyFn(params, ret, _) => {
+      let mut i = 0
+      let mut found = impl_target_mentions(ret, wanted)
+      while i < Array::length(params) && !found {
+        found = impl_target_mentions(Array::get(params, i), wanted)
+        i = i + 1
+      }
+      found
+    },
+    TyTuple(items) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(items) && !found {
+        found = impl_target_mentions(Array::get(items, i), wanted)
+        i = i + 1
+      }
+      found
+    },
+    TyUnit => false
+  }
+}
+
+//# Types
+
+/// Successful production-check boundary. `checked_stmts` is the same
+/// in-place post-desugar program consumed by existing codegen callers;
+/// `typed_occurrences` is only the offset/type information that the production
+/// checker already records (it is not a complete elaborated typed IR).
+export struct CheckedProgram {
+  checked_stmts: Array[Stmt];
+  final_env: TypeEnv;
+  type_defs: Array[TypeDef];
+  final_subst: Subst;
+  typed_occurrences: Array[(Int, Type)]
+}
+
+/// Observation-only provenance aligned with `checked_program.type_defs`.
+/// `type_def_binders` contains generic TDEnum binder CtVar ids in declaration
+/// order. This is deliberately separate so CheckedProgram remains source
+/// compatible with its original production-result shape.
+export struct CheckedProgramTypeDefsObservation {
+  checked_program: CheckedProgram;
+  type_def_binders: Array[Array[Int]]
+}
+
+/// Statement-owner-only typed-occurrence observation. Each entry retains the
+/// post-desugar CheckedProgram statement path, its capture ordinal, and the raw
+/// checker type. It deliberately does not claim expression/role provenance,
+/// source offsets, edit stability, typed IR, cache, trace, interface, or codec
+/// semantics. The first erasure point is each statement's expression tree.
+export struct CheckedTypedOccurrenceStatementObservation {
+  checked_program: CheckedProgram;
+  entries: Array[(Array[Int], Int, Type)]
+}
+
+/// Opaque append-time role/lane observation. Its rows are exactly aligned to
+/// the retained legacy typed_occurrences table, but expose no offsets or types.
+export struct CheckedTypedOccurrenceRoleLaneObservation {
+  checked_program: CheckedProgram;
+  entries: TypedOccurrenceRoleLaneCapture
+}
+
+/// Opaque append-time structural provenance. Every row combines its retained
+/// statement path, exact `expr_children` path, role, and lane. It is returned
+/// only when every retained legacy row has an honest path.
+export struct CheckedTypedOccurrenceExpressionPathObservation {
+  checked_program: CheckedProgram;
+  entries: TypedOccurrenceRoleLaneCapture
+}
+
+/// Complete-or-none direct primary checker-return types for every retained
+/// post-desugar expression coordinate. This is an observation, not typed IR.
+export struct CheckedDirectExpressionReturnObservation {
+  checked_program: CheckedProgram;
+  entries: Array[(Array[Int], Array[Int], Type)]
+}
+
+export enum CheckerStatementCapture {
+  StatementTypedOccurrences(Array[(Array[Int], Int, Type)]);
+  StatementRootTypes(Array[(Array[Int], String, Type)]);
+  StatementDirectExpressionReturns
+}
+
+struct CheckerObservationCheckpoint {
+  tytab_len: Int;
+  statement_entries_len: Int;
+  role_entries_len: Int;
+  role_provenance_len: Int;
+  role_direct_len: Int;
+  role_statement_path: Array[Int];
+  role_frame_paths_len: Int;
+  role_frame_next_len: Int;
+  role_frame_expected_len: Int;
+  role_frame_direct_len: Int;
+  role_frame_depth: Int;
+  role_complete: Bool
+}
+
+export fn checker_observation_checkpoint(capture: Option[CheckerStatementCapture], role_capture: Option[TypedOccurrenceRoleLaneCapture], tytab: Array[(Int, Type)]) -> CheckerObservationCheckpoint {
+  let statement_entries_len = match capture {
+    Some(StatementTypedOccurrences(entries)) => Array::length(entries),
+    Some(StatementRootTypes(entries)) => Array::length(entries),
+    _ => 0
+  }
+  match role_capture {
+    Some(role) => CheckerObservationCheckpoint::{
+      tytab_len: Array::length(tytab),
+      statement_entries_len: statement_entries_len,
+      role_entries_len: Array::length(role.entries),
+      role_provenance_len: Array::length(role.provenance_entries),
+      role_direct_len: Array::length(role.direct_entries),
+      role_statement_path: Array::slice(role.statement_path, 0, Array::length(role.statement_path)),
+      role_frame_paths_len: Array::length(role.frame_paths),
+      role_frame_next_len: Array::length(role.frame_next_children),
+      role_frame_expected_len: Array::length(role.frame_expected_children),
+      role_frame_direct_len: Array::length(role.frame_direct_recorded),
+      role_frame_depth: role.frame_depth,
+      role_complete: role.complete
+    },
+    None => CheckerObservationCheckpoint::{
+      tytab_len: Array::length(tytab),
+      statement_entries_len: statement_entries_len,
+      role_entries_len: 0,
+      role_provenance_len: 0,
+      role_direct_len: 0,
+      role_statement_path: array_empty(),
+      role_frame_paths_len: 0,
+      role_frame_next_len: 0,
+      role_frame_expected_len: 0,
+      role_frame_direct_len: 0,
+      role_frame_depth: 0,
+      role_complete: true
+    }
+  }
+}
+
+export fn restore_checker_observation(checkpoint: CheckerObservationCheckpoint, capture: Option[CheckerStatementCapture], role_capture: Option[TypedOccurrenceRoleLaneCapture], tytab: Array[(Int, Type)]) -> Unit {
+  Array::truncate(tytab, checkpoint.tytab_len)
+  match capture {
+    Some(StatementTypedOccurrences(entries)) => Array::truncate(entries, checkpoint.statement_entries_len),
+    Some(StatementRootTypes(entries)) => Array::truncate(entries, checkpoint.statement_entries_len),
+    _ => ()
+  }
+  match role_capture {
+    Some(role) => {
+      Array::truncate(role.entries, checkpoint.role_entries_len)
+      Array::truncate(role.provenance_entries, checkpoint.role_provenance_len)
+      Array::truncate(role.direct_entries, checkpoint.role_direct_len)
+      role.statement_path = Array::slice(checkpoint.role_statement_path, 0, Array::length(checkpoint.role_statement_path))
+      Array::truncate(role.frame_paths, checkpoint.role_frame_paths_len)
+      Array::truncate(role.frame_next_children, checkpoint.role_frame_next_len)
+      Array::truncate(role.frame_expected_children, checkpoint.role_frame_expected_len)
+      Array::truncate(role.frame_direct_recorded, checkpoint.role_frame_direct_len)
+      role.frame_depth = checkpoint.role_frame_depth
+      role.complete = checkpoint.role_complete
+    },
+    None => ()
+  }
+}
+
+/// Successful-check-only direct root types for retained expression-bearing
+/// statements. Entries retain `(statement_path, closed_statement_kind, raw_type)`;
+/// canonical consumers apply `checked_program.final_subst` after checking.
+export struct CheckedStatementRootTypeObservation {
+  checked_program: CheckedProgram;
+  entries: Array[(Array[Int], String, Type)]
+}
+
+export fn copy_ints(items: Array[Int]) -> Array[Int] {
+  Array::slice(items, 0, Array::length(items))
+}
+
+/// Capture the legacy table rows appended by exactly one retained statement.
+/// This observes the checker-time append range rather than reconstructing any
+/// association from offsets. Module containers never own their child rows.
+export fn capture_statement_rows(entries: Array[(Array[Int], Int, Type)], tytab: Array[(Int, Type)], start: Int, path: Array[Int]) -> Unit {
+  let mut i = start
+  let mut ordinal = 0
+  while i < Array::length(tytab) {
+    let (_, ty) = Array::get(tytab, i)
+    Array::push(entries, (copy_ints(path), ordinal, ty))
+    i = i + 1
+    ordinal = ordinal + 1
+  }
+}
+
+export fn typed_occurrence_statement_observation_from_capture(checked: CheckedProgram, entries: Array[(Array[Int], Int, Type)]) -> Option[CheckedTypedOccurrenceStatementObservation] {
+  Some(CheckedTypedOccurrenceStatementObservation::{
+    checked_program: checked,
+    entries: entries
+  })
+}
+
+export fn typed_occurrence_role_lane_observation_from_capture(checked: CheckedProgram, entries: TypedOccurrenceRoleLaneCapture) -> Option[CheckedTypedOccurrenceRoleLaneObservation] {
+  if Array::length(entries.entries) == Array::length(checked.typed_occurrences) {
+    Some(CheckedTypedOccurrenceRoleLaneObservation::{
+      checked_program: checked,
+      entries: entries
+    })
+  } else {
+    None
+  }
+}
+
+export fn typed_occurrence_expression_path_observation_from_capture(checked: CheckedProgram, entries: TypedOccurrenceRoleLaneCapture) -> Option[CheckedTypedOccurrenceExpressionPathObservation] {
+  if entries.complete && Array::length(entries.provenance_entries) == Array::length(checked.typed_occurrences) {
+    Some(CheckedTypedOccurrenceExpressionPathObservation::{
+      checked_program: checked,
+      entries: entries
+    })
+  } else {
+    None
+  }
+}
+
+export fn capture_statement_root_type(capture: Option[CheckerStatementCapture], statement_path: Option[Array[Int]], kind: String, ty: Type) -> Unit {
+  match capture {
+    Some(StatementRootTypes(entries)) => match statement_path {
+      Some(path) => Array::push(entries, (path, kind, ty)),
+      None => ()
+    },
+    _ => ()
+  }
+}
+
+export fn statement_capture_is_root(capture: Option[CheckerStatementCapture]) -> Bool {
+  match capture {
+    Some(StatementRootTypes(_)) => true,
+    Some(StatementDirectExpressionReturns) => true,
+    _ => false
+  }
+}
+
+fn root_type_paths_equal(left: Array[Int], right: Array[Int]) -> Bool {
+  if Array::length(left) != Array::length(right) {
+    false
+  } else {
+    let mut i = 0
+    let mut same = true
+    while i < Array::length(left) {
+      if Array::get(left, i) != Array::get(right, i) {
+        same = false
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    same
+  }
+}
+
+fn root_type_capture_entries_valid_stmts(entries: Array[(Array[Int], String, Type)], stmts: Array[Stmt], parent: Array[Int], next: Int) -> (Bool, Int) {
+  let mut valid = true
+  let mut row = next
+  let mut i = 0
+  while i < Array::length(stmts) && valid {
+    let stmt = Array::get(stmts, i)
+    let path = copy_ints(parent)
+    Array::push(path, i)
+    match stmt {
+      SLet(_, _, _, _, _) => {
+        if row < Array::length(entries) {
+          let (actual_path, kind, _) = Array::get(entries, row)
+          valid = root_type_paths_equal(actual_path, path) && kind == "SLet"
+          row = row + 1
+        } else {
+          valid = false
+        }
+      },
+      SLetMut(_, _, _) => {
+        if row < Array::length(entries) {
+          let (actual_path, kind, _) = Array::get(entries, row)
+          valid = root_type_paths_equal(actual_path, path) && kind == "SLetMut"
+          row = row + 1
+        } else {
+          valid = false
+        }
+      },
+      SLetPat(_, _) => {
+        if row < Array::length(entries) {
+          let (actual_path, kind, _) = Array::get(entries, row)
+          valid = root_type_paths_equal(actual_path, path) && kind == "SLetPat"
+          row = row + 1
+        } else {
+          valid = false
+        }
+      },
+      STest(_, _) => {
+        if row < Array::length(entries) {
+          let (actual_path, kind, _) = Array::get(entries, row)
+          valid = root_type_paths_equal(actual_path, path) && kind == "STest"
+          row = row + 1
+        } else {
+          valid = false
+        }
+      },
+      SBench(_, _) => {
+        if row < Array::length(entries) {
+          let (actual_path, kind, _) = Array::get(entries, row)
+          valid = root_type_paths_equal(actual_path, path) && kind == "SBench"
+          row = row + 1
+        } else {
+          valid = false
+        }
+      },
+      SExpr(EIdent(name, _)) => {
+        if String::starts_with(name, "@zero_alloc") {
+          valid = false
+        } else if row < Array::length(entries) {
+          let (actual_path, kind, _) = Array::get(entries, row)
+          valid = root_type_paths_equal(actual_path, path) && kind == "SExpr"
+          row = row + 1
+        } else {
+          valid = false
+        }
+      },
+      SExpr(_) => {
+        if row < Array::length(entries) {
+          let (actual_path, kind, _) = Array::get(entries, row)
+          valid = root_type_paths_equal(actual_path, path) && kind == "SExpr"
+          row = row + 1
+        } else {
+          valid = false
+        }
+      },
+      SModule(_, _, body) => {
+        let (nested_valid, nested_row) = root_type_capture_entries_valid_stmts(entries, body, path, row)
+        valid = nested_valid
+        row = nested_row
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  (valid, row)
+}
+
+export fn statement_root_type_observation_from_capture(checked: CheckedProgram, entries: Array[(Array[Int], String, Type)]) -> Option[CheckedStatementRootTypeObservation] {
+  let (valid, consumed) = root_type_capture_entries_valid_stmts(entries, checked.checked_stmts, array_empty(), 0)
+  if valid && consumed == Array::length(entries) {
+    Some(CheckedStatementRootTypeObservation::{
+      checked_program: checked,
+      entries: entries
+    })
+  } else {
+    None
+  }
+}
+
+//# Functions
+
+/// ADR-0069 Phase 1: locate a top-level statement for the reject diagnostics
+/// below — first available source char-offset of the statement's value
+/// expression (same walk as codegen's first_offset; duplicated locally to keep
+/// checker → codegen imports out). -1 when no offset-carrying node exists; the
+/// `[@off=N]` marker convention (see checker.vibe off_marker) then simply
+/// stays off the message.
+export fn top_stmt_expr_off(e: Expr) -> Int {
+  match e {
+    EIdent(_, off) => off,
+    // A string literal carries its own offset on this branch (`EString(String,
+    // Int)`), so a `let a: Int = "not an int"` locates at the LITERAL rather
+    // than falling back to the binder. AGENTS.md lists the missing slot as a
+    // standing violation of the CLI policy; main's #2199 records at call sites
+    // and does not need the widening, but nothing about it conflicts.
+    EString(_, off) => off,
+    ECall(callee, _, off) => if off >= 0 {
+      off
+    } else {
+      top_stmt_expr_off(callee)
+    },
+    EDot(base, _, off, _) => if off >= 0 {
+      off
+    } else {
+      top_stmt_expr_off(base)
+    },
+    EBinOp(_, lhs, _, _) => top_stmt_expr_off(lhs),
+    EUnaryOp(_, inner) => top_stmt_expr_off(inner),
+    ELet(_, val, _, _) => top_stmt_expr_off(val),
+    ELetRec(_, val, _) => top_stmt_expr_off(val),
+    ELetMut(_, val, _, _) => top_stmt_expr_off(val),
+    EAssign(_, val, _) => top_stmt_expr_off(val),
+    EAssignOp(_, _, val, _) => top_stmt_expr_off(val),
+    ESeq(first, _) => top_stmt_expr_off(first),
+    EIf(cond, _, _) => top_stmt_expr_off(cond),
+    EMatch(scrut, _) => top_stmt_expr_off(scrut),
+    EReturn(inner) => top_stmt_expr_off(inner),
+    _ => 0 - 1
+  }
+}
+
+// ADR-0071 step 2 (#755) resolver core: effectset member-expansion cycle
+// detection and qualified-name/operation collision detection, kept local to
+// this file (no new cross-file function -- see docs/internal/design/effectset.md's
+// "Bootstrap gotcha" note on why introducing a brand new cross-file
+// function+its first caller in the same change once broke
+// generate_bundle.sh's flatten step). Full resolution (actually authorizing
+// `with EffectsetName`) is still step 3; this only powers the two
+// specific checks the ADR's Decision section calls out by name (cycle
+// rejection, operation/effectset member-namespace collision) so the
+// checker's current blanket "not yet supported" rejection at least
+// distinguishes a genuinely invalid definition from one that is merely
+// unresolved.
+
+export fn es_index_of(names: Array[String], name: String) -> Int {
+  let mut i = 0
+  let mut found = -1
+  while i < Array::length(names) {
+    if Array::get(names, i) == name {
+      found = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+export fn es_string_array_contains(arr: Array[String], v: String) -> Bool {
+  es_index_of(arr, v) >= 0
+}
+
+/// "Effect::Name" -> (Some("Effect"), "Name"); unqualified -> (None, name).
+fn es_split_qualified(name: String) -> (Option[String], String) {
+  let idx = String::index_of(name, "::")
+  if idx > 0 {
+    (Some(String::substring(name, 0, idx)), String::substring(name, idx + 2, String::length(name)))
+  } else {
+    (None, name)
+  }
+}
+
+fn es_join_arrow(names: Array[String]) -> String {
+  let mut result = ""
+  let mut i = 0
+  while i < Array::length(names) {
+    if i == 0 {
+      result = Array::get(names, i)
+    } else {
+      result = String::concat(result, String::concat(" -> ", Array::get(names, i)))
+    }
+    i = i + 1
+  }
+  result
+}
+
+/// DFS over effectset member references. `path` is the chain of effectset
+/// names visited in the CURRENT recursion (not a global visited set) so two
+/// independent effectsets sharing a common, acyclic member is fine -- only
+/// re-visiting a name already on the current path is a genuine cycle.
+/// Members that are not themselves a known effectset name (an ordinary
+/// effect name or a qualified operation) are leaves -- es_index_of returns
+/// -1 for them, ending that branch.
+export fn es_detect_cycle(es_names: Array[String], es_members_list: Array[Array[String]], name: String, path: Array[String]) -> Option[String] {
+  if es_string_array_contains(path, name) {
+    Some(String::concat("effectset cycle: ", String::concat(es_join_arrow(path), String::concat(" -> ", name))))
+  } else {
+    let idx = es_index_of(es_names, name)
+    if idx < 0 {
+      None
+    } else {
+      let members = Array::get(es_members_list, idx)
+      Array::push(path, name)
+      let mut mi = 0
+      let mut result = None
+      while mi < Array::length(members) {
+        match result {
+          None => {
+            result = es_detect_cycle(es_names, es_members_list, Array::get(members, mi), path)
+          },
+          Some(_) => ()
+        }
+        mi = mi + 1
+      }
+      Array::truncate(path, Array::length(path) - 1)
+      result
+    }
+  }
+}
+
+/// `Env::Read` collides with `Env` if `Env` separately declares an operation
+/// named `Read` -- the ADR's Decision section calls this out explicitly:
+/// operation and effectset names share the effect-row member namespace, so a
+/// reference to `Env::Read` would be ambiguous between the two.
+export fn es_qualified_collision(ed_names: Array[String], ed_ops_list: Array[Array[String]], qualified_name: String) -> Bool {
+  let (eff_opt, member_name) = es_split_qualified(qualified_name)
+  match eff_opt {
+    Some(eff) => {
+      let idx = es_index_of(ed_names, eff)
+      if idx < 0 {
+        false
+      } else {
+        es_string_array_contains(Array::get(ed_ops_list, idx), member_name)
+      }
+    },
+    None => false
+  }
+}
+
+/// Collect every effectset (name -> raw member list) and effect (name ->
+/// operation names) declared at or after `from_idx` in `stmts`, in one pass.
+/// Shared by check_stmts' own pre-pass (order-independent cycle/collision
+/// checking) and collect_async_effect_errors' row-expansion pass below (step
+/// 3) so both walks agree on exactly the same tables.
+export fn es_append_imported_tables(defs: Array[TypeDef], es_names: Array[String], es_members_list: Array[Array[String]], ed_names: Array[String], ed_ops_list: Array[Array[String]]) -> Unit {
+  let mut i = 0
+  while i < Array::length(defs) {
+    match Array::get(defs, i) {
+      TDEffect(name, ops, _) => {
+        let op_names = array_empty()
+        let mut oi = 0
+        while oi < Array::length(ops) {
+          let (op, _, _) = Array::get(ops, oi)
+          Array::push(op_names, op)
+          oi = oi + 1
+        }
+        Array::push(ed_names, name)
+        Array::push(ed_ops_list, op_names)
+      },
+      TDEffectSet(name, members) => {
+        Array::push(es_names, name)
+        Array::push(es_members_list, members)
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+export fn es_collect_tables(stmts: Array[Stmt], from_idx: Int) -> (Array[String], Array[Array[String]], Array[String], Array[Array[String]]) {
+  let es_names = array_empty()
+  let es_members_list = array_empty()
+  let ed_names = array_empty()
+  let ed_ops_list = array_empty()
+  let mut i = from_idx
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SEffectSet(exported, esname, esmembers) => {
+        Array::push(es_names, esname)
+        Array::push(es_members_list, esmembers)
+      },
+      SEffectDef(_, edname, _, edops) => {
+        let opnames = for op in edops {
+          let (opname, _, _) = op
+          opname
+        }
+        Array::push(ed_names, edname)
+        Array::push(ed_ops_list, opnames)
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  (es_names, es_members_list, ed_names, ed_ops_list)
+}
+
+/// ADR-0075 Phase 2 / ADR-0094 実装順 2 (#1343): validate the `resource Name :
+/// Kind` declarations in one statement list.
+///
+/// Two rules, both about IDENTITY -- a resource declaration names a logical
+/// thing the executable requires a binding for, so two declarations must not
+/// be able to name the same thing under different names, nor one thing twice:
+///
+///   * a name may be declared once. The predeclared resources
+///     (`Process::Root`) count as already-declared, so a program cannot
+///     shadow the ambient process root with its own.
+///   * a SINGLETON kind (`Process::Root`) already has its one inhabitant, so
+///     nothing may be declared of it. `resource Home : Process::Root` would
+///     be a second name for the one process, which ADR-0075's alias check
+///     exists to prevent -- rejecting it at the declaration is cheaper than
+///     detecting the alias at bind time.
+///
+/// Kind names themselves are NOT checked against a registry: there is no
+/// resource-kind declaration syntax yet, so `S3::Bucket` (ADR-0075's own
+/// example) has nowhere to be declared. The parser's qualified-path
+/// requirement is the only well-formedness rule the kind carries today.
+export fn resource_decl_errors(stmts: Array[Stmt], from_idx: Int, errors: Array[String]) -> Unit {
+  let seen = array_empty()
+  let pre = predeclared_resources()
+  let mut p = 0
+  while p < Array::length(pre) {
+    let (pname, _) = Array::get(pre, p)
+    Array::push(seen, pname)
+    p = p + 1
+  }
+  let mut i = from_idx
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SResource(rname, rkind) => {
+        // String::concat rather than `\{}` interpolation: this module imports
+        // @vibe/compiler/core, whose `__to_string(Int)` is what the
+        // interpolation desugar resolves to here, so a String hole is a type
+        // error. Same reason every other diagnostic in this file is built by
+        // concat.
+        if es_string_array_contains(seen, rname) {
+          Array::push(errors, String::concat("resource '", String::concat(rname, "' is already declared -- a logical resource identity is declared once (ADR-0075)")))
+        } else {
+          Array::push(seen, rname)
+        }
+        if is_singleton_resource_kind(rkind) {
+          Array::push(errors, String::concat("resource kind '", String::concat(rkind, String::concat("' is a singleton: its one inhabitant is '", String::concat(rkind, String::concat("' itself, so declaring '", String::concat(rname, "' of it would be a second name for the same thing (ADR-0075)")))))))
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+/// #1464: reject a value name declared twice in one DECLARATION list (the
+/// top level of a file, or a `module { ... }` body). `fn` declarations are
+/// lowered to `SLet` before the checker, so this covers `fn f` twice,
+/// `let x` twice, and any mix of the two with `let mut` / `extern let`.
+///
+/// Deliberately NOT a shadowing check: this walk only ever sees declaration
+/// lists (check_stmts_with_binders' two callers are the program root and the
+/// SModule arm), never a function body, so the legal and widespread
+/// `let x = ...; let x = f(x)` inside a block is untouched. At the top level
+/// there is no sequencing to shadow -- declarations are hoisted (see the
+/// hoist_i pre-pass), so both `x`s are in scope for the whole file and every
+/// reference resolves to the last one, silently.
+///
+/// `_` is skipped: `let _ = ...` is a discard, not a name.
+export fn duplicate_value_decl_note(seen: Array[String], dname: String, errors: Array[String]) -> Unit {
+  if dname == "_" {
+    ()
+  } else if es_string_array_contains(seen, dname) {
+    Array::push(errors, String::concat("duplicate declaration: ", dname))
+  } else {
+    Array::push(seen, dname)
+  }
+}
+
+fn import_bound_name(item: ImportItem) -> String {
+  match item.alias {
+    Some(a) => a,
+    None => item.name
+  }
+}
+
+fn import_item_is_value_binding(item: ImportItem) -> Bool {
+  match item.kind {
+    None => true,
+    Some(_) => false
+  }
+}
+
+fn name_is_type_head(n: String) -> Bool {
+  if String::length(n) == 0 {
+    false
+  } else if String::contains(n, "::") {
+    false
+  } else {
+    let c = String::char_code_at(n, 0)
+    c >= 65 && c <= 90
+  }
+}
+
+export fn duplicate_import_value_note(seen: Array[String], item: ImportItem, errors: Array[String]) -> Unit {
+  if !import_item_is_value_binding(item) {
+    ()
+  } else {
+    let local = import_bound_name(item)
+    // The source name, not its local alias, distinguishes the unkinded
+    // type-head form (`HashMap as Shared`) from a value (`abs as Abs`).
+    if name_is_type_head(item.name) {
+      ()
+    } else {
+      duplicate_value_decl_note(seen, local, errors)
+    }
+  }
+}

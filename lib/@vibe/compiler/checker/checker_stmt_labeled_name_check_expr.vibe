@@ -1,0 +1,1876 @@
+// lib/@vibe/compiler/checker/checker_stmt.vibe — labeled name check expr.
+
+import ./checker_trait.vibe {
+  bound_entails_send
+}
+
+import @vibe/core {
+  array_empty, struct MutMap
+}
+
+import @vibe/compiler/checker/diagnostics {
+  off_marker_len
+}
+
+import ./checker_effects.vibe {
+  check_async_effects_stmts
+}
+
+import ./checker_pattern.vibe {
+  check_qualified_pattern_refs
+}
+
+import ./builtins.vibe {
+  lookup_builtin
+}
+
+import ./checker_spawnable.vibe {
+  closure_bare_callee_names
+}
+
+import @vibe/compiler/core {
+  Expr, ImportItem, ImportKind, Pat, Stmt, Subst, Type, TypeDef, TypeEnv, TypeExpr, env_bind, expr_children, subst_apply, type_to_string
+}
+
+import ./checker.vibe {
+  TypedOccurrenceRoleLaneCapture, fn_return_env_name
+}
+
+import @vibe/ast {
+  type_param_name
+}
+
+import ./checked_expression_structure_core.vibe {
+  checked_expression_structure_rows
+}
+
+import ./checker_resolve.vibe {
+  resolve_type_expr
+}
+
+import @vibe/compiler/normalize {
+  derive_trait_namespace_operations, desugar_labeled_args
+}
+
+import @vibe/parser {
+  BinderAuthorityNode, LocatedProgramBinderAuthority, SourceBinder
+}
+
+fn annotation_return_type(ann: Option[TypeExpr], defs: Array[TypeDef]) -> Option[Type] {
+  match ann {
+    Some(te) => match te {
+      TyFn(params, ret, _) => {
+        let ret_box = Array::slice([ret], 0, 1)
+        let _ = Array::length(params)
+        Some(resolve_type_expr(Array::get(ret_box, 0), defs))
+      },
+      _ => None
+    },
+    None => None
+  }
+}
+
+fn fn_expr_return_type(expr: Expr, defs: Array[TypeDef]) -> Option[Type] {
+  match expr {
+    EFn(_, _, _, ret_ty, _, _) => match ret_ty {
+      Some(te) => Some(resolve_type_expr(te, defs)),
+      None => None
+    },
+    _ => None
+  }
+}
+
+export fn bind_fn_return(env: TypeEnv, name: String, ret_ty: Type) -> TypeEnv {
+  env_bind(env, fn_return_env_name(name), ret_ty)
+}
+
+export fn bind_annotation_return(env: TypeEnv, name: String, ann: Option[TypeExpr], defs: Array[TypeDef]) -> TypeEnv {
+  match annotation_return_type(ann, defs) {
+    Some(ret_ty) => bind_fn_return(env, name, ret_ty),
+    None => env
+  }
+}
+
+export fn bind_value_or_annotation_return(env: TypeEnv, name: String, val: Expr, ann: Option[TypeExpr], defs: Array[TypeDef]) -> TypeEnv {
+  match fn_expr_return_type(val, defs) {
+    Some(ret_ty) => bind_fn_return(env, name, ret_ty),
+    None => bind_annotation_return(env, name, ann, defs)
+  }
+}
+
+export fn struct_derives_has(derives: Array[String], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(derives) {
+    if Array::get(derives, i) == name {
+      found = true
+      i = Array::length(derives)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// The derivable traits the structural `derive(...)` desugar understands. Any
+/// other name in a `derive(...)` clause is rejected with `unknown trait: <name>`
+/// (#638) so a typo / unsupported trait fails the compile instead of silently
+/// generating nothing.
+fn derive_name_is_known(name: String) -> Bool {
+  name == "Eq" || name == "Ord" || name == "Show" || name == "Hash" || name == "Default"
+}
+
+/// #1078: the name of a DIFFERENT enum (already registered in `defs`) that
+/// declares a variant named `vname`, or None. Used to reject bare-name
+/// constructor collisions at declaration time -- see the SEnum arm's
+/// comment for why last-registered-wins shadowing makes these silently
+/// wrong rather than merely ambiguous.
+///
+/// #1455: the scan starts at `local_defs_start`, so only enums declared by
+/// THIS unit collide. Shadowing an imported constructor is ordinary,
+/// already-working code (the local binding wins); the collision #1078 is
+/// about only arises when both declarations land in one compiled unit via
+/// the merge/flatten lane, where both are local.
+///
+/// `seed_imported_enum_defs` already drops any imported enum whose variant
+/// names clash with a locally declared one, so there should be nothing here
+/// for an unscoped scan to find; the bound is what makes that a guarantee
+/// rather than a coincidence of the two scans agreeing.
+export fn find_other_enum_declaring_variant(defs: Array[TypeDef], local_defs_start: Int, enum_name: String, vname: String) -> Option[String] {
+  let mut i = local_defs_start
+  let mut found = None
+  while i < Array::length(defs) {
+    match Array::get(defs, i) {
+      TDEnum(other_name, _, other_variants) => if other_name != enum_name {
+        let mut vi = 0
+        while vi < Array::length(other_variants) {
+          let (ovn, _) = Array::get(other_variants, vi)
+          if ovn == vname {
+            found = Some(other_name)
+          } else {
+            ()
+          }
+          vi = vi + 1
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// #2317: exported so the single-buffer contract lane reports an unknown
+/// `derive` with the SAME message the build does (`unknown trait: X`), rather
+/// than a second implementation of the same rule that could drift from it.
+export fn validate_derives(derives: Array[String], errors: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(derives) {
+    let name = Array::get(derives, i)
+    if name != "" && !derive_name_is_known(name) {
+      Array::push(errors, String::concat("unknown trait: ", name))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
+export fn stmt_is_type_decl(stmt: Stmt) -> Bool {
+  match stmt {
+    SEnum(_, _, _, _, _) => true,
+    SSuberror(_, _, _) => true,
+    SStruct(_, _, _, _, _, _) => true,
+    STypeAlias(_, _, _, _) => true,
+    SEffectDef(_, _, _, _) => true,
+    _ => false
+  }
+}
+
+/// #613: process type declarations (enum / struct / type-alias / suberror /
+/// effect) before value definitions so a `let` or impl may reference a type
+/// or constructor
+/// declared LATER in the same statement list (a forward reference). check_stmts
+/// records each type into `defs` and binds its constructors into `env` only when
+/// the declaration statement is reached, so without this a value defined before
+/// its enum saw neither the type nor its constructors and aborted the compile
+/// with an opaque trap (e.g. an imported module whose function constructs an enum
+/// value lands before the enum in the merged statement list). Codegen is already
+/// order-independent (the ctor table scans every statement up front), so this
+/// check-side reorder is sufficient. The partition is STABLE, so already-ordered
+/// (type-before-value) code is processed exactly as before, and relative order
+/// within each group is preserved.
+export fn reorder_type_decls_first(stmts: Array[Stmt], start: Int) -> Array[Stmt] {
+  let out = Array::slice(stmts, 0, start)
+  let n = Array::length(stmts)
+  let mut i = start
+  while i < n {
+    let st = Array::get(stmts, i)
+    if stmt_is_type_decl(st) {
+      Array::push(out, st)
+    }
+    i = i + 1
+  }
+  let mut j = start
+  while j < n {
+    let st = Array::get(stmts, j)
+    if !stmt_is_type_decl(st) {
+      Array::push(out, st)
+    }
+    j = j + 1
+  }
+  out
+}
+
+/// Re-hoist the value declarations owned by one FS-merged source after its
+/// re-export lookup barriers. The ordinary list-wide hoist sits below those
+/// barriers, so without this pass a legitimate same-source declaration named
+/// like a re-export would be hidden together with dependency definitions.
+fn hoisted_binding_type(annotation: Option[TypeExpr], defs: Array[TypeDef]) -> Type {
+  match annotation {
+    Some(type_expr) => resolve_type_expr(type_expr, defs),
+    None => CtUnknown
+  }
+}
+
+/// #2318: the signature of a top-level `fn`, for the hoist.
+///
+/// A top-level `fn f(a: Int) -> Int { .. }` is an `SLet` whose types live on
+/// the EFn's parameter list, NOT on a binding annotation -- so it hoisted as
+/// `CtUnknown`, and a call placed ABOVE it saw a non-`CtFn` callee and fell
+/// into the `_` arm of the call checker, which returns `CtUnknown` and reports
+/// nothing. Measured: argument types, ARITY, and the return type were all
+/// unchecked, and an arity-short forward call emitted a module wasm refuses to
+/// instantiate (`not enough arguments on the stack for call`) with `vibe check`
+/// silent. The same call written BELOW the definition was rejected, so the
+/// verdict depended on source order.
+///
+/// A missing parameter or return annotation does NOT disqualify the signature:
+/// that slot resolves to `CtUnknown`, which unifies with anything, so the
+/// unannotated position goes unchecked exactly as before while arity and the
+/// annotated positions are checked. `hoisted_binding_type` is what turns each
+/// `Option[TypeExpr]` into a type, so there is one implementation of that rule
+/// rather than a copy per slot.
+///
+/// One shape IS excluded, because for it a synthesized signature would be
+/// WRONG rather than merely imprecise: an optional or labeled parameter (a
+/// trailing `~`/`?` in the raw AST name, see `labeled_param_base_name`) may be
+/// omitted by a legitimate call, so a strict arity would report a false error.
+/// It keeps the `CtUnknown` the hoist gave everything before this. Ordered
+/// (backward-reference) code is unaffected either way: the binding's own
+/// statement fills in the precise type when it is reached and shadows this
+/// pre-binding.
+///
+/// #2607: a type parameter used to disqualify the WHOLE signature, for a reason
+/// that is true only of PART of it -- `[T](x: T) -> Double` cannot hoist as a
+/// concrete `CtFn`, because one pre-binding is shared by every call site and `T`
+/// is not the same type at each. That is a fact about the SLOTS THAT MENTION a
+/// parameter, not about the signature, and collapsing the whole thing to
+/// `CtUnknown` threw the arity and any concrete return type away with it.
+///
+/// Measured on the production linear/RC lane:
+///
+///   fn caller() -> String { len([1, 2]) }        // len returns Int
+///   fn len[T](xs: Array[T]) -> Int { Array::length(xs) }
+///
+/// compiled clean and printed `2`, and `String::length(caller())` answered `4`
+/// -- an Int in a String slot, no diagnostic at any stage. The identical program
+/// with the definition ABOVE the caller was rejected, so source order decided
+/// the verdict. A forward call with one argument too many was clean too, and
+/// then failed at run with no message.
+///
+/// Not a corner: every `Trait::op` wrapper `derive_trait_namespace_operations`
+/// synthesizes carries a `Self`-dispatch type parameter, which is the mechanism
+/// #2570 ran into from the other side.
+///
+/// So the mask is per slot: a parameter or return annotation that mentions one
+/// of the binder's own type parameters reads as unannotated (`CtUnknown`,
+/// unifies with anything, unchecked exactly as before), and every other slot
+/// resolves normally. Arity is checked either way.
+fn hoist_is_type_param(tparams: Array[String], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(tparams) && !found {
+    if type_param_name(Array::get(tparams, i)) == name {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Does `ty` mention one of `tparams` anywhere? Head positions count: `T[Int]`
+/// under `[T[_]]` is as unresolvable as bare `T`.
+fn hoist_mentions_type_param(ty: TypeExpr, tparams: Array[String]) -> Bool {
+  match ty {
+    TyName(name) => hoist_is_type_param(tparams, name),
+    TyApp(head, args) => if hoist_is_type_param(tparams, head) {
+      true
+    } else {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(args) && !found {
+        if hoist_mentions_type_param(Array::get(args, i), tparams) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    TyFn(ps, r, _) => if hoist_mentions_type_param(r, tparams) {
+      true
+    } else {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(ps) && !found {
+        if hoist_mentions_type_param(Array::get(ps, i), tparams) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    TyTuple(items) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(items) && !found {
+        if hoist_mentions_type_param(Array::get(items, i), tparams) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    TyUnit => false
+  }
+}
+
+/// `hoisted_binding_type`, with the per-slot type-parameter mask of #2607.
+///
+/// Masking a slot is exactly "treat it as unannotated": `hoisted_binding_type`
+/// already turns that into `CtUnknown`, and its doc says why that is the right
+/// answer for a slot the hoist cannot know. Routing through it keeps one
+/// implementation of that rule rather than a second copy here.
+fn hoisted_slot_type(annotation: Option[TypeExpr], tparams: Array[String], defs: Array[TypeDef]) -> Type {
+  let readable = match annotation {
+    Some(type_expr) => if hoist_mentions_type_param(type_expr, tparams) {
+      None
+    } else {
+      annotation
+    },
+    _ => annotation
+  }
+  hoisted_binding_type(readable, defs)
+}
+
+export fn hoisted_fn_signature(value: Expr, defs: Array[TypeDef]) -> Type {
+  match value {
+    EFn(tparams, _bounds, params, ret, eff, _body) => {
+      let ptys = array_empty()
+      let mut usable = true
+      let mut i = 0
+      while i < Array::length(params) {
+        let (pname, pann) = Array::get(params, i)
+        if labeled_param_base_name(pname) != pname {
+          usable = false
+        } else {
+          Array::push(ptys, hoisted_slot_type(pann, tparams, defs))
+        }
+        i = i + 1
+      }
+      if usable {
+        CtFn(ptys, hoisted_slot_type(ret, tparams, defs), eff)
+      } else {
+        CtUnknown
+      }
+    },
+    _ => CtUnknown
+  }
+}
+
+/// Is one of `tparams` used as an APPLICATION HEAD anywhere in `te`?
+///
+/// `F[A]` under `[F[_], A]` is the shape the `EFn` arm handles by making the
+/// formal RIGID (`#hktformal.`) instead of a unification variable, precisely so
+/// `F[A]` cannot unify with `Array[Int]`. The hoist has no way to reproduce
+/// that here, so a binder with one keeps the #2607 per-slot mask.
+export fn hoist_te_applies_formal(te: TypeExpr, tparams: Array[String]) -> Bool {
+  match te {
+    TyName(_) => false,
+    TyUnit => false,
+    TyApp(head, args) => if hoist_is_type_param(tparams, head) {
+      true
+    } else {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(args) && !found {
+        if hoist_te_applies_formal(Array::get(args, i), tparams) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    TyFn(ps, r, _) => if hoist_te_applies_formal(r, tparams) {
+      true
+    } else {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(ps) && !found {
+        if hoist_te_applies_formal(Array::get(ps, i), tparams) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    TyTuple(items) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(items) && !found {
+        if hoist_te_applies_formal(Array::get(items, i), tparams) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    }
+  }
+}
+
+/// #986: labeled-argument NAME validation. Codegen binds call arguments
+/// positionally after desugar_labeled_args has reordered fully-labeled calls
+/// into declared parameter order, so any labeled argument that survives to a
+/// position whose parameter has a DIFFERENT base name would silently bind the
+/// wrong parameter (or, for a label naming no parameter at all, is a typo the
+/// user meant to be caught). This walk runs AFTER desugar_labeled_args (see
+/// check_program) and rejects both shapes with a located error. Resolution
+/// scope deliberately mirrors collect_fn_param_labels / relabel_expr in
+/// desugar_trait_dict.vibe: only calls whose callee is an EIdent naming a
+/// top-level `let`-bound function are validated — builtins with decorative
+/// flag labels (`sh_lines("ls", a = true)`), local closures, and method calls
+/// are left untouched, exactly like the reorder pass leaves them untouched.
+export fn labeled_name_marker(off: Int, len: Int) -> String {
+  if off >= 0 && len > 0 {
+    String::concat(" [@off=", String::concat(__to_string(off), String::concat(":", String::concat(__to_string(off + len), "]"))))
+  } else if off >= 0 {
+    String::concat(" [@off=", String::concat(__to_string(off), "]"))
+  } else {
+    ""
+  }
+}
+
+/// Strip a trailing `~` (labeled) / `?` (optional) marker off a raw parameter
+/// name — same convention as the EFn arm in checker.vibe.
+export fn labeled_param_base_name(n: String) -> String {
+  let ln = String::length(n)
+  if ln > 0 {
+    let last = n[ln - 1: ln]
+    if last == "~" || last == "?" {
+      n[0: ln - 1]
+    } else {
+      n
+    }
+  } else {
+    n
+  }
+}
+
+/// fname -> ordered parameter base names for EVERY top-level `let f = (..) -> ..`
+/// (labeled or not — a labeled call against an unlabeled fn still binds
+/// positionally, so its labels must line up too).
+export fn collect_labeled_check_fns(stmts: Array[Stmt]) -> Array[(String, Array[String])] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, fname, _, body) => match body {
+        EFn(_, _, params, _, _, _) => {
+          let names = array_empty()
+          let mut pi = 0
+          while pi < Array::length(params) {
+            let (pn, _) = Array::get(params, pi)
+            Array::push(names, labeled_param_base_name(pn))
+            pi = pi + 1
+          }
+          Array::push(out, (fname, names))
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn lookup_labeled_check_fn(tbl: Array[(String, Array[String])], fname: String) -> Option[Array[String]] {
+  let mut i = 0
+  let mut found = None
+  while i < Array::length(tbl) {
+    let (n, names) = Array::get(tbl, i)
+    if n == fname {
+      found = Some(names)
+      i = Array::length(tbl)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// #1001: the Oracle (formal/VibeFormal/Typing/Call.lean's `resolveArguments`)
+/// rejects a call whose arguments mix `ELabeledArg` (`x=1`) and plain
+/// positional (`"ok"`) forms UNCONDITIONALLY -- a call must be either
+/// uniformly positional or uniformly labeled, regardless of whether a label
+/// happens to already sit at its own declared parameter position. This check
+/// MUST run on the ORIGINAL, pre-desugar argument list (see the `pre_desugar`
+/// branch in `labeled_name_check_expr` above): `desugar_labeled_args`'s
+/// `strip_in_position_labels` (desugar_trait_dict.vibe) silently unwraps any
+/// label that already matches its own position, on the theory that it is a
+/// harmless "decorative" label on an otherwise-fully-positional call -- so
+/// `f(x=1, "ok")` desugars to the ordinary positional `f(1, "ok")`,
+/// indistinguishable by the time codegen or a post-desugar checker pass would
+/// see it from a call that was never labeled at all. Checking here, before
+/// that stripping runs, is the only point where the genuine mix is still
+/// observable.
+fn check_mixed_argument_modes(fname: String, fname_off: Int, args: Array[Expr], errors: Array[String]) -> Unit {
+  let mut has_labeled = false
+  let mut has_plain = false
+  let mut i = 0
+  while i < Array::length(args) {
+    match Array::get(args, i) {
+      ELabeledArg(_, _, _) => {
+        has_labeled = true
+      },
+      _ => {
+        has_plain = true
+      }
+    }
+    i = i + 1
+  }
+  if has_labeled && has_plain {
+    let marker = labeled_name_marker(fname_off, String::length(fname))
+    Array::push(errors, String::concat("call to ", String::concat(fname, String::concat(" mixes positional and labeled arguments — use either all positional or all labeled arguments", marker))))
+  } else {
+    ()
+  }
+}
+
+fn labeled_name_check_call(fname: String, fname_off: Int, args: Array[Expr], pnames: Array[String], errors: Array[String]) -> Unit {
+  let mut ai = 0
+  while ai < Array::length(args) {
+    match Array::get(args, ai) {
+      ELabeledArg(lbl, _, _) => {
+        let in_position = if ai < Array::length(pnames) {
+          Array::get(pnames, ai) == lbl
+        } else {
+          false
+        }
+        if in_position {
+          ()
+        } else {
+          let mut known = false
+          let mut pi = 0
+          while pi < Array::length(pnames) {
+            if Array::get(pnames, pi) == lbl {
+              known = true
+            } else {
+              ()
+            }
+            pi = pi + 1
+          }
+          let marker = labeled_name_marker(fname_off, String::length(fname))
+          if known {
+            Array::push(errors, String::concat("labeled argument `", String::concat(lbl, String::concat("` for ", String::concat(fname, String::concat(" is out of declared parameter order", marker))))))
+          } else {
+            Array::push(errors, String::concat("unknown labeled argument `", String::concat(lbl, String::concat("` for ", String::concat(fname, marker)))))
+          }
+        }
+      },
+      _ => ()
+    }
+    ai = ai + 1
+  }
+}
+
+/// #986 (Codex P2-2 on #993): the walk tracks lexical shadowing — a local
+/// binding (`let f = ..`, fn param, pattern bind, loop var) of a table name
+/// suppresses validation for calls in its scope, since those calls resolve to
+/// the local value whose parameter names the top-level table does not describe.
+/// Same discipline as relabel_expr's `shadows` stack in desugar_trait_dict.vibe.
+fn labeled_walk_shadowed(shadows: Array[String], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(shadows) {
+    if Array::get(shadows, i) == name {
+      found = true
+      i = Array::length(shadows)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+fn labeled_walk_pat_binds(pat: Pat, shadows: Array[String]) -> Unit {
+  match pat {
+    PBind(n) => Array::push(shadows, n),
+    PCtor(_, ps) => {
+      let mut i = 0
+      while i < Array::length(ps) {
+        labeled_walk_pat_binds(Array::get(ps, i), shadows)
+        i = i + 1
+      }
+    },
+    PTuple(ps) => {
+      let mut i = 0
+      while i < Array::length(ps) {
+        labeled_walk_pat_binds(Array::get(ps, i), shadows)
+        i = i + 1
+      }
+    },
+    POr(a, b) => {
+      labeled_walk_pat_binds(a, shadows)
+      labeled_walk_pat_binds(b, shadows)
+    },
+    PStruct(_, fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fp) = Array::get(fields, i)
+        labeled_walk_pat_binds(fp, shadows)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+export fn labeled_name_check_expr(e: Expr, tbl: Array[(String, Array[String])], shadows: Array[String], errors: Array[String], pre_desugar: Bool) -> Unit {
+  match e {
+    ECall(callee, args, _) => {
+      labeled_name_check_expr(callee, tbl, shadows, errors, pre_desugar)
+      let mut i = 0
+      while i < Array::length(args) {
+        labeled_name_check_expr(Array::get(args, i), tbl, shadows, errors, pre_desugar)
+        i = i + 1
+      }
+      match callee {
+        EIdent(fname, fname_off) => {
+          let mut has_labeled = false
+          let mut li = 0
+          while li < Array::length(args) {
+            match Array::get(args, li) {
+              ELabeledArg(_, _, _) => {
+                has_labeled = true
+              },
+              _ => ()
+            }
+            li = li + 1
+          }
+          if has_labeled {
+            if pre_desugar {
+              // #1001 review (Codex P2): mixed-mode is a purely syntactic
+              // call-shape check that needs no parameter-name resolution at
+              // all, so it must NOT be gated behind the same
+              // tbl-membership + not-shadowed lookup the position/unknown-
+              // label checks need (those genuinely require knowing the
+              // callee's real param names). Gating it that way let a call to
+              // any LOCAL closure with labeled params bypass the check
+              // entirely: `labeled_walk_shadowed` returns true for such a
+              // callee (it tracks every local let/param binding in scope,
+              // not just names that collide with a top-level table entry),
+              // so the check never ran. Run it whenever the callee resolves
+              // to a genuine user-level closure -- a local binding OR a
+              // known top-level fn -- either of which can legitimately
+              // declare labeled params. A callee that is neither (a genuine
+              // BUILTIN, some of which use a deliberate decorative
+              // flag-label convention -- `sh_lines("ls", a = true)` -- or an
+              // import/erroneous reference) stays tolerated, exactly like
+              // the post-desugar branch below already tolerates those
+              // shapes.
+              if labeled_walk_shadowed(shadows, fname) {
+                check_mixed_argument_modes(fname, fname_off, args, errors)
+              } else {
+                match lookup_labeled_check_fn(tbl, fname) {
+                  Some(_) => check_mixed_argument_modes(fname, fname_off, args, errors),
+                  None => ()
+                }
+              }
+            } else if !labeled_walk_shadowed(shadows, fname) {
+              match lookup_labeled_check_fn(tbl, fname) {
+                Some(pnames) => labeled_name_check_call(fname, fname_off, args, pnames, errors),
+                None => ()
+              }
+            } else {
+              ()
+            }
+          } else {
+            ()
+          }
+        },
+        _ => ()
+      }
+    },
+    ELabeledArg(_, _, v) => labeled_name_check_expr(v, tbl, shadows, errors, pre_desugar),
+    EBinOp(_, l, r, _) => {
+      labeled_name_check_expr(l, tbl, shadows, errors, pre_desugar)
+      labeled_name_check_expr(r, tbl, shadows, errors, pre_desugar)
+    },
+    EUnaryOp(_, inner) => labeled_name_check_expr(inner, tbl, shadows, errors, pre_desugar),
+    ETuple(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        labeled_name_check_expr(Array::get(items, i), tbl, shadows, errors, pre_desugar)
+        i = i + 1
+      }
+    },
+    EArray(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        labeled_name_check_expr(Array::get(items, i), tbl, shadows, errors, pre_desugar)
+        i = i + 1
+      }
+    },
+    ESpread(inner) => labeled_name_check_expr(inner, tbl, shadows, errors, pre_desugar),
+    ERecord(_, fields, _) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fv) = Array::get(fields, i)
+        labeled_name_check_expr(fv, tbl, shadows, errors, pre_desugar)
+        i = i + 1
+      }
+    },
+    EMap(pairs) => {
+      let mut i = 0
+      while i < Array::length(pairs) {
+        let (_, pv) = Array::get(pairs, i)
+        labeled_name_check_expr(pv, tbl, shadows, errors, pre_desugar)
+        i = i + 1
+      }
+    },
+    EIf(cnd, thn, els) => {
+      labeled_name_check_expr(cnd, tbl, shadows, errors, pre_desugar)
+      labeled_name_check_expr(thn, tbl, shadows, errors, pre_desugar)
+      labeled_name_check_expr(els, tbl, shadows, errors, pre_desugar)
+    },
+    ELet(name, v, b, _) => {
+      labeled_name_check_expr(v, tbl, shadows, errors, pre_desugar)
+      let mark = Array::length(shadows)
+      Array::push(shadows, name)
+      labeled_name_check_expr(b, tbl, shadows, errors, pre_desugar)
+      Array::truncate(shadows, mark)
+    },
+    ELetRec(name, v, b) => {
+      let mark = Array::length(shadows)
+      Array::push(shadows, name)
+      labeled_name_check_expr(v, tbl, shadows, errors, pre_desugar)
+      labeled_name_check_expr(b, tbl, shadows, errors, pre_desugar)
+      Array::truncate(shadows, mark)
+    },
+    ELetMut(name, v, b, _) => {
+      labeled_name_check_expr(v, tbl, shadows, errors, pre_desugar)
+      let mark = Array::length(shadows)
+      Array::push(shadows, name)
+      labeled_name_check_expr(b, tbl, shadows, errors, pre_desugar)
+      Array::truncate(shadows, mark)
+    },
+    EAssign(_, v, k) => {
+      labeled_name_check_expr(v, tbl, shadows, errors, pre_desugar)
+      labeled_name_check_expr(k, tbl, shadows, errors, pre_desugar)
+    },
+    EAssignOp(_, _, v, k) => {
+      labeled_name_check_expr(v, tbl, shadows, errors, pre_desugar)
+      labeled_name_check_expr(k, tbl, shadows, errors, pre_desugar)
+    },
+    ESeq(a, b) => {
+      labeled_name_check_expr(a, tbl, shadows, errors, pre_desugar)
+      labeled_name_check_expr(b, tbl, shadows, errors, pre_desugar)
+    },
+    EMatch(scrut, arms) => {
+      labeled_name_check_expr(scrut, tbl, shadows, errors, pre_desugar)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (ap, ab) = Array::get(arms, i)
+        let mark = Array::length(shadows)
+        labeled_walk_pat_binds(ap, shadows)
+        labeled_name_check_expr(ab, tbl, shadows, errors, pre_desugar)
+        Array::truncate(shadows, mark)
+        i = i + 1
+      }
+    },
+    EHandle(scrut, arms) => {
+      labeled_name_check_expr(scrut, tbl, shadows, errors, pre_desugar)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (ap, ab) = Array::get(arms, i)
+        let mark = Array::length(shadows)
+        labeled_walk_pat_binds(ap, shadows)
+        labeled_name_check_expr(ab, tbl, shadows, errors, pre_desugar)
+        Array::truncate(shadows, mark)
+        i = i + 1
+      }
+    },
+    EWhile(cnd, body) => {
+      labeled_name_check_expr(cnd, tbl, shadows, errors, pre_desugar)
+      labeled_name_check_expr(body, tbl, shadows, errors, pre_desugar)
+    },
+    ELoop(inits, body) => {
+      let mut i = 0
+      while i < Array::length(inits) {
+        let (_, iv) = Array::get(inits, i)
+        labeled_name_check_expr(iv, tbl, shadows, errors, pre_desugar)
+        i = i + 1
+      }
+      let mark = Array::length(shadows)
+      let mut pi = 0
+      while pi < Array::length(inits) {
+        let (pname, _) = Array::get(inits, pi)
+        Array::push(shadows, pname)
+        pi = pi + 1
+      }
+      labeled_name_check_expr(body, tbl, shadows, errors, pre_desugar)
+      Array::truncate(shadows, mark)
+    },
+    EForIn(name, idx, iter, body) => {
+      labeled_name_check_expr(iter, tbl, shadows, errors, pre_desugar)
+      let mark = Array::length(shadows)
+      Array::push(shadows, name)
+      match idx {
+        Some(ix) => Array::push(shadows, ix),
+        None => ()
+      }
+      labeled_name_check_expr(body, tbl, shadows, errors, pre_desugar)
+      Array::truncate(shadows, mark)
+    },
+    EFn(_, _, fparams, _, _, body) => {
+      let mark = Array::length(shadows)
+      let mut pi = 0
+      while pi < Array::length(fparams) {
+        let (pn, _) = Array::get(fparams, pi)
+        Array::push(shadows, labeled_param_base_name(pn))
+        pi = pi + 1
+      }
+      labeled_name_check_expr(body, tbl, shadows, errors, pre_desugar)
+      Array::truncate(shadows, mark)
+    },
+    EDot(obj, _, _, _) => labeled_name_check_expr(obj, tbl, shadows, errors, pre_desugar),
+    EReturn(inner) => labeled_name_check_expr(inner, tbl, shadows, errors, pre_desugar),
+    EBreak(opt) => match opt {
+      Some(inner) => labeled_name_check_expr(inner, tbl, shadows, errors, pre_desugar),
+      None => ()
+    },
+    EContinue(exprs) => {
+      let mut i = 0
+      while i < Array::length(exprs) {
+        labeled_name_check_expr(Array::get(exprs, i), tbl, shadows, errors, pre_desugar)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+export fn string_array_contains_exact(items: Array[String], wanted: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(items) && !found {
+    if Array::get(items, i) == wanted {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+fn alias_decl_body(stmts: Array[Stmt], name: String) -> Option[(Array[String], TypeExpr)] {
+  let mut i = 0
+  let mut result = None
+  while i < Array::length(stmts) && result is None {
+    match Array::get(stmts, i) {
+      STypeAlias(_, alias_name, params, body) => if alias_name == name {
+        result = Some((params, body))
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  result
+}
+
+fn alias_type_expr_reaches(stmts: Array[Stmt], te: TypeExpr, shadow: Array[String], target: String, seen: Array[String]) -> Bool {
+  let refs = array_empty()
+  collect_texpr_ref_names(te, refs)
+  let mut i = 0
+  let mut reaches = false
+  while i < Array::length(refs) && !reaches {
+    let name = Array::get(refs, i)
+    if string_array_contains_exact(shadow, name) {
+      ()
+    } else if name == target {
+      reaches = true
+    } else if string_array_contains_exact(seen, name) {
+      ()
+    } else {
+      match alias_decl_body(stmts, name) {
+        Some((params, body)) => {
+          Array::push(seen, name)
+          if alias_type_expr_reaches(stmts, body, params, target, seen) {
+            reaches = true
+          } else {
+            ()
+          }
+        },
+        None => ()
+      }
+    }
+    i = i + 1
+  }
+  reaches
+}
+
+fn alias_decl_is_recursive(stmts: Array[Stmt], name: String, params: Array[String], body: TypeExpr) -> Bool {
+  alias_type_expr_reaches(stmts, body, params, name, array_empty())
+}
+
+export fn collect_visible_type_stmts(stmts: Array[Stmt], to: Int, out: Array[Stmt]) -> Unit {
+  let mut i = 0
+  while i < to {
+    let stmt = Array::get(stmts, i)
+    if stmt_is_type_decl(stmt) {
+      Array::push(out, stmt)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  i = 0
+  while i < to {
+    match Array::get(stmts, i) {
+      SModule(_, _, body) => collect_visible_type_stmts(body, Array::length(body), out),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+export fn recursive_alias_flags(stmts: Array[Stmt]) -> Array[Bool] {
+  let flags = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      STypeAlias(_, name, params, body) => Array::push(flags, alias_decl_is_recursive(stmts, name, params, body)),
+      _ => Array::push(flags, false)
+    }
+    i = i + 1
+  }
+  flags
+}
+
+export fn alias_expansion_node_limit() -> Int {
+  262144
+}
+
+export fn capped_type_node_add(total: Int, extra: Int, limit: Int) -> Int {
+  if total > limit || extra > limit || total > limit - extra {
+    limit + 1
+  } else {
+    total + extra
+  }
+}
+
+export fn type_param_index(params: Array[String], name: String) -> Int {
+  let mut found = 0 - 1
+  let mut i = 0
+  while i < Array::length(params) && found < 0 {
+    if type_param_name(Array::get(params, i)) == name {
+      found = i
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+//# Import-usage / discarded-value diagnostics (#1129, and the companion
+// "unbound non-Unit return value" request from the same batch). Both are
+// syntactic-plus-type-table post-passes over an already-parsed/checked
+// program, kept in THIS file (not checker_warning.vibe, which lives in the
+// top-level @vibe/compiler package) so `collect_all_diagnostics`
+// (runtime/typecheck_fs.vibe, already a `@vibe/compiler/checker` consumer
+// via check_program/check_program_type_table) can reach them without
+// introducing a cross-package import back from a subpackage into the
+// top-level package (the direction checker_trait.vibe's relocation into
+// this package, noted above, was moved to avoid).
+
+fn warning_names_contains(arr: Array[String], s: String) -> Bool {
+  let len = Array::length(arr)
+  let mut i = 0
+  let mut found = false
+  while i < len {
+    if Array::get(arr, i) == s {
+      found = true
+      i = len
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+fn push_ref_name(out: Array[String], name: String) -> Unit {
+  if warning_names_contains(out, name) {
+    ()
+  } else {
+    Array::push(out, name)
+  }
+}
+
+/// Every name referenced in `te`'s type positions (`TyName`/`TyApp`'s own
+/// name, plus recursively into `TyApp` args, `TyFn` params/return, and
+/// `TyTuple` members) -- so an imported `type X` counted "used" only via a
+/// type ANNOTATION (e.g. `fn f(x: X) -> Unit`) is not misreported as unused
+/// just because it never appears as a value-position `EIdent`.
+fn collect_texpr_ref_names(te: TypeExpr, out: Array[String]) -> Unit {
+  match te {
+    TyName(name) => push_ref_name(out, name),
+    TyApp(name, args) => {
+      push_ref_name(out, name)
+      let mut i = 0
+      while i < Array::length(args) {
+        collect_texpr_ref_names(Array::get(args, i), out)
+        i = i + 1
+      }
+    },
+    TyFn(params, ret, _) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        collect_texpr_ref_names(Array::get(params, i), out)
+        i = i + 1
+      }
+      collect_texpr_ref_names(ret, out)
+    },
+    TyTuple(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        collect_texpr_ref_names(Array::get(items, i), out)
+        i = i + 1
+      }
+    },
+    TyUnit => ()
+  }
+}
+
+fn collect_opt_texpr_ref_names(ty: Option[TypeExpr], out: Array[String]) -> Unit {
+  match ty {
+    Some(te) => collect_texpr_ref_names(te, out),
+    None => ()
+  }
+}
+
+/// Every `EIdent` name reachable from `expr` (value-position references,
+/// including qualified `Type::method` spellings -- the parser already folds
+/// those into a single `EIdent("Type::method", off)`, see
+/// parser_expr_primary.vibe), PLUS every type name reachable through an
+/// `EFn`'s own parameter/return annotations, an `ERecord`'s own type name
+/// and explicit type-argument list -- both otherwise invisible to a
+/// value-only walk. `bound` is the stack of names currently shadowed by an
+/// enclosing binder (function param, `let`/`let rec`/`let mut`, `for`/`loop`
+/// var, or match/handle pattern bind) -- an `EIdent` matching one of these is
+/// a reference to the LOCAL binding, never the import, so it must not count
+/// (Codex review on #1204: a param named the same as an imported value used
+/// to suppress that import's own unused warning). Each scope-introducing
+/// case pushes its bound name(s) before recursing into the scope they cover
+/// and truncates back to the saved length afterward, so a name is only
+/// shadowed for the span of code it actually covers.
+fn collect_referenced_names_expr(expr: Expr, bound: Array[String], out: Array[String]) -> Unit {
+  match expr {
+    EIdent(name, _) => if labeled_walk_shadowed(bound, name) {
+      ()
+    } else {
+      push_ref_name(out, name)
+    },
+    EInt(_) => (),
+    EFloat(_) => (),
+    EString(_, _) => (),
+    EBool(_) => (),
+    EUnit => (),
+    EBreak(opt) => match opt {
+      Some(e) => collect_referenced_names_expr(e, bound, out),
+      None => ()
+    },
+    EContinue(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        collect_referenced_names_expr(Array::get(items, i), bound, out)
+        i = i + 1
+      }
+    },
+    EReturn(e) => collect_referenced_names_expr(e, bound, out),
+    EUnaryOp(_, e) => collect_referenced_names_expr(e, bound, out),
+    ETuple(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        collect_referenced_names_expr(Array::get(items, i), bound, out)
+        i = i + 1
+      }
+    },
+    EArray(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        collect_referenced_names_expr(Array::get(items, i), bound, out)
+        i = i + 1
+      }
+    },
+    ERecord(name, fields, targs) => {
+      // #1204 Codex review: the record's OWN name (`Type::{ .. }`) is a real
+      // reference to `Type` -- struct/enum names are top-level-only (never
+      // locally bound), so no `bound` check applies here.
+      push_ref_name(out, name)
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, val) = Array::get(fields, i)
+        collect_referenced_names_expr(val, bound, out)
+        i = i + 1
+      }
+      let mut ti = 0
+      while ti < Array::length(targs) {
+        collect_texpr_ref_names(Array::get(targs, ti), out)
+        ti = ti + 1
+      }
+    },
+    EBinOp(_, l, r, _) => {
+      collect_referenced_names_expr(l, bound, out)
+      collect_referenced_names_expr(r, bound, out)
+    },
+    ECall(callee, args, _) => {
+      collect_referenced_names_expr(callee, bound, out)
+      let mut i = 0
+      while i < Array::length(args) {
+        collect_referenced_names_expr(Array::get(args, i), bound, out)
+        i = i + 1
+      }
+    },
+    EIf(cond, then_e, else_e) => {
+      collect_referenced_names_expr(cond, bound, out)
+      collect_referenced_names_expr(then_e, bound, out)
+      collect_referenced_names_expr(else_e, bound, out)
+    },
+    ELet(name, val, body, _) => {
+      // `val` is evaluated BEFORE `name` is bound (not visible to itself).
+      collect_referenced_names_expr(val, bound, out)
+      let mark = Array::length(bound)
+      Array::push(bound, name)
+      collect_referenced_names_expr(body, bound, out)
+      Array::truncate(bound, mark)
+    },
+    ELetRec(name, val, body) => {
+      // Recursive: `name` is visible in its OWN value too.
+      let mark = Array::length(bound)
+      Array::push(bound, name)
+      collect_referenced_names_expr(val, bound, out)
+      collect_referenced_names_expr(body, bound, out)
+      Array::truncate(bound, mark)
+    },
+    ELetMut(name, val, body, _) => {
+      collect_referenced_names_expr(val, bound, out)
+      let mark = Array::length(bound)
+      Array::push(bound, name)
+      collect_referenced_names_expr(body, bound, out)
+      Array::truncate(bound, mark)
+    },
+    EAssign(_, val, body) => {
+      collect_referenced_names_expr(val, bound, out)
+      collect_referenced_names_expr(body, bound, out)
+    },
+    EAssignOp(_, _, val, body) => {
+      collect_referenced_names_expr(val, bound, out)
+      collect_referenced_names_expr(body, bound, out)
+    },
+    ESeq(l, r) => {
+      collect_referenced_names_expr(l, bound, out)
+      collect_referenced_names_expr(r, bound, out)
+    },
+    EMatch(scr, arms) => {
+      collect_referenced_names_expr(scr, bound, out)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (pat, body) = Array::get(arms, i)
+        let mark = Array::length(bound)
+        labeled_walk_pat_binds(pat, bound)
+        collect_referenced_names_expr(body, bound, out)
+        Array::truncate(bound, mark)
+        i = i + 1
+      }
+    },
+    EHandle(body_expr, arms) => {
+      collect_referenced_names_expr(body_expr, bound, out)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (pat, arm_body) = Array::get(arms, i)
+        let mark = Array::length(bound)
+        labeled_walk_pat_binds(pat, bound)
+        collect_referenced_names_expr(arm_body, bound, out)
+        Array::truncate(bound, mark)
+        i = i + 1
+      }
+    },
+    EWhile(cond, body) => {
+      collect_referenced_names_expr(cond, bound, out)
+      collect_referenced_names_expr(body, bound, out)
+    },
+    ELoop(params, body) => {
+      // Every init is evaluated against the OUTER scope (no loop var is
+      // visible to any init, including its own), then all loop vars come
+      // into scope together for `body`.
+      let mark = Array::length(bound)
+      let mut i = 0
+      while i < Array::length(params) {
+        let (_, init) = Array::get(params, i)
+        collect_referenced_names_expr(init, bound, out)
+        i = i + 1
+      }
+      let mut j = 0
+      while j < Array::length(params) {
+        let (pname, _) = Array::get(params, j)
+        Array::push(bound, pname)
+        j = j + 1
+      }
+      collect_referenced_names_expr(body, bound, out)
+      Array::truncate(bound, mark)
+    },
+    EForIn(name, idx_opt, iter, body) => {
+      // #1205 Codex review: `for x, i in items { .. }` binds BOTH the item
+      // name and the optional index name as loop locals -- only pushing
+      // `name` let an import shadowed solely by the index (`i` above) keep
+      // reading as "used" via the body's own reference to its own index var.
+      collect_referenced_names_expr(iter, bound, out)
+      let mark = Array::length(bound)
+      Array::push(bound, name)
+      match idx_opt {
+        Some(idx) => Array::push(bound, idx),
+        None => ()
+      }
+      collect_referenced_names_expr(body, bound, out)
+      Array::truncate(bound, mark)
+    },
+    EFn(_, _, params, ret, _, body) => {
+      let mark = Array::length(bound)
+      let mut i = 0
+      while i < Array::length(params) {
+        let (pname, pty) = Array::get(params, i)
+        collect_opt_texpr_ref_names(pty, out)
+        Array::push(bound, labeled_param_base_name(pname))
+        i = i + 1
+      }
+      collect_opt_texpr_ref_names(ret, out)
+      collect_referenced_names_expr(body, bound, out)
+      Array::truncate(bound, mark)
+    },
+    EDot(obj, _, _, _) => collect_referenced_names_expr(obj, bound, out),
+    ELabeledArg(_, _, e) => collect_referenced_names_expr(e, bound, out),
+    EMap(fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, val) = Array::get(fields, i)
+        collect_referenced_names_expr(val, bound, out)
+        i = i + 1
+      }
+    },
+    ESpread(e) => collect_referenced_names_expr(e, bound, out),
+    EStringInterp(_) => ()
+  }
+}
+
+fn collect_referenced_names_expr_top(expr: Expr, out: Array[String]) -> Unit {
+  collect_referenced_names_expr(expr, array_empty(), out)
+}
+
+/// Broader than check_stmts' own local hoist walks: every place a name from
+/// an `import`/`import @pkg @alias` could legitimately be referenced --
+/// value positions in every statement kind that carries an `Expr`, PLUS type
+/// positions in struct/enum/suberror field types, a type alias's own
+/// target, trait method signatures, extern-let/effect-op types, and
+/// (recursively) nested `SModule` bodies.
+export fn collect_referenced_names_stmts(stmts: Array[Stmt], out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, ann, val) => {
+        collect_opt_texpr_ref_names(ann, out)
+        collect_referenced_names_expr_top(val, out)
+      },
+      SLetMut(_, ann, val) => {
+        collect_opt_texpr_ref_names(ann, out)
+        collect_referenced_names_expr_top(val, out)
+      },
+      SLetPat(_, val) => collect_referenced_names_expr_top(val, out),
+      SEnum(_, _, _, variants, _) => {
+        let mut vi = 0
+        while vi < Array::length(variants) {
+          let (_, vtypes) = Array::get(variants, vi)
+          let mut ti = 0
+          while ti < Array::length(vtypes) {
+            collect_texpr_ref_names(Array::get(vtypes, ti), out)
+            ti = ti + 1
+          }
+          vi = vi + 1
+        }
+      },
+      SSuberror(_, _, variants) => {
+        let mut vi = 0
+        while vi < Array::length(variants) {
+          let (_, vtypes) = Array::get(variants, vi)
+          let mut ti = 0
+          while ti < Array::length(vtypes) {
+            collect_texpr_ref_names(Array::get(vtypes, ti), out)
+            ti = ti + 1
+          }
+          vi = vi + 1
+        }
+      },
+      SStruct(_, _, fields, _, _, _) => {
+        let mut fi = 0
+        while fi < Array::length(fields) {
+          let (_, fty) = Array::get(fields, fi)
+          collect_texpr_ref_names(fty, out)
+          fi = fi + 1
+        }
+      },
+      STypeAlias(_, _, _, te) => collect_texpr_ref_names(te, out),
+      STrait(_, _, _, methods, _, _) => {
+        let mut mi = 0
+        while mi < Array::length(methods) {
+          let (_, ptypes, rty) = Array::get(methods, mi)
+          let mut pi = 0
+          while pi < Array::length(ptypes) {
+            collect_texpr_ref_names(Array::get(ptypes, pi), out)
+            pi = pi + 1
+          }
+          collect_texpr_ref_names(rty, out)
+          mi = mi + 1
+        }
+      },
+      SExternLet(_, te) => collect_texpr_ref_names(te, out),
+      SEffectDef(_, _, _, ops) => {
+        let mut oi = 0
+        while oi < Array::length(ops) {
+          let (_, ptypes, rty) = Array::get(ops, oi)
+          let mut pi = 0
+          while pi < Array::length(ptypes) {
+            collect_texpr_ref_names(Array::get(ptypes, pi), out)
+            pi = pi + 1
+          }
+          collect_texpr_ref_names(rty, out)
+          oi = oi + 1
+        }
+      },
+      STest(_, val) => collect_referenced_names_expr_top(val, out),
+      SBench(_, val) => collect_referenced_names_expr_top(val, out),
+      SExpr(val) => collect_referenced_names_expr_top(val, out),
+      SModule(_, _, body) => collect_referenced_names_stmts(body, out),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+fn unused_alias_referenced(used: Array[String], bare: String, qualified_prefix: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(used) {
+    let name = Array::get(used, i)
+    if name == bare || String::starts_with(name, qualified_prefix) {
+      found = true
+      i = Array::length(used)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// #1129: an `import ./f.vibe { a, b }` name (its local alias, or the
+/// original if unaliased) that is never referenced anywhere else in the
+/// SAME file, or an `import @pkg @alias` whose alias is never referenced
+/// (as `@alias`, or qualified `@alias::member`). Both are WARNING-level (not
+/// hard errors -- see the issue's own caution about the "merge a package's
+/// exports whole-program with no local call site" pattern): this only flags
+/// what is invisible to THIS file, and a caller relying on the
+/// whole-program merge lane is expected to judge each hit, not have the
+/// compile fail. Only reached after a clean type-check
+/// (collect_all_diagnostics only calls this on the success path), so the
+/// AST it sees already has #1001/#986's labeled-arg desugars and #760's
+/// Result-prelude injection applied -- neither touches import/alias
+/// statements, so this is inert either way.
+export fn detect_unused_imports(stmts: Array[Stmt]) -> Array[(String, String, String)] {
+  let used = array_empty()
+  collect_referenced_names_stmts(stmts, used)
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SImport(path, items) => {
+        let mut j = 0
+        while j < Array::length(items) {
+          let item = Array::get(items, j)
+          let orig = item.name
+          let alias = item.alias
+          let local = match alias {
+            Some(a) => a,
+            None => orig
+          }
+          if unused_alias_referenced(used, local, String::concat(local, "::")) {
+            ()
+          } else {
+            let msg = String::concat("imported name '", String::concat(local, String::concat("' from '", String::concat(path, "' is never used in this file"))))
+            Array::push(out, ("unused_import", local, msg))
+          }
+          j = j + 1
+        }
+      },
+      SAliasDecl(alias, path) => {
+        let qualified_prefix = String::concat("@", String::concat(alias, "::"))
+        let bare = String::concat("@", alias)
+        if unused_alias_referenced(used, bare, qualified_prefix) {
+          ()
+        } else {
+          let msg = String::concat("import alias '", String::concat(bare, String::concat("' for '", String::concat(path, "' is never used in this file (referenced elsewhere in a whole-program merge? consider a named import instead)"))))
+          Array::push(out, ("unused_import", alias, msg))
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn import_items_have_unaliased_owner(items: Array[ImportItem], owner: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(items) {
+    let item = Array::get(items, i)
+    if item.name == owner && item.alias == None {
+      found = true
+      i = Array::length(items)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// An unaliased owner import activates its exported namespace, so spelling
+/// an unaliased `Owner::member` beside it adds no binding. Keep aliased
+/// members: they intentionally introduce a distinct local name.
+export fn detect_redundant_namespace_imports(stmts: Array[Stmt]) -> Array[(String, String, String)] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SImport(path, items) => {
+        let mut j = 0
+        while j < Array::length(items) {
+          let item = Array::get(items, j)
+          let sep = String::index_of(item.name, "::")
+          if sep > 0 && item.alias == None {
+            let owner = String::substring(item.name, 0, sep)
+            if import_items_have_unaliased_owner(items, owner) {
+              let msg = String::concat("imported name '", String::concat(item.name, String::concat("' from '", String::concat(path, String::concat("' is redundant because '", String::concat(owner, String::concat("' activates its namespace; remove '", String::concat(item.name, "' from the import list"))))))))
+              Array::push(out, ("redundant_import", item.name, msg))
+            } else {
+              ()
+            }
+          } else {
+            ()
+          }
+          j = j + 1
+        }
+      },
+      SModule(_, _, body) => {
+        let nested = detect_redundant_namespace_imports(body)
+        let mut j = 0
+        while j < Array::length(nested) {
+          Array::push(out, Array::get(nested, j))
+          j = j + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// #3044: `let*` and `?` both short-circuit an `Option`; they differ only in
+/// where they exit. `?` returns from the enclosing FUNCTION, `let*` makes the
+/// enclosing BLOCK evaluate to `None`. In a function body's top-level block
+/// those are the same place, and `?` is the one spelling there -- so a
+/// `let*` on that spine is a warning naming the rewrite. A `let*` inside a
+/// nested block (an `if` / `match` arm that is not the body's tail, a block
+/// expression bound to a name) exits only that block and stays silent.
+///
+/// The parser lowers `let* x = e` to `__try_bind(e, (x) -> rest)`, so the
+/// rest of the block is the continuation lambda's body: the spine walk steps
+/// INTO that lambda instead of treating it as a new function. Every other
+/// lambda starts a spine of its own (a closure's `?` exits the closure).
+/// One warning per function body, at its first `let*`.
+export fn detect_top_level_let_star(stmts: Array[Stmt]) -> Array[(String, String, String)] {
+  let offs: Array[Int] = []
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, body) => lsw_walk(body, offs),
+      SLetMut(_, _, body) => lsw_walk(body, offs),
+      SExpr(body) => lsw_walk(body, offs),
+      STest(_, body) => lsw_walk(body, offs),
+      SBench(_, body) => lsw_walk(body, offs),
+      _ => ()
+    }
+    i = i + 1
+  }
+  let out = array_empty()
+  let mut j = 0
+  while j < Array::length(offs) {
+    let off = Array::get(offs, j)
+    let msg = String::concat("write `let x = e?` instead of `let* x = e` here: in a function body's top-level block both return `None` from the function, and `?` is the one spelling for that (`let*` is for a nested block, which it exits alone)", off_marker_len(off, 4))
+    Array::push(out, ("top_level_let_star", "let*", msg))
+    j = j + 1
+  }
+  out
+}
+
+/// Find every function literal under `e` and walk its body's spine.
+fn lsw_walk(e: Expr, offs: Array[Int]) -> Unit {
+  match e {
+    EFn(_, _, _, _, _, body) => lsw_spine(body, offs),
+    // A `let*` off every spine: its continuation is the rest of the SAME
+    // nested block, not a function body of its own.
+    ECall(EIdent("__try_bind", _), args, _) => if Array::length(args) == 2 {
+      lsw_walk(Array::get(args, 0), offs)
+      match Array::get(args, 1) {
+        EFn(_, _, _, _, _, rest) => lsw_walk(rest, offs),
+        other => lsw_walk(other, offs)
+      }
+    } else {
+      let kids = expr_children(e)
+      let mut k = 0
+      while k < Array::length(kids) {
+        lsw_walk(Array::get(kids, k), offs)
+        k = k + 1
+      }
+    },
+    _ => {
+      let kids = expr_children(e)
+      let mut k = 0
+      while k < Array::length(kids) {
+        lsw_walk(Array::get(kids, k), offs)
+        k = k + 1
+      }
+    }
+  }
+}
+
+/// Walk one function body's top-level block. The spine is iterative (a body
+/// is one deep right-nested let/seq chain); everything off the spine is
+/// searched for nested function literals only.
+fn lsw_spine(body: Expr, offs: Array[Int]) -> Unit {
+  let mut cur = body
+  let mut going = true
+  let mut reported = false
+  while going {
+    match cur {
+      ECall(EIdent("__try_bind", off), args, _) => if Array::length(args) == 2 {
+        if !reported {
+          Array::push(offs, off)
+          reported = true
+        }
+        lsw_walk(Array::get(args, 0), offs)
+        match Array::get(args, 1) {
+          EFn(_, _, _, _, _, rest) => cur = rest,
+          other => {
+            lsw_walk(other, offs)
+            going = false
+          }
+        }
+      } else {
+        lsw_walk(cur, offs)
+        going = false
+      },
+      ELet(_, v, b, _) => {
+        lsw_walk(v, offs)
+        cur = b
+      },
+      ELetMut(_, v, b, _) => {
+        lsw_walk(v, offs)
+        cur = b
+      },
+      ELetRec(_, v, b) => {
+        lsw_walk(v, offs)
+        cur = b
+      },
+      ESeq(a, b) => {
+        lsw_walk(a, offs)
+        cur = b
+      },
+      EAssign(_, v, c) => {
+        lsw_walk(v, offs)
+        cur = c
+      },
+      EAssignOp(_, _, v, c) => {
+        lsw_walk(v, offs)
+        cur = c
+      },
+      // A destructuring `let PAT = v` lowers to a one-arm match, but so does a
+      // source `match` with one arm, and the AST keeps no provenance to tell
+      // them apart (block-level destructuring admits refutable patterns
+      // too). Both are treated as a nested block: a `let*` after a
+      // destructuring `let` misses this advisory warning, rather than one
+      // inside a source match arm receiving a wrong one (Codex on #3061).
+      _ => {
+        lsw_walk(cur, offs)
+        going = false
+      }
+    }
+  }
+}
+
+/// The offset of every `ESeq(left, _)` where `left` is itself an `ECall` --
+/// a bare call statement in the middle of a block whose result is thrown
+/// away. Recurses into every other expression shape so a discard nested
+/// inside an `if`/`match`/`while`/closure body etc. is still found; the
+/// match only special-cases `ESeq` because that is the ONLY shape where a
+/// value is silently dropped (a `let`/`let mut`/assignment BINDS its value
+/// by construction, so is never a discard site).
+fn collect_discard_call_offsets_expr(expr: Expr, out: Array[Int]) -> Unit {
+  match expr {
+    ESeq(left, right) => {
+      match left {
+        ECall(_, _, call_off) => if call_off >= 0 {
+          Array::push(out, call_off)
+        } else {
+          ()
+        },
+        _ => ()
+      }
+      collect_discard_call_offsets_expr(left, out)
+      collect_discard_call_offsets_expr(right, out)
+    },
+    EIf(cond, then_e, else_e) => {
+      collect_discard_call_offsets_expr(cond, out)
+      collect_discard_call_offsets_expr(then_e, out)
+      collect_discard_call_offsets_expr(else_e, out)
+    },
+    ELet(_, val, body, _) => {
+      collect_discard_call_offsets_expr(val, out)
+      collect_discard_call_offsets_expr(body, out)
+    },
+    ELetRec(_, val, body) => {
+      collect_discard_call_offsets_expr(val, out)
+      collect_discard_call_offsets_expr(body, out)
+    },
+    ELetMut(_, val, body, _) => {
+      collect_discard_call_offsets_expr(val, out)
+      collect_discard_call_offsets_expr(body, out)
+    },
+    EAssign(_, val, body) => {
+      collect_discard_call_offsets_expr(val, out)
+      collect_discard_call_offsets_expr(body, out)
+    },
+    EAssignOp(_, _, val, body) => {
+      collect_discard_call_offsets_expr(val, out)
+      collect_discard_call_offsets_expr(body, out)
+    },
+    EMatch(scr, arms) => {
+      collect_discard_call_offsets_expr(scr, out)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, body) = Array::get(arms, i)
+        collect_discard_call_offsets_expr(body, out)
+        i = i + 1
+      }
+    },
+    EHandle(body_expr, arms) => {
+      collect_discard_call_offsets_expr(body_expr, out)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, arm_body) = Array::get(arms, i)
+        collect_discard_call_offsets_expr(arm_body, out)
+        i = i + 1
+      }
+    },
+    EWhile(cond, body) => {
+      collect_discard_call_offsets_expr(cond, out)
+      collect_discard_call_offsets_expr(body, out)
+    },
+    ELoop(params, body) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        let (_, init) = Array::get(params, i)
+        collect_discard_call_offsets_expr(init, out)
+        i = i + 1
+      }
+      collect_discard_call_offsets_expr(body, out)
+    },
+    EForIn(_, _, iter, body) => {
+      collect_discard_call_offsets_expr(iter, out)
+      collect_discard_call_offsets_expr(body, out)
+    },
+    ECall(callee, args, _) => {
+      collect_discard_call_offsets_expr(callee, out)
+      let mut i = 0
+      while i < Array::length(args) {
+        collect_discard_call_offsets_expr(Array::get(args, i), out)
+        i = i + 1
+      }
+    },
+    EBinOp(_, l, r, _) => {
+      collect_discard_call_offsets_expr(l, out)
+      collect_discard_call_offsets_expr(r, out)
+    },
+    EUnaryOp(_, e) => collect_discard_call_offsets_expr(e, out),
+    ETuple(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        collect_discard_call_offsets_expr(Array::get(items, i), out)
+        i = i + 1
+      }
+    },
+    EArray(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        collect_discard_call_offsets_expr(Array::get(items, i), out)
+        i = i + 1
+      }
+    },
+    ERecord(_, fields, _) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, val) = Array::get(fields, i)
+        collect_discard_call_offsets_expr(val, out)
+        i = i + 1
+      }
+    },
+    EFn(_, _, _, _, _, body) => collect_discard_call_offsets_expr(body, out),
+    EDot(obj, _, _, _) => collect_discard_call_offsets_expr(obj, out),
+    ELabeledArg(_, _, e) => collect_discard_call_offsets_expr(e, out),
+    EMap(fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, val) = Array::get(fields, i)
+        collect_discard_call_offsets_expr(val, out)
+        i = i + 1
+      }
+    },
+    ESpread(e) => collect_discard_call_offsets_expr(e, out),
+    EReturn(e) => collect_discard_call_offsets_expr(e, out),
+    EBreak(opt) => match opt {
+      Some(e) => collect_discard_call_offsets_expr(e, out),
+      None => ()
+    },
+    EContinue(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        collect_discard_call_offsets_expr(Array::get(items, i), out)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+fn collect_discard_call_offsets_stmts(stmts: Array[Stmt], out: Array[Int]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, val) => collect_discard_call_offsets_expr(val, out),
+      SLetMut(_, _, val) => collect_discard_call_offsets_expr(val, out),
+      SLetPat(_, val) => collect_discard_call_offsets_expr(val, out),
+      STest(_, val) => collect_discard_call_offsets_expr(val, out),
+      SBench(_, val) => collect_discard_call_offsets_expr(val, out),
+      SExpr(val) => collect_discard_call_offsets_expr(val, out),
+      SModule(_, _, body) => collect_discard_call_offsets_stmts(body, out),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+fn lookup_tytab_offset(tytab: Array[(Int, Type)], off: Int) -> Option[Type] {
+  let mut i = 0
+  let mut found = None
+  while i < Array::length(tytab) {
+    let (o, t) = Array::get(tytab, i)
+    if o == off {
+      found = Some(t)
+      i = Array::length(tytab)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+fn discard_type_worth_warning(ty: Type) -> Bool {
+  match ty {
+    CtUnit => false,
+    CtUnknown => false,
+    CtVar(_) => false,
+    _ => true
+  }
+}
+
+/// The companion "unbound non-Unit return value" request: a bare call
+/// statement (`foo();` mid-block, not bound via `let`/`let _`) whose
+/// resolved return type is neither `Unit` nor still-polymorphic/unresolved.
+/// Scoped to CALL expressions specifically (not `if`/`match`/`while` used as
+/// a statement) because only `ECall` nodes get a `tytab` entry keyed by
+/// their own offset (checker.vibe's `tab_call_ty`) -- an `if`/`match` used
+/// for its side effects has no such entry to look up, so it is silently
+/// skipped rather than false-positiving. `let _ = foo()` is already how
+/// this codebase spells "discard intentionally" (see e.g.
+/// `annotation_return_type` above) and is unaffected: it is an `ELet`
+/// binding, never the left side of an `ESeq`, so it is never a candidate.
+export fn detect_unbound_nonunit_returns(stmts: Array[Stmt], tytab: Array[(Int, Type)], final_s: Subst) -> Array[String] {
+  let offsets = array_empty()
+  collect_discard_call_offsets_stmts(stmts, offsets)
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(offsets) {
+    let off = Array::get(offsets, i)
+    match lookup_tytab_offset(tytab, off) {
+      Some(ty) => {
+        let resolved = subst_apply(final_s, ty)
+        if discard_type_worth_warning(resolved) {
+          let marker = labeled_name_marker(off, 0)
+          Array::push(out, String::concat("expression result of type `", String::concat(type_to_string(resolved), String::concat("` is unused -- bind it (e.g. `let _ = ...`) if this is intentional", marker))))
+        } else {
+          ()
+        }
+      },
+      None => ()
+    }
+    i = i + 1
+  }
+  out
+}

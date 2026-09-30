@@ -1,0 +1,1803 @@
+// lib/@vibe/compiler/lowering/effects/suspend/suspend.vibe — scps anf walk.
+
+import @vibe/ast {
+  builtin_ref
+}
+
+import @vibe/compiler/core {
+  Expr, Pat, Stmt, TypeExpr
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import @vibe/compiler/lowering/effects/direct {
+  idp_is_pure_builtin_call
+}
+
+import @vibe/compiler/lowering/effects/evidence {
+  edp_collect_effect_defs
+}
+
+import @vibe/compiler/lowering/effects/queries {
+  EdpReadQuery,
+  edp_is_identity_ascription,
+  edp_rq_arms,
+  edp_rq_fold,
+  edp_str_array_contains,
+  scps_as_cps_local_call,
+  scps_as_needing_call,
+  scps_as_target_perform,
+  scps_ty_has_fn
+}
+
+import ./suspend_cps_effs_expr.vibe {
+  scps_is_safe_mut_builtin, scps_locals_with_params, scps_pat_collect_binds, scps_ty_is_plain_data
+}
+
+import ./suspend_scps_rename_ident.vibe {
+  array_empty_expr,
+  array_empty_str,
+  scps_assign_value_float,
+  scps_bubble_name,
+  scps_call_args,
+  scps_call_kind,
+  scps_callee_first_order,
+  scps_contains_susp,
+  scps_done_name,
+  scps_effect_decl_ops,
+  scps_empty_arms,
+  scps_empty_ctors,
+  scps_empty_pairs,
+  scps_empty_pats,
+  scps_empty_tys,
+  scps_exprs_contain_susp,
+  scps_fn_row_of,
+  scps_has_loop_ctl,
+  scps_inert_taint,
+  scps_is_ctor_name,
+  scps_literal_is_own_step_for,
+  scps_literal_is_step_for,
+  scps_local,
+  scps_mk_fn1,
+  scps_mk_fn2,
+  scps_perform_args,
+  scps_rename_ident,
+  scps_row_contains,
+  scps_row_has_var,
+  scps_seq_float_fresh,
+  scps_seq_float_match_arms,
+  scps_step_name,
+  scps_string_names_with,
+  scps_ty_is_array,
+  scps_ty_row,
+  scps_y_name
+}
+
+/// #1727 gap 1: the ARGUMENT side of the first-order rule above.
+///
+/// `scps_callee_first_order` refuses every callee that takes a function,
+/// because an argument could instantiate the callee's row variable to the
+/// handled effect. That is sound but it reads the callee alone -- and whether
+/// the variable can become `eff` is a property of what actually arrives HERE.
+/// When every function-typed parameter receives a literal this pass already
+/// proves inert for `eff` (`scps_is_inert_literal` -- no `eff` in its row, no
+/// row variable of its own, not a step literal, no tainted call in its body),
+/// the row variable cannot be instantiated to `eff` at this call site, so the
+/// call is E-free for the same reason a first-order one is.
+///
+/// Fails closed on everything else: a callee this pass cannot find, an
+/// untyped parameter, a missing argument, or a function-typed parameter
+/// receiving anything other than an inert literal -- a name, a call result, a
+/// field access. Those are the shapes whose row this pass cannot read, which
+/// is the same line `resolve_row_var_instantiation` draws on the checker side.
+///
+/// #3161: the literal is judged in the call site's `scope`, so it may capture
+/// a name bound there to plain data or to an inert literal
+/// (`scps_is_inert_literal_in`) -- the `TaskGroup::spawn` child that reads a
+/// count bound before its `TaskGroup::run`.
+fn scps_callee_fn_args_inert(ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), name: String, args: Array[Expr], eff: String, needing: Array[String], scope: Array[(String, Int)]) -> Bool {
+  let (stmts, _, _, _, _, _) = ctx
+  let mut found = false
+  let mut ok = false
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, snm, _, EFn(_, _, params, _, _, _)) => if snm == name {
+        found = true
+        let mut all = true
+        let mut pi = 0
+        while pi < Array::length(params) {
+          let (_, pty) = Array::get(params, pi)
+          match pty {
+            Some(t) => if scps_ty_has_fn(t) {
+              if pi < Array::length(args) && scps_is_inert_literal_in(Array::get(args, pi), eff, needing, ctx, scope) {
+                ()
+              } else {
+                all = false
+              }
+            } else {
+              ()
+            },
+            None => {
+              all = false
+            }
+          }
+          pi = pi + 1
+        }
+        ok = all
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found && ok
+}
+
+/// #1727 gap 1: `scps_named_call_ok` plus the argument-side widening above.
+/// Only reachable when the name-only rule already refused, and only admits the
+/// one clause it refused for -- a known function whose row does NOT carry
+/// `eff` but DOES carry a variable, called with provably inert functions.
+export fn scps_named_call_with_args_ok(name: String, args: Array[Expr], sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), scope: Array[(String, Int)]) -> Bool {
+  if scps_named_call_ok(name, sctx, ctx, scope) {
+    true
+  } else {
+    let (eff, _, needing, _, _) = sctx
+    // A local binding keeps the lexical classification rule; only top-level
+    // functions have a declared row this can read.
+    if scps_local_class(scope, name) >= 0 {
+      false
+    } else {
+      let (is_fn, row) = scps_fn_row_of(ctx, name)
+      is_fn && !scps_row_contains(ctx, row, eff) && scps_row_has_var(row) && scps_callee_fn_args_inert(ctx, name, args, eff, needing, scope)
+    }
+  }
+}
+
+/// #1536: is `v` a closure literal this pass can prove INERT for `eff`? Its row
+/// must be free of the effect (and of a row variable), it must not be
+/// step-split, and its own body must pass the taint scan. A local bound to one
+/// is safe both to CALL and to CAPTURE: the call cannot perform, and it returns
+/// an ordinary value rather than a step.
+///
+/// A step-split literal stays out -- calling one yields a step, meaningful only
+/// on the CPS spine, and handing it onward is what #1707 guards.
+fn scps_is_inert_literal(v: Expr, eff: String, needing: Array[String], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String])) -> Bool {
+  match v {
+    EFn(_, _, vparams, _, vef, vb) => {
+      let row_ok = match vef {
+        Some(row) => !scps_row_contains(ctx, row, eff) && !scps_row_has_var(row),
+        None => true
+      }
+      row_ok && !scps_literal_is_own_step_for(v, eff) && !scps_inert_taint(vb, eff, needing, scps_locals_with_params(array_empty_str(), vparams), ctx)
+    },
+    _ => false
+  }
+}
+
+/// #3161: `scps_is_inert_literal` judged where the literal is written. A name
+/// it captures is otherwise of unknown provenance -- it might alias a closure
+/// the prepass step-compiled -- so any capture used to taint it. A capture the
+/// enclosing `scope` classifies as plain data (`scps_kind_data`) or as an inert
+/// literal (kind 1) cannot be such a closure, so it is trusted like a name the
+/// literal binds itself.
+export fn scps_is_inert_literal_in(v: Expr, eff: String, needing: Array[String], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), scope: Array[(String, Int)]) -> Bool {
+  match v {
+    EFn(_, _, vparams, _, vef, vb) => {
+      let row_ok = match vef {
+        Some(row) => !scps_row_contains(ctx, row, eff) && !scps_row_has_var(row),
+        None => true
+      }
+      row_ok && !scps_literal_is_own_step_for(v, eff) && !scps_inert_taint(vb, eff, needing, scps_locals_with_params(scps_safe_captures(scope), vparams), ctx)
+    },
+    _ => false
+  }
+}
+
+/// #3161: the names `scope` makes safe to capture -- whose currently visible
+/// binder is plain data or an inert literal. A later binder of another kind
+/// shadows an earlier safe one, so only each name's LAST binder counts.
+export fn scps_safe_captures(scope: Array[(String, Int)]) -> Array[String] {
+  let seen = array_empty_str()
+  let out = array_empty_str()
+  let mut i = Array::length(scope) - 1
+  while i >= 0 {
+    let (nm, kind) = Array::get(scope, i)
+    if edp_str_array_contains(seen, nm) {
+      ()
+    } else {
+      Array::push(seen, nm)
+      if kind == 1 || kind == scps_kind_data() {
+        Array::push(out, nm)
+      } else {
+        ()
+      }
+    }
+    i = i - 1
+  }
+  out
+}
+
+/// #3161: the eligibility-scope class of a binder whose value is plain data --
+/// it cannot hold a closure, so capturing it smuggles nothing. The prepass
+/// keeps its own scopes, where 3 and up name an aliased top-level function
+/// (`scps_prepass_alias_class`); the two kinds of scope never meet. Calling a
+/// name of this class is refused like any opaque local (`scps_named_call_ok`
+/// admits only 1 and 2), which is moot: the checker has refused the call.
+fn scps_kind_data() -> Int {
+  3
+}
+
+/// #3161: is `v` plain data by its own syntax -- a scalar or string literal, a
+/// NON-EMPTY array or a tuple of such values, a value ascribed a plain-data
+/// type (`let n: Int = f()`, which reaches this pass as the identity
+/// ascription), or a name `scope` already classifies as data? An empty array
+/// literal is not: its element type comes from later pushes, which may be
+/// closures.
+fn scps_value_is_data(v: Expr, scope: Array[(String, Int)]) -> Bool {
+  match v {
+    EInt(_) => true,
+    EFloat(_) => true,
+    EString(_, _) => true,
+    EBool(_) => true,
+    EUnit => true,
+    EStringInterp(_) => true,
+    EUnaryOp(_, a) => scps_value_is_data(a, scope),
+    ETuple(items) => scps_values_are_data(items, scope),
+    EArray(items) => Array::length(items) > 0 && scps_values_are_data(items, scope),
+    EIdent(nm, _) => scps_local_class(scope, nm) == scps_kind_data(),
+    ECall(EFn(_, _, aparams, _, _, abody), args, _) => Array::length(args) == 1 && edp_is_identity_ascription(aparams, abody) && match Array::get(aparams, 0).1 {
+      Some(t) => scps_ty_is_plain_data(t),
+      None => false
+    },
+    _ => false
+  }
+}
+
+fn scps_values_are_data(vs: Array[Expr], scope: Array[(String, Int)]) -> Bool {
+  let mut ok = true
+  let mut i = 0
+  while ok && i < Array::length(vs) {
+    ok = scps_value_is_data(Array::get(vs, i), scope)
+    i = i + 1
+  }
+  ok
+}
+
+/// The eligibility class of `let nm = v` in `scope`: an inert literal (1), a
+/// step literal (2), plain data (`scps_kind_data`), or opaque (0). Both
+/// eligibility walks -- scps_calls_ok and the culprit walk -- bind through
+/// this, so they cannot disagree about a binder.
+export fn scps_let_kind(v: Expr, eff: String, needing: Array[String], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), scope: Array[(String, Int)]) -> Int {
+  if scps_is_inert_literal_in(v, eff, needing, ctx, scope) {
+    1
+  } else if scps_literal_is_step_for(v, eff) {
+    2
+  } else if scps_value_is_data(v, scope) {
+    scps_kind_data()
+  } else {
+    0
+  }
+}
+
+/// Spine names bound to such literals, for the capture-side gate.
+export fn scps_inert_local_literals(e: Expr, eff: String, needing: Array[String], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), out: Array[String]) -> Unit {
+  match e {
+    ELet(nm, v, b, _) => {
+      if scps_is_inert_literal(v, eff, needing, ctx) {
+        Array::push(out, nm)
+      } else {
+        ()
+      }
+      scps_inert_local_literals(b, eff, needing, ctx, out)
+    },
+    ELetMut(_, _, b, _) => scps_inert_local_literals(b, eff, needing, ctx, out),
+    ELetRec(_, _, b) => scps_inert_local_literals(b, eff, needing, ctx, out),
+    ESeq(_, b) => scps_inert_local_literals(b, eff, needing, ctx, out),
+    EAssign(_, _, b) => scps_inert_local_literals(b, eff, needing, ctx, out),
+    EAssignOp(_, _, _, b) => scps_inert_local_literals(b, eff, needing, ctx, out),
+    _ => ()
+  }
+}
+
+/// #1718 / #1720: lexical authority for every named call in the suspend
+/// eligibility and diagnostic walks. Kinds are deliberately internal integers:
+/// 0 = opaque, 1 = proven inert, 2 = CPS/step. The array is an immutable stack;
+/// reverse lookup makes the latest (currently visible) binder authoritative.
+export fn scps_local_class(scope: Array[(String, Int)], name: String) -> Int {
+  let mut i = Array::length(scope) - 1
+  let mut kind = -1
+  while i >= 0 && kind < 0 {
+    let (nm, k) = Array::get(scope, i)
+    if nm == name {
+      kind = k
+    } else {
+      ()
+    }
+    i = i - 1
+  }
+  kind
+}
+
+export fn scps_scope_bind(scope: Array[(String, Int)], name: String, kind: Int) -> Array[(String, Int)] {
+  let out = Array::slice(scope, 0, Array::length(scope))
+  Array::push(out, (name, kind))
+  out
+}
+
+export fn scps_scope_bind_names(scope: Array[(String, Int)], names: Array[String], kind: Int) -> Array[(String, Int)] {
+  let out = Array::slice(scope, 0, Array::length(scope))
+  let mut i = 0
+  while i < Array::length(names) {
+    Array::push(out, (Array::get(names, i), kind))
+    i = i + 1
+  }
+  out
+}
+
+export fn scps_scope_bind_opt(scope: Array[(String, Int)], name: Option[String], kind: Int) -> Array[(String, Int)] {
+  match name {
+    Some(nm) => scps_scope_bind(scope, nm, kind),
+    None => scope
+  }
+}
+
+export fn scps_scope_bind_params(scope: Array[(String, Int)], params: Array[(String, Option[TypeExpr])], eff: String, ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String])) -> Array[(String, Int)] {
+  let out = Array::slice(scope, 0, Array::length(scope))
+  let mut i = 0
+  while i < Array::length(params) {
+    let (nm, ty) = Array::get(params, i)
+    let row = scps_ty_row(ty)
+    let kind = if row != "" && scps_row_contains(ctx, row, eff) {
+      2
+    } else {
+      0
+    }
+    Array::push(out, (nm, kind))
+    i = i + 1
+  }
+  out
+}
+
+export fn scps_scope_bind_pat(scope: Array[(String, Int)], p: Pat) -> Array[(String, Int)] {
+  let names = array_empty_str()
+  scps_pat_collect_binds(p, names)
+  let bound = scps_scope_bind_names(scope, names, 0)
+  // #1537: an arm on this pass's own yield constructor binds its
+  // continuation last, and that binder is a step function (the rewrap of an
+  // abortive handle calls it). A source program cannot name `__ScpsY_`
+  // constructors, so nothing else is classified this way.
+  match p {
+    PCtor(q, sub) => if String::starts_with(q, "__ScpsY_") && Array::length(sub) > 0 {
+      match Array::get(sub, Array::length(sub) - 1) {
+        PBind(k) => scps_scope_bind(bound, k, 2),
+        _ => bound
+      }
+    } else {
+      bound
+    },
+    _ => bound
+  }
+}
+
+/// #1537: a `let rec` bound to a step literal is a step local, as a `let` is
+/// (the step wrapper of an abortive handle is one).
+export fn scps_letrec_kind(v: Expr, eff: String) -> Int {
+  if scps_literal_is_step_for(v, eff) {
+    2
+  } else {
+    0
+  }
+}
+
+export fn scps_scope_from_visible(visible: Array[(String, String)], eff: String, ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String])) -> Array[(String, Int)] {
+  let scope: Array[(String, Int)] = []
+  let mut i = 0
+  while i < Array::length(visible) {
+    let (nm, row) = Array::get(visible, i)
+    let kind = if row != "" && scps_row_contains(ctx, row, eff) {
+      2
+    } else {
+      0
+    }
+    Array::push(scope, (nm, kind))
+    i = i + 1
+  }
+  scope
+}
+
+export fn scps_scope_from_params(params: Array[(String, Option[TypeExpr])], eff: String, inert_generated: Array[String], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String])) -> Array[(String, Int)] {
+  let scope: Array[(String, Int)] = []
+  let mut i = 0
+  while i < Array::length(params) {
+    let (nm, ty) = Array::get(params, i)
+    let row = scps_ty_row(ty)
+    // #3161: a parameter declared plain data (`n: Int`) holds no closure.
+    let plain = match ty {
+      Some(t) => scps_ty_is_plain_data(t),
+      None => false
+    }
+    let kind = if edp_str_array_contains(inert_generated, nm) {
+      1
+    } else if row != "" && scps_row_contains(ctx, row, eff) {
+      2
+    } else if plain {
+      scps_kind_data()
+    } else {
+      0
+    }
+    Array::push(scope, (nm, kind))
+    i = i + 1
+  }
+  scope
+}
+
+/// One shared named-callee predicate for eligibility and culprit diagnostics.
+/// Lexical classification MUST precede every spelling-based authorization,
+/// including the generated prefix: source is allowed to spell `__scps_*`, so a
+/// source-bound opaque local of that spelling must remain opaque.
+fn scps_named_call_ok(name: String, sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), scope: Array[(String, Int)]) -> Bool {
+  let (eff, _, needing, _, _) = sctx
+  let kind = scps_local_class(scope, name)
+  if kind >= 0 {
+    kind == 1 || kind == 2
+  } else if String::starts_with(name, "__scps_") || String::starts_with(name, "__Scps") {
+    true
+  } else if idp_is_pure_builtin_call(name) || scps_is_safe_mut_builtin(name) || scps_is_ctor_name(ctx, name) || edp_str_array_contains(needing, name) {
+    true
+  } else {
+    let (is_fn, row) = scps_fn_row_of(ctx, name)
+    is_fn && !scps_row_contains(ctx, row, eff) && (!scps_row_has_var(row) || scps_callee_first_order(ctx, name))
+  }
+}
+
+export fn scps_first_nonempty(a: String, b: String) -> String {
+  if a != "" {
+    a
+  } else {
+    b
+  }
+}
+
+// --- step constructors.
+
+export fn scps_mk_yield(eff: String, opname: String, args: Array[Expr], bind_name: String, cont_body: Expr) -> Expr {
+  let payload = array_empty_expr()
+  let mut i = 0
+  while i < Array::length(args) {
+    Array::push(payload, Array::get(args, i))
+    i = i + 1
+  }
+  Array::push(payload, scps_mk_fn1(bind_name, cont_body))
+  ECall(EIdent(scps_y_name(eff, opname), -1), payload, -1)
+}
+
+export fn scps_mk_done(eff: String, v: Expr) -> Expr {
+  ECall(EIdent(scps_done_name(eff), -1), [v], -1)
+}
+
+// --- per-effect runtime injection: the __ScpsStep_E enum (from the
+// effect DECLARATION, so every op has its variant regardless of which
+// sites/clones use it) and the __scps_bubble_E composition combinator.
+// Injected once per effect per program.
+
+export fn scps_ensure_effect_runtime(eff: String, ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), st: (Array[Int], Array[String], Array[String], Array[String], Array[String], Array[Stmt], Array[String])) -> Unit {
+  let (_, injected, _, _, _, inj, _) = st
+  if edp_str_array_contains(injected, eff) {
+    ()
+  } else {
+    Array::push(injected, eff)
+    let (_, decl_ops) = scps_effect_decl_ops(ctx, eff)
+    // enum
+    let ctors = scps_empty_ctors()
+    let done_tys = scps_empty_tys()
+    Array::push(done_tys, TyName("Int"))
+    Array::push(ctors, (scps_done_name(eff), done_tys))
+    let mut ei = 0
+    while ei < Array::length(decl_ops) {
+      let (opname, arity) = Array::get(decl_ops, ei)
+      let ytys = scps_empty_tys()
+      let mut ti = 0
+      while ti < arity + 1 {
+        Array::push(ytys, TyName("Int"))
+        ti = ti + 1
+      }
+      Array::push(ctors, (scps_y_name(eff, opname), ytys))
+      ei = ei + 1
+    }
+    Array::push(inj, SEnum(false, scps_step_name(eff), array_empty_str(), ctors, array_empty_str()))
+    // bubble: (st, k) -> match st { Done(v) => k(v),
+    //   Y_op(p.., kk) => Y_op(p.., (rv) -> bubble(kk(rv), k)) }
+    let bname = scps_bubble_name(eff)
+    let marms = scps_empty_arms()
+    let done_pats = scps_empty_pats()
+    Array::push(done_pats, PBind("__scps_bv"))
+    Array::push(marms, (PCtor(scps_done_name(eff), done_pats), ECall(EIdent("__scps_bk", -1), [
+      EIdent("__scps_bv", -1)
+    ], -1)))
+    let mut bi = 0
+    while bi < Array::length(decl_ops) {
+      let (opname, arity) = Array::get(decl_ops, bi)
+      let ypats = scps_empty_pats()
+      let yargs = array_empty_expr()
+      let mut pi = 0
+      while pi < arity {
+        let pname = scps_local("__scps_bp", pi)
+        Array::push(ypats, PBind(pname))
+        Array::push(yargs, EIdent(pname, -1))
+        pi = pi + 1
+      }
+      Array::push(ypats, PBind("__scps_bkk"))
+      let rewrap = scps_mk_fn1("__scps_brv", ECall(EIdent(bname, -1), [
+        ECall(EIdent("__scps_bkk", -1), [EIdent("__scps_brv", -1)], -1),
+        EIdent("__scps_bk", -1)
+      ], -1))
+      Array::push(yargs, rewrap)
+      Array::push(marms, (PCtor(scps_y_name(eff, opname), ypats), ECall(EIdent(scps_y_name(eff, opname), -1), yargs, -1)))
+      bi = bi + 1
+    }
+    let bfn = scps_mk_fn2("__scps_bst", "__scps_bk", EMatch(EIdent("__scps_bst", -1), marms))
+    Array::push(inj, SLet(false, true, bname, None, bfn))
+  }
+}
+
+// --- clone worklist.
+
+export fn scps_need_clone(eff: String, fname: String, st: (Array[Int], Array[String], Array[String], Array[String], Array[String], Array[Stmt], Array[String])) -> Unit {
+  let (_, _, clone_keys, q_eff, q_fn, _, _) = st
+  let key = String::concat(String::concat(eff, "||"), fname)
+  if edp_str_array_contains(clone_keys, key) {
+    ()
+  } else {
+    Array::push(clone_keys, key)
+    Array::push(q_eff, eff)
+    Array::push(q_fn, fname)
+  }
+}
+
+// --- the body split: `e` sits in TAIL position of the computation being
+// lowered (a handle body or a clone body); the result is an expression
+// producing a __ScpsStep_E value. Suspendables (direct performs of E,
+// calls to needing functions) are only recognized on the
+// let/seq/tail/branch-tail spine. A direct recognized suspension may also
+// occupy an if condition, match scrutinee, or plain-assignment RHS: it is
+// first named by a fresh ELet, then the existing spine machinery resumes into
+// selection/assignment or a while condition. A suspension nested in a COMPOUND
+// -- an operand, a call argument, a constructor payload -- is linearized onto
+// the same spine first (scps_anf_compound). Tail `&&` / `||` is first lowered
+// to an equivalent EIf, so its condition and selected RHS can use the existing
+// branch splitter; conditional positions nested in non-tail compounds still
+// fail closed. Closure literals are handled on their own prepass step spine;
+// supported nested different-effect handles keep their existing ownership path.
+
+export fn scps_direct_spine_input(e: Expr, sctx: (String, Array[String], Array[String], Int, Array[String])) -> Bool {
+  let (_, ops, _, _, _) = sctx
+  scps_as_target_perform(e, ops) >= 0 || scps_as_needing_call(e, sctx) != "" || scps_as_cps_local_call(e, sctx) != ""
+}
+
+export fn scps_selection_fresh(e: Expr, site: Int) -> String {
+  // Reuse the scope-blind collision probe used by sequence-head floating.
+  // Passing the whole selection expression ensures the generated binder is
+  // absent from both the input and every continuation branch/arm.
+  scps_seq_float_fresh("select", e, EUnit, site)
+}
+
+// --- #1536 (a) v8: compound input linearization.
+//
+// The spine above recognizes a suspension only when it IS the whole let value,
+// assignment RHS, selection input or statement. Written any other way -- as an
+// operand (`acc + perform Get(i)`, which is also what `acc += perform Get(i)`
+// becomes once the mutable local is boxed), a call/constructor argument
+// (`Some(perform Get(i))`), a comparison in a `while` condition -- the same
+// program was rejected, so the accepted spelling depended on where the
+// suspension happened to sit rather than on what it did.
+//
+// The rewrite is A-normalization stopping at the FIRST suspension:
+//
+//   f(g(x), perform Op(i)) + 1
+//     ==>  let h0 = g(x); let h1 = perform Op(i); f(h0, h1) + 1
+//
+// Every subexpression the original evaluates BEFORE the suspension is named,
+// in evaluation order, so nothing is reordered across it: the let chain
+// replays the same reads at the same points and only the suspension itself
+// moves onto the spine, where the existing machinery splits it. Whatever
+// followed the suspension stays where it is and therefore still runs after
+// the resume. Suspensions after the first are left in the residual and picked
+// up by the next pass over it, so one operand chain converges in as many
+// rounds as it has suspensions.
+//
+// Only strictly-evaluated positions are traversed. A suspension that some
+// execution reaching the compound would NOT reach -- inside an if/match branch
+// or the right operand of `&&` / `||` -- is not linearizable this way and
+// stays fail-closed. Closure literals are step-split by `scps_prepass_expr` on
+// their own spine, and supported nested different-effect handles keep their
+// existing handler-ownership lowering; neither is floated by this helper.
+
+/// Is `e` a recognized suspension whose own inputs are already suspension-free
+/// -- i.e. one the spine can name as it stands?
+fn scps_anf_ready(e: Expr, sctx: (String, Array[String], Array[String], Int, Array[String])) -> Bool {
+  let (_, ops, _, _, _) = sctx
+  if scps_as_target_perform(e, ops) >= 0 {
+    !scps_exprs_contain_susp(scps_perform_args(e), sctx)
+  } else if scps_as_needing_call(e, sctx) != "" || scps_as_cps_local_call(e, sctx) != "" {
+    !scps_exprs_contain_susp(scps_call_args(e), sctx)
+  } else {
+    false
+  }
+}
+
+/// Values that may stay where they are instead of being named: evaluating them
+/// is unobservable and cannot yield a different result across a suspension.
+///
+/// A `let mut` read is deliberately NOT one of these. By the time this runs,
+/// scps_cellify has rewritten it into `Array::get(cell, 0)`, which is named
+/// like any other computation -- so the read keeps happening at its original
+/// point in the program even when the suspension is to its right, which is
+/// exactly what `acc += perform ..` needs.
+///
+/// A closure literal is one: the language rejects capturing a `let mut`
+/// (err_type_closure_capture_mut), so everything a literal captures is either
+/// immutable or a shared cell, and building it earlier or later is the same.
+fn scps_anf_is_atom(e: Expr) -> Bool {
+  match e {
+    EInt(_) => true,
+    EFloat(_) => true,
+    EString(_, _) => true,
+    EBool(_) => true,
+    EUnit => true,
+    EIdent(_, _) => true,
+    EFn(_, _, _, _, _, _) => true,
+    _ => false
+  }
+}
+
+/// Control transfers are not values; naming one would move the transfer.
+fn scps_anf_nameable(e: Expr) -> Bool {
+  match e {
+    EReturn(_) => false,
+    EBreak(_) => false,
+    EContinue(_) => false,
+    _ => true
+  }
+}
+
+/// ctr = (next binder ordinal, blocked flag). The flag lets `scps_anf_name`,
+/// which has to return an expression, still refuse a position.
+export fn scps_anf_ctr() -> Array[Int] {
+  [0, 0]
+}
+
+fn scps_anf_fresh(probe: Expr, site: Int, ctr: Array[Int]) -> String {
+  let n = Array::get(ctr, 0)
+  Array::set(ctr, 0, n + 1)
+  // Probe the WHOLE enclosing expression, not just the compound: the binders
+  // this mints scope over the continuation too, so a user spelling anywhere
+  // in it must push the generated name aside.
+  scps_seq_float_fresh(String::concat("anf", Int::to_string(n)), probe, EUnit, site)
+}
+
+fn scps_anf_bind(e: Expr, probe: Expr, site: Int, ctr: Array[Int], bn: Array[String], bv: Array[Expr]) -> Expr {
+  let h = scps_anf_fresh(probe, site, ctr)
+  Array::push(bn, h)
+  Array::push(bv, e)
+  EIdent(h, -1)
+}
+
+/// Name one subexpression that the original evaluates before the suspension.
+fn scps_anf_name(e: Expr, probe: Expr, site: Int, ctr: Array[Int], bn: Array[String], bv: Array[Expr]) -> Expr {
+  match e {
+    // Argument syntax, not a value: name what it wraps.
+    ELabeledArg(l, m, v) => ELabeledArg(l, m, scps_anf_name(v, probe, site, ctr, bn, bv)),
+    ESpread(v) => ESpread(scps_anf_name(v, probe, site, ctr, bn, bv)),
+    _ => if scps_anf_is_atom(e) {
+      e
+    } else if scps_anf_nameable(e) {
+      scps_anf_bind(e, probe, site, ctr, bn, bv)
+    } else {
+      Array::set(ctr, 1, 1)
+      e
+    }
+  }
+}
+
+/// Walk `e` in evaluation order. Status 0 = no suspension in `e` (unchanged),
+/// 1 = the first suspension was named and `e` rebuilt around it, 2 = blocked.
+fn scps_anf_walk(e: Expr, sctx: (String, Array[String], Array[String], Int, Array[String]), probe: Expr, site: Int, ctr: Array[Int], bn: Array[String], bv: Array[Expr]) -> (Int, Expr) {
+  if !scps_contains_susp(e, sctx) {
+    (0, e)
+  } else if scps_anf_ready(e, sctx) {
+    (1, scps_anf_bind(e, probe, site, ctr, bn, bv))
+  } else {
+    match e {
+      // A suspension inside a call's arguments -- including the operand list
+      // of a not-yet-ready `perform Op(..)`, which is a call two levels down.
+      // The callee is evaluated first and is left alone: naming it would turn
+      // a by-name call into a call through a local binding, which is the one
+      // shape the suspend lowering cannot see through.
+      ECall(callee, args, off) => if scps_contains_susp(callee, sctx) || !scps_anf_is_atom(callee) {
+        (2, e)
+      } else {
+        let (s, args2) = scps_anf_walk_exprs(args, sctx, probe, site, ctr, bn, bv)
+        if s == 1 {
+          (1, ECall(callee, args2, off))
+        } else {
+          (2, e)
+        }
+      },
+      EBinOp(op, l, r, boff) => if op == "&&" || op == "||" {
+        // Only the left operand is unconditionally evaluated.
+        if scps_contains_susp(r, sctx) {
+          // #1536: the whole short-circuit is nameable for the same reason a
+          // selection is -- this walk only reaches strictly evaluated
+          // positions -- but only if the spine will then accept
+          // `let h = l && r`. Unlike a selection, that acceptance is
+          // conditional, and a decline would send the value straight back
+          // here to be named again, which does not converge. So ask the
+          // decision procedure itself (its verdict depends only on the RHS,
+          // not on the binder or the continuation it would build).
+          if scps_contains_susp(l, sctx) {
+            (2, e)
+          } else {
+            match scps_let_shortcircuit_bind("__scps_sc_probe", r, EUnit, -1, site, sctx, false) {
+              Some(_) => (1, scps_anf_bind(e, probe, site, ctr, bn, bv)),
+              None => (2, e)
+            }
+          }
+        } else {
+          let (s, l2) = scps_anf_walk(l, sctx, probe, site, ctr, bn, bv)
+          if s == 1 {
+            (1, EBinOp(op, l2, r, boff))
+          } else {
+            (2, e)
+          }
+        }
+      } else if scps_contains_susp(l, sctx) {
+        let (s, l2) = scps_anf_walk(l, sctx, probe, site, ctr, bn, bv)
+        if s == 1 {
+          (1, EBinOp(op, l2, r, boff))
+        } else {
+          (2, e)
+        }
+      } else {
+        let l2 = scps_anf_name(l, probe, site, ctr, bn, bv)
+        let (s, r2) = scps_anf_walk(r, sctx, probe, site, ctr, bn, bv)
+        if s == 1 {
+          (1, EBinOp(op, l2, r2, boff))
+        } else {
+          (2, e)
+        }
+      },
+      EUnaryOp(op, a) => {
+        let (s, a2) = scps_anf_walk(a, sctx, probe, site, ctr, bn, bv)
+        if s == 1 {
+          (1, EUnaryOp(op, a2))
+        } else {
+          (2, e)
+        }
+      },
+      EDot(o, f, off, foff) => {
+        let (s, o2) = scps_anf_walk(o, sctx, probe, site, ctr, bn, bv)
+        if s == 1 {
+          (1, EDot(o2, f, off, foff))
+        } else {
+          (2, e)
+        }
+      },
+      ELabeledArg(l, m, v) => {
+        let (s, v2) = scps_anf_walk(v, sctx, probe, site, ctr, bn, bv)
+        if s == 1 {
+          (1, ELabeledArg(l, m, v2))
+        } else {
+          (2, e)
+        }
+      },
+      ESpread(a) => {
+        let (s, a2) = scps_anf_walk(a, sctx, probe, site, ctr, bn, bv)
+        if s == 1 {
+          (1, ESpread(a2))
+        } else {
+          (2, e)
+        }
+      },
+      ETuple(items) => {
+        let (s, items2) = scps_anf_walk_exprs(items, sctx, probe, site, ctr, bn, bv)
+        if s == 1 {
+          (1, ETuple(items2))
+        } else {
+          (2, e)
+        }
+      },
+      EArray(items) => {
+        let (s, items2) = scps_anf_walk_exprs(items, sctx, probe, site, ctr, bn, bv)
+        if s == 1 {
+          (1, EArray(items2))
+        } else {
+          (2, e)
+        }
+      },
+      ERecord(rn, fields, targs) => {
+        let (s, fields2) = scps_anf_walk_fields(fields, sctx, probe, site, ctr, bn, bv)
+        if s == 1 {
+          (1, ERecord(rn, fields2, targs))
+        } else {
+          (2, e)
+        }
+      },
+      EMap(fields) => {
+        let (s, fields2) = scps_anf_walk_fields(fields, sctx, probe, site, ctr, bn, bv)
+        if s == 1 {
+          (1, EMap(fields2))
+        } else {
+          (2, e)
+        }
+      },
+      // #1536: a selection is NOT walked into -- naming a suspension that
+      // lives in one branch would run the operation on the path that does not
+      // select that branch. But the selection AS A WHOLE is an ordinary
+      // subexpression of the compound, and this walk only reaches strictly
+      // evaluated positions, so it can be named exactly where it stands. That
+      // puts `let h = if c { .. } else { .. }` on the spine, which the binding
+      // distribution then lowers -- so `1 + (if c { perform .. } else { 0 })`
+      // is accepted without the conditional position ever being floated out of.
+      //
+      // A selection carrying `break` / `continue` / `return` is left blocked
+      // here rather than named: those transfers do not survive being moved
+      // into a binding, and the distribution refuses them anyway.
+      EIf(_, _, _) => if scps_has_loop_ctl(e) {
+        (2, e)
+      } else {
+        (1, scps_anf_bind(e, probe, site, ctr, bn, bv))
+      },
+      EMatch(_, _) => if scps_has_loop_ctl(e) {
+        (2, e)
+      } else {
+        (1, scps_anf_bind(e, probe, site, ctr, bn, bv))
+      },
+      _ => (2, e)
+    }
+  }
+}
+
+fn scps_anf_walk_exprs(es: Array[Expr], sctx: (String, Array[String], Array[String], Int, Array[String]), probe: Expr, site: Int, ctr: Array[Int], bn: Array[String], bv: Array[Expr]) -> (Int, Array[Expr]) {
+  let mut idx = -1
+  let mut i = 0
+  while i < Array::length(es) {
+    if idx < 0 {
+      if scps_contains_susp(Array::get(es, i), sctx) {
+        idx = i
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if idx < 0 {
+    (0, es)
+  } else {
+    let out = array_empty_expr()
+    let mut j = 0
+    while j < idx {
+      Array::push(out, scps_anf_name(Array::get(es, j), probe, site, ctr, bn, bv))
+      j = j + 1
+    }
+    let (s, hit) = scps_anf_walk(Array::get(es, idx), sctx, probe, site, ctr, bn, bv)
+    Array::push(out, hit)
+    // Everything after the first suspension keeps its place: it already ran
+    // after it, and it still does.
+    let mut k = idx + 1
+    while k < Array::length(es) {
+      Array::push(out, Array::get(es, k))
+      k = k + 1
+    }
+    if s == 1 {
+      (1, out)
+    } else {
+      (2, es)
+    }
+  }
+}
+
+fn scps_anf_walk_fields(fields: Array[(String, Expr)], sctx: (String, Array[String], Array[String], Int, Array[String]), probe: Expr, site: Int, ctr: Array[Int], bn: Array[String], bv: Array[Expr]) -> (Int, Array[(String, Expr)]) {
+  let mut idx = -1
+  let mut i = 0
+  while i < Array::length(fields) {
+    let (_, fv) = Array::get(fields, i)
+    if idx < 0 {
+      if scps_contains_susp(fv, sctx) {
+        idx = i
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if idx < 0 {
+    (0, fields)
+  } else {
+    let out = scps_empty_pairs()
+    let mut j = 0
+    while j < idx {
+      let (fn0, fv0) = Array::get(fields, j)
+      Array::push(out, (fn0, scps_anf_name(fv0, probe, site, ctr, bn, bv)))
+      j = j + 1
+    }
+    let (hn, hv) = Array::get(fields, idx)
+    let (s, hit) = scps_anf_walk(hv, sctx, probe, site, ctr, bn, bv)
+    Array::push(out, (hn, hit))
+    let mut k = idx + 1
+    while k < Array::length(fields) {
+      Array::push(out, Array::get(fields, k))
+      k = k + 1
+    }
+    if s == 1 {
+      (1, out)
+    } else {
+      (2, fields)
+    }
+  }
+}
+
+/// Linearize `sub` (a compound occupying a spine slot of `probe`). Returns
+/// `(ok, binder names, binder values, residual)`; the binders are meant to be
+/// wrapped around the whole rebuilt slot with `scps_anf_wrap`.
+export fn scps_anf_compound(sub: Expr, sctx: (String, Array[String], Array[String], Int, Array[String]), probe: Expr, site: Int) -> (Bool, Array[String], Array[Expr], Expr) {
+  let bn = array_empty_str()
+  let bv = array_empty_expr()
+  let ctr = scps_anf_ctr()
+  let (s, out) = scps_anf_walk(sub, sctx, probe, site, ctr, bn, bv)
+  if s == 1 && Array::get(ctr, 1) == 0 && Array::length(bn) > 0 {
+    (true, bn, bv, out)
+  } else {
+    // Partial bindings are dropped with the arrays; nothing observed them.
+    (false, bn, bv, sub)
+  }
+}
+
+export fn scps_anf_wrap(bn: Array[String], bv: Array[Expr], body: Expr) -> Expr {
+  let mut out = body
+  let mut i = Array::length(bn) - 1
+  while i >= 0 {
+    out = ELet(Array::get(bn, i), Array::get(bv, i), out, -1)
+    i = i - 1
+  }
+  out
+}
+
+/// Push one immutable-let binding into the terminal of a selected short-circuit
+/// RHS block. Only parser-produced let/sequence continuation spines are
+/// traversed, and every suspending spine element must already be a direct input
+/// accepted by scps_split_tail. A plain terminal is valid only after that spine
+/// carried the selected suspension; control-transfer and arbitrary compound
+/// terminals stay closed.
+/// Moving the outer continuation under a traversed let widens that binder, so
+/// alpha-rename it first using the seq-float freshness contract.
+export fn scps_let_shortcircuit_bind(result: String, rhs: Expr, continuation: Expr, result_off: Int, site: Int, sctx: (String, Array[String], Array[String], Int, Array[String]), carried: Bool) -> Option[Expr] {
+  match rhs {
+    ELet(x, v, b, off) => {
+      let susp = scps_contains_susp(v, sctx)
+      if susp && !scps_direct_spine_input(v, sctx) {
+        None
+      } else {
+        let nx = scps_seq_float_fresh(x, b, continuation, site)
+        match scps_let_shortcircuit_bind(result, scps_rename_ident(b, x, nx), continuation, result_off, site, sctx, carried || susp) {
+          Some(rest) => Some(ELet(nx, v, rest, off)),
+          None => None
+        }
+      }
+    },
+    ESeq(a, b) => {
+      let susp = scps_contains_susp(a, sctx)
+      if susp && !scps_direct_spine_input(a, sctx) {
+        None
+      } else {
+        match scps_let_shortcircuit_bind(result, b, continuation, result_off, site, sctx, carried || susp) {
+          Some(rest) => Some(ESeq(a, rest)),
+          None => None
+        }
+      }
+    },
+    // A source control transfer cannot be rebound inside the synthetic resume
+    // continuation: it would target that closure rather than its source scope.
+    EReturn(_) => None,
+    EBreak(_) => None,
+    EContinue(_) => None,
+    // #1536: a COMPOUND terminal (`perform Op(1) > 0`) is bound as it stands.
+    // The binding this produces lives inside the SELECTED branch of the
+    // lowered conditional, so everything in it is strictly evaluated once the
+    // branch is taken -- which is exactly the precondition the spine's
+    // linearization needs. If that linearization cannot handle the compound
+    // after all, the split refuses there, as it would have here.
+    _ => if scps_contains_susp(rhs, sctx) {
+      Some(ELet(result, rhs, continuation, result_off))
+    } else if carried {
+      Some(ELet(result, rhs, continuation, result_off))
+    } else {
+      None
+    }
+  }
+}
+
+/// Name direct suspension RHS values before mutable-local boxing. This pass
+/// traverses continuation-spine positions; expression normalization separately
+/// handles supported closure and nested-handle forms before this pass.
+///
+/// #1536: a block- or selection-valued RHS is reshaped here too, and for the
+/// same reason it has to happen BEFORE cellification: once `x = v` has become
+/// `Array::set(x, 0, v)`, `v` is a builtin argument, and floating it out of
+/// there would mean duplicating the evaluation of the other arguments.
+export fn scps_float_direct_assign(e: Expr, sctx: (String, Array[String], Array[String], Int, Array[String]), site: Int) -> Expr {
+  match e {
+    EAssign(x, v, b) => if scps_direct_spine_input(v, sctx) {
+      let ax = scps_seq_float_fresh("assign", e, EUnit, site)
+      ELet(ax, v, EAssign(x, EIdent(ax, -1), scps_float_direct_assign(b, sctx, site)), -1)
+    } else if scps_contains_susp(v, sctx) {
+      match scps_assign_value_float(x, v, b, site) {
+        // Each float strictly shrinks the RHS, so re-running this walk on the
+        // result converges instead of looping.
+        Some(lowered) => scps_float_direct_assign(lowered, sctx, site),
+        None => EAssign(x, v, scps_float_direct_assign(b, sctx, site))
+      }
+    } else {
+      EAssign(x, v, scps_float_direct_assign(b, sctx, site))
+    },
+    EAssignOp(nm, op, v, b) => EAssignOp(nm, op, v, scps_float_direct_assign(b, sctx, site)),
+    ELet(x, v, b, off) => ELet(x, v, scps_float_direct_assign(b, sctx, site), off),
+    ELetMut(x, v, b, off) => ELetMut(x, v, scps_float_direct_assign(b, sctx, site), off),
+    ELetRec(x, v, b) => ELetRec(x, v, scps_float_direct_assign(b, sctx, site)),
+    ESeq(a, b) => ESeq(a, scps_float_direct_assign(b, sctx, site)),
+    EIf(c, t, el) => EIf(c, scps_float_direct_assign(t, sctx, site), scps_float_direct_assign(el, sctx, site)),
+    EMatch(s, arms) => {
+      let out = scps_empty_arms()
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (p, b) = Array::get(arms, i)
+        Array::push(out, (p, scps_float_direct_assign(b, sctx, site)))
+        i = i + 1
+      }
+      EMatch(s, out)
+    },
+    _ => e
+  }
+}
+
+/// #1536: the String half. Codegen materializes a String iterand's char codes
+/// into a fresh array and iterates that (#807); indexing the String directly
+/// walks the same sequence, and Strings are immutable so nothing can change
+/// under the loop. `String::length` / `String::char_code_at` are the builtins
+/// codegen itself uses to do that materializing.
+fn scps_string_for_rewrite(name: String, str_nm: String, body: Expr, iname: String) -> Expr {
+  let len_call = ECall(builtin_ref("String::length"), [EIdent(str_nm, -1)], -1)
+  let at_call = ECall(builtin_ref("String::char_code_at"), [
+    EIdent(str_nm, -1),
+    EIdent(iname, -1)
+  ], -1)
+  let step = EAssign(iname, EBinOp("+", EIdent(iname, -1), EInt(1), -1), body)
+  EWhile(EBinOp("<", EIdent(iname, -1), len_call, -1), ELet(name, at_call, step, -1))
+}
+
+/// Names this walk can prove hold an Array, without asking the checker: a
+/// parameter annotated `Array[..]`, or a `let` bound to an array literal or
+/// carrying the same annotation. Anything else is simply not proved, and the
+/// `for` over it keeps the treatment it has today (refusal).
+export fn scps_array_names_seed(params: Array[(String, Option[TypeExpr])]) -> Array[String] {
+  let out = array_empty_str()
+  let mut i = 0
+  while i < Array::length(params) {
+    let (nm, ty) = Array::get(params, i)
+    if scps_ty_is_array(ty) {
+      Array::push(out, nm)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn scps_array_names_with(known: Array[String], nm: String, v: Expr, ty: Option[TypeExpr], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), root: Expr) -> Array[String] {
+  let out = array_empty_str()
+  let mut i = 0
+  while i < Array::length(known) {
+    let k = Array::get(known, i)
+    if k == nm {
+      ()
+    } else {
+      Array::push(out, k)
+    }
+    i = i + 1
+  }
+  let proved = match v {
+    EArray(_) => true,
+    _ => scps_ty_is_array(ty) || scps_call_kind(v, ctx, root) == "array"
+  }
+  if proved {
+    Array::push(out, nm)
+  } else {
+    ()
+  }
+  out
+}
+
+/// #1536: `for x in xs { .. perform .. }` in statement position, where `xs` is
+/// PROVED to hold an Array.
+///
+/// The proof matters because codegen keeps `EForIn` to the end and decides at
+/// RUN TIME whether the iterand is a String, materializing its bytes first
+/// (#807). Rewriting the loop at source level would make a String iterate zero
+/// times, so it is only sound where the value cannot be one.
+///
+///   for x in xs { body }  ==>  let mut i = 0
+///                              while i < Array::length(xs) {
+///                                let x = Array::get(xs, i)
+///                                i = i + 1
+///                                body
+///                              }
+///
+/// `Array::length` is re-read every iteration, as `for` requires (a body that
+/// grows the array iterates further). The index advances BEFORE the body so a
+/// `continue` in it cannot spin.
+///
+/// Only the shapes this proves are rewritten; every other `for` keeps the
+/// treatment it has today, which for a suspending body is refusal. So this can
+/// only turn a rejection into an acceptance -- no program that compiles today
+/// changes.
+fn scps_array_for_rewrite(name: String, arr: String, body: Expr, iname: String) -> Expr {
+  let len_call = ECall(builtin_ref("Array::length"), [EIdent(arr, -1)], -1)
+  let get_call = ECall(builtin_ref("Array::get"), [
+    EIdent(arr, -1),
+    EIdent(iname, -1)
+  ], -1)
+  let step = EAssign(iname, EBinOp("+", EIdent(iname, -1), EInt(1), -1), body)
+  EWhile(EBinOp("<", EIdent(iname, -1), len_call, -1), ELet(name, get_call, step, -1))
+}
+
+/// Walk the spine, tracking which names are proved arrays, and rewrite the
+/// statement-position `for` loops over them. `ctr` keeps generated index names
+/// distinct between sibling loops.
+/// Walk entry: `root` is the whole expression this walk was handed, and is
+/// threaded down unchanged so the deep cases can run the scope-blind shadowing
+/// probe below against it.
+export fn scps_elim_array_for(e: Expr, known: Array[String], kstr: Array[String], site: Int, ctr: Array[Int], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String])) -> Expr {
+  scps_elim_for_walk(e, known, kstr, site, ctr, ctx, e)
+}
+
+fn scps_elim_for_walk(e: Expr, known: Array[String], kstr: Array[String], site: Int, ctr: Array[Int], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), root: Expr) -> Expr {
+  match e {
+    ESeq(a, b) => match a {
+      EForIn(nm, idx, it, fbody) => {
+        let arr = match it {
+          EIdent(inm, _) => if edp_str_array_contains(known, inm) {
+            inm
+          } else {
+            ""
+          },
+          _ => ""
+        }
+        let indexed = match idx {
+          Some(_) => true,
+          None => false
+        }
+        let sname = match it {
+          EIdent(inm, _) => if edp_str_array_contains(kstr, inm) {
+            inm
+          } else {
+            ""
+          },
+          _ => ""
+        }
+        // #1536: a CALL iterand is proved by the callee's declared return type.
+        // The value is bound once before the loop, exactly as `for` evaluates
+        // its iterand once -- the name-based cases already have a name to reuse.
+        let callkind = scps_call_kind(it, ctx, root)
+        // #1536: a LITERAL iterand proves itself. `for x in [1, 2, 3]` and
+        // `for c in "abc"` carry their kind in the syntax, so they need no
+        // annotation and no callee lookup.
+        let lit_is_arr = match it {
+          EArray(_) => true,
+          _ => false
+        }
+        let lit_is_str = match it {
+          EString(_, _) => true,
+          _ => false
+        }
+        let call_is_arr = callkind == "array" || lit_is_arr
+        let call_is_str = callkind == "string" || lit_is_str
+        if indexed {
+          ESeq(a, scps_elim_for_walk(b, known, kstr, site, ctr, ctx, root))
+        } else if arr == "" && sname == "" && !call_is_arr && !call_is_str {
+          ESeq(a, scps_elim_for_walk(b, known, kstr, site, ctr, ctx, root))
+        } else {
+          // One fresh counter per loop: the ordinal keeps sibling loops apart
+          // and the scope-blind probe keeps it clear of anything the user
+          // spelled in the loop or its continuation.
+          let n = Array::get(ctr, 0)
+          Array::set(ctr, 0, n + 1)
+          let iname = scps_seq_float_fresh(String::concat("foriter", Int::to_string(n)), e, EUnit, site)
+          let inner = scps_elim_for_walk(fbody, known, kstr, site, ctr, ctx, root)
+          let srcname = if arr != "" {
+            arr
+          } else if sname != "" {
+            sname
+          } else {
+            scps_seq_float_fresh(String::concat("forsrc", Int::to_string(n)), e, EUnit, site)
+          }
+          let as_str = if arr != "" {
+            false
+          } else if sname != "" {
+            true
+          } else {
+            call_is_str
+          }
+          let lowered = if as_str {
+            scps_string_for_rewrite(nm, srcname, inner, iname)
+          } else {
+            scps_array_for_rewrite(nm, srcname, inner, iname)
+          }
+          let loop_part = ELetMut(iname, EInt(0), ESeq(lowered, scps_elim_for_walk(b, known, kstr, site, ctr, ctx, root)), -1)
+          if arr == "" && sname == "" {
+            ELet(srcname, it, loop_part, -1)
+          } else {
+            loop_part
+          }
+        }
+      },
+      _ => ESeq(a, scps_elim_for_walk(b, known, kstr, site, ctr, ctx, root))
+    },
+    ELet(x, v, b, off) => ELet(x, v, scps_elim_for_walk(b, scps_array_names_with(known, x, v, None, ctx, root), scps_string_names_with(kstr, x, v, None, ctx, root), site, ctr, ctx, root), off),
+    ELetMut(x, v, b, off) => ELetMut(x, v, scps_elim_for_walk(b, scps_array_names_with(known, x, v, None, ctx, root), scps_string_names_with(kstr, x, v, None, ctx, root), site, ctr, ctx, root), off),
+    ELetRec(x, v, b) => ELetRec(x, v, scps_elim_for_walk(b, known, kstr, site, ctr, ctx, root)),
+    EAssign(x, v, b) => EAssign(x, v, scps_elim_for_walk(b, known, kstr, site, ctr, ctx, root)),
+    EAssignOp(x, op, v, b) => EAssignOp(x, op, v, scps_elim_for_walk(b, known, kstr, site, ctr, ctx, root)),
+    EIf(c, t, el) => EIf(c, scps_elim_for_walk(t, known, kstr, site, ctr, ctx, root), scps_elim_for_walk(el, known, kstr, site, ctr, ctx, root)),
+    EWhile(c, b) => EWhile(c, scps_elim_for_walk(b, known, kstr, site, ctr, ctx, root)),
+    EMatch(sc, arms) => {
+      let out = scps_empty_arms()
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (p, ex) = Array::get(arms, i)
+        Array::push(out, (p, scps_elim_for_walk(ex, known, kstr, site, ctr, ctx, root)))
+        i = i + 1
+      }
+      EMatch(sc, out)
+    },
+    _ => e
+  }
+}
+
+/// #1536: hoist `return` to the tail position it already denotes, so the split
+/// never sees one.
+///
+/// In a needing fn's clone, and in a closure literal, `return v` means exactly
+/// "this computation's value is v" -- which is what the TAIL of the body means
+/// too. So the fix is not to carry an escape through the step machine; it is to
+/// move the `return` to the tail it is already talking about:
+///
+///   return v;  REST                    ==>  v                (REST is dead)
+///   if c { .. return .. } else { .. };  REST
+///                                      ==>  if c { ..; REST } else { ..; REST }
+///
+/// The second rule is the continuation distribution the suspension slices
+/// already use, with the same capture rule for match arms. It fires only when a
+/// branch actually returns, so non-returning code keeps its shape.
+///
+/// Whatever this cannot reach -- a `return` inside a loop, a let initializer, an
+/// operand -- is LEFT IN PLACE, and the caller rejects the body when any
+/// `return` survives. Being incomplete here therefore costs a rejection, never
+/// a miscompile, which is what makes it safe to land the reachable half first.
+///
+/// A nested closure is not entered: its `return` targets that closure and is
+/// already correct (`_ => e` covers EFn, EWhile, ELoop and EForIn alike).
+/// Does this expression hold a `return` inside a LOOP? Used only by the
+/// walk's fallback, to tell "a plain return the hoist will handle" from "a
+/// loop return this walk did not reach and must refuse". Nested closures are
+/// not entered (their `return` is their own).
+fn scps_loop_return_nested(e: Expr) -> Bool {
+  match e {
+    EFn(_, _, _, _, _, _) => false,
+    EWhile(_, b) => scps_body_has_return(b),
+    ELoop(_, b) => scps_body_has_return(b),
+    EForIn(_, _, _, b) => scps_body_has_return(b),
+    ELet(_, v, b, _) => scps_loop_return_nested(v) || scps_loop_return_nested(b),
+    ELetMut(_, v, b, _) => scps_loop_return_nested(v) || scps_loop_return_nested(b),
+    ELetRec(_, v, b) => scps_loop_return_nested(v) || scps_loop_return_nested(b),
+    ESeq(a, b) => scps_loop_return_nested(a) || scps_loop_return_nested(b),
+    EAssign(_, v, b) => scps_loop_return_nested(v) || scps_loop_return_nested(b),
+    EAssignOp(_, _, v, b) => scps_loop_return_nested(v) || scps_loop_return_nested(b),
+    EIf(c, t, el) => scps_loop_return_nested(c) || scps_loop_return_nested(t) || scps_loop_return_nested(el),
+    EMatch(s, arms) => scps_loop_return_nested(s) || scps_loop_arms_return_nested(arms),
+    EHandle(b, arms) => scps_loop_return_nested(b) || scps_loop_arms_return_nested(arms),
+    _ => false
+  }
+}
+
+fn scps_loop_arms_return_nested(arms: Array[(Pat, Expr)]) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(arms) {
+    let (_, ex) = Array::get(arms, i)
+    if scps_loop_return_nested(ex) {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+/// `if returned { break } else { () }` -- placed after a nested returning loop
+/// so the exit keeps travelling outward one level at a time.
+fn scps_loop_return_guard(flag: String) -> Expr {
+  EIf(EIdent(flag, -1), EBreak(None), EUnit)
+}
+
+/// Replace every `return v` in a loop body with "record and leave the loop".
+/// The recorded value is picked up by the `if returned { return .. }` the
+/// caller places after the loop, where the ordinary hoist can reach it.
+/// Nested closures keep their own `return` (`_ => e` covers EFn).
+fn scps_loop_return_to_break(e: Expr, flag: String, slot: String) -> Expr {
+  match e {
+    EReturn(v) => EAssign(slot, v, EAssign(flag, EBool(true), EBreak(None))),
+    ESeq(a, b) => match a {
+      EReturn(v) => EAssign(slot, v, EAssign(flag, EBool(true), EBreak(None))),
+      // A NESTED loop that returns: rewrite it the same way, then guard the
+      // enclosing loop's continuation. `break` leaves one level, so each level
+      // needs its own -- that is what carries the exit outward.
+      EWhile(c, wb) => if scps_body_has_return(wb) {
+        ESeq(EWhile(c, scps_loop_return_to_break(wb, flag, slot)), ESeq(scps_loop_return_guard(flag), scps_loop_return_to_break(b, flag, slot)))
+      } else {
+        ESeq(a, scps_loop_return_to_break(b, flag, slot))
+      },
+      _ => ESeq(scps_loop_return_to_break(a, flag, slot), scps_loop_return_to_break(b, flag, slot))
+    },
+    // A nested returning loop in TAIL position still needs the guard: without
+    // it the enclosing loop would simply iterate again.
+    EWhile(c, wb) => if scps_body_has_return(wb) {
+      ESeq(EWhile(c, scps_loop_return_to_break(wb, flag, slot)), scps_loop_return_guard(flag))
+    } else {
+      e
+    },
+    ELet(x, v, b, off) => ELet(x, v, scps_loop_return_to_break(b, flag, slot), off),
+    ELetMut(x, v, b, off) => ELetMut(x, v, scps_loop_return_to_break(b, flag, slot), off),
+    ELetRec(x, v, b) => ELetRec(x, v, scps_loop_return_to_break(b, flag, slot)),
+    EAssign(x, v, b) => EAssign(x, v, scps_loop_return_to_break(b, flag, slot)),
+    EAssignOp(x, op, v, b) => EAssignOp(x, op, v, scps_loop_return_to_break(b, flag, slot)),
+    EIf(c, t, el) => EIf(c, scps_loop_return_to_break(t, flag, slot), scps_loop_return_to_break(el, flag, slot)),
+    EMatch(s, arms) => {
+      let out = scps_empty_arms()
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (p, body) = Array::get(arms, i)
+        Array::push(out, (p, scps_loop_return_to_break(body, flag, slot)))
+        i = i + 1
+      }
+      EMatch(s, out)
+    },
+    _ => e
+  }
+}
+
+/// #1536: a `return` inside a suspending `while` body. The hoist below cannot
+/// move it to the body's tail -- a loop body's tail is the NEXT ITERATION, not
+/// the function's value -- and the loop closure the split builds cannot return
+/// from the function around it. Nothing new is needed to express it, though:
+/// `break` already leaves such a loop (追記47), and a `return` on the spine
+/// AFTER the loop is already handled. So record the value, leave the loop, and
+/// return it outside:
+///
+///   while c { .. return v .. }   ==>  let mut returned = false
+///   REST                              let mut slot = 0
+///                                     while c { .. slot = v; returned = true; break .. }
+///                                     if returned { return slot } else { REST }
+///
+/// The trailing `return` is then hoisted by scps_elim_returns like any other.
+/// Both binders are minted with the usual scope-blind freshness probe.
+///
+/// A `return` nested several loops deep works too: each level records-and-breaks
+/// and is followed by a guard that carries the exit outward one level at a time
+/// (scps_loop_return_guard). Returns None only for a loop return this walk did
+/// not reach at all, leaving the body for the caller to refuse.
+export fn scps_elim_loop_returns(e: Expr, site: Int) -> Option[Expr] {
+  match e {
+    ESeq(a, b) => match a {
+      EWhile(c, wb) => if scps_body_has_return(wb) {
+        let flag = scps_seq_float_fresh("returned", e, EUnit, site)
+        let slot = scps_seq_float_fresh("retslot", e, EUnit, site)
+        let wb2 = scps_loop_return_to_break(wb, flag, slot)
+        Some(ELetMut(flag, EBool(false), ELetMut(slot, EInt(0), ESeq(EWhile(c, wb2), EIf(EIdent(flag, -1), EReturn(EIdent(slot, -1)), b)), -1), -1))
+      } else {
+        match scps_elim_loop_returns(b, site) {
+          Some(b2) => Some(ESeq(a, b2)),
+          None => None
+        }
+      },
+      _ => match scps_elim_loop_returns(b, site) {
+        Some(b2) => Some(ESeq(a, b2)),
+        None => None
+      }
+    },
+    ELet(x, v, b, off) => match scps_elim_loop_returns(b, site) {
+      Some(b2) => Some(ELet(x, v, b2, off)),
+      None => None
+    },
+    ELetMut(x, v, b, off) => match scps_elim_loop_returns(b, site) {
+      Some(b2) => Some(ELetMut(x, v, b2, off)),
+      None => None
+    },
+    ELetRec(x, v, b) => match scps_elim_loop_returns(b, site) {
+      Some(b2) => Some(ELetRec(x, v, b2)),
+      None => None
+    },
+    EAssign(x, v, b) => match scps_elim_loop_returns(b, site) {
+      Some(b2) => Some(EAssign(x, v, b2)),
+      None => None
+    },
+    EAssignOp(x, op, v, b) => match scps_elim_loop_returns(b, site) {
+      Some(b2) => Some(EAssignOp(x, op, v, b2)),
+      None => None
+    },
+    // A bare loop in TAIL position has no continuation to guard; the `return`
+    // becomes the value of what follows it, which is nothing.
+    EWhile(c, wb) => if scps_body_has_return(wb) {
+      let flag = scps_seq_float_fresh("returned", e, EUnit, site)
+      let slot = scps_seq_float_fresh("retslot", e, EUnit, site)
+      let wb2 = scps_loop_return_to_break(wb, flag, slot)
+      Some(ELetMut(flag, EBool(false), ELetMut(slot, EInt(0), ESeq(EWhile(c, wb2), EIf(EIdent(flag, -1), EReturn(EIdent(slot, -1)), EUnit)), -1), -1))
+    } else {
+      Some(e)
+    },
+    // Everything else passes through UNCHANGED. A plain `return` here is not
+    // this rewrite's business -- scps_elim_returns hoists it. Only a `return`
+    // sitting inside a loop this walk did not reach (one held by a selection
+    // branch, an initializer, an operand) is refused, by returning None for
+    // the caller to turn into the #1691 diagnostic.
+    _ => if scps_loop_return_nested(e) {
+      None
+    } else {
+      Some(e)
+    }
+  }
+}
+
+/// What a hoisted `return v` becomes. With no cell (`flag == ""`) the value IS
+/// the result -- the function case, where the body's tail is what `return`
+/// already denotes. With a cell, the value is recorded and the body finishes
+/// with a placeholder, because the caller (a handle) must hand its own value
+/// back before the real return can happen outside it.
+fn scps_return_terminal(v: Expr, flag: String, slot: String) -> Expr {
+  if flag == "" {
+    v
+  } else {
+    EAssign(slot, v, EAssign(flag, EBool(true), EInt(0)))
+  }
+}
+
+export fn scps_elim_returns(e: Expr, site: Int) -> Expr {
+  scps_elim_returns_to(e, site, "", "")
+}
+
+export fn scps_elim_returns_to(e: Expr, site: Int, flag: String, slot: String) -> Expr {
+  match e {
+    EReturn(v) => scps_return_terminal(v, flag, slot),
+    ESeq(a, b) => match a {
+      // A transfer makes the rest of the sequence unreachable.
+      EReturn(v) => scps_return_terminal(v, flag, slot),
+      EIf(c, t, el) => if scps_body_has_return(t) || scps_body_has_return(el) {
+        scps_elim_returns_to(EIf(c, ESeq(t, b), ESeq(el, b)), site, flag, slot)
+      } else {
+        ESeq(a, scps_elim_returns_to(b, site, flag, slot))
+      },
+      EMatch(s, arms) => if scps_body_arms_have_return(arms) {
+        scps_elim_returns_to(EMatch(s, scps_seq_float_match_arms(arms, b, site)), site, flag, slot)
+      } else {
+        ESeq(a, scps_elim_returns_to(b, site, flag, slot))
+      },
+      _ => ESeq(a, scps_elim_returns_to(b, site, flag, slot))
+    },
+    ELet(x, v, b, off) => ELet(x, v, scps_elim_returns_to(b, site, flag, slot), off),
+    ELetMut(x, v, b, off) => ELetMut(x, v, scps_elim_returns_to(b, site, flag, slot), off),
+    ELetRec(x, v, b) => ELetRec(x, v, scps_elim_returns_to(b, site, flag, slot)),
+    EAssign(x, v, b) => EAssign(x, v, scps_elim_returns_to(b, site, flag, slot)),
+    EAssignOp(x, op, v, b) => EAssignOp(x, op, v, scps_elim_returns_to(b, site, flag, slot)),
+    EIf(c, t, el) => EIf(c, scps_elim_returns_to(t, site, flag, slot), scps_elim_returns_to(el, site, flag, slot)),
+    EMatch(s, arms) => {
+      let out = scps_empty_arms()
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (p, body) = Array::get(arms, i)
+        Array::push(out, (p, scps_elim_returns_to(body, site, flag, slot)))
+        i = i + 1
+      }
+      EMatch(s, out)
+    },
+    _ => e
+  }
+}
+
+/// A `return` inside the loop body targets the FUNCTION, which a loop closure
+/// cannot express. Nested closures own their own `return`, so the scan stops
+/// at them (the same boundary scps_has_loop_ctl uses).
+export fn scps_body_has_return(e: Expr) -> Bool {
+  edp_rq_fold(RQBodyReturn, e) > 0
+}
+
+export fn scps_body_arms_have_return(arms: Array[(Pat, Expr)]) -> Bool {
+  edp_rq_arms(RQBodyReturn, arms, false) > 0
+}
+
+/// #1536: is this expression an unconditional transfer out of the enclosing
+/// loop iteration? Nothing sequenced after one runs, which is what lets the
+/// repeat-append and the ctl rewrite below drop the dead tail.
+/// Does every execution of `e` leave the loop (or restart it)?
+///
+/// #1536 P0: this used to recognize only a BARE `break` / `continue`, so the
+/// ordinary spelling `if done { acc = v; break }` -- a transfer with a
+/// statement in front of it -- was not seen as a transfer at all. The
+/// continuation was then neither dropped by the normalizer nor cut by the
+/// rewrite, and since a rewritten transfer is a plain CALL (`k(v)`), execution
+/// FELL THROUGH it and kept looping. That compiled clean and silently returned
+/// a different answer than the same loop without a suspension in it.
+///
+/// A selection counts only when EVERY branch transfers. Nested loops, closures
+/// and handles are not entered: their transfers are not this loop's.
+fn scps_is_ctl_terminator(e: Expr) -> Bool {
+  match e {
+    EBreak(_) => true,
+    EContinue(_) => true,
+    ESeq(_, b) => scps_is_ctl_terminator(b),
+    ELet(_, _, b, _) => scps_is_ctl_terminator(b),
+    ELetMut(_, _, b, _) => scps_is_ctl_terminator(b),
+    ELetRec(_, _, b) => scps_is_ctl_terminator(b),
+    EAssign(_, _, b) => scps_is_ctl_terminator(b),
+    EAssignOp(_, _, _, b) => scps_is_ctl_terminator(b),
+    EIf(_, t, el) => scps_is_ctl_terminator(t) && scps_is_ctl_terminator(el),
+    EMatch(_, arms) => scps_arms_are_ctl_terminators(arms),
+    _ => false
+  }
+}
+
+/// Every arm transfers -- and an empty arm list does not (nothing transfers).
+fn scps_arms_are_ctl_terminators(arms: Array[(Pat, Expr)]) -> Bool {
+  let mut i = 0
+  let mut all = Array::length(arms) > 0
+  while i < Array::length(arms) {
+    let (_, ex) = Array::get(arms, i)
+    if scps_is_ctl_terminator(ex) {
+      ()
+    } else {
+      all = false
+    }
+    i = i + 1
+  }
+  all
+}
+
+/// Put every transfer of THIS loop in a TAIL slot of the body, so the append
+/// and the rewrite below see it as one. A transfer written mid-sequence --
+/// `if i >= n { break }` followed by the rest of the body, the ordinary
+/// spelling -- is not a tail until the sequence continuation is distributed
+/// into the branches it can transfer out of; after that, the statements
+/// sequenced behind the transfer are dead and drop.
+///
+/// Distribution only fires for a head that actually carries a transfer, so a
+/// body without `break`/`continue` keeps its shape. Match arms get the same
+/// binder alpha-rename the #1610 sequence-head distribution uses, for the same
+/// reason: the continuation moves under the arm's scope.
+export fn scps_loop_normalize_ctl(e: Expr, site: Int) -> Expr {
+  match e {
+    ESeq(a, b) => if scps_is_ctl_terminator(a) {
+      a
+    } else if scps_loop_ctl_remains(a) {
+      match a {
+        EIf(c, t, el) => scps_loop_normalize_ctl(EIf(c, ESeq(t, b), ESeq(el, b)), site),
+        EMatch(s, arms) => scps_loop_normalize_ctl(EMatch(s, scps_seq_float_match_arms(arms, b, site)), site),
+        _ => ESeq(scps_loop_normalize_ctl(a, site), scps_loop_normalize_ctl(b, site))
+      }
+    } else {
+      ESeq(a, scps_loop_normalize_ctl(b, site))
+    },
+    ELet(x, v, b, off) => ELet(x, v, scps_loop_normalize_ctl(b, site), off),
+    ELetMut(x, v, b, off) => ELetMut(x, v, scps_loop_normalize_ctl(b, site), off),
+    ELetRec(x, v, b) => ELetRec(x, v, scps_loop_normalize_ctl(b, site)),
+    EAssign(nm, v, b) => EAssign(nm, v, scps_loop_normalize_ctl(b, site)),
+    EAssignOp(nm, op, v, b) => EAssignOp(nm, op, v, scps_loop_normalize_ctl(b, site)),
+    EIf(c, t, el) => EIf(c, scps_loop_normalize_ctl(t, site), scps_loop_normalize_ctl(el, site)),
+    EMatch(s, arms) => {
+      let out = scps_empty_arms()
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (p, ex) = Array::get(arms, i)
+        Array::push(out, (p, scps_loop_normalize_ctl(ex, site)))
+        i = i + 1
+      }
+      EMatch(s, out)
+    },
+    _ => e
+  }
+}
+
+/// Like scps_seq_append, but for a `loop` body: a tail that already transfers
+/// (`break` / `continue`) keeps its own transfer instead of falling through to
+/// the repeat call, and statements sequenced after a transfer are dropped as
+/// the dead code they are. Nested loops and closures are not spine positions,
+/// so their own `break`/`continue` are never touched here.
+export fn scps_loop_append_repeat(e: Expr, k: Expr) -> Expr {
+  match e {
+    EBreak(_) => e,
+    EContinue(_) => e,
+    ELet(x, v, b, off) => ELet(x, v, scps_loop_append_repeat(b, k), off),
+    ELetMut(x, v, b, off) => ELetMut(x, v, scps_loop_append_repeat(b, k), off),
+    ELetRec(x, v, b) => ELetRec(x, v, scps_loop_append_repeat(b, k)),
+    ESeq(a, b) => if scps_is_ctl_terminator(a) {
+      a
+    } else {
+      ESeq(a, scps_loop_append_repeat(b, k))
+    },
+    EAssign(nm, v, b) => EAssign(nm, v, scps_loop_append_repeat(b, k)),
+    EAssignOp(nm, op, v, b) => EAssignOp(nm, op, v, scps_loop_append_repeat(b, k)),
+    EIf(c, t, el) => EIf(c, scps_loop_append_repeat(t, k), scps_loop_append_repeat(el, k)),
+    EMatch(s, arms) => {
+      let out = scps_empty_arms()
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (p, ex) = Array::get(arms, i)
+        Array::push(out, (p, scps_loop_append_repeat(ex, k)))
+        i = i + 1
+      }
+      EMatch(s, out)
+    },
+    EUnit => k,
+    _ => ESeq(e, k)
+  }
+}
+
+/// The `loop`'s parameters as call arguments, for the repeat call and for a
+/// bare `continue` (which the surface language defines as "repeat with the
+/// parameters unchanged").
+
+/// Rewrite THIS loop's transfers into calls on the CPS spine:
+///   `break v`      -> `k(v)`        (the loop's exit continuation)
+///   `continue(as)` -> `lp(as)`      (bare `continue` repeats the parameters)
+/// Nested loops (`while` / `for` / `loop`) and closures own the transfers
+/// written inside them, so the walk stops there. Values are not descended
+/// into: a transfer buried in one (`let x = if c { break } else { 1 }`) is
+/// left alone and then rejected by scps_loop_ctl_remains, rather than
+/// silently rewritten into a value position where it means something else.
+export fn scps_loop_rewrite_ctl(e: Expr, lp: String, kname: String) -> Expr {
+  match e {
+    EBreak(opt) => {
+      let bv = match opt {
+        Some(v) => v,
+        None => EUnit
+      }
+      let args = array_empty_expr()
+      Array::push(args, bv)
+      ECall(EIdent(kname, -1), args, -1)
+    },
+    // The parser's loop desugar leaves `continue` payload-less (it assigns the
+    // parameters first), so a payload here is a shape this pass has never seen:
+    // leave it, and scps_loop_ctl_remains rejects the site.
+    EContinue(args) => if Array::length(args) == 0 {
+      ECall(EIdent(lp, -1), array_empty_expr(), -1)
+    } else {
+      e
+    },
+    EWhile(_, _) => e,
+    EForIn(_, _, _, _) => e,
+    ELoop(_, _) => e,
+    EFn(_, _, _, _, _, _) => e,
+    EHandle(_, _) => e,
+    ESeq(a, b) => {
+      let a2 = scps_loop_rewrite_ctl(a, lp, kname)
+      if scps_is_ctl_terminator(a) {
+        a2
+      } else {
+        ESeq(a2, scps_loop_rewrite_ctl(b, lp, kname))
+      }
+    },
+    ELet(x, v, b, off) => ELet(x, v, scps_loop_rewrite_ctl(b, lp, kname), off),
+    ELetMut(x, v, b, off) => ELetMut(x, v, scps_loop_rewrite_ctl(b, lp, kname), off),
+    ELetRec(x, v, b) => ELetRec(x, v, scps_loop_rewrite_ctl(b, lp, kname)),
+    EAssign(nm, v, b) => EAssign(nm, v, scps_loop_rewrite_ctl(b, lp, kname)),
+    EAssignOp(nm, op, v, b) => EAssignOp(nm, op, v, scps_loop_rewrite_ctl(b, lp, kname)),
+    EIf(c, t, el) => EIf(c, scps_loop_rewrite_ctl(t, lp, kname), scps_loop_rewrite_ctl(el, lp, kname)),
+    EMatch(s, arms) => {
+      let out = scps_empty_arms()
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (p, ex) = Array::get(arms, i)
+        Array::push(out, (p, scps_loop_rewrite_ctl(ex, lp, kname)))
+        i = i + 1
+      }
+      EMatch(s, out)
+    },
+    _ => e
+  }
+}
+
+/// Any transfer belonging to THIS loop that the rewrite above did not reach
+/// (a `break` inside a let value, a call argument, an operand, ...). The scan
+/// uses the same nested-loop / closure boundaries, so an inner loop's own
+/// transfers do not count. `return` counts too: the loop becomes a closure,
+/// and a closure cannot return from the function that encloses it.
+export fn scps_loop_ctl_remains(e: Expr) -> Bool {
+  match e {
+    EBreak(_) => true,
+    EContinue(_) => true,
+    EWhile(_, _) => false,
+    EForIn(_, _, _, _) => false,
+    ELoop(_, _) => false,
+    EFn(_, _, _, _, _, _) => false,
+    ELet(_, v, b, _) => scps_loop_ctl_remains(v) || scps_loop_ctl_remains(b),
+    ELetMut(_, v, b, _) => scps_loop_ctl_remains(v) || scps_loop_ctl_remains(b),
+    ELetRec(_, v, b) => scps_loop_ctl_remains(v) || scps_loop_ctl_remains(b),
+    ESeq(a, b) => scps_loop_ctl_remains(a) || scps_loop_ctl_remains(b),
+    EIf(c, t, el) => scps_loop_ctl_remains(c) || scps_loop_ctl_remains(t) || scps_loop_ctl_remains(el),
+    EMatch(s, arms) => scps_loop_ctl_remains(s) || scps_loop_arms_ctl_remain(arms),
+    EHandle(b, arms) => scps_loop_ctl_remains(b) || scps_loop_arms_ctl_remain(arms),
+    ECall(callee, args, _) => scps_loop_ctl_remains(callee) || scps_loop_exprs_ctl_remain(args),
+    EBinOp(_, l, r, _) => scps_loop_ctl_remains(l) || scps_loop_ctl_remains(r),
+    EUnaryOp(_, a) => scps_loop_ctl_remains(a),
+    EAssign(_, v, b) => scps_loop_ctl_remains(v) || scps_loop_ctl_remains(b),
+    EAssignOp(_, _, v, b) => scps_loop_ctl_remains(v) || scps_loop_ctl_remains(b),
+    EDot(o, _, _, _) => scps_loop_ctl_remains(o),
+    ELabeledArg(_, _, v) => scps_loop_ctl_remains(v),
+    ETuple(items) => scps_loop_exprs_ctl_remain(items),
+    EArray(items) => scps_loop_exprs_ctl_remain(items),
+    ERecord(_, fields, _) => scps_loop_fields_ctl_remain(fields),
+    EMap(fields) => scps_loop_fields_ctl_remain(fields),
+    ESpread(a) => scps_loop_ctl_remains(a),
+    _ => false
+  }
+}
+
+fn scps_loop_exprs_ctl_remain(es: Array[Expr]) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(es) {
+    if scps_loop_ctl_remains(Array::get(es, i)) {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+export fn scps_loop_arms_ctl_remain(arms: Array[(Pat, Expr)]) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(arms) {
+    let (_, ex) = Array::get(arms, i)
+    if scps_loop_ctl_remains(ex) {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+fn scps_loop_fields_ctl_remain(fields: Array[(String, Expr)]) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(fields) {
+    let (_, ex) = Array::get(fields, i)
+    if scps_loop_ctl_remains(ex) {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}

@@ -1,0 +1,1093 @@
+// lib/@vibe/compiler/perceus/perceus.vibe — expr projects or matches.
+
+import @vibe/compiler/codegen/common_analysis {
+  collect_free_vars, md_consume_count_pre
+}
+
+import @vibe/core {
+  struct MutSet
+}
+
+import @vibe/compiler/core {
+  Expr,
+  Pat,
+  Stmt,
+  TypeExpr,
+  expr_child_at,
+  expr_children,
+  expr_children_pop,
+  expr_children_push,
+  expr_children_top,
+  is_exception_throw_operation
+}
+
+import ./perceus_analyze_calls.vibe {
+  pa_is_alias_dup, type_expr_is_heap
+}
+
+import ./perceus_pctx.vibe {
+  PerceusActionKind, array_contains_str_pctx, name_in, pa_is_drop, pat_names, pr_push_reuse
+}
+
+fn expr_projects_or_matches(name: String, e: Expr) -> Bool {
+  match e {
+    EDot(obj, _, _, _) =>
+    match obj {
+      EIdent(n, _) => n == name,
+      _ => expr_projects_or_matches(name, obj)
+    },
+    EMatch(scrut, arms) => {
+      let hit = match scrut {
+        EIdent(n, _) => n == name,
+        _ => expr_projects_or_matches(name, scrut)
+      }
+      if hit {
+        true
+      } else {
+        let mut i = 0
+        let mut found = false
+        while i < Array::length(arms) {
+          let (_, arm_body) = Array::get(arms, i)
+          if expr_projects_or_matches(name, arm_body) {
+            found = true
+          } else {
+            ()
+          }
+          i = i + 1
+        }
+        found
+      }
+    },
+    EHandle(body, arms) => {
+      let mut i = 0
+      let mut found = expr_projects_or_matches(name, body)
+      while i < Array::length(arms) {
+        let (_, arm_body) = Array::get(arms, i)
+        if expr_projects_or_matches(name, arm_body) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    ELet(_, val, body, _) =>
+    expr_projects_or_matches(name, val) || expr_projects_or_matches(name, body),
+    ELetRec(_, val, body) =>
+    expr_projects_or_matches(name, val) || expr_projects_or_matches(name, body),
+    ELetMut(_, val, body, _) =>
+    expr_projects_or_matches(name, val) || expr_projects_or_matches(name, body),
+    EAssign(_, val, cont) =>
+    expr_projects_or_matches(name, val) || expr_projects_or_matches(name, cont),
+    EAssignOp(_, _, val, cont) =>
+    expr_projects_or_matches(name, val) || expr_projects_or_matches(name, cont),
+    ESeq(a, b) =>
+    expr_projects_or_matches(name, a) || expr_projects_or_matches(name, b),
+    EIf(c, t, el) =>
+    expr_projects_or_matches(name, c) ||
+    expr_projects_or_matches(name, t) ||
+    expr_projects_or_matches(name, el),
+    EWhile(c, b) =>
+    expr_projects_or_matches(name, c) || expr_projects_or_matches(name, b),
+    EForIn(_, _, iter, body) =>
+    expr_projects_or_matches(name, iter) || expr_projects_or_matches(name, body),
+    ECall(callee, args, _) => {
+      let mut i = 0
+      let mut found = expr_projects_or_matches(name, callee)
+      while i < Array::length(args) {
+        if expr_projects_or_matches(name, Array::get(args, i)) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EBinOp(_, l, r, _) =>
+    expr_projects_or_matches(name, l) || expr_projects_or_matches(name, r),
+    EUnaryOp(_, o) => expr_projects_or_matches(name, o),
+    EFn(_, _, _, _, _, body) => expr_projects_or_matches(name, body),
+    ETuple(elems) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(elems) {
+        if expr_projects_or_matches(name, Array::get(elems, i)) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EArray(elems) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(elems) {
+        if expr_projects_or_matches(name, Array::get(elems, i)) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    ELoop(params, body) => {
+      let mut i = 0
+      let mut found = expr_projects_or_matches(name, body)
+      while i < Array::length(params) {
+        let (_, init) = Array::get(params, i)
+        if expr_projects_or_matches(name, init) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    ERecord(_, fields, _) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(fields) {
+        let (_, fval) = Array::get(fields, i)
+        if expr_projects_or_matches(name, fval) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EMap(fields) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(fields) {
+        let (_, fval) = Array::get(fields, i)
+        if expr_projects_or_matches(name, fval) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    ELabeledArg(_, _, inner) => expr_projects_or_matches(name, inner),
+    EReturn(inner) => expr_projects_or_matches(name, inner),
+    ESpread(inner) => expr_projects_or_matches(name, inner),
+    EBreak(opt) =>
+    match opt {
+      Some(inner) => expr_projects_or_matches(name, inner),
+      None => false
+    },
+    EContinue(args) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(args) {
+        if expr_projects_or_matches(name, Array::get(args, i)) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EInt(_) => false,
+    EFloat(_) => false,
+    EString(_, _) => false,
+    EBool(_) => false,
+    EIdent(_, _) => false,
+    EStringInterp(_) => false,
+    EUnit => false
+  }
+}
+
+/// Heap-ness decision for an owned parameter: the type annotation says heap, or
+/// (when unannotated) the body proves it via projection/match. Used by the
+/// Perceus plan and codegen so an unannotated nested-closure param that is
+/// projected no longer leaks its owned argument (ADR-0055 Stage 4).
+export fn param_is_heap_in_body(name: String, otype: Option[TypeExpr], body: Expr) -> Bool {
+  if type_expr_is_heap(otype) {
+    true
+  } else {
+    match otype {
+      None => expr_projects_or_matches(name, body),
+      Some(_) => false
+    }
+  }
+}
+
+//# ADR-0092 / #2389: plan-level reuse pairing.
+//
+// Post-pass over the function body: every `match <ident>` whose scrutinee
+// has a planned drop is scanned for arms that (a) decompose the value with
+// an all-PBind/PWild `PCtor` pattern none of whose binds is alias-bound
+// (every consume/borrow mix is admissible -- see reuse_bind_mode for how
+// the codegen keeps each bind's child alive), (b) never mention the
+// scrutinee again, (c) contain no control transfer that could skip the
+// arm's end (return/break/continue/perform -- a lambda's interior is
+// exempt: its body runs in its own frame), and (d) contain, ANYWHERE in
+// the arm outside lambda interiors, a call of a constructor-like name with
+// the SAME arity as the pattern -- the same-size constructor rebuild FBIP
+// targets. The site need not be the arm's tail: the codegen arms the
+// token for the whole arm, the first same-size constructor that runs
+// consumes it (a branch of an `if`/`match` tail, a site after a statement
+// prefix, an interior intermediate), and a path on which no site ran
+// releases the claimed block at arm end. Such an arm gets a
+// PaReuseToken/PaReuseAlloc pair (arity in `extra`). Constructor-ness and
+// float-field layout are NOT known here (no ctor table in the planner --
+// the constructor test is the spelling, see reuse_ctor_like); the RC
+// codegen re-validates both against the real table and quietly declines,
+// so a false candidate costs nothing and a printed pair in `vibe rc-plan`
+// reads as "candidate", never as a promise.
+
+/// Constructor-like callee: the last `::` segment starts with an uppercase
+/// letter (`Pair`, `Expr::ECall`, `Some`). Functions and methods are
+/// snake_case by convention, so this is the planner's only view of
+/// constructor-ness; the codegen's ctor table has the final say.
+fn reuse_ctor_like(f: String) -> Bool {
+  let n = String::length(f)
+  let mut i = 0
+  let mut start = 0
+  while i < n {
+    if String::char_code_at(f, i) == 58 {
+      start = i + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if start < n {
+    let c = String::char_code_at(f, start)
+    c >= 65 && c <= 90
+  } else {
+    false
+  }
+}
+
+/// Does `e` contain a call of a constructor-like name with exactly `arity`
+/// arguments? Lambda interiors are excluded: a lambda body compiles in its
+/// own frame with its own (empty) token state, so a site inside one can
+/// never consume this arm's token. Exported: the RC codegen's wide tier
+/// re-runs the same walk against its ctor table on the arm it fuses.
+export fn reuse_arm_has_ctor_site(e: Expr, arity: Int) -> Bool {
+  match e {
+    EFn(_, _, _, _, _, _) => false,
+    _ => {
+      let here = match e {
+        ECall(callee, args, _) => match callee {
+          EIdent(f, _) => Array::length(args) == arity && reuse_ctor_like(f),
+          _ => false
+        },
+        _ => false
+      }
+      if here {
+        true
+      } else {
+        let mark = expr_children_push(e)
+        let end = expr_children_top()
+        let mut i = mark
+        let mut found = false
+        while !found && i < end {
+          if reuse_arm_has_ctor_site(expr_child_at(i), arity) {
+            found = true
+          } else {
+            ()
+          }
+          i = i + 1
+        }
+        expr_children_pop(mark)
+        found
+      }
+    }
+  }
+}
+
+/// Any node that can transfer control past the arm's spine tail. EFn does
+/// not recurse: a return/perform inside a lambda leaves the LAMBDA, not
+/// this arm, and the lambda body compiles in its own frame with its own
+/// (empty) token state. Exported: the RC codegen re-runs this same
+/// predicate on the arm it is about to fuse, so a plan row produced by one
+/// arm can never authorize a same-scrutinee same-arity SIBLING arm that
+/// carries a control transfer (the pairing key is (name, arity), not an
+/// arm identity). Scope is DIRECT perform/throw only: a spine call whose
+/// callee unwinds internally is not blocked -- every call can throw on
+/// this lane (Array::get, arithmetic traps), so transitive blocking would
+/// reject every arm, and an unwind between the claim and the tail leaks
+/// the block without ever corrupting it, the same window the narrow
+/// fusion's spine calls (#1265) have always had and the same "safe leak,
+/// never use-after-free" class ADR-0055 accepts on unwind paths.
+export fn reuse_arm_has_blocker(e: Expr) -> Bool {
+  match e {
+    EReturn(_) => true,
+    EBreak(_) => true,
+    EContinue(_) => true,
+    EFn(_, _, _, _, _, _) => false,
+    ECall(callee, args, _) => {
+      let callee_blocks = match callee {
+        EIdent(f, _) => f == "perform" || is_exception_throw_operation(f) || f == "throw",
+        _ => reuse_arm_has_blocker(callee)
+      }
+      if callee_blocks {
+        true
+      } else {
+        let mut i = 0
+        let mut found = false
+        while !found && i < Array::length(args) {
+          if reuse_arm_has_blocker(Array::get(args, i)) {
+            found = true
+          } else {
+            ()
+          }
+          i = i + 1
+        }
+        found
+      }
+    },
+    _ => {
+      let kids = expr_children(e)
+      let mut i = 0
+      let mut found = false
+      while !found && i < Array::length(kids) {
+        if reuse_arm_has_blocker(Array::get(kids, i)) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    }
+  }
+}
+
+/// Every occurrence of `name` as an identifier in `e`, lambdas and
+/// shadowed regions INCLUDED -- deliberately an overcount. The admission
+/// below compares it against the consume count, and an overcount can only
+/// DECLINE an arm, never admit one whose reads it missed.
+export fn reuse_ident_occurrences(e: Expr, name: String) -> Int {
+  match e {
+    EIdent(n, _) => if n == name {
+      1
+    } else {
+      0
+    },
+    _ => {
+      let mark = expr_children_push(e)
+      let end = expr_children_top()
+      let mut acc = 0
+      let mut i = mark
+      while i < end {
+        acc = acc + reuse_ident_occurrences(expr_child_at(i), name)
+        i = i + 1
+      }
+      expr_children_pop(mark)
+      acc
+    }
+  }
+}
+
+/// The admission mode of one payload bind for the reuse fusion: 1 = raw
+/// transfer (consumed exactly once and that consume is its ONLY
+/// occurrence, so the consume itself releases the child), 0 = borrow-only
+/// (never consumed; the codegen releases the child at arm end), -1 = HELD:
+/// consumed once with further reads, or consumed two or more times. A held
+/// bind keeps its child alive for the WHOLE arm -- the wide tier gives it
+/// one reference per consume at staging (the normal path's dup-per-consume,
+/// see bind_match_pat) plus one base reference released at arm end, so a
+/// read sequenced after a consume can never see a freed child. That is the
+/// use-after-free PR #2416 found in a raw transfer with reads after the
+/// consume (13 became 17 in the pinned e2e case); it used to be refused by
+/// declining the whole class, and is now refused by construction. The
+/// narrow tier admits mode 1 only. Exported: both codegen tiers re-run the
+/// same predicate on the arm they fuse.
+export fn reuse_bind_mode(arm_body: Expr, bn: String, borrow_param_fns: Array[String], bmasks: Array[Int]) -> Int {
+  let cc = md_consume_count_pre(arm_body, bn, borrow_param_fns, bmasks)
+  if cc == 0 {
+    0
+  } else if cc == 1 && reuse_ident_occurrences(arm_body, bn) == 1 {
+    1
+  } else {
+    0 - 1
+  }
+}
+
+fn reuse_arm_candidate_arity(sname: String, pat: Pat, arm_body: Expr, alias_names: Array[String]) -> Int {
+  match pat {
+    PCtor(_, pargs) => {
+      let arity = Array::length(pargs)
+      if arity >= 1 && reuse_arm_has_ctor_site(arm_body, arity) && !reuse_arm_has_blocker(arm_body) {
+        let mut ok = true
+        let mut i = 0
+        while ok && i < arity {
+          match Array::get(pargs, i) {
+            // Every consume/borrow mix of a payload bind is admissible
+            // (reuse_bind_mode documents how the codegen keeps the child
+            // alive). Only an alias-bound name (PaAliasDup row anywhere in
+            // the fn) declines -- aliasing can hide an extra owner the
+            // consume count does not see; name-keyed, so a same-named
+            // alias elsewhere declines conservatively.
+            PBind(bn) => if name_in(alias_names, bn) {
+              ok = false
+            } else {
+              ()
+            },
+            PWild => (),
+            _ => ok = false
+          }
+          i = i + 1
+        }
+        let no_params: Array[String] = []
+        let no_fns: Array[String] = []
+        if ok && !name_in(collect_free_vars(arm_body, no_params, no_fns), sname) {
+          arity
+        } else {
+          0 - 1
+        }
+      } else {
+        0 - 1
+      }
+    },
+    _ => 0 - 1
+  }
+}
+
+fn plan_reuse_pairs_walk(e: Expr, drop_names: Array[String], alias_names: Array[String], actions: Array[PerceusAction]) -> Unit {
+  match e {
+    // A nested lambda's body plans in its OWN frame (compile_lambda builds
+    // a separate plan whose post-pass pairs its matches there), exactly as
+    // pc_count/pc_emit treat an EFn as capture uses only and
+    // reuse_arm_has_blocker exempts the lambda interior. Recursing past
+    // this boundary would attribute the lambda's rows to the enclosing
+    // function -- wrong FN in `vibe rc-plan`, unrealizable candidates on
+    // the enclosing ctx (#2411 review).
+    EFn(_, _, _, _, _, _) => (),
+    EMatch(scrut, arms) => {
+      match scrut {
+        EIdent(sname, _) => if name_in(drop_names, sname) {
+          let mut ai = 0
+          while ai < Array::length(arms) {
+            let (apat, abody) = Array::get(arms, ai)
+            let arity = reuse_arm_candidate_arity(sname, apat, abody, alias_names)
+            if arity >= 1 {
+              pr_push_reuse(actions, PaReuseToken, sname, arity)
+              pr_push_reuse(actions, PaReuseAlloc, sname, arity)
+            } else {
+              ()
+            }
+            ai = ai + 1
+          }
+        } else {
+          ()
+        },
+        _ => ()
+      }
+      let mark = expr_children_push(e)
+      let end = expr_children_top()
+      let mut i = mark
+      while i < end {
+        plan_reuse_pairs_walk(expr_child_at(i), drop_names, alias_names, actions)
+        i = i + 1
+      }
+      expr_children_pop(mark)
+    },
+    _ => {
+      let mark = expr_children_push(e)
+      let end = expr_children_top()
+      let mut i = mark
+      while i < end {
+        plan_reuse_pairs_walk(expr_child_at(i), drop_names, alias_names, actions)
+        i = i + 1
+      }
+      expr_children_pop(mark)
+    }
+  }
+}
+
+// #2386: the drop / alias name lists of a function are deduped through the
+// action's binding id -- dense per function, 0-based (`ctx.next_id`) -- so
+// a check is one read of a stamp table indexed by id instead of a scan of
+// every name collected so far (the compiler's larger bodies carry hundreds
+// of drop rows; `name_in` was 60 ms of a warm compile). The tables are two
+// process-wide `Array[Int]` cells stamped with a generation per plan: a
+// function allocates nothing for its dedup and the tables never grow past
+// the largest function's binding count. The generation is what keeps plans
+// apart: the previous plan's stamps have to count as absent for this one,
+// or the second function that drops `n` (the same id 0) would find it
+// "already listed", push nothing and silently lose its reuse rows. Two
+// bindings that share a name (shadowing) list the name twice; both lists
+// are read by membership only. A reuse row carries id -1 and is neither
+// kind, but an id below 0 takes the linear membership test anyway.
+let pr_drop_stamp: Array[Int] = []
+
+let pr_alias_stamp: Array[Int] = []
+
+let pr_seen_gen: Array[Int] = [0]
+
+fn pr_seen_begin() -> Unit {
+  Array::set(pr_seen_gen, 0, Array::get(pr_seen_gen, 0) + 1)
+}
+
+/// Push `name` onto `names` unless this plan already listed binding `id`:
+/// true iff pushed.
+fn pr_push_once(stamps: Array[Int], names: Array[String], id: Int, name: String) -> Bool {
+  if id < 0 {
+    if name_in(names, name) {
+      false
+    } else {
+      Array::push(names, name)
+      true
+    }
+  } else {
+    let gen = Array::get(pr_seen_gen, 0)
+    while Array::length(stamps) <= id {
+      Array::push(stamps, 0)
+    }
+    if Array::get(stamps, id) == gen {
+      false
+    } else {
+      Array::set(stamps, id, gen)
+      Array::push(names, name)
+      true
+    }
+  }
+}
+
+export fn plan_reuse_pairs(body: Expr, actions: Array[PerceusAction]) -> Unit {
+  let drop_names: Array[String] = []
+  let alias_names: Array[String] = []
+  pr_seen_begin()
+  let mut i = 0
+  while i < Array::length(actions) {
+    let a = Array::get(actions, i)
+    if pa_is_drop(a) {
+      let _ = pr_push_once(pr_drop_stamp, drop_names, a.binding_id, a.name)
+    } else {
+      ()
+    }
+    if pa_is_alias_dup(a) {
+      let _ = pr_push_once(pr_alias_stamp, alias_names, a.binding_id, a.name)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if Array::length(drop_names) > 0 {
+    plan_reuse_pairs_walk(body, drop_names, alias_names, actions)
+  } else {
+    ()
+  }
+}
+
+//# #2837: reclaiming what `Array::truncate` removes
+
+// `Array::truncate` shortens an array's LENGTH and, on its own, releases
+// nothing: the removed elements stay counted by nobody but a length the
+// destructor no longer walks, so a fill/truncate/refill loop of owned
+// elements leaks every round. Releasing them in the truncate body is wrong by
+// itself, because `Array::get` hands out an UNCOUNTED view whose only owner is
+// the array -- the reverted #2554 experiment freed exactly such a view.
+//
+// So release is decided per ARRAY, here, and only where it is proven safe:
+//
+//   1. the array is a local `let x = <fresh array>` (`[..]` or
+//      `Array::with_capacity`), so no caller or global can hold a view into
+//      it;
+//   2. every mention of `x` is the receiver of `Array::push` / `length` /
+//      `get` / `truncate`, outside any lambda -- `x` never escapes, so every
+//      view of its elements is produced in this body, by a mention of `x` or
+//      of a binding derived from one;
+//   3. every truncate of `x` sits in STATEMENT position (reached only through
+//      let bodies, sequences, if branches and loop bodies), so no temporary
+//      is live across it -- only bindings are;
+//   4. every binding enclosing a truncate whose value derives from `x`
+//      (transitively, by mention) is an immutable `let`, and is PINNED: it
+//      takes a reference of its own at its bind site and releases it at its
+//      scope end (dup-on-escape). Any other derived binder kind -- `let mut`,
+//      `for`, a match or handler arm -- declines the array;
+//   5. a pinned binding's scope result cannot carry a view past the pin's
+//      release: its result spine is provably not a derived pointer, or it
+//      flows straight to a function result the codegen knows to be
+//      Int/Bool/Char/Unit (the row's `extra` = 1 asks codegen for that);
+//   6. no `return` / `break` / `continue` / assignment / lambda carries a
+//      derived value;
+//   7. the rest of the plan counts no derived binding: a view holds no
+//      reference, so a planned dup or drop on one is accounting this proof
+//      does not cover.
+//
+// Anything else keeps today's non-releasing truncate: a bounded leak, never
+// a use-after-free. The truncate through an alias or a helper function
+// (`let alias = xs; clobber(alias)`) is exactly such a case -- rule 2
+// declines `xs`, and `clobber`'s parameter is not a fresh local.
+//
+// Rows: `PaTruncRelease(x)` followed by one `PaViewPin(v)` per pinned binding
+// of that array, all carrying the same `extra`. Codegen releases at a
+// truncate of `x` only while every one of those pins is live, so a pin the
+// codegen did not honour withdraws the release instead of freeing a view.
+
+export fn tr_is_ident(e: Expr, x: String) -> Bool {
+  match e {
+    EIdent(n, _) => n == x,
+    _ => false
+  }
+}
+
+fn tr_receiver_builtin(f: String) -> Bool {
+  f == "Array::push" || f == "Array::length" || f == "Array::get" || f == "Array::truncate"
+}
+
+/// A local `let x: T = e` reaches here as the parser's ascription wrapper
+/// `((__asc: T) -> __asc)(e)` (ascribe_wrap), which hands back `e` itself.
+fn tr_fresh_array_value(e: Expr) -> Bool {
+  match e {
+    EArray(_) => true,
+    ECall(callee, args, _) => match callee {
+      EIdent(f, _) => f == "Array::with_capacity",
+      EFn(_, _, params, _, _, body) => Array::length(params) == 1 && Array::length(args) == 1 && (Array::get(params, 0)).0 == "__asc" && tr_is_ident(body, "__asc") && tr_fresh_array_value(Array::get(args, 0)),
+      _ => false
+    },
+    _ => false
+  }
+}
+
+/// The receiver of a truncate call, or "" when `e` is not one.
+fn tr_truncate_receiver(e: Expr) -> String {
+  match e {
+    ECall(callee, args, _) => match callee {
+      EIdent(f, _) => if f == "Array::truncate" && Array::length(args) == 2 {
+        match Array::get(args, 0) {
+          EIdent(x, _) => x,
+          _ => ""
+        }
+      } else {
+        ""
+      },
+      _ => ""
+    },
+    _ => ""
+  }
+}
+
+/// Every truncate receiver named in `e`, lambdas included (a truncate inside
+/// a lambda disqualifies its receiver through rule 2 later).
+export fn tr_collect_receivers(e: Expr, out: Array[String]) -> Unit {
+  let r = tr_truncate_receiver(e)
+  if r != "" && !array_contains_str_pctx(out, r) {
+    Array::push(out, r)
+  } else {
+    ()
+  }
+  let mark = expr_children_push(e)
+  let end = expr_children_top()
+  let mut i = mark
+  while i < end {
+    tr_collect_receivers(expr_child_at(i), out)
+    i = i + 1
+  }
+  expr_children_pop(mark)
+}
+
+/// Rule 2: every mention of `x` is the receiver of a receiver builtin,
+/// outside any lambda.
+export fn tr_receiver_only(e: Expr, x: String, in_fn: Bool) -> Bool {
+  match e {
+    EIdent(n, _) => n != x,
+    ECall(callee, args, _) => {
+      let recv = match callee {
+        EIdent(f, _) => !in_fn && Array::length(args) > 0 && tr_receiver_builtin(f) && tr_is_ident(Array::get(args, 0), x),
+        _ => false
+      }
+      let mut ok = recv || tr_receiver_only(callee, x, in_fn)
+      let mut i = if recv {
+        1
+      } else {
+        0
+      }
+      while ok && i < Array::length(args) {
+        ok = tr_receiver_only(Array::get(args, i), x, in_fn)
+        i = i + 1
+      }
+      ok
+    },
+    EFn(_, _, _, _, _, body) => tr_receiver_only(body, x, true),
+    EAssign(n, v, b) => n != x && tr_receiver_only(v, x, in_fn) && tr_receiver_only(b, x, in_fn),
+    EAssignOp(n, _, v, b) => n != x && tr_receiver_only(v, x, in_fn) && tr_receiver_only(b, x, in_fn),
+    _ => {
+      let mark = expr_children_push(e)
+      let end = expr_children_top()
+      let mut ok = true
+      let mut i = mark
+      while ok && i < end {
+        ok = tr_receiver_only(expr_child_at(i), x, in_fn)
+        i = i + 1
+      }
+      expr_children_pop(mark)
+      ok
+    }
+  }
+}
+
+/// Does `e` mention any of `names` anywhere, lambdas included?
+export fn tr_mentions(e: Expr, names: Array[String]) -> Bool {
+  match e {
+    EIdent(n, _) => array_contains_str_pctx(names, n),
+    _ => {
+      let mark = expr_children_push(e)
+      let end = expr_children_top()
+      let mut hit = false
+      let mut i = mark
+      while !hit && i < end {
+        hit = tr_mentions(expr_child_at(i), names)
+        i = i + 1
+      }
+      expr_children_pop(mark)
+      hit
+    }
+  }
+}
+
+export fn tr_add(d: Array[String], n: String) -> Unit {
+  if array_contains_str_pctx(d, n) {
+    ()
+  } else {
+    Array::push(d, n)
+  }
+}
+
+export fn tr_add_pat(d: Array[String], p: Pat) -> Unit {
+  let names: Array[String] = []
+  let _ = pat_names(p, names)
+  let mut i = 0
+  while i < Array::length(names) {
+    tr_add(d, Array::get(names, i))
+    i = i + 1
+  }
+}
+
+/// Rules 4 and 6, the derivation half: grow `d` (seeded with the array) by
+/// every binder whose value mentions a derived name, in one preorder pass --
+/// a binder's value can only mention binders enclosing it, which are visited
+/// first. Returns false on a carrier rule 6 forbids.
+export fn tr_derive(e: Expr, d: Array[String]) -> Bool {
+  match e {
+    ELet(n, v, b, _) => {
+      if tr_mentions(v, d) {
+        tr_add(d, n)
+      } else {
+        ()
+      }
+      tr_derive(v, d) && tr_derive(b, d)
+    },
+    ELetMut(n, v, b, _) => {
+      if tr_mentions(v, d) {
+        tr_add(d, n)
+      } else {
+        ()
+      }
+      tr_derive(v, d) && tr_derive(b, d)
+    },
+    ELetRec(n, v, b) => {
+      if tr_mentions(v, d) {
+        tr_add(d, n)
+      } else {
+        ()
+      }
+      tr_derive(v, d) && tr_derive(b, d)
+    },
+    EForIn(n, _, it, body) => {
+      if tr_mentions(it, d) {
+        tr_add(d, n)
+      } else {
+        ()
+      }
+      tr_derive(it, d) && tr_derive(body, d)
+    },
+    EMatch(s, arms) => {
+      let from_d = tr_mentions(s, d)
+      let mut ok = tr_derive(s, d)
+      let mut i = 0
+      while ok && i < Array::length(arms) {
+        let (p, body) = Array::get(arms, i)
+        if from_d {
+          tr_add_pat(d, p)
+        } else {
+          ()
+        }
+        ok = tr_derive(body, d)
+        i = i + 1
+      }
+      ok
+    },
+    EHandle(hb, arms) => {
+      let from_d = tr_mentions(hb, d)
+      let mut ok = tr_derive(hb, d)
+      let mut i = 0
+      while ok && i < Array::length(arms) {
+        let (p, body) = Array::get(arms, i)
+        if from_d {
+          tr_add_pat(d, p)
+        } else {
+          ()
+        }
+        ok = tr_derive(body, d)
+        i = i + 1
+      }
+      ok
+    },
+    ELoop(params, body) => {
+      let mut ok = true
+      let mut i = 0
+      while ok && i < Array::length(params) {
+        let (pn, pv) = Array::get(params, i)
+        if tr_mentions(pv, d) {
+          tr_add(d, pn)
+        } else {
+          ()
+        }
+        ok = tr_derive(pv, d)
+        i = i + 1
+      }
+      ok && tr_derive(body, d)
+    },
+    EAssign(_, v, b) => !tr_mentions(v, d) && tr_derive(b, d),
+    EAssignOp(_, _, v, b) => !tr_mentions(v, d) && tr_derive(b, d),
+    EReturn(v) => !tr_mentions(v, d),
+    EBreak(ov) => match ov {
+      Some(v) => !tr_mentions(v, d),
+      None => true
+    },
+    EContinue(vs) => {
+      let mut ok = true
+      let mut i = 0
+      while ok && i < Array::length(vs) {
+        ok = !tr_mentions(Array::get(vs, i), d)
+        i = i + 1
+      }
+      ok
+    },
+    EFn(_, _, _, _, _, body) => !tr_mentions(body, d),
+    _ => {
+      let mark = expr_children_push(e)
+      let end = expr_children_top()
+      let mut ok = true
+      let mut i = mark
+      while ok && i < end {
+        ok = tr_derive(expr_child_at(i), d)
+        i = i + 1
+      }
+      expr_children_pop(mark)
+      ok
+    }
+  }
+}
+
+/// Rule 5: can the value `e` produces be a pointer into a derived binding?
+/// Walks the RESULT spine only; a leaf that mentions no derived name cannot
+/// reach one (rule 2 closed every other route), and the comparison, logic and
+/// bitwise operators produce an Int or a Bool whatever they read.
+export fn tr_result_safe(e: Expr, d: Array[String]) -> Bool {
+  match e {
+    ELet(_, _, b, _) => tr_result_safe(b, d),
+    ELetMut(_, _, b, _) => tr_result_safe(b, d),
+    ELetRec(_, _, b) => tr_result_safe(b, d),
+    ESeq(_, b) => tr_result_safe(b, d),
+    EAssign(_, _, b) => tr_result_safe(b, d),
+    EAssignOp(_, _, _, b) => tr_result_safe(b, d),
+    EIf(_, t, f) => tr_result_safe(t, d) && tr_result_safe(f, d),
+    EMatch(_, arms) => {
+      let mut ok = true
+      let mut i = 0
+      while ok && i < Array::length(arms) {
+        ok = tr_result_safe((Array::get(arms, i)).1, d)
+        i = i + 1
+      }
+      ok
+    },
+    EWhile(_, _) => true,
+    EForIn(_, _, _, _) => true,
+    EBinOp(op, _, _, _) => op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">=" || op == "&&" || op == "||" || op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>" || !tr_mentions(e, d),
+    EUnaryOp(op, _) => op == "!" || op == "~" || !tr_mentions(e, d),
+    ECall(callee, _, _) => match callee {
+      EIdent(f, _) => f == "Array::length" || !tr_mentions(e, d),
+      _ => !tr_mentions(e, d)
+    },
+    _ => !tr_mentions(e, d)
+  }
+}
+
+export struct TrWalk {
+  x: String;
+  d: Array[String];
+  // The binders enclosing the walk's position, innermost last: name, kind
+  // (1 let, 2 let mut, 3 let rec, 4 for), whether the value is a fresh
+  // array, the scope body, and whether the binder's result reaches the
+  // function result with no discarding boundary in between.
+  bn: Array[String];
+  bk: Array[Int];
+  bf: Array[Bool];
+  bb: Array[Expr];
+  bt: Array[Bool];
+  pins: Array[String];
+  pin_bodies: Array[Expr];
+  pin_tail: Array[Bool];
+  mut ok: Bool
+}
+
+fn tr_push(w: TrWalk, n: String, k: Int, fresh: Bool, body: Expr, tail: Bool) -> Unit {
+  Array::push(w.bn, n)
+  Array::push(w.bk, k)
+  Array::push(w.bf, fresh)
+  Array::push(w.bb, body)
+  Array::push(w.bt, tail)
+}
+
+fn tr_pop(w: TrWalk) -> Unit {
+  let n = Array::length(w.bn) - 1
+  Array::truncate(w.bn, n)
+  Array::truncate(w.bk, n)
+  Array::truncate(w.bf, n)
+  Array::truncate(w.bb, n)
+  Array::truncate(w.bt, n)
+}
+
+/// Rules 1, 3 and 4 at one truncate of the walk's array.
+fn tr_site(w: TrWalk, count_arg: Expr, stmt: Bool) -> Unit {
+  let simple_count = match count_arg {
+    EInt(_) => true,
+    EIdent(_, _) => true,
+    _ => false
+  }
+  if !stmt || !simple_count {
+    w.ok = false
+  } else {
+    let mut found = false
+    let mut i = Array::length(w.bn) - 1
+    while w.ok && i >= 0 {
+      let n = Array::get(w.bn, i)
+      if n == w.x {
+        if !found {
+          found = true
+          if Array::get(w.bk, i) != 1 || !Array::get(w.bf, i) {
+            w.ok = false
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+      } else if array_contains_str_pctx(w.d, n) {
+        if Array::get(w.bk, i) != 1 {
+          w.ok = false
+        } else if !array_contains_str_pctx(w.pins, n) {
+          Array::push(w.pins, n)
+          Array::push(w.pin_bodies, Array::get(w.bb, i))
+          Array::push(w.pin_tail, Array::get(w.bt, i))
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      i = i - 1
+    }
+    if !found {
+      w.ok = false
+    } else {
+      ()
+    }
+  }
+}
+
+/// `stmt`: every node from the root to here is a let body, a sequence
+/// element, an if branch or a loop body. `tail`: the value here is the
+/// function's result, with no discarding boundary in between.
+export fn tr_walk(w: TrWalk, e: Expr, stmt: Bool, tail: Bool) -> Unit {
+  if !w.ok {
+    ()
+  } else {
+    match e {
+      ELet(n, v, b, _) => {
+        tr_walk(w, v, false, false)
+        tr_push(w, n, 1, tr_fresh_array_value(v), b, tail)
+        tr_walk(w, b, stmt, tail)
+        tr_pop(w)
+      },
+      ELetMut(n, v, b, _) => {
+        tr_walk(w, v, false, false)
+        tr_push(w, n, 2, false, b, tail)
+        tr_walk(w, b, stmt, tail)
+        tr_pop(w)
+      },
+      ELetRec(n, v, b) => {
+        tr_push(w, n, 3, false, b, tail)
+        tr_walk(w, v, false, false)
+        tr_walk(w, b, stmt, tail)
+        tr_pop(w)
+      },
+      ESeq(a, b) => {
+        tr_walk(w, a, stmt, false)
+        tr_walk(w, b, stmt, tail)
+      },
+      EIf(c, t, f) => {
+        tr_walk(w, c, false, false)
+        tr_walk(w, t, stmt, tail)
+        tr_walk(w, f, stmt, tail)
+      },
+      EWhile(c, body) => {
+        tr_walk(w, c, false, false)
+        tr_walk(w, body, stmt, false)
+      },
+      EForIn(n, idx, it, body) => {
+        tr_walk(w, it, false, false)
+        tr_push(w, n, 4, false, body, false)
+        match idx {
+          Some(ix) => tr_push(w, ix, 4, false, body, false),
+          None => ()
+        }
+        tr_walk(w, body, stmt, false)
+        match idx {
+          Some(_) => tr_pop(w),
+          None => ()
+        }
+        tr_pop(w)
+      },
+      EAssign(_, v, b) => {
+        tr_walk(w, v, false, false)
+        tr_walk(w, b, stmt, tail)
+      },
+      EAssignOp(_, _, v, b) => {
+        tr_walk(w, v, false, false)
+        tr_walk(w, b, stmt, tail)
+      },
+      ECall(callee, args, _) => {
+        if tr_truncate_receiver(e) == w.x {
+          tr_site(w, Array::get(args, 1), stmt)
+        } else {
+          ()
+        }
+        tr_walk(w, callee, false, false)
+        let mut i = 0
+        while i < Array::length(args) {
+          tr_walk(w, Array::get(args, i), false, false)
+          i = i + 1
+        }
+      },
+      _ => {
+        let mark = expr_children_push(e)
+        let end = expr_children_top()
+        let mut i = mark
+        while i < end {
+          tr_walk(w, expr_child_at(i), false, false)
+          i = i + 1
+        }
+        expr_children_pop(mark)
+      }
+    }
+  }
+}

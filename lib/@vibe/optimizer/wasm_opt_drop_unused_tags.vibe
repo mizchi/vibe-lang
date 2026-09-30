@@ -1,0 +1,1478 @@
+// lib/@vibe/optimizer/wasm_opt.vibe — drop unused tags.
+
+import ./wasm_opt_decode_instr.vibe {
+  array_contains_int,
+  binary_size,
+  copy_bytes,
+  copy_span_bytes,
+  count_functions,
+  count_import_funcs,
+  count_imported_tables,
+  decode_instr,
+  emit_section,
+  list_sections,
+  parse_body_spans,
+  parse_code_bodies,
+  read_name,
+  read_sleb128,
+  read_uleb128,
+  rebuild_code_section,
+  remove_empty_sections,
+  span_read_uleb_imm,
+  strip_custom_sections,
+  write_uleb128
+}
+
+import ./wasm_opt_remove_dead_blocks_body.vibe {
+  build_func_type_by_index,
+  call_forwarding,
+  coalesce_locals,
+  code_uses_any_table_op,
+  collect_func_roots,
+  dce,
+  dce_remove,
+  directize,
+  fold_table_size_body,
+  inline_empty_calls,
+  optimize_code_section,
+  parse_full_body_spans,
+  parse_table_mins,
+  remove_dead_blocks,
+  remove_unused_types
+}
+
+/// table.size -> i32.const folding. Only when every table is locally defined
+/// (no imported tables shift the index space) and no table.grow exists (so the
+/// current size equals the declared minimum). The resulting `i32.const; drop`
+/// is cleaned by peephole, often emptying the body.
+/// True if the module exports any table (kind 1). An exported table can be
+/// grown by the embedder between calls, so its `table.size` is not statically
+/// the declared minimum.
+fn any_table_exported(bytes: Bytes) -> Bool {
+  let sections = list_sections(bytes)
+  let mut found = false
+  let mut s = 0
+  while s < Array::length(sections) {
+    let (sid, off, sz) = Array::get(sections, s)
+    if sid == 7 {
+      let end_pos = off + sz
+      let (cnt, pos0) = read_uleb128(bytes, off)
+      let mut pos = pos0
+      let mut i = 0
+      while (i < cnt) && (pos < end_pos) {
+        let (_, np) = read_name(bytes, pos)
+        pos = np
+        let kind = bytes[pos]
+        pos = pos + 1
+        let (_, np2) = read_uleb128(bytes, pos)
+        pos = np2
+        if kind == 1 {
+          found = true
+        }
+        i = i + 1
+      }
+    }
+    s = s + 1
+  }
+  found
+}
+
+export fn fold_table_size(bytes: Bytes) -> Bytes {
+  let len = Bytes::length(bytes)
+  if len < 8 {
+    copy_bytes(bytes, 0, len)
+  }
+  else if count_imported_tables(bytes) > 0 {
+    copy_bytes(bytes, 0, len)
+  }
+  else if any_table_exported(bytes) {
+    copy_bytes(bytes, 0, len)
+  }
+  else {
+    let table_mins = parse_table_mins(bytes)
+    if Array::length(table_mins) == 0 {
+      copy_bytes(bytes, 0, len)
+    }
+    else {
+      // bail if any table.grow (0xFC 15) is present
+      let sections = list_sections(bytes)
+      let mut has_grow = false
+      let mut gs = 0
+      while gs < Array::length(sections) {
+        let (sid, off, sz) = Array::get(sections, gs)
+        if sid == 10 {
+          let raw_bodies = parse_code_bodies(bytes, off, sz)
+          let mut bi = 0
+          while bi < Array::length(raw_bodies) {
+            let body = Array::get(raw_bodies, bi)
+            let spans = parse_full_body_spans(body)
+            let mut i = 0
+            while i < Array::length(spans) {
+              let (s_i, _, op_i) = Array::get(spans, i)
+              if op_i == 0xFC {
+                let (sub, _) = read_uleb128(body, s_i + 1)
+                if sub == 15 {
+                  has_grow = true
+                }
+              }
+              i = i + 1
+            }
+            bi = bi + 1
+          }
+        }
+        gs = gs + 1
+      }
+      if has_grow {
+        copy_bytes(bytes, 0, len)
+      }
+      else {
+        let out = Bytes::new()
+        let mut hi = 0
+        while hi < 8 {
+          Bytes::push(out, bytes[hi]); hi = hi + 1
+        }
+        let mut s = 0
+        while s < Array::length(sections) {
+          let (sid, off, sz) = Array::get(sections, s)
+          if sid == 10 {
+            let raw_bodies = parse_code_bodies(bytes, off, sz)
+            let new_bodies = Array::slice([(Bytes::new())], 0, 0)
+            let mut bi = 0
+            while bi < Array::length(raw_bodies) {
+              Array::push(new_bodies, fold_table_size_body(Array::get(raw_bodies, bi), table_mins))
+              bi = bi + 1
+            }
+            emit_section(out, 10, rebuild_code_section(new_bodies))
+          } else {
+            let content = copy_bytes(bytes, off, off + sz)
+            emit_section(out, sid, content)
+          }
+          s = s + 1
+        }
+        out
+      }
+    }
+  }
+}
+
+/// Drop the table and element sections when no table opcode references any table
+/// and no table is exported or imported. The functions that were only kept alive
+/// by element segments then become dead and are removed by the following DCE.
+export fn drop_unused_tables(bytes: Bytes) -> Bytes {
+  let len = Bytes::length(bytes)
+  if len < 8 {
+    copy_bytes(bytes, 0, len)
+  }
+  else if count_imported_tables(bytes) > 0 {
+    copy_bytes(bytes, 0, len)
+  }
+  else {
+    let sections = list_sections(bytes)
+    let mut has_table = false
+    let mut table_exported = false
+    let mut s0 = 0
+    while s0 < Array::length(sections) {
+      let (sid, off, sz) = Array::get(sections, s0)
+      if sid == 4 {
+        has_table = true
+      }
+      else if sid == 7 {
+        let end_pos = off + sz
+        let (cnt, pos0) = read_uleb128(bytes, off)
+        let mut pos = pos0
+        let mut i = 0
+        while (i < cnt) && (pos < end_pos) {
+          let (_, np) = read_name(bytes, pos)
+          pos = np
+          let kind = bytes[pos]
+          pos = pos + 1
+          let (_, np2) = read_uleb128(bytes, pos)
+          pos = np2
+          if kind == 1 {
+            table_exported = true
+          }
+          i = i + 1
+        }
+      }
+      s0 = s0 + 1
+    }
+    if (has_table == false) || table_exported || code_uses_any_table_op(bytes) {
+      copy_bytes(bytes, 0, len)
+    }
+    else {
+      let out = Bytes::new()
+      let mut hi = 0
+      while hi < 8 {
+        Bytes::push(out, bytes[hi]); hi = hi + 1
+      }
+      let mut s = 0
+      while s < Array::length(sections) {
+        let (sid, off, sz) = Array::get(sections, s)
+        if (sid == 4) || (sid == 9) {
+          ()
+        } else {
+          let content = copy_bytes(bytes, off, off + sz)
+          emit_section(out, sid, content)
+        }
+        s = s + 1
+      }
+      out
+    }
+  }
+}
+
+/// Replace `local.set N` with `drop` when local N is never read anywhere in the
+/// function (no local.get/local.tee references it). Since "never read" is a
+/// whole-function property it is independent of control flow, so this is always
+/// safe; the resulting `<pure expr>; drop` is then cleaned by peephole and the
+/// now-unused local declaration by coalesce_locals.
+fn eliminate_dead_stores_body(body: Bytes) -> Bytes {
+  let body_len = Bytes::length(body)
+  if body_len < 2 {
+    copy_bytes(body, 0, body_len)
+  }
+  else {
+    let (local_count, lp) = read_uleb128(body, 0)
+    let mut pos = lp
+    let mut lc = 0
+    while lc < local_count {
+      let (_, tp) = read_uleb128(body, pos)
+      pos = tp + 1
+      lc = lc + 1
+    }
+    let code_start = pos
+    let code_end = body_len - 1
+    if code_start >= code_end {
+      copy_bytes(body, 0, body_len)
+    }
+    else {
+      let spans = parse_body_spans(body, code_start, code_end)
+      let reads = Array::slice([(0)], 0, 0)
+      let mut ri = 0
+      while ri < Array::length(spans) {
+        let (s_i, _, op_i) = Array::get(spans, ri)
+        if (op_i == 0x20) || (op_i == 0x22) {
+          Array::push(reads, span_read_uleb_imm(body, s_i))
+        }
+        ri = ri + 1
+      }
+      let out = Bytes::new()
+      let mut ci = 0
+      while ci < code_start {
+        Bytes::push(out, body[ci]); ci = ci + 1
+      }
+      let mut i = 0
+      while i < Array::length(spans) {
+        let (s_i, e_i, op_i) = Array::get(spans, i)
+        if op_i == 0x21 {
+          let idx = span_read_uleb_imm(body, s_i)
+          if array_contains_int(reads, idx) {
+            copy_span_bytes(out, body, s_i, e_i)
+          } else {
+            Bytes::push(out, 0x1A)
+          }
+        } else {
+          copy_span_bytes(out, body, s_i, e_i)
+        }
+        i = i + 1
+      }
+      Bytes::push(out, 0x0B)
+      out
+    }
+  }
+}
+
+export fn eliminate_dead_stores(bytes: Bytes) -> Bytes {
+  let len = Bytes::length(bytes)
+  if len < 8 {
+    copy_bytes(bytes, 0, len)
+  }
+  else {
+    let sections = list_sections(bytes)
+    let out = Bytes::new()
+    let mut hi = 0
+    while hi < 8 {
+      Bytes::push(out, bytes[hi]); hi = hi + 1
+    }
+    let mut s = 0
+    while s < Array::length(sections) {
+      let (sid, off, sz) = Array::get(sections, s)
+      if sid == 10 {
+        let raw_bodies = parse_code_bodies(bytes, off, sz)
+        let new_bodies = Array::slice([(Bytes::new())], 0, 0)
+        let mut bi = 0
+        while bi < Array::length(raw_bodies) {
+          Array::push(new_bodies, eliminate_dead_stores_body(Array::get(raw_bodies, bi)))
+          bi = bi + 1
+        }
+        emit_section(out, 10, rebuild_code_section(new_bodies))
+      } else {
+        let content = copy_bytes(bytes, off, off + sz)
+        emit_section(out, sid, content)
+      }
+      s = s + 1
+    }
+    out
+  }
+}
+
+/// Read the parameter value types of type index `type_idx` from the type
+/// section, as an array of value-type bytes (used to append callee param locals).
+fn read_param_types(bytes: Bytes, type_off: Int, type_sz: Int, type_idx: Int) -> Array[Int] {
+  let end_pos = type_off + type_sz
+  let (type_count, pos0) = read_uleb128(bytes, type_off)
+  let mut pos = pos0
+  let mut ti = 0
+  let result = Array::slice([(0)], 0, 0)
+  while (ti < type_count) && (pos < end_pos) {
+    pos = pos + 1
+    let (pc, pp) = read_uleb128(bytes, pos)
+    let pstart = pp
+    pos = pp + pc
+    let (rc, rp) = read_uleb128(bytes, pos)
+    pos = rp + rc
+    if ti == type_idx {
+      let mut k = 0
+      while k < pc {
+        Array::push(result, bytes[pstart + k])
+        k = k + 1
+      }
+    }
+    ti = ti + 1
+  }
+  result
+}
+
+/// Read the single result blocktype byte of type index `type_idx`: 0x40 for no
+/// result, the value-type byte for one result, or -1 for multi-value (which the
+/// inliner does not handle).
+fn read_result_bt(bytes: Bytes, type_off: Int, type_sz: Int, type_idx: Int) -> Int {
+  let end_pos = type_off + type_sz
+  let (type_count, pos0) = read_uleb128(bytes, type_off)
+  let mut pos = pos0
+  let mut ti = 0
+  let mut result = 0x40
+  while (ti < type_count) && (pos < end_pos) {
+    pos = pos + 1
+    let (pc, pp) = read_uleb128(bytes, pos)
+    pos = pp + pc
+    let (rc, rp) = read_uleb128(bytes, pos)
+    let rstart = rp
+    pos = rp + rc
+    if ti == type_idx {
+      if rc == 0 {
+        result = 0x40
+      } else if rc == 1 {
+        result = bytes[rstart]
+      } else {
+        result = -1
+      }
+    }
+    ti = ti + 1
+  }
+  result
+}
+
+/// Parse a code body's local declaration groups: returns the (count, type) pairs
+/// and the offset of the first instruction (after the local header).
+fn read_local_groups(body: Bytes) -> (Array[(Int, Int)], Int) {
+  let (decl_count, p0) = read_uleb128(body, 0)
+  let mut pos = p0
+  let groups = Array::slice([(0, 0)], 0, 0)
+  let mut i = 0
+  while i < decl_count {
+    let (cnt, tp) = read_uleb128(body, pos)
+    Array::push(groups, (cnt, body[tp]))
+    pos = tp + 1
+    i = i + 1
+  }
+  (groups, pos)
+}
+
+fn local_groups_total(groups: Array[(Int, Int)]) -> Int {
+  let mut t = 0
+  let mut i = 0
+  while i < Array::length(groups) {
+    let (cnt, _) = Array::get(groups, i)
+    t = t + cnt
+    i = i + 1
+  }
+  t
+}
+
+/// True if the callee body contains a control-flow op whose branch target would
+/// shift when the body is wrapped in the inliner's block: br/br_if/br_table
+/// (0x0C/0x0D/0x0E) may target the function-implicit scope, and try_table (0x1F)
+/// catch labels / throw (0x08) interact with exception scopes. We rewrite only
+/// `return` (0x0F) safely, so bail on any of these to keep inlining correct.
+fn body_has_unrelocatable_op(body: Bytes) -> Bool {
+  let spans = parse_full_body_spans(body)
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(spans) {
+    let (_, _, op) = Array::get(spans, i)
+    if (op == 0x0C) || (op == 0x0D) || (op == 0x0E) || (op == 0x1F) || (op == 0x08) {
+      found = true
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Emit the callee body inlined at a call site: store args into the appended
+/// param locals, wrap the body in a block of the callee's result type, remap
+/// the callee's locals by +base, and rewrite `return` to `br <depth>` so it
+/// exits the wrapper instead of the (now different) enclosing function.
+fn emit_inlined_body(out: Bytes, f_body: Bytes, n_params: Int, base: Int, result_bt: Int) -> Unit {
+  let mut k = n_params - 1
+  while k >= 0 {
+    Bytes::push(out, 0x21)
+    write_uleb128(out, base + k)
+    k = k - 1
+  }
+  Bytes::push(out, 0x02)
+  if result_bt >= 0 {
+    Bytes::push(out, result_bt)
+  } else {
+    Bytes::push(out, 0x40)
+  }
+  let spans = parse_full_body_spans(f_body)
+  let mut depth = 0
+  let mut i = 0
+  while i < Array::length(spans) {
+    let (s_i, e_i, op_i) = Array::get(spans, i)
+    if op_i == 0x0B {
+      depth = depth - 1
+      copy_span_bytes(out, f_body, s_i, e_i)
+    } else if (op_i == 0x02) || (op_i == 0x03) || (op_i == 0x04) || (op_i == 0x1F) {
+      copy_span_bytes(out, f_body, s_i, e_i)
+      depth = depth + 1
+    } else if op_i == 0x0F {
+      Bytes::push(out, 0x0C)
+      write_uleb128(out, depth)
+    } else if (op_i == 0x20) || (op_i == 0x21) || (op_i == 0x22) {
+      let idx = span_read_uleb_imm(f_body, s_i)
+      Bytes::push(out, op_i)
+      write_uleb128(out, idx + base)
+    } else {
+      copy_span_bytes(out, f_body, s_i, e_i)
+    }
+    i = i + 1
+  }
+  Bytes::push(out, 0x0B)
+}
+
+/// Inline a single call to a non-root function that is called exactly once
+/// (general function inlining beyond inline_empty_calls). The now-uncalled
+/// callee is removed by the following DCE. One inline per pass; converge repeats.
+export fn inline_calls(bytes: Bytes) -> Bytes {
+  let len = Bytes::length(bytes)
+  if len < 8 {
+    copy_bytes(bytes, 0, len)
+  }
+  else {
+    let sections = list_sections(bytes)
+    let mut type_off = -1
+    let mut type_sz = 0
+    let mut code_off = -1
+    let mut code_sz = 0
+    let mut si = 0
+    while si < Array::length(sections) {
+      let (sid, off, sz) = Array::get(sections, si)
+      if sid == 1 {
+        type_off = off
+        type_sz = sz
+      } else if sid == 10 {
+        code_off = off
+        code_sz = sz
+      }
+      si = si + 1
+    }
+    if (code_off < 0) || (type_off < 0) {
+      copy_bytes(bytes, 0, len)
+    }
+    else {
+      let func_type_by_idx = build_func_type_by_index(bytes)
+      let import_count = count_import_funcs(bytes)
+      let total_funcs = count_functions(bytes)
+      let raw_bodies = parse_code_bodies(bytes, code_off, code_sz)
+      let roots = collect_func_roots(bytes)
+      let call_count = FixedArray::make(total_funcs + 1, 0)
+      let caller_of = FixedArray::make(total_funcs + 1, -1)
+      let mut fi = 0
+      while fi < Array::length(raw_bodies) {
+        let caller_g = import_count + fi
+        let spans = parse_full_body_spans(Array::get(raw_bodies, fi))
+        let mut k = 0
+        while k < Array::length(spans) {
+          let (s_k, _, op_k) = Array::get(spans, k)
+          if op_k == 0x10 {
+            let t = span_read_uleb_imm(Array::get(raw_bodies, fi), s_k)
+            if (t >= 0) && (t <= total_funcs) {
+              FixedArray::set(call_count, t, FixedArray::get(call_count, t) + 1)
+              FixedArray::set(caller_of, t, caller_g)
+            }
+          }
+          k = k + 1
+        }
+        fi = fi + 1
+      }
+      let mut target_g = -1
+      let mut g = import_count
+      while (g < total_funcs) && (target_g < 0) {
+        if (FixedArray::get(call_count, g) == 1) && (array_contains_int(roots, g) == false) && (FixedArray::get(caller_of, g) != g) {
+          let tidx = if g < Array::length(func_type_by_idx) {
+            Array::get(func_type_by_idx, g)
+          } else {
+            -1
+          }
+          if tidx >= 0 {
+            if read_result_bt(bytes, type_off, type_sz, tidx) != -1 {
+              let g_body = Array::get(raw_bodies, g - import_count)
+              if body_has_unrelocatable_op(g_body) == false {
+                target_g = g
+              }
+            }
+          }
+        }
+        g = g + 1
+      }
+      if target_g < 0 {
+        copy_bytes(bytes, 0, len)
+      }
+      else {
+        let caller_g = FixedArray::get(caller_of, target_g)
+        let fi_f = target_g - import_count
+        let fi_c = caller_g - import_count
+        let f_body = Array::get(raw_bodies, fi_f)
+        let f_tidx = Array::get(func_type_by_idx, target_g)
+        let f_params = read_param_types(bytes, type_off, type_sz, f_tidx)
+        let n_params = Array::length(f_params)
+        let f_result_bt = read_result_bt(bytes, type_off, type_sz, f_tidx)
+        let (f_groups, _) = read_local_groups(f_body)
+        let c_tidx = Array::get(func_type_by_idx, caller_g)
+        let c_param_count = Array::length(read_param_types(bytes, type_off, type_sz, c_tidx))
+        let c_body = Array::get(raw_bodies, fi_c)
+        let (c_groups, c_code_start) = read_local_groups(c_body)
+        let base = c_param_count + local_groups_total(c_groups)
+        let new_c = Bytes::new()
+        let new_decl_count = Array::length(c_groups) + n_params + Array::length(f_groups)
+        write_uleb128(new_c, new_decl_count)
+        let mut ci = 0
+        while ci < Array::length(c_groups) {
+          let (cnt, ty) = Array::get(c_groups, ci)
+          write_uleb128(new_c, cnt)
+          Bytes::push(new_c, ty)
+          ci = ci + 1
+        }
+        let mut pj = 0
+        while pj < n_params {
+          write_uleb128(new_c, 1)
+          Bytes::push(new_c, Array::get(f_params, pj))
+          pj = pj + 1
+        }
+        let mut fj = 0
+        while fj < Array::length(f_groups) {
+          let (cnt, ty) = Array::get(f_groups, fj)
+          write_uleb128(new_c, cnt)
+          Bytes::push(new_c, ty)
+          fj = fj + 1
+        }
+        let c_code_end = Bytes::length(c_body) - 1
+        let c_spans = parse_body_spans(c_body, c_code_start, c_code_end)
+        let mut kk = 0
+        while kk < Array::length(c_spans) {
+          let (s_k, e_k, op_k) = Array::get(c_spans, kk)
+          if (op_k == 0x10) && (span_read_uleb_imm(c_body, s_k) == target_g) {
+            emit_inlined_body(new_c, f_body, n_params, base, f_result_bt)
+          } else {
+            copy_span_bytes(new_c, c_body, s_k, e_k)
+          }
+          kk = kk + 1
+        }
+        Bytes::push(new_c, 0x0B)
+        let new_bodies = Array::slice([(Bytes::new())], 0, 0)
+        let mut bi = 0
+        while bi < Array::length(raw_bodies) {
+          if bi == fi_c {
+            Array::push(new_bodies, new_c)
+          } else {
+            Array::push(new_bodies, Array::get(raw_bodies, bi))
+          }
+          bi = bi + 1
+        }
+        let out = Bytes::new()
+        let mut hi = 0
+        while hi < 8 {
+          Bytes::push(out, bytes[hi]); hi = hi + 1
+        }
+        let mut s = 0
+        while s < Array::length(sections) {
+          let (sid, off, sz) = Array::get(sections, s)
+          if sid == 10 {
+            emit_section(out, 10, rebuild_code_section(new_bodies))
+          } else {
+            let content = copy_bytes(bytes, off, off + sz)
+            emit_section(out, sid, content)
+          }
+          s = s + 1
+        }
+        out
+      }
+    }
+  }
+}
+
+/// Count imported entries of a given external kind (0=func,1=table,2=mem,
+/// 3=global,4=tag). Used to decide whether the corresponding index space starts
+/// above 0 (we bail on imports for tag/global DCE to keep renumbering simple).
+fn count_import_kind(bytes: Bytes, want_kind: Int) -> Int {
+  let sections = list_sections(bytes)
+  let mut n = 0
+  let mut s = 0
+  while s < Array::length(sections) {
+    let (sid, off, sz) = Array::get(sections, s)
+    if sid == 2 {
+      let end_pos = off + sz
+      let (cnt, pos0) = read_uleb128(bytes, off)
+      let mut pos = pos0
+      let mut i = 0
+      while (i < cnt) && (pos < end_pos) {
+        let (mlen, mp) = read_uleb128(bytes, pos); pos = mp + mlen
+        let (flen, fp) = read_uleb128(bytes, pos); pos = fp + flen
+        if pos < end_pos {
+          let kind = bytes[pos]; pos = pos + 1
+          if kind == want_kind {
+            n = n + 1
+          }
+          if kind == 0 {
+            let (_, np) = read_uleb128(bytes, pos); pos = np
+          } else if kind == 1 {
+            let (_, np) = read_uleb128(bytes, pos); pos = np
+            let flag = bytes[pos]; pos = pos + 1
+            let (_, np2) = read_uleb128(bytes, pos); pos = np2
+            if flag == 1 {
+              let (_, np3) = read_uleb128(bytes, pos); pos = np3
+            }
+          } else if kind == 2 {
+            let flag = bytes[pos]; pos = pos + 1
+            let (_, np2) = read_uleb128(bytes, pos); pos = np2
+            if flag == 1 {
+              let (_, np3) = read_uleb128(bytes, pos); pos = np3
+            }
+          } else if kind == 3 {
+            pos = pos + 2
+          } else if kind == 4 {
+            pos = pos + 1
+            let (_, np) = read_uleb128(bytes, pos); pos = np
+          } else {
+            pos = end_pos
+          }
+        }
+        i = i + 1
+      }
+    }
+    s = s + 1
+  }
+  n
+}
+
+/// Reserialize an export section, remapping the index of exports whose kind
+/// matches want_kind through idx_map (old index -> new index, -1 = removed).
+fn remap_export_kind(bytes: Bytes, offset: Int, size: Int, want_kind: Int, idx_map: Array[Int]) -> Bytes {
+  let end_pos = offset + size
+  let (cnt, pos0) = read_uleb128(bytes, offset)
+  let mut pos = pos0
+  let out = Bytes::new()
+  write_uleb128(out, cnt)
+  let mut i = 0
+  while (i < cnt) && (pos < end_pos) {
+    let (name, np) = read_name(bytes, pos)
+    pos = np
+    let kind = bytes[pos]
+    pos = pos + 1
+    let (index, np2) = read_uleb128(bytes, pos)
+    pos = np2
+    write_uleb128(out, String::length(name))
+    let mut ci = 0
+    while ci < String::length(name) {
+      Bytes::push(out, String::char_code_at(name, ci))
+      ci = ci + 1
+    }
+    Bytes::push(out, kind)
+    let new_index = if (kind == want_kind) && (index < Array::length(idx_map)) && (Array::get(idx_map, index) >= 0) {
+      Array::get(idx_map, index)
+    } else {
+      index
+    }
+    write_uleb128(out, new_index)
+    i = i + 1
+  }
+  out
+}
+
+/// Rewrite a code body remapping tag indices in throw (0x08) and try_table
+/// (0x1F) catch clauses through tmap.
+fn rewrite_body_tags(body: Bytes, tmap: Array[Int]) -> Bytes {
+  let body_len = Bytes::length(body)
+  if body_len < 2 {
+    copy_bytes(body, 0, body_len)
+  }
+  else {
+    let (local_count, lp) = read_uleb128(body, 0)
+    let mut pos = lp
+    let mut lc = 0
+    while lc < local_count {
+      let (_, tp) = read_uleb128(body, pos)
+      pos = tp + 1
+      lc = lc + 1
+    }
+    let code_start = pos
+    let code_end = body_len - 1
+    if code_start >= code_end {
+      copy_bytes(body, 0, body_len)
+    }
+    else {
+      let spans = parse_body_spans(body, code_start, code_end)
+      let out = Bytes::new()
+      let mut ci = 0
+      while ci < code_start {
+        Bytes::push(out, body[ci]); ci = ci + 1
+      }
+      let mut i = 0
+      while i < Array::length(spans) {
+        let (s_i, e_i, op_i) = Array::get(spans, i)
+        if op_i == 0x08 {
+          let (tag, _) = read_uleb128(body, s_i + 1)
+          Bytes::push(out, 0x08)
+          let nt = if (tag < Array::length(tmap)) && (Array::get(tmap, tag) >= 0) {
+            Array::get(tmap, tag)
+          } else {
+            tag
+          }
+          write_uleb128(out, nt)
+        } else if op_i == 0x1F {
+          Bytes::push(out, 0x1F)
+          let (_, p1) = read_sleb128(body, s_i + 1)
+          let mut bp = s_i + 1
+          while bp < p1 {
+            Bytes::push(out, body[bp]); bp = bp + 1
+          }
+          let (cnt, p2) = read_uleb128(body, p1)
+          write_uleb128(out, cnt)
+          let mut pp = p2
+          let mut k = 0
+          while k < cnt {
+            let kind = body[pp]
+            Bytes::push(out, kind)
+            pp = pp + 1
+            if (kind == 0) || (kind == 1) {
+              let (tag, pa) = read_uleb128(body, pp)
+              let nt = if (tag < Array::length(tmap)) && (Array::get(tmap, tag) >= 0) {
+                Array::get(tmap, tag)
+              } else {
+                tag
+              }
+              write_uleb128(out, nt)
+              let (label, pb) = read_uleb128(body, pa)
+              write_uleb128(out, label)
+              pp = pb
+            } else {
+              let (label, pa) = read_uleb128(body, pp)
+              write_uleb128(out, label)
+              pp = pa
+            }
+            k = k + 1
+          }
+        } else {
+          copy_span_bytes(out, body, s_i, e_i)
+        }
+        i = i + 1
+      }
+      Bytes::push(out, 0x0B)
+      out
+    }
+  }
+}
+
+/// Remove tags that are never referenced by code (throw / try_table catch) and
+/// never exported. Renumbers throw/try_table/export tag indices. Bails on
+/// imported tags. This is the unused-tag cleanup that function inlining unlocks
+/// (an inlined effect helper can leave its tag unreferenced).
+export fn drop_unused_tags(bytes: Bytes) -> Bytes {
+  let len = Bytes::length(bytes)
+  if len < 8 {
+    copy_bytes(bytes, 0, len)
+  }
+  else {
+    let sections = list_sections(bytes)
+    let mut tag_off = -1
+    let mut tag_sz = 0
+    let mut code_off = -1
+    let mut code_sz = 0
+    let mut export_off = -1
+    let mut export_sz = 0
+    let mut s0 = 0
+    while s0 < Array::length(sections) {
+      let (sid, off, sz) = Array::get(sections, s0)
+      if sid == 13 {
+        tag_off = off; tag_sz = sz
+      } else if sid == 10 {
+        code_off = off; code_sz = sz
+      } else if sid == 7 {
+        export_off = off; export_sz = sz
+      }
+      s0 = s0 + 1
+    }
+    if (tag_off < 0) || (count_import_kind(bytes, 4) > 0) {
+      copy_bytes(bytes, 0, len)
+    }
+    else {
+      let (tag_count, p0) = read_uleb128(bytes, tag_off)
+      let starts = Array::slice([(0)], 0, 0)
+      let ends = Array::slice([(0)], 0, 0)
+      let mut pos = p0
+      let mut ti = 0
+      while ti < tag_count {
+        let estart = pos
+        pos = pos + 1
+        let (_, np) = read_uleb128(bytes, pos)
+        pos = np
+        Array::push(starts, estart)
+        Array::push(ends, pos)
+        ti = ti + 1
+      }
+      let used = FixedArray::make(tag_count, false)
+      if export_off >= 0 {
+        let (ecnt, ep0) = read_uleb128(bytes, export_off)
+        let mut epos = ep0
+        let mut ei = 0
+        while ei < ecnt {
+          let (_, np) = read_name(bytes, epos)
+          epos = np
+          let kind = bytes[epos]
+          epos = epos + 1
+          let (index, np2) = read_uleb128(bytes, epos)
+          epos = np2
+          if (kind == 4) && (index >= 0) && (index < tag_count) {
+            FixedArray::set(used, index, true)
+          }
+          ei = ei + 1
+        }
+      }
+      let bodies = if code_off >= 0 {
+        parse_code_bodies(bytes, code_off, code_sz)
+      } else {
+        Array::slice([(Bytes::new())], 0, 0)
+      }
+      let mut bi = 0
+      while bi < Array::length(bodies) {
+        let body = Array::get(bodies, bi)
+        let spans = parse_full_body_spans(body)
+        let mut k = 0
+        while k < Array::length(spans) {
+          let (s_k, _, op_k) = Array::get(spans, k)
+          if op_k == 0x08 {
+            let (tag, _) = read_uleb128(body, s_k + 1)
+            if (tag >= 0) && (tag < tag_count) {
+              FixedArray::set(used, tag, true)
+            }
+          } else if op_k == 0x1F {
+            let (_, p1) = read_sleb128(body, s_k + 1)
+            let (cnt, p2) = read_uleb128(body, p1)
+            let mut pp = p2
+            let mut cj = 0
+            while cj < cnt {
+              let kind = body[pp]
+              pp = pp + 1
+              if (kind == 0) || (kind == 1) {
+                let (tag, pa) = read_uleb128(body, pp)
+                if (tag >= 0) && (tag < tag_count) {
+                  FixedArray::set(used, tag, true)
+                }
+                let (_, pb) = read_uleb128(body, pa)
+                pp = pb
+              } else {
+                let (_, pa) = read_uleb128(body, pp)
+                pp = pa
+              }
+              cj = cj + 1
+            }
+          }
+          k = k + 1
+        }
+        bi = bi + 1
+      }
+      let mut removed = 0
+      let mut ui = 0
+      while ui < tag_count {
+        if FixedArray::get(used, ui) == false {
+          removed = removed + 1
+        }
+        ui = ui + 1
+      }
+      if removed == 0 {
+        copy_bytes(bytes, 0, len)
+      }
+      else {
+        let tmap = Array::slice([(0)], 0, 0)
+        let mut newidx = 0
+        let mut mi = 0
+        while mi < tag_count {
+          if FixedArray::get(used, mi) {
+            Array::push(tmap, newidx)
+            newidx = newidx + 1
+          } else {
+            Array::push(tmap, -1)
+          }
+          mi = mi + 1
+        }
+        let newtag = Bytes::new()
+        write_uleb128(newtag, tag_count - removed)
+        let mut ki = 0
+        while ki < tag_count {
+          if FixedArray::get(used, ki) {
+            copy_span_bytes(newtag, bytes, Array::get(starts, ki), Array::get(ends, ki))
+          }
+          ki = ki + 1
+        }
+        let newbodies = Array::slice([(Bytes::new())], 0, 0)
+        let mut ri = 0
+        while ri < Array::length(bodies) {
+          Array::push(newbodies, rewrite_body_tags(Array::get(bodies, ri), tmap))
+          ri = ri + 1
+        }
+        let out = Bytes::new()
+        let mut hi = 0
+        while hi < 8 {
+          Bytes::push(out, bytes[hi]); hi = hi + 1
+        }
+        let mut s = 0
+        while s < Array::length(sections) {
+          let (sid, off, sz) = Array::get(sections, s)
+          if sid == 13 {
+            emit_section(out, 13, newtag)
+          } else if sid == 10 {
+            emit_section(out, 10, rebuild_code_section(newbodies))
+          } else if sid == 7 {
+            emit_section(out, 7, remap_export_kind(bytes, off, sz, 4, tmap))
+          } else {
+            let content = copy_bytes(bytes, off, off + sz)
+            emit_section(out, sid, content)
+          }
+          s = s + 1
+        }
+        out
+      }
+    }
+  }
+}
+
+/// Rewrite a code body remapping global indices in global.get (0x23) and
+/// global.set (0x24) through gmap.
+fn rewrite_body_globals(body: Bytes, gmap: Array[Int]) -> Bytes {
+  let body_len = Bytes::length(body)
+  if body_len < 2 {
+    copy_bytes(body, 0, body_len)
+  }
+  else {
+    let (local_count, lp) = read_uleb128(body, 0)
+    let mut pos = lp
+    let mut lc = 0
+    while lc < local_count {
+      let (_, tp) = read_uleb128(body, pos)
+      pos = tp + 1
+      lc = lc + 1
+    }
+    let code_start = pos
+    let code_end = body_len - 1
+    if code_start >= code_end {
+      copy_bytes(body, 0, body_len)
+    }
+    else {
+      let spans = parse_body_spans(body, code_start, code_end)
+      let out = Bytes::new()
+      let mut ci = 0
+      while ci < code_start {
+        Bytes::push(out, body[ci]); ci = ci + 1
+      }
+      let mut i = 0
+      while i < Array::length(spans) {
+        let (s_i, e_i, op_i) = Array::get(spans, i)
+        if (op_i == 0x23) || (op_i == 0x24) {
+          let (g, _) = read_uleb128(body, s_i + 1)
+          let ng = if (g < Array::length(gmap)) && (Array::get(gmap, g) >= 0) {
+            Array::get(gmap, g)
+          } else {
+            g
+          }
+          Bytes::push(out, op_i)
+          write_uleb128(out, ng)
+        } else {
+          copy_span_bytes(out, body, s_i, e_i)
+        }
+        i = i + 1
+      }
+      Bytes::push(out, 0x0B)
+      out
+    }
+  }
+}
+
+/// True if any global init expr contains a global.get (0x23). Defined-global
+/// inits may reference imported globals; we bail in that case to avoid having to
+/// renumber inside init exprs.
+fn global_init_refs_global(bytes: Bytes, gbl_off: Int, gbl_sz: Int) -> Bool {
+  let end_pos = gbl_off + gbl_sz
+  let mut pos = gbl_off
+  let mut found = false
+  while (pos < end_pos) && (found == false) {
+    if bytes[pos] == 0x23 {
+      found = true
+    }
+    pos = pos + 1
+  }
+  found
+}
+
+/// Remove globals that are never referenced by code (global.get/set) and never
+/// exported. Renumbers global.get/set and export global indices. Bails on
+/// imported globals or any global.get inside init/offset exprs. This is the
+/// unused-global cleanup that function inlining unlocks.
+export fn drop_unused_globals(bytes: Bytes) -> Bytes {
+  let len = Bytes::length(bytes)
+  if len < 8 {
+    copy_bytes(bytes, 0, len)
+  }
+  else {
+    let sections = list_sections(bytes)
+    let mut gbl_off = -1
+    let mut gbl_sz = 0
+    let mut code_off = -1
+    let mut code_sz = 0
+    let mut export_off = -1
+    let mut export_sz = 0
+    let mut s0 = 0
+    while s0 < Array::length(sections) {
+      let (sid, off, sz) = Array::get(sections, s0)
+      if sid == 6 {
+        gbl_off = off; gbl_sz = sz
+      } else if sid == 10 {
+        code_off = off; code_sz = sz
+      } else if sid == 7 {
+        export_off = off; export_sz = sz
+      }
+      s0 = s0 + 1
+    }
+    if (gbl_off < 0) || (count_import_kind(bytes, 3) > 0) || global_init_refs_global(bytes, gbl_off, gbl_sz) {
+      copy_bytes(bytes, 0, len)
+    }
+    else {
+      let (gbl_count, p0) = read_uleb128(bytes, gbl_off)
+      let starts = Array::slice([(0)], 0, 0)
+      let ends = Array::slice([(0)], 0, 0)
+      let mut pos = p0
+      let mut gi = 0
+      while gi < gbl_count {
+        let estart = pos
+        pos = pos + 1
+        pos = pos + 1
+        // step the init expr's instructions (decode_instr skips each opcode's
+        // immediates correctly, so a const whose LEB byte is 0x0B is not
+        // mistaken for the terminating `end`).
+        let mut done = false
+        while done == false {
+          if bytes[pos] == 0x0B {
+            pos = pos + 1
+            done = true
+          } else {
+            let (_, _, next) = decode_instr(bytes, pos)
+            pos = next
+          }
+        }
+        Array::push(starts, estart)
+        Array::push(ends, pos)
+        gi = gi + 1
+      }
+      let used = FixedArray::make(gbl_count, false)
+      if export_off >= 0 {
+        let (ecnt, ep0) = read_uleb128(bytes, export_off)
+        let mut epos = ep0
+        let mut ei = 0
+        while ei < ecnt {
+          let (_, np) = read_name(bytes, epos)
+          epos = np
+          let kind = bytes[epos]
+          epos = epos + 1
+          let (index, np2) = read_uleb128(bytes, epos)
+          epos = np2
+          if (kind == 3) && (index >= 0) && (index < gbl_count) {
+            FixedArray::set(used, index, true)
+          }
+          ei = ei + 1
+        }
+      }
+      let bodies = if code_off >= 0 {
+        parse_code_bodies(bytes, code_off, code_sz)
+      } else {
+        Array::slice([(Bytes::new())], 0, 0)
+      }
+      let mut bi = 0
+      while bi < Array::length(bodies) {
+        let spans = parse_full_body_spans(Array::get(bodies, bi))
+        let body = Array::get(bodies, bi)
+        let mut k = 0
+        while k < Array::length(spans) {
+          let (s_k, _, op_k) = Array::get(spans, k)
+          if (op_k == 0x23) || (op_k == 0x24) {
+            let (g, _) = read_uleb128(body, s_k + 1)
+            if (g >= 0) && (g < gbl_count) {
+              FixedArray::set(used, g, true)
+            }
+          }
+          k = k + 1
+        }
+        bi = bi + 1
+      }
+      let mut removed = 0
+      let mut ui = 0
+      while ui < gbl_count {
+        if FixedArray::get(used, ui) == false {
+          removed = removed + 1
+        }
+        ui = ui + 1
+      }
+      if removed == 0 {
+        copy_bytes(bytes, 0, len)
+      }
+      else {
+        let gmap = Array::slice([(0)], 0, 0)
+        let mut newidx = 0
+        let mut mi = 0
+        while mi < gbl_count {
+          if FixedArray::get(used, mi) {
+            Array::push(gmap, newidx)
+            newidx = newidx + 1
+          } else {
+            Array::push(gmap, -1)
+          }
+          mi = mi + 1
+        }
+        let newgbl = Bytes::new()
+        write_uleb128(newgbl, gbl_count - removed)
+        let mut ki = 0
+        while ki < gbl_count {
+          if FixedArray::get(used, ki) {
+            copy_span_bytes(newgbl, bytes, Array::get(starts, ki), Array::get(ends, ki))
+          }
+          ki = ki + 1
+        }
+        let newbodies = Array::slice([(Bytes::new())], 0, 0)
+        let mut ri = 0
+        while ri < Array::length(bodies) {
+          Array::push(newbodies, rewrite_body_globals(Array::get(bodies, ri), gmap))
+          ri = ri + 1
+        }
+        let out = Bytes::new()
+        let mut hi = 0
+        while hi < 8 {
+          Bytes::push(out, bytes[hi]); hi = hi + 1
+        }
+        let mut s = 0
+        while s < Array::length(sections) {
+          let (sid, off, sz) = Array::get(sections, s)
+          if sid == 6 {
+            emit_section(out, 6, newgbl)
+          } else if sid == 10 {
+            emit_section(out, 10, rebuild_code_section(newbodies))
+          } else if sid == 7 {
+            emit_section(out, 7, remap_export_kind(bytes, off, sz, 3, gmap))
+          } else {
+            let content = copy_bytes(bytes, off, off + sz)
+            emit_section(out, sid, content)
+          }
+          s = s + 1
+        }
+        out
+      }
+    }
+  }
+}
+
+/// Per-body rewrite for propagate_local_copies: drop the `local.get; local.set`
+/// pair at span indices (set_b_span - 1, set_b_span) and, when b_idx >= 0,
+/// rewrite the single later `local.get $b_idx` to `local.get $a_idx`. Mirrors
+/// the other rewrite_body_* helpers.
+fn rewrite_body_locals(body: Bytes, set_b_span: Int, a_idx: Int, b_idx: Int) -> Bytes {
+  let (_, code_start) = read_local_groups(body)
+  let code_end = Bytes::length(body) - 1
+  let spans = parse_body_spans(body, code_start, code_end)
+  let nb = Bytes::new()
+  let mut h = 0
+  while h < code_start {
+    Bytes::push(nb, body[h]); h = h + 1
+  }
+  let mut i = 0
+  while i < Array::length(spans) {
+    let (s_i, e_i, op_i) = Array::get(spans, i)
+    if (i == set_b_span - 1) || (i == set_b_span) {
+      i = i + 1
+    } else {
+      if (op_i == 0x20) && (span_read_uleb_imm(body, s_i) == b_idx) {
+        Bytes::push(nb, 0x20)
+        write_uleb128(nb, a_idx)
+      } else {
+        copy_span_bytes(nb, body, s_i, e_i)
+      }
+      i = i + 1
+    }
+  }
+  Bytes::push(nb, 0x0B)
+  nb
+}
+
+/// Local copy-propagation (a conservative slice of wasm-opt's simplify-locals).
+/// Handles two adjacent-pair shapes, one rewrite per call (converge repeats):
+///   (A) `local.get $x; local.set $x` — a pure no-op pair (push then pop into
+///       the same slot); both are deleted unconditionally.
+///   (B) `local.get $a; local.set $b` (a != b) where $b is written only here and
+///       read exactly once, that read comes after the set, and $a is not
+///       rewritten between the copy and the read. The pair is stack-neutral so
+///       both are deleted and the later `local.get $b` becomes `local.get $a`
+///       (value-equivalent since $a is unchanged). $b is then dead for
+///       coalesce/DCE.
+export fn propagate_local_copies(bytes: Bytes) -> Bytes {
+  let len = Bytes::length(bytes)
+  if len < 8 {
+    copy_bytes(bytes, 0, len)
+  }
+  else {
+    let sections = list_sections(bytes)
+    let mut code_off = -1
+    let mut code_sz = 0
+    let mut si = 0
+    while si < Array::length(sections) {
+      let (sid, off, sz) = Array::get(sections, si)
+      if sid == 10 {
+        code_off = off; code_sz = sz
+      }
+      si = si + 1
+    }
+    if code_off < 0 {
+      copy_bytes(bytes, 0, len)
+    }
+    else {
+      let bodies = parse_code_bodies(bytes, code_off, code_sz)
+      let mut target_fi = -1
+      let mut a_idx = -1
+      let mut b_idx = -1
+      let mut set_b_span = -1
+      let mut fi = 0
+      while (fi < Array::length(bodies)) && (target_fi < 0) {
+        let body = Array::get(bodies, fi)
+        let spans = parse_full_body_spans(body)
+        let mut maxidx = -1
+        let mut k = 0
+        while k < Array::length(spans) {
+          let (s_k, _, op_k) = Array::get(spans, k)
+          if (op_k == 0x20) || (op_k == 0x21) || (op_k == 0x22) {
+            let idx = span_read_uleb_imm(body, s_k)
+            if idx > maxidx {
+              maxidx = idx
+            }
+          }
+          k = k + 1
+        }
+        if maxidx >= 0 {
+          let reads = FixedArray::make(maxidx + 1, 0)
+          let writes = FixedArray::make(maxidx + 1, 0)
+          // read_pos[idx] = span index of a local.get of idx; for a local read
+          // exactly once (reads[idx] == 1) this is that single read's index.
+          let read_pos = FixedArray::make(maxidx + 1, -1)
+          let mut c = 0
+          while c < Array::length(spans) {
+            let (s_c, _, op_c) = Array::get(spans, c)
+            if op_c == 0x20 {
+              let idx = span_read_uleb_imm(body, s_c)
+              if (idx >= 0) && (idx <= maxidx) {
+                FixedArray::set(reads, idx, FixedArray::get(reads, idx) + 1)
+                FixedArray::set(read_pos, idx, c)
+              }
+            } else if (op_c == 0x21) || (op_c == 0x22) {
+              let idx = span_read_uleb_imm(body, s_c)
+              if (idx >= 0) && (idx <= maxidx) {
+                FixedArray::set(writes, idx, FixedArray::get(writes, idx) + 1)
+              }
+            }
+            c = c + 1
+          }
+          let mut p = 0
+          while (p + 1 < Array::length(spans)) && (target_fi < 0) {
+            let (s_p, _, op_p) = Array::get(spans, p)
+            let (s_q, _, op_q) = Array::get(spans, p + 1)
+            if (op_p == 0x20) && (op_q == 0x21) {
+              let a = span_read_uleb_imm(body, s_p)
+              let b = span_read_uleb_imm(body, s_q)
+              if (a == b) && (a >= 0) && (a <= maxidx) {
+                // self-copy `local.get $x; local.set $x`: a pure no-op pair.
+                target_fi = fi
+                a_idx = a
+                b_idx = -1
+                set_b_span = p + 1
+              } else if (a != b) && (a >= 0) && (a <= maxidx) && (b >= 0) && (b <= maxidx)
+              && (FixedArray::get(reads, b) == 1) && (FixedArray::get(writes, b) == 1) {
+                let gb = FixedArray::get(read_pos, b)
+                // Safe iff $b's single read comes after the set, $a is not
+                // rewritten between the copy and that read (so $a still holds
+                // the copied value at the use), and the set dominates the read.
+                // Dominance: the span between the set and the read must be
+                // straight-line (no control-flow ops) — otherwise the set may be
+                // conditional (e.g. inside an `if` arm) while the read runs
+                // unconditionally, and on the untaken path $b keeps its prior /
+                // zero-init value rather than $a's. A nested block/branch between
+                // the two is rejected conservatively.
+                let mut a_clobbered = false
+                let mut crosses_branch = false
+                let mut w = p + 2
+                while w < gb {
+                  let (s_w, _, op_w) = Array::get(spans, w)
+                  if (op_w == 0x21) || (op_w == 0x22) {
+                    if span_read_uleb_imm(body, s_w) == a {
+                      a_clobbered = true
+                    }
+                  }
+                  if (op_w == 0x00) || (op_w == 0x02) || (op_w == 0x03) || (op_w == 0x04) ||
+                  (op_w == 0x05) || (op_w == 0x08) || (op_w == 0x0A) || (op_w == 0x0B) ||
+                  (op_w == 0x0C) || (op_w == 0x0D) || (op_w == 0x0E) || (op_w == 0x0F) ||
+                  (op_w == 0x1F) {
+                    crosses_branch = true
+                  }
+                  w = w + 1
+                }
+                if (gb > (p + 1)) && (a_clobbered == false) && (crosses_branch == false) {
+                  target_fi = fi
+                  a_idx = a
+                  b_idx = b
+                  set_b_span = p + 1
+                }
+              }
+            }
+            p = p + 1
+          }
+        }
+        fi = fi + 1
+      }
+      if target_fi < 0 {
+        copy_bytes(bytes, 0, len)
+      }
+      else {
+        let nb = rewrite_body_locals(Array::get(bodies, target_fi), set_b_span, a_idx, b_idx)
+        let newbodies = Array::slice([(Bytes::new())], 0, 0)
+        let mut bj = 0
+        while bj < Array::length(bodies) {
+          if bj == target_fi {
+            Array::push(newbodies, nb)
+          } else {
+            Array::push(newbodies, Array::get(bodies, bj))
+          }
+          bj = bj + 1
+        }
+        let out = Bytes::new()
+        let mut hi = 0
+        while hi < 8 {
+          Bytes::push(out, bytes[hi]); hi = hi + 1
+        }
+        let mut s = 0
+        while s < Array::length(sections) {
+          let (sid, off, sz) = Array::get(sections, s)
+          if sid == 10 {
+            emit_section(out, 10, rebuild_code_section(newbodies))
+          } else {
+            let content = copy_bytes(bytes, off, off + sz)
+            emit_section(out, sid, content)
+          }
+          s = s + 1
+        }
+        out
+      }
+    }
+  }
+}
+
+export fn minify(bytes: Bytes) -> Bytes {
+  let len = Bytes::length(bytes)
+  if len < 8 {
+    copy_bytes(bytes, 0, len)
+  }
+  else {
+    let sections = list_sections(bytes)
+    let stripped = Bytes::new()
+    let mut i = 0
+    while i < 8 {
+      Bytes::push(stripped, bytes[i]); i = i + 1
+    }
+    let mut s = 0
+    while s < Array::length(sections) {
+      let (sid, off, sz) = Array::get(sections, s)
+      if sid != 0 {
+        let content = copy_bytes(bytes, off, off + sz)
+        emit_section(stripped, sid, content)
+      }
+      s = s + 1
+    }
+    let s2 = directize(stripped)
+    let s3 = call_forwarding(s2)
+    let s3t = fold_table_size(s3)
+    let s3d = eliminate_dead_stores(s3t)
+    let s4a = optimize_code_section(s3d)
+    let s4b = inline_empty_calls(s4a)
+    let s4c = inline_calls(s4b)
+    let s4d = remove_dead_blocks(s4c)
+    let s4 = drop_unused_tables(s4d)
+    let s5_removed = dce_remove(s4)
+    let s5 = if binary_size(s5_removed) < binary_size(s4) {
+      s5_removed
+    } else {
+      dce(s4)
+    }
+    let s5g = drop_unused_globals(s5)
+    let s5t = drop_unused_tags(s5g)
+    let s5p = propagate_local_copies(s5t)
+    let s6 = coalesce_locals(s5p)
+    let s7 = remove_unused_types(s6)
+    remove_empty_sections(s7)
+  }
+}
+
+export fn optimize(bytes: Bytes) -> Bytes {
+  let step1 = strip_custom_sections(bytes)
+  let step2 = optimize_code_section(step1)
+  let step3 = dce(step2)
+  step3
+}
+
+/// Run `minify` repeatedly until it stops shrinking the binary (wite's
+/// `--converge`). Passes feed each other across rounds: `directize` exposes
+/// dead functions for `dce`, `dce` exposes unused types for `remove_unused_types`,
+/// and deep constant-fold chains finish past `peephole_body`'s internal cap.
+/// Monotonic: a round is kept only if it is strictly smaller, so the result is
+/// never larger than a single `minify`. `max_rounds` bounds the work.
+fn minify_converge_n(bytes: Bytes, max_rounds: Int) -> Bytes {
+  let mut cur = minify(bytes)
+  let mut rounds = 0
+  let mut keep_going = true
+  while keep_going && (rounds < max_rounds) {
+    let next = minify(cur)
+    if binary_size(next) < binary_size(cur) {
+      cur = next
+      rounds = rounds + 1
+    } else {
+      keep_going = false
+    }
+  }
+  cur
+}
+
+export fn minify_converge(bytes: Bytes) -> Bytes {
+  minify_converge_n(bytes, 16)
+}

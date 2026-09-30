@@ -34,7 +34,7 @@ fi
 run_case() {
   local name="$1" mutation="$2" needle="$3"
   local copy="$WORK/$name.vibe"
-  cp "$REAL" "$copy"
+  python3 scripts/source_files.py "$REAL" > "$copy"
   python3 - "$copy" "$mutation" <<'PY'
 import re, sys
 path, which = sys.argv[1], sys.argv[2]

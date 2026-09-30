@@ -1,0 +1,551 @@
+// Renderer scope.
+
+import @vibe/compiler/core {
+  Expr,
+  Pat,
+  Stmt,
+  TypeExpr,
+  __to_string,
+  expr_child_at,
+  expr_children_pop,
+  expr_children_push,
+  expr_children_top,
+  namespace_rename_original,
+  typed_lowering_arg_offset
+}
+
+import @vibe/ast {
+  builtin_ref
+}
+
+import ./assert_eq_scope.vibe {
+  user_assert_eq_bound
+}
+
+import ./equality_registry.vibe {
+  generic_shape_head
+}
+
+import ./name_encoding.vibe {
+  concat2
+}
+
+import ./shape_environment.vibe {
+  shape_split
+}
+
+import ./state.vibe {
+  dtd_derived_renderers,
+  dtd_generic_show_shims,
+  dtd_interp_site_off,
+  dtd_local_show_shims,
+  dtd_show_generic_enum_stack,
+  dtd_show_self_fn,
+  dtd_show_shim_body_depth,
+  dtd_show_shims,
+  dtd_show_tmp
+}
+
+import ./utilities.vibe {
+  empty_str_array, str_array_contains
+}
+
+export fn show_self_fn_set(name: String) -> Unit {
+  Array::set(dtd_show_self_fn, 0, name)
+}
+
+export fn derived_renderers_reset() -> Unit {
+  Array::truncate(dtd_derived_renderers, 0)
+}
+
+export fn derived_renderer_record(tname: String) -> Unit {
+  Array::push(dtd_derived_renderers, tname)
+}
+
+export fn has_derived_renderer(tname: String) -> Bool {
+  str_array_contains(dtd_derived_renderers, tname)
+}
+
+/// `__to_string(x)`: the single-argument shape string interpolation lowers to.
+export fn is_interp_to_string_call(callee: Expr, args: Array[Expr]) -> Bool {
+  match callee {
+    EIdent(n, _) => n == "__to_string" && Array::length(args) == 1,
+    _ => false
+  }
+}
+
+export fn local_show_shim_reset() -> Unit {
+  Array::truncate(dtd_local_show_shims, 0)
+  Array::set(dtd_show_shim_body_depth, 0, 0)
+}
+
+export fn in_show_shim_body() -> Bool {
+  Array::get(dtd_show_shim_body_depth, 0) > 0
+}
+
+export fn show_shim_body_enter() -> Unit {
+  Array::set(dtd_show_shim_body_depth, 0, Array::get(dtd_show_shim_body_depth, 0) + 1)
+}
+
+export fn show_shim_body_leave() -> Unit {
+  let d = Array::get(dtd_show_shim_body_depth, 0)
+  if d > 0 {
+    Array::set(dtd_show_shim_body_depth, 0, d - 1)
+  } else {
+    ()
+  }
+}
+
+fn local_show_shim_mask(name: String) -> String {
+  String::concat("#mask#", name)
+}
+
+fn local_show_shim_push(entry: String) -> Unit {
+  Array::push(dtd_local_show_shims, entry)
+}
+
+export fn local_show_shim_pop() -> Unit {
+  let n = Array::length(dtd_local_show_shims)
+  if n > 0 {
+    Array::truncate(dtd_local_show_shims, n - 1)
+  } else {
+    ()
+  }
+}
+
+export fn local_show_shim_enter(name: String, val: Expr) -> Unit {
+  if is_show_shim_value(val) {
+    local_show_shim_push(name)
+  } else {
+    local_show_shim_push(local_show_shim_mask(name))
+  }
+}
+
+fn local_show_shim_bound(name: String) -> Bool {
+  let mut i = Array::length(dtd_local_show_shims)
+  let mut found = false
+  let mut is_shim = false
+  // Built once, not per entry (the concat allocates and this scan runs for
+  // every interpolated name), and not at all when there is nothing to scan.
+  let mask = if i == 0 {
+    ""
+  } else {
+    local_show_shim_mask(name)
+  }
+  while i > 0 && !found {
+    i = i - 1
+    let e = Array::get(dtd_local_show_shims, i)
+    if e == name {
+      found = true
+      is_shim = true
+    } else if e == mask {
+      found = true
+      is_shim = false
+    } else {
+      ()
+    }
+  }
+  is_shim
+}
+
+/// `__to_string(<pname>)` and nothing else -- the shim's whole body.
+fn is_bare_to_string_of(body: Expr, pname: String) -> Bool {
+  match body {
+    ECall(bc, ba, _) => if Array::length(ba) == 1 {
+      match bc {
+        EIdent(cn, _) => if cn == "__to_string" {
+          match Array::get(ba, 0) {
+            EIdent(an, _) => an == pname,
+            _ => false
+          }
+        } else {
+          false
+        },
+        _ => false
+      }
+    } else {
+      false
+    },
+    _ => false
+  }
+}
+
+/// A one-parameter function whose body is just `__to_string` of that
+/// parameter -- i.e. a pass-through whose call is interchangeable with the
+/// call it wraps.
+export fn is_show_shim_value(v: Expr) -> Bool {
+  match v {
+    EFn(_, _, ps, _, _, body) => if Array::length(ps) == 1 {
+      let (pn, _) = Array::get(ps, 0)
+      is_bare_to_string_of(body, pn)
+    } else {
+      false
+    },
+    _ => false
+  }
+}
+
+/// Every name this program binds LOCALLY, anywhere: `let`, `let mut`, `let rec`,
+/// lambda parameters, `for` binders, loop parameters, and pattern binders in
+/// `match`/`handle`/`let`-pattern arms.
+///
+/// #1443 review (Codex P2): the shim set is matched by NAME at a call site, and
+/// a name is not a binding. A local that SHADOWS a top-level shim -- a
+/// parameter `dump: (Int) -> String` where the module also defines
+/// `dump(x) { __to_string(x) }` -- would have its calls rewritten to
+/// `T::to_string(..)`, silently bypassing the function the caller passed in.
+///
+/// Discriminating properly means threading scope through `rewrite_expr`, which
+/// has dozens of recursive call sites. This is the conservative alternative: a
+/// shim whose name is bound locally ANYWHERE in the program is dropped from the
+/// set entirely, so no call site of that name is touched. It costs the rewrite
+/// in a program that happens to bind the name elsewhere (nothing renders worse
+/// than before), and it cannot mis-target one. The merged prelude shim is
+/// unaffected -- `import_alias_rewrite` gives it a suffixed name
+/// (`to_string_exp_lib__vibe_prelude_builtin_traits_vibe`) that no local binds.
+export fn collect_pat_binders(p: Pat, out: Array[String]) -> Unit {
+  match p {
+    PBind(n) => Array::push(out, n),
+    PCtor(_, args) => {
+      let mut i = 0
+      while i < Array::length(args) {
+        collect_pat_binders(Array::get(args, i), out)
+        i = i + 1
+      }
+    },
+    PTuple(elems) => {
+      let mut i = 0
+      while i < Array::length(elems) {
+        collect_pat_binders(Array::get(elems, i), out)
+        i = i + 1
+      }
+    },
+    POr(a, b) => {
+      collect_pat_binders(a, out)
+      collect_pat_binders(b, out)
+    },
+    PStruct(_, fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fp) = Array::get(fields, i)
+        collect_pat_binders(fp, out)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+fn collect_arm_binders(arms: Array[(Pat, Expr)], out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (p, _) = Array::get(arms, i)
+    collect_pat_binders(p, out)
+    i = i + 1
+  }
+}
+
+/// Binder names introduced by THIS node. Recursion is `expr_children`, which
+/// already covers every sub-expression of every form (including match/handle
+/// arm bodies and loop initializers), so a new binding form added to `Expr`
+/// shows up here as a missing case rather than as a silently skipped subtree.
+fn collect_expr_binders(e: Expr, out: Array[String]) -> Unit {
+  match e {
+    ELet(n, _, _, _) => Array::push(out, n),
+    ELetRec(n, _, _) => Array::push(out, n),
+    ELetMut(n, _, _, _) => Array::push(out, n),
+    EForIn(n, idx, _, _) => {
+      Array::push(out, n)
+      match idx {
+        Some(iname) => Array::push(out, iname),
+        None => ()
+      }
+    },
+    ELoop(params, _) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        let (pn, _) = Array::get(params, i)
+        Array::push(out, pn)
+        i = i + 1
+      }
+    },
+    EFn(_, _, params, _, _, _) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        let (pn, _) = Array::get(params, i)
+        Array::push(out, pn)
+        i = i + 1
+      }
+    },
+    EMatch(_, arms) => collect_arm_binders(arms, out),
+    EHandle(_, arms) => collect_arm_binders(arms, out),
+    _ => ()
+  }
+  let mark = expr_children_push(e)
+  let end = expr_children_top()
+  let mut i = mark
+  while i < end {
+    collect_expr_binders(expr_child_at(i), out)
+    i = i + 1
+  }
+  expr_children_pop(mark)
+}
+
+fn collect_local_binder_names(stmts: Array[Stmt]) -> Array[String] {
+  let out = empty_str_array()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, value) => collect_expr_binders(value, out),
+      SLetMut(_, _, value) => collect_expr_binders(value, out),
+      SLetPat(p, value) => {
+        collect_pat_binders(p, out)
+        collect_expr_binders(value, out)
+      },
+      SExpr(e) => collect_expr_binders(e, out),
+      STest(_, e) => collect_expr_binders(e, out),
+      SBench(_, e) => collect_expr_binders(e, out),
+      SExample(_, e) => collect_expr_binders(e, out),
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// #3075: a non-generic shim whose parameter is annotated with a type the
+/// call-site argument cannot stand in for is left an ordinary call, whose body
+/// renders at the declared type. Expanding it at the call site replaced that
+/// type with the argument's: `fn render(c: Char)` applied to `'q'` (a char
+/// literal is an Int) rendered `113`. The same holds for `Unit` and for an
+/// applied user type (`G[Bool]`, #3074). Builtin containers and tuples keep
+/// the expansion: their parameter shape is not read in the body.
+fn show_shim_param_is_concrete(value: Expr) -> Bool {
+  match value {
+    EFn(tparams, _, params, _, _, _) => if Array::length(tparams) == 0 && Array::length(params) == 1 {
+      let (_, ann) = Array::get(params, 0)
+      match ann {
+        Some(TyName(n)) => n == "Char",
+        Some(TyUnit) => true,
+        Some(TyApp(n, _)) => n != "Array" && n != "Option" && n != "Result" && n != "Map",
+        _ => false
+      }
+    } else {
+      false
+    },
+    _ => false
+  }
+}
+
+/// Refreshed at each `desugar_trait_dicts` entry. Empty (so nothing is
+/// rewritten) whenever the shim's own definition is not part of the program
+/// being compiled -- the conservative direction.
+export fn collect_show_shims(stmts: Array[Stmt]) -> Unit {
+  Array::truncate(dtd_show_shims, 0)
+  Array::truncate(dtd_generic_show_shims, 0)
+  let shadowed = collect_local_binder_names(stmts)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, value) => if is_show_shim_value(value) && !str_array_contains(shadowed, name) && !show_shim_param_is_concrete(value) {
+        Array::push(dtd_show_shims, name)
+        match value {
+          EFn(tparams, _, _, _, _, _) => if Array::length(tparams) > 0 {
+            Array::push(dtd_generic_show_shims, name)
+          },
+          _ => ()
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+export fn is_show_shim_call(callee: Expr, args: Array[Expr]) -> Bool {
+  if Array::length(args) != 1 {
+    false
+  } else {
+    match callee {
+      EIdent(n, _) => str_array_contains(dtd_show_shims, n) || local_show_shim_bound(n),
+      EFn(_, _, _, _, _, _) => is_show_shim_value(callee),
+      _ => false
+    }
+  }
+}
+
+/// #2198: the synthesized `__to_string` call carries the backslash of
+/// `\{`, not the expression's first byte -- that byte is the argument's
+/// own offset, and sharing it collides in the typed-lowering key space
+/// (#2427). The message carries `[@off=N]` and `locate_type_error` reports
+/// that byte. `[@fn=]` remains only when the
+/// call has no offset (a synthetic re-entry, or a fragment lexed without
+/// one): it names the enclosing binding, which is coarser and wrong for the
+/// fragment, but it is a position rather than none. An interpolation inside
+/// a `test { }` block has no self_fn and, without an offset, stays
+/// positionless. Do not emit both markers: `locate_type_error` resolves
+/// `[@off=]` and would leave `[@fn=]` in the text the reader sees.
+export fn interp_missing_show_msg(tn: String, off: Int) -> String {
+  let base = String::concat("cannot interpolate a value of type `", String::concat(tn, String::concat("`: it has no Show renderer -- add `derive(Show)` to `", String::concat(tn, String::concat("`, or define `fn ", String::concat(tn, "::to_string(v) -> String` (#1445)"))))))
+  if off >= 0 {
+    String::concat(base, String::concat(" [@off=", String::concat(__to_string(off), "]")))
+  } else {
+    let self_fn = Array::get(dtd_show_self_fn, 0)
+    if String::length(self_fn) > 0 {
+      String::concat(base, String::concat(" [@fn=", String::concat(self_fn, "]")))
+    } else {
+      base
+    }
+  }
+}
+
+/// The five names the two shape functions above understand, and nothing else.
+/// Kept beside them so a name added to either is added here in the same edit.
+export fn dtd_names_an_array_builtin(fname: String) -> Bool {
+  fname == "Array::map" || fname == "Array::filter" || fname == "Array::slice" || fname == "Array::reverse" || fname == "Array::concat"
+}
+
+/// #2912: the refusal message, naming the edit rather than the pass.
+export fn interp_unresolved_array_msg(fname: String) -> String {
+  let base = String::concat("cannot render the result of `", String::concat(fname, "` -- its element type is not known here, and rendering it would print a heap address instead of the array. Annotate the binding (`let xs: Array[Int] = ...`) or, for `Array::map`, give the callback a declared return type (`(v: Int) -> Int { .. }`) (#2912)"))
+  let self_fn = Array::get(dtd_show_self_fn, 0)
+  if String::length(self_fn) > 0 {
+    String::concat(base, String::concat(" [@fn=", String::concat(self_fn, "]")))
+  } else {
+    base
+  }
+}
+
+export fn show_tmp_name() -> String {
+  let n = Array::get(dtd_show_tmp, 0)
+  Array::set(dtd_show_tmp, 0, n + 1)
+  String::concat("__show_v", __to_string(n))
+}
+
+/// Does expanding `sh` recur? The same shape is already open (regular
+/// recursion), or its head is open eight times over (a non-regular one, whose
+/// shapes grow: `Nest[T]` holding `Nest[Array[T]]`). A different
+/// instantiation of the same head (`Box[Box[Int]]`) is not recursion.
+export fn show_generic_recurs(sh: String, head: String) -> Bool {
+  if str_array_contains(dtd_show_generic_enum_stack, sh) {
+    true
+  } else {
+    let mut n = 0
+    let mut i = 0
+    while i < Array::length(dtd_show_generic_enum_stack) {
+      if generic_shape_head(Array::get(dtd_show_generic_enum_stack, i)) == head {
+        n = n + 1
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    n >= 8
+  }
+}
+
+/// A recursive `{g:` position. Its erased derived renderer is exact only when
+/// every type argument renders the same erased as typed (`Int`, `String`); any
+/// other argument is refused rather than printed through the erased formal.
+export fn show_generic_recursive_render(subject: Expr, sh: String, head: String) -> Expr with Exception {
+  let gparts = shape_split(String::substring(sh, 3, String::length(sh) - 1))
+  let mut safe = true
+  let mut ai = 1
+  while ai < Array::length(gparts) {
+    let a = Array::get(gparts, ai)
+    if a != "Int" && a != "String" {
+      safe = false
+    } else {
+      ()
+    }
+    ai = ai + 1
+  }
+  if safe {
+    ECall(EIdent(String::concat(head, "::to_string"), -1), [subject], -1)
+  } else {
+    let shown = namespace_rename_original(head)
+    let base = String::concat("cannot interpolate a recursive `", String::concat(shown, String::concat("` whose type arguments are not `Int` or `String`: its derived renderer erases the type parameter, so a nested value would print through it -- render the value with a function you write (e.g. `fn show(v: ", String::concat(shown, "[..]) -> String`) (#3074, #3082)"))))
+    // #3090: anchor at the interpolated value when it carries an offset, else
+    // at the interpolation the expansion started from.
+    let soff = if typed_lowering_arg_offset(subject) >= 0 {
+      typed_lowering_arg_offset(subject)
+    } else {
+      Array::get(dtd_interp_site_off, 0)
+    }
+    if soff >= 0 {
+      throw(String::concat(base, String::concat(" [@off=", String::concat(__to_string(soff), "]"))))
+    } else {
+      throw(base)
+    }
+  }
+}
+
+/// #3075: render a `Char` as the character itself (UTF-8 encoded), the way a
+/// `String` renders its text.
+export fn char_render_expr(val: Expr) -> Expr {
+  let c = show_tmp_name()
+  let cv = EIdent(c, -1)
+  let byte = (e: Expr) -> Expr {
+    ECall(builtin_ref("String::from_char_code"), [e], -1)
+  }
+  let shr = (n: Int) -> Expr {
+    EBinOp(">>", cv, EInt(n), -1)
+  }
+  let cont = (e: Expr) -> Expr {
+    byte(EBinOp("|", EInt(128), EBinOp("&", e, EInt(63), -1), -1))
+  }
+  let lead = (mark: Int, e: Expr) -> Expr {
+    byte(EBinOp("|", EInt(mark), e, -1))
+  }
+  let two = concat2(lead(192, shr(6)), cont(cv))
+  let three = concat2(lead(224, shr(12)), concat2(cont(shr(6)), cont(cv)))
+  let four = concat2(lead(240, shr(18)), concat2(cont(shr(12)), concat2(cont(shr(6)), cont(cv))))
+  // Through `Char::to_int` so the binder is an Int: the gc lane has no `<` /
+  // `>>` lowering for a Char-typed operand.
+  ELet(c, ECall(builtin_ref("Char::to_int"), [val], -1), EIf(EBinOp("<", cv, EInt(128), -1), byte(cv), EIf(EBinOp("<", cv, EInt(2048), -1), two, EIf(EBinOp("<", cv, EInt(65536), -1), three, four))), -1)
+}
+
+/// #3075: render a `Unit` as `()`, still evaluating the value once.
+export fn unit_render_expr(val: Expr) -> Expr {
+  match val {
+    EUnit => EString("()", -1),
+    EIdent(_, _) => EString("()", -1),
+    _ => ESeq(val, EString("()", -1))
+  }
+}
+
+/// Whether the interpolation rewrite produced a replacement. Split from
+/// `interp_take_repl` because the decision is made in an else-if chain, which
+/// cannot bind the payload.
+export fn interp_has_repl(r: Option[Expr]) -> Bool {
+  match r {
+    Some(_) => true,
+    None => false
+  }
+}
+
+/// The replacement, given `interp_has_repl` already said there is one.
+export fn interp_take_repl(r: Option[Expr]) -> Expr {
+  match r {
+    Some(e) => e,
+    None => EUnit
+  }
+}
+
+/// #1946 leftover: a two-argument `assert_eq` call. The builtin is still
+/// what the checker sees (effect-free); this pass rewrites it after check so
+/// a failure can print both sides without adding Stderr/Exception to the
+/// source row.
+/// A program that DEFINES `assert_eq` itself gets its own function, not this
+/// lowering. Measured before the guard: `fn assert_eq(a: Int, b: Int) -> Int {
+/// a + b }` plus `assert_eq(1, 2)` compiled clean and trapped with `assert_eq
+/// failed` instead of returning 3, with no diagnostic naming the conflict
+/// anywhere (#2283).
+export fn is_assert_eq_call(callee: Expr, args: Array[Expr]) -> Bool {
+  match callee {
+    EIdent(n, _) => n == "assert_eq" && Array::length(args) == 2 && !user_assert_eq_bound(),
+    _ => false
+  }
+}

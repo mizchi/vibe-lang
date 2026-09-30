@@ -1,0 +1,2405 @@
+// lib/@vibe/compiler/checker/checker.vibe — call expr.
+
+import @vibe/compiler/checker/annotations {
+  report_mixed_kind_let_annotation
+}
+
+import @vibe/compiler/checker/type_relations {
+  head_kind, type_is_ground
+}
+
+import @vibe/compiler/checker/resume {
+  arm_first_bare_tail
+}
+
+import @vibe/compiler/checker/diagnostics {
+  off_marker, off_marker_len
+}
+
+import @vibe/compiler/core {
+  Expr,
+  Pat,
+  Stmt,
+  Subst,
+  Type,
+  TypeDef,
+  TypeEnv,
+  TypeExpr,
+  array_receiver_reads,
+  canonical_builtin_name,
+  env_bind,
+  env_bind_mut,
+  env_cache_binding,
+  env_lookup,
+  expr_children,
+  find_typedef,
+  fresh_var,
+  generalize,
+  instantiate,
+  is_exception_throw_operation,
+  refine_trait_bounds_from_receiver,
+  registry_builtin_scheme,
+  subst_add_bound,
+  subst_apply,
+  type_to_string,
+  unify
+}
+
+import @vibe/ast {
+  index_site_offset, is_builtin_ref_offset
+}
+
+import @vibe/parser {
+  lex
+}
+
+import ./builtins.vibe {
+  lookup_builtin
+}
+
+import @vibe/core {
+  array_empty, struct MutMap
+}
+
+import ./checker_exhaustive.vibe {
+  match_nonexhaustive_witness
+}
+
+import ./checker_pattern.vibe {
+  check_pattern
+}
+
+import ./checker_resolve.vibe {
+  resolve_type_expr_shadowed, subst_type_params
+}
+
+import ./checker_spawnable.vibe {
+  check_spawnable_captures
+}
+
+import ./builtin_call_arms.vibe {
+  builtin_call_arm, builtin_resolves_at
+}
+
+import ./checker_effects.vibe {
+  throw_payload_site_key
+}
+
+import ./checker_escape.vibe {
+  diag_report_into
+}
+
+import ./checker_builtin_arg_head_rest.vibe {
+  ascription_lambda_ann,
+  bind_builtin_arg_var,
+  builtin_fixed_arity,
+  builtin_param_head,
+  call_result_with_provenance,
+  check_builtin_arg_head,
+  check_hof_param_vs_elem,
+  check_spawn_shaped_call,
+  check_two_array_elems,
+  direct_builtin_return,
+  direct_call_return,
+  env_lookup_unless_synthesized_builtin,
+  future_builtin_arity,
+  future_builtin_type,
+  head_fold_char,
+  lookup_builtin_in_env,
+  receiver_struct_field_type,
+  type_name_prefix,
+  unify_call_args
+}
+
+import ./checker_closure_capture_row.vibe {
+  railway_ident_lookup_name, tail_expr_off
+}
+
+import ./checker_eq_unbounded_formal_msg.vibe {
+  callee_inst_types_cell,
+  check_assignable,
+  check_assignable_for,
+  check_assignable_set_end,
+  check_interp_formal,
+  effect_op_sig,
+  effect_tparams,
+  interp_name_is_shim,
+  is_bytestream_named_type,
+  preserve_generic_instantiation,
+  reject_non_frozen_receiver,
+  slice_receiver_is_invalid,
+  slice_result_type,
+  string_lit_end
+}
+
+import ./checker_infer_binop_type.vibe {
+  TypedOccurrenceRoleLaneCapture,
+  callee_is_run_shaped,
+  callee_is_spawn_shaped,
+  effect_instantiate,
+  effect_is_declared,
+  is_known_builtin_receiver_prefix,
+  param_types_are_spawn_shaped,
+  record_index_receiver,
+  report_spawnable_violations,
+  resolve_tparams_in,
+  typed_occurrence_capture_enter_virtual_child,
+  typed_occurrence_capture_frame_depth,
+  typed_occurrence_capture_restore_frame_depth,
+  typed_occurrence_capture_skip_children
+}
+
+import ./checker_lambda_expr.vibe {
+  array_reader_second_key,
+  bind_array_arg,
+  field_write_mut_check,
+  record_array_receiver,
+  retaining_write_region_check,
+  tab_call_ty,
+  tail_named_record_mentions_region
+}
+
+import ./checker_merge_capture_provenance.vibe {
+  builtin_no_lowering_hint,
+  collect_env_bindings,
+  eq_formal_row_of,
+  formal_shadow,
+  throw_payload_sites,
+  type_is_ground_except,
+  type_mentions_named
+}
+
+import ./checker_throw_kind_of_type.vibe {
+  check_mutbytes_receiver, expr_ident_name_or_empty, prepend_expr, railway_expr_off, report_unknown_type_names
+}
+
+// Check call arguments and callee dispatch through the caller's recursive checker.
+export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture], lane: String, discarded_root: Bool, check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int), check_plain: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int), check_args: (Array[Expr], TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Subst, Int)) -> (Type, Subst, Int) {
+  match expr {
+    ECall(callee, args, call_off) => match callee {
+      // `perform EffName::Op(opargs)` parses as ECall(EIdent("perform"),
+      // [ECall(EIdent("EffName::Op"), opargs)]). The op name may be a builtin
+      // effect (Stdin/Stdout/...) not registered in the checker env, so check
+      // only the op ARGUMENTS (not the op callee) and yield a fresh result type.
+      // `resume(v)` likewise yields the continuation result (a fresh var;
+      // handler arms are otherwise unchecked).
+      EIdent(name, callee_off) => {
+        // The recognized-callee path types arguments directly, but its callee
+        // remains structural child 0 under core::expr_children.
+        typed_occurrence_capture_skip_children(capture, 1)
+        // #3185: the field-write check belongs to the builtin `__set_field`
+        // (the `obj.f = x` sugar, spelled `builtin_ref`); a program's own
+        // function of that name is an ordinary call.
+        if builtin_resolves_at(env, name, callee_off) {
+          field_write_mut_check(name, args, env, defs, s, c, errors, tytab, check_plain)
+        } else {
+          ()
+        }
+        retaining_write_region_check(name, args, env, defs, s, c, errors, check_plain)
+        // #3179: the builtin arms below are selected by `arm`, never by
+        // `name`: a spelling the program's own function answers for reaches
+        // the ordinary call path at the end of this chain instead.
+        let arm = builtin_call_arm(env, name, Array::length(args), callee_off)
+        if name == "perform" || name == "perform?" {
+          let (pty, ps, pc) = if Array::length(args) == 1 {
+            match Array::get(args, 0) {
+              ECall(op_callee, opargs, _) => {
+                // #640 Stage 2: `throw(x)` parses to this exact shape
+                // (perform Exception::Throw(x)), and that carve-out preserved
+                // EThrow's historical typing verbatim: CtUnknown as the value
+                // AND no look at the payload at all.
+                //
+                // #1464: only the FIRST half is still wanted. Skipping the
+                // payload meant every type error inside a `throw(...)` was
+                // invisible -- measured, all of these compiled:
+                //
+                //   suberror AppError(String)
+                //   throw(AppError("boom", 1))   arity
+                //   throw(AppError(1))           payload type
+                //   throw(f("x", 1))             any call, at any depth
+                //
+                // while the same expressions OUTSIDE a throw were rejected,
+                // and `perform Log::Emit(f("x", 1))` (a user effect) was
+                // rejected too. So this was `Exception::Throw` alone, not `perform`
+                // and not CtUnknown-parameter builtins.
+                //
+                // The payload is now checked; the RESULT stays CtUnknown, which
+                // is the half the carve-out was really protecting -- `throw`
+                // sits in any expression position, so yielding a fresh var
+                // would change typing at all ~970 throw sites. Nothing is
+                // unified against a declared signature: `Exception` is core
+                // ambient and has no TDEffect, so the payload is checked on its
+                // own terms and no further.
+                let is_error_throw = match op_callee {
+                  EIdent(op_qname0, _) => is_exception_throw_operation(op_qname0),
+                  _ => false
+                }
+                if is_error_throw {
+                  let throw_parent_depth = typed_occurrence_capture_frame_depth(capture)
+                  typed_occurrence_capture_enter_virtual_child(capture, 1, 1 + Array::length(opargs))
+                  typed_occurrence_capture_skip_children(capture, 1)
+                  let mut ts = s
+                  let mut tc = c
+                  let mut ti = 0
+                  while ti < Array::length(opargs) {
+                    let (pt, ns, nc) = check_child(Array::get(opargs, ti), env, defs, ts, tc, errors, tytab, capture, lane)
+                    // #3017: hand the payload's type to the effects pass.
+                    if ti == 0 && Array::length(opargs) == 1 && call_off >= 0 {
+                      Array::push(throw_payload_sites, (throw_payload_site_key(call_off, Array::get(opargs, 0)), pt))
+                    }
+                    ts = ns
+                    tc = nc
+                    ti = ti + 1
+                  }
+                  typed_occurrence_capture_restore_frame_depth(capture, throw_parent_depth)
+                  (CtUnknown, ts, tc)
+                } else {
+                  // The op call is perform's outer argument (child 1), and
+                  // its callee is its own child 0. We check only op arguments,
+                  // so retain both skipped structural frames explicitly.
+                  let virtual_parent_depth = typed_occurrence_capture_frame_depth(capture)
+                  typed_occurrence_capture_enter_virtual_child(capture, 1, 1 + Array::length(opargs))
+                  typed_occurrence_capture_skip_children(capture, 1)
+                  let oalen = Array::length(opargs)
+                  let mut s1 = s
+                  let mut c1 = c
+                  let oparg_tys = array_empty()
+                  let mut ai = 0
+                  while ai < oalen {
+                    let (oat, ns, nc) = check_child(Array::get(opargs, ai), env, defs, s1, c1, errors, tytab, capture, lane)
+                    Array::push(oparg_tys, oat)
+                    s1 = ns
+                    c1 = nc
+                    ai = ai + 1
+                  }
+                  // #813: when the op belongs to a DECLARED effect, validate the
+                  // perform against its signature — arity and (ground-gated)
+                  // argument types were previously unchecked, so
+                  // `perform R::Take("str")` against `Take(Int)` compiled and
+                  // produced garbage. Builtin/imported effects (no TDEffect) skip.
+                  let perform_result = match op_callee {
+                    EIdent(op_qname, op_off) => match effect_op_sig(defs, op_qname) {
+                      Some(sig) => {
+                        let (sig_params_decl, sig_ret_decl) = sig
+                        // #1340 (ADR-0071): a GENERIC effect's signature
+                        // mentions its declared type params as rigid CtNamed
+                        // names — instantiate them with fresh inference vars
+                        // per perform site, so arity AND argument types are
+                        // genuinely checked (`perform State::Get(1,2,3)`
+                        // against a 0-arity op used to pass silently).
+                        let eff_of_op = String::substring(op_qname, 0, String::index_of(op_qname, "::"))
+                        let etps = effect_tparams(defs, eff_of_op)
+                        let mut c1b = c1
+                        let (sig_params, sig_ret, ret_usable) = if Array::length(etps) > 0 {
+                          let (ftargs, nc) = effect_instantiate(env, eff_of_op, etps, c1b)
+                          c1b = nc
+                          let ip = for p in sig_params_decl {
+                            subst_type_params(p, etps, ftargs)
+                          }
+                          (ip, subst_type_params(sig_ret_decl, etps, ftargs), type_is_ground_except(sig_ret_decl, etps))
+                        } else {
+                          (sig_params_decl, sig_ret_decl, type_is_ground(sig_ret_decl))
+                        }
+                        if Array::length(sig_params) != oalen {
+                          Array::push(errors, String::concat("perform ", String::concat(op_qname, String::concat(" expects ", String::concat(__to_string(Array::length(sig_params)), String::concat(" argument(s), got ", String::concat(__to_string(oalen), off_marker(op_off))))))))
+                        } else {
+                          let mut vi = 0
+                          while vi < oalen {
+                            s1 = check_assignable_for(subst_apply(s1, Array::get(sig_params, vi)), subst_apply(s1, Array::get(oparg_tys, vi)), s1, errors, "perform argument type mismatch for ", op_qname, op_off)
+                            vi = vi + 1
+                          }
+                        }
+                        // The perform's value is the op's declared return type —
+                        // typing it (instead of a fresh var) also lets resume/arm
+                        // consumers see the concrete type. Non-ground returns keep
+                        // the fresh var (generic inference untouched); a generic
+                        // effect's params-only return counts as usable after the
+                        // fresh-var substitution above (#1340).
+                        if ret_usable {
+                          (sig_ret, s1, c1b)
+                        } else {
+                          let (tv, c2) = fresh_var(c1b)
+                          (tv, s1, c2)
+                        }
+                      },
+                      None => {
+                        // A HOST operation with no source declaration
+                        // (`perform Fs::Exists(p)` without `@vibe/fs`) is
+                        // answered by the entry's provider with a direct call
+                        // to its builtin, synthesized after checking -- so its
+                        // arguments are checked here against the builtin's
+                        // registry signature, or an ill-typed perform would
+                        // first fail in codegen or at run time (Codex on
+                        // #3059). The perform's value is the builtin's result,
+                        // since that is what the provider resumes it with.
+                        let host_canon = canonical_builtin_name(op_qname)
+                        let mut host_ret: Option[Type] = None
+                        if host_canon != op_qname {
+                          match registry_builtin_scheme(host_canon) {
+                            Some(scheme) => {
+                              let (hty, c1h, _) = instantiate(scheme, c1)
+                              c1 = c1h
+                              match hty {
+                                CtFn(hparams, hret, _) => {
+                                  host_ret = Some(hret)
+                                  if Array::length(hparams) != oalen {
+                                    Array::push(errors, String::concat("perform ", String::concat(op_qname, String::concat(" expects ", String::concat(__to_string(Array::length(hparams)), String::concat(" argument(s), got ", String::concat(__to_string(oalen), off_marker(op_off))))))))
+                                  } else {
+                                    let mut hi = 0
+                                    while hi < oalen {
+                                      s1 = check_assignable_for(subst_apply(s1, Array::get(hparams, hi)), subst_apply(s1, Array::get(oparg_tys, hi)), s1, errors, "perform argument type mismatch for ", op_qname, op_off)
+                                      hi = hi + 1
+                                    }
+                                  }
+                                },
+                                _ => ()
+                              }
+                            },
+                            None => ()
+                          }
+                        } else {
+                          ()
+                        }
+                        // Unknown op of a DECLARED effect: the typo'd op would
+                        // never be matched by any handler arm — report it.
+                        let ci2 = String::index_of(op_qname, "::")
+                        if ci2 > 0 && effect_is_declared(defs, String::substring(op_qname, 0, ci2)) {
+                          Array::push(errors, String::concat("unknown operation `", String::concat(String::substring(op_qname, ci2 + 2, String::length(op_qname)), String::concat("` of effect ", String::concat(String::substring(op_qname, 0, ci2), off_marker(op_off))))))
+                        } else {
+                          ()
+                        }
+                        match host_ret {
+                          Some(r) => (r, s1, c1),
+                          None => {
+                            let (tv, c2) = fresh_var(c1)
+                            (tv, s1, c2)
+                          }
+                        }
+                      }
+                    },
+                    _ => {
+                      let (tv, c2) = fresh_var(c1)
+                      (tv, s1, c2)
+                    }
+                  }
+                  typed_occurrence_capture_restore_frame_depth(capture, virtual_parent_depth)
+                  perform_result
+                }
+              },
+              EIdent(bare_qname, bare_off) => {
+                // #1157: a zero-arg operation performed WITHOUT parens
+                // (`perform State::Get`) parses as a bare EIdent, not an
+                // ECall. #1340: validate it against the registry too — an
+                // op that declares parameters cannot be performed bare, and
+                // a usable return type flows out just like the ECall path
+                // (generic effects instantiate their type params with fresh
+                // vars first).
+                match effect_op_sig(defs, bare_qname) {
+                  Some(bare_sig) => {
+                    let (bare_params_decl, bare_ret_decl) = bare_sig
+                    let bare_eff = String::substring(bare_qname, 0, String::index_of(bare_qname, "::"))
+                    let betps = effect_tparams(defs, bare_eff)
+                    let mut bc1 = c
+                    let (bare_ret, bare_ret_usable) = if Array::length(betps) > 0 {
+                      let (bftargs, bnc) = effect_instantiate(env, bare_eff, betps, bc1)
+                      bc1 = bnc
+                      (subst_type_params(bare_ret_decl, betps, bftargs), type_is_ground_except(bare_ret_decl, betps))
+                    } else {
+                      (bare_ret_decl, type_is_ground(bare_ret_decl))
+                    }
+                    if Array::length(bare_params_decl) != 0 {
+                      Array::push(errors, String::concat("perform ", String::concat(bare_qname, String::concat(" expects ", String::concat(__to_string(Array::length(bare_params_decl)), String::concat(" argument(s), got 0", off_marker(bare_off)))))))
+                    } else {
+                      ()
+                    }
+                    if bare_ret_usable {
+                      (bare_ret, s, bc1)
+                    } else {
+                      let (tv, c2) = fresh_var(bc1)
+                      (tv, s, c2)
+                    }
+                  },
+                  None => {
+                    // An undeclared HOST operation performed bare: the same
+                    // registry check as the call form above (Codex on #3059).
+                    let bare_canon = canonical_builtin_name(bare_qname)
+                    let bare_host = if bare_canon != bare_qname {
+                      registry_builtin_scheme(bare_canon)
+                    } else {
+                      None
+                    }
+                    match bare_host {
+                      Some(scheme) => {
+                        let (hty, c1h, _) = instantiate(scheme, c)
+                        match hty {
+                          CtFn(hparams, hret, _) => {
+                            if Array::length(hparams) != 0 {
+                              Array::push(errors, String::concat("perform ", String::concat(bare_qname, String::concat(" expects ", String::concat(__to_string(Array::length(hparams)), String::concat(" argument(s), got 0", off_marker(bare_off)))))))
+                            } else {
+                              ()
+                            }
+                            (hret, s, c1h)
+                          },
+                          _ => {
+                            let (tv, c2) = fresh_var(c1h)
+                            (tv, s, c2)
+                          }
+                        }
+                      },
+                      None => {
+                        let (tv, c2) = fresh_var(c)
+                        (tv, s, c2)
+                      }
+                    }
+                  }
+                }
+              },
+              other => check_child(other, env, defs, s, c, errors, tytab, capture, lane)
+            }
+          } else {
+            (CtUnknown, s, c)
+          }
+          if name == "perform?" {
+            let attempt_t = if Array::length(args) == 1 {
+              match Array::get(args, 0) {
+                ECall(op_callee, _, _) => match op_callee {
+                  EIdent(op_qname, _) => match direct_builtin_return(canonical_builtin_name(op_qname)) {
+                    Some(bt) => bt,
+                    None => pty
+                  },
+                  _ => pty
+                },
+                EIdent(op_qname, _) => match direct_builtin_return(canonical_builtin_name(op_qname)) {
+                  Some(bt) => bt,
+                  None => pty
+                },
+                _ => pty
+              }
+            } else {
+              pty
+            }
+            (CtNamed("Attempt", [attempt_t, CtString]), ps, pc)
+          } else {
+            (pty, ps, pc)
+          }
+        } else if name == "resume" {
+          let alen = Array::length(args)
+          let mut s1 = s
+          let mut c1 = c
+          let mut ai = 0
+          while ai < alen {
+            let (_, ns, nc) = check_child(Array::get(args, ai), env, defs, s1, c1, errors, tytab, capture, lane)
+            s1 = ns
+            c1 = nc
+            ai = ai + 1
+          }
+          let (tv, c2) = fresh_var(c1)
+          (tv, s1, c2)
+        } else if name == "%wasm" {
+          // #805 (ADR-0072) inline wasm marker: only producible by the parser's
+          // `fn f(a: Int, ..) -> Int = wasm "..."` form (a `%`-ident cannot be
+          // parsed in expression position, so user source cannot forge it).
+          // The declared signature is trusted extern-let style; the call's
+          // value is a fresh var that unifies with the declared Int return.
+          // The single arg is the WAT text literal — shape-checked here
+          // defensively, never evaluated.
+          let wasm_shape_ok = if Array::length(args) == 1 {
+            match Array::get(args, 0) {
+              EString(_, _) => true,
+              _ => false
+            }
+          } else {
+            false
+          }
+          if !wasm_shape_ok {
+            Array::push(errors, "malformed inline wasm marker (expected a single WAT string literal)")
+          } else {
+            ()
+          }
+          let (tv, c2) = fresh_var(c)
+          (tv, s, c2)
+        } else if name == "Some" {
+          if Array::length(args) == 1 {
+            let (at, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+            (tab_call_ty(tytab, call_off, CtOption(subst_apply(s1, at)), capture, lane), s1, c1)
+          } else {
+            // `Some` takes exactly one payload — `Some(1, 2)` was accepted.
+            Array::push(errors, String::concat(String::concat("Some expects 1 argument, got ", __to_string(Array::length(args))), off_marker_len(callee_off, 4)))
+            (tab_call_ty(tytab, call_off, CtOption(CtUnknown), capture, lane), s, c)
+          }
+        } else if arm == "__index" {
+          // `obj[i]` (`__index(obj, i)`) is typed polymorphically by the builtin
+          // table, losing the result type — `let s: String = a[0]` over an
+          // `Array[Int]` slipped through. When the receiver resolves to
+          // `CtArray(elem)`, refine the result to `elem`; String/Bytes indexing
+          // yields the char/byte code (`Int`) so `let s: String = "abc"[0]`
+          // (which returns 97) must be rejected. Var / unknown / named receivers
+          // keep the conservative CtUnknown. Validate receiver/subscript shape
+          // from these same inference results: re-checking both expressions on
+          // a throwaway channel used to duplicate this hot traversal.
+          let (obj_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          let (idx_ty, s2, c2) = check_child(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
+          let resolved_obj = subst_apply(s2, obj_ty)
+          // #3133: the trait-dictionary pass lowers `m[k]` on a Map to
+          // `Map::get`, and it asks THIS type, not the receiver's spelling.
+          let bracket_off = index_site_offset(callee_off)
+          record_index_receiver(capture, bracket_off, obj_ty, resolved_obj, s2)
+          // A Map receiver indexes by its String key and yields the value slot,
+          // exactly as `Map::get` does below (#983).
+          let map_value = match resolved_obj {
+            CtNamed(mn, margs) => if mn == "Map" && Array::length(margs) == 2 {
+              Some(Array::get(margs, 1))
+            } else {
+              None
+            },
+            _ => None
+          }
+          let s3 = match map_value {
+            Some(_) => check_assignable(CtString, subst_apply(s2, idx_ty), s2, errors, "a Map index must be a String key", bracket_off),
+            None => s2
+          }
+          let not_indexable = match resolved_obj {
+            CtInt => true,
+            CtDouble => true,
+            CtBool => true,
+            CtChar => true,
+            CtUnit => true,
+            _ => false
+          }
+          if not_indexable {
+            Array::push(errors, "cannot index a non-indexable value (expected Array, String, or Bytes)")
+          } else {
+            let indexable = match resolved_obj {
+              CtArray(_) => true,
+              CtString => true,
+              CtBytes => true,
+              _ => false
+            }
+            let resolved_idx = subst_apply(s3, idx_ty)
+            if indexable && match resolved_idx {
+              CtInt => false,
+              _ => type_is_ground(resolved_idx)
+            } {
+              Array::push(errors, "index must be an Int")
+            } else {
+              ()
+            }
+          }
+          let result = match map_value {
+            Some(v) => subst_apply(s3, v),
+            None => match resolved_obj {
+              CtArray(elem) => elem,
+              CtString => CtInt,
+              CtBytes => CtInt,
+              _ => CtUnknown
+            }
+          }
+          (tab_call_ty(tytab, call_off, result, capture, lane), s3, c2)
+        } else if arm == "__rec_field" {
+          // #2452: `r.field` on an anonymous-record BINDING never reaches the
+          // `EDot` arm below -- the desugar rewrites it to
+          // `__rec_field(r, slot)` first (`anon_dot_rewrite`,
+          // normalize/desugar_trait_dict.vibe), and the builtin table types
+          // that call `(CtUnknown, Int) -> CtUnknown`. Its own comment called
+          // that "lenient ... only needs to resolve, not constrain", which was
+          // true while it served only the record-PATTERN desugar; #1839 routed
+          // EVERY dot access on an anonymous record through it and the
+          // leniency became a silent-wrong hole.
+          //
+          // Measured before this, all clean: `let r = record { n: 1 }` then
+          // `let s: String = r.n`, `String::length(r.n)`, `if r.n { .. }`,
+          // `r.n(1)`, and `let r = record { xs: [1] }` then
+          // `Array::push(r.xs, "s")`. An INLINE `(record { n: 1 }).n` was
+          // strict the whole time -- with no binding there is no sentinel, so
+          // it keeps its `EDot` and reaches the record arm there. Two
+          // spellings of one read disagreed, and the loose one is the one
+          // people write.
+          //
+          // Resolve the slot against the receiver's own field list, the same
+          // way the `EDot` `CtTuple` arm resolves `.N`. A non-record receiver
+          // keeps the tolerant answer: this call is also emitted for record
+          // PATTERNS over receivers this pass cannot resolve, and the fix is
+          // to stop losing a type that IS known, not to start rejecting types
+          // that are not.
+          //
+          // The index KEEPS its `Int` constraint. Refining the result is the
+          // only thing this arm adds; taking the call over from the builtin
+          // table would otherwise drop the one thing the old signature did
+          // check. Source can write `__rec_field(r, "bad")` directly -- the
+          // name is not reserved from expressions -- and codegen requires an
+          // `EInt` index, so dropping the constraint made `vibe check` answer
+          // "clean" for a program that then throws. Found by Codex on #2458;
+          // measured on `ed1089a9f`, a `String` and a `Bool` index were both
+          // rejected before and both clean after, which is why the red test
+          // for this is a direct call rather than a desugared one.
+          let (obj_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          let (idx_ty, s2, c2) = check_child(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
+          let s2b = check_assignable(CtInt, subst_apply(s2, idx_ty), s2, errors, "__rec_field index must be Int", call_off)
+          let result = match subst_apply(s2b, obj_ty) {
+            CtRecord(rfields) => match Array::get(args, 1) {
+              // Both producers emit a literal `EInt`. A non-literal index is
+              // left tolerant rather than rejected: it cannot be resolved to a
+              // field here, and the `Int` constraint above already covers the
+              // type. An out-of-range literal keeps the pre-#2452 answer too.
+              EInt(slot) => if slot >= 0 && slot < Array::length(rfields) {
+                let (_, fty) = Array::get(rfields, slot)
+                fty
+              } else {
+                CtUnknown
+              },
+              _ => CtUnknown
+            },
+            _ => CtUnknown
+          }
+          (tab_call_ty(tytab, call_off, result, capture, lane), s2b, c2)
+        } else if arm == "__slice" {
+          // #1682: the old fallback signature was
+          // `(CtUnknown, Int, Int) -> CtUnknown`, so both the receiver and
+          // result unified with anything. In particular
+          // `let n: Int = "hello"[0:2]` checked clean and then performed
+          // pointer arithmetic at runtime. Mirror the runtime's three-way
+          // dispatch explicitly and preserve an Array receiver's element type.
+          let receiver_errors_before = Array::length(errors)
+          let (obj_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          let receiver_had_error = Array::length(errors) > receiver_errors_before
+          let (start_ty, s2, c2) = check_child(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
+          let s2b = check_assignable(CtInt, subst_apply(s2, start_ty), s2, errors, "slice start must be Int", call_off)
+          let (end_ty, s3, c3) = check_child(Array::get(args, 2), env, defs, s2b, c2, errors, tytab, capture, lane)
+          let s3b = check_assignable(CtInt, subst_apply(s3, end_ty), s3, errors, "slice end must be Int", call_off)
+          let receiver = subst_apply(s3b, obj_ty)
+          if slice_receiver_is_invalid(receiver, receiver_had_error) {
+            Array::push(errors, String::concat("slice receiver must be String, Bytes, or Array, got ", String::concat(type_to_string(receiver), off_marker_len(callee_off, String::length(name)))))
+          } else {
+            ()
+          }
+          (tab_call_ty(tytab, call_off, slice_result_type(receiver), capture, lane), s3b, c3)
+        } else if arm == "__len" {
+          // Open-ended slices synthesize `__len(receiver)`. Keep its accepted
+          // receiver set identical to `__slice` and the runtime dispatch.
+          let receiver_errors_before = Array::length(errors)
+          let (obj_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          let receiver_had_error = Array::length(errors) > receiver_errors_before
+          let receiver = subst_apply(s1, obj_ty)
+          if slice_receiver_is_invalid(receiver, receiver_had_error) {
+            Array::push(errors, String::concat("slice receiver must be String, Bytes, or Array, got ", String::concat(type_to_string(receiver), off_marker_len(callee_off, String::length(name)))))
+          } else {
+            ()
+          }
+          (tab_call_ty(tytab, call_off, CtInt, capture, lane), s1, c1)
+        } else if arm == "Array::with_capacity" {
+          // Registry variables are erased on direct calls. A fresh element
+          // slot keeps this mutable array monomorphic across all of its uses,
+          // exactly as for an empty literal; the capacity expression is checked once.
+          let (at, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          let s2 = check_assignable(CtInt, subst_apply(s1, at), s1, errors, "Array::with_capacity requires an Int capacity", callee_off)
+          let (ev, c2) = fresh_var(c1)
+          (tab_call_ty(tytab, call_off, CtArray(ev), capture, lane), s2, c2)
+        } else if arm == "ArrayBuilder::new" {
+          // #938: the builder ops were typed all-CtUnknown, so
+          // `ArrayBuilder::push(b, 1); ArrayBuilder::push(b, "two")` compiled
+          // clean and the frozen array leaked a raw String pointer through an
+          // `Array[Int]` annotation. Give the builder a REAL element slot:
+          // `CtNamed("ArrayBuilder", [fresh])` — the same shape an explicit
+          // `b: ArrayBuilder[String]` annotation already resolves to
+          // (checker_resolve TyApp fallback), so annotated params get checked
+          // by the same push/freeze rules for free. The fresh var is bound by
+          // the FIRST push and every later push must unify with it. (ELet's
+          // generalize deliberately skips this shape — see the value-restriction
+          // note at the ELet arm — or each use would re-instantiate the var and
+          // the pushes could never disagree.)
+          let (ev, c1) = fresh_var(c)
+          (tab_call_ty(tytab, call_off, CtNamed("ArrayBuilder", Array::slice([
+            ev
+          ], 0, 1)), capture, lane), s, c1)
+        } else if arm == "ArrayBuilder::push" {
+          // #938: unify the pushed value with the builder's element slot. A
+          // builder that reaches here untyped (CtUnknown / var receiver from an
+          // un-annotated param) stays tolerant, exactly like Array::push's
+          // ground gate.
+          let (b_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          let (v_ty, s2, c2) = check_child(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
+          let s3 = match subst_apply(s2, b_ty) {
+            CtNamed(bn, bargs) => if bn == "ArrayBuilder" && Array::length(bargs) == 1 {
+              match unify(Array::get(bargs, 0), v_ty, s2) {
+                Some(su) => su,
+                None => {
+                  Array::push(errors, String::concat("ArrayBuilder::push element type mismatch: builder holds ", String::concat(type_to_string(subst_apply(s2, Array::get(bargs, 0))), String::concat(", got ", String::concat(type_to_string(subst_apply(s2, v_ty)), off_marker_len(callee_off, String::length(name)))))))
+                  s2
+                }
+              }
+            } else {
+              s2
+            },
+            _ => s2
+          }
+          (tab_call_ty(tytab, call_off, CtUnit, capture, lane), s3, c2)
+        } else if arm == "ArrayBuilder::freeze" {
+          // #938: freeze returns an array of the builder's (now tracked) element
+          // type, so a wrong return/let annotation is caught by the ordinary
+          // unify instead of vanishing into CtArray(CtUnknown).
+          let (b_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          let result = match subst_apply(s1, b_ty) {
+            CtNamed(bn, bargs) => if bn == "ArrayBuilder" && Array::length(bargs) == 1 {
+              CtArray(subst_apply(s1, Array::get(bargs, 0)))
+            } else {
+              CtArray(CtUnknown)
+            },
+            _ => CtArray(CtUnknown)
+          }
+          (tab_call_ty(tytab, call_off, result, capture, lane), s1, c1)
+        } else if arm == "FrozenArray::from_array" {
+          // #906: FrozenArray[T] is a checker-only phantom-type distinction over
+          // Array[T]'s exact same runtime layout -- same technique as
+          // ArrayBuilder above (freeze is a pure identity cast; here from_array
+          // is too). Capture the argument's element type into
+          // CtNamed("FrozenArray", [elem]) so get/to_array recover a real type
+          // instead of CtUnknown. A non-concrete argument (var/unknown
+          // receiver) stays tolerant, matching Array::reverse's own fallback.
+          let (a_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          let elem = match subst_apply(s1, a_ty) {
+            CtArray(e) => e,
+            _ => CtUnknown
+          }
+          (tab_call_ty(tytab, call_off, CtNamed("FrozenArray", Array::slice([
+            elem
+          ], 0, 1)), capture, lane), s1, c1)
+        } else if arm == "FrozenArray::to_array" {
+          // #906: the reverse of from_array -- unwraps a tracked FrozenArray
+          // element type back into an ordinary Array[T], same shape as
+          // ArrayBuilder::freeze above.
+          let (fa_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          // #2454: the receiver must BE a FrozenArray. The tolerant `else`
+          // below recovers the element type and cannot report -- so
+          // `FrozenArray::to_array` on an `Array[Int]` checked clean, and the
+          // distinction this phantom type exists for was not held apart at
+          // all. Ground-gated exactly like `Array::get`'s receiver check
+          // (head 0 = unresolved, tolerate); head 18 is FrozenArray.
+          reject_non_frozen_receiver(subst_apply(s1, fa_ty), name, callee_off, errors)
+          let result = match subst_apply(s1, fa_ty) {
+            CtNamed(fn0, fargs) => if fn0 == "FrozenArray" && Array::length(fargs) == 1 {
+              CtArray(subst_apply(s1, Array::get(fargs, 0)))
+            } else {
+              CtArray(CtUnknown)
+            },
+            _ => CtArray(CtUnknown)
+          }
+          (tab_call_ty(tytab, call_off, result, capture, lane), s1, c1)
+        } else if arm == "FrozenArray::get" {
+          // #906: same element-type extraction as Array::get, over a tracked
+          // FrozenArray receiver instead of CtArray.
+          let (fa_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          let (_, s2, c2) = check_child(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
+          // #2454: the receiver must BE a FrozenArray. The tolerant `else`
+          // below recovers the element type and cannot report -- so
+          // `FrozenArray::get` on an `Array[Int]` checked clean, and the
+          // distinction this phantom type exists for was not held apart at
+          // all. Ground-gated exactly like `Array::get`'s receiver check
+          // (head 0 = unresolved, tolerate); head 18 is FrozenArray.
+          reject_non_frozen_receiver(subst_apply(s2, fa_ty), name, callee_off, errors)
+          let result = match subst_apply(s2, fa_ty) {
+            CtNamed(fn1, fargs1) => if fn1 == "FrozenArray" && Array::length(fargs1) == 1 {
+              subst_apply(s2, Array::get(fargs1, 0))
+            } else {
+              CtUnknown
+            },
+            _ => CtUnknown
+          }
+          (tab_call_ty(tytab, call_off, result, capture, lane), s2, c2)
+        } else if arm == "FrozenArray::length" {
+          // #906: length is not element-type-dependent -- always Int, but the
+          // receiver still needs checking (consistent with every other builtin
+          // branch here checking all of its arguments).
+          let (fa_len_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          // #2454: this arm did not look at the receiver's SHAPE at all -- it
+          // checked the argument for effects and returned CtInt, so
+          // `FrozenArray::length(x)` on an `Array[Int]` checked clean.
+          reject_non_frozen_receiver(subst_apply(s1, fa_len_ty), name, callee_off, errors)
+          (tab_call_ty(tytab, call_off, CtInt, capture, lane), s1, c1)
+        } else if arm == "MutList::empty" {
+          // ADR-0090 Phase 1: MutList[T, r] is a checker-only phantom over
+          // Array[T]'s runtime layout (same technique as FrozenArray above).
+          // The region argument's type -- inside `region r { .. }` a type
+          // variable that `__region_run` later pins to its rigid skolem --
+          // is captured as the SECOND type argument, so the escape scan in
+          // the `__region_run` branch below can see region-tainted values in
+          // fully-zonked types. The element type stays tolerant (CtUnknown),
+          // matching FrozenArray's rows.
+          let (r_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          let zoned_r = subst_apply(s1, r_ty)
+          // #1274 Codex P1: the token must be the unforgeable `#region_N`
+          // skolem the `region` binder carries. Any other argument type
+          // (e.g. `MutList::empty(0)`) would install a skolem-free phantom
+          // that the `__region_run` escape scan can never see, making the
+          // region-bound collection freely constructible and escapable.
+          // Second-class by design: the token cannot pass through function
+          // parameters in this slice (a param's type is a fresh var, not
+          // the skolem), matching the ADR's escape rules.
+          let is_region_token = match zoned_r {
+            CtNamed(zr_name, _) => String::length(zr_name) >= 8 && String::substring(zr_name, 0, 8) == "#region_",
+            _ => false
+          }
+          if is_region_token {
+            ()
+          } else {
+            diag_report_into(errors, String::concat("MutList::empty requires the region token bound by `region r { ... }` (the token is second-class and cannot be forged or passed through function parameters)", off_marker_len(callee_off, String::length(name))))
+          }
+          (tab_call_ty(tytab, call_off, CtNamed("MutList", Array::slice([
+            CtUnknown,
+            zoned_r
+          ], 0, 2)), capture, lane), s1, c1)
+        } else if arm == "MutList::push" {
+          // ADR-0090 Phase 1: borrows the list (arg0), consumes the element.
+          // The tolerant CtUnknown element type means no per-push element
+          // unification yet -- the checker slice keeps FrozenArray's
+          // tolerance until MutList grows real element inference.
+          let (_, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          let (_, s2, c2) = check_child(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
+          (tab_call_ty(tytab, call_off, CtUnit, capture, lane), s2, c2)
+        } else if arm == "MutList::freeze" {
+          // ADR-0090 Phase 1: the sanctioned region exit -- drops the region
+          // type argument, so the frozen result passes the `__region_run`
+          // escape scan (runtime identity cast, like ArrayBuilder::freeze).
+          let (ml_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          let elem = match subst_apply(s1, ml_ty) {
+            CtNamed(ml_name, ml_args) => if ml_name == "MutList" && Array::length(ml_args) == 2 {
+              subst_apply(s1, Array::get(ml_args, 0))
+            } else {
+              CtUnknown
+            },
+            _ => CtUnknown
+          }
+          (tab_call_ty(tytab, call_off, CtNamed("FrozenArray", Array::slice([
+            elem
+          ], 0, 1)), capture, lane), s1, c1)
+        } else if arm == "MutList::to_array" {
+          // ADR-0090 Phase 1: like freeze but exits to a plain Array[T].
+          let (ml_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          let elem = match subst_apply(s1, ml_ty) {
+            CtNamed(ml_name, ml_args) => if ml_name == "MutList" && Array::length(ml_args) == 2 {
+              subst_apply(s1, Array::get(ml_args, 0))
+            } else {
+              CtUnknown
+            },
+            _ => CtUnknown
+          }
+          (tab_call_ty(tytab, call_off, CtArray(elem), capture, lane), s1, c1)
+        } else if arm == "MutList::get" {
+          // ADR-0090 / #1770: in-region read. The ELEMENT is an ordinary
+          // main-heap value (push stores whatever the caller built), so
+          // returning it is not an escape of region storage -- only the
+          // list's own backing is arena-bound, and no pointer to it leaves.
+          // This is what lets an accumulation be CONSUMED inside the region
+          // (worklists, scan-then-reduce) instead of forcing the copy-out
+          // exit whose cost cancelled the arena savings in #1794.
+          let (ml_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          let elem = match subst_apply(s1, ml_ty) {
+            CtNamed(ml_name, ml_args) => if ml_name == "MutList" && Array::length(ml_args) == 2 {
+              subst_apply(s1, Array::get(ml_args, 0))
+            } else {
+              CtUnknown
+            },
+            _ => CtUnknown
+          }
+          let (idx_ty, s2, c2) = check_child(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
+          match subst_apply(s2, idx_ty) {
+            CtInt => (),
+            CtVar(_) => (),
+            CtUnknown => (),
+            other => Array::push(errors, String::concat(String::concat("MutList::get expects an Int index, got ", type_to_string(other)), off_marker_len(callee_off, String::length(name))))
+          }
+          (tab_call_ty(tytab, call_off, elem, capture, lane), s2, c2)
+        } else if arm == "MutList::length" {
+          // ADR-0090 / #1770: scalar in-region read, escape-free.
+          let (_, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          (tab_call_ty(tytab, call_off, CtInt, capture, lane), s1, c1)
+        } else if arm == "MutList::truncate" {
+          // #1863: stack-pop idiom for helper-grown region scratch.
+          // Same layout as Array::truncate; the list stays in the region.
+          let (_, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          let (len_ty, s2, c2) = check_child(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
+          match subst_apply(s2, len_ty) {
+            CtInt => (),
+            CtVar(_) => (),
+            CtUnknown => (),
+            other => Array::push(errors, String::concat(String::concat("MutList::truncate expects an Int length, got ", type_to_string(other)), off_marker_len(callee_off, String::length(name))))
+          }
+          (tab_call_ty(tytab, call_off, CtUnit, capture, lane), s2, c2)
+        } else if arm == "MutBytes::empty" {
+          // ADR-0090 MutBytes: region-bound byte buffer, same checker-only
+          // phantom technique as MutList::empty above. Bytes has no element
+          // type, so the region argument is the ONLY type argument -- the
+          // `__region_run` escape scan sees the skolem in the same position
+          // sweep (type_mentions_named walks every argument).
+          let (r_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          let zoned_r = subst_apply(s1, r_ty)
+          let is_region_token = match zoned_r {
+            CtNamed(zr_name, _) => String::length(zr_name) >= 8 && String::substring(zr_name, 0, 8) == "#region_",
+            _ => false
+          }
+          if is_region_token {
+            ()
+          } else {
+            Array::push(errors, String::concat("MutBytes::empty requires the region token bound by `region r { ... }` (the token is second-class and cannot be forged or passed through function parameters)", off_marker_len(callee_off, String::length(name))))
+          }
+          (tab_call_ty(tytab, call_off, CtNamed("MutBytes", Array::slice([
+            zoned_r
+          ], 0, 1)), capture, lane), s1, c1)
+        } else if arm == "MutBytes::push" {
+          // ADR-0090 MutBytes: borrows the buffer (arg0), consumes the byte.
+          // Unlike MutList's element tolerance, the receiver and the byte
+          // have exactly one valid head each, so a known-wrong head is
+          // rejected here instead of aliasing to Bytes::push and reading
+          // unrelated linear memory (Codex review on #1801). Unresolved
+          // vars/CtUnknown stay tolerant ("silent when unsure").
+          let (mb_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          check_mutbytes_receiver(name, subst_apply(s1, mb_ty), errors, callee_off)
+          let (b_ty, s2, c2) = check_child(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
+          match subst_apply(s2, b_ty) {
+            CtInt => (),
+            CtVar(_) => (),
+            CtUnknown => (),
+            other => Array::push(errors, String::concat(String::concat("MutBytes::push expects an Int byte, got ", type_to_string(other)), off_marker_len(callee_off, String::length(name))))
+          }
+          (tab_call_ty(tytab, call_off, CtUnit, capture, lane), s2, c2)
+        } else if arm == "MutBytes::append" {
+          // ADR-0090 MutBytes: appends a plain Bytes' content INTO the
+          // region buffer (dst = arg0). Reading a main-heap Bytes from
+          // inside the region is always safe; nothing escapes.
+          let (mb_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          check_mutbytes_receiver(name, subst_apply(s1, mb_ty), errors, callee_off)
+          let (src_ty, s2, c2) = check_child(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
+          match subst_apply(s2, src_ty) {
+            CtBytes => (),
+            CtVar(_) => (),
+            CtUnknown => (),
+            other => Array::push(errors, String::concat(String::concat("MutBytes::append expects a Bytes source, got ", type_to_string(other)), off_marker_len(callee_off, String::length(name))))
+          }
+          (tab_call_ty(tytab, call_off, CtUnit, capture, lane), s2, c2)
+        } else if arm == "MutBytes::length" {
+          let (mb_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          check_mutbytes_receiver(name, subst_apply(s1, mb_ty), errors, callee_off)
+          (tab_call_ty(tytab, call_off, CtInt, capture, lane), s1, c1)
+        } else if arm == "MutBytes::to_bytes" {
+          // ADR-0090 MutBytes: the sanctioned region exit -- drops the region
+          // type argument so the result passes the `__region_run` escape
+          // scan. Unlike MutList::freeze this is a REAL copy in codegen
+          // (mutbytes_exit_copy), never an alias.
+          let (mb_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          check_mutbytes_receiver(name, subst_apply(s1, mb_ty), errors, callee_off)
+          (tab_call_ty(tytab, call_off, CtBytes, capture, lane), s1, c1)
+        } else if arm == "FixedArray::make" {
+          // #1140: FixedArray[T] is a checker-only phantom-type distinction
+          // over Array[T]'s exact same runtime layout, same technique as
+          // FrozenArray above (codegen already treats FixedArray::make/get/
+          // set/length as their own opcodes -- see codegen/gc/backend_call.vibe
+          // and codegen/expr/compile_call.vibe -- only the checker-level type
+          // tracking was missing, degrading every FixedArray value to
+          // CtArray(CtUnknown)/CtUnknown). Capture the init value's type into
+          // CtNamed("FixedArray", [elem]) so get/set/length recover a real
+          // element type. The length (arg 0) must still be checked against
+          // Int here -- #985's builtin_first_arg_head table already enforced
+          // this via the fallback path, and this ECall branch pre-empts that
+          // fallback, so skipping the check here would silently regress
+          // `FixedArray::make("4", 0)` back to compiling clean (caught by
+          // checker_builtin_arg_head_test.vibe's #985 review case).
+          let (len_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          let s1b = check_assignable(CtInt, subst_apply(s1, len_ty), s1, errors, "FixedArray::make length must be Int", call_off)
+          let (init_ty, s2, c2) = check_child(Array::get(args, 1), env, defs, s1b, c1, errors, tytab, capture, lane)
+          let elem = subst_apply(s2, init_ty)
+          (tab_call_ty(tytab, call_off, CtNamed("FixedArray", Array::slice([
+            elem
+          ], 0, 1)), capture, lane), s2, c2)
+        } else if arm == "FixedArray::get" {
+          // #1140: same element-type extraction as FrozenArray::get, over a
+          // tracked FixedArray receiver. Index (arg 1) checked against Int,
+          // same discipline #985's builtin_first_arg_head table enforced for
+          // Int64Array::get before this ECall branch pre-empted the fallback.
+          let (fa_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          let (idx_ty, s2, c2) = check_child(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
+          let s2b = check_assignable(CtInt, subst_apply(s2, idx_ty), s2, errors, "FixedArray::get index must be Int", call_off)
+          let result = match subst_apply(s2b, fa_ty) {
+            CtNamed(fan, faargs) => if fan == "FixedArray" && Array::length(faargs) == 1 {
+              subst_apply(s2b, Array::get(faargs, 0))
+            } else {
+              CtUnknown
+            },
+            _ => CtUnknown
+          }
+          (tab_call_ty(tytab, call_off, result, capture, lane), s2b, c2)
+        } else if arm == "FixedArray::set" || arm == "FixedArray::unsafe_set" {
+          // #1140: writing a value not assignable to the tracked element type
+          // is now a located type error instead of silently compiling through
+          // CtUnknown (same discipline as Map::set below). `unsafe_set` only
+          // skips the runtime bounds check (codegen concern) -- the static
+          // element-type contract is identical to `set`. Index (arg 1)
+          // checked against Int, same #985 discipline as FixedArray::get above.
+          let (fa_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          let (idx_ty2, s2, c2) = check_child(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
+          let s2b = check_assignable_for(CtInt, subst_apply(s2, idx_ty2), s2, errors, "index must be Int for ", name, call_off)
+          let (v_ty, s3, c3) = check_child(Array::get(args, 2), env, defs, s2b, c2, errors, tytab, capture, lane)
+          let s4 = match subst_apply(s3, fa_ty) {
+            CtNamed(fan2, faargs2) => if fan2 == "FixedArray" && Array::length(faargs2) == 1 {
+              check_assignable_for(subst_apply(s3, Array::get(faargs2, 0)), subst_apply(s3, v_ty), s3, errors, "value type mismatch for ", name, call_off)
+            } else {
+              s3
+            },
+            _ => s3
+          }
+          (tab_call_ty(tytab, call_off, CtUnit, capture, lane), s4, c3)
+        } else if arm == "FixedArray::length" {
+          // #1140: same as FrozenArray::length -- always Int, receiver still checked.
+          let (_, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          (tab_call_ty(tytab, call_off, CtInt, capture, lane), s1, c1)
+        } else if arm == "FixedArray::blit" {
+          // #1140: dst/dst_off/src/src_off/len -- dst_off/src_off/len (1, 3, 4)
+          // checked against Int, matching the Int positions the pre-existing
+          // fallback signature (fixed_array_five_params(.., CtInt, .., CtInt,
+          // CtInt)) enforced before this ECall branch pre-empted it. No
+          // cross-checking that dst's and src's tracked element types match
+          // (kept tolerant, same spirit as that same fallback signature's
+          // CtArray(CtUnknown) receiver positions).
+          let (_, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          let (dst_off_ty, s2, c2) = check_child(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
+          let s2b = check_assignable(CtInt, subst_apply(s2, dst_off_ty), s2, errors, "FixedArray::blit dst_off must be Int", call_off)
+          let (_, s3, c3) = check_child(Array::get(args, 2), env, defs, s2b, c2, errors, tytab, capture, lane)
+          let (src_off_ty, s4, c4) = check_child(Array::get(args, 3), env, defs, s3, c3, errors, tytab, capture, lane)
+          let s4b = check_assignable(CtInt, subst_apply(s4, src_off_ty), s4, errors, "FixedArray::blit src_off must be Int", call_off)
+          let (len_ty2, s5, c5) = check_child(Array::get(args, 4), env, defs, s4b, c4, errors, tytab, capture, lane)
+          let s5b = check_assignable(CtInt, subst_apply(s5, len_ty2), s5, errors, "FixedArray::blit len must be Int", call_off)
+          (tab_call_ty(tytab, call_off, CtUnit, capture, lane), s5b, c5)
+        } else if arm == "Map::set" {
+          // #983: every Map API's VALUE position was `CtUnknown` (the static
+          // builtin table cannot mint per-call vars), so
+          // `Map::set(m, "b", "str")` into a `Map[String, Int]` compiled clean
+          // and trapped at the consumer. Map literals now carry a real value
+          // slot (`CtNamed("Map", [CtString, v])` — the shape a
+          // `Map[String, V]` annotation already resolves to), and set checks
+          // the written value against it, ground-gated via `check_assignable`
+          // (same tolerate discipline as Array::push — untyped/var receivers
+          // stay tolerant). The key check replicates the CtString param the
+          // bypassed table signature enforced.
+          let (m_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          let (k_ty, s2, c2) = check_child(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
+          let (v_ty, s3, c3) = check_child(Array::get(args, 2), env, defs, s2, c2, errors, tytab, capture, lane)
+          let s4 = check_assignable(CtString, subst_apply(s3, k_ty), s3, errors, "argument type mismatch for Map::set", call_off)
+          let s5 = match subst_apply(s4, m_ty) {
+            CtNamed(mn, margs) => if mn == "Map" && Array::length(margs) == 2 {
+              check_assignable(subst_apply(s4, Array::get(margs, 1)), subst_apply(s4, v_ty), s4, errors, "Map::set value type mismatch", call_off)
+            } else {
+              s4
+            },
+            _ => s4
+          }
+          let mret = match subst_apply(s5, m_ty) {
+            CtNamed(mn2, margs2) => if mn2 == "Map" && Array::length(margs2) == 2 {
+              subst_apply(s5, m_ty)
+            } else {
+              CtNamed("Map", [CtString, CtUnknown])
+            },
+            _ => CtNamed("Map", [CtString, CtUnknown])
+          }
+          (tab_call_ty(tytab, call_off, mret, capture, lane), s5, c3)
+        } else if arm == "Map::get" {
+          // #983: refine the result from bare CtUnknown to the receiver's value
+          // slot, so a wrongly-typed consume of the looked-up value is caught
+          // by the ordinary unify. NOTE: `Map::get` returns the RAW stored
+          // value and TRAPS on a miss (#2990) — `declare Map::get(Map[T, U],
+          // T) -> U` in builtins/declarations.vibe and both codegen lanes
+          // agree — NOT an Option. Untyped receivers keep the conservative
+          // CtUnknown.
+          let (m_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          let (k_ty, s2, c2) = check_child(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
+          let s3 = check_assignable(CtString, subst_apply(s2, k_ty), s2, errors, "argument type mismatch for Map::get", call_off)
+          let result = match subst_apply(s3, m_ty) {
+            CtNamed(mn, margs) => if mn == "Map" && Array::length(margs) == 2 {
+              subst_apply(s3, Array::get(margs, 1))
+            } else {
+              CtUnknown
+            },
+            _ => CtUnknown
+          }
+          (tab_call_ty(tytab, call_off, result, capture, lane), s3, c2)
+        } else if arm == "MapBuilder::get" {
+          // #1310 (Codex review): mirror Map::get's #983 refinement just
+          // above -- an annotated/parameter receiver `MapBuilder[K, V]`
+          // should refine the direct-call fast path's bare
+          // `Option[CtUnknown]` (direct_builtin_return) to `Option[V]`, so a
+          // wrongly-typed consumer of the looked-up value is caught by the
+          // ordinary unify instead of silently passing (CtUnknown unifies
+          // with anything). Untyped receivers keep the conservative
+          // Option[CtUnknown].
+          let (mb_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          let (mbk_ty, s2, c2) = check_child(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
+          let s3 = check_assignable(CtString, subst_apply(s2, mbk_ty), s2, errors, "argument type mismatch for MapBuilder::get", call_off)
+          let mbresult = match subst_apply(s3, mb_ty) {
+            CtNamed(mn, margs) => if mn == "MapBuilder" && Array::length(margs) == 2 {
+              CtOption(subst_apply(s3, Array::get(margs, 1)))
+            } else {
+              CtOption(CtUnknown)
+            },
+            _ => CtOption(CtUnknown)
+          }
+          (tab_call_ty(tytab, call_off, mbresult, capture, lane), s3, c2)
+        } else if arm == "Map::keys" {
+          // #2263: keys() of a key-slotted map is `Array[k]`. The shape table
+          // answers `Array[String]` for every receiver, so a `Map[Int, V]`
+          // annotation handed its keys to `String::length` and compiled clean
+          // -- an annotation that disables checking at the slot, the #2125
+          // class. Every map the builtins can BUILD is still String-keyed
+          // (Map::set and from_pairs reject a non-String key), so for real
+          // programs this is the same answer; it stops the type from lying
+          // where the annotation says otherwise.
+          let (m_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          let result = match subst_apply(s1, m_ty) {
+            CtNamed(mn, margs) => if mn == "Map" && Array::length(margs) == 2 {
+              CtArray(subst_apply(s1, Array::get(margs, 0)))
+            } else {
+              CtArray(CtString)
+            },
+            _ => CtArray(CtString)
+          }
+          (tab_call_ty(tytab, call_off, result, capture, lane), s1, c1)
+        } else if arm == "Map::values" {
+          // #983: values() of a value-slotted map is `Array[v]`, not
+          // `Array[CtUnknown]`.
+          let (m_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          let result = match subst_apply(s1, m_ty) {
+            CtNamed(mn, margs) => if mn == "Map" && Array::length(margs) == 2 {
+              CtArray(subst_apply(s1, Array::get(margs, 1)))
+            } else {
+              CtArray(CtUnknown)
+            },
+            _ => CtArray(CtUnknown)
+          }
+          (tab_call_ty(tytab, call_off, result, capture, lane), s1, c1)
+        } else if arm == "Map::delete" {
+          // #983: delete preserves the receiver's map type (value slot
+          // included) instead of collapsing it to `Map[String, CtUnknown]`.
+          let (m_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          let (k_ty, s2, c2) = check_child(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
+          let s3 = check_assignable(CtString, subst_apply(s2, k_ty), s2, errors, "argument type mismatch for Map::delete", call_off)
+          let mret = match subst_apply(s3, m_ty) {
+            CtNamed(mn, margs) => if mn == "Map" && Array::length(margs) == 2 {
+              subst_apply(s3, m_ty)
+            } else {
+              CtNamed("Map", [CtString, CtUnknown])
+            },
+            _ => CtNamed("Map", [CtString, CtUnknown])
+          }
+          (tab_call_ty(tytab, call_off, mret, capture, lane), s3, c2)
+        } else if arm == "Array::push" {
+          // `Array::push(a, v)` requires `v` to match `a`'s element type — pushing
+          // a String into an `Array[Int]` was accepted (direct_call_return only
+          // checks arg-0 head). Check the value against a concrete element type;
+          // generic / var element types stay tolerant (check_assignable is ground-
+          // gated).
+          let (obj_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          check_builtin_arg_head(name, 0, subst_apply(s1, obj_ty), errors, callee_off)
+          let (s1, c1) = bind_array_arg(capture, name, callee_off, obj_ty, s1, c1)
+          let (val_ty, s2, c2) = check_child(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
+          let s3 = match subst_apply(s2, obj_ty) {
+            CtArray(elem) => check_assignable(subst_apply(s2, elem), subst_apply(s2, val_ty), s2, errors, "Array::push value type mismatch", tail_expr_off(Array::get(args, 1))),
+            _ => s2
+          }
+          (tab_call_ty(tytab, call_off, CtUnit, capture, lane), s3, c2)
+        } else if arm == "Array::set" {
+          // `Array::set(a, i, v)` requires `v` to match `a`'s element type (the 3rd
+          // arg was unchecked). Same ground-gated discipline as Array::push.
+          let (obj_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          let (set_idx_ty, s2, c2) = check_child(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
+          let (val_ty, s3, c3) = check_child(Array::get(args, 2), env, defs, s2, c2, errors, tytab, capture, lane)
+          // #3139: file the receiver like an index read's (#3133), so the
+          // trait-dictionary pass can refuse a write whose receiver is never
+          // resolved -- on a Map it would write the backing store
+          // positionally. The key is the callee's own offset for a written
+          // `Array::set(..)`, or the `[` an index write (`xs[i] = v`) carries.
+          let set_site = if callee_off >= 0 {
+            callee_off
+          } else {
+            index_site_offset(callee_off)
+          }
+          record_index_receiver(capture, set_site, obj_ty, subst_apply(s3, obj_ty), s3)
+          // #826: same head checks as Array::get (this branch also bypasses the
+          // direct fast path).
+          let as_recv_head = head_kind(subst_apply(s3, obj_ty))
+          if as_recv_head != 0 && as_recv_head != 9 {
+            // #3133: `m[k] = v` parses to `Array::set(m, k, v)`; on a Map the
+            // edit is the functional update, so say so.
+            let map_hint = match subst_apply(s3, obj_ty) {
+              CtNamed(mn, _) => if mn == "Map" {
+                " -- a Map is not updated in place (`m[k] = v` is Array-only): bind the result of `Map::set(m, k, v)` instead"
+              } else {
+                ""
+              },
+              _ => ""
+            }
+            Array::push(errors, String::concat("argument type mismatch for Array::set: receiver type ", String::concat(type_to_string(subst_apply(s3, obj_ty)), String::concat(map_hint, off_marker_len(callee_off, String::length(name))))))
+          } else if is_bytestream_named_type(subst_apply(s3, obj_ty)) {
+            Array::push(errors, String::concat("argument type mismatch for Array::set: receiver type ", String::concat(type_to_string(subst_apply(s3, obj_ty)), String::concat(" is a ByteStream, not an Array", off_marker_len(callee_off, String::length(name))))))
+          } else {
+            ()
+          }
+          let as_idx_head = head_kind(subst_apply(s3, set_idx_ty))
+          if as_idx_head != 0 && as_idx_head != 1 {
+            Array::push(errors, String::concat("argument type mismatch for Array::set (arg 1): ", String::concat(type_to_string(subst_apply(s3, set_idx_ty)), off_marker_len(callee_off, String::length(name)))))
+          } else {
+            ()
+          }
+          let s4 = match subst_apply(s3, obj_ty) {
+            CtArray(elem) => check_assignable(subst_apply(s3, elem), subst_apply(s3, val_ty), s3, errors, "Array::set value type mismatch", tail_expr_off(Array::get(args, 2))),
+            _ => s3
+          }
+          (tab_call_ty(tytab, call_off, CtUnit, capture, lane), s4, c3)
+        } else if arm == "Array::push_all" {
+          // `Array::push_all(a, b)` appends every element of `b` into `a`, so the
+          // two arrays must share an element type — `Array::push_all([1], ["x"])`
+          // merged Int and String elements and slipped through (push_all had no
+          // value/element check, only the arg-0 head). Same ground-gated discipline
+          // as Array::concat.
+          let (a_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          let (b_ty, s2, c2) = check_child(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
+          let (s2, c2) = bind_array_arg(capture, name, callee_off, a_ty, s2, c2)
+          let (s2, c2) = bind_array_arg(capture, name, array_reader_second_key(callee_off), b_ty, s2, c2)
+          let s3 = check_two_array_elems(subst_apply(s2, a_ty), subst_apply(s2, b_ty), s2, errors, "Array::push_all element type mismatch")
+          (tab_call_ty(tytab, call_off, CtUnit, capture, lane), s3, c2)
+        } else if arm == "Array::get" {
+          // `Array::get(a, i)` returns the element type, but `direct_call_return`
+          // types it CtUnknown — `let s: String = Array::get(intArr, 0)` slipped
+          // through. Refine the result to the element type from a concrete
+          // `CtArray(elem)` receiver (var / generic receivers stay CtUnknown).
+          let (obj_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          let (idx_ty, s2, c2) = check_child(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
+          // #826: this special branch bypasses the direct fast path, so the
+          // head checks never ran — `Array::get("str", 0)` trapped at runtime
+          // and `Array::get(a, "x")` returned silent garbage. Same ground-gated
+          // discipline as builtin_first_arg_head (0 = tolerate).
+          let (s2, c2) = bind_array_arg(capture, name, callee_off, obj_ty, s2, c2)
+          let ag_recv_head = head_kind(subst_apply(s2, obj_ty))
+          if ag_recv_head != 0 && ag_recv_head != 9 {
+            Array::push(errors, String::concat("argument type mismatch for Array::get: receiver type ", String::concat(type_to_string(subst_apply(s2, obj_ty)), off_marker_len(callee_off, String::length(name)))))
+          } else if is_bytestream_named_type(subst_apply(s2, obj_ty)) {
+            Array::push(errors, String::concat("argument type mismatch for Array::get: receiver type ", String::concat(type_to_string(subst_apply(s2, obj_ty)), String::concat(" is a ByteStream, not an Array", off_marker_len(callee_off, String::length(name))))))
+          } else {
+            ()
+          }
+          let ag_idx_head = head_kind(subst_apply(s2, idx_ty))
+          if ag_idx_head != 0 && ag_idx_head != 1 {
+            Array::push(errors, String::concat("argument type mismatch for Array::get (arg 1): ", String::concat(type_to_string(subst_apply(s2, idx_ty)), off_marker_len(callee_off, String::length(name)))))
+          } else {
+            ()
+          }
+          let result = match subst_apply(s2, obj_ty) {
+            CtArray(elem) => elem,
+            _ => CtUnknown
+          }
+          (tab_call_ty(tytab, call_off, result, capture, lane), s2, c2)
+        } else if arm == "Array::reverse" {
+          // Returns an array of the same element type (was CtUnknown).
+          let (obj_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          check_builtin_arg_head(name, 0, subst_apply(s1, obj_ty), errors, callee_off)
+          let (s1, c1) = bind_array_arg(capture, name, callee_off, obj_ty, s1, c1)
+          let result = match subst_apply(s1, obj_ty) {
+            CtArray(elem) => CtArray(elem),
+            _ => CtUnknown
+          }
+          (tab_call_ty(tytab, call_off, result, capture, lane), s1, c1)
+        } else if arm == "Array::concat" {
+          // Returns an array of the receivers' element type (was CtUnknown). Refine
+          // from the first concrete `CtArray(elem)` operand, and require the two
+          // operands' element types to agree — `Array::concat([1], ["x"])` mixed
+          // `Array[Int]` with `Array[String]` and slipped through (the result was
+          // refined to the first operand but the second was never checked).
+          let (a_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          check_builtin_arg_head(name, 0, subst_apply(s1, a_ty), errors, callee_off)
+          let (b_ty, s2, c2) = check_child(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
+          let (s2, c2) = bind_array_arg(capture, name, callee_off, a_ty, s2, c2)
+          let (s2, c2) = bind_array_arg(capture, name, array_reader_second_key(callee_off), b_ty, s2, c2)
+          let a_app = subst_apply(s2, a_ty)
+          let b_app = subst_apply(s2, b_ty)
+          let s3 = check_two_array_elems(a_app, b_app, s2, errors, "Array::concat element type mismatch")
+          let result = match a_app {
+            CtArray(elem) => CtArray(elem),
+            _ => match b_app {
+              CtArray(elem) => CtArray(elem),
+              _ => CtUnknown
+            }
+          }
+          (tab_call_ty(tytab, call_off, result, capture, lane), s3, c2)
+        } else if arm == "Array::slice" {
+          // `Array::slice(a, lo, hi)` returns an array of the SAME element type,
+          // typed CtUnknown by the builtin table (`let s: String =
+          // Array::get(Array::slice(ints, 0, 1), 0)` slipped through). Refine to
+          // `CtArray(elem)` from a concrete receiver.
+          let (obj_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          check_builtin_arg_head(name, 0, subst_apply(s1, obj_ty), errors, callee_off)
+          let (s1, c1) = bind_array_arg(capture, name, callee_off, obj_ty, s1, c1)
+          let (_, s2, c2) = check_child(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
+          let (_, s3, c3) = check_child(Array::get(args, 2), env, defs, s2, c2, errors, tytab, capture, lane)
+          let result = match subst_apply(s3, obj_ty) {
+            CtArray(elem) => CtArray(elem),
+            _ => CtUnknown
+          }
+          (tab_call_ty(tytab, call_off, result, capture, lane), s3, c3)
+        } else if arm == "Array::fold" {
+          // `Array::fold(a, init, f)` returns the accumulator type — i.e. `init`'s
+          // type — but was typed CtUnknown, so `let s: String = Array::fold(ints,
+          // 0, add)` slipped through. Refine the result to the init value's type.
+          // Also check the callback `(acc, x)` params: `acc` against `init`'s type
+          // and `x` against the array element type (`Array::fold([1,2], 0, (acc:
+          // String, x) -> ...)` slipped through). Ground-gated.
+          let (recv_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          check_builtin_arg_head(name, 0, subst_apply(s1, recv_ty), errors, callee_off)
+          let (s1, c1) = bind_array_arg(capture, name, callee_off, recv_ty, s1, c1)
+          let (init_ty, s2, c2) = check_child(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
+          let (fn_ty, s3, c3) = check_child(Array::get(args, 2), env, defs, s2, c2, errors, tytab, capture, lane)
+          check_builtin_arg_head(name, 2, subst_apply(s3, fn_ty), errors, callee_off)
+          let s4 = match subst_apply(s3, fn_ty) {
+            CtFn(ptys, _, _) => if Array::length(ptys) >= 1 {
+              check_assignable(subst_apply(s3, Array::get(ptys, 0)), subst_apply(s3, init_ty), s3, errors, "Array::fold accumulator type mismatch", tail_expr_off(Array::get(args, 1)))
+            } else {
+              s3
+            },
+            _ => s3
+          }
+          let s5 = check_hof_param_vs_elem(subst_apply(s4, recv_ty), subst_apply(s4, fn_ty), 1, s4, errors, "Array::fold element parameter type mismatch")
+          (tab_call_ty(tytab, call_off, subst_apply(s5, init_ty), capture, lane), s5, c3)
+        } else if arm == "Array::map" {
+          // `Array::map(a, f)` returns `Array[R]` where R is f's return type —
+          // typed CtUnknown by the builtin table, so the mapped element type was
+          // lost (`let s: String = Array::get(Array::map(ints, inc), 0)`). Refine
+          // the result element to the mapping function's concrete return type; a
+          // non-function / var f stays CtUnknown. Also check the callback's first
+          // parameter type against the array element type — `Array::map([1,2],
+          // (s: String) -> ...)` applied a `(String)->_` over `Array[Int]` and
+          // slipped through. Ground-gated, so an unannotated `(x) -> ...` param
+          // (CtVar) stays tolerant.
+          let (recv_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          check_builtin_arg_head(name, 0, subst_apply(s1, recv_ty), errors, callee_off)
+          let (s1, c1) = bind_array_arg(capture, name, callee_off, recv_ty, s1, c1)
+          let (fn_ty, s2, c2) = check_child(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
+          check_builtin_arg_head(name, 1, subst_apply(s2, fn_ty), errors, callee_off)
+          let s3 = check_hof_param_vs_elem(subst_apply(s2, recv_ty), subst_apply(s2, fn_ty), 0, s2, errors, "Array::map function parameter type mismatch")
+          let result = match subst_apply(s3, fn_ty) {
+            CtFn(_, ret, _) => CtArray(ret),
+            _ => CtUnknown
+          }
+          (tab_call_ty(tytab, call_off, result, capture, lane), s3, c2)
+        } else if arm == "TaskGroup::run" || (Array::length(args) == 1 && callee_is_run_shaped(env, s, name)) {
+          // #1081 step 3: `TaskGroup::run` mints a fresh generative region.
+          // There is no general rank-2/`Region`-bound mechanism in this
+          // checker (see docs/internal/design/concurrency.md's dated 実装ノート).
+          // #3153: the branch is selected by the callee's TYPE
+          // (`type_is_run_shaped`: one closure argument whose one parameter
+          // is a `TaskGroup[r, e]`), so a `let` alias, a renamed import and
+          // a wrapper of that shape get the same fresh region; the
+          // function taken as any other value is refused where it is taken.
+          // A structural match was tried once before and reverted (PR #1135
+          // review) because it matched any single-closure call and
+          // regressed 20 unit tests; this shape requires the closure's
+          // parameter to be a `TaskGroup`, which only a runner is handed.
+          // The scheme's `r` type
+          // parameter is instantiated to a fresh RIGID skolem (a `CtNamed`
+          // name no parsed source can ever spell — the lexer rejects `#` in
+          // identifiers) instead of an ordinary unifiable `CtVar`, so nothing
+          // outside this call can be coerced into it by accident; only a
+          // real escape reaches it, which the two checks below catch by
+          // scanning fully-zonked types for the skolem's name.
+          match env_lookup(env, name) {
+            Some(scheme) => {
+              let (ti, c1, new_bounds) = instantiate(scheme, c)
+              let mut s0 = s
+              let mut bi = 0
+              while bi < Array::length(new_bounds) {
+                let (vid, bounds) = Array::get(new_bounds, bi)
+                if Array::length(bounds) != 0 {
+                  s0 = subst_add_bound(s0, vid, bounds)
+                } else {
+                  ()
+                }
+                bi = bi + 1
+              }
+              match ti {
+                CtFn(run_params, run_ret, _) => match Array::get(run_params, 0) {
+                  CtFn(body_params, body_ret, body_eff) => match Array::get(body_params, 0) {
+                    CtNamed(tg_name, tg_args) => if tg_name == "TaskGroup" && Array::length(tg_args) == 2 {
+                      match Array::get(tg_args, 0) {
+                        CtVar(rv_id) => {
+                          let skolem_name = String::concat("#region_", __to_string(c1))
+                          let s_skolem = SubstBind(rv_id, CtNamed(skolem_name, [
+                          ]), s0)
+                          let (bt, s_body, c_body) = check_child(Array::get(args, 0), env, defs, s_skolem, c1 + 1, errors, tytab, capture, lane)
+                          match unify(CtFn(body_params, body_ret, body_eff), bt, s_body) {
+                            Some(s_unified) => {
+                              let zonked_ret = subst_apply(s_unified, body_ret)
+                              if type_mentions_named(zonked_ret, skolem_name) {
+                                Array::push(errors, String::concat("region escapes its nursery scope: the value returned from this TaskGroup::run body still depends on its own Nursery/Task/Sender/Receiver token", off_marker_len(callee_off, String::length(name))))
+                              } else {
+                                ()
+                              }
+                              let outer_bindings = array_empty()
+                              collect_env_bindings(env, outer_bindings)
+                              let mut oi = 0
+                              let mut leaked = false
+                              while oi < Array::length(outer_bindings) {
+                                let (_, oty) = Array::get(outer_bindings, oi)
+                                if !leaked && type_mentions_named(subst_apply(s_unified, oty), skolem_name) {
+                                  leaked = true
+                                } else {
+                                  ()
+                                }
+                                oi = oi + 1
+                              }
+                              if leaked {
+                                Array::push(errors, String::concat("region escapes its nursery scope: an outer binding now depends on this TaskGroup::run call's own Nursery/Task/Sender/Receiver token", off_marker_len(callee_off, String::length(name))))
+                              } else {
+                                ()
+                              }
+                              // #1262: the `let mut` capture check now rides
+                              // the per-spawn branch below, reading the
+                              // escape fact `env_bind_mut` recorded in the
+                              // env at the binding site (ADR-0100 (1)). It
+                              // used to be a separate whole-program AST pass
+                              // precisely because `TypeEnv` could not answer
+                              // "is this binding mutable?".
+                              (tab_call_ty(tytab, call_off, subst_apply(s_unified, run_ret), capture, lane), s_unified, c_body)
+                            },
+                            None => {
+                              Array::push(errors, String::concat("argument type mismatch for TaskGroup::run", off_marker_len(callee_off, String::length(name))))
+                              (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), s_body, c_body)
+                            }
+                          }
+                        },
+                        // #3153: a runner whose region is already fixed (a
+                        // monomorphic binding used twice) cannot mint a fresh
+                        // one, so its escape check cannot run. Say so rather
+                        // than answer Unknown in silence.
+                        _ => {
+                          Array::push(errors, String::concat(String::concat(String::concat("`", name), "` cannot run a new task group here: its group type is already fixed by an earlier use -- call `TaskGroup::run` directly, or bind it with a local `let` at each use"), off_marker_len(callee_off, String::length(name))))
+                          let (sa, ca) = check_args(args, env, defs, s0, c1, errors, tytab, capture, lane)
+                          (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), sa, ca)
+                        }
+                      }
+                    } else {
+                      let (sa, ca) = check_args(args, env, defs, s0, c1, errors, tytab, capture, lane)
+                      (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), sa, ca)
+                    },
+                    _ => {
+                      let (sa, ca) = check_args(args, env, defs, s0, c1, errors, tytab, capture, lane)
+                      (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), sa, ca)
+                    }
+                  },
+                  _ => {
+                    let (sa, ca) = check_args(args, env, defs, s0, c1, errors, tytab, capture, lane)
+                    (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), sa, ca)
+                  }
+                },
+                _ => {
+                  let (sa, ca) = check_args(args, env, defs, s0, c1, errors, tytab, capture, lane)
+                  (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), sa, ca)
+                }
+              }
+            },
+            // Reachable: `arm` names `TaskGroup::run` exactly when nothing in
+            // `env` binds it (e.g. the package isn't imported here at all);
+            // a binding of another shape is the program's own function and
+            // takes the ordinary call path (#3179).
+            None => {
+              Array::push(errors, String::concat(String::concat(String::concat("unknown name: ", name), builtin_no_lowering_hint(name)), off_marker_len(callee_off, String::length(name))))
+              let (sa, ca) = check_args(args, env, defs, s, c, errors, tytab, capture, lane)
+              (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), sa, ca)
+            }
+          }
+        } else if arm == "__region_run" {
+          // ADR-0090 Phase 1: `region r { body }` -- parser-lowered to
+          // `__region_run((r) -> { body })` -- mints a fresh generative
+          // region, cloned from the TaskGroup::run branch above. Two
+          // differences: `__region_run` is a reserved internal ABI name that
+          // only the `region` syntax emits (a direct call spelled by hand
+          // gets the same semantics, so the TaskGroup::run alias-bypass hole
+          // does not exist here -- there is no scheme to alias), and there
+          // is no env scheme to instantiate: the argument is by construction
+          // a literal lambda, so its binder is bound DIRECTLY to the rigid
+          // skolem (a CtNamed name no parsed source can spell -- `#` is
+          // rejected in identifiers) before the body is checked. Binding
+          // before checking matters: region-tainted `let` bindings then
+          // carry the concrete skolem in their types, so this checker's
+          // let-generalization cannot quantify the taint away (the
+          // check-first-unify-later order would leave a free var at `let`
+          // time and reopen exactly the generalize hole the ADR-0068
+          // section documents). Known Phase 1 gap: the body is checked as a
+          // plain expression here, but the separate effect-row pass still
+          // sees the lambda wrapper, so effects performed inside a region
+          // body are not attributed to the enclosing fn by that pass.
+          // #3185: the `region` syntax spells its call `builtin_ref_at`, which keys
+          // the keyword's offset below `builtin_ref_offset()`; decode it so an escape
+          // is still reported at the `region` keyword.
+          let region_off = if is_builtin_ref_offset(callee_off) {
+            index_site_offset(callee_off)
+          } else {
+            callee_off
+          }
+          let skolem_name = String::concat("#region_", __to_string(c))
+          match Array::get(args, 0) {
+            EFn(_, _, fn_params, _, _, fn_body) => if Array::length(fn_params) == 1 {
+              let (binder_name, _) = Array::get(fn_params, 0)
+              let region_ty = CtNamed(skolem_name, [])
+              // Region-sensitive checks run many times in a deep body. Cache
+              // the marker once at the boundary so those checks use the
+              // existing indexed TypeEnv lookup instead of rescanning every
+              // lexical binding. env_bind keeps this cache at the head for
+              // ordinary region-local names, and a nested region rebuilds it.
+              let env_body_uncached = env_bind(env_bind(env_bind(env, "__capture_boundary__", CtUnit), binder_name, region_ty), "#active_region", region_ty)
+              let env_body = env_cache_binding(env_body_uncached, "#active_region", region_ty)
+              // The specialized region path checks the literal lambda body
+              // directly. Preserve both structural edges from the outer call:
+              // argument child 1, then EFn body child 0.
+              let virtual_parent_depth = typed_occurrence_capture_frame_depth(capture)
+              typed_occurrence_capture_enter_virtual_child(capture, 1, 1)
+              let (body_ty, s1, c1) = check_child(fn_body, env_body, defs, s, c + 1, errors, tytab, capture, lane)
+              typed_occurrence_capture_restore_frame_depth(capture, virtual_parent_depth)
+              let zonked_ret = subst_apply(s1, body_ty)
+              if type_mentions_named(zonked_ret, skolem_name) || tail_named_record_mentions_region(fn_body, env_body, defs, s, c + 1, skolem_name, check_plain) {
+                Array::push(errors, String::concat("region escapes its scope: the value returned from this region body still depends on the region's own token", off_marker_len(region_off, String::length(name))))
+              } else {
+                ()
+              }
+              let outer_bindings = array_empty()
+              collect_env_bindings(env, outer_bindings)
+              let mut oi = 0
+              let mut leaked = false
+              while oi < Array::length(outer_bindings) {
+                let (_, oty) = Array::get(outer_bindings, oi)
+                if !leaked && type_mentions_named(subst_apply(s1, oty), skolem_name) {
+                  leaked = true
+                } else {
+                  ()
+                }
+                oi = oi + 1
+              }
+              if leaked {
+                Array::push(errors, String::concat("region escapes its scope: an outer binding now depends on this region's own token", off_marker_len(region_off, String::length(name))))
+              } else {
+                ()
+              }
+              (tab_call_ty(tytab, call_off, zonked_ret, capture, lane), s1, c1)
+            } else {
+              (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), s, c + 1)
+            },
+            // A hand-written `__region_run(f)` with a non-literal callee:
+            // check it as an ordinary 1-arg closure call and pin its
+            // parameter to the skolem afterwards. Direct return-position
+            // escapes are still caught through the final zonk; taint that
+            // detoured through a generalized `let` inside `f` is not (the
+            // documented generalize gap -- only the literal-lambda form the
+            // parser emits gets the stronger bind-first treatment above).
+            _ => {
+              let (bt, s_body, c_body) = check_child(Array::get(args, 0), env, defs, s, c + 1, errors, tytab, capture, lane)
+              match subst_apply(s_body, bt) {
+                CtFn(body_params, body_ret, _) => if Array::length(body_params) == 1 {
+                  match unify(Array::get(body_params, 0), CtNamed(skolem_name, [
+                  ]), s_body) {
+                    Some(s_unified) => {
+                      let zonked_ret = subst_apply(s_unified, body_ret)
+                      if type_mentions_named(zonked_ret, skolem_name) {
+                        Array::push(errors, String::concat("region escapes its scope: the value returned from this region body still depends on the region's own token", off_marker_len(region_off, String::length(name))))
+                      } else {
+                        ()
+                      }
+                      (tab_call_ty(tytab, call_off, zonked_ret, capture, lane), s_unified, c_body)
+                    },
+                    None => {
+                      Array::push(errors, String::concat("region body parameter type mismatch for __region_run", off_marker_len(region_off, String::length(name))))
+                      (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), s_body, c_body)
+                    }
+                  }
+                } else {
+                  (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), s_body, c_body)
+                },
+                _ => (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), s_body, c_body)
+              }
+            }
+          }
+        } else if future_builtin_arity(arm) >= 0 {
+          // #3112: the guest-future builtins carry their payload type. Their
+          // table rows erase it to `?`, so `Future::ready(x)` hid what the
+          // future holds from every later check -- a response captured by a
+          // spawned task through it escaped the one-owner rule -- and `await`
+          // answered `?`. Checked here, argument by argument, then refined.
+          let mut ai = 0
+          let mut s1 = s
+          let mut c1 = c
+          let arg_tys: Array[Type] = []
+          while ai < Array::length(args) {
+            let (at, ns, nc) = check_child(Array::get(args, ai), env, defs, s1, c1, errors, tytab, capture, lane)
+            Array::push(arg_tys, at)
+            s1 = ns
+            c1 = nc
+            ai = ai + 1
+          }
+          let (rt, s2, c2) = future_builtin_type(name, arg_tys, args, s1, c1, errors, callee_off)
+          (tab_call_ty(tytab, call_off, rt, capture, lane), s2, c2)
+        } else if arm == "TaskGroup::spawn" || arm == "TaskGroup::spawn_suspend" || (Array::length(args) == 2 && callee_is_spawn_shaped(env, s, name)) {
+          // #1081 step 3 Phase B: `Spawnable[r]` capture check. There is no
+          // general `Spawnable` trait/bound in this checker, so the check is
+          // attached to the call. #3125: it used to be selected by the
+          // literal spelling of these two names, so `let sp =
+          // TaskGroup::spawn; sp(n, () -> xs)` ran a capture the literal
+          // spelling refuses. It is now selected by the callee's TYPE
+          // (`callee_is_spawn_shaped`), which covers a `let` alias, a renamed
+          // import and a wrapper with spawn's signature; the one route a
+          // call cannot see -- the function handed on as a value -- is
+          // refused where the value is taken (`EIdent` arm).
+          // This branch does exactly the SAME instantiate + check-args +
+          // unify work the generic call-checking fallback below would (so
+          // ordinary type errors on `n`/`f` are unaffected), then additionally
+          // zonks `n`'s region argument and walks the closure literal's
+          // captured free variables against `check_spawnable_captures`.
+          match env_lookup(env, name) {
+            Some(scheme) => {
+              let (ti, c1, new_bounds) = instantiate(scheme, c)
+              let mut s0 = s
+              let mut bi = 0
+              while bi < Array::length(new_bounds) {
+                let (vid, bounds) = Array::get(new_bounds, bi)
+                if Array::length(bounds) != 0 {
+                  s0 = subst_add_bound(s0, vid, bounds)
+                } else {
+                  ()
+                }
+                bi = bi + 1
+              }
+              match ti {
+                CtFn(param_tys, ret_ty, _) => {
+                  let (a0_ty, s1, c2) = check_child(Array::get(args, 0), env, defs, s0, c1, errors, tytab, capture, lane)
+                  let (a1_ty, s2, c3) = check_child(Array::get(args, 1), env, defs, s1, c2, errors, tytab, capture, lane)
+                  let arg_tys = [a0_ty, a1_ty]
+                  let s3 = unify_call_args(param_tys, arg_tys, args, s2, errors, name, callee_off)
+                  report_spawnable_violations(env, s3, defs, a0_ty, Array::get(args, 1), errors, name, callee_off)
+                  (tab_call_ty(tytab, call_off, subst_apply(s3, ret_ty), capture, lane), s3, c3)
+                },
+                _ => {
+                  let (sa, ca) = check_args(args, env, defs, s0, c1, errors, tytab, capture, lane)
+                  (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), sa, ca)
+                }
+              }
+            },
+            None => {
+              Array::push(errors, String::concat(String::concat(String::concat("unknown name: ", name), builtin_no_lowering_hint(name)), off_marker_len(callee_off, String::length(name))))
+              let (sa, ca) = check_args(args, env, defs, s, c, errors, tytab, capture, lane)
+              (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), sa, ca)
+            }
+          }
+        } else {
+          match direct_call_return(env, name, callee_off) {
+            Some(ret_ty) => {
+              let alen = Array::length(args)
+              let want_head = builtin_param_head(name, 0)
+              // Argument-count check (see `builtin_fixed_arity`). `Bytes::new`
+              // is special-cased: 0 args = empty growable buffer, 1 arg =
+              // length-n zero-filled (MoonBit semantics, linear backend synth).
+              if name == "Bytes::new" {
+                if alen > 1 {
+                  Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(name, String::concat(": expected 0 or 1 args, got ", __to_string(alen)))), off_marker_len(callee_off, String::length(name))))
+                } else {
+                  ()
+                }
+              } else {
+                let want_arity = builtin_fixed_arity(name)
+                if want_arity >= 0 && alen != want_arity {
+                  Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(name, String::concat(": expected ", String::concat(__to_string(want_arity), String::concat(" args, got ", __to_string(alen)))))), off_marker_len(callee_off, String::length(name))))
+                } else {
+                  ()
+                }
+              }
+              let mut ai = 0
+              let mut s2 = s
+              let mut c2 = c
+              while ai < alen {
+                let (at, ns, nc) = check_child(Array::get(args, ai), env, defs, s2, c2, errors, tytab, capture, lane)
+                if name == "__to_string" && ai == 0 {
+                  check_interp_formal(at, ns, env, errors, call_off)
+                }
+                // First-argument head check for container/string builtins: the
+                // receiver's top-level constructor must match (`Array::length(5)`
+                // passes an Int where an Array is required). A non-concrete head
+                // (var / generic / unknown) is tolerated.
+                if ai == 0 && want_head != 0 {
+                  let got_head = head_fold_char(head_kind(subst_apply(s2, at)))
+                  if got_head != 0 && got_head != want_head {
+                    Array::push(errors, String::concat(String::concat("argument type mismatch for ", String::concat(name, ": receiver type ")), String::concat(type_to_string(subst_apply(s2, at)), off_marker_len(callee_off, String::length(name)))))
+                  } else if want_head == 9 && is_bytestream_named_type(subst_apply(s2, at)) {
+                    Array::push(errors, String::concat(String::concat("argument type mismatch for ", String::concat(name, ": receiver type ")), String::concat(type_to_string(subst_apply(s2, at)), String::concat(" is a ByteStream, not an Array", off_marker_len(callee_off, String::length(name))))))
+                  } else {
+                    ()
+                  }
+                } else if ai >= 1 {
+                  // Non-receiver argument head check for fixed-signature builtins
+                  // (`String::concat("a", 1)`, `String::substring(s, "x", 2)`).
+                  let want_rest = builtin_param_head(name, ai)
+                  if want_rest != 0 {
+                    let got_head = head_fold_char(head_kind(subst_apply(s2, at)))
+                    if got_head != 0 && got_head != want_rest {
+                      Array::push(errors, String::concat(String::concat("argument type mismatch for ", String::concat(name, String::concat(" (arg ", String::concat(__to_string(ai), "): ")))), String::concat(type_to_string(subst_apply(s2, at)), off_marker_len(callee_off, String::length(name)))))
+                    } else {
+                      ()
+                    }
+                  } else {
+                    ()
+                  }
+                } else {
+                  ()
+                }
+                // #3006: a type VARIABLE argument -- a generic body's formal, or
+                // an unannotated lambda parameter -- used to be tolerated
+                // without being bound, so `fn g[T](x: T) -> Int {
+                // String::length(x) }` stayed fully generic and `g(41)` read an
+                // Int as a string (`82`). Bind it to what the builtin reads, the
+                // way a user function's parameter would.
+                // #3145: file an Array reader's receiver before the binding
+                // below, so a formal it cannot bind stays open in the row.
+                if ai == 0 {
+                  let formal_recv = match subst_apply(ns, at) {
+                    CtVar(fv) => array_receiver_reads(name) && eq_formal_row_of(fv) >= 0,
+                    _ => false
+                  }
+                  record_array_receiver(capture, name, callee_off, at, ns, formal_recv)
+                } else {
+                  ()
+                }
+                let want_any = if ai == 0 {
+                  want_head
+                } else {
+                  builtin_param_head(name, ai)
+                }
+                let (bound_s, bound_c) = bind_builtin_arg_var(subst_apply(ns, at), want_any, ns, nc)
+                s2 = bound_s
+                c2 = bound_c
+                ai = ai + 1
+              }
+              (tab_call_ty(tytab, call_off, subst_apply(s2, ret_ty), capture, lane), s2, c2)
+            },
+            None => {
+              // #736 residual: method-style call with a bare UNRESOLVED callee —
+              // `xs |> length` is `length(xs)`, and with only the receiver TYPE
+              // imported there is no lexical `length`. Retry as
+              // `<type-of-arg0>::length`, the same resolution as `xs.length()`
+              // (the EDot arm below), by re-checking in EDot form. Gated on the
+              // bare name resolving to nothing (env/builtin) AND the qualified
+              // name actually resolving, so a genuinely unknown callee still
+              // reports `unknown name` from the normal path below.
+              let method_form = if String::index_of(name, "::") < 0 && Array::length(args) >= 1 {
+                match env_lookup(env, name) {
+                  Some(_) => false,
+                  None => match lookup_builtin_in_env(env, name) {
+                    Some(_) => false,
+                    None => true
+                  }
+                }
+              } else {
+                false
+              }
+              let recv_method = if method_form {
+                let (a0_ty, sa, ca) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+                let recv_ty = subst_apply(sa, a0_ty)
+                let qual = String::concat(type_name_prefix(recv_ty), String::concat("::", name))
+                let has_qual = match env_lookup(env, qual) {
+                  Some(_) => true,
+                  None => match lookup_builtin_in_env(env, qual) {
+                    Some(_) => true,
+                    None => false
+                  }
+                }
+                // A USER-typed receiver takes the (tolerant) EDot path even when
+                // the qualified method is not in THIS module's env: with only the
+                // type imported (`import ./list.vibe { List }`), `List::length`
+                // lives in the imported module and is resolved by the merged
+                // codegen — the per-module checker can't see it, exactly like
+                // `xs.length()` (EDot), which types such calls CtUnknown. A
+                // non-user receiver (Int/String/...) keeps the strict path so a
+                // typo'd `foo(42)` still reports `unknown name`.
+                let user_recv = match recv_ty {
+                  CtEnum(_) => true,
+                  CtStruct(_) => true,
+                  CtNamed(_, _) => true,
+                  _ => false
+                }
+                if has_qual || user_recv {
+                  Some(check_child(ECall(EDot(Array::get(args, 0), name, callee_off, callee_off), Array::slice(args, 1, Array::length(args)), call_off), env, defs, sa, ca, errors, tytab, capture, "SyntheticRewrite"))
+                } else {
+                  None
+                }
+              } else {
+                None
+              }
+              match recv_method {
+                Some(rm) => rm,
+                None => {
+                  // Call position: look up the callee type without going through
+                  // the value-ident arm. That arm rejects call-only builtins
+                  // (`StringBuilder::new`, `Map::size`); an ECall of those is
+                  // the form they allow. Unknown names still go through EIdent
+                  // so the diagnostic uses the real callee offset.
+                  let lookup_name = railway_ident_lookup_name(name)
+                  // #3146: a call the compiler synthesized skips the program's
+                  // same-named function and reaches the builtin below.
+                  let (ct, s1, c1) = match env_lookup_unless_synthesized_builtin(env, lookup_name, callee_off) {
+                    Some(t) => {
+                      let (ti, nc, new_bounds) = instantiate(t, c)
+                      // #3027: the handle check reads a generic callee's
+                      // instantiation at this call to resolve a formal its
+                      // row names.
+                      match t {
+                        CtForAll(_, _, _) => if callee_off >= 0 {
+                          Array::push(callee_inst_types_cell, (callee_off, t, ti, name))
+                        },
+                        _ => ()
+                      }
+                      let mut sbound = s
+                      let mut bi = 0
+                      while bi < Array::length(new_bounds) {
+                        let (vid, bounds) = Array::get(new_bounds, bi)
+                        if Array::length(bounds) != 0 {
+                          sbound = subst_add_bound(sbound, vid, bounds)
+                        }
+                        bi = bi + 1
+                      }
+                      (ti, sbound, nc)
+                    },
+                    None => match lookup_builtin_in_env(env, lookup_name) {
+                      Some(t) => (t, s, c),
+                      None => check_child(EIdent(name, callee_off), env, defs, s, c, errors, tytab, capture, lane)
+                    }
+                  }
+                  let inferred_param_tys = match ct {
+                    CtFn(params, _, _) => params,
+                    _ => array_empty()
+                  }
+                  let alen = Array::length(args)
+                  let arg_tys = array_empty()
+                  let mut ai = 0
+                  let mut s2 = s1
+                  let mut c2 = c1
+                  while ai < alen {
+                    let (at, ns, nc) = check_child(Array::get(args, ai), env, defs, s2, c2, errors, tytab, capture, lane)
+                    Array::push(arg_tys, at)
+                    if ai < Array::length(inferred_param_tys) {
+                      s2 = refine_trait_bounds_from_receiver(env, ns, Array::get(inferred_param_tys, ai), at)
+                    } else {
+                      s2 = ns
+                    }
+                    c2 = nc
+                    ai = ai + 1
+                  }
+                  // #2773: THE CALL SITE THE BODY EXEMPTION DEFERS TO.
+                  //
+                  // `check_interp_formal` stands down inside a top-level
+                  // rendering shim's body (the `#interp.shim.body` marker bound
+                  // in the EFn arm) on the grounds that the shim is expanded at
+                  // each of its call sites, where the argument's type is still
+                  // available. That was half a contract: nothing re-asked the
+                  // question HERE, so the deferral deferred to nobody, and what
+                  // actually caught `shim(if c { a } else { a })` was
+                  // normalize's syntactic walk -- #2773's subject, and a pass
+                  // with no types. Measured with that walk stubbed, the shape
+                  // compiled and printed `v=232` / `v=252`: two allocation
+                  // addresses for two different values.
+                  //
+                  // The name is marked by `check_stmts`'s hoist rather than
+                  // when the declaration is reached, so a shim declared BELOW
+                  // its call site is still recognised.
+                  if Array::length(arg_tys) == 1 && interp_name_is_shim(env, name) {
+                    check_interp_formal(Array::get(arg_tys, 0), s2, env, errors, call_off)
+                  } else {
+                    ()
+                  }
+                  let applied_callee_ty = match ct {
+                    CtFn(_, _, _) => ct,
+                    _ => subst_apply(s2, ct)
+                  }
+                  match applied_callee_ty {
+                    CtFn(param_tys, ret, _) => {
+                      let ret_box = Array::slice([ret], 0, 1)
+                      let call_param_tys = param_tys
+                      let plen2 = Array::length(param_tys)
+                      let alen3 = Array::length(arg_tys)
+                      if alen3 != plen2 {
+                        Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(name, String::concat(": expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))))), off_marker_len(callee_off, String::length(name))))
+                      }
+                      let s3 = unify_call_args(call_param_tys, arg_tys, args, s2, errors, name, callee_off)
+                      // #3152: a spawn-shaped callee of another arity
+                      // (`Parallel::map(n, xs, f)`) keeps this general typing
+                      // path and gets the same capture check on its closure.
+                      if alen3 == plen2 && alen3 >= 2 && param_types_are_spawn_shaped(call_param_tys) {
+                        report_spawnable_violations(env, s3, defs, Array::get(arg_tys, 0), Array::get(args, alen3 - 1), errors, name, callee_off)
+                      } else {
+                        ()
+                      }
+                      let call_ret = call_result_with_provenance(Array::get(ret_box, 0), call_param_tys, arg_tys, s3)
+                      (tab_call_ty(tytab, call_off, call_ret, capture, lane), s3, c2)
+                    },
+                    CtStruct(sname) => (tab_call_ty(tytab, call_off, CtStruct(sname), capture, lane), s2, c2),
+                    other => {
+                      // Calling a value whose type is a concrete NON-callable scalar /
+                      // aggregate (e.g. `let x = 5; x(3)`) was previously accepted
+                      // silently. A type variable / unknown / named (generic) callee
+                      // is tolerated — it may yet resolve to a function.
+                      let not_callable = match other {
+                        CtInt => true,
+                        CtDouble => true,
+                        CtBool => true,
+                        CtString => true,
+                        CtChar => true,
+                        CtUnit => true,
+                        CtBytes => true,
+                        CtTuple(_) => true,
+                        CtArray(_) => true,
+                        // A constructed `Option`/enum value (`let o = Some(1); o(2)`)
+                        // is not callable — constructors themselves are typed `CtFn`,
+                        // so a `CtOption`/`CtEnum` callee is always a built value.
+                        CtOption(_) => true,
+                        CtEnum(_) => true,
+                        _ => false
+                      }
+                      if not_callable {
+                        Array::push(errors, String::concat(String::concat("calling a non-function value: ", name), off_marker_len(callee_off, String::length(name))))
+                      } else {
+                        ()
+                      }
+                      (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), s2, c2)
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      // #897: `mod.x(args)` through a qualified-import namespace parses as
+      // ECall(EDot(EIdent(mod), x), args) -- a call whose callee is EDot goes
+      // through THIS UFCS/method-call arm, not the standalone EDot arm below,
+      // so the same qualified-namespace shortcut is needed here too (see the
+      // comment on the standalone `EDot` check_plain arm for the full
+      // rationale).
+      EDot(obj, method, _, qcall_field_off) => {
+        // #897/Codex P2: only take the qualified-import shortcut when `ns`
+        // is NOT independently bound -- a real local/param named the same
+        // as a qualified-import namespace must shadow it (normal field
+        // access on that local's own value), matching how import_alias_
+        // rewrite.vibe's alias map is pruned at every binder.
+        let qualified_key = match obj {
+          EIdent(ns, _) => match env_lookup(env, ns) {
+            Some(_) => None,
+            None => Some(String::concat(ns, String::concat(".", method)))
+          },
+          _ => None
+        }
+        let qualified_hit = match qualified_key {
+          Some(k) => env_lookup(env, k),
+          None => None
+        }
+        match qualified_hit {
+          Some(_) => match qualified_key {
+            Some(k) => check_child(ECall(EIdent(k, qcall_field_off), args, call_off), env, defs, s, c, errors, tytab, capture, "SyntheticRewrite"),
+            None => (CtUnknown, s, c)
+          },
+          None => {
+            // The receiver is the dot object's child 0, while the dot callee
+            // is the outer call's child 0. The specialized method path skips
+            // that EDot recursion, so retain its frame explicitly.
+            let virtual_parent_depth = typed_occurrence_capture_frame_depth(capture)
+            typed_occurrence_capture_enter_virtual_child(capture, 0, 1)
+            let (obj_ty, s1, c1) = check_child(obj, env, defs, s, c, errors, tytab, capture, lane)
+            typed_occurrence_capture_restore_frame_depth(capture, virtual_parent_depth)
+            let resolved = subst_apply(s1, obj_ty)
+            let type_prefix = type_name_prefix(resolved)
+            let qualified = String::concat(type_prefix, String::concat("::", method))
+            let has_real_fn_binding = match env_lookup(env, qualified) {
+              Some(_) => true,
+              None => false
+            }
+            // #994: `desugar_trait_dict.vibe`'s dot-call lowering (the
+            // `EDot(obj, m, ...)` arm, `as_recv_method`) only rewrites a
+            // `.method(...)` call into a working `Type::method(...)` call when
+            // `fn_exists(fn_returns, qual)` -- i.e. `qual` is a REAL parsed
+            // top-level `fn` declaration. `env_lookup` reflects that exact same
+            // set of declarations. A `lookup_builtin` hit with NO `env_lookup`
+            // hit is a checker-only hardcoded signature (`Array::set`,
+            // `String::length`, ...) that has no corresponding parsed fn --
+            // codegen's EDot fallback then compiles the call as a struct-field
+            // READ and dies with an unlocated "unknown struct field: <method>"
+            // regardless of argument types (confirmed by probing EVERY builtin
+            // dot-call, well-typed or not: `a.set(0, 42)` fails identically to
+            // `a.set(0, "bad")`). Reject these HERE instead of silently
+            // accepting a call that can never compile.
+            // #3198 review: a program may declare its own type with a builtin
+            // head's spelling (`struct Future[T] { apply: (T) -> T }`); the
+            // resolver lets it own that name, so its receiver is the program's
+            // type -- a function-valued field read below, not a builtin method.
+            let prefix_is_declared = match find_typedef(defs, type_prefix) {
+              Some(_) => true,
+              None => false
+            }
+            if !has_real_fn_binding && !prefix_is_declared && is_known_builtin_receiver_prefix(type_prefix) {
+              match lookup_builtin_in_env(env, qualified) {
+                Some(_) => {
+                  Array::push(errors, String::concat("dot-call syntax is not supported for the builtin method `", String::concat(qualified, String::concat("` -- call it as `", String::concat(qualified, String::concat("(...)`", off_marker_len(qcall_field_off, String::length(method))))))))
+                  (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), s1, c1)
+                },
+                None => {
+                  let bare_hint = match env_lookup(env, method) {
+                    Some(_) => String::concat(String::concat("(...)` (a bare `fn ", method), String::concat("` is only callable as `", String::concat(method, String::concat("(x)` or `x |> ", String::concat(method, "`)"))))),
+                    None => "(...)`"
+                  }
+                  // #3163: `f.await()` on a `Future` named no method and
+                  // checked clean with an unknown result, then failed in
+                  // codegen ("unknown struct field: await"). A builtin
+                  // FUNCTION of that name is the edit the reader wants, so
+                  // lead with it rather than with declaring a method.
+                  let builtin_fn = match env_lookup(env, method) {
+                    Some(_) => false,
+                    None => match lookup_builtin_in_env(env, method) {
+                      Some(_) => true,
+                      None => false
+                    }
+                  }
+                  if builtin_fn {
+                    Array::push(errors, String::concat(String::concat("no method `", String::concat(method, String::concat("` on `", String::concat(type_prefix, "`: `")))), String::concat(method, String::concat("` is a function, not a method -- call it as `", String::concat(method, String::concat("(x)` or `x |> ", String::concat(method, String::concat("`", off_marker_len(qcall_field_off, String::length(method))))))))))
+                  } else {
+                    Array::push(errors, String::concat(String::concat("no method `", String::concat(method, String::concat("` on `", String::concat(type_prefix, "`: declare a top-level `fn ")))), String::concat(qualified, String::concat(bare_hint, off_marker_len(qcall_field_off, String::length(method))))))
+                  }
+                  (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), s1, c1)
+                }
+              }
+            } else {
+              let direct_ret = direct_call_return(env, qualified, 0 - 1)
+              let method_ty = match env_lookup(env, qualified) {
+                Some(t) => {
+                  let (ti, c2, _) = instantiate(t, c1)
+                  (ti, s1, c2)
+                },
+                None => match lookup_builtin_in_env(env, qualified) {
+                  Some(t) => (t, s1, c1),
+                  None => (CtUnknown, s1, c1)
+                }
+              }
+              let (mt, s2, c2) = method_ty
+              let all_args = prepend_expr(obj, args)
+              retaining_write_region_check(qualified, all_args, env, defs, s2, c2, errors, check_plain)
+              let alen = Array::length(all_args)
+              let arg_tys = array_empty()
+              Array::push(arg_tys, obj_ty)
+              let mut ai = 1
+              let mut s3 = s2
+              let mut c3 = c2
+              while ai < alen {
+                let (at, ns, nc) = check_child(Array::get(all_args, ai), env, defs, s3, c3, errors, tytab, capture, lane)
+                Array::push(arg_tys, at)
+                s3 = ns
+                c3 = nc
+                ai = ai + 1
+              }
+              let applied_method_ty = match mt {
+                CtFn(_, _, _) => mt,
+                _ => subst_apply(s3, mt)
+              }
+              match applied_method_ty {
+                CtFn(param_tys, ret, _) => {
+                  let ret_box = Array::slice([ret], 0, 1)
+                  let call_param_tys = param_tys
+                  let plen = Array::length(param_tys)
+                  let alen2 = Array::length(arg_tys)
+                  if alen2 != plen {
+                    Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(qualified, String::concat(": expected ", String::concat(__to_string(plen), String::concat(" args, got ", __to_string(alen2)))))), off_marker_len(call_off, String::length(qualified))))
+                  }
+                  let s4 = unify_call_args(call_param_tys, arg_tys, all_args, s3, errors, qualified, call_off)
+                  let call_ret = Array::get(ret_box, 0)
+                  let selected_ret = match direct_ret {
+                    Some(t) => t,
+                    None => call_ret
+                  }
+                  let result_ty = call_result_with_provenance(selected_ret, call_param_tys, arg_tys, s4)
+                  (tab_call_ty(tytab, call_off, result_ty, capture, lane), s4, c3)
+                },
+                _ => {
+                  // No method/builtin `T::method` resolved. If the receiver is a
+                  // concrete struct whose field `method` holds a FUNCTION, this is a
+                  // field-stored-function call `b.f(args)` (the receiver is NOT an
+                  // argument). Arg-check the explicit args against the field's
+                  // parameter types and use its return type — `(b.f)("s")` with `f:
+                  // (Int) -> Int` was otherwise unchecked. Ground-gated via
+                  // unify_call_args; generic-struct receivers stay CtUnknown so no
+                  // over-rejection.
+                  // #829: also resolve the field through an INSTANTIATED generic
+                  // struct receiver (`CtNamed(S, targs)`), so `it.pull(x)` on
+                  // `LazyIter[Int]` checks against the concrete field signature.
+                  let field_fn = receiver_struct_field_type(defs, subst_apply(s3, obj_ty), method)
+                  match field_fn {
+                    Some(CtFn(fpts, fret, _)) => {
+                      let explicit = Array::slice(arg_tys, 1, Array::length(arg_tys))
+                      if Array::length(fpts) != Array::length(explicit) {
+                        Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(qualified, String::concat(": expected ", String::concat(__to_string(Array::length(fpts)), String::concat(" args, got ", __to_string(Array::length(explicit))))))), off_marker_len(call_off, String::length(qualified))))
+                      }
+                      let s4 = unify_call_args(fpts, explicit, Array::slice(all_args, 1, Array::length(all_args)), s3, errors, qualified, call_off)
+                      let result_ty = call_result_with_provenance(fret, fpts, explicit, s4)
+                      (tab_call_ty(tytab, call_off, result_ty, capture, lane), s4, c3)
+                    },
+                    _ => match direct_ret {
+                      Some(t) => (tab_call_ty(tytab, call_off, t, capture, lane), s3, c3),
+                      None => {
+                        // #953: method-style call `x.m()` on a receiver whose checked
+                        // type is a USER type DECLARED IN THIS CHECK'S defs, with no
+                        // `T::m` binding anywhere (env covers the whole program on the
+                        // merged FS-compile path, and check_stmts hoists every
+                        // top-level SLet — including `fn T::m` declared later — so an
+                        // absent binding means the method truly does not exist), no
+                        // builtin, and no struct field `m`. Codegen compiles a called
+                        // EDot as a struct-field read, so this previously escaped the
+                        // checker and died in codegen with an unlocated "unknown
+                        // struct field: m". Report it HERE, located at the method
+                        // token, with the #736 contract spelled out: dot-calls
+                        // resolve `T::m` top-level fns (a BARE `fn m(x: T)` is only
+                        // callable as `m(x)` / `x |> m`). Receivers of IMPORTED types
+                        // (no local typedef) keep the tolerant CtUnknown path — with
+                        // only the type imported, the method lives in the source
+                        // module and is resolved by the merged codegen (see the #736
+                        // comment on the bare-callee arm above).
+                        let no_field = match field_fn {
+                          None => true,
+                          _ => false
+                        }
+                        let local_user_ty = if type_prefix == "" {
+                          false
+                        } else {
+                          match find_typedef(defs, type_prefix) {
+                            Some(_) => true,
+                            None => false
+                          }
+                        }
+                        let has_method_binding = match env_lookup(env, qualified) {
+                          Some(_) => true,
+                          None => match lookup_builtin_in_env(env, qualified) {
+                            Some(_) => true,
+                            None => false
+                          }
+                        }
+                        // #994: known builtin receiver prefixes (String/Array/...)
+                        // never reach this branch anymore -- they're intercepted
+                        // earlier (before `direct_ret`/`method_ty` are computed) so
+                        // codegen-unlowerable builtin dot-calls get a located error
+                        // instead of silently unifying against a tolerant
+                        // `CtUnknown` builtin signature. This diagnostic now only
+                        // covers genuinely LOCAL user types.
+                        if no_field && local_user_ty && !has_method_binding {
+                          let bare_hint = match env_lookup(env, method) {
+                            Some(_) => String::concat(String::concat("(...)` (a bare `fn ", method), String::concat("` is only callable as `", String::concat(method, String::concat("(x)` or `x |> ", String::concat(method, "`)"))))),
+                            // Codex P2 on #961: with no bare binding of this name,
+                            // suggesting `x |> method` re-enters the same fallback
+                            // and reproduces this diagnostic — only suggest the
+                            // Type::method declaration.
+                            None => "(...)`"
+                          }
+                          Array::push(errors, String::concat(String::concat("no method `", String::concat(method, String::concat("` on `", String::concat(type_prefix, "`: declare a top-level `fn ")))), String::concat(qualified, String::concat(bare_hint, off_marker_len(qcall_field_off, String::length(method))))))
+                        } else {
+                          ()
+                        }
+                        (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), s3, c3)
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      _ => {
+        // #844: intercept the synthetic ascription-lambda call shape
+        // `((__asc: T) -> __asc)(val)` that a LOCAL `let x: T = val` desugars
+        // to (parser_expr_dispatch.vibe's ascribe_wrap) BEFORE the general
+        // callee-dispatch logic below, so its annotation-vs-value check can
+        // additionally run `detect_narrowed_generic_mismatch` (closing the
+        // #844 same-name generic-struct re-narrowing hole) and
+        // `preserve_generic_instantiation` (so the bound local variable keeps
+        // its real instantiated type instead of an erased bare one) without
+        // touching `unify_call_args` / `check_assignable`, which every OTHER
+        // call in the language also goes through.
+        let asc_ann = if Array::length(args) == 1 {
+          ascription_lambda_ann(callee)
+        } else {
+          None
+        }
+        match asc_ann {
+          Some(ann_te) => {
+            // The synthetic ascription lambda is structural child 0 but is
+            // intentionally not type-checked as a callable expression.
+            typed_occurrence_capture_skip_children(capture, 1)
+            let (at, ns0, nc0) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+            // #2130: map an enclosing declaration's type formals onto their
+            // real variables, the same two-step the parameter and return-type
+            // paths do (`resolve_type_expr_shadowed` + `resolve_tparams_in`,
+            // the EFn arm). Without it a body-level `let y: T = ..` resolved
+            // `T` to a bare `CtNamed("T", [])` -- indistinguishable from an
+            // unresolved name, which `check_assignable` must tolerate because
+            // that is also how an un-instantiated formal is spelled. So the
+            // annotation was not checked AT ALL: `fn f[T](x: T) -> T { let y: T
+            // = 42; y }` compiled, and `f("a string")` handed the caller an Int
+            // typed as String (`String::length` on it returned 84). It only
+            // looked like it worked because the rigid name matched by string
+            // equality. `env` already binds each formal to a fresh `CtVar` (see
+            // the EFn arm's `tp_env`), so the mapping is available right here.
+            // #3011: the enclosing formals SHADOW a same-named import alias in
+            // `defs`; resolving with `defs` first turned `let y: T` into the
+            // alias's type before the env could map `T` to its variable.
+            let resolved = resolve_tparams_in(resolve_type_expr_shadowed(ann_te, defs, formal_shadow(ann_te, env, array_empty())), env)
+            // #2125: a body-level `let y: Intt = ..` annotation. `shadow` is
+            // empty here by construction (the ascription lambda carries no
+            // formals of its own); the env is what knows the enclosing
+            // declaration's, which is exactly the #2130 mapping above.
+            report_unknown_type_names(ann_te, defs, array_empty(), env, array_empty(), "a local let annotation", errors)
+            // Mixed-kind across this annotation and the enclosing signature
+            // (EFn binds `__fapp_applied__` / `__fapp_unapplied__` markers).
+            report_mixed_kind_let_annotation(ann_te, env, "a local let annotation", errors)
+            let actual = subst_apply(ns0, at)
+            // #981: `check_assignable` now runs the #844 same-name concrete
+            // `CtNamed` check itself (its tolerate branch calls
+            // `detect_narrowed_generic_mismatch`), so the explicit second
+            // call this site used to make would double-report — dropped.
+            // This ECall is SYNTHETIC (ascribe_wrap builds it). The bound
+            // value is the sole argument, and where it HAS a position that is
+            // the best anchor -- it is where the annotation-vs-value conflict
+            // is fixed. But a literal carries no offset slot, so
+            // `let a: Int = "not an int"` used to land unlocated. ascribe_wrap
+            // now puts the binder NAME's offset on the synthetic call, so the
+            // fallback anchors at `a` instead of nowhere. Value first, binder
+            // second: this only adds a position where there was none.
+            let val_off = railway_expr_off(Array::get(args, 0))
+            let asc_off = if val_off >= 0 {
+              val_off
+            } else {
+              call_off
+            }
+            check_assignable_set_end(string_lit_end(Array::get(args, 0)))
+            let ns2 = check_assignable(resolved, actual, ns0, errors, "binding type mismatch for a local let", asc_off)
+            let bound_ty = preserve_generic_instantiation(resolved, subst_apply(ns2, actual))
+            (tab_call_ty(tytab, call_off, bound_ty, capture, lane), ns2, nc0)
+          },
+          None => {
+            let callee_name0 = expr_ident_name_or_empty(callee)
+            if callee_name0 != "" {
+              match direct_call_return(env, callee_name0, 0 - 1) {
+                Some(ret_ty) => {
+                  // A direct-return lookup avoids rechecking this callee.
+                  typed_occurrence_capture_skip_children(capture, 1)
+                  let alen = Array::length(args)
+                  let mut ai = 0
+                  let mut s2 = s
+                  let mut c2 = c
+                  while ai < alen {
+                    let (_, ns, nc) = check_child(Array::get(args, ai), env, defs, s2, c2, errors, tytab, capture, lane)
+                    s2 = ns
+                    c2 = nc
+                    ai = ai + 1
+                  }
+                  (tab_call_ty(tytab, call_off, subst_apply(s2, ret_ty), capture, lane), s2, c2)
+                },
+                None => {
+                  let (ct, s1, c1) = check_child(callee, env, defs, s, c, errors, tytab, capture, lane)
+                  let alen = Array::length(args)
+                  let arg_tys = array_empty()
+                  let mut ai = 0
+                  let mut s2 = s1
+                  let mut c2 = c1
+                  while ai < alen {
+                    let (at, ns, nc) = check_child(Array::get(args, ai), env, defs, s2, c2, errors, tytab, capture, lane)
+                    Array::push(arg_tys, at)
+                    s2 = ns
+                    c2 = nc
+                    ai = ai + 1
+                  }
+                  let applied_callee_ty = match ct {
+                    CtFn(_, _, _) => ct,
+                    _ => subst_apply(s2, ct)
+                  }
+                  match applied_callee_ty {
+                    CtFn(param_tys, ret, _) => {
+                      let ret_box = Array::slice([ret], 0, 1)
+                      let call_param_tys = param_tys
+                      let plen2 = Array::length(param_tys)
+                      let alen3 = Array::length(arg_tys)
+                      if alen3 != plen2 {
+                        Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(callee_name0, String::concat(": expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))))), off_marker_len(call_off, String::length(callee_name0))))
+                      }
+                      let s3 = unify_call_args(call_param_tys, arg_tys, args, s2, errors, callee_name0, call_off)
+                      check_spawn_shaped_call(env, s3, defs, call_param_tys, Array::get(ret_box, 0), args, errors, off_marker_len(call_off, String::length(callee_name0)))
+                      let call_ret = call_result_with_provenance(Array::get(ret_box, 0), call_param_tys, arg_tys, s3)
+                      (tab_call_ty(tytab, call_off, call_ret, capture, lane), s3, c2)
+                    },
+                    CtStruct(sname) => (tab_call_ty(tytab, call_off, CtStruct(sname), capture, lane), s2, c2),
+                    _ => (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), s2, c2)
+                  }
+                }
+              }
+            } else {
+              let (ct, s1, c1) = check_child(callee, env, defs, s, c, errors, tytab, capture, lane)
+              let alen = Array::length(args)
+              let arg_tys = array_empty()
+              let mut ai = 0
+              let mut s2 = s1
+              let mut c2 = c1
+              while ai < alen {
+                let (at, ns, nc) = check_child(Array::get(args, ai), env, defs, s2, c2, errors, tytab, capture, lane)
+                Array::push(arg_tys, at)
+                s2 = ns
+                c2 = nc
+                ai = ai + 1
+              }
+              // #2890: a lambda carrying `[U]` checks to a `CtForAll` scheme,
+              // not a `CtFn`. This path matched only `CtFn` / `CtStruct`, so an
+              // IIFE whose lambda was generic fell to the `CtUnknown` arm and
+              // the call was NOT CHECKED AT ALL -- measured, `([U](u: U) -> U {
+              // u })(1, 2)` (one parameter, two arguments), a `String` passed to
+              // a declared `Int` parameter, and a concrete declared return bound
+              // to an unrelated struct were all accepted, and
+              // `let v: Int = ([U](u: U) -> U { u })(Qt::{ w: 5 }); v + 1`
+              // printed 233, the allocation address.
+              //
+              // The same lambda bound to a NAME first is checked, because that
+              // callee is an `EIdent` and takes the named path; only applying it
+              // where it is written reached here. Opening the scheme with fresh
+              // variables is what that named path effectively gets, so the call
+              // is checked exactly as any other.
+              let (opened_callee_ty, c2o) = match ct {
+                CtForAll(_, _, _) => match instantiate(ct, c2) {
+                  (ity, nc, _) => (ity, nc)
+                },
+                _ => (ct, c2)
+              }
+              let applied_callee_ty = match opened_callee_ty {
+                CtFn(_, _, _) => opened_callee_ty,
+                _ => subst_apply(s2, opened_callee_ty)
+              }
+              match applied_callee_ty {
+                CtFn(param_tys, ret, _) => {
+                  let ret_box = Array::slice([ret], 0, 1)
+                  let call_param_tys = param_tys
+                  let plen2 = Array::length(param_tys)
+                  let alen3 = Array::length(arg_tys)
+                  if alen3 != plen2 {
+                    Array::push(errors, String::concat(String::concat("function arity mismatch for <expr>: expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))), off_marker(call_off)))
+                  }
+                  let s3 = unify_call_args(call_param_tys, arg_tys, args, s2, errors, "<expr>", call_off)
+                  check_spawn_shaped_call(env, s3, defs, call_param_tys, Array::get(ret_box, 0), args, errors, off_marker(call_off))
+                  let call_ret = call_result_with_provenance(Array::get(ret_box, 0), call_param_tys, arg_tys, s3)
+                  (tab_call_ty(tytab, call_off, call_ret, capture, lane), s3, c2o)
+                },
+                CtStruct(sname) => (tab_call_ty(tytab, call_off, CtStruct(sname), capture, lane), s2, c2o),
+                _ => (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), s2, c2o)
+              }
+            }
+          }
+        }
+      }
+    },
+    _ => (CtUnknown, s, c)
+  }
+}

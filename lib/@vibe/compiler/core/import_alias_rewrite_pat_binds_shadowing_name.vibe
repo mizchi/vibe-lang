@@ -1,0 +1,601 @@
+// lib/@vibe/compiler/core/import_alias_rewrite.vibe — pat binds shadowing name.
+
+import ./ast.vibe {
+  Expr, ImportItem, ImportKind, Pat, Stmt, TypeExpr
+}
+
+import @vibe/core {
+  array_empty, eq_string, hash_string, struct MutMap, struct MutSet
+}
+
+import @vibe/ast {
+  type_param_name
+}
+
+import ./module_graph_path.vibe {
+  dir_of_path
+}
+
+import ./inline_wasm_marker.vibe {
+  inline_wasm_marker_name
+}
+
+//# Functions
+
+export fn empty_aliases() -> Array[(String, String)] {
+  array_empty()
+}
+
+export fn empty_strings() -> Array[String] {
+  array_empty()
+}
+
+export fn empty_import_refs() -> Array[(String, String, String)] {
+  array_empty()
+}
+
+export fn builtin_iterator_origin_marker_prefix() -> String {
+  "__vibe_internal_builtin_iterator_origin:"
+}
+
+export fn iterator_namespace_operation(name: String, namespace: String) -> Bool {
+  name == String::concat(namespace, "::map") || name == String::concat(namespace, "::filter") || name == String::concat(namespace, "::fold") || name == String::concat(namespace, "::iter") || name == String::concat(namespace, "::find") || name == String::concat(namespace, "::any") || name == String::concat(namespace, "::all") || name == String::concat(namespace, "::flatmap")
+}
+
+export fn trait_namespace_operation(name: String, namespace: String) -> Bool {
+  let prefix = String::concat(namespace, "::")
+  String::starts_with(name, prefix) && String::length(name) > String::length(prefix)
+}
+
+export fn import_items_bind_iterator_namespace_operation(items: Array[ImportItem], namespace: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(items) && !found {
+    let item = Array::get(items, i)
+    let local = match item.alias {
+      Some(alias) => alias,
+      None => item.name
+    }
+    found = iterator_namespace_operation(local, namespace)
+    i = i + 1
+  }
+  found
+}
+
+export fn builtin_iterator_serialized_boundary_path() -> String {
+  "@vibe/compiler/internal/iterator_boundary"
+}
+
+fn boundary_hex_digit(n: Int) -> String {
+  String::from_char_code(if n < 10 {
+    48 + n
+  } else {
+    87 + n
+  })
+}
+
+fn boundary_hex_value(c: Int) -> Int {
+  if c >= 48 && c <= 57 {
+    c - 48
+  } else if c >= 97 && c <= 102 {
+    c - 87
+  } else {
+    -1
+  }
+}
+
+export fn encode_boundary_names(names: Array[String]) -> String {
+  if Array::length(names) == 0 {
+    return "z"
+  }
+  let out = StringBuilder::new()
+  let mut i = 0
+  while i < Array::length(names) {
+    if i > 0 {
+      StringBuilder::push(out, "_")
+    } else {
+      ()
+    }
+    StringBuilder::push(out, "n")
+    let name = Array::get(names, i)
+    let mut j = 0
+    while j < String::length(name) {
+      let byte = String::byte_at(name, j)
+      StringBuilder::push(out, boundary_hex_digit(byte / 16))
+      StringBuilder::push(out, boundary_hex_digit(byte % 16))
+      j = j + 1
+    }
+    i = i + 1
+  }
+  StringBuilder::freeze(out)
+}
+
+export fn decode_boundary_names(payload: String) -> Option[Array[String]] {
+  let names = empty_strings()
+  if payload == "z" {
+    return Some(names)
+  }
+  if String::length(payload) == 0 {
+    return None
+  }
+  let mut start = 0
+  let mut i = 0
+  while i <= String::length(payload) {
+    if i == String::length(payload) || String::byte_at(payload, i) == 95 {
+      if i - start < 3 || String::byte_at(payload, start) != 110 || (i - start - 1) % 2 != 0 {
+        return None
+      }
+      let name = StringBuilder::new()
+      let mut j = start + 1
+      while j < i {
+        let hi = boundary_hex_value(String::byte_at(payload, j))
+        let lo = boundary_hex_value(String::byte_at(payload, j + 1))
+        if hi < 0 || lo < 0 {
+          return None
+        }
+        StringBuilder::push(name, String::from_char_code(hi * 16 + lo))
+        j = j + 2
+      }
+      Array::push(names, StringBuilder::freeze(name))
+      start = i + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  Some(names)
+}
+
+export fn builtin_iterator_serialized_boundary_payload_prefix() -> String {
+  String::concat(builtin_iterator_serialized_boundary_path(), "/_")
+}
+
+/// Whether an import path is the reserved source-text carrier for Iterator
+/// provenance. Loaders must retain this statement for the trait desugar pass,
+/// but must not resolve it as a package dependency.
+export fn is_builtin_iterator_serialized_boundary_path(path: String) -> Bool {
+  path == builtin_iterator_serialized_boundary_path() || String::starts_with(path, builtin_iterator_serialized_boundary_payload_prefix())
+}
+
+fn stmt_has_user_iterator_serialized_boundary(stmt: Stmt) -> Bool {
+  match stmt {
+    SImport(path, _) => is_builtin_iterator_serialized_boundary_path(path),
+    SModule(_, _, body) => stmts_have_user_iterator_serialized_boundary(body),
+    _ => false
+  }
+}
+
+export fn stmts_have_user_iterator_serialized_boundary(stmts: Array[Stmt]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(stmts) && !found {
+    found = stmt_has_user_iterator_serialized_boundary(Array::get(stmts, i))
+    i = i + 1
+  }
+  found
+}
+
+export fn import_alias_rewrite_string_array_contains(items: Array[String], target: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(items) && !found {
+    if Array::get(items, i) == target {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+export fn import_ref_array_contains_local(items: Array[(String, String, String)], target: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(items) && !found {
+    let (_, _, local) = Array::get(items, i)
+    if local == target {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+export fn import_ref_has_other_path_for_original(items: Array[(String, String, String)], raw_path: String, original: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(items) && !found {
+    let (other_path, other_original, _) = Array::get(items, i)
+    if other_original == original && other_path != raw_path {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+export fn lookup_alias(aliases: Array[(String, String)], name: String) -> Option[String] {
+  let mut i = 0
+  let mut found = None
+  while i < Array::length(aliases) {
+    let (alias, original) = Array::get(aliases, i)
+    if alias == name {
+      found = Some(original)
+      i = Array::length(aliases)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// #897/Codex P2: a local binder named `ns` must also shadow any qualified-
+/// import namespace aliases it introduces ("ns.x", "ns.y" from `import ...
+/// as ns only { x, y }`) -- otherwise `ns.add` inside that binder's scope,
+/// where `ns` is a genuine local value with its own `add` field, gets
+/// mis-rewritten to the IMPORTED `add` instead of the real field access
+/// (silently wrong codegen, not just a diagnostic gap). `alias_is_shadowed`
+/// centralizes the "does binder `name` shadow this alias key" test so the
+/// exact-match and dotted-namespace-prefix cases can never drift apart.
+fn alias_is_shadowed(alias: String, name: String) -> Bool {
+  alias == name || (String::starts_with(alias, name) && String::length(alias) > String::length(name) && String::char_code_at(alias, String::length(name)) == '.')
+}
+
+/// Perf: the without_* family runs at EVERY binder (let/lambda/match arm)
+/// while rewriting every expression, but a binder that shadows an alias is
+/// rare -- in the common case nothing is removed. Pre-scan and return the
+/// input map unchanged (alias maps are read-only after construction, so
+/// sharing is safe); only allocate the filtered copy when a removal is real.
+/// A full-closure compile profile showed this trio as the #2 __rt_arr_push /
+/// __rt_heap_grow_check caller after perceus copy_ints.
+fn alias_map_has_name(aliases: Array[(String, String)], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(aliases) && !found {
+    let (alias, _) = Array::get(aliases, i)
+    if alias_is_shadowed(alias, name) {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+export fn alias_map_without_name(aliases: Array[(String, String)], name: String) -> Array[(String, String)] {
+  if !alias_map_has_name(aliases, name) {
+    aliases
+  } else {
+    let out = empty_aliases()
+    let mut i = 0
+    while i < Array::length(aliases) {
+      let (alias, original) = Array::get(aliases, i)
+      if !alias_is_shadowed(alias, name) {
+        Array::push(out, (alias, original))
+      }
+      i = i + 1
+    }
+    out
+  }
+}
+
+/// #897/Codex P2: same dotted-namespace-prefix shadowing as alias_is_shadowed
+/// above, generalized to a whole array of shadowing names (this helper's
+/// callers pass collision/rename-local lists, not a single binder name).
+fn names_shadow_alias(names: Array[String], alias: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(names) && !found {
+    if alias_is_shadowed(alias, type_param_name(Array::get(names, i))) {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+export fn alias_map_without_names(aliases: Array[(String, String)], names: Array[String]) -> Array[(String, String)] {
+  let mut any = false
+  let mut j = 0
+  while j < Array::length(aliases) && !any {
+    let (alias, _) = Array::get(aliases, j)
+    if names_shadow_alias(names, alias) {
+      any = true
+    } else {
+      j = j + 1
+    }
+  }
+  if !any {
+    aliases
+  } else {
+    let out = empty_aliases()
+    let mut i = 0
+    while i < Array::length(aliases) {
+      let (alias, original) = Array::get(aliases, i)
+      if !names_shadow_alias(names, alias) {
+        Array::push(out, (alias, original))
+      }
+      i = i + 1
+    }
+    out
+  }
+}
+
+fn pat_binds_name(pat: Pat, name: String) -> Bool {
+  match pat {
+    PBind(bound) => bound == name,
+    PCtor(_, pats) => {
+      let mut found = false
+      let mut i = 0
+      while i < Array::length(pats) && !found {
+        if pat_binds_name(Array::get(pats, i), name) {
+          found = true
+        } else {
+          i = i + 1
+        }
+      }
+      found
+    },
+    PTuple(pats) => {
+      let mut found = false
+      let mut i = 0
+      while i < Array::length(pats) && !found {
+        if pat_binds_name(Array::get(pats, i), name) {
+          found = true
+        } else {
+          i = i + 1
+        }
+      }
+      found
+    },
+    POr(left, right) => pat_binds_name(left, name) || pat_binds_name(right, name),
+    PStruct(_, fields) => {
+      let mut found = false
+      let mut i = 0
+      while i < Array::length(fields) && !found {
+        let (_, field_pat) = Array::get(fields, i)
+        if pat_binds_name(field_pat, name) {
+          found = true
+        } else {
+          i = i + 1
+        }
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+/// Does `pat` bind any name that shadows `alias` (exactly, or as its dotted
+/// namespace prefix)? Structurally identical to pat_binds_name's walk, but
+/// the leaf test is `alias_is_shadowed` so both shadowing forms are decided
+/// in ONE traversal with no prefix extraction -- see pat_shadows_alias.
+fn pat_binds_shadowing_name(pat: Pat, alias: String) -> Bool {
+  match pat {
+    PBind(bound) => alias_is_shadowed(alias, bound),
+    PCtor(_, pats) => {
+      let mut found = false
+      let mut i = 0
+      while i < Array::length(pats) && !found {
+        if pat_binds_shadowing_name(Array::get(pats, i), alias) {
+          found = true
+        } else {
+          i = i + 1
+        }
+      }
+      found
+    },
+    PTuple(pats) => {
+      let mut found = false
+      let mut i = 0
+      while i < Array::length(pats) && !found {
+        if pat_binds_shadowing_name(Array::get(pats, i), alias) {
+          found = true
+        } else {
+          i = i + 1
+        }
+      }
+      found
+    },
+    POr(left, right) =>
+    pat_binds_shadowing_name(left, alias) || pat_binds_shadowing_name(right, alias),
+    PStruct(_, fields) => {
+      let mut found = false
+      let mut i = 0
+      while i < Array::length(fields) && !found {
+        let (_, field_pat) = Array::get(fields, i)
+        if pat_binds_shadowing_name(field_pat, alias) {
+          found = true
+        } else {
+          i = i + 1
+        }
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+/// Does any name bound by `pat` shadow `alias`?
+///
+/// Perf (#1237 follow-up): this used to be `pat_binds_name(pat, alias) ||
+/// pat_binds_name(pat, <alias's namespace prefix>)`, which per (binder,
+/// alias) pair walked the pattern TWICE and paid a `String::index_of` plus a
+/// `String::substring` ALLOCATION to cut the namespace prefix out -- for a
+/// prefix that is a pure function of the alias and never changes. Since
+/// alias_map_without_pat runs this at every binder against every alias, a
+/// full-closure compile profile attributed 17.2% of the whole merge/rename
+/// phase to `alias_namespace_prefix` and the `String::index_of` underneath
+/// it. Testing `alias_is_shadowed` at each bound name instead is one walk
+/// with no allocation.
+///
+/// Equivalent because a pattern binder is an identifier and so never
+/// contains a dot: `alias_is_shadowed(alias, bound)` is then true exactly
+/// when `bound == alias` or `bound` is alias's FIRST dotted segment, which
+/// is precisely the old pair of checks. This is the same identifier-has-no-
+/// dot argument the `without_*` family already relies on -- alias_is_shadowed
+/// is the predicate it uses, so the two now agree by construction instead of
+/// by two separately-maintained spellings.
+fn pat_shadows_alias(pat: Pat, alias: String) -> Bool {
+  pat_binds_shadowing_name(pat, alias)
+}
+
+export fn alias_map_without_pat(aliases: Array[(String, String)], pat: Pat) -> Array[(String, String)] {
+  let mut any = false
+  let mut j = 0
+  while j < Array::length(aliases) && !any {
+    let (alias, _) = Array::get(aliases, j)
+    if pat_shadows_alias(pat, alias) {
+      any = true
+    } else {
+      j = j + 1
+    }
+  }
+  if !any {
+    aliases
+  } else {
+    let out = empty_aliases()
+    let mut i = 0
+    while i < Array::length(aliases) {
+      let (alias, original) = Array::get(aliases, i)
+      if !pat_shadows_alias(pat, alias) {
+        Array::push(out, (alias, original))
+      }
+      i = i + 1
+    }
+    out
+  }
+}
+
+/// Parameter-list counterpart of pat_shadows_alias -- same rewrite, same
+/// reasoning (see that function's note).
+fn params_shadow_alias(params: Array[(String, Option[TypeExpr])], alias: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(params) && !found {
+    let (param_name, _) = Array::get(params, i)
+    if alias_is_shadowed(alias, param_name) {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+export fn alias_map_without_params(aliases: Array[(String, String)], params: Array[(String, Option[TypeExpr])]) -> Array[(String, String)] {
+  let mut any = false
+  let mut j = 0
+  while j < Array::length(aliases) && !any {
+    let (alias, _) = Array::get(aliases, j)
+    if params_shadow_alias(params, alias) {
+      any = true
+    } else {
+      j = j + 1
+    }
+  }
+  if !any {
+    aliases
+  } else {
+    let out = empty_aliases()
+    let mut i = 0
+    while i < Array::length(aliases) {
+      let (alias, original) = Array::get(aliases, i)
+      if !params_shadow_alias(params, alias) {
+        Array::push(out, (alias, original))
+      }
+      i = i + 1
+    }
+    out
+  }
+}
+
+/// #1259: indexed view of one alias map. `entries` stays the canonical
+/// first-match array -- the filtered copies the without_* family produces
+/// run through the SAME filter functions, so every lookup result is
+/// identical to the linear scans it replaces. `idx` maps alias -> original
+/// with first-push-wins, and `shadow_keys` holds every name whose binding
+/// would shadow at least one alias (each alias itself plus each of its
+/// dotted prefixes, per alias_is_shadowed), turning the at-every-binder
+/// "does this binder shadow anything" pre-scan from O(aliases) into O(1).
+/// A full-closure compile profile put the lookup_alias / alias_map_has_name
+/// scans at ~8% of total CPU before this index.
+export struct AliasIdx {
+  entries: Array[(String, String)];
+  idx: MutMap[String, String];
+  shadow_keys: MutSet[String];
+  pattern_ctors: Array[(String, String)];
+  // #3132: rename every identifier EXCEPT a compiler-synthesized builtin
+  // reference (`builtin_ref`, offset `builtin_ref_offset()`), keeping its
+  // offset, and never rewrite a qualified head. Only
+  // `rename_builtin_shadow_defs` sets it.
+  user_refs_only: Bool
+}
+
+export fn aliasidx_build(entries: Array[(String, String)]) -> AliasIdx {
+  aliasidx_build_mode(entries, false)
+}
+
+/// The same index over `entries`, in `am`'s mode -- what the binder
+/// reductions (`aliasidx_without_*`) rebuild with.
+export fn aliasidx_rebuild(am: AliasIdx, entries: Array[(String, String)]) -> AliasIdx {
+  let rebuilt = aliasidx_build_mode(entries, am.user_refs_only)
+  AliasIdx::{
+    entries: rebuilt.entries,
+    idx: rebuilt.idx,
+    shadow_keys: rebuilt.shadow_keys,
+    pattern_ctors: am.pattern_ctors,
+    user_refs_only: rebuilt.user_refs_only
+  }
+}
+
+export fn aliasidx_with_pattern_ctors(am: AliasIdx, pattern_ctors: Array[(String, String)]) -> AliasIdx {
+  AliasIdx::{
+    entries: am.entries,
+    idx: am.idx,
+    shadow_keys: am.shadow_keys,
+    pattern_ctors: pattern_ctors,
+    user_refs_only: am.user_refs_only
+  }
+}
+
+export fn aliasidx_build_mode(entries: Array[(String, String)], user_refs_only: Bool) -> AliasIdx {
+  // Presized for the entries (load factor 0.7): these indexes are rebuilt for
+  // every file of a merge, and growing from the default capacity by doubling
+  // left each outgrown table behind on the bump heap (~11 MB of rehash).
+  // Lookups only -- no caller iterates either table, so capacity cannot
+  // change an answer.
+  let n = Array::length(entries)
+  let idx: MutMap[String, String] = MutMap::with_capacity_string(n * 10 / 7 + 1)
+  let shadow_keys: MutSet[String] = MutSet::with_capacity(hash_string, eq_string, n * 10 / 7 + 1)
+  let mut i = 0
+  while i < Array::length(entries) {
+    let (alias, original) = Array::get(entries, i)
+    if !MutMap::has(idx, alias) {
+      MutMap::set(idx, alias, original)
+    } else {
+      ()
+    }
+    MutSet::add(shadow_keys, alias)
+    let mut ci = 0
+    while ci < String::length(alias) {
+      if String::char_code_at(alias, ci) == '.' {
+        MutSet::add(shadow_keys, alias[0: ci])
+      } else {
+        ()
+      }
+      ci = ci + 1
+    }
+    i = i + 1
+  }
+  AliasIdx::{
+    entries: entries,
+    idx: idx,
+    shadow_keys: shadow_keys,
+    pattern_ctors: [],
+    user_refs_only: user_refs_only
+  }
+}

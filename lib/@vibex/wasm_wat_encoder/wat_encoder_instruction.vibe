@@ -1,0 +1,1978 @@
+// lib/@vibex/wasm_wat_encoder/wat_encoder.vibe — instruction.
+
+import @vibe/core {
+  struct BigInt
+}
+
+//# Values
+
+//# Functions
+
+fn hex_val(c: Int) -> Int {
+  if (c >= 48) && (c <= 57) {
+    c - 48
+  }
+  else {
+    if (c >= 97) && (c <= 102) {
+      c - 87
+    }
+    else {
+      if (c >= 65) && (c <= 70) {
+        c - 55
+      }
+      else {
+        0
+      }
+    }
+  }
+}
+
+export fn map_get(names: Array[String], indices: Array[Int], name: String) -> Int {
+  let len = Array::length(names)
+  let mut i = 0
+  let mut found = -1
+  while i < len {
+    if Array::get(names, i) == name {
+      found = Array::get(indices, i)
+    }
+    i = i + 1
+  }
+  found
+}
+
+export fn map_set(names: Array[String], indices: Array[Int], name: String, idx: Int) -> Unit {
+  Array::push(names, name)
+  Array::push(indices, idx)
+}
+
+export let tok_int: Int = 5
+
+fn is_digit(c: Int) -> Bool {
+  (c >= 48) && (c <= 57)
+}
+
+export fn tok_text(src: String, tokens: Array[(Int, Int, Int)], idx: Int) -> String {
+  let (_, s, e) = Array::get(tokens, idx)
+  String::substring(src, s, e)
+}
+
+export fn tok_type(tokens: Array[(Int, Int, Int)], idx: Int) -> Int {
+  let (ty, _, _) = Array::get(tokens, idx)
+  ty
+}
+
+export fn parse_int(s: String) -> Int {
+  let len = String::length(s)
+  if len == 0 {
+    0
+  }
+  else {
+    let mut neg = false
+    let mut start = 0
+    if String::char_code_at(s, 0) == 45 {
+      neg = true; start = 1
+    }
+    else {
+      if String::char_code_at(s, 0) == 43 {
+        start = 1
+      }
+    }
+    let mut val = 0
+    if ((start + 1) < len) && (String::char_code_at(s, start) == 48) && ((String::char_code_at(s, start + 1) == 120) || (String::char_code_at(s, start + 1) == 88)) {
+      let mut i = start + 2
+      while i < len {
+        let c = String::char_code_at(s, i)
+        if (c >= 48) && (c <= 57) {
+          val = val * 16 + (c - 48)
+        }
+        else {
+          if (c >= 97) && (c <= 102) {
+            val = val * 16 + (c - 87)
+          }
+          else {
+            if (c >= 65) && (c <= 70) {
+              val = val * 16 + (c - 55)
+            }
+          }
+        }
+        i = i + 1
+      }
+    } else {
+      let mut i = start
+      while i < len {
+        let c = String::char_code_at(s, i)
+        if (c >= 48) && (c <= 57) {
+          val = val * 10 + (c - 48)
+        }
+        i = i + 1
+      }
+    }
+    if neg {
+      0 - val
+    } else {
+      val
+    }
+  }
+}
+
+let tok_float: Int = 6
+
+export let tok_ident: Int = 4
+
+fn is_id_char(c: Int) -> Bool {
+  ((c >= 97) && (c <= 122)) ||
+  ((c >= 65) && (c <= 90)) ||
+  ((c >= 48) && (c <= 57)) ||
+  (c == 95) || (c == 46) || (c == 47) || (c == 58) || (c == 45) || (c == 61)
+}
+
+export let tok_lparen: Int = 1
+
+export let tok_rparen: Int = 2
+
+export let tok_string: Int = 7
+
+export let tok_keyword: Int = 3
+
+export fn append_bytes(dst: Bytes, src: Bytes) -> Unit {
+  let len = Bytes::length(src)
+  let mut i = 0
+  while i < len {
+    Bytes::push(dst, src[i])
+    i = i + 1
+  }
+}
+
+fn is_hex_digit(c: Int) -> Bool {
+  ((c >= 48) && (c <= 57)) ||
+  ((c >= 97) && (c <= 102)) ||
+  ((c >= 65) && (c <= 70))
+}
+
+export fn tokenize(src: String) -> Array[(Int, Int, Int)] {
+  let len = String::length(src)
+  let result = Array::slice([(0, 0, 0)], 0, 0)
+  let mut i = 0
+  while i < len {
+    let c = String::char_code_at(src, i)
+    if (c == 32) || (c == 9) || (c == 10) || (c == 13) {
+      i = i + 1
+    } else {
+      if c == 40 {
+        if ((i + 1) < len) && (String::char_code_at(src, i + 1) == 59) {
+          i = i + 2
+          let mut depth = 1
+          while (i < len) && (depth > 0) {
+            let cc = String::char_code_at(src, i)
+            if (cc == 59) && ((i + 1) < len) && (String::char_code_at(src, i + 1) == 41) {
+              depth = depth - 1
+              i = i + 2
+            } else {
+              if (cc == 40) && ((i + 1) < len) && (String::char_code_at(src, i + 1) == 59) {
+                depth = depth + 1
+                i = i + 2
+              } else {
+                i = i + 1
+              }
+            }
+          }
+        } else {
+          Array::push(result, (tok_lparen, i, i + 1))
+          i = i + 1
+        }
+      } else {
+        if c == 41 {
+          Array::push(result, (tok_rparen, i, i + 1))
+          i = i + 1
+        } else {
+          if c == 59 {
+            while (i < len) && (String::char_code_at(src, i) != 10) {
+              i = i + 1
+            }
+          } else {
+            if c == 34 {
+              let start = i
+              i = i + 1
+              while (i < len) && (String::char_code_at(src, i) != 34) {
+                if String::char_code_at(src, i) == 92 {
+                  i = i + 2
+                }
+                else {
+                  i = i + 1
+                }
+              }
+              if i < len {
+                i = i + 1
+              }
+              Array::push(result, (tok_string, start, i))
+            } else {
+              if c == 36 {
+                let start = i
+                i = i + 1
+                while (i < len) && (is_id_char(String::char_code_at(src, i))) {
+                  i = i + 1
+                }
+                Array::push(result, (tok_ident, start, i))
+              } else {
+                if is_digit(c) || ((c == 45) && ((i + 1) < len) && (is_digit(String::char_code_at(src, i + 1)))) || ((c == 43) && ((i + 1) < len) && (is_digit(String::char_code_at(src, i + 1)))) {
+                  let start = i
+                  let mut is_float = false
+                  if (c == 45) || (c == 43) {
+                    i = i + 1
+                  }
+                  if ((i + 1) < len) && (String::char_code_at(src, i) == 48) && ((String::char_code_at(src, i + 1) == 120) || (String::char_code_at(src, i + 1) == 88)) {
+                    i = i + 2
+                    while (i < len) && (is_hex_digit(String::char_code_at(src, i)) || (String::char_code_at(src, i) == 95)) {
+                      i = i + 1
+                    }
+                    if (i < len) && (String::char_code_at(src, i) == 46) {
+                      is_float = true
+                      i = i + 1
+                      while (i < len) && (is_hex_digit(String::char_code_at(src, i)) || (String::char_code_at(src, i) == 95)) {
+                        i = i + 1
+                      }
+                    }
+                    if (i < len) && ((String::char_code_at(src, i) == 112) || (String::char_code_at(src, i) == 80)) {
+                      is_float = true
+                      i = i + 1
+                      if (i < len) && ((String::char_code_at(src, i) == 43) || (String::char_code_at(src, i) == 45)) {
+                        i = i + 1
+                      }
+                      while (i < len) && (is_digit(String::char_code_at(src, i))) {
+                        i = i + 1
+                      }
+                    }
+                  } else {
+                    while (i < len) && (is_digit(String::char_code_at(src, i)) || (String::char_code_at(src, i) == 95)) {
+                      i = i + 1
+                    }
+                    if (i < len) && (String::char_code_at(src, i) == 46) {
+                      is_float = true
+                      i = i + 1
+                      while (i < len) && (is_digit(String::char_code_at(src, i)) || (String::char_code_at(src, i) == 95)) {
+                        i = i + 1
+                      }
+                    }
+                    if (i < len) && ((String::char_code_at(src, i) == 101) || (String::char_code_at(src, i) == 69)) {
+                      is_float = true
+                      i = i + 1
+                      if (i < len) && ((String::char_code_at(src, i) == 43) || (String::char_code_at(src, i) == 45)) {
+                        i = i + 1
+                      }
+                      while (i < len) && (is_digit(String::char_code_at(src, i))) {
+                        i = i + 1
+                      }
+                    }
+                  }
+                  if is_float {
+                    Array::push(result, (tok_float, start, i))
+                  } else {
+                    Array::push(result, (tok_int, start, i))
+                  }
+                } else {
+                  let start = i
+                  while (i < len) && (is_id_char(String::char_code_at(src, i))) {
+                    i = i + 1
+                  }
+                  if i > start {
+                    Array::push(result, (tok_keyword, start, i))
+                  } else {
+                    i = i + 1
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  result
+}
+
+export fn valtype_code(name: String) -> Int {
+  if name == "i32" {
+    0x7F
+  }
+  else if name == "i64" {
+    0x7E
+  }
+  else if name == "f32" {
+    0x7D
+  }
+  else if name == "f64" {
+    0x7C
+  }
+  else {
+    0x7F
+  }
+}
+
+fn write_f32_le(buf: Bytes, bits: Int) -> Unit {
+  Bytes::push(buf, bits&0xFF)
+  Bytes::push(buf, (bits>>8)&0xFF)
+  Bytes::push(buf, (bits>>16)&0xFF)
+  Bytes::push(buf, (bits>>24)&0xFF)
+}
+
+/// little-endian の 8 バイト。上位/下位を別々の `Int` で受け取る
+/// (parse_f64_bits の doc comment 参照 — 64 bit は 1 つの `Int` に入らない)。
+fn write_f64_le(buf: Bytes, hi: Int, lo: Int) -> Unit {
+  Bytes::push(buf, lo&0xFF)
+  Bytes::push(buf, (lo>>8)&0xFF)
+  Bytes::push(buf, (lo>>16)&0xFF)
+  Bytes::push(buf, (lo>>24)&0xFF)
+  Bytes::push(buf, hi&0xFF)
+  Bytes::push(buf, (hi>>8)&0xFF)
+  Bytes::push(buf, (hi>>16)&0xFF)
+  Bytes::push(buf, (hi>>24)&0xFF)
+}
+
+export fn decode_string(s: String) -> String {
+  let len = String::length(s)
+  if len < 2 {
+    ""
+  }
+  else {
+    // O(N) build via StringBuilder; per-char String::concat was O(L²) (issue #366).
+    let result = StringBuilder::new()
+    let mut i = 1
+    let end_pos = len - 1
+    while i < end_pos {
+      let c = String::char_code_at(s, i)
+      if c == 92 {
+        i = i + 1
+        if i < end_pos {
+          let c2 = String::char_code_at(s, i)
+          if c2 == 110 {
+            StringBuilder::push(result, String::from_char_code(10)); i = i + 1
+          }
+          else {
+            if c2 == 116 {
+              StringBuilder::push(result, String::from_char_code(9)); i = i + 1
+            }
+            else {
+              if c2 == 92 {
+                StringBuilder::push(result, "\\"); i = i + 1
+              }
+              else {
+                if c2 == 34 {
+                  StringBuilder::push(result, "\""); i = i + 1
+                }
+                else {
+                  if is_hex_digit(c2) && ((i + 1) < end_pos) && (is_hex_digit(String::char_code_at(s, i + 1))) {
+                    let h = hex_val(c2) * 16 + hex_val(String::char_code_at(s, i + 1))
+                    StringBuilder::push(result, String::from_char_code(h))
+                    i = i + 2
+                  } else {
+                    StringBuilder::push(result, String::from_char_code(c2))
+                    i = i + 1
+                  }
+                }
+              }
+            }
+          }
+        }
+      } else {
+        StringBuilder::push(result, String::from_char_code(c))
+        i = i + 1
+      }
+    }
+    StringBuilder::freeze(result)
+  }
+}
+
+export fn map_names_new() -> Array[String] {
+  Array::slice([""], 0, 0)
+}
+
+export fn write_sleb128(buf: Bytes, val: Int) -> Unit {
+  let mut v = val
+  let mut done = false
+  while done == false {
+    let byte = v&0x7F
+    v = v>>7
+    if ((v == 0) && ((byte&0x40) == 0)) || ((v == -1) && ((byte&0x40) != 0)) {
+      Bytes::push(buf, byte)
+      done = true
+    } else {
+      Bytes::push(buf, byte|0x80)
+    }
+  }
+}
+
+export fn write_uleb128(buf: Bytes, val: Int) -> Unit {
+  let mut v = val
+  let mut done = false
+  while done == false {
+    let byte = v&0x7F
+    v = v>>7
+    if v < 0 {
+      v = v&0x1FFFFFFFFFFFFFF
+    }
+    if v == 0 {
+      Bytes::push(buf, byte)
+      done = true
+    } else {
+      Bytes::push(buf, byte|0x80)
+    }
+  }
+}
+
+export fn write_name(buf: Bytes, s: String) -> Unit {
+  let len = String::length(s)
+  write_uleb128(buf, len)
+  let mut i = 0
+  while i < len {
+    Bytes::push(buf, String::char_code_at(s, i))
+    i = i + 1
+  }
+}
+
+export fn emit_section(out: Bytes, section_id: Int, payload: Bytes) -> Unit {
+  let plen = Bytes::length(payload)
+  if plen > 0 {
+    Bytes::push(out, section_id)
+    write_uleb128(out, plen)
+    let mut i = 0
+    while i < plen {
+      Bytes::push(out, payload[i])
+      i = i + 1
+    }
+  }
+}
+
+/// Compare `num / den` with powers of two and return
+/// `floor(log2(num / den))`. Both inputs must be positive.
+fn decimal_binary_exponent(num: BigInt, den: BigInt) -> Int {
+  let two = BigInt::from_int(2)
+  if BigInt::cmp(num, den) >= 0 {
+    let mut scaled = den
+    let mut exponent = 0
+    let mut next = BigInt::mul(scaled, two)
+    while BigInt::cmp(num, next) >= 0 {
+      scaled = next
+      exponent = exponent + 1
+      next = BigInt::mul(scaled, two)
+    }
+    exponent
+  } else {
+    let mut scaled = num
+    let mut exponent = 0
+    while BigInt::cmp(scaled, den) < 0 {
+      scaled = BigInt::mul(scaled, two)
+      exponent = exponent - 1
+    }
+    exponent
+  }
+}
+
+/// Divide positive integers and round the result to nearest, ties to even.
+/// The caller scales the ratio so the quotient fits in vibe's tagged Int.
+fn rounded_big_ratio(num: BigInt, den: BigInt) -> Option[Int] {
+  match BigInt::divmod(num, den) {
+    None => None,
+    Some((q_big, remainder)) => {
+      match BigInt::to_int(q_big) {
+        None => None,
+        Some(q) => {
+          let twice_remainder = BigInt::mul(remainder, BigInt::from_int(2))
+          let half_cmp = BigInt::cmp(twice_remainder, den)
+          if half_cmp > 0 || (half_cmp == 0 && q % 2 == 1) {
+            Some(q + 1)
+          } else {
+            Some(q)
+          }
+        },
+      }
+    },
+  }
+}
+
+fn signed_f64_zero(neg: Bool) -> (Int, Int) {
+  if neg {
+    (0x80000000, 0)
+  } else {
+    (0, 0)
+  }
+}
+
+fn signed_f64_inf(neg: Bool) -> (Int, Int) {
+  if neg {
+    (0xFFF00000, 0)
+  } else {
+    (0x7FF00000, 0)
+  }
+}
+
+/// Parse a plain decimal WAT float into IEEE-754 binary64 bits.
+///
+/// The decimal significand and power of ten stay as exact BigInts. Only the
+/// final 53-bit quotient is rounded, once, with the IEEE nearest-even rule.
+/// This avoids all three silent-wrong modes of the old Double-arithmetic
+/// parser: tagged-Int overflow, accumulated pow10 error, and pow10 saturation.
+/// Inputs with more than 768 significant decimal digits fail closed: the WAT
+/// encoder is intentionally bounded and must never emit guessed bits.
+fn parse_decimal_f64_bits(s: String) -> Option[(Int, Int)] {
+  let len = String::length(s)
+  if len == 0 {
+    None
+  } else {
+    let mut i = 0
+    let mut neg = false
+    let c0 = String::char_code_at(s, 0)
+    if c0 == 45 {
+      neg = true
+      i = 1
+    } else if c0 == 43 {
+      i = 1
+    }
+    let e_pos_lower = String::index_of(s, "e")
+    let e_pos_upper = String::index_of(s, "E")
+    let e_pos = if e_pos_lower >= 0 {
+      e_pos_lower
+    } else {
+      e_pos_upper
+    }
+    let mantissa_end = if e_pos >= 0 {
+      e_pos
+    } else {
+      len
+    }
+    let digits_builder = StringBuilder::new()
+    let mut frac_digits = 0
+    let mut seen_dot = false
+    let mut seen_digit = false
+    let mut significant_digits = 0
+    let mut seen_nonzero = false
+    let mut leading_zeros = 0
+    let mut trailing_zeros = 0
+    let mut digit_count = 0
+    let mut ok = true
+    let mut j = i
+    while j < mantissa_end {
+      let c = String::char_code_at(s, j)
+      if is_digit(c) {
+        StringBuilder::push(digits_builder, String::from_char_code(c))
+        digit_count = digit_count + 1
+        if seen_dot {
+          frac_digits = frac_digits + 1
+        }
+        if not(seen_nonzero) && c == 48 {
+          leading_zeros = leading_zeros + 1
+        } else {
+          seen_nonzero = true
+          significant_digits = significant_digits + 1
+          if c == 48 {
+            trailing_zeros = trailing_zeros + 1
+          } else {
+            trailing_zeros = 0
+          }
+        }
+        seen_digit = true
+      } else if c == 46 && not(seen_dot) {
+        seen_dot = true
+      } else {
+        ok = false
+      }
+      j = j + 1
+    }
+    let mut exp = 0
+    if ok && seen_digit && e_pos >= 0 {
+      let exp_str = String::substring(s, e_pos + 1, len)
+      let exp_len = String::length(exp_str)
+      if exp_len == 0 {
+        ok = false
+      } else {
+        let mut k = 0
+        let mut exp_neg = false
+        let e0 = String::char_code_at(exp_str, 0)
+        if e0 == 45 {
+          exp_neg = true
+          k = 1
+        } else if e0 == 43 {
+          k = 1
+        }
+        let mut exp_val = 0
+        // Any exponent larger than the whole source plus this IEEE-sized
+        // margin cannot be cancelled by decimal point placement or trailing
+        // zeros. Saturating relative to the source length preserves exact
+        // cancellation while still bounding enormous exponent strings.
+        let exp_limit = len + 1100
+        let mut exp_seen_digit = false
+        while k < exp_len {
+          let c = String::char_code_at(exp_str, k)
+          if is_digit(c) {
+            if exp_val <= exp_limit {
+              if exp_val > exp_limit / 10 {
+                exp_val = exp_limit + 1
+              } else {
+                exp_val = exp_val * 10 + (c - 48)
+                if exp_val > exp_limit {
+                  exp_val = exp_limit + 1
+                }
+              }
+            }
+            exp_seen_digit = true
+          } else {
+            ok = false
+          }
+          k = k + 1
+        }
+        if not(exp_seen_digit) {
+          ok = false
+        }
+        exp = if exp_neg {
+          0 - exp_val
+        } else {
+          exp_val
+        }
+      }
+    }
+    if not(ok) || not(seen_digit) || i >= mantissa_end {
+      None
+    } else if not(seen_nonzero) {
+      Some(signed_f64_zero(neg))
+    } else if significant_digits - trailing_zeros > 768 {
+      None
+    } else {
+      let canonical_digits = significant_digits - trailing_zeros
+      let total_exp = exp - frac_digits + trailing_zeros
+      let decimal_order = canonical_digits - 1 + total_exp
+      if decimal_order > 309 {
+        Some(signed_f64_inf(neg))
+      } else if decimal_order < -325 {
+        Some(signed_f64_zero(neg))
+      } else {
+        let all_digits = StringBuilder::freeze(digits_builder)
+        let digits = String::substring(all_digits, leading_zeros, digit_count - trailing_zeros)
+        match BigInt::parse(digits) {
+          None => None,
+          Some(mantissa) => {
+            let ten = BigInt::from_int(10)
+            let num = if total_exp >= 0 {
+              BigInt::mul(mantissa, BigInt::pow(ten, total_exp))
+            } else {
+              mantissa
+            }
+            let den = if total_exp < 0 {
+              BigInt::pow(ten, 0 - total_exp)
+            } else {
+              BigInt::from_int(1)
+            }
+            if BigInt::is_zero(num) {
+              Some(signed_f64_zero(neg))
+            } else {
+              let mut exponent = decimal_binary_exponent(num, den)
+              let shift = if exponent < -1022 {
+                1074
+              } else {
+                52 - exponent
+              }
+              let scaled_num = if shift >= 0 {
+                BigInt::mul(num, BigInt::pow(BigInt::from_int(2), shift))
+              } else {
+                num
+              }
+              let scaled_den = if shift < 0 {
+                BigInt::mul(den, BigInt::pow(BigInt::from_int(2), 0 - shift))
+              } else {
+                den
+              }
+              match rounded_big_ratio(scaled_num, scaled_den) {
+                None => None,
+                Some(rounded) => {
+                  let sign_hi = if neg {
+                    0x80000000
+                  } else {
+                    0
+                  }
+                  if exponent < -1022 {
+                    if rounded == 0 {
+                      Some((sign_hi, 0))
+                    } else if rounded >= (1<<52) {
+                      Some((sign_hi|(1<<20), 0))
+                    } else {
+                      Some((sign_hi|((rounded>>32)&0xFFFFF), rounded&0xFFFFFFFF))
+                    }
+                  } else {
+                    let mut significand = rounded
+                    if significand >= (1<<53) {
+                      significand = significand / 2
+                      exponent = exponent + 1
+                    }
+                    if exponent > 1023 {
+                      Some(signed_f64_inf(neg))
+                    } else {
+                      let fraction = significand - (1<<52)
+                      let hi = sign_hi|((exponent + 1023)<<20)|((fraction>>32)&0xFFFFF)
+                      Some((hi, fraction&0xFFFFFFFF))
+                    }
+                  }
+                },
+              }
+            }
+          },
+        }
+      }
+    }
+  }
+}
+
+/// f64 のビットパターンは 64 bit だが、vibe の `Int` は 62-bit tagged
+/// (上限 2^61-1 = 2,305,843,009,213,693,951) なので **1 つの `Int` には入らない**。
+/// 例えば `1.0` のパターン 0x3FF0000000000000 = 4,607,182,418,800,017,408 は
+/// 上限の約 2 倍あり、詰めようとすると黙って壊れる。
+///
+/// 以前はここが単一の `Int` を返しており、`make_i64(hi, lo) = (hi<<32)|lo` も
+/// `Double::to_i64_bits` も同じ理由で誤った値を出していた (`f64.const 1.0` が
+/// 誤ったバイト列を吐いていた — wat_encoder_test の "f64 const" は magic と
+/// セクション順と export の有無しか見ていなかったので素通りしていた)。
+///
+/// 32 bit ずつの対で返す。これは `Double::to_i64_bits_lo` / `_hi` が存在する
+/// 理由そのもの (ADR-0055 Blocker-2) で、どちらの半分も `Int` に収まる。
+fn parse_f64_bits(s: String) -> (Int, Int) {
+  if s == "nan" {
+    (0x7FF80000, 0)
+  }
+  else if s == "-nan" {
+    (0xFFF80000, 0)
+  }
+  else if s == "inf" {
+    (0x7FF00000, 0)
+  }
+  else if s == "-inf" {
+    (0xFFF00000, 0)
+  }
+  else {
+    let mut clean = ""
+    let len = String::length(s)
+    let mut i = 0
+    while i < len {
+      let c = String::char_code_at(s, i)
+      if c != 95 {
+        clean = String::concat(clean, String::from_char_code(c))
+      }
+      i = i + 1
+    }
+    let parsed = parse_decimal_f64_bits(clean)
+    match parsed {
+      Some(bits) => bits,
+      None => {
+        // Malformed or deliberately out-of-budget f64 literal. The exact
+        // converter is bounded at 768 significant decimal digits; exceeding
+        // that contract traps just like malformed input. Never guess or emit
+        // zero bytes for a valid-looking value that was not converted.
+        assert(false)
+        (0, 0)
+      },
+    }
+  }
+}
+
+fn parse_mem_args(src: String, tokens: Array[(Int, Int, Int)], pos: Int, end_pos: Int, default_align: Int) -> (Int, Int, Int) {
+  let mut align = default_align
+  let mut offset = 0
+  let mut cur = pos
+  let mut done = false
+  while (cur < end_pos) && (done == false) {
+    if tok_type(tokens, cur) != tok_keyword {
+      done = true
+    }
+    else {
+      let text = tok_text(src, tokens, cur)
+      if String::starts_with(text, "offset=") {
+        offset = parse_int(String::substring(text, 7, String::length(text)))
+        cur = cur + 1
+      } else if String::starts_with(text, "align=") {
+        let a = parse_int(String::substring(text, 6, String::length(text)))
+        align = 0
+        let mut av = a
+        while av > 1 {
+          align = align + 1; av = av / 2
+        }
+        cur = cur + 1
+      } else {
+        done = true
+      }
+    }
+  }
+  (align, offset, cur)
+}
+
+export fn empty_int_array() -> Array[Int] {
+  Array::slice([0], 0, 0)
+}
+
+export fn parse_func_sig(src: String, tokens: Array[(Int, Int, Int)], start_pos: Int, tok_count: Int) -> (Array[Int], Array[Int], Int) {
+  let params = empty_int_array()
+  let results = empty_int_array()
+  let mut pos = start_pos
+  let mut parsing = true
+  while parsing {
+    if (pos < tok_count) && (tok_type(tokens, pos) == tok_lparen) {
+      let peek = pos + 1
+      if peek < tok_count {
+        let kw = tok_text(src, tokens, peek)
+        if kw == "param" {
+          pos = peek + 1
+          if (pos < tok_count) && (tok_type(tokens, pos) == tok_ident) {
+            pos = pos + 1
+            if (pos < tok_count) && (tok_type(tokens, pos) == tok_keyword) {
+              Array::push(params, valtype_code(tok_text(src, tokens, pos)))
+              pos = pos + 1
+            }
+          } else {
+            while (pos < tok_count) && (tok_type(tokens, pos) == tok_keyword) {
+              Array::push(params, valtype_code(tok_text(src, tokens, pos)))
+              pos = pos + 1
+            }
+          }
+          if (pos < tok_count) && (tok_type(tokens, pos) == tok_rparen) {
+            pos = pos + 1
+          }
+        }
+        else if kw == "result" {
+          pos = peek + 1
+          while (pos < tok_count) && (tok_type(tokens, pos) == tok_keyword) {
+            Array::push(results, valtype_code(tok_text(src, tokens, pos)))
+            pos = pos + 1
+          }
+          if (pos < tok_count) && (tok_type(tokens, pos) == tok_rparen) {
+            pos = pos + 1
+          }
+        }
+        else {
+          parsing = false
+        }
+      } else {
+        parsing = false
+      }
+    } else {
+      parsing = false
+    }
+  }
+  (params, results, pos)
+}
+
+export fn map_indices_new() -> Array[Int] {
+  Array::slice([0], 0, 0)
+}
+
+export fn find_or_add_type(types_params: Array[Array[Int]], types_results: Array[Array[Int]], params: Array[Int], results: Array[Int]) -> Int {
+  let cnt = Array::length(types_params)
+  let mut i = 0
+  let mut found = -1
+  while (i < cnt) && (found == -1) {
+    let tp = Array::get(types_params, i)
+    let tr = Array::get(types_results, i)
+    if (Array::length(tp) == Array::length(params)) && (Array::length(tr) == Array::length(results)) {
+      let mut match_ok = true
+      let mut j = 0
+      while j < Array::length(tp) {
+        if Array::get(tp, j) != Array::get(params, j) {
+          match_ok = false
+        }
+        j = j + 1
+      }
+      j = 0
+      while j < Array::length(tr) {
+        if Array::get(tr, j) != Array::get(results, j) {
+          match_ok = false
+        }
+        j = j + 1
+      }
+      if match_ok {
+        found = i
+      }
+    }
+    i = i + 1
+  }
+  if found >= 0 {
+    found
+  }
+  else {
+    Array::push(types_params, params)
+    Array::push(types_results, results)
+    cnt
+  }
+}
+
+export fn decode_string_bytes(s: String) -> Bytes {
+  let len = String::length(s)
+  let buf = Bytes::new()
+  if len < 2 {
+    buf
+  }
+  else {
+    let mut i = 1
+    let end_pos = len - 1
+    while i < end_pos {
+      let c = String::char_code_at(s, i)
+      if c == 92 {
+        i = i + 1
+        if i < end_pos {
+          let c2 = String::char_code_at(s, i)
+          if c2 == 110 {
+            Bytes::push(buf, 10); i = i + 1
+          }
+          else {
+            if c2 == 116 {
+              Bytes::push(buf, 9); i = i + 1
+            }
+            else {
+              if c2 == 92 {
+                Bytes::push(buf, 92); i = i + 1
+              }
+              else {
+                if c2 == 34 {
+                  Bytes::push(buf, 34); i = i + 1
+                }
+                else {
+                  if is_hex_digit(c2) && ((i + 1) < end_pos) && (is_hex_digit(String::char_code_at(s, i + 1))) {
+                    let h = hex_val(c2) * 16 + hex_val(String::char_code_at(s, i + 1))
+                    Bytes::push(buf, h)
+                    i = i + 2
+                  } else {
+                    Bytes::push(buf, c2)
+                    i = i + 1
+                  }
+                }
+              }
+            }
+          }
+        }
+      } else {
+        Bytes::push(buf, c)
+        i = i + 1
+      }
+    }
+    buf
+  }
+}
+
+/// hi/lo の 32 bit 対から f32 のビットパターンを作る。
+/// f64 の 52 bit 仮数は hi の下位 20 bit と lo の 32 bit にまたがる:
+///   frac64 の bit 32..51 = hi の bit 0..19
+///   frac64 の bit  0..31 = lo
+/// f32 の 23 bit 仮数は frac64 >> 29 なので、hi 側 20 bit が bit 3..22 へ、
+/// lo の最上位 3 bit が bit 0..2 へ落ちる。
+/// Shift `v` right by `shift`, rounding the discarded bits to nearest with
+/// ties to even. That is the rounding IEEE-754 mandates when a wider value is
+/// narrowed, and what the wasm spec requires of an `f32.const` literal.
+fn shr_round_nearest_even(v: Int, shift: Int) -> Int {
+  if shift <= 0 {
+    v
+  } else if shift >= 54 {
+    // Callers pass `v` below 2^53, so every discarded bit here is worth less
+    // than half a unit in the last place and the result rounds to zero.
+    0
+  } else {
+    let q = v>>shift
+    let rem = v&((1<<shift) - 1)
+    let half = 1<<(shift - 1)
+    if rem > half || ((rem == half) && ((q&1) == 1)) {
+      q + 1
+    } else {
+      q
+    }
+  }
+}
+
+fn f64_bits_to_f32_bits(hi: Int, lo: Int) -> Int {
+  let sign = (hi>>31)&1
+  let exp64 = (hi>>20)&0x7FF
+  let frac_hi = hi&0xFFFFF
+  if exp64 == 0x7FF {
+    if frac_hi == 0 && lo == 0 {
+      (sign<<31)|0x7F800000
+    } else {
+      (sign<<31)|0x7FC00000
+    }
+  } else if exp64 == 0 {
+    // Every f64 subnormal is below 2^-1022, far under the smallest f32
+    // subnormal (2^-149), so they all narrow to a signed zero.
+    sign<<31
+  } else {
+    let m = (frac_hi<<32)|lo
+    let exp32 = exp64 - 896
+    if exp32 >= 255 {
+      (sign<<31)|0x7F800000
+    } else if exp32 <= 0 {
+      // f32 subnormal: the value is `f * 2^-149`, where `f` still carries the
+      // f64's implicit leading 1. `f` landing on 2^23 means rounding pushed it
+      // up to the smallest normal, and `(sign<<31)|f` already spells that.
+      (sign<<31)|shr_round_nearest_even((1<<52)|m, 30 - exp32)
+    } else {
+      // `+`, not `|`: a mantissa that rounds up to 2^23 has to carry into the
+      // exponent field, which is exactly what the addition does.
+      let bits = (exp32<<23) + shr_round_nearest_even(m, 29)
+      if bits >= (255<<23) {
+        (sign<<31)|0x7F800000
+      } else {
+        (sign<<31)|bits
+      }
+    }
+  }
+}
+
+fn parse_f32_bits(s: String) -> Int {
+  if s == "nan" {
+    0x7FC00000
+  }
+  else if s == "-nan" {
+    0xFFC00000
+  }
+  else if s == "inf" {
+    0x7F800000
+  }
+  else if s == "-inf" {
+    0xFF800000
+  }
+  else {
+    let (f_hi, f_lo) = parse_f64_bits(s)
+    f64_bits_to_f32_bits(f_hi, f_lo)
+  }
+}
+
+export fn emit_instruction(buf: Bytes, src: String, tokens: Array[(Int, Int, Int)], pos: Int, end_pos: Int, func_names: Array[String], func_indices: Array[Int], local_names: Array[String], local_indices: Array[Int], global_names: Array[String], global_indices: Array[Int], label_names: Array[String], label_indices: Array[Int], label_depth: Int) -> Int {
+  if pos >= end_pos {
+    pos
+  }
+  else {
+    let ty = tok_type(tokens, pos)
+    if ty == tok_lparen {
+      pos + 1
+    } else if ty == tok_rparen {
+      pos + 1
+    } else if ty != tok_keyword {
+      pos + 1
+    } else {
+      let kw = tok_text(src, tokens, pos)
+      if kw == "unreachable" {
+        Bytes::push(buf, 0x00); pos + 1
+      }
+      else if kw == "nop" {
+        Bytes::push(buf, 0x01); pos + 1
+      }
+      else if kw == "block" {
+        Bytes::push(buf, 0x02)
+        let mut next = pos + 1
+        if (next < end_pos) && (tok_type(tokens, next) == tok_ident) {
+          let lbl = tok_text(src, tokens, next)
+          map_set(label_names, label_indices, lbl, label_depth)
+          next = next + 1
+        }
+        if (next < end_pos) && (tok_type(tokens, next) == tok_lparen) && ((next + 1) < end_pos) && (tok_text(src, tokens, next + 1) == "result") {
+          let rpos = next + 2
+          if (rpos < end_pos) && (tok_type(tokens, rpos) == tok_keyword) {
+            Bytes::push(buf, valtype_code(tok_text(src, tokens, rpos)))
+            let mut skip = rpos + 1
+            if (skip < end_pos) && (tok_type(tokens, skip) == tok_rparen) {
+              skip = skip + 1
+            }
+            skip
+          } else {
+            Bytes::push(buf, 0x40)
+            next
+          }
+        } else {
+          Bytes::push(buf, 0x40)
+          next
+        }
+      }
+      else if kw == "loop" {
+        Bytes::push(buf, 0x03)
+        let mut next = pos + 1
+        if (next < end_pos) && (tok_type(tokens, next) == tok_ident) {
+          let lbl = tok_text(src, tokens, next)
+          map_set(label_names, label_indices, lbl, label_depth)
+          next = next + 1
+        }
+        if (next < end_pos) && (tok_type(tokens, next) == tok_lparen) && ((next + 1) < end_pos) && (tok_text(src, tokens, next + 1) == "result") {
+          let rpos = next + 2
+          if (rpos < end_pos) && (tok_type(tokens, rpos) == tok_keyword) {
+            Bytes::push(buf, valtype_code(tok_text(src, tokens, rpos)))
+            let mut skip = rpos + 1
+            if (skip < end_pos) && (tok_type(tokens, skip) == tok_rparen) {
+              skip = skip + 1
+            }
+            skip
+          } else {
+            Bytes::push(buf, 0x40)
+            next
+          }
+        } else {
+          Bytes::push(buf, 0x40)
+          next
+        }
+      }
+      else if kw == "if" {
+        Bytes::push(buf, 0x04)
+        let mut next = pos + 1
+        if (next < end_pos) && (tok_type(tokens, next) == tok_ident) {
+          let lbl = tok_text(src, tokens, next)
+          map_set(label_names, label_indices, lbl, label_depth)
+          next = next + 1
+        }
+        if (next < end_pos) && (tok_type(tokens, next) == tok_lparen) && ((next + 1) < end_pos) && (tok_text(src, tokens, next + 1) == "result") {
+          let rpos = next + 2
+          if (rpos < end_pos) && (tok_type(tokens, rpos) == tok_keyword) {
+            Bytes::push(buf, valtype_code(tok_text(src, tokens, rpos)))
+            let mut skip = rpos + 1
+            if (skip < end_pos) && (tok_type(tokens, skip) == tok_rparen) {
+              skip = skip + 1
+            }
+            skip
+          } else {
+            Bytes::push(buf, 0x40)
+            next
+          }
+        } else {
+          Bytes::push(buf, 0x40)
+          next
+        }
+      }
+      else if kw == "else" {
+        Bytes::push(buf, 0x05); pos + 1
+      }
+      else if kw == "end" {
+        Bytes::push(buf, 0x0B); pos + 1
+      }
+      else if kw == "then" {
+        pos + 1
+      }
+      else if kw == "br" {
+        Bytes::push(buf, 0x0C)
+        let next = pos + 1
+        if next < end_pos {
+          let arg = tok_text(src, tokens, next)
+          if tok_type(tokens, next) == tok_ident {
+            let idx = map_get(label_names, label_indices, arg)
+            let depth = if idx >= 0 {
+              label_depth - idx - 1
+            } else {
+              0
+            }
+            write_uleb128(buf, depth)
+          } else {
+            write_uleb128(buf, parse_int(arg))
+          }
+          next + 1
+        } else {
+          next
+        }
+      }
+      else if kw == "br_if" {
+        Bytes::push(buf, 0x0D)
+        let next = pos + 1
+        if next < end_pos {
+          let arg = tok_text(src, tokens, next)
+          if tok_type(tokens, next) == tok_ident {
+            let idx = map_get(label_names, label_indices, arg)
+            let depth = if idx >= 0 {
+              label_depth - idx - 1
+            } else {
+              0
+            }
+            write_uleb128(buf, depth)
+          } else {
+            write_uleb128(buf, parse_int(arg))
+          }
+          next + 1
+        } else {
+          next
+        }
+      }
+      else if kw == "return" {
+        Bytes::push(buf, 0x0F); pos + 1
+      }
+      else if kw == "call" {
+        Bytes::push(buf, 0x10)
+        let next = pos + 1
+        if next < end_pos {
+          let arg = tok_text(src, tokens, next)
+          if tok_type(tokens, next) == tok_ident {
+            let idx = map_get(func_names, func_indices, arg)
+            write_uleb128(buf, if idx >= 0 {
+              idx
+            } else {
+              0
+            })
+          } else {
+            write_uleb128(buf, parse_int(arg))
+          }
+          next + 1
+        } else {
+          next
+        }
+      }
+      else if kw == "drop" {
+        Bytes::push(buf, 0x1A); pos + 1
+      }
+      else if kw == "select" {
+        Bytes::push(buf, 0x1B); pos + 1
+      }
+      else if kw == "local.get" {
+        Bytes::push(buf, 0x20)
+        let next = pos + 1
+        if next < end_pos {
+          let arg = tok_text(src, tokens, next)
+          if tok_type(tokens, next) == tok_ident {
+            let idx = map_get(local_names, local_indices, arg)
+            write_uleb128(buf, if idx >= 0 {
+              idx
+            } else {
+              0
+            })
+          } else {
+            write_uleb128(buf, parse_int(arg))
+          }
+          next + 1
+        } else {
+          next
+        }
+      }
+      else if kw == "local.set" {
+        Bytes::push(buf, 0x21)
+        let next = pos + 1
+        if next < end_pos {
+          let arg = tok_text(src, tokens, next)
+          if tok_type(tokens, next) == tok_ident {
+            let idx = map_get(local_names, local_indices, arg)
+            write_uleb128(buf, if idx >= 0 {
+              idx
+            } else {
+              0
+            })
+          } else {
+            write_uleb128(buf, parse_int(arg))
+          }
+          next + 1
+        } else {
+          next
+        }
+      }
+      else if kw == "local.tee" {
+        Bytes::push(buf, 0x22)
+        let next = pos + 1
+        if next < end_pos {
+          let arg = tok_text(src, tokens, next)
+          if tok_type(tokens, next) == tok_ident {
+            let idx = map_get(local_names, local_indices, arg)
+            write_uleb128(buf, if idx >= 0 {
+              idx
+            } else {
+              0
+            })
+          } else {
+            write_uleb128(buf, parse_int(arg))
+          }
+          next + 1
+        } else {
+          next
+        }
+      }
+      else if kw == "global.get" {
+        Bytes::push(buf, 0x23)
+        let next = pos + 1
+        if next < end_pos {
+          let arg = tok_text(src, tokens, next)
+          if tok_type(tokens, next) == tok_ident {
+            let idx = map_get(global_names, global_indices, arg)
+            write_uleb128(buf, if idx >= 0 {
+              idx
+            } else {
+              0
+            })
+          } else {
+            write_uleb128(buf, parse_int(arg))
+          }
+          next + 1
+        } else {
+          next
+        }
+      }
+      else if kw == "global.set" {
+        Bytes::push(buf, 0x24)
+        let next = pos + 1
+        if next < end_pos {
+          let arg = tok_text(src, tokens, next)
+          if tok_type(tokens, next) == tok_ident {
+            let idx = map_get(global_names, global_indices, arg)
+            write_uleb128(buf, if idx >= 0 {
+              idx
+            } else {
+              0
+            })
+          } else {
+            write_uleb128(buf, parse_int(arg))
+          }
+          next + 1
+        } else {
+          next
+        }
+      }
+      else if kw == "i32.load" {
+        Bytes::push(buf, 0x28)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 2)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "i64.load" {
+        Bytes::push(buf, 0x29)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 3)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "i32.store" {
+        Bytes::push(buf, 0x36)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 2)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "i64.store" {
+        Bytes::push(buf, 0x37)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 3)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "i32.store8" {
+        Bytes::push(buf, 0x3A)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 0)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "i32.store16" {
+        Bytes::push(buf, 0x3B)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 1)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "i32.load8_s" {
+        Bytes::push(buf, 0x2C)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 0)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "i32.load8_u" {
+        Bytes::push(buf, 0x2D)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 0)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "i32.load16_s" {
+        Bytes::push(buf, 0x2E)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 1)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "i32.load16_u" {
+        Bytes::push(buf, 0x2F)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 1)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "memory.size" {
+        Bytes::push(buf, 0x3F)
+        Bytes::push(buf, 0x00)
+        pos + 1
+      }
+      else if kw == "memory.grow" {
+        Bytes::push(buf, 0x40)
+        Bytes::push(buf, 0x00)
+        pos + 1
+      }
+      else if kw == "i32.const" {
+        Bytes::push(buf, 0x41)
+        let next = pos + 1
+        if next < end_pos {
+          write_sleb128(buf, parse_int(tok_text(src, tokens, next)))
+          next + 1
+        } else {
+          next
+        }
+      }
+      else if kw == "i64.const" {
+        Bytes::push(buf, 0x42)
+        let next = pos + 1
+        if next < end_pos {
+          write_sleb128(buf, parse_int(tok_text(src, tokens, next)))
+          next + 1
+        } else {
+          next
+        }
+      }
+      else if kw == "i32.eqz" {
+        Bytes::push(buf, 0x45); pos + 1
+      }
+      else if kw == "i32.eq" {
+        Bytes::push(buf, 0x46); pos + 1
+      }
+      else if kw == "i32.ne" {
+        Bytes::push(buf, 0x47); pos + 1
+      }
+      else if kw == "i32.lt_s" {
+        Bytes::push(buf, 0x48); pos + 1
+      }
+      else if kw == "i32.lt_u" {
+        Bytes::push(buf, 0x49); pos + 1
+      }
+      else if kw == "i32.gt_s" {
+        Bytes::push(buf, 0x4A); pos + 1
+      }
+      else if kw == "i32.gt_u" {
+        Bytes::push(buf, 0x4B); pos + 1
+      }
+      else if kw == "i32.le_s" {
+        Bytes::push(buf, 0x4C); pos + 1
+      }
+      else if kw == "i32.le_u" {
+        Bytes::push(buf, 0x4D); pos + 1
+      }
+      else if kw == "i32.ge_s" {
+        Bytes::push(buf, 0x4E); pos + 1
+      }
+      else if kw == "i32.ge_u" {
+        Bytes::push(buf, 0x4F); pos + 1
+      }
+      else if kw == "i64.eqz" {
+        Bytes::push(buf, 0x50); pos + 1
+      }
+      else if kw == "i64.eq" {
+        Bytes::push(buf, 0x51); pos + 1
+      }
+      else if kw == "i64.ne" {
+        Bytes::push(buf, 0x52); pos + 1
+      }
+      else if kw == "i64.lt_s" {
+        Bytes::push(buf, 0x53); pos + 1
+      }
+      else if kw == "i64.gt_s" {
+        Bytes::push(buf, 0x55); pos + 1
+      }
+      else if kw == "i64.le_s" {
+        Bytes::push(buf, 0x57); pos + 1
+      }
+      else if kw == "i64.ge_s" {
+        Bytes::push(buf, 0x59); pos + 1
+      }
+      else if kw == "i32.clz" {
+        Bytes::push(buf, 0x67); pos + 1
+      }
+      else if kw == "i32.ctz" {
+        Bytes::push(buf, 0x68); pos + 1
+      }
+      else if kw == "i32.popcnt" {
+        Bytes::push(buf, 0x69); pos + 1
+      }
+      else if kw == "i32.add" {
+        Bytes::push(buf, 0x6A); pos + 1
+      }
+      else if kw == "i32.sub" {
+        Bytes::push(buf, 0x6B); pos + 1
+      }
+      else if kw == "i32.mul" {
+        Bytes::push(buf, 0x6C); pos + 1
+      }
+      else if kw == "i32.div_s" {
+        Bytes::push(buf, 0x6D); pos + 1
+      }
+      else if kw == "i32.div_u" {
+        Bytes::push(buf, 0x6E); pos + 1
+      }
+      else if kw == "i32.rem_s" {
+        Bytes::push(buf, 0x6F); pos + 1
+      }
+      else if kw == "i32.rem_u" {
+        Bytes::push(buf, 0x70); pos + 1
+      }
+      else if kw == "i32.and" {
+        Bytes::push(buf, 0x71); pos + 1
+      }
+      else if kw == "i32.or" {
+        Bytes::push(buf, 0x72); pos + 1
+      }
+      else if kw == "i32.xor" {
+        Bytes::push(buf, 0x73); pos + 1
+      }
+      else if kw == "i32.shl" {
+        Bytes::push(buf, 0x74); pos + 1
+      }
+      else if kw == "i32.shr_s" {
+        Bytes::push(buf, 0x75); pos + 1
+      }
+      else if kw == "i32.shr_u" {
+        Bytes::push(buf, 0x76); pos + 1
+      }
+      else if kw == "i32.rotl" {
+        Bytes::push(buf, 0x77); pos + 1
+      }
+      else if kw == "i32.rotr" {
+        Bytes::push(buf, 0x78); pos + 1
+      }
+      else if kw == "i64.add" {
+        Bytes::push(buf, 0x7C); pos + 1
+      }
+      else if kw == "i64.sub" {
+        Bytes::push(buf, 0x7D); pos + 1
+      }
+      else if kw == "i64.mul" {
+        Bytes::push(buf, 0x7E); pos + 1
+      }
+      else if kw == "i64.clz" {
+        Bytes::push(buf, 0x79); pos + 1
+      }
+      else if kw == "i64.ctz" {
+        Bytes::push(buf, 0x7A); pos + 1
+      }
+      else if kw == "i64.popcnt" {
+        Bytes::push(buf, 0x7B); pos + 1
+      }
+      else if kw == "i64.div_s" {
+        Bytes::push(buf, 0x7F); pos + 1
+      }
+      else if kw == "i64.div_u" {
+        Bytes::push(buf, 0x80); pos + 1
+      }
+      else if kw == "i64.rem_s" {
+        Bytes::push(buf, 0x81); pos + 1
+      }
+      else if kw == "i64.rem_u" {
+        Bytes::push(buf, 0x82); pos + 1
+      }
+      else if kw == "i64.and" {
+        Bytes::push(buf, 0x83); pos + 1
+      }
+      else if kw == "i64.or" {
+        Bytes::push(buf, 0x84); pos + 1
+      }
+      else if kw == "i64.xor" {
+        Bytes::push(buf, 0x85); pos + 1
+      }
+      else if kw == "i64.shl" {
+        Bytes::push(buf, 0x86); pos + 1
+      }
+      else if kw == "i64.shr_s" {
+        Bytes::push(buf, 0x87); pos + 1
+      }
+      else if kw == "i64.shr_u" {
+        Bytes::push(buf, 0x88); pos + 1
+      }
+      else if kw == "i64.rotl" {
+        Bytes::push(buf, 0x89); pos + 1
+      }
+      else if kw == "i64.rotr" {
+        Bytes::push(buf, 0x8A); pos + 1
+      }
+      else if kw == "f32.eq" {
+        Bytes::push(buf, 0x5B); pos + 1
+      }
+      else if kw == "f32.ne" {
+        Bytes::push(buf, 0x5C); pos + 1
+      }
+      else if kw == "f32.lt" {
+        Bytes::push(buf, 0x5D); pos + 1
+      }
+      else if kw == "f32.gt" {
+        Bytes::push(buf, 0x5E); pos + 1
+      }
+      else if kw == "f32.le" {
+        Bytes::push(buf, 0x5F); pos + 1
+      }
+      else if kw == "f32.ge" {
+        Bytes::push(buf, 0x60); pos + 1
+      }
+      else if kw == "f64.eq" {
+        Bytes::push(buf, 0x61); pos + 1
+      }
+      else if kw == "f64.ne" {
+        Bytes::push(buf, 0x62); pos + 1
+      }
+      else if kw == "f64.lt" {
+        Bytes::push(buf, 0x63); pos + 1
+      }
+      else if kw == "f64.gt" {
+        Bytes::push(buf, 0x64); pos + 1
+      }
+      else if kw == "f64.le" {
+        Bytes::push(buf, 0x65); pos + 1
+      }
+      else if kw == "f64.ge" {
+        Bytes::push(buf, 0x66); pos + 1
+      }
+      else if kw == "f32.abs" {
+        Bytes::push(buf, 0x8B); pos + 1
+      }
+      else if kw == "f32.neg" {
+        Bytes::push(buf, 0x8C); pos + 1
+      }
+      else if kw == "f32.ceil" {
+        Bytes::push(buf, 0x8D); pos + 1
+      }
+      else if kw == "f32.floor" {
+        Bytes::push(buf, 0x8E); pos + 1
+      }
+      else if kw == "f32.trunc" {
+        Bytes::push(buf, 0x8F); pos + 1
+      }
+      else if kw == "f32.nearest" {
+        Bytes::push(buf, 0x90); pos + 1
+      }
+      else if kw == "f32.sqrt" {
+        Bytes::push(buf, 0x91); pos + 1
+      }
+      else if kw == "f32.add" {
+        Bytes::push(buf, 0x92); pos + 1
+      }
+      else if kw == "f32.sub" {
+        Bytes::push(buf, 0x93); pos + 1
+      }
+      else if kw == "f32.mul" {
+        Bytes::push(buf, 0x94); pos + 1
+      }
+      else if kw == "f32.div" {
+        Bytes::push(buf, 0x95); pos + 1
+      }
+      else if kw == "f32.min" {
+        Bytes::push(buf, 0x96); pos + 1
+      }
+      else if kw == "f32.max" {
+        Bytes::push(buf, 0x97); pos + 1
+      }
+      else if kw == "f32.copysign" {
+        Bytes::push(buf, 0x98); pos + 1
+      }
+      else if kw == "f64.abs" {
+        Bytes::push(buf, 0x99); pos + 1
+      }
+      else if kw == "f64.neg" {
+        Bytes::push(buf, 0x9A); pos + 1
+      }
+      else if kw == "f64.ceil" {
+        Bytes::push(buf, 0x9B); pos + 1
+      }
+      else if kw == "f64.floor" {
+        Bytes::push(buf, 0x9C); pos + 1
+      }
+      else if kw == "f64.trunc" {
+        Bytes::push(buf, 0x9D); pos + 1
+      }
+      else if kw == "f64.nearest" {
+        Bytes::push(buf, 0x9E); pos + 1
+      }
+      else if kw == "f64.sqrt" {
+        Bytes::push(buf, 0x9F); pos + 1
+      }
+      else if kw == "f64.add" {
+        Bytes::push(buf, 0xA0); pos + 1
+      }
+      else if kw == "f64.sub" {
+        Bytes::push(buf, 0xA1); pos + 1
+      }
+      else if kw == "f64.mul" {
+        Bytes::push(buf, 0xA2); pos + 1
+      }
+      else if kw == "f64.div" {
+        Bytes::push(buf, 0xA3); pos + 1
+      }
+      else if kw == "f64.min" {
+        Bytes::push(buf, 0xA4); pos + 1
+      }
+      else if kw == "f64.max" {
+        Bytes::push(buf, 0xA5); pos + 1
+      }
+      else if kw == "f64.copysign" {
+        Bytes::push(buf, 0xA6); pos + 1
+      }
+      else if kw == "i32.wrap_i64" {
+        Bytes::push(buf, 0xA7); pos + 1
+      }
+      else if kw == "i32.trunc_f32_s" {
+        Bytes::push(buf, 0xA8); pos + 1
+      }
+      else if kw == "i32.trunc_f32_u" {
+        Bytes::push(buf, 0xA9); pos + 1
+      }
+      else if kw == "i32.trunc_f64_s" {
+        Bytes::push(buf, 0xAA); pos + 1
+      }
+      else if kw == "i32.trunc_f64_u" {
+        Bytes::push(buf, 0xAB); pos + 1
+      }
+      else if kw == "i64.extend_i32_s" {
+        Bytes::push(buf, 0xAC); pos + 1
+      }
+      else if kw == "i64.extend_i32_u" {
+        Bytes::push(buf, 0xAD); pos + 1
+      }
+      else if kw == "i64.trunc_f32_s" {
+        Bytes::push(buf, 0xAE); pos + 1
+      }
+      else if kw == "i64.trunc_f32_u" {
+        Bytes::push(buf, 0xAF); pos + 1
+      }
+      else if kw == "i64.trunc_f64_s" {
+        Bytes::push(buf, 0xB0); pos + 1
+      }
+      else if kw == "i64.trunc_f64_u" {
+        Bytes::push(buf, 0xB1); pos + 1
+      }
+      else if kw == "f32.convert_i32_s" {
+        Bytes::push(buf, 0xB2); pos + 1
+      }
+      else if kw == "f32.convert_i32_u" {
+        Bytes::push(buf, 0xB3); pos + 1
+      }
+      else if kw == "f32.convert_i64_s" {
+        Bytes::push(buf, 0xB4); pos + 1
+      }
+      else if kw == "f32.convert_i64_u" {
+        Bytes::push(buf, 0xB5); pos + 1
+      }
+      else if kw == "f32.demote_f64" {
+        Bytes::push(buf, 0xB6); pos + 1
+      }
+      else if kw == "f64.convert_i32_s" {
+        Bytes::push(buf, 0xB7); pos + 1
+      }
+      else if kw == "f64.convert_i32_u" {
+        Bytes::push(buf, 0xB8); pos + 1
+      }
+      else if kw == "f64.convert_i64_s" {
+        Bytes::push(buf, 0xB9); pos + 1
+      }
+      else if kw == "f64.convert_i64_u" {
+        Bytes::push(buf, 0xBA); pos + 1
+      }
+      else if kw == "f64.promote_f32" {
+        Bytes::push(buf, 0xBB); pos + 1
+      }
+      else if kw == "i32.reinterpret_f32" {
+        Bytes::push(buf, 0xBC); pos + 1
+      }
+      else if kw == "i64.reinterpret_f64" {
+        Bytes::push(buf, 0xBD); pos + 1
+      }
+      else if kw == "f32.reinterpret_i32" {
+        Bytes::push(buf, 0xBE); pos + 1
+      }
+      else if kw == "f64.reinterpret_i64" {
+        Bytes::push(buf, 0xBF); pos + 1
+      }
+      else if kw == "f32.load" {
+        Bytes::push(buf, 0x2A)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 2)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "f64.load" {
+        Bytes::push(buf, 0x2B)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 3)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "f32.store" {
+        Bytes::push(buf, 0x38)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 2)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "f64.store" {
+        Bytes::push(buf, 0x39)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 3)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "i64.load8_s" {
+        Bytes::push(buf, 0x30)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 0)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "i64.load8_u" {
+        Bytes::push(buf, 0x31)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 0)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "i64.load16_s" {
+        Bytes::push(buf, 0x32)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 1)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "i64.load16_u" {
+        Bytes::push(buf, 0x33)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 1)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "i64.load32_s" {
+        Bytes::push(buf, 0x34)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 2)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "i64.load32_u" {
+        Bytes::push(buf, 0x35)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 2)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "i64.store8" {
+        Bytes::push(buf, 0x3C)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 0)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "i64.store16" {
+        Bytes::push(buf, 0x3D)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 1)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "i64.store32" {
+        Bytes::push(buf, 0x3E)
+        let next = pos + 1
+        let (align0, offset0, next2) = parse_mem_args(src, tokens, next, end_pos, 2)
+        write_uleb128(buf, align0)
+        write_uleb128(buf, offset0)
+        next2
+      }
+      else if kw == "br_table" {
+        Bytes::push(buf, 0x0E)
+        let labels = empty_int_array()
+        let mut next = pos + 1
+        while (next < end_pos) && ((tok_type(tokens, next) == tok_int) || (tok_type(tokens, next) == tok_ident)) {
+          let arg = tok_text(src, tokens, next)
+          if tok_type(tokens, next) == tok_ident {
+            let idx = map_get(label_names, label_indices, arg)
+            let depth = if idx >= 0 {
+              label_depth - idx - 1
+            } else {
+              0
+            }
+            Array::push(labels, depth)
+          } else {
+            Array::push(labels, parse_int(arg))
+          }
+          next = next + 1
+        }
+        let label_count = Array::length(labels)
+        if label_count > 0 {
+          write_uleb128(buf, label_count - 1)
+          let mut li = 0
+          while li < label_count {
+            write_uleb128(buf, Array::get(labels, li))
+            li = li + 1
+          }
+        } else {
+          write_uleb128(buf, 0)
+          write_uleb128(buf, 0)
+        }
+        next
+      }
+      else if kw == "call_indirect" {
+        Bytes::push(buf, 0x11)
+        let next = pos + 1
+        if (next < end_pos) && (tok_type(tokens, next) == tok_lparen) && ((next + 1) < end_pos) && (tok_text(src, tokens, next + 1) == "type") {
+          let type_pos = next + 2
+          if type_pos < end_pos {
+            let type_arg = tok_text(src, tokens, type_pos)
+            if tok_type(tokens, type_pos) == tok_int {
+              write_uleb128(buf, parse_int(type_arg))
+            } else {
+              write_uleb128(buf, 0)
+            }
+          } else {
+            write_uleb128(buf, 0)
+          }
+          Bytes::push(buf, 0x00)
+          let mut skip = type_pos + 1
+          if (skip < end_pos) && (tok_type(tokens, skip) == tok_rparen) {
+            skip = skip + 1
+          }
+          skip
+        } else if (next < end_pos) && (tok_type(tokens, next) == tok_int) {
+          write_uleb128(buf, parse_int(tok_text(src, tokens, next)))
+          Bytes::push(buf, 0x00)
+          next + 1
+        } else {
+          write_uleb128(buf, 0)
+          Bytes::push(buf, 0x00)
+          next
+        }
+      }
+      else if kw == "f32.const" {
+        Bytes::push(buf, 0x43)
+        let next = pos + 1
+        if next < end_pos {
+          let bits = parse_f32_bits(tok_text(src, tokens, next))
+          write_f32_le(buf, bits)
+          next + 1
+        } else {
+          next
+        }
+      }
+      else if kw == "f64.const" {
+        Bytes::push(buf, 0x44)
+        let next = pos + 1
+        if next < end_pos {
+          let (bits_hi, bits_lo) = parse_f64_bits(tok_text(src, tokens, next))
+          write_f64_le(buf, bits_hi, bits_lo)
+          next + 1
+        } else {
+          next
+        }
+      }
+      else {
+        pos + 1
+      }
+    }
+  }
+}

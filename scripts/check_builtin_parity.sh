@@ -24,6 +24,8 @@ cd "$ROOT_DIR"
 
 python3 - <<'PY'
 import os, re, sys
+sys.path.insert(0, "scripts")
+from source_files import read_source_group
 
 # Overridable for the same reason REGISTRY is: the self-test points the gate at
 # a MUTATED COPY rather than editing the tree's own sources. Unset on every
@@ -94,7 +96,7 @@ def callsite_names(path):
     # (`__region_run`, `MutList::empty/freeze/to_array`, `MutBytes::empty/
     # to_bytes`) invisible on the linear side -- so the model would call them
     # gc-only the moment the gc lane implemented them, which is backwards.
-    text = strip_line_comments(open(path).read())
+    text = strip_line_comments(read_source_group(path))
     # THREE spellings reach the same place, and reading only the first made
     # whole families invisible:
     #   fname == ".."                     the main dispatch chains
@@ -117,7 +119,7 @@ gc_cs = callsite_names(GC_CALLSITE)
 # mutation-checked: these public rows deliberately appear in one GC condition
 # whose body only throws the component-only diagnostic. If that shape moves,
 # fail instead of silently counting (or excluding) the wrong names.
-gc_text = open(GC_CALLSITE).read()
+gc_text = read_source_group(GC_CALLSITE)
 gc_throw_only_expected = {
     "Stdin::read_via_stream", "StdinStream::next", "StdinStream::close",
     "StdinStream::read_chunk"
@@ -167,7 +169,7 @@ if not lin_cs or not gc_cs:
 # Array::push (and every other allocating, non-borrow-returning name) as
 # a dead row claiming neither lane.
 BOOL = r'(true|false)'
-registry_text = open(REGISTRY).read()
+registry_text = read_source_group(REGISTRY)
 named = re.findall(r'\(\s*"([^"]+)"\s*,\s*CtFn', registry_text)
 rows = re.findall(
     r'\(\s*"([^"]+)"\s*,\s*CtFn.*?,\s*'
@@ -193,7 +195,7 @@ reg_gc = {n for n, l, g, v, *_ in rows if g == "true"}
 # func-table row. Keep this exception exact and mutation-checked: read_chunk
 # must still be retargeted to its injected linear/RC implementation.
 wrapper_only_expected = {"StdinStream::read_chunk"}
-linked_text = open(LINKED).read()
+linked_text = read_source_group(LINKED)
 wrapper_only_found = {
     n for n in wrapper_only_expected
     if f'"{n}"' in linked_text and "__stdin_provider_read_chunk_surface" in linked_text
@@ -209,8 +211,8 @@ if wrapper_only_found != wrapper_only_expected:
 # lowering that is deleted or renamed fails here instead of being waved
 # through as "a name nobody registered".
 callsite_only_expected = {"abort"}
-lin_callsite_text = open(LIN_CALLSITE).read()
-gc_callsite_text = open(GC_CALLSITE).read()
+lin_callsite_text = read_source_group(LIN_CALLSITE)
+gc_callsite_text = read_source_group(GC_CALLSITE)
 callsite_only_found = {
     n for n in callsite_only_expected
     if f'fname == "{n}"' in lin_callsite_text and f'fname == "{n}"' in gc_callsite_text
@@ -241,7 +243,7 @@ if neither:
 # Same posture as the extractions above: pin the shape, and FAIL rather than
 # silently count zero if it moves. A parity guard that quietly stops seeing a
 # lane is worse than one that breaks loudly.
-gc_body_text = open(GC_BODY).read()
+gc_body_text = read_source_group(GC_BODY)
 host_defs_match = re.search(r'let host_defs = \[(.*?)\n    \]', gc_body_text, re.S)
 if not host_defs_match:
     print("[builtin-parity] FAIL: could not find the gc host_defs table in "

@@ -1,0 +1,1887 @@
+// lib/@vibe/compiler/contract/contract.vibe — scan package header.
+
+import @vibe/compiler/core {
+  Expr, ImportItem, Stmt, TypeExpr
+}
+
+import @vibe/ast {
+  type_param_arity, type_param_key, type_param_name
+}
+
+import @vibe/compiler/syntax {
+  Token, allows_outside_entry_error, parse_fn_signature, parse_stmt, parse_type, peek, print_stmt, print_type_expr
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import ./identity.vibe {
+  content_id_matches, emit_content_id, emit_content_id_with, is_package_pin
+}
+
+//# Functions
+
+/// #740/#753: facades are marked so every re-ingestion point (the grouped
+/// chokepoint, the persistent-header lane, type_db re-reads of collected
+/// sources) can tell an already-desugared facade from raw contract grammar.
+/// Re-parsing a facade AS a contract mis-attributes its imports (a facade
+/// with only `import ./impl.vibe {}` lines yields zero DECLS, and one with
+/// only type defs yields zero impl imports → sibling auto-discovery), so the
+/// marker check must happen wherever `.vibei`-suffixed sources are parsed.
+export let contract_facade_marker: String = "// vibe: contract facade (desugared from .vibei)\n"
+
+/// #897 (ADR-0070 Phase 1): mirrors `contract_facade_marker`'s idempotency
+/// role, for a DIFFERENT ingestion transform -- a sibling `.vibe` impl file
+/// under a `.vpkg` directory gets that vpkg's directory-shared imports
+/// PREPENDED to its own source text (see `contract_directory_shared_import_prefix_text`
+/// below and `ingest_source_text_fs`/`collect_sources_rec` in loader/index.vibe,
+/// the two call sites). Ingestion is applied more than once to the same
+/// logical file in ordinary operation (`collect_source_groups_fs` re-ingests
+/// every already-collected source; #740's comment documents the same
+/// re-ingestion for the contract-facade case) -- without a marker, a second
+/// pass would prepend the imports AGAIN, producing duplicate `import`
+/// statements. The loader checks for this marker before prepending and skips
+/// if already present, exactly like the facade marker check.
+export let vpkg_shared_import_marker: String = "// vibe: vpkg directory-shared imports (#897)\n"
+
+// ADR-0063 Phase C (#729): contract conformance engine for `.vibei` files.
+//
+// A contract file's top level declares the package's public API. This module
+// parses bodyless `fn` declarations (the contract grammar) and checks that a
+// package's implementation statements provide exactly the declared surface:
+// every declared fn exists with a matching signature (param types + labels,
+// generics, return type, effect row), and no exported def is undeclared.
+//
+// This increment is the pure engine + its grammar; wiring into import
+// resolution / the merge layer (directory imports resolving through
+// index.vibei, boundary rules) is the next #729 stage.
+
+/// Canonical signature fingerprint: `[T: Eq](Int, x~: Int) -> Ret with E`.
+/// Labeled params keep their name (the label is ABI); positional params are
+/// types only. Built from the same shapes both the contract declaration and
+/// the implementation's EFn carry, so string equality is signature equality.
+fn fn_sig_text(tps: Array[String], tbs: Array[(String, Array[String])], params: Array[(String, Option[TypeExpr])], ret_ty: TypeExpr, eff_opt: Option[String]) -> Option[String] {
+  let mut missing = false
+  let parts = array_empty()
+  let mut i = 0
+  while i < Array::length(params) {
+    let (pname, pty_opt) = Array::get(params, i)
+    match pty_opt {
+      Some(pty) => {
+        let tystr = print_type_expr(pty)
+        let entry = if String::ends_with(pname, "~") {
+          "\{pname}: \{tystr}"
+        } else tystr
+        Array::push(parts, entry)
+      },
+      None => {
+        missing = true
+      }
+    }
+    i = i + 1
+  }
+  if missing {
+    None
+  } else {
+    let gen = if Array::length(tps) == 0 {
+      ""
+    } else {
+      let entries = array_empty()
+      let mut gi = 0
+      while gi < Array::length(tps) {
+        let tp = Array::get(tps, gi)
+        let mut bound = ""
+        let mut bi = 0
+        while bi < Array::length(tbs) {
+          let (bname, bnds) = Array::get(tbs, bi)
+          if bname == tp && Array::length(bnds) > 0 {
+            bound = String::join(bnds, " + ")
+          } else ()
+          bi = bi + 1
+        }
+        let entry = if String::length(bound) == 0 {
+          tp
+        } else "\{tp}: \{bound}"
+        Array::push(entries, entry)
+        gi = gi + 1
+      }
+      "[\{String::join(entries, ", ")}]"
+    }
+    let eff = match eff_opt {
+      Some(e) => " with { \{e} }",
+      None => ""
+    }
+    Some("\{gen}(\{String::join(parts, ", ")}) -> \{print_type_expr(ret_ty)}\{eff}")
+  }
+}
+
+/// Parse a contract source's top level. Bare `fn` heads become declarations
+/// (name, canonical signature); a declaration followed by `{` is an error —
+/// contract files carry no bodies. `opaque type Name` declares a public type
+/// whose definition lives in an implementation file (#729 C-4). Everything
+/// else (implementation imports, transparent type definitions) parses as
+/// ordinary statements and is returned alongside.
+/// #739/#2338: opaque/bodyless type declarations carry their canonical type
+/// parameter keys, including constructor arities. Conformance and semver can
+/// therefore see both `Box` -> `Box[T]` and `F[_]` -> `F[_, _]` as breaking.
+/// #2317: record a contract statement together with the token index it
+/// started at.
+///
+/// The two arrays are read positionally by `contract_classify_diagnostic`, so
+/// a push that lands in only one of them does not fail -- it shifts every
+/// later statement's anchor onto its neighbour, which is a diagnostic pointing
+/// confidently at the wrong line. One call site each keeps them paired, and
+/// the length check at the end of the parse catches a site that bypasses this.
+fn push_contract_stmt(stmts: Array[Stmt], stmt_at: Array[Int], stmt: Stmt, at: Int) -> Unit {
+  Array::push(stmts, stmt)
+  Array::push(stmt_at, at)
+}
+
+/// #2317: record a bodyless declaration together with the token index it
+/// started at, for the same reason as `push_contract_stmt` -- the two arrays
+/// are read positionally, so a push landing in only one of them would shift
+/// every later declaration's anchor onto its neighbour.
+fn push_contract_decl(decls: Array[(String, String)], decl_at: Array[Int], name: String, sig: String, at: Int) -> Unit {
+  Array::push(decls, (name, sig))
+  Array::push(decl_at, at)
+}
+
+/// Parse the optional parameter list of a bodyless contract type. Each binder
+/// retains its constructor kind in the same canonical key used by the AST, so
+/// conformance and surface hashing can distinguish `F`, `F[_]`, and
+/// `F[_, _]` instead of collapsing all three to one outer parameter.
+fn parse_opaque_type_params(tokens: Array[Token], pos: Int, name: String) -> (Array[String], Int) with Exception {
+  match peek(tokens, pos) {
+    TLBracket => {
+      let mut p = pos + 1
+      let params = array_empty()
+      let mut done = false
+      while !done {
+        match peek(tokens, p) {
+          TIdent(param_name) => {
+            p = p + 1
+            let mut kind_arity = 0
+            match peek(tokens, p) {
+              TLBracket => {
+                p = p + 1
+                let mut kind_done = false
+                while !kind_done {
+                  match peek(tokens, p) {
+                    TIdent(hole) => if hole == "_" {
+                      kind_arity = kind_arity + 1
+                      p = p + 1
+                      match peek(tokens, p) {
+                        TComma => {
+                          p = p + 1
+                        },
+                        TRBracket => {
+                          p = p + 1
+                          kind_done = true
+                        },
+                        _ => throw("expected ',' or ']' after '_' in opaque type `\{name}` constructor parameter")
+                      }
+                    } else {
+                      throw("opaque type `\{name}` constructor parameters contain only '_' placeholders")
+                    },
+                    TRBracket => throw("opaque type `\{name}` constructor parameter needs at least one '_' placeholder"),
+                    TEof => throw("unterminated constructor parameter on opaque type `\{name}`"),
+                    _ => throw("expected '_' in opaque type `\{name}` constructor parameter")
+                  }
+                }
+              },
+              _ => ()
+            }
+            Array::push(params, type_param_key(param_name, kind_arity))
+            match peek(tokens, p) {
+              TComma => {
+                p = p + 1
+              },
+              TRBracket => {
+                p = p + 1
+                done = true
+              },
+              _ => throw("expected ',' or ']' in opaque type `\{name}` parameter list")
+            }
+          },
+          TRBracket => throw("opaque type `\{name}` requires at least one parameter inside '[]'"),
+          _ => throw("expected type parameter name in opaque type `\{name}`")
+        }
+      }
+      (params, p)
+    },
+    _ => ([], pos)
+  }
+}
+
+/// ADR-0088: the index of the entry-grant keyword `allows` in the contract
+/// signature `[start, end)` (`start` is the function name), or -1. The clause
+/// can only follow the return type at bracket depth 0, so the name, the
+/// generic binder `[..]` and the parameter list `(..)` are skipped first:
+/// `allows` is contextual, not reserved, and `fn allows() -> Int` or a
+/// parameter named `allows` is an ordinary declaration. A row label or a
+/// return type spelled `allows` follows `with` / `+` / `->` and is not the
+/// clause either; a where-clause name sits inside `{..}`. A declaration is a
+/// requirement the package publishes, so the clause is refused here whatever
+/// the function's name (Codex review on PR #2653, two rounds).
+fn signature_allows_keyword_at(tokens: Array[Token], start: Int, end: Int) -> Int {
+  let mut i = start + 1
+  let mut depth = 0
+  let mut params_closed = false
+  let mut after_row_op = false
+  let mut found = 0 - 1
+  while i < end && found < 0 {
+    let tok = Array::get(tokens, i)
+    match tok {
+      TLParen => {
+        depth = depth + 1
+      },
+      TLBracket => {
+        depth = depth + 1
+      },
+      TLBrace => {
+        depth = depth + 1
+      },
+      TRParen => {
+        depth = depth - 1
+        if depth == 0 {
+          params_closed = true
+        } else {
+          ()
+        }
+      },
+      TRBracket => {
+        depth = depth - 1
+      },
+      TRBrace => {
+        depth = depth - 1
+      },
+      TIdent(kw) => if params_closed && depth == 0 && !after_row_op && kw == "allows" {
+        found = i
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    after_row_op = match tok {
+      TWith => true,
+      TPlus => true,
+      TThinArrow => true,
+      _ => false
+    }
+    i = i + 1
+  }
+  found
+}
+
+export fn parse_contract_program(tokens: Array[Token]) -> (Array[(String, String)], Array[(String, Array[String])], Array[Stmt]) with Exception {
+  let (decls, opaques, stmts, _at, _dat) = parse_contract_program_spans(tokens)
+  (decls, opaques, stmts)
+}
+
+/// #2317: `parse_contract_program`, plus the TOKEN INDEX each statement
+/// started at (one entry per `Stmt`, same order).
+///
+/// `classify_contract_stmts` rejects a statement a contract may not contain,
+/// and its message carries no position -- so the buffer lane rendered it at
+/// the synthetic 0:0 and told the reader a contract is broken without saying
+/// where. The parser is the only place that knows where each statement began;
+/// it used to discard that. Recovering it by SEARCH was tried three times in
+/// the #2315 review and each attempt produced a predicate that could anchor on
+/// valid code, so the offset is carried instead.
+export fn parse_contract_program_spans(tokens: Array[Token]) -> (Array[(String, String)], Array[(String, Array[String])], Array[Stmt], Array[Int], Array[Int]) with Exception {
+  let (decls, opaques, stmts, stmt_at, decl_at, _opaque_at) = parse_contract_program_spans_opaque_at(tokens)
+  (decls, opaques, stmts, stmt_at, decl_at)
+}
+
+/// `parse_contract_program_spans`, plus the token index each OPAQUE (bodyless
+/// `type Name` / `opaque type Name`) declaration started at -- one entry per
+/// entry of `opaques`, same order.
+///
+/// Statements and fn/val declarations already carried their token index; the
+/// opaque stream did not, so a caller that needs to point at a contract's
+/// types -- `vibe symbols`, which answers with a source span per declaration
+/// (#2898) -- had no position for exactly the declarations a contract mostly
+/// consists of. Recovering it by searching the token stream is the shape
+/// #2317 rejected three times: the parser is the only thing that knows where
+/// a declaration began, so it records it.
+export fn parse_contract_program_spans_opaque_at(tokens: Array[Token]) -> (Array[(String, String)], Array[(String, Array[String])], Array[Stmt], Array[Int], Array[Int], Array[Int]) with Exception {
+  let decls = array_empty()
+  let decl_at = array_empty()
+  let opaques = array_empty()
+  let opaque_at = array_empty()
+  let stmts = array_empty()
+  let stmt_at = array_empty()
+  let mut pos = 0
+  let mut done = false
+  while !done {
+    match peek(tokens, pos) {
+      TEof => {
+        done = true
+      },
+      TType => {
+        // Bodyless `type Name` / `type Name[T]` — a TRANSPARENT public type
+        // whose definition lives in an implementation file (the facade
+        // re-exports it; same conformance rules as opaque, opacity is the
+        // only — currently documentation-level — difference). `type X = ..`
+        // (with '=') is the contract-defined alias and parses as a stmt.
+        let mut la = pos + 1
+        let tname = match peek(tokens, la) {
+          TIdent(tn) => tn,
+          _ => ""
+        }
+        let mut is_bodyless = false
+        let mut params: Array[String] = []
+        if tname == "" {
+          ()
+        } else {
+          la = la + 1
+          let mut scan = la
+          match peek(tokens, scan) {
+            TLBracket => {
+              let parsed = parse_opaque_type_params(tokens, scan, tname)
+              params = parsed.0
+              scan = parsed.1
+            },
+            _ => ()
+          }
+          match peek(tokens, scan) {
+            TEq => {
+              params = []
+            },
+            _ => {
+              is_bodyless = true
+              la = scan
+            }
+          }
+        }
+        if is_bodyless {
+          Array::push(opaques, (tname, params))
+          Array::push(opaque_at, pos)
+          pos = la
+        } else {
+          let (stmt, next) = parse_stmt(tokens, [], pos)
+          push_contract_stmt(stmts, stmt_at, stmt, pos)
+          pos = next
+        }
+      },
+      TLet => {
+        // #752 (ADR-0065): bodyless `let name: Type` — a public VALUE
+        // declaration (constants like `pi: Double`). The definition lives in
+        // an implementation file and is fingerprinted as "val <type>";
+        // conformance and the facade treat it exactly like a fn decl (both
+        // are name + signature-string). A body (`= ...`) is rejected like fn
+        // bodies; `let mut` cannot be contract surface.
+        match peek(tokens, pos + 1) {
+          TMut => throw("contract let declaration cannot be `mut` (#752)"),
+          _ => ()
+        }
+        let vname = match peek(tokens, pos + 1) {
+          TIdent(vn) => vn,
+          _ => throw("expected value name after 'let' in a contract")
+        }
+        match peek(tokens, pos + 2) {
+          TColon => (),
+          _ => throw("contract value declaration '\{vname}' requires a type annotation (#752)")
+        }
+        let (vty, vnext) = parse_type(tokens, pos + 3)
+        match peek(tokens, vnext) {
+          TEq => throw("contract value declaration '\{vname}' must not have a definition (#752)"),
+          _ => ()
+        }
+        push_contract_decl(decls, decl_at, vname, String::concat("val ", print_type_expr(vty)), pos)
+        pos = vnext
+      },
+      TIdent(head) => if head == "opaque" {
+        match peek(tokens, pos + 1) {
+          TType => match peek(tokens, pos + 2) {
+            TIdent(oname) => {
+              let (params, next) = parse_opaque_type_params(tokens, pos + 3, oname)
+              Array::push(opaques, (oname, params))
+              Array::push(opaque_at, pos)
+              pos = next
+            },
+            _ => throw("expected type name after 'opaque type'")
+          },
+          _ => throw("expected 'type' after 'opaque'")
+        }
+      } else {
+        let (stmt, next) = parse_stmt(tokens, [], pos)
+        push_contract_stmt(stmts, stmt_at, stmt, pos)
+        pos = next
+      },
+      // `#deprecated` is a token-level marker (`vibe check` scans the
+      // on-disk vpkg). The contract grammar has to skip it so type aliases
+      // that exist only here can carry the directive. Other `#` forms
+      // (`#cfg`, `#zero_alloc`) stay rejected — they have no contract
+      // meaning yet.
+      THash => {
+        match peek(tokens, pos + 1) {
+          TIdent(dname) => {
+            if dname == "deprecated" {
+              match peek(tokens, pos + 2) {
+                TLParen => match peek(tokens, pos + 3) {
+                  TString(_) => match peek(tokens, pos + 4) {
+                    TRParen => {
+                      pos = pos + 5
+                    },
+                    _ => throw("expected ')' after #deprecated message")
+                  },
+                  _ => throw("expected string message in #deprecated(...)")
+                },
+                _ => {
+                  pos = pos + 2
+                }
+              }
+            } else {
+              throw("unsupported # directive in a contract file: \{dname} (only #deprecated is allowed)")
+            }
+          },
+          _ => throw("expected directive name after '#' in a contract file")
+        }
+      },
+      // #1280: `fn` lexes as TFn (reserved word), no longer TIdent("fn").
+      TFn => {
+        // where clauses on declarations parse but are not yet part of the
+        // contract fingerprint (conformance/hash coverage comes with the
+        // SMT stage of #731).
+        let (dhead, dsig, _, next) = parse_fn_signature(tokens, pos + 1)
+        let (name, tps, tbs) = dhead
+        // ADR-0088: a declaration is a requirement the package publishes,
+        // never an entry, so the entry grant `allows` is refused here even on
+        // a `main` -- the signature parser admits it by name alone, because a
+        // source-file `fn main` IS the entry (Codex review on PR #2653).
+        let allows_at = signature_allows_keyword_at(tokens, pos + 1, next)
+        if allows_at >= 0 {
+          throw(allows_outside_entry_error(String::concat("the contract declaration `", String::concat(name, "`")), allows_at))
+        } else {
+          ()
+        }
+        let (params, ret_ty, eff_opt) = dsig
+        match peek(tokens, next) {
+          TLBrace => throw("contract fn declaration '\{name}' must not have a body (#729)"),
+          _ => ()
+        }
+        match fn_sig_text(tps, tbs, params, ret_ty, eff_opt) {
+          Some(sig) => push_contract_decl(decls, decl_at, name, sig, pos),
+          None => throw("contract fn declaration '\{name}' requires full annotations")
+        }
+        pos = next
+      },
+      _ => {
+        let (stmt, next) = parse_stmt(tokens, [], pos)
+        push_contract_stmt(stmts, stmt_at, stmt, pos)
+        pos = next
+      }
+    }
+  }
+  if Array::length(stmts) != Array::length(stmt_at) || Array::length(decls) != Array::length(decl_at) || Array::length(opaques) != Array::length(opaque_at) {
+    throw("internal: contract offsets desynced (#2317) -- a statement or declaration was recorded without its position")
+  } else {
+    ()
+  }
+  (decls, opaques, stmts, stmt_at, decl_at, opaque_at)
+}
+
+/// Lifted here from the checker's FS lane (#2898): `vibe symbols` needs the
+/// same answer and must not acquire that lane to get it -- it is a parse-only
+/// query, and its whole dependency budget is the parser plus this grammar.
+/// One contract grammar, one place that says where it stopped.
+fn contract_msg_mentions_eof(msg: String) -> Bool {
+  String::index_of(msg, "but got eof") >= 0 || String::index_of(msg, "unexpected eof") >= 0
+}
+
+/// Byte offset of the last token that is not `TEof`, or -1.
+///
+/// Where an "expected ... but got eof" belongs: the parser ran out of input, so
+/// the actionable position is the end of what the author actually wrote, not
+/// the whitespace past it.
+fn last_real_token_offset(tokens: Array[Token], starts: Array[Int]) -> Int {
+  let mut i = Array::length(tokens) - 1
+  let lim = Array::length(starts)
+  let mut found = 0 - 1
+  while i >= 0 {
+    let is_eof = match Array::get(tokens, i) {
+      TEof => true,
+      _ => false
+    }
+    if is_eof || i >= lim {
+      i = i - 1
+    } else {
+      found = Array::get(starts, i)
+      i = 0 - 1
+    }
+  }
+  found
+}
+
+/// Does the first `k` tokens throw exactly `msg` from the contract parser?
+///
+/// `peek` answers `TEof` past the end of the array, so a plain truncation is a
+/// well-formed token prefix -- no sentinel to append.
+fn contract_prefix_throws(tokens: Array[Token], k: Int, msg: String) -> Bool with Exception {
+  let head = array_empty()
+  let mut i = 0
+  while i < k {
+    Array::push(head, Array::get(tokens, i))
+    i = i + 1
+  }
+  handle {
+    let (_, _, _hstmts) = parse_contract_program(head)
+    false
+  } with { Exception::Throw(m) => m == msg }
+}
+
+/// Byte offset of the token the contract PARSER stopped at, or -1.
+///
+/// Parser only. A round of this review extended the probe to run the
+/// classifier too, so a `classify_contract_stmts` rejection would anchor
+/// instead of rendering at 0:0 -- and that predicate is NOT monotone, which is
+/// the third time in this review I claimed monotonicity without testing the
+/// shape that breaks it. With a forbidden statement followed by a longer valid
+/// declaration it reads true (classify throws), then FALSE for prefixes ending
+/// partway through the next declaration (the parse throws first, a different
+/// message), then true again once that declaration completes. Binary search
+/// over true/false/true can discard the first match and anchor the diagnostic
+/// on later VALID code.
+///
+/// So a classifier rejection is deliberately left unlocated. That is the
+/// existing behavior for every diagnostic this lane cannot place, and it is
+/// the rule this function already states for its own failure: degraded, never
+/// wrong. Anchoring it needs the rejected statement's own offset rather than a
+/// search -- tracked with the rest of the contract-validation family in #2317.
+///
+/// `parse_contract_program` throws an UNLOCATED message, and
+/// `locate_type_error`'s heuristics key on message prefixes the contract
+/// grammar never produces ("unknown name: ", "function arity mismatch for ",
+/// ...). Without this the JSON and live-LSP forms render the synthetic 0:0
+/// range instead of pointing at the malformed declaration (#2314 review) --
+/// the reader is told a contract is broken and not told where.
+///
+/// Same shape as `header_prefix_throws` above, and for the same reason: ask
+/// the PARSER where it stopped rather than mirroring its grammar. Two earlier
+/// attempts in this file at recovering a position by reading the MESSAGE
+/// drifted from the grammar each time (#2253 rounds 3-4/6); a probe has no
+/// grammar mirror, so there is nothing to drift.
+///
+/// The search is used ONLY for a message that does not mention `eof`, because
+/// only there is the predicate monotone in k: the full parse stops at some
+/// token j with this message, every prefix longer than j stops at the same
+/// place with the same message, and every shorter prefix runs out of input
+/// first and throws an eof-flavoured message that does not match. Parsing is
+/// deterministic and left to right, so no shorter prefix can produce the same
+/// NON-eof message at an earlier position -- if it could, the full parse would
+/// have stopped there too. The smallest matching prefix is therefore exactly
+/// j + 1.
+///
+/// For an eof message that reasoning FAILS, and the first version of this
+/// claimed monotonicity without testing it (Codex review on #2315). Given
+///
+///     fn a(x: Int) -> Int
+///     fn b(x: Int) ->
+///
+/// the full stream throws `expected type but got eof` -- and so does the
+/// prefix that stops right after the FIRST `->`. A shorter prefix matches, so
+/// the search walks `hi` backwards and anchors on line 1 instead of line 2:
+/// a diagnostic pointing at correct code, which is the worst way to be wrong.
+///
+/// An eof message means the parser ran out of input, so its position is the
+/// END of the token stream by definition. Anchor it at the last real token --
+/// the declaration that ran out -- and no search is needed or sound.
+export fn contract_parse_error_offset(tokens: Array[Token], starts: Array[Int], msg: String) -> Int with Exception {
+  let n = Array::length(tokens)
+  if n <= 0 {
+    return 0 - 1
+  } else {
+    ()
+  }
+  if contract_msg_mentions_eof(msg) {
+    return last_real_token_offset(tokens, starts)
+  } else {
+    ()
+  }
+  // The full-length prefix reproduces `msg` by construction; confirm it anyway
+  // so a violated assumption answers BARE rather than wrong.
+  if !contract_prefix_throws(tokens, n, msg) {
+    return 0 - 1
+  } else {
+    ()
+  }
+  let mut lo = 0
+  let mut hi = n
+  while hi - lo > 1 {
+    let mid = (lo + hi) / 2
+    if contract_prefix_throws(tokens, mid, msg) {
+      hi = mid
+    } else {
+      lo = mid
+    }
+  }
+  // `hi` is the smallest throwing prefix length, so the offending token is at
+  // index hi - 1.
+  let idx = hi - 1
+  if idx >= 0 && idx < Array::length(starts) {
+    Array::get(starts, idx)
+  } else {
+    0 - 1
+  }
+}
+
+/// Collect (name, Some(sig) | None, exported) for every top-level let whose
+/// value is a function. A None signature means the def lacks the full
+/// annotations needed to compare against a contract (e.g. an unannotated
+/// lambda) — reported as a conformance error if the name is declared.
+export fn collect_impl_fn_defs(stmts: Array[Stmt]) -> Array[(String, Option[String], Bool)] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(exported, _, name, ty_opt, val) => match val {
+        EFn(tps, tbs, params, ret_opt, eff_opt, _) => {
+          let sig = match ret_opt {
+            Some(ret_ty) => fn_sig_text(tps, tbs, params, ret_ty, eff_opt),
+            None => None
+          }
+          Array::push(out, (name, sig, exported))
+        },
+        // #752: a non-fn top-level let is a VALUE def — contract surface when
+        // exported, fingerprinted as "val <type>" (matching the contract's
+        // bodyless `let name: Type` declarations). An unannotated value maps
+        // to None, so a declared name reports the standard
+        // "lacks the full annotations" conformance error.
+        _ => match ty_opt {
+          Some(vty) => Array::push(out, (name, Some(String::concat("val ", print_type_expr(vty))), exported)),
+          None => Array::push(out, (name, None, exported))
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Collect (name, exported) for every top-level type definition (struct /
+/// enum / type alias / suberror) — the shapes an `opaque type` declaration
+/// can be implemented by.
+/// #739/#2338: the third element is the implementation's canonical type
+/// parameter list, so conformance compares both outer arity and constructor
+/// kinds. Suberrors carry no type parameters in the AST. Structs DO
+/// (#829 gave SStruct a trailing tparams field, `struct S[T] { ... }`) —
+/// this used to be hardcoded to 0 for every struct, which forced every
+/// generic-struct package's contract to under-declare its arity as 0 (see
+/// e.g. the #841 packages' now-stale "arity 0" workaround NOTEs).
+export fn collect_impl_type_defs(stmts: Array[Stmt]) -> Array[(String, Bool, Array[String])] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SStruct(exported, name, _, _, _, tparams) => Array::push(out, (name, exported, tparams)),
+      SEnum(exported, name, tparams, _, _) => Array::push(out, (name, exported, tparams)),
+      STypeAlias(exported, name, tparams, _) => Array::push(out, (name, exported, tparams)),
+      SSuberror(exported, name, _) => Array::push(out, (name, exported, [])),
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+export fn same_type_param_kinds(left: Array[String], right: Array[String]) -> Bool {
+  if Array::length(left) != Array::length(right) {
+    false
+  } else {
+    let mut i = 0
+    let mut same = true
+    while i < Array::length(left) && same {
+      if type_param_arity(Array::get(left, i)) != type_param_arity(Array::get(right, i)) {
+        same = false
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    same
+  }
+}
+
+fn render_type_param(param: String) -> String {
+  let arity = type_param_arity(param)
+  if arity == 0 {
+    type_param_name(param)
+  } else {
+    let holes = array_empty()
+    let mut i = 0
+    while i < arity {
+      Array::push(holes, "_")
+      i = i + 1
+    }
+    "\{type_param_name(param)}[\{String::join(holes, ", ")}]"
+  }
+}
+
+export fn render_type_params(params: Array[String]) -> String {
+  let rendered = array_empty()
+  let mut i = 0
+  while i < Array::length(params) {
+    Array::push(rendered, render_type_param(Array::get(params, i)))
+    i = i + 1
+  }
+  "[\{String::join(rendered, ", ")}]"
+}
+
+/// Canonical kind-only rendering for API identity. Binder spellings are not
+/// observable: `F[_]` and `G[_]` occupy the same positional constructor slot.
+fn render_type_param_kinds(params: Array[String]) -> String {
+  let rendered = array_empty()
+  let mut i = 0
+  while i < Array::length(params) {
+    let arity = type_param_arity(Array::get(params, i))
+    if arity == 0 {
+      Array::push(rendered, "_")
+    } else {
+      let holes = array_empty()
+      let mut hi = 0
+      while hi < arity {
+        Array::push(holes, "_")
+        hi = hi + 1
+      }
+      Array::push(rendered, "_[\{String::join(holes, ", ")}]")
+    }
+    i = i + 1
+  }
+  "[\{String::join(rendered, ", ")}]"
+}
+
+/// #847: names an impl file brings into the package's export surface via
+/// `export ./other.vibe { name, other as alias }` rather than a direct
+/// SLet/SStruct/... definition — invisible to `collect_impl_fn_defs`/
+/// `collect_impl_type_defs`, which only match direct top-level defs. Resolved
+/// to the alias when present (the alias, not the source name, is what the
+/// contract surface actually sees).
+export fn collect_reexported_names(impl_stmts: Array[Stmt]) -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(impl_stmts) {
+    match Array::get(impl_stmts, i) {
+      SReExport(_, items) => {
+        let mut ii = 0
+        while ii < Array::length(items) {
+          let item = Array::get(items, ii)
+          let rname = item.name
+          let alias_opt = item.alias
+          let exported_name = match alias_opt {
+            Some(a) => a,
+            None => rname
+          }
+          Array::push(out, exported_name)
+          ii = ii + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Type-parameter kinds carried by a re-export whose source declaration is
+/// one of the implementation statements being checked. The public spelling
+/// is the alias when present, while the declaration lookup uses the source
+/// spelling from the re-export item.
+export fn collect_reexported_type_defs(impl_stmts: Array[Stmt], type_defs: Array[(String, Bool, Array[String])]) -> Array[(String, Array[String])] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(impl_stmts) {
+    match Array::get(impl_stmts, i) {
+      SReExport(_, items) => {
+        let mut ii = 0
+        while ii < Array::length(items) {
+          let item = Array::get(items, ii)
+          let exported_name = match item.alias {
+            Some(alias) => alias,
+            None => item.name
+          }
+          if exported_name == item.name {
+            ()
+          } else {
+            let mut ti = 0
+            while ti < Array::length(type_defs) {
+              let (type_name, _, params) = Array::get(type_defs, ti)
+              if type_name == item.name {
+                Array::push(out, (exported_name, params))
+              } else {
+                ()
+              }
+              ti = ti + 1
+            }
+          }
+          ii = ii + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+export fn array_contains_string(xs: Array[String], target: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(xs) {
+    if Array::get(xs, i) == target {
+      found = true
+    } else ()
+    i = i + 1
+  }
+  found
+}
+
+/// ADR-0071 (#755) step 5: signature-matching effectset awareness. decls'
+/// and defs' signature strings (fn_sig_text, above) render a fn's effect
+/// row VERBATIM as parsed -- a contract spelled with an effectset alias
+/// (`with AskAll`) and an implementation spelled with the literal
+/// operations it expands to (`with Ask::Get`) are semantically
+/// identical but compare unequal as raw strings, producing a false
+/// "signature mismatch". Local to this file (no new cross-file reference --
+/// see docs/internal/design/effectset.md's bootstrap gotcha) since it needs its own
+/// ES table built from the CONTRACT's own type_defs (the sole source of
+/// truth for effect/effectset definitions; implementation files use but
+/// never redefine them, same discipline as SEffectDef).
+fn ctr_es_index_of(names: Array[String], name: String) -> Int {
+  let mut i = 0
+  let mut found = -1
+  while i < Array::length(names) {
+    if Array::get(names, i) == name {
+      found = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn ctr_es_contains(arr: Array[String], v: String) -> Bool {
+  ctr_es_index_of(arr, v) >= 0
+}
+
+export fn ctr_es_collect_tables(stmts: Array[Stmt]) -> (Array[String], Array[Array[String]]) {
+  let es_names = array_empty()
+  let es_members_list = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SEffectSet(_, esname, esmembers) => {
+        Array::push(es_names, esname)
+        Array::push(es_members_list, esmembers)
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  (es_names, es_members_list)
+}
+
+/// Same cycle-safe DFS technique as checker_stmt.vibe's es_detect_cycle /
+/// es_expand_into -- a cyclic effectset is rejected by the checker
+/// separately (checker_stmt.vibe), but this pass runs independently at
+/// load/conformance time and must not hang even on a source that hasn't
+/// been through that check yet.
+fn ctr_es_expand_into(es_names: Array[String], es_members_list: Array[Array[String]], name: String, path: Array[String], out: Array[String]) -> Unit {
+  if ctr_es_contains(path, name) {
+    ()
+  } else {
+    let idx = ctr_es_index_of(es_names, name)
+    if idx < 0 {
+      if ctr_es_contains(out, name) {
+        ()
+      } else {
+        Array::push(out, name)
+      }
+    } else {
+      Array::push(path, name)
+      let members = Array::get(es_members_list, idx)
+      let mut mi = 0
+      while mi < Array::length(members) {
+        ctr_es_expand_into(es_names, es_members_list, Array::get(members, mi), path, out)
+        mi = mi + 1
+      }
+      Array::truncate(path, Array::length(path) - 1)
+    }
+  }
+}
+
+fn ctr_es_join_comma(names: Array[String]) -> String {
+  let mut result = ""
+  let mut i = 0
+  while i < Array::length(names) {
+    if i == 0 {
+      result = Array::get(names, i)
+    } else {
+      result = String::concat(result, String::concat(", ", Array::get(names, i)))
+    }
+    i = i + 1
+  }
+  result
+}
+
+export fn ctr_es_expand_row_string(row: String, es_names: Array[String], es_members_list: Array[Array[String]]) -> String {
+  let raw = String::split(row, ", ")
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(raw) {
+    let expanded = array_empty()
+    ctr_es_expand_into(es_names, es_members_list, Array::get(raw, i), array_empty(), expanded)
+    let mut j = 0
+    while j < Array::length(expanded) {
+      let e = Array::get(expanded, j)
+      if ctr_es_contains(out, e) {
+        ()
+      } else {
+        Array::push(out, e)
+      }
+      j = j + 1
+    }
+    i = i + 1
+  }
+  ctr_es_join_comma(out)
+}
+
+// ADR-0063 §5 (#730): content addressing. Two hashes identify a package:
+//
+// - contract_hash — the API surface only (fn signatures, opaque names,
+//   transparent type definitions), independent of implementation text.
+//   The API-compatibility signal and the dependents' recheck cache key.
+// - package_hash — the merkle over the package's normalized (path, source)
+//   pairs. Paths must be PACKAGE-RELATIVE (the contract as "index.vibei",
+//   impls by their raw import spelling) so the hash is location-independent.
+//   Since require/import lines are part of the hashed file contents, pinning
+//   a package hash transitively fixes its dependency choices.
+//
+// Format: `ct:b3:<64hex>` / `pkg:b3:<64hex>` on new writes (ADR-0093).
+// A `sha1` identity still verifies against SHA-1 of the same payload.
+
+/// Normalized lexical comparison behind typed String parameters. The helper
+/// boundary is required for Array::get-sourced operands (#1184).
+fn contract_str_compare(a: String, b: String) -> Int {
+  if a < b {
+    -1
+  } else if a > b {
+    1
+  } else {
+    0
+  }
+}
+
+fn sorted_strings(items: Array[String]) -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(items) {
+    Array::push(out, Array::get(items, i))
+    i = i + 1
+  }
+  let n = Array::length(out)
+  let mut a = 0
+  while a < n {
+    let mut b = a + 1
+    let mut min_i = a
+    while b < n {
+      let x = Array::get(out, b)
+      let y = Array::get(out, min_i)
+      if contract_str_compare(x, y) < 0 {
+        min_i = b
+      } else ()
+      b = b + 1
+    }
+    if min_i != a {
+      let tmp = Array::get(out, a)
+      Array::set(out, a, Array::get(out, min_i))
+      Array::set(out, min_i, tmp)
+    } else ()
+    a = a + 1
+  }
+  out
+}
+
+fn contract_hash_payload(fn_decls: Array[(String, String)], opaque_names: Array[(String, Array[String])], type_defs: Array[Stmt]) -> String {
+  let canon = String::join(sorted_strings(contract_surface_lines(fn_decls, opaque_names, type_defs)), "\n")
+  String::concat("vibei:v1\n", canon)
+}
+
+export fn contract_hash(fn_decls: Array[(String, String)], opaque_names: Array[(String, Array[String])], type_defs: Array[Stmt]) -> String {
+  emit_content_id("ct", contract_hash_payload(fn_decls, opaque_names, type_defs))
+}
+
+export fn contract_hash_with(algo: String, fn_decls: Array[(String, String)], opaque_names: Array[(String, Array[String])], type_defs: Array[Stmt]) -> String {
+  emit_content_id_with("ct", algo, contract_hash_payload(fn_decls, opaque_names, type_defs))
+}
+
+fn package_merkle_payload(sources: Array[(String, String)]) -> String {
+  let keys = array_empty()
+  let mut i = 0
+  while i < Array::length(sources) {
+    let (path, _) = Array::get(sources, i)
+    Array::push(keys, path)
+    i = i + 1
+  }
+  let ordered = sorted_strings(keys)
+  let sb = StringBuilder::new()
+  StringBuilder::push(sb, "vibe-pkg:v1\n")
+  let mut ki = 0
+  while ki < Array::length(ordered) {
+    let key = Array::get(ordered, ki)
+    let mut si = 0
+    while si < Array::length(sources) {
+      let (path, text) = Array::get(sources, si)
+      if path == key {
+        StringBuilder::push(sb, "file \{path} \{String::length(text)}\n")
+        StringBuilder::push(sb, text)
+        StringBuilder::push(sb, "\n")
+        si = Array::length(sources)
+      } else {
+        si = si + 1
+      }
+    }
+    ki = ki + 1
+  }
+  StringBuilder::freeze(sb)
+}
+
+export fn package_hash_from_sources(sources: Array[(String, String)]) -> String {
+  package_hash_from_sources_with("b3", sources)
+}
+
+export fn package_hash_from_sources_with(algo: String, sources: Array[(String, String)]) -> String {
+  emit_content_id_with("pkg", algo, package_merkle_payload(sources))
+}
+
+export fn package_id_matches(id: String, sources: Array[(String, String)]) -> Bool {
+  content_id_matches(id, package_merkle_payload(sources))
+}
+
+// ADR-0063 §6 (#730 D-2): `require` pin lines. A directive, not statement
+// grammar: `require @scope/name 1.2.3 = #pkg:b3:<64hex>` (legacy
+// `#pkg:sha1:<40hex>` still parses) lines sit at the
+// top of a file (blank lines / line comments may precede). The loader
+// extracts them BEFORE parsing and blanks them to spaces, so byte offsets —
+// and therefore diagnostics — are preserved (same philosophy as #cfg's
+// tail-append). semver is strict: bare x.y.z or ^x.y.z, full triple only.
+// The constraint is edit-time tooling metadata; the build consumes only the
+// hash. The unpinned 3-field form is accepted at parse so `vibe fmt` can
+// complete it offline from the workspace store (D-3, fill_require_pins_lenient
+// in loader/loader.vibe); the BUILD still refuses to resolve an unpinned
+// package (hash-only, resolver-free).
+//
+// #1128: the leading directive region additionally carries the package
+// HEADER itself (`index.vpkg` only, though nothing here special-cases the
+// file extension -- any file's leading region may carry these same
+// directives, exactly as `version` always could):
+//
+//   name = @scope/pkg
+//   version = x.y.z
+//   main = true            (optional; parsed only, no compiler behavior
+//                            yet -- reserved, #1128)
+//   description =
+//     #|line one
+//     #|line two
+//   deps = {
+//     @scope/pkg2 : x.y.z
+//   }
+//   generated_hash = <#pkg:b3:<64hex> or empty until computed>
+//
+// `version = x.y.z` (with `=`) is the PREFERRED spelling going forward, but
+// the old bare `version x.y.z` (ADR-0065/#754) is still accepted, NOT an
+// error -- see the `version` branch below for why (short version: the
+// bootstrap seed that builds the compiler itself only understands the old
+// spelling, and `lib/@vibe/compiler/**` plus its direct dependency closure
+// stay on it until a dedicated bootstrap-bump migrates them). Every OTHER
+// package in the repo has been migrated to the new header (name/version=/
+// description/deps/generated_hash). None of the header fields (including
+// `name`/`version`/`description`, "required" per the #1128 convention) are
+// hard-enforced by this scanner or by the loader -- doing so would also
+// reject the handful of `fixtures/contract_*` test packages that
+// deliberately carry a minimal or absent header to exercise the
+// conformance engine in isolation. This scanner accepts a header with any
+// subset of fields present (including none at all), since it also runs
+// over plain consumer files that carry only `require` lines.
+// `description`'s `#|` continuation lines reuse the language's own `#|`
+// multi-line string alignment rule (#854): every continuation line's `#|`
+// must sit at the same column as the block's first, or it's a located
+// error. `deps` declares this package's OWN external version constraints
+// -- `import @scope/pkg { names }` elsewhere remains pure name resolution
+// (never carries a version); `deps` is the single authoritative place a
+// package states what it needs and at what version, deliberately separate
+// from name resolution so the two can't silently drift into two competing
+// sources of truth. Cross-checking `deps` against a package's actual
+// `import` statements (catching an undeclared external dependency) is
+// deliberately NOT wired into the live loader here -- see
+// `deps_missing_for_imports` below, a standalone checker a future gate can
+// call once the shape has been exercised in practice. `generated_hash` is
+// the package's own content hash (same `#pkg:b3:<64hex>` shape a
+// `require` pin already uses; `#pkg:sha1:<40hex>` still parses) -- left empty until a publish step computes
+// and writes it back; this pass only parses it.
+
+/// `@scope/name` or a nested `@scope/name/sub/...` (e.g. `@vibe/wasi/p3`,
+/// `@vibe/compiler/runtime`) -- at least two `/`-separated segments, not
+/// exactly two, and every segment (including the `@scope` head) non-empty:
+/// rejects `@/pkg`, `@scope/`, `@scope//pkg`.
+fn is_package_name(n: String) -> Bool {
+  if !String::starts_with(n, "@") {
+    false
+  } else {
+    let segs = String::split(n, "/")
+    if Array::length(segs) < 2 || String::length(Array::get(segs, 0)) <= 1 {
+      false
+    } else {
+      let mut i = 1
+      let mut ok = true
+      while i < Array::length(segs) {
+        if String::length(Array::get(segs, i)) == 0 {
+          ok = false
+        }
+        i = i + 1
+      }
+      ok
+    }
+  }
+}
+
+/// N spaces, same length as `s` -- used to blank a directive line to spaces
+/// while preserving byte length (so downstream offsets never shift).
+fn blank_of(s: String) -> String {
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < String::length(s) {
+    StringBuilder::push(sb, " ")
+    i = i + 1
+  }
+  StringBuilder::freeze(sb)
+}
+
+/// Parses one `@scope/pkg : x.y.z` deps entry (already trimmed).
+fn parse_deps_entry(trimmed: String) -> (String, String) with Exception {
+  let parts = String::split(trimmed, ":")
+  if Array::length(parts) != 2 {
+    throw("malformed deps entry (expected: @scope/pkg : x.y.z): \{trimmed}")
+  } else ()
+  let dname = String::trim(Array::get(parts, 0))
+  let dver = String::trim(Array::get(parts, 1))
+  if !is_package_name(dname) {
+    throw("deps package name must be @scope/name: \{trimmed}")
+  } else ()
+  if !is_strict_semver(dver) {
+    throw("deps version must be a strict semver triple (x.y.z): \{trimmed}")
+  } else ()
+  (dname, dver)
+}
+
+/// Consume `description =`'s `#|` continuation lines starting at `start`
+/// (just past the `description =` line's own newline). Returns (joined
+/// description text, position just past the last consumed line, the
+/// blanked+newline-preserving text for those consumed lines). Stops at the
+/// first line that is not a `#|` line at the established column -- that
+/// line is NOT consumed here (the outer scanner sees it fresh).
+fn consume_description_block(source: String, len: Int, start: Int) -> (String, Int, String) with Exception {
+  let parts = array_empty()
+  let sb = StringBuilder::new()
+  let mut pos = start
+  let mut col = -1
+  let mut cont = true
+  while cont && pos < len {
+    let mut nl = pos
+    while nl < len && String::char_code_at(source, nl) != 10 {
+      nl = nl + 1
+    }
+    let dline = String::substring(source, pos, nl)
+    let mut j = 0
+    while j < String::length(dline) && (String::char_code_at(dline, j) == ' ' || String::char_code_at(dline, j) == '\t') {
+      j = j + 1
+    }
+    let is_bar = j + 1 < String::length(dline) && String::char_code_at(dline, j) == '#' && String::char_code_at(dline, j + 1) == '|'
+    if is_bar {
+      if col < 0 {
+        col = j
+      } else if j != col {
+        throw("description #| continuation must be indented to column \{__to_string(col + 1)}: \{dline}")
+      } else ()
+      Array::push(parts, String::substring(dline, j + 2, String::length(dline)))
+      StringBuilder::push(sb, blank_of(dline))
+      if nl < len {
+        StringBuilder::push(sb, "\n")
+      } else ()
+      pos = nl + 1
+    } else {
+      cont = false
+    }
+  }
+  (String::join(parts, "\n"), pos, StringBuilder::freeze(sb))
+}
+
+/// Consume a `deps = {` block starting at `start` (just past that line's own
+/// newline), through and including the line that is exactly `}`. Returns
+/// (entries, position just past the closing `}` line, blanked text).
+fn consume_deps_block(source: String, len: Int, start: Int) -> (Array[(String, String)], Int, String) with Exception {
+  let entries = array_empty()
+  let sb = StringBuilder::new()
+  let mut pos = start
+  let mut closed = false
+  while !closed && pos < len {
+    let mut nl = pos
+    while nl < len && String::char_code_at(source, nl) != 10 {
+      nl = nl + 1
+    }
+    let dline = String::substring(source, pos, nl)
+    let dtrimmed = String::trim(dline)
+    if dtrimmed == "}" {
+      StringBuilder::push(sb, blank_of(dline))
+      closed = true
+    } else if String::length(dtrimmed) == 0 {
+      StringBuilder::push(sb, dline)
+    } else {
+      let (dname, dver) = parse_deps_entry(dtrimmed)
+      Array::push(entries, (dname, dver))
+      StringBuilder::push(sb, blank_of(dline))
+    }
+    if nl < len {
+      StringBuilder::push(sb, "\n")
+    } else ()
+    pos = nl + 1
+  }
+  if !closed {
+    throw("unterminated deps block (missing closing '}')")
+  } else ()
+  (entries, pos, StringBuilder::freeze(sb))
+}
+
+fn is_digit_run(s: String, from: Int, to: Int) -> Bool {
+  if to <= from {
+    false
+  } else {
+    let mut i = from
+    let mut ok = true
+    while i < to {
+      let c = String::char_code_at(s, i)
+      if c < '0' || c > '9' {
+        ok = false
+        i = to
+      } else {
+        i = i + 1
+      }
+    }
+    ok
+  }
+}
+
+export fn is_strict_semver(v: String) -> Bool {
+  let start = if String::starts_with(v, "^") {
+    1
+  } else 0
+  let body = String::substring(v, start, String::length(v))
+  let parts = String::split(body, ".")
+  if Array::length(parts) != 3 {
+    false
+  } else {
+    let a = Array::get(parts, 0)
+    let b = Array::get(parts, 1)
+    let c = Array::get(parts, 2)
+    is_digit_run(a, 0, String::length(a)) && is_digit_run(b, 0, String::length(b)) && is_digit_run(c, 0, String::length(c))
+  }
+}
+
+/// #2676: the `from <source-spec>` clause of a require line names where
+/// `vibe add` fetched the package: `github:owner/repo[/dir]@<commit>` or
+/// `git:<url>@<commit>[#<dir>]`. Only the shape is checked here (the
+/// launcher resolves and fetches it); a spec without a `@` has no ref and is
+/// refused, so a pin can never point at "whatever the branch is today".
+export fn is_require_source_spec(s: String) -> Bool {
+  let rest = if String::starts_with(s, "github:") {
+    String::substring(s, 7, String::length(s))
+  } else if String::starts_with(s, "git:") {
+    String::substring(s, 4, String::length(s))
+  } else {
+    ""
+  }
+  String::length(rest) > 0 && String::index_of(rest, "@") > 0
+}
+
+/// Whether the split fields of a require line end in a `from <spec>` clause
+/// (`require @n v from s` or `require @n v = #pin from s`).
+fn require_fields_have_source(fields: Array[String]) -> Bool {
+  let n = Array::length(fields)
+  (n == 5 && Array::get(fields, 3) == "from") || (n == 7 && Array::get(fields, 5) == "from")
+}
+
+/// #2676: the ` from <source-spec>` tail of a require line, "" when it has
+/// none. The fill-pins lane rewrites a require line to add or replace its
+/// pin and re-attaches this, so a source recorded by `vibe add` survives
+/// `vibe fmt` and `VIBE_FILL_PINS`.
+export fn require_line_source_clause(line: String) -> String {
+  let fields = split_fields(line)
+  if require_fields_have_source(fields) {
+    String::concat(" from ", Array::get(fields, Array::length(fields) - 1))
+  } else {
+    ""
+  }
+}
+
+fn split_fields(line: String) -> Array[String] {
+  let raw = String::split(String::trim(line), " ")
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(raw) {
+    let f = Array::get(raw, i)
+    if String::length(f) > 0 {
+      Array::push(out, f)
+    } else ()
+    i = i + 1
+  }
+  out
+}
+
+/// Returns ((name, constraint, pin) triples, source with require lines
+/// blanked to spaces). Only the leading directive region is scanned; a
+/// `require` line after the first ordinary statement is a parse error
+/// downstream (it never parses as a statement), which is intended.
+/// #754 (ADR-0065): the leading region may also carry ONE `version x.y.z`
+/// directive — the PACKAGE-side version declaration. It is validated and
+/// blanked here (so every parse lane tolerates it) and read back with
+/// extract_package_version below. The raw line stays in the file text, so it
+/// is part of the package hash by construction: a version change is a new
+/// artifact, and version->hash immutability is checkable.
+fn scan_package_header(source: String) -> (Array[(String, String, String)], String, String, Bool, String, Array[(String, String)], String, String) with Exception {
+  let pins = array_empty()
+  let deps = array_empty()
+  let sb = StringBuilder::new()
+  let len = String::length(source)
+  let mut pos = 0
+  let mut scanning = true
+  let mut name = ""
+  let mut version = ""
+  let mut main = false
+  let mut description = ""
+  let mut generated_hash = ""
+  let mut seen_name = false
+  let mut seen_version = false
+  let mut seen_main = false
+  let mut seen_description = false
+  let mut seen_deps = false
+  let mut seen_hash = false
+  // #2386: whether any directive line was blanked. Once the header ends the
+  // rest of the file is verbatim, so a source whose header blanked nothing
+  // IS its own blanked text, and one that did gets its tail in one piece --
+  // the line-by-line copy of every source (one substring and one push per
+  // line, per call, and this is called per file from a dozen sites) was
+  // 0.1 s and the copies of every compiler source on a warm compile.
+  let mut blanked_any = false
+  while pos < len {
+    let mut nl = pos
+    while nl < len && String::char_code_at(source, nl) != 10 {
+      nl = nl + 1
+    }
+    let line = String::substring(source, pos, nl)
+    let trimmed = String::trim(line)
+    let mut next_pos = nl + 1
+    if !scanning {
+      StringBuilder::push(sb, line)
+    } else if String::starts_with(trimmed, "version =") {
+      if seen_version {
+        throw("duplicate version directive: \{trimmed}")
+      } else ()
+      let v = String::trim(String::substring(trimmed, 9, String::length(trimmed)))
+      if String::starts_with(v, "^") || !is_strict_semver(v) {
+        throw("version directive must be an exact semver triple (x.y.z): \{trimmed}")
+      } else ()
+      version = v
+      seen_version = true
+      StringBuilder::push(sb, blank_of(line))
+      blanked_any = true
+    } else if String::starts_with(trimmed, "version ") {
+      // Legacy bare `version x.y.z` (ADR-0065/#754), pre-#1128. Still
+      // accepted, NOT an error: the compiler's own `lib/@vibe/compiler/**`
+      // packages (plus their direct dependency closure -- @vibe/ast,
+      // @vibe/cache, @vibe/core, @vibe/json, @vibe/module,
+      // @vibe/parser, @vibe/builtin) are read by the bootstrap seed while
+      // building the compiler itself (scripts/generate_bundle.sh's
+      // merge-flatten step); the frozen seed predates #1128 and understands
+      // only this spelling. Migrating those packages to `version = x.y.z`
+      // (or any other new #1128 directive) requires a dedicated
+      // bootstrap-bump cycle first (docs/internal/operations/bootstrap.md) -- out of scope here.
+      // New/non-bootstrap packages should prefer `version = x.y.z`.
+      let vfields = split_fields(trimmed)
+      if Array::length(vfields) != 2 {
+        throw("malformed version directive (expected: version x.y.z): \{trimmed}")
+      } else ()
+      let v = Array::get(vfields, 1)
+      if String::starts_with(v, "^") || !is_strict_semver(v) {
+        throw("version directive must be an exact semver triple (x.y.z): \{trimmed}")
+      } else ()
+      if seen_version {
+        throw("duplicate version directive: \{trimmed}")
+      } else ()
+      version = v
+      seen_version = true
+      StringBuilder::push(sb, blank_of(line))
+      blanked_any = true
+    } else if String::starts_with(trimmed, "name =") {
+      if seen_name {
+        throw("duplicate name directive: \{trimmed}")
+      } else ()
+      let n = String::trim(String::substring(trimmed, 6, String::length(trimmed)))
+      if !is_package_name(n) {
+        throw("name directive must be @scope/name: \{trimmed}")
+      } else ()
+      name = n
+      seen_name = true
+      StringBuilder::push(sb, blank_of(line))
+      blanked_any = true
+    } else if String::starts_with(trimmed, "main =") {
+      if seen_main {
+        throw("duplicate main directive: \{trimmed}")
+      } else ()
+      let m = String::trim(String::substring(trimmed, 6, String::length(trimmed)))
+      if m == "true" {
+        main = true
+      } else if m == "false" {
+        main = false
+      } else {
+        throw("main directive must be true or false: \{trimmed}")
+      }
+      seen_main = true
+      StringBuilder::push(sb, blank_of(line))
+      blanked_any = true
+    } else if String::starts_with(trimmed, "generated_hash =") {
+      if seen_hash {
+        throw("duplicate generated_hash directive: \{trimmed}")
+      } else ()
+      let gh = String::trim(String::substring(trimmed, 17, String::length(trimmed)))
+      if (String::length(gh) > 0) && !is_package_pin(gh) {
+        throw("generated_hash must be empty or #pkg:sha1:<40hex> or #pkg:b3:<64hex>: \{trimmed}")
+      } else ()
+      generated_hash = gh
+      seen_hash = true
+      StringBuilder::push(sb, blank_of(line))
+      blanked_any = true
+    } else if trimmed == "description =" {
+      if seen_description {
+        throw("duplicate description directive: \{trimmed}")
+      } else ()
+      StringBuilder::push(sb, blank_of(line))
+      blanked_any = true
+      let (dtext, dpos, dblanked) = consume_description_block(source, len, nl + 1)
+      description = dtext
+      seen_description = true
+      StringBuilder::push(sb, dblanked)
+      next_pos = dpos
+    } else if trimmed == "deps = {}" {
+      if seen_deps {
+        throw("duplicate deps directive: \{trimmed}")
+      } else ()
+      seen_deps = true
+      StringBuilder::push(sb, blank_of(line))
+      blanked_any = true
+    } else if trimmed == "deps = {" {
+      if seen_deps {
+        throw("duplicate deps directive: \{trimmed}")
+      } else ()
+      StringBuilder::push(sb, blank_of(line))
+      blanked_any = true
+      let (dentries, dpos, dblanked) = consume_deps_block(source, len, nl + 1)
+      deps_extend(deps, dentries)
+      seen_deps = true
+      StringBuilder::push(sb, dblanked)
+      next_pos = dpos
+    } else if String::starts_with(trimmed, "require ") {
+      let fields = split_fields(trimmed)
+      let nfields = Array::length(fields)
+      // Four shapes (#2676 added the `from` clause, which records where
+      // `vibe add` fetched the package from so `vibe fetch` can restore the
+      // store on a fresh clone; the source is commit-pinned):
+      //   require @scope/name x.y.z
+      //   require @scope/name x.y.z = #pkg:b3:<64hex>
+      //   require @scope/name x.y.z from <source-spec>
+      //   require @scope/name x.y.z = #pkg:b3:<64hex> from <source-spec>
+      let has_from = require_fields_have_source(fields)
+      let has_pin = nfields == 7 || (nfields == 5 && !has_from)
+      if nfields != 3 && nfields != 5 && nfields != 7 {
+        throw("malformed require line (expected: require @scope/name x.y.z [= #pkg:sha1:<40hex>|#pkg:b3:<64hex>] [from <source-spec>]): \{trimmed}")
+      } else ()
+      if nfields == 7 && !has_from {
+        throw("malformed require line (expected: require @scope/name x.y.z = #pkg:sha1:<40hex>|#pkg:b3:<64hex> from <source-spec>): \{trimmed}")
+      } else ()
+      let rname = Array::get(fields, 1)
+      let rver = Array::get(fields, 2)
+      if !String::starts_with(rname, "@") {
+        throw("require package name must start with '@': \{rname}")
+      } else ()
+      if !is_strict_semver(rver) {
+        throw("require version must be a strict semver triple (x.y.z or ^x.y.z): \{rver}")
+      } else ()
+      // Unpinned form: accepted at parse so `vibe fmt` can fill the pin
+      // offline from the store (D-3); the BUILD still refuses to resolve an
+      // unpinned package (hash-only, resolver-free).
+      let pin_hash = if has_pin {
+        let eq = Array::get(fields, 3)
+        let pin = Array::get(fields, 4)
+        if eq == "=" {
+          ()
+        } else {
+          throw("malformed require line (missing '='): \{trimmed}")
+        }
+        if !is_package_pin(pin) {
+          throw("require pin must be #pkg:sha1:<40hex> or #pkg:b3:<64hex> (compute with `vibe hash`): \{pin}")
+        } else ()
+        String::substring(pin, 1, String::length(pin))
+      } else {
+        ""
+      }
+      if has_from {
+        let spec = Array::get(fields, nfields - 1)
+        if !is_require_source_spec(spec) {
+          throw("require source must be github:owner/repo[/dir]@<commit> or git:<url>@<commit>[#<dir>] (written by `vibe add`): \{spec}")
+        } else ()
+      } else ()
+      Array::push(pins, (rname, rver, pin_hash))
+      StringBuilder::push(sb, blank_of(line))
+      blanked_any = true
+    } else if String::length(trimmed) == 0 || String::starts_with(trimmed, "//") {
+      StringBuilder::push(sb, line)
+    } else {
+      scanning = false
+      if !blanked_any {
+        // Nothing to blank: every line so far went in verbatim, and so does
+        // everything from here.
+        return (pins, name, version, main, description, deps, generated_hash, source)
+      } else {
+        ()
+      }
+      // The verbatim tail, newlines included, in one piece.
+      StringBuilder::push(sb, String::substring(source, pos, len))
+      next_pos = len
+    }
+    if scanning && nl < len {
+      StringBuilder::push(sb, "\n")
+    } else ()
+    pos = next_pos
+  }
+  (pins, name, version, main, description, deps, generated_hash, StringBuilder::freeze(sb))
+}
+
+fn deps_extend(deps: Array[(String, String)], more: Array[(String, String)]) -> Unit {
+  let mut i = 0
+  while i < Array::length(more) {
+    Array::push(deps, Array::get(more, i))
+    i = i + 1
+  }
+}
+
+/// ADR-0063 §6 (#730 D-2) / #1128: (name, constraint, pin) triples for every
+/// `require` line, plus the source with EVERY recognized leading directive
+/// (require, version, name, main, description, deps, generated_hash) blanked
+/// to spaces (byte length preserved, so downstream offsets never shift).
+export fn extract_require_pins(source: String) -> (Array[(String, String, String)], String) with Exception {
+  let (pins, _name, _version, _main, _description, _deps, _hash, blanked) = scan_package_header(source)
+  (pins, blanked)
+}
+
+/// #754/#1128: read the `version = x.y.z` directive ("" when absent).
+export fn extract_package_version(source: String) -> String with Exception {
+  let (_pins, _name, version, _main, _description, _deps, _hash, _blanked) = scan_package_header(source)
+  version
+}
+
+/// #1128: read the `name = @scope/pkg` directive ("" when absent).
+export fn extract_package_name(source: String) -> String with Exception {
+  let (_pins, name, _version, _main, _description, _deps, _hash, _blanked) = scan_package_header(source)
+  name
+}
+
+/// #1128: read the `main = true|false` directive (false when absent —
+/// parsed only, no compiler behavior attached yet; see the header-scanner
+/// doc comment above).
+export fn extract_package_main(source: String) -> Bool with Exception {
+  let (_pins, _name, _version, main, _description, _deps, _hash, _blanked) = scan_package_header(source)
+  main
+}
+
+/// #1128: read the `description = \n  #|...` block, joined with "\n"
+/// ("" when absent).
+export fn extract_package_description(source: String) -> String with Exception {
+  let (_pins, _name, _version, _main, description, _deps, _hash, _blanked) = scan_package_header(source)
+  description
+}
+
+/// #1128: read the `deps = { @scope/pkg : x.y.z ... }` block (empty array
+/// when absent).
+export fn extract_package_deps(source: String) -> Array[(String, String)] with Exception {
+  let (_pins, _name, _version, _main, _description, deps, _hash, _blanked) = scan_package_header(source)
+  deps
+}
+
+/// #1128: read the `generated_hash = ...` directive ("" when absent or not
+/// yet computed).
+export fn extract_package_generated_hash(source: String) -> String with Exception {
+  let (_pins, _name, _version, _main, _description, _deps, hash, _blanked) = scan_package_header(source)
+  hash
+}
+
+/// #1145 follow-up 3: true when `source`'s leading directive region has a
+/// `generated_hash = ` line at all (only #1128-migrated files do). Plain
+/// existence check, never throws -- lets a caller decide whether to touch
+/// the directive without first committing to `replace_generated_hash_directive`'s
+/// throw-if-absent contract.
+fn has_generated_hash_directive(source: String) -> Bool {
+  let lines = String::split(source, "\n")
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(lines) && !found {
+    if String::starts_with(String::trim(Array::get(lines, i)), "generated_hash =") {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// #1145 follow-up 3: blanks `source`'s `generated_hash = ` directive to
+/// empty when present, unchanged otherwise. `generated_hash` stores this
+/// package's own content hash -- feeding a stale value into the very
+/// content being hashed would make the hash depend on hash-writing history
+/// instead of on the file, so `contract_package_hashes_fs` runs every
+/// `.vpkg` file through this before hashing (a no-op for the common case
+/// where the directive is already empty, so `vibe hash`'s output for every
+/// package migrated to #1128 with an unwritten hash is unaffected).
+export fn canonicalize_for_hash(source: String) -> String with Exception {
+  if has_generated_hash_directive(source) {
+    replace_generated_hash_directive(source, "")
+  } else {
+    source
+  }
+}
+
+/// #1145 follow-up 3: rewrites the `generated_hash = ` directive line to
+/// `new_value` verbatim (no `#pkg:sha1:` validation here -- callers pass
+/// either "" to canonicalize before hashing, or an already-computed pin).
+/// Requires exactly one such line; `scan_package_header` already rejects a
+/// file with more than one, and a file that predates the #1128 migration
+/// (no `generated_hash = ` line at all) is rejected rather than silently
+/// inserting one -- deciding WHERE to insert a missing directive is a
+/// migration decision, not this tool's job.
+export fn replace_generated_hash_directive(source: String, new_value: String) -> String with Exception {
+  let lines = String::split(source, "\n")
+  let out = array_empty()
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(lines) {
+    let line = Array::get(lines, i)
+    if (!found) && String::starts_with(String::trim(line), "generated_hash =") {
+      found = true
+      let replacement = if String::length(new_value) == 0 {
+        "generated_hash ="
+      } else {
+        "generated_hash = \{new_value}"
+      }
+      Array::push(out, replacement)
+    } else {
+      Array::push(out, line)
+    }
+    i = i + 1
+  }
+  if !found {
+    throw("no generated_hash directive found (this tool only rewrites #1128-migrated index.vpkg files)")
+  } else ()
+  String::join(out, "\n")
+}
+
+/// #1128: every external (`@scope/pkg`) name referenced by a NON-relative
+/// `import` statement across `impl_sources`, that has no matching entry in
+/// `deps`. A standalone checker, deliberately NOT wired into the live
+/// loader path yet (see the header-scanner doc comment above) — exercise it
+/// against the real package graph first, then decide where it gates.
+/// `impl_sources` should be the package's own sibling implementation files
+/// (not `deps`' OWN transitive dependencies — only this package's direct,
+/// textually-visible imports matter here).
+export fn deps_missing_for_imports(deps: Array[(String, String)], impl_sources: Array[String]) -> Array[String] {
+  let missing = array_empty()
+  let mut si = 0
+  while si < Array::length(impl_sources) {
+    let src = Array::get(impl_sources, si)
+    let len = String::length(src)
+    let mut pos = 0
+    while pos < len {
+      let mut nl = pos
+      while nl < len && String::char_code_at(src, nl) != 10 {
+        nl = nl + 1
+      }
+      let trimmed = String::trim(String::substring(src, pos, nl))
+      if String::starts_with(trimmed, "import @") {
+        let after = String::substring(trimmed, 7, String::length(trimmed))
+        let mut ei = 0
+        while ei < String::length(after) && String::char_code_at(after, ei) != ' ' {
+          ei = ei + 1
+        }
+        let pkg = String::substring(after, 0, ei)
+        let mut found = false
+        let mut di = 0
+        while di < Array::length(deps) {
+          let (dname, _dver) = Array::get(deps, di)
+          if dname == pkg {
+            found = true
+          } else ()
+          di = di + 1
+        }
+        if !found && !str_in(missing, pkg) {
+          Array::push(missing, pkg)
+        } else ()
+      } else ()
+      pos = nl + 1
+    }
+    si = si + 1
+  }
+  missing
+}
+
+// ADR-0063 §8 (#732 Phase F): Elm-style machine-verified semver. The
+// version bump a release CLAIMS must match what its contract diff REQUIRES:
+//   patch — the API surface is unchanged (same fn decls, opaques, types)
+//   minor — additions only (every old declaration survives verbatim)
+//   major — anything else
+// "semver is trusted" becomes a checkable property instead of a hope.
+
+fn str_in(arr: Array[String], target: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(arr) && !found {
+    if Array::get(arr, i) == target {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// Canonical per-declaration lines for a contract surface (shared by
+/// contract_hash and the change classifier, so they can never disagree).
+export fn contract_surface_lines(fn_decls: Array[(String, String)], opaque_names: Array[(String, Array[String])], type_defs: Array[Stmt]) -> Array[String] {
+  let lines = array_empty()
+  let mut i = 0
+  while i < Array::length(fn_decls) {
+    let (dname, dsig) = Array::get(fn_decls, i)
+    Array::push(lines, "fn \{dname} \{dsig}")
+    i = i + 1
+  }
+  let mut oi = 0
+  while oi < Array::length(opaque_names) {
+    let (oname, oparams) = Array::get(opaque_names, oi)
+    // The full kind signature is part of the surface. Zero-parameter types
+    // keep the historical line so unrelated contract hashes do not move.
+    let oline = if Array::length(oparams) == 0 {
+      "opaque \{oname}"
+    } else {
+      "opaque \{oname}\{render_type_param_kinds(oparams)}"
+    }
+    Array::push(lines, oline)
+    oi = oi + 1
+  }
+  let mut ti = 0
+  while ti < Array::length(type_defs) {
+    Array::push(lines, "type \{print_stmt(Array::get(type_defs, ti))}")
+    ti = ti + 1
+  }
+  lines
+}
+
+/// "patch" | "minor" | "major" for old -> new surface lines.
+export fn classify_contract_change(old_lines: Array[String], new_lines: Array[String]) -> String {
+  let mut all_old_kept = true
+  let mut i = 0
+  while i < Array::length(old_lines) {
+    if str_in(new_lines, Array::get(old_lines, i)) {
+      ()
+    } else {
+      all_old_kept = false
+    }
+    i = i + 1
+  }
+  if !all_old_kept {
+    "major"
+  } else {
+    let mut any_new = false
+    let mut j = 0
+    while j < Array::length(new_lines) {
+      if str_in(old_lines, Array::get(new_lines, j)) {
+        ()
+      } else {
+        any_new = true
+      }
+      j = j + 1
+    }
+    if any_new {
+      "minor"
+    } else {
+      "patch"
+    }
+  }
+}
+
+fn digits_to_int(raw: String) -> Int {
+  let len = String::length(raw)
+  let mut result = 0
+  let mut i = 0
+  while i < len {
+    result = result * 10 + (String::char_code_at(raw, i) - 48)
+    i = i + 1
+  }
+  result
+}
+
+export fn semver_parts(v: String) -> Option[(Int, Int, Int)] {
+  if is_strict_semver(v) && !String::starts_with(v, "^") {
+    let parts = String::split(v, ".")
+    Some((digits_to_int(Array::get(parts, 0)), digits_to_int(Array::get(parts, 1)), digits_to_int(Array::get(parts, 2))))
+  } else {
+    None
+  }
+}
+
+/// The bump kind a version transition claims: Some("patch"/"minor"/"major"),
+/// None when the transition is not a single well-formed forward bump.
+export fn semver_bump_kind(prev: String, next: String) -> Option[String] {
+  match semver_parts(prev) {
+    None => None,
+    Some(pp) => match semver_parts(next) {
+      None => None,
+      Some(np) => {
+        let (pa, pb, pc) = pp
+        let (na, nb, nc) = np
+        if na == pa + 1 && nb == 0 && nc == 0 {
+          Some("major")
+        } else if na == pa && nb == pb + 1 && nc == 0 {
+          Some("minor")
+        } else if na == pa && nb == pb && nc == pc + 1 {
+          Some("patch")
+        } else {
+          None
+        }
+      }
+    }
+  }
+}
+
+/// The publish gate: claimed bump must be exactly what the diff requires.
+export fn verify_publish_bump(prev_version: String, next_version: String, old_lines: Array[String], new_lines: Array[String]) -> Array[String] {
+  let errors = array_empty()
+  let required = classify_contract_change(old_lines, new_lines)
+  match semver_bump_kind(prev_version, next_version) {
+    None => Array::push(errors, "\{prev_version} -> \{next_version} is not a single forward semver bump"),
+    Some(claimed) => if claimed == required {
+      ()
+    } else {
+      Array::push(errors, "version \{prev_version} -> \{next_version} claims a \{claimed} bump but the contract change requires \{required}")
+    }
+  }
+  errors
+}

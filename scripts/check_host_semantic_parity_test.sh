@@ -47,6 +47,7 @@ fi
 # --- build the mutated runner ------------------------------------------------
 MUT="$WORK/mutated_runner.js"
 cp "$ROOT_DIR/scripts/wasm_vibe_host_runner.js" "$MUT"
+cp scripts/wasm_vibe_host_runtime.js "$WORK/wasm_vibe_host_runtime.js"
 python3 - "$MUT" <<'PY'
 import sys
 p = sys.argv[1]

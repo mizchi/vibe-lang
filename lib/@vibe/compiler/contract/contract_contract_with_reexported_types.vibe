@@ -1,0 +1,1393 @@
+// lib/@vibe/compiler/contract/contract.vibe — contract with reexported types.
+
+import @vibe/compiler/core {
+  Expr, ImportItem, Stmt, TypeExpr, is_builtin_type_name, lookup_registry_builtin, resolve_builtin
+}
+
+import @vibe/ast {
+  type_param_arity
+}
+
+import @vibe/compiler/syntax {
+  Token, offset_to_line_col, print_stmt, print_type_expr
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import ./identity.vibe {
+  content_id_matches
+}
+
+import ./contract_scan_package_header.vibe {
+  array_contains_string,
+  collect_impl_fn_defs,
+  collect_impl_type_defs,
+  collect_reexported_names,
+  collect_reexported_type_defs,
+  ctr_es_collect_tables,
+  ctr_es_expand_row_string,
+  render_type_params,
+  same_type_param_kinds
+}
+
+/// `sig` is fn_sig_text's output; when a row is present it ALWAYS ends in
+/// the exact suffix " with ROW" (see fn_sig_text above). Finds that
+/// suffix, expands ROW's effectset-name tokens, and rebuilds the string. A
+/// signature with no row, or one that doesn't match the expected suffix
+/// shape, passes through completely unchanged (never corrupt a string this
+/// pass doesn't recognize).
+///
+/// #1429: fn_sig_text's own row deliberately KEEPS the braced spelling even
+/// though the language moved to `with A + B`. This string is an internal
+/// comparison key -- declaration signature vs implementation signature --
+/// that is never parsed back and never handed to a reader to copy, and the
+/// braces now do real work: print_type_expr renders a PARAMETER's row
+/// braceless, so `" with { "` matches the function's OWN row and nothing
+/// else. Before the printer moved, a higher-order parameter carrying a row
+/// rendered `" with E"` too and this index_of found the parameter's row
+/// first -- a latent bug the braceless printer closed by accident. Spelling
+/// this one braceless would reopen it.
+fn ctr_expand_sig_row(sig: String, es_names: Array[String], es_members_list: Array[Array[String]]) -> String {
+  if Array::length(es_names) == 0 {
+    sig
+  } else {
+    let marker = " with { "
+    let idx = String::index_of(sig, marker)
+    if idx < 0 {
+      sig
+    } else {
+      let slen = String::length(sig)
+      let mlen = String::length(marker)
+      if slen < idx + mlen + 2 {
+        sig
+      } else {
+        let last_two = String::substring(sig, slen - 2, slen)
+        if last_two != " }" {
+          sig
+        } else {
+          let head = String::substring(sig, 0, idx)
+          let row = String::substring(sig, idx + mlen, slen - 2)
+          let expanded = ctr_es_expand_row_string(row, es_names, es_members_list)
+          String::concat(head, String::concat(marker, String::concat(expanded, " }")))
+        }
+      }
+    }
+  }
+}
+
+/// Check that `impl_stmts` provide exactly the contract surface. Returns a
+/// list of human-readable conformance errors; empty = conformant.
+/// `contract_type_defs` (ADR-0071/#755): the CONTRACT's own classified type
+/// definitions (classify_contract_stmts' second return value at the call
+/// site) -- used only to build the effectset expansion table above, so a
+/// contract signature spelled with an effectset alias and an
+/// implementation spelled with its literal expansion compare as equal
+/// instead of a false "signature mismatch".
+export fn check_contract_with_reexported_types(decls: Array[(String, String)], opaque_names: Array[(String, Array[String])], impl_stmts: Array[Stmt], contract_type_defs: Array[Stmt], resolved_reexported_type_defs: Array[(String, Array[String])]) -> Array[String] {
+  let errors = array_empty()
+  let (ctr_es_names, ctr_es_members_list) = ctr_es_collect_tables(contract_type_defs)
+  let defs = collect_impl_fn_defs(impl_stmts)
+  // #847: a re-exported name has no signature to compare (SReExport carries
+  // no type info) — it is accepted at face value as satisfying a declared
+  // fn or opaque type, same trust boundary the loader already gives a plain
+  // `export ./impl.vibe { name }` line (the re-exported definition's OWN
+  // package/contract is responsible for that definition's correctness).
+  let reexported = collect_reexported_names(impl_stmts)
+  let mut di = 0
+  while di < Array::length(decls) {
+    let (dname, dsig) = Array::get(decls, di)
+    // ADR-0071 (#755): compare EXPANDED forms so a contract signature
+    // spelled with an effectset alias matches an implementation spelled
+    // with the literal operations it expands to (or vice versa) -- `dsig`
+    // itself (used in error messages / satisfied tracking below) stays the
+    // original, as-written text so a mismatch still quotes what the user
+    // actually typed, not an internal normalized form.
+    let dsig_expanded = ctr_expand_sig_row(dsig, ctr_es_names, ctr_es_members_list)
+    // A declaration is satisfied by ANY exported def with a matching
+    // signature. Same-name defs in OTHER package files (private aliases,
+    // domain-local helpers) are legal and never violations by themselves —
+    // only when NO def satisfies the decl do the candidates drive the
+    // error message (best mismatch first, then export status).
+    // Compiler-provided values may be explicitly exposed by a contract even
+    // though no sibling implementation file owns their bodies.
+    let mut satisfied = match lookup_registry_builtin(dname) {
+      Some(_) => true,
+      None => dname == "Int::to_string"
+    }
+    let mut seen_any = false
+    let mut best_msg = ""
+    let mut fi = 0
+    while fi < Array::length(defs) {
+      let (fname, fsig_opt, fexported) = Array::get(defs, fi)
+      if fname == dname {
+        seen_any = true
+        match fsig_opt {
+          Some(fsig) => if ctr_expand_sig_row(fsig, ctr_es_names, ctr_es_members_list) == dsig_expanded {
+            if fexported {
+              satisfied = true
+            } else {
+              best_msg = "contract declaration '\{dname}' is implemented but not exported by its implementation file"
+            }
+          } else {
+            if best_msg == "" {
+              best_msg = "signature mismatch for '\{dname}': contract \{dsig} but implementation \{fsig}"
+            } else ()
+          },
+          None => if best_msg == "" {
+            best_msg = "implementation of '\{dname}' lacks the full annotations required by the contract"
+          } else ()
+        }
+      } else ()
+      fi = fi + 1
+    }
+    if satisfied {
+      ()
+    } else if array_contains_string(reexported, dname) {
+      ()
+    } else if seen_any {
+      Array::push(errors, best_msg)
+    } else {
+      Array::push(errors, "contract declaration '\{dname}' has no implementation")
+    }
+    di = di + 1
+  }
+  let mut ei = 0
+  while ei < Array::length(defs) {
+    let (fname, _fsig_opt, fexported) = Array::get(defs, ei)
+    if fexported {
+      let mut declared = false
+      let mut ci = 0
+      while ci < Array::length(decls) {
+        let (dname, _dsig) = Array::get(decls, ci)
+        if dname == fname {
+          declared = true
+        } else ()
+        ci = ci + 1
+      }
+      if declared {
+        ()
+      } else {
+        Array::push(errors, "exported '\{fname}' is not declared in the contract")
+      }
+    } else ()
+    ei = ei + 1
+  }
+  let type_defs = collect_impl_type_defs(impl_stmts)
+  let reexported_type_defs = collect_reexported_type_defs(impl_stmts, type_defs)
+  let mut resolved_rti = 0
+  while resolved_rti < Array::length(resolved_reexported_type_defs) {
+    Array::push(reexported_type_defs, Array::get(resolved_reexported_type_defs, resolved_rti))
+    resolved_rti = resolved_rti + 1
+  }
+  let mut oi = 0
+  while oi < Array::length(opaque_names) {
+    let (oname, oparams) = Array::get(opaque_names, oi)
+    // #847: a re-exported name satisfies the declaration, but an aliased
+    // source declaration present in this implementation set carries its
+    // parameter kinds into the same conformance check as a direct definition.
+    // Compiler-provided types have no implementation sibling, but their
+    // builtin parameter kinds are known and must match the retained contract
+    // shape before the declaration can describe that builtin.
+    let builtin_params = if oname == "Option" {
+      Some(["T"])
+    } else {
+      match resolve_builtin(oname) {
+        Some(_) => Some([]),
+        None => None
+      }
+    }
+    // A re-export proves that a name is present, but not that its constructor
+    // kind matches this opaque declaration. Count it as an implementation only
+    // after the loader (or the local statement set) resolves kind metadata.
+    // Missing and cyclic facade chains therefore fail closed.
+    let mut ofound = Array::length(oparams) == 0 && array_contains_string(reexported, oname)
+    let mut rti = 0
+    while rti < Array::length(reexported_type_defs) {
+      let (rtname, rtparams) = Array::get(reexported_type_defs, rti)
+      if rtname == oname {
+        ofound = true
+        if Array::length(oparams) != Array::length(rtparams) {
+          Array::push(errors, "type '\{oname}' arity mismatch: contract declares \{Array::length(oparams)} type parameter(s), re-exported implementation defines \{Array::length(rtparams)}")
+        } else if same_type_param_kinds(oparams, rtparams) {
+          ()
+        } else {
+          Array::push(errors, "type '\{oname}' kind mismatch: contract declares \{render_type_params(oparams)}, re-exported implementation defines \{render_type_params(rtparams)}")
+        }
+      } else {
+        ()
+      }
+      rti = rti + 1
+    }
+    match builtin_params {
+      Some(params) => {
+        ofound = true
+        if Array::length(oparams) != Array::length(params) {
+          Array::push(errors, "type '\{oname}' arity mismatch: contract declares \{Array::length(oparams)} type parameter(s), builtin defines \{Array::length(params)}")
+        } else if !same_type_param_kinds(oparams, params) {
+          Array::push(errors, "type '\{oname}' kind mismatch: contract declares \{render_type_params(oparams)}, builtin defines \{render_type_params(params)}")
+        } else {
+          ()
+        }
+      },
+      None => ()
+    }
+    let mut ti = 0
+    while ti < Array::length(type_defs) {
+      let (tname, texported, tparams) = Array::get(type_defs, ti)
+      if tname == oname {
+        ofound = true
+        if texported {
+          ()
+        } else {
+          Array::push(errors, "opaque type '\{oname}' is implemented but not exported by its implementation file")
+        }
+        // #739: the contract's declared type-parameter count is part of the
+        // surface — `type Box[T]` is not satisfied by a nullary `enum Box`.
+        if Array::length(oparams) != Array::length(tparams) {
+          Array::push(errors, "type '\{oname}' arity mismatch: contract declares \{Array::length(oparams)} type parameter(s), implementation defines \{Array::length(tparams)}")
+        } else if same_type_param_kinds(oparams, tparams) {
+          ()
+        } else {
+          Array::push(errors, "type '\{oname}' kind mismatch: contract declares \{render_type_params(oparams)}, implementation defines \{render_type_params(tparams)}")
+        }
+      } else ()
+      ti = ti + 1
+    }
+    if ofound {
+      ()
+    } else {
+      Array::push(errors, "opaque type '\{oname}' has no implementation")
+    }
+    oi = oi + 1
+  }
+  let mut xi = 0
+  while xi < Array::length(type_defs) {
+    let (tname, texported, _) = Array::get(type_defs, xi)
+    if texported {
+      let mut tdeclared = false
+      let mut oj = 0
+      while oj < Array::length(opaque_names) {
+        let (ojname, _) = Array::get(opaque_names, oj)
+        if ojname == tname {
+          tdeclared = true
+        } else ()
+        oj = oj + 1
+      }
+      if tdeclared {
+        ()
+      } else {
+        Array::push(errors, "exported type '\{tname}' is not declared in the contract (declare it as `opaque type \{tname}` or define it transparently in the contract)")
+      }
+    } else ()
+    xi = xi + 1
+  }
+  // #847: `collect_impl_fn_defs`/`collect_impl_type_defs` only see SLet/
+  // SStruct/... top-level defs — an impl file that RE-exports a symbol
+  // (`export ./other.vibe { extra }`) is neither, so its name was invisible
+  // to every check above and could leak an undeclared symbol into the
+  // package's real export surface. Require every re-exported name to match
+  // either a declared fn or a declared opaque type.
+  let mut rxi = 0
+  while rxi < Array::length(reexported) {
+    let exported_name = Array::get(reexported, rxi)
+    let mut rdeclared = false
+    let mut rdi = 0
+    while rdi < Array::length(decls) {
+      let (dname, _) = Array::get(decls, rdi)
+      if dname == exported_name {
+        rdeclared = true
+      } else ()
+      rdi = rdi + 1
+    }
+    if rdeclared {
+      ()
+    } else {
+      let mut roi = 0
+      while roi < Array::length(opaque_names) {
+        let (oname, _) = Array::get(opaque_names, roi)
+        if oname == exported_name {
+          rdeclared = true
+        } else ()
+        roi = roi + 1
+      }
+    }
+    if rdeclared {
+      ()
+    } else {
+      Array::push(errors, "re-exported '\{exported_name}' is not declared in the contract")
+    }
+    rxi = rxi + 1
+  }
+  // #1879: a TRANSPARENT contract type (struct / enum / type alias) must not
+  // be re-defined by an implementation file. The contract definition is the
+  // single definition site (#1840's materialized types module); a sibling
+  // re-definition compiles into a SECOND type identity whose enum ctor tags
+  // disagree with the contract's, so matches fall through to a runtime trap
+  // -- or silently take the wrong arm when tags happen to coincide -- with
+  // no diagnostic anywhere. Reject it here, where both surfaces are in hand.
+  // (An OPAQUE contract type is the inverse contract -- declared here,
+  // defined by a sibling -- and stays untouched: contract_type_defs carries
+  // only the transparent definitions.)
+  let impl_type_defs = collect_impl_type_defs(impl_stmts)
+  let tf_defs = contract_type_family_defs(contract_type_defs)
+  let mut tfi = 0
+  while tfi < Array::length(tf_defs) {
+    let tf_name = match Array::get(tf_defs, tfi) {
+      SStruct(_, sname, _, _, _, _) => sname,
+      SEnum(_, ename, _, _, _) => ename,
+      STypeAlias(_, aname, _, _) => aname,
+      _ => ""
+    }
+    if tf_name == "" {
+      ()
+    } else {
+      let mut iti = 0
+      while iti < Array::length(impl_type_defs) {
+        let (itname, _, _) = Array::get(impl_type_defs, iti)
+        if itname == tf_name {
+          Array::push(errors, "transparent contract type '\{tf_name}' is re-defined by an implementation file -- the contract definition is the single definition site; remove the local definition (a re-definition is a second runtime type identity, #1879)")
+          iti = Array::length(impl_type_defs)
+        } else {
+          iti = iti + 1
+        }
+      }
+    }
+    tfi = tfi + 1
+  }
+  errors
+}
+
+/// Pure conformance entry point for callers that have no filesystem-backed
+/// re-export metadata. The loader uses the richer entry point above after it
+/// resolves each re-export source.
+export fn check_contract(decls: Array[(String, String)], opaque_names: Array[(String, Array[String])], impl_stmts: Array[Stmt], contract_type_defs: Array[Stmt]) -> Array[String] {
+  check_contract_with_reexported_types(decls, opaque_names, impl_stmts, contract_type_defs, [
+  ])
+}
+
+/// Classify a contract's non-declaration statements: implementation-file
+/// imports (`import ./impl.vibe {}`) and transparent type definitions
+/// (struct / enum / type alias — the definition IS the contract, so it lives
+/// here and passes into the facade verbatim, exported). Anything else is
+/// rejected (subpath re-exports arrive with @scope resolution, #730).
+export fn classify_contract_stmts(stmts: Array[Stmt]) -> (Array[String], Array[Stmt]) with Exception {
+  let raws = array_empty()
+  let type_defs = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SImport(raw_path, _) => Array::push(raws, raw_path),
+      SStruct(_, name, fields, derives, mut_names, tparams) => Array::push(type_defs, SStruct(true, name, fields, derives, mut_names, tparams)),
+      SEnum(_, name, tparams, ctors, derives) => Array::push(type_defs, SEnum(true, name, tparams, ctors, derives)),
+      STypeAlias(_, name, tparams, ty) => Array::push(type_defs, STypeAlias(true, name, tparams, ty)),
+      // #752: a transparent EFFECT definition — like transparent types, the
+      // definition IS the contract (effect rows are core contract surface,
+      // ADR-0063). It passes into the facade verbatim, exported; the
+      // implementation files use the effect but must not re-define it.
+      SEffectDef(_, ename, etparams, eops) => Array::push(type_defs, SEffectDef(true, ename, etparams, eops)),
+      // ADR-0071 (#755) step 5: an `effectset` is likewise a transparent,
+      // compile-time-only alias (no runtime identity of its own, same as
+      // SEffectDef) -- the ADR's Decision section explicitly calls out
+      // that it "は `index.vpkg` の contract symbol として import/export
+      // できる". Passes into the facade verbatim, exported, same as
+      // SEffectDef immediately above. The checker (checker_stmt.vibe)
+      // still independently validates cycle/collision on every effectset
+      // it type-checks, including ones that arrive via this contract path.
+      SEffectSet(_, esname, esmembers) => Array::push(type_defs, SEffectSet(true, esname, esmembers)),
+      // #729's original message said "a .vibei contract" -- this classifier
+      // is shared plumbing for BOTH `index.vpkg` (ADR-0070's boundary file,
+      // docs/internal/design/module-system-oracle.md) and the legacy `index.vibei` spelling
+      // (not itself a boundary; kept only during migration), invoked from
+      // loader.vibe/header_cache.vibe regardless of which extension the
+      // directory actually has. "contract file" avoids implying vpkg
+      // callers hit vibei-specific rules.
+      _ => throw("unsupported statement in a contract file (index.vpkg / index.vibei): only fn declarations, opaque type declarations, transparent type/effect/effectset definitions, and implementation-file imports are allowed (#729)")
+    }
+    i = i + 1
+  }
+  (raws, type_defs)
+}
+
+/// #2317: the contract offset of each type-family definition, in the order
+/// `contract_type_family_defs` yields them.
+///
+/// Derived by ASKING the two real filters one statement at a time, not by
+/// mirroring their match arms -- a second copy of those rules drifts the first
+/// time a statement kind is added. Both filters only drop entries and neither
+/// reorders, so the n-th surviving statement is the n-th materialized
+/// declaration, and its recorded offset is the one to report.
+///
+/// A statement the classifier rejects contributes nothing: by the time a types
+/// module is generated the whole list has already classified cleanly, so this
+/// only guards against being called out of order.
+export fn contract_type_family_offsets(stmts: Array[Stmt], stmt_at: Array[Int]) -> Array[Int] {
+  let out = array_empty()
+  let lim = Array::length(stmt_at)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let one = array_empty()
+    Array::push(one, Array::get(stmts, i))
+    let is_family = handle {
+      let (_raws, tds) = classify_contract_stmts(one)
+      Array::length(contract_type_family_defs(tds)) == 1
+    } with { Exception::Throw(_) => false }
+    if is_family && i < lim {
+      Array::push(out, Array::get(stmt_at, i))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// #2317: the `line:col` of each type-family definition, in the order the
+/// generator emits them.
+///
+/// Rendered here, at generation time, because the diagnostic site has no `Fs`
+/// and cannot read the contract to convert an offset. `offset_to_line_col` is
+/// the same function the diagnostic renderer uses, so the two agree on what a
+/// column is (1-based bytes, ADR-0108).
+export fn contract_type_family_decl_positions(source: String, stmts: Array[Stmt], stmt_at: Array[Int], starts: Array[Int]) -> Array[String] {
+  // `stmt_at` holds TOKEN INDICES, not byte offsets -- `starts` is what turns
+  // one into the other. Passing the index straight to `offset_to_line_col`
+  // reads it as a byte offset and answers from the top of the file: measured,
+  // a declaration on line 13 reported `line 1:8`, which is token index 8 read
+  // as offset 8. `contract_classify_diagnostic` already does this conversion;
+  // this function was written without it.
+  let offs = contract_type_family_offsets(stmts, stmt_at)
+  let lim = Array::length(starts)
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(offs) {
+    let tok = Array::get(offs, i)
+    if tok >= 0 && tok < lim {
+      let (l, c) = offset_to_line_col(source, Array::get(starts, tok))
+      Array::push(out, String::concat(__to_string(l), String::concat(":", __to_string(c))))
+    } else {
+      // No position rather than a wrong one; the generator omits the marker
+      // and the reader keeps the stub's own line.
+      Array::push(out, "")
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// #2317: the declarations a contract EFFECTIVELY has, after the one filter
+/// the loader applies before counting them.
+///
+/// A legacy bodyless `let version: String` is dropped when the header carries
+/// a real `version` directive (#1054): the facade synthesizes that binding, so
+/// demanding an implementation for it would be wrong. Without the directive it
+/// is an ordinary declaration with a hand-written implementation and must stay.
+///
+/// This lived inline in `desugar_contract_source_fs`, which is why the buffer
+/// lane could not reproduce it: any check counting raw declarations disagrees
+/// with the build on exactly this shape. One function, both callers -- so a
+/// filter added later cannot land in only one lane (#2317's whole point).
+export fn contract_effective_decls(decls_raw: Array[(String, String)], pkg_version: String) -> Array[(String, String)] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(decls_raw) {
+    let (dname, dsig) = Array::get(decls_raw, i)
+    if contract_decl_is_filtered(dname, dsig, pkg_version) {
+      ()
+    } else {
+      Array::push(out, (dname, dsig))
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// The one filter rule, so `contract_effective_decls` and
+/// `contract_effective_decl_indices` cannot disagree about which entries
+/// survive.
+fn contract_decl_is_filtered(dname: String, dsig: String, pkg_version: String) -> Bool {
+  dname == "version" && dsig == "val String" && pkg_version != ""
+}
+
+/// #2317: for each EFFECTIVE declaration, its index in the raw list.
+///
+/// The offsets are recorded against the raw list, so a caller holding an
+/// effective index needs this to reach them. Counting name occurrences instead
+/// is wrong when a FILTERED entry shares the name: a dropped legacy `let
+/// version: String` beside two effective `version` declarations makes the
+/// count skip one, and the diagnostic anchors on the first declaration rather
+/// than the repeat -- telling the reader to delete the line they want to keep
+/// (Codex review on #2328).
+export fn contract_effective_decl_indices(decls_raw: Array[(String, String)], pkg_version: String) -> Array[Int] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(decls_raw) {
+    let (dname, dsig) = Array::get(decls_raw, i)
+    if contract_decl_is_filtered(dname, dsig, pkg_version) {
+      ()
+    } else {
+      Array::push(out, i)
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// #2317: index of the first EFFECTIVE declaration whose name was already
+/// declared, or -1.
+///
+/// Measured: the build refuses a duplicate today, but through
+/// `contract_facade_source`, whose `allocated` list is set-like while `decls`
+/// counts multiplicity -- so the count check trips and reports "some
+/// declarations have no implementation file" about a name that is implemented.
+/// The reader is handed an edit that does nothing. Deciding it here instead
+/// lets both lanes say what is actually wrong.
+///
+/// Names only. Two declarations of one name are a duplicate whatever their
+/// signatures: the facade allocates by name, so the second can never bind.
+export fn contract_duplicate_decl_index(decls: Array[(String, String)]) -> Int {
+  let mut i = 0
+  let mut found = 0 - 1
+  while i < Array::length(decls) && found < 0 {
+    let (iname, _) = Array::get(decls, i)
+    let mut j = 0
+    while j < i && found < 0 {
+      let (jname, _) = Array::get(decls, j)
+      if jname == iname {
+        found = i
+      } else {
+        j = j + 1
+      }
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// #2317: index of the first statement `classify_contract_stmts` rejects, or
+/// -1 when it accepts them all.
+///
+/// It ASKS the classifier, one statement at a time, rather than mirroring its
+/// match arms -- a second copy of the rule would drift the first time a
+/// statement kind is added, and the classifier's own loop is per-statement
+/// with no cross-statement state, so `classify_contract_stmts([s])` throws
+/// exactly when `s` is the kind it refuses. Walking in order therefore finds
+/// the same statement the full call stopped on.
+///
+/// Deliberately not a prefix search: three attempts in the #2315 review to
+/// locate a diagnostic by probing growing prefixes each produced a predicate
+/// that was not monotone, and binary search over one can anchor on valid code.
+/// This asks about each statement on its own, so there is no predicate shape
+/// to get wrong.
+export fn contract_unsupported_stmt_index(stmts: Array[Stmt]) -> Int {
+  let mut i = 0
+  let mut found = 0 - 1
+  while i < Array::length(stmts) && found < 0 {
+    let one = array_empty()
+    Array::push(one, Array::get(stmts, i))
+    let bad = handle {
+      let (_raws, _defs) = classify_contract_stmts(one)
+      false
+    } with { Exception::Throw(_) => true }
+    if bad {
+      found = i
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// Compat shim for the strict v1 shape (implementation imports only).
+export fn contract_impl_import_raw_paths(stmts: Array[Stmt]) -> Array[String] with Exception {
+  let (raws, _) = classify_contract_stmts(stmts)
+  raws
+}
+
+/// #1840: the TYPE-FAMILY subset of a contract's transparent definitions
+/// (struct / enum / type alias). These move out of the facade into a
+/// materialized "types module" the loader writes under the build cache, so
+/// sibling impl units can IMPORT them — which is what gives enum
+/// constructors real value bindings in every lane (an enum living only in
+/// the facade left siblings failing with `unknown name: <Ctor>`, and
+/// re-defining it locally compiled into a second identity that trapped at
+/// runtime, #1879). Effects / effectsets stay in the facade: their use
+/// sites resolve through the row machinery, not through value names.
+export fn contract_type_family_defs(type_defs: Array[Stmt]) -> Array[Stmt] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(type_defs) {
+    let td = Array::get(type_defs, i)
+    match td {
+      SStruct(_, _, _, _, _, _) => Array::push(out, td),
+      SEnum(_, _, _, _, _) => Array::push(out, td),
+      STypeAlias(_, _, _, _) => Array::push(out, td),
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// #1840: idempotency marker for the materialized types module (mirrors
+/// `contract_facade_marker` / `vpkg_shared_import_marker`).
+export let vpkg_types_module_marker: String = "// vibe: vpkg contract types module (#1840)\n"
+
+/// #2317: header prefix naming the contract a types module was generated from.
+///
+/// Carried IN-BAND, for the same reason the deferred-name sentinel is (#2125):
+/// the value has to travel with the TEXT through every lane. A materialized
+/// types module is checked in-process by the serial walk, but also by an
+/// isolated worker under `VIBE_MODULE_JOB_DIR`, which is handed `source.vibe`
+/// and its dependencies' environments and never runs the loader -- so any
+/// process-local registry is empty there, and a diagnostic would name the
+/// contract in one lane and the generated file in the other. Lanes disagreeing
+/// about the same file is the bug #2317 is about; the fix must not add a new
+/// instance of it (Codex review on #2324).
+export let vpkg_types_contract_marker: String = "// vibe: generated from "
+
+/// #2317: per-declaration position marker, emitted immediately ABOVE the
+/// declaration it describes.
+///
+/// Adjacent rather than a header table, so nothing depends on how many lines
+/// `print_stmt` renders a declaration onto -- the reader takes the nearest
+/// preceding marker, which stays correct if the printer's output grows.
+///
+/// The value is the contract's own `line:col`, precomputed here because the
+/// diagnostic site has no `Fs` and cannot read the contract to convert an
+/// offset. Declaration-granular by construction: `print_stmt` rebuilds the
+/// declaration from the AST, so positions INSIDE it are gone.
+export let vpkg_types_decl_marker: String = "// vibe: decl-at "
+
+/// #2324: escape a contract path for the single-line `//` provenance marker.
+///
+/// A POSIX path may legally contain a newline. Concatenated raw, it would end
+/// the comment and turn the remainder of the path into generated vibe source
+/// -- the types module could then fail to parse, or take crafted path text as
+/// declarations, and the reader would recover only the truncated prefix.
+///
+/// Backslash is escaped first so the decode is unambiguous.
+///
+/// Also the DISPLAY form for a path in a diagnostic (#2324): the CLI's contract
+/// is one record per line, and a decoded newline rendered verbatim would split
+/// one diagnostic across lines -- crafted path components could even resemble
+/// further diagnostics. Round-tripping stays exact internally; only what is
+/// printed is escaped.
+export fn vpkg_path_escape_one_line(path: String) -> String {
+  let sb = StringBuilder::new()
+  let n = String::length(path)
+  let mut i = 0
+  while i < n {
+    let c = String::char_code_at(path, i)
+    if c == 92 {
+      StringBuilder::push(sb, "\\\\")
+    } else if c == 10 {
+      StringBuilder::push(sb, "\\n")
+    } else if c == 13 {
+      StringBuilder::push(sb, "\\r")
+    } else {
+      StringBuilder::push(sb, String::substring(path, i, i + 1))
+    }
+    i = i + 1
+  }
+  StringBuilder::freeze(sb)
+}
+
+/// Inverse of `vpkg_path_escape_one_line`. An unrecognized escape is passed through
+/// verbatim rather than dropped: a stub written by some other producer should
+/// degrade to a wrong-looking path, never to a silently shortened one.
+fn vpkg_marker_decode(text: String) -> String {
+  let sb = StringBuilder::new()
+  let n = String::length(text)
+  let mut i = 0
+  while i < n {
+    let c = String::char_code_at(text, i)
+    if c == 92 && i + 1 < n {
+      let d = String::char_code_at(text, i + 1)
+      if d == 110 {
+        StringBuilder::push(sb, "\n")
+        i = i + 2
+      } else if d == 114 {
+        StringBuilder::push(sb, "\r")
+        i = i + 2
+      } else if d == 92 {
+        StringBuilder::push(sb, "\\")
+        i = i + 2
+      } else {
+        StringBuilder::push(sb, String::substring(text, i, i + 1))
+        i = i + 1
+      }
+    } else {
+      StringBuilder::push(sb, String::substring(text, i, i + 1))
+      i = i + 1
+    }
+  }
+  StringBuilder::freeze(sb)
+}
+
+/// #2125 / #2164: heads `tds` reference minus names `tds` declare, restricted
+/// to contract-`opaque` provenance. A sibling-impl opaque (`PerceusActionKind`)
+/// or a foreign name declared `opaque type` / bodyless `type` stays a
+/// wildcard; a typo (`Intt`) is not in that set and is reported. Compiler-owned
+/// heads (`Map`, `MutMap`, ...) go through `is_builtin_type_name`. A
+/// declaration's own generic binders shadow its references locally only.
+fn ctm_name_is_type_head(n: String) -> Bool {
+  if String::length(n) == 0 {
+    false
+  } else {
+    let c = String::char_code_at(n, 0)
+    c >= 65 && c <= 90
+  }
+}
+
+export fn contract_imported_type_names(extra: Array[Stmt]) -> Array[(String, Int)] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(extra) {
+    match Array::get(extra, i) {
+      SImport(_, items) => {
+        let mut j = 0
+        while j < Array::length(items) {
+          let item = Array::get(items, j)
+          let local = match item.alias {
+            Some(a) => a,
+            None => item.name
+          }
+          let imports_type = match item.kind {
+            Some(kind) => match kind {
+              ImportType => true,
+              ImportStruct => true,
+              ImportEnum => true,
+              ImportEffect => true,
+              ImportTrait => false
+            },
+            None => ctm_name_is_type_head(local)
+          }
+          if imports_type {
+            Array::push(out, (local, 0))
+          } else {
+            ()
+          }
+          j = j + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Type names whose existence a contract declares without defining them in
+/// its transparent type-family statements.
+///
+/// This is the one provenance merge used by both the materialized types-module
+/// lane and the single-buffer diagnostic lane (#2317). Keeping the merge here
+/// prevents an imported kind or alias from becoming a wildcard in one lane and
+/// an unknown name in the other.
+export fn contract_type_provenance(extra: Array[Stmt], opaque_names: Array[(String, Array[String])]) -> Array[(String, Int)] {
+  let out = array_empty()
+  let mut oi = 0
+  while oi < Array::length(opaque_names) {
+    let (name, params) = Array::get(opaque_names, oi)
+    Array::push(out, (name, Array::length(params)))
+    oi = oi + 1
+  }
+  let imported = contract_imported_type_names(extra)
+  let mut ii = 0
+  while ii < Array::length(imported) {
+    Array::push(out, Array::get(imported, ii))
+    ii = ii + 1
+  }
+  out
+}
+
+fn ctm_opaque_name_list(opaque_names: Array[(String, Int)]) -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(opaque_names) {
+    let (n, _) = Array::get(opaque_names, i)
+    Array::push(out, n)
+    i = i + 1
+  }
+  out
+}
+
+fn ctm_deferred_type_names(tds: Array[Stmt], opaque_names: Array[String]) -> (Array[String], Array[String]) {
+  let declared = array_empty()
+  let referenced = array_empty()
+  let mut i = 0
+  while i < Array::length(tds) {
+    let scratch = array_empty()
+    let binders = array_empty()
+    match Array::get(tds, i) {
+      SStruct(_, sname, fields, _, _, stp) => {
+        Array::push(declared, sname)
+        let mut ti = 0
+        while ti < Array::length(stp) {
+          Array::push(binders, Array::get(stp, ti))
+          ti = ti + 1
+        }
+        let mut fi = 0
+        while fi < Array::length(fields) {
+          let (_, fte) = Array::get(fields, fi)
+          ctm_collect_type_expr_heads(fte, scratch)
+          fi = fi + 1
+        }
+      },
+      SEnum(_, ename, eparams, variants, _) => {
+        Array::push(declared, ename)
+        let mut pi = 0
+        while pi < Array::length(eparams) {
+          Array::push(binders, Array::get(eparams, pi))
+          pi = pi + 1
+        }
+        let mut vi = 0
+        while vi < Array::length(variants) {
+          let (_, vtypes) = Array::get(variants, vi)
+          let mut vti = 0
+          while vti < Array::length(vtypes) {
+            ctm_collect_type_expr_heads(Array::get(vtypes, vti), scratch)
+            vti = vti + 1
+          }
+          vi = vi + 1
+        }
+      },
+      STypeAlias(_, aname, aparams, body) => {
+        Array::push(declared, aname)
+        let mut api = 0
+        while api < Array::length(aparams) {
+          Array::push(binders, Array::get(aparams, api))
+          api = api + 1
+        }
+        ctm_collect_type_expr_heads(body, scratch)
+      },
+      _ => ()
+    }
+    let mut si = 0
+    while si < Array::length(scratch) {
+      let sn = Array::get(scratch, si)
+      if ctm_str_list_has(binders, sn) {
+        ()
+      } else {
+        Array::push(referenced, sn)
+      }
+      si = si + 1
+    }
+    i = i + 1
+  }
+  let out = array_empty()
+  let mut ri = 0
+  while ri < Array::length(referenced) {
+    let n = Array::get(referenced, ri)
+    if is_builtin_type_name(n) || ctm_str_list_has(declared, n) || ctm_str_list_has(out, n) {
+      ()
+    } else if ctm_str_list_has(opaque_names, n) {
+      Array::push(out, n)
+    } else {
+      ()
+    }
+    ri = ri + 1
+  }
+  (declared, out)
+}
+
+fn ctm_collect_type_expr_heads(te: TypeExpr, out: Array[String]) -> Unit {
+  match te {
+    TyUnit => (),
+    TyName(n) => Array::push(out, n),
+    TyApp(n, args) => {
+      Array::push(out, n)
+      let mut i = 0
+      while i < Array::length(args) {
+        ctm_collect_type_expr_heads(Array::get(args, i), out)
+        i = i + 1
+      }
+    },
+    TyTuple(elems) => {
+      let mut i = 0
+      while i < Array::length(elems) {
+        ctm_collect_type_expr_heads(Array::get(elems, i), out)
+        i = i + 1
+      }
+    },
+    TyFn(params, ret, _) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        ctm_collect_type_expr_heads(Array::get(params, i), out)
+        i = i + 1
+      }
+      ctm_collect_type_expr_heads(ret, out)
+    }
+  }
+}
+
+fn ctm_str_list_has(items: Array[String], wanted: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(items) && !found {
+    if Array::get(items, i) == wanted {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// #2125: the sentinel binding name prefix the checker's field/payload
+/// unknown-type enforcement recognises (see checker_stmt's
+/// `collect_deferred_type_name_sentinels`). Spelled here once; the checker
+/// mirrors the spelling.
+export let vpkg_deferred_type_names_prefix: String = "__vpkg_deferred_type_names_"
+
+/// #1840: the materialized types module's source text — the contract's
+/// type-family definitions verbatim (they are already exported by
+/// `classify_contract_stmts`), behind the idempotency marker.
+///
+/// #2125: when the definitions reference names the module can neither declare
+/// nor import, a sentinel `let <prefix><uniq>__: String = "N1 N2"` binding
+/// carries them IN-BAND, so every lane that checks this text — per-module,
+/// cached, or injected into a whole-program merge — exempts exactly those
+/// names at field/payload positions without any process-lifetime registry.
+/// `uniq` keeps the binding name collision-free when several contracts'
+/// modules meet in one merge.
+export fn contract_types_module_text(tds: Array[Stmt], uniq: String, contract_path: String, opaque_names: Array[(String, Int)], decl_pos: Array[String]) -> String {
+  let lines = array_empty()
+  Array::push(lines, vpkg_types_module_marker)
+  // Provenance, so a process holding only this text can still name the
+  // contract. Emitted even when empty so the header shape is uniform.
+  Array::push(lines, String::concat(vpkg_types_contract_marker, vpkg_path_escape_one_line(contract_path)))
+  let (decl_names, deferred) = ctm_deferred_type_names(tds, ctm_opaque_name_list(opaque_names))
+  if Array::length(deferred) == 0 {
+    ()
+  } else {
+    // `<declared> : <deferred>` -- the checker scopes the exemption to the
+    // declarations named BEFORE the `:` (Codex round 3 on #2162: in a
+    // whole-program merge an unscoped sentinel would excuse an unrelated
+    // declaration that misspelled or forgot to import one of these names).
+    Array::push(lines, "let \{vpkg_deferred_type_names_prefix}\{uniq}__: String = \"\{String::join(decl_names, " ")} : \{String::join(deferred, " ")}\"\n")
+  }
+  let mut i = 0
+  while i < Array::length(tds) {
+    // Position first, then the declaration it belongs to. A missing entry is
+    // simply omitted: the reader falls back to the stub's own position, which
+    // is what every stub written before this marker existed will do.
+    if i < Array::length(decl_pos) {
+      let dp = Array::get(decl_pos, i)
+      if dp == "" {
+        ()
+      } else {
+        Array::push(lines, String::concat(vpkg_types_decl_marker, dp))
+      }
+    } else {
+      ()
+    }
+    Array::push(lines, print_stmt(Array::get(tds, i)))
+    i = i + 1
+  }
+  String::concat(String::join(lines, "\n"), "\n")
+}
+
+/// #2317: the contract `line:col` for a 1-based line of a materialized types
+/// module, or "" when the stub carries no marker for it.
+///
+/// The NEAREST PRECEDING marker wins, so this stays correct however many lines
+/// `print_stmt` renders a declaration onto. Declaration-granular by
+/// construction: the printer rebuilds the declaration from the AST, so a
+/// column inside it cannot be recovered and is not claimed to be.
+///
+/// "" for a stub written before the marker existed, so the caller keeps the
+/// stub's own position rather than inventing one.
+export fn vpkg_types_decl_pos_for_line(source: String, stub_line: Int) -> String {
+  let lines = String::split(source, "\n")
+  let n = Array::length(lines)
+  let lim = if stub_line - 1 < n {
+    stub_line - 1
+  } else {
+    n
+  }
+  let mut i = 0
+  let mut found = ""
+  while i < lim {
+    let line = Array::get(lines, i)
+    if String::starts_with(line, vpkg_types_decl_marker) {
+      found = String::trim(String::substring(line, String::length(vpkg_types_decl_marker), String::length(line)))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// #2317: the contract a materialized types module was generated from, read
+/// from the module's OWN text, or "" when the marker is absent.
+///
+/// Text, not a registry: this has to answer the same way in the isolated
+/// worker lane, which never runs the loader. "" when absent, so a stub
+/// generated before this marker existed keeps the caller's fallback rather
+/// than producing a guess.
+export fn vpkg_types_contract_of_source(source: String) -> String {
+  let lines = String::split(source, "\n")
+  let n = Array::length(lines)
+  let mut i = 0
+  let mut found = ""
+  while i < n && found == "" {
+    let line = Array::get(lines, i)
+    if String::starts_with(line, vpkg_types_contract_marker) {
+      let raw = String::substring(line, String::length(vpkg_types_contract_marker), String::length(line))
+      // Verbatim, except a trailing CR. The marker is written with no padding,
+      // so trimming can only corrupt: a directory name may legally begin with
+      // a space, and the diagnostic would then name a file that does not exist
+      // (Codex review on #2324). The CR is the one exception -- splitting on
+      // "\n" leaves it on a CRLF file, and a CR inside the path is just as
+      // wrong as a lost space.
+      let raw_len = String::length(raw)
+      // Strip a trailing CR before decoding: the writer ESCAPES a real CR, so
+      // a literal one here can only have come from a CRLF line ending.
+      let line_body = if raw_len > 0 && String::char_code_at(raw, raw_len - 1) == 13 {
+        String::substring(raw, 0, raw_len - 1)
+      } else {
+        raw
+      }
+      found = vpkg_marker_decode(line_body)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// #1840: the `type <Name>` item list for importing / re-exporting the
+/// materialized types module (a `type` import binds the typedef AND, for an
+/// enum, its constructors — both bare and `Enum::Ctor`-qualified).
+export fn contract_types_item_names(tds: Array[Stmt]) -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(tds) {
+    match Array::get(tds, i) {
+      // This line is a compiler-owned carrier for already-checked transparent
+      // declarations, not a user's kind-qualified import claim. Keep it bare
+      // so parsing records ImportItem.kind=None; `type` would falsely assert
+      // that structs/enums are aliases under import-kind Phase 1.
+      SStruct(_, name, _, _, _, _) => Array::push(out, name),
+      SEnum(_, name, _, _, _) => Array::push(out, name),
+      STypeAlias(_, name, _, _) => Array::push(out, name),
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// #2968: the in-band carrier naming the effects and effectsets a contract
+/// declares, for its sibling implementation files. Those declarations stay in
+/// the facade, which a sibling cannot import (facade -> impl is already an
+/// edge), so without this a sibling's `with Ask` over the contract's
+/// `effect Ask` read as an unknown effect. Same shape as the #2125 deferred
+/// type-name sentinel: a `let` the checker reads, carried in the text so the
+/// isolated worker lane sees it too.
+export let vpkg_contract_effects_prefix: String = "__vpkg_contract_effects_"
+
+/// Placeholder the loader replaces with a per-sibling suffix, so two siblings
+/// of one contract never declare the same private name in a merged program.
+export let vpkg_contract_effects_sibling_slot: String = "SIBLING"
+
+/// The carrier line for `type_defs` (a contract's classified declarations), or
+/// "" when it declares no effect or effectset. Items are space-separated: an
+/// effect as `Name=Op1,Op2`, an effectset as its bare name.
+export fn contract_effect_names_line(type_defs: Array[Stmt]) -> String {
+  let names = array_empty()
+  let mut i = 0
+  while i < Array::length(type_defs) {
+    match Array::get(type_defs, i) {
+      // `Name=Op1,Op2`: the operations travel too, so a sibling's row naming
+      // an operation the contract does not declare is still refused.
+      SEffectDef(_, name, _, ops) => {
+        let op_names = array_empty()
+        let mut oi = 0
+        while oi < Array::length(ops) {
+          let (op_name, _, _) = Array::get(ops, oi)
+          Array::push(op_names, op_name)
+          oi = oi + 1
+        }
+        Array::push(names, String::concat(name, String::concat("=", String::join(op_names, ","))))
+      },
+      SEffectSet(_, name, _) => Array::push(names, name),
+      _ => ()
+    }
+    i = i + 1
+  }
+  if Array::length(names) == 0 {
+    ""
+  } else {
+    "let \{vpkg_contract_effects_prefix}\{vpkg_contract_effects_sibling_slot}__: String = \"\{String::join(names, " ")}\"\n"
+  }
+}
+
+/// #1840: one source line importing (keyword `import`) or re-exporting
+/// (keyword `export`) the materialized types module.
+export fn contract_types_module_line(keyword: String, types_path: String, tds: Array[Stmt]) -> String {
+  let items = contract_types_item_names(tds)
+  String::concat(keyword, String::concat(" ", String::concat(types_path, String::concat(" { ", String::concat(String::join(items, ", "), " }\n")))))
+}
+
+/// #897 (ADR-0070 Phase 1): does every item of a qualified `import <path> as
+/// <mod> only { x, y }` import get its dot-joined "mod.x" alias (parser.vibe's
+/// `qualify_import_items`)? Real identifiers can never contain '.', so a "."
+/// inside an item's alias is conclusive proof the import was written in the
+/// namespaced `as ... only` form, not the unqualified `import <path> { x, y }`
+/// form this module's directory-shared-scope feature applies to. Only the
+/// unqualified form is shared with sibling impl files -- the namespaced form's
+/// whole point is to keep `mod.x` the ONLY way in, so propagating it verbatim
+/// would defeat that.
+fn import_items_are_dot_qualified(items: Array[ImportItem]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(items) && !found {
+    let alias = Array::get(items, i).alias
+    match alias {
+      Some(a) => if String::index_of(a, ".") >= 0 {
+        found = true
+      } else {
+        ()
+      },
+      None => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// #897 (ADR-0070 Phase 1): a `.vpkg` contract's own UNQUALIFIED external
+/// dependency imports (`import @user/mod { x, y }`) -- the ones ADR-0070
+/// says register `x`/`y` into the package directory's SHARED scope, so any
+/// sibling `.vibe` implementation file can use them without its own import
+/// line. Scans the same non-declaration statement list `classify_contract_stmts`
+/// does (a contract's `extra`, pre-classification), but keeps the full
+/// `SImport` node (raw path + item names/aliases) instead of collapsing to a
+/// bare path string, and keeps only `@`-prefixed imports whose items are NOT
+/// namespace-qualified (see `import_items_are_dot_qualified`). Relative
+/// impl-file imports (`import ./impl.vibe {}`) and the namespaced `as mod
+/// only` form are excluded -- neither participates in directory-shared scope.
+export fn contract_directory_shared_imports(stmts: Array[Stmt]) -> Array[Stmt] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SImport(raw_path, items) =>
+      if String::starts_with(raw_path, "@") && !import_items_are_dot_qualified(items) {
+        Array::push(out, SImport(raw_path, items))
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// #897: render a `.vpkg` contract's directory-shared imports (see
+/// `contract_directory_shared_imports`) as literal `import ...` source lines,
+/// one per statement, each newline-terminated -- ready to PREPEND verbatim to
+/// a qualifying sibling `.vibe` file's own source text so every existing
+/// import-processing code path (checker env-binding, whole-program merge
+/// rename/alias-rewrite, header/dep extraction) sees the inherited import
+/// exactly as if the sibling had written it itself. `print_stmt` round-trips
+/// `SImport` back to valid `import <path> { name [as alias], ... }` syntax
+/// (parser.vibe/printer.vibe), so this needs no bespoke formatting. Empty
+/// input -> "" (nothing to prepend).
+export fn contract_directory_shared_import_prefix_text(stmts: Array[Stmt]) -> String {
+  let shared = contract_directory_shared_imports(stmts)
+  if Array::length(shared) == 0 {
+    ""
+  } else {
+    let lines = array_empty()
+    let mut i = 0
+    while i < Array::length(shared) {
+      Array::push(lines, print_stmt(Array::get(shared, i)))
+      i = i + 1
+    }
+    String::concat(String::join(lines, "\n"), "\n")
+  }
+}
+
+/// Desugar a conformance-checked contract to facade source text: one
+/// `export <raw> { names }` re-export line per implementation file, each
+/// declared name allocated to its first definer. The facade is plain vibe
+/// source, so everything downstream of the loader (type db, merge plan,
+/// codegen) needs no .vibei awareness — it rides the #716 re-export
+/// machinery unchanged.
+export fn contract_facade_source(decls: Array[(String, String)], opaque_names: Array[(String, Array[String])], type_defs: Array[Stmt], impl_units: Array[(String, Array[Stmt])], types_path: String) -> String with Exception {
+  let lines = array_empty()
+  // #1840: when the loader materialized a types module, the facade
+  // RE-EXPORTS the type family from it instead of defining it verbatim —
+  // the definitions must have exactly ONE site (a second identity for the
+  // same enum traps at runtime, #1879), and that site must be importable by
+  // sibling impl units (the facade is not: facade → impl would become a
+  // cycle). Effects / effectsets / anything non-type-family stay verbatim.
+  if types_path != "" {
+    Array::push(lines, contract_types_module_line("export", types_path, type_defs))
+  } else {
+    ()
+  }
+  let mut tdi = 0
+  while tdi < Array::length(type_defs) {
+    let td = Array::get(type_defs, tdi)
+    let in_types_module = if types_path == "" {
+      false
+    } else {
+      match td {
+        SStruct(_, _, _, _, _, _) => true,
+        SEnum(_, _, _, _, _) => true,
+        STypeAlias(_, _, _, _) => true,
+        _ => false
+      }
+    }
+    if in_types_module {
+      ()
+    } else {
+      Array::push(lines, print_stmt(td))
+    }
+    tdi = tdi + 1
+  }
+  let allocated = array_empty()
+  // Contract-declared compiler builtins have no implementation sibling. Keep
+  // their authority explicit in the generated plain-vibe facade.
+  let builtin_exports = array_empty()
+  let mut boi = 0
+  while boi < Array::length(opaque_names) {
+    let (oname, oparams) = Array::get(opaque_names, boi)
+    let oarity = Array::length(oparams)
+    let expected_arity = if oname == "Option" {
+      1
+    } else {
+      0
+    }
+    let is_builtin_type = match resolve_builtin(oname) {
+      Some(_) => expected_arity == oarity,
+      None => oname == "Option" && oarity == 1
+    }
+    if is_builtin_type {
+      Array::push(builtin_exports, oname)
+      Array::push(allocated, "type \{oname}")
+    } else ()
+    boi = boi + 1
+  }
+  let mut bdi = 0
+  while bdi < Array::length(decls) {
+    let (dname, _) = Array::get(decls, bdi)
+    match lookup_registry_builtin(dname) {
+      Some(_) => {
+        Array::push(builtin_exports, dname)
+        Array::push(allocated, dname)
+      },
+      None => if dname == "Int::to_string" {
+        Array::push(builtin_exports, dname)
+        Array::push(allocated, dname)
+      } else ()
+    }
+    bdi = bdi + 1
+  }
+  if Array::length(builtin_exports) > 0 {
+    Array::push(lines, "export { \{String::join(builtin_exports, ", ")} }")
+  } else ()
+  let mut ui = 0
+  while ui < Array::length(impl_units) {
+    let (raw, unit_stmts) = Array::get(impl_units, ui)
+    let defs = collect_impl_fn_defs(unit_stmts)
+    let unit_types = collect_impl_type_defs(unit_stmts)
+    // #847: a unit may satisfy a declaration purely via `export ./other.vibe
+    // { name }` (no direct SLet/SStruct/... def of its own) — `check_contract`
+    // already accepts this (a re-export is trusted at face value, same as any
+    // other impl declaration), so the facade must allocate it here too, or a
+    // contract that relies on re-export throws "some declarations have no
+    // implementation file" despite passing conformance.
+    let unit_reexported = collect_reexported_names(unit_stmts)
+    let names = array_empty()
+    let mut oi = 0
+    while oi < Array::length(opaque_names) {
+      let (oname, _) = Array::get(opaque_names, oi)
+      let mut otaken = false
+      let mut oai = 0
+      while oai < Array::length(allocated) {
+        if Array::get(allocated, oai) == "type \{oname}" {
+          otaken = true
+        } else ()
+        oai = oai + 1
+      }
+      if otaken {
+        ()
+      } else {
+        let mut here = array_contains_string(unit_reexported, oname)
+        let mut uti = 0
+        while uti < Array::length(unit_types) {
+          let (tname, _, _) = Array::get(unit_types, uti)
+          if tname == oname {
+            here = true
+          } else ()
+          uti = uti + 1
+        }
+        if here {
+          // Generated facade carrier: this does not assert that the opaque
+          // implementation is a type alias (it may be a struct or enum).
+          // Keep the import item bare so Phase 1 records kind=None.
+          Array::push(names, oname)
+          Array::push(allocated, "type \{oname}")
+        } else ()
+      }
+      oi = oi + 1
+    }
+    let mut di = 0
+    while di < Array::length(decls) {
+      let (dname, _) = Array::get(decls, di)
+      let mut taken = false
+      let mut ai = 0
+      while ai < Array::length(allocated) {
+        if Array::get(allocated, ai) == dname {
+          taken = true
+        } else ()
+        ai = ai + 1
+      }
+      if taken {
+        ()
+      } else {
+        let mut defined_here = array_contains_string(unit_reexported, dname)
+        let mut fi = 0
+        while fi < Array::length(defs) {
+          let (fname, _, fexp) = Array::get(defs, fi)
+          if fname == dname && fexp {
+            defined_here = true
+          } else ()
+          fi = fi + 1
+        }
+        if defined_here {
+          Array::push(names, dname)
+          Array::push(allocated, dname)
+        } else ()
+      }
+      di = di + 1
+    }
+    if Array::length(names) > 0 {
+      Array::push(lines, "export \{raw} { \{String::join(names, ", ")} }")
+    } else {
+      // #753: an impl unit with no allocated names must STILL appear in the
+      // facade. A facade with no import/export lines re-header-parses (the
+      // type_db lane re-reads collected sources under the .vibei path) to
+      // ZERO impl imports, which triggers sibling auto-discovery and pulls
+      // test files beside the package into its dep set — an `import .` test
+      // then manufactures "type_db: import cycle detected". Zero-name impl
+      // units are real for all-transparent-type packages (@vibe/ast).
+      Array::push(lines, "import \{raw} {}")
+    }
+    ui = ui + 1
+  }
+  if Array::length(allocated) != Array::length(decls) + Array::length(opaque_names) {
+    throw("contract facade: some declarations have no implementation file (run check_contract first)")
+  } else ()
+  String::concat(String::join(lines, "\n"), "\n")
+}

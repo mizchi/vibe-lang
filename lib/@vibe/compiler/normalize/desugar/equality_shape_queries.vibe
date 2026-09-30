@@ -1,0 +1,761 @@
+// Equality shape queries.
+
+import @vibe/compiler/core {
+  Expr, Pat, TypeExpr
+}
+
+import ./binding_shape_queries.vibe {
+  array_elem_type_of, shape_inner
+}
+
+import ./derive_operations.vibe {
+  collect_array_elem_types
+}
+
+import ./equality_aliases.vibe {
+  eq_expand_alias_ty
+}
+
+import ./equality_registry.vibe {
+  builtin_string_map_applied, eq_generic_enum_declared, generic_eq_struct_declared
+}
+
+import ./equality_requests.vibe {
+  type_key
+}
+
+import ./formal_scope.vibe {
+  is_scalar_type_name, subst_scope_formals_ty
+}
+
+import ./shape_environment.vibe {
+  shape_split
+}
+
+import ./state.vibe {
+  dtd_eq_generic_structs
+}
+
+import ./type_names.vibe {
+  lookup_var_type
+}
+
+import ./utilities.vibe {
+  empty_type_exprs, str_array_contains
+}
+
+/// Best-effort element TypeExpr of an array LITERAL, inferred from its first
+/// element: scalars and nested array literals only. An empty array, or a first
+/// element whose type is not statically obvious here (variables, struct records,
+/// calls), yields `None` — the caller then leaves a bare-array `==` as the
+/// status-quo scalar binop (documented #695 residual) rather than guessing.
+/// Is `e` an empty array literal `[]`? Used to reduce `[] == x` to a length check.
+export fn is_empty_array_lit(e: Expr) -> Bool {
+  match e {
+    EArray(elems) => Array::length(elems) == 0,
+    _ => false
+  }
+}
+
+export fn is_untyped_empty_array_name(e: Expr, var_types: Array[(String, String)]) -> Bool {
+  match e {
+    EIdent(name, _) => match lookup_var_type(var_types, eq_shape_key(name)) {
+      Some(sh) => sh == "[__EqEmpty]",
+      None => false
+    },
+    _ => false
+  }
+}
+
+/// #1526: the element type of an array operand reached through a NAME.
+///
+/// `infer_earray_elem_type` below only reads an array LITERAL, so the moment an
+/// array was bound to a name the bare `==` fell back to the runtime `eq`, which
+/// identity-compares -- `let a = [1, 2]; let c = [1, 2]; a == c` was `false`.
+/// The element type is not missing, though: `array_elem_bind` already records
+/// it for a let-bound array literal and `seed_var_types` for an `Array[T]`
+/// parameter, both under `array_elem_key` (#1199, for call-site dict
+/// synthesis). This just reads that back at the comparison site.
+///
+/// Scope is exactly what those two record -- a name whose element type this
+/// pass never inferred (an array returned by a function, an empty literal)
+/// still gets the identity `eq`, the documented #695 residual.
+export fn eq_var_array_elem(l: Expr, r: Expr, var_types: Array[(String, String)]) -> Option[TypeExpr] {
+  match eq_operand_elem_name(l, var_types) {
+    Some(n) => Some(TyName(n)),
+    None => match eq_operand_elem_name(r, var_types) {
+      Some(n) => Some(TyName(n)),
+      None => None
+    }
+  }
+}
+
+fn eq_operand_elem_name(e: Expr, var_types: Array[(String, String)]) -> Option[String] {
+  match e {
+    EIdent(name, _) => match array_elem_type_of(var_types, name) {
+      Some(n) => if eq_elem_name_dispatchable(n) {
+        Some(n)
+      } else {
+        None
+      },
+      None => None
+    },
+    _ => None
+  }
+}
+
+// ---- #1526 (ADR-0097): tuple-through-a-NAME `==`, the Array/Bytes arm ----
+//
+// A let-bound tuple already compares structurally at the CODEGEN level: the
+// `==` there drives a recursive walk over the binding's recorded shape
+// literal (compile_expr.vibe, #672/#724), which is why `(P::{x:1}, 0)` /
+// `(1, 2)` bound to names answer correctly in every backend. That walk's
+// Array leaf is the generic runtime `eq`, though — an identity compare — so
+// exactly the tuples that CONTAIN an Array (or Bytes) answered `false` for
+// equal values while the same tuple written as a literal answered `true`
+// (the #825 static dispatch catches literals before codegen ever sees them).
+//
+// So this dispatch deliberately triggers ONLY when the operand's recorded
+// shape mentions an Array or Bytes anywhere: everything else keeps the
+// codegen walk, whose per-element precision (ctor payloads, tracked
+// aliases) a flattened shape string cannot match. Where it does trigger, the
+// comparison routes through `eq_for_typed` with the declared-type list
+// (`dtd_eq_known_types`), so struct/enum elements still take their
+// `::equals` and only genuinely unknown positions fall to raw `==`.
+
+export fn eq_shape_key(pname: String) -> String {
+  String::concat("__eqshape$", pname)
+}
+
+/// Full equality shape of a function result. The space makes this key
+/// impossible to collide with a source-level function name.
+export fn fn_eq_shape_key(fname: String) -> String {
+  String::concat("eq return ", fname)
+}
+
+/// A constructor argument inside `{g:Head,...}`. Bare `Array`/`Map`/`Tuple`
+/// here are type constructors (`KBox[Array, Int]`), not complete values, so
+/// they must round-trip as `TyName` rather than the `?EqUnknown` marker
+/// `shape_to_eq_ty` uses for an element-free array binding.
+fn shape_to_eq_ctor_arg(sh: String) -> TypeExpr {
+  if sh == "Array" || sh == "Map" || sh == "Tuple" {
+    TyName(sh)
+  } else {
+    shape_to_eq_ty(sh)
+  }
+}
+
+/// A shape string back into the TypeExpr `eq_for_typed` dispatches on. An
+/// unknown position becomes the `?EqUnknown` marker (raw `==`, the status
+/// quo for that position). A bare "Option"/"Result" head keeps its
+/// structural match with unknown payloads — the same upgrade the bare-`==`
+/// name path applies via `opt_eq_match` — while a bare "Array"/"Tuple"/"Map"
+/// head carries nothing to dispatch on and stays unknown.
+export fn shape_to_eq_ty(sh: String) -> TypeExpr {
+  if String::length(sh) == 0 {
+    TyName("?EqUnknown")
+  } else if sh == "{u}" {
+    TyUnit
+  } else if String::starts_with(sh, "(") {
+    let parts = shape_split(shape_inner(sh))
+    let ts = empty_type_exprs()
+    let mut i = 0
+    while i < Array::length(parts) {
+      Array::push(ts, shape_to_eq_ty(Array::get(parts, i)))
+      i = i + 1
+    }
+    TyTuple(ts)
+  } else if String::starts_with(sh, "[") {
+    TyApp("Array", Array::slice([shape_to_eq_ty(shape_inner(sh))], 0, 1))
+  } else if String::starts_with(sh, "{o:") {
+    TyApp("Option", Array::slice([
+      shape_to_eq_ty(String::substring(sh, 3, String::length(sh) - 1))
+    ], 0, 1))
+  } else if String::starts_with(sh, "{m:") {
+    let parts = shape_split(String::substring(sh, 3, String::length(sh) - 1))
+    if Array::length(parts) == 2 {
+      TyApp("Map", Array::slice([
+        shape_to_eq_ty(Array::get(parts, 0)),
+        shape_to_eq_ty(Array::get(parts, 1))
+      ], 0, 2))
+    } else {
+      TyName("?EqUnknown")
+    }
+  } else if String::starts_with(sh, "{r:") {
+    let parts = shape_split(String::substring(sh, 3, String::length(sh) - 1))
+    if Array::length(parts) == 2 {
+      TyApp("Result", Array::slice([
+        shape_to_eq_ty(Array::get(parts, 0)),
+        shape_to_eq_ty(Array::get(parts, 1))
+      ], 0, 2))
+    } else {
+      TyName("?EqUnknown")
+    }
+  } else if String::starts_with(sh, "{g:") {
+    let parts = shape_split(String::substring(sh, 3, String::length(sh) - 1))
+    if Array::length(parts) > 1 {
+      let args = empty_type_exprs()
+      let mut i = 0
+      while i + 1 < Array::length(parts) {
+        Array::push(args, shape_to_eq_ctor_arg(Array::get(parts, i + 1)))
+        i = i + 1
+      }
+      TyApp(Array::get(parts, 0), args)
+    } else {
+      TyName("?EqUnknown")
+    }
+  } else if sh == "Option" {
+    TyApp("Option", Array::slice([TyName("?EqUnknown")], 0, 1))
+  } else if sh == "Result" {
+    TyApp("Result", Array::slice([TyName("?EqUnknown"), TyName("?EqUnknown")], 0, 2))
+  } else if sh == "Array" || sh == "Tuple" || sh == "Map" {
+    TyName("?EqUnknown")
+  } else {
+    TyName(sh)
+  }
+}
+
+/// Does the dispatch type mention a head the codegen walk gets WRONG anywhere?
+/// This is the trigger condition: a composite shape without one is already
+/// compared correctly by that walk, and re-routing it here could only lose
+/// precision.
+///
+/// `Array` and `Bytes` were the original two. `Map` joined them in #2218 -- it
+/// has the same property (the raw `==` compares the reference) and it now has
+/// the same remedy (a generated `__map_equals__` helper). The name kept its
+/// two original heads for one release too long and said something false about
+/// the third; it is spelled by intent now.
+///
+/// `Double` joined them in #2431, for the same reason and with a remedy that
+/// was already written: `eq_for_typed`'s `Double` arm wraps each side in the
+/// identity `Double::to_float` so the `==` codegen recognises the operands as
+/// floatish and takes the unbox-then-`f64.eq` path. The walk this trigger
+/// diverts from gets a Double field wrong on EVERY lane -- raw bits separate
+/// `0.0` from `-0.0` and equate two NaNs, neither of which IEEE 754 says, and
+/// under RC a Double field is a BOXED value, so the generic `eq` compares box
+/// identity and two structurally equal tuples come out unequal. Note this
+/// cannot re-route a BARE `Double == Double`: `eq_operand_shape_ty` requires a
+/// COMPOSITE shape, and a scalar binding records none. Only a Double reached
+/// as a tuple element, a constructor field or a container payload changes.
+export fn ty_needs_typed_eq(t: TypeExpr) -> Bool {
+  ty_needs_typed_eq_expanded(eq_expand_alias_ty(subst_scope_formals_ty(t)))
+}
+
+fn ty_needs_typed_eq_expanded(t: TypeExpr) -> Bool {
+  match t {
+    TyName(n) => n == "Bytes" || n == "Double" || n == "Float",
+    TyApp(n, args) => if n == "Array" || n == "Map" || builtin_string_map_applied(n, args) || generic_eq_struct_declared(n) || (eq_generic_enum_declared(n) && Array::length(args) > 0) {
+      // #2467: a generic ENUM instantiation reached through a name takes
+      // its specialized comparator, as a generic struct's does; through the
+      // bare-name rung it called the derived `Wrap::equals`, whose erased
+      // `==` answered `true` for `W(64 << 32) == W(65 << 32)` (#2457 row 4).
+      true
+    } else {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(args) {
+        if ty_needs_typed_eq_expanded(Array::get(args, i)) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    TyTuple(ts) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(ts) {
+        if ty_needs_typed_eq_expanded(Array::get(ts, i)) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+/// Codex P1 on PR #1565: what `array_elem_key` stores is a bare HEAD NAME, not
+/// a TypeExpr, so it cannot be wrapped in `TyName` and trusted. Two kinds of
+/// entry are not element types at all:
+///
+///   - a head that lost its arguments: a let-bound `[[1, 2]]` records just
+///     "Array", a `[(1, 2)]` just "Tuple". `TyName("Array")` would name a
+///     helper `__arr_equals__Array` whose element comparison degrades to a raw
+///     `==` -- no worse than the identity fallback, but it spends a generated
+///     function to buy nothing.
+///   - an in-scope TYPE VARIABLE: `fn same[T](x: Array[T], y: Array[T])`
+///     records "T". The concrete type is erased, so nothing type-directed can
+///     be resolved from it.
+///
+/// A declared struct/enum name is excluded too, deliberately: `eq_for_typed`
+/// would emit `N::equals`, which only exists when N derives Eq. Routing a
+/// name-reached array there would turn a program that compiles today into an
+/// `undefined variable` -- so this stays at the scalars, which are exactly the
+/// ones `eq_for_typed` compares correctly with no generated dependency. An
+/// array of structs reached through a name keeps the identity `eq` it has
+/// always had.
+fn eq_elem_name_dispatchable(n: String) -> Bool {
+  is_scalar_type_name(n)
+}
+
+export fn infer_earray_elem_type(arr: Expr) -> Option[TypeExpr] {
+  match arr {
+    EArray(elems) => if Array::length(elems) == 0 {
+      None
+    } else {
+      match Array::get(elems, 0) {
+        EInt(_) => Some(TyName("Int")),
+        EBool(_) => Some(TyName("Bool")),
+        EString(_, _) => Some(TyName("String")),
+        EFloat(_) => Some(TyName("Double")),
+        EArray(_) => match infer_earray_elem_type(Array::get(elems, 0)) {
+          Some(inner) => Some(TyApp("Array", Array::slice([inner], 0, 1))),
+          None => None
+        },
+        _ => None
+      }
+    },
+    _ => None
+  }
+}
+
+/// The unknown-position marker. Its spelling starts with `?`, which cannot
+/// begin an identifier, so no source declaration can produce the same
+/// `TyName` (Codex rounds 2-3 on #2471: spelled `__EqUnknown` it collided
+/// with a legal `struct __EqUnknown`, and every position the literal
+/// inference could not name dispatched to that struct's comparator over
+/// whatever word sat there). It never reaches generated source --
+/// `derive_array_helper_tparams_test.vibe` pins that -- and a leak would now
+/// fail to parse rather than name a user type.
+///
+/// #825: does `t` contain the `?EqUnknown` marker anywhere? Used to keep the
+/// marker out of generated `__arr_equals__<key>` helper names/annotations (an
+/// Array element type must be fully concrete to be usable).
+export fn ty_contains_eq_unknown(t: TypeExpr) -> Bool {
+  match t {
+    TyName(n) => n == "?EqUnknown",
+    TyApp(_, args) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(args) {
+        if ty_contains_eq_unknown(Array::get(args, i)) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    TyTuple(ts) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(ts) {
+        if ty_contains_eq_unknown(Array::get(ts, i)) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+fn generic_record_direct_arg(fields: Array[(String, Expr)], decl_fields: Array[(String, TypeExpr)], param: String, i: Int) -> Option[TypeExpr] {
+  if i >= Array::length(decl_fields) {
+    None
+  } else {
+    let (decl_name, decl_ty) = Array::get(decl_fields, i)
+    match decl_ty {
+      TyName(n) => if n == param {
+        let mut j = 0
+        let mut out: Option[TypeExpr] = None
+        while j < Array::length(fields) {
+          let (value_name, value_expr) = Array::get(fields, j)
+          if value_name == decl_name {
+            out = infer_static_eq_type(value_expr)
+          } else {
+            ()
+          }
+          j = j + 1
+        }
+        out
+      } else {
+        generic_record_direct_arg(fields, decl_fields, param, i + 1)
+      },
+      _ => generic_record_direct_arg(fields, decl_fields, param, i + 1)
+    }
+  }
+}
+
+export fn infer_generic_record_static(name: String, fields: Array[(String, Expr)], i: Int) -> Option[TypeExpr] {
+  if i >= Array::length(dtd_eq_generic_structs) {
+    None
+  } else {
+    let (decl_name, params, decl_fields) = Array::get(dtd_eq_generic_structs, i)
+    if decl_name == name && Array::length(params) == 1 {
+      match generic_record_direct_arg(fields, decl_fields, Array::get(params, 0), 0) {
+        Some(arg) => Some(TyApp(name, Array::slice([arg], 0, 1))),
+        None => infer_generic_record_static(name, fields, i + 1)
+      }
+    } else {
+      infer_generic_record_static(name, fields, i + 1)
+    }
+  }
+}
+
+/// #825: best-effort full STATIC TypeExpr of a bare `==` operand, inferred from
+/// literal syntax alone (no environment). Where the name-based `==` dispatch
+/// only recovers a head name ("Option"/"Result") and compares payloads with a
+/// raw word `==`, this recovers the payload SHAPE too, so
+/// `Some([1,2]) == Some([1,2])` / `Ok([1,2]) == Ok([1,2])` /
+/// `Some(Some(1)) == Some(Some(1))` / `([1,2], 0) == ([1,2], 0)` route through
+/// the fully-recursive `eq_for_typed` instead of identity-comparing aggregate
+/// payloads. A position whose type is not statically obvious yields the marker
+/// `TyName("?EqUnknown")` — never a scalar or declared type, so `eq_for_typed`
+/// falls back to raw `==` there (exactly the status-quo behavior for that
+/// position). An Array element type must be marker-free (else the whole array
+/// is uninferable): the element type names the generated `__arr_equals__<key>`
+/// helper and appears in its parameter annotations, where the marker would not
+/// resolve.
+export fn infer_static_eq_type(e: Expr) -> Option[TypeExpr] {
+  match e {
+    EInt(_) => Some(TyName("Int")),
+    EBool(_) => Some(TyName("Bool")),
+    EString(_, _) => Some(TyName("String")),
+    EFloat(_) => Some(TyName("Double")),
+    EUnit => Some(TyUnit),
+    // #2457: an operator expression whose result is an Int / Bool word by
+    // construction. A shift or bitwise operator admits only Int operands; a
+    // comparison or logical operator yields Bool; `~` is Int (#2344) and `!`
+    // is Bool. Arithmetic is named Int only when BOTH operands are named Int
+    // here -- `1.5 + x` must not become an Int leaf (a Double compares
+    // through `Double::to_float`, never a word compare). Anything else stays
+    // unnamed, exactly as before: an unknown leaf keeps the raw compare, a
+    // guessed one would be the worse bug.
+    EBinOp(bop, bl, br, _) => if bop == "<<" || bop == ">>" || bop == "&" || bop == "|" || bop == "^" || bop == "%" {
+      Some(TyName("Int"))
+    } else if bop == "<" || bop == ">" || bop == "<=" || bop == ">=" || bop == "==" || bop == "!=" || bop == "&&" || bop == "||" {
+      Some(TyName("Bool"))
+    } else if bop == "+" || bop == "-" || bop == "*" || bop == "/" {
+      let both_int = match infer_static_eq_type(bl) {
+        Some(TyName(ln)) => ln == "Int" && (match infer_static_eq_type(br) {
+          Some(TyName(rn)) => rn == "Int",
+          _ => false
+        }),
+        _ => false
+      }
+      if both_int {
+        Some(TyName("Int"))
+      } else {
+        None
+      }
+    } else {
+      None
+    },
+    EUnaryOp(uop, _) => if uop == "~" {
+      Some(TyName("Int"))
+    } else if uop == "!" {
+      Some(TyName("Bool"))
+    } else {
+      None
+    },
+    ERecord(name, fields, targs) => if generic_eq_struct_declared(name) && Array::length(targs) > 0 {
+      Some(TyApp(name, targs))
+    } else if generic_eq_struct_declared(name) {
+      infer_generic_record_static(name, fields, 0)
+    } else {
+      None
+    },
+    EArray(elems) => if Array::length(elems) == 0 {
+      None
+    } else {
+      match infer_static_eq_type(Array::get(elems, 0)) {
+        Some(t) => if ty_contains_eq_unknown(t) {
+          None
+        } else {
+          Some(TyApp("Array", Array::slice([t], 0, 1)))
+        },
+        None => None
+      }
+    },
+    ETuple(es) => {
+      let ts = empty_type_exprs()
+      let mut i = 0
+      while i < Array::length(es) {
+        match infer_static_eq_type(Array::get(es, i)) {
+          Some(t) => Array::push(ts, t),
+          None => Array::push(ts, TyName("?EqUnknown"))
+        }
+        i = i + 1
+      }
+      Some(TyTuple(ts))
+    },
+    EIdent(n, _) => if n == "None" {
+      Some(TyApp("Option", Array::slice([TyName("?EqUnknown")], 0, 1)))
+    } else {
+      None
+    },
+    ECall(callee, args, _) => match callee {
+      // #825 review follow-up: the docs' qualified ctor spellings
+      // (`Option::Some` / `Result::Ok` / `Result::Err`) must infer the same
+      // shape as the bare forms — they fell through to the name-only path
+      // where aggregate payloads word-compare.
+      EIdent("Option::Some", _) => if Array::length(args) == 1 {
+        let pt = match infer_static_eq_type(Array::get(args, 0)) {
+          Some(t) => t,
+          None => TyName("?EqUnknown")
+        }
+        Some(TyApp("Option", Array::slice([pt], 0, 1)))
+      } else {
+        None
+      },
+      EIdent("Result::Ok", _) => if Array::length(args) == 1 {
+        let pt = match infer_static_eq_type(Array::get(args, 0)) {
+          Some(t) => t,
+          None => TyName("?EqUnknown")
+        }
+        Some(TyApp("Result", Array::slice([pt, TyName("?EqUnknown")], 0, 2)))
+      } else {
+        None
+      },
+      EIdent("Result::Err", _) => if Array::length(args) == 1 {
+        let pt = match infer_static_eq_type(Array::get(args, 0)) {
+          Some(t) => t,
+          None => TyName("?EqUnknown")
+        }
+        Some(TyApp("Result", Array::slice([TyName("?EqUnknown"), pt], 0, 2)))
+      } else {
+        None
+      },
+      EIdent("Some", _) => if Array::length(args) == 1 {
+        let pt = match infer_static_eq_type(Array::get(args, 0)) {
+          Some(t) => t,
+          None => TyName("?EqUnknown")
+        }
+        Some(TyApp("Option", Array::slice([pt], 0, 1)))
+      } else {
+        None
+      },
+      EIdent("Ok", _) => if Array::length(args) == 1 {
+        let pt = match infer_static_eq_type(Array::get(args, 0)) {
+          Some(t) => t,
+          None => TyName("?EqUnknown")
+        }
+        Some(TyApp("Result", Array::slice([pt, TyName("?EqUnknown")], 0, 2)))
+      } else {
+        None
+      },
+      EIdent("Err", _) => if Array::length(args) == 1 {
+        let pt = match infer_static_eq_type(Array::get(args, 0)) {
+          Some(t) => t,
+          None => TyName("?EqUnknown")
+        }
+        Some(TyApp("Result", Array::slice([TyName("?EqUnknown"), pt], 0, 2)))
+      } else {
+        None
+      },
+      _ => None
+    },
+    _ => None
+  }
+}
+
+/// #825 review follow-up: pick the static shape for `l == r` from whichever
+/// side is MORE concrete. A left-first choice masked a fully concrete right
+/// shape — `let xs = [1, 2]; Some(xs) == Some([1, 2])` inferred the left as
+/// `Option[?EqUnknown]` and the payload fell back to raw word `==`. Prefer a
+/// marker-free shape; between two partial shapes keep the left one.
+export fn infer_static_eq_type_binop(l: Expr, r: Expr) -> Option[TypeExpr] {
+  let lt = infer_static_eq_type(l)
+  let rt = infer_static_eq_type(r)
+  match lt {
+    Some(lty) => if ty_contains_eq_unknown(lty) {
+      match rt {
+        Some(rty) => if ty_contains_eq_unknown(rty) {
+          Some(lty)
+        } else {
+          Some(rty)
+        },
+        None => Some(lty)
+      }
+    } else {
+      Some(lty)
+    },
+    None => rt
+  }
+}
+
+/// #825: shapes worth dispatching through `eq_for_typed` at a bare `==` site.
+/// Only the aggregate shapes the runtime word-compare gets wrong; scalars keep
+/// the raw binop and anything unrecognized falls back to the name-based
+/// dispatch (which preserves the pre-#825 behavior).
+export fn static_eq_dispatchable(t: TypeExpr) -> Bool {
+  match t {
+    TyApp(n, args) => (n == "Option" && Array::length(args) == 1) || (n == "Result" && Array::length(args) == 2) || (n == "Array" && Array::length(args) == 1) || (generic_eq_struct_declared(n) && Array::length(args) > 0) || (eq_generic_enum_declared(n) && Array::length(args) > 0),
+    TyTuple(_) => true,
+    _ => false
+  }
+}
+
+/// Walk an expression and, for every `a == b` / `a != b` whose operand is an
+/// array LITERAL with a determinable element type, collect that element type so a
+/// `__arr_equals__<key>` helper is generated for the dispatch rewrite to call.
+export fn collect_bare_array_eq_keys(e: Expr, acc: Array[TypeExpr], acc_keys: Array[String]) -> Unit {
+  match e {
+    EBinOp(op, l, r, _) => {
+      if op == "==" || op == "!=" {
+        let et = match infer_earray_elem_type(l) {
+          Some(t) => Some(t),
+          None => infer_earray_elem_type(r)
+        }
+        match et {
+          Some(t) => {
+            let k = type_key(t)
+            if !str_array_contains(acc_keys, k) {
+              Array::push(acc, t)
+              Array::push(acc_keys, k)
+            } else {
+              ()
+            }
+            collect_array_elem_types(t, acc, acc_keys)
+          },
+          None => ()
+        }
+        // #825: the full static-shape dispatch can surface Array element types
+        // nested inside Option/Result/tuple literals (`Some([1,2]) == ...`,
+        // `([1,2], 0) == ...`, `[Some(1)] == ...`) — collect them so their
+        // `__arr_equals__<key>` helpers exist for `eq_for_typed`'s calls.
+        let sty = infer_static_eq_type_binop(l, r)
+        match sty {
+          Some(t2) => collect_array_elem_types(t2, acc, acc_keys),
+          None => ()
+        }
+      } else {
+        ()
+      }
+      collect_bare_array_eq_keys(l, acc, acc_keys)
+      collect_bare_array_eq_keys(r, acc, acc_keys)
+    },
+    EInt(_) => (),
+    EFloat(_) => (),
+    EString(_, _) => (),
+    EBool(_) => (),
+    EIdent(_, _) => (),
+    EUnit => (),
+    ETuple(es) => collect_bare_array_eq_keys_list(es, acc, acc_keys),
+    EArray(es) => collect_bare_array_eq_keys_list(es, acc, acc_keys),
+    ERecord(_, fs, _) => {
+      let mut i = 0
+      while i < Array::length(fs) {
+        let (_, fe) = Array::get(fs, i)
+        collect_bare_array_eq_keys(fe, acc, acc_keys)
+        i = i + 1
+      }
+    },
+    EMap(fs) => {
+      let mut i = 0
+      while i < Array::length(fs) {
+        let (_, fe) = Array::get(fs, i)
+        collect_bare_array_eq_keys(fe, acc, acc_keys)
+        i = i + 1
+      }
+    },
+    EIf(c, t, el) => {
+      collect_bare_array_eq_keys(c, acc, acc_keys)
+      collect_bare_array_eq_keys(t, acc, acc_keys)
+      collect_bare_array_eq_keys(el, acc, acc_keys)
+    },
+    ELet(_, v, b, _) => {
+      collect_bare_array_eq_keys(v, acc, acc_keys)
+      collect_bare_array_eq_keys(b, acc, acc_keys)
+    },
+    ELetRec(_, v, b) => {
+      collect_bare_array_eq_keys(v, acc, acc_keys)
+      collect_bare_array_eq_keys(b, acc, acc_keys)
+    },
+    ELetMut(_, v, b, _) => {
+      collect_bare_array_eq_keys(v, acc, acc_keys)
+      collect_bare_array_eq_keys(b, acc, acc_keys)
+    },
+    EAssign(_, v, c) => {
+      collect_bare_array_eq_keys(v, acc, acc_keys)
+      collect_bare_array_eq_keys(c, acc, acc_keys)
+    },
+    EAssignOp(_, _, v, c) => {
+      collect_bare_array_eq_keys(v, acc, acc_keys)
+      collect_bare_array_eq_keys(c, acc, acc_keys)
+    },
+    ESeq(a, b) => {
+      collect_bare_array_eq_keys(a, acc, acc_keys)
+      collect_bare_array_eq_keys(b, acc, acc_keys)
+    },
+    EMatch(s, arms) => {
+      collect_bare_array_eq_keys(s, acc, acc_keys)
+      collect_bare_array_eq_keys_arms(arms, acc, acc_keys)
+    },
+    EHandle(s, arms) => {
+      collect_bare_array_eq_keys(s, acc, acc_keys)
+      collect_bare_array_eq_keys_arms(arms, acc, acc_keys)
+    },
+    EWhile(c, b) => {
+      collect_bare_array_eq_keys(c, acc, acc_keys)
+      collect_bare_array_eq_keys(b, acc, acc_keys)
+    },
+    ELoop(params, b) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        let (_, init) = Array::get(params, i)
+        collect_bare_array_eq_keys(init, acc, acc_keys)
+        i = i + 1
+      }
+      collect_bare_array_eq_keys(b, acc, acc_keys)
+    },
+    EForIn(_, _, it, b) => {
+      collect_bare_array_eq_keys(it, acc, acc_keys)
+      collect_bare_array_eq_keys(b, acc, acc_keys)
+    },
+    ECall(callee, args, _) => {
+      collect_bare_array_eq_keys(callee, acc, acc_keys)
+      collect_bare_array_eq_keys_list(args, acc, acc_keys)
+    },
+    EUnaryOp(_, x) => collect_bare_array_eq_keys(x, acc, acc_keys),
+    EFn(_, _, _, _, _, b) => collect_bare_array_eq_keys(b, acc, acc_keys),
+    EDot(o, _, _, _) => collect_bare_array_eq_keys(o, acc, acc_keys),
+    ELabeledArg(_, _, b) => collect_bare_array_eq_keys(b, acc, acc_keys),
+    EReturn(x) => collect_bare_array_eq_keys(x, acc, acc_keys),
+    EBreak(opt) => match opt {
+      Some(x) => collect_bare_array_eq_keys(x, acc, acc_keys),
+      None => ()
+    },
+    EContinue(es) => collect_bare_array_eq_keys_list(es, acc, acc_keys),
+    ESpread(x) => collect_bare_array_eq_keys(x, acc, acc_keys),
+    _ => ()
+  }
+}
+
+fn collect_bare_array_eq_keys_list(es: Array[Expr], acc: Array[TypeExpr], acc_keys: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(es) {
+    collect_bare_array_eq_keys(Array::get(es, i), acc, acc_keys)
+    i = i + 1
+  }
+}
+
+fn collect_bare_array_eq_keys_arms(arms: Array[(Pat, Expr)], acc: Array[TypeExpr], acc_keys: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (_, b) = Array::get(arms, i)
+    collect_bare_array_eq_keys(b, acc, acc_keys)
+    i = i + 1
+  }
+}

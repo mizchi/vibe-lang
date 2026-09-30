@@ -1,0 +1,1703 @@
+// lib/@vibe/compiler/user_dispatch.vibe — selfhost cli user grep args.
+
+import @vibe/compiler/cache {
+  ingestion_fingerprint_telemetry_json, set_ingestion_fingerprint_telemetry_enabled
+}
+
+import @vibe/compiler/contract {
+  extract_require_pins
+}
+
+import @vibe/compiler/entry/compiler/file_compile {
+  compile_file_fs_mode
+}
+
+import @vibe/compiler/entry/source_compile/wasi_only {
+  comp_emit_component_wasm_command
+}
+
+import @vibe/compiler/fmt {
+  format_source, source_header_end
+}
+
+import @vibe/compiler/loader {
+  collect_source_groups_fs,
+  fill_require_pins_lenient,
+  ingest_source_text_fs,
+  ingestion_pipeline_telemetry_json,
+  load_or_parse_module_header_fs,
+  set_ingestion_pipeline_telemetry_enabled
+}
+
+import @vibe/compiler/normalize {
+  normalize_source
+}
+
+import @vibe/compiler/runtime {
+  alloc_spans,
+  binding_occurrences,
+  collect_all_diagnostics_with_unstable_for_path,
+  doc_at_source,
+  escape_spans,
+  escape_spans_strict,
+  grep_collect_files,
+  grep_file_list_banner,
+  grep_list_files,
+  grep_read_file_list,
+  grep_scan_files_report,
+  incremental_invalidation_trace_json,
+  incremental_typecheck_telemetry_json,
+  rc_classify_source,
+  rc_plan_source,
+  set_experimental_typing_dependency_env_reuse_enabled,
+  set_incremental_interface_trace_enabled,
+  set_incremental_typecheck_telemetry_enabled,
+  symbol_spans_fs_report,
+  symbol_spans_locate_failure,
+  symbol_spans_with_docs_for_path,
+  type_at_ident_at,
+  type_at_source
+}
+
+import @vibe/compiler/checker {
+  authority_for_capability_flag
+}
+
+import @vibe/compiler/core {
+  Stmt
+}
+
+import @vibe/compiler/syntax {
+  lex
+}
+
+import ./cli_support.vibe {
+  check_builtin_shadowing_warnings_from_source_groups,
+  check_deprecated_warnings_from_source_groups,
+  check_let_star_warnings_from_source_groups,
+  check_linked_file_source_groups,
+  check_redundant_import_warnings_from_source_groups,
+  command_component_compile_mode,
+  command_component_entry,
+  unstable_closure_reset,
+  write_linked_debug_build_checked
+}
+
+import ./inspect_update.vibe {
+  compute_updated_source
+}
+
+import ./wit_gen.vibe {
+  wit_from_program
+}
+
+import @vibe/lsp {
+  lsp_diagnostics_json_of_messages, lsp_diagnostics_json_of_messages_for
+}
+
+import ./user_refactor.vibe {
+  selfhost_cli_user_refactor_args
+}
+
+import ./user_dispatch_selfhost_cli_test_plan_args.vibe {
+  basename_of,
+  compile_user_artifact,
+  default_build_dir,
+  display_under_root,
+  ensure_parent_dir,
+  format_check_report,
+  is_check_report_continuation,
+  is_vibex_path,
+  line_terminated,
+  need_value,
+  no_grants,
+  parse_error_of,
+  parse_jobs_value,
+  parse_user_check_args,
+  parse_user_entry_file,
+  path_has_suffix,
+  print_text,
+  program_parses,
+  reject_unstable_closure_surface,
+  reject_unstable_entry_surface,
+  resolve_user_build_output,
+  rewrite_user_argv,
+  selfhost_cli_user_bench_args,
+  selfhost_cli_user_hash_args,
+  selfhost_cli_user_help_args,
+  selfhost_cli_user_inspect_update_args,
+  selfhost_cli_user_lsp_args,
+  selfhost_cli_user_profile_args,
+  selfhost_cli_user_run_args,
+  selfhost_cli_user_serve_args,
+  selfhost_cli_user_test_args,
+  strip_vibe_suffix,
+  unstable_opt_in,
+  user_check_scan,
+  user_check_single,
+  user_dispatch_parse_int_or,
+  write_host_action,
+  write_user_executable,
+  write_wasm
+}
+
+/// Every positional argument of `vibe check` is a file to check; the flags
+/// that take a value are skipped with it. `parse_user_check_args` validates
+/// the flags and names the first file, this names them all.
+fn user_check_paths(args: Array[String]) -> Array[String] {
+  let paths: Array[String] = []
+  let mut i = 1
+  while i < Array::length(args) {
+    let arg = Array::get(args, i)
+    if arg == "--jobs" || arg == "--profile" || arg == "--profile-tsv" || arg == "--profile-callstack" {
+      i = i + 2
+    } else if String::length(arg) > 0 && String::byte_at(arg, 0) == 45 {
+      i = i + 1
+    } else {
+      Array::push(paths, arg)
+      i = i + 1
+    }
+  }
+  paths
+}
+
+fn has_control_char(value: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < String::length(value) {
+    let c = String::byte_at(value, i)
+    if c < 32 || c == 127 {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn remove_stale_sidecar(path: String) -> Unit with Fs {
+  if path != "" && Fs::exists(path) {
+    Fs::remove(path)
+  } else {
+    ()
+  }
+}
+
+fn write_warning_rows(rows: Array[String]) -> Unit with Stderr {
+  if Array::length(rows) > 0 {
+    Stderr::write_stream(line_terminated(String::join(rows, "\n")))
+  } else {
+    ()
+  }
+}
+
+/// The import-resolving check, with the policy and observation the adapter's
+/// former check-only branch carried (Codex review of #2858):
+///
+/// - typing-dependency-env reuse is the production default for this lane
+///   (`VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE=1` opts out; an invalidation
+///   trace forces it off so the trace stays observation-only);
+/// - the opt-in sidecars -- `VIBE_INCREMENTAL_TELEMETRY_OUT`,
+///   `VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT` (+ nonce),
+///   `VIBE_INGESTION_TELEMETRY_OUT` (+ nonce) and
+///   `VIBE_INGESTION_PIPELINE_TELEMETRY_OUT` (+ nonce) -- are removed before
+///   the check and published only after it succeeds, so a stale file never
+///   reads as this check's result (`scripts/edit_cycle_kpi.mjs` reads them);
+/// - the deprecated-use, redundant-import and builtin-shadowing warnings are
+///   collected from the checked source groups and written to stderr, leaving
+///   stdout and the exit code to the errors.
+///
+/// ADR-0068 applies as on every artifact path: the closure gate is asked after
+/// the walk, so a program the build refuses for an unstable import is reported
+/// by `vibe check` too rather than answered clean.
+fn user_check_linked(src: String) -> Int with Exception + Fs + Env + Stderr {
+  if !Fs::exists(src) {
+    throw(String::concat("not found: ", src))
+  } else {
+    let disable_reuse = Env::get("VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE")
+    let telemetry_out = Env::get("VIBE_INCREMENTAL_TELEMETRY_OUT")
+    let trace_out = Env::get("VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT")
+    let trace_nonce = Env::get("VIBE_INCREMENTAL_INVALIDATION_TRACE_NONCE")
+    let ingestion_out = Env::get("VIBE_INGESTION_TELEMETRY_OUT")
+    let ingestion_nonce = Env::get("VIBE_INGESTION_TELEMETRY_NONCE")
+    let pipeline_out = Env::get("VIBE_INGESTION_PIPELINE_TELEMETRY_OUT")
+    let pipeline_nonce = Env::get("VIBE_INGESTION_PIPELINE_TELEMETRY_NONCE")
+    if disable_reuse != "" && disable_reuse != "1" {
+      throw("VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE must be exactly 1 when set")
+    } else {
+      ()
+    }
+    set_experimental_typing_dependency_env_reuse_enabled(disable_reuse != "1" && trace_out == "")
+    remove_stale_sidecar(telemetry_out)
+    remove_stale_sidecar(trace_out)
+    remove_stale_sidecar(ingestion_out)
+    remove_stale_sidecar(pipeline_out)
+    if trace_out != "" && trace_nonce == "" {
+      throw("VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT requires VIBE_INCREMENTAL_INVALIDATION_TRACE_NONCE")
+    } else if ingestion_out != "" && (ingestion_nonce == "" || has_control_char(ingestion_nonce)) {
+      throw("VIBE_INGESTION_TELEMETRY_OUT requires a non-empty control-free VIBE_INGESTION_TELEMETRY_NONCE")
+    } else if pipeline_out != "" && (pipeline_nonce == "" || has_control_char(pipeline_nonce)) {
+      throw("VIBE_INGESTION_PIPELINE_TELEMETRY_OUT requires a non-empty control-free VIBE_INGESTION_PIPELINE_TELEMETRY_NONCE")
+    } else {
+      ()
+    }
+    set_incremental_typecheck_telemetry_enabled(telemetry_out != "" || trace_out != "")
+    set_ingestion_fingerprint_telemetry_enabled(ingestion_out != "")
+    set_ingestion_pipeline_telemetry_enabled(pipeline_out != "")
+    set_incremental_interface_trace_enabled(trace_out != "")
+    reject_unstable_entry_surface(src)
+    unstable_closure_reset()
+    let groups = check_linked_file_source_groups(src)
+    let _ = Env::get("VIBE_PROFILE_MEMORY_MARK:check_groups_done")
+    if telemetry_out != "" {
+      Fs::write_file(telemetry_out, incremental_typecheck_telemetry_json())
+    } else {
+      ()
+    }
+    if trace_out != "" {
+      Fs::write_file(trace_out, incremental_invalidation_trace_json(src, trace_nonce))
+    } else {
+      ()
+    }
+    if ingestion_out != "" {
+      Fs::write_file(ingestion_out, ingestion_fingerprint_telemetry_json(ingestion_nonce))
+    } else {
+      ()
+    }
+    reject_unstable_closure_surface()
+    let _ = Env::get("VIBE_PROFILE_MEMORY_MARK:check_unstable_done")
+    write_warning_rows(check_deprecated_warnings_from_source_groups(src, groups))
+    let _ = Env::get("VIBE_PROFILE_MEMORY_MARK:check_warn_deprecated")
+    write_warning_rows(check_redundant_import_warnings_from_source_groups(src, groups))
+    let _ = Env::get("VIBE_PROFILE_MEMORY_MARK:check_warn_redundant")
+    write_warning_rows(check_let_star_warnings_from_source_groups(src, groups))
+    let _ = Env::get("VIBE_PROFILE_MEMORY_MARK:check_warn_letstar")
+    write_warning_rows(check_builtin_shadowing_warnings_from_source_groups(src, groups))
+    let _ = Env::get("VIBE_PROFILE_MEMORY_MARK:check_warn_shadow")
+    // Published strictly after the check has been answered: a failure above
+    // leaves no pipeline sidecar looking like a successful observation.
+    if pipeline_out != "" {
+      Fs::write_file(pipeline_out, ingestion_pipeline_telemetry_json(pipeline_nonce))
+    } else {
+      ()
+    }
+    0
+  }
+}
+
+/// `user_check_linked` answered as a JSON array of LSP Diagnostic objects
+/// (#2831). The FS lane reports diagnostics by RAISING them, so the whole
+/// check runs under a handler here and the raised text becomes the array's
+/// one entry; a clean file yields `[]` and exit 0. `not found` stays an
+/// exception -- a usage error is not a diagnostic about the file's contents.
+fn user_check_linked_json(src: String) -> Int with Exception + Fs + Env + Console + Stderr {
+  if !Fs::exists(src) {
+    throw(String::concat("not found: ", src))
+  } else {
+    let text = Fs::read_file(src)
+    let diags = handle {
+      let _ = user_check_linked(src)
+      let empty: Array[String] = []
+      empty
+    } with { Exception::Throw(message) => {
+      // #2831 criterion 4: the raised text is now every diagnostic the check
+      // collected, `\n`-joined and each one located and path-prefixed on its
+      // own. One ARRAY ENTRY per line, or the JSON lane would emit a single
+      // Diagnostic whose `message` carries embedded newlines -- which is not
+      // a thing an LSP client can place.
+      // Per DIAGNOSTIC, not per line: `is_check_report_continuation` above
+      // decides which lines belong to the one before them.
+      let lines = String::split(message, "\n")
+      let out: Array[String] = []
+      let mut li = 0
+      while li < Array::length(lines) {
+        let line = Array::get(lines, li)
+        if String::length(line) == 0 {
+          ()
+        } else if is_check_report_continuation(line) && Array::length(out) > 0 {
+          let last = Array::length(out) - 1
+          Array::set(out, last, String::concat(Array::get(out, last), String::concat("\n", line)))
+        } else {
+          Array::push(out, line)
+        }
+        li = li + 1
+      }
+      out
+    } }
+    // Told WHICH file `text` is: this lane reports a DEPENDENCY's error as
+    // `<dep>: line L:C: body`, located against the dep. Rendered without the
+    // path, that column was converted against the entry's text and the origin
+    // was dropped from the message (Codex P2 on #2868).
+    print(line_terminated(lsp_diagnostics_json_of_messages_for(src, text, diags)))
+    if Array::length(diags) == 0 {
+      0
+    } else {
+      1
+    }
+  }
+}
+
+/// The two profiling sidecars `vibe check` can be asked for: `--profile-tsv P`
+/// and `--profile-callstack P`. Parsed apart from `parse_user_check_args` so
+/// that tuple keeps the shape `dispatch_test.vibe` pins; a flag without a
+/// value is refused there, so this scan only reads what it validated.
+fn user_check_profile_paths(args: Array[String]) -> (String, String) {
+  let mut tsv = ""
+  let mut callstack = ""
+  let mut i = 1
+  while i < Array::length(args) {
+    let arg = Array::get(args, i)
+    if (arg == "--profile-tsv" || arg == "--profile-callstack") && i + 1 < Array::length(args) {
+      if arg == "--profile-tsv" {
+        tsv = Array::get(args, i + 1)
+      } else {
+        callstack = Array::get(args, i + 1)
+      }
+      i = i + 2
+    } else {
+      i = i + 1
+    }
+  }
+  (tsv, callstack)
+}
+
+fn profile_stage_row(stage: String, elapsed_us: Int) -> String {
+  let us = if elapsed_us < 0 {
+    0
+  } else {
+    elapsed_us
+  }
+  String::concat(stage, String::concat("\t", String::concat(__to_string(us / 1000), String::concat("\t", String::concat(__to_string(us), "\n")))))
+}
+
+/// Writes the check's profiling sidecars (`stage / elapsed_ms / elapsed_us`
+/// TSV, the shape `scripts/test_cli_core.sh` reads). One measured stage: the
+/// import-resolving check is a single call from here, so `check` and `total`
+/// carry the same wall time rather than a load/type split nobody measured.
+fn write_check_profiles(tsv_path: String, callstack_path: String, elapsed_us: Int) -> Unit with Fs {
+  if tsv_path != "" {
+    Fs::write_file(tsv_path, String::concat("stage\telapsed_ms\telapsed_us\n", String::concat(profile_stage_row("check", elapsed_us), profile_stage_row("total", elapsed_us))))
+  } else {
+    ()
+  }
+  if callstack_path != "" {
+    Fs::write_file(callstack_path, String::concat("stage\telapsed_ms\telapsed_us\n", profile_stage_row("check", elapsed_us)))
+  } else {
+    ()
+  }
+}
+
+fn selfhost_cli_user_check_args(args: Array[String]) -> Int with Exception + Fs + Env + Console + Stderr + Profiler {
+  let mut missing_vpkg = false
+  let mut deps_missing = false
+  let mut i = 1
+  while i < Array::length(args) {
+    let arg = Array::get(args, i)
+    if arg == "--missing-vpkg" {
+      missing_vpkg = true
+    } else if arg == "--deps-missing" {
+      deps_missing = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if missing_vpkg || deps_missing {
+    let (root, _, _) = parse_user_check_args(args)
+    user_check_scan(root, missing_vpkg)
+  } else {
+    let (_, single, json) = parse_user_check_args(args)
+    let paths = user_check_paths(args)
+    let (profile_tsv, profile_callstack) = user_check_profile_paths(args)
+    // Every file must exist before any is checked: a report for the files
+    // that exist would read as a complete answer to a different question.
+    let mut pi = 0
+    while pi < Array::length(paths) {
+      if !Fs::exists(Array::get(paths, pi)) {
+        throw(String::concat("not found: ", Array::get(paths, pi)))
+      } else {
+        ()
+      }
+      pi = pi + 1
+    }
+    // `vibe check`'s contract (AGENTS.md, #1567/#1888): the diagnostics are
+    // the REPORT -- one per line on STDOUT, `error: ` framing, exit 1 -- and
+    // empty stdout means clean. The lanes below raise them as an exception
+    // (that is how the checker hands them back); a usage error such as a
+    // missing file stays an exception and reaches stderr through the
+    // dispatcher's handler, which is where the launcher printed it before.
+    // Several files are checked in turn (`vibe check a.vibe b.vibe`), and
+    // one failing file fails the command.
+    let started_us = Profiler::now_us()
+    let mut code = 0
+    let mut ci = 0
+    while ci < Array::length(paths) {
+      let src = Array::get(paths, ci)
+      let file_code = handle {
+        if single {
+          user_check_single(src, json)
+        } else if json {
+          user_check_linked_json(src)
+        } else {
+          user_check_linked(src)
+        }
+      } with { Exception::Throw(e) => {
+        print(line_terminated(format_check_report(e)))
+        1
+      } }
+      if file_code != 0 {
+        code = file_code
+      } else {
+        ()
+      }
+      ci = ci + 1
+    }
+    // `--profile-tsv` / `--profile-callstack` (Codex review of #2858): the
+    // sidecars are written for a failed check too -- a profile of a check
+    // that found errors is still a profile of that check.
+    write_check_profiles(profile_tsv, profile_callstack, Profiler::now_us() - started_us)
+    code
+  }
+}
+
+//# compile / build
+
+/// `(input, output, entry, wit, minify, component)`.
+///
+/// `component` is its own field rather than a mode: `--component` selects a
+/// DIFFERENT COMPILE LANE (`command_component_compile_mode()`) and a different
+/// artifact (a Component Model binary wrapping the core), so folding it into
+/// the wit/minify booleans would lose the refusals below.
+export fn parse_user_compile_args(args: Array[String]) -> (String, String, String, Bool, Bool, Bool) with Exception {
+  if Array::length(args) == 0 {
+    throw("compile: expected command")
+  } else {
+    let cmd = Array::get(args, 0)
+    if cmd != "compile" && cmd != "build" {
+      throw("compile: expected command")
+    } else {
+      let mut src = ""
+      let mut out = ""
+      let mut entry = "main"
+      let mut entry_override = false
+      let mut wit = false
+      let mut component = false
+      let mut minify = false
+      let mut i = 1
+      while i < Array::length(args) {
+        let arg = Array::get(args, i)
+        if arg == "-o" || arg == "--output" || arg == "--out" {
+          i = i + 1
+          out = need_value(args, i, cmd, arg)
+          ()
+        } else if arg == "--entry" {
+          i = i + 1
+          entry = need_value(args, i, cmd, arg)
+          entry_override = true
+          ()
+        } else if arg == "--wit" {
+          wit = true
+          ()
+        } else if arg == "--component" {
+          component = true
+          ()
+        } else if arg == "--minify" {
+          minify = true
+          ()
+        } else if arg == "--jobs" {
+          i = i + 1
+          let _ = parse_jobs_value(need_value(args, i, cmd, arg))
+          ()
+        } else if arg == "--wasm" || arg == "--wasm-linear" || arg == "--release" {
+          ()
+        } else if arg == "--debug" {
+          ()
+        } else if String::length(arg) > 0 && String::byte_at(arg, 0) == 45 {
+          throw(String::concat(cmd, String::concat(": unknown option: ", arg)))
+        } else if src == "" {
+          src = arg
+          ()
+        } else {
+          throw(String::concat(cmd, ": too many input files"))
+        }
+        i = i + 1
+      }
+      if src == "" {
+        throw(String::concat("usage: vibe ", String::concat(cmd, " <file.vibe|file.vibex> [-o <out.wasm>] [--entry <name>] [--wit] [--component] [--minify] [--jobs N]")))
+      } else if is_vibex_path(src) && entry_override {
+        throw(".vibex entry is always main; --entry is not allowed")
+      } else if wit && is_vibex_path(src) {
+        throw("--wit for .vibex requires semantic contract emission")
+      } else if component && wit {
+        throw("--component and --wit produce different artifacts from the same file; run them separately")
+      } else if component && entry_override {
+        throw("--component has no command entry; its surface is the lifted `run` export, so --entry is not allowed")
+      } else if component && minify {
+        // vibe-opt optimizes CORE modules; running it over a component binary
+        // is a different operation and is not wired.
+        throw("--component and --minify cannot be combined: the minifier takes a core module, not a component")
+      } else if component && is_vibex_path(src) {
+        // A `.vibex` is an executable root with NO export surface (ADR-0075,
+        // #2229), so it can never carry the `export fn vibe_command` a command
+        // component is made of. Refused here rather than deep in compilation,
+        // where the message would be about exports and never mention
+        // `--component`.
+        throw("--component needs a .vibe module: a .vibex is an executable root with no export surface, and a command component is built from `export fn vibe_command(args: String) -> String`")
+      } else {
+        let resolved_entry = if component {
+          // Shared with the `.vibex` CLI door, so the same flag cannot mean two
+          // different entries depending on which front door was used (#2863).
+          command_component_entry()
+        } else if is_vibex_path(src) {
+          "main"
+        } else {
+          entry
+        }
+        let resolved_out = if out == "" {
+          if wit {
+            String::concat(".vibe/build/out/", String::concat(basename_of(strip_vibe_suffix(src)), ".wit"))
+          } else if component {
+            String::concat(".vibe/build/out/", String::concat(basename_of(strip_vibe_suffix(src)), ".component.wasm"))
+          } else {
+            String::concat(".vibe/build/out/", String::concat(basename_of(strip_vibe_suffix(src)), ".wasm"))
+          }
+        } else {
+          out
+        }
+        (src, resolved_out, resolved_entry, wit, minify, component)
+      }
+    }
+  }
+}
+
+/// The export name a command component lifts. `runtime/viberun`'s command
+/// loader looks it up by name; the vibe function BEHIND it is
+/// `command_component_entry()`.
+fn user_command_component_export() -> String {
+  "run"
+}
+
+/// The wrap's own message names what it found in the core; this adds the edit,
+/// which is what the reader is missing when the core has no command entry.
+fn user_command_component_edit(input_path: String, entry: String, message: String) -> String {
+  "build --component \{input_path}: \{message}; a command module exports exactly `export fn \{entry}(args: String) -> String` and returns the `vibe-command-result-v1` frame (`command_ok` / `command_result` in @vibe/command)"
+}
+
+fn emit_user_command_component(core: Bytes, input_path: String) -> Bytes with Exception {
+  let entry = command_component_entry()
+  handle {
+    comp_emit_component_wasm_command(core, entry, user_command_component_export())
+  } with { Exception::Throw(message) => throw(user_command_component_edit(input_path, entry, message)) }
+}
+
+fn args_has_flag(args: Array[String], flag: String) -> Bool {
+  let mut i = 1
+  let mut found = false
+  while i < Array::length(args) {
+    if Array::get(args, i) == flag {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn selfhost_cli_user_compile_args(args: Array[String]) -> Int with Exception + Fs + Env + Console {
+  let (src, out, entry, wit, minify, component) = parse_user_compile_args(args)
+  // `--debug` is the linked debug lane docs/user/reference/cli-commands.md
+  // documents for `vibe build`: library modules cached as linked wasm files,
+  // only the entry recompiled. The parser accepted the flag and this function
+  // then built the release artifact regardless (Codex review of #2858) -- a
+  // release binary reported as a debug build is the silent kind of wrong.
+  let debug = args_has_flag(args, "--debug")
+  let out_given = args_has_flag(args, "-o") || args_has_flag(args, "--output") || args_has_flag(args, "--out")
+  if !Fs::exists(src) {
+    throw(String::concat("not found: ", src))
+  } else if debug && (component || wit || minify) {
+    throw("--debug selects the linked debug lane and cannot be combined with --component, --wit or --minify")
+  } else if debug {
+    let resolved = resolve_user_build_output(out, out_given)
+    ensure_parent_dir(resolved)
+    // The GATED builder checks the closure its own compile ingested, so the
+    // verdict covers exactly the bytes it writes (#2305, Codex review).
+    reject_unstable_entry_surface(src)
+    write_linked_debug_build_checked(src, resolved, entry, unstable_opt_in())
+    println(String::concat("compiled (debug) ", String::concat(src, String::concat(" -> ", display_under_root(resolved, default_build_dir())))))
+    0
+  } else if component {
+    let resolved = resolve_user_build_output(out, out_given)
+    // The `dce-root` lane prunes from the command entry, so a module with no
+    // `vibe_command` export compiles to nothing and the compiler says so in
+    // its own words. The reader needs the EDIT -- the signature and the
+    // result frame -- which is what `user_command_component_edit` adds
+    // (scripts/test_component_lazy_dispatch_gate.sh asserts both). Other
+    // refusals (an unstable import, a type error) keep their own message.
+    let core = handle {
+      compile_user_artifact(src, entry, "component", no_grants())
+    } with { Exception::Throw(message) => {
+      if String::contains(message, "no functions found to compile") {
+        throw(user_command_component_edit(src, entry, "the module has no `\{entry}` export (\{message})"))
+      } else {
+        throw(message)
+      }
+    } }
+    write_wasm(resolved, emit_user_command_component(core, src))
+    println(String::concat("component ", String::concat(src, String::concat(" -> ", display_under_root(resolved, default_build_dir())))))
+    0
+  } else if wit {
+    let resolved = resolve_user_build_output(out, out_given)
+    let stmts = parse_user_entry_file(src)
+    ensure_parent_dir(resolved)
+    Fs::write_file(resolved, wit_from_program(stmts, stmts, basename_of(strip_vibe_suffix(src))))
+    println(String::concat("wit ", String::concat(src, String::concat(" -> ", display_under_root(resolved, default_build_dir())))))
+    0
+  } else {
+    let resolved = resolve_user_build_output(out, out_given)
+    let bytes = compile_user_artifact(src, entry, "mvp", no_grants())
+    write_user_executable(resolved, bytes, entry, "mvp")
+    println(String::concat("compiled ", String::concat(src, String::concat(" -> ", display_under_root(resolved, default_build_dir())))))
+    if minify {
+      let action = Env::get("VIBE_HOST_ACTION_OUT")
+      write_host_action(action, String::concat("vibe-host-action-v1\nminify\n", String::concat(resolved, "\n")))
+    } else {
+      0
+    }
+  }
+}
+
+//# fmt / normalize
+
+export fn parse_user_fmt_args(args: Array[String]) -> (String, String) with Exception {
+  if Array::length(args) == 0 || Array::get(args, 0) != "fmt" {
+    throw("vibe fmt: expected command")
+  } else {
+    let mut mode = "write"
+    let mut src = ""
+    let mut i = 1
+    while i < Array::length(args) {
+      let arg = Array::get(args, i)
+      if arg == "--check" {
+        mode = "check"
+        ()
+      } else if arg == "--stdout" {
+        mode = "stdout"
+        ()
+      } else if String::length(arg) > 0 && String::byte_at(arg, 0) == 45 {
+        throw(String::concat("vibe fmt: unknown flag: ", arg))
+      } else if src == "" {
+        src = arg
+        ()
+      } else {
+        throw("vibe fmt: takes ONE file")
+      }
+      i = i + 1
+    }
+    if src == "" {
+      throw("usage: vibe fmt [--check|--stdout] <file.vibe>")
+    } else {
+      (src, mode)
+    }
+  }
+}
+
+fn selfhost_cli_user_fmt_args(args: Array[String]) -> Int with Env + Exception + Fs + Console {
+  let (src, mode) = parse_user_fmt_args(args)
+  if !Fs::exists(src) {
+    throw(String::concat("not found: ", src))
+  } else {
+    let raw = Fs::read_file(src)
+    let pre = fill_require_pins_lenient(raw)
+    let formatted = format_source(src, pre)
+    let is_vpkg = path_has_suffix(src, ".vpkg")
+    let head_end = if is_vpkg {
+      0
+    } else {
+      let e = source_header_end(pre)
+      if e > 0 {
+        e
+      } else {
+        0
+      }
+    }
+    let body = String::substring(pre, head_end, String::length(pre))
+    let formatted_body = String::substring(formatted, head_end, String::length(formatted))
+    if !is_vpkg {
+      let err = parse_error_of(body)
+      if String::length(err) > 0 {
+        throw(String::concat("vibe fmt: refusing to format ", String::concat(src, String::concat(": it does not parse\n  ", err))))
+      } else if !program_parses(formatted_body) {
+        throw(String::concat("vibe fmt: refusing to rewrite ", src))
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    if mode == "stdout" {
+      print(formatted)
+      0
+    } else if mode == "check" {
+      if raw == formatted {
+        0
+      } else {
+        println(String::concat("not formatted: ", src))
+        1
+      }
+    } else {
+      if raw != formatted {
+        Fs::write_file(src, formatted)
+      } else {
+        ()
+      }
+      0
+    }
+  }
+}
+
+fn parse_user_normalize_args(args: Array[String]) -> (String, String) with Exception {
+  if Array::length(args) == 0 || Array::get(args, 0) != "normalize" {
+    throw("vibe normalize: expected command")
+  } else {
+    let mut mode = "write"
+    let mut src = ""
+    let mut i = 1
+    while i < Array::length(args) {
+      let arg = Array::get(args, i)
+      if arg == "--check" {
+        mode = "check"
+        ()
+      } else if arg == "--stdout" {
+        mode = "stdout"
+        ()
+      } else if String::length(arg) > 0 && String::byte_at(arg, 0) == 45 {
+        throw(String::concat("vibe normalize: unknown flag: ", arg))
+      } else if src == "" {
+        src = arg
+        ()
+      } else {
+        throw("vibe normalize: takes ONE file")
+      }
+      i = i + 1
+    }
+    if src == "" {
+      throw("usage: vibe normalize [--check|--stdout] <file.vibe>")
+    } else {
+      (src, mode)
+    }
+  }
+}
+
+fn selfhost_cli_user_normalize_args(args: Array[String]) -> Int with Exception + Fs + Console {
+  let (src, mode) = parse_user_normalize_args(args)
+  if !Fs::exists(src) {
+    throw(String::concat("not found: ", src))
+  } else {
+    let raw = Fs::read_file(src)
+    let normalized = normalize_source(raw)
+    if mode == "stdout" {
+      print(normalized)
+      0
+    } else if mode == "check" {
+      if raw == normalized {
+        0
+      } else {
+        println(String::concat("not normalized: ", src))
+        1
+      }
+    } else {
+      if raw != normalized {
+        Fs::write_file(src, normalized)
+      } else {
+        ()
+      }
+      0
+    }
+  }
+}
+
+//# queries
+
+export fn parse_user_type_at_args(args: Array[String]) -> (String, Int, Int) with Exception {
+  if Array::length(args) < 4 {
+    throw(String::concat("usage: vibe ", String::concat(Array::get(args, 0), " <file.vibe> <line> <col>")))
+  } else {
+    let src = Array::get(args, 1)
+    let line = user_dispatch_parse_int_or(Array::get(args, 2), 0)
+    let col = user_dispatch_parse_int_or(Array::get(args, 3), 0)
+    if line < 1 || col < 1 {
+      throw(String::concat("usage: vibe ", String::concat(Array::get(args, 0), " <file.vibe> <line> <col>")))
+    } else {
+      (src, line, col)
+    }
+  }
+}
+
+/// `vibe type-at` (#3000): stdout carries the type and nothing else, so an
+/// empty stdout with exit 0 means exactly one thing -- there IS an identifier
+/// at the position, and no type is known for it (a note naming it goes to
+/// stderr). A position with no identifier under it (whitespace, a keyword, a
+/// literal, punctuation, past the end of the line or file) is an error: stderr
+/// says so and the exit is 1. So is a file that does not parse, which used to
+/// answer nothing with exit 0 as well.
+fn selfhost_cli_user_type_at_args(args: Array[String]) -> Int with Exception + Fs + Console + Stderr {
+  let (src, line, col) = parse_user_type_at_args(args)
+  if !Fs::exists(src) {
+    throw(String::concat("not found: ", src))
+  } else {
+    let source = Fs::read_file(src)
+    let ty = type_at_source(source, line, col)
+    if ty != "" {
+      print_text(ty)
+      0
+    } else {
+      let at = String::concat(src, String::concat(":", String::concat(__to_string(line), String::concat(":", __to_string(col)))))
+      let parse_error = parse_error_of(source)
+      let name = type_at_ident_at(source, line, col)
+      if parse_error != "" {
+        // Nothing in a file that does not parse has a type; saying "no
+        // identifier" here would blame the position for the file's error.
+        Stderr::write_stream(line_terminated(String::concat("type-at: ", String::concat(src, String::concat(" does not parse (run `vibe check` on it): ", parse_error)))))
+        1
+      } else if name == "" {
+        Stderr::write_stream(line_terminated(String::concat("type-at: no identifier at ", String::concat(at, " (the byte column must point into a name)"))))
+        1
+      } else {
+        Stderr::write_stream(line_terminated(String::concat("type-at: no type is known for `", String::concat(name, String::concat("` at ", at)))))
+        0
+      }
+    }
+  }
+}
+
+fn selfhost_cli_user_doc_at_args(args: Array[String]) -> Int with Exception + Fs + Console {
+  let (src, line, col) = parse_user_type_at_args(args)
+  if !Fs::exists(src) {
+    throw(String::concat("not found: ", src))
+  } else {
+    print_text(doc_at_source(Fs::read_file(src), line, col))
+    0
+  }
+}
+
+fn join_binding(occ: Array[(Int, Int)]) -> String {
+  let n = Array::length(occ)
+  if n == 0 {
+    ""
+  } else {
+    let acc = StringBuilder::new()
+    let mut i = 0
+    while i < n {
+      let (s, e) = Array::get(occ, i)
+      if i > 0 {
+        StringBuilder::push(acc, "\n")
+      } else {
+        ()
+      }
+      StringBuilder::push(acc, __to_string(s))
+      StringBuilder::push(acc, " ")
+      StringBuilder::push(acc, __to_string(e))
+      i = i + 1
+    }
+    StringBuilder::freeze(acc)
+  }
+}
+
+fn selfhost_cli_user_binding_at_args(args: Array[String]) -> Int with Exception + Fs + Console {
+  let (src, line, col) = parse_user_type_at_args(args)
+  if !Fs::exists(src) {
+    throw(String::concat("not found: ", src))
+  } else {
+    print_text(join_binding(binding_occurrences(Fs::read_file(src), line, col)))
+    0
+  }
+}
+
+fn escape_doc_field(text: String) -> String {
+  let n = String::length(text)
+  let acc = StringBuilder::new()
+  let mut i = 0
+  while i < n {
+    let c = String::byte_at(text, i)
+    if c == 92 {
+      StringBuilder::push(acc, "\\\\")
+    } else if c == 10 {
+      StringBuilder::push(acc, "\\n")
+    } else if c == 13 {
+      ()
+    } else {
+      StringBuilder::push(acc, String::from_byte(c))
+    }
+    i = i + 1
+  }
+  StringBuilder::freeze(acc)
+}
+
+fn name_field_needs_escape(text: String) -> Bool {
+  let n = String::length(text)
+  let mut i = 0
+  let mut found = false
+  while i < n && !found {
+    let c = String::byte_at(text, i)
+    if c == 92 || c == 32 || (c >= 9 && c <= 13) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn name_field_escape_of(c: Int) -> String {
+  if c == 92 {
+    "\\\\"
+  } else if c == 32 {
+    "\\s"
+  } else if c == 9 {
+    "\\t"
+  } else if c == 10 {
+    "\\n"
+  } else if c == 11 {
+    "\\v"
+  } else if c == 12 {
+    "\\f"
+  } else if c == 13 {
+    "\\r"
+  } else {
+    String::from_byte(c)
+  }
+}
+
+fn escape_name_field(text: String) -> String {
+  if !name_field_needs_escape(text) {
+    text
+  } else {
+    let n = String::length(text)
+    let acc = StringBuilder::new()
+    let mut i = 0
+    while i < n {
+      StringBuilder::push(acc, name_field_escape_of(String::byte_at(text, i)))
+      i = i + 1
+    }
+    StringBuilder::freeze(acc)
+  }
+}
+
+fn join_symbol_spans(syms: Array[(String, Int, Int, Int, String)]) -> String {
+  let n = Array::length(syms)
+  let acc = StringBuilder::new()
+  let mut first = true
+  let mut i = 0
+  while i < n {
+    let (name, kind, s, e, doc) = Array::get(syms, i)
+    if String::length(name) == 0 {
+      ()
+    } else {
+      let head = String::concat(escape_name_field(name), String::concat(" ", String::concat(__to_string(kind), String::concat(" ", String::concat(__to_string(s), String::concat(" ", __to_string(e)))))))
+      let line = if String::length(doc) == 0 {
+        head
+      } else {
+        String::concat(head, String::concat(" ", escape_doc_field(doc)))
+      }
+      if first {
+        StringBuilder::push(acc, line)
+        first = false
+      } else {
+        StringBuilder::push(acc, "\n")
+        StringBuilder::push(acc, line)
+      }
+    }
+    i = i + 1
+  }
+  StringBuilder::freeze(acc)
+}
+
+fn join_symbol_spans_with_path(rows: Array[(String, String, Int, Int, Int, String)]) -> String {
+  let n = Array::length(rows)
+  let acc = StringBuilder::new()
+  let mut first = true
+  let mut i = 0
+  while i < n {
+    let (path, name, kind, s, e, doc) = Array::get(rows, i)
+    if String::length(name) == 0 {
+      ()
+    } else {
+      let head = String::concat(path, String::concat(" ", String::concat(escape_name_field(name), String::concat(" ", String::concat(__to_string(kind), String::concat(" ", String::concat(__to_string(s), String::concat(" ", __to_string(e)))))))))
+      let line = if String::length(doc) == 0 {
+        head
+      } else {
+        String::concat(head, String::concat(" ", escape_doc_field(doc)))
+      }
+      if first {
+        StringBuilder::push(acc, line)
+        first = false
+      } else {
+        StringBuilder::push(acc, "\n")
+        StringBuilder::push(acc, line)
+      }
+    }
+    i = i + 1
+  }
+  StringBuilder::freeze(acc)
+}
+
+fn symbols_legend() -> String {
+  "2 Module\n6 Method\n10 Enum\n11 Interface\n12 Function\n13 Variable\n23 Struct\n24 Event\n26 TypeParameter\n27 Test\n28 Bench"
+}
+
+fn selfhost_cli_user_symbols_args(args: Array[String]) -> Int with Exception + Fs + Console + Stderr {
+  if Array::length(args) >= 2 && Array::get(args, 1) == "--legend" {
+    println(symbols_legend())
+    0
+  } else if Array::length(args) >= 2 && (Array::get(args, 1) == "--help" || Array::get(args, 1) == "-h") {
+    println("usage: vibe symbols [--with-path] <path>...\n       vibe symbols --legend")
+    0
+  } else {
+    let mut with_path = false
+    let paths: Array[String] = []
+    let mut i = 1
+    while i < Array::length(args) {
+      let arg = Array::get(args, i)
+      if arg == "--with-path" {
+        with_path = true
+        ()
+      } else if arg == "--" {
+        i = i + 1
+        while i < Array::length(args) {
+          Array::push(paths, Array::get(args, i))
+          i = i + 1
+        }
+      } else if String::length(arg) > 0 && String::byte_at(arg, 0) == 45 {
+        throw(String::concat("symbols: unknown flag: ", arg))
+      } else {
+        Array::push(paths, arg)
+      }
+      i = i + 1
+    }
+    if Array::length(paths) == 0 {
+      throw("usage: vibe symbols [--with-path] <path>...")
+    } else {
+      // Every root must exist before any row is printed: a sweep that skipped
+      // a missing root would print a complete-looking answer to a different
+      // question (scripts/test_vibe_symbols.sh, #2381).
+      let mut ci = 0
+      while ci < Array::length(paths) {
+        if !Fs::exists(Array::get(paths, ci)) {
+          throw(String::concat("not found: ", Array::get(paths, ci)))
+        } else {
+          ()
+        }
+        ci = ci + 1
+      }
+      // More than one root, or a DIRECTORY root, can produce lines from more
+      // than one file -- so the PATH field is not optional there, and a lone
+      // directory takes the sweep rather than being read as a file.
+      let many = with_path || Array::length(paths) > 1 || Fs::is_dir(Array::get(paths, 0))
+      if many {
+        let acc = StringBuilder::new()
+        let fails: Array[String] = []
+        let mut first = true
+        let mut pi = 0
+        while pi < Array::length(paths) {
+          let (rows, failures) = symbol_spans_fs_report(Array::get(paths, pi))
+          let chunk = join_symbol_spans_with_path(rows)
+          if chunk != "" {
+            if first {
+              StringBuilder::push(acc, chunk)
+              first = false
+            } else {
+              StringBuilder::push(acc, "\n")
+              StringBuilder::push(acc, chunk)
+            }
+          } else {
+            ()
+          }
+          let mut fi = 0
+          while fi < Array::length(failures) {
+            Array::push(fails, Array::get(failures, fi))
+            fi = fi + 1
+          }
+          pi = pi + 1
+        }
+        print_text(StringBuilder::freeze(acc))
+        // The symbols contract (AGENTS.md): the rows that were read reach
+        // stdout, a file that could not be parsed is NAMED on stderr, and the
+        // exit is non-zero. Throwing here would append the failure to the
+        // machine-readable stream through the entry's `error:` framing.
+        if Array::length(fails) > 0 {
+          Stderr::write_stream(line_terminated(String::join(fails, "\n")))
+          1
+        } else {
+          0
+        }
+      } else {
+        let src = Array::get(paths, 0)
+        if !Fs::exists(src) {
+          throw(String::concat("not found: ", src))
+        } else {
+          // #2898: the file DECIDES the grammar -- a `.vpkg` is a list of
+          // bodyless declarations, not statement grammar. A failure carries
+          // the path and, where the contract parser can say which token it
+          // stopped on, a `line L:col C:` prefix: `unexpected token: type`
+          // with neither was a non-zero exit the caller could not act on.
+          let text = Fs::read_file(src)
+          let syms = handle {
+            symbol_spans_with_docs_for_path(src, text)
+          } with { Exception::Throw(msg) => throw(String::concat(src, String::concat(": ", symbol_spans_locate_failure(src, text, msg)))) }
+          print_text(join_symbol_spans(syms))
+          0
+        }
+      }
+    }
+  }
+}
+
+fn join_triples_name_int_int(items: Array[(String, Int, Int)]) -> String {
+  let n = Array::length(items)
+  let acc = StringBuilder::new()
+  let mut first = true
+  let mut i = 0
+  while i < n {
+    let (name, s, e) = Array::get(items, i)
+    if String::length(name) == 0 {
+      ()
+    } else {
+      let line = String::concat(name, String::concat(" ", String::concat(__to_string(s), String::concat(" ", __to_string(e)))))
+      if first {
+        StringBuilder::push(acc, line)
+        first = false
+      } else {
+        StringBuilder::push(acc, "\n")
+        StringBuilder::push(acc, line)
+      }
+    }
+    i = i + 1
+  }
+  StringBuilder::freeze(acc)
+}
+
+fn selfhost_cli_user_escapes_args(args: Array[String]) -> Int with Exception + Fs + Console {
+  let mut strict = false
+  let mut src = ""
+  let mut i = 1
+  while i < Array::length(args) {
+    let arg = Array::get(args, i)
+    if arg == "--strict" {
+      strict = true
+      ()
+    } else if arg == "--help" || arg == "-h" {
+      println("usage: vibe escapes [--strict] <file.vibe>")
+      return 0
+    } else if String::length(arg) > 0 && String::byte_at(arg, 0) == 45 {
+      throw(String::concat("escapes: unknown flag: ", arg))
+    } else {
+      src = arg
+    }
+    i = i + 1
+  }
+  if src == "" {
+    throw("usage: vibe escapes [--strict] <file.vibe>")
+  } else if !Fs::exists(src) {
+    throw(String::concat("not found: ", src))
+  } else {
+    let spans = if strict {
+      escape_spans_strict(Fs::read_file(src))
+    } else {
+      escape_spans(Fs::read_file(src))
+    }
+    print_text(join_triples_name_int_int(spans))
+    0
+  }
+}
+
+/// The same three lines `runtime/vibe` prints for `rc-classify --help` without
+/// starting a runner (scripts/test_vibe_rc_help.sh); the two texts are kept in
+/// step by hand, the gate reads the launcher's.
+fn rc_classify_help_text() -> String {
+  "usage: vibe rc-classify <file.vibe>\nNAME SET[,SET...] per user function. Empty output = no special sets.\nSets: borrow_ret, borrow_param, view_ret, scalar_ret.\n"
+}
+
+fn rc_plan_help_text() -> String {
+  "usage: vibe rc-plan [--fn NAME] <file.vibe>\nFN BINDING ACTION COUNT per collapsed Perceus action.\nEmpty output = no actions. ACTION is dup, drop, or alias_dup.\n"
+}
+
+fn selfhost_cli_user_rc_classify_args(args: Array[String]) -> Int with Exception + Fs + Console {
+  if Array::length(args) >= 2 && (Array::get(args, 1) == "--help" || Array::get(args, 1) == "-h") {
+    print_text(rc_classify_help_text())
+    0
+  } else if Array::length(args) != 2 {
+    throw("usage: vibe rc-classify <file.vibe>")
+  } else {
+    let src = Array::get(args, 1)
+    if !Fs::exists(src) {
+      throw(String::concat("not found: ", src))
+    } else {
+      print_text(rc_classify_source(Fs::read_file(src)))
+      0
+    }
+  }
+}
+
+fn selfhost_cli_user_rc_plan_args(args: Array[String]) -> Int with Exception + Fs + Console {
+  let mut fn_filter = ""
+  let mut src = ""
+  let mut i = 1
+  while i < Array::length(args) {
+    let arg = Array::get(args, i)
+    if arg == "--fn" {
+      i = i + 1
+      fn_filter = need_value(args, i, "rc-plan", arg)
+      ()
+    } else if String::starts_with(arg, "--fn=") {
+      fn_filter = arg[5: String::length(arg)]
+      ()
+    } else if arg == "--help" || arg == "-h" {
+      print_text(rc_plan_help_text())
+      return 0
+    } else if String::length(arg) > 0 && String::byte_at(arg, 0) == 45 {
+      throw(String::concat("rc-plan: unknown flag: ", arg))
+    } else {
+      src = arg
+    }
+    i = i + 1
+  }
+  if src == "" {
+    throw("usage: vibe rc-plan [--fn NAME] <file.vibe>")
+  } else if !Fs::exists(src) {
+    throw(String::concat("not found: ", src))
+  } else {
+    print_text(rc_plan_source(Fs::read_file(src), fn_filter))
+    0
+  }
+}
+
+fn join_alloc_spans(items: Array[(String, String, Int)]) -> String {
+  let n = Array::length(items)
+  let acc = StringBuilder::new()
+  let mut first = true
+  let mut i = 0
+  while i < n {
+    let (fname, kind, off) = Array::get(items, i)
+    if first {
+      first = false
+    } else {
+      StringBuilder::push(acc, "\n")
+    }
+    StringBuilder::push(acc, fname)
+    StringBuilder::push(acc, " ")
+    StringBuilder::push(acc, kind)
+    StringBuilder::push(acc, " ")
+    StringBuilder::push(acc, __to_string(off))
+    i = i + 1
+  }
+  StringBuilder::freeze(acc)
+}
+
+fn selfhost_cli_user_allocs_args(args: Array[String]) -> Int with Exception + Fs + Console {
+  if Array::length(args) != 2 {
+    throw("usage: vibe allocs <file.vibe>")
+  } else {
+    let src = Array::get(args, 1)
+    if !Fs::exists(src) {
+      throw(String::concat("not found: ", src))
+    } else {
+      print_text(join_alloc_spans(alloc_spans(Fs::read_file(src))))
+      0
+    }
+  }
+}
+
+fn array_contains(items: Array[String], needle: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(items) {
+    if Array::get(items, i) == needle {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn join_dep_paths(groups: Array[(String, Array[(String, String)])], entry_path: String) -> String {
+  let acc = StringBuilder::new()
+  let seen = Array::slice([""], 0, 0)
+  let mut first = true
+  let mut gi = 0
+  while gi < Array::length(groups) {
+    let (_, gsources) = Array::get(groups, gi)
+    let mut si = 0
+    while si < Array::length(gsources) {
+      let (path, _) = Array::get(gsources, si)
+      if path == entry_path || array_contains(seen, path) {
+        ()
+      } else {
+        Array::push(seen, path)
+        if first {
+          StringBuilder::push(acc, path)
+          first = false
+        } else {
+          StringBuilder::push(acc, "\n")
+          StringBuilder::push(acc, path)
+        }
+      }
+      si = si + 1
+    }
+    gi = gi + 1
+  }
+  StringBuilder::freeze(acc)
+}
+
+fn selfhost_cli_user_deps_args(args: Array[String]) -> Int with Env + Exception + Fs + Console {
+  let mut direct = false
+  let mut src = ""
+  let mut i = 1
+  while i < Array::length(args) {
+    let arg = Array::get(args, i)
+    if arg == "--direct" {
+      direct = true
+      ()
+    } else if String::length(arg) > 0 && String::byte_at(arg, 0) == 45 {
+      throw(String::concat("deps: unknown flag: ", arg))
+    } else if src == "" {
+      src = arg
+      ()
+    } else {
+      throw("usage: vibe deps [--direct] <file.vibe>")
+    }
+    i = i + 1
+  }
+  if src == "" {
+    throw("usage: vibe deps [--direct] <file.vibe>")
+  } else if !Fs::exists(src) {
+    throw(String::concat("not found: ", src))
+  } else if direct {
+    let ingested = ingest_source_text_fs(src, Fs::read_file(src))
+    let (deps, _, _) = load_or_parse_module_header_fs(src, ingested, 0)
+    print_text(String::join(deps, "\n"))
+    0
+  } else {
+    print_text(join_dep_paths(collect_source_groups_fs(src), src))
+    0
+  }
+}
+
+fn selfhost_cli_user_diagnostics_args(args: Array[String]) -> Int with Exception + Fs + Env + Console {
+  let mut json = false
+  let mut src = ""
+  let mut i = 1
+  while i < Array::length(args) {
+    let arg = Array::get(args, i)
+    if arg == "--json" {
+      json = true
+      ()
+    } else if src == "" {
+      src = arg
+      ()
+    } else {
+      throw("usage: vibe diagnostics [--json] <file.vibe>")
+    }
+    i = i + 1
+  }
+  if src == "" {
+    throw("usage: vibe diagnostics [--json] <file.vibe>")
+  } else {
+    user_diagnostics_report(src, json)
+  }
+}
+
+/// `vibe diagnostics` is deprecated and FROZEN for the editors that still call
+/// it (AGENTS.md, #1567): every diagnostic line raw on stdout (or the LSP
+/// Diagnostic array with `--json`), and exit 0 whether or not the file is
+/// clean. Routing it through `user_check_single` gave it `vibe check`'s
+/// `error:` framing and exit 1 (Codex review of #2858).
+fn user_diagnostics_report(src: String, json: Bool) -> Int with Exception + Fs + Env + Console {
+  if !Fs::exists(src) {
+    throw(String::concat("not found: ", src))
+  } else {
+    let text = Fs::read_file(src)
+    let diags = handle {
+      collect_all_diagnostics_with_unstable_for_path(src, text, unstable_opt_in())
+    } with { Exception::Throw(_) => {
+      let empty: Array[String] = []
+      empty
+    } }
+    if json {
+      print(line_terminated(lsp_diagnostics_json_of_messages(text, diags)))
+    } else if Array::length(diags) > 0 {
+      print_text(String::join(diags, "\n"))
+    } else {
+      ()
+    }
+    0
+  }
+}
+
+fn selfhost_cli_user_grep_args(args: Array[String]) -> Int with Env + Exception + Fs + Profiler + Console + Stderr {
+  let mut pattern = ""
+  let mut json = false
+  let mut only = ""
+  // #2914's chunked-sweep contract, as FLAGS rather than env selectors.
+  //
+  // The env-mode entry (cli_adapter) reads `VIBE_GREP_LIST_FILES` and friends
+  // because it has no argv at all -- it is `(input, output)` plus VIBE_*
+  // selectors, and that is the only channel there is. This path HAS an
+  // argument parser, so using the env spelling here was copying the wrong half
+  // of that pattern: `VIBE_GREP_LIST_FILES` is an adapter BRANCH SELECTOR, and
+  // a launcher that dispatches by argv must not set one
+  // (`check_selector_precedence.sh`, which caught exactly this). A hidden env
+  // knob on a user-facing CLI is worse than a flag anyway.
+  let mut list_files = false
+  let mut file_list = ""
+  let mut resume_out = ""
+  let wheres: Array[String] = []
+  let where_rows: Array[String] = []
+  let paths: Array[String] = []
+  let mut i = 1
+  while i < Array::length(args) {
+    let arg = Array::get(args, i)
+    if arg == "--help" || arg == "-h" {
+      println("usage: vibe grep --pattern '<pat>' [paths]")
+      return 0
+    } else if arg == "--pattern" {
+      i = i + 1
+      pattern = need_value(args, i, "grep", arg)
+      ()
+    } else if String::starts_with(arg, "--pattern=") {
+      pattern = arg[10: String::length(arg)]
+      ()
+    } else if arg == "--json" || arg == "--output-json" {
+      json = true
+      ()
+    } else if arg == "--where" {
+      i = i + 1
+      Array::push(wheres, need_value(args, i, "grep", arg))
+      ()
+    } else if String::starts_with(arg, "--where=") {
+      Array::push(wheres, arg[8: String::length(arg)])
+    } else if arg == "--where-row" {
+      i = i + 1
+      Array::push(where_rows, need_value(args, i, "grep", arg))
+      ()
+    } else if String::starts_with(arg, "--where-row=") {
+      Array::push(where_rows, arg[12: String::length(arg)])
+    } else if arg == "--only-ill-typed" {
+      only = "ill"
+      ()
+    } else if arg == "--only-well-typed" {
+      only = "well"
+      ()
+    } else if arg == "--list-files" {
+      list_files = true
+      ()
+    } else if arg == "--file-list" {
+      i = i + 1
+      file_list = need_value(args, i, "grep", arg)
+      ()
+    } else if String::starts_with(arg, "--file-list=") {
+      file_list = arg[12: String::length(arg)]
+    } else if arg == "--resume-out" {
+      i = i + 1
+      resume_out = need_value(args, i, "grep", arg)
+      ()
+    } else if String::starts_with(arg, "--resume-out=") {
+      resume_out = arg[13: String::length(arg)]
+    } else if arg == "--" {
+      i = i + 1
+      while i < Array::length(args) {
+        Array::push(paths, Array::get(args, i))
+        i = i + 1
+      }
+    } else if String::length(arg) > 0 && String::byte_at(arg, 0) == 45 {
+      throw(String::concat("vibe grep: unknown flag: ", arg))
+    } else {
+      Array::push(paths, arg)
+    }
+    i = i + 1
+  }
+  if pattern == "" {
+    throw("vibe grep: --pattern needs an argument")
+  } else if resume_out != "" && file_list == "" && Array::length(paths) > 1 {
+    // `file_list == ""` is half the condition and the important half: WITH an
+    // explicit list the index is well defined against it, and the launcher's
+    // own chunk calls pass one alongside every original root -- so refusing on
+    // the root count alone rejected every chunk of a multi-root typed sweep
+    // before it scanned anything (Codex on #2956, P2, against the refusal I
+    // added one commit earlier). Without a list the roots are walked
+    // separately, and there is no single sequence for an index to mean
+    // anything against. Left unrefused, a hand-off in an early
+    // root returned partial output and wrote its index, the loop moved on, and
+    // THAT root's sweep deleted the index as stale -- exit 0, the first root
+    // partly searched, nothing left saying so (Codex on #2956, P1; the delete
+    // was my own fix for a stale index, one round earlier).
+    //
+    // Refused rather than stopped after the first hand-off, because stopping
+    // still hands back an index the caller cannot attribute to a root.
+    // `--json` below refuses several paths for the same kind of reason: one
+    // answer, one input.
+    throw("vibe grep --resume-out: one path at a time (the resume index is an offset into a single file list)")
+  } else if json && Array::length(paths) > 1 {
+    // Each sweep returns one complete JSON array; concatenating two is not
+    // JSON. The launcher refused this before the verbs moved (Codex review).
+    throw("vibe grep --json: one path at a time (JSON output is a single array)")
+  } else {
+    if Array::length(paths) == 0 {
+      Array::push(paths, ".")
+    } else {
+      ()
+    }
+    // #2914: the same file-list / resume contract cli_adapter.vibe carries, so
+    // `runtime/vibe grep` can drive a resumable sweep too. Until this, the
+    // argv path had no way to be chunked: it stopped at the guard with the
+    // located refusal and never finished a tree-wide typed sweep -- measured,
+    // file 70 of 1224 -- while its own diagnostic advised lowering
+    // `VIBE_GREP_CHUNK_FILES`, a knob that did nothing on this path.
+    //
+    // There is exactly ONE call to the sweep below. Two call sites are how
+    // `VIBE_GREP_RESUME` came to be honoured on one adapter path and silently
+    // ignored on the other.
+    let chunk_list = file_list
+    // The files the sweep WOULD visit, for a driver that wants to partition
+    // them. Printed rather than swept; the skip policy stays in source_walk.
+    if list_files {
+      let listing = StringBuilder::new()
+      StringBuilder::push(listing, grep_file_list_banner())
+      StringBuilder::push(listing, "\n")
+      let mut li = 0
+      while li < Array::length(paths) {
+        StringBuilder::push(listing, grep_list_files(Array::get(paths, li)))
+        li = li + 1
+      }
+      print_text(StringBuilder::freeze(listing))
+      return 0
+    } else {
+      ()
+    }
+    // A chunk IS the sweep, once -- not once per path. The chunk a driver
+    // hands back was cut from the COMBINED listing of every path, so running
+    // it inside the per-path loop would emit each match once per path: two
+    // paths, every result doubled, exit 0. That is the silent-wrong shape
+    // this repo ranks above crashing, and it is invisible to a one-path gate.
+    let job_count = if chunk_list != "" {
+      1
+    } else {
+      Array::length(paths)
+    }
+    let acc = StringBuilder::new()
+    let mut first = true
+    let mut pi = 0
+    while pi < job_count {
+      let sweep_root = Array::get(paths, pi)
+      let sweep_files = if chunk_list != "" {
+        grep_read_file_list(chunk_list)
+      } else {
+        grep_collect_files(sweep_root)
+      }
+      // Which files this sweep was asked about BY NAME, so an unparseable one
+      // throws rather than warning (#2940). When a chunk spans several roots
+      // it is EVERY named non-directory among them -- a chunk cut from the
+      // combined listing has no single root, and answering "directory" for it
+      // downgraded a named `bad.vibe` to exit 0 (Codex on #2956, P1).
+      let named_files: Array[String] = []
+      let mut ni = 0
+      while ni < (if chunk_list != "" {
+        Array::length(paths)
+      } else {
+        1
+      }) {
+        let cand = if chunk_list != "" {
+          Array::get(paths, ni)
+        } else {
+          sweep_root
+        }
+        if Fs::is_dir(cand) {
+          ()
+        } else {
+          Array::push(named_files, cand)
+        }
+        ni = ni + 1
+      }
+      let (text, warnings) = grep_scan_files_report(sweep_files, pattern, wheres, where_rows, only, json, named_files, resume_out)
+      // A file the sweep could not parse is reported, not searched: the
+      // warning is what tells "no match" from "not searched" apart, so it
+      // reaches stderr the way the launcher used to relay `<out>.warn`.
+      if warnings != "" {
+        Stderr::write_stream(line_terminated(warnings))
+      } else {
+        ()
+      }
+      if text != "" {
+        if first {
+          StringBuilder::push(acc, text)
+          first = false
+        } else {
+          StringBuilder::push(acc, "\n")
+          StringBuilder::push(acc, text)
+        }
+      } else {
+        ()
+      }
+      pi = pi + 1
+    }
+    print_text(StringBuilder::freeze(acc))
+    0
+  }
+}
+
+/// The verb dispatcher with its exception discharged to an exit code: the
+/// framed diagnostic goes to STDERR, where `runtime/vibe` used to print the
+/// adapter's `.diag` sidecar, so a verb's machine-readable stdout (symbols
+/// rows, grep matches, check diagnostics) is never interleaved with it.
+export fn run_user_dispatch_args(args: Array[String]) -> Int with Fs + Env + Stdin + Console + Stderr + Profiler {
+  handle {
+    selfhost_cli_user_dispatch_args(args)
+  } with { Exception::Throw(e) => {
+    Stderr::write_stream(line_terminated(format_check_report(e)))
+    1
+  } }
+}
+
+export fn selfhost_cli_user_dispatch_args(args: Array[String]) -> Int with Exception + Fs + Env + Stdin + Console + Stderr + Profiler {
+  let argv = rewrite_user_argv(args, Env::get("VIBE_INVOKE_DIR"), Fs::getcwd())
+  let first = if Array::length(argv) == 0 {
+    "help"
+  } else {
+    Array::get(argv, 0)
+  }
+  match first {
+    "check" => selfhost_cli_user_check_args(argv),
+    "compile" => selfhost_cli_user_compile_args(argv),
+    "build" => selfhost_cli_user_compile_args(argv),
+    "fmt" => selfhost_cli_user_fmt_args(argv),
+    "normalize" => selfhost_cli_user_normalize_args(argv),
+    "type-at" => selfhost_cli_user_type_at_args(argv),
+    "doc-at" => selfhost_cli_user_doc_at_args(argv),
+    "refactor" => selfhost_cli_user_refactor_args(argv),
+    "binding-at" => selfhost_cli_user_binding_at_args(argv),
+    "symbols" => selfhost_cli_user_symbols_args(argv),
+    "escapes" => selfhost_cli_user_escapes_args(argv),
+    "rc-classify" => selfhost_cli_user_rc_classify_args(argv),
+    "rc-plan" => selfhost_cli_user_rc_plan_args(argv),
+    "allocs" => selfhost_cli_user_allocs_args(argv),
+    "deps" => selfhost_cli_user_deps_args(argv),
+    "diagnostics" => selfhost_cli_user_diagnostics_args(argv),
+    "grep" => selfhost_cli_user_grep_args(argv),
+    "run" => selfhost_cli_user_run_args(argv),
+    "test" => selfhost_cli_user_test_args(argv),
+    "bench" => selfhost_cli_user_bench_args(argv),
+    "serve" => selfhost_cli_user_serve_args(argv),
+    "profile" => selfhost_cli_user_profile_args(argv),
+    "lsp" => selfhost_cli_user_lsp_args(argv),
+    "hash" => selfhost_cli_user_hash_args(argv),
+    "inspect-update" => selfhost_cli_user_inspect_update_args(argv),
+    "help" => selfhost_cli_user_help_args(argv),
+    "--help" => selfhost_cli_user_help_args(argv),
+    "-h" => selfhost_cli_user_help_args(argv),
+    _ => throw(String::concat("unknown command: ", String::concat(first, " (try 'vibe help')")))
+  }
+}

@@ -1,0 +1,766 @@
+// Type names.
+
+import @vibe/compiler/core {
+  Expr, Stmt, TypeExpr, builtin_shadow_rename_of, str_lt
+}
+
+import @vibe/ast {
+  builtin_ref, impl_target_key
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import ./callable_names.vibe {
+  impl_target_fn_key
+}
+
+import ./constructor_environments.vibe {
+  extend_constructor_var_types
+}
+
+import ./equality_aliases.vibe {
+  eq_expand_alias_ty
+}
+
+import ./lambda_return_shapes.vibe {
+  dtd_interp_fn_lamret_key, dtd_interp_lamret_of
+}
+
+import ./state.vibe {
+  dtd_constructor_local_returns, dtd_constructor_tracking
+}
+
+import ./type_name_occurrences.vibe {
+  ty_mentions_name_in
+}
+
+import ./utilities.vibe {
+  dict_struct_name, empty_str_array, local_fn_return_key, split_qualified, str_array_contains
+}
+
+/// Build the witness struct `TrDict { m: (Self) -> R; ... }` for a trait. The
+/// `Self` placeholder in the signatures stays verbatim — struct type params are
+/// erased, so the field-access typing is structural (proven in spike G-3).
+export fn make_dict_struct_stmt(trait_name: String, sigs: Array[(String, Array[TypeExpr], TypeExpr)], tparams: Array[String]) -> Stmt {
+  let fields = array_empty()
+  let mut i = 0
+  while i < Array::length(sigs) {
+    let (mname, params, ret) = Array::get(sigs, i)
+    Array::push(fields, (mname, TyFn(params, ret, None)))
+    i = i + 1
+  }
+  SStruct(false, dict_struct_name(trait_name), fields, empty_str_array(), empty_str_array(), tparams)
+}
+
+/// Two field-name sets describe the same struct shape when they have equal
+/// length and every name in one appears in the other.
+export fn field_sets_match(a: Array[String], b: Array[String]) -> Bool {
+  if Array::length(a) != Array::length(b) {
+    false
+  } else {
+    let mut i = 0
+    let mut ok = true
+    while i < Array::length(a) {
+      if str_array_contains(b, Array::get(a, i)) {
+        i = i + 1
+      } else {
+        ok = false
+        i = Array::length(a)
+      }
+    }
+    ok
+  }
+}
+
+/// Is `name` a known struct (a key in struct_sets)? Gates the #672 `==` dispatch.
+export fn struct_set_has(struct_sets: Array[(String, Array[String])], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(struct_sets) {
+    let (sname, _) = Array::get(struct_sets, i)
+    if sname == name {
+      found = true
+      i = Array::length(struct_sets)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// Whether type `name` declares a field/variant called `member` (struct_sets
+/// maps struct AND enum names to their field/variant name lists). Used to keep
+/// a field-stored-function call `b.f(args)` as an EDot when the struct also
+/// has a same-named `T::f` method candidate.
+export fn struct_set_member(struct_sets: Array[(String, Array[String])], name: String, member: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(struct_sets) {
+    let (sname, members) = Array::get(struct_sets, i)
+    if sname == name {
+      let mut j = 0
+      while j < Array::length(members) {
+        if Array::get(members, j) == member {
+          found = true
+          j = Array::length(members)
+        } else {
+          j = j + 1
+        }
+      }
+      i = Array::length(struct_sets)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// [robj, arg1, arg2, ...] — receiver prepended to the rewritten args for a
+/// method-call rewrite (`xs.m(a)` -> `T::m(xs, a)`).
+export fn prepend_expr(head: Expr, rest: Array[Expr]) -> Array[Expr] {
+  let out = array_empty()
+  Array::push(out, head)
+  let mut i = 0
+  while i < Array::length(rest) {
+    Array::push(out, Array::get(rest, i))
+    i = i + 1
+  }
+  out
+}
+
+export fn lookup_var_type(var_types: Array[(String, String)], name: String) -> Option[String] {
+  // `extend_var_types` APPENDS on each `let`, so a shadowing rebind adds a second
+  // entry for the same name. Return the LAST match (the innermost binding in
+  // scope) so `let r = record { a }; ...; let r = record { c }; r.c` resolves
+  // against the inner shape rather than the stale outer one (#760(4)).
+  // Scanned BACKWARD so the innermost binding -- the common query -- answers
+  // without walking the whole environment.
+  let mut i = Array::length(var_types) - 1
+  let mut result = None
+  while i >= 0 {
+    let (vn, vt) = Array::get(var_types, i)
+    if vn == name {
+      result = Some(vt)
+      i = -1
+    } else {
+      i = i - 1
+    }
+  }
+  result
+}
+
+/// Best-effort syntactic inference of a call argument's concrete type, enough to
+/// pick the trait impl at a concrete call site. Consults `var_types` (locals
+/// bound to inferable values and parameters with concrete annotations). Returns
+/// None when the type is not determinable (the call is then left unrewritten).
+/// Resolve a (possibly qualified) constructor name to its enum/return type.
+/// Bare `Green` -> `Color` via fn_returns; qualified `Color::Green` first tries
+/// the whole name (no match) then the member `Green` confirming its enum equals
+/// the head — so `let a = Color::Green` seeds `a -> Color` for `==` dispatch.
+/// #2527: is a BARE identifier in value position a nullary constructor?
+///
+/// It is exactly when its head is uppercase (`Green`, `None`) or it is
+/// qualified (`Color::Green`). A lowercase bare name is a variable or a
+/// function VALUE, and neither has the type `fn_returns` would report for it.
+///
+/// This matters because `fn_returns` is the program-wide FLAT table for the
+/// whole import closure, with no module scoping: consulting it for a lowercase
+/// name answers about a same-spelled function in another module. Measured --
+/// `CtVar(id) => "?t\{id}"` in `core/types.vibe`, where `id` is an `Int` bound
+/// by the match arm and so absent from `var_types`, picked up a test file's
+/// `fn id(n: String) -> Expr` and rejected THAT file with "cannot interpolate
+/// a value of type `Expr`: it has no Show renderer". The named file had no
+/// interpolation, the suggested fix (`derive(Show)` on `Expr`) was wrong, and
+/// renaming the helper was the only way out.
+///
+/// The CALL arm is a different question -- `f(x)` really does have `f`'s
+/// return type -- so it keeps asking `ctor_enum_of_name` unchanged, and the
+/// cross-module ambiguity there is #2527's remaining half.
+export fn dtd_name_is_constructor_shaped(name: String) -> Bool {
+  if String::contains(name, "::") {
+    true
+  } else if String::length(name) == 0 {
+    false
+  } else {
+    let c = String::char_code_at(name, 0)
+    c >= 'A' && c <= 'Z'
+  }
+}
+
+export fn ctor_enum_of_name(fn_returns: Array[(String, String)], name: String) -> Option[String] {
+  match fn_return_type(fn_returns, name) {
+    Some(t) => Some(t),
+    None => match split_qualified(name) {
+      Some(parts) => {
+        let (head, member) = parts
+        // #1491 (second site): ask whether `member` is a constructor of THIS
+        // enum, not what `member`'s FIRST fn_returns entry returns.
+        // Constructor names collide across enums, so the first-match form
+        // answered about whichever enum sorted first and returned None for a
+        // perfectly good `Color::Green` -- leaving the binding untyped, which
+        // downstream means synth_dicts finds no witness and emits a call short
+        // its dictionary argument. Same defect as `qual_ctor_member`, same
+        // table, same fix.
+        if fn_returns_has_type(fn_returns, member, head) {
+          Some(head)
+        } else {
+          None
+        }
+      },
+      None => None
+    }
+  }
+}
+
+/// A tuple field is spelled as decimal digits (`t.0`). A struct field never is,
+/// so digits-only is the whole test -- and it must be digits ONLY, or `.0x` on
+/// a struct would read as index 0.
+export fn dtd_tuple_index_of(field: String) -> Option[Int] {
+  let n = String::length(field)
+  if n == 0 {
+    None
+  } else {
+    let mut i = 0
+    let mut acc = 0
+    let mut ok = true
+    while i < n {
+      let c = String::char_code_at(field, i)
+      if c >= 48 && c <= 57 {
+        acc = acc * 10 + (c - 48)
+      } else {
+        ok = false
+      }
+      i = i + 1
+    }
+    if ok {
+      Some(acc)
+    } else {
+      None
+    }
+  }
+}
+
+/// The operand-type test of dtd_binop_builtin_operand_type on two ALREADY
+/// inferred operand names, so a caller that has both in hand (the `+` arm of
+/// infer_arg_type_name) does not infer them a second time (#2680).
+export fn dtd_builtin_arith_agreement(lt: String, rt: String) -> Option[String] {
+  if lt == rt && dtd_is_builtin_arith_type(lt) {
+    Some(lt)
+  } else {
+    None
+  }
+}
+
+/// The types an arithmetic `EBinOp` resolves to WITHOUT going through a user
+/// trait impl -- i.e. the ones whose result the checker takes from the operands
+/// (`unify_binop_candidate` against Int, then Double, then String for `+`).
+/// "" is not one of them, so an unknown operand answers false here.
+fn dtd_is_builtin_arith_type(t: String) -> Bool {
+  t == "Int" || t == "Double" || t == "String"
+}
+
+/// #973: known concrete/struct-like type names `infer_arg_type_name` can
+/// report, for which the EXISTING per-type rewrites (String concat/relational,
+/// struct `==`, Option/Result structural eq, ...) already apply, or correctly
+/// do not. Anything else it returns `Some` for is, by construction, the bare
+/// name of an in-scope generic type parameter: `seed_var_types` (and the `EFn`
+/// arm of `rewrite_expr`) seed a parameter's own `[T]` annotation verbatim as
+/// its "type name" — see #931's `as_tparam_dict`, which reuses the same
+/// inference for method calls — and no other path in `infer_arg_type_name`
+/// produces a non-concrete `Some`.
+export fn is_concrete_or_known_type_name(t: String, struct_sets: Array[(String, Array[String])]) -> Bool {
+  // `Char` / `Unit` are concrete: a `Char` operand is an Int at run time, and
+  // routing it to the erased-generic dispatch left `__generic_add` unresolved
+  // on the gc lane.
+  t == "Int" || t == "Bool" || t == "String" || t == "Double" || t == "Float" || t == "Char" || t == "Unit" || t == "Array" || t == "Map" || t == "Option" || t == "Result" || t == "ByteStream" || struct_set_has(struct_sets, t)
+}
+
+/// #760(4): anonymous-record dot access `r.name`. A `record { .. }` literal whose
+/// field-set matches NO declared struct is stored in LITERAL field order with tag
+/// 0 (see compile_expr_tail4 ERecord); its `.field` reads reach codegen's EDot,
+/// which resolves the slot only through declared structs (`struct_field_candidates`)
+/// and therefore throws "unknown struct field". The record-pattern destructure
+/// (`let record { name: n } = r`) already works because the parser lowers it to
+/// positional `__rec_field(r, i)` reads (parser_expr_dispatch). This mirrors that:
+/// we thread each anonymous-record binding's ordered field list through `var_types`
+/// (as a `__anonrec:` sentinel) and rewrite `binding.field` to the same
+/// `__rec_field(binding, slot)` positional read. A struct-matching record is left
+/// alone — its literal is reordered to the struct's declared order and the EDot
+/// struct-tag-dispatch path resolves it correctly.
+export fn anon_record_prefix() -> String {
+  "__anonrec:"
+}
+
+/// #1878: compound sentinel for a TUPLE whose elements include anonymous
+/// records — `__anontup:` + ';'-joined element entries, each either a full
+/// `__anonrec:` sentinel or "" (untracked element). Record sentinels join
+/// fields with ',', so ';' is unambiguous. One level only: a tuple nested
+/// inside a tuple stays untracked, same scope as the parser's positional
+/// sub-tuple destructure support.
+export fn anon_tuple_prefix() -> String {
+  "__anontup:"
+}
+
+/// The `__anontup:` sentinel for a tuple literal's elements, or None when no
+/// element is an anonymous record (nothing to track).
+export fn tuple_sentinel_from_exprs(items: Array[Expr]) -> Option[String] {
+  let parts = empty_str_array()
+  let mut any = false
+  let mut i = 0
+  while i < Array::length(items) {
+    match Array::get(items, i) {
+      ERecord(rn, fields, _) => if String::length(rn) == 0 {
+        let names = empty_str_array()
+        let mut fi = 0
+        while fi < Array::length(fields) {
+          let (fname, _) = Array::get(fields, fi)
+          Array::push(names, fname)
+          fi = fi + 1
+        }
+        Array::push(parts, anon_record_sentinel(names))
+        any = true
+      } else {
+        Array::push(parts, "")
+      },
+      _ => Array::push(parts, "")
+    }
+    i = i + 1
+  }
+  if any {
+    Some(String::concat(anon_tuple_prefix(), String::join(parts, ";")))
+  } else {
+    None
+  }
+}
+
+/// Split a `__anontup:` sentinel back into its per-element entries.
+export fn anon_tuple_elems(sentinel: String) -> Array[String] {
+  String::split(sentinel[String::length(anon_tuple_prefix()): String::length(sentinel)], ";")
+}
+
+/// Encode an ordered field-name list as a `var_types` sentinel value.
+fn anon_record_sentinel(names: Array[String]) -> String {
+  let mut s = anon_record_prefix()
+  let mut i = 0
+  while i < Array::length(names) {
+    if i > 0 {
+      s = String::concat(s, ",")
+    } else {
+      ()
+    }
+    s = String::concat(s, Array::get(names, i))
+    i = i + 1
+  }
+  s
+}
+
+/// The slot of `field` within a `__anonrec:` sentinel, or -1 if the string is not
+/// a sentinel or does not carry `field`. Splits on `,` so a field name that is a
+/// prefix of another (e.g. `ver` vs `version`) does not false-match.
+fn anon_field_index(sentinel: String, field: String) -> Int {
+  let prefix = anon_record_prefix()
+  if !String::starts_with(sentinel, prefix) {
+    -1
+  } else {
+    let mut rest = String::substring(sentinel, String::length(prefix), String::length(sentinel))
+    let mut idx = 0
+    let mut found = -1
+    let mut go = true
+    while go {
+      let comma = String::index_of(rest, ",")
+      let tok = if comma < 0 {
+        rest
+      } else {
+        String::substring(rest, 0, comma)
+      }
+      if tok == field {
+        found = idx
+        go = false
+      } else if comma < 0 {
+        go = false
+      } else {
+        rest = String::substring(rest, comma + 1, String::length(rest))
+        idx = idx + 1
+      }
+    }
+    found
+  }
+}
+
+/// If `val` is an explicit anonymous `record { .. }` literal (rn == ""), the
+/// `__anonrec:` sentinel recording its literal field order; else None.
+/// Threaded into `var_types` at `let`/`let mut` so a later `binding.field` on the
+/// same name resolves positionally.
+///
+/// #1839: EVERY rn == "" literal gets the sentinel — it used to be withheld
+/// when the field set matched a declared struct (leaving `.field` to the EDot
+/// struct-table path), which was consistent only because codegen also
+/// reordered such literals to the struct's declared order. That capture made
+/// the parser's POSITIONAL record destructure read swapped values
+/// (`let record { start: a, end: b } = record { start: 3, end: 9 }` bound
+/// a = 9 whenever a same-field-set struct declared its fields in another
+/// order). Anonymous records now stay in literal order end-to-end, so dot
+/// access must resolve positionally against that order too.
+export fn anon_record_inferred(val: Expr, struct_sets: Array[(String, Array[String])]) -> Option[String] {
+  match val {
+    ERecord(rn, fields, _) => if String::length(rn) > 0 {
+      None
+    } else {
+      let names = empty_str_array()
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (fname, _) = Array::get(fields, i)
+        Array::push(names, fname)
+        i = i + 1
+      }
+      Some(anon_record_sentinel(names))
+    },
+    // #1878: a tuple literal carrying anonymous records gets the compound
+    // `__anontup:` sentinel, so a later tuple destructure of the binding
+    // (`let (r, n) = t` — an EMatch with a PTuple pattern) can hand each
+    // element's record sentinel to its binder. Sentinel entries are inert
+    // for every other var_types consumer (no struct name ever matches).
+    ETuple(items) => tuple_sentinel_from_exprs(items),
+    _ => None
+  }
+}
+
+fn constructor_return_head_of(ret: Option[TypeExpr], body: Expr) -> String {
+  match ret {
+    Some(te) => match eq_expand_alias_ty(te) {
+      TyName(n) => n,
+      TyApp(n, _) => n,
+      TyFn(_, _, _) => fn_type_return_head(),
+      _ => ""
+    },
+    None => fn_return_head_of(ret, body)
+  }
+}
+
+export fn extend_local_fn_return(var_types: Array[(String, String)], name: String, value: Expr) -> Array[(String, String)] {
+  if !Array::get(dtd_constructor_tracking, 0) || !str_array_contains(dtd_constructor_local_returns, name) {
+    var_types
+  } else {
+    let key = local_fn_return_key(name)
+    match value {
+      EFn(_, _, _, ret, _, body) => {
+        let head = constructor_return_head_of(ret, body)
+        if String::length(head) == 0 {
+          extend_constructor_var_types(var_types, key, None)
+        } else {
+          extend_constructor_var_types(var_types, key, Some(head))
+        }
+      },
+      _ => extend_constructor_var_types(var_types, key, None)
+    }
+  }
+}
+
+/// `binding.field` -> `__rec_field(binding, slot)` when `binding` is an
+/// anonymous-record binding (a `__anonrec:` var_types entry) that carries `field`.
+/// `robj` is the already-rewritten receiver. None leaves the EDot untouched (a
+/// declared-struct field, a tuple index, or an unknown receiver).
+export fn anon_dot_rewrite(obj: Expr, field: String, off: Int, robj: Expr, var_types: Array[(String, String)]) -> Option[Expr] {
+  match obj {
+    EIdent(vn, _) => match lookup_var_type(var_types, vn) {
+      Some(t) => {
+        let idx = anon_field_index(t, field)
+        if idx >= 0 {
+          // builtin_ref: the checker runs this rewrite (desugar_railway_binds)
+          // BEFORE any rename, so a bare name here was redirected to a
+          // program's own `fn __rec_field` on wasm-gc (#3132 review). The call
+          // keeps the source offset.
+          Some(ECall(builtin_ref("__rec_field"), [robj, EInt(idx)], off))
+        } else {
+          None
+        }
+      },
+      None => None
+    },
+    _ => None
+  }
+}
+
+/// Collect the return-type name of every top-level `let f = (..) -> R { .. }`
+/// (R only when it is a bare type name), so the `for` desugar can tell an
+/// iterator (`C::next` exists) from an iterable (`C::iter` returns an iterator).
+/// The tail expression a function body evaluates to, walking the binding
+/// spine (`let` / `let mut` / `letrec` / sequencing) to its final position.
+/// Used to infer a return head when the annotation is omitted.
+export fn fn_body_tail_expr(e: Expr) -> Expr {
+  match e {
+    ELet(_, _, rest, _) => fn_body_tail_expr(rest),
+    ELetMut(_, _, rest, _) => fn_body_tail_expr(rest),
+    ELetRec(_, _, rest) => fn_body_tail_expr(rest),
+    ESeq(_, rest) => fn_body_tail_expr(rest),
+    other => other
+  }
+}
+
+/// Record the head name of a function's return type: `TyName(n)` -> n,
+/// `TyApp(n, _)` -> n (so a generic `iter() -> LazyIter[T]` resolves to
+/// `LazyIter`, and an async `next() -> Future[Option[..]]` resolves to
+/// `Future` so the for-loop desugar can tell async from sync).
+///
+/// #1350 (Codex P1, twice): a FUNCTION-typed return gets its own head
+/// sentinel instead of collapsing into the empty "unknown" head, because
+/// `for x in f()` may only classify as a pull-closure loop when `f`
+/// positively returns a function -- otherwise an unannotated
+/// `let values = () -> { [40, 2] }` is indistinguishable from
+/// `stdin_stream : (Int) -> (() -> Option[String])` and the array gets
+/// called as a closure (call_indirect trap).
+///
+/// When the annotation is OMITTED the head is inferred from the body's tail
+/// expression: a body that evaluates to a lambda is a closure factory, so it
+/// gets the same sentinel. Without this, tightening the annotated case alone
+/// just moved the trap to the other side -- an unannotated
+/// `let make_pull = () -> { () -> { .. } }` lost its pull loop and iterated a
+/// function value as an array. Only the lambda shape is inferred; every other
+/// tail keeps the empty head, so nothing that used to classify by NAME
+/// changes. fn_return_type maps the sentinel to None, so every consumer that
+/// reads type NAMES sees exactly what it saw before.
+export fn fn_return_head_of(ret: Option[TypeExpr], body: Expr) -> String {
+  match ret {
+    Some(te) => match te {
+      TyName(n) => n,
+      TyApp(n, _) => n,
+      TyFn(_, _, _) => fn_type_return_head(),
+      _ => ""
+    },
+    None => match fn_body_tail_expr(body) {
+      EFn(_, _, _, _, _, _) => fn_type_return_head(),
+      _ => ""
+    }
+  }
+}
+
+/// #1341 (Codex P1 on #1369): the key under which a struct FIELD's declared
+/// type head rides in the fn_returns table. `.` cannot appear in a vibe
+/// binding or function name (qualified names use `::`), so this can never
+/// collide with a real entry -- the same reserved-key trick array_elem_key
+/// already uses for var_types.
+///
+/// fn_returns is threaded through every infer_arg_type_name caller already,
+/// and struct_sets carries field NAMES only, so this is the cheapest place to
+/// put field types without adding a parameter to a dozen signatures.
+export fn struct_field_type_key(struct_name: String, field: String) -> String {
+  String::concat(struct_name, String::concat(".", field))
+}
+
+/// #1502: reserved `fn_returns` key carrying `type C = Color` as `C -> Color`.
+/// Same trick as `struct_field_type_key` -- this pass has no `TypeDef` table, so
+/// the alias map rides along in the one table every consumer already has. The
+/// `type ` prefix cannot collide with a function or variant name (a space is not
+/// an identifier character).
+export fn type_alias_key(alias_name: String) -> String {
+  String::concat("type ", alias_name)
+}
+
+/// Follow `type_alias_key` hops to the name a qualifier ultimately denotes, so
+/// an alias works as a constructor qualifier. `fuel` bounds a cyclic chain
+/// (rejected by the checker; here we only need to not spin).
+export fn resolve_alias_head(fn_returns: Array[(String, String)], head: String) -> String {
+  let mut cur = head
+  let mut fuel = 16
+  let mut done = false
+  while !done {
+    if fuel <= 0 {
+      done = true
+    } else {
+      fuel = fuel - 1
+      match fn_return_type(fn_returns, type_alias_key(cur)) {
+        Some(target) => {
+          cur = target
+        },
+        None => {
+          done = true
+        }
+      }
+    }
+  }
+  cur
+}
+
+/// (`Holder.s` -> `HostStream`) for every declared struct field whose
+/// annotation has a head name. Appended to fn_returns so `infer_arg_type_name`
+/// can type a projection (`h.s`).
+export fn collect_struct_field_types(stmts: Array[Stmt], out: Array[(String, String)]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SStruct(_, sname, fields, _, _, _) => {
+        let mut j = 0
+        while j < Array::length(fields) {
+          let (fname, fty) = Array::get(fields, j)
+          let head = match fty {
+            TyName(n) => n,
+            TyApp(n, _) => n,
+            _ => ""
+          }
+          if String::length(head) > 0 {
+            Array::push(out, (struct_field_type_key(sname, fname), head))
+          } else {
+            ()
+          }
+          j = j + 1
+        }
+      },
+      SModule(_, _, inner) => collect_struct_field_types(inner, out),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+export fn collect_fn_impl_return_key(out: Array[(String, String)], fname: String, tparams: Array[String], ret: Option[TypeExpr]) -> Unit {
+  match ret {
+    Some(te) => if !ty_mentions_name_in(te, tparams) {
+      Array::push(out, (impl_target_fn_key(fname), impl_target_key(te)))
+    } else {
+      ()
+    },
+    None => ()
+  }
+}
+
+/// Record a top-level generic's return MARKER under a reserved `fn_returns`
+/// key, when its return says something this pass can use.
+///
+/// `fn_returns` keeps only the return's head, which is enough for a bare `-> U`
+/// (the head IS the formal, re-spelled above) and says nothing at all for
+/// `-> Array[U]` or `-> (U, Int)`. The marker is exactly what a LOCAL lambda
+/// records at its binding, so the readers need no arm of their own -- see
+/// `dtd_interp_lamret_slot_of` (#2745 round 25).
+export fn collect_fn_return_marker(out: Array[(String, String)], fname: String, tparams: Array[String], fparams: Array[(String, Option[TypeExpr])], ret: Option[TypeExpr], fbody: Expr) -> Unit {
+  let marker = dtd_interp_lamret_of(tparams, fparams, ret, fbody)
+  if String::length(marker) > 0 {
+    Array::push(out, (dtd_interp_fn_lamret_key(fname), marker))
+  } else {
+    ()
+  }
+}
+
+/// Leftmost binary search over the SORTED fn_returns table (see
+/// collect_fn_returns). Leftmost-of-run preserves first-match-wins for
+/// duplicate names.
+fn fn_returns_find(fn_returns: Array[(String, String)], fname: String) -> Int {
+  let mut lo = 0
+  let mut hi = Array::length(fn_returns)
+  while lo < hi {
+    let mid = (lo + hi) / 2
+    let (n, _) = Array::get(fn_returns, mid)
+    if str_lt(n, fname) {
+      lo = mid + 1
+    } else {
+      hi = mid
+    }
+  }
+  let mut res = -1
+  if lo < Array::length(fn_returns) {
+    let (n2, _) = Array::get(fn_returns, lo)
+    if n2 == fname {
+      res = lo
+    }
+  }
+  res
+}
+
+export fn fn_exists(fn_returns: Array[(String, String)], fname: String) -> Bool {
+  fn_returns_find(fn_returns, fname) >= 0
+}
+
+/// #3144 round 4: the program's definition for a name this pass COMPUTED as
+/// `<Type>::<method>` (a trait witness field, a dot-call receiver's method).
+/// An impl method binds that name, and when it is one of the builtin names the
+/// compiler moves a program's definition away from (`String::length` ->
+/// `String::length$user`, see rename_builtin_shadow_defs) the table holds the
+/// moved spelling, so a lookup by the computed one missed it: the witness fell
+/// back to the builtin (`measure("abc")` answered 3, not the impl's 42) and
+/// `"abc".length()` compiled as a field read that trapped. Answers the moved
+/// spelling when that is what the program defines, else `qual` unchanged.
+export fn dtd_program_fn_name(fn_returns: Array[(String, String)], qual: String) -> String {
+  if fn_exists(fn_returns, qual) {
+    qual
+  } else {
+    let moved = builtin_shadow_rename_of(qual)
+    if fn_exists(fn_returns, moved) {
+      moved
+    } else {
+      qual
+    }
+  }
+}
+
+/// #1350 (Codex P1): the recorded return-type head for a FUNCTION-typed
+/// return. Not a legal type name, so it can never collide with a real head.
+/// Only fn_return_is_fn_type reads it; fn_return_type maps it to None so the
+/// type-name consumers (infer_arg_type_name and everything downstream of it)
+/// behave exactly as they did when function returns had an empty head.
+fn fn_type_return_head() -> String {
+  "->"
+}
+
+/// Does the fn_returns table record `fname` with return head `want` ANYWHERE,
+/// not just at its leftmost entry?
+///
+/// #1491: `fn_return_type` answers "what does the FIRST `fname` entry return",
+/// which silently loses every later duplicate. Constructor names are not
+/// unique across enums -- two enums in one merged compile can both declare
+/// `Red` -- so asking "is `Red` a variant of `Color`" through the first-match
+/// helper answers about whichever enum happened to sort first (`Paint`), and
+/// `Color::Red` fails the `qual_ctor_member` gate. The table already holds
+/// BOTH entries; only the lookup was lossy. Duplicates are adjacent because
+/// the table is sorted by name, so the run scan below is O(#duplicates).
+export fn fn_returns_has_type(fn_returns: Array[(String, String)], fname: String, want: String) -> Bool {
+  let start = fn_returns_find(fn_returns, fname)
+  if start < 0 {
+    false
+  } else {
+    let mut i = start
+    let mut found = false
+    let mut done = false
+    while !done && i < Array::length(fn_returns) {
+      let (n, rt) = Array::get(fn_returns, i)
+      if n == fname {
+        if rt == want {
+          found = true
+          done = true
+        } else {
+          i = i + 1
+        }
+      } else {
+        done = true
+      }
+    }
+    found
+  }
+}
+
+export fn fn_return_type(fn_returns: Array[(String, String)], fname: String) -> Option[String] {
+  let idx = fn_returns_find(fn_returns, fname)
+  if idx < 0 {
+    None
+  } else {
+    let (_, rt) = Array::get(fn_returns, idx)
+    if String::length(rt) == 0 || rt == fn_type_return_head() {
+      None
+    } else {
+      Some(rt)
+    }
+  }
+}
+
+/// Does `fname` positively RETURN A FUNCTION (an annotated function type)?
+/// This is the pull-closure classification's real question -- distinct from
+/// "the return annotation was omitted", which records an empty head.
+export fn fn_return_is_fn_type(fn_returns: Array[(String, String)], fname: String) -> Bool {
+  let idx = fn_returns_find(fn_returns, fname)
+  if idx < 0 {
+    false
+  } else {
+    let (_, rt) = Array::get(fn_returns, idx)
+    rt == fn_type_return_head()
+  }
+}

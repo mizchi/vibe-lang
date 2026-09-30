@@ -330,5 +330,32 @@ run_case "a script named only in inputs does not count as running it" 0 'local t
   inputs { "scripts/check_freeze_surface.sh" }
 }'
 
+cat > "$WORK/common.pkl" <<'PKL'
+vibeSources: Listing<String> = new { "lib/**/*.vibe"; "lib/**/*.vpkg" }
+compilerProbeInputs: Listing<String> = new { ...vibeSources; "bootstrap/seed.json" }
+PKL
+for identity in safe unsafe; do
+  if [ "$identity" = safe ]; then binding='common.compilerProbeInputs'; want=0; else binding='new Listing<String> {}'; want=1; fi
+  cat > "$WORK/Taskfile.pkl" <<PKL
+amends "package://pkg.pkl-lang.org/github.com/mizchi/pkfire/pkfire@0.14.2#/Taskfile.pkl"
+import "common.pkl" as common
+local compilerProbeInputs = $binding
+local t = new Task {
+  name = "modular-probe"
+  cmd = "bash scripts/check_freeze_surface.sh"
+  inputs { ...compilerProbeInputs }
+}
+tasks { t }
+PKL
+  got=0
+  TASK_INPUTS_TASKFILE="$WORK/Taskfile.pkl" bash scripts/check_task_inputs.sh > "$WORK/modular.out" 2>&1 || got=$?
+  if [ "$got" = "$want" ]; then
+    note "modular $identity compiler identity"
+  else
+    cat "$WORK/modular.out" >&2
+    bad "modular $identity compiler identity: expected $want, got $got"
+  fi
+done
+
 [ "$fails" -eq 0 ] || exit 1
-echo "check-task-inputs-test: ok (34 cases)"
+echo "check-task-inputs-test: ok (36 cases)"

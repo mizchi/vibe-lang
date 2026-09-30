@@ -1,0 +1,1722 @@
+// lib/@vibe/compiler/checker/checker.vibe — builtin arg head rest.
+
+import @vibe/compiler/checker/annotations {
+  collect_formal_kind_uses
+}
+
+import @vibe/compiler/checker/type_relations {
+  head_kind
+}
+
+import @vibe/compiler/checker/resume {
+  arm_first_bare_tail
+}
+
+import @vibe/compiler/checker/diagnostics {
+  off_marker_len
+}
+
+import @vibe/compiler/core {
+  Expr,
+  Pat,
+  Stmt,
+  Subst,
+  Type,
+  TypeDef,
+  TypeEnv,
+  TypeExpr,
+  apply_type_constructor,
+  canonical_builtin_name,
+  env_has_reexport_surface_binding,
+  env_lookup,
+  find_typedef,
+  generalize,
+  instantiate,
+  registry_builtin_arity,
+  registry_builtin_param_type,
+  subst_apply,
+  type_to_string,
+  unify
+}
+
+import @vibe/ast {
+  is_builtin_ref_offset
+}
+
+import @vibe/parser {
+  lex
+}
+
+import ./builtins.vibe {
+  lookup_builtin
+}
+
+import @vibe/core {
+  array_empty, struct MutMap
+}
+
+import ./checker_exhaustive.vibe {
+  match_nonexhaustive_witness
+}
+
+import ./checker_pattern.vibe {
+  check_pattern
+}
+
+import ./checker_resolve.vibe {
+  subst_type_params
+}
+
+import ./checker_spawnable.vibe {
+  check_spawnable_captures
+}
+
+import ./builtin_call_arms.vibe {
+  builtin_resolves_at
+}
+
+import ./checker_effects.vibe {
+  row_items_top_level
+}
+
+import ./checker_escape.vibe {
+  diag_report_into
+}
+
+import ./checker_eq_unbounded_formal_msg.vibe {
+  check_assignable,
+  check_assignable_for,
+  check_assignable_set_end,
+  is_bytestream_named_type,
+  string_lit_end,
+  struct_field_names_match,
+  struct_fields_ground
+}
+
+import ./checker_merge_capture_provenance.vibe {
+  checker_string_array_has, merge_provenance_row, unsent_open_formal_vars
+}
+
+import ./checker_throw_kind_of_type.vibe {
+  min_int, railway_expr_off
+}
+
+/// Resolve the (uniquely) matching struct name for a record literal's field-name
+/// set. Returns None when 0 or >1 structs share that field set (ambiguous), or
+/// when the matching struct is GENERIC (non-ground fields) — so a record's
+/// struct identity is only recovered for an unambiguous MONOMORPHIC struct. Used
+/// to give a bare `S::{ ... }` literal the type `CtStruct(S)` instead of
+/// CtUnknown, which in turn lets `mut`-field write checking see the struct
+/// without disturbing generic-struct inference.
+export fn resolve_record_struct_name(defs: Array[TypeDef], actual: Array[(String, Type)]) -> Option[String] {
+  let mut matchct = 0
+  let mut out = None
+  let mut ground = false
+  let mut di = 0
+  while di < Array::length(defs) {
+    match Array::get(defs, di) {
+      TDStruct(sname, dfields, _, stps) => if struct_field_names_match(dfields, actual) {
+        matchct = matchct + 1
+        out = Some(sname)
+        ground = struct_fields_ground(dfields, defs, stps)
+      },
+      _ => ()
+    }
+    di = di + 1
+  }
+  if matchct == 1 && ground {
+    out
+  } else {
+    None
+  }
+}
+
+/// Unify each argument against its parameter, REPORTING a type mismatch instead
+/// of silently swallowing it. `__to_string` (the polymorphic interpolation
+/// stringifier: `"\{x}"` -> `__to_string(x)` wraps values of any type, but the
+/// polyfill annotates it `(Int) -> String`) is exempt.
+/// #3125: the spawn `Spawnable` capture check, keyed on the callee's TYPE
+/// rather than its spelling. The direct `TaskGroup::spawn` /
+/// `TaskGroup::spawn_suspend` branch runs it itself; every other callee with
+/// the same shape -- `(TaskGroup[r, e], <closure>) -> TaskHandle[..]`, which
+/// is what `let sp = TaskGroup::spawn` binds -- is checked here, so an alias
+/// is refused with the same diagnostic as the direct call.
+export fn check_spawn_shaped_call(env: TypeEnv, s: Subst, defs: Array[TypeDef], param_tys: Array[Type], ret: Type, args: Array[Expr], errors: Array[String], marker: String) -> Unit {
+  if Array::length(param_tys) == 2 && Array::length(args) == 2 {
+    let is_handle = match subst_apply(s, ret) {
+      CtNamed(hn, _) => hn == "TaskHandle",
+      _ => false
+    }
+    let takes_fn = match subst_apply(s, Array::get(param_tys, 1)) {
+      CtFn(_, _, _) => true,
+      _ => false
+    }
+    match subst_apply(s, Array::get(param_tys, 0)) {
+      CtNamed(tg_name, tg_args) => if is_handle && takes_fn && tg_name == "TaskGroup" && Array::length(tg_args) == 2 {
+        let violations = check_spawnable_captures(env, s, defs, Array::get(args, 1), Array::get(tg_args, 0), unsent_open_formal_vars(s))
+        let mut vi = 0
+        while vi < Array::length(violations) {
+          Array::push(errors, String::concat(Array::get(violations, vi), marker))
+          vi = vi + 1
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+  } else {
+    ()
+  }
+}
+
+export fn unify_call_args(param_tys: Array[Type], arg_tys: Array[Type], arg_exprs: Array[Expr], s: Subst, errors: Array[String], label: String, off: Int) -> Subst {
+  let mut out = s
+  let mut ui = 0
+  let ul = min_int(Array::length(arg_tys), Array::length(param_tys))
+  // One expression per TYPE, not merely enough of them: a length floor would
+  // admit an array that is misaligned but long enough, which is exactly how the
+  // two receiver-prepended method sites below slipped through a first draft
+  // (their `arg_tys` comes from `all_args`, one longer than `args`).
+  let have_exprs = Array::length(arg_exprs) == Array::length(arg_tys)
+  while ui < ul {
+    let pty = Array::get(param_tys, ui)
+    let aty = Array::get(arg_tys, ui)
+    // #2831 (2): anchor the ARGUMENT, not the callee. `takes("nope")` used to
+    // report the column of `takes`, so the reader was sent to the name rather
+    // than to the text they have to edit. The offset was already there -- this
+    // path simply did not read it, which is why it is independent of #2831 (1)
+    // (widening `EInt` / `EFloat` / `EBool`, an AST_BINARY_VERSION bump).
+    //
+    // Indexing `arg_exprs` positionally is sound because `arg_tys` is built by
+    // walking `args` in order, and `desugar_labeled_args` reorders a labeled
+    // call BEFORE checking; an `ELabeledArg` that survives types as CtUnknown,
+    // which never mismatches. The length guard keeps a caller that cannot
+    // supply the expressions on the old callee anchor rather than on a
+    // MISALIGNED one -- a wrong location is worse than a coarse one.
+    let a_off = if have_exprs {
+      let ao = railway_expr_off(Array::get(arg_exprs, ui))
+      if ao >= 0 {
+        ao
+      } else {
+        off
+      }
+    } else {
+      off
+    }
+    out = if label == "__to_string" {
+      match unify(pty, aty, out) {
+        Some(su) => su,
+        None => out
+      }
+    } else {
+      // Set unconditionally (with -1 clearing it) so a range never leaks from
+      // one argument onto the next argument's diagnostic.
+      if have_exprs {
+        check_assignable_set_end(string_lit_end(Array::get(arg_exprs, ui)))
+      } else {
+        ()
+      }
+      check_assignable_for(pty, aty, out, errors, "argument type mismatch for ", label, a_off)
+    }
+    ui = ui + 1
+  }
+  out
+}
+
+export fn param_marker_index(label: String) -> Option[Int] {
+  if String::starts_with(label, "#param[") {
+    let close = String::index_of(label, "]")
+    if close > 7 {
+      let mut id = 0
+      let mut p = 7
+      while p < close {
+        id = id * 10 + (String::char_code_at(label, p) - 48)
+        p = p + 1
+      }
+      Some(id)
+    } else {
+      None
+    }
+  } else {
+    None
+  }
+}
+
+/// Scalar / unit types cannot later mention a region, so a function that
+/// merely returns such a parameter must stay a pure `None` row. Attaching
+/// `#aliasparam` there made identity `(x: Int) -> x` look effectful and
+/// then fail #939 drop-checks (`inc` into a `with Logger` slot, Parallel::map).
+export fn type_can_carry_region(ty: Type) -> Bool {
+  match ty {
+    CtFn(_, _, _) => true,
+    CtArray(_) => true,
+    CtOption(_) => true,
+    CtTuple(_) => true,
+    CtRecord(_) => true,
+    CtNamed(_, _) => true,
+    CtApplied(_, _) => true,
+    CtStruct(_) => true,
+    CtEnum(_) => true,
+    CtVar(_) => true,
+    CtUnknown => true,
+    CtForAll(_, _, _) => true,
+    _ => false
+  }
+}
+
+export fn add_param_capture_dependency(ty: Type, index: Int) -> Type {
+  match ty {
+    CtFn(params, ret, effect) => CtFn(for param in params {
+      add_param_capture_dependency(param, index)
+    }, add_param_capture_dependency(ret, index), merge_provenance_row(effect, Some(String::concat("#param[", String::concat(__to_string(index), "]"))))),
+    CtArray(elem) => CtArray(add_param_capture_dependency(elem, index)),
+    CtOption(elem) => CtOption(add_param_capture_dependency(elem, index)),
+    CtTuple(items) => CtTuple(for item in items {
+      add_param_capture_dependency(item, index)
+    }),
+    CtRecord(fields) => CtRecord(for field in fields {
+      let (name, field_ty) = field
+      (name, add_param_capture_dependency(field_ty, index))
+    }),
+    CtNamed(name, args) => CtNamed(name, for arg in args {
+      add_param_capture_dependency(arg, index)
+    }),
+    CtApplied(head, args) => apply_type_constructor(add_param_capture_dependency(head, index), for arg in args {
+      add_param_capture_dependency(arg, index)
+    }),
+    CtForAll(vars, bounds, body) => CtForAll(vars, bounds, add_param_capture_dependency(body, index)),
+    _ => ty
+  }
+}
+
+export fn collect_internal_provenance(ty: Type, out: Array[String]) -> Unit {
+  match ty {
+    CtFn(params, ret, effect) => {
+      match effect {
+        Some(row) => for raw in String::split(row, ",") {
+          let label = String::trim(raw)
+          if (String::starts_with(label, "#region_") || String::starts_with(label, "#capture[") || String::starts_with(label, "#param[")) && !checker_string_array_has(out, label) {
+            Array::push(out, label)
+          }
+        },
+        None => ()
+      }
+      for param in params {
+        collect_internal_provenance(param, out)
+      }
+      collect_internal_provenance(ret, out)
+    },
+    CtArray(elem) => collect_internal_provenance(elem, out),
+    CtOption(elem) => collect_internal_provenance(elem, out),
+    CtTuple(items) => for item in items {
+      collect_internal_provenance(item, out)
+    },
+    CtRecord(fields) => for field in fields {
+      let (_, field_ty) = field
+      collect_internal_provenance(field_ty, out)
+    },
+    CtNamed(name, args) => {
+      if String::starts_with(name, "#region_") && !checker_string_array_has(out, name) {
+        Array::push(out, name)
+      }
+      for arg in args {
+        collect_internal_provenance(arg, out)
+      }
+    },
+    CtApplied(head, args) => {
+      collect_internal_provenance(head, out)
+      for arg in args {
+        collect_internal_provenance(arg, out)
+      }
+    },
+    CtForAll(_, _, body) => collect_internal_provenance(body, out),
+    _ => ()
+  }
+}
+
+export fn type_has_param_marker(ty: Type, marker: Int) -> Bool {
+  let wanted = String::concat("#param[", String::concat(__to_string(marker), "]"))
+  match ty {
+    CtFn(params, ret, effect) => {
+      let mut found = match effect {
+        Some(row) => checker_string_array_has(for raw in String::split(row, ",") {
+          String::trim(raw)
+        }, wanted),
+        None => false
+      }
+      for param in params {
+        if type_has_param_marker(param, marker) {
+          found = true
+        }
+      }
+      found || type_has_param_marker(ret, marker)
+    },
+    CtArray(elem) => type_has_param_marker(elem, marker),
+    CtOption(elem) => type_has_param_marker(elem, marker),
+    CtTuple(items) => {
+      let mut found = false
+      for item in items {
+        if type_has_param_marker(item, marker) {
+          found = true
+        }
+      }
+      found
+    },
+    CtRecord(fields) => {
+      let mut found = false
+      for field in fields {
+        let (_, field_ty) = field
+        if type_has_param_marker(field_ty, marker) {
+          found = true
+        }
+      }
+      found
+    },
+    CtNamed(_, args) => {
+      let mut found = false
+      for arg in args {
+        if type_has_param_marker(arg, marker) {
+          found = true
+        }
+      }
+      found
+    },
+    CtApplied(head, args) => {
+      let mut found = type_has_param_marker(head, marker)
+      for arg in args {
+        if type_has_param_marker(arg, marker) {
+          found = true
+        }
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+fn param_marker_argument(marker: Int, param_tys: Array[Type], arg_tys: Array[Type]) -> Option[Type] {
+  let len = min_int(Array::length(param_tys), Array::length(arg_tys))
+  let mut i = 0
+  let mut found = None
+  while i < len {
+    if type_has_param_marker(Array::get(param_tys, i), marker) {
+      found = Some(Array::get(arg_tys, i))
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn resolve_param_provenance(ty: Type, param_tys: Array[Type], arg_tys: Array[Type]) -> Type {
+  match ty {
+    CtFn(params, ret, effect) => {
+      let labels = array_empty()
+      match effect {
+        Some(row) => for raw in String::split(row, ",") {
+          let label = String::trim(raw)
+          match param_marker_index(label) {
+            Some(marker) => match param_marker_argument(marker, param_tys, arg_tys) {
+              Some(arg_ty) => collect_internal_provenance(arg_ty, labels),
+              None => Array::push(labels, label)
+            },
+            None => Array::push(labels, label)
+          }
+        },
+        None => ()
+      }
+      let mapped_params = for param in params {
+        resolve_param_provenance(param, param_tys, arg_tys)
+      }
+      let resolved_effect = if Array::length(labels) == 0 {
+        None
+      } else {
+        Some(String::join(labels, ", "))
+      }
+      CtFn(mapped_params, resolve_param_provenance(ret, param_tys, arg_tys), resolved_effect)
+    },
+    CtArray(elem) => CtArray(resolve_param_provenance(elem, param_tys, arg_tys)),
+    CtOption(elem) => CtOption(resolve_param_provenance(elem, param_tys, arg_tys)),
+    CtTuple(items) => CtTuple(for item in items {
+      resolve_param_provenance(item, param_tys, arg_tys)
+    }),
+    CtRecord(fields) => CtRecord(for field in fields {
+      let (name, field_ty) = field
+      (name, resolve_param_provenance(field_ty, param_tys, arg_tys))
+    }),
+    CtNamed(name, args) => CtNamed(name, for arg in args {
+      resolve_param_provenance(arg, param_tys, arg_tys)
+    }),
+    CtApplied(head, args) => apply_type_constructor(resolve_param_provenance(head, param_tys, arg_tys), for arg in args {
+      resolve_param_provenance(arg, param_tys, arg_tys)
+    }),
+    _ => ty
+  }
+}
+
+export fn call_result_with_provenance(ret: Type, param_tys: Array[Type], arg_tys: Array[Type], s: Subst) -> Type {
+  let resolved_ret = subst_apply(s, ret)
+  match resolved_ret {
+    CtFn(_, _, _)|CtArray(_)|CtOption(_)|CtTuple(_)|CtRecord(_)|CtNamed(_, _)|CtApplied(_, _) => {
+      let resolved_params = for param in param_tys {
+        subst_apply(s, param)
+      }
+      let resolved_args = for arg in arg_tys {
+        subst_apply(s, arg)
+      }
+      resolve_param_provenance(resolved_ret, resolved_params, resolved_args)
+    },
+    _ => resolved_ret
+  }
+}
+
+/// #3125: is a local `let`'s value an ALIAS -- a bare name, or a bare name
+/// under an annotation? An annotated `let sp: (..) -> .. = TaskGroup::spawn`
+/// reaches the checker as the parser's ascription call
+/// `((__asc: T) -> __asc)(TaskGroup::spawn)` (`ascription_lambda_ann`), and
+/// the ascription only fixes the type the new name carries, so it is the
+/// same alias as the unannotated spelling (#3156 review: it was refused,
+/// contradicting the diagnostic's own advice to bind it with a `let`).
+export fn let_rhs_is_alias(val: Expr) -> Bool {
+  match val {
+    EIdent(_, _) => true,
+    ECall(callee, args, _) => if Array::length(args) == 1 {
+      match ascription_lambda_ann(callee) {
+        Some(_) => match Array::get(args, 0) {
+          EIdent(_, _) => true,
+          _ => false
+        },
+        None => false
+      }
+    } else {
+      false
+    },
+    _ => false
+  }
+}
+
+/// The closure literal a local `let` binds, seen through the parser's
+/// ascription wrapper for an annotated binding (`ascription_lambda_ann`).
+export fn let_rhs_closure_literal(val: Expr) -> Option[Expr] {
+  match val {
+    EFn(_, _, _, _, _, _) => Some(val),
+    ECall(callee, args, _) => if Array::length(args) == 1 {
+      match ascription_lambda_ann(callee) {
+        Some(_) => match Array::get(args, 0) {
+          EFn(_, _, _, _, _, _) => Some(Array::get(args, 0)),
+          _ => None
+        },
+        None => None
+      }
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
+/// #844: recognize the EXACT synthetic call shape `parser_expr_dispatch.vibe`'s
+/// `ascribe_wrap` builds for a LOCAL `let x: T = val` --
+/// `((__asc: T) -> __asc)(val)` -- and return its annotation `T`. `"__asc"` is
+/// a dedicated internal marker name (parallel to `"__return__"` /
+/// `"__in_loop__"` used elsewhere in this file), never written by real user
+/// code, so this match is precise: an ordinary lambda call (a real user IIFE)
+/// will not have a single param literally named `__asc` whose body is exactly
+/// `EIdent("__asc", _)`. Used to run a dedicated, narrowly-scoped check for
+/// this one call shape (see the `ECall` fallback arm below) instead of
+/// changing the general call-argument checking (`unify_call_args`) that every
+/// other call in the language goes through.
+export fn ascription_lambda_ann(callee: Expr) -> Option[TypeExpr] {
+  match callee {
+    EFn(tparams, _tbounds, params, ret_ty, effect, body) => if Array::length(tparams) == 0 && Array::length(params) == 1 {
+      match ret_ty {
+        Some(_) => None,
+        None => match effect {
+          Some(_) => None,
+          None => {
+            let (pname, pann) = Array::get(params, 0)
+            if pname == "__asc" {
+              match body {
+                EIdent(bname, _) => if bname == "__asc" {
+                  pann
+                } else {
+                  None
+                },
+                _ => None
+              }
+            } else {
+              None
+            }
+          }
+        }
+      }
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
+export fn fn_return_env_name(name: String) -> String {
+  String::concat("__fn_ret__:", name)
+}
+
+/// #1455: the side-channel binding that carries a MONOMORPHIC enum's variant
+/// list across a module boundary, the way `fn_return_env_name` carries a
+/// function's return type. The checker's cross-module transport is the flat
+/// `TypeEnv`, so an importing module sees each exported constructor as a bare
+/// `Mk : (Int) -> Box` binding and nothing that says which enum owns `Mk`.
+/// Three separate symptoms all come from that one missing edge:
+/// `Box::Mk(..)` cannot resolve (`resolve_qualified_ctor_ident` finds no
+/// `TDEnum` for `Box`), a non-exhaustive `match` cannot name the variants it
+/// is missing, and `find_ctor_in_defs` falls through to `bind_unknown`, so an
+/// imported enum's pattern payloads bind `CtUnknown` and are never checked
+/// (`match b { Mk(n) => String::concat(n, "!") }` compiles with `n : Int`).
+/// Rebuilding the `TDEnum` in the importing module's `defs` closes all three.
+///
+/// Parameterized enums ride the same carrier. What blocked them at first was
+/// that a `TDEnum`'s payload types hold `CtVar` ids allocated by the DECLARING
+/// compilation's fresh-id counter, with the binders that quantify them in
+/// `type_def_binders` rather than in the `TDEnum` -- so the ids mean nothing in
+/// the importing unit. The carrier therefore stores the enum's formals by NAME
+/// alongside NAME-parameterized payloads (`encode_enum_def`), and the importing
+/// side rebinds them to ids of its own: `seed_imported_enum_defs` for the
+/// `TDEnum` it registers, `resolve_qualified_ctor_ident` for the `CtForAll`
+/// scheme it hands a qualified reference.
+///
+/// The name is `Enum::__variants__` rather than a fresh `__enumdef__:Enum`
+/// prefix so the carrier needs no transport code of its own: an importing
+/// module's env is NOT the dependency's whole env, it is built name by name
+/// from the import list, and `bind_enum_constructor_companions`
+/// (runtime/typecheck_fs.vibe and runtime/runtime.vibe both have a copy)
+/// already pulls across every dependency binding spelled `Enum::`, which is
+/// how `Enum::equals` and the derive signatures reach an importer. Riding
+/// that rule means the carrier arrives on every path that already carries
+/// constructors, and cannot be forgotten by one of them.
+export fn enum_def_env_name(name: String) -> String {
+  String::concat(name, "::__variants__")
+}
+
+/// The enum a binding produced by `enum_def_env_name` describes, or None for
+/// an ordinary binding.
+export fn enum_def_env_target(binding_name: String) -> Option[String] {
+  let suffix = "::__variants__"
+  let slen = String::length(suffix)
+  let blen = String::length(binding_name)
+  if blen > slen && String::ends_with(binding_name, suffix) {
+    Some(String::substring(binding_name, 0, blen - slen))
+  } else {
+    None
+  }
+}
+
+/// The reserved leading entry that carries a parameterized enum's formal
+/// parameter names. `__params__` is not a legal variant name, so a decoder can
+/// tell it apart from a variant by name alone, and a monomorphic enum simply
+/// omits it -- its encoding is byte-identical to the one that existed before
+/// parameterized enums rode this carrier at all.
+fn enum_def_params_marker() -> String {
+  "__params__"
+}
+
+/// Variant list -> `Type`, so the carrier rides the existing `TypeEnv` instead
+/// of adding a `TypeEnv` or `Type` variant: every `match` over those (plus the
+/// persistent-env transport identity and the canonical checked-state walks)
+/// would otherwise have to grow a case for a value that is pure provenance.
+/// One variant becomes `CtNamed(vname, payloads)`; the whole list becomes
+/// `CtNamed("__variants__", entries)`, which no source type can spell.
+///
+/// `params` names the enum's formal type parameters and is empty for a
+/// monomorphic enum. The payload types written here must be the
+/// NAME-parameterized form (`CtNamed("T", [])` where the declaration said `T`),
+/// NOT the `CtVar`-substituted form the `TDEnum` stores: a `CtVar` id only
+/// means anything paired with the binder list that quantifies it, and the
+/// binder list lives in the declaring compilation's `type_def_binders`, which
+/// does not cross the module boundary. Names do cross, and the importing side
+/// re-substitutes its own fresh ids (see `seed_imported_enum_defs` and
+/// `resolve_qualified_ctor_ident`).
+export fn encode_enum_def(params: Array[String], variants: Array[(String, Array[Type])]) -> Type {
+  let entries = array_empty()
+  if Array::length(params) > 0 {
+    let param_entries = array_empty()
+    let mut pi = 0
+    while pi < Array::length(params) {
+      Array::push(param_entries, CtNamed(Array::get(params, pi), array_empty()))
+      pi = pi + 1
+    }
+    Array::push(entries, CtNamed(enum_def_params_marker(), param_entries))
+  } else {
+    ()
+  }
+  let mut i = 0
+  while i < Array::length(variants) {
+    let (vname, payloads) = Array::get(variants, i)
+    Array::push(entries, CtNamed(vname, payloads))
+    i = i + 1
+  }
+  CtNamed("__variants__", entries)
+}
+
+/// Monomorphic shorthand for `encode_enum_def`.
+export fn encode_enum_def_variants(variants: Array[(String, Array[Type])]) -> Type {
+  encode_enum_def(array_empty(), variants)
+}
+
+/// Inverse of `encode_enum_def`, as `(params, variants)`. Returns None rather
+/// than a partial list if the shape is not exactly what the encoder writes -- a
+/// half-decoded variant list would register a `TDEnum` that silently loses
+/// constructors.
+export fn decode_enum_def(ty: Type) -> Option[(Array[String], Array[(String, Array[Type])])] {
+  match ty {
+    CtNamed(head, entries) => if head == "__variants__" {
+      let params = array_empty()
+      let out = array_empty()
+      let mut ok = true
+      let mut i = 0
+      while i < Array::length(entries) {
+        match Array::get(entries, i) {
+          CtNamed(vname, payloads) => if vname == enum_def_params_marker() {
+            let mut pi = 0
+            while pi < Array::length(payloads) {
+              match Array::get(payloads, pi) {
+                CtNamed(pname, _) => Array::push(params, pname),
+                _ => {
+                  ok = false
+                }
+              }
+              pi = pi + 1
+            }
+          } else {
+            Array::push(out, (vname, payloads))
+          },
+          _ => {
+            ok = false
+          }
+        }
+        i = i + 1
+      }
+      if ok {
+        Some((params, out))
+      } else {
+        None
+      }
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
+/// `decode_enum_def` keeping only the variant list.
+export fn decode_enum_def_variants(ty: Type) -> Option[Array[(String, Array[Type])]] {
+  match decode_enum_def(ty) {
+    Some((_, variants)) => Some(variants),
+    None => None
+  }
+}
+
+/// #938: the ArrayBuilder container type — `CtNamed("ArrayBuilder", [elem])`,
+/// the same shape `b: ArrayBuilder[T]` annotations resolve to. Used by the
+/// builder call branches below. #983/#996 (Codex P2): `Map` is deliberately
+/// NOT listed here — `Map::set` is a FUNCTIONAL update (the linear codegen
+/// allocates a fresh count+1 map and leaves the receiver untouched; measured:
+/// `Map::has_key(m, "a")` is false after `let m2 = Map::set(m, "a", 1)`), so
+/// aliases of one empty `Map::new()` binding do NOT share a live value slot.
+/// Value-restricting Map would mis-reject
+/// `let e = Map::new(); Map::set(e, "i", 1); Map::set(e, "s", "x")` (two
+/// independent derived maps). Generalizing the empty literal's fresh slot is
+/// therefore sound; maps whose slot is already CONCRETE (from_pairs values,
+/// annotations, a set-chain's returned type) keep the #983 value check.
+fn is_array_builder_head(t: Type) -> Bool {
+  match t {
+    CtNamed(n, targs) => n == "ArrayBuilder" && Array::length(targs) == 1,
+    _ => false
+  }
+}
+
+/// #1081 step 3 Phase B: true when a `TaskGroup[r]` / `TaskHandle[r,_]` /
+/// `Sender[r,_]` / `Receiver[r,_]` region-tagged endpoint occurs anywhere in
+/// the value's type. Generalizing a `let`-bound endpoint (ordinary
+/// Hindley-Milner let-polymorphism, `generalize`) would sever its region
+/// argument from the skolem `TaskGroup::run` minted -- EVERY later reference
+/// re-instantiates a FRESH, unconnected region var, so `check_spawnable_
+/// captures`'s same-region comparison (checker_spawnable.vibe) could never
+/// see two endpoints from the same nursery as equal. Same value-restriction
+/// shape as `is_array_builder_ty` right below (a mutable container has the
+/// identical "generalizing loses the identity a later use needs" problem);
+/// bind the monotype instead.
+export fn is_region_tagged_ty(t: Type) -> Bool {
+  match t {
+    CtNamed(n, targs) => if n == "TaskGroup" && Array::length(targs) == 2 {
+      true
+    } else if (n == "TaskHandle" || n == "Sender" || n == "Receiver") && Array::length(targs) == 3 {
+      true
+    } else {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(targs) && !found {
+        found = is_region_tagged_ty(Array::get(targs, i))
+        i = i + 1
+      }
+      found
+    },
+    CtArray(e) => is_region_tagged_ty(e),
+    CtOption(e) => is_region_tagged_ty(e),
+    CtTuple(elems) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(elems) && !found {
+        found = is_region_tagged_ty(Array::get(elems, i))
+        i = i + 1
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+/// #938 value-restriction predicate (Codex P1 on #977): true when a builder
+/// occurs ANYWHERE in the value's type reachable without crossing a function
+/// boundary — `(ArrayBuilder::new(), 0)`, `[ArrayBuilder::new()]`,
+/// `Some(ArrayBuilder::new())` all alias ONE live builder, so their element
+/// vars must stay un-quantified exactly like a bare builder's (a root-only
+/// check let each lookup of the tuple re-instantiate a fresh element slot and
+/// mixed pushes type-checked again). CtFn is deliberately NOT descended:
+/// a function value creates a NEW builder per call, so generalizing
+/// `() -> ArrayBuilder[v]` is sound and useful.
+/// #3112: a `Future` is a cell a later `Future::resolve` fills, so its payload
+/// variable stays a monotype like an array builder's element: quantified, a
+/// `let f = Future::pending()` would re-instantiate a fresh payload at every
+/// use, and `resolve(f, 40)` could not constrain `await(f)`.
+export fn is_future_cell_ty(t: Type, defs: Array[TypeDef], depth: Int) -> Bool {
+  if depth > 16 {
+    // Too deep to finish: answer as holding one, which only keeps the
+    // binding monomorphic.
+    true
+  } else {
+    match t {
+      CtNamed(n, targs) => n == "Future" || named_args_hold_future_cell(n, targs, defs, depth + 1) || decl_holds_future_cell(n, defs, depth + 1),
+      CtStruct(n) => decl_holds_future_cell(n, defs, depth + 1),
+      CtEnum(n) => decl_holds_future_cell(n, defs, depth + 1),
+      CtTuple(elems) => is_future_cell_ty_any(elems, defs, depth + 1),
+      CtOption(e) => is_future_cell_ty(e, defs, depth + 1),
+      CtArray(e) => is_future_cell_ty(e, defs, depth + 1),
+      CtApplied(h, args) => is_future_cell_ty(h, defs, depth + 1) || is_future_cell_ty_any(args, defs, depth + 1),
+      CtRecord(fields) => is_future_cell_ty_any(for f in fields {
+        let (_, ft) = f
+        ft
+      }, defs, depth + 1),
+      _ => false
+    }
+  }
+}
+
+/// The type arguments of `n` that hold a future cell. A declared type only
+/// stores the arguments its fields mention: `struct Marker[T] { tag: Int }`
+/// at `Marker[Future[a]]` holds no cell, so it must not keep `a` monomorphic
+/// (Codex on #3091). An undeclared head keeps every argument.
+fn named_args_hold_future_cell(n: String, targs: Array[Type], defs: Array[TypeDef], depth: Int) -> Bool {
+  match find_typedef(defs, n) {
+    Some(_) => {
+      let mut hit = false
+      let mut i = 0
+      while i < Array::length(targs) && !hit {
+        hit = is_future_cell_ty(Array::get(targs, i), defs, depth) && decl_param_stores_future(n, i, defs, depth)
+        i = i + 1
+      }
+      hit
+    },
+    None => is_future_cell_ty_any(targs, defs, depth)
+  }
+}
+
+/// Parameters being walked by `decl_param_stores_future`, keyed `name#index`,
+/// so a recursive declaration that never stores the parameter answers "no"
+/// instead of recursing.
+let future_param_walk: Array[String] = []
+
+/// Whether declaration `n` stores its `idx`-th type parameter where a future
+/// placed there is kept: the fields are instantiated with a `Future` in that
+/// position (and `Int` elsewhere) and asked the same question.
+fn decl_param_stores_future(n: String, idx: Int, defs: Array[TypeDef], depth: Int) -> Bool {
+  let key = String::concat(String::concat(n, "#"), Int::to_string(idx))
+  let mut seen = false
+  let mut wi = 0
+  while wi < Array::length(future_param_walk) && !seen {
+    seen = Array::get(future_param_walk, wi) == key
+    wi = wi + 1
+  }
+  if seen {
+    false
+  } else {
+    Array::push(future_param_walk, key)
+    let stores = match find_typedef(defs, n) {
+      Some(td) => {
+        let (tparams, field_tys) = match td {
+          TDStruct(_, fields, _, tps) => (tps, for f in fields {
+            let (_, ft) = f
+            ft
+          }),
+          TDEnum(_, tps, variants) => {
+            let all: Array[Type] = []
+            let mut vi = 0
+            while vi < Array::length(variants) {
+              let (_, payload) = Array::get(variants, vi)
+              let mut pi = 0
+              while pi < Array::length(payload) {
+                Array::push(all, Array::get(payload, pi))
+                pi = pi + 1
+              }
+              vi = vi + 1
+            }
+            (tps, all)
+          },
+          TDAlias(_, aps, body) => (aps, [body]),
+          _ => (array_empty(), array_empty())
+        }
+        if idx >= Array::length(tparams) {
+          true
+        } else {
+          let probe: Array[Type] = []
+          let mut pj = 0
+          while pj < Array::length(tparams) {
+            Array::push(probe, if pj == idx {
+              CtNamed("Future", [CtInt])
+            } else {
+              CtInt
+            })
+            pj = pj + 1
+          }
+          let inst: Array[Type] = []
+          let mut fi = 0
+          while fi < Array::length(field_tys) {
+            Array::push(inst, subst_type_params(Array::get(field_tys, fi), tparams, probe))
+            fi = fi + 1
+          }
+          is_future_cell_ty_any(inst, defs, depth + 1)
+        }
+      },
+      None => true
+    }
+    Array::truncate(future_param_walk, Array::length(future_param_walk) - 1)
+    stores
+  }
+}
+
+fn is_future_cell_ty_any(ts: Array[Type], defs: Array[TypeDef], depth: Int) -> Bool {
+  let mut hit = false
+  let mut i = 0
+  while i < Array::length(ts) && !hit {
+    hit = is_future_cell_ty(Array::get(ts, i), defs, depth)
+    i = i + 1
+  }
+  hit
+}
+
+/// Whether a declared struct's fields, an enum's payloads, or an alias's body
+/// mention a `Future` (Codex on #3091): `struct Box[T] { f: Future[T] }`
+/// holds the cell as surely as a bare `Future[T]` does. Only the presence of
+/// the head is asked, so the declaration's own type parameters need no
+/// instantiation.
+/// Declarations being walked by `decl_holds_future_cell`. The question is
+/// about the declaration's text (does a `Future` head appear), so a name met
+/// again adds nothing: answering "no" there keeps a recursive declaration
+/// such as `List[T]` from reaching the depth cap, which would keep every
+/// `let` of an open `List` monomorphic (Codex on #3091).
+let future_cell_walk: Array[String] = []
+
+fn decl_holds_future_cell(name: String, defs: Array[TypeDef], depth: Int) -> Bool {
+  let mut seen = false
+  let mut i = 0
+  while i < Array::length(future_cell_walk) && !seen {
+    seen = Array::get(future_cell_walk, i) == name
+    i = i + 1
+  }
+  if seen {
+    false
+  } else {
+    Array::push(future_cell_walk, name)
+    let holds = decl_holds_future_cell_fields(name, defs, depth)
+    Array::truncate(future_cell_walk, Array::length(future_cell_walk) - 1)
+    holds
+  }
+}
+
+fn decl_holds_future_cell_fields(name: String, defs: Array[TypeDef], depth: Int) -> Bool {
+  match find_typedef(defs, name) {
+    Some(td) => match td {
+      TDStruct(_, fields, _, _) => is_future_cell_ty_any(for f in fields {
+        let (_, ft) = f
+        ft
+      }, defs, depth),
+      TDEnum(_, _, variants) => {
+        let mut hit = false
+        let mut i = 0
+        while i < Array::length(variants) && !hit {
+          let (_, payload) = Array::get(variants, i)
+          hit = is_future_cell_ty_any(payload, defs, depth)
+          i = i + 1
+        }
+        hit
+      },
+      TDAlias(_, _, body) => is_future_cell_ty(body, defs, depth),
+      _ => false
+    },
+    None => false
+  }
+}
+
+export fn is_array_builder_ty(t: Type) -> Bool {
+  if is_array_builder_head(t) {
+    true
+  } else {
+    match t {
+      CtArray(e) => is_array_builder_ty(e),
+      CtOption(e) => is_array_builder_ty(e),
+      CtTuple(elems) => {
+        let mut i = 0
+        let mut found = false
+        while i < Array::length(elems) && !found {
+          found = is_array_builder_ty(Array::get(elems, i))
+          i = i + 1
+        }
+        found
+      },
+      CtNamed(_, targs) => {
+        let mut i = 0
+        let mut found = false
+        while i < Array::length(targs) && !found {
+          found = is_array_builder_ty(Array::get(targs, i))
+          i = i + 1
+        }
+        found
+      },
+      _ => false
+    }
+  }
+}
+
+/// #2447 value-restriction predicate, the Array sibling of
+/// `is_array_builder_ty` above: true when an ARRAY whose element type is
+/// not yet fully determined occurs anywhere in the value's type.
+/// `let xs = []` -- and `([], 0)`, `Some([])`, `[[]]` -- alias ONE live
+/// mutable array, so the element var must stay un-quantified: generalizing
+/// it re-instantiates a fresh slot at every use, and pushes at different
+/// types can then never disagree, which is exactly the CtUnknown hole the
+/// empty-literal element slot replaced.
+///
+/// Codex round 2 on #2450, both measured real:
+/// - The element test is "mentions ANY unresolved var", not "is
+///   immediately a var" -- `Array[Option[v]]` from a generic producer is
+///   as open as `Array[v]` (ty_elem_mentions_open_var below).
+/// - CtFn IS descended, conservatively. A function value does not
+///   necessarily create a new array per call: `let xs = []` then
+///   `let get = () -> { xs }` returns the SAME captured array, and
+///   `generalize` is environment-blind, so quantifying the return's
+///   element var lets two calls disagree about one runtime array. The
+///   type alone cannot tell a captured var from a body-fresh one, so a
+///   lambda whose type mentions an open array element binds as a monotype
+///   too; a polymorphic array factory keeps one spelling, the named
+///   generic `fn mk[T]() -> Array[T]` form.
+export fn ty_has_open_array_elem(t: Type) -> Bool {
+  match t {
+    CtArray(e) => ty_elem_mentions_open_var(e),
+    CtFn(params, ret, _) => {
+      let mut i = 0
+      let mut found = ty_has_open_array_elem(ret)
+      while i < Array::length(params) && !found {
+        found = ty_has_open_array_elem(Array::get(params, i))
+        i = i + 1
+      }
+      found
+    },
+    // Codex round 3: an application whose head is still an inference var
+    // (`F[T]` from an HKT producer) is not normalized to CtNamed yet --
+    // descend head and arguments alike. CtForAll is deliberately NOT
+    // descended anywhere in these walks: its body mentions its OWN bound
+    // vars as CtVar, so descending would read every alias of a generic
+    // function as open and wrongly monomorphize it.
+    CtApplied(head, args) => {
+      let mut i = 0
+      let mut found = ty_has_open_array_elem(head)
+      while i < Array::length(args) && !found {
+        found = ty_has_open_array_elem(Array::get(args, i))
+        i = i + 1
+      }
+      found
+    },
+    CtOption(e) => ty_has_open_array_elem(e),
+    CtTuple(elems) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(elems) && !found {
+        found = ty_has_open_array_elem(Array::get(elems, i))
+        i = i + 1
+      }
+      found
+    },
+    CtNamed(_, targs) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(targs) && !found {
+        found = ty_has_open_array_elem(Array::get(targs, i))
+        i = i + 1
+      }
+      found
+    },
+    // Codex P1 on #2450: an anonymous record is a data shape like a tuple --
+    // `let r = record { xs: [] }` aliases ONE live array through `r.xs`, so
+    // its field types are descended. Measured, this arm alone does not yet
+    // reject the record spelling: record PROJECTIONS are loosely typed
+    // independently of empty arrays (#2452), so the pushes never unify with
+    // the field's var either way. The arm stays so the restriction is
+    // already in place when #2452 tightens projections.
+    CtRecord(fields) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(fields) && !found {
+        let (_, field_ty) = Array::get(fields, i)
+        found = ty_has_open_array_elem(field_ty)
+        i = i + 1
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+/// Inside an array ELEMENT position the question changes: not "does a new
+/// array get created per call" but "is this element type fully
+/// determined". Any unresolved var beneath -- through Option, tuples,
+/// nested arrays, named applications, records, and function types alike --
+/// leaves the element open, so the walk descends everything.
+fn ty_elem_mentions_open_var(t: Type) -> Bool {
+  match t {
+    CtVar(_) => true,
+    CtArray(e) => ty_elem_mentions_open_var(e),
+    CtOption(e) => ty_elem_mentions_open_var(e),
+    CtTuple(elems) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(elems) && !found {
+        found = ty_elem_mentions_open_var(Array::get(elems, i))
+        i = i + 1
+      }
+      found
+    },
+    CtNamed(_, targs) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(targs) && !found {
+        found = ty_elem_mentions_open_var(Array::get(targs, i))
+        i = i + 1
+      }
+      found
+    },
+    CtRecord(fields) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(fields) && !found {
+        let (_, field_ty) = Array::get(fields, i)
+        found = ty_elem_mentions_open_var(field_ty)
+        i = i + 1
+      }
+      found
+    },
+    CtFn(params, ret, _) => {
+      let mut i = 0
+      let mut found = ty_elem_mentions_open_var(ret)
+      while i < Array::length(params) && !found {
+        found = ty_elem_mentions_open_var(Array::get(params, i))
+        i = i + 1
+      }
+      found
+    },
+    CtApplied(head, args) => {
+      let mut i = 0
+      let mut found = ty_elem_mentions_open_var(head)
+      while i < Array::length(args) && !found {
+        found = ty_elem_mentions_open_var(Array::get(args, i))
+        i = i + 1
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+export fn direct_builtin_return(name: String) -> Option[Type] {
+  if name == "Bytes::length" {
+    Some(CtInt)
+  }
+  else if name == "Array::length" {
+    Some(CtInt)
+  }
+  else if name == "FixedArray::length" || name == "Int64Array::length" {
+    Some(CtInt)
+  }
+  else if name == "String::length" || name == "String::unicode_length" || name == "String::utf16_length" || name == "String::utf8_length" {
+    Some(CtInt)
+  }
+  else if name == "Bytes::get" || name == "String::index_of" || name == "String::char_code_at" || name == "String::last_index_of" || name == "Char::to_int" || name == "Double::to_int" || name == "Double::to_i64_bits_lo" || name == "Double::to_i64_bits_hi" || name == "Env::args_len" || name == "Stdin::read_char" || name == "Int64Array::get" {
+    Some(CtInt)
+  }
+  else if name == "String::equals" || name == "String::contains" || name == "String::starts_with" || name == "String::ends_with" || name == "Array::any" || name == "Array::all" || name == "Map::has_key" || name == "map_has" || name == "MapBuilder::has_key" || name == "Path::is_absolute" || name == "Fs::exists" || name == "Fs::is_dir" || name == "Fs::is_file" || name == "eq" || name == "not" {
+    Some(CtBool)
+  }
+  else if name == "String::concat" || name == "String::substring" || name == "String::trim" || name == "String::from_char_code" || name == "String::join" || name == "Path::to_string" || name == "Path::resolve" || name == "Stdin::read_stream" || name == "Env::get" || name == "Env::args_get" || name == "Fs::read_file" || name == "Fs::getcwd" || name == "sh" || name == "Map::iter_get" || name == "__to_string" {
+    Some(CtString)
+  }
+  else if name == "__len" {
+    Some(CtInt)
+  }
+  else if name == "Bytes::new" || name == "Bytes::with_capacity" || name == "Bytes::concat" || name == "Bytes::slice" || name == "Bytes::from_array" || name == "Fs::read_bytes" {
+    Some(CtBytes)
+  }
+  else if name == "Array::set" || name == "Array::push" || name == "Array::push_all" || name == "Array::truncate" || name == "MutList::truncate" || name == "FixedArray::set" || name == "FixedArray::blit" || name == "FixedArray::unsafe_set" || name == "Int64Array::set" || name == "Bytes::set" || name == "Bytes::push" || name == "Bytes::append" || name == "Bytes::blit" || name == "Bytes::fill" || name == "MapBuilder::set" || name == "Stdout::write_char" || name == "Stdout::write_stream" || name == "sleep" || name == "Fs::copy" || name == "Fs::chdir" || name == "Fs::mkdir" || name == "Fs::mkdir_p" || name == "Fs::append" || name == "Fs::remove" || name == "Fs::remove_file" || name == "Fs::remove_tree" || name == "Fs::rename" || name == "Fs::write_file" || name == "Fs::write_bytes" || name == "print" || name == "println" || name == "assert" || name == "assert_true" || name == "assert_eq" || name == "__set_field" {
+    Some(CtUnit)
+  }
+  else if name == "Double::from_i64_bits" || name == "Double::from_i64_bits_lohi" || name == "Int::to_double" || name == "Double::to_float" || name == "Float::to_double" {
+    Some(CtDouble)
+  }
+  else if name == "Char::from_int" {
+    Some(CtChar)
+  }
+  else if name == "Bytes::to_array" || name == "Int64Array::make" {
+    Some(CtArray(CtInt))
+  }
+  else if name == "Map::keys" || name == "sh_lines" || name == "String::split" {
+    Some(CtArray(CtString))
+  }
+  else if name == "Array::slice" || name == "Array::concat" || name == "Array::filter" || name == "Array::reverse" || name == "FixedArray::make" {
+    Some(CtArray(CtUnknown))
+  }
+  else if name == "Some" || name == "Array::find" {
+    Some(CtOption(CtUnknown))
+  }
+  else {
+    None
+  }
+}
+
+/// #3112: how many arguments a guest-future builtin takes, or -1 when `name`
+/// is not one.
+export fn future_builtin_arity(name: String) -> Int {
+  if name == "Future::ready" || name == "await" {
+    1
+  } else if name == "Future::pending" {
+    0
+  } else if name == "Future::resolve" {
+    2
+  } else {
+    0 - 1
+  }
+}
+
+/// #3112: the result of a guest-future builtin call, with its payload.
+/// `Future::ready(x)` is `Future[typeof x]`, `Future::pending()` a `Future`
+/// of a fresh variable, `await(f)` the payload of `f`'s `Future` (a
+/// non-future argument is the same mismatch the table row reported), and
+/// `Future::resolve(f, v)` unifies that payload with `v`, so a pending
+/// future's variable is settled by what resolves it.
+export fn future_builtin_type(name: String, arg_tys: Array[Type], args: Array[Expr], s: Subst, c: Int, errors: Array[String], callee_off: Int) -> (Type, Subst, Int) {
+  if name == "Future::ready" {
+    (CtNamed("Future", [subst_apply(s, Array::get(arg_tys, 0))]), s, c)
+  } else if name == "Future::pending" {
+    (CtNamed("Future", [CtVar(c)]), s, c + 1)
+  } else if name == "await" {
+    let payload = CtVar(c)
+    let s2 = unify_call_args([CtNamed("Future", [payload])], arg_tys, args, s, errors, name, callee_off)
+    (subst_apply(s2, payload), s2, c + 1)
+  } else {
+    // Future::resolve(f, v)
+    let payload = CtVar(c)
+    let s2 = unify_call_args([CtNamed("Future", [payload]), payload], arg_tys, args, s, errors, name, callee_off)
+    (CtUnit, s2, c + 1)
+  }
+}
+
+export fn direct_call_return(env: TypeEnv, name: String, callee_off: Int) -> Option[Type] {
+  // Ask the builtin table first so user-defined callees pay no environment
+  // scan. A lookup that includes surface bindings proves both kinds absent
+  // in one walk; ordinary value lookup hides surfaces and needs a second.
+  match direct_builtin_return(canonical_builtin_name(name)) {
+    None => None,
+    Some(ret) => if builtin_resolves_at(env, name, callee_off) {
+      Some(ret)
+    } else {
+      None
+    }
+  }
+}
+
+/// #3146: the program's binding for `name`, skipped when `ident_off` marks a
+/// compiler-synthesized reference to a builtin of that name. The caller's
+/// builtin lookup then answers, so a program's same-named function cannot
+/// capture a call it never wrote.
+export fn env_lookup_unless_synthesized_builtin(env: TypeEnv, name: String, ident_off: Int) -> Option[Type] {
+  if is_builtin_ref_offset(ident_off) && is_some_type(lookup_builtin(name)) {
+    None
+  } else {
+    env_lookup(env, name)
+  }
+}
+
+fn is_some_type(t: Option[Type]) -> Bool {
+  match t {
+    Some(_) => true,
+    None => false
+  }
+}
+
+/// A surface-only re-export alias is not a local value, but it is still a
+/// source spelling claimed by this module. Do not let a same-named builtin
+/// turn that invalid local use into different executable behavior (#2287).
+export fn lookup_builtin_in_env(env: TypeEnv, name: String) -> Option[Type] {
+  if env_has_reexport_surface_binding(env, name) {
+    None
+  } else {
+    lookup_builtin(name)
+  }
+}
+
+/// Expected TOP-LEVEL head-kind (see `head_kind`) of a builtin's FIRST argument,
+/// for the container/string builtins whose receiver head is unambiguous. 0 means
+/// "unchecked". Used to catch `Array::length(5)` / `String::length(5)` etc. on
+/// the direct-call fast path WITHOUT a per-call `lookup_builtin` (the #626
+/// seed-heap OOM constraint). Only entries whose first-arg head is certain are
+/// listed; anything else returns 0 (tolerated).
+fn builtin_first_arg_head(name: String) -> Int {
+  if name == "Array::length" || name == "Array::get" || name == "Array::set" || name == "Array::push" || name == "Array::push_all" || name == "Array::slice" || name == "Array::concat" || name == "Array::reverse" || name == "Array::truncate" || name == "Array::any" || name == "Array::all" || name == "Array::find" || name == "Array::filter" || name == "Array::map" || name == "Array::fold" {
+    9
+  } else if name == "String::length" || name == "String::unicode_length" || name == "String::utf16_length" || name == "String::utf8_length" || name == "String::substring" || name == "String::trim" || name == "String::to_lower" || name == "String::to_upper" || name == "String::index_of" || name == "String::last_index_of" || name == "String::char_code_at" || name == "String::contains" || name == "String::starts_with" || name == "String::ends_with" || name == "String::split" || name == "String::concat" {
+    4
+  } else if name == "Bytes::length" || name == "Bytes::get" || name == "Bytes::set" || name == "Bytes::slice" || name == "Bytes::to_array" || name == "Bytes::push" || name == "Bytes::append" || name == "Bytes::blit" || name == "Bytes::fill" {
+    7
+  } else if name == "Map::iter_get" {
+    17
+  } else if name == "Int64Array::make" || name == "FixedArray::make" {
+    // #989 review: the make length is arg 0, so the rest-position table
+    // never sees it — `Int64Array::make("4", 0)` compiled with the String
+    // as the loop bound. Both makes take a certain Int first.
+    1
+  } else {
+    0
+  }
+}
+
+/// Expected head-kind for argument position `i` (i >= 1) of fixed-signature
+/// builtins, mirroring `builtin_first_arg_head` for the non-receiver args.
+/// `direct_call_return` types these polymorphically, so passing e.g. an Int as
+/// the second arg of `String::concat`, or a String as the index of
+/// `String::substring`, slipped through. 0 = tolerate (no certain head). Only
+/// monomorphic, non-callback positions are listed (so HOF args like Array::map's
+/// function stay untouched — those need real signature inference, not a head).
+fn builtin_arg_head_rest(name: String, i: Int) -> Int {
+  // String head = 4, Int head = 1, Bytes head = 7, FUNCTION head = 13
+  // (see head_kind).
+  //
+  // #2936: the callback slot of the higher-order Array family. The note below
+  // used to exclude these on the grounds that a HOF argument "needs real
+  // signature inference, not a head" -- true for checking the callback's
+  // PARAMETER types, which `check_hof_param_vs_elem` does, and beside the
+  // point for the case that actually bites: `Array::map(xs, 0)`, a plain Int
+  // where the function goes, type-checked clean and emitted a module that
+  // would not load. A head is exactly enough to reject that, and a callback
+  // whose type is still unresolved has head 0 and stays tolerated.
+  if name == "Array::map" || name == "Array::filter" || name == "Array::any" || name == "Array::all" || name == "Array::find" {
+    if i == 1 {
+      13
+    } else {
+      0
+    }
+  } else if name == "Array::fold" {
+    // `Array::fold(xs, init, f)` -- the seed is arg 1 and may be any type.
+    if i == 2 {
+      13
+    } else {
+      0
+    }
+  } else if name == "String::concat" {
+    if i == 1 {
+      4
+    } else {
+      0
+    }
+  } else if name == "String::index_of" || name == "String::last_index_of" || name == "String::contains" || name == "String::starts_with" || name == "String::ends_with" || name == "String::split" {
+    if i == 1 {
+      4
+    } else {
+      0
+    }
+  } else if name == "String::substring" {
+    if i == 1 || i == 2 {
+      1
+    } else {
+      0
+    }
+  } else if name == "String::char_code_at" {
+    if i == 1 {
+      1
+    } else {
+      0
+    }
+  } else if name == "Bytes::get" || name == "Bytes::push" {
+    // #985: Bytes::push's pushed byte (Int) was unlisted, so
+    // `Bytes::push(b, "hello")` compiled clean and wrote a garbage byte.
+    if i == 1 {
+      1
+    } else {
+      0
+    }
+  } else if name == "Bytes::set" || name == "Bytes::slice" || name == "Bytes::fill" {
+    if i == 1 || i == 2 {
+      1
+    } else {
+      0
+    }
+  } else if name == "Bytes::blit" {
+    // blit(dst: Bytes, src: Bytes, src_off: Int, len: Int)
+    if i == 1 {
+      7
+    } else if i == 2 || i == 3 {
+      1
+    } else {
+      0
+    }
+  } else if name == "Int64Array::get" {
+    // #985: the Int64Array positions were never listed —
+    // `Int64Array::set(w, 0, "hi")` wrote a String pointer into an i64 slot.
+    if i == 1 {
+      1
+    } else {
+      0
+    }
+  } else if name == "Map::iter_get" {
+    if i == 1 {
+      1
+    } else {
+      0
+    }
+  } else if name == "Int64Array::set" {
+    if i == 1 || i == 2 {
+      1
+    } else {
+      0
+    }
+  } else if name == "Int64Array::make" {
+    if i == 1 {
+      1
+    } else {
+      0
+    }
+  } else {
+    0
+  }
+}
+
+/// Fixed argument COUNT for direct-path builtins (-1 = unchecked). The direct
+/// fast path types the call by name alone (the #626 seed-heap constraint rules
+/// out a per-call `lookup_builtin`), so a wrong argument count was silently
+/// accepted — and the linear backend then emitted the surplus operands straight
+/// into the wasm body (`Bytes::new(3)` left a value stranded on the stack and
+/// the module failed validation only at instantiation). Only builtins whose
+/// arity is certain are listed; anything variadic-ish or unsure stays -1.
+/// `Bytes::new` is handled separately (0 or 1 capacity arg).
+export fn builtin_fixed_arity(name: String) -> Int {
+  let name = canonical_builtin_name(name)
+  if name == "Array::length" || name == "Array::reverse" || name == "String::length" || name == "String::unicode_length" || name == "String::utf16_length" || name == "String::utf8_length" || name == "String::trim" || name == "String::to_lower" || name == "String::to_upper" || name == "String::from_char_code" || name == "String::iter_length" || name == "Bytes::length" || name == "Bytes::to_array" || name == "Bytes::from_array" || name == "Map::keys" || name == "Map::iter_length" || name == "Char::to_int" || name == "Char::from_int" || name == "Double::to_int" || name == "Double::from_i64_bits" || name == "Int::to_double" || name == "Double::to_float" || name == "Float::to_double" || name == "Double::to_i64_bits_lo" || name == "Double::to_i64_bits_hi" || name == "Path::is_absolute" || name == "Path::resolve" || name == "Path::to_string" || name == "__len" || name == "not" || name == "print" || name == "println" || name == "assert" || name == "assert_true" || name == "__to_string" || name == "FixedArray::length" || name == "Int64Array::length" {
+    1
+  } else if name == "Array::get" || name == "Array::push" || name == "Array::push_all" || name == "Array::truncate" || name == "Array::concat" || name == "Array::any" || name == "Array::all" || name == "Array::find" || name == "Array::filter" || name == "String::equals" || name == "String::concat" || name == "String::char_code_at" || name == "String::index_of" || name == "String::last_index_of" || name == "String::contains" || name == "String::starts_with" || name == "String::ends_with" || name == "String::split" || name == "String::join" || name == "String::iter_get" || name == "Bytes::get" || name == "Bytes::push" || name == "Bytes::append" || name == "Bytes::concat" || name == "Map::has_key" || name == "Map::iter_get" || name == "map_has" || name == "MapBuilder::has_key" || name == "MapBuilder::get" || name == "eq" || name == "assert_eq" || name == "FixedArray::get" || name == "FixedArray::make" || name == "Int64Array::get" || name == "Int64Array::make" || name == "Double::from_i64_bits_lohi" || name == "MutList::truncate" {
+    2
+  } else if name == "Array::set" || name == "Array::slice" || name == "String::substring" || name == "Bytes::set" || name == "Bytes::slice" || name == "Bytes::fill" || name == "MapBuilder::set" || name == "FixedArray::set" || name == "FixedArray::unsafe_set" || name == "Int64Array::set" || name == "__set_field" {
+    3
+  } else if name == "Bytes::blit" {
+    4
+  } else if name == "FixedArray::blit" {
+    5
+  } else {
+    // #2941: eleven names reached here and got -1, so ANY argument count was
+    // accepted and codegen took the call -- `Path::resolve("/a", "b")` was
+    // clean at `vibe check` and then `reached code generation unresolved`,
+    // telling the reader to report a compiler bug for their own typo, while
+    // `Path::resolve("/a")` lowered fine. Measured by probing every name
+    // `direct_builtin_return` admits with a 7-argument call: 96 of 109
+    // answered `function arity mismatch`, and the eleven above did not. Their
+    // arities are read from the declaration or the checker row, not guessed
+    // (`__set_field` from its inline 3-param list, `MutList::truncate` from
+    // its own arm's `Array::length(args) == 2` guard).
+    //
+    // #1513: fall back to the central registry rather than growing this list.
+    // The chain above predates the registry and covers the pure container /
+    // string builtins; every HOST builtin (`Stdout::*`, `Env::*`, `Stdin::*`,
+    // `Fs::*`, `sh`, `sleep`, ...) declares its parameters there and was
+    // therefore arity-UNCHECKED here -- `Stdout::write_stream()` compiled and
+    // emitted a module the host rejected at load time, and
+    // `Fs::read_file("a", "b")` did the same. Returns -1 for a non-registry
+    // name, so anything this pass genuinely cannot see stays tolerated exactly
+    // as before.
+    registry_builtin_arity(name)
+  }
+}
+
+/// #1513: the expected head kind of builtin `name`'s argument `i`, hand table
+/// FIRST and the central registry as the fallback.
+///
+/// The two hand tables above (`builtin_first_arg_head` /
+/// `builtin_arg_head_rest`) predate the registry and cover Array / String /
+/// Bytes / FixedArray only, so every HOST builtin's arguments were unchecked:
+/// `Stdout::write_stream(42)` compiled AND RAN, printing the pointer as a
+/// decimal. Same shape as the arity gap this issue's first half closed —
+/// "which builtins get checked" was the maintenance state of a list, not a rule.
+///
+/// The hand table wins where it has an entry so nothing already checked can
+/// change verdict (it encodes receiver-position knowledge the registry's
+/// per-parameter types do not, e.g. HOF callbacks deliberately left at 0).
+/// A registry parameter typed `CtUnknown` maps to head 0 = tolerate, which is
+/// how `assert_eq` and friends stay unchecked.
+export fn builtin_param_head(name: String, i: Int) -> Int {
+  let normalized = canonical_builtin_name(name)
+  let hand = if i == 0 {
+    builtin_first_arg_head(normalized)
+  } else {
+    builtin_arg_head_rest(normalized, i)
+  }
+  if hand != 0 {
+    hand
+  } else {
+    match registry_builtin_param_type(normalized, i) {
+      Some(t) => head_fold_char(head_kind(t)),
+      None => 0
+    }
+  }
+}
+
+/// `Char` is an `Int` alias in this language: the lexer emits `TInt` for a char
+/// literal, so `'A' == 65` and `char_int_compatible` (core/types.vibe) lets the
+/// two unify freely in both directions. The head-kind check must not invent a
+/// distinction `unify` does not make, so fold `CtChar`'s head into `CtInt`'s on
+/// both sides of the comparison. Without this the registry's `Char::to_int`
+/// row (declared `CtChar`) rejects `Char::to_int('A')`, and a `CtChar`-typed
+/// value (e.g. `Char::from_int(65)`) is rejected by every builtin whose
+/// registry row spells the slot `CtInt` (`Stdout::write_char`, ...).
+/// #2936: the receiver head check, callable from a builtin's DEDICATED arm.
+///
+/// The check itself lives in the general builtin-call arm (the `else` branch
+/// below `direct_call_return`), and it was reached only by names that have no
+/// arm of their own. Measured on `c4d075f9c`: of the names
+/// `builtin_first_arg_head` maps to head 9, `length` / `truncate` / `set` /
+/// `any` / `all` / `find` / `filter` refused an `Int` receiver and `push`
+/// (8942) / `reverse` (9022) / `concat` (9030) / `slice` (9049) / `fold`
+/// (9062) / `map` (9082) accepted it -- exactly the six with a dedicated arm
+/// ahead of the general one. `Array::map(xs, 0)` then type-checked clean and
+/// emitted a module that would not load.
+///
+/// The arms exist for reasons the general arm cannot serve -- `Array::map`'s
+/// says so: the mapped element type is `CtUnknown` in the builtin table and
+/// has to be recovered from `f`. So the rule is shared rather than the
+/// dispatch rewritten: hoisting the check ahead of the chain would mean
+/// type-checking argument 0 before dispatch, and `check_expr_capture` threads
+/// the substitution and appends to `errors`, so the same expression would be
+/// checked twice.
+///
+/// Call it with the receiver type ALREADY substituted, right after the arm
+/// binds it.
+export fn check_builtin_arg_head(name: String, i: Int, arg_ty: Type, errors: Array[String], callee_off: Int) -> Unit {
+  let want_head = builtin_param_head(name, i)
+  if want_head != 0 {
+    let got_head = head_fold_char(head_kind(arg_ty))
+    if got_head != 0 && got_head != want_head {
+      // Same two wordings the general arm produces, so a diagnostic does not
+      // depend on which path happened to check the call.
+      if i == 0 {
+        Array::push(errors, String::concat(String::concat("argument type mismatch for ", String::concat(name, ": receiver type ")), String::concat(type_to_string(arg_ty), off_marker_len(callee_off, String::length(name)))))
+      } else {
+        Array::push(errors, String::concat(String::concat("argument type mismatch for ", String::concat(name, String::concat(" (arg ", String::concat(__to_string(i), "): ")))), String::concat(type_to_string(arg_ty), off_marker_len(callee_off, String::length(name)))))
+      }
+    } else if i == 0 && want_head == 9 && is_bytestream_named_type(arg_ty) {
+      Array::push(errors, String::concat(String::concat("argument type mismatch for ", String::concat(name, ": receiver type ")), String::concat(type_to_string(arg_ty), String::concat(" is a ByteStream, not an Array", off_marker_len(callee_off, String::length(name))))))
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+}
+
+/// #3006: unify an unresolved type-variable argument with the concrete type a
+/// builtin's parameter head names. Only heads that name ONE type are bound
+/// (`Int`, `Double`, `Bool`, `String`, `Bytes`, and `Array[_]` with a fresh
+/// element); every other head, and a head of 0 (a parameter the builtin leaves
+/// open), leaves the variable alone exactly as before. The Int head also
+/// admits a concrete `Char`, but a variable is bound to `Int`: a generic
+/// wrapper then takes `Int` and a `Char` caller converts, instead of the
+/// formal staying open to a `String` read as an integer (#3022 review). A
+/// failed unify (a bounded variable, say) also leaves it alone -- the head
+/// check above is the one that reports.
+export fn bind_builtin_arg_var(arg_ty: Type, want: Int, s: Subst, c: Int) -> (Subst, Int) {
+  match arg_ty {
+    CtVar(_) => {
+      let target = if want == 1 {
+        Some(CtInt)
+      } else if want == 2 {
+        Some(CtDouble)
+      } else if want == 3 {
+        Some(CtBool)
+      } else if want == 4 {
+        Some(CtString)
+      } else if want == 7 {
+        Some(CtBytes)
+      } else if want == 9 {
+        Some(CtArray(CtVar(c)))
+      } else {
+        None
+      }
+      match target {
+        Some(t) => match unify(arg_ty, t, s) {
+          Some(s2) => (s2, if want == 9 {
+            c + 1
+          } else {
+            c
+          }),
+          None => (s, c)
+        },
+        None => (s, c)
+      }
+    },
+    _ => (s, c)
+  }
+}
+
+export fn head_fold_char(k: Int) -> Int {
+  if k == 5 {
+    1
+  } else {
+    k
+  }
+}
+
+/// Check a higher-order builtin's callback parameter against the type it will be
+/// fed. `recv_ty` / `fn_ty` are already subst-applied; when the receiver is a
+/// concrete `CtArray(elem)` and the callback is a `CtFn` with a parameter at
+/// `pidx`, require `elem` to be assignable to that parameter type. Ground-gated
+/// via check_assignable, so an unannotated callback param (a fresh CtVar that
+/// the body never pins to a concrete type) stays tolerant — only an explicit
+/// wrong annotation (or a body that pins the param to a mismatching concrete
+/// type) is rejected. `expected_ty` is the param (the slot), `elem` the value.
+export fn check_hof_param_vs_elem(recv_ty: Type, fn_ty: Type, pidx: Int, s: Subst, errors: Array[String], msg: String) -> Subst {
+  match recv_ty {
+    CtArray(elem) => match fn_ty {
+      CtFn(ptys, _, _) => if Array::length(ptys) > pidx {
+        check_assignable(subst_apply(s, Array::get(ptys, pidx)), subst_apply(s, elem), s, errors, msg, 0 - 1)
+      } else {
+        s
+      },
+      _ => s
+    },
+    _ => s
+  }
+}
+
+/// Require two array operands to share an element type (Array::concat /
+/// Array::push_all). `a_app` / `b_app` are already subst-applied; when both are
+/// concrete `CtArray`, ground-gated check_assignable compares their element
+/// types (generic / var operands stay tolerant).
+export fn check_two_array_elems(a_app: Type, b_app: Type, s: Subst, errors: Array[String], msg: String) -> Subst {
+  match a_app {
+    CtArray(ea) => match b_app {
+      CtArray(eb) => check_assignable(subst_apply(s, ea), subst_apply(s, eb), s, errors, msg, 0 - 1),
+      _ => s
+    },
+    _ => s
+  }
+}
+
+/// Declared type of a (monomorphic) struct field by name, or None if the struct
+/// or field is unknown. Used to recognise a field-stored-function call
+/// `b.f(args)` when no method/builtin `T::f` exists.
+fn struct_field_type(defs: Array[TypeDef], sname: String, field: String) -> Option[Type] {
+  match find_typedef(defs, sname) {
+    Some(td) => match td {
+      TDStruct(_, fields, _, _) => {
+        let rec go: (Int) -> Option[Type] = (i) -> {
+          if i >= Array::length(fields) {
+            None
+          } else {
+            let (fname, ftype) = Array::get(fields, i)
+            if fname == field {
+              Some(ftype)
+            } else {
+              go(i + 1)
+            }
+          }
+        }
+        go(0)
+      },
+      _ => None
+    },
+    None => None
+  }
+}
+
+/// #829: instantiate a declared field type against the receiver's actual type
+/// arguments (`CtNamed(S, targs)`). Substitutes only when the declared param
+/// list and the argument list line up; otherwise the raw (rigid) type is kept,
+/// which downstream checks tolerate exactly as before.
+export fn inst_struct_field_ty(ft: Type, tparams: Array[String], targs: Array[Type]) -> Type {
+  if Array::length(tparams) > 0 && Array::length(tparams) == Array::length(targs) {
+    subst_type_params(ft, tparams, targs)
+  } else {
+    ft
+  }
+}
+
+/// #829: field type of a struct-typed receiver, instantiated when the receiver
+/// is an applied generic struct. `CtStruct` receivers keep the raw field type
+/// (monomorphic structs have no params to substitute). None when the receiver
+/// is not a known struct or the field does not exist.
+export fn receiver_struct_field_type(defs: Array[TypeDef], recv: Type, field: String) -> Option[Type] {
+  match recv {
+    CtStruct(sname) => struct_field_type(defs, sname, field),
+    CtNamed(sname, targs) => match find_typedef(defs, sname) {
+      Some(td) => match td {
+        TDStruct(_, _, _, tparams) => match struct_field_type(defs, sname, field) {
+          Some(ft) => Some(inst_struct_field_ty(ft, tparams, targs)),
+          None => None
+        },
+        _ => None
+      },
+      None => None
+    },
+    _ => None
+  }
+}
+
+export fn is_logic_binop(op: String) -> Bool {
+  op == "&&"
+  || op == "||"
+}
+
+export fn is_order_binop(op: String) -> Bool {
+  op == "<"
+  || op == ">"
+  || op == "<="
+  || op == ">="
+}
+
+export fn type_name_prefix(ty: Type) -> String {
+  match ty {
+    CtInt => "Int",
+    CtDouble => "Double",
+    CtBool => "Bool",
+    CtString => "String",
+    CtChar => "Char",
+    CtUnit => "Unit",
+    CtBytes => "Bytes",
+    CtArray(_) => "Array",
+    CtOption(_) => "Option",
+    CtEnum(name) => name,
+    CtStruct(name) => name,
+    CtNamed(name, _) => name,
+    _ => ""
+  }
+}

@@ -1,0 +1,569 @@
+// Binding shape queries.
+
+import @vibe/compiler/core {
+  Expr, Pat, TypeExpr, __to_string
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import ./constructor_environments.vibe {
+  extend_var_types
+}
+
+import ./equality_registry.vibe {
+  generic_shape_head, show_generic_known
+}
+
+import ./equality_type_shapes.vibe {
+  ty_to_eq_shape
+}
+
+import ./shape_environment.vibe {
+  clone_var_types, constructor_mask_key, shape_key, shape_split
+}
+
+import ./tuple_shape_encoding.vibe {
+  dtd_join_shape_parts, dtd_shape_is_tuple
+}
+
+import ./type_names.vibe {
+  fn_exists, lookup_var_type
+}
+
+import ./utilities.vibe {
+  empty_str_array
+}
+
+/// #1199 bug 1: sentinel key prefix recording a parameter's ARRAY ELEMENT type,
+/// keyed off the parameter name so `array_elem_type_of` below can recover it
+/// without a second table threaded through every caller. Reuses the existing
+/// `var_types: Array[(String, String)]` association list -- same trick as the
+/// anonymous-record `__anonrec:` sentinel (anon_record_prefix above): a
+/// synthetic KEY (not value) that no real source identifier can collide with,
+/// since `$` isn't a valid identifier character.
+export fn array_elem_key(pname: String) -> String {
+  String::concat("__arrelem$", pname)
+}
+
+/// #1199 bug 1: look up the element type recorded for an Array-typed variable
+/// by `seed_var_types` (function parameters) or `array_elem_bind` (let-bound
+/// array literals).
+///
+/// A recorded EMPTY is a masking entry written by `mask_stale_array_elem`, not
+/// an element type: it means "an inner binding of this name shadowed whatever
+/// the outer one held, and this pass cannot type the new one". Same answer as
+/// no record at all.
+export fn array_elem_type_of(var_types: Array[(String, String)], name: String) -> Option[String] {
+  match lookup_var_type(var_types, array_elem_key(name)) {
+    Some(t) => if String::length(t) == 0 {
+      None
+    } else {
+      Some(t)
+    },
+    None => None
+  }
+}
+
+/// Codex P2 on PR #1565: a rebinding this pass cannot type must still MASK the
+/// outer binding's recorded element type. `lookup_var_type` returns the LAST
+/// match, so leaving the shadowed entry as the live answer is a real
+/// miscompile, not just imprecision -- measured before this:
+///
+///   let xs = [P::{ n: 1 }]      // records __arrelem$xs -> "P"
+///   let xs = mk(7)              // Array[Int] from a call: nothing recorded
+///   let ys = mk(9)
+///   xs == ys                    // true (!) -- dispatched __arr_equals__P,
+///                               // whose body reads a `.n` field off raw Ints
+///
+/// This is the same staleness `shape_bind` fixed for `__shape$` (it records
+/// even a non-composite binding for exactly this reason) and explicitly did
+/// NOT rewrite here at the time. #1526 made the entry load-bearing at `==`
+/// sites, so it has to be masked now.
+///
+/// Only writes when there IS a live entry to mask, so the common binding pays
+/// nothing.
+export fn mask_stale_array_elem_into(out: Array[(String, String)], name: String) -> Unit {
+  match array_elem_type_of(out, name) {
+    Some(_) => Array::push(out, (array_elem_key(name), "")),
+    None => ()
+  }
+}
+
+/// #1199 follow-up (Codex review on the original fix): the let-bound sibling
+/// of `seed_var_types`' Array[T]-parameter element tracking. Without this,
+/// `let xs = [1, 2]; Set::from_array(xs)` left `xs`'s element type
+/// unrecoverable at the call site -- `extend_var_types` only records the
+/// coarse "Array" head (via `infer_arg_type_name`'s `EArray(_) => Some
+/// ("Array")` case), so `infer_arg_elem_type_name`'s `EIdent` arm had nothing
+/// to look up, `synth_dicts` failed, and the call was emitted without its
+/// Hash dict argument(s) -- invalid wasm, the same failure shape bug 1's
+/// `Array::get` case had. Only a bare (unannotated) array literal RHS with a
+/// syntactically inferable first-element type is handled here, matching the
+/// rest of this file's syntax-directed (not full type-inference) approach;
+/// an empty literal (`let xs = []`) or an already-Array-typed variable RHS
+/// stays untracked -- recovering those needs the RHS's *expected* type
+/// flowing in from an enclosing annotation, which this bottom-up pass does
+/// not thread.
+/// #1880: a LOCAL `let x: T = v` is not annotation-free just because `ELet` has
+/// no annotation field. The parser rewrites it to `((__asc: T) -> __asc)(v)`
+/// (`ascribe_wrap` in parser_expr_dispatch.vibe), so `T` is right there in the
+/// AST -- this recognizes that exact shape and hands it back. Same recognizer
+/// the checker already runs (`ascription_lambda_ann`), kept local because this
+/// package does not import the checker.
+///
+/// The shape is precise: `__asc` is a dedicated internal name, and a real user
+/// IIFE will not have a single param literally named `__asc` whose body is
+/// exactly `EIdent("__asc", _)`.
+export fn dtd_ascribed_type(val: Expr) -> Option[TypeExpr] {
+  match val {
+    ECall(callee, _args, _) => match callee {
+      EFn(tparams, _tbounds, params, ret_ty, effect, body) => if Array::length(tparams) == 0 && Array::length(params) == 1 {
+        match ret_ty {
+          Some(_) => None,
+          None => match effect {
+            Some(_) => None,
+            None => {
+              let (pname, pann) = Array::get(params, 0)
+              if pname == "__asc" {
+                match body {
+                  EIdent(bname, _) => if bname == "__asc" {
+                    pann
+                  } else {
+                    None
+                  },
+                  _ => None
+                }
+              } else {
+                None
+              }
+            }
+          }
+        }
+      } else {
+        None
+      },
+      _ => None
+    },
+    _ => None
+  }
+}
+
+/// The element type named by an `Array[T]` annotation, when T is a bare name.
+/// Same single-bare-type-arg scope as `seed_var_types`' parameter handling --
+/// a nested element type stays untracked rather than recorded imprecisely.
+fn dtd_array_elem_of_ann(ty: TypeExpr) -> Option[String] {
+  match ty {
+    TyApp(head, targs) => if head == "Array" && Array::length(targs) == 1 {
+      match Array::get(targs, 0) {
+        TyName(elem) => Some(elem),
+        _ => None
+      }
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
+export fn dtd_array_elem_of_ann_opt(ann: Option[TypeExpr]) -> Option[String] {
+  match ann {
+    Some(t) => dtd_array_elem_of_ann(t),
+    None => None
+  }
+}
+
+/// A constructor name, by the language's own convention: vibe functions and
+/// variables are snake_case (lowercase), so an uppercase first letter is what
+/// distinguishes `B(p)` from `helper(p)` without a constructor table.
+export fn starts_upper(sname: String) -> Bool {
+  if String::length(sname) == 0 {
+    false
+  } else {
+    let c = String::char_code_at(sname, 0)
+    c >= 65 && c <= 90
+  }
+}
+
+/// `__ctorpayi$<Ctor>$<i>$<name>` -> the shape of slot `i` of `<name>`'s
+/// multi-field `<Ctor>` payload (#139). Arity 1 keeps the unindexed key below.
+export fn ctor_payload_idx_key(pname: String, ctor: String, idx: Int) -> String {
+  String::concat("__ctorpayi$", String::concat(ctor, String::concat("$", String::concat(__to_string(idx), String::concat("$", pname)))))
+}
+
+/// `__ctorpay$<Ctor>$<name>` -> the payload type of `<name>`'s `<Ctor>` arm.
+/// `Option[P]` records `Some -> P`; `Result[T, E]` records `Ok -> T` and
+/// `Err -> E`. Read when a `match` scrutinises that variable, so the arm's
+/// binder gets a type (#1445 cause 3: a pattern binder is otherwise absent
+/// from `var_types` entirely).
+export fn ctor_payload_key(pname: String, ctor: String) -> String {
+  String::concat("__ctorpay$", String::concat(ctor, String::concat("$", pname)))
+}
+
+/// Split a `tuple_shape_key` value back into its per-element type names.
+/// Written by hand rather than via `String::split` because an EMPTY element
+/// (an uninferable one) must survive as an empty entry -- it is what keeps the
+/// entry count equal to the tuple's arity.
+export fn tuple_shape_parts(sentinel: String) -> Array[String] {
+  let out = empty_str_array()
+  let mut rest = sentinel
+  let mut go = true
+  while go {
+    let comma = String::index_of(rest, ",")
+    if comma < 0 {
+      Array::push(out, rest)
+      go = false
+    } else {
+      Array::push(out, String::substring(rest, 0, comma))
+      rest = String::substring(rest, comma + 1, String::length(rest))
+    }
+  }
+  out
+}
+
+/// #2128: a `(A, B, ..)` annotation -> the `tuple_shape_key` sentinel (the
+/// element type NAMES, comma-joined). `None` when the annotation is absent or
+/// is not a tuple. An element the shape language cannot spell as a bare name
+/// contributes an EMPTY entry, exactly like `tuple_shape_bind`'s value path, so
+/// the entry count still equals the arity.
+export fn dtd_tuple_elem_names_of_ann(ann: Option[TypeExpr]) -> Option[String] {
+  match ann {
+    Some(t) => match t {
+      TyTuple(elems) => if Array::length(elems) == 0 {
+        None
+      } else {
+        let mut acc = ""
+        let mut i = 0
+        while i < Array::length(elems) {
+          let tn = match Array::get(elems, i) {
+            TyName(n) => n,
+            _ => ""
+          }
+          acc = if i == 0 {
+            tn
+          } else {
+            String::concat(acc, String::concat(",", tn))
+          }
+          i = i + 1
+        }
+        Some(acc)
+      },
+      _ => None
+    },
+    None => None
+  }
+}
+
+/// #2128: `Array::get(ps, i)` / `ps[i]` where `ps`'s recorded shape is an array
+/// of tuples -> the element's `tuple_shape_key` sentinel. "" when the value is
+/// not an array read, the array has no recorded shape, or its element is not a
+/// tuple.
+export fn dtd_tuple_elem_names_of_array_get(val: Expr, var_types: Array[(String, String)]) -> String {
+  match val {
+    ECall(callee, cargs, _) => match callee {
+      EIdent(cn, _) => if (cn == "Array::get" || cn == "__index") && Array::length(cargs) == 2 {
+        match Array::get(cargs, 0) {
+          EIdent(arrname, _) => match lookup_var_type(var_types, shape_key(arrname)) {
+            Some(sh) => if String::starts_with(sh, "[") {
+              let inner = shape_inner(sh)
+              if dtd_shape_is_tuple(inner) {
+                dtd_join_shape_parts(shape_split(shape_inner(inner)))
+              } else {
+                ""
+              }
+            } else {
+              ""
+            },
+            None => ""
+          },
+          _ => ""
+        }
+      } else {
+        ""
+      },
+      _ => ""
+    },
+    _ => ""
+  }
+}
+
+export fn constructor_binding_is_masked(var_types: Array[(String, String)], name: String) -> Bool {
+  match lookup_var_type(var_types, constructor_mask_key(name)) {
+    Some(_) => true,
+    None => false
+  }
+}
+
+export fn shape_is_composite(sh: String) -> Bool {
+  sh == "{u}" || String::starts_with(sh, "(") || String::starts_with(sh, "[") || String::starts_with(sh, "{o:") || String::starts_with(sh, "{r:") || String::starts_with(sh, "{m:") || String::starts_with(sh, "{g:")
+}
+
+/// Equality's shape grammar is a strict superset of interpolation's. Reuse the
+/// already-recorded function result shape, but only admit the tuple/array forms
+/// the interpolation renderer knows how to expand.
+export fn interp_shape(sh: String) -> String {
+  if String::starts_with(sh, "(") || String::starts_with(sh, "[") || String::starts_with(sh, "{o:") || String::starts_with(sh, "{r:") {
+    sh
+  } else if String::starts_with(sh, "{g:") && show_generic_known(generic_shape_head(sh)) {
+    sh
+  } else {
+    ""
+  }
+}
+
+/// The text between a composite shape's outer brackets.
+export fn shape_inner(sh: String) -> String {
+  String::substring(sh, 1, String::length(sh) - 1)
+}
+
+/// #2912: `Array::map(xs, (v: T) -> U { .. })` -> `[<shape of U>]`, read from
+/// the callback's DECLARED return type.
+///
+/// The sibling `dtd_elem_preserving_shape` excludes `Array::map` on purpose:
+/// its element type is the callback's return, so reusing the argument's shape
+/// would render confidently and wrongly. That reasoning is right, and the
+/// comment there tells the reader "an annotation covers it" -- but it did not.
+/// Only annotating the BINDING worked (`let ys: Array[Int] = ..`, which
+/// `infer_shape` reads through `dtd_ascribed_type`); annotating the LAMBDA was
+/// never consulted anywhere, so `__to_string(Array::map(xs, (v: Int) -> Int {
+/// v * 2 }))` printed a heap address. The code disagreed with its own comment,
+/// and this closes that gap rather than widening the exclusion.
+///
+/// Only a DECLARED return type is read. An inferred one would mean running
+/// inference from a normalize pass that has no types, which is the decision
+/// AGENTS.md records against for the structural-`==` scan: a classification
+/// that can be absent but never wrong. An unannotated callback still resolves
+/// to nothing here.
+///
+/// The result goes through `interp_shape` for the same reason `infer_shape`
+/// does: `ty_to_eq_shape` speaks equality's grammar, a strict superset of the
+/// renderer's, and letting an Option/Result encoding through would emit
+/// `Array::length` against a non-array.
+export fn dtd_map_callback_shape(fname: String, cargs: Array[Expr]) -> String {
+  if fname == "Array::map" && Array::length(cargs) >= 2 {
+    match Array::get(cargs, 1) {
+      EFn(_, _, _, ret, _, _) => match ret {
+        Some(rt) => {
+          let elem = ty_to_eq_shape(rt)
+          if String::length(elem) == 0 {
+            ""
+          } else {
+            interp_shape(String::concat(String::concat("[", elem), "]"))
+          }
+        },
+        None => ""
+      },
+      _ => ""
+    }
+  } else {
+    ""
+  }
+}
+
+/// #1880: the scalar type of an arithmetic/literal expression, for a `for-in`
+/// BODY only.
+///
+/// `infer_arg_type_name` deliberately answers only for `+` on strings, and that
+/// restraint is correct there: it also drives witness-dictionary synthesis
+/// (#1199), where a confident wrong answer emits a wrong dict and produces
+/// invalid wasm rather than a diagnostic. This one feeds the RENDERER, where
+/// the cost of a wrong answer is a wrong string, and the cost of no answer is
+/// the heap pointer #1880 is about. Kept separate rather than widening that
+/// function, so the two risk profiles do not get merged by accident.
+///
+/// Scope is deliberately small: literals, a bound name, and arithmetic over
+/// them. Anything else is "" -- no claim.
+/// Shadow any outer binding of `name` with an explicit UNKNOWN.
+///
+/// `extend_var_types(.., None)` cannot do this -- it returns `var_types`
+/// unchanged, which is the behaviour being fixed. An empty-string entry is the
+/// masking convention this file already uses (`mask_stale_array_elem`), and it
+/// reads back as unknown here because `dtd_scalar_shape`'s `EIdent` arm returns
+/// the looked-up string as-is.
+fn dtd_mask_var_type(var_types: Array[(String, String)], name: String) -> Array[(String, String)] {
+  let out = clone_var_types(var_types)
+  Array::push(out, (name, ""))
+  out
+}
+
+export fn dtd_scalar_shape(e: Expr, var_types: Array[(String, String)]) -> String {
+  match e {
+    EInt(_) => "Int",
+    EFloat(_) => "Double",
+    EString(_, _) => "String",
+    EBool(_) => "Bool",
+    EIdent(n, _) => match lookup_var_type(var_types, n) {
+      Some(t) => t,
+      None => ""
+    },
+    EBinOp(bop, bl, br, _) => if bop == "+" || bop == "-" || bop == "*" || bop == "/" || bop == "%" {
+      let l = dtd_scalar_shape(bl, var_types)
+      let r = dtd_scalar_shape(br, var_types)
+      // Both sides must agree. A mixed or unknown pair says nothing rather
+      // than picking a side.
+      if String::length(l) > 0 && l == r {
+        l
+      } else {
+        ""
+      }
+    } else if bop == "==" || bop == "!=" || bop == "<" || bop == ">" || bop == "<=" || bop == ">=" || bop == "&&" || bop == "||" {
+      "Bool"
+    } else {
+      ""
+    },
+    // A body with statements before its value (`{ if .. { break } else { }
+    // x * 10 }`, fixtures/for_in_break_test.vibe) -- the loop's element is the LAST
+    // expression, same rule `fn_body_tail_expr` already uses for function
+    // bodies.
+    ESeq(_, rest) => dtd_scalar_shape(rest, var_types),
+    // The binding has to be RECORDED, not just stepped over: the tail usually
+    // refers to it (`{ let y = x + 1  y * 2 }`), and an unrecorded `y` makes
+    // the tail unknown, which is the same as not walking in at all.
+    ELet(lname, lval, rest, _) => {
+      let lty = dtd_scalar_shape(lval, var_types)
+      let inner = if String::length(lty) > 0 {
+        extend_var_types(var_types, lname, Some(lty))
+      } else {
+        // A value this pass cannot classify must MASK any outer binding of the
+        // same name, not leave it visible. Passing `var_types` through was
+        // strictly worse than claiming nothing (Codex review on PR #1896):
+        //
+        //   let y = "outer"
+        //   for x in [1, 2] { let y = Some(x)
+        //     y }
+        //
+        // resolved the tail `y` to the OUTER String, so the loop got shape
+        // `[String]` and the renderer printed each `Some` as a string --
+        // `[276, 288]`, pointers laid out inside a structurally-rendered
+        // array. Without the outer binding the same body renders `192`, the
+        // old bare pointer. The stale answer is the more dangerous one: it
+        // looks like real output.
+        //
+        // Same hazard `mask_stale_array_elem` handles for the array sentinel,
+        // and the same reason `shape_bind` records even a non-composite: with
+        // `lookup_var_type` returning the LAST match, a shadowed entry stays
+        // the live answer unless something overwrites it.
+        dtd_mask_var_type(var_types, lname)
+      }
+      dtd_scalar_shape(rest, inner)
+    },
+    ECall(callee, _, _) => match callee {
+      EIdent(fname, _) => dtd_scalar_builtin_return(fname),
+      _ => ""
+    },
+    _ => ""
+  }
+}
+
+/// The scalar return type of a builtin, for the same renderer-only purpose as
+/// `dtd_scalar_shape`. Deliberately a short list of the length/measure builtins
+/// a `for-in` body actually ends in (`for s in names { String::length(s) }`,
+/// fixtures/for_in_string_test.vibe) rather than a mirror of the checker's tables --
+/// a name missing from here costs the old rendering, a WRONG entry costs a
+/// wrong render, so it only carries entries whose return type is unambiguous.
+fn dtd_scalar_builtin_return(fname: String) -> String {
+  if fname == "String::length" || fname == "String::unicode_length" || fname == "String::utf16_length" || fname == "String::utf8_length" || fname == "Array::length" || fname == "Bytes::length" || fname == "Map::size" || fname == "String::iter_length" || fname == "Map::iter_length" || fname == "Char::to_int" || fname == "Double::to_int" || fname == "String::char_code_at" || fname == "String::index_of" {
+    "Int"
+  } else if fname == "Int::to_double" {
+    "Double"
+  } else if fname == "String::concat" || fname == "String::substring" || fname == "String::trim" || fname == "String::to_lower" || fname == "String::to_upper" || fname == "Int::to_string" || fname == "__to_string" {
+    "String"
+  } else if fname == "String::contains" || fname == "String::starts_with" || fname == "String::ends_with" || fname == "not" {
+    "Bool"
+  } else {
+    ""
+  }
+}
+
+/// The whole binding-site environment of a `let` / `let mut` / the equality
+/// walk's `bound_var_types`, built on ONE copy of `var_types`: the inferred
+/// head type when there is one (what `extend_var_types` records), the
+/// impl-target key, the four shape records, then the equality shape. Same
+/// entries in the same order as the former chain of per-stage clones.
+/// #3024: a local named like a top-level function hides it, so a call through
+/// the local must not be typed by the top-level function's declared result.
+/// `fn helper() -> String` plus `let helper = () -> 5` used to type
+/// `helper() + 2` as a String and lower the `+` to `String::concat`, printing
+/// a pointer-shaped integer. The constructor mask makes the `EIdent` call arm
+/// of `infer_arg_type_name` answer unknown instead; a local whose own result
+/// is recorded (`local_fn_return_key`) still answers with that.
+export fn dtd_mask_shadowed_fn_into(out: Array[(String, String)], name: String, fn_returns: Array[(String, String)]) -> Unit {
+  if fn_exists(fn_returns, name) {
+    Array::push(out, (constructor_mask_key(name), ""))
+  } else {
+    ()
+  }
+}
+
+/// `dtd_mask_shadowed_fn_into` for every name a pattern binds.
+export fn dtd_mask_shadowed_pat(var_types: Array[(String, String)], p: Pat, fn_returns: Array[(String, String)]) -> Array[(String, String)] {
+  let names = array_empty()
+  dtd_pat_bind_names(p, names)
+  let ps = array_empty()
+  let mut i = 0
+  while i < Array::length(names) {
+    Array::push(ps, (Array::get(names, i), None))
+    i = i + 1
+  }
+  dtd_mask_shadowed_params(var_types, ps, fn_returns)
+}
+
+fn dtd_pat_bind_names(p: Pat, out: Array[String]) -> Unit {
+  match p {
+    PBind(n) => Array::push(out, n),
+    PCtor(_, subs) => {
+      let mut i = 0
+      while i < Array::length(subs) {
+        dtd_pat_bind_names(Array::get(subs, i), out)
+        i = i + 1
+      }
+    },
+    PTuple(subs) => {
+      let mut i = 0
+      while i < Array::length(subs) {
+        dtd_pat_bind_names(Array::get(subs, i), out)
+        i = i + 1
+      }
+    },
+    POr(l, r) => {
+      dtd_pat_bind_names(l, out)
+      dtd_pat_bind_names(r, out)
+    },
+    PStruct(_, fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fp) = Array::get(fields, i)
+        dtd_pat_bind_names(fp, out)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+/// `dtd_mask_shadowed_fn_into` for every parameter of a lambda, cloning only
+/// when one of them actually shadows a function.
+export fn dtd_mask_shadowed_params(var_types: Array[(String, String)], ps: Array[(String, Option[TypeExpr])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
+  let mut any = false
+  let mut i = 0
+  while i < Array::length(ps) {
+    let (pn, _) = Array::get(ps, i)
+    if fn_exists(fn_returns, pn) {
+      any = true
+    }
+    i = i + 1
+  }
+  if any {
+    let out = clone_var_types(var_types)
+    let mut j = 0
+    while j < Array::length(ps) {
+      let (pn, _) = Array::get(ps, j)
+      dtd_mask_shadowed_fn_into(out, pn, fn_returns)
+      j = j + 1
+    }
+    out
+  } else {
+    var_types
+  }
+}

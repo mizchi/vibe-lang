@@ -1,0 +1,2060 @@
+// lib/@vibe/compiler/loader/loader.vibe — contract source fs.
+
+import @vibe/compiler/syntax {
+  cfg_ambient_flags_csv, lex, lex_with_offsets, located_lex_message, parse_program, parse_program_preserving_located
+}
+
+import @vibe/core {
+  array_empty, hex_decode, hex_encode, struct MutMap
+}
+
+import @vibe/compiler/core {
+  Expr,
+  Source,
+  Stmt,
+  Subst,
+  Type,
+  TypeDef,
+  TypeEnv,
+  TypeExpr,
+  contains_path,
+  dir_of_path,
+  ensure_regular_source_fs,
+  external_lib_roots,
+  is_contract_ext,
+  nearest_vpkg_path_fs,
+  normalize_path,
+  path_in_dir,
+  reject_user_iterator_serialized_boundaries,
+  resolve_import_path_candidates,
+  resolve_import_path_probe,
+  text_mentions_unstable_package,
+  vpkg_path_in_dir
+}
+
+import @vibe/compiler/checker {
+  check_stmts
+}
+
+import @vibe/compiler/runtime/eval_loader {
+  collect_exports
+}
+
+import ./header_cache.vibe {
+  contract_sibling_impl_raws, load_or_parse_module_header_fs_impl, merge_impl_raws_dedupe, parse_program_located_shared_fs
+}
+
+import @vibe/compiler/contract {
+  check_contract_with_reexported_types,
+  classify_contract_stmts,
+  collect_impl_type_defs,
+  contract_directory_shared_import_prefix_text,
+  contract_duplicate_decl_index,
+  contract_effect_names_line,
+  contract_effective_decls,
+  contract_facade_marker,
+  contract_facade_source,
+  contract_type_family_decl_positions,
+  contract_type_family_defs,
+  contract_type_provenance,
+  contract_types_module_line,
+  contract_types_module_text,
+  extract_package_version,
+  extract_require_pins,
+  parse_contract_program,
+  parse_contract_program_spans,
+  vpkg_contract_effects_prefix,
+  vpkg_contract_effects_sibling_slot,
+  vpkg_shared_import_marker,
+  vpkg_types_contract_of_source,
+  vpkg_types_decl_marker
+}
+
+import ./ingestion_pipeline_telemetry.vibe {
+  ingestion_pipeline_telemetry_add
+}
+
+import ./manifest_sources.vibe {
+  is_vpkg_companion_basename, is_vpkg_direct_production_basename, is_vpkg_explicit_only_basename
+}
+
+import ./manifest_sources.vibe {
+  build_grouped_sources_from_manifest_row_source_index
+}
+
+import @vibe/compiler/cache {
+  cache_read_source_fs,
+  cache_read_source_with_token_fs,
+  compact_source_fingerprint_memo,
+  compact_string_fingerprint,
+  fingerprint_file_fs,
+  normalize_persistent_cache_text,
+  persistent_contract_facade_cache_path,
+  persistent_vpkg_prefix_cache_path
+}
+
+/// Collect the exported type kinds of one source boundary, following facade
+/// re-export chains until a declaration is reached. `visiting` makes a cycle
+/// an unresolved export instead of unbounded recursion; every visited source
+/// is fingerprinted so the contract-facade cache observes changes at any
+/// depth of the chain.
+/// #2386: the answer for one source, per path for the process, stamped with
+/// the stat token of every file the recursion read. `desugar_contract_source_fs`
+/// asks for the kinds behind a re-export once per MEMBER unit of the
+/// contract, and each ask read, lexed and parsed the re-export's target
+/// (and its own re-export chain) again -- on a cold compiler-closure compile
+/// every re-exported source parsed once per member re-exporting it. A hit
+/// re-stats every recorded file and replays the same `dep_paths` /
+/// `dep_fingerprints` pushes the parse made, so the facade cache row observes
+/// the same dependency set either way; a changed token re-reads. An answer
+/// is recorded only when the recursion beneath it met no `visiting` cycle,
+/// so a recorded answer never depends on the caller's `visiting` stack.
+/// A hit also re-runs every path resolution the recursion made (a nested
+/// `export ./target { T }` probing `target.vibe` before `target/index.vpkg`)
+/// and compares the answer, so a new file that now wins a resolution is
+/// observed even though no file that was read changed (Codex review on
+/// #2520). One entry per path, replaced on a token or resolution change, so
+/// a resident compiler holds one answer per source.
+/// #2521: the entries live in a CELL so the whole memo can be replaced. There
+/// is no `MutMap::clear`, and the located-parse memo next to it
+/// (`header_cache.vibe`) already drops itself this way.
+let exported_type_params_memo_cell: Array[MutMap[String, (Array[(String, Int)], Array[String], Array[(String, Array[String])], Array[(String, String, String)])]] = [
+  MutMap::new_string()
+]
+
+/// #2521: the ROWS the memo currently retains -- summed over its entries, the
+/// read rows plus the resolution rows each one stores. Kept exact rather than
+/// monotonic: `MutMap::set` REPLACES an entry when its path is asked again
+/// under a changed token, resolution or `#cfg` set, and counting the replaced
+/// entry's rows forever would evict a daemon that is merely recompiling one
+/// edited file over and over.
+let exported_type_params_memo_rows: Array[Int] = [0]
+
+/// #2521: the bound, in rows.
+///
+/// ROWS and not entries, because rows are where the quadratic term lives.
+/// Each entry stores the complete suffix of the files read and the path
+/// resolutions made BENEATH it -- a hit has to re-stat every file and re-run
+/// every resolution its answer depended on, and a nested hit replays its rows
+/// into the outer entry -- so a re-export chain of N sources is O(N^2) rows
+/// across N entries. A per-entry count cannot tell a thousand one-row entries
+/// from one thousand-row entry, and it is the second that this issue is about.
+///
+/// Dropping is always SAFE, never merely cheap: the memo is a pure cache of
+/// `exported_type_params_uncached_fs`, so a miss re-reads and re-parses and
+/// costs one parse pass per contract path afterwards. That is the same trade
+/// #2386 measured in the other direction.
+///
+/// A cell, not a literal, so the regression test can lower it and observe an
+/// eviction. A bound no test can reach is a bound nobody has seen work
+/// (CLAUDE.md: a gate is worth nothing until it is shown able to fail).
+let exported_type_params_memo_row_bound: Array[Int] = [65536]
+
+let exported_type_params_read_log: Array[(String, Int)] = []
+
+/// The ambient `#cfg` set each recorded answer was parsed under: the parsers
+/// keep or drop `#cfg`-gated declarations by that set, so an answer is only
+/// fresh under the set it was made with (Codex review on #2520).
+let exported_type_params_memo_cfg_cell: Array[MutMap[String, String]] = [
+  MutMap::new_string()
+]
+
+let exported_type_params_resolve_log: Array[(String, String, String)] = []
+
+let exported_type_params_cycle_hits: Array[Int] = [0]
+
+fn exported_type_params_entry_cfg_matches(path: String, cfg: String) -> Bool {
+  match MutMap::get(Array::get(exported_type_params_memo_cfg_cell, 0), path) {
+    Some(recorded) => recorded == cfg,
+    None => false
+  }
+}
+
+/// A recorded answer is fresh when every file it read has the stat token it
+/// was read under and every path resolution it made answers the same. A plain
+/// function, not the match arm: `resolve_path_fs` discharges the Source
+/// effect with a handler, and that call chain inside an Option match arm is
+/// the #708 trap shape (it trapped here, `unreachable`, on the first hit
+/// with a recorded resolution).
+fn exported_type_params_entry_fresh(reads: Array[(String, Int)], resolves: Array[(String, String, String)]) -> Bool with Env + Fs {
+  let mut same = true
+  let mut ri = 0
+  while ri < Array::length(reads) && same {
+    let (read_path, token) = Array::get(reads, ri)
+    // A file the answer read can be gone by now (a `target.vibe` that won a
+    // resolution, then deleted): absent is stale, and `Fs::stat_token` on a
+    // missing path traps rather than answering.
+    if !Fs::exists(read_path) || Fs::stat_token(read_path) != token {
+      same = false
+    } else {
+      ()
+    }
+    ri = ri + 1
+  }
+  let mut si = 0
+  while si < Array::length(resolves) && same {
+    let (base_dir, raw_path, resolved) = Array::get(resolves, si)
+    if loader_resolve_path_fs(base_dir, raw_path) != resolved {
+      same = false
+    } else {
+      ()
+    }
+    si = si + 1
+  }
+  same
+}
+
+/// #2521: stop counting the rows of the entry about to be REPLACED.
+///
+/// No effectful call inside the match arm: `exported_type_params_entry_fresh`
+/// is a plain function for exactly that reason (the #708 trap shape), and this
+/// one only reads lengths.
+fn exported_type_params_memo_release(path: String) -> Unit {
+  match MutMap::get(Array::get(exported_type_params_memo_cell, 0), path) {
+    Some(entry) => {
+      let (reads, _, _, resolves) = entry
+      Array::set(exported_type_params_memo_rows, 0, Array::get(exported_type_params_memo_rows, 0) - (Array::length(reads) + Array::length(resolves)))
+    },
+    None => ()
+  }
+}
+
+/// #2521: make room for `rows` more, dropping the whole memo past the bound.
+///
+/// BOTH maps go together. A `#cfg` row that outlived its answer would make
+/// `exported_type_params_entry_cfg_matches` report a match for an entry that
+/// is no longer there -- harmless today, because the caller reads the entry
+/// first and a miss re-parses either way, but it is the kind of split state
+/// that stops being harmless the moment someone reorders those two reads.
+fn exported_type_params_memo_reserve(rows: Int) -> Unit {
+  if Array::get(exported_type_params_memo_rows, 0) + rows > Array::get(exported_type_params_memo_row_bound, 0) {
+    Array::set(exported_type_params_memo_cell, 0, MutMap::new_string())
+    Array::set(exported_type_params_memo_cfg_cell, 0, MutMap::new_string())
+    Array::set(exported_type_params_memo_rows, 0, 0)
+  } else {
+    ()
+  }
+  Array::set(exported_type_params_memo_rows, 0, Array::get(exported_type_params_memo_rows, 0) + rows)
+}
+
+/// #2521: how many rows the memo retains right now. Instrumentation for the
+/// regression test and for measuring a real compile against the bound; it
+/// reports state and changes none.
+export fn exported_type_params_memo_rows_retained() -> Int {
+  Array::get(exported_type_params_memo_rows, 0)
+}
+
+/// #2521: lower (or restore) the row bound. The regression test uses it to
+/// reach an eviction from a handful of files instead of the tens of thousands
+/// of rows the shipped bound would need.
+export fn set_exported_type_params_memo_row_bound(rows: Int) -> Unit {
+  Array::set(exported_type_params_memo_row_bound, 0, rows)
+}
+
+fn exported_type_params_fs(path: String, dep_paths: Array[String], dep_fingerprints: Array[String], visiting: Array[String]) -> Array[(String, Array[String])] with Env + Exception + Fs {
+  if contains_path(visiting, path) {
+    Array::set(exported_type_params_cycle_hits, 0, Array::get(exported_type_params_cycle_hits, 0) + 1)
+    return array_empty()
+  } else {
+    ()
+  }
+  if Array::length(visiting) == 0 {
+    Array::truncate(exported_type_params_read_log, 0)
+    Array::truncate(exported_type_params_resolve_log, 0)
+  } else {
+    ()
+  }
+  let fresh = match MutMap::get(Array::get(exported_type_params_memo_cell, 0), path) {
+    Some(entry) => {
+      let (reads, _, _, resolves) = entry
+      if exported_type_params_entry_cfg_matches(path, cfg_ambient_flags_csv()) && exported_type_params_entry_fresh(reads, resolves) {
+        Some(entry)
+      } else {
+        None
+      }
+    },
+    None => None
+  }
+  match fresh {
+    Some(entry) => {
+      let (reads, fps, out, resolves) = entry
+      let mut ri = 0
+      while ri < Array::length(reads) {
+        let (read_path, token) = Array::get(reads, ri)
+        Array::push(dep_paths, read_path)
+        Array::push(dep_fingerprints, Array::get(fps, ri))
+        Array::push(exported_type_params_read_log, (read_path, token))
+        ri = ri + 1
+      }
+      let mut si = 0
+      while si < Array::length(resolves) {
+        Array::push(exported_type_params_resolve_log, Array::get(resolves, si))
+        si = si + 1
+      }
+      out
+    },
+    None => {
+      let log_mark = Array::length(exported_type_params_read_log)
+      let resolve_mark = Array::length(exported_type_params_resolve_log)
+      let dep_mark = Array::length(dep_fingerprints)
+      let hits_before = Array::get(exported_type_params_cycle_hits, 0)
+      let out = exported_type_params_uncached_fs(path, dep_paths, dep_fingerprints, visiting)
+      let reads = Array::slice(exported_type_params_read_log, log_mark, Array::length(exported_type_params_read_log))
+      let fps = Array::slice(dep_fingerprints, dep_mark, Array::length(dep_fingerprints))
+      let resolves = Array::slice(exported_type_params_resolve_log, resolve_mark, Array::length(exported_type_params_resolve_log))
+      if Array::get(exported_type_params_cycle_hits, 0) == hits_before && Array::length(reads) == Array::length(fps) {
+        exported_type_params_memo_release(path)
+        exported_type_params_memo_reserve(Array::length(reads) + Array::length(resolves))
+        MutMap::set(Array::get(exported_type_params_memo_cell, 0), path, (reads, fps, out, resolves))
+        MutMap::set(Array::get(exported_type_params_memo_cfg_cell, 0), path, cfg_ambient_flags_csv())
+      } else {
+        ()
+      }
+      out
+    }
+  }
+}
+
+fn exported_type_params_uncached_fs(path: String, dep_paths: Array[String], dep_fingerprints: Array[String], visiting: Array[String]) -> Array[(String, Array[String])] with Env + Exception + Fs {
+  let out = array_empty()
+  let visiting_mark = Array::length(visiting)
+  Array::push(visiting, path)
+  // The token is taken BEFORE the read: a file rewritten between the two is
+  // parsed as its new body under the old token, so the next ask re-reads it;
+  // the other order would record the new token against the old parse.
+  let token = Fs::stat_token(path)
+  let raw = cache_read_source_with_token_fs(path, token)
+  Array::push(exported_type_params_read_log, (path, token))
+  Array::push(dep_paths, path)
+  // Fingerprint the bytes that are parsed below. A second filesystem read
+  // could observe a newer body and make stale metadata look current forever.
+  Array::push(dep_fingerprints, compact_source_fingerprint_memo(path, raw))
+  if is_contract_ext(path) {
+    let (_, blanked) = extract_require_pins(raw)
+    let (_, opaques, extra) = parse_contract_program(lex(blanked))
+    let mut oi = 0
+    while oi < Array::length(opaques) {
+      Array::push(out, Array::get(opaques, oi))
+      oi = oi + 1
+    }
+    let (_, transparent) = classify_contract_stmts(extra)
+    let transparent_defs = collect_impl_type_defs(transparent)
+    let mut ti = 0
+    while ti < Array::length(transparent_defs) {
+      let (name, _, params) = Array::get(transparent_defs, ti)
+      Array::push(out, (name, params))
+      ti = ti + 1
+    }
+  } else {
+    let stmts = exported_type_params_parse_fs(path, ingest_source_text_fs(path, raw))
+    let defs = collect_impl_type_defs(stmts)
+    let mut ti = 0
+    while ti < Array::length(defs) {
+      let (name, exported, params) = Array::get(defs, ti)
+      if exported {
+        Array::push(out, (name, params))
+      } else {
+        ()
+      }
+      ti = ti + 1
+    }
+    // Traits are valid opaque contract implementations too. The generic
+    // collector intentionally covers data/type definitions only, so retain
+    // trait constructor kinds explicitly for re-export conformance.
+    let mut trait_i = 0
+    while trait_i < Array::length(stmts) {
+      match Array::get(stmts, trait_i) {
+        STrait(exported, name, _, _, _, params) => if exported {
+          Array::push(out, (name, params))
+        } else {
+          ()
+        },
+        _ => ()
+      }
+      trait_i = trait_i + 1
+    }
+    let mut si = 0
+    while si < Array::length(stmts) {
+      match Array::get(stmts, si) {
+        SReExport(raw_path, items) => {
+          let resolved = loader_resolve_path_fs(dir_of_path(path), raw_path)
+          Array::push(exported_type_params_resolve_log, (dir_of_path(path), raw_path, resolved))
+          let source_types = exported_type_params_fs(resolved, dep_paths, dep_fingerprints, visiting)
+          let mut ii = 0
+          while ii < Array::length(items) {
+            let item = Array::get(items, ii)
+            match lookup_exported_type_params(source_types, item.name) {
+              Some(params) => {
+                let exported_name = match item.alias {
+                  Some(alias) => alias,
+                  None => item.name
+                }
+                Array::push(out, (exported_name, params))
+              },
+              None => ()
+            }
+            ii = ii + 1
+          }
+        },
+        _ => ()
+      }
+      si = si + 1
+    }
+  }
+  Array::truncate(visiting, visiting_mark)
+  out
+}
+
+/// The re-export source's statements through the shared located parse memo:
+/// the loader parses the same (path, ingested text) when it collects the
+/// module, so whichever asks second is answered from the first parse instead
+/// of lexing and parsing the file again (~35 MB of the self-compile heap).
+/// Only names and type parameters are read here, which the located parse
+/// spells identically. A text that does not parse is re-parsed the old way so
+/// the error a caller sees is the one it always saw; a throwing located parse
+/// is not memoized.
+fn exported_type_params_parse_fs(path: String, ingested: String) -> Array[Stmt] with Env + Exception + Fs {
+  handle {
+    parse_program_located_shared_fs(path, ingested)
+  } with { Exception::Throw(_) => parse_program(lex(ingested)) }
+}
+
+fn lookup_exported_type_params(defs: Array[(String, Array[String])], name: String) -> Option[Array[String]] {
+  let mut i = 0
+  let mut found = None
+  while i < Array::length(defs) {
+    let (candidate, params) = Array::get(defs, i)
+    if candidate == name {
+      found = Some(params)
+      i = Array::length(defs)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// Resolve the declared kinds behind implementation-file re-exports before
+/// contract conformance. SReExport itself carries names only; the source
+/// contract or source declaration owns the type-parameter keys.
+fn resolved_reexported_type_defs_fs(unit_path: String, stmts: Array[Stmt], dep_paths: Array[String], dep_fingerprints: Array[String]) -> Array[(String, Array[String])] with Env + Exception + Fs {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SReExport(raw_path, items) => {
+        let resolved = loader_resolve_path_fs(dir_of_path(unit_path), raw_path)
+        let source_types = exported_type_params_fs(resolved, dep_paths, dep_fingerprints, [
+        ])
+        let mut ii = 0
+        while ii < Array::length(items) {
+          let item = Array::get(items, ii)
+          match lookup_exported_type_params(source_types, item.name) {
+            Some(params) => {
+              let exported_name = match item.alias {
+                Some(alias) => alias,
+                None => item.name
+              }
+              Array::push(out, (exported_name, params))
+            },
+            None => ()
+          }
+          ii = ii + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+// #847: `loader/` has no index.vibei boundary of its own, so outside callers
+// have historically reached straight into `loader/manifest_sources.vibe`
+// (bench scripts, tests) instead of going through `loader/index.vibe`. Since
+// this module already imports several of manifest_sources' functions for its
+// own use above, re-export the full set those outside callers need so they
+// can route through the index instead (ADR-0063's "index is the only entry
+// point" rule, generalized to plain-index.vibe directories per #847).
+
+/// ADR-0075 Phase 1: `.vibex` is a language-level executable root, not a
+/// launcher convention. Validate the preserving AST before fn declarations
+/// are lowered to SLet so a value-bound main cannot masquerade as canonical
+/// `fn main`. Exact operation-row equality is wired in a later phase; this
+/// slice fixes the file/entry shape and requires an explicit row.
+export fn validate_vibex_entry_source(path: String, source: String) -> Unit with Exception {
+  if !String::ends_with(path, ".vibex") {
+    ()
+  } else {
+    // #2227: a `require ... = #pkg:sha1:` pin head is a header directive,
+    // not statement grammar -- blank it exactly as every build-lane
+    // ingestion does (offset-preserving), or the parse below reads the
+    // pin's `#pkg` as a `#` directive and rejects a file the loader
+    // otherwise accepts.
+    let (_, pin_blanked) = extract_require_pins(source)
+    // #2938: this is the only parse a `.vibex` ENTRY reaches before the module
+    // walk, and it threw bare -- no path and no position -- while the SAME
+    // lexer error reached the reader three different ways depending on how it
+    // was asked. Measured on stage2 `25a3b9f96`:
+    //
+    //   vibe check e.vibex   error: line 2:13: unexpected character: \
+    //   vibe build e.vibex   error: unexpected character: \
+    //   vibe build e2.vibe   error: <path>: unexpected character: \
+    //
+    // The third is `located_parse_uncached`, which a `.vibe` entry reaches and
+    // a `.vibex` entry does not, because this runs first and throws.
+    //
+    // #2948: the parse is the LOCATED preserving one, so a syntax error
+    // carries `line L:col C:` as it does on the `.vibe` lane; the tokens-only
+    // parse had no starts table and so no position (and an `at #N` token
+    // index leaked into the message instead).
+    let stmts = handle {
+      let (tokens, starts, _ends) = lex_with_offsets(pin_blanked)
+      parse_program_preserving_located(tokens, starts, pin_blanked)
+    } with { Exception::Throw(msg) => throw(String::concat(String::concat(path, ": "), located_lex_message(pin_blanked, msg))) }
+    let mut main_count = 0
+    let mut saw_value_main = false
+    let mut invalid_shape = false
+    let mut missing_effect_row = false
+    let mut exported_main = false
+    let mut export_display = ""
+    let mut i = 0
+    while i < Array::length(stmts) {
+      match Array::get(stmts, i) {
+        SFnDecl(exported, name, value, _, _) => if name != "main" {
+          // #2229 (ADR-0075): an executable root has no export surface --
+          // nothing can import a .vibex, so an export in one is a promise
+          // no consumer can ever reach. Record the first one; the throw
+          // is below with the other shape rules.
+          if exported && export_display == "" {
+            export_display = "export fn \{name}"
+          } else {
+            ()
+          }
+        } else {
+          main_count = main_count + 1
+          if exported {
+            exported_main = true
+          } else {
+            ()
+          }
+          match value {
+            EFn(type_params, _, params, ret, effects, _) => {
+              let returns_unit = match ret {
+                Some(TyName(name)) => name == "Unit",
+                _ => false
+              }
+              if Array::length(type_params) != 0 || Array::length(params) != 0 || !returns_unit {
+                invalid_shape = true
+              } else {
+                ()
+              }
+              match effects {
+                Some(_) => (),
+                None => {
+                  missing_effect_row = true
+                }
+              }
+            },
+            _ => {
+              invalid_shape = true
+            }
+          }
+        },
+        SLet(exported, _, name, _, _) => if name == "main" {
+          saw_value_main = true
+        } else {
+          if exported && export_display == "" {
+            export_display = "export let \{name}"
+          } else {
+            ()
+          }
+        },
+        SEnum(exported, name, _, _, _) => if exported && export_display == "" {
+          export_display = "export enum \{name}"
+        } else {
+          ()
+        },
+        SSuberror(exported, name, _) => if exported && export_display == "" {
+          export_display = "export suberror \{name}"
+        } else {
+          ()
+        },
+        SStruct(exported, name, _, _, _, _) => if exported && export_display == "" {
+          export_display = "export struct \{name}"
+        } else {
+          ()
+        },
+        STypeAlias(exported, name, _, _) => if exported && export_display == "" {
+          export_display = "export type \{name}"
+        } else {
+          ()
+        },
+        STrait(exported, name, _, _, _, _) => if exported && export_display == "" {
+          export_display = "export trait \{name}"
+        } else {
+          ()
+        },
+        SModule(exported, name, _) => if exported && export_display == "" {
+          export_display = "export module \{name}"
+        } else {
+          ()
+        },
+        SEffectDef(exported, name, _, _) => if exported && export_display == "" {
+          export_display = "export effect \{name}"
+        } else {
+          ()
+        },
+        SEffectSet(exported, name, _) => if exported && export_display == "" {
+          export_display = "export effectset \{name}"
+        } else {
+          ()
+        },
+        SExport(names) => if export_display == "" {
+          if Array::length(names) > 0 {
+            export_display = "export { \{Array::get(names, 0)} }"
+          } else {
+            export_display = "export { }"
+          }
+        } else {
+          ()
+        },
+        SReExport(from_path, _) => if export_display == "" {
+          export_display = "export \{from_path} { ... }"
+        } else {
+          ()
+        },
+        _ => ()
+      }
+      i = i + 1
+    }
+    if saw_value_main {
+      throw("\{path}: value-bound main is not allowed in .vibex; use 'fn main allows <row> { ... }'")
+    } else if main_count != 1 {
+      throw("\{path}: .vibex executable requires exactly one fn main")
+    } else if exported_main {
+      throw("\{path}: .vibex fn main is an entry declaration and cannot be exported")
+    } else if export_display != "" {
+      // #2229 (ADR-0075): nothing can import a .vibex, so an export in one
+      // is unreachable by construction -- reject it and name the move.
+      throw("\{path}: .vibex is an executable root and has no export surface; move '\{export_display}' to a .vibe module and import it from main")
+    } else if invalid_shape {
+      throw("\{path}: .vibex fn main must have type () -> Unit")
+    } else if missing_effect_row {
+      throw("\{path}: .vibex fn main requires an explicit effect row; write 'allows ()' for a pure entry")
+    } else {
+      ()
+    }
+  }
+}
+
+//# Path helpers
+
+fn source_lookup(sources: Array[(String, String)], path_key: String) -> Option[String] {
+  let mut i = 0
+  let mut found = None
+  while i < Array::length(sources) {
+    match found {
+      Some(_) => (),
+      None => {
+        let (p, src) = Array::get(sources, i)
+        if p == path_key {
+          found = Some(src)
+        }
+      }
+    }
+    i = i + 1
+  }
+  found
+}
+
+export fn resolve_path_in_sources(base_dir: String, raw_path: String, sources: Array[(String, String)]) -> Option[(String, String)] with Env {
+  let candidates = resolve_import_path_candidates(base_dir, raw_path)
+  let mut i = 0
+  let mut found = None
+  while i < Array::length(candidates) {
+    match found {
+      Some(_) => (),
+      None => {
+        let candidate = Array::get(candidates, i)
+        match source_lookup(sources, candidate) {
+          Some(source) => {
+            found = Some((candidate, source))
+          }
+          None => ()
+        }
+      }
+    }
+    i = i + 1
+  }
+  found
+}
+
+export fn loader_resolve_path_fs(base_dir: String, raw_path: String) -> String with Env + Fs {
+  // #1872 pilot: the probe loop lives once in core (resolve_import_path_probe,
+  // `with Source`); this wrapper only discharges Source with the real
+  // capability builtins. self_path = "" -- this call site never needed the
+  // self-import skip (no candidate equals ""). The old #768/#778 direct-call
+  // retreat is deliberately revisited here: `perform Source::Exists` inside
+  // the probe is the pilot's live test of perform in this compiled unit,
+  // pinned by fixtures/effect_source_pilot_test.vibe and the bootstrap gate.
+  handle {
+    resolve_import_path_probe(base_dir, raw_path, "")
+  } with { Source::Read(p) => resume(Fs::read_file(p)); Source::Exists(p) => resume(Fs::exists(p)) }
+}
+
+/// #740: normalized for the same reason as manifest_sources' join_path —
+/// manifest rows outside the compiler dir must key under the import-resolved
+/// spelling.
+export fn loader_join_path(base_dir: String, rel_path: String) -> String {
+  if base_dir == "" {
+    normalize_path(rel_path)
+  } else {
+    normalize_path(String::concat(base_dir, String::concat("/", rel_path)))
+  }
+}
+
+fn strip_trailing_cr(line: String) -> String {
+  let len = String::length(line)
+  if len > 0 {
+    if String::char_code_at(line, len - 1) == 13 {
+      line[0: len - 1]
+    } else {
+      line
+    }
+  } else {
+    line
+  }
+}
+
+fn split_tsv_fields(line: String) -> Array[String] {
+  let fields = array_empty()
+  let len = String::length(line)
+  let mut start = 0
+  let mut i = 0
+  while i <= len {
+    let at_field_end = if i == len {
+      true
+    } else {
+      String::char_code_at(line, i) == 9
+    }
+    if at_field_end {
+      Array::push(fields, line[start: i])
+      start = i + 1
+    }
+    i = i + 1
+  }
+  fields
+}
+
+export fn empty_source_specs() -> Array[(String, String)] {
+  array_empty()
+}
+
+export fn copy_source_specs(sources: Array[(String, String)]) -> Array[(String, String)] {
+  let out = empty_source_specs()
+  let mut i = 0
+  while i < Array::length(sources) {
+    Array::push(out, Array::get(sources, i))
+    i = i + 1
+  }
+  out
+}
+
+fn empty_group_specs() -> Array[(String, String, String)] {
+  array_empty()
+}
+
+fn empty_source_cache_specs() -> Array[(String, String, String)] {
+  array_empty()
+}
+
+fn empty_group_cache_specs() -> Array[(String, String, String, String)] {
+  array_empty()
+}
+
+export fn loader_empty_grouped_sources() -> Array[(String, Array[(String, String)])] {
+  array_empty()
+}
+
+export fn source_paths(sources: Array[(String, String)]) -> Array[String] {
+  let paths = array_empty()
+  let mut i = 0
+  while i < Array::length(sources) {
+    let (path, _) = Array::get(sources, i)
+    if path != "" {
+      Array::push(paths, path)
+    } else ()
+    i = i + 1
+  }
+  paths
+}
+
+export fn source_cache_spec_paths(specs: Array[(String, String, String)]) -> Array[String] {
+  let paths = array_empty()
+  let mut i = 0
+  while i < Array::length(specs) {
+    let (path, _, _) = Array::get(specs, i)
+    if path != "" {
+      Array::push(paths, path)
+    } else ()
+    i = i + 1
+  }
+  paths
+}
+
+export fn grouped_source_paths(groups: Array[(String, Array[(String, String)])]) -> Array[String] {
+  let paths = array_empty()
+  let mut gi = 0
+  while gi < Array::length(groups) {
+    let (_, sources) = Array::get(groups, gi)
+    let mut si = 0
+    while si < Array::length(sources) {
+      let (path, _) = Array::get(sources, si)
+      if path != "" {
+        Array::push(paths, path)
+      } else ()
+      si = si + 1
+    }
+    gi = gi + 1
+  }
+  paths
+}
+
+export fn group_cache_row_paths(rows: Array[(String, String, String, String)]) -> Array[String] {
+  let paths = array_empty()
+  let mut i = 0
+  while i < Array::length(rows) {
+    let (_, path, _, _) = Array::get(rows, i)
+    if path != "" {
+      Array::push(paths, path)
+    } else ()
+    i = i + 1
+  }
+  paths
+}
+
+export fn push_grouped_source(groups: Array[(String, Array[(String, String)])], group_name: String, path: String, source: String) -> Unit {
+  let group_count = Array::length(groups)
+  let handled_by_tail = if group_count > 0 {
+    let (last_name, last_sources) = Array::get(groups, group_count - 1)
+    if last_name == group_name {
+      Array::push(last_sources, (path, source))
+      true
+    } else {
+      false
+    }
+  } else {
+    false
+  }
+  if !handled_by_tail {
+    let mut i = 0
+    let mut found_index = -1
+    while i < group_count {
+      if found_index == -1 {
+        let (name, sources) = Array::get(groups, i)
+        if name == group_name {
+          Array::push(sources, (path, source))
+          found_index = i
+        }
+      }
+      i = i + 1
+    }
+    if found_index == -1 {
+      let sources = array_empty()
+      Array::push(sources, (path, source))
+      Array::push(groups, (group_name, sources))
+    }
+  }
+}
+
+export fn push_grouped_source_fingerprint(groups: Array[(String, Array[(String, String)])], group_name: String, path: String, source_fingerprint: String) -> Unit {
+  let group_count = Array::length(groups)
+  let handled_by_tail = if group_count > 0 {
+    let (last_name, last_specs) = Array::get(groups, group_count - 1)
+    if last_name == group_name {
+      Array::push(last_specs, (path, source_fingerprint))
+      true
+    } else {
+      false
+    }
+  } else {
+    false
+  }
+  if !handled_by_tail {
+    let mut i = 0
+    let mut found_index = -1
+    while i < group_count {
+      if found_index == -1 {
+        let (name, specs) = Array::get(groups, i)
+        if name == group_name {
+          Array::push(specs, (path, source_fingerprint))
+          found_index = i
+        }
+      }
+      i = i + 1
+    }
+    if found_index == -1 {
+      let specs = array_empty()
+      Array::push(specs, (path, source_fingerprint))
+      Array::push(groups, (group_name, specs))
+    }
+  }
+}
+
+fn empty_manifest_header_cache_rows() -> Array[(String, String, String, String)] {
+  array_empty()
+}
+
+/// #801: the source list/group caches store a RESOLVED graph, and `@scope/name`
+/// resolution depends on which packages EXIST under `.vibe/store`, `lib/`, and
+/// the external roots at resolve time — not just on the root list (#758's env
+/// seed covers the latter only). A graph collected while `.vibe/store/@vibe/core`
+/// existed (store install gates/tests create and delete it) can lack the
+/// lib/-resolved vibe_core group entirely; every row such a cache DOES list
+/// still validates, so row-level checks can never notice the missing package.
+/// The visible package set itself must therefore be part of the validity check:
+/// writers record its fingerprint (`resctx` row) and validators refuse the
+/// cache when the current set differs.
+/// NOTE: no Fs::is_dir guards here — the fixed seed compiler predates that
+/// builtin (bootstrap bump required first). Scope/package levels are
+/// directories by layout convention (resolver assumes the same).
+fn push_context_packages_under(sb: StringBuilder, root: String) -> Unit with Exception + Fs {
+  if Fs::exists(root) {
+    let scopes = Fs::readdir(root)
+    let mut i = 0
+    while i < Array::length(scopes) {
+      let scope = Array::get(scopes, i)
+      if String::starts_with(scope, "@") {
+        let scope_dir = String::concat(root, String::concat("/", scope))
+        let names = Fs::readdir(scope_dir)
+        let mut j = 0
+        while j < Array::length(names) {
+          let name = Array::get(names, j)
+          let pkg_dir = String::concat(scope_dir, String::concat("/", name))
+          if Fs::exists(String::concat(pkg_dir, "/index.vpkg")) || Fs::exists(String::concat(pkg_dir, "/index.vibei")) {
+            StringBuilder::push(sb, root)
+            StringBuilder::push(sb, "|")
+            StringBuilder::push(sb, scope)
+            StringBuilder::push(sb, "/")
+            StringBuilder::push(sb, name)
+            StringBuilder::push(sb, "\n")
+          } else {
+            ()
+          }
+          j = j + 1
+        }
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+  } else {
+    ()
+  }
+}
+
+export fn resolution_context_fingerprint_fs() -> String with Env + Exception + Fs {
+  let sb = StringBuilder::new()
+  push_context_packages_under(sb, ".vibe/store")
+  push_context_packages_under(sb, "lib")
+  let roots = external_lib_roots()
+  let mut i = 0
+  while i < Array::length(roots) {
+    push_context_packages_under(sb, Array::get(roots, i))
+    i = i + 1
+  }
+  compact_string_fingerprint(StringBuilder::freeze(sb))
+}
+
+/// Persistent source caches contain a resolved graph, so local package policy is
+/// also part of their context. Per-source owner state detects a newly inserted
+/// nested boundary; owner contract content detects changed shared imports; and
+/// the direct-root listing detects production siblings added after a cache was
+/// written. This keeps cache hits observationally equivalent to a cold walk.
+fn module_policy_context_fingerprint_fs(entry_path: String, paths: Array[String]) -> String with Env + Exception + Fs {
+  let sb = StringBuilder::new()
+  let owners = array_empty()
+  let all_paths = array_empty()
+  if entry_path != "" {
+    Array::push(all_paths, entry_path)
+  } else ()
+  let mut pi = 0
+  while pi < Array::length(paths) {
+    let path = Array::get(paths, pi)
+    if path != "" && !contains_path(all_paths, path) {
+      Array::push(all_paths, path)
+    } else ()
+    pi = pi + 1
+  }
+  let mut i = 0
+  while i < Array::length(all_paths) {
+    let path = Array::get(all_paths, i)
+    StringBuilder::push(sb, "source|")
+    StringBuilder::push(sb, path)
+    if Fs::exists(path) {
+      validate_index_layout_fs(path)
+      let owner = nearest_vpkg_path_fs(path)
+      StringBuilder::push(sb, "|owner|")
+      StringBuilder::push(sb, owner)
+      if owner != "" && !contains_path(owners, owner) {
+        Array::push(owners, owner)
+      } else ()
+    } else {
+      StringBuilder::push(sb, "|missing")
+    }
+    StringBuilder::push(sb, "\n")
+    i = i + 1
+  }
+  let mut oi = 0
+  while oi < Array::length(owners) {
+    let owner = Array::get(owners, oi)
+    validate_index_layout_fs(owner)
+    StringBuilder::push(sb, "contract|")
+    StringBuilder::push(sb, owner)
+    StringBuilder::push(sb, "|")
+    StringBuilder::push(sb, fingerprint_file_fs(owner))
+    StringBuilder::push(sb, "\n")
+    let roots = contract_sibling_impl_raws(dir_of_path(owner))
+    let mut ri = 0
+    while ri < Array::length(roots) {
+      StringBuilder::push(sb, "root|")
+      StringBuilder::push(sb, owner)
+      StringBuilder::push(sb, "|")
+      StringBuilder::push(sb, Array::get(roots, ri))
+      StringBuilder::push(sb, "\n")
+      ri = ri + 1
+    }
+    oi = oi + 1
+  }
+  compact_string_fingerprint(StringBuilder::freeze(sb))
+}
+
+export fn persistent_resolution_context_fingerprint_fs(entry_path: String, paths: Array[String]) -> String with Env + Exception + Fs {
+  String::concat(resolution_context_fingerprint_fs(), String::concat(":", module_policy_context_fingerprint_fs(entry_path, paths)))
+}
+
+/// Narrow trace-only access to the exact loader resolution-context authority
+/// used by persistent source-group validation. The trace caller supplies a
+/// post-compile source-group recollection; this performs no reuse and does not
+/// claim an atomic snapshot with the production compile.
+export fn artifact_input_trace_resolution_context_fingerprint_fs(entry_path: String, groups: Array[(String, Array[(String, String)])]) -> String with Env + Exception + Fs {
+  persistent_resolution_context_fingerprint_fs(entry_path, grouped_source_paths(groups))
+}
+
+export fn resolution_context_is_valid(resctx: Option[String], entry_path: String, paths: Array[String]) -> Bool with Env + Exception + Fs {
+  match resctx {
+    Some(fp) => fp == persistent_resolution_context_fingerprint_fs(entry_path, paths),
+    // No resctx row = written before #801 (or by a foreign writer): the
+    // context it resolved under is unknown, so it cannot be trusted.
+    None => false
+  }
+}
+
+export fn parse_persistent_source_list_cache(raw: String) -> (Int, Option[(String, String, String)], Array[(String, String, String)], Option[String]) with Exception {
+  let len = String::length(raw)
+  let mut line_start = 0
+  let mut i = 0
+  let mut version = 0
+  let mut manifest = None
+  let mut resctx = None
+  let sources = empty_source_cache_specs()
+  while i <= len {
+    let at_line_end = if i == len {
+      true
+    } else {
+      String::char_code_at(raw, i) == 10
+    }
+    if at_line_end {
+      let line = strip_trailing_cr(raw[line_start: i])
+      if String::length(line) > 0 {
+        let fields = split_tsv_fields(line)
+        let tag = Array::get(fields, 0)
+        if tag == "version" {
+          if Array::length(fields) != 2 {
+            throw("invalid persistent source list cache version")
+          }
+          let version_text = Array::get(fields, 1)
+          if version_text == "1" {
+            version = 1
+          } else if version_text == "2" {
+            version = 2
+          } else if version_text == "3" {
+            version = 3
+          } else if version_text == "4" {
+            version = 4
+          } else {
+            throw("invalid persistent source list cache version")
+          }
+        } else if tag == "resctx" {
+          if Array::length(fields) != 2 {
+            throw("invalid persistent source list cache resctx row")
+          }
+          resctx = Some(Array::get(fields, 1))
+        } else if tag == "manifest" {
+          if version == 1 {
+            if Array::length(fields) != 3 {
+              throw("invalid persistent source list cache manifest row")
+            }
+            manifest = Some((Array::get(fields, 1), "", Array::get(fields, 2)))
+          } else {
+            if Array::length(fields) != 4 {
+              throw("invalid persistent source list cache manifest row")
+            }
+            let path = if version == 4 {
+              hex_decode(Array::get(fields, 1))
+            } else {
+              Array::get(fields, 1)
+            }
+            manifest = Some((path, Array::get(fields, 2), Array::get(fields, 3)))
+          }
+        } else if tag == "source" {
+          if version == 1 {
+            if Array::length(fields) != 3 {
+              throw("invalid persistent source list cache source row")
+            }
+            Array::push(sources, (Array::get(fields, 1), "", Array::get(fields, 2)))
+          } else {
+            if Array::length(fields) != 4 {
+              throw("invalid persistent source list cache source row")
+            }
+            let path = if version == 4 {
+              hex_decode(Array::get(fields, 1))
+            } else {
+              Array::get(fields, 1)
+            }
+            Array::push(sources, (path, Array::get(fields, 2), Array::get(fields, 3)))
+          }
+        } else {
+          throw(String::concat("invalid persistent source list cache row: ", line))
+        }
+      }
+      line_start = i + 1
+    }
+    i = i + 1
+  }
+  (version, manifest, sources, resctx)
+}
+
+export fn parse_persistent_source_group_cache(raw: String) -> (Int, Option[(String, String, String)], Array[(String, String, String, String)], Option[String]) with Exception {
+  let len = String::length(raw)
+  let mut line_start = 0
+  let mut i = 0
+  let mut version = 0
+  let mut manifest = None
+  let mut resctx = None
+  let rows = empty_group_cache_specs()
+  while i <= len {
+    let at_line_end = if i == len {
+      true
+    } else {
+      String::char_code_at(raw, i) == 10
+    }
+    if at_line_end {
+      let line = strip_trailing_cr(raw[line_start: i])
+      if String::length(line) > 0 {
+        let fields = split_tsv_fields(line)
+        let tag = Array::get(fields, 0)
+        if tag == "version" {
+          if Array::length(fields) != 2 {
+            throw("invalid persistent source group cache version")
+          }
+          let version_text = Array::get(fields, 1)
+          if version_text == "1" {
+            version = 1
+          } else if version_text == "2" {
+            version = 2
+          } else if version_text == "3" {
+            version = 3
+          } else if version_text == "4" {
+            version = 4
+          } else {
+            throw("invalid persistent source group cache version")
+          }
+        } else if tag == "resctx" {
+          if Array::length(fields) != 2 {
+            throw("invalid persistent source group cache resctx row")
+          }
+          resctx = Some(Array::get(fields, 1))
+        } else if tag == "manifest" {
+          if version == 1 {
+            if Array::length(fields) != 3 {
+              throw("invalid persistent source group cache manifest row")
+            }
+            manifest = Some((Array::get(fields, 1), "", Array::get(fields, 2)))
+          } else {
+            if Array::length(fields) != 4 {
+              throw("invalid persistent source group cache manifest row")
+            }
+            let path = if version == 4 {
+              hex_decode(Array::get(fields, 1))
+            } else {
+              Array::get(fields, 1)
+            }
+            manifest = Some((path, Array::get(fields, 2), Array::get(fields, 3)))
+          }
+        } else if tag == "group" {
+          if version == 1 {
+            if Array::length(fields) != 4 {
+              throw("invalid persistent source group cache group row")
+            }
+            Array::push(rows, (Array::get(fields, 1), Array::get(fields, 2), "", Array::get(fields, 3)))
+          } else {
+            if Array::length(fields) != 5 {
+              throw("invalid persistent source group cache group row")
+            }
+            let group_name = if version == 4 {
+              hex_decode(Array::get(fields, 1))
+            } else {
+              Array::get(fields, 1)
+            }
+            let path = if version == 4 {
+              hex_decode(Array::get(fields, 2))
+            } else {
+              Array::get(fields, 2)
+            }
+            Array::push(rows, (group_name, path, Array::get(fields, 3), Array::get(fields, 4)))
+          }
+        } else {
+          throw(String::concat("invalid persistent source group cache row: ", line))
+        }
+      }
+      line_start = i + 1
+    }
+    i = i + 1
+  }
+  (version, manifest, rows, resctx)
+}
+
+export fn loader_matches_cached_file_spec(path: String, stat_token_text: String, source_fingerprint: String) -> Bool with Env + Exception + Fs {
+  if !(Fs::exists(path)) {
+    false
+  } else {
+    let has_stat_token = String::length(stat_token_text) > 0
+    if has_stat_token {
+      if __to_string(Fs::stat_token(path)) == stat_token_text {
+        true
+      } else if String::length(source_fingerprint) > 0 {
+        fingerprint_file_fs(path) == source_fingerprint
+      } else {
+        false
+      }
+    } else if String::length(source_fingerprint) > 0 {
+      fingerprint_file_fs(path) == source_fingerprint
+    } else {
+      false
+    }
+  }
+}
+
+export fn load_source_if_cached_file_spec_matches(path: String, stat_token_text: String, source_fingerprint: String) -> Option[String] with Exception + Fs {
+  if !(Fs::exists(path)) {
+    None
+  } else {
+    let has_stat_token = String::length(stat_token_text) > 0
+    if has_stat_token {
+      let token = Fs::stat_token(path)
+      if __to_string(token) == stat_token_text {
+        Some(cache_read_source_with_token_fs(path, token))
+      } else if String::length(source_fingerprint) > 0 {
+        let source = cache_read_source_with_token_fs(path, token)
+        if compact_source_fingerprint_memo(path, source) == source_fingerprint {
+          Some(source)
+        } else {
+          None
+        }
+      } else {
+        None
+      }
+    } else if String::length(source_fingerprint) > 0 {
+      let source = cache_read_source_fs(path)
+      if compact_source_fingerprint_memo(path, source) == source_fingerprint {
+        Some(source)
+      } else {
+        None
+      }
+    } else {
+      None
+    }
+  }
+}
+
+// #729/#730: EVERY path that turns an on-disk file into an in-memory source
+// must apply the same ingestion transform — require-pin blanking, and for
+// index.vibei contracts the conformance-checked facade desugar. The cold
+// walk (collect_sources_rec) did; the persistent-cache reconstruction lanes
+// below re-read RAW disk bytes, so a warm cache leaked undesugared contracts
+// into the merge (masked until now because every compiler-bundle change
+// invalidated the caches). Cache validity stays keyed on the RAW file.
+// Exported (#741): the wasi_only MERGE lane (merge_sources.vibe) applies the
+// same ingestion when collecting its import graph, so contract packages
+// (.vibei) resolve in that lane too.
+// #740: the facade output is marked so a second ingestion pass (the
+// collect_source_groups_fs chokepoint below re-ingests EVERY collected
+// source, including ones a cache-reconstruction branch already ingested)
+// recognizes an already-desugared contract instead of re-parsing the facade
+// as contract grammar (which would fail conformance with empty decls).
+// #753: the marker constant moved to contract/index.vibe so the
+// persistent-header lane (header_cache.vibe) applies the same check.
+
+export fn path_basename(path: String) -> String {
+  let idx = String::last_index_of(path, "/")
+  if idx < 0 {
+    path
+  } else {
+    path[idx + 1: String::length(path)]
+  }
+}
+
+// The `.vpkg` basename predicates (`is_vpkg_companion_basename`,
+// `is_vpkg_explicit_only_basename`, `is_vpkg_direct_production_basename`)
+// live in manifest_sources.vibe, whose header scan has to agree with
+// `vpkg_directory_shared_import_prefix_fs` about which sources inherit a
+// package's directory-shared imports.
+
+export fn validate_index_layout_fs(path: String) -> Unit with Exception + Fs {
+  ensure_regular_source_fs(path)
+  let dir = dir_of_path(path)
+  let present = array_empty()
+  if Fs::exists(path_in_dir(dir, "index.vibe")) {
+    Array::push(present, "index.vibe")
+  } else ()
+  if Fs::exists(path_in_dir(dir, "index.vibei")) {
+    Array::push(present, "index.vibei")
+  } else ()
+  if Fs::exists(vpkg_path_in_dir(dir)) {
+    Array::push(present, "index.vpkg")
+  } else ()
+  if Array::length(present) > 1 {
+    throw("\{String::join(present, " and ")} exist in \{dir} (#729/#897): a boundary has exactly one index")
+  } else ()
+}
+
+/// #897: the directory-shared `import @user/mod { x, y }` text to PREPEND to
+/// `path`'s own source. Direct production siblings use their directory's vpkg;
+/// explicitly-run test/bench companions and explicitly-reached private/draft
+/// sources use their nearest enclosing vpkg. These sources remain excluded from
+/// implicit build roots; explicit-only sources enter the hash only when reached.
+/// "" when `path` doesn't qualify or the vpkg declares no shared imports.
+/// Reads `index.vpkg` FRESH from disk on every
+/// call rather than caching anything about it here — every caller already
+/// keys its OWN cache off a fingerprint of this function's return value baked
+/// into the ingested source text (`compact_string_fingerprint`, throughout
+/// runtime/index.vibe and header_cache.vibe's `load_or_parse_module_header_fs_impl`),
+/// so a live re-read is what makes a change to `index.vpkg`'s shared imports
+/// correctly invalidate every sibling's downstream caches — no separate
+/// invalidation bookkeeping needed (the #801 stale-cache bug class this
+/// avoids: caching a derived value under a key that does not depend on
+/// everything the value was derived from).
+/// Scoped to `.vpkg` only (#897 issue comments: `.vibei`'s legacy either/or
+/// import behavior is deliberately left unchanged by this feature).
+/// #1840: materialize a vpkg contract's type-family definitions (struct /
+/// enum / type alias) as a real source file under the build cache. The type
+/// family needs exactly ONE definition site (a second identity for the same
+/// enum traps at runtime, #1879) that BOTH the facade (re-export) and every
+/// sibling impl unit (shared-prefix import) can reach through ordinary
+/// import machinery — the facade itself cannot be that site for siblings,
+/// because facade → impl is already an edge and the reverse import would be
+/// a cycle. The path is content-keyed (package identity + text), so a
+/// contract edit that changes the type family moves the path and every
+/// dependent header invalidates naturally; the write is idempotent.
+/// #1840: process-local registry of materialized types modules —
+/// (contract path, types-module path, types-module text). Fixed-source-set
+/// merge consumers (the s5 selfbuild bundle, any lane that hands
+/// collect_merged_stmts a pre-collected list) have no FS walk to pick the
+/// materialized file up, so the merge would silently LOSE the contract's
+/// type family (the facade only re-exports it now). collect_merged_stmts
+/// re-injects from this registry, gated on "this compile's source set
+/// contains the originating contract" so a long-lived process (test daemon)
+/// never leaks another package's types into an unrelated merge.
+export let vpkg_types_registry_contracts: Array[String] = []
+export let vpkg_types_registry_paths: Array[String] = []
+export let vpkg_types_registry_texts: Array[String] = []
+fn vpkg_types_registry_note(contract_path: String, types_path: String, text: String) -> Unit {
+  let mut i = 0
+  let mut seen = false
+  while i < Array::length(vpkg_types_registry_paths) {
+    if Array::get(vpkg_types_registry_paths, i) == types_path {
+      seen = true
+      i = Array::length(vpkg_types_registry_paths)
+    } else {
+      i = i + 1
+    }
+  }
+  if seen {
+    ()
+  } else {
+    Array::push(vpkg_types_registry_contracts, contract_path)
+    Array::push(vpkg_types_registry_paths, types_path)
+    Array::push(vpkg_types_registry_texts, text)
+  }
+}
+
+/// #2324: the exact prefix every materialized types module is written under.
+///
+/// Shared with the predicate that decides whether to trust a module's
+/// provenance marker, so the two cannot drift: a generator that moved and a
+/// predicate that did not would silently stop attributing diagnostics, or
+/// start trusting a file it should not.
+export let vpkg_types_module_path_prefix: String = ".vibe/build/vpkg_types/types_"
+
+/// Returns "" when the contract declares no type-family definitions, or when
+/// the package lives outside the repo-relative tree (an absolute VIBE_LIB
+/// external root — the relative import spelling below cannot reach _build
+/// from there, so those packages keep the verbatim-facade behavior).
+fn ensure_vpkg_types_module_fs(vpkg_path: String, extra: Array[Stmt], opaque_names: Array[(String, Array[String])], decl_pos: Array[String]) -> String with Exception + Fs {
+  if String::starts_with(vpkg_path, "/") {
+    return ""
+  } else {
+    ()
+  }
+  let (_, type_defs) = classify_contract_stmts(extra)
+  let tds = contract_type_family_defs(type_defs)
+  if Array::length(tds) == 0 {
+    ""
+  } else {
+    // #2125: `uniq` keeps the deferred-names sentinel binding (see
+    // contract_types_module_text) collision-free across contracts whose
+    // modules meet in one whole-program merge. Fingerprint of the contract
+    // path, not a sanitized spelling of it -- character replacement is not
+    // injective (`a/b` and `a_b` collapse, Codex on #2162), and two equal
+    // binding names would be duplicate declarations in the merge.
+    let uniq_fp = compact_string_fingerprint(vpkg_path)
+    let uniq_sb = StringBuilder::new()
+    let mut uci = 0
+    while uci < String::length(uniq_fp) {
+      let uc = String::char_code_at(uniq_fp, uci)
+      let u_ident = (uc >= '0' && uc <= '9') || (uc >= 'a' && uc <= 'z') || (uc >= 'A' && uc <= 'Z') || uc == '_'
+      if u_ident {
+        StringBuilder::push(uniq_sb, uniq_fp[uci: uci + 1])
+      } else {
+        StringBuilder::push(uniq_sb, "_")
+      }
+      uci = uci + 1
+    }
+    let provenance = contract_type_provenance(extra, opaque_names)
+    let text = contract_types_module_text(tds, StringBuilder::freeze(uniq_sb), vpkg_path, provenance, decl_pos)
+    let raw_key = compact_string_fingerprint(String::concat(vpkg_path, String::concat("|", text)))
+    // Identifier-safe basename: the import-path grammar (parser_base.vibe's
+    // collect_import_path) lexes path segments as identifier/keyword tokens,
+    // so a digit-leading segment lexes as TInt and the fingerprint's ':'
+    // separators are not path tokens at all — both fail with "unexpected
+    // token in import path". `types_` + [a-z0-9_] keeps the whole basename
+    // one TIdent.
+    let key_sb = StringBuilder::new()
+    let mut kci = 0
+    while kci < String::length(raw_key) {
+      let kc = String::char_code_at(raw_key, kci)
+      let is_ident_char = (kc >= '0' && kc <= '9') || (kc >= 'a' && kc <= 'z') || (kc >= 'A' && kc <= 'Z') || kc == '_'
+      if is_ident_char {
+        StringBuilder::push(key_sb, raw_key[kci: kci + 1])
+      } else {
+        StringBuilder::push(key_sb, "_")
+      }
+      kci = kci + 1
+    }
+    let types_path = String::concat(vpkg_types_module_path_prefix, String::concat(StringBuilder::freeze(key_sb), ".vibe"))
+    if Fs::exists(types_path) {
+      ()
+    } else {
+      Fs::write_file(types_path, text)
+    }
+    vpkg_types_registry_note(vpkg_path, types_path, text)
+    types_path
+  }
+}
+
+/// #1840: the RELATIVE spelling of `canonical` (a repo-root-relative path)
+/// as seen from `dir` (also repo-root-relative) — `../` per path segment of
+/// `dir`, then the canonical path. Both the facade re-export and the sibling
+/// prefix import need this: the import-path grammar accepts a leading `../`
+/// chain, while a bare root-relative `_build/...` fails the export
+/// statement's head-token check.
+fn relative_spelling_from_dir(dir: String, canonical: String) -> String {
+  let mut segments = if dir == "" {
+    0
+  } else {
+    1
+  }
+  let mut si = 0
+  while si < String::length(dir) {
+    if String::char_code_at(dir, si) == '/' {
+      segments = segments + 1
+    } else {
+      ()
+    }
+    si = si + 1
+  }
+  let sb = StringBuilder::new()
+  let mut ui = 0
+  while ui < segments {
+    StringBuilder::push(sb, "../")
+    ui = ui + 1
+  }
+  StringBuilder::push(sb, canonical)
+  StringBuilder::freeze(sb)
+}
+
+fn vpkg_directory_shared_import_prefix_fs(path: String) -> String with Env + Exception + Fs {
+  if is_contract_ext(path) {
+    ""
+  } else {
+    let basename = path_basename(path)
+    let vpkg_path = if is_vpkg_companion_basename(basename) || is_vpkg_explicit_only_basename(basename) {
+      nearest_vpkg_path_fs(path)
+    } else if is_vpkg_direct_production_basename(basename) {
+      let direct = vpkg_path_in_dir(dir_of_path(path))
+      if Fs::exists(direct) {
+        direct
+      } else {
+        ""
+      }
+    } else {
+      ""
+    }
+    if vpkg_path == "" {
+      ""
+    } else {
+      ensure_regular_source_fs(vpkg_path)
+      // #1100: this runs once per MEMBER file of the directory package, and
+      // used to re-lex + re-parse the same index.vpkg contract every time
+      // (20 members = 20 contract parses; ~14% of the cold collect walk's
+      // parse time). The prefix text is a pure function of the vpkg's
+      // content, so memoize it in a persistent text cache keyed by
+      // (path, content fingerprint): the first member pays one parse, every
+      // other member (and every later cold compile of an unchanged vpkg)
+      // reads the one-line cache file instead.
+      // #1308: key the cache probe off the memoized file fingerprint and
+      // defer the raw read to the miss branch — the hit path (every member
+      // after the first) previously re-read + re-hashed the whole contract
+      // just to compute the cache key.
+      let prefix_cache_path = persistent_vpkg_prefix_cache_path(vpkg_path, fingerprint_file_fs(vpkg_path))
+      let cached_prefix = if Fs::exists(prefix_cache_path) {
+        normalize_persistent_cache_text(Fs::read_file(prefix_cache_path))
+      } else {
+        ""
+      }
+      // #1840: v2 rows carry the materialized types-module path on their
+      // second line (empty when the contract has no type-family defs) so a
+      // hit can verify the file still exists — the prefix cache and the
+      // types module live under different roots when VIBE_BUILD_CACHE_DIR
+      // rebases the caches, so one can survive a clean of the other. A
+      // missing file falls through to full regeneration (idempotent write).
+      let cached_hit = if String::starts_with(cached_prefix, "v5\n") {
+        let rest = cached_prefix[3: String::length(cached_prefix)]
+        let nl = String::index_of(rest, "\n")
+        if nl < 0 {
+          ""
+        } else {
+          let cached_types_path = rest[0: nl]
+          // #2324: a stub written before the provenance marker existed is
+          // STALE, not merely present. This branch skips regeneration on
+          // mere existence, so a workspace warmed by an older compiler
+          // would keep serving a marker-less stub and the diagnostic would
+          // go on naming the generated file after the upgrade. Reading the
+          // text once folds the missing-file case in: absent reads as "",
+          // which has no marker, so both fall through to the same
+          // idempotent regeneration below.
+          let cached_types_text = if cached_types_path != "" && Fs::exists(cached_types_path) {
+            Fs::read_file(cached_types_path)
+          } else {
+            ""
+          }
+          let cached_types_fresh = if cached_types_path == "" {
+            true
+          } else {
+            // #2317: BOTH markers. A stub from the version that had only
+            // provenance passes a provenance-only check, so the cache keeps
+            // serving it and located diagnostics go on naming the artifact --
+            // the same staleness hole as #2324, one marker later. Every stub
+            // that exists has at least one declaration (none are generated for
+            // a contract with no type family), so a missing decl marker means
+            // the stub predates them.
+            vpkg_types_contract_of_source(cached_types_text) != "" && String::index_of(cached_types_text, vpkg_types_decl_marker) >= 0
+          }
+          if cached_types_fresh {
+            // Same registry note as the facade-cache hit: a warm prefix
+            // used to skip ensure_vpkg_types_module_fs, so collect_merged
+            // and the typecheck source set never saw the stub (#1921).
+            if cached_types_path == "" {
+              ()
+            } else {
+              vpkg_types_registry_note(vpkg_path, cached_types_path, cached_types_text)
+            }
+            rest[nl + 1: String::length(rest)]
+          } else {
+            ""
+          }
+        }
+      } else {
+        ""
+      }
+      if cached_hit != "" || String::starts_with(cached_prefix, "v5\n\n") {
+        cached_hit
+      } else {
+        let vpkg_raw = cache_read_source_fs(vpkg_path)
+        let (_, vpkg_pin_blanked) = extract_require_pins(vpkg_raw)
+        let (vpkg_tokens, vpkg_starts, _ve) = lex_with_offsets(vpkg_pin_blanked)
+        let (_, vpkg_opaques, vpkg_extra, vpkg_stmt_at, _vd) = parse_contract_program_spans(vpkg_tokens)
+        let shared_text = contract_directory_shared_import_prefix_text(vpkg_extra)
+        // #1840: siblings import the contract's type family from the
+        // materialized types module — this is what gives enum constructors
+        // real value bindings inside impl units (the facade cannot be
+        // imported from a sibling: facade → impl is already an edge).
+        // #2317: positions come from the SAME blanked text the parse used, so
+        // the offsets and the source agree. Blanking is offset-preserving, so
+        // a line:col computed here is the line:col in the real contract too.
+        let vpkg_decl_pos = contract_type_family_decl_positions(vpkg_pin_blanked, vpkg_extra, vpkg_stmt_at, vpkg_starts)
+        let types_path = ensure_vpkg_types_module_fs(vpkg_path, vpkg_extra, vpkg_opaques, vpkg_decl_pos)
+        // #2968: the contract's effect and effectset names, for the unknown-
+        // effect check in this sibling (v5 of this cache carries it, with ops).
+        let (_, vpkg_effect_defs) = classify_contract_stmts(vpkg_extra)
+        let effects_line = contract_effect_names_line(vpkg_effect_defs)
+        let prefix_text = String::concat(effects_line, if types_path == "" {
+          shared_text
+        } else {
+          let (_, vpkg_type_defs) = classify_contract_stmts(vpkg_extra)
+          let types_rel = relative_spelling_from_dir(dir_of_path(vpkg_path), types_path)
+          String::concat(contract_types_module_line("import", types_rel, contract_type_family_defs(vpkg_type_defs)), shared_text)
+        })
+        Fs::write_file(prefix_cache_path, String::concat("v5\n", String::concat(types_path, String::concat("\n", prefix_text))))
+        prefix_text
+      }
+    }
+  }
+}
+
+/// #897: applies `vpkg_directory_shared_import_prefix_fs`, guarded by
+/// `vpkg_shared_import_marker` so re-ingesting an already-ingested source
+/// (routine: `collect_source_groups_fs` re-ingests every source it collects,
+/// #740) does not prepend the inherited imports a second time.
+/// An identifier-safe, injective-enough suffix for a sibling path: its
+/// fingerprint with every non-identifier character replaced.
+fn vpkg_sibling_ident(path: String) -> String {
+  let fp = compact_string_fingerprint(path)
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < String::length(fp) {
+    let c = String::char_code_at(fp, i)
+    if (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
+      StringBuilder::push(sb, fp[i: i + 1])
+    } else {
+      StringBuilder::push(sb, "_")
+    }
+    i = i + 1
+  }
+  StringBuilder::freeze(sb)
+}
+
+export fn apply_vpkg_directory_shared_imports_fs(path: String, pin_blanked: String) -> String with Env + Exception + Fs {
+  if String::starts_with(pin_blanked, vpkg_shared_import_marker) {
+    pin_blanked
+  } else {
+    let prefix = vpkg_directory_shared_import_prefix_fs(path)
+    if prefix == "" {
+      pin_blanked
+    } else {
+      // #2968: the effect-names carrier is a private `let`; give it this
+      // sibling's own suffix so two siblings never collide in a merge.
+      let slot = String::concat(vpkg_contract_effects_prefix, String::concat(vpkg_contract_effects_sibling_slot, "__"))
+      let sib = String::concat(vpkg_contract_effects_prefix, String::concat(vpkg_sibling_ident(path), "__"))
+      let own_prefix = String::join(String::split(prefix, slot), sib)
+      String::concat(vpkg_shared_import_marker, String::concat(own_prefix, pin_blanked))
+    }
+  }
+}
+
+/// #2284: every on-disk module of the resolved closure passes through
+/// `ingest_source_text_fs`, so this is the one place the WHOLE closure can be
+/// observed without a second traversal. The ADR-0068 gate used to read the
+/// entry file alone, which meant moving `import @vibe/concurrent` into a
+/// sibling bypassed it -- and `main.vibe` calling `./worker.vibe` is the
+/// normal shape of a project, so the boundary was missing for exactly the
+/// structure it most needed to cover.
+///
+/// Only a cheap substring test happens here; the VERDICT is the token scan's,
+/// in `cli_support.vibe`. Over-matching is fine and expected -- roughly ten
+/// compiler files merely MENTION the package in a comment -- because a
+/// candidate that carries no real `SImport` produces no diagnostic.
+///
+/// Reset per compilation by the adapter. That matters: the unit-test batch
+/// compiles many files in one long-lived daemon, so a record left standing
+/// would report a previous file's dependency against the next one.
+let unstable_candidate_cell: Array[(String, String)] = array_empty()
+
+export fn unstable_candidates_reset() -> Unit {
+  Array::truncate(unstable_candidate_cell, 0)
+}
+
+export fn unstable_candidates() -> Array[(String, String)] {
+  unstable_candidate_cell
+}
+
+fn record_unstable_candidate(path: String, ingested: String) -> Unit {
+  if text_mentions_unstable_package(ingested) {
+    // #2386: the loader ingests a module more than once per compile (header
+    // cache, source-group collection), and every record was lexed and
+    // parsed by the closure scan on its own. The same (path, text) yields
+    // the same reports, which the scan already collapses, so it is recorded
+    // once; a path whose ingested text changed is still recorded again.
+    let mut i = 0
+    let mut dup = false
+    while !dup && i < Array::length(unstable_candidate_cell) {
+      let (p, t) = Array::get(unstable_candidate_cell, i)
+      if p == path && t == ingested {
+        dup = true
+      } else {
+        i = i + 1
+      }
+    }
+    if dup {
+      ()
+    } else {
+      Array::push(unstable_candidate_cell, (path, ingested))
+    }
+  } else {
+    ()
+  }
+}
+
+export fn ingest_source_text_fs(path: String, raw: String) -> String with Env + Exception + Fs {
+  // The serialized Iterator boundary is a trusted carrier only after sources
+  // have been merged. Keep the common path allocation- and parse-free; a
+  // comment mentioning the prefix pays one parse but remains accepted.
+  if String::contains(raw, "@vibe/compiler/internal/iterator_boundary") {
+    reject_user_iterator_serialized_boundaries(parse_program(lex(raw)))
+  } else {
+    ()
+  }
+  let (_, pin_blanked) = extract_require_pins(raw)
+  let ingested = if is_contract_ext(path) {
+    if String::starts_with(pin_blanked, contract_facade_marker) {
+      pin_blanked
+    } else {
+      String::concat(contract_facade_marker, desugar_contract_source_fs(path, pin_blanked))
+    }
+  } else {
+    apply_vpkg_directory_shared_imports_fs(path, pin_blanked)
+  }
+  record_unstable_candidate(path, ingested)
+  ingested
+}
+
+//# FS-based source collection
+
+/// `visited` is a `path_set` (#533): this recursion runs once per import
+/// EDGE and the visited set grows to every module of the program, so the
+/// previous linear `contains_path` scan was O(edges × modules). The set is
+/// membership-only — `sources` keeps its own dependency-first order from
+/// the recursion, which is what callers consume.
+/// #729 (ADR-0063 Phase C-2): ingest an index.vibei contract. The contract is
+/// conformance-checked against its declared implementation files and desugared
+/// to plain facade source (re-export lines), so everything downstream of the
+/// loader — type db, merge plan, codegen — sees ordinary vibe source and needs
+/// no .vibei awareness. Implementation files are DECLARED by the contract
+/// (`import ./impl.vibe {}`) rather than discovered: the Fs effect has no
+/// directory listing yet (auto-discovery arrives with Fs::ReadDir, #730).
+export fn desugar_contract_source_fs(path: String, source: String) -> String with Env + Exception + Fs {
+  let dir = dir_of_path(path)
+  validate_index_layout_fs(path)
+  // `lex_with_offsets`, because the declaration positions below need byte
+  // offsets and `stmt_at` records token indices.
+  let (src_tokens, src_starts, _src_ends) = lex_with_offsets(source)
+  let (decls_raw, opaque_names, extra, stmt_at, _decl_at) = parse_contract_program_spans(src_tokens)
+  // `source` here has already had its leading directive region blanked by
+  // extract_require_pins (see ingest_source_text_fs), so the directive must
+  // be read back from the ORIGINAL on-disk text via `path`.
+  let pkg_version = extract_package_version(Fs::read_file(path))
+  // #<version-synthesis>: `version` is already carried by the package's own
+  // leading `version x.y.z` directive (ADR-0065/#754) -- a contract no
+  // longer needs to also declare `let version: String`, nor does any impl
+  // file need to define it. Drop it from `decls` (so `check_contract` stops
+  // demanding an implementation for it) and synthesize the binding directly
+  // into the facade instead. Only do this when a directive actually exists
+  // (Codex review on #1054): a contract with a bare `let version: String`
+  // decl and NO `version x.y.z` directive is the pre-existing legacy shape
+  // (declared + hand-implemented, no synthesis) -- dropping it there too
+  // would strip the declaration out from under a real implementation with
+  // nothing to replace it, turning a legitimate impl into an undeclared
+  // export. A contract that still spells the old bodyless `let version:
+  // String` line alongside a real directive keeps parsing (this filter just
+  // makes it a no-op) so existing packages migrate at their own pace.
+  let decls = contract_effective_decls(decls_raw, pkg_version)
+  // #2317: say what is actually wrong. A duplicate declaration reaches
+  // `contract_facade_source` as an extra entry that can never be allocated
+  // (its `allocated` list is set-like, `decls` counts multiplicity), so the
+  // count check there trips and reports "some declarations have no
+  // implementation file" -- about a name that IS implemented, handing the
+  // reader an edit that does nothing. Measured before this: a contract
+  // declaring `fn plain` twice with a matching impl got exactly that.
+  //
+  // Decided from the contract alone, and from the SAME effective list the
+  // buffer lane uses, so the two cannot disagree about which shapes are
+  // duplicates.
+  let (impl_raws0, type_defs) = classify_contract_stmts(extra)
+  // AFTER classification, to match the buffer lane's order. Both lanes must
+  // recommend the same first edit for the same file: a contract with a
+  // duplicate AND an unsupported statement reported the duplicate here and the
+  // unsupported statement there (Codex review on #2328), which is a fresh
+  // instance of the divergence this work exists to close. A statement the
+  // contract may not contain is the more basic error, so it leads.
+  let dup_at = contract_duplicate_decl_index(decls)
+  if dup_at >= 0 {
+    let (dup_name, _) = Array::get(decls, dup_at)
+    throw("contract declares '\{dup_name}' more than once; remove the repeated declaration (#2317)")
+  } else {
+    ()
+  }
+  // #730: explicit `import ./impl.vibe {}` declarations win; a contract that
+  // declares none auto-discovers its sibling *.vibe files (Fs::readdir,
+  // byte-sorted by the host so the facade is deterministic).
+  // #897/#855 (ADR-0070 Phase 1): .vpkg gets implicit membership
+  // unconditionally -- explicit declarations (if any) are MERGED with
+  // discovery rather than suppressing it, replacing the empty-import idiom.
+  let impl_raws = if String::ends_with(path, ".vpkg") {
+    merge_impl_raws_dedupe(impl_raws0, contract_sibling_impl_raws(dir))
+  } else if Array::length(impl_raws0) == 0 {
+    contract_sibling_impl_raws(dir)
+  } else {
+    impl_raws0
+  }
+  // #1100 (selfcompile-heap): everything below this point — per-member
+  // ingest + full parse, conformance check, facade generation — is a pure
+  // function of the contract's original on-disk text plus every resolved
+  // member's path and content. On the compiler's own tree this member-parse
+  // loop was ~24% of the cold collect walk's parse time (and each member's
+  // ingest re-enters the vpkg-prefix path on top). Fingerprint the closure
+  // first (reads + rolling hashes only, no parsing) and serve the finished
+  // facade text from the persistent cache when nothing changed; a hit also
+  // implies the cached conformance check passed for these exact inputs.
+  let contract_fp = fingerprint_file_fs(path)
+  let closure_fp_sb = StringBuilder::new()
+  StringBuilder::push(closure_fp_sb, contract_fp)
+  let member_paths = array_empty()
+  let member_raws = array_empty()
+  let mut fpi = 0
+  while fpi < Array::length(impl_raws) {
+    let fp_raw = Array::get(impl_raws, fpi)
+    // #842: probe directory/contract candidates the same way the regular
+    // loader does (resolve_path_fs) instead of assuming the plain-file form
+    // — a bare `import ../pkg { ... }` inside a .vibei must resolve to
+    // `../pkg/index.vibei` (or `/index.vibe`) when `../pkg.vibe` does not
+    // exist, exactly like the same import spelled inside a .vibe impl file.
+    let fp_resolved = loader_resolve_path_fs(dir, fp_raw)
+    ensure_regular_source_fs(fp_resolved)
+    // #1308: fingerprint via the stat-token memo and don't read the member
+    // body here — on a facade-cache hit (the common case) every member's
+    // content was read only to be thrown away with the hit's early return.
+    StringBuilder::push(closure_fp_sb, "|")
+    StringBuilder::push(closure_fp_sb, fp_resolved)
+    StringBuilder::push(closure_fp_sb, ":")
+    StringBuilder::push(closure_fp_sb, fingerprint_file_fs(fp_resolved))
+    Array::push(member_paths, fp_resolved)
+    Array::push(member_raws, fp_raw)
+    fpi = fpi + 1
+  }
+  let closure_fp = compact_string_fingerprint(StringBuilder::freeze(closure_fp_sb))
+  let facade_cache_path = persistent_contract_facade_cache_path(path, closure_fp)
+  let cached_facade = if Fs::exists(facade_cache_path) {
+    normalize_persistent_cache_text(Fs::read_file(facade_cache_path))
+  } else {
+    ""
+  }
+  // v4 additionally records every re-export source whose type declaration
+  // contributed kind metadata. A changed dependency invalidates the facade
+  // even when the contract and its direct implementation files are stable.
+  if String::starts_with(cached_facade, "v4\n") {
+    let fc_rest = cached_facade[3: String::length(cached_facade)]
+    let fc_nl = String::index_of(fc_rest, "\n")
+    if fc_nl >= 0 {
+      let fc_types_path = fc_rest[0: fc_nl]
+      let fc_after_types = fc_rest[fc_nl + 1: String::length(fc_rest)]
+      let fc_deps_end = String::index_of(fc_after_types, "\n\n")
+      // #2324: stale-not-merely-absent, exactly as in the prefix cache above.
+      let fc_types_text = if fc_types_path != "" && Fs::exists(fc_types_path) {
+        Fs::read_file(fc_types_path)
+      } else {
+        ""
+      }
+      let fc_types_fresh = if fc_types_path == "" {
+        true
+      } else {
+        // #2317: both markers, exactly as in the prefix cache above.
+        vpkg_types_contract_of_source(fc_types_text) != "" && String::index_of(fc_types_text, vpkg_types_decl_marker) >= 0
+      }
+      let mut fc_deps_fresh = fc_deps_end >= 0
+      if fc_deps_fresh {
+        let fc_dep_text = fc_after_types[0: fc_deps_end]
+        let fc_dep_rows = if fc_dep_text == "" {
+          []
+        } else {
+          String::split(fc_dep_text, "\n")
+        }
+        let mut fc_di = 0
+        while fc_di < Array::length(fc_dep_rows) && fc_deps_fresh {
+          let fc_parts = String::split(Array::get(fc_dep_rows, fc_di), "\t")
+          if Array::length(fc_parts) != 2 {
+            fc_deps_fresh = false
+          } else {
+            let decoded = handle {
+              Some(hex_decode(Array::get(fc_parts, 0)))
+            } with { Exception::Throw(_) => None }
+            match decoded {
+              None => {
+                fc_deps_fresh = false
+              },
+              Some(fc_dep_path) => {
+                let fc_dep_fingerprint = Array::get(fc_parts, 1)
+                if !Fs::exists(fc_dep_path) || fingerprint_file_fs(fc_dep_path) != fc_dep_fingerprint {
+                  fc_deps_fresh = false
+                } else {
+                  ()
+                }
+              }
+            }
+          }
+          fc_di = fc_di + 1
+        }
+      } else {
+        ()
+      }
+      if fc_types_fresh && fc_deps_fresh {
+        // #1840: the registry note must happen on the HIT path too —
+        // collect_merged_stmts' fixed-source-set re-injection reads the
+        // process-local registry, and a warm facade cache would otherwise
+        // skip ensure_vpkg_types_module_fs entirely (found the hard way:
+        // the s5 bundle merge lost the AST enums, `PInt ... reached code
+        // generation unresolved`).
+        if fc_types_path == "" {
+          ()
+        } else {
+          vpkg_types_registry_note(path, fc_types_path, fc_types_text)
+        }
+        return fc_after_types[fc_deps_end + 2: String::length(fc_after_types)]
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+  // #1308/Codex P2: the probe key above pairs member FINGERPRINTS taken
+  // before this point with member BODIES read below — a member rewritten in
+  // between would get its new body persisted under the old closure key, and
+  // a later revert of the file would then serve that mismatched facade with
+  // conformance skipped. Rebuild the closure fingerprint from the bodies
+  // actually read (same row format as the probe key) and publish the cache
+  // entry under THAT key: in the no-race case the two keys are equal, and
+  // under a mid-compile rewrite the entry lands under a key no stale probe
+  // can hit. The rebuilt row's fingerprint comes from the source-fingerprint
+  // memo, which verifies the text it answers for (#2386): a member whose body
+  // is the one the probe fingerprinted costs no second hash, and a rewritten
+  // body is hashed afresh.
+  let fresh_fp_sb = StringBuilder::new()
+  StringBuilder::push(fresh_fp_sb, contract_fp)
+  let impl_units = array_empty()
+  let union_stmts = array_empty()
+  let resolved_reexported_type_defs = array_empty()
+  let reexport_dep_paths = array_empty()
+  let reexport_dep_fingerprints = array_empty()
+  let mut ri = 0
+  while ri < Array::length(member_raws) {
+    let raw = Array::get(member_raws, ri)
+    let resolved = Array::get(member_paths, ri)
+    let resolved_content = cache_read_source_fs(resolved)
+    StringBuilder::push(fresh_fp_sb, "|")
+    StringBuilder::push(fresh_fp_sb, resolved)
+    StringBuilder::push(fresh_fp_sb, ":")
+    StringBuilder::push(fresh_fp_sb, compact_source_fingerprint_memo(resolved, resolved_content))
+    // #842: an impl raw may itself resolve to ANOTHER package's contract
+    // (a cross-package `import ../pkg { ... }`, not just this package's own
+    // sibling impl files) — route it through the same ingestion transform
+    // every other on-disk source goes through (ingest_source_text_fs), so a
+    // `.vibei` target is recursively desugared to its facade text instead of
+    // being handed to parse_program as raw (bodyless) contract grammar.
+    let impl_ingested = ingest_source_text_fs(resolved, resolved_content)
+    // #2386: the member is parsed through the shared located memo, so the
+    // header pass that later collects this member as a source (the same
+    // ingested text) answers from this parse instead of parsing it again.
+    let impl_stmts = parse_program_located_shared_fs(resolved, impl_ingested)
+    Array::push(impl_units, (raw, impl_stmts))
+    // #847: a raw resolving to ANOTHER package's own index.vibei/index.vibe
+    // (a cross-package or nested-boundary reference, e.g. `import ../pkgb
+    // { X }` written purely so the contract's own bodyless signatures
+    // can NAME `X`) is that OTHER package's already-conformance-checked
+    // facade, not this package's own implementation surface. Its stmts are
+    // excluded from `union_stmts` (this package's own conformance input) —
+    // otherwise pkgb's synthetic `export ./impl.vibe { X, make, value }`
+    // facade line reads as pkga re-exporting undeclared symbols, a false
+    // positive `check_contract`'s SReExport check would otherwise raise.
+    // `impl_units` (facade generation) is unaffected: a boundary unit's defs
+    // are already invisible to `collect_impl_fn_defs`/`collect_impl_type_defs`
+    // (a facade is SReExport-only, no SLet/SStruct), so it never allocates a
+    // re-export line under this package's own name anyway.
+    let is_boundary_unit = String::ends_with(resolved, "/index.vibei") || String::ends_with(resolved, "/index.vpkg") || String::ends_with(resolved, "/index.vibe")
+    if is_boundary_unit {
+      ()
+    } else {
+      // Only local implementation units participate in this contract's type
+      // conformance. Imported package boundaries are dependencies, not
+      // alternate definitions of a same-spelled local opaque type.
+      let resolved_types = resolved_reexported_type_defs_fs(resolved, impl_stmts, reexport_dep_paths, reexport_dep_fingerprints)
+      let mut rti = 0
+      while rti < Array::length(resolved_types) {
+        Array::push(resolved_reexported_type_defs, Array::get(resolved_types, rti))
+        rti = rti + 1
+      }
+      let mut si = 0
+      while si < Array::length(impl_stmts) {
+        Array::push(union_stmts, Array::get(impl_stmts, si))
+        si = si + 1
+      }
+    }
+    ri = ri + 1
+  }
+  let errors = check_contract_with_reexported_types(decls, opaque_names, union_stmts, type_defs, resolved_reexported_type_defs)
+  if Array::length(errors) > 0 {
+    throw("\{path}: contract violation: \{String::join(errors, "; ")}")
+  } else ()
+  // #1840: materialize the type family once and hand the facade its path —
+  // the facade re-exports it, siblings import it (shared prefix). The facade
+  // text needs the package-dir-RELATIVE spelling (the export grammar rejects
+  // a bare root-relative head token); the cache row below keeps the
+  // canonical root-relative path for its existence re-check.
+  // #2317: the contract's own line:col for each materialized declaration, so a
+  // located diagnostic about the generated module can name the contract.
+  let facade_decl_pos = contract_type_family_decl_positions(source, extra, stmt_at, src_starts)
+  let facade_types_path = ensure_vpkg_types_module_fs(path, extra, opaque_names, facade_decl_pos)
+  let facade_types_rel = if facade_types_path == "" {
+    ""
+  } else {
+    relative_spelling_from_dir(dir_of_path(path), facade_types_path)
+  }
+  let facade = contract_facade_source(decls, opaque_names, type_defs, impl_units, facade_types_rel)
+  let facade_final = if pkg_version == "" {
+    facade
+  } else {
+    String::concat(facade, "\nexport let version: String = \"\{pkg_version}\"\n")
+  }
+  // #1100: publish the finished facade under the closure fingerprint
+  // computed above — the next desugar of this unchanged package (same run
+  // or a later cold compile) skips the whole member-parse + conformance
+  // pass. Only a PASSING conformance result ever reaches this line (the
+  // throw above aborts first), so a hit can never mask a violation.
+  // #1308/Codex P2: publish under the fingerprint of the bodies actually
+  // used (equal to the probed closure_fp unless a member changed between
+  // the fingerprint pass and the reads above — see the comment at
+  // fresh_fp_sb's construction).
+  let fresh_closure_fp = compact_string_fingerprint(StringBuilder::freeze(fresh_fp_sb))
+  let reexport_dep_rows = array_empty()
+  let mut rdi = 0
+  while rdi < Array::length(reexport_dep_paths) {
+    Array::push(reexport_dep_rows, "\{hex_encode(Array::get(reexport_dep_paths, rdi))}\t\{Array::get(reexport_dep_fingerprints, rdi)}")
+    rdi = rdi + 1
+  }
+  let reexport_dep_text = String::join(reexport_dep_rows, "\n")
+  Fs::write_file(persistent_contract_facade_cache_path(path, fresh_closure_fp), String::concat("v4\n", String::concat(facade_types_path, String::concat("\n", String::concat(reexport_dep_text, String::concat("\n\n", facade_final))))))
+  facade_final
+}

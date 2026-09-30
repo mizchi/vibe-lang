@@ -34,9 +34,11 @@ SRC="${GC_HOST_IMPORT_COUNTS_SRC:-lib/@vibe/compiler/codegen/gc/backend_body.vib
 
 python3 - "$SRC" <<'PY'
 import re, sys
+sys.path.insert(0, "scripts")
+from source_files import read_source_group
 
 path = sys.argv[1]
-src = open(path, encoding="utf-8", errors="replace").read()
+src = read_source_group(path)
 fails = []
 
 def die(msg):

@@ -1,0 +1,346 @@
+// Witness generation.
+
+import @vibe/compiler/lowering/trait_namespaces {
+  lookup_trait_sigs
+}
+
+import @vibe/compiler/core {
+  Expr, TypeExpr
+}
+
+import @vibe/ast {
+  impl_specialized_method_binding_name, impl_target_head, impl_target_key, trait_ref_args, trait_ref_name
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import ./argument_types.vibe {
+  infer_arg_type_name
+}
+
+import ./constructor_inference.vibe {
+  infer_arg_elem_type_name, infer_constructor_arg_type_name
+}
+
+import ./generic_dispatch.vibe {
+  generic_impl_bound_target, lookup_gen, matching_generic_impl_method, specialize_applied_trait_for_target
+}
+
+import ./generic_equality.vibe {
+  eq_ty_has_formal
+}
+
+import ./models.vibe {
+  DictGen
+}
+
+import ./state.vibe {
+  dtd_eq_derived_generic, dtd_eq_known_types
+}
+
+import ./trait_bounds.vibe {
+  decode_array_elem_recv_index,
+  decode_constructor_recv_index,
+  dtd_eq_witness_trait,
+  find_dict_for_trait,
+  is_array_elem_recv_index,
+  is_constructor_recv_index,
+  trait_ref_mentions_param
+}
+
+import ./type_names.vibe {
+  dtd_program_fn_name, fn_exists
+}
+
+import ./typed_equality.vibe {
+  eq_for_typed_declared_app
+}
+
+import ./utilities.vibe {
+  dict_struct_name, empty_expr_array, empty_str_array, empty_ty_args, method_names_of_sigs, str_array_contains
+}
+
+import ./witness_targets.vibe {
+  dtd_builtin_witness,
+  dtd_eq_was_injected,
+  dtd_scalar_eq_witness,
+  first_array_elem,
+  infer_impl_target_expr,
+  push_constructor_subst,
+  specialize_trait_constructors
+}
+
+fn constructor_substs_from_recvs(recvs: Array[(String, Int)], orig_args: Array[Expr], gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(recvs) {
+    let (formal, recv_idx_raw) = Array::get(recvs, i)
+    if is_constructor_recv_index(recv_idx_raw) {
+      let recv_idx = decode_constructor_recv_index(recv_idx_raw)
+      if recv_idx >= 0 && recv_idx < Array::length(orig_args) {
+        match infer_constructor_arg_type_name(Array::get(orig_args, recv_idx), gens, struct_sets, var_types, fn_returns) {
+          Some(actual) => Array::push(out, (formal, actual)),
+          None => ()
+        }
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn build_concrete_dict_for_target(actual_target: TypeExpr, trait_name: String, traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)], arg_expr: Option[Expr]) -> Option[Expr] with Exception {
+  let cname = impl_target_head(actual_target)
+  match lookup_trait_sigs(traits, trait_ref_name(trait_name)) {
+    Some(sigs) => {
+      let mnames = method_names_of_sigs(sigs)
+      let recfields = array_empty()
+      let mut mi = 0
+      let mut failed = false
+      while mi < Array::length(mnames) {
+        let m = Array::get(mnames, mi)
+        let plain_qm = dtd_program_fn_name(fn_returns, String::concat(cname, String::concat("::", m)))
+        let specialized_qm = impl_specialized_method_binding_name(cname, trait_name, impl_target_key(actual_target), m)
+        let qm = if specialized_qm != "" && fn_exists(fn_returns, specialized_qm) {
+          specialized_qm
+        } else match matching_generic_impl_method(gens, cname, trait_name, m, actual_target) {
+          Some(generic_qm) => generic_qm,
+          None => plain_qm
+        }
+        // #2523: for the INJECTED builtin `Eq` at a scalar the witness is the
+        // builtin comparison, NOT whatever top-level function happens to be
+        // named `<Type>::equals`. Measured: with `trait Weird { equals(Self,
+        // Self) -> Bool }` and `impl Weird for Int { equals(a, b) { false } }`
+        // in the program, that impl DEFINES `Int::equals`, so this `fn_exists`
+        // fallback picked it up and `same[T: Eq + Weird](1, 1)` answered
+        // `false`. `fixtures/eq_bound_witness_trait_test.vibe` exists to pin
+        // exactly that hijack from the other direction: the witness is keyed
+        // by `<Type>::<method>`, which any trait with an `equals` for that
+        // type can occupy. Skipping `fn_exists` drops through to the builtin
+        // and scalar arms below, where the right answer is.
+        let injected_eq_scalar = dtd_eq_was_injected() && trait_ref_name(trait_name) == dtd_eq_witness_trait() && (dtd_scalar_eq_witness(cname, m) is Some)
+        let specialized_generic_eq = match actual_target {
+          TyApp(ghead, gargs) => if trait_ref_name(trait_name) == dtd_eq_witness_trait() && m == "equals" && Array::length(gargs) > 0 && str_array_contains(dtd_eq_derived_generic, ghead) && !eq_ty_has_formal(actual_target) {
+            // #3008: see `dtd_eq_derived_generic`. The closure body is exactly
+            // what a direct `a == b` at this type lowers to.
+            let gparams: Array[(String, Option[TypeExpr])] = [
+              ("__geq_a", Some(actual_target)),
+              ("__geq_b", Some(actual_target))
+            ]
+            Some(EFn(array_empty(), array_empty(), gparams, Some(TyName("Bool")), None, eq_for_typed_declared_app(actual_target, ghead, gargs, EIdent("__geq_a", -1), EIdent("__geq_b", -1), dtd_eq_known_types)))
+          } else {
+            None
+          },
+          _ => None
+        }
+        if specialized_generic_eq is Some {
+          match specialized_generic_eq {
+            Some(closure) => Array::push(recfields, (m, closure)),
+            None => ()
+          }
+        } else if injected_eq_scalar || not(fn_exists(fn_returns, qm)) {
+          // #2872: the name may still be a BUILTIN -- `fn_exists` knows only
+          // user functions, and `String::equals` is a real builtin that a
+          // bodyless `impl Eq for String` should be able to resolve to.
+          // Eta-expanded, because a witness slot holds a value.
+          //
+          // A renderer witness still needs an actual implementation, like
+          // every other method: `builtin_value_form_arity` refuses an
+          // effectful or unconstrained row, so falling back to erased
+          // __to_string cannot happen here and the pointer-as-text defect
+          // (#2840) stays closed.
+          match dtd_builtin_witness(qm) {
+            Some(closure) => Array::push(recfields, (m, closure)),
+            None => match dtd_scalar_eq_witness(cname, m) {
+              // #2523: `Int` / `Double` / `Bool` / `Char` have no
+              // `<Type>::equals` builtin the way `String` does, and the
+              // prelude's impls cannot carry a body without colliding with a
+              // program's own. Synthesize the annotated comparison instead.
+              Some(closure) => Array::push(recfields, (m, closure)),
+              None => {
+                // #2872 case (1): the impl declares no body for `m` and there
+                // is no `<Type>::<m>` of any kind to stand in. Leaving the
+                // dictionary with a hole emitted the call one argument short,
+                // which the wasm VALIDATOR rejected -- after `vibe check`
+                // certified the program. Refuse here instead, naming the edit
+                // (#2475's shape: a build error, not a bare trap).
+                throw(String::concat("add a body for `", String::concat(m, String::concat("` to `impl ", String::concat(trait_ref_name(trait_name), String::concat(" for ", String::concat(cname, String::concat("`: a method-bearing trait's impl must implement every method, and there is no `", String::concat(qm, "` to fall back to")))))))))
+              }
+            }
+          }
+        } else {
+          match lookup_gen(gens, qm) {
+            Some(threaded) => if Array::length(threaded) == 0 {
+              Array::push(recfields, (m, EIdent(qm, -1)))
+            } else {
+              let callargs = empty_expr_array()
+              let mut bi = 0
+              let mut subok = true
+              while bi < Array::length(threaded) {
+                let (type_param, btrait, _) = Array::get(threaded, bi)
+                let nested_target = match generic_impl_bound_target(gens, qm, type_param, actual_target) {
+                  Some(target) => Some(target),
+                  None => match arg_expr {
+                    Some(value) => match first_array_elem(value) {
+                      Some(elem) => infer_impl_target_expr(elem, struct_sets, var_types, fn_returns),
+                      None => None
+                    },
+                    None => None
+                  }
+                }
+                match nested_target {
+                  Some(target) => match build_concrete_dict_for_target(target, btrait, traits, gens, struct_sets, var_types, fn_returns, None) {
+                    Some(sd) => Array::push(callargs, sd),
+                    None => {
+                      subok = false
+                    }
+                  },
+                  None => {
+                    match actual_target {
+                      TyName("Array") => throw(String::concat("add an explicit `Array[Element]` annotation to the array binding or parameter before this trait call: the element type needed for `", String::concat(btrait, "` is not available here"))),
+                      _ => ()
+                    }
+                    subok = false
+                  }
+                }
+                bi = bi + 1
+              }
+              if subok {
+                Array::push(callargs, EIdent("__w", -1))
+                let closure = EFn(empty_str_array(), array_empty(), Array::slice([
+                  ("__w", None)
+                ], 0, 1), None, None, ECall(EIdent(qm, -1), callargs, -1))
+                Array::push(recfields, (m, closure))
+              } else {
+                failed = true
+              }
+            },
+            None => Array::push(recfields, (m, EIdent(qm, -1)))
+          }
+        }
+        mi = mi + 1
+      }
+      if failed {
+        None
+      } else {
+        let dict_args = trait_ref_args(trait_name)
+        if Array::length(dict_args) > 0 {
+          Some(ERecord(dict_struct_name(trait_name), recfields, dict_args))
+        } else {
+          Some(ERecord("", recfields, empty_ty_args()))
+        }
+      }
+    },
+    None => None
+  }
+}
+
+fn build_concrete_dict(cname: String, trait_name: String, traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)], arg_expr: Expr) -> Option[Expr] with Exception {
+  let target = match infer_impl_target_expr(arg_expr, struct_sets, var_types, fn_returns) {
+    Some(inferred) => inferred,
+    None => TyName(cname)
+  }
+  build_concrete_dict_for_target(target, trait_name, traits, gens, struct_sets, var_types, fn_returns, Some(arg_expr))
+}
+
+/// None when any receiver's witness cannot be determined (the call is then left
+/// unrewritten). Each bound is satisfied either by a concrete dict literal (the
+/// receiver type is syntactically known) or by forwarding the caller's own dict
+/// parameter (the receiver is a type parameter bound by the same trait in the
+/// enclosing generic — the generic->generic case).
+export fn synth_dicts(callee_type_params: Array[String], threaded: Array[(String, String, Int)], constructor_recvs: Array[(String, Int)], orig_args: Array[Expr], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], dict_binds: Array[(String, String, String, Array[String])], fn_returns: Array[(String, String)], gens: Array[DictGen]) -> Option[Array[Expr]] with Exception {
+  let dicts = empty_expr_array()
+  let mut ok = true
+  let mut bi = 0
+  while bi < Array::length(threaded) {
+    let (type_param, trait_name, recv_idx_raw) = Array::get(threaded, bi)
+    // #1199 bug 1: decode the packed receiver kind (see
+    // encode_array_elem_recv_index's doc comment) once, up front, so the rest
+    // of this loop body works from a plain non-negative index + the right
+    // inference function either way.
+    let is_constructor_recv = is_constructor_recv_index(recv_idx_raw)
+    let is_elem_recv = is_array_elem_recv_index(recv_idx_raw)
+    let recv_idx = if is_constructor_recv {
+      decode_constructor_recv_index(recv_idx_raw)
+    } else if is_elem_recv {
+      decode_array_elem_recv_index(recv_idx_raw)
+    } else {
+      recv_idx_raw
+    }
+    if ok && recv_idx < 0 {
+      // Enclosing formal forwarded into a nested lambda: the witness is
+      // already in `dict_binds` under the outer spelling, not inferred from
+      // this call's arguments.
+      match find_dict_for_trait(dict_binds, type_param, trait_name) {
+        Some(dict_pname) => Array::push(dicts, EIdent(dict_pname, -1)),
+        None => {
+          ok = false
+        }
+      }
+    } else if ok && recv_idx >= 0 && recv_idx < Array::length(orig_args) {
+      let recv_arg = Array::get(orig_args, recv_idx)
+      let inferred = if is_constructor_recv {
+        infer_constructor_arg_type_name(recv_arg, gens, struct_sets, var_types, fn_returns)
+      } else if is_elem_recv {
+        infer_arg_elem_type_name(recv_arg, struct_sets, var_types, fn_returns)
+      } else {
+        infer_arg_type_name(recv_arg, struct_sets, var_types, fn_returns)
+      }
+      match inferred {
+        Some(nm) => {
+          let resolved_trait = if is_constructor_recv {
+            let substs = constructor_substs_from_recvs(constructor_recvs, orig_args, gens, struct_sets, var_types, fn_returns)
+            push_constructor_subst(substs, type_param, nm)
+            specialize_trait_constructors(trait_name, substs)
+          } else {
+            trait_name
+          }
+          let target = if is_elem_recv || is_constructor_recv {
+            // The receiver carries `Array[T]`, but this witness is for T.
+            // A constructor receiver similarly carries `F[A]`, while its
+            // witness target is the constructor F rather than F[A].
+            TyName(nm)
+          } else match infer_impl_target_expr(recv_arg, struct_sets, var_types, fn_returns) {
+            Some(inferred) => inferred,
+            None => TyName(nm)
+          }
+          let concrete_trait = specialize_applied_trait_for_target(resolved_trait, callee_type_params, target, gens)
+          match find_dict_for_trait(dict_binds, nm, concrete_trait) {
+            Some(dict_pname) => Array::push(dicts, EIdent(dict_pname, -1)),
+            None => {
+              match build_concrete_dict_for_target(target, concrete_trait, traits, gens, struct_sets, var_types, fn_returns, Some(recv_arg)) {
+                Some(dict) => Array::push(dicts, dict),
+                None => {
+                  ok = false
+                }
+              }
+            }
+          }
+        },
+        None => if is_constructor_recv || trait_ref_mentions_param(trait_name, callee_type_params) {
+          // Constructor proofs and bounds still mentioning the callee's
+          // formals can be unresolved while rewriting a generic body.
+          ok = false
+        } else {
+          // An ordinary receiver needs a dictionary here. Omitting it emits
+          // an invalid call, including for unresolved builtin value aliases.
+          throw("add an explicit type annotation to the argument binding before this trait call: the type needed for `" + trait_ref_name(trait_name) + "` is not available here")
+        }
+      }
+    } else {
+      ok = false
+    }
+    bi = bi + 1
+  }
+  if ok {
+    Some(dicts)
+  } else {
+    None
+  }
+}

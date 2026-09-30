@@ -19,9 +19,11 @@ runner="$root/scripts/wasm_vibe_host_runner.js"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 fail=0
+cp "$root/scripts/wasm_vibe_host_runtime.js" "$work/"
 
 # Green first: an unmutated runner must PASS, or every red below is vacuous.
-if ! "$gate" > "$work/green.log" 2>&1; then
+cp "$runner" "$work/unmutated.js"
+if ! VIBE_DAEMON_DIAG_RUNNER_JS="$work/unmutated.js" "$gate" > "$work/green.log" 2>&1; then
   echo "daemon-memory-diagnostic-test FAIL: the gate does not pass on an unmutated runner"
   sed 's/^/  /' "$work/green.log"
   exit 1

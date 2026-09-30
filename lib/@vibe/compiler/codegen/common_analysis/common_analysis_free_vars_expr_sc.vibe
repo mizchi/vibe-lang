@@ -1,0 +1,1456 @@
+// lib/@vibe/compiler/codegen/common_analysis/common_analysis.vibe — free vars expr sc.
+
+import @vibe/compiler/core {
+  Expr,
+  Pat,
+  Stmt,
+  Type,
+  TypeDef,
+  TypeExpr,
+  bsearch_leftmost,
+  bytebuf_push,
+  canonical_builtin_name,
+  expr_child_at,
+  expr_children,
+  expr_children_pop,
+  expr_children_push,
+  expr_children_top,
+  is_borrow_ret_builtin,
+  is_exception_throw_operation,
+  runtime_prelude_dispatched_builtin_name,
+  sorted_names_of
+}
+
+import @vibe/core {
+  array_empty, struct MutMap, struct MutSet
+}
+
+import @vibe/compiler/codegen/common_extractors {
+  array_contains_str
+}
+
+import @vibe/compiler/codegen/wasm_emit {
+  emit_call_indirect,
+  emit_else,
+  emit_end,
+  emit_i32_load,
+  emit_i32_wrap_i64,
+  emit_i64_and,
+  emit_i64_const,
+  emit_i64_eq,
+  emit_i64_shr_s,
+  emit_if_void,
+  emit_local_get,
+  emit_local_set
+}
+
+let op_i64_extend_i32_u: Int = 173
+
+//# Functions
+
+export fn common_analysis_fresh_string_array() -> Array[String] {
+  ArrayBuilder::freeze(ArrayBuilder::new())
+}
+
+/// Collect string literals appearing anywhere in a pattern, including inside
+/// constructor / tuple / or / struct sub-patterns. #603: codegen now tests a
+/// `PString` sub-pattern of a `PCtor`, so its literal must be registered in the
+/// string table (previously only top-level `PString` arms were collected).
+/// `seen` is shared with `collect_strings_expr`: a literal first met as a
+/// pattern and again as an expression is ONE table entry. (Measured while
+/// #2479 was built with the set on the expression side only: every such
+/// literal -- `canonical_builtin_name`'s match arms and the same names in an
+/// array literal -- was emitted twice, shifting every later string's address.)
+/// The ONE insertion path of the string table: `out` keeps first-occurrence
+/// order, `seen` is its membership. Every collector arm that can put a text
+/// into the table (`EString`, `PString`, a nonempty interpolation segment, an
+/// `EMap` key) goes through here -- #2482 review: the segment and key arms
+/// used to push after their own scan of `out` without recording the text in
+/// `seen`, so a later `EString` of the same text was appended again.
+fn collect_strings_note(s: String, out: Array[String], seen: MutSet[String]) -> Unit {
+  if MutSet::insert(seen, s) {
+    Array::push(out, s)
+  } else {
+    ()
+  }
+}
+
+fn collect_strings_pat(pat: Pat, out: Array[String], seen: MutSet[String]) -> Int {
+  match pat {
+    PString(s) => {
+      collect_strings_note(s, out, seen)
+      0
+    },
+    PCtor(_, args) => {
+      let mut i = 0
+      while i < Array::length(args) {
+        let _ = collect_strings_pat(Array::get(args, i), out, seen)
+        i = i + 1
+      }
+      0
+    },
+    PTuple(pats) => {
+      let mut i = 0
+      while i < Array::length(pats) {
+        let _ = collect_strings_pat(Array::get(pats, i), out, seen)
+        i = i + 1
+      }
+      0
+    },
+    POr(l, r) => {
+      let _ = collect_strings_pat(l, out, seen)
+      let _ = collect_strings_pat(r, out, seen)
+      0
+    },
+    PStruct(_, fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fp) = Array::get(fields, i)
+        let _ = collect_strings_pat(fp, out, seen)
+        i = i + 1
+      }
+      0
+    },
+    _ => 0
+  }
+}
+
+/// #2479: `seen` is the membership side of `out` -- `out` keeps the first-
+/// occurrence order the string table is laid out in, the set answers "is it
+/// there" in O(1). The old form scanned `out` for every `EString`, O(literals²)
+/// over a compiler-sized program (162 ms of a 5.77 s warm compile).
+export fn collect_strings_expr(expr: Expr, out: Array[String], seen: MutSet[String]) -> Int {
+  match expr {
+    EString(s, _) => {
+      collect_strings_note(s, out, seen)
+      0
+    },
+    EBinOp(_, lhs, rhs, _) => {
+      collect_strings_expr(lhs, out, seen)
+      collect_strings_expr(rhs, out, seen)
+    },
+    EUnaryOp(_, operand) => collect_strings_expr(operand, out, seen),
+    EIf(cond, then_e, else_e) => {
+      collect_strings_expr(cond, out, seen)
+      collect_strings_expr(then_e, out, seen)
+      collect_strings_expr(else_e, out, seen)
+    },
+    ECall(callee, args, _) => {
+      collect_strings_expr(callee, out, seen)
+      // #784: the bool→string codegen path (compile_call.vibe) synthesizes
+      // `if b { "true" } else { "false" }` for a statically-boolean `__to_string`
+      // arg. Those EString nodes are created during codegen — AFTER this
+      // collection pass — so their literals are otherwise absent from the string
+      // table (`string not in table: true`, Codex #785 review, P1). Seed them
+      // whenever `__to_string` is called. Over-approximates (also seeds for a
+      // purely-integer `__to_string`), which is harmless: two small interned
+      // strings.
+      match callee {
+        EIdent(nm, _) => if nm == "__to_string" {
+          collect_strings_expr(EString("true", -1), out, seen)
+          collect_strings_expr(EString("false", -1), out, seen)
+        } else {
+          0
+        },
+        _ => 0
+      }
+      let mut i = 0
+      while i < Array::length(args) {
+        collect_strings_expr(Array::get(args, i), out, seen)
+        i = i + 1
+      }
+      0
+    },
+    ELet(_, value, body, _) => {
+      collect_strings_expr(value, out, seen)
+      collect_strings_expr(body, out, seen)
+    },
+    ELetRec(_, value, body) => {
+      collect_strings_expr(value, out, seen)
+      collect_strings_expr(body, out, seen)
+    },
+    ELetMut(_, value, body, _) => {
+      collect_strings_expr(value, out, seen)
+      collect_strings_expr(body, out, seen)
+    },
+    EAssign(_, value, body) => {
+      collect_strings_expr(value, out, seen)
+      collect_strings_expr(body, out, seen)
+    },
+    EAssignOp(_, _, value, body) => {
+      collect_strings_expr(value, out, seen)
+      collect_strings_expr(body, out, seen)
+    },
+    ESeq(first, second) => {
+      collect_strings_expr(first, out, seen)
+      collect_strings_expr(second, out, seen)
+    },
+    EWhile(cond, body) => {
+      collect_strings_expr(cond, out, seen)
+      collect_strings_expr(body, out, seen)
+    },
+    EForIn(_, _, iter_e, body) => {
+      collect_strings_expr(iter_e, out, seen)
+      collect_strings_expr(body, out, seen)
+    },
+    ETuple(elems) => {
+      let mut i = 0
+      while i < Array::length(elems) {
+        collect_strings_expr(Array::get(elems, i), out, seen)
+        i = i + 1
+      }
+      0
+    },
+    EArray(elems) => {
+      let mut i = 0
+      while i < Array::length(elems) {
+        collect_strings_expr(Array::get(elems, i), out, seen)
+        i = i + 1
+      }
+      0
+    },
+    EMatch(scrutinee, arms) => {
+      collect_strings_expr(scrutinee, out, seen)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (pat, arm_expr) = Array::get(arms, i)
+        let _ = collect_strings_pat(pat, out, seen)
+        collect_strings_expr(arm_expr, out, seen)
+        i = i + 1
+      }
+      0
+    },
+    EFn(_, _, _, _, _, body) => collect_strings_expr(body, out, seen),
+    EReturn(msg) => collect_strings_expr(msg, out, seen),
+    EStringInterp(parts) => {
+      let mut si_p = 0
+      while si_p < Array::length(parts) {
+        if si_p % 2 == 0 {
+          let part = Array::get(parts, si_p)
+          if String::length(part) > 0 {
+            collect_strings_note(part, out, seen)
+          } else {
+            ()
+          }
+        }
+        si_p = si_p + 1
+      }
+      0
+    },
+    EHandle(body, arms) => {
+      collect_strings_expr(body, out, seen)
+      let mut hi = 0
+      while hi < Array::length(arms) {
+        let (_, arm_expr) = Array::get(arms, hi)
+        collect_strings_expr(arm_expr, out, seen)
+        hi = hi + 1
+      }
+      0
+    },
+    EMap(fields) => {
+      let mut mi = 0
+      while mi < Array::length(fields) {
+        let (key, val) = Array::get(fields, mi)
+        collect_strings_note(key, out, seen)
+        collect_strings_expr(val, out, seen)
+        mi = mi + 1
+      }
+      0
+    },
+    ERecord(_, fields, _) => {
+      let mut ri = 0
+      while ri < Array::length(fields) {
+        let (_, fval) = Array::get(fields, ri)
+        collect_strings_expr(fval, out, seen)
+        ri = ri + 1
+      }
+      0
+    },
+    EDot(obj, _, _, _) => collect_strings_expr(obj, out, seen),
+    ELabeledArg(_, _, val) => collect_strings_expr(val, out, seen),
+    _ => 0
+  }
+}
+
+/// Extract function param names from SLet(_, _, _, _, EFn(_, _, params, _, _, _))
+export fn get_func_param_names(stmt: Stmt) -> Array[String] with Exception {
+  match stmt {
+    SLet(_, _, _, _, expr) => match expr {
+      EFn(_, _, params, _, _, _) => {
+        let names = common_analysis_fresh_string_array()
+        let mut i = 0
+        while i < Array::length(params) {
+          let (pname, _) = Array::get(params, i)
+          // Strip labeled/optional markers from param names
+          let plen2 = String::length(pname)
+          let clean_name = if plen2 > 0 {
+            let last_char = String::char_code_at(pname, plen2 - 1)
+            if last_char == '~' || last_char == '?' {
+              pname[0: plen2 - 1]
+            } else pname
+          } else pname
+          Array::push(names, clean_name)
+          i = i + 1
+        }
+        names
+      },
+      _ => throw("get_func_param_names: not a function")
+    },
+    _ => throw("get_func_param_names: not a let statement")
+  }
+}
+
+/// #721: does the program reference the exception machinery anywhere? EThrow
+/// compiles to `throw 2`, EHandle to try_table over tags 0-3, and effect op
+/// performs to `throw <eff_tag>` (guarded separately by the effect declaration
+/// list). When NONE of these appear, the tag section and the "error" tag
+/// export can be omitted entirely -- V8 runs exnref-bearing modules on a
+/// slower path, costing pure-compute code ~35% (fib(38): 0.32s with tags vs
+/// 0.20s without; wasmtime shows parity, so it is engine behavior, not
+/// codegen). Conservative: any EThrow/EHandle at ANY nesting depth counts.
+export fn expr_contains_exceptions(expr: Expr) -> Bool {
+  match expr {
+    EHandle(_, _) => true,
+    EBinOp(_, lhs, rhs, _) => expr_contains_exceptions(lhs) || expr_contains_exceptions(rhs),
+    EUnaryOp(_, operand) => expr_contains_exceptions(operand),
+    EIf(cond, then_e, else_e) =>
+    expr_contains_exceptions(cond) || expr_contains_exceptions(then_e) || expr_contains_exceptions(else_e),
+    ECall(callee, args, _) => {
+      // A bare `resume(..)` call compiles to `throw 1` (continuation resume)
+      // even without a surrounding EHandle in this expression -- a resume
+      // misused outside a handler must still produce a VALID module. A user
+      // function actually named `resume` merely keeps the tags (harmless
+      // over-approximation).
+      //
+      // #774: `perform Eff::Op(..)` compiles to `throw <eff_tag>`
+      // (compile_call.vibe) EVEN WHEN the enclosing file declares no
+      // `effect Eff { .. }` of its own (e.g. lib/@vibe/http/http.vibe /
+      // lib/@vibe/socket/tcp.vibe perform `Http::*`/`Socket::*` ops whose
+      // names never appear as an `SEffectDef` in the compiled unit) --
+      // `effect_name_to_tag` falls back to a sentinel tag index in that
+      // case. Missing "perform" here (like "resume") made `uses_exceptions`
+      // false whenever a compiled unit's ONLY exception-shaped construct was
+      // an un-declared-effect `perform` with no `handle`/`throw` anywhere
+      // else, so the tag section was omitted -- and the emitted `throw
+      // <eff_tag>` then referenced a tag index that plain does not exist,
+      // failing wasm validation ("Invalid tag index: N") the moment the
+      // function's body is compiled, whether or not it is ever called.
+      let mut found = match callee {
+        EIdent(cname, _) => cname == "resume" || cname == "perform",
+        _ => expr_contains_exceptions(callee)
+      }
+      let mut i = 0
+      while i < Array::length(args) {
+        if expr_contains_exceptions(Array::get(args, i)) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    ELet(_, value, body, _) => expr_contains_exceptions(value) || expr_contains_exceptions(body),
+    ELetRec(_, value, body) => expr_contains_exceptions(value) || expr_contains_exceptions(body),
+    ELetMut(_, value, body, _) => expr_contains_exceptions(value) || expr_contains_exceptions(body),
+    EAssign(_, value, body) => expr_contains_exceptions(value) || expr_contains_exceptions(body),
+    EAssignOp(_, _, value, body) => expr_contains_exceptions(value) || expr_contains_exceptions(body),
+    ESeq(first, second) => expr_contains_exceptions(first) || expr_contains_exceptions(second),
+    EWhile(cond, body) => expr_contains_exceptions(cond) || expr_contains_exceptions(body),
+    EForIn(_, _, iter_e, body) => expr_contains_exceptions(iter_e) || expr_contains_exceptions(body),
+    ELoop(params, body) => {
+      let mut i = 0
+      let mut found = expr_contains_exceptions(body)
+      while i < Array::length(params) {
+        let (_, iv) = Array::get(params, i)
+        if expr_contains_exceptions(iv) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EMatch(scrut, arms) => {
+      let mut i = 0
+      let mut found = expr_contains_exceptions(scrut)
+      while i < Array::length(arms) {
+        let (_, arm_body) = Array::get(arms, i)
+        if expr_contains_exceptions(arm_body) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EFn(_, _, _, _, _, body) => expr_contains_exceptions(body),
+    ETuple(elems) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(elems) {
+        if expr_contains_exceptions(Array::get(elems, i)) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EArray(elems) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(elems) {
+        if expr_contains_exceptions(Array::get(elems, i)) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    ERecord(_, fields, _) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(fields) {
+        let (_, fval) = Array::get(fields, i)
+        if expr_contains_exceptions(fval) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EMap(fields) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(fields) {
+        let (_, fval) = Array::get(fields, i)
+        if expr_contains_exceptions(fval) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EDot(obj, _, _, _) => expr_contains_exceptions(obj),
+    ELabeledArg(_, _, inner) => expr_contains_exceptions(inner),
+    EReturn(inner) => expr_contains_exceptions(inner),
+    ESpread(inner) => expr_contains_exceptions(inner),
+    EBreak(opt) => match opt {
+      Some(inner) => expr_contains_exceptions(inner),
+      None => false
+    },
+    EContinue(args) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(args) {
+        if expr_contains_exceptions(Array::get(args, i)) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EInt(_) => false,
+    EFloat(_) => false,
+    EString(_, _) => false,
+    EBool(_) => false,
+    EIdent(_, _) => false,
+    EStringInterp(_) => false,
+    EUnit => false
+  }
+}
+
+export fn stmts_contain_exceptions(stmts: Array[Stmt]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, expr) => if expr_contains_exceptions(expr) {
+        found = true
+      } else {
+        ()
+      },
+      SLetMut(_, _, expr) => if expr_contains_exceptions(expr) {
+        found = true
+      } else {
+        ()
+      },
+      SLetPat(_, expr) => if expr_contains_exceptions(expr) {
+        found = true
+      } else {
+        ()
+      },
+      SExpr(expr) => if expr_contains_exceptions(expr) {
+        found = true
+      } else {
+        ()
+      },
+      STest(_, expr) => if expr_contains_exceptions(expr) {
+        found = true
+      } else {
+        ()
+      },
+      SBench(_, expr) => if expr_contains_exceptions(expr) {
+        found = true
+      } else {
+        ()
+      },
+      SModule(_, _, inner) => if stmts_contain_exceptions(inner) {
+        found = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+export fn collect_strings_stmts(stmts: Array[Stmt]) -> Array[String] {
+  let out = common_analysis_fresh_string_array()
+  let seen: MutSet[String] = MutSet::new_string()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, expr) => collect_strings_expr(expr, out, seen),
+      _ => 0
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// #2158: count how many `ECall` nodes in `e` carry each candidate offset.
+///
+/// The descent goes through `expr_children` rather than a per-constructor
+/// match for the same reason `all_returns_definitely_int` does: this counter is
+/// only sound if it finds EVERY call, and an enumeration that silently misses a
+/// form under-counts -- which is the dangerous direction here (an offset that
+/// is really shared would survive as "unique" and classify the wrong call).
+/// Nested `EFn` bodies are descended into as well: a lambda's calls are
+/// compiled by this same program and share its offset space.
+fn count_one_offset(counts: MutMap[Int, Int], off: Int) -> Unit {
+  if off >= 0 {
+    match MutMap::get(counts, off) {
+      Some(n) => MutMap::set(counts, off, n + 1),
+      None => ()
+    }
+  } else {
+    ()
+  }
+}
+
+fn count_typed_lowering_offsets_expr(e: Expr, counts: MutMap[Int, Int]) -> Unit {
+  // #2424: count by `typed_lowering_arg_offset`'s key, not by "is an ECall".
+  // The Double channel now carries PROJECTION rows alongside call-result rows,
+  // and a projection is keyed by its field-name offset -- counting only calls
+  // scored every such row 0 and dropped it, which is the fail-closed direction
+  // and therefore silent: the channel would have been wired up and inert.
+  //
+  // EIdent is deliberately NOT counted. A call's own offset is its callee's
+  // start (`parse_postfix` passes `callee_offset(expr)`), so an ordinary
+  // `f(x)` carries an EIdent and an ECall at ONE offset; counting both would
+  // score 2 and drop every call-result row in the table.
+  match e {
+    ECall(_, _, off) => count_one_offset(counts, off),
+    EDot(_, _, _, field_off) => count_one_offset(counts, field_off),
+    _ => ()
+  }
+  let mark = expr_children_push(e)
+  let end = expr_children_top()
+  let mut i = mark
+  while i < end {
+    count_typed_lowering_offsets_expr(expr_child_at(i), counts)
+    i = i + 1
+  }
+  expr_children_pop(mark)
+}
+
+fn count_typed_lowering_offsets_stmts(stmts: Array[Stmt], counts: MutMap[Int, Int]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, expr) => count_typed_lowering_offsets_expr(expr, counts),
+      SLetMut(_, _, expr) => count_typed_lowering_offsets_expr(expr, counts),
+      SLetPat(_, expr) => count_typed_lowering_offsets_expr(expr, counts),
+      SExpr(expr) => count_typed_lowering_offsets_expr(expr, counts),
+      STest(_, expr) => count_typed_lowering_offsets_expr(expr, counts),
+      SBench(_, expr) => count_typed_lowering_offsets_expr(expr, counts),
+      SExample(_, expr) => count_typed_lowering_offsets_expr(expr, counts),
+      SFnDecl(_, _, decl_expr, pre_exprs, post_exprs) => {
+        count_typed_lowering_offsets_expr(decl_expr, counts)
+        let mut pi = 0
+        while pi < Array::length(pre_exprs) {
+          count_typed_lowering_offsets_expr(Array::get(pre_exprs, pi), counts)
+          pi = pi + 1
+        }
+        let mut qi = 0
+        while qi < Array::length(post_exprs) {
+          count_typed_lowering_offsets_expr(Array::get(post_exprs, qi), counts)
+          qi = qi + 1
+        }
+      },
+      SModule(_, _, inner) => count_typed_lowering_offsets_stmts(inner, counts),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+/// How many nodes were counted at `off`; 0 when it was never a candidate. A named reader rather than an inline match at the use site: the
+/// answer is a number to compare, not a membership test, and reading it out
+/// here keeps the caller's condition an ordinary numeric comparison.
+fn typed_lowering_offset_count(counts: MutMap[Int, Int], off: Int) -> Int {
+  match MutMap::get(counts, off) {
+    Some(n) => n,
+    None => 0
+  }
+}
+
+/// #2158 / #2424: of `candidates`, keep only the offsets that identify EXACTLY
+/// ONE typed-lowering node in `stmts` -- one `ECall` (keyed by its own offset)
+/// or one `EDot` (keyed by its field-name offset), which is what
+/// `typed_lowering_arg_offset` reads at the consumer.
+///
+/// The checker hands codegen a set of source offsets whose value it typed as
+/// `Double`, and codegen looks an offset up on a node. That is sound only while
+/// an offset names one node and one node only, and it is NOT free: the FS lanes
+/// merge many files into a single statement array, and each file's offsets are
+/// relative to its own text -- file A's offset 100 and file B's offset 100 are
+/// the same key. A collision that lands a `Double` classification on an
+/// Int-valued node is silently wrong, which is worse than the bug the table
+/// exists to fix.
+///
+/// So the disjointness is ESTABLISHED here, on exactly the statements codegen
+/// is about to walk, instead of being assumed from how some entry parsed. An
+/// offset survives only when the whole program carries one node at it; two
+/// files colliding makes the count 2 and drops it. Fail closed: a dropped
+/// offset classifies nothing and the syntactic answer stands.
+///
+/// Empty `candidates` returns immediately without walking, so every lane that
+/// supplies no checker offsets pays nothing at all for this.
+export fn unique_typed_lowering_offsets_in_stmts(stmts: Array[Stmt], candidates: Array[Int]) -> Array[Int] {
+  let out: Array[Int] = array_empty()
+  if Array::length(candidates) == 0 {
+    out
+  } else {
+    let counts: MutMap[Int, Int] = MutMap::new_int()
+    let mut i = 0
+    while i < Array::length(candidates) {
+      MutMap::set(counts, Array::get(candidates, i), 0)
+      i = i + 1
+    }
+    count_typed_lowering_offsets_stmts(stmts, counts)
+    let mut j = 0
+    while j < Array::length(candidates) {
+      let off = Array::get(candidates, j)
+      if typed_lowering_offset_count(counts, off) == 1 {
+        Array::push(out, off)
+      } else {
+        ()
+      }
+      j = j + 1
+    }
+    out
+  }
+}
+
+export fn emit_i64_extend_i32_u(buf: Bytes) -> Unit {
+  bytebuf_push(buf, op_i64_extend_i32_u)
+}
+
+/// Resolve closure/fn value tag and fill slot_local/env_local
+/// After this: slot_local = table slot index, env_local = env pointer (0 for bare fn)
+export fn emit_closure_resolve(buf: Bytes, fn_val_local: Int, slot_local: Int, env_local: Int) -> Unit {
+  emit_local_get(buf, fn_val_local)
+  emit_i64_const(buf, 3)
+  emit_i64_and(buf)
+  emit_i64_const(buf, 2)
+  emit_i64_eq(buf)
+  emit_if_void(buf)
+  // Bare fn: table_slot = fn_val >> 2, env = 0
+  emit_local_get(buf, fn_val_local)
+  emit_i64_const(buf, 2)
+  emit_i64_shr_s(buf)
+  emit_local_set(buf, slot_local)
+  emit_i64_const(buf, 0)
+  emit_local_set(buf, env_local)
+  emit_else(buf)
+  // Heap closures carry only the low-bit reference tag. Bit 1 belongs to
+  // the address: an RC block may start at a two-byte boundary. Clearing it
+  // reads the slot two bytes before the closure and corrupts indirect calls.
+  emit_local_get(buf, fn_val_local)
+  emit_i64_const(buf, -2)
+  emit_i64_and(buf)
+  emit_local_set(buf, env_local)
+  emit_local_get(buf, env_local)
+  emit_i32_wrap_i64(buf)
+  emit_i32_load(buf, 2, 0)
+  emit_i64_extend_i32_u(buf)
+  emit_local_set(buf, slot_local)
+  emit_end(buf)
+}
+
+/// Emit the tail of an indirect closure call (push env, push slot, call_indirect)
+export fn emit_closure_call_tail(buf: Bytes, env_local: Int, slot_local: Int, closure_type_base: Int, num_args: Int) -> Unit {
+  emit_local_get(buf, env_local)
+  emit_local_get(buf, slot_local)
+  emit_i32_wrap_i64(buf)
+  emit_call_indirect(buf, closure_type_base + num_args)
+}
+
+export fn collect_pattern_bindings(pat: Pat, bindings: Array[String]) -> Int {
+  match pat {
+    PBind(name) => {
+      Array::push(bindings, name); 0
+    },
+    PTuple(pats) => {
+      let mut i = 0
+      while i < Array::length(pats) {
+        collect_pattern_bindings(Array::get(pats, i), bindings)
+        i = i + 1
+      }
+      0
+    },
+    PCtor(_, args) => {
+      let mut i = 0
+      while i < Array::length(args) {
+        collect_pattern_bindings(Array::get(args, i), bindings)
+        i = i + 1
+      }
+      0
+    },
+    POr(l, r) => {
+      collect_pattern_bindings(l, bindings); collect_pattern_bindings(r, bindings)
+    },
+    PStruct(_, fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fpat) = Array::get(fields, i)
+        collect_pattern_bindings(fpat, bindings)
+        i = i + 1
+      }
+      0
+    },
+    _ => 0
+  }
+}
+
+/// Inlined async builtins (docs/internal/design/wasi-p3-async.md) are lowered directly by
+/// compile_call rather than living in the func table, so — like operators — they
+/// must never be treated as free variables when they appear inside a nested
+/// lambda body. Otherwise a thunk such as `() -> { Task::join(t) }` would capture
+/// `Task::join` as a closure value and mis-lower the call as an indirect apply.
+fn is_inlined_async_builtin(name: String) -> Bool {
+  // Every name here is lowered INLINE by compile_call.vibe and has NO func
+  // table entry, so the free-var collector below must not record it as a
+  // capturable free variable (the capture becomes a call_indirect of a
+  // nonexistent closure value -- an invalid-signature-index module or a
+  // "null function" trap, see the #773 story in the doc comment further
+  // down). Keep this in sync with compile_call's
+  // `!prefer_bound_call && fname == "..."` dispatch: a builtin added there
+  // that is neither func-table-registered (like Array::set) nor listed
+  // here reintroduces the bug for closures. Future::pending/resolve
+  // (#1230) and Path::to_string/is_absolute were exactly such omissions --
+  // each reproduced as a one-closure miscompile before being added
+  // (#1218 D1 increment 4 follow-up).
+  // #1348: `Path::ref` / `Path::resolve` are now listed. They were held out
+  // because listing them regressed TOP-LEVEL
+  // `Path::is_absolute(Path::resolve(..))` to a trap "through a mechanism not
+  // yet understood" -- that mechanism is now understood and fixed at its
+  // source: the USED-BUILTIN scan shared this walk and therefore this skip, so
+  // listing a name here also erased it from the used-builtin set and the
+  // `resolve_path` host import these two lower to was never reserved. The
+  // scan now runs with the skip off (collect_free_vars_used_builtins), which
+  // is why they can finally be listed. The other names hid the conflict only
+  // because none of them reserves an import.
+  //
+  // NOT here, measured 2026-08-01 (#1218), do not add without a full battery
+  // + Path-shape matrix: the bare `path` builtin. A bare snake_case name
+  // collides with ordinary local bindings, and listing it corrupted the
+  // SELF-COMPILE (stage2 miscompiled every Path-touching program, including
+  // straight-line top-level code). That is a DIFFERENT failure from the one
+  // fixed here -- shadowing, not import gating -- and `encl` (#1114) is the
+  // machinery that would have to cover it.
+  name == "await" || name == "Future::ready" || name == "Future::pending" || name == "Future::resolve" || name == "String::to_bytes" || name == "ByteStream::to_string" || name == "Path::to_string" || name == "Path::is_absolute" || name == "Path::ref" || name == "Path::resolve" || name == "host_future_get" || name == "host_future_named" || name == "host_stream_named" || name == "host_stream_next" || name == "host_stream_close" || name == "HostStream::next" || name == "HostStream::close" || name == "host_response_named" || name == "host_response_named_with" || name == "HostResponse::status" || name == "HostResponse::body"
+}
+
+/// #773: the scalar arithmetic/logic intrinsics ("not"/"add"/"sub"/"mul"/"lt")
+/// are, like the async builtins above, lowered INLINE by compile_call.vibe
+/// (`!prefer_bound_call && fname == "not"` etc.) rather than living in the func
+/// table -- UNLESS a user top-level function of the same bare name shadows them,
+/// in which case they're already present in `fn_names` (ctx.func_table.names)
+/// and excluded by the check above. ("eq"/"Array::length"/"Bytes::length"/
+/// "String::length" are unconditionally registered in the func table for every
+/// compile, so they never reach this fallback and need no entry here.)
+///
+/// Before this fix, a closure/lambda literal that referenced one of these bare
+/// names as a call callee (e.g. `(b: Bool) -> Bool { not(b) }`) — and did NOT
+/// shadow it with a same-named top-level function — fell through to the `else`
+/// branch below and was wrongly recorded as a FREE VARIABLE to capture from the
+/// enclosing scope. compile_lambda.vibe then allocated a captured-env slot named
+/// "not" and, back in compile_call.vibe, `local_idx_hint` found "not" among the
+/// closure's own `local_names` (the just-added capture), forcing
+/// `prefer_bound_call = true` -- i.e. treating the wrongly captured (and
+/// nonexistent-in-the-enclosing-scope) "not" value as a closure to invoke via
+/// `call_indirect`. That corrupted the closure's environment and crashed with
+/// "unreachable" / "null function or function signature mismatch" at runtime
+/// (reported against @vibex/quickcheck's check_int/check_bool + is_ok, whose
+/// property closures call `not(...)`).
+///
+/// #1095: "assert" has the identical `!prefer_bound_call && fname == "assert"`
+/// inline-lowering gate in compile_call.vibe, and hit the same bug: a closure
+/// body calling bare `assert(...)` got it wrongly captured as a free variable,
+/// so `assert(false)` inside a lambda crashed with "null function or function
+/// signature mismatch" instead of the expected "unreachable" trap that the
+/// same code produces at top level.
+///
+/// #2285: `assert_true` and `assert_eq` join them. Their three arms in
+/// compile_call.vibe used to be UNGUARDED (`fn_idx_in_list < 0` alone), which
+/// made them immune to this bug by construction -- an unguarded branch lowers
+/// inline whether or not the name was wrongly captured, so the bad capture
+/// could never reach a `call_indirect`. That immunity was also what made a
+/// LOCAL binding of the name unhonorable: `local_idx_hint` finding the name
+/// among the closure's locals could equally mean "the reader bound it" or
+/// "the capture scan invented it", so the arms could not read it. Registering
+/// the two names here removes the second reading, which is what lets the arms
+/// switch to `!prefer_bound_call` and a local binding finally win.
+fn is_inlined_scalar_builtin(name: String) -> Bool {
+  name == "not" || name == "add" || name == "sub" || name == "mul" || name == "lt" || name == "abort" || name == "assert" || name == "assert_true" || name == "assert_eq" || name == "Double::from_i64_bits" || name == "Map::__iter_get_unchecked" || name == "Array::iter_eager" || is_runtime_prelude_dispatched_builtin(name)
+}
+
+/// PR #2708 review: the callsite-dispatched names that lower to ONE call into
+/// a runtime prelude (codegen/common_base/double_runtime.vibe,
+/// string_views_runtime.vibe) -- no func table entry under this spelling,
+/// and `canonical_builtin_resolves_globally` says no for them because their
+/// canonical spelling is their own. Their dispatch arms are guarded on
+/// `local_names` so a program's own `fn String::unicode_length` wins, which
+/// means a spurious capture of the builtin spelling into a closure now turns
+/// the arm OFF inside that closure and the call goes through an uninitialized
+/// closure slot (`wasm trap: uninitialized element`, measured on the bump
+/// and RC lanes with `Array::map(xs, (p) -> String::utf16_length(p))`).
+/// Listing them here is the linear lane's `gc_direct_abi_names`. The list
+/// itself is core's `runtime_prelude_dispatched_builtin_name`, shared with the
+/// #2378 collector.
+fn is_runtime_prelude_dispatched_builtin(name: String) -> Bool {
+  runtime_prelude_dispatched_builtin_name(name)
+}
+
+/// A namespaced source alias recognized by the builtin registry resolves
+/// globally, just like its canonical spelling. An unchanged canonical name is
+/// accepted only when an actual top-level function provides it.
+/// Namespaced spellings cannot be local binders, so this cannot hide a real
+/// capture. The exact-name lookup remains first and keeps user/global shadows
+/// authoritative.
+fn canonical_builtin_resolves_globally(name: String, fn_names: Array[String]) -> Bool {
+  if String::contains(name, "::") {
+    let canonical = canonical_builtin_name(name)
+    canonical != name || bsearch_leftmost(fn_names, canonical) >= 0
+  } else {
+    false
+  }
+}
+
+/// Stack-based free variable analysis: uses in-place push/truncate on bound array
+/// to avoid O(n) array copies at every scope boundary. This dramatically reduces
+/// heap allocation during meta-circular self-compilation.
+/// #799 perf: `fn_names` is a MEMBERSHIP INDEX (Map), not an array. The flat
+/// fn+ctor name table is thousands of entries in a compiler-closure compile,
+/// and this walker consulted it linearly PER IDENT -- ~70% of a full compile's
+/// profile was string-equality scans under this function. Callers with a hot
+/// loop pass a prebuilt index (ctx.capture_name_index); the Array-taking
+/// wrapper below builds one per call for small/cold callers.
+/// #640 Stage 2: recognize the parse-time desugar of `throw(x)` —
+/// `ECall(EIdent("perform"), [ECall(EIdent("Exception::Throw"), payload_args)])`
+/// — and return its payload args. None for every other perform (or shape).
+fn ca_perform_error_throw_op_args(args: Array[Expr]) -> Option[Array[Expr]] {
+  if Array::length(args) == 1 {
+    match Array::get(args, 0) {
+      ECall(op_callee, op_args, _) => match op_callee {
+        EIdent(op_name, _) => if is_exception_throw_operation(op_name) {
+          Some(op_args)
+        } else {
+          None
+        },
+        _ => None
+      },
+      _ => None
+    }
+  } else {
+    None
+  }
+}
+
+/// #1114: the inlined-builtin skip below must also yield to a LOCAL binding
+/// in an ENCLOSING scope. `bound` only ever holds the innermost lambda's own
+/// binders (it is re-seeded per lambda from that lambda's parameters -- see
+/// collect_free_vars_indexed), and `fn_names` only holds TOP-LEVEL names, so
+/// neither can see that e.g. `fn outer(not: (Bool) -> Bool)` binds `not` for
+/// a nested `() -> { not(true) }`. Without `encl` the skip fired, `not` was
+/// never captured, and the call silently lowered to the BUILTIN logical-not
+/// instead of invoking the parameter -- a wrong VALUE, not a crash.
+/// `encl` is the enclosing compile scope's local names, threaded from
+/// compile_lambda; the public wrapper passes an empty array, which reproduces
+/// the previous behavior exactly for every other caller.
+export fn collect_free_vars_expr(expr: Expr, bound: Array[String], fn_names: Array[String], out: Array[String]) -> Int {
+  collect_free_vars_expr_sc(expr, bound, fn_names, common_analysis_fresh_string_array(), true, out)
+}
+
+// Reads, callees and writes resolve bindings once, before the callee-only
+// builtin skip. Enclosing locals precede globals, including builtin shadows.
+fn collect_free_var_name(name: String, bound: Array[String], fn_names: Array[String], encl: Array[String], skip_inlined: Bool, out: Array[String]) -> Int {
+  if array_contains_str(bound, name) {
+    0
+  } else if !array_contains_str(encl, name) && (bsearch_leftmost(fn_names, name) >= 0 || (skip_inlined && (canonical_builtin_resolves_globally(name, fn_names) || is_inlined_async_builtin(name) || is_inlined_scalar_builtin(name)))) {
+    0
+  } else if array_contains_str(out, name) {
+    0
+  } else {
+    Array::push(out, name)
+    0
+  }
+}
+
+fn collect_free_vars_expr_sc(expr: Expr, bound: Array[String], fn_names: Array[String], encl: Array[String], skip_inlined: Bool, out: Array[String]) -> Int {
+  match expr {
+    EIdent(name, _) => collect_free_var_name(name, bound, fn_names, encl, false, out),
+    EInt(_) => 0,
+    EBool(_) => 0,
+    EFloat(_) => 0,
+    EString(_, _) => 0,
+    EUnit => 0,
+    EBinOp(_, lhs, rhs, _) => {
+      collect_free_vars_expr_sc(lhs, bound, fn_names, encl, skip_inlined, out); collect_free_vars_expr_sc(rhs, bound, fn_names, encl, skip_inlined, out)
+    },
+    EUnaryOp(_, operand) => collect_free_vars_expr_sc(operand, bound, fn_names, encl, skip_inlined, out),
+    EIf(cond, then_e, else_e) => {
+      collect_free_vars_expr_sc(cond, bound, fn_names, encl, skip_inlined, out); collect_free_vars_expr_sc(then_e, bound, fn_names, encl, skip_inlined, out); collect_free_vars_expr_sc(else_e, bound, fn_names, encl, skip_inlined, out)
+    },
+    // #773/regression fix: the inlined-builtin skip only applies to a bare
+    // name used as a CALL CALLEE (`sub(a, b)`), never to a plain identifier
+    // reference. Checking it in the generic EIdent branch above would also
+    // swallow a real bound-elsewhere variable that merely happens to share
+    // one of these short names (e.g. a `sub: String` parameter in
+    // lib/@vibe/builtin/string.vibe's String::index_of_from), wrongly
+    // skipping its capture into a nested closure and crashing with
+    // "undefined variable (ident)" at runtime.
+    ECall(EIdent(cname, _), args, _) => if cname == "perform" {
+      // #640 Stage 2: `throw(x)` parses to `perform Exception::Throw(x)`. The
+      // magic `perform` callee and the `Exception::Throw` op name are keywords,
+      // not capturable values — collecting them as free vars made every
+      // throw-bearing LOCAL closure capture a garbage "perform" slot and
+      // call through it (null call_indirect / signature mismatch at
+      // runtime; the #786 perform-in-closure shape, which throw never had
+      // as EThrow). Skip both and recurse into the payload only. A real
+      // `perform Eff::Op(..)` keeps the historical collection verbatim
+      // (those lambdas are dlh-hoisted before this analysis runs).
+      match ca_perform_error_throw_op_args(args) {
+        Some(op_args) => {
+          let mut i = 0
+          while i < Array::length(op_args) {
+            collect_free_vars_expr_sc(Array::get(op_args, i), bound, fn_names, encl, skip_inlined, out)
+            i = i + 1
+          }
+          0
+        },
+        None => {
+          collect_free_var_name(cname, bound, fn_names, encl, false, out)
+          let mut i = 0
+          while i < Array::length(args) {
+            collect_free_vars_expr_sc(Array::get(args, i), bound, fn_names, encl, skip_inlined, out)
+            i = i + 1
+          }
+          0
+        }
+      }
+    } else {
+      collect_free_var_name(cname, bound, fn_names, encl, skip_inlined, out)
+      let mut i = 0
+      while i < Array::length(args) {
+        collect_free_vars_expr_sc(Array::get(args, i), bound, fn_names, encl, skip_inlined, out)
+        i = i + 1
+      }
+      0
+    },
+    ECall(callee, args, _) => {
+      collect_free_vars_expr_sc(callee, bound, fn_names, encl, skip_inlined, out)
+      let mut i = 0
+      while i < Array::length(args) {
+        collect_free_vars_expr_sc(Array::get(args, i), bound, fn_names, encl, skip_inlined, out)
+        i = i + 1
+      }
+      0
+    },
+    ELet(name, value, body, _) => {
+      collect_free_vars_expr_sc(value, bound, fn_names, encl, skip_inlined, out)
+      let saved = Array::length(bound)
+      Array::push(bound, name)
+      collect_free_vars_expr_sc(body, bound, fn_names, encl, skip_inlined, out)
+      Array::truncate(bound, saved)
+      0
+    },
+    ELetRec(name, value, body) => {
+      let saved = Array::length(bound)
+      Array::push(bound, name)
+      collect_free_vars_expr_sc(value, bound, fn_names, encl, skip_inlined, out)
+      collect_free_vars_expr_sc(body, bound, fn_names, encl, skip_inlined, out)
+      Array::truncate(bound, saved)
+      0
+    },
+    ELetMut(name, value, body, _) => {
+      collect_free_vars_expr_sc(value, bound, fn_names, encl, skip_inlined, out)
+      let saved = Array::length(bound)
+      Array::push(bound, name)
+      collect_free_vars_expr_sc(body, bound, fn_names, encl, skip_inlined, out)
+      Array::truncate(bound, saved)
+      0
+    },
+    EAssign(name, value, body) => {
+      // The assignment TARGET is a variable reference too: a lambda whose only
+      // use of an outer `let mut` is `x = 1` (no read) must still capture it —
+      // previously only value/body mentions were collected, so `count += 1` /
+      // write-only assigns in closures failed codegen with
+      // "undefined variable (local): count" (and is_mut_captured_in, which
+      // rides this collector, never promoted the cell).
+      // #1203 Codex review (P1): same encl-before-fn_names precedence as the
+      // plain EIdent case above -- an enclosing `let mut f` reassigned only
+      // via `f = ...`/`f += ...` inside the closure must still be captured
+      // even when the linked program also defines an unrelated top-level
+      // `fn f`.
+      collect_free_var_name(name, bound, fn_names, encl, false, out)
+      collect_free_vars_expr_sc(value, bound, fn_names, encl, skip_inlined, out); collect_free_vars_expr_sc(body, bound, fn_names, encl, skip_inlined, out)
+    },
+    EAssignOp(name, _, value, body) => {
+      collect_free_var_name(name, bound, fn_names, encl, false, out)
+      collect_free_vars_expr_sc(value, bound, fn_names, encl, skip_inlined, out); collect_free_vars_expr_sc(body, bound, fn_names, encl, skip_inlined, out)
+    },
+    ESeq(first, second) => {
+      collect_free_vars_expr_sc(first, bound, fn_names, encl, skip_inlined, out); collect_free_vars_expr_sc(second, bound, fn_names, encl, skip_inlined, out)
+    },
+    EWhile(cond, body) => {
+      collect_free_vars_expr_sc(cond, bound, fn_names, encl, skip_inlined, out); collect_free_vars_expr_sc(body, bound, fn_names, encl, skip_inlined, out)
+    },
+    EForIn(var_name, index_name, iter_e, body) => {
+      collect_free_vars_expr_sc(iter_e, bound, fn_names, encl, skip_inlined, out)
+      let saved = Array::length(bound)
+      Array::push(bound, var_name)
+      match index_name {
+        Some(index_name) => Array::push(bound, index_name),
+        None => ()
+      }
+      collect_free_vars_expr_sc(body, bound, fn_names, encl, skip_inlined, out)
+      Array::truncate(bound, saved)
+      0
+    },
+    ETuple(elems) => {
+      let mut i = 0
+      while i < Array::length(elems) {
+        collect_free_vars_expr_sc(Array::get(elems, i), bound, fn_names, encl, skip_inlined, out)
+        i = i + 1
+      }
+      0
+    },
+    EArray(elems) => {
+      let mut i = 0
+      while i < Array::length(elems) {
+        collect_free_vars_expr_sc(Array::get(elems, i), bound, fn_names, encl, skip_inlined, out)
+        i = i + 1
+      }
+      0
+    },
+    EMatch(scrutinee, arms) => {
+      collect_free_vars_expr_sc(scrutinee, bound, fn_names, encl, skip_inlined, out)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (arm_pat, arm_expr) = Array::get(arms, i)
+        let saved = Array::length(bound)
+        collect_pattern_bindings(arm_pat, bound)
+        collect_free_vars_expr_sc(arm_expr, bound, fn_names, encl, skip_inlined, out)
+        Array::truncate(bound, saved)
+        i = i + 1
+      }
+      0
+    },
+    EFn(_, _, params, _, _, body) => {
+      let saved = Array::length(bound)
+      let mut pi = 0
+      while pi < Array::length(params) {
+        let (pname_raw, _) = Array::get(params, pi)
+        let pnl = String::length(pname_raw)
+        let pname = if pnl > 0 {
+          let plc = String::char_code_at(pname_raw, pnl - 1)
+          if plc == '~' || plc == '?' {
+            pname_raw[0: pnl - 1]
+          } else pname_raw
+        } else pname_raw
+        Array::push(bound, pname)
+        pi = pi + 1
+      }
+      collect_free_vars_expr_sc(body, bound, fn_names, encl, skip_inlined, out)
+      Array::truncate(bound, saved)
+      0
+    },
+    EBreak(_) => 0,
+    EContinue(_) => 0,
+    EReturn(msg) => collect_free_vars_expr_sc(msg, bound, fn_names, encl, skip_inlined, out),
+    EHandle(body, arms) => {
+      collect_free_vars_expr_sc(body, bound, fn_names, encl, skip_inlined, out)
+      let mut hi = 0
+      while hi < Array::length(arms) {
+        let (_, arm_expr) = Array::get(arms, hi)
+        collect_free_vars_expr_sc(arm_expr, bound, fn_names, encl, skip_inlined, out)
+        hi = hi + 1
+      }
+      0
+    },
+    EDot(obj, _, _, _) => collect_free_vars_expr_sc(obj, bound, fn_names, encl, skip_inlined, out),
+    ERecord(_, fields, _) => {
+      let mut ri = 0
+      while ri < Array::length(fields) {
+        let (_, fval) = Array::get(fields, ri)
+        collect_free_vars_expr_sc(fval, bound, fn_names, encl, skip_inlined, out)
+        ri = ri + 1
+      }
+      0
+    },
+    ELabeledArg(_, _, arg_expr) => collect_free_vars_expr_sc(arg_expr, bound, fn_names, encl, skip_inlined, out),
+    _ => 0
+  }
+}
+
+/// Array-taking compatibility entry: builds the membership index per call.
+/// Fine for small fn_names (tests, perceus probes); HOT loops over the full
+/// fn+ctor table must use collect_free_vars_indexed with a prebuilt index.
+export fn collect_free_vars(body: Expr, param_names: Array[String], fn_names: Array[String]) -> Array[String] {
+  collect_free_vars_indexed(body, param_names, sorted_names_of(fn_names))
+}
+
+/// #799 perf: index-taking entry -- the index is built ONCE per compile
+/// (linked_compile) and reused for every lambda.
+export fn collect_free_vars_indexed(body: Expr, param_names: Array[String], fn_name_index: Array[String]) -> Array[String] {
+  collect_free_vars_indexed_sc(body, param_names, fn_name_index, common_analysis_fresh_string_array(), true)
+}
+
+/// #1348: the same walk WITHOUT the inlined-builtin skip, for the used-builtin
+/// scan (collect_used_builtin_names, wasi/linked_helpers.vibe) rather than for
+/// closure capture.
+///
+/// These two consumers ask opposite questions of the same walk, and conflating
+/// them is what made `Path::resolve` unfixable for a year:
+///
+/// - CAPTURE asks "is this name a value this lambda must close over?" An
+///   inlined builtin is not -- capturing it produces a call_indirect of a
+///   nonexistent closure (the #773 story above), so the skip is right.
+/// - USED-BUILTIN asks "does this program mention this builtin at all?", and
+///   the answer gates whether its host import is even reserved
+///   (`need_resolve_path_builtin` etc., linked_compile.vibe). Applying the
+///   capture skip here DELETES the evidence: the name vanishes from the used
+///   set, no import is reserved, and the inline lowering -- which for
+///   `Path::ref`/`Path::resolve` emits a call to the `resolve_path` host
+///   import -- targets an index that was never emitted.
+///
+/// That is the "mechanism not yet understood" recorded in #1218/#1348: adding
+/// `Path::resolve` to is_inlined_async_builtin fixed the closure case and
+/// simultaneously broke straight-line TOP-LEVEL `Path::is_absolute(
+/// Path::resolve(..))`, because the skip is not scoped to lambdas at all --
+/// it fires at every call site in the program. The other listed names hid the
+/// conflict only because none of them reserves an import (`Path::to_string`
+/// is identity, `Path::is_absolute` is a char compare).
+export fn collect_free_vars_used_builtins(body: Expr, param_names: Array[String], fn_name_index: Array[String]) -> Array[String] {
+  collect_free_vars_indexed_sc(body, param_names, fn_name_index, common_analysis_fresh_string_array(), false)
+}
+
+// The scope walker only visits AST data and cannot re-enter an indexed query.
+// Keep its stack capacity between queries; returned captures never alias it.
+let free_var_bound_scratch: Array[String] = []
+
+/// #1114: same, plus the ENCLOSING compile scope's local names -- a bare
+/// inlined-builtin call callee that one of those shadows must be captured,
+/// not inline-lowered. See collect_free_vars_expr's doc comment.
+fn collect_free_vars_indexed_sc(body: Expr, param_names: Array[String], fn_name_index: Array[String], encl: Array[String], skip_inlined: Bool) -> Array[String] {
+  let out = common_analysis_fresh_string_array()
+  let bound = free_var_bound_scratch
+  let mut i = 0
+  while i < Array::length(param_names) {
+    Array::push(bound, Array::get(param_names, i))
+    i = i + 1
+  }
+  collect_free_vars_expr_sc(body, bound, fn_name_index, encl, skip_inlined, out)
+  // Release names even when the next query never runs. Preserve only capacity.
+  Array::truncate(bound, 0)
+  out
+}
+
+/// #875 fix 2: like collect_free_vars_indexed, but forces `self_name` (the
+/// closure's OWN `let rec NAME = (...) -> { ... }` binding name, or "" for
+/// "no self-reference to force") into the result when `body` genuinely
+/// references it as a free (lexically unshadowed) identifier -- even if
+/// `self_name` ALSO happens to collide, by bare string equality, with an
+/// unrelated entry already present in `fn_name_index` (ctx.capture_name_index,
+/// a shared whole-program name index used to skip capturing bona fide global
+/// func/ctor references).
+///
+/// Why this is needed: collect_free_vars_expr's EIdent case treats ANY name
+/// found in fn_name_index as "resolves globally, no capture needed" --
+/// correct when the name really is only reachable as a global, but wrong when
+/// it is ALSO the closure's own let-rec name. A `let rec check = (i) -> Bool
+/// { ... check(i + 1) ... }` closure normally captures "check" as a free
+/// variable precisely BECAUSE "check" is otherwise unknown to fn_name_index;
+/// the failure mode only appears once some unrelated top-level function
+/// (reachable via a widened whole-program-merge import graph, e.g. the
+/// compile entry file's own unqualified top-level names) happens to share the
+/// bare name "check". When that happens, compile_lambda's capture list
+/// silently omits the self-reference, self_cap_idx (compile_expr_tail.vibe)
+/// never fires, and the closure's own recursive call site falls through to
+/// compile_call's func-table direct-call path -- calling the unrelated global
+/// instead of itself (#875).
+///
+/// Implementation: re-run the SAME free-var walk with an EMPTY fn_name_index
+/// (so nothing is excluded as "a global") whenever the normal result doesn't
+/// already contain self_name -- this reuses collect_free_vars_expr's existing,
+/// well-tested lexical-shadowing logic (bound push/truncate per scope) exactly
+/// as-is, so a self_name that IS legitimately shadowed by an inner binding of
+/// the same name (e.g. a nested lambda parameter also named "check") is still
+/// correctly excluded, matching normal shadowing semantics. Only runs the
+/// second walk in the (rare) collision case, so the common case -- no
+/// collision, self_name already present -- costs one array-membership check.
+/// `encl` (#1114): the enclosing compile scope's local names, so a bare
+/// inlined-builtin call callee shadowed by one of them is captured instead
+/// of inline-lowered. Pass an empty array for "no enclosing locals".
+export fn collect_free_vars_indexed_self(body: Expr, param_names: Array[String], fn_name_index: Array[String], self_name: String, encl: Array[String]) -> Array[String] {
+  let captures = collect_free_vars_indexed_sc(body, param_names, fn_name_index, encl, true)
+  if self_name == "" || array_contains_str(captures, self_name) {
+    captures
+  } else {
+    let no_globals = common_analysis_fresh_string_array()
+    let unfiltered = collect_free_vars_indexed_sc(body, param_names, no_globals, encl, true)
+    if array_contains_str(unfiltered, self_name) {
+      Array::push(captures, self_name)
+      captures
+    } else {
+      captures
+    }
+  }
+}
+
+/// True exactly when codegen's lambda lowering needs a heap environment.
+/// Keep allocation queries on this API instead of reimplementing capture
+/// rules: globals, let-rec self references, and enclosing-name shadowing are
+/// deliberately the same inputs compile_lambda uses.
+export fn lambda_has_captures(body: Expr, params: Array[(String, Option[TypeExpr])], fn_name_index: Array[String], self_name: String, encl: Array[String]) -> Bool {
+  let param_names = common_analysis_fresh_string_array()
+  let mut i = 0
+  while i < Array::length(params) {
+    let (name, _) = Array::get(params, i)
+    Array::push(param_names, name)
+    i = i + 1
+  }
+  Array::length(collect_free_vars_indexed_self(body, param_names, fn_name_index, self_name, encl)) > 0
+}
+
+/// The root identifier of a projection chain (EDot(...EDot(EIdent(root))...)), or
+/// "" if `e` is not a projection. (ADR-0055 Stage 4: shared with compile_expr_tail
+/// so function-tail param drops can detect an escaping projection of a param.)
+export fn proj_root_ident(e: Expr) -> String {
+  match e {
+    EDot(obj, _, _, _) => proj_root_ident(obj),
+    EIdent(nm, _) => nm,
+    _ => ""
+  }
+}
+
+/// #1272: the borrow-returning builtins -- each hands back an INTERIOR
+/// reference into its first argument rather than a fresh value, so a scope
+/// whose tail is one of these is escaping a pointer into the container, just
+/// like `.field` does. Kept in sync with classify_let_value_heap's own
+/// hardcoded list (codegen/expr/compile_expr_tail.vibe).
+export fn borrow_ret_builtin_name(nm: String) -> Bool {
+  is_borrow_ret_builtin(nm)
+}
+
+/// The container a borrow-returning tail reads from: an identifier, a
+/// projection chain rooted at one, or a nested borrow-returning read (an
+/// element of an element is still interior to the same root).
+///
+fn borrow_tail_root(e: Expr) -> String {
+  match e {
+    EIdent(nm, _) => nm,
+    EDot(obj, _, _, _) => borrow_tail_root(obj),
+    ECall(callee, args, _) => match callee {
+      EIdent(nm, _) => if Array::length(args) >= 1 && borrow_ret_builtin_name(nm) {
+        borrow_tail_root(Array::get(args, 0))
+      } else {
+        ""
+      },
+      _ => ""
+    },
+    _ => ""
+  }
+}
+
+/// #1272: the bare identifier a scope's tail evaluates to, or "". Lets
+/// scope_tail_proj_root see through a borrow that was bound to a local name
+/// and then returned (`let r = Array::get(f, 1); r`) -- the same escape as
+/// returning the read directly, just spelled with one more binding.
+export fn scope_tail_ident(e: Expr) -> String {
+  match e {
+    ELet(_, _, b, _) => scope_tail_ident(b),
+    ELetMut(_, _, b, _) => scope_tail_ident(b),
+    ELetRec(_, _, b) => scope_tail_ident(b),
+    ESeq(_, b) => scope_tail_ident(b),
+    EAssign(_, _, b) => scope_tail_ident(b),
+    EAssignOp(_, _, _, b) => scope_tail_ident(b),
+    EIdent(nm, _) => nm,
+    _ => ""
+  }
+}
+
+/// The container root of a borrow-returning CALL, and only a call: an alias is
+/// interior to a container exactly when the value it was bound to is a
+/// borrowing read.
+fn borrow_call_root(e: Expr) -> String {
+  match e {
+    ECall(callee, args, _) => match callee {
+      EIdent(nm, _) => if Array::length(args) >= 1 && borrow_ret_builtin_name(nm) {
+        borrow_tail_root(Array::get(args, 0))
+      } else {
+        ""
+      },
+      _ => ""
+    },
+    _ => ""
+  }
+}
+
+/// If the *tail* (result) expression of a scope is a projection chain, return its
+/// root identifier; otherwise "". Follows let/seq/assign wrappers to the tail.
+///
+/// #1272: an element read through a borrow-returning builtin counts as a
+/// projection too. Only `EDot` used to, so a scope whose tail read an element
+/// out of a container it OWNS -- `let f = [..]; Array::get(f, 1)`, or the same
+/// shape at a function tail over a heap parameter -- dropped that container
+/// without first retaining the value it was handing back. The caller received
+/// a pointer into freed memory; nothing failed until a later allocation reused
+/// the cell, so a single call looked correct and two calls returned garbage.
+/// Callers use this exclusively to decide "dup the result before dropping the
+/// owner", where over-reporting costs a retain (a leak at worst) and
+/// under-reporting is the use-after-free above.
+export fn scope_tail_proj_root(e: Expr) -> String {
+  match e {
+    // #1272: `let r = <borrowing read>; .. ; r` escapes the same interior
+    // pointer as returning the read itself, so resolve the alias when the
+    // scope's tail is exactly this binding and nothing nearer matched.
+    ELet(n, v, b, _) => {
+      let inner = scope_tail_proj_root(b)
+      if inner == "" && scope_tail_ident(b) == n {
+        borrow_call_root(v)
+      } else {
+        inner
+      }
+    },
+    ELetMut(_, _, b, _) => scope_tail_proj_root(b),
+    ELetRec(_, _, b) => scope_tail_proj_root(b),
+    ESeq(_, b) => scope_tail_proj_root(b),
+    EAssign(_, _, b) => scope_tail_proj_root(b),
+    EAssignOp(_, _, _, b) => scope_tail_proj_root(b),
+    EDot(obj, _, _, _) => proj_root_ident(obj),
+    ECall(callee, args, _) => match callee {
+      EIdent(nm, _) => if Array::length(args) >= 1 && borrow_ret_builtin_name(nm) {
+        borrow_tail_root(Array::get(args, 0))
+      } else {
+        ""
+      },
+      _ => ""
+    },
+    _ => ""
+  }
+}
+
+// #1935: allocation-free negative filter before collecting a closure's free
+// variables. This asks only whether the spelling occurs, including write-only
+// assignment targets. It deliberately ignores binders: shadowing belongs to
+// the existing capture judgment, and a false positive only costs that walk.
+// Interpolation is opaque at this AST layer, so it cannot certify absence.
+export fn capture_body_mentions_name(e: Expr, name: String) -> Bool {
+  match e {
+    EIdent(n, _) => n == name,
+    EAssign(n, v, b) => n == name || capture_body_mentions_name(v, name) || capture_body_mentions_name(b, name),
+    EAssignOp(n, _, v, b) => n == name || capture_body_mentions_name(v, name) || capture_body_mentions_name(b, name),
+    EInt(_) => false,
+    EFloat(_) => false,
+    EString(_, _) => false,
+    EBool(_) => false,
+    EUnit => false,
+    EStringInterp(_) => true,
+    ELet(_, v, b, _) => capture_body_mentions_name(v, name) || capture_body_mentions_name(b, name),
+    ELetMut(_, v, b, _) => capture_body_mentions_name(v, name) || capture_body_mentions_name(b, name),
+    ELetRec(_, v, b) => capture_body_mentions_name(v, name) || capture_body_mentions_name(b, name),
+    ESeq(a, b) => capture_body_mentions_name(a, name) || capture_body_mentions_name(b, name),
+    EBinOp(_, a, b, _) => capture_body_mentions_name(a, name) || capture_body_mentions_name(b, name),
+    EIf(c, t, f) => capture_body_mentions_name(c, name) || capture_body_mentions_name(t, name) || capture_body_mentions_name(f, name),
+    EWhile(c, b) => capture_body_mentions_name(c, name) || capture_body_mentions_name(b, name),
+    EForIn(_, _, iter, b) => capture_body_mentions_name(iter, name) || capture_body_mentions_name(b, name),
+    ECall(callee, args, _) => capture_body_mentions_name(callee, name) || capture_list_mentions_name(args, name),
+    ETuple(items) => capture_list_mentions_name(items, name),
+    EArray(items) => capture_list_mentions_name(items, name),
+    EContinue(items) => capture_list_mentions_name(items, name),
+    ERecord(_, fields, _) => capture_fields_mention_name(fields, name),
+    EMap(fields) => capture_fields_mention_name(fields, name),
+    ELoop(inits, body) => capture_fields_mention_name(inits, name) || capture_body_mentions_name(body, name),
+    EMatch(scrutinee, arms) => capture_body_mentions_name(scrutinee, name) || capture_arms_mention_name(arms, name),
+    EHandle(body, arms) => capture_body_mentions_name(body, name) || capture_arms_mention_name(arms, name),
+    EFn(_, _, _, _, _, body) => capture_body_mentions_name(body, name),
+    EUnaryOp(_, body) => capture_body_mentions_name(body, name),
+    EDot(body, _, _, _) => capture_body_mentions_name(body, name),
+    ELabeledArg(_, _, body) => capture_body_mentions_name(body, name),
+    EReturn(body) => capture_body_mentions_name(body, name),
+    ESpread(body) => capture_body_mentions_name(body, name),
+    EBreak(Some(body)) => capture_body_mentions_name(body, name),
+    EBreak(None) => false
+  }
+}
+
+fn capture_list_mentions_name(items: Array[Expr], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(items) {
+    found = capture_body_mentions_name(Array::get(items, i), name)
+    i = i + 1
+  }
+  found
+}
+
+fn capture_fields_mention_name(fields: Array[(String, Expr)], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(fields) {
+    let (_, value) = Array::get(fields, i)
+    found = capture_body_mentions_name(value, name)
+    i = i + 1
+  }
+  found
+}
+
+fn capture_arms_mention_name(arms: Array[(Pat, Expr)], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(arms) {
+    let (_, body) = Array::get(arms, i)
+    found = capture_body_mentions_name(body, name)
+    i = i + 1
+  }
+  found
+}

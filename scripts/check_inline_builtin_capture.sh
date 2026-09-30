@@ -56,6 +56,11 @@ done
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
+python3 scripts/source_files.py "$CALL_SRC" > "$tmp/call.vibe"
+python3 scripts/source_files.py "$ANALYSIS_SRC" > "$tmp/analysis.vibe"
+CALL_SRC="$tmp/call.vibe"
+ANALYSIS_SRC="$tmp/analysis.vibe"
+
 # 1. Names dispatched INLINE by compile_call. Both spellings are used:
 #    `!prefer_bound_call && fname == "X"` and the parenthesised
 #    `!prefer_bound_call && (fname == "A" || fname == "B")` form. The second
@@ -74,7 +79,7 @@ if [ ! -s "$tmp/inline.txt" ]; then
 fi
 
 # 2. Names the capture analysis already knows to skip.
-sed -n '/^fn is_inlined_async_builtin/,/^}/p;/^fn is_inlined_scalar_builtin/,/^}/p;/^fn is_inlined_simd_builtin/,/^}/p' "$ANALYSIS_SRC" |
+sed -nE '/^(export )?fn is_inlined_async_builtin/,/^}/p;/^(export )?fn is_inlined_scalar_builtin/,/^}/p;/^(export )?fn is_inlined_simd_builtin/,/^}/p' "$ANALYSIS_SRC" |
   grep -o 'name == "[^"]*"' | sed 's/name == "//; s/"$//' | sort -u > "$tmp/registered.txt"
 
 if [ ! -s "$tmp/registered.txt" ]; then

@@ -1,0 +1,2396 @@
+// lib/@vibe/compiler/checker/checker.vibe — expr capture impl.
+
+import @vibe/compiler/checker/annotations {
+  collect_formal_kind_uses
+}
+
+import @vibe/compiler/checker/type_relations {
+  type_is_ground
+}
+
+import @vibe/compiler/checker/resume {
+  arm_first_bare_tail, arm_refs_resume_value, arm_tail_all_return, reject_resume_in_error_arm, resume_walk_bind_pat
+}
+
+import @vibe/compiler/checker/diagnostics {
+  off_marker, off_marker_len
+}
+
+import @vibe/compiler/core {
+  Expr,
+  Pat,
+  Stmt,
+  Subst,
+  Type,
+  TypeDef,
+  TypeEnv,
+  TypeExpr,
+  env_bind,
+  env_bind_mut,
+  env_lookup,
+  exception_effect_kind,
+  expr_children,
+  find_typedef,
+  fresh_var,
+  generalize,
+  instantiate,
+  is_exception_effect_name,
+  resolve_type_constructor_args,
+  subst_add_bound,
+  subst_apply,
+  type_name_has_iterator_impl,
+  type_to_string,
+  typed_lowering_arg_offset,
+  unify
+}
+
+import @vibe/ast {
+  impl_encode_name
+}
+
+import @vibe/parser {
+  lex, parse_type
+}
+
+import ./builtins.vibe {
+  lookup_builtin
+}
+
+import @vibe/core {
+  array_empty, struct MutMap
+}
+
+import ./checker_exhaustive.vibe {
+  match_nonexhaustive_witness
+}
+
+import ./checker_pattern.vibe {
+  check_pattern, pat_has_unsupported_or_binding
+}
+
+import ./checker_resolve.vibe {
+  resolve_type_expr, resolve_type_expr_shadowed, subst_type_params
+}
+
+import ./checker_spawnable.vibe {
+  closure_capture_facts, spawn_caps_marker
+}
+
+import ./builtin_call_arms.vibe {
+  builtin_call_arm
+}
+
+import ./checker_effects.vibe {
+  row_items_top_level
+}
+
+import ./checker_escape.vibe {
+  mut_binding_escapes
+}
+
+import ./checker_builtin_arg_head_rest.vibe {
+  add_param_capture_dependency,
+  bind_builtin_arg_var,
+  env_lookup_unless_synthesized_builtin,
+  let_rhs_closure_literal,
+  let_rhs_is_alias,
+  lookup_builtin_in_env,
+  param_marker_index,
+  resolve_record_struct_name
+}
+
+import ./checker_call_expr.vibe {
+  check_call_expr
+}
+
+import ./checker_closure_capture_row.vibe {
+  assignment_crosses_region,
+  builtin_ident_is_value,
+  builtin_ident_value_type,
+  call_only_builtin_ident_error,
+  let_generalize,
+  railway_anchor_off,
+  railway_ident_lookup_name,
+  railway_is_ident,
+  railway_kind_from_match,
+  railway_not_option_msg,
+  railway_origin_env,
+  refine_open_option_branch,
+  report_railway_after_arms,
+  tail_expr_off,
+  type_is_concrete_non_option
+}
+
+import ./checker_eq_unbounded_formal_msg.vibe {
+  bind_function_dependency_contracts,
+  check_assignable,
+  check_assignable_for,
+  check_assignable_set_end,
+  effect_fresh_targs,
+  effect_op_sig,
+  effect_tparams,
+  env_has_active_region,
+  mark_return_provenance_written,
+  note_local_generic_binding,
+  string_lit_end,
+  struct_fields_ground,
+  struct_fields_ground_builtin_named
+}
+
+import ./checker_infer_binop_type.vibe {
+  TypedOccurrenceRoleLaneCapture,
+  append_legacy_typed_occurrence,
+  check_handle_inst_vs_callee_rows,
+  check_record_fields,
+  effect_inst_env_key,
+  effect_instantiate,
+  effect_is_declared,
+  infer_binop_type,
+  lookup_actual_field_ty,
+  lookup_field_expr_off,
+  publish_row_formals,
+  record_receiver_kind,
+  record_string_binop_operands,
+  resolve_bare_var,
+  resolve_tparams_in,
+  spawn_value_let_rhs_cell,
+  type_is_call_checked,
+  type_is_run_shaped,
+  typed_occurrence_capture_enter_expression,
+  typed_occurrence_capture_enter_virtual_child,
+  typed_occurrence_capture_exit_expression,
+  typed_occurrence_capture_frame_depth,
+  typed_occurrence_capture_record_direct_return,
+  typed_occurrence_capture_record_virtual_spine_returns,
+  typed_occurrence_capture_restore_frame_depth
+}
+
+import ./checker_lambda_expr.vibe {
+  check_lambda_expr,
+  collect_bool_pats_into,
+  collect_ctor_names_into,
+  expression_mentions_active_region,
+  field_read_type,
+  flat_names_contain,
+  map_literal_ground,
+  open_formal_name_for_var,
+  pat_is_catchall,
+  refuse_generalized_field_reads,
+  tab_identifier_ty
+}
+
+import ./checker_merge_capture_provenance.vibe {
+  binding_predates_active_region,
+  builtin_no_lowering_hint,
+  deferred_field_reads,
+  eq_formal_row_of,
+  exception_kind_formals_in_env,
+  expression_aliases_outer_binding,
+  formal_shadow,
+  marker_default_dispatch_error,
+  merge_capture_provenance,
+  record_local_let_rec_type,
+  record_local_let_type,
+  reset_eq_formal_vars,
+  resume_walk_param_base,
+  return_provenance_key,
+  unary_operand_is_definitely_wrong
+}
+
+import ./checker_throw_kind_of_type.vibe {
+  attach_unlocated_decl_name_marker,
+  railway_expr_off,
+  record_exception_kind_resolution,
+  report_unknown_type_names,
+  resolve_qualified_ctor_ident,
+  resolve_trait_method_ident,
+  trait_erased_type_param_prefix
+}
+
+fn tab_dot_projection_ty(tytab: Array[(Int, Type)], dot_off: Int, ty: Type, capture: Option[TypedOccurrenceRoleLaneCapture], lane: String) -> Unit {
+  append_legacy_typed_occurrence(tytab, dot_off, ty, capture, "DotProjection", lane)
+}
+
+fn tab_dot_field_name_ty(tytab: Array[(Int, Type)], field_off: Int, ty: Type, capture: Option[TypedOccurrenceRoleLaneCapture], lane: String) -> Unit {
+  append_legacy_typed_occurrence(tytab, field_off, ty, capture, "DotFieldName", lane)
+}
+
+/// Iteratively check a sequence/let SPINE (`ESeq` and `ELet`/`ELetMut`/`ELetRec`
+/// chains) instead of recursing into each `body`, so a long function body — a
+/// deep right-nested `let` chain — does not exhaust the wasm call stack during
+/// self-compile. `ce` is `check_expr` itself (threaded as a value to avoid a
+/// forward reference). Semantics are identical to the recursive arms: each `let`
+/// binds its (generalized, or raw for `mut`) value type into the env seen by the
+/// rest of the spine, and the final non-spine expression's result is returned.
+fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture], lane: String, ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int), ce_discarded_root: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> (Type, Subst, Int) {
+  let mut cur = expr
+  let mut cenv = env
+  let mut s1 = s
+  let mut c1 = c
+  let start_frame_depth = typed_occurrence_capture_frame_depth(capture)
+  // #2386: expression_aliases_outer_binding can only answer true inside a
+  // region block (its roots are the `#active_region` binder and the alias
+  // markers this spine writes when it answered true), and a spine's lets
+  // never open one -- a region body is checked in its own environment -- so
+  // the region state is asked once here, not two chain walks per let.
+  let spine_region_active = env_has_active_region(env)
+  let mut done = false
+  let mut result = (CtUnit, s, c)
+  while !done {
+    match cur {
+      ESeq(left, right) => {
+        // Only a DIRECT EForIn at the head of a sequence is statement-shaped.
+        // Do not put this context in TypeEnv: an ambient sentinel leaks through
+        // if/lambda/block children (and can collide with a user binding), which
+        // would let a nested consumed iterator result revive #1679.
+        let (_, ns, nc) = match left {
+          EForIn(_, _, _, _) => ce_discarded_root(left, cenv, defs, s1, c1, errors, tytab, capture, lane),
+          _ => ce(left, cenv, defs, s1, c1, errors, tytab, capture, lane)
+        }
+        s1 = ns
+        c1 = nc
+        // The right child is processed by this iterative loop, not by a
+        // recursive call. Keep its frame so nested spine values receive the
+        // exact `expr_children` prefix.
+        typed_occurrence_capture_enter_virtual_child(capture, 1, Array::length(expr_children(right)))
+        cur = right
+      },
+      ELet(name, val, body, let_off) => {
+        let err_before = Array::length(errors)
+        // #3125: a bare name bound by `let` may alias a spawn-shaped function;
+        // calls through the new name are checked by type, so this one value
+        // position is not refused (see `spawn_value_let_rhs_cell`).
+        if let_rhs_is_alias(val) {
+          Array::push(spawn_value_let_rhs_cell, true)
+        } else {
+          ()
+        }
+        let (vt, ns, nc) = ce(val, cenv, defs, s1, c1, errors, tytab, capture, lane)
+        Array::truncate(spawn_value_let_rhs_cell, 0)
+        attach_unlocated_decl_name_marker(errors, err_before, name)
+        // #938 value restriction: a builder is a MUTABLE container, so its
+        // element var must stay un-quantified — generalizing
+        // `CtNamed("ArrayBuilder", [v])` would re-instantiate a fresh v at
+        // every use and pushes could never constrain each other (the exact
+        // hole this issue is about). Bind the monotype instead.
+        // #2447: a still-open Array element var gets the same treatment as
+        // a builder's; #2459: a variable free in the ENVIRONMENT is not this
+        // binding's to quantify. See let_generalize for why those are two
+        // rules and not one.
+        let gen0 = let_generalize(val, vt, cenv, defs, ns, None)
+        // #3057: a local alias (`let h = f`) is quantified afresh, possibly
+        // in another order than `f`, so the row markers it copied are
+        // respelled against its own quantifier list, as a top-level one's are.
+        let gen = match val {
+          EIdent(_, _) => publish_row_formals(gen0, val, cenv, defs),
+          _ => gen0
+        }
+        // #2848: a field read on a parameter this binding just quantified.
+        refuse_generalized_field_reads(gen, ns, errors)
+        // #3050: the binding's own type -- the generalized one its uses
+        // instantiate, not the monotype before quantification (#3104 review).
+        record_local_let_type(let_off, gen, lane)
+        let aliases_outer = spine_region_active && expression_aliases_outer_binding(val, cenv)
+        note_local_generic_binding(val, gen, cenv)
+        let def_env = cenv
+        cenv = env_bind(cenv, name, gen)
+        cenv = bind_function_dependency_contracts(cenv, name, val)
+        // #3152: record what a local closure captured, read in the scope it
+        // was written in, so a later `TaskGroup::spawn(n, name)` -- or a
+        // spawned body that calls `name` -- is checked like the literal.
+        // An annotated `let f: T = () -> ..` is the parser's ascription call
+        // around the literal (#3156 review); unwrap it the way
+        // `let_rhs_is_alias` does.
+        match let_rhs_closure_literal(val) {
+          Some(EFn(_, _, fparams, _, _, fbody)) => {
+            cenv = env_bind(cenv, spawn_caps_marker(name), CtTuple(closure_capture_facts(def_env, fbody, fparams)))
+          },
+          _ => ()
+        }
+        if aliases_outer {
+          cenv = env_bind(cenv, String::concat("__region_outer_alias__", name), CtUnit)
+        } else {
+          ()
+        }
+        s1 = ns
+        c1 = nc
+        typed_occurrence_capture_enter_virtual_child(capture, 1, Array::length(expr_children(body)))
+        cur = body
+      },
+      ELetMut(name, val, body, let_off) => {
+        let err_before = Array::length(errors)
+        let (vt, ns, nc) = ce(val, cenv, defs, s1, c1, errors, tytab, capture, lane)
+        attach_unlocated_decl_name_marker(errors, err_before, name)
+        record_local_let_type(let_off, vt, lane)
+        // `loop` desugars to `let mut __loop_result = 0; while true { ...
+        // __loop_result = <break value> ... }` (parser_expr_primary.vibe) —
+        // the 0 is only a slot placeholder, but binding its CtInt here pinned
+        // every loop's result to Int, so `break((a, b))` / `break(acc)` with a
+        // tuple/String errored "assignment type mismatch for __loop_result".
+        // Bind the marker to a fresh var instead; the first assignment (break)
+        // instantiates it via check_assignable's unify.
+        // #1262 / ADR-0100 (1): record the STRICT escape fact alongside the
+        // type. `body` is exactly the region where this binding is in scope,
+        // so `mut_binding_escapes` answers about THIS binding and not a
+        // same-named one outside it. Consumers read it back with
+        // `env_mut_escape` (checker_spawnable) instead of re-deriving
+        // mutability from the raw AST.
+        let escapes = mut_binding_escapes(body, name)
+        if name == "__loop_result" {
+          let (lr_tv, nc2) = fresh_var(nc)
+          cenv = env_bind_mut(cenv, name, lr_tv, escapes)
+          c1 = nc2
+        } else {
+          cenv = env_bind_mut(cenv, name, vt, escapes)
+          c1 = nc
+        }
+        s1 = ns
+        typed_occurrence_capture_enter_virtual_child(capture, 1, Array::length(expr_children(body)))
+        cur = body
+      },
+      ELetRec(name, val, body) => {
+        let (tv, c1b) = fresh_var(c1)
+        let err_before = Array::length(errors)
+        let (vt, ns, nc) = ce(val, env_bind(cenv, name, tv), defs, s1, c1b, errors, tytab, capture, lane)
+        attach_unlocated_decl_name_marker(errors, err_before, name)
+        let s2 = match unify(tv, vt, ns) {
+          Some(su) => su,
+          None => ns
+        }
+        // #2447 / Codex round 3: the recursive binder takes the same value
+        // restriction as ELet above -- `let rec get = () -> { xs }` returns
+        // the same captured array every call, and this site generalized
+        // unconditionally.
+        // #2892: generalize the value's RESOLVED type, not the bare recursive
+        // binder variable. `tv` is the fresh var bound for the recursive
+        // occurrence; `let_generalize(val, tv, ..)` produced a scheme whose
+        // body was that variable rather than the lambda's `CtFn`, so
+        // instantiating it at a call site yielded a variable and the call fell
+        // to the unchecked arm. `ELet` above already passes the value's type
+        // (`vt`); after the `unify(tv, vt, ..)` just above the two agree, so
+        // this is the same binding through a type the call path can read.
+        let gen = let_generalize(val, subst_apply(s2, tv), cenv, defs, s2, Some(name))
+        // #2848: see the ELet arm.
+        refuse_generalized_field_reads(gen, s2, errors)
+        // #3106: hover on a `let rec` called only as a callee, as #3050 does
+        // for `let` -- keyed by its value, since `ELetRec` has no offset.
+        record_local_let_rec_type(val, body, gen, lane)
+        note_local_generic_binding(val, gen, cenv)
+        cenv = env_bind(cenv, name, gen)
+        cenv = bind_function_dependency_contracts(cenv, name, val)
+        s1 = s2
+        c1 = nc
+        typed_occurrence_capture_enter_virtual_child(capture, 1, Array::length(expr_children(body)))
+        cur = body
+      },
+      _ => {
+        // `cur` already owns the active virtual right-child frame. Calling
+        // the wrapper here would add a fictional child before checking it.
+        result = check_expr_capture_impl(cur, cenv, defs, s1, c1, errors, tytab, capture, lane, false)
+        done = true
+      }
+    }
+  }
+  typed_occurrence_capture_record_virtual_spine_returns(capture, start_frame_depth, result.0, lane)
+  typed_occurrence_capture_restore_frame_depth(capture, start_frame_depth)
+  result
+}
+
+fn check_resume_values(e: Expr, ret_ty: Type, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture]) -> Subst {
+  match e {
+    ECall(callee, args, _) => {
+      let mut s1 = s
+      // #942 (Codex P2 on #970): `env` is the normal lexical TypeEnv threaded
+      // through check_expr, already containing every enclosing binder (the
+      // top-level fn/let hoist, the arm's own payload binders via henv, and
+      // any local let/let-mut/let-rec/match-arm binder this walk itself adds
+      // below) — so a `resume` name already bound here is a real callable
+      // binding codegen's prefer_bound_call routes to, not the builtin.
+      let resume_shadowed = env_lookup(env, "resume") is Some(_)
+      match callee {
+        EIdent(nm, _) => {
+          // A Unit-returning op discards the resumed value at the perform
+          // site, so any resume argument is tolerated there (mirrors the
+          // statement-position Unit tolerance elsewhere; the existing idiom
+          // `Print(s) => resume(0)` for `Print(String) -> Unit` stays legal).
+          if nm == "resume" && !resume_shadowed && Array::length(args) == 1 && !(ret_ty is CtUnit) {
+            let (aty, ns, _) = check_expr_capture(Array::get(args, 0), env, defs, s1, c, errors, tytab, capture, "AuxiliaryResumeValueRecheck")
+            s1 = check_assignable(ret_ty, subst_apply(ns, aty), ns, errors, "resume value type mismatch", tail_expr_off(Array::get(args, 0)))
+          } else if nm == "resume" && !resume_shadowed && Array::length(args) == 0 && !(ret_ty is CtUnit) {
+            // #828: `resume()` on a value-returning op used to reach codegen,
+            // which indexes resume args[0] unconditionally — a compiler ICE
+            // with no diagnostic. Reject it here instead.
+            Array::push(errors, "resume expects a value (the operation returns a non-Unit type); resume() with no argument is only valid for Unit-returning operations")
+          } else {
+            ()
+          }
+        },
+        _ => {
+          s1 = check_resume_values(callee, ret_ty, env, defs, s1, c, errors, tytab, capture)
+        }
+      }
+      let mut ri = 0
+      while ri < Array::length(args) {
+        s1 = check_resume_values(Array::get(args, ri), ret_ty, env, defs, s1, c, errors, tytab, capture)
+        ri = ri + 1
+      }
+      s1
+    },
+    EHandle(_, _) => s,
+    ELet(ln, v, b, _) => check_resume_values(b, ret_ty, env_bind(env, ln, CtUnknown), defs, check_resume_values(v, ret_ty, env, defs, s, c, errors, tytab, capture), c, errors, tytab, capture),
+    ELetMut(ln, v, b, _) => check_resume_values(b, ret_ty, env_bind(env, ln, CtUnknown), defs, check_resume_values(v, ret_ty, env, defs, s, c, errors, tytab, capture), c, errors, tytab, capture),
+    ELetRec(ln, v, b) => check_resume_values(b, ret_ty, env_bind(env, ln, CtUnknown), defs, check_resume_values(v, ret_ty, env_bind(env, ln, CtUnknown), defs, s, c, errors, tytab, capture), c, errors, tytab, capture),
+    ESeq(a, b) => check_resume_values(b, ret_ty, env, defs, check_resume_values(a, ret_ty, env, defs, s, c, errors, tytab, capture), c, errors, tytab, capture),
+    EIf(cnd, t, el) => check_resume_values(el, ret_ty, env, defs, check_resume_values(t, ret_ty, env, defs, check_resume_values(cnd, ret_ty, env, defs, s, c, errors, tytab, capture), c, errors, tytab, capture), c, errors, tytab, capture),
+    EMatch(scr, marms) => {
+      let mut s1 = check_resume_values(scr, ret_ty, env, defs, s, c, errors, tytab, capture)
+      let mut mi = 0
+      while mi < Array::length(marms) {
+        let (mp, mb) = Array::get(marms, mi)
+        s1 = check_resume_values(mb, ret_ty, resume_walk_bind_pat(mp, env), defs, s1, c, errors, tytab, capture)
+        mi = mi + 1
+      }
+      s1
+    },
+    EWhile(cnd, b) => check_resume_values(b, ret_ty, env, defs, check_resume_values(cnd, ret_ty, env, defs, s, c, errors, tytab, capture), c, errors, tytab, capture),
+    EForIn(fname, fidx, it, b) => {
+      let fenv = match fidx {
+        Some(fi) => env_bind(env_bind(env, fname, CtUnknown), fi, CtUnknown),
+        None => env_bind(env, fname, CtUnknown)
+      }
+      check_resume_values(b, ret_ty, fenv, defs, check_resume_values(it, ret_ty, env, defs, s, c, errors, tytab, capture), c, errors, tytab, capture)
+    },
+    EBinOp(_, l, r, _) => check_resume_values(r, ret_ty, env, defs, check_resume_values(l, ret_ty, env, defs, s, c, errors, tytab, capture), c, errors, tytab, capture),
+    EUnaryOp(_, inner) => check_resume_values(inner, ret_ty, env, defs, s, c, errors, tytab, capture),
+    EAssign(_, v, b) => check_resume_values(b, ret_ty, env, defs, check_resume_values(v, ret_ty, env, defs, s, c, errors, tytab, capture), c, errors, tytab, capture),
+    EAssignOp(_, _, v, b) => check_resume_values(b, ret_ty, env, defs, check_resume_values(v, ret_ty, env, defs, s, c, errors, tytab, capture), c, errors, tytab, capture),
+    EFn(_, _, fparams, _, _, fb) => {
+      // The lambda's own parameters are binders for its body (#3005: a
+      // `resume(v)` whose `v` is the lambda's parameter answered "unknown
+      // name: v" because the walk carried the ARM's env into the body).
+      let mut fenv = env
+      let mut fpi = 0
+      while fpi < Array::length(fparams) {
+        let (fpn, _) = Array::get(fparams, fpi)
+        fenv = env_bind(fenv, resume_walk_param_base(fpn), CtUnknown)
+        fpi = fpi + 1
+      }
+      check_resume_values(fb, ret_ty, fenv, defs, s, c, errors, tytab, capture)
+    },
+    EReturn(inner) => check_resume_values(inner, ret_ty, env, defs, s, c, errors, tytab, capture),
+    EDot(obj, _, _, _) => check_resume_values(obj, ret_ty, env, defs, s, c, errors, tytab, capture),
+    ETuple(items) => {
+      let mut s1 = s
+      let mut ti = 0
+      while ti < Array::length(items) {
+        s1 = check_resume_values(Array::get(items, ti), ret_ty, env, defs, s1, c, errors, tytab, capture)
+        ti = ti + 1
+      }
+      s1
+    },
+    EArray(items) => {
+      let mut s1 = s
+      let mut ti = 0
+      while ti < Array::length(items) {
+        s1 = check_resume_values(Array::get(items, ti), ret_ty, env, defs, s1, c, errors, tytab, capture)
+        ti = ti + 1
+      }
+      s1
+    },
+    _ => s
+  }
+}
+
+fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture], lane: String, discarded_root: Bool) -> (Type, Subst, Int) {
+  match expr {
+    EInt(_) => (CtInt, s, c),
+    EFloat(_) => (CtDouble, s, c),
+    EString(_, _) => (CtString, s, c),
+    EBool(_) => (CtBool, s, c),
+    EUnit => (CtUnit, s, c),
+    EIdent(name, ident_off) => if String::starts_with(name, "__fapp_") || String::starts_with(name, trait_erased_type_param_prefix) {
+      // #2268 (Codex round 6 on #2267): both prefixes name compiler-internal
+      // env markers bound with ordinary EnvBind. Letting source resolve one
+      // as a value would check clean (the marker's CtUnit) and then die in
+      // codegen, which has no such local -- a check-passes/codegen-fails
+      // hole. Reserve the spellings and reject BEFORE resolution can find
+      // the marker.
+      Array::push(errors, String::concat(String::concat(String::concat("`", name), "` uses a reserved compiler-internal prefix (type-formal markers) -- rename the identifier"), off_marker_len(ident_off, String::length(name))))
+      (CtUnknown, s, c)
+    } else match env_lookup_unless_synthesized_builtin(env, railway_ident_lookup_name(name), ident_off) {
+      Some(t) => {
+        let let_rhs = Array::length(spawn_value_let_rhs_cell) != 0
+        Array::truncate(spawn_value_let_rhs_cell, 0)
+        if !let_rhs && type_is_call_checked(s, t) {
+          // #3125 / #3153: a spawn- or run-shaped function reaching anything
+          // but a call or a `let` would be applied where its check cannot see
+          // the closure (`apply2(TaskGroup::spawn, n, () -> xs)` ran a
+          // capture of a plain `Array`). Refuse it here instead.
+          let is_run = type_is_run_shaped(resolve_bare_var(s, t))
+          let reason = if is_run {
+            "` cannot be used as a value here: the check that keeps a task group inside its `TaskGroup::run` body runs where it is called, so the body it is applied to would go unchecked -- call it directly (`TaskGroup::run((g) -> ...)`) or bind it with a local `let` and call that name"
+          } else {
+            "` cannot be used as a value here: the `Spawnable` capture check runs where it is called, so the closure it is applied to would go unchecked -- call it directly (`TaskGroup::spawn(n, () -> ...)`) or bind it with a local `let` and call that name"
+          }
+          Array::push(errors, String::concat(String::concat(String::concat("`", name), reason), off_marker_len(ident_off, String::length(name))))
+        } else {
+          ()
+        }
+        let (ti, c1, new_bounds) = instantiate(t, c)
+        let nblen = Array::length(new_bounds)
+        let mut s1 = s
+        let mut bi = 0
+        while bi < nblen {
+          let (vid, bounds) = Array::get(new_bounds, bi)
+          if Array::length(bounds) != 0 {
+            s1 = subst_add_bound(s1, vid, bounds)
+          }
+          bi = bi + 1
+        }
+        // Record this user identifier's inferred (raw, pre-final-subst) type
+        // keyed by its real source offset, for typed-hover (vibe type-at) on
+        // locals and parameters. Synthetic idents (off < 0) are skipped.
+        if ident_off >= 0 {
+          tab_identifier_ty(tytab, ident_off, ti, capture, lane)
+        } else {
+          ()
+        }
+        (ti, s1, c1)
+      },
+      None => match lookup_builtin_in_env(env, railway_ident_lookup_name(name)) {
+        Some(t) => if builtin_ident_is_value(railway_ident_lookup_name(name), t) {
+          // A non-function builtin is a value: a nullary constructor (`None`)
+          // lowers through the `ctor_table` arm. This is what #2274's
+          // bare-name exemption was really protecting -- rejecting every
+          // non-table builtin silently broke selfhost on `None`, which is not
+          // in the linear func table. #2433 replaced that exemption with the
+          // type test, so bare `eq` / `not` are rejected here too rather than
+          // reaching codegen. Do not exempt ident_off < 0: the FS compile lane
+          // still parses unlocated, so every user ident is -1. Call sites of
+          // these names are typed by the ECall fallback, which looks up the
+          // builtin without this rejection.
+          // #2451: bind the row's own variables, freshened for this
+          // occurrence, rather than the erased row's independent unknowns.
+          let (value_ty, value_c) = builtin_ident_value_type(railway_ident_lookup_name(name), t, c)
+          if ident_off >= 0 {
+            tab_identifier_ty(tytab, ident_off, value_ty, capture, lane)
+          } else {
+            ()
+          }
+          (value_ty, s, value_c)
+        } else {
+          Array::push(errors, call_only_builtin_ident_error(name, t, ident_off))
+          (CtUnknown, s, c)
+        },
+        None => match resolve_trait_method_ident(name, env, defs, s) {
+          Some(mty) => {
+            if ident_off >= 0 {
+              tab_identifier_ty(tytab, ident_off, mty, capture, lane)
+            } else {
+              ()
+            }
+            (mty, s, c)
+          },
+          None => match resolve_qualified_ctor_ident(name, env, defs, c) {
+            Some(ct) => {
+              let (ti, c1, new_bounds) = instantiate(ct, c)
+              let nblen = Array::length(new_bounds)
+              let mut s1 = s
+              let mut bi = 0
+              while bi < nblen {
+                let (vid, bounds) = Array::get(new_bounds, bi)
+                if Array::length(bounds) != 0 {
+                  s1 = subst_add_bound(s1, vid, bounds)
+                } else {
+                  ()
+                }
+                bi = bi + 1
+              }
+              if ident_off >= 0 {
+                tab_identifier_ty(tytab, ident_off, ti, capture, lane)
+              } else {
+                ()
+              }
+              (ti, s1, c1)
+            },
+            None => {
+              if name == "__try_v" {
+                Array::push(errors, String::concat("`?` could not unwrap this value (the lowered binder is not in scope)", off_marker(ident_off)))
+              } else if name == "_" {
+                // #2201: `_` is syntax the reader used in the wrong position,
+                // not a name they thought existed -- "unknown name: _" answers
+                // the wrong question. Name its two expression roles instead.
+                Array::push(errors, String::concat("`_` is not a value here: it is only a pipe slot (in the call directly after `|>`) or a lambda section (as part of a larger expression, e.g. `_ * 2`)", off_marker_len(ident_off, 1)))
+              } else {
+                match marker_default_dispatch_error(name, env, s) {
+                  Some(msg) => Array::push(errors, String::concat(msg, off_marker_len(ident_off, String::length(name)))),
+                  None => Array::push(errors, String::concat(String::concat(String::concat("unknown name: ", name), builtin_no_lowering_hint(name)), off_marker_len(ident_off, String::length(name))))
+                }
+              }
+              (CtUnknown, s, c)
+            }
+          }
+        }
+      }
+    },
+    ESeq(_, _) => check_seq_spine(expr, env, defs, s, c, errors, tytab, capture, lane, check_expr_capture, check_expr_capture_discarded_root),
+    ELet(_, _, _, _) => check_seq_spine(expr, env, defs, s, c, errors, tytab, capture, lane, check_expr_capture, check_expr_capture_discarded_root),
+    ELetRec(_, _, _) => check_seq_spine(expr, env, defs, s, c, errors, tytab, capture, lane, check_expr_capture, check_expr_capture_discarded_root),
+    ELetMut(_, _, _, _) => check_seq_spine(expr, env, defs, s, c, errors, tytab, capture, lane, check_expr_capture, check_expr_capture_discarded_root),
+    EIf(cond, then_e, else_e) => {
+      let (ct, s1, c1) = check_expr_capture(cond, env, defs, s, c, errors, tytab, capture, lane)
+      let resolved_ct = subst_apply(s1, ct)
+      match resolved_ct {
+        CtBool => (),
+        CtUnknown => (),
+        CtVar(_) => (),
+        // Anchor on the CONDITION, not the `if`: that is the expression whose
+        // type is wrong, and it is what the reader has to change (#1941).
+        // Naming the actual type is the other half of the repair (#2200): for
+        // `flag?: Bool` the condition is Option[Bool], and without "got ..."
+        // the message reads as agreeing with the reader who believes flag IS
+        // a Bool.
+        _ => {
+          // An optional `flag?: Bool` arrives as Option[Bool]. Naming the
+          // type is not enough: the edit is to match it (chapter 3).
+          let hint = match resolved_ct {
+            CtOption(_) => "; match it, or pass a Bool"
+            _ => ""
+          }
+          Array::push(errors, String::concat("if condition must be Bool, got ", String::concat(type_to_string(resolved_ct), String::concat(hint, off_marker(railway_expr_off(cond))))))
+        }
+      }
+      let (tt, s2, c2) = check_expr_capture(then_e, env, defs, s1, c1, errors, tytab, capture, lane)
+      let (et, s3, c3) = check_expr_capture(else_e, env, defs, s2, c2, errors, tytab, capture, lane)
+      // The two branches must agree when both yield a real value (previously
+      // unchecked — `if c { 1 } else { "x" }` was accepted). A `CtUnit` branch
+      // is tolerated: `if c { stmt }` desugars to an `else ()` whose value is
+      // discarded, and a statement-position `if` need not have matching arms.
+      let s3 = refine_open_option_branch(tt, et, refine_open_option_branch(et, tt, s3))
+      let rtt = subst_apply(s3, tt)
+      let ret = subst_apply(s3, et)
+      // When one branch yields Unit (an else-less `if`, whose missing else is
+      // `()`, or an explicit `()` branch), the branches need not agree and the
+      // expression yields Unit as a VALUE — so `let x: Int = if c { 1 }` is
+      // rejected (it returns Unit when c is false) while a statement-position
+      // `if` is harmless (its value is discarded). Only when BOTH branches yield
+      // a real (non-Unit) value must they agree, and the result is that type.
+      // #3012 / #2985 review (Codex P2): a branch whose every tail is a
+      // `return` leaves the function and yields nothing to the `if`, so the
+      // OTHER branch's type is the expression's -- `if flag { return 42 }
+      // else { "abcd" }` is a String, the way a diverging match arm already
+      // does not force the match's type (#635). Before, the return's operand
+      // type was taken as the branch type and `let s: String = ..` and the
+      // implicit-resume arm check both refused it as `got Int`.
+      let (s3b, if_ty) = if arm_tail_all_return(then_e) {
+        (s3, et)
+      } else if arm_tail_all_return(else_e) {
+        (s3, tt)
+      } else {
+        match rtt {
+          CtUnit => (s3, CtUnit),
+          _ => match ret {
+            CtUnit => (s3, CtUnit),
+            _ => {
+              // #2198: a literal else-branch carries no offset, which left this
+              // diagnostic file-only. Keep the else anchor when it exists (pinned
+              // by diagnostic_anchor_test), else fall back to the then-branch
+              // tail, else to the condition -- coarser, but still on the `if`.
+              let else_off = railway_expr_off(else_e)
+              let branch_off = if else_off >= 0 {
+                else_off
+              } else {
+                let then_off = tail_expr_off(then_e)
+                if then_off >= 0 {
+                  then_off
+                } else {
+                  railway_expr_off(cond)
+                }
+              }
+              let else_end = string_lit_end(else_e)
+              if else_end > 0 {
+                check_assignable_set_end(else_end)
+              } else {
+                check_assignable_set_end(string_lit_end(then_e))
+              }
+              (check_assignable(rtt, ret, s3, errors, "if branches have incompatible types", branch_off), tt)
+            }
+          }
+        }
+      }
+      (if_ty, s3b, c3)
+    },
+    ECall(_, _, _) => check_call_expr(expr, env, defs, s, c, errors, tytab, capture, lane, discarded_root, check_expr_capture, check_expr, check_unmatched_call_args),
+    EBinOp(op, left, right, boff) => {
+      let (left_ty, s1, c1) = check_expr_capture(left, env, defs, s, c, errors, tytab, capture, lane)
+      let (right_ty, s2, c2) = check_expr_capture(right, env, defs, s1, c1, errors, tytab, capture, lane)
+      // The DIAGNOSTIC anchor stays on an operand (the left reads as the
+      // start of the offending expression, the right is the fallback for
+      // `1 + x`) -- moving diagnostics to the #2435 operator offset is a
+      // separate, deliberately isolated change because pinned diagnostic
+      // expectations reference these positions.
+      let bin_left_off = railway_expr_off(left)
+      let bin_right_off = railway_expr_off(right)
+      let bin_off = if bin_left_off >= 0 {
+        bin_left_off
+      } else if bin_right_off >= 0 {
+        bin_right_off
+      } else {
+        // #2999: two literal operands (`1 == 1.0`, `true && 1`) carry no
+        // offset, and the mismatch was reported with no position at all. The
+        // operator's own offset (#2435) is where the reader looks.
+        boff
+      }
+      let left_applied = subst_apply(s2, left_ty)
+      let right_applied = subst_apply(s2, right_ty)
+      // #2391 slice 2 / #2435: the typed String-lowering channel. The types
+      // recorded here may still be unresolved variables; the extraction
+      // resolves them against the FINAL substitution, so a binding unified
+      // after this binop still classifies. The recorder anchors on the
+      // binop's OWN operator offset (exact identity), with the operand walk
+      // only as the fallback for desugar-synthesized binops.
+      record_string_binop_operands(capture, op, boff, left, right, left_applied, right_applied)
+      let (result_ty, s3) = infer_binop_type(op, left_applied, right_applied, env, s2, errors, tytab, bin_off)
+      (subst_apply(s3, result_ty), s3, c2)
+    },
+    EUnaryOp(op, operand) => {
+      let (operand_ty, s1, c1) = check_expr_capture(operand, env, defs, s, c, errors, tytab, capture, lane)
+      if op == "!" {
+        match subst_apply(s1, operand_ty) {
+          CtBool => (CtBool, s1, c1),
+          CtVar(_) => match unify(operand_ty, CtBool, s1) {
+            Some(s2) => (CtBool, s2, c1),
+            None => (CtUnknown, s1, c1)
+          },
+          other => {
+            // `!x` on a concrete non-Bool operand (`!5`) was accepted silently.
+            // A type formal / Unknown operand is tolerated (may resolve to
+            // Bool); #2408 widened "concrete" to the declared, builtin-head and
+            // container routes that `type_is_ground` answers `false` for.
+            let flag = unary_operand_is_definitely_wrong(other, defs)
+            if flag {
+              Array::push(errors, "operand of `!` must be Bool")
+            } else {
+              ()
+            }
+            (CtUnknown, s1, c1)
+          }
+        }
+      } else if op == "-" {
+        match subst_apply(s1, operand_ty) {
+          CtDouble => (CtDouble, s1, c1),
+          CtInt => (CtInt, s1, c1),
+          CtVar(_) => match unify(operand_ty, CtInt, s1) {
+            Some(s2) => (CtInt, s2, c1),
+            None => (CtUnknown, s1, c1)
+          },
+          other => {
+            // Unary `-` on a concrete non-numeric operand (`-"hi"`) was accepted
+            // silently. A type formal / Unknown operand is tolerated; #2408
+            // widened "concrete" -- `-x` on a `Cell[Int]` used to compile clean
+            // and return -237, the complemented struct pointer.
+            let flag = unary_operand_is_definitely_wrong(other, defs)
+            if flag {
+              Array::push(errors, "operand of unary `-` must be Int or Double")
+            } else {
+              ()
+            }
+            (CtUnknown, s1, c1)
+          }
+        }
+      } else if op == "~" {
+        // #2344 slice C. Int only -- unlike unary `-` there is no Double form,
+        // because the value being complemented is the 63-bit two's complement
+        // integer. Typed here rather than after the `x ^ -1` lowering so the
+        // diagnostic names the operator the author actually wrote.
+        match subst_apply(s1, operand_ty) {
+          CtInt => (CtInt, s1, c1),
+          CtVar(_) => match unify(operand_ty, CtInt, s1) {
+            Some(s2) => (CtInt, s2, c1),
+            None => (CtUnknown, s1, c1)
+          },
+          other => {
+            // #2408: the four routes this used to spell out inline are now
+            // the shared predicate, because `!` and unary `-` had the
+            // identical hole and were fixed by pointing at the same one.
+            let flag = unary_operand_is_definitely_wrong(other, defs)
+            if flag {
+              Array::push(errors, "operand of `~` must be Int")
+            } else {
+              ()
+            }
+            (CtUnknown, s1, c1)
+          }
+        }
+      } else (CtUnknown, s1, c1)
+    },
+    EAssign(name, val, body) => {
+      let (vt, s1, c1) = check_expr_capture(val, env, defs, s, c, errors, tytab, capture, lane)
+      if assignment_crosses_region(name, subst_apply(s1, vt), env) || (binding_predates_active_region(name, env) && expression_mentions_active_region(val, env, defs, s1, c1, check_expr)) {
+        Array::push(errors, String::concat("region escapes its scope: an assignment stores a value that captures this region into an outer binding", off_marker(tail_expr_off(val))))
+      }
+      // The assigned value must be assignable to the variable's type
+      // (previously unchecked — `y = "s"` for `let mut y = 1` was accepted).
+      let s1b = match env_lookup(env, name) {
+        Some(var_ty) => check_assignable_for(var_ty, subst_apply(s1, vt), s1, errors, "assignment type mismatch for ", name, tail_expr_off(val)),
+        // The mutability pass only knows which bindings are mutable. Letting
+        // an absent target reach it reports the misleading `let mut` edit.
+        None => {
+          Array::push(errors, String::concat("unknown name: ", String::concat(name, " [@assign-target]")))
+          s1
+        }
+      }
+      check_expr_capture(body, env, defs, s1b, c1, errors, tytab, capture, lane)
+    },
+    EAssignOp(name, _, val, body) => {
+      let (_, s1, c1) = check_expr_capture(val, env, defs, s, c, errors, tytab, capture, lane)
+      match env_lookup(env, name) {
+        Some(_) => (),
+        None => Array::push(errors, String::concat("unknown name: ", String::concat(name, " [@assign-target]")))
+      }
+      check_expr_capture(body, env, defs, s1, c1, errors, tytab, capture, lane)
+    },
+    EMatch(scrutinee, arms) => {
+      let (scr_ty, s1, c1) = check_expr_capture(scrutinee, env, defs, s, c, errors, tytab, capture, lane)
+      let alen = Array::length(arms)
+      if alen == 0 {
+        // #809: a match with ZERO arms is only produced by the guard desugar
+        // (#666) — `pat if g => body` chains end in `match __mg { }` when NO
+        // unguarded arm exists — or by a literal empty `match x { }`. Both
+        // reach codegen as an unconditional `unreachable`: every guard failing
+        // at runtime trapped with no source location. Reject at compile time.
+        Array::push(errors, String::concat("non-exhaustive match: no unguarded arm covers the scrutinee (all guards may fail — add an unguarded arm or `_`)", off_marker(railway_expr_off(scrutinee))))
+        (CtUnknown, s1, c1)
+      }
+      else {
+        // #940 Phase 2 baseline: the nested usefulness check below only runs
+        // when THIS match produced no other diagnostics (pattern shape / arm
+        // type / flat exhaustiveness errors all suppress it — an ill-typed
+        // matrix would only yield a garbage witness on top of the real error).
+        let exh_base = Array::length(errors)
+        // #1947: identify `let*` / `?` after lowering so diagnostics name
+        // the written operator instead of the synthetic match / `return None`.
+        let rk = railway_kind_from_match(scrutinee, arms)
+        let rail_env = railway_origin_env(env, rk)
+        if rk != 0 {
+          let zonked_scr = subst_apply(s1, scr_ty)
+          if type_is_concrete_non_option(zonked_scr) {
+            Array::push(errors, railway_not_option_msg(rk, type_to_string(zonked_scr), railway_anchor_off(arms, scrutinee)))
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+        let mut result_ty = CtUnknown
+        let mut result_anchored = false
+        // Whether to cross-check arm types. Enabled only when the first arm's
+        // type resolves to a SIMPLE scalar (Int/Double/Bool/String/Char) — that
+        // covers the real bug (`match x { 0 => 1, _ => "s" }`) while skipping
+        // the per-arm `subst_apply` for matches whose arms yield large tuple /
+        // struct / function types (e.g. the compiler's own `(Type, Subst, Int)`
+        // returning matches), which would otherwise balloon the self-compile
+        // heap. CtUnknown/CtVar/aggregate first arms are left unchecked.
+        let mut check_arms = false
+        // #941: cross-check arms for Option⇔Result railway-head conflicts
+        // when the first arm's type is railway-headed. The full aggregate
+        // cross-check stays off (heap cost, see `check_arms` above), but this
+        // one conflict is both cheap (head-only) and always genuine — it is
+        // exactly the `let*` desugar's failure track (`Err(e)` / `None`)
+        // yielding the WRONG monad into a match whose other arms yield the
+        // function's annotated one (docs/user/reference/cheatsheet.md #635).
+        let mut si = s1
+        let mut ci = c1
+        let mut ai = 0
+        while ai < alen {
+          let (pat, body) = Array::get(arms, ai)
+          // #951: `A(v) | B(v) => v` (or any or-pattern binding a variable in
+          // either branch) passes `check_pattern` (which only walks the LEFT
+          // branch) but codegen has no per-branch binding-extraction path for
+          // or-patterns and crashes with an unlocated internal error. Reject
+          // it here instead, as a normal located diagnostic.
+          if pat_has_unsupported_or_binding(pat) {
+            // Anchor on the arm body when it has a usable offset; block /
+            // let / literal bodies have none (railway_expr_off => -1), so
+            // fall back to the match scrutinee — patterns carry no offsets,
+            // and an unlocated reject would defeat the point of this check.
+            let body_off = railway_expr_off(body)
+            let or_off = if body_off >= 0 {
+              body_off
+            } else {
+              railway_expr_off(scrutinee)
+            }
+            Array::push(errors, String::concat("or-pattern bindings are not supported yet: `A(v) | B(v)`-style patterns cannot bind variables in an or-branch (rewrite without a shared binding, e.g. separate arms with the same body, or bind after matching)", off_marker(or_off)))
+          } else {
+            ()
+          }
+          let arm_env = check_pattern(pat, scr_ty, rail_env, defs, errors)
+          let (arm_ty, ns, nc) = check_expr_capture(body, arm_env, defs, si, ci, errors, tytab, capture, lane)
+          si = ns
+          ci = nc
+          // #3012 / #2985 review (Codex P2): the match's type is anchored on
+          // the first arm that YIELDS a value. A first arm whose every tail
+          // is a `return` leaves the function (the #635 tolerance below only
+          // covered such an arm when it came later), so it is skipped here.
+          if !result_anchored && !arm_tail_all_return(body) {
+            result_anchored = true
+            result_ty = arm_ty
+            let r0 = subst_apply(si, arm_ty)
+            check_arms = match r0 {
+              CtInt => true,
+              CtDouble => true,
+              CtBool => true,
+              CtString => true,
+              CtChar => true,
+              _ => false
+            }
+          } else if !result_anchored {
+            ()
+          } else {
+            if arm_tail_all_return(body) {
+              ()
+            } else {
+              si = refine_open_option_branch(result_ty, arm_ty, si)
+            }
+            if check_arms {
+              // Tolerate a `CtUnit` arm (statement-position match); rely on
+              // check_assignable's ground/ground gate otherwise. Also tolerate a
+              // DIVERGING arm whose body is an early `return` (#635): `val?`
+              // lowers to `match val { Some(v) => v, None => return None }` — the
+              // `return` arm yields no value to the match, so it must not force
+              // the match's result type (it would clash `T` vs `Option[T]`).
+              let r2 = subst_apply(si, arm_ty)
+              si = if arm_tail_all_return(body) {
+                si
+              } else {
+                match r2 {
+                  CtUnit => si,
+                  _ => if rk != 0 {
+                    si
+                  } else {
+                    check_assignable(result_ty, r2, si, errors, "match arms have incompatible types", tail_expr_off(body))
+                  }
+                }
+              }
+            } else {
+              ()
+            }
+          }
+          ai = ai + 1
+        }
+        report_railway_after_arms(rk, env, si, result_ty, arms, scrutinee, errors)
+        // Exhaustiveness: when the scrutinee is a concrete user enum, the arms
+        // must either include a catch-all (`_` / bind) or cover EVERY variant —
+        // otherwise an unhandled variant traps at runtime. Conservative: only a
+        // concrete enum whose definition is known is checked; anything else
+        // (builtin Option/bool, type vars, non-enum) is left alone.
+        let enum_name_opt = match subst_apply(si, scr_ty) {
+          CtEnum(en) => Some(en),
+          CtNamed(en, _) => Some(en),
+          _ => None
+        }
+        match enum_name_opt {
+          Some(en) => match find_typedef(defs, en) {
+            Some(TDEnum(_, _, variants)) => {
+              let mut has_catchall = false
+              let covered = array_empty()
+              let mut ax = 0
+              while ax < Array::length(arms) {
+                let (apat, _) = Array::get(arms, ax)
+                if pat_is_catchall(apat) {
+                  has_catchall = true
+                } else {
+                  ()
+                }
+                collect_ctor_names_into(apat, covered)
+                ax = ax + 1
+              }
+              if has_catchall {
+                ()
+              } else {
+                let mut vi = 0
+                while vi < Array::length(variants) {
+                  let (vname, _) = Array::get(variants, vi)
+                  let mut found = false
+                  let mut ci2 = 0
+                  while ci2 < Array::length(covered) {
+                    if Array::get(covered, ci2) == vname {
+                      found = true
+                    } else {
+                      ()
+                    }
+                    ci2 = ci2 + 1
+                  }
+                  if found {
+                    ()
+                  } else {
+                    Array::push(errors, String::concat("non-exhaustive match: variant `", String::concat(vname, String::concat("` of enum ", String::concat(en, String::concat(" is not handled (add it or a `_` arm)", off_marker(railway_expr_off(scrutinee))))))))
+                  }
+                  vi = vi + 1
+                }
+              }
+            },
+            _ => ()
+          },
+          None => ()
+        }
+        // #940 Phase 1: builtin `Option` and `Bool` scrutinees were not
+        // covered by the flat exhaustiveness check AT ALL (the comment above
+        // even said so) — `match o { Some(v) => v, Some-only arms }` or a
+        // Bool match missing `false` compiled clean and trapped at runtime
+        // (codegen's test chain ends in `unreachable`). Checked for
+        // MULTI-arm matches, plus (Codex P2 on #980) for ANY match whose
+        // scrutinee is the guard desugar's synthesized `__mg` temp: a failed
+        // guard falls through to `EMatch(__mg, rest)` (#666), and that
+        // residual can have a single arm (`match b { true if g => 1,
+        // false => 0 }` leaves `match __mg { false => 0 }` — `b == true &&
+        // !g` trapped). A single-arm match over anything else stays
+        // tolerated: it is syntactically indistinguishable from the
+        // partial-let desugar (`let Some(v) = o`, the cheatsheet's
+        // documented idiom), whose scrutinee is the user's own expression,
+        // never `__mg`. Nested-pattern completeness (tuples, ctor payloads,
+        // literals) is the Phase 2 usefulness algorithm — this closes only
+        // the flat gap.
+        let flat_guard_residual = match scrutinee {
+          EIdent(sn, _) => sn == "__mg",
+          _ => false
+        }
+        if alen >= 2 || flat_guard_residual {
+          match subst_apply(si, scr_ty) {
+            CtOption(_) => {
+              let mut opt_catchall = false
+              let opt_covered = array_empty()
+              let mut oax = 0
+              while oax < Array::length(arms) {
+                let (oapat, _) = Array::get(arms, oax)
+                if pat_is_catchall(oapat) {
+                  opt_catchall = true
+                } else {
+                  ()
+                }
+                collect_ctor_names_into(oapat, opt_covered)
+                oax = oax + 1
+              }
+              if opt_catchall {
+                ()
+              } else {
+                if !flat_names_contain(opt_covered, "Some") {
+                  Array::push(errors, String::concat("non-exhaustive match: variant `Some` of Option is not handled (add it or a `_` arm)", off_marker(railway_expr_off(scrutinee))))
+                } else {
+                  ()
+                }
+                if !flat_names_contain(opt_covered, "None") {
+                  Array::push(errors, String::concat("non-exhaustive match: variant `None` of Option is not handled (add it or a `_` arm)", off_marker(railway_expr_off(scrutinee))))
+                } else {
+                  ()
+                }
+              }
+            },
+            CtBool => {
+              let mut bool_catchall = false
+              let bool_covered = array_empty()
+              let mut bax = 0
+              while bax < Array::length(arms) {
+                let (bapat, _) = Array::get(arms, bax)
+                if pat_is_catchall(bapat) {
+                  bool_catchall = true
+                } else {
+                  ()
+                }
+                collect_bool_pats_into(bapat, bool_covered)
+                bax = bax + 1
+              }
+              if bool_catchall {
+                ()
+              } else {
+                if !flat_names_contain(bool_covered, "true") {
+                  Array::push(errors, String::concat("non-exhaustive match: `true` is not handled for a Bool scrutinee (add it or a `_` arm)", off_marker(railway_expr_off(scrutinee))))
+                } else {
+                  ()
+                }
+                if !flat_names_contain(bool_covered, "false") {
+                  Array::push(errors, String::concat("non-exhaustive match: `false` is not handled for a Bool scrutinee (add it or a `_` arm)", off_marker(railway_expr_off(scrutinee))))
+                } else {
+                  ()
+                }
+              }
+            },
+            _ => ()
+          }
+        } else {
+          ()
+        }
+        // #940 Phase 2: nested usefulness (Maranget). Same arity gate as the
+        // flat checks above; additionally skipped when this match already has
+        // any diagnostic (no duplicate/garbage reports on top of a flat
+        // non-exhaustiveness or an ill-typed pattern). The ground gate,
+        // catch-all fast path and budget cap live inside
+        // match_nonexhaustive_witness (checker_exhaustive.vibe).
+        if (alen >= 2 || flat_guard_residual) && Array::length(errors) == exh_base {
+          let exh_pats = array_empty()
+          let mut exh_i = 0
+          while exh_i < alen {
+            let (exh_p, _) = Array::get(arms, exh_i)
+            Array::push(exh_pats, exh_p)
+            exh_i = exh_i + 1
+          }
+          match match_nonexhaustive_witness(subst_apply(si, scr_ty), exh_pats, defs) {
+            Some(exh_wit) => Array::push(errors, String::concat("non-exhaustive match: pattern `", String::concat(exh_wit, String::concat("` is not handled (add it or a `_` arm)", off_marker(railway_expr_off(scrutinee)))))),
+            None => ()
+          }
+        } else {
+          ()
+        }
+        (result_ty, si, ci)
+      }
+    },
+    EHandle(body, harms) => {
+      // #1340 (Codex P1 on #1352): choose this handle's instantiation of every
+      // DISCHARGED generic effect BEFORE the body is checked, and publish it in
+      // the type env so the body's `perform` sites and the arms that handle
+      // them resolve the SAME type variables. Instantiating only in the arm
+      // loop leaves `let s: String = perform Box::Get()` pinning its own
+      // private T while `Get => resume(123)` pins the arm's T to Int — two
+      // unrelated variables, no diagnostic, and a continuation resumed with the
+      // wrong type at runtime. Arm patterns carry the effect name
+      // syntactically (`Eff::Op`), so this pre-pass needs no type information
+      // and cannot depend on checking the body first.
+      let hinst_seen = array_empty()
+      let mut hc0 = c
+      let mut henv_shared = env
+      let mut hpi = 0
+      while hpi < Array::length(harms) {
+        let (hppat, _) = Array::get(harms, hpi)
+        match hppat {
+          PCtor(hpq, _) => {
+            let hpci = String::index_of(hpq, "::")
+            if hpci > 0 {
+              let hpeff = String::substring(hpq, 0, hpci)
+              if effect_is_declared(defs, hpeff) && !flat_names_contain(hinst_seen, hpeff) {
+                let hpetps = effect_tparams(defs, hpeff)
+                if Array::length(hpetps) > 0 {
+                  let (hptargs, hpnc) = effect_fresh_targs(hpetps, hc0)
+                  hc0 = hpnc
+                  Array::push(hinst_seen, hpeff)
+                  henv_shared = env_bind(henv_shared, effect_inst_env_key(hpeff), CtTuple(hptargs))
+                } else {
+                  ()
+                }
+              } else {
+                ()
+              }
+            } else {
+              ()
+            }
+          },
+          _ => ()
+        }
+        hpi = hpi + 1
+      }
+      let (hty, hs, hc) = check_expr_capture(body, henv_shared, defs, s, hc0, errors, tytab, capture, lane)
+      // #813: validate handler arms against DECLARED effects (TDEffect).
+      // Previously arms were never checked at all: a typo'd op name silently
+      // handled a different op, payload binds carried garbage types, and
+      // `resume("oops")` into an Int-returning op compiled. Scope is limited
+      // to declared effects — arms for builtin/imported effects (Error etc.)
+      // keep the pre-#813 behavior (unchecked) so the compiler's ~4k
+      // `with Exception` arms are untouched.
+      let mut hs1 = hs
+      let mut hc1 = hc
+      // #954 (Codex P1): when the body's type is unknown (e.g. a bare
+      // `throw`), adopt the first ground arm value type as the handle
+      // result instead of staying CtUnknown — otherwise
+      // `let n: Int = handle { throw("x") } with Exception { Throw(_) => "s" }`
+      // sailed through and did Int arithmetic on a String.
+      let mut hres: Type = hty
+      // #1340 (ADR-0071): every arm reads the ONE instantiation published in
+      // henv_shared above, so the S that `Get => resume(0)` binds to Int is the
+      // same S the `Put(v)` payload binder and the body's performs see.
+      let mut hai = 0
+      while hai < Array::length(harms) {
+        let (hpat, hbody) = Array::get(harms, hai)
+        match hpat {
+          PCtor(hqname, hbinds) => {
+            let hci = String::index_of(hqname, "::")
+            if hci > 0 && effect_is_declared(defs, String::substring(hqname, 0, hci)) {
+              match effect_op_sig(defs, hqname) {
+                Some(hsig) => {
+                  let (hparams_decl, hret_decl) = hsig
+                  let heff_name = String::substring(hqname, 0, hci)
+                  let hetps = effect_tparams(defs, heff_name)
+                  let (hparams, hret) = if Array::length(hetps) > 0 {
+                    let (htargs, hnc) = effect_instantiate(henv_shared, heff_name, hetps, hc1)
+                    hc1 = hnc
+                    (for p in hparams_decl {
+                      subst_type_params(p, hetps, htargs)
+                    }, subst_type_params(hret_decl, hetps, htargs))
+                  } else {
+                    (hparams_decl, hret_decl)
+                  }
+                  let hplen = Array::length(hparams)
+                  let hblen = Array::length(hbinds)
+                  // The op's declared arity, plus optionally one trailing
+                  // continuation binder (`Op(v, k)` — the #627 k-convention).
+                  // #814: the k-convention only ever ran on the retired
+                  // MoonBit fixture runner; this build path compiles
+                  // the binder but codegen dies with an internal `undefined
+                  // variable (local): k`. Reject it HERE with a located
+                  // message until evidence-passing handlers (#817) land.
+                  if hblen == hplen + 1 {
+                    // #828: this shape is EITHER a payload-arity typo or an
+                    // intended k-convention continuation — say both, since a
+                    // plain extra binder was misdiagnosed as k-convention.
+                    Array::push(errors, String::concat("handler arm ", String::concat(hqname, String::concat(String::concat(" expects ", String::concat(__to_string(hplen), " payload binding(s), got ")), String::concat(__to_string(hblen), " — either drop the extra binder, or if it was meant as a non-tail continuation (k-convention): that is not supported by the build path; use resume(v) (#814, evidence-passing handlers #817)")))))
+                  } else if hblen != hplen {
+                    Array::push(errors, String::concat("handler arm ", String::concat(hqname, String::concat(" expects ", String::concat(__to_string(hplen), " payload binding(s)")))))
+                  } else {
+                    ()
+                  }
+                  // Bind payload names to the op's param types and check the
+                  // arm body (the trailing k binder stays CtUnknown).
+                  // `env`, NOT henv_shared (Codex P1 on #1354): an arm body runs
+                  // OUTSIDE the handled computation ("an Async handler arm's own
+                  // body is NOT an async context", checker_async_effects_test),
+                  // so an operation RE-performed here is handled by the ENCLOSING
+                  // handler, not by this one. Starting from the pre-handle env
+                  // makes such a re-perform resolve against the outer handle's
+                  // instantiation (or a fresh one when there is no outer handle);
+                  // publishing this handle's instantiation here would instead let
+                  // an inner arm re-perform at the INNER type while the outer
+                  // handler supplies a different one to that continuation. The
+                  // arm's own payload/return types still come from THIS handle's
+                  // instantiation (hparams/hret above) -- that part is what the
+                  // arm actually handles.
+                  let mut henv = env
+                  let mut hbi = 0
+                  let mut hbinds_shadow_resume = false
+                  while hbi < hblen {
+                    match Array::get(hbinds, hbi) {
+                      PBind(hbname) => {
+                        if hbname == "resume" {
+                          hbinds_shadow_resume = true
+                        } else {
+                          ()
+                        }
+                        henv = env_bind(henv, hbname, if hbi < hplen {
+                          Array::get(hparams, hbi)
+                        } else {
+                          CtUnknown
+                        })
+                      },
+                      _ => ()
+                    }
+                    hbi = hbi + 1
+                  }
+                  // ADR-0076 Phase 3a (#817): `resume` is a first-class
+                  // one-shot value inside a declared-effect handler arm —
+                  // bind it as (op return type) -> (handle result type) so
+                  // an arm can STORE it and call it later (the suspend
+                  // class, ADR-0068's Async::suspend). Only check_expr gets
+                  // this binding: check_resume_values below keeps the
+                  // pre-binding henv so its resume_shadowed detection and
+                  // direct-call argument checks are unchanged, and #942's
+                  // tail constraint on the DIRECT call form stays in force
+                  // (check_arm_resume_tail is a separate syntactic walk that
+                  // only looks at call sites — a bare value reference never
+                  // trips it). A payload binder literally named `resume`
+                  // keeps shadowing (no extra binding on top of it).
+                  // #2962: a SUSPEND arm (one that references `resume` as a
+                  // value) resumes later and its own value is the handle's
+                  // result, so `resume : (ret) -> handle result`. Every other
+                  // arm is tail-resumptive: the lowering strips each tail
+                  // `resume(v)` to `v` and delivers every tail value to the
+                  // `perform`, so `resume : (ret) -> ret` and the arm's value
+                  // is checked against the OPERATION's return type below --
+                  // which is what catches `if c { resume("ok") } else { 7 }`
+                  // for a String operation (Codex P0 on #2985).
+                  let harm_suspends = arm_refs_resume_value(hbody, hbinds_shadow_resume)
+                  let henv_arm = if hbinds_shadow_resume {
+                    henv
+                  } else if harm_suspends {
+                    env_bind(henv, "resume", CtFn([hret], subst_apply(hs1, hres), None))
+                  } else {
+                    env_bind(henv, "resume", CtFn([hret], hret, None))
+                  }
+                  let (harm_ty, hns, hnc) = check_expr_capture(hbody, henv_arm, defs, hs1, hc1, errors, tytab, capture, lane)
+                  hs1 = hns
+                  hc1 = hnc
+                  // #2962: a tail-resumptive arm (no value reference to
+                  // `resume`) delivers every tail value to the `perform` --
+                  // both backends do (measured: `Get() => 5` under `let a =
+                  // perform Get(); a + 100` answers 105) -- so its value is
+                  // checked against the OPERATION's return type, with the
+                  // `resume : (ret) -> ret` binding above making a written
+                  // `resume(v)` and a bare `v` type the same. #938's rule
+                  // stays for a SUSPEND arm, whose own value is the handle's
+                  // result (ADR-0076 Phase 3a). The #938 rule used to apply
+                  // to every arm, which rejected a correct `Unit` arm inside
+                  // an `Int` body and accepted an `Int` arm for a
+                  // `String`-returning operation that the body then read as a
+                  // string.
+                  // #2969: an arm that does not store `resume` must hand its
+                  // value back with `resume(...)` on every tail, or leave
+                  // with `return` / `throw`. A bare tail value used to be an
+                  // implicit resume; the declaration cannot say so and a
+                  // reader takes it for an abort, so it is refused and the
+                  // message names the edit. A payload binder named `resume`
+                  // hides the continuation from the whole arm, so no tail can
+                  // resume and the binder has to be renamed.
+                  let mut harm_bare = false
+                  if hbinds_shadow_resume {
+                    harm_bare = true
+                    Array::push(errors, String::concat("handler arm `", String::concat(hqname, String::concat("` binds a payload named `resume`, which hides the continuation: rename the binder so the arm can end in resume(...)", off_marker(tail_expr_off(hbody))))))
+                  } else if !harm_suspends {
+                    match arm_first_bare_tail(hbody, false) {
+                      Some(bare) => {
+                        harm_bare = true
+                        Array::push(errors, String::concat("handler arm `", String::concat(hqname, String::concat("` must pass its value back with resume(...): write `resume(<value>)` here, or leave the arm with `return` / `throw` -- a tail value without resume(...) does not resume the perform", off_marker(railway_expr_off(bare))))))
+                      },
+                      None => ()
+                    }
+                  } else {
+                    ()
+                  }
+                  let harm_now = subst_apply(hs1, harm_ty)
+                  if harm_suspends {
+                    let hres_now = subst_apply(hs1, hres)
+                    if hres_now is CtUnknown {
+                      hres = harm_now
+                    } else {
+                      hs1 = check_assignable(hres_now, harm_now, hs1, errors, "handler arm value type mismatch with the handle body's type", tail_expr_off(hbody))
+                    }
+                  } else if harm_bare || arm_tail_all_return(hbody) {
+                    // A bare tail was already refused above, and its type
+                    // against the operation would only repeat that.
+                    // Every tail leaves the enclosing function: nothing is
+                    // resumed with, and the `return` value was already
+                    // checked against `__return__` (Codex P2 on #2985).
+                    ()
+                  } else {
+                    let hret_now = subst_apply(hs1, hret)
+                    hs1 = check_assignable(hret_now, harm_now, hs1, errors, "handler arm value type mismatch with the operation's return type", tail_expr_off(hbody))
+                  }
+                  // resume(x): x must be assignable to the op's declared
+                  // return type (ground-gated). Throwaway walk — nested
+                  // handles are skipped (their resumes belong to inner arms).
+                  hs1 = check_resume_values(hbody, hret, henv, defs, hs1, hc1, errors, tytab, capture)
+                },
+                None => Array::push(errors, String::concat("handler arm `", String::concat(String::substring(hqname, hci + 2, String::length(hqname)), String::concat("` is not an operation of effect ", String::substring(hqname, 0, hci)))))
+              }
+            } else if hci > 0 && is_exception_effect_name(String::substring(hqname, 0, hci)) {
+              // #640 Stage 1: Error arms stay OUT of the #813 arm validation
+              // above (payload/arity/exhaustiveness unchanged), but a
+              // resume(...) inside one is rejected — Error is non-resumable
+              // (`throw` / `perform Exception::Throw` unwind for good; the arm's
+              // value IS the handle result, so the resume never ran).
+              reject_resume_in_error_arm(hbody, errors)
+              // #938: an Error arm never resumes, so its value IS the handle
+              // result — type the body (Throw's payload binds as String) and
+              // unify with the handle body's type. Ground-gated, so arms
+              // whose value involves unknowns (throw/rethrow etc.) pass.
+              let mut eaenv = env
+              if Array::length(hbinds) == 1 {
+                match Array::get(hbinds, 0) {
+                  PBind(eabname) => {
+                    // #2963: a KINDED arm (`Exception[IoErr]::Throw(e)`) binds
+                    // its payload at the kind's type -- that is the one thing
+                    // the kinded spelling exists to say, and an untyped `e`
+                    // unified with the handle's Int result and printed a
+                    // pointer. The kind is the label's bracketed text, so it
+                    // is re-read with the real type parser: a bare name and an
+                    // applied kind (`Array[Int]`, `Option[String]`) both bind
+                    // at their type (Codex P1 on #2985 -- erasing the applied
+                    // ones re-opened the same hole for `Exception[Array[Int]]`).
+                    // A kind the parser cannot read falls back to the erased
+                    // binder rather than failing the arm.
+                    // The kind may name a FORMAL of the enclosing declaration
+                    // (`fn f[T](x: T) { handle { throw([x]) } with {
+                    // Exception[Array[T]]::Throw(e) => .. } }`), so the resolved
+                    // type is mapped onto the env's variables the way a
+                    // body-level annotation is (#2130, the ascription site):
+                    // `resolve_type_expr` alone leaves a rigid `CtNamed("T")`
+                    // that unifies with nothing and checks nothing, and
+                    // `String::length(Array::get(e, 0))` on an Int payload
+                    // printed `82` (Codex P0 on #2985).
+                    // The ERASED payload stays CtUnknown: `throw` accepts any
+                    // value (#786 — suberror payloads like `throw(AppError("x"))`
+                    // are legal), so pinning String would newly reject valid
+                    // `Throw(e) => inspect(e)` handlers (Codex P1 on #954).
+                    let eakind = exception_effect_kind(String::substring(hqname, 0, hci))
+                    let eaty = if String::length(eakind) > 0 {
+                      handle {
+                        let (kind_te, _) = parse_type(lex(eakind), 0)
+                        // A formal is a BINDER, so it wins over `defs`: with
+                        // `import ./m { Hue as T }` in scope, plain resolution
+                        // turned the kind's `T` into `Hue` before the env
+                        // mapping could see it, and `e` was typed at the
+                        // imported enum while the instantiation threw an Int
+                        // (Codex P0 on #2985, the #1510 shape). The names the
+                        // env binds as type variables are shadowed first.
+                        let kind_shadow = exception_kind_formals_in_env(kind_te, eaenv, array_empty())
+                        // #3018: the kind is a TYPE, and an undeclared one
+                        // (`Exception[IoError]` with no `IoError` in scope) was
+                        // bound as an opaque nominal the arm body could hand
+                        // to `String::length`. Refused like an unknown type in
+                        // a `let` annotation.
+                        report_unknown_type_names(kind_te, defs, kind_shadow, eaenv, array_empty(), "an exception kind", errors)
+                        // #3033: the arm's kind is compared as the type it names.
+                        record_exception_kind_resolution(eakind, kind_te, defs, kind_shadow)
+                        resolve_tparams_in(resolve_type_expr_shadowed(kind_te, defs, kind_shadow), eaenv)
+                      } with { Exception::Throw(_unreadable) => CtUnknown }
+                    } else {
+                      CtUnknown
+                    }
+                    eaenv = env_bind(eaenv, eabname, eaty)
+                  },
+                  // #2983: an arm that does not bind its payload
+                  // (`Exception[Nope]::Throw(_)`) still names its kind, and
+                  // the kind must be a type in scope exactly as above -- an
+                  // undeclared name or an effectset was accepted here.
+                  _ => {
+                    let wkind = exception_effect_kind(String::substring(hqname, 0, hci))
+                    if String::length(wkind) > 0 {
+                      handle {
+                        let (wkind_te, _) = parse_type(lex(wkind), 0)
+                        let wshadow = exception_kind_formals_in_env(wkind_te, eaenv, array_empty())
+                        report_unknown_type_names(wkind_te, defs, wshadow, eaenv, array_empty(), "an exception kind", errors)
+                        // #3033: compared as the type it names, as a binding
+                        // arm's is -- `Exception[E]::Throw(_)` with `type E =
+                        // IoErr` catches `IoErr` (Codex on #3061).
+                        record_exception_kind_resolution(wkind, wkind_te, defs, wshadow)
+                      } with { Exception::Throw(_unreadable) => () }
+                    }
+                  }
+                }
+              } else {
+                ()
+              }
+              let (earm_ty, eans, eanc) = check_expr_capture(hbody, eaenv, defs, hs1, hc1, errors, tytab, capture, lane)
+              hs1 = eans
+              hc1 = eanc
+              let eres_now = subst_apply(hs1, hres)
+              let earm_now = subst_apply(hs1, earm_ty)
+              if eres_now is CtUnknown {
+                hres = earm_now
+              } else {
+                hs1 = check_assignable(eres_now, earm_now, hs1, errors, "handler arm value type mismatch with the handle body's type", tail_expr_off(hbody))
+              }
+            } else {
+              ()
+            }
+          },
+          _ => ()
+        }
+        hai = hai + 1
+      }
+      // #828: op-arm exhaustiveness for DECLARED effects — a handler covering
+      // only some ops compiled and the unhandled perform trapped unreachable
+      // at runtime with no message. The checker knows the op set (it already
+      // rejects unknown arm names), so require every op to have an arm.
+      let hx_eff = array_empty()
+      let hx_ops = array_empty()
+      let mut hxi = 0
+      while hxi < Array::length(harms) {
+        let (hxpat, _) = Array::get(harms, hxi)
+        match hxpat {
+          PCtor(hxq, _) => {
+            let hxci = String::index_of(hxq, "::")
+            if hxci > 0 && effect_is_declared(defs, String::substring(hxq, 0, hxci)) {
+              Array::push(hx_eff, String::substring(hxq, 0, hxci))
+              Array::push(hx_ops, String::substring(hxq, hxci + 2, String::length(hxq)))
+            } else {
+              ()
+            }
+          },
+          _ => ()
+        }
+        hxi = hxi + 1
+      }
+      if Array::length(hx_eff) > 0 {
+        match find_typedef(defs, Array::get(hx_eff, 0)) {
+          Some(TDEffect(_, hx_decl_ops, _)) => {
+            let mut hoi = 0
+            while hoi < Array::length(hx_decl_ops) {
+              let (hx_op_name, _, _) = Array::get(hx_decl_ops, hoi)
+              let mut hx_found = false
+              let mut hoj = 0
+              while hoj < Array::length(hx_ops) {
+                if Array::get(hx_ops, hoj) == hx_op_name {
+                  hx_found = true
+                } else {
+                  ()
+                }
+                hoj = hoj + 1
+              }
+              if hx_found {
+                ()
+              } else {
+                Array::push(errors, String::concat("non-exhaustive handler: operation `", String::concat(hx_op_name, String::concat("` of effect ", String::concat(Array::get(hx_eff, 0), " has no arm — performing it would trap at runtime; add an arm for it")))))
+              }
+              hoi = hoi + 1
+            }
+          },
+          _ => ()
+        }
+      } else {
+        ()
+      }
+      // Every argument of each instantiation, so an effect with two or more
+      // parameters is compared position by position (#3022 review).
+      let hinst_resolved: Array[(String, Array[Type])] = []
+      let mut hri = 0
+      while hri < Array::length(hinst_seen) {
+        let hr_eff = Array::get(hinst_seen, hri)
+        match env_lookup(henv_shared, effect_inst_env_key(hr_eff)) {
+          Some(CtTuple(hr_targs)) => {
+            let resolved_args = array_empty()
+            let mut hai = 0
+            while hai < Array::length(hr_targs) {
+              Array::push(resolved_args, subst_apply(hs1, Array::get(hr_targs, hai)))
+              hai = hai + 1
+            }
+            Array::push(hinst_resolved, (hr_eff, resolved_args))
+          },
+          _ => ()
+        }
+        hri = hri + 1
+      }
+      check_handle_inst_vs_callee_rows(body, hinst_resolved, env, defs, hs1, errors)
+      (hres, hs1, hc1)
+    },
+    EWhile(cond, body) => {
+      let (ct, s1, c1) = check_expr_capture(cond, env, defs, s, c, errors, tytab, capture, lane)
+      let resolved_ct = subst_apply(s1, ct)
+      match resolved_ct {
+        CtBool => (),
+        CtUnknown => (),
+        CtVar(_) => (),
+        _ => Array::push(errors, "while condition must be Bool")
+      }
+      let (_, s2, c2) = check_expr_capture(body, env_bind(env, "__in_loop__", CtUnit), defs, s1, c1, errors, tytab, capture, lane)
+      (CtUnit, s2, c2)
+    },
+    ELoop(params, body) => {
+      let mut env1 = env
+      let mut s1 = s
+      let mut c1 = c
+      let mut i = 0
+      while i < Array::length(params) {
+        let (name, init) = Array::get(params, i)
+        let (pt, ns, nc) = check_expr_capture(init, env1, defs, s1, c1, errors, tytab, capture, lane)
+        env1 = env_bind(env1, name, pt)
+        s1 = ns
+        c1 = nc
+        i = i + 1
+      }
+      let (_, s2, c2) = check_expr_capture(body, env_bind(env1, "__in_loop__", CtUnit), defs, s1, c1, errors, tytab, capture, lane)
+      (CtUnit, s2, c2)
+    },
+    EForIn(name, index_name, iterable, body) => {
+      // #1350: `for await x in s` was retired, so there is no longer a
+      // `__await_iter(s)` marker to unwrap here -- the iterable is checked
+      // directly, and whether the loop awaits each step is decided from the
+      // iterand's type in the dict-passing desugar.
+      let (it, s1a, c1a) = check_expr_capture(iterable, env, defs, s, c, errors, tytab, capture, lane)
+      // #3148: file the iterand for the trait-dictionary pass, which lowers a
+      // Map iterand to its keys and refuses one whose type never resolves --
+      // the loop reads its value as an Array, so a Map (or a value that may
+      // be one) iterated zero times. Keyed like a render argument, by the
+      // iterand's own offset. A type VARIABLE iterand is bound to `Array[_]`,
+      // the way an Array builtin binds its argument (#3006 / #3145): an
+      // unannotated lambda parameter used as an iterand is then an Array to
+      // its callers, and a Map argument is a type error at the call. A
+      // declared type parameter is bound too, and since #3149 the binding
+      // reaches the declaration's scheme; it is filed as kind 8, which is
+      // refused unless every caller was checked against that scheme
+      // (`scheme_formal_constrained`).
+      let forin_formal = match subst_apply(s1a, it) {
+        CtVar(fv) => eq_formal_row_of(fv) >= 0,
+        _ => false
+      }
+      // A formal the body already bound to an Array is filed from its raw
+      // type, whose variable chain still names it (#3156 review).
+      record_receiver_kind(capture, typed_lowering_arg_offset(iterable), if forin_formal {
+        subst_apply(s1a, it)
+      } else {
+        it
+      }, subst_apply(s1a, it), if forin_formal {
+        8
+      } else {
+        7
+      }, s1a)
+      let (s1, c1) = bind_builtin_arg_var(subst_apply(s1a, it), 9, s1a, c1a)
+      // Element type bound by `for x in it`:
+      //   - `Array[T]`                       -> T
+      //   - a parameterized iterator type
+      //     `C[T, ..]` (`LazyIter[T]`, async `Stream[T]`, the async-iterator
+      //     desugared iterator, …) -> its FIRST type argument `T`. By the
+      //     iterator convention `next(Self) -> Option[(T, Self)]` the element is
+      //     the struct's first type parameter, so it is recoverable from the
+      //     iterable's type alone — which matters across modules, where the
+      //     `impl Iterator for C` lives in a dependency and is not in this file's
+      //     import env (the dict-passing desugar drives codegen off the merged
+      //     sources separately). Only `for` loops over a real iterable reach
+      //     codegen, so a non-iterator never lands here in a valid program.
+      //   - an iterator type with NO type argument (a bare struct value, or
+      //     `Stream` in the eager Array-backed model, docs/spec §M2c-3) -> a
+      //     fresh unification var, so the loop body's usage constrains the
+      //     element instead of `CtUnknown` silently accepting any element use and
+      //     dropping element-type safety.
+      let it_resolved = subst_apply(s1, it)
+      // #1679: only the residual builtin EForIn lowering collects body values.
+      // Trait iterators, pull closures, HostStream and indexed user Iterators
+      // are rewritten after checking to a Unit-valued EWhile.  Claiming
+      // CtArray here for those shapes let a Unit zero be reinterpreted as an
+      // Array pointer.  Keep statement-position loops working, but reject a
+      // non-collecting loop when its value is consumed.  An unresolved head is
+      // not evidence that collection happens: fail closed rather than revive
+      // the silent-wrong path.
+      //
+      //  1 = residual collection (Array/String/builtin eager containers)
+      //  0 = positively non-collecting iterator lowering
+      // -1 = classification unavailable
+      // #3149: a declared type parameter is classified from its type BEFORE
+      // the Array binding above -- that binding constrains callers, it is not
+      // evidence about what the loop lowers to inside the generic body.
+      let class_ty = if forin_formal {
+        subst_apply(s1a, it)
+      } else {
+        it_resolved
+      }
+      let collection_class = match class_ty {
+        CtArray(_) => 1,
+        CtString => 1,
+        CtNamed(nm, _) => if nm == "Map" || nm == "ByteStream" {
+          1
+        } else if nm == "HostStream" {
+          0
+        } else if type_name_has_iterator_impl(env, nm) {
+          0
+        } else match find_typedef(defs, nm) {
+          Some(_) => 0,
+          None => -1
+        },
+        CtStruct(_) => 0,
+        CtEnum(_) => 0,
+        CtFn(_, _, _) => 0,
+        CtUnknown => -1,
+        CtVar(_) => -1,
+        CtForAll(_, _, _) => -1,
+        _ => 0
+      }
+      // Two non-collecting lowerings deliberately preserve
+      // `for index, value in ...`: indexed-Iterator binds its generated loop
+      // counter, and build_pull_for_in creates/increments an index cell.  The
+      // next-based and HostStream lowerings do not, which is the silent index
+      // drop diagnosed below (#1763 review).
+      let index_preserved = match it_resolved {
+        CtFn(_, _, _) => true,
+        CtNamed(nm, _) => match (env_lookup(env, String::concat(nm, "::iter_length")), env_lookup(env, String::concat(nm, "::iter_get"))) {
+          (Some(_), Some(_)) => true,
+          _ => false
+        },
+        CtStruct(nm) => match (env_lookup(env, String::concat(nm, "::iter_length")), env_lookup(env, String::concat(nm, "::iter_get"))) {
+          (Some(_), Some(_)) => true,
+          _ => false
+        },
+        _ => false
+      }
+      if collection_class == 0 && !discarded_root {
+        Array::push(errors, String::concat("non-Array `for` does not produce a value; use it as a statement and accumulate explicitly, or call an iterator collection function", off_marker(railway_expr_off(iterable))))
+      } else if collection_class < 0 && !discarded_root {
+        Array::push(errors, String::concat("cannot determine whether this `for` produces an Array; give the iterand a concrete Array type or use the loop as a statement", off_marker(railway_expr_off(iterable))))
+      } else if collection_class < 0 {
+        // #1559: a rigid type parameter (`T`) as the iterand used to lower
+        // to the residual Array loop and trap. A still-open inference var
+        // is different — builtins such as `String::split` surface as a
+        // fresh var when their return is not yet in the env, and the
+        // compiler itself iterates those in statement position.
+        let rigid_param = match class_ty {
+          CtNamed(nm, args) => Array::length(args) == 0 && nm != "HostStream" && match find_typedef(defs, nm) {
+            None => true,
+            Some(_) => false
+          },
+          CtForAll(_, _, _) => true,
+          _ => false
+        }
+        if rigid_param {
+          Array::push(errors, String::concat("cannot classify this `for` iterand; annotate it or pass a concrete Array, iterator, or pull closure", off_marker(railway_expr_off(iterable))))
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      match index_name {
+        Some(_) => if collection_class != 1 && !index_preserved {
+          Array::push(errors, String::concat("a `for` index binding is only supported when the iterator lowering preserves a counter; this iterator lowering would drop the index", off_marker(railway_expr_off(iterable))))
+        } else {
+          ()
+        },
+        None => ()
+      }
+      let (et, c1b) = match it_resolved {
+        CtArray(elem) => (elem, c1),
+        CtNamed(nm, args) => if Array::length(args) > 0 {
+          (Array::get(args, 0), c1)
+        } else if nm == "HostStream" {
+          // #1341: `for b in <host stream>` reads bytes (spec §3.18), so the
+          // loop variable is Int, not a fresh variable. Before the host stream
+          // got its own nominal type it shared `Stream[Int]` with the eager
+          // array-backed stream and this loop silently iterated the 2-word
+          // `[state, handle]` cell.
+          (CtInt, c1)
+        } else if nm == "ByteStream" {
+          (CtInt, c1)
+        } else if type_name_has_iterator_impl(env, nm) {
+          fresh_var(c1)
+        } else (CtUnknown, c1),
+        CtStruct(nm) => if type_name_has_iterator_impl(env, nm) {
+          fresh_var(c1)
+        } else (CtUnknown, c1),
+        other => {
+          // `for x in 5` over a primitive scalar can never be an iterable and
+          // was accepted silently. Only flag the unambiguously non-iterable
+          // primitives — a struct/named type may have an Iterator impl in
+          // another module (see above), so those stay tolerated.
+          let flag = match other {
+            CtInt => true,
+            CtDouble => true,
+            CtBool => true,
+            CtUnit => true,
+            CtChar => true,
+            _ => false
+          }
+          if flag {
+            Array::push(errors, "for loop requires an iterable (Array or iterator)")
+          } else {
+            ()
+          }
+          (CtUnknown, c1)
+        }
+      }
+      let env2 = env_bind(env, name, et)
+      let env3 = match index_name {
+        Some(index_name) => env_bind(env2, index_name, CtInt),
+        None => env2
+      }
+      let (bt, s2, c2) = check_expr_capture(body, env_bind(env3, "__in_loop__", CtUnit), defs, s1, c1b, errors, tytab, capture, lane)
+      (CtArray(bt), s2, c2)
+    },
+    // #897: `mod.x` against a qualified-import namespace (`import ... as mod
+    // only { x }`) is bound directly as "mod.x" in env (see
+    // qualify_import_items in lib/@vibe/parser/parser.vibe -- bare `mod` is
+    // deliberately never bound, so a real identifier can never collide with
+    // this key). Whole-program merge later rewrites `EDot(EIdent(mod), x)`
+    // straight to the merged/renamed `x` (import_alias_rewrite.vibe), but
+    // some lanes (incremental fs_compile) type-check per-file BEFORE that
+    // merge runs, so this same shortcut is needed here too: resolve through
+    // the qualified binding directly instead of ever checking `mod` alone.
+    EDot(obj, field, dot_off, field_off) => {
+      // #897/Codex P2: only take the qualified-import shortcut when `ns` is
+      // NOT independently bound -- see the matching comment on the ECall
+      // callee-is-EDot arm above for the full rationale.
+      let qualified_key = match obj {
+        EIdent(ns, _) => match env_lookup(env, ns) {
+          Some(_) => None,
+          None => Some(String::concat(ns, String::concat(".", field)))
+        },
+        _ => None
+      }
+      let qualified_hit = match qualified_key {
+        Some(k) => env_lookup(env, k),
+        None => None
+      }
+      match qualified_hit {
+        Some(_) => match qualified_key {
+          Some(k) => check_expr_capture(EIdent(k, field_off), env, defs, s, c, errors, tytab, capture, "SyntheticRewrite"),
+          None => (CtUnknown, s, c)
+        },
+        None => {
+          let (obj_ty, s1, c1) = check_expr_capture(obj, env, defs, s, c, errors, tytab, capture, lane)
+          let resolved = subst_apply(s1, obj_ty)
+          let field_ty0 = field_read_type(resolved, field, defs, s1, errors, field_off, dot_off)
+          // #2848 (Codex on #2864): a receiver that is STILL an unsolved
+          // variable here -- an unannotated lambda parameter, typically -- may
+          // be unified with a type parameter, or with a concrete non-struct,
+          // only when the lambda is applied later in the enclosing body
+          // (`let f = (p) -> { p.payload }; f(m)`). Judging it now accepts the
+          // read for good, and codegen then resolves the field by spelling. So
+          // the site is recorded and judged again, with the same arms, once
+          // the enclosing function body (and finally the program) has been
+          // checked. A variable that already stands for an open formal was
+          // refused inside `field_read_type` and is not recorded twice. A
+          // `let` that GENERALIZES the variable instead refuses the row on
+          // the spot (`refuse_generalized_field_reads`), since no later pass
+          // could see a quantified variable resolve.
+          //
+          // The read is typed with a fresh RESULT variable rather than the
+          // `CtUnknown` `field_read_type` answers for an unsolved receiver, so
+          // what the value flows into is remembered and checked against the
+          // field's real type when the receiver resolves.
+          let (field_ty, c_after) = match resolved {
+            CtVar(pending_id) => if open_formal_name_for_var(pending_id, s1) == "" {
+              let (result_tv, nc) = fresh_var(c1)
+              Array::push(deferred_field_reads, (pending_id, field, field_off, dot_off, match obj {
+                EIdent(recv_name, _) => recv_name,
+                _ => ""
+              }, nc - 1))
+              (result_tv, nc)
+            } else {
+              (field_ty0, c1)
+            },
+            _ => (field_ty0, c1)
+          }
+          // Record this field-access node's (raw, pre-final-subst) projection type
+          // keyed by its real source offset, for typed-hover on `obj.field`.
+          // Synthetic accesses (dot_off < 0) are skipped. #645: the field token's
+          // own offset gets the same entry, so hovering the field NAME (not just
+          // the base) resolves the projection type.
+          let dependent_field_ty = match obj {
+            EIdent(base_name, _) => match env_lookup(env, String::concat("__param_marker__", base_name)) {
+              Some(CtNamed(marker_label, _)) => add_param_capture_dependency(field_ty, match param_marker_index(marker_label) {
+                Some(marker) => marker,
+                None => 0 - 1
+              }),
+              _ => field_ty
+            },
+            _ => field_ty
+          }
+          if dot_off >= 0 {
+            tab_dot_projection_ty(tytab, dot_off, dependent_field_ty, capture, lane)
+          } else {
+            ()
+          }
+          if field_off >= 0 && field_off != dot_off {
+            tab_dot_field_name_ty(tytab, field_off, dependent_field_ty, capture, lane)
+          } else {
+            ()
+          }
+          (dependent_field_ty, s1, c_after)
+        }
+      }
+    },
+    EFn(_, _, _, _, _, _) => check_lambda_expr(expr, env, defs, s, c, errors, tytab, capture, lane, discarded_root, check_expr_capture),
+    EBreak(opt) => {
+      // `break` is only meaningful inside a loop. Loop bodies bind the
+      // `__in_loop__` sentinel; its absence means this `break` is outside any
+      // loop (`() -> { break }`). Threaded through env, so if/match/let/seq
+      // inside a loop still see it; a nested function does not introduce one, so
+      // a `break` there is (conservatively) left unchecked rather than flagged.
+      let in_loop = match env_lookup(env, "__in_loop__") {
+        Some(_) => true,
+        None => {
+          Array::push(errors, "`break` outside a loop")
+          false
+        }
+      }
+      match opt {
+        Some(e) => {
+          let (_, s1, c1) = check_expr_capture(e, env, defs, s, c, errors, tytab, capture, lane)
+          // Parameterized `loop (...)` rewrites `break value` to an assignment
+          // plus a bare break before checking. Any payload that survives here
+          // therefore belongs to a non-value `break` target: `while`, bare
+          // `loop {}`, or `for-in`. Both backends used to omit that expression
+          // entirely, including effects.
+          if in_loop {
+            Array::push(errors, String::concat("this loop form does not accept a `break` value; remove the payload, or use parameterized `loop (...)` to return one", off_marker(railway_expr_off(e))))
+          } else {
+            ()
+          }
+          (CtUnit, s1, c1)
+        },
+        None => (CtUnit, s, c)
+      }
+    },
+    EContinue(args) => {
+      match env_lookup(env, "__in_loop__") {
+        Some(_) => (),
+        None => Array::push(errors, "`continue` outside a loop")
+      }
+      let alen = Array::length(args)
+      let mut s1 = s
+      let mut c1 = c
+      let mut ai = 0
+      while ai < alen {
+        let (_, ns, nc) = check_expr_capture(Array::get(args, ai), env, defs, s1, c1, errors, tytab, capture, lane)
+        s1 = ns
+        c1 = nc
+        ai = ai + 1
+      }
+      (CtUnit, s1, c1)
+    },
+    ERecord(rn, fields, targs) => {
+      let flen = Array::length(fields)
+      let mut s1 = s
+      let mut c1 = c
+      let field_tys = array_empty()
+      let mut fi = 0
+      while fi < flen {
+        let (fname, fval) = Array::get(fields, fi)
+        // A field may be given only once in a record literal (`P::{ x: 1, x: 2 }`
+        // silently kept the last). Report a duplicate by scanning the names
+        // already collected.
+        let mut dj = 0
+        let mut dup = false
+        while dj < Array::length(field_tys) {
+          let (pn, _) = Array::get(field_tys, dj)
+          if pn == fname {
+            dup = true
+          } else {
+            ()
+          }
+          dj = dj + 1
+        }
+        if dup {
+          Array::push(errors, String::concat("duplicate field `", String::concat(fname, "` in record literal")))
+        } else {
+          ()
+        }
+        let (ft, ns, nc) = check_expr_capture(fval, env, defs, s1, c1, errors, tytab, capture, lane)
+        Array::push(field_tys, (fname, ft))
+        s1 = ns
+        c1 = nc
+        fi = fi + 1
+      }
+      // #810: a NAMED struct literal `S::{ ... }` (rn carries the parsed
+      // struct name since the ERecord arity bump) is validated against S's
+      // declaration by NAME — the field-set heuristics below cannot tell a
+      // typo'd `Point::{ x, z }` from an intentional anonymous
+      // `record { x, z }`, so before this check a same-count wrong-name
+      // field silently landed in another field's slot. Anonymous literals
+      // (rn == "") keep the field-set path unchanged.
+      if rn != "" {
+        match find_typedef(defs, rn) {
+          Some(td) => match td {
+            TDStruct(_, dfields, _, s_tparams) => {
+              // Unknown literal fields (present in the literal, absent from
+              // the declaration).
+              let mut ui = 0
+              while ui < Array::length(field_tys) {
+                let (an, _) = Array::get(field_tys, ui)
+                let mut known = false
+                let mut uj = 0
+                while uj < Array::length(dfields) {
+                  let (dn, _) = Array::get(dfields, uj)
+                  if dn == an {
+                    known = true
+                  } else {
+                    ()
+                  }
+                  uj = uj + 1
+                }
+                if !known {
+                  Array::push(errors, String::concat("unknown field `", String::concat(an, String::concat("` for struct ", rn))))
+                } else {
+                  ()
+                }
+                ui = ui + 1
+              }
+              // #829: instantiate a GENERIC struct's declared type params with
+              // fresh inference vars, so the field values determine the
+              // construction's concrete type arguments (`Box::{ v: 1 }` is
+              // `Box[Int]`, not CtUnknown → its field reads become checkable).
+              //
+              // #886: EXPLICIT type arguments (`Pair[Int]::{ .. }`) pin the
+              // instantiation instead: each declared param is substituted by
+              // the resolved explicit argument (no fresh var), so field values
+              // are checked against the pinned types (mismatches surface as
+              // `struct field type mismatch for <f>`) and the construction's
+              // type is exactly `CtNamed(rn, <explicit args>)` even when the
+              // field values alone could not determine a param (e.g. an
+              // empty-array field). An arity mismatch reports an error and
+              // falls back to #829's inference to avoid cascading errors.
+              let tplen = Array::length(s_tparams)
+              let ntargs = Array::length(targs)
+              if ntargs > 0 && ntargs != tplen {
+                Array::push(errors, "struct \{rn} expects \{tplen} type argument(s), got \{ntargs} in `\{rn}[...]::{ ... }` (#886 explicit struct type arguments)")
+              }
+              let use_explicit = ntargs > 0 && ntargs == tplen
+              let fresh_targs = array_empty()
+              let mut c2 = c1
+              if use_explicit {
+                // Resolve through the generic environment (same as param /
+                // return annotations, ~line 3252): an explicit argument
+                // naming an ENCLOSING fn's type parameter (`fn make[T](x:
+                // T) -> Box[T] { Box[T]::{ v: x } }`) must become the
+                // env-bound CtVar, not a rigid CtNamed("T") — otherwise the
+                // construction's type loses its link to the quantified
+                // param and `make(42).v` fails as `expected Int, got T`
+                // (Codex review, PR #926). Kinded parameters also reify a
+                // bare constructor argument (`Array` in `KBox[Array, Int]::{
+                // ... }`) the same way trait-bound constructor arguments do.
+                let resolved = array_empty()
+                let mut tpi = 0
+                while tpi < tplen {
+                  Array::push(resolved, resolve_tparams_in(resolve_type_expr_shadowed(Array::get(targs, tpi), defs, formal_shadow(Array::get(targs, tpi), env, array_empty())), env))
+                  tpi = tpi + 1
+                }
+                let reified = resolve_type_constructor_args(s_tparams, targs, resolved, defs, array_empty())
+                let mut ri = 0
+                while ri < Array::length(reified) {
+                  Array::push(fresh_targs, Array::get(reified, ri))
+                  ri = ri + 1
+                }
+              } else {
+                let mut tpi = 0
+                while tpi < tplen {
+                  match fresh_var(c2) {
+                    (tv, nc) => {
+                      Array::push(fresh_targs, tv)
+                      c2 = nc
+                    },
+                    _ => ()
+                  }
+                  tpi = tpi + 1
+                }
+              }
+              // Missing declared fields (absent from the literal).
+              let mut mi = 0
+              while mi < Array::length(dfields) {
+                let (dn, dty0) = Array::get(dfields, mi)
+                // Check field values against the INSTANTIATED declared type
+                // (rigid params substituted by the fresh vars above); a
+                // non-generic struct keeps the raw declared type as before.
+                let dty = if tplen > 0 {
+                  subst_type_params(dty0, s_tparams, fresh_targs)
+                } else {
+                  dty0
+                }
+                match lookup_actual_field_ty(field_tys, dn) {
+                  Some(aty) => {
+                    // Value type check (ground-gated like check_record_fields).
+                    s1 = check_assignable_for(dty, subst_apply(s1, aty), s1, errors, "struct field type mismatch for ", dn, lookup_field_expr_off(fields, dn))
+                  },
+                  None => Array::push(errors, String::concat("missing field `", String::concat(dn, String::concat("` in construction of struct ", rn))))
+                }
+                mi = mi + 1
+              }
+              // Struct identity: a monomorphic struct keeps `CtStruct(rn)`;
+              // a GENERIC struct now gets its instantiated nominal type
+              // `CtNamed(rn, args)` (#829 — previously CtUnknown, which made
+              // every downstream use of the value unchecked). A non-ground
+              // struct WITHOUT declared params (unresolved field type names)
+              // keeps the old CtUnknown tolerance.
+              if struct_fields_ground(dfields, defs, s_tparams) || (tplen == 0 && struct_fields_ground_builtin_named(dfields)) {
+                (CtStruct(rn), s1, c2)
+              } else if tplen > 0 {
+                let inst_targs = for ta in fresh_targs {
+                  subst_apply(s1, ta)
+                }
+                (CtNamed(rn, inst_targs), s1, c2)
+              } else {
+                (CtUnknown, s1, c2)
+              }
+            },
+            _ => {
+              Array::push(errors, String::concat("`", String::concat(rn, "` is not a struct (struct literal)")))
+              (CtUnknown, s1, c1)
+            }
+          },
+          // Unknown name: fall back to the anonymous field-set path instead
+          // of erroring — the merge layer's private-struct rename and alias
+          // imports can leave rn referring to a pre-rename spelling that the
+          // merged defs no longer contain. The typo detection above still
+          // fires for the common case (the struct EXISTS and a field name is
+          // wrong).
+          None => {
+            let s2f = check_record_fields(defs, field_tys, s1, errors)
+            let rec_tyf = match resolve_record_struct_name(defs, field_tys) {
+              Some(sname) => CtStruct(sname),
+              None => CtUnknown
+            }
+            (rec_tyf, s2f, c1)
+          }
+        }
+      } else {
+        // #1839: an EXPLICIT `record { ... }` literal (rn == "" comes only
+        // from the `record` keyword since #810 put the parsed name on
+        // `S::{...}`) is structural — it must not be captured by a named
+        // struct that happens to share its field-name set. The field-set
+        // match that used to run here (check_record_fields +
+        // resolve_record_struct_name) silently retyped the literal as the
+        // struct (accepting `fn (s: Span)` calls the writer never meant) and
+        // rejected records whose field set was a strict subset of some
+        // struct ("missing field ... in construction of struct X"). Codegen
+        // and the anon-record dot-access desugar keep the same rule:
+        // rn == "" always lays out in literal order with tag 0.
+        //
+        // Slice 2: the literal now gets a real structural type. CtRecord
+        // unifies only with a same-shaped record, so passing a record where
+        // a struct is expected is a located type mismatch instead of a
+        // CtUnknown pass-through that read wrong slots at runtime.
+        (CtRecord(field_tys), s1, c1)
+      }
+    },
+    ETuple(items) => {
+      let ilen = Array::length(items)
+      let mut s1 = s
+      let mut c1 = c
+      let tys = array_empty()
+      let mut ti = 0
+      while ti < ilen {
+        let (it, ns, nc) = check_expr_capture(Array::get(items, ti), env, defs, s1, c1, errors, tytab, capture, lane)
+        Array::push(tys, it)
+        s1 = ns
+        c1 = nc
+        ti = ti + 1
+      }
+      (CtTuple(tys), s1, c1)
+    },
+    EArray(items) => {
+      let ilen = Array::length(items)
+      // #2447: an EMPTY literal gets a REAL element slot, the same fix #938
+      // gave `ArrayBuilder::new`. It used to type as `CtArray(CtUnknown)`,
+      // and CtUnknown absorbs every later unification -- so one binding
+      // could be pushed `Int` here and `String` there and check clean, while
+      // every type-directed consumer (a selected comparator, the typed-`==`
+      // channel) saw no type at all. The fresh var is bound by the first
+      // use and every later use must unify with it; ELet's generalize
+      // deliberately skips the still-unresolved shape (the value
+      // restriction below), or each use would re-instantiate the var and
+      // the uses could never disagree.
+      if ilen == 0 {
+        let (ev, c1e) = fresh_var(c)
+        (CtArray(ev), s, c1e)
+      } else {
+        let mut s1 = s
+        let mut c1 = c
+        let mut elem_ty = CtUnknown
+        // Cross-check elements only when the first element is a simple scalar, or
+        // a one-level array of scalars (`[[1], ["x"]]` — `Array[Int]` vs
+        // `Array[String]`) — see EMatch: this catches the cheap, bounded cases
+        // while skipping the per-element `subst_apply` for arrays of large
+        // struct/tuple values that pressure the self-compile heap.
+        let mut check_elems = false
+        let mut ai = 0
+        while ai < ilen {
+          let (it, ns, nc) = check_expr_capture(Array::get(items, ai), env, defs, s1, c1, errors, tytab, capture, lane)
+          s1 = ns
+          c1 = nc
+          if ai == 0 {
+            elem_ty = it
+            check_elems = match subst_apply(s1, it) {
+              CtInt => true,
+              CtDouble => true,
+              CtBool => true,
+              CtString => true,
+              CtChar => true,
+              CtArray(inner) => match inner {
+                CtInt => true,
+                CtDouble => true,
+                CtBool => true,
+                CtString => true,
+                CtChar => true,
+                // #2893: an EMPTY literal first (`[[], [a]]`). #2447 gives it a
+                // real element slot -- `CtArray(<fresh var>)` -- and that var is
+                // what the whole literal's element type becomes. Falling to
+                // `false` here meant no later element was ever unified with it,
+                // so it stayed unconstrained and absorbed anything: measured,
+                //
+                //   let xs = [[], [a]]            // a: T
+                //   let v: Int = Array::get(Array::get(xs, 1), 0)
+                //
+                // compiled clean and printed 233, the allocation address. The
+                // same literal with the empty row SECOND (`[xs, []]`) was
+                // rejected, because then a real type went in first.
+                //
+                // Cross-checking costs one `subst_apply` per element, and a
+                // variable is not the "large struct/tuple" case the comment
+                // above is protecting against.
+                CtVar(_) => true,
+                _ => false
+              },
+              _ => false
+            }
+          } else {
+            if check_elems {
+              s1 = check_assignable(elem_ty, subst_apply(s1, it), s1, errors, "array elements have incompatible types", railway_expr_off(Array::get(items, ai)))
+            } else {
+              ()
+            }
+          }
+          ai = ai + 1
+        }
+        (CtArray(elem_ty), s1, c1)
+      }
+    },
+    EReturn(e) => {
+      let (et, s1, c1) = check_expr_capture(e, env, defs, s, c, errors, tytab, capture, lane)
+      // Check the returned value against the enclosing function's annotated
+      // return type (bound as `__return__` by the EFn arm). Ground-gated via
+      // check_assignable, so a generic return type is not over-rejected.
+      match env_lookup(env, "__return__") {
+        Some(rt) => {
+          let rte = subst_apply(s1, rt)
+          let ate = subst_apply(s1, et)
+          // #1947: `?` lowers to `return None`. The EMatch railway hook
+          // reports that in source-level terms; do not also emit
+          // `got Option[?]` against the synthetic None.
+          let skip_railway_none = match env_lookup(env, "__railway_q__") {
+            Some(_) => railway_is_ident(e, "None"),
+            None => false
+          }
+          if skip_railway_none {
+            ()
+          } else {
+            // Explicit `return e`: anchor on `e` itself, so this spelling locates
+            // the same way the implicit tail-expression return does above.
+            check_assignable_set_end(string_lit_end(e))
+            let _ = check_assignable(rte, ate, s1, errors, "return type mismatch", railway_expr_off(e))
+            ()
+          }
+        },
+        None => ()
+      }
+      let s2 = match env_lookup(env, "__return_provenance__") {
+        Some(CtVar(id)) => {
+          mark_return_provenance_written(id)
+          append_legacy_typed_occurrence(tytab, return_provenance_key(id), CtUnit, capture, "ReturnProvenance", "SyntheticRewrite")
+          let previous = subst_apply(s1, CtVar(id))
+          let merged = match previous {
+            CtVar(_) => subst_apply(s1, et),
+            _ => merge_capture_provenance(previous, subst_apply(s1, et))
+          }
+          SubstBind(id, merged, s1)
+        },
+        _ => s1
+      }
+      // The expression value of `return e` is `e`'s type, not CtUnknown. A lambda
+      // whose body is a bare `return e` (`(n) -> { return n }`) otherwise inferred
+      // a CtUnknown return type, so when its type came from OUTER unification
+      // (`let g: (Int) -> String = (n) -> { return n }`) the return/result
+      // mismatch was hidden — the no-`return` form `(n) -> { n }` is rejected, so
+      // the `return` form must be too. Propagating `et` makes them identical.
+      (et, s2, c1)
+    },
+    EMap(mpairs) => {
+      // #938: map literals were entirely untyped (fell through to CtUnknown),
+      // so `map { "a": 1, "b": "two" }` compiled and the stray String read
+      // back as a garbage Int. Check each entry and require pairwise
+      // homogeneous keys/values, ground-gated exactly like array literals
+      // (only when the first key/value type is a simple ground type).
+      let mut ms1 = s
+      let mut mc1 = c
+      let mut mvty: Type = CtUnknown
+      let mut mchk_v = false
+      let mut mi = 0
+      while mi < Array::length(mpairs) {
+        let (_, mve) = Array::get(mpairs, mi)
+        let (mvt, mvs, mvc) = check_expr_capture(mve, env, defs, ms1, mc1, errors, tytab, capture, lane)
+        ms1 = mvs
+        mc1 = mvc
+        if mi == 0 {
+          mvty = mvt
+          mchk_v = map_literal_ground(subst_apply(ms1, mvt))
+        } else {
+          if mchk_v {
+            ms1 = check_assignable(mvty, subst_apply(ms1, mvt), ms1, errors, "map literal values have incompatible types", railway_expr_off(mve))
+          } else {
+            ()
+          }
+        }
+        mi = mi + 1
+      }
+      // #983: surface the literal's value type as a REAL slot —
+      // `CtNamed("Map", [CtString, v])`, the exact shape a `Map[String, V]`
+      // annotation resolves to (checker_resolve's TyApp fallback) — so
+      // `Map::set`/`Map::get` can check against it. An empty literal
+      // (`Map::new()`) gets a fresh var; a let-bound empty map GENERALIZES
+      // (#996 Codex P2: `Map::set` is a functional update, so aliases of the
+      // empty binding build independent maps — no value restriction; each
+      // use re-instantiates a fresh slot, bound by that use's own flow).
+      if Array::length(mpairs) == 0 {
+        let (mv0, mc2) = fresh_var(mc1)
+        (CtNamed("Map", [CtString, mv0]), ms1, mc2)
+      } else {
+        (CtNamed("Map", [CtString, subst_apply(ms1, mvty)]), ms1, mc1)
+      }
+    },
+    ELabeledArg(_, _, la_val) => {
+      // #986: desugar_labeled_args (run before checking — see check_program)
+      // RESOLVES labeled args whose callee's parameter names are known in this
+      // module: it reorders fully-labeled calls into declared order and strips
+      // the ELabeledArg wrappers, so those values reach the strict positional
+      // unification as plain args. An ELabeledArg that SURVIVES to this arm
+      // therefore has no label→position resolution available here — the
+      // callee is import-resolved (its param names live in another module,
+      // Codex P2-1 on #993), locally shadowed, a builtin with decorative flag
+      // labels (`sh_lines("ls", a = true)`), or an erroneous local shape that
+      // check_labeled_arg_names_stmts reports by name. Check the value for
+      // nested diagnostics but type the arg CtUnknown, so an unresolvable
+      // label is never falsely rejected by position.
+      let (_, la_s, la_c) = check_expr_capture(la_val, env, defs, s, c, errors, tytab, capture, lane)
+      (CtUnknown, la_s, la_c)
+    },
+    _ => (CtUnknown, s, c)
+  }
+}
+
+/// Compatibility public expression checker. Ordinary callers never allocate a
+/// role/lane capture and all retained legacy output stays unchanged.
+/// Expression paths follow `core::expr_children`: root is `[]`, and each
+/// recursively checked structural child receives its zero-based child index.
+/// The dynamic stack makes the rule apply uniformly to every existing
+/// recursive check without reconstructing provenance from source offsets.
+export fn check_expr_capture(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture], lane: String) -> (Type, Subst, Int) {
+  // Production calls carry None. Avoid enter/exit Option dispatches for every
+  // recursive expression while preserving them exactly for opt-in capture.
+  match capture {
+    None => check_expr_capture_impl(expr, env, defs, s, c, errors, tytab, None, lane, false),
+    Some(_) => {
+      typed_occurrence_capture_enter_expression(capture, expr)
+      let result = check_expr_capture_impl(expr, env, defs, s, c, errors, tytab, capture, lane, false)
+      typed_occurrence_capture_record_direct_return(capture, result.0, lane)
+      typed_occurrence_capture_exit_expression(capture)
+      result
+    }
+  }
+}
+
+/// Check exactly this expression root as a discarded statement. Recursive
+/// children go back through `check_expr_capture`, so the flag cannot leak into
+/// a nested value position (#1679 review follow-up).
+fn check_expr_capture_discarded_root(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture], lane: String) -> (Type, Subst, Int) {
+  match capture {
+    None => check_expr_capture_impl(expr, env, defs, s, c, errors, tytab, None, lane, true),
+    Some(_) => {
+      typed_occurrence_capture_enter_expression(capture, expr)
+      let result = check_expr_capture_impl(expr, env, defs, s, c, errors, tytab, capture, lane, true)
+      typed_occurrence_capture_record_direct_return(capture, result.0, lane)
+      typed_occurrence_capture_exit_expression(capture)
+      result
+    }
+  }
+}
+
+export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)]) -> (Type, Subst, Int) {
+  // A standalone expression check starts its own variable numbering (callers
+  // pass `c = 0`), so a formal recorded by an earlier standalone check would
+  // alias a fresh variable here. Not an internal entry: the checker recurses
+  // through check_expr_capture.
+  reset_eq_formal_vars()
+  check_expr_capture_impl(expr, env, defs, s, c, errors, tytab, None, "Primary", false)
+}
+
+/// #3150: the arguments of a spawn- or run-shaped call that the dedicated
+/// branch could not check against a signature -- the callee does not resolve
+/// (`vibe type-at` and `vibe check --single-file` see no imports, so
+/// `TaskGroup::run` is unknown there) or its type is not the shape the branch
+/// expects. Those arms used to return without looking at the arguments at
+/// all, so nothing inside the closure literal was typed: `vibe type-at`
+/// answered "no type is known" for every name in a task body, and an error in
+/// that body was never reported. The generic call path checks the arguments of
+/// an unresolved callee one by one, and so does this.
+fn check_unmatched_call_args(args: Array[Expr], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture], lane: String) -> (Subst, Int) {
+  let mut s1 = s
+  let mut c1 = c
+  let mut i = 0
+  while i < Array::length(args) {
+    let (_, ns, nc) = check_expr_capture(Array::get(args, i), env, defs, s1, c1, errors, tytab, capture, lane)
+    s1 = ns
+    c1 = nc
+    i = i + 1
+  }
+  (s1, c1)
+}

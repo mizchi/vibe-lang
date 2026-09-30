@@ -1,0 +1,442 @@
+// Typed rendering.
+
+import @vibe/compiler/core {
+  Expr, Stmt, TypeExpr, typed_lowering_arg_offset, typed_render_row_head
+}
+
+import @vibe/ast {
+  impl_target_from_key
+}
+
+import ./binding_shape_queries.vibe {
+  interp_shape
+}
+
+import ./deferred_equality_requests.vibe {
+  eq_deferred_key_for_ty, eq_deferred_request_record_ty
+}
+
+import ./equality_content_types.vibe {
+  eq_known_types_reset, eq_ty_field_is_content_comparable
+}
+
+import ./equality_emit.vibe {
+  emit_recorded_structural_eq
+}
+
+import ./equality_registry.vibe {
+  show_generic_known
+}
+
+import ./equality_requests.vibe {
+  arr_eq_needed_record
+}
+
+import ./equality_type_shapes.vibe {
+  ty_to_eq_shape
+}
+
+import ./formal_scope.vibe {
+  formal_in_scope, formals_contain_source_name, is_marked_formal_name
+}
+
+import ./generic_equality.vibe {
+  generic_eq_record
+}
+
+import ./state.vibe {
+  dtd_eq_deferred_requests,
+  dtd_eq_deferred_types,
+  dtd_eq_known_types,
+  dtd_eq_typed_refusals,
+  dtd_scope_formals,
+  dtd_type_param_names,
+  dtd_typed_render_keys,
+  dtd_typed_render_offs
+}
+
+import ./typed_equality.vibe {
+  eq_for_typed
+}
+
+import ./typed_row_queries.vibe {
+  dtd_typed_eq_key_for, dtd_typed_item_shape_join
+}
+
+import ./utilities.vibe {
+  empty_str_array, str_array_contains
+}
+
+/// #3066: the interpolation shape of the type the checker gave this render
+/// argument, or "" when it filed none. A type naming a formal in scope here is
+/// "" too: a formal renders through its witness, which the syntactic path
+/// already finds.
+export fn dtd_typed_render_shape_for(arg: Expr) -> String {
+  interp_shape(dtd_typed_render_raw_shape_for(arg))
+}
+
+/// #3075: the checker's row for a SCALAR leaf the runtime renderer cannot tell
+/// from an Int: "Char", "{u}", or "".
+export fn dtd_typed_render_leaf_for(arg: Expr) -> String {
+  let sh = dtd_typed_render_raw_shape_for(arg)
+  if sh == "Char" || sh == "{u}" {
+    sh
+  } else {
+    ""
+  }
+}
+
+/// The row's type in the shape grammar, unfiltered.
+export fn dtd_typed_render_raw_shape_for(arg: Expr) -> String {
+  let off = typed_lowering_arg_offset(arg)
+  let mut key = ""
+  if off >= 0 {
+    let mut i = 0
+    while i < Array::length(dtd_typed_render_offs) {
+      if Array::get(dtd_typed_render_offs, i) == off {
+        key = Array::get(dtd_typed_render_keys, i)
+        i = Array::length(dtd_typed_render_offs)
+      } else {
+        i = i + 1
+      }
+    }
+  } else {
+    ()
+  }
+  if String::length(key) == 0 {
+    ""
+  } else {
+    match impl_target_from_key(key) {
+      Some(TyApp(head, args)) => if head == typed_render_row_head() && Array::length(args) == 1 && !eq_ty_mentions_scope_formal(Array::get(args, 0)) {
+        ty_to_eq_shape(Array::get(args, 0))
+      } else {
+        ""
+      },
+      _ => ""
+    }
+  }
+}
+
+/// #3081: the shape of the type the checker filed for an ELEMENT of a
+/// composite literal (or a `Some` payload), scalars included, or "" when it
+/// filed none. Unlike `dtd_typed_render_shape_for` this is not restricted to
+/// the shapes a top-level render expands: the element is rendered from the
+/// literal's shape, where a `Bool` / `Double` leaf is exactly what the pointer
+/// heuristic got wrong.
+export fn dtd_typed_item_shape_for(e: Expr) -> String {
+  let off = typed_lowering_arg_offset(e)
+  if off < 0 {
+    dtd_typed_item_shape_through_wrapper(e)
+  } else {
+    dtd_typed_item_shape_at(off)
+  }
+}
+
+/// #3081 review: an element with no offset of its own -- an `if`, a `match`,
+/// a block, a binder whose body is its own name -- answers from its arms, the
+/// same descent the checker's key walk (`irc_push_arg_key`) makes. Every arm
+/// that answers must agree; an arm with no row, or two arms that disagree,
+/// answer "" and the syntactic shape stays in charge.
+fn dtd_typed_item_shape_through_wrapper(e: Expr) -> String {
+  match e {
+    EIf(_, t, f) => dtd_typed_item_shape_join(dtd_typed_item_shape_for(t), dtd_typed_item_shape_for(f)),
+    ESeq(_, second) => dtd_typed_item_shape_for(second),
+    EMatch(_, arms) => {
+      let mut acc = ""
+      let mut ok = true
+      let mut i = 0
+      while i < Array::length(arms) && ok {
+        let (_, body) = Array::get(arms, i)
+        let sh = dtd_typed_item_shape_for(body)
+        if String::length(sh) == 0 {
+          ()
+        } else if String::length(acc) == 0 {
+          acc = sh
+        } else if acc != sh {
+          ok = false
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      if ok {
+        acc
+      } else {
+        ""
+      }
+    },
+    ELet(nm, val, body, _) => dtd_typed_item_shape_through_binder(nm, val, body),
+    ELetRec(nm, val, body) => dtd_typed_item_shape_through_binder(nm, val, body),
+    ELetMut(nm, val, body, _) => dtd_typed_item_shape_through_binder(nm, val, body),
+    _ => ""
+  }
+}
+
+/// #3084: a render argument's head that names no type at this site: none at
+/// all, or a type parameter that no enclosing binder binds -- a generic
+/// callee's declared return (`fn pass[T](x: T) -> T`) leaking into the call
+/// site's answer. A formal the site does bind is a real, erased type and is
+/// the checker's to refuse (#2745).
+export fn dtd_head_is_leaked_formal(head: String) -> Bool {
+  // A formal reaches here in its source spelling or in the `__Vfp_` spelling
+  // #2141's re-spelling gives a declaration's formals.
+  String::length(head) > 0 && !formal_in_scope(head) && (str_array_contains(dtd_type_param_names, head) || is_marked_formal_name(head))
+}
+
+/// #3074 / #3084: the row a render argument takes when its head names
+/// nothing here. A leaked formal takes any row; an argument with NO head at
+/// all takes only a generic-renderer row, keeping #2912's refusal of an
+/// `Array::map` result whose callback declares no return type (its gate row
+/// asserts the refusal and its edit).
+export fn dtd_unnamed_head_row(arg: Expr, head: String) -> String {
+  if dtd_head_is_leaked_formal(head) {
+    dtd_typed_render_shape_for(arg)
+  } else if String::length(head) == 0 {
+    let row_sh = dtd_typed_render_shape_for(arg)
+    if String::starts_with(row_sh, "{g:") {
+      row_sh
+    } else {
+      ""
+    }
+  } else {
+    ""
+  }
+}
+
+/// The one binder shape the checker's walk follows: the body is exactly the
+/// bound name, so the VALUE answers for it.
+fn dtd_typed_item_shape_through_binder(name: String, value: Expr, body: Expr) -> String {
+  match body {
+    EIdent(bn, _) => if bn == name {
+      dtd_typed_item_shape_for(value)
+    } else {
+      ""
+    },
+    _ => ""
+  }
+}
+
+fn dtd_typed_item_shape_at(off: Int) -> String {
+  let mut key = ""
+  if off >= 0 {
+    let mut i = 0
+    while i < Array::length(dtd_typed_render_offs) {
+      if Array::get(dtd_typed_render_offs, i) == off {
+        key = Array::get(dtd_typed_render_keys, i)
+        i = Array::length(dtd_typed_render_offs)
+      } else {
+        i = i + 1
+      }
+    }
+  } else {
+    ()
+  }
+  if String::length(key) == 0 {
+    ""
+  } else {
+    match impl_target_from_key(key) {
+      Some(TyApp(head, args)) => if head == typed_render_row_head() && Array::length(args) == 1 && !eq_ty_mentions_scope_formal(Array::get(args, 0)) {
+        ty_to_eq_shape(Array::get(args, 0))
+      } else {
+        ""
+      },
+      _ => ""
+    }
+  }
+}
+
+/// #3066: does the interpolation pass EXPAND this argument itself, reading the
+/// payload positions from syntax? Those are the renders a render row corrects:
+/// a composite shape it inferred, or an `Option` / `Result` head (`Some(v)` with
+/// `v` untyped here). An argument it does not expand keeps reaching codegen,
+/// where the checker's own refusal (#2987) still answers -- a row never turns a
+/// refusal into a render.
+export fn dtd_interp_expands_itself(sh: String, head: String) -> Bool {
+  String::length(sh) > 0 || head == "Option" || head == "Result" || show_generic_known(head)
+}
+
+/// #2441: the residual rung of the `==`/`!=` ladder. Every syntactic rung
+/// has already missed (no literal, no recorded shape, no head name), which
+/// until this channel meant the raw binop survived to codegen and the
+/// runtime `eq` identity-compared aggregates -- `false` for content-equal
+/// arrays from a lambda's call result. When the checker recorded this
+/// operator offset's operand type, dispatch through the same
+/// `eq_for_typed` the shape rungs use; otherwise keep the raw binop
+/// (today's behavior). By construction this ADDS a comparator only where
+/// the ladder found none, so no answer the syntactic rungs produce
+/// changes.
+export fn dtd_typed_eq_residual(op: String, rl: Expr, rr: Expr, boff: Int) -> Expr {
+  let key = dtd_typed_eq_key_for(boff)
+  if String::length(key) == 0 {
+    EBinOp(op, rl, rr, boff)
+  } else {
+    match impl_target_from_key(key) {
+      Some(te) => {
+        let call = eq_for_typed(te, rl, rr, dtd_eq_known_types)
+        if op == "==" {
+          call
+        } else {
+          ECall(EIdent("not", -1), [call], -1)
+        }
+      },
+      None => EBinOp(op, rl, rr, boff)
+    }
+  }
+}
+
+/// #2391: the typed-`==` row at this operator offset as a TypeExpr the
+/// untyped-empty arm may dispatch on, or None. Unlike `dtd_typed_eq_residual`
+/// this applies an admission test: that arm replaces a fail-closed TRAP, not
+/// a raw binop, so a type whose comparator would answer by reference for
+/// some field must keep trapping. The test is the declared-field allow-list
+/// itself (`eq_ty_field_is_content_comparable`, the one `dtd_eq_unsafe_types`
+/// is built from) rather than the push scan's `adoptable_pushed_elem_shape`:
+/// the scan leaves `Option` / `Result` out because a SHAPE string carries
+/// `?EqUnknown` positions, while a checker-typed TypeExpr has none, and
+/// `eq_for_typed` has a structural arm for every head the field test admits
+/// (Codex P2 on #2456 -- `Array[Option[Int]]` filled through a function
+/// trapped under the scan's test although the documented allow-list admits
+/// it). The producer records a row only for a fully concrete operand type
+/// (a checker type variable -- what a lexical formal is inside a generic
+/// body -- never rides the channel: measured, `fn same[T]` comparing two
+/// untyped-empty `Array[T]` records no row). Codex round 14 on #2456: the
+/// consumer does not rely on that. A row whose spelling names a formal in
+/// scope at this site (`T` next to a merged-in `struct T`, the #2141
+/// collision) is refused here, before the allow-list could read that
+/// spelling as the declaration and admit a comparator that compares the
+/// formal's elements by reference.
+export fn dtd_typed_eq_admitted_ty(boff: Int) -> Option[TypeExpr] {
+  let key = dtd_typed_eq_key_for(boff)
+  if String::length(key) == 0 {
+    None
+  } else {
+    match impl_target_from_key(key) {
+      Some(te) => if !eq_ty_mentions_scope_formal(te) && eq_ty_field_is_content_comparable(te, empty_str_array()) {
+        Some(te)
+      } else {
+        // #2634: the checker HAD a type for this `==` site and the pass
+        // refused it. `eq_ty_field_is_content_comparable` is an allow-list
+        // that consults declared registries, so a module that cannot see a
+        // leaf's declaration refuses a row the whole program admits -- and the
+        // site then never learns its type, never reaches `eq_for_typed`'s
+        // `Array` arm, and never records the helper it needs. Recorded so that
+        // "the split never asks for this helper" can be traced to a refusal
+        // rather than guessed at.
+        eq_typed_refusal_record(key)
+        eq_deferred_request_record_ty(eq_deferred_key_for_ty(te), te)
+        None
+      },
+      None => None
+    }
+  }
+}
+
+/// #2634: MINT, into `stmts`, every helper some module deferred and nobody
+/// built. This is the link step the deferrals exist for.
+///
+/// It is the same generator the whole-program run uses
+/// (`emit_recorded_structural_eq`, which loops to a fixpoint because generating
+/// one helper can record a nested instantiation), run against the CONCATENATED
+/// program -- so every declaration a module lacked is present here by
+/// construction. A module declining to build is then not a loss: it hands the
+/// need upward and the link, which can see everything, satisfies it.
+///
+/// Returns how many top-level statements were added. Zero means every deferred
+/// helper was already built by some module that could see enough.
+///
+/// The registries are reset against `stmts` first, so what gets emitted is
+/// decided by the linked program's declarations and not by whatever the last
+/// module left behind.
+export fn eq_mint_deferred_into(stmts: Array[Stmt]) -> Int {
+  let before = Array::length(stmts)
+  eq_known_types_reset(stmts)
+  let mut i = 0
+  while i < Array::length(dtd_eq_deferred_types) {
+    match Array::get(dtd_eq_deferred_types, i) {
+      TyApp("Array", args) => if Array::length(args) == 1 {
+        arr_eq_needed_record(Array::get(args, 0))
+      } else {
+        ()
+      },
+      TyApp(head, args) => if Array::length(args) > 0 {
+        generic_eq_record(head, args)
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  emit_recorded_structural_eq(stmts)
+  Array::length(stmts) - before
+}
+
+export fn eq_deferred_requests_list() -> Array[String] {
+  let out = empty_str_array()
+  let mut i = 0
+  while i < Array::length(dtd_eq_deferred_requests) {
+    Array::push(out, Array::get(dtd_eq_deferred_requests, i))
+    i = i + 1
+  }
+  out
+}
+
+fn eq_typed_refusal_record(key: String) -> Unit {
+  if str_array_contains(dtd_eq_typed_refusals, key) {
+    ()
+  } else {
+    Array::push(dtd_eq_typed_refusals, key)
+  }
+}
+
+/// The refusals since the last reset. Paired with `eq_synthesis_requests_list`:
+/// a helper the split never requests, whose type appears here on the split lane
+/// and not on the whole-program one, was refused rather than never typed.
+export fn eq_typed_refusals_list() -> Array[String] {
+  let out = empty_str_array()
+  let mut i = 0
+  while i < Array::length(dtd_eq_typed_refusals) {
+    Array::push(out, Array::get(dtd_eq_typed_refusals, i))
+    i = i + 1
+  }
+  out
+}
+
+/// Whether a channel row's TypeExpr spells a formal that is lexically in
+/// scope at the rewrite site (the same test `eq_for_typed` applies to a
+/// binder). A shape this walk does not know counts as mentioning one.
+fn eq_ty_mentions_scope_formal(t: TypeExpr) -> Bool {
+  match t {
+    TyName(n) => is_marked_formal_name(n) || formal_in_scope(n) || formals_contain_source_name(dtd_scope_formals, n),
+    TyApp(head, args) => if is_marked_formal_name(head) || formal_in_scope(head) || formals_contain_source_name(dtd_scope_formals, head) {
+      true
+    } else {
+      let mut hit = false
+      let mut i = 0
+      while i < Array::length(args) {
+        if eq_ty_mentions_scope_formal(Array::get(args, i)) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    TyTuple(ts) => {
+      let mut hit = false
+      let mut i = 0
+      while i < Array::length(ts) {
+        if eq_ty_mentions_scope_formal(Array::get(ts, i)) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    TyUnit => false,
+    _ => true
+  }
+}

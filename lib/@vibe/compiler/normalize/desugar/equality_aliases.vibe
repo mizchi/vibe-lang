@@ -1,0 +1,162 @@
+// Equality aliases.
+
+import @vibe/compiler/core {
+  TypeExpr
+}
+
+import @vibe/ast {
+  type_param_name
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import ./state.vibe {
+  dtd_eq_type_aliases
+}
+
+import ./utilities.vibe {
+  str_array_contains
+}
+
+fn eq_subst_lookup(params: Array[String], args: Array[TypeExpr], n: String) -> Option[TypeExpr] {
+  let mut i = 0
+  let mut found = None
+  while i < Array::length(params) && i < Array::length(args) {
+    if type_param_name(Array::get(params, i)) == type_param_name(n) {
+      found = Some(Array::get(args, i))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+export fn eq_subst_ty(ty: TypeExpr, params: Array[String], args: Array[TypeExpr]) -> TypeExpr {
+  match ty {
+    TyName(n) => match eq_subst_lookup(params, args, n) {
+      Some(arg) => arg,
+      None => ty
+    },
+    TyApp(n, xs) => {
+      let subst_xs = for x in xs {
+        eq_subst_ty(x, params, args)
+      }
+      match eq_subst_lookup(params, args, n) {
+        Some(TyName(hn)) => TyApp(hn, subst_xs),
+        Some(TyApp(hn, _)) => TyApp(hn, subst_xs),
+        Some(_) => TyApp(n, subst_xs),
+        None => TyApp(n, subst_xs)
+      }
+    },
+    TyFn(ps, result, effect) => TyFn(for p in ps {
+      eq_subst_ty(p, params, args)
+    }, eq_subst_ty(result, params, args), effect),
+    TyTuple(xs) => TyTuple(for x in xs {
+      eq_subst_ty(x, params, args)
+    }),
+    _ => ty
+  }
+}
+
+fn eq_alias_name_exists(name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(dtd_eq_type_aliases) {
+    if Array::get(dtd_eq_type_aliases, i).0 == name {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn eq_ty_mentions_alias(ty: TypeExpr) -> Bool {
+  match ty {
+    TyName(name) => eq_alias_name_exists(name),
+    TyApp(head, args) => if eq_alias_name_exists(head) {
+      true
+    } else {
+      eq_tys_mention_alias(args)
+    },
+    TyFn(params, result, _) => if eq_tys_mention_alias(params) {
+      true
+    } else {
+      eq_ty_mentions_alias(result)
+    },
+    TyTuple(items) => eq_tys_mention_alias(items),
+    TyUnit => false
+  }
+}
+
+fn eq_tys_mention_alias(ts: Array[TypeExpr]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(ts) {
+    if eq_ty_mentions_alias(Array::get(ts, i)) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+export fn eq_expand_alias_ty(ty: TypeExpr) -> TypeExpr {
+  if Array::length(dtd_eq_type_aliases) == 0 {
+    ty
+  } else if !eq_ty_mentions_alias(ty) {
+    ty
+  } else {
+    eq_expand_alias_ty_seen(ty, array_empty())
+  }
+}
+
+fn eq_expand_alias_ty_seen(ty: TypeExpr, seen: Array[String]) -> TypeExpr {
+  match ty {
+    TyName(name) => eq_expand_alias_app(name, array_empty(), ty, seen),
+    TyApp(head, args) => {
+      let expanded_args = for arg in args {
+        eq_expand_alias_ty_seen(arg, seen)
+      }
+      eq_expand_alias_app(head, expanded_args, TyApp(head, expanded_args), seen)
+    },
+    TyFn(params, result, effect) => TyFn(for param in params {
+      eq_expand_alias_ty_seen(param, seen)
+    }, eq_expand_alias_ty_seen(result, seen), effect),
+    TyTuple(items) => TyTuple(for item in items {
+      eq_expand_alias_ty_seen(item, seen)
+    }),
+    TyUnit => TyUnit
+  }
+}
+
+fn eq_expand_alias_app(head: String, args: Array[TypeExpr], fallback: TypeExpr, seen: Array[String]) -> TypeExpr {
+  let mut i = 0
+  let mut out = fallback
+  let mut found = false
+  while i < Array::length(dtd_eq_type_aliases) {
+    let alias = Array::get(dtd_eq_type_aliases, i)
+    if !found && alias.0 == head && Array::length(alias.1) == Array::length(args) {
+      if str_array_contains(seen, head) {
+        out = TyName("__EqAliasCycle")
+      } else {
+        let next_seen = for item in seen {
+          item
+        }
+        Array::push(next_seen, head)
+        out = eq_expand_alias_ty_seen(eq_subst_ty(alias.2, alias.1, args), next_seen)
+      }
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}

@@ -37,8 +37,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="${VIBE_GATE_WIRING_ROOT:-$(dirname "$SCRIPT_DIR")}"
 cd "$ROOT"
 
-exec python3 - "$ROOT" <<'PYEOF'
+exec python3 - "$ROOT" "$SCRIPT_DIR" <<'PYEOF'
 import os, re, sys
+sys.path.insert(0, sys.argv[2])
+from source_files import read_local_pkl
 
 root = sys.argv[1]
 os.chdir(root)
@@ -215,11 +217,11 @@ def check_resolvable(rel, text):
                             f"resolves by basename, so spell it literally")
 
 # ---- Taskfile: task name -> body, and local binding -> task name
-taskfile = read("Taskfile.pkl")
+taskfile = read_local_pkl("Taskfile.pkl")
 local_to_task = dict(re.findall(
-    r"local\s+(\w+)\s*=\s*new Task\s*\{\s*\n\s*name\s*=\s*\"([^\"]+)\"", taskfile))
+    r"(?:local\s+)?(\w+)\s*=\s*new (?:\w+\.)?Task\s*\{\s*\n\s*name\s*=\s*\"([^\"]+)\"", taskfile))
 task_bodies = {}
-for m in re.finditer(r"local\s+(\w+)\s*=\s*new Task\s*\{(.*?)\n\}", taskfile, re.S):
+for m in re.finditer(r"(?:local\s+)?(\w+)\s*=\s*new (?:\w+\.)?Task\s*\{(.*?)\n\}", taskfile, re.S):
     local, body = m.group(1), m.group(2)
     nm = re.search(r'name\s*=\s*"([^"]+)"', body)
     if nm:

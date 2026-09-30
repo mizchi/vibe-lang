@@ -1,0 +1,239 @@
+// Interpolation types.
+
+import @vibe/compiler/core {
+  Expr, Pat, TypeExpr
+}
+
+import ./argument_types.vibe {
+  infer_arg_type_name
+}
+
+import ./binding_shape_inference.vibe {
+  dtd_elem_preserving_shape
+}
+
+import ./binding_shape_queries.vibe {
+  dtd_map_callback_shape
+}
+
+import ./empty_array_inference.vibe {
+  arm_binder_var_types
+}
+
+import ./formal_scope.vibe {
+  formal_in_scope, is_scalar_type_name
+}
+
+import ./lambda_return_shapes.vibe {
+  dtd_show_witness_dict
+}
+
+import ./renderer_scope.vibe {
+  dtd_names_an_array_builtin, has_derived_renderer
+}
+
+import ./state.vibe {
+  dtd_show_self_fn, dtd_show_shims
+}
+
+import ./trait_bounds.vibe {
+  dtd_formal_innermost_is_nested
+}
+
+import ./type_names.vibe {
+  fn_exists, lookup_var_type, struct_set_has
+}
+
+import ./typed_rendering.vibe {
+  dtd_head_is_leaked_formal, dtd_typed_render_leaf_for
+}
+
+import ./utilities.vibe {
+  str_array_contains
+}
+
+/// The `T::to_string` that should render `arg`, or "" when this pass cannot
+/// resolve one and the `__to_string` call must stay as it is.
+///
+/// The `fn_exists` gate is what keeps this from naming a function that is not
+/// there: `fn_returns` holds the program's top-level bindings AFTER
+/// `desugar_derives` has appended the generated renderers, so a hit means
+/// `derive(Show)`, `derive(Hash)`, or a hand-written `T::to_string`. Scalars
+/// are excluded outright -- `__to_string` is already faithful for them, and
+/// they are the shapes a `T::to_string` name could plausibly collide with.
+export fn interp_show_target(arg: Expr, derived_only: Bool, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
+  match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
+    Some(tn) => {
+      let target = String::concat(tn, "::to_string")
+      // `derived_only` (#1398 review, Codex P1) restricts this to renderers
+      // THIS PASS generated -- see dtd_derived_renderers. Set at a throw site,
+      // where the call is synthesized; clear at an interpolation, where the
+      // user wrote it.
+      // #2141: an enclosing binder's formal shadows a same-spelled declared
+      // type -- its values are NOT that struct, so its renderer must not fire.
+      if !is_scalar_type_name(tn) && !formal_in_scope(tn) && fn_exists(fn_returns, target) && target != Array::get(dtd_show_self_fn, 0) && (!derived_only || has_derived_renderer(tn)) {
+        target
+      } else {
+        ""
+      }
+    },
+    None => ""
+  }
+}
+
+/// #1445: the type name of an interpolated value that is a DECLARED aggregate
+/// with no `Show` renderer, or "" when this site is not that case.
+///
+/// Such a value used to fall through to the ADR-0058 pointer heuristic and print
+/// a decimal -- `enum F { C(Int); D }` (no `derive(Show)`) interpolated as
+/// `"\{f}"` printed `288`. The type is KNOWN here, so this is a missing
+/// `derive(Show)`, not an unknowable shape: silently printing an address is the
+/// worst of the three options (#1445 owner decision: make it an error).
+///
+/// Deliberately narrow -- it fires ONLY when this pass can name a declared
+/// struct/enum (`struct_sets` carries both, #672). An unresolved head, a type
+/// parameter, and every builtin shape keep the old behaviour, because at those
+/// the pass genuinely cannot tell a missing renderer from a shape it simply
+/// cannot see. The `fn_exists` check also keeps the self-recursion case quiet:
+/// inside a generated `T::to_string`, `interp_show_target` suppresses the target
+/// by name, and that is not a missing renderer.
+export fn interp_missing_show_type(arg: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
+  match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
+    // #2141: an enclosing binder's formal shadows a same-spelled declared
+    // type. Its values are erased, not renderless-struct-shaped -- keep the
+    // old fallback rendering instead of throwing a false "missing Show".
+    Some(tn) => if !is_scalar_type_name(tn) && !formal_in_scope(tn) && struct_set_has(struct_sets, tn) && !fn_exists(fn_returns, String::concat(tn, "::to_string")) {
+      tn
+    } else {
+      ""
+    },
+    None => ""
+  }
+}
+
+/// #2912: an array-returning builtin call whose ELEMENT SHAPE did not resolve,
+/// or "" when this is not that shape.
+///
+/// The two shape functions above are the whole vocabulary the renderer has for
+/// an array-returning call: `dtd_elem_preserving_shape` for the four builtins
+/// that reuse their argument's element type, and `dtd_map_callback_shape` for
+/// `Array::map`'s declared callback return. A call to one of those five whose
+/// shape comes back empty is an array the renderer CANNOT render -- and the
+/// fall-through below lowers it into `compile_call`'s general `__to_string`
+/// arm, a runtime heuristic that guesses string-pointer vs integer from the
+/// bit pattern. An array pointer takes the integer branch and prints as a
+/// decimal address: `__to_string(Array::map(xs, (v) -> v * 2))` printed `296`,
+/// varying with what allocated before it, while `vibe check` said nothing.
+///
+/// This reuses those two lists rather than adding a third naming the
+/// array-returning builtins. That family has already diverged four times from
+/// exactly such hand-maintained lists (#1460, #2903, and both halves of
+/// #2905), and a name missing from a NEW list here would silently reopen the
+/// pointer path. Missing from these two, the call never had a shape to begin
+/// with, so there is nothing to refuse and behaviour is unchanged.
+export fn interp_unresolved_array_call(arg: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
+  match arg {
+    ECall(callee, cargs, _) => match callee {
+      EIdent(fname, _) => if String::length(dtd_elem_preserving_shape(fname, cargs, struct_sets, var_types, fn_returns)) == 0 && String::length(dtd_map_callback_shape(fname, cargs)) == 0 && dtd_names_an_array_builtin(fname) {
+        fname
+      } else {
+        ""
+      },
+      _ => ""
+    },
+    _ => ""
+  }
+}
+
+/// The head-only fallback: a value this pass knows is an `Option`/`Result` but
+/// whose payload type it does not know. The match is emitted over the REWRITTEN
+/// argument (evaluated once, as the scrutinee), and the payload is rendered by
+/// the ordinary path.
+/// #1445 残件: the payload binder of a SYNTHESIZED `Option`/`Result` arm.
+///
+/// `interp_expand_by_head` builds `match x { Some(v) => .. }` itself, so `v` is
+/// a fresh temp that appears in no binding site and had no entry in
+/// `var_types` -- the payload fell to the ADR-0058 pointer heuristic even
+/// though the payload TYPE was recorded against `x` (`let op = Some(p)` ->
+/// `ctor_payload_bind`, or `o: Option[P]` -> `seed_var_types`). Measured:
+/// `let op = Some(p); "\{op}"` printed `Some(260)` while the inline
+/// `"\{Some(p)}"` printed `Some(P { x: 1 })`.
+///
+/// A USER-written `match op { Some(v) => "\{v}" }` already resolved, through
+/// `arm_binder_var_types`. This is the same shape -- a `PCtor` arm over a named
+/// scrutinee -- so it reuses that function verbatim rather than restating the
+/// lookup, and inherits its composite-payload handling for free.
+export fn interp_ctor_arm_var_types(arg: Expr, ctor: String, binder: String, var_types: Array[(String, String)]) -> Array[(String, String)] {
+  arm_binder_var_types(arg, PCtor(ctor, Array::slice([PBind(binder)], 0, 1)), var_types)
+}
+
+/// #1527: is the interpolated argument a Bool this pass can PROVE from
+/// recorded/declared types? Deliberately excludes the Bool LITERAL (the
+/// codegen classifiers already format it, and skipping it keeps the common
+/// case's lowering untouched); everything else asks `infer_arg_type_name`,
+/// which covers calls to `-> Bool` functions (fn_returns), names bound to
+/// them (var_types), and Bool-typed struct-field projections.
+export fn interp_arg_is_bool(arg: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Bool {
+  match arg {
+    EBool(_) => false,
+    _ => match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
+      Some(t) => t == "Bool",
+      None => false
+    }
+  }
+}
+
+/// #2993: a NAME whose recorded binding type is Double -- the synthesized
+/// element binder of a container render, above all. Only a name: a call is
+/// answered from `fn_returns`, which is keyed by the top-level name and cannot
+/// see a local binding that shadows it (a local `let value = () -> Int` beside
+/// a top-level `fn value() -> Double` rendered `1` through the float path), and
+/// a literal or a projection is already answered by codegen's classifiers.
+export fn interp_arg_is_double(arg: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Bool {
+  match arg {
+    EIdent(n, _) => match lookup_var_type(var_types, n) {
+      Some(t) => t == "Double" || t == "Float",
+      None => false
+    },
+    _ => false
+  }
+}
+
+/// #3075: a `Char` (declared, recorded, or filed by the checker's render row).
+/// A `Char` is a transparent `Int` at run time, so codegen's renderer printed
+/// its code point: `let c: Char = 'a'` rendered `97`. A char LITERAL lexes as
+/// an Int and is not a `Char` until something declares it one.
+export fn interp_arg_is_char(arg: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Bool {
+  match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
+    Some(t) => t == "Char" || (dtd_head_is_leaked_formal(t) && dtd_typed_render_leaf_for(arg) == "Char"),
+    None => dtd_typed_render_leaf_for(arg) == "Char"
+  }
+}
+
+/// #3075: a `Unit` value. It shares the Int representation too, so `Some(())`
+/// rendered `Some(0)`.
+export fn interp_arg_is_unit(arg: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Bool {
+  match arg {
+    EUnit => true,
+    _ => match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
+      Some(t) => t == "Unit" || (dtd_head_is_leaked_formal(t) && dtd_typed_render_leaf_for(arg) == "{u}"),
+      None => dtd_typed_render_leaf_for(arg) == "{u}"
+    }
+  }
+}
+
+/// #3003: the formal `arg` is typed at when it is an erased top-level formal
+/// with no renderer witness (the case `dtd_check_top_interp` refuses), or "".
+export fn dtd_erased_top_formal_head(arg: Expr, dict_binds: Array[(String, String, String, Array[String])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
+  match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
+    Some(head) => if formal_in_scope(head) && !dtd_formal_innermost_is_nested(head) && !str_array_contains(dtd_show_shims, Array::get(dtd_show_self_fn, 0)) {
+      match dtd_show_witness_dict(dict_binds, traits, head) {
+        Some(_) => "",
+        None => head
+      }
+    } else {
+      ""
+    },
+    None => ""
+  }
+}

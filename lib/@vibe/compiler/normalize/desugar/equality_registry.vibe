@@ -1,0 +1,541 @@
+// Equality registry.
+
+import @vibe/compiler/core {
+  TypeExpr, __to_string, compiler_owned_type_arity
+}
+
+import @vibe/ast {
+  impl_target_key, type_param_name
+}
+
+import ./equality_aliases.vibe {
+  eq_expand_alias_ty
+}
+
+import ./equality_requests.vibe {
+  type_key
+}
+
+import ./formal_scope.vibe {
+  is_scalar_type_name
+}
+
+import ./shape_environment.vibe {
+  shape_split
+}
+
+import ./state.vibe {
+  dtd_arr_eq_needed_keys,
+  dtd_eq_explicit_equals,
+  dtd_eq_explicit_equals_param,
+  dtd_eq_generic_structs,
+  dtd_eq_generic_types,
+  dtd_eq_invisible_nominals,
+  dtd_eq_nonenum_builtin_heads,
+  dtd_eq_nonstandard_builtin_enums,
+  dtd_eq_specializations,
+  dtd_eq_type_owners,
+  dtd_map_eq_needed_keys,
+  dtd_show_generic_enums,
+  dtd_show_generic_structs,
+  dtd_type_param_names,
+  scope_formal_mark_prefix
+}
+
+import ./type_name_occurrences.vibe {
+  ty_mentions_name_in
+}
+
+import ./utilities.vibe {
+  empty_str_array, str_array_contains
+}
+
+export fn show_generic_struct_decl(head: String) -> Option[(String, Array[String], Array[(String, TypeExpr)])] {
+  let mut found: Option[(String, Array[String], Array[(String, TypeExpr)])] = None
+  let mut i = 0
+  while i < Array::length(dtd_show_generic_structs) {
+    let decl = Array::get(dtd_show_generic_structs, i)
+    if decl.0 == head {
+      found = Some(decl)
+      i = Array::length(dtd_show_generic_structs)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+export fn show_generic_struct_known(head: String) -> Bool {
+  match show_generic_struct_decl(head) {
+    Some(_) => true,
+    None => false
+  }
+}
+
+export fn show_generic_enum_decl(head: String) -> Option[(String, Array[String], Array[(String, Array[TypeExpr])])] {
+  let mut found: Option[(String, Array[String], Array[(String, Array[TypeExpr])])] = None
+  let mut i = 0
+  while i < Array::length(dtd_show_generic_enums) {
+    let decl = Array::get(dtd_show_generic_enums, i)
+    if decl.0 == head {
+      found = Some(decl)
+      i = Array::length(dtd_show_generic_enums)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+export fn show_generic_enum_known(head: String) -> Bool {
+  match show_generic_enum_decl(head) {
+    Some(_) => true,
+    None => false
+  }
+}
+
+/// A `{g:Head,..}` head this pass renders itself: a `derive (Show)` generic
+/// struct (#3007) or enum (#3074).
+export fn show_generic_known(head: String) -> Bool {
+  show_generic_struct_known(head) || show_generic_enum_known(head)
+}
+
+/// #3074: the refusal for a `derive (Show)` generic enum whose type arguments
+/// this site cannot recover, naming the edit.
+export fn interp_generic_enum_unknown_msg(ename: String, off: Int) -> String {
+  let base = String::concat("cannot interpolate this `", String::concat(ename, String::concat("` value: its type arguments are not known here, and the derived renderer would print a field or payload through an erased type parameter (`1` for `true`) -- bind it with a type annotation first (e.g. `let v: ", String::concat(ename, "[Bool] = ...`, then interpolate `v`) (#3074, #3082)"))))
+  if off >= 0 {
+    String::concat(base, String::concat(" [@off=", String::concat(__to_string(off), "]")))
+  } else {
+    base
+  }
+}
+
+/// The head of a `{g:Head,..}` shape, or "".
+export fn generic_shape_head(sh: String) -> String {
+  if String::starts_with(sh, "{g:") {
+    Array::get(shape_split(String::substring(sh, 3, String::length(sh) - 1)), 0)
+  } else {
+    ""
+  }
+}
+
+export fn eq_has_explicit_equals(name: String) -> Bool {
+  str_array_contains(dtd_eq_explicit_equals, name)
+}
+
+export fn eq_explicit_equals_matches(head: String, args: Array[TypeExpr]) -> Bool {
+  let want = impl_target_key(eq_expand_alias_ty(TyApp(head, args)))
+  let mut matched = false
+  let mut i = 0
+  while i < Array::length(dtd_eq_explicit_equals_param) {
+    let entry = Array::get(dtd_eq_explicit_equals_param, i)
+    if entry.0 == head && impl_target_key(eq_expand_alias_ty(entry.1)) == want {
+      matched = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  matched
+}
+
+/// Whether a declaration's `with` clause is absent or empty. The injected
+/// comparator call is never effect-checked, so only such a comparator may
+/// be recorded.
+export fn eq_effect_row_is_empty(eff: Option[String]) -> Bool {
+  match eff {
+    Some(row) => String::length(row) == 0,
+    None => true
+  }
+}
+
+/// The one instantiation both parameters of an explicit comparator name,
+/// or `None` when either is unannotated, the two differ (after alias
+/// expansion), or the result is not annotated `Bool`.
+export fn eq_explicit_equals_signature_ty(a: Option[TypeExpr], b: Option[TypeExpr], ret_ty: Option[TypeExpr]) -> Option[TypeExpr] {
+  let ret_is_bool = match ret_ty {
+    Some(r) => match eq_expand_alias_ty(r) {
+      // Codex round 18 on #2456: the spelling must be the compiler's `Bool`;
+      // a source-owned `struct Bool` (which `dtd_eq_type_owners` records)
+      // would hand `if` a struct word. Measured: the checker already rejects
+      // such a comparator ("return type mismatch"), so this guard is the
+      // desugar's own statement of the same rule, not a fix for a program
+      // that compiles.
+      TyName(rn) => rn == "Bool" && !str_array_contains(dtd_eq_type_owners, "Bool"),
+      _ => false
+    },
+    None => false
+  }
+  match a {
+    Some(ta) => match b {
+      Some(tb) => if ret_is_bool && impl_target_key(eq_expand_alias_ty(ta)) == impl_target_key(eq_expand_alias_ty(tb)) {
+        Some(ta)
+      } else {
+        None
+      },
+      None => None
+    },
+    None => None
+  }
+}
+
+export fn generic_eq_struct_declared(name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(dtd_eq_generic_structs) {
+    if Array::get(dtd_eq_generic_structs, i).0 == name {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// The compiler-owned spelling applies only when source does not own the name.
+export fn builtin_string_map_applied(name: String, args: Array[TypeExpr]) -> Bool {
+  name == "StringMap" && Array::length(args) == 1 && !str_array_contains(dtd_eq_type_owners, name)
+}
+
+/// Whether `variants` is EXACTLY the expected constructor set, payload by
+/// payload: each expected constructor present once with the arity given,
+/// and each payload slot spelled as the named formal (`Ok(T)` is
+/// `TyName("T")` where `T` is the declaration's first parameter). Names and
+/// arities alone are not enough: `enum Result[T, E] { Ok(E); Err(T) }` has
+/// both right and swaps the formals, and the special arm would then compare
+/// an `Ok` payload with the FIRST argument's comparator (Codex round 4).
+export fn eq_enum_shape_is(variants: Array[(String, Array[TypeExpr])], expected: Array[(String, Array[String])]) -> Bool {
+  if Array::length(variants) != Array::length(expected) {
+    false
+  } else {
+    let mut ok = true
+    let mut i = 0
+    while i < Array::length(expected) {
+      let (want_name, want_formals) = Array::get(expected, i)
+      let mut found = false
+      let mut vi = 0
+      while vi < Array::length(variants) {
+        let (vname, payload) = Array::get(variants, vi)
+        if vname == want_name && Array::length(payload) == Array::length(want_formals) {
+          let mut slots_ok = true
+          let mut pi = 0
+          while pi < Array::length(payload) {
+            let slot_ok = match Array::get(payload, pi) {
+              TyName(pn) => pn == Array::get(want_formals, pi),
+              _ => false
+            }
+            if !slot_ok {
+              slots_ok = false
+            } else {
+              ()
+            }
+            pi = pi + 1
+          }
+          if slots_ok {
+            found = true
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+        vi = vi + 1
+      }
+      if !found {
+        ok = false
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    ok
+  }
+}
+
+export fn eq_builtin_enum_arm_applies(head: String) -> Bool {
+  !str_array_contains(dtd_eq_nonstandard_builtin_enums, head) && !str_array_contains(dtd_eq_nonenum_builtin_heads, head)
+}
+
+export fn eq_builtin_head_owned_by_nonenum(head: String) -> Bool {
+  str_array_contains(dtd_eq_nonenum_builtin_heads, head)
+}
+
+/// A source-declared generic type that is an ENUM: in `dtd_eq_generic_types`
+/// (every generic struct or enum) but not in `dtd_eq_generic_structs`.
+export fn eq_generic_enum_declared(name: String) -> Bool {
+  str_array_contains(dtd_eq_generic_types, name) && !generic_eq_struct_declared(name)
+}
+
+/// #2631: clear the invisible-nominal record. Deliberately NOT part of
+/// `eq_known_types_reset`, which runs once per pass entry -- the caller decides
+/// which span of compilation it wants the answer for (the whole program, or one
+/// module), and folding it into the pass reset would only ever report the last
+/// one.
+/// #2631: `n` reached `eq_for_typed`'s raw-`==` fallthrough as a NOMINAL the
+/// statement list could not see -- as opposed to the three things that legally
+/// land there.
+///
+///  - a scalar, where `==` is the right answer;
+///  - a type FORMAL, which cannot have a comparator because it has no type
+///    yet. `dtd_type_param_names` holds the names the program binds as type
+///    parameters, and `scope_formal_mark_prefix` marks one that a re-spelling
+///    already resolved to a formal (`__Vfp_E` and friends are formals by
+///    construction, #2141);
+///  - `?EqUnknown`, the shape scanner's explicit "no answer", spelled so that
+///    no identifier can collide with it.
+///
+/// What is left is a declared struct or enum that some OTHER module declares.
+/// A raw `==` on that compares an aggregate by REFERENCE, so this predicate is
+/// the defect's shape rather than a statistic about it. Measured on the
+/// compiler's CLI closure: the whole-program lane admits none of these, and a
+/// per-module lane admits exactly the ones behind an `opaque` contract
+/// declaration (#2631).
+///
+/// A name the COMPILER owns is deliberately NOT excluded here, and it was for
+/// one merge. `d3e32af` answered `false` for every `compiler_owned_type_arity`
+/// entry, so that `HostStream::equals` would not be minted. #2855 fixed the
+/// same bug the other way, and the two are mutually exclusive: both of its
+/// guards read `eq_name_is_invisible_nominal(n) && eq_name_is_unmintable_builtin(n)`,
+/// and the second is true ONLY for a compiler-owned name. With both merged,
+/// every `eq_trap()` arm was unreachable and the unmintable leaf fell through
+/// to the raw `==` below -- which compares an aggregate by REFERENCE, the
+/// answer the paragraph above calls the defect's shape.
+///
+/// Measured, `struct Holder { s: StringBuilder }` compared two ways: two
+/// builders holding the same content answered `0` on `12cd9f0` and the same
+/// builder twice answered `1`, where `8c966c3` refused (an unresolved
+/// `StringBuilder::equals` reached codegen) and #2855's own compiler trapped.
+///
+/// What the exclusion did NOT cost, because it was predicted and then measured:
+/// the six registry names `lib/` also declares (`Attempt`, `MutMap`,
+/// `TaskGroup`, `TaskHandle`, `Sender`, `Receiver`) keep comparing by content.
+/// `struct W { a: Attempt[Int, String] }` over two equal `Granted(7)` values
+/// answers `true` on all three compilers: a declaration this statement list can
+/// SEE takes an earlier arm, so it never reaches this predicate. The exclusion
+/// reaches them only where the name is genuinely invisible -- the per-module
+/// lane behind an `opaque` contract -- which is the case the paragraph above
+/// describes and which no fixture covers.
+///
+/// So "can anything mint `<n>::equals`?" stays in
+/// `eq_name_is_unmintable_builtin`, which asks it precisely: the registry MINUS
+/// the names `lib/` declares, with `dtd_eq_type_owners` on top.
+export fn eq_name_is_invisible_nominal(n: String) -> Bool {
+  !is_scalar_type_name(n) && !str_array_contains(dtd_type_param_names, n) && !String::starts_with(n, scope_formal_mark_prefix) && n != "?EqUnknown"
+}
+
+/// #2851: is a comparator reference for `n` one NOTHING can ever mint?
+///
+/// `eq_name_is_invisible_nominal` admits two different things, and the
+/// difference decides whether emitting `<n>::equals` is sound. A declared
+/// nominal this statement list cannot see is fine -- some module declares it,
+/// so the link mints the body from the concatenated program (#2631/#2634). A
+/// type with NO source declaration anywhere is not: nothing will ever supply
+/// `HostStream::equals`, and the reference dies unresolved.
+///
+/// `compiler_owned_type_arity` alone is the WRONG key, and Codex on #2855
+/// caught it: that registry records type-constructor ARITIES, not which names
+/// a module declares, and six of its entries are declared in source --
+/// `Attempt` (`lib/@vibe/core/attempt.vibe`), `MutMap`
+/// (`lib/@vibe/core/hashmap.vibe`), and `TaskGroup` / `TaskHandle` / `Sender`
+/// / `Receiver` (`lib/@vibe/concurrent/experimental/concurrent.vibe`). Their comparators
+/// ARE mintable, so trapping them would turn a working structural comparison
+/// into a trap -- a regression, where the bug being fixed is a hard error.
+///
+/// So the set is the registry MINUS those, measured by scanning `lib/` for
+/// `struct` / `enum` / `type` declarations of each registry name (generated
+/// bundles excluded, since they restate declarations rather than make them).
+/// `dtd_eq_type_owners` is consulted as well, so a declaration this run CAN
+/// see -- a shadowing test fixture, or a source declaration added later --
+/// keeps its deferral without this list having to be updated first.
+fn eq_name_is_unmintable_builtin(n: String) -> Bool {
+  if str_array_contains(dtd_eq_type_owners, n) {
+    false
+  } else {
+    match compiler_owned_type_arity(n) {
+      Some(_) => n == "HostStream" || n == "HostResponse" || n == "ByteStream" || n == "StringBuilder" || n == "PromptText" || n == "Future" || n == "Task" || n == "MutList" || n == "Array" || n == "Option" || n == "StringMap" || n == "ArrayBuilder" || n == "FixedArray" || n == "FrozenArray" || n == "MutBytes" || n == "MapBuilder",
+      None => false
+    }
+  }
+}
+
+/// #2851: the exact condition the two comparator-GENERATING arms use to decide
+/// that `<n>::equals` must not be emitted at all.
+///
+/// Named once, and exported, because the two predicates it ANDs were made
+/// mutually exclusive by accident: two fixes for #2851 landed within the hour,
+/// one narrowing `eq_name_is_invisible_nominal` and one adding
+/// `eq_name_is_unmintable_builtin`, and the conjunction silently became `false`
+/// for every name. Both `eq_trap()` arms went dead and nothing failed, because
+/// every test that covered them asked only whether the program COMPILES -- and
+/// falling through to raw `==` compiles fine. `registry_name_struct_eq_test`
+/// asserts this conjunction directly, which is the property; a proxy for it
+/// (that a call site exists, that a name is on a list) is what failed to catch
+/// the collision.
+export fn eq_name_needs_unmintable_trap(n: String) -> Bool {
+  eq_name_is_invisible_nominal(n) && eq_name_is_unmintable_builtin(n)
+}
+
+/// #2634: the synthesis REQUESTS a run made -- the container comparators and
+/// generic-struct specializations some `==` site asked for, by name.
+///
+/// Separate from what was emitted, because the two answer different halves of
+/// the same question. A per-module run that emits fewer helpers than the whole
+/// program either never RECORDED the need (the `==` site took a different arm
+/// for want of a visible type) or recorded it and failed to emit. The oracle
+/// sees only the second, and the fix is different for each.
+export fn eq_synthesis_requests_list() -> Array[String] {
+  let out = empty_str_array()
+  let mut i = 0
+  while i < Array::length(dtd_arr_eq_needed_keys) {
+    Array::push(out, Array::get(dtd_arr_eq_needed_keys, i))
+    i = i + 1
+  }
+  let mut j = 0
+  while j < Array::length(dtd_map_eq_needed_keys) {
+    Array::push(out, Array::get(dtd_map_eq_needed_keys, j))
+    j = j + 1
+  }
+  let mut k = 0
+  while k < Array::length(dtd_eq_specializations) {
+    let nm = String::concat("spec:", type_key(Array::get(dtd_eq_specializations, k)))
+    if str_array_contains(out, nm) {
+      ()
+    } else {
+      Array::push(out, nm)
+    }
+    k = k + 1
+  }
+  out
+}
+
+export fn eq_invisible_nominals_reset() -> Unit {
+  Array::truncate(dtd_eq_invisible_nominals, 0)
+}
+
+/// The non-scalar type names that reached `eq_for_typed`'s raw-`==`
+/// fallthrough without being a type formal, since the last reset: nominals the
+/// statement list could not see. A raw `==` on such a name compares an
+/// aggregate by reference, so a non-empty list is the #2631 defect and an
+/// empty one is its absence -- reported rather than assumed.
+export fn eq_invisible_nominals_list() -> Array[String] {
+  let out = empty_str_array()
+  let mut i = 0
+  while i < Array::length(dtd_eq_invisible_nominals) {
+    Array::push(out, Array::get(dtd_eq_invisible_nominals, i))
+    i = i + 1
+  }
+  out
+}
+
+/// Does the comparator generated for a field of this DECLARED type compare
+/// content? The walk that fills `dtd_eq_unsafe_types` asks this of every field,
+/// and it is an allow-list on purpose: a head this pass has not measured
+/// answers `false` and costs its owner a trap, which is the direction the
+/// triage order wants. It started as a deny-list naming the generic heads, and
+/// `Map` walked straight through it (#2192 review) -- `eq_for_typed` has no
+/// structural `Map` arm, so it falls back to a raw `==` and two equal maps
+/// answer `false`.
+///
+/// Measured on one build, a `struct W { f: T } derive (Eq)` pushed onto two
+/// unannotated empty bindings, values built separately so identity and content
+/// disagree:
+///
+///   | field type | `==` |
+///   |---|---|
+///   | `Int` / `String` / `Double` / `Bytes` | true |
+///   | `Array[Int]` / `Array[Double]` | true |
+///   | `Option[Int]` | true |
+///   | `(Int, String)` | true |
+///   | a declared struct | true |
+///   | `Map[String, Int]` | true, since #2218 |
+///
+/// A declared or concretely-specialized `Double` or `Bytes` field is fine --
+/// both generate a type-directed comparison. Generic fields retain their
+/// concrete arguments through specialized comparators (#2195). A nominal
+/// opaque type still reaches the raw-`==` fallback and is rejected
+/// by the same clause -- a `StringBuilder` field is neither scalar nor a
+/// declared struct here, so its owner is unsafe.
+///
+/// `Map` was the single outlier in that table until #2218 gave `eq_for_typed`
+/// a `Map` arm. It is admitted here for the same reason `Array` is: there is
+/// now a generated comparator that descends into it.
+export fn eq_tparams_contain_name(tparams: Array[String], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(tparams) && !found {
+    if type_param_name(Array::get(tparams, i)) == name {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+export fn generic_eq_formal_is_observed(head: String, formal: String, visiting: Array[String]) -> Bool {
+  let key = String::concat(head, String::concat("::", formal))
+  if str_array_contains(visiting, key) {
+    false
+  } else {
+    Array::push(visiting, key)
+    let mut observed = false
+    let mut i = 0
+    while i < Array::length(dtd_eq_generic_structs) {
+      let decl = Array::get(dtd_eq_generic_structs, i)
+      if decl.0 == head {
+        let mut fi = 0
+        while fi < Array::length(decl.2) {
+          if generic_eq_type_observes_formal(Array::get(decl.2, fi).1, formal, visiting) {
+            observed = true
+          } else {
+            ()
+          }
+          fi = fi + 1
+        }
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    Array::truncate(visiting, Array::length(visiting) - 1)
+    observed
+  }
+}
+
+fn generic_eq_type_observes_formal(ty: TypeExpr, formal: String, visiting: Array[String]) -> Bool {
+  match ty {
+    TyName(name) => name == formal || name == type_param_name(formal),
+    TyApp(head, args) => if head == type_param_name(formal) {
+      true
+    } else if generic_eq_struct_declared(head) {
+      let mut observed = false
+      let mut i = 0
+      while i < Array::length(dtd_eq_generic_structs) {
+        let decl = Array::get(dtd_eq_generic_structs, i)
+        if decl.0 == head && Array::length(decl.1) == Array::length(args) {
+          let mut ai = 0
+          while ai < Array::length(args) {
+            if generic_eq_formal_is_observed(head, Array::get(decl.1, ai), visiting) && generic_eq_type_observes_formal(Array::get(args, ai), formal, visiting) {
+              observed = true
+            } else {
+              ()
+            }
+            ai = ai + 1
+          }
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      observed
+    } else {
+      ty_mentions_name_in(ty, Array::slice([formal], 0, 1))
+    },
+    TyFn(_, _, _) => ty_mentions_name_in(ty, Array::slice([formal], 0, 1)),
+    TyTuple(_) => ty_mentions_name_in(ty, Array::slice([formal], 0, 1)),
+    TyUnit => false
+  }
+}

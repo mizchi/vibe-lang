@@ -1,0 +1,1107 @@
+// lib/@vibex/wasm_wat_encoder/wat_encoder.vibe — compile.
+
+import @vibe/core {
+  struct BigInt
+}
+
+import ./wat_encoder_instruction.vibe {
+  append_bytes,
+  decode_string,
+  decode_string_bytes,
+  emit_instruction,
+  emit_section,
+  empty_int_array,
+  find_or_add_type,
+  map_get,
+  map_indices_new,
+  map_names_new,
+  map_set,
+  parse_func_sig,
+  parse_int,
+  tok_ident,
+  tok_int,
+  tok_keyword,
+  tok_lparen,
+  tok_rparen,
+  tok_string,
+  tok_text,
+  tok_type,
+  tokenize,
+  valtype_code,
+  write_name,
+  write_sleb128,
+  write_uleb128
+}
+
+/// Return the `)` paired with `open_pos`, or `end_pos` for malformed input.
+/// Keeping this structural (rather than searching source text) also makes
+/// comments and quoted parentheses harmless here.
+fn folded_close(tokens: Array[(Int, Int, Int)], open_pos: Int, end_pos: Int) -> Int {
+  let mut depth = 0
+  let mut pos = open_pos
+  let mut close = end_pos
+  while pos < end_pos && close == end_pos {
+    let ty = tok_type(tokens, pos)
+    if ty == tok_lparen {
+      depth = depth + 1
+    } else if ty == tok_rparen {
+      depth = depth - 1
+      if depth == 0 {
+        close = pos
+      }
+    }
+    pos = pos + 1
+  }
+  close
+}
+
+fn folded_group_kind(src: String, tokens: Array[(Int, Int, Int)], open_pos: Int, end_pos: Int) -> String {
+  if open_pos + 1 < end_pos && tok_type(tokens, open_pos) == tok_lparen {
+    tok_text(src, tokens, open_pos + 1)
+  } else {
+    ""
+  }
+}
+
+/// Emit a sequence of flat and folded instructions. Folded operands recurse
+/// through `emit_folded_instruction`; flat instructions keep using the one
+/// opcode/immediate encoder above, so the two syntaxes cannot drift apart.
+fn emit_instruction_range(buf: Bytes, src: String, tokens: Array[(Int, Int, Int)], start_pos: Int, end_pos: Int, func_names: Array[String], func_indices: Array[Int], local_names: Array[String], local_indices: Array[Int], global_names: Array[String], global_indices: Array[Int], label_names: Array[String], label_indices: Array[Int], label_depth: Int) -> Unit {
+  let mut pos = start_pos
+  while pos < end_pos {
+    if tok_type(tokens, pos) == tok_lparen {
+      pos = emit_folded_instruction(buf, src, tokens, pos, end_pos, func_names, func_indices, local_names, local_indices, global_names, global_indices, label_names, label_indices, label_depth)
+    } else if tok_type(tokens, pos) == tok_rparen {
+      pos = end_pos
+    } else {
+      pos = emit_instruction(buf, src, tokens, pos, end_pos, func_names, func_indices, local_names, local_indices, global_names, global_indices, label_names, label_indices, label_depth)
+    }
+  }
+}
+
+/// Lower one WAT folded instruction `(op operand...)` to stack-machine order:
+/// each nested operand is emitted first, then `op`. Immediate arguments such
+/// as the index in `local.set 1` remain attached to `op`.
+///
+/// Structured control is the exception to the final-op rule: `block`/`loop`
+/// open before their bodies, while folded `if` evaluates its condition before
+/// opening the if and then emits its `then`/`else` groups.
+fn emit_folded_instruction(buf: Bytes, src: String, tokens: Array[(Int, Int, Int)], open_pos: Int, end_pos: Int, func_names: Array[String], func_indices: Array[Int], local_names: Array[String], local_indices: Array[Int], global_names: Array[String], global_indices: Array[Int], label_names: Array[String], label_indices: Array[Int], label_depth: Int) -> Int {
+  let close = folded_close(tokens, open_pos, end_pos)
+  let head = open_pos + 1
+  if head >= close || tok_type(tokens, head) != tok_keyword {
+    if close < end_pos {
+      close + 1
+    } else {
+      end_pos
+    }
+  } else {
+    let kw = tok_text(src, tokens, head)
+    let mut prefix_end = head + 1
+    if kw == "br_table" {
+      while prefix_end < close && (tok_type(tokens, prefix_end) == tok_int || tok_type(tokens, prefix_end) == tok_ident) {
+        prefix_end = prefix_end + 1
+      }
+    } else if prefix_end < close && tok_type(tokens, prefix_end) == tok_ident {
+      prefix_end = prefix_end + 1
+    } else if (kw == "br" || kw == "br_if" || kw == "call" || kw == "local.get" || kw == "local.set" || kw == "local.tee" || kw == "global.get" || kw == "global.set") && prefix_end < close && tok_type(tokens, prefix_end) != tok_lparen {
+      prefix_end = prefix_end + 1
+    } else if (kw == "i32.const" || kw == "i64.const" || kw == "f32.const" || kw == "f64.const") && prefix_end < close {
+      prefix_end = prefix_end + 1
+    } else if String::starts_with(kw, "i32.load") || String::starts_with(kw, "i64.load") || String::starts_with(kw, "f32.load") || String::starts_with(kw, "f64.load") || String::starts_with(kw, "i32.store") || String::starts_with(kw, "i64.store") || String::starts_with(kw, "f32.store") || String::starts_with(kw, "f64.store") {
+      while prefix_end < close && tok_type(tokens, prefix_end) == tok_keyword && (String::starts_with(tok_text(src, tokens, prefix_end), "offset=") || String::starts_with(tok_text(src, tokens, prefix_end), "align=")) {
+        prefix_end = prefix_end + 1
+      }
+    }
+    // `(result ...)` and call_indirect's `(type ...)` are annotations, not
+    // operand expressions. Leave them in the prefix consumed by the flat
+    // immediate encoder.
+    let annotation = if prefix_end < close {
+      folded_group_kind(src, tokens, prefix_end, close)
+    } else {
+      ""
+    }
+    if annotation == "result" || (kw == "call_indirect" && annotation == "type") {
+      let annotation_close = folded_close(tokens, prefix_end, close)
+      prefix_end = if annotation_close < close {
+        annotation_close + 1
+      } else {
+        close
+      }
+    }
+    if kw == "block" || kw == "loop" {
+      let _ = emit_instruction(buf, src, tokens, head, prefix_end, func_names, func_indices, local_names, local_indices, global_names, global_indices, label_names, label_indices, label_depth)
+      emit_instruction_range(buf, src, tokens, prefix_end, close, func_names, func_indices, local_names, local_indices, global_names, global_indices, label_names, label_indices, label_depth + 1)
+      Bytes::push(buf, 0x0B)
+    } else if kw == "if" {
+      let mut then_pos = prefix_end
+      while then_pos < close && folded_group_kind(src, tokens, then_pos, close) != "then" {
+        if tok_type(tokens, then_pos) == tok_lparen {
+          let child_close = folded_close(tokens, then_pos, close)
+          emit_instruction_range(buf, src, tokens, then_pos, child_close + 1, func_names, func_indices, local_names, local_indices, global_names, global_indices, label_names, label_indices, label_depth)
+          then_pos = child_close + 1
+        } else {
+          then_pos = emit_instruction(buf, src, tokens, then_pos, close, func_names, func_indices, local_names, local_indices, global_names, global_indices, label_names, label_indices, label_depth)
+        }
+      }
+      let _ = emit_instruction(buf, src, tokens, head, prefix_end, func_names, func_indices, local_names, local_indices, global_names, global_indices, label_names, label_indices, label_depth)
+      if then_pos < close {
+        let then_close = folded_close(tokens, then_pos, close)
+        emit_instruction_range(buf, src, tokens, then_pos + 2, then_close, func_names, func_indices, local_names, local_indices, global_names, global_indices, label_names, label_indices, label_depth + 1)
+        let else_pos = then_close + 1
+        if else_pos < close && folded_group_kind(src, tokens, else_pos, close) == "else" {
+          Bytes::push(buf, 0x05)
+          let else_close = folded_close(tokens, else_pos, close)
+          emit_instruction_range(buf, src, tokens, else_pos + 2, else_close, func_names, func_indices, local_names, local_indices, global_names, global_indices, label_names, label_indices, label_depth + 1)
+        }
+      }
+      Bytes::push(buf, 0x0B)
+    } else {
+      emit_instruction_range(buf, src, tokens, prefix_end, close, func_names, func_indices, local_names, local_indices, global_names, global_indices, label_names, label_indices, label_depth)
+      let _ = emit_instruction(buf, src, tokens, head, prefix_end, func_names, func_indices, local_names, local_indices, global_names, global_indices, label_names, label_indices, label_depth)
+    }
+    if close < end_pos {
+      close + 1
+    } else {
+      end_pos
+    }
+  }
+}
+
+fn compile_func_body(src: String, tokens: Array[(Int, Int, Int)], body_start: Int, body_end: Int, func_names: Array[String], func_indices: Array[Int], global_names: Array[String], global_indices: Array[Int], param_names: Array[String], param_count: Int, local_types: Array[Int], local_decl_names: Array[String]) -> Bytes {
+  let code = Bytes::new()
+  let ln = map_names_new()
+  let li = map_indices_new()
+  let mut pi = 0
+  while pi < Array::length(param_names) {
+    let pn = Array::get(param_names, pi)
+    if String::length(pn) > 0 {
+      map_set(ln, li, pn, pi)
+    }
+    pi = pi + 1
+  }
+  let mut di = 0
+  while di < Array::length(local_decl_names) {
+    let dn = Array::get(local_decl_names, di)
+    if String::length(dn) > 0 {
+      map_set(ln, li, dn, param_count + di)
+    }
+    di = di + 1
+  }
+  let lbl_names = map_names_new()
+  let lbl_indices = map_indices_new()
+  let local_count = Array::length(local_types)
+  if local_count == 0 {
+    write_uleb128(code, 0)
+  } else {
+    let groups_types = empty_int_array()
+    let groups_counts = empty_int_array()
+    let mut gi = 0
+    while gi < local_count {
+      let lt = Array::get(local_types, gi)
+      let gl = Array::length(groups_types)
+      if (gl > 0) && (Array::get(groups_types, gl - 1) == lt) {
+        let prev = Array::get(groups_counts, gl - 1)
+        Array::truncate(groups_counts, gl - 1)
+        Array::push(groups_counts, prev + 1)
+      } else {
+        Array::push(groups_types, lt)
+        Array::push(groups_counts, 1)
+      }
+      gi = gi + 1
+    }
+    write_uleb128(code, Array::length(groups_types))
+    let mut k = 0
+    while k < Array::length(groups_types) {
+      write_uleb128(code, Array::get(groups_counts, k))
+      Bytes::push(code, Array::get(groups_types, k))
+      k = k + 1
+    }
+  }
+  emit_instruction_range(code, src, tokens, body_start, body_end, func_names, func_indices, ln, li, global_names, global_indices, lbl_names, lbl_indices, 0)
+  Bytes::push(code, 0x0B)
+  code
+}
+
+export fn compile(src: String) -> Bytes {
+  let tokens = tokenize(src)
+  let tok_count = Array::length(tokens)
+  let out = Bytes::new()
+  Bytes::push(out, 0x00)
+  Bytes::push(out, 0x61)
+  Bytes::push(out, 0x73)
+  Bytes::push(out, 0x6D)
+  Bytes::push(out, 0x01)
+  Bytes::push(out, 0x00)
+  Bytes::push(out, 0x00)
+  Bytes::push(out, 0x00)
+  let types_params = Array::slice([Array::slice([0], 0, 0)], 0, 0)
+  let types_results = Array::slice([Array::slice([0], 0, 0)], 0, 0)
+  let import_modules = Array::slice([""], 0, 0)
+  let import_names = Array::slice([""], 0, 0)
+  let import_kinds = Array::slice([0], 0, 0)
+  let import_type_indices = Array::slice([0], 0, 0)
+  let import_global_valtypes = Array::slice([0], 0, 0)
+  let import_global_muts = Array::slice([0], 0, 0)
+  let func_type_indices = Array::slice([0], 0, 0)
+  let func_bodies_start = Array::slice([0], 0, 0)
+  let func_bodies_end = Array::slice([0], 0, 0)
+  let func_param_names = Array::slice([Array::slice([""], 0, 0)], 0, 0)
+  let func_param_counts = Array::slice([0], 0, 0)
+  let func_local_types = Array::slice([Array::slice([0], 0, 0)], 0, 0)
+  let func_local_names = Array::slice([Array::slice([""], 0, 0)], 0, 0)
+  let func_names = map_names_new()
+  let func_indices = map_indices_new()
+  let global_names = map_names_new()
+  let global_indices = map_indices_new()
+  let export_names = Array::slice([""], 0, 0)
+  let export_kinds = Array::slice([0], 0, 0)
+  let export_indices = Array::slice([0], 0, 0)
+  let mem_min = Array::slice([0], 0, 0)
+  let mem_max = Array::slice([0], 0, 0)
+  let mem_has_max = Array::slice([0], 0, 0)
+  let global_valtypes = Array::slice([0], 0, 0)
+  let global_muts = Array::slice([0], 0, 0)
+  let global_init_vals = Array::slice([0], 0, 0)
+  let global_init_types = Array::slice([0], 0, 0)
+  let table_min = Array::slice([0], 0, 0)
+  let table_max = Array::slice([0], 0, 0)
+  let table_has_max = Array::slice([0], 0, 0)
+  let elem_offsets = Array::slice([0], 0, 0)
+  let elem_func_indices = Array::slice([Array::slice([0], 0, 0)], 0, 0)
+  let data_offsets = Array::slice([0], 0, 0)
+  let data_bytes = Array::slice([Bytes::new()], 0, 0)
+  let mut start_func = -1
+  let mut import_func_count = 0
+  let mut pos = 0
+  while (pos < tok_count) && (tok_type(tokens, pos) != tok_lparen) {
+    pos = pos + 1
+  }
+  if pos < tok_count {
+    pos = pos + 1
+  }
+  if (pos < tok_count) && (tok_type(tokens, pos) == tok_keyword) && (tok_text(src, tokens, pos) == "module") {
+    pos = pos + 1
+  }
+  while pos < tok_count {
+    let cur_ty = tok_type(tokens, pos)
+    if cur_ty == tok_rparen {
+      pos = tok_count
+    } else if cur_ty == tok_lparen {
+      pos = pos + 1
+      if (pos < tok_count) && (tok_type(tokens, pos) == tok_keyword) {
+        let section_kw = tok_text(src, tokens, pos)
+        pos = pos + 1
+        if section_kw == "type" {
+          if (pos < tok_count) && (tok_type(tokens, pos) == tok_ident) {
+            pos = pos + 1
+          }
+          if (pos < tok_count) && (tok_type(tokens, pos) == tok_lparen) {
+            pos = pos + 1
+            if (pos < tok_count) && (tok_text(src, tokens, pos) == "func") {
+              pos = pos + 1
+              let result0 = parse_func_sig(src, tokens, pos, tok_count)
+              let (params0, results0, new_pos0) = result0
+              let _ = find_or_add_type(types_params, types_results, params0, results0)
+              pos = new_pos0
+            }
+          }
+          let mut depth = 1
+          while (pos < tok_count) && (depth > 0) {
+            if tok_type(tokens, pos) == tok_lparen {
+              depth = depth + 1
+            }
+            else if tok_type(tokens, pos) == tok_rparen {
+              depth = depth - 1
+            }
+            pos = pos + 1
+          }
+        }
+        else if section_kw == "import" {
+          let mut mod_name = ""
+          let mut field_name = ""
+          let mut str_count = 0
+          while (pos < tok_count) && (tok_type(tokens, pos) == tok_string) {
+            if str_count == 0 {
+              mod_name = decode_string(tok_text(src, tokens, pos))
+            } else {
+              field_name = decode_string(tok_text(src, tokens, pos))
+            }
+            str_count = str_count + 1
+            pos = pos + 1
+          }
+          if (pos < tok_count) && (tok_type(tokens, pos) == tok_lparen) {
+            pos = pos + 1
+            if pos < tok_count {
+              let desc_kw = tok_text(src, tokens, pos)
+              pos = pos + 1
+              if desc_kw == "func" {
+                if (pos < tok_count) && (tok_type(tokens, pos) == tok_ident) {
+                  let fname = tok_text(src, tokens, pos)
+                  map_set(func_names, func_indices, fname, import_func_count)
+                  pos = pos + 1
+                }
+                if (pos < tok_count) && (tok_type(tokens, pos) == tok_lparen) {
+                  let result1 = parse_func_sig(src, tokens, pos, tok_count)
+                  let (params1, results1, new_pos1) = result1
+                  let tidx = find_or_add_type(types_params, types_results, params1, results1)
+                  Array::push(import_modules, mod_name)
+                  Array::push(import_names, field_name)
+                  Array::push(import_kinds, 0)
+                  Array::push(import_type_indices, tidx)
+                  Array::push(import_global_valtypes, 0)
+                  Array::push(import_global_muts, 0)
+                  pos = new_pos1
+                } else {
+                  let tidx = find_or_add_type(types_params, types_results, empty_int_array(), empty_int_array())
+                  Array::push(import_modules, mod_name)
+                  Array::push(import_names, field_name)
+                  Array::push(import_kinds, 0)
+                  Array::push(import_type_indices, tidx)
+                  Array::push(import_global_valtypes, 0)
+                  Array::push(import_global_muts, 0)
+                }
+                import_func_count = import_func_count + 1
+              }
+              else if desc_kw == "memory" {
+                let mut min_val = 0
+                let mut max_val = 0
+                let mut has_max_val = 0
+                if (pos < tok_count) && (tok_type(tokens, pos) == tok_int) {
+                  min_val = parse_int(tok_text(src, tokens, pos))
+                  pos = pos + 1
+                  if (pos < tok_count) && (tok_type(tokens, pos) == tok_int) {
+                    max_val = parse_int(tok_text(src, tokens, pos))
+                    has_max_val = 1
+                    pos = pos + 1
+                  }
+                }
+                Array::push(import_modules, mod_name)
+                Array::push(import_names, field_name)
+                Array::push(import_kinds, 2)
+                Array::push(import_type_indices, 0)
+                Array::push(import_global_valtypes, 0)
+                Array::push(import_global_muts, 0)
+                Array::push(mem_min, min_val)
+                Array::push(mem_max, max_val)
+                Array::push(mem_has_max, has_max_val)
+              }
+              else if desc_kw == "global" {
+                let mut vt = 0x7F
+                let mut mutability = 0
+                if (pos < tok_count) && (tok_type(tokens, pos) == tok_lparen) {
+                  pos = pos + 1
+                  if (pos < tok_count) && (tok_text(src, tokens, pos) == "mut") {
+                    mutability = 1
+                    pos = pos + 1
+                    if pos < tok_count {
+                      vt = valtype_code(tok_text(src, tokens, pos))
+                      pos = pos + 1
+                    }
+                  }
+                  if (pos < tok_count) && (tok_type(tokens, pos) == tok_rparen) {
+                    pos = pos + 1
+                  }
+                } else if (pos < tok_count) && (tok_type(tokens, pos) == tok_keyword) {
+                  vt = valtype_code(tok_text(src, tokens, pos))
+                  pos = pos + 1
+                }
+                Array::push(import_modules, mod_name)
+                Array::push(import_names, field_name)
+                Array::push(import_kinds, 3)
+                Array::push(import_type_indices, 0)
+                Array::push(import_global_valtypes, vt)
+                Array::push(import_global_muts, mutability)
+              }
+            }
+          }
+          let mut depth2 = 1
+          while (pos < tok_count) && (depth2 > 0) {
+            if tok_type(tokens, pos) == tok_lparen {
+              depth2 = depth2 + 1
+            }
+            else if tok_type(tokens, pos) == tok_rparen {
+              depth2 = depth2 - 1
+            }
+            pos = pos + 1
+          }
+        }
+        else if section_kw == "func" {
+          let func_idx = import_func_count + Array::length(func_type_indices)
+          if (pos < tok_count) && (tok_type(tokens, pos) == tok_ident) {
+            let fname = tok_text(src, tokens, pos)
+            map_set(func_names, func_indices, fname, func_idx)
+            pos = pos + 1
+          }
+          let mut check_export = true
+          while check_export {
+            if (pos < tok_count) && (tok_type(tokens, pos) == tok_lparen) {
+              let next_pos = pos + 1
+              if (next_pos < tok_count) && (tok_type(tokens, next_pos) == tok_keyword) && (tok_text(src, tokens, next_pos) == "export") {
+                let str_pos = next_pos + 1
+                if (str_pos < tok_count) && (tok_type(tokens, str_pos) == tok_string) {
+                  let ename = decode_string(tok_text(src, tokens, str_pos))
+                  Array::push(export_names, ename)
+                  Array::push(export_kinds, 0)
+                  Array::push(export_indices, func_idx)
+                  pos = str_pos + 1
+                  if (pos < tok_count) && (tok_type(tokens, pos) == tok_rparen) {
+                    pos = pos + 1
+                  }
+                } else {
+                  check_export = false
+                }
+              } else {
+                check_export = false
+              }
+            } else {
+              check_export = false
+            }
+          }
+          let pnames = Array::slice([""], 0, 0)
+          let params = empty_int_array()
+          let results = empty_int_array()
+          let mut parsing_sig = true
+          while parsing_sig {
+            if (pos < tok_count) && (tok_type(tokens, pos) == tok_lparen) {
+              let peek_pos = pos + 1
+              if peek_pos < tok_count {
+                let peek_kw = tok_text(src, tokens, peek_pos)
+                if peek_kw == "param" {
+                  pos = peek_pos + 1
+                  if (pos < tok_count) && (tok_type(tokens, pos) == tok_ident) {
+                    let pname = tok_text(src, tokens, pos)
+                    pos = pos + 1
+                    if (pos < tok_count) && (tok_type(tokens, pos) == tok_keyword) {
+                      Array::push(pnames, pname)
+                      Array::push(params, valtype_code(tok_text(src, tokens, pos)))
+                      pos = pos + 1
+                    }
+                  } else {
+                    while (pos < tok_count) && (tok_type(tokens, pos) == tok_keyword) {
+                      Array::push(pnames, "")
+                      Array::push(params, valtype_code(tok_text(src, tokens, pos)))
+                      pos = pos + 1
+                    }
+                  }
+                  if (pos < tok_count) && (tok_type(tokens, pos) == tok_rparen) {
+                    pos = pos + 1
+                  }
+                }
+                else if peek_kw == "result" {
+                  pos = peek_pos + 1
+                  while (pos < tok_count) && (tok_type(tokens, pos) == tok_keyword) {
+                    Array::push(results, valtype_code(tok_text(src, tokens, pos)))
+                    pos = pos + 1
+                  }
+                  if (pos < tok_count) && (tok_type(tokens, pos) == tok_rparen) {
+                    pos = pos + 1
+                  }
+                }
+                else {
+                  parsing_sig = false
+                }
+              } else {
+                parsing_sig = false
+              }
+            } else {
+              parsing_sig = false
+            }
+          }
+          let tidx = find_or_add_type(types_params, types_results, params, results)
+          Array::push(func_type_indices, tidx)
+          Array::push(func_param_names, pnames)
+          Array::push(func_param_counts, Array::length(params))
+          let ltypes = empty_int_array()
+          let lnames = Array::slice([""], 0, 0)
+          let mut parsing_locals = true
+          while parsing_locals {
+            if (pos < tok_count) && (tok_type(tokens, pos) == tok_lparen) {
+              let peek_pos2 = pos + 1
+              if (peek_pos2 < tok_count) && (tok_text(src, tokens, peek_pos2) == "local") {
+                pos = peek_pos2 + 1
+                if (pos < tok_count) && (tok_type(tokens, pos) == tok_ident) {
+                  let lname = tok_text(src, tokens, pos)
+                  pos = pos + 1
+                  if (pos < tok_count) && (tok_type(tokens, pos) == tok_keyword) {
+                    Array::push(lnames, lname)
+                    Array::push(ltypes, valtype_code(tok_text(src, tokens, pos)))
+                    pos = pos + 1
+                  }
+                } else {
+                  while (pos < tok_count) && (tok_type(tokens, pos) == tok_keyword) {
+                    Array::push(lnames, "")
+                    Array::push(ltypes, valtype_code(tok_text(src, tokens, pos)))
+                    pos = pos + 1
+                  }
+                }
+                if (pos < tok_count) && (tok_type(tokens, pos) == tok_rparen) {
+                  pos = pos + 1
+                }
+              } else {
+                parsing_locals = false
+              }
+            } else {
+              parsing_locals = false
+            }
+          }
+          Array::push(func_local_types, ltypes)
+          Array::push(func_local_names, lnames)
+          let body_start_pos = pos
+          let mut depth3 = 1
+          while (pos < tok_count) && (depth3 > 0) {
+            if tok_type(tokens, pos) == tok_lparen {
+              depth3 = depth3 + 1
+            }
+            else if tok_type(tokens, pos) == tok_rparen {
+              depth3 = depth3 - 1
+            }
+            if depth3 > 0 {
+              pos = pos + 1
+            }
+          }
+          let body_end_pos = pos
+          Array::push(func_bodies_start, body_start_pos)
+          Array::push(func_bodies_end, body_end_pos)
+          if pos < tok_count {
+            pos = pos + 1
+          }
+        }
+        else if section_kw == "memory" {
+          if (pos < tok_count) && (tok_type(tokens, pos) == tok_lparen) {
+            let next_pos2 = pos + 1
+            if (next_pos2 < tok_count) && (tok_text(src, tokens, next_pos2) == "export") {
+              let str_pos2 = next_pos2 + 1
+              if (str_pos2 < tok_count) && (tok_type(tokens, str_pos2) == tok_string) {
+                let ename2 = decode_string(tok_text(src, tokens, str_pos2))
+                Array::push(export_names, ename2)
+                Array::push(export_kinds, 2)
+                Array::push(export_indices, Array::length(mem_min))
+                pos = str_pos2 + 1
+                if (pos < tok_count) && (tok_type(tokens, pos) == tok_rparen) {
+                  pos = pos + 1
+                }
+              }
+            }
+          }
+          let mut min_v = 0
+          let mut max_v = 0
+          let mut has_max_v = 0
+          if (pos < tok_count) && (tok_type(tokens, pos) == tok_int) {
+            min_v = parse_int(tok_text(src, tokens, pos))
+            pos = pos + 1
+            if (pos < tok_count) && (tok_type(tokens, pos) == tok_int) {
+              max_v = parse_int(tok_text(src, tokens, pos))
+              has_max_v = 1
+              pos = pos + 1
+            }
+          }
+          Array::push(mem_min, min_v)
+          Array::push(mem_max, max_v)
+          Array::push(mem_has_max, has_max_v)
+          let mut d4 = 1
+          while (pos < tok_count) && (d4 > 0) {
+            if tok_type(tokens, pos) == tok_lparen {
+              d4 = d4 + 1
+            }
+            else if tok_type(tokens, pos) == tok_rparen {
+              d4 = d4 - 1
+            }
+            pos = pos + 1
+          }
+        }
+        else if section_kw == "export" {
+          let mut ename3 = ""
+          if (pos < tok_count) && (tok_type(tokens, pos) == tok_string) {
+            ename3 = decode_string(tok_text(src, tokens, pos))
+            pos = pos + 1
+          }
+          if (pos < tok_count) && (tok_type(tokens, pos) == tok_lparen) {
+            pos = pos + 1
+            if pos < tok_count {
+              let ekind_kw = tok_text(src, tokens, pos)
+              pos = pos + 1
+              let mut ekind = 0
+              if ekind_kw == "func" {
+                ekind = 0
+              }
+              else if ekind_kw == "table" {
+                ekind = 1
+              }
+              else if ekind_kw == "memory" {
+                ekind = 2
+              }
+              else if ekind_kw == "global" {
+                ekind = 3
+              }
+              let mut eidx = 0
+              if pos < tok_count {
+                if tok_type(tokens, pos) == tok_ident {
+                  let ident = tok_text(src, tokens, pos)
+                  if ekind == 0 {
+                    eidx = map_get(func_names, func_indices, ident)
+                    if eidx < 0 {
+                      eidx = 0
+                    }
+                  } else if ekind == 3 {
+                    eidx = map_get(global_names, global_indices, ident)
+                    if eidx < 0 {
+                      eidx = 0
+                    }
+                  }
+                  pos = pos + 1
+                } else if tok_type(tokens, pos) == tok_int {
+                  eidx = parse_int(tok_text(src, tokens, pos))
+                  pos = pos + 1
+                }
+              }
+              Array::push(export_names, ename3)
+              Array::push(export_kinds, ekind)
+              Array::push(export_indices, eidx)
+            }
+          }
+          let mut d5 = 1
+          while (pos < tok_count) && (d5 > 0) {
+            if tok_type(tokens, pos) == tok_lparen {
+              d5 = d5 + 1
+            }
+            else if tok_type(tokens, pos) == tok_rparen {
+              d5 = d5 - 1
+            }
+            pos = pos + 1
+          }
+        }
+        else if section_kw == "global" {
+          let global_idx = Array::length(global_valtypes)
+          if (pos < tok_count) && (tok_type(tokens, pos) == tok_ident) {
+            let gname = tok_text(src, tokens, pos)
+            map_set(global_names, global_indices, gname, global_idx)
+            pos = pos + 1
+          }
+          if (pos < tok_count) && (tok_type(tokens, pos) == tok_lparen) {
+            let peek3 = pos + 1
+            if (peek3 < tok_count) && (tok_text(src, tokens, peek3) == "export") {
+              let str3 = peek3 + 1
+              if (str3 < tok_count) && (tok_type(tokens, str3) == tok_string) {
+                let gename = decode_string(tok_text(src, tokens, str3))
+                Array::push(export_names, gename)
+                Array::push(export_kinds, 3)
+                Array::push(export_indices, global_idx)
+                pos = str3 + 1
+                if (pos < tok_count) && (tok_type(tokens, pos) == tok_rparen) {
+                  pos = pos + 1
+                }
+              }
+            }
+          }
+          let mut gvt = 0x7F
+          let mut gmut = 0
+          if (pos < tok_count) && (tok_type(tokens, pos) == tok_lparen) {
+            pos = pos + 1
+            if (pos < tok_count) && (tok_text(src, tokens, pos) == "mut") {
+              gmut = 1
+              pos = pos + 1
+              if (pos < tok_count) && (tok_type(tokens, pos) == tok_keyword) {
+                gvt = valtype_code(tok_text(src, tokens, pos))
+                pos = pos + 1
+              }
+            }
+            if (pos < tok_count) && (tok_type(tokens, pos) == tok_rparen) {
+              pos = pos + 1
+            }
+          } else if (pos < tok_count) && (tok_type(tokens, pos) == tok_keyword) {
+            gvt = valtype_code(tok_text(src, tokens, pos))
+            pos = pos + 1
+          }
+          let mut ginit = 0
+          let mut ginit_type = 0x7F
+          if (pos < tok_count) && (tok_type(tokens, pos) == tok_lparen) {
+            pos = pos + 1
+            if pos < tok_count {
+              let init_kw = tok_text(src, tokens, pos)
+              pos = pos + 1
+              if init_kw == "i32.const" {
+                ginit_type = 0x7F
+              }
+              else if init_kw == "i64.const" {
+                ginit_type = 0x7E
+              }
+              if (pos < tok_count) && (tok_type(tokens, pos) == tok_int) {
+                ginit = parse_int(tok_text(src, tokens, pos))
+                pos = pos + 1
+              }
+            }
+            if (pos < tok_count) && (tok_type(tokens, pos) == tok_rparen) {
+              pos = pos + 1
+            }
+          }
+          Array::push(global_valtypes, gvt)
+          Array::push(global_muts, gmut)
+          Array::push(global_init_vals, ginit)
+          Array::push(global_init_types, ginit_type)
+          let mut d6 = 1
+          while (pos < tok_count) && (d6 > 0) {
+            if tok_type(tokens, pos) == tok_lparen {
+              d6 = d6 + 1
+            }
+            else if tok_type(tokens, pos) == tok_rparen {
+              d6 = d6 - 1
+            }
+            pos = pos + 1
+          }
+        }
+        else if section_kw == "table" {
+          let mut tmin = 0
+          let mut tmax = 0
+          let mut t_has_max = 0
+          if (pos < tok_count) && (tok_type(tokens, pos) == tok_ident) {
+            pos = pos + 1
+          }
+          if (pos < tok_count) && (tok_type(tokens, pos) == tok_int) {
+            tmin = parse_int(tok_text(src, tokens, pos))
+            pos = pos + 1
+          }
+          if (pos < tok_count) && (tok_type(tokens, pos) == tok_int) {
+            tmax = parse_int(tok_text(src, tokens, pos))
+            t_has_max = 1
+            pos = pos + 1
+          }
+          if (pos < tok_count) && (tok_type(tokens, pos) == tok_keyword) {
+            pos = pos + 1
+          }
+          Array::push(table_min, tmin)
+          Array::push(table_max, tmax)
+          Array::push(table_has_max, t_has_max)
+          let mut d_tab = 1
+          while (pos < tok_count) && (d_tab > 0) {
+            if tok_type(tokens, pos) == tok_lparen {
+              d_tab = d_tab + 1
+            }
+            else if tok_type(tokens, pos) == tok_rparen {
+              d_tab = d_tab - 1
+            }
+            pos = pos + 1
+          }
+        }
+        else if section_kw == "elem" {
+          let mut eoffset = 0
+          if (pos < tok_count) && (tok_type(tokens, pos) == tok_lparen) {
+            pos = pos + 1
+            if (pos < tok_count) && (tok_text(src, tokens, pos) == "i32.const") {
+              pos = pos + 1
+              if (pos < tok_count) && (tok_type(tokens, pos) == tok_int) {
+                eoffset = parse_int(tok_text(src, tokens, pos))
+                pos = pos + 1
+              }
+            }
+            if (pos < tok_count) && (tok_type(tokens, pos) == tok_rparen) {
+              pos = pos + 1
+            }
+          }
+          if (pos < tok_count) && (tok_type(tokens, pos) == tok_keyword) && (tok_text(src, tokens, pos) == "func") {
+            pos = pos + 1
+          }
+          let efuncs = empty_int_array()
+          while (pos < tok_count) && (tok_type(tokens, pos) != tok_rparen) {
+            if tok_type(tokens, pos) == tok_ident {
+              let fidx = map_get(func_names, func_indices, tok_text(src, tokens, pos))
+              Array::push(efuncs, if fidx >= 0 {
+                fidx
+              } else {
+                0
+              })
+            } else if tok_type(tokens, pos) == tok_int {
+              Array::push(efuncs, parse_int(tok_text(src, tokens, pos)))
+            }
+            pos = pos + 1
+          }
+          Array::push(elem_offsets, eoffset)
+          Array::push(elem_func_indices, efuncs)
+          if (pos < tok_count) && (tok_type(tokens, pos) == tok_rparen) {
+            pos = pos + 1
+          }
+        }
+        else if section_kw == "data" {
+          let mut doffset = 0
+          if (pos < tok_count) && (tok_type(tokens, pos) == tok_lparen) {
+            pos = pos + 1
+            if (pos < tok_count) && (tok_text(src, tokens, pos) == "i32.const") {
+              pos = pos + 1
+              if (pos < tok_count) && (tok_type(tokens, pos) == tok_int) {
+                doffset = parse_int(tok_text(src, tokens, pos))
+                pos = pos + 1
+              }
+            }
+            if (pos < tok_count) && (tok_type(tokens, pos) == tok_rparen) {
+              pos = pos + 1
+            }
+          }
+          let dbytes = Bytes::new()
+          while (pos < tok_count) && (tok_type(tokens, pos) == tok_string) {
+            let sraw = tok_text(src, tokens, pos)
+            let decoded = decode_string_bytes(sraw)
+            append_bytes(dbytes, decoded)
+            pos = pos + 1
+          }
+          Array::push(data_offsets, doffset)
+          Array::push(data_bytes, dbytes)
+          let mut d7 = 1
+          while (pos < tok_count) && (d7 > 0) {
+            if tok_type(tokens, pos) == tok_lparen {
+              d7 = d7 + 1
+            }
+            else if tok_type(tokens, pos) == tok_rparen {
+              d7 = d7 - 1
+            }
+            pos = pos + 1
+          }
+        }
+        else if section_kw == "start" {
+          if pos < tok_count {
+            if tok_type(tokens, pos) == tok_ident {
+              let sn = tok_text(src, tokens, pos)
+              start_func = map_get(func_names, func_indices, sn)
+              if start_func < 0 {
+                start_func = 0
+              }
+            } else if tok_type(tokens, pos) == tok_int {
+              start_func = parse_int(tok_text(src, tokens, pos))
+            }
+            pos = pos + 1
+          }
+          let mut d8 = 1
+          while (pos < tok_count) && (d8 > 0) {
+            if tok_type(tokens, pos) == tok_lparen {
+              d8 = d8 + 1
+            }
+            else if tok_type(tokens, pos) == tok_rparen {
+              d8 = d8 - 1
+            }
+            pos = pos + 1
+          }
+        }
+        else {
+          let mut d9 = 1
+          while (pos < tok_count) && (d9 > 0) {
+            if tok_type(tokens, pos) == tok_lparen {
+              d9 = d9 + 1
+            }
+            else if tok_type(tokens, pos) == tok_rparen {
+              d9 = d9 - 1
+            }
+            pos = pos + 1
+          }
+        }
+      } else {
+        pos = pos + 1
+      }
+    } else {
+      pos = pos + 1
+    }
+  }
+  let type_count = Array::length(types_params)
+  if type_count > 0 {
+    let type_payload = Bytes::new()
+    write_uleb128(type_payload, type_count)
+    let mut ti = 0
+    while ti < type_count {
+      Bytes::push(type_payload, 0x60)
+      let tp = Array::get(types_params, ti)
+      let tr = Array::get(types_results, ti)
+      write_uleb128(type_payload, Array::length(tp))
+      let mut pi2 = 0
+      while pi2 < Array::length(tp) {
+        Bytes::push(type_payload, Array::get(tp, pi2))
+        pi2 = pi2 + 1
+      }
+      write_uleb128(type_payload, Array::length(tr))
+      let mut ri = 0
+      while ri < Array::length(tr) {
+        Bytes::push(type_payload, Array::get(tr, ri))
+        ri = ri + 1
+      }
+      ti = ti + 1
+    }
+    emit_section(out, 1, type_payload)
+  }
+  let import_count = Array::length(import_modules)
+  if import_count > 0 {
+    let import_payload = Bytes::new()
+    write_uleb128(import_payload, import_count)
+    let mut ii = 0
+    while ii < import_count {
+      write_name(import_payload, Array::get(import_modules, ii))
+      write_name(import_payload, Array::get(import_names, ii))
+      let ikind = Array::get(import_kinds, ii)
+      Bytes::push(import_payload, ikind)
+      if ikind == 0 {
+        write_uleb128(import_payload, Array::get(import_type_indices, ii))
+      } else if ikind == 2 {
+        if Array::length(mem_min) > 0 {
+          let hm = Array::get(mem_has_max, 0)
+          if hm > 0 {
+            Bytes::push(import_payload, 0x01)
+            write_uleb128(import_payload, Array::get(mem_min, 0))
+            write_uleb128(import_payload, Array::get(mem_max, 0))
+          } else {
+            Bytes::push(import_payload, 0x00)
+            write_uleb128(import_payload, Array::get(mem_min, 0))
+          }
+        } else {
+          Bytes::push(import_payload, 0x00)
+          write_uleb128(import_payload, 0)
+        }
+      } else if ikind == 3 {
+        Bytes::push(import_payload, Array::get(import_global_valtypes, ii))
+        Bytes::push(import_payload, Array::get(import_global_muts, ii))
+      }
+      ii = ii + 1
+    }
+    emit_section(out, 2, import_payload)
+  }
+  let func_count = Array::length(func_type_indices)
+  if func_count > 0 {
+    let func_payload = Bytes::new()
+    write_uleb128(func_payload, func_count)
+    let mut fi = 0
+    while fi < func_count {
+      write_uleb128(func_payload, Array::get(func_type_indices, fi))
+      fi = fi + 1
+    }
+    emit_section(out, 3, func_payload)
+  }
+  if Array::length(table_min) > 0 {
+    let table_payload = Bytes::new()
+    write_uleb128(table_payload, Array::length(table_min))
+    let mut ti = 0
+    while ti < Array::length(table_min) {
+      Bytes::push(table_payload, 0x70)
+      let thm = Array::get(table_has_max, ti)
+      if thm > 0 {
+        Bytes::push(table_payload, 0x01)
+        write_uleb128(table_payload, Array::get(table_min, ti))
+        write_uleb128(table_payload, Array::get(table_max, ti))
+      } else {
+        Bytes::push(table_payload, 0x00)
+        write_uleb128(table_payload, Array::get(table_min, ti))
+      }
+      ti = ti + 1
+    }
+    emit_section(out, 4, table_payload)
+  }
+  let mut imported_mem = false
+  let mut im_check = 0
+  while im_check < Array::length(import_kinds) {
+    if Array::get(import_kinds, im_check) == 2 {
+      imported_mem = true
+    }
+    im_check = im_check + 1
+  }
+  if (Array::length(mem_min) > 0) && (imported_mem == false) {
+    let mem_payload = Bytes::new()
+    write_uleb128(mem_payload, Array::length(mem_min))
+    let mut mi = 0
+    while mi < Array::length(mem_min) {
+      let hm2 = Array::get(mem_has_max, mi)
+      if hm2 > 0 {
+        Bytes::push(mem_payload, 0x01)
+        write_uleb128(mem_payload, Array::get(mem_min, mi))
+        write_uleb128(mem_payload, Array::get(mem_max, mi))
+      } else {
+        Bytes::push(mem_payload, 0x00)
+        write_uleb128(mem_payload, Array::get(mem_min, mi))
+      }
+      mi = mi + 1
+    }
+    emit_section(out, 5, mem_payload)
+  }
+  let global_count = Array::length(global_valtypes)
+  if global_count > 0 {
+    let global_payload = Bytes::new()
+    write_uleb128(global_payload, global_count)
+    let mut gli = 0
+    while gli < global_count {
+      Bytes::push(global_payload, Array::get(global_valtypes, gli))
+      Bytes::push(global_payload, Array::get(global_muts, gli))
+      let git = Array::get(global_init_types, gli)
+      if git == 0x7E {
+        Bytes::push(global_payload, 0x42)
+      } else {
+        Bytes::push(global_payload, 0x41)
+      }
+      write_sleb128(global_payload, Array::get(global_init_vals, gli))
+      Bytes::push(global_payload, 0x0B)
+      gli = gli + 1
+    }
+    emit_section(out, 6, global_payload)
+  }
+  let export_count = Array::length(export_names)
+  if export_count > 0 {
+    let export_payload = Bytes::new()
+    write_uleb128(export_payload, export_count)
+    let mut ei = 0
+    while ei < export_count {
+      write_name(export_payload, Array::get(export_names, ei))
+      Bytes::push(export_payload, Array::get(export_kinds, ei))
+      write_uleb128(export_payload, Array::get(export_indices, ei))
+      ei = ei + 1
+    }
+    emit_section(out, 7, export_payload)
+  }
+  if start_func >= 0 {
+    let start_payload = Bytes::new()
+    write_uleb128(start_payload, start_func)
+    emit_section(out, 8, start_payload)
+  }
+  if Array::length(elem_offsets) > 0 {
+    let elem_payload = Bytes::new()
+    write_uleb128(elem_payload, Array::length(elem_offsets))
+    let mut eli = 0
+    while eli < Array::length(elem_offsets) {
+      Bytes::push(elem_payload, 0x00)
+      Bytes::push(elem_payload, 0x41)
+      write_sleb128(elem_payload, Array::get(elem_offsets, eli))
+      Bytes::push(elem_payload, 0x0B)
+      let efuncs = Array::get(elem_func_indices, eli)
+      write_uleb128(elem_payload, Array::length(efuncs))
+      let mut efi = 0
+      while efi < Array::length(efuncs) {
+        write_uleb128(elem_payload, Array::get(efuncs, efi))
+        efi = efi + 1
+      }
+      eli = eli + 1
+    }
+    emit_section(out, 9, elem_payload)
+  }
+  if func_count > 0 {
+    let code_payload = Bytes::new()
+    write_uleb128(code_payload, func_count)
+    let mut ci = 0
+    while ci < func_count {
+      let body = compile_func_body(src, tokens, Array::get(func_bodies_start, ci), Array::get(func_bodies_end, ci), func_names, func_indices, global_names, global_indices, Array::get(func_param_names, ci), Array::get(func_param_counts, ci), Array::get(func_local_types, ci), Array::get(func_local_names, ci))
+      let body_len = Bytes::length(body)
+      write_uleb128(code_payload, body_len)
+      append_bytes(code_payload, body)
+      ci = ci + 1
+    }
+    emit_section(out, 10, code_payload)
+  }
+  let data_count = Array::length(data_offsets)
+  if data_count > 0 {
+    let data_payload = Bytes::new()
+    write_uleb128(data_payload, data_count)
+    let mut dti = 0
+    while dti < data_count {
+      Bytes::push(data_payload, 0x00)
+      Bytes::push(data_payload, 0x41)
+      write_sleb128(data_payload, Array::get(data_offsets, dti))
+      Bytes::push(data_payload, 0x0B)
+      let db = Array::get(data_bytes, dti)
+      write_uleb128(data_payload, Bytes::length(db))
+      append_bytes(data_payload, db)
+      dti = dti + 1
+    }
+    emit_section(out, 11, data_payload)
+  }
+  out
+}
