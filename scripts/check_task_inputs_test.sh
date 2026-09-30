@@ -349,7 +349,12 @@ tasks { t }
 PKL
   got=0
   TASK_INPUTS_TASKFILE="$WORK/Taskfile.pkl" bash scripts/check_task_inputs.sh > "$WORK/modular.out" 2>&1 || got=$?
-  [ "$got" = "$want" ] && note "modular $identity compiler identity" || bad "modular $identity compiler identity: expected $want, got $got"
+  if [ "$got" = "$want" ]; then
+    note "modular $identity compiler identity"
+  else
+    cat "$WORK/modular.out" >&2
+    bad "modular $identity compiler identity: expected $want, got $got"
+  fi
 done
 
 [ "$fails" -eq 0 ] || exit 1

@@ -239,6 +239,7 @@ except ImportError:
 
 PARSING_GATES = ("test_ci_compiler_gate_layout.sh", "test_ci_compiler_gate_layout_test.sh",
                  "check_pkfire_pin.sh", "check_pkfire_pin_test.sh")
+PKL_GATES = ("check_task_inputs.sh", "check_task_inputs_test.sh")
 
 with open(sys.argv[1], encoding="utf-8") as fh:
     doc = yaml.safe_load(fh)
@@ -248,6 +249,11 @@ for job_id, job in (doc.get("jobs") or {}).items():
     if not isinstance(job, dict):
         continue
     steps = job.get("steps") or []
+    pkl_provision = next((n for n, step in enumerate(steps)
+                          if isinstance(step, dict)
+                          and step.get("uses") == "./.github/actions/setup-vibe"
+                          and str((step.get("with") or {}).get("pkfire", "")).lower() == "true"
+                          and "if" not in step), None)
     provision = None
     for n, step in enumerate(steps):
         if isinstance(step, dict) and "pyyaml" in str(step.get("run", "")).lower():
@@ -257,6 +263,17 @@ for job_id, job in (doc.get("jobs") or {}).items():
         if not isinstance(step, dict):
             continue
         run = str(step.get("run", ""))
+        pkl_gate = next((g for g in PKL_GATES if g in run), None)
+        if pkl_gate is not None:
+            if pkl_provision is None:
+                print(f"[ci-compiler-gate-layout] {job_id} runs {pkl_gate} but never provisions Pkl",
+                      file=sys.stderr)
+                rc = 1
+            elif pkl_provision > n:
+                print(f"[ci-compiler-gate-layout] {job_id} runs {pkl_gate} at step {n} but provisions "
+                      f"Pkl at step {pkl_provision} -- the gate dies before its dependency is installed",
+                      file=sys.stderr)
+                rc = 1
         gate = next((g for g in PARSING_GATES if g in run), None)
         if gate is None:
             continue
@@ -272,7 +289,7 @@ for job_id, job in (doc.get("jobs") or {}).items():
 sys.exit(rc)
 PYEOF
 then
-  echo "  Move the PyYAML step ahead of every gate that parses the workflows." >&2
+  echo "  Provision PyYAML and Pkl before the gates that use them." >&2
   exit 1
 fi
 
