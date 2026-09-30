@@ -29,7 +29,7 @@ import @vibe/compiler/core {
 }
 
 import ./typed_lowering_codec.vibe {
-  module_typed_lowering_text, parse_module_typed_lowering_offsets_text
+  append_module_typed_lowering_text, parse_module_typed_lowering_offsets_text
 }
 
 /// Disk storage combines the outputs of one check. None means no table was
@@ -73,17 +73,445 @@ fn parse_int_strict(raw: String) -> Int with Exception {
   }
 }
 
-fn serialize_segment(text: String) -> String {
-  String::concat(__to_string(String::length(text)), String::concat(":", text))
+/// One compile-owned sequence of pieces. Nested segments reserve a prefix
+/// slot, emit their children once, and fill the slot with the measured byte
+/// length. No nested payload String or second traversal is needed. The only
+/// payload copy is the final join; pieces and prefix slots live until then.
+struct CacheTextWriter {
+  parts: Array[String];
+  mut byte_count: Int
 }
 
-/// Emit a length-prefixed segment directly when its caller owns a builder.
-/// Materializing the nested concats would copy the payload twice before the
-/// enclosing builder copies it again. The canonical wire bytes are unchanged.
-fn push_serialized_segment(out: StringBuilder, text: String) -> Unit {
-  StringBuilder::push(out, __to_string(String::length(text)))
-  StringBuilder::push(out, ":")
-  StringBuilder::push(out, text)
+fn cache_text_writer() -> CacheTextWriter {
+  CacheTextWriter::{ parts: [], byte_count: 0 }
+}
+
+fn cache_push(out: CacheTextWriter, text: String) -> Unit {
+  Array::push(out.parts, text)
+  out.byte_count = out.byte_count + String::length(text)
+}
+
+fn cache_segment(out: CacheTextWriter, text: String) -> Unit {
+  cache_push(out, __to_string(String::length(text)))
+  cache_push(out, ":")
+  cache_push(out, text)
+}
+
+fn cache_reserve_segment(out: CacheTextWriter) -> Int {
+  let slot = Array::length(out.parts)
+  Array::push(out.parts, "")
+  slot
+}
+
+fn cache_finish_segment(out: CacheTextWriter, slot: Int, body_start: Int) -> Unit {
+  let prefix = String::concat(__to_string(out.byte_count - body_start), ":")
+  Array::set(out.parts, slot, prefix)
+  out.byte_count = out.byte_count + String::length(prefix)
+}
+
+fn write_count(out: CacheTextWriter, count: Int) -> Unit {
+  cache_push(out, __to_string(count))
+  cache_push(out, "[")
+}
+
+fn write_int_array(out: CacheTextWriter, items: Array[Int]) -> Unit {
+  write_count(out, Array::length(items))
+  let mut i = 0
+  while i < Array::length(items) {
+    cache_segment(out, __to_string(Array::get(items, i)))
+    i = i + 1
+  }
+  cache_push(out, "]")
+}
+
+fn write_string_array(out: CacheTextWriter, items: Array[String]) -> Unit {
+  write_count(out, Array::length(items))
+  let mut i = 0
+  while i < Array::length(items) {
+    cache_segment(out, Array::get(items, i))
+    i = i + 1
+  }
+  cache_push(out, "]")
+}
+
+fn write_bounds_array(out: CacheTextWriter, items: Array[(Int, Array[String])]) -> Unit {
+  write_count(out, Array::length(items))
+  let mut i = 0
+  while i < Array::length(items) {
+    let (id, bounds) = Array::get(items, i)
+    cache_segment(out, __to_string(id))
+    write_string_array(out, bounds)
+    i = i + 1
+  }
+  cache_push(out, "]")
+}
+
+fn write_type_segment(out: CacheTextWriter, ty: Type) -> Unit {
+  let slot = cache_reserve_segment(out)
+  let start = out.byte_count
+  write_type(out, ty)
+  cache_finish_segment(out, slot, start)
+}
+
+fn write_type_array(out: CacheTextWriter, items: Array[Type]) -> Unit {
+  write_count(out, Array::length(items))
+  let mut i = 0
+  while i < Array::length(items) {
+    write_type_segment(out, Array::get(items, i))
+    i = i + 1
+  }
+  cache_push(out, "]")
+}
+
+fn write_type(out: CacheTextWriter, ty: Type) -> Unit {
+  match ty {
+    CtInt => cache_push(out, "I"),
+    CtDouble => cache_push(out, "D"),
+    CtBool => cache_push(out, "B"),
+    CtString => cache_push(out, "G"),
+    CtChar => cache_push(out, "H"),
+    CtUnit => cache_push(out, "U"),
+    CtBytes => cache_push(out, "Y"),
+    CtUnknown => cache_push(out, "X"),
+    CtVar(id) => {
+      cache_push(out, "V")
+      cache_segment(out, __to_string(id))
+    },
+    CtConstructor(name, arity) => {
+      cache_push(out, "J")
+      cache_segment(out, name)
+      cache_segment(out, __to_string(arity))
+    },
+    CtApplied(head, args) => {
+      cache_push(out, "P")
+      write_type_segment(out, head)
+      write_type_array(out, args)
+    },
+    CtEnum(name) => {
+      cache_push(out, "E"); cache_segment(out, name)
+    },
+    CtStruct(name) => {
+      cache_push(out, "R"); cache_segment(out, name)
+    },
+    CtArray(elem) => {
+      cache_push(out, "A"); write_type(out, elem)
+    },
+    CtOption(elem) => {
+      cache_push(out, "O"); write_type(out, elem)
+    },
+    CtTuple(elems) => {
+      cache_push(out, "T"); write_type_array(out, elems)
+    },
+    CtFn(params, ret, effect_name) => {
+      cache_push(out, "F")
+      cache_segment(out, match effect_name {
+        Some(name) => name,
+        None => ""
+      })
+      write_type_array(out, params)
+      write_type(out, ret)
+    },
+    CtNamed(name, args) => {
+      cache_push(out, "N")
+      cache_segment(out, name)
+      write_type_array(out, args)
+    },
+    CtForAll(vars, bounds, body) => {
+      cache_push(out, "Q")
+      write_int_array(out, vars)
+      write_bounds_array(out, bounds)
+      write_type(out, body)
+    },
+    CtRecord(fields) => {
+      cache_push(out, "K")
+      write_count(out, Array::length(fields))
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (name, field_type) = Array::get(fields, i)
+        cache_segment(out, name)
+        write_type_segment(out, field_type)
+        i = i + 1
+      }
+      cache_push(out, "]")
+    }
+  }
+}
+
+fn write_type_expr_array(out: CacheTextWriter, items: Array[TypeExpr]) -> Unit {
+  write_count(out, Array::length(items))
+  let mut i = 0
+  while i < Array::length(items) {
+    let slot = cache_reserve_segment(out)
+    let start = out.byte_count
+    write_type_expr(out, Array::get(items, i))
+    cache_finish_segment(out, slot, start)
+    i = i + 1
+  }
+  cache_push(out, "]")
+}
+
+fn write_type_expr(out: CacheTextWriter, ty: TypeExpr) -> Unit {
+  match ty {
+    TyName(name) => {
+      cache_push(out, "n"); cache_segment(out, name)
+    },
+    TyApp(name, args) => {
+      cache_push(out, "a")
+      cache_segment(out, name)
+      write_type_expr_array(out, args)
+    },
+    TyFn(params, ret, effect_name) => {
+      cache_push(out, "f")
+      match effect_name {
+        Some(name) => {
+          cache_push(out, "1"); cache_segment(out, name)
+        },
+        None => cache_push(out, "0")
+      }
+      write_type_expr_array(out, params)
+      write_type_expr(out, ret)
+    },
+    TyTuple(elems) => {
+      cache_push(out, "t"); write_type_expr_array(out, elems)
+    },
+    TyUnit => cache_push(out, "u")
+  }
+}
+
+fn write_string_bounds(out: CacheTextWriter, items: Array[(String, Array[String])]) -> Unit {
+  write_count(out, Array::length(items))
+  let mut i = 0
+  while i < Array::length(items) {
+    let (name, bounds) = Array::get(items, i)
+    cache_segment(out, name)
+    write_string_array(out, bounds)
+    i = i + 1
+  }
+  cache_push(out, "]")
+}
+
+fn write_trait_methods(out: CacheTextWriter, items: Array[(String, Array[TypeExpr], TypeExpr)]) -> Unit {
+  write_count(out, Array::length(items))
+  let mut i = 0
+  while i < Array::length(items) {
+    let (name, params, ret) = Array::get(items, i)
+    cache_segment(out, name)
+    write_type_expr_array(out, params)
+    write_type_expr(out, ret)
+    i = i + 1
+  }
+  cache_push(out, "]")
+}
+
+fn write_trait_method_gens(out: CacheTextWriter, items: Array[(String, Array[String], Array[(String, Array[String])])]) -> Unit {
+  write_count(out, Array::length(items))
+  let mut i = 0
+  while i < Array::length(items) {
+    let (name, params, bounds) = Array::get(items, i)
+    cache_segment(out, name)
+    write_string_array(out, params)
+    write_string_bounds(out, bounds)
+    i = i + 1
+  }
+  cache_push(out, "]")
+}
+
+fn write_bindings(out: CacheTextWriter, items: Array[(String, Type)]) -> Unit {
+  write_count(out, Array::length(items))
+  let mut i = 0
+  while i < Array::length(items) {
+    let (name, ty) = Array::get(items, i)
+    cache_segment(out, name)
+    write_type(out, ty)
+    i = i + 1
+  }
+  cache_push(out, "]")
+}
+
+fn write_type_def(out: CacheTextWriter, def: TypeDef) -> Unit {
+  match def {
+    TDEnum(name, params, variants) => {
+      cache_push(out, "E")
+      cache_segment(out, name)
+      write_string_array(out, params)
+      write_count(out, Array::length(variants))
+      let mut i = 0
+      while i < Array::length(variants) {
+        let (variant, fields) = Array::get(variants, i)
+        cache_segment(out, variant)
+        write_type_array(out, fields)
+        i = i + 1
+      }
+      cache_push(out, "]")
+    },
+    TDStruct(name, fields, mut_fields, params) => {
+      cache_push(out, "S")
+      cache_segment(out, name)
+      write_bindings(out, fields)
+      write_string_array(out, mut_fields)
+      write_string_array(out, params)
+    },
+    TDAlias(name, params, target) => {
+      cache_push(out, "A")
+      cache_segment(out, name)
+      write_string_array(out, params)
+      write_type(out, target)
+    },
+    TDEffect(name, ops, params) => {
+      cache_push(out, "K")
+      cache_segment(out, name)
+      write_string_array(out, params)
+      write_count(out, Array::length(ops))
+      let mut i = 0
+      while i < Array::length(ops) {
+        let (op, args, ret) = Array::get(ops, i)
+        cache_segment(out, op)
+        write_type_array(out, args)
+        write_type(out, ret)
+        i = i + 1
+      }
+      cache_push(out, "]")
+    },
+    TDEffectSet(name, members) => {
+      cache_push(out, "Z")
+      cache_segment(out, name)
+      write_string_array(out, members)
+    }
+  }
+}
+
+fn write_type_defs(out: CacheTextWriter, defs: Array[TypeDef]) -> Unit {
+  write_count(out, Array::length(defs))
+  let mut i = 0
+  while i < Array::length(defs) {
+    let slot = cache_reserve_segment(out)
+    let start = out.byte_count
+    write_type_def(out, Array::get(defs, i))
+    cache_finish_segment(out, slot, start)
+    i = i + 1
+  }
+  cache_push(out, "]")
+}
+
+fn write_binding_origin(out: CacheTextWriter, origin: BindingOrigin) -> Unit {
+  match origin {
+    BindingOriginUnavailable => cache_push(out, "U"),
+    BindingOriginModuleExport(path, name) => {
+      cache_push(out, "M")
+      cache_segment(out, path)
+      cache_segment(out, name)
+    },
+    BindingOriginReExportSurface(path, name) => {
+      cache_push(out, "R")
+      cache_segment(out, path)
+      cache_segment(out, name)
+    }
+  }
+}
+
+fn write_value_bindings(out: CacheTextWriter, items: Array[(String, EnvValueBinding)]) -> Unit {
+  write_count(out, Array::length(items))
+  let mut i = 0
+  while i < Array::length(items) {
+    let (name, binding) = Array::get(items, i)
+    cache_segment(out, name)
+    write_type(out, binding.ty)
+    write_binding_origin(out, binding.origin)
+    i = i + 1
+  }
+  cache_push(out, "]")
+}
+
+fn write_type_env(out: CacheTextWriter, env: TypeEnv) -> Unit {
+  match env {
+    EnvEmpty => cache_push(out, "0"),
+    EnvBind(name, binding, rest) => {
+      cache_push(out, "B")
+      cache_segment(out, name)
+      write_type(out, binding.ty)
+      write_binding_origin(out, binding.origin)
+      write_type_env(out, rest)
+    },
+    EnvMutCell(name, escapes, rest) => {
+      cache_push(out, "M")
+      cache_segment(out, name)
+      cache_push(out, if escapes {
+        "1"
+      } else {
+        "0"
+      })
+      write_type_env(out, rest)
+    },
+    EnvTraitDef(name, supers, is_auto, methods, rest, params, method_gens) => {
+      cache_push(out, "D")
+      cache_segment(out, name)
+      write_string_array(out, supers)
+      cache_push(out, if is_auto {
+        "1"
+      } else {
+        "0"
+      })
+      write_trait_methods(out, methods)
+      write_type_env(out, rest)
+      write_string_array(out, params)
+      write_trait_method_gens(out, method_gens)
+    },
+    EnvTraitImpl(name, target, rest) => {
+      cache_push(out, "I")
+      cache_segment(out, name)
+      write_type(out, target)
+      write_type_env(out, rest)
+    },
+    EnvTraitImplGen(name, params, bounds, target, rest) => {
+      cache_push(out, "G")
+      cache_segment(out, name)
+      write_string_array(out, params)
+      write_string_bounds(out, bounds)
+      write_type(out, target)
+      write_type_env(out, rest)
+    },
+    EnvTypeDefs(defs, selectable, rest) => {
+      cache_push(out, "P")
+      write_type_defs(out, defs)
+      write_string_array(out, selectable)
+      write_type_env(out, rest)
+    },
+    EnvFlat(bindings) => {
+      cache_push(out, "L"); write_value_bindings(out, bindings)
+    },
+    EnvCached(_, _, rest) => {
+      // Rebuild from the authoritative chain once. Stale accelerator arrays
+      // must never become persisted semantics, including their type rows.
+      match env_cache(rest) {
+        EnvCached(names, bindings, _) => {
+          cache_push(out, "C")
+          write_count(out, env_name_index_length(names))
+          let mut i = 0
+          while i < env_name_index_length(names) {
+            cache_segment(out, env_name_index_at(names, i))
+            i = i + 1
+          }
+          cache_push(out, "]")
+          write_count(out, Array::length(bindings))
+          i = 0
+          while i < Array::length(bindings) {
+            write_type_segment(out, Array::get(bindings, i).ty)
+            i = i + 1
+          }
+          cache_push(out, "]")
+          write_type_env(out, rest)
+        },
+        _ => write_type_env(out, rest)
+      }
+    }
+  }
+}
+
+fn write_type_env_segment(out: CacheTextWriter, env: TypeEnv) -> Unit {
+  let slot = cache_reserve_segment(out)
+  let start = out.byte_count
+  write_type_env(out, env)
+  cache_finish_segment(out, slot, start)
 }
 
 fn parse_count_header(text: String, pos: Int, terminator: Int) -> (Int, Int) with Exception {
@@ -115,19 +543,6 @@ fn parse_segment(text: String, pos: Int) -> (String, Int) with Exception {
   }
 }
 
-fn serialize_int_array(items: Array[Int]) -> String {
-  let buf = StringBuilder::new()
-  StringBuilder::push(buf, __to_string(Array::length(items)))
-  StringBuilder::push(buf, "[")
-  let mut i = 0
-  while i < Array::length(items) {
-    push_serialized_segment(buf, __to_string(Array::get(items, i)))
-    i = i + 1
-  }
-  StringBuilder::push(buf, "]")
-  StringBuilder::freeze(buf)
-}
-
 fn parse_int_array(text: String, pos: Int) -> (Array[Int], Int) with Exception {
   let (count, start) = parse_count_header(text, pos, '[')
   let items = array_empty()
@@ -144,19 +559,6 @@ fn parse_int_array(text: String, pos: Int) -> (Array[Int], Int) with Exception {
   } else {
     (items, cursor + 1)
   }
-}
-
-fn serialize_string_array(items: Array[String]) -> String {
-  let buf = StringBuilder::new()
-  StringBuilder::push(buf, __to_string(Array::length(items)))
-  StringBuilder::push(buf, "[")
-  let mut i = 0
-  while i < Array::length(items) {
-    push_serialized_segment(buf, Array::get(items, i))
-    i = i + 1
-  }
-  StringBuilder::push(buf, "]")
-  StringBuilder::freeze(buf)
 }
 
 fn parse_string_array(text: String, pos: Int) -> (Array[String], Int) with Exception {
@@ -177,21 +579,6 @@ fn parse_string_array(text: String, pos: Int) -> (Array[String], Int) with Excep
   }
 }
 
-fn serialize_bounds_array(items: Array[(Int, Array[String])]) -> String {
-  let buf = StringBuilder::new()
-  StringBuilder::push(buf, __to_string(Array::length(items)))
-  StringBuilder::push(buf, "[")
-  let mut i = 0
-  while i < Array::length(items) {
-    let (id, bounds) = Array::get(items, i)
-    push_serialized_segment(buf, __to_string(id))
-    StringBuilder::push(buf, serialize_string_array(bounds))
-    i = i + 1
-  }
-  StringBuilder::push(buf, "]")
-  StringBuilder::freeze(buf)
-}
-
 fn parse_bounds_array(text: String, pos: Int) -> (Array[(Int, Array[String])], Int) with Exception {
   let (count, start) = parse_count_header(text, pos, '[')
   let items = array_empty()
@@ -209,19 +596,6 @@ fn parse_bounds_array(text: String, pos: Int) -> (Array[(Int, Array[String])], I
   } else {
     (items, cursor + 1)
   }
-}
-
-fn serialize_type_array(items: Array[Type]) -> String {
-  let buf = StringBuilder::new()
-  StringBuilder::push(buf, __to_string(Array::length(items)))
-  StringBuilder::push(buf, "[")
-  let mut i = 0
-  while i < Array::length(items) {
-    push_serialized_segment(buf, serialize_type(Array::get(items, i)))
-    i = i + 1
-  }
-  StringBuilder::push(buf, "]")
-  StringBuilder::freeze(buf)
 }
 
 fn parse_type_array(text: String, pos: Int) -> (Array[Type], Int) with Exception {
@@ -360,67 +734,6 @@ fn parse_cached_type(source: String, pos: Int) -> (Type, Int) with Exception {
   }
 }
 
-fn serialize_type(ty: Type) -> String {
-  match ty {
-    CtInt => "I",
-    CtDouble => "D",
-    CtBool => "B",
-    CtString => "G",
-    CtChar => "H",
-    CtUnit => "U",
-    CtBytes => "Y",
-    CtUnknown => "X",
-    CtVar(id) => String::concat("V", serialize_segment(__to_string(id))),
-    CtConstructor(name, arity) => String::concat("J", String::concat(serialize_segment(name), serialize_segment(__to_string(arity)))),
-    CtApplied(head, args) => String::concat("P", String::concat(serialize_segment(serialize_type(head)), serialize_type_array(args))),
-    CtEnum(name) => String::concat("E", serialize_segment(name)),
-    CtStruct(name) => String::concat("R", serialize_segment(name)),
-    CtArray(elem) => String::concat("A", serialize_type(elem)),
-    CtOption(elem) => String::concat("O", serialize_type(elem)),
-    CtTuple(elems) => String::concat("T", serialize_type_array(elems)),
-    CtFn(params, ret, effect_name) => {
-      let effect = if effect_name is Some(name) {
-        name
-      } else {
-        ""
-      }
-      String::concat("F", String::concat(serialize_segment(effect), String::concat(serialize_type_array(params), serialize_type(ret))))
-    },
-    CtNamed(name, args) => String::concat("N", String::concat(serialize_segment(name), serialize_type_array(args))),
-    CtForAll(vars, bounds, body) => String::concat("Q", String::concat(serialize_int_array(vars), String::concat(serialize_bounds_array(bounds), serialize_type(body)))),
-    // #1839: anonymous record — count-headed (name segment, type segment)
-    // pairs in literal field order (mirrors the 'K' parser above).
-    CtRecord(rfields) => {
-      let kbuf = StringBuilder::new()
-      StringBuilder::push(kbuf, "K")
-      StringBuilder::push(kbuf, __to_string(Array::length(rfields)))
-      StringBuilder::push(kbuf, "[")
-      let mut ki = 0
-      while ki < Array::length(rfields) {
-        let (kname, kty) = Array::get(rfields, ki)
-        push_serialized_segment(kbuf, kname)
-        push_serialized_segment(kbuf, serialize_type(kty))
-        ki = ki + 1
-      }
-      StringBuilder::push(kbuf, "]")
-      StringBuilder::freeze(kbuf)
-    }
-  }
-}
-
-fn serialize_type_expr_array(items: Array[TypeExpr]) -> String {
-  let buf = StringBuilder::new()
-  StringBuilder::push(buf, __to_string(Array::length(items)))
-  StringBuilder::push(buf, "[")
-  let mut i = 0
-  while i < Array::length(items) {
-    push_serialized_segment(buf, serialize_type_expr(Array::get(items, i)))
-    i = i + 1
-  }
-  StringBuilder::push(buf, "]")
-  StringBuilder::freeze(buf)
-}
-
 fn parse_type_expr_array(text: String, pos: Int) -> (Array[TypeExpr], Int) with Exception {
   let (count, start) = parse_count_header(text, pos, '[')
   let items = array_empty()
@@ -441,23 +754,6 @@ fn parse_type_expr_array(text: String, pos: Int) -> (Array[TypeExpr], Int) with 
     throw("invalid persistent type env type expr array")
   } else {
     (items, cursor + 1)
-  }
-}
-
-fn serialize_type_expr(ty: TypeExpr) -> String {
-  match ty {
-    TyName(name) => String::concat("n", serialize_segment(name)),
-    TyApp(name, args) => String::concat("a", String::concat(serialize_segment(name), serialize_type_expr_array(args))),
-    TyFn(params, ret, effect_name) => {
-      let effect = if effect_name is Some(name) {
-        String::concat("1", serialize_segment(name))
-      } else {
-        "0"
-      }
-      String::concat("f", String::concat(effect, String::concat(serialize_type_expr_array(params), serialize_type_expr(ret))))
-    },
-    TyTuple(elems) => String::concat("t", serialize_type_expr_array(elems)),
-    TyUnit => "u"
   }
 }
 
@@ -504,21 +800,6 @@ fn parse_type_expr(source: String, pos: Int) -> (TypeExpr, Int) with Exception {
   }
 }
 
-fn serialize_string_bounds(items: Array[(String, Array[String])]) -> String {
-  let buf = StringBuilder::new()
-  StringBuilder::push(buf, __to_string(Array::length(items)))
-  StringBuilder::push(buf, "[")
-  let mut i = 0
-  while i < Array::length(items) {
-    let (name, bounds) = Array::get(items, i)
-    push_serialized_segment(buf, name)
-    StringBuilder::push(buf, serialize_string_array(bounds))
-    i = i + 1
-  }
-  StringBuilder::push(buf, "]")
-  StringBuilder::freeze(buf)
-}
-
 fn parse_string_bounds(text: String, pos: Int) -> (Array[(String, Array[String])], Int) with Exception {
   let (count, start) = parse_count_header(text, pos, '[')
   let items = array_empty()
@@ -536,22 +817,6 @@ fn parse_string_bounds(text: String, pos: Int) -> (Array[(String, Array[String])
   } else {
     (items, cursor + 1)
   }
-}
-
-fn serialize_trait_methods(items: Array[(String, Array[TypeExpr], TypeExpr)]) -> String {
-  let buf = StringBuilder::new()
-  StringBuilder::push(buf, __to_string(Array::length(items)))
-  StringBuilder::push(buf, "[")
-  let mut i = 0
-  while i < Array::length(items) {
-    let (name, params, ret) = Array::get(items, i)
-    push_serialized_segment(buf, name)
-    StringBuilder::push(buf, serialize_type_expr_array(params))
-    StringBuilder::push(buf, serialize_type_expr(ret))
-    i = i + 1
-  }
-  StringBuilder::push(buf, "]")
-  StringBuilder::freeze(buf)
 }
 
 fn parse_trait_methods(text: String, pos: Int) -> (Array[(String, Array[TypeExpr], TypeExpr)], Int) with Exception {
@@ -574,22 +839,6 @@ fn parse_trait_methods(text: String, pos: Int) -> (Array[(String, Array[TypeExpr
   }
 }
 
-fn serialize_trait_method_gens(items: Array[(String, Array[String], Array[(String, Array[String])])]) -> String {
-  let buf = StringBuilder::new()
-  StringBuilder::push(buf, __to_string(Array::length(items)))
-  StringBuilder::push(buf, "[")
-  let mut i = 0
-  while i < Array::length(items) {
-    let (name, params, bounds) = Array::get(items, i)
-    push_serialized_segment(buf, name)
-    StringBuilder::push(buf, serialize_string_array(params))
-    StringBuilder::push(buf, serialize_string_bounds(bounds))
-    i = i + 1
-  }
-  StringBuilder::push(buf, "]")
-  StringBuilder::freeze(buf)
-}
-
 fn parse_trait_method_gens(text: String, pos: Int) -> (Array[(String, Array[String], Array[(String, Array[String])])], Int) with Exception {
   let (count, start) = parse_count_header(text, pos, '[')
   let items = array_empty()
@@ -607,49 +856,6 @@ fn parse_trait_method_gens(text: String, pos: Int) -> (Array[(String, Array[Stri
     throw("invalid persistent type env trait method generics")
   } else {
     (items, cursor + 1)
-  }
-}
-
-fn serialize_type_def(def: TypeDef) -> String {
-  match def {
-    TDEnum(name, params, variants) => {
-      let out = StringBuilder::new()
-      StringBuilder::push(out, "E")
-      push_serialized_segment(out, name)
-      StringBuilder::push(out, serialize_string_array(params))
-      StringBuilder::push(out, __to_string(Array::length(variants)))
-      StringBuilder::push(out, "[")
-      let mut i = 0
-      while i < Array::length(variants) {
-        let (variant, fields) = Array::get(variants, i)
-        push_serialized_segment(out, variant)
-        StringBuilder::push(out, serialize_type_array(fields))
-        i = i + 1
-      }
-      StringBuilder::push(out, "]")
-      StringBuilder::freeze(out)
-    },
-    TDStruct(name, fields, mut_fields, params) => String::concat("S", String::concat(serialize_segment(name), String::concat(serialize_bindings(fields), String::concat(serialize_string_array(mut_fields), serialize_string_array(params))))),
-    TDAlias(name, params, target) => String::concat("A", String::concat(serialize_segment(name), String::concat(serialize_string_array(params), serialize_type(target)))),
-    TDEffect(name, ops, params) => {
-      let out = StringBuilder::new()
-      StringBuilder::push(out, "K")
-      push_serialized_segment(out, name)
-      StringBuilder::push(out, serialize_string_array(params))
-      StringBuilder::push(out, __to_string(Array::length(ops)))
-      StringBuilder::push(out, "[")
-      let mut i = 0
-      while i < Array::length(ops) {
-        let (op, args, ret) = Array::get(ops, i)
-        push_serialized_segment(out, op)
-        StringBuilder::push(out, serialize_type_array(args))
-        StringBuilder::push(out, serialize_type(ret))
-        i = i + 1
-      }
-      StringBuilder::push(out, "]")
-      StringBuilder::freeze(out)
-    },
-    TDEffectSet(name, members) => String::concat("Z", String::concat(serialize_segment(name), serialize_string_array(members)))
   }
 }
 
@@ -722,19 +928,6 @@ fn parse_type_def(text: String, pos: Int) -> (TypeDef, Int) with Exception {
   }
 }
 
-fn serialize_type_defs(defs: Array[TypeDef]) -> String {
-  let out = StringBuilder::new()
-  StringBuilder::push(out, __to_string(Array::length(defs)))
-  StringBuilder::push(out, "[")
-  let mut i = 0
-  while i < Array::length(defs) {
-    push_serialized_segment(out, serialize_type_def(Array::get(defs, i)))
-    i = i + 1
-  }
-  StringBuilder::push(out, "]")
-  StringBuilder::freeze(out)
-}
-
 fn parse_type_defs(text: String, pos: Int) -> (Array[TypeDef], Int) with Exception {
   let (count, start) = parse_count_header(text, pos, '[')
   let defs = array_empty()
@@ -755,14 +948,6 @@ fn parse_type_defs(text: String, pos: Int) -> (Array[TypeDef], Int) with Excepti
     throw("invalid persistent type definitions")
   } else {
     (defs, cursor + 1)
-  }
-}
-
-fn serialize_binding_origin(origin: BindingOrigin) -> String {
-  match origin {
-    BindingOriginUnavailable => "U",
-    BindingOriginModuleExport(path, name) => String::concat("M", String::concat(serialize_segment(path), serialize_segment(name))),
-    BindingOriginReExportSurface(path, name) => String::concat("R", String::concat(serialize_segment(path), serialize_segment(name)))
   }
 }
 
@@ -787,22 +972,6 @@ fn parse_binding_origin(text: String, pos: Int) -> (BindingOrigin, Int) with Exc
   }
 }
 
-fn serialize_value_bindings(items: Array[(String, EnvValueBinding)]) -> String {
-  let buf = StringBuilder::new()
-  StringBuilder::push(buf, __to_string(Array::length(items)))
-  StringBuilder::push(buf, "[")
-  let mut i = 0
-  while i < Array::length(items) {
-    let (name, binding) = Array::get(items, i)
-    push_serialized_segment(buf, name)
-    StringBuilder::push(buf, serialize_type(binding.ty))
-    StringBuilder::push(buf, serialize_binding_origin(binding.origin))
-    i = i + 1
-  }
-  StringBuilder::push(buf, "]")
-  StringBuilder::freeze(buf)
-}
-
 fn parse_value_bindings(text: String, pos: Int) -> (Array[(String, EnvValueBinding)], Int) with Exception {
   let (count, start) = parse_count_header(text, pos, '[')
   let items = array_empty()
@@ -823,21 +992,6 @@ fn parse_value_bindings(text: String, pos: Int) -> (Array[(String, EnvValueBindi
   }
 }
 
-fn serialize_bindings(items: Array[(String, Type)]) -> String {
-  let buf = StringBuilder::new()
-  StringBuilder::push(buf, __to_string(Array::length(items)))
-  StringBuilder::push(buf, "[")
-  let mut i = 0
-  while i < Array::length(items) {
-    let (name, ty) = Array::get(items, i)
-    push_serialized_segment(buf, name)
-    StringBuilder::push(buf, serialize_type(ty))
-    i = i + 1
-  }
-  StringBuilder::push(buf, "]")
-  StringBuilder::freeze(buf)
-}
-
 fn parse_bindings(text: String, pos: Int) -> (Array[(String, Type)], Int) with Exception {
   let (count, start) = parse_count_header(text, pos, '[')
   let items = array_empty()
@@ -855,105 +1009,6 @@ fn parse_bindings(text: String, pos: Int) -> (Array[(String, Type)], Int) with E
   } else {
     (items, cursor + 1)
   }
-}
-
-fn serialize_type_env_into(buf: StringBuilder, env: TypeEnv) -> Unit {
-  match env {
-    EnvEmpty => StringBuilder::push(buf, "0"),
-    EnvBind(name, binding, rest) => {
-      StringBuilder::push(buf, "B")
-      push_serialized_segment(buf, name)
-      StringBuilder::push(buf, serialize_type(binding.ty))
-      StringBuilder::push(buf, serialize_binding_origin(binding.origin))
-      serialize_type_env_into(buf, rest)
-    },
-    // #1262: a `let mut` escape marker is function-local, so a published
-    // module env never carries one. Round-trip it anyway rather than dropping
-    // it to `rest` -- a lossy arm here would decode to an env that quietly
-    // claims a mutable binding is immutable, and the whole point of putting
-    // the fact in TypeEnv is that consumers may trust its absence.
-    EnvMutCell(name, escapes, rest) => {
-      StringBuilder::push(buf, "M")
-      push_serialized_segment(buf, name)
-      StringBuilder::push(buf, if escapes {
-        "1"
-      } else {
-        "0"
-      })
-      serialize_type_env_into(buf, rest)
-    },
-    EnvTraitDef(name, supers, is_auto, methods, rest, params, method_gens) => {
-      StringBuilder::push(buf, "D")
-      push_serialized_segment(buf, name)
-      StringBuilder::push(buf, serialize_string_array(supers))
-      StringBuilder::push(buf, if is_auto {
-        "1"
-      } else {
-        "0"
-      })
-      StringBuilder::push(buf, serialize_trait_methods(methods))
-      serialize_type_env_into(buf, rest)
-      StringBuilder::push(buf, serialize_string_array(params))
-      StringBuilder::push(buf, serialize_trait_method_gens(method_gens))
-    },
-    EnvTraitImpl(name, target, rest) => {
-      StringBuilder::push(buf, "I")
-      push_serialized_segment(buf, name)
-      StringBuilder::push(buf, serialize_type(target))
-      serialize_type_env_into(buf, rest)
-    },
-    EnvTraitImplGen(name, params, bounds, target, rest) => {
-      StringBuilder::push(buf, "G")
-      push_serialized_segment(buf, name)
-      StringBuilder::push(buf, serialize_string_array(params))
-      StringBuilder::push(buf, serialize_string_bounds(bounds))
-      StringBuilder::push(buf, serialize_type(target))
-      serialize_type_env_into(buf, rest)
-    },
-    EnvTypeDefs(defs, selectable, rest) => {
-      StringBuilder::push(buf, "P")
-      StringBuilder::push(buf, serialize_type_defs(defs))
-      StringBuilder::push(buf, serialize_string_array(selectable))
-      serialize_type_env_into(buf, rest)
-    },
-    EnvFlat(bindings) => {
-      StringBuilder::push(buf, "L")
-      StringBuilder::push(buf, serialize_value_bindings(bindings))
-    },
-    EnvCached(_, _, rest) => {
-      // Cached arrays are acceleration state, not trusted semantics. Emit the
-      // canonical index rebuilt from the chain so cold-store bytes and decoded
-      // transport identities agree even if an in-memory cache is stale.
-      match env_cache(rest) {
-        EnvCached(names, types, _) => {
-          StringBuilder::push(buf, "C")
-          StringBuilder::push(buf, __to_string(env_name_index_length(names)))
-          StringBuilder::push(buf, "[")
-          let mut row = 0
-          while row < env_name_index_length(names) {
-            push_serialized_segment(buf, env_name_index_at(names, row))
-            row = row + 1
-          }
-          StringBuilder::push(buf, "]")
-          let plain_types = array_empty()
-          let mut i = 0
-          while i < Array::length(types) {
-            Array::push(plain_types, Array::get(types, i).ty)
-            i = i + 1
-          }
-          StringBuilder::push(buf, serialize_type_array(plain_types))
-          serialize_type_env_into(buf, rest)
-        },
-        _ => serialize_type_env_into(buf, rest)
-      }
-    }
-  }
-}
-
-fn serialize_type_env(env: TypeEnv) -> String {
-  let buf = StringBuilder::new()
-  serialize_type_env_into(buf, env)
-  StringBuilder::freeze(buf)
 }
 
 fn parse_persistent_type_env_payload(text: String, pos: Int) -> (TypeEnv, Int) with Exception {
@@ -1055,7 +1110,10 @@ export fn persistent_dep_list_text(deps: Array[String]) -> String {
   } else if Array::length(deps) == 1 {
     String::concat("version\t3\n", Array::get(deps, 0))
   } else {
-    String::concat("version\t2\n", serialize_string_array(deps))
+    let out = cache_text_writer()
+    cache_push(out, "version\t2\n")
+    write_string_array(out, deps)
+    String::join(out.parts, "")
   }
 }
 
@@ -1157,16 +1215,15 @@ export fn load_persistent_module_cache(fingerprint: String) -> Option[Persistent
 /// A length-delimited TypeEnv payload followed by exactly one lowering
 /// section. The v8 lowering codec retains its count/digest/end-marker checks.
 export fn persistent_module_cache_text(env: TypeEnv, lowering: Option[(Array[Int], Array[Int], Array[String])]) -> String {
-  let section = match lowering {
-    Some((offsets, eq_offs, eq_keys)) => module_typed_lowering_text(offsets, eq_offs, eq_keys),
-    None => "lowering\tmissing\n"
+  let out = cache_text_writer()
+  cache_push(out, "version\t10\nenv\t")
+  write_type_env_segment(out, env)
+  cache_push(out, "\n")
+  match lowering {
+    Some((offsets, eq_offs, eq_keys)) => append_module_typed_lowering_text(out.parts, offsets, eq_offs, eq_keys),
+    None => cache_push(out, "lowering\tmissing\n")
   }
-  let out = StringBuilder::new()
-  StringBuilder::push(out, "version\t10\nenv\t")
-  push_serialized_type_env_segment(out, env)
-  StringBuilder::push(out, "\n")
-  StringBuilder::push(out, section)
-  StringBuilder::freeze(out)
+  String::join(out.parts, "")
 }
 
 /// Reject the whole entry when either section is malformed. In particular a
@@ -1205,25 +1262,11 @@ export fn parse_persistent_module_cache(text: String) -> Option[PersistentModule
 }
 
 export fn persistent_type_env_cache_text(env: TypeEnv) -> String {
-  let out = StringBuilder::new()
-  StringBuilder::push(out, "version\t9\nenv\t")
-  push_serialized_type_env_segment(out, env)
-  StringBuilder::push(out, "\n")
-  StringBuilder::freeze(out)
-}
-
-/// `serialize_segment(serialize_type_env(env))`, pushed into `out` as its
-/// three pieces instead of being materialized (#2945). A `String::concat`
-/// copies both operands, so the nested-concat spelling copied the payload
-/// once per enclosing concat -- three times for the v9 text and four for the
-/// v10 record -- on every module commit and every dependency re-serialization.
-/// A builder push keeps a view of the piece and `freeze` copies it exactly
-/// once, so the bytes are identical and the payload is copied once.
-fn push_serialized_type_env_segment(out: StringBuilder, env: TypeEnv) -> Unit {
-  let payload = serialize_type_env(env)
-  StringBuilder::push(out, __to_string(String::length(payload)))
-  StringBuilder::push(out, ":")
-  StringBuilder::push(out, payload)
+  let out = cache_text_writer()
+  cache_push(out, "version\t9\nenv\t")
+  write_type_env_segment(out, env)
+  cache_push(out, "\n")
+  String::join(out.parts, "")
 }
 
 export fn load_persistent_leaf_fingerprint(path: String, source: String, typing_semantics_seed: String) -> Option[String] with Env + Exception + Fs {
