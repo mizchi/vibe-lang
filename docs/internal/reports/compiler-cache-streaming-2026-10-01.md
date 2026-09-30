@@ -86,6 +86,11 @@ and gives 975,440,056 bytes; that number is not the default KPI baseline.
 
 ## Validation
 
+Two additional cold compiles produce **352 byte-identical combined v10 records**
+per lane (3,613,548 bytes). The comparison uses the complete raw record-byte
+multiset, without normalizing payload contents; cache filenames belong to
+different compiler namespaces. Record hashes are retained in the raw artifact.
+
 - Fresh stage2: 41 codec tests pass on RC; allocation probes also pass on bump.
 - Compiler gates: early, mid, and late pass, including cache-state output parity.
 - Full unit corpus: 1,547/1,547 active unit-test files pass with the fresh stage2.
