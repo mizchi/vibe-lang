@@ -25,6 +25,25 @@ fn replace_once(text: String, before: String, after: String) -> String {
   String::concat(text[0: at], String::concat(after, text[at + String::length(before): String::length(text)]))
 }
 
+test "long environment segments keep canonical bytes without temporary payload copies" {
+  let buf = StringBuilder::new()
+  let mut i = 0
+  while i < 128 {
+    StringBuilder::push(buf, "abcdefgh")
+    i = i + 1
+  }
+  let name = StringBuilder::freeze(buf)
+  let env = env_bind(EnvEmpty, name, CtString)
+  let expected = String::concat("version\t10\nenv\t1033:B1024:", String::concat(name, "GU0\nlowering\tmissing\n"))
+  let before = Profiler::heap_bytes()
+  let text = persistent_module_cache_text(env, None)
+  let allocated = Profiler::heap_bytes() - before
+  assert(text == expected)
+  // The payload and final record each need one copy. A third copy's worth
+  // leaves room for builder metadata, but rejects nested segment concats.
+  assert(allocated <= String::length(text) * 3)
+}
+
 test "the combined record round-trips both outputs canonically" {
   let text = sample()
   match parse_persistent_module_cache(text) {

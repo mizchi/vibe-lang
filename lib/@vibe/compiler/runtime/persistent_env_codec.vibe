@@ -77,6 +77,15 @@ fn serialize_segment(text: String) -> String {
   String::concat(__to_string(String::length(text)), String::concat(":", text))
 }
 
+/// Emit a length-prefixed segment directly when its caller owns a builder.
+/// Materializing the nested concats would copy the payload twice before the
+/// enclosing builder copies it again. The canonical wire bytes are unchanged.
+fn push_serialized_segment(out: StringBuilder, text: String) -> Unit {
+  StringBuilder::push(out, __to_string(String::length(text)))
+  StringBuilder::push(out, ":")
+  StringBuilder::push(out, text)
+}
+
 fn parse_count_header(text: String, pos: Int, terminator: Int) -> (Int, Int) with Exception {
   let len = String::length(text)
   let mut i = pos
@@ -112,7 +121,7 @@ fn serialize_int_array(items: Array[Int]) -> String {
   StringBuilder::push(buf, "[")
   let mut i = 0
   while i < Array::length(items) {
-    StringBuilder::push(buf, serialize_segment(__to_string(Array::get(items, i))))
+    push_serialized_segment(buf, __to_string(Array::get(items, i)))
     i = i + 1
   }
   StringBuilder::push(buf, "]")
@@ -143,7 +152,7 @@ fn serialize_string_array(items: Array[String]) -> String {
   StringBuilder::push(buf, "[")
   let mut i = 0
   while i < Array::length(items) {
-    StringBuilder::push(buf, serialize_segment(Array::get(items, i)))
+    push_serialized_segment(buf, Array::get(items, i))
     i = i + 1
   }
   StringBuilder::push(buf, "]")
@@ -175,7 +184,7 @@ fn serialize_bounds_array(items: Array[(Int, Array[String])]) -> String {
   let mut i = 0
   while i < Array::length(items) {
     let (id, bounds) = Array::get(items, i)
-    StringBuilder::push(buf, serialize_segment(__to_string(id)))
+    push_serialized_segment(buf, __to_string(id))
     StringBuilder::push(buf, serialize_string_array(bounds))
     i = i + 1
   }
@@ -208,7 +217,7 @@ fn serialize_type_array(items: Array[Type]) -> String {
   StringBuilder::push(buf, "[")
   let mut i = 0
   while i < Array::length(items) {
-    StringBuilder::push(buf, serialize_segment(serialize_type(Array::get(items, i))))
+    push_serialized_segment(buf, serialize_type(Array::get(items, i)))
     i = i + 1
   }
   StringBuilder::push(buf, "]")
@@ -389,8 +398,8 @@ fn serialize_type(ty: Type) -> String {
       let mut ki = 0
       while ki < Array::length(rfields) {
         let (kname, kty) = Array::get(rfields, ki)
-        StringBuilder::push(kbuf, serialize_segment(kname))
-        StringBuilder::push(kbuf, serialize_segment(serialize_type(kty)))
+        push_serialized_segment(kbuf, kname)
+        push_serialized_segment(kbuf, serialize_type(kty))
         ki = ki + 1
       }
       StringBuilder::push(kbuf, "]")
@@ -405,7 +414,7 @@ fn serialize_type_expr_array(items: Array[TypeExpr]) -> String {
   StringBuilder::push(buf, "[")
   let mut i = 0
   while i < Array::length(items) {
-    StringBuilder::push(buf, serialize_segment(serialize_type_expr(Array::get(items, i))))
+    push_serialized_segment(buf, serialize_type_expr(Array::get(items, i)))
     i = i + 1
   }
   StringBuilder::push(buf, "]")
@@ -502,7 +511,7 @@ fn serialize_string_bounds(items: Array[(String, Array[String])]) -> String {
   let mut i = 0
   while i < Array::length(items) {
     let (name, bounds) = Array::get(items, i)
-    StringBuilder::push(buf, serialize_segment(name))
+    push_serialized_segment(buf, name)
     StringBuilder::push(buf, serialize_string_array(bounds))
     i = i + 1
   }
@@ -536,7 +545,7 @@ fn serialize_trait_methods(items: Array[(String, Array[TypeExpr], TypeExpr)]) ->
   let mut i = 0
   while i < Array::length(items) {
     let (name, params, ret) = Array::get(items, i)
-    StringBuilder::push(buf, serialize_segment(name))
+    push_serialized_segment(buf, name)
     StringBuilder::push(buf, serialize_type_expr_array(params))
     StringBuilder::push(buf, serialize_type_expr(ret))
     i = i + 1
@@ -572,7 +581,7 @@ fn serialize_trait_method_gens(items: Array[(String, Array[String], Array[(Strin
   let mut i = 0
   while i < Array::length(items) {
     let (name, params, bounds) = Array::get(items, i)
-    StringBuilder::push(buf, serialize_segment(name))
+    push_serialized_segment(buf, name)
     StringBuilder::push(buf, serialize_string_array(params))
     StringBuilder::push(buf, serialize_string_bounds(bounds))
     i = i + 1
@@ -606,14 +615,14 @@ fn serialize_type_def(def: TypeDef) -> String {
     TDEnum(name, params, variants) => {
       let out = StringBuilder::new()
       StringBuilder::push(out, "E")
-      StringBuilder::push(out, serialize_segment(name))
+      push_serialized_segment(out, name)
       StringBuilder::push(out, serialize_string_array(params))
       StringBuilder::push(out, __to_string(Array::length(variants)))
       StringBuilder::push(out, "[")
       let mut i = 0
       while i < Array::length(variants) {
         let (variant, fields) = Array::get(variants, i)
-        StringBuilder::push(out, serialize_segment(variant))
+        push_serialized_segment(out, variant)
         StringBuilder::push(out, serialize_type_array(fields))
         i = i + 1
       }
@@ -625,14 +634,14 @@ fn serialize_type_def(def: TypeDef) -> String {
     TDEffect(name, ops, params) => {
       let out = StringBuilder::new()
       StringBuilder::push(out, "K")
-      StringBuilder::push(out, serialize_segment(name))
+      push_serialized_segment(out, name)
       StringBuilder::push(out, serialize_string_array(params))
       StringBuilder::push(out, __to_string(Array::length(ops)))
       StringBuilder::push(out, "[")
       let mut i = 0
       while i < Array::length(ops) {
         let (op, args, ret) = Array::get(ops, i)
-        StringBuilder::push(out, serialize_segment(op))
+        push_serialized_segment(out, op)
         StringBuilder::push(out, serialize_type_array(args))
         StringBuilder::push(out, serialize_type(ret))
         i = i + 1
@@ -719,7 +728,7 @@ fn serialize_type_defs(defs: Array[TypeDef]) -> String {
   StringBuilder::push(out, "[")
   let mut i = 0
   while i < Array::length(defs) {
-    StringBuilder::push(out, serialize_segment(serialize_type_def(Array::get(defs, i))))
+    push_serialized_segment(out, serialize_type_def(Array::get(defs, i)))
     i = i + 1
   }
   StringBuilder::push(out, "]")
@@ -785,7 +794,7 @@ fn serialize_value_bindings(items: Array[(String, EnvValueBinding)]) -> String {
   let mut i = 0
   while i < Array::length(items) {
     let (name, binding) = Array::get(items, i)
-    StringBuilder::push(buf, serialize_segment(name))
+    push_serialized_segment(buf, name)
     StringBuilder::push(buf, serialize_type(binding.ty))
     StringBuilder::push(buf, serialize_binding_origin(binding.origin))
     i = i + 1
@@ -821,7 +830,7 @@ fn serialize_bindings(items: Array[(String, Type)]) -> String {
   let mut i = 0
   while i < Array::length(items) {
     let (name, ty) = Array::get(items, i)
-    StringBuilder::push(buf, serialize_segment(name))
+    push_serialized_segment(buf, name)
     StringBuilder::push(buf, serialize_type(ty))
     i = i + 1
   }
@@ -853,7 +862,7 @@ fn serialize_type_env_into(buf: StringBuilder, env: TypeEnv) -> Unit {
     EnvEmpty => StringBuilder::push(buf, "0"),
     EnvBind(name, binding, rest) => {
       StringBuilder::push(buf, "B")
-      StringBuilder::push(buf, serialize_segment(name))
+      push_serialized_segment(buf, name)
       StringBuilder::push(buf, serialize_type(binding.ty))
       StringBuilder::push(buf, serialize_binding_origin(binding.origin))
       serialize_type_env_into(buf, rest)
@@ -865,7 +874,7 @@ fn serialize_type_env_into(buf: StringBuilder, env: TypeEnv) -> Unit {
     // the fact in TypeEnv is that consumers may trust its absence.
     EnvMutCell(name, escapes, rest) => {
       StringBuilder::push(buf, "M")
-      StringBuilder::push(buf, serialize_segment(name))
+      push_serialized_segment(buf, name)
       StringBuilder::push(buf, if escapes {
         "1"
       } else {
@@ -875,7 +884,7 @@ fn serialize_type_env_into(buf: StringBuilder, env: TypeEnv) -> Unit {
     },
     EnvTraitDef(name, supers, is_auto, methods, rest, params, method_gens) => {
       StringBuilder::push(buf, "D")
-      StringBuilder::push(buf, serialize_segment(name))
+      push_serialized_segment(buf, name)
       StringBuilder::push(buf, serialize_string_array(supers))
       StringBuilder::push(buf, if is_auto {
         "1"
@@ -889,13 +898,13 @@ fn serialize_type_env_into(buf: StringBuilder, env: TypeEnv) -> Unit {
     },
     EnvTraitImpl(name, target, rest) => {
       StringBuilder::push(buf, "I")
-      StringBuilder::push(buf, serialize_segment(name))
+      push_serialized_segment(buf, name)
       StringBuilder::push(buf, serialize_type(target))
       serialize_type_env_into(buf, rest)
     },
     EnvTraitImplGen(name, params, bounds, target, rest) => {
       StringBuilder::push(buf, "G")
-      StringBuilder::push(buf, serialize_segment(name))
+      push_serialized_segment(buf, name)
       StringBuilder::push(buf, serialize_string_array(params))
       StringBuilder::push(buf, serialize_string_bounds(bounds))
       StringBuilder::push(buf, serialize_type(target))
@@ -922,7 +931,7 @@ fn serialize_type_env_into(buf: StringBuilder, env: TypeEnv) -> Unit {
           StringBuilder::push(buf, "[")
           let mut row = 0
           while row < env_name_index_length(names) {
-            StringBuilder::push(buf, serialize_segment(env_name_index_at(names, row)))
+            push_serialized_segment(buf, env_name_index_at(names, row))
             row = row + 1
           }
           StringBuilder::push(buf, "]")

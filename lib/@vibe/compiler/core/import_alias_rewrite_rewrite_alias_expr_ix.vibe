@@ -1359,24 +1359,34 @@ export fn rewrite_imported_value_stmt_to_local(stmt: Stmt, original: String, loc
   }
 }
 
-fn sanitize_namespace_char(code: Int) -> String {
-  if (code >= 'a' && code <= 'z') || (code >= 'A' && code <= 'Z') || (code >= '0' && code <= '9') || code == '_' {
-    String::from_char_code(code)
-  } else {
-    "_"
-  }
+fn namespace_byte_is_valid(code: Int) -> Bool {
+  (code >= 'a' && code <= 'z') || (code >= 'A' && code <= 'Z') || (code >= '0' && code <= '9') || code == '_'
 }
 
 export fn sanitize_namespace_path(path: String) -> String {
-  // O(N) build via StringBuilder; the previous `out = String::concat(out, ...)`
-  // per char was O(N²) over the path length (issue #366).
+  // Keep valid byte spans intact instead of allocating one String and one
+  // builder entry per byte. Each rejected byte still becomes one underscore.
   let out = StringBuilder::new()
+  let mut span_start = 0
   let mut i = 0
   while i < String::length(path) {
-    StringBuilder::push(out, sanitize_namespace_char(String::char_code_at(path, i)))
+    if !namespace_byte_is_valid(String::char_code_at(path, i)) {
+      if span_start < i {
+        StringBuilder::push(out, path[span_start: i])
+      }
+      StringBuilder::push(out, "_")
+      span_start = i + 1
+    }
     i = i + 1
   }
-  StringBuilder::freeze(out)
+  if span_start == 0 {
+    path
+  } else {
+    if span_start < String::length(path) {
+      StringBuilder::push(out, path[span_start: String::length(path)])
+    }
+    StringBuilder::freeze(out)
+  }
 }
 
 export fn namespace_private_name(path: String, name: String) -> String {

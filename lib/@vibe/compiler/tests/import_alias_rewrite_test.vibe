@@ -19,6 +19,7 @@ import @vibe/compiler/core {
   namespace_exported_name,
   namespace_private_name,
   namespace_private_value_stmts,
+  sanitize_namespace_path,
   trait_import_local_operation_renames
 }
 
@@ -35,6 +36,33 @@ import @vibe/compiler/codegen {
 }
 
 //# Misc
+
+test "namespace paths preserve ASCII names and replace each non-name byte" {
+  inspect(sanitize_namespace_path(""), "")
+  inspect(sanitize_namespace_path("Az_09"), "Az_09")
+  inspect(sanitize_namespace_path("/A-Z_09/foo.vibe"), "_A_Z_09_foo_vibe")
+  inspect(sanitize_namespace_path("あ"), "___")
+  inspect(namespace_private_name("/tmp/A-Z.vibe", "value"), "value_dep__tmp_A_Z_vibe")
+  inspect(namespace_exported_name("/tmp/A-Z.vibe", "value"), "value_exp__tmp_A_Z_vibe")
+}
+
+test "namespace sanitization avoids one temporary string per valid byte" {
+  let buf = StringBuilder::new()
+  let mut i = 0
+  while i < 128 {
+    StringBuilder::push(buf, "abcdefgh")
+    i = i + 1
+  }
+  let chunk = StringBuilder::freeze(buf)
+  let path = String::concat("/tmp/", String::concat(chunk, ".vibe"))
+  let expected = String::concat("_tmp_", String::concat(chunk, "_vibe"))
+  let before = Profiler::heap_bytes()
+  let sanitized = sanitize_namespace_path(path)
+  let allocated = Profiler::heap_bytes() - before
+  assert(sanitized == expected)
+  // A bump run measures every temporary allocation; RC may reuse buffers.
+  assert(allocated <= String::length(path) * 10 + 512)
+}
 
 test "standard Iterator provenance is scoped to its local import namespace" {
   let imported = parse_program(lex("import @vibe/builtin { trait Iterator }\nlet answer = Iterator::map([1], (x: Int) -> Int { x })"))
