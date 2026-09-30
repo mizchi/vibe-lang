@@ -1,0 +1,114 @@
+// Typed row queries.
+
+import @vibe/compiler/core {
+  Stmt
+}
+
+import ./state.vibe {
+  dtd_ctx_len, dtd_eq_deferred_requests, dtd_eq_deferred_types, dtd_eq_typed_refusals, dtd_own_limit, dtd_typed_eq_keys, dtd_typed_eq_offs
+}
+
+/// End (exclusive) of the module's own statements; the whole array when no
+/// module boundary is set.
+export fn dtd_own_end(stmts: Array[Stmt]) -> Int {
+  let lim = Array::get(dtd_own_limit, 0)
+  if lim < 0 || lim > Array::length(stmts) {
+    Array::length(stmts)
+  } else {
+    lim
+  }
+}
+
+/// Whether index `i` is a module-owned statement: everything before the
+/// boundary, plus everything appended after the context block (the pass's
+/// own synthesized statements).
+export fn dtd_is_own_index(i: Int) -> Bool {
+  let lim = Array::get(dtd_own_limit, 0)
+  lim < 0 || i < lim || i >= lim + Array::get(dtd_ctx_len, 0)
+}
+
+/// Whether `trait_name` is declared among the module's own statements.
+export fn dtd_trait_declared_here(stmts: Array[Stmt], trait_name: String) -> Bool {
+  let own_end = dtd_own_end(stmts)
+  let mut i = 0
+  let mut found = false
+  while i < own_end && !found {
+    match Array::get(stmts, i) {
+      STrait(_, n, _, _, _, _) => if n == trait_name {
+        found = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Two arms' answers: the one that answered when only one did, the shared one
+/// when both agree, "" when they disagree.
+export fn dtd_typed_item_shape_join(a: String, b: String) -> String {
+  if String::length(a) == 0 {
+    b
+  } else if String::length(b) == 0 || a == b {
+    a
+  } else {
+    ""
+  }
+}
+
+/// #3084: a row shape that is a bare declared name (`Pt`), not a composite
+/// encoding.
+export fn dtd_row_is_bare_nominal(sh: String) -> Bool {
+  if String::length(sh) == 0 {
+    false
+  } else {
+    let c = String::char_code_at(sh, 0)
+    // Not `(`, `[`, `{`.
+    c != 40 && c != 91 && c != 123
+  }
+}
+
+export fn dtd_typed_eq_key_for(boff: Int) -> String {
+  if boff < 0 {
+    ""
+  } else {
+    let n = Array::length(dtd_typed_eq_offs)
+    let mut i = 0
+    let mut found = ""
+    while i < n {
+      if Array::get(dtd_typed_eq_offs, i) == boff {
+        found = Array::get(dtd_typed_eq_keys, i)
+        i = n
+      } else {
+        i = i + 1
+      }
+    }
+    found
+  }
+}
+
+/// #2642 review (Codex P2): clear what a LANE recorded, at that lane's
+/// boundary.
+///
+/// These three arrays are process-global and nothing cleared them, while their
+/// own doc comments said "since the last reset". The other synthesis registries
+/// (`dtd_arr_eq_needed_keys`, `dtd_map_eq_needed_keys`,
+/// `dtd_eq_specializations`) are reset by `dtd_run` on every call, so they
+/// describe one run; a caller that wants the union over several modules unions
+/// the per-run lists itself. These cannot do that, because `eq_mint_deferred_into`
+/// reads the REGISTRY at the link and so needs it to accumulate across the
+/// modules of one split run -- which also means every earlier program's
+/// deferrals were still in it. A second oracle report in the same process
+/// therefore replayed the first program's instantiations against the second
+/// program's statements, and `deferred` / `minted` depended on test order.
+///
+/// So the reset is at the lane boundary rather than per run: the whole-program
+/// entry (`desugar_trait_dicts_with_typed_eq`, one program per call) and the
+/// per-module driver, before its first module.
+export fn eq_deferred_reset() -> Unit {
+  Array::truncate(dtd_eq_deferred_requests, 0)
+  Array::truncate(dtd_eq_deferred_types, 0)
+  Array::truncate(dtd_eq_typed_refusals, 0)
+}

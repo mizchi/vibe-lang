@@ -1,0 +1,212 @@
+// Collection equality generation.
+
+import @vibe/compiler/core {
+  Expr, Stmt, TypeExpr
+}
+
+import @vibe/ast {
+  builtin_ref
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import ./derive_operations.vibe {
+  collect_decl_type_names, top_level_fn_exists
+}
+
+import ./equality_generation.vibe {
+  gen_arr_equals_fn
+}
+
+import ./equality_requests.vibe {
+  arr_equals_name, bytes_equals_name, dtd_fresh_reset_for_decl, eq_tuple_uid_next, map_equals_name
+}
+
+import ./formal_scope.vibe {
+  collect_ty_var_names
+}
+
+import ./name_encoding.vibe {
+  idx_str
+}
+
+import ./state.vibe {
+  dtd_arr_eq_needed, dtd_bytes_eq_needed, dtd_map_eq_needed
+}
+
+import ./typed_equality.vibe {
+  eq_for_typed
+}
+
+import ./utilities.vibe {
+  empty_str_array
+}
+
+/// #1526: generate every recorded `__arr_equals__<key>` helper that does not
+/// already exist. Runs AFTER the rewrite loop, since that is what produces the
+/// calls.
+///
+/// The loop re-reads `Array::length` each turn on purpose: `gen_arr_equals_fn`
+/// builds its body through `eq_for_typed`, which records the nested element
+/// types it in turn calls (`Array[Array[Int]]` -> `Array[Int]`), so appending
+/// to the list while walking it IS the worklist closure. It terminates because
+/// `arr_eq_needed_record` dedups by type key and each nested type is strictly
+/// shallower.
+///
+/// The generated statements are appended after the rewrite and so are not
+/// themselves rewritten. They need no rewriting: `gen_arr_equals_fn` emits
+/// already-lowered code (`Array::get` / `Array::length` / a type-directed
+/// element comparison), which is what the pre-existing helpers reduce to as
+/// well.
+export fn emit_recorded_arr_equals(stmts: Array[Stmt]) -> Unit {
+  let known_types = collect_decl_type_names(stmts)
+  let mut i = 0
+  while i < Array::length(dtd_arr_eq_needed) {
+    let et = Array::get(dtd_arr_eq_needed, i)
+    if top_level_fn_exists(stmts, arr_equals_name(et)) {
+      ()
+    } else {
+      dtd_fresh_reset_for_decl()
+      Array::push(stmts, gen_arr_equals_fn(et, known_types))
+    }
+    i = i + 1
+  }
+}
+
+/// Generate every recorded `__map_equals__<k>__<v>` helper that does not
+/// already exist. Runs after the rewrite loop, like `emit_recorded_arr_equals`,
+/// and re-reads `Array::length` each turn for the same reason: a value type
+/// that is itself a Map or an Array records ITS helper while this body is
+/// built, so appending while walking is the worklist closure. It terminates
+/// because the record dedups by name and each nested type is strictly
+/// shallower.
+export fn emit_recorded_map_equals(stmts: Array[Stmt]) -> Unit {
+  let known_types = collect_decl_type_names(stmts)
+  let mut i = 0
+  while i < Array::length(dtd_map_eq_needed) {
+    let pair = Array::get(dtd_map_eq_needed, i)
+    match pair {
+      TyTuple(kv) => if Array::length(kv) == 2 {
+        let k_ty = Array::get(kv, 0)
+        let v_ty = Array::get(kv, 1)
+        if top_level_fn_exists(stmts, map_equals_name(k_ty, v_ty)) {
+          ()
+        } else {
+          dtd_fresh_reset_for_decl()
+          Array::push(stmts, gen_map_equals_fn(k_ty, v_ty, known_types))
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+/// `let __map_equals__<k>__<v> = (a: Map[k, v], b: Map[k, v]) -> Bool { ... }`
+///
+/// Equal size plus "every key of `a` is in `b` with an equal value" is set
+/// equality: with the sizes equal, a key of `b` missing from `a` would force a
+/// key of `a` missing from `b`, which the loop catches.  The value comparison
+/// goes through `eq_for_typed`, so `Map[String, Array[Int]]` and
+/// `Map[String, SomeStruct]` recurse instead of identity-comparing.
+///
+/// The value compare is nested INSIDE the `has_key` test on purpose: `Map::get`
+/// returns the raw stored value and `0` on a miss (see its checker comment), so
+/// handing that `0` to a generated `V::equals` would read a non-value.
+fn gen_map_equals_fn(k_ty: TypeExpr, v_ty: TypeExpr, known_types: Array[String]) -> Stmt {
+  // Per-expansion binder names, from the counter the tuple arm already uses.
+  // Fixed synthetic binders are what `scripts/review_lint.vibex` rejects, and
+  // it is right to: the tuple arm carried fixed ones until a NESTED expansion
+  // rebound them and the linear backend's match binding reused the shadowed
+  // local, so the outer elements compared against clobbered slots (#1526). A
+  // map body cannot nest inside another one today -- a Map-valued Map emits a
+  // CALL to the inner helper, not an inline body -- but "cannot nest today" is
+  // exactly the reasoning that was wrong before, and a unique name costs
+  // nothing.
+  let uid = idx_str(eq_tuple_uid_next())
+  let n_k = String::concat("__me_k", uid)
+  let n_ks = String::concat("__me_ks", uid)
+  let n_i = String::concat("__me_i", uid)
+  let n_ok = String::concat("__me_ok", uid)
+  let size_a = ECall(builtin_ref("Map::size"), Array::slice([EIdent("a", -1)], 0, 1), -1)
+  let size_b = ECall(builtin_ref("Map::size"), Array::slice([EIdent("b", -1)], 0, 1), -1)
+  let val_a = ECall(builtin_ref("Map::get"), Array::slice([
+    EIdent("a", -1),
+    EIdent(n_k, -1)
+  ], 0, 2), -1)
+  let val_b = ECall(builtin_ref("Map::get"), Array::slice([
+    EIdent("b", -1),
+    EIdent(n_k, -1)
+  ], 0, 2), -1)
+  let val_eq = eq_for_typed(v_ty, val_a, val_b, known_types)
+  let val_bad = EIf(ECall(EIdent("not", -1), Array::slice([val_eq], 0, 1), -1), EAssign(n_ok, EBool(false), EUnit), EUnit)
+  let has_b = ECall(builtin_ref("Map::has_key"), Array::slice([
+    EIdent("b", -1),
+    EIdent(n_k, -1)
+  ], 0, 2), -1)
+  let check_one = EIf(ECall(EIdent("not", -1), Array::slice([has_b], 0, 1), -1), EAssign(n_ok, EBool(false), EUnit), val_bad)
+  let incr = EAssign(n_i, EBinOp("+", EIdent(n_i, -1), EInt(1), -1), EUnit)
+  let loop_body = ELet(n_k, ECall(builtin_ref("Array::get"), Array::slice([
+    EIdent(n_ks, -1),
+    EIdent(n_i, -1)
+  ], 0, 2), -1), ESeq(check_one, incr), -1)
+  let while_loop = EWhile(EBinOp("<", EIdent(n_i, -1), ECall(builtin_ref("Array::length"), Array::slice([
+    EIdent(n_ks, -1)
+  ], 0, 1), -1), -1), loop_body)
+  let body_eq = ELet(n_ks, ECall(builtin_ref("Map::keys"), Array::slice([
+    EIdent("a", -1)
+  ], 0, 1), -1), ELetMut(n_i, EInt(0), ELetMut(n_ok, EBool(true), ESeq(while_loop, EIdent(n_ok, -1)), -1), -1), -1)
+  let body = EIf(EBinOp("!=", size_a, size_b, -1), EBool(false), body_eq)
+  let map_ty = TyApp("Map", Array::slice([k_ty, v_ty], 0, 2))
+  let params = Array::slice([("a", Some(map_ty)), ("b", Some(map_ty))], 0, 2)
+  let tparams = empty_str_array()
+  collect_ty_var_names(k_ty, tparams)
+  collect_ty_var_names(v_ty, tparams)
+  let no_tb = array_empty()
+  SLet(false, false, map_equals_name(k_ty, v_ty), None, EFn(tparams, no_tb, params, Some(TyName("Bool")), None, body))
+}
+
+/// `let __bytes_equals = (a: Bytes, b: Bytes) -> Bool { ... }` — length check
+/// plus a byte loop, the `gen_arr_equals_fn` shape minus the element-type
+/// recursion (a byte is an Int). Runs after `emit_recorded_arr_equals`, whose
+/// generated bodies can themselves record this need (`Array[Bytes]` elements);
+/// this body records nothing, so one pass closes the worklist.
+export fn emit_recorded_bytes_equals(stmts: Array[Stmt]) -> Unit {
+  if Array::length(dtd_bytes_eq_needed) > 0 && !top_level_fn_exists(stmts, bytes_equals_name()) {
+    let len_a = ECall(builtin_ref("Bytes::length"), Array::slice([
+      EIdent("a", -1)
+    ], 0, 1), -1)
+    let len_b = ECall(builtin_ref("Bytes::length"), Array::slice([
+      EIdent("b", -1)
+    ], 0, 1), -1)
+    let byte_a = ECall(builtin_ref("Bytes::get"), Array::slice([
+      EIdent("a", -1),
+      EIdent("__be_i", -1)
+    ], 0, 2), -1)
+    let byte_b = ECall(builtin_ref("Bytes::get"), Array::slice([
+      EIdent("b", -1),
+      EIdent("__be_i", -1)
+    ], 0, 2), -1)
+    let set_false = EIf(EBinOp("!=", byte_a, byte_b, -1), EAssign("__be_ok", EBool(false), EUnit), EUnit)
+    let incr = EAssign("__be_i", EBinOp("+", EIdent("__be_i", -1), EInt(1), -1), EUnit)
+    let while_loop = EWhile(EBinOp("<", EIdent("__be_i", -1), ECall(builtin_ref("Bytes::length"), Array::slice([
+      EIdent("a", -1)
+    ], 0, 1), -1), -1), ESeq(set_false, incr))
+    let body_eq = ELetMut("__be_i", EInt(0), ELetMut("__be_ok", EBool(true), ESeq(while_loop, EIdent("__be_ok", -1)), -1), -1)
+    // review-lint: allow-fixed-synthetic-name
+    let body = EIf(EBinOp("!=", len_a, len_b, -1), EBool(false), body_eq)
+    let params = Array::slice([
+      ("a", Some(TyName("Bytes"))),
+      ("b", Some(TyName("Bytes")))
+    ], 0, 2)
+    let no_tp = array_empty()
+    let no_tb = array_empty()
+    Array::push(stmts, SLet(false, false, bytes_equals_name(), None, EFn(no_tp, no_tb, params, Some(TyName("Bool")), None, body)))
+  } else {
+    ()
+  }
+}

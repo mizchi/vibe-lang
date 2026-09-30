@@ -1,0 +1,2508 @@
+// Rewrite.
+
+import @vibe/compiler/lowering/trait_namespaces {
+  dict_param_name, lookup_trait_sigs
+}
+
+import @vibe/compiler/core {
+  Expr,
+  ImportItem,
+  Pat,
+  Stmt,
+  TypeExpr,
+  __to_string,
+  builtin_iterator_serialized_boundary_markers,
+  namespace_rename_original,
+  typed_lowering_arg_offset
+}
+
+import @vibe/ast {
+  builtin_ref, trait_ref_args, type_param_name
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import ./argument_types.vibe {
+  anon_or_infer, infer_arg_type_name, is_erased_generic_operand
+}
+
+import ./assert_eq_scope.vibe {
+  member_of
+}
+
+import ./binding_environments.vibe {
+  bind_let_env, bind_let_env_into, dtd_exception_kind_arm_var_types
+}
+
+import ./binding_shape_inference.vibe {
+  bind_shapes, infer_shape
+}
+
+import ./binding_shape_queries.vibe {
+  array_elem_type_of,
+  dtd_mask_shadowed_fn_into,
+  dtd_mask_shadowed_params,
+  dtd_mask_shadowed_pat,
+  interp_shape,
+  shape_inner,
+  shape_is_composite,
+  tuple_shape_parts
+}
+
+import ./collection_access.vibe {
+  dtd_forin_map_iterand, iterator_array_intrinsic, iterator_array_intrinsic_callee, map_index_rewrite
+}
+
+import ./constructor_environments.vibe {
+  extend_constructor_var_types, extend_var_types
+}
+
+import ./constructor_inference.vibe {
+  anon_or_constructor_infer, constructor_handler_arm_var_types, constructor_match_arm_var_types
+}
+
+import ./constructor_receivers.vibe {
+  constructor_for_body_var_types,
+  constructor_rewrite_var_types,
+  qual_ctor_member,
+  railway_bind_payload_type,
+  result_uses_constructor_witness
+}
+
+import ./empty_array_inference.vibe {
+  arm_binder_var_types_env, empty_array_shape_from_body, opt_ty_is_some
+}
+
+import ./equality_aliases.vibe {
+  eq_subst_ty
+}
+
+import ./equality_content_types.vibe {
+  show_generic_enum_nullary
+}
+
+import ./equality_inference.vibe {
+  eq_var_shape_dispatch
+}
+
+import ./equality_registry.vibe {
+  generic_shape_head,
+  interp_generic_enum_unknown_msg,
+  show_generic_enum_decl,
+  show_generic_enum_known,
+  show_generic_known,
+  show_generic_struct_decl,
+  show_generic_struct_known
+}
+
+import ./equality_requests.vibe {
+  arr_eq_needed_record, arr_equals_name, bytes_eq_needed_record, bytes_equals_name, eq_fail_closed, eq_refuse, owned_scalar_name_in
+}
+
+import ./equality_shape_queries.vibe {
+  eq_var_array_elem,
+  infer_earray_elem_type,
+  infer_static_eq_type_binop,
+  is_empty_array_lit,
+  is_untyped_empty_array_name,
+  shape_to_eq_ty,
+  static_eq_dispatchable
+}
+
+import ./equality_type_shapes.vibe {
+  ty_to_eq_shape
+}
+
+import ./exceptions.vibe {
+  exn_kind_fresh_payload_name,
+  exn_kind_mark_used,
+  exn_kind_read_expr,
+  exn_kind_suppressed,
+  exn_kind_write_expr,
+  exn_msg_read_expr,
+  exn_msg_write_expr,
+  is_exception_kind_read,
+  is_exception_message_read,
+  is_perform_throw_shape,
+  perform_throw_payload,
+  perform_throw_with_payload
+}
+
+import ./formal_scope.vibe {
+  formal_in_scope, is_scalar_type_name, scope_formals_pop, scope_formals_push, subst_scope_formals_ty, ty_mentions_owned_scalar
+}
+
+import ./generic_dispatch.vibe {
+  lookup_gen, lookup_gen_entry
+}
+
+import ./generic_equality.vibe {
+  opt_eq_match, result_eq_match
+}
+
+import ./inspect_rewrite.vibe {
+  dinsp_fresh_name
+}
+
+import ./interpolation_types.vibe {
+  dtd_erased_top_formal_head,
+  interp_arg_is_bool,
+  interp_arg_is_char,
+  interp_arg_is_double,
+  interp_arg_is_unit,
+  interp_ctor_arm_var_types,
+  interp_missing_show_type,
+  interp_show_target,
+  interp_unresolved_array_call
+}
+
+import ./interpolation_witnesses.vibe {
+  dtd_check_top_interp, dtd_check_unthreaded_interp, dtd_eq_witness_dict, dtd_interp_bind_lamret
+}
+
+import ./iteration.vibe {
+  classify_sync_for_loop, classify_trait_free_for_loop
+}
+
+import ./lambda_return_shapes.vibe {
+  dtd_show_witness_dict
+}
+
+import ./models.vibe {
+  DictGen
+}
+
+import ./name_encoding.vibe {
+  concat2
+}
+
+import ./offsetless_shapes.vibe {
+  dtd_offsetless_shape
+}
+
+import ./parameter_annotations.vibe {
+  seed_var_types
+}
+
+import ./railway_binds.vibe {
+  lower_try_bind, lower_try_op, try_sentinel
+}
+
+import ./renderer_scope.vibe {
+  char_render_expr,
+  interp_has_repl,
+  interp_missing_show_msg,
+  interp_take_repl,
+  interp_unresolved_array_msg,
+  is_assert_eq_call,
+  is_interp_to_string_call,
+  is_show_shim_call,
+  is_show_shim_value,
+  local_show_shim_enter,
+  local_show_shim_pop,
+  show_generic_recurs,
+  show_generic_recursive_render,
+  show_self_fn_set,
+  show_shim_body_enter,
+  show_shim_body_leave,
+  show_tmp_name,
+  unit_render_expr
+}
+
+import ./shape_environment.vibe {
+  clone_var_types, constructor_binding_has_evidence, shape_key, shape_split, tuple_shape_key
+}
+
+import ./state.vibe {
+  dtd_constructor_tracking,
+  dtd_eq_known_types,
+  dtd_generic_show_shims,
+  dtd_interp_site_off,
+  dtd_show_generic_enum_stack,
+  dtd_show_self_fn,
+  dtd_user_assert_eq,
+  dtd_user_assert_eq_alias_blocker,
+  dtd_user_assert_eq_program,
+  dtd_user_assert_eq_range
+}
+
+import ./trait_bounds.vibe {
+  already_threaded,
+  dtd_check_unthreaded_dispatch,
+  dtd_eq_witness_method,
+  empty_dict_binds,
+  empty_threaded,
+  encode_array_elem_recv_index,
+  encode_constructor_recv_index,
+  find_array_elem_recv_index,
+  find_dict_for_method,
+  find_recv_index,
+  return_constructor_param
+}
+
+import ./type_names.vibe {
+  anon_dot_rewrite,
+  anon_record_prefix,
+  anon_tuple_prefix,
+  dtd_program_fn_name,
+  extend_local_fn_return,
+  fn_exists,
+  lookup_var_type,
+  prepend_expr,
+  struct_set_has,
+  struct_set_member
+}
+
+import ./typed_equality.vibe {
+  eq_for_typed
+}
+
+import ./typed_rendering.vibe {
+  dtd_head_is_leaked_formal,
+  dtd_interp_expands_itself,
+  dtd_typed_eq_admitted_ty,
+  dtd_typed_eq_residual,
+  dtd_typed_render_raw_shape_for,
+  dtd_typed_render_shape_for,
+  dtd_unnamed_head_row
+}
+
+import ./typed_row_queries.vibe {
+  dtd_row_is_bare_nominal
+}
+
+import ./utilities.vibe {
+  concat_expr_arrays, dict_struct_name, empty_str_array, empty_type_exprs, method_names_of_sigs, split_qualified, str_array_contains
+}
+
+import ./witness_generation.vibe {
+  synth_dicts
+}
+
+/// Render one sub-expression by re-entering the interpolation rewrite on a
+/// synthetic `__to_string(sub)`, so a nested wrapper or a derive(Show) value
+/// inside one is rendered too.
+fn interp_render_sub(sub: Expr, derived_only: Bool, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
+  rewrite_expr(ECall(builtin_ref("__to_string"), Array::slice([sub], 0, 1), -1), gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+}
+
+/// `open_s ++ e0 ++ sep ++ e1 ++ .. ++ close_s`, each element rendered.
+/// (`open` is a reserved word in vibe, hence the suffixed names.)
+fn interp_join(items: Array[Expr], open_s: String, sep: String, close_s: String, derived_only: Bool, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
+  let mut acc = EString(open_s, -1)
+  let mut i = 0
+  while i < Array::length(items) {
+    let piece = interp_render_sub(Array::get(items, i), derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+    acc = if i == 0 {
+      concat2(acc, piece)
+    } else {
+      concat2(concat2(acc, EString(sep, -1)), piece)
+    }
+    i = i + 1
+  }
+  concat2(acc, EString(close_s, -1))
+}
+
+/// #1445: render a variable whose binding site recorded a TUPLE shape
+/// (`tuple_shape_key`). The expansion destructures the variable rather than
+/// re-evaluating any element expression -- the tuple is already built, and
+/// the binding's RHS may not even be in scope here.
+///
+///   let t = (1, p)   ->   match t { (a, b) => "(" ++ show(a) ++ ", " ++ show(b) ++ ")" }
+///
+/// Each binder is rendered through `interp_render_sub`, with its recorded
+/// element type pushed into `var_types` first -- that is what lets a
+/// `derive(Show)` struct inside the tuple render structurally instead of
+/// falling to the pointer heuristic. An element whose type was not inferable
+/// at the binding site carries an empty entry and simply renders through the
+/// ordinary `__to_string`, exactly as it does today.
+fn interp_expand_var_tuple(name: String, elem_types: Array[String], derived_only: Bool, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
+  let n = Array::length(elem_types)
+  let pats = array_empty()
+  let binders = empty_str_array()
+  let mut i = 0
+  while i < n {
+    let v = show_tmp_name()
+    Array::push(pats, PBind(v))
+    Array::push(binders, v)
+    i = i + 1
+  }
+  let mut acc = EString("(", -1)
+  let mut k = 0
+  while k < n {
+    let v = Array::get(binders, k)
+    let et = Array::get(elem_types, k)
+    let vt = if String::length(et) == 0 {
+      var_types
+    } else {
+      extend_var_types(var_types, v, Some(et))
+    }
+    let piece = interp_render_sub(EIdent(v, -1), derived_only, gens, traits, struct_sets, dict_binds, vt, fn_returns)
+    acc = if k == 0 {
+      concat2(acc, piece)
+    } else {
+      concat2(concat2(acc, EString(", ", -1)), piece)
+    }
+    k = k + 1
+  }
+  EMatch(EIdent(name, -1), Array::slice([
+    (PTuple(pats), concat2(acc, EString(")", -1)))
+  ], 0, 1))
+}
+
+/// #1445: render a variable known to hold an `Array[T]` (its element type was
+/// recorded under `array_elem_key` by `array_elem_bind` or `seed_var_types`).
+///
+/// The loop is emitted INLINE rather than as a call to a monomorphic
+/// `__arr_to_string__<key>` helper. `gen_arr_to_string_fn` builds that helper
+/// for `derive`d fields, but emitting one from here would mean driving helper
+/// COLLECTION from interpolation sites in `desugar_derives` -- a second pass
+/// has to have already decided which helpers exist by the time this one runs.
+/// The loop body is the same shape as that helper's, so nothing is duplicated
+/// conceptually; it is just placed where the type is known.
+///
+/// The element is rendered by re-entering the rewrite on `Array::get(name, i)`
+/// -- `infer_arg_type_name` already resolves that shape through
+/// `array_elem_type_of`, so a `derive(Show)` element renders structurally
+/// without any extra plumbing here.
+fn interp_expand_var_array(name: String, derived_only: Bool, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
+  let iv = String::concat(show_tmp_name(), "_i")
+  let av = String::concat(show_tmp_name(), "_acc")
+  let elem_piece = interp_render_sub(ECall(builtin_ref("Array::get"), Array::slice([
+    EIdent(name, -1),
+    EIdent(iv, -1)
+  ], 0, 2), -1), derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+  let sep = EIf(EBinOp("==", EIdent(iv, -1), EInt(0), -1), EString("", -1), EString(", ", -1))
+  let append = concat2(concat2(EIdent(av, -1), sep), elem_piece)
+  let body = ESeq(EAssign(av, append, EUnit), EAssign(iv, EBinOp("+", EIdent(iv, -1), EInt(1), -1), EUnit))
+  let len_call = ECall(builtin_ref("Array::length"), Array::slice([
+    EIdent(name, -1)
+  ], 0, 1), -1)
+  let loop_e = EWhile(EBinOp("<", EIdent(iv, -1), len_call, -1), body)
+  ELetMut(iv, EInt(0), ELetMut(av, EString("[", -1), ESeq(loop_e, concat2(EIdent(av, -1), EString("]", -1))), -1), -1)
+}
+
+/// #1445 (#139): render `sub` given its recursive SHAPE.
+///
+/// The tuple case destructures with a `match` so no element expression is
+/// re-evaluated; the array case binds each element to a name inside the loop,
+/// which is what lets a NESTED composite element recurse (an element reached
+/// as `Array::get(a, i)` has no name for `var_types` to key on).
+fn interp_render_shaped(sub: Expr, sh: String, derived_only: Bool, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
+  if shape_is_composite(sh) {
+    interp_expand_shape(sub, sh, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+  } else if String::length(sh) == 0 {
+    interp_render_sub(sub, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+  } else {
+    match sub {
+      EIdent(v, _) => interp_render_sub(sub, derived_only, gens, traits, struct_sets, dict_binds, extend_var_types(var_types, v, Some(sh)), fn_returns),
+      _ => interp_render_sub(sub, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+    }
+  }
+}
+
+/// #1445 (#139): the tuple / array expansion for a composite shape. Supersedes
+/// interp_expand_var_tuple / interp_expand_var_array for anything that nests;
+/// those two stay for the shapes recorded by the older sentinels alone.
+fn interp_expand_shape(subject: Expr, sh: String, derived_only: Bool, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
+  if sh == "{u}" {
+    // #3075: a Unit position (`Option[Unit]`) printed `0`.
+    unit_render_expr(subject)
+  } else if String::starts_with(sh, "(") {
+    let parts = shape_split(shape_inner(sh))
+    let n = Array::length(parts)
+    let pats = array_empty()
+    let binders = empty_str_array()
+    let mut i = 0
+    while i < n {
+      let v = show_tmp_name()
+      Array::push(pats, PBind(v))
+      Array::push(binders, v)
+      i = i + 1
+    }
+    let mut acc = EString("(", -1)
+    let mut k = 0
+    while k < n {
+      let piece = interp_render_shaped(EIdent(Array::get(binders, k), -1), Array::get(parts, k), derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+      acc = if k == 0 {
+        concat2(acc, piece)
+      } else {
+        concat2(concat2(acc, EString(", ", -1)), piece)
+      }
+      k = k + 1
+    }
+    EMatch(subject, Array::slice([
+      (PTuple(pats), concat2(acc, EString(")", -1)))
+    ], 0, 1))
+  } else if String::starts_with(sh, "{o:") {
+    // #2971: an Option. Every non-tuple composite used to take the ARRAY arm
+    // below, so the `{o:Int}` element of an `Array[Option[Int]]` was walked
+    // with `Array::length` / `Array::get` and `[None, Some(0), Some(1)]`
+    // rendered `[[], [0], [0]]`.
+    let v = show_tmp_name()
+    let payload = interp_render_shaped(EIdent(v, -1), String::substring(sh, 3, String::length(sh) - 1), derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+    EMatch(subject, Array::slice([
+      (PCtor("Some", Array::slice([PBind(v)], 0, 1)), concat2(EString("Some(", -1), concat2(payload, EString(")", -1)))),
+      (PCtor("None", array_empty()), EString("None", -1))
+    ], 0, 2))
+  } else if String::starts_with(sh, "{r:") {
+    let parts = shape_split(String::substring(sh, 3, String::length(sh) - 1))
+    let ok_sh = if Array::length(parts) == 2 {
+      Array::get(parts, 0)
+    } else {
+      ""
+    }
+    let err_sh = if Array::length(parts) == 2 {
+      Array::get(parts, 1)
+    } else {
+      ""
+    }
+    let ov = show_tmp_name()
+    let ev = show_tmp_name()
+    let ok_piece = interp_render_shaped(EIdent(ov, -1), ok_sh, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+    let err_piece = interp_render_shaped(EIdent(ev, -1), err_sh, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+    EMatch(subject, Array::slice([
+      (PCtor("Ok", Array::slice([PBind(ov)], 0, 1)), concat2(EString("Ok(", -1), concat2(ok_piece, EString(")", -1)))),
+      (PCtor("Err", Array::slice([PBind(ev)], 0, 1)), concat2(EString("Err(", -1), concat2(err_piece, EString(")", -1))))
+    ], 0, 2))
+  } else if String::starts_with(sh, "{g:") && show_generic_enum_known(generic_shape_head(sh)) {
+    interp_expand_generic_enum(subject, sh, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+  } else if String::starts_with(sh, "{g:") && show_generic_struct_known(generic_shape_head(sh)) {
+    // #3007: a `derive (Show)` generic struct at a known instantiation. The
+    // field types get the arguments substituted, so each field renders at its
+    // real type; the text matches `gen_show_fn`'s (`Box { v: 1.5 }`).
+    // #3082: a field naming the struct again (`rest: Option[L[T]]`) recursed
+    // here until the stack overflowed; the recursion guard is the enum arm's.
+    let gparts = shape_split(String::substring(sh, 3, String::length(sh) - 1))
+    match show_generic_struct_decl(Array::get(gparts, 0)) {
+      Some(_) => if show_generic_recurs(sh, Array::get(gparts, 0)) {
+        show_generic_recursive_render(subject, sh, Array::get(gparts, 0))
+      } else {
+        Array::push(dtd_show_generic_enum_stack, sh)
+        let out = interp_expand_generic_struct(subject, sh, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+        Array::truncate(dtd_show_generic_enum_stack, Array::length(dtd_show_generic_enum_stack) - 1)
+        out
+      },
+      None => interp_render_sub(subject, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+    }
+  } else if !String::starts_with(sh, "[") {
+    // #2971: an encoding this renderer does not expand (`{u}`, `{m:..}`,
+    // `{g:..}`). Treating it as an array was the bug above; the ordinary path
+    // is the honest answer, and a `{g:Head,..}` keeps its head so a
+    // `Head::to_string` renderer is still found.
+    let head_vt = if String::starts_with(sh, "{g:") {
+      let gparts = shape_split(String::substring(sh, 3, String::length(sh) - 1))
+      match subject {
+        EIdent(sv, _) => extend_var_types(var_types, sv, Some(Array::get(gparts, 0))),
+        _ => var_types
+      }
+    } else {
+      var_types
+    }
+    interp_render_sub(subject, derived_only, gens, traits, struct_sets, dict_binds, head_vt, fn_returns)
+  } else {
+    // Array. The subject is read twice (length + per-index get), so it must be
+    // a name; anything else is bound once first.
+    let elem_sh = shape_inner(sh)
+    let nm = match subject {
+      EIdent(n, _) => n,
+      _ => show_tmp_name()
+    }
+    let iv = String::concat(show_tmp_name(), "_i")
+    let av = String::concat(show_tmp_name(), "_acc")
+    let ev = show_tmp_name()
+    let elem_piece = ELet(ev, ECall(builtin_ref("Array::get"), Array::slice([
+      EIdent(nm, -1),
+      EIdent(iv, -1)
+    ], 0, 2), -1), interp_render_shaped(EIdent(ev, -1), elem_sh, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns), -1)
+    let sep = EIf(EBinOp("==", EIdent(iv, -1), EInt(0), -1), EString("", -1), EString(", ", -1))
+    let append = concat2(concat2(EIdent(av, -1), sep), elem_piece)
+    let body = ESeq(EAssign(av, append, EUnit), EAssign(iv, EBinOp("+", EIdent(iv, -1), EInt(1), -1), EUnit))
+    let len_call = ECall(builtin_ref("Array::length"), Array::slice([
+      EIdent(nm, -1)
+    ], 0, 1), -1)
+    let loop_e = EWhile(EBinOp("<", EIdent(iv, -1), len_call, -1), body)
+    let inner = ELetMut(iv, EInt(0), ELetMut(av, EString("[", -1), ESeq(loop_e, concat2(EIdent(av, -1), EString("]", -1))), -1), -1)
+    match subject {
+      EIdent(_, _) => inner,
+      _ => ELet(nm, subject, inner, -1)
+    }
+  }
+}
+
+/// #3007: the field-by-field expansion of a `derive (Show)` generic struct at
+/// a known instantiation (see `interp_expand_shape`'s `{g:` arm).
+fn interp_expand_generic_struct(subject: Expr, sh: String, derived_only: Bool, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
+  let gparts = shape_split(String::substring(sh, 3, String::length(sh) - 1))
+  match show_generic_struct_decl(Array::get(gparts, 0)) {
+    Some((sname, formals, fields)) => {
+      let targs = empty_type_exprs()
+      let mut ai = 1
+      while ai < Array::length(gparts) {
+        Array::push(targs, shape_to_eq_ty(Array::get(gparts, ai)))
+        ai = ai + 1
+      }
+      let nm = match subject {
+        EIdent(n, _) => n,
+        _ => show_tmp_name()
+      }
+      let mut acc = EString(String::concat(namespace_rename_original(sname), " { "), -1)
+      let mut fi = 0
+      while fi < Array::length(fields) {
+        let (fname, fty) = Array::get(fields, fi)
+        let fsh = if Array::length(targs) == Array::length(formals) {
+          ty_to_eq_shape(eq_subst_ty(fty, formals, targs))
+        } else {
+          ""
+        }
+        let fv = show_tmp_name()
+        let piece = ELet(fv, EDot(EIdent(nm, -1), fname, -1, -1), interp_render_shaped(EIdent(fv, -1), fsh, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns), -1)
+        let label = if fi == 0 {
+          String::concat(fname, ": ")
+        } else {
+          String::concat(", ", String::concat(fname, ": "))
+        }
+        acc = concat2(acc, concat2(EString(label, -1), piece))
+        fi = fi + 1
+      }
+      let rendered = concat2(acc, EString(" }", -1))
+      match subject {
+        EIdent(_, _) => rendered,
+        _ => ELet(nm, subject, rendered, -1)
+      }
+    },
+    None => interp_render_sub(subject, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+  }
+}
+
+/// #3074: a `derive (Show)` generic enum at a known instantiation, rendered
+/// variant by variant with the arguments substituted into the payload types.
+/// The text matches `gen_enum_show_fn`'s (`GA(true)`, `GB`).
+///
+/// A payload that names an enum already being expanded is recursive. Its
+/// erased `to_string` is exact only when every type argument renders the same
+/// erased as typed (`Int`, `String`); any other argument is refused rather than
+/// printed through the erased formal.
+fn interp_expand_generic_enum(subject: Expr, sh: String, derived_only: Bool, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
+  let gparts = shape_split(String::substring(sh, 3, String::length(sh) - 1))
+  let head = Array::get(gparts, 0)
+  if show_generic_recurs(sh, head) {
+    show_generic_recursive_render(subject, sh, head)
+  } else {
+    match show_generic_enum_decl(head) {
+      Some((_, formals, variants)) => {
+        let targs = empty_type_exprs()
+        let mut ai = 1
+        while ai < Array::length(gparts) {
+          Array::push(targs, shape_to_eq_ty(Array::get(gparts, ai)))
+          ai = ai + 1
+        }
+        Array::push(dtd_show_generic_enum_stack, sh)
+        let arms = array_empty()
+        let mut vi = 0
+        while vi < Array::length(variants) {
+          let (vname, ptys) = Array::get(variants, vi)
+          let pats = array_empty()
+          let mut body = EString(namespace_rename_original(vname), -1)
+          if Array::length(ptys) > 0 {
+            body = EString(String::concat(namespace_rename_original(vname), "("), -1)
+            let mut pi = 0
+            while pi < Array::length(ptys) {
+              let pv = show_tmp_name()
+              Array::push(pats, PBind(pv))
+              let psh = if Array::length(targs) == Array::length(formals) {
+                ty_to_eq_shape(eq_subst_ty(Array::get(ptys, pi), formals, targs))
+              } else {
+                ""
+              }
+              let piece = interp_render_shaped(EIdent(pv, -1), psh, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+              body = if pi == 0 {
+                concat2(body, piece)
+              } else {
+                concat2(concat2(body, EString(", ", -1)), piece)
+              }
+              pi = pi + 1
+            }
+            body = concat2(body, EString(")", -1))
+          } else {
+            ()
+          }
+          Array::push(arms, (PCtor(vname, pats), body))
+          vi = vi + 1
+        }
+        Array::truncate(dtd_show_generic_enum_stack, Array::length(dtd_show_generic_enum_stack) - 1)
+        EMatch(subject, arms)
+      },
+      None => interp_render_sub(subject, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+    }
+  }
+}
+
+/// `ctor_name(<rendered payload>)`.
+fn interp_wrap1(ctor: String, payload: Expr, derived_only: Bool, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
+  concat2(EString(String::concat(ctor, "("), -1), concat2(interp_render_sub(payload, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns), EString(")", -1)))
+}
+
+fn interp_expand_by_head(arg: Expr, head: String, derived_only: Bool, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[Expr] with Exception {
+  if head == "Option" {
+    let v = show_tmp_name()
+    let vt_some = interp_ctor_arm_var_types(arg, "Some", v, var_types)
+    Some(EMatch(rewrite_expr(arg, gens, traits, struct_sets, dict_binds, var_types, fn_returns), Array::slice([
+      (PCtor("Some", Array::slice([PBind(v)], 0, 1)), interp_wrap1("Some", EIdent(v, -1), derived_only, gens, traits, struct_sets, dict_binds, vt_some, fn_returns)),
+      (PCtor("None", array_empty()), EString("None", -1))
+    ], 0, 2)))
+  } else if head == "Result" {
+    let ov = show_tmp_name()
+    let ev = show_tmp_name()
+    let vt_ok = interp_ctor_arm_var_types(arg, "Ok", ov, var_types)
+    let vt_err = interp_ctor_arm_var_types(arg, "Err", ev, var_types)
+    Some(EMatch(rewrite_expr(arg, gens, traits, struct_sets, dict_binds, var_types, fn_returns), Array::slice([
+      (PCtor("Ok", Array::slice([PBind(ov)], 0, 1)), interp_wrap1("Ok", EIdent(ov, -1), derived_only, gens, traits, struct_sets, dict_binds, vt_ok, fn_returns)),
+      (PCtor("Err", Array::slice([PBind(ev)], 0, 1)), interp_wrap1("Err", EIdent(ev, -1), derived_only, gens, traits, struct_sets, dict_binds, vt_err, fn_returns))
+    ], 0, 2)))
+  } else {
+    None
+  }
+}
+
+/// The structural rendering for an interpolated wrapper value, or None when
+/// this pass has no shape to work from and the `__to_string` call must stand.
+fn interp_expand(arg: Expr, derived_only: Bool, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[Expr] with Exception {
+  let erased_throw_head = if derived_only {
+    dtd_erased_top_formal_head(arg, dict_binds, traits, struct_sets, var_types, fn_returns)
+  } else {
+    ""
+  }
+  if String::length(erased_throw_head) > 0 {
+    // #3003: `derived_only` is a THROW site's synthesized render (the message an
+    // erased `Exception::Throw(m)` arm reads), not an interpolation the user
+    // wrote. Refusing it with the interpolation message told `throw(x)` to
+    // "interpolate at a concrete type", while `throw([x])` compiled and
+    // rendered `<Array>`. Both render a placeholder naming the type now.
+    Some(EString(String::concat("<", String::concat(erased_throw_head, ">")), -1))
+  } else {
+    interp_expand_checked(arg, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+  }
+}
+
+fn interp_expand_checked(arg: Expr, derived_only: Bool, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[Expr] with Exception {
+  dtd_check_top_interp(arg, dict_binds, traits, struct_sets, var_types, fn_returns)
+  let head = match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
+    Some(h) => h,
+    None => ""
+  }
+  let syn_sh = interp_shape(infer_shape(arg, struct_sets, var_types, fn_returns))
+  // #3066: where this pass expands the argument itself, the checker's type
+  // (a render row) outranks the syntactic shape. The syntax is exact for a
+  // literal, but a payload it cannot type -- `Some(k())` through a local
+  // lambda -- was rendered by the pointer heuristic (`Some(0)` for
+  // `Some(false)`); the checker knows it.
+  // #3081 review: an argument with no offset (an `if`, a `match`, a block)
+  // has no syntactic head either, so the gate below would never ask; it is
+  // shaped from its arms (`dtd_offsetless_shape`), and `interp_shape` keeps
+  // only a composite answer.
+  let typed_sh = if typed_lowering_arg_offset(arg) < 0 {
+    interp_shape(dtd_offsetless_shape(arg, struct_sets, var_types, fn_returns))
+  } else if dtd_interp_expands_itself(syn_sh, head) {
+    dtd_typed_render_shape_for(arg)
+  } else if String::length(head) == 0 || dtd_head_is_leaked_formal(head) {
+    // #3074: a value this pass cannot name at all (`pair.0` holding a
+    // `G[Bool]`) takes the checker's row: the erased renderer, or an
+    // address, is all that is left for it otherwise. #3084: so does a head
+    // that names nothing here -- a generic function's result, typed by the
+    // callee's own formal (`pass(Some(true))` answers `T`); the gc lane
+    // printed its address.
+    dtd_unnamed_head_row(arg, head)
+  } else {
+    ""
+  }
+  let sh = if String::length(typed_sh) > 0 {
+    typed_sh
+  } else {
+    syn_sh
+  }
+  if String::length(sh) > 0 {
+    Some(interp_expand_shape(arg, sh, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns))
+  } else {
+    let as_show = dtd_show_witness_dict(dict_binds, traits, head)
+    // #2737: a promised `Show` witness with no dictionary renders the value's
+    // representation rather than the value, so it is refused here too.
+    dtd_check_unthreaded_interp(as_show, head, traits, fn_returns)
+    match as_show {
+      Some(dict_pname) => Some(ECall(EDot(EIdent(dict_pname, -1), "to_string", -1, -1), [
+        arg
+      ], -1)),
+      None => interp_expand_local(arg, head, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+    }
+  }
+}
+
+fn interp_expand_local(arg: Expr, head: String, derived_only: Bool, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[Expr] with Exception {
+  match arg {
+    ETuple(items) => Some(interp_join(items, "(", ", ", ")", derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+    EArray(items) => Some(interp_join(items, "[", ", ", "]", derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+    EIdent(n, _) => if n == "None" && head == "Option" {
+      Some(EString("None", -1))
+    } else {
+      // #1445: a tuple or array reached through a NAME. The shape came from
+      // the binding site (tuple_shape_bind / array_elem_bind) or from a
+      // parameter annotation (seed_var_types), which is what the head name
+      // alone could never supply.
+      // #139: the recursive shape first -- it is the only one that can carry
+      // a nested tuple/array. The two older sentinels still answer for a
+      // binding shape_bind declined to record (a PARAMETER annotation, which
+      // seeds them directly and never goes through bind_shapes).
+      match lookup_var_type(var_types, shape_key(n)) {
+        // A RECORDED shape is the binding site's answer, empty or not: an
+        // empty one means the innermost binding of `n` is not a tuple/array,
+        // so the older sentinels (which a shadowing rebind does not clear)
+        // must NOT be consulted. Only a name with no record at all -- a
+        // parameter, seeded directly by seed_var_types -- falls through.
+        Some(sh) => if shape_is_composite(sh) {
+          Some(interp_expand_shape(EIdent(n, -1), sh, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns))
+        } else {
+          interp_expand_by_head(arg, head, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+        },
+        None => match lookup_var_type(var_types, tuple_shape_key(n)) {
+          Some(sentinel) => Some(interp_expand_var_tuple(n, tuple_shape_parts(sentinel), derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+          None => match array_elem_type_of(var_types, n) {
+            Some(_) => Some(interp_expand_var_array(n, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+            None => interp_expand_by_head(arg, head, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+          }
+        }
+      }
+    },
+    ECall(callee, cargs, _) => match callee {
+      EIdent(cn, _) => if Array::length(cargs) == 1 && ((head == "Option" && cn == "Some") || (head == "Result" && (cn == "Ok" || cn == "Err"))) {
+        Some(interp_wrap1(cn, Array::get(cargs, 0), derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns))
+      } else {
+        interp_expand_by_head(arg, head, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+      },
+      _ => interp_expand_by_head(arg, head, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+    },
+    _ => interp_expand_by_head(arg, head, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+  }
+}
+
+export fn user_assert_eq_reset(stmts: Array[Stmt]) -> Unit {
+  Array::set(dtd_user_assert_eq, 0, -1)
+  Array::set(dtd_user_assert_eq_range, 0, 0)
+  Array::set(dtd_user_assert_eq_range, 1, -1)
+  Array::set(dtd_user_assert_eq_alias_blocker, 0, 0)
+  Array::truncate(dtd_user_assert_eq_program, 0)
+  Array::push(dtd_user_assert_eq_program, stmts)
+}
+
+export fn plain_reexport_binds(items: Array[ImportItem], wanted: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(items) && !found {
+    let item = Array::get(items, i)
+    if item.name == wanted && item.alias == None {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn reexport_blockers_bind_assert_eq(names: Array[String]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(names) {
+    found = Array::get(names, i) == "assert_eq"
+    i = i + 1
+  }
+  found
+}
+
+export fn merged_source_range_end(stmts: Array[Stmt], start: Int) -> Int {
+  let mut end = start
+  while end < Array::length(stmts) && merged_source_boundary_local_names(Array::get(stmts, end)) == None {
+    end = end + 1
+  }
+  end
+}
+
+export fn merged_source_boundary_local_names(stmt: Stmt) -> Option[Array[String]] {
+  match builtin_iterator_serialized_boundary_markers(stmt) {
+    Some(local_names) => Some(local_names),
+    None => match stmt {
+      SReExportSourceBoundary(local_names, _) => Some(local_names),
+      _ => None
+    }
+  }
+}
+
+export fn user_assert_eq_set_merged_source(stmts: Array[Stmt], start: Int, names: Array[String]) -> Unit {
+  Array::set(dtd_user_assert_eq, 0, -1)
+  Array::set(dtd_user_assert_eq_range, 0, start)
+  Array::set(dtd_user_assert_eq_range, 1, merged_source_range_end(stmts, start))
+  Array::set(dtd_user_assert_eq_alias_blocker, 0, if reexport_blockers_bind_assert_eq(names) {
+    1
+  } else {
+    0
+  })
+}
+
+fn assert_eq_concat(a: Expr, b: Expr) -> Expr {
+  ECall(builtin_ref("String::concat"), [a, b], -1)
+}
+
+/// Render one `assert_eq` operand. Reuses the throw-site renderer
+/// (`derived_only`) so a missing Show becomes `<unprintable>` instead of a
+/// pointer decimal or a compile error.
+fn assert_eq_render(arg: Expr, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
+  let target = interp_show_target(arg, true, struct_sets, var_types, fn_returns)
+  if target != "" {
+    ECall(EIdent(target, -1), Array::slice([arg], 0, 1), -1)
+  } else {
+    let expanded = interp_expand(arg, true, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+    if interp_has_repl(expanded) {
+      interp_take_repl(expanded)
+    } else {
+      match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
+        Some(tn) => if is_scalar_type_name(tn) {
+          ECall(builtin_ref("__to_string"), Array::slice([arg], 0, 1), -1)
+        } else {
+          EString("<unprintable>", -1)
+        },
+        None => {
+          let as_scalar = match arg {
+            EInt(_) => true,
+            EBool(_) => true,
+            EString(_, _) => true,
+            EFloat(_) => true,
+            _ => false
+          }
+          if as_scalar {
+            ECall(builtin_ref("__to_string"), Array::slice([arg], 0, 1), -1)
+          } else {
+            EString("<unprintable>", -1)
+          }
+        }
+      }
+    }
+  }
+}
+
+fn lower_assert_eq(args: Array[Expr], call_off: Int, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
+  let a2 = rewrite_expr(Array::get(args, 0), gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+  let b2 = rewrite_expr(Array::get(args, 1), gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+  let an = dinsp_fresh_name("__assert_eq_actual", a2, b2)
+  let en = dinsp_fresh_name("__assert_eq_expected", a2, b2)
+  let vars1 = bind_shapes(extend_var_types(var_types, an, infer_arg_type_name(a2, struct_sets, var_types, fn_returns)), an, a2, struct_sets, fn_returns)
+  let vars2 = bind_shapes(extend_var_types(vars1, en, infer_arg_type_name(b2, struct_sets, vars1, fn_returns)), en, b2, struct_sets, fn_returns)
+  let actual = EIdent(an, -1)
+  let expected = EIdent(en, -1)
+  let actual_s = assert_eq_render(actual, gens, traits, struct_sets, dict_binds, vars2, fn_returns)
+  let expected_s = assert_eq_render(expected, gens, traits, struct_sets, dict_binds, vars2, fn_returns)
+  // The trailing `assert failed: aborting` line closes the diagnostic and
+  // says what happens next -- the trap that follows is this assert's own
+  // deliberate abort, not a second failure. It doubles as the marker the
+  // test condensers (scripts/vibe_test.sh / runtime/vibe) key on to
+  // suppress the trap echo (#2202, Codex rounds 2-3 on #2213): rendered
+  // values may contain newlines and a test's own output may imitate the
+  // block, so the block text alone cannot identify the abort. The
+  // condensers hide the line; in a plain `vibe run` it reads as ordinary
+  // diagnostic prose rather than harness protocol.
+  // #2202: bake the call's source offset so `vibe test` can print a line
+  // number. The condenser maps `at off=N` using the source file.
+  let msg = assert_eq_concat(EString(String::concat("assert_eq failed\n  at off=", String::concat(__to_string(call_off), "\n  expected: ")), -1), assert_eq_concat(expected_s, assert_eq_concat(EString("\n  actual:   ", -1), assert_eq_concat(actual_s, EString("\nassert failed: aborting", -1)))))
+  // stdout, not Stderr::write_stream: the gc lane only reserves host
+  // imports when the source already used one, and flipping that on a
+  // SIMD-only file shifts every generated-body index (gc-gate
+  // simd_skip_ws_test). `vibe test` now keeps stdout on FAIL so the
+  // diagnostic still reaches vt_fail_detail.
+  //
+  // #2107: `println` here means `assert_eq` REQUIRES `Console` in the
+  // function containing it -- this expansion runs before the checker, so the
+  // row lands on the caller. That is the honest reading (the branch really
+  // does write to the console) and it is the same rule `inspect` follows.
+  // In practice it costs nothing: a `test` / `bench` block is granted the
+  // standard test effect set, which includes Console, and that is where
+  // assertions live. A plain function asserting outside a test block declares
+  // `with Console`, as `fixtures/gc_backend_smoke_test.vibe` now does.
+  //
+  // The internal printer `print_str` looks like the way to avoid that and is
+  // not: its wasm signature takes two params (the string as a pair), it is
+  // `checker_visible=false`, and codegen only ever emits it with that ABI
+  // from a lowering -- a vibe-level call to it is `unknown name` at the
+  // checker and a broken module past it. Introducing a rowless vibe-callable
+  // printer just to keep this branch quiet would re-open the exact escape
+  // #2107 closed, one dunder away.
+  let fail = ESeq(ECall(EIdent("println", -1), [msg], -1), ECall(EIdent("assert_true", -1), [
+    EBool(false)
+  ], -1))
+  let cmp = rewrite_expr(EBinOp("==", actual, expected, -1), gens, traits, struct_sets, dict_binds, vars2, fn_returns)
+  ELet(an, a2, ELet(en, b2, EIf(cmp, EUnit, fail), -1), -1)
+}
+
+/// The core rewriter. `dict_binds` is non-empty only inside a transformed
+/// generic's body (so `T::method` resolves to a dict field); call-site dict
+/// threading applies everywhere a transformed generic is called. `var_types`
+/// tracks locals/params whose concrete type is known, for call-site dict
+/// synthesis when the receiver is a variable.
+fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
+  match expr {
+    EIdent(name, _) => if str_array_contains(dtd_generic_show_shims, name) {
+      throw("wrap the renderer in a lambda with a concrete parameter type: a generic rendering shim must be called directly so its argument type remains available")
+    },
+    _ => ()
+  }
+  match expr {
+    EIdent(name, off) => match split_qualified(name) {
+      Some(parts) => {
+        let (head, member) = parts
+        let as_method = find_dict_for_method(dict_binds, head, member)
+        match as_method {
+          Some(dict_pname) => EDot(EIdent(dict_pname, -1), member, -1, -1),
+          None => match qual_ctor_member(head, member, struct_sets, fn_returns) {
+            Some(m) => EIdent(m, off),
+            None => {
+              // #2737 (Codex, P1 on the first commit): a trait method taken as a
+              // VALUE -- `let cmp = T::equals` -- is a fourth route into the same
+              // hole, and it reaches this arm rather than either call site. Left
+              // alone the name stayed unresolved exactly as the qualified CALL
+              // did: measured, `cmp(a, b)` for `7, 8` inside a shadowing
+              // `[T: Eq]` lambda answered `true` through `Pt::equals`, both
+              // before this pass's guard and after it.
+              //
+              // Placed on the LAST branch, after the constructor lookup: a
+              // formal's spelling can collide with an enum whose
+              // `Enum::Variant` this arm resolves, and that is a real
+              // resolution, not a missing witness.
+              dtd_check_unthreaded_dispatch(as_method, head, member, name, traits, fn_returns)
+              expr
+            }
+          }
+        }
+      },
+      None => expr
+    },
+    ECall(callee, args, off) => {
+      // #635: type-directed lowering of the railway sentinels emitted by the
+      // parser. `__try_bind(val, (x) -> rest)` and `__try_op(val)` carry no type
+      // info from the parser; here `infer_arg_type_name(val)` picks Option vs
+      // Result (default Result when undeterminable — today's behavior). A user
+      // function literally named `__try_bind`/`__try_op` with the wrong shape
+      // (handled by `try_sentinel` returning None) takes the generic path.
+      let try_kind = try_sentinel(callee, args)
+      // #1392: the interpolation replacement, computed once here rather than
+      // inside the else-if chain below so the resolvers run at most once per
+      // call site. Slice 1 (the argument's type names a `T::to_string`) wins
+      // over slice 2 (the argument is, or is headed by, a wrapper).
+      let interp_repl = if is_interp_to_string_call(callee, args) || is_show_shim_call(callee, args) {
+        // #2745 (Codex, P1 on #2761): FIRST, ahead of every rendering path below.
+        // All of them key on the argument's type NAME, and a nested formal is a
+        // NAME -- so a binder spelled like a type they recognise takes that
+        // type's rendering on an erased value.
+        //
+        // Measured on the first cut of this fix, which ran the check after them:
+        // `let inner = [Bool](a: Bool) -> String { "\{a}" }` applied to a struct
+        // printed `true`, the struct's pointer read as a Bool by
+        // `interp_arg_is_bool`; `[Option]` reached the wrapper arm and trapped.
+        //
+        // The BUILTIN spellings are what leak, and only they: a formal named
+        // after a DECLARED type is refused upstream by #2141's shadowing guard
+        // (measured -- `[Qt]` where `struct Qt` exists gives "type parameter `Qt`
+        // ... shadows the declared type"), which never sees `Bool` / `Option` /
+        // `Result` because they are not declarations. Rather than enumerate them
+        // here -- the enumeration is the bug, a condition applied through
+        // whichever spelling happened to be in front of it -- this asks about the
+        // BINDER before any spelling is consulted.
+        // WHICH message, decided here rather than by which check happens to run
+        // first. Hoisting this above the rendering paths also lifted it above
+        // #2737's interp refusal, and a `[T: Show]` lambda is BOTH -- erased, and
+        // carrying a bound nothing honours. #2737 offers the more specific edit
+        // of lifting the bounded lambda and diagnosis (the bound you wrote is not threaded),
+        // so it wins when the binder's bound promised a renderer. Choosing on the
+        // FACT keeps that true no matter where either check sits.
+        // #2773: the erased-formal REFUSAL used to live here, driven by
+        // `dtd_erased_interp_formal` -- a walk that answered "is this
+        // interpolated value an erased formal?" from syntax, in a pass with no
+        // types, carrying an ad-hoc environment. Twenty-six review rounds found
+        // sixty-three routes past it and the rate did not fall.
+        //
+        // The checker refuses these now, including the one shape that was
+        // load-bearing here (`shim(if c { a } else { a })`, where a top-level
+        // rendering shim's body exemption had no call-site counterpart). It has
+        // types, so it answers the question instead of approximating it, and
+        // its refusal carries a location this one never did.
+        //
+        // Measured before removing it: with the walk stubbed to answer "",
+        // every one of the 65 `lambda_bound_*_refused.vibe` fixtures still
+        // refused, so did all three routes #2773 listed as open, and the
+        // 1315-file unit corpus kept both programs refused -- what changed was
+        // only WHICH channel reports them.
+        // #3007: a `derive (Show)` generic struct whose instantiation this pass
+        // can see renders field by field (`interp_expand_shape`'s `{g:` arm);
+        // its one derived `to_string` erases the formals.
+        let generic_syn_sh = interp_shape(infer_shape(Array::get(args, 0), struct_sets, var_types, fn_returns))
+        // #3074: the checker's render row supplies the instantiation where the
+        // syntax does not (a call result, a binder it never recorded).
+        let generic_head = match infer_arg_type_name(Array::get(args, 0), struct_sets, var_types, fn_returns) {
+          Some(h) => h,
+          None => ""
+        }
+        // #3084: a head that names nothing here -- a generic function's
+        // result is typed by its declared return, the callee's own formal
+        // (`pass(Pt::{ x: 1 })` answers `T`) -- takes the checker's row, which
+        // has the call site's instantiation.
+        let head_leaked = dtd_head_is_leaked_formal(generic_head)
+        let leaked_row = if head_leaked && !String::starts_with(generic_syn_sh, "{g:") {
+          dtd_typed_render_raw_shape_for(Array::get(args, 0))
+        } else {
+          ""
+        }
+        let generic_show_sh = if String::starts_with(generic_syn_sh, "{g:") {
+          generic_syn_sh
+        } else if head_leaked {
+          let admitted = interp_shape(leaked_row)
+          if String::length(admitted) > 0 {
+            admitted
+          } else {
+            generic_syn_sh
+          }
+        } else if show_generic_known(generic_head) {
+          let row_sh = dtd_typed_render_shape_for(Array::get(args, 0))
+          if String::starts_with(row_sh, "{g:") {
+            row_sh
+          } else {
+            generic_syn_sh
+          }
+        } else {
+          generic_syn_sh
+        }
+        // #3084: the row names a plain nominal (`Pt`, a non-generic enum):
+        // its renderer, as if the value had been annotated. A `derive (Show)`
+        // generic named without its arguments is refused below.
+        let leaked_nominal = if head_leaked && String::length(interp_shape(leaked_row)) == 0 && dtd_row_is_bare_nominal(leaked_row) {
+          leaked_row
+        } else {
+          ""
+        }
+        if String::length(leaked_nominal) > 0 && show_generic_known(leaked_nominal) {
+          throw(interp_generic_enum_unknown_msg(namespace_rename_original(leaked_nominal), off))
+        } else if String::length(leaked_nominal) > 0 && !is_scalar_type_name(leaked_nominal) && struct_set_has(struct_sets, leaked_nominal) && !fn_exists(fn_returns, String::concat(leaked_nominal, "::to_string")) {
+          throw(interp_missing_show_msg(namespace_rename_original(leaked_nominal), off))
+        } else {
+          ()
+        }
+        let show_target = if String::starts_with(generic_show_sh, "{g:") {
+          ""
+        } else if String::length(leaked_nominal) > 0 && !is_scalar_type_name(leaked_nominal) && fn_exists(fn_returns, String::concat(leaked_nominal, "::to_string")) && String::concat(leaked_nominal, "::to_string") != Array::get(dtd_show_self_fn, 0) {
+          String::concat(leaked_nominal, "::to_string")
+        } else {
+          interp_show_target(Array::get(args, 0), false, struct_sets, var_types, fn_returns)
+        }
+        // #3074: the only renderer left is the derived one, which erases the
+        // enum's formals -- `G[Bool]` printed `GA(1)`. A payload-free
+        // constructor renders its name at any instantiation; anything else is
+        // refused rather than printed through the erased formal. #3082: a
+        // generic struct the same way (`o.b` holding a `Box[Bool]` printed
+        // `Box { v: 1 }`).
+        if show_target != "" && show_generic_known(generic_head) && !show_generic_enum_nullary(Array::get(args, 0)) {
+          throw(interp_generic_enum_unknown_msg(namespace_rename_original(generic_head), off))
+        } else {
+          ()
+        }
+        if show_target != "" {
+          Some(ECall(EIdent(show_target, -1), Array::slice([
+            rewrite_expr(Array::get(args, 0), gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+          ], 0, 1), off))
+        } else if interp_arg_is_bool(Array::get(args, 0), struct_sets, var_types, fn_returns) {
+          // #1527: a Bool that reaches `"\{...}"` through a CALL or a NAME
+          // whose recorded type is Bool printed `1`/`0` — Bool and Int share
+          // the tagged-int representation, and codegen's boolish classifiers
+          // (cc_expr_is_boolish and its per-backend twins) are syntactic:
+          // they know literals, comparisons and bool-returning BUILTINS, but
+          // not a user fn's declared `-> Bool`. This pass has that type
+          // (fn_returns / var_types / struct field heads), so rewrite the
+          // rendering here, once, for every backend: the `__to_string(arg)`
+          // becomes `if arg { "true" } else { "false" }`. A Bool LITERAL is
+          // excluded — every classifier already answers it, and skipping it
+          // keeps the common case's lowering untouched.
+          Some(EIf(rewrite_expr(Array::get(args, 0), gens, traits, struct_sets, dict_binds, var_types, fn_returns), EString("true", -1), EString("false", -1)))
+        } else if interp_arg_is_double(Array::get(args, 0), struct_sets, var_types, fn_returns) {
+          // #2993: the same gap for a Double. A container's element reaches
+          // here as a synthesized binder (`let __show_vN = Array::get(xs, i)`)
+          // whose recorded type is Double, but codegen's floatish classifiers
+          // cannot see that binder's type, so `[1.5, 2.25]` rendered the boxed
+          // Doubles' addresses (`[352, 360]`). This pass knows the type, so it
+          // names the renderer.
+          Some(ECall(builtin_ref("Double::to_string"), Array::slice([
+            rewrite_expr(Array::get(args, 0), gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+          ], 0, 1), off))
+        } else if interp_arg_is_char(Array::get(args, 0), struct_sets, var_types, fn_returns) {
+          // #3075: a `Char` printed its code point (`97` for `'a'`).
+          Some(char_render_expr(rewrite_expr(Array::get(args, 0), gens, traits, struct_sets, dict_binds, var_types, fn_returns)))
+        } else if interp_arg_is_unit(Array::get(args, 0), struct_sets, var_types, fn_returns) {
+          // #3075: a `Unit` printed `0` (`Some(())` -> `Some(0)`).
+          Some(unit_render_expr(rewrite_expr(Array::get(args, 0), gens, traits, struct_sets, dict_binds, var_types, fn_returns)))
+        } else {
+          let saved_site_off = Array::get(dtd_interp_site_off, 0)
+          Array::set(dtd_interp_site_off, 0, off)
+          let expanded = interp_expand(Array::get(args, 0), false, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+          Array::set(dtd_interp_site_off, 0, saved_site_off)
+          // #1445: nothing rendered it structurally AND the type is a declared
+          // aggregate with no renderer -- that is a missing `derive(Show)`, and
+          // falling through here would print a pointer decimal.
+          if interp_has_repl(expanded) {
+            expanded
+          } else {
+            let missing = interp_missing_show_type(Array::get(args, 0), struct_sets, var_types, fn_returns)
+            let unresolved_array = interp_unresolved_array_call(Array::get(args, 0), struct_sets, var_types, fn_returns)
+            if missing != "" {
+              throw(interp_missing_show_msg(missing, off))
+            } else if String::length(unresolved_array) > 0 {
+              // #2912: the same reasoning as #1445 one line up, for an array
+              // instead of a declared aggregate. Both reach here having failed
+              // to render, and both would otherwise print a pointer decimal.
+              throw(interp_unresolved_array_msg(unresolved_array))
+            } else if is_show_shim_call(callee, args) {
+              // #2468: nothing HERE resolved it, and for a shim call leaving
+              // the call standing is not the same as leaving a `__to_string`
+              // standing. A shim is by definition `fn s(x) { __to_string(x) }`,
+              // so `s(arg)` and `__to_string(arg)` are one lowering -- but only
+              // the second is a render call to CODEGEN, which is where the
+              // typed-lowering channel (#2424/#2462) and the syntactic boolish
+              // classifiers get their turn. Left as `s(arg)` the argument was
+              // never classified and the two spellings of one render disagreed:
+              //
+              //   __to_string(l())  ->  "true"      to_string(l())  ->  "1"
+              //
+              // Rewriting to the direct spelling, at the SAME call offset, is
+              // what makes them one answer again. The callee is unreachable
+              // afterwards only if nothing else calls it; that is DCE's
+              // business, not this pass's.
+              Some(ECall(builtin_ref("__to_string"), Array::slice([
+                rewrite_expr(Array::get(args, 0), gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+              ], 0, 1), off))
+            } else {
+              expanded
+            }
+          }
+        }
+      } else {
+        None
+      }
+      if try_kind == 0 {
+        // __try_bind(val, (name) -> rest)
+        let val = Array::get(args, 0)
+        match Array::get(args, 1) {
+          EFn(_, _, ps, _, _, rest) => {
+            let (name, _) = Array::get(ps, 0)
+            let rwval = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+            // #1064: `name` binds to the UNWRAPPED payload (`Some(name)`'s
+            // field), never to a value of `inferred`'s own type (the
+            // wrapper "Option"/"Result" of `val`) -- recording name ->
+            // inferred unconditionally here conflated the two, so a later
+            // `name == <int literal>` in `rest` was misclassified by
+            // infer_arg_type_name's var_types lookup as an Option/Result
+            // operand and routed through the structural opt_eq_match/
+            // result_eq_match rewrite instead of a scalar comparison,
+            // silently computing nonsense for the common scalar-payload
+            // case. `railway_bind_payload_type` recovers the real payload
+            // type for the one shape it CAN (a literal `Some(x)`/`Ok(x)`
+            // nesting, e.g. `let* outer = Some(Some(1))`) so a follow-up
+            // `let* inner = outer` still chains correctly; every other
+            // shape (a plain function call, a bare identifier, ...) stays
+            // untracked, falling through infer_arg_type_name to `None`,
+            // which keeps the plain scalar `==`/`!=` codegen path.
+            let body_vars = extend_var_types(var_types, name, railway_bind_payload_type(val, struct_sets, var_types, fn_returns))
+            let rwrest = rewrite_expr(rest, gens, traits, struct_sets, dict_binds, body_vars, fn_returns)
+            lower_try_bind(rwval, name, rwrest)
+          },
+          _ => EUnit
+        }
+      } else if try_kind == 1 {
+        // __try_op(val)
+        let val = Array::get(args, 0)
+        let rwval = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+        lower_try_op(rwval)
+      } else if interp_has_repl(interp_repl) {
+        // #1392: the interpolation of a value this pass can render.
+        interp_take_repl(interp_repl)
+      } else if is_assert_eq_call(callee, args) {
+        lower_assert_eq(args, off, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+      } else if !exn_kind_suppressed() && is_exception_kind_read(callee, args) {
+        // #1374: `__exn_kind()` is a checker-only intrinsic (typed
+        // `() -> String` in checker/builtins_misc.vibe, no wasm body) -- it
+        // exists so a handler arm can spell the read, and it is gone by the
+        // time either backend sees the program.
+        exn_kind_mark_used()
+        exn_kind_read_expr()
+      } else if !exn_kind_suppressed() && is_exception_message_read(callee, args) {
+        // #1392 slice 3: the companion read. Same checker-only intrinsic shape
+        // as `__exn_kind()`.
+        exn_kind_mark_used()
+        exn_msg_read_expr()
+      } else if !exn_kind_suppressed() && is_perform_throw_shape(callee, args) {
+        // #1374: record the payload's static type name for the handler. The
+        // write is UNCONDITIONAL, including the empty name for a payload this
+        // pass cannot resolve -- leaving the slot alone there would let an
+        // earlier throw's kind be read as this one's.
+        //
+        // The resolver is codegen's own `infer_arg_type_name`, not the
+        // checker's `throw_payload_kind`: both answer the same question from
+        // the same syntax, but the checker's table is TypeEnv-derived state
+        // that does not reach codegen, and this pass already carries
+        // `var_types`/`fn_returns` for every expression it visits. They can
+        // disagree only by one being MORE conservative (an unresolved name is
+        // ""), which costs a kind here and a row precision there, never
+        // soundness.
+        // #1878 (Codex review on #1892): `infer_arg_type_name` can answer
+        // with an internal shape sentinel (`__anonrec:` for a record
+        // binding, `__anontup:` for a tuple carrying one) — inert for every
+        // dispatch consumer, but THIS site publishes the string as the
+        // user-facing exception kind, where a sentinel would render as
+        // `<__anontup:__anonrec:a;>`. Publish "" instead, the same value an
+        // unresolved payload gets (the erased sink then falls back to the
+        // safely rendered payload).
+        let kind0 = match infer_arg_type_name(perform_throw_payload(args), struct_sets, var_types, fn_returns) {
+          Some(k) => k,
+          None => ""
+        }
+        let kind = if String::starts_with(kind0, anon_record_prefix()) || String::starts_with(kind0, anon_tuple_prefix()) {
+          ""
+        } else {
+          kind0
+        }
+        let rwargs = for a in args {
+          rewrite_expr(a, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+        }
+        exn_kind_mark_used()
+        // The write has to land AFTER the payload is evaluated, not before.
+        // There is ONE slot, so anything the payload expression does that
+        // reaches a throw -- even one it handles itself -- overwrites the kind
+        // this site just recorded. `throw(payload())` where `payload()`
+        // internally catches a `throw(Bang(1))` and returns a String would
+        // otherwise leave `Boom` in the slot and be reported as `<Boom>`
+        // instead of its own message. Binding the payload first makes the
+        // write the last thing before the perform.
+        let pname = exn_kind_fresh_payload_name()
+        // #1392 slice 3: render the payload HERE, where its type is known, and
+        // carry the string alongside the kind. The erased arm cannot do this
+        // itself at any later point -- see exn_kind_cell_stmt's comment.
+        //
+        // The renderer is the ordinary interpolation path, run against the
+        // payload TEMP with `kind` injected into var_types. Rendering the
+        // original payload expression instead would evaluate it twice; the
+        // temp is exactly the same value and `kind` is exactly the type
+        // `infer_arg_type_name` just derived from that expression.
+        //
+        // The slot is written ONLY when a STRUCTURAL renderer was found, and
+        // is cleared otherwise. The reader cannot make that distinction
+        // itself: `__to_string`'s pointer decimal is a perfectly ordinary
+        // non-empty string, so a reader that trusted any non-empty slot would
+        // print `192` for an enum without `derive(Show)` -- strictly worse
+        // than the `<Kind>` #1374 already prints there. Faithfulness is a
+        // static property of this site, so it is decided here.
+        //
+        // #1398 review (Codex P2): "" is therefore a sentinel, and it is a
+        // sound one only because every renderer reachable from here produces a
+        // NON-EMPTY string by construction. `derived_only` (Codex P1, above)
+        // is what makes that true: a derived struct renderer opens with the
+        // type name (`P { ..`), a derived enum renderer IS a variant name, and
+        // the wrapper expansions are `Some(..)`/`Ok(..)`/`Err(..)`/`None`. A
+        // user-written formatter could legitimately return "" -- and is no
+        // longer called from here at all.
+        let render_vars = if kind == "" {
+          var_types
+        } else {
+          extend_var_types(var_types, pname, Some(kind))
+        }
+        let render_target = interp_show_target(EIdent(pname, -1), true, struct_sets, render_vars, fn_returns)
+        let rendered = if render_target != "" {
+          Some(ECall(EIdent(render_target, -1), Array::slice([
+            EIdent(pname, -1)
+          ], 0, 1), -1))
+        } else {
+          interp_expand(EIdent(pname, -1), true, gens, traits, struct_sets, dict_binds, render_vars, fn_returns)
+        }
+        let msg_write = exn_msg_write_expr(if interp_has_repl(rendered) {
+          interp_take_repl(rendered)
+        } else {
+          EString("", -1)
+        })
+        ELet(pname, perform_throw_payload(rwargs), ESeq(exn_kind_write_expr(kind), ESeq(msg_write, ECall(callee, perform_throw_with_payload(rwargs, EIdent(pname, -1)), off))), -1)
+      } else {
+        let rwargs = for a in args {
+          rewrite_expr(a, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+        }
+        match map_index_rewrite(callee, args, rwargs, struct_sets, var_types, fn_returns, true) {
+          Some(map_get) => map_get,
+          None =>
+          match callee {
+            EIdent(name0, coff) => {
+              // #672: unqualify a qualified constructor call `Enum::Variant(..)` ->
+              // `Variant(..)` so codegen's (unqualified) ctor table recognizes it.
+              let name_ctor = match split_qualified(name0) {
+                Some(parts0) => {
+                  let (h0, m0) = parts0
+                  match qual_ctor_member(h0, m0, struct_sets, fn_returns) {
+                    Some(mm) => mm,
+                    None => name0
+                  }
+                },
+                None => name0
+              }
+              // #736 residual: bare method-style callee — `xs |> length` is
+              // `length(xs)`; with only the receiver TYPE imported there is no
+              // top-level `length`, so resolve to `<type-of-arg0>::length` (USER
+              // types only, and only when no top-level fn of the bare name exists
+              // — a lexically visible `length` keeps normal call semantics). The
+              // checker applies the same rule, so typing and codegen agree.
+              let name = if String::index_of(name_ctor, "::") < 0 && !fn_exists(fn_returns, name_ctor) && Array::length(args) >= 1 {
+                match infer_arg_type_name(Array::get(args, 0), struct_sets, var_types, fn_returns) {
+                  Some(tn) => {
+                    let qual = String::concat(tn, String::concat("::", name_ctor))
+                    if struct_set_has(struct_sets, tn) && fn_exists(fn_returns, qual) {
+                      qual
+                    } else {
+                      name_ctor
+                    }
+                  },
+                  None => name_ctor
+                }
+              } else {
+                name_ctor
+              }
+              // `T::method(args)` inside a transformed body -> `(dict.method)(args)`.
+              let as_method = match split_qualified(name) {
+                Some(parts) => {
+                  let (head, member) = parts
+                  find_dict_for_method(dict_binds, head, member)
+                },
+                None => None
+              }
+              // #2737: a promised witness with no dictionary is refused here
+              // rather than left to codegen, which lowers the unresolved name to
+              // a table call on a bogus index.
+              match split_qualified(name) {
+                Some(promised) => {
+                  let (phead, pmember) = promised
+                  dtd_check_unthreaded_dispatch(as_method, phead, pmember, name, traits, fn_returns)
+                },
+                None => ()
+              }
+              let array_intrinsic = iterator_array_intrinsic(name, args, gens, struct_sets, var_types, fn_returns)
+              match array_intrinsic {
+                Some(intrinsic) => ECall(iterator_array_intrinsic_callee(intrinsic, coff), rwargs, off),
+                None => match as_method {
+                  Some(dict_pname) => ECall(EDot(EIdent(dict_pname, -1), member_of(name), -1, -1), rwargs, off),
+                  None => match lookup_gen_entry(gens, name) {
+                    Some(gen) => match synth_dicts_if(gen_prepends_dicts(gen), gen.type_params, gen.threaded, gen.constructor_recvs, args, traits, struct_sets, var_types, dict_binds, fn_returns, gens) {
+                      Some(dicts) => ECall(EIdent(name, coff), concat_expr_arrays(dicts, rwargs), off),
+                      None => ECall(EIdent(name, coff), rwargs, off)
+                    },
+                    None => ECall(EIdent(name, coff), rwargs, off)
+                  }
+                }
+              }
+            },
+            EDot(obj, m, doff, fdoff) => {
+              // #736 residual: method-style call `xs.length()` on a USER type —
+              // codegen compiles a called EDot as struct-field access, so a
+              // receiver method (`List::length`) failed with "unknown struct
+              // field". Rewrite to the qualified call when the receiver's type is
+              // inferable and declares the method as a top-level fn. A struct
+              // FIELD of the same name keeps the field-stored-function call (the
+              // field is the closer binding), and unknown receivers keep the EDot
+              // (codegen's existing paths).
+              let robj = rewrite_expr(obj, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+              // #931: UFCS on a trait-BOUNDED TYPE PARAMETER — `k.probe_key()`
+              // where `k: K` and `[K: Hash]` is in scope. The receiver's inferred
+              // "type name" is the tparam itself ("K"), which is neither a struct
+              // nor a concrete `K::method` top-level fn, so the concrete-method
+              // rewrite below missed it and the call stayed a bare EDot — codegen
+              // compiles a called EDot as a struct-field read, yielding a
+              // null-function call at runtime. Route it through the SAME threaded
+              // witness dict as the qualified spelling `K::probe_key(k)` (the
+              // EIdent arm above): `(dict.method)(k, args)`. Checked FIRST so both
+              // spellings resolve identically (the qualified path also consults
+              // find_dict_for_method before any concrete fallback).
+              let recv_tn = infer_arg_type_name(obj, struct_sets, var_types, fn_returns)
+              let as_tparam_dict = match recv_tn {
+                Some(tn) => find_dict_for_method(dict_binds, tn, m),
+                None => None
+              }
+              let as_recv_method = match as_tparam_dict {
+                Some(_) => None,
+                None => match recv_tn {
+                  Some(tn) => {
+                    let qual = dtd_program_fn_name(fn_returns, String::concat(tn, String::concat("::", m)))
+                    let is_field = struct_set_member(struct_sets, tn, m)
+                    if !is_field && fn_exists(fn_returns, qual) {
+                      Some(qual)
+                    } else {
+                      None
+                    }
+                  },
+                  None => None
+                }
+              }
+              // #2737: same refusal as the qualified spelling -- an EDot that
+              // resolves to neither a dictionary nor a concrete method is
+              // compiled as a struct-field read, so the fallthrough is a
+              // null-function call rather than an error.
+              match recv_tn {
+                Some(rtn) => dtd_check_unthreaded_dispatch(match as_tparam_dict {
+                  Some(d) => Some(d),
+                  None => as_recv_method
+                }, rtn, m, String::concat(rtn, String::concat("::", m)), traits, fn_returns),
+                None => ()
+              }
+              match as_tparam_dict {
+                Some(dict_pname) => ECall(EDot(EIdent(dict_pname, -1), m, -1, -1), prepend_expr(robj, rwargs), off),
+                None => match as_recv_method {
+                  // #1199 bug 2: `qual` (e.g. "Box::describe") can be a
+                  // THREADED generic itself (`Box::describe[T: Hash](b:
+                  // Box[T], value: T)`) exactly like a directly-written
+                  // `Box::describe(b, value)` call reaching the EIdent arm
+                  // above -- but until this fix, this EDot rewrite only ever
+                  // built `ECall(EIdent(qual), [receiver, ...args])`,
+                  // NEVER consulting lookup_gen/synth_dicts the way the
+                  // EIdent arm does. So the qualified spelling of a call
+                  // correctly prepended its witness dictionary argument(s)
+                  // while the identical call written as dot-call sugar
+                  // silently dropped them -- the callee's (already
+                  // dict-threaded) signature and the dot-call's rewritten
+                  // arg count then disagreed, and codegen emitted a call
+                  // short its dict argument(s) (invalid wasm), not two
+                  // notations of the same, both-valid call. Mirror the
+                  // EIdent arm exactly: synth_dicts against the ORIGINAL
+                  // (pre-rewrite) receiver + args, prepending the resolved
+                  // dicts ahead of the rewritten receiver + args on success,
+                  // falling back to the un-dicted call (same as the EIdent
+                  // arm's own fallback) when synth_dicts can't resolve one.
+                  Some(qual) => match lookup_gen_entry(gens, qual) {
+                    Some(gen) => match synth_dicts_if(gen_prepends_dicts(gen), gen.type_params, gen.threaded, gen.constructor_recvs, prepend_expr(obj, args), traits, struct_sets, var_types, dict_binds, fn_returns, gens) {
+                      Some(dicts) => ECall(EIdent(qual, doff), concat_expr_arrays(dicts, prepend_expr(robj, rwargs)), off),
+                      None => ECall(EIdent(qual, doff), prepend_expr(robj, rwargs), off)
+                    },
+                    None => ECall(EIdent(qual, doff), prepend_expr(robj, rwargs), off)
+                  },
+                  None => ECall(EDot(robj, m, doff, fdoff), rwargs, off)
+                }
+              }
+            },
+            EFn(tp, bs, ps, _, _, _) => {
+              let rewritten = rewrite_expr(callee, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+              // Codex review of #2868: this synthesized the lambda's OWN bounds
+              // only, so an immediately-invoked inner lambda referencing an
+              // enclosing formal got no dictionary at all.
+              let threaded = lambda_threaded_sig(tp, bs, ps, traits, dict_binds)
+              if Array::length(threaded) > 0 {
+                match synth_dicts(tp, threaded, array_empty(), args, traits, struct_sets, var_types, dict_binds, fn_returns, gens) {
+                  Some(dicts) => ECall(rewritten, concat_expr_arrays(dicts, rwargs), off),
+                  None => ECall(rewritten, rwargs, off)
+                }
+              } else {
+                ECall(rewritten, rwargs, off)
+              }
+            },
+            _ => ECall(rewrite_expr(callee, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rwargs, off)
+          }
+        }
+      }
+    },
+    EInt(_) => expr,
+    EFloat(_) => expr,
+    EString(_, _) => expr,
+    EBool(_) => expr,
+    EUnit => expr,
+    ESpread(_) => expr,
+    EStringInterp(_) => expr,
+    ETuple(elems) => ETuple(for e in elems {
+      rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+    }),
+    EArray(elems) => EArray(for e in elems {
+      rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+    }),
+    ERecord(rn, fields, targs) => {
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (fname, fval) = Array::get(fields, i)
+        Array::push(out, (fname, rewrite_expr(fval, gens, traits, struct_sets, dict_binds, var_types, fn_returns)))
+        i = i + 1
+      }
+      ERecord(rn, out, targs)
+    },
+    EMap(fields) => {
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (k, v) = Array::get(fields, i)
+        Array::push(out, (k, rewrite_expr(v, gens, traits, struct_sets, dict_binds, var_types, fn_returns)))
+        i = i + 1
+      }
+      EMap(out)
+    },
+    EIf(c, t, e) => EIf(rewrite_expr(c, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(t, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+    ELet(name, val, body, soff) => {
+      let body_gens = gens_after_let(gens, name, val, traits, dict_binds)
+      let new_val = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+      let inferred = if result_uses_constructor_witness(val, gens) {
+        anon_or_constructor_infer(val, gens, struct_sets, var_types, fn_returns)
+      } else {
+        anon_or_infer(val, struct_sets, var_types, fn_returns)
+      }
+      let mark = Array::length(var_types)
+      let body_vars2 = if Array::get(dtd_constructor_tracking, 0) && inferred == None && constructor_binding_has_evidence(var_types, name) {
+        bind_let_env(constructor_rewrite_var_types(var_types, name, inferred), name, val, None, struct_sets, fn_returns)
+      } else {
+        bind_let_env_into(var_types, name, val, inferred, struct_sets, fn_returns)
+      }
+      // #2157: an unannotated `let xs = []` reads its element type off the
+      // pushes in its own body, so it compares like the annotated form.
+      let body_vars3 = empty_array_shape_from_body(body_vars2, name, body, struct_sets, fn_returns)
+      let body_vars = dtd_interp_bind_lamret(extend_local_fn_return(body_vars3, name, val), name, val)
+      local_show_shim_enter(name, val)
+      let new_body = rewrite_expr(body, body_gens, traits, struct_sets, dict_binds, body_vars, fn_returns)
+      local_show_shim_pop()
+      Array::truncate(var_types, mark)
+      ELet(name, new_val, new_body, soff)
+    },
+    ELetRec(name, val, body) => {
+      let rec_gens = gens_after_let(gens, name, val, traits, dict_binds)
+      let rec_vars00 = if Array::get(dtd_constructor_tracking, 0) {
+        extend_local_fn_return(extend_constructor_var_types(var_types, name, None), name, val)
+      } else {
+        var_types
+      }
+      let rec_vars0 = if fn_exists(fn_returns, name) {
+        let masked = clone_var_types(rec_vars00)
+        dtd_mask_shadowed_fn_into(masked, name, fn_returns)
+        masked
+      } else {
+        rec_vars00
+      }
+      // #2745 (Codex, P1 round 18 on #2761): `let rec` is a binding like the
+      // other two and was the one this record was not wired into, so
+      // `let rec idf = [U](u: U) -> U { u }` printed a pointer where `let idf`
+      // was refused. Seeded on the RECURSIVE environment, which is the one both
+      // the value and the body are rewritten in.
+      let rec_vars = dtd_interp_bind_lamret(rec_vars0, name, val)
+      local_show_shim_enter(name, val)
+      let new_val = rewrite_expr(val, rec_gens, traits, struct_sets, dict_binds, rec_vars, fn_returns)
+      let new_body = rewrite_expr(body, rec_gens, traits, struct_sets, dict_binds, rec_vars, fn_returns)
+      local_show_shim_pop()
+      ELetRec(name, new_val, new_body)
+    },
+    ELetMut(name, val, body, soff) => {
+      let body_gens = gens_after_let(gens, name, val, traits, dict_binds)
+      let new_val = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+      let inferred = if result_uses_constructor_witness(val, gens) {
+        anon_or_constructor_infer(val, gens, struct_sets, var_types, fn_returns)
+      } else {
+        anon_or_infer(val, struct_sets, var_types, fn_returns)
+      }
+      let mark = Array::length(var_types)
+      let body_vars2 = if Array::get(dtd_constructor_tracking, 0) && inferred == None && constructor_binding_has_evidence(var_types, name) {
+        bind_let_env(constructor_rewrite_var_types(var_types, name, inferred), name, val, None, struct_sets, fn_returns)
+      } else {
+        bind_let_env_into(var_types, name, val, inferred, struct_sets, fn_returns)
+      }
+      let body_vars3 = empty_array_shape_from_body(body_vars2, name, body, struct_sets, fn_returns)
+      let body_vars = dtd_interp_bind_lamret(extend_local_fn_return(body_vars3, name, val), name, val)
+      local_show_shim_enter(name, val)
+      let new_body = rewrite_expr(body, body_gens, traits, struct_sets, dict_binds, body_vars, fn_returns)
+      local_show_shim_pop()
+      Array::truncate(var_types, mark)
+      ELetMut(name, new_val, new_body, soff)
+    },
+    EAssign(name, val, cont) => {
+      let cont_gens = gens_after_let(gens, name, val, traits, dict_binds)
+      let new_val = rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+      let inferred = if result_uses_constructor_witness(val, gens) {
+        anon_or_constructor_infer(val, gens, struct_sets, var_types, fn_returns)
+      } else {
+        anon_or_infer(val, struct_sets, var_types, fn_returns)
+      }
+      let continuation_vars = if Array::get(dtd_constructor_tracking, 0) {
+        extend_local_fn_return(constructor_rewrite_var_types(var_types, name, inferred), name, val)
+      } else {
+        var_types
+      }
+      local_show_shim_enter(name, val)
+      let new_cont = rewrite_expr(cont, cont_gens, traits, struct_sets, dict_binds, continuation_vars, fn_returns)
+      local_show_shim_pop()
+      EAssign(name, new_val, new_cont)
+    },
+    EAssignOp(name, op, val, cont) => EAssignOp(name, op, rewrite_expr(val, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(cont, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+    ESeq(a, b) => ESeq(rewrite_expr(a, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(b, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+    EMatch(scrut, arms) => {
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (p, b) = Array::get(arms, i)
+        // #1445 cause 3: a pattern binder was absent from `var_types`
+        // entirely, so `match o { Some(v) => "\{v}" }` rendered `v` through
+        // the ADR-0058 pointer heuristic even when `o`'s payload type was
+        // known. When the scrutinee is a NAME whose payload type was recorded
+        // (`ctor_payload_key`, from a parameter annotation or a let-bound
+        // `Some(..)`), the arm's binder gets that type for its body.
+        let arm_vars0 = arm_binder_var_types_env(scrut, p, var_types, struct_sets, fn_returns)
+        let arm_vars1 = if Array::get(dtd_constructor_tracking, 0) {
+          constructor_match_arm_var_types(scrut, p, gens, struct_sets, arm_vars0, fn_returns)
+        } else {
+          arm_vars0
+        }
+        let arm_vars = dtd_mask_shadowed_pat(arm_vars1, p, fn_returns)
+        Array::push(out, (p, rewrite_expr(b, gens, traits, struct_sets, dict_binds, arm_vars, fn_returns)))
+        i = i + 1
+      }
+      EMatch(rewrite_expr(scrut, gens, traits, struct_sets, dict_binds, var_types, fn_returns), out)
+    },
+    EHandle(scrut, arms) => {
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (p, b) = Array::get(arms, i)
+        let arm_vars = dtd_exception_kind_arm_var_types(p, dtd_mask_shadowed_pat(if Array::get(dtd_constructor_tracking, 0) {
+          constructor_handler_arm_var_types(scrut, p, gens, struct_sets, var_types, fn_returns)
+        } else {
+          var_types
+        }, p, fn_returns))
+        Array::push(out, (p, rewrite_expr(b, gens, traits, struct_sets, dict_binds, arm_vars, fn_returns)))
+        i = i + 1
+      }
+      EHandle(rewrite_expr(scrut, gens, traits, struct_sets, dict_binds, var_types, fn_returns), out)
+    },
+    EWhile(c, b) => EWhile(rewrite_expr(c, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(b, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+    ELoop(params, body) => ELoop(for param in params {
+      let (name, init) = param
+      (name, rewrite_expr(init, gens, traits, struct_sets, dict_binds, var_types, fn_returns))
+    }, rewrite_expr(body, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+    EForIn(name, idx, iter, body) => {
+      let body_vars0 = if Array::get(dtd_constructor_tracking, 0) {
+        constructor_for_body_var_types(iter, name, idx, struct_sets, var_types, fn_returns)
+      } else {
+        var_types
+      }
+      let body_vars = dtd_mask_shadowed_params(body_vars0, [(name, None)], fn_returns)
+      let rbody = rewrite_expr(body, gens, traits, struct_sets, dict_binds, body_vars, fn_returns)
+      // #1350: one surface, one classification. A plain `for x in e` is
+      // iterator/iterable/array-classified only when a method-bearing trait is
+      // present (without one there are no `impl ::next` methods to dispatch),
+      // so trait-free programs' `for` loops keep their EForIn lowering -- with
+      // the two ASYNC shapes as the exception, exactly as `for await` was the
+      // exception before: they are plain named functions / closures, need no
+      // trait machinery, and their consumers (the prelude's AsyncIter
+      // terminals, @vibe/console's pull streams) are trait-free files.
+      let riter = rewrite_expr(iter, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+      match dtd_forin_map_iterand(iter, riter, struct_sets, var_types, fn_returns) {
+        // #3148: a Map's loop is the Array loop over its keys.
+        Some(keys) => EForIn(name, idx, keys, rbody),
+        None => if Array::length(traits) == 0 {
+          classify_trait_free_for_loop(name, idx, iter, riter, rbody, struct_sets, var_types, fn_returns)
+        } else {
+          classify_sync_for_loop(name, idx, iter, riter, rbody, struct_sets, var_types, fn_returns)
+        }
+      }
+    },
+    EBinOp(op, l, r, boff) => {
+      let rl = rewrite_expr(l, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+      let rr = rewrite_expr(r, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+      // #672: dispatch `a == b` / `a != b` on a struct type to the generated
+      // structural `T::equals`. The operand's type is resolved best-effort via
+      // `infer_arg_type_name` (var_types for variables, field-set match for
+      // struct literals); a struct type whose `equals` we generated is rewritten
+      // to a call. Non-struct / unresolved operands keep the scalar binop.
+      if op == "==" || op == "!=" {
+        // #695: an empty array LITERAL on either side reduces `==` to a length
+        // check on the other operand (an array equals `[]` iff its length is 0),
+        // which is exact and needs no element type. This also covers `[] == []`,
+        // whose element type is otherwise undeterminable.
+        let empty_bound_l = is_untyped_empty_array_name(l, var_types)
+        let empty_bound_r = is_untyped_empty_array_name(r, var_types)
+        let empty_lit_l = is_empty_array_lit(l)
+        let empty_lit_r = is_empty_array_lit(r)
+        // #695: a bare array `==` (operand is an array literal whose element type
+        // is statically determinable) dispatches to the monomorphic
+        // `__arr_equals__<key>` helper (emitted by desugar_derives), since the
+        // runtime `eq` would identity-compare the array. Opaque array-typed
+        // operands (no literal in scope) are left as `==` (documented residual).
+        // #1526: a literal on either side answers first (it is exact and needs
+        // no environment); an operand reached through a NAME answers next, from
+        // the element type recorded at its binding site. The helper this
+        // resolves to is generated because the emission was RECORDED, not
+        // because a second walk predicted the same thing -- see
+        // `arr_eq_needed_record`.
+        // #2141: an element type that names an enclosing binder's formal is
+        // re-spelled before it keys/records a helper -- see subst_formals_ty.
+        let arr_elem = match (match infer_earray_elem_type(l) {
+          Some(t) => Some(t),
+          None => match infer_earray_elem_type(r) {
+            Some(t) => Some(t),
+            None => eq_var_array_elem(l, r, var_types)
+          }
+        }) {
+          Some(t) => Some(subst_scope_formals_ty(t)),
+          None => None
+        }
+        if empty_lit_l || empty_lit_r {
+          // An empty LITERAL decides the answer on its own: the array it is
+          // compared against is equal to it exactly when that array is empty.
+          // Exact for any element type, so no guard and no comparator.
+          let other = if empty_lit_l {
+            rr
+          } else {
+            rl
+          }
+          let lencmp = EBinOp("==", ECall(builtin_ref("Array::length"), [other], -1), EInt(0), -1)
+          if op == "==" {
+            lencmp
+          } else {
+            ECall(EIdent("not", -1), [lencmp], -1)
+          }
+        } else if (empty_bound_l || empty_bound_r) && !opt_ty_is_some(arr_elem) {
+          // An unannotated `let xs = []` whose element type #2157's push scan
+          // could not recover, and whose PARTNER supplies none either (an
+          // operand with a known element type takes the monomorphic comparator
+          // below, which handles an empty array like any other).
+          //
+          // #2391 (after #2447): before failing closed, ask the typed-`==`
+          // channel. The scan cannot read a pushed NAME, or pushes that all
+          // happen inside a function the array is merely passed to, but the
+          // checker types the binding (an empty literal carries a real element
+          // slot since #2447) and the per-module carrier (#2443) records the
+          // operand type at this operator offset. Where that row exists AND
+          // the declared-field allow-list admits the type (a closure field or
+          // an opaque nominal field is still refused, because a `::equals`
+          // that answers by reference is worse than the trap), dispatch
+          // through the same `eq_for_typed` the shape rungs use. A lane with no typed rows (rc_query, the flat single-source
+          // lane) falls through unchanged: absent, never wrong.
+          match dtd_typed_eq_admitted_ty(boff) {
+            Some(te) => {
+              let call = eq_for_typed(te, rl, rr, dtd_eq_known_types)
+              if op == "==" {
+                call
+              } else {
+                ECall(EIdent("not", -1), [call], -1)
+              }
+            },
+            None => {
+              // The lengths still decide the answer whenever EITHER side is empty:
+              // two arrays cannot be equal unless their lengths are, and a length
+              // of zero on one side leaves nothing to compare element-wise. That
+              // covers every program in which one of the two never grew, which is
+              // the shape this residual is usually reached by.
+              //
+              // Only two arrays that BOTH grew, with no element type on either
+              // side, are genuinely undecidable here, and that case still traps
+              // rather than falling back to length-only or identity equality --
+              // answering wrongly is worse than falling over. An annotation
+              // (`let xs: Array[Int] = []`) supplies the missing static shape.
+              //
+              // The lengths are bound rather than re-spelled: an operand may be an
+              // arbitrary expression, and it must be evaluated exactly once.
+              // Minted FRESH against both operands, the way assert_eq and inspect
+              // mint theirs: an operand is arbitrary user code, and a fixed name is
+              // capturable. `let __eqempty_ln = []; xs == __eqempty_ln` bound the
+              // outer temporary over the right operand while the inner one was
+              // still being initialized, so `Array::length` was applied to the left
+              // LENGTH rather than to the second array (#2192 review).
+              let ln = dinsp_fresh_name("__eqempty_l", rl, rr)
+              let rn = dinsp_fresh_name("__eqempty_r", rl, rr)
+              let either_empty = EBinOp("||", EBinOp("==", EIdent(ln, -1), EInt(0), -1), EBinOp("==", EIdent(rn, -1), EInt(0), -1), -1)
+              let decided = EIf(either_empty, EBinOp("==", EIdent(ln, -1), EIdent(rn, -1), -1), eq_refuse("both operands are untyped empty-array bindings that were pushed to, so neither side describes its element type. Annotate one of them (`let xs: Array[<type>] = []`)."))
+              let guarded = ELet(ln, ECall(builtin_ref("Array::length"), [rl], -1), ELet(rn, ECall(builtin_ref("Array::length"), [
+                rr
+              ], -1), decided, -1), -1)
+              if op == "==" {
+                guarded
+              } else {
+                ECall(EIdent("not", -1), [guarded], -1)
+              }
+            }
+          }
+        } else {
+          match arr_elem {
+            Some(elem) => if ty_mentions_owned_scalar(elem) {
+              // Codex round 4 on #2471: see ty_mentions_owned_scalar.
+              eq_fail_closed(op, owned_scalar_name_in(elem))
+            } else {
+              // #1526: record before emitting -- this is one of the two sites
+              // that can reference a `__arr_equals__<key>` helper, and the
+              // recorded set is what generates them (see arr_eq_needed_record).
+              arr_eq_needed_record(elem)
+              let call = ECall(EIdent(arr_equals_name(elem), -1), [rl, rr], -1)
+              if op == "==" {
+                call
+              } else {
+                ECall(EIdent("not", -1), [call], -1)
+              }
+            },
+            None => {
+              // #825: full static-shape dispatch. When either operand's complete
+              // TypeExpr is inferable from literal syntax (Some/Ok/Err ctor
+              // literals, tuple literals, array literals with non-scalar
+              // elements), route through the fully-recursive `eq_for_typed` so
+              // aggregate payloads (`Some([1,2])`, `Ok([1,2])`, `Some(Some(1))`,
+              // `([1,2], 0)`) compare structurally instead of by word identity.
+              // This inference yields builtin shapes and generic struct
+              // literals; unknown positions carry the `?EqUnknown` marker,
+              // which `eq_for_typed` compares with raw `==` (status quo for
+              // that position). A scalar spelling the source also declares is
+              // ambiguous here and fails closed (ty_mentions_owned_scalar).
+              // #2457: the checker's row for this site, when the allow-list
+              // admits it, is the COMPLETE operand type and wins over the
+              // literal-syntax shape. `Some(64 << 32) == Some(65 << 32)` used
+              // to infer `Option[?EqUnknown]` (a shift is not a literal this
+              // inference named), and the unknown payload position compared
+              // with the raw `==` -- the generic `eq`, whose string fall-back
+              // equated the two words. With the row, `Option[Int]` compares
+              // the payload exactly; a lane with no rows keeps the syntactic
+              // shape, whose leaf inference now names such an expression too.
+              let sty = match dtd_typed_eq_admitted_ty(boff) {
+                Some(te) => Some(te),
+                None => infer_static_eq_type_binop(l, r)
+              }
+              let dty = match sty {
+                Some(t) => if static_eq_dispatchable(t) {
+                  Some(t)
+                } else {
+                  None
+                },
+                None => None
+              }
+              match dty {
+                Some(dt) => if ty_mentions_owned_scalar(dt) {
+                  // Codex round 4 on #2471: see ty_mentions_owned_scalar.
+                  eq_fail_closed(op, owned_scalar_name_in(dt))
+                } else {
+                  let call = eq_for_typed(dt, rl, rr, dtd_eq_known_types)
+                  if op == "==" {
+                    call
+                  } else {
+                    ECall(EIdent("not", -1), [call], -1)
+                  }
+                },
+                None => match eq_var_shape_dispatch(l, r, struct_sets, var_types, fn_returns) {
+                  // #1526 (ADR-0097): a NAME whose recorded shape mentions an
+                  // Array/Bytes — the tuple-through-a-name comparison whose
+                  // Array elements the codegen walk identity-compared. Any
+                  // other shape stays on the paths below (see
+                  // eq_operand_shape_ty's trigger condition).
+                  Some(st) => {
+                    let call = eq_for_typed(st, rl, rr, dtd_eq_known_types)
+                    if op == "==" {
+                      call
+                    } else {
+                      ECall(EIdent("not", -1), [call], -1)
+                    }
+                  },
+                  None => {
+                    let ty = match infer_arg_type_name(l, struct_sets, var_types, fn_returns) {
+                      Some(t) => Some(t),
+                      None => infer_arg_type_name(r, struct_sets, var_types, fn_returns)
+                    }
+                    match ty {
+                      Some(t) => match dtd_eq_witness_dict(dict_binds, traits, t) {
+                        // #2523: the operand is a formal carrying a witness --
+                        // dispatch through the threaded dictionary, the way the
+                        // qualified spelling `T::equals(x, y)` and the UFCS
+                        // spelling `x.equals(y)` already do. Everything else in
+                        // this ladder is a CONCRETE operand type and is
+                        // unaffected.
+                        Some(dict_pname) => {
+                          let call = ECall(EDot(EIdent(dict_pname, -1), dtd_eq_witness_method(), -1, -1), [
+                            rl,
+                            rr
+                          ], -1)
+                          if op == "==" {
+                            call
+                          } else {
+                            ECall(EIdent("not", -1), [call], -1)
+                          }
+                        },
+                        // #2141: a spelling that is a type parameter of an
+                        // enclosing binder is a FORMAL here, whatever else the
+                        // (merged) program declares under that name -- the
+                        // struct dispatch would call `T::equals` on erased
+                        // operands and read garbage.
+                        None => if struct_set_has(struct_sets, t) && !formal_in_scope(t) {
+                          let call = ECall(EIdent(String::concat(t, "::equals"), -1), [
+                            rl,
+                            rr
+                          ], -1)
+                          if op == "==" {
+                            call
+                          } else {
+                            ECall(EIdent("not", -1), [call], -1)
+                          }
+                        } else if t == "Option" {
+                          // Bare `==` on Option-typed operands (e.g. `let a = None; a == b`)
+                          // dispatches to a structural match; the runtime would otherwise
+                          // identity-compare the heap-allocated nullary `None`. Payloads
+                          // compare with `==` — correct for scalar payloads (the common
+                          // case); an aggregate-payload bare-Option variable is a #695
+                          // residual (route it through a struct field for full recursion).
+                          // #2457: the structural match compares each payload
+                          // with a raw `==`, which codegen cannot classify (a
+                          // match binder), so an `Int` payload went through the
+                          // generic `eq` and `mk(64 << 32) == mk(65 << 32)`
+                          // answered `true`. When the checker's row for this
+                          // site names an admitted type (`Option[Int]`), the
+                          // typed comparator compares that payload exactly;
+                          // with no row, or a type the allow-list refuses, the
+                          // match stays as it was.
+                          // Codex round 4 on #2471: a row spelling a scalar the
+                          // source also declares is ambiguous (see
+                          // ty_mentions_owned_scalar) and fails closed.
+                          let eqm = match dtd_typed_eq_admitted_ty(boff) {
+                            Some(te) => if ty_mentions_owned_scalar(te) {
+                              eq_fail_closed("==", owned_scalar_name_in(te))
+                            } else {
+                              eq_for_typed(te, rl, rr, dtd_eq_known_types)
+                            },
+                            None => opt_eq_match(rl, rr)
+                          }
+                          if op == "==" {
+                            eqm
+                          } else {
+                            ECall(EIdent("not", -1), [eqm], -1)
+                          }
+                        } else if t == "Result" {
+                          let eqm = match dtd_typed_eq_admitted_ty(boff) {
+                            Some(te) => if ty_mentions_owned_scalar(te) {
+                              eq_fail_closed("==", owned_scalar_name_in(te))
+                            } else {
+                              eq_for_typed(te, rl, rr, dtd_eq_known_types)
+                            },
+                            None => result_eq_match(rl, rr)
+                          }
+                          if op == "==" {
+                            eqm
+                          } else {
+                            ECall(EIdent("not", -1), [eqm], -1)
+                          }
+                        } else if t == "Bytes" {
+                          // #1526 (ADR-0097): a Bytes-typed operand (annotation or
+                          // recorded binding) — content equality, same helper the
+                          // typed contexts dispatch to.
+                          bytes_eq_needed_record()
+                          let call = ECall(EIdent(bytes_equals_name(), -1), [
+                            rl,
+                            rr
+                          ], -1)
+                          if op == "==" {
+                            call
+                          } else {
+                            ECall(EIdent("not", -1), [call], -1)
+                          }
+                        } else {
+                          // #2441: an inferred head name with no actionable
+                          // rung (e.g. `Array` with an unknown element) falls
+                          // to the typed channel before staying raw.
+                          dtd_typed_eq_residual(op, rl, rr, boff)
+                        }
+                      },
+                      None => dtd_typed_eq_residual(op, rl, rr, boff)
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      } else if op == "<" || op == ">" || op == "<=" || op == ">=" {
+        // #746: String relational lowering. The backends compile a bare
+        // `<`/`>`/`<=`/`>=` as signed i64 compare — on the (ptr<<32)|len
+        // string repr that orders by POINTER, not content. Rewrite to
+        // `str_lex_diff(l, r) <op> 0` (a builtin returning a sign-carrying
+        // lexicographic diff with length tie-break) when either ORIGINAL
+        // operand is determinably String — same inference and residual
+        // class as the `+` -> String::concat rewrite below.
+        let rel_stringish = (match infer_arg_type_name(l, struct_sets, var_types, fn_returns) {
+          Some(t) => t == "String",
+          None => false
+        }) || (match infer_arg_type_name(r, struct_sets, var_types, fn_returns) {
+          Some(t) => t == "String",
+          None => false
+        })
+        if rel_stringish {
+          EBinOp(op, ECall(EIdent("str_lex_diff", -1), [rl, rr], -1), EInt(0), -1)
+        } else if is_erased_generic_operand(l, r, struct_sets, var_types, fn_returns) {
+          // #973: neither operand is determinably String, but at least one is
+          // the bare name of an in-scope generic type parameter — the
+          // concrete runtime type is erased, so dispatch at runtime instead
+          // (see is_erased_generic_operand / gen_generic_rel_diff_body).
+          EBinOp(op, ECall(builtin_ref("__generic_rel_diff"), [rl, rr], -1), EInt(0), -1)
+        } else {
+          EBinOp(op, rl, rr, boff)
+        }
+      } else if op == "+" {
+        // String `+` lowering: the checker types `String + String` as String,
+        // but the backends compile a bare `+` as numeric i64.add — on the
+        // (ptr<<32)|len string repr that adds the lengths and garbles the
+        // pointer. Rewrite to String::concat when either ORIGINAL operand is
+        // determinably String (literal, tracked var, string-returning call,
+        // or a nested `+` chain of those). Undeterminable operands (e.g. two
+        // untracked call results) keep the raw binop — same residual class
+        // as #695's opaque `==`.
+        let stringish = (match infer_arg_type_name(l, struct_sets, var_types, fn_returns) {
+          Some(t) => t == "String",
+          None => false
+        }) || (match infer_arg_type_name(r, struct_sets, var_types, fn_returns) {
+          Some(t) => t == "String",
+          None => false
+        })
+        if stringish {
+          ECall(builtin_ref("String::concat"), [rl, rr], -1)
+        } else if is_erased_generic_operand(l, r, struct_sets, var_types, fn_returns) {
+          // #973: same erased-`[T: Add]` case as the relational branch above.
+          ECall(builtin_ref("__generic_add"), [rl, rr], -1)
+        } else {
+          EBinOp(op, rl, rr, boff)
+        }
+      } else {
+        EBinOp(op, rl, rr, boff)
+      }
+    },
+    EUnaryOp(op, e) => EUnaryOp(op, rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+    EFn(tp, bs, ps, ret, eff, body) => {
+      // #2141: the binder frame scopes the body -- see dtd_scope_formals.
+      // #2737: the frame carries `bs` so a dispatch inside the body can tell
+      // this binder's own bound from an enclosing one's.
+      // #2778: a nested lambda with bounds is a generic of its own. Overlay
+      // its dictionaries on the enclosing ones, dropping only formals this
+      // binder rebinds -- an inner `[U]` must still see outer `[T: Show]`.
+      if Array::length(tp) > 0 {
+        let own = if already_threaded(bs, ps) {
+          empty_threaded()
+        } else {
+          threaded_from_lambda_sig(bs, ps, traits)
+        }
+        // What to ADD, which is nothing when the parameters already carry
+        // their dicts -- not the same question lambda_threaded_sig answers.
+        let threaded = if already_threaded(bs, ps) {
+          empty_threaded()
+        } else {
+          concat_threaded(threaded_from_outer_binds(dict_binds, tp), own)
+        }
+        let binds = dict_binds_overlay(dict_binds, tp, dict_binds_of(own, traits))
+        let new_params = if Array::length(threaded) > 0 {
+          thread_dict_params(threaded, ps)
+        } else {
+          ps
+        }
+        let shim_body = is_show_shim_value(expr)
+        if shim_body {
+          show_shim_body_enter()
+        } else {
+          ()
+        }
+        scope_formals_push(tp, bs, true)
+        let rbody = rewrite_expr(body, gens, traits, struct_sets, binds, dtd_mask_shadowed_params(seed_var_types(ps, tp, var_types), ps, fn_returns), fn_returns)
+        scope_formals_pop()
+        if shim_body {
+          show_shim_body_leave()
+        } else {
+          ()
+        }
+        EFn(tp, bs, new_params, ret, eff, rbody)
+      } else {
+        scope_formals_push(tp, bs, true)
+        let rbody = rewrite_expr(body, gens, traits, struct_sets, dict_binds, dtd_mask_shadowed_params(seed_var_types(ps, tp, var_types), ps, fn_returns), fn_returns)
+        scope_formals_pop()
+        EFn(tp, bs, ps, ret, eff, rbody)
+      }
+    },
+    EDot(obj, field, off, fdoff) => {
+      let robj = rewrite_expr(obj, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+      match anon_dot_rewrite(obj, field, off, robj, var_types) {
+        Some(rw) => rw,
+        None => EDot(robj, field, off, fdoff)
+      }
+    },
+    ELabeledArg(label, name, body) => ELabeledArg(label, name, rewrite_expr(body, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+    EReturn(e) => EReturn(rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+    EBreak(opt) => match opt {
+      Some(e) => EBreak(Some(rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types, fn_returns))),
+      None => expr
+    },
+    EContinue(exprs) => EContinue(for e in exprs {
+      rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+    })
+  }
+}
+
+/// Build the dict bindings in scope for a transformed generic's body.
+fn concat_threaded(a: Array[(String, String, Int)], b: Array[(String, String, Int)]) -> Array[(String, String, Int)] {
+  let out = empty_threaded()
+  let mut i = 0
+  while i < Array::length(a) {
+    Array::push(out, Array::get(a, i))
+    i = i + 1
+  }
+  let mut j = 0
+  while j < Array::length(b) {
+    Array::push(out, Array::get(b, j))
+    j = j + 1
+  }
+  out
+}
+
+/// `synth_dicts` when the callee actually declares dict parameters, None when
+/// it does not -- see gen_prepends_dicts.
+fn synth_dicts_if(prepend: Bool, callee_type_params: Array[String], threaded: Array[(String, String, Int)], constructor_recvs: Array[(String, Int)], args: Array[Expr], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], dict_binds: Array[(String, String, String, Array[String])], fn_returns: Array[(String, String)], gens: Array[DictGen]) -> Option[Array[Expr]] with Exception {
+  if prepend {
+    synth_dicts(callee_type_params, threaded, constructor_recvs, args, traits, struct_sets, var_types, dict_binds, fn_returns, gens)
+  } else {
+    None
+  }
+}
+
+/// Whether a resolved gen's dictionaries are PASSED at its call sites.
+///
+/// A lambda that binds no type parameters of its own takes no dict parameter:
+/// `rewrite_expr`'s EFn arm threads only when `tp` is non-empty, and the
+/// enclosing dictionaries reach such a body by CAPTURE, not by argument. Its
+/// gen still lists them -- the interpolation expander reads that to resolve a
+/// renderer -- so the question of what to pass is answered here instead.
+///
+/// Measured without this: `Set::from_array[T: Hash]`'s inner
+/// `let rec go = (i, acc) -> ...` takes two parameters and was called with
+/// three, which is a `null function or function signature mismatch` at run
+/// time. A plain local lambda inside a bounded generic is everywhere, which is
+/// why the failure looked unrelated to nested bounds.
+fn gen_prepends_dicts(gen: DictGen) -> Bool {
+  if gen.impl_trait == lambda_gen_marker() {
+    Array::length(gen.type_params) > 0
+  } else {
+    // `build_gens` derives `threaded` from BOUNDS, and a generic impl method
+    // can carry them with an empty `type_params` (its formals live in
+    // `impl_params`). Testing the arity alone therefore suppressed dictionaries
+    // those methods really do take -- measured, that is what stopped
+    // `s5_wasm_test` self-compiling the compiler.
+    true
+  }
+}
+
+/// The dict parameters a lambda's rewritten signature CARRIES (#2778).
+///
+/// `threaded_from_outer_binds` drops only the formals the binder REBINDS, so
+/// with `tp` empty it returns every enclosing dictionary -- while the `EFn`
+/// rewrite arm threads nothing at all unless `tp` is non-empty. Reading that
+/// difference off two separately written expressions is what let them drift:
+/// `Set::from_array[T: Hash]`'s inner `let rec go = (i, acc) -> ...` takes two
+/// parameters and was called with three, because the call site claimed the
+/// enclosing `T: Hash` dictionary for a lambda that binds nothing. A plain
+/// local lambda inside a bounded generic is everywhere, which is why the
+/// failure looked unrelated to nested bounds.
+///
+/// This answers for the CALL SITES, which is not the same question the rewrite
+/// arm asks. The arm asks what to ADD, and adds nothing when `already_threaded`
+/// reports the parameters already carry their dicts -- but a signature that
+/// already carries them still has to be CALLED with them. Those two answers
+/// differ exactly there, so the arm keeps its own expression and this one does
+/// not mention `already_threaded`. Collapsing them cost a round: it made every
+/// `already_threaded` lambda's gen vanish and refused `add_by` in
+/// `s5_wasm_test`.
+fn lambda_threaded_sig(tp: Array[String], bounds: Array[(String, Array[String])], params: Array[(String, Option[TypeExpr])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], dict_binds: Array[(String, String, String, Array[String])]) -> Array[(String, String, Int)] {
+  if Array::length(tp) > 0 {
+    concat_threaded(threaded_from_outer_binds(dict_binds, tp), threaded_from_lambda_sig(bounds, params, traits))
+  } else {
+    empty_threaded()
+  }
+}
+
+fn threaded_from_outer_binds(outer: Array[(String, String, String, Array[String])], inner_tp: Array[String]) -> Array[(String, String, Int)] {
+  let out = empty_threaded()
+  let mut i = 0
+  while i < Array::length(outer) {
+    let row = Array::get(outer, i)
+    if dict_bind_shadowed_by(row, inner_tp) {
+      ()
+    } else {
+      let (tp, trait_name, _, _) = row
+      Array::push(out, (tp, trait_name, 0 - 1))
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn dict_binds_overlay(outer: Array[(String, String, String, Array[String])], inner_tp: Array[String], inner: Array[(String, String, String, Array[String])]) -> Array[(String, String, String, Array[String])] {
+  let out = empty_dict_binds()
+  let mut i = 0
+  while i < Array::length(outer) {
+    let row = Array::get(outer, i)
+    if dict_bind_shadowed_by(row, inner_tp) {
+      ()
+    } else {
+      Array::push(out, row)
+    }
+    i = i + 1
+  }
+  let mut j = 0
+  while j < Array::length(inner) {
+    Array::push(out, Array::get(inner, j))
+    j = j + 1
+  }
+  out
+}
+
+fn dict_bind_shadowed_by(row: (String, String, String, Array[String]), inner_tp: Array[String]) -> Bool {
+  let (tp, _, _, _) = row
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(inner_tp) && !hit {
+    let raw = Array::get(inner_tp, i)
+    hit = raw == tp || type_param_name(raw) == tp
+    i = i + 1
+  }
+  hit
+}
+
+fn dict_binds_of(threaded: Array[(String, String, Int)], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])]) -> Array[(String, String, String, Array[String])] {
+  let out = empty_dict_binds()
+  let mut i = 0
+  while i < Array::length(threaded) {
+    let (tp, trait_name, _) = Array::get(threaded, i)
+    let methods = match lookup_trait_sigs(traits, trait_name) {
+      Some(sigs) => method_names_of_sigs(sigs),
+      None => empty_str_array()
+    }
+    Array::push(out, (tp, trait_name, dict_param_name(trait_name, tp), methods))
+    i = i + 1
+  }
+  out
+}
+
+/// Prepend the hidden dict parameters to a transformed generic's parameter list.
+fn thread_dict_params(threaded: Array[(String, String, Int)], params: Array[(String, Option[TypeExpr])]) -> Array[(String, Option[TypeExpr])] {
+  let result = array_empty()
+  let mut i = 0
+  while i < Array::length(threaded) {
+    let (tp, trait_name, _) = Array::get(threaded, i)
+    let trait_args = trait_ref_args(trait_name)
+    let dty = TyApp(dict_struct_name(trait_name), if Array::length(trait_args) > 0 {
+      trait_args
+    } else {
+      [TyName(tp)]
+    })
+    Array::push(result, (dict_param_name(trait_name, tp), Some(dty)))
+    i = i + 1
+  }
+  let mut j = 0
+  while j < Array::length(params) {
+    Array::push(result, Array::get(params, j))
+    j = j + 1
+  }
+  result
+}
+
+/// #2778: index of a parameter whose annotation is `F[..]` for constructor
+/// formal `F`, without walking the enclosing program's alias table. Nested
+/// lambdas have no statement array here; a `TyApp` head is enough for the
+/// four rungs and for `F[_]: Mappable[F]`.
+fn lambda_constructor_recv_index(params: Array[(String, Option[TypeExpr])], tp: String) -> Int {
+  let mut i = 0
+  let mut idx = 0 - 1
+  while i < Array::length(params) {
+    let (_, ann) = Array::get(params, i)
+    match ann {
+      Some(TyApp(head, _)) => if head == tp {
+        idx = i
+        i = Array::length(params)
+      } else {
+        i = i + 1
+      },
+      _ => {
+        i = i + 1
+      }
+    }
+  }
+  idx
+}
+
+/// #2778: the dictionaries a nested generic lambda needs, derived from its
+/// own bounds the way `build_gens` derives them for a top-level binder.
+fn threaded_from_lambda_sig(bounds: Array[(String, Array[String])], params: Array[(String, Option[TypeExpr])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])]) -> Array[(String, String, Int)] {
+  let threaded = empty_threaded()
+  let mut bi = 0
+  while bi < Array::length(bounds) {
+    let (tp, trait_list) = Array::get(bounds, bi)
+    let tpname = type_param_name(tp)
+    let mut ti = 0
+    while ti < Array::length(trait_list) {
+      let tr = Array::get(trait_list, ti)
+      match lookup_trait_sigs(traits, tr) {
+        Some(_) => {
+          let ridx = find_recv_index(params, tpname)
+          if ridx >= 0 {
+            Array::push(threaded, (tpname, tr, ridx))
+          } else {
+            let cidx = lambda_constructor_recv_index(params, tpname)
+            if cidx >= 0 {
+              Array::push(threaded, (tpname, tr, encode_constructor_recv_index(cidx)))
+            } else {
+              let widx = find_array_elem_recv_index(params, tpname)
+              if widx >= 0 {
+                Array::push(threaded, (tpname, tr, encode_array_elem_recv_index(widx)))
+              } else {
+                ()
+              }
+            }
+          }
+        },
+        None => ()
+      }
+      ti = ti + 1
+    }
+    bi = bi + 1
+  }
+  threaded
+}
+
+/// The marker that separates a LAMBDA binder's gen from `build_gens`'s.
+///
+/// `impl_trait` is read only under `match gen.impl_target { Some(target) =>`,
+/// and a lambda gen's target is always None, so the field is free here and
+/// the two producers stay distinguishable without widening `DictGen`.
+fn lambda_gen_marker() -> String {
+  "__lambda_binder"
+}
+
+fn dict_gen_of_lambda(name: String, tparams: Array[String], threaded: Array[(String, String, Int)]) -> DictGen {
+  DictGen::{
+    name: name,
+    type_params: tparams,
+    threaded: threaded,
+    return_constructor_param: "",
+    impl_trait: lambda_gen_marker(),
+    impl_params: [],
+    impl_target: None,
+    constructor_recvs: []
+  }
+}
+
+fn gens_plus(gens: Array[DictGen], extra: DictGen) -> Array[DictGen] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(gens) {
+    Array::push(out, Array::get(gens, i))
+    i = i + 1
+  }
+  Array::push(out, extra)
+  out
+}
+
+fn gens_name_bound(gens: Array[DictGen], name: String) -> Bool {
+  match lookup_gen_entry(gens, name) {
+    Some(_) => true,
+    None => false
+  }
+}
+
+fn gens_after_let(gens: Array[DictGen], name: String, val: Expr, traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], dict_binds: Array[(String, String, String, Array[String])]) -> Array[DictGen] {
+  match lambda_dict_gen(name, val, traits, dict_binds) {
+    Some(g) => gens_plus(gens, g),
+    None => if gens_name_bound(gens, name) {
+      gens_plus(gens, dict_gen_of_lambda(name, [], empty_threaded()))
+    } else {
+      gens
+    }
+  }
+}
+
+fn lambda_dict_gen(name: String, val: Expr, traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], dict_binds: Array[(String, String, String, Array[String])]) -> Option[DictGen] {
+  match val {
+    // The entry keeps DESCRIBING the enclosing dictionaries even for a binder
+    // that declares none: the interpolation expander reads `gens` to resolve a
+    // formal's renderer, and narrowing this to what the signature carries
+    // refused `add_by` in `s5_wasm_test`'s self-compile of the whole compiler.
+    // Whether those dicts are PASSED is the call site's question, and
+    // `gen_prepends_dicts` answers it there.
+    EFn(tparams, bounds, params, _, _, _) => {
+      let own = threaded_from_lambda_sig(bounds, params, traits)
+      let threaded = concat_threaded(threaded_from_outer_binds(dict_binds, tparams), own)
+      if Array::length(threaded) > 0 {
+        Some(dict_gen_of_lambda(name, tparams, threaded))
+      } else {
+        None
+      }
+    },
+    _ => None
+  }
+}
+
+/// `toplevel_vars` (#839): the program's top-level anonymous-record bindings
+/// (see `collect_toplevel_anon_records`), seeded as the base var_types for
+/// every top-level statement's own `rewrite_expr` pass — mirrors the
+/// `railway_rw_stmt` fix for the SAME `anon_dot_rewrite` call below, since this
+/// is the SECOND, independent pass (the "heavy dict-passing" pass driving
+/// `desugar_trait_dicts`, used by the RC/FS-compile codegen entries) that also
+/// lowers `record{}.field` dot access — without this it inherited the exact
+/// same "only resolves within a single top-level statement's own expression
+/// tree" gap.
+export fn rewrite_stmt(stmt: Stmt, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)], toplevel_vars: Array[(String, String)]) -> Stmt with Exception {
+  let no_binds = empty_dict_binds()
+  // #1392: which top-level binding's body is about to be walked, so the
+  // interpolation rewrite can decline to make `T::to_string` call itself.
+  show_self_fn_set(match stmt {
+    SLet(_, _, sname, _, _) => sname,
+    _ => ""
+  })
+  match stmt {
+    SLet(exp, isrec, fname, ann, body) => match lookup_gen(gens, fname) {
+      Some(threaded) => match body {
+        EFn(tparams, bounds, params, ret, eff, fbody) => {
+          let binds = dict_binds_of(threaded, traits)
+          let new_params = thread_dict_params(threaded, params)
+          let seeded = dtd_mask_shadowed_params(seed_var_types(params, tparams, toplevel_vars), params, fn_returns)
+          // #2141 (Codex P1 on #2183): this dict-threaded path unwraps the
+          // EFn itself, so rewrite_expr's EFn arm never pushes the binder
+          // frame for it -- a `[T: Trait]` formal colliding with an imported
+          // `struct T` still dispatched `T::equals` on erased operands.
+          scope_formals_push(tparams, bounds, false)
+          let new_body = rewrite_expr(fbody, gens, traits, struct_sets, binds, seeded, fn_returns)
+          scope_formals_pop()
+          SLet(exp, isrec, fname, ann, EFn(tparams, bounds, new_params, ret, eff, new_body))
+        },
+        _ => stmt
+      },
+      // #2745: a TOP-LEVEL generic that `build_gens` did not thread -- an
+      // unbounded one, `fn show_any[T](a: T)` -- reached here and let
+      // `rewrite_expr`'s EFn arm push its binder frame, which marks the frame as
+      // a LAMBDA's. That made `dtd_formal_innermost_is_nested` answer "nested"
+      // for a top-level declaration. #2737's uses never saw it (they also require
+      // the binder's bound to promise the method, and an unbounded binder
+      // promises nothing), but it is wrong on its own terms, and #2745's refusal
+      // reads that marker alone -- measured: the whole compiler was rejected,
+      // because its own top-level unbounded generics interpolate their formals.
+      //
+      // Unwrapping the EFn here is what the threaded path above already does, for
+      // the same reason: the frame belongs to the DECLARATION, so this arm must
+      // push it rather than leave it to the arm that cannot tell the two apart.
+      None => match body {
+        EFn(tparams, bounds, params, ret, eff, fbody) => {
+          scope_formals_push(tparams, bounds, false)
+          let new_body = rewrite_expr(fbody, gens, traits, struct_sets, no_binds, dtd_mask_shadowed_params(seed_var_types(params, tparams, toplevel_vars), params, fn_returns), fn_returns)
+          scope_formals_pop()
+          SLet(exp, isrec, fname, ann, EFn(tparams, bounds, params, ret, eff, new_body))
+        },
+        _ => SLet(exp, isrec, fname, ann, rewrite_expr(body, gens, traits, struct_sets, no_binds, toplevel_vars, fn_returns))
+      }
+    },
+    SLetMut(name, ty, e) => SLetMut(name, ty, rewrite_expr(e, gens, traits, struct_sets, no_binds, toplevel_vars, fn_returns)),
+    SLetPat(pat, e) => SLetPat(pat, rewrite_expr(e, gens, traits, struct_sets, no_binds, toplevel_vars, fn_returns)),
+    STest(name, body) => STest(name, rewrite_expr(body, gens, traits, struct_sets, no_binds, toplevel_vars, fn_returns)),
+    SBench(name, body) => SBench(name, rewrite_expr(body, gens, traits, struct_sets, no_binds, toplevel_vars, fn_returns)),
+    SExpr(e) => SExpr(rewrite_expr(e, gens, traits, struct_sets, no_binds, toplevel_vars, fn_returns)),
+    SModule(exp, name, body) => SModule(exp, name, for s in body {
+      rewrite_stmt(s, gens, traits, struct_sets, fn_returns, toplevel_vars)
+    }),
+    _ => stmt
+  }
+}

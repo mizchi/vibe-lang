@@ -1,0 +1,396 @@
+// Collection access.
+
+import @vibe/compiler/core {
+  Expr,
+  Stmt,
+  __to_string,
+  array_receiver_reads,
+  builtin_iterator_namespace_from_marker,
+  builtin_iterator_namespace_markers,
+  typed_index_map_verdict,
+  typed_index_open_verdict,
+  typed_lowering_arg_offset
+}
+
+import @vibe/ast {
+  builtin_ref, index_site_offset
+}
+
+import ./argument_types.vibe {
+  infer_arg_type_name
+}
+
+import ./constructor_inference.vibe {
+  infer_constructor_arg_type_name
+}
+
+import ./models.vibe {
+  DictGen
+}
+
+import ./state.vibe {
+  dtd_builtin_iterator_namespaces,
+  dtd_index_refusals,
+  dtd_typed_forin_offs,
+  dtd_typed_forin_verdicts,
+  dtd_typed_index_offs,
+  dtd_typed_index_verdicts
+}
+
+import ./type_names.vibe {
+  fn_exists
+}
+
+import ./utilities.vibe {
+  split_qualified, str_array_contains
+}
+
+/// #3148: `for x in e` over a Map. The residual loop (and every classified
+/// lowering) reads the iterand as an Array, so a Map iterated zero times --
+/// even one whose type was known (`for k in m` with `m: StringMap[Int]`
+/// counted 0). The checker binds the loop variable to the Map's KEY type, so
+/// the loop is the loop over `Map::keys(m)`, and it is lowered to exactly
+/// that. A Map known from the checker's row, or from the iterand's own
+/// spelling on a lane with no rows, is rewritten; an iterand whose type
+/// never resolved (an erased formal, a generalised lambda's parameter) is
+/// refused -- it may be a Map at run time. Returns the rewritten iterand, or
+/// None to keep the loop as it is.
+export fn dtd_forin_map_iterand(iter: Expr, riter: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[Expr] {
+  let off = typed_lowering_arg_offset(iter)
+  let verdict = dtd_typed_row_verdict_for(dtd_typed_forin_offs, dtd_typed_forin_verdicts, off)
+  let spelled = match infer_arg_type_name(iter, struct_sets, var_types, fn_returns) {
+    Some(t) => t,
+    None => ""
+  }
+  if verdict == typed_index_map_verdict() || spelled == "Map" || spelled == "StringMap" {
+    Some(ECall(builtin_ref("Map::keys"), [riter], -1))
+  } else {
+    if verdict == typed_index_open_verdict() {
+      let what = match iter {
+        EIdent(n, _) => String::concat("`", String::concat(n, "`")),
+        EDot(_, f, _, _) => String::concat("field `", String::concat(f, "`")),
+        _ => "the iterated value"
+      }
+      let msg = String::concat("cannot tell whether this `for` iterates an Array or a Map: the type of ", String::concat(what, String::concat(" is not known where it is iterated -- annotate it (`xs: Array[T]`), or iterate a Map's keys with `for k in Map::keys(m)` (#3148)", if off >= 0 {
+        String::concat(" [@off=", String::concat(__to_string(off), "]"))
+      } else {
+        ""
+      })))
+      if !str_array_contains(dtd_index_refusals, msg) {
+        Array::push(dtd_index_refusals, msg)
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    None
+  }
+}
+
+/// Sorted insert. Rows arrive in the checker's (source) order, so this is an
+/// append in the common case; a second row for one offset that disagrees
+/// leaves the site open, because one lowering cannot serve both.
+export fn dtd_typed_index_insert(off: Int, verdict: String) -> Unit {
+  dtd_typed_row_insert(dtd_typed_index_offs, dtd_typed_index_verdicts, off, verdict)
+}
+
+export fn dtd_typed_row_insert(dtd_typed_index_offs: Array[Int], dtd_typed_index_verdicts: Array[String], off: Int, verdict: String) -> Unit {
+  let mut lo = 0
+  let mut hi = Array::length(dtd_typed_index_offs)
+  while lo < hi {
+    let mid = (lo + hi) / 2
+    if Array::get(dtd_typed_index_offs, mid) < off {
+      lo = mid + 1
+    } else {
+      hi = mid
+    }
+  }
+  if lo < Array::length(dtd_typed_index_offs) && Array::get(dtd_typed_index_offs, lo) == off {
+    if Array::get(dtd_typed_index_verdicts, lo) != verdict {
+      Array::set(dtd_typed_index_verdicts, lo, typed_index_open_verdict())
+    } else {
+      ()
+    }
+  } else {
+    Array::push(dtd_typed_index_offs, off)
+    Array::push(dtd_typed_index_verdicts, verdict)
+    let mut j = Array::length(dtd_typed_index_offs) - 1
+    while j > lo {
+      Array::set(dtd_typed_index_offs, j, Array::get(dtd_typed_index_offs, j - 1))
+      Array::set(dtd_typed_index_verdicts, j, Array::get(dtd_typed_index_verdicts, j - 1))
+      j = j - 1
+    }
+    Array::set(dtd_typed_index_offs, lo, off)
+    Array::set(dtd_typed_index_verdicts, lo, verdict)
+  }
+}
+
+/// The checker's verdict for the index whose `[` sits at `off`, or "".
+fn dtd_typed_index_verdict_for(off: Int) -> String {
+  dtd_typed_row_verdict_for(dtd_typed_index_offs, dtd_typed_index_verdicts, off)
+}
+
+fn dtd_typed_row_verdict_for(dtd_typed_index_offs: Array[Int], dtd_typed_index_verdicts: Array[String], off: Int) -> String {
+  if off < 0 {
+    ""
+  } else {
+    let mut lo = 0
+    let mut hi = Array::length(dtd_typed_index_offs)
+    while lo < hi {
+      let mid = (lo + hi) / 2
+      if Array::get(dtd_typed_index_offs, mid) < off {
+        lo = mid + 1
+      } else {
+        hi = mid
+      }
+    }
+    if lo < Array::length(dtd_typed_index_offs) && Array::get(dtd_typed_index_offs, lo) == off {
+      Array::get(dtd_typed_index_verdicts, lo)
+    } else {
+      ""
+    }
+  }
+}
+
+/// #3133: record that the index at `off` cannot be lowered. The receiver may
+/// be a Map at run time, and array indexing on a Map reads its backing store
+/// positionally -- a wrong answer, not a trap -- so it is a build error.
+///
+/// #3139: `write` is an index WRITE (`xs[i] = v`, or `Array::set(xs, i, v)`
+/// written directly), which on a Map writes the backing store positionally.
+fn dtd_index_refuse(recv: Expr, off: Int, write: Bool) -> Unit {
+  let what = match recv {
+    EIdent(n, _) => String::concat("`", String::concat(n, "`")),
+    EDot(_, f, _, _) => String::concat("field `", String::concat(f, "`")),
+    _ => "the indexed value"
+  }
+  let body = if write {
+    String::concat("cannot tell whether this index write targets an Array: the type of ", String::concat(what, " is not known where it is written -- annotate it (`xs: Array[T]`); a Map is not updated in place, so bind the result of `Map::set(m, k, v)` instead (#3139)"))
+  } else {
+    String::concat("cannot tell whether this index reads a Map or an Array: the type of ", String::concat(what, " is not known where it is indexed -- annotate it (`m: StringMap[V]` or `xs: Array[T]`), or call `Map::get(m, k)` / `Array::get(xs, i)` directly (#3133)"))
+  }
+  let msg = String::concat(body, if off >= 0 {
+    String::concat(" [@off=", String::concat(__to_string(off), "]"))
+  } else {
+    ""
+  })
+  if !str_array_contains(dtd_index_refusals, msg) {
+    Array::push(dtd_index_refusals, msg)
+  } else {
+    ()
+  }
+}
+
+/// #3145: the refusal for a builtin `Array::*` reader (`array_receiver_reads`)
+/// whose Array argument the checker never resolved.
+fn dtd_array_reader_refuse(name: String, recv: Expr, off: Int) -> Unit {
+  let what = match recv {
+    EIdent(n, _) => String::concat("`", String::concat(n, "`")),
+    EDot(_, f, _, _) => String::concat("field `", String::concat(f, "`")),
+    _ => "its argument"
+  }
+  let msg = String::concat("cannot tell whether this call reads an Array: `", String::concat(name, String::concat("` treats ", String::concat(what, String::concat(" as an Array, but its type is not known here -- annotate it (`xs: Array[T]`); for a Map use the `Map::` operations (#3145)", if off >= 0 {
+    String::concat(" [@off=", String::concat(__to_string(off), "]"))
+  } else {
+    ""
+  })))))
+  if !str_array_contains(dtd_index_refusals, msg) {
+    Array::push(dtd_index_refusals, msg)
+  } else {
+    ()
+  }
+}
+
+export fn index_refusals_report() -> Unit with Exception {
+  if Array::length(dtd_index_refusals) == 0 {
+    ()
+  } else {
+    throw(Array::get(dtd_index_refusals, 0))
+  }
+}
+
+/// #760(3) / #3133: `m[k]` parses to `__index(m, k)`, whose codegen
+/// array-indexes the receiver -- on a Map that reads its backing store as a
+/// positional array. Rewrite to `Map::get(m, k)` when the receiver is a Map.
+///
+/// `typed` says whether the checker's index rows describe this program (the
+/// rewrite loop in `dtd_run`); the railway pass runs INSIDE the checker, before
+/// any row exists, and must not read a previous program's table. With rows,
+/// the checker's type of the receiver decides -- a Map by any spelling (a
+/// `StringMap[V]` annotation, a function's result, a struct field, an
+/// unannotated parameter, a `match` binder) is a `Map::get`, and a receiver it
+/// could not resolve is REFUSED (`dtd_index_refuse`) rather than lowered as an
+/// array read that may land on a Map. Without rows (an unlocated lane), only
+/// the receiver's spelling is available: a `Map::new()` literal or a
+/// `Map[..]`-annotated binding (`infer_arg_type_name` reports "Map").
+/// `rwargs` are the already-rewritten arguments to carry into the new call.
+export fn map_index_rewrite(callee: Expr, args: Array[Expr], rwargs: Array[Expr], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)], typed: Bool) -> Option[Expr] {
+  match callee {
+    EIdent(nm, site_key) => if nm == "__index" && Array::length(args) == 2 {
+      let bracket_off = index_site_offset(site_key)
+      let verdict = if typed {
+        dtd_typed_index_verdict_for(bracket_off)
+      } else {
+        ""
+      }
+      let spelled = match infer_arg_type_name(Array::get(args, 0), struct_sets, var_types, fn_returns) {
+        Some(t) => t,
+        None => ""
+      }
+      // An open verdict is authoritative: the spelling fallback reads a
+      // syntactic scope, so a lambda parameter shadowing an outer Map binding
+      // would otherwise be rewritten to `Map::get` (#3133 review).
+      let recv_map = verdict == typed_index_map_verdict() || (verdict != typed_index_open_verdict() && (spelled == "Map" || spelled == "StringMap"))
+      if recv_map {
+        Some(ECall(builtin_ref("Map::get"), rwargs, -1))
+      } else {
+        // An open verdict is refused. (#3138 retired an exemption for a
+        // receiver SPELLED as a sequence: it existed because a struct literal
+        // with a nominal field was typed as nothing, so its fields read as
+        // open; the checker types that literal now.)
+        if verdict == typed_index_open_verdict() {
+          dtd_index_refuse(Array::get(args, 0), bracket_off, false)
+        } else {
+          ()
+        }
+        None
+      }
+    } else if nm == "Array::set" && Array::length(args) == 3 && typed {
+      // #3139: the write side. `xs[i] = v` is `Array::set(xs, i, v)` from the
+      // parser on, keyed by its `[`; a written `Array::set` is keyed by its
+      // own name. There is no Map lowering of a write -- `Map::set` returns a
+      // new map -- so an open receiver is refused and nothing is rewritten.
+      let set_site = if site_key >= 0 {
+        site_key
+      } else {
+        index_site_offset(site_key)
+      }
+      if dtd_typed_index_verdict_for(set_site) == typed_index_open_verdict() {
+        dtd_index_refuse(Array::get(args, 0), set_site, true)
+      } else {
+        ()
+      }
+      None
+    } else if typed && site_key >= 0 && array_receiver_reads(nm) && Array::length(args) >= 1 {
+      // #3145: every other builtin that reads an argument as an Array's
+      // backing store (see `array_receiver_reads`), keyed by its own name.
+      if dtd_typed_index_verdict_for(site_key) == typed_index_open_verdict() {
+        dtd_array_reader_refuse(nm, Array::get(args, 0), site_key)
+      } else if Array::length(args) >= 2 && dtd_typed_index_verdict_for(site_key + 1) == typed_index_open_verdict() {
+        // The second operand of `Array::concat` / `Array::push_all`, filed one
+        // byte into the callee (`array_reader_second_key`): name IT, not the
+        // resolved first operand.
+        dtd_array_reader_refuse(nm, Array::get(args, 1), site_key)
+      } else {
+        ()
+      }
+      None
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
+fn dtd_add_builtin_iterator_markers(markers: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(markers) {
+    match builtin_iterator_namespace_from_marker(Array::get(markers, i)) {
+      Some(namespace) => if !str_array_contains(dtd_builtin_iterator_namespaces, namespace) {
+        Array::push(dtd_builtin_iterator_namespaces, namespace)
+      } else {
+        ()
+      },
+      None => ()
+    }
+    i = i + 1
+  }
+}
+
+export fn dtd_builtin_iterator_reset(stmts: Array[Stmt]) -> Unit {
+  Array::truncate(dtd_builtin_iterator_namespaces, 0)
+  // Direct/single-source preprocessing still has its imports. FS merges erase
+  // them and restore the same fact at each SReExportSourceBoundary instead.
+  dtd_add_builtin_iterator_markers(builtin_iterator_namespace_markers(stmts))
+}
+
+export fn dtd_builtin_iterator_set_boundary(markers: Array[String]) -> Unit {
+  Array::truncate(dtd_builtin_iterator_namespaces, 0)
+  dtd_add_builtin_iterator_markers(markers)
+}
+
+export fn iterator_array_intrinsic(name: String, args: Array[Expr], gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
+  let member = match split_qualified(name) {
+    Some(parts) => {
+      let (namespace, operation) = parts
+      if str_array_contains(dtd_builtin_iterator_namespaces, namespace) {
+        operation
+      } else {
+        ""
+      }
+    },
+    None => ""
+  }
+  if Array::length(args) == 0 || member == "" {
+    None
+  } else {
+    // Constructor-aware inference covers result-bearing control flow such as
+    // `Iterator::map(loop { break [1] }, f)`. Falling back to the generic
+    // dictionary there is semantically valid in principle, but would make an
+    // Array pay abstraction overhead solely because its receiver is not a
+    // literal or a named binding.
+    let is_array = match infer_constructor_arg_type_name(Array::get(args, 0), gens, struct_sets, var_types, fn_returns) {
+      Some(receiver) => receiver == "Array",
+      None => false
+    }
+    if !is_array {
+      None
+    } else if member == "map" {
+      Some("Array::map")
+    } else if member == "filter" {
+      Some("Array::filter")
+    } else if member == "fold" {
+      Some("Array::fold")
+    } else if member == "iter" && !fn_exists(fn_returns, "Array::iter_eager") {
+      // Compiler-only eager Array operation. `Array::iter` is the unrelated
+      // pull AsyncIter constructor, so it cannot serve this lowering. A
+      // source binding with this name wins: leaving the Iterator helper in
+      // place preserves its semantics instead of sending it to that binding.
+      Some("Array::iter_eager")
+    } else if member == "find" {
+      Some("Array::find")
+    } else if member == "any" {
+      Some("Array::any")
+    } else if member == "all" {
+      Some("Array::all")
+    } else if member == "flatmap" {
+      let provider_prefix = "Iterator_exp_"
+      let provider_namespace = match split_qualified(name) {
+        Some(parts) => parts.0,
+        None => ""
+      }
+      if String::starts_with(provider_namespace, provider_prefix) {
+        let provider_suffix = String::substring(provider_namespace, String::length(provider_prefix), String::length(provider_namespace))
+        Some(String::concat("Array_exp_", String::concat(provider_suffix, "::flatmap")))
+      } else {
+        Some("Array::flatmap")
+      }
+    } else {
+      None
+    }
+  }
+}
+
+/// #3185: the callee of a devirtualized iterator operation. The Array
+/// operations are the builtins, whatever the program defines, so they are
+/// spelled `builtin_ref`: a program's own `fn Array::map` must not take an
+/// `Iterator::map` over an array it never called. `flatmap` is the library
+/// specialization beside the trait helper and keeps its ordinary resolution.
+export fn iterator_array_intrinsic_callee(intrinsic: String, coff: Int) -> Expr {
+  if String::ends_with(intrinsic, "::flatmap") {
+    EIdent(intrinsic, coff)
+  } else {
+    builtin_ref(intrinsic)
+  }
+}

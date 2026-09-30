@@ -1,0 +1,169 @@
+// Equality inference.
+
+import @vibe/compiler/core {
+  Expr, TypeExpr
+}
+
+import ./binding_shape_inference.vibe {
+  infer_shape
+}
+
+import ./binding_shape_queries.vibe {
+  shape_is_composite
+}
+
+import ./equality_shape_queries.vibe {
+  eq_shape_key, fn_eq_shape_key, infer_static_eq_type, shape_to_eq_ty, ty_contains_eq_unknown, ty_needs_typed_eq
+}
+
+import ./equality_type_shapes.vibe {
+  ty_to_eq_shape
+}
+
+import ./type_names.vibe {
+  fn_return_type, lookup_var_type
+}
+
+/// The dispatchable shape type of ONE bare-`==` operand reached through a
+/// NAME, or None. Precedence mirrors interp_expand's: the recorded recursive
+/// shape answers first (a recorded EMPTY means "innermost binding is not
+/// composite" and must not fall through to a stale parameter shape — the
+/// shadowing rule from #1465); a parameter's `__eqshape$` (seed_var_types)
+/// answers next; the older per-element sentinels resolve via `infer_shape`
+/// last.
+export fn infer_eq_shape(e: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
+  match e {
+    // #2431: a tuple LITERAL keeps its element types here. Without this arm it
+    // fell to the `_` arm, whose `infer_shape` has no scalar cases at all --
+    // every element came back "" and `let x = (0.0, 1)` recorded the shape
+    // `(,)`. That reads back as `(?EqUnknown, ?EqUnknown)`, which
+    // `eq_operand_shape_ty` refuses, so the comparison dropped to the codegen
+    // walk and compared each field with the generic `eq` builtin: raw bits on
+    // bump and gc (so `0.0 == -0.0` was false and `nan == nan` true), and box
+    // IDENTITY under RC, where a Double field is a boxed heap value -- there
+    // two structurally equal tuples were unequal to each other. Measured on
+    // the production default lane before this change, `let x = (1.5, 1)` and
+    // `let y = (1.5, 1)` compared FALSE.
+    //
+    // The elements recurse through this same function, so a nested tuple, an
+    // array element, a constructor payload and a scalar literal all resolve
+    // exactly as they do at the top level. An element this classifier cannot
+    // name stays "" and becomes `?EqUnknown`, which keeps the whole shape out
+    // of the typed dispatch -- today's behaviour for that tuple, never a
+    // guessed leaf type. Guessing one would be worse than the bug: a leaf
+    // wrongly called Double routes an Int field through `Double::to_float`.
+    ETuple(items) => if Array::length(items) == 0 {
+      ""
+    } else {
+      let mut acc = "("
+      let mut i = 0
+      while i < Array::length(items) {
+        let item = Array::get(items, i)
+        let sub0 = infer_eq_shape(item, struct_sets, var_types, fn_returns)
+        // Strictly ADDITIVE against what the `_` arm used to do, which was
+        // `infer_shape` on the whole tuple, i.e. `infer_shape` per element.
+        // `infer_eq_shape` answers for more elements than that, but for FEWER
+        // in one place: its `EIdent` arm treats a recorded empty as the answer
+        // "not composite" (the #1465 shadowing rule) and stops, where
+        // `infer_shape` goes on to the element's head TYPE NAME. `let x =
+        // Bytes::new(); let a = (x, 0)` is exactly that shape -- recursing
+        // alone recorded `(,Int)` and dropped the `Bytes`, so a tuple of Bytes
+        // compared by pointer and `fixtures/eq_array_option_fields_test.vibe`
+        // regressed. Falling back keeps the head name. It cannot resurrect the
+        // stale composite #1465 guarded: `infer_shape`'s own EIdent arm applies
+        // the same rule and yields a head name, never a container shape.
+        let sub = if String::length(sub0) > 0 {
+          sub0
+        } else {
+          infer_shape(item, struct_sets, var_types, fn_returns)
+        }
+        acc = if i == 0 {
+          String::concat(acc, sub)
+        } else {
+          String::concat(acc, String::concat(",", sub))
+        }
+        i = i + 1
+      }
+      String::concat(acc, ")")
+    },
+    EIdent(n, _) => {
+      match lookup_var_type(var_types, eq_shape_key(n)) {
+        Some(s) => s,
+        None => infer_shape(e, struct_sets, var_types, fn_returns)
+      }
+    },
+    // #2234: `Map::from_pairs` is normalized by the parser into EMap before
+    // this pass, so looking for the source-level call can never fire. Keys are
+    // string literals by the EMap contract; the first value stands for every
+    // value just as the EArray arm does for its elements (heterogeneous maps
+    // are rejected by the checker). An empty map still says nothing about V.
+    EMap(fields) => if Array::length(fields) == 0 {
+      ""
+    } else {
+      let (_, first_value) = Array::get(fields, 0)
+      String::concat("{m:String,", String::concat(infer_eq_shape(first_value, struct_sets, var_types, fn_returns), "}"))
+    },
+    ECall(EIdent(fname, _), args, _) => if (fname == "Some" || fname == "Option::Some") && Array::length(args) == 1 {
+      String::concat("{o:", String::concat(infer_eq_shape(Array::get(args, 0), struct_sets, var_types, fn_returns), "}"))
+    } else if (fname == "Ok" || fname == "Result::Ok") && Array::length(args) == 1 {
+      String::concat("{r:", String::concat(infer_eq_shape(Array::get(args, 0), struct_sets, var_types, fn_returns), ",?EqUnknown}"))
+    } else if (fname == "Err" || fname == "Result::Err") && Array::length(args) == 1 {
+      String::concat("{r:?EqUnknown,", String::concat(infer_eq_shape(Array::get(args, 0), struct_sets, var_types, fn_returns), "}"))
+    } else {
+      let local_shape = lookup_var_type(var_types, eq_shape_key(fname))
+      match local_shape {
+        Some(s) => s,
+        None => match fn_return_type(fn_returns, fn_eq_shape_key(fname)) {
+          Some(s) => s,
+          None => {
+            let ordinary = infer_shape(e, struct_sets, var_types, fn_returns)
+            if shape_is_composite(ordinary) {
+              ordinary
+            } else {
+              match infer_static_eq_type(e) {
+                Some(t) => ty_to_eq_shape(t),
+                None => ordinary
+              }
+            }
+          }
+        }
+      }
+    },
+    _ => {
+      let ordinary = infer_shape(e, struct_sets, var_types, fn_returns)
+      if shape_is_composite(ordinary) {
+        ordinary
+      } else {
+        match infer_static_eq_type(e) {
+          Some(t) => ty_to_eq_shape(t),
+          None => ordinary
+        }
+      }
+    }
+  }
+}
+
+fn eq_operand_shape_ty(e: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[TypeExpr] {
+  let sh = infer_eq_shape(e, struct_sets, var_types, fn_returns)
+  if shape_is_composite(sh) {
+    let t = shape_to_eq_ty(sh)
+    // A partial operand must not win merely because its container head is
+    // dispatchable. In particular `{m:String,}` becomes
+    // `Map[String, ?EqUnknown]`; accepting it here hides a complete shape on
+    // the other operand and makes aggregate values fall back to identity.
+    if ty_needs_typed_eq(t) && !ty_contains_eq_unknown(t) {
+      Some(t)
+    } else {
+      None
+    }
+  } else {
+    None
+  }
+}
+
+export fn eq_var_shape_dispatch(l: Expr, r: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[TypeExpr] {
+  match eq_operand_shape_ty(l, struct_sets, var_types, fn_returns) {
+    Some(t) => Some(t),
+    None => eq_operand_shape_ty(r, struct_sets, var_types, fn_returns)
+  }
+}

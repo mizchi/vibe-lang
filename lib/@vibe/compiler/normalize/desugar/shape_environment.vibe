@@ -1,0 +1,99 @@
+// Shape environment.
+
+import ./utilities.vibe {
+  empty_str_array, local_fn_return_key
+}
+
+// ---- #1445: shapes that survive a BINDING ----
+//
+// #1392 slice 2 rendered a tuple/array/Option/Result written literally at the
+// interpolation site, and slice 1 rendered a `derive(Show)` value. What stayed
+// broken is the same value reached through a NAME:
+//
+//   "\{(1, 2)}"                 -> "(1, 2)"     already worked
+//   let t = (1, 2); "\{t}"      -> "228"        the raw pointer, #1445
+//
+// The head name alone (`infer_arg_type_name` returns "Tuple"/"Array") gives
+// neither arity nor element types, and a local `let`'s type annotation is not
+// in the AST (`ELet` has no annotation field, only `SLet` does), so there is no
+// TypeExpr to hand `show_for_typed`. But the BINDING SITE has the shape in
+// front of it -- `let t = (1, 2)` is a tuple literal right there -- so the
+// shape is recorded then and looked up at the interpolation site, exactly the
+// way `array_elem_bind` already records a let-bound array's element type.
+//
+// Two sentinel KEYS (not values), same `$`-in-the-key trick as
+// `array_elem_key`: `$` is not a valid identifier character, so no real source
+// name can collide.
+
+/// `__tupshape$<name>` -> the tuple's per-element type names, comma-joined.
+/// An element whose type this pass could not infer contributes an EMPTY entry,
+/// so arity is always exactly `commas + 1` and a partially-inferable tuple
+/// still renders (the unknown elements just fall back to `__to_string`).
+export fn tuple_shape_key(pname: String) -> String {
+  String::concat("__tupshape$", pname)
+}
+
+/// Independent copy of the rewrite environment, made once per extension.
+/// `Array::slice` is one allocation + one guarded-dup copy; the push-per-element
+/// version this replaces was the single largest __rt_arr_push caller in a
+/// full-closure compile profile (same finding as perceus.vibe's copy_ints).
+export fn clone_var_types(var_types: Array[(String, String)]) -> Array[(String, String)] {
+  Array::slice(var_types, 0, Array::length(var_types))
+}
+
+// ---- #1445 (#139): shapes that NEST ----
+//
+// Recursive shape grammar: Name, (s1,s2,...), [s], or "" for unknown.
+
+export fn shape_key(pname: String) -> String {
+  String::concat("__shape$", pname)
+}
+
+export fn constructor_mask_key(pname: String) -> String {
+  String::concat("__ctormask$", pname)
+}
+
+export fn constructor_head_key(pname: String) -> String {
+  String::concat("__ctorhead$", pname)
+}
+
+export fn constructor_binding_has_evidence(var_types: Array[(String, String)], name: String) -> Bool {
+  let head_key = constructor_head_key(name)
+  let return_key = local_fn_return_key(name)
+  let value_shape_key = shape_key(name)
+  let tuple_key = tuple_shape_key(name)
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(var_types) && !found {
+    let (entry_name, _) = Array::get(var_types, i)
+    found = entry_name == name || entry_name == head_key || entry_name == return_key || entry_name == value_shape_key || entry_name == tuple_key
+    i = i + 1
+  }
+  found
+}
+
+/// Split a tuple shape's INNER text (`s1,s2,...`, no outer parens) on
+/// top-level commas only.
+export fn shape_split(inner: String) -> Array[String] {
+  let out = empty_str_array()
+  let n = String::length(inner)
+  let mut depth = 0
+  let mut start = 0
+  let mut i = 0
+  while i < n {
+    let c = String::char_code_at(inner, i)
+    if c == 40 || c == 91 || c == 123 {
+      depth = depth + 1
+    } else if c == 41 || c == 93 || c == 125 {
+      depth = depth - 1
+    } else if c == 44 && depth == 0 {
+      Array::push(out, String::substring(inner, start, i))
+      start = i + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  Array::push(out, String::substring(inner, start, n))
+  out
+}

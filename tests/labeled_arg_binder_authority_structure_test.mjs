@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { readDesugarSources } from "./helpers/desugar_sources.mjs";
 
 const root = new URL("../", import.meta.url);
-const normalizer = readFileSync(new URL("lib/@vibe/compiler/normalize/desugar_trait_dict.vibe", root), "utf8");
+const normalizer = readDesugarSources();
 const detach = readFileSync(new URL("lib/@vibe/parser/ast_detach.vibe", root), "utf8");
 const normalizeFacade = readFileSync(new URL("lib/@vibe/compiler/normalize/index.vpkg", root), "utf8");
 const parserFacade = readFileSync(new URL("lib/@vibe/parser/index.vpkg", root), "utf8");
@@ -106,11 +107,11 @@ assert.match(parserFacade, /fn detach_stmts\(stmts: Array\[Stmt\]\) -> Array\[St
 const pats = ["PWild", "PBind", "PInt", "PFloat", "PString", "PBool", "PCtor", "PTuple", "POr", "PStruct"];
 const types = ["TyName", "TyApp", "TyFn", "TyTuple", "TyUnit"];
 const exprs = ["EInt", "EFloat", "EString", "EBool", "EIdent", "ETuple", "EArray", "ERecord", "EIf", "ELet", "ELetRec", "ELetMut", "EAssign", "EAssignOp", "ESeq", "EMatch", "EHandle", "EWhile", "ELoop", "EForIn", "ECall", "EBinOp", "EUnaryOp", "EFn", "EDot", "ELabeledArg", "EReturn", "EBreak", "EContinue", "EMap", "ESpread", "EStringInterp", "EUnit"];
-const stmts = ["SLet", "SLetMut", "SEnum", "SSuberror", "SStruct", "STypeAlias", "STrait", "SImpl", "SExternLet", "SImport", "STest", "SBench", "SExample", "SExpr", "SExport", "SReExport", "SAliasDecl", "SQualifiedPatternRefs", "STestEffectRows", "SLetPat", "SModule", "SEffectDef", "SEffectSet", "SResource", "SFnDecl"];
+const stmts = ["SLet", "SLetMut", "SEnum", "SSuberror", "SStruct", "STypeAlias", "STrait", "SImpl", "SExternLet", "SImport", "STest", "SBench", "SExample", "SExpr", "SExport", "SReExport", "SReExportSourceBoundary", "SAliasDecl", "SQualifiedPatternRefs", "STestEffectRows", "SLetPat", "SModule", "SEffectDef", "SEffectSet", "SResource", "SFnDecl"];
 exactKeys(outerArms(detach, "detach_pat"), pats, "10 Pat detachment arms");
 exactKeys(outerArms(detach, "detach_type_expr"), types, "5 TypeExpr detachment arms");
 exactKeys(outerArms(detach, "detach_expr"), exprs, "33 Expr detachment arms");
-exactKeys(outerArms(detach, "detach_stmt"), stmts, "25 Stmt detachment arms");
+exactKeys(outerArms(detach, "detach_stmt"), stmts, "26 Stmt detachment arms");
 for (const name of ["detach_pat", "detach_type_expr", "detach_expr", "detach_stmt"]) assert.doesNotMatch(functionBody(detach, name), /_ =>/);
 
 const pairedPats = outerArms(normalizer, "paired_expect_pat");

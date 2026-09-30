@@ -1,0 +1,88 @@
+// Constructor pattern scope.
+
+import @vibe/compiler/core {
+  Pat
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import ./constructor_environments.vibe {
+  constructor_env_entry_belongs_to, constructor_env_has_binding
+}
+
+import ./renderer_scope.vibe {
+  collect_pat_binders
+}
+
+import ./shape_environment.vibe {
+  constructor_binding_has_evidence, constructor_mask_key
+}
+
+import ./type_names.vibe {
+  fn_return_type
+}
+
+import ./utilities.vibe {
+  empty_str_array
+}
+
+/// Remove every name introduced by a pattern before adding any constructor
+/// evidence recoverable from its scrutinee. Unknown pattern payloads still
+/// shadow outer bindings; retaining them can select a stale witness.
+export fn mask_constructor_pat_binders(var_types: Array[(String, String)], pat: Pat, fn_returns: Array[(String, String)]) -> Array[(String, String)] {
+  let binders = empty_str_array()
+  collect_pat_binders(pat, binders)
+  if Array::length(binders) == 0 {
+    var_types
+  } else {
+    let mut needed = false
+    let mut bi = 0
+    while bi < Array::length(binders) {
+      let name = Array::get(binders, bi)
+      if constructor_binding_has_evidence(var_types, name) || constructor_env_has_binding(var_types, name) || fn_return_type(fn_returns, name) != None {
+        needed = true
+      } else {
+        ()
+      }
+      bi = bi + 1
+    }
+    if !needed {
+      var_types
+    } else {
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(var_types) {
+        let entry = Array::get(var_types, i)
+        let (entry_name, _) = entry
+        let mut drop = false
+        let mut j = 0
+        while j < Array::length(binders) && !drop {
+          if constructor_env_entry_belongs_to(entry_name, Array::get(binders, j)) {
+            drop = true
+          } else {
+            j = j + 1
+          }
+        }
+        if drop {
+          ()
+        } else {
+          Array::push(out, entry)
+        }
+        i = i + 1
+      }
+      let mut k = 0
+      while k < Array::length(binders) {
+        let name = Array::get(binders, k)
+        if constructor_binding_has_evidence(var_types, name) || constructor_env_has_binding(var_types, name) || fn_return_type(fn_returns, name) != None {
+          Array::push(out, (constructor_mask_key(name), ""))
+        } else {
+          ()
+        }
+        k = k + 1
+      }
+      out
+    }
+  }
+}

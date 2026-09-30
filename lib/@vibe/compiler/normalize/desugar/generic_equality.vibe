@@ -1,0 +1,604 @@
+// Generic equality.
+
+import @vibe/compiler/core {
+  Expr, Pat, TypeExpr
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import ./equality_aliases.vibe {
+  eq_expand_alias_ty, eq_subst_ty
+}
+
+import ./equality_registry.vibe {
+  eq_generic_enum_declared, eq_has_explicit_equals, generic_eq_formal_is_observed, generic_eq_struct_declared
+}
+
+import ./formal_scope.vibe {
+  formal_in_scope, is_marked_formal_name
+}
+
+import ./name_encoding.vibe {
+  idx_str
+}
+
+import ./state.vibe {
+  dtd_eq_enum_decls,
+  dtd_eq_enum_formal_visit_stack,
+  dtd_eq_enum_inst_check_stack,
+  dtd_eq_generic_structs,
+  dtd_eq_specialization_ancestries,
+  dtd_eq_specialization_stack,
+  dtd_eq_specializations
+}
+
+import ./utilities.vibe {
+  empty_str_array, empty_type_exprs, str_array_contains
+}
+
+/// Structural equality match for two Option operands whose element type is NOT
+/// statically known here (bare `==` dispatch on Option-typed variables). Some
+/// payloads compare with `==` (correct for scalars); a None matches a None.
+/// (#695.)
+export fn opt_eq_match(lhs: Expr, rhs: Expr) -> Expr {
+  let some_inner = EMatch(rhs, Array::slice([
+    (PCtor("Some", Array::slice([PBind("__oeq_r")], 0, 1)), EBinOp("==", EIdent("__oeq_l", -1), EIdent("__oeq_r", -1), -1)),
+    // review-lint: allow-fixed-synthetic-name -- existing generated comparator payload binder preserved by the module split
+    // review-lint: allow-fixed-synthetic-name
+    (PWild, EBool(false))
+  ], 0, 2))
+  let none_inner = EMatch(rhs, Array::slice([
+    (PCtor("None", array_empty()), EBool(true)),
+    (PWild, EBool(false))
+  ], 0, 2))
+  EMatch(lhs, Array::slice([
+    (PCtor("Some", Array::slice([PBind("__oeq_l")], 0, 1)), some_inner),
+    // review-lint: allow-fixed-synthetic-name -- existing generated comparator payload binder preserved by the module split
+    (PCtor("None", array_empty()), none_inner)
+  ], 0, 2))
+}
+
+/// Structural equality match for two Result operands of statically-unknown
+/// element types (bare `==` dispatch). (#695.)
+export fn result_eq_match(lhs: Expr, rhs: Expr) -> Expr {
+  let ok_inner = EMatch(rhs, Array::slice([
+    (PCtor("Ok", Array::slice([PBind("__req_r")], 0, 1)), EBinOp("==", EIdent("__req_l", -1), EIdent("__req_r", -1), -1)),
+    // review-lint: allow-fixed-synthetic-name -- existing generated comparator payload binder preserved by the module split
+    // review-lint: allow-fixed-synthetic-name
+    (PWild, EBool(false))
+  ], 0, 2))
+  let err_inner = EMatch(rhs, Array::slice([
+    (PCtor("Err", Array::slice([PBind("__req_r")], 0, 1)), EBinOp("==", EIdent("__req_l", -1), EIdent("__req_r", -1), -1)),
+    // review-lint: allow-fixed-synthetic-name -- existing generated comparator payload binder preserved by the module split
+    // review-lint: allow-fixed-synthetic-name
+    (PWild, EBool(false))
+  ], 0, 2))
+  EMatch(lhs, Array::slice([
+    (PCtor("Ok", Array::slice([PBind("__req_l")], 0, 1)), ok_inner),
+    // review-lint: allow-fixed-synthetic-name -- existing generated comparator payload binder preserved by the module split
+    (PCtor("Err", Array::slice([PBind("__req_l")], 0, 1)), err_inner)
+    // review-lint: allow-fixed-synthetic-name -- existing generated comparator payload binder preserved by the module split
+  ], 0, 2))
+}
+
+fn generic_eq_key_part(value: String) -> String {
+  String::concat(idx_str(String::length(value)), String::concat("_", value))
+}
+
+/// An injective, fn-name-safe structural encoding for generic equality
+/// specializations. Length prefixes keep names such as `Array_Int` distinct
+/// from applications such as `Array[Int]`.
+fn generic_eq_type_key(ty: TypeExpr) -> String {
+  match ty {
+    TyName(name) => String::concat("N", generic_eq_key_part(name)),
+    TyApp(head, args) => {
+      let mut key = String::concat("A", generic_eq_key_part(head))
+      key = String::concat(key, String::concat("C", idx_str(Array::length(args))))
+      let mut i = 0
+      while i < Array::length(args) {
+        key = String::concat(key, generic_eq_type_key(Array::get(args, i)))
+        i = i + 1
+      }
+      key
+    },
+    TyFn(params, result, effect) => {
+      let mut key = String::concat("F", idx_str(Array::length(params)))
+      let mut i = 0
+      while i < Array::length(params) {
+        key = String::concat(key, generic_eq_type_key(Array::get(params, i)))
+        i = i + 1
+      }
+      key = String::concat(key, String::concat("R", generic_eq_type_key(result)))
+      match effect {
+        Some(name) => String::concat(key, String::concat("E", generic_eq_key_part(name))),
+        None => String::concat(key, "Z")
+      }
+    },
+    TyTuple(items) => {
+      let mut key = String::concat("T", idx_str(Array::length(items)))
+      let mut i = 0
+      while i < Array::length(items) {
+        key = String::concat(key, generic_eq_type_key(Array::get(items, i)))
+        i = i + 1
+      }
+      key
+    },
+    TyUnit => "U"
+  }
+}
+
+export fn generic_eq_name(head: String, args: Array[TypeExpr]) -> String {
+  let mut name = String::concat(head, "::equals")
+  let mut i = 0
+  while i < Array::length(args) {
+    name = String::concat(name, String::concat("__", generic_eq_type_key(Array::get(args, i))))
+    i = i + 1
+  }
+  name
+}
+
+fn generic_eq_type_size(ty: TypeExpr) -> Int {
+  match ty {
+    TyName(_) => 1,
+    TyApp(_, args) => 1 + generic_eq_types_size(args),
+    TyFn(params, result, _) => 1 + generic_eq_types_size(params) + generic_eq_type_size(result),
+    TyTuple(items) => 1 + generic_eq_types_size(items),
+    TyUnit => 1
+  }
+}
+
+fn generic_eq_types_size(types: Array[TypeExpr]) -> Int {
+  let mut size = 0
+  let mut i = 0
+  while i < Array::length(types) {
+    size = size + generic_eq_type_size(Array::get(types, i))
+    i = i + 1
+  }
+  size
+}
+
+fn generic_eq_graph_types_are_finite(types: Array[TypeExpr], visiting: Array[TypeExpr], done: Array[String]) -> Bool {
+  let mut i = 0
+  let mut finite = true
+  while i < Array::length(types) {
+    if !generic_eq_graph_type_is_finite(Array::get(types, i), visiting, done) {
+      finite = false
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  finite
+}
+
+fn generic_eq_graph_type_is_finite(ty: TypeExpr, visiting: Array[TypeExpr], done: Array[String]) -> Bool {
+  match ty {
+    TyName(_) => true,
+    // #2467: a generic ENUM head is a node of this graph too. Measured with
+    // it left out: `enum Nest[T] { N(Nest[Array[T]]); End(T) }` at `Int` was
+    // judged finite through its arguments alone, the worklist grew by one
+    // `Array` per specialization, and the compiler died of memory.
+    TyApp(head, args) => if (generic_eq_struct_declared(head) || eq_generic_enum_declared(head)) && Array::length(args) > 0 {
+      let canonical_args = for arg in args {
+        eq_expand_alias_ty(arg)
+      }
+      generic_eq_graph_node_is_finite(head, canonical_args, visiting, done)
+    } else {
+      generic_eq_graph_types_are_finite(args, visiting, done)
+    },
+    TyFn(params, result, _) => generic_eq_graph_types_are_finite(params, visiting, done) && generic_eq_graph_type_is_finite(result, visiting, done),
+    TyTuple(items) => generic_eq_graph_types_are_finite(items, visiting, done),
+    TyUnit => true
+  }
+}
+
+/// Prove that every specialized-comparator edge reachable from this node is
+/// finite. Exact cycles are valid; revisiting a head with larger arguments on
+/// the active path proves non-regular growth. Walking every field prevents a
+/// regular self-edge from hiding a growing edge through this or another head.
+fn generic_eq_graph_node_is_finite(head: String, args: Array[TypeExpr], visiting: Array[TypeExpr], done: Array[String]) -> Bool {
+  let key = generic_eq_name(head, args)
+  let mut i = 0
+  let mut exact = false
+  let mut growing = false
+  while i < Array::length(visiting) {
+    match Array::get(visiting, i) {
+      TyApp(active_head, active_args) => if generic_eq_name(active_head, active_args) == key {
+        exact = true
+      } else if active_head == head && generic_eq_types_size(args) > generic_eq_types_size(active_args) {
+        growing = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  if exact {
+    true
+  } else if growing {
+    false
+  } else if str_array_contains(done, key) {
+    true
+  } else {
+    Array::push(visiting, TyApp(head, args))
+    let mut finite = true
+    let mut di = 0
+    while di < Array::length(dtd_eq_generic_structs) {
+      let decl = Array::get(dtd_eq_generic_structs, di)
+      if decl.0 == head && Array::length(decl.1) == Array::length(args) {
+        let mut fi = 0
+        while fi < Array::length(decl.2) {
+          let field_ty = eq_expand_alias_ty(eq_subst_ty(Array::get(decl.2, fi).1, decl.1, args))
+          if !generic_eq_graph_type_is_finite(field_ty, visiting, done) {
+            finite = false
+          } else {
+            ()
+          }
+          fi = fi + 1
+        }
+      } else {
+        ()
+      }
+      di = di + 1
+    }
+    // #2467: a generic ENUM's specializations grow the same worklist, so a
+    // non-regular enum recursion (`enum Nest[T] { N(Nest[Array[T]]); End }`)
+    // must be caught here as a struct's is -- without this loop an enum head
+    // found no declaration and every enum recursion was judged finite.
+    // An enum is a node only where `eq_for_typed_nonstandard_enum` would
+    // specialize it: a head with a program-written `::equals` dispatches
+    // there and records nothing, and an instantiation carrying a formal
+    // takes the declaration-level answer (Codex round 1 on #2477: walking
+    // such an enum's declaration made an unrelated `E[Int]` field, whose
+    // declaration holds `E[Array[T]]`, report a closing graph as infinite).
+    let enum_specialized = !eq_has_explicit_equals(head) && !eq_ty_has_formal(TyApp(head, args))
+    let mut ei = 0
+    while enum_specialized && ei < Array::length(dtd_eq_enum_decls) {
+      let edecl = Array::get(dtd_eq_enum_decls, ei)
+      if edecl.0 == head && Array::length(edecl.1) == Array::length(args) && Array::length(edecl.1) > 0 {
+        let mut vi = 0
+        while vi < Array::length(edecl.2) {
+          let payload = Array::get(edecl.2, vi).1
+          let mut pi = 0
+          while pi < Array::length(payload) {
+            let pty = eq_expand_alias_ty(eq_subst_ty(Array::get(payload, pi), edecl.1, args))
+            if !generic_eq_graph_type_is_finite(pty, visiting, done) {
+              finite = false
+            } else {
+              ()
+            }
+            pi = pi + 1
+          }
+          vi = vi + 1
+        }
+      } else {
+        ()
+      }
+      ei = ei + 1
+    }
+    Array::truncate(visiting, Array::length(visiting) - 1)
+    if finite {
+      Array::push(done, key)
+    } else {
+      ()
+    }
+    finite
+  }
+}
+
+fn generic_eq_specialization_graph_is_finite(head: String, args: Array[TypeExpr]) -> Bool {
+  generic_eq_graph_node_is_finite(head, args, empty_type_exprs(), empty_str_array())
+}
+
+/// Non-regular recursion such as `Loop[T] -> Loop[Array[T]]` grows the
+/// specialization worklist forever. A larger specialization is allowed only
+/// when its own fields close back over that exact specialization, as in
+/// `Stable[T] -> Stable[Array[Int]]`. An exact active specialization also
+/// proves that the worklist is finite.
+export fn generic_eq_is_expanding_recursion(head: String, args: Array[TypeExpr]) -> Bool {
+  let mut i = 0
+  let mut exact = false
+  let mut has_active = false
+  while i < Array::length(dtd_eq_specialization_stack) {
+    has_active = true
+    match Array::get(dtd_eq_specialization_stack, i) {
+      TyApp(active_head, active_args) => if active_head == head {
+        if generic_eq_name(active_head, active_args) == generic_eq_name(head, args) {
+          exact = true
+        } else {
+          ()
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  has_active && !exact && !generic_eq_specialization_graph_is_finite(head, args)
+}
+
+export fn generic_eq_record(head: String, args: Array[TypeExpr]) -> Unit {
+  let key = generic_eq_name(head, args)
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(dtd_eq_specializations) {
+    match Array::get(dtd_eq_specializations, i) {
+      TyApp(h, as_) => if generic_eq_name(h, as_) == key {
+        found = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  if !found {
+    Array::push(dtd_eq_specializations, TyApp(head, args))
+    Array::push(dtd_eq_specialization_ancestries, for item in dtd_eq_specialization_stack {
+      item
+    })
+  } else {
+    ()
+  }
+}
+
+export fn eq_ty_has_formal(t: TypeExpr) -> Bool {
+  match t {
+    TyName(n) => is_marked_formal_name(n) || formal_in_scope(n),
+    TyApp(_, xs) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(xs) {
+        if eq_ty_has_formal(Array::get(xs, i)) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    TyTuple(xs) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(xs) {
+        if eq_ty_has_formal(Array::get(xs, i)) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+/// Codex round 7 on #2456: whether a declared enum's derived `::equals`
+/// (`gen_enum_eq_fn`) is a content comparison. That comparator compares each
+/// payload through `eq_for_typed` on the payload's DECLARED type, so it is
+/// exact exactly when every payload type is content-comparable with no
+/// formal in scope: a payload spelled as a formal (`W(T)`) reaches the raw
+/// word `==` -- reference equality for an aggregate, and not even exact for
+/// an `Int` (Codex round 6) -- while a concrete payload (`Mark(Int)`,
+/// `Pair(Array[Int], String)`) or a nullary constructor does not. A phantom
+/// parameter therefore costs nothing. An enum that names itself in a
+/// payload is refused at the second visit (conservative; the declared-field
+/// walk keys such recursion the same way).
+/// Codex rounds 8-9 on #2456: the declaration's own formals, renamed to a
+/// spelling no declaration can own (`#formal:T`), so that alias expansion
+/// can run over the payload without ever reading a formal as a same-spelled
+/// declared type -- `type T = Array[Int]` or an imported `struct T` next to
+/// `enum Wrap[T] { W(T) }` (the #2141 guard rejects only a same-file struct
+/// or enum). Expansion substitutes alias arguments, so an alias that does
+/// not observe its argument erases the formal (`type Ignore[X] = Int`,
+/// `Mark(Ignore[T])` becomes `Int`, exact) while one that does keeps it
+/// (`type Keep[X] = Array[X]`, `W(Keep[T])` becomes `Array[#formal:T]`).
+export fn eq_formal_sentinel(f: String) -> String {
+  String::concat("#formal:", f)
+}
+
+export fn eq_ty_rename_formals(t: TypeExpr, formals: Array[String]) -> TypeExpr {
+  match t {
+    TyName(n) => if str_array_contains(formals, n) {
+      TyName(eq_formal_sentinel(n))
+    } else {
+      t
+    },
+    TyApp(head, args) => {
+      let renamed_args = for arg in args {
+        eq_ty_rename_formals(arg, formals)
+      }
+      if str_array_contains(formals, head) {
+        TyApp(eq_formal_sentinel(head), renamed_args)
+      } else {
+        TyApp(head, renamed_args)
+      }
+    },
+    TyTuple(ts) => TyTuple(for item in ts {
+      eq_ty_rename_formals(item, formals)
+    }),
+    TyFn(params, result, effect) => TyFn(for param in params {
+      eq_ty_rename_formals(param, formals)
+    }, eq_ty_rename_formals(result, formals), effect),
+    TyUnit => TyUnit
+  }
+}
+
+/// The formals of a declared generic struct, or an empty array for any other
+/// head (a builtin container, a generic enum, an unknown name).
+fn eq_generic_struct_formals(head: String) -> Array[String] {
+  let mut out = empty_str_array()
+  let mut i = 0
+  while i < Array::length(dtd_eq_generic_structs) {
+    let decl = Array::get(dtd_eq_generic_structs, i)
+    if decl.0 == head {
+      out = decl.1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Whether a (renamed, expanded) payload type still mentions a formal
+/// sentinel anywhere inside it. Asked BEFORE the allow-list: a leftover
+/// formal reaches the derived comparator as the erased `==`, so it fails
+/// closed whatever the allow-list would say. A shape this walk does not
+/// know is reported as mentioning one.
+export fn eq_ty_mentions_formal(t: TypeExpr, formals: Array[String]) -> Bool {
+  match t {
+    TyName(n) => str_array_contains(formals, n),
+    TyApp(head, args) => if str_array_contains(formals, head) {
+      true
+    } else {
+      // Codex round 10 on #2456: a declared generic STRUCT's specialised
+      // comparator reads only the fields, so a formal forwarded to one of
+      // its UNOBSERVED parameters (`struct Phantom[X] { tag: Int }`,
+      // `W(Phantom[T])`) never reaches the erased `==`. Only the observed
+      // argument positions are walked -- the same question
+      // `generic_eq_observed_args_content_comparable` asks. Round 13: a
+      // declared generic ENUM with a derived comparator is read the same
+      // way (`enum Inner[X] { Mark(Int) }`, `Wrap(Inner[T])`: the derived
+      // `Inner::equals` never reads `X`). Any other head (a builtin
+      // container, an enum with a program-written comparator, whose reads
+      // are unknown) walks every argument.
+      let struct_formals = eq_generic_struct_formals(head)
+      let enum_formals = eq_generic_enum_formals(head)
+      let mut hit = false
+      let mut i = 0
+      while i < Array::length(args) {
+        let walk = if Array::length(struct_formals) == Array::length(args) {
+          generic_eq_formal_is_observed(head, Array::get(struct_formals, i), empty_str_array())
+        } else if Array::length(enum_formals) == Array::length(args) && !eq_has_explicit_equals(head) {
+          eq_generic_enum_formal_is_observed(head, Array::get(enum_formals, i))
+        } else {
+          true
+        }
+        if walk && eq_ty_mentions_formal(Array::get(args, i), formals) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    TyTuple(ts) => {
+      let mut hit = false
+      let mut i = 0
+      while i < Array::length(ts) {
+        if eq_ty_mentions_formal(Array::get(ts, i), formals) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    TyUnit => false,
+    _ => true
+  }
+}
+
+/// The formals of a declared generic enum, or an empty array for any other
+/// head.
+fn eq_generic_enum_formals(head: String) -> Array[String] {
+  let mut out = empty_str_array()
+  let mut i = 0
+  while i < Array::length(dtd_eq_enum_decls) {
+    let decl = Array::get(dtd_eq_enum_decls, i)
+    if decl.0 == head && Array::length(decl.1) > 0 {
+      out = decl.1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Whether a declared generic enum's DERIVED comparator can read the given
+/// formal: some payload, with the declaration's formals renamed to sentinels
+/// and aliases expanded, still mentions it in an observed position. A pair
+/// met again while its own payloads are being walked (`enum Loop[T] {
+/// End(Int); Next(Loop[T]) }`) is answered coinductively (Codex round 18 on
+/// #2456): the recursive occurrence is compared by the very comparator being
+/// examined, which reads the formal only if some OTHER payload does -- and
+/// that payload is still walked. Measured: a finite `Loop[String]` compared
+/// correctly on the baseline and trapped when the revisit counted as observed.
+fn eq_generic_enum_formal_is_observed(head: String, formal: String) -> Bool {
+  let key = String::concat(head, String::concat("::", formal))
+  if str_array_contains(dtd_eq_enum_formal_visit_stack, key) {
+    false
+  } else {
+    Array::push(dtd_eq_enum_formal_visit_stack, key)
+    let mut observed = false
+    let mut i = 0
+    while i < Array::length(dtd_eq_enum_decls) {
+      let decl = Array::get(dtd_eq_enum_decls, i)
+      if decl.0 == head {
+        let sentinels = Array::slice([eq_formal_sentinel(formal)], 0, 1)
+        let mut vi = 0
+        while vi < Array::length(decl.2) {
+          let payload = Array::get(decl.2, vi).1
+          let mut pi = 0
+          while pi < Array::length(payload) {
+            let pty = eq_expand_alias_ty(eq_ty_rename_formals(Array::get(payload, pi), decl.1))
+            if eq_ty_mentions_formal(pty, sentinels) {
+              observed = true
+            } else {
+              ()
+            }
+            pi = pi + 1
+          }
+          vi = vi + 1
+        }
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    Array::truncate(dtd_eq_enum_formal_visit_stack, Array::length(dtd_eq_enum_formal_visit_stack) - 1)
+    observed
+  }
+}
+
+/// Where `inst` stands against the instantiations being walked: 1 when the
+/// same instantiation is already active (coinductive: answered by the
+/// comparator under examination); -1 when a LARGER instantiation of the same
+/// head is active AND the larger one's own specialization graph does not
+/// close -- the non-regular recursion `Nest[T]` holding `Nest[Array[T]]`,
+/// whose walk would never end. A larger node whose edges close on
+/// themselves (`enum Stable[T] { End(Int); Next(Stable[Array[Int]]) }`:
+/// `Stable[String]` reaches `Stable[Array[Int]]`, which reaches only itself)
+/// is finite and is walked (Codex round 1 on #2477: treating every size
+/// increase as non-regular made that phantom enum trap where it answered).
+/// The finiteness test is the one `generic_eq_is_expanding_recursion` uses,
+/// so the predicate and the dispatch agree. 0 otherwise.
+export fn eq_enum_inst_stack_verdict(head: String, args: Array[TypeExpr]) -> Int {
+  let key = generic_eq_name(head, args)
+  let mut verdict = 0
+  let mut i = 0
+  while i < Array::length(dtd_eq_enum_inst_check_stack) {
+    match Array::get(dtd_eq_enum_inst_check_stack, i) {
+      TyApp(active_head, active_args) => if generic_eq_name(active_head, active_args) == key {
+        verdict = 1
+      } else if active_head == head && generic_eq_types_size(args) > generic_eq_types_size(active_args) && verdict == 0 && !generic_eq_specialization_graph_is_finite(head, args) {
+        verdict = 0 - 1
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  verdict
+}

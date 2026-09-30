@@ -1,0 +1,774 @@
+// State.
+
+import @vibe/compiler/core {
+  Expr, Stmt, TypeExpr
+}
+
+import @vibe/core {
+  array_empty
+}
+
+/// #2286: which dict structs THIS program's desugar actually synthesized, and
+/// for which trait. `(struct name, trait name)`.
+///
+/// A diagnostic on a dict field used to name the synthesized struct -- ``field
+/// `lookup` of struct `StoreDict` `` -- which is a declaration the author never
+/// wrote and cannot act on. The trait label exists (`fapp_decl_label`) and is
+/// what `vibe check` reports, but the whole-program lane re-checks the desugar
+/// output as ordinary source, and by then the trait statement is gone: the
+/// compile lane emits exactly ONE diagnostic and it is the struct-shaped one.
+/// So this is not a duplicate to suppress -- suppressing it would lose the
+/// error -- it is a label that has to be recoverable.
+///
+/// Recorded at the synthesis site rather than inferred from the name. That
+/// distinction is the whole point: `collect_trait_dict_erasures` identifies
+/// dict structs by the `+ "Dict"` convention, and a program may legitimately
+/// declare its own struct with that name (`unknown_type_name_enforced_test`
+/// does). Relabelling on the convention reports a real user struct as a trait
+/// signature, which is what killed the attempt in #2276.
+///
+/// The synthesis site is already guarded by `struct_decl_exists`, so a
+/// hand-written `StoreDict` means no struct is synthesized and nothing is
+/// recorded -- the user's declaration keeps the field label by construction,
+/// not by a name test.
+/// Keyed by FIELD, not by struct. `flatten_traits` copies a supertrait's
+/// methods into the child's dict, so `ChildDict` holds fields `Child` does not
+/// declare. Recording only the dict's owner reported ``the signature of
+/// `Child::lookup` `` for a method only `Base` declares -- a name the reader
+/// cannot find anywhere in their source, and order-dependent on top: with
+/// `Base` declared first the walk stops on `BaseDict` and the label happened
+/// to be right (Codex review on #2313, measured both orders).
+export let dtd_synth_dict_fields: Array[(String, String, String)] = array_empty()
+export let dtd_constructor_tracking: Array[Bool] = [false]
+export let dtd_constructor_local_returns: Array[String] = array_empty()
+
+/// Pass state for the rewrite below, reset at every `desugar_trait_dicts`
+/// entry (the same discipline `set_throw_kind_table` uses in the checker, and
+/// for the same reason -- state must never survive into the next program).
+///
+/// `[0]` = suppressed: the cell is already declared, so an earlier run of this
+/// pass on the same program already wrapped every throw. Re-wrapping would nest
+/// a second, redundant write inside the first one's `ESeq`. `[1]` = used: at
+/// least one throw was wrapped or one `__exn_kind()` was lowered, so the cell
+/// has to be appended once the rewrite loop finishes. `[2]` = the payload-temp
+/// counter, so each wrapped throw binds its payload under a name of its own.
+export let dtd_exn_kind_state: Array[Int] = [0, 0, 0]
+
+/// #3133: the checker's index-receiver rows for THIS program -- the `[` offset
+/// of an `xs[k]` whose receiver the checker typed as a Map
+/// (`typed_index_map_verdict()`) or could not resolve
+/// (`typed_index_open_verdict()`), sorted by offset. Split out of the typed-`==`
+/// rows and repopulated at every `dtd_run`, like the render rows. A site with
+/// no row is one the checker typed as something other than a Map, or one this
+/// lane has no located check for.
+export let dtd_typed_index_offs: Array[Int] = []
+
+export let dtd_typed_index_verdicts: Array[String] = []
+
+/// #3148: the checker's `for` iterand rows for THIS program, keyed by
+/// `typed_lowering_arg_offset(iterand)`; the same verdicts as the index rows.
+export let dtd_typed_forin_offs: Array[Int] = []
+
+export let dtd_typed_forin_verdicts: Array[String] = []
+
+/// #3133: the index sites this run refused, reported after the rewrite
+/// alongside the structural-`==` refusals.
+export let dtd_index_refusals: Array[String] = array_empty()
+
+/// Devirtualize finite Iterator operations when the receiver is statically an
+/// Array. The public helper remains dictionary-based for user collections,
+/// while Array hot loops keep the same direct intrinsics as `Array::*`.
+export let dtd_builtin_iterator_namespaces: Array[String] = array_empty()
+
+/// Each trait's declared supertraits, for THIS program. Populated where the
+/// flattened trait table is built, because the entailment test below needs the
+/// graph the flattening already walked.
+export let dtd_trait_supers: Array[(String, Array[String])] = array_empty()
+
+/// #2523: the prelude's `Eq` signature, for a program that declares no `Eq` of
+/// its own.
+///
+/// `@vibe/builtin/builtin_traits.vibe` declares `trait Eq { equals(Self, Self)
+/// -> Bool }`, but that file is a MODULE programs import, not statements every
+/// program carries -- `collect_method_traits` walks `stmts`, so the trait is
+/// invisible here and `[T: Eq]` had no signature to build a dictionary from.
+/// Measured before this: `vibe check` was clean and codegen then failed with
+/// ``internal compiler error: `T::equals` (local, @call) reached code
+/// generation unresolved``.
+///
+/// The checker learns the same thing from `register_builtin_traits`; this is
+/// the lowering half of that one registration.
+export let dtd_eq_injected: Array[Bool] = [false]
+
+// Direct calls can carry a performed constructor payload across a function
+// boundary. Handler lifting turns an immediately invoked effectful lambda into
+// exactly such a top-level helper before dictionary lowering, so retain the
+// callable bodies for the payload scan instead of treating the helper name as
+// opaque. The active stack makes recursive call graphs terminate.
+export let dtd_constructor_callable_bodies: Array[(String, Array[String], Array[(String, Option[TypeExpr])], Expr)] = array_empty()
+export let dtd_constructor_payload_call_stack: Array[String] = array_empty()
+
+// ---- #1392: string interpolation renders a derive(Show) value structurally ----
+//
+// `"\{v}"` lowers in the PARSER (build_interp_expr, parser_expr_primary.vibe)
+// to `__to_string(v)`, i.e. before any type is known. `__to_string` is the
+// ADR-0058 runtime heuristic -- "a tagged i64 that looks like a string
+// pointer, else a decimal integer" -- so every aggregate reached it as a raw
+// pointer rendered in decimal (`"\{P::{ x: 1, y: 2 }}"` measured as `208`),
+// `derive(Show)` or not. docs/internal/design/effect-evidence-passing.md 追記23 recorded that
+// as needing "a new dispatch mechanism"; since then `derive(Show)` generates a
+// concrete `T::to_string`, so for a value whose type this pass can resolve the
+// dispatch is just a name.
+//
+// Scope of THIS slice (#1392 lists the rest): only a type that both resolves
+// through `infer_arg_type_name` and already has a top-level `T::to_string` is
+// rewritten, so nothing new has to be generated. `Option`/`Result`/tuple/
+// `Array[T]` interpolation still renders as a pointer -- `show_for_typed`
+// handles those shapes, but `Array[T]` needs its `__arr_to_string__<key>`
+// helper emitted, which means driving that collection from interpolation
+// sites too.
+//
+// The resolver is the same `infer_arg_type_name` the #1374 throw-kind write
+// uses, with the same precision: an annotated parameter, a `let` whose value
+// this pass can type, a struct literal, a constructor call. A pattern binding
+// stays unresolved and keeps today's rendering -- no site gets WORSE.
+
+/// The top-level binding `rewrite_stmt` is currently rewriting. Read only by
+/// `interp_show_target`, to keep the interpolation rewrite from turning a
+/// hand-written `T::to_string`'s own `"\{self}"` into an infinite self-call.
+/// (The DERIVED `T::to_string` never spells that -- `show_for_typed` already
+/// emits `n::to_string` for a known field type and `__to_string` only for
+/// scalars -- so this guards user-written renderers.)
+export let dtd_show_self_fn: Array[String] = [""]
+
+/// #3090: the offset of the interpolation (`\{` of the `__to_string` call)
+/// whose argument is being expanded, or `-1` outside one. A refusal raised deep
+/// in the expansion, on a synthesized binder that carries no offset of its own,
+/// anchors here instead of carrying no position.
+export let dtd_interp_site_off: Array[Int] = [-1]
+
+/// #1398 review (Codex P1): the type names whose `T::to_string` THIS PASS
+/// generated, recorded by `desugar_derives` as it emits them.
+///
+/// It exists to keep the SYNTHESIZED render at a throw site from calling a
+/// user-written formatter. An interpolation `"\{v}"` is the user asking for
+/// the call, so any `T::to_string` is fair game there. A throw site is not:
+/// the call is inserted after type checking, runs on EVERY throw even when no
+/// handler reads the message, and its effects are absent from the throwing
+/// function's checked row. A formatter that itself throws would recurse during
+/// formatting or silently replace the original exception; one that mutates or
+/// performs would do so invisibly. Measured before this fix: a `Boom::to_string`
+/// containing `println` printed on a `throw(Bang(1))` whose handler ignored the
+/// payload entirely.
+///
+/// The derived renderers are structural, total, and effect-free by
+/// construction, so restricting the eager path to them removes the hazard
+/// rather than narrowing it.
+///
+/// Reset at each `desugar_trait_dicts` entry, BEFORE `desugar_derives` runs.
+/// The second run of the pass over one program regenerates nothing (the
+/// functions already exist) and leaves this empty, which is harmless: that run
+/// also has `exn_kind_suppressed()` set, so it rewrites no throw site.
+export let dtd_derived_renderers: Array[String] = array_empty()
+
+// ---- #1392: the same rendering for an explicit `to_string(v)` ----
+//
+// prelude's `to_string[T: Show](x: T) -> String { __to_string(x) }`
+// (builtin_traits.vibe) requires the bound and then calls the ADR-0058 runtime
+// heuristic unconditionally -- there is nothing to dispatch on, so it rendered
+// every aggregate as a pointer decimal exactly as bare interpolation used to.
+// That left #1392's asymmetry: after slices 1 and 2, `"\{v}"` renders
+// structurally but the spelled-out `to_string(v)` still does not.
+//
+// Its body IS `__to_string(x)`, so treating a call to it as that call is
+// INLINING, not a semantic change -- which makes both slices apply to
+// `to_string(v)` for free. What it is NOT is `Show` dispatch: inside a generic
+// `f[T: Show](x: T) { to_string(x) }` the argument's type is a variable,
+// nothing resolves, and the call stands as it does today. Real dispatch needs
+// `Show` to become a method-bearing trait AND this pass to see impls across
+// module boundaries (`collect_method_traits` reads only THIS program's stmts,
+// and prelude is a separate module), which is #1392's own remaining slice.
+//
+// The shim is recognized BY ITS BODY, not by the name `to_string` and not by
+// the `Show` bound, because neither survives to this point: the module merge
+// renames imported bindings (import_alias_rewrite.vibe) and
+// `strip_generic_type_params` erases every type parameter AND bound before
+// codegen, so the merged prelude shim arrives here as a plain one-parameter
+// `(x) -> { __to_string(x) }`.
+//
+// The body is also the whole soundness argument, which is why losing the bound
+// costs nothing: a function whose entire body is `__to_string` of its own sole
+// parameter computes exactly what `__to_string` computes, so replacing a call
+// to it with that call is an identity. That holds for a user-written
+// `fn dump(x) { __to_string(x) }` as much as for prelude's, and both should
+// render the same -- #1392's point is that the pointer decimal was never the
+// intent. A user `to_string` that does anything else has a different body, is
+// never in this set, and keeps its call sites untouched.
+export let dtd_show_shims: Array[String] = array_empty()
+export let dtd_generic_show_shims: Array[String] = array_empty()
+
+/// Nested `let inner = [T](a: T) { "\{a}" }` shims, scoped to the let's body.
+/// Top-level shims live in `dtd_show_shims`; these are the same rewrite at a
+/// local name so the CALL SITE still sees the concrete argument (#2778).
+export let dtd_local_show_shims: Array[String] = array_empty()
+export let dtd_show_shim_body_depth: Array[Int] = [0]
+
+// ---- #1392: structural interpolation ----
+// Literals render from syntax; names and annotated function calls render from
+// the recursive shape environment. Option/Result use their inferred head.
+// Nested elements re-enter `rewrite_expr` on a smaller `__to_string` call.
+
+/// A fresh binder for the structural expansions below. Lexical scoping alone
+/// would make one fixed name correct, but a distinct name per site keeps
+/// nesting legible in dumped IR -- same rationale as
+/// `exn_kind_fresh_payload_name`.
+export let dtd_show_tmp: Array[Int] = [0]
+
+/// #3074 / #3082: the `{g:` shapes (generic enums and structs) whose expansion
+/// is being generated, innermost last. A payload or field naming one of them
+/// again (`Cons(T, L[T])`, `rest: Option[L[T]]`) would otherwise expand
+/// forever.
+export let dtd_show_generic_enum_stack: Array[String] = array_empty()
+
+/// Pass state, reset at every `desugar_trait_dicts` entry like the exn-kind
+/// cell above: whether THIS program binds `assert_eq` itself.
+///
+/// For an ordinary source array this is program-wide. The FS merge inserts an
+/// `SReExportSourceBoundary` marker before each source unit; the final rewrite
+/// loop resets the cached answer and active range at every marker, so a
+/// dependency's blocker cannot suppress an unrelated entry builtin (#2287).
+///
+/// COMPUTED LAZILY (#2285). The scan now descends into every expression, and
+/// paying for a whole-program AST walk on every compile is not free -- an
+/// earlier round of this work measured a 1.1% self-compile heap regression
+/// from one extra traversal and blew the KPI ceiling. Nothing asks this
+/// question unless the program actually spells `assert_eq(a, b)`, because
+/// `is_assert_eq_call` tests the name and the arity first, so a program with
+/// no such call never runs the walk at all -- which is every file in the
+/// compiler's own closure.
+///
+/// Slot 0 is the answer: -1 not computed yet, 0 no, 1 yes.
+export let dtd_user_assert_eq: Array[Int] = [-1]
+
+/// The program to answer that question from, held until something asks. One
+/// element or none; `Array::truncate` on reset is what makes a torn run
+/// (a throw mid-rewrite) unable to leave a previous program behind.
+export let dtd_user_assert_eq_program: Array[Array[Stmt]] = array_empty()
+
+/// Half-open source-unit range within the retained program. `end < 0` means
+/// the entire array (the ordinary non-merged path).
+export let dtd_user_assert_eq_range: Array[Int] = [0, -1]
+
+/// Whether the current FS source boundary carries an aliased re-export named
+/// `assert_eq`. Kept separate so the expensive expression walk stays lazy.
+export let dtd_user_assert_eq_alias_blocker: Array[Int] = [0]
+
+export let dtd_facts_wrappers: Array[String] = []
+
+export let dtd_facts_explicit_ops: Array[String] = []
+
+/// #3082: the `derive (Show)` generic types whose inline rendering is being
+/// generated by `show_for_typed`, as `ts_type_key`s. Kept apart from the
+/// interpolation stack: the two passes never nest.
+export let dtd_show_inline_stack: Array[String] = array_empty()
+
+/// #3082: `Array[e]` element types a substituted field needs a
+/// `__arr_to_string__<key>` helper for; `desugar_derives` emits them with the
+/// declared ones.
+export let dtd_show_inline_arr_elems: Array[TypeExpr] = array_empty()
+
+/// #3082: refusals found while generating a derived renderer, reported by
+/// `show_refusals_report` where the pass can throw.
+export let dtd_show_refusals: Array[String] = array_empty()
+
+// ---- #2136: a synthesized helper binds the type variables it mentions ----
+//
+// The `Array[e]` helpers below are described as MONOMORPHIC, and for a concrete
+// element type they are. But `e` is read off a declaration (`struct Box[T] { xs:
+// Array[T] }`) or off a generic function's `==` operand, so it can be a TYPE
+// VARIABLE — and the synthesized `let __arr_equals__T = (a: Array[T], b:
+// Array[T]) -> Bool { .. }` then names a `T` that NOTHING in the generated
+// declaration binds. It only type-checks because an unknown type name silently
+// becomes a rigid type constructor (#2125); the moment that hole closes, the
+// compiler's own generated code stops checking.
+//
+// So the helper binds them: `[T](a: Array[T], b: Array[T]) -> Bool`. Which names
+// are variables is not a guess — `dtd_type_param_names` holds the names the
+// program itself binds as type parameters, and a name that is ALSO a declared
+// struct/enum name is left alone (there it denotes the declared type, and
+// binding it would change a working program).
+export let dtd_type_param_names: Array[String] = array_empty()
+
+// #2631 measurement (non-behavioural): the non-scalar `TyName`s that reach
+// `eq_for_typed`'s raw-`==` fallthrough while NOT being a type formal. Those
+// are nominals the statement list handed to the pass cannot see -- the whole
+// program can see every one of them, so on that lane this set is expected to
+// be EMPTY, and a per-module run is where it fills up. Recorded rather than
+// reasoned about because "expected to be empty" is exactly the kind of claim
+// this repo has been wrong about before.
+export let dtd_eq_invisible_nominals: Array[String] = array_empty()
+
+// ---- #2141: the LEXICAL type-parameter scope during the rewrite ----
+//
+// `dtd_type_param_names` is a program-wide UNION minus declared type names, so
+// it cannot say "the `T` HERE is a formal" when the same spelling is also a
+// declared type. The #2141 guard rejects that collision for a LOCALLY declared
+// type, but an IMPORTED `struct T` next to a formal `T` is legal (pinned by
+// derive_array_helper_interference_test) -- and at the merged codegen run the
+// import IS in `struct_sets`, so spelling-keyed dispatch sent a formal-typed
+// `a == b` to `T::equals` and read garbage (measured: `eqv[T](1, 2)` answered
+// true).
+//
+// This stack is the scope-precise answer: `rewrite_expr`'s EFn arm pushes the
+// binder frame around the body and pops it after, so a decision site can ask
+// whether a spelling is a type parameter OF AN ENCLOSING BINDER -- where the
+// formal shadows any same-spelled declared type, exactly like a value binding
+// would.
+export let dtd_scope_formals: Array[String] = array_empty()
+
+export let dtd_scope_formal_marks: Array[Int] = [0]
+
+// #2737: the trait keys each entry of `dtd_scope_formals` was DECLARED with
+// (empty for an unbounded formal). Parallel to `dtd_scope_formals`, so the
+// INNERMOST binder of a spelling answers for its own bound rather than an
+// enclosing binder's.
+//
+// This is what a dispatch site needs to tell "the program promised this witness
+// and the pass cannot produce it" (refuse) from "the head is not a witness
+// dispatch at all" (leave alone). `dict_binds` cannot answer it: it lists the
+// bounds that DID get a dictionary, so a binder whose bound was dropped looks
+// exactly like a binder that declared nothing.
+//
+// Kept as an array of arrays rather than a joined string: a trait key carries
+// its arguments (`Iter[Int]`, and `trait_ref_key` would render a two-argument
+// reference with a comma in it), so any separator a join could pick is a
+// separator a key could contain.
+export let dtd_scope_formal_bounds: Array[Array[String]] = []
+
+// #2737 (Codex round 2, P2): whether each entry's frame was pushed by
+// `rewrite_expr`'s EFn arm -- a LAMBDA binder -- rather than by `rewrite_stmt`'s
+// threaded path, which is the top-level one.
+//
+// The refusal used to infer that from "the bound promises the method and no
+// dictionary was produced", and absence of a dictionary is not the same fact.
+// It happens that the top-level shapes `build_gens` skips are caught earlier and
+// more accurately (measured: `fn same[T: Eq](a: Option[T], b: Option[T])` calling
+// `T::equals` is refused with "no parameter of `same` carries the `[T: Eq]`
+// witness", on this compiler and on main alike), so the inference was not wrong
+// in practice -- but it was an inference, and this records the fact instead. A
+// message that tells the author to move a lambda must never be reachable from a
+// binder that is not one.
+export let dtd_scope_formal_nested: Array[Bool] = []
+
+// #2141: a formal's spelling, re-spelled so no declared type can collide with
+// it. A generated helper's KEY, BINDER and element semantics all derive from
+// the element TypeExpr's spellings -- `Array[T]` where `T` is a formal next to
+// a (merged-in) `struct T` used to key the CONCRETE helper `__arr_equals__T`,
+// lose its binder to the #2136 subtraction, and compare elements with
+// `T::equals` (measured: `same[T]([1,2], [1,3])` answered true). Re-spelling
+// the formal at the classification site makes every downstream decision
+// follow: distinct key, bound binder (collect_ty_var_names recognizes the
+// prefix), and the raw `==` element compare a variable requires.
+export let scope_formal_mark_prefix: String = "__Vfp_"
+
+/// The fail-closed `==` result: trap, never a guessed answer.
+/// #2475: the structural-equality refusals this run decided it cannot answer.
+///
+/// Recorded rather than thrown at the site, because the deciding functions
+/// (`eq_for_typed`, `eq_for_typed_nonstandard_enum`, `eq_fail_closed`) are
+/// pure `-> Expr` and giving them `with Exception` would ripple through
+/// sixteen callers. `desugar_trait_dicts_with_typed_eq` throws once at the end
+/// of the rewrite, which is also where a single message can name every site.
+///
+/// Truncated at the same entry point as `dtd_eq_type_owners`, so a refusal can
+/// never outlive the one program it describes.
+export let dtd_eq_refusals: Array[String] = array_empty()
+
+// ---- #1526: the emitted set of `__arr_equals__<key>` helpers ----
+//
+// Which helpers a program needs is decided TWICE, by two separate walks:
+//
+//   1. `collect_bare_array_eq_keys` (run from `desugar_derives`) PREDICTS the
+//      set and generates the helpers.
+//   2. the `==` rewrite in `rewrite_expr` (and `eq_for_typed`) EMITS the calls.
+//
+// The two agreed only because they ran the same literal-only inference. (1) is
+// handed nothing but `stmts` -- no `var_types` -- so it cannot see an operand's
+// element type when the operand is reached through a NAME; (2) runs inside the
+// rewrite, where the binding environment IS available, and it stayed
+// deliberately blind to it to keep the two in step. That is the coupling that
+// made `let a = [1, 2]; let c = [1, 2]; a == c` compare by identity: teaching
+// the rewrite to use `var_types` (which it can) would have emitted calls the
+// prediction never generated -- `undefined variable (local):
+// __arr_equals__Int @call` -- so neither half could move alone.
+//
+// So generation stops being a prediction. The two sites that BUILD a call
+// record what they built, and `emit_recorded_arr_equals` generates exactly that
+// set after the rewrite has run. `desugar_derives`' own generation stays as a
+// head start (it also covers struct/enum fields, which no `==` site mentions);
+// the post-rewrite pass skips anything already produced. With emission as the
+// source of truth, the rewrite is free to resolve element types however well it
+// can -- see `eq_var_array_elem`.
+export let dtd_arr_eq_needed: Array[TypeExpr] = array_empty()
+
+export let dtd_arr_eq_needed_keys: Array[String] = array_empty()
+
+// ---- #1526 (ADR-0097): structural `Bytes` equality ----
+//
+// `Bytes` has no literal syntax, so a `Bytes` operand ALWAYS reaches `==`
+// through a name/call and the runtime `eq` identity-compared it. Same
+// record-then-emit contract as `__arr_equals__<key>`: the sites that build a
+// call record the need, and the helper is generated after the rewrite. One
+// helper suffices (no element-type key: the element is always a byte).
+export let dtd_bytes_eq_needed: Array[String] = array_empty()
+
+// #1526: per-expansion uid for `eq_for_typed`'s tuple binders (see the TyTuple
+// arm). Deterministic — a counter over a deterministic walk — so the selfhost
+// fixpoint (stage2 == stage3) is unaffected; reset per run anyway so a
+// program's generated names never depend on what compiled before it.
+export let dtd_eq_tuple_uid: Array[Int] = [0]
+
+// ---- #2218: structural `Map` equality ----
+//
+// `eq_for_typed` had no `Map` arm, so a `Map` reached the raw `==` and compared
+// by reference. Measured before this: a `struct W { f: Map[String, Int] }` was
+// the SINGLE outlier in a row of eleven declared field types -- `Int`,
+// `String`, `Double`, `Bytes`, `Array[Int]`, `Array[Double]`, `Option[Int]`, a
+// tuple and a declared struct all compared by content, and only `Map` answered
+// `false` for two separately built equal maps. Nothing at the call site
+// distinguished it.
+//
+// Same record-then-emit contract as `__arr_equals__<key>`: the site that BUILDS
+// a call records the need, and `emit_recorded_map_equals` generates exactly the
+// set the output references. Keyed by both type arguments because a program can
+// hold `Map[String, Int]` and `Map[String, Array[Int]]` at once and they need
+// different value comparisons.
+export let dtd_map_eq_needed: Array[TypeExpr] = array_empty()
+
+export let dtd_map_eq_needed_keys: Array[String] = array_empty()
+
+// ---- #1526 (ADR-0097): the `==` rewrite's declared-type list ----
+//
+// The bare-`==` shape dispatch below (`eq_var_shape_dispatch`) can surface
+// USER type names (a struct/enum element of a let-bound tuple), unlike the
+// #825 literal-only inference whose shapes never carry one — so it cannot
+// pass `eq_for_typed` an empty `known_types` (that would identity-compare a
+// struct element the codegen's own tuple walk compares structurally today).
+// Filled once per `desugar_trait_dicts` run; every declared struct/enum has a
+// generated `::equals` (see desugar_derives), so membership here is exactly
+// "a direct `T::equals` call resolves".
+export let dtd_eq_known_types: Array[String] = array_empty()
+
+/// Declared types that take type parameters. Membership identifies a type whose
+/// concrete equality must preserve its arguments and use a specialized helper.
+export let dtd_eq_generic_types: Array[String] = array_empty()
+
+// Concrete instantiations whose generated equality must retain type arguments.
+// A single erased `Box::equals` cannot compare `T` structurally when `T` is an
+// aggregate, so call sites record `Box[... ]` and a typed comparator is emitted
+// after the rewrite, like the recorded Array comparators.
+export let dtd_eq_generic_structs: Array[(String, Array[String], Array[(String, TypeExpr)])] = array_empty()
+
+/// #3008: the generic structs and enums that `derive (Eq)`. Their derived
+/// `equals` is generated once with the formals erased, so a `[T: Eq]` witness
+/// built from it compared a `Box[Double]` field by reference. The witness for a
+/// concrete instantiation is the per-instantiation comparator the direct `==`
+/// already uses (#2195, #2467) instead.
+export let dtd_eq_derived_generic: Array[String] = array_empty()
+
+/// #3007: the generic structs that `derive (Show)` -- (name, formals, fields).
+/// Their derived `to_string` is generated ONCE with the formals erased, so a
+/// field whose type is a formal renders through the raw heuristic and a
+/// `Box[Double]` printed `Box { v: 268 }`. An interpolation that knows the
+/// instantiation renders the fields itself instead (`interp_expand_shape`'s
+/// `{g:` arm), with the arguments substituted into the field types.
+export let dtd_show_generic_structs: Array[(String, Array[String], Array[(String, TypeExpr)])] = array_empty()
+
+/// #3074: the generic enums that `derive (Show)` -- (name, formals, variants).
+/// Like the structs above, their one derived `to_string` erases the formals, so
+/// a `G[Bool]` payload rendered as its tagged integer (`GA(1)`), annotated or
+/// not. An interpolation that knows the instantiation renders the variants
+/// itself (`interp_expand_shape`'s `{g:` arm), with the arguments substituted
+/// into the payload types; one that does not is refused
+/// (`interp_generic_enum_unknown_msg`).
+export let dtd_show_generic_enums: Array[(String, Array[String], Array[(String, Array[TypeExpr])])] = array_empty()
+
+/// #3088: every struct declaration -- (name, formals, fields) -- so a field
+/// projection's declared type can be read here.
+export let dtd_struct_field_decls: Array[(String, Array[String], Array[(String, TypeExpr)])] = array_empty()
+
+/// Codex round 7 on #2456: every declared enum -- (name, formals, variants
+/// with their payload types) -- so a generic enum's payloads can be read
+/// when deciding whether its derived comparator is structural (see
+/// `eq_generic_enum_payloads_concrete_comparable`).
+export let dtd_eq_enum_decls: Array[(String, Array[String], Array[(String, Array[TypeExpr])])] = array_empty()
+
+/// Recursion guard for `eq_generic_enum_payloads_concrete_comparable`: an
+/// enum whose payload names itself (or another enum that names it) is
+/// answered `false` at the second visit rather than looping.
+export let dtd_eq_enum_payload_check_stack: Array[String] = array_empty()
+
+/// Codex round 11 on #2456: declared types whose `::equals` the PROGRAM
+/// wrote (`fn Wrap::equals(..)`, the `Type::method` spelling), collected
+/// before `desugar_derives` runs -- which is what makes the distinction
+/// possible: at `eq_known_types_reset` time a `<name>::equals` in the
+/// statement list is the author's, because derives skips a name that
+/// already exists and has not run yet. An explicit comparator is the
+/// author's contract and is dispatched to as the pre-#2456 `known_types`
+/// path did; the payload gate applies only to the derived one.
+export let dtd_eq_explicit_equals: Array[String] = array_empty()
+
+/// Codex rounds 12-13 on #2456: the instantiation an explicit comparator is
+/// written for. `fn Wrap::equals(a: Wrap[Array[Int]], b: Wrap[Array[Int]])
+/// -> Bool` records `Wrap[Array[Int]]`. The generated array helper calls
+/// the comparator after checking has finished, so handing it another
+/// instantiation (`Wrap[String]`) would read a string payload as an array;
+/// a concrete application is admitted only when it matches this type
+/// exactly (after alias expansion). The comparator must take exactly two
+/// parameters, BOTH annotated with the same instantiation (round 13: a
+/// `(Wrap[String], Wrap[Array[Int]])` signature admitted `Wrap[String]`
+/// from the first parameter alone and fed the second a string payload), and
+/// declare a `Bool` result, since the post-check call is used as one, and
+/// carry NO effect row (round 16: the call is injected after effect
+/// checking, so `with Console` on the comparator would run inside a caller
+/// checked as pure; a comparator whose body performs an effect it does not
+/// declare is already rejected at its declaration). A comparator missing
+/// any of that, or generic over its own formals (whose post-check call
+/// would bypass the `Eq` witness dispatch), records nothing and every
+/// application fails closed.
+export let dtd_eq_explicit_equals_param: Array[(String, TypeExpr)] = array_empty()
+export let dtd_eq_type_aliases: Array[(String, Array[String], TypeExpr)] = array_empty()
+// Source declarations that own a type spelling. This is deliberately
+// separate from `dtd_eq_known_types`: effects do not have generated
+// `T::equals` functions, but they still prevent a same-named compiler builtin
+// from claiming their representation.
+export let dtd_eq_type_owners: Array[String] = array_empty()
+export let dtd_eq_specializations: Array[TypeExpr] = array_empty()
+export let dtd_eq_specialization_ancestries: Array[Array[TypeExpr]] = array_empty()
+export let dtd_eq_specialization_stack: Array[TypeExpr] = array_empty()
+
+/// Declared types with a field this pass cannot show is compared by content,
+/// transitively. Generic instantiations now use concrete specialized
+/// comparators (#2195), and Map has a structural arm (#2218). A nominal opaque
+/// type such as `StringBuilder` still lands here.
+///
+/// Both are pre-existing and reachable without any array; what this table
+/// prevents is an unannotated binding ADOPTING such a name and arriving there
+/// Type aliases take part so an unsupported target cannot be laundered past a
+/// field. Conservative in one direction only: an unproved name costs a trap.
+export let dtd_eq_unsafe_types: Array[String] = array_empty()
+
+/// Codex round 3 on #2456: a source-owned `Result` / `Option` whose declared
+/// constructors are NOT the shape the special arms of `eq_for_typed` match
+/// on (`Ok(T) | Err(E)`, `Some(T) | None`). `Result` is always declared
+/// (#1324) and its conventional shape takes the constructor-match arm, which
+/// is the comparator its aggregate payloads need (#825); a declaration such
+/// as `enum Result[T, E] { Success(T); Failure(E) }` is an ordinary enum
+/// (docs/internal/project/adding-modules.md) and must never reach an `Ok`/`Err` match.
+export let dtd_eq_nonstandard_builtin_enums: Array[String] = array_empty()
+
+/// Codex round 4 on #2456: a `Result` / `Option` spelling owned by a STRUCT
+/// or a type alias. Not an enum at all, so neither the constructor-match arm
+/// nor a derived enum comparator applies; it takes the declared-type
+/// dispatch (`eq_for_typed_declared_app`), the same route a source-owned
+/// `Map` takes.
+export let dtd_eq_nonenum_builtin_heads: Array[String] = array_empty()
+
+/// Recursion guard for `eq_generic_enum_formal_is_observed`: `head::formal`
+/// pairs whose payloads are being walked.
+export let dtd_eq_enum_formal_visit_stack: Array[String] = array_empty()
+
+/// Recursion guard for `eq_generic_enum_instantiation_content_comparable`:
+/// the instantiations whose payloads are being walked.
+export let dtd_eq_enum_inst_check_stack: Array[TypeExpr] = array_empty()
+
+/// #2388: the top-level declaration whose body is being hoisted, and the
+/// module tag to fall back on when that declaration has no name of its own.
+///
+/// A hoisted lambda becomes a TOP-LEVEL definition, so its name has to be a
+/// function of the module that owns it and of nothing else. It used to come
+/// from a counter that ran across the whole program, which makes the spelling
+/// depend on how many lambdas EARLIER FILES hoisted: compiled whole-program a
+/// module's `let f` is `__hoisted_lam_7_f`, compiled alone it is
+/// `__hoisted_lam_0_f`, and two modules compiled alone both mint
+/// `__hoisted_lam_0_f` and collide when the link concatenates them.
+///
+/// The owner's own name is already unique across a merged program -- the merge
+/// renames a private name to `<name>_dep_<path>` and an exported one must be
+/// unique for the link to resolve it at all -- so deriving the spelling from it
+/// gives the same name whether the pass runs whole-program or per module, and
+/// gives two modules different names. The counter then only has to separate
+/// lambdas hoisted out of the SAME declaration, so it restarts at each one.
+export let dlh_owner_name: Array[String] = [""]
+
+/// What `dlh_owner_name` holds: 0 a declaration's own name, 1 a test block's
+/// name, 2 a bench block's, 3 nothing (a statement that binds no name). The
+/// key itself is built only when a lambda is actually hoisted -- a compile of
+/// the compiler walks ~4,600 top-level statements and hoists none of them, so
+/// building one string per statement was ~138 kB of bump heap per compile,
+/// measured on the selfcompile KPI.
+export let dlh_owner_kind: Array[Int] = [0]
+
+export let dlh_owner_idx: Array[Int] = [0]
+
+/// The module tag set by the per-module entry (`desugar_trait_dicts_module`),
+/// empty for the whole-program entry. Read only for a top-level statement that
+/// binds no name -- a bare expression statement -- where there is nothing to
+/// derive an owner from; the whole-program lane numbers those by their position
+/// in the merged program, which is unique there but not across modules.
+export let dlh_module_tag: Array[String] = [""]
+
+/// The top-level name of the `idx`-th lambda hoisted out of the current
+/// declaration. `__hoisted_lam_` stays the prefix: the gc backend's
+/// float-return collection treats it as a hint and takes provenance (the
+/// before-set) as the authority, so the spelling is free to carry the owner.
+///
+/// The owner is LENGTH-PREFIXED, because joining the three parts with `_` is
+/// not injective even when each part is (Codex P1 on #2618): a local
+/// `bar_1_baz` hoisted first out of `foo`, and a local `baz` hoisted second
+/// out of `foo_0_bar`, both read `__hoisted_lam_foo_0_bar_1_baz`, and both
+/// declarations are legal. With the length in front, the owner's extent is
+/// decidable and the rest is unambiguous on its own -- the counter is digits
+/// and a local name can never begin with one.
+/// The prefix `dlh_hoisted_name` mints and `hoisted_lambda_owner_key` reads
+/// back. One spelling, so the minter and the decoder cannot drift apart.
+export let dlh_hoisted_prefix: String = "__hoisted_lam_"
+
+/// #1500: `fname -> per-parameter "is optional"` flags, consulted by the ECall
+/// arm of `relabel_expr`. A module cell rather than another threaded parameter
+/// because `relabel_expr` recurses from ~30 sites; same shape as the other
+/// per-program tables in this file (`afe_field_types_cell`, `throw_kind_cell`).
+export let optional_param_tbl_cell: Array[Array[(String, Array[Bool])]] = array_empty()
+
+// #1952: block-local `let o = (a, b?) -> ...` is in `shadows`, so the
+// top-level table must not apply — but the local function still needs fill.
+// Innermost binding wins; leave pops with the matching `shadows` mark.
+export let optional_param_local_cell: Array[(String, Array[Bool])] = array_empty()
+
+/// #1899/#1952: the labels and optional flags of lambdas bound by a `let`
+/// INSIDE a block, which the two top-level tables above cannot see.
+///
+/// `collect_fn_param_labels` and `collect_optional_param_fns` both index
+/// top-level statements only, and the `ECall` arm of `relabel_expr` bails out
+/// for any callee found in `shadows`. That bail-out is right as far as it goes
+/// -- do not apply a top-level function's labels to a local binding that
+/// merely shares its name -- but it left a local labeled lambda with no table
+/// at all, so nothing reordered its arguments and nothing filled in its
+/// omitted optionals. Both failed silently at first: written-order arguments
+/// compiled and ran (#1899, P0), and an omitted optional reached the checker
+/// as `function arity mismatch` (#1952, P1).
+///
+/// A module cell for the same reason `optional_param_tbl_cell` is one:
+/// `relabel_expr` recurses from ~30 sites.
+///
+/// Each entry records the index its name occupies in `shadows`, and that is
+/// what makes shadowing work. A later binding of the same name -- `let s = 5`
+/// after `let s = (x~: Int) -> ...`, a parameter, a match binder -- pushes
+/// onto `shadows` at a higher index, so this entry is no longer the innermost
+/// binding of that name, the lookup below rejects it, and the old bail-out
+/// stands. Without the index a local lambda's labels would leak onto a
+/// completely unrelated value that happens to reuse its name.
+export let local_fn_tbl_cell: Array[(String, Array[String], Array[Bool], Int)] = array_empty()
+
+/// #1994: `let mut` lambda bindings whose scope does NOT agree on the labels,
+/// with the index the name occupies in `shadows` -- same innermost-binding
+/// discipline as `local_fn_tbl_cell` above. A labeled call to one of these has
+/// no resolution at all, so it must be reported rather than left to bind in
+/// written order, which is right only by luck.
+export let unstable_mut_tbl_cell: Array[(String, Int)] = array_empty()
+
+/// Every assignment that CHANGED a binding's labels, as (name, index in
+/// `shadows`). A subtree whose walk does not dominate what follows notes the
+/// length on entry and hands what its walk appended to
+/// `poison_branch_assignments` on the way out. An assignment that re-binds the
+/// same parameter names is not recorded: it changes nothing a labeled call can
+/// observe, so it must not cost the binding its labels.
+export let relabel_assigned_cell: Array[(String, Int)] = array_empty()
+
+/// Call sites drained by the checker (`unresolved_mut_labeled_calls`), as
+/// (callee name, callee offset).
+export let unresolved_mut_labeled_cell: Array[(String, Int)] = array_empty()
+
+// #2386: mode 7 answers modes 0 and 1 in ONE walk. The bits are recorded
+// here as the walk finds them; the walk stops early only once both are
+// known. dinsp_expr_census resets the cell and reads it.
+export let dinsp_census_cell: Array[Int] = [0, 0]
+
+// #2386: the two questions the range asks of every statement -- "does it
+// bind `inspect`?" (which blocks the whole range) and "does it call
+// `inspect`?" (which selects the statements to rewrite) -- used to be two
+// walks per statement. One census walk answers both; the bits are kept in
+// a scratch row refilled per range so nothing is allocated.
+export let dinsp_census_row: Array[Int] = [0]
+
+/// #2441: the typed-`==` rows for THIS merged program -- (operator-offset,
+/// operand TypeExpr key) pairs the FS lanes union from the per-module
+/// carrier. Unconditionally re-populated (usually to empty) at every entry
+/// below, so a row can never outlive the one program it describes: a later
+/// run through the plain `desugar_trait_dicts` entry truncates the table
+/// before any rewrite reads it.
+export let dtd_typed_eq_offs: Array[Int] = []
+
+/// #2388: the "declared here" boundary of a per-module run. The module entry
+/// (`desugar_trait_dicts_module`) lays the module's own statements first and
+/// its dependency interface after them, and records both lengths here, so the
+/// synthesis sites (derives, namespace operations, lambda hoisting, the rewrite
+/// loop, dict structs) work on the module's statements only and read the
+/// context for lookups. -1 (the whole-program entry) means everything is own.
+export let dtd_own_limit: Array[Int] = [0 - 1]
+
+export let dtd_ctx_len: Array[Int] = [0]
+
+/// Statements a stage inserted INSIDE the module's own region (the trait
+/// namespace operations land right after their trait, not at the end), so
+/// the module entry knows where its own region ends after the run.
+export let dtd_own_growth: Array[Int] = [0]
+
+export let dtd_typed_eq_keys: Array[String] = []
+
+/// #3066: the checker's render rows for THIS program -- (render argument
+/// offset, `impl_target_key(__render[T])`), split out of the typed-`==` rows
+/// they ride in and repopulated at every `dtd_run` like the table above.
+export let dtd_typed_render_offs: Array[Int] = []
+
+export let dtd_typed_render_keys: Array[String] = []
+
+/// Type keys the typed-`==` channel had a row for and the pass refused.
+export let dtd_eq_typed_refusals: Array[String] = array_empty()
+
+/// #2634: helpers a run KNEW it needed and could not build.
+///
+/// The four visibility sites all conflate two questions -- "does this `==`
+/// need a structural helper" and "can this module generate one" -- and answer
+/// both with silence. They are separable: needing is a property of the
+/// operand's type, which the checker supplies; building needs the leaf
+/// declarations, which only some module has.
+///
+/// This records the first without the second. It is the measurement that says
+/// whether a link could MINT what the modules could not: if the whole
+/// program's request set is contained in the union of the split's requests and
+/// its deferrals, then nothing is lost by a module declining to build -- the
+/// link has every instantiation it would need. If it is not contained, the
+/// need is being lost before anyone could record it, and a minting link would
+/// not be enough.
+export let dtd_eq_deferred_requests: Array[String] = array_empty()
+
+/// The deferred types themselves, parallel to `dtd_eq_deferred_requests`. The
+/// key is what a measurement compares; the type is what a link would MINT from.
+export let dtd_eq_deferred_types: Array[TypeExpr] = array_empty()
+
+//# #1962 (Option 1): direct host builtins handled by a lexical `handle`
+
+export let dhhc_changed_cell: Array[Int] = [0]
+// Builtin spellings a top-level declaration of the program occupies
+// (`fn Fs::exists(..)`): a call of that name resolves to the declaration, so
+// it is never rewritten into the operation's perform (Codex on #3059).
+export let dhhc_shadowed_names: Array[String] = []
+// Operations the entry provider appended to an existing declaration after
+// checking, with their arities; see `ehp_forward_added_ops`.
+export let dhhc_forward_ops: Array[(String, Int)] = []
+// Set while `wrap_entry_host_provider` adds forwarding arms: that walk must
+// not rewrite any call -- the provider's own arms call the builtins
+// (`resume(Fs::exists(a))`), and turning those into performs would make each
+// arm perform the operation it answers.
+export let dhhc_forward_only: Array[Bool] = [false]

@@ -1,0 +1,140 @@
+// Labeled args pass.
+
+import @vibe/compiler/core {
+  Stmt
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import ./inspect_rewrite.vibe {
+  dinsp_scan
+}
+
+import ./labeled_args.vibe {
+  collect_fn_param_labels, collect_optional_param_fns, optional_param_tbl_set, relabel_stmt
+}
+
+import ./state.vibe {
+  local_fn_tbl_cell, optional_param_local_cell, relabel_assigned_cell, unresolved_mut_labeled_cell, unstable_mut_tbl_cell
+}
+
+import ./typed_row_queries.vibe {
+  dtd_is_own_index
+}
+
+/// #986: allocation-free containment scan used to gate the allocating
+/// relabel_stmt rebuild per top-level statement,
+/// since collect_fn_param_labels now indexes EVERY top-level function and the
+/// old `tbl empty -> skip` fast path no longer fires for ordinary programs.
+/// #2386: the walk_all replacement -- see dinsp_scan mode 6. Only meaningful
+/// after optional_param_tbl_set has published the program's table.
+fn stmt_calls_optional_fn(stmt: Stmt) -> Bool {
+  match stmt {
+    SLet(_, _, _, _, body) => dinsp_scan(body, 6, ""),
+    SFnDecl(_, _, body, _, _) => dinsp_scan(body, 6, ""),
+    SLetMut(_, _, body) => dinsp_scan(body, 6, ""),
+    STest(_, body) => dinsp_scan(body, 6, ""),
+    SBench(_, body) => dinsp_scan(body, 6, ""),
+    SExpr(e) => dinsp_scan(e, 6, ""),
+    SLetPat(_, e) => dinsp_scan(e, 6, ""),
+    SModule(_, _, ms) => {
+      let mut found = false
+      let mut i = 0
+      while i < Array::length(ms) {
+        if found {
+          i = Array::length(ms)
+        } else {
+          found = stmt_calls_optional_fn(Array::get(ms, i))
+          i = i + 1
+        }
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+fn stmt_has_labeled_arg(stmt: Stmt) -> Bool {
+  match stmt {
+    SLet(_, _, _, _, body) => dinsp_scan(body, 3, ""),
+    SFnDecl(_, _, body, _, _) => dinsp_scan(body, 3, ""),
+    SLetMut(_, _, body) => dinsp_scan(body, 3, ""),
+    STest(_, body) => dinsp_scan(body, 3, ""),
+    SBench(_, body) => dinsp_scan(body, 3, ""),
+    SExpr(e) => dinsp_scan(e, 3, ""),
+    SLetPat(_, e) => dinsp_scan(e, 3, ""),
+    SModule(_, _, ms) => {
+      let mut found = false
+      let mut i = 0
+      while i < Array::length(ms) {
+        if found {
+          i = Array::length(ms)
+        } else {
+          found = stmt_has_labeled_arg(Array::get(ms, i))
+          i = i + 1
+        }
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+/// In-place labeled-argument reordering over a whole program. Rebuilds only the
+/// top-level statements that the allocation-free scalar scan finds contain a
+/// labeled argument.
+export fn desugar_labeled_args(stmts: Array[Stmt]) -> Unit {
+  Array::truncate(optional_param_local_cell, 0)
+  Array::truncate(local_fn_tbl_cell, 0)
+  Array::truncate(unstable_mut_tbl_cell, 0)
+  Array::truncate(relabel_assigned_cell, 0)
+  Array::truncate(unresolved_mut_labeled_cell, 0)
+  let tbl = collect_fn_param_labels(stmts)
+  // #1500: optional-parameter call sites are rewritten by the same walk (see
+  // the ECall arm of relabel_expr). Unlike labeled arguments, an omitted
+  // optional argument leaves NO syntactic trace at the call site -- `d(1)` for
+  // `fn d(x: Int, z?: Int)` looks like any other call -- so when the program
+  // declares one, every statement has to be walked, not just the ones
+  // stmt_has_labeled_arg finds.
+  let opt_tbl = collect_optional_param_fns(stmts)
+  optional_param_tbl_set(opt_tbl)
+  // #2386: `walk_all` used to be true for every program that declared an
+  // optional parameter anywhere (the compiler's own closure does), so every
+  // statement was rebuilt on every compile (0.23 s of a warm compiler-closure
+  // compile). The two syntactic reasons the walk can change a statement are
+  // already scanned by stmt_has_labeled_arg (a labeled argument, a lambda
+  // with an optional parameter); the third -- a call to a top-level
+  // optional-parameter fn -- is stmt_calls_optional_fn, consulted only when
+  // the table is non-empty.
+  let has_opt_tbl = Array::length(opt_tbl) > 0
+  // No `if Array::length(tbl) == 0` early-out. It was an optimisation that had
+  // become a correctness hole once local lambdas got labels of their own
+  // (#1899/#1952): collect_fn_param_labels indexes `SLet`s, so a file whose
+  // only top-level statements are `test` blocks has an EMPTY table, and the
+  // whole walk was skipped -- including the block-local labeled lambdas inside
+  // those tests. stmt_has_labeled_arg already gates each statement, so
+  // dropping the early-out costs one scalar scan per statement in the case
+  // where nothing needs relabelling.
+  // #2388: every module-owned statement, the functions
+  // `desugar_hoist_local_lambdas` appended after the context block included
+  // (a hoisted lambda's labeled call is reordered here or nowhere), never a
+  // context statement.
+  let mut i = 0
+  while i < Array::length(stmts) {
+    if !dtd_is_own_index(i) {
+      ()
+    } else if stmt_has_labeled_arg(Array::get(stmts, i)) || (has_opt_tbl && stmt_calls_optional_fn(Array::get(stmts, i))) {
+      Array::set(stmts, i, relabel_stmt(Array::get(stmts, i), tbl))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  optional_param_tbl_set(array_empty())
+  Array::truncate(optional_param_local_cell, 0)
+  Array::truncate(local_fn_tbl_cell, 0)
+  Array::truncate(unstable_mut_tbl_cell, 0)
+  Array::truncate(relabel_assigned_cell, 0)
+}

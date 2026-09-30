@@ -1,0 +1,334 @@
+// Derive pass.
+
+import @vibe/compiler/core {
+  Expr, Pat, Stmt, TypeExpr
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import ./derive_operations.vibe {
+  arr_to_string_name,
+  collect_array_elem_types,
+  collect_decl_type_names,
+  collect_show_array_elems,
+  dtd_source_op_defined,
+  empty_stmt_list,
+  gen_compare_fn,
+  gen_default_fn,
+  gen_enum_compare_fn,
+  gen_enum_default_fn,
+  gen_enum_show_fn,
+  gen_hash_key_fn,
+  qualified_name,
+  show_inline_merge_arr_elems,
+  top_level_fn_exists
+}
+
+import ./equality_generation.vibe {
+  gen_arr_equals_fn, gen_eq_fn
+}
+
+import ./equality_requests.vibe {
+  arr_equals_name, dtd_fresh_reset_for_decl
+}
+
+import ./equality_shape_queries.vibe {
+  collect_bare_array_eq_keys
+}
+
+import ./formal_scope.vibe {
+  subst_field_formals, subst_variant_formals, type_param_names_reset
+}
+
+import ./name_encoding.vibe {
+  idx_str
+}
+
+import ./renderer_scope.vibe {
+  derived_renderer_record
+}
+
+import ./show_generation.vibe {
+  gen_arr_to_string_fn, gen_show_fn
+}
+
+import ./typed_equality.vibe {
+  eq_for_typed
+}
+
+import ./typed_row_queries.vibe {
+  dtd_own_end
+}
+
+import ./utilities.vibe {
+  empty_str_array, empty_type_exprs, str_array_contains
+}
+
+/// `let E::equals = (a: E, b: E) -> Bool {
+///    match a {
+///      V1(_a0, _a1) => match b { V1(_b0, _b1) => _a0 == _b0 && _a1 == _b1, _ => false },
+///      V2          => match b { V2 => true, _ => false }, ... } }`
+/// Tag mismatch falls to the inner `_ => false`; payload `==` is itself
+/// dispatched, so aggregate payloads recurse into their own `equals`.
+fn gen_enum_eq_fn(ename: String, variants: Array[(String, Array[TypeExpr])], known_types: Array[String]) -> Stmt {
+  let outer_arms = array_empty()
+  let mut vi = 0
+  while vi < Array::length(variants) {
+    let (vname, ftypes) = Array::get(variants, vi)
+    let nf = Array::length(ftypes)
+    let abinds = array_empty()
+    let bbinds = array_empty()
+    let mut fi = 0
+    while fi < nf {
+      Array::push(abinds, PBind(String::concat("__a", idx_str(fi))))
+      Array::push(bbinds, PBind(String::concat("__b", idx_str(fi))))
+      fi = fi + 1
+    }
+    let mut body = EBool(true)
+    let mut bi = nf - 1
+    while bi >= 0 {
+      let cmp = eq_for_typed(Array::get(ftypes, bi), EIdent(String::concat("__a", idx_str(bi)), -1), EIdent(String::concat("__b", idx_str(bi)), -1), known_types)
+      body = EBinOp("&&", cmp, body, -1)
+      bi = bi - 1
+    }
+    let inner_arms = Array::slice([
+      (PCtor(vname, bbinds), body),
+      (PWild, EBool(false))
+    ], 0, 2)
+    let inner = EMatch(EIdent("b", -1), inner_arms)
+    Array::push(outer_arms, (PCtor(vname, abinds), inner))
+    vi = vi + 1
+  }
+  let params = Array::slice([
+    ("a", Some(TyName(ename))),
+    ("b", Some(TyName(ename)))
+  ], 0, 2)
+  let no_tp = array_empty()
+  let no_tb = array_empty()
+  SLet(false, false, qualified_name(ename, "equals"), None, EFn(no_tp, no_tb, params, Some(TyName("Bool")), None, EMatch(EIdent("a", -1), outer_arms)))
+}
+
+export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
+  let gen = empty_stmt_list()
+  let own_end = dtd_own_end(stmts)
+  let known_types = collect_decl_type_names(stmts)
+  // #2136: the type variables a generated `Array[e]` helper has to bind. Filled
+  // here because this is the first pass that generates one, and read again by
+  // `emit_recorded_arr_equals`, which runs later in the same
+  // `desugar_trait_dicts` call.
+  type_param_names_reset(stmts, known_types)
+  // #694 Layer 2: collect `Array[e]` element types referenced by Show/Hash-
+  // deriving types' fields/payloads, so each gets a `__arr_to_string__<key>`
+  // helper. A worklist closes nesting (`Array[Array[Int]]` -> `Array[Int]`).
+  let arr_elems = empty_type_exprs()
+  let arr_keys = empty_str_array()
+  let mut i = 0
+  while i < own_end {
+    match Array::get(stmts, i) {
+      SStruct(_, name, fields0, derives, _, decl_tparams) => {
+        // #2141: the declaration's tparams scope its field types -- re-spell
+        // them before any generator reads them (see subst_field_formals).
+        let fields = subst_field_formals(fields0, decl_tparams)
+        // `derive(Hash)` also needs the structural `to_string`: a Hash type's
+        // stable Map-key string is its structural representation (#638), so
+        // generate `to_string` for Show OR Hash.
+        if (str_array_contains(derives, "Show") || str_array_contains(derives, "Hash")) && !dtd_source_op_defined(stmts, qualified_name(name, "to_string")) {
+          dtd_fresh_reset_for_decl()
+          Array::push(gen, gen_show_fn(name, fields, known_types))
+          derived_renderer_record(name)
+        } else {
+          ()
+        }
+        // #694 Layer 1: `derive(Hash)` -> structural `T::hash_key` (delegates to
+        // the recursive `to_string`), so the method-bearing `Hash` witness at a
+        // `get_by(m, T::{..})` call site resolves to a stable structural key.
+        if str_array_contains(derives, "Hash") && !dtd_source_op_defined(stmts, qualified_name(name, "hash_key")) {
+          dtd_fresh_reset_for_decl()
+          Array::push(gen, gen_hash_key_fn(name))
+        } else {
+          ()
+        }
+        if str_array_contains(derives, "Show") || str_array_contains(derives, "Hash") {
+          let mut fi = 0
+          while fi < Array::length(fields) {
+            let (_, fty) = Array::get(fields, fi)
+            collect_show_array_elems(fty, arr_elems, arr_keys)
+            fi = fi + 1
+          }
+        } else {
+          ()
+        }
+        if str_array_contains(derives, "Ord") && !dtd_source_op_defined(stmts, qualified_name(name, "compare")) {
+          dtd_fresh_reset_for_decl()
+          Array::push(gen, gen_compare_fn(name, fields, known_types))
+        } else {
+          ()
+        }
+        if str_array_contains(derives, "Default") && !dtd_source_op_defined(stmts, qualified_name(name, "default")) {
+          dtd_fresh_reset_for_decl()
+          Array::push(gen, gen_default_fn(name, fields, known_types))
+        } else {
+          ()
+        }
+        // Generate `T::equals` for every struct (not just derive(Eq)) so the
+        // `==` dispatch below always resolves; structural equality is the
+        // sensible default for any struct, and a struct never relied on the old
+        // pointer-identity `==` (which was silently always-false).
+        if !dtd_source_op_defined(stmts, qualified_name(name, "equals")) {
+          dtd_fresh_reset_for_decl()
+          Array::push(gen, gen_eq_fn(name, fields, known_types))
+        } else {
+          ()
+        }
+      },
+      SEnum(_, ename, decl_tparams, variants0, derives) => {
+        // #2141: same re-spelling as the SStruct arm, for payload types.
+        let variants = subst_variant_formals(variants0, decl_tparams)
+        if (str_array_contains(derives, "Show") || str_array_contains(derives, "Hash")) && !dtd_source_op_defined(stmts, qualified_name(ename, "to_string")) {
+          dtd_fresh_reset_for_decl()
+          Array::push(gen, gen_enum_show_fn(ename, variants, known_types))
+          derived_renderer_record(ename)
+        } else {
+          ()
+        }
+        if str_array_contains(derives, "Hash") && !dtd_source_op_defined(stmts, qualified_name(ename, "hash_key")) {
+          dtd_fresh_reset_for_decl()
+          Array::push(gen, gen_hash_key_fn(ename))
+        } else {
+          ()
+        }
+        if str_array_contains(derives, "Show") || str_array_contains(derives, "Hash") {
+          let mut vi = 0
+          while vi < Array::length(variants) {
+            let (_, ftypes) = Array::get(variants, vi)
+            let mut ti = 0
+            while ti < Array::length(ftypes) {
+              collect_show_array_elems(Array::get(ftypes, ti), arr_elems, arr_keys)
+              ti = ti + 1
+            }
+            vi = vi + 1
+          }
+        } else {
+          ()
+        }
+        if str_array_contains(derives, "Ord") && !dtd_source_op_defined(stmts, qualified_name(ename, "compare")) {
+          dtd_fresh_reset_for_decl()
+          Array::push(gen, gen_enum_compare_fn(ename, variants, known_types))
+        } else {
+          ()
+        }
+        if str_array_contains(derives, "Default") && !dtd_source_op_defined(stmts, qualified_name(ename, "default")) {
+          dtd_fresh_reset_for_decl()
+          Array::push(gen, gen_enum_default_fn(ename, variants, known_types))
+        } else {
+          ()
+        }
+        // Generate `E::equals` for every enum (same rationale as structs), so
+        // the `==` dispatch resolves enum operands too.
+        if !dtd_source_op_defined(stmts, qualified_name(ename, "equals")) {
+          dtd_fresh_reset_for_decl()
+          Array::push(gen, gen_enum_eq_fn(ename, variants, known_types))
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  // #695: collect every `Array[e]` element type referenced by struct fields /
+  // enum payloads (transitively) plus those surfaced by bare-array `==` sites in
+  // user code, then emit one monomorphic `__arr_equals__<key>` helper per
+  // distinct key. The worklist closes nesting: scanning element type `e` may
+  // surface a further `Array[u]` whose helper is also required. Idempotent:
+  // guarded by `top_level_fn_exists` so re-running the pass is inert.
+  let elem_types = empty_type_exprs()
+  let elem_keys = empty_str_array()
+  let mut si = 0
+  while si < own_end {
+    match Array::get(stmts, si) {
+      // #2141: read the fields/payloads through the same decl-tparams
+      // re-spelling the generator arms use, or this walk predicts an
+      // unsubstituted DUPLICATE helper next to the substituted one the
+      // generated `equals` actually calls.
+      SStruct(_, _, fields, _, _, decl_tparams) => {
+        let sfields = subst_field_formals(fields, decl_tparams)
+        let mut fi = 0
+        while fi < Array::length(sfields) {
+          let (_, fty) = Array::get(sfields, fi)
+          collect_array_elem_types(fty, elem_types, elem_keys)
+          fi = fi + 1
+        }
+      },
+      SEnum(_, _, decl_tparams, variants, _) => {
+        let svariants = subst_variant_formals(variants, decl_tparams)
+        let mut vi = 0
+        while vi < Array::length(svariants) {
+          let (_, ftypes) = Array::get(svariants, vi)
+          let mut ti = 0
+          while ti < Array::length(ftypes) {
+            collect_array_elem_types(Array::get(ftypes, ti), elem_types, elem_keys)
+            ti = ti + 1
+          }
+          vi = vi + 1
+        }
+      },
+      SLet(_, _, _, _, e) => collect_bare_array_eq_keys(e, elem_types, elem_keys),
+      SLetMut(_, _, e) => collect_bare_array_eq_keys(e, elem_types, elem_keys),
+      SExpr(e) => collect_bare_array_eq_keys(e, elem_types, elem_keys),
+      STest(_, e) => collect_bare_array_eq_keys(e, elem_types, elem_keys),
+      SBench(_, e) => collect_bare_array_eq_keys(e, elem_types, elem_keys),
+      _ => ()
+    }
+    si = si + 1
+  }
+  // Worklist closure: scanning each collected element type can surface further
+  // nested array element types (e.g. `Array[Array[Int]]` -> `Array[Int]`).
+  let mut wi = 0
+  while wi < Array::length(elem_types) {
+    collect_array_elem_types(Array::get(elem_types, wi), elem_types, elem_keys)
+    wi = wi + 1
+  }
+  let mut ei = 0
+  while ei < Array::length(elem_types) {
+    let et = Array::get(elem_types, ei)
+    if !top_level_fn_exists(stmts, arr_equals_name(et)) {
+      dtd_fresh_reset_for_decl()
+      Array::push(gen, gen_arr_equals_fn(et, known_types))
+    } else {
+      ()
+    }
+    ei = ei + 1
+  }
+  // #694: emit `__arr_to_string__<key>` helpers for Array element types
+  // referenced by Show/Hash-deriving fields/payloads (`arr_elems` populated in
+  // the struct/enum arms above). Independent of the #695 `__arr_equals__` set.
+  // #3082: plus the element types a generic field rendered at its
+  // substituted type needs (`show_generic_inline`); generating a helper can
+  // surface more, so they are merged again after each one.
+  show_inline_merge_arr_elems(arr_elems, arr_keys)
+  let mut wi2 = 0
+  while wi2 < Array::length(arr_elems) {
+    collect_show_array_elems(Array::get(arr_elems, wi2), arr_elems, arr_keys)
+    wi2 = wi2 + 1
+  }
+  let mut ei2 = 0
+  while ei2 < Array::length(arr_elems) {
+    let et2 = Array::get(arr_elems, ei2)
+    if !top_level_fn_exists(stmts, arr_to_string_name(et2)) {
+      dtd_fresh_reset_for_decl()
+      Array::push(gen, gen_arr_to_string_fn(et2, known_types))
+    } else {
+      ()
+    }
+    show_inline_merge_arr_elems(arr_elems, arr_keys)
+    ei2 = ei2 + 1
+  }
+  let mut g = 0
+  while g < Array::length(gen) {
+    Array::push(stmts, Array::get(gen, g))
+    g = g + 1
+  }
+}

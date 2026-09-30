@@ -1,0 +1,94 @@
+// Constructor environments.
+
+import @vibe/core {
+  array_empty
+}
+
+import ./shape_environment.vibe {
+  clone_var_types, constructor_binding_has_evidence, constructor_head_key, constructor_mask_key
+}
+
+import ./utilities.vibe {
+  local_fn_return_key
+}
+
+export fn constructor_env_entry_belongs_to(entry_name: String, name: String) -> Bool {
+  // This environment is shared with equality, rendering, tuple projection,
+  // array-element, and impl-target inference. Shadow only constructor-owned
+  // evidence here; those other consumers rebind their metadata in rewrite_expr.
+  if entry_name == name || entry_name == constructor_mask_key(name) || entry_name == constructor_head_key(name) || entry_name == local_fn_return_key(name) {
+    true
+  } else {
+    let suffix = String::concat("$", name)
+    String::ends_with(entry_name, suffix) && (String::starts_with(entry_name, "__ctorpay$") || String::starts_with(entry_name, "__ctorpayi$"))
+  }
+}
+
+export fn constructor_env_has_binding(var_types: Array[(String, String)], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(var_types) && !found {
+    let (entry_name, _) = Array::get(var_types, i)
+    if constructor_env_entry_belongs_to(entry_name, name) {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+fn constructor_env_copy_without(var_types: Array[(String, String)], name: String) -> Array[(String, String)] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(var_types) {
+    let entry = Array::get(var_types, i)
+    let (entry_name, _) = entry
+    if constructor_env_entry_belongs_to(entry_name, name) {
+      ()
+    } else {
+      Array::push(out, entry)
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Constructor recovery has a stricter shadowing contract than the shared
+/// rewrite environment: an unresolved inner binding must still mask both the
+/// nominal and every per-binding sentinel carried by an outer binding of the
+/// same name. A fresh name has nothing to mask, so reuse the parent array —
+/// copying on every `let` of a large function is what moved selfcompile heap
+/// +27% on the constructor-witness branch.
+export fn extend_constructor_var_types(var_types: Array[(String, String)], name: String, inferred: Option[String]) -> Array[(String, String)] {
+  match inferred {
+    Some(tname) => if constructor_env_has_binding(var_types, name) {
+      let out = constructor_env_copy_without(var_types, name)
+      Array::push(out, (name, tname))
+      out
+    } else {
+      extend_var_types(var_types, name, Some(tname))
+    },
+    None => if constructor_binding_has_evidence(var_types, name) || constructor_env_has_binding(var_types, name) {
+      let out = constructor_env_copy_without(var_types, name)
+      Array::push(out, (constructor_mask_key(name), ""))
+      out
+    } else {
+      var_types
+    }
+  }
+}
+
+/// Extend the shared rewrite environment when the binding's type is known.
+/// Unknown bindings retain the historical best-effort environment because
+/// shape/rendering consumers have separate conservative fallbacks.
+export fn extend_var_types(var_types: Array[(String, String)], name: String, inferred: Option[String]) -> Array[(String, String)] {
+  match inferred {
+    Some(tname) => {
+      let out = clone_var_types(var_types)
+      Array::push(out, (name, tname))
+      out
+    },
+    None => var_types
+  }
+}

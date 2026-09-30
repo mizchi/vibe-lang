@@ -1,0 +1,167 @@
+// Constructor annotations.
+
+import @vibe/compiler/lowering/trait_namespaces {
+  substitute_constructor_alias_target
+}
+
+import @vibe/compiler/core {
+  TypeExpr
+}
+
+import @vibe/ast {
+  type_param_name
+}
+
+import ./binding_shape_queries.vibe {
+  ctor_payload_key, shape_inner
+}
+
+import ./shape_environment.vibe {
+  shape_split
+}
+
+import ./state.vibe {
+  dtd_eq_type_aliases
+}
+
+import ./utilities.vibe {
+  empty_str_array
+}
+
+/// A recorded `__shape$` value -> its tuple element shapes, or empty when it is
+/// not a tuple shape. Unlike `tuple_shape_parts` the entries may themselves be
+/// composite (`(String,String)` inside `((String,String),Int)`), which is what
+/// lets a nested binder keep its own tuple record.
+export fn dtd_tuple_parts_of_shape(sh: Option[String]) -> Array[String] {
+  match sh {
+    Some(t) => if String::starts_with(t, "(") && String::ends_with(t, ")") {
+      shape_split(shape_inner(t))
+    } else {
+      empty_str_array()
+    },
+    None => empty_str_array()
+  }
+}
+
+/// #1445 残件: a TypeExpr rendered in the SHAPE language documented above
+/// `shape_key` (`Name` / `(s1,s2)` / `[s]`). Returns "" for anything the shape
+/// language cannot spell -- `Option[P]` and `Result[T, E]` among them, which is
+/// correct: those resolve through the per-ctor payload entries instead, and a
+/// bogus shape would divert them to a renderer that cannot handle a wrapper.
+export fn texpr_shape(te: TypeExpr) -> String {
+  match te {
+    TyName(n) => n,
+    TyApp(tn, targs) => if tn == "Array" && Array::length(targs) == 1 {
+      let inner = texpr_shape(Array::get(targs, 0))
+      if String::length(inner) == 0 {
+        ""
+      } else {
+        String::concat("[", String::concat(inner, "]"))
+      }
+    } else {
+      ""
+    },
+    TyTuple(elems) => if Array::length(elems) == 0 {
+      ""
+    } else {
+      let mut acc = "("
+      let mut i = 0
+      let mut ok = true
+      while i < Array::length(elems) {
+        let sub = texpr_shape(Array::get(elems, i))
+        if String::length(sub) == 0 {
+          ok = false
+        } else {
+          ()
+        }
+        acc = if i == 0 {
+          String::concat(acc, sub)
+        } else {
+          String::concat(acc, String::concat(",", sub))
+        }
+        i = i + 1
+      }
+      if ok {
+        String::concat(acc, ")")
+      } else {
+        ""
+      }
+    },
+    _ => ""
+  }
+}
+
+/// Record one constructor payload's shape against `pname`, skipping the entry
+/// entirely when the payload type has no shape (rather than recording "", which
+/// downstream reads as a definite "not composite").
+export fn seed_ctor_payload(out: Array[(String, String)], pname: String, ctor: String, payload: TypeExpr) -> Unit {
+  let sh = texpr_shape(payload)
+  if String::length(sh) == 0 {
+    ()
+  } else {
+    Array::push(out, (ctor_payload_key(pname, ctor), sh))
+  }
+}
+
+fn constructor_formal_name_in(tparams: Array[String], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(tparams) {
+    if type_param_name(Array::get(tparams, i)) == name {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Parameter seeding runs after `eq_known_types_reset` has collected this
+/// program's aliases. Expand only an annotation's alias spine, stopping at a
+/// locally bound constructor formal so a same-spelled global alias cannot
+/// capture `F` in `Apply[F, A]`.
+export fn expand_seed_constructor_alias(ty: TypeExpr, tparams: Array[String], fuel: Int) -> TypeExpr {
+  if fuel <= 0 {
+    ty
+  } else match ty {
+    TyName(head) => if constructor_formal_name_in(tparams, head) {
+      ty
+    } else {
+      let mut i = 0
+      let mut result = ty
+      let mut found = false
+      while i < Array::length(dtd_eq_type_aliases) {
+        let (name, params, target) = Array::get(dtd_eq_type_aliases, i)
+        if !found && name == head && Array::length(params) == 0 {
+          result = expand_seed_constructor_alias(target, tparams, fuel - 1)
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      result
+    },
+    TyApp(head, args) => if constructor_formal_name_in(tparams, head) {
+      ty
+    } else {
+      let mut i = 0
+      let mut result = ty
+      let mut found = false
+      while i < Array::length(dtd_eq_type_aliases) {
+        let (name, params, target) = Array::get(dtd_eq_type_aliases, i)
+        if !found && name == head && Array::length(params) == Array::length(args) {
+          let expanded = substitute_constructor_alias_target(target, params, args)
+          result = expand_seed_constructor_alias(expanded, tparams, fuel - 1)
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      result
+    },
+    _ => ty
+  }
+}

@@ -1,0 +1,168 @@
+// Binding environments.
+
+import @vibe/compiler/core {
+  Expr, Pat, TypeExpr, exception_effect_kind
+}
+
+import @vibe/parser {
+  lex, parse_type
+}
+
+import ./binding_shape_inference.vibe {
+  bind_shapes_into, infer_shape
+}
+
+import ./binding_shape_queries.vibe {
+  dtd_ascribed_type, dtd_mask_shadowed_fn_into, shape_is_composite
+}
+
+import ./equality_inference.vibe {
+  infer_eq_shape
+}
+
+import ./equality_shape_queries.vibe {
+  eq_shape_key
+}
+
+import ./equality_type_shapes.vibe {
+  ty_to_eq_shape
+}
+
+import ./parameter_annotations.vibe {
+  seed_var_types
+}
+
+import ./shape_environment.vibe {
+  clone_var_types
+}
+
+import ./state.vibe {
+  dtd_scope_formals
+}
+
+import ./type_name_occurrences.vibe {
+  ty_mentions_name_in
+}
+
+import ./type_names.vibe {
+  fn_body_tail_expr
+}
+
+import ./witness_targets.vibe {
+  bind_impl_target_key_into
+}
+
+/// #3065: a KINDED exception arm (`Exception[K]::Throw(e)`) binds `e` at the
+/// kind's type -- the checker has done so since #2963 -- but this pass never
+/// recorded it, so `"\{e}"` had no head to find `K::to_string` by and fell to
+/// codegen's pointer heuristic: `caught 268` for `caught KA(5)`, while
+/// `let k: K = e` rendered correctly. The binder is seeded exactly the way a
+/// parameter annotated with the kind is, so every shape an annotation already
+/// renders (a nominal, `Array[..]`, `Option[..]`, a tuple) renders here too.
+/// A kind the type parser cannot read leaves `var_types` untouched, which is
+/// what the arm had before. The erased `Exception::Throw(m)` has no kind and
+/// keeps the throw-site rendered message channel.
+export fn dtd_exception_kind_arm_var_types(p: Pat, var_types: Array[(String, String)]) -> Array[(String, String)] {
+  match p {
+    PCtor(name, sub) => if Array::length(sub) == 1 && String::ends_with(name, "::Throw") {
+      let kind = exception_effect_kind(String::substring(name, 0, String::length(name) - 7))
+      match Array::get(sub, 0) {
+        PBind(v) => if String::length(kind) > 0 {
+          let parsed: Option[TypeExpr] = handle {
+            let (kind_te, _) = parse_type(lex(kind), 0)
+            Some(kind_te)
+          } with { Exception::Throw(_unreadable) => None }
+          match parsed {
+            Some(te) => seed_var_types([(v, Some(te))], dtd_scope_formals, var_types),
+            None => var_types
+          }
+        } else {
+          var_types
+        },
+        _ => var_types
+      }
+    } else {
+      var_types
+    },
+    _ => var_types
+  }
+}
+
+export fn bind_let_env(var_types: Array[(String, String)], name: String, val: Expr, inferred: Option[String], struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
+  bind_let_env_into(clone_var_types(var_types), name, val, inferred, struct_sets, fn_returns)
+}
+
+/// `bind_let_env` without the copy: appends the binding's entries to `out`
+/// itself. `rewrite_expr`'s `let` arms use it on the environment they were
+/// handed and truncate back to the saved length once the body is rewritten.
+/// Every entry is an append and lookups read the LAST match, so the body sees
+/// exactly what a copy would have shown it, and the caller sees its own
+/// environment again afterwards. Copying instead made a function's `let`s
+/// quadratic in the environment's length (~28 MB of the self-compile heap).
+export fn bind_let_env_into(out: Array[(String, String)], name: String, val: Expr, inferred: Option[String], struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
+  match inferred {
+    Some(tname) => Array::push(out, (name, tname)),
+    None => ()
+  }
+  dtd_mask_shadowed_fn_into(out, name, fn_returns)
+  bind_impl_target_key_into(out, name, val, struct_sets, fn_returns)
+  bind_shapes_into(out, name, val, struct_sets, fn_returns)
+  eq_shape_bind_into(out, name, val, struct_sets, fn_returns)
+  out
+}
+
+/// Equality keeps a deeper type shape than the general rendering/type-head
+/// environment. In particular constructor payloads and function result type
+/// arguments must survive binding. Empty literals are recorded as a dedicated
+/// shape for both `let` and `let mut`; their contents may still mutate, so
+/// comparison has a runtime fail-closed guard below. Empty entries are answers
+/// too: they mask an outer binding's equality/call-result shape on shadowing.
+fn eq_shape_bind_into(out: Array[(String, String)], name: String, val: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Unit {
+  // #2218: read a LOCAL annotation directly. `let m: Map[String, Int] = mk()`
+  // is parsed as `((__asc: Map[String, Int]) -> __asc)(mk())`, so the type is
+  // in the AST -- but the arms below see the ascription WRAPPER, not the call,
+  // and `infer_shape`'s own ascription arm narrows through `interp_shape`,
+  // which admits only the tuple and array forms the interpolation renderer
+  // knows. Equality's shape grammar is a strict superset, so the eq path has
+  // to read the annotation itself.
+  //
+  // Measured before this: `let m: Map[String, Int] = mk()` compared by
+  // reference while the UNANNOTATED `let m = mk()` compared by content -- the
+  // annotation, which can only add information, made the answer worse.
+  //
+  // Falls through to the arms below when the annotation yields no shape, so
+  // this is strictly additive.
+  let ann_sh = match dtd_ascribed_type(val) {
+    Some(ann) => ty_to_eq_shape(ann),
+    None => ""
+  }
+  let sh = if String::length(ann_sh) > 0 {
+    ann_sh
+  } else {
+    match val {
+      EFn(tparams, _, _, ret, _, fbody) => match ret {
+        Some(rt) => if ty_mentions_name_in(rt, tparams) {
+          ""
+        } else {
+          ty_to_eq_shape(rt)
+        },
+        None => if Array::length(tparams) > 0 {
+          ""
+        } else {
+          infer_shape(fn_body_tail_expr(fbody), struct_sets, out, fn_returns)
+        }
+      },
+      EArray(items) => if Array::length(items) == 0 {
+        "[__EqEmpty]"
+      } else {
+        infer_eq_shape(val, struct_sets, out, fn_returns)
+      },
+      _ => infer_eq_shape(val, struct_sets, out, fn_returns)
+    }
+  }
+  Array::push(out, (eq_shape_key(name), if shape_is_composite(sh) {
+    sh
+  } else {
+    ""
+  }))
+}

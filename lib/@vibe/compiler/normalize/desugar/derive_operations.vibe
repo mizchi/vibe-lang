@@ -1,0 +1,902 @@
+// Derive operations.
+
+import @vibe/compiler/core {
+  Expr, Pat, Stmt, TypeExpr, namespace_rename_original
+}
+
+import @vibe/ast {
+  builtin_ref
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import ./equality_aliases.vibe {
+  eq_subst_ty
+}
+
+import ./equality_registry.vibe {
+  show_generic_enum_decl, show_generic_known, show_generic_struct_decl
+}
+
+import ./equality_requests.vibe {
+  eq_tuple_uid_next, type_key
+}
+
+import ./formal_scope.vibe {
+  is_scalar_type_name
+}
+
+import ./lambda_hoist.vibe {
+  dlh_strip_tilde
+}
+
+import ./models.vibe {
+  ModuleTraitFacts
+}
+
+import ./name_encoding.vibe {
+  concat2, idx_str
+}
+
+import ./renderer_scope.vibe {
+  char_render_expr, show_tmp_name, unit_render_expr
+}
+
+import ./state.vibe {
+  dtd_facts_explicit_ops, dtd_facts_wrappers, dtd_show_inline_arr_elems, dtd_show_inline_stack, dtd_show_refusals, dtd_type_param_names
+}
+
+import ./utilities.vibe {
+  empty_expr_array, empty_str_array, empty_ty_args, str_array_contains
+}
+
+// ---- derive(...) structural function generation (#638) ----
+//
+// For a `struct P { x; y } derive(Show, Ord)` this generates the structural
+// free functions `P::to_string` and `P::compare` (concrete `Type::method`,
+// resolved by the PR-1 dispatch path). `Eq` stays a no-op marker (structural
+// `==` is a runtime builtin). Hash / Default and enums are deferred slices.
+
+export fn qualified_name(tname: String, method: String) -> String {
+  String::concat(tname, String::concat("::", method))
+}
+
+export fn module_trait_facts_none() -> ModuleTraitFacts {
+  ModuleTraitFacts::{
+    wrapper_names: array_empty(),
+    explicit_ops: array_empty()
+  }
+}
+
+export fn dtd_facts_set(facts: ModuleTraitFacts) -> Unit {
+  Array::truncate(dtd_facts_wrappers, 0)
+  Array::truncate(dtd_facts_explicit_ops, 0)
+  let mut i = 0
+  while i < Array::length(facts.wrapper_names) {
+    Array::push(dtd_facts_wrappers, Array::get(facts.wrapper_names, i))
+    i = i + 1
+  }
+  let mut j = 0
+  while j < Array::length(facts.explicit_ops) {
+    Array::push(dtd_facts_explicit_ops, Array::get(facts.explicit_ops, j))
+    j = j + 1
+  }
+}
+
+/// Does the SOURCE define this derived operation -- here or anywhere in the
+/// program? Distinct from `top_level_fn_exists`, which also answers "have we
+/// already emitted this generated helper"; widening THAT would suppress a
+/// helper the module genuinely needs, so only the derive-suppression sites
+/// consult the whole-program set.
+export fn dtd_source_op_defined(stmts: Array[Stmt], fname: String) -> Bool {
+  top_level_fn_exists(stmts, fname) || str_array_contains(dtd_facts_explicit_ops, fname)
+}
+
+/// Every trivial identity wrapper in `stmts`, with no own-region limit -- the
+/// whole-program half of `dtpw_collect_wrappers`.
+export fn collect_trivial_wrapper_names(stmts: Array[Stmt]) -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, EFn(_, _, params, _, _, body)) => if Array::length(params) == 1 {
+        let (pname, _) = Array::get(params, 0)
+        let stripped = dlh_strip_tilde(pname)
+        match body {
+          ECall(callee, args, _) => match callee {
+            EIdent(cn, _) => if cn == stripped && Array::length(args) == 0 {
+              Array::push(out, name)
+            } else {
+              ()
+            },
+            _ => ()
+          },
+          _ => ()
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Every top-level `T::op` the SOURCE defines, for the derived operations the
+/// suppression checks ask about.
+export fn collect_explicit_derived_op_names(stmts: Array[Stmt]) -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, EFn(_, _, _, _, _, _)) => if String::contains(name, "::") {
+        Array::push(out, name)
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+export fn top_level_fn_exists(stmts: Array[Stmt], fname: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, _) => if name == fname {
+        found = true
+        i = Array::length(stmts)
+      } else {
+        i = i + 1
+      },
+      _ => {
+        i = i + 1
+      }
+    }
+  }
+  found
+}
+
+/// A stable, fn-name-safe key for a TypeExpr, used to name the monomorphic array
+/// to-string helper `__arr_to_string__<key>` so distinct element types get
+/// distinct helpers. `Int` -> "Int", `Array[Int]` -> "Array_Int",
+/// `Option[Int]` -> "Option_Int", `(Int,Bool)` -> "Tup_Int_Bool", else "Any".
+/// (#694: mirrors #672/#695-era helper-naming so Layer-2 recursion into
+/// `Array[t]` fields produces a structural — not pointer-heuristic — string.)
+fn ts_type_key(ty: TypeExpr) -> String {
+  match ty {
+    TyName(n) => n,
+    TyApp(n, args) => {
+      let mut s = n
+      let mut i = 0
+      while i < Array::length(args) {
+        s = String::concat(s, String::concat("_", ts_type_key(Array::get(args, i))))
+        i = i + 1
+      }
+      s
+    },
+    TyTuple(ts) => {
+      let mut s = "Tup"
+      let mut i = 0
+      while i < Array::length(ts) {
+        s = String::concat(s, String::concat("_", ts_type_key(Array::get(ts, i))))
+        i = i + 1
+      }
+      s
+    },
+    TyUnit => "Unit",
+    _ => "Any"
+  }
+}
+
+/// The generated monomorphic array-to-string helper name for element type `t`.
+export fn arr_to_string_name(t: TypeExpr) -> String {
+  String::concat("__arr_to_string__", ts_type_key(t))
+}
+
+/// Produce a String expression for a value `val` whose declared type is `fty`.
+/// Fully type-directed and recursive (#694 Layer 2):
+///   - `String` -> verbatim
+///   - scalar `TyName` -> `__to_string(val)`
+///   - declared struct/enum `TyName(n)` (`known_types`) -> `n::to_string(val)`
+///   - `Option[t]` -> `match val { Some(x) => "Some(" ++ show(x) ++ ")", None => "None" }`
+///   - `Result[t,e]` -> `Ok(..)` / `Err(..)` structural match
+///   - tuple `(t0,..,tn)` -> `"(" ++ show(t0) ++ ", " ++ .. ++ ")"`
+///   - `Array[t]` -> a call to the monomorphic `__arr_to_string__<key>` helper
+///   - declared generic `TyApp(n, _)` (e.g. `Box[T]`) -> `n::to_string(val)`
+///   - anything else -> `__to_string(val)` (status-quo pointer/scalar heuristic)
+/// The structural `Type::to_string` (and the derived `Type::hash_key` that
+/// delegates to it) is therefore stable for two distinct-but-equal aggregates,
+/// no matter how deeply nested.
+export fn show_for_typed(fty: TypeExpr, val: Expr, known_types: Array[String]) -> Expr {
+  show_note_unrenderable(fty)
+  match fty {
+    TyName("String") => val,
+    // #3075: a `Char` / `Unit` field or payload shares the Int
+    // representation, so `__to_string` printed `97` / `0`.
+    TyName("Char") => char_render_expr(val),
+    TyUnit => unit_render_expr(val),
+    // #3082: a substituted formal reaches here as its argument (`v: Bool` in a
+    // `Box[Bool]`), where codegen sees only the erased field; name the
+    // renderer rather than leave it to the representation.
+    TyName("Bool") => EIf(val, EString("true", -1), EString("false", -1)),
+    TyName("Double") => ECall(builtin_ref("Double::to_string"), [val], -1),
+    TyName(n) => if !is_scalar_type_name(n) && str_array_contains(known_types, n) {
+      ECall(EIdent(qualified_name(n, "to_string"), -1), Array::slice([val], 0, 1), -1)
+    } else {
+      ECall(builtin_ref("__to_string"), Array::slice([val], 0, 1), -1)
+    },
+    TyApp("Option", args) => if Array::length(args) == 1 {
+      let t = Array::get(args, 0)
+      let inner = show_for_typed(t, EIdent("__os_v", -1), known_types)
+      let some_body = concat2(EString("Some(", -1), concat2(inner, EString(")", -1)))
+      EMatch(val, Array::slice([
+        (PCtor("Some", Array::slice([PBind("__os_v")], 0, 1)), some_body),
+        // review-lint: allow-fixed-synthetic-name -- existing generated derived renderer payload binder preserved by the module split
+        (PCtor("None", array_empty()), EString("None", -1))
+      ], 0, 2))
+    } else {
+      ECall(builtin_ref("__to_string"), Array::slice([val], 0, 1), -1)
+    },
+    TyApp("Result", args) => if Array::length(args) == 2 {
+      let t = Array::get(args, 0)
+      let e = Array::get(args, 1)
+      let ok_inner = show_for_typed(t, EIdent("__rs_v", -1), known_types)
+      let err_inner = show_for_typed(e, EIdent("__rs_v", -1), known_types)
+      let ok_body = concat2(EString("Ok(", -1), concat2(ok_inner, EString(")", -1)))
+      let err_body = concat2(EString("Err(", -1), concat2(err_inner, EString(")", -1)))
+      EMatch(val, Array::slice([
+        (PCtor("Ok", Array::slice([PBind("__rs_v")], 0, 1)), ok_body),
+        // review-lint: allow-fixed-synthetic-name -- existing generated derived renderer payload binder preserved by the module split
+        (PCtor("Err", Array::slice([PBind("__rs_v")], 0, 1)), err_body)
+        // review-lint: allow-fixed-synthetic-name -- existing generated derived renderer payload binder preserved by the module split
+      ], 0, 2))
+    } else {
+      ECall(builtin_ref("__to_string"), Array::slice([val], 0, 1), -1)
+    },
+    TyTuple(ts) => {
+      let n = Array::length(ts)
+      let pats = array_empty()
+      let mut i = 0
+      while i < n {
+        Array::push(pats, PBind(String::concat("__ts_t", idx_str(i))))
+        i = i + 1
+      }
+      let segs = empty_expr_array()
+      Array::push(segs, EString("(", -1))
+      let mut k = 0
+      while k < n {
+        if k > 0 {
+          Array::push(segs, EString(", ", -1))
+        } else {
+          ()
+        }
+        Array::push(segs, show_for_typed(Array::get(ts, k), EIdent(String::concat("__ts_t", idx_str(k)), -1), known_types))
+        k = k + 1
+      }
+      Array::push(segs, EString(")", -1))
+      let mut acc = Array::get(segs, Array::length(segs) - 1)
+      let mut j = Array::length(segs) - 2
+      while j >= 0 {
+        acc = concat2(Array::get(segs, j), acc)
+        j = j - 1
+      }
+      EMatch(val, Array::slice([(PTuple(pats), acc)], 0, 1))
+    },
+    TyApp("Array", args) => if Array::length(args) == 1 {
+      ECall(EIdent(arr_to_string_name(Array::get(args, 0)), -1), Array::slice([
+        val
+      ], 0, 1), -1)
+    } else {
+      ECall(builtin_ref("__to_string"), Array::slice([val], 0, 1), -1)
+    },
+    TyApp(n, targs) => if show_generic_known(n) && show_ty_args_concrete(targs, known_types) {
+      // #3082: a derived renderer's field or payload of a `derive (Show)`
+      // generic type at a concrete instantiation (`b: Box[Bool]`). Its own
+      // `to_string` erases the formal (`Outer { b: Box { v: 1 } }`), so the
+      // value is rendered here with the arguments substituted.
+      show_generic_inline(n, targs, val, known_types)
+    } else if str_array_contains(known_types, n) {
+      ECall(EIdent(qualified_name(n, "to_string"), -1), Array::slice([val], 0, 1), -1)
+    } else {
+      ECall(builtin_ref("__to_string"), Array::slice([val], 0, 1), -1)
+    },
+    _ => ECall(builtin_ref("__to_string"), Array::slice([val], 0, 1), -1)
+  }
+}
+
+/// #3092: a derived renderer's field or payload that is, or carries through
+/// type arguments, a function or `Bytes` has no text form; the renderer fell
+/// back to `__to_string` and printed a table index or an address
+/// (`C { f: 1 }`). Refused where the pass can throw, naming the edit.
+fn show_note_unrenderable(fty: TypeExpr) -> Unit {
+  let what = show_unrenderable_kind(fty)
+  if String::length(what) > 0 {
+    let msg = String::concat("a derived renderer contains ", String::concat(what, ", which has no text form and would print a memory address -- write the type's `to_string` yourself, or keep that field out of a `derive (Show)` type (#3092)"))
+    if !str_array_contains(dtd_show_refusals, msg) {
+      Array::push(dtd_show_refusals, msg)
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+}
+
+fn show_unrenderable_kind(t: TypeExpr) -> String {
+  match t {
+    TyFn(_, _, _) => "a function value",
+    TyName("Bytes") => "a `Bytes` value",
+    TyApp(_, args) => show_unrenderable_kind_of(args),
+    TyTuple(ts) => show_unrenderable_kind_of(ts),
+    _ => ""
+  }
+}
+
+fn show_unrenderable_kind_of(ts: Array[TypeExpr]) -> String {
+  let mut found = ""
+  let mut i = 0
+  while i < Array::length(ts) && String::length(found) == 0 {
+    found = show_unrenderable_kind(Array::get(ts, i))
+    i = i + 1
+  }
+  found
+}
+
+/// #3082: every type argument names no type parameter, so substituting it
+/// yields a fully concrete type.
+fn show_ty_args_concrete(targs: Array[TypeExpr], known_types: Array[String]) -> Bool {
+  let mut ok = Array::length(targs) > 0
+  let mut i = 0
+  while i < Array::length(targs) && ok {
+    ok = show_ty_concrete(Array::get(targs, i), known_types)
+    i = i + 1
+  }
+  ok
+}
+
+fn show_ty_concrete(t: TypeExpr, known_types: Array[String]) -> Bool {
+  match t {
+    TyName(n) => is_scalar_type_name(n) || (str_array_contains(known_types, n) && !str_array_contains(dtd_type_param_names, n)),
+    TyUnit => true,
+    TyTuple(ts) => show_ty_args_concrete(ts, known_types),
+    TyApp(n, args) => (n == "Array" || n == "Option" || n == "Result" || n == "Map" || (str_array_contains(known_types, n) && !str_array_contains(dtd_type_param_names, n))) && show_ty_args_concrete(args, known_types),
+    _ => false
+  }
+}
+
+/// #3082: render `val`, a `derive (Show)` generic struct or enum at the
+/// concrete instantiation `n[targs]`, in its derived renderer's text with the
+/// arguments substituted into each field / payload type.
+fn show_generic_inline(n: String, targs: Array[TypeExpr], val: Expr, known_types: Array[String]) -> Expr {
+  let key = ts_type_key(TyApp(n, targs))
+  let mut same_head = 0
+  let mut si = 0
+  while si < Array::length(dtd_show_inline_stack) {
+    if String::starts_with(Array::get(dtd_show_inline_stack, si), String::concat(n, "_")) {
+      same_head = same_head + 1
+    } else {
+      ()
+    }
+    si = si + 1
+  }
+  if str_array_contains(dtd_show_inline_stack, key) || same_head >= 8 {
+    // Recursive. The erased renderer is exact only at `Int` / `String`.
+    let mut safe = true
+    let mut ai = 0
+    while ai < Array::length(targs) {
+      match Array::get(targs, ai) {
+        TyName(a) => if a != "Int" && a != "String" {
+          safe = false
+        } else {
+          ()
+        },
+        _ => {
+          safe = false
+        }
+      }
+      ai = ai + 1
+    }
+    if !safe {
+      let msg = String::concat("a derived renderer contains a recursive `", String::concat(namespace_rename_original(n), "` whose type arguments are not `Int` or `String`: its own renderer erases the type parameter, so a nested value would print through it -- write the containing type's `to_string` yourself (#3082)"))
+      if !str_array_contains(dtd_show_refusals, msg) {
+        Array::push(dtd_show_refusals, msg)
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    ECall(EIdent(qualified_name(n, "to_string"), -1), [val], -1)
+  } else {
+    Array::push(dtd_show_inline_stack, key)
+    let tmp = show_tmp_name()
+    let tv = EIdent(tmp, -1)
+    let body = match show_generic_struct_decl(n) {
+      Some((_, formals, fields)) => {
+        let mut acc = EString(String::concat(namespace_rename_original(n), " { "), -1)
+        let mut fi = 0
+        while fi < Array::length(fields) {
+          let (fname, fty) = Array::get(fields, fi)
+          let sty = eq_subst_ty(fty, formals, targs)
+          show_inline_note_arrays(sty)
+          let label = if fi == 0 {
+            String::concat(fname, ": ")
+          } else {
+            String::concat(", ", String::concat(fname, ": "))
+          }
+          acc = concat2(acc, concat2(EString(label, -1), show_for_typed(sty, EDot(tv, fname, -1, -1), known_types)))
+          fi = fi + 1
+        }
+        concat2(acc, EString(" }", -1))
+      },
+      None => match show_generic_enum_decl(n) {
+        Some((_, formals, variants)) => {
+          let arms = array_empty()
+          let mut vi = 0
+          while vi < Array::length(variants) {
+            let (vname, ptys) = Array::get(variants, vi)
+            let pats = array_empty()
+            let mut vbody = EString(namespace_rename_original(vname), -1)
+            if Array::length(ptys) > 0 {
+              vbody = EString(String::concat(namespace_rename_original(vname), "("), -1)
+              let mut pi = 0
+              while pi < Array::length(ptys) {
+                let pv = show_tmp_name()
+                Array::push(pats, PBind(pv))
+                let sty = eq_subst_ty(Array::get(ptys, pi), formals, targs)
+                show_inline_note_arrays(sty)
+                let piece = show_for_typed(sty, EIdent(pv, -1), known_types)
+                vbody = if pi == 0 {
+                  concat2(vbody, piece)
+                } else {
+                  concat2(concat2(vbody, EString(", ", -1)), piece)
+                }
+                pi = pi + 1
+              }
+              vbody = concat2(vbody, EString(")", -1))
+            } else {
+              ()
+            }
+            Array::push(arms, (PCtor(vname, pats), vbody))
+            vi = vi + 1
+          }
+          EMatch(tv, arms)
+        },
+        None => ECall(EIdent(qualified_name(n, "to_string"), -1), [tv], -1)
+      }
+    }
+    Array::truncate(dtd_show_inline_stack, Array::length(dtd_show_inline_stack) - 1)
+    ELet(tmp, val, body, -1)
+  }
+}
+
+/// Move the recorded element types into `desugar_derives`' helper list, with
+/// its dedup and nesting closure.
+export fn show_inline_merge_arr_elems(arr_elems: Array[TypeExpr], arr_keys: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(dtd_show_inline_arr_elems) {
+    collect_show_array_elems(TyApp("Array", [
+      Array::get(dtd_show_inline_arr_elems, i)
+    ]), arr_elems, arr_keys)
+    i = i + 1
+  }
+  Array::truncate(dtd_show_inline_arr_elems, 0)
+}
+
+/// Record the `Array[e]` element types a substituted type mentions.
+/// Walks the whole type: `show_for_typed` reaches an `Array` inside an
+/// `Option` / `Result` / tuple too, and each needs its helper.
+fn show_inline_note_arrays(t: TypeExpr) -> Unit {
+  match t {
+    TyApp(n, args) => {
+      if n == "Array" && Array::length(args) == 1 {
+        Array::push(dtd_show_inline_arr_elems, Array::get(args, 0))
+      } else {
+        ()
+      }
+      if n == "Array" || n == "Option" || n == "Result" {
+        let mut i = 0
+        while i < Array::length(args) {
+          show_inline_note_arrays(Array::get(args, i))
+          i = i + 1
+        }
+      } else {
+        ()
+      }
+    },
+    TyTuple(ts) => {
+      let mut i = 0
+      while i < Array::length(ts) {
+        show_inline_note_arrays(Array::get(ts, i))
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+/// #3082: a recursive generic value inside a derived renderer cannot be
+/// rendered by content; the refusal is a build error naming the edit.
+export fn show_refusals_report() -> Unit with Exception {
+  if Array::length(dtd_show_refusals) == 0 {
+    ()
+  } else {
+    throw(Array::get(dtd_show_refusals, 0))
+  }
+}
+
+/// Show a single struct field value as a String expression, by its declared type
+/// (#694: type-directed and recursive — aggregate fields recurse structurally
+/// instead of falling into the `__to_string` pointer heuristic).
+export fn field_show_expr(fname: String, fty: TypeExpr, known_types: Array[String]) -> Expr {
+  show_for_typed(fty, EDot(EIdent("self", -1), fname, -1, -1), known_types)
+}
+
+/// `let P::compare = (a: P, b: P) -> Ordering { lexicographic over fields }`
+/// (#3042, ADR-0118). The first field that is not `Equal` decides; a struct
+/// with no fields, or with every field `Equal`, answers `Equal`.
+export fn gen_compare_fn(tname: String, fields: Array[(String, TypeExpr)], known_types: Array[String]) -> Stmt {
+  let mut body = ordering_ctor("Equal")
+  let mut i = Array::length(fields) - 1
+  while i >= 0 {
+    let (fname, fty) = Array::get(fields, i)
+    let af = EDot(EIdent("a", -1), fname, -1, -1)
+    let bf = EDot(EIdent("b", -1), fname, -1, -1)
+    body = compare_then_typed(fty, af, bf, body, known_types)
+    i = i - 1
+  }
+  let params = Array::slice([
+    ("a", Some(TyName(tname))),
+    ("b", Some(TyName(tname)))
+  ], 0, 2)
+  let no_tp = array_empty()
+  let no_tb = array_empty()
+  SLet(false, false, qualified_name(tname, "compare"), None, EFn(no_tp, no_tb, params, Some(TyName("Ordering")), None, body))
+}
+
+/// #3042: a reference to one of the prelude `Ordering`'s constructors.
+fn ordering_ctor(name: String) -> Expr {
+  EIdent(name, -1)
+}
+
+/// Show an arbitrary value expression by its declared type (#694: type-directed
+/// and recursive via `show_for_typed`, so aggregate enum payloads — nested
+/// struct/enum, Option, Result, tuple, Array — render structurally instead of
+/// through the `__to_string` pointer heuristic).
+fn show_expr_typed(val: Expr, fty: TypeExpr, known_types: Array[String]) -> Expr {
+  show_for_typed(fty, val, known_types)
+}
+
+/// `let E::to_string = (self: E) -> String {
+///    match self { V0(_a0, _a1) => "V0(" ++ show(_a0) ++ ", " ++ show(_a1) ++ ")",
+///                 V1 => "V1", ... } }`
+/// A nullary variant shows as its bare name; a payload variant shows as
+/// `Name(p0, p1, ...)` with each payload shown structurally.
+export fn gen_enum_show_fn(ename: String, variants: Array[(String, Array[TypeExpr])], known_types: Array[String]) -> Stmt {
+  let arms = array_empty()
+  let mut vi = 0
+  while vi < Array::length(variants) {
+    let (vname, ftypes) = Array::get(variants, vi)
+    let nf = Array::length(ftypes)
+    let binds = array_empty()
+    let mut fi = 0
+    while fi < nf {
+      Array::push(binds, PBind(String::concat("__s", idx_str(fi))))
+      fi = fi + 1
+    }
+    let body = if nf == 0 {
+      // #2205: render the source constructor name, not the merge-renamed one
+      // (same as gen_show_fn above; the PCtor pattern below keeps `vname`).
+      EString(namespace_rename_original(vname), -1)
+    } else {
+      let segs = empty_expr_array()
+      Array::push(segs, EString(String::concat(namespace_rename_original(vname), "("), -1))
+      let mut si = 0
+      while si < nf {
+        let sep = if si == 0 {
+          ""
+        } else ", "
+        if sep != "" {
+          Array::push(segs, EString(sep, -1))
+        } else {
+          ()
+        }
+        Array::push(segs, show_expr_typed(EIdent(String::concat("__s", idx_str(si)), -1), Array::get(ftypes, si), known_types))
+        si = si + 1
+      }
+      Array::push(segs, EString(")", -1))
+      let mut acc = Array::get(segs, Array::length(segs) - 1)
+      let mut j = Array::length(segs) - 2
+      while j >= 0 {
+        acc = concat2(Array::get(segs, j), acc)
+        j = j - 1
+      }
+      acc
+    }
+    Array::push(arms, (PCtor(vname, binds), body))
+    vi = vi + 1
+  }
+  let params = Array::slice([("self", Some(TyName(ename)))], 0, 1)
+  let no_tp = array_empty()
+  let no_tb = array_empty()
+  SLet(false, false, qualified_name(ename, "to_string"), None, EFn(no_tp, no_tb, params, Some(TyName("String")), None, EMatch(EIdent("self", -1), arms)))
+}
+
+/// `let T::hash_key = (self: T) -> String { T::to_string(self) }` (#694 Layer 1).
+/// `derive(Hash)` makes a type usable as a Map key via the method-bearing `Hash`
+/// trait (`hash_key(Self) -> String`): `map_key_to_string = [K: Hash](key) ->
+/// K::hash_key(key)` threads the witness (#684), and at a concrete call site
+/// `get_by(m, T::{..})` the synthesized `HashDict::{ hash_key: T::hash_key }`
+/// resolves here. The key is the structural `to_string` (now fully recursive via
+/// `show_for_typed`), so two distinct-but-field-equal values hash to one entry.
+export fn gen_hash_key_fn(tname: String) -> Stmt {
+  let body = ECall(EIdent(qualified_name(tname, "to_string"), -1), Array::slice([
+    EIdent("self", -1)
+  ], 0, 1), -1)
+  let params = Array::slice([("self", Some(TyName(tname)))], 0, 1)
+  let no_tp = array_empty()
+  let no_tb = array_empty()
+  SLet(false, false, qualified_name(tname, "hash_key"), None, EFn(no_tp, no_tb, params, Some(TyName("String")), None, body))
+}
+
+/// Append any `Array[e]` element types referenced by a TypeExpr to `acc`
+/// (dedup by type-key), so a Show/Hash-deriving type with an `Array[t]` field or
+/// payload gets a generated `__arr_to_string__<key>` helper. (#694 Layer 2.)
+export fn collect_show_array_elems(ty: TypeExpr, acc: Array[TypeExpr], keys: Array[String]) -> Unit {
+  match ty {
+    TyApp("Array", args) => if Array::length(args) == 1 {
+      let et = Array::get(args, 0)
+      let k = ts_type_key(et)
+      if str_array_contains(keys, k) {
+        ()
+      } else {
+        Array::push(keys, k)
+        Array::push(acc, et)
+      }
+    } else {
+      ()
+    },
+    _ => ()
+  }
+}
+
+/// Compare two operands of declared type `fty` and answer `rest` when they are
+/// `Equal`, otherwise their `Ordering` (#3042). Aggregate (declared
+/// struct/enum) operands recurse through `T::compare`; scalars and type
+/// parameters use the runtime structural `<` / `>` (codegen handles them).
+fn compare_then_typed(fty: TypeExpr, lhs: Expr, rhs: Expr, rest: Expr, known_types: Array[String]) -> Expr {
+  let by_operator = EIf(EBinOp("<", lhs, rhs, -1), ordering_ctor("Less"), EIf(EBinOp(">", lhs, rhs, -1), ordering_ctor("Greater"), rest))
+  match fty {
+    TyName(n) => if !is_scalar_type_name(n) && str_array_contains(known_types, n) {
+      let arms = array_empty()
+      let equal_binds = array_empty()
+      Array::push(arms, (PCtor("Equal", equal_binds), rest))
+      // Fresh per comparison: a nested field's arm must not capture an
+      // enclosing field's binder.
+      let decided = String::concat("__ord", idx_str(eq_tuple_uid_next()))
+      Array::push(arms, (PBind(decided), EIdent(decided, -1)))
+      EMatch(ECall(EIdent(qualified_name(n, "compare"), -1), Array::slice([
+        lhs,
+        rhs
+      ], 0, 2), -1), arms)
+    } else by_operator,
+    _ => by_operator
+  }
+}
+
+/// `let E::compare = (a: E, b: E) -> Ordering { ... }` (#3042, ADR-0118)
+/// Lexicographic: first by variant order (a's tag index vs b's tag index), then
+/// (same variant) by payload, recursively. The variant index of `a` is computed
+/// by matching `a`; for each `a` variant the inner match on `b` either compares
+/// payloads (same variant) or answers `Less` / `Greater` from the two indices.
+export fn gen_enum_compare_fn(ename: String, variants: Array[(String, Array[TypeExpr])], known_types: Array[String]) -> Stmt {
+  let outer_arms = array_empty()
+  let mut ai = 0
+  while ai < Array::length(variants) {
+    let (avname, aftypes) = Array::get(variants, ai)
+    let anf = Array::length(aftypes)
+    let abinds = array_empty()
+    let mut afi = 0
+    while afi < anf {
+      Array::push(abinds, PBind(String::concat("__a", idx_str(afi))))
+      afi = afi + 1
+    }
+    // inner match over b: for the same variant compare payloads; otherwise the
+    // sign comes from the variant order (a before b -> -1, after -> 1).
+    let inner_arms = array_empty()
+    let mut bi = 0
+    while bi < Array::length(variants) {
+      let (bvname, bftypes) = Array::get(variants, bi)
+      let bnf = Array::length(bftypes)
+      let bbinds = array_empty()
+      let mut bfi = 0
+      while bfi < bnf {
+        Array::push(bbinds, PBind(String::concat("__b", idx_str(bfi))))
+        bfi = bfi + 1
+      }
+      let arm_body = if ai == bi {
+        // same variant: lexicographic over payloads, `Equal` if no payload.
+        let mut body = ordering_ctor("Equal")
+        let mut pi = anf - 1
+        while pi >= 0 {
+          body = compare_then_typed(Array::get(aftypes, pi), EIdent(String::concat("__a", idx_str(pi)), -1), EIdent(String::concat("__b", idx_str(pi)), -1), body, known_types)
+          pi = pi - 1
+        }
+        body
+      } else if ai < bi {
+        ordering_ctor("Less")
+      } else {
+        ordering_ctor("Greater")
+      }
+      Array::push(inner_arms, (PCtor(bvname, bbinds), arm_body))
+      bi = bi + 1
+    }
+    Array::push(outer_arms, (PCtor(avname, abinds), EMatch(EIdent("b", -1), inner_arms)))
+    ai = ai + 1
+  }
+  let params = Array::slice([
+    ("a", Some(TyName(ename))),
+    ("b", Some(TyName(ename)))
+  ], 0, 2)
+  let no_tp = array_empty()
+  let no_tb = array_empty()
+  SLet(false, false, qualified_name(ename, "compare"), None, EFn(no_tp, no_tb, params, Some(TyName("Ordering")), None, EMatch(EIdent("a", -1), outer_arms)))
+}
+
+/// The default value expression for a declared field type. Per-type rules:
+///   Int -> 0, Double/Float -> 0.0, Bool -> false, String -> "", Unit -> (),
+///   Option[_] -> None, Array[_] -> empty array, and a declared struct/enum
+///   (in `known_types`) -> `T::default()`. A type with no sensible default (a
+///   bare type parameter, a function/tuple type, an unknown name) falls back to
+///   `()` — codegen will then flag the literal against the field's real type, so
+///   the limitation surfaces as a type error rather than silently wrong data.
+fn default_for_type(fty: TypeExpr, known_types: Array[String]) -> Expr {
+  match fty {
+    TyName("Int") => EInt(0),
+    TyName("Double") => EFloat(0.0),
+    TyName("Float") => EFloat(0.0),
+    TyName("Bool") => EBool(false),
+    TyName("String") => EString("", -1),
+    TyName("Unit") => EUnit,
+    TyName(n) => if str_array_contains(known_types, n) {
+      ECall(EIdent(qualified_name(n, "default"), -1), empty_expr_array(), -1)
+    } else {
+      EUnit
+    },
+    TyApp("Option", _) => EIdent("None", -1),
+    TyApp("Array", _) => EArray(empty_expr_array()),
+    TyApp(n, _) => if str_array_contains(known_types, n) {
+      ECall(EIdent(qualified_name(n, "default"), -1), empty_expr_array(), -1)
+    } else {
+      EUnit
+    },
+    TyUnit => EUnit,
+    _ => EUnit
+  }
+}
+
+/// `let P::default = () -> P { P::{ f1: <default>, ... } }` — a struct literal
+/// (ERecord; the struct type is recovered from the field set) with each field at
+/// its type's default.
+export fn gen_default_fn(tname: String, fields: Array[(String, TypeExpr)], known_types: Array[String]) -> Stmt {
+  let rec_fields = array_empty()
+  let mut i = 0
+  while i < Array::length(fields) {
+    let (fname, fty) = Array::get(fields, i)
+    Array::push(rec_fields, (fname, default_for_type(fty, known_types)))
+    i = i + 1
+  }
+  let no_params = array_empty()
+  let no_tp = array_empty()
+  let no_tb = array_empty()
+  SLet(false, false, qualified_name(tname, "default"), None, EFn(no_tp, no_tb, no_params, Some(TyName(tname)), None, ERecord("", rec_fields, empty_ty_args())))
+}
+
+/// `let E::default = () -> E { V0(<default>, ...) }` — the FIRST variant, with
+/// each payload slot at its type's default (nullary -> bare constructor name).
+export fn gen_enum_default_fn(ename: String, variants: Array[(String, Array[TypeExpr])], known_types: Array[String]) -> Stmt {
+  let (vname, ftypes) = Array::get(variants, 0)
+  let body = if Array::length(ftypes) == 0 {
+    EIdent(vname, -1)
+  } else {
+    let args = empty_expr_array()
+    let mut i = 0
+    while i < Array::length(ftypes) {
+      Array::push(args, default_for_type(Array::get(ftypes, i), known_types))
+      i = i + 1
+    }
+    ECall(EIdent(vname, -1), args, -1)
+  }
+  let no_params = array_empty()
+  let no_tp = array_empty()
+  let no_tb = array_empty()
+  SLet(false, false, qualified_name(ename, "default"), None, EFn(no_tp, no_tb, no_params, Some(TyName(ename)), None, body))
+}
+
+/// Scan `ty` and, for every `Array[e]` shape found anywhere inside it, append the
+/// element type `e` to `acc` (deduped by `type_key`). Only the immediate element
+/// types are added here; transitive nesting (`Array[Array[Int]]` needs the
+/// `Array[Int]` helper too) is closed by the worklist loop in the caller, which
+/// re-scans every element type it collects. (#695.)
+export fn collect_array_elem_types(ty: TypeExpr, acc: Array[TypeExpr], acc_keys: Array[String]) -> Unit {
+  match ty {
+    TyApp("Array", args) => if Array::length(args) == 1 {
+      let e = Array::get(args, 0)
+      let k = type_key(e)
+      if !str_array_contains(acc_keys, k) {
+        Array::push(acc, e)
+        Array::push(acc_keys, k)
+      } else {
+        ()
+      }
+      collect_array_elem_types(e, acc, acc_keys)
+    } else {
+      ()
+    },
+    TyApp(_, args) => {
+      let mut i = 0
+      while i < Array::length(args) {
+        collect_array_elem_types(Array::get(args, i), acc, acc_keys)
+        i = i + 1
+      }
+    },
+    TyTuple(ts) => {
+      let mut i = 0
+      while i < Array::length(ts) {
+        collect_array_elem_types(Array::get(ts, i), acc, acc_keys)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+/// In-place: for each struct with `derive(Show/Ord)`, append the structural
+/// function if not already present (idempotent across the double-run pipeline).
+/// The set of concrete struct/enum names declared in the program — the gate for
+/// emitting DIRECT `T::equals` calls in generated comparators (a field/arg whose
+/// type name is NOT here, e.g. a type parameter `T` of `Box[T]`, falls back to
+/// scalar `==`, since there is no `T::equals` to call).
+export fn collect_decl_type_names(stmts: Array[Stmt]) -> Array[String] {
+  let out = empty_str_array()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SStruct(_, name, _, _, _, _) => Array::push(out, name),
+      SEnum(_, ename, _, _, _) => Array::push(out, ename),
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+export fn empty_stmt_list() -> Array[Stmt] {
+  array_empty()
+}
+
+export fn struct_decl_exists(stmts: Array[Stmt], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SStruct(_, sname, _, _, _, _) => if sname == name {
+        found = true
+        i = Array::length(stmts)
+      } else {
+        i = i + 1
+      },
+      _ => {
+        i = i + 1
+      }
+    }
+  }
+  found
+}

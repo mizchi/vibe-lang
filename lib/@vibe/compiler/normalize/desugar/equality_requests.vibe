@@ -1,0 +1,262 @@
+// Equality requests.
+
+import @vibe/compiler/core {
+  Expr, TypeExpr
+}
+
+import ./formal_scope.vibe {
+  is_scalar_type_name
+}
+
+import ./name_encoding.vibe {
+  idx_str
+}
+
+import ./state.vibe {
+  dtd_arr_eq_needed,
+  dtd_arr_eq_needed_keys,
+  dtd_bytes_eq_needed,
+  dtd_eq_refusals,
+  dtd_eq_tuple_uid,
+  dtd_eq_type_owners,
+  dtd_exn_kind_state,
+  dtd_map_eq_needed,
+  dtd_map_eq_needed_keys
+}
+
+import ./utilities.vibe {
+  str_array_contains
+}
+
+/// The fail-closed expression itself, for the rungs that stay a RUNTIME trap.
+///
+/// #2475 measured why they cannot all move: `eq_for_typed_nonstandard_enum` and
+/// the expanding-recursion arm fire while GENERATING a comparator for a generic
+/// shape, not at a comparison the program performs. The compiler's own sources
+/// reach both (`List` and `AvlTree` at a formal argument), so reporting them at
+/// compile time rejects the compiler itself -- the trap they emit is never
+/// executed. Those keep the status quo, and #2475's remaining half is the
+/// builtin-scalar marker that makes them answerable.
+export fn eq_trap() -> Expr {
+  ESeq(ECall(EIdent("assert_true", -1), [EBool(false)], -1), EBool(false))
+}
+
+/// #2475: record a structural-equality refusal, and keep emitting the
+/// fail-closed expression.
+///
+/// The expression still matters. The refusal is reported by throwing after the
+/// rewrite, so nothing downstream sees this node -- but if a future path ever
+/// swallows the throw, the emitted trap is what keeps the contract fail-closed
+/// rather than silently wrong, which is the property that outranks the
+/// diagnostic (AGENTS.md's first pillar).
+export fn eq_refuse(reason: String) -> Expr {
+  if str_array_contains(dtd_eq_refusals, reason) {
+    ()
+  } else {
+    Array::push(dtd_eq_refusals, reason)
+  }
+  eq_trap()
+}
+
+/// The owned scalar spelling that made `t` ambiguous, or "" -- the same walk
+/// `ty_mentions_owned_scalar` does, returning WHICH name it found so the
+/// refusal can name it.
+export fn owned_scalar_name_in(t: TypeExpr) -> String {
+  match t {
+    TyName(n) => if is_scalar_type_name(n) && str_array_contains(dtd_eq_type_owners, n) {
+      n
+    } else {
+      ""
+    },
+    TyApp(h, args) => if is_scalar_type_name(h) && str_array_contains(dtd_eq_type_owners, h) {
+      h
+    } else {
+      let mut found = ""
+      let mut i = 0
+      while i < Array::length(args) {
+        if found == "" {
+          found = owned_scalar_name_in(Array::get(args, i))
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    TyTuple(ts) => {
+      let mut found = ""
+      let mut i = 0
+      while i < Array::length(ts) {
+        if found == "" {
+          found = owned_scalar_name_in(Array::get(ts, i))
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    _ => ""
+  }
+}
+
+export fn eq_fail_closed(op: String, owned: String) -> Expr {
+  let named = if owned == "" {
+    "a builtin scalar"
+  } else {
+    String::concat("`", String::concat(owned, "`"))
+  }
+  let trapped = eq_refuse(String::concat("this program declares a type named ", String::concat(named, ", so an operand with that spelling may be the builtin or the declared type, and comparing the wrong one reads its words as the other's. Annotate the operands with the type you mean (`let xs: Array[<type>] = []`), or rename the declared type.")))
+  if op == "==" {
+    trapped
+  } else {
+    ECall(EIdent("not", -1), [trapped], -1)
+  }
+}
+
+/// A stable, fn-name-safe key for a TypeExpr, used to name the monomorphic array
+/// helper `__arr_equals__<key>` so distinct element types get distinct helpers.
+/// `Int` -> "Int", `Array[Int]` -> "Array_Int", `Option[Int]` -> "Option_Int",
+/// `(Int,Bool)` -> "Tup_Int_Bool", unknown shapes -> "Any".
+/// A stable, fn-name-safe key for a TypeExpr, used to name the monomorphic
+/// array/map helpers so distinct types get distinct helpers.
+///
+/// The encoding is LENGTH-PREFIXED and CONSTRUCTOR-TAGGED, which is what makes
+/// it injective. Two rounds of #2235 review found collisions in the old
+/// `join components with _` form, and each patch left another:
+///
+///   - a NAME containing `_` collided with an application: `type_key(Array[Int])`
+///     and `type_key(Array_Int)` were both `Array_Int`, so a program declaring
+///     `struct Array_Int` compared two `Array[Array_Int]` values with different
+///     fields as EQUAL. Measured on main.
+///   - doubling the underscores inside names fixed that one and left the
+///     CONSTRUCTOR untagged: a tuple `(Int, Int)` and an application
+///     `Tup[Int, Int]` both keyed `Tup_Int_Int`, and nothing recorded the
+///     ARITY either -- `A[B[C]]` and `A[B, C]` keyed the same.
+///
+/// Both classes are silent-wrong, so the fix is an encoding that can be read
+/// back rather than a longer list of escapes. Each node carries its tag, its
+/// arity where it has one, and a length before every raw name -- so no name,
+/// however spelled, can be mistaken for structure:
+///
+///   Int              -> N3_Int
+///   Array[Int]       -> A1_N5_ArrayN3_Int
+///   (Int, Bool)      -> T2_N3_IntN4_Bool
+///   Tup[Int, Bool]   -> A2_N3_TupN3_IntN4_Bool
+///
+/// The names are longer and are not meant to be read; they appear only in
+/// generated symbols and in the wasm name section.
+export fn type_key(ty: TypeExpr) -> String {
+  match ty {
+    TyName(n) => type_key_name(n),
+    TyApp(n, args) => {
+      let mut s = String::concat(String::concat("A", idx_str(Array::length(args))), "_")
+      s = String::concat(s, type_key_name(n))
+      let mut i = 0
+      while i < Array::length(args) {
+        s = String::concat(s, type_key(Array::get(args, i)))
+        i = i + 1
+      }
+      s
+    },
+    TyTuple(ts) => {
+      let mut s = String::concat(String::concat("T", idx_str(Array::length(ts))), "_")
+      let mut i = 0
+      while i < Array::length(ts) {
+        s = String::concat(s, type_key(Array::get(ts, i)))
+        i = i + 1
+      }
+      s
+    },
+    TyUnit => "U",
+    _ => "X"
+  }
+}
+
+/// `N<len>_<name>`: the length is what lets a reader (and any future decoder)
+/// know where the raw name ends, so a name containing `_`, a digit, or the
+/// spelling of a tag cannot be confused for structure.
+fn type_key_name(n: String) -> String {
+  String::concat(String::concat("N", idx_str(String::length(n))), String::concat("_", n))
+}
+
+/// The generated monomorphic array-equality helper name for element type `t`.
+export fn arr_equals_name(t: TypeExpr) -> String {
+  String::concat("__arr_equals__", type_key(t))
+}
+
+/// Reset at each `desugar_trait_dicts` entry, BEFORE `desugar_derives` runs.
+export fn arr_eq_needed_reset() -> Unit {
+  Array::truncate(dtd_arr_eq_needed, 0)
+  Array::truncate(dtd_arr_eq_needed_keys, 0)
+}
+
+/// Record that a call to `__arr_equals__<key>` for element type `t` was emitted.
+/// Called from the two (only) sites that build such a call, so the recorded set
+/// is by construction the set the output references.
+export fn arr_eq_needed_record(t: TypeExpr) -> Unit {
+  let k = type_key(t)
+  if str_array_contains(dtd_arr_eq_needed_keys, k) {
+    ()
+  } else {
+    Array::push(dtd_arr_eq_needed_keys, k)
+    Array::push(dtd_arr_eq_needed, t)
+  }
+}
+
+export fn eq_tuple_uid_reset() -> Unit {
+  Array::set(dtd_eq_tuple_uid, 0, 0)
+}
+
+/// #2388: fresh names are minted per declaration, not per program. The tuple
+/// / map comparator binders (`__teq_l<n>_<k>`, `__me_ks<n>`) and the throw
+/// payload lets (`__exn_payload<n>`) are local to the statement or helper
+/// they appear in, so their counters restart at every top-level statement
+/// the rewrite loop visits and at every generated helper: a module's output
+/// then does not depend on what was compiled before it, and a per-module run
+/// mints the same names as the whole-program run (the oracle's `renames`).
+export fn dtd_fresh_reset_for_decl() -> Unit {
+  eq_tuple_uid_reset()
+  Array::set(dtd_exn_kind_state, 2, 0)
+}
+
+export fn eq_tuple_uid_next() -> Int {
+  let v = Array::get(dtd_eq_tuple_uid, 0)
+  Array::set(dtd_eq_tuple_uid, 0, v + 1)
+  v
+}
+
+export fn map_equals_name(k_ty: TypeExpr, v_ty: TypeExpr) -> String {
+  String::concat(String::concat(String::concat("__map_equals__", type_key(k_ty)), "__"), type_key(v_ty))
+}
+
+export fn map_eq_needed_reset() -> Unit {
+  Array::truncate(dtd_map_eq_needed, 0)
+  Array::truncate(dtd_map_eq_needed_keys, 0)
+}
+
+export fn map_eq_needed_record(k_ty: TypeExpr, v_ty: TypeExpr) -> Unit {
+  let nm = map_equals_name(k_ty, v_ty)
+  if str_array_contains(dtd_map_eq_needed_keys, nm) {
+    ()
+  } else {
+    Array::push(dtd_map_eq_needed_keys, nm)
+    Array::push(dtd_map_eq_needed, TyTuple(Array::slice([k_ty, v_ty], 0, 2)))
+  }
+}
+
+export fn bytes_equals_name() -> String {
+  "__bytes_equals"
+}
+
+export fn bytes_eq_needed_reset() -> Unit {
+  Array::truncate(dtd_bytes_eq_needed, 0)
+}
+
+export fn bytes_eq_needed_record() -> Unit {
+  if Array::length(dtd_bytes_eq_needed) == 0 {
+    Array::push(dtd_bytes_eq_needed, "Bytes")
+  } else {
+    ()
+  }
+}

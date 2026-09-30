@@ -1,0 +1,379 @@
+// Formal scope.
+
+import @vibe/compiler/core {
+  Expr, Stmt, TypeExpr, expr_child_at, expr_children_pop, expr_children_push, expr_children_top
+}
+
+import @vibe/ast {
+  type_param_name
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import ./state.vibe {
+  dtd_eq_type_owners,
+  dtd_scope_formal_bounds,
+  dtd_scope_formal_marks,
+  dtd_scope_formal_nested,
+  dtd_scope_formals,
+  dtd_type_param_names,
+  scope_formal_mark_prefix
+}
+
+import ./utilities.vibe {
+  empty_str_array, empty_type_exprs, str_array_contains
+}
+
+export fn scope_formals_reset() -> Unit {
+  Array::truncate(dtd_scope_formals, 0)
+  Array::truncate(dtd_scope_formal_bounds, 0)
+  Array::truncate(dtd_scope_formal_nested, 0)
+  Array::truncate(dtd_scope_formal_marks, 0)
+}
+
+/// Every trait key `bounds` declares for `tp` (a binder may repeat a formal,
+/// and `[T: A + B]` lands as one entry carrying both).
+///
+/// Matches on the key AND on its canonical name, because a kinded binder is
+/// spelled as a key (`type_param_key`: `F[_]` is `<prefix>1$F`) and the two
+/// arrays need not agree on which spelling they carry.
+fn scope_bound_keys_of(bounds: Array[(String, Array[String])], tp: String) -> Array[String] {
+  let out = empty_str_array()
+  let canonical = type_param_name(tp)
+  let mut i = 0
+  while i < Array::length(bounds) {
+    let (bt, traits_of) = Array::get(bounds, i)
+    if bt == tp || type_param_name(bt) == canonical {
+      let mut j = 0
+      while j < Array::length(traits_of) {
+        Array::push(out, Array::get(traits_of, j))
+        j = j + 1
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// #2737 (Codex round 2, P1): the spelling stored is the CANONICAL name, not the
+/// key. A kinded binder arrives as `type_param_key(name, arity)` -- `F[_]` is
+/// `<prefix>1$F` -- while every lookup here passes a bare head: `split_qualified`
+/// gives `F` for `F::map`, `infer_arg_type_name` gives `F`, and `build_gens`
+/// already canonicalizes via `type_param_name`. Stored as the key, a kinded
+/// binder was invisible to `formal_in_scope`, `dtd_formal_is_shadowed` and
+/// `dtd_formal_bound_promises` alike -- so the withholding guard and the refusal
+/// both skipped it. The BOUNDS are read with the raw key (that is what the
+/// binder's own bounds list carries), then the name is canonicalized.
+export fn scope_formals_push(tparams: Array[String], bounds: Array[(String, Array[String])], nested: Bool) -> Unit {
+  Array::push(dtd_scope_formal_marks, Array::length(dtd_scope_formals))
+  let mut i = 0
+  while i < Array::length(tparams) {
+    let raw = Array::get(tparams, i)
+    Array::push(dtd_scope_formals, type_param_name(raw))
+    Array::push(dtd_scope_formal_bounds, scope_bound_keys_of(bounds, raw))
+    Array::push(dtd_scope_formal_nested, nested)
+    i = i + 1
+  }
+}
+
+export fn scope_formals_pop() -> Unit {
+  if Array::length(dtd_scope_formal_marks) == 0 {
+    ()
+  } else {
+    let mark = Array::get(dtd_scope_formal_marks, Array::length(dtd_scope_formal_marks) - 1)
+    Array::truncate(dtd_scope_formal_marks, Array::length(dtd_scope_formal_marks) - 1)
+    Array::truncate(dtd_scope_formals, mark)
+    Array::truncate(dtd_scope_formal_bounds, mark)
+    Array::truncate(dtd_scope_formal_nested, mark)
+  }
+}
+
+export fn formal_in_scope(n: String) -> Bool {
+  str_array_contains(dtd_scope_formals, n)
+}
+
+export fn mark_formal_name(n: String) -> String {
+  String::concat(scope_formal_mark_prefix, n)
+}
+
+export fn is_marked_formal_name(n: String) -> Bool {
+  String::starts_with(n, scope_formal_mark_prefix)
+}
+
+/// Re-spell every name in `ty` that `is_formal` answers true for. Used with
+/// `formal_in_scope` at rewrite sites (the lexical stack is live there) and
+/// with a declaration's own tparams at the derive-generation sites (where the
+/// declaration IS the scope).
+fn subst_formals_ty(ty: TypeExpr, formals: Array[String]) -> TypeExpr {
+  if Array::length(formals) == 0 {
+    ty
+  } else {
+    subst_formals_ty_body(ty, formals)
+  }
+}
+
+export fn formals_contain_source_name(formals: Array[String], n: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(formals) {
+    if type_param_name(Array::get(formals, i)) == n {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn subst_formals_ty_body(ty: TypeExpr, formals: Array[String]) -> TypeExpr {
+  match ty {
+    TyName(n) => if formals_contain_source_name(formals, n) {
+      TyName(mark_formal_name(n))
+    } else {
+      ty
+    },
+    TyApp(n, args) => {
+      let out = empty_type_exprs()
+      let mut i = 0
+      while i < Array::length(args) {
+        Array::push(out, subst_formals_ty(Array::get(args, i), formals))
+        i = i + 1
+      }
+      if formals_contain_source_name(formals, n) {
+        TyApp(mark_formal_name(n), out)
+      } else {
+        TyApp(n, out)
+      }
+    },
+    TyTuple(ts) => {
+      let out = empty_type_exprs()
+      let mut i = 0
+      while i < Array::length(ts) {
+        Array::push(out, subst_formals_ty(Array::get(ts, i), formals))
+        i = i + 1
+      }
+      TyTuple(out)
+    },
+    _ => ty
+  }
+}
+
+export fn subst_scope_formals_ty(ty: TypeExpr) -> TypeExpr {
+  subst_formals_ty(ty, dtd_scope_formals)
+}
+
+/// #2141, derive side: a declaration's OWN tparams are the scope its field
+/// types were written in. Re-spell them before any generator reads the field
+/// types, so a `struct Box[T]` next to a same-spelled (merged-in) declared
+/// type generates variable-semantics helpers for `T`, not struct-semantics.
+export fn subst_field_formals(fields: Array[(String, TypeExpr)], formals: Array[String]) -> Array[(String, TypeExpr)] {
+  if Array::length(formals) == 0 {
+    fields
+  } else {
+    let out = array_empty()
+    let mut i = 0
+    while i < Array::length(fields) {
+      let (fname, fty) = Array::get(fields, i)
+      Array::push(out, (fname, subst_formals_ty(fty, formals)))
+      i = i + 1
+    }
+    out
+  }
+}
+
+export fn subst_variant_formals(variants: Array[(String, Array[TypeExpr])], formals: Array[String]) -> Array[(String, Array[TypeExpr])] {
+  if Array::length(formals) == 0 {
+    variants
+  } else {
+    let out = array_empty()
+    let mut i = 0
+    while i < Array::length(variants) {
+      let (vname, ftypes) = Array::get(variants, i)
+      let tys = empty_type_exprs()
+      let mut j = 0
+      while j < Array::length(ftypes) {
+        Array::push(tys, subst_formals_ty(Array::get(ftypes, j), formals))
+        j = j + 1
+      }
+      Array::push(out, (vname, tys))
+      i = i + 1
+    }
+    out
+  }
+}
+
+fn push_name_once(acc: Array[String], name: String) -> Unit {
+  if str_array_contains(acc, name) {
+    ()
+  } else {
+    Array::push(acc, name)
+  }
+}
+
+fn push_names_once(acc: Array[String], names: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(names) {
+    push_name_once(acc, Array::get(names, i))
+    i = i + 1
+  }
+}
+
+fn collect_expr_type_param_names(e: Expr, acc: Array[String]) -> Unit {
+  match e {
+    EFn(tparams, _, _, _, _, _) => push_names_once(acc, tparams),
+    _ => ()
+  }
+  let mark = expr_children_push(e)
+  let end = expr_children_top()
+  let mut i = mark
+  while i < end {
+    collect_expr_type_param_names(expr_child_at(i), acc)
+    i = i + 1
+  }
+  expr_children_pop(mark)
+}
+
+/// Fill `dtd_type_param_names` with every type-parameter name this program
+/// binds — `struct Box[T]`, `enum Tree[T]`, and every `[T](..) -> ..` function
+/// or lambda — minus any that is also a declared struct/enum name. Called from
+/// `desugar_derives`, which runs before every site that generates an array
+/// helper. (#2136.)
+export fn type_param_names_reset(stmts: Array[Stmt], known_types: Array[String]) -> Unit {
+  Array::truncate(dtd_type_param_names, 0)
+  let found = empty_str_array()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SStruct(_, _, _, _, _, tparams) => push_names_once(found, tparams),
+      SEnum(_, _, tparams, _, _) => push_names_once(found, tparams),
+      SLet(_, _, _, _, e) => collect_expr_type_param_names(e, found),
+      SLetMut(_, _, e) => collect_expr_type_param_names(e, found),
+      SLetPat(_, e) => collect_expr_type_param_names(e, found),
+      SExpr(e) => collect_expr_type_param_names(e, found),
+      STest(_, e) => collect_expr_type_param_names(e, found),
+      SBench(_, e) => collect_expr_type_param_names(e, found),
+      _ => ()
+    }
+    i = i + 1
+  }
+  let mut j = 0
+  while j < Array::length(found) {
+    let n = Array::get(found, j)
+    if str_array_contains(known_types, n) {
+      ()
+    } else {
+      Array::push(dtd_type_param_names, n)
+    }
+    j = j + 1
+  }
+}
+
+/// The type variables `ty` mentions, appended to `acc` in first-occurrence
+/// order. (#2136.)
+export fn collect_ty_var_names(ty: TypeExpr, acc: Array[String]) -> Unit {
+  match ty {
+    // #2141: a `__Vfp_`-marked name IS a formal by construction (see
+    // subst_formals_ty) -- the program-wide set cannot know it, since the
+    // marked spelling never appears in source.
+    TyName(n) => if str_array_contains(dtd_type_param_names, n) || is_marked_formal_name(n) {
+      push_name_once(acc, n)
+    } else {
+      ()
+    },
+    TyApp(n, args) => {
+      if str_array_contains(dtd_type_param_names, n) || is_marked_formal_name(n) {
+        push_name_once(acc, n)
+      } else {
+        ()
+      }
+      let mut i = 0
+      while i < Array::length(args) {
+        collect_ty_var_names(Array::get(args, i), acc)
+        i = i + 1
+      }
+    },
+    TyTuple(ts) => {
+      let mut i = 0
+      while i < Array::length(ts) {
+        collect_ty_var_names(Array::get(ts, i), acc)
+        i = i + 1
+      }
+    },
+    TyFn(ps, ret, _) => {
+      let mut i = 0
+      while i < Array::length(ps) {
+        collect_ty_var_names(Array::get(ps, i), acc)
+        i = i + 1
+      }
+      collect_ty_var_names(ret, acc)
+    },
+    _ => ()
+  }
+}
+
+/// The type-parameter list a synthesized `Array[elem_ty]` helper must carry:
+/// empty for a concrete element type (the helper stays monomorphic), and the
+/// mentioned type variables otherwise. (#2136.)
+export fn arr_helper_tparams(elem_ty: TypeExpr) -> Array[String] {
+  let out = empty_str_array()
+  collect_ty_var_names(elem_ty, out)
+  out
+}
+
+/// A type name that the runtime compares as a flat scalar (no structural
+/// `equals` needed). Everything else named is a user struct/enum and recurses
+/// through its generated `T::equals`.
+export fn is_scalar_type_name(n: String) -> Bool {
+  n == "Int" || n == "Double" || n == "Float" || n == "Bool" || n == "String" || n == "Char" || n == "Unit" || n == "Bytes"
+}
+
+/// Codex round 4 on #2471: a program may declare a struct whose spelling is a
+/// scalar's (`struct Int { value: String }`, #2456 round 17). A shape that
+/// reaches the static-shape rung or the array-literal rung then cannot say
+/// which `Int` it means -- the checker's row spells a literal's builtin `Int`
+/// and the declared struct the same way, and the syntactic inference names a
+/// literal `Int` too. Dispatching such a position through the declared
+/// comparator read two Int words as struct pointers (measured on the FS
+/// lane: `Some(1) == Some(2)` and `(1, "a") == (2, "a")` answered `true`,
+/// `[1] == [2]` answered `true` on main as well); the builtin arm would
+/// misjudge a struct payload the same way. Those rungs fail closed instead.
+/// A program that owns no scalar spelling never sees this test succeed.
+export fn ty_mentions_owned_scalar(t: TypeExpr) -> Bool {
+  match t {
+    TyName(n) => is_scalar_type_name(n) && str_array_contains(dtd_eq_type_owners, n),
+    TyApp(h, args) => if is_scalar_type_name(h) && str_array_contains(dtd_eq_type_owners, h) {
+      true
+    } else {
+      let mut hit = false
+      let mut i = 0
+      while i < Array::length(args) {
+        if ty_mentions_owned_scalar(Array::get(args, i)) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    TyTuple(ts) => {
+      let mut hit = false
+      let mut i = 0
+      while i < Array::length(ts) {
+        if ty_mentions_owned_scalar(Array::get(ts, i)) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    _ => false
+  }
+}

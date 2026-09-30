@@ -1,0 +1,736 @@
+// Pipeline.
+
+import @vibe/compiler/lowering/trait_namespaces {
+  collect_method_traits, collect_trait_supers, flatten_trait_owners, flatten_traits
+}
+
+import @vibe/compiler/lowering/array_spread {
+  lower_array_spreads
+}
+
+import @vibe/compiler/core {
+  Stmt,
+  TypeExpr,
+  namespace_rename_originals_reset,
+  prelude_ordering_stmt,
+  rename_builtin_shadow_defs,
+  stmts_declare_prelude_ordering_shape,
+  stmts_shadow_prelude_ordering,
+  stmts_use_prelude_ordering,
+  typed_forin_row_head,
+  typed_index_map_verdict,
+  typed_index_open_verdict,
+  typed_index_row_head,
+  typed_render_row_head
+}
+
+import @vibe/ast {
+  impl_target_key
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import ./collection_access.vibe {
+  dtd_builtin_iterator_reset, dtd_builtin_iterator_set_boundary, dtd_typed_index_insert, dtd_typed_row_insert, index_refusals_report
+}
+
+import ./collection_equality_generation.vibe {
+  emit_recorded_bytes_equals
+}
+
+import ./constructor_inference.vibe {
+  collect_constructor_callable_bodies
+}
+
+import ./constructor_receivers.vibe {
+  gens_use_constructor_receiver, propagate_constructor_receiver_names, stmts_use_constructor_witness
+}
+
+import ./derive_operations.vibe {
+  dtd_facts_set, module_trait_facts_none, show_refusals_report, struct_decl_exists
+}
+
+import ./derive_pass.vibe {
+  desugar_derives
+}
+
+import ./equality_content_types.vibe {
+  eq_known_types_reset
+}
+
+import ./equality_emit.vibe {
+  emit_recorded_structural_eq
+}
+
+import ./equality_requests.vibe {
+  arr_eq_needed_reset, bytes_eq_needed_reset, dtd_fresh_reset_for_decl, eq_tuple_uid_reset, map_eq_needed_reset
+}
+
+import ./exceptions.vibe {
+  collect_struct_field_sets, ensure_exn_kind_cell, exn_kind_cell_present, lookup_str_pair
+}
+
+import ./formal_scope.vibe {
+  scope_formals_reset
+}
+
+import ./function_returns.vibe {
+  collect_fn_returns
+}
+
+import ./generic_dispatch.vibe {
+  build_gens, collect_impl_infos
+}
+
+import ./labeled_args_pass.vibe {
+  desugar_labeled_args
+}
+
+import ./lambda_hoist.vibe {
+  desugar_hoist_local_lambdas
+}
+
+import ./models.vibe {
+  ModuleTraitFacts
+}
+
+import ./railway_binds.vibe {
+  collect_toplevel_anon_records, collect_toplevel_constructor_vars
+}
+
+import ./renderer_scope.vibe {
+  collect_show_shims, derived_renderers_reset, local_show_shim_reset
+}
+
+import ./rewrite.vibe {
+  merged_source_boundary_local_names, rewrite_stmt, user_assert_eq_reset, user_assert_eq_set_merged_source
+}
+
+import ./state.vibe {
+  dlh_module_tag,
+  dtd_constructor_callable_bodies,
+  dtd_constructor_local_returns,
+  dtd_constructor_tracking,
+  dtd_ctx_len,
+  dtd_eq_refusals,
+  dtd_exn_kind_state,
+  dtd_index_refusals,
+  dtd_own_growth,
+  dtd_own_limit,
+  dtd_synth_dict_fields,
+  dtd_typed_eq_keys,
+  dtd_typed_eq_offs,
+  dtd_typed_forin_offs,
+  dtd_typed_forin_verdicts,
+  dtd_typed_index_offs,
+  dtd_typed_index_verdicts,
+  dtd_typed_render_keys,
+  dtd_typed_render_offs
+}
+
+import ./trait_bounds.vibe {
+  dtd_eq_witness_trait, dtd_trait_supers_set
+}
+
+import ./trivial_wrappers.vibe {
+  dtpw_inline_trivial_wrappers
+}
+
+import ./type_names.vibe {
+  make_dict_struct_stmt
+}
+
+import ./typed_row_queries.vibe {
+  dtd_is_own_index, dtd_own_end, dtd_trait_declared_here, eq_deferred_reset
+}
+
+import ./utilities.vibe {
+  collect_trait_type_params,
+  derive_trait_namespace_operations,
+  dict_struct_name,
+  dtd_synth_dict_reset,
+  inject_trait_method_generics_with,
+  lookup_trait_type_params
+}
+
+import ./witness_targets.vibe {
+  dtd_inject_builtin_eq, dtd_trait_declared_anywhere
+}
+
+/// In-place lowering of array-literal spreads across the whole program (#790).
+export fn desugar_array_spread(stmts: Array[Stmt]) -> Unit {
+  lower_array_spreads(stmts, dtd_own_end(stmts))
+}
+
+/// Entry point: in-place dictionary-passing desugaring. No-op unless the program
+/// declares at least one method-bearing trait. Idempotent: re-running (the
+/// single-file pipeline desugars before generic-stripping and codegen re-runs on
+/// the same stmts after) finds the bounds already stripped (so no function is
+/// re-threaded) and skips dict structs that already exist.
+export fn desugar_trait_dicts(stmts: Array[Stmt]) -> Unit with Exception {
+  desugar_trait_dicts_with_typed_eq(stmts, array_empty(), array_empty())
+}
+
+export fn desugar_trait_dicts_with_typed_eq(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Array[String]) -> Unit with Exception {
+  // #3132: this pass synthesizes `Array::get` / `Array::length` / ... calls
+  // (interpolation, structural `==`, iteration), which must reach the
+  // builtin. Every entry pipeline reaches here before its first such
+  // synthesis; a program's own definition of one of those names is moved
+  // aside first. A no-op when the linked prelude already ran it.
+  rename_builtin_shadow_defs(stmts)
+  Array::set(dtd_own_limit, 0, 0 - 1)
+  Array::set(dtd_ctx_len, 0, 0)
+  Array::set(dlh_module_tag, 0, "")
+  // A whole program carries no per-module facts (#2647 Codex round 8). Cleared
+  // on ENTRY rather than trusted to have been cleared on the way out, because
+  // `dtd_run` ends in `eq_refusals_report`, which THROWS: a module lowering
+  // that hits a structural-`==` refusal skips the per-module entry's own clear
+  // and leaves these cells populated. Since both entries now set them before
+  // any reader runs, no exceptional-exit cleanup is needed anywhere -- there is
+  // no path into `dtpw_collect_wrappers` or `dtd_source_op_defined` that does
+  // not pass through one of the two. Left stale, a wrapper name from a FAILED
+  // compile rewrites `apply(pick)` in the next program to `pick()`.
+  dtd_facts_set(module_trait_facts_none())
+  // One program per call, so this call's deferrals and refusals are this
+  // program's. The per-module entry deliberately does NOT reset: its caller
+  // wants the union across the modules of one split run, and resets once at
+  // that boundary (#2642 review, Codex P2).
+  eq_deferred_reset()
+  dtd_run(stmts, typed_eq_offsets, typed_eq_keys)
+  // #3144 round 4: a witness field is named by COMPUTING `<Type>::<method>`,
+  // which for an impl method at a listed name (`impl Measured for String {
+  // length(..) }`) is the source spelling of a definition renamed above.
+  // This run points those references at the definition; the builtin calls
+  // this pass wrote carry `builtin_ref` and stay on the builtin.
+  rename_builtin_shadow_defs(stmts)
+  // The lane is over: clear the merge rename table so a later compilation in
+  // this process cannot see stale entries (#2205, moved here in #2647 round 6).
+  namespace_rename_originals_reset()
+}
+
+/// #2388: the per-module entry. `own` is the module's statements, rewritten in
+/// place; `ctx` is its dependency interface -- the type / trait declarations,
+/// bounded-generic function definitions and explicit `T::op` definitions it
+/// can see through its imports, in their pre-pass (contract) form -- read for
+/// lookups and never emitted. Returns the statements the pass appended: the
+/// derived operations of the module's own types (`T::equals`, …) and the
+/// program-level helpers they and the module's `==` sites need
+/// (`__arr_equals__*`, `__map_equals__*`, the exn-kind cell). A caller links
+/// them once per name across modules; a `T::op` for a type this module
+/// declares is this module's definition. Only the trait namespace operations
+/// are placed inside `own` (right after their trait, as the whole-program
+/// entry does), which is why the entry tracks how much the own region grew.
+///
+/// `module_tag` names this module for the one generated top-level name that
+/// cannot be derived from a declaration -- a lambda hoisted out of a bare
+/// expression statement (see `dlh_owner_name`). Every other hoisted name comes from
+/// the declaration that owns it and so is already module-unique; pass "" to
+/// number the nameless ones by position, as the whole-program entry does.
+export fn desugar_trait_dicts_module(own: Array[Stmt], ctx: Array[Stmt], module_tag: String, typed_eq_offsets: Array[Int], typed_eq_keys: Array[String]) -> Array[Stmt] with Exception {
+  desugar_trait_dicts_module_with_facts(own, ctx, module_tag, typed_eq_offsets, typed_eq_keys, module_trait_facts_none())
+}
+
+/// The same entry given the whole-program facts a partition cannot derive
+/// (#2647 Codex rounds 6-7). See `ModuleTraitFacts`. The five-argument form
+/// above passes none, which is right for a MEASUREMENT and wrong for a
+/// production driver -- a caller that means to compile passes real ones.
+export fn desugar_trait_dicts_module_with_facts(own: Array[Stmt], ctx: Array[Stmt], module_tag: String, typed_eq_offsets: Array[Int], typed_eq_keys: Array[String], facts: ModuleTraitFacts) -> Array[Stmt] with Exception {
+  dtd_facts_set(facts)
+  let stmts: Array[Stmt] = []
+  let mut i = 0
+  while i < Array::length(own) {
+    Array::push(stmts, Array::get(own, i))
+    i = i + 1
+  }
+  let mut ci = 0
+  while ci < Array::length(ctx) {
+    Array::push(stmts, Array::get(ctx, ci))
+    ci = ci + 1
+  }
+  Array::set(dtd_own_limit, 0, Array::length(own))
+  Array::set(dtd_ctx_len, 0, Array::length(ctx))
+  Array::set(dtd_own_growth, 0, 0)
+  Array::set(dlh_module_tag, 0, module_tag)
+  dtd_run(stmts, typed_eq_offsets, typed_eq_keys)
+  // #3144 round 4: as in the whole-program entry. The module's own
+  // definitions and its context's are both in `stmts`, so a witness naming
+  // either is pointed at the renamed definition.
+  rename_builtin_shadow_defs(stmts)
+  let own_n = Array::length(own)
+  let own_end = own_n + Array::get(dtd_own_growth, 0)
+  let mut wi = 0
+  while wi < own_end {
+    if wi < own_n {
+      Array::set(own, wi, Array::get(stmts, wi))
+    } else {
+      Array::push(own, Array::get(stmts, wi))
+    }
+    wi = wi + 1
+  }
+  let synthesized: Array[Stmt] = []
+  let mut si = own_end + Array::length(ctx)
+  while si < Array::length(stmts) {
+    Array::push(synthesized, Array::get(stmts, si))
+    si = si + 1
+  }
+  Array::set(dtd_own_limit, 0, 0 - 1)
+  Array::set(dtd_ctx_len, 0, 0)
+  Array::set(dlh_module_tag, 0, "")
+  dtd_facts_set(module_trait_facts_none())
+  synthesized
+}
+
+/// #3042 (ADR-0118): append the prelude `enum Ordering { Less; Equal;
+/// Greater } derive (Eq, Ord, Show)` to a program that builds an `Ordering`
+/// -- one that derives `Ord`, or names one of its constructors as a value or a
+/// pattern (`stmts_use_prelude_ordering`) -- and does not
+/// declare those names itself. The checker checked every module against the
+/// same declaration (`seed_prelude_ordering`); this is the one copy the merged
+/// program is compiled with, so every module's `Less` is the same constructor.
+/// A program that already carries a declaration (a second run of this pass,
+/// or `@vibe/builtin`'s `ordering.vibe` linked in) is left as it is.
+///
+/// A program that derives `Ord` while one of its modules declares an
+/// `Ordering`, or a `Less` / `Equal` / `Greater` constructor or value, of
+/// another shape has no constructor the derived `compare` may build, so it is
+/// refused. The checker refuses the module-local and imported-constructor
+/// shapes first; this catches a foreign `Ordering` that reached a module only
+/// through an imported signature, whose declaration that module never saw.
+///
+/// An exact-shaped `enum Ordering { Less; Equal; Greater }` declared by some
+/// module IS the prelude for the modules that import a signature mentioning
+/// it, and the checker binds the prelude's `equals` / `compare` /
+/// `to_string` for them. A declaration written without those derives gains
+/// them here; one that defines such an operation by hand instead is refused,
+/// since its signature need not be the one the importers were checked against.
+fn dtd_append_prelude_ordering(stmts: Array[Stmt]) -> Unit with Exception {
+  if dtd_stmts_derive_ord(stmts) && dtd_ordering_foreign_shadow(stmts) {
+    throw("`derive (Ord)` generates `compare` returning the prelude `Ordering` (`Less` / `Equal` / `Greater`), but a module in this program declares its own `Ordering` or one of those constructors; rename that declaration")
+  } else if !stmts_shadow_prelude_ordering(stmts) {
+    if stmts_use_prelude_ordering(stmts) {
+      Array::push(stmts, prelude_ordering_stmt())
+    }
+  } else {
+    dtd_complete_prelude_ordering_derives(stmts)
+  }
+}
+
+/// Does some top-level statement shadow the prelude `Ordering` other than an
+/// exact-shaped `enum Ordering { Less; Equal; Greater }` declaration?
+fn dtd_ordering_foreign_shadow(stmts: Array[Stmt]) -> Bool {
+  let mut found = false
+  for stmt in stmts {
+    let one = [stmt]
+    if stmts_shadow_prelude_ordering(one) && !stmts_declare_prelude_ordering_shape(one) {
+      found = true
+    }
+  }
+  found
+}
+
+/// Give an exact-shaped `Ordering` declaration the prelude's `Eq` / `Ord` /
+/// `Show` derives it lacks, refusing one whose operation the program defines.
+fn dtd_complete_prelude_ordering_derives(stmts: Array[Stmt]) -> Unit with Exception {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let stmt = Array::get(stmts, i)
+    if stmts_declare_prelude_ordering_shape([stmt]) {
+      match stmt {
+        SEnum(exported, name, params, variants, derives) => {
+          let completed = array_empty()
+          for d in derives {
+            Array::push(completed, d)
+          }
+          for pair in [
+            ("Eq", "Ordering::equals"),
+            ("Ord", "Ordering::compare"),
+            ("Show", "Ordering::to_string")
+          ] {
+            let (wanted, op) = pair
+            let mut present = false
+            for d in completed {
+              if d == wanted {
+                present = true
+              }
+            }
+            // A hand-written operation is refused whether or not the derive is
+            // listed: `desugar_derives` lets a source definition replace the
+            // generated one, and its signature need not be the prelude's.
+            if dtd_stmts_define_value(stmts, op) {
+              throw(String::concat("`enum Ordering { Less; Equal; Greater }` is spelled exactly like the prelude, so it carries the prelude's `derive (Eq, Ord, Show)`; `", String::concat(op, "` is also written by hand -- remove it and derive it, or rename the type")))
+            }
+            if !present {
+              Array::push(completed, wanted)
+            }
+          }
+          Array::set(stmts, i, SEnum(exported, name, params, variants, completed))
+        },
+        _ => ()
+      }
+    }
+    i = i + 1
+  }
+}
+
+fn dtd_stmts_define_value(stmts: Array[Stmt], wanted: String) -> Bool {
+  let mut found = false
+  for stmt in stmts {
+    match stmt {
+      SLet(_, _, name, _, _) => if name == wanted {
+        found = true
+      },
+      _ => ()
+    }
+  }
+  found
+}
+
+/// Does any struct or enum in `stmts` derive `Ord`?
+fn dtd_stmts_derive_ord(stmts: Array[Stmt]) -> Bool {
+  let mut found = false
+  for stmt in stmts {
+    let derives = match stmt {
+      SStruct(_, _, _, ds, _, _) => ds,
+      SEnum(_, _, _, _, ds) => ds,
+      _ => array_empty()
+    }
+    for d in derives {
+      if d == "Ord" {
+        found = true
+      }
+    }
+  }
+  found
+}
+
+fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Array[String]) -> Unit with Exception {
+  // #2441: (re)populate the typed-`==` table for THIS program before any
+  // rewrite can read it.
+  Array::truncate(dtd_typed_eq_offs, 0)
+  Array::truncate(dtd_typed_eq_keys, 0)
+  // #3066: the render rows ride the same channel under the
+  // `typed_render_row_head` wrapper; they are split off here so a `==` lookup
+  // never reads one.
+  Array::truncate(dtd_typed_render_offs, 0)
+  Array::truncate(dtd_typed_render_keys, 0)
+  let render_prefix = impl_target_key(TyApp(typed_render_row_head(), [
+    TyName("Int")
+  ]))
+  let render_head_len = String::index_of(render_prefix, impl_target_key(TyName("Int")))
+  let render_head = String::substring(render_prefix, 0, render_head_len)
+  // #3133: the index-receiver rows, split off the same way.
+  Array::truncate(dtd_typed_index_offs, 0)
+  Array::truncate(dtd_typed_index_verdicts, 0)
+  Array::truncate(dtd_index_refusals, 0)
+  Array::truncate(dtd_typed_forin_offs, 0)
+  Array::truncate(dtd_typed_forin_verdicts, 0)
+  let forin_map_key = impl_target_key(TyApp(typed_forin_row_head(), [
+    TyName(typed_index_map_verdict())
+  ]))
+  let forin_open_key = impl_target_key(TyApp(typed_forin_row_head(), [
+    TyName(typed_index_open_verdict())
+  ]))
+  let index_map_key = impl_target_key(TyApp(typed_index_row_head(), [
+    TyName(typed_index_map_verdict())
+  ]))
+  let index_open_key = impl_target_key(TyApp(typed_index_row_head(), [
+    TyName(typed_index_open_verdict())
+  ]))
+  let mut teq_i = 0
+  while teq_i < Array::length(typed_eq_offsets) {
+    let tkey = Array::get(typed_eq_keys, teq_i)
+    if tkey == forin_map_key {
+      dtd_typed_row_insert(dtd_typed_forin_offs, dtd_typed_forin_verdicts, Array::get(typed_eq_offsets, teq_i), typed_index_map_verdict())
+    } else if tkey == forin_open_key {
+      dtd_typed_row_insert(dtd_typed_forin_offs, dtd_typed_forin_verdicts, Array::get(typed_eq_offsets, teq_i), typed_index_open_verdict())
+    } else if tkey == index_map_key {
+      dtd_typed_index_insert(Array::get(typed_eq_offsets, teq_i), typed_index_map_verdict())
+    } else if tkey == index_open_key {
+      dtd_typed_index_insert(Array::get(typed_eq_offsets, teq_i), typed_index_open_verdict())
+    } else if render_head_len > 0 && String::starts_with(tkey, render_head) {
+      Array::push(dtd_typed_render_offs, Array::get(typed_eq_offsets, teq_i))
+      Array::push(dtd_typed_render_keys, tkey)
+    } else {
+      Array::push(dtd_typed_eq_offs, Array::get(typed_eq_offsets, teq_i))
+      Array::push(dtd_typed_eq_keys, tkey)
+    }
+    teq_i = teq_i + 1
+  }
+  // #2286: the record describes THIS program. The unit-test batch compiles
+  // many files in one long-lived daemon, so a table left standing would
+  // relabel a later program's struct after an earlier program's trait.
+  dtd_synth_dict_reset()
+  // #790: lower array-literal spreads first, so no downstream pass or codegen
+  // ever sees a raw ESpread.
+  desugar_array_spread(stmts)
+  // #3042: the prelude `Ordering` joins a program that builds one, before
+  // any pass below collects the program's declared types.
+  dtd_append_prelude_ordering(stmts)
+  // #1070 (narrow slice): inline a trivial pass-through wrapper
+  // (`let apply = (f) -> { f() }`, body EXACTLY a same-arity direct call to
+  // its own sole parameter, nothing else) at each matching call site
+  // (`apply(x)` -> `x()`), before #786's hoist below. A capturing effectful
+  // closure PASSED BY VALUE through such a wrapper (`apply(inner)` where
+  // `inner` captures a local) crashes independent of #1069's closure-
+  // conversion fix -- #1069 only rewrites provably-direct call sites, and
+  // `inner` used as a bare argument to `apply` is exactly the "used as a
+  // value" shape it correctly declines to touch. This doesn't attempt the
+  // general problem (#1070's own analysis: real closure-conversion-to-
+  // value semantics, or fixing #786's still-unlocated deeper combinator
+  // bug) -- it only recognizes the specific case where the "value use" is
+  // itself immediately, trivially, and unconditionally a direct call one
+  // level removed, and short-circuits it back into an ordinary direct
+  // call BEFORE #786/#1069's hoist+conversion logic runs, so THAT already-
+  // verified machinery picks it up exactly as if the caller had written
+  // `inner()` directly. Always sound regardless of what the argument does
+  // (identity-wrapper inlining never changes observable behavior -- the
+  // wrapper's own row already required whatever effects the checker
+  // already validated at the original `apply(inner)` call site, and
+  // `inner()` requires the identical row by construction), and leaves the
+  // wrapper's own top-level definition untouched (usable as a value
+  // wherever else it's referenced) -- only matching call sites are
+  // rewritten, so a wrapper used BOTH as a value AND as a direct call
+  // elsewhere is still handled safely either way.
+  dtpw_inline_trivial_wrappers(stmts)
+  // #786: hoist non-capturing effectful local lambdas to top-level functions
+  // before any other pass. A local `let f = (x) -> { perform ... }` that captures
+  // nothing gets promoted to a top-level `let f = ...`, so codegen emits a direct
+  // function (with its `$read` effect param) instead of a local closure whose
+  // arity-1 type may go unregistered. Runs first so the hoisted top-level SLets
+  // are processed by every downstream pass (labeled args, dict rewrite, codegen).
+  desugar_hoist_local_lambdas(stmts)
+  // Labeled-argument reordering runs first so downstream passes and codegen see
+  // args already in declared parameter order.
+  desugar_labeled_args(stmts)
+  // derive(...) structural function generation (#638) — independent of traits,
+  // idempotent, so it runs unconditionally here at the shared pre-check points.
+  // #1398 review (Codex P1): reset before desugar_derives repopulates it, so
+  // the throw-site render can only ever name a renderer generated for THIS
+  // program.
+  derived_renderers_reset()
+  // #1526: same reason -- the recorded set must describe THIS run's output.
+  arr_eq_needed_reset()
+  map_eq_needed_reset()
+  bytes_eq_needed_reset()
+  // #2141: a throw mid-rewrite leaves frames on the lexical binder stack;
+  // reset so a later run on another program cannot see them.
+  scope_formals_reset()
+  // #2283: same discipline -- whether the assert lowering must stand down for
+  // THIS program, because the program defines the name itself.
+  user_assert_eq_reset(stmts)
+  dtd_builtin_iterator_reset(stmts)
+  eq_tuple_uid_reset()
+  eq_known_types_reset(stmts)
+  desugar_derives(stmts)
+  // #2205's reset used to be HERE and is now at the LANE boundary
+  // (`desugar_trait_dicts_with_typed_eq`, and the per-module driver after its
+  // last module). Its purpose is unchanged -- the derive generators above are
+  // the only readers of the merge rename table, and a LATER compilation in this
+  // process must not see stale entries.
+  //
+  // What changed is granularity (#2647 Codex round 6). `dtd_run` runs ONCE
+  // whole-program but once PER MODULE on the split lane, so clearing here meant
+  // module 0 read the table and every module after it found it empty --
+  // rendering `Point_dep_<path>` instead of `Point` in derived `Show` / `Hash`
+  // output. The table is built by `record_namespace_rename_originals_for_file`
+  // during the MERGE, before any of this runs, so no module can rebuild it.
+  //
+  // This is the same defect as the deferral registries in round 1 of the same
+  // review: a process-global registry reset at per-run granularity, where the
+  // split lane needs lane granularity.
+  derive_trait_namespace_operations(stmts)
+  // Flatten supertrait methods into each trait so `[T: B]` (for `trait B: A`)
+  // dispatches both B's and A's methods through one witness dictionary. When the
+  // program declares no method-bearing trait `traits` is empty, the dict-passing
+  // rewrites are all no-ops (`gens` empty, sync-`for` classification gated off),
+  // and the rewrite pass only classifies the ASYNC for-loop shapes — so it must
+  // still run unconditionally (those shapes need no trait machinery, #1350).
+  // #1392: the `Show`-bounded `__to_string` pass-throughs in THIS program, so a
+  // spelled-out `to_string(v)` renders like `"\{v}"` does. See dtd_show_shims.
+  collect_show_shims(stmts)
+  local_show_shim_reset()
+  // #2523: BEFORE the trait table is built, so every downstream collector --
+  // collect_method_traits, collect_trait_supers, build_gens, impl target
+  // resolution -- sees the prelude's `Eq` the same way it sees a program's
+  // own. Injecting only the SIGNATURES left the impls missing and the dict
+  // record was built without its field: `unknown struct field: equals` on
+  // `bare[T: Eq](1, 1)`, measured. The two halves have to arrive together.
+  let traits_raw = collect_method_traits(stmts)
+  dtd_inject_builtin_eq(stmts, traits_raw)
+  let trait_type_params = collect_trait_type_params(stmts)
+  let supers_map = collect_trait_supers(stmts)
+  let traits = flatten_traits(traits_raw, supers_map)
+  // #2523: the `==` rung's entailment test reads the same graph the flattening
+  // walked -- see dtd_bound_entails_eq.
+  dtd_trait_supers_set(supers_map)
+  // Rank-1 method generics (#684): re-attach each trait method's `[X: Bound]`
+  // binder to its impl free functions (and annotate their params) BEFORE
+  // build_gens, so `C::m` is registered as a bounded generic and the existing
+  // dict-passing threads the witness at qualified call sites. Inert (and
+  // idempotent) when no trait declares a method-level binder. Also run from
+  // `check_program` so the FS-compile path (which type-checks before this pass)
+  // sees the `X` binding and can resolve `X::method` in the impl body.
+  inject_trait_method_generics_with(stmts, traits)
+  let struct_sets = collect_struct_field_sets(stmts)
+  let fn_returns = collect_fn_returns(stmts)
+  let gimpl_infos = collect_impl_infos(stmts)
+  let gens = build_gens(stmts, traits, gimpl_infos)
+  Array::truncate(dtd_constructor_local_returns, 0)
+  Array::truncate(dtd_constructor_callable_bodies, 0)
+  Array::set(dtd_constructor_tracking, 0, gens_use_constructor_receiver(gens) && stmts_use_constructor_witness(stmts, gens))
+  if Array::get(dtd_constructor_tracking, 0) {
+    collect_constructor_callable_bodies(stmts)
+    let mut previous_count = -1
+    while previous_count != Array::length(dtd_constructor_local_returns) {
+      previous_count = Array::length(dtd_constructor_local_returns)
+      propagate_constructor_receiver_names(stmts)
+    }
+  } else {
+    ()
+  }
+  // #839: see `collect_toplevel_anon_records` / the `rewrite_stmt` doc comment.
+  let toplevel_vars = if Array::get(dtd_constructor_tracking, 0) {
+    collect_toplevel_constructor_vars(stmts, gens, struct_sets, fn_returns)
+  } else {
+    collect_toplevel_anon_records(stmts, struct_sets)
+  }
+  // #1374: reset the exception-kind pass state. An already-declared cell means
+  // an earlier run of this pass on this same program already wrapped every
+  // throw, so the rewrite below stays off.
+  Array::set(dtd_exn_kind_state, 0, if exn_kind_cell_present(stmts) {
+    1
+  } else {
+    0
+  })
+  Array::set(dtd_exn_kind_state, 1, 0)
+  Array::set(dtd_exn_kind_state, 2, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let stmt = Array::get(stmts, i)
+    if !dtd_is_own_index(i) {
+      ()
+    } else {
+      dtd_fresh_reset_for_decl()
+      match merged_source_boundary_local_names(stmt) {
+        Some(local_names) => {
+          user_assert_eq_set_merged_source(stmts, i + 1, local_names)
+          dtd_builtin_iterator_set_boundary(local_names)
+        },
+        None => Array::set(stmts, i, rewrite_stmt(stmt, gens, traits, struct_sets, fn_returns, toplevel_vars))
+      }
+    }
+    i = i + 1
+  }
+  // #1526: the rewrite above is what emits `__arr_equals__<key>` calls, so it
+  // is what decides which helpers exist. Anything `desugar_derives` could not
+  // predict (an operand reached through a name) is generated here. Bytes
+  // second: generating an `__arr_equals__` body can record the Bytes need
+  // (`Array[Bytes]` elements), and `__bytes_equals` records nothing back.
+  // Array, Map, and specialized generic comparator bodies can record needs
+  // into one another. Alternate all three emitters to a mutual fixpoint.
+  emit_recorded_structural_eq(stmts)
+  emit_recorded_bytes_equals(stmts)
+  // #1374: append the cell only for a program that actually reads or writes it,
+  // so a throw-free program's output is unchanged.
+  if Array::get(dtd_exn_kind_state, 1) == 1 {
+    ensure_exn_kind_cell(stmts)
+  } else {
+    ()
+  }
+  // Witness dict structs are only needed when method-bearing traits exist.
+  if Array::length(traits_raw) == 0 {
+    ()
+  } else {
+    let mut ti = 0
+    while ti < Array::length(traits) {
+      let (trait_name, sigs) = Array::get(traits, ti)
+      // #2523: the builtin `Eq` is injected as SIGNATURES (dtd_inject_builtin_eq),
+      // never as a statement, so `dtd_trait_declared_here` is false for it and
+      // this guard skipped its dict struct -- which is exactly why a
+      // signatures-only injection produced `unknown struct field: equals` on
+      // `bare[T: Eq](1, 1)`. Declaring it as a statement instead is what made
+      // `Int::next` reach codegen unresolved and the module-split oracles
+      // diverge: a trait DECLARATION feeds collect_method_traits, the supers
+      // map and the trait-namespace machinery, and an injection performed once
+      // per run makes a whole-program run and a per-module run disagree.
+      //
+      // The dict struct is this pass's OWN output -- it appends one for every
+      // method-bearing trait already -- so emitting it for the injected trait
+      // adds nothing the pass does not otherwise produce.
+      let injected_builtin = trait_name == dtd_eq_witness_trait() && !dtd_trait_declared_anywhere(stmts, trait_name)
+      if struct_decl_exists(stmts, dict_struct_name(trait_name)) || (!dtd_trait_declared_here(stmts, trait_name) && !injected_builtin) {
+        ()
+      } else {
+        // #2286: record the provenance at the ONE point a dict struct is
+        // actually synthesized -- one row per field, carrying the trait that
+        // DECLARES it, which for an inherited method is a supertrait rather
+        // than `trait_name`.
+        let dict_name = dict_struct_name(trait_name)
+        let owners = flatten_trait_owners(trait_name, traits_raw, supers_map)
+        let mut si = 0
+        while si < Array::length(sigs) {
+          let (mname, _mparams, _mret) = Array::get(sigs, si)
+          Array::push(dtd_synth_dict_fields, (dict_name, mname, lookup_str_pair(owners, mname, trait_name)))
+          si = si + 1
+        }
+        // #2523: `make_dict_struct_stmt` keeps `Self` verbatim in the field
+        // types, on the documented reasoning that struct type params are
+        // erased so the field-access typing is structural. That holds for a
+        // DECLARED trait, whose declaration puts `Self` in scope. The injected
+        // builtin has no declaration, so `Self` resolved to nothing:
+        // `unknown type `Self` in field `equals` of struct `EqDict``,
+        // measured. Bind it as an (erased) type parameter of the dict struct
+        // instead, which is the same erasure the comment already relies on.
+        let dict_tparams = if injected_builtin {
+          let tp: Array[String] = ["Self"]
+          tp
+        } else {
+          lookup_trait_type_params(trait_type_params, trait_name)
+        }
+        Array::push(stmts, make_dict_struct_stmt(trait_name, sigs, dict_tparams))
+      }
+      ti = ti + 1
+    }
+  }
+  eq_refusals_report()
+  show_refusals_report()
+  index_refusals_report()
+}
+
+/// #2475: a structural-equality refusal is a COMPILE error, not a runtime trap.
+///
+/// Every one of these used to be emitted as a bare `assert_true(false)`, so the
+/// program compiled clean and died with `trap: RuntimeError: unreachable` -- no
+/// message, no position, nothing to act on. There is no way to attach a message
+/// at run time: `assert_eq` lowers to `println` and so requires `Console` on the
+/// containing function (#2107), which breaks a derived `::equals` outright and
+/// would reject user code with an effect-row error about the wrong thing.
+///
+/// So it is reported here, at the end of the rewrite, where the pass already
+/// carries `with Exception`. The refusal itself is unchanged -- these sites
+/// were never going to answer -- but the program now fails to build, saying
+/// which comparison and what to write instead, and NO guard is emitted for it.
+///
+/// The cost, accepted deliberately: a comparison that is written but never
+/// executed used to compile and run, and no longer does. `vibe check` does not
+/// run this pass, so it stays clean; the refusal lands on `vibe build` /
+/// `vibe run` / `vibe test`.
+fn eq_refusals_report() -> Unit with Exception {
+  if Array::length(dtd_eq_refusals) == 0 {
+    ()
+  } else {
+    let mut out = ""
+    let mut i = 0
+    while i < Array::length(dtd_eq_refusals) {
+      out = String::concat(out, String::concat(if i == 0 {
+        ""
+      } else {
+        "\n"
+      }, String::concat("structural `==` cannot be decided here: ", Array::get(dtd_eq_refusals, i))))
+      i = i + 1
+    }
+    throw(out)
+  }
+}
