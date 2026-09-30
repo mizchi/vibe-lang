@@ -5832,27 +5832,27 @@ fn edp_etawrap_stmts(stmts: Array[Stmt], needing: Array[String], ename: String, 
     match Array::get(stmts, i) {
       SLet(ex, isrec, nm, ty, expr) => if edp_rq_fold(nq, expr) > 0 {
         let scope = edp_str_array_contains(needing, nm)
-        Array::set(stmts, i, SLet(ex, isrec, nm, ty, edp_etawrap_expr(expr, scope, needing, ename, wc)))
+        Array::set(stmts, i, SLet(ex, isrec, nm, ty, edp_etawrap_expr(expr, scope, needing, ename, wc, array_empty())))
       } else {
         ()
       },
       SLetMut(nm, ty, expr) => if edp_rq_fold(nq, expr) > 0 {
-        Array::set(stmts, i, SLetMut(nm, ty, edp_etawrap_expr(expr, false, needing, ename, wc)))
+        Array::set(stmts, i, SLetMut(nm, ty, edp_etawrap_expr(expr, false, needing, ename, wc, array_empty())))
       } else {
         ()
       },
       SExpr(expr) => if edp_rq_fold(nq, expr) > 0 {
-        Array::set(stmts, i, SExpr(edp_etawrap_expr(expr, false, needing, ename, wc)))
+        Array::set(stmts, i, SExpr(edp_etawrap_expr(expr, false, needing, ename, wc, array_empty())))
       } else {
         ()
       },
       STest(nm, expr) => if edp_rq_fold(nq, expr) > 0 {
-        Array::set(stmts, i, STest(nm, edp_etawrap_expr(expr, false, needing, ename, wc)))
+        Array::set(stmts, i, STest(nm, edp_etawrap_expr(expr, false, needing, ename, wc, array_empty())))
       } else {
         ()
       },
       SBench(nm, expr) => if edp_rq_fold(nq, expr) > 0 {
-        Array::set(stmts, i, SBench(nm, edp_etawrap_expr(expr, false, needing, ename, wc)))
+        Array::set(stmts, i, SBench(nm, edp_etawrap_expr(expr, false, needing, ename, wc, array_empty())))
       } else {
         ()
       },
@@ -5862,16 +5862,64 @@ fn edp_etawrap_stmts(stmts: Array[Stmt], needing: Array[String], ename: String, 
   }
 }
 
-fn edp_etawrap_expr(e: Expr, in_scope: Bool, needing: Array[String], ename: String, wc: (Array[Stmt], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]])) -> Expr {
+/// After checking, an ascribed alias of a needing function has the same value
+/// as the bare name. The parser's identity call is a type-checking artifact;
+/// leaving it here makes the escape guard mistake its argument for a row-free
+/// callback slot. Only peel the exact checked identity shape with this row.
+/// A local immutable alias carries the original needing function's call
+/// convention. The last row for a name wins, including an empty row from a
+/// shadowing binder that must hide an outer alias.
+fn edp_alias_root(name: String, needing: Array[String], aliases: Array[(String, String)]) -> String {
+  let mut i = Array::length(aliases)
+  while i > 0 {
+    i = i - 1
+    let (bound, root) = Array::get(aliases, i)
+    if bound == name {
+      return root
+    }
+  }
+  if edp_str_array_contains(needing, name) {
+    name
+  } else {
+    ""
+  }
+}
+
+fn edp_ascribed_needing_alias(callee: Expr, args: Array[Expr], needing: Array[String], ename: String, es_names: Array[String], es_members_list: Array[Array[String]], aliases: Array[(String, String)]) -> Option[Expr] {
+  if Array::length(args) != 1 {
+    None
+  } else {
+    match (callee, Array::get(args, 0)) {
+      (EFn(tps, _, params, ret, eff, EIdent(body_name, _)), EIdent(alias, _)) => if Array::length(tps) == 0 && Array::length(params) == 1 && ret == None && eff == None && edp_alias_root(alias, needing, aliases) != "" {
+        let (param_name, pty) = Array::get(params, 0)
+        let is_asc = param_name == "__asc" || (String::starts_with(param_name, "__shadow_") && String::ends_with(param_name, "___asc"))
+        if is_asc && body_name == param_name && edp_type_is_fn_row_exactly(pty, ename, es_names, es_members_list) {
+          Some(EIdent(edp_alias_root(alias, needing, aliases), -1))
+        } else {
+          None
+        }
+      } else {
+        None
+      },
+      _ => None
+    }
+  }
+}
+
+fn edp_etawrap_expr(e: Expr, in_scope: Bool, needing: Array[String], ename: String, wc: (Array[Stmt], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]]), aliases: Array[(String, String)]) -> Expr {
   match e {
     ECall(callee, args, off) => {
       let (wstmts, wfn_defs, wes_names, wes_members) = wc
+      match edp_ascribed_needing_alias(callee, args, needing, ename, wes_names, wes_members, aliases) {
+        Some(alias) => return alias,
+        None => ()
+      }
       let callee_nm = match callee {
         EIdent(cn, _) => cn,
         _ => ""
       }
       let new_callee = if callee_nm == "" {
-        edp_etawrap_expr(callee, in_scope, needing, ename, wc)
+        edp_etawrap_expr(callee, in_scope, needing, ename, wc, aliases)
       } else {
         callee
       }
@@ -5880,11 +5928,7 @@ fn edp_etawrap_expr(e: Expr, in_scope: Bool, needing: Array[String], ename: Stri
       while i < Array::length(args) {
         let a = Array::get(args, i)
         let bare = match a {
-          EIdent(an, _) => if edp_str_array_contains(needing, an) {
-            an
-          } else {
-            ""
-          },
+          EIdent(an, _) => edp_alias_root(an, needing, aliases),
           _ => ""
         }
         let wrapped = if bare != "" && in_scope && callee_nm != "" && !edp_arg_slot_accepts_needing(wstmts, wfn_defs, callee_nm, i, ename, wes_names, wes_members) {
@@ -5894,13 +5938,22 @@ fn edp_etawrap_expr(e: Expr, in_scope: Bool, needing: Array[String], ename: Stri
         }
         match wrapped {
           Some(w) => Array::push(new_args, w),
-          None => Array::push(new_args, edp_etawrap_expr(a, in_scope, needing, ename, wc))
+          None => Array::push(new_args, edp_etawrap_expr(a, in_scope, needing, ename, wc, aliases))
         }
         i = i + 1
       }
       ECall(new_callee, new_args, off)
     },
-    EFn(tps, tbs, params, ret, eff, b) => EFn(tps, tbs, params, ret, eff, edp_etawrap_expr(b, in_scope, needing, ename, wc)),
+    EFn(tps, tbs, params, ret, eff, b) => {
+      let mark = Array::length(aliases)
+      for param in params {
+        let (name, _) = param
+        Array::push(aliases, (edp_strip_tilde(name), ""))
+      }
+      let body = edp_etawrap_expr(b, in_scope, needing, ename, wc, aliases)
+      Array::truncate(aliases, mark)
+      EFn(tps, tbs, params, ret, eff, body)
+    },
     EHandle(b, arms) => {
       let matches = edp_handle_matches_effect(arms, ename)
       let body_scope = if matches {
@@ -5913,55 +5966,114 @@ fn edp_etawrap_expr(e: Expr, in_scope: Bool, needing: Array[String], ename: Stri
       } else {
         in_scope
       }
-      EHandle(edp_etawrap_expr(b, body_scope, needing, ename, wc), edp_etawrap_arms(arms, arm_scope, needing, ename, wc))
+      EHandle(edp_etawrap_expr(b, body_scope, needing, ename, wc, aliases), edp_etawrap_arms(arms, arm_scope, needing, ename, wc, aliases))
     },
-    EIf(c, t, el) => EIf(edp_etawrap_expr(c, in_scope, needing, ename, wc), edp_etawrap_expr(t, in_scope, needing, ename, wc), edp_etawrap_expr(el, in_scope, needing, ename, wc)),
-    EMatch(s, arms) => EMatch(edp_etawrap_expr(s, in_scope, needing, ename, wc), edp_etawrap_arms(arms, in_scope, needing, ename, wc)),
-    EWhile(c, b) => EWhile(edp_etawrap_expr(c, in_scope, needing, ename, wc), edp_etawrap_expr(b, in_scope, needing, ename, wc)),
-    EForIn(n, idx, it, b) => EForIn(n, idx, edp_etawrap_expr(it, in_scope, needing, ename, wc), edp_etawrap_expr(b, in_scope, needing, ename, wc)),
-    ELoop(pairs, b) => ELoop(edp_etawrap_pairs(pairs, in_scope, needing, ename, wc), edp_etawrap_expr(b, in_scope, needing, ename, wc)),
-    ELet(n, v, b, off) => ELet(n, edp_etawrap_expr(v, in_scope, needing, ename, wc), edp_etawrap_expr(b, in_scope, needing, ename, wc), off),
-    ELetMut(n, v, b, off) => ELetMut(n, edp_etawrap_expr(v, in_scope, needing, ename, wc), edp_etawrap_expr(b, in_scope, needing, ename, wc), off),
-    ELetRec(n, v, b) => ELetRec(n, edp_etawrap_expr(v, in_scope, needing, ename, wc), edp_etawrap_expr(b, in_scope, needing, ename, wc)),
-    ESeq(a, b) => ESeq(edp_etawrap_expr(a, in_scope, needing, ename, wc), edp_etawrap_expr(b, in_scope, needing, ename, wc)),
-    EBinOp(op, l, r, boff) => EBinOp(op, edp_etawrap_expr(l, in_scope, needing, ename, wc), edp_etawrap_expr(r, in_scope, needing, ename, wc), boff),
-    EUnaryOp(op, x) => EUnaryOp(op, edp_etawrap_expr(x, in_scope, needing, ename, wc)),
-    EAssign(n, v, c) => EAssign(n, edp_etawrap_expr(v, in_scope, needing, ename, wc), edp_etawrap_expr(c, in_scope, needing, ename, wc)),
-    EAssignOp(n, op, v, c) => EAssignOp(n, op, edp_etawrap_expr(v, in_scope, needing, ename, wc), edp_etawrap_expr(c, in_scope, needing, ename, wc)),
-    EDot(o, f, o1, o2) => EDot(edp_etawrap_expr(o, in_scope, needing, ename, wc), f, o1, o2),
-    ELabeledArg(l, n, v) => ELabeledArg(l, n, edp_etawrap_expr(v, in_scope, needing, ename, wc)),
-    EReturn(x) => EReturn(edp_etawrap_expr(x, in_scope, needing, ename, wc)),
+    EIf(c, t, el) => EIf(edp_etawrap_expr(c, in_scope, needing, ename, wc, aliases), edp_etawrap_expr(t, in_scope, needing, ename, wc, aliases), edp_etawrap_expr(el, in_scope, needing, ename, wc, aliases)),
+    EMatch(s, arms) => EMatch(edp_etawrap_expr(s, in_scope, needing, ename, wc, aliases), edp_etawrap_arms(arms, in_scope, needing, ename, wc, aliases)),
+    EWhile(c, b) => EWhile(edp_etawrap_expr(c, in_scope, needing, ename, wc, aliases), edp_etawrap_expr(b, in_scope, needing, ename, wc, aliases)),
+    EForIn(n, idx, it, b) => {
+      let iter = edp_etawrap_expr(it, in_scope, needing, ename, wc, aliases)
+      let mark = Array::length(aliases)
+      Array::push(aliases, (n, ""))
+      match idx {
+        Some(index) => Array::push(aliases, (index, "")),
+        None => ()
+      }
+      let body = edp_etawrap_expr(b, in_scope, needing, ename, wc, aliases)
+      Array::truncate(aliases, mark)
+      EForIn(n, idx, iter, body)
+    },
+    ELoop(pairs, b) => {
+      let values = edp_etawrap_pairs(pairs, in_scope, needing, ename, wc, aliases)
+      let mark = Array::length(aliases)
+      for pair in pairs {
+        let (name, _) = pair
+        Array::push(aliases, (name, ""))
+      }
+      let body = edp_etawrap_expr(b, in_scope, needing, ename, wc, aliases)
+      Array::truncate(aliases, mark)
+      ELoop(values, body)
+    },
+    ELet(n, v, b, off) => {
+      let value = edp_etawrap_expr(v, in_scope, needing, ename, wc, aliases)
+      let root = match value {
+        EIdent(name, _) => edp_alias_root(name, needing, aliases),
+        _ => ""
+      }
+      let mark = Array::length(aliases)
+      Array::push(aliases, (n, root))
+      let body = edp_etawrap_expr(b, in_scope, needing, ename, wc, aliases)
+      Array::truncate(aliases, mark)
+      ELet(n, value, body, off)
+    },
+    ELetMut(n, v, b, off) => {
+      let value = edp_etawrap_expr(v, in_scope, needing, ename, wc, aliases)
+      let mark = Array::length(aliases)
+      Array::push(aliases, (n, ""))
+      let body = edp_etawrap_expr(b, in_scope, needing, ename, wc, aliases)
+      Array::truncate(aliases, mark)
+      ELetMut(n, value, body, off)
+    },
+    ELetRec(n, v, b) => {
+      let mark = Array::length(aliases)
+      Array::push(aliases, (n, ""))
+      let value = edp_etawrap_expr(v, in_scope, needing, ename, wc, aliases)
+      let root = match value {
+        EIdent(name, _) => edp_alias_root(name, needing, aliases),
+        _ => ""
+      }
+      Array::set(aliases, mark, (n, root))
+      let body = edp_etawrap_expr(b, in_scope, needing, ename, wc, aliases)
+      Array::truncate(aliases, mark)
+      ELetRec(n, value, body)
+    },
+    ESeq(a, b) => ESeq(edp_etawrap_expr(a, in_scope, needing, ename, wc, aliases), edp_etawrap_expr(b, in_scope, needing, ename, wc, aliases)),
+    EBinOp(op, l, r, boff) => EBinOp(op, edp_etawrap_expr(l, in_scope, needing, ename, wc, aliases), edp_etawrap_expr(r, in_scope, needing, ename, wc, aliases), boff),
+    EUnaryOp(op, x) => EUnaryOp(op, edp_etawrap_expr(x, in_scope, needing, ename, wc, aliases)),
+    EAssign(n, v, c) => EAssign(n, edp_etawrap_expr(v, in_scope, needing, ename, wc, aliases), edp_etawrap_expr(c, in_scope, needing, ename, wc, aliases)),
+    EAssignOp(n, op, v, c) => EAssignOp(n, op, edp_etawrap_expr(v, in_scope, needing, ename, wc, aliases), edp_etawrap_expr(c, in_scope, needing, ename, wc, aliases)),
+    EDot(o, f, o1, o2) => EDot(edp_etawrap_expr(o, in_scope, needing, ename, wc, aliases), f, o1, o2),
+    ELabeledArg(l, n, v) => ELabeledArg(l, n, edp_etawrap_expr(v, in_scope, needing, ename, wc, aliases)),
+    EReturn(x) => EReturn(edp_etawrap_expr(x, in_scope, needing, ename, wc, aliases)),
     EBreak(opt) => EBreak(match opt {
-      Some(x) => Some(edp_etawrap_expr(x, in_scope, needing, ename, wc)),
+      Some(x) => Some(edp_etawrap_expr(x, in_scope, needing, ename, wc, aliases)),
       None => None
     }),
-    EContinue(args) => EContinue(edp_etawrap_exprs(args, in_scope, needing, ename, wc)),
-    ETuple(items) => ETuple(edp_etawrap_exprs(items, in_scope, needing, ename, wc)),
-    EArray(items) => EArray(edp_etawrap_exprs(items, in_scope, needing, ename, wc)),
-    ERecord(n, fields, tas) => ERecord(n, edp_etawrap_pairs(fields, in_scope, needing, ename, wc), tas),
-    EMap(fields) => EMap(edp_etawrap_pairs(fields, in_scope, needing, ename, wc)),
-    ESpread(x) => ESpread(edp_etawrap_expr(x, in_scope, needing, ename, wc)),
+    EContinue(args) => EContinue(edp_etawrap_exprs(args, in_scope, needing, ename, wc, aliases)),
+    ETuple(items) => ETuple(edp_etawrap_exprs(items, in_scope, needing, ename, wc, aliases)),
+    EArray(items) => EArray(edp_etawrap_exprs(items, in_scope, needing, ename, wc, aliases)),
+    ERecord(n, fields, tas) => ERecord(n, edp_etawrap_pairs(fields, in_scope, needing, ename, wc, aliases), tas),
+    EMap(fields) => EMap(edp_etawrap_pairs(fields, in_scope, needing, ename, wc, aliases)),
+    ESpread(x) => ESpread(edp_etawrap_expr(x, in_scope, needing, ename, wc, aliases)),
     _ => e
   }
 }
 
-fn edp_etawrap_exprs(es: Array[Expr], in_scope: Bool, needing: Array[String], ename: String, wc: (Array[Stmt], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]])) -> Array[Expr] {
+fn edp_etawrap_exprs(es: Array[Expr], in_scope: Bool, needing: Array[String], ename: String, wc: (Array[Stmt], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]]), aliases: Array[(String, String)]) -> Array[Expr] {
   for x in es {
-    edp_etawrap_expr(x, in_scope, needing, ename, wc)
+    edp_etawrap_expr(x, in_scope, needing, ename, wc, aliases)
   }
 }
 
-fn edp_etawrap_pairs(pairs: Array[(String, Expr)], in_scope: Bool, needing: Array[String], ename: String, wc: (Array[Stmt], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]])) -> Array[(String, Expr)] {
+fn edp_etawrap_pairs(pairs: Array[(String, Expr)], in_scope: Bool, needing: Array[String], ename: String, wc: (Array[Stmt], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]]), aliases: Array[(String, String)]) -> Array[(String, Expr)] {
   for p in pairs {
     let (n, v) = p
-    (n, edp_etawrap_expr(v, in_scope, needing, ename, wc))
+    (n, edp_etawrap_expr(v, in_scope, needing, ename, wc, aliases))
   }
 }
 
-fn edp_etawrap_arms(arms: Array[(Pat, Expr)], in_scope: Bool, needing: Array[String], ename: String, wc: (Array[Stmt], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]])) -> Array[(Pat, Expr)] {
+fn edp_etawrap_arms(arms: Array[(Pat, Expr)], in_scope: Bool, needing: Array[String], ename: String, wc: (Array[Stmt], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]]), aliases: Array[(String, String)]) -> Array[(Pat, Expr)] {
   for a in arms {
     let (p, ex) = a
-    (p, edp_etawrap_expr(ex, in_scope, needing, ename, wc))
+    let names = empty_str_array()
+    edp_pat_binds(p, names)
+    let mark = Array::length(aliases)
+    for name in names {
+      Array::push(aliases, (name, ""))
+    }
+    let body = edp_etawrap_expr(ex, in_scope, needing, ename, wc, aliases)
+    Array::truncate(aliases, mark)
+    (p, body)
   }
 }
 

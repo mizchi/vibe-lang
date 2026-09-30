@@ -1,0 +1,74 @@
+effect Ask {
+  Get() -> Int
+}
+
+fn ask_once() -> Int with Ask {
+  perform Ask::Get()
+}
+
+fn ask_plus_one() -> Int with Ask {
+  perform Ask::Get() + 1
+}
+
+let module_saved = ask_once
+
+test "an annotated local alias can name a module alias" {
+  let f: () -> Int with Ask = module_saved
+  inspect(handle {
+    f()
+  } with { Ask::Get() => resume(7) }, "7")
+}
+
+test "an annotated alias can follow a non-self recursive binding" {
+  let rec f = ask_once
+  let g: () -> Int with Ask = f
+  inspect(handle {
+    g()
+  } with { Ask::Get() => resume(7) }, "7")
+}
+
+test "an annotated local alias is handled at its call site" {
+  let f: () -> Int with Ask = ask_once
+  inspect(handle {
+    f()
+  } with { Ask::Get() => resume(1) }, "1")
+}
+
+test "a chain of annotated local aliases is handled at its call site" {
+  let f: () -> Int with Ask = ask_once
+  let g: () -> Int with Ask = f
+  inspect(handle {
+    g()
+  } with { Ask::Get() => resume(1) }, "1")
+}
+
+test "an annotated alias after an unannotated alias is handled" {
+  let f = ask_once
+  let g: () -> Int with Ask = f
+  inspect(handle {
+    g()
+  } with { Ask::Get() => resume(1) }, "1")
+}
+
+test "a saved top-level alias survives a same-named local closure" {
+  let saved = ask_once
+  let ask_once = () -> Int {
+    0
+  }
+  let g: () -> Int with Ask = saved
+  inspect(handle {
+    g()
+  } with { Ask::Get() => resume(1) }, content = "1")
+}
+
+test "a shadowed alias resolves to its own performing function" {
+  let f: () -> Int with Ask = ask_once
+  let result = {
+    let f: () -> Int with Ask = ask_plus_one
+    let g: () -> Int with Ask = f
+    handle {
+      g()
+    } with { Ask::Get() => resume(1) }
+  }
+  inspect(result, "2")
+}
