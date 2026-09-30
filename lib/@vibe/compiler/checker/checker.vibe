@@ -92,7 +92,7 @@ import @vibe/compiler/core {
   is_exception_throw_handler_name,
   is_exception_throw_operation,
   is_hkt_app,
-  let_rec_value_anchor,
+  let_rec_binding_anchor,
   refine_trait_bounds_from_receiver,
   registry_builtin_arity,
   registry_builtin_param_type,
@@ -3449,10 +3449,9 @@ export fn throw_payload_site_types() -> Array[(String, Type)] {
 let local_let_type_rows: Array[(Int, Type)] = []
 let local_let_type_recording: Array[Bool] = [false]
 
-/// #3106: the same for a local `let rec`, keyed by `let_rec_value_anchor` of
-/// its value. `ELetRec` carries no offset, so its binding is known by the
-/// smallest offset inside its value instead; a separate table, because that
-/// offset can be an inner `let` keyword's, which keys a row of the one above.
+/// #3106: the same for a local `let rec`, keyed by the value's first located
+/// node, or by the continuation's when the value has none (#3208). A separate
+/// table keeps this key apart from ordinary `let` keyword offsets.
 let local_let_rec_type_rows: Array[(Int, Type)] = []
 
 export fn local_let_types_begin() -> Unit {
@@ -3483,10 +3482,10 @@ export fn local_let_rec_types() -> Array[(Int, Type)] {
   local_let_rec_type_rows
 }
 
-fn record_local_let_rec_type(value: Expr, ty: Type, lane: String) -> Unit {
+fn record_local_let_rec_type(value: Expr, body: Expr, ty: Type, lane: String) -> Unit {
   // The anchor walks the whole value, so it is taken only while recording.
   if lane == "Primary" && Array::get(local_let_type_recording, 0) {
-    let anchor = let_rec_value_anchor(value)
+    let anchor = let_rec_binding_anchor(value, body)
     if anchor >= 0 {
       Array::push(local_let_rec_type_rows, (anchor, ty))
     } else {
@@ -9760,7 +9759,7 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         refuse_generalized_field_reads(gen, s2, errors)
         // #3106: hover on a `let rec` called only as a callee, as #3050 does
         // for `let` -- keyed by its value, since `ELetRec` has no offset.
-        record_local_let_rec_type(val, gen, lane)
+        record_local_let_rec_type(val, body, gen, lane)
         note_local_generic_binding(val, gen, cenv)
         cenv = env_bind(cenv, name, gen)
         cenv = bind_function_dependency_contracts(cenv, name, val)
@@ -14038,12 +14037,21 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       // (previously unchecked — `y = "s"` for `let mut y = 1` was accepted).
       let s1b = match env_lookup(env, name) {
         Some(var_ty) => check_assignable_for(var_ty, subst_apply(s1, vt), s1, errors, "assignment type mismatch for ", name, tail_expr_off(val)),
-        None => s1
+        // The mutability pass only knows which bindings are mutable. Letting
+        // an absent target reach it reports the misleading `let mut` edit.
+        None => {
+          Array::push(errors, String::concat("unknown name: ", String::concat(name, " [@assign-target]")))
+          s1
+        }
       }
       check_expr_capture(body, env, defs, s1b, c1, errors, tytab, capture, lane)
     },
-    EAssignOp(_, _, val, body) => {
+    EAssignOp(name, _, val, body) => {
       let (_, s1, c1) = check_expr_capture(val, env, defs, s, c, errors, tytab, capture, lane)
+      match env_lookup(env, name) {
+        Some(_) => (),
+        None => Array::push(errors, String::concat("unknown name: ", String::concat(name, " [@assign-target]")))
+      }
       check_expr_capture(body, env, defs, s1, c1, errors, tytab, capture, lane)
     },
     EMatch(scrutinee, arms) => {

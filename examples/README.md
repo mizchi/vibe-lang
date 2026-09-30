@@ -16,23 +16,23 @@ vibe test examples/syntax.vibe
 
 - `effects.vibe`: `with Exception` / `handle { ... } with Exception { ... }`
 - `async.vibe`: `await` and async effect combinations
-- `perform_handle.vibe`: `perform Effect::Op(...)` + `handle` による多層エフェクト/回復パターン
-- `effect_demo.vibe`: effect 宣言を名前で共有する複数関数パターン (#752)
+- `perform_handle.vibe`: layered effects and recovery with `perform Effect::Op(...)` and `handle`
+- `effect_demo.vibe`: functions sharing a named effect declaration (#752)
 - `module_export.vibe`, `module_import.vibe`: module export/import basics
 - `module_types_export.vibe`, `module_types_import.vibe`: importing types from modules
-- `trait_map_set.vibe`: map/set の trait パターン（`Hash` 境界と custom key adapter）
-- `compiler_features.vibe`: selfhost compiler が使う言語機能のショーケース
+- `trait_map_set.vibe`: map/set traits with a `Hash` bound and custom key adapter
+- `compiler_features.vibe`: language features used by the self-hosted compiler
 
 ## Standard Library Usage
 
-- `base64.vibe`: base64 encode/decode の使用例
-- `http_handler.vibe`: HTTP handler の書き方
-- `json.vibe`: JSON の parse/build/query
+- `base64.vibe`: base64 encoding and decoding
+- `http_handler.vibe`: writing an HTTP handler
+- `json.vibe`: JSON parsing, construction, and queries
 
 ## Bench
 
-- `simple_bench.vibe`: `vibe bench` の最小例（詳細は
-  [CONTRIBUTION.md の Bench セクション](../CONTRIBUTION.md#bench)）
+- `simple_bench.vibe`: minimal `vibe bench` example (see the
+  [Bench section in CONTRIBUTION.md](../CONTRIBUTION.md#bench))
 
 ```bash
 vibe bench examples/simple_bench.vibe
@@ -50,10 +50,6 @@ vibe bench examples/simple_bench.vibe
   (`sleep`/`Stdin::read_char` suspending across the guest/host boundary; see
   `scripts/test_real_async_host.sh` and `tools/async_host/`)
 - `wasm/tui_stream_demo.vibe`: stdin/stdout stream TUI-style demo
-
-```bash
-pkf run demo-tui-stream
-```
 
 ## Test Fixtures
 

@@ -45,7 +45,7 @@ run_mutated() {
 # RED 1: the two lanes disagree on the diagnostics. Emit a different body when
 # --single-file is among the arguments.
 if run_mutated lanes_differ \
-  's#VIBE_PREOPEN_DIR="$ROOT_DIR" bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" .*#{ case " $* " in *" --single-file "*) echo "[{\\"x\\":1}]" ;; *) echo "[]" ;; esac; } >"$out" 2>/dev/null || status=$?#'; then
+  's#^  VIBE_PREOPEN_DIR="$ROOT_DIR" bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" .*#{ case " $* " in *" --single-file "*) echo "[{\\"x\\":1}]" ;; *) echo "[]" ;; esac; } >"$out" 2>/dev/null || status=$?#'; then
   fail "RED 1: the gate passed when the two lanes emitted different JSON"
 fi
 grep -qF 'emitted different JSON' "$WORK/out" \
@@ -54,7 +54,7 @@ grep -qF 'emitted different JSON' "$WORK/out" \
 # RED 2: identical bodies, but a different exit status per lane. A gate that
 # only diffed stdout would pass this.
 if run_mutated exit_differs \
-  's#VIBE_PREOPEN_DIR="$ROOT_DIR" bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" .*#{ echo "[]"; case " $* " in *" --single-file "*) status=7 ;; esac; } >"$out" 2>/dev/null#'; then
+  's#^  VIBE_PREOPEN_DIR="$ROOT_DIR" bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" .*#{ echo "[]"; case " $* " in *" --single-file "*) status=7 ;; esac; } >"$out" 2>/dev/null#'; then
   fail "RED 2: the gate passed when the lanes exited differently"
 fi
 grep -qF 'exit differs' "$WORK/out" \
@@ -63,7 +63,7 @@ grep -qF 'exit differs' "$WORK/out" \
 # RED 3: empty output instead of `[]`. "No diagnostics" and "this mode is not
 # supported here" must not look alike.
 if run_mutated not_an_array \
-  's#VIBE_PREOPEN_DIR="$ROOT_DIR" bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" .*#: >"$out" 2>/dev/null#'; then
+  's#^  VIBE_PREOPEN_DIR="$ROOT_DIR" bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" .*#: >"$out" 2>/dev/null#'; then
   fail "RED 3: the gate passed on empty output rather than a JSON array"
 fi
 grep -qF 'did not emit a JSON array' "$WORK/out" \
@@ -73,7 +73,7 @@ grep -qF 'did not emit a JSON array' "$WORK/out" \
 # the body is an array, the exits match -- only the conversion is wrong, which
 # is the one defect the other three cases cannot see.
 if run_mutated byte_offsets \
-  's#VIBE_PREOPEN_DIR="$ROOT_DIR" bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" .*#{ case " $* " in *multibyte*) echo "[{\\"range\\":{\\"start\\":{\\"line\\":0,\\"character\\":13},\\"end\\":{\\"line\\":0,\\"character\\":33}}}]"; status=1 ;; *mismatch*) echo "[{}]"; status=1 ;; *) echo "[]" ;; esac; } >"$out" 2>/dev/null#'; then
+  's#^  VIBE_PREOPEN_DIR="$ROOT_DIR" bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" .*#{ case " $* " in *multibyte*) echo "[{\\"range\\":{\\"start\\":{\\"line\\":0,\\"character\\":13},\\"end\\":{\\"line\\":0,\\"character\\":33}}}]"; status=1 ;; *mismatch*) echo "[{}]"; status=1 ;; *) echo "[]" ;; esac; } >"$out" 2>/dev/null#'; then
   fail "RED 4: the gate passed on byte offsets where UTF-16 units are required"
 fi
 grep -qF 'not in UTF-16 code units' "$WORK/out" \

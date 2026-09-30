@@ -83,6 +83,123 @@ probe clean 0
 printf 'let a: Int = "not an int"\n' > "$WORK/mismatch.vibe"
 probe mismatch 1
 
+# #3226: an assignment target with no binding is an unknown name, with the
+# target's real source position in both lanes. An existing immutable binding
+# still gets the separate `let mut` edit.
+printf 'export fn main() -> Int {\n  accI = 1\n  0\n}\n' > "$WORK/assign_unknown.vibe"
+probe assign_unknown 1
+python3 - "$WORK/assign_unknown.fs.json" <<'PY' || bad "assign_unknown: expected an unbound target at line 2"
+import json, sys
+rows = json.load(open(sys.argv[1]))
+assert len(rows) == 1, rows
+row = rows[0]
+assert 'unknown name: accI' in row['message'], row
+assert 'immutable' not in row['message'], row
+assert row['range']['start'] == {'line': 1, 'character': 2}, row
+assert row['range']['end'] == {'line': 1, 'character': 6}, row
+assert row['data'] is None, row
+PY
+for lane in fs single-file; do
+  if [ "$lane" = single-file ]; then set -- --single-file; else set --; fi
+  plain="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" --invoke cli_main "$STAGE2" check "$@" "$WORK/assign_unknown.vibe" 2>&1 || true)"
+  case "$plain" in
+    *'line 2:3-7: unknown name: accI'*) ;;
+    *) bad "assign_unknown: plain $lane diagnostic is missing the target position: $plain" ;;
+  esac
+done
+
+# Build and run use the compile diagnostic adapters, not the checker CLI's
+# JSON printer. Internal location markers must never escape into a .diag file.
+for compile_lane in fs single-file; do
+  rm -f "$WORK/assign_unknown.$compile_lane.wasm" "$WORK/assign_unknown.$compile_lane.wasm.diag"
+  if [ "$compile_lane" = fs ]; then compile_fs=1; else compile_fs=0; fi
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE="$compile_fs" VIBE_IMPORT_ABI=raw \
+    bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" --invoke cli_main "$STAGE2" \
+    "$WORK/assign_unknown.vibe" "$WORK/assign_unknown.$compile_lane.wasm" main >/dev/null 2>&1 || true
+  if [ -s "$WORK/assign_unknown.$compile_lane.wasm" ]; then
+    bad "assign_unknown: $compile_lane build accepted the unknown assignment"
+  fi
+  if ! grep -qF 'unknown name: accI' "$WORK/assign_unknown.$compile_lane.wasm.diag" 2>/dev/null; then
+    bad "assign_unknown: $compile_lane build lost the unbound-target diagnostic"
+  fi
+  if grep -qF '[@assign-target]' "$WORK/assign_unknown.$compile_lane.wasm.diag" 2>/dev/null; then
+    bad "assign_unknown: $compile_lane build leaked an internal marker"
+  fi
+done
+
+printf 'export fn main() -> Int {\n  accI += 1\n  0\n}\n' > "$WORK/assign_op_unknown.vibe"
+probe assign_op_unknown 1
+if ! grep -qF '"message":"unknown name: accI"' "$WORK/assign_op_unknown.fs.json"; then
+  bad "assign_op_unknown: compound assignment lost the unbound-target diagnostic"
+fi
+python3 - "$WORK/assign_op_unknown.fs.json" <<'PY' || bad "assign_op_unknown: wrong target range"
+import json, sys
+row, = json.load(open(sys.argv[1]))
+assert row['range'] == {'start': {'line': 1, 'character': 2}, 'end': {'line': 1, 'character': 6}}, row
+PY
+
+# A raw identifier's token spelling is longer than the normalized name.
+printf 'export fn main() -> Int {\n  r#loop = 1\n  0\n}\n' > "$WORK/assign_raw_target.vibe"
+probe assign_raw_target 1
+python3 - "$WORK/assign_raw_target.fs.json" <<'PY' || bad "assign_raw_target: wrong raw-token range"
+import json, sys
+row, = json.load(open(sys.argv[1]))
+assert row['message'] == 'unknown name: loop', row
+assert row['range'] == {'start': {'line': 1, 'character': 2}, 'end': {'line': 1, 'character': 8}}, row
+PY
+
+# A named call argument has the same token pair as an assignment but is not
+# an assignment target. It must not hide the one unknown target in this file.
+printf 'fn f(accI: Int) -> Int { accI }\nexport fn main() -> Int {\n  f(accI = 1)\n  accI = 1\n  0\n}\n' > "$WORK/assign_with_label.vibe"
+probe assign_with_label 1
+python3 - "$WORK/assign_with_label.fs.json" <<'PY' || bad "assign_with_label: named argument hid the target location"
+import json, sys
+rows = json.load(open(sys.argv[1]))
+target = [row for row in rows if row['message'] == 'unknown name: accI']
+assert len(target) == 1, rows
+assert target[0]['range'] == {'start': {'line': 3, 'character': 2}, 'end': {'line': 3, 'character': 6}}, target
+PY
+
+# Multiple diagnostics can be joined before reaching the compile adapter;
+# every private marker must be removed from the user-visible .diag sidecar.
+printf 'export fn main() -> Int {\n  a = 1\n  b = 2\n  c = 3\n  0\n}\n' > "$WORK/assign_many.vibe"
+for compile_lane in fs single-file; do
+  if [ "$compile_lane" = fs ]; then compile_fs=1; else compile_fs=0; fi
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE="$compile_fs" VIBE_IMPORT_ABI=raw \
+    bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" --invoke cli_main "$STAGE2" \
+    "$WORK/assign_many.vibe" "$WORK/assign_many.$compile_lane.wasm" main >/dev/null 2>&1 || true
+  if grep -qF '[@assign-target]' "$WORK/assign_many.$compile_lane.wasm.diag" 2>/dev/null; then
+    bad "assign_many: $compile_lane build leaked an internal marker"
+  fi
+  if [ "$compile_lane" = single-file ]; then
+    for expected in 'line 2:3-4: unknown name: a' 'line 3:3-4: unknown name: b' 'line 4:3-4: unknown name: c'; do
+      if ! grep -qF "$expected" "$WORK/assign_many.$compile_lane.wasm.diag" 2>/dev/null; then
+        bad "assign_many: single-file build lost a diagnostic location: $expected"
+      fi
+    done
+  fi
+done
+
+# An earlier comment, parameter and `let` declaration use the same spelling.
+# None is the assignment target. The range must cover the target token itself.
+printf '// accI is mentioned here\nfn prior(accI: Int) -> Int { accI }\nfn older() -> Int { let accI = 1; accI }\nexport fn main() -> Int {\n  accI = 1\n  0\n}\n' > "$WORK/assign_target_span.vibe"
+probe assign_target_span 1
+python3 - "$WORK/assign_target_span.fs.json" <<'PY' || bad "assign_target_span: wrong target range"
+import json, sys
+rows = json.load(open(sys.argv[1]))
+assert len(rows) == 1, rows
+row = rows[0]
+assert row['message'] == 'unknown name: accI', row
+assert row['range'] == {'start': {'line': 4, 'character': 2}, 'end': {'line': 4, 'character': 6}}, row
+assert row['data'] is None, row
+PY
+
+printf 'export fn main() -> Int {\n  let acc = 0\n  acc = 1\n  0\n}\n' > "$WORK/assign_immutable.vibe"
+probe assign_immutable 1
+if ! grep -qF 'cannot assign to immutable binding `acc` (declare it with `let mut`)' "$WORK/assign_immutable.fs.json"; then
+  bad "assign_immutable: lost the let mut edit"
+fi
+
 # The conversion case. 20 bytes, 8 UTF-16 code units.
 printf 'let a: Int = "\xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e\xe3\x81\xa7\xe3\x81\x99\xe3\x82\x88"\n' > "$WORK/multibyte.vibe"
 probe multibyte 1
@@ -145,4 +262,4 @@ if grep -qF 'unlocated.vibe' "$WORK/unlocated.fs.json" 2>/dev/null; then
 fi
 
 [ "$fails" -eq 0 ] || exit 1
-echo "[check-json-parity] ok (6 probes: both lanes agree on diagnostics, exit code, and UTF-16 offsets)"
+echo "[check-json-parity] ok (12 probes: both lanes agree on diagnostics, exit code, and UTF-16 offsets)"

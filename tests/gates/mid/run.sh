@@ -624,6 +624,7 @@ for bb_lane in rc shadow; do
     exit 1
   fi
 done
+
 rm -rf "$bbdir"
 echo "[compiler-gate] branch-tail borrow let retain ok (334444 on rc/shadow)"
 # 40f-b2. #3108 review: the follow-ups of the same retain on the shadow
@@ -2702,6 +2703,260 @@ fi
 rm -rf "$sdcdir"
 echo "[compiler-gate] self-discharging callee call-inertness ok (#1595/#1591)"
 
+# #3195: a row-typed parameter called under a handler receives an evidence
+# argument. A named top-level function whose own handler discharged that row
+# still has its plain call convention, so passing it directly used to compile
+# and trap at the indirect call. The explicit closure is a working edit.
+echo "[compiler-gate] 40h4c/40 nested-handler function value refuses before an arity trap (#3195)"
+nhvdir="_build/_gate_nested_handle_value"
+rm -rf "$nhvdir"; mkdir -p "$nhvdir"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/err_fnvalue_nested_handle.vibe "$nhvdir/rej.wasm" main >/dev/null 2>&1 || true
+if [ -s "$nhvdir/rej.wasm" ]; then
+  echo "[compiler-gate] FAIL: named self-discharging function value compiled and can trap at an indirect call (#3195)" >&2
+  exit 1
+fi
+if ! grep -qF 'pass an explicitly row-annotated closure that calls `inner_handled`' "$nhvdir/rej.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: nested-handler function value refusal lacks the working edit (#3195)" >&2
+  cat "$nhvdir/rej.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/err_fnvalue_nested_handle_test_owner_alias.vibe "$nhvdir/test_owner_alias.wasm" main >/dev/null 2>&1 || true
+if [ -s "$nhvdir/test_owner_alias.wasm" ]; then
+  echo "[compiler-gate] FAIL: a test alias of the handler owner compiled and can trap at an indirect call (#3195)" >&2
+  exit 1
+fi
+if ! grep -qF 'using this handler owner as a value cannot safely select the closure call convention' "$nhvdir/test_owner_alias.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: a test alias of the handler owner lacks the working edit (#3195)" >&2
+  cat "$nhvdir/test_owner_alias.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+for dormant_fixture in \
+  fixtures/fnvalue_nested_handle_dormant_owner_alias.vibe \
+  fixtures/fnvalue_nested_handle_dormant_option.vibe \
+  fixtures/fnvalue_nested_handle_dormant_enum.vibe; do
+  rm -f "$nhvdir/dormant.wasm" "$nhvdir/dormant.wasm.diag"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$dormant_fixture" "$nhvdir/dormant.wasm" main >/dev/null 2>&1 || true
+  if [ ! -s "$nhvdir/dormant.wasm" ]; then
+    echo "[compiler-gate] FAIL: dormant owner use refused the live entry: $dormant_fixture (#3195)" >&2
+    cat "$nhvdir/dormant.wasm.diag" >&2 2>/dev/null || true
+    exit 1
+  fi
+  dormant_result="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$nhvdir/dormant.wasm" 2>/dev/null | tr -dc '0-9')"
+  if [ "$dormant_result" != "1" ]; then
+    echo "[compiler-gate] FAIL: dormant owner use changed the live result: $dormant_fixture ($dormant_result, want 1, #3195)" >&2
+    exit 1
+  fi
+done
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/err_fnvalue_nested_handle_eager_constructor_argument.vibe "$nhvdir/eager_constructor_argument.wasm" main >/dev/null 2>&1 || true
+if [ -s "$nhvdir/eager_constructor_argument.wasm" ] || ! grep -qF 'pass an explicitly row-annotated closure that calls `inner_handled`' "$nhvdir/eager_constructor_argument.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: an eager constructor argument bypassed the nested-handler refusal (#3195)" >&2
+  exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/fnvalue_nested_handle_retained_export.vibe "$nhvdir/stripped_export.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$nhvdir/stripped_export.wasm" ]; then
+  echo "[compiler-gate] FAIL: a stripped bad export rejected the clean entry (#3195)" >&2
+  exit 1
+fi
+VIBE_WASM_KEEP_EXPORTS=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/fnvalue_nested_handle_retained_export.vibe "$nhvdir/retained_export.wasm" main >/dev/null 2>&1 || true
+if [ -s "$nhvdir/retained_export.wasm" ] || ! grep -qF 'pass an explicitly row-annotated closure that calls `inner_handled`' "$nhvdir/retained_export.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: a retained export bypassed the nested-handler refusal (#3195)" >&2
+  exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/fnvalue_nested_handle_retained_export.vibe "$nhvdir/library_export.wasm" __no_entry__ >/dev/null 2>&1 || true
+if [ -s "$nhvdir/library_export.wasm" ] || ! grep -qF 'pass an explicitly row-annotated closure that calls `inner_handled`' "$nhvdir/library_export.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: a library export bypassed the nested-handler refusal (#3195)" >&2
+  exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/fnvalue_nested_handle_dead.vibe "$nhvdir/dead.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$nhvdir/dead.wasm" ]; then
+  echo "[compiler-gate] FAIL: unreachable nested-handler call rejected the live entry (#3195)" >&2
+  cat "$nhvdir/dead.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+dead_result="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$nhvdir/dead.wasm" 2>/dev/null | tr -dc '0-9')"
+if [ "$dead_result" != "42" ]; then
+  echo "[compiler-gate] FAIL: reachable entry returned '$dead_result' with an unreachable nested-handler call (#3195)" >&2
+  exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/fnvalue_nested_handle_dead_caller.vibe "$nhvdir/dead_caller.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$nhvdir/dead_caller.wasm" ]; then
+  echo "[compiler-gate] FAIL: an unreachable call site rejected a reachable handler owner (#3195)" >&2
+  cat "$nhvdir/dead_caller.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+dead_caller_result="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$nhvdir/dead_caller.wasm" 2>/dev/null | tr -dc '0-9')"
+if [ "$dead_caller_result" != "1" ]; then
+  echo "[compiler-gate] FAIL: reachable handler owner returned '$dead_caller_result' (want 1, #3195)" >&2
+  exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/fnvalue_nested_handle_dead_owner_value.vibe "$nhvdir/dead_owner_value.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$nhvdir/dead_owner_value.wasm" ]; then
+  echo "[compiler-gate] FAIL: a dead value reference rejected a reachable direct handler-owner call (#3195)" >&2
+  cat "$nhvdir/dead_owner_value.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+dead_owner_value_result="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$nhvdir/dead_owner_value.wasm" 2>/dev/null | tr -dc '0-9')"
+if [ "$dead_owner_value_result" != "1" ]; then
+  echo "[compiler-gate] FAIL: reachable owner with dead value reference returned '$dead_owner_value_result' (want 1, #3195)" >&2
+  exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/fnvalue_nested_handle_shadowed_owner_value.vibe "$nhvdir/shadowed_owner_value.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$nhvdir/shadowed_owner_value.wasm" ]; then
+  echo "[compiler-gate] FAIL: a local value shadow rejected the reachable handler owner (#3195)" >&2
+  cat "$nhvdir/shadowed_owner_value.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+shadowed_owner_value_result="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$nhvdir/shadowed_owner_value.wasm" 2>/dev/null | tr -dc '0-9')"
+if [ "$shadowed_owner_value_result" != "6" ]; then
+  echo "[compiler-gate] FAIL: reachable owner with local value shadow returned '$shadowed_owner_value_result' (want 6, #3195)" >&2
+  exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/fnvalue_nested_handle_labeled_shadow_value.vibe "$nhvdir/labeled_shadow_value.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$nhvdir/labeled_shadow_value.wasm" ]; then
+  echo "[compiler-gate] FAIL: a labeled parameter was attributed to the top-level handler owner (#3195)" >&2
+  cat "$nhvdir/labeled_shadow_value.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+labeled_shadow_value_result="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$nhvdir/labeled_shadow_value.wasm" 2>/dev/null | tr -dc '0-9')"
+if [ "$labeled_shadow_value_result" != "6" ]; then
+  echo "[compiler-gate] FAIL: labeled parameter shadow returned '$labeled_shadow_value_result' (want 6, #3195)" >&2
+  exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/fnvalue_nested_handle_dead_local.vibe "$nhvdir/dead_local.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$nhvdir/dead_local.wasm" ]; then
+  echo "[compiler-gate] FAIL: an unused local closure rejected a reachable handler owner (#3195)" >&2
+  cat "$nhvdir/dead_local.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+dead_local_result="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$nhvdir/dead_local.wasm" 2>/dev/null | tr -dc '0-9')"
+if [ "$dead_local_result" != "1" ]; then
+  echo "[compiler-gate] FAIL: reachable owner with unused local closure returned '$dead_local_result' (want 1, #3195)" >&2
+  exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/fnvalue_nested_handle_dead_array.vibe "$nhvdir/dead_array.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$nhvdir/dead_array.wasm" ]; then
+  echo "[compiler-gate] FAIL: an unused array of closures rejected a reachable handler owner (#3195)" >&2
+  cat "$nhvdir/dead_array.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+dead_array_result="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$nhvdir/dead_array.wasm" 2>/dev/null | tr -dc '0-9')"
+if [ "$dead_array_result" != "1" ]; then
+  echo "[compiler-gate] FAIL: reachable owner with unused closure array returned '$dead_array_result' (want 1, #3195)" >&2
+  exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/fnvalue_nested_handle_shadowed_dead_local.vibe "$nhvdir/shadowed_dead_local.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$nhvdir/shadowed_dead_local.wasm" ]; then
+  echo "[compiler-gate] FAIL: a shadowed unused closure rejected a reachable handler owner (#3195)" >&2
+  cat "$nhvdir/shadowed_dead_local.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+shadowed_dead_local_result="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$nhvdir/shadowed_dead_local.wasm" 2>/dev/null | tr -dc '0-9')"
+if [ "$shadowed_dead_local_result" != "3" ]; then
+  echo "[compiler-gate] FAIL: reachable owner with shadowed unused closure returned '$shadowed_dead_local_result' (want 3, #3195)" >&2
+  exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/fnvalue_nested_handle_dormant_reference.vibe "$nhvdir/dormant_reference.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$nhvdir/dormant_reference.wasm" ]; then
+  echo "[compiler-gate] FAIL: a reference inside another unused closure made a dormant closure reachable (#3195)" >&2
+  cat "$nhvdir/dormant_reference.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+dormant_reference_result="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$nhvdir/dormant_reference.wasm" 2>/dev/null | tr -dc '0-9')"
+if [ "$dormant_reference_result" != "1" ]; then
+  echo "[compiler-gate] FAIL: reachable owner with dormant reference returned '$dormant_reference_result' (want 1, #3195)" >&2
+  exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/fnvalue_nested_handle_dormant_array_reference.vibe "$nhvdir/dormant_array_reference.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$nhvdir/dormant_array_reference.wasm" ]; then
+  echo "[compiler-gate] FAIL: a function reference in an unused array made a dormant closure reachable (#3195)" >&2
+  cat "$nhvdir/dormant_array_reference.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+dormant_array_reference_result="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$nhvdir/dormant_array_reference.wasm" 2>/dev/null | tr -dc '0-9')"
+if [ "$dormant_array_reference_result" != "1" ]; then
+  echo "[compiler-gate] FAIL: reachable owner with dormant array reference returned '$dormant_array_reference_result' (want 1, #3195)" >&2
+  exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/fnvalue_nested_handle_shadowed_local_row.vibe "$nhvdir/shadowed_local_row.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$nhvdir/shadowed_local_row.wasm" ]; then
+  echo "[compiler-gate] FAIL: a local row-annotated closure was confused with a self-discharging top-level function (#3195)" >&2
+  cat "$nhvdir/shadowed_local_row.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+shadowed_local_row_result="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$nhvdir/shadowed_local_row.wasm" 2>/dev/null | tr -dc '0-9')"
+if [ "$shadowed_local_row_result" != "1" ]; then
+  echo "[compiler-gate] FAIL: shadowed local row returned '$shadowed_local_row_result' (want 1, #3195)" >&2
+  exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/fnvalue_nested_handle_shadowed_owner.vibe "$nhvdir/shadowed_owner.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$nhvdir/shadowed_owner.wasm" ]; then
+  echo "[compiler-gate] FAIL: a local shadow of the handler owner was mistaken for the top-level owner (#3195)" >&2
+  cat "$nhvdir/shadowed_owner.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+shadowed_owner_result="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke main "$nhvdir/shadowed_owner.wasm" 2>/dev/null | tr -dc '0-9')"
+if [ "$shadowed_owner_result" != "9" ]; then
+  echo "[compiler-gate] FAIL: shadowed handler owner returned '$shadowed_owner_result' (want 9, #3195)" >&2
+  exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/err_fnvalue_nested_handle_unused_eager_array.vibe "$nhvdir/eager_array.wasm" main >/dev/null 2>&1 || true
+if [ -s "$nhvdir/eager_array.wasm" ] || ! grep -qF 'pass an explicitly row-annotated closure that calls `inner_handled`' "$nhvdir/eager_array.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: an eager call in an unused array escaped the refusal (#3195)" >&2
+  cat "$nhvdir/eager_array.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/err_fnvalue_nested_handle_loop_initializer.vibe "$nhvdir/loop_initializer.wasm" main >/dev/null 2>&1 || true
+if [ -s "$nhvdir/loop_initializer.wasm" ] || ! grep -qF 'call `outer` directly' "$nhvdir/loop_initializer.wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: a handler owner used as a loop value escaped the call-convention refusal (#3195)" >&2
+  cat "$nhvdir/loop_initializer.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+VIBE_TEST_CLI_WASM="$stage2_wasm" bash scripts/vibe_test.sh fixtures/fnvalue_nested_handle_inline_test.vibe
+rm -rf "$nhvdir"
+echo "[compiler-gate] nested-handler function value refusal and inline closure ok (#3195)"
+
 # 40h5. ADR-0076 (#817) gc-backend follow-up: a local closure literal with
 #       NO explicit `with` annotation (its `eff` field is blank in the
 #       AST -- the checker infers the row internally but never writes it
@@ -4573,3 +4828,43 @@ if ! VIBE_RC=shadow VIBE_TEST_CLI_WASM="$stage2_wasm" VIBE_TEST_QUIET_COMPILER_N
 fi
 rm -f "$ROOT_DIR/_build/_gate_option_payload_rc.log"
 echo "[compiler-gate] Option closure payload stays live and bounded in shadow RC ok (#3240)"
+
+# A callback parameter or immutable rebinding shadows an effectful source.
+# The entry lane's independent opaque-call rule still rejects these calls,
+# but the mutable-alias diagnostic must not attribute them to that source.
+for shadowed_callback in \
+    handle_callee_mutable_shadowed_callback_opaque_reject \
+    handle_callee_mutable_shadowed_labeled_callback_opaque_reject \
+    handle_callee_mutable_shadowed_labeled_alias_opaque_reject \
+    handle_callee_mutable_outer_copied_shadowed_opaque_reject; do
+  shadowed_callback_diag="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+    --invoke cli_main "$stage2_wasm" check "fixtures/$shadowed_callback.vibe" 2>&1 || true)"
+  case "$shadowed_callback_diag" in
+    *"handle of effect 'Ask' cannot be compiled here"*) ;;
+    *) echo "[compiler-gate] FAIL: $shadowed_callback changed the independent opaque-call diagnostic (#3196): $shadowed_callback_diag" >&2; exit 1 ;;
+  esac
+  case "$shadowed_callback_diag" in
+    *'cannot compile a call through mutable local'*) echo "[compiler-gate] FAIL: $shadowed_callback was attributed to a top-level effectful function (#3196)" >&2; exit 1 ;;
+    *) ;;
+  esac
+  shadowed_callback_flat="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+    --invoke cli_main "$stage2_wasm" check --single-file "fixtures/$shadowed_callback.vibe" 2>&1 || true)"
+  if [ -n "$shadowed_callback_flat" ]; then
+    echo "[compiler-gate] FAIL: flat checker rejected $shadowed_callback (#3196): $shadowed_callback_flat" >&2
+    exit 1
+  fi
+done
+
+for outer_mutable_fixture in \
+    handle_callee_mutable_outer_with_direct_perform_reject \
+    handle_callee_mutable_outer_copied_alias_reject \
+    handle_callee_mutable_outer_annotated_chain_reject \
+    handle_callee_mutable_outer_recursive_alias_reject; do
+  outer_mutable_diag="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+    --invoke cli_main "$stage2_wasm" check --single-file \
+    "fixtures/typecheck/$outer_mutable_fixture.vibe" 2>&1 || true)"
+  case "$outer_mutable_diag" in
+    *'cannot compile a call through mutable local `f`'*) ;;
+    *) echo "[compiler-gate] FAIL: $outer_mutable_fixture lost its mutable source inside a nested handle (#3196): $outer_mutable_diag" >&2; exit 1 ;;
+  esac
+done
