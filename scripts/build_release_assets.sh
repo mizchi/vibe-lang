@@ -61,6 +61,14 @@ compiler_fragment="$OUT_DIR/.compiler-manifest-fragment.json"
 
 commit_sha="$(git -C "$PROJECT_ROOT" rev-parse HEAD 2>/dev/null || true)"
 
+# Product installs consume compiler_wasm directly; they do not rebuild from
+# the bootstrap module source. Ship the current CLI separately from the seed
+# trio that fetch_compiler.sh still uses for reproducible bootstrap builds.
+CLI_WASM_NAME="vibe-cli-$TAG.wasm"
+bash "$SCRIPT_DIR/build_cli_wasm.sh" "$OUT_DIR/$CLI_WASM_NAME" >/dev/null
+[ -s "$OUT_DIR/$CLI_WASM_NAME" ] || {
+  echo "release-assets: current CLI compiler not produced: $CLI_WASM_NAME" >&2; exit 1; }
+
 sha256_file() {
   # Probe by RUNNING it, not by `command -v`: a nix-shim `sha256sum` that is on
   # PATH but dies on a glibc mismatch passes an existence check and then fails
@@ -112,7 +120,7 @@ for pkg in @vibe/core @vibe/ast @vibe/parser @vibe/builtin @vibe/console @vibe/w
   hash_out="$OUT_DIR/.hash.out"
   rm -f "$hash_out" "$hash_out.diag"
   VIBE_HASH=1 VIBE_PREOPEN_DIR="$PROJECT_ROOT" \
-    bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main "$OUT_DIR/$WASM_NAME" \
+    bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main "$OUT_DIR/$CLI_WASM_NAME" \
       "$src/index.vpkg" "$hash_out" __no_entry__ >/dev/null 2>&1 || true
   pkg_hash="$(awk '/^package /{print $2}' "$hash_out" 2>/dev/null || true)"
   [ -n "$pkg_hash" ] || { cat "$hash_out.diag" >&2 2>/dev/null || true; echo "release-assets: package hash failed for $pkg" >&2; exit 1; }
@@ -152,7 +160,7 @@ wasmtime_version="$(sed -n 's/^wasmtime = { version = "\([^"]*\)".*$/\1/p' "$PRO
 # anything is moved into toolchains/.
 asset_lines="$OUT_DIR/.assets.tsv"
 : > "$asset_lines"
-for name in "$WASM_NAME" "$MODSRC_NAME" "$SEED_JSON_NAME" "$TOOLCHAIN_NAME" ${runner_names[@]+"${runner_names[@]}"}; do
+for name in "$WASM_NAME" "$CLI_WASM_NAME" "$MODSRC_NAME" "$SEED_JSON_NAME" "$TOOLCHAIN_NAME" ${runner_names[@]+"${runner_names[@]}"}; do
   printf '%s\t%s\n' "$name" "$(sha256_file "$OUT_DIR/$name")" >> "$asset_lines"
 done
 runner_lines="$OUT_DIR/.runners.tsv"
@@ -163,10 +171,10 @@ while [ "$i" -lt "${#runner_names[@]}" ]; do
   i=$((i + 1))
 done
 node - "$compiler_fragment" "$OUT_DIR/$MANIFEST_NAME" "$TAG" "$VERSION" "$commit_sha" \
-  "$WASM_NAME" "$MODSRC_NAME" "$SEED_JSON_NAME" "$TOOLCHAIN_NAME" "$wasmtime_version" \
+  "$WASM_NAME" "$CLI_WASM_NAME" "$MODSRC_NAME" "$SEED_JSON_NAME" "$TOOLCHAIN_NAME" "$wasmtime_version" \
   "$asset_lines" "$runner_lines" <<'NODE'
 const fs = require("node:fs");
-const [fragmentPath, outPath, tag, version, commit, wasmName, modsrcName, seedJsonName,
+const [fragmentPath, outPath, tag, version, commit, wasmName, cliWasmName, modsrcName, seedJsonName,
   toolchainName, wasmtime, assetLines, runnerLines] = process.argv.slice(2);
 const compiler = JSON.parse(fs.readFileSync(fragmentPath, "utf8"));
 const tsv = (p) => fs.readFileSync(p, "utf8").split("\n").filter(Boolean).map((l) => l.split("\t"));
@@ -179,11 +187,11 @@ const manifest = {
   version,
   commit,
   wasmtime,
-  compiler_wasm: wasmName,
+  compiler_wasm: cliWasmName,
   toolchain: toolchainName,
   runners,
   assets,
-  artifacts: [wasmName, modsrcName, seedJsonName, toolchainName, ...Object.values(runners)],
+  artifacts: [wasmName, cliWasmName, modsrcName, seedJsonName, toolchainName, ...Object.values(runners)],
   compiler,
 };
 fs.writeFileSync(outPath, `${JSON.stringify(manifest, null, 2)}\n`);
@@ -193,10 +201,10 @@ rm -f "$compiler_fragment" "$asset_lines" "$runner_lines"
 (
   cd "$OUT_DIR"
   if sha256sum </dev/null >/dev/null 2>&1; then
-    sha256sum "$WASM_NAME" "$MODSRC_NAME" "$SEED_JSON_NAME" "$TOOLCHAIN_NAME" ${runner_names[@]+"${runner_names[@]}"} "$MANIFEST_NAME" \
+    sha256sum "$WASM_NAME" "$CLI_WASM_NAME" "$MODSRC_NAME" "$SEED_JSON_NAME" "$TOOLCHAIN_NAME" ${runner_names[@]+"${runner_names[@]}"} "$MANIFEST_NAME" \
       > "$CHECKSUM_NAME"
   else
-    shasum -a 256 "$WASM_NAME" "$MODSRC_NAME" "$SEED_JSON_NAME" "$TOOLCHAIN_NAME" ${runner_names[@]+"${runner_names[@]}"} "$MANIFEST_NAME" \
+    shasum -a 256 "$WASM_NAME" "$CLI_WASM_NAME" "$MODSRC_NAME" "$SEED_JSON_NAME" "$TOOLCHAIN_NAME" ${runner_names[@]+"${runner_names[@]}"} "$MANIFEST_NAME" \
       > "$CHECKSUM_NAME"
   fi
 )
@@ -204,6 +212,7 @@ rm -f "$compiler_fragment" "$asset_lines" "$runner_lines"
 echo "[release-assets] staged assets:"
 printf '  %s\n' \
   "$OUT_DIR/$WASM_NAME" \
+  "$OUT_DIR/$CLI_WASM_NAME" \
   "$OUT_DIR/$MODSRC_NAME" \
   "$OUT_DIR/$SEED_JSON_NAME" \
   "$OUT_DIR/$TOOLCHAIN_NAME"

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Red/green for scripts/build_release_assets.sh's TAG VALIDATION (#2248: a
+# Red/green for scripts/build_release_assets.sh's publication contract (#2248: a
 # guard means nothing until it is shown to fail, and nothing good until it is
 # shown not to fail on what it must let through).
 #
-# Only the argument-handling arms are exercised, deliberately: the asset build
-# itself takes ~4 minutes and needs a compiler, while the defect this pins cost
-# nothing to hit and could only surface at the tag --
+# Argument handling and product artifact selection are exercised with distinct
+# bootstrap and current-compiler outputs. The real compiler build is replaced
+# in the scratch tree, so the packaging contract needs no bootstrap build.
 #
 #   $ bash scripts/build_release_assets.sh v0.1.0-rc.0
 #   release-assets: invalid semver: 0.1.0-rc.0
@@ -97,6 +97,75 @@ note "=== 8. red: and the reverse -- a release tree tagged as a candidate ==="
 setup "0.1.0"; run v0.1.0-rc.0
 check "exit" "$RC" "1"
 says "$OUT" "VIBE_VERSION mismatch"
+
+note "=== 9. a product install selects the current compiler, preserving the seed ==="
+setup "0.1.0-rc.3"
+cat > "$WORK/t/scripts/build_compiler_seed_assets.sh" <<'SH'
+set -eu
+tag="$1"; out="$2"
+printf 'bootstrap compiler\n' > "$out/vibe-compiler-$tag.wasm"
+printf 'current source\n' > "$out/vibe-compiler-module-source-$tag.vibe"
+printf '{}\n' > "$out/vibe-compiler-seed-$tag.json"
+printf '{"compiler_wasm":"vibe-compiler-%s.wasm","source_commit":"seed-commit"}\n' "$tag" > "$out/.compiler-manifest-fragment.json"
+SH
+cat > "$WORK/t/scripts/build_cli_wasm.sh" <<'SH'
+set -eu
+printf 'current compiler\n' > "$1"
+printf '%s\n' "$1"
+SH
+printf 'printf "context pack\\n"\n' > "$WORK/t/scripts/gen_context_pack.sh"
+cat > "$WORK/t/scripts/run_wasm_vibe_host_runner.sh" <<'SH'
+set -eu
+[ "$(cat "$3")" = "current compiler" ]
+printf 'package test-hash\n' > "$5"
+SH
+for script in vibe_pkg.sh parallel_warm_pool.sh run_bounded.sh; do
+  : > "$WORK/t/scripts/$script"
+done
+for pkg in core ast parser builtin console wit_runtime; do
+  mkdir -p "$WORK/t/lib/@vibe/$pkg"
+  : > "$WORK/t/lib/@vibe/$pkg/index.vpkg"
+done
+mkdir -p "$WORK/t/runtime/viberun"
+printf 'wasmtime = { version = "47.0.2" }\n' > "$WORK/t/runtime/viberun/Cargo.toml"
+run v0.1.0-rc.3
+check "packaging exit" "$RC" "0"
+if ! python3 - "$WORK/t/dist/release/v0.1.0-rc.3" <<'PY'
+import hashlib, json, pathlib, sys
+out = pathlib.Path(sys.argv[1])
+manifest = json.loads((out / 'release-manifest.json').read_text())
+cli = manifest['compiler_wasm']
+seed = manifest['compiler']['compiler_wasm']
+assert cli != seed, (cli, seed)
+assert (out / cli).read_bytes() == b'current compiler\n'
+assert (out / seed).read_bytes() == b'bootstrap compiler\n'
+for name in (cli, seed):
+    sha = hashlib.sha256((out / name).read_bytes()).hexdigest()
+    assert manifest['assets'][name] == sha, name
+    assert name in manifest['artifacts'], name
+    assert f'{sha}  {name}' in (out / 'SHA256SUMS.txt').read_text(), name
+PY
+then
+  note "  FAIL product compiler selection or checksums"
+  fail=1
+else
+  note "  ok   current compiler selected; both compiler assets hashed"
+fi
+
+note "=== 10. a failed current compiler build refuses publication ==="
+printf 'exit 1\n' > "$WORK/t/scripts/build_cli_wasm.sh"
+run v0.1.0-rc.3
+check "failed build exit" "$RC" "1"
+if [ -f "$WORK/t/dist/release/v0.1.0-rc.3/release-manifest.json" ]; then
+  note "  FAIL published a manifest after the current compiler build failed"; fail=1
+else
+  note "  ok   no release manifest produced"
+fi
+
+note "=== 11. a missing current compiler output refuses publication ==="
+printf 'exit 0\n' > "$WORK/t/scripts/build_cli_wasm.sh"
+run v0.1.0-rc.3
+check "missing output exit" "$RC" "1"
 
 note
 if [ "$fail" = 0 ]; then note "[build-release-assets-test] ok"; else note "[build-release-assets-test] FAIL"; fi
