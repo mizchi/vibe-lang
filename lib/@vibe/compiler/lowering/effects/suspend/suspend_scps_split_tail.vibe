@@ -166,7 +166,7 @@ fn scps_arms_unwrap_done(harms: Array[(Pat, Expr)], eff: String) -> Array[(Pat, 
   while i < Array::length(harms) {
     let (p, ex) = Array::get(harms, i)
     let inner = match ex {
-      ECall(EIdent(nm, _), vargs, _) => if nm == dn && Array::length(vargs) == 1 {
+      ECall(EIdent(nm, _), vargs, _, _) => if nm == dn && Array::length(vargs) == 1 {
         Array::get(vargs, 0)
       } else {
         ex
@@ -228,13 +228,16 @@ fn scps_split_handle(hb: Expr, harms: Array[(Pat, Expr)], sctx: (String, Array[S
         pi = pi + 1
       }
       Array::push(ypats, PBind(kname))
-      let resumed = EHandle(ECall(EIdent(kname, -1), [EIdent(rv, -1)], -1), darms)
-      Array::push(yargs, scps_mk_fn1(rv, ECall(EIdent(wname, -1), [resumed], -1)))
-      Array::push(marms, (PCtor(scps_y_name(eff, opname), ypats), ECall(EIdent(scps_y_name(eff, opname), -1), yargs, -1)))
+      let resumed = EHandle(ECall(EIdent(kname, -1), [EIdent(rv, -1)], -1, []), darms)
+      Array::push(yargs, scps_mk_fn1(rv, ECall(EIdent(wname, -1), [resumed], -1, [
+      ])))
+      Array::push(marms, (PCtor(scps_y_name(eff, opname), ypats), ECall(EIdent(scps_y_name(eff, opname), -1), yargs, -1, [
+      ])))
       oi = oi + 1
     }
     let wfn = scps_mk_fn1(stn, EMatch(EIdent(stn, -1), marms))
-    (true, ELetRec(wname, wfn, ECall(EIdent(wname, -1), [EHandle(bstep, darms)], -1)))
+    (true, ELetRec(wname, wfn, ECall(EIdent(wname, -1), [EHandle(bstep, darms)], -1, [
+    ])))
   }
 }
 
@@ -248,7 +251,7 @@ fn scps_split_handle_bind(v: Expr, x: String, b: Expr, sctx: (String, Array[Stri
       (hok && bok, ECall(EIdent(scps_bubble_name(eff), -1), [
         hstep,
         scps_mk_fn1(x, bexpr)
-      ], -1))
+      ], -1, []))
     },
     _ => (false, v)
   }
@@ -266,11 +269,11 @@ fn scps_as_split_handle(e: Expr, sctx: (String, Array[String], Array[String], In
 export fn scps_calls_ok(e: Expr, sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), scope: Array[(String, Int)]) -> Bool {
   let (eff, _, needing, _, _) = sctx
   match e {
-    ECall(callee, args, _) => match callee {
+    ECall(callee, args, _, _) => match callee {
       EIdent(nm, _) => if nm == "perform" && Array::length(args) == 1 {
         match Array::get(args, 0) {
           EIdent(_, _) => true,
-          ECall(opc, op_args, _) => match opc {
+          ECall(opc, op_args, _, _) => match opc {
             EIdent(_, _) => scps_exprs_calls_ok(op_args, sctx, ctx, scope),
             _ => false
           },
@@ -394,11 +397,11 @@ fn scps_fields_calls_ok(fields: Array[(String, Expr)], sctx: (String, Array[Stri
 fn scps_first_bad_call_info(e: Expr, sctx: (String, Array[String], Array[String], Int, Array[String]), ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), scope: Array[(String, Int)]) -> (Bool, String, Int) {
   let (eff, _, needing, _, _) = sctx
   match e {
-    ECall(callee, args, off) => match callee {
+    ECall(callee, args, off, _) => match callee {
       EIdent(nm, ioff) => if nm == "perform" && Array::length(args) == 1 {
         match Array::get(args, 0) {
           EIdent(_, _) => (false, "", -1),
-          ECall(opc, op_args, _) => match opc {
+          ECall(opc, op_args, _, _) => match opc {
             EIdent(_, _) => scps_first_bad_call_info_exprs(op_args, sctx, ctx, scope),
             _ => (true, nm, scps_pick_off(ioff, off))
           },
@@ -687,7 +690,7 @@ fn scps_first_opaque_capture(e: Expr, locals: Array[String], ctx: (Array[Stmt], 
     } else {
       nm
     },
-    ECall(EIdent(_, _), args, _) => scps_first_opaque_capture_all(args, locals, ctx),
+    ECall(EIdent(_, _), args, _, _) => scps_first_opaque_capture_all(args, locals, ctx),
     ELet(nm, v, b, _) => scps_first_nonempty(scps_first_opaque_capture(v, locals, ctx), scps_first_opaque_capture(b, scps_locals_with(locals, nm), ctx)),
     ELetMut(nm, v, b, _) => scps_first_nonempty(scps_first_opaque_capture(v, locals, ctx), scps_first_opaque_capture(b, scps_locals_with(locals, nm), ctx)),
     ELetRec(nm, v, b) => {
@@ -800,7 +803,7 @@ fn scps_scope_step_names(scope: Array[(String, Int)]) -> Array[String] {
 /// diagnostic to name. "" when there is none.
 fn scps_first_step_call(e: Expr, eff: String, names: Array[String], add: Bool) -> String {
   match e {
-    ECall(EIdent(nm, _), args, _) => if edp_str_array_contains(names, nm) {
+    ECall(EIdent(nm, _), args, _, _) => if edp_str_array_contains(names, nm) {
       nm
     } else {
       scps_first_step_call_all(args, eff, names, add)
@@ -884,7 +887,8 @@ export fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], 
         (false, e)
       } else {
         scps_need_clone(eff, tail_needing, st)
-        (true, ECall(EIdent(scps_clone_name(eff, tail_needing), -1), cargs, -1))
+        (true, ECall(EIdent(scps_clone_name(eff, tail_needing), -1), cargs, -1, [
+        ]))
       }
     } else if tail_cps != "" {
       // closure-CPS (追記31 Vertical B): tail call through a step-typed
@@ -963,9 +967,9 @@ export fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], 
                   scps_need_clone(eff, vn, st)
                   let (bok, bexpr) = scps_split_tail(b, sctx, ctx, st)
                   (bok, ECall(EIdent(scps_bubble_name(eff), -1), [
-                    ECall(EIdent(scps_clone_name(eff, vn), -1), vargs, -1),
+                    ECall(EIdent(scps_clone_name(eff, vn), -1), vargs, -1, []),
                     scps_mk_fn1_typed(x, scps_call_ret_ty(v, ctx, e), bexpr)
-                  ], -1))
+                  ], -1, []))
                 }
               } else if vc != "" {
                 // closure-CPS: `let x = f(a) REST` where `f` is a step-typed
@@ -978,7 +982,7 @@ export fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], 
                   (bok, ECall(EIdent(scps_bubble_name(eff), -1), [
                     v,
                     scps_mk_fn1(x, bexpr)
-                  ], -1))
+                  ], -1, []))
                 }
               } else if scps_contains_susp(v, sctx) {
                 // #1536: a block or a selection that IS the whole bound value
@@ -1154,9 +1158,9 @@ export fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], 
                 scps_need_clone(eff, an, st)
                 let (bok, bexpr) = scps_split_tail(b, sctx, ctx, st)
                 (bok, ECall(EIdent(scps_bubble_name(eff), -1), [
-                  ECall(EIdent(scps_clone_name(eff, an), -1), aargs, -1),
+                  ECall(EIdent(scps_clone_name(eff, an), -1), aargs, -1, []),
                   scps_mk_fn1(scps_local("__scps_w", site), bexpr)
-                ], -1))
+                ], -1, []))
               }
             } else if scps_as_cps_local_call(a, sctx) != "" {
               // closure-CPS: statement-position call through a step-typed
@@ -1169,7 +1173,7 @@ export fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], 
                 (bok, ECall(EIdent(scps_bubble_name(eff), -1), [
                   a,
                   scps_mk_fn1(scps_local("__scps_w", site), bexpr)
-                ], -1))
+                ], -1, []))
               }
             } else if scps_contains_susp(a, sctx) {
               // #1536 (a) v8: a compound STATEMENT around the suspension --
@@ -1365,7 +1369,8 @@ fn scps_split_while(c: Expr, body: Expr, rest: Expr, sctx: (String, Array[String
     let ext = Array::slice(s_cps, 0, Array::length(s_cps))
     Array::push(ext, lp)
     let sctx2 = (eff, s_ops, s_needing, s_site, ext)
-    let step = scps_seq_append(body, ECall(EIdent(lp, -1), array_empty_expr(), -1))
+    let step = scps_seq_append(body, ECall(EIdent(lp, -1), array_empty_expr(), -1, [
+    ]))
     if scps_direct_spine_input(c, sctx) {
       // #1536 (a) v8: evaluate one directly recognized suspending condition
       // once per loop check, then resume into the existing recursive loop
@@ -1376,7 +1381,7 @@ fn scps_split_while(c: Expr, body: Expr, rest: Expr, sctx: (String, Array[String
       let (lok, lowered) = scps_split_tail(loop_body, sctx2, ctx, st)
       if lok {
         let lam = EFn(array_empty_str(), scps_empty_tbs(), scps_empty_params(), None, None, lowered)
-        (true, ELetRec(lp, lam, ECall(EIdent(lp, -1), array_empty_expr(), -1)))
+        (true, ELetRec(lp, lam, ECall(EIdent(lp, -1), array_empty_expr(), -1, [])))
       } else {
         (false, orig)
       }
@@ -1390,7 +1395,8 @@ fn scps_split_while(c: Expr, body: Expr, rest: Expr, sctx: (String, Array[String
         let (lok, lowered) = scps_split_tail(loop_body, sctx2, ctx, st)
         if lok {
           let lam = EFn(array_empty_str(), scps_empty_tbs(), scps_empty_params(), None, None, lowered)
-          (true, ELetRec(lp, lam, ECall(EIdent(lp, -1), array_empty_expr(), -1)))
+          (true, ELetRec(lp, lam, ECall(EIdent(lp, -1), array_empty_expr(), -1, [
+          ])))
         } else {
           (false, orig)
         }
@@ -1402,7 +1408,7 @@ fn scps_split_while(c: Expr, body: Expr, rest: Expr, sctx: (String, Array[String
       let (rok, rbody) = scps_split_tail(rest, sctx2, ctx, st)
       if iok && rok {
         let lam = EFn(array_empty_str(), scps_empty_tbs(), scps_empty_params(), None, None, EIf(c, ibody, rbody))
-        (true, ELetRec(lp, lam, ECall(EIdent(lp, -1), array_empty_expr(), -1)))
+        (true, ELetRec(lp, lam, ECall(EIdent(lp, -1), array_empty_expr(), -1, [])))
       } else {
         (false, orig)
       }
@@ -1440,7 +1446,7 @@ fn scps_split_while_ctl(c: Expr, body: Expr, rest: Expr, sctx: (String, Array[St
   let lp = scps_loop_ctl_fresh("__scps_lp", orig, lsite)
   let kname = scps_loop_ctl_fresh("__scps_lpk", orig, lsite)
   let bv = scps_loop_ctl_fresh("__scps_lpv", orig, lsite)
-  let repeat = ECall(EIdent(lp, -1), array_empty_expr(), -1)
+  let repeat = ECall(EIdent(lp, -1), array_empty_expr(), -1, [])
   let normalized = scps_loop_normalize_ctl(body, lsite)
   let rewritten = scps_loop_rewrite_ctl(scps_loop_append_repeat(normalized, repeat), lp, kname)
   // Anything the rewrite could not place on the spine (a transfer inside a
@@ -1454,7 +1460,7 @@ fn scps_split_while_ctl(c: Expr, body: Expr, rest: Expr, sctx: (String, Array[St
     let sctx2 = (eff, s_ops, s_needing, s_site, ext)
     let exit_args = array_empty_expr()
     Array::push(exit_args, EUnit)
-    let exit_call = ECall(EIdent(kname, -1), exit_args, -1)
+    let exit_call = ECall(EIdent(kname, -1), exit_args, -1, [])
     // #1536 (a) v8: a compound suspending condition is linearized INSIDE the
     // loop closure, so it is re-evaluated on every check like the direct one.
     let (cok, cbn, cbv, ac) = if scps_direct_spine_input(c, sctx) || !scps_contains_susp(c, sctx) {
@@ -1477,7 +1483,8 @@ fn scps_split_while_ctl(c: Expr, body: Expr, rest: Expr, sctx: (String, Array[St
       let (kok, kbody) = scps_split_tail(rest, sctx2, ctx, st)
       if lok && kok {
         let lam = EFn(array_empty_str(), scps_empty_tbs(), scps_empty_params(), None, None, lowered)
-        (true, ELet(kname, scps_mk_fn1(bv, kbody), ELetRec(lp, lam, ECall(EIdent(lp, -1), array_empty_expr(), -1)), -1))
+        (true, ELet(kname, scps_mk_fn1(bv, kbody), ELetRec(lp, lam, ECall(EIdent(lp, -1), array_empty_expr(), -1, [
+        ])), -1))
       } else {
         (false, orig)
       }

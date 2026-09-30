@@ -334,7 +334,7 @@ fn edp_count_direct_calls(expr: Expr, name: String) -> Int {
 fn edp_fn_value_used_in(expr: Expr, fname: String, ctors: Array[String]) -> Bool {
   match expr {
     EIdent(name, _) => name == fname,
-    ECall(EIdent(_, _), args, _) => edp_fn_value_used_in_exprs(args, fname, ctors),
+    ECall(EIdent(_, _), args, _, _) => edp_fn_value_used_in_exprs(args, fname, ctors),
     ELet(name, value, body, _) => {
       let inner = edp_usage_ctor_mask(ctors, name)
       let in_value = if edp_binding_used_in(body, name, inner) {
@@ -393,7 +393,7 @@ fn edp_fn_value_used_in_unused_value(expr: Expr, fname: String, ctors: Array[Str
   match expr {
     EFn(_, _, _, _, _, _) => false,
     EIdent(_, _) => false,
-    ECall(EIdent(name, _), args, _) => if edp_str_array_contains(ctors, name) {
+    ECall(EIdent(name, _), args, _, _) => if edp_str_array_contains(ctors, name) {
       edp_fn_value_used_in_unused_exprs(args, fname, ctors)
     } else {
       edp_fn_value_used_in(expr, fname, ctors)
@@ -625,9 +625,9 @@ fn edp_sweep_row_lits_expr(e: Expr, ename: String, dict_pname: String, call_safe
       let (pp, ex) = a
       (pp, edp_sweep_row_lits_expr(ex, ename, dict_pname, call_safe, es_names, es_members_list))
     }),
-    ECall(callee, args, off) => ECall(edp_sweep_row_lits_expr(callee, ename, dict_pname, call_safe, es_names, es_members_list), for a in args {
+    ECall(callee, args, off, callee_resolution) => ECall(edp_sweep_row_lits_expr(callee, ename, dict_pname, call_safe, es_names, es_members_list), for a in args {
       edp_sweep_row_lits_expr(a, ename, dict_pname, call_safe, es_names, es_members_list)
-    }, off),
+    }, off, callee_resolution),
     EWhile(c, b) => EWhile(edp_sweep_row_lits_expr(c, ename, dict_pname, call_safe, es_names, es_members_list), edp_sweep_row_lits_expr(b, ename, dict_pname, call_safe, es_names, es_members_list)),
     EForIn(n, idx, it, b) => EForIn(n, idx, edp_sweep_row_lits_expr(it, ename, dict_pname, call_safe, es_names, es_members_list), edp_sweep_row_lits_expr(b, ename, dict_pname, call_safe, es_names, es_members_list)),
     ELoop(pairs, b) => ELoop(for pr in pairs {
@@ -749,9 +749,9 @@ fn edp_migrate_closure_binding_expr(expr: Expr, xname: String, ename: String, di
     EAssign(n, v, c) => EAssign(n, edp_migrate_closure_binding_expr(v, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list), edp_migrate_closure_binding_expr(c, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)),
     EAssignOp(n, op, v, c) => EAssignOp(n, op, edp_migrate_closure_binding_expr(v, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list), edp_migrate_closure_binding_expr(c, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)),
     EDot(o, f, off1, off2) => EDot(edp_migrate_closure_binding_expr(o, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list), f, off1, off2),
-    ECall(callee, args, off) => ECall(callee, for a in args {
+    ECall(callee, args, off, callee_resolution) => ECall(callee, for a in args {
       edp_migrate_closure_binding_expr(a, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)
-    }, off),
+    }, off, callee_resolution),
     EBinOp(op, l, r, boff) => EBinOp(op, edp_migrate_closure_binding_expr(l, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list), edp_migrate_closure_binding_expr(r, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list), boff),
     EUnaryOp(op, e2) => EUnaryOp(op, edp_migrate_closure_binding_expr(e2, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)),
     ELabeledArg(l, n, v) => ELabeledArg(l, n, edp_migrate_closure_binding_expr(v, xname, ename, dict_pname, needing, pure_fns, es_names, es_members_list)),
@@ -1200,15 +1200,15 @@ fn edp_rewrite_needing_body(expr: Expr, ename: String, dict_pname: String, needi
     // counterpart's `_ => ECall(...)` catch it independently) only needs
     // its object expression rewritten; the field name is a bare string.
     EDot(o, f, off1, off2) => EDot(edp_rewrite_needing_body(o, ename, dict_pname, needing), f, off1, off2),
-    ECall(callee, args, off) => match callee {
+    ECall(callee, args, off, callee_resolution) => match callee {
       EIdent(nm, _) => if nm == "perform" && Array::length(args) == 1 {
         edp_rewrite_perform_via_dict(Array::get(args, 0), ename, dict_pname, needing)
       } else if edp_str_array_contains(needing, nm) {
-        ECall(callee, edp_prepend_dict_arg(dict_pname, edp_rewrite_needing_body_exprs(args, ename, dict_pname, needing)), off)
+        ECall(callee, edp_prepend_dict_arg(dict_pname, edp_rewrite_needing_body_exprs(args, ename, dict_pname, needing)), off, callee_resolution)
       } else {
-        ECall(callee, edp_rewrite_needing_body_exprs(args, ename, dict_pname, needing), off)
+        ECall(callee, edp_rewrite_needing_body_exprs(args, ename, dict_pname, needing), off, callee_resolution)
       },
-      _ => ECall(callee, edp_rewrite_needing_body_exprs(args, ename, dict_pname, needing), off)
+      _ => ECall(callee, edp_rewrite_needing_body_exprs(args, ename, dict_pname, needing), off, callee_resolution)
     },
     EBinOp(op, l, r, boff) => EBinOp(op, edp_rewrite_needing_body(l, ename, dict_pname, needing), edp_rewrite_needing_body(r, ename, dict_pname, needing), boff),
     EUnaryOp(op, e2) => EUnaryOp(op, edp_rewrite_needing_body(e2, ename, dict_pname, needing)),
@@ -1263,21 +1263,23 @@ fn edp_qname_is_for_effect(qname: String, ename: String) -> Bool {
 fn edp_rewrite_perform_via_dict(operand: Expr, ename: String, dict_pname: String, needing: Array[String]) -> Expr {
   match operand {
     EIdent(qname, _) => if edp_qname_is_for_effect(qname, ename) {
-      ECall(EDot(EIdent(dict_pname, -1), edp_strip_effect_prefix(qname, ename), -1, -1), array_empty(), -1)
+      ECall(EDot(EIdent(dict_pname, -1), edp_strip_effect_prefix(qname, ename), -1, -1), array_empty(), -1, [
+      ])
     } else {
-      ECall(EIdent("perform", -1), [operand], -1)
+      ECall(EIdent("perform", -1), [operand], -1, [])
     },
-    ECall(op_callee, op_args, _) => match op_callee {
+    ECall(op_callee, op_args, _, callee_resolution) => match op_callee {
       EIdent(qname, _) => if edp_qname_is_for_effect(qname, ename) {
-        ECall(EDot(EIdent(dict_pname, -1), edp_strip_effect_prefix(qname, ename), -1, -1), edp_rewrite_needing_body_exprs(op_args, ename, dict_pname, needing), -1)
+        ECall(EDot(EIdent(dict_pname, -1), edp_strip_effect_prefix(qname, ename), -1, -1), edp_rewrite_needing_body_exprs(op_args, ename, dict_pname, needing), -1, [
+        ])
       } else {
         ECall(EIdent("perform", -1), [
-          ECall(op_callee, edp_rewrite_needing_body_exprs(op_args, ename, dict_pname, needing), -1)
-        ], -1)
+          ECall(op_callee, edp_rewrite_needing_body_exprs(op_args, ename, dict_pname, needing), -1, callee_resolution)
+        ], -1, [])
       },
-      _ => ECall(EIdent("perform", -1), [operand], -1)
+      _ => ECall(EIdent("perform", -1), [operand], -1, [])
     },
-    _ => ECall(EIdent("perform", -1), [operand], -1)
+    _ => ECall(EIdent("perform", -1), [operand], -1, [])
   }
 }
 
@@ -1367,7 +1369,7 @@ fn edp_build_dict_literal(ename: String, op_names: Array[String], bind_names: Ar
           Array::push(params, (String::concat("__ev_unhandled_", __to_string(a)), None))
           a = a + 1
         }
-        let trap = ECall(EIdent("assert_true", -1), [EBool(false)], -1)
+        let trap = ECall(EIdent("assert_true", -1), [EBool(false)], -1, [])
         Array::push(fields, (declared, EFn(empty_str_array(), array_empty(), params, None, None, trap)))
       }
       d = d + 1
@@ -1495,15 +1497,15 @@ fn edp_rewrite_handle_body(expr: Expr, ename: String, op_names: Array[String], b
     // Same bare-`.field`-read handling as edp_rewrite_needing_body: only
     // the object expression can hide anything that needs rewriting.
     EDot(o, f, off1, off2) => EDot(edp_rewrite_handle_body(o, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), f, off1, off2),
-    ECall(callee, args, off) => match callee {
+    ECall(callee, args, off, callee_resolution) => match callee {
       EIdent(nm, _) => if nm == "perform" && Array::length(args) == 1 {
         edp_splice_perform(Array::get(args, 0), op_names, bind_names_list, prepared_bodies)
       } else if edp_str_array_contains(needing, nm) {
-        ECall(callee, edp_prepend_expr(dict_literal, edp_rewrite_handle_body_exprs(args, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)), off)
+        ECall(callee, edp_prepend_expr(dict_literal, edp_rewrite_handle_body_exprs(args, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)), off, callee_resolution)
       } else {
-        ECall(callee, edp_rewrite_handle_body_exprs(args, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), off)
+        ECall(callee, edp_rewrite_handle_body_exprs(args, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), off, callee_resolution)
       },
-      _ => ECall(callee, edp_rewrite_handle_body_exprs(args, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), off)
+      _ => ECall(callee, edp_rewrite_handle_body_exprs(args, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), off, callee_resolution)
     },
     EBinOp(op, l, r, boff) => EBinOp(op, edp_rewrite_handle_body(l, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), edp_rewrite_handle_body(r, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing), boff),
     EUnaryOp(op, e2) => EUnaryOp(op, edp_rewrite_handle_body(e2, ename, op_names, bind_names_list, prepared_bodies, dict_literal, needing)),
@@ -1541,18 +1543,18 @@ fn edp_prepend_expr(v: Expr, args: Array[Expr]) -> Array[Expr] {
 fn edp_splice_perform(operand: Expr, op_names: Array[String], bind_names_list: Array[Array[String]], prepared_bodies: Array[Expr]) -> Expr {
   match operand {
     EIdent(qname, _) => edp_splice_or_leave(qname, array_empty(), operand, op_names, bind_names_list, prepared_bodies),
-    ECall(op_callee, op_args, _) => match op_callee {
+    ECall(op_callee, op_args, _, _) => match op_callee {
       EIdent(qname, _) => edp_splice_or_leave(qname, op_args, operand, op_names, bind_names_list, prepared_bodies),
-      _ => ECall(EIdent("perform", -1), [operand], -1)
+      _ => ECall(EIdent("perform", -1), [operand], -1, [])
     },
-    _ => ECall(EIdent("perform", -1), [operand], -1)
+    _ => ECall(EIdent("perform", -1), [operand], -1, [])
   }
 }
 
 fn edp_splice_or_leave(qname: String, actual_args: Array[Expr], original_operand: Expr, op_names: Array[String], bind_names_list: Array[Array[String]], prepared_bodies: Array[Expr]) -> Expr {
   let idx = edp_table_lookup(op_names, qname)
   if idx < 0 {
-    ECall(EIdent("perform", -1), [original_operand], -1)
+    ECall(EIdent("perform", -1), [original_operand], -1, [])
   } else {
     edp_bind_args(Array::get(bind_names_list, idx), actual_args, Array::get(prepared_bodies, idx))
   }
@@ -1613,9 +1615,9 @@ fn edp_find_rewrite_handles(expr: Expr, ename: String, needing: Array[String]) -
     }),
     EWhile(c, b) => EWhile(edp_find_rewrite_handles(c, ename, needing), edp_find_rewrite_handles(b, ename, needing)),
     EForIn(n, idx, it, b) => EForIn(n, idx, edp_find_rewrite_handles(it, ename, needing), edp_find_rewrite_handles(b, ename, needing)),
-    ECall(callee, args, off) => ECall(edp_find_rewrite_handles(callee, ename, needing), for a in args {
+    ECall(callee, args, off, callee_resolution) => ECall(edp_find_rewrite_handles(callee, ename, needing), for a in args {
       edp_find_rewrite_handles(a, ename, needing)
-    }, off),
+    }, off, callee_resolution),
     EBinOp(op, l, r, boff) => EBinOp(op, edp_find_rewrite_handles(l, ename, needing), edp_find_rewrite_handles(r, ename, needing), boff),
     EUnaryOp(op, e2) => EUnaryOp(op, edp_find_rewrite_handles(e2, ename, needing)),
     EAssign(n, v, c) => EAssign(n, edp_find_rewrite_handles(v, ename, needing), edp_find_rewrite_handles(c, ename, needing)),

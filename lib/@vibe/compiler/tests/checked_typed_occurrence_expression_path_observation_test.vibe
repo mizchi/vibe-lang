@@ -62,8 +62,8 @@ fn snapshot_contains(snapshot: String, piece: String) -> Bool {
 fn nested_call_fixture() -> Array[Stmt] {
   [
     SLet(false, false, "value", None, ECall(EIdent("Some", 10), [
-      ECall(EIdent("Some", 11), [EInt(1)], 12)
-    ], 13))
+      ECall(EIdent("Some", 11), [EInt(1)], 12, [])
+    ], 13, []))
   ]
 }
 
@@ -88,7 +88,7 @@ test "expression provenance records root and nested call paths at append time" {
 test "expression provenance follows seq and dot child indexes despite shared offsets" {
   let stmts = [
     SStruct(false, "Box", [("value", TyName("Int"))], array_empty(), array_empty(), array_empty()),
-    SLet(false, false, "box", None, ECall(EIdent("Box", 10), [EInt(1)], 11)),
+    SLet(false, false, "box", None, ECall(EIdent("Box", 10), [EInt(1)], 11, [])),
     SLet(false, false, "value", None, ESeq(EIdent("box", 20), EDot(EIdent("box", 21), "value", 22, 22)))
   ]
   match check_program_typed_occurrence_expression_path_observation(stmts) {
@@ -115,11 +115,11 @@ test "expression provenance keeps exact paths through a mixed iterative let spin
   let stmts = [
     SLet(false, false, "result", None, ELet("a", ECall(EIdent("Some", 100), [
       EInt(1)
-    ], 101), ELetMut("b", ECall(EIdent("Some", 102), [EInt(2)], 103), ELetRec("c", ECall(EIdent("Some", 104), [
+    ], 101, []), ELetMut("b", ECall(EIdent("Some", 102), [EInt(2)], 103, []), ELetRec("c", ECall(EIdent("Some", 104), [
       EInt(3)
-    ], 105), ESeq(ECall(EIdent("Some", 106), [EInt(4)], 107), ECall(EIdent("Some", 108), [
+    ], 105, []), ESeq(ECall(EIdent("Some", 106), [EInt(4)], 107, []), ECall(EIdent("Some", 108), [
       EInt(5)
-    ], 109))), -1), -1))
+    ], 109, []))), -1), -1))
   ]
   match check_program_typed_occurrence_expression_path_observation(stmts) {
     Some(observation) => {
@@ -159,8 +159,10 @@ test "expression provenance keeps outer and nested perform call frames" {
       ("Get", [TyApp("Option", [TyName("Int")])], TyName("Int"))
     ]),
     SLet(false, false, "run", None, EFn(array_empty(), array_empty(), array_empty(), None, Some("Ask"), ECall(EIdent("perform", -1), [
-      ECall(EIdent("Ask::Get", -1), [ECall(EIdent("Some", 110), [EInt(1)], 111)], -1)
-    ], -1)))
+      ECall(EIdent("Ask::Get", -1), [
+        ECall(EIdent("Some", 110), [EInt(1)], 111, [])
+      ], -1, [])
+    ], -1, [])))
   ]
   match check_program_typed_occurrence_expression_path_observation(stmts) {
     Some(observation) => {
@@ -178,8 +180,8 @@ test "expression provenance keeps outer and nested perform call frames" {
 test "expression provenance keeps call-callee and dot-object receiver frames" {
   let stmts = [
     SLet(false, false, "result", None, ECall(EDot(EIdent("box", 120), "method", 121, 122), [
-      ECall(EIdent("Some", 123), [EInt(1)], 124)
-    ], 125))
+      ECall(EIdent("Some", 123), [EInt(1)], 124, [])
+    ], 125, []))
   ]
   match check_program_with_env_typed_occurrence_expression_path_observation(stmts, env_bind(EnvEmpty, "box", CtUnknown)) {
     Some(observation) => {
@@ -201,7 +203,7 @@ test "expression provenance keeps region literal lambda body frame" {
   let stmts = [
     SLet(false, false, "result", None, ECall(EIdent("__region_run", -1), [
       EFn(array_empty(), array_empty(), [("region_token", None)], None, None, EIdent("outer", 126))
-    ], 127))
+    ], 127, []))
   ]
   match check_program_with_env_typed_occurrence_expression_path_observation(stmts, env_bind(EnvEmpty, "outer", CtInt)) {
     Some(observation) => {
@@ -223,7 +225,8 @@ test "expression provenance snapshot retains final-substitution occurrence types
     SLet(false, false, "identity", None, EFn(array_empty(), array_empty(), [
       ("x", None)
     ], None, None, EIdent("x", 130))),
-    SLet(false, false, "answer", None, ECall(EIdent("identity", 131), [EInt(1)], 132))
+    SLet(false, false, "answer", None, ECall(EIdent("identity", 131), [EInt(1)], 132, [
+    ]))
   ]
   match check_program_typed_occurrence_expression_path_observation(stmts) {
     Some(observation) => {
@@ -290,7 +293,7 @@ test "synthetic rewrite and auxiliary resume recheck fail closed" {
     SLet(false, false, "handled", None, EHandle(EInt(1), [
       (PCtor("Ask::Get", array_empty()), ECall(EIdent("resume", -1), [
         EIdent("outer", 50)
-      ], -1))
+      ], -1, []))
     ]))
   ]
   match check_program_with_env_typed_occurrence_expression_path_observation(auxiliary, env_bind(EnvEmpty, "outer", CtInt)) {

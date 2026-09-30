@@ -13,7 +13,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/compiler/codegen/common_analysis {
-  collect_pattern_bindings, emit_closure_call_tail, emit_closure_resolve, emit_i64_extend_i32_u, proj_root_ident
+  collect_pattern_bindings, emit_closure_call_tail, emit_closure_resolve, emit_i64_extend_i32_u, proj_root_ident, region_mutbytes_exit_copy
 }
 
 import @vibe/compiler/perceus {
@@ -136,7 +136,7 @@ import ./compile_call_cc_ladder_names.vibe {
 /// The value is bound to a temp first so an effectful argument
 /// (`MutList::freeze(make_list(r))`) is evaluated once, not twice.
 export fn mutlist_exit_copy(arg: Expr) -> Expr {
-  array_value_copy(ECall(EIdent("ArrayBuilder::freeze", -1), [arg], -1), "__mutlist_exit")
+  array_value_copy(ECall(EIdent("ArrayBuilder::freeze", -1), [arg], -1, []), "__mutlist_exit")
 }
 
 /// ADR-0090 MutBytes: `MutBytes::to_bytes(mb)` -- the copy-out exit, for the
@@ -146,12 +146,7 @@ export fn mutlist_exit_copy(arg: Expr) -> Expr {
 /// a main-heap bump, so the escaping value never points into the arena. The
 /// value is bound to a temp so an effectful argument is evaluated once.
 export fn mutbytes_exit_copy(arg: Expr) -> Expr {
-  let tmp = "__mutbytes_exit"
-  ELet(tmp, arg, ECall(EIdent("Bytes::slice", -1), [
-    EIdent(tmp, -1),
-    EInt(0),
-    ECall(EIdent("Bytes::length", -1), [EIdent(tmp, -1)], -1)
-  ], -1), -1)
+  region_mutbytes_exit_copy(arg)
 }
 
 /// `Array::slice(v, 0, Array::length(v))` -- a fresh array with the same
@@ -161,8 +156,8 @@ export fn array_value_copy(value: Expr, tmp: String) -> Expr {
   ELet(tmp, value, ECall(EIdent("Array::slice", -1), [
     EIdent(tmp, -1),
     EInt(0),
-    ECall(EIdent("Array::length", -1), [EIdent(tmp, -1)], -1)
-  ], -1), -1)
+    ECall(EIdent("Array::length", -1), [EIdent(tmp, -1)], -1, [])
+  ], -1, []), -1)
 }
 
 /// #1733: `FrozenArray[T]` is not merely "an immutable array" -- it is a
@@ -588,12 +583,12 @@ export fn rc_exit_operand_ok(e: Expr, local_names: Array[String], ctx: CompileCt
         true
       }
     },
-    ECall(callee, args, _) => match callee {
+    ECall(callee, args, _, _) => match callee {
       EIdent(f, off) => if f == "__lambda_return_owned" && off < 0 && Array::length(args) == 1 {
         let inner = Array::get(args, 0)
         let mut inspect_inner = false
         match inner {
-          ECall(EIdent(inner_name, _), _, _) => {
+          ECall(EIdent(inner_name, _), _, _, _) => {
             inspect_inner = false
             if find_local_slot(local_names, inner_name) < 0 {
               for row in ctx.passthrough_ret_params {
@@ -756,12 +751,12 @@ export fn rc_exit_fresh_independent_closure(e: Expr, name: String, local_names: 
       }
     },
     EFn(_, _, _, _, _, _) => !rc_exit_mentions_name(e, name),
-    ECall(EIdent("__lambda_return_owned", off), args, _) => if off < 0 && Array::length(args) == 1 {
+    ECall(EIdent("__lambda_return_owned", off), args, _, _) => if off < 0 && Array::length(args) == 1 {
       rc_exit_fresh_independent_closure(Array::get(args, 0), name, local_names, ctx, shadowed)
     } else {
       false
     },
-    ECall(EIdent(callee, _), args, _) => {
+    ECall(EIdent(callee, _), args, _, _) => {
       if find_local_slot(local_names, callee) >= 0 || cc_callee_may_return_view(callee, ctx) {
         return false
       }
@@ -1681,7 +1676,7 @@ export fn cc_compile_named_3(buf: Bytes, callee: Expr, args: Array[Expr], local_
     } else {
       ()
     }
-    nl2 = ce(buf, ECall(EIdent("Some", -1), [EIdent("__mbg_val", -1)], -1), local_names, nl2, ctx, ld)
+    nl2 = ce(buf, ECall(EIdent("Some", -1), [EIdent("__mbg_val", -1)], -1, []), local_names, nl2, ctx, ld)
     // Same staged-`None` leak as Array::find's hit path (#2671): the
     // nullary block res_l holds is released before the Some replaces it.
     cc_hof_release_slot(buf, res_l, ctx)
@@ -2171,13 +2166,13 @@ export fn cc_compile_named_3(buf: Bytes, callee: Expr, args: Array[Expr], local_
     }
   }
   else if fname == "FixedArray::length" || fname == "Int64Array::length" {
-    ce(buf, ECall(EIdent("Array::length", -1), args, -1), local_names, next_local, ctx, ld)
+    ce(buf, ECall(EIdent("Array::length", -1), args, -1, []), local_names, next_local, ctx, ld)
   }
   else if fname == "FixedArray::get" || fname == "Int64Array::get" {
-    ce(buf, ECall(EIdent("Array::get", -1), args, -1), local_names, next_local, ctx, ld)
+    ce(buf, ECall(EIdent("Array::get", -1), args, -1, []), local_names, next_local, ctx, ld)
   }
   else if fname == "FixedArray::set" || fname == "FixedArray::unsafe_set" || fname == "Int64Array::set" {
-    ce(buf, ECall(EIdent("Array::set", -1), args, -1), local_names, next_local, ctx, ld)
+    ce(buf, ECall(EIdent("Array::set", -1), args, -1, []), local_names, next_local, ctx, ld)
   }
   else if fname == "FixedArray::make" || fname == "Int64Array::make" {
     let n_expr = Array::get(args, 0)
@@ -2185,7 +2180,7 @@ export fn cc_compile_named_3(buf: Bytes, callee: Expr, args: Array[Expr], local_
     let loop_body = ESeq(ECall(EIdent("Array::push", -1), [
       EIdent("__fam_arr", -1),
       EIdent("__fam_init", -1)
-    ], -1), EAssign("__fam_i", EBinOp("+", EIdent("__fam_i", -1), EInt(1), -1), EUnit))
+    ], -1, []), EAssign("__fam_i", EBinOp("+", EIdent("__fam_i", -1), EInt(1), -1), EUnit))
     let synth = ELet("__fam_n", n_expr, ELet("__fam_init", init_expr, ELetMut("__fam_arr", EArray(array_empty()), ELetMut("__fam_i", EInt(0), ESeq(EWhile(EBinOp("<", EIdent("__fam_i", -1), EIdent("__fam_n", -1), -1), loop_body), EIdent("__fam_arr", -1)), -1), -1), -1), -1)
     // review-lint: allow-fixed-synthetic-name
     ce(buf, synth, local_names, next_local, ctx, ld)
@@ -2204,8 +2199,8 @@ export fn cc_compile_named_3(buf: Bytes, callee: Expr, args: Array[Expr], local_
       ECall(EIdent("Array::get", -1), [
         EIdent("__fb_src", -1),
         EBinOp("+", EIdent("__fb_soff", -1), EIdent("__fb_i", -1), -1)
-      ], -1)
-    ], -1), EAssign("__fb_i", EBinOp("+", EIdent("__fb_i", -1), EInt(1), -1), EUnit))
+      ], -1, [])
+    ], -1, []), EAssign("__fb_i", EBinOp("+", EIdent("__fb_i", -1), EInt(1), -1), EUnit))
     let synth = ELet("__fb_dst", dst_expr, ELet("__fb_doff", doff_expr, ELet("__fb_src", src_expr, ELet("__fb_soff", soff_expr, ELet("__fb_len", len_expr, ELetMut("__fb_i", EInt(0), ESeq(EWhile(EBinOp("<", EIdent("__fb_i", -1), EIdent("__fb_len", -1), -1), loop_body), EUnit), -1), -1), -1), -1), -1), -1)
     // review-lint: allow-fixed-synthetic-name
     ce(buf, synth, local_names, next_local, ctx, ld)
@@ -2220,7 +2215,7 @@ export fn cc_compile_named_3(buf: Bytes, callee: Expr, args: Array[Expr], local_
     let loop_body = ESeq(ECall(EIdent("Bytes::push", -1), [
       EIdent("__bf2_dst", -1),
       EIdent("__bf2_val", -1)
-    ], -1), EAssign("__bf2_i", EBinOp("+", EIdent("__bf2_i", -1), EInt(1), -1), EUnit))
+    ], -1, []), EAssign("__bf2_i", EBinOp("+", EIdent("__bf2_i", -1), EInt(1), -1), EUnit))
     let synth = ELet("__bf2_dst", dst_expr, ELet("__bf2_val", val_expr, ELet("__bf2_count", count_expr, ELetMut("__bf2_i", EInt(0), ESeq(EWhile(EBinOp("<", EIdent("__bf2_i", -1), EIdent("__bf2_count", -1), -1), loop_body), EUnit), -1), -1), -1), -1)
     // review-lint: allow-fixed-synthetic-name
     ce(buf, synth, local_names, next_local, ctx, ld)

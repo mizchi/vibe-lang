@@ -149,7 +149,7 @@ export fn emit_assignop_rc_tag_fix(buf: Bytes, enable_rc: Bool, op: String) -> U
 /// path classifier; an unknown result keeps the previous conservative drop.
 fn seq_handler_resumes(e: Expr, local_names: Array[String], bound: Array[String]) -> Bool with Exception {
   match e {
-    ECall(EIdent("resume", _), _, _) => find_local_slot(local_names, "resume") < 0 && seq_bound_call_result(bound, "resume") < 0,
+    ECall(EIdent("resume", _), _, _, _) => find_local_slot(local_names, "resume") < 0 && seq_bound_call_result(bound, "resume") < 0,
     ELet(name, _, body, _) => {
       let mark = Array::length(bound)
       Array::push(bound, name)
@@ -236,7 +236,7 @@ fn seq_discard_exits(e: Expr, local_names: Array[String], bound: Array[String]) 
     EReturn(_) => true,
     EBreak(_) => true,
     EContinue(_) => true,
-    ECall(EIdent("throw", _), _, _) => find_local_slot(local_names, "throw") < 0 && seq_bound_call_result(bound, "throw") < 0,
+    ECall(EIdent("throw", _), _, _, _) => find_local_slot(local_names, "throw") < 0 && seq_bound_call_result(bound, "throw") < 0,
     ELet(name, _, body, _) => {
       let mark = Array::length(bound)
       Array::push(bound, name)
@@ -279,7 +279,7 @@ fn seq_discard_exits(e: Expr, local_names: Array[String], bound: Array[String]) 
 
 fn seq_discard_owns_result_in(e: Expr, local_names: Array[String], bound: Array[String], ctx: CompileCtx) -> Bool with Exception {
   match e {
-    ECall(EIdent(n, _), _, _) => {
+    ECall(EIdent(n, _), _, _, _) => {
       let local_bound = seq_bound_call_result(bound, n)
       let slot = find_local_slot(local_names, n)
       if local_bound >= 0 {
@@ -290,7 +290,7 @@ fn seq_discard_owns_result_in(e: Expr, local_names: Array[String], bound: Array[
         is_ctor_call(e, ctx.ctor_table) || ((bsearch_leftmost(ctx.heap_ret_names, n) >= 0 || (registry_builtin_arity(n) >= 0 && builtin_allocates(n) && func_table_user_index_of(ctx.func_table, n, ctx.num_user_funcs) < 0)) && !is_borrow_ret_builtin(n) && bsearch_leftmost(ctx.borrow_ret_names, n) < 0 && bsearch_leftmost(ctx.borrow_view_ret, n) < 0)
       }
     },
-    ECall(_, _, _) => true,
+    ECall(_, _, _, _) => true,
     EArray(_) => true,
     ETuple(_) => true,
     ERecord(_, _, _) => true,
@@ -859,7 +859,7 @@ export fn spine_leaf_unowned(value: Expr, local_names: Array[String], ctx: Compi
     // differently. But the root being a spine binder is NOT on its own evidence
     // that the lowering retained, which is what `spine_binder_promoted` exists
     // to establish -- see its doc comment for the shape that proved it.
-    ECall(EIdent(cn, _), _, _) => if array_contains_str(binders, cn) || !call_returns_borrow(leaf, local_names, ctx) {
+    ECall(EIdent(cn, _), _, _, _) => if array_contains_str(binders, cn) || !call_returns_borrow(leaf, local_names, ctx) {
       false
     } else {
       let tail_root = scope_tail_proj_root(value)
@@ -936,7 +936,7 @@ export fn mib_spine_leaf(e: Expr, binders: Array[String]) -> Expr {
 /// same as a borrow contract.
 export fn call_returns_borrow(value: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool {
   match value {
-    ECall(EIdent(cn, _), _, _) => find_local_slot(local_names, cn) < 0 && (is_borrow_ret_builtin(cn) || bsearch_leftmost(ctx.borrow_ret_names, cn) >= 0),
+    ECall(EIdent(cn, _), _, _, _) => find_local_slot(local_names, cn) < 0 && (is_borrow_ret_builtin(cn) || bsearch_leftmost(ctx.borrow_ret_names, cn) >= 0),
     _ => false
   }
 }
@@ -949,7 +949,7 @@ fn rc_scope_borrow_arg_reaches_owner(e: Expr, owner: String, local_names: Array[
   match operand {
     EIdent(_, _) => proj_root_ident(operand) == owner,
     EDot(_, _, _, _) => proj_root_ident(operand) == owner,
-    ECall(EIdent(callee, _), args, _) => {
+    ECall(EIdent(callee, _), args, _, _) => {
       let mut source_idx = if call_returns_borrow(operand, local_names, ctx) {
         0
       } else {
@@ -1048,11 +1048,11 @@ fn rc_mut_rec_prefix_reads_owner(e: Expr, local_names: Array[String], ctx: Compi
 fn rc_mut_rec_retain_passthrough_source(e: Expr, local_names: Array[String], ctx: CompileCtx, shadowed: Array[String]) -> Expr {
   match e {
     EIdent(name, _) => if !array_contains_str(shadowed, name) && array_contains_str(ctx.rc_exit_lets, name) && rc_mut_rec_owner_slot(name, local_names, ctx) {
-      ECall(EIdent("__loop_tail_retain", -1), [e], -1)
+      ECall(EIdent("__loop_tail_retain", -1), [e], -1, [])
     } else {
       e
     },
-    ECall(_, _, _) => rc_mut_rec_transfer_value(e, local_names, ctx, shadowed),
+    ECall(_, _, _, _) => rc_mut_rec_transfer_value(e, local_names, ctx, shadowed),
     EIf(cond, yes, no) => EIf(cond, rc_mut_rec_retain_passthrough_source(yes, local_names, ctx, shadowed), rc_mut_rec_retain_passthrough_source(no, local_names, ctx, shadowed)),
     EMatch(scrutinee, arms) => EMatch(scrutinee, for arm in arms {
       let mark = Array::length(shadowed)
@@ -1111,14 +1111,14 @@ fn rc_mut_rec_retain_passthrough_source(e: Expr, local_names: Array[String], ctx
 
 export fn rc_mut_rec_transfer_value(e: Expr, local_names: Array[String], ctx: CompileCtx, shadowed: Array[String]) -> Expr {
   match e {
-    ECall(EIdent("__lambda_return_owned", off), args, call_off) => if off < 0 && Array::length(args) == 1 {
+    ECall(EIdent("__lambda_return_owned", off), args, call_off, callee_resolution) => if off < 0 && Array::length(args) == 1 {
       ECall(EIdent("__lambda_return_owned", off), [
         rc_mut_rec_transfer_value(Array::get(args, 0), local_names, ctx, shadowed)
-      ], call_off)
+      ], call_off, callee_resolution)
     } else {
       e
     },
-    ECall(EIdent(callee, off), args, call_off) => {
+    ECall(EIdent(callee, off), args, call_off, callee_resolution) => {
       if find_local_slot(local_names, callee) >= 0 {
         return e
       }
@@ -1135,7 +1135,7 @@ export fn rc_mut_rec_transfer_value(e: Expr, local_names: Array[String], ctx: Co
             })
             i = i + 1
           }
-          return ECall(EIdent(callee, off), next_args, call_off)
+          return ECall(EIdent(callee, off), next_args, call_off, callee_resolution)
         }
       }
       e
@@ -1228,7 +1228,7 @@ export fn rc_scope_tail_borrows_name(e: Expr, owner: String, local_names: Array[
       }
       found
     },
-    ECall(_, _, _) => rc_scope_borrow_arg_reaches_owner(operand, owner, local_names, ctx) || rc_scope_unknown_result_may_be_owner(operand, owner, local_names, ctx),
+    ECall(_, _, _, _) => rc_scope_borrow_arg_reaches_owner(operand, owner, local_names, ctx) || rc_scope_unknown_result_may_be_owner(operand, owner, local_names, ctx),
     _ => rc_scope_borrow_arg_reaches_owner(operand, owner, local_names, ctx)
   }
 }
@@ -1342,15 +1342,15 @@ export fn spine_leaf_ident_view(value: Expr, local_names: Array[String], ctx: Co
 /// alias from a match binder that the arm already retained.
 export fn assign_retain_view_tails(e: Expr, local_names: Array[String], inner: Array[String], inner_owned: Array[Int], ctx: CompileCtx) -> Expr with Exception {
   match e {
-    ECall(_, _, _) => if call_returns_borrow(e, local_names, ctx) && !callee_bound_in(e, inner) {
-      ECall(EIdent("__loop_tail_retain", -1), [e], -1)
+    ECall(_, _, _, _) => if call_returns_borrow(e, local_names, ctx) && !callee_bound_in(e, inner) {
+      ECall(EIdent("__loop_tail_retain", -1), [e], -1, [])
     } else {
       e
     },
     EIdent(x, _) => {
       let bi = find_local_slot(inner, x)
       if (bi >= 0 && Array::get(inner_owned, bi) == 0) || (bi < 0 && assign_name_is_view(x, local_names, ctx)) {
-        ECall(EIdent("__loop_tail_retain", -1), [e], -1)
+        ECall(EIdent("__loop_tail_retain", -1), [e], -1, [])
       } else {
         e
       }
@@ -1358,7 +1358,7 @@ export fn assign_retain_view_tails(e: Expr, local_names: Array[String], inner: A
     EDot(_, _, _, _) => {
       let root = proj_root_ident(e)
       if String::length(root) > 0 && !array_contains_str(inner, root) && !array_contains_str(ctx.ref_cell_names, root) {
-        ECall(EIdent("__loop_tail_retain", -1), [e], -1)
+        ECall(EIdent("__loop_tail_retain", -1), [e], -1, [])
       } else {
         e
       }
@@ -1431,7 +1431,7 @@ export fn assign_retain_view_tails(e: Expr, local_names: Array[String], inner: A
 export fn assign_retain_store_dup_tails(e: Expr, local_names: Array[String], inner: Array[String], ctx: CompileCtx) -> Expr with Exception {
   match e {
     EIdent(x, _) => if !array_contains_str(inner, x) && assign_ident_store_dup(e, local_names, ctx) {
-      ECall(EIdent("__loop_tail_retain", -1), [e], -1)
+      ECall(EIdent("__loop_tail_retain", -1), [e], -1, [])
     } else {
       e
     },
@@ -1491,7 +1491,7 @@ export fn let_retain_store_dup_tails(value: Expr, local_names: Array[String], ct
 /// #3184: did one of the rewrites above retain a tail of this value in place?
 export fn assign_tails_retained(e: Expr) -> Bool {
   match e {
-    ECall(EIdent(f, off), _, _) => f == "__loop_tail_retain" && off < 0,
+    ECall(EIdent(f, off), _, _, _) => f == "__loop_tail_retain" && off < 0,
     EIf(_, t, el) => assign_tails_retained(t) || assign_tails_retained(el),
     EMatch(_, arms) => assign_arm_tails_retained(arms),
     EHandle(hb, harms) => assign_tails_retained(hb) || assign_arm_tails_retained(harms),
@@ -1545,20 +1545,20 @@ export fn retain_wrap_branch_tails(e: Expr, local_names: Array[String], inner: A
     // next iteration) reaches a freed block. Unlike an ident, this holds in
     // straight-line code too, which is why retain_wrap_let_value does not
     // require a loop for it.
-    ECall(_, _, _) => if call_returns_borrow(e, local_names, ctx) && !callee_bound_in(e, inner) {
-      ECall(EIdent("__loop_tail_retain", -1), [e], -1)
+    ECall(_, _, _, _) => if call_returns_borrow(e, local_names, ctx) && !callee_bound_in(e, inner) {
+      ECall(EIdent("__loop_tail_retain", -1), [e], -1, [])
     } else {
       e
     },
     EIdent(x, p) => if array_contains_str(ctx.loop_borrowed_names, x) && !array_contains_str(ctx.ref_cell_names, x) && !array_contains_str(inner, x) {
-      ECall(EIdent("__loop_tail_retain", -1), [EIdent(x, p)], -1)
+      ECall(EIdent("__loop_tail_retain", -1), [EIdent(x, p)], -1, [])
     } else {
       e
     },
     EDot(_, _, _, _) => {
       let root = proj_root_ident(e)
       if String::length(root) > 0 && array_contains_str(ctx.loop_borrowed_names, root) && !array_contains_str(ctx.ref_cell_names, root) {
-        ECall(EIdent("__loop_tail_retain", -1), [e], -1)
+        ECall(EIdent("__loop_tail_retain", -1), [e], -1, [])
       } else {
         e
       }
@@ -1611,7 +1611,7 @@ export fn value_has_borrowed_branch_tail(e: Expr, local_names: Array[String], in
     EDot(_, _, _, _) => true,
     // #3108 review: a callee a local or a branch-local binding shadows is
     // that binding, not the borrow-returning function of the same spelling.
-    ECall(_, _, _) => call_returns_borrow(e, local_names, ctx) && !callee_bound_in(e, inner),
+    ECall(_, _, _, _) => call_returns_borrow(e, local_names, ctx) && !callee_bound_in(e, inner),
     EIf(_, t, el) => value_has_borrowed_branch_tail(t, local_names, inner, ctx) || value_has_borrowed_branch_tail(el, local_names, inner, ctx),
     EMatch(_, arms) => {
       let mut found = false
@@ -1745,7 +1745,7 @@ export fn path_value_owned(e: Expr, local_names: Array[String], bound: Array[Str
     ETuple(_) => true,
     EArray(_) => true,
     ERecord(_, _, _) => true,
-    ECall(callee, _, _) => match callee {
+    ECall(callee, _, _, _) => match callee {
       EIdent(cn, _) => if is_ctor_call(e, ctx.ctor_table) {
         true
       } else {
@@ -1849,7 +1849,7 @@ fn value_spine_borrowed(e: Expr, local_names: Array[String], bound: Array[String
       }
     },
     EDot(_, _, _, _) => true,
-    ECall(callee, _, _) => match callee {
+    ECall(callee, _, _, _) => match callee {
       EIdent(cn, _) => if is_ctor_call(e, ctx.ctor_table) {
         false
       } else if find_local_slot(bound, cn) >= 0 || find_local_slot(local_names, cn) >= 0 {
@@ -1986,7 +1986,7 @@ fn arms_tail_call_borrow(arms: Array[(Pat, Expr)], local_names: Array[String], i
 /// (`local_names` covers only what was in scope at the enclosing `let`).
 fn callee_bound_in(e: Expr, inner: Array[String]) -> Bool {
   match e {
-    ECall(EIdent(cn, _), _, _) => array_contains_str(inner, cn),
+    ECall(EIdent(cn, _), _, _, _) => array_contains_str(inner, cn),
     _ => false
   }
 }
@@ -2010,7 +2010,7 @@ fn with_pattern_binders(inner: Array[String], pat: Pat) -> Array[String] {
 /// slot down the generic path.
 export fn cet_strip_owned_markers(e: Expr) -> Expr {
   match e {
-    ECall(EIdent(n, off), args, _) => if n == "__lambda_return_owned" && off < 0 && Array::length(args) == 1 {
+    ECall(EIdent(n, off), args, _, _) => if n == "__lambda_return_owned" && off < 0 && Array::length(args) == 1 {
       cet_strip_owned_markers(Array::get(args, 0))
     } else {
       e
@@ -2044,7 +2044,7 @@ export fn cet_strip_owned_markers(e: Expr) -> Expr {
 /// function -- a tail retain_wrap_branch_tails' `ECall` arm retains?
 export fn branch_tail_calls_borrow(e: Expr, local_names: Array[String], inner: Array[String], ctx: CompileCtx) -> Bool {
   match e {
-    ECall(_, _, _) => call_returns_borrow(e, local_names, ctx) && !callee_bound_in(e, inner),
+    ECall(_, _, _, _) => call_returns_borrow(e, local_names, ctx) && !callee_bound_in(e, inner),
     EIf(_, t, el) => branch_tail_calls_borrow(t, local_names, inner, ctx) || branch_tail_calls_borrow(el, local_names, inner, ctx),
     EMatch(_, arms) => {
       let mut found = false

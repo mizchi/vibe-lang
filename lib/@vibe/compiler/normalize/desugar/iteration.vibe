@@ -54,12 +54,12 @@ fn build_iter_for_with(name: String, ctype: String, should_await: Bool, iter: Ex
   let rest_name = dinsp_fresh_name("__iter_rest", iter, body)
   let raw_next = ECall(EIdent(String::concat(ctype, "::next"), -1), [
     EIdent(cur_name, -1)
-  ], -1)
+  ], -1, [])
   let nextcall = if should_await {
     // #3198 review: a compiler-synthesized `await` means the builtin even
     // where the program binds `await` locally (the await lowering honours
     // that binding for the calls the program wrote).
-    ECall(builtin_ref("await"), [raw_next], -1)
+    ECall(builtin_ref("await"), [raw_next], -1, [])
   } else {
     raw_next
   }
@@ -105,10 +105,10 @@ fn build_indexed_iter_for(name: String, idx: Option[String], ctype: String, iter
   let get_call = ECall(EIdent(String::concat(ctype, "::iter_get"), -1), [
     EIdent(src_name, -1),
     EIdent(index_name, -1)
-  ], -1)
+  ], -1, [])
   let len_call = ECall(EIdent(String::concat(ctype, "::iter_length"), -1), [
     EIdent(src_name, -1)
-  ], -1)
+  ], -1, [])
   let incr = EAssign(index_name, EBinOp("+", EIdent(index_name, -1), EInt(1), -1), EUnit)
   let bound_body = match idx {
     Some(iname) => ELet(iname, EIdent(index_name, -1), body, -1),
@@ -150,7 +150,8 @@ fn build_indexed_iter_for(name: String, idx: Option[String], ctype: String, iter
 fn build_host_stream_for(name: String, iter: Expr, body: Expr) -> Expr {
   let src_name = dinsp_fresh_name("__hs_src", iter, body)
   let byte_name = dinsp_fresh_name("__hs_b", iter, body)
-  let read_call = ECall(EIdent("host_stream_next", -1), [EIdent(src_name, -1)], -1)
+  let read_call = ECall(EIdent("host_stream_next", -1), [EIdent(src_name, -1)], -1, [
+  ])
   let advance = EAssign(byte_name, read_call, EUnit)
   let loop_body = ELet(name, EIdent(byte_name, -1), ESeq(body, advance), -1)
   ELet(src_name, iter, ELetMut(byte_name, read_call, EWhile(EBinOp("<=", EInt(0), EIdent(byte_name, -1), -1), loop_body), -1), -1)
@@ -173,7 +174,7 @@ fn build_pull_for_in(value_name: String, index_name: Option[String], iterable: E
     Some(ix) => ESeq(body, EAssign(ix, EBinOp("+", EIdent(ix, -1), EInt(1), -1), EUnit)),
     None => ESeq(body, EUnit)
   }
-  let loop_body = EMatch(ECall(EIdent(next_name, -1), array_empty(), -1), [
+  let loop_body = EMatch(ECall(EIdent(next_name, -1), array_empty(), -1, []), [
     (PCtor("Some", [PBind(value_name)]), some_arm),
     (PCtor("None", array_empty()), EAssign(continue_name, EBool(false), EUnit))
   ])
@@ -214,7 +215,7 @@ fn fn_return_is_future(fn_returns: Array[(String, String)], fname: String) -> Bo
 fn for_await_is_pull_source(inner: Expr, fn_returns: Array[(String, String)]) -> Bool {
   match inner {
     EFn(_, _, _, _, _, _) => true,
-    ECall(callee, _, _) => match callee {
+    ECall(callee, _, _, _) => match callee {
       EIdent(fname, _) => fn_return_is_fn_type(fn_returns, fname),
       _ => false
     },
@@ -306,7 +307,7 @@ fn for_no_protocol_msg(tn: String) -> String {
 fn for_iterand_off_marker(iter: Expr) -> String {
   let off = match iter {
     EIdent(_, o) => o,
-    ECall(_, _, o) => o,
+    ECall(_, _, o, _) => o,
     EDot(_, _, o, _) => o,
     _ => 0 - 1
   }
@@ -354,7 +355,7 @@ export fn classify_sync_for_loop(name: String, idx: Option[String], iter: Expr, 
       match fn_return_type(fn_returns, String::concat(tn, "::iter")) {
         Some(itertype) => build_iter_for(name, itertype, ECall(EIdent(String::concat(tn, "::iter"), -1), [
           riter
-        ], -1), rbody),
+        ], -1, []), rbody),
         None => classify_indexed_for_loop(name, idx, iter, riter, rbody, struct_sets, var_types, fn_returns)
       }
     },

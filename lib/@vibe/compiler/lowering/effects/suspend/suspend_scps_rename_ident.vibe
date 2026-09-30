@@ -395,9 +395,9 @@ export fn scps_is_ctor_name(ctx: (Array[Stmt], Array[(String, Array[(String, Arr
 
 export fn scps_perform_args(e: Expr) -> Array[Expr] {
   match e {
-    ECall(_, pargs, _) => if Array::length(pargs) == 1 {
+    ECall(_, pargs, _, _) => if Array::length(pargs) == 1 {
       match Array::get(pargs, 0) {
-        ECall(_, op_args, _) => op_args,
+        ECall(_, op_args, _, _) => op_args,
         _ => array_empty_expr()
       }
     } else {
@@ -409,7 +409,7 @@ export fn scps_perform_args(e: Expr) -> Array[Expr] {
 
 export fn scps_call_args(e: Expr) -> Array[Expr] {
   match e {
-    ECall(_, args, _) => args,
+    ECall(_, args, _, _) => args,
     _ => array_empty_expr()
   }
 }
@@ -481,7 +481,7 @@ fn scps_mentions_step_shallow(e: Expr, dn: String, yprefix: String, bn: String) 
     // a step-source parameter (`TaskGroup::spawn_suspend(g, __scps_cps_..)`),
     // not this literal's own control flow; only the callee position, and a
     // done / bubble constructor anywhere, make the literal a step.
-    ECall(callee, args, _) => {
+    ECall(callee, args, _, _) => {
       let mut found = scps_mentions_step_shallow(callee, dn, yprefix, bn)
       let mut i = 0
       while !found && i < Array::length(args) {
@@ -552,7 +552,7 @@ fn scps_fn_tail_is_step(v: Expr, eff: String, own: Array[String]) -> Bool {
 /// closure whose only step-looking tail is a call to itself does not count.
 fn scps_tail_is_step(e: Expr, eff: String, own: Array[String]) -> Bool {
   match e {
-    ECall(EIdent(nm, _), _, _) => nm == scps_done_name(eff) || nm == scps_bubble_name(eff) || String::starts_with(nm, scps_y_name(eff, "")) || String::starts_with(nm, scps_clone_name(eff, "")) || edp_str_array_contains(own, nm),
+    ECall(EIdent(nm, _), _, _, _) => nm == scps_done_name(eff) || nm == scps_bubble_name(eff) || String::starts_with(nm, scps_y_name(eff, "")) || String::starts_with(nm, scps_clone_name(eff, "")) || edp_str_array_contains(own, nm),
     ELet(x, v, b, _) => scps_tail_is_step(b, eff, scps_step_names_bind(own, x, scps_fn_tail_is_step(v, eff, own))),
     ELetRec(x, v, b) => scps_tail_is_step(b, eff, scps_step_names_bind(own, x, scps_fn_tail_is_step(v, eff, scps_step_names_bind(own, x, false)))),
     ELetMut(x, _, b, _) => scps_tail_is_step(b, eff, scps_step_names_bind(own, x, false)),
@@ -623,7 +623,7 @@ export fn scps_calls_step_local(e: Expr, eff: String, names: Array[String], add:
     false
   } else {
     match e {
-      ECall(callee, args, _) => match callee {
+      ECall(callee, args, _, _) => match callee {
         EIdent(nm, _) => edp_str_array_contains(names, nm) || scps_calls_step_local_exprs(args, eff, names, add, skip_discharged),
         _ => scps_calls_step_local(callee, eff, names, add, skip_discharged) || scps_calls_step_local_exprs(args, eff, names, add, skip_discharged)
       },
@@ -840,11 +840,11 @@ export fn scps_params_bind_name(params: Array[(String, Option[TypeExpr])], x: St
 }
 
 fn scps_cell_get(x: String, off: Int) -> Expr {
-  ECall(builtin_ref("Array::get"), [EIdent(x, off), EInt(0)], -1)
+  ECall(builtin_ref("Array::get"), [EIdent(x, off), EInt(0)], -1, [])
 }
 
 fn scps_cell_set(x: String, v: Expr) -> Expr {
-  ECall(builtin_ref("Array::set"), [EIdent(x, -1), EInt(0), v], -1)
+  ECall(builtin_ref("Array::set"), [EIdent(x, -1), EInt(0), v], -1, [])
 }
 
 /// Rewrite every read and write of the local `x` in `e` into 1-element
@@ -928,7 +928,7 @@ export fn scps_cellify(e: Expr, x: String) -> Expr {
         scps_cellify(b, x)
       })
     },
-    ECall(callee, args, off) => ECall(scps_cellify(callee, x), scps_cellify_exprs(args, x), off),
+    ECall(callee, args, off, callee_resolution) => ECall(scps_cellify(callee, x), scps_cellify_exprs(args, x), off, callee_resolution),
     EBinOp(op, l, r, boff) => EBinOp(op, scps_cellify(l, x), scps_cellify(r, x), boff),
     EUnaryOp(op, a) => EUnaryOp(op, scps_cellify(a, x)),
     EReturn(a) => EReturn(scps_cellify(a, x)),
@@ -1108,7 +1108,7 @@ fn scps_local_binding_ret_ty(root: Expr, name: String, ctx: (Array[Stmt], Array[
 
 export fn scps_call_ret_ty(v: Expr, ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String]), root: Expr) -> Option[TypeExpr] {
   match v {
-    ECall(callee, _, _) => match callee {
+    ECall(callee, _, _, _) => match callee {
       EIdent(cn, _) => if scps_binds_name(root, cn) {
         scps_local_binding_ret_ty(root, cn, ctx)
       } else {
@@ -1156,7 +1156,7 @@ export fn scps_call_kind(v: Expr, ctx: (Array[Stmt], Array[(String, Array[(Strin
     "string"
   } else {
     match v {
-      ECall(callee, _, _) => match callee {
+      ECall(callee, _, _, _) => match callee {
         EIdent(cn, _) => if scps_binds_name(root, cn) {
           ""
         } else {
@@ -1350,7 +1350,7 @@ export fn scps_rename_ident(e: Expr, x: String, nx: String) -> Expr {
         scps_rename_ident(b, x, nx)
       })
     },
-    ECall(callee, args, off) => ECall(scps_rename_ident(callee, x, nx), scps_rename_ident_exprs(args, x, nx), off),
+    ECall(callee, args, off, callee_resolution) => ECall(scps_rename_ident(callee, x, nx), scps_rename_ident_exprs(args, x, nx), off, callee_resolution),
     EBinOp(op, l, r, boff) => EBinOp(op, scps_rename_ident(l, x, nx), scps_rename_ident(r, x, nx), boff),
     EUnaryOp(op, a) => EUnaryOp(op, scps_rename_ident(a, x, nx)),
     EReturn(a) => EReturn(scps_rename_ident(a, x, nx)),
@@ -1739,7 +1739,7 @@ fn scps_rename_pat_idents(ps: Array[Pat], x: String, nx: String) -> Array[Pat] {
 export fn scps_inert_taint(e: Expr, eff: String, needing: Array[String], locals: Array[String], ctx: (Array[Stmt], Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]], Array[String])) -> Bool {
   match e {
     EIdent(nm, _) => !edp_str_array_contains(locals, nm) && !scps_is_ctor_name(ctx, nm),
-    ECall(callee, args, _) => match callee {
+    ECall(callee, args, _, _) => match callee {
       EIdent(nm, _) => if nm == "perform" {
         true
       } else if edp_str_array_contains(needing, nm) || String::starts_with(nm, "__scps_") || String::starts_with(nm, "__Scps") {

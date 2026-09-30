@@ -20,14 +20,14 @@ import ./parser_binder_context.vibe {
 // an occurrence must retain its wrapper; generated children remain unwrapped.
 export fn source_expr(expr: Expr) -> Expr {
   match expr {
-    ECall(EIdent("$source_span", _), args, _) => Array::get(args, 0),
+    ECall(EIdent("$source_span", _), args, _, _) => Array::get(args, 0),
     _ => expr
   }
 }
 
 export fn source_expr_range(expr: Expr) -> (Int, Int) {
   match expr {
-    ECall(EIdent("$source_span", start), args, _) => match Array::get(args, 1) {
+    ECall(EIdent("$source_span", start), args, _, _) => match Array::get(args, 1) {
       EInt(end) => if start >= 0 && end >= start {
         (start, end)
       } else {
@@ -43,26 +43,26 @@ fn source_annotate(expr: Expr, start: Int, end: Int, c: ParserBinderContext) -> 
   match expr {
     // Grouping changes the syntactic extent used by a surrounding operator,
     // not the occurrence of the already parsed child expression.
-    ECall(EIdent("$source_span", core_start), args, _) => ECall(EIdent("$source_span", core_start), [
+    ECall(EIdent("$source_span", core_start), args, _, _) => ECall(EIdent("$source_span", core_start), [
       Array::get(args, 0),
       Array::get(args, 1),
       Array::get(args, 2),
       EInt(start),
       EInt(end)
-    ], core_start),
+    ], core_start, []),
     _ => ECall(EIdent("$source_span", start), [
       expr,
       EInt(end),
       EArray(source_direct_slots(expr, start, end, c)),
       EInt(start),
       EInt(end)
-    ], start)
+    ], start, [])
   }
 }
 
 export fn source_expr_syntax_range(expr: Expr) -> (Int, Int) {
   match expr {
-    ECall(EIdent("$source_span", _), args, _) => match (Array::get(args, 3), Array::get(args, 4)) {
+    ECall(EIdent("$source_span", _), args, _, _) => match (Array::get(args, 3), Array::get(args, 4)) {
       (EInt(start), EInt(end)) => (start, end),
       _ => (-1, -1)
     },
@@ -374,7 +374,7 @@ fn source_direct_slots(expr: Expr, start: Int, end: Int, c: ParserBinderContext)
 
 export fn source_expr_slot(expr: Expr, index: Int) -> (Int, Int) {
   match expr {
-    ECall(EIdent("$source_span", _), args, _) => match Array::get(args, 2) {
+    ECall(EIdent("$source_span", _), args, _, _) => match Array::get(args, 2) {
       EArray(slots) => if index >= 0 && index < Array::length(slots) {
         match Array::get(slots, index) {
           ETuple(bounds) => match (Array::get(bounds, 0), Array::get(bounds, 1)) {
@@ -396,13 +396,13 @@ export fn source_expr_slot(expr: Expr, index: Int) -> (Int, Int) {
 /// without introducing new syntax (for example distributing a lambda type).
 export fn source_rewrap_expr(original: Expr, replacement: Expr) -> Expr {
   match original {
-    ECall(EIdent("$source_span", start), args, _) => ECall(EIdent("$source_span", start), [
+    ECall(EIdent("$source_span", start), args, _, _) => ECall(EIdent("$source_span", start), [
       replacement,
       Array::get(args, 1),
       Array::get(args, 2),
       Array::get(args, 3),
       Array::get(args, 4)
-    ], start),
+    ], start, []),
     _ => replacement
   }
 }
@@ -422,7 +422,7 @@ export fn source_wrap_bind(expr: Expr, name: String, off: Int, value: Expr, cont
       }
       let value_span = source_expr_syntax_range(value)
       match expr {
-        ECall(callee, args, call_off) => {
+        ECall(callee, args, call_off, callee_resolution) => {
           let continuation = Array::get(args, 1)
           let slot = source_binding_slot(name, start, value_span.0, c)
           let located_continuation = ECall(EIdent("$source_span", -1), [
@@ -431,8 +431,8 @@ export fn source_wrap_bind(expr: Expr, name: String, off: Int, value: Expr, cont
             EArray([slot]),
             EInt(-1),
             EInt(-1)
-          ], -1)
-          source_annotate(ECall(callee, [value, located_continuation], call_off), start, value_span.1, c)
+          ], -1, [])
+          source_annotate(ECall(callee, [value, located_continuation], call_off, callee_resolution), start, value_span.1, c)
         },
         _ => expr
       }

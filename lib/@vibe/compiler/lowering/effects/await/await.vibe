@@ -191,28 +191,29 @@ export fn await_poll_pass(stmts: Array[Stmt], host_future: Bool, waiter_hooks: B
 /// ```
 fn awp_poll_fn_def(host_future: Bool, waiter_hooks: Bool) -> Stmt {
   let fut = EIdent("__aw_fut", -1)
-  let state = ECall(builtin_ref("Array::get"), [fut, EInt(0)], -1)
+  let state = ECall(builtin_ref("Array::get"), [fut, EInt(0)], -1, [])
   // EBinOp("<"), NOT the `lt` builtin the old inline expansion used: the
   // evidence migration's see-through scan does not know `lt` as a pure
   // callee, so a `while lt(...)` condition makes this fn -- and therefore
   // every handle whose body awaits -- ineligible (measured: reduced case
   // v9 REJECTED with `lt`, identical fn with `<` compiles and runs).
   let pending = EBinOp("<", EInt(0), state, -1)
-  let payload = ECall(builtin_ref("Array::get"), [fut, EInt(1)], -1)
+  let payload = ECall(builtin_ref("Array::get"), [fut, EInt(1)], -1, [])
   let loop_body = if host_future {
     let suspend = ECall(EIdent("perform", -1), [
-      ECall(EIdent("Async::Suspend", -1), [EIdent("__aw_p", -1)], -1)
-    ], -1)
-    let pay = ECall(EIdent("__aw_pay", -1), [fut], -1)
-    let settle = ECall(EIdent("__aw_settle", -1), [fut, EIdent("__aw_w", -1)], -1)
+      ECall(EIdent("Async::Suspend", -1), [EIdent("__aw_p", -1)], -1, [])
+    ], -1, [])
+    let pay = ECall(EIdent("__aw_pay", -1), [fut], -1, [])
+    let settle = ECall(EIdent("__aw_settle", -1), [fut, EIdent("__aw_w", -1)], -1, [
+    ])
     ELet("__aw_p", pay, ELet("__aw_w", suspend, ELet("__aw_s", settle, EUnit, -1), -1), -1)
   } else if waiter_hooks {
-    let wait_call = ECall(EIdent("__aw_wait", -1), [fut], -1)
+    let wait_call = ECall(EIdent("__aw_wait", -1), [fut], -1, [])
     ELet("__aw_w", wait_call, EUnit, -1)
   } else {
     let suspend = ECall(EIdent("perform", -1), [
-      ECall(EIdent("Async::Suspend", -1), [EInt(1)], -1)
-    ], -1)
+      ECall(EIdent("Async::Suspend", -1), [EInt(1)], -1, [])
+    ], -1, [])
     ELet("__aw_w", suspend, EUnit, -1)
   }
   let body = ESeq(EWhile(pending, loop_body), payload)
@@ -227,9 +228,9 @@ fn awp_poll_fn_def(host_future: Bool, waiter_hooks: Bool) -> Stmt {
 /// plain poll-wait retry.
 fn awp_pay_fn_def(cell_note: String) -> Stmt {
   let f = EIdent("__awp_f", -1)
-  let state = ECall(builtin_ref("Array::get"), [f, EInt(0)], -1)
+  let state = ECall(builtin_ref("Array::get"), [f, EInt(0)], -1, [])
   // `hnd`, not `handle` -- `handle` is the effect-handler keyword.
-  let hnd = ECall(builtin_ref("Array::get"), [f, EInt(1)], -1)
+  let hnd = ECall(builtin_ref("Array::get"), [f, EInt(1)], -1, [])
   let pay = EIf(EBinOp("==", state, EInt(2), -1), EBinOp("+", hnd, EInt(2), -1), EInt(1))
   // #1537 (Codex on #3091): state 9 is a cell whose host read was released
   // -- its last waiter was cancelled, or (#3131) it went unawaited while
@@ -238,10 +239,10 @@ fn awp_pay_fn_def(cell_note: String) -> Stmt {
   // it.
   let poisoned = ESeq(ECall(EIdent("abort", -1), [
     EString("vibe: await on a host future whose read was released (its waiter was cancelled, or 512 later calls reclaimed it unawaited)", -1)
-  ], -1), EInt(1))
+  ], -1, []), EInt(1))
   let checked = EIf(EBinOp("==", state, EInt(9), -1), poisoned, pay)
   let body = if cell_note != "" {
-    ELet("__awp_n", ECall(EIdent(cell_note, -1), [f], -1), checked, -1)
+    ELet("__awp_n", ECall(EIdent(cell_note, -1), [f], -1, []), checked, -1)
   } else {
     checked
   }
@@ -255,13 +256,13 @@ fn awp_pay_fn_def(cell_note: String) -> Stmt {
 /// loop observes readiness. Poll-wait rounds (state != 2) ignore `v`.
 fn awp_settle_fn_def() -> Stmt {
   let f = EIdent("__aws_f", -1)
-  let state = ECall(builtin_ref("Array::get"), [f, EInt(0)], -1)
+  let state = ECall(builtin_ref("Array::get"), [f, EInt(0)], -1, [])
   let set_payload = ECall(builtin_ref("Array::set"), [
     f,
     EInt(1),
     EIdent("__aws_v", -1)
-  ], -1)
-  let set_state = ECall(builtin_ref("Array::set"), [f, EInt(0), EInt(0)], -1)
+  ], -1, [])
+  let set_state = ECall(builtin_ref("Array::set"), [f, EInt(0), EInt(0)], -1, [])
   let body = EIf(EBinOp("==", state, EInt(2), -1), ESeq(set_payload, ESeq(set_state, EInt(0))), EInt(0))
   let params: Array[(String, Option[TypeExpr])] = [
     ("__aws_f", None),
@@ -319,7 +320,7 @@ fn awp_program_defines(stmts: Array[Stmt], name: String) -> Bool {
 /// escapes ahead of it.
 fn awp_lift(e: Expr, ctr: Array[Int], binds: Array[(String, Expr, String)], sh: Int) -> Expr {
   match e {
-    ECall(callee, args, off) => {
+    ECall(callee, args, off, callee_resolution) => {
       let callee_nm = match callee {
         EIdent(cn, _) => cn,
         _ => ""
@@ -347,7 +348,7 @@ fn awp_lift(e: Expr, ctr: Array[Int], binds: Array[(String, Expr, String)], sh: 
         } else {
           callee
         }
-        ECall(new_callee, awp_lift_exprs(args, ctr, binds, sh), off)
+        ECall(new_callee, awp_lift_exprs(args, ctr, binds, sh), off, callee_resolution)
       }
     },
     EBinOp(op, l, r, boff) => EBinOp(op, awp_lift(l, ctr, binds, sh), awp_lift(r, ctr, binds, sh), boff),
@@ -407,7 +408,7 @@ fn awp_wrap(binds: Array[(String, Expr, String)], inner: Expr) -> Expr {
   let mut i = Array::length(binds) - 1
   while i >= 0 {
     let (fname, fut, vname) = Array::get(binds, i)
-    let poll = ECall(EIdent("__aw_poll", -1), [EIdent(fname, -1)], -1)
+    let poll = ECall(EIdent("__aw_poll", -1), [EIdent(fname, -1)], -1, [])
     out = ELet(fname, fut, ELet(vname, poll, out, -1), -1)
     i = i - 1
   }
@@ -426,7 +427,7 @@ fn awp_spine(e: Expr, ctr: Array[Int], rebuild_is_tail: Bool, sh: Int) -> Expr {
 /// `Future::ready(x)` awaited immediately is just `x` -- no array, no loop.
 fn awp_ready_payload(fut: Expr, sh: Int) -> Option[Expr] {
   match fut {
-    ECall(callee, args, _) => match callee {
+    ECall(callee, args, _, _) => match callee {
       EIdent(nm, _) => if nm == "Future::ready" && Array::length(args) == 1 && !awp_ready_user_defined(sh) {
         Some(Array::get(args, 0))
       } else {

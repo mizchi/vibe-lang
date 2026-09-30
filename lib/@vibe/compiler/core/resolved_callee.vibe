@@ -1,0 +1,167 @@
+import @vibe/core {
+  struct MutMap
+}
+
+import ./ast.vibe {
+  Expr, Stmt
+}
+import ./expr_children.vibe {
+  expr_children
+}
+
+// Operation identities are separate from source spellings and binding names.
+// The call's fourth field retains the checker's answer through AST rewrites.
+// Empty = not migrated; -1 = a program binding; positive = builtin operation.
+
+export let builtin_mutbytes_empty: Int = 1
+export let builtin_mutbytes_push: Int = 2
+export let builtin_mutbytes_append: Int = 3
+export let builtin_mutbytes_length: Int = 4
+export let builtin_mutbytes_to_bytes: Int = 5
+
+// (source name, operation identity, arity, runtime alias).
+let mutbytes_operations: Array[(String, Int, Int, String)] = [
+  ("MutBytes::empty", builtin_mutbytes_empty, 1, ""),
+  ("MutBytes::push", builtin_mutbytes_push, 2, "Bytes::push"),
+  ("MutBytes::append", builtin_mutbytes_append, 2, "Bytes::append"),
+  ("MutBytes::length", builtin_mutbytes_length, 1, "Bytes::length"),
+  ("MutBytes::to_bytes", builtin_mutbytes_to_bytes, 1, "")
+]
+
+/// Source-name lookup belongs to the checker and explicit builtin factories.
+export fn mutbytes_operation_from_source(name: String) -> Int {
+  if !String::starts_with(name, "MutBytes::") {
+    0
+  } else {
+    let mut result = 0
+    let mut i = 0
+    while i < Array::length(mutbytes_operations) {
+      let row = Array::get(mutbytes_operations, i)
+      if row.0 == name {
+        result = row.1
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    result
+  }
+}
+
+export fn resolved_callee_operation(resolution: Array[Int]) -> Int {
+  if Array::length(resolution) == 1 {
+    Array::get(resolution, 0)
+  } else {
+    0
+  }
+}
+
+export fn builtin_operation_arity(operation: Int) -> Int {
+  if operation >= builtin_mutbytes_empty && operation <= builtin_mutbytes_to_bytes {
+    Array::get(mutbytes_operations, operation - builtin_mutbytes_empty).2
+  } else {
+    0 - 1
+  }
+}
+
+/// Shared lowering targets explicitly name builtins, never program bindings.
+export fn builtin_operation_alias(operation: Int) -> String {
+  if operation >= builtin_mutbytes_empty && operation <= builtin_mutbytes_to_bytes {
+    Array::get(mutbytes_operations, operation - builtin_mutbytes_empty).3
+  } else {
+    ""
+  }
+}
+
+// Tag 7 in the per-module lowering carrier stores (call offset, identity).
+// Its payload is offset * 8 + identity, with 0 representing a program binding.
+let callee_capture: Array[Int] = []
+export fn resolved_callee_capture_reset() -> Unit {
+  Array::truncate(callee_capture, 0)
+}
+export fn resolved_callee_capture_record(offset: Int, operation: Int) -> Unit {
+  if offset >= 0 && operation != 0 {
+    let identity = if operation < 0 {
+      0
+    } else {
+      operation
+    }
+    Array::push(callee_capture, (offset * 8 + identity) * 8 + 7)
+  }
+}
+export fn resolved_callee_capture_rows() -> Array[Int] {
+  Array::slice(callee_capture, 0, Array::length(callee_capture))
+}
+fn restore_callee_expr(expr: Expr, operations: MutMap[Int, Int]) -> Unit {
+  match expr {
+    ECall(_, _, offset, resolution) => {
+      match MutMap::get(operations, offset) {
+        Some(operation) => {
+          if Array::length(resolution) == 0 {
+            Array::push(resolution, operation)
+          } else {
+            Array::set(resolution, 0, operation)
+          }
+        },
+        None => ()
+      }
+    },
+    _ => ()
+  }
+  let children = expr_children(expr)
+  let mut child_index = 0
+  while child_index < Array::length(children) {
+    restore_callee_expr(Array::get(children, child_index), operations)
+    child_index = child_index + 1
+  }
+}
+fn restore_callee_stmts(stmts: Array[Stmt], operations: MutMap[Int, Int]) -> Unit {
+  let mut statement_index = 0
+  while statement_index < Array::length(stmts) {
+    match Array::get(stmts, statement_index) {
+      SLet(_, _, _, _, body) => restore_callee_expr(body, operations),
+      SLetMut(_, _, body) => restore_callee_expr(body, operations),
+      SLetPat(_, body) => restore_callee_expr(body, operations),
+      STest(_, body) => restore_callee_expr(body, operations),
+      SBench(_, body) => restore_callee_expr(body, operations),
+      SExpr(body) => restore_callee_expr(body, operations),
+      SModule(_, _, children) => restore_callee_stmts(children, operations),
+      _ => ()
+    }
+    statement_index = statement_index + 1
+  }
+}
+export fn restore_resolved_callees(stmts: Array[Stmt], rows: Array[Int]) -> Unit {
+  let mut has_callees = false
+  for row in rows {
+    if row % 8 == 7 {
+      has_callees = true
+    }
+  }
+  if has_callees {
+    let operations: MutMap[Int, Int] = MutMap::new_int()
+    for row in rows {
+      if row % 8 == 7 {
+        let payload = row / 8
+        let identity = payload % 8
+        MutMap::set(operations, payload / 8, if identity == 0 {
+          0 - 1
+        } else {
+          identity
+        })
+      }
+    }
+    restore_callee_stmts(stmts, operations)
+  }
+}
+
+/// For compiler-synthesized calls AFTER the caller resolved a builtin value.
+/// Program references must go through the checker, never this factory.
+export fn builtin_callee_resolution(name: String) -> Array[Int] {
+  let operation = mutbytes_operation_from_source(name)
+  if operation > 0 {
+    [operation]
+  } else {
+    []
+  }
+}

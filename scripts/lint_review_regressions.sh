@@ -45,6 +45,11 @@ diff="$({
   git -C "$PROJECT_ROOT" diff "${DIFF_SELECTOR[@]}" --no-ext-diff --no-textconv --unified=0 --diff-filter=ACMR
 } || true)"
 
+# AST ABI v3 adds an empty resolution cell to existing ECall nodes. That
+# migration alone does not introduce the historical binders/references these
+# rules guard. Keep every hunk in a file containing another token or comment change.
+diff="$(printf '%s\n' "$diff" | python3 "$SCRIPT_DIR/review_lint_metadata_diff.py" --root "$PROJECT_ROOT" --range "$RANGE")"
+
 staged_paths="$(git -C "$PROJECT_ROOT" diff "${DIFF_SELECTOR[@]}" --name-only --diff-filter=ACMR \
   | awk '/^lib\/@vibe\/compiler\/.*\.vibe$/')"
 

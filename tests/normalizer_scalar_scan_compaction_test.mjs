@@ -257,7 +257,7 @@ const modeArms = [
   // optional leaves no syntactic trace at the call site, but the callee's name
   // is one, so this reads the same table the walk reads.
   { mode: 6, arms: [
-    { role: "top-level-optional-callee", pattern: "ECall(callee, _, _)", body: `match callee { EIdent(n, _) => match optional_param_flags(n) { Some(_) => true, None => false }, _ => false }` },
+    { role: "top-level-optional-callee", pattern: "ECall(callee, _, _, _)", body: `match callee { EIdent(n, _) => match optional_param_flags(n) { Some(_) => true, None => false }, _ => false }` },
     { role: "optional-call-default", pattern: "_", body: "false" }
   ] },
   // The `else`, i.e. mode 5.
@@ -271,7 +271,7 @@ const modeArms = [
 // Modes 0 and 1, as their own predicates. Same arms they had inline, so
 // splitting them out for the census cost no coverage.
 const hereUsesArms = [
-  { role: "inspect-call", pattern: "ECall(callee, args, _)", body: `match callee { EIdent(n, _) => n == "inspect" && Array::length(args) == 2, _ => false }` },
+  { role: "inspect-call", pattern: "ECall(callee, args, _, _)", body: `match callee { EIdent(n, _) => n == "inspect" && Array::length(args) == 2, _ => false }` },
   { role: "inspect-default", pattern: "_", body: "false" }
 ];
 const hereBindsArms = [
@@ -290,7 +290,7 @@ const recursiveArms = [
   ["tuple-items", "ETuple(items)", "dinsp_scan_list(items, mode, name)"], ["array-items", "EArray(items)", "dinsp_scan_list(items, mode, name)"], ["record-values", "ERecord(_, fields, _)", "dinsp_scan_fields(fields, mode, name)"], ["map-values", "EMap(fields)", "dinsp_scan_fields(fields, mode, name)"],
   ["if-condition-then-else", "EIf(c, t, f)", "dinsp_scan(c, mode, name) || dinsp_scan(t, mode, name) || dinsp_scan(f, mode, name)"], ["let-value-body", "ELet(_, v, b, _)", "dinsp_scan(v, mode, name) || dinsp_scan(b, mode, name)"], ["letrec-value-body", "ELetRec(_, v, b)", "dinsp_scan(v, mode, name) || dinsp_scan(b, mode, name)"], ["letmut-value-body", "ELetMut(_, v, b, _)", "dinsp_scan(v, mode, name) || dinsp_scan(b, mode, name)"], ["assign-value-continuation", "EAssign(_, v, b)", "dinsp_scan(v, mode, name) || dinsp_scan(b, mode, name)"], ["assignop-value-continuation", "EAssignOp(_, _, v, b)", "dinsp_scan(v, mode, name) || dinsp_scan(b, mode, name)"], ["sequence-head-tail", "ESeq(a, b)", "dinsp_scan(a, mode, name) || dinsp_scan(b, mode, name)"],
   ["match-scrutinee-arms", "EMatch(sc, arms)", "dinsp_scan(sc, mode, name) || dinsp_scan_arms(arms, mode, name)"], ["handle-scrutinee-arms", "EHandle(sc, arms)", "dinsp_scan(sc, mode, name) || dinsp_scan_arms(arms, mode, name)"], ["while-condition-body", "EWhile(c, b)", "dinsp_scan(c, mode, name) || dinsp_scan(b, mode, name)"], ["loop-initializers-body", "ELoop(params, b)", "dinsp_scan_fields(params, mode, name) || dinsp_scan(b, mode, name)"], ["for-iterable-body", "EForIn(_, _, it, b)", "dinsp_scan(it, mode, name) || dinsp_scan(b, mode, name)"],
-  ["call-callee-then-args-with-direct-marker-exemption", "ECall(callee, args, _)", `if mode == 4 { match callee { EIdent(n, _) => if n == name { dinsp_scan_list(args, mode, name) } else { dinsp_scan(callee, mode, name) || dinsp_scan_list(args, mode, name) }, _ => dinsp_scan(callee, mode, name) || dinsp_scan_list(args, mode, name) } } else { dinsp_scan(callee, mode, name) || dinsp_scan_list(args, mode, name) }`],
+  ["call-callee-then-args-with-direct-marker-exemption", "ECall(callee, args, _, _)", `if mode == 4 { match callee { EIdent(n, _) => if n == name { dinsp_scan_list(args, mode, name) } else { dinsp_scan(callee, mode, name) || dinsp_scan_list(args, mode, name) }, _ => dinsp_scan(callee, mode, name) || dinsp_scan_list(args, mode, name) } } else { dinsp_scan(callee, mode, name) || dinsp_scan_list(args, mode, name) }`],
   ["binary-left-right", "EBinOp(_, l, r, _)", "dinsp_scan(l, mode, name) || dinsp_scan(r, mode, name)"], ["unary-value", "EUnaryOp(_, v)", "dinsp_scan(v, mode, name)"], ["function-body", "EFn(_, _, _, _, _, body)", "dinsp_scan(body, mode, name)"], ["dot-object", "EDot(inner, _, _, _)", "dinsp_scan(inner, mode, name)"], ["labeled-child", "ELabeledArg(_, _, v)", "dinsp_scan(v, mode, name)"], ["return-value", "EReturn(v)", "dinsp_scan(v, mode, name)"], ["optional-break", "EBreak(opt)", "match opt { Some(v) => dinsp_scan(v, mode, name), None => false }"], ["continue-values", "EContinue(args)", "dinsp_scan_list(args, mode, name)"], ["spread-value", "ESpread(v)", "dinsp_scan(v, mode, name)"]
 ].map(([role, pattern, body]) => ({ role, pattern, body }));
 
@@ -355,7 +355,7 @@ function mutate(text, from, to, label) {
 }
 const wrongChild = mutate(scan.body, "dinsp_scan(c, mode, name) || dinsp_scan(t, mode, name) || dinsp_scan(f, mode, name)", "dinsp_scan(t, mode, name) || dinsp_scan(c, mode, name) || dinsp_scan(f, mode, name)", "swapped recursive child");
 expectMutationFailure("swapped recursive child", () => assertArms(matchExprArms(wrongChild).at(-1), recursiveArms, "mutated Expr"));
-const wrongDirect = mutate(scan.body, "ECall(callee, args, _) => if mode == 4 {", "ECall(callee, args, _) => if mode == 5 {", "wrong direct-callee mode");
+const wrongDirect = mutate(scan.body, "ECall(callee, args, _, _) => if mode == 4 {", "ECall(callee, args, _, _) => if mode == 5 {", "wrong direct-callee mode");
 expectMutationFailure("wrong direct-callee mode", () => assertArms(matchExprArms(wrongDirect).at(-1), recursiveArms, "mutated call"));
 const wrongPat = mutate(collector.body, "collect_pat_binders(a, out)\n      collect_pat_binders(b, out)", "collect_pat_binders(b, out)\n      collect_pat_binders(a, out)", "reversed POr binder order");
 expectMutationFailure("reversed POr binder order", () => assertArms(parseMatchAt(wrongPat, maskNonCode(wrongPat).search(/\bmatch\s+p\s*\{/)), expectedPatArms, "mutated Pat"));
@@ -387,19 +387,19 @@ const synthetic = `fn probe(expr: Expr) -> Bool {
     // this deliberately long comment shifts indexes in a deleting comment stripper: {{{ [[[(())]]] }}}
     match expr {
       EInt(_) => false,
-      ECall(_, _, _) => { let nested = ["}", "{"] false }
+      ECall(_, _, _, _) => { let nested = ["}", "{"] false }
     }
   } else { false }
 }`;
 const syntheticBody = functionPartsIn(synthetic, "probe").body;
 const syntheticMatches = matchExprArms(syntheticBody);
 assert.equal(syntheticMatches.length, 1);
-assert.deepEqual(syntheticMatches[0].map(({ pattern }) => pattern), ["EInt(_)", "ECall(_, _, _)"]);
+assert.deepEqual(syntheticMatches[0].map(({ pattern }) => pattern), ["EInt(_)", "ECall(_, _, _, _)"]);
 function deletingStrip(text) { return text.replace(/\/\/[^\n]*/g, ""); }
 expectMutationFailure("deleted-comment coordinate mismatch", () => {
   const brokenIndex = deletingStrip(syntheticBody).search(/\bmatch\s+expr\s*\{/);
   const broken = parseMatchAt(syntheticBody, brokenIndex);
-  assert.deepEqual(broken.map(({ pattern }) => pattern), ["EInt(_)", "ECall(_, _, _)"]);
+  assert.deepEqual(broken.map(({ pattern }) => pattern), ["EInt(_)", "ECall(_, _, _, _)"]);
 });
 assert.equal(maskNonCode(syntheticBody).length, syntheticBody.length, "masking preserves every source offset");
 

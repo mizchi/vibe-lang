@@ -12,6 +12,10 @@ import @vibe/ast {
   impl_method_owner, index_site_key, is_builtin_ref_offset, trait_ref_from_key, trait_ref_key, type_param_name
 }
 
+import ./resolved_callee.vibe {
+  builtin_callee_resolution
+}
+
 import ./module_graph_path.vibe {
   dir_of_path
 }
@@ -374,7 +378,7 @@ fn rewrite_alias_param_types(params: Array[(String, Option[TypeExpr])], am: Alia
 /// #2348: is this expression an inline-wasm marker call, `%wasm("<WAT>")`?
 fn is_inline_wasm_marker_body(body: Expr) -> Bool {
   match body {
-    ECall(callee, args, _) => is_inline_wasm_marker(callee, args),
+    ECall(callee, args, _, _) => is_inline_wasm_marker(callee, args),
     _ => false
   }
 }
@@ -430,6 +434,24 @@ fn builtin_shadow_renamed_ident(name: String, renamed: String, off: Int) -> Expr
     EIdent(name, index_site_key(off))
   } else {
     EIdent(renamed, off)
+  }
+}
+
+// The unit-owner rename resolves references outside a private definition's
+// unit to explicit builtin references. Its synthesized calls need the same
+// identity as any other builtin factory, even after a whole-program check.
+fn builtin_shadow_call_resolution(callee: Expr, resolution: Array[Int], am: AliasIdx) -> Array[Int] {
+  if am.user_refs_only {
+    match callee {
+      EIdent(name, off) => if is_builtin_ref_offset(off) {
+        builtin_callee_resolution(name)
+      } else {
+        resolution
+      },
+      _ => resolution
+    }
+  } else {
+    resolution
   }
 }
 
@@ -632,14 +654,14 @@ export fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
       // generic rewrite below cannot see it -- the text is an EString -- so a
       // private helper's DEFINITION was renamed by the merge while the
       // `$helper` token was left pointing at a name that no longer existed.
-      ECall(callee, args, off) => if is_inline_wasm_marker(callee, args) {
+      ECall(callee, args, off, callee_resolution) => if is_inline_wasm_marker(callee, args) {
         let m = alias_marks()
         let c2 = rewrite_alias_expr_ix(callee, am)
         let a2 = rewrite_wat_marker_args(args, am)
         if alias_marks() == m {
           expr
         } else {
-          ECall(c2, a2, off)
+          ECall(c2, a2, off, builtin_shadow_call_resolution(c2, callee_resolution, am))
         }
       } else {
         let m = alias_marks()
@@ -648,7 +670,7 @@ export fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
         if alias_marks() == m {
           expr
         } else {
-          ECall(c2, a2, off)
+          ECall(c2, a2, off, builtin_shadow_call_resolution(c2, callee_resolution, am))
         }
       },
       EBinOp(op, left, right, boff) => {
@@ -1832,9 +1854,9 @@ fn rewrite_private_type_ctor_expr(expr: Expr, type_renames: Array[(String, Strin
       }
       EForIn(name, index_name, rewrite_private_type_ctor_expr(iter, type_renames, ctor_renames), rewrite_private_type_ctor_expr(body, type_renames, body_ctors))
     },
-    ECall(callee, args, off) => ECall(rewrite_private_type_ctor_expr(callee, type_renames, ctor_renames), for arg in args {
+    ECall(callee, args, off, callee_resolution) => ECall(rewrite_private_type_ctor_expr(callee, type_renames, ctor_renames), for arg in args {
       rewrite_private_type_ctor_expr(arg, type_renames, ctor_renames)
-    }, off),
+    }, off, callee_resolution),
     EBinOp(op, left, right, boff) => EBinOp(op, rewrite_private_type_ctor_expr(left, type_renames, ctor_renames), rewrite_private_type_ctor_expr(right, type_renames, ctor_renames), boff),
     EUnaryOp(op, value) => EUnaryOp(op, rewrite_private_type_ctor_expr(value, type_renames, ctor_renames)),
     EFn(type_params, bounds, params, ret_ty, effect, body) => EFn(type_params, bounds, rewrite_private_params(params, type_renames), rewrite_private_type_opt(ret_ty, type_renames), effect, rewrite_private_type_ctor_expr(body, type_renames, alias_map_without_params(ctor_renames, params))),

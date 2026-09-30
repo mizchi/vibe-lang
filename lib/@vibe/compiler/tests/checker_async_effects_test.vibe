@@ -36,7 +36,7 @@ fn async_fn(effect: Option[String], body: Expr) -> Expr {
 }
 
 fn await_call(arg: Expr) -> Expr {
-  ECall(EIdent("await", -1), [arg], -1)
+  ECall(EIdent("await", -1), [arg], -1, [])
 }
 
 //# Misc
@@ -57,7 +57,7 @@ test "await inside Async context is OK" {
 }
 
 test "sleep outside Async context reports error" {
-  let call = ECall(EIdent("sleep", -1), [EInt(10)], -1)
+  let call = ECall(EIdent("sleep", -1), [EInt(10)], -1, [])
   let errors = check_async_effects_expr(call, EnvEmpty, false)
   assert(Array::length(errors) > 0)
 }
@@ -111,7 +111,7 @@ test "calling an Async user function from sync context is allowed" {
   // calling it outside an Async context is fine (its own await is checked in
   // its body). Only builtin async primitives require an Async context.
   let env = env_bind(EnvEmpty, "my_async", CtFn([CtInt], CtInt, Some("Async")))
-  let call = ECall(EIdent("my_async", -1), [EInt(1)], -1)
+  let call = ECall(EIdent("my_async", -1), [EInt(1)], -1, [])
   let errors = check_async_effects_expr(call, env, false)
   assert(eq(Array::length(errors), 0))
 }
@@ -134,7 +134,7 @@ test "SLet without Async signature flags await in body" {
 }
 
 test "pure non-async call outside Async context is OK" {
-  let call = ECall(EIdent("println", -1), [EString("hi", -1)], -1)
+  let call = ECall(EIdent("println", -1), [EString("hi", -1)], -1, [])
   let errors = check_async_effects_expr(call, EnvEmpty, false)
   assert(eq(Array::length(errors), 0))
 }
@@ -146,20 +146,21 @@ test "pure non-async call outside Async context is OK" {
 // retarget on this same shape).
 
 test "handle with Async provides the async context for its body" {
-  let sleep_call = ECall(EIdent("sleep", -1), [EInt(10)], -1)
+  let sleep_call = ECall(EIdent("sleep", -1), [EInt(10)], -1, [])
   let handled = EHandle(sleep_call, [
     (PCtor("Async::Suspend", [PBind("req")]), ECall(EIdent("resume", -1), [
       EInt(0)
-    ], -1))
+    ], -1, []))
   ])
   let errors = check_async_effects_expr(handled, EnvEmpty, false)
   assert(eq(Array::length(errors), 0))
 }
 
 test "handle of a different effect does NOT provide the async context" {
-  let sleep_call = ECall(EIdent("sleep", -1), [EInt(10)], -1)
+  let sleep_call = ECall(EIdent("sleep", -1), [EInt(10)], -1, [])
   let handled = EHandle(sleep_call, [
-    (PCtor("Log::Emit", [PBind("m")]), ECall(EIdent("resume", -1), [EInt(0)], -1))
+    (PCtor("Log::Emit", [PBind("m")]), ECall(EIdent("resume", -1), [EInt(0)], -1, [
+    ]))
   ])
   let errors = check_async_effects_expr(handled, EnvEmpty, false)
   assert(Array::length(errors) > 0)
@@ -171,7 +172,7 @@ test "an Async handler arm's own body is NOT an async context" {
   let handled = EHandle(EInt(1), [
     (PCtor("Async::Suspend", [PBind("req")]), ECall(EIdent("sleep", -1), [
       EInt(5)
-    ], -1))
+    ], -1, []))
   ])
   let errors = check_async_effects_expr(handled, EnvEmpty, false)
   assert(Array::length(errors) > 0)
@@ -231,7 +232,7 @@ test "handle with Async discharges an async for loop" {
   let handled = EHandle(for_over(chan_literal()), [
     (PCtor("Async::Suspend", [PBind("req")]), ECall(EIdent("resume", -1), [
       EInt(0)
-    ], -1))
+    ], -1, []))
   ])
   let errors = check_async_effects_expr(handled, async_iter_env(), false)
   assert(eq(Array::length(errors), 0))
@@ -247,7 +248,7 @@ test "an async iterand reached through a local let is recognised" {
 
 test "an async iterand reached through a call's return type is recognised" {
   let mk = env_bind(async_iter_env(), "open_chan", CtFn(array_empty(), CtStruct("Chan"), None))
-  let call = ECall(EIdent("open_chan", -1), array_empty(), -1)
+  let call = ECall(EIdent("open_chan", -1), array_empty(), -1, [])
   let errors = check_async_effects_expr(for_over(call), mk, false)
   assert(Array::length(errors) > 0)
 }
@@ -259,7 +260,7 @@ test "an async iterand returned by a constructor-polymorphic map requires Async"
   ], CtApplied(CtVar(0), [CtVar(2)]), None))
   let env = env_bind(async_iter_env(), "map", map_type)
   let mapper = EFn(array_empty(), array_empty(), [("x", None)], None, None, EIdent("x", -1))
-  let mapped = ECall(EIdent("map", -1), [chan_literal(), mapper], -1)
+  let mapped = ECall(EIdent("map", -1), [chan_literal(), mapper], -1, [])
   let errors = check_async_effects_expr(for_over(mapped), env, false)
   assert(Array::length(errors) > 0)
 }
@@ -317,7 +318,7 @@ test "an ENUM async iterand keeps its head name" {
   let env = env_bind(iter_env(TyApp("Future", [TyApp("Option", [TyName("Int")])]), "Chan"), "Chan", CtFn([
     CtInt
   ], CtEnum("Chan"), None))
-  let call = ECall(EIdent("Chan", -1), [EInt(3)], -1)
+  let call = ECall(EIdent("Chan", -1), [EInt(3)], -1, [])
   let errors = check_async_effects_expr(for_over(call), env, false)
   assert(Array::length(errors) > 0)
 }
@@ -326,7 +327,7 @@ test "a SYNC enum iterator still requires nothing" {
   let env = env_bind(iter_env(TyApp("Option", [TyName("Int")]), "Chan"), "Chan", CtFn([
     CtInt
   ], CtEnum("Chan"), None))
-  let call = ECall(EIdent("Chan", -1), [EInt(3)], -1)
+  let call = ECall(EIdent("Chan", -1), [EInt(3)], -1, [])
   let errors = check_async_effects_expr(for_over(call), env, false)
   assert(eq(Array::length(errors), 0))
 }
@@ -378,7 +379,7 @@ fn identity_mapper() -> Expr {
 }
 
 fn mapped_over(arg: Expr) -> Expr {
-  ECall(EIdent("map", -1), [arg, identity_mapper()], -1)
+  ECall(EIdent("map", -1), [arg, identity_mapper()], -1, [])
 }
 
 fn assert_mapped_requires_async(arg: Expr) -> Unit {
@@ -390,7 +391,8 @@ fn assert_mapped_requires_async(arg: Expr) -> Unit {
 
 test "mapped handle AsyncIter receivers require Async" {
   let handled = EHandle(chan_literal(), [
-    (PCtor("Log::Emit", [PBind("m")]), ECall(EIdent("resume", -1), [EInt(0)], -1))
+    (PCtor("Log::Emit", [PBind("m")]), ECall(EIdent("resume", -1), [EInt(0)], -1, [
+    ]))
   ])
   assert_mapped_requires_async(handled)
 }
@@ -406,7 +408,8 @@ test "mapped constructor-alias results require Async" {
     CtFn([CtVar(1)], CtVar(2), None)
   ], CtNamed("Apply", [CtVar(0), CtVar(2)]), None))
   let env = env_bind(alias_env, "mapped", mapped_type)
-  let call = ECall(EIdent("mapped", -1), [chan_literal(), identity_mapper()], -1)
+  let call = ECall(EIdent("mapped", -1), [chan_literal(), identity_mapper()], -1, [
+  ])
   let errors = check_async_effects_expr(for_over(call), env, false)
   assert(Array::length(errors) > 0)
   let ok = check_async_effects_expr(for_over(call), env, true)
@@ -415,7 +418,8 @@ test "mapped constructor-alias results require Async" {
 
 test "method-style AsyncIter map results require Async" {
   let env = env_bind(async_iter_env(), "Chan::map", poly_map_type())
-  let call = ECall(EDot(chan_literal(), "map", -1, -1), [identity_mapper()], -1)
+  let call = ECall(EDot(chan_literal(), "map", -1, -1), [identity_mapper()], -1, [
+  ])
   let errors = check_async_effects_expr(for_over(call), env, false)
   assert(Array::length(errors) > 0)
   let ok = check_async_effects_expr(for_over(call), env, true)
@@ -425,7 +429,7 @@ test "method-style AsyncIter map results require Async" {
 test "mapped IIFE AsyncIter inputs require Async" {
   let iife = ECall(EFn(array_empty(), array_empty(), [("xs", None)], None, None, EIdent("xs", -1)), [
     chan_literal()
-  ], -1)
+  ], -1, [])
   assert_mapped_requires_async(iife)
 }
 
@@ -440,7 +444,7 @@ test "mapped match-pattern AsyncIter binders require Async" {
 }
 
 test "mapped constructor-pattern AsyncIter payloads require Async" {
-  let matched = EMatch(ECall(EIdent("Some", -1), [chan_literal()], -1), [
+  let matched = EMatch(ECall(EIdent("Some", -1), [chan_literal()], -1, []), [
     (PCtor("Some", [PBind("it")]), EIdent("it", -1)),
     (PCtor("None", array_empty()), chan_literal())
   ])
@@ -449,7 +453,7 @@ test "mapped constructor-pattern AsyncIter payloads require Async" {
 
 test "a local AsyncIter::map is not treated as builtin" {
   let env = env_bind(EnvEmpty, "AsyncIter::map", CtFn([CtInt], CtInt, None))
-  let call = ECall(EIdent("AsyncIter::map", -1), [EInt(1)], -1)
+  let call = ECall(EIdent("AsyncIter::map", -1), [EInt(1)], -1, [])
   let errors = check_async_effects_expr(for_over(call), env, false)
   assert(eq(Array::length(errors), 0))
 }
@@ -466,7 +470,7 @@ test "mapped array-element AsyncIter values require Async" {
   let extracted = ELet("streams", EArray([chan_literal()]), mapped_over(ECall(EIdent("Array::get", -1), [
     EIdent("streams", -1),
     EInt(0)
-  ], -1)), -1)
+  ], -1, [])), -1)
   let errors = check_async_effects_expr(for_over(extracted), poly_map_env(), false)
   assert(Array::length(errors) > 0)
   let ok = check_async_effects_expr(for_over(extracted), poly_map_env(), true)
@@ -477,7 +481,7 @@ test "mapped __index AsyncIter values require Async" {
   let extracted = ELet("streams", EArray([chan_literal()]), mapped_over(ECall(EIdent("__index", -1), [
     EIdent("streams", -1),
     EInt(0)
-  ], -1)), -1)
+  ], -1, [])), -1)
   let errors = check_async_effects_expr(for_over(extracted), poly_map_env(), false)
   assert(Array::length(errors) > 0)
   let ok = check_async_effects_expr(for_over(extracted), poly_map_env(), true)
@@ -485,20 +489,22 @@ test "mapped __index AsyncIter values require Async" {
 }
 
 test "mapped IIFE AsyncIter results with explicit return require Async" {
-  let iife = ECall(EFn(array_empty(), array_empty(), array_empty(), Some(TyName("Chan")), None, EReturn(chan_literal())), array_empty(), -1)
+  let iife = ECall(EFn(array_empty(), array_empty(), array_empty(), Some(TyName("Chan")), None, EReturn(chan_literal())), array_empty(), -1, [
+  ])
   assert_mapped_requires_async(iife)
 }
 
 test "mapped recursive local AsyncIter results require Async" {
   let rec_fn = EFn(array_empty(), array_empty(), [("n", Some(TyName("Int")))], Some(TyName("Chan")), None, chan_literal())
-  let rec_block = ELetRec("make", rec_fn, ECall(EIdent("make", -1), [EInt(0)], -1))
+  let rec_block = ELetRec("make", rec_fn, ECall(EIdent("make", -1), [EInt(0)], -1, [
+  ]))
   assert_mapped_requires_async(rec_block)
 }
 
 test "mapped handler-payload AsyncIter results require Async" {
   let performed = ECall(EIdent("perform", -1), [
-    ECall(EIdent("Exception::Throw", -1), [chan_literal()], -1)
-  ], -1)
+    ECall(EIdent("Exception::Throw", -1), [chan_literal()], -1, [])
+  ], -1, [])
   let handled = EHandle(ESeq(performed, chan_literal()), [
     (PCtor("Exception::Throw", [PBind("it")]), EIdent("it", -1))
   ])
@@ -507,8 +513,8 @@ test "mapped handler-payload AsyncIter results require Async" {
 
 test "mapped multi-payload handler results require Async" {
   let performed = ECall(EIdent("perform", -1), [
-    ECall(EIdent("Carry::Yield", -1), [EInt(0), chan_literal()], -1)
-  ], -1)
+    ECall(EIdent("Carry::Yield", -1), [EInt(0), chan_literal()], -1, [])
+  ], -1, [])
   let handled = EHandle(ESeq(performed, chan_literal()), [
     (PCtor("Carry::Yield", [PWild, PBind("it")]), EIdent("it", -1))
   ])
@@ -517,9 +523,10 @@ test "mapped multi-payload handler results require Async" {
 
 test "mapped IIFE-performed handler payloads require Async" {
   let performed = ECall(EIdent("perform", -1), [
-    ECall(EIdent("Carry::Yield", -1), [chan_literal()], -1)
-  ], -1)
-  let iife = ECall(EFn(array_empty(), array_empty(), array_empty(), Some(TyName("Unit")), None, performed), array_empty(), -1)
+    ECall(EIdent("Carry::Yield", -1), [chan_literal()], -1, [])
+  ], -1, [])
+  let iife = ECall(EFn(array_empty(), array_empty(), array_empty(), Some(TyName("Unit")), None, performed), array_empty(), -1, [
+  ])
   let handled = EHandle(ESeq(iife, chan_literal()), [
     (PCtor("Carry::Yield", [PBind("it")]), EIdent("it", -1))
   ])
@@ -528,12 +535,12 @@ test "mapped IIFE-performed handler payloads require Async" {
 
 test "mapped named-helper handler payloads require Async" {
   let performed = ECall(EIdent("perform", -1), [
-    ECall(EIdent("Carry::Yield", -1), [EIdent("items", -1)], -1)
-  ], -1)
+    ECall(EIdent("Carry::Yield", -1), [EIdent("items", -1)], -1, [])
+  ], -1, [])
   let helper = SLet(false, false, "emit", None, EFn(array_empty(), array_empty(), [
     ("items", Some(TyName("Chan")))
   ], Some(TyName("Unit")), Some("Carry"), performed))
-  let handled = EHandle(ESeq(ECall(EIdent("emit", -1), [chan_literal()], -1), chan_literal()), [
+  let handled = EHandle(ESeq(ECall(EIdent("emit", -1), [chan_literal()], -1, []), chan_literal()), [
     (PCtor("Carry::Yield", [PBind("it")]), EIdent("it", -1))
   ])
   let errors = check_async_effects_stmts([
@@ -545,13 +552,15 @@ test "mapped named-helper handler payloads require Async" {
 
 test "mapped recursive-helper handler payloads require Async without looping" {
   let performed = ECall(EIdent("perform", -1), [
-    ECall(EIdent("Carry::Yield", -1), [EIdent("items", -1)], -1)
-  ], -1)
-  let recursive_call = ECall(EIdent("emit_rec", -1), [EIdent("items", -1)], -1)
+    ECall(EIdent("Carry::Yield", -1), [EIdent("items", -1)], -1, [])
+  ], -1, [])
+  let recursive_call = ECall(EIdent("emit_rec", -1), [EIdent("items", -1)], -1, [
+  ])
   let helper = SLet(false, false, "emit_rec", None, EFn(array_empty(), array_empty(), [
     ("items", Some(TyName("Chan")))
   ], Some(TyName("Unit")), Some("Carry"), ESeq(recursive_call, performed)))
-  let handled = EHandle(ESeq(ECall(EIdent("emit_rec", -1), [chan_literal()], -1), chan_literal()), [
+  let handled = EHandle(ESeq(ECall(EIdent("emit_rec", -1), [chan_literal()], -1, [
+  ]), chan_literal()), [
     (PCtor("Carry::Yield", [PBind("it")]), EIdent("it", -1))
   ])
   let errors = check_async_effects_stmts([
@@ -563,17 +572,19 @@ test "mapped recursive-helper handler payloads require Async without looping" {
 
 test "mutually recursive helper reachability does not cache a false result" {
   let performed = ECall(EIdent("perform", -1), [
-    ECall(EIdent("Carry::Yield", -1), [EIdent("items", -1)], -1)
-  ], -1)
-  let call_a = ECall(EIdent("emit_a", -1), [EIdent("items", -1)], -1)
-  let call_b = ECall(EIdent("emit_b", -1), [EIdent("items", -1)], -1)
+    ECall(EIdent("Carry::Yield", -1), [EIdent("items", -1)], -1, [])
+  ], -1, [])
+  let call_a = ECall(EIdent("emit_a", -1), [EIdent("items", -1)], -1, [])
+  let call_b = ECall(EIdent("emit_b", -1), [EIdent("items", -1)], -1, [])
   let params = [("items", Some(TyName("Chan")))]
   let helper_a = SLet(false, false, "emit_a", None, EFn(array_empty(), array_empty(), params, Some(TyName("Unit")), Some("Carry"), ESeq(call_b, performed)))
   let helper_b = SLet(false, false, "emit_b", None, EFn(array_empty(), array_empty(), params, Some(TyName("Unit")), Some("Carry"), call_a))
-  let handled_a = EHandle(ESeq(ECall(EIdent("emit_a", -1), [chan_literal()], -1), chan_literal()), [
+  let handled_a = EHandle(ESeq(ECall(EIdent("emit_a", -1), [chan_literal()], -1, [
+  ]), chan_literal()), [
     (PCtor("Carry::Yield", [PBind("it")]), EIdent("it", -1))
   ])
-  let handled_b = EHandle(ESeq(ECall(EIdent("emit_b", -1), [chan_literal()], -1), chan_literal()), [
+  let handled_b = EHandle(ESeq(ECall(EIdent("emit_b", -1), [chan_literal()], -1, [
+  ]), chan_literal()), [
     (PCtor("Carry::Yield", [PBind("it")]), EIdent("it", -1))
   ])
   let errors = check_async_effects_stmts([
@@ -587,8 +598,8 @@ test "mutually recursive helper reachability does not cache a false result" {
 
 test "mapped payloads cross nested non-consuming handler bodies" {
   let performed = ECall(EIdent("perform", -1), [
-    ECall(EIdent("Carry::Yield", -1), [chan_literal()], -1)
-  ], -1)
+    ECall(EIdent("Carry::Yield", -1), [chan_literal()], -1, [])
+  ], -1, [])
   let nested = EHandle(ESeq(performed, EUnit), [
     (PCtor("Dummy::Ping", array_empty()), EUnit)
   ])
@@ -600,8 +611,8 @@ test "mapped payloads cross nested non-consuming handler bodies" {
 
 test "mapped payloads cross nested non-consuming handler arms" {
   let performed = ECall(EIdent("perform", -1), [
-    ECall(EIdent("Carry::Yield", -1), [chan_literal()], -1)
-  ], -1)
+    ECall(EIdent("Carry::Yield", -1), [chan_literal()], -1, [])
+  ], -1, [])
   let nested = EHandle(EUnit, [(PCtor("Dummy::Ping", array_empty()), performed)])
   let handled = EHandle(ESeq(nested, chan_literal()), [
     (PCtor("Carry::Yield", [PBind("it")]), EIdent("it", -1))
@@ -611,8 +622,8 @@ test "mapped payloads cross nested non-consuming handler arms" {
 
 test "mapped handler-arm payloads require Async inside the arm" {
   let performed = ECall(EIdent("perform", -1), [
-    ECall(EIdent("Carry::Yield", -1), [chan_literal()], -1)
-  ], -1)
+    ECall(EIdent("Carry::Yield", -1), [chan_literal()], -1, [])
+  ], -1, [])
   let handled = EHandle(ESeq(performed, EUnit), [
     (PCtor("Carry::Yield", [PBind("it")]), for_over(mapped_over(EIdent("it", -1))))
   ])

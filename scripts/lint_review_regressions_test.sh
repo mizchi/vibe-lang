@@ -15,6 +15,7 @@ unset VIBE_REVIEW_LINT_RUNNER
 unset VIBE_REVIEW_LINT_REQUIRE_AST
 unset VIBE_REVIEW_LINT_PROJECT_ROOT
 CHECK_SCRIPT="$SCRIPT_DIR/lint_review_regressions.sh"
+python3 "$SCRIPT_DIR/review_lint_metadata_diff_test.py"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/vibe_review_lint_test.XXXXXX")"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 

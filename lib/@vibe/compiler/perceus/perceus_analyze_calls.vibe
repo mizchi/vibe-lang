@@ -104,7 +104,7 @@ fn tail_is_borrow_ret_safe(known: MutSet[String], e0: Expr, spine_names: Array[S
             ai = ai + 1
           }
         },
-        ECall(callee_e, cargs, _) =>
+        ECall(callee_e, cargs, _, _) =>
         match callee_e {
           EIdent(callee, _) =>
           if callee == "perform" && Array::length(cargs) == 1 {
@@ -118,7 +118,7 @@ fn tail_is_borrow_ret_safe(known: MutSet[String], e0: Expr, spine_names: Array[S
             // ECall(EIdent(..)) pattern) per the workaround note above.
             let mut op_is_throw = false
             match Array::get(cargs, 0) {
-              ECall(op_e, _, _) =>
+              ECall(op_e, _, _, _) =>
               match op_e {
                 EIdent(op_n, _) => if is_exception_throw_operation(op_n) {
                   op_is_throw = true
@@ -226,7 +226,7 @@ fn bret_round(stmts: Array[Stmt], known: Array[String], known_set: MutSet[String
             // misclassified as a Array::get-style borrowed view.
             let top = strip_wrappers_for_borrow_ret(body)
             let eligible_shape = match top {
-              ECall(_, _, _) => true,
+              ECall(_, _, _, _) => true,
               EIf(_, _, _) => true,
               EMatch(_, _) => true,
               _ => false
@@ -352,7 +352,7 @@ fn passthrough_tail_name(body: Expr, known: Array[(String, Int)], bound: Array[S
   match body {
     EIdent(name, _) => passthrough_alias_source(name, bound, aliases),
     EReturn(value) => passthrough_tail_name(value, known, bound, aliases),
-    ECall(EIdent(callee, _), args, _) => {
+    ECall(EIdent(callee, _), args, _, _) => {
       if array_contains_str_pctx(bound, callee) {
         return ""
       }
@@ -481,7 +481,7 @@ fn passthrough_return_value_agrees(value: Expr, source: String, known: Array[(St
     // A bound name with no recorded source can be a pattern payload. It is
     // not a fresh return and cannot agree with the parameter being tracked.
     EIdent(name, _) => !array_contains_str_pctx(bound, name),
-    ECall(EIdent(callee, _), args, _) => {
+    ECall(EIdent(callee, _), args, _, _) => {
       if array_contains_str_pctx(bound, callee) {
         return false
       }
@@ -494,7 +494,7 @@ fn passthrough_return_value_agrees(value: Expr, source: String, known: Array[(St
       // fresh early return. An unclassified call may return any argument.
       Array::length(args) == 0 && array_contains_str_pctx(fresh_noarg, callee)
     },
-    ECall(_, _, _) => false,
+    ECall(_, _, _, _) => false,
     EIf(_, yes, no) => passthrough_return_value_agrees(yes, source, known, fresh_noarg, bound, aliases) && passthrough_return_value_agrees(no, source, known, fresh_noarg, bound, aliases),
     EMatch(_, arms) => {
       for arm in arms {
@@ -997,7 +997,7 @@ export fn is_scalar_expr(ctx: PCtx, scope: PScope, e: Expr) -> Bool {
     EInt(_) => true,
     EBool(_) => true,
     EUnit => true,
-    ECall(EIdent(fname, _), _, _) => fname == "Stdin::read_via_stream" || (!ps_has(scope, fname) && is_borrow_ret_fname(ctx, fname)),
+    ECall(EIdent(fname, _), _, _, _) => fname == "Stdin::read_via_stream" || (!ps_has(scope, fname) && is_borrow_ret_fname(ctx, fname)),
     _ => false
   }
 }
@@ -1083,7 +1083,7 @@ fn is_heap_value(e: Expr, env: PEnv, hctx: HeapInferCtx) -> Bool {
     true
   } else {
     match e {
-      ECall(callee, args, _) =>
+      ECall(callee, args, _, _) =>
       match callee {
         EIdent(c, _) =>
         if pe_has(env, c) {
@@ -1136,7 +1136,7 @@ fn analyze_calls(name: String, e_in: Expr, env_in: PEnv, calls: Array[Array[Bool
         }
         0
       },
-      ECall(callee, args, _) => {
+      ECall(callee, args, _, _) => {
         let is_self = match callee {
           EIdent(cn, _) => cn == name,
           _ => false
@@ -1473,7 +1473,7 @@ fn inferred_heap_result_spine(body: Expr, ctor_names: Array[String], heap_names:
     EMap(_) => true,
     EFloat(_) => true,
     EFn(_, _, _, _, _, _) => true,
-    ECall(EIdent(name, off), args, _) => if name == "__lambda_return_owned" && off < 0 && Array::length(args) == 1 {
+    ECall(EIdent(name, off), args, _, _) => if name == "__lambda_return_owned" && off < 0 && Array::length(args) == 1 {
       true
     } else {
       inferred_bound_owns(bound, name) < 0 && (array_contains_str_pctx(ctor_names, name) || array_contains_str_pctx(heap_names, name))
@@ -1877,14 +1877,14 @@ export fn elaborate_rw(e: Expr, hctx: HeapInferCtx) -> Expr {
     EForIn(n, ix, it, b) => EForIn(n, ix, elaborate_rw(it, hctx), elaborate_rw(b, hctx)),
     EFn(tps, bounds, params, ret, eff, fb) =>
     EFn(tps, bounds, params, ret, eff, elaborate_rw(fb, hctx)),
-    ECall(callee, args, off) => {
+    ECall(callee, args, off, callee_resolution) => {
       let new_args = Array::slice(args, 0, 0)
       let mut i = 0
       while i < Array::length(args) {
         Array::push(new_args, elaborate_rw(Array::get(args, i), hctx))
         i = i + 1
       }
-      ECall(elaborate_rw(callee, hctx), new_args, off)
+      ECall(elaborate_rw(callee, hctx), new_args, off, callee_resolution)
     },
     EBinOp(op, l, r, boff) => EBinOp(op, elaborate_rw(l, hctx), elaborate_rw(r, hctx), boff),
     EUnaryOp(op, o) => EUnaryOp(op, elaborate_rw(o, hctx)),

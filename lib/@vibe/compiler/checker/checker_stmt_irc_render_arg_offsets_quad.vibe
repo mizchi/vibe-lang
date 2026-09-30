@@ -41,6 +41,8 @@ import @vibe/compiler/core {
   TypeExpr,
   env_cache,
   expr_children,
+  resolved_callee_capture_reset,
+  resolved_callee_capture_rows,
   subst_apply,
   subst_resolves_to_double,
   trait_defined,
@@ -538,7 +540,9 @@ export fn checked_double_render_offsets(checked: CheckedProgram) -> Array[Int] {
 /// flat Array[Int]: enc = offset * 8 + tag, with tag 0 = Double call result,
 /// 1 = String relational binop anchor, 2 = String `+` binop anchor, 3 = Int
 /// render/`eq` argument, 4 = Double render/`eq` argument, 5 = Bool render/`eq`
-/// argument, 6 = unrenderable render/`eq` argument (#2987). Rebasing a module
+/// argument, 6 = unrenderable render/`eq` argument (#2987). Tag 7 carries
+/// resolved callees: its payload is call_offset * 8 + operation, so its
+/// rebase is B * 64 (core/resolved_callee.vibe). Rebasing any other module
 /// table by a merge base B therefore adds B * 8. The decoder lives in
 /// file_compile's split; keep the two in lockstep.
 ///
@@ -645,6 +649,7 @@ export fn typed_lowering_enc_tag(enc: Int) -> Int {
 /// next one. The rule here still closes the hole whether or not an instance is
 /// live -- a desugar is one edit away from making one.
 fn check_program_double_call_result_observation_impl(stmts: Array[Stmt]) -> Option[(CheckedProgram, Array[Int], Int, Int, Array[Int], Array[String])] with Exception {
+  resolved_callee_capture_reset()
   let capture = reset_double_call_capture()
   let checked = check_program_type_defs_observation_impl(stmts, None, Some(capture)).checked_program
   match double_call_result_offsets_from_capture(checked, capture) {
@@ -754,6 +759,7 @@ export fn check_program_with_env_typed_lowering_located_observation(stmts: Array
 }
 
 fn typed_lowering_located_observation_impl(stmts: Array[Stmt], initial_env: TypeEnv, imports_already_projected: Bool) -> (CheckedProgram, Option[Array[Int]], Array[Int], Array[String]) with Exception {
+  resolved_callee_capture_reset()
   let capture = reset_double_call_capture()
   let checked = check_program_with_env_type_defs_observation_impl(stmts, initial_env, None, Some(capture), imports_already_projected).checked_program
   match double_call_result_offsets_from_capture(checked, capture) {
@@ -840,6 +846,9 @@ fn typed_lowering_located_observation_impl(stmts: Array[Stmt], initial_env: Type
       // #3148: and the `for` iterand rows.
       let (forin_offs, forin_keys) = forin_receiver_rows_from_capture(checked, capture)
       let (eq_offs, eq_keys) = append_render_rows(eq_index_offs, eq_index_keys, forin_offs, forin_keys)
+      for row in resolved_callee_capture_rows() {
+        Array::push(enc, row)
+      }
       (checked, Some(enc), eq_offs, eq_keys)
     }
   }

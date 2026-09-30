@@ -182,7 +182,7 @@ fn edp_arg_slot_accepts_needing(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, B
 /// silent fallback -- the alternative is a runtime trap.
 fn edp_needing_escape(e: Expr, needing: Array[String], ename: String, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], es_names: Array[String], es_members_list: Array[Array[String]]) -> String {
   match e {
-    ECall(callee, args, _) => {
+    ECall(callee, args, _, _) => {
       let callee_nm = match callee {
         EIdent(cn, _) => cn,
         _ => ""
@@ -361,7 +361,8 @@ fn edp_etawrap_value(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String
           Array::push(cargs, EIdent(wn, -1))
           i = i + 1
         }
-        Some(EFn(empty_str_array(), array_empty(), wparams, None, None, ECall(EIdent(nm, -1), cargs, -1)))
+        Some(EFn(empty_str_array(), array_empty(), wparams, None, None, ECall(EIdent(nm, -1), cargs, -1, [
+        ])))
       } else {
         None
       }
@@ -471,7 +472,7 @@ fn edp_ascribed_needing_alias(callee: Expr, args: Array[Expr], needing: Array[St
 
 fn edp_etawrap_expr(e: Expr, in_scope: Bool, needing: Array[String], ename: String, wc: (Array[Stmt], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], Array[String], Array[Array[String]]), aliases: Array[(String, String)]) -> Expr {
   match e {
-    ECall(callee, args, off) => {
+    ECall(callee, args, off, callee_resolution) => {
       let (wstmts, wfn_defs, wes_names, wes_members) = wc
       match edp_ascribed_needing_alias(callee, args, needing, ename, wes_names, wes_members, aliases) {
         Some(alias) => return alias,
@@ -505,7 +506,7 @@ fn edp_etawrap_expr(e: Expr, in_scope: Bool, needing: Array[String], ename: Stri
         }
         i = i + 1
       }
-      ECall(new_callee, new_args, off)
+      ECall(new_callee, new_args, off, callee_resolution)
     },
     EFn(tps, tbs, params, ret, eff, b) => {
       let mark = Array::length(aliases)
@@ -765,7 +766,7 @@ export fn edp_usage_ctor_pat(ctors: Array[String], pat: Pat) -> Array[String] {
 fn edp_collect_ecall_arg_idents_unused_value(expr: Expr, gname: String, argpos: Int, out: Array[String], ctors: Array[String]) -> Unit {
   match expr {
     EFn(_, _, _, _, _, _) => (),
-    ECall(EIdent(name, _), args, _) => if edp_str_array_contains(ctors, name) {
+    ECall(EIdent(name, _), args, _, _) => if edp_str_array_contains(ctors, name) {
       for arg in args {
         edp_collect_ecall_arg_idents_unused_value(arg, gname, argpos, out, ctors)
       }
@@ -859,7 +860,7 @@ fn edp_binding_used_in_unused_value(expr: Expr, name: String, ctors: Array[Strin
   match expr {
     EFn(_, _, _, _, _, _) => false,
     EIdent(_, _) => false,
-    ECall(EIdent(ctor, _), args, _) => if edp_str_array_contains(ctors, ctor) {
+    ECall(EIdent(ctor, _), args, _, _) => if edp_str_array_contains(ctors, ctor) {
       edp_binding_used_in_unused_exprs(args, name, ctors)
     } else {
       edp_binding_used_in(expr, name, ctors)
@@ -923,7 +924,7 @@ fn edp_binding_used_in_arms(arms: Array[(Pat, Expr)], name: String, ctors: Array
 
 fn edp_collect_ecall_arg_idents_expr(expr: Expr, gname: String, argpos: Int, out: Array[String], ctors: Array[String]) -> Unit {
   match expr {
-    ECall(callee, args, _) => {
+    ECall(callee, args, _, _) => {
       match callee {
         EIdent(nm, _) => if nm == gname {
           if Array::length(args) > argpos {

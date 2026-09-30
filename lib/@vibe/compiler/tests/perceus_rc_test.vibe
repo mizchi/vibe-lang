@@ -29,11 +29,11 @@ test "aggregate with closure payload is an owned heap parameter" {
 }
 
 test "2803 the cross-store duplicate belongs to the old RHS use" {
-  let rhs = ELet("n", ECall(EIdent("consume", 10), [EIdent("x", 20)], 10), ECall(EIdent("Array::get", 30), [
+  let rhs = ELet("n", ECall(EIdent("consume", 10), [EIdent("x", 20)], 10, []), ECall(EIdent("Array::get", 30), [
     EIdent("xs", 31),
     EInt(0)
-  ], 30), 9)
-  let after = ECall(EIdent("consume", 40), [EIdent("x", 50)], 40)
+  ], 30, []), 9)
+  let after = ECall(EIdent("consume", 40), [EIdent("x", 50)], 40, [])
   let expr = ELetMut("x", ETuple([EInt(1), EInt(2)]), EAssign("x", rhs, after), 0)
   let before = build_perceus_plan(expr)
   inspect(dup_use_offsets(before, "x"), content = "[20]")
@@ -66,11 +66,11 @@ fn count_drops(plan: Array[PerceusAction], name: String) -> Int {
 }
 
 test "a closure capture borrows its defining local" {
-  let read = ECall(EIdent("Array::get", -1), [EIdent("xs", -1), EInt(0)], -1)
+  let read = ECall(EIdent("Array::get", -1), [EIdent("xs", -1), EInt(0)], -1, [])
   let lam = EFn([], [], [("k", None)], None, None, EBinOp("+", read, EIdent("k", -1), -1))
   let body = ELet("xs", EArray([EInt(5)]), ELet("g", lam, ECall(EIdent("g", -1), [
     EInt(5)
-  ], -1), -1), -1)
+  ], -1, []), -1), -1)
   let plan = build_perceus_plan(body)
   inspect(count_drops(plan, "xs"), content = "1")
   inspect(count_drops(plan, "g"), content = "1")
@@ -186,7 +186,7 @@ test "perceus: binding used twice owning emits one dup" {
 test "perceus: called binding (closure) is borrowed and dropped" {
   // let g = (x){ x }; g(1)   — represented with an EFn value
   let lam = EFn([], [], [("x", None)], None, None, EIdent("x", -1))
-  let body = ELet("g", lam, ECall(EIdent("g", -1), [EInt(1)], -1), -1)
+  let body = ELet("g", lam, ECall(EIdent("g", -1), [EInt(1)], -1, []), -1)
   let plan = build_perceus_plan(body)
   assert(count_drops(plan, "g") == 1)
 }
@@ -236,7 +236,7 @@ test "perceus: closure capture borrows the defining binding" {
   // g's environment owns a duplicated reference to t, while both t and g
   // release their own references at scope end.
   let lam = EFn([], [], [("x", None)], None, None, EBinOp("+", EDot(EIdent("t", -1), "0", -1, -1), EIdent("x", -1), -1))
-  let inner = ELet("g", lam, ECall(EIdent("g", -1), [EInt(1)], -1), -1)
+  let inner = ELet("g", lam, ECall(EIdent("g", -1), [EInt(1)], -1, []), -1)
   let body = ELet("t", ETuple([EInt(1), EInt(2)]), inner, -1)
   let plan = build_perceus_plan(body)
   assert(count_drops(plan, "g") == 1)
@@ -352,7 +352,7 @@ test "perceus: match scrutinee binding is borrowed and dropped" {
   let arm2: (Pat, Expr) = (PWild, EInt(0))
   let arms: Array[(Pat, Expr)] = [arm1, arm2]
   let m = EMatch(EIdent("e", -1), arms)
-  let body = ELet("e", ECall(EIdent("A", -1), [EInt(5)], -1), m, -1)
+  let body = ELet("e", ECall(EIdent("A", -1), [EInt(5)], -1, []), m, -1)
   let plan = build_perceus_plan(body)
   assert(count_drops(plan, "e") == 1)
   assert(count_dups(plan, "e") == 0)
@@ -392,14 +392,15 @@ test "perceus: multi-alias dups all but the last" {
 /// loop. (Array::get / length / set / push borrow their array arg, like __index.)
 test "perceus: array read via Array::get is borrowed and dropped" {
   // let a = [1, 2, 3]; Array::get(a, 0)
-  let getcall = ECall(EIdent("Array::get", -1), [EIdent("a", -1), EInt(0)], -1)
+  let getcall = ECall(EIdent("Array::get", -1), [EIdent("a", -1), EInt(0)], -1, [
+  ])
   let body = ELet("a", EArray([EInt(1), EInt(2), EInt(3)]), getcall, -1)
   let plan = build_perceus_plan(body)
   assert(count_drops(plan, "a") == 1)
 }
 
 test "perceus: a shadowed borrow builtin follows the computed ownership set" {
-  let call = ECall(EIdent("Map::iter_get", -1), [EInt(1), EInt(0)], -1)
+  let call = ECall(EIdent("Map::iter_get", -1), [EInt(1), EInt(0)], -1, [])
   let body = ELet("result", call, EUnit, -1)
   let masks: Array[Int] = []
   let owned_plan = build_perceus_plan_with_params([], body, [], [], masks, [])
@@ -410,7 +411,8 @@ test "perceus: a shadowed borrow builtin follows the computed ownership set" {
 }
 
 test "#2379 review: a source-owned Map accessor consumes its first argument" {
-  let call = ECall(EIdent("Map::iter_get", -1), [EIdent("m", -1), EInt(0)], -1)
+  let call = ECall(EIdent("Map::iter_get", -1), [EIdent("m", -1), EInt(0)], -1, [
+  ])
   let body = ELet("m", EArray([EInt(1)]), call, -1)
   let owned_plan = build_perceus_plan_with_params([], body, [], [
     "Map::iter_get"
@@ -529,7 +531,7 @@ fn inference_lambda() -> Expr {
 }
 
 fn inference_call(arg: Expr) -> Expr {
-  ECall(EIdent("target", 0), [arg], 0)
+  ECall(EIdent("target", 0), [arg], 0, [])
 }
 
 fn inferred_top_parameter(stmts: Array[Stmt]) -> Bool {

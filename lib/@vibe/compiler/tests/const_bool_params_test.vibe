@@ -43,11 +43,11 @@ fn no_ty() -> Option[TypeExpr] {
 }
 
 fn call0(name: String) -> Expr {
-  ECall(EIdent(name, -1), array_empty(), -1)
+  ECall(EIdent(name, -1), array_empty(), -1, [])
 }
 
 fn call1(name: String, arg: Expr) -> Expr {
-  ECall(EIdent(name, -1), [arg], -1)
+  ECall(EIdent(name, -1), [arg], -1, [])
 }
 
 /// `fn <name>(<params>) { <body> }` as codegen sees it (the parser lowers a
@@ -129,7 +129,7 @@ test "every call passes true: the if folds to the then arm" {
   let n = fold_const_bool_params(stmts, "main", no_wat())
   assert(eq(n, 1))
   match body_of(stmts, "work") {
-    ECall(EIdent("helper", _), _, _) => (),
+    ECall(EIdent("helper", _), _, _, _) => (),
     _ => assert(false)
   }
 }
@@ -149,7 +149,7 @@ test "a wrapper that forwards its parameter is folded first, then its callee: fi
   assert(eq(n, 2))
   assert(is_int_one(body_of(stmts, "inner")))
   match body_of(stmts, "outer") {
-    ECall(EIdent("inner", _), args, _) => match Array::get(args, 0) {
+    ECall(EIdent("inner", _), args, _, _) => match Array::get(args, 0) {
       EBool(false) => (),
       _ => assert(false)
     },
@@ -163,12 +163,13 @@ test "`!flag && other` with flag = false leaves exactly `other` as the condition
   let stmts = [
     helper_stmt(),
     work,
-    main_stmt(ECall(EIdent("work", -1), [EBool(false), call0("read_other")], -1))
+    main_stmt(ECall(EIdent("work", -1), [EBool(false), call0("read_other")], -1, [
+    ]))
   ]
   let n = fold_const_bool_params(stmts, "main", no_wat())
   assert(eq(n, 1))
   match body_of(stmts, "work") {
-    EIf(EIdent("other", _), ECall(_, _, _), EInt(1)) => (),
+    EIf(EIdent("other", _), ECall(_, _, _, _), EInt(1)) => (),
     _ => assert(false)
   }
 }
@@ -179,7 +180,7 @@ test "`flag || other` with flag = true folds the whole condition to true" {
   let stmts = [helper_stmt(), work, main_stmt(call1("work", EBool(true)))]
   let _ = fold_const_bool_params(stmts, "main", no_wat())
   match body_of(stmts, "work") {
-    ECall(EIdent("helper", _), _, _) => (),
+    ECall(EIdent("helper", _), _, _, _) => (),
     _ => assert(false)
   }
 }
@@ -191,7 +192,7 @@ test "a literal on the RIGHT of && keeps the left operand: it may have effects" 
   let _ = fold_const_bool_params(stmts, "main", no_wat())
   // `probe() && false` is not folded to `false`: probe() must still run.
   match body_of(stmts, "work") {
-    EIf(EBinOp("&&", ECall(EIdent("probe", _), _, _), EBool(false), _), _, _) => (),
+    EIf(EBinOp("&&", ECall(EIdent("probe", _), _, _, _), EBool(false), _), _, _) => (),
     _ => assert(false)
   }
 }
@@ -326,7 +327,8 @@ test "an arity mismatch or a labeled argument refuses" {
   let stmts = [
     helper_stmt(),
     work_stmt(false),
-    main_stmt(ESeq(call1("work", EBool(false)), ECall(EIdent("work", -1), array_empty(), -1)))
+    main_stmt(ESeq(call1("work", EBool(false)), ECall(EIdent("work", -1), array_empty(), -1, [
+    ])))
   ]
   assert(eq(fold_const_bool_params(stmts, "main", no_wat()), 0))
   let labeled = [
@@ -343,7 +345,7 @@ test "a method-style call site refuses the same-named function" {
     work_stmt(false),
     main_stmt(ESeq(call1("work", EBool(false)), ECall(EDot(call0("recv"), "work", -1, -1), [
       EBool(true)
-    ], -1)))
+    ], -1, [])))
   ]
   assert(eq(fold_const_bool_params(stmts, "main", no_wat()), 0))
 }

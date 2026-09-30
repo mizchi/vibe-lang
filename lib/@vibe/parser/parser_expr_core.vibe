@@ -89,8 +89,8 @@ fn callee_offset(callee: Expr) -> Int {
       callee_offset(inner)
     },
     // #3133: an index's `[` key belongs to the index alone.
-    ECall(EIdent("__index", _), _, _) => -1,
-    ECall(inner, _, off) => if off >= 0 {
+    ECall(EIdent("__index", _), _, _, _) => -1,
+    ECall(inner, _, off, _) => if off >= 0 {
       off
     } else {
       callee_offset(inner)
@@ -120,7 +120,7 @@ fn index_expr(cur_expr: Expr, idx: Expr, bracket_off: Int) -> Expr {
   let args = empty_exprs()
   Array::push(args, cur_expr)
   Array::push(args, idx)
-  ECall(index_ref(bracket_off), args, -1)
+  ECall(index_ref(bracket_off), args, -1, [])
 }
 
 /// `x |> f(a, _)` substitutes the piped value at each bare `_` placeholder
@@ -138,7 +138,7 @@ fn pipe_arg_is_hole(arg: Expr) -> Bool {
 
 fn pipe_desugar(lhs: Expr, rhs: Expr) -> Expr {
   match source_expr(rhs) {
-    ECall(callee, args, off) => {
+    ECall(callee, args, off, callee_resolution) => {
       let mut has_hole = false
       let mut i = 0
       while i < Array::length(args) {
@@ -161,9 +161,9 @@ fn pipe_desugar(lhs: Expr, rhs: Expr) -> Expr {
           }
           j = j + 1
         }
-        ECall(callee, out, off)
+        ECall(callee, out, off, callee_resolution)
       } else {
-        ECall(callee, Array::concat([lhs], args), off)
+        ECall(callee, Array::concat([lhs], args), off, callee_resolution)
       }
     },
     _ => {
@@ -177,7 +177,7 @@ fn pipe_desugar(lhs: Expr, rhs: Expr) -> Expr {
       // single-element array built via concat is RC-safe. `off` is hoisted so
       // `rhs` is read once before being moved into the ECall callee slot.
       let off = callee_offset(rhs)
-      ECall(rhs, Array::concat([lhs], empty_exprs()), off)
+      ECall(rhs, Array::concat([lhs], empty_exprs()), off, [])
     }
   }
 }
@@ -245,7 +245,7 @@ fn slice_from_idx_expr(cur_expr: Expr, idx: Expr, end_expr: Expr, off: Int) -> E
   Array::push(args, cur_expr)
   Array::push(args, idx)
   Array::push(args, end_expr)
-  ECall(builtin_ref("__slice"), args, off)
+  ECall(builtin_ref("__slice"), args, off, [])
 }
 
 fn has_placeholder_args(args: Array[Expr]) -> Bool {
@@ -297,7 +297,7 @@ fn slice_from_zero_expr(cur_expr: Expr, end_expr: Expr, off: Int) -> Expr {
   Array::push(args, cur_expr)
   Array::push(args, EInt(0))
   Array::push(args, end_expr)
-  ECall(builtin_ref("__slice"), args, off)
+  ECall(builtin_ref("__slice"), args, off, [])
 }
 
 fn wrap_placeholder_arg(arg: Expr, _context: Option[ParserBinderContext]) -> Expr {
@@ -479,7 +479,7 @@ fn map_from_pairs_fields(args: Array[Expr], pos: Int) -> Array[(String, Expr)] w
 /// or to a call node one level down.
 fn callee_roots_at_call(e: Expr) -> Bool {
   match source_expr(e) {
-    ECall(_, _, _) => true,
+    ECall(_, _, _, _) => true,
     EDot(inner, _, _, _) => callee_roots_at_call(inner),
     _ => false
   }
@@ -564,7 +564,7 @@ fn build_call_expr(expr: Expr, args: Array[Expr], pos: Int, lparen_off: Int) -> 
   } else if ctor_name == "Map::from_pairs" {
     EMap(map_from_pairs_fields(args, pos))
   } else {
-    ECall(expr, args, call_site_offset(expr, lparen_off))
+    ECall(expr, args, call_site_offset(expr, lparen_off), [])
   }
 }
 
@@ -628,7 +628,7 @@ fn parse_postfix(tokens: Array[Token], starts: Array[Int], first: Int, pos: Int,
     TLBracket => match peek(tokens, pos + 1) {
       TColon => match peek(tokens, pos + 2) {
         TRBracket => {
-          let end_expr = ECall(builtin_ref("__len"), [expr], -1)
+          let end_expr = ECall(builtin_ref("__len"), [expr], -1, [])
           parse_postfix(tokens, starts, first, pos + 3, slice_from_zero_expr(expr, end_expr, field_offset_at(starts, pos)), parse_recur, context)
         },
         _ => {
@@ -645,7 +645,7 @@ fn parse_postfix(tokens: Array[Token], starts: Array[Int], first: Int, pos: Int,
         match peek(tokens, idx_next) {
           TColon => match peek(tokens, idx_next + 1) {
             TRBracket => {
-              let end_expr = ECall(builtin_ref("__len"), [expr], -1)
+              let end_expr = ECall(builtin_ref("__len"), [expr], -1, [])
               parse_postfix(tokens, starts, first, idx_next + 2, slice_from_idx_expr(expr, idx, end_expr, field_offset_at(starts, pos)), parse_recur, context)
             },
             _ => {
@@ -686,7 +686,7 @@ fn parse_postfix(tokens: Array[Token], starts: Array[Int], first: Int, pos: Int,
     // parsing so `f(x)?.field` chains.
     TQuestion => parse_postfix(tokens, starts, first, pos + 1, ECall(EIdent("__try_op", -1), [
       expr
-    ], -1), parse_recur, context),
+    ], -1, []), parse_recur, context),
     _ => (expr, pos)
   }
 }

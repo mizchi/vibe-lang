@@ -449,7 +449,7 @@ fn scps_fn_alias_target(v: Expr, fn_names: Array[String]) -> String {
     } else {
       ""
     },
-    ECall(EFn(_, _, aparams, _, _, abody), args, _) => if Array::length(args) == 1 && edp_is_identity_ascription(aparams, abody) {
+    ECall(EFn(_, _, aparams, _, _, abody), args, _, _) => if Array::length(args) == 1 && edp_is_identity_ascription(aparams, abody) {
       scps_fn_alias_target(Array::get(args, 0), fn_names)
     } else {
       ""
@@ -477,7 +477,7 @@ fn scps_inline_fn_aliases(e: Expr, fn_names: Array[String]) -> Expr {
     ELetMut(x, v, b, off) => ELetMut(x, scps_inline_fn_aliases(v, fn_names), scps_inline_fn_aliases(b, fn_names), off),
     ELetRec(x, v, b) => ELetRec(x, scps_inline_fn_aliases(v, fn_names), scps_inline_fn_aliases(b, fn_names)),
     EFn(tps, tbs, params, ret, eff, b) => EFn(tps, tbs, params, ret, eff, scps_inline_fn_aliases(b, fn_names)),
-    ECall(callee, args, off) => ECall(scps_inline_fn_aliases(callee, fn_names), scps_inline_fn_aliases_exprs(args, fn_names), off),
+    ECall(callee, args, off, callee_resolution) => ECall(scps_inline_fn_aliases(callee, fn_names), scps_inline_fn_aliases_exprs(args, fn_names), off, callee_resolution),
     ESeq(a, b) => ESeq(scps_inline_fn_aliases(a, fn_names), scps_inline_fn_aliases(b, fn_names)),
     EIf(c, t, el) => EIf(scps_inline_fn_aliases(c, fn_names), scps_inline_fn_aliases(t, fn_names), scps_inline_fn_aliases(el, fn_names)),
     EMatch(s, arms) => EMatch(scps_inline_fn_aliases(s, fn_names), scps_inline_fn_aliases_arms(arms, fn_names)),
@@ -769,7 +769,7 @@ fn scps_transform_handle(body: Expr, arms: Array[(Pat, Expr)], ik: String, ctx: 
           let once_get = ECall(builtin_ref("Array::get"), [
             EIdent(once, -1),
             EInt(0)
-          ], -1)
+          ], -1, [])
           // One-shot violation: write the diagnostic and TRAP via an
           // out-of-bounds Array::get (clean `unreachable`, verified to
           // trap correctly INSIDE a closure). NOT assert(false) (#1095:
@@ -784,15 +784,15 @@ fn scps_transform_handle(body: Expr, arms: Array[(Pat, Expr)], ik: String, ctx: 
           // not run under plain wasmtime.
           let trap = ECall(EIdent("abort", -1), [
             EString("vibe: resume one-shot continuation called twice", -1)
-          ], -1)
+          ], -1, [])
           let set_true = ECall(builtin_ref("Array::set"), [
             EIdent(once, -1),
             EInt(0),
             EBool(true)
-          ], -1)
+          ], -1, [])
           let drive_call = ECall(EIdent(drive, -1), [
-            ECall(EIdent(kname, -1), [EIdent(rv, -1)], -1)
-          ], -1)
+            ECall(EIdent(kname, -1), [EIdent(rv, -1)], -1, [])
+          ], -1, [])
           let rfn = scps_mk_fn1(rv, EIf(once_get, trap, ESeq(set_true, drive_call)))
           // `ik` is the hygienic spelling the implicit-resume wrap calls
           // (scps_wrap_tail_resume). When the arm's own payload binder is
@@ -809,7 +809,7 @@ fn scps_transform_handle(body: Expr, arms: Array[(Pat, Expr)], ik: String, ctx: 
         }
         let stn = scps_local("__scps_st", site)
         let dfn = scps_mk_fn1(stn, EMatch(EIdent(stn, -1), dmarms))
-        Some(ELetRec(drive, dfn, ECall(EIdent(drive, -1), [split_body], -1)))
+        Some(ELetRec(drive, dfn, ECall(EIdent(drive, -1), [split_body], -1, [])))
       }
     }
   }
@@ -881,7 +881,7 @@ fn scps_slot_sites_ok(e: Expr, fname: String, slot: Int, has_encl: Bool, encl_pa
   let cname = scps_clone_name(eff, fname)
   match e {
     EIdent(nm, _) => nm != fname && nm != cname,
-    ECall(callee, args, _) => {
+    ECall(callee, args, _, _) => {
       let head_ok = match callee {
         EIdent(nm, _) => if nm == fname || nm == cname {
           let mut shape_ok = slot < Array::length(args)
@@ -1332,15 +1332,15 @@ fn scps_wrap_tail_resume(expr: Expr, ik: String, sh: Bool) -> Expr {
     EAssign(n, v, c) => EAssign(n, v, scps_wrap_tail_resume(c, ik, sh)),
     EAssignOp(n, op, v, c) => EAssignOp(n, op, v, scps_wrap_tail_resume(c, ik, sh)),
     EReturn(_) => expr,
-    ECall(callee, _, _) => match callee {
+    ECall(callee, _, _, _) => match callee {
       EIdent(nm, _) => if nm == "resume" && !sh {
         expr
       } else {
-        ECall(EIdent(ik, -1), [expr], -1)
+        ECall(EIdent(ik, -1), [expr], -1, [])
       },
-      _ => ECall(EIdent(ik, -1), [expr], -1)
+      _ => ECall(EIdent(ik, -1), [expr], -1, [])
     },
-    _ => ECall(EIdent(ik, -1), [expr], -1)
+    _ => ECall(EIdent(ik, -1), [expr], -1, [])
   }
 }
 
@@ -1446,7 +1446,7 @@ fn scps_reaches_arm_indirectly(e: Expr, root: Expr, eff: String, ops: Array[Stri
     // A function passed as a value: a needing top-level function, or an
     // enclosing binding whose declared type carries the effect.
     EIdent(nm, _) => edp_str_array_contains(needing, nm) || scps_scope_row_has(scope, nm, eff, ctx),
-    ECall(callee, args, _) => match callee {
+    ECall(callee, args, _, _) => match callee {
       EIdent(nm, _) => if nm == "perform" {
         if scps_as_target_perform(e, ops) >= 0 && in_fn {
           true
@@ -1682,9 +1682,9 @@ fn scps_rewrite(e: Expr, ctx: (Array[Stmt], Array[(String, Array[(String, Array[
       Array::truncate(scope, fmark)
       EForIn(n, idx, rit, rb)
     },
-    ECall(callee, args, off) => ECall(scps_rewrite(callee, ctx, st, cps_effs, scope), for a in args {
+    ECall(callee, args, off, callee_resolution) => ECall(scps_rewrite(callee, ctx, st, cps_effs, scope), for a in args {
       scps_rewrite(a, ctx, st, cps_effs, scope)
-    }, off),
+    }, off, callee_resolution),
     EBinOp(op, l, r, boff) => EBinOp(op, scps_rewrite(l, ctx, st, cps_effs, scope), scps_rewrite(r, ctx, st, cps_effs, scope), boff),
     EUnaryOp(op, e2) => EUnaryOp(op, scps_rewrite(e2, ctx, st, cps_effs, scope)),
     EAssign(n, v, c) => EAssign(n, scps_rewrite(v, ctx, st, cps_effs, scope), scps_rewrite(c, ctx, st, cps_effs, scope)),
@@ -1863,7 +1863,7 @@ fn scps_prepass_expr(e: Expr, ecfgs: Array[(String, Array[String], Array[String]
         EFn(tps, tbs, params, ret, eff, b2)
       }
     },
-    ECall(callee, args, off) => {
+    ECall(callee, args, off, callee_resolution) => {
       let mut rcallee = scps_prepass_expr(callee, ecfgs, ctx, st, split_effs, scope)
       let rargs = for a in args {
         scps_prepass_expr(a, ecfgs, ctx, st, split_effs, scope)
@@ -1985,7 +1985,7 @@ fn scps_prepass_expr(e: Expr, ecfgs: Array[(String, Array[String], Array[String]
         },
         _ => ()
       }
-      ECall(rcallee, rargs, off)
+      ECall(rcallee, rargs, off, callee_resolution)
     },
     EHandle(b, arms) => EHandle(scps_prepass_expr(b, ecfgs, ctx, st, split_effs, scope), for a in arms {
       let (p, ex) = a
@@ -2126,7 +2126,7 @@ fn scps_guard_untriggered(e: Expr, guard_effs: Array[String], errs: Array[String
         i = i + 1
       }
     },
-    ECall(callee, args, _) => {
+    ECall(callee, args, _, _) => {
       scps_guard_untriggered(callee, guard_effs, errs)
       let mut i = 0
       while i < Array::length(args) {

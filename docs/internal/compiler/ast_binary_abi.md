@@ -1,4 +1,4 @@
-# AST Binary ABI v2
+# AST Binary ABI v3
 
 Stable binary encoding for the vibe surface-syntax AST — `Array[Stmt]` and
 the `Stmt` / `Expr` / `Pat` / `TypeExpr` trees underneath it, as declared
@@ -31,14 +31,34 @@ added, removed or renamed without this document following it.
 ```
 +----------------+------------------+----------------+
 | magic (4B)     | version (varint) | module body    |
-| "vAST"         | = 2              |                |
+| "vAST"         | = 3              |                |
 +----------------+------------------+----------------+
 ```
 
 Magic: ASCII `'v' 'A' 'S' 'T'` (`0x76 0x41 0x53 0x54`). Followed by a
-varint version number; this document defines **version 2**. The
+varint version number; this document defines **version 3**. The
 deserializer rejects any other magic or any version it doesn't
 recognize.
+
+**v2 -> v3**: `ECall` appends a call-owned resolution cell, encoded as
+`array<svarint>`. An empty cell is unresolved/unmigrated; `[-1]` resolves a
+migrated source spelling to a program binding; `[1]` through `[5]` name the
+five MutBytes builtin operations. Other values or more than one entry are
+rejected. This payload is preserved by checked-program transport and call
+rewrites. It carries no source offset or interned spelling ID.
+
+The checker assigns these identities after lexical/module binding resolution.
+The linear and GC backends consume the same operation ID for MutBytes calls.
+Other builtin families retain their existing dispatch until migrated.
+
+The existing per-module lowering carrier also transports these answers when
+only the type environment is reused. Tag 7 stores
+`(call_offset * 8 + operation_code) * 8 + 7`, where operation code 0 means a
+program binding and codes 1–5 match the operation IDs. Restoration matches the
+exact current module's located call, before offset rebasing or namespace
+rewrites; it never derives an identity from the callee's diagnostic spelling.
+Tag 7 rebasing therefore adds `base * 64`, while existing tags add `base * 8`.
+The compiler source fingerprint invalidates older carrier entries.
 
 **v1 -> v2**: `EString` gained its source offset. v1 wrote only the value and
 rebuilt the offset as `-1`, so a cached parse lost what locates a literal's
@@ -185,7 +205,7 @@ ImportItem : opt<ImportKind>(kind) string(name) optstr(alias)
 | 0x12 | `EWhile(Expr, Expr)` | `Expr(cond) Expr(body)` |
 | 0x13 | `ELoop(Array[(String, Expr)], Expr)` | `array<(string, Expr)>(params) Expr(body)` |
 | 0x14 | `EForIn(String, Option[String], Expr, Expr)` | `string(value_name) optstr(index_name) Expr(iterable) Expr(body)` |
-| 0x15 | `ECall(Expr, Array[Expr], Int)` | `Expr(callee) array<Expr>(args) svarint(byte_offset)` |
+| 0x15 | `ECall(Expr, Array[Expr], Int, Array[Int])` | `Expr(callee) array<Expr>(args) svarint(byte_offset) array<svarint>(callee_resolution)` |
 | 0x16 | `EBinOp(String, Expr, Expr, Int)` | `string(op) Expr(lhs) Expr(rhs) svarint(operator_byte_offset)` |
 | 0x17 | `EUnaryOp(String, Expr)` | `string(op) Expr(operand)` |
 | 0x18 | `EFn(Array[String], Array[(String, Array[String])], Array[(String, Option[TypeExpr])], Option[TypeExpr], Option[String], Expr)` | `array<string>(type_params) array<(string, array<string>)>(bounds) array<(string, opt<TypeExpr>)>(params) opt<TypeExpr>(ret) optstr(effect_row) Expr(body)` |

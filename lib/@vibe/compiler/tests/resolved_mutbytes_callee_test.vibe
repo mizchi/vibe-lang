@@ -1,0 +1,196 @@
+import @vibe/compiler/core {
+  Expr,
+  Stmt,
+  Subst,
+  Type,
+  TypeEnv,
+  builtin_mutbytes_append,
+  builtin_mutbytes_empty,
+  builtin_mutbytes_length,
+  builtin_mutbytes_push,
+  builtin_mutbytes_to_bytes,
+  builtin_operation_alias,
+  builtin_operation_arity,
+  env_bind,
+  rename_builtin_shadow_defs,
+  resolved_callee_capture_record,
+  resolved_callee_capture_reset,
+  resolved_callee_capture_rows,
+  resolved_callee_operation,
+  restore_resolved_callees
+}
+import @vibe/compiler/checker {
+  check_expr, resolve_mutbytes_callee
+}
+import @vibe/ast {
+  builtin_ref_offset
+}
+import @vibe/parser {
+  detach_stmts
+}
+import @vibe/compiler/cache {
+  ast_binary_read_expr, ast_binary_reader_new, ast_binary_write_expr
+}
+
+test "a call retains the checker builtin identity" {
+  let resolution: Array[Int] = []
+  let env = env_bind(EnvEmpty, "buffer", CtNamed("MutBytes", [CtInt]))
+  let errors: Array[String] = []
+  let _ = check_expr(ECall(EIdent("MutBytes::length", 7), [EIdent("buffer", 25)], 7, resolution), env, [
+  ], SubstEmpty, 0, errors, [])
+  inspect(Array::length(errors), content = "0")
+  inspect(resolved_callee_operation(resolution), content = "4")
+}
+
+test "program calls and compiler synthesized calls resolve differently" {
+  let env = env_bind(EnvEmpty, "MutBytes::push", CtFn([CtInt, CtInt], CtString, None))
+  let own: Array[Int] = []
+  let generated: Array[Int] = []
+  inspect(resolve_mutbytes_callee(env, "MutBytes::push", 10, own), content = "-1")
+  inspect(resolve_mutbytes_callee(env, "MutBytes::push", builtin_ref_offset(), generated), content = "2")
+  inspect(resolved_callee_operation(own), content = "-1")
+  inspect(resolved_callee_operation(generated), content = "2")
+}
+
+test "MutBytes operation coverage includes arity and shared lowering" {
+  let operations = [
+    builtin_mutbytes_empty,
+    builtin_mutbytes_push,
+    builtin_mutbytes_append,
+    builtin_mutbytes_length,
+    builtin_mutbytes_to_bytes
+  ]
+  let arities = [1, 2, 2, 1, 1]
+  let aliases = ["", "Bytes::push", "Bytes::append", "Bytes::length", ""]
+  let mut i = 0
+  while i < Array::length(operations) {
+    let operation = Array::get(operations, i)
+    assert(builtin_operation_arity(operation) == Array::get(arities, i))
+    assert(builtin_operation_alias(operation) == Array::get(aliases, i))
+    let mut j = i + 1
+    while j < Array::length(operations) {
+      assert(operation != Array::get(operations, j))
+      j = j + 1
+    }
+    i = i + 1
+  }
+  inspect(builtin_operation_arity(99), content = "-1")
+}
+
+test "binary transport preserves resolved calls without spelling inference" {
+  let operations = [
+    0 - 1,
+    builtin_mutbytes_empty,
+    builtin_mutbytes_push,
+    builtin_mutbytes_append,
+    builtin_mutbytes_length,
+    builtin_mutbytes_to_bytes
+  ]
+  for operation in operations {
+    let encoded = Bytes::new()
+    ast_binary_write_expr(encoded, ECall(EIdent("diagnostic_name", 17), [], 17, [
+      operation
+    ]))
+    let restored = ast_binary_read_expr(ast_binary_reader_new(encoded))
+    match restored {
+      ECall(EIdent(name, offset), _, call_offset, resolution) => {
+        assert(name == "diagnostic_name")
+        assert(offset == 17 && call_offset == 17)
+        assert(resolved_callee_operation(resolution) == operation)
+      },
+      _ => assert(false)
+    }
+  }
+}
+
+test "a fresh check replaces a cached callee answer after bindings change" {
+  let resolution: Array[Int] = []
+  inspect(resolve_mutbytes_callee(EnvEmpty, "MutBytes::length", 9, resolution), content = "4")
+  let changed = env_bind(EnvEmpty, "MutBytes::length", CtFn([CtInt], CtString, None))
+  inspect(resolve_mutbytes_callee(changed, "MutBytes::length", 9, resolution), content = "-1")
+  inspect(resolved_callee_operation(resolution), content = "-1")
+  inspect(resolve_mutbytes_callee(EnvEmpty, "MutBytes::length", 9, resolution), content = "4")
+  inspect(Array::length(resolution), content = "1")
+}
+
+test "a cached checker answer restores call identity without a source name lookup" {
+  resolved_callee_capture_reset()
+  resolved_callee_capture_record(17, builtin_mutbytes_push)
+  resolved_callee_capture_record(31, 0 - 1)
+  let builtin_cell: Array[Int] = []
+  let program_cell: Array[Int] = []
+  let stmts: Array[Stmt] = [
+    SExpr(ECall(EIdent("diagnostic_name", 17), [], 17, builtin_cell)),
+    SExpr(ECall(EIdent("another_name", 31), [], 31, program_cell))
+  ]
+  let rows = resolved_callee_capture_rows()
+  restore_resolved_callees(stmts, rows)
+  inspect(resolved_callee_operation(builtin_cell), content = "2")
+  inspect(resolved_callee_operation(program_cell), content = "-1")
+  resolved_callee_capture_reset()
+  inspect(Array::length(resolved_callee_capture_rows()), content = "0")
+  inspect(Array::length(rows), content = "2")
+}
+
+test "binary transport rejects malformed resolved call identities" {
+  for resolution in [[0], [6], [0 - 2], [1, 2]] {
+    let encoded = Bytes::new()
+    ast_binary_write_expr(encoded, ECall(EIdent("diagnostic_name", 17), [], 17, resolution))
+    let rejected = handle {
+      let _ = ast_binary_read_expr(ast_binary_reader_new(encoded))
+      false
+    } with { Exception::Throw(_) => true }
+    assert(rejected)
+  }
+}
+
+test "private shadow renaming assigns identities to generated module references" {
+  let dep_call = ECall(EIdent("MutBytes::push", 40), [
+    EIdent("buffer", 51),
+    EInt(7)
+  ], 40, [0 - 1])
+  let own_call = ECall(EIdent("MutBytes::push", 90), [EInt(9), EInt(2)], 90, [
+    0 - 1
+  ])
+  let stmts = [
+    SReExportSourceBoundary([], []),
+    SExpr(dep_call),
+    SReExportSourceBoundary([], []),
+    SLet(false, false, "MutBytes::push", None, EFn([], [], [
+      ("a", None),
+      ("b", None)
+    ], None, None, EInt(7))),
+    SExpr(own_call)
+  ]
+  rename_builtin_shadow_defs(stmts)
+  match Array::get(stmts, 1) {
+    SExpr(ECall(EIdent(name, _), _, _, resolution)) => {
+      inspect(name, content = "MutBytes::push")
+      inspect(resolved_callee_operation(resolution), content = "2")
+    },
+    _ => assert(false)
+  }
+  match Array::get(stmts, 4) {
+    SExpr(ECall(EIdent(name, _), _, _, resolution)) => {
+      inspect(name, content = "MutBytes::push$user")
+      inspect(resolved_callee_operation(resolution), content = "-1")
+    },
+    _ => assert(false)
+  }
+}
+
+test "independent AST owners detach mutable callee resolution cells" {
+  let resolution = [builtin_mutbytes_push]
+  let stmts = [
+    SExpr(ECall(EIdent("MutBytes::push", 7), [EInt(1), EInt(2)], 7, resolution))
+  ]
+  let detached = detach_stmts(stmts)
+  match Array::get(detached, 0) {
+    SExpr(ECall(_, _, _, copy)) => {
+      Array::set(copy, 0, 0 - 1)
+      inspect(resolved_callee_operation(copy), content = "-1")
+    },
+    _ => assert(false)
+  }
+  inspect(resolved_callee_operation(resolution), content = "2")
+}
