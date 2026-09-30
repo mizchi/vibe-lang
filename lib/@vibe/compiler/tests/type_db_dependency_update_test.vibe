@@ -1,0 +1,149 @@
+import @vibe/compiler/core {
+  Type, TypeEnv, env_lookup
+}
+
+import ../type_db.vibe {
+  TypeDb, db_new, db_set_source, db_typecheck, db_typecheck_fs, db_check_env, db_typecheck_count
+}
+
+fn update_dependency_module(db: TypeDb, path: String, source: String, filesystem: Bool) -> TypeDb with Fs {
+  if filesystem {
+    Fs::write_file(path, source)
+  } else {
+    ()
+  }
+  db_set_source(db, path, source)
+}
+
+fn dependency_checked_env(db: TypeDb, path: String) -> TypeEnv with Exception {
+  match db_check_env(db, path) {
+    Some(env) => env,
+    None => throw(String::concat("checked interface is missing: ", path))
+  }
+}
+
+fn check_dependency_graph(db: TypeDb, path: String, filesystem: Bool) -> TypeDb with Env + Exception + Fs {
+  if filesystem {
+    db_typecheck_fs(db, path)
+  } else {
+    db_typecheck(db, path)
+  }
+}
+
+fn dependency_update_graph(filesystem: Bool) -> Unit with Env + Exception + Fs {
+  let dir = if filesystem {
+    "/tmp/vibe_dependency_interface_views"
+  } else {
+    "memory_views"
+  }
+  if filesystem {
+    Fs::mkdir_p(dir)
+  } else {
+    ()
+  }
+  let dep = String::concat(dir, "/dep.vibe")
+  let mid = String::concat(dir, "/mid.vibe")
+  let left = String::concat(dir, "/left.vibe")
+  let right = String::concat(dir, "/right.vibe")
+  let root = String::concat(dir, "/main.vibe")
+  let before = "export trait Marker\nimpl Marker for Int\ntype Hidden = Int\nexport type Label = Hidden\nexport fn echo[T: Marker](x: T) -> T { x }\nexport let value = 1\n"
+  let after = "export trait Marker\nimpl Marker for String\ntype Hidden = String\nexport type Label = Hidden\nexport fn echo[T: Marker](x: T) -> T { x }\nexport let value = \"updated\"\n"
+  let mut db = update_dependency_module(db_new(), dep, before, filesystem)
+  let mid_source = "export ./dep.vibe { type Label as PublicLabel, trait Marker as Tag, echo as ident, value as data }\n"
+  db = update_dependency_module(db, mid, mid_source, filesystem)
+  let left_source = "import ./dep.vibe { type Label as Local, echo, value as renamed }\nlet value = \"shadow\"\nexport let result = echo(renamed)\nexport fn labelled(x: Local) -> Local { x }\n"
+  db = update_dependency_module(db, left, left_source, filesystem)
+  let right_source = "import ./mid.vibe { type PublicLabel, trait Tag, ident, data }\nexport let result = ident(data)\nexport fn bounded[T: Tag](x: T) -> T { x }\nexport fn labelled(x: PublicLabel) -> PublicLabel { x }\n"
+  db = update_dependency_module(db, right, right_source, filesystem)
+  let root_source = "import ./left.vibe { result as first }\nimport ./right.vibe { result as second }\nexport let result = first\n"
+  db = update_dependency_module(db, root, root_source, filesystem)
+  if filesystem {
+    remove_dependency_graph_cache([dep, mid, left, right, root], [
+      before,
+      mid_source,
+      left_source,
+      right_source,
+      root_source
+    ], [[], [0], [0], [1], [2, 3]])
+  } else {
+    ()
+  }
+  let cold = check_dependency_graph(db, root, filesystem)
+  let old_left = dependency_checked_env(cold, left)
+  assert(env_lookup(old_left, "result") == Some(CtInt))
+  assert(env_lookup(dependency_checked_env(cold, right), "result") == Some(CtInt))
+  let cold_count = db_typecheck_count(cold)
+  let warm = check_dependency_graph(cold, root, filesystem)
+  assert(db_typecheck_count(warm) == cold_count)
+  assert(env_lookup(dependency_checked_env(warm, right), "result") == Some(CtInt))
+  let changed = check_dependency_graph(update_dependency_module(warm, dep, after, filesystem), root, filesystem)
+  assert(db_typecheck_count(changed) == cold_count + 5)
+  assert(env_lookup(dependency_checked_env(changed, left), "result") == Some(CtString))
+  assert(env_lookup(dependency_checked_env(changed, right), "result") == Some(CtString))
+  assert(env_lookup(old_left, "result") == Some(CtInt))
+  let changed_warm = check_dependency_graph(changed, root, filesystem)
+  assert(env_lookup(dependency_checked_env(changed_warm, root), "result") == Some(CtString))
+}
+
+test "in-memory dependency edits refresh both importers and re-exports" {
+  dependency_update_graph(false)
+}
+
+test "filesystem dependency edits refresh both importers on cold and warm checks" {
+  dependency_update_graph(true)
+}
+
+import @vibe/compiler/cache {
+  persistent_type_env_cache_path
+}
+import @vibe/compiler/checker {
+  typing_semantics_seed
+}
+import @vibe/compiler/runtime {
+  typecheck_fs_build_fingerprint
+}
+
+fn remove_dependency_graph_cache(paths: Array[String], sources: Array[String], deps: Array[Array[Int]]) -> Unit with Env + Fs {
+  let fingerprints: Array[String] = []
+  let mut i = 0
+  while i < Array::length(paths) {
+    let dep_fps: Array[(String, String)] = []
+    for j in Array::get(deps, i) {
+      Array::push(dep_fps, (Array::get(paths, j), Array::get(fingerprints, j)))
+    }
+    let fp = typecheck_fs_build_fingerprint(Array::get(paths, i), Array::get(sources, i), dep_fps, typing_semantics_seed())
+    Array::push(fingerprints, fp)
+    let cache = persistent_type_env_cache_path(fp)
+    if Fs::exists(cache) {
+      Fs::remove(cache)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
+test "filesystem dependency edits recheck a parent's declared return type" {
+  let dir = "/tmp/vibe_dependency_update_rejection"
+  Fs::mkdir_p(dir)
+  let dep = String::concat(dir, "/dep.vibe")
+  let root = String::concat(dir, "/main.vibe")
+  let before = "export let value = 1\n"
+  let after = "export let value = \"changed\"\n"
+  let source = "import ./dep.vibe { value }\nexport fn read() -> Int { value }\n"
+  let db = update_dependency_module(update_dependency_module(db_new(), dep, before, true), root, source, true)
+  remove_dependency_graph_cache([dep, root], [before, source], [[], [0]])
+  let checked = check_dependency_graph(db, root, true)
+  let message = handle {
+    let _ = check_dependency_graph(update_dependency_module(checked, dep, after, true), root, true)
+    ""
+  } with { Exception::Throw(message) => message }
+  assert(String::contains(message, "return type mismatch"))
+  // A failed parent leaves successfully stepped dependencies in the resident
+  // DB. Retrying must still reject; changes from this walk alone are no proof.
+  let retried = handle {
+    let _ = check_dependency_graph(checked, root, true)
+    ""
+  } with { Exception::Throw(message) => message }
+  assert(String::contains(retried, "return type mismatch"))
+}
