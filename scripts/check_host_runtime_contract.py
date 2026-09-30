@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Fail-closed drift check for the documented `vibe.*` core import contract."""
+from __future__ import annotations
+
 import json
 import re
 import sys

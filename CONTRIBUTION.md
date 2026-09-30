@@ -180,15 +180,8 @@ pkf run build-wasmtime-submodule
 # run wasmtime from submodule directly
 pkf run wasmtime-submodule -- run -W gc --invoke _start /tmp/out.wasm
 
-# or switch existing vibe scripts/tasks to submodule wasmtime
-VIBE_USE_WASMTIME_SUBMODULE=1 pkf run component-run -- script.vibe
-
-# inject extra wasmtime runtime flags into vibe scripts/*
-# (space-separated list; each token is passed as -W / -S)
-VIBE_WASMTIME_WASM_FLAGS='component-model-async=y concurrency-support=y' \
-VIBE_WASMTIME_WASI_FLAGS='p3=y' \
-VIBE_USE_WASMTIME_SUBMODULE=1 \
-pkf run component-run -- script.vibe
+# or use the submodule binary through the shared runner
+VIBE_USE_WASMTIME_SUBMODULE=1 bash scripts/wasmtime_run.sh --invoke _start /tmp/out.wasm
 
 # inspect current flag env values used by scripts/wasmtime_run.sh
 pkf run show-wasmtime-flags

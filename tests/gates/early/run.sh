@@ -36,6 +36,103 @@ if [ "$fsres" != "42" ]; then
 fi
 echo "[compiler-gate] multi-file FS-compile ok (42)"
 
+# #3213: the byte-indexed char lexer rejects a multi-byte character. Both
+# checker lanes must locate the opening quote and name the usable syntax.
+for char_lane in fs single-file; do
+  if [ "$char_lane" = single-file ]; then set -- --single-file; else set --; fi
+  char_diag="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+    --invoke cli_main "$stage2_wasm" check "$@" fixtures/err_nonascii_char_literal.vibe 2>&1 || true)"
+  case "$char_diag" in
+    *'line 2:11: use a String for text or an Int code point for non-ASCII'*) ;;
+    *) echo "[compiler-gate] FAIL: $char_lane non-ASCII char diagnostic lacks its location or edit: $char_diag" >&2; exit 1 ;;
+  esac
+  missing_quote="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+    --invoke cli_main "$stage2_wasm" check "$@" fixtures/err_unclosed_char_literal.vibe 2>&1 || true)"
+  case "$missing_quote" in
+    *'line 2:11: add a closing quote to the char literal'*) ;;
+    *) echo "[compiler-gate] FAIL: $char_lane missing char quote diagnostic suggests the wrong edit: $missing_quote" >&2; exit 1 ;;
+  esac
+  crlf_quote="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+    --invoke cli_main "$stage2_wasm" check "$@" fixtures/err_unclosed_char_crlf.vibe 2>&1 || true)"
+  case "$crlf_quote" in
+    *'line 2:11: add a closing quote to the char literal'*) ;;
+    *) echo "[compiler-gate] FAIL: $char_lane CRLF missing quote diagnostic differs from LF: $crlf_quote" >&2; exit 1 ;;
+  esac
+  unclosed_multichar="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+    --invoke cli_main "$stage2_wasm" check "$@" fixtures/err_multichar_unclosed_char_literal.vibe 2>&1 || true)"
+  case "$unclosed_multichar" in
+    *'line 2:11: use a String for text or an Int code point for non-ASCII'*) ;;
+    *) echo "[compiler-gate] FAIL: $char_lane unclosed multi-character literal suggests a quote that cannot fix it: $unclosed_multichar" >&2; exit 1 ;;
+  esac
+  unclosed_nonascii="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+    --invoke cli_main "$stage2_wasm" check "$@" fixtures/err_nonascii_unclosed_char_literal.vibe 2>&1 || true)"
+  case "$unclosed_nonascii" in
+    *'line 2:11: use a String for text or an Int code point for non-ASCII'*) ;;
+    *) echo "[compiler-gate] FAIL: $char_lane unclosed non-ASCII char suggests a quote that cannot fix it: $unclosed_nonascii" >&2; exit 1 ;;
+  esac
+  comment_quote="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+    --invoke cli_main "$stage2_wasm" check "$@" fixtures/err_unclosed_char_comment.vibe 2>&1 || true)"
+  case "$comment_quote" in
+    *'line 2:11: add a closing quote to the char literal'*) ;;
+    *) echo "[compiler-gate] FAIL: $char_lane apostrophe in a comment changed the char edit: $comment_quote" >&2; exit 1 ;;
+  esac
+  compact_comment_quote="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+    --invoke cli_main "$stage2_wasm" check "$@" fixtures/err_unclosed_char_compact_comment.vibe 2>&1 || true)"
+  case "$compact_comment_quote" in
+    *'line 2:11: add a closing quote to the char literal'*) ;;
+    *) echo "[compiler-gate] FAIL: $char_lane apostrophe in a compact comment changed the char edit: $compact_comment_quote" >&2; exit 1 ;;
+  esac
+  next_literal="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+    --invoke cli_main "$stage2_wasm" check "$@" fixtures/err_unclosed_char_next_literal.vibe 2>&1 || true)"
+  case "$next_literal" in
+    *'line 2:11: add a closing quote to the char literal'*) ;;
+    *) echo "[compiler-gate] FAIL: $char_lane next literal changed the missing-quote edit: $next_literal" >&2; exit 1 ;;
+  esac
+  next_escaped_literal="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+    --invoke cli_main "$stage2_wasm" check "$@" fixtures/err_unclosed_char_next_escaped_literal.vibe 2>&1 || true)"
+  case "$next_escaped_literal" in
+    *'line 2:11: add a closing quote to the char literal'*) ;;
+    *) echo "[compiler-gate] FAIL: $char_lane escaped next literal changed the missing-quote edit: $next_escaped_literal" >&2; exit 1 ;;
+  esac
+  next_operator_literal="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+    --invoke cli_main "$stage2_wasm" check "$@" fixtures/err_unclosed_char_next_literal_operator.vibe 2>&1 || true)"
+  case "$next_operator_literal" in
+    *'line 2:14: add a closing quote to the char literal'*) ;;
+    *) echo "[compiler-gate] FAIL: $char_lane operator-separated literal changed the missing-quote edit: $next_operator_literal" >&2; exit 1 ;;
+  esac
+  next_space_literal="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+    --invoke cli_main "$stage2_wasm" check "$@" fixtures/err_unclosed_char_next_space_literal.vibe 2>&1 || true)"
+  case "$next_space_literal" in
+    *'line 2:11: add a closing quote to the char literal'*) ;;
+    *) echo "[compiler-gate] FAIL: $char_lane whitespace-valued next literal changed the missing-quote edit: $next_space_literal" >&2; exit 1 ;;
+  esac
+  following_string="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+    --invoke cli_main "$stage2_wasm" check "$@" fixtures/err_unclosed_char_following_string.vibe 2>&1 || true)"
+  case "$following_string" in
+    *'line 2:15: add a closing quote to the char literal'*) ;;
+    *) echo "[compiler-gate] FAIL: $char_lane apostrophe inside a later string changed the char edit: $following_string" >&2; exit 1 ;;
+  esac
+  block_string="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+    --invoke cli_main "$stage2_wasm" check "$@" fixtures/err_unclosed_char_following_block_string.vibe 2>&1 || true)"
+  case "$block_string" in
+    *'line 3:11: add a closing quote to the char literal'*) ;;
+    *) echo "[compiler-gate] FAIL: $char_lane apostrophe inside a later block string changed the char edit: $block_string" >&2; exit 1 ;;
+  esac
+  for closed_delimiter in comma semicolon followed_literal slashes adjacent_literal; do
+    closed_column=11
+    if [ "$closed_delimiter" = adjacent_literal ]; then
+      closed_column=15
+    fi
+    closed_diag="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+      --invoke cli_main "$stage2_wasm" check "$@" "fixtures/err_multichar_char_${closed_delimiter}.vibe" 2>&1 || true)"
+    case "$closed_diag" in
+      *"line 2:${closed_column}: use a String for text or an Int code point for non-ASCII"*) ;;
+      *) echo "[compiler-gate] FAIL: $char_lane closed literal containing $closed_delimiter suggests a missing quote: $closed_diag" >&2; exit 1 ;;
+    esac
+  done
+done
+echo "[compiler-gate] char diagnostics locate invalid width and missing quotes with distinct edits (#3213)"
+
 # Keep complete checked-module transport aligned with the real FS output and
 # diagnostics corpus, including compiler-sized input and hostile cache repair.
 echo "[compiler-gate] checked-module cache parity (#2505)"
