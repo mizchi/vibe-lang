@@ -1,0 +1,52 @@
+import @vibe/compiler/runtime {
+  module_typed_lowering_text, parse_module_typed_lowering_offsets_text
+}
+
+test "offset and equality rows retain the canonical v8 digest and wire bytes" {
+  inspect(module_typed_lowering_text([0, 8, 6263971], [40, 128], ["I", "T2_I_G"]), "module_typed_lowering_offsets\tv8\n0\n8\n6263971\nmodule_typed_lowering_offsets\tcount\t3\nmodule_typed_lowering_offsets\teqrow\t40\tI\nmodule_typed_lowering_offsets\teqrow\t128\tT2_I_G\nmodule_typed_lowering_offsets\teqcount\t2\nmodule_typed_lowering_offsets\tdigest\t99:900695606:1940773585\nmodule_typed_lowering_offsets\tend\n")
+}
+
+test "row-heavy tables avoid an intermediate digest payload and row copies" {
+  let offsets: Array[Int] = []
+  let eq_offs: Array[Int] = []
+  let eq_keys: Array[String] = []
+  let buf = StringBuilder::new()
+  let mut i = 0
+  while i < 64 {
+    StringBuilder::push(buf, "I_G_")
+    i = i + 1
+  }
+  let key = StringBuilder::freeze(buf)
+  i = 0
+  while i < 512 {
+    Array::push(offsets, i * 8)
+    Array::push(eq_offs, i * 16)
+    Array::push(eq_keys, key)
+    i = i + 1
+  }
+  let start = Profiler::heap_bytes()
+  let text = module_typed_lowering_text(offsets, eq_offs, eq_keys)
+  let allocated = Profiler::heap_bytes() - start
+  println("rows wire=\{String::length(text)} allocated=\{allocated}")
+  inspect(allocated <= String::length(text) * 3, "true")
+}
+
+test "digest boundaries agree with the independent decoder for empty and single-row classes" {
+  for row in [
+    ([], [], []),
+    ([0, 999999], [], []),
+    ([], [8], ["I"]),
+    ([], [8, 32], ["I", "あ"])
+  ] {
+    let (offsets, eq_offs, eq_keys) = row
+    let text = module_typed_lowering_text(offsets, eq_offs, eq_keys)
+    match parse_module_typed_lowering_offsets_text(text) {
+      Some((decoded, decoded_eq, decoded_keys)) => {
+        assert(decoded == offsets)
+        assert(decoded_eq == eq_offs)
+        assert(decoded_keys == eq_keys)
+      },
+      None => assert(false)
+    }
+  }
+}

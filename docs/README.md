@@ -175,6 +175,7 @@ Not normative.
 | --- | --- |
 | [internal/reports/blake3-vs-sha1-bench-2026-08-01.md](internal/reports/blake3-vs-sha1-bench-2026-08-01.md) | |
 | [internal/reports/cloudflare-workers-fit-2026-09-04.md](internal/reports/cloudflare-workers-fit-2026-09-04.md) | |
+| [internal/reports/compiler-cache-streaming-2026-10-01.md](internal/reports/compiler-cache-streaming-2026-10-01.md) | Recursive cache encoder byte contracts and controlled allocation measurements |
 | [internal/reports/compiler-data-reservation-2026-09-16.md](internal/reports/compiler-data-reservation-2026-09-16.md) | Wasm data buffer reservation: paired microbenchmarks and cold/warm compiler timings |
 | [internal/reports/compiler-data-reservation-2026-09-16.json](internal/reports/compiler-data-reservation-2026-09-16.json) | Raw samples and artifact provenance for the data buffer reservation measurements |
 | [internal/reports/compiler-file-split-memory-2026-10-01.md](internal/reports/compiler-file-split-memory-2026-10-01.md) | Source-split allocation attribution, local fixes and measured optimization follow-ups |

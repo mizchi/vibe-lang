@@ -38,37 +38,89 @@ fn module_typed_lowering_body_digest(body: Array[String]) -> String {
   compact_string_fingerprint(String::join(body, "\n"))
 }
 
-export fn module_typed_lowering_text(offsets: Array[Int], eq_offs: Array[Int], eq_keys: Array[String]) -> String {
-  let parts = array_empty()
-  // The lines the digest covers: the offset rows and the eq rows, in emission
-  // order. The header, the counts, the digest line itself and the end marker
-  // are not in it -- they are checked directly.
-  let body = array_empty()
-  Array::push(parts, "module_typed_lowering_offsets\tv8")
-  let n = Array::length(offsets)
+/// Incremental form of compact_string_fingerprint over the body bytes.
+/// The absolute byte position is part of h2, including separators between
+/// rows. Headers and counts are never fed to this state.
+struct LoweringDigest {
+  mut length: Int;
+  mut h1: Int;
+  mut h2: Int;
+  mut rows: Int
+}
+
+fn lowering_digest_push(digest: LoweringDigest, text: String) -> Unit {
+  let mut h1 = digest.h1
+  let mut h2 = digest.h2
+  let mut pos = digest.length
   let mut i = 0
-  while i < n {
-    let row_text = __to_string(Array::get(offsets, i))
-    Array::push(parts, row_text)
-    Array::push(body, row_text)
+  while i < String::length(text) {
+    let c = String::char_code_at(text, i)
+    h1 = (h1 * 131 + c + 1) % 2147483647
+    h2 = (h2 * 65599 + c + pos + 1) % 2147483629
+    i = i + 1
+    pos = pos + 1
+  }
+  digest.h1 = h1
+  digest.h2 = h2
+  digest.length = pos
+}
+
+fn lowering_begin_row(digest: LoweringDigest) -> Unit {
+  if digest.rows > 0 {
+    lowering_digest_push(digest, "\n")
+  } else {
+    ()
+  }
+  digest.rows = digest.rows + 1
+}
+
+fn lowering_body_piece(parts: Array[String], digest: LoweringDigest, text: String) -> Unit {
+  Array::push(parts, text)
+  lowering_digest_push(digest, text)
+}
+
+/// Append the complete v8 envelope to caller-owned pieces. The combined
+/// module encoder freezes these together with its env, without copying a
+/// separate lowering payload. No body array, joined digest input, or eq-row
+/// String is materialized.
+export fn append_module_typed_lowering_text(parts: Array[String], offsets: Array[Int], eq_offs: Array[Int], eq_keys: Array[String]) -> Unit {
+  let digest = LoweringDigest::{ length: 0, h1: 17, h2: 29, rows: 0 }
+  Array::push(parts, "module_typed_lowering_offsets\tv8\n")
+  let mut i = 0
+  while i < Array::length(offsets) {
+    lowering_begin_row(digest)
+    lowering_body_piece(parts, digest, __to_string(Array::get(offsets, i)))
+    Array::push(parts, "\n")
     i = i + 1
   }
-  Array::push(parts, String::concat("module_typed_lowering_offsets\tcount\t", __to_string(n)))
-  // #2441: the typed-`==` rows. Keys are impl_target_key strings, whose
-  // charset (digits, `_`, structure letters) can never contain a tab or a
-  // newline, so the cell split is unambiguous.
-  let eq_n = Array::length(eq_offs)
-  let mut ei = 0
-  while ei < eq_n {
-    let eq_row = String::concat("module_typed_lowering_offsets\teqrow\t", String::concat(__to_string(Array::get(eq_offs, ei)), String::concat("\t", Array::get(eq_keys, ei))))
-    Array::push(parts, eq_row)
-    Array::push(body, eq_row)
-    ei = ei + 1
+  Array::push(parts, "module_typed_lowering_offsets\tcount\t")
+  Array::push(parts, __to_string(Array::length(offsets)))
+  Array::push(parts, "\n")
+  i = 0
+  while i < Array::length(eq_offs) {
+    lowering_begin_row(digest)
+    lowering_body_piece(parts, digest, "module_typed_lowering_offsets\teqrow\t")
+    lowering_body_piece(parts, digest, __to_string(Array::get(eq_offs, i)))
+    lowering_body_piece(parts, digest, "\t")
+    lowering_body_piece(parts, digest, Array::get(eq_keys, i))
+    Array::push(parts, "\n")
+    i = i + 1
   }
-  Array::push(parts, String::concat("module_typed_lowering_offsets\teqcount\t", __to_string(eq_n)))
-  Array::push(parts, String::concat("module_typed_lowering_offsets\tdigest\t", module_typed_lowering_body_digest(body)))
-  Array::push(parts, "module_typed_lowering_offsets\tend")
-  String::concat(String::join(parts, "\n"), "\n")
+  Array::push(parts, "module_typed_lowering_offsets\teqcount\t")
+  Array::push(parts, __to_string(Array::length(eq_offs)))
+  Array::push(parts, "\nmodule_typed_lowering_offsets\tdigest\t")
+  Array::push(parts, __to_string(digest.length))
+  Array::push(parts, ":")
+  Array::push(parts, __to_string(digest.h1))
+  Array::push(parts, ":")
+  Array::push(parts, __to_string(digest.h2))
+  Array::push(parts, "\nmodule_typed_lowering_offsets\tend\n")
+}
+
+export fn module_typed_lowering_text(offsets: Array[Int], eq_offs: Array[Int], eq_keys: Array[String]) -> String {
+  let parts: Array[String] = []
+  append_module_typed_lowering_text(parts, offsets, eq_offs, eq_keys)
+  String::join(parts, "")
 }
 
 /// Digit-only row decode; any other character poisons the whole parse.
