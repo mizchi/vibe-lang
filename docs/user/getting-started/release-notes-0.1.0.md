@@ -6,7 +6,7 @@
 > [spec/0-1.md](../../spec/0-1.md).
 
 The previous stable release is `v0.0.1` (2026-04-14); `v0.1.0-rc.1` and
-`v0.1.0-rc.2` were published as pre-releases. The final candidate also fixes
+`v0.1.0-rc.2` were published as pre-releases. This candidate also fixes
 RC ownership of store views, local closure captures, recursive closures, and
 closures returned from `Option` payloads (#3215, #3203, #3110, #3240); makes
 qualified constructor patterns through
@@ -19,6 +19,28 @@ rewritten in itself, so these notes describe a different compiler rather than
 a list of fixes. The work once prepared under the name
 "0.3.0 GA" is part of this release; the record of that intermediate state is
 [archive/release-notes-0.3.0.md](../../archive/release-notes-0.3.0.md).
+
+## Changes in 0.1.0-rc.3
+
+- Prebuilt installations use the current compiler built from the release's
+  source. The pinned bootstrap seed remains a separate asset; it no longer
+  substitutes for the installed CLI compiler.
+- RC ownership fixes cover store views, local closure captures, recursive
+  closures, and closures returned from `Option` payloads (#3215, #3203,
+  #3110, #3240).
+- Local effect handlers accept annotated function aliases (#3196). Unsafe
+  function values under nested handlers are rejected before they can trap
+  (#3195), and mutable closure diagnostics follow the current assignment
+  rather than a stale initializer (#3218).
+- Plain local closures passed to `spawn_suspend` are rejected with an edit
+  that makes the supported form explicit (#3194).
+- Character-literal diagnostics retain accurate positions through edits and
+  CRLF input, and obsolete component tasks have been removed (#3213).
+- `type-at` resolves offset-free recursive local closures used as callees
+  (#3208). Assignments to an unbound name report the missing name and its
+  source range on both checker lanes, including JSON output (#3226).
+- Checkout installation rebuilds the native runner when needed instead of
+  copying a stale binary (#3242).
 
 ## The headline: vibe compiles itself
 
@@ -207,10 +229,6 @@ the edit that fixes them rather than an internal pass name.
 - Everything in §6 of [spec/stable-surface.md](../reference/stable-surface.md) is
   outside the SemVer promise, most notably async/structured concurrency and the
   capability authorization surface.
-- An assignment to an unbound name is rejected but can be reported as an
-  immutable-binding error without a source location (#3226). The 0.1.0-rc.2
-  mutation campaign found this on invalid input; the committed seed has the
-  same behavior. Valid program results are unaffected.
 
 ## Release verification
 

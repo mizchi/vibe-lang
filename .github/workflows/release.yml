@@ -195,3 +195,16 @@ jobs:
           printf 'fn main allows Console {\n  println("42")\n}\n' > "$RUNNER_TEMP/hello.vibex"
           out="$(cd "$RUNNER_TEMP" && "$VIBE_HOME/bin/vibe" run hello.vibex)"
           [ "$out" = "42" ] || { echo "installed release printed '$out'" >&2; exit 1; }
+          # A seed-only installation also prints 42. Exercise a diagnostic
+          # fixed in this source tree to prove the product ships the current CLI.
+          printf 'export fn main() -> Int {\n  accI = 1\n  0\n}\n' > "$RUNNER_TEMP/unknown.vibe"
+          for lane in fs single-file; do
+            if [ "$lane" = single-file ]; then set -- --single-file; else set --; fi
+            if out="$(cd "$RUNNER_TEMP" && "$VIBE_HOME/bin/vibe" check "$@" unknown.vibe 2>&1)"; then
+              echo "installed release accepted an unbound assignment" >&2; exit 1
+            fi
+            case "$out" in
+              *'line 2:3-7: unknown name: accI'*) ;;
+              *) echo "installed $lane compiler lost the current diagnostic: $out" >&2; exit 1 ;;
+            esac
+          done

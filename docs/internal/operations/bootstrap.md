@@ -186,51 +186,53 @@ merge し、`seed-release` workflow が使えるようになってから最初�
   `VIBE_ENSURE_SEED_NO_REBUILD=1` でこの例外も無効化できる。詳細は下の
   "Bootstrap bump procedure" step 3。
 
-### Release タグ体系
+### Release tags and artifacts
 
-- 製品リリース: `v*` (例 `v0.1.0`)。`.github/workflows/release.yml` が発火し、
-  `scripts/build_release_assets.sh` が publish する通常の GitHub Release。
-- bootstrap-bump seed リリース: `seed/<name>` (例
-  `seed/map-from-pairs-2026-07-17`、`<name>` は既存の `seed.name` 命名を踏襲)。
-  `.github/workflows/seed-release.yml` が発火し、
-  `scripts/build_seed_release_assets.sh` が publish する。バージョン概念が
-  無い (製品リリースではない) ので semver チェックは無く、**prerelease** として
-  作成する — 通常の Releases 一覧で `v*` と混ざって読みにくくならないように。
+- Product releases use `v*` tags, such as `v0.1.0`. The tag triggers
+  `.github/workflows/release.yml`, which packages assets with
+  `scripts/build_release_assets.sh`.
+- Bootstrap seed releases use `seed/<name>`, following `seed.name`, such as
+  `seed/map-from-pairs-2026-07-17`. The manually dispatched
+  `.github/workflows/seed-release.yml` uses `scripts/build_seed_release_assets.sh`.
+  These have no SemVer version and are published as prereleases.
 
-どちらのリリースも同じ artifact trio を含む (共有ロジックは
-`scripts/build_compiler_seed_assets.sh`):
+Both release kinds include the bootstrap artifact trio, produced by
+`scripts/build_compiler_seed_assets.sh`:
 
-- `vibe-compiler-<tag>.wasm` — stage0 seed compiler wasm。stock wasmtime で
-  instantiate でき、`cli_main` として動く。中身は `bootstrap/seed/compiler.wasm`
-  そのもの (seed.json で sha256 pin)。
-- `vibe-compiler-module-source-<tag>.vibe` — flatten 済みの flat module source。
-  `emit-module-source` の出力 (= committed compiler source からの決定的関数) を
-  pin したもの。これがあれば flatten を再実行せず prebuilt をそのまま使える
-  (regeneration は seed-based の `scripts/generate_bundle.sh`)。
-- `vibe-compiler-seed-<tag>.json` / `release-manifest.json` / `SHA256SUMS.txt` —
-  provenance と整合性メタデータ。manifest の `compiler` block に各 asset の
-  sha256 と `source_commit` が入る。
+- `vibe-compiler-<tag>.wasm`: the pinned stage0 seed, copied directly from
+  `bootstrap/seed/compiler.wasm` and verified against `bootstrap/seed.json`.
+- `vibe-compiler-module-source-<tag>.vibe`: flat module source generated from
+  the release's compiler source by the seed-based `scripts/generate_bundle.sh`.
+  Consumers can rebuild stage1 and stage2 without repeating flattening.
+- `vibe-compiler-seed-<tag>.json`: the seed provenance descriptor. The
+  `compiler` block in `release-manifest.json` records the bootstrap artifacts,
+  their checksums, and the seed's source commit. `SHA256SUMS.txt` covers the
+  shipped files.
 
-取得は共通で `scripts/fetch_compiler.sh` (`pkf run fetch-compiler`)。
+Product releases also ship `vibe-cli-<tag>.wasm`, built from current source by
+`scripts/build_cli_wasm.sh` (seed → stage1 → stage2). The manifest's top-level
+`compiler_wasm` selects this CLI for installation. The installer consumes it
+directly and AOT-compiles it for the host; it does not rebuild the CLI from the
+bootstrap trio. Package hashes are computed with this same current compiler.
+
+Fetch bootstrap artifacts with `scripts/fetch_compiler.sh`
+(`pkf run fetch-compiler`), which reads the nested `compiler` block.
 
 ```bash
-# release から pull + sha256 検証し、prebuilt module source の env を出す
+# Fetch and verify bootstrap artifacts, then print the module-source environment.
 eval "$(pkf run fetch-compiler -- <tag> --print-env)"
-# flat source の regeneration を skip して stage0 -> stage1 -> stage2 を回す
+# Rebuild stage0 -> stage1 -> stage2 using the downloaded flat source.
 bash scripts/generations.sh build
 ```
 
-`scripts/generations.sh` の `prepare_flat_cli_source` は
-`VIBE_PREBUILT_MODULE_SOURCE`(+ optional `..._SHA256`)が指定されると
-regeneration を skip して pull 済み flat source を使う。未指定時は
-`scripts/generate_bundle.sh` (seed compiler ベース) で regenerate する。
+`prepare_flat_cli_source` in `scripts/generations.sh` uses
+`VIBE_PREBUILT_MODULE_SOURCE` and its optional `..._SHA256` without regenerating
+the flat source. Without that override, it runs `scripts/generate_bundle.sh`.
 
-freshness 契約: prebuilt flat source は **対応する source commit / tag 専用**。
-HEAD 開発で compiler source を変えた場合は stale になるため、その場合は
-`scripts/generate_bundle.sh` で regenerate する。stale な artifact を使うと
-flat source が現在の source と食い違い、stage1/stage2 parity 失敗として
-顕在化する (fetch 側は manifest の `source_commit` を、`--adopt-seed` 時は
-`seed.json` の sha256 を突き合わせて誤用を弾く)。
+Prebuilt flat source belongs to the release's exact source tree. After editing
+compiler source, regenerate it rather than reusing a stale release artifact.
+`--adopt-seed` additionally verifies the downloaded seed against the locally
+pinned checksum.
 
 ### 生成物のマージコンフリクト
 
