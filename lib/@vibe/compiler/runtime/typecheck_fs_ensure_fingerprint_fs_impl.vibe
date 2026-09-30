@@ -110,7 +110,7 @@ import ./typecheck_fs_find_fn_anchor_off.vibe {
 }
 
 import ./typecheck_fs_finish_typecheck_fs_impl.vibe {
-  locate_type_error, locate_type_error_lines, plan_deps_of, plan_import_graph_fs, step_module_fs
+  locate_type_error, locate_type_error_lines, plan_deps_of, plan_import_graph_fs, step_module_fs_using_interfaces
 }
 
 import ./typecheck_fs_interface_decl_lines.vibe {
@@ -355,6 +355,7 @@ export fn ensure_fingerprint_fs_impl(rdb: RippleDb, env_cache: Array[(String, Ty
   // returns. Resetting here is what rules out a row surviving from an
   // earlier compile of a since-edited file, without any eviction policy that
   // could drop a row the ACTIVE compile still needs.
+  let interfaces = dependency_interface_set_new()
   module_typed_lowering_memo_reset()
   typing_dependency_env_reuse_valid_witness_memo_reset()
   checked_module_cache_reset()
@@ -431,7 +432,7 @@ export fn ensure_fingerprint_fs_impl(rdb: RippleDb, env_cache: Array[(String, Ty
         let cur_pc = pc
         let raised = empty_stack()
         let (fp, next_db, next_envc, next_dsc, next_pc) = handle {
-          step_module_fs(plan_leaf_fps, plan_edges, fps, cur_db, cur_envc, cur_dsc, cur_pc, m)
+          step_module_fs_using_interfaces(plan_leaf_fps, plan_edges, fps, cur_db, cur_envc, cur_dsc, cur_pc, m, interfaces)
         } with { Exception::Throw(msg) => {
           Array::push(raised, msg)
           (String::concat("diagnosed:", m), cur_db, cur_envc, cur_dsc, cur_pc)
@@ -468,6 +469,10 @@ export fn ensure_fingerprint_fs_impl(rdb: RippleDb, env_cache: Array[(String, Ty
           } else {
             incremental_typecheck_telemetry_add(2, 1)
             incremental_typecheck_telemetry_decide(m, "reused")
+          }
+          match typecheck_fs_lookup_env_cache(next_envc, m) {
+            Some(env) => dependency_interface_set_publish(interfaces, m, env),
+            None => ()
           }
           db = next_db
           envc = next_envc
@@ -1813,4 +1818,8 @@ export fn unstable_import_diagnostics(input_path: String, detected: String, loca
     None => ()
   }
   out
+}
+
+import ./typecheck_fs_bind_import_names_from_cache_collecting.vibe {
+  dependency_interface_set_new, dependency_interface_set_publish
 }

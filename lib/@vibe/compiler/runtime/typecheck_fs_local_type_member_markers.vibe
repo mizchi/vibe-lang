@@ -43,7 +43,6 @@ import @vibe/compiler/core {
   env_bind,
   env_bind_with_origin,
   env_flat_bindings,
-  env_lookup_binding_including_surface,
   env_lookup_flat,
   env_trait_def_names_into,
   namespace_private_renamer_for_path,
@@ -153,18 +152,8 @@ export fn valid_persistent_leaf_fingerprint(path: String, source: String) -> Opt
 // carries only TypeEnv v9, so its disk record marks lowering unavailable and a
 // later in-driver compile re-checks instead of silently losing offsets.
 
-// #2386: scratch rows for the import projection. Each row belongs to ONE
-// non-recursive function (bi_ = bind_import_names_from_cache_collecting,
-// pra_ = prepend_reexport_alias_declarations, ipt_ =
-// interface_public_trait_names), is refilled at that function's start and
-// read only inside it, so an edge allocates nothing for its trait-name list
-// and its uppercase binding slots. The three owners never run inside one
-// another: the import binder is driven by a loop over a module's import
-// statements, and the interface projection runs after a module is checked.
-export let bi_trait_names: Array[String] = []
-export let bi_upper_slots: Array[Int] = []
-export let pra_trait_names: Array[String] = []
-export let pra_upper_slots: Array[Int] = []
+// The publication pass owns this scratch row and refills it before use.
+// Import projection reads each dependency's immutable interface view instead.
 export let ipt_trait_names: Array[String] = []
 let module_typed_lowering_memo_paths: Array[String] = []
 
@@ -907,12 +896,50 @@ fn is_enum_variant_of(defs: Array[TypeDef], type_name: String, variant: String) 
 /// coincidence) but "unknown name: Json::string" for the other 8 of the
 /// 11 documented accessors. The bundle-merge lane resolves these by name
 /// against the merged unit and never had the gap; only this FS lane did.
+/// Accelerator rows are derived indexes. Provenance comes from the actual
+/// published chain, including surface-only entries and EnvFlat's real rows.
+fn selected_authoritative_binding_origin(env: TypeEnv, name: String) -> Option[BindingOrigin] {
+  let mut cur = env
+  let mut result = None
+  let mut done = false
+  while !done {
+    match cur {
+      EnvEmpty => done = true,
+      EnvBind(n, binding, rest) => if n == name {
+        result = Some(binding.origin)
+        done = true
+      } else {
+        cur = rest
+      },
+      EnvMutCell(_, _, rest) => cur = rest,
+      EnvTraitDef(_, _, _, _, rest, _, _) => cur = rest,
+      EnvTraitImpl(_, _, rest) => cur = rest,
+      EnvTraitImplGen(_, _, _, _, rest) => cur = rest,
+      EnvTypeDefs(_, _, rest) => cur = rest,
+      EnvCached(_, _, rest) => cur = rest,
+      EnvFlat(bindings) => {
+        let mut i = 0
+        while i < Array::length(bindings) && !done {
+          let (n, binding) = Array::get(bindings, i)
+          if n == name {
+            result = Some(binding.origin); done = true
+          } else {
+            i = i + 1
+          }
+        }
+        done = true
+      }
+    }
+  }
+  result
+}
+
 export fn selected_module_binding_origin(dep_env: TypeEnv, resolved: String, source_name: String, reexport_surface_only: Bool) -> BindingOrigin {
   // Preserve an ultimate module origin already carried by a facade binding.
   // Replacing it with `resolved` at every import hop loses semantic provenance
   // such as the canonical @vibe/builtin AsyncIter constructors.
-  let (path, original_name) = match env_lookup_binding_including_surface(dep_env, source_name) {
-    Some(binding) => match binding.origin {
+  let (path, original_name) = match selected_authoritative_binding_origin(dep_env, source_name) {
+    Some(origin) => match origin {
       BindingOriginModuleExport(origin_path, origin_name) => (origin_path, origin_name),
       BindingOriginReExportSurface(origin_path, origin_name) => (origin_path, origin_name),
       BindingOriginUnavailable => (resolved, source_name)

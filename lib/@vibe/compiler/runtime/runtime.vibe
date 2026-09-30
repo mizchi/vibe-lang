@@ -50,7 +50,6 @@ import @vibe/compiler/runtime/eval_loader {
 }
 
 import ./typecheck_fs.vibe {
-  build_trait_aware_import_envs,
   checked_module_public_env_for_path,
   checked_module_public_env_with_reexport_declarations,
   ensure_fingerprint_fs_impl,
@@ -325,11 +324,16 @@ export fn db_check_env(db: TypeDb, path: String) -> Option[TypeEnv] {
   }
 }
 
-/// The in-memory TypeDb accepts caller-provided modules. Delegate its import
-/// assembly to the trait-aware FS implementation rather than silently dropping
-/// trait declarations and impls from those module environments.
-fn build_import_envs(stmts: Array[Stmt], base_dir: String, cache: Array[(String, TypeEnv)]) -> (TypeEnv, TypeEnv) with Env + Exception {
-  build_trait_aware_import_envs(stmts, base_dir, cache)
+/// Both walks project the same authoritative interfaces. The snapshot belongs
+/// to this TypeDb check, so a later source update cannot reuse a previous view.
+fn build_import_envs(stmts: Array[Stmt], base_dir: String, cache: Array[(String, TypeEnv)], interfaces: DependencyInterfaceSet) -> (TypeEnv, TypeEnv) with Env + Exception {
+  let unresolved: Array[String] = []
+  let envs = build_import_envs_from_published_cache(stmts, base_dir, cache, interfaces, unresolved)
+  if Array::length(unresolved) == 0 {
+    envs
+  } else {
+    throw(Array::get(unresolved, 0))
+  }
 }
 
 fn upsert_env_cache(cache: Array[(String, TypeEnv)], path: String, env: TypeEnv) -> Array[(String, TypeEnv)] {
@@ -518,7 +522,7 @@ fn check_module_publishing_typed_lowering_offsets(path: String, fingerprint: Str
   checked.final_env
 }
 
-fn ensure_fingerprint(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, stack: Array[String]) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception {
+fn ensure_fingerprint(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, stack: Array[String], interfaces: DependencyInterfaceSet) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception {
   if contains_str(stack, path) {
     throw(String::concat("type_db: import cycle detected at ", path))
   } else {
@@ -542,7 +546,7 @@ fn ensure_fingerprint(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_so
             (dep_acc, dep_db, dep_env_cache, dep_source_cache2, dep_parse_count)
           } else {
             let dep_path = Array::get(deps, i)
-            let (dep_fp, next_db, next_env_cache, next_dep_source_cache2, next_parse_count) = ensure_fingerprint(dep_db, dep_env_cache, dep_source_cache2, dep_parse_count, dep_path, stack)
+            let (dep_fp, next_db, next_env_cache, next_dep_source_cache2, next_parse_count) = ensure_fingerprint(dep_db, dep_env_cache, dep_source_cache2, dep_parse_count, dep_path, stack, interfaces)
             Array::push(dep_acc, (dep_path, dep_fp))
             resolve_nested(i + 1, dep_acc, next_db, next_env_cache, next_dep_source_cache2, next_parse_count)
           }
@@ -570,9 +574,10 @@ fn ensure_fingerprint(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_so
           } else {
             let stmts = parse_program_with_path(path, source)
             let final_parse_count = parse_count_after_deps + 1
-            let (import_env, reexport_declarations) = build_import_envs(stmts, dir_of_path(path), env_cache_after_deps)
+            let (import_env, reexport_declarations) = build_import_envs(stmts, dir_of_path(path), env_cache_after_deps, interfaces)
             let full_checked_env = check_module_publishing_typed_lowering_offsets(path, fingerprint, stmts, import_env)
             let checked_env = checked_module_public_env_for_path(path, stmts, full_checked_env, reexport_declarations)
+            dependency_interface_set_publish(interfaces, path, checked_env)
             let next_env_cache = upsert_env_cache(env_cache_after_deps, path, checked_env)
             let next_db = ripple_record_eval(db_after_deps, path, fingerprint, deps)
             (fingerprint, next_db, next_env_cache, dep_source_cache_after_deps, final_parse_count)
@@ -580,9 +585,10 @@ fn ensure_fingerprint(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_so
           None => {
             let stmts = parse_program_with_path(path, source)
             let final_parse_count = parse_count_after_deps + 1
-            let (import_env, reexport_declarations) = build_import_envs(stmts, dir_of_path(path), env_cache_after_deps)
+            let (import_env, reexport_declarations) = build_import_envs(stmts, dir_of_path(path), env_cache_after_deps, interfaces)
             let full_checked_env = check_module_publishing_typed_lowering_offsets(path, fingerprint, stmts, import_env)
             let checked_env = checked_module_public_env_for_path(path, stmts, full_checked_env, reexport_declarations)
+            dependency_interface_set_publish(interfaces, path, checked_env)
             let next_env_cache = upsert_env_cache(env_cache_after_deps, path, checked_env)
             let next_db = ripple_record_eval(db_after_deps, path, fingerprint, deps)
             (fingerprint, next_db, next_env_cache, dep_source_cache_after_deps, final_parse_count)
@@ -596,7 +602,7 @@ fn ensure_fingerprint(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_so
 export fn db_typecheck(db: TypeDb, path: String) -> TypeDb with Env + Exception {
   match unwrap_db(db) {
     TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count) => {
-      let (_, next_rdb, next_env_cache, next_dep_source_cache, next_parse_count) = ensure_fingerprint(rdb, env_cache, dep_source_cache, parse_count, path, empty_strings())
+      let (_, next_rdb, next_env_cache, next_dep_source_cache, next_parse_count) = ensure_fingerprint(rdb, env_cache, dep_source_cache, parse_count, path, empty_strings(), dependency_interface_set_new())
       wrap_db(TypeDbState(next_rdb, next_env_cache, next_dep_source_cache, merged_cache, module_source_cache, artifact_cache, next_parse_count, merge_count, module_source_count, codegen_count))
     }
   }
@@ -1030,4 +1036,8 @@ export fn db_store_artifact(db: TypeDb, _path: String, kind: String, entry_name:
     TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, artifact_cache, parse_count, merge_count, module_source_count, codegen_count) =>
     wrap_db(TypeDbState(rdb, env_cache, dep_source_cache, merged_cache, module_source_cache, upsert_source_cache(artifact_cache, artifact_cache_key(kind, entry_name), fingerprint, bytes_to_hex(bytes)), parse_count, merge_count, module_source_count, codegen_count + 1))
   }
+}
+
+import ./typecheck_fs_bind_import_names_from_cache_collecting.vibe {
+  DependencyInterfaceSet, build_import_envs_from_published_cache, dependency_interface_set_new, dependency_interface_set_publish
 }

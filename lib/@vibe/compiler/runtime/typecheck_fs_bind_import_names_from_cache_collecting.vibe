@@ -103,13 +103,9 @@ import ./typecheck_fs_find_fn_anchor_off.vibe {
 }
 
 import ./typecheck_fs_local_type_member_markers.vibe {
-  bi_trait_names,
-  bi_upper_slots,
   bind_enum_constructor_companions,
   dependency_trait_projection_mappings,
   empty_stack,
-  pra_trait_names,
-  pra_upper_slots,
   resolve_cached_import_path,
   selected_module_binding_origin,
   starts_with_upper,
@@ -127,9 +123,140 @@ import ./typecheck_fs_local_type_member_markers.vibe {
   uppercase_binding_slots_into
 }
 
-fn dependency_typedef_projection(dep_env: TypeEnv, names: Array[ImportItem]) -> Array[TypeDef] {
-  let dep_defs = env_type_defs(dep_env)
-  let selectable = env_selectable_type_defs(dep_env)
+/// A view is derived from this exact published chain, never from EnvCached
+/// accelerator rows. All arrays are private and read-only after construction.
+/// Selection, aliasing, collisions and scratch remain importer-owned.
+struct DependencyInterfaceView {
+  env: TypeEnv;
+  bindings: Array[(String, Type)];
+  defs: Array[TypeDef];
+  selectable: Array[String];
+  traits: Array[String];
+  upper_slots: Array[Int];
+  declared_names: Array[String];
+  markers: Array[(String, Type)]
+}
+
+/// Owned by one compile or an explicitly published in-memory snapshot.
+/// Replacing a publication replaces its whole view, including empty facts.
+/// There is no process-global path memo and no caller-visible mutable array.
+struct DependencyInterfaceProduct {
+  env: TypeEnv;
+  mut view: Option[DependencyInterfaceView]
+}
+
+export struct DependencyInterfaceSet {
+  rows: Array[(String, DependencyInterfaceProduct)]
+}
+
+export fn dependency_interface_set_new() -> DependencyInterfaceSet {
+  DependencyInterfaceSet::{ rows: [] }
+}
+
+fn dependency_interface_view(env: TypeEnv) -> DependencyInterfaceView {
+  let bindings = env_flat_bindings(env)
+  let defs = env_type_defs(env)
+  let traits: Array[String] = []
+  let upper_slots: Array[Int] = []
+  let declared_names: Array[String] = []
+  env_trait_def_names_into(env, traits)
+  uppercase_binding_slots_into(bindings, upper_slots)
+  for def in defs {
+    match def {
+      TDEnum(name, _, _) => Array::push(declared_names, name),
+      TDStruct(name, _, _, _) => Array::push(declared_names, name),
+      TDAlias(name, _, _) => Array::push(declared_names, name),
+      _ => ()
+    }
+  }
+  DependencyInterfaceView::{
+    env,
+    bindings,
+    defs,
+    selectable: env_selectable_type_defs(env),
+    traits,
+    upper_slots,
+    declared_names,
+    markers: type_reference_markers(env)
+  }
+}
+
+fn dependency_interface_slot(interfaces: DependencyInterfaceSet, path: String) -> Int {
+  let mut i = 0
+  let mut found = -1
+  while i < Array::length(interfaces.rows) && found < 0 {
+    if Array::get(interfaces.rows, i).0 == path {
+      found = i
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// Call only when publishing a new authoritative interface. Re-publication
+/// invalidates all derived facts, even at the same path and spelling.
+export fn dependency_interface_set_publish(interfaces: DependencyInterfaceSet, path: String, env: TypeEnv) -> Unit {
+  // A warm walk that reuses every check does not need any projection arrays.
+  // Retain the actual product now; derive its immutable facts on first use.
+  let row = (path, DependencyInterfaceProduct::{ env, view: None })
+  let slot = dependency_interface_slot(interfaces, path)
+  if slot < 0 {
+    Array::push(interfaces.rows, row)
+  } else {
+    Array::set(interfaces.rows, slot, row)
+  }
+}
+
+/// A standalone worker owns a fresh set. The serial walk already published
+/// stepped dependencies and supplies only any cached frontier not stepped in
+/// this walk. Changed stepped products were explicitly replaced on publish.
+export fn dependency_interface_set_supply_missing(interfaces: DependencyInterfaceSet, envs: Array[(String, TypeEnv)]) -> Unit {
+  for row in envs {
+    let (path, env) = row
+    if dependency_interface_slot(interfaces, path) < 0 {
+      dependency_interface_set_publish(interfaces, path, env)
+    } else {
+      ()
+    }
+  }
+  ()
+}
+
+fn dependency_interface_lookup(interfaces: DependencyInterfaceSet, path: String) -> Option[DependencyInterfaceView] {
+  let slot = dependency_interface_slot(interfaces, path)
+  if slot < 0 {
+    None
+  } else {
+    let product = Array::get(interfaces.rows, slot).1
+    match product.view {
+      Some(view) => Some(view),
+      None => {
+        let view = dependency_interface_view(product.env)
+        product.view = Some(view)
+        Some(view)
+      }
+    }
+  }
+}
+
+/// The path resolver sees precisely the job's dependency paths, in their
+/// original order. Its environment and all projection facts come from the
+/// same published view, so no independent accelerator can replace authority.
+export fn build_import_envs_from_interfaces(stmts: Array[Stmt], base_dir: String, interfaces: DependencyInterfaceSet, dependency_paths: Array[String], unresolved: Array[String]) -> (TypeEnv, TypeEnv) with Env {
+  let cache: Array[(String, TypeEnv)] = []
+  for path in dependency_paths {
+    match dependency_interface_lookup(interfaces, path) {
+      Some(view) => Array::push(cache, (path, view.env)),
+      None => ()
+    }
+  }
+  build_import_envs_using_interfaces(stmts, base_dir, cache, interfaces, unresolved)
+}
+
+fn dependency_typedef_projection(view: DependencyInterfaceView, names: Array[ImportItem]) -> Array[TypeDef] {
+  let dep_defs = view.defs
+  let selectable = view.selectable
   let selected = array_empty()
   let mut i = 0
   while i < Array::length(names) {
@@ -187,15 +314,15 @@ fn dependency_typedef_projection(dep_env: TypeEnv, names: Array[ImportItem]) -> 
   selected
 }
 
-fn prepend_dependency_type_defs(dep_env: TypeEnv, names: Array[ImportItem], tail: TypeEnv) -> TypeEnv {
-  let defs = dependency_typedef_projection(dep_env, names)
+fn prepend_dependency_type_defs(view: DependencyInterfaceView, names: Array[ImportItem], tail: TypeEnv) -> TypeEnv {
+  let defs = dependency_typedef_projection(view, names)
   if Array::length(defs) == 0 {
     tail
   } else {
     // Only the explicitly requested names are selectable; recursive closure
     // entries merely make their signatures intelligible to this checker.
     let selectable = array_empty()
-    let published = env_selectable_type_defs(dep_env)
+    let published = view.selectable
     let mut i = 0
     while i < Array::length(names) {
       let item = Array::get(names, i)
@@ -211,7 +338,7 @@ fn prepend_dependency_type_defs(dep_env: TypeEnv, names: Array[ImportItem], tail
       }
       i = i + 1
     }
-    env_preserve_type_definition_origins(EnvTypeDefs(defs, selectable, tail), dep_env)
+    env_preserve_type_definition_origins(EnvTypeDefs(defs, selectable, tail), view.env)
   }
 }
 
@@ -476,21 +603,6 @@ fn foreign_type_name_collisions(imported: String, raw_path: String, resolved: St
       report_foreign_type_name(name, imported, raw_path, local_types, unresolved, reported)
     }
   }
-}
-
-/// The dependency's declared nominal type names (enums, structs, aliases),
-/// published or kept in the closure that describes a published signature.
-fn dependency_declared_type_names(dep_env: TypeEnv) -> Array[String] {
-  let out: Array[String] = []
-  for def in env_type_defs(dep_env) {
-    match def {
-      TDEnum(n, _, _) => Array::push(out, n),
-      TDStruct(n, _, _, _) => Array::push(out, n),
-      TDAlias(n, _, _) => Array::push(out, n),
-      _ => ()
-    }
-  }
-  out
 }
 
 /// Every type name `ty` refers to as a nominal type. `CtEnum` / `CtStruct` and
@@ -1621,7 +1733,7 @@ fn note_imported_type_identity(name: String, def: Option[TypeDef], ty: Type, wha
 /// checked against `A`'s declaration). A projected declaration that names a
 /// type the dependency holds only as a reference marker reaches it through
 /// the closure walk.
-fn note_imported_declaration_identities(dep_env: TypeEnv, raw_path: String, names: Array[ImportItem], defs: Array[TypeDef], markers: Array[(String, Type)], walked: Array[String], keep: Array[String], carried: Array[(String, Type)], seen: Array[(String, Option[TypeDef], Type, String)], unresolved: Array[String]) -> Unit {
+fn note_imported_declaration_identities(view: DependencyInterfaceView, raw_path: String, names: Array[ImportItem], defs: Array[TypeDef], markers: Array[(String, Type)], walked: Array[String], keep: Array[String], carried: Array[(String, Type)], seen: Array[(String, Option[TypeDef], Type, String)], unresolved: Array[String]) -> Unit {
   let selected = array_empty()
   let aliases = array_empty()
   let mut i = 0
@@ -1638,7 +1750,7 @@ fn note_imported_declaration_identities(dep_env: TypeEnv, raw_path: String, name
     }
     i = i + 1
   }
-  let projected = dependency_typedef_projection(dep_env, names)
+  let projected = dependency_typedef_projection(view, names)
   let selected_roots: Array[String] = []
   let closure_roots: Array[String] = []
   let mut j = 0
@@ -1678,23 +1790,19 @@ fn note_imported_declaration_identities(dep_env: TypeEnv, raw_path: String, name
   }
 }
 
-fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_path: String, names: Array[ImportItem], declaration_names: Array[ImportItem], cache: Array[(String, TypeEnv)], unresolved: Array[String], trait_claims: Array[(String, String, Bool, String)], reexport_surface_only: Bool, local_types: Array[String], seen_types: Array[(String, Option[TypeDef], Type, String)]) -> TypeEnv {
-  let cached = typecheck_fs_lookup_env_cache(cache, resolved)
-  let dep_env = match cached {
-    Some(e) => e,
-    None => EnvEmpty
+fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_path: String, names: Array[ImportItem], declaration_names: Array[ImportItem], interfaces: DependencyInterfaceSet, unresolved: Array[String], trait_claims: Array[(String, String, Bool, String)], reexport_surface_only: Bool, local_types: Array[String], seen_types: Array[(String, Option[TypeDef], Type, String)]) -> TypeEnv {
+  let cached = dependency_interface_lookup(interfaces, resolved)
+  let view = match cached {
+    Some(v) => v,
+    None => dependency_interface_view(EnvEmpty)
   }
-  let dep_bindings = env_flat_bindings(dep_env)
+  let dep_env = view.env
+  let dep_bindings = view.bindings
   builtin_shadow_diagnostics_into(dep_bindings, resolved, unresolved)
-  env_trait_def_names_into(dep_env, bi_trait_names)
-  uppercase_binding_slots_into(dep_bindings, bi_upper_slots)
-  let dep_selectable_type_defs = env_selectable_type_defs(dep_env)
-  // #3026: computed once per dependency; one report per colliding name.
-  let dep_types = if Array::length(local_types) > 0 {
-    dependency_declared_type_names(dep_env)
-  } else {
-    array_empty()
-  }
+  let dep_traits = view.traits
+  let dep_upper_slots = view.upper_slots
+  let dep_selectable_type_defs = view.selectable
+  let dep_types = view.declared_names
   let collision_reported: Array[String] = []
   // #3036: this dependency's definitions, read once, and the state of the
   // closure walk that feeds the cross-import identity table
@@ -1704,8 +1812,8 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
   // exempting it let an external `Err` shadow the contract's own. Its
   // deferred (opaque) names are declared by the implementation and have no
   // definition in the stub, so the closure walk never reaches them.
-  let id_defs = env_type_defs(dep_env)
-  let id_markers = type_reference_markers(dep_env)
+  let id_defs = view.defs
+  let id_markers = view.markers
   let id_walked: Array[String] = []
   // The declarations this import projects as nodes; every other closure
   // member is carried on as a reference marker.
@@ -1718,7 +1826,7 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
   let mut kii = 0
   while kii < Array::length(names) {
     let item = Array::get(names, kii)
-    if contains_str(dep_selectable_type_defs, item.name) || trait_in_list(bi_trait_names, item.name) || env_lookup_flat(dep_bindings, item.name) != None {
+    if contains_str(dep_selectable_type_defs, item.name) || trait_in_list(dep_traits, item.name) || env_lookup_flat(dep_bindings, item.name) != None {
       Array::push(kind_items, item)
     } else {
       ()
@@ -1733,7 +1841,7 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
   }
   // Explicit trait aliases must be known before values are bound: a selected
   // value can mention the trait before its `trait X as Local` row appears.
-  let trait_mappings = dependency_trait_projection_mappings(dep_env, dep_bindings, bi_trait_names, bi_upper_slots, names, unresolved)
+  let trait_mappings = dependency_trait_projection_mappings(dep_env, dep_bindings, dep_traits, dep_upper_slots, names, unresolved)
   trait_projection_claim_mappings(trait_claims, resolved, dep_env, trait_mappings, unresolved)
   // Whether the dependency was CHECKED, not whether it happens to bind any
   // values. A module that exports only types or only traits is checked and
@@ -1782,7 +1890,7 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
           // Declaration authority travels explicitly in EnvTypeDefs, so
           // uppercase is never evidence that an import is valid. Effects and
           // effectsets use the same selected declaration channel.
-          if dep_known && !contains_str(dep_selectable_type_defs, name) && !trait_in_list(bi_trait_names, name) {
+          if dep_known && !contains_str(dep_selectable_type_defs, name) && !trait_in_list(dep_traits, name) {
             Array::push(unresolved, String::concat(String::concat(String::concat("imported name '", name), "' is not exported by '"), String::concat(raw_path, "'")))
           } else {
             ()
@@ -1792,7 +1900,7 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
       }
       let with_name = match imported_ty {
         Some(_) => env_bind_with_origin(nacc, bound_name, ty, binding_origin),
-        None => if contains_str(dep_selectable_type_defs, name) || trait_in_list(bi_trait_names, name) {
+        None => if contains_str(dep_selectable_type_defs, name) || trait_in_list(dep_traits, name) {
           // Declaration aliases travel in the separate publication projection
           // below. Retain the declaration's origin on its existing unknown
           // value-space marker so semantic checks can distinguish a projected
@@ -1818,11 +1926,11 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
       foreign_type_declaration_collisions(item, raw_path, resolved, dep_env, dep_types, local_types, unresolved, collision_reported)
     }
   }
-  note_imported_declaration_identities(dep_env, raw_path, declaration_names, id_defs, id_markers, id_walked, id_keep, carried_references, seen_types, unresolved)
-  let declaration_trait_mappings = dependency_trait_projection_mappings(dep_env, dep_bindings, bi_trait_names, bi_upper_slots, declaration_names, array_empty())
+  note_imported_declaration_identities(view, raw_path, declaration_names, id_defs, id_markers, id_walked, id_keep, carried_references, seen_types, unresolved)
+  let declaration_trait_mappings = dependency_trait_projection_mappings(dep_env, dep_bindings, dep_traits, dep_upper_slots, declaration_names, array_empty())
   foreign_trait_impl_collisions(dep_env, declaration_trait_mappings, raw_path, resolved, dep_types, local_types, unresolved, collision_reported)
   note_trait_identities(dep_env, declaration_trait_mappings, raw_path, id_defs, id_markers, id_walked, id_keep, carried_references, seen_types, unresolved)
-  let bound = bind_names(0, prepend_dependency_trait_nodes(dep_env, declaration_trait_mappings, prepend_dependency_type_defs(dep_env, declaration_names, acc)))
+  let bound = bind_names(0, prepend_dependency_trait_nodes(dep_env, declaration_trait_mappings, prepend_dependency_type_defs(view, declaration_names, acc)))
   let mut with_references = bound
   let mut ci = 0
   while ci < Array::length(carried_references) {
@@ -1857,25 +1965,26 @@ fn reexport_items_with_alias(items: Array[ImportItem], want_alias: Bool) -> Arra
 /// re-exports of different `X`s would hand an importer of `Left` and `Right`
 /// one `X` for both. They are checked here, in the re-exporting module, like
 /// any other pair of imports.
-fn note_reexport_surface_identities(resolved: String, raw_path: String, names: Array[ImportItem], cache: Array[(String, TypeEnv)], seen: Array[(String, Option[TypeDef], Type, String)], unresolved: Array[String]) -> Array[(String, Type)] {
+fn note_reexport_surface_identities(resolved: String, raw_path: String, names: Array[ImportItem], interfaces: DependencyInterfaceSet, seen: Array[(String, Option[TypeDef], Type, String)], unresolved: Array[String]) -> Array[(String, Type)] {
   // The types the aliased declarations name without publishing, carried on
   // as reference markers by `prepend_reexport_alias_declarations`.
   let carried: Array[(String, Type)] = []
   // A generated type stub is tracked too, as on the ordinary import path.
   if Array::length(names) > 0 {
-    match typecheck_fs_lookup_env_cache(cache, resolved) {
-      Some(dep_env) => {
-        let defs = env_type_defs(dep_env)
-        let markers = type_reference_markers(dep_env)
+    match dependency_interface_lookup(interfaces, resolved) {
+      Some(view) => {
+        let dep_env = view.env
+        let defs = view.defs
+        let markers = view.markers
         let walked: Array[String] = []
         let keep: Array[String] = []
-        note_imported_declaration_identities(dep_env, raw_path, names, defs, markers, walked, keep, carried, seen, unresolved)
+        note_imported_declaration_identities(view, raw_path, names, defs, markers, walked, keep, carried, seen, unresolved)
         // An aliased TRAIT is walked like an imported one (Codex on #3076):
         // its method signatures and retained implementations name types too.
-        let dep_bindings = env_flat_bindings(dep_env)
-        env_trait_def_names_into(dep_env, pra_trait_names)
-        uppercase_binding_slots_into(dep_bindings, pra_upper_slots)
-        let mappings = dependency_trait_projection_mappings(dep_env, dep_bindings, pra_trait_names, pra_upper_slots, names, array_empty())
+        let dep_bindings = view.bindings
+        let dep_traits = view.traits
+        let dep_upper_slots = view.upper_slots
+        let mappings = dependency_trait_projection_mappings(dep_env, dep_bindings, dep_traits, dep_upper_slots, names, array_empty())
         note_trait_identities(dep_env, mappings, raw_path, defs, markers, walked, keep, carried, seen, unresolved)
       },
       None => ()
@@ -1886,18 +1995,19 @@ fn note_reexport_surface_identities(resolved: String, raw_path: String, names: A
   carried
 }
 
-fn prepend_reexport_alias_declarations(acc: TypeEnv, resolved: String, names: Array[ImportItem], cache: Array[(String, TypeEnv)], carried: Array[(String, Type)]) -> TypeEnv {
-  let cached = typecheck_fs_lookup_env_cache(cache, resolved)
-  let dep_env = match cached {
-    Some(env) => env,
-    None => EnvEmpty
+fn prepend_reexport_alias_declarations(acc: TypeEnv, resolved: String, names: Array[ImportItem], interfaces: DependencyInterfaceSet, carried: Array[(String, Type)]) -> TypeEnv {
+  let cached = dependency_interface_lookup(interfaces, resolved)
+  let view = match cached {
+    Some(v) => v,
+    None => dependency_interface_view(EnvEmpty)
   }
-  let dep_bindings = env_flat_bindings(dep_env)
-  env_trait_def_names_into(dep_env, pra_trait_names)
-  uppercase_binding_slots_into(dep_bindings, pra_upper_slots)
+  let dep_env = view.env
+  let dep_bindings = view.bindings
+  let dep_traits = view.traits
+  let dep_upper_slots = view.upper_slots
   let ignored = array_empty()
-  let mappings = dependency_trait_projection_mappings(dep_env, dep_bindings, pra_trait_names, pra_upper_slots, names, ignored)
-  let mut out = prepend_dependency_trait_nodes(dep_env, mappings, prepend_dependency_type_defs(dep_env, names, acc))
+  let mappings = dependency_trait_projection_mappings(dep_env, dep_bindings, dep_traits, dep_upper_slots, names, ignored)
+  let mut out = prepend_dependency_trait_nodes(dep_env, mappings, prepend_dependency_type_defs(view, names, acc))
   // #3036: the published surface names each carried type's declaration, so
   // an importer of the alias checks it against its other imports.
   let mut ci = 0
@@ -1987,6 +2097,37 @@ fn build_import_env(stmts: Array[Stmt], base_dir: String, cache: Array[(String, 
 /// a matching tag there lets an impl target silently re-resolve while the
 /// witness-set fingerprint stays put.
 export fn build_import_envs_collecting(stmts: Array[Stmt], base_dir: String, cache: Array[(String, TypeEnv)], unresolved: Array[String]) -> (TypeEnv, TypeEnv) with Env {
+  build_import_envs_from_published_cache(stmts, base_dir, cache, dependency_interface_set_new(), unresolved)
+}
+
+/// Use a compile-owned publication set with the actual caller's ordered cache.
+/// Only dependencies referenced by this importer need a derived view.
+export fn build_import_envs_from_published_cache(stmts: Array[Stmt], base_dir: String, cache: Array[(String, TypeEnv)], interfaces: DependencyInterfaceSet, unresolved: Array[String]) -> (TypeEnv, TypeEnv) with Env {
+  for stmt in stmts {
+    let imported_path = match stmt {
+      SImport(path, _) => Some(path),
+      SReExport(path, _) => Some(path),
+      _ => None
+    }
+    match imported_path {
+      Some(raw_path) => {
+        let resolved = resolve_cached_import_path(base_dir, raw_path, cache)
+        if dependency_interface_slot(interfaces, resolved) < 0 {
+          match typecheck_fs_lookup_env_cache(cache, resolved) {
+            Some(env) => dependency_interface_set_publish(interfaces, resolved, env),
+            None => ()
+          }
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+  }
+  build_import_envs_using_interfaces(stmts, base_dir, cache, interfaces, unresolved)
+}
+
+fn build_import_envs_using_interfaces(stmts: Array[Stmt], base_dir: String, cache: Array[(String, TypeEnv)], interfaces: DependencyInterfaceSet, unresolved: Array[String]) -> (TypeEnv, TypeEnv) with Env {
   let trait_claims = array_empty()
   let local_types = local_declared_type_names(stmts)
   // #3036: the type names this module's imports bring in, with the
@@ -2002,14 +2143,14 @@ export fn build_import_envs_collecting(stmts: Array[Stmt], base_dir: String, cac
           (local_acc, surface_acc)
         } else {
           let resolved = resolve_cached_import_path(base_dir, raw_path, cache)
-          (bind_import_names_from_cache_collecting(local_acc, resolved, raw_path, names, names, cache, unresolved, trait_claims, false, local_types, seen_types), surface_acc)
+          (bind_import_names_from_cache_collecting(local_acc, resolved, raw_path, names, names, interfaces, unresolved, trait_claims, false, local_types, seen_types), surface_acc)
         },
         SReExport(raw_path, names) => {
           let resolved = resolve_cached_import_path(base_dir, raw_path, cache)
           let local_declarations = reexport_items_with_alias(names, false)
           let surface_declarations = reexport_items_with_alias(names, true)
-          let carried = note_reexport_surface_identities(resolved, raw_path, surface_declarations, cache, seen_types, unresolved)
-          (bind_import_names_from_cache_collecting(local_acc, resolved, raw_path, names, local_declarations, cache, unresolved, trait_claims, true, local_types, seen_types), prepend_reexport_alias_declarations(surface_acc, resolved, surface_declarations, cache, carried))
+          let carried = note_reexport_surface_identities(resolved, raw_path, surface_declarations, interfaces, seen_types, unresolved)
+          (bind_import_names_from_cache_collecting(local_acc, resolved, raw_path, names, local_declarations, interfaces, unresolved, trait_claims, true, local_types, seen_types), prepend_reexport_alias_declarations(surface_acc, resolved, surface_declarations, interfaces, carried))
         },
         _ => (local_acc, surface_acc)
       }
