@@ -1251,7 +1251,9 @@ fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], 
       }
       let next_db = ripple_record_eval(rdb, path, fingerprint, deps)
       incremental_typecheck_telemetry_add(7, 1)
-      (fingerprint, next_db, env_cache, dep_source_cache, parse_count)
+      // A disk hit may replace an older resident product at the same path.
+      let next_env_cache = typecheck_fs_upsert_env_cache(env_cache, path, cached_env)
+      (fingerprint, next_db, next_env_cache, dep_source_cache, parse_count)
     },
     None => {
       // Keep the accumulated cache as coordinator state, but expose exactly the
@@ -1396,17 +1398,10 @@ fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], 
 /// paying for them a second time, so this is a REPLACEMENT for work
 /// the walk used to do inline, not an extra pass.
 ///
-/// The three short-circuits are the same three the walk applies, in the same
-/// order -- no source in the db (the `missing:` arm), a reusable cached
-/// fingerprint, a persistent leaf fingerprint -- and evaluating them here
-/// gives the same answers the walk gets: nothing mutates module M's db or
-/// dep-cache entries before M's own first visit, and the walk resolves each
-/// module's deps exactly once too (a module reached a second time returns on
-/// its now-cached fingerprint). The queue dedupes by path for the same reason.
-///
-/// A module left OUT of `edges` -- missing, or short-circuited -- is a leaf
-/// to plan_module_order (mo_deps_of), which is what makes those arms terminal
-/// for scheduling as well as for the walk.
+/// An unchanged module still contributes its dependency edges: its own source
+/// says nothing about whether one of those dependencies changed. Only a missing
+/// source or a validated dependency-free leaf can terminate planning early.
+/// Source/header caches avoid reparsing unchanged dependency lists.
 export fn plan_import_graph_fs(rdb: RippleDb, dep_source_cache: Array[(String, String)], parse_count: Int, root: String) -> (Array[(String, String)], Array[(String, Array[String])], Int, Array[(String, String)]) with Env + Exception + Fs {
   let leaf_fps = typecheck_fs_empty_dep_fps()
   let plan_diags: Array[(String, String)] = []
@@ -1465,73 +1460,56 @@ export fn plan_import_graph_fs(rdb: RippleDb, dep_source_cache: Array[(String, S
         // site is simply absent at the other. Both were, until Codex found
         // them on #2771.
         let _ = ast_cache_prefetch_fs(path, source)
-        let reusable = if checked_module_cache_mode() == "off" && dep_source_cache_is_current(dep_source_cache, path, source) {
-          match ripple_get_fingerprint(rdb, path) {
-            // #2391: reuse needs BOTH cache halves -- the TypeEnv and the
-            // module's checked lowering table -- or the walk must re-check.
-            Some(fingerprint) => match valid_persistent_type_env(path, fingerprint) {
-              Some(_) => ensure_module_typed_lowering_offsets(path, fingerprint),
-              None => false
-            },
-            None => false
-          }
-        } else {
-          false
-        }
-        if reusable {
-          ()
-        } else {
-          match valid_persistent_leaf_fingerprint(path, source) {
-            Some(leaf_fingerprint) => Array::push(leaf_fps, (path, leaf_fingerprint)),
-            None => {
-              // Codex review P2: resolving a module's imports PARSES it, so a
-              // syntax error raises here -- during planning, before the walk's
-              // per-step handler exists. Left alone that made parse errors
-              // fail-fast even while collecting: two malformed leaves reported
-              // one diagnostic, because planning aborted on the first.
-              //
-              // Collected the same way a step's diagnostic is, and with the
-              // same two exclusions (fail-fast mode, and `type_db:` internal
-              // invariants). A module that fails to plan gets no edge entry and
-              // no dependencies explored -- it is a leaf to the schedule, and
-              // the caller seeds it into `failed` so its importers are blocked
-              // rather than cascading.
-              let plan_raised = empty_stack()
-              let (deps_raw, _, next_pc) = handle {
-                resolve_deps_for_source_fs(rdb, scratch_cache, path, source, pc)
-              } with { Exception::Throw(msg) => {
-                Array::push(plan_raised, msg)
-                (empty_stack(), scratch_cache, pc)
-              } }
-              if Array::length(plan_raised) > 0 {
-                let msg = Array::get(plan_raised, 0)
-                if !collect_module_diagnostics() || String::starts_with(msg, "type_db: ") {
-                  throw(msg)
-                } else {
-                  Array::push(plan_diags, (path, msg))
-                }
+        match valid_persistent_leaf_fingerprint(path, source) {
+          Some(leaf_fingerprint) => Array::push(leaf_fps, (path, leaf_fingerprint)),
+          None => {
+            // Codex review P2: resolving a module's imports PARSES it, so a
+            // syntax error raises here -- during planning, before the walk's
+            // per-step handler exists. Left alone that made parse errors
+            // fail-fast even while collecting: two malformed leaves reported
+            // one diagnostic, because planning aborted on the first.
+            //
+            // Collected the same way a step's diagnostic is, and with the
+            // same two exclusions (fail-fast mode, and `type_db:` internal
+            // invariants). A module that fails to plan gets no edge entry and
+            // no dependencies explored -- it is a leaf to the schedule, and
+            // the caller seeds it into `failed` so its importers are blocked
+            // rather than cascading.
+            let plan_raised = empty_stack()
+            let (deps_raw, _, next_pc) = handle {
+              resolve_deps_for_source_fs(rdb, scratch_cache, path, source, pc)
+            } with { Exception::Throw(msg) => {
+              Array::push(plan_raised, msg)
+              (empty_stack(), scratch_cache, pc)
+            } }
+            if Array::length(plan_raised) > 0 {
+              let msg = Array::get(plan_raised, 0)
+              if !collect_module_diagnostics() || String::starts_with(msg, "type_db: ") {
+                throw(msg)
               } else {
-                ()
+                Array::push(plan_diags, (path, msg))
               }
-              let deps = copy_string_array(deps_raw)
-              pc = next_pc
-              if Array::length(plan_raised) > 0 {
+            } else {
+              ()
+            }
+            let deps = copy_string_array(deps_raw)
+            pc = next_pc
+            if Array::length(plan_raised) > 0 {
+              ()
+            } else {
+              Array::push(edges, (path, deps))
+            }
+            let dlen = Array::length(deps)
+            let mut i = 0
+            while i < dlen {
+              let dep = Array::get(deps, i)
+              if contains_str(seen, dep) {
                 ()
               } else {
-                Array::push(edges, (path, deps))
+                Array::push(seen, dep)
+                Array::push(queue, dep)
               }
-              let dlen = Array::length(deps)
-              let mut i = 0
-              while i < dlen {
-                let dep = Array::get(deps, i)
-                if contains_str(seen, dep) {
-                  ()
-                } else {
-                  Array::push(seen, dep)
-                  Array::push(queue, dep)
-                }
-                i = i + 1
-              }
+              i = i + 1
             }
           }
         }
@@ -1575,7 +1553,8 @@ fn commit_leaf_fingerprint_fs(rdb: RippleDb, env_cache: Array[(String, TypeEnv)]
       let next_dep_source_cache = typecheck_fs_upsert_string_pair(dep_source_cache, path, source)
       let next_db = ripple_record_eval(rdb, path, leaf_fingerprint, empty_stack())
       incremental_typecheck_telemetry_add(7, 1)
-      (leaf_fingerprint, next_db, env_cache, next_dep_source_cache, parse_count)
+      let next_env_cache = typecheck_fs_upsert_env_cache(env_cache, path, cached_env)
+      (leaf_fingerprint, next_db, next_env_cache, next_dep_source_cache, parse_count)
     } else {
       finish_typecheck_fs_impl(rdb, env_cache, dep_source_cache, parse_count, path, source, empty_stack(), typecheck_fs_empty_dep_fps(), typecheck_fs_build_fingerprint(path, source, typecheck_fs_empty_dep_fps(), typing_semantics_seed()))
     },
@@ -1626,26 +1605,9 @@ fn commit_with_deps_fs(fps: Array[(String, String)], rdb: RippleDb, env_cache: A
     finish_typecheck_fs_impl(rdb, env_cache, dep_source_cache, parse_count, path, source, deps, dep_fps, fingerprint)
   }
 }
-/// True when `path`'s entry in the ripple db can be reused as-is: the source
-/// the dep cache was built from still matches the source in the db. The three
-/// arms of the old nested match collapsed to this one predicate because two
-/// of them (source changed / never seen) did exactly the same thing.
-fn dep_source_cache_is_current(dep_source_cache: Array[(String, String)], path: String, source: String) -> Bool {
-  match typecheck_fs_lookup_string_pair(dep_source_cache, path) {
-    Some(cached_source) => cached_source == source,
-    None => false
-  }
-}
-/// One module of the schedule. The same three short-circuits the plan applied
-/// (no source in the db, a reusable cached fingerprint, a persistent leaf
-/// fingerprint), in the same order, then the dep fold.
-///
-/// This is where the walk stopped being a recursion. It reads state and hands
-/// back the next state; it never reaches into another module's step. That is
-/// the property step 4(D) needs: the old DFS threaded four state values
-/// through dependencies IN SEQUENCE (dep[1] received dep[0]'s output
-/// RippleDb), so siblings could not be dispatched independently no matter
-/// what the host could do.
+/// Step one scheduled module after accepting all dependency fingerprints.
+/// A validated leaf needs no dependency fold; every other module folds the
+/// current dependency inputs before accepting a resident or disk product.
 export fn step_module_fs(plan_leaf_fps: Array[(String, String)], plan_edges: Array[(String, Array[String])], fps: Array[(String, String)], rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Env + Exception + Fs {
   let (rdb_loaded, loaded_source) = load_planned_module_source(rdb, path)
   match loaded_source {
@@ -1662,60 +1624,21 @@ export fn step_module_fs(plan_leaf_fps: Array[(String, String)], plan_edges: Arr
         }
         return commit_with_deps_fs(fps, rdb_loaded, env_cache, dep_source_cache, parse_count, path, source, deps)
       }
-      let reusable = if dep_source_cache_is_current(dep_source_cache, path, source) {
-        match ripple_get_fingerprint(rdb_loaded, path) {
-          // #2391: both cache halves, or no reuse (see ensure_module_typed_lowering_offsets).
-          Some(fingerprint) => match valid_persistent_type_env(path, fingerprint) {
-            Some(_) => if ensure_module_typed_lowering_offsets(path, fingerprint) {
-              Some(fingerprint)
-            } else {
-              None
-            },
-            None => None
-          },
-          None => None
-        }
-      } else {
-        None
-      }
-      match reusable {
-        // The fingerprint is enough for dependency fingerprint folding.
-        // Loading the env here caused shared leaf modules to re-read their
-        // persistent leaf cache every time they were reached before a parent
-        // needed their bindings.
-        Some(cached_fingerprint) => {
-          if incremental_interface_trace_enabled() {
-            let observed_env = match typecheck_fs_lookup_env_cache(env_cache, path) {
-              Some(value) => value,
-              None => match load_persistent_type_env(cached_fingerprint) {
-                Some(value) => value,
-                None => throw(String::concat("incremental trace observation: unreadable in-memory reused environment for ", path))
-              }
-            }
-            incremental_trace_observe_checked_env(path, source, observed_env)
-          } else {
-            ()
-          }
-          incremental_typecheck_telemetry_add(7, 1)
-          (cached_fingerprint, rdb_loaded, env_cache, dep_source_cache, parse_count)
-        }
+      match typecheck_fs_lookup_string_pair(plan_leaf_fps, path) {
+        Some(leaf_fingerprint) =>
+        commit_leaf_fingerprint_fs(rdb_loaded, env_cache, dep_source_cache, parse_count, path, source, leaf_fingerprint),
         None =>
-        match typecheck_fs_lookup_string_pair(plan_leaf_fps, path) {
-          Some(leaf_fingerprint) =>
-          commit_leaf_fingerprint_fs(rdb_loaded, env_cache, dep_source_cache, parse_count, path, source, leaf_fingerprint),
+        match plan_deps_of(plan_edges, path) {
+          Some(planned_deps) =>
+          commit_with_deps_fs(fps, rdb_loaded, env_cache, typecheck_fs_upsert_string_pair(dep_source_cache, path, source), parse_count, path, source, planned_deps),
+          // Types stubs interned only as someone else's dep have no plan
+          // edge: plan_import_graph_fs skipped them because they were not
+          // in the ripple db. They are leaves (type-family defs only).
           None =>
-          match plan_deps_of(plan_edges, path) {
-            Some(planned_deps) =>
-            commit_with_deps_fs(fps, rdb_loaded, env_cache, typecheck_fs_upsert_string_pair(dep_source_cache, path, source), parse_count, path, source, planned_deps),
-            // Types stubs interned only as someone else's dep have no plan
-            // edge: plan_import_graph_fs skipped them because they were not
-            // in the ripple db. They are leaves (type-family defs only).
-            None =>
-            if is_vpkg_types_stub_path(path) {
-              commit_with_deps_fs(fps, rdb_loaded, env_cache, typecheck_fs_upsert_string_pair(dep_source_cache, path, source), parse_count, path, source, empty_stack())
-            } else {
-              throw(String::concat("type_db: module missing from the import plan: ", path))
-            }
+          if is_vpkg_types_stub_path(path) {
+            commit_with_deps_fs(fps, rdb_loaded, env_cache, typecheck_fs_upsert_string_pair(dep_source_cache, path, source), parse_count, path, source, empty_stack())
+          } else {
+            throw(String::concat("type_db: module missing from the import plan: ", path))
           }
         }
       }
