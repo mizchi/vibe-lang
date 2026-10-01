@@ -2,7 +2,7 @@ import @vibe/ast {
   Expr, Stmt, builtin_ref, index_site_offset, is_builtin_ref_offset
 }
 import @vibe/compiler/core {
-  builtin_shadow_rename_names_are_sorted, builtin_shadow_rename_of, rename_builtin_shadow_defs
+  builtin_shadow_rename_names_are_sorted, builtin_shadow_rename_of, mark_private_builtin_references, rename_builtin_shadow_defs
 }
 
 // #3132: a program's own definition of a builtin the compiler calls by name
@@ -237,4 +237,50 @@ test "#3185: the parser's field-write sugar keeps the builtin under the program'
   rename_builtin_shadow_defs(stmts)
   assert_eq(callee_of_body(Array::get(stmts, 1)), "__set_field")
   assert_eq(callee_of_body(Array::get(stmts, 2)), "__set_field$user")
+}
+
+test "merged precheck marks foreign private builtin references without renaming source bindings" {
+  for name in ["MutList::push", "String::length"] {
+    let dep = one_param_fn("dep", "xs", ECall(EIdent(name, 40), [
+      EIdent("xs", 51)
+    ], 40, []))
+    let def = one_param_fn(name, "xs", EInt(77))
+    let own = one_param_fn("own", "xs", ECall(EIdent(name, 90), [
+      EIdent("xs", 101)
+    ], 90, []))
+    let stmts = [source_boundary(), dep, source_boundary(), def, own]
+    mark_private_builtin_references(stmts)
+    assert_eq(let_name(Array::get(stmts, 3)), name)
+    assert_eq(callee_of_body(Array::get(stmts, 4)), name)
+    assert_eq(callee_off_of_body(Array::get(stmts, 4)), 90)
+    assert_eq(callee_of_body(Array::get(stmts, 1)), name)
+    assert(is_builtin_ref_offset(callee_off_of_body(Array::get(stmts, 1))))
+    assert_eq(index_site_offset(callee_off_of_body(Array::get(stmts, 1))), 40)
+    mark_private_builtin_references(stmts)
+    assert_eq(let_name(Array::get(stmts, 3)), name)
+    rename_builtin_shadow_defs(stmts)
+    assert_eq(let_name(Array::get(stmts, 3)), builtin_shadow_rename_of(name))
+    assert_eq(callee_of_body(Array::get(stmts, 4)), builtin_shadow_rename_of(name))
+    assert_eq(callee_of_body(Array::get(stmts, 1)), name)
+  }
+}
+
+test "merged precheck leaves published builtin shadows and lexical bindings unmarked" {
+  let name = "String::length"
+  let dep = one_param_fn("dep", "xs", ECall(EIdent(name, 40), [EIdent("xs", 51)], 40, [
+  ]))
+  let def = one_param_fn(name, "xs", EInt(77))
+  let stmts = [source_boundary(), dep, source_boundary(), def, SExport([name])]
+  mark_private_builtin_references(stmts)
+  assert_eq(let_name(Array::get(stmts, 3)), name)
+  assert_eq(callee_off_of_body(Array::get(stmts, 1)), 40)
+  match Array::get(stmts, 4) {
+    SExport(items) => assert_eq(Array::get(items, 0), name),
+    _ => assert(false)
+  }
+  let bound = one_param_fn("bound", name, ECall(EIdent(name, 40), [EInt(1)], 40, [
+  ]))
+  let private_stmts = [source_boundary(), bound, source_boundary(), def]
+  mark_private_builtin_references(private_stmts)
+  assert_eq(callee_off_of_body(Array::get(private_stmts, 1)), 40)
 }

@@ -552,7 +552,12 @@ CLI="x"
 # shellcheck disable=SC1090
 . "$1"
 TIMEOUT_BIN=""
-t0=$(date +%s)
+# Node is already required by this harness. Wall-clock corrections must not
+# make an escaping grandchild appear bounded; measure monotonic elapsed time.
+monotonic_seconds() {
+  node -p '(process.hrtime.bigint() / 1000000000n).toString()'
+}
+t0=$(monotonic_seconds)
 case "$2" in
   hang)       watchdog_run 2 sleep 12 >/dev/null 2>&1; rc=$? ;;
   status)     watchdog_run 5 sh -c 'exit 7' >/dev/null 2>&1; rc=$? ;;
@@ -560,7 +565,7 @@ case "$2" in
   # The shape every call site here actually has: a wrapper that spawns the
   # real workload. Signalling only the direct child leaves the grandchild
   # holding the command substitution's pipe, so the answer is 124 and the
-  # WALL CLOCK is the child's full lifetime -- a bound that does not bind
+  # elapsed time is the child's full lifetime -- a bound that does not bind
   # (#2955 review).
   grandchild) out=$(watchdog_run 2 bash -c 'bash -c "sleep 12" & wait' 2>/dev/null); rc=$? ;;
   # The marker directory is gone, as it would be if the filesystem filled
@@ -611,7 +616,7 @@ case "$2" in
     [ "$rc" = "124" ] || rc=143 ;;
   *) echo "unknown case: $2" >&2; exit 2 ;;
 esac
-t1=$(date +%s)
+t1=$(monotonic_seconds)
 echo "rc=$rc elapsed=$((t1 - t0))"
 WD
 
@@ -637,6 +642,50 @@ wd_expect() { # <case> <want-rc> <max-seconds> <why>
 
 if grep -q "$(basename "$tlib")" "$tprobe" && grep -q 'vibe_absent_gtimeout' "$tlib"; then
   say "  ok   probe staged: neither timeout(1) binary resolves"
+  # A backward clock step used to make this probe report negative durations,
+  # and a smaller step made the direct-child-only control look bounded.
+  clock_dir="$(mktemp -d "$ROOT/_build/fuzz-watchdog-clock.XXXXXXXX")" || {
+    bad "could not stage the backward wall-clock step"
+    exit 1
+  }
+  cat > "$clock_dir/date" <<'CLOCK'
+#!/usr/bin/env bash
+if [ -e "$VIBE_FAKE_REALTIME_STATE" ]; then
+  printf '50\n'
+else
+  : > "$VIBE_FAKE_REALTIME_STATE"
+  printf '100\n'
+fi
+CLOCK
+  chmod +x "$clock_dir/date"
+  clock_state="$clock_dir/state"
+  first=$(VIBE_FAKE_REALTIME_STATE="$clock_state" "$clock_dir/date")
+  second=$(VIBE_FAKE_REALTIME_STATE="$clock_state" "$clock_dir/date")
+  if [ "$first:$second" != "100:50" ]; then
+    bad "the backward wall-clock step was not staged"
+  else
+    rm -f "$clock_state"
+    clock_line=$(PATH="$clock_dir:$PATH" VIBE_FAKE_REALTIME_STATE="$clock_state" \
+      bash "$wdcase" "$ROOT/$tlib" status 2>&1 | tail -1)
+    case "$clock_line" in
+      "rc=7 elapsed="[0-8]) say "  ok   elapsed time ignores a backward wall-clock step" ;;
+      *) bad "the wall-clock step changed the duration: $clock_line" ;;
+    esac
+    cp "$wdcase" "$clock_dir/pre-fix.sh"
+    sed -i.bak 's/^t0=.*/t0=$(date +%s)/; s/^t1=.*/t1=$(date +%s)/' "$clock_dir/pre-fix.sh"
+    if [ "$(grep -c '=$(date +%s)' "$clock_dir/pre-fix.sh")" != "2" ]; then
+      bad "the wall-clock control was not staged"
+    else
+      rm -f "$clock_state"
+      clock_line=$(PATH="$clock_dir:$PATH" VIBE_FAKE_REALTIME_STATE="$clock_state" \
+        bash "$clock_dir/pre-fix.sh" "$ROOT/$tlib" status 2>&1 | tail -1)
+      case "$clock_line" in
+        "rc=7 elapsed=-50") say "  ok   pre-fix: the same clock step makes elapsed time negative" ;;
+        *) bad "the wall-clock control did not fail: $clock_line" ;;
+      esac
+    fi
+  fi
+  rm -rf "$clock_dir"
   wd_expect hang 124 8 "the bound is reached, and reported the way timeout(1) reports it"
   wd_expect status 7 8 "a command's own status passes through untouched"
   wd_expect self_term 143 8 "a program the OOM killer TERMs is not relabelled a hang"

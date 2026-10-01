@@ -1,0 +1,195 @@
+import @vibe/compiler/core {
+  Expr,
+  Stmt,
+  Subst,
+  Type,
+  TypeEnv,
+  builtin_callee_resolution,
+  builtin_operation_alias,
+  builtin_operation_arity,
+  env_bind,
+  resolved_builtin_operation_from_source,
+  resolved_callee_capture_record,
+  resolved_callee_capture_reset,
+  resolved_callee_capture_rows,
+  resolved_callee_operation,
+  resolved_callee_row_rebase,
+  restore_resolved_callees
+}
+import @vibe/compiler/checker {
+  check_expr, check_program, resolve_builtin_callee
+}
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+import @vibe/compiler/cache {
+  ast_binary_read_expr, ast_binary_reader_new, ast_binary_write_expr
+}
+import @vibe/compiler/runtime {
+  module_typed_lowering_memo_put, module_typed_lowering_memo_reset, union_module_typed_lowering_offsets
+}
+import @vibe/ast {
+  builtin_ref_offset
+}
+
+let names = [
+  "MutList::empty",
+  "MutList::push",
+  "MutList::freeze",
+  "MutList::to_array",
+  "MutList::get",
+  "MutList::length",
+  "MutList::truncate"
+]
+let arities = [1, 2, 1, 1, 2, 1, 2]
+let aliases = [
+  "",
+  "ArrayBuilder::push",
+  "",
+  "",
+  "Array::get",
+  "Array::length",
+  "Array::truncate"
+]
+
+fn rejection(source: String) -> String {
+  handle {
+    let _ = check_program(parse_program(lex(source)))
+    ""
+  } with { Exception::Throw(message) => message }
+}
+
+test "MutList identity dispatch preserves region and index rejection diagnostics" {
+  assert(String::contains(rejection("let bad = MutList::empty(0)"), "MutList::empty requires the region token bound by `region r { ... }`"))
+  assert(String::contains(rejection("let bad = region r { let values = MutList::empty(r); MutList::get(values, \"bad\") }"), "MutList::get expects an Int index, got String"))
+  assert(String::contains(rejection("let bad = region r { let values = MutList::empty(r); MutList::truncate(values, \"bad\") }"), "MutList::truncate expects an Int length, got String"))
+  // This family has no builtin value-form signature yet; do not manufacture
+  // a wrapper from a spelling merely because direct calls have an identity.
+  assert(String::contains(rejection("let length = MutList::length"), "unknown name: MutList::length"))
+}
+
+test "every MutList operation resolves once with shared arity and lowering" {
+  let mut i = 0
+  while i < Array::length(names) {
+    let name = Array::get(names, i)
+    let operation = resolved_builtin_operation_from_source(name)
+    assert_eq(operation, 6 + i)
+    assert_eq(builtin_operation_arity(operation), Array::get(arities, i))
+    assert_eq(builtin_operation_alias(operation), Array::get(aliases, i))
+    assert_eq(resolved_callee_operation(builtin_callee_resolution(name)), operation)
+    let resolution: Array[Int] = []
+    assert_eq(resolve_builtin_callee(EnvEmpty, name, 40, resolution), operation)
+    let params: Array[Type] = []
+    let args: Array[Expr] = []
+    let mut j = 0
+    while j < Array::get(arities, i) {
+      Array::push(params, CtInt)
+      Array::push(args, EInt(j))
+      j = j + 1
+    }
+    let shadowed = env_bind(EnvEmpty, name, CtFn(params, CtString, None))
+    let errors: Array[String] = []
+    let (result, _, _) = check_expr(ECall(EIdent(name, 40), args, 40, resolution), shadowed, [
+    ], SubstEmpty, 0, errors, [])
+    assert_eq(result, CtString)
+    assert_eq(Array::length(errors), 0)
+    assert_eq(resolved_callee_operation(resolution), 0 - 1)
+    // A compiler factory explicitly targeting the builtin ignores that shadow.
+    assert_eq(resolve_builtin_callee(shadowed, name, builtin_ref_offset(), resolution), operation)
+    i = i + 1
+  }
+  assert_eq(builtin_operation_arity(13), 0 - 1)
+  assert_eq(resolved_builtin_operation_from_source("MutList::unknown"), 0)
+}
+
+test "the checker retains the MutList scalar read operation on its call" {
+  let env = env_bind(EnvEmpty, "values", CtNamed("MutList", [
+    CtInt,
+    CtNamed("#region_1", [])
+  ]))
+  let resolution: Array[Int] = []
+  let errors: Array[String] = []
+  let (result, _, _) = check_expr(ECall(EIdent("MutList::length", 17), [
+    EIdent("values", 34)
+  ], 17, resolution), env, [], SubstEmpty, 0, errors, [])
+  assert_eq(result, CtInt)
+  assert_eq(Array::length(errors), 0)
+  assert_eq(resolved_callee_operation(resolution), 11)
+}
+
+test "binary transport retains all operation identities without source spellings" {
+  for operation in [0 - 1, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] {
+    let bytes = Bytes::new()
+    ast_binary_write_expr(bytes, ECall(EIdent("diagnostic_name", 1048576), [], 1048576, [
+      operation
+    ]))
+    match ast_binary_read_expr(ast_binary_reader_new(bytes)) {
+      ECall(_, _, offset, resolution) => {
+        assert_eq(offset, 1048576)
+        assert_eq(resolved_callee_operation(resolution), operation)
+      },
+      _ => assert(false)
+    }
+  }
+}
+
+test "callee IDs above seven survive mixed channel union and offset rebasing" {
+  module_typed_lowering_memo_reset()
+  resolved_callee_capture_reset()
+  let before: Array[Stmt] = []
+  let after: Array[Stmt] = []
+  let cells: Array[Array[Int]] = []
+  let mut operation = 0 - 1
+  while operation <= 12 {
+    if operation != 0 {
+      let offset = 1048576 + operation
+      resolved_callee_capture_record(offset, operation)
+      let cell: Array[Int] = []
+      Array::push(cells, cell)
+      Array::push(before, SExpr(ECall(EIdent("diagnostic_name", offset), [], offset, cell)))
+      Array::push(after, SExpr(ECall(EIdent("diagnostic_name", offset + 91), [], offset + 91, cell)))
+    }
+    operation = operation + 1
+  }
+  let rows = resolved_callee_capture_rows()
+  // Invalid operations must not manufacture a row in the adjacent offset.
+  resolved_callee_capture_record(1048576, 13)
+  resolved_callee_capture_record(1048576, 65536)
+  resolved_callee_capture_record(1048576, 0 - 2)
+  assert_eq(Array::length(resolved_callee_capture_rows()), 13)
+  restore_resolved_callees(before, rows)
+  let mut i = 0
+  while i < Array::length(cells) {
+    assert_eq(resolved_callee_operation(Array::get(cells, i)), if i == 0 {
+      0 - 1
+    } else {
+      i
+    })
+    Array::truncate(Array::get(cells, i), 0)
+    i = i + 1
+  }
+  let mixed = Array::slice(rows, 0, Array::length(rows))
+  for tag in [0, 1, 2, 3, 4, 5, 6] {
+    Array::push(mixed, 33 * 8 + tag)
+  }
+  module_typed_lowering_memo_put("callee_rows.vibe", "fp", mixed, [], [])
+  let rebased = union_module_typed_lowering_offsets(["callee_rows.vibe"], [91])
+  assert_eq(Array::length(rebased), Array::length(mixed))
+  restore_resolved_callees(after, rebased)
+  i = 0
+  while i < Array::length(cells) {
+    assert_eq(resolved_callee_operation(Array::get(cells, i)), if i == 0 {
+      0 - 1
+    } else {
+      i
+    })
+    assert_eq(Array::get(rebased, i), resolved_callee_row_rebase(Array::get(rows, i), 91))
+    assert_eq(resolved_callee_row_rebase(Array::get(rebased, i), 0 - 91), Array::get(rows, i))
+    i = i + 1
+  }
+  for tag in [0, 1, 2, 3, 4, 5, 6] {
+    assert_eq(Array::get(rebased, 13 + tag), (33 + 91) * 8 + tag)
+  }
+  resolved_callee_capture_reset()
+  module_typed_lowering_memo_reset()
+}

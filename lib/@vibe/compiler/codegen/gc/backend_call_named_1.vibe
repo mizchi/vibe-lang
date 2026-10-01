@@ -5,12 +5,13 @@ import @vibe/compiler/core {
   Pat,
   Stmt,
   TypeExpr,
-  builtin_mutbytes_append,
   builtin_mutbytes_empty,
-  builtin_mutbytes_length,
-  builtin_mutbytes_push,
   builtin_mutbytes_to_bytes,
+  builtin_mutlist_empty,
+  builtin_mutlist_freeze,
+  builtin_mutlist_to_array,
   builtin_operation_alias,
+  builtin_operation_arity,
   bytebuf_push,
   canonical_builtin_name,
   is_exception_operation_name,
@@ -398,7 +399,7 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], resolution: Arra
       // `MutList` storage IS an ArrayBuilder, as before. Either way the region
       // token is not evaluated -- by construction it is the pure binder ident
       // the parser emitted.
-      if !source_is_bound && fname == "MutList::empty" && Array::length(args) == 1 {
+      if operation == builtin_mutlist_empty && Array::length(args) == 1 {
         if ctx.gc_region_arr_new_func_idx >= 0 {
           emit_call(buf, ctx.gc_region_arr_new_func_idx)
           return next_local
@@ -410,28 +411,10 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], resolution: Arra
       } else {
         ()
       }
-      // Arena-free, `MutList` storage IS an ArrayBuilder, so the mutating and
-      // reading operations are the ArrayBuilder/Array ones under another
-      // spelling. The linear lane reaches the same place by registering these
-      // as builtins whose bodies alias those; rewriting at the call site keeps
-      // the gc lane's arena-free tier in one block.
-      if !source_is_bound && fname == "MutList::push" && Array::length(args) == 2 {
-        return gc_mut_alias_call(buf, "ArrayBuilder::push", args, local_names, next_local, ctx, ld, ce)
-      } else {
-        ()
-      }
-      if !source_is_bound && fname == "MutList::get" && Array::length(args) == 2 {
-        return gc_mut_alias_call(buf, "Array::get", args, local_names, next_local, ctx, ld, ce)
-      } else {
-        ()
-      }
-      if !source_is_bound && fname == "MutList::length" && Array::length(args) == 1 {
-        return gc_mut_alias_call(buf, "Array::length", args, local_names, next_local, ctx, ld, ce)
-      } else {
-        ()
-      }
-      if !source_is_bound && fname == "MutList::truncate" && Array::length(args) == 2 {
-        return gc_mut_alias_call(buf, "Array::truncate", args, local_names, next_local, ctx, ld, ce)
+      // Both families share the same operation-to-builtin alias table.
+      let operation_alias = builtin_operation_alias(operation)
+      if operation_alias != "" && builtin_operation_arity(operation) == Array::length(args) {
+        return gc_mut_alias_call(buf, operation_alias, args, local_names, next_local, ctx, ld, ce)
       } else {
         ()
       }
@@ -455,23 +438,8 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], resolution: Arra
       } else {
         ()
       }
-      if operation == builtin_mutbytes_push && Array::length(args) == 2 {
-        return gc_mut_alias_call(buf, builtin_operation_alias(operation), args, local_names, next_local, ctx, ld, ce)
-      } else {
-        ()
-      }
-      if operation == builtin_mutbytes_append && Array::length(args) == 2 {
-        return gc_mut_alias_call(buf, builtin_operation_alias(operation), args, local_names, next_local, ctx, ld, ce)
-      } else {
-        ()
-      }
-      if operation == builtin_mutbytes_length && Array::length(args) == 1 {
-        return gc_mut_alias_call(buf, builtin_operation_alias(operation), args, local_names, next_local, ctx, ld, ce)
-      } else {
-        ()
-      }
       // The sanctioned region exits COPY (see region_mutlist_exit_copy).
-      if !source_is_bound && (fname == "MutList::freeze" || fname == "MutList::to_array") && Array::length(args) == 1 {
+      if (operation == builtin_mutlist_freeze || operation == builtin_mutlist_to_array) && Array::length(args) == 1 {
         return ce(buf, region_mutlist_exit_copy(Array::get(args, 0)), local_names, next_local, ld)
       } else {
         ()
