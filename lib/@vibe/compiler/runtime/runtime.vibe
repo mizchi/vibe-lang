@@ -1,5 +1,9 @@
 //# Imports
 
+import ./typecheck_fs_local_type_member_markers.vibe {
+  ensure_module_typed_lowering_offsets_for_source, module_typed_lowering_bind_source
+}
+
 import @vibe/compiler/core {
   ExportRenamePlan,
   Stmt,
@@ -516,9 +520,10 @@ fn resolve_deps_for_source_fs(rdb: RippleDb, dep_source_cache: Array[(String, St
 /// while `vibe check` on the same pair was clean. `db_typecheck` is published
 /// from `@vibe/compiler/type_db`, so that divergence was part of the public
 /// surface.
-fn check_module_publishing_typed_lowering_offsets(path: String, fingerprint: String, stmts: Array[Stmt], import_env: TypeEnv) -> TypeEnv with Exception {
+fn check_module_publishing_typed_lowering_offsets(path: String, fingerprint: String, source: String, stmts: Array[Stmt], import_env: TypeEnv) -> TypeEnv with Exception {
   let (checked, offsets, eq_offs, eq_keys) = check_program_with_projected_import_env_typed_lowering_located_observation(stmts, import_env)
   publish_module_typed_lowering_offsets(path, fingerprint, offsets, eq_offs, eq_keys)
+  module_typed_lowering_bind_source(path, fingerprint, source)
   checked.final_env
 }
 
@@ -569,13 +574,13 @@ fn ensure_fingerprint(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_so
           // this path: measured, rows went 1 -> 0 across a warm-db re-prepare.
           // Same fail-closed rule the FS lane's reuse arms follow
           // (`ensure_module_typed_lowering_offsets`).
-          if cached_fp == fingerprint && rebind_module_typed_lowering_offsets(path, fingerprint) {
+          if cached_fp == fingerprint && ensure_module_typed_lowering_offsets_for_source(path, fingerprint, source) {
             (fingerprint, db_after_deps, env_cache_after_deps, dep_source_cache_after_deps, parse_count_after_deps)
           } else {
             let stmts = parse_program_with_path(path, source)
             let final_parse_count = parse_count_after_deps + 1
             let (import_env, reexport_declarations) = build_import_envs(stmts, dir_of_path(path), env_cache_after_deps, interfaces)
-            let full_checked_env = check_module_publishing_typed_lowering_offsets(path, fingerprint, stmts, import_env)
+            let full_checked_env = check_module_publishing_typed_lowering_offsets(path, fingerprint, source, stmts, import_env)
             let checked_env = checked_module_public_env_for_path(path, stmts, full_checked_env, reexport_declarations)
             dependency_interface_set_publish(interfaces, path, checked_env)
             let next_env_cache = upsert_env_cache(env_cache_after_deps, path, checked_env)
@@ -586,7 +591,7 @@ fn ensure_fingerprint(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_so
             let stmts = parse_program_with_path(path, source)
             let final_parse_count = parse_count_after_deps + 1
             let (import_env, reexport_declarations) = build_import_envs(stmts, dir_of_path(path), env_cache_after_deps, interfaces)
-            let full_checked_env = check_module_publishing_typed_lowering_offsets(path, fingerprint, stmts, import_env)
+            let full_checked_env = check_module_publishing_typed_lowering_offsets(path, fingerprint, source, stmts, import_env)
             let checked_env = checked_module_public_env_for_path(path, stmts, full_checked_env, reexport_declarations)
             dependency_interface_set_publish(interfaces, path, checked_env)
             let next_env_cache = upsert_env_cache(env_cache_after_deps, path, checked_env)

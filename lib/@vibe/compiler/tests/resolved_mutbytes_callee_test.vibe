@@ -22,6 +22,15 @@ import @vibe/compiler/core {
 import @vibe/compiler/checker {
   check_expr, resolve_mutbytes_callee
 }
+import @vibe/compiler/runtime {
+  ensure_module_typed_lowering_offsets_for_source,
+  module_typed_lowering_bind_source,
+  module_typed_lowering_memo_put,
+  module_typed_lowering_memo_reset,
+  module_typed_lowering_offsets_for_source,
+  parse_program_with_path,
+  rebind_module_typed_lowering_offsets
+}
 import @vibe/ast {
   builtin_ref_offset
 }
@@ -111,6 +120,84 @@ test "a fresh check replaces a cached callee answer after bindings change" {
   inspect(resolved_callee_operation(resolution), content = "-1")
   inspect(resolve_mutbytes_callee(EnvEmpty, "MutBytes::length", 9, resolution), content = "4")
   inspect(Array::length(resolution), content = "1")
+}
+
+test "a fresh check clears a MutBytes identity after the callee name changes" {
+  let resolution = [builtin_mutbytes_push]
+  let env = env_bind(EnvEmpty, "ordinary_call", CtFn([CtInt, CtInt], CtInt, None))
+  let errors: Array[String] = []
+  let (result, _, _) = check_expr(ECall(EIdent("ordinary_call", 9), [
+    EInt(40),
+    EInt(2)
+  ], 9, resolution), env, [], SubstEmpty, 0, errors, [])
+  assert_eq(result, CtInt)
+  assert_eq(Array::length(errors), 0)
+  assert_eq(Array::length(resolution), 0)
+}
+
+test "a changed source at the same path cannot inherit an old builtin identity" {
+  let path = "workspace/resolved_callee_source.vibe"
+  let original = "MutBytes::push(buffer, 2)"
+  let changed = "ordinary_call_(40, 2)"
+  module_typed_lowering_memo_reset()
+  module_typed_lowering_memo_put(path, "original-fingerprint", [
+    builtin_mutbytes_push * 8 + 7
+  ], [], [])
+  module_typed_lowering_bind_source(path, "original-fingerprint", original)
+  match Array::get(parse_program_with_path(path, original), 0) {
+    SExpr(ECall(_, _, offset, resolution)) => {
+      assert_eq(offset, 0)
+      assert_eq(resolved_callee_operation(resolution), builtin_mutbytes_push)
+    },
+    _ => assert(false)
+  }
+  let stmts = parse_program_with_path(path, changed)
+  match Array::get(stmts, 0) {
+    SExpr(call) => match call {
+      ECall(_, _, offset, resolution) => {
+        assert_eq(offset, 0)
+        assert_eq(Array::length(resolution), 0)
+        let env = env_bind(EnvEmpty, "ordinary_call_", CtFn([CtInt, CtInt], CtInt, None))
+        let errors: Array[String] = []
+        let (result, _, _) = check_expr(call, env, [], SubstEmpty, 0, errors, [])
+        assert_eq(result, CtInt)
+        assert_eq(Array::length(errors), 0)
+        assert_eq(Array::length(resolution), 0)
+      },
+      _ => assert(false)
+    },
+    _ => assert(false)
+  }
+  // Both exact texts remain in the parser memo. The old one still owns its
+  // checked decision; visiting the edited one did not overwrite that owner.
+  match Array::get(parse_program_with_path(path, original), 0) {
+    SExpr(ECall(_, _, _, resolution)) => assert_eq(resolved_callee_operation(resolution), builtin_mutbytes_push),
+    _ => assert(false)
+  }
+  module_typed_lowering_memo_reset()
+}
+
+test "source witnesses follow fingerprints through rebind and cache acceptance" {
+  let path = "workspace/resolved_callee_memo.vibe"
+  let source = "MutBytes::push(buffer, 2)"
+  let rows = [builtin_mutbytes_push * 8 + 7]
+  module_typed_lowering_memo_reset()
+  module_typed_lowering_memo_put(path, "checked", rows, [], [])
+  assert_eq(module_typed_lowering_offsets_for_source(path, source), None)
+  module_typed_lowering_bind_source(path, "another-fingerprint", source)
+  assert_eq(module_typed_lowering_offsets_for_source(path, source), None)
+  module_typed_lowering_bind_source(path, "checked", source)
+  assert_true(rebind_module_typed_lowering_offsets("workspace/identical.vibe", "checked"))
+  assert_eq(module_typed_lowering_offsets_for_source("workspace/identical.vibe", source), Some(rows))
+  // Replacing a row's fingerprint invalidates its source witness.
+  module_typed_lowering_memo_put(path, "persistent", rows, [], [])
+  assert_eq(module_typed_lowering_offsets_for_source(path, source), None)
+  assert_true(ensure_module_typed_lowering_offsets_for_source(path, "persistent", source))
+  assert_eq(module_typed_lowering_offsets_for_source(path, source), Some(rows))
+  assert_true(!ensure_module_typed_lowering_offsets_for_source(path, "missing", source))
+  assert_eq(module_typed_lowering_offsets_for_source(path, "ordinary_call_(40, 2)"), None)
+  module_typed_lowering_memo_reset()
+  assert_eq(module_typed_lowering_offsets_for_source(path, source), None)
 }
 
 test "a cached checker answer restores call identity without a source name lookup" {

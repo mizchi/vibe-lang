@@ -159,6 +159,10 @@ let module_typed_lowering_memo_paths: Array[String] = []
 
 let module_typed_lowering_memo_fps: Array[String] = []
 
+// Exact source witnesses belong to the same row as its checked fingerprint.
+// A path alone must never authorize restoring identities into another text.
+let module_typed_lowering_memo_sources: Array[Option[String]] = []
+
 let module_typed_lowering_memo_offsets: Array[Array[Int]] = []
 
 // #2441: the typed-`==` rows ride the same memo lifecycle as the Int table
@@ -171,6 +175,7 @@ let module_typed_lowering_memo_eq_keys: Array[Array[String]] = []
 export fn module_typed_lowering_memo_reset() -> Unit {
   Array::truncate(module_typed_lowering_memo_paths, 0)
   Array::truncate(module_typed_lowering_memo_fps, 0)
+  Array::truncate(module_typed_lowering_memo_sources, 0)
   Array::truncate(module_typed_lowering_memo_offsets, 0)
   Array::truncate(module_typed_lowering_memo_eq_offs, 0)
   Array::truncate(module_typed_lowering_memo_eq_keys, 0)
@@ -182,6 +187,9 @@ export fn module_typed_lowering_memo_put(path: String, fingerprint: String, offs
   let mut found = false
   while i < n {
     if Array::get(module_typed_lowering_memo_paths, i) == path {
+      if Array::get(module_typed_lowering_memo_fps, i) != fingerprint {
+        Array::set(module_typed_lowering_memo_sources, i, None)
+      }
       Array::set(module_typed_lowering_memo_fps, i, fingerprint)
       Array::set(module_typed_lowering_memo_offsets, i, offsets)
       Array::set(module_typed_lowering_memo_eq_offs, i, eq_offs)
@@ -195,12 +203,60 @@ export fn module_typed_lowering_memo_put(path: String, fingerprint: String, offs
   if !found {
     Array::push(module_typed_lowering_memo_paths, path)
     Array::push(module_typed_lowering_memo_fps, fingerprint)
+    Array::push(module_typed_lowering_memo_sources, None)
     Array::push(module_typed_lowering_memo_offsets, offsets)
     Array::push(module_typed_lowering_memo_eq_offs, eq_offs)
     Array::push(module_typed_lowering_memo_eq_keys, eq_keys)
   } else {
     ()
   }
+}
+
+// Publish only after the checker or cache acceptance validated this source
+// against fingerprint. An unbound legacy row cannot restore callee identities.
+export fn module_typed_lowering_bind_source(path: String, fingerprint: String, source: String) -> Unit {
+  let mut i = 0
+  while i < Array::length(module_typed_lowering_memo_paths) {
+    if Array::get(module_typed_lowering_memo_paths, i) == path && Array::get(module_typed_lowering_memo_fps, i) == fingerprint {
+      Array::set(module_typed_lowering_memo_sources, i, Some(source))
+    }
+    i = i + 1
+  }
+}
+
+fn module_typed_lowering_source_for_fp(fingerprint: String) -> Option[String] {
+  let mut result: Option[String] = None
+  let mut i = 0
+  while i < Array::length(module_typed_lowering_memo_fps) {
+    if Array::get(module_typed_lowering_memo_fps, i) == fingerprint {
+      match Array::get(module_typed_lowering_memo_sources, i) {
+        Some(source) => {
+          result = Some(source)
+          i = Array::length(module_typed_lowering_memo_fps)
+        },
+        None => i = i + 1
+      }
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+
+export fn module_typed_lowering_offsets_for_source(path: String, source: String) -> Option[Array[Int]] {
+  let mut result: Option[Array[Int]] = None
+  let mut i = 0
+  while i < Array::length(module_typed_lowering_memo_paths) {
+    if Array::get(module_typed_lowering_memo_paths, i) == path {
+      if Array::get(module_typed_lowering_memo_sources, i) == Some(source) {
+        result = Some(Array::get(module_typed_lowering_memo_offsets, i))
+      }
+      i = Array::length(module_typed_lowering_memo_paths)
+    } else {
+      i = i + 1
+    }
+  }
+  result
 }
 
 /// #2449: the in-memory module walk's publication point. `ensure_fingerprint`
@@ -476,7 +532,12 @@ export fn split_typed_lowering_offsets(enc: Array[Int]) -> (Array[Int], Array[In
 export fn rebind_module_typed_lowering_offsets(path: String, fingerprint: String) -> Bool {
   match module_typed_lowering_memo_get_by_fp(fingerprint) {
     Some((offsets, eq_offs, eq_keys)) => {
+      let source = module_typed_lowering_source_for_fp(fingerprint)
       module_typed_lowering_memo_put(path, fingerprint, offsets, eq_offs, eq_keys)
+      match source {
+        Some(text) => module_typed_lowering_bind_source(path, fingerprint, text),
+        None => ()
+      }
       true
     },
     None => false
@@ -487,6 +548,17 @@ export fn rebind_module_typed_lowering_offsets(path: String, fingerprint: String
 /// Rebind by fingerprint so byte-identical modules at distinct paths agree.
 export fn ensure_module_typed_lowering_offsets(path: String, fingerprint: String) -> Bool {
   rebind_module_typed_lowering_offsets(path, fingerprint)
+}
+
+// The accepting caller has validated a persistent/transported fingerprint for
+// its current source. Bind that witness before any subsequent merge parse.
+export fn ensure_module_typed_lowering_offsets_for_source(path: String, fingerprint: String, source: String) -> Bool {
+  if rebind_module_typed_lowering_offsets(path, fingerprint) {
+    module_typed_lowering_bind_source(path, fingerprint, source)
+    true
+  } else {
+    false
+  }
 }
 
 export fn typecheck_fs_lookup_env_cache(cache: Array[(String, TypeEnv)], path: String) -> Option[TypeEnv] {
