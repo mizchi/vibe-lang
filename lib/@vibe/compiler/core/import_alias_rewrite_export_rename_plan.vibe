@@ -1812,6 +1812,17 @@ export fn builtin_shadow_source_name(name: String) -> String {
 /// `export { }` list) still renames program-wide, as a library's qualified
 /// export always has (#2378). A program with no boundaries is one unit.
 export fn rename_builtin_shadow_defs(stmts: Array[Stmt]) -> Unit {
+  rewrite_builtin_shadow_refs(stmts, true)
+}
+
+/// Preserve module-private builtin provenance before a merged source check.
+/// Definitions and owned references keep their source names so method checking
+/// still sees its original environment. The later rename owns definitions.
+export fn mark_private_builtin_references(stmts: Array[Stmt]) -> Unit {
+  rewrite_builtin_shadow_refs(stmts, false)
+}
+
+fn rewrite_builtin_shadow_refs(stmts: Array[Stmt], rename_defs: Bool) -> Unit {
   let published = empty_aliases()
   let private_defs: Array[(String, Int)] = []
   let listed_exports = builtin_shadow_export_items(stmts)
@@ -1853,7 +1864,7 @@ export fn rename_builtin_shadow_defs(stmts: Array[Stmt]) -> Unit {
     // other unit; almost always the entry's and the rest.
     let owner_units: Array[Int] = []
     let owner_maps: Array[AliasIdx] = []
-    let other_map = aliasidx_build_mode(builtin_shadow_unit_renames(published, private_defs, 0 - 1), true)
+    let other_map = aliasidx_build_mode(builtin_shadow_unit_renames(published, private_defs, 0 - 1, rename_defs), true)
     let mut si = 0
     let mut su = 0
     while si < Array::length(stmts) {
@@ -1862,13 +1873,13 @@ export fn rename_builtin_shadow_defs(stmts: Array[Stmt]) -> Unit {
         su = su + 1
       } else {
         let am = if builtin_shadow_unit_owns(private_defs, su) {
-          builtin_shadow_owner_map(owner_units, owner_maps, published, private_defs, su)
+          builtin_shadow_owner_map(owner_units, owner_maps, published, private_defs, su, rename_defs)
         } else {
           other_map
         }
         match stmt {
           SLet(exported, is_rec, name, ty, body) => {
-            let new_name = if is_builtin_shadow_rename_name(name) {
+            let new_name = if rename_defs && is_builtin_shadow_rename_name(name) {
               builtin_shadow_rename_of(name)
             } else {
               name
@@ -1876,7 +1887,7 @@ export fn rename_builtin_shadow_defs(stmts: Array[Stmt]) -> Unit {
             Array::set(stmts, si, SLet(exported, is_rec, new_name, ty, rewrite_alias_expr_ix(body, am)))
           },
           SFnDecl(exported, name, value, reqs, enss) => {
-            let new_name = if is_builtin_shadow_rename_name(name) {
+            let new_name = if rename_defs && is_builtin_shadow_rename_name(name) {
               builtin_shadow_rename_of(name)
             } else {
               name
@@ -1889,7 +1900,7 @@ export fn rename_builtin_shadow_defs(stmts: Array[Stmt]) -> Unit {
           SExpr(body) => Array::set(stmts, si, SExpr(rewrite_alias_expr_ix(body, am))),
           SLetPat(pat, body) => Array::set(stmts, si, SLetPat(pat, rewrite_alias_expr_ix(body, am))),
           SExport(items) => Array::set(stmts, si, SExport(for item in items {
-            if builtin_shadow_rename_listed(published, item) {
+            if rename_defs && builtin_shadow_rename_listed(published, item) {
               builtin_shadow_rename_of(item)
             } else {
               item
@@ -1973,7 +1984,7 @@ fn builtin_shadow_unit_owns(private_defs: Array[(String, Int)], unit: Int) -> Bo
 /// private definition). Published definitions rename everywhere; a private
 /// definition renames in its own unit, and elsewhere its spelling maps to
 /// itself, which the rewrite reads as "mark this reference as the builtin's".
-fn builtin_shadow_unit_renames(published: Array[(String, String)], private_defs: Array[(String, Int)], unit: Int) -> Array[(String, String)] {
+fn builtin_shadow_unit_renames(published: Array[(String, String)], private_defs: Array[(String, Int)], unit: Int, rename_defs: Bool) -> Array[(String, String)] {
   let out = empty_aliases()
   let mut i = 0
   while i < Array::length(published) {
@@ -1994,10 +2005,22 @@ fn builtin_shadow_unit_renames(published: Array[(String, String)], private_defs:
     }
     j = j + 1
   }
-  out
+  if rename_defs {
+    out
+  } else {
+    let marked = empty_aliases()
+    for row in out {
+      if row.0 == row.1 {
+        Array::push(marked, row)
+      } else {
+        ()
+      }
+    }
+    marked
+  }
 }
 
-fn builtin_shadow_owner_map(owner_units: Array[Int], owner_maps: Array[AliasIdx], published: Array[(String, String)], private_defs: Array[(String, Int)], unit: Int) -> AliasIdx {
+fn builtin_shadow_owner_map(owner_units: Array[Int], owner_maps: Array[AliasIdx], published: Array[(String, String)], private_defs: Array[(String, Int)], unit: Int, rename_defs: Bool) -> AliasIdx {
   let mut found = 0 - 1
   let mut i = 0
   while found < 0 && i < Array::length(owner_units) {
@@ -2010,7 +2033,7 @@ fn builtin_shadow_owner_map(owner_units: Array[Int], owner_maps: Array[AliasIdx]
   if found >= 0 {
     Array::get(owner_maps, found)
   } else {
-    let am = aliasidx_build_mode(builtin_shadow_unit_renames(published, private_defs, unit), true)
+    let am = aliasidx_build_mode(builtin_shadow_unit_renames(published, private_defs, unit, rename_defs), true)
     Array::push(owner_units, unit)
     Array::push(owner_maps, am)
     am

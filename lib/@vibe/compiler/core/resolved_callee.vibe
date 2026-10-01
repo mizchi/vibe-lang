@@ -18,25 +18,39 @@ export let builtin_mutbytes_push: Int = 2
 export let builtin_mutbytes_append: Int = 3
 export let builtin_mutbytes_length: Int = 4
 export let builtin_mutbytes_to_bytes: Int = 5
+export let builtin_mutlist_empty: Int = 6
+export let builtin_mutlist_push: Int = 7
+export let builtin_mutlist_freeze: Int = 8
+export let builtin_mutlist_to_array: Int = 9
+export let builtin_mutlist_get: Int = 10
+export let builtin_mutlist_length: Int = 11
+export let builtin_mutlist_truncate: Int = 12
 
 // (source name, operation identity, arity, runtime alias).
-let mutbytes_operations: Array[(String, Int, Int, String)] = [
+let builtin_operations: Array[(String, Int, Int, String)] = [
   ("MutBytes::empty", builtin_mutbytes_empty, 1, ""),
   ("MutBytes::push", builtin_mutbytes_push, 2, "Bytes::push"),
   ("MutBytes::append", builtin_mutbytes_append, 2, "Bytes::append"),
   ("MutBytes::length", builtin_mutbytes_length, 1, "Bytes::length"),
-  ("MutBytes::to_bytes", builtin_mutbytes_to_bytes, 1, "")
+  ("MutBytes::to_bytes", builtin_mutbytes_to_bytes, 1, ""),
+  ("MutList::empty", builtin_mutlist_empty, 1, ""),
+  ("MutList::push", builtin_mutlist_push, 2, "ArrayBuilder::push"),
+  ("MutList::freeze", builtin_mutlist_freeze, 1, ""),
+  ("MutList::to_array", builtin_mutlist_to_array, 1, ""),
+  ("MutList::get", builtin_mutlist_get, 2, "Array::get"),
+  ("MutList::length", builtin_mutlist_length, 1, "Array::length"),
+  ("MutList::truncate", builtin_mutlist_truncate, 2, "Array::truncate")
 ]
 
 /// Source-name lookup belongs to the checker and explicit builtin factories.
-export fn mutbytes_operation_from_source(name: String) -> Int {
-  if !String::starts_with(name, "MutBytes::") {
+export fn resolved_builtin_operation_from_source(name: String) -> Int {
+  if !String::starts_with(name, "MutBytes::") && !String::starts_with(name, "MutList::") {
     0
   } else {
     let mut result = 0
     let mut i = 0
-    while i < Array::length(mutbytes_operations) {
-      let row = Array::get(mutbytes_operations, i)
+    while i < Array::length(builtin_operations) {
+      let row = Array::get(builtin_operations, i)
       if row.0 == name {
         result = row.1
       } else {
@@ -57,8 +71,8 @@ export fn resolved_callee_operation(resolution: Array[Int]) -> Int {
 }
 
 export fn builtin_operation_arity(operation: Int) -> Int {
-  if operation >= builtin_mutbytes_empty && operation <= builtin_mutbytes_to_bytes {
-    Array::get(mutbytes_operations, operation - builtin_mutbytes_empty).2
+  if operation >= 1 && operation <= Array::length(builtin_operations) {
+    Array::get(builtin_operations, operation - 1).2
   } else {
     0 - 1
   }
@@ -66,27 +80,39 @@ export fn builtin_operation_arity(operation: Int) -> Int {
 
 /// Shared lowering targets explicitly name builtins, never program bindings.
 export fn builtin_operation_alias(operation: Int) -> String {
-  if operation >= builtin_mutbytes_empty && operation <= builtin_mutbytes_to_bytes {
-    Array::get(mutbytes_operations, operation - builtin_mutbytes_empty).3
+  if operation >= 1 && operation <= Array::length(builtin_operations) {
+    Array::get(builtin_operations, operation - 1).3
   } else {
     ""
   }
 }
 
 // Tag 7 in the per-module lowering carrier stores (call offset, identity).
-// Its payload is offset * 8 + identity, with 0 representing a program binding.
+// Its payload reserves 16 bits for identity; 0 represents a program binding.
+// Compiler-source fingerprints invalidate sidecars using the old 3-bit layout.
+let callee_identity_radix: Int = 65536
+/// Rebase all typed-lowering channels without losing the callee identity.
+export fn resolved_callee_row_rebase(row: Int, base: Int) -> Int {
+  let scale = if row % 8 == 7 {
+    callee_identity_radix * 8
+  } else {
+    8
+  }
+  row + base * scale
+}
+
 let callee_capture: Array[Int] = []
 export fn resolved_callee_capture_reset() -> Unit {
   Array::truncate(callee_capture, 0)
 }
 export fn resolved_callee_capture_record(offset: Int, operation: Int) -> Unit {
-  if offset >= 0 && operation != 0 {
-    let identity = if operation < 0 {
+  if offset >= 0 && (operation == 0 - 1 || builtin_operation_arity(operation) >= 0) {
+    let identity = if operation == 0 - 1 {
       0
     } else {
       operation
     }
-    Array::push(callee_capture, (offset * 8 + identity) * 8 + 7)
+    Array::push(callee_capture, (offset * callee_identity_radix + identity) * 8 + 7)
   }
 }
 export fn resolved_callee_capture_rows() -> Array[Int] {
@@ -143,12 +169,16 @@ export fn restore_resolved_callees(stmts: Array[Stmt], rows: Array[Int]) -> Unit
     for row in rows {
       if row % 8 == 7 {
         let payload = row / 8
-        let identity = payload % 8
-        MutMap::set(operations, payload / 8, if identity == 0 {
-          0 - 1
+        let identity = payload % callee_identity_radix
+        if identity == 0 || builtin_operation_arity(identity) >= 0 {
+          MutMap::set(operations, payload / callee_identity_radix, if identity == 0 {
+            0 - 1
+          } else {
+            identity
+          })
         } else {
-          identity
-        })
+          ()
+        }
       }
     }
     restore_callee_stmts(stmts, operations)
@@ -158,7 +188,7 @@ export fn restore_resolved_callees(stmts: Array[Stmt], rows: Array[Int]) -> Unit
 /// For compiler-synthesized calls AFTER the caller resolved a builtin value.
 /// Program references must go through the checker, never this factory.
 export fn builtin_callee_resolution(name: String) -> Array[Int] {
-  let operation = mutbytes_operation_from_source(name)
+  let operation = resolved_builtin_operation_from_source(name)
   if operation > 0 {
     [operation]
   } else {

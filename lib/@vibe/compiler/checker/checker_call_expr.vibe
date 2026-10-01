@@ -31,6 +31,13 @@ import @vibe/compiler/core {
   builtin_mutbytes_length,
   builtin_mutbytes_push,
   builtin_mutbytes_to_bytes,
+  builtin_mutlist_empty,
+  builtin_mutlist_freeze,
+  builtin_mutlist_get,
+  builtin_mutlist_length,
+  builtin_mutlist_push,
+  builtin_mutlist_to_array,
+  builtin_mutlist_truncate,
   builtin_operation_arity,
   canonical_builtin_name,
   env_bind,
@@ -85,7 +92,7 @@ import ./checker_spawnable.vibe {
 }
 
 import ./builtin_call_arms.vibe {
-  builtin_call_arm, builtin_resolves_at, resolve_mutbytes_callee
+  builtin_call_arm, builtin_resolves_at, resolve_builtin_callee
 }
 
 import ./checker_effects.vibe {
@@ -206,7 +213,7 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
         // #3179: the builtin arms below are selected by `arm`, never by
         // `name`: a spelling the program's own function answers for reaches
         // the ordinary call path at the end of this chain instead.
-        let operation = resolve_mutbytes_callee(env, name, callee_off, callee_resolution)
+        let operation = resolve_builtin_callee(env, name, callee_off, callee_resolution)
         resolved_callee_capture_record(call_off, operation)
         let builtin_operation = if builtin_operation_arity(operation) == Array::length(args) {
           operation
@@ -829,7 +836,7 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
           // `FrozenArray::length(x)` on an `Array[Int]` checked clean.
           reject_non_frozen_receiver(subst_apply(s1, fa_len_ty), name, callee_off, errors)
           (tab_call_ty(tytab, call_off, CtInt, capture, lane), s1, c1)
-        } else if arm == "MutList::empty" {
+        } else if builtin_operation == builtin_mutlist_empty {
           // ADR-0090 Phase 1: MutList[T, r] is a checker-only phantom over
           // Array[T]'s runtime layout (same technique as FrozenArray above).
           // The region argument's type -- inside `region r { .. }` a type
@@ -861,7 +868,7 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
             CtUnknown,
             zoned_r
           ], 0, 2)), capture, lane), s1, c1)
-        } else if arm == "MutList::push" {
+        } else if builtin_operation == builtin_mutlist_push {
           // ADR-0090 Phase 1: borrows the list (arg0), consumes the element.
           // The tolerant CtUnknown element type means no per-push element
           // unification yet -- the checker slice keeps FrozenArray's
@@ -869,7 +876,7 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
           let (_, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
           let (_, s2, c2) = check_child(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
           (tab_call_ty(tytab, call_off, CtUnit, capture, lane), s2, c2)
-        } else if arm == "MutList::freeze" {
+        } else if builtin_operation == builtin_mutlist_freeze {
           // ADR-0090 Phase 1: the sanctioned region exit -- drops the region
           // type argument, so the frozen result passes the `__region_run`
           // escape scan (runtime identity cast, like ArrayBuilder::freeze).
@@ -885,7 +892,7 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
           (tab_call_ty(tytab, call_off, CtNamed("FrozenArray", Array::slice([
             elem
           ], 0, 1)), capture, lane), s1, c1)
-        } else if arm == "MutList::to_array" {
+        } else if builtin_operation == builtin_mutlist_to_array {
           // ADR-0090 Phase 1: like freeze but exits to a plain Array[T].
           let (ml_ty, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
           let elem = match subst_apply(s1, ml_ty) {
@@ -897,7 +904,7 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
             _ => CtUnknown
           }
           (tab_call_ty(tytab, call_off, CtArray(elem), capture, lane), s1, c1)
-        } else if arm == "MutList::get" {
+        } else if builtin_operation == builtin_mutlist_get {
           // ADR-0090 / #1770: in-region read. The ELEMENT is an ordinary
           // main-heap value (push stores whatever the caller built), so
           // returning it is not an escape of region storage -- only the
@@ -922,11 +929,11 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
             other => Array::push(errors, String::concat(String::concat("MutList::get expects an Int index, got ", type_to_string(other)), off_marker_len(callee_off, String::length(name))))
           }
           (tab_call_ty(tytab, call_off, elem, capture, lane), s2, c2)
-        } else if arm == "MutList::length" {
+        } else if builtin_operation == builtin_mutlist_length {
           // ADR-0090 / #1770: scalar in-region read, escape-free.
           let (_, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
           (tab_call_ty(tytab, call_off, CtInt, capture, lane), s1, c1)
-        } else if arm == "MutList::truncate" {
+        } else if builtin_operation == builtin_mutlist_truncate {
           // #1863: stack-pop idiom for helper-grown region scratch.
           // Same layout as Array::truncate; the list stays in the region.
           let (_, s1, c1) = check_child(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)

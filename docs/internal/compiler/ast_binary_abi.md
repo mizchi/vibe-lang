@@ -42,22 +42,26 @@ recognize.
 
 **v2 -> v3**: `ECall` appends a call-owned resolution cell, encoded as
 `array<svarint>`. An empty cell is unresolved/unmigrated; `[-1]` resolves a
-migrated source spelling to a program binding; `[1]` through `[5]` name the
-five MutBytes builtin operations. Other values or more than one entry are
+migrated source spelling to a program binding; `[1]` through `[12]` name
+the five MutBytes and seven MutList builtin operations. Other values or more than one entry are
 rejected. This payload is preserved by checked-program transport and call
 rewrites. It carries no source offset or interned spelling ID.
 
 The checker assigns these identities after lexical/module binding resolution.
-The linear and GC backends consume the same operation ID for MutBytes calls.
+The linear and GC backends consume the same operation ID for MutBytes and MutList calls.
 Other builtin families retain their existing dispatch until migrated.
 
 The existing per-module lowering carrier also transports these answers when
 only the type environment is reused. Tag 7 stores
-`(call_offset * 8 + operation_code) * 8 + 7`, where operation code 0 means a
-program binding and codes 1–5 match the operation IDs. Restoration matches the
+`(call_offset * 65536 + operation_code) * 8 + 7`, where operation code 0 means a
+program binding and codes 1–12 match the operation IDs. Restoration matches the
 exact current module's located call, before offset rebasing or namespace
 rewrites; it never derives an identity from the callee's diagnostic spelling.
-Tag 7 rebasing therefore adds `base * 64`, while existing tags add `base * 8`.
+Tag 7 rebasing therefore adds `base * 65536 * 8`, while existing tags add `base * 8`.
+All consumers use `resolved_callee_row_rebase` for this distinction. The wider
+identity field keeps IDs above 7 distinct from source offsets; unknown IDs are
+not restored. The AST binary layout remains v3 because its signed-varint cell
+already carries these IDs; older v3 readers reject the new operations explicitly.
 The compiler source fingerprint invalidates older carrier entries.
 
 **v1 -> v2**: `EString` gained its source offset. v1 wrote only the value and

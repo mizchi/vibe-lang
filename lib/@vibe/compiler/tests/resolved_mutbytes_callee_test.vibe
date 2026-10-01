@@ -20,7 +20,7 @@ import @vibe/compiler/core {
   restore_resolved_callees
 }
 import @vibe/compiler/checker {
-  check_expr, resolve_mutbytes_callee
+  check_expr, resolve_builtin_callee
 }
 import @vibe/compiler/runtime {
   ensure_module_typed_lowering_offsets_for_source,
@@ -55,8 +55,8 @@ test "program calls and compiler synthesized calls resolve differently" {
   let env = env_bind(EnvEmpty, "MutBytes::push", CtFn([CtInt, CtInt], CtString, None))
   let own: Array[Int] = []
   let generated: Array[Int] = []
-  inspect(resolve_mutbytes_callee(env, "MutBytes::push", 10, own), content = "-1")
-  inspect(resolve_mutbytes_callee(env, "MutBytes::push", builtin_ref_offset(), generated), content = "2")
+  inspect(resolve_builtin_callee(env, "MutBytes::push", 10, own), content = "-1")
+  inspect(resolve_builtin_callee(env, "MutBytes::push", builtin_ref_offset(), generated), content = "2")
   inspect(resolved_callee_operation(own), content = "-1")
   inspect(resolved_callee_operation(generated), content = "2")
 }
@@ -114,11 +114,11 @@ test "binary transport preserves resolved calls without spelling inference" {
 
 test "a fresh check replaces a cached callee answer after bindings change" {
   let resolution: Array[Int] = []
-  inspect(resolve_mutbytes_callee(EnvEmpty, "MutBytes::length", 9, resolution), content = "4")
+  inspect(resolve_builtin_callee(EnvEmpty, "MutBytes::length", 9, resolution), content = "4")
   let changed = env_bind(EnvEmpty, "MutBytes::length", CtFn([CtInt], CtString, None))
-  inspect(resolve_mutbytes_callee(changed, "MutBytes::length", 9, resolution), content = "-1")
+  inspect(resolve_builtin_callee(changed, "MutBytes::length", 9, resolution), content = "-1")
   inspect(resolved_callee_operation(resolution), content = "-1")
-  inspect(resolve_mutbytes_callee(EnvEmpty, "MutBytes::length", 9, resolution), content = "4")
+  inspect(resolve_builtin_callee(EnvEmpty, "MutBytes::length", 9, resolution), content = "4")
   inspect(Array::length(resolution), content = "1")
 }
 
@@ -220,7 +220,7 @@ test "a cached checker answer restores call identity without a source name looku
 }
 
 test "binary transport rejects malformed resolved call identities" {
-  for resolution in [[0], [6], [0 - 2], [1, 2]] {
+  for resolution in [[0], [13], [0 - 2], [1, 2]] {
     let encoded = Bytes::new()
     ast_binary_write_expr(encoded, ECall(EIdent("diagnostic_name", 17), [], 17, resolution))
     let rejected = handle {

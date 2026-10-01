@@ -42,6 +42,7 @@ import @vibe/compiler/core {
   dir_of_path,
   export_plan_renames_for,
   import_value_rename_locals,
+  mark_private_builtin_references,
   merged_offset_space_add,
   merged_offset_space_reset,
   merged_source_boundary_names,
@@ -50,6 +51,7 @@ import @vibe/compiler/core {
   namespace_rename_originals_reset,
   resolution_env_seed,
   resolve_import_path,
+  resolved_callee_row_rebase,
   rewrite_imported_value_stmt_to_local,
   stmts_have_import_deep,
   trait_import_local_operation_renames,
@@ -313,14 +315,9 @@ fn append_import_alias_collision_defs_from_sources(merged: Array[Stmt], current_
                           // typed_lowering_enc), so shifting a row by the
                           // clone's merge-space delta adds (base + delta) * 8
                           // -- the tag bits stay untouched. Callee tag 7 has one
-                          // more identity field, so its offset scale is 64.
+                          // more identity field, so rebasing is shared with core/resolved_callee.
                           let row = Array::get(provider_offsets, k)
-                          let scale = if row % 8 == 7 {
-                            64
-                          } else {
-                            8
-                          }
-                          Array::push(clone_float_offsets_out, row + (provider_base + delta) * scale)
+                          Array::push(clone_float_offsets_out, resolved_callee_row_rebase(row, (provider_base + delta)))
                           k = k + 1
                         }
                       },
@@ -1502,6 +1499,10 @@ export fn compile_file_fs_mode_gc(entry_path: String, entry_name: String) -> Byt
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   let _ = next_db
   let merged_stmts = build_grouped_merged_stmts_gc(source_groups)
+  // Protect dependency builtins from the entry's private names before the
+  // whole-program check, while retaining source names for method checking.
+  // The normal post-check rename still owns definitions and ABI tables.
+  mark_private_builtin_references(merged_stmts)
   compile_generated_stmts_gc_only(merged_stmts, entry_name)
 }
 
