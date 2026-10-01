@@ -74,6 +74,11 @@ Validation of the candidate includes:
 
 [Raw samples and provenance](../../../bench/perf/analysis/resolved-mutlist-callees-2026-10-01.json)
 contain 32 samples: four cold and four warm runs per compiler and corpus.
+Their fixed input tree is original PR commit
+`19e34f384901525e2f11b1d40a94b71f7f1d683b`, including the shared GC helper's
+checker import. This controls the compiler-artifact comparison, but does not
+measure each commit against its own source closure; the CI follow-up below
+records the input-closure regression this comparison missed.
 The harness uses independent persistent caches per round/compiler, equal-width
 paths, alternating AB/BA order, one process per sample and no concurrent builds
 or tests. Node 24.7.0, Linux x64, Ryzen 7 7700; target linear RC, compiler bump
@@ -98,3 +103,71 @@ A census of tracked `lib/@vibe/compiler` `.vibe`/`.vpkg` files, excluding
 bytes and 314,852 → 314,860 lines. The largest file is `file_compile.vibe`,
 2,951 → 2,952 lines; no production module was added. All identity channels
 remain explicitly parameterized, without new process-global state.
+
+## CI heap regression and test-helper repair
+
+[The original CI run](https://github.com/mizchi/vibe-lang/actions/runs/36863067440/job/110374438470)
+passed the unit shards and runtime gates but failed the default selfcompile
+heap gate: 1,445,040,920 bytes exceeded the 1,201,834,048-byte ceiling. The
+checker import added to the shared codegen test helper expanded the lexer
+test's input closure even though that test only uses `assert_wasm`. The old
+compiler artifact also allocates about 1.445 GB when compiling that expanded
+tree. This is an input-closure regression introduced by this PR, not evidence
+that the old heap baseline needed an increase.
+
+Keeping the candidate compiler and all other sources fixed, temporarily
+restoring only the main version of the shared helper produced **1,088,059,120
+bytes in all three isolated cold runs**. The repair moves `compile_wasi_gc`,
+its checker collection and GC imports unchanged into
+`codegen_gc_test_support.vibe`, and redirects the ten GC consumers. RC-only
+tests import the shared helper without reaching these GC/checker dependencies.
+The checker still supplies resolved callee IDs to the deliberately unchecked
+GC emission probes.
+
+After the split, the default KPI produces **1,023,482,488 bytes in all three
+isolated cold runs**. The production compiler sources and stage2/stage3
+artifact are unchanged. The heap baseline ratchets down from 1,092,576,408 to
+1,023,482,488 bytes; the +10% tolerance is unchanged, giving a new ceiling of
+1,125,830,736 bytes. The existing CI heap gate detects this dependency growth;
+its failing run and the repair supply the red/green regression evidence.
+
+The raw JSON preserves the earlier fixed-tree artifact comparison and adds the
+CI result, six before samples, three checker-import ablation samples and three
+repaired samples. These diagnostic cold heap trials use fresh isolated caches
+and equal-width temporary paths; their order is fixed and no wall-time speedup
+is claimed. The ten GC test files plus the lexer test pass after the split.
+
+### Whole/split cold and warm follow-up
+
+The PR's original perf report also flagged whole and production-split warm
+allocation. Both lanes use the same lexer-test closure: adding the checker
+expanded the split from main's **353 modules to 415**. Separating GC support
+reduces the repaired closure to **314 modules**.
+
+The unchanged CI collector, `scripts/selfhost_build_metrics.mjs`, was run
+with three rounds, alternating whole/split order, fresh processes and isolated
+cold/warm caches, without concurrent builds or tests. Every allocation value
+agreed across all three samples; cold/warm output hashes match within each
+lane.
+
+| Allocation volume | Main CI | Original PR CI | Repaired local, N=3 |
+| --- | ---: | ---: | ---: |
+| Whole cold | 1,088,332,680 B | 1,446,136,004 B | 1,024,303,300 B |
+| Whole warm | 660,250,872 B | 900,106,340 B | 622,786,292 B |
+| Split cold | 1,465,422,728 B | 1,917,115,908 B | 1,337,544,084 B |
+| Split warm | 1,037,340,872 B | 1,371,086,212 B | 936,027,028 B |
+
+The raw JSON retains both CI snapshots and all twelve repaired local samples.
+The collector protocol hash is unchanged. Main/original CI used Node 24.21.0
+and the local repair used Node 24.7.0; percentage comparisons across runtimes
+are deferred to the next CI perf report. All four repaired local allocation
+readings are below the recorded main readings.
+
+The release gate additionally exposed an existing timing-test defect: its
+escaping-grandchild control uses `date +%s`, and reported 9 seconds against a
+>=10-second assertion twice while other gate timings were negative. The test
+probe now uses Node's monotonic `process.hrtime.bigint()`. A backward-date
+mutation from 100 to 50 deterministically makes the pre-fix probe report
+`elapsed=-50`; the repaired probe preserves a nonnegative elapsed time and the
+child's exit status. Production timeout classification is unchanged. The
+complete fuzz self-test passes with that red/green regression.
