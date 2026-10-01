@@ -1,0 +1,132 @@
+import @vibe/compiler/core {
+  Expr,
+  Stmt,
+  Subst,
+  Type,
+  TypeEnv,
+  builtin_callee_resolution,
+  builtin_operation_alias,
+  builtin_operation_arity,
+  env_bind,
+  resolved_builtin_operation_from_source,
+  resolved_callee_capture_record,
+  resolved_callee_capture_reset,
+  resolved_callee_capture_rows,
+  resolved_callee_operation,
+  resolved_callee_row_rebase,
+  restore_resolved_callees
+}
+import @vibe/compiler/checker {
+  check_expr, check_program, resolve_builtin_callee
+}
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+import @vibe/compiler/cache {
+  ast_binary_read_expr, ast_binary_reader_new, ast_binary_write_expr
+}
+import @vibe/ast {
+  builtin_ref_offset
+}
+
+let names = ["Array::with_capacity", "Array::push", "Array::set"]
+let arities = [1, 2, 3]
+
+fn rejection(source: String) -> String {
+  handle {
+    let _ = check_program(parse_program(lex(source)))
+    ""
+  } with { Exception::Throw(message) => message }
+}
+
+test "Array operations have distinct identities and explicit builtin targets" {
+  let mut i = 0
+  while i < Array::length(names) {
+    let name = Array::get(names, i)
+    let operation = 13 + i
+    assert_eq(resolved_builtin_operation_from_source(name), operation)
+    assert_eq(builtin_operation_arity(operation), Array::get(arities, i))
+    assert_eq(builtin_operation_alias(operation), name)
+    assert_eq(resolved_callee_operation(builtin_callee_resolution(name)), operation)
+    let params: Array[Type] = []
+    let args: Array[Expr] = []
+    let mut j = 0
+    while j < Array::get(arities, i) {
+      Array::push(params, CtInt)
+      Array::push(args, EInt(j))
+      j = j + 1
+    }
+    let env = env_bind(EnvEmpty, name, CtFn(params, CtString, None))
+    let cell = [operation]
+    let errors: Array[String] = []
+    let (result, _, _) = check_expr(ECall(EIdent(name, 40), args, 40, cell), env, [
+    ], SubstEmpty, 0, errors, [])
+    assert_eq(result, CtString)
+    assert_eq(Array::length(errors), 0)
+    assert_eq(resolved_callee_operation(cell), 0 - 1)
+    assert_eq(resolve_builtin_callee(env, name, builtin_ref_offset(), cell), operation)
+    assert_eq(resolve_builtin_callee(EnvEmpty, "unmigrated", 40, cell), 0)
+    assert_eq(Array::length(cell), 0)
+    i = i + 1
+  }
+}
+
+test "Array identity dispatch retains capacity and element rejection diagnostics" {
+  assert(String::contains(rejection("let xs = Array::with_capacity(\"bad\")"), "Array::with_capacity requires an Int capacity"))
+  assert(String::contains(rejection("let xs: Array[Int] = []; Array::push(xs, \"bad\")"), "Array::push value type mismatch"))
+  assert(String::contains(rejection("let xs: Array[Int] = [1]; Array::set(xs, 0, \"bad\")"), "Array::set value type mismatch"))
+  assert(String::contains(rejection("let xs: Array[Int] = [1]; Array::set(xs, \"bad\", 2)"), "argument type mismatch for Array::set (arg 1)"))
+}
+
+test "binary transport preserves Array identities independently of diagnostics" {
+  for operation in [13, 14, 15] {
+    let bytes = Bytes::new()
+    ast_binary_write_expr(bytes, ECall(EIdent("diagnostic_name", 1048576), [], 1048576, [
+      operation
+    ]))
+    match ast_binary_read_expr(ast_binary_reader_new(bytes)) {
+      ECall(_, _, offset, cell) => {
+        assert_eq(offset, 1048576)
+        assert_eq(resolved_callee_operation(cell), operation)
+      },
+      _ => assert(false)
+    }
+  }
+}
+
+test "the checker replaces a stale program identity on an Array push" {
+  let cell = [0 - 1]
+  let errors: Array[String] = []
+  let env = env_bind(EnvEmpty, "values", CtArray(CtInt))
+  let (result, _, _) = check_expr(ECall(EIdent("Array::push", 17), [
+    EIdent("values", 30),
+    EInt(29)
+  ], 17, cell), env, [], SubstEmpty, 0, errors, [])
+  assert_eq(result, CtUnit)
+  assert_eq(Array::length(errors), 0)
+  assert_eq(resolved_callee_operation(cell), 14)
+}
+
+test "Array identities survive typed carrier restoration and rebasing" {
+  resolved_callee_capture_reset()
+  let stmts: Array[Stmt] = []
+  let cells: Array[Array[Int]] = []
+  for operation in [13, 14, 15] {
+    let cell: Array[Int] = []
+    Array::push(cells, cell)
+    let offset = 1048576 + operation
+    resolved_callee_capture_record(offset, operation)
+    Array::push(stmts, SExpr(ECall(EIdent("diagnostic_name", offset + 91), [], offset + 91, cell)))
+  }
+  let rows: Array[Int] = []
+  for row in resolved_callee_capture_rows() {
+    Array::push(rows, resolved_callee_row_rebase(row, 91))
+  }
+  restore_resolved_callees(stmts, rows)
+  let mut i = 0
+  while i < Array::length(cells) {
+    assert_eq(resolved_callee_operation(Array::get(cells, i)), 13 + i)
+    i = i + 1
+  }
+  resolved_callee_capture_reset()
+}

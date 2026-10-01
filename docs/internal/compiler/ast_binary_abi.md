@@ -42,19 +42,20 @@ recognize.
 
 **v2 -> v3**: `ECall` appends a call-owned resolution cell, encoded as
 `array<svarint>`. An empty cell is unresolved/unmigrated; `[-1]` resolves a
-migrated source spelling to a program binding; `[1]` through `[12]` name
-the five MutBytes and seven MutList builtin operations. Other values or more than one entry are
-rejected. This payload is preserved by checked-program transport and call
+migrated source spelling to a program binding; `[1]` through `[15]` name
+the five MutBytes, seven MutList, and three Array mutation/capacity builtin
+operations. Other values or more than one entry are rejected. This payload is preserved by checked-program transport and call
 rewrites. It carries no source offset or interned spelling ID.
 
 The checker assigns these identities after lexical/module binding resolution.
-The linear and GC backends consume the same operation ID for MutBytes and MutList calls.
+The linear and GC backends consume the same operation ID for MutBytes, MutList,
+and migrated Array calls.
 Other builtin families retain their existing dispatch until migrated.
 
 The existing per-module lowering carrier also transports these answers when
 only the type environment is reused. Tag 7 stores
 `(call_offset * 65536 + operation_code) * 8 + 7`, where operation code 0 means a
-program binding and codes 1–12 match the operation IDs. Restoration matches the
+program binding and codes 1–15 match the operation IDs. Restoration matches the
 exact current module's located call, before offset rebasing or namespace
 rewrites; it never derives an identity from the callee's diagnostic spelling.
 Tag 7 rebasing therefore adds `base * 65536 * 8`, while existing tags add `base * 8`.

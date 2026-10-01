@@ -183,6 +183,7 @@ Not normative.
 | [internal/reports/parser-simd-scan-2026-08-15.md](internal/reports/parser-simd-scan-2026-08-15.md) | |
 | [internal/reports/perf-snapshot-2026-08-07.md](internal/reports/perf-snapshot-2026-08-07.md) | |
 | [internal/reports/pl-survey-2026-07.md](internal/reports/pl-survey-2026-07.md) | |
+| [internal/reports/resolved-array-callees-2026-10-02.md](internal/reports/resolved-array-callees-2026-10-02.md) | Array mutation/capacity operation identities, backend parity and source-controlled allocation measurements |
 | [internal/reports/resolved-mutlist-callees-2026-10-01.md](internal/reports/resolved-mutlist-callees-2026-10-01.md) | MutList operation identities, transport, shadow regression and controlled compiler measurements |
 | [internal/reports/code-size-linear-vs-gc.md](internal/reports/code-size-linear-vs-gc.md) | Measured 2026-08-15/16 |
 

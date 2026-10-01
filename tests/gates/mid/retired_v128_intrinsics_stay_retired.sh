@@ -776,6 +776,7 @@ for bf_lane in shadow gc; do
         fixtures/builtin_shadow_conversion_test.vibe fixtures/builtin_shadow_capability_test.vibe \
         fixtures/builtin_shadow_entry_scope_test.vibe \
         fixtures/resolved_mutlist_runtime_test.vibe fixtures/resolved_mutlist_import_test.vibe \
+        fixtures/resolved_array_runtime_test.vibe fixtures/resolved_array_import_test.vibe \
         fixtures/resolved_mutbytes_runtime_test.vibe fixtures/resolved_mutbytes_import_test.vibe \
       >"$ROOT_DIR/_build/_gate_builtin_shadow_intercept.log" 2>&1; then
     echo "[compiler-gate] FAIL: a program's own function of a builtin spelling a lowering intercepts was ignored for its direct call, or took the compiler's own call, on the $bf_lane lane (#3185 / #3186):" >&2

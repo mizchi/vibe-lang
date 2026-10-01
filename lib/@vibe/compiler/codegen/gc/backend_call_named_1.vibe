@@ -5,6 +5,7 @@ import @vibe/compiler/core {
   Pat,
   Stmt,
   TypeExpr,
+  builtin_array_set,
   builtin_mutbytes_empty,
   builtin_mutbytes_to_bytes,
   builtin_mutlist_empty,
@@ -282,7 +283,7 @@ export fn gc_compile_native_array_ref(buf: Bytes, expr: Expr, local_names: Array
 /// ordinary lowering.
 fn gc_mut_alias_call(buf: Bytes, target: String, args: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, ce: (Bytes, Expr, Array[String], Int, Int) -> Int with Exception) -> Int with Exception {
   let eff_target = gc_direct_abi_twin_callee(ctx, target)
-  let pos = if func_table_user_index_of(ctx.func_table, target, ctx.num_user_funcs) >= 0 {
+  let pos = if func_table_user_index_of(ctx.func_table, target, ctx.num_user_funcs) >= 0 || find_local_slot(local_names, target) >= 0 {
     func_table_builtin_pos_of(ctx.func_table, eff_target, ctx.num_user_funcs)
   } else {
     -1
@@ -411,13 +412,6 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], resolution: Arra
       } else {
         ()
       }
-      // Both families share the same operation-to-builtin alias table.
-      let operation_alias = builtin_operation_alias(operation)
-      if operation_alias != "" && builtin_operation_arity(operation) == Array::length(args) {
-        return gc_mut_alias_call(buf, operation_alias, args, local_names, next_local, ctx, ld, ce)
-      } else {
-        ()
-      }
       // The Bytes half of the same tier. `MutBytes` storage IS a `Bytes`
       // without an arena, so the operations are the Bytes ones under another
       // spelling, and the exit copies for the same reason as MutList's.
@@ -476,7 +470,7 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], resolution: Arra
       let native_slot = gc_native_array_receiver_slot(args, local_names, ctx)
       // #3132: the shortcuts below ARE the builtins; a call the program
       // resolves to its own function of that name must not take them.
-      let native_receiver = Array::length(args) > 0 && (native_slot >= 0 || gc_expr_is_native_array_ref(Array::get(args, 0), local_names, ctx)) && !gc_name_is_user_defined(ctx, local_names, fname)
+      let native_receiver = Array::length(args) > 0 && (native_slot >= 0 || gc_expr_is_native_array_ref(Array::get(args, 0), local_names, ctx)) && (operation == builtin_array_set || !gc_name_is_user_defined(ctx, local_names, fname))
       if native_receiver && fname == "Array::length" && Array::length(args) == 1 {
         let nl = if native_slot >= 0 {
           emit_local_get(buf, native_slot)
@@ -498,7 +492,7 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], resolution: Arra
         emit_i32_wrap_i64(buf)
         emit_array_get(buf, ctx.gc_native_array_type_idx)
         return nl
-      } else if native_receiver && fname == "Array::set" && Array::length(args) == 3 {
+      } else if native_receiver && operation == builtin_array_set && Array::length(args) == 3 {
         let nl0 = if native_slot >= 0 {
           emit_local_get(buf, native_slot)
           next_local
@@ -511,6 +505,13 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], resolution: Arra
         emit_array_set(buf, ctx.gc_native_array_type_idx)
         emit_i64_const(buf, 0)
         return nl2
+      } else {
+        ()
+      }
+      // Resolved calls share one operation-to-builtin target table.
+      let operation_alias = builtin_operation_alias(operation)
+      if operation_alias != "" && builtin_operation_arity(operation) == Array::length(args) {
+        return gc_mut_alias_call(buf, operation_alias, args, local_names, next_local, ctx, ld, ce)
       } else {
         ()
       }
