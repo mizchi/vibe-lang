@@ -317,11 +317,22 @@ fi
 # transitive dependencies (loader/header_cache.vibe is reachable from
 # fmt_entry through contract_package_hashes_fs and was tracked by nothing).
 # ensure_entry_wasm.sh captures the closure into <wasm>.deps at build time;
-# prove a transitive dep is IN the manifest and that touching it rebuilds.
-# GNU stat spells the mtime query -c %Y, BSD (macOS) stat spells it -f %m
-# (#2260 round 8); try GNU first, fall back to BSD.
-mtime_of() {
-  stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"
+# prove a transitive dep is IN the manifest and that making it newer rebuilds.
+# Set the staleness stimulus relative to the artifact, independent of wall
+# clock backsteps. Observe atomic publication by inode, not by a second-rounded
+# timestamp: a successful rebuild can publish with the same or an older mtime.
+newer_than_artifact() {
+  node - "$1" "$entry_wasm" <<'NODE'
+const fs = require('node:fs');
+const [path, artifact] = process.argv.slice(2);
+const original = fs.statSync(path);
+const reference = fs.statSync(artifact);
+fs.utimesSync(path, original.atime, new Date(reference.mtimeMs + 1000));
+NODE
+  if [ ! "$1" -nt "$entry_wasm" ]; then
+    echo "vibe_fmt_parse_guard_test: could not make the dependency newer than the artifact" >&2
+    exit 1
+  fi
 }
 
 entry_wasm="$ROOT_DIR/_build/vibe_fmt/fmt_entry.wasm"
@@ -330,12 +341,13 @@ if ! grep -q '^lib/@vibe/compiler/loader/header_cache\.vibe$' "$entry_wasm.deps"
   echo "vibe_fmt_parse_guard_test: fmt_entry's captured closure is missing a transitive dep (header_cache.vibe)" >&2
   exit 1
 fi
-before_mtime="$(mtime_of "$entry_wasm")"
-sleep 1
-touch "$ROOT_DIR/lib/@vibe/compiler/loader/header_cache.vibe"
+dep="$ROOT_DIR/lib/@vibe/compiler/loader/header_cache.vibe"
+touch -r "$dep" "$work/header-cache-mtime"
+ln "$entry_wasm" "$work/before-transitive-dep.wasm"
+newer_than_artifact "$dep"
 bash "$ROOT_DIR/scripts/ensure_vibe_fmt_entry.sh" >/dev/null
-after_mtime="$(mtime_of "$entry_wasm")"
-if [ "$after_mtime" -le "$before_mtime" ]; then
+touch -r "$work/header-cache-mtime" "$dep"
+if [ "$entry_wasm" -ef "$work/before-transitive-dep.wasm" ]; then
   echo "vibe_fmt_parse_guard_test: touching a transitive dep did not rebuild the cached formatter" >&2
   exit 1
 fi
@@ -359,12 +371,13 @@ if grep -q 'no_such_recorded_dep' "$entry_wasm.deps"; then
   echo "vibe_fmt_parse_guard_test: the rebuild did not recapture the closure manifest" >&2
   exit 1
 fi
-before_mtime="$(mtime_of "$entry_wasm")"
-sleep 1
-touch "$ROOT_DIR/lib/@vibe/cli"
+dep="$ROOT_DIR/lib/@vibe/cli"
+touch -r "$dep" "$work/cli-directory-mtime"
+ln "$entry_wasm" "$work/before-directory-dep.wasm"
+newer_than_artifact "$dep"
 bash "$ROOT_DIR/scripts/ensure_vibe_fmt_entry.sh" >/dev/null
-after_mtime="$(mtime_of "$entry_wasm")"
-if [ "$after_mtime" -le "$before_mtime" ]; then
+touch -r "$work/cli-directory-mtime" "$dep"
+if [ "$entry_wasm" -ef "$work/before-directory-dep.wasm" ]; then
   echo "vibe_fmt_parse_guard_test: a newer closure-member directory did not read as stale" >&2
   exit 1
 fi
