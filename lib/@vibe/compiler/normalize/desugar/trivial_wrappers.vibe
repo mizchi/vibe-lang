@@ -121,7 +121,7 @@ fn dtpw_expr_binds_name(expr: Expr, name: String) -> Bool {
       }
       found
     },
-    ECall(callee, args, _) => dtpw_expr_binds_name(callee, name) || dtpw_exprs_bind_name(args, name),
+    ECall(callee, args, _, _) => dtpw_expr_binds_name(callee, name) || dtpw_exprs_bind_name(args, name),
     EBinOp(_, l, r, _) => dtpw_expr_binds_name(l, name) || dtpw_expr_binds_name(r, name),
     EUnaryOp(_, e) => dtpw_expr_binds_name(e, name),
     ETuple(es) => dtpw_exprs_bind_name(es, name),
@@ -218,7 +218,7 @@ fn dtpw_collect_wrappers(stmts: Array[Stmt]) -> Array[String] {
         let (pname, _) = Array::get(params, 0)
         let stripped = dlh_strip_tilde(pname)
         match body {
-          ECall(callee, args, _) => match callee {
+          ECall(callee, args, _, _) => match callee {
             EIdent(cn, _) => if cn == stripped && Array::length(args) == 0 {
               Array::push(out, name)
             } else {
@@ -271,17 +271,17 @@ fn dtpw_collect_wrappers(stmts: Array[Stmt]) -> Array[String] {
 /// arity that wouldn't match here anyway).
 fn dtpw_inline_expr(expr: Expr, wrappers: Array[String]) -> Expr {
   match expr {
-    ECall(callee, args, off) => match callee {
+    ECall(callee, args, off, callee_resolution) => match callee {
       EIdent(wn, _) => if str_array_contains(wrappers, wn) && Array::length(args) == 1 {
-        ECall(dtpw_inline_expr(Array::get(args, 0), wrappers), array_empty(), off)
+        ECall(dtpw_inline_expr(Array::get(args, 0), wrappers), array_empty(), off, callee_resolution)
       } else {
         ECall(dtpw_inline_expr(callee, wrappers), for a in args {
           dtpw_inline_expr(a, wrappers)
-        }, off)
+        }, off, callee_resolution)
       },
       _ => ECall(dtpw_inline_expr(callee, wrappers), for a in args {
         dtpw_inline_expr(a, wrappers)
-      }, off)
+      }, off, callee_resolution)
     },
     EBinOp(op, l, r, boff) => EBinOp(op, dtpw_inline_expr(l, wrappers), dtpw_inline_expr(r, wrappers), boff),
     EUnaryOp(op, e) => EUnaryOp(op, dtpw_inline_expr(e, wrappers)),

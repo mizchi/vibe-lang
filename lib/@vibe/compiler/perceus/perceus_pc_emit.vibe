@@ -485,7 +485,7 @@ fn pmvc_spine_leaf(e: Expr, binders: Array[String]) -> Expr {
 /// one twice.
 fn pv_spine_is_view(ctx: PCtx, scope: PScope, e: Expr, binders: Array[String]) -> Bool {
   match e {
-    ECall(EIdent(fname, _), _, _) => !array_contains_str_pctx(binders, fname) && !ps_has(scope, fname) && is_borrow_ret_fname(ctx, fname),
+    ECall(EIdent(fname, _), _, _, _) => !array_contains_str_pctx(binders, fname) && !ps_has(scope, fname) && is_borrow_ret_fname(ctx, fname),
     EIdent(x, _) => !array_contains_str_pctx(binders, x) && ps_has(scope, x) && Array::get(ctx.borrowed_view, ps_get(scope, x)),
     EDot(_, _, _, _) => true,
     EIf(_, t, el) => pv_spine_is_view(ctx, scope, t, binders) || pv_spine_is_view(ctx, scope, el, binders),
@@ -531,7 +531,7 @@ fn pv_spine_under_binder(ctx: PCtx, scope: PScope, n: String, b: Expr, binders: 
 /// the binder's id is not yet known.
 fn pe_let_value_is_view(ctx: PCtx, scope: PScope, value: Expr) -> Bool {
   match value {
-    ECall(EIdent(fname, _), _, _) => !ps_has(scope, fname) && is_borrow_ret_fname(ctx, fname),
+    ECall(EIdent(fname, _), _, _, _) => !ps_has(scope, fname) && is_borrow_ret_fname(ctx, fname),
     EIdent(src, _) => ps_has(scope, src) && Array::get(ctx.borrowed_view, ps_get(scope, src)),
     ELet(_, _, _, _) => pv_spine_is_view(ctx, scope, value, array_empty()),
     ELetMut(_, _, _, _) => pv_spine_is_view(ctx, scope, value, array_empty()),
@@ -549,7 +549,7 @@ fn pe_let_value_is_view(ctx: PCtx, scope: PScope, value: Expr) -> Bool {
 fn pe_let_mut_borrowed_call(ctx: PCtx, value: Expr) -> Bool {
   let bc_binders = array_empty()
   match pmvc_spine_leaf(value, bc_binders) {
-    ECall(EIdent(fname, _), _, _) => !array_contains_str_pctx(bc_binders, fname) && is_borrow_ret_fname(ctx, fname),
+    ECall(EIdent(fname, _), _, _, _) => !array_contains_str_pctx(bc_binders, fname) && is_borrow_ret_fname(ctx, fname),
     _ => false
   }
 }
@@ -587,7 +587,7 @@ fn pctx_mark_view_call(ctx: PCtx, scope: PScope, id: Int, value: Expr) -> Int {
   let binders = array_empty()
   let leaf = pmvc_spine_leaf(value, binders)
   match leaf {
-    ECall(vc, args, _) => match vc {
+    ECall(vc, args, _, _) => match vc {
       EIdent(vf, _) => {
         if !array_contains_str_pctx(binders, vf) && !ps_has(scope, vf) && bsearch_leftmost(ctx.view_ret_user, vf) >= 0 {
           Array::set(ctx.view_call_let, id, true)
@@ -657,7 +657,7 @@ fn pe_has_live_view_of(ctx: PCtx, id: Int) -> Bool {
 /// keeps the codegen's loop-carried dup off the same occurrence.
 fn pe_self_reassign_moves(ctx: PCtx, scope: PScope, name: String, value: Expr) -> Bool {
   match value {
-    ECall(callee, args, _) => {
+    ECall(callee, args, _, _) => {
       let callee_is_name = match callee {
         EIdent(c, _) => c == name,
         _ => false
@@ -867,7 +867,7 @@ export fn pc_emit(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
     EUnit => 0,
     EStringInterp(_) => 0,
     EIdent(x, off) => pe_use(ctx, scope, x, off),
-    ECall(callee, args, _) => {
+    ECall(callee, args, _, _) => {
       // Same lexical-shadow guard as pc_count (and compile_call #875).
       let bmask = pe_borrow_mask(ctx, scope, callee)
       match callee {
@@ -1593,7 +1593,7 @@ export fn pc_count(ctx: PCtx, scope: PScope, expr: Expr) -> Int {
     EUnit => 0,
     EStringInterp(_) => 0,
     EIdent(x, _) => pc_count_use(ctx, scope, x),
-    ECall(callee, args, _) => {
+    ECall(callee, args, _, _) => {
       match callee {
         // Always borrow-count an ident callee: for a true top-level fn the
         // name is not in scope and this is a no-op, while for a LOCAL that

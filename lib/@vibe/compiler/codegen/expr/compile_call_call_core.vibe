@@ -9,7 +9,15 @@ import @vibe/core {
 }
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeExpr, canonical_builtin_name
+  Expr,
+  Pat,
+  Stmt,
+  TypeExpr,
+  builtin_mutbytes_empty,
+  builtin_mutbytes_to_bytes,
+  builtin_operation_alias,
+  canonical_builtin_name,
+  resolved_callee_operation
 }
 
 import @vibe/compiler/codegen/common_analysis {
@@ -163,22 +171,23 @@ fn cc_emit_truncate_release(buf: Bytes, args: Array[Expr], kind: Int, local_name
   next_local + 2
 }
 
-export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
+export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], resolution: Array[Int], local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
+  let operation = resolved_callee_operation(resolution)
   if is_eident(callee) && get_eident_name(callee) == "__region_run" && Array::length(args) == 1 {
     if ctx.region_ptr_addr >= 0 {
       emit_region_enter(buf, ctx.region_ptr_addr)
       if ctx.region_exn_tag >= 0 {
         emit_region_try_prologue(buf, ctx.region_exn_tag)
-        let r = ce(buf, ECall(Array::get(args, 0), [EInt(0)], -1), local_names, next_local, ctx, region_try_body_ld(ld))
+        let r = ce(buf, ECall(Array::get(args, 0), [EInt(0)], -1, []), local_names, next_local, ctx, region_try_body_ld(ld))
         emit_region_try_epilogue(buf, ctx.region_ptr_addr, ctx.region_exn_tag)
         r
       } else {
-        let r = ce(buf, ECall(Array::get(args, 0), [EInt(0)], -1), local_names, next_local, ctx, ld)
+        let r = ce(buf, ECall(Array::get(args, 0), [EInt(0)], -1, []), local_names, next_local, ctx, ld)
         emit_region_exit(buf, ctx.region_ptr_addr)
         r
       }
     } else {
-      ce(buf, ECall(Array::get(args, 0), [EInt(0)], -1), local_names, next_local, ctx, ld)
+      ce(buf, ECall(Array::get(args, 0), [EInt(0)], -1, []), local_names, next_local, ctx, ld)
     }
   } else if is_eident(callee) && get_eident_name(callee) == "MutList::empty" && Array::length(args) == 1 {
     if ctx.region_arr_new_func_idx >= 0 {
@@ -186,19 +195,19 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
       next_local
     } else {
       let no_args = Array::slice([EInt(0)], 0, 0)
-      ce(buf, ECall(EIdent("ArrayBuilder::new", -1), no_args, -1), local_names, next_local, ctx, ld)
+      ce(buf, ECall(EIdent("ArrayBuilder::new", -1), no_args, -1, []), local_names, next_local, ctx, ld)
     }
   } else if is_eident(callee) && (get_eident_name(callee) == "MutList::freeze" || get_eident_name(callee) == "MutList::to_array") && Array::length(args) == 1 {
     ce(buf, mutlist_exit_copy(Array::get(args, 0)), local_names, next_local, ctx, ld)
-  } else if is_eident(callee) && get_eident_name(callee) == "MutBytes::empty" && Array::length(args) == 1 {
+  } else if operation == builtin_mutbytes_empty && Array::length(args) == 1 {
     if ctx.region_bytes_new_func_idx >= 0 {
       emit_call(buf, ctx.region_bytes_new_func_idx)
       next_local
     } else {
       let no_args = Array::slice([EInt(0)], 0, 0)
-      ce(buf, ECall(EIdent("Bytes::new", -1), no_args, -1), local_names, next_local, ctx, ld)
+      ce(buf, ECall(EIdent("Bytes::new", -1), no_args, -1, []), local_names, next_local, ctx, ld)
     }
-  } else if is_eident(callee) && get_eident_name(callee) == "MutBytes::to_bytes" && Array::length(args) == 1 {
+  } else if operation == builtin_mutbytes_to_bytes && Array::length(args) == 1 {
     ce(buf, mutbytes_exit_copy(Array::get(args, 0)), local_names, next_local, ctx, ld)
   } else if is_eident(callee) && frozen_array_conversion_copy(get_eident_name(callee)) != "" && Array::length(args) == 1 && func_table_index_of(ctx.func_table, get_eident_name(callee)) >= 0 && !array_contains_str(local_names, get_eident_name(callee)) {
     ce(buf, array_value_copy(Array::get(args, 0), frozen_array_conversion_copy(get_eident_name(callee))), local_names, next_local, ctx, ld)
@@ -207,13 +216,17 @@ export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], local_names:
   } else if is_eident(callee) && get_eident_name(callee) == "Array::truncate" && !array_contains_str(local_names, "Array::truncate") && cc_truncate_release_kind(args, local_names, ctx) > 0 {
     // #2837: release the removed suffix first, then the ordinary truncate.
     let nl = cc_emit_truncate_release(buf, args, cc_truncate_release_kind(args, local_names, ctx), local_names, next_local, ctx)
-    compile_call_core(buf, callee, args, local_names, nl, ctx, ld, ce)
+    compile_call_core_resolved(buf, callee, args, resolution, local_names, nl, ctx, ld, ce)
   } else {
-    compile_call_core(buf, callee, args, local_names, next_local, ctx, ld, ce)
+    compile_call_core_resolved(buf, callee, args, resolution, local_names, next_local, ctx, ld, ce)
   }
 }
 
 fn compile_call_core(buf: Bytes, callee: Expr, raw_args: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
+  compile_call_core_resolved(buf, callee, raw_args, [], local_names, next_local, ctx, ld, ce)
+}
+
+fn compile_call_core_resolved(buf: Bytes, callee: Expr, raw_args: Array[Expr], resolution: Array[Int], local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
   let args = cc_own_cell_compound_args(callee, raw_args, local_names, ctx)
   if is_eident(callee) {
     let source_name = get_eident_name(callee)
@@ -260,7 +273,10 @@ fn compile_call_core(buf: Bytes, callee: Expr, raw_args: Array[Expr], local_name
     // `MutList::length(m)` (answered 77 for a three-element list). The
     // target is looked up among the builtins only (`mut_alias_pos` below),
     // and a program that defines the `Mut*` name itself keeps its own call.
-    let fname: String = if !String::starts_with(fname0, "Mut") || func_table_user_index_of(ctx.func_table, fname0, ctx.num_user_funcs) >= 0 {
+    let resolved_alias = builtin_operation_alias(resolved_callee_operation(resolution))
+    let fname: String = if resolved_alias != "" {
+      resolved_alias
+    } else if !String::starts_with(fname0, "Mut") || func_table_user_index_of(ctx.func_table, fname0, ctx.num_user_funcs) >= 0 {
       fname0
     } else if fname0 == "MutList::push" {
       "ArrayBuilder::push"
@@ -274,12 +290,6 @@ fn compile_call_core(buf: Bytes, callee: Expr, raw_args: Array[Expr], local_name
       "Array::length"
     } else if fname0 == "MutList::truncate" {
       "Array::truncate"
-    } else if fname0 == "MutBytes::push" {
-      "Bytes::push"
-    } else if fname0 == "MutBytes::append" {
-      "Bytes::append"
-    } else if fname0 == "MutBytes::length" {
-      "Bytes::length"
     } else {
       fname0
     }

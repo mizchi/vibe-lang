@@ -5,11 +5,18 @@ import @vibe/compiler/core {
   Pat,
   Stmt,
   TypeExpr,
+  builtin_mutbytes_append,
+  builtin_mutbytes_empty,
+  builtin_mutbytes_length,
+  builtin_mutbytes_push,
+  builtin_mutbytes_to_bytes,
+  builtin_operation_alias,
   bytebuf_push,
   canonical_builtin_name,
   is_exception_operation_name,
   is_exception_throw_operation,
   leb128_encode_u32,
+  resolved_callee_operation,
   unrenderable_render_message
 }
 
@@ -221,11 +228,11 @@ export fn gc_compile_native_array_ref(buf: Bytes, expr: Expr, local_names: Array
       emit_local_get(buf, slot)
       nl
     },
-    ECall(callee, args, _) => match callee {
+    ECall(callee, args, _, _) => match callee {
       EIdent(name, _) => {
         let idx = gc_direct_abi_call_index(ctx, name)
         if find_local_slot(local_names, name) < 0 && idx >= 0 && Array::get(ctx.gc_direct_abi_return_refs, idx) {
-          compile_call_gc(buf, callee, args, local_names, next_local, ctx, ld, ce)
+          compile_call_gc(buf, callee, args, [], local_names, next_local, ctx, ld, ce)
         } else {
           throw("gc direct ABI proof mismatch: call does not return a native array")
         }
@@ -280,7 +287,7 @@ fn gc_mut_alias_call(buf: Bytes, target: String, args: Array[Expr], local_names:
     -1
   }
   if pos < 0 {
-    ce(buf, ECall(EIdent(target, -1), args, -1), local_names, next_local, ld)
+    ce(buf, ECall(EIdent(target, -1), args, -1, []), local_names, next_local, ld)
   } else {
     let fidx = Array::get(ctx.func_table.indices, pos)
     let has_ret = Array::get(ctx.func_table.returns, pos)
@@ -310,7 +317,12 @@ fn gc_mut_alias_call(buf: Bytes, target: String, args: Array[Expr], local_names:
   }
 }
 
-fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, ce: (Bytes, Expr, Array[String], Int, Int) -> Int with Exception) -> Int with Exception {
+fn compile_call_gc_unresolved(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, ce: (Bytes, Expr, Array[String], Int, Int) -> Int with Exception) -> Int with Exception {
+  compile_call_gc(buf, callee, args, [], local_names, next_local, ctx, ld, ce)
+}
+
+fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], resolution: Array[Int], local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, ce: (Bytes, Expr, Array[String], Int, Int) -> Int with Exception) -> Int with Exception {
+  let operation = resolved_callee_operation(resolution)
   match callee {
     EIdent(source_name, _) => {
       // Match checker/linear shadowing: an alias spelling is a builtin only
@@ -368,16 +380,16 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
           emit_region_enter(buf, ctx.gc_region_ptr_addr)
           if ctx.gc_region_exn_tag >= 0 {
             emit_region_try_prologue(buf, ctx.gc_region_exn_tag)
-            let region_r = ce(buf, ECall(Array::get(args, 0), [EInt(0)], -1), local_names, next_local, region_try_body_ld(ld))
+            let region_r = ce(buf, ECall(Array::get(args, 0), [EInt(0)], -1, []), local_names, next_local, region_try_body_ld(ld))
             emit_region_try_epilogue(buf, ctx.gc_region_ptr_addr, ctx.gc_region_exn_tag)
             return region_r
           } else {
-            let region_r = ce(buf, ECall(Array::get(args, 0), [EInt(0)], -1), local_names, next_local, ld)
+            let region_r = ce(buf, ECall(Array::get(args, 0), [EInt(0)], -1, []), local_names, next_local, ld)
             emit_region_exit(buf, ctx.gc_region_ptr_addr)
             return region_r
           }
         } else {
-          return ce(buf, ECall(Array::get(args, 0), [EInt(0)], -1), local_names, next_local, ld)
+          return ce(buf, ECall(Array::get(args, 0), [EInt(0)], -1, []), local_names, next_local, ld)
         }
       } else {
         ()
@@ -394,7 +406,7 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
           ()
         }
         let no_args = Array::slice([EInt(0)], 0, 0)
-        return ce(buf, ECall(EIdent("ArrayBuilder::new", -1), no_args, -1), local_names, next_local, ld)
+        return ce(buf, ECall(EIdent("ArrayBuilder::new", -1), no_args, -1, []), local_names, next_local, ld)
       } else {
         ()
       }
@@ -426,7 +438,7 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
       // The Bytes half of the same tier. `MutBytes` storage IS a `Bytes`
       // without an arena, so the operations are the Bytes ones under another
       // spelling, and the exit copies for the same reason as MutList's.
-      if !source_is_bound && fname == "MutBytes::empty" && Array::length(args) == 1 {
+      if operation == builtin_mutbytes_empty && Array::length(args) == 1 {
         if ctx.gc_region_bytes_new_func_idx >= 0 {
           emit_call(buf, ctx.gc_region_bytes_new_func_idx)
           return next_local
@@ -434,27 +446,27 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
           ()
         }
         let no_bytes_args = Array::slice([EInt(0)], 0, 0)
-        return ce(buf, ECall(EIdent("Bytes::new", -1), no_bytes_args, -1), local_names, next_local, ld)
+        return ce(buf, ECall(EIdent("Bytes::new", -1), no_bytes_args, -1, []), local_names, next_local, ld)
       } else {
         ()
       }
-      if !source_is_bound && fname == "MutBytes::to_bytes" && Array::length(args) == 1 {
+      if operation == builtin_mutbytes_to_bytes && Array::length(args) == 1 {
         return ce(buf, region_mutbytes_exit_copy(Array::get(args, 0)), local_names, next_local, ld)
       } else {
         ()
       }
-      if !source_is_bound && fname == "MutBytes::push" && Array::length(args) == 2 {
-        return gc_mut_alias_call(buf, "Bytes::push", args, local_names, next_local, ctx, ld, ce)
+      if operation == builtin_mutbytes_push && Array::length(args) == 2 {
+        return gc_mut_alias_call(buf, builtin_operation_alias(operation), args, local_names, next_local, ctx, ld, ce)
       } else {
         ()
       }
-      if !source_is_bound && fname == "MutBytes::append" && Array::length(args) == 2 {
-        return gc_mut_alias_call(buf, "Bytes::append", args, local_names, next_local, ctx, ld, ce)
+      if operation == builtin_mutbytes_append && Array::length(args) == 2 {
+        return gc_mut_alias_call(buf, builtin_operation_alias(operation), args, local_names, next_local, ctx, ld, ce)
       } else {
         ()
       }
-      if !source_is_bound && fname == "MutBytes::length" && Array::length(args) == 1 {
-        return gc_mut_alias_call(buf, "Bytes::length", args, local_names, next_local, ctx, ld, ce)
+      if operation == builtin_mutbytes_length && Array::length(args) == 1 {
+        return gc_mut_alias_call(buf, builtin_operation_alias(operation), args, local_names, next_local, ctx, ld, ce)
       } else {
         ()
       }
@@ -472,7 +484,7 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
       if !source_is_bound && fname == "Fs::readdir" && Array::length(args) == 1 {
         return ce(buf, packed_dir_entries_to_array_expr(ECall(EIdent("vibe_fs_read_dir_raw", -1), [
           Array::get(args, 0)
-        ], -1), "__rd_names"), local_names, next_local, ld)
+        ], -1, []), "__rd_names"), local_names, next_local, ld)
       } else {
         ()
       }
@@ -540,7 +552,7 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         ()
       }
       let ctor_lookup_idx = ctor_table_index_of(ctx.gc_ctor_table, fname)
-      gc_compile_named_1(buf, callee, args, local_names, next_local, ctx, ld, ce, fname, source_is_bound, ctor_lookup_idx, compile_call_gc, gc_mut_alias_call, gc_compile_native_array_ref)
+      gc_compile_named_1(buf, callee, args, local_names, next_local, ctx, ld, ce, fname, source_is_bound, ctor_lookup_idx, compile_call_gc_unresolved, gc_mut_alias_call, gc_compile_native_array_ref)
     },
     _ => {
       let num_args = Array::length(args)
@@ -944,7 +956,7 @@ fn gc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_names: 
     nl
   }
   else if fname == "Float::to_int" && Array::length(args) == 1 {
-    ce(buf, ECall(EIdent("Double::to_int", -1), [Array::get(args, 0)], -1), local_names, next_local, ld)
+    ce(buf, ECall(EIdent("Double::to_int", -1), [Array::get(args, 0)], -1, []), local_names, next_local, ld)
   }
   else if fname == "Map::values" {
     let (arr_new_fi, _, _) = resolve_func(ctx.func_table, "array_new")
@@ -1003,9 +1015,10 @@ fn gc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_names: 
     // 47)` avoids synthesizing a "/" string, which would not be in the
     // string table.
     ce(buf, ECall(EIdent("eq", -1), [
-      ECall(EIdent("String::char_code_at", -1), [Array::get(args, 0), EInt(0)], -1),
+      ECall(EIdent("String::char_code_at", -1), [Array::get(args, 0), EInt(0)], -1, [
+      ]),
       EInt(47)
-    ], -1), local_names, next_local, ld)
+    ], -1, []), local_names, next_local, ld)
   }
   else if !source_is_bound && fname == "String::to_bytes" {
     let (an_idx, _, _) = resolve_func(ctx.func_table, "array_new")
@@ -1102,7 +1115,7 @@ fn gc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_names: 
   else if fname == "String::utf8_length" && Array::length(args) == 1 && !gc_name_is_user_defined(ctx, local_names, fname) {
     // #2630: a String IS its UTF-8 bytes (ADR-0098), so the UTF-8 length
     // is the byte length.
-    ce(buf, ECall(EIdent("String::length", -1), [Array::get(args, 0)], -1), local_names, next_local, ld)
+    ce(buf, ECall(EIdent("String::length", -1), [Array::get(args, 0)], -1, []), local_names, next_local, ld)
   }
   else if fname == "Int::parse" {
     ce(buf, int_parse_expr(Array::get(args, 0)), local_names, next_local, ld)
@@ -1549,7 +1562,8 @@ fn gc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_names: 
     emit_closure_call_tail(buf, env_local, slot_local, ctx.closure_type_base, 1)
     emit_i32_wrap_i64(buf)
     emit_if_void(buf)
-    nl = ce(buf, ECall(EIdent("Some", -1), [EIdent("[gc-temp]__find_elem", -1)], -1), local_names, nl, ld)
+    nl = ce(buf, ECall(EIdent("Some", -1), [EIdent("[gc-temp]__find_elem", -1)], -1, [
+    ]), local_names, nl, ld)
     emit_local_set(buf, res_local)
     emit_br(buf, 2)
     emit_end(buf)
@@ -1976,7 +1990,7 @@ fn gc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_names: 
     // "to_string" (any real user function) leaves the flag false and
     // this whole branch inert, falling through to the ordinary bound
     // call below untouched.
-    ce(buf, ECall(EIdent("__to_string", -1), [Array::get(args, 0)], -1), local_names, next_local, ld)
+    ce(buf, ECall(EIdent("__to_string", -1), [Array::get(args, 0)], -1, []), local_names, next_local, ld)
   }
   else if (fname == "Int::to_string" || fname == "__to_string") && Array::length(args) == 1 && bc_expr_is_intish(Array::get(args, 0), local_names, ctx) {
     // #2405: the builtin decides Int-vs-String by a HEURISTIC on the bit

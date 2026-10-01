@@ -86,7 +86,7 @@ fn ascribe_wrap(val: Expr, ty: TypeExpr, capture_mark: Int, context: Option[Pars
   let tbounds = _no_tb()
   let params = [("__asc", Some(ty))]
   let lam = EFn(tparams, tbounds, params, None, None, EIdent("__asc", 0 - 1))
-  ECall(lam, [val], binder_off)
+  ECall(lam, [val], binder_off, [])
 }
 
 /// #705: a local `let f: (A) -> R = (x) -> ..` must behave like the top-level
@@ -387,9 +387,9 @@ fn parse_arm_assign_tail(tokens: Array[Token], body: Expr, at: Int, parse_recur:
         Array::push(set_args, obj)
         Array::push(set_args, EString(field, -1))
         Array::push(set_args, val)
-        (ECall(builtin_ref("__set_field"), set_args, -1), next)
+        (ECall(builtin_ref("__set_field"), set_args, -1, []), next)
       },
-      ECall(idx_callee, idx_args, _) => {
+      ECall(idx_callee, idx_args, _, callee_resolution) => {
         let is_index = match idx_callee {
           EIdent(icn, _) => icn == "__index",
           _ => false
@@ -400,7 +400,7 @@ fn parse_arm_assign_tail(tokens: Array[Token], body: Expr, at: Int, parse_recur:
           Array::push(set_args, Array::get(idx_args, 0))
           Array::push(set_args, Array::get(idx_args, 1))
           Array::push(set_args, val)
-          (ECall(index_write_callee(source_expr(idx_callee)), set_args, -1), next)
+          (ECall(index_write_callee(source_expr(idx_callee)), set_args, -1, callee_resolution), next)
         } else {
           throw("invalid assignment target")
         }
@@ -848,9 +848,9 @@ fn parse_block_after_expr(tokens: Array[Token], pos: Int, e: Expr, parse_recur: 
         Array::push(set_args, obj)
         Array::push(set_args, EString(field, -1))
         Array::push(set_args, val)
-        (ESeq(ECall(builtin_ref("__set_field"), set_args, -1), rest), end)
+        (ESeq(ECall(builtin_ref("__set_field"), set_args, -1, []), rest), end)
       },
-      ECall(idx_callee, idx_args, _) => {
+      ECall(idx_callee, idx_args, _, callee_resolution) => {
         // `arr[i] = v` (indexing parses as `__index(arr, i)`) desugars to
         // `Array::set(arr, i, v)` — host-era index assignment used across
         // vibe/shell and vibe/wasm sources previously died here with
@@ -870,7 +870,7 @@ fn parse_block_after_expr(tokens: Array[Token], pos: Int, e: Expr, parse_recur: 
           Array::push(set_args, Array::get(idx_args, 0))
           Array::push(set_args, Array::get(idx_args, 1))
           Array::push(set_args, val)
-          (ESeq(ECall(index_write_callee(source_expr(idx_callee)), set_args, -1), rest), end)
+          (ESeq(ECall(index_write_callee(source_expr(idx_callee)), set_args, -1, callee_resolution), rest), end)
         } else {
           throw("invalid assignment target")
         }
@@ -1069,7 +1069,7 @@ fn apply_record_destr(pat: Pat, val: Expr, rest: Expr, context: Option[ParserBin
             desugar = ELet(bname, ECall(builtin_ref("__rec_field"), [
               EIdent(val_name, -1),
               EInt(di)
-            ], -1), desugar, -1)
+            ], -1, []), desugar, -1)
           },
           PTuple(sub_pats) => {
             let sub_name = String::concat("__rec_sub_", __to_string(di))
@@ -1086,7 +1086,7 @@ fn apply_record_destr(pat: Pat, val: Expr, rest: Expr, context: Option[ParserBin
             desugar = ELet(sub_name, ECall(builtin_ref("__rec_field"), [
               EIdent(val_name, -1),
               EInt(di)
-            ], -1), desugar, -1)
+            ], -1, []), desugar, -1)
           },
           _ => ()
         }
@@ -1134,7 +1134,7 @@ fn apply_block_step(step: BlockStep, rest: Expr, context: Option[ParserBinderCon
     StepBind(name, val, off) => source_wrap_bind(ECall(EIdent("__try_bind", off), [
       val,
       EFn(_no_tp(), _no_tb(), [(name, None)], None, None, rest)
-    ], off), name, off, val, context)
+    ], off, []), name, off, val, context)
   }
 }
 
@@ -1167,9 +1167,9 @@ fn fold_block_steps(steps: Array[BlockStep], context: Option[ParserBinderContext
 fn expr_always_exits_guard(e: Expr) -> Bool {
   match source_expr(e) {
     EReturn(_) => true,
-    ECall(EIdent("perform", _), args, _) => if Array::length(args) == 1 {
+    ECall(EIdent("perform", _), args, _, _) => if Array::length(args) == 1 {
       match Array::get(args, 0) {
-        ECall(EIdent(op_name, _), op_args, _) =>
+        ECall(EIdent(op_name, _), op_args, _, _) =>
         (op_name == "Exception::Throw" || op_name == "Error::Throw") && Array::length(op_args) == 1,
         _ => false
       }
@@ -1564,10 +1564,11 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
                 Array::push(set_args, obj)
                 Array::push(set_args, EString(field, -1))
                 Array::push(set_args, val)
-                ArrayBuilder::push(steps, StepSeq(source_wrap_expr(ECall(builtin_ref("__set_field"), set_args, -1), p, block_source_end(tokens, next_pos), context)))
+                ArrayBuilder::push(steps, StepSeq(source_wrap_expr(ECall(builtin_ref("__set_field"), set_args, -1, [
+                ]), p, block_source_end(tokens, next_pos), context)))
                 p = next_pos
               },
-              ECall(sidx_callee, sidx_args, _) => {
+              ECall(sidx_callee, sidx_args, _, callee_resolution) => {
                 // `arr[i] = v` in the step-block path (same desugar as the
                 // parse_block_after_expr TEq arm above).
                 let s_is_index = match source_expr(sidx_callee) {
@@ -1580,7 +1581,7 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
                   Array::push(set_args, Array::get(sidx_args, 0))
                   Array::push(set_args, Array::get(sidx_args, 1))
                   Array::push(set_args, val)
-                  ArrayBuilder::push(steps, StepSeq(source_wrap_expr(ECall(index_write_callee(source_expr(sidx_callee)), set_args, -1), p, block_source_end(tokens, next_pos), context)))
+                  ArrayBuilder::push(steps, StepSeq(source_wrap_expr(ECall(index_write_callee(source_expr(sidx_callee)), set_args, -1, callee_resolution), p, block_source_end(tokens, next_pos), context)))
                   p = next_pos
                 } else {
                   throw("invalid assignment target")
@@ -1862,7 +1863,7 @@ export fn parse_impl_dispatch_with_binder_context(tokens: Array[Token], starts: 
     let tparams = _no_tp()
     let tbounds = _no_tb()
     let lam = EFn(tparams, tbounds, [(gname, None)], None, None, body)
-    (ECall(EIdent("TaskGroup::run", off), [lam], off), close)
+    (ECall(EIdent("TaskGroup::run", off), [lam], off, []), close)
   } else if mode == 27 {
     // ADR-0090 Phase 1: `region r { body }` lowers to
     // `__region_run((r) -> { body })`. `__region_run` is reserved internal
@@ -1884,7 +1885,7 @@ export fn parse_impl_dispatch_with_binder_context(tokens: Array[Token], starts: 
     let tparams = _no_tp()
     let tbounds = _no_tb()
     let lam = EFn(tparams, tbounds, [(rname, None)], None, None, body)
-    (ECall(builtin_ref_at("__region_run", off), [lam], off), close)
+    (ECall(builtin_ref_at("__region_run", off), [lam], off, []), close)
   } else {
     let actual = tk_name(peek(tokens, pos))
     throw("internal parser error: unknown parse mode \{mode} at #\{pos} token=\{actual}")

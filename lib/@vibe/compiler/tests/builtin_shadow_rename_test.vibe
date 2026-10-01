@@ -25,7 +25,7 @@ fn let_name(s: Stmt) -> String {
 
 fn callee_of_body(s: Stmt) -> String {
   match s {
-    SLet(_, _, _, _, EFn(_, _, _, _, _, ECall(EIdent(n, _), _, _))) => n,
+    SLet(_, _, _, _, EFn(_, _, _, _, _, ECall(EIdent(n, _), _, _, _))) => n,
     _ => ""
   }
 }
@@ -34,15 +34,15 @@ test "#3132: the definition and the program's own calls are renamed" {
   let def = one_param_fn("Array::length", "xs", EInt(77))
   let user_call = one_param_fn("caller", "xs", ECall(EIdent("Array::length", 40), [
     EIdent("xs", 55)
-  ], 40))
+  ], 40, []))
   // What an interpolation's re-parse or an unlocated lane hands the pass: the
   // program's own call with no source offset.
   let unlocated_user_call = one_param_fn("interp", "xs", ECall(EIdent("Array::length", -1), [
     EIdent("xs", -1)
-  ], -1))
+  ], -1, []))
   let synthesized = one_param_fn("lowered", "xs", ECall(builtin_ref("Array::length"), [
     EIdent("xs", -1)
-  ], -1))
+  ], -1, []))
   let stmts = [def, user_call, unlocated_user_call, synthesized]
   rename_builtin_shadow_defs(stmts)
   assert_eq(let_name(Array::get(stmts, 0)), builtin_shadow_rename_of("Array::length"))
@@ -54,7 +54,7 @@ test "#3132: the definition and the program's own calls are renamed" {
 test "#3132: nothing is renamed without a definition, or for an unlisted name" {
   let user_call = one_param_fn("caller", "xs", ECall(EIdent("Array::length", 40), [
     EIdent("xs", 55)
-  ], 40))
+  ], 40, []))
   let own = one_param_fn("Array::iter_get_helper", "xs", EInt(1))
   let stmts = [user_call, own]
   rename_builtin_shadow_defs(stmts)
@@ -92,10 +92,10 @@ test "#3144: a second run renames a reference written after the first" {
   // beside one it spells as the builtin.
   Array::push(stmts, one_param_fn("witness", "s", ECall(EIdent("String::length", -1), [
     EIdent("s", -1)
-  ], -1)))
+  ], -1, [])))
   Array::push(stmts, one_param_fn("lowered", "s", ECall(builtin_ref("String::length"), [
     EIdent("s", -1)
-  ], -1)))
+  ], -1, [])))
   rename_builtin_shadow_defs(stmts)
   assert_eq(let_name(Array::get(stmts, 0)), "String::length$user")
   assert_eq(callee_of_body(Array::get(stmts, 1)), "String::length$user")
@@ -139,7 +139,7 @@ test "#3185: a builtin spelling a lowering intercepts is renamed" {
 
 fn callee_off_of_body(s: Stmt) -> Int {
   match s {
-    SLet(_, _, _, _, EFn(_, _, _, _, _, ECall(EIdent(_, off), _, _))) => off,
+    SLet(_, _, _, _, EFn(_, _, _, _, _, ECall(EIdent(_, off), _, _, _))) => off,
     _ => 0
   }
 }
@@ -153,12 +153,12 @@ test "#3185: a private definition renames its own file's references only" {
   let dep_call = one_param_fn("first", "xs", ECall(EIdent("Array::get", 40), [
     EIdent("xs", 51),
     EInt(0)
-  ], 40))
+  ], 40, []))
   let def = one_param_fn("Array::get", "xs", EInt(77))
   let entry_call = one_param_fn("mine", "xs", ECall(EIdent("Array::get", 90), [
     EIdent("xs", 101),
     EInt(0)
-  ], 90))
+  ], 90, []))
   let stmts = [source_boundary(), dep_call, source_boundary(), def, entry_call]
   rename_builtin_shadow_defs(stmts)
   assert_eq(let_name(Array::get(stmts, 3)), "Array::get$user")
@@ -177,7 +177,7 @@ test "#3185: a published definition still renames every file's references" {
   let dep_call = one_param_fn("first", "xs", ECall(EIdent("Array::get", 40), [
     EIdent("xs", 51),
     EInt(0)
-  ], 40))
+  ], 40, []))
   let def = SLet(true, false, "Array::get", None, EFn([], [], [("xs", None)], None, None, EInt(77)))
   let stmts = [source_boundary(), dep_call, source_boundary(), def]
   rename_builtin_shadow_defs(stmts)
@@ -188,12 +188,12 @@ test "#3211: an export list cannot publish another source unit's private builtin
   let dep_call = one_param_fn("doubled", "xs", ECall(EIdent("Array::map", 40), [
     EIdent("xs", 51),
     EIdent("id", 55)
-  ], 40))
+  ], 40, []))
   let def = one_param_fn("Array::map", "xs", EInt(77))
   let entry_call = one_param_fn("mine", "xs", ECall(EIdent("Array::map", 90), [
     EIdent("xs", 101),
     EIdent("id", 105)
-  ], 90))
+  ], 90, []))
   let stmts = [
     source_boundary(),
     SExport(["Array::map"]),
@@ -215,7 +215,7 @@ test "#3185: a program with no source boundaries is one file" {
   let call = one_param_fn("mine", "xs", ECall(EIdent("Array::get", 90), [
     EIdent("xs", 101),
     EInt(0)
-  ], 90))
+  ], 90, []))
   let stmts = [call, def]
   rename_builtin_shadow_defs(stmts)
   assert_eq(callee_of_body(Array::get(stmts, 0)), "Array::get$user")
@@ -227,12 +227,12 @@ test "#3185: the parser's field-write sugar keeps the builtin under the program'
     EIdent("o", -1),
     EString("v", -1),
     EInt(5)
-  ], -1))
+  ], -1, []))
   let direct = one_param_fn("direct", "o", ECall(EIdent("__set_field", 30), [
     EIdent("o", 42),
     EString("v", -1),
     EInt(5)
-  ], 30))
+  ], 30, []))
   let stmts = [def, sugar, direct]
   rename_builtin_shadow_defs(stmts)
   assert_eq(callee_of_body(Array::get(stmts, 1)), "__set_field")

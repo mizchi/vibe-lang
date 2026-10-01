@@ -15,6 +15,7 @@ unset VIBE_REVIEW_LINT_RUNNER
 unset VIBE_REVIEW_LINT_REQUIRE_AST
 unset VIBE_REVIEW_LINT_PROJECT_ROOT
 CHECK_SCRIPT="$SCRIPT_DIR/lint_review_regressions.sh"
+python3 "$SCRIPT_DIR/review_lint_metadata_diff_test.py"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/vibe_review_lint_test.XXXXXX")"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
@@ -628,5 +629,57 @@ if ! grep -qE 'decided by its owner.*"Async"' "$TMP_ROOT/effect-name-fail.out"; 
   exit 1
 fi
 git -C "$TMP_ROOT" reset -q --hard HEAD
+
+# #3264: changing only the restore arm must intersect the physical match
+# span even when grep renders its AST text on one line. This mock supplies
+# grep's JSON protocol; the rule and diagnostic still run in review_lint.vibex.
+mkdir -p "$TMP_ROOT/lib/@vibe/compiler/runtime"
+cat > "$TMP_ROOT/lib/@vibe/compiler/runtime/restore.vibe" <<'EOF'
+fn restore(path: String, stmts: Array[Stmt]) -> Unit {
+  match module_typed_lowering_offsets_for_path(path) {
+    Some(rows) => (),
+    None => ()
+  }
+}
+EOF
+git -C "$TMP_ROOT" add .
+git -C "$TMP_ROOT" commit -qm "path lookup without callee restoration"
+sed -i.bak 's/Some(rows) => ()/Some(rows) => restore_resolved_callees(stmts, rows)/' \
+  "$TMP_ROOT/lib/@vibe/compiler/runtime/restore.vibe"
+rm -f "$TMP_ROOT/lib/@vibe/compiler/runtime/restore.vibe.bak"
+git -C "$TMP_ROOT" add .
+cat > "$TMP_ROOT/fake-vibe-callee-source" <<'EOF'
+#!/usr/bin/env bash
+root="${@: -1}"
+path="$root/lib/@vibe/compiler/runtime/restore.vibe"
+if [[ "$*" == *'module_typed_lowering_offsets_for_path('*'None => ()'* ]] && \
+  grep -q 'module_typed_lowering_offsets_for_path(' "$path"; then
+  jq -n --arg path "$path" --rawfile source "$path" \
+    '[{path:$path,line:1,col:1,start:0,end:($source|length),text:"match path_lookup { Some(rows) => restore_resolved_callees(stmts, rows), None => () }",captures:{}}]'
+else
+  echo '[]'
+fi
+EOF
+chmod +x "$TMP_ROOT/fake-vibe-callee-source"
+if VIBE_REVIEW_LINT_PROJECT_ROOT="$TMP_ROOT" \
+  VIBE_REVIEW_LINT_GREP_BIN="$TMP_ROOT/fake-vibe-callee-source" \
+  "$CHECK_SCRIPT" >"$TMP_ROOT/callee-source-fail.out" 2>&1; then
+  echo "review-regressions lint self-test: expected a path-only callee restore violation" >&2
+  exit 1
+fi
+if ! grep -q 'callee identities require the current source' "$TMP_ROOT/callee-source-fail.out"; then
+  cat "$TMP_ROOT/callee-source-fail.out" >&2
+  exit 1
+fi
+sed -i.bak 's/module_typed_lowering_offsets_for_path(path)/module_typed_lowering_offsets_for_source(path, source)/' \
+  "$TMP_ROOT/lib/@vibe/compiler/runtime/restore.vibe"
+rm -f "$TMP_ROOT/lib/@vibe/compiler/runtime/restore.vibe.bak"
+git -C "$TMP_ROOT" add .
+if ! VIBE_REVIEW_LINT_PROJECT_ROOT="$TMP_ROOT" \
+  VIBE_REVIEW_LINT_GREP_BIN="$TMP_ROOT/fake-vibe-callee-source" \
+  "$CHECK_SCRIPT" >"$TMP_ROOT/callee-source-pass.out" 2>&1; then
+  cat "$TMP_ROOT/callee-source-pass.out" >&2
+  exit 1
+fi
 
 echo "review-regressions lint self-test: ok"

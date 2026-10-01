@@ -193,42 +193,46 @@ export fn lc_inject_stdin_surface_wrappers(stmts: Array[Stmt]) -> Bool {
       ("__stdin_stream", Some(TyName("StdinStream"))),
       ("__stdin_chunk_size", Some(TyName("Int")))
     ]
-    let acquire_body = ECall(EIdent("vibe_stdin_provider_acquire_raw", -1), lc_fresh_expr_array(), -1)
+    let acquire_body = ECall(EIdent("vibe_stdin_provider_acquire_raw", -1), lc_fresh_expr_array(), -1, [
+    ])
     let next_body = ECall(EIdent("vibe_stdin_provider_read_raw", -1), [
       EIdent("__stdin_stream", -1)
-    ], -1)
+    ], -1, [])
     let close_body = ESeq(ECall(EIdent("vibe_stdin_provider_close_raw", -1), [
       EIdent("__stdin_stream", -1)
-    ], -1), EUnit)
+    ], -1, []), EUnit)
     // One-byte String::from_char_code construction preserves every u8 value,
     // including NUL and bytes that are not valid standalone UTF-8. The raw
     // route is validated before conversion so an ABI violation traps instead
     // of being silently truncated by store8.
     let chunk_read = ECall(EIdent("vibe_stdin_provider_read_raw", -1), [
       EIdent("__stdin_stream", -1)
-    ], -1)
+    ], -1, [])
     let chunk_byte_valid = EBinOp("&&", EBinOp("<=", EInt(0), EIdent("__stdin_chunk_byte", -1), -1), EBinOp("<=", EIdent("__stdin_chunk_byte", -1), EInt(255), -1), -1)
     let chunk_push = ESeq(ECall(EIdent("StringBuilder::push", -1), [
       EIdent("__stdin_chunk_builder", -1),
       ECall(EIdent("String::from_char_code", -1), [
         EIdent("__stdin_chunk_byte", -1)
-      ], -1)
-    ], -1), EAssign("__stdin_chunk_len", EBinOp("+", EIdent("__stdin_chunk_len", -1), EInt(1), -1), EUnit))
+      ], -1, [])
+    ], -1, []), EAssign("__stdin_chunk_len", EBinOp("+", EIdent("__stdin_chunk_len", -1), EInt(1), -1), EUnit))
     let chunk_accept = EIf(chunk_byte_valid, chunk_push, ECall(EIdent("assert_true", -1), [
       EBool(false)
-    ], -1))
+    ], -1, []))
     let chunk_step = ELet("__stdin_chunk_byte", chunk_read, EIf(EBinOp("==", EIdent("__stdin_chunk_byte", -1), EInt(0 - 1), -1), EAssign("__stdin_chunk_eof", EBool(true), EUnit), chunk_accept), -1)
     // review-lint: allow-fixed-synthetic-name
     let chunk_loop_cond = EBinOp("&&", EBinOp("<", EIdent("__stdin_chunk_len", -1), EIdent("__stdin_chunk_size", -1), -1), EBinOp("==", EIdent("__stdin_chunk_eof", -1), EBool(false), -1), -1)
-    let chunk_result = EIf(EBinOp("==", EIdent("__stdin_chunk_len", -1), EInt(0), -1), ECall(EIdent("None", -1), array_empty(), -1), ECall(EIdent("Some", -1), [
+    let chunk_result = EIf(EBinOp("==", EIdent("__stdin_chunk_len", -1), EInt(0), -1), ECall(EIdent("None", -1), array_empty(), -1, [
+    ]), ECall(EIdent("Some", -1), [
       ECall(EIdent("StringBuilder::freeze", -1), [
         EIdent("__stdin_chunk_builder", -1)
-      ], -1)
-    ], -1))
-    let positive_pull = ELet("__stdin_chunk_builder", ECall(EIdent("StringBuilder::new", -1), array_empty(), -1), ELetMut("__stdin_chunk_len", EInt(0), ELetMut("__stdin_chunk_eof", EBool(false), ESeq(EWhile(chunk_loop_cond, chunk_step), chunk_result), -1), -1), -1)
+      ], -1, [])
+    ], -1, []))
+    let positive_pull = ELet("__stdin_chunk_builder", ECall(EIdent("StringBuilder::new", -1), array_empty(), -1, [
+    ]), ELetMut("__stdin_chunk_len", EInt(0), ELetMut("__stdin_chunk_eof", EBool(false), ESeq(EWhile(chunk_loop_cond, chunk_step), chunk_result), -1), -1), -1)
     // review-lint: allow-fixed-synthetic-name -- existing conversion temporaries preserved by the module split
     let read_chunk_ret = TyApp("Option", [TyName("String")])
-    let read_chunk_body = EIf(EBinOp("<=", EIdent("__stdin_chunk_size", -1), EInt(0), -1), ECall(EIdent("None", -1), array_empty(), -1), positive_pull)
+    let read_chunk_body = EIf(EBinOp("<=", EIdent("__stdin_chunk_size", -1), EInt(0), -1), ECall(EIdent("None", -1), array_empty(), -1, [
+    ]), positive_pull)
     Array::push(stmts, SLet(false, false, Array::get(raw_names, 0), None, EFn(lc_fresh_string_array(), array_empty(), no_params, Some(TyName("StdinStream")), None, acquire_body)))
     Array::push(stmts, SLet(false, false, Array::get(raw_names, 1), None, EFn(lc_fresh_string_array(), array_empty(), next_param, Some(TyName("Int")), None, next_body)))
     Array::push(stmts, SLet(false, false, Array::get(raw_names, 2), None, EFn(lc_fresh_string_array(), array_empty(), close_param, Some(TyName("Unit")), None, close_body)))
@@ -259,7 +263,7 @@ fn lc_rename_hs_call(e: Expr, active: Bool, from_name: String, to_name: String) 
 /// handed to `to_name` as a WIT getter (`lc_ws_tracked_getter`).
 export fn lc_retarget_call(e: Expr, active: Bool, from_name: String, to_name: String, wrap: Bool) -> Expr {
   match e {
-    ECall(callee, args, off) => {
+    ECall(callee, args, off, callee_resolution) => {
       let new_args = lc_fresh_expr_array()
       let mut i = 0
       while i < Array::length(args) {
@@ -271,12 +275,12 @@ export fn lc_retarget_call(e: Expr, active: Bool, from_name: String, to_name: St
           if wrap {
             lc_ws_tracked_getter(to_name, callee, new_args, off)
           } else {
-            ECall(EIdent(to_name, coff), new_args, off)
+            ECall(EIdent(to_name, coff), new_args, off, callee_resolution)
           }
         } else {
-          ECall(callee, new_args, off)
+          ECall(callee, new_args, off, callee_resolution)
         },
-        _ => ECall(lc_retarget_call(callee, active, from_name, to_name, wrap), new_args, off)
+        _ => ECall(lc_retarget_call(callee, active, from_name, to_name, wrap), new_args, off, callee_resolution)
       }
     },
     ELet(x, v, b, off) => ELet(x, lc_retarget_call(v, active, from_name, to_name, wrap), lc_retarget_call(b, active && x != from_name, from_name, to_name, wrap), off),
@@ -510,7 +514,7 @@ export fn lc_expr_has_async_handle(e: Expr) -> Bool {
       None => false
     },
     EContinue(args) => lc_exprs_have_async_handle(args),
-    ECall(callee, args, _) => {
+    ECall(callee, args, _, _) => {
       let mut hit = lc_expr_has_async_handle(callee)
       let mut i = 0
       while i < Array::length(args) {
@@ -590,7 +594,7 @@ export fn lc_mark_calls(e: Expr, targets: Array[String], hits: Array[Bool], ment
     } else {
       ()
     },
-    ECall(callee, args, _) => {
+    ECall(callee, args, _, _) => {
       match callee {
         EIdent(nm, _) => lc_mark_call_name(nm, targets, hits),
         _ => lc_mark_calls(callee, targets, hits, mentions)
@@ -746,7 +750,7 @@ fn lc_mark_calls_exprs(es: Array[Expr], targets: Array[String], hits: Array[Bool
 /// is compiling that call.
 fn lc_expr_collect_hf_names(e: Expr, active: Bool, target: String, out: Array[String]) -> Unit {
   match e {
-    ECall(callee, args, _) => {
+    ECall(callee, args, _, _) => {
       match callee {
         EIdent(nm, _) => if active && nm == target && Array::length(args) == (if target == "host_response_named_with" {
           2
@@ -1017,7 +1021,7 @@ export fn lc_hs_req_base() -> Int {
 /// compile_call's lowering.
 fn lc_expr_collect_hs_names(e: Expr, active: Bool, out: Array[String]) -> Unit {
   match e {
-    ECall(callee, args, _) => {
+    ECall(callee, args, _, _) => {
       match callee {
         EIdent(nm, _) => if active && nm == "host_stream_named" && Array::length(args) == 1 {
           match Array::get(args, 0) {
@@ -1310,7 +1314,7 @@ fn lc_drop_stream_band(e: Expr) -> Expr {
 
 fn lc_is_stream_read_call(e: Expr) -> Bool {
   match e {
-    ECall(EIdent(nm, _), _, _) => nm == "vibe_hs_read_raw",
+    ECall(EIdent(nm, _), _, _, _) => nm == "vibe_hs_read_raw",
     _ => false
   }
 }
@@ -1375,7 +1379,7 @@ fn lc_expr_mentions_name(e: Expr, target: String) -> Bool {
     EAssignOp(n, _, v, b) => n == target || lc_expr_mentions_name(v, target) || lc_expr_mentions_name(b, target),
     EReturn(a) => lc_expr_mentions_name(a, target),
     EDot(o, _, _, _) => lc_expr_mentions_name(o, target),
-    ECall(callee, args, _) => lc_expr_mentions_name(callee, target) || lc_exprs_mention_name(args, target),
+    ECall(callee, args, _, _) => lc_expr_mentions_name(callee, target) || lc_exprs_mention_name(args, target),
     EBinOp(_, l, r, _) => lc_expr_mentions_name(l, target) || lc_expr_mentions_name(r, target),
     EUnaryOp(_, a) => lc_expr_mentions_name(a, target),
     ELabeledArg(_, _, v) => lc_expr_mentions_name(v, target),
@@ -1503,11 +1507,12 @@ export fn lc_host_hooks_install(stmts: Array[Stmt], hf_machinery: Bool, hs_machi
           let replaced = if lc_is_hook_name(name, "__conc_host_arm") {
             Some(lc_host_hook_dispatch(param, hf_machinery, hs_machinery, "vibe_hf_arm_raw", "vibe_hs_arm_raw"))
           } else if lc_is_hook_name(name, "__conc_host_wait_any") {
-            Some(ECall(EIdent("vibe_hf_wait_any_raw", -1), lc_fresh_expr_array(), -1))
+            Some(ECall(EIdent("vibe_hf_wait_any_raw", -1), lc_fresh_expr_array(), -1, [
+            ]))
           } else if lc_is_hook_name(name, "__conc_host_sleep_arm") {
-            Some(ECall(EIdent("vibe_hf_sleep_arm_raw", -1), [param], -1))
+            Some(ECall(EIdent("vibe_hf_sleep_arm_raw", -1), [param], -1, []))
           } else if lc_is_hook_name(name, "__conc_host_sleep_cancel") {
-            Some(ECall(EIdent("vibe_hf_sleep_cancel_raw", -1), [param], -1))
+            Some(ECall(EIdent("vibe_hf_sleep_cancel_raw", -1), [param], -1, []))
           } else if lc_is_hook_name(name, "__conc_host_cancel") {
             Some(lc_host_cancel_body(param, hf_machinery, hs_machinery, ws_freed))
           } else if lc_is_hook_name(name, "__conc_host_take") {
@@ -1536,10 +1541,10 @@ export fn lc_host_hooks_install(stmts: Array[Stmt], hf_machinery: Bool, hs_machi
 fn lc_host_hook_dispatch(payload: Expr, hf_machinery: Bool, hs_machinery: Bool, future_fn: String, stream_fn: String) -> Expr {
   let future_call = ECall(EIdent(future_fn, -1), [
     EBinOp("-", payload, EInt(2), -1)
-  ], -1)
+  ], -1, [])
   let stream_call = ECall(EIdent(stream_fn, -1), [
     EBinOp("-", payload, EInt(lc_hs_req_base()), -1)
-  ], -1)
+  ], -1, [])
   if hf_machinery && hs_machinery {
     EIf(EBinOp("<", EInt(lc_hs_req_base() - 1), payload, -1), stream_call, future_call)
   } else if hs_machinery {
@@ -1573,15 +1578,15 @@ fn lc_ws_tracked_getter(track: String, callee: Expr, args: Array[Expr], off: Int
     let args2 = Array::slice(args, 0, n)
     Array::set(args2, 1, ECall(EIdent("__ws_room_arg", -1), [
       Array::get(args, 1)
-    ], -1))
-    ECall(EIdent(track, -1), [EInt(0), ECall(callee, args2, off)], off)
+    ], -1, []))
+    ECall(EIdent(track, -1), [EInt(0), ECall(callee, args2, off, [])], off, [])
   } else if takes_slot {
     ECall(EIdent(track, -1), [
-      ECall(EIdent("__ws_room", -1), lc_fresh_expr_array(), -1),
-      ECall(callee, args, off)
-    ], off)
+      ECall(EIdent("__ws_room", -1), lc_fresh_expr_array(), -1, []),
+      ECall(callee, args, off, [])
+    ], off, [])
   } else {
-    ECall(EIdent(track, -1), [EInt(0), ECall(callee, args, off)], off)
+    ECall(EIdent(track, -1), [EInt(0), ECall(callee, args, off, [])], off, [])
   }
 }
 
@@ -1610,12 +1615,12 @@ fn lc_host_hook_dispatch_freeing(payload: Expr, hf_machinery: Bool, hs_machinery
   if ws_freed {
     let future_call = ECall(EIdent("__ws_freed", -1), [
       payload,
-      ECall(EIdent(future_fn, -1), [EBinOp("-", payload, EInt(2), -1)], -1)
-    ], -1)
+      ECall(EIdent(future_fn, -1), [EBinOp("-", payload, EInt(2), -1)], -1, [])
+    ], -1, [])
     if hs_machinery {
       let stream_call = ECall(EIdent(stream_fn, -1), [
         EBinOp("-", payload, EInt(lc_hs_req_base()), -1)
-      ], -1)
+      ], -1, [])
       EIf(EBinOp("<", EInt(lc_hs_req_base() - 1), payload, -1), stream_call, future_call)
     } else {
       future_call
@@ -1700,14 +1705,14 @@ export fn lc_rename_sleep_scoped(e: Expr) -> Expr {
       }
       ELoop(out, lc_rename_sleep_scoped(b))
     },
-    ECall(callee, args, off) => {
+    ECall(callee, args, off, callee_resolution) => {
       let out = lc_fresh_expr_array()
       let mut i = 0
       while i < Array::length(args) {
         Array::push(out, lc_rename_sleep_scoped(Array::get(args, i)))
         i = i + 1
       }
-      ECall(lc_rename_sleep_scoped(callee), out, off)
+      ECall(lc_rename_sleep_scoped(callee), out, off, callee_resolution)
     },
     EBinOp(op, l, r, boff) => EBinOp(op, lc_rename_sleep_scoped(l), lc_rename_sleep_scoped(r), boff),
     EUnaryOp(op, a) => EUnaryOp(op, lc_rename_sleep_scoped(a)),
@@ -1787,7 +1792,7 @@ export fn lc_is_exception_boundary_arms(arms: Array[(Pat, Expr)]) -> Bool {
 
 export fn lc_expr_has_spawn_suspend(e: Expr) -> Bool {
   match e {
-    ECall(EIdent(name, _), args, _) => {
+    ECall(EIdent(name, _), args, _, _) => {
       if name == "TaskGroup::spawn_suspend" || name == "spawn_suspend" {
         true
       } else {
@@ -1798,7 +1803,7 @@ export fn lc_expr_has_spawn_suspend(e: Expr) -> Bool {
     // TaskGroup::spawn_suspend`) spawns wherever the alias is called. No local
     // binder can spell a qualified name, so this one is the library's.
     EIdent(name, _) => name == "TaskGroup::spawn_suspend",
-    ECall(callee, args, _) => lc_expr_has_spawn_suspend(callee) || lc_exprs_have_spawn_suspend(args),
+    ECall(callee, args, _, _) => lc_expr_has_spawn_suspend(callee) || lc_exprs_have_spawn_suspend(args),
     ELet(_, value, body, _) => lc_expr_has_spawn_suspend(value) || lc_expr_has_spawn_suspend(body),
     ELetMut(_, value, body, _) => lc_expr_has_spawn_suspend(value) || lc_expr_has_spawn_suspend(body),
     ELetRec(_, value, body) => lc_expr_has_spawn_suspend(value) || lc_expr_has_spawn_suspend(body),

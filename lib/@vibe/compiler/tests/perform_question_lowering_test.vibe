@@ -42,11 +42,11 @@ test "#2236: unresolved optional operation lowers to NotGranted" allows Exceptio
 
 test "#2236: a granted operation converts host failure to Errored" allows Exception {
   match lowered_binding([("Fs::read_file", "Granted")]) {
-    EHandle(ECall(EIdent("$vibe_attempt_granted", _), granted_args, _), arms) => {
+    EHandle(ECall(EIdent("$vibe_attempt_granted", _), granted_args, _, _), arms) => {
       assert_eq(Array::length(granted_args), 1)
       assert_eq(Array::length(arms), 1)
       match Array::get(granted_args, 0) {
-        ECall(EIdent("Fs::read_file", _), operation_args, _) => {
+        ECall(EIdent("Fs::read_file", _), operation_args, _, _) => {
           assert_eq(Array::length(operation_args), 1)
           match Array::get(operation_args, 0) {
             EString("x", _) => (),
@@ -56,7 +56,7 @@ test "#2236: a granted operation converts host failure to Errored" allows Except
         _ => assert(false)
       }
       match Array::get(arms, 0) {
-        (PCtor("Exception::Throw", handler_pats), ECall(EIdent("$vibe_attempt_errored", _), errored_args, _)) => {
+        (PCtor("Exception::Throw", handler_pats), ECall(EIdent("$vibe_attempt_errored", _), errored_args, _, _)) => {
           assert_eq(Array::length(handler_pats), 1)
           assert_eq(Array::length(errored_args), 1)
         },
@@ -76,8 +76,8 @@ test "#2236: a provider-level denial covers its operations" allows Exception {
 
 fn optional_call() -> Expr {
   ECall(EIdent("perform?", 0), [
-    ECall(EIdent("Fs::read_file", 0), [EString("x", -1)], 0)
-  ], 0)
+    ECall(EIdent("Fs::read_file", 0), [EString("x", -1)], 0, [])
+  ], 0, [])
 }
 
 fn assert_ambient_granted(stmt: Stmt) -> Unit with Exception {
@@ -92,7 +92,7 @@ fn assert_ambient_granted(stmt: Stmt) -> Unit with Exception {
     _ => throw("expected a test-like block")
   }
   match body {
-    EHandle(ECall(EIdent("$vibe_attempt_granted", _), args, _), _) => assert_eq(Array::length(args), 1),
+    EHandle(ECall(EIdent("$vibe_attempt_granted", _), args, _, _), _) => assert_eq(Array::length(args), 1),
     _ => assert(false)
   }
 }
@@ -106,13 +106,13 @@ test "#2236 review: test, bench, and example optionals use ambient grants" allow
 test "#2236 review: a test artifact grants optionals in reachable helpers" allows Exception {
   let stmts = [
     SLet(false, false, "read_optional", None, EFn([], [], [], None, None, optional_call())),
-    STest("uses helper", ECall(EIdent("read_optional", 0), [], 0))
+    STest("uses helper", ECall(EIdent("read_optional", 0), [], 0, []))
   ]
   let resolution = optional_perform_artifact_resolution(stmts, "__no_entry__", false, [
   ])
   lower_optional_performs(stmts, resolution)
   match Array::get(stmts, 0) {
-    SLet(_, _, "read_optional", _, EFn(_, _, _, _, _, EHandle(ECall(EIdent("$vibe_attempt_granted", _), args, _), _))) => assert_eq(Array::length(args), 1),
+    SLet(_, _, "read_optional", _, EFn(_, _, _, _, _, EHandle(ECall(EIdent("$vibe_attempt_granted", _), args, _, _), _))) => assert_eq(Array::length(args), 1),
     _ => assert(false)
   }
 }
@@ -120,7 +120,7 @@ test "#2236 review: a test artifact grants optionals in reachable helpers" allow
 test "#2236 review: non-test artifacts keep the non-interactive default" allows Exception {
   let main_stmts = [
     SLet(false, false, "main", None, EFn([], [], [], None, None, optional_call())),
-    STest("not part of this entry", ECall(EIdent("main", 0), [], 0))
+    STest("not part of this entry", ECall(EIdent("main", 0), [], 0, []))
   ]
   let library_stmts = [
     SLet(false, false, "helper", None, EFn([], [], [], None, None, optional_call()))
@@ -135,9 +135,9 @@ test "#2236 review: GC-lowered test artifacts retain ambient authority" {
   let stmts = [
     SLet(false, false, "read_optional", None, EFn([], [], [], None, None, optional_call())),
     SLet(false, false, "__test_uses helper", None, EFn([], [], [], None, None, ECall(EIdent("read_optional", 0), [
-    ], 0))),
+    ], 0, []))),
     SLet(true, false, "_start", None, EFn([], [], [], None, None, ECall(EIdent("__test_uses helper", 0), [
-    ], 0)))
+    ], 0, [])))
   ]
   assert_eq(Array::length(optional_perform_artifact_resolution(stmts, "_start", true, [
   ])), 1)
@@ -148,7 +148,7 @@ test "#2236 review: user __test_ names do not grant GC artifact authority" {
     SLet(false, false, "helper", None, EFn([], [], [], None, None, optional_call())),
     SLet(false, false, "__test_marker", None, EFn([], [], [], None, None, EInt(0))),
     SLet(true, false, "_start", None, EFn([], [], [], None, None, ECall(EIdent("helper", 0), [
-    ], 0)))
+    ], 0, [])))
   ]
   assert_eq(Array::length(optional_perform_artifact_resolution(stmts, "_start", false, [
   ])), 0)

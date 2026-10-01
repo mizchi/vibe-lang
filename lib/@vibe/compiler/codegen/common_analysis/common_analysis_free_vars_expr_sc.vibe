@@ -135,7 +135,7 @@ export fn collect_strings_expr(expr: Expr, out: Array[String], seen: MutSet[Stri
       collect_strings_expr(then_e, out, seen)
       collect_strings_expr(else_e, out, seen)
     },
-    ECall(callee, args, _) => {
+    ECall(callee, args, _, _) => {
       collect_strings_expr(callee, out, seen)
       // #784: the bool→string codegen path (compile_call.vibe) synthesizes
       // `if b { "true" } else { "false" }` for a statically-boolean `__to_string`
@@ -315,7 +315,7 @@ export fn expr_contains_exceptions(expr: Expr) -> Bool {
     EUnaryOp(_, operand) => expr_contains_exceptions(operand),
     EIf(cond, then_e, else_e) =>
     expr_contains_exceptions(cond) || expr_contains_exceptions(then_e) || expr_contains_exceptions(else_e),
-    ECall(callee, args, _) => {
+    ECall(callee, args, _, _) => {
       // A bare `resume(..)` call compiles to `throw 1` (continuation resume)
       // even without a surrounding EHandle in this expression -- a resume
       // misused outside a handler must still produce a VALID module. A user
@@ -565,7 +565,7 @@ fn count_typed_lowering_offsets_expr(e: Expr, counts: MutMap[Int, Int]) -> Unit 
   // `f(x)` carries an EIdent and an ECall at ONE offset; counting both would
   // score 2 and drop every call-result row in the table.
   match e {
-    ECall(_, _, off) => count_one_offset(counts, off),
+    ECall(_, _, off, _) => count_one_offset(counts, off),
     EDot(_, _, _, field_off) => count_one_offset(counts, field_off),
     _ => ()
   }
@@ -879,7 +879,7 @@ fn canonical_builtin_resolves_globally(name: String, fn_names: Array[String]) ->
 fn ca_perform_error_throw_op_args(args: Array[Expr]) -> Option[Array[Expr]] {
   if Array::length(args) == 1 {
     match Array::get(args, 0) {
-      ECall(op_callee, op_args, _) => match op_callee {
+      ECall(op_callee, op_args, _, _) => match op_callee {
         EIdent(op_name, _) => if is_exception_throw_operation(op_name) {
           Some(op_args)
         } else {
@@ -947,7 +947,7 @@ fn collect_free_vars_expr_sc(expr: Expr, bound: Array[String], fn_names: Array[S
     // lib/@vibe/builtin/string.vibe's String::index_of_from), wrongly
     // skipping its capture into a nested closure and crashing with
     // "undefined variable (ident)" at runtime.
-    ECall(EIdent(cname, _), args, _) => if cname == "perform" {
+    ECall(EIdent(cname, _), args, _, _) => if cname == "perform" {
       // #640 Stage 2: `throw(x)` parses to `perform Exception::Throw(x)`. The
       // magic `perform` callee and the `Exception::Throw` op name are keywords,
       // not capturable values — collecting them as free vars made every
@@ -985,7 +985,7 @@ fn collect_free_vars_expr_sc(expr: Expr, bound: Array[String], fn_names: Array[S
       }
       0
     },
-    ECall(callee, args, _) => {
+    ECall(callee, args, _, _) => {
       collect_free_vars_expr_sc(callee, bound, fn_names, encl, skip_inlined, out)
       let mut i = 0
       while i < Array::length(args) {
@@ -1289,7 +1289,7 @@ fn borrow_tail_root(e: Expr) -> String {
   match e {
     EIdent(nm, _) => nm,
     EDot(obj, _, _, _) => borrow_tail_root(obj),
-    ECall(callee, args, _) => match callee {
+    ECall(callee, args, _, _) => match callee {
       EIdent(nm, _) => if Array::length(args) >= 1 && borrow_ret_builtin_name(nm) {
         borrow_tail_root(Array::get(args, 0))
       } else {
@@ -1323,7 +1323,7 @@ export fn scope_tail_ident(e: Expr) -> String {
 /// borrowing read.
 fn borrow_call_root(e: Expr) -> String {
   match e {
-    ECall(callee, args, _) => match callee {
+    ECall(callee, args, _, _) => match callee {
       EIdent(nm, _) => if Array::length(args) >= 1 && borrow_ret_builtin_name(nm) {
         borrow_tail_root(Array::get(args, 0))
       } else {
@@ -1367,7 +1367,7 @@ export fn scope_tail_proj_root(e: Expr) -> String {
     EAssign(_, _, b) => scope_tail_proj_root(b),
     EAssignOp(_, _, _, b) => scope_tail_proj_root(b),
     EDot(obj, _, _, _) => proj_root_ident(obj),
-    ECall(callee, args, _) => match callee {
+    ECall(callee, args, _, _) => match callee {
       EIdent(nm, _) => if Array::length(args) >= 1 && borrow_ret_builtin_name(nm) {
         borrow_tail_root(Array::get(args, 0))
       } else {
@@ -1403,7 +1403,7 @@ export fn capture_body_mentions_name(e: Expr, name: String) -> Bool {
     EIf(c, t, f) => capture_body_mentions_name(c, name) || capture_body_mentions_name(t, name) || capture_body_mentions_name(f, name),
     EWhile(c, b) => capture_body_mentions_name(c, name) || capture_body_mentions_name(b, name),
     EForIn(_, _, iter, b) => capture_body_mentions_name(iter, name) || capture_body_mentions_name(b, name),
-    ECall(callee, args, _) => capture_body_mentions_name(callee, name) || capture_list_mentions_name(args, name),
+    ECall(callee, args, _, _) => capture_body_mentions_name(callee, name) || capture_list_mentions_name(args, name),
     ETuple(items) => capture_list_mentions_name(items, name),
     EArray(items) => capture_list_mentions_name(items, name),
     EContinue(items) => capture_list_mentions_name(items, name),

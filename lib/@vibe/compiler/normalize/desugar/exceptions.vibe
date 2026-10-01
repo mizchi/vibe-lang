@@ -94,7 +94,8 @@ fn exn_kind_cell_stmt() -> Stmt {
 /// entry boundary (`wrap_entry_exception_boundary`) is built AFTER this pass and
 /// so has to spell the lowered form itself.
 export fn exn_kind_read_expr() -> Expr {
-  ECall(builtin_ref("Array::get"), [EIdent(exn_kind_cell_name(), -1), EInt(0)], -1)
+  ECall(builtin_ref("Array::get"), [EIdent(exn_kind_cell_name(), -1), EInt(0)], -1, [
+  ])
 }
 
 export fn exn_kind_write_expr(kind: String) -> Expr {
@@ -102,13 +103,14 @@ export fn exn_kind_write_expr(kind: String) -> Expr {
     EIdent(exn_kind_cell_name(), -1),
     EInt(0),
     EString(kind, -1)
-  ], -1)
+  ], -1, [])
 }
 
 /// What `__exn_message()` lowers to. Exported for the same reason
 /// `exn_kind_read_expr` is: the entry boundary is synthesized after this pass.
 export fn exn_msg_read_expr() -> Expr {
-  ECall(builtin_ref("Array::get"), [EIdent(exn_kind_cell_name(), -1), EInt(1)], -1)
+  ECall(builtin_ref("Array::get"), [EIdent(exn_kind_cell_name(), -1), EInt(1)], -1, [
+  ])
 }
 
 export fn exn_msg_write_expr(rendered: Expr) -> Expr {
@@ -116,7 +118,7 @@ export fn exn_msg_write_expr(rendered: Expr) -> Expr {
     EIdent(exn_kind_cell_name(), -1),
     EInt(1),
     rendered
-  ], -1)
+  ], -1, [])
 }
 
 /// Append the cell unless the program already declares it. Idempotent, and
@@ -154,34 +156,34 @@ export fn wrap_entry_exception_boundary(stmts: Array[Stmt], entry_name: String) 
         let printable = EBinOp("||", ECall(EIdent("String::equals", -1), [
           kind_ident,
           EString("", -1)
-        ], -1), EBinOp("||", ECall(EIdent("String::equals", -1), [
+        ], -1, []), EBinOp("||", ECall(EIdent("String::equals", -1), [
           kind_ident,
           EString("String", -1)
-        ], -1), ECall(EIdent("String::equals", -1), [
+        ], -1, []), ECall(EIdent("String::equals", -1), [
           kind_ident,
           EString("Int", -1)
-        ], -1), -1), -1)
+        ], -1, []), -1), -1)
         let rendered_ok = EBinOp("!=", ECall(builtin_ref("String::length"), [
           msg_ident
-        ], -1), EInt(0), -1)
+        ], -1, []), EInt(0), -1)
         let text = EIf(printable, ECall(builtin_ref("__to_string"), [
           EIdent(payload_name, -1)
-        ], -1), EIf(rendered_ok, msg_ident, ECall(builtin_ref("String::concat"), [
+        ], -1, []), EIf(rendered_ok, msg_ident, ECall(builtin_ref("String::concat"), [
           EString("<", -1),
-          ECall(builtin_ref("String::concat"), [kind_ident, EString(">", -1)], -1)
-        ], -1)))
+          ECall(builtin_ref("String::concat"), [kind_ident, EString(">", -1)], -1, [
+          ])
+        ], -1, [])))
         // #2976: leave through the host's exit call with status 1, so the run
         // ends on the diagnosis instead of a second report of the trap that
         // used to follow it. The trap stays as the fallback for a host whose
         // exit call returns.
-        let fail = ESeq(ECall(builtin_ref("vibe_process_exit_raw"), [EInt(1)], -1), ECall(EIdent("assert_true", -1), [
-          EBool(false)
-        ], -1))
+        let fail = ESeq(ECall(builtin_ref("vibe_process_exit_raw"), [EInt(1)], -1, [
+        ]), ECall(EIdent("assert_true", -1), [EBool(false)], -1, []))
         let diag = ELet(kind_name, exn_kind_read_expr(), ELet(rendered_name, exn_msg_read_expr(), ESeq(ECall(builtin_ref("Stderr::write_stream"), [
           EString("vibe: uncaught error: ", -1)
-        ], -1), ESeq(ECall(builtin_ref("Stderr::write_stream"), [text], -1), ESeq(ECall(builtin_ref("Stderr::write_stream"), [
-          EString("\n", -1)
-        ], -1), fail))), -1), -1)
+        ], -1, []), ESeq(ECall(builtin_ref("Stderr::write_stream"), [text], -1, [
+        ]), ESeq(ECall(builtin_ref("Stderr::write_stream"), [EString("\n", -1)], -1, [
+        ]), fail))), -1), -1)
         let wrapped = EHandle(body, [
           (PCtor("Exception::Throw", [PBind(payload_name)]), diag)
         ])
@@ -272,7 +274,7 @@ export fn is_perform_throw_shape(callee: Expr, args: Array[Expr]) -> Bool {
   }
   if head && Array::length(args) == 1 {
     match Array::get(args, 0) {
-      ECall(op_callee, oargs, _) => match op_callee {
+      ECall(op_callee, oargs, _, _) => match op_callee {
         EIdent(op_n, _) => is_exception_throw_operation(op_n) && Array::length(oargs) == 1,
         _ => false
       },
@@ -301,7 +303,7 @@ export fn is_exception_message_read(callee: Expr, args: Array[Expr]) -> Bool {
 
 export fn perform_throw_payload(args: Array[Expr]) -> Expr {
   match Array::get(args, 0) {
-    ECall(_, oargs, _) => Array::get(oargs, 0),
+    ECall(_, oargs, _, _) => Array::get(oargs, 0),
     _ => EUnit
   }
 }
@@ -311,7 +313,9 @@ export fn perform_throw_payload(args: Array[Expr]) -> Expr {
 /// so the kind write happens after it is evaluated (#1374).
 export fn perform_throw_with_payload(args: Array[Expr], payload: Expr) -> Array[Expr] {
   match Array::get(args, 0) {
-    ECall(op_callee, _, ooff) => [ECall(op_callee, [payload], ooff)],
+    ECall(op_callee, _, ooff, callee_resolution) => [
+      ECall(op_callee, [payload], ooff, callee_resolution)
+    ],
     _ => args
   }
 }

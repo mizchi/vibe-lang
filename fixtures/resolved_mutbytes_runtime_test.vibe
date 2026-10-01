@@ -1,0 +1,23 @@
+// The snapshot must remain independent of the region storage and later writes.
+test "MutBytes direct calls preserve contents and copy on region exit" {
+  let snapshot = region r {
+    let buffer = MutBytes::empty(r)
+    MutBytes::push(buffer, 7)
+    let tail = Bytes::new()
+    Bytes::push(tail, 20)
+    Bytes::push(tail, 30)
+    MutBytes::append(buffer, tail)
+    inspect(MutBytes::length(buffer), content = "3")
+    let snapshot = MutBytes::to_bytes(buffer)
+    MutBytes::push(buffer, 99)
+    snapshot
+  }
+  let _ = region r {
+    let replacement = MutBytes::empty(r)
+    MutBytes::push(replacement, 42)
+    MutBytes::length(replacement)
+  }
+  inspect(Bytes::length(snapshot), content = "3")
+  inspect(Bytes::get(snapshot, 0) - Bytes::get(snapshot, 1), content = "-13")
+  inspect(Bytes::get(snapshot, 2), content = "30")
+}

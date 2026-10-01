@@ -5,6 +5,7 @@ import @vibe/compiler/core {
   Pat,
   Stmt,
   TypeExpr,
+  builtin_callee_resolution,
   builtin_value_form_arity,
   bytebuf_length,
   bytebuf_new,
@@ -256,7 +257,7 @@ fn builtin_value_closure(name: String, arity: Int) -> Expr {
     Array::push(args, EIdent(param, -1))
     i = i + 1
   }
-  EFn(array_empty(), array_empty(), params, None, None, ECall(EIdent(name, -1), args, -1))
+  EFn(array_empty(), array_empty(), params, None, None, ECall(EIdent(name, -1), args, -1, builtin_callee_resolution(name)))
 }
 
 /// #538 P4.5: shape-based "definitely scalar" test for `==`/`!=` operands,
@@ -324,7 +325,7 @@ fn gc_expr_is_floatish_syntactic(e: Expr, local_names: Array[String], ctx: Compi
     },
     EBinOp(op, l, r, _) => (op == "+" || op == "-" || op == "*" || op == "/") && (gc_expr_is_floatish(l, local_names, ctx) || gc_expr_is_floatish(r, local_names, ctx)),
     EUnaryOp(op, x) => op == "-" && gc_expr_is_floatish(x, local_names, ctx),
-    ECall(fcallee, _, call_off) => match fcallee {
+    ECall(fcallee, _, call_off, _) => match fcallee {
       EIdent(cn, _) => array_contains_int(ctx.gc_float_call_offsets, call_off) || cn == "Int::to_double" || cn == "Double::from_i64_bits" || cn == "Float::to_double" || cn == "Double::to_float" || cn == "Int::to_float" || gc_fn_returns_float(local_names, ctx, cn),
       _ => false
     },
@@ -511,7 +512,7 @@ fn gc_expr_is_boolish(e: Expr, local_names: Array[String], ctx: CompileCtxGc) ->
       // table either, because `desugar_derives` GENERATES `T::equals` into
       // that same table; linear's copy still carries the hole, reported
       // separately rather than half-fixed here.
-      ECall(callee, args, _) => match callee {
+      ECall(callee, args, _, _) => match callee {
         EIdent(cn, _) =>
         (cn == "not" && Array::length(args) == 1 && find_local_slot(local_names, "not") < 0 && func_table_user_index_of(ctx.func_table, "not", ctx.num_user_funcs) < 0 && gc_expr_is_boolish(Array::get(args, 0), local_names, ctx)) || gc_builtin_ret_is_bool(cn, local_names, ctx),
         _ => false
@@ -544,7 +545,7 @@ fn gc_builtin_ret_is_bool(n: String, local_names: Array[String], ctx: CompileCtx
 /// structural comparison path for `==`/`!=`.
 fn gc_is_ctor_expr(e: Expr, ctx: CompileCtxGc) -> Bool {
   match e {
-    ECall(callee, _, _) => match callee {
+    ECall(callee, _, _, _) => match callee {
       EIdent(cname, _) => ctor_table_index_of(ctx.gc_ctor_table, cname) >= 0,
       _ => false
     },
@@ -758,7 +759,7 @@ fn emit_gc_eq_value(buf: Bytes, lhs: Expr, rhs: Expr, local_names: Array[String]
       rhs
     }
     let cargs_lit = match clit {
-      ECall(_, cargs, _) => cargs,
+      ECall(_, cargs, _, _) => cargs,
       _ => array_empty()
     }
     let cfc = Array::length(cargs_lit)
@@ -841,7 +842,7 @@ fn gc_native_array_body_is_safe_tail(expr: Expr, name: String, allow_tail: Bool,
 fn gc_native_array_escape_gate(expr: Expr, name: String, allow_tail: Bool, abi_names: Array[String], abi_param_refs: Array[Array[Bool]]) -> Bool {
   match expr {
     EIdent(n, _) => n != name || allow_tail,
-    ECall(EIdent(fname, _), args, _) => {
+    ECall(EIdent(fname, _), args, _, _) => {
       let direct_idx = gc_direct_abi_name_slot(abi_names, fname)
       if direct_idx >= 0 {
         let refs = Array::get(abi_param_refs, direct_idx)
@@ -966,7 +967,7 @@ fn gc_native_array_children_are_safe(expr: Expr, name: String, abi_names: Array[
 fn gc_native_struct_ref_field_reads_are_ops(expr: Expr, name: String, ctx: CompileCtxGc, ns_struct_idx: Int, local_names: Array[String]) -> Bool {
   match expr {
     EDot(EIdent(obj, _), field, _, _) => obj != name || !gc_ctor_field_is_ref(ctx.gc_ctor_table, ns_struct_idx, field),
-    ECall(EIdent(fname, _), args, _) => {
+    ECall(EIdent(fname, _), args, _, _) => {
       if fname == "__set_field" && Array::length(args) == 3 {
         match (Array::get(args, 0), Array::get(args, 1)) {
           (EIdent(obj, _), EString(field, -1)) => if obj == name && gc_ctor_field_is_ref(ctx.gc_ctor_table, ns_struct_idx, field) {
@@ -1027,7 +1028,7 @@ fn gc_native_struct_scope_is_safe(expr: Expr, name: String) -> Bool {
     // by struct.get, so it never materializes as a value either -- but the
     // STORED value is an ordinary expression and still has to be checked, or
     // `p.x = p` would smuggle the struct out through its own field.
-    ECall(EIdent(sf_callee, _), sf_args, _) => if sf_callee == "__set_field" && Array::length(sf_args) == 3 {
+    ECall(EIdent(sf_callee, _), sf_args, _, _) => if sf_callee == "__set_field" && Array::length(sf_args) == 3 {
       match Array::get(sf_args, 0) {
         EIdent(_, _) => gc_native_struct_scope_is_safe(Array::get(sf_args, 2), name),
         _ => gc_native_struct_children_are_safe(expr, name)
@@ -1225,7 +1226,7 @@ fn gc_compile_let_i64(buf: Bytes, name: String, name_slot: Int, value: Expr, bod
     ERecord(_, rfields, _) => 128 + Array::length(rfields),
     _ => if gc_is_ctor_expr(value, ctx) {
       match value {
-        ECall(_, cargs, _) => {
+        ECall(_, cargs, _, _) => {
           let fcnt = if Array::length(cargs) == 1 {
             match Array::get(cargs, 0) {
               ERecord(_, crf, _) => Array::length(crf),
@@ -1253,7 +1254,7 @@ fn gc_compile_let_i64(buf: Bytes, name: String, name_slot: Int, value: Expr, bod
             0
           }
         },
-        ECall(vcal, _, _) => match vcal {
+        ECall(vcal, _, _, _) => match vcal {
           EIdent(cfn, _) => if find_local_slot(local_names, cfn) < 0 {
             let rinfo = agg_ret_lookup_indexed(ctx.gc_agg_ret_names_sorted, ctx.gc_agg_ret_names_sorted_pos, ctx.gc_agg_ret_infos, cfn)
             if rinfo > 0 {
@@ -1777,7 +1778,7 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       }
       max_nl
     },
-    ECall(callee, args, _) => compile_call_gc(buf, callee, args, local_names, next_local, ctx, ld, ce),
+    ECall(callee, args, _, callee_resolution) => compile_call_gc(buf, callee, args, callee_resolution, local_names, next_local, ctx, ld, ce),
     ELet(name, value, body, _) => {
       let local_idx = next_local
       let name_slot = Array::length(local_names)
@@ -1873,7 +1874,7 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
             gc_compile_let_i64(buf, name, name_slot, value, body, local_names, next_local, ctx, ld, ce)
           }
         },
-        ECall(_, _, _) => if gc_expr_can_compile_native_array_ref(value, local_names, ctx) && gc_native_array_body_is_safe_tail(body, name, ctx.gc_direct_abi_current_return_ref, ctx) {
+        ECall(_, _, _, _) => if gc_expr_can_compile_native_array_ref(value, local_names, ctx) && gc_native_array_body_is_safe_tail(body, name, ctx.gc_direct_abi_current_return_ref, ctx) {
           Array::push(ctx.gc_native_array_locals, local_idx)
           Array::push(ctx.gc_native_array_local_types, local_idx)
           let native_nl = ce(buf, value, local_names, next_local + 1, ld)

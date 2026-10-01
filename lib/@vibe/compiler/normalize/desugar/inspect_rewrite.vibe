@@ -56,7 +56,7 @@ fn dinsp_params_optional(params: Array[(String, Option[TypeExpr])]) -> Bool {
 /// Mode 0's predicate: this node is an `inspect(value, content)` call.
 fn dinsp_here_uses(expr: Expr) -> Bool {
   match expr {
-    ECall(callee, args, _) => match callee {
+    ECall(callee, args, _, _) => match callee {
       EIdent(n, _) => n == "inspect" && Array::length(args) == 2,
       _ => false
     },
@@ -140,7 +140,7 @@ export fn dinsp_scan(expr: Expr, mode: Int, name: String) -> Bool {
     // with mode 3, it replaces the `walk_all` that rebuilt EVERY statement
     // of a program declaring any optional parameter.
     match expr {
-      ECall(callee, _, _) => match callee {
+      ECall(callee, _, _, _) => match callee {
         EIdent(n, _) => match optional_param_flags(n) {
           Some(_) => true,
           None => false
@@ -183,7 +183,7 @@ export fn dinsp_scan(expr: Expr, mode: Int, name: String) -> Bool {
       EWhile(c, b) => dinsp_scan(c, mode, name) || dinsp_scan(b, mode, name),
       ELoop(params, b) => dinsp_scan_fields(params, mode, name) || dinsp_scan(b, mode, name),
       EForIn(_, _, it, b) => dinsp_scan(it, mode, name) || dinsp_scan(b, mode, name),
-      ECall(callee, args, _) => if mode == 4 {
+      ECall(callee, args, _, _) => if mode == 4 {
         match callee {
           EIdent(n, _) => if n == name {
             dinsp_scan_list(args, mode, name)
@@ -375,19 +375,19 @@ fn inspect_lowering_expr(value: Expr, content: Expr) -> Expr {
   let tail = ECall(builtin_ref("String::concat"), [
     EString("\n  expected: ", -1),
     expected
-  ], 0 - 1)
-  let body_msg = ECall(builtin_ref("String::concat"), [actual, tail], 0 - 1)
+  ], 0 - 1, [])
+  let body_msg = ECall(builtin_ref("String::concat"), [actual, tail], 0 - 1, [])
   let msg = ECall(builtin_ref("String::concat"), [
     EString("inspect mismatch:\n  actual:   ", -1),
     body_msg
-  ], 0 - 1)
+  ], 0 - 1, [])
   // The message must print BEFORE the trap: `vibe test --update` reads exactly
   // this "actual/expected" text off stdout to rewrite the stale literal.
-  let on_mismatch = ESeq(ECall(EIdent("println", 0 - 1), [msg], 0 - 1), ECall(EIdent("assert_true", 0 - 1), [
+  let on_mismatch = ESeq(ECall(EIdent("println", 0 - 1), [msg], 0 - 1, []), ECall(EIdent("assert_true", 0 - 1), [
     EBool(false)
-  ], 0 - 1))
+  ], 0 - 1, []))
   let check = EIf(EBinOp("==", actual, expected, -1), EUnit, on_mismatch)
-  ELet(actual_name, ECall(builtin_ref("__to_string"), [value], 0 - 1), ELet(expected_name, content, check, 0 - 1), 0 - 1)
+  ELet(actual_name, ECall(builtin_ref("__to_string"), [value], 0 - 1, []), ELet(expected_name, content, check, 0 - 1), 0 - 1)
 }
 
 /// Rewrite every two-argument `inspect(value, content)` call to its expansion.
@@ -399,7 +399,7 @@ fn inspect_lowering_expr(value: Expr, content: Expr) -> Expr {
 /// snapshot-assertion behaviour (Codex review on #1621).
 fn dinsp_expr(expr: Expr) -> Expr {
   match expr {
-    ECall(callee, args, off) => {
+    ECall(callee, args, off, callee_resolution) => {
       let rewritten = for a in args {
         dinsp_expr(a)
       }
@@ -407,9 +407,9 @@ fn dinsp_expr(expr: Expr) -> Expr {
         EIdent(name, _) => if name == "inspect" && Array::length(rewritten) == 2 {
           inspect_lowering_expr(Array::get(rewritten, 0), Array::get(rewritten, 1))
         } else {
-          ECall(dinsp_expr(callee), rewritten, off)
+          ECall(dinsp_expr(callee), rewritten, off, callee_resolution)
         },
-        _ => ECall(dinsp_expr(callee), rewritten, off)
+        _ => ECall(dinsp_expr(callee), rewritten, off, callee_resolution)
       }
     },
     _ => dinsp_children(expr)
@@ -469,7 +469,7 @@ fn dinsp_children(expr: Expr) -> Expr {
     EWhile(c, b) => EWhile(dinsp_expr(c), dinsp_expr(b)),
     ELoop(params, b) => ELoop(dinsp_fields(params), dinsp_expr(b)),
     EForIn(v, k, it, b) => EForIn(v, k, dinsp_expr(it), dinsp_expr(b)),
-    ECall(callee, args, off) => ECall(dinsp_expr(callee), dinsp_exprs(args), off),
+    ECall(callee, args, off, callee_resolution) => ECall(dinsp_expr(callee), dinsp_exprs(args), off, callee_resolution),
     EBinOp(op, l, r, boff) => EBinOp(op, dinsp_expr(l), dinsp_expr(r), boff),
     EUnaryOp(op, v) => EUnaryOp(op, dinsp_expr(v)),
     EFn(g, bs, ps, ret, row, body) => EFn(g, bs, ps, ret, row, dinsp_expr(body)),

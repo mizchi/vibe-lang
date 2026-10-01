@@ -553,9 +553,9 @@ fn fold_expr(expr: Expr) -> Expr {
       (n, fold_expr(init))
     }, fold_expr(b)),
     EForIn(n, idx, it, b) => EForIn(n, idx, fold_expr(it), fold_expr(b)),
-    ECall(callee, args, off) => ECall(fold_expr(callee), for a in args {
+    ECall(callee, args, off, callee_resolution) => ECall(fold_expr(callee), for a in args {
       fold_expr(a)
-    }, off),
+    }, off, callee_resolution),
     EBinOp(op, l, r, boff) => {
       let fl = fold_expr(l)
       let fr = fold_expr(r)
@@ -1416,14 +1416,14 @@ fn uniquify_shadowed_bindings(expr: Expr, env: UqEnv, counter: Array[Int], seen:
         EForIn(n2, idx2, it2, b2)
       }
     },
-    ECall(callee, args, off) => {
+    ECall(callee, args, off, callee_resolution) => {
       let before = uq_marks_now()
       let callee2 = uniquify_shadowed_bindings(callee, env, counter, seen)
       let args2 = uq_exprs(args, env, counter, seen)
       if uq_marks_now() == before {
         expr
       } else {
-        ECall(callee2, args2, off)
+        ECall(callee2, args2, off, callee_resolution)
       }
     },
     EBinOp(op, l, r, boff) => {
@@ -1617,9 +1617,9 @@ export fn lift_match_scrutinees(expr: Expr, counter: Array[Int]) -> Expr {
       (n, lift_match_scrutinees(init, counter))
     }, lift_match_scrutinees(b, counter)),
     EForIn(n, idx, it, b) => EForIn(n, idx, lift_match_scrutinees(it, counter), lift_match_scrutinees(b, counter)),
-    ECall(callee, args, off) => ECall(lift_match_scrutinees(callee, counter), for a in args {
+    ECall(callee, args, off, callee_resolution) => ECall(lift_match_scrutinees(callee, counter), for a in args {
       lift_match_scrutinees(a, counter)
-    }, off),
+    }, off, callee_resolution),
     EBinOp(op, l, r, boff) => EBinOp(op, lift_match_scrutinees(l, counter), lift_match_scrutinees(r, counter), boff),
     EUnaryOp(op, e) => EUnaryOp(op, lift_match_scrutinees(e, counter)),
     EFn(tp, bounds, params, ret, eff, body) => EFn(tp, bounds, params, ret, eff, lift_match_scrutinees(body, counter)),
@@ -1941,7 +1941,7 @@ fn ndc_infer_type_name(e: Expr, struct_sets: Array[(String, Array[String])], var
         None => ndc_fn_return_type(fn_returns, name)
       }
     },
-    ECall(callee, _, _) => match callee {
+    ECall(callee, _, _, _) => match callee {
       EIdent("Some", _) => Some("Option"),
       EIdent("Ok", _) => Some("Result"),
       EIdent("Err", _) => Some("Result"),
@@ -2064,7 +2064,7 @@ fn normalize_dot_calls_expr(expr: Expr, struct_sets: Array[(String, Array[String
       (pn, normalize_dot_calls_expr(init, struct_sets, var_types, fn_returns))
     }, normalize_dot_calls_expr(b, struct_sets, var_types, fn_returns)),
     EForIn(n, idx, it, b) => EForIn(n, idx, normalize_dot_calls_expr(it, struct_sets, var_types, fn_returns), normalize_dot_calls_expr(b, struct_sets, var_types, fn_returns)),
-    ECall(callee, args, off) => {
+    ECall(callee, args, off, callee_resolution) => {
       let rargs = for a in args {
         normalize_dot_calls_expr(a, struct_sets, var_types, fn_returns)
       }
@@ -2072,11 +2072,11 @@ fn normalize_dot_calls_expr(expr: Expr, struct_sets: Array[(String, Array[String
         EDot(obj, m, doff, fdoff) => {
           let robj = normalize_dot_calls_expr(obj, struct_sets, var_types, fn_returns)
           match ndc_qualified_call(robj, m, struct_sets, var_types, fn_returns) {
-            Some(qual) => ECall(EIdent(qual, doff), ndc_prepend(robj, rargs), off),
-            None => ECall(EDot(robj, m, doff, fdoff), rargs, off)
+            Some(qual) => ECall(EIdent(qual, doff), ndc_prepend(robj, rargs), off, callee_resolution),
+            None => ECall(EDot(robj, m, doff, fdoff), rargs, off, callee_resolution)
           }
         },
-        _ => ECall(normalize_dot_calls_expr(callee, struct_sets, var_types, fn_returns), rargs, off)
+        _ => ECall(normalize_dot_calls_expr(callee, struct_sets, var_types, fn_returns), rargs, off, callee_resolution)
       }
     },
     EBinOp(op, l, r, boff) => EBinOp(op, normalize_dot_calls_expr(l, struct_sets, var_types, fn_returns), normalize_dot_calls_expr(r, struct_sets, var_types, fn_returns), boff),

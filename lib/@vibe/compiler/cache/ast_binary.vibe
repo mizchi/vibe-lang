@@ -43,7 +43,7 @@ import @vibe/compiler/core {
 
 //# Constants ===
 
-export let AST_BINARY_VERSION: Int = 2
+export let AST_BINARY_VERSION: Int = 3
 export let AST_BINARY_MAGIC_V: Int = 118
 /// 'v'
 export let AST_BINARY_MAGIC_A: Int = 65
@@ -1182,11 +1182,15 @@ export fn ast_binary_write_expr(buf: Bytes, e: Expr) -> Unit {
       ast_binary_write_expr(buf, it)
       ast_binary_write_expr(buf, body)
     }
-    ECall(callee, args, off) => {
+    ECall(callee, args, off, resolution) => {
       Bytes::push(buf, AST_BINARY_TAG_E_CALL)
       ast_binary_write_expr(buf, callee)
       ast_binary_write_expr_array(buf, args)
       ast_binary_write_svarint(buf, off)
+      ast_binary_write_varint(buf, Array::length(resolution))
+      for operation in resolution {
+        ast_binary_write_svarint(buf, operation)
+      }
     }
     EBinOp(op, l, r, off) => {
       Bytes::push(buf, AST_BINARY_TAG_E_BIN_OP)
@@ -1342,7 +1346,21 @@ export fn ast_binary_read_expr(r: AstBinaryReader) -> Expr with Exception {
     let callee = ast_binary_read_expr(r)
     let args = ast_binary_read_expr_array(r)
     let off = ast_binary_read_svarint_checked(r)
-    ECall(callee, args, off)
+    let count = ast_binary_read_count_checked(r)
+    if count > 1 {
+      throw("AST binary: invalid callee resolution")
+    }
+    let resolution: Array[Int] = []
+    let mut i = 0
+    while i < count {
+      let operation = ast_binary_read_svarint_checked(r)
+      if operation < 0 - 1 || operation == 0 || operation > 5 {
+        throw("AST binary: unknown callee operation")
+      }
+      Array::push(resolution, operation)
+      i = i + 1
+    }
+    ECall(callee, args, off, resolution)
   } else if tag == AST_BINARY_TAG_E_BIN_OP {
     let op = ast_binary_read_string_checked(r)
     let l = ast_binary_read_expr(r)

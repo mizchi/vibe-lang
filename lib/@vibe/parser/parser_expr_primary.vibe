@@ -90,7 +90,7 @@ fn map_ident_off(off: Int, f: (Int) -> Int) -> Int {
 fn map_expr_offsets(expr: Expr, f: (Int) -> Int, context: Option[ParserBinderContext]) -> Expr {
   {
     match expr {
-      ECall(EIdent("$source_span", _), args, _) => source_rewrap_expr(expr, map_expr_offsets(Array::get(args, 0), f, context)),
+      ECall(EIdent("$source_span", _), args, _, _) => source_rewrap_expr(expr, map_expr_offsets(Array::get(args, 0), f, context)),
       EInt(_) => expr,
       EFloat(_) => expr,
       EString(s, off) => EString(s, map_located_off(off, f)),
@@ -112,7 +112,7 @@ fn map_expr_offsets(expr: Expr, f: (Int) -> Int, context: Option[ParserBinderCon
       EWhile(c, b) => EWhile(map_expr_offsets(c, f, context), map_expr_offsets(b, f, context)),
       ELoop(params, b) => ELoop(map_named_exprs(params, f, context), map_expr_offsets(b, f, context)),
       EForIn(n, idx, it, b) => EForIn(n, idx, map_expr_offsets(it, f, context), map_expr_offsets(b, f, context)),
-      ECall(callee, args, off) => ECall(map_expr_offsets(callee, f, context), map_exprs(args, f, context), map_located_off(off, f)),
+      ECall(callee, args, off, callee_resolution) => ECall(map_expr_offsets(callee, f, context), map_exprs(args, f, context), map_located_off(off, f), callee_resolution),
       EBinOp(op, l, r, boff) => EBinOp(op, map_expr_offsets(l, f, context), map_expr_offsets(r, f, context), map_located_off(boff, f)),
       EUnaryOp(op, e) => EUnaryOp(op, map_expr_offsets(e, f, context)),
       EFn(tp, tb, params, ret, eff, body) => EFn(tp, tb, params, ret, eff, map_expr_offsets(body, f, context)),
@@ -296,7 +296,7 @@ fn tl_scan_expr(expr: Expr, rels: Array[Int], pluses: Array[Int], anchor: (Int, 
     EWhile(c, b) => tl_scan_expr(c, rels, pluses, anchor) || tl_scan_expr(b, rels, pluses, anchor),
     ELoop(params, b) => tl_scan_named_exprs(params, rels, pluses, anchor) || tl_scan_expr(b, rels, pluses, anchor),
     EForIn(_, _, it, b) => tl_scan_expr(it, rels, pluses, anchor) || tl_scan_expr(b, rels, pluses, anchor),
-    ECall(callee, args, _) => tl_scan_expr(callee, rels, pluses, anchor) || tl_scan_exprs(args, rels, pluses, anchor),
+    ECall(callee, args, _, _) => tl_scan_expr(callee, rels, pluses, anchor) || tl_scan_exprs(args, rels, pluses, anchor),
     EBinOp(op, l, r, boff) => tl_binop_is_hit(op, boff, l, r, rels, pluses, anchor) || tl_scan_expr(l, rels, pluses, anchor) || tl_scan_expr(r, rels, pluses, anchor),
     EUnaryOp(_, e) => tl_scan_expr(e, rels, pluses, anchor),
     EFn(_, _, _, _, _, body) => tl_scan_expr(body, rels, pluses, anchor),
@@ -357,7 +357,7 @@ fn tl_rewrite_expr(expr: Expr, rels: Array[Int], pluses: Array[Int], anchor: (In
     EWhile(c, b) => EWhile(tl_rewrite_expr(c, rels, pluses, anchor), tl_rewrite_expr(b, rels, pluses, anchor)),
     ELoop(params, b) => ELoop(tl_rewrite_named_exprs(params, rels, pluses, anchor), tl_rewrite_expr(b, rels, pluses, anchor)),
     EForIn(n, idx, it, b) => EForIn(n, idx, tl_rewrite_expr(it, rels, pluses, anchor), tl_rewrite_expr(b, rels, pluses, anchor)),
-    ECall(callee, args, off) => ECall(tl_rewrite_expr(callee, rels, pluses, anchor), tl_rewrite_exprs(args, rels, pluses, anchor), off),
+    ECall(callee, args, off, callee_resolution) => ECall(tl_rewrite_expr(callee, rels, pluses, anchor), tl_rewrite_exprs(args, rels, pluses, anchor), off, callee_resolution),
     EBinOp(op, l, r, boff) => {
       // The anchor is computed on the ORIGINAL operands (the offsets the
       // checker recorded); the rewrite then applies to the recursively
@@ -368,9 +368,9 @@ fn tl_rewrite_expr(expr: Expr, rels: Array[Int], pluses: Array[Int], anchor: (In
       let rr = tl_rewrite_expr(r, rels, pluses, anchor)
       if is_hit {
         if op == "+" {
-          ECall(builtin_ref("String::concat"), [rl, rr], -1)
+          ECall(builtin_ref("String::concat"), [rl, rr], -1, [])
         } else {
-          EBinOp(op, ECall(EIdent("str_lex_diff", -1), [rl, rr], -1), EInt(0), -1)
+          EBinOp(op, ECall(EIdent("str_lex_diff", -1), [rl, rr], -1, []), EInt(0), -1)
         }
       } else {
         EBinOp(op, rl, rr, boff)
@@ -540,7 +540,7 @@ fn locate_interp_fragment_error(msg: String, part: String, frag_starts: Array[In
 /// expressions), not just a single token at the fragment start.
 fn build_interp_expr(parts: Array[String], offsets: Array[Int], outer_starts: Array[Int], parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> Expr with Exception {
   let concat_expr: (Expr, Expr) -> Expr = (a, b) -> {
-    ECall(builtin_ref("String::concat"), [a, b], -1)
+    ECall(builtin_ref("String::concat"), [a, b], -1, [])
   }
   let plen = Array::length(parts)
   let mut result = EString("", -1)
@@ -598,7 +598,7 @@ fn build_interp_expr(parts: Array[String], offsets: Array[Int], outer_starts: Ar
       } else {
         frag_off
       }
-      let piece = ECall(builtin_ref("__to_string"), [pe], call_off)
+      let piece = ECall(builtin_ref("__to_string"), [pe], call_off, [])
       result = if has_val {
         concat_expr(result, piece)
       } else {
@@ -696,9 +696,9 @@ fn desugar_loop_body(expr: Expr, param_names: Array[String], context: Option[Par
       (p, desugar_loop_body(ex, param_names, context))
     }),
     EBinOp(op, l, r, boff) => EBinOp(op, desugar_loop_body(l, param_names, context), desugar_loop_body(r, param_names, context), boff),
-    ECall(callee, args, off) => ECall(desugar_loop_body(callee, param_names, context), for arg in args {
+    ECall(callee, args, off, callee_resolution) => ECall(desugar_loop_body(callee, param_names, context), for arg in args {
       desugar_loop_body(arg, param_names, context)
-    }, off),
+    }, off, callee_resolution),
     ETuple(items) => ETuple(for item in items {
       desugar_loop_body(item, param_names, context)
     }),
@@ -849,8 +849,8 @@ fn parse_throw_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse
   // diagnostic still points at the `throw` keyword, and so does the op's
   // `EIdent` -- `op_off` in the checker's perform arm reads that, not this.
   (ECall(EIdent("perform", off), [
-    ECall(EIdent("Exception::Throw", off), [expr], 0 - 1)
-  ], off), close_pos)
+    ECall(EIdent("Exception::Throw", off), [expr], 0 - 1, [])
+  ], off, []), close_pos)
 }
 
 fn parse_return_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
@@ -876,7 +876,8 @@ fn parse_perform_primary(tokens: Array[Token], starts: Array[Int], pos: Int, par
     TQuestion => {
       // ADR-0088: `perform? Op(...)` is not postfix `expr?` (`__try_op`).
       let (arg, next_pos) = parse_recur(tokens, pos + 2, 10, context)
-      (ECall(EIdent("perform?", offset_at(starts, pos)), [arg], offset_at(starts, pos)), next_pos)
+      (ECall(EIdent("perform?", offset_at(starts, pos)), [arg], offset_at(starts, pos), [
+      ]), next_pos)
     },
     _ => {
       // `perform` binds tighter than binary operators: parse only the
@@ -887,7 +888,7 @@ fn parse_perform_primary(tokens: Array[Token], starts: Array[Int], pos: Int, par
       // highest binop precedence (9, see binop_prec), so parse_infix_loop
       // stops before consuming any operator.
       let (arg, next_pos) = parse_recur(tokens, pos + 1, 10, context)
-      (ECall(EIdent("perform", -1), [arg], offset_at(starts, pos)), next_pos)
+      (ECall(EIdent("perform", -1), [arg], offset_at(starts, pos), []), next_pos)
     }
   }
 }

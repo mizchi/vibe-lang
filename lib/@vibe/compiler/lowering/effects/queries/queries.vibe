@@ -24,10 +24,10 @@ import @vibe/compiler/lowering/effects/direct {
 /// (see compile_call.vibe's op_is_builtin branch).
 export fn edp_user_perform_effect_of(expr: Expr) -> String {
   match expr {
-    ECall(callee, args, _) => match callee {
+    ECall(callee, args, _, _) => match callee {
       EIdent(nm, _) => if nm == "perform" && Array::length(args) == 1 {
         let q = match Array::get(args, 0) {
-          ECall(inner, _, _) => match inner {
+          ECall(inner, _, _, _) => match inner {
             EIdent(qn, _) => qn,
             _ => ""
           },
@@ -299,16 +299,16 @@ fn edp_rq_local(q: EdpReadQuery, e: Expr) -> Int {
       0
     },
     RQOpaqueCall(inert, fn_names) => match e {
-      ECall(EIdent(name, _), _, _) => if edp_callee_is_resolvable(name, inert, fn_names) {
+      ECall(EIdent(name, _), _, _, _) => if edp_callee_is_resolvable(name, inert, fn_names) {
         0
       } else {
         1
       },
-      ECall(_, _, _) => 1,
+      ECall(_, _, _, _) => 1,
       _ => 0
     },
     RQCallsAny(names) => match e {
-      ECall(EIdent(name, _), _, _) => if MutSet::has(names, name) {
+      ECall(EIdent(name, _), _, _, _) => if MutSet::has(names, name) {
         1
       } else {
         0
@@ -319,7 +319,7 @@ fn edp_rq_local(q: EdpReadQuery, e: Expr) -> Int {
       1
     } else {
       match e {
-        ECall(EIdent(name, _), _, _) => if !edp_callee_is_resolvable(name, inert, fn_names) {
+        ECall(EIdent(name, _), _, _, _) => if !edp_callee_is_resolvable(name, inert, fn_names) {
           1
         } else {
           if MutSet::has(fn_names, name) {
@@ -327,7 +327,7 @@ fn edp_rq_local(q: EdpReadQuery, e: Expr) -> Int {
           }
           0
         },
-        ECall(_, _, _) => 1,
+        ECall(_, _, _, _) => 1,
         _ => 0
       }
     },
@@ -364,7 +364,7 @@ fn edp_rq_local(q: EdpReadQuery, e: Expr) -> Int {
       _ => 0
     },
     RQDirectCalls(name) => match e {
-      ECall(EIdent(n, _), _, _) => if n == name {
+      ECall(EIdent(n, _), _, _, _) => if n == name {
         1
       } else {
         0
@@ -450,7 +450,7 @@ fn edp_rq_local(q: EdpReadQuery, e: Expr) -> Int {
       } else {
         0
       },
-      ECall(_, args, _) => {
+      ECall(_, args, _, _) => {
         let mut ai = 0
         let mut hit = 0
         while ai < Array::length(args) && hit == 0 {
@@ -532,7 +532,7 @@ export fn edp_rq_fold(q: EdpReadQuery, e: Expr) -> Int {
         _ => edp_rq_loop(q, pairs, body, false, false, false)
       },
       EForIn(_, _, iter, body) => edp_rq_two(q, iter, body),
-      ECall(callee, args, _) => match q {
+      ECall(callee, args, _, _) => match q {
         RQOpaqueCall(_, _) => edp_rq_exprs(q, args),
         RQDirectCalls(_) => match callee {
           EIdent(_, _) => edp_rq_exprs(q, args),
@@ -1151,7 +1151,7 @@ fn edp_has_unsafe_construct_sc(expr: Expr, needing: Array[String], ename: String
       r
     },
     ESeq(a, b) => edp_has_unsafe_construct_sc(a, needing, ename, pure_fns, ls_names, ls_flags) || edp_has_unsafe_construct_sc(b, needing, ename, pure_fns, ls_names, ls_flags),
-    ECall(callee, args, _) => match callee {
+    ECall(callee, args, _, _) => match callee {
       // A type ascription -- how an annotated `let x: T = v` reaches this
       // pass, `((__asc: T) -> __asc)(v)` -- is an identity closure applied on
       // the spot: it performs nothing and runs nothing but its argument, so
@@ -1475,7 +1475,7 @@ fn edp_expr_reaches_effect(e: Expr, ename: String, needing: Array[String], pure_
     true
   } else {
     match e {
-      ECall(EIdent(nm, _), args, _) => {
+      ECall(EIdent(nm, _), args, _, _) => {
         // A builtin's spelling reaches the builtin only when no binder in the
         // program has it: `not: (Bool) -> Bool with Async` captured by the
         // literal makes `not(true)` perform (Codex on #3059).
@@ -1483,7 +1483,7 @@ fn edp_expr_reaches_effect(e: Expr, ename: String, needing: Array[String], pure_
         let callee_ok = nm == "perform" || nm == "resume" || (unshadowed && (edp_is_pure_builtin_call(nm) || edp_builtin_is_first_order(nm) || (edp_str_array_contains(pure_fns, nm) && !edp_str_array_contains(needing, nm))))
         !callee_ok || edp_exprs_reach_effect(args, ename, needing, pure_fns)
       },
-      ECall(_, _, _) => true,
+      ECall(_, _, _, _) => true,
       EHandle(body, arms) => edp_expr_reaches_effect(body, ename, needing, pure_fns) || edp_arm_bodies_reach_effect(arms, ename, needing, pure_fns),
       EMatch(scrut, arms) => edp_expr_reaches_effect(scrut, ename, needing, pure_fns) || edp_arm_bodies_reach_effect(arms, ename, needing, pure_fns),
       _ => edp_exprs_reach_effect(expr_children(e), ename, needing, pure_fns)
@@ -1613,7 +1613,7 @@ export fn edp_name_is_host_raw_shape(nm: String) -> Bool {
 fn edp_perform_operand_has_unsafe_construct(operand: Expr, needing: Array[String], ename: String, pure_fns: Array[String], ls_names: Array[String], ls_flags: Array[Bool]) -> Bool {
   match operand {
     EIdent(_, _) => false,
-    ECall(op_callee, op_args, _) => match op_callee {
+    ECall(op_callee, op_args, _, _) => match op_callee {
       EIdent(_, _) => edp_exprs_have_unsafe_construct(op_args, needing, ename, pure_fns, ls_names, ls_flags),
       _ => true
     },
@@ -1844,7 +1844,7 @@ export fn scps_arm_refs_resume_value(e: Expr, sh: Bool) -> Bool {
 fn scps_arm_refs_resume_value_at(e: Expr, sh: Bool, in_fn: Bool) -> Bool {
   match e {
     EIdent(nm, _) => nm == "resume" && !sh,
-    ECall(callee, args, _) => {
+    ECall(callee, args, _, _) => {
       // The immediate callee position `resume(x)` is the direct call form
       // (#942's territory), NOT a value reference. Everything else in the
       // call -- including a computed callee -- is walked normally.
@@ -1991,11 +1991,11 @@ fn scps_op_index(ops: Array[String], q: String) -> Int {
 /// return the op's index in ops; -1 otherwise.
 export fn scps_as_target_perform(e: Expr, ops: Array[String]) -> Int {
   match e {
-    ECall(callee, pargs, _) => match callee {
+    ECall(callee, pargs, _, _) => match callee {
       EIdent(nm, _) => if nm == "perform" && Array::length(pargs) == 1 {
         match Array::get(pargs, 0) {
           EIdent(q, _) => scps_op_index(ops, q),
-          ECall(opc, _, _) => match opc {
+          ECall(opc, _, _, _) => match opc {
             EIdent(q, _) => scps_op_index(ops, q),
             _ => -1
           },
@@ -2015,7 +2015,7 @@ export fn scps_as_target_perform(e: Expr, ops: Array[String]) -> Int {
 export fn scps_as_needing_call(e: Expr, sctx: (String, Array[String], Array[String], Int, Array[String])) -> String {
   let (_, _, needing, _, _) = sctx
   match e {
-    ECall(callee, _, _) => match callee {
+    ECall(callee, _, _, _) => match callee {
       EIdent(nm, _) => if nm != "perform" && edp_str_array_contains(needing, nm) {
         nm
       } else {
@@ -2036,7 +2036,7 @@ export fn scps_as_needing_call(e: Expr, sctx: (String, Array[String], Array[Stri
 export fn scps_as_cps_local_call(e: Expr, sctx: (String, Array[String], Array[String], Int, Array[String])) -> String {
   let (_, _, _, _, cps_locals) = sctx
   match e {
-    ECall(callee, _, _) => match callee {
+    ECall(callee, _, _, _) => match callee {
       EIdent(nm, _) => if edp_str_array_contains(cps_locals, nm) {
         nm
       } else {

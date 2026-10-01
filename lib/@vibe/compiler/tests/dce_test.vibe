@@ -37,7 +37,8 @@ test "single unused let is removed" {
 test "transitive dependency is kept" {
   let stmts = [
     SLet(false, false, "b", no_ty(), EInt(1)),
-    SLet(false, false, "a", no_ty(), ECall(EIdent("b", -1), array_empty(), -1))
+    SLet(false, false, "a", no_ty(), ECall(EIdent("b", -1), array_empty(), -1, [
+    ]))
   ]
   let result = dce_stmts(stmts, ["a"])
   assert(eq(Array::length(result), 2))
@@ -71,7 +72,8 @@ test "SImport is always kept" {
 test "entry and deps kept, unrelated removed" {
   let stmts = [
     SLet(false, false, "helper", no_ty(), EInt(10)),
-    SLet(false, false, "main", no_ty(), ECall(EIdent("helper", -1), array_empty(), -1)),
+    SLet(false, false, "main", no_ty(), ECall(EIdent("helper", -1), array_empty(), -1, [
+    ])),
     SLet(false, false, "unused", no_ty(), EInt(99))
   ]
   let result = dce_stmts(stmts, ["main"])
@@ -139,7 +141,7 @@ test "STest expression refs are kept" {
     SLet(false, false, "helper", no_ty(), EFn(array_empty(), array_empty(), [
       ("x", None)
     ], no_ty(), None, EIdent("x", -1))),
-    STest("calls helper", ECall(EIdent("helper", -1), [EInt(41)], -1)),
+    STest("calls helper", ECall(EIdent("helper", -1), [EInt(41)], -1, [])),
     SLet(false, false, "unused", no_ty(), EInt(0))
   ]
   let result = dce_stmts(stmts, array_empty())
@@ -159,7 +161,8 @@ test "SBench expression refs are kept" {
 test "top-level destructuring initializer keeps its callee" {
   let stmts = [
     SLet(false, false, "helper", no_ty(), EInt(42)),
-    SLetPat(PTuple([PBind("a"), PBind("b")]), ECall(EIdent("helper", -1), array_empty(), -1))
+    SLetPat(PTuple([PBind("a"), PBind("b")]), ECall(EIdent("helper", -1), array_empty(), -1, [
+    ]))
   ]
   assert(eq(Array::length(dce_stmts(stmts, array_empty())), 2))
 }
@@ -183,7 +186,7 @@ test "contract parameters and result do not retain matching top-level names" {
     SFnDecl(false, "checked", EFn(array_empty(), array_empty(), [
       ("dead_cap", None)
     ], no_ty(), None, EInt(0)), [
-      ECall(EIdent("live_check", -1), [EIdent("dead_cap", -1)], -1)
+      ECall(EIdent("live_check", -1), [EIdent("dead_cap", -1)], -1, [])
     ], [EIdent("result", -1)])
   ]
   assert(eq(Array::length(dce_stmts(stmts, ["checked"])), 2))
@@ -196,7 +199,7 @@ test "contract parameters and result do not retain matching top-level names" {
 fn iw_marker_fn(name: String, wat: String) -> Stmt {
   SFnDecl(false, name, EFn(array_empty(), array_empty(), array_empty(), no_ty(), None, ECall(EIdent("%wasm", -1), [
     EString(wat, -1)
-  ], -1)), array_empty(), array_empty())
+  ], -1, [])), array_empty(), array_empty())
 }
 
 test "#2348 dce: a helper only a WAT `call` names is reachable" {
@@ -207,7 +210,8 @@ test "#2348 dce: a helper only a WAT `call` names is reachable" {
   let stmts = [
     iw_marker_fn("helper", "(i64.sub (local.get $a) (local.get $b))"),
     iw_marker_fn("caller", "(call $helper (local.get $a) (i64.const 8))"),
-    SLet(false, false, "main", no_ty(), ECall(EIdent("caller", -1), [EInt(10)], -1))
+    SLet(false, false, "main", no_ty(), ECall(EIdent("caller", -1), [EInt(10)], -1, [
+    ]))
   ]
   let result = dce_stmts(stmts, ["main"])
   assert(eq(Array::length(result), 3))
@@ -219,7 +223,8 @@ test "#2348 dce: an inline-wasm fn nothing calls is still pruned" {
   let stmts = [
     iw_marker_fn("helper", "(i64.sub (local.get $a) (local.get $b))"),
     iw_marker_fn("caller", "(i64.add (local.get $a) (i64.const 8))"),
-    SLet(false, false, "main", no_ty(), ECall(EIdent("caller", -1), [EInt(10)], -1))
+    SLet(false, false, "main", no_ty(), ECall(EIdent("caller", -1), [EInt(10)], -1, [
+    ]))
   ]
   let result = dce_stmts(stmts, ["main"])
   assert(eq(Array::length(result), 2))
@@ -231,7 +236,8 @@ test "#2348 dce: a local spelled like a fn is not a reference" {
   let stmts = [
     iw_marker_fn("helper", "(i64.sub (local.get $a) (local.get $b))"),
     iw_marker_fn("caller", "(i64.add (local.get $helper) (i64.const 8))"),
-    SLet(false, false, "main", no_ty(), ECall(EIdent("caller", -1), [EInt(10)], -1))
+    SLet(false, false, "main", no_ty(), ECall(EIdent("caller", -1), [EInt(10)], -1, [
+    ]))
   ]
   let result = dce_stmts(stmts, ["main"])
   assert(eq(Array::length(result), 2))
@@ -243,7 +249,8 @@ test "#2348 dce: every callee of a multi-call body is reachable" {
     iw_marker_fn("h2", "(i64.add (local.get $a) (local.get $b))"),
     iw_marker_fn("unused", "(i64.mul (local.get $a) (local.get $b))"),
     iw_marker_fn("caller", "(call $h1 (call $h2 (local.get $a) (i64.const 2)) (i64.const 8))"),
-    SLet(false, false, "main", no_ty(), ECall(EIdent("caller", -1), [EInt(10)], -1))
+    SLet(false, false, "main", no_ty(), ECall(EIdent("caller", -1), [EInt(10)], -1, [
+    ]))
   ]
   let result = dce_stmts(stmts, ["main"])
   assert(eq(Array::length(result), 4))
@@ -259,7 +266,7 @@ fn iw_marker_fn_params(name: String, params: Array[String], wat: String) -> Stmt
   }
   SFnDecl(false, name, EFn(array_empty(), array_empty(), ps, no_ty(), None, ECall(EIdent("%wasm", -1), [
     EString(wat, -1)
-  ], -1)), array_empty(), array_empty())
+  ], -1, [])), array_empty(), array_empty())
 }
 
 test "#2348 dce: a callee followed straight by a `;;` comment is an edge" {
@@ -272,7 +279,8 @@ test "#2348 dce: a callee followed straight by a `;;` comment is an edge" {
   let stmts = [
     iw_marker_fn("helper", "(i64.sub (local.get $a) (local.get $b))"),
     iw_marker_fn("caller", "(call $helper;; why\n (local.get $a) (i64.const 8))"),
-    SLet(false, false, "main", no_ty(), ECall(EIdent("caller", -1), [EInt(10)], -1))
+    SLet(false, false, "main", no_ty(), ECall(EIdent("caller", -1), [EInt(10)], -1, [
+    ]))
   ]
   assert(eq(Array::length(dce_stmts(stmts, ["main"])), 3))
 }
@@ -292,7 +300,8 @@ test "#2348 dce: a parameter named like the callee does not hide the edge" {
   let stmts = [
     iw_marker_fn("helper", "(i64.sub (local.get $a) (local.get $b))"),
     iw_marker_fn_params("caller", ["helper"], "(call $helper (local.get $helper) (i64.const 8))"),
-    SLet(false, false, "main", no_ty(), ECall(EIdent("caller", -1), [EInt(10)], -1))
+    SLet(false, false, "main", no_ty(), ECall(EIdent("caller", -1), [EInt(10)], -1, [
+    ]))
   ]
   assert(eq(Array::length(dce_stmts(stmts, ["main"])), 3))
 }
@@ -307,10 +316,12 @@ fn impl_dispatch_program() -> Array[Stmt] {
       ("measure", [TyName("Self")], TyName("Int"))
     ], array_empty(), array_empty()),
     SImpl(array_empty(), array_empty(), "Measured", TyName("Pt")),
-    SLet(false, false, "Pt::measure", no_ty(), ECall(EIdent("helper", -1), array_empty(), -1)),
+    SLet(false, false, "Pt::measure", no_ty(), ECall(EIdent("helper", -1), array_empty(), -1, [
+    ])),
     SLet(false, false, "helper", no_ty(), EInt(1)),
     SLet(false, false, "Pt::inherent", no_ty(), EInt(2)),
-    SLet(false, false, "main", no_ty(), ECall(EIdent("T::measure", -1), array_empty(), -1))
+    SLet(false, false, "main", no_ty(), ECall(EIdent("T::measure", -1), array_empty(), -1, [
+    ]))
   ]
 }
 
@@ -348,9 +359,9 @@ test "3111: an impl of a trait declared elsewhere keeps its owner's bindings" {
 test "#3193: break and continue payloads keep their callees" {
   let helper = SLet(false, false, "helper", no_ty(), EInt(7))
   let break_main = SLet(false, false, "main", no_ty(), ELoop([], EBreak(Some(ECall(EIdent("helper", -1), [
-  ], -1)))))
+  ], -1, [])))))
   let continue_main = SLet(false, false, "main", no_ty(), ELoop([], EContinue([
-    ECall(EIdent("helper", -1), [], -1)
+    ECall(EIdent("helper", -1), [], -1, [])
   ])))
   inspect(Array::length(dce_stmts([helper, break_main], ["main"])), "2")
   inspect(Array::length(dce_stmts([helper, continue_main], ["main"])), "2")
@@ -371,8 +382,9 @@ test "#3193: a live interpolation with unresolved text keeps definitions" {
 test "#3193: a live function contract keeps its callees" {
   let helper = SLet(false, false, "helper", no_ty(), EInt(7))
   let body = EFn([], [], [], no_ty(), None, EInt(1))
-  let main = SFnDecl(false, "main", body, [ECall(EIdent("helper", -1), [], -1)], [
-  ])
+  let main = SFnDecl(false, "main", body, [
+    ECall(EIdent("helper", -1), [], -1, [])
+  ], [])
   inspect(Array::length(dce_stmts([helper, main], ["main"])), "2")
 }
 

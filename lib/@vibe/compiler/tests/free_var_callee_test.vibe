@@ -7,7 +7,7 @@ import @vibe/compiler/codegen/common_analysis {
 
 fn call_scan_extra_bytes(name: String, bound: Array[String], globals: Array[String]) -> Int with Profiler {
   let ident = EIdent(name, -1)
-  let call = ECall(ident, [], -1)
+  let call = ECall(ident, [], -1, [])
   let out: Array[String] = []
   let start = Profiler::heap_bytes()
   let _ = collect_free_vars_expr(ident, bound, globals, out)
@@ -29,7 +29,7 @@ test "direct callees need no temporary identifier node" {
 test "reads, callees and writes keep first-occurrence order and deduplicate" {
   let body = ETuple([
     EIdent("first", -1),
-    ECall(EIdent("callee", -1), [EIdent("arg", -1)], -1),
+    ECall(EIdent("callee", -1), [EIdent("arg", -1)], -1, []),
     EAssign("callee", EIdent("value", -1), EUnit),
     EAssignOp("slot", "+", EIdent("delta", -1), EIdent("first", -1))
   ])
@@ -39,7 +39,7 @@ test "reads, callees and writes keep first-occurrence order and deduplicate" {
 test "local and enclosing bindings keep precedence for each name occurrence" {
   let uses: Array[Expr] = [
     EIdent("name", -1),
-    ECall(EIdent("name", -1), [], -1),
+    ECall(EIdent("name", -1), [], -1, []),
     EAssign("name", EInt(1), EUnit),
     EAssignOp("name", "+", EInt(1), EUnit)
   ]
@@ -56,7 +56,7 @@ test "local and enclosing bindings keep precedence for each name occurrence" {
 
 test "inline builtin skipping applies only to unshadowed capture callees" {
   let ident = EIdent("not", -1)
-  let call = ECall(ident, [EBool(true)], -1)
+  let call = ECall(ident, [EBool(true)], -1, [])
   inspect(collect_free_vars_indexed(ident, [], []), content = "[not]")
   inspect(collect_free_vars_indexed(call, [], []), content = "[]")
   inspect(collect_free_vars_used_builtins(call, [], []), content = "[not]")
@@ -66,21 +66,21 @@ test "inline builtin skipping applies only to unshadowed capture callees" {
 test "throw skips magic names while other performs keep their callees" {
   let payload = EIdent("payload", -1)
   let throw_call = ECall(EIdent("perform", -1), [
-    ECall(EIdent("Exception::Throw", -1), [payload], -1)
-  ], -1)
+    ECall(EIdent("Exception::Throw", -1), [payload], -1, [])
+  ], -1, [])
   let other_call = ECall(EIdent("perform", -1), [
-    ECall(EIdent("Log::Emit", -1), [payload], -1)
-  ], -1)
+    ECall(EIdent("Log::Emit", -1), [payload], -1, [])
+  ], -1, [])
   inspect(collect_free_vars_indexed(throw_call, [], []), content = "[payload]")
   inspect(collect_free_vars_used_builtins(throw_call, [], []), content = "[payload]")
   inspect(collect_free_vars_indexed(other_call, [], []), content = "[perform, Log::Emit, payload]")
-  inspect(collect_free_vars_indexed(ECall(EIdent("perform", -1), [], -1), [
+  inspect(collect_free_vars_indexed(ECall(EIdent("perform", -1), [], -1, []), [
     "perform"
   ], []), content = "[]")
 }
 
 test "inline callee names obey local then enclosing then global precedence" {
-  let call = ECall(EIdent("not", -1), [EIdent("argument", -1)], -1)
+  let call = ECall(EIdent("not", -1), [EIdent("argument", -1)], -1, [])
   let globals = ["not"]
   inspect(collect_free_vars_indexed_self(call, [], globals, "", ["not"]), content = "[not, argument]")
   inspect(collect_free_vars_indexed_self(call, ["not"], globals, "", ["not"]), content = "[argument]")
@@ -91,10 +91,10 @@ test "inline callee names obey local then enclosing then global precedence" {
 test "skipped callees still scan arguments and preserve prior value references" {
   let body = ETuple([
     EIdent("not", -1),
-    ECall(EIdent("not", -1), [EIdent("first", -1)], -1),
-    ECall(EIdent("global", -1), [EIdent("second", -1)], -1),
-    ECall(EIdent("Path::resolve", -1), [EIdent("third", -1)], -1),
-    ECall(EIdent("global", -1), [EIdent("first", -1)], -1)
+    ECall(EIdent("not", -1), [EIdent("first", -1)], -1, []),
+    ECall(EIdent("global", -1), [EIdent("second", -1)], -1, []),
+    ECall(EIdent("Path::resolve", -1), [EIdent("third", -1)], -1, []),
+    ECall(EIdent("global", -1), [EIdent("first", -1)], -1, [])
   ])
   inspect(collect_free_vars_indexed(body, [], ["global"]), content = "[not, first, second, third]")
   inspect(collect_free_vars_used_builtins(body, [], ["global"]), content = "[not, first, second, Path::resolve, third]")

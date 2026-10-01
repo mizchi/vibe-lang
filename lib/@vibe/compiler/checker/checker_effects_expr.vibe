@@ -528,7 +528,7 @@ fn dh_overlay_call_may_reach(name: String, ename: String, ov_names: Array[String
 
 fn dh_widened_only_alias_call(body: Expr, ename: String, fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], ov_names: Array[String], ov_effs: Array[Array[String]]) -> Bool {
   match body {
-    ECall(EIdent(name, _), args, _) => {
+    ECall(EIdent(name, _), args, _, _) => {
       let widened = match overlay_alias_target(ov_names, ov_effs, name) {
         Some(target) => match (lookup_program_fn_effs(fn_index, fn_effs, target), lookup_fn_effs(ov_names, ov_effs, name)) {
           (Some(actual), Some(declared)) => dh_labels_may_be(declared, ename) && !dh_labels_may_be(actual, ename),
@@ -610,7 +610,7 @@ fn dh_may_reach(expr: Expr, ename: String, fn_names: Array[String], fn_effs: Arr
       // PARAMETERS and row-declaring local closures in scope. The overlay is
       // what spares `TaskGroup::spawn_suspend`, whose handled body's only
       // callee is its own `f: () -> T with Async + Exception` parameter.
-      ECall(EIdent(nm, _), _, _) => match lookup_program_fn_effs(fn_index, fn_effs, nm) {
+      ECall(EIdent(nm, _), _, _, _) => match lookup_program_fn_effs(fn_index, fn_effs, nm) {
         Some(effs) => dh_labels_may_be(effs, ename),
         None => dh_overlay_call_may_reach(nm, ename, ov_names, ov_effs, fn_effs, fn_index)
       },
@@ -706,7 +706,7 @@ fn dh_callee_is_opaque(nm: String, fn_names: Array[String], fn_index: MutMap[Str
 
 fn dh_has_opaque_call(expr: Expr, fn_names: Array[String], fn_index: MutMap[String, Int]) -> Bool {
   let direct = match expr {
-    ECall(EIdent(nm, _), _, _) => dh_callee_is_opaque(nm, fn_names, fn_index),
+    ECall(EIdent(nm, _), _, _, _) => dh_callee_is_opaque(nm, fn_names, fn_index),
     _ => false
   }
   if direct {
@@ -844,7 +844,7 @@ fn dh_shadow_has(shadowed: Array[String], name: String) -> Bool {
 fn dh_lc_after_assigns_scoped(expr: Expr, lc: Array[(String, Option[Expr], Int)], shadowed: Array[String], certain: Bool) -> Array[(String, Option[Expr], Int)] {
   match expr {
     EFn(_, _, _, _, _, _) => lc,
-    ECall(EFn(_, _, params, _, _, body), args, _) => {
+    ECall(EFn(_, _, params, _, _, body), args, _, _) => {
       let before_body = dh_lc_after_assigns_in_scoped(args, lc, shadowed, certain)
       if dh_direct_abortive_transfer_in(args) {
         before_body
@@ -973,18 +973,18 @@ fn dh_lc_after_assigns(expr: Expr, lc: Array[(String, Option[Expr], Int)]) -> Ar
 /// processed separately because its arm may return normally.
 fn dh_direct_abortive_transfer(expr: Expr) -> Bool {
   match expr {
-    ECall(EIdent(name, _), args, _) => if name == "throw" {
+    ECall(EIdent(name, _), args, _, _) => if name == "throw" {
       true
     } else if name == "perform" && Array::length(args) == 1 {
       match Array::get(args, 0) {
-        ECall(EIdent(op, _), _, _) => is_exception_throw_operation(op),
+        ECall(EIdent(op, _), _, _, _) => is_exception_throw_operation(op),
         EIdent(op, _) => is_exception_throw_operation(op),
         _ => false
       }
     } else {
       dh_direct_abortive_transfer_in(args)
     },
-    ECall(callee, args, _) => dh_direct_abortive_transfer(callee) || dh_direct_abortive_transfer_in(args),
+    ECall(callee, args, _, _) => dh_direct_abortive_transfer(callee) || dh_direct_abortive_transfer_in(args),
     ELabeledArg(_, _, value) => dh_direct_abortive_transfer(value),
     _ => false
   }
@@ -1256,7 +1256,7 @@ fn dh_expr_performs(expr: Expr, ename: String, fn_effs: Array[Array[String]], fn
       },
       _ => {
         let direct = match expr {
-          ECall(EIdent(nm, _), _, _) => match lookup_fn_effs(ov_names, ov_effs, nm) {
+          ECall(EIdent(nm, _), _, _, _) => match lookup_fn_effs(ov_names, ov_effs, nm) {
             Some(effs) => dh_labels_name(effs, ename),
             None => match lookup_program_fn_effs(fn_index, fn_effs, nm) {
               Some(effs) => dh_labels_name(effs, ename),
@@ -1350,7 +1350,7 @@ fn dh_rowless_closure_call_arms(arms: Array[(Pat, Expr)], ename: String, lc: Arr
 /// `dh_check_expr`, so the name is resolved to the binding it means there.
 fn dh_rowless_closure_call(expr: Expr, ename: String, lc: Array[(String, Option[Expr], Int)], fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], depth: Int) -> Option[(String, Int)] {
   match expr {
-    ECall(callee, args, _) => {
+    ECall(callee, args, _, _) => {
       let direct = match callee {
         EIdent(nm, off) => {
           let idx = dh_lc_index(lc, nm)

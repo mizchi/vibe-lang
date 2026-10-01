@@ -249,7 +249,7 @@ fn scps_value_is_data(v: Expr, scope: Array[(String, Int)]) -> Bool {
     ETuple(items) => scps_values_are_data(items, scope),
     EArray(items) => Array::length(items) > 0 && scps_values_are_data(items, scope),
     EIdent(nm, _) => scps_local_class(scope, nm) == scps_kind_data(),
-    ECall(EFn(_, _, aparams, _, _, abody), args, _) => Array::length(args) == 1 && edp_is_identity_ascription(aparams, abody) && match Array::get(aparams, 0).1 {
+    ECall(EFn(_, _, aparams, _, _, abody), args, _, _) => Array::length(args) == 1 && edp_is_identity_ascription(aparams, abody) && match Array::get(aparams, 0).1 {
       Some(t) => scps_ty_is_plain_data(t),
       None => false
     },
@@ -472,11 +472,11 @@ export fn scps_mk_yield(eff: String, opname: String, args: Array[Expr], bind_nam
     i = i + 1
   }
   Array::push(payload, scps_mk_fn1(bind_name, cont_body))
-  ECall(EIdent(scps_y_name(eff, opname), -1), payload, -1)
+  ECall(EIdent(scps_y_name(eff, opname), -1), payload, -1, [])
 }
 
 export fn scps_mk_done(eff: String, v: Expr) -> Expr {
-  ECall(EIdent(scps_done_name(eff), -1), [v], -1)
+  ECall(EIdent(scps_done_name(eff), -1), [v], -1, [])
 }
 
 // --- per-effect runtime injection: the __ScpsStep_E enum (from the
@@ -517,7 +517,7 @@ export fn scps_ensure_effect_runtime(eff: String, ctx: (Array[Stmt], Array[(Stri
     Array::push(done_pats, PBind("__scps_bv"))
     Array::push(marms, (PCtor(scps_done_name(eff), done_pats), ECall(EIdent("__scps_bk", -1), [
       EIdent("__scps_bv", -1)
-    ], -1)))
+    ], -1, [])))
     let mut bi = 0
     while bi < Array::length(decl_ops) {
       let (opname, arity) = Array::get(decl_ops, bi)
@@ -532,11 +532,12 @@ export fn scps_ensure_effect_runtime(eff: String, ctx: (Array[Stmt], Array[(Stri
       }
       Array::push(ypats, PBind("__scps_bkk"))
       let rewrap = scps_mk_fn1("__scps_brv", ECall(EIdent(bname, -1), [
-        ECall(EIdent("__scps_bkk", -1), [EIdent("__scps_brv", -1)], -1),
+        ECall(EIdent("__scps_bkk", -1), [EIdent("__scps_brv", -1)], -1, []),
         EIdent("__scps_bk", -1)
-      ], -1))
+      ], -1, []))
       Array::push(yargs, rewrap)
-      Array::push(marms, (PCtor(scps_y_name(eff, opname), ypats), ECall(EIdent(scps_y_name(eff, opname), -1), yargs, -1)))
+      Array::push(marms, (PCtor(scps_y_name(eff, opname), ypats), ECall(EIdent(scps_y_name(eff, opname), -1), yargs, -1, [
+      ])))
       bi = bi + 1
     }
     let bfn = scps_mk_fn2("__scps_bst", "__scps_bk", EMatch(EIdent("__scps_bst", -1), marms))
@@ -717,12 +718,12 @@ fn scps_anf_walk(e: Expr, sctx: (String, Array[String], Array[String], Int, Arra
       // The callee is evaluated first and is left alone: naming it would turn
       // a by-name call into a call through a local binding, which is the one
       // shape the suspend lowering cannot see through.
-      ECall(callee, args, off) => if scps_contains_susp(callee, sctx) || !scps_anf_is_atom(callee) {
+      ECall(callee, args, off, callee_resolution) => if scps_contains_susp(callee, sctx) || !scps_anf_is_atom(callee) {
         (2, e)
       } else {
         let (s, args2) = scps_anf_walk_exprs(args, sctx, probe, site, ctr, bn, bv)
         if s == 1 {
-          (1, ECall(callee, args2, off))
+          (1, ECall(callee, args2, off, callee_resolution))
         } else {
           (2, e)
         }
@@ -1073,11 +1074,12 @@ export fn scps_float_direct_assign(e: Expr, sctx: (String, Array[String], Array[
 /// under the loop. `String::length` / `String::char_code_at` are the builtins
 /// codegen itself uses to do that materializing.
 fn scps_string_for_rewrite(name: String, str_nm: String, body: Expr, iname: String) -> Expr {
-  let len_call = ECall(builtin_ref("String::length"), [EIdent(str_nm, -1)], -1)
+  let len_call = ECall(builtin_ref("String::length"), [EIdent(str_nm, -1)], -1, [
+  ])
   let at_call = ECall(builtin_ref("String::char_code_at"), [
     EIdent(str_nm, -1),
     EIdent(iname, -1)
-  ], -1)
+  ], -1, [])
   let step = EAssign(iname, EBinOp("+", EIdent(iname, -1), EInt(1), -1), body)
   EWhile(EBinOp("<", EIdent(iname, -1), len_call, -1), ELet(name, at_call, step, -1))
 }
@@ -1149,11 +1151,11 @@ fn scps_array_names_with(known: Array[String], nm: String, v: Expr, ty: Option[T
 /// only turn a rejection into an acceptance -- no program that compiles today
 /// changes.
 fn scps_array_for_rewrite(name: String, arr: String, body: Expr, iname: String) -> Expr {
-  let len_call = ECall(builtin_ref("Array::length"), [EIdent(arr, -1)], -1)
+  let len_call = ECall(builtin_ref("Array::length"), [EIdent(arr, -1)], -1, [])
   let get_call = ECall(builtin_ref("Array::get"), [
     EIdent(arr, -1),
     EIdent(iname, -1)
-  ], -1)
+  ], -1, [])
   let step = EAssign(iname, EBinOp("+", EIdent(iname, -1), EInt(1), -1), body)
   EWhile(EBinOp("<", EIdent(iname, -1), len_call, -1), ELet(name, get_call, step, -1))
 }
@@ -1679,13 +1681,13 @@ export fn scps_loop_rewrite_ctl(e: Expr, lp: String, kname: String) -> Expr {
       }
       let args = array_empty_expr()
       Array::push(args, bv)
-      ECall(EIdent(kname, -1), args, -1)
+      ECall(EIdent(kname, -1), args, -1, [])
     },
     // The parser's loop desugar leaves `continue` payload-less (it assigns the
     // parameters first), so a payload here is a shape this pass has never seen:
     // leave it, and scps_loop_ctl_remains rejects the site.
     EContinue(args) => if Array::length(args) == 0 {
-      ECall(EIdent(lp, -1), array_empty_expr(), -1)
+      ECall(EIdent(lp, -1), array_empty_expr(), -1, [])
     } else {
       e
     },
@@ -1742,7 +1744,7 @@ export fn scps_loop_ctl_remains(e: Expr) -> Bool {
     EIf(c, t, el) => scps_loop_ctl_remains(c) || scps_loop_ctl_remains(t) || scps_loop_ctl_remains(el),
     EMatch(s, arms) => scps_loop_ctl_remains(s) || scps_loop_arms_ctl_remain(arms),
     EHandle(b, arms) => scps_loop_ctl_remains(b) || scps_loop_arms_ctl_remain(arms),
-    ECall(callee, args, _) => scps_loop_ctl_remains(callee) || scps_loop_exprs_ctl_remain(args),
+    ECall(callee, args, _, _) => scps_loop_ctl_remains(callee) || scps_loop_exprs_ctl_remain(args),
     EBinOp(_, l, r, _) => scps_loop_ctl_remains(l) || scps_loop_ctl_remains(r),
     EUnaryOp(_, a) => scps_loop_ctl_remains(a),
     EAssign(_, v, b) => scps_loop_ctl_remains(v) || scps_loop_ctl_remains(b),

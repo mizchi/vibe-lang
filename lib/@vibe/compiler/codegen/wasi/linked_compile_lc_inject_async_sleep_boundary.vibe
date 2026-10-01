@@ -130,14 +130,16 @@ import ./linked_compile_lc_retarget_call.vibe {
 /// future dropped nothing could be reclaimed, and the NEXT call trapped in the
 /// adapter's getter although that dropped future was there to evict.
 fn lc_ws_track_inject(stmts: Array[Stmt]) -> Unit {
-  let get = (a: Expr, i: Expr) -> ECall(builtin_ref("Array::get"), [a, i], -1)
+  let get = (a: Expr, i: Expr) -> ECall(builtin_ref("Array::get"), [a, i], -1, [
+  ])
   let set = (a: Expr, i: Expr, v: Expr) -> ECall(builtin_ref("Array::set"), [
     a,
     i,
     v
-  ], -1)
-  let len = (a: Expr) -> ECall(builtin_ref("Array::length"), [a], -1)
-  let push = (a: Expr, v: Expr) -> ECall(builtin_ref("Array::push"), [a, v], -1)
+  ], -1, [])
+  let len = (a: Expr) -> ECall(builtin_ref("Array::length"), [a], -1, [])
+  let push = (a: Expr, v: Expr) -> ECall(builtin_ref("Array::push"), [a, v], -1, [
+  ])
   let cells = EIdent("__ws_cells", -1)
   let seqs = EIdent("__ws_seq", -1)
   let ctr = EIdent("__ws_ctr", -1)
@@ -184,7 +186,7 @@ fn lc_ws_track_inject(stmts: Array[Stmt]) -> Unit {
   // `Future::resolve` overwrites the cell's handle word with its value.
   let cancel = ECall(builtin_ref("vibe_hf_cancel_raw"), [
     EBinOp("+", rbest, EInt(lc_ws_handle_base()), -1)
-  ], -1)
+  ], -1, [])
   // A cell `Future::resolve` already answered keeps its value; only a cell
   // still waiting on the host is poisoned.
   let poison = EIf(EBinOp("==", get(victim, EInt(0)), EInt(2), -1), set(victim, EInt(0), EInt(9)), EUnit)
@@ -198,7 +200,8 @@ fn lc_ws_track_inject(stmts: Array[Stmt]) -> Unit {
   Array::push(stmts, SLet(false, false, lc_fixed_synthetic_name("__ws_room", "review-lint: allow-fixed-synthetic-name"), None, EFn(lc_fresh_string_array(), array_empty(), room_params, Some(int_ty), None, room_body)))
   // __ws_room_arg(s): make room, then pass the getter's last argument `s`
   // through -- the room is made after every argument is evaluated.
-  let room_arg_body = ELet("__wsa_u", ECall(EIdent("__ws_room", -1), lc_fresh_expr_array(), -1), EIdent("__wsa_s", -1), -1)
+  let room_arg_body = ELet("__wsa_u", ECall(EIdent("__ws_room", -1), lc_fresh_expr_array(), -1, [
+  ]), EIdent("__wsa_s", -1), -1)
   // review-lint: allow-fixed-synthetic-name (the injected __ws_room_arg's own scope)
   let room_arg_params: Array[(String, Option[TypeExpr])] = [
     ("__wsa_s", Some(TyName("String")))
@@ -255,7 +258,7 @@ fn lc_ws_track_inject(stmts: Array[Stmt]) -> Unit {
       SLet(ex, isrec, name, ty, EFn(tps, tbs, params, ret, eff, body)) => if name == "__aw_pay" {
         let claim = ECall(EIdent("__ws_claim", -1), [
           EIdent(Array::get(params, 0).0, -1)
-        ], -1)
+        ], -1, [])
         Array::set(stmts, i, SLet(ex, isrec, name, ty, EFn(tps, tbs, params, ret, eff, ELet("__awp_k", claim, body, -1))))
         // review-lint: allow-fixed-synthetic-name (the injected __aw_pay's own scope)
       } else if name == "__ws_track" || name == "__ws_room" || name == "__ws_room_arg" || name == "__ws_claim" || name == "__ws_freed" {
@@ -618,8 +621,8 @@ export fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String)
   } else {
     let ms = EIdent("__slp_ms", -1)
     let suspend = ECall(EIdent("perform", -1), [
-      ECall(EIdent("Async::Suspend", -1), [EBinOp("-", EInt(0), ms, -1)], -1)
-    ], -1)
+      ECall(EIdent("Async::Suspend", -1), [EBinOp("-", EInt(0), ms, -1)], -1, [])
+    ], -1, [])
     let sleep_body = EIf(EBinOp("<", EInt(0), ms, -1), ELet("__slp_w", suspend, EUnit, -1), EUnit)
     // review-lint: allow-fixed-synthetic-name
     let sleep_params: Array[(String, Option[TypeExpr])] = [
@@ -698,18 +701,18 @@ export fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String)
     // same shape as __aw_poll's pay/settle chain, so the suspend CPS
     // split accepts it.
     let hsn_s = EIdent("__hsn_s", -1)
-    let hsn_state = ECall(EIdent("Array::get", -1), [hsn_s, EInt(0)], -1)
-    let hsn_hnd = ECall(EIdent("Array::get", -1), [hsn_s, EInt(1)], -1)
+    let hsn_state = ECall(EIdent("Array::get", -1), [hsn_s, EInt(0)], -1, [])
+    let hsn_hnd = ECall(EIdent("Array::get", -1), [hsn_s, EInt(1)], -1, [])
     let hsn_suspend = ECall(EIdent("perform", -1), [
       ECall(EIdent("Async::Suspend", -1), [
         EBinOp("+", hsn_hnd, EInt(lc_hs_req_base()), -1)
-      ], -1)
-    ], -1)
+      ], -1, [])
+    ], -1, [])
     let hsn_read = ELet("__hsn_v", hsn_suspend, ECall(EIdent("__hs_fin", -1), [
       // review-lint: allow-fixed-synthetic-name
       hsn_s,
       EIdent("__hsn_v", -1)
-    ], -1), -1)
+    ], -1, []), -1)
     // #2066 (Codex on #3091): a stream has ONE owner. Every read -- including
     // one that finds the stream already closed and answers end of stream
     // without parking -- first claims the cell for the running task, so a
@@ -718,7 +721,7 @@ export fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String)
     let hsn_claim = lc_concurrent_hook_name(stmts, array_empty(), "__conc_stream_claim")
     let hsn_open = EIf(EBinOp("==", hsn_state, EInt(3), -1), hsn_read, EBinOp("-", EInt(0), EInt(1), -1))
     let hsn_body = if hsn_claim != "" {
-      ELet("__hsn_c", ECall(EIdent(hsn_claim, -1), [hsn_s], -1), hsn_open, -1)
+      ELet("__hsn_c", ECall(EIdent(hsn_claim, -1), [hsn_s], -1, []), hsn_open, -1)
       // review-lint: allow-fixed-synthetic-name (the injected __hs_next's own scope)
     } else {
       hsn_open
@@ -732,24 +735,24 @@ export fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String)
       let hso_s = EIdent("__hso_s", -1)
       let hso_v = EIdent("__hso_v", -1)
       let hso_raw = EIdent("__hso_raw", -1)
-      let hso_state = ECall(EIdent("Array::get", -1), [hso_s, EInt(0)], -1)
-      let hso_hnd = ECall(EIdent("Array::get", -1), [hso_s, EInt(1)], -1)
+      let hso_state = ECall(EIdent("Array::get", -1), [hso_s, EInt(0)], -1, [])
+      let hso_hnd = ECall(EIdent("Array::get", -1), [hso_s, EInt(1)], -1, [])
       let hso_suspend = ECall(EIdent("perform", -1), [
         ECall(EIdent("Async::Suspend", -1), [
           EBinOp("+", hso_hnd, EInt(lc_hs_req_base()), -1)
-        ], -1)
-      ], -1)
-      let hso_finished = ECall(EIdent("__hs_fin", -1), [hso_s, hso_v], -1)
+        ], -1, [])
+      ], -1, [])
+      let hso_finished = ECall(EIdent("__hs_fin", -1), [hso_s, hso_v], -1, [])
       let hso_option = EIf(EBinOp("<", hso_raw, EInt(0), -1), EIdent("None", -1), ECall(EIdent("Some", -1), [
         hso_raw
-      ], -1))
+      ], -1, []))
       let hso_settle = ELet(lc_fixed_synthetic_name("__hso_raw", "review-lint: allow-fixed-synthetic-name"), hso_finished, hso_option, -1)
       let hso_read = ELet(lc_fixed_synthetic_name("__hso_v", "review-lint: allow-fixed-synthetic-name"), hso_suspend, hso_settle, -1)
       let hso_open = EIf(EBinOp("==", hso_state, EInt(3), -1), hso_read, EIdent("None", -1))
       // #2066 (Codex on #3091): the public `HostStream::next` spelling claims
       // the cell for the running task exactly as `__hs_next` does.
       let hso_body = if hsn_claim != "" {
-        ELet("__hso_c", ECall(EIdent(hsn_claim, -1), [hso_s], -1), hso_open, -1)
+        ELet("__hso_c", ECall(EIdent(hsn_claim, -1), [hso_s], -1, []), hso_open, -1)
         // review-lint: allow-fixed-synthetic-name (the injected __hs_next_option's own scope)
       } else {
         hso_open
@@ -765,7 +768,8 @@ export fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String)
     }
     let hsf_s = EIdent("__hsf_s", -1)
     let hsf_v = EIdent("__hsf_v", -1)
-    let hsf_close = ECall(EIdent("Array::set", -1), [hsf_s, EInt(0), EInt(0)], -1)
+    let hsf_close = ECall(EIdent("Array::set", -1), [hsf_s, EInt(0), EInt(0)], -1, [
+    ])
     let hsf_body = EIf(EBinOp("<", hsf_v, EInt(0), -1), ESeq(hsf_close, EBinOp("-", EInt(0), EInt(1), -1)), hsf_v)
     let hsf_params: Array[(String, Option[TypeExpr])] = [
       ("__hsf_s", None),
@@ -791,10 +795,11 @@ export fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String)
     // on one handle would trap host-side, so this is load-bearing, not
     // just tidy.
     let hsc_s = EIdent("__hsc_s", -1)
-    let hsc_state = ECall(EIdent("Array::get", -1), [hsc_s, EInt(0)], -1)
-    let hsc_hnd = ECall(EIdent("Array::get", -1), [hsc_s, EInt(1)], -1)
-    let hsc_drop = ECall(EIdent("vibe_hs_close_raw", -1), [hsc_hnd], -1)
-    let hsc_mark = ECall(EIdent("Array::set", -1), [hsc_s, EInt(0), EInt(0)], -1)
+    let hsc_state = ECall(EIdent("Array::get", -1), [hsc_s, EInt(0)], -1, [])
+    let hsc_hnd = ECall(EIdent("Array::get", -1), [hsc_s, EInt(1)], -1, [])
+    let hsc_drop = ECall(EIdent("vibe_hs_close_raw", -1), [hsc_hnd], -1, [])
+    let hsc_mark = ECall(EIdent("Array::set", -1), [hsc_s, EInt(0), EInt(0)], -1, [
+    ])
     let hsc_close = ELet("__hsc_r", hsc_drop, hsc_mark, -1)
     // review-lint: allow-fixed-synthetic-name
     // #2066 (Codex on #3091): closing is a use of the stream too. The running
@@ -802,7 +807,7 @@ export fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String)
     // cannot drop another task's stream under it.
     let hsc_claim = lc_concurrent_hook_name(stmts, array_empty(), "__conc_stream_claim")
     let hsc_guarded = if hsc_claim != "" {
-      ELet("__hsc_c", ECall(EIdent(hsc_claim, -1), [hsc_s], -1), hsc_close, -1)
+      ELet("__hsc_c", ECall(EIdent(hsc_claim, -1), [hsc_s], -1, []), hsc_close, -1)
       // review-lint: allow-fixed-synthetic-name (the injected __hs_close's own scope)
     } else {
       hsc_close
@@ -898,20 +903,20 @@ export fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String)
       let q = EIdent("__entry_hf_q", -1)
       let raw_wait = ECall(EIdent("vibe_hf_wait_raw", -1), [
         EBinOp("-", q, EInt(2), -1)
-      ], -1)
+      ], -1, [])
       // #3131: the wait frees a WIT slot; record it (lc_ws_track_inject).
       let wait_call = if hf_machinery {
-        ECall(EIdent("__ws_freed", -1), [q, raw_wait], -1)
+        ECall(EIdent("__ws_freed", -1), [q, raw_wait], -1, [])
       } else {
         raw_wait
       }
       let trap_zero = ESeq(ECall(EIdent("assert", -1), [
         EBinOp("==", q, EInt(0), -1)
-      ], -1), EInt(0))
+      ], -1, []), EInt(0))
       let low = if sleep_machinery {
         EIf(EBinOp("<", q, EInt(0), -1), ESeq(ECall(EIdent("sleep_blocking", -1), [
           EBinOp("-", EInt(0), q, -1)
-        ], -1), EInt(0)), trap_zero)
+        ], -1, []), EInt(0)), trap_zero)
       } else {
         trap_zero
       }
@@ -929,7 +934,7 @@ export fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String)
       let settle_body = if hs_machinery {
         let hs_read_call = ECall(EIdent("vibe_hs_read_raw", -1), [
           EBinOp("-", q, EInt(lc_hs_req_base()), -1)
-        ], -1)
+        ], -1, [])
         EIf(EBinOp("<", EInt(lc_hs_req_base() - 1), q, -1), hs_read_call, mid)
       } else {
         mid
@@ -938,30 +943,32 @@ export fn lc_inject_async_sleep_boundary(stmts: Array[Stmt], entry_name: String)
         ("__entry_hf_q", Some(TyName("Int")))
       ]
       Array::push(stmts, SLet(false, false, lc_fixed_synthetic_name("__entry_settle", "review-lint: allow-fixed-synthetic-name"), None, EFn(lc_fresh_string_array(), array_empty(), settle_params, Some(TyName("Int")), None, settle_body)))
-      let settled = ECall(EIdent("__entry_settle", -1), [req], -1)
+      let settled = ECall(EIdent("__entry_settle", -1), [req], -1, [])
       if step_boundary {
         // #1537: the suspend-class spelling, as in the sleep-only arm
         // below -- bind `resume` first, so this handler takes the step
         // convention the spawned tasks use.
         let k_resumed = ECall(EIdent("__entry_k", -1), [
           EIdent("__entry_slp_v", -1)
-        ], -1)
+        ], -1, [])
         ELet(lc_fixed_synthetic_name("__entry_slp_v", "review-lint: allow-fixed-synthetic-name"), settled, ELet(lc_fixed_synthetic_name("__entry_k", "review-lint: allow-fixed-synthetic-name"), EIdent("resume", -1), k_resumed, -1), -1)
       } else {
-        let resumed = ECall(EIdent("resume", -1), [EIdent("__entry_slp_v", -1)], -1)
+        let resumed = ECall(EIdent("resume", -1), [EIdent("__entry_slp_v", -1)], -1, [
+        ])
         ELet(lc_fixed_synthetic_name("__entry_slp_v", "review-lint: allow-fixed-synthetic-name"), settled, resumed, -1)
       }
     } else {
       let settle = EIf(EBinOp("<", req, EInt(0), -1), ECall(EIdent("sleep_blocking", -1), [
         EBinOp("-", EInt(0), req, -1)
-      ], -1), ECall(EIdent("assert", -1), [EBinOp("<", req, EInt(1), -1)], -1))
+      ], -1, []), ECall(EIdent("assert", -1), [EBinOp("<", req, EInt(1), -1)], -1, [
+      ]))
       if step_boundary {
         // #2065 wall 2: suspend-class spelling -- see the guard above.
         ESeq(settle, ELet(lc_fixed_synthetic_name("__entry_k", "review-lint: allow-fixed-synthetic-name"), EIdent("resume", -1), ECall(EIdent("__entry_k", -1), [
           EInt(0)
-        ], -1), -1))
+        ], -1, []), -1))
       } else {
-        ESeq(settle, ECall(EIdent("resume", -1), [EInt(0)], -1))
+        ESeq(settle, ECall(EIdent("resume", -1), [EInt(0)], -1, []))
       }
     }
     let mut j = 0

@@ -340,7 +340,7 @@ export fn cl_own_return_stmts(stmts: Array[Stmt]) -> Array[String] {
 /// Compiler-internal return markers preserve the operand's representation.
 export fn cl_return_operand(e: Expr) -> Expr {
   match e {
-    ECall(EIdent(n, off), args, _) => if n == "__lambda_return_owned" && off < 0 && Array::length(args) == 1 {
+    ECall(EIdent(n, off), args, _, _) => if n == "__lambda_return_owned" && off < 0 && Array::length(args) == 1 {
       Array::get(args, 0)
     } else {
       e
@@ -403,17 +403,17 @@ fn cl_own_return_into(e: Expr, needed: Array[String], tail: Bool) -> Expr {
       EReturn(value) => EReturn(cl_own_return_into(value, needed, true)),
       EIdent(n, _) => {
         Array::push(needed, n)
-        ECall(EIdent("__lambda_return_owned", -1), [e], -1)
+        ECall(EIdent("__lambda_return_owned", -1), [e], -1, [])
       },
       EDot(obj, field, off, field_off) => {
         let value = EDot(cl_own_return_into(obj, needed, false), field, off, field_off)
         if tail {
-          ECall(EIdent("__lambda_return_owned", -1), [value], -1)
+          ECall(EIdent("__lambda_return_owned", -1), [value], -1, [])
         } else {
           value
         }
       },
-      ECall(callee, args, off) => {
+      ECall(callee, args, off, callee_resolution) => {
         let already_owned = match callee {
           EIdent("__lambda_return_owned", marker_off) => marker_off < 0,
           _ => false
@@ -422,12 +422,12 @@ fn cl_own_return_into(e: Expr, needed: Array[String], tail: Bool) -> Expr {
           e
         } else {
           let value = if cl_contains_return(e) {
-            ECall(cl_own_return_into(callee, needed, false), cl_own_return_list(args, needed), off)
+            ECall(cl_own_return_into(callee, needed, false), cl_own_return_list(args, needed), off, callee_resolution)
           } else {
             e
           }
           if tail {
-            ECall(EIdent("__lambda_return_owned", -1), [value], -1)
+            ECall(EIdent("__lambda_return_owned", -1), [value], -1, [])
           } else {
             value
           }
@@ -864,7 +864,7 @@ fn cl_cell_tails(e: Expr, cells: Array[String], through_dot: Bool) -> Expr {
   } else {
     rs_map(e, array_empty(), (x: Expr, shadow: Array[String]) -> Expr {
       if cl_is_cell_read(x, cells, shadow, through_dot) {
-        ECall(EIdent("__lambda_return_owned", -1), [x], -1)
+        ECall(EIdent("__lambda_return_owned", -1), [x], -1, [])
       } else {
         x
       }
@@ -909,15 +909,15 @@ fn cl_store_leaf(x: Expr, needed: Array[String]) -> Expr {
   match x {
     EIdent(n, _) => {
       Array::push(needed, n)
-      ECall(EIdent("__lambda_return_owned", -1), [x], -1)
+      ECall(EIdent("__lambda_return_owned", -1), [x], -1, [])
     },
-    EDot(_, _, _, _) => ECall(EIdent("__lambda_return_owned", -1), [x], -1),
-    ECall(EIdent("__lambda_return_owned", off), _, _) => if off < 0 {
+    EDot(_, _, _, _) => ECall(EIdent("__lambda_return_owned", -1), [x], -1, []),
+    ECall(EIdent("__lambda_return_owned", off), _, _, _) => if off < 0 {
       x
     } else {
-      ECall(EIdent("__lambda_return_owned", -1), [x], -1)
+      ECall(EIdent("__lambda_return_owned", -1), [x], -1, [])
     },
-    ECall(_, _, _) => ECall(EIdent("__lambda_return_owned", -1), [x], -1),
+    ECall(_, _, _, _) => ECall(EIdent("__lambda_return_owned", -1), [x], -1, []),
     _ => x
   }
 }
@@ -1015,7 +1015,7 @@ fn cl_own_cells(e: Expr, cells: Array[String]) -> Expr {
       }
       EFn(tps, bounds, ps, ret, eff, cl_own_cells(body, cl_cells_without_all(cells, names)))
     },
-    ECall(callee, args, off) => ECall(cl_own_cells(callee, cells), cl_list_cells(args, cells), off),
+    ECall(callee, args, off, callee_resolution) => ECall(cl_own_cells(callee, cells), cl_list_cells(args, cells), off, callee_resolution),
     ETuple(items) => ETuple(cl_agg_cells(items, cells)),
     EArray(items) => EArray(cl_agg_cells(items, cells)),
     ERecord(n, fields, args) => ERecord(n, cl_agg_fields_cells(fields, cells), args),

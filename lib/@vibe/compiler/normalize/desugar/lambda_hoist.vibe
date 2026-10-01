@@ -78,7 +78,7 @@ export fn dlh_strip_tilde(n: String) -> String {
 /// scope that resolves them (`undefined variable (local): KeyInvalid @call`).
 fn dlh_has_perform(expr: Expr) -> Bool {
   match expr {
-    ECall(callee, args, _) => {
+    ECall(callee, args, _, _) => {
       let head = match callee {
         EIdent(n, _) => n == "perform",
         _ => false
@@ -91,7 +91,7 @@ fn dlh_has_perform(expr: Expr) -> Bool {
       // perform nested inside a throw payload still triggers.
       let is_throw_shape = if head && Array::length(args) == 1 {
         match Array::get(args, 0) {
-          ECall(op_callee, _, _) => match op_callee {
+          ECall(op_callee, _, _, _) => match op_callee {
             EIdent(op_n, _) => is_exception_throw_operation(op_n),
             _ => false
           },
@@ -163,7 +163,7 @@ fn dlh_has_perform(expr: Expr) -> Bool {
 /// `never_called` for the exact shape that surfaced this.
 fn dlh_collect_performed_effect_names(expr: Expr, out: Array[String]) -> Unit {
   match expr {
-    ECall(callee, args, _) => {
+    ECall(callee, args, _, _) => {
       let head = match callee {
         EIdent(n, _) => n == "perform",
         _ => false
@@ -172,7 +172,7 @@ fn dlh_collect_performed_effect_names(expr: Expr, out: Array[String]) -> Unit {
         let operand = Array::get(args, 0)
         let qname = match operand {
           EIdent(qn, _) => Some(qn),
-          ECall(op_callee, _, _) => match op_callee {
+          ECall(op_callee, _, _, _) => match op_callee {
             EIdent(qn, _) => Some(qn),
             _ => None
           },
@@ -311,7 +311,7 @@ fn dlh_scan_free(expr: Expr, bound: Array[String], bad: Array[String]) -> Unit {
       dlh_scan_free(r, bound, bad)
     },
     EUnaryOp(_, e) => dlh_scan_free(e, bound, bad),
-    ECall(callee, args, _) => {
+    ECall(callee, args, _, _) => {
       dlh_scan_free(callee, bound, bad)
       let mut i = 0
       while i < Array::length(args) {
@@ -478,9 +478,9 @@ fn dlh_subst(expr: Expr, from: String, to: String) -> Expr {
     },
     EBinOp(op, l, r, boff) => EBinOp(op, dlh_subst(l, from, to), dlh_subst(r, from, to), boff),
     EUnaryOp(op, e) => EUnaryOp(op, dlh_subst(e, from, to)),
-    ECall(callee, args, off) => ECall(dlh_subst(callee, from, to), for a in args {
+    ECall(callee, args, off, callee_resolution) => ECall(dlh_subst(callee, from, to), for a in args {
       dlh_subst(a, from, to)
-    }, off),
+    }, off, callee_resolution),
     ETuple(es) => ETuple(for e in es {
       dlh_subst(e, from, to)
     }),
@@ -644,22 +644,22 @@ fn dlh_marker_only_called_directly(expr: Expr, marker: String) -> Bool {
 /// fresh/unique, no shadowing concern, so no bound-tracking needed here).
 fn dlh_prepend_and_rename_calls(expr: Expr, marker: String, fresh: String, extra_names: Array[String]) -> Expr {
   match expr {
-    ECall(callee, args, off) => match callee {
+    ECall(callee, args, off, callee_resolution) => match callee {
       EIdent(n, coff) => if n == marker {
         let extra_args = for en in extra_names {
           EIdent(en, coff)
         }
         ECall(EIdent(fresh, coff), Array::concat(extra_args, for a in args {
           dlh_prepend_and_rename_calls(a, marker, fresh, extra_names)
-        }), off)
+        }), off, callee_resolution)
       } else {
         ECall(dlh_prepend_and_rename_calls(callee, marker, fresh, extra_names), for a in args {
           dlh_prepend_and_rename_calls(a, marker, fresh, extra_names)
-        }, off)
+        }, off, callee_resolution)
       },
       _ => ECall(dlh_prepend_and_rename_calls(callee, marker, fresh, extra_names), for a in args {
         dlh_prepend_and_rename_calls(a, marker, fresh, extra_names)
-      }, off)
+      }, off, callee_resolution)
     },
     EBinOp(op, l, r, boff) => EBinOp(op, dlh_prepend_and_rename_calls(l, marker, fresh, extra_names), dlh_prepend_and_rename_calls(r, marker, fresh, extra_names), boff),
     EUnaryOp(op, e) => EUnaryOp(op, dlh_prepend_and_rename_calls(e, marker, fresh, extra_names)),
@@ -849,7 +849,7 @@ fn dlh_args_have_literal_efn(args: Array[Expr]) -> Bool {
 /// wrapper is preserved, only its inner value is replaced). Non-literal
 /// args are left untouched. See dlh_args_have_literal_efn's call site
 /// (dlh_hoist_expr's ECall case) for why this exists.
-fn dlh_letbind_literal_args(callee: Expr, args: Array[Expr], off: Int, ctr: Array[Int]) -> Expr {
+fn dlh_letbind_literal_args(callee: Expr, args: Array[Expr], off: Int, resolution: Array[Int], ctr: Array[Int]) -> Expr {
   let new_args = array_empty()
   let lits = array_empty()
   let mut i = 0
@@ -881,7 +881,7 @@ fn dlh_letbind_literal_args(callee: Expr, args: Array[Expr], off: Int, ctr: Arra
     }
     i = i + 1
   }
-  let mut wrapped = ECall(callee, new_args, off)
+  let mut wrapped = ECall(callee, new_args, off, resolution)
   let mut k = Array::length(lits) - 1
   while k >= 0 {
     let (nm, lit) = Array::get(lits, k)
@@ -1243,16 +1243,16 @@ fn dlh_hoist_expr(expr: Expr, hoisted: Array[Stmt], ctr: Array[Int]) -> Expr {
     // `ELet(fresh, EFn(...), fresh())` shape and re-enter this same
     // function -- reuses 100% of the existing, separately-verified
     // ELet/EFn logic above with no new closure-conversion code.
-    ECall(callee, args, off) => match callee {
+    ECall(callee, args, off, callee_resolution) => match callee {
       EFn(_, _, _, _, ceff, cfbody) => if dlh_has_perform(cfbody) || dlh_row_is_effectful(ceff) {
         let idx = Array::get(ctr, 0)
         Array::set(ctr, 0, idx + 1)
         let iife_name = "__dlh_iife_\{idx}"
-        dlh_hoist_expr(ELet(iife_name, callee, ECall(EIdent(iife_name, off), args, off), off), hoisted, ctr)
+        dlh_hoist_expr(ELet(iife_name, callee, ECall(EIdent(iife_name, off), args, off, callee_resolution), off), hoisted, ctr)
       } else {
         ECall(dlh_hoist_expr(callee, hoisted, ctr), for a in args {
           dlh_hoist_expr(a, hoisted, ctr)
-        }, off)
+        }, off, callee_resolution)
       },
       _ => if dlh_args_have_literal_efn(args) {
         // An inline `EFn` literal passed as a CALL ARGUMENT (not the
@@ -1272,11 +1272,11 @@ fn dlh_hoist_expr(expr: Expr, hoisted: Array[Stmt], ctr: Array[Int]) -> Expr {
         // order as the literal appearing inline) so the existing ELet/EFn
         // hoist logic above turns it into an ordinary named function
         // reference, exactly like the already-working named-closure case.
-        dlh_hoist_expr(dlh_letbind_literal_args(callee, args, off, ctr), hoisted, ctr)
+        dlh_hoist_expr(dlh_letbind_literal_args(callee, args, off, callee_resolution, ctr), hoisted, ctr)
       } else {
         ECall(dlh_hoist_expr(callee, hoisted, ctr), for a in args {
           dlh_hoist_expr(a, hoisted, ctr)
-        }, off)
+        }, off, callee_resolution)
       }
     },
     ETuple(es) => ETuple(for e in es {

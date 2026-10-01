@@ -150,7 +150,7 @@ fn bp_round0_scan(stmts: Array[Stmt], nonident: MutMap[String, Int], valued_set:
 /// possible callers. A generation mark deduplicates edges within each body.
 fn bp_index_callers(e: Expr, caller: Int, names: Array[String], callers: Array[Array[Int]], seen: Array[Int]) -> Unit {
   match e {
-    ECall(EIdent(name, _), _, _) => {
+    ECall(EIdent(name, _), _, _, _) => {
       let slot = bsearch_leftmost(names, name)
       if slot >= 0 && Array::get(seen, slot) != caller {
         Array::set(seen, slot, caller)
@@ -715,7 +715,7 @@ fn mrv_fresh(e: Expr, fresh_names: MutMap[String, Int], tainted: MutMap[String, 
       let _ = mrv_fresh(b, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view, callees)
       true
     },
-    ECall(callee, args, _) => {
+    ECall(callee, args, _, _) => {
       let mut arg0_fresh = false
       let mut i = 0
       while i < Array::length(args) {
@@ -1179,7 +1179,7 @@ fn count_lambda_sites_scoped(expr: Expr, shadow_names: Array[String], bound: Arr
     // materialized as the synthetic lambda above. A callee that IS shadowed is
     // an ordinary local/global call, which allocates no table entry either, so
     // this arm answers 0 for both readings.
-    ECall(callee, args, _) => {
+    ECall(callee, args, _, _) => {
       let callee_count = match callee {
         EIdent(_, _) => 0,
         _ => count_lambda_sites_scoped(callee, shadow_names, bound)
@@ -1321,14 +1321,17 @@ fn count_lambda_sites_arms(arms: Array[(Pat, Expr)], shadow_names: Array[String]
 ///     `EString` is not in the string table (same constraint as
 ///     `double_to_string_expr`), so it cannot be emitted as a constant.
 export fn packed_dir_entries_to_array_expr(raw_call: Expr, tmp_name: String) -> Expr {
-  let separator = ECall(EIdent("String::from_char_code", -1), [EInt(0)], -1)
+  let separator = ECall(EIdent("String::from_char_code", -1), [EInt(0)], -1, [])
   ELet(tmp_name, raw_call, EIf(EBinOp("==", ECall(EIdent("String::length", -1), [
     EIdent(tmp_name, -1)
-  ], -1), EInt(0), -1), ECall(EIdent("Array::slice", -1), [
+  ], -1, []), EInt(0), -1), ECall(EIdent("Array::slice", -1), [
     EArray([separator]),
     EInt(0),
     EInt(0)
-  ], -1), ECall(EIdent("String::split", -1), [EIdent(tmp_name, -1), separator], -1)), -1)
+  ], -1, []), ECall(EIdent("String::split", -1), [
+    EIdent(tmp_name, -1),
+    separator
+  ], -1, [])), -1)
 }
 
 /// ADR-0090 (#1262): the region copy-out exits, shared by both backends.
@@ -1346,8 +1349,8 @@ export fn region_array_value_copy(value: Expr, tmp: String) -> Expr {
   ELet(tmp, value, ECall(EIdent("Array::slice", -1), [
     EIdent(tmp, -1),
     EInt(0),
-    ECall(EIdent("Array::length", -1), [EIdent(tmp, -1)], -1)
-  ], -1), -1)
+    ECall(EIdent("Array::length", -1), [EIdent(tmp, -1)], -1, [])
+  ], -1, []), -1)
 }
 
 /// `MutBytes::to_bytes(mb)` -- the same exit for the Bytes half, for the same
@@ -1359,12 +1362,13 @@ export fn region_mutbytes_exit_copy(arg: Expr) -> Expr {
   ELet(tmp, arg, ECall(EIdent("Bytes::slice", -1), [
     EIdent(tmp, -1),
     EInt(0),
-    ECall(EIdent("Bytes::length", -1), [EIdent(tmp, -1)], -1)
-  ], -1), -1)
+    ECall(EIdent("Bytes::length", -1), [EIdent(tmp, -1)], -1, [])
+  ], -1, []), -1)
 }
 
 export fn region_mutlist_exit_copy(arg: Expr) -> Expr {
-  region_array_value_copy(ECall(EIdent("ArrayBuilder::freeze", -1), [arg], -1), "__mutlist_exit")
+  region_array_value_copy(ECall(EIdent("ArrayBuilder::freeze", -1), [arg], -1, [
+  ]), "__mutlist_exit")
 }
 
 /// #2158: names of user functions whose declared return type is a float.

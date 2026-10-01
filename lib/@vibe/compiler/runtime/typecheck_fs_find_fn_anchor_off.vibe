@@ -1,3 +1,6 @@
+import ./typecheck_fs_local_type_member_markers.vibe {
+  module_typed_lowering_offsets_for_source
+}
 // lib/@vibe/compiler/runtime/typecheck_fs.vibe — find fn anchor off.
 
 import @vibe/compiler/cache {
@@ -37,7 +40,7 @@ import @vibe/compiler/runtime/checked_module_cache {
 }
 
 import @vibe/compiler/core {
-  BindingOrigin, EnvValueBinding, Expr, Stmt, Type, TypeDef, TypeEnv, normalize_path, resolution_env_seed, str_lt
+  BindingOrigin, EnvValueBinding, Expr, Stmt, Type, TypeDef, TypeEnv, normalize_path, resolution_env_seed, restore_resolved_callees, str_lt
 }
 
 import @vibe/compiler/codegen {
@@ -712,7 +715,7 @@ export fn parse_program_with_path_impl(path: String, source: String, observe_cur
 /// lane parsed every source in the closure. The counter that was 0 is still
 /// 0 and still means what it says; the work it never covered now has its own.
 export fn parse_program_with_path(path: String, source: String) -> Array[Stmt] with Exception {
-  match checked_module_artifact_stmts(path, source) {
+  let result = match checked_module_artifact_stmts(path, source) {
     Some(stmts) => stmts,
     None => {
       let stmts = parse_program_with_path_impl(path, source, false)
@@ -728,6 +731,11 @@ export fn parse_program_with_path(path: String, source: String) -> Array[Stmt] w
       stmts
     }
   }
+  match module_typed_lowering_offsets_for_source(path, source) {
+    Some(rows) => restore_resolved_callees(result, rows),
+    None => ()
+  }
+  result
 }
 
 export fn store_persistent_type_env(fingerprint: String, env: TypeEnv) -> String with Env + Exception + Fs {

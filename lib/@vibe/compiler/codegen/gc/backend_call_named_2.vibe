@@ -298,7 +298,7 @@ fn bc_expr_is_floatish_syntactic(e: Expr, local_names: Array[String], ctx: Compi
     },
     EBinOp(op, l, r, _) => (op == "+" || op == "-" || op == "*" || op == "/") && (bc_expr_is_floatish(l, local_names, ctx) || bc_expr_is_floatish(r, local_names, ctx)),
     EUnaryOp(op, x) => op == "-" && bc_expr_is_floatish(x, local_names, ctx),
-    ECall(fcallee, _, call_off) => match fcallee {
+    ECall(fcallee, _, call_off, _) => match fcallee {
       EIdent(cn, _) => array_contains_int(ctx.gc_float_call_offsets, call_off) || cn == "Int::to_double" || cn == "Double::from_i64_bits" || cn == "Float::to_double" || cn == "Double::to_float" || cn == "Int::to_float" || gc_fn_returns_float(local_names, ctx, cn),
       _ => false
     },
@@ -402,7 +402,7 @@ export fn bc_expr_is_boolish(e: Expr, local_names: Array[String], ctx: CompileCt
       // as backend_expr's copy -- see there for why `__arr_equals__*` and
       // `T::equals` are left out (measured dead on gc, and `T::equals` matches
       // on the name, so it misrenders a user's own `Foo::equals`).
-      ECall(callee, args, _) => match callee {
+      ECall(callee, args, _, _) => match callee {
         EIdent(cn, _) =>
         (cn == "not" && Array::length(args) == 1 && find_local_slot(local_names, "not") < 0 && func_table_user_index_of(ctx.func_table, "not", ctx.num_user_funcs) < 0 && bc_expr_is_boolish(Array::get(args, 0), local_names, ctx)) || bc_builtin_ret_is_bool(cn, local_names, ctx),
         _ => false
@@ -486,7 +486,7 @@ export fn gc_expr_is_native_array_ref(expr: Expr, local_names: Array[String], ct
     // #1542: reading a reference-lane FIELD yields a reference, so it inhabits
     // the lane exactly as a native local does.
     EDot(EIdent(ns_obj, _), ns_field, _, _) => gc_ctor_field_is_ref(ctx.gc_ctor_table, gc_slot_map_get(ctx.gc_native_struct_scope, find_local_slot(local_names, ns_obj)), ns_field),
-    ECall(EIdent(name, _), _, _) => {
+    ECall(EIdent(name, _), _, _, _) => {
       let idx = gc_direct_abi_call_index(ctx, name)
       find_local_slot(local_names, name) < 0 && idx >= 0 && Array::get(ctx.gc_direct_abi_return_refs, idx)
     },
@@ -506,7 +506,7 @@ export fn gc_expr_can_compile_native_array_ref(expr: Expr, local_names: Array[St
     },
     EArray(_) => true,
     EDot(EIdent(ns_obj, _), ns_field, _, _) => gc_ctor_field_is_ref(ctx.gc_ctor_table, gc_slot_map_get(ctx.gc_native_struct_scope, find_local_slot(local_names, ns_obj)), ns_field),
-    ECall(EIdent(name, _), _, _) => {
+    ECall(EIdent(name, _), _, _, _) => {
       let idx = gc_direct_abi_call_index(ctx, name)
       find_local_slot(local_names, name) < 0 && idx >= 0 && Array::get(ctx.gc_direct_abi_return_refs, idx)
     },
@@ -527,7 +527,7 @@ fn gc_expr_is_lane_proven_ref(expr: Expr, local_names: Array[String], ctx: Compi
       let slot = find_local_slot(local_names, name)
       slot >= 0 && array_contains_int(ctx.gc_native_array_locals, slot)
     },
-    ECall(EIdent(name, _), _, _) => {
+    ECall(EIdent(name, _), _, _, _) => {
       let idx = gc_direct_abi_call_index(ctx, name)
       find_local_slot(local_names, name) < 0 && idx >= 0 && Array::get(ctx.gc_direct_abi_return_refs, idx)
     },
@@ -568,8 +568,8 @@ export fn gc_frozen_conversion_copy(value: Expr, tmp: String) -> Expr {
   ELet(tmp, value, ECall(EIdent("Array::slice", -1), [
     EIdent(tmp, -1),
     EInt(0),
-    ECall(EIdent("Array::length", -1), [EIdent(tmp, -1)], -1)
-  ], -1), -1)
+    ECall(EIdent("Array::length", -1), [EIdent(tmp, -1)], -1, [])
+  ], -1, []), -1)
 }
 
 /// #2300: is `name` something the READER wrote -- a lexical binding in this
@@ -996,7 +996,8 @@ export fn gc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
     emit_i32_add(buf)
     emit_i64_load(buf, 3, 8)
     emit_local_set(buf, mv_l)
-    nl2 = ce(buf, ECall(EIdent("Some", -1), [EIdent("[gc-temp]__mbg_val", -1)], -1), local_names, nl2, ld)
+    nl2 = ce(buf, ECall(EIdent("Some", -1), [EIdent("[gc-temp]__mbg_val", -1)], -1, [
+    ]), local_names, nl2, ld)
     emit_local_set(buf, res_l)
     emit_br(buf, 2)
     emit_end(buf)

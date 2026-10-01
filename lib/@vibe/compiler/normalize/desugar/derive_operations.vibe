@@ -105,7 +105,7 @@ export fn collect_trivial_wrapper_names(stmts: Array[Stmt]) -> Array[String] {
         let (pname, _) = Array::get(params, 0)
         let stripped = dlh_strip_tilde(pname)
         match body {
-          ECall(callee, args, _) => match callee {
+          ECall(callee, args, _, _) => match callee {
             EIdent(cn, _) => if cn == stripped && Array::length(args) == 0 {
               Array::push(out, name)
             } else {
@@ -226,11 +226,12 @@ export fn show_for_typed(fty: TypeExpr, val: Expr, known_types: Array[String]) -
     // `Box[Bool]`), where codegen sees only the erased field; name the
     // renderer rather than leave it to the representation.
     TyName("Bool") => EIf(val, EString("true", -1), EString("false", -1)),
-    TyName("Double") => ECall(builtin_ref("Double::to_string"), [val], -1),
+    TyName("Double") => ECall(builtin_ref("Double::to_string"), [val], -1, []),
     TyName(n) => if !is_scalar_type_name(n) && str_array_contains(known_types, n) {
-      ECall(EIdent(qualified_name(n, "to_string"), -1), Array::slice([val], 0, 1), -1)
+      ECall(EIdent(qualified_name(n, "to_string"), -1), Array::slice([val], 0, 1), -1, [
+      ])
     } else {
-      ECall(builtin_ref("__to_string"), Array::slice([val], 0, 1), -1)
+      ECall(builtin_ref("__to_string"), Array::slice([val], 0, 1), -1, [])
     },
     TyApp("Option", args) => if Array::length(args) == 1 {
       let t = Array::get(args, 0)
@@ -242,7 +243,7 @@ export fn show_for_typed(fty: TypeExpr, val: Expr, known_types: Array[String]) -
         (PCtor("None", array_empty()), EString("None", -1))
       ], 0, 2))
     } else {
-      ECall(builtin_ref("__to_string"), Array::slice([val], 0, 1), -1)
+      ECall(builtin_ref("__to_string"), Array::slice([val], 0, 1), -1, [])
     },
     TyApp("Result", args) => if Array::length(args) == 2 {
       let t = Array::get(args, 0)
@@ -258,7 +259,7 @@ export fn show_for_typed(fty: TypeExpr, val: Expr, known_types: Array[String]) -
         // review-lint: allow-fixed-synthetic-name -- existing generated derived renderer payload binder preserved by the module split
       ], 0, 2))
     } else {
-      ECall(builtin_ref("__to_string"), Array::slice([val], 0, 1), -1)
+      ECall(builtin_ref("__to_string"), Array::slice([val], 0, 1), -1, [])
     },
     TyTuple(ts) => {
       let n = Array::length(ts)
@@ -292,9 +293,9 @@ export fn show_for_typed(fty: TypeExpr, val: Expr, known_types: Array[String]) -
     TyApp("Array", args) => if Array::length(args) == 1 {
       ECall(EIdent(arr_to_string_name(Array::get(args, 0)), -1), Array::slice([
         val
-      ], 0, 1), -1)
+      ], 0, 1), -1, [])
     } else {
-      ECall(builtin_ref("__to_string"), Array::slice([val], 0, 1), -1)
+      ECall(builtin_ref("__to_string"), Array::slice([val], 0, 1), -1, [])
     },
     TyApp(n, targs) => if show_generic_known(n) && show_ty_args_concrete(targs, known_types) {
       // #3082: a derived renderer's field or payload of a `derive (Show)`
@@ -303,11 +304,12 @@ export fn show_for_typed(fty: TypeExpr, val: Expr, known_types: Array[String]) -
       // value is rendered here with the arguments substituted.
       show_generic_inline(n, targs, val, known_types)
     } else if str_array_contains(known_types, n) {
-      ECall(EIdent(qualified_name(n, "to_string"), -1), Array::slice([val], 0, 1), -1)
+      ECall(EIdent(qualified_name(n, "to_string"), -1), Array::slice([val], 0, 1), -1, [
+      ])
     } else {
-      ECall(builtin_ref("__to_string"), Array::slice([val], 0, 1), -1)
+      ECall(builtin_ref("__to_string"), Array::slice([val], 0, 1), -1, [])
     },
-    _ => ECall(builtin_ref("__to_string"), Array::slice([val], 0, 1), -1)
+    _ => ECall(builtin_ref("__to_string"), Array::slice([val], 0, 1), -1, [])
   }
 }
 
@@ -413,7 +415,7 @@ fn show_generic_inline(n: String, targs: Array[TypeExpr], val: Expr, known_types
     } else {
       ()
     }
-    ECall(EIdent(qualified_name(n, "to_string"), -1), [val], -1)
+    ECall(EIdent(qualified_name(n, "to_string"), -1), [val], -1, [])
   } else {
     Array::push(dtd_show_inline_stack, key)
     let tmp = show_tmp_name()
@@ -469,7 +471,7 @@ fn show_generic_inline(n: String, targs: Array[TypeExpr], val: Expr, known_types
           }
           EMatch(tv, arms)
         },
-        None => ECall(EIdent(qualified_name(n, "to_string"), -1), [tv], -1)
+        None => ECall(EIdent(qualified_name(n, "to_string"), -1), [tv], -1, [])
       }
     }
     Array::truncate(dtd_show_inline_stack, Array::length(dtd_show_inline_stack) - 1)
@@ -639,7 +641,7 @@ export fn gen_enum_show_fn(ename: String, variants: Array[(String, Array[TypeExp
 export fn gen_hash_key_fn(tname: String) -> Stmt {
   let body = ECall(EIdent(qualified_name(tname, "to_string"), -1), Array::slice([
     EIdent("self", -1)
-  ], 0, 1), -1)
+  ], 0, 1), -1, [])
   let params = Array::slice([("self", Some(TyName(tname)))], 0, 1)
   let no_tp = array_empty()
   let no_tb = array_empty()
@@ -685,7 +687,7 @@ fn compare_then_typed(fty: TypeExpr, lhs: Expr, rhs: Expr, rest: Expr, known_typ
       EMatch(ECall(EIdent(qualified_name(n, "compare"), -1), Array::slice([
         lhs,
         rhs
-      ], 0, 2), -1), arms)
+      ], 0, 2), -1, []), arms)
     } else by_operator,
     _ => by_operator
   }
@@ -766,14 +768,14 @@ fn default_for_type(fty: TypeExpr, known_types: Array[String]) -> Expr {
     TyName("String") => EString("", -1),
     TyName("Unit") => EUnit,
     TyName(n) => if str_array_contains(known_types, n) {
-      ECall(EIdent(qualified_name(n, "default"), -1), empty_expr_array(), -1)
+      ECall(EIdent(qualified_name(n, "default"), -1), empty_expr_array(), -1, [])
     } else {
       EUnit
     },
     TyApp("Option", _) => EIdent("None", -1),
     TyApp("Array", _) => EArray(empty_expr_array()),
     TyApp(n, _) => if str_array_contains(known_types, n) {
-      ECall(EIdent(qualified_name(n, "default"), -1), empty_expr_array(), -1)
+      ECall(EIdent(qualified_name(n, "default"), -1), empty_expr_array(), -1, [])
     } else {
       EUnit
     },
@@ -812,7 +814,7 @@ export fn gen_enum_default_fn(ename: String, variants: Array[(String, Array[Type
       Array::push(args, default_for_type(Array::get(ftypes, i), known_types))
       i = i + 1
     }
-    ECall(EIdent(vname, -1), args, -1)
+    ECall(EIdent(vname, -1), args, -1, [])
   }
   let no_params = array_empty()
   let no_tp = array_empty()

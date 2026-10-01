@@ -593,6 +593,31 @@ fn report_by_name_call_arm_hits(raw: String, emit: Bool) -> Int with Fs + Stderr
   count
 }
 
+fn report_path_only_callee_restore_hits(raw: String, emit: Bool) -> Int with Fs + Stderr {
+  let hits = Json::parse(raw)
+  let mut count = 0
+  let mut i = 0
+  while i < Json::length(hits) {
+    let hit = Json::index(hits, i)
+    let path = Json::string(Json::field(hit, "path"))
+    if String::contains(path, "/compiler/") && is_production_compiler_path(path) && !is_generated_bundle(path) {
+      if emit {
+        let start = Double::to_int(Json::number(Json::field(hit, "start")))
+        let end = Double::to_int(Json::number(Json::field(hit, "end")))
+        let text = if Fs::exists(path) && end > start {
+          String::substring(Fs::read_file(path), start, end)
+        } else {
+          Json::string(Json::field(hit, "text"))
+        }
+        report_finding(path, Double::to_int(Json::number(Json::field(hit, "line"))), text, "callee identities require the current source: use module_typed_lowering_offsets_for_source(path, source), not a path-only lookup")
+      }
+      count = count + 1
+    }
+    i = i + 1
+  }
+  count
+}
+
 fn lint(root: String, vibe: String) -> Int with Fs + Process + Stderr {
   let patterns = [
     "$(ctor:id)($(name:const), $(rest:args))",
@@ -609,6 +634,10 @@ fn lint(root: String, vibe: String) -> Int with Fs + Process + Stderr {
     Array::push(patterns, Array::get(effect_patterns, ep))
     ep = ep + 1
   }
+  // #3264: a path's latest row may belong to an earlier source at that path.
+  // Restore only after matching the checked row to the current source.
+  Array::push(patterns, "match module_typed_lowering_offsets_for_path($(path:exp)) { Some($(rows:id)) => restore_resolved_callees($(stmts:exp), $(rows:id)), None => () }")
+  Array::push(patterns, "match module_typed_lowering_offsets_for_path($(path:exp)) { Some($(rows:id)) => restore_resolved_callees($(stmts:exp), $(rows:id)), _ => () }")
   let mut i = 0
   let mut violations = 0
   let mut failed = false
@@ -647,10 +676,12 @@ fn lint(root: String, vibe: String) -> Int with Fs + Process + Stderr {
         }
       } else if i == 6 {
         violations = violations + report_by_name_call_arm_hits(output, true)
-      } else {
+      } else if i < 7 + Array::length(effect_patterns) {
         // patterns 7.. are effect_name_compare_patterns(): four per name.
         let name = Array::get(policy_effect_names(), (i - 7) / 4)
         violations = violations + report_effect_name_compare_hits(output, "\"" + name + "\"", true)
+      } else {
+        violations = violations + report_path_only_callee_restore_hits(output, true)
       }
     }
     i = i + 1
@@ -724,6 +755,8 @@ fn gc_write_bare_probe(path: String, with_marker: Bool) -> Unit with Fs {
 }
 
 fn self_test() -> Int with Fs + Stderr {
+  let stale_restore = "[{\"path\":\"/repo/lib/@vibe/compiler/runtime/parse.vibe\",\"line\":1,\"text\":\"match path_only { Some(rows) => restore_resolved_callees(stmts, rows), None => () }\"}]"
+  let restore_test = "[{\"path\":\"/repo/lib/@vibe/compiler/tests/restore_test.vibe\",\"line\":1,\"text\":\"stale restore regression\"}]"
   let raw = "[{\"path\":\"/repo/lib/@vibe/compiler/normalize/pass.vibe\",\"line\":1,\"text\":\"ELet(\\\"__tmp\\\", e, e, -1)\",\"captures\":{\"name\":{\"text\":\"\\\"__tmp\\\"\"}}}]"
   let bad_assign = "[{\"path\":\"/repo/lib/@vibe/compiler/runtime/grep.vibe\",\"line\":2,\"text\":\"EAssignOp(_, name, v, b)\",\"captures\":{\"operator\":{\"text\":\"name\"}}}]"
   let good_assign = "[{\"path\":\"/repo/lib/@vibe/compiler/runtime/grep.vibe\",\"line\":2,\"text\":\"EAssignOp(name, op, v, b)\",\"captures\":{\"operator\":{\"text\":\"op\"}}}]"
@@ -740,7 +773,10 @@ fn self_test() -> Int with Fs + Stderr {
   gc_write_bare_probe(bare_marked, true)
   gc_write_bare_probe(bare_plain, false)
   let gc_ledger = gc_ledger_sample()
-  if !starts_with_synthetic_literal("\"__tmp\"") {
+  if report_path_only_callee_restore_hits(stale_restore, false) != 1 || report_path_only_callee_restore_hits("[]", false) != 0 || report_path_only_callee_restore_hits(restore_test, false) != 0 {
+    Stderr::write_stream("review-lint self-test: a path-only callee restore was missed or a regression fixture was flagged\n")
+    1
+  } else if !starts_with_synthetic_literal("\"__tmp\"") {
     Stderr::write_stream("review-lint self-test: synthetic literal was not recognized\n")
     1
   } else if starts_with_synthetic_literal("\"user\"") {

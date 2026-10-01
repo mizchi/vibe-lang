@@ -92,7 +92,7 @@ fn expr_projects_or_matches(name: String, e: Expr) -> Bool {
     expr_projects_or_matches(name, c) || expr_projects_or_matches(name, b),
     EForIn(_, _, iter, body) =>
     expr_projects_or_matches(name, iter) || expr_projects_or_matches(name, body),
-    ECall(callee, args, _) => {
+    ECall(callee, args, _, _) => {
       let mut i = 0
       let mut found = expr_projects_or_matches(name, callee)
       while i < Array::length(args) {
@@ -281,7 +281,7 @@ export fn reuse_arm_has_ctor_site(e: Expr, arity: Int) -> Bool {
     EFn(_, _, _, _, _, _) => false,
     _ => {
       let here = match e {
-        ECall(callee, args, _) => match callee {
+        ECall(callee, args, _, _) => match callee {
           EIdent(f, _) => Array::length(args) == arity && reuse_ctor_like(f),
           _ => false
         },
@@ -329,7 +329,7 @@ export fn reuse_arm_has_blocker(e: Expr) -> Bool {
     EBreak(_) => true,
     EContinue(_) => true,
     EFn(_, _, _, _, _, _) => false,
-    ECall(callee, args, _) => {
+    ECall(callee, args, _, _) => {
       let callee_blocks = match callee {
         EIdent(f, _) => f == "perform" || is_exception_throw_operation(f) || f == "throw",
         _ => reuse_arm_has_blocker(callee)
@@ -647,7 +647,7 @@ fn tr_receiver_builtin(f: String) -> Bool {
 fn tr_fresh_array_value(e: Expr) -> Bool {
   match e {
     EArray(_) => true,
-    ECall(callee, args, _) => match callee {
+    ECall(callee, args, _, _) => match callee {
       EIdent(f, _) => f == "Array::with_capacity",
       EFn(_, _, params, _, _, body) => Array::length(params) == 1 && Array::length(args) == 1 && (Array::get(params, 0)).0 == "__asc" && tr_is_ident(body, "__asc") && tr_fresh_array_value(Array::get(args, 0)),
       _ => false
@@ -659,7 +659,7 @@ fn tr_fresh_array_value(e: Expr) -> Bool {
 /// The receiver of a truncate call, or "" when `e` is not one.
 fn tr_truncate_receiver(e: Expr) -> String {
   match e {
-    ECall(callee, args, _) => match callee {
+    ECall(callee, args, _, _) => match callee {
       EIdent(f, _) => if f == "Array::truncate" && Array::length(args) == 2 {
         match Array::get(args, 0) {
           EIdent(x, _) => x,
@@ -698,7 +698,7 @@ export fn tr_collect_receivers(e: Expr, out: Array[String]) -> Unit {
 export fn tr_receiver_only(e: Expr, x: String, in_fn: Bool) -> Bool {
   match e {
     EIdent(n, _) => n != x,
-    ECall(callee, args, _) => {
+    ECall(callee, args, _, _) => {
       let recv = match callee {
         EIdent(f, _) => !in_fn && Array::length(args) > 0 && tr_receiver_builtin(f) && tr_is_ident(Array::get(args, 0), x),
         _ => false
@@ -913,7 +913,7 @@ export fn tr_result_safe(e: Expr, d: Array[String]) -> Bool {
     EForIn(_, _, _, _) => true,
     EBinOp(op, _, _, _) => op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">=" || op == "&&" || op == "||" || op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>" || !tr_mentions(e, d),
     EUnaryOp(op, _) => op == "!" || op == "~" || !tr_mentions(e, d),
-    ECall(callee, _, _) => match callee {
+    ECall(callee, _, _, _) => match callee {
       EIdent(f, _) => f == "Array::length" || !tr_mentions(e, d),
       _ => !tr_mentions(e, d)
     },
@@ -1065,7 +1065,7 @@ export fn tr_walk(w: TrWalk, e: Expr, stmt: Bool, tail: Bool) -> Unit {
         tr_walk(w, v, false, false)
         tr_walk(w, b, stmt, tail)
       },
-      ECall(callee, args, _) => {
+      ECall(callee, args, _, _) => {
         if tr_truncate_receiver(e) == w.x {
           tr_site(w, Array::get(args, 1), stmt)
         } else {
