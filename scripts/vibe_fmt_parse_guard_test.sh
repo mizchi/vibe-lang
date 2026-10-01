@@ -346,11 +346,12 @@ fi
 # CREATED next to a closure member can join the closure via `.vpkg` sibling
 # auto-discovery without any recorded file changing, so a closure member's
 # parent-directory mtime is a staleness signal too.
-before_mtime="$(mtime_of "$entry_wasm")"
+# Publication is an atomic rename. Pin the old inode so a rebuild within
+# the same stat(1) second is still distinguishable from stale reuse.
+ln "$entry_wasm" "$work/before-missing-dep.wasm"
 echo "lib/@vibe/no_such_recorded_dep.vibe" >> "$entry_wasm.deps"
 bash "$ROOT_DIR/scripts/ensure_vibe_fmt_entry.sh" >/dev/null
-after_mtime="$(mtime_of "$entry_wasm")"
-if [ "$after_mtime" -le "$before_mtime" ]; then
+if [ "$entry_wasm" -ef "$work/before-missing-dep.wasm" ]; then
   echo "vibe_fmt_parse_guard_test: a missing recorded dep did not read as stale" >&2
   exit 1
 fi
