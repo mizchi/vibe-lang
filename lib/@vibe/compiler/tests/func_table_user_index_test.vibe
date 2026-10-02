@@ -1,0 +1,93 @@
+import @vibe/compiler/codegen/common_base {
+  FuncTable, ctor_sorted_index, func_table_user_index_of
+}
+
+fn user_index_table(sorted: Array[String], positions: Array[Int]) -> FuncTable {
+  FuncTable::{
+    names: ["z", "shared", "a", "shared", "shared", "builtin_only"],
+    indices: [101, 203, 307, 409, 503, 607],
+    params: [0, 0, 0, 0, 0, 0],
+    returns: [1, 1, 1, 1, 1, 1],
+    needs_env: [false, false, false, false, false, false],
+    names_sorted: sorted,
+    names_sorted_pos: positions
+  }
+}
+
+test "a user-prefix lookup returns the first table position, not a Wasm index" {
+  let (sorted, positions) = ctor_sorted_index([
+    "z",
+    "shared",
+    "a",
+    "shared",
+    "shared",
+    "builtin_only"
+  ])
+  let ft = user_index_table(sorted, positions)
+  inspect([
+    func_table_user_index_of(ft, "shared", 4),
+    func_table_user_index_of(ft, "z", 4),
+    func_table_user_index_of(ft, "a", 4),
+    func_table_user_index_of(ft, "builtin_only", 4),
+    func_table_user_index_of(ft, "absent", 4)
+  ], content = "[1, 0, 2, -1, -1]")
+}
+
+test "equal-name sorted slots can put a builtin before duplicate users" {
+  let ft = user_index_table([
+    "a",
+    "builtin_only",
+    "shared",
+    "shared",
+    "shared",
+    "z"
+  ], [2, 5, 4, 3, 1, 0])
+  inspect([
+    func_table_user_index_of(ft, "shared", 4),
+    func_table_user_index_of(ft, "shared", 2),
+    func_table_user_index_of(ft, "shared", 1)
+  ], content = "[1, 1, -1]")
+}
+
+test "the user prefix is empty when nonpositive and clips to the table length" {
+  let ft = user_index_table([], [])
+  let results: Array[Int] = []
+  for limit in [-7, 0, 1, 2, 4, 6, 99] {
+    Array::push(results, func_table_user_index_of(ft, "shared", limit))
+  }
+  inspect(results, content = "[-1, -1, -1, 1, 1, 1, 1]")
+  inspect([
+    func_table_user_index_of(ft, "builtin_only", 5),
+    func_table_user_index_of(ft, "builtin_only", 6),
+    func_table_user_index_of(ft, "builtin_only", 99)
+  ], content = "[-1, 5, 5]")
+  let empty = FuncTable::{
+    names: [],
+    indices: [],
+    params: [],
+    returns: [],
+    needs_env: [],
+    names_sorted: [],
+    names_sorted_pos: []
+  }
+  inspect([
+    func_table_user_index_of(empty, "absent", -1),
+    func_table_user_index_of(empty, "absent", 0),
+    func_table_user_index_of(empty, "absent", 99)
+  ], content = "[-1, -1, -1]")
+}
+
+test "missing and partial sorted views retain the original forward lookup" {
+  let tables = [
+    user_index_table([], []),
+    user_index_table(["a"], [2]),
+    user_index_table(["a", "builtin_only", "shared", "shared", "shared", "z"], [
+    ])
+  ]
+  let results: Array[Int] = []
+  for ft in tables {
+    Array::push(results, func_table_user_index_of(ft, "shared", 4))
+    Array::push(results, func_table_user_index_of(ft, "builtin_only", 4))
+  }
+  inspect(results, content = "[1, -1, 1, -1, 1, -1]")
+}
