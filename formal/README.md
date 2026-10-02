@@ -4,7 +4,7 @@ This directory contains small Lean 4 models of Vibe's effect system and Error
 policy, executable capability/resource contracts, parallel execution/compiler
 scheduling, and module system. Their sources of truth are
 [ADR-0071](../docs/internal/design/effectset.md) and
-[ADR-0073](../docs/internal/design/error-effect-policy.md),
+[ADR-0073](../docs/internal/design/exception-effect.md),
 [ADR-0068](../docs/internal/design/concurrency.md),
 [ADR-0075](../docs/internal/design/vibex-runtime-contract.md),
 [ADR-0084](../docs/internal/design/effect-taxonomy-entry-policy.md),

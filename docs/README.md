@@ -106,7 +106,6 @@ the repo; not the user manual.
 | [internal/design/effect-taxonomy-review.md](internal/design/effect-taxonomy-review.md) | Review, not the user effect tutorial |
 | [internal/design/effect-wit-mapping.md](internal/design/effect-wit-mapping.md) | Compiler `--wit` mapping |
 | [internal/design/effectset.md](internal/design/effectset.md) | ADR-0071, proposed |
-| [internal/design/error-effect-policy.md](internal/design/error-effect-policy.md) | ADR-0073 |
 | [internal/design/exception-effect.md](internal/design/exception-effect.md) | ADR-0085. User surface is the cheatsheet |
 | [internal/design/compiler-host-boundary.md](internal/design/compiler-host-boundary.md) | ADR-0086: what a runner must provide for the compiler's own `cli_main`. Not the generated-program contract, which is [user/reference/host-runtime-contract.md](user/reference/host-runtime-contract.md) |
 | [internal/design/module-system-oracle.md](internal/design/module-system-oracle.md) | Executable ADR-0070 oracle |
