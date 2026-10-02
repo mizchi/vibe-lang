@@ -47,8 +47,7 @@ old basenames.
 | `lib/@vibex/book/` | HTML renderer + SUMMARY parser |
 | `scripts/vibe_book.sh` | compile and run the generator |
 
-The former `docs/tutorial/` chapters live here now;
-`docs/user/tutorial/README.md` maps the old chapter names to theirs.
+The former `docs/tutorial/` chapters live here now.
 
 ## What the check does and does not prove
 

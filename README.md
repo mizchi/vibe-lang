@@ -62,8 +62,7 @@ New to the language? Start with **[The Vibe Book](book/README.md)**
 (`book/en/`) — a rust-book-shaped tour. Every chapter is a `*.vibe.md`
 executable doc (#1142): code blocks are compiled and run, and the printed
 output is embedded right in the markdown. `bash scripts/vibe_book.sh`
-renders `_build/book/index.html`. The old `docs/tutorial/` chapter names are
-mapped to book chapters in `docs/user/tutorial/README.md`.
+renders `_build/book/index.html`.
 
 ## Design policy
 

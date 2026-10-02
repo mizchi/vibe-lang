@@ -23,7 +23,6 @@ containing it: it has its own gates (`scripts/check_book_links.sh`,
 external links to The Vibe Book (decided in #2565).
 
 **Users:** [user/getting-started/install.md](user/getting-started/install.md) · [The Vibe Book](../book/README.md) ·
-[user/tutorial/README.md](user/tutorial/README.md) ·
 [user/reference/cheatsheet.md](user/reference/cheatsheet.md) · [user/reference/cli-commands.md](user/reference/cli-commands.md) ·
 [user/reference/editor-and-debugging.md](user/reference/editor-and-debugging.md)
 
@@ -46,7 +45,6 @@ Install, learn, write, build, test, package, debug, deploy.
 | --- | --- |
 | [user/getting-started/install.md](user/getting-started/install.md) | |
 | [../book/](../book/README.md) | The Vibe Book. Canonical tour + language + systems. Children: [SUMMARY.md](../book/SUMMARY.md), [src/](../book/en/), [ja/](../book/ja/) |
-| [user/tutorial/](user/tutorial/) | Pointer only. Chapters moved to `book/en/` and `book/ja/`. |
 | [user/reference/cheatsheet.md](user/reference/cheatsheet.md) | Language reference. Absorbed `language-tour/`. |
 | [user/reference/cli-commands.md](user/reference/cli-commands.md) | |
 | [user/reference/editor-and-debugging.md](user/reference/editor-and-debugging.md) | LSP, DAP, editor query CLI |
