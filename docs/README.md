@@ -70,41 +70,41 @@ the repo; not the user manual.
 | Path | Notes |
 | --- | --- |
 | [internal/project/adding-modules.md](internal/project/adding-modules.md) | How to add/fix a library module in this repo |
-| [internal/project/issue-triage.md](internal/project/issue-triage.md) | |
-| [internal/project/release-roadmap.md](internal/project/release-roadmap.md) | |
+| [internal/project/issue-triage.md](internal/project/issue-triage.md) | How an issue gets its kind, priority and `blocker` labels, and what each milestone holds |
+| [internal/project/release-roadmap.md](internal/project/release-roadmap.md) | Version ladder, what promotes an rc, and what 0.1.0 and 0.2.0 hold |
 
 ### Operations / gates / bootstrap
 
 | Path | Notes |
 | --- | --- |
-| [internal/operations/bootstrap.md](internal/operations/bootstrap.md) | |
-| [internal/operations/operation-gate.md](internal/operations/operation-gate.md) | |
-| [internal/operations/build-cache.md](internal/operations/build-cache.md) | |
+| [internal/operations/bootstrap.md](internal/operations/bootstrap.md) | Seed pin, stage0–stage3, and the bootstrap bump procedure |
+| [internal/operations/operation-gate.md](internal/operations/operation-gate.md) | Which gate to run when, and the stop criteria |
+| [internal/operations/build-cache.md](internal/operations/build-cache.md) | The persistent build cache: layout, identity hashes, publication, GC |
 | [internal/operations/incremental-build.md](internal/operations/incremental-build.md) | Design + measurement; not a user how-to |
-| [internal/operations/ci-speed.md](internal/operations/ci-speed.md) | |
+| [internal/operations/ci-speed.md](internal/operations/ci-speed.md) | CI job layout and its measured cost model |
 | [internal/operations/coverage.md](internal/operations/coverage.md) | Compiler coverage strategy |
 | [internal/operations/selfcompile-heap-policy.md](internal/operations/selfcompile-heap-policy.md) | |
-| [internal/operations/pkfire-pkspec.md](internal/operations/pkfire-pkspec.md) | |
+| [internal/operations/pkfire-pkspec.md](internal/operations/pkfire-pkspec.md) | pkfire: install, Taskfile layout, cache, git hooks |
 | [internal/operations/BENCHMARKS.md](internal/operations/BENCHMARKS.md) | Continuously-runnable regression signals |
-| [internal/operations/wasm-opt-dogfood.md](internal/operations/wasm-opt-dogfood.md) | |
+| [internal/operations/wasm-opt-dogfood.md](internal/operations/wasm-opt-dogfood.md) | The vibe optimizer against binaryen `wasm-opt`: method and measured sizes |
 
 ### Design (ADR index + reviews + contracts)
 
 | Path | Notes |
 | --- | --- |
 | [internal/design/adr.md](internal/design/adr.md) | Living ADR log |
-| [internal/design/async-host-contract.md](internal/design/async-host-contract.md) | #2832: every async host import read off the emitters — what the values mean, who owns a handle, what completion looks like, and that cancellation has no ABI. The synchronous sibling is [user/reference/host-runtime-contract.md](user/reference/host-runtime-contract.md) |
-| [internal/design/capability-authorization-surface.md](internal/design/capability-authorization-surface.md) | ADR-0088, proposed |
-| [internal/design/capability-host-contract.md](internal/design/capability-host-contract.md) | ADR-0088's host half (#2825 step 1), proposed: what a host does with a capability import it withholds |
+| [internal/design/async-host-contract.md](internal/design/async-host-contract.md) | #2832: every async host import read off the emitters — what the values mean, who owns a handle, what completion looks like, and how a cancelled wait is released (`future.cancel-read` / `stream.cancel-read` / `subtask.cancel`). The synchronous sibling is [user/reference/host-runtime-contract.md](user/reference/host-runtime-contract.md) |
+| [internal/design/capability-authorization-surface.md](internal/design/capability-authorization-surface.md) | ADR-0088, partial: the capability grant ladder; L1 and L3 are connected for `vibe run` |
+| [internal/design/capability-host-contract.md](internal/design/capability-host-contract.md) | ADR-0088's host half (#2825 step 1), partial (withholding landed; `vibe.capabilities` and the grant globals are not built): what a host does with a capability import it withholds |
 | [internal/design/component-lazy-dispatch.md](internal/design/component-lazy-dispatch.md) | The `vibe build --component` / `viberun --commands` contract: manifest, result frame, which wrap a command gets |
-| [internal/design/host-contract-artifact-lazy-cli.md](internal/design/host-contract-artifact-lazy-cli.md) | ADR-0112, proposed (#1346): the residual `vibe:host` WIT, the self-describing build artifact (`vibe.entry`), and the `vibe-commands-v2` requirement column, as one declaration with three readers |
-| [internal/design/component-build-convention.md](internal/design/component-build-convention.md) | ADR-0113, proposed: what `vibe build --component` derives from an export surface, the admitted boundary types, and transparent vibe-to-vibe import |
-| [internal/design/compiler-parallelism.md](internal/design/compiler-parallelism.md) | ADR-0068 companion, proposed |
-| [internal/design/concurrency.md](internal/design/concurrency.md) | ADR-0068, proposed. The user concurrency guide is the book's [17_concurrency](../book/en/17_concurrency.vibe.md) |
-| [internal/design/effect-evidence-passing.md](internal/design/effect-evidence-passing.md) | ADR-0076, proposed |
-| [internal/design/effect-taxonomy-entry-policy.md](internal/design/effect-taxonomy-entry-policy.md) | ADR-0084, proposed |
+| [internal/design/host-contract-artifact-lazy-cli.md](internal/design/host-contract-artifact-lazy-cli.md) | ADR-0112, proposed and unimplemented, no open owner: the residual `vibe:host` WIT, the self-describing build artifact (`vibe.entry`), and the `vibe-commands-v2` requirement column, as one declaration with three readers |
+| [internal/design/component-build-convention.md](internal/design/component-build-convention.md) | ADR-0113, proposed; only the command kind exists, no open owner: what `vibe build --component` derives from an export surface, the admitted boundary types, and transparent vibe-to-vibe import |
+| [internal/design/compiler-parallelism.md](internal/design/compiler-parallelism.md) | ADR-0068 companion: the compiler's parallel frontend. Phases 0–1 done, the pre-warm driver built but unwired, phases 3–4 unscheduled |
+| [internal/design/concurrency.md](internal/design/concurrency.md) | ADR-0068, partial: the structured-concurrency specification (core stable, suspendable lane experimental). The user concurrency guide is the book's [17_concurrency](../book/en/17_concurrency.vibe.md) |
+| [internal/design/effect-evidence-passing.md](internal/design/effect-evidence-passing.md) | ADR-0076, accepted: handler lowering (evidence passing, suspend CPS, `try_table`) |
+| [internal/design/effect-taxonomy-entry-policy.md](internal/design/effect-taxonomy-entry-policy.md) | ADR-0084, partial: effect classes and entry admission |
 | [internal/design/effect-wit-mapping.md](internal/design/effect-wit-mapping.md) | Compiler `--wit` mapping |
-| [internal/design/effectset.md](internal/design/effectset.md) | ADR-0071, proposed |
+| [internal/design/effectset.md](internal/design/effectset.md) | ADR-0071, partial: effect sets |
 | [internal/design/exception-effect.md](internal/design/exception-effect.md) | ADR-0085. User surface is the cheatsheet |
 | [internal/design/compiler-host-boundary.md](internal/design/compiler-host-boundary.md) | ADR-0086: what a runner must provide for the compiler's own `cli_main`. Not the generated-program contract, which is [user/reference/host-runtime-contract.md](user/reference/host-runtime-contract.md) |
 | [internal/design/module-system-oracle.md](internal/design/module-system-oracle.md) | Executable ADR-0070 oracle |
@@ -126,33 +126,33 @@ the repo; not the user manual.
 | [internal/design/compiler-typeenv-symbols.json](internal/design/compiler-typeenv-symbols.json) | Immutable TypeEnv name indexes: cold/warm selfhost comparisons, CPU profiles, and transport compatibility |
 | [internal/design/compiler-single-rebind.json](internal/design/compiler-single-rebind.json) | Reassignment lifetime and generated-name collision fixes, leak bounds, and cold/warm selfhost comparisons |
 | [internal/design/registry-design.md](internal/design/registry-design.md) | ADR-0065 Phase 5 |
-| [internal/design/resource-kind-parameters.md](internal/design/resource-kind-parameters.md) | ADR-0094, proposed |
+| [internal/design/resource-kind-parameters.md](internal/design/resource-kind-parameters.md) | ADR-0094, proposed: steps 0–2 landed, the remainder is #3143 |
 | [internal/design/simd-data-structures.md](internal/design/simd-data-structures.md) | Measured record of the SIMD-first data-structure epic (#2340) |
-| [internal/design/vibex-runtime-contract.md](internal/design/vibex-runtime-contract.md) | ADR-0075, proposed |
-| [internal/design/wasip3-effect-alignment.md](internal/design/wasip3-effect-alignment.md) | ADR-0089, proposed |
+| [internal/design/vibex-runtime-contract.md](internal/design/vibex-runtime-contract.md) | ADR-0075, partial: the `.vibex` runtime contract, per phase |
+| [internal/design/wasip3-effect-alignment.md](internal/design/wasip3-effect-alignment.md) | ADR-0089, partial: implemented except Decision 1's JSPI and subtask backends (#3147) |
 | [internal/design/zero-alloc-check.md](internal/design/zero-alloc-check.md) | ADR-0091, current conservative allocation verification |
 | [internal/design/side-effect-consolidation.md](internal/design/side-effect-consolidation.md) | Measured basis of ADR-0100 / ADR-0101: mutation authority and collection naming |
 | [internal/design/memory-contract.md](internal/design/memory-contract.md) | Linear / wasm-gc / RC |
 | [internal/design/profiling.md](internal/design/profiling.md) | `vibe run --mem` / `--mem-sample` / `--alloc-site`, `vibe bench`, guest CPU profiles |
 | [internal/design/rc-cutover-readiness.md](internal/design/rc-cutover-readiness.md) | ADR-0055 status |
 | [internal/design/simd-api-design.md](internal/design/simd-api-design.md) | Current SIMD surface: fused builtins and inline-wasm kernels |
-| [internal/design/test-example-capabilities.md](internal/design/test-example-capabilities.md) | Proposal, partial |
+| [internal/design/test-example-capabilities.md](internal/design/test-example-capabilities.md) | Implemented (#1508, ADR-0088): the effect rows of tests, benches and examples |
 | [internal/design/uniform-value-repr.md](internal/design/uniform-value-repr.md) | ADR-0055: value tagging, object headers, drop classes, RC allocator |
-| [internal/design/wasi-p3-async.md](internal/design/wasi-p3-async.md) | |
+| [internal/design/wasi-p3-async.md](internal/design/wasi-p3-async.md) | Async lowering and ABI on WASI 0.3; open work in §6.2 |
 
 ### Compiler
 
 | Path | Notes |
 | --- | --- |
-| [internal/compiler/ast_binary_abi.md](internal/compiler/ast_binary_abi.md) | |
-| [internal/compiler/checked-body-transport.md](internal/compiler/checked-body-transport.md) | Checked-implementation-body artifact + normalized typed-IR codec. Its "shadow-only" framing is superseded: #2505 promotes this lane, and the #1958 it cites is closed |
+| [internal/compiler/ast_binary_abi.md](internal/compiler/ast_binary_abi.md) | Binary encoding of the surface AST (`selfhost_ast_v1`, behind `VIBE_EXPERIMENTAL_AST_CACHE`) |
+| [internal/compiler/checked-body-transport.md](internal/compiler/checked-body-transport.md) | Opt-in checked-module artifact lane (`VIBE_CHECKED_MODULE_CACHE`, default off): format, consumers, cost measurements, parity gate |
 | [internal/compiler/checked-direct-expression-return-observation.md](internal/compiler/checked-direct-expression-return-observation.md) | Checker observation note |
-| [internal/compiler/tracing-design.md](internal/compiler/tracing-design.md) | Proposed internal spans |
+| [internal/compiler/tracing-design.md](internal/compiler/tracing-design.md) | Internal span tracing: host-side stage 0 implemented; guest `effect Trace` proposed |
 | [internal/design/experimental-wasmfx-effect-backend.md](internal/design/experimental-wasmfx-effect-backend.md) | WasmFX feasibility probe. Tracked by #2221 |
-| [internal/design/experimental-wasmtime-guest-profiler.md](internal/design/experimental-wasmtime-guest-profiler.md) | Guest-profiler integration. Tracked by #2207 |
+| [internal/design/experimental-wasmtime-guest-profiler.md](internal/design/experimental-wasmtime-guest-profiler.md) | Wasmtime guest CPU profiling, implemented for core modules (#2207); component and continuation probes have no owner |
 | [internal/compiler/vibec-component.md](internal/compiler/vibec-component.md) | Compiler-core component split |
 | [internal/compiler/gc-value-abi.md](internal/compiler/gc-value-abi.md) | wasm-gc value ABI |
-| [internal/compiler/wasm_threads_requirements.md](internal/compiler/wasm_threads_requirements.md) | |
+| [internal/compiler/wasm_threads_requirements.md](internal/compiler/wasm_threads_requirements.md) | Which Wasmtime thread surfaces vibe can rely on, and the measurements behind it (#488) |
 | [internal/compiler/wit/](internal/compiler/wit/) | [vibe-compiler-host.wit](internal/compiler/wit/vibe-compiler-host.wit) |
 
 ### Reports / dated snapshots
