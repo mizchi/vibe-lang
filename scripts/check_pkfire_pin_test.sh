@@ -52,8 +52,8 @@ NIX
 {
   "nodes": {
     "pkfire": {
-      "locked": { "ref": "refs/tags/v0.14.2", "type": "git" },
-      "original": { "ref": "refs/tags/v0.14.2", "type": "git" }
+      "locked": { "url": "https://github.com/mizchi/pkfire", "ref": "refs/tags/v0.14.2", "type": "git" },
+      "original": { "url": "https://github.com/mizchi/pkfire", "ref": "refs/tags/v0.14.2", "type": "git" }
     },
     "root": { "inputs": { "pkfire": "pkfire" } }
   },
@@ -242,7 +242,7 @@ scaffold
 sed -i.bak 's/refs\/tags\/v0.14.2";/refs\/tags\/v0.16.0";/' "$TMP/tree/flake.nix"
 grep -q 'refs/tags/v0.16.0";' "$TMP/tree/flake.nix" || fail "case 7: mutation did not land"
 if run_gate; then fail "case 7: a flake.nix pkfire input disagreeing with the pin file was accepted"; fi
-grep -q "flake.nix pins pkfire at v0.16.0" "$TMP/out" || fail "case 7: the message does not name the flake.nix tag"
+grep -q "flake.nix pins pkfire at 'git+https://github.com/mizchi/pkfire?ref=refs/tags/v0.16.0'" "$TMP/out" || fail "case 7: the message does not name the flake.nix tag"
 echo "check_pkfire_pin_test: ok: case 7: a flake.nix tag disagreeing with the pin file is rejected"
 
 # --- case 7b: only the COMMENT names the tag -> no input found, refuse ----
@@ -259,6 +259,40 @@ grep -q 'v0.14.2' "$TMP/tree/flake.nix" || fail "case 7b: the comment naming the
 if run_gate; then fail "case 7b: a flake.nix whose only pkfire tag is in a comment was accepted"; fi
 grep -q "declares no" "$TMP/out" || fail "case 7b: the message does not say the input is missing"
 echo "check_pkfire_pin_test: ok: case 7b: a tag named only in a comment does not count"
+
+# --- case 7c: the right URL on ANOTHER input does not count (Codex review) -
+# The pkfire input moves to a fork while a decoy input keeps the canonical URL;
+# a scan of the whole file found the decoy and passed.
+scaffold
+python3 - "$TMP/tree/flake.nix" <<'PY5'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+s = s.replace("github.com/mizchi/pkfire?ref", "github.com/someone/pkfire?ref")
+s = s.replace("  inputs = {\n", '  inputs = {\n    decoy = {\n      url = "git+https://github.com/mizchi/pkfire?ref=refs/tags/v0.14.2";\n    };\n', 1)
+open(p, "w").write(s)
+PY5
+grep -q 'someone/pkfire' "$TMP/tree/flake.nix" || fail "case 7c: mutation did not land"
+grep -q 'mizchi/pkfire?ref=refs/tags/v0.14.2' "$TMP/tree/flake.nix" || fail "case 7c: the decoy was not added"
+if run_gate; then fail "case 7c: a pkfire input on a fork passed because another input carries the canonical URL"; fi
+grep -q "someone/pkfire" "$TMP/out" || fail "case 7c: the message does not name the pkfire input's actual URL"
+echo "check_pkfire_pin_test: ok: case 7c: only the pkfire input's own URL counts"
+
+# --- case 7d: a dotted pkfire.url outside the block is refused -------------
+# The gate reads the input in one form; another form is a named FAIL, not a
+# spelling the scanner silently looks past.
+scaffold
+python3 - "$TMP/tree/flake.nix" <<'PY6'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+s = s.replace("  inputs = {\n", '  inputs = {\n    pkfire.url = "git+https://github.com/someone/pkfire?ref=refs/tags/v0.14.2";\n', 1)
+open(p, "w").write(s)
+PY6
+grep -q '^    pkfire.url = ' "$TMP/tree/flake.nix" || fail "case 7d: mutation did not land"
+if run_gate; then fail "case 7d: a pkfire.url outside the input block was accepted"; fi
+grep -q "outside the input block" "$TMP/out" || fail "case 7d: the message does not name the expected form"
+echo "check_pkfire_pin_test: ok: case 7d: pkfire.url outside the block is refused"
 
 # --- case 8: flake.lock resolved another tag (lock not refreshed) ---------
 scaffold
@@ -312,4 +346,14 @@ if run_gate; then fail "case 8d: a lock whose root has no pkfire input was accep
 grep -q "maps no 'pkfire' input" "$TMP/out" || fail "case 8d: the message does not say the input is unmapped"
 echo "check_pkfire_pin_test: ok: case 8d: an unmapped pkfire input is rejected"
 
-echo "check_pkfire_pin_test: ok (2 controls + 18 cases)"
+# --- case 8e: the locked node is another repository at the same tag -------
+# Comparing only `ref` let a lock resolved from a fork pass (Codex review).
+scaffold
+sed -i.bak 's#"url": "https://github.com/mizchi/pkfire"#"url": "https://github.com/someone/pkfire"#' "$TMP/tree/flake.lock"
+grep -q 'someone/pkfire' "$TMP/tree/flake.lock" || fail "case 8e: mutation did not land"
+grep -q '"ref": "refs/tags/v0.14.2"' "$TMP/tree/flake.lock" || fail "case 8e: the tag must stay current for this case to mean anything"
+if run_gate; then fail "case 8e: a lock resolved from another repository at the same tag was accepted"; fi
+grep -q "pkfire.locked url is 'https://github.com/someone/pkfire'" "$TMP/out" || fail "case 8e: the message does not name the locked repository"
+echo "check_pkfire_pin_test: ok: case 8e: the locked repository must be mizchi/pkfire"
+
+echo "check_pkfire_pin_test: ok (2 controls + 21 cases)"
