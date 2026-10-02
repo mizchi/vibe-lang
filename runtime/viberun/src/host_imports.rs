@@ -275,6 +275,27 @@ pub(super) fn vibe_read_dir_names(
     Ok(names)
 }
 
+// Match the guest allocator's geometric policy while retaining exact-growth
+// fallback when a module maximum or the store's soft limit rejects spare pages.
+fn ensure_vibe_memory_capacity(
+    caller: &mut Caller<'_, HostState>,
+    mem: &wasmtime::Memory,
+    end: u64,
+) -> Result<()> {
+    let current = mem.data_size(&*caller) as u64;
+    if end <= current {
+        return Ok(());
+    }
+    let pages = (end - current).div_ceil(65536);
+    let grow_by = pages.max(current / 65536 / 2);
+    if grow_by != pages && mem.grow(&mut *caller, grow_by).is_ok() {
+        return Ok(());
+    }
+    mem.grow(&mut *caller, pages)
+        .map_err(|e| format_err!("vibe host import: memory.grow({pages}): {e}"))?;
+    Ok(())
+}
+
 pub(super) fn vibe_alloc_packed_str(caller: &mut Caller<'_, HostState>, s: &str) -> Result<i64> {
     let bytes = s.as_bytes();
     let mem = vibe_memory(caller)?;
@@ -291,12 +312,7 @@ pub(super) fn vibe_alloc_packed_str(caller: &mut Caller<'_, HostState>, s: &str)
     let aligned = (cur + (align - 1)) & !(align - 1);
     let size = bytes.len() as u64;
     let next = (aligned + size + (align - 1)) & !(align - 1);
-    let cur_size = mem.data_size(&*caller) as u64;
-    if next > cur_size {
-        let pages = (next - cur_size).div_ceil(65536);
-        mem.grow(&mut *caller, pages)
-            .map_err(|e| format_err!("vibe host import: memory.grow({pages}): {e}"))?;
-    }
+    ensure_vibe_memory_capacity(caller, &mem, next)?;
     mem.write(&mut *caller, aligned as usize, bytes)
         .map_err(|e| format_err!("vibe host import: string write @{aligned}: {e}"))?;
     let set = if is_i64 {
@@ -331,12 +347,7 @@ pub(super) fn vibe_alloc_packed_bytes(
     let aligned = (cur + (align - 1)) & !(align - 1);
     let len = data.len() as u64;
     let next = (aligned + 12 + len + (align - 1)) & !(align - 1);
-    let cur_size = mem.data_size(&*caller) as u64;
-    if next > cur_size {
-        let pages = (next - cur_size).div_ceil(65536);
-        mem.grow(&mut *caller, pages)
-            .map_err(|e| format_err!("vibe host import: memory.grow({pages}): {e}"))?;
-    }
+    ensure_vibe_memory_capacity(caller, &mem, next)?;
     let base = aligned as usize;
     let neg_cap = 0u32.wrapping_sub(len as u32);
     mem.write(&mut *caller, base, &neg_cap.to_le_bytes())
@@ -1626,4 +1637,131 @@ pub(super) fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()
         },
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod allocation_growth_tests {
+    use super::*;
+    const PAGE: usize = 65536;
+    const TEXT: &str = "abc日本語";
+    const BYTES: &[u8] = &[0, 255, 9, 31, 128, 20, 8, 2, 5, 6];
+
+    fn exercise(
+        maximum: u64,
+        soft_pages: usize,
+        start: usize,
+        expected_pages: u64,
+        fails: bool,
+    ) -> Result<()> {
+        for heap_type in ["i32", "i64"] {
+            for byte_payload in [false, true] {
+                let engine = Engine::default();
+                let module = Module::new(
+                    &engine,
+                    format!(
+                        r#"(module
+                    (import "test" "alloc" (func $alloc (result i64)))
+                    (memory (export "memory") 4 {maximum})
+                    (global (export "__heap_ptr") (mut {heap_type}) ({heap_type}.const {start}))
+                    (func (export "run") (result i64) call $alloc))"#
+                    ),
+                )?;
+                let limits = StoreLimitsBuilder::new()
+                    .memory_size(soft_pages * PAGE)
+                    .build();
+                let mut store =
+                    Store::new(&engine, HostState::new(vec![], MemLimiter::new(limits)));
+                store.limiter(|state| &mut state.mem);
+                let mut linker = Linker::new(&engine);
+                linker.func_wrap("test", "alloc", move |mut caller: Caller<'_, HostState>| {
+                    if byte_payload {
+                        vibe_alloc_packed_bytes(&mut caller, BYTES)
+                    } else {
+                        vibe_alloc_packed_str(&mut caller, TEXT)
+                    }
+                })?;
+                let instance = linker.instantiate(&mut store, &module)?;
+                let memory = instance.get_memory(&mut store, "memory").unwrap();
+                let heap = instance.get_global(&mut store, "__heap_ptr").unwrap();
+                memory.write(&mut store, 0, &[19, 255, 70])?;
+                store.data_mut().mem.record = true;
+                let result = instance
+                    .get_typed_func::<(), i64>(&mut store, "run")?
+                    .call(&mut store, ());
+                let cursor = match heap.get(&mut store) {
+                    Val::I32(v) => v as u32 as usize,
+                    Val::I64(v) => v as usize,
+                    _ => unreachable!(),
+                };
+                assert_eq!(memory.size(&store), expected_pages);
+                assert_eq!(&memory.data(&store)[0..3], &[19, 255, 70]);
+                if fails {
+                    assert!(format!("{:#}", result.unwrap_err()).contains("memory.grow(1)"));
+                    assert_eq!(cursor, start);
+                    assert!(store.data().mem.events.is_empty());
+                    continue;
+                }
+                let value = result?;
+                let base = (start + 7) & !7;
+                let data = memory.data(&store);
+                let end = if byte_payload {
+                    assert_eq!(value as usize, base);
+                    assert_eq!(
+                        i32::from_le_bytes(data[base..base + 4].try_into().unwrap()),
+                        -(BYTES.len() as i32)
+                    );
+                    assert_eq!(
+                        u32::from_le_bytes(data[base + 4..base + 8].try_into().unwrap()) as usize,
+                        BYTES.len()
+                    );
+                    assert_eq!(
+                        u32::from_le_bytes(data[base + 8..base + 12].try_into().unwrap()) as usize,
+                        base + 12
+                    );
+                    assert_eq!(&data[base + 12..base + 12 + BYTES.len()], BYTES);
+                    (base + 12 + BYTES.len() + 7) & !7
+                } else {
+                    assert_eq!((value as u64 >> 32) as usize, base);
+                    assert_eq!(value as u32 as usize, TEXT.len());
+                    assert_eq!(&data[base..base + TEXT.len()], TEXT.as_bytes());
+                    (base + TEXT.len() + 7) & !7
+                };
+                assert_eq!(cursor, end);
+                let events: Vec<_> = store
+                    .data()
+                    .mem
+                    .events
+                    .iter()
+                    .map(|(_, from, to)| (*from, *to))
+                    .collect();
+                let expected = if expected_pages == 4 {
+                    vec![]
+                } else {
+                    vec![(4 * PAGE as u64, expected_pages * PAGE as u64)]
+                };
+                assert_eq!(events, expected);
+            }
+        }
+        Ok(())
+    }
+    #[test]
+    fn geometric_growth_preserves_raw_payloads() -> Result<()> {
+        exercise(8, 8, 4 * PAGE - 8, 6, false)
+    }
+    #[test]
+    fn declared_maximum_retries_exact_growth() -> Result<()> {
+        exercise(5, 8, 4 * PAGE - 8, 5, false)
+    }
+    #[test]
+    fn store_limit_retries_exact_growth() -> Result<()> {
+        exercise(8, 5, 4 * PAGE - 8, 5, false)
+    }
+    #[test]
+    fn failed_growth_preserves_heap_and_existing_bytes() -> Result<()> {
+        exercise(4, 8, 4 * PAGE - 8, 4, true)
+    }
+    #[test]
+    fn fitting_payload_does_not_grow() -> Result<()> {
+        exercise(8, 8, 8, 4, false)
+    }
 }

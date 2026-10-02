@@ -369,6 +369,18 @@ function decodeUtf8Range(instance, ptr, len) {
   return new TextDecoder().decode(mem.subarray(ptr, ptr + len));
 }
 
+// Match guest geometric growth, retrying the exact deficit at a capacity limit.
+function growHostMemory(memory, pagesNeeded) {
+  const currentPages = memory.buffer.byteLength / WASM_PAGE_BYTES;
+  const growBy = Math.max(pagesNeeded, Math.floor(currentPages / 2));
+  try {
+    memory.grow(growBy);
+  } catch (error) {
+    if (!(error instanceof RangeError) || growBy === pagesNeeded) throw error;
+    memory.grow(pagesNeeded);
+  }
+}
+
 function ensureMemoryCapacity(instance, end) {
   if (!(instance.exports.memory instanceof WebAssembly.Memory)) {
     throw new Error("missing exported memory");
@@ -378,7 +390,7 @@ function ensureMemoryCapacity(instance, end) {
     return;
   }
   const pagesNeeded = Math.ceil((end - memory.buffer.byteLength) / 65536);
-  memory.grow(pagesNeeded);
+  growHostMemory(memory, pagesNeeded);
 }
 
 function allocPreview2Buffer(instance, size, align = 4) {
@@ -401,7 +413,7 @@ function allocPreview2Buffer(instance, size, align = 4) {
   const next = ((alignedPtr + size + (heapAlign - 1)) & ~(heapAlign - 1)) >>> 0;
   if (next > mem.length) {
     const pagesNeeded = Math.ceil((next - mem.length) / 65536);
-    instance.exports.memory.grow(pagesNeeded);
+    growHostMemory(instance.exports.memory, pagesNeeded);
     mem = new Uint8Array(instance.exports.memory.buffer);
   }
   heapGlobal.value = next;
@@ -430,7 +442,7 @@ function allocGuestHeapHostBuffer(instance, size, align) {
   const next = ((alignedPtr + size + (heapAlign - 1)) & ~(heapAlign - 1)) >>> 0;
   if (next > mem.length) {
     const pagesNeeded = Math.ceil((next - mem.length) / 65536);
-    instance.exports.memory.grow(pagesNeeded);
+    growHostMemory(instance.exports.memory, pagesNeeded);
     mem = new Uint8Array(instance.exports.memory.buffer);
   }
   setHeapGlobalValue(heapGlobal, next);
@@ -469,7 +481,7 @@ function allocHostBuffer(instance, size, align = 8) {
   let next = alignedPtr + size;
   if (next > mem.length) {
     const pagesNeeded = Math.ceil((next - mem.length) / 65536);
-    instance.exports.memory.grow(pagesNeeded);
+    growHostMemory(instance.exports.memory, pagesNeeded);
     mem = new Uint8Array(instance.exports.memory.buffer);
   }
   hostAllocPtrGlobal = next;
