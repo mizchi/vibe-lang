@@ -1222,7 +1222,7 @@ let nv = {                            // destructure also works in fn/block body
 // Map (#960: the `map { ... }` literal was removed; use the Map:: API).
 // The builtin map is STRING-KEYED; its type is spelled `StringMap[V]`
 // (no import needed). `Map[K, V]` with a concrete non-String key is
-// rejected where it is written -- generic keys are #2263. For another
+// rejected where it is written -- generic keys are #2334. For another
 // key type today, use `MutMap[K, V]` from `@vibe/core` (below).
 let m = Map::from_pairs([("key", 42)])
 let e = Map::new()                    // empty map
