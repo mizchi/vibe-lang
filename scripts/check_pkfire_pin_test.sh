@@ -54,7 +54,8 @@ NIX
     "pkfire": {
       "locked": { "ref": "refs/tags/v0.14.2", "type": "git" },
       "original": { "ref": "refs/tags/v0.14.2", "type": "git" }
-    }
+    },
+    "root": { "inputs": { "pkfire": "pkfire" } }
   },
   "root": "root",
   "version": 7
@@ -276,4 +277,39 @@ if run_gate; then fail "case 8b: a flake with no lock was accepted"; fi
 grep -q "flake.lock does not" "$TMP/out" || fail "case 8b: the message does not say the lock is missing"
 echo "check_pkfire_pin_test: ok: case 8b: a missing flake.lock is rejected"
 
-echo "check_pkfire_pin_test: ok (2 controls + 16 cases)"
+# --- case 8c: the root maps pkfire to ANOTHER node (Codex review) ---------
+# nix resolves the input through the root node's mapping. A lock whose root
+# points at a stale `pkfire_2` must fail even while `nodes.pkfire` is current.
+scaffold
+python3 - "$TMP/tree/flake.lock" <<'PY3'
+import json, sys
+p = sys.argv[1]
+d = json.load(open(p))
+d["nodes"]["pkfire_2"] = {
+    "locked": {"ref": "refs/tags/v0.13.0", "type": "git"},
+    "original": {"ref": "refs/tags/v0.13.0", "type": "git"},
+}
+d["nodes"]["root"]["inputs"]["pkfire"] = "pkfire_2"
+json.dump(d, open(p, "w"))
+PY3
+grep -q '"pkfire": "pkfire_2"' "$TMP/tree/flake.lock" || fail "case 8c: mutation did not land"
+grep -q 'refs/tags/v0.14.2' "$TMP/tree/flake.lock" || fail "case 8c: the decoy current node was lost"
+if run_gate; then fail "case 8c: a root input mapped to a stale node was accepted"; fi
+grep -q "pkfire_2.locked ref" "$TMP/out" || fail "case 8c: the message does not name the node the root maps to"
+echo "check_pkfire_pin_test: ok: case 8c: the root's input mapping decides which node is checked"
+
+# --- case 8d: the root maps no pkfire input at all -> refuse ---------------
+scaffold
+python3 - "$TMP/tree/flake.lock" <<'PY4'
+import json, sys
+p = sys.argv[1]
+d = json.load(open(p))
+del d["nodes"]["root"]["inputs"]["pkfire"]
+json.dump(d, open(p, "w"))
+PY4
+grep -q '"inputs": {}' "$TMP/tree/flake.lock" || fail "case 8d: mutation did not land"
+if run_gate; then fail "case 8d: a lock whose root has no pkfire input was accepted"; fi
+grep -q "maps no 'pkfire' input" "$TMP/out" || fail "case 8d: the message does not say the input is unmapped"
+echo "check_pkfire_pin_test: ok: case 8d: an unmapped pkfire input is rejected"
+
+echo "check_pkfire_pin_test: ok (2 controls + 18 cases)"

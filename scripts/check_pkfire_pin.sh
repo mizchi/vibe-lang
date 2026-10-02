@@ -173,19 +173,27 @@ if [ -f "$FLAKE" ]; then
     echo "[pkfire-pin] FAIL: $FLAKE exists but $LOCK does not -- run: nix flake lock" >&2
     rc=1
   else
+    # Resolve the input the way nix does: the node named by the top-level
+    # `root` maps each input name to a node id, and that id need not be
+    # "pkfire" (a lock can hold `pkfire_2` beside a stale `pkfire`). Reading
+    # `nodes.pkfire` directly would check whichever node happens to carry the
+    # name (Codex review).
     lock_refs="$(python3 - "$LOCK" <<'PYEOF'
 import json, sys
-nodes = json.load(open(sys.argv[1], encoding="utf-8")).get("nodes", {})
-node = nodes.get("pkfire")
+doc = json.load(open(sys.argv[1], encoding="utf-8"))
+nodes = doc.get("nodes", {})
+root = nodes.get(doc.get("root", "root"))
+target = ((root if isinstance(root, dict) else {}).get("inputs") or {}).get("pkfire")
+node = nodes.get(target) if isinstance(target, str) else None
 if not isinstance(node, dict):
     sys.exit(0)
 for key in ("original", "locked"):
     ref = (node.get(key) or {}).get("ref", "")
-    print(f"{key}={ref}")
+    print(f"{target}.{key}={ref}")
 PYEOF
 )"
     if [ -z "$lock_refs" ]; then
-      echo "[pkfire-pin] FAIL: $LOCK has no 'pkfire' node -- run: nix flake update pkfire" >&2
+      echo "[pkfire-pin] FAIL: $LOCK's root node maps no 'pkfire' input to a node -- run: nix flake update pkfire" >&2
       rc=1
     fi
     for entry in $lock_refs; do
