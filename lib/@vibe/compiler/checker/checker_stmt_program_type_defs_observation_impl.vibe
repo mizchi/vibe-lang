@@ -76,7 +76,7 @@ import ./checker.vibe {
 }
 
 import @vibe/ast {
-  impl_target_key
+  impl_target_key, type_param_arity
 }
 
 import ./checked_expression_structure_core.vibe {
@@ -780,7 +780,7 @@ export fn string_binop_offsets_from_capture(checked: CheckedProgram, capture: Ty
 /// row is simply absent (the syntactic classifiers stay in charge, which is
 /// today's behavior; absent, never wrong).
 export fn eq_channel_type_expr(ty: Type) -> Option[TypeExpr] {
-  eq_channel_type_expr_impl(ty, false)
+  eq_channel_type_expr_impl(ty, None)
 }
 
 /// #3283: the `==` row extraction's lowering. It differs from
@@ -809,11 +809,21 @@ export fn eq_channel_type_expr(ty: Type) -> Option[TypeExpr] {
 ///   - a variable anywhere else: an `Array` element, an `Option` payload, a
 ///     tuple slot, or the whole operand. Those already have their own rungs
 ///     (the untyped-empty arm, `opt_eq_match`, the tuple walk) and keep them.
-fn eq_channel_row_type_expr(ty: Type) -> Option[TypeExpr] {
-  eq_channel_type_expr_impl(ty, true)
+///   - an argument whose declared parameter is a type CONSTRUCTOR (`F` of
+///     `enum R[T, F[_]]`, Codex on #3286). `Unit` has arity 0, so substituting
+///     it for `F` leaves the payload `F[Int]` unresolvable in the specialized
+///     comparator. No placeholder of every arity exists, so the row stays
+///     absent there -- today's answer, not a new wrong one. The parameter's
+///     arity is read from the head's own declaration (`type_param_arity` of
+///     its `params` key); a head whose declaration is not in `defs` is not
+///     filled either.
+fn eq_channel_row_type_expr(ty: Type, defs: Array[TypeDef]) -> Option[TypeExpr] {
+  eq_channel_type_expr_impl(ty, Some(defs))
 }
 
-fn eq_channel_type_expr_impl(ty: Type, fill_free_args: Bool) -> Option[TypeExpr] {
+/// `fill_defs`: `None` lowers every variable to an absent row; `Some(defs)`
+/// fills a free type argument as `eq_channel_row_type_expr` describes.
+fn eq_channel_type_expr_impl(ty: Type, fill_defs: Option[Array[TypeDef]]) -> Option[TypeExpr] {
   match ty {
     CtInt => Some(TyName("Int")),
     CtDouble => Some(TyName("Double")),
@@ -822,15 +832,15 @@ fn eq_channel_type_expr_impl(ty: Type, fill_free_args: Bool) -> Option[TypeExpr]
     CtChar => Some(TyName("Char")),
     CtBytes => Some(TyName("Bytes")),
     CtUnit => Some(TyUnit),
-    CtTuple(items) => match eq_channel_type_exprs(items, fill_free_args) {
+    CtTuple(items) => match eq_channel_type_exprs(items, fill_defs) {
       Some(out) => Some(TyTuple(out)),
       None => None
     },
-    CtArray(t) => match eq_channel_type_expr_impl(t, fill_free_args) {
+    CtArray(t) => match eq_channel_type_expr_impl(t, fill_defs) {
       Some(inner) => Some(TyApp("Array", [inner])),
       None => None
     },
-    CtOption(t) => match eq_channel_type_expr_impl(t, fill_free_args) {
+    CtOption(t) => match eq_channel_type_expr_impl(t, fill_defs) {
       Some(inner) => Some(TyApp("Option", [inner])),
       None => None
     },
@@ -849,7 +859,7 @@ fn eq_channel_type_expr_impl(ty: Type, fill_free_args: Bool) -> Option[TypeExpr]
     } else if Array::length(args) == 0 {
       Some(TyName(n))
     } else {
-      match eq_channel_type_args(args, fill_free_args) {
+      match eq_channel_type_args(n, args, fill_defs) {
         Some(out) => Some(TyApp(n, out)),
         None => None
       }
@@ -868,7 +878,7 @@ fn eq_channel_type_expr_impl(ty: Type, fill_free_args: Bool) -> Option[TypeExpr]
       if String::length(head_name) == 0 || String::starts_with(head_name, "#") {
         None
       } else {
-        match eq_channel_type_args(args, fill_free_args) {
+        match eq_channel_type_args(head_name, args, fill_defs) {
           Some(out) => Some(TyApp(head_name, out)),
           None => None
         }
@@ -878,22 +888,26 @@ fn eq_channel_type_expr_impl(ty: Type, fill_free_args: Bool) -> Option[TypeExpr]
   }
 }
 
-/// The type arguments of a named head. With `fill_free_args`, an unresolved
-/// non-formal variable lowers to `Unit` (see `eq_channel_row_type_expr`);
-/// everything else lowers as any other position does.
-fn eq_channel_type_args(args: Array[Type], fill_free_args: Bool) -> Option[Array[TypeExpr]] {
+/// The type arguments of the named head `head`. With `fill_defs`, an
+/// unresolved non-formal variable whose declared parameter has arity 0 lowers
+/// to `Unit` (see `eq_channel_row_type_expr`); everything else lowers as any
+/// other position does.
+fn eq_channel_type_args(head: String, args: Array[Type], fill_defs: Option[Array[TypeDef]]) -> Option[Array[TypeExpr]] {
   let out: Array[TypeExpr] = []
   let mut i = 0
   let mut ok = true
   while i < Array::length(args) {
     let arg = Array::get(args, i)
     let lowered = match arg {
-      CtVar(vid) => if fill_free_args && eq_formal_row_of(vid) < 0 {
-        Some(TyUnit)
-      } else {
-        None
+      CtVar(vid) => match fill_defs {
+        Some(defs) => if eq_formal_row_of(vid) < 0 && eq_declared_param_arity(defs, head, i) == 0 {
+          Some(TyUnit)
+        } else {
+          None
+        },
+        None => None
       },
-      _ => eq_channel_type_expr_impl(arg, fill_free_args)
+      _ => eq_channel_type_expr_impl(arg, fill_defs)
     }
     match lowered {
       Some(te) => Array::push(out, te),
@@ -911,12 +925,48 @@ fn eq_channel_type_args(args: Array[Type], fill_free_args: Bool) -> Option[Array
   }
 }
 
-fn eq_channel_type_exprs(items: Array[Type], fill_free_args: Bool) -> Option[Array[TypeExpr]] {
+/// The arity of the `index`th type parameter of the enum or struct `head`
+/// declares, or -1 when `defs` holds no such declaration or parameter.
+fn eq_declared_param_arity(defs: Array[TypeDef], head: String, index: Int) -> Int {
+  let mut out = 0 - 1
+  let mut i = 0
+  while i < Array::length(defs) {
+    let params = match Array::get(defs, i) {
+      TDEnum(n, ps, _) => if n == head {
+        Some(ps)
+      } else {
+        None
+      },
+      TDStruct(n, _, _, ps) => if n == head {
+        Some(ps)
+      } else {
+        None
+      },
+      _ => None
+    }
+    match params {
+      Some(ps) => {
+        if index < Array::length(ps) {
+          out = type_param_arity(Array::get(ps, index))
+        } else {
+          ()
+        }
+        i = Array::length(defs)
+      },
+      None => {
+        i = i + 1
+      }
+    }
+  }
+  out
+}
+
+fn eq_channel_type_exprs(items: Array[Type], fill_defs: Option[Array[TypeDef]]) -> Option[Array[TypeExpr]] {
   let out: Array[TypeExpr] = []
   let mut i = 0
   let mut ok = true
   while i < Array::length(items) {
-    match eq_channel_type_expr_impl(Array::get(items, i), fill_free_args) {
+    match eq_channel_type_expr_impl(Array::get(items, i), fill_defs) {
       Some(te) => Array::push(out, te),
       None => {
         ok = false
@@ -965,8 +1015,8 @@ export fn eq_binop_type_keys_from_capture(checked: CheckedProgram, capture: Type
     let off = Array::get(capture.binop_offsets, i)
     let kind = Array::get(capture.binop_kinds, i)
     if kind == 3 {
-      let lte = eq_channel_row_type_expr(subst_apply(checked.final_subst, Array::get(capture.binop_types, i)))
-      let rte = eq_channel_row_type_expr(subst_apply(checked.final_subst, Array::get(capture.binop_types, i + 1)))
+      let lte = eq_channel_row_type_expr(subst_apply(checked.final_subst, Array::get(capture.binop_types, i)), checked.type_defs)
+      let rte = eq_channel_row_type_expr(subst_apply(checked.final_subst, Array::get(capture.binop_types, i + 1)), checked.type_defs)
       let row_key = match (lte, rte) {
         (Some(lt), Some(rt)) => if eq_channel_type_expr_is_scalar(lt) {
           ""
