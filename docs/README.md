@@ -186,6 +186,7 @@ Not normative.
 | [internal/reports/batched-source-embedding-2026-10-02.md](internal/reports/batched-source-embedding-2026-10-02.md) | Source embedding process overhead, byte-identical products and paired cold/warm generation measurements |
 | [internal/reports/checker-environment-snapshots-2026-10-02.md](internal/reports/checker-environment-snapshots-2026-10-02.md) | Full compiler name-lookup bottleneck, canonical snapshots, allocation tradeoff and paired cold/warm validation |
 | [internal/reports/effect-callable-body-index-2026-10-02.md](internal/reports/effect-callable-body-index-2026-10-02.md) | Effect callable-body scans, ambiguity-preserving name index, entry resets and controlled CPU/allocation comparisons |
+| [internal/reports/async-effect-environment-index-2026-10-02.md](internal/reports/async-effect-environment-index-2026-10-02.md) | Async-effect environment lookup hotspot, entry-local canonical snapshot and paired CPU/allocation comparisons |
 | [internal/reports/parser-simd-scan-2026-08-15.md](internal/reports/parser-simd-scan-2026-08-15.md) | |
 | [internal/reports/perf-snapshot-2026-08-07.md](internal/reports/perf-snapshot-2026-08-07.md) | |
 | [internal/reports/pl-survey-2026-07.md](internal/reports/pl-survey-2026-07.md) | |

@@ -1,0 +1,194 @@
+import @vibe/compiler/core {
+  BindingOrigin,
+  Expr,
+  Stmt,
+  Type,
+  TypeDef,
+  TypeEnv,
+  TypeExpr,
+  env_bind,
+  env_bind_with_origin,
+  env_cache,
+  env_cached,
+  env_preserve_type_definition_origins,
+  env_value_binding,
+  env_value_binding_with_origin
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import @vibe/compiler/checker {
+  EffectError, check_async_effects_expr, check_async_effects_stmt, check_async_effects_stmts, effect_error_to_string
+}
+
+// Exercise the large-program entry while retaining the existing public
+// checker semantics. Padding adds only effect-free integer expressions.
+fn check_large(stmts: Array[Stmt], env: TypeEnv) -> Array[EffectError] {
+  let padded = Array::slice(stmts, 0, Array::length(stmts))
+  while Array::length(padded) < 256 {
+    Array::push(padded, SExpr(EInt(0)))
+  }
+  check_async_effects_stmts(padded, env)
+}
+
+fn assert_same_diagnostics(stmts: Array[Stmt], env: TypeEnv) -> Unit {
+  let small = check_async_effects_stmts(stmts, env)
+  let large = check_large(stmts, env)
+  assert_eq(Array::length(small), Array::length(large))
+  let mut i = 0
+  while i < Array::length(small) {
+    assert_eq(effect_error_to_string(Array::get(small, i)), effect_error_to_string(Array::get(large, i)))
+    i = i + 1
+  }
+}
+
+fn sleep_call() -> Expr {
+  ECall(EIdent("sleep", -1), [EInt(10)], -1, [])
+}
+
+fn sleep_fn() -> Expr {
+  EFn(array_empty(), array_empty(), array_empty(), None, None, sleep_call())
+}
+
+fn user_sleep_env() -> TypeEnv {
+  env_bind(EnvEmpty, "sleep", CtFn([CtInt], CtInt, None))
+}
+
+fn for_over(iterand: Expr) -> Expr {
+  EForIn("x", None, iterand, EIdent("x", -1))
+}
+
+fn holder_body() -> Expr {
+  EFn(array_empty(), array_empty(), [("holder", Some(TyName("Holder")))], None, None, for_over(EDot(EIdent("holder", -1), "stream", -1, -1)))
+}
+
+fn holder_defs(rest: TypeEnv) -> TypeEnv {
+  EnvTypeDefs([
+    TDStruct("Holder", [("stream", CtNamed("AsyncIter", [CtInt]))], [], []),
+    TDStruct("AsyncIter", [], [], ["T"])
+  ], ["Holder"], rest)
+}
+
+fn builtin_async_iter_env() -> TypeEnv {
+  let origin = BindingOriginModuleExport("/workspace/lib/@vibe/builtin/index.vpkg", "AsyncIter")
+  let source = EnvBind("AsyncIter", env_value_binding_with_origin(CtUnknown, origin), EnvEmpty)
+  env_preserve_type_definition_origins(holder_defs(EnvEmpty), source)
+}
+
+fn count(errors: Array[EffectError]) -> Int {
+  Array::length(errors)
+}
+
+test "large program: an async-primitive answer does not outlive its entry (statements)" {
+  let stmts = [STest("t", sleep_call())]
+  assert_eq(count(check_large(stmts, user_sleep_env())), 0)
+  assert_true(count(check_large(stmts, EnvEmpty)) > 0)
+  assert_eq(count(check_large(stmts, user_sleep_env())), 0)
+}
+
+test "large program: an async-primitive answer does not outlive its entry (expression and statement entries)" {
+  assert_true(count(check_async_effects_expr(sleep_call(), EnvEmpty, false)) > 0)
+  assert_eq(count(check_async_effects_expr(sleep_call(), user_sleep_env(), false)), 0)
+  assert_true(count(check_async_effects_expr(sleep_call(), EnvEmpty, false)) > 0)
+  let stmt = SLet(false, false, "f", None, sleep_fn())
+  assert_eq(count(check_async_effects_stmt(stmt, user_sleep_env())), 0)
+  assert_true(count(check_async_effects_stmt(stmt, EnvEmpty)) > 0)
+  assert_eq(count(check_async_effects_stmt(stmt, user_sleep_env())), 0)
+}
+
+test "large program: the same name is asked once per entry, not once per site" {
+  // Two sites of one name in one walk: the first answer is reused for the
+  // second, and both agree with the per-site answer.
+  let two = EFn(array_empty(), array_empty(), array_empty(), None, None, ELet("a", sleep_call(), sleep_call(), -1))
+  let stmts = [STest("t", two)]
+  assert_eq(count(check_large(stmts, user_sleep_env())), 0)
+  assert_true(count(check_large(stmts, EnvEmpty)) >= 2)
+}
+
+test "large program: the AsyncIter provenance answer does not outlive its entry" {
+  let stmts = [STest("projected field", holder_body())]
+  assert_true(count(check_large(stmts, builtin_async_iter_env())) > 0)
+  assert_eq(count(check_large(stmts, holder_defs(EnvEmpty))), 0)
+  assert_true(count(check_large(stmts, builtin_async_iter_env())) > 0)
+  assert_eq(count(check_large(stmts, holder_defs(EnvEmpty))), 0)
+}
+
+// #2495 review: the field-type table is built at the very start of an entry,
+// before the memos of the previous entry are cleared -- so the clear must
+// come first. These shapes route a projected `AsyncIter` field through the
+// table (a struct declared in the program itself, a call result, a `let`),
+// checked right after an entry whose env carried builtin provenance.
+
+fn call_body() -> Expr {
+  EFn(array_empty(), array_empty(), array_empty(), None, None, for_over(EDot(ECall(EIdent("mk", -1), [
+  ], -1, []), "stream", -1, -1)))
+}
+
+fn let_body() -> Expr {
+  EFn(array_empty(), array_empty(), array_empty(), None, None, ELet("h", ECall(EIdent("mk", -1), [
+  ], -1, []), for_over(EDot(EIdent("h", -1), "stream", -1, -1)), -1))
+}
+
+fn holder_stmts() -> Array[Stmt] {
+  [
+    SStruct(false, "AsyncIter", [], [], [], ["T"]),
+    SStruct(false, "Holder", [("stream", TyApp("AsyncIter", [TyName("Int")]))], [
+    ], [], []),
+    STest("projected field", holder_body())
+  ]
+}
+
+fn mk_env(rest: TypeEnv) -> TypeEnv {
+  env_bind(rest, "mk", CtFn([], CtNamed("Holder", []), None))
+}
+
+fn builtin_mk_env() -> TypeEnv {
+  let origin = BindingOriginModuleExport("/workspace/lib/@vibe/builtin/index.vpkg", "AsyncIter")
+  let source = EnvBind("AsyncIter", env_value_binding_with_origin(CtUnknown, origin), EnvEmpty)
+  env_preserve_type_definition_origins(mk_env(holder_defs(EnvEmpty)), source)
+}
+
+test "large program: a program declaring its own AsyncIter is synchronous right after a builtin-provenance entry" {
+  assert_true(count(check_large([STest("projected field", holder_body())], builtin_async_iter_env())) > 0)
+  assert_eq(count(check_large(holder_stmts(), EnvEmpty)), 0)
+  assert_eq(count(check_large(holder_stmts(), EnvEmpty)), 0)
+  assert_true(count(check_large([STest("projected field", holder_body())], builtin_async_iter_env())) > 0)
+}
+
+test "large program: a call-result or let-bound projection is classified by its own entry's env" {
+  assert_true(count(check_large([STest("call", call_body())], builtin_mk_env())) > 0)
+  assert_eq(count(check_large([STest("call", call_body())], mk_env(holder_defs(EnvEmpty)))), 0)
+  assert_true(count(check_large([STest("let", let_body())], builtin_mk_env())) > 0)
+  assert_eq(count(check_large([STest("let", let_body())], mk_env(holder_defs(EnvEmpty)))), 0)
+}
+
+test "large program retains diagnostic order and lexical shadowing" {
+  let stmts = [
+    STest("sleep", sleep_call()),
+    STest("local", ELet("sleep", EFn([], [], [("ms", Some(TyName("Int")))], None, None, EInt(0)), sleep_call(), -1)),
+    STest("await", ECall(EIdent("await", -1), [EInt(0)], -1, [])),
+    STest("sleep again", sleep_call())
+  ]
+  assert_same_diagnostics(stmts, EnvEmpty)
+  assert_eq(count(check_large(stmts, EnvEmpty)), 3)
+  assert_same_diagnostics(stmts, user_sleep_env())
+  assert_eq(count(check_large(stmts, user_sleep_env())), 1)
+}
+
+test "large program retains cached tails and nearest surface barriers" {
+  let canonical = env_bind(env_bind(EnvEmpty, "tail", CtInt), "sleep", CtFn([
+    CtInt
+  ], CtInt, None))
+  let partial = env_cached(["tail"], [env_value_binding(CtInt)], canonical)
+  let stmts = [STest("sleep", sleep_call())]
+  assert_same_diagnostics(stmts, partial)
+  assert_eq(count(check_large(stmts, partial)), 0)
+  let barrier = env_bind_with_origin(env_cache(canonical), "sleep", CtUnknown, BindingOriginReExportSurface("facade", "sleep"))
+  assert_same_diagnostics(stmts, barrier)
+  assert_true(count(check_large(stmts, barrier)) > 0)
+  let rebound = env_bind(barrier, "sleep", CtFn([CtInt], CtInt, None))
+  assert_same_diagnostics(stmts, rebound)
+  assert_eq(count(check_large(stmts, rebound)), 0)
+}

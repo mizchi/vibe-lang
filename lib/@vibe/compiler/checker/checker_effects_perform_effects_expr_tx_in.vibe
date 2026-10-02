@@ -9,6 +9,7 @@ import @vibe/compiler/core {
   TypeDef,
   TypeEnv,
   TypeExpr,
+  env_cache_complete,
   expr_child_at,
   expr_children,
   expr_children_pop,
@@ -381,10 +382,18 @@ export fn check_async_effects_stmts(stmts: Array[Stmt], env: TypeEnv) -> Array[E
   // Enforce direct-call-only before ordinary Async row checks. These errors are
   // checker diagnostics, so no artifact reaches codegen for an opaque flow.
   let errors = check_stdin_provider_direct_calls_stmts(stmts)
+  // The whole walk reads one environment; lexical bindings live in AfeLocals.
+  // Snapshot large programs once so payload inference does not repeatedly
+  // scan the completed checker chain. Small module entries keep their cost.
+  let walk_env = if Array::length(stmts) >= 256 {
+    env_cache_complete(env)
+  } else {
+    env
+  }
   // #1341: rebuild the struct field-type table for THIS program before the
   // walk, so a stale one from a previous module can never classify a
   // same-named field here.
-  afe_set_field_types(stmts, env)
+  afe_set_field_types(stmts, walk_env)
   Array::truncate(afe_builtin_async_iter_import_names, 0)
   afe_record_builtin_async_iter_imports(stmts)
   Array::truncate(afe_callable_bodies, 0)
@@ -395,7 +404,7 @@ export fn check_async_effects_stmts(stmts: Array[Stmt], env: TypeEnv) -> Array[E
   afe_collect_callable_bodies(stmts)
   let mut i = 0
   while i < Array::length(stmts) {
-    append_eff_errs(errors, check_async_effects_stmt_lo(Array::get(stmts, i), env))
+    append_eff_errs(errors, check_async_effects_stmt_lo(Array::get(stmts, i), walk_env))
     i = i + 1
   }
   errors
