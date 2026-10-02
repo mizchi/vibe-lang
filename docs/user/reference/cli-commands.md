@@ -56,7 +56,9 @@ vibe compile --entry <name> <file.vibe>          # entry other than `main` (not 
   cached as linked wasm files and only the entry is recompiled. It cannot be
   combined with `--component`, `--wit` or `--minify`.
 - **`--minify`** runs the standalone `vibe-opt.wasm` optimizer over the core
-  module after it is written. The default artifact is not post-optimized.
+  module after it is written. The default artifact is not post-optimized. With
+  `--component` it is refused (the minifier takes a core module); with
+  `--wit` it is accepted and has no effect, since no module is written.
 - `--wasm`, `--wasm-linear` and `--release` are accepted and change nothing.
   They do **not** select a backend: `compile` produces linear core WASM by
   default, and `VIBE_BACKEND=gc` switches it to wasm-gc even when
@@ -126,7 +128,8 @@ VIBE_HTTP_ADAPTER_BODY_STREAM=1 scripts/build_wasi_http_p3_full_adapter.sh \
   resolution, composition, and serving live in the launcher — the compiled
   `<handler>.component.wasm` + `<handler>.wit` are reusable on their own.
 - Prerequisites for the serve step: `wac` (`cargo install wac-cli`) and
-  `wasmtime` (v45+). The P3 adapter component is built once by
+  `wasmtime` 46 or newer (the first release that serves the ratified
+  `wasi:http@0.3.0` world; the repository pins 47.0.2). The P3 adapter component is built once by
   `scripts/build_wasi_http_p3_full_adapter.sh` (cargo + wasm-tools) or passed
   via `--adapter` / `VIBE_HTTP_ADAPTER`.
 - E2E gates: `scripts/test_wasi_http_p3_full_gate.sh` (String body),

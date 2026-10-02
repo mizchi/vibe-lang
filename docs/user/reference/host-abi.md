@@ -23,12 +23,15 @@ proposal, and this document does not cover it.
   measured `Fs` program; both export an `error` tag. A program with no effects,
   or one that only prints, defines no tag and runs on a host without the
   proposal (#716/#733).
-- **The fixed-width SIMD proposal (`v128`) is needed only by a module that
-  uses a builtin implemented with it**: the SIMD scan builtins (`simd_skip_ws`
-  and the other `simd_scan_*`), and the 16-byte scans behind `Bytes::index_of`
-  and substring search ([cheatsheet](cheatsheet.md)). A builtin's body is
-  emitted only when the program uses it, so a program that calls none of them
-  carries no `v128` instruction.
+- **The fixed-width SIMD proposal (`v128`) is needed by a module that uses
+  any builtin implemented with it**, and that set is wider than the names
+  suggest. Besides the SIMD scan builtins (`simd_skip_ws` and the other
+  `simd_scan_*`), it includes String equality and comparison, and
+  `Bytes::index_of` / `last_index_of` / `count` / `compare` and substring
+  search. The list is not exhaustive: the builtin bodies under
+  `lib/@vibe/compiler/codegen/builtin_bodies/` are authoritative. A builtin's
+  body is emitted only when the program uses it, so a program that uses none
+  of them carries no `v128` instruction.
 - **A program with no host capability runs on any WASI Preview 1 host** that
   also supports SIMD if the program uses one of those builtins. Plain
   `wasmtime run pure.wasm` prints `5`. Effects the program declares and handles
