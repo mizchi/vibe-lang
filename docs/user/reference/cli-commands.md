@@ -55,8 +55,10 @@ vibe compile --entry <name> <file.vibe>          # entry other than `main` (not 
   combined with `--component`, `--wit` or `--minify`.
 - **`--minify`** runs the standalone `vibe-opt.wasm` optimizer over the core
   module after it is written. The default artifact is not post-optimized.
-- `--wasm`, `--wasm-linear` and `--release` are accepted and change nothing:
-  linear core WASM is what `compile` always produces. `--jobs N` is accepted.
+- `--wasm`, `--wasm-linear` and `--release` are accepted and change nothing.
+  They do **not** select a backend: `compile` produces linear core WASM by
+  default, and `VIBE_BACKEND=gc` switches it to wasm-gc even when
+  `--wasm-linear` is on the command line. `--jobs N` is accepted.
 - **Any other option is refused** with `unknown option: <flag>`. That includes
   the retired MoonBit host's flags (`--no-dce`, `-O<level>`, `--wasm-gc`,
   `--wac`, `--library`, ...). The wasm-gc backend is reached through

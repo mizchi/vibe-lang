@@ -11,7 +11,6 @@ Server:
 - `Http::listen(port: Int) -> Int with Http`
 - `Http::accept(server_fd: Int) -> Int with Http`
 - `Http::respond(req_fd: Int, status: Int, headers: String, body: String) -> Unit with Http`
-- `Http::close(fd: Int) -> Unit with Http`
 
 Incoming request, on a handle `accept` returned:
 
@@ -26,9 +25,20 @@ Client:
 - `Http::response_status(fd: Int) -> Int with Http`
 - `Http::response_header(fd: Int, name: String) -> String with Http`
 - `Http::response_body(fd: Int) -> String with Http`
+- `Http::close(fd: Int) -> Unit with Http` — closes a response handle
+  `request` returned. It is not a server operation.
 
 Notes:
 
+- **The server operations have no host implementation yet.** `listen`,
+  `accept`, `respond` and the `request_*` readers `perform` the matching
+  `Http::` effect operation (`Http::Listen`, `Http::Accept`, ...), so an
+  unhandled call throws. A program that uses them handles those operations
+  itself; `lib/@vibe/http/http_effect_test.vibe` shows the handler shape with
+  its own effect declaration. The client operations
+  call the runner's `vibe.http_*` imports directly and reach the network with
+  no handler. To serve HTTP today, use `vibe serve` (a wasi-http component;
+  see [cli-commands.md](cli-commands.md)).
 - Every `Int` handle is **opaque**; its value is not part of the contract.
 - `headers` is the wire-format string (`"name: value\nname2: value2"`).
   `headers_to_wire` builds it from a `Map[String, String]`, and the typed
