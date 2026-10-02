@@ -7,8 +7,10 @@
 // Usage: vibe-opt-debug <input.wasm> <out_prefix>
 
 import @vibe/optimizer {
+  binary_size,
   call_forwarding,
   coalesce_locals,
+  dce,
   dce_remove,
   directize,
   drop_unused_globals,
@@ -71,8 +73,22 @@ fn main allows Fs + Env + Console + Stderr {
     write_stage(prefix, 9, "remove_dead_blocks", s4d)
     let s4 = drop_unused_tables(s4d)
     write_stage(prefix, 10, "drop_unused_tables", s4)
-    let s5 = dce_remove(s4)
-    write_stage(prefix, 11, "dce_remove", s5)
+    // The same size guard as `minify`: keep physical removal only when it
+    // shrinks the module, else fall back to `dce`. A stage the real pipeline
+    // would discard must not be the one a bisection blames.
+    let s5_removed = dce_remove(s4)
+    let keep_removed = binary_size(s5_removed) < binary_size(s4)
+    let s5 = if keep_removed {
+      s5_removed
+    } else {
+      dce(s4)
+    }
+    let s5_name = if keep_removed {
+      "dce_remove"
+    } else {
+      "dce"
+    }
+    write_stage(prefix, 11, s5_name, s5)
     let s5g = drop_unused_globals(s5)
     write_stage(prefix, 12, "drop_unused_globals", s5g)
     let s5t = drop_unused_tags(s5g)
