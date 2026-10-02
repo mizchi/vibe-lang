@@ -62,8 +62,12 @@
 | debug | `vibe::dbg_break` | `() -> ()` | `--break` ビルドのみ |
 
 注:
-- **Process / Shell / Http エフェクトは現行 runner の `vibe::*` には未実装**。これらを使う
-  プログラムを動かすには ABI 拡張（`vibe::proc_*` 等）か component path が要る。
+- 上の表は抜粋。`viberun` は Process / Shell / Http / Tcp の provider も持つ
+  (`vibe::sh` / `sh_capture*` / `sh_lines`、`vibe::process_exit`、`vibe::http_request` /
+  `http_response_*` / `http_close`、`vibe::tcp_connect` / `tcp_read` / `tcp_write` /
+  `tcp_close`)。provider の正本は
+  [host-runtime-contract.md](host-runtime-contract.md) と
+  `docs/generated/host-runtime-contract.json`。
 - `Fs::publish_immutable_text(path, content) -> Bool with Fs` は final path が
   不在のときだけ exact UTF-8 bytes を atomically publish する。既存 regular file の
   raw bytes が同じなら `true`、異なれば `false`。losing writer は overwrite せず、
