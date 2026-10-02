@@ -1,0 +1,46 @@
+import @vibe/parser {
+  lex, parse_program
+}
+import @vibe/compiler/checker {
+  check_program
+}
+import @vibe/compiler/core {
+  Type, env_lookup
+}
+
+// Cross both the large-list threshold and the next snapshot boundary. Every
+// binding is real source syntax, so the checker exercises its normal hoisting,
+// declaration refresh, statement scheduling and environment extension paths.
+fn padded_program(prefix: String, suffix: String) -> String {
+  let mut source = prefix
+  let mut i = 0
+  while i < 640 {
+    source = source + "let padding_" + Int::to_string(i) + " = (x: Int) -> Int { x }\n"
+    i = i + 1
+  }
+  source + suffix
+}
+
+test "large statement lists preserve completed generic aliases and forward calls" {
+  let source = padded_program("type Alias[T] = Box[T]\nstruct Box[T] { value: T }\nlet before = (x: Alias[Int]) -> Int { after(x) }\n", "let after = (x: Box[Int]) -> Int { x.value }\n")
+  let env = check_program(parse_program(lex(source)))
+  for name in ["before", "after", "padding_0", "padding_639"] {
+    match env_lookup(env, name) {
+      Some(CtFn(params, ret, _)) => {
+        assert(Array::length(params) == 1)
+        assert(ret is CtInt)
+      },
+      _ => assert(false)
+    }
+  }
+  ()
+}
+
+test "large statement lists refuse a wrong forward argument across snapshot boundaries" {
+  let source = padded_program("let before = (x: Int) -> Int { after(x) }\n", "let after = (x: Bool) -> Bool { x }\n")
+  let refused = handle {
+    let _ = check_program(parse_program(lex(source)))
+    false
+  } with { Exception::Throw(message) => String::contains(message, "mismatch") }
+  assert(refused)
+}

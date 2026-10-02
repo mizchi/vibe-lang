@@ -40,6 +40,7 @@ import @vibe/compiler/core {
   TypeEnv,
   TypeExpr,
   env_bind,
+  env_cache_complete,
   env_lookup,
   env_with_reexport_surface_blockers,
   find_typedef,
@@ -862,7 +863,14 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
     }
     rst_i = rst_i + 1
   }
+  // Large merged programs otherwise probe thousands of hoisted/checked
+  // bindings per call. Rebuild from canonical rows every 512 statements;
+  // ordinary small module lists keep the existing head-cache layout.
+  let index_large_env = Array::length(stmts) - i >= 256
   while idx < Array::length(stmts) {
+    if index_large_env && (idx - i) % 512 == 0 {
+      cur_env = env_cache_complete(cur_env)
+    }
     let env = cur_env
     let s = cur_s
     let c = cur_c
