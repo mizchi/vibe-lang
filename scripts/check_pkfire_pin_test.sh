@@ -38,6 +38,28 @@ jobs:
 YML
   printf 'PKF_VERSION="$(tr -d x < "$PROJECT_DIR/.github/pkfire-version")"\n' \
     > "$TMP/tree/.claude/hooks/session-start.sh"
+  cat > "$TMP/tree/flake.nix" <<'NIX'
+{
+  inputs = {
+    # pinned to the tag in .github/pkfire-version (v0.14.2)
+    pkfire = {
+      url = "git+https://github.com/mizchi/pkfire?ref=refs/tags/v0.14.2";
+    };
+  };
+}
+NIX
+  cat > "$TMP/tree/flake.lock" <<'LOCK'
+{
+  "nodes": {
+    "pkfire": {
+      "locked": { "ref": "refs/tags/v0.14.2", "type": "git" },
+      "original": { "ref": "refs/tags/v0.14.2", "type": "git" }
+    }
+  },
+  "root": "root",
+  "version": 7
+}
+LOCK
 }
 run_gate() { VIBE_PKFIRE_PIN_ROOT="$TMP/tree" bash "$GATE" >"$TMP/out" 2>&1; }
 
@@ -214,4 +236,35 @@ printf '\n# uses: mizchi/pkfire@vNOPE (prose, not a call site)\n' >> "$TMP/tree/
 run_gate || { cat "$TMP/out" >&2; fail "case 6: a commented-out example was counted as a call site"; }
 echo "check_pkfire_pin_test: ok: case 6: a commented example is not a call site"
 
-echo "check_pkfire_pin_test: ok (2 controls + 12 cases)"
+# --- case 7: flake.nix pins another pkfire tag ---------------------------
+scaffold
+sed -i.bak 's/refs\/tags\/v0.14.2";/refs\/tags\/v0.16.0";/' "$TMP/tree/flake.nix"
+grep -q 'refs/tags/v0.16.0";' "$TMP/tree/flake.nix" || fail "case 7: mutation did not land"
+if run_gate; then fail "case 7: a flake.nix pkfire input disagreeing with the pin file was accepted"; fi
+grep -q "flake.nix pins pkfire at v0.16.0" "$TMP/out" || fail "case 7: the message does not name the flake.nix tag"
+echo "check_pkfire_pin_test: ok: case 7: a flake.nix tag disagreeing with the pin file is rejected"
+
+# --- case 7b: only the COMMENT names the tag -> no input found, refuse ----
+# The scan is anchored to a `url =` assignment; a tag in prose must not count.
+scaffold
+python3 - "$TMP/tree/flake.nix" <<'PY2'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace('      url = "git+https://github.com/mizchi/pkfire?ref=refs/tags/v0.14.2";\n', '')
+open(p, "w").write(s)
+PY2
+grep -q 'url = ' "$TMP/tree/flake.nix" && fail "case 7b: mutation did not land"
+grep -q 'v0.14.2' "$TMP/tree/flake.nix" || fail "case 7b: the comment naming the tag was lost"
+if run_gate; then fail "case 7b: a flake.nix whose only pkfire tag is in a comment was accepted"; fi
+grep -q "declares no" "$TMP/out" || fail "case 7b: the message does not say the input is missing"
+echo "check_pkfire_pin_test: ok: case 7b: a tag named only in a comment does not count"
+
+# --- case 8: flake.lock resolved another tag (lock not refreshed) ---------
+scaffold
+sed -i.bak 's/"ref": "refs\/tags\/v0.14.2", "type": "git" }/"ref": "refs\/tags\/v0.13.0", "type": "git" }/' "$TMP/tree/flake.lock"
+grep -q 'v0.13.0' "$TMP/tree/flake.lock" || fail "case 8: mutation did not land"
+if run_gate; then fail "case 8: a flake.lock resolving another pkfire tag was accepted"; fi
+grep -q "flake.lock" "$TMP/out" || fail "case 8: the message does not name flake.lock"
+echo "check_pkfire_pin_test: ok: case 8: a stale flake.lock ref is rejected"
+
+echo "check_pkfire_pin_test: ok (2 controls + 15 cases)"

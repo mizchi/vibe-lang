@@ -146,6 +146,52 @@ if [ "$withs" -lt "$refs" ]; then
   rc=1
 fi
 
+# The nix dev shell pins pkfire as a flake input. It cannot read the pin file
+# (a flake input URL is a literal), so it restates the tag, and this checks the
+# restatement: the input URL in flake.nix and the ref flake.lock resolved. The
+# flake.nix scan is ANCHORED to a `url =` assignment so the comment above the
+# input cannot answer for it. flake.nix pinned v0.14.2 for a month while CI ran
+# 0.16.0 because nothing compared them.
+FLAKE="flake.nix"
+if [ -f "$FLAKE" ]; then
+  flake_tags="$(grep -E '^[[:space:]]*url = "git\+https://github\.com/mizchi/pkfire\?ref=refs/tags/v[^"]*";' "$FLAKE" \
+    | sed -E 's/.*refs\/tags\/v([^"]*)".*/\1/' || true)"
+  if [ -z "$flake_tags" ]; then
+    echo "[pkfire-pin] FAIL: $FLAKE declares no 'url = \"git+https://github.com/mizchi/pkfire?ref=refs/tags/v…\";' input" >&2
+    rc=1
+  fi
+  for tag in $flake_tags; do
+    if [ "$tag" != "$want" ]; then
+      echo "[pkfire-pin] FAIL: $FLAKE pins pkfire at v$tag, $PIN_FILE says $want" >&2
+      rc=1
+    fi
+  done
+  LOCK="flake.lock"
+  if [ -f "$LOCK" ]; then
+    lock_refs="$(python3 - "$LOCK" <<'PYEOF'
+import json, sys
+nodes = json.load(open(sys.argv[1], encoding="utf-8")).get("nodes", {})
+node = nodes.get("pkfire")
+if not isinstance(node, dict):
+    sys.exit(0)
+for key in ("original", "locked"):
+    ref = (node.get(key) or {}).get("ref", "")
+    print(f"{key}={ref}")
+PYEOF
+)"
+    if [ -z "$lock_refs" ]; then
+      echo "[pkfire-pin] FAIL: $LOCK has no 'pkfire' node -- run: nix flake update pkfire" >&2
+      rc=1
+    fi
+    for entry in $lock_refs; do
+      if [ "${entry#*=}" != "refs/tags/v$want" ]; then
+        echo "[pkfire-pin] FAIL: $LOCK ${entry%%=*} ref is '${entry#*=}', $PIN_FILE says $want -- run: nix flake update pkfire" >&2
+        rc=1
+      fi
+    done
+  fi
+fi
+
 # The hook must READ the pin, not restate it.
 HOOK=".claude/hooks/session-start.sh"
 if [ -f "$HOOK" ]; then
