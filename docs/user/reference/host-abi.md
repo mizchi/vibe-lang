@@ -29,12 +29,14 @@ proposal, and this document does not cover it.
   and substring search ([cheatsheet](cheatsheet.md)). A builtin's body is
   emitted only when the program uses it, so a program that calls none of them
   carries no `v128` instruction.
-- **A program with no effects runs on any WASI Preview 1 host** that also
-  supports SIMD if the program uses one of those builtins. Plain
-  `wasmtime run pure.wasm` prints `5`.
-- **A program that uses effects needs a host that implements the `vibe::*`
-  ABI**, which today is `viberun`. A host with only standard WASI fails to
-  instantiate it with `unknown import: vibe::fs_read_file`.
+- **A program with no host capability runs on any WASI Preview 1 host** that
+  also supports SIMD if the program uses one of those builtins. Plain
+  `wasmtime run pure.wasm` prints `5`. Effects the program declares and handles
+  itself (a user `effect`, or `Exception` caught by a `handle`) import nothing.
+- **A program that uses a host capability (`Fs`, `Console`, `Http`, ...)
+  needs a host that implements the `vibe::*` ABI**, which today is `viberun`.
+  A host with only standard WASI fails to instantiate it with
+  `unknown import: vibe::fs_read_file`.
 - **The default linear path is not wasip3.** It is Preview 1 `fd_write` plus
   `vibe::*`; wasip3 is the target of the separate component path (§4).
 
@@ -44,9 +46,9 @@ proposal, and this document does not cover it.
 |---|---|
 | module kind | core wasm, linear memory (not a component) |
 | proposals | exception-handling, only when the module defines a tag (§3); fixed-width SIMD, only when it uses a `v128` builtin (Summary) |
-| exports | `_start` (the WASI command entry), `main`, `memory`, `__heap_ptr` (global); plus the `error` and `__exception_throw_tag` tags when the module uses exceptions |
+| exports | `_start` (the WASI command entry), the entry function (`main`, or the name given to `--entry`), `memory`, `__heap_ptr` (global); plus the `error` and `__exception_throw_tag` tags when the module uses exceptions |
 
-`_start` writes the result of `main` to stdout through `fd_write`, so **every
+`_start` writes the entry's result to stdout through `fd_write`, so **every
 program imports `fd_write`**, whether or not it prints anything itself.
 
 ## 2. Import contract
@@ -117,12 +119,13 @@ Notes:
 
 All measured.
 
-- **Tier 0: no effects.** The only import is `fd_write`, and there is no tag,
-  so the module runs on any WASI Preview 1 host (wasmtime, wasmer, Node's
-  `node:wasi`, a browser WASI shim, ...) without the exception-handling
-  proposal, and without SIMD unless it uses a `v128` builtin. Measured:
-  `wasmtime run pure.wasm` prints `5` (`add(2, 3)`).
-- **Tier 1: effects.** The module also imports `vibe::*`, so it needs a host
+- **Tier 0: no host capability.** The only import is `fd_write`, so the
+  module runs on any WASI Preview 1 host (wasmtime, wasmer, Node's
+  `node:wasi`, a browser WASI shim, ...): without the exception-handling
+  proposal unless it throws or handles an exception, and without SIMD unless
+  it uses a `v128` builtin. Measured: `wasmtime run pure.wasm` prints `5`
+  (`add(2, 3)`).
+- **Tier 1: host capabilities.** The module also imports `vibe::*`, so it needs a host
   that implements the vibe ABI. A module that throws or handles an exception
   also defines tags, and so did the measured `Fs` program; such a module needs
   the exception-handling proposal as well. Measured: plain wasmtime refuses the
@@ -156,7 +159,8 @@ To run effectful output in another environment (JS, Rust, Go, ...):
 3. Implement **only the `vibe::*` functions the module imports** (§2.2).
    Values are tagged i64s; read packed strings and bytes from the exported
    `memory`.
-4. Call `_start`, or invoke `main` directly.
+4. Call `_start`, or invoke the entry function directly (`main`, or the name
+   given to `--entry`).
 
 Those four points are the contract. A host that meets them runs the output the
 same way `viberun` does.
