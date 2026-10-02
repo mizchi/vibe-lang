@@ -37,6 +37,7 @@ same artifacts.
 ```
 vibe compile <file.vibe|file.vibex>              # core WASM (linear backend)
 vibe compile -o out.wasm <file.vibe>             # explicit output path
+                                                 #   (also --output / --out)
 vibe compile --wit <file.vibe>                   # the WIT world for the file's effect
                                                  #   surface (docs/internal/design/effect-wit-mapping.md)
 vibe compile --component <file.vibe>             # a command component from the
@@ -49,7 +50,8 @@ vibe compile --entry <name> <file.vibe>          # entry other than `main` (not 
 - Output defaults to `.vibe/build/out/<name>.wasm` under the project root
   (`<name>.wit` with `--wit`, `<name>.component.wasm` with `--component`;
   #2675, [install.md](../getting-started/install.md#project-layout)). `-o`
-  chooses another path, relative to the directory you ran from.
+  (or `--output` / `--out`) chooses another path, relative to the directory
+  you ran from.
 - **`--debug`** builds through the linked debug lane: library modules are
   cached as linked wasm files and only the entry is recompiled. It cannot be
   combined with `--component`, `--wit` or `--minify`.

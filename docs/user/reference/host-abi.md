@@ -6,6 +6,11 @@ run on plain `wasmtime` (pinned seed `array-capacity-2026-09-20`, wasmtime 47,
 2026-10-02). `scripts/test_host_abi.js` pins the contract in CI (see
 [CI enforcement](#ci-enforcement)).
 
+This is the contract of the **default linear lane**. `VIBE_BACKEND=gc` selects
+the opt-in wasm-gc backend, whose output uses wasm-gc instructions
+(`struct.new`, `array.new`, ...); a host for that output also needs the GC
+proposal, and this document does not cover it.
+
 ## Summary
 
 - The output is a **core wasm module with linear memory**, not a component.
@@ -31,7 +36,7 @@ run on plain `wasmtime` (pinned seed `array-capacity-2026-09-20`, wasmtime 47,
 | Item | Value |
 |---|---|
 | module kind | core wasm, linear memory (not a component) |
-| proposals | exception-handling, only when the module defines a tag (§3) |
+| proposals | exception-handling, only when the module defines a tag (§3); nothing else on the linear lane |
 | exports | `_start` (the WASI command entry), `main`, `memory`, `__heap_ptr` (global); plus the `error` and `__exception_throw_tag` tags when the module uses exceptions |
 
 `_start` writes the result of `main` to stdout through `fd_write`, so **every
