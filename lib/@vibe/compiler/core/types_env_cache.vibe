@@ -651,6 +651,91 @@ export fn env_cache_complete(env: TypeEnv) -> TypeEnv {
   }
 }
 
+fn env_read_snapshot_push(name: String, binding: EnvValueBinding, barriers: Array[EnvNameIndex], names: Array[String], bindings: Array[EnvValueBinding]) -> Unit {
+  let mut i = 0
+  let mut visible = true
+  while i < Array::length(barriers) && visible {
+    visible = !env_name_index_miss_is_final(Array::get(barriers, i), name)
+    i = i + 1
+  }
+  if visible {
+    Array::push(names, name)
+    Array::push(bindings, binding)
+  }
+}
+
+/// Freeze current lookup answers for a read-only walk. Unlike a canonical
+/// rebuild, cached rows may be the only owner of a binding and must survive.
+/// Keep the original tail for declaration, provenance and mutability walks.
+export fn env_cache_read_snapshot(env: TypeEnv) -> TypeEnv {
+  match env {
+    EnvEmpty => EnvEmpty,
+    _ => {
+      let names: Array[String] = []
+      let bindings: Array[EnvValueBinding] = []
+      let barriers: Array[EnvNameIndex] = []
+      let mut cur = env
+      let mut done = false
+      while !done {
+        match cur {
+          EnvEmpty => done = true,
+          EnvBind(name, binding, rest) => {
+            env_read_snapshot_push(name, binding, barriers, names, bindings)
+            cur = rest
+          },
+          EnvTraitDef(_, _, _, _, rest, _, _) => cur = rest,
+          EnvTraitImpl(_, _, rest) => cur = rest,
+          EnvTraitImplGen(_, _, _, _, rest) => cur = rest,
+          EnvTypeDefs(_, _, rest) => cur = rest,
+          EnvMutCell(_, _, rest) => cur = rest,
+          EnvFlat(rows) => {
+            let mut i = 0
+            while i < Array::length(rows) {
+              let (name, binding) = Array::get(rows, i)
+              env_read_snapshot_push(name, binding, barriers, names, bindings)
+              i = i + 1
+            }
+            done = true
+          },
+          EnvCached(index, rows, rest) => {
+            let mut i = 0
+            while i < env_name_index_length(index) {
+              let name = env_name_index_at(index, i)
+              // Use the same lookup as the original node. This preserves
+              // first-row wins and the historical behavior of unsorted rows.
+              if env_name_index_find(index, name) == i {
+                env_read_snapshot_push(name, Array::get(rows, i), barriers, names, bindings)
+              }
+              i = i + 1
+            }
+            if env_name_index_has_tail_names(index) {
+              Array::push(barriers, index)
+            }
+            cur = rest
+          }
+        }
+      }
+      // Stable sorting retains the first lookup-visible occurrence. Deduping
+      // after sorting bounds storage without changing nearest-binding wins.
+      let perm = sort_perm_by_names(names)
+      let sorted_names: Array[String] = []
+      let sorted_bindings: Array[EnvValueBinding] = []
+      let mut i = 0
+      while i < Array::length(perm) {
+        let row = Array::get(perm, i)
+        let name = Array::get(names, row)
+        let n = Array::length(sorted_names)
+        if n == 0 || Array::get(sorted_names, n - 1) != name {
+          Array::push(sorted_names, name)
+          Array::push(sorted_bindings, Array::get(bindings, row))
+        }
+        i = i + 1
+      }
+      EnvCached(env_name_index_with_tail_names(env_name_index_new(sorted_names)), sorted_bindings, env)
+    }
+  }
+}
+
 export fn fresh_var(c: Int) -> (Type, Int) {
   (CtVar(c), c + 1)
 }

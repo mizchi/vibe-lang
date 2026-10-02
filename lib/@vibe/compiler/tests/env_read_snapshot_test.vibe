@@ -1,0 +1,105 @@
+import @vibe/compiler/core {
+  BindingOrigin,
+  Type,
+  TypeEnv,
+  env_bind,
+  env_bind_mut,
+  env_bind_with_origin,
+  env_cache_complete,
+  env_cache_read_snapshot,
+  env_cached,
+  env_lookup,
+  env_lookup_binding_including_surface,
+  env_mut_escape,
+  env_value_binding,
+  env_value_binding_with_origin,
+  trait_supers,
+  types_equal
+}
+
+fn assert_lookup_answers(env: TypeEnv, names: Array[String]) -> Unit {
+  let snapshot = env_cache_read_snapshot(env)
+  for name in names {
+    let before = env_lookup_binding_including_surface(env, name)
+    let after = env_lookup_binding_including_surface(snapshot, name)
+    match (before, after) {
+      (Some(left), Some(right)) => {
+        assert_true(types_equal(left.ty, right.ty))
+        assert(left.origin == right.origin)
+      },
+      (None, None) => (),
+      _ => assert(false)
+    }
+  }
+  ()
+}
+
+test "read snapshot preserves cache-only rows and their origins" {
+  let origin = BindingOriginModuleExport("builtin.vibe", "AsyncIter")
+  let env = env_cached(["AsyncIter", "sleep"], [
+    env_value_binding_with_origin(CtUnknown, origin),
+    env_value_binding(CtFn([CtInt], CtInt, None))
+  ], EnvEmpty)
+  assert_lookup_answers(env, ["AsyncIter", "sleep", "missing"])
+  assert(env_lookup(env_cache_read_snapshot(env), "sleep") is Some(CtFn(_, _, None)))
+}
+
+test "read snapshot preserves cached precedence duplicate rows and flat tails" {
+  let tail = EnvFlat([
+    ("x", env_value_binding(CtInt)),
+    ("tail", env_value_binding(CtChar))
+  ])
+  let inner = env_cached(["only", "x", "x"], [
+    env_value_binding(CtUnit),
+    env_value_binding(CtString),
+    env_value_binding(CtDouble)
+  ], tail)
+  let env = env_bind(inner, "x", CtBool)
+  assert_lookup_answers(env, ["only", "x", "tail", "missing"])
+  assert(env_lookup(env_cache_read_snapshot(inner), "x") is Some(CtString))
+  assert(env_lookup(env_cache_read_snapshot(env), "x") is Some(CtBool))
+}
+
+test "read snapshot preserves cached surface barriers and local rebinding" {
+  let origin = BindingOriginReExportSurface("facade", "x")
+  let env = env_cached(["x"], [env_value_binding_with_origin(CtUnknown, origin)], env_bind(EnvEmpty, "x", CtInt))
+  let snapshot = env_cache_read_snapshot(env)
+  assert_lookup_answers(env, ["x", "missing"])
+  assert(env_lookup(snapshot, "x") is None)
+  assert(env_lookup(env_bind(snapshot, "x", CtBool), "x") is Some(CtBool))
+}
+
+test "read snapshot honors existing complete misses and later tail binds" {
+  let complete = env_cache_complete(env_bind(EnvEmpty, "visible", CtInt))
+  let extended = env_bind(complete, "added", CtString)
+  assert_lookup_answers(complete, ["visible", "added", "missing"])
+  assert_lookup_answers(extended, ["visible", "added", "missing"])
+  match complete {
+    EnvCached(index, rows, rest) => {
+      // Even a manually assembled node cannot turn an existing final miss
+      // into a new visible binding merely by taking a read snapshot.
+      let hidden = EnvCached(index, rows, env_bind(rest, "hidden", CtChar))
+      assert(env_lookup(hidden, "hidden") is None)
+      assert_lookup_answers(hidden, ["visible", "hidden", "missing"])
+    },
+    _ => assert(false)
+  }
+}
+
+test "read snapshot keeps the original lookup behavior of unsorted cached rows" {
+  let env = env_cached(["z", "a"], [
+    env_value_binding(CtString),
+    env_value_binding(CtDouble)
+  ], env_bind(EnvEmpty, "z", CtBool))
+  assert_lookup_answers(env, ["z", "a", "missing"])
+}
+
+test "read snapshot preserves mutability facts and trait declaration walks" {
+  let rest = EnvTraitDef("Trait", ["Base"], false, [], env_bind_mut(EnvEmpty, "cell", CtInt, true), [
+  ], [])
+  let env = env_cached(["only"], [env_value_binding(CtString)], rest)
+  let snapshot = env_cache_read_snapshot(env)
+  assert_lookup_answers(env, ["only", "cell", "missing"])
+  assert(env_mut_escape(snapshot, "cell") is Some(true))
+  assert_eq(Array::get(trait_supers(snapshot, "Trait"), 0), "Base")
+}
