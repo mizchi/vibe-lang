@@ -1,7 +1,18 @@
 // lib/@vibe/compiler/lowering/effects/evidence/evidence.vibe — handle effect names expr.
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeExpr, dce_keep_flags, expr_children, is_exception_effect_name, sort_perm_by_names
+  Expr,
+  Pat,
+  Stmt,
+  TypeExpr,
+  dce_keep_flags,
+  expr_child_at,
+  expr_children,
+  expr_children_pop,
+  expr_children_push,
+  expr_children_top,
+  is_exception_effect_name,
+  sort_perm_by_names
 }
 
 import @vibe/core {
@@ -955,12 +966,14 @@ fn edp_collect_lambda_candidates_expr(expr: Expr, names: Array[String], bodies: 
       edp_collect_lambda_candidates_expr(body, names, bodies, bcount)
     },
     _ => {
-      let kids = expr_children(expr)
-      let mut i = 0
-      while i < Array::length(kids) {
-        edp_collect_lambda_candidates_expr(Array::get(kids, i), names, bodies, bcount)
+      let mark = expr_children_push(expr)
+      let end = expr_children_top()
+      let mut i = mark
+      while i < end {
+        edp_collect_lambda_candidates_expr(expr_child_at(i), names, bodies, bcount)
         i = i + 1
       }
+      expr_children_pop(mark)
     }
   }
 }
@@ -1309,16 +1322,23 @@ export fn edp_append_visible_pure_lambda_names(stmts: Array[Stmt], pure_fns: Arr
     i = i + 1
   }
   let sole = edp_lambda_only_spellings(names, bcount)
+  // Keep the ordered result (including existing duplicates) while indexing
+  // membership once per pass. New names become visible in the same iteration.
+  let pure_names: MutSet[String] = MutSet::with_capacity(hash_string, eq_string, Array::length(pure_fns) * 10 / 7 + 1)
+  for name in pure_fns {
+    MutSet::insert(pure_names, name)
+  }
   let mut grew = true
   while grew {
     grew = false
     let mut j = 0
     while j < Array::length(names) {
       let nm = Array::get(names, j)
-      if edp_str_array_contains(pure_fns, nm) || !MutSet::has(sole, nm) {
+      if MutSet::has(pure_names, nm) || !MutSet::has(sole, nm) {
         ()
       } else if edp_name_bodies_all_pure(nm, names, bodies, pure_fns) {
         Array::push(pure_fns, nm)
+        MutSet::insert(pure_names, nm)
         grew = true
       } else {
         ()

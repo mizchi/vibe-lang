@@ -1,5 +1,15 @@
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, Type, TypeExpr, expr_children, lookup_registry_builtin
+  Expr,
+  Pat,
+  Stmt,
+  Type,
+  TypeExpr,
+  expr_child_at,
+  expr_children,
+  expr_children_pop,
+  expr_children_push,
+  expr_children_top,
+  lookup_registry_builtin
 }
 
 import @vibe/core {
@@ -1268,11 +1278,11 @@ let edp_argcond_masks: Array[Array[Bool]] = []
 // Every name the program binds locally (a parameter, a `let`, a pattern), so
 // a callee spelled like a pure top-level function is trusted only when no
 // local binding could be what it resolves to (Codex on #3059).
-let edp_argcond_binders: Array[String] = []
+let edp_argcond_binders: Array[MutSet[String]] = [MutSet::new_string()]
 
 /// Record every locally bound name in `stmts` for `edp_expr_reaches_effect`.
 export fn edp_argcond_note_binders(stmts: Array[Stmt]) -> Unit {
-  Array::truncate(edp_argcond_binders, 0)
+  Array::set(edp_argcond_binders, 0, MutSet::new_string())
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
@@ -1294,15 +1304,12 @@ export fn edp_argcond_note_binders(stmts: Array[Stmt]) -> Unit {
 /// Does some local binding in the program last passed to
 /// `edp_argcond_note_binders` have this spelling?
 export fn edp_is_program_binder(name: String) -> Bool {
-  edp_str_array_contains(edp_argcond_binders, name)
+  MutSet::has(Array::get(edp_argcond_binders, 0), name)
 }
 
 fn edp_note_binder(name: String) -> Unit {
-  if !edp_str_array_contains(edp_argcond_binders, name) {
-    Array::push(edp_argcond_binders, name)
-  } else {
-    ()
-  }
+  MutSet::insert(Array::get(edp_argcond_binders, 0), name)
+  ()
 }
 
 fn edp_note_pat_binders(p: Pat) -> Unit {
@@ -1374,10 +1381,14 @@ fn edp_collect_binders(e: Expr) -> Unit {
     },
     _ => ()
   }
-  for child in expr_children(e) {
-    edp_collect_binders(child)
+  let mark = expr_children_push(e)
+  let end = expr_children_top()
+  let mut i = mark
+  while i < end {
+    edp_collect_binders(expr_child_at(i))
+    i = i + 1
   }
-  ()
+  expr_children_pop(mark)
 }
 
 export fn edp_argcond_reset(ename: String) -> Unit {
@@ -1479,7 +1490,7 @@ fn edp_expr_reaches_effect(e: Expr, ename: String, needing: Array[String], pure_
         // A builtin's spelling reaches the builtin only when no binder in the
         // program has it: `not: (Bool) -> Bool with Async` captured by the
         // literal makes `not(true)` perform (Codex on #3059).
-        let unshadowed = !edp_str_array_contains(edp_argcond_binders, nm)
+        let unshadowed = !edp_is_program_binder(nm)
         let callee_ok = nm == "perform" || nm == "resume" || (unshadowed && (edp_is_pure_builtin_call(nm) || edp_builtin_is_first_order(nm) || (edp_str_array_contains(pure_fns, nm) && !edp_str_array_contains(needing, nm))))
         !callee_ok || edp_exprs_reach_effect(args, ename, needing, pure_fns)
       },
