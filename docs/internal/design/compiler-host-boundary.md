@@ -89,16 +89,12 @@ imports, not what the imports are, and a third runner may sandbox differently.
 branches in the same adapter that read and write files through the same `fs`
 imports, treating the input / output path as a directory.
 
-## The hand-written WIT world
+## No WIT rendering
 
-`docs/internal/compiler/wit/vibe-compiler-host.wit` renders this boundary as a
-WIT world (`fs`, `env`, `stdin`, `stdout`; export `cli-main`). It is
-hand-written and nothing checks it against the import section, and it has
-fallen behind it: its `fs` interface has six functions (`read-file`,
-`write-file`, `write-bytes`, `exists`, `stat-token`, `readdir`), it has no
-`stderr`, `process` or `profiler` interface, and its `readdir` returns
-`list<string>` where the raw import returns one joined string. Generating it
-from the same table the emitter uses is ADR-0112's design
+There is no `.wit` for this boundary. The contract is the import section of the
+built compiler and the manifest's `portableCore` band, which
+`scripts/check_host_runtime_contract.py` keeps the emitter and both runners in
+agreement with. A WIT rendering is only worth having if it is generated from
+the table the emitter uses, so it cannot drift; that is ADR-0112's design
 ([host-contract-artifact-lazy-cli.md](host-contract-artifact-lazy-cli.md)
-§1.4), which is unimplemented and has no open owner. Until then the manifest
-and the built compiler's import section, not the `.wit`, are the contract.
+§1.4), which is unimplemented and has no open owner.
