@@ -18,14 +18,18 @@ import @vibe/compiler/core {
   env_bind_with_origin,
   env_cache,
   env_cache_binding,
+  env_cache_complete,
   env_cached,
+  env_cached_after_tail_change,
   env_flat_bindings,
   env_lookup,
   env_lookup_binding,
+  env_lookup_binding_including_surface,
   env_lookup_flat,
   env_mut_escape,
   env_name_index_at,
   env_name_index_length,
+  env_preserve_type_definition_origins,
   env_value_binding,
   resolve_type_expr_core_shadowed,
   subst_apply_except,
@@ -577,4 +581,107 @@ test "cached names are snapshots so mutating the caller array cannot redirect bi
   Array::set(names, 0, "BB")
   inspect(cached_lookup_text(cached, "Aa"), "Int")
   inspect(cached_lookup_text(cached, "BB"), "Bool")
+}
+
+test "complete snapshots retain tuck-behind binds across shared branches" {
+  let base = env_cache_complete(env_bind(EnvEmpty, "base", CtInt))
+  let left = env_bind(base, "added", CtString)
+  let right = env_bind(base, "added", CtBool)
+  match left {
+    EnvCached(_, _, _) => (),
+    _ => assert(false)
+  }
+  assert(env_lookup(base, "added") is None)
+  assert(env_lookup(left, "added") is Some(CtString))
+  assert(env_lookup(right, "added") is Some(CtBool))
+  assert(env_lookup(env_bind(left, "base", CtChar), "base") is Some(CtChar))
+  assert(env_lookup(base, "base") is Some(CtInt))
+  assert(env_lookup(left, "missing") is None)
+}
+
+test "partial accelerators continue into their canonical tail on a miss" {
+  let env = env_cached(["cached"], [env_value_binding(CtInt)], env_bind(EnvEmpty, "tail", CtString))
+  assert(env_lookup(env, "tail") is Some(CtString))
+  assert(env_lookup_binding_including_surface(env, "tail") is Some(_))
+}
+
+test "complete snapshots preserve surface barriers and local shadowing" {
+  let old = env_bind(EnvEmpty, "x", CtInt)
+  let barrier = env_bind_with_origin(old, "x", CtUnknown, BindingOriginReExportSurface("facade", "x"))
+  let env = env_cache_complete(barrier)
+  assert(env_lookup(env, "x") is None)
+  match env_lookup_binding_including_surface(env, "x") {
+    Some(binding) => assert(binding.origin is BindingOriginReExportSurface("facade", "x")),
+    None => assert(false)
+  }
+  assert(env_lookup(env_bind(env, "x", CtBool), "x") is Some(CtBool))
+  assert(env_lookup(env_cache_complete(env_bind(env, "x", CtBool)), "x") is Some(CtBool))
+}
+
+test "complete snapshots preserve mutable facts and nearest binding order" {
+  let outer = env_cache_complete(env_bind_mut(EnvEmpty, "cell", CtInt, true))
+  assert(env_mut_escape(outer, "cell") is Some(true))
+  let inner = env_cache_complete(env_bind(outer, "cell", CtString))
+  assert(env_mut_escape(inner, "cell") is None)
+  assert(env_lookup(inner, "cell") is Some(CtString))
+  let local = env_cache_complete(env_bind_mut(inner, "local", CtBool, false))
+  assert(env_mut_escape(local, "local") is Some(false))
+  assert(env_mut_escape(local, "cell") is None)
+}
+
+test "refreshing provenance drops miss authority before adding marker bindings" {
+  let defs = [TDEnum("Private", [], [("Only", [])])]
+  let env = env_cache_complete(EnvTypeDefs(defs, [], EnvEmpty))
+  let source = env_bind_with_origin(EnvEmpty, "Private", CtEnum("Private"), BindingOriginModuleExport("origin", "Private"))
+  let refreshed = env_preserve_type_definition_origins(env, source)
+  match env_lookup_binding(refreshed, "#typedef-origin:Private") {
+    Some(binding) => assert(binding.origin is BindingOriginModuleExport("origin", "Private")),
+    None => assert(false)
+  }
+}
+
+test "repeated complete snapshots replace older indexes without retaining their history" {
+  let mut env = env_cache_complete(env_bind(EnvEmpty, "root", CtInt))
+  let mut i = 0
+  while i < 40 {
+    let extended = env_bind(env, "row_" + Int::to_string(i), CtBool)
+    // Invalidation removes miss authority but must still let the next
+    // rebuild replace this canonical snapshot instead of retaining it.
+    env = env_cache_complete(env_preserve_type_definition_origins(extended, EnvEmpty))
+    i = i + 1
+  }
+  let mut cur = env
+  let mut caches = 0
+  let mut done = false
+  while !done {
+    match cur {
+      EnvCached(_, _, rest) => {
+        caches = caches + 1; cur = rest
+      },
+      EnvBind(_, _, rest) => {
+        cur = rest
+      },
+      _ => {
+        done = true
+      }
+    }
+  }
+  assert(caches == 1)
+  assert(env_lookup(env, "root") is Some(CtInt))
+  assert(env_lookup(env, "row_0") is Some(CtBool))
+  assert(env_lookup(env, "row_39") is Some(CtBool))
+  assert(env_lookup(env, "not_bound") is None)
+}
+
+test "canonical snapshot invalidation also discards stale positive value rows" {
+  let snapshot = env_cache_complete(env_bind(EnvEmpty, "x", CtInt))
+  match snapshot {
+    EnvCached(names, bindings, _) => {
+      let changed_tail = env_bind(EnvEmpty, "x", CtString)
+      let changed = env_cached_after_tail_change(names, bindings, changed_tail)
+      assert(env_lookup(changed, "x") is Some(CtString))
+      assert(env_lookup(env_cache_complete(changed), "x") is Some(CtString))
+    },
+    _ => assert(false)
+  }
 }
