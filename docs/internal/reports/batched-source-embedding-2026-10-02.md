@@ -69,3 +69,22 @@ not an A/B performance comparison.
 
 AST-required staged-snapshot pre-commit passed with the integrated tree's
 explicit stage2 compiler.
+
+## Reproduce
+
+Run from the candidate checkout with Python 3.12+ and Node 24.7 available,
+a verified seed and current generated products. Keep other compiler jobs
+idle. The replay pins the baseline archive to the recorded commit, copies
+the candidate producers from this checkout, and uses a fresh output directory.
+The original executed harness is retained separately in the raw report.
+
+```bash
+export VIBE_NODE_WASM_FLAGS="--experimental-wasm-exnref --stack-size=131072"
+bash scripts/ensure_generated.sh
+python3 - <<'PY'
+import json
+from pathlib import Path
+report = json.loads(Path("bench/perf/analysis/batched-source-embedding-2026-10-02.json").read_text())
+exec(compile(report["reproduction_python"], "source-batching-reproduction", "exec"))
+PY
+```
