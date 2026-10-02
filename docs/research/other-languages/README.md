@@ -15,6 +15,7 @@ ADR says so. The question behind them is this:
 | [mojo.md](mojo.md) | Mojo 1.1: parameter conventions, exclusivity, ASAP destruction, origins, and `SIMD[dtype, width]` + `vectorize` as library code |
 | [vx.md](vx.md) | Vx: memory placement in the type, linear types, a scope-depth borrow checker (not to copy), and per-transfer SMT obligations (to copy) |
 | [moonbit-veri.md](moonbit-veri.md) | MoonBit `where`-contract verification through Why3/SMT, and veri's practice: model + contract + runtime correspondence + negative controls. Also where aliasing and associativity bite |
+| [mutable-state-control.md](mutable-state-control.md) | Scala capture checking, Flix regions and OxCaml `[@zero_alloc]`: what vibe adopted as ADR-0090 / ADR-0091 and what it left out |
 | [borrowing-and-vectorization.md](borrowing-and-vectorization.md) | **The proposal**: second-class borrow modes, a lane-wise kernel subset for `v128`, the Lean/oracle plan, and slices in dependency order |
 
 ## Conclusions
@@ -85,7 +86,6 @@ ADR says so. The question behind them is this:
 - vibe background:
   [simd-api-design.md](../../internal/design/simd-api-design.md),
   [simd-data-structures.md](../../internal/design/simd-data-structures.md),
-  [mutability-control-review.md](../../internal/design/mutability-control-review.md),
   [perceus-reuse.md](../../internal/design/perceus-reuse.md),
   [memory-contract.md](../../internal/design/memory-contract.md),
   [pl-survey-2026-07.md](../../internal/reports/pl-survey-2026-07.md)

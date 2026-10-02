@@ -1,1105 +1,936 @@
-# ADR-0068 詳細仕様: 構造化並行と message passing
+# ADR-0068: structured concurrency
 
-Status: accepted for the core (`@vibe/concurrent`); the suspendable-task lane
-(`@vibe/concurrent/experimental`) is proposed
+Status: accepted for the core, which ships as `@vibe/concurrent` with no
+opt-in ([stable-surface §3.1](../../user/reference/stable-surface.md)). The
+suspendable-task lane, `@vibe/concurrent/experimental`, is proposed: it is
+accepted when one spawn covers both lanes and no program drives the scheduler
+by hand (#3200).
 
-Date: 2026-07-16
-
-Related: ADR-0012, ADR-0050, ADR-0068, ADR-0071, ADR-0075, ADR-0076,
-#488, #806, #817, #818, #906
+Related: ADR-0008, ADR-0012, ADR-0071, ADR-0075, ADR-0076, ADR-0085,
+ADR-0089, ADR-0090, ADR-0100; #3147, #3200.
 
 ## Scope
 
-This document is the source of truth for the public semantics of concurrency.
-`docs/internal/design/wasi-p3-async.md` covers the lowering onto WASI 0.3, and
-#488 the shared-everything-threads experiment. Where either disagrees with this
-document, this document decides the public API and the observable behaviour.
+This document is the specification of structured concurrency: what a program
+observes when it opens a task group, spawns into it, waits, cancels, sends a
+message, or fails. The frozen contract is
+`lib/@vibe/concurrent/index.vpkg`; this document says what its declarations
+mean and which compiler checks come with them.
 
-The eager `Task[T]` prototype (`Task::spawn` / `join` / `cancel` / `race` /
-`timeout`) was **removed in #1227**. `spawn` ran its thunk immediately, so
-`spawn(f); spawn(g)` always started `g` after `f` finished -- it looked
-concurrent and was silently serial. Those names are now `unknown name`
-compile errors. The removed `Threads::*` probe and the Int channel id API are
-not public contract either.
+Elsewhere:
 
-**The concurrency surface that ships is `lib/@vibe/concurrent`**, in two parts:
+- the user guide is the book's chapter 17
+  (`book/en/17_concurrency.vibe.md`);
+- the host side -- WASI 0.3 futures, streams and the entry boundary -- is in
+  [wasi-p3-async.md](wasi-p3-async.md) and
+  [async-host-contract.md](async-host-contract.md);
+- the compiler as a concurrent workload is in
+  [compiler-parallelism.md](compiler-parallelism.md).
 
-- **The stable core, `@vibe/concurrent`** (no opt-in; stable-surface §3.1):
-  `TaskGroup::run` / `spawn`, `TaskHandle::join` / `cancel`, bounded channels
-  (`Channel::bounded`, `Sender` / `Receiver`), `Parallel::map`, and the
-  `Send` / `Spawnable` / region checks.
-- **The suspendable-task lane, `@vibe/concurrent/experimental`** (behind
-  `VIBE_UNSTABLE=1`): `TaskGroup::spawn_suspend` starts a task that can
-  suspend, `TaskHandle::join` / `result_wait` collect results, and
-  `sleep_wait` (#1253) lets concurrent sleeps overlap instead of serializing
-  them.
+Where one of those disagrees with this document about what a program
+observes, this document decides.
 
-The `Task[r,T]` / nursery / typed-channel shapes this document describes are
-the target form those build towards.
+## Decisions
 
-The code in this document is pseudo-vibe showing the proposed surface and does
-not compile yet, so its blocks are `vibe skip` with a reason. "Required" marks a
-condition a conforming v0.2.0 implementation meets; "future" marks an extension
-with no compatibility promise.
+1. **The public model is shared-nothing structured concurrency.** OS threads,
+   Workers and Wasm threads are not language values. A program opens a task
+   group, spawns tasks into it, and the group does not return while a task in
+   it is live.
+2. **A task group is scoped by a generative region.** Each `TaskGroup::run`
+   mints a region that no source text can name. The group, its task handles
+   and its channel endpoints carry that region, and the compiler refuses a
+   body that returns one of them.
+3. **Failure is an exception row, not a wrapper** (ADR-0085). `run` and
+   `join` return the value itself and throw `TaskError`. A task that fails
+   cancels the siblings that are not already running, and `run` throws the
+   first failure it observed.
+4. **What crosses a task boundary is judged by the compiler.** `Send` is a
+   structural judgement the compiler makes from the type; no program can
+   implement it. A spawned closure may capture only `Send` values and
+   endpoints of its own group (`Spawnable`).
+5. **The meaning does not depend on the backend.** What ships is one
+   cooperative, deterministic scheduler inside one instance. Component Model
+   subtasks (#3147) and shared-everything threads (#488) are candidate
+   backends that must produce the same observations. JSPI is a way to lower
+   suspension, not a thread model.
+6. **The compiler is the first CPU-bound user.** Its parallel frontend uses
+   the same shared-nothing contract: workers return values, and a coordinator
+   commits them in a canonical order
+   ([compiler-parallelism.md](compiler-parallelism.md)).
 
-## 決定の要約
+## Terms
 
-1. 公開モデルは **shared-nothing な構造化並行**とする。OS thread、Worker、
-   Wasm thread を言語へ直接露出しない。
-2. 最小コアは generative region を持つ `Nursery[r]`、`Task[r, T]`、
-   `Sender[r, T]`、`Receiver[r, T]` と、compiler が判定する `Send` で構成する。
-3. task の生成・cancel は代数的 effect `Spawn[r]::spawn` /
-   `Spawn[r]::cancel`、待機は `Async::suspend` として追跡する。ADR-0071 の
-   operation-level row と `effectset` をそのまま利用する。
-4. handler evidence、continuation、可変参照は task-local とし、task や channel
-   を越えて共有しない。message は deep-copy snapshot を基準意味論とする。
-5. JSPI は suspend/resume の lowering であり、並列実行の方式ではない。
-   browser の並列化には Worker 等を別途使う。JSPI の全 browser 出荷を
-   v0.2.0 の blocker にしない。
-6. WASI Component Model concurrency と shared-everything-threads は交換可能な
-   backend とする。shared-everything は #488 の opt-in 実験であり、公開意味論や
-   リリース条件を依存させない。
-7. compiler の import DAG 並列 typecheck を最初の CPU-bound dogfood
-   とする。worker は immutable dependency snapshot から `ModuleOutcome` を返し、
-   `TypeDb`、diagnostics、link、cache publish は coordinator が決定的順序で行う。
-8. native/WASI の production multi-worker backend は Wasmtime embedder が OS thread
-   を管理し、worker ごとに独立した `Store + Instance + heap` を所有する形を目標と
-   する。移行までは host Worker と worker-owned compiler daemon による shared-nothing
-   prototype を許容する。WASI Threads の shared linear memory は既定 backend にしない。
-
-## 用語
-
-| 用語 | 意味 |
+| Term | Meaning |
 | --- | --- |
-| task | nursery に束縛された、独立した実行・失敗・cancel の単位。runtime 上の軽量 process に相当する |
-| nursery | child task と channel の lifetime を囲う lexical scope |
-| process | mailbox と supervision を持つ長寿命 actor。v0.2.0 の最小コアには含めず、task 上の後続 abstraction とする |
-| suspend point | task が scheduler へ制御を返し、cancel を観測できる operation |
-| worker | backend の実行資源。Web Worker、host thread、Wasm thread 等。言語からは見えない |
-| evidence | algebraic effect operation の handler を指す runtime capability |
+| task group | the scope opened by `TaskGroup::run` (or `taskgroup { g => .. }`); every task spawned into it ends before `run` returns |
+| task | one unit of execution, failure and cancellation, owned by one group |
+| task handle | `TaskHandle[rg, e, T]`, the value `spawn` returns; `join` reads the task's outcome through it |
+| region | the type argument `rg` that `run` mints fresh for each call |
+| endpoint | a value tagged with a group's region: the group itself, a task handle, a `Sender`, a `Receiver` |
+| ready queue | the group's FIFO of spawned tasks that have not started |
+| parked | a suspendable task stopped at a suspension point, its continuation stored in its cell |
+| nursery | the formal model's name for a task group (Trio's term); the library spells it `TaskGroup` |
 
-task は「OS thread」を意味しない。同じプログラムを単一 thread の cooperative
-scheduler、複数 Worker、WASI host task、shared-everything thread のいずれへ
-lower しても、以下の意味論を保つ。
+A task is not an OS thread. A conforming backend may run tasks on one thread
+or several, and the program observes the same outcomes either way, up to the
+orders this document leaves open.
 
 ## Core surface
 
-概念上の最小 surface は次のとおりとする。失敗は値ラッパではなく ADR-0085 の
-型付き `Exception[E]` row で表す。以下は未実装の region-bound API を含むため
-実行例ではなく、目標シグネチャを固定する疑似 vibe である。
+The stable core declares (`lib/@vibe/concurrent/index.vpkg`; the comments
+naming the error types' variants are added here):
 
-```vibe skip
-effect Async {
-  suspend() -> Unit
-}
+```text
+type TaskGroup[rg, e]
+type TaskHandle[rg, e, T]
+type TaskError                // Failed(String) | Cancelled
+type SendError                // Closed
+type ChannelConfigError       // NegativeCapacity
+type Channel[rg, e, T]
+type Sender[rg, e, T]
+type Receiver[rg, e, T]
+type Parallel
 
-effect Spawn[r] {
-  spawn[T: Send, e](() -> T with e) -> Task[r, T]
-  cancel[T](Task[r, T]) -> Unit
-}
-
-effectset Concurrent[r] = {
-  Async::suspend,
-  Spawn[r]::spawn,
-  Spawn[r]::cancel,
-}
-
-enum TaskError {
-  Failed(String);
-  Cancelled;
-}
-
-enum SendError {
-  Closed;
-}
-
-enum ChannelConfigError {
-  NegativeCapacity;
-}
-
-// nursery { n => body } introduces a fresh r and handles Spawn[r].
-// NOTE: 以下は v0.2.0 の提案 surface（region-bound `Task[r, T]` + `Spawn[r]`）で
-// あり、#1227 で撤去した eager prototype の `Task::spawn` とは別物。名前は同じ
-// だが型も意味論も異なる——現時点でコンパイルできる API ではない。
-Task::spawn: [T: Send] (() -> T with e)
-  -> Task[r, T] with Spawn[r]::spawn
-Task::join: (Task[r, T])
-  -> T with Exception[TaskError] + Async::suspend
-Task::cancel: (Task[r, T]) -> Unit with Spawn[r]::cancel
-Task::yield: () -> Unit with Async::suspend
-
-Channel::bounded: [T: Send] (Nursery[r], Int)
-  -> (Sender[r, T], Receiver[r, T]) with Exception[ChannelConfigError]
-Sender::send: (Sender[r, T], T)
-  -> Unit with Exception[SendError] + Async::suspend
-Receiver::recv: (Receiver[r, T])
-  -> Option[T] with Async::suspend
+fn TaskGroup::run[T, rg, e](body: (TaskGroup[rg, e]) -> T with e) -> T with Exception[TaskError] + e
+fn TaskGroup::spawn[rg, e, T: Send](n: TaskGroup[rg, e], f: () -> T with Exception + e) -> TaskHandle[rg, e, T]
+fn TaskHandle::join[rg, e, T](h: TaskHandle[rg, e, T]) -> T with Exception[TaskError] + e
+fn TaskHandle::cancel[rg, e, T](h: TaskHandle[rg, e, T]) -> Unit
+fn Channel::bounded[rg, e, T: Send](n: TaskGroup[rg, e], capacity: Int) -> (Sender[rg, e, T], Receiver[rg, e, T]) with Exception[ChannelConfigError]
+fn Sender::send[rg, e, T](s: Sender[rg, e, T], v: T) -> Unit with Exception[SendError] + e
+fn Sender::clone[rg, e, T](s: Sender[rg, e, T]) -> Sender[rg, e, T]
+fn Sender::release[rg, e, T](s: Sender[rg, e, T]) -> Unit
+fn Receiver::recv[rg, e, T](rh: Receiver[rg, e, T]) -> Option[T] with e
+fn Parallel::map[rg, e, T: Send, U: Send](n: TaskGroup[rg, e], xs: Array[T], f: (T) -> U with Exception + e) -> Array[U] with Exception[TaskError] + e
 ```
 
-`nursery { n => body }` は fresh な region `r` と `Nursery[r]` を導入し、
-`Spawn[r]` handler を設置する標準構文である。成功時の式の結果は body の `T`、
-nursery 自身の失敗は `Exception[TaskError]` とする。つまり式全体の概念型は
-`T with Exception[TaskError] + e` である。`Spawn[r]` は scope 外へ discharge
-されるが、body が使った `Async::suspend` その他の `e` は通常どおり外側へ残る。
-値と失敗を二重に包まないため、正常終了した `T` と nursery failure は混同しない。
+The implementation lives in `lib/@vibe/concurrent/experimental/concurrent.vibe`;
+`@vibe/concurrent` re-exports the stable subset of it.
 
-`Task::spawn` は child の完了を待たず handle を返し、親にとって suspend point
-ではない。cooperative backend は child を ready queue へ追加する。parallel
-backend では handle が返る前に child が進む場合もあるため、spawn 直後の実行順を
-プログラムから仮定してはならない。
+`e` is the row a spawned task may perform besides `Exception`. It is a
+parameter of the group, so it appears in `run`'s own row: whatever a child
+does is visible in the signature of the function that runs the group, and a
+group whose children perform nothing asks nothing of its caller.
 
-child の返り値も child heap から joiner へ渡るため `T: Send` を要求する。
-recover 可能な業務上の failure は、child 内で `Exception[E]` を処理し、
-`ModuleOutcome` のような application-defined enum の通常値へ変換して返す。その
-success / failure payload はどちらも structural `Send` でなければならない。
-child boundary まで未処理の exception は recoverable outcome ではなく task failure
-であり、この通常値の経路とは区別する。
+A minimal program (the book's first example):
 
-`race` と `timeout` は上記 primitive から構成できる library combinator とする。
-#1227 で撤去した eager `Task::race` / `Task::timeout` の挙動は契約に含めない。task handle の
-affine consumption が定義されるまでは、loser を暗黙に所有・cancel する primitive
-`race(Task, Task)` を core に置かない。
+```vibe
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
 
-## Region と structured concurrency
+fn main allows Console + Exception {
+  let answer = TaskGroup::run((n) -> {
+    let h = TaskGroup::spawn(n, () -> {
+      21 * 2
+    })
+    TaskHandle::join(h)
+  })
+  println("answer = \{answer}")
+}
+```
 
-`r` は nursery ごとに生成される nominal な region であり、ユーザーが名前を
-偽造できない。次を型検査で保証する。
+The eager `Task::*` prototype (`Task::spawn` / `join` / `cancel` / `race` /
+`timeout`) is not part of the language: it ran its thunk inside `spawn`, so
+two spawns always ran one after the other. Those names are not registered
+builtins (`lib/@vibe/compiler/tests/checker_async_test.vibe`).
 
-- `Task[r, T]`、`Sender[r, T]`、`Receiver[r, T]`、`Nursery[r]` は nursery の
-  戻り値、外側の mutable cell、escaping closure へ保存できない。
-- nursery が `Closed` になる前に、その region の全 task は terminal state、
-  channel waiter は解放済みでなければならない。
-- close 開始後に同じ nursery へ spawn できない。
-- child closure が capture できるのは `Send` な値、同じ `r` の許可された endpoint、
-  fork 可能な effect evidence だけである。外側の `let mut` cell、`Write[r2]`
-  capability、continuation の capture は reject する。
+## Task groups
 
-`nursery` の正常な body 終了は、未完了 child の join を開始する。body または child
-が task failure になると nursery は fail-fast で sibling に cancel を要求し、全 child
-の終了を待って `throw(TaskError::Failed(...))` する。recover 可能な child failure は
-前節の application-defined enum 値として返し、task failure に変換しない。
+`TaskGroup::run(body)` creates an open group, calls `body` with it, and then
+closes the group:
 
-child boundary まで未処理の `throw(payload)` (`Exception[E]`) が到達した場合は、
-payload の安定した表示を `TaskError::Failed(message)` へ変換する。child 内で処理して通常値へ
-変換した exception は task failure ではない。この境界変換は元の `E` を nursery の
-row へ動的に追加せず、異なる child の failure を一つの閉じた `TaskError` family へ
-集約するためのものである。
+1. Every task still in the ready queue runs (or is resolved `Cancelled`, see
+   below).
+2. Every suspendable task still parked is pumped until it is terminal, under
+   the same rules as `pump_all`: host futures and stream reads settle, timers
+   and sleep debts run down, and siblings that wait on each other interleave.
+3. If any task failed, `run` throws `TaskError::Failed(m)`, where `m` is the
+   first failure the group observed. Otherwise it returns the body's value.
 
-明示的に cancel された child の `TaskError::Cancelled` は、その child の `join` では
-throw されるが、それだけでは nursery 全体の failure にしない。外側から nursery
-自身が cancel された場合は全 child を cancel し、全 child の終了後に
-`throw(TaskError::Cancelled)` する。複数の failure が競合した場合、scheduler が
-最初に観測した failure を代表値とし、順序は非決定的である。
+A child's failure does not interrupt the body. The body sees it only through
+`join`, and the group reports it when it closes even if the body caught the
+`join` failure and returned normally.
 
-現行 ADR-0076 lowering では suspend-class closure literal の内側に `handle` を置けない。
-したがって `spawn_suspend` body 内の `send_wait` / `result_wait` が投げる typed
-exception はその場で別の値へ recover せず、task boundary まで伝播させる。捕捉する
-場合は row 変数 callee を generic helper で包まず、`TaskGroup::run` / nursery の
-**直接の呼び出し地点**を `handle ... with Exception[TaskError]` で囲む。そこで観測する
-値は境界変換後の `TaskError` であり、元の `SendError` ではない。この制約を外せるのは
-ADR-0076 の CPS 適格性が拡張された後だけで、提案 surface は現在の実装を先取りして
-inner recovery を約束しない。
+A throw that escapes the body itself is not converted. The group cancels its
+parked children, releases what it holds on the host (a pending timer), and
+re-throws the payload unchanged, kind included. Tasks still in the ready queue
+never run.
 
-Wasm trap、process abort、host の強制終了は初期仕様では `TaskError` へ変換せず、
-instance 全体の failure とする。
+`taskgroup { g => body }` is parser sugar for `TaskGroup::run((g) -> body)`:
+the parser builds the same call, so every check below applies to it unchanged.
+The body after `=>` is one expression; several statements need their own
+braces. The sugar resolves `TaskGroup::run` by name, so the program still
+imports `TaskGroup` from `@vibe/concurrent`.
+
+Groups nest. A task may open a group of its own, and the inner group closes
+before the task that opened it can finish.
 
 ## Lifecycle
 
-task の状態遷移は次の形に限定する。
+### Tasks
+
+A task is in one of these states:
 
 ```text
-Created -> Ready -> Running <-> Suspended
-                     |              |
-                     +-> Succeeded <-+
-                     +-> Failed
-                     +-> Cancelled
+Ready -> Running -> Succeeded
+            |   \-> Failed
+            v
+          Parked -> Running        (suspendable tasks only)
+Ready  -> Cancelled                (cancel point: dispatch)
+Parked -> Cancelled                (cancel point: parked)
 ```
 
-terminal state は一度だけ確定し、以後変化しない。`join` は複数回呼ばれても同じ
-outcome を返す。`cancel` は idempotent で、terminal task には作用しない。
+A terminal state (`Succeeded`, `Failed`, `Cancelled`) is set once and never
+changes, so joining twice observes the same outcome.
 
-cancel は cooperative である。`join`、blocking `send` / `recv`、`yield`、
-`sleep`、host await に加え、Ready task の dispatch を cancel point とする。したがって
-まだ body を開始していない child も dispatch 前に cancel できる。要求は次の cancel
-point で観測するが、Running task が次の cancel point より先に完了した場合は、その
-完了 outcome が確定してよい。
-cancel を観測しない CPU loop の prompt termination や fairness は v0.2.0 では
-保証しない。
+`TaskGroup::spawn` does not run the closure. It appends the task to the
+group's ready queue and returns the handle; the task runs when something
+drives the queue: a `join`, a blocking `send` or `recv`, or the group's
+close. Dispatch is FIFO in spawn order. `TaskGroup::spawn_suspend` differs:
+its body starts at once and runs to its first suspension (see the
+suspendable lane below).
 
-nursery は次の状態を取る。
+A spawn is accepted only while the group is open. Spawning into a group that
+is closing, closed, or cancelling after a child failed traps -- including a
+spawn from a body that caught the failed child's `join` and carried on.
+
+### Join
+
+`TaskHandle::join(h)` returns the task's value, throws `Failed(m)` for a task
+that failed, and throws `Cancelled` for one that was cancelled. While the task
+is not terminal, `join` drives the group on the caller's stack:
+
+- a task in the ready queue: run the next ready task, and look again;
+- a parked task: run any ready task first (it may be the producer the parked
+  task waits on), otherwise pump the group until this task is no longer
+  parked.
+
+Joining a task that is currently running -- a join that cycles back through
+the tasks being driven -- traps, as does a join whose target can never be
+woken.
+
+### Cancel
+
+`TaskHandle::cancel(h)` is a request, idempotent, and a no-op on a terminal
+task. It is observed at two points:
+
+- **dispatch**: a task in the ready queue is resolved `Cancelled` without
+  running its body;
+- **parked**: a parked suspendable task is resolved `Cancelled` at once, and
+  its stored continuation is dropped, so reference counting frees what it
+  captured (ADR-0076). A host wait it was parked on is released.
+
+A running task is not interrupted, and no check inside a running body
+observes the request. A cancelled child does not fail the group: only its own
+`join` throws `Cancelled`.
+
+### Groups
+
+A group's phases follow the formal model:
 
 ```text
 Open -> Cancelling -> Closing -> Closed
    \-----------------> Closing
 ```
 
-cancel と non-local exit は stack を unwind し、登録済み finalizer をちょうど一度
-実行しなければならない。したがって replay handler を generalized evidence
-passing + 明示 suspend IR へ置き換える ADR-0076 (#817) と、`dynamic-wind` 相当の
-finalization 規則は、並行 runtime を compliant と呼ぶ前提である
-(ADR-0076 は「Cont[R] を破棄すれば通常の RC drop で capture 済み資源が解放
-される」という Perceus ベースの最小保証までを約束し、明示的な finalizer 登録
-API の要否は本 ADR 側の判断に委ねている)。
+`Cancelling` is entered when the first child fails while the group is open.
+`Closing` is entered when the body returns, and `Closed` once every child is
+terminal. A group's channels close with it.
+
+### Failure and fail-fast
+
+An exception that escapes a child's closure becomes that child's `Failed(m)`.
+The group records the first failure it observes, then:
+
+- every task still in the ready queue is resolved `Cancelled` when its turn to
+  dispatch comes;
+- every parked suspendable sibling is cancelled at once.
+
+A sibling that is already running finishes. When several children fail, which
+one the group reports depends on the order the scheduler observed them; a
+program must not rely on it.
+
+The message `m` is built from the payload: a `String` or `Int` payload is its
+own text; a payload the throw site can render arrives rendered (`SendError`
+derives `Show`, so `Closed` becomes `"Closed"`); any other payload arrives as
+`<TypeName>`. The original value does not cross the task boundary:
+a caller of `run` or `join` matches `TaskError`, not the child's own error
+type.
+
+A failure the program wants to recover from is a value. A child that handles
+its own `Exception[E]` and returns an ordinary enum is a succeeded task, and
+the enum's payloads must be `Send` like any other result.
+
+Wasm traps, process aborts, and a host killing the instance are not task
+failures. They end the instance.
+
+### Deadlock
+
+The scheduler is deterministic, so a wait that nothing in the group can satisfy
+never resolves. Such a wait traps instead of hanging:
+
+- a stack-driving `join`, `send` or `recv` with no ready task to run traps on
+  an internal contract, without a message;
+- `pump_all`, `join` on a parked task, or a group close, when every task left
+  waits on something no task in the group can produce, traps with one:
+  ``vibe: deadlock in TaskGroup::run: every task left is waiting on something
+  no task in the group can produce ...``.
+
+A cooperative yield is never counted as evidence of a deadlock: resuming a
+yielding task always advances it, so an endlessly yielding task is an ordinary
+infinite loop.
 
 ## Lean lifecycle oracle
 
-task / nursery lifecycle の backend 非依存な部分は、次の Lean モデルを
-machine-checkable oracle とする。
+The backend-independent part of the lifecycle is a Lean model:
 
-- `formal/VibeFormal/Async/State.lean`: task、nursery、cancel request の論理状態
-- `formal/VibeFormal/Async/Transition.lean`: scheduler event ごとの遷移関係
-- `formal/VibeFormal/Async/Trace.lean`: 許容された遷移だけからなる有限 trace
-- `formal/VibeFormal/Proofs/AsyncSafety.lean`: terminal outcome と join result の安定性
-- `formal/VibeFormal/Proofs/NurseryCorrect.lean`: spawn / close と nursery phase の安全性
-- `formal/VibeFormal/Proofs/AsyncExamples.lean`: 正例と、拒否される壊れた trace
+- `formal/VibeFormal/Async/State.lean`: task, nursery and cancel-request state
+- `formal/VibeFormal/Async/Transition.lean`: the transition per scheduler event
+- `formal/VibeFormal/Async/Trace.lean`: finite traces of permitted transitions
+- `formal/VibeFormal/Proofs/AsyncSafety.lean`: terminal outcomes and join results are stable
+- `formal/VibeFormal/Proofs/NurseryCorrect.lean`: spawn requires an open nursery; close requires every child terminal
+- `formal/VibeFormal/Proofs/AsyncExamples.lean`: accepted traces and rejected broken ones
 
-モデルでは task の未登録状態から `spawn` すると `Ready` になるため、上図の
-`Created` は独立状態として保持しない。`Suspended` は待機理由を持つ `Blocked` として
-表現する。task の terminal outcome は `Succeeded` / `Failed` / `Cancelled`、nursery
-は `Open` / `Cancelling` / `Closing` / `Closed` を持つ。
+The model has no separate `Created` state: spawning an unregistered task makes
+it `ready`. A parked task is `blocked` with a wait reason (`join`, an external
+key, or `yield`). Task outcomes are `succeeded` / `failed` / `cancelled`; a
+nursery is `open` / `cancelling` / `closing` / `closed`.
 
-遷移関係は次を固定する。
+The transition relation fixes:
 
-1. `spawn` は nursery が `Open` で task id が未使用のときだけ許可する。
-2. cancel request は冪等であり、dispatch、suspend、blocked wait のいずれかでだけ
-   `Cancelled` として観測できる。
-3. 明示的に child 一個を cancel しても nursery の成功 cause は failure に変わらない。
-4. 複数 child の failure は scheduler が最初に観測したものを保持する。どれが最初かは
-   非決定的だが、`Closed` へ進む前に全 child が terminal でなければならない。
-5. terminal task と `Closed` nursery は後続 trace で変化しない。したがって複数回の
-   join は同じ outcome を観測する。
+1. `spawn` is allowed only into an `open` nursery and an unused task id.
+2. A cancel request is idempotent and is observed as `cancelled` only at
+   dispatch, suspension, or a blocked wait.
+3. Cancelling one child explicitly does not turn the nursery's cause into a
+   failure.
+4. With several failing children the nursery keeps the first one it observed;
+   every child is terminal before the nursery is `closed`.
+5. A terminal task and a `closed` nursery do not change in later steps, so
+   repeated joins observe the same outcome.
 
-実装は event trace をこの遷移関係へ射影できなければならない。cooperative、JSPI /
-Worker、WASI、shared-everything の差は、許容される次 event の選択として表し、公開
-lifecycle を別定義しない。
+An implementation must be able to project its event trace onto this relation.
+Backends differ only in which permitted event comes next.
 
-この oracle は heap、thread、host waitable、channel queue、message linearization、
-fairness、無限 trace、finalizer stack をまだモデル化しない。特に terminal state の
-一回性は証明済みだが、具体的な unwind が各 finalizer をちょうど一度実行することは
-未証明であり、#817 の lowering と別の refinement proof / differential test が必要で
-ある。Channel semantics は後続の独立モデルでこの lifecycle oracle に接続する。
+The oracle does not model the heap, threads, host waitables, channel queues,
+message linearization, fairness, infinite traces, or finalizers. Terminal
+states are proved to be set once; that a concrete unwind runs each finalizer
+exactly once is not proved, and today there is no finalizer registration to
+prove it about.
+
+Two smaller models cover the static rule and the channel:
+
+- `formal/VibeFormal/Parallel/SpawnCapture.lean`: the capture rule
+  `sp_spawnable_ok` enforces -- a capture is legal when it is `Send` or an
+  endpoint of the spawning group's own region;
+- `formal/VibeFormal/Parallel/ChannelDelivery.lean`: one channel delivers what
+  was sent, once each, in order, and a close does not discard buffered
+  messages.
 
 ### Parallel refinement oracle
 
-multi-worker backend は lifecycle を置き換えず、次の Lean overlay で async oracle を
-refine する。
+A multi-worker backend refines the lifecycle rather than replacing it:
 
-- `formal/VibeFormal/Parallel/State.lean`: worker slot、task assignment、heap owner
-- `formal/VibeFormal/Parallel/Transition.lean`: claim / release と async event への射影
-- `formal/VibeFormal/Parallel/Trace.lean`: physical worker trace
-- `formal/VibeFormal/Proofs/ParallelSafety.lean`: assignment invariant、trace refinement、
-  task-local heap の非共有
-- `formal/VibeFormal/Proofs/ParallelExamples.lean`: 二 worker 実行、release、二重 claim と
-  共有 access の拒否例
+- `formal/VibeFormal/Parallel/State.lean`: worker slots, task assignment, heap owners
+- `formal/VibeFormal/Parallel/Transition.lean`: claim / release, projected onto async events
+- `formal/VibeFormal/Parallel/Trace.lean`: physical worker traces
+- `formal/VibeFormal/Proofs/ParallelSafety.lean`: the assignment invariant, trace refinement, and disjoint task-local heaps
+- `formal/VibeFormal/Proofs/ParallelExamples.lean`: a two-worker run, a release, and rejected double claims and shared accesses
 
-各 `Running` task はちょうど一つの worker slot に割り当てられ、同じ task を二 worker
-が同時に claim できない。suspend / cancel / completion では slot を release し、wake 後
-の再 dispatch は別 worker を選んでもよい。worker affinity と task migration は公開の
-観測対象にしない。
+Each running task holds exactly one worker slot, and two workers cannot claim
+the same task. Suspension, cancellation and completion release the slot, and
+a woken task may resume on another worker; worker affinity and migration are
+not observable.
 
-すべての parallel step は対応する async step を内包し、parallel trace 全体を既存の
-async trace へ射影できなければならない。したがって backend は thread を追加するために
-cancel point、first-failure、nursery close 条件を変更できない。物理的に同時な実行は
-event の interleaving として表す。task 間に共有 mutable location がないことを前提に、
-この順序付けは公開観測を失わない。
+Every parallel step contains the async step it projects to, so a backend
+cannot add threads by changing cancel points, the first-failure rule, or the
+close condition. Simultaneous execution is represented as an interleaving,
+which loses no observation because tasks share no mutable location.
 
-heap safety は location ごとに owner task が一つだけ存在し、running task は owner が
-自分である location だけ access できる、という copy-on-send の抽象 contract で表す。
-この contract と worker assignment の一意性から、異なる worker は同じ task-local
-location に access できない。実装の deep copy、fresh allocation、move 最適化がこの
-owner relation を実現することは別の refinement obligation であり、現時点では Lean が
-具体的 allocator や Wasm memory access を検証したものではない。
-
-## Safe parallel API
-
-v0.2.0 では `Thread`、worker handle、shared reference を新しい公開 primitive にしない。
-安全な並列 API は既存の `nursery` / `Task[r, T]` / channel とし、`Task::spawn` された
-child を同時に実行するかは backend と host policy が決める。同じプログラムは
-cooperative な一 worker でも multi-worker でも同じ async oracle の trace だけを生成する。
-
-API boundary は次を必須とする。
-
-- spawn closure は `Spawnable[r]` を満たし、capture は `Send` value、許可された同一
-  region endpoint、fork-safe evidence に限る。戻り値は `T: Send` とする。
-- mutable cell、handler stack、continuation、`TaskContext`、`Task` / `Receiver` handle
-  を worker 境界へ渡さない。message と child result は deep-copy snapshot を基準とする。
-- raw blocking FFI を child から呼ばせず、host await は `Async::suspend` と明示された
-  adapter を通す。backend 内部の blocking pool は公開 `Thread` API にしない。
-- cancel / failure / finalizer は worker の kill ではなく task lifecycle event として処理
-  する。host が worker を強制終了した場合は task failure への安全な変換を証明できない
-  限り instance failure とする。
-- external effect の実行順が必要な場合は、一つの owner task へ channel で集約する。
-  worker id、completion time、CPU count から順序を作らない。
-
-worker 数は compiler driver の `--jobs N` や embedding host の runtime config など
-instance 外の resource policy とする。`N >= 1` を起動時に検証し、値を vibe program
-から取得する安定 API は設けない。generic CLI の具体的な option spelling は実装時に
-決める。これにより worker 数を増減しても program の分岐や compiler output が
-変わらない。
-
-`Parallel::map`、bounded work queue、ordered result collection は、上記 primitive から
-作る library combinator とする。特に `Parallel::map` は入力 index 順に結果を返し、
-task completion 順を公開しない。`FrozenArray[T]` と bounded channel の contract が
-実装されるまでは core primitive や安定 API として先行追加しない。
+Heap safety is stated as ownership: each location has one owner task, and a
+running task touches only locations it owns. With unique worker assignment,
+two workers never touch the same task-local location. That an allocator, a
+deep copy or a move actually realizes this ownership is a separate refinement
+obligation; the Lean model does not verify an allocator or Wasm memory
+accesses.
 
 ## Channel semantics
 
-初期 channel は bounded MPMC とする。capacity は 0 以上の `Int` で、0 は
-rendezvous channel、負値は `NegativeCapacity` である。unbounded channel は
-backpressure を失うため core に含めない。
+`Channel::bounded(n, capacity)` creates a bounded multi-producer,
+multi-consumer channel owned by group `n`:
 
-- `send` は buffer に空きができるか receiver と rendezvous するまで suspend する。
-- `recv` は message が届くか channel が close するまで suspend する。
-- 同一 Sender から成功した send の program order は保持する。異なる Sender 間の
-  順序は、成功した enqueue / rendezvous の linearization order で決まり、
-  非決定的である。
-- 最後の Sender handle が release されると channel は close する。buffer 済みの
-  message をすべて受信した後、`recv` は `None` を返す。
-- nursery の正常 close でも残る endpoint を close する。nursery cancel 時は
-  waiter を cancel し、未配送 buffer を破棄して scope を閉じる。
-- closed channel への `send` は `throw(SendError::Closed)`。空文字列、`-1`、false
-  等を sentinel に使わない。
-- blocked send が cancel された場合、その message は enqueue されない。blocked
-  recv が cancel された場合、message を消費しない。cancel と channel operation の
-  競合は一つの linearization point で解決する。
+- `capacity` is an `Int`, 0 or more. 0 is a rendezvous channel. A negative
+  capacity throws `NegativeCapacity`. There is no unbounded channel: it would
+  lose backpressure.
+- `Sender::send` returns once the message is linearized: buffered, handed to a
+  receiver, or consumed by a receiver it drove. While the buffer is full (or,
+  at capacity 0, no receiver has taken the message) it drives the group's
+  ready tasks on the caller's stack.
+- `Receiver::recv` returns `Some(message)` in linearization order, or `None`
+  once the channel is closed and drained. While the channel is open and empty
+  it drives the group's ready tasks.
+- Messages from one `Sender` arrive in the order they were sent. Messages from
+  different senders arrive in their linearization order, which a program must
+  not depend on.
+- `Sender::clone` adds a sender; `Sender::release` removes one. Releasing the
+  last sender closes the channel. A sender is not released implicitly:
+  forgetting `release` leaves the channel open until its group closes.
+- Messages already buffered stay receivable after the close; `recv` returns
+  `None` only after they are drained.
+- A `send` on a closed channel throws `SendError::Closed`. So does a blocked
+  `send` whose channel closes before its message is taken. No sentinel value
+  stands in for either.
+- A group's channels stay open while the group closes, so children joined at
+  close can still use them, and close once the group is closed.
 
-message の値は send 成功の linearization point で snapshot される。基準実装は
-deep copy であり、受信側は sender の heap への参照を得ない。zero-copy や move は
-この観測結果を変えない最適化に限る。
+An explicit `close(sender)` is not part of the surface. Closing is decided by
+the last release and by the group's scope.
 
-明示 `close(sender)` は affine handle の consumption 規則が入るまで core に
-含めない。close 責務は「任意の sender 一個」ではなく、最後の Sender の release と
-nursery scope によって決まる。
+The suspendable lane adds `Sender::send_wait` and `Receiver::recv_wait`, which
+suspend the calling task instead of driving others (below). Both lanes share
+one linearization, so the guarantees above hold across them.
 
-## `Send` と capture safety
+<a id="send-と-capture-safety"></a>
 
-> **この節が `Send` allowlist の正典 (#2123)。** 他の文書はここへリンクし、
-> 一覧を書き写さない。以前は cheatsheet・`mutability-control-review.md`・
-> book 11 章・本書の 4 箇所に複製され、うち 3 つが `Option` と `Result` を
-> 並べて「どちらも builtin」と読める形に drift していた。挙動そのものは
-> `lib/@vibe/compiler/tests/send_allowlist_test.vibe` が固定している (11 件)
-> ので、この一覧が実装からずれたらテストが落ちる。
+## `Send` and capture safety
 
-`Send` は user が `unsafe impl` できる通常 trait ではなく、compiler が型構造から
-判定する marker とする。`impl Send for X` は reject される。allowlist は保守的。
+This section is the canonical statement of the `Send` allowlist. Other
+documents link here instead of copying it. The behaviour is pinned by
+`lib/@vibe/compiler/tests/send_allowlist_test.vibe`, so the list below cannot
+drift from the checker without a test failing.
 
-`Send` になるもの:
+### `Send`
 
-- `Unit`、`Bool`、`Int`、`Double`、`String`、`Char`
-- 全 field が `Send` で mutable field を持たない tuple / struct / enum
-- 上記から構成される **builtin の `Option`**、および自前宣言の enum
-  (名前は無関係 — 自分で書いた `Result[T, E]` も components が `Send` なら
-  `Send`。`Result` は #1324 で言語から削除されたので builtin ではない)
-- runtime が特別に認識する同一 nursery 内の `Sender[r, T]`
-- `FrozenArray[T]` (要素が `Send` のとき)
+`Send` is a marker the compiler judges from a type's structure
+(`type_send_ok` in `lib/@vibe/compiler/checker/checker_trait.vibe`). It is
+not a trait a program can grant: `impl Send for X` is refused with
+`` `Send` is a compiler-judged structural marker and cannot be implemented;
+remove `impl Send` ``.
 
-`Send` にならないもの:
+Send:
 
-- `Array`、`ArrayBuilder`、`Bytes`、mutable field を持つ struct、captured `let mut`
-- closure、handler evidence、continuation、`Task` / `Receiver` handle
-- host resource と opaque FFI value（contract で安全性を証明した組み込みを除く）
-- **型パラメータが未解決のまま残っている値** — 解決済みの部分がすべて `Send`
-  でも通らない。実測: 注釈なしの `Result::Ok(1)` は `E` が開いたままなので
-  `no impl \`Send\` for \`Result[Int, ?t8]\`` で落ちる。「Send な部品からなる
-  enum は Send」だけ読むと十分条件に見えるが、そうではない
+- `Unit`, `Bool`, `Int`, `Double`, `String`, `Char`;
+- a tuple or an anonymous record whose components are all `Send`;
+- `Option[T]` when `T` is `Send`;
+- a declared struct with no `mut` field whose fields are all `Send`, and a
+  declared enum whose payloads are all `Send`, at the instantiation in use.
+  The name does not matter: a `Result[T, E]` a program declares itself is
+  `Send` exactly when its components are (`Result` is not a builtin, #1324);
+- a type alias, judged by what it stands for;
+- `FrozenArray[T]` when `T` is `Send`;
+- inside a generic body, a type parameter bounded by `Send`, or by a trait
+  whose supertraits include `Send`: every instantiation is checked at its call
+  site.
 
-closure 自体を message として送ることはできない。spawn closure には別途
-`Spawnable[r]` 判定を行い、全 capture が `Send` または許可された同一 region handle
-で、child の effect row が閉じており、必要 evidence が fork 可能であることを
-要求する。
+Recursive types are judged coinductively: meeting the same type at the same
+instantiation again does not fail the check. A non-regular recursion (each
+level at a new instantiation) is cut off at a fixed depth and judged not
+`Send`.
 
-`FrozenArray[T]` 等の immutable bulk container は compiler multi-worker dogfood の
-前提として追加し、`T: Send` なら structural `Send` とする。mutable graph の
-graph-copy、alias 保存、cycle 処理が定義されるまでは、deep copy できそうという
-理由だけで mutable `Array` / `Bytes` を `Send` にしない。
+Not Send:
 
-## Algebraic effects との関係
+- `Array`, `Bytes`, and any struct with a `mut` field;
+- closures;
+- a type with an unresolved type variable, even when every resolved part is
+  `Send`: an unannotated `Result::Ok(1)` leaves `E` open and is refused;
+- a type parameter with no `Send` bound;
+- any named type with no visible declaration -- host resources, opaque
+  handles, and the builtin `Map`.
 
-並行性そのものを巨大な `Async` atom にまとめず、ADR-0071 に従って operation 単位
-で追跡する。
+`Send` is required wherever a value moves between tasks: a spawned task's
+result (`TaskGroup::spawn[.., T: Send]`), a channel's element type
+(`Channel::bounded[.., T: Send]`), and `Parallel::map`'s inputs and outputs.
 
-- `Spawn[r]::spawn` / `Spawn[r]::cancel` は child lifecycle を変更する権限。
-  `nursery` が handler を設置・放電する。
-- `Async::suspend` は現在の task を suspend する権限。`join` と blocking channel
-  operation が要求する。
-- channel の送受信権限は effect row ではなく `Sender` / `Receiver` の値が持つ。
-  これにより channel instance と方向が型に残る。
-- `effectset Concurrent[r]` は便利な透明 alias にすぎず、独自 handler や runtime
-  identity を持たない。
+### `Spawnable`: what a spawned closure may capture
 
-handler stack と continuation は task-affine とする。`perform` が捕捉した continuation
-は同じ task で一度だけ resume でき、channel message、spawn capture、global state に
-保存できない。別 task から resume することは禁止する。
+A closure is never `Send`, so a spawned closure is judged by what it
+captures. A capture is legal when it is:
 
-child は親の dynamic handler stack を暗黙に複製しない。spawn boundary では child
-closure の閉じた effect row を明示し、その operation の evidence が fork 可能かを
-検査する。v0.2.0 では `Async` / `Spawn` runtime evidence と、package contract で
-fork-safe と定めた built-in host capability だけを fork できる。user-defined handler
-は既定で task-local とし、user が fork-safe を宣言する surface は後続 ADR にする。
+- a value whose type is `Send`;
+- an endpoint of the spawning group's own region: a `TaskGroup`,
+  `TaskHandle`, `Sender` or `Receiver` whose region is the region of the
+  group passed to this spawn. An endpoint of another group is refused like
+  any other non-`Send` value;
+- a builtin `Future[T]`, unless its value owns a host stream (a
+  `HostResponse` or `HostStream` anywhere inside it, or a type parameter with
+  no `Send` bound that could be instantiated at one). A response body has one
+  reader, so the request belongs inside the task that reads it.
 
-### Executable authority contract
+A captured `let mut` is refused whatever it holds: it shares a mutable cell
+across the spawn boundary. A capture that holds a host stream is refused with
+the edit (open the stream inside the task).
 
-ADR-0075 に従い、task/process が持つ authority は host と parent の部分集合とする。
+The check is `check_spawnable_captures`
+(`lib/@vibe/compiler/checker/checker_spawnable.vibe`). It runs at every call
+whose callee has spawn's shape -- a `TaskGroup[rg, e]` first parameter and a
+closure last parameter -- which covers `TaskGroup::spawn`,
+`TaskGroup::spawn_suspend`, `Parallel::map`, a local `let` alias, a renamed
+import, and a wrapper of the same shape. It is selected by the callee's type,
+not its spelling. A spawn-shaped function taken as any other value -- passed
+as an argument, stored in a field, returned -- is refused where it is taken,
+because no later call could see the closure it would run.
+
+The closure argument must be one whose captures the check can see:
+
+- a closure literal at the call;
+- a name bound by a local `let` to a closure literal, whose captures were
+  recorded where the `let` was checked;
+- a top-level function, which captures nothing;
+- inside a spawn-shaped function, its own closure parameter: every call site
+  of that function is itself checked.
+
+Anything else -- a closure a helper returned, a field, a rebound name -- is
+refused: ``no impl `Spawnable` for closure `q`: its captures cannot be seen
+here -- write the closure literally at this call, or bind it with a local
+`let` to a closure literal``. A local closure called inside the spawned body is
+a capture too, and is judged the same way.
+
+The adoption lane (`TaskGroup::adopt` / `TaskHandle::settle`) takes no
+closure, so it is not spawn-shaped and this check does not apply to it.
+
+## Regions and escape
+
+`TaskGroup::run` mints a fresh region for each call: the checker binds the
+call's `rg` to a rigid name of the form `#region_<n>`, which the lexer cannot
+produce, so no source text can forge or unify with it. Like the spawn check,
+this is selected by the callee's type: a function taking one closure whose one
+parameter is a `TaskGroup[rg, e]` with `rg` quantified by the function itself,
+and returning that closure's result. A `let` alias, a renamed import and a
+wrapper of that shape mint their own region per call; `run` taken as any other
+value is refused; a runner whose region an earlier use already fixed is
+refused with the edit (call `TaskGroup::run` directly, or bind it with a local
+`let` at each use).
+
+After the body is checked, the call is refused when:
+
+- **the returned value mentions the region** -- the body returns a task
+  handle, an endpoint, or anything containing one: `region escapes its nursery
+  scope: the value returned from this TaskGroup::run body still depends on its
+  own Nursery/Task/Sender/Receiver token`;
+- **a binding visible at the call now mentions the region**: `region escapes
+  its nursery scope: an outer binding now depends on this TaskGroup::run
+  call's own Nursery/Task/Sender/Receiver token`.
+
+The outer-binding check sees a binding only when every use of it shares one
+type instance. An array whose element type is still open is never generalized
+(`let_generalize` keeps it monomorphic), so `let cell = [None]` or
+`let mut cell = [None]` before the call, with a handle stored into it from the
+body, is refused; so is `let mut slot = None` assigned `Some(handle)`. A
+binding the checker does generalize gets a fresh instance at each use, and a
+region stored through it is not seen: measured, an outer `let c = Cell::{ v:
+None }` (or `let mut c`) of a generic struct with a `mut v: Option[T]` field,
+assigned `c.v = Some(handle)` inside the body, compiles and runs (see
+[Known gaps](#known-gaps)). The return check has no such hole.
+
+Inside the body, a `let` bound to a region-tagged type is not generalized
+(`is_region_tagged_ty` puts it under the same value restriction as an
+`ArrayBuilder`), so the binding keeps its region.
+
+Pinned by `fixtures/region_ok_basic.vibe`, `fixtures/err_region_escape_return.vibe`,
+`fixtures/err_region_escape_run_local_alias.vibe`,
+`fixtures/err_region_escape_run_rename.vibe`,
+`fixtures/err_region_escape_run_value.vibe`,
+`fixtures/region_ok_run_local_alias.vibe`, `fixtures/region_ok_not_a_runner.vibe`
+and, through the sugar, `fixtures/err_taskgroup_sugar_region_escape.vibe`.
+
+ADR-0090's `region r { .. }` mints its region the same way for region-bound
+mutable storage; that is a separate construct with its own escape check.
+
+## Safe parallel API
+
+There is no `Thread` type, worker handle or shared reference. The safe
+parallel API is the task group, its handles and its channels. Whether two
+tasks actually run at the same time is the backend's decision, and the same
+program produces the same permitted traces on one worker or many.
+
+`Parallel::map(n, xs, f)` spawns one task per element into `n` and joins them
+in index order. It returns the results in input order; completion order is not
+observable. A failing element makes `map` throw a `TaskError`, and fail-fast
+cancels the elements that have not started. Its closure is judged like a
+spawn's.
+
+The boundary rules:
+
+- a spawned closure satisfies `Spawnable`, and a task's result is `Send`;
+- mutable cells, handlers, continuations and task handles of other groups do
+  not cross a task boundary;
+- when external effects must happen in a fixed order, route them through a
+  channel to one task. Do not derive an order from task identity, completion
+  time, or a CPU count;
+- the number of workers is a property of the host, not of the program. No
+  API exposes it, so changing it cannot change what a program computes.
+
+## The suspendable-task lane
+
+`@vibe/concurrent/experimental` is the whole runtime: the stable core plus
+the API below. Importing it requires `VIBE_UNSTABLE=1` (ADR-0008), and it is
+outside the SemVer promise ([stable-surface §6](../../user/reference/stable-surface.md)).
 
 ```text
-Root.authority  = VibexEntry.requires
-Child.authority = Child.transitiveRequirements
+effect Async { Suspend(Int) -> Int }
 
-Child.authority ⊆ Parent.authority ⊆ ComposedHost.provides
-Child.authority ⊆ ComposedHost.forkable
+fn TaskGroup::spawn_suspend[rg, e, T: Send](n: TaskGroup[rg, e], f: () -> T with Async + Exception) -> TaskHandle[rg, e, T]
+fn TaskGroup::pump[rg, e](n: TaskGroup[rg, e]) -> Bool
+fn TaskGroup::pump_all[rg, e](n: TaskGroup[rg, e]) -> Unit
+fn Sender::send_wait[rg, e, T](s: Sender[rg, e, T], v: T) -> Unit with Exception[SendError] + Async
+fn Receiver::recv_wait[rg, e, T](rh: Receiver[rg, e, T]) -> Option[T] with Async
+fn TaskHandle::result_wait[rg, e, T](h: TaskHandle[rg, e, T]) -> T with Exception[TaskError] + Async
+fn sleep_wait(ms: Int) -> Unit with Async
 ```
 
-physical thread / Worker / worker slot は独自の ambient authority を持たない。実行中の
-task authority を一時的に借りるだけであり、task migration、worker pool reuse、worker
-数の変更で authority が増減してはならない。
+plus the lower-level adoption API (`TaskGroup::adopt`, `TaskHandle::settle`,
+`park`, `park_poll`, `park_kind`, `wake`, and `TaskStep[T]`). The effect
+declaration is transparent: a program that declares the same `effect Async`
+names the same effect.
 
-spawn closure の latent effect を root executable contract から落としてはならない。
+### Why a second lane exists
 
-```text
-Req(spawn f)     = { Spawn[r]::spawn } ∪ Req(f)
-ForkReq(spawn f) = Req(f) ∪ ForkReq(f)
+A run-to-completion task (`spawn`) can wait only by driving other tasks on its
+own stack. It cannot stop halfway and come back later, so two tasks that each
+wait on the other mid-body -- a producer that overflows a channel's capacity
+while a consumer drains it -- cannot both make progress, and the program traps
+as a deadlock. A suspendable task can: its body is compiled to a sequence of
+steps (ADR-0076's suspend lowering), and at a suspension point its
+continuation is stored in its cell and resumed later. The lane exists until
+one spawn covers both shapes (#3200).
+
+### Spawning and the inline-closure rule
+
+`TaskGroup::spawn_suspend(g, f)` registers the task and runs `f` immediately,
+up to its first suspension; it does not enter the ready queue. A body that
+finishes without suspending settles the task at once.
+
+The body is written inline, as a closure literal at the call. A closure passed
+to `spawn_suspend` -- or to any parameter whose row carries `Async`, such as a
+wrapper around it -- must be compiled with the step-returning convention, and
+only a literal written at that parameter is. A local closure passed by name
+is refused with the edit:
+
+```vibe skip
+// doctest-skip: intentionally rejected -- a named task closure (#3194)
+let p = () -> Int with Async + Exception {
+  5
+}
+let h = TaskGroup::spawn_suspend(g, p)
+// pass the task closure inline at `TaskGroup::spawn_suspend` instead of
+// passing `p`: this local closure has the plain call convention
 ```
 
-したがって child だけが `S3[Posts]::get_object` を行う場合も `.vibex` entry はその
-resource-qualified operation を要求する。provider/host が operation を提供するだけでなく
-fork-safe evidence として委譲可能でなければ spawn contract は満たされない。host が
-より強い operation を持っていても parent authority に無い operation を child へ渡す
-ことは禁止する。
+and a closure rebound to a new name (`let q = p`) is refused by `Spawnable`
+(``no impl `Spawnable` for closure `q` ``). The accepted form, from
+`fixtures/spawn_suspend_wrapper_inline.vibe`'s inline variant:
 
-authority は v0.2.0 では immutable とし、動的 grant/revoke は導入しない。将来の
-`Process[Msg]` も同じ principal hierarchy を使い、親より長生きする場合は supervisor
-への ownership 移管を明示する。詳細、resource/provider contract、Lean Oracle は
-[vibex-runtime-contract.md](vibex-runtime-contract.md) を参照する。
+```vibe
+import @vibe/concurrent/experimental {
+  TaskGroup, TaskHandle
+}
 
-## Memory and runtime context
+fn main() -> Int allows Async + Exception {
+  TaskGroup::run((g) -> {
+    let h = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      5
+    })
+    TaskGroup::pump_all(g)
+    TaskHandle::join(h) + 1
+  })
+}
+```
 
-各 task は論理的に独立した heap / arena と `TaskContext` を持つ。単一 linear memory
-内で実装しても、別 task の arena を指す user-visible reference を作ってはならない。
+A body that suspends carries its row on the literal, as above. Without it the
+suspension is charged to the enclosing function instead (measured: an
+unannotated `() -> { sleep_wait(5); 41 }` makes `main` fail with ``effect row
+mismatch for 'main': missing { Async }``). A body that never suspends needs no
+annotation: `TaskGroup::spawn_suspend(g, () -> 6 * 7)` settles at once.
 
-`TaskContext` には少なくとも次を集約する。
+Pinned by `fixtures/err_spawn_suspend_{alias,ascribed,rebound,wrapper,wrapper_rebound}_plain.vibe`
+and `fixtures/spawn_suspend_wrapper_inline.vibe`, whose gate rows in
+`tests/gates/late/adr_0068_taskgroup_g_body_syntax_sugar.sh` assert the
+messages. Whether a named task closure becomes acceptable, or the inline rule
+becomes part of the frozen surface, is decided with #3200.
 
-- task id、nursery id、lifecycle / cancel state
-- allocator / heap arena と message copy context
-- evidence vector / handler stack と suspend continuation
-- channel / task waiter registration と scheduler state
-- finalizer stack、top-level thunk memo、runtime bookkeeping
+### Waiting inside a suspendable task
 
-既存の bump heap pointer、effect 固定 region、operation index、lazy thunk memo 等の
-mutable global は task-local / nursery-local context へ移すか、spawn 前に初期化して
-immutable に freeze する。言語から観測できる unsynchronized mutable global を追加
-しない。
+Inside a suspendable body, the `_wait` forms suspend the calling task; the
+stack-driving forms do not.
 
-message の move 最適化を許すのは、compiler が sender 側の last use と、到達可能な
-全 allocation が一つの transferable arena に閉じていることを証明できる場合だけ
-である。root object の `refcount == 1` だけでは内部 alias や別 arena 参照を排除できず、
-move の根拠にしてはならない。
+| waits by | siblings | operations |
+|---|---|---|
+| blocking the instance | nothing runs | `sleep` outside a suspendable body |
+| driving on the caller's stack | ready siblings run to completion | `join`, `send`, `recv` |
+| suspending the task | siblings interleave with it | `sleep_wait`, `send_wait`, `recv_wait`, `result_wait`, `await` |
 
-言語の memory model は data-race-free とし、shared mutable reference、atomic、lock、
-weak-memory ordering を公開しない。shared-everything backend もこの制約を破らない。
+(When the entry's row carries `Async`, the compiler routes `sleep` everywhere
+through the entry's async boundary instead, ADR-0089.)
+
+- `Sender::send_wait` buffers when there is room. Otherwise it deposits the
+  message (its linearization point) and suspends until that message is
+  consumed. A close before then throws `Closed`.
+- `Receiver::recv_wait` takes a buffered or deposited message, returns `None`
+  on a closed and drained channel, and otherwise suspends.
+- `TaskHandle::result_wait(h)` is the suspending `join`: it returns the
+  sibling's value or throws its `Failed` / `Cancelled`. A sibling's failure
+  usually cancels the waiting task first, through fail-fast.
+- `sleep_wait(ms)` parks the task with a sleep debt. Inside a suspendable body
+  the compiler rewrites a plain `sleep(ms)` to the same suspension, so the two
+  are the same there. Sleeps overlap: when every parked task owes time, the
+  scheduler spends the smallest debt once and debits it from every sleeper,
+  so three tasks sleeping 300 ms each cost 300 ms, not 900. No wall clock is
+  read.
+- `await` on a builtin `Future[T]` parks the task until the future resolves.
+  A task waiting on a future is woken by the resolve, not by polling.
+
+A task blocked on a channel, a sibling or a future is woken by the event it
+waits for. A waiting task that nothing in the group can wake makes `pump_all`,
+`join` or the group's close trap with the deadlock message.
+
+### Driving the lane
+
+`TaskGroup::pump(g)` resumes one parked task, round-robin, and answers whether
+anything ran. `TaskGroup::pump_all(g)` pumps until no task is parked. Neither
+is required for correctness any more: `join` on a parked task pumps until that
+task settles, and the group's close pumps every parked child. They remain the
+way to interleave tasks before the body's own next step.
+
+### Exceptions in a suspendable body
+
+An exception that escapes the body -- before its first suspension or in any
+resumed leg -- fails the task and the group exactly as for `spawn`, and
+cancels parked siblings.
+
+A `handle` inside a suspendable body may wrap code that suspends when it is
+abortive: its arms handle another effect's operations (an
+`Exception::Throw(m) => ..` catch is the shape), never mention `resume`, and
+cannot reach `Async` themselves. The handler is reinstalled around every
+resumed leg, so a throw after an `await` is caught by the arms written around
+it (`fixtures/async_spawn_host_futures/catch_across_await.vibe`).
+
+To observe a failure outside the tasks, put the `handle` around the
+`TaskGroup::run` call itself. What arrives there is the group's
+`TaskError::Failed(m)`, with the child's error rendered into `m`.
+
+### Host waits
+
+When a program's entry boundary settles host futures (ADR-0089), a
+suspendable task that awaits a host future, reads a host stream, or sleeps
+parks on a host waitable. When nothing else can run, the group waits on every
+pending waitable at once, through the component adapter's shared waitable set,
+and resumes whichever lands first, so tasks waiting on different host futures
+interleave in completion order. Cancelling such a task releases its wait.
+Without that boundary the library's hooks report "no host waitables"; a
+waiting task then parks as a poller and an unsatisfiable wait traps as a
+deadlock.
+
+The tasks themselves are still guest-side continuations scheduled by
+`@vibe/concurrent` inside one component instance. Backing them with Component
+Model subtasks that the host can schedule and cancel is #3147.
+
+## Effects and authority
+
+Concurrency is not one coarse effect. What a child may do is the group's row
+`e`, which is part of `run`'s row, so a task cannot perform anything the
+function running its group does not declare, and authority is settled at the
+entry as for any other call (ADR-0075, ADR-0088). The suspendable lane's
+`Async` row is discharged inside the library: `spawn_suspend`'s body carries
+`Async + Exception`, and its caller's row gains nothing from it.
+
+Channels carry their authority as values: holding a `Sender` is what lets a
+task send, so a channel's identity and direction stay in the types rather
+than in an effect row.
+
+A stored continuation belongs to its task: it is resumed by the scheduler for
+that task only, at most once, and it is never `Send`, so no capture or
+message can carry it to another task.
+
+[vibex-runtime-contract.md](vibex-runtime-contract.md) states the executable
+authority contract a multi-worker backend must keep: a child's authority is a
+subset of its parent's and of what the composed host can delegate, and a
+worker has no ambient authority of its own.
+
+## Memory model
+
+Logically, each task owns its heap and a message is a deep-copy snapshot taken
+when the send linearizes; the receiver never holds a reference into the
+sender's heap.
+
+Today every task runs in one heap and a message is passed by reference. `T:
+Send` admits only values with no mutable interior, which is what keeps that
+from being observable. `FrozenArray::from_array` and `to_array` copy at the
+conversion, so a retained `Array` handle cannot change a value after it
+became `Send`.
+
+A future backend may move a message instead of copying it only when the
+compiler proves the sender's last use and that every allocation reachable from
+it is transferable. A root reference count of 1 is not such a proof: it says
+nothing about interior aliases.
+
+The language memory model is data-race-free. There are no shared mutable
+references, atomics, locks or weak-memory orderings in the surface, and a
+shared-everything backend does not add them.
 
 ## Scheduler observability
 
-schedule は非決定的である。プログラムが依存してよい同期点は spawn、suspend、
-task completion、channel linearization、nursery close だけとする。複数 child の
-Stdout 等、外部 effect の順序が重要なら channel で一つの owner task へ直列化する。
+The schedule is not part of the contract. A program may rely only on these
+synchronization points: spawn, a suspension, a task's completion, a channel's
+linearization, and a group's close. When external effects from several tasks
+must be ordered (several tasks writing to `Console`, say), send them to one
+owning task over a channel.
 
-cooperative backend は suspend point でのみ task を切り替えてよい。parallel backend
-は任意の時点で別 task を進められるが、task-local state しか共有しないため、観測差は
-許された message / external-effect order に限られる。テスト用 scheduler は seed と
-trace を受け取り、同じ backend・seed で再現可能にする。
-
-## Compiler self-parallelization
-
-compiler を ADR-0068 の reference workload とする。最初の並列単位は import
-DAG 上で依存が terminal になった module の parse/typecheck であり、現在の mutable
-`TypeDb` を複数 task から共有しない。driver が source snapshot、DAG、result store、
-cache publish を所有し、worker は immutable な source + dependency interface から
-成功 artifact または diagnostics の値を返す。
-
-通常の parse/type error は `TaskError` にせず recoverable な `ModuleOutcome` として
-返す。compiler は outcome を module path / source span の canonical order で確定し、
-nursery が最初に観測した failure や task completion order を診断・Wasm index・cache
-key に混ぜない。trap や compiler invariant 違反だけを task failure として sibling
-cancel へ流す。
-
-最終 codegen は、function/type/constructor/string/effect index と per-function id range
-を serial planning pass で freeze した後に限り function body 単位で並列化する。link と
-cache publication は canonical coordinator operation とする。詳細な worker contract、
-cache atomicity、TDD gate、Lean model の対応は
-[compiler-parallelism.md](compiler-parallelism.md) を source of truth とする。
+The cooperative backend switches tasks only at these points: a stack-driving
+operation runs other tasks, a suspension parks one, and `spawn_suspend` runs
+the new task's first leg before it returns. It is deterministic --
+the ready queue is FIFO and parked tasks resume round-robin -- so a program
+run twice produces the same trace. A parallel backend may run tasks at any
+moment; because tasks share only what the rules above allow, the difference
+is limited to the message and external-effect orders this document leaves
+open.
 
 ## Backend mapping
 
-| Backend | suspend | isolation / message | parallelism | 位置づけ |
+| Backend | Suspension | Isolation / messages | Parallelism | Status |
 | --- | --- | --- | --- | --- |
-| core wasm cooperative | 明示 suspend IR + evidence/yield | 同一 memory 内の task arena + deep copy | なし | 基準実装、決定的テスト |
-| browser JSPI | `WebAssembly.Suspending` / `promising` | Worker ごとの instance/heap + `postMessage` 相当 | Worker 数まで | JSPI は stack suspension のみ。task pinning を許す |
-| WASI Component Model | async lift/lower、waitable、task built-in | component/resource 境界 | host 実装次第 | vibe nursery が host より強い lifetime/fail-fast 規則を追加 |
-| shared-everything threads | thread intrinsic + shared store | task arena を論理分離。message API は不変 | host thread 数まで | #488 の opt-in 実験。zero-copy は証明時のみ |
+| cooperative, in-guest | stack driving, plus stored continuations from ADR-0076's suspend lowering | one heap; `Send` keeps sharing unobservable | none | ships; the reference behaviour |
+| host waitables (Component Model) | a parked task waits on a host future, stream read or timer through the adapter's waitable set | as above | host I/O overlaps; task bodies do not | ships with an entry boundary that settles host futures |
+| Component Model subtasks | async lift/lower, one subtask per task | component / resource boundaries | as the host provides | not implemented (#3147) |
+| JSPI with Workers | `WebAssembly.Suspending` / `promising` | an instance and heap per Worker, messages copied | up to the number of Workers | not implemented; JSPI only lowers suspension |
+| shared-everything threads | thread intrinsics over a shared store | task-local arenas inside one store; same message API | host threads | opt-in probe only (#488) |
 
-### Native/WASI backend implementation policy
+The Component Model provides tasks and threads with weaker lifetime rules than
+this document's. "No group closes while a child is live" stays a runtime rule
+of the language on every backend; it is not weakened to the host's minimum.
 
-production の native/WASI multi-worker 実装は、guest が `wasi::thread-spawn` を直接
-呼ぶ形ではなく、Wasmtime embedding host が worker pool を所有する形を採る。
-`Engine` と compile 済み `Module` は host 内で共有できるが、各 worker は別々の OS
-thread、`Store`、`Instance`、linear memory、effect evidence table を持つ。worker 間で
-渡せるのは `Send` を満たす immutable snapshot/message だけであり、結果 publish と
-canonical commit は coordinator に限定する。
+### Native/WASI backend policy
 
-この選択は backend 実装の決定であり、公開 `Task` API に thread id、Wasmtime flag、
-`Store`、shared memory を露出しない。Wasmtime Component Model threading が安定した
-場合も、同じ lifecycle trace、task-local heap/evidence、message-copy 契約を満たす
-adapter として置換する。
+A production multi-worker backend for native and WASI hosts is an embedder
+that owns the workers, not a guest calling `wasi:thread-spawn`. Each worker
+has its own `Store`, `Instance`, linear memory and handler state; only `Send`
+values cross between workers, and one coordinator publishes results. Thread
+ids, `Store`s, shared memory and Wasmtime flags never become language values.
+For the compiler, an ordinary process pool over the AOT-compiled compiler
+image already meets this shape
+([compiler-parallelism.md](compiler-parallelism.md)).
 
-移行までの executable prototype は Node.js `worker_threads` を scheduler/ownership
-境界に使い、実 selfhost check は各 worker が所有する永続 stage2 daemon で実行する。
-これは process-shaped な現行 JavaScript host runner を再利用する暫定 transport で
-あり、論理 `ModuleJob -> ModuleOutcome`、ready rule、failure classification、canonical
-commit は production backend と同じに保つ。transport の差は Lean oracle の状態や
-event 語彙へ入れない。
+Core Wasm threads (shared memory and atomics) and guest-side WASI thread spawn
+are not needed to implement these semantics. A backend that uses them stays
+opt-in until it shows task-local isolation and the same conformance traces.
 
-Core Wasm Threads の shared memory/atomic と WASI Threads の guest-side spawn は、
-shared-nothing 基準意味論を実装するための必須機能ではない。これらを使う経路は
-#488 と同様に opt-in 実験とし、通常 backend へ昇格するには task-local isolation と
-同一 conformance trace を別途示さなければならない。
+## Shared-everything threads (#488)
 
-JSPI は WebAssembly proposal registry で Phase 4、Safari 27 beta でも実装が告知され、
-Firefox も実装を追跡中である。browser version matrix は backend 選択の入力であって、
-公開意味論の blocker ではない。JSPI が無い環境は cooperative/state-machine lowering
-へ fallback できる。
+#488 probed the shared-everything-threads proposal across vibe and Wasmtime.
+Its results are backend feasibility and probes; none of the following is
+public API:
 
-Component Model の concurrency は host task と thread の primitive を提供するが、
-vibe の「nursery close 前に全 child が terminal」という強い規則は language runtime
-側で維持する。host primitive の最小保証へ意味論を弱めない。
+- proposal intrinsics such as `thread.spawn-ref`;
+- Wasmtime-specific flags, thread ids, or the available parallelism;
+- shared references, shared functions, atomics, locks;
+- raw `Int` channel ids or `String`-only messages.
 
-## #488: shared-everything 実験の境界
+The proposal is a draft, and Wasmtime does not implement it: the flag is
+accepted but not wired to the validator or the text parser
+([wasm_threads_requirements.md §4](../compiler/wasm_threads_requirements.md)).
+The path is enabled only behind feature detection and is not a CI or release
+gate.
 
-#488 の成果は backend feasibility と flag/probe の検証に限定し、次を公開 API に
-しない。
+It becomes a production lowering only when all of these hold:
 
-- `thread.spawn-ref` 等の proposal intrinsic
-- Wasmtime 固有 flag、thread id、available parallelism
-- shared reference、shared function、atomic、lock
-- raw Int channel id や String 専用 message
+1. The proposal's grammar and Wasmtime's intrinsic names agree, and upstream
+   regression tests pass.
+2. Shared heap types, shared function / table / composite types, and the
+   needed component intrinsics are implemented.
+3. Task-local handler state, cancellation and arena isolation survive.
+4. It produces the same set of conformance traces as the cooperative backend.
+5. It reproduces on a pinned upstream Wasmtime release, not a locally patched
+   build.
 
-shared-everything-threads proposal 自体も WebAssembly registry では Phase 1 の
-draft である。2026-07-16 時点の #488 では、local patch 上の shared `i31`
-subset と既存 Component Model `canon thread.new-indirect` 系は確認できる一方、
-`thread.spawn-ref`、
-`thread.spawn-indirect`、`thread.available-parallelism` は Wasmtime の unsupported
-intrinsic path に入り、proposal test と parser/runtime の名前にも差がある。このため
-shared-everything path は feature detection と probe に合格した build だけで有効化し、
-通常 CI / release gate にはしない。
+## Conformance
 
-#488 を production lowering 候補へ昇格できる条件は次のすべてである。
+What is pinned, and where:
 
-1. proposal grammar と Wasmtime intrinsic 名が一致し、upstream regression test が通る。
-2. shared heap type、function/table/composite type、必要な component intrinsic が実装済み。
-3. task-local evidence、cancel、finalizer、arena isolation を壊さない。
-4. cooperative backend と同じ conformance trace 集合を満たす。
-5. patched local Wasmtime でなく、version 固定できる upstream release で再現する。
-
-## Conformance locks
-
-実装は次を Red から固定する。
-
-Static rejection:
-
-- `Task[r, T]` / endpoint / nursery token の region escape
-- mutable cell、non-`Send` value、task-local evidence の spawn capture
-- non-`Send` message と別 task からの continuation resume
-- nursery close 中の spawn、負 capacity
-
-Lifecycle and failure:
-
-- suspend する child に対し `spawn` が completion を待たない
-- nursery 正常終了時に orphan task が残らない
-- child failure が sibling cancel と全 child の収束を引き起こす
-- cancel / join の idempotence、finalizer exactly-once
-- replay による pre-perform side effect の重複がない
-
-Channel:
-
-- capacity 0 rendezvous、bounded backpressure、sender 内 FIFO
-- sender 間の許された順序違い、last-sender close、buffer drain 後 `None`
-- closed send の `throw(SendError::Closed)`
-- send / recv と cancel の競合で duplicate / loss が起きない
-- send 後の sender 側変更が receiver snapshot に見えない
-
-Backend differential:
-
-- cooperative を oracle とし、JSPI/Worker、WASI、shared-everything の trace を
-  許容された非決定順序へ正規化して比較する
-- scheduler seed と event trace から failure を再現できる
-- #488 probe は opt-in 環境だけで走り、不在を通常 CI failure にしない
-
-## 実装順
-
-ADR-0075 の `.vibex` entry、semantic contract emission、local provider preflight は
-下記 runtime 実装と独立に先行できる。ただし child へ operation/resource 単位の
-evidence を実際に委譲する段階は、ADR-0076 (#817) の evidence passing と
-`TaskContext` 分離後に行う。
-
-1. 本仕様と negative/type fixtures を固定する。
-2. ADR-0076 (#817): replay handler を evidence passing + yield bubbling へ置換し、
-   共通の `Suspend` IR (ADR-0076 の `EPerform`/`EHandle`) と finalizer unwind を
-   作る。ADR-0076 のロールアウトは Phase 1〜3 相当 (M2 回帰 pin → tail-resumptive
-   hybrid → yield bubbling で replay 全廃) に分かれ、本項目が「compliant」と
-   見なせるのは ADR-0076 Phase 3 完了後。
-3. mutable global を `TaskContext` へ集約し、単一 thread の deterministic scheduler
-   と nursery state machine を実装する。
-4. region escape、`Send`、`Spawnable[r]`、fork-safe evidence の checker を実装する。
-5. deep-copy channel、cancel atomicity、failure propagation を実装する。
-6. compiler を `--jobs 1` の順序ランダム化 scheduler へ移し、module
-   outcome と Wasm bytes の決定性を固定してから module DAG を dogfood する。
-7. JSPI / Worker と WASI Component Model lowering を conformance suite に接続する。
-8. multi-worker を有効化し、最後に #488 shared-everything lowering と証明可能な
-   move/zero-copy を opt-in で追加する。
-
-### 実装ノート (2026-07-24): cooperative run-to-completion slice
-
-`lib/@vibe/concurrent/` に本仕様の最初の runtime slice を追加した。単一
-thread の決定的 FIFO scheduler で、`spawn` は deferred(eager prototype は
-契約外のまま)、blocking 操作 (join / send / recv / nursery close) が ready
-queue を呼び出しスタック上で駆動する run-to-completion 方式。継続を使わない
-ため ADR-0076 Phase 3 の suspend IR を待たずに次を conformance lock として
-テストで固定した: join 冪等・terminal 安定、dispatch 前 cancel と cancel
-冪等、fail-fast sibling cancel + first-observed failure、child の
-`Error::Throw` → `Failed` 変換、`Err` 値は task failure ではない、bounded
-MPMC channel (capacity 0 rendezvous / `NegativeCapacity` / per-sender FIFO /
-last-sender release close / drain-then-`None` / closed send `Err(Closed)`)、
-nursery close の endpoint close。
-
-未実装(本 slice の scope 外、実装順の後続 step): region 生成性と escape
-check、`Send` / `Spawnable` 判定、blocking API の `Async::suspend` row、
-mid-run cancel 観測、deep-copy snapshot(単一 heap のため immutable 値の
-送信を前提)、`Task::yield`。双方が body 途中で block し合う 2 task
-(容量超過 producer + 貪欲 drain consumer の相互 block)は本方式では表現
-できず deadlock trap になる — suspend IR 着地後に内部を差し替える。
-
-命名: 本書の概念名 nursery (Trio 系譜) は spec 用語として維持し、
-library の型/APIは `TaskGroup` (asyncio / Swift 系譜) とした —
-LLM/読者にとって最も広く学習・認知されている綴りを採る判断
-(2026-07-24)。将来の構文糖衣も `taskgroup { g => ... }` を予定。
-
-実装中に #1070 の一般ケースが **pure closure でも再現する**ことを特定した
-(capturing closure を by-value 引数で callee に渡して store すると 3 個目
-から破損。effect/evidence 非依存)。`TaskGroup::spawn` は store を inline 化
-する workaround で回避している。最小 repro は #1070 のコメント参照
-(store サブケースは #1085 へ切り出し済み)。
-
-### 実装ノート (2026-07-24 追記): `Send` marker (実装順 step 4 の第一片)
-
-checker に compiler 判定の structural `Send` を実装した。`Send` は
-`register_builtin_traits` で trait def として seed され(primitive は
-nominal impl も併記)、`[T: Send]` bound の enforcement は
-`check_program_bounds` から `type_send_ok`
-(`checker/checker_trait.vibe`) に dispatch する。判定は本書冒頭の
-allowlist どおりで、ここには書き写さない (#2123: 一覧の複製が drift の原因
-だった)。generic instantiation・再帰型は coinductive に扱う。
-generic enum は TDEnum が payload を宣言時 fresh `CtVar` で保存する
-ため、ctor の `CtForAll` binder から var id を回収して positional に
-置換する(struct は名前ベースの `subst_type_params` で足りる)。
-
-fixtures: `send_bound_structural.vibe`(positive, 実行 42)+
-`err_type_send_{array_bound,mut_struct_bound,closure_bound,user_impl}`、
-compiler gate 47/47。`@vibe/concurrent` の `TaskGroup::spawn` /
-`Channel::bounded` / `Parallel::map` に `[T: Send]` bound を配線済み。
-未着手: spawn closure の capture 検査(`Spawnable`)、`Sender[r,T]` の
-同一 nursery 特例、region 生成性。
-
-### 実装ノート (2026-07-25 追記): suspend 継続の第一級化 (ADR-0076 Phase 3a)
-
-実装順 step 2 の入口が着地: handler arm が `resume` を第一級 one-shot 値
-として保存し、後から別の dynamic extent で呼べるようになった (linear
-backend、depth-0 — perform が handle body 直下にある場合のみ)。これは
-本 ADR の `Async::suspend` が要求する「scheduler が継続を受け取る」形
-そのもので、`fixtures/effect_resume_store_scheduler.vibe` が
-suspend → 外部から resume → 次の suspend → 完走のサイクルを pin する。
-次の一手 (3c) は `TaskCell` に継続 slot を足して cooperative scheduler
-の run-to-completion 制約 (mid-body の相互 blocking 不可) を解除する
-こと。詳細は [effect-evidence-passing.md](effect-evidence-passing.md)
-追記27/28。
-
-### 実装ノート (2026-07-25 追記2): 3c — suspendable task
-(`@vibe/concurrent` への接続、run-to-completion 制約の部分解除)
-
-Phase 3b (yield bubbling、追記29) を受けて、`@vibe/concurrent` に
-suspendable task の第一スライスを実装した:
-
-- `TaskCell` に**継続 slot** (`mut cont: Option[(Int) -> Unit]`) と
-  parked 状態 (status 5) を追加。`TaskGroup` は adopted list +
-  round-robin の pump カーソルを持つ。
-- 新 API: `TaskGroup::adopt` / `TaskHandle::settle` / `TaskHandle::park`
-  (arm の第一級 `resume` を T 消去 wrapper で slot へ保存) /
-  `TaskHandle::wake(v)` (wake 値を届けて再開) / `TaskGroup::pump` /
-  `pump_all` (yield された task を round-robin で駆動)。
-  `effect Async { Suspend(Int) -> Int }` は package contract の透明
-  宣言 (#752)。
-- task body の handle site は 2 通り: adoption site (`adopt`/`settle` の
-  canonical shape、concurrent.vibe の Suspendable tasks 節) と、
-  **`TaskGroup::spawn_suspend(g, f)`** — closure-CPS ABI (ADR-0076
-  追記31 Vertical B) の着地で handle site が library 内部へ移り、caller
-  は `() -> T with Async { ... }` の plain closure を渡すだけに
-  なった (suspend する literal には明示 row 注釈が必要、#761)。
-- **channel の mid-body blocking も着地**: `Sender::send_wait`
-  (#1324 slice 2 で `with Exception[SendError] + Async`) /
-  `Receiver::recv_wait` (`with Async`)。バッファ満杯の send は
-  deposit → suspend → 消費 (pend_consumed) を自己再帰で待ち、空の recv
-  は suspend → 再検査 (loop spine 非対応のためリトライは再帰 — 3b の
-  再帰 clone がそのまま処理する)。capacity-0 rendezvous も同経路。
-  producer が capacity-1 を溢れさせ consumer が drain する相互 blocking
-  (run-to-completion では不可能と header が明記していた形) が
-  suspend_test.vibe で conformance lock 済み。`TaskGroup.progress`
-  カウンタ + `pump_all` の全周無進捗検出で、詰まった channel 待ちは
-  livelock ではなく deadlock trap になる (drive_one の規則と同型)。
-  stack-driving の `Sender::send` / `Receiver::recv` は `send_wait`/
-  `recv_wait` と同じ linearization (buf/pend/pend_seq/pend_consumed) を
-  共有する。**#1181 追記**: `TaskGroup`/`Channel`/`Sender`/`Receiver` が
-  `e` について row-polymorphic 化されたことに伴い、`Sender::send`/
-  `Receiver::recv`/`TaskHandle::join` の宣言 row は row-free から
-  `with e`(row 変数)へ変わった。ADR-0076 の suspend/CPS lowering
-  (`inline_direct_perform.vibe` の `scps_calls_ok`/`scps_row_has_var`) は
-  row 変数を持つ callee を常に保守的に拒否するため、`Async` を持つ
-  `spawn_suspend` closure literal の**内側**から呼ぶ場合は引き続き
-  row 変数を持たない `send_wait`/`recv_wait` を使う必要がある。#1324
-  slice 2 で `send_wait` の row に bracketed な `Exception[SendError]` が
-  加わったが、bracketed ラベルは row 変数ではないので適格性は変わらない
-  (呼び出し側で変わったのは、closure literal の row 注釈に `Error` が
-  要ることだけ)。
-  **Suspend payload 規約**: `0` = cooperative yield / `1` = poll wait。
-  adoption-site の arm は理由を伝播する
-  `TaskHandle::park_poll(h, resume, r == 1)` を canonical とする —
-  plain `park` は yield 扱いなので、channel 待ちを plain park で park
-  すると deadlock trap に見えず livelock になる (#1111 Codex review)。
-  yield は deadlock の証拠に数えない (resume は常に body を前進させる;
-  無限 yield は通常の無限ループ)。
-- **fail-fast × suspendable の統合も着地**: `spawn_suspend` の body row は
-  `{ Async, Error }` になり、escape した `Error::Throw` は Failed へ変換
-  される。settle leg は spawn_suspend 内の外側 Error handle (Async handle
-  は CPS 化済みなので handler 越え resume は存在せず #543 の罠は当たら
-  ない)、resume 後の leg は park wrapper の per-leg Error boundary が
-  受ける (pump の stack 上で走るため)。失敗は group の first-observed
-  failure を記録し、**parked sibling を自動 cancel** (継続 drop = RC 解放)
-  して pump_all を自然終了させる。run は Err(Failed(first)) を返す。
-- conformance lock (`suspend_test.vibe`): **2 task の mid-body 相互
-  interleave** (run-to-completion では不可能だった形 — log が厳密交互)、
-  wake 値の suspension point への配達、parked task の cancel (継続 drop
-  = RC 解放、ADR-0076 の保証)、suspend しない body の同期 settle。
-  A group whose body returns with a child still parked joins it at close
-  (#3160): close pumps the group under `pump_all`'s rules -- host futures,
-  stream reads, timers and sleeps settle -- until every child is terminal.
-  Only a genuine deadlock (a wait nothing in the group can produce) still
-  traps, with a message, as `join` and `pump_all` do.
-
-cancel は parked 状態でも観測されるようになった (mid-run cancel 観測の
-第一歩)。fail-fast と adopted task の統合 (parked sibling の自動
-cancel) は次スライス。#1097 (suspend 継続の local capture × 複数 site の RC trap) は根治済み — 当初の `md_capturing_fn_count` 補償は owned-captures closure ABI (ADR-0076 追記31 Vertical A: closure env が heap capture を creation dup で所有し class-7 drop が再帰解放) に置き換わり、補償テーブルは撤去された。suspend_test がローカル capture 形のままregression lock。
-
-### 実装ノート (2026-07-27 追記): region 生成性 (実装順 step 4、#1081 step 3)
-
-`TaskGroup::run` が呼び出しごとに新しい生成的 region を発行するようになった。
-checker に一般化された rank-2 多相や `Region` bound の仕組みは存在しない
-(確認済み — `CtForAll` は `let`/`letrec` の通常多相のみ、呼び出し側が
-choose する fresh var を返す `instantiate` しかなく、型に scope タグを
-付けて escape を検査する既存機構もゼロだった)。そのため `TaskGroup::run`
-という qualified name を `resume` と同様に checker が直書きで特殊扱いする
-(`checker/checker.vibe` の `ECall(EIdent(name),...)` 分岐、`name ==
-"TaskGroup::run"` の枝)。
-
-- **region の表現**: `CtNamed("#region_" + gensym, [])`。`#` を含む名前は
-  lexer が識別子として受理しないため、パースされたソースは絶対にこの名前を
-  偽造できない。`TaskGroup::run` の呼び出しごとに、通常なら fresh `CtVar`
-  になるはずの `r` 型パラメータをこの rigid skolem へ直接 bind してから
-  body を検査する。
-- **struct へ `r` を追加する際の罠**: `TaskGroup[r]`/`TaskHandle[r,T]`/
-  `Channel[r,T]`/`Sender[r,T]`/`Receiver[r,T]` の型引数は、構築時
-  `struct_fields_ground` (checker.vibe) が「宣言済みフィールド型がすべて
-  ground なら型引数を丸ごと捨てて `CtStruct` に潰す」ため、`r` を使う
-  フィールドが一つも無い構造体 (`TaskGroup` は元々どの型パラメータも
-  使っていなかった) では型引数が構築のたびに消えて追跡できない。
-  `TaskGroup` に `_region_witness: (r) -> r`(恒等関数、実行時には一度も
-  呼ばれない)という phantom field を足すだけで `type_is_ground` が
-  `CtFn` の中の `r` 参照を検出し非 ground 判定になる — unsafe cast も
-  新しい checker 機構も要らない。`TaskHandle`/`Channel`/`Sender`/
-  `Receiver` は元々 `group`/`ch` フィールド経由で `r` を含む型
-  (`TaskGroup[r]`/`Channel[r,T]`) を参照するため witness 不要。
-- **escape check の実装**: `TaskGroup::run` の呼び出しを検査し終えた
-  「その場」で 2 種類のチェックを行う(`Send` の `check_program_bounds_impl`
-  のような遅延・全体パスではない — この呼び出し固有の skolem が対象なので
-  即座に判定できる):
-  1. **戻り値位置**: body の戻り値型(`T`)を最終 subst で zonk し、
-     skolem 名を含んでいれば reject。
-  2. **外側 capture**: 呼び出し時点の `env` に見えているすべての
-     binding を(`env_cache` と同じ cons chain 走査で)集め、最終 subst
-     で zonk して skolem 名を含むものが無いか調べる。呼び出し前に存在した
-     bindings だけを見るので、body 内で新しく `let` された名前は対象外。
-- **既知のギャップ (未解決、正直に記録)**: 外側 capture check は
-  **generalize された `let`/`let mut` local へのリークを検出できない**。
-  実測: `let mut arr = [None]` に対して型の異なる 2 回の `Array::set`
-  (`Some(1)` → `Some("str")`) がどちらも通ることを確認済み — この
-  checker は `let`/`let mut` binding を(mutable でも)generalize する
-  ため、body 内で `arr` を参照するたびに独立した fresh instantiation が
-  返り、env に保存された scheme 自体は一切変化しない。したがって
-  `let mut leaked = [None]; TaskGroup::run((n) => { ...; Array::set(leaked,
-  0, Some(rx)) })` のような、旧 `concurrent_test.vibe` が実際に使っていた
-  leak パターンは **現状のこの slice では検出できない**。戻り値位置の
-  escape (`fixtures/err_region_escape_return.vibe`) だけがこの slice の
-  確定した保証であり、`fixtures/err_region_escape_outer_mut.vibe` のような
-  「必ず reject される」fixture は追加していない(誤って通ってしまう
-  fixture を追加するのは不正直なので)。閉じるには generalize を
-  region-checking 中だけ抑制するか、型に依存しない AST ベースの escape
-  追跡が必要 — 次スライスの課題として残す。
-- **fixtures/compiler_gate.sh 59/59**: `region_ok_basic.vibe` (非 escape、
-  spawn+join、42 で正常終了)、`err_region_escape_return.vibe` (戻り値
-  escape、reject)。両方とも `Send` marker (48/48) と同じ
-  `send_check_reject` 型のヘルパーパターンで gate に配線。
-- **既知のギャップ 2 (PR #1135 Codex review P1、試みて撤回)**: 特殊扱いは
-  callee の**リテラルな綴り** `"TaskGroup::run"` に対する文字列一致であり、
-  `let run = TaskGroup::run; run((n) => ...)` のような first-class alias、
-  import rename、higher-order wrapper はこの一致をすり抜けて `r` が
-  普通の unifiable `CtVar` になる(escape 検査が一切走らない)。一度、
-  文字列一致の代わりに callee の**構造的な形**(`(body: (TaskGroup[r]) ->
-  T with e) -> Result[T, TaskError] with e`)で一致させる修正を試みたが、
-  コンパイラ自身のソース中の無関係な 1 引数呼び出しに誤爆し unit battery
-  20 ファイルが実行時 trap で regress した(`TaskError` が実際には
-  `CtEnum("TaskError")` に解決される — `CtNamed` だと決め打っていた
-  一箇所のバグで露呈)ため撤回し、リテラル一致に戻した。alias/rename/
-  wrapper 経由のすり抜けは this slice の既知のギャップとして
-  `lib/@vibe/concurrent/experimental/index.vpkg` の `r` コメントに明記した。
-### Implementation note: the `Spawnable[r]` capture check (#1081 step 3, second half)
-
-The worry recorded above -- that `n`'s region is not yet unified with a
-skolem when the spawn call is checked -- is real, but judging inline is still
-sound, so no deferred second pass is needed. When `TaskGroup::spawn(n, f)` is
-checked, `n`'s region is still the fresh `CtVar` the nursery body's `EFn`
-parameter check issued (an unannotated parameter gets `fresh_var`). Two
-different `TaskGroup::run` calls always pass through two different parameter
-checks, so they get different ids from the program-wide monotonic counter.
-Comparing a capture's zonked region with `n`'s is therefore exact: by name
-when both are `CtNamed(skolem, [])`, by var id when both are still `CtVar`.
-Only a capture from the same nursery shares the id. The comparison is
-`sp_same_region` in `checker/checker_spawnable.vibe`.
-
-- **Where it runs.** The check is attached to the call, not to a trait bound:
-  there is no general `Spawnable` bound in the checker. It is selected by the
-  callee's TYPE, not its spelling (#3125, #3153): any callee typed
-  `(TaskGroup[r, e], <closure>) -> TaskHandle[..]` runs it after the ordinary
-  call check (instantiate, check both arguments, `unify_call_args`), with the
-  zonked region argument of `n` passed to `check_spawnable_captures`. So a
-  `let` alias, a renamed import and a wrapper with spawn's signature are
-  checked like the direct call. Handing a spawn- or run-shaped function on as
-  a value (an argument, a field, a return value) is refused where the value
-  is taken, because no later call could see the closure it is applied to
-  (`err_spawnable_capture_alias.vibe`, `spawnable_alias_send_ok.vibe`).
-- **What it reads.** The checker package cannot import the root package's
-  free-variable walk (that would be a cycle), so `checker_spawnable.vibe`
-  carries its own, the codebase's usual per-purpose copy. A closure's
-  captures are recorded as capture facts (#3152):
-  - a closure literal at the call is read directly;
-  - a local `let` bound to a closure literal has its captures recorded where
-    the `let` is checked (`spawn_caps_marker`), and a spawn of that name
-    judges them;
-  - a top-level function captures nothing, and the closure parameter of a
-    spawn-shaped function (a `TaskGroup` first, a closure last, as
-    `Parallel::map` is) is trusted because every call site of that function
-    is itself checked (`spawn_safe_marker`);
-  - any other closure value -- a closure a helper returned, a field -- is
-    refused, and the message says to write the literal.
-
-  A bare callee counts as a capture when it names a local binding, so
-  `let cb = ...; TaskGroup::spawn(n, () -> { cb() })` judges `cb`. A builtin,
-  a top-level function or a constructor in callee position does not.
-- **The judgment.** `sp_spawnable_ok` accepts a capture that satisfies
-  `type_send_ok`, or a `TaskGroup[r]` / `TaskHandle[r, _]` / `Sender[r, _]` /
-  `Receiver[r, _]` whose `r` is this spawn call's own region. A captured
-  `let mut` is refused whatever it holds (ADR-0100 (1) records the escape in
-  the environment). A future is accepted unless its value owns a host stream
-  (#2066): a `HostResponse` or `HostStream` anywhere inside the payload,
-  through `Option`, tuples, records and declared fields, or a type parameter
-  with no `Send` bound in an open generic declaration, which could be
-  instantiated at a response. Each refusal names the edit.
-- **Bugs found on the way (checker-wide, not specific to this check).**
-  - `check_pattern`'s generic enum payload substitution (the `PCtor` branch in
-    `checker_pattern.vibe`) was always a no-op. `SEnum` had already replaced
-    payload types with the declaration's fixed `CtVar` ids, while
-    `check_pattern` searched by name for a `CtNamed(paramname, [])` that no
-    longer existed. Plain `Result[Int, String]` with `Ok(a)` reproduced it.
-    It now recovers the real var ids from the constructor's
-    `CtForAll(param_var_ids, _, ..)` scheme, as `send_ok_named` /
-    `send_subst_vars` in `checker_trait.vibe` already did.
-  - A region-tagged endpoint bound by `let` was generalized like any
-    Hindley-Milner `let`, so every use got a fresh instantiation and region
-    identity was lost. `is_region_tagged_ty` gives these types the same value
-    restriction `ArrayBuilder` has (`is_array_builder_ty`).
-- **Fixtures.** `region_ok_spawnable_capture.vibe` (a same-nursery `Sender`
-  capture, exits 42), `err_spawnable_capture_array.vibe` (a non-Send outer
-  `Array`, refused) and `err_spawnable_capture_cross_region.vibe` (another
-  nursery's `Sender`, refused).
-- **Out of scope.** The adoption lane (`TaskGroup::adopt` +
-  `TaskHandle::settle`) is not spawn-shaped, so the check does not see it;
-  that is why `suspend_test.vibe`'s adoption-site tests can capture a
-  `log: Array[Int]`.
-
-### 実装ノート (2026-07-27 追記3): `taskgroup { g => body }` 構文糖衣 (#1081 step 4 の一部)
-
-実装順 step 4「表面仕上げ」のうち、構文糖衣の部分を実装した。もう一方
-(blocking API への `Async::suspend` row 付与) はすでに
-`Sender::send_wait`/`Receiver::recv_wait`/`TaskGroup::spawn_suspend` の
-既存シグネチャで満たされていたため、追加作業は不要だった。
-
-- 命名は 2026-07-24 の実装ノートにある「library の型/API は `TaskGroup`」
-  という決定に従う。本書冒頭の illustrative セクション (`nursery { n =>
-  body }`、`Task::spawn`、`Spawn[r]` capability effect)
-  は初期の aspirational 設計であり、実装は別の(より単純な、effect を使わ
-  ない region ベースの)形になっているため、構文糖衣も `nursery` ではなく
-  `taskgroup` を採用する。
-- `taskgroup { g => body }` は `TaskGroup::run((g) -> { body })` への
-  純粋な parse-time 書き換えであり、専用の AST variant も desugar pass も
-  checker 側の特別扱いも追加していない — parser が今日の手書き
-  `TaskGroup::run(...)` 呼び出しと全く同じ `ECall`/`EFn` 形を直接構築する
-  だけなので、region escape check・`Spawnable[r]` capture check は無変更
-  のまま sugar 越しにも適用される(`err_taskgroup_sugar_region_escape.vibe`
-  で確認)。
-- 実装: `lib/@vibe/parser/lexer.vibe`(`taskgroup` キーワード追加、識別子
-  長 9 の分岐)、`token.vibe`(`TTaskGroup` variant)、
-  `parser_expr_primary.vibe`(`parse_control_primary` から mode 26 へ
-  ディスパッチ)、`parser_expr_dispatch.vibe`(mode 26: `{` → 束縛識別子
-  → `=>` → body(mode 0、match arm の body と同じ規約 — 複文は
-  `{ ... }` で自分から囲む必要がある)→ `}`)。
-- 現状は今日の手書き呼び出しと同様、呼び出し側が
-  `import @vibe/concurrent { TaskGroup }` を書く必要がある — この
-  sugar 自体は import を暗黙に注入しない(そうする既存の仕組みがこの
-  コンパイラに存在しないため、範囲外とした)。
-- fixtures/compiler_gate.sh 62/62: `region_ok_taskgroup_sugar.vibe`
-  (sugar 経由の spawn+join、42 で正常終了)、
-  `err_taskgroup_sugar_region_escape.vibe`(sugar body から漏れた
-  `TaskHandle`、reject)。
-
-### 実装ノート (2026-08-03 追記): `Result` → 型付き `Exception[E]` (#1324 slice 1)
-
-ADR-0085 の型付き `Exception[E]` (#1344) を受けて、`@vibe/concurrent` の
-公開 API のうち **suspend lane にないもの**を throw ベースへ移した。
-`Result` の二重ラップ (`Result[Result[T, TaskError], TaskError]`) が消え、
-成功パスが値そのものになる。
-
-移行済み (5 本):
-
-| API | 旧 | 新 |
-| --- | --- | --- |
-| `TaskGroup::run` | `-> Result[T, TaskError] with e` | `-> T with Exception[TaskError] + e` |
-| `TaskHandle::join` | `-> Result[T, TaskError] with e` | `-> T with Exception[TaskError] + e` |
-| `Channel::bounded` | `-> Result[(Sender, Receiver), ChannelConfigError]` | `-> (Sender, Receiver) with Exception[ChannelConfigError]` |
-| `Sender::send` | `-> Result[Unit, SendError] with e` | `-> Unit with Exception[SendError] + e` |
-| `Parallel::map` | `-> Result[Array[U], TaskError] with e` | `-> Array[U] with Exception[TaskError] + e` |
-
-失敗を観測したい呼び出し側は
-`handle { .. } with Exception[TaskError] { Throw(e) => .. }` を書く。
-`TaskGroup::run` の row は effect 変数 `e` を含むため、その `handle` は
-**呼び出し地点に直接**置く — generic helper で包むと nursery token が型変数
-経由で escape し (#1081 step 3)、closure literal で包むと ADR-0076 の
-suspend lowering が row 変数 callee を拒否する (`scps_calls_ok`)。
-
-**当時移行しなかったもの (suspend lane)**:
-`Sender::send_wait` / `conc_send_wait_consumed` / `TaskHandle::result_wait`
-は `Result` のまま据え置いた。ADR-0076 の suspend lowering が **CPS 分割
-された callee の中で実行された `throw` を正しく伝播しない** — task を abort
-せず、呼び出し元に garbage 値を返す — ためで、`main` 上で計測して確認した
-(この #1324 の変更前): `fn pw(x) -> Int with Error + Async { perform
-Async::Suspend(0); throw(Failed("boom")) }` を `spawn_suspend` の body から
-呼ぶと、group は成功終了し `join` は 699 を返した。この3本を throw 化すると
-「閉じた channel」「cancel された sibling」が観測可能な結果から静かな破損に
-変わるため、lowering 側が直るまで据え置いた。→ **slice 2 で移行済み (下記)**。
-
-`Result` を返す `TaskHandle::join` に依存していた fixture 群
-(`region_ok_*.vibe`、`err_spawnable_capture_*.vibe` ほか) は throw 版へ
-更新済み。エントリが throw を素通しするため `with Exception` の row 付与が
-必要になった点に注意。
-
-**同時に踏んだ checker のバグ (修正済み)**: `unify` の `CtUnknown` 節が
-`CtVar` 節より下にあったため、`unify(CtVar(T), CtUnknown)` が
-`T := CtUnknown` を束縛して T を恒久的に消していた。`throw` の結果型は
-`CtUnknown` (builtins_misc.vibe `lookup_throw`) なので、`-> T` を宣言した
-関数が T の位置で `throw` すると (= 移行後の `TaskGroup::run` /
-`TaskHandle::join` そのもの) 一般化された scheme が `T` の代わりに
-`CtUnknown` を持つ。その結果 #1081 の region-escape 検査
-(`TaskGroup::run` の body 戻り値が rigid skolem を含むか) が常に false と
-なり、**`fixtures/err_region_escape_return.vibe` が clean に通ってしまう**
-状態になっていた。`CtUnknown` 節を `CtVar` 節より上へ移し、型変数を
-`CtUnknown` に束縛しないようにして修正 (`core/types.vibe`)。同 fixture が
-そのまま regression lock になっている。
-
-**失敗メッセージの表現 (#1374)**: `TaskGroup::spawn` の runner と suspend
-lane の2つの Error boundary は、どれも payload を `fail_msg: String` に
-流し込む。ADR-0085 の runtime は kind を出さないので、これらの **erased な
-`with Exception` arm は typed な `Exception[E]` の throw も捕まえ**、enum
-ポインタが String として保存されていた (計測: `String::length` が 2129)。
-#1374 の kind side channel が入ったので、3箇所とも `conc_exn_message` を
-通す:
-
-| payload の kind | `fail_msg` |
+| Property | Pinned by |
 | --- | --- |
-| `String` / `Int` / 解決不能 | `__to_string` の結果 (従来どおり) |
-| その他 (throw site が描画できた) | 描画結果 (例: `Failed("Closed")`) |
-| その他 (描画できない) | `<Kind>` (例: `Failed("<SendError>")`) |
+| deferred spawn, FIFO dispatch, idempotent join and cancel, cancel before dispatch, a cancelled child does not fail the group, close joins unjoined children | `lib/@vibe/concurrent/experimental/concurrent_test.vibe` ("Lifecycle conformance locks") |
+| child throw becomes `Failed(m)`, fail-fast cancels ready siblings, a recoverable result is a value, message rendering by payload kind, a throw escaping the body keeps its payload | `concurrent_test.vibe` ("Failure conformance locks") |
+| negative capacity, per-sender FIFO, last-release close, drain then `None`, `Closed` on a closed channel, rendezvous, a full buffer blocks | `concurrent_test.vibe` ("Channel conformance locks") |
+| `Parallel::map` index order, first failure, empty input | `concurrent_test.vibe` ("Composition") |
+| mid-body interleaving, wake values, cancel of a parked task, fail-fast from either leg, sleeps, futures, `result_wait`, close pumping parked children, CPS-split callees | `lib/@vibe/concurrent/experimental/suspend_test.vibe` |
+| the `Send` allowlist | `lib/@vibe/compiler/tests/send_allowlist_test.vibe`, `fixtures/send_bound_structural.vibe`, `fixtures/err_type_send_*.vibe` |
+| `Spawnable` captures, aliases, renamed imports, closure values | `fixtures/region_ok_spawnable_*.vibe`, `fixtures/err_spawnable_*.vibe`, `fixtures/spawnable_alias_send_ok.vibe` |
+| region escape through `run` and its aliases | the fixtures listed under [Regions and escape](#regions-and-escape) |
+| the inline-closure rule | `fixtures/err_spawn_suspend_*_plain.vibe`, `fixtures/spawn_suspend_wrapper_inline.vibe` |
+| host waits, catching across `await`, nested groups | `fixtures/async_spawn_host_futures/` (run by `scripts/test_named_hostfutures_component_gate.sh`) |
 
-つまり **String を throw する既存コードの見え方は変わらない**。非 String
-payload については、#1392 slice 3 で **throw site 側** (payload の静的型が
-分かる唯一の場所) が `derive(Show)` 由来の renderer を持つ型を描画して
-message slot に書くようになったので、`Closed` / `Cancelled` のような variant
-名はここまで届く。まだ失われるのは**値そのもの** — 呼び出し側が受け取るのは
-variant の名前であって pattern-match できる `SendError` ではない。
+The compile-rejection fixtures are exercised by the late compiler gate
+(`tests/gates/late/`), whose rows assert the diagnostic text as well as the
+refusal.
 
-### 追記 (2026-08-03): suspend lane も移行 (#1324 slice 2)
+Not pinned yet, because no second backend exists: differential traces between
+backends, replay of a failure from a scheduler seed, and the #488 probe in an
+opt-in environment.
 
-上で据え置いた3本を `Exception[E]` へ移した。塞いでいた2つがどちらも
-解消したため:
+## Naming
 
-1. CPS 分割 callee 内の `throw` が伝播しない問題 → **#1371 で修正済み**
-   (`suspend_test.vibe` の "CPS-split callee results" 節が lock)。
-2. enum payload が erased arm で variant を失う問題 → **#1392 slice 3**
-   (上表)。`Closed` / `Cancelled` は payload を持たないので、variant 名が
-   届けば情報は落ちない。
+The formal model calls the scope a *nursery* (Trio's term). The library
+spells it `TaskGroup` and the handle `TaskHandle` (asyncio's and Swift's
+spelling), the names most readers already know for these semantics, and the
+sugar is `taskgroup { g => .. }`. The handle is not called `Task`, to stay
+clear of the retired `Task::*` builtins. A task group is an ordinary library
+type plus compiler checks keyed on its shape, not a capability effect: there
+is no `Spawn[r]` effect and no `Nursery[r]` type. (The `Spawn[r]::spawn`
+requirement in [vibex-runtime-contract.md](vibex-runtime-contract.md) names
+the spawn operation in that document's authority model; no program performs
+it.) The diagnostics still say "nursery" in places (`region escapes its
+nursery scope`).
 
-| API | 旧 | 新 |
-| --- | --- | --- |
-| `Sender::send_wait` | `-> Result[Unit, SendError] with Async` | `-> Unit with Exception[SendError] + Async` |
-| `conc_send_wait_consumed` (internal) | 同上 | 同上 |
-| `TaskHandle::result_wait` | `-> Result[T, TaskError] with Async` | `-> T with Exception[TaskError] + Async` |
+## Known gaps
 
-**呼び出し側の意味論が変わる点**: suspend-class の closure literal は
-`handle` を含められない (CPS clone の適格性規則) ので、`spawn_suspend` の
-body の中では throw を**伝播させるしかない** — awaiter は cancel された
-sibling を見て別の値を返す、という分岐が書けなくなった。捕まえたければ
-`TaskGroup::run` の呼び出しを `handle` で囲む (row 変数を持つ callee なので
-使用地点に直接置く)。そこで受け取るのは runner が組み立てた
-`Failed(<描画結果>)` であって、元の `SendError` / `TaskError` 値ではない。
-`suspend_test.vibe` の "result_wait propagates a cancelled sibling to the
-awaiter" がこの経路 (`Failed("Cancelled")` まで variant が届くこと) を lock
-している。
+- **Outer generalized bindings.** The escape check does not see a region
+  leaking into a binding the checker generalized before `TaskGroup::run`,
+  because each use of it gets its own instance. Arrays with an open element
+  type and `let mut` options are not generalized, so a leak into them is
+  caught. A value of a generic struct whose type argument is still open is
+  generalized, with or without `mut` on the binding: measured with
+  `struct Cell[T] { mut v: Option[T] }` and `let c = Cell::{ v: None }`, a
+  task handle stored into `c.v` from the body escapes the group, and the
+  program compiles and runs. A binding annotated with a concrete type is not
+  checked either: with `let c: Array[Option[TaskHandle[Int]]] = [None]`, an
+  `Array::set(c, 0, Some(h))` from the body compiles. Joining an escaped
+  handle after the group returns the task's value (measured), so the program
+  is not answered wrongly today, but nothing enforces that the handle stays in
+  its group. Only the return check is a guarantee.
+- **Spawning after a failure.** A spawn into a group that is cancelling
+  after a child failed traps with a bare `unreachable` (measured), as do the
+  stack-driving deadlocks; neither names the problem.
+- **Mid-run cancellation.** A cancel request is observed at dispatch and at a
+  parked task only. A running task, and a suspendable task that is running
+  when the request arrives, are not interrupted.
+- **Messages are shared, not copied.** Sound only because `Send` admits no
+  mutable interior.
+- **One scheduler.** Every task runs on the cooperative in-guest scheduler;
+  the JSPI, Component Model subtask (#3147) and shared-everything (#488)
+  backends do not exist, so the conformance suite has nothing to compare
+  against.
+- **Finalizers.** There is no finalizer registration. A cancelled parked task
+  releases what its continuation captured through reference counting, and a
+  task that is never parked releases at its normal end.
+- **The suspendable lane is a second spelling.** `spawn_suspend` beside
+  `spawn`, and the inline-closure rule, remain until #3200.
 
-row 注釈も更新が要る: これらを呼ぶ `spawn_suspend` closure literal は
-`() -> T with Async` では足りず `with Async + Exception` になる
-(bracketed な `Exception[E]` ラベル自体は row 変数ではないので、
-`scps_calls_ok` の適格性判定には影響しない)。
+## Out of scope
 
-## v0.2.0 に含めないもの
+- raw OS thread or Worker APIs, thread affinity, priorities, and a stable CPU
+  count;
+- shared mutable memory, atomics, mutexes, and a weak-memory model;
+- moving a continuation to another task;
+- user-declared handlers that a task inherits across a spawn boundary;
+- long-lived actors with mailboxes and supervision (`Process[Msg]`);
+- acquiring several resources atomically, and performance guarantees for work
+  stealing;
+- Component Model subtasks as the task backend, which is #3147's subject.
 
-- raw OS thread / Worker API、thread affinity、priority、CPU count の安定公開
-- shared mutable memory、atomics、mutex、weak-memory model
-- arbitrary continuation migration
-- user-defined fork-safe handler 宣言
-- actor supervision / location transparency を持つ `Process[Msg]`
-- cown 的な複数 resource atomic acquisition、work stealing の性能保証
-
-これらは core semantics を変えずに追加できる場合だけ後続 ADR で扱う。
+These are added only if they leave the semantics above unchanged.
 
 ## References
 
-- [WebAssembly proposal registry](https://github.com/WebAssembly/proposals)
+- [WebAssembly proposals](https://github.com/WebAssembly/proposals)
 - [JavaScript Promise Integration](https://github.com/WebAssembly/js-promise-integration)
-- [WebKit: JSPI in Safari 27 beta](https://webkit.org/blog/17967/news-from-wwdc26-webkit-in-safari-27-beta/)
-- [Mozilla JSPI tracking bug](https://bugzilla.mozilla.org/show_bug.cgi?id=1897981)
-- [Component Model concurrency design](https://github.com/WebAssembly/component-model/blob/main/design/mvp/Concurrency.md)
-- [Shared-everything threads draft](https://github.com/WebAssembly/shared-everything-threads)
+- [Component Model concurrency](https://github.com/WebAssembly/component-model/blob/main/design/mvp/Concurrency.md)
+- [Shared-everything threads](https://github.com/WebAssembly/shared-everything-threads)
 - [Generalized Evidence Passing for Effect Handlers](https://www.microsoft.com/en-us/research/publication/generalized-evidence-passing-for-effect-handlers/)

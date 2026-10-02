@@ -5,18 +5,22 @@ the `Stmt` / `Expr` / `Pat` / `TypeExpr` trees underneath it, as declared
 in `lib/@vibe/ast/index.vpkg`. Implemented in
 `lib/@vibe/compiler/cache/ast_binary.vibe`.
 
-The format is the source of truth for the on-disk per-file AST cache
-(`~/.cache/vibe/prelude-<sha>.ast.bin`, #2510) and any other place where
-an AST has to cross a process boundary. Roundtrips MUST be byte-for-byte
-stable across compiler versions.
+The format is the source of truth for the on-disk per-file AST cache and any
+other place where an AST has to cross a process boundary. Roundtrips MUST be
+byte-for-byte stable across compiler versions.
 
-There is one implementation and one AST. The tag tables below were
-rewritten against that AST in #2510, replacing tables that still described
-the host retired in #594 — they named `Int` / `Float` / `Record` / `Map` /
-`Set` / `ArrayBuilder`, and whole enums (`ModuleRef`, `ParamLabel`,
-`EffectAtom`) this compiler has never had. `scripts/check_ast_binary_tags.sh`
-now holds every table to `lib/@vibe/ast/index.vpkg`, so a variant cannot be
-added, removed or renamed without this document following it.
+The per-file AST cache (`lib/@vibe/compiler/cache/ast_cache.vibe`) is opt-in:
+it is consulted only under `VIBE_EXPERIMENTAL_AST_CACHE=1`. Its entries are
+persistent-cache artifacts of kind `selfhost_ast_v1`, keyed by
+`(path, source fingerprint)` and stored with the other artifacts under
+`.vibe/build/cache/` (rebased by `VIBE_BUILD_CACHE_DIR`), so the compiler's
+codegen fingerprint, the resolution seed and the active `#cfg` set are already
+part of the key ([build-cache.md](../operations/build-cache.md)). An entry that
+fails to decode, or decodes with trailing bytes, is a cache miss.
+
+There is one implementation and one AST. `scripts/check_ast_binary_tags.sh`
+holds every tag table below to `lib/@vibe/ast/index.vpkg`, so a variant cannot
+be added, removed or renamed without this document following it.
 
 ## Goals
 

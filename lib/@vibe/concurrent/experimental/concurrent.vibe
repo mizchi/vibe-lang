@@ -11,35 +11,15 @@
 // Phase 3 suspend IR and replace the internals here without changing this
 // surface.
 //
-// Conformance scope (vs docs/internal/design/concurrency.md):
-//   implemented — deferred spawn, FIFO deterministic dispatch, join
-//     idempotence on stable terminal outcomes, cancel-before-dispatch,
-//     cancel idempotence, fail-fast sibling cancel + first-observed
-//     failure as the task group result, child Exception::Throw -> Failed
-//     conversion, recoverable child failure as a Result *value*, bounded
-//     MPMC channel (capacity 0 = rendezvous, NegativeCapacity), per-sender
-//     FIFO, close on last Sender release, group-close closes endpoints,
-//     drain-then-None, Err(Closed) on send-after-close.
-//   NOT implemented yet (deferred, tracked by ADR-0068 implementation
-//   order) — region escape checking beyond the return-position case (see
-//     index.vpkg's `r` note for the exact enforced scope), `Spawnable[rg]`
-//     capture checking, mid-run cancel observation, deep-copy message
-//     snapshots (single-heap: callers must send immutable values),
-//     Task::yield. (Async rows on the blocking API landed for the
-//     suspendable lane: Sender::send_wait / Receiver::recv_wait, with a
-//     concrete `with Async` row. #1181 made TaskGroup/Channel/Sender/
-//     Receiver row-polymorphic in `e` so spawned tasks can use effects
-//     beyond Error, which widened the stack-driving Sender::send /
-//     Receiver::recv / TaskHandle::join from row-free to `with e` -- a
-//     row VARIABLE. Callers inside an Async-carrying spawn_suspend closure
-//     literal must use the `_wait` primitives instead: the ADR-0076
-//     suspend/CPS lowering pass (inline_direct_perform.vibe,
-//     scps_calls_ok/scps_row_has_var) always conservatively rejects a
-//     row-variable callee there, since it cannot see what `e` resolves to
-//     at that call site.)
-//   Message/result types ARE `Send`-bounded: spawn results, channel
-//     elements, and Parallel::map inputs/outputs carry `[T: Send]`
-//     (compiler-judged structural marker, checker/checker_trait.vibe).
+// Conformance scope: docs/internal/design/concurrency.md is the
+// specification this file implements (lifecycle, fail-fast, channel
+// semantics including `SendError::Closed`, `Spawnable[rg]` capture
+// checking, the suspendable lane), and its "Known gaps" section lists what
+// it does not (mid-run cancel observation, the region escapes the checker
+// misses, messages shared rather than copied). Message/result types are
+// `Send`-bounded: spawn results, channel elements, and Parallel::map
+// inputs/outputs carry `[T: Send]` (compiler-judged structural marker,
+// checker/checker_trait.vibe).
 //
 // Naming: the task handle is `TaskHandle` (not the spec's `Task[rg, T]`)
 // because `Task::*` is claimed by the retired eager builtin prototype in
@@ -87,7 +67,7 @@ export struct TaskCell {
   mut status: Int;
   mut cancel_requested: Bool;
   mut fail_msg: String;
-  // The continuation slot (ADR-0068 実装ノート 3c): a parked suspendable
+  // The continuation slot (concurrency.md "The suspendable-task lane"): a parked suspendable
   // task's wrapped resume — calling it with the wake value runs the task
   // to its next suspend (or completion). Uniform (Int) -> Unit so the
   // group can hold heterogeneous tasks; the T-aware settle logic lives in
@@ -1151,7 +1131,7 @@ export fn Receiver::recv[rg, e, T](rh: Receiver[rg, e, T]) -> Option[T] with e {
   out
 }
 
-//# Suspendable tasks (ADR-0068 実装ノート 3c — ADR-0076 Phase 3a/3b の
+//# Suspendable tasks (concurrency.md "The suspendable-task lane" — ADR-0076 Phase 3a/3b の
 //# first-class resume を scheduler に接続する最初のスライス)
 
 // A suspendable task is DRIVEN FROM USER CODE: the task body runs inside

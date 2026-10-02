@@ -125,7 +125,7 @@ world vibec-hosted {
 node is only a headless stand-in. The driver code runs unchanged in a
 `<script type="module">`; only loading the sample switches to fetch.
 
-## Switching runtime/vibe over (#857 open question)
+## Switching runtime/vibe over to vibec
 
 - The `vibe` CLI's compile commands currently go through `vibe-cli.wasm` (the
   env-mode adapter). **The launcher already has a substitution seam

@@ -2,8 +2,8 @@
 # Sourced by this lane's run.sh; shares its resolved compiler and gate state.
 # #1081 step 4 (surface polish): `taskgroup { g => body }` is pure parser
 # sugar for `TaskGroup::run((g) -> { body })` -- no dedicated AST node, no
-# desugar pass, no checker special-casing (docs/internal/design/concurrency.md's naming
-# note: the actually-implemented library type is `TaskGroup`, not the
+# desugar pass, no checker special-casing (docs/internal/design/concurrency.md
+# "Naming": the actually-implemented library type is `TaskGroup`, not the
 # earlier illustrative `Nursery`/`Task`/`Spawn[r]` capability-effect
 # design). Positive: the sugar compiles + runs identically to a
 # hand-written `TaskGroup::run(...)` call. Negative: the EXISTING region-
@@ -50,7 +50,7 @@ echo "[compiler-gate] taskgroup { g => body } syntax sugar ok"
 # docs/internal/design/compiler-parallelism.md "FrozenArray"): FrozenArray[T] is a
 # checker-only phantom-type distinction over Array[T]'s exact same runtime
 # layout (mirrors ArrayBuilder's new/push/freeze technique, checker.vibe
-# #938 -- from_array/to_array are pure identity casts, get/length alias
+# #938 -- from_array/to_array copy since #1733, get/length alias
 # Array::get/Array::length's own bodies). Its whole point is the Send
 # judgment: checker_trait.vibe's send_ok_rec now has a
 # CtNamed("FrozenArray", [elem]) arm recognizing it Send exactly when

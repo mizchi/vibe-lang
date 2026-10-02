@@ -884,7 +884,7 @@ fi
 rm -rf "$lspgatedir"
 echo "[compiler-gate] self-hosted vibe lsp round trip ok (incl. completion/signatureHelp/workspace-symbol)"
 
-# 48/48. ADR-0068 `Send` marker (docs/internal/design/concurrency.md "`Send` と capture
+# 48/48. ADR-0068 `Send` marker (docs/internal/design/concurrency.md "`Send` and capture
 #        safety"): compiler-judged structural marker for task/channel
 #        message safety. Positive: primitives, tuples, Option/Result, and
 #        immutable structs/enums (incl. generic instantiation + recursive
@@ -1953,17 +1953,18 @@ fi
 
 # 59/59. #1081 step 3: ADR-0068 region generativity. `TaskGroup::run`
 # mints a fresh, compiler-rigid region skolem (hardcoded to this qualified
-# name -- no general rank-2/`Region`-bound mechanism, see docs/
-# concurrency.md's dated 実装ノート) and rejects the call if the region
+# name -- no general rank-2/`Region`-bound mechanism, see docs/internal/
+# design/concurrency.md "Regions and escape") and rejects the call if the region
 # escapes via the body's return value. Positive: a plain spawn+join inside
 # one nursery keeps compiling and running (region_ok_basic.vibe, 42).
 # Negative: returning a `TaskHandle` obtained inside the nursery is a
 # STATIC error (err_region_escape_return.vibe). Known gap, documented
 # rather than silently claimed: an outer-capture check also runs (scans
-# every binding visible at the call site after the body is checked), but
-# this checker generalizes `let`/`let mut` bindings, so a leak into an
-# already-generalized local `let mut` cell is NOT caught by this slice --
-# only the return-position escape is a hard guarantee here.
+# every binding visible at the call site after the body is checked) and
+# refuses a leak into an outer binding whose type is still open, but a
+# binding the checker generalized (a generic struct value) or annotated with
+# a concrete type is not seen (concurrency.md "Known gaps") -- only the
+# return-position escape is a hard guarantee here.
 echo "[compiler-gate] 59/59 ADR-0068 region generativity (#1081 step 3)"
 regiondir="_build/_gate_region"
 rm -rf "$regiondir"; mkdir -p "$regiondir"

@@ -1,25 +1,34 @@
 # ADR-0075: `.vibex` executable と resource/capability 実行契約
 
-Status: proposed
+Status: proposed. Phase 1 is implemented except the exact entry row; of the
+later phases only `resource` declarations, the type-level spawn row, and a
+launcher-driven required-capability preflight exist (see *Current state*).
+Accepted when Phase 2's semantic contract is emitted and Phase 3's preflight
+reads it; until then this document is the target, and *Current state* is the
+implemented subset.
 
 Date: 2026-07-22
 
 Related: ADR-0010, ADR-0012, ADR-0050, ADR-0068, ADR-0069, ADR-0071,
-ADR-0073, #488, #806, #817, #818
+ADR-0073, ADR-0084, ADR-0088, ADR-0094, #488, #806, #817, #818
 
-## 位置づけ
+## Scope
 
-本書を `.vibex` の entry、resource requirement、provider composition、Wasm host
-preflight、task/process への authority 委譲に関する source of truth とする。
+This document is the source of truth for the `.vibex` entry, resource
+requirements, provider composition, Wasm host preflight, and the delegation of
+authority to tasks and processes.
 
-- [effectset.md](effectset.md) は operation-level effect row の意味論を定める。
-- [concurrency.md](concurrency.md) は task / nursery / worker の lifecycle と isolation を
-  定める。
-- [effect-wit-mapping.md](effect-wit-mapping.md) は現行 WIT generator の実装状態を記録する。
-- 本書は、それらを executable の build / deploy / run 境界へ接続する。
+- [effectset.md](effectset.md) defines the meaning of operation-level effect
+  rows.
+- [concurrency.md](concurrency.md) defines the lifecycle and isolation of
+  tasks, nurseries and workers.
+- [effect-wit-mapping.md](effect-wit-mapping.md) records what today's WIT
+  generator does.
+- This document connects them to an executable's build / deploy / run
+  boundary.
 
-現行 compiler、`runtime/vibe`、既存 `.vibex` script、export-only WIT generator は
-移行前の実装であり、本書と衝突する場合は本書を目標仕様とする。
+Where the compiler, `runtime/vibe` or the WIT generator differ from this
+document, *Current state* says so; the rest of the document is the target.
 
 ## 決定の要約
 
@@ -46,6 +55,26 @@ preflight、task/process への authority 委譲に関する source of truth と
 11. path-scoped authority は正規化 glob の順序ではなく集合として扱う。同一
     scope domain で交差しうる pattern は同一 authority の場合だけ許し、
     異なる authority の重複は plan/apply 時に reject する。
+
+## Current state
+
+What the compiler and runners implement, by phase of the plan below:
+
+| phase | implemented | not implemented |
+| --- | --- | --- |
+| 0. specification / Oracle | the Lean model under `formal/VibeFormal/Capability/` and its proofs (see *Lean Oracle*) | — |
+| 1. `.vibex` entry | executable file kind; exactly one non-exported `fn main`, `() -> Unit`, with an explicit row; a `.vibex` cannot be imported and exports nothing (#2229); the entry is always `main` (`--entry` / `VIBE_ENTRY` refused); `vibe run` refuses a `.vibe`; `.vibex --wit` is refused rather than emitting an export-only WIT. The entry row is written `allows` and admitted by ADR-0084's rule (#1683, ADR-0088) | the exact row, `Ractual = Rdeclared`: an entry may still grant more than its body requires (an `allows Fs?` entry whose body needs only `Fs::read_file?` checks clean) |
+| 2. semantic contract emission | `resource Name : Owner::Kind` declarations, the `Process::Root` singleton kind, and their two identity rules (#1343, PR #1465; [resource-kind-parameters.md](resource-kind-parameters.md)) | `resourceId` in ADR-0071's normalization and resource-qualified `OperationRef` (#3143); `fork_requires`; any contract artifact (`SemanticContract` JSON or custom section); restricting `resource` to the `.vibex` root |
+| 3. provider resolver / preflight | `vibe run` refuses, before the artifact is built, a required capability its `--allow-*` / `--deny-*` flags withhold, naming the flag (#2828, ADR-0088 L3) | provider selection; a `BindingLock` reader or writer; the path-scope overlap checker; a preflight that reads a contract artifact rather than launcher flags |
+| 4. WIT / component boundary | `vibe compile --wit` projects a module's exports and user effects ([effect-wit-mapping.md](effect-wit-mapping.md)) | a WIT world derived from the `.vibex` semantic contract; operation-level host imports; binding slots |
+| 5. task authority | type-level propagation of a child's row: `TaskGroup::spawn` takes `() -> T with Exception + e` and `TaskGroup::run` carries `e`, so a task's requirement reaches its caller's row; `Send` / `Spawnable` capture rules (ADR-0068) | fork-safe evidence, evidence subsetting per task, authority traces |
+| 6. resource provisioning | — | all of it |
+| 7. multi-worker / process / WasmFX | — | all of it |
+
+No open issue owns Phase 1's exact row, the Phase 2 contract artifact, or
+Phases 3–7 beyond the rows marked above. #3143 owns resource-qualified
+operation identity, and #2656 (user-declared capabilities provided by the
+host) builds on the same `resource` and provider machinery.
 
 ## 用語と関係
 
@@ -510,97 +539,113 @@ spawn row propagation、authority subset、provider-not-subtyping、phase separa
 compiler manifest、provider lowering、host preflight、child authority の contract が先に
 一致することである。
 
-## 実装計画
+## Implementation plan
 
-### Phase 0: specification / Oracle（本 ADR）
+Each phase lists its red tests (what must be refused or must differ) and its
+green work. *Current state* above says which of these exist.
 
-- `.vibex`、resource identity、provider、authority 委譲を決定する。
-- Leanにpositive/negative witnessを置く。
-- CIは従来どおり `formal/**` 変更時だけ `formal-check` を実行する。
+### Phase 0: specification / Oracle
+
+- Decide `.vibex`, resource identity, providers and authority delegation (this
+  ADR).
+- Put positive and negative witnesses in Lean.
+- CI runs `formal-check` only when `formal/**` changes, as before.
 
 ### Phase 1: `.vibex` entry hardening
 
-実装状況（2026-07-22）:
-
-- 実装済み: executable file kind、exactly-one/non-exported `fn main`、Unit/無引数、
-  明示 row、`.vibex` import拒否、固定 `main` entry、`.vibe` run拒否、CLI/script移行。
-- 未実装: checker が求める `Ractual = Rdeclared` の exact/closed row 検査。
-  現段階は構文上 row が書かれていることだけを検査し、semantic contract emission と
-  同時に Phase 2 で接地する。この差は target contract の緩和ではない。
-- `.vibex --wit` は Phase 2 まで拒否する。export-only の旧 WIT generator で
-  non-exported main の requirement を欠落させた artifact は生成しない。
-
 Red:
 
-- `.vibex` without main、multiple main、value-bound main、custom `--entry` をreject。
-- `.vibe` を `vibe run` した場合と `.vibex` importをreject。
-- open/inferred/overdeclared main rowをreject。
+- Reject a `.vibex` with no `main`, with several, with a value-bound `main`, or
+  with a custom `--entry`.
+- Reject `vibe run` of a `.vibe`, and an import of a `.vibex`.
+- Reject an open, inferred or over-declared `main` row.
 
 Green:
 
-- frontendにfile kindを渡し、`fn main` contractをcheckerで検査する。
-- canonical Unit mainからtarget entryを合成する。
-- 既存script/fixtureを移行し、seed bump前はcompat harnessを隔離する。
+- Pass the file kind to the frontend and check the `fn main` contract in the
+  checker.
+- Synthesize the target entry from the canonical `Unit` `main`.
+- Migrate the existing scripts and fixtures; keep a compatibility harness
+  isolated until the seed bump.
+
+The exact row (`Ractual = Rdeclared`) is grounded together with Phase 2's
+contract emission; until then only the presence of a row is checked. That gap
+is not a relaxation of the target contract.
 
 ### Phase 2: semantic contract emission
 
 Red:
 
-- operation順序/alias表記が違ってもhashが同じ。
-- `S3[Posts]` と `S3[Uploads]` のhash/requirementが異なる。
-- direct operationとeffectsetが同じmanifestを生成する。
-- child-only effectがroot contractから欠落しない。
+- Different operation order or alias spelling gives the same hash.
+- `S3[Posts]` and `S3[Uploads]` give different hashes and requirements.
+- A direct operation and an effectset produce the same manifest.
+- A child-only effect is not dropped from the root contract.
 
 Green:
 
-- ADR-0071 normalizationに`resourceId`を配線する。
-- `resource` declaration/resolution、exact main row、`fork_requires` projectionを実装する。
-- deterministic JSON/custom sectionを生成しgoldenを固定する。
+- Wire `resourceId` into ADR-0071's normalization.
+- `resource` declaration and resolution, the exact `main` row, and the
+  `fork_requires` projection.
+- Emit deterministic JSON / a custom section and pin it with goldens.
 
 ### Phase 3: local provider resolver / preflight
 
 Red:
 
-- missing operation、wrong resource kind/id、non-fork-safe provider、ABI mismatchでmain未実行。
-- read-only parentからwrite childをreject。
-- S3 mock providerでS3が消え、provider requirementだけがresidualに残る。
-- `read src/**` と `write src/generated/**` を reject し、同一 authority の重複と
-  `read src/**` / `write cache/**` は accept。
-- overlap 診断が両 pattern に一致する canonical path witness を含む。
-- 異なる logical resource が同じ physical root へ bind された場合にも重複を再検出。
+- A missing operation, a wrong resource kind or id, a non-fork-safe provider,
+  or an ABI mismatch keeps `main` from starting.
+- A write child under a read-only parent is rejected.
+- With an S3 mock provider, S3 disappears and only the provider's requirements
+  remain residual.
+- `read src/**` with `write src/generated/**` is rejected; an overlap with the
+  same authority, and `read src/**` with `write cache/**`, are accepted.
+- The overlap diagnostic carries a canonical path witness matching both
+  patterns.
+- An overlap is detected again when different logical resources bind the same
+  physical root.
 
 Green:
 
-- deterministic provider selectionとbinding lock readerを実装する。
-- mock/in-memory providerでcompile→plan→runの縦串を通す。
-- normalized glob intersection と logical/physical scope policy gate を実装する。
-- LeanのcaseをJSON corpus化し、selfhost resolver/runtime preflightとdifferential testする。
+- Deterministic provider selection and a binding-lock reader.
+- A compile → plan → run vertical with mock / in-memory providers.
+- The normalized-glob intersection and the logical / physical scope-policy
+  gate.
+- The Lean cases as a JSON corpus, differential-tested against the selfhost
+  resolver and the runtime preflight.
 
-### Phase 4: WIT / Component boundary
+### Phase 4: WIT / component boundary
 
-- export-only scanから`.vibex` semantic contract起点へ移行する。
-- provider composition前後のsemantic/residual contractを両方保持する。
-- operation-level WIT import、resource binding slot、ABI/hash検査を実装する。
-- Error/Async outer providerをWIT projection前に明示的にlowerする。
+- Move from the export-only scan to the `.vibex` semantic contract.
+- Keep both the semantic and the residual contract, before and after provider
+  composition.
+- Operation-level WIT imports, resource binding slots, ABI / hash checks.
+- Lower the `Error` / `Async` outer providers explicitly before WIT
+  projection.
 
 ### Phase 5: task authority
 
-- higher-order `spawn` typingでchild rowをroot requirementへ伝播する。
-- evidence vectorをoperation/resource単位でsubset抽出する。
-- fork-safe provider check、`Send`/`Spawnable`、task-local handler拒否を実装する。
-- cooperative one-worker backendで権限traceを取得しLean modelと比較する。
+- Propagate the child row of a higher-order `spawn` into the root requirement.
+- Extract evidence vectors per operation / resource.
+- The fork-safe provider check, `Send` / `Spawnable`, and rejection of
+  task-local handlers.
+- Trace authority on the cooperative one-worker backend and compare it with
+  the Lean model.
 
 ### Phase 6: resource provisioning
 
-- resource provider lifecycle、plan/apply、policy mapperを別層で実装する。
-- 最初のcloud providerはS3 Read-onlyに限定し、credentialをguestへ渡さない。
-- policy diffとcontract surface diffをsecurity-sensitive changeとして表示する。
+- Resource-provider lifecycle, plan / apply, and the policy mapper as a
+  separate layer.
+- Limit the first cloud provider to S3 read-only, and never hand a credential
+  to the guest.
+- Show policy diffs and contract-surface diffs as security-sensitive changes.
 
 ### Phase 7: multi-worker / process / WasmFX
 
-- capability contractを変えずにworker backendを追加する。
-- task migration、worker reuse、cancel後のevidence破棄をdifferential traceで検証する。
-- public process、WasmFX、shared-everythingは個別ADRとopt-in gateで追加する。
+- Add worker backends without changing the capability contract.
+- Verify task migration, worker reuse and evidence disposal after cancel with
+  differential traces.
+- Add public processes, WasmFX and shared-everything through separate ADRs and
+  opt-in gates.
 
 ## Conformance locks
 

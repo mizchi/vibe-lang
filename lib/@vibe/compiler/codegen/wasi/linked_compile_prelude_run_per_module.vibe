@@ -695,19 +695,11 @@ export fn effect_lowering_prelude_grants(stmts: Array[Stmt], entry_name: String,
     if async_sleep_boundary_err != "" {
       Array::push(errs, async_sleep_boundary_err)
     } else {
-      // ADR-0076 (#817) Phase 2: inline `perform` calls that are structurally
-      // reachable-only-via-tail-resumptive-handler-arms directly into their
-      // handler arm body (single-shot fast path). Conservative: bails out
-      // per-handle whenever the handled body contains anything (nested
-      // `handle`, closures, or calls to named functions) that could hide a
-      // perform outside this direct scan, leaving those to evidence_dict_pass
-      // below (which, since 追記34 V2 removed the replay engine, hard-errors on
-      // any live non-Error handle it cannot migrate).
       // ADR-0076 Phase 3a (#817, docs/internal/design/effect-evidence-passing.md 追記27):
       // depth-0 suspend CPS for handle sites whose arms capture `resume` as a
       // first-class value (the suspend class -- ADR-0068's Async::suspend
-      // shape). Runs BEFORE the Phase 2 / evidence passes below so they only
-      // ever see the sites this pass left alone (a transformed site has no
+      // shape). Runs BEFORE the evidence pass below so it only
+      // ever sees the sites this pass left alone (a transformed site has no
       // EHandle left at all). A triggered-but-ineligible site is a hard
       // compile error -- a value-referencing arm cannot compile on the replay
       // path, so silent fallback is not an option.
@@ -715,17 +707,15 @@ export fn effect_lowering_prelude_grants(stmts: Array[Stmt], entry_name: String,
       if Array::length(scps_errs) > 0 {
         Array::push(errs, Array::get(scps_errs, 0))
       } else {
-        // ADR-0076 (#817) Phase 3, first slice: evidence-dict threading for the
-        // narrow case Phase 2 above cannot reach on its own -- a handle body that
-        // calls a named top-level function which itself performs the handled
-        // effect (docs/internal/design/effect-evidence-passing.md "追記 2", evidence_dict_pass's
+        // ADR-0076 (#817) Phase 3: evidence-dict threading for every handle the
+        // suspend pass left -- including a handle body that calls a named
+        // top-level function which itself performs the handled effect (docs/internal/design/effect-evidence-passing.md "追記 2", evidence_dict_pass's
         // own doc comment in common_base/inline_direct_perform.vibe -- appended to
         // that existing cross-file-registered file rather than a new one, to
         // avoid the bootstrap flatten gotcha documented in docs/internal/design/effectset.md).
-        // Runs after Phase 2 so it only sees the handles Phase 2 did
-        // not already fully inline; whole-program-conservative and strictly
-        // additive (per-effect all-or-nothing), so it never touches a handle or
-        // function Phase 2 already resolved or that this pass cannot prove safe.
+        // Whole-program-conservative and per-effect all-or-nothing, so it never
+        // touches a handle or function this pass cannot prove safe; the Phase 2
+        // direct-perform inliner that used to run first was deleted in #2500.
         let edp_errs = evidence_dict_pass_with_roots(stmts, lc_late_dce_roots(stmts, entry_name, false))
         if Array::length(edp_errs) > 0 {
           Array::push(errs, Array::get(edp_errs, 0))

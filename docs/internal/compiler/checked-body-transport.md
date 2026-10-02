@@ -1,6 +1,12 @@
 # Checked body transport
 
-Issue #2505 owns the boundary between module checking and code generation.
+This document describes the checked-module artifact lane: an opt-in boundary
+between module checking and code generation (`VIBE_CHECKED_MODULE_CACHE`,
+default `off`). It stays default-off on measurement — the transport costs more
+than the work it saves (below), and #2505, which asked whether it could become
+a phase boundary, was closed as not planned on that evidence. The lane and its
+parity oracle remain.
+
 `checker/artifacts/program` transports the complete current `CheckedProgram`.
 Decoding reconstructs values directly from bytes: it neither parses source nor
 reruns inference, and no current syntax or semantic constructor is omitted.
@@ -135,12 +141,13 @@ modules produce no artifact. The codegen AST memo is reset per compilation,
 checks exact source and context, and hands out a fresh top-level array so merge
 cannot mutate another consumer's input.
 
-Default activation and the remaining phase separation stay subject to corpus
-parity and compiler-sized cost measurements. The #2510 work still owns caching
-the prelude's derived tables and limiting its execution to edited modules; this
-artifact already supplies its AST and checker-owned lowering inputs.
+Caching the prelude's derived tables and limiting its execution to edited
+modules is not done by this lane; that work belongs to per-module compilation
+(#2826). This artifact already supplies the prelude's AST and checker-owned
+lowering inputs.
 
-Both measurements now exist, and they do not agree. Parity holds, including
+Default activation was conditioned on two measurements, corpus parity and
+compiler-sized cost. Both exist, and they do not agree. Parity holds, including
 across edits (below). The cost does not: on the compiler's own closure the
 cache is **+87 % wall and +61 % heap warm**, measured by
 `scripts/checked_module_cache_cost.mjs` and recorded with its counter

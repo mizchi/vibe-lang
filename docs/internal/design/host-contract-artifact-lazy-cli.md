@@ -1,8 +1,14 @@
 # One declaration, three readers: the residual `.wit`, the build artifact, and lazy CLI dispatch
 
-Status: proposed — [#1346](https://github.com/mizchi/vibe-lang/issues/1346)
-(the synchronous host contract), under
-[#2828](https://github.com/mizchi/vibe-lang/issues/2828). Accepted when the
+Status: proposed, and not implemented. It was filed under #1346 (the
+synchronous host contract) and #2828. Both closed without these artifacts:
+#1346 was met by the generated import manifest and its gates
+([../../user/reference/host-runtime-contract.md](../../user/reference/host-runtime-contract.md),
+`scripts/check_host_runtime_contract.py`) and by
+[capability-host-contract.md](capability-host-contract.md), not by the
+generator, sections and manifest column below. There is no `vibe:host`
+package, no `vibe.entry` section, no `vibe.capabilities` emitter and no
+`vibe-commands-v2` row, and **no open issue owns them**. Accepted when the
 generator, the artifact sections and the manifest column below exist and the
 conformance gate in §5 rejects its own mutations.
 
@@ -57,14 +63,14 @@ builtin registry, `docs/generated/host-runtime-contract.json` (including the
 resource-grouping table in §1.2), or from the emitter, and the gate in §5 is
 what proves it.
 
-## What exists, as of `5275d33`
+## What exists
 
 | piece | state | where |
 |---|---|---|
-| raw `vibe.*` import inventory: 59 static fields in four bands, plus two dynamic name patterns, with core type indices | generated, gated fail-closed on emitter + both runners | `docs/generated/host-runtime-contract.json`, `scripts/check_host_runtime_contract.py` |
+| raw `vibe.*` import inventory: 68 static fields in four bands, plus five dynamic name patterns, with core type indices | generated, gated fail-closed on emitter + both runners | `docs/generated/host-runtime-contract.json`, `scripts/check_host_runtime_contract.py` |
 | value layout of the raw lane: packed `(ptr << 32) \| byte_len` strings, `Bytes` header struct, untagged `i64` results, opaque `i64` handles | documented | [../../user/reference/host-runtime-contract.md](../../user/reference/host-runtime-contract.md), [../../user/reference/host-abi.md](../../user/reference/host-abi.md) |
 | `vibe.abi` custom section (`version=1`, `host_import_abi=raw`) on both lanes | emitted, read by the node runner | `lib/@vibe/compiler/codegen/wasm_emit/metadata.vibe` |
-| `vibe.tagmode` custom section for adapters | emitted where an adapter is selected, required by ADR-0106 | `lib/@vibe/compiler/entry/source_compile/wasi_only/component_codegen.vibe` |
+| `vibe.tagmode` custom section for adapters | emitted where an adapter is selected, required by ADR-0106 | the composer, `lib/@vibe/compiler/entry/source_compile/wasi_only/component_codegen*.vibe` |
 | `vibe.capabilities` section + `__vibe_granted$<label>` globals + trapping stub | designed; withholding landed on both runners (`VIBE_HOST_WITHHOLD`) | [capability-host-contract.md](capability-host-contract.md) |
 | `--wit` generator for user effects and exports | implemented; host capabilities are a comment | `lib/@vibe/compiler/wit_gen.vibe` |
 | `viberun --commands`: `vibe-commands-v1` manifest, `run: func(args: string) -> string`, result frame, lazy load proven by a poisoned-row gate | implemented; launcher does not use it | `runtime/viberun/src/commands.rs`, [component-lazy-dispatch.md](component-lazy-dispatch.md) |
@@ -325,8 +331,9 @@ and `tcp_connect` follow the same table; they are not a prose convention.
 **Failure is a trap in this version.** Every runner today turns a host failure
 into a trap (a Rust `Err` through `func_wrap`, a thrown JS error), and the
 program cannot observe it. The WIT above says so by returning `T` rather than
-`result<T, E>`. ADR-0088's `Errored(E)` arm needs a catchable host-failure ABI;
-that is #2828's item, and when it lands the residual signature becomes
+`result<T, E>`. ADR-0088's `Errored(E)` arm needs a catchable host-failure ABI,
+which no open issue owns ([capability-authorization-surface.md](capability-authorization-surface.md)
+§4); when it lands the residual signature becomes
 `result<T, host-error>` on the operations it covers, with a version bump on
 the package. Declaring `result` now, before any host produces one, would
 describe a boundary that does not exist.
@@ -821,9 +828,9 @@ step 4 is that change's own deliverable; step 5 needs 3.
 
 - **Who sets the toolchain policy** (which labels the CLI may use on this
   machine). Today the CLI has full authority and nothing here narrows it; the
-  column makes narrowing possible, and #2332's L1 flags are where the answer
-  goes.
-- **`Errored(E)`** and any `result<T, E>` residual signature (#2828).
+  column makes narrowing possible, and ADR-0088's L1 flags (`--allow-*` /
+  `--deny-*`, implemented for `vibe run` by #2828) are where the answer goes.
+- **`Errored(E)`** and any `result<T, E>` residual signature (no open owner).
 - **Async**: `future<T>`, `stream<u8>`, the async lift and the
   `componentAdapterOnly` names stay exactly where ADR-0089 and #2832 put them.
 - **The `.cwasm` freshness rule for the monolithic CLI**, which stays until

@@ -5,18 +5,32 @@ implementation. The memory profiler is directly tied to the allocation model.
 
 ## Memory model
 
-- **Linear backend** (default for `vibe build --release` and `viberun`): uses a
-  bump allocator. The exported mutable `i32` global `__heap_ptr` is the
-  monotonically increasing heap frontier. There is no `free`; allocation uses
-  an arena. Therefore, within one execution, peak memory equals total allocated
-  memory. This is an allocation profile by total, rate, and site, not a live-set
-  profile.
-- **Wasm GC backend** (opt-in): host GC makes live-set measurement possible,
-  but code-generation gaps remain, including higher-order functions and
-  iterators. See `AGENTS.md`.
+Every tier below reads the exported global `__heap_ptr`, the frontier of the
+main linear allocator. It only moves forward. What a frontier delta means
+depends on the lane the program was compiled for (the
+[memory contract](memory-contract.md) defines the lanes):
 
-Host allocations such as `vibe_alloc_packed_str` bump the same `__heap_ptr`, so
-the value represents combined guest and host heap use.
+- **Linear RC** (the default for `vibe run`, `vibe build` and `vibe bench`):
+  Perceus releases objects onto free lists, and later allocations reuse those
+  blocks without moving the frontier. A delta is **frontier growth**, not total
+  allocation: a loop that frees what it allocates can report 0 B while it
+  allocates on every iteration, and the peak frontier is not the peak live
+  set either.
+- **Linear bump** (`VIBE_RC=0`): nothing is freed, so within one execution the
+  delta is the total allocated and the peak equals the total. Compile with
+  `VIBE_RC=0` when a measurement must count allocations, as the
+  `bench/bench_*.vibe` write-ups that quote B/op as allocation do.
+- **Wasm GC** (`VIBE_BACKEND=gc`, opt-in): native GC objects never touch the
+  frontier; only values that stay in linear memory do.
+
+On the bump lane and the Wasm-GC backend, `MutList` / `MutBytes` storage
+inside a `region` lives in a separate arena and does not move `__heap_ptr`
+while the arena has room. The RC lane has no dedicated arena.
+
+These tiers are therefore allocation profiles by frontier growth, rate and
+site, not live-set profiles. Host allocations such as `vibe_alloc_packed_str`
+bump the same `__heap_ptr`, so the value covers guest and host heap use
+together.
 
 ## Implementation tiers by cost
 
@@ -43,8 +57,10 @@ vibe: memory — allocated 124.0 KiB (127008 B), peak heap 252.1 KiB, committed 
 - `vibe::mem ...` is machine-readable for benchmark harnesses and CI.
 - `vibe: memory — ...` is human-readable.
 
-`allocated = heap_peak - heap_base`. The linear backend has no `free`, so this
-is the total allocated during the execution. Pure computational programs have
+`allocated = heap_peak - heap_base`. On the bump lane (`VIBE_RC=0`) nothing is
+freed, so this is the total allocated during the execution; on the default RC
+lane it is frontier growth, and blocks reused from the free lists do not count
+(see [Memory model](#memory-model)). Pure computational programs have
 `allocated=0`. `committed` is the total number of bytes in Wasm memory.
 
 When `VIBE_MEM=1` is set by `--mem`, the runner reads `__heap_ptr` through
@@ -109,8 +125,8 @@ massif or heaptrack by reusing the break build without new instrumentation.
 Break code generation emits `vibe::dbg_break` at every user-function entry and
 `vibe::dbg_line` at statement boundaries for debugger breakpoints and stepping.
 The runner treats both hooks as sample points. It reads `__heap_ptr` and credits
-the bump since the previous sample to the innermost function active at that
-time, `frame[0]` of the backtrace.
+the frontier growth since the previous sample to the innermost function active
+at that time, `frame[0]` of the backtrace.
 
 Refreshing the backtrace at statement boundaries means allocations in a caller
 after a helper returns are normally credited to the caller. This avoids a
@@ -137,7 +153,8 @@ not pause.
 
 Attribution is an approximation at function granularity, not line granularity.
 It assigns the entire delta between sample points to one function. Because it
-uses `__heap_ptr`, it measures arena allocation rather than live memory. Taking
+uses `__heap_ptr`, it measures frontier growth rather than live memory, and on
+the RC lane an allocation served from a free list is credited to nobody. Taking
 a backtrace at every sample also makes `--alloc-site` slower than a normal run.
 
 A remaining misattribution occurs when a caller allocates after a helper call
@@ -160,7 +177,9 @@ changing code generation:
 - It repeatedly invokes a restartable test entry on one warm instance, using
   warmup calls before measurement.
 - It times each call with `Instant` and reads `__heap_ptr` around the batch to
-  report bytes per operation using tier 1.
+  report bytes per operation using tier 1. On the default RC lane that is
+  frontier growth per operation; compile with `VIBE_RC=0` to count
+  allocations.
 - It reports minimum, p50, p95, mean, operations per second, and bytes per
   operation.
 
@@ -213,8 +232,9 @@ bench multi_bench.vibe::heavy: 1000 iters — … ns/op …
 ```
 
 The export logic is in
-`lib/@vibe/compiler/codegen/wasi/linked_compile.vibe`, where the export section
-adds `__bench_*` names from `test_fn_names` to `all_export_names`. The runner's
+`lib/@vibe/compiler/codegen/wasi/linked_compile_module_sections.vibe`, where the
+export section adds `__bench_*` names from `test_fn_names` to
+`all_export_names`. The runner's
 `bench` function enumerates module exports and selects per-block measurement or
 the fallback. `scripts/test_vibe_bench.sh` covers the behavior.
 
@@ -228,6 +248,8 @@ Potential accuracy improvements include:
 ## Measurement cautions
 
 - `profile-now-us` reads a host wall clock. Microbenchmarks must batch work.
-- A bump allocator has no fragmentation or reclamation, so peak equals total
-  allocation by definition.
+- On the bump lane nothing is reclaimed, so peak equals total allocation by
+  definition. On the RC lane the frontier stops growing once the free lists
+  cover the workload's churn, so a flat frontier is not proof of zero
+  allocation or of no leak; compare against `VIBE_RC=0`.
 - Measurements are inherently noisy; use repetition and robust statistics.

@@ -282,9 +282,10 @@ contract — this is a naming *rule*, not a per-type coincidence:
 旧綴りの**型注釈**も transparent alias として残る (#1700)。たとえば
 `let m: HashMap[String, Int] = HashMap::new_string()` は `@vibe/core` の
 `index.vpkg` 境界を越えて `MutMap[String, Int]` と同じ型になる。移行先は
-引き続き `Mut-` 名。型行に `#deprecated` を書くのは bootstrap bump 待ち
-(seed の契約パーサが `#` を拒む) なので、`vibe check` は言語側の表で
-同じ名前を警告する。`import { HashMap }` したファイルの注釈が対象。
+引き続き `Mut-` 名。`@vibe/core` の型行にはまだ `#deprecated` が付いて
+いない (seed の契約パーサは型行の `#deprecated` をもう受理する — 2026-10-02 に
+seed で実測) ので、`vibe check` は言語側の表で同じ名前を警告する。
+`import { HashMap }` したファイルの注釈が対象。
 
 旧綴りの**関数**を使うと `vibe check` が移行先を名指しする `warning:` 行を
 出す (非致命、exit 0)。**これは #1262 follow-up で初めて実際に効くようになった**
@@ -296,7 +297,7 @@ contract — this is a naming *rule*, not a per-type coincidence:
 **"Frozen" and "persistent" are not synonyms.** `Map`/`StringSet` are
 persistent (functional-update) but are *not* `Send`-eligible under the
 current allowlist — the canonical one is
-[concurrency.md](../../internal/design/concurrency.md#send-と-capture-safety), pinned by
+[concurrency.md](../../internal/design/concurrency.md#send-and-capture-safety), pinned by
 `send_allowlist_test.vibe`. Reach for `FrozenArray`
 specifically when a value needs to cross a `spawn`/task boundary; reach for
 a bare-named persistent type for ordinary functional-update code.
@@ -322,9 +323,9 @@ fn greeting() -> String {
 `StringBuilder::freeze` も同じ registry row・同じ codegen に落ちる
 (`canonical_builtin_name` のエイリアス、生成 wasm はバイト一致 —
 `compiler_gate.sh` 102/102 が pin) ので既存コードは動くが、新規コードは
-`build` を使うこと。**コンパイラ自身のソースの移行と `freeze` の
-`#deprecated` 化は bootstrap bump 待ち** —— seed が `build` を知るまで
-compiler source は `freeze` のままでなければならない (docs/internal/operations/bootstrap.md)。
+`build` を使うこと。コンパイラ自身のソースはまだ `freeze` 綴りで、`freeze` に
+`#deprecated` も付いていない。seed は `build` を既に理解する (2026-10-02 に
+seed で実測) ので、これは bootstrap bump 待ちではなく未着手の移行 (ADR-0101)。
 
 `Array`/`Bytes` themselves are NOT renamed under this convention — they
 predate it and a rename would be too disruptive. They remain low-level
@@ -1058,7 +1059,7 @@ impl [T: Eq] Eq for Array[T]              // 宣言はできるが bound には�
 
 // `Send` (ADR-0068) is a COMPILER-JUDGED structural marker, not a user
 // trait; `impl Send for X` is an error. The allowlist is stated once, in
-// docs/internal/design/concurrency.md "Send と capture safety".
+// docs/internal/design/concurrency.md "`Send` and capture safety".
 
 // `Default` (#1847) は builtin trait: prelude が marker + primitive impl
 // (Int/Float/Double/Bool/String) を登録するので `[T: Default]` bound は
@@ -1558,7 +1559,7 @@ handle { fetch_user(input) } with {
 > `Ok`/`Err` が本当に要るのは **WIT 境界だけ** — WIT の `result<T,E>` は
 > `Exception[E]` row からは射影されないので、そこには
 > `import @vibe/wit_runtime { Result }` を使う ([effect-wit-mapping.md](../../internal/design/effect-wit-mapping.md)、
-> compiler-gate 89/89 が byte 単位で pin)。それ以外で自前に
+> compiler-gate 90/90 が byte 単位で pin)。それ以外で自前に
 > `enum Result[T, E] { Ok(T); Err(E) }` を宣言するのは自由だが、特別扱いは
 > 一切なくただのユーザー enum になる。
 
@@ -1889,7 +1890,8 @@ let r = handle {
 // later, calling (Array::get(conts, 0))(5) runs the rest of the body: 50
 ```
 
-Constraints (linear backend only): in the body of a handle whose arm
+Constraints (both backends; the wasm-gc lane has run the same pass since
+#3009): in the body of a handle whose arm
 references `resume` as a value, a perform of the handled effect (and a call to
 a function whose row carries it) must appear directly in a let / sequence /
 tail / branch-tail position. **A let chain standing in the middle of a
@@ -1928,11 +1930,16 @@ delegating caller proven the same way)** (#1536 (a) -- `AsyncIter::find`'s
 before). **A perform inside `while` / `loop` is accepted** (#1230/#1536: the
 loop becomes a recursive closure returning a step; bodies with `break` /
 `continue` work, `break` becoming the loop's exit continuation and `continue`
-the loop's own call; only a body containing `return` is still a compile error,
-because a closure cannot return from the function). A callee with a row
-variable (`with e`) and a perform inside a `for` form are compile errors --
-except a row-variable callee whose closure arguments are literals that provably
-cannot perform the effect, which is how an `Async` entry calls `TaskGroup::run`.
+the loop's own call; a `return` in the body records its value, leaves the
+loop, and returns after it, ADR-0076 addendum 56). **A perform inside a `for`
+is accepted when the iterand is provably an `Array` or a `String`** -- an
+annotated parameter, a binding to a literal, or a call whose declared return
+type is one (addenda 58 / 60) -- and an unproved iterand is a compile error. A
+callee with a row variable (`with e`) is accepted when none of its declared
+parameter types mentions a function type, since `e` can then only be empty
+(addendum 59). Any other row-variable callee is a compile error -- except one
+whose closure arguments are literals that provably cannot perform the effect,
+which is how an `Async` entry calls `TaskGroup::run`.
 Such a literal may capture a name bound outside it only when that name holds
 plain data: a scalar or string literal, a non-empty array or tuple of them, a
 value given a plain-data type (`let n: Int = f()`), or a parameter declared as
@@ -2819,10 +2826,7 @@ fn simd_add(a: Int, b: Int) -> Int = wasm
   `(i32.const -1640531535)` are the same instruction. Out of range for the
   instruction's width — or longer than a vibe `Int` — is a **located error**
   from `vibe check`, not a truncation and not a module that only fails at load
-  (#2341). NOTE until the next bootstrap bump: the committed seed predates this,
-  and `vibe test` compiles with the seed by default, so inside `lib/**` and
-  anything run through `scripts/vibe_test.sh` keep spelling an out-of-signed-range
-  i32 immediate the signed way.
+  (#2341).
 - **WAT text**: ordinary string literal(s) — the lexer has no raw/multiline
   strings; adjacent literals after `= wasm` are joined with newlines. `;;`
   line and `(; ;)` block comments work inside the text.
@@ -3193,6 +3197,7 @@ user-defined function.
 // doctest-skip: shows both separators side by side, including the rejected one
 enum Shape { Circle(Int); Rect(Int, Int) }        // declaration members: ;
 let r = match s { Circle(r) => r, _ => 0 }        // match arms: ,
+handle { body } with { A::X() => resume(1); A::Y() => resume(2) }  // handler arms: ;
 ```
 
 Declaration bodies (struct fields, enum variants) separate their members with
@@ -3203,6 +3208,11 @@ members`). Match arms are the one list that also accepts `;` (#2972): the
 lexer ends a line with `;` when the next line starts with `(`, so an arm whose
 pattern begins with `(` must still parse. Write `,`; the `;` is tolerated, not
 a second spelling.
+
+Handler arms are the exception to the arm rule: the arms of a `with { .. }`
+handler set are separated by `;` or a newline, like declaration members, and
+`,` is a parse error that names the fix (`replace this ',' with ';' or a
+newline: handler-set arms are separated by ';' or a newline, not ','`, #3072).
 
 ### top-level に裸の式は置けない (ADR-0069)
 

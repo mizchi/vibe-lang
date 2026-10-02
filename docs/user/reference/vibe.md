@@ -62,8 +62,10 @@ Exception-rowed callback parameter all require the caller to declare or
 `handle` it.
 An entry declared `with Exception` gets a runtime boundary handler: an
 escaping Throw becomes `vibe: uncaught error: <msg>` on stderr and an
-unsuccessful process outcome. Remaining #944 tail: the builtin-call exception
-carve-out (sub-decision) and the temporary `VIBE_CHECK_ERROR_ROW=0` opt-out.
+unsuccessful process outcome. Two exceptions remain: a call to a builtin
+whose declared row is `Exception` adds no requirement to the caller's row
+(the entry boundary handles it), and `VIBE_CHECK_ERROR_ROW=0` still turns the
+checked row off for one compile.
 
 ```
 let run: () -> Unit with Process = () -> {

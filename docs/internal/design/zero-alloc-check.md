@@ -29,7 +29,7 @@ for this distinction.
 ## Implementation boundary
 
 `zero_alloc_check` and `zero_alloc_fn_summaries` live in
-`lib/@vibe/compiler/codegen/common_analysis/common_analysis.vibe`. They inspect
+`lib/@vibe/compiler/codegen/common_analysis/common_analysis_za_walk.vibe`. They inspect
 statements and local function bodies. The check returns an empty string on
 success or the first allocation diagnostic naming the function and cause;
 it does not enumerate every allocation site with a source range.
@@ -55,8 +55,10 @@ contracts (ADR-0090/0092).
   imported summaries and diagnostics, including allocating `assume` bodies
   and growable Bytes operations.
 - `lib/@vibe/compiler/core/builtin_allocates_test.vibe` pins builtin
-  classification. A missing classification can reject valid annotated code;
-  the registry coverage work is #2584.
+  classification. The non-allocating flag is a column of the builtin's
+  registry row (`builtin_allocates` in `core/builtin_registry.vibe`, #2584);
+  a name without that flag counts as allocating, so a missing flag rejects
+  valid annotated code rather than certifying allocating code.
 
 The GC backend is not covered by this linear allocation guarantee. Runtime
 profiling remains useful for counting actual allocations and measuring reuse;

@@ -1,17 +1,19 @@
 # CI test-execution speed & growth budget
 
-Goal (2026-08-01): branch coverage is ~6% and needs to grow severalfold.
-CI must stay **under 5 minutes** end-to-end as tests are added, so the
+Goal: CI stays **under 5 minutes** end-to-end as tests are added, so the
 battery's cost model has to be sub-linear in test count. This page records
 the measured cost model, the mechanisms that keep it flat, and the knobs to
 turn as the suite grows.
 
-## Where a unit-shard job's wall time goes (measured 2026-08-01)
+## Where a unit-shard job's wall time goes
+
+The per-test costs were measured 2026-08-01; the stage2 row describes the
+current job layout.
 
 | phase | cost | scaling behavior |
 |---|---|---|
 | runner setup (checkout, caches, node, wasmtime) | ~10-15s | flat |
-| stage2 build | 0s on `stage2-v1-*` cache hit, ~30s on miss | flat |
+| stage2 | a download of the `compiler-build` job's artifact (~25s); that job builds stage2 once per run, or restores it from the `stage2-v2-*` cache | flat |
 | per-test COMPILE (test + its import closure through stage2) | ~1s (leaf) to ~6s (full compiler closure); **>90% of a cold battery** | linear in tests × closure size |
 | per-test RUN (`_start`) | ~0.1-0.5s, except self-compile tests (below) | linear in tests |
 
@@ -36,9 +38,9 @@ Content-keyed reuse of each test file's compile output:
   sha256(contract-salt + sha256 of every dep). Make-depfile staleness
   logic: an edit that changes the closure necessarily touches a file in
   the OLD closure, so the key misses and deps are re-planned. The contract
-  salt folds in every `.vibei`/`index.vpkg` under `lib/` (contracts affect
-  compile output; the plan already lists per-closure `index.vpkg` entries,
-  the salt is belt-and-braces for cross-package contract edits);
+  salt folds in every `index.vpkg` under `lib/` (contracts affect compile
+  output; the plan already lists per-closure `index.vpkg` entries, the salt
+  is belt-and-braces for cross-package contract edits);
 - hit path = hash deps (~20-50ms, one `sha256sum` process) + run. No
   compiler invocation at all;
 - store cost ≈ one plan call (~0.2-0.5s) after a successful compile+run;
@@ -106,22 +108,24 @@ costs the batch phase ~15-30s once, and only their run time after that.
 ## Mechanism 3: weight-balanced shards (scale-out knob)
 
 `VIBE_UNIT_TEST_SHARD=i/N` LPT-partitions the battery by recorded weights
-(`scripts/unit_test_weights.tsv`); ci.yml's matrix is the only place N is
-chosen (4 as of #1330's follow-up; was 3). Raising N is the release valve
-when warm-shard wall approaches the budget: per-shard setup is ~15s flat,
-so N can grow to ~8 before setup overhead matters.
+(`scripts/unit_test_weights.tsv`); ci.yml's `unit-tests` matrix is the only
+place N is chosen, and it is 8. Raising N is the release valve when
+warm-shard wall approaches the budget. Since the compiler is built once per
+run by `compiler-build` and downloaded by every shard, an extra shard costs a
+job start plus that download, not another compiler build.
 
 ## Growth budget
 
 With the cache warm, adding an ordinary test costs its RUN time
-(~0.1-0.5s) per battery, not its compile. At 4 shards / 4 jobs:
+(~0.1-0.5s) per battery, not its compile. Each shard runs `min(4, nproc)`
+tests in parallel (`VIBE_UNIT_TEST_JOBS` overrides), so with 8 shards:
 
-- +1000 ordinary tests ≈ +100-500s of run spread over 16 workers ≈
-  **+6-30s per shard job** — comfortably inside 5 minutes.
-- A compiler-touching PR pays a full cold battery (every closure changed):
-  ~2-4min per shard today. This is the worst case that bounds shard count;
-  it scales linearly with test count, so as coverage grows, raise the
-  shard matrix (or move to batch compilation, below).
+- +1000 ordinary tests ≈ +100-500s of run time spread over the shards'
+  workers — a few seconds to tens of seconds per shard job.
+- A compiler-touching PR pays a full cold battery (every closure changed),
+  even with the batch precompile above. This is the worst case that bounds
+  shard count; it scales linearly with test count, so as coverage grows,
+  raise the shard matrix.
 
 ## Known limits / next levers
 
@@ -137,6 +141,7 @@ With the cache warm, adding an ordinary test costs its RUN time
 - The run-phase 300s bound and the runtime-self-compile class: those
   tests' cost is the compiler's own selfcompile speed (tracked by
   `scripts/selfcompile_kpi.sh` and the perf-metrics job).
-- `coverage-suite` (main-only) re-runs the battery instrumented; it reuses
-  none of this cache (instrumented output differs). It is off the PR
-  critical path by design; revisit if main-push wall matters.
+- `coverage-suite` (main-only, also 8 shards) re-runs the battery
+  instrumented; it reuses none of this cache (instrumented output differs).
+  It is off the PR critical path by design; revisit if main-push wall
+  matters.

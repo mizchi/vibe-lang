@@ -52,9 +52,14 @@ the terminal lambda's syntax. The negative `fixtures/err_region_escape_*`
 cases and positive region-local closures in
 [`tests/gates/late/run.sh`](../../../tests/gates/late/run.sh) pin these paths.
 
-Key implementations are the `__region_run` / collection branches and the
-region-sensitive call/write/capture checks in
-[`checker.vibe`](../../../lib/@vibe/compiler/checker/checker.vibe).
+Key implementations: the `__region_run` branch, the region-token check on the
+collection constructors and the copy-out exits in
+[`checker_call_expr.vibe`](../../../lib/@vibe/compiler/checker/checker_call_expr.vibe);
+the capture-provenance merge that carries region skolems through closure types
+in
+[`checker_merge_capture_provenance.vibe`](../../../lib/@vibe/compiler/checker/checker_merge_capture_provenance.vibe);
+and the compiler-recognized call rows in
+[`builtin_call_arms.vibe`](../../../lib/@vibe/compiler/checker/builtin_call_arms.vibe).
 The parser-generated literal lambda receives the bind-before-check handling;
 the internal non-literal `__region_run(f)` fallback is not a public lifetime
 API and does not provide the same generalization guarantee.
@@ -74,8 +79,9 @@ semantics.
 | Linear RC | Ordinary collection allocation; no dedicated arena |
 | Wasm-GC | Dedicated linear-memory arena; these buffers are not native GC objects |
 
-The layout is shared through helpers in
-[`common_base.vibe`](../../../lib/@vibe/compiler/codegen/common_base/common_base.vibe):
+The layout is shared through helpers (`region_depth_addr_of`,
+`region_saves_base_of`, `emit_region_enter` / `emit_region_exit`) in
+[`common_base_codegen_body_cache_from_bytes.vibe`](../../../lib/@vibe/compiler/codegen/common_base/common_base_codegen_body_cache_from_bytes.vibe):
 
 ```text
 bump pointer | nesting depth | 64 saved pointers | aligned 256 KiB data segment
@@ -105,8 +111,8 @@ Likewise, reclaiming buffer storage does not reclaim an arbitrary cyclic graph
 of ordinary heap objects stored in the buffer.
 
 The backend setup is in
-[`linked_compile.vibe`](../../../lib/@vibe/compiler/codegen/wasi/linked_compile.vibe)
-and [`backend_body.vibe`](../../../lib/@vibe/compiler/codegen/gc/backend_body.vibe).
+[`linked_compile_wasi_module_linked_impl_with_split_grants.vibe`](../../../lib/@vibe/compiler/codegen/wasi/linked_compile_wasi_module_linked_impl_with_split_grants.vibe)
+and [`backend_body_wasi_module_gc_impl.vibe`](../../../lib/@vibe/compiler/codegen/gc/backend_body_wasi_module_gc_impl.vibe).
 The GC backend's `MutList` / `MutBytes` paths use the same linear arena
 despite native GC allocation being available for other values.
 

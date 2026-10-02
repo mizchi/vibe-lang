@@ -1,29 +1,25 @@
 # Coverage strategy
 
-> **Status (measured 2026-08-21).** Working: the selfhost `#cov` lane
-> (`pkf run coverage*`) and the per-file `--coverage` flags on
-> `scripts/vibe_test.sh` / `scripts/vibe_run.sh`. `coverage-wasm-std` is a
-> selector over that same maintained test coverage path; it is no longer a
-> separate compiler/report pipeline.
+Coverage is measured with one instrumentation (`VIBE_COVERAGE=1`, below) used
+two ways: on a **compiled program** (`vibe test --coverage` /
+`vibe run --coverage`, and the suite built on them), and on an **instrumented
+compiler** compiling other programs. No MoonBit host is involved; everything
+runs from the pinned seed (or an explicit stage2) and the Node/Rust runner.
 
-## コンパイラの関数 / 分岐カバレッジ（#cov）
+## Per-file coverage: `vibe test --coverage` / `vibe run --coverage`
 
-コンパイラ自身を **計測ビルド**して、ワークロード実行時にどの compiler
-関数が呼ばれたか（関数カバレッジ）と、どの `if`/`match` 分岐が実行されたか
-（分岐カバレッジ）を集計する。MoonBit host 不要（committed seed + node runner）。
-
-### CLI: `vibe test --coverage`
-
-ユーザーの **テスト対象**（テストファイルとその import）のカバレッジは
-`vibe test --coverage` で計測する。テストファイルを計測ビルドして実行し、
-どの関数・分岐がテストで踏まれたかを per-file + 集計で表示する。
+Coverage of what a **test** exercises — the test file and its imports — comes
+from `vibe test --coverage`. It compiles the test file with instrumentation,
+runs it, and reports which functions and branches the tests reached, per file
+and in aggregate.
 
 ```bash
-scripts/vibe_test.sh --coverage path/to/foo_test.vibe   # 単一ファイル
-scripts/vibe_test.sh --coverage lib/@vibe/builtin       # ディレクトリ配下の *_test.vibe
+bash scripts/vibe_test.sh --coverage path/to/foo_test.vibe   # one file
+bash scripts/vibe_test.sh --coverage lib/@vibe/builtin       # every *_test.vibe under a directory
 ```
 
-出力例（負数入力を踏まないテストだと `n < 0` アームが未到達 → 3/4）:
+A test that never passes a negative input leaves the `n < 0` arm unreached,
+so it reports 3/4 branches:
 
 ```
 ok   foo_test.vibe  [cov fn 3/3, branch 3/4]
@@ -31,550 +27,281 @@ ok   foo_test.vibe  [cov fn 3/3, branch 3/4]
 [vibe-test] coverage: functions 3/3 (100.00%), branches 3/4 (75.00%) over 1 file(s)
 ```
 
-`vibe run --coverage`（単一プログラムを実行しつつ計測）も同じ仕組み:
+`vibe run --coverage` measures one program while running it:
 
 ```bash
-scripts/vibe_run.sh --coverage path/to/prog.vibex [-- args...]
+bash scripts/vibe_run.sh --coverage path/to/prog.vibex [-- args...]
 ```
 
-プログラムの出力は stdout、`[vibe-cov]` サマリは stderr、JSON は
-`_build/vibe_run/<name>.cov.json`。
+The program's output goes to stdout, the `[vibe-cov]` summary to stderr, and
+the JSON to `_build/vibe_run/<name>.cov.json`. Per-file test JSON is
+`_build/vibe_test/coverage/<file>.json`
+(`{total,hit,missed,rate,hit_fns,missed_fns,branch{...}}`). Both work by
+passing `VIBE_COVERAGE=1` to the FS compile lane, which then compiles with
+instrumentation (`compile_file_fs_mode_coverage`) — the same instrumentation
+the compiler-side measurement below uses.
 
-per-file の JSON は `_build/vibe_test/coverage/<file>.json`
-（`{total,hit,missed,rate,hit_fns,missed_fns,branch{...}}`）。仕組みは
-`VIBE_FS_COMPILE` 経路が `VIBE_COVERAGE=1` を尊重して計測コンパイル
-（`compile_file_fs_mode_coverage`）するだけで、下記の self-compile 計測と同じ
-instrumentation を共有する。
+`vibe compile --coverage` does **not** instrument: measured 2026-08-20, the
+output `.wasm` and its `.funcmap` are byte-identical with and without the flag.
+The `.funcmap` (`NAME<TAB>INDEX`) is written by every FS compile and is
+consumed by failure stack annotation (`scripts/vibe_test.sh`), not by coverage.
+`VIBE_TEST_COVERAGE=1` is not a supported control either; use
+`bash scripts/vibe_test.sh --coverage`.
 
-### カバレッジは 2 本立てで見る (#1556)
+### All `@vibe/builtin` tests
 
-**1 つの数字にまとめない。** 分母が違い、どちらも他方を含まない。片方だけ見ると、
-それぞれが得意な部分がちょうど隠れる。
+```bash
+pkf run coverage-wasm-std
+```
 
-| track | 何を測るか | 走らせ方 | 見える所 / 見えない所 |
+selects every `*_test.vibe` under `@vibe/builtin` and runs it through the same
+`--coverage` path, printing per-file and aggregate function/branch coverage and
+writing per-file JSON to `_build/vibe_test/coverage/`. Any compile or test
+failure fails the task, and so does selecting zero files.
+
+`VIBE_WASM_STD_COVERAGE_FILTER` and `VIBE_WASM_STD_COVERAGE_EXCLUDE` narrow the
+selection with **POSIX extended regular expressions** (`grep -E`). PCRE/Rust
+regex constructs such as `\d` and `(?i)` are rejected rather than
+reinterpreted, and an invalid pattern fails the run instead of reporting an
+empty corpus. `VIBE_TEST_CLI_WASM` selects the compiler, following the same
+contract as `scripts/vibe_test.sh`.
+
+## Two tracks, never one number (#1556)
+
+The two uses of the instrumentation have different denominators, and neither
+contains the other. Looking at only one hides exactly what the other is good
+at.
+
+| track | measures | run with | sees / cannot see |
 |---|---|---|---|
-| **in-process** | コンパイルされた**テストプログラム自身**が実行した分岐 | `pkf run coverage` (`coverage_suite.sh` の `branch_union`) | stdlib・`@vibex` はよく見える。**コンパイラのパスは構造的に見えない** |
-| **self-compile** | **コンパイラ**が実プログラムをコンパイルする間に実行した分岐 | `pkf run coverage-corpus` (`coverage_corpus.sh` の `merged.json`) | parser/checker/codegen はここに出る。stdlib は**呼び出しを emit するだけで実行しない**ので見えない |
+| **in-process** | branches the **compiled test programs** execute | `pkf run coverage` (`branch_union` of `scripts/coverage_suite.sh`) | sees stdlib and `@vibex` well. **Cannot see compiler passes**, structurally |
+| **self-compile** | branches the **compiler** executes while compiling a corpus of real programs | `pkf run coverage-corpus` (`merged.json` of `scripts/coverage_corpus.sh`) | sees parser/checker/codegen. Cannot see stdlib, which the compiler only emits calls to |
 
 ```bash
-pkf run coverage-tracks          # 両方を並べて表示
-pkf run coverage-tracks -- --check   # それぞれの床を検査
+pkf run coverage-tracks              # both, side by side
+pkf run coverage-tracks -- --check   # check each against its floor
 ```
 
-実測 (2026-08-13, 同一 checkout):
+Measured 2026-08-13, same checkout:
 
 ```
 [coverage-tracks] in-process    branches 26894/46469 (57.88%)  min 57.0%
 [coverage-tracks] self-compile  branches 10703/26738 (40.03%)  min 0.0%
 ```
 
-**床は in-process にしか張っていない。** in-process の分母はテストスイート
-そのもので、増えることはあっても設定で変わらないのでラチェットとして機能する。
-self-compile の率は**コンパイラに何本のプログラムを食わせたか**の関数で、
-`VIBE_COV_MAX` ひとつで動く:
+**Only the in-process track has a floor** (57%,
+`VIBE_TRACK_MIN_IN_PROCESS_RATE`). Its denominator is the test suite itself,
+which grows but does not change with configuration, so it works as a ratchet.
+The self-compile rate is a function of **how many programs the compiler was
+fed** — `VIBE_COV_MAX` alone moves it — so a floor there would pass or fail
+according to how long someone was willing to wait. Its floor stays 0
+(`VIBE_TRACK_MIN_SELF_COMPILE_RATE`) until the corpus is a committed file list
+rather than "examples + fixtures, cut off by an env var".
 
-- `VIBE_COV_MAX=12` → 10,703/26,738 (40.03%)
-- 上記の 626 ファイル実行 → 4,695/6,694 (70.1%)。ただし**当時の分母は 6,694**で
-  今は 26,738 なので、この数字は今日の値と比較できない
+When one track has no report, `coverage-tracks` says `NOT MEASURED in this
+run`, and `--check` **fails**: a track that could not be measured is not
+treated as passing, because when something regresses the track with no number
+is the most suspect.
 
-corpus を固定 (「examples + fixtures を env var で打ち切る」ではなく**コミット
-されたファイル一覧**) するまで、self-compile に床を張ると「誰がどれだけ待つ気が
-あったか」で通ったり落ちたりする**偽のラチェット**になる。固定が先。
+**Why in-process cannot see compiler passes.** `vibe test --coverage`
+instruments and runs the wasm **obtained by compiling the test**. The compiler
+passes that ran **while compiling** it ran inside a different, uninstrumented
+binary (stage2), so they count zero branches however thoroughly a fixture or
+gate exercises them. A compiler pass appears in this track only when some test
+calls it **in process**. Control measurement (2026-08-13):
 
-> 片方の track のレポートが無い場合、`coverage-tracks` は
-> `NOT MEASURED in this run` と明示し、`--check` では**失敗させる**。
-> 測れなかった track を黙って pass 扱いにしない (退行しているとき、
-> 最も怪しいのは値の出ていない方なので)。
+| entry | what it exercises | result |
+|---|---|---|
+| `runtime/grep_test.vibe` | calls `grep_scan_source` directly | 264/587 of grep.vibe's branches counted |
+| `tests/import_private_ctor_collision_test.vibe` | private-constructor namespacing, **at compile time** | the program has 8 branches, and none of `import_alias_rewrite`'s functions |
 
-**なぜ in-process がコンパイラのパスを見られないか**: `vibe test --coverage` は
-テストファイルを**コンパイルして得た wasm** を計測ビルドして実行する。テストを
-**コンパイルする過程**で走ったコンパイラのパスは、計測されていない別バイナリ
-(stage2) の中の出来事なので 1 branch も計上されない。fixture やゲートでどれだけ
-厚く検証されていても 0% のままになる。
+So `cli_adapter.vibe 0/250` means "**not called in process**", not
+"untested". Reading `top_branch_union_gaps` as a list of untested code leads to
+writing in-process wrappers for code that is already verified — work that only
+moves the number. To see compiler passes, read the self-compile track; to see
+the stdlib, read in-process.
 
-したがって:
+## The suite: `pkf run coverage`
 
-- `cli_adapter.vibe 0/250` は「未テスト」ではなく「**in-process で呼ばれていない**」
-- コンパイラのパスの実態を知りたいなら **self-compile を見る**
-- stdlib の実態を知りたいなら **in-process を見る**
+`pkf run coverage` (= `coverage-suite`, `scripts/coverage_suite.sh`, against a
+stage2 built for the checkout) runs every `*_test.vibe` as its own
+instrumented binary. In CI it is the `coverage-suite` job: main only, eight
+shards.
 
-### selfhost test suite の集計指標
+Each entry carries its whole import closure, so one compiler function appears
+in the denominator once per entry. The report's `entry_weighted.function` and
+`entry_weighted.branch` are therefore **entry-weighted** figures, kept as stable
+comparison values and never to be read as unique source coverage. Adding one
+test entry adds its whole closure to their denominator, so a larger suite can
+lower them while covered functions and branches both increase; they are not
+gated by default (`VIBE_SUITE_MIN_POINT_RATE` / `VIBE_SUITE_MIN_BRANCH_RATE`
+set a floor for an explicit diagnostic experiment only).
 
-`pkf run coverage` は全 `*_test.vibe` をそれぞれ別バイナリとして実行する。
-各 entry はその import closure を含むため、同じ compiler 関数が entry ごとに
-分母へ現れる。したがって report の `entry_weighted.function` と
-`entry_weighted.branch` は **entry-weighted** 指標であり、ユニークな source
-coverage として解釈してはいけない。これは既存 gate の安定した比較値として残す。
+The primary figures are the unions:
 
-`function_union` は per-entry の `hit_fns` / `missed_fns` を source-qualified
-function ID で union した primary 指標である。いずれかの entry で実行された
-関数を一度だけ数えるため、suite 全体が到達した compiler 関数の実態を表す。
-`branch_union` は branch の同じ指標 (#1556)。branch の**大域 index は
-entry ごとの program 固有**なので entry 間で比較してはいけないが、
-**owner 関数の中での ordinal** はその関数の本体を lower した順序そのものなので、
-`(source-qualified な owner 関数名, ordinal)` は同じ source 上の branch を
-どの entry でも同じように名指す。per-entry JSON の
-`branch.per_fn[fn].mask` (branch 1つにつき `'1'`/`'0'` 1文字、ordinal 昇順)
-がこの ordinal を公開しており、report 側はこれを OR して union を出す。
+- `function_union` unions each entry's `hit_fns` / `missed_fns` by
+  source-qualified function ID, so a function reached by any entry counts once.
+- `branch_union` does the same for branches (#1556). A branch's global index is
+  specific to each entry's program and cannot be compared across entries, but
+  its **ordinal within its owner function** is the order that function's body
+  was lowered in, so `(source-qualified owner, ordinal)` names the same source
+  branch in every entry. Per-entry JSON exposes it as `branch.per_fn[fn].mask`
+  (one `'1'`/`'0'` per branch, by ordinal), and the report ORs the masks.
+- When one source function lowers to different branch counts in different
+  entries (specialization, dictionary passing), the union widens to the largest
+  shape seen.
+- Only the names synthesized per entry (`_start`, `__test_<name>`,
+  `__bench_<name>`) are qualified by entry path (`union_key`). They carry no
+  source qualification, so two entries with a same-spelled `test` block would
+  otherwise collapse into one name (`hashmap_test.vibe` and
+  `sortedmap_test.vibe` both have `test "empty map"`, with 2 and 4 branches).
+  Names such as `Array::map` / `T::equals` are genuinely shared and stay
+  unqualified; only the synthesized class is always "same name, different
+  function", because test and bench blocks are never imported.
+- If any coverage JSON without masks is mixed in, `branch_union.exact` is
+  `false`, the value is shown as a **lower bound**, and the ratchets that depend
+  on it are skipped rather than failing on a number that was not measured.
 
-Entry-weighted rates are reported for historical continuity, but they are not
-gated by default. Adding one test entry adds its whole import closure to their
-denominator, so a larger test suite can lower those rates while both the
-covered-function and covered-branch counts increase. The default gate instead
-uses absolute hit ratchets plus the explicit branch source-coverage KPI. Set
-`VIBE_SUITE_MIN_POINT_RATE` or `VIBE_SUITE_MIN_BRANCH_RATE` only for an explicit
-diagnostic experiment that needs an entry-weighted floor.
-
-> **重要 — この指標が測っているのは「テストプログラム自身の実行」であって
-> 「テストで検証された機能」ではない。**
->
-> `vibe test --coverage` は**テストファイルをコンパイルして得た wasm を計測
-> ビルドし、それを実行**する。テストを**コンパイルする過程**で走った
-> コンパイラのパスは、別バイナリ (計測されていない stage2) の中の出来事なので
-> **1 branch も計上されない**。あるコンパイラのパスがここに現れるのは、
-> どれかのテストがそれを **in-process で呼んだ**ときだけ。
->
-> control 実測 (2026-08-13):
->
-> | entry | 何を見ているか | 結果 |
-> |---|---|---|
-> | `runtime/grep_test.vibe` | `grep_scan_source` を直接呼ぶ | grep.vibe の **264/587** branch が計上 |
-> | `tests/import_private_ctor_collision_test.vibe` | private ctor の namespacing を**コンパイル時に**踏む | そのプログラムは **branch 8 個**しか無く、`import_alias_rewrite` の関数は **1 つも含まれない** |
->
-> したがって `cli_adapter.vibe 0/250` や `namespace_private_type_ctor_stmt
-> 0/41` は「テストされていない」ではなく「**in-process で呼ばれていない**」。
-> 前者はゲートや fixture で実際に検証されていることがある。
-> `top_branch_union_gaps` を「未テスト一覧」として読むと、既に検証済みの
-> コードに in-process ラッパを書く作業に誘導されるので注意する
-> — それはカバレッジの数字だけが上がる作業になりうる。
-
-- **`branch_union.rate` が #1556 の「分岐カバレッジ N%」目標の指標**。
-  entry-weighted の branch rate は分母が entry 数で膨らむので目標には使えない
-- 同じ source 関数が entry ごとに異なる branch 数へ lower される
-  (特殊化・辞書渡し) ことがあるため、union は**見えた最大の shape** に広げる
-- **entry ごとに合成される名前 (`_start` / `__test_<名前>` / `__bench_<名前>`)
-  だけは entry path で修飾する** (`union_key`)。これらは source 修飾を持たない
-  ので、別 entry が同じ綴りの test ブロックを持つと同一名に落ちる (実例:
-  `hashmap_test.vibe` と `sortedmap_test.vibe` の `test "empty map"` は branch
-  数が 2 と 4 で違う)。名前だけで束ねると分母から小さい方が消え、片方で踏んだ
-  branch がもう片方の別の branch を covered にしてしまう。逆に `Array::map` /
-  `T::equals` のように source 修飾を持たないが**本当に共通**の名前もあるので、
-  修飾してよいのは合成名だけ (test/bench ブロックは import されないので、
-  この class に限り「同名 = 別関数」が常に成り立つ)
-- mask を持たない (mask 導入前の) coverage JSON が1つでも混ざると
-  `branch_union.exact` が `false` になり、値は**下限**として表示される。
-  この場合 ratchet は測れなかった数値で落とさないようスキップされる
-
-ratchet: `VIBE_SUITE_MIN_BRANCH_UNION_HIT` (absolute count) and
-`VIBE_SUITE_MIN_BRANCH_UNION_RATE` (the explicit #1556 branch-coverage KPI).
-The union removes repeated imports across entries, but its source universe can
-still expand when a test first imports a module. Function union therefore uses
-`VIBE_SUITE_MIN_FUNCTION_UNION_HIT` as its default monotonic ratchet; its rate
-is reported and can be enabled explicitly with
-`VIBE_SUITE_MIN_FUNCTION_UNION_RATE`, but defaults to zero.
-
-### コンパイラ自身を計測
+`branch_union.rate` is the #1556 branch-coverage KPI. The ratchets and their
+defaults are in `scripts/coverage_suite.sh`: `VIBE_SUITE_MIN_BRANCH_UNION_RATE`
+(the KPI floor), `VIBE_SUITE_MIN_BRANCH_UNION_HIT` and
+`VIBE_SUITE_MIN_FUNCTION_UNION_HIT` (absolute union counts),
+`VIBE_SUITE_MIN_FN_HIT` / `VIBE_SUITE_MIN_BRANCH_HIT` (absolute entry-weighted
+counts), and `VIBE_SUITE_MIN_LINE_RATE` (the share of entries that pass). A
+union's source universe can still grow when a test first imports a module, so
+the function union is ratcheted by count; its rate is reported, and gated only
+when `VIBE_SUITE_MIN_FUNCTION_UNION_RATE` is set.
 
 ```bash
-scripts/coverage_fn.sh                  # 既定: コンパイラの self-compile を計測
-scripts/coverage_fn.sh path/to/foo.vibe # foo.vibe をコンパイルする経路を計測 (FS mode)
-VIBE_COV_SHOW_MISSED=1 scripts/coverage_fn.sh        # 未実行関数も列挙
-VIBE_COV_SHOW_BRANCH_GAPS=1 scripts/coverage_fn.sh   # 未到達分岐が多い関数 top50
+pkf run coverage                       # the suite, with its ratchets
+pkf run coverage-suite-next-branches   # suggest entries for unreached branches
+pkf run coverage-suite-branch          # the suite plus those suggested entries
+pkf run coverage-suite-branch-gate     # the same, with explicit floors
 ```
 
-#### 複数ワークロードのマージ
-
-単一ワークロードは経路が偏る: self-compile は parser/checker/codegen を踏むが
-printer（`print_expr`/`print_stmt`）は `normalize` でしか、Perceus RC
-（`pc_count`/`pc_emit`/`elaborate_rw`）は `VIBE_RC=1` でしか踏まれない。
-`coverage_merge.sh` は **1 つの計測コンパイラ**を複数ワークロードで
-走らせ、ヒット bitmap を **union 合成**する（同一バイナリ＝同一 id なので
-正確に OR できる）。
+## The compiler's own coverage (self-compile track)
 
 ```bash
-scripts/coverage_merge.sh                 # 既定: compile + normalize + rc
-scripts/coverage_merge.sh extra1.vibe ... # 追加で各ファイルを FS-compile
-VIBE_COV_SHOW_BRANCH_GAPS=1 scripts/coverage_merge.sh
+bash scripts/coverage_fn.sh                  # default workload: the compiler compiling itself
+bash scripts/coverage_fn.sh path/to/foo.vibe # workload: compiling foo.vibe (FS mode)
+VIBE_COV_SHOW_MISSED=1 bash scripts/coverage_fn.sh        # also list unexecuted functions
+VIBE_COV_SHOW_BRANCH_GAPS=1 bash scripts/coverage_fn.sh   # functions with the most unreached branches
 ```
 
-実測（合成効果）: compile 単体 646fn/2436br → **merged 733fn(62.4%) /
-2835br(42.5%)**。`print_*` は normalize で、`pc_*`/`elaborate_rw` は rc で
-0% から点灯する。`_build/coverage/selfhost-merge/merged.json` に
-per-workload 内訳 + union 結果（`per_fn` / `top_gaps`）が出る。
+`VIBE_COV_SEED` selects the compiler that builds the instrumented compiler (the
+pinned seed by default) and `VIBE_COV_DIR` the output directory
+(`_build/coverage/selfhost-fn/`: `compiler_cov.wasm`, the instrumented
+compiler, and `report.json`).
 
-マージは **同一の計測バイナリ**を別ワークロードで回した結果にのみ有効
-（関数/分岐 id が一致するため）。別々にコンパイルしたモジュール同士は id が
-異なるのでマージ不可。runner 側は `VIBE_COV_RAW=1` のとき report に id 単位の
-bitmap（`raw.fn_bitmap` / `raw.branch_bitmap` + 静的な name/owner 表）を足す。
-
-#### コーパス（大量プログラム）でのマージ
-
-`coverage_merge.sh` の固定 3 ワークロードでは分岐 ~56% で頭打ちになる。
-`coverage_corpus.sh` は 1 つの計測コンパイラを **多数の .vibe**
-（`examples/` `fixtures/` `lib/@vibe/builtin/`）に対して compile / normalize / rc で
-走らせ、全 run を union する。
+One workload exercises a skewed subset: self-compile reaches
+parser/checker/codegen, but the printer only runs under `normalize` and Perceus
+RC only under `VIBE_RC=1`. Results from **one instrumented binary** run over
+several workloads can be OR-merged exactly, because function and branch ids
+agree; binaries compiled separately cannot.
 
 ```bash
-scripts/coverage_corpus.sh                 # 既定: examples fixtures + 生成エラーコーパス
-VIBE_COV_MAX=200 scripts/coverage_corpus.sh
-VIBE_COV_SHOW_BRANCH_GAPS=1 scripts/coverage_corpus.sh
+bash scripts/coverage_merge.sh                 # compile + normalize + rc
+bash scripts/coverage_merge.sh extra1.vibe ... # plus an FS compile of each file
+bash scripts/coverage_corpus.sh                # one instrumented compiler over examples + fixtures
+VIBE_COV_MAX=200 bash scripts/coverage_corpus.sh
 ```
 
-corpus は base self-compile / RC-stress に加えて以下のワークロードを束ねる:
-- **cache-orch**: `compiler_sources_manifest.tsv` を持つコンパイラツリーと
-  複数 import の example を、`.vibe/build/cache/vibe_selfhost_*` の各キャッシュファイルを
-  選択的に無効化しながら繰り返し compile する。これにより
-  persistent-cache の read 経路（`parse_persistent_*_cache` /
-  `matches_cached_file_spec` / `scan_header_*` / `serialize_type` 等、
-  単発 compile では絶対に踏めない分岐）が点灯する（`serialize_type` は
-  0→17/19 に上がった）。
-- **生成エラーコーパス** (`scripts/coverage_gen_errcorpus.sh` →
-  `_build/errcorpus/`): 意図的に ill-typed / mis-parse なプログラムを多数生成。
-  「失敗 compile も abort 時に bitmap を dump する」修正（commit 1ea7b6f）と
-  併せて、診断系関数（`tk_name` / `type_to_string` / `check_expr` の防御アーム）
-  を点灯させる。
+`coverage_corpus.sh` (also `pkf run coverage-corpus`) bundles, besides the
+plain compiles and an RC-stress set:
 
-実測（examples + fixtures + errcorpus + cache-orch + RC-stress, 626+ files）:
-**関数 1020/1174 (86.9%)・分岐 4490/6679 (67.2%)**。`_build/coverage/selfhost-corpus/`
-に `acc.json`（running union）/ `merged.json` / `fails.txt`。
+- **cache-orch**: repeatedly compiles a project with a source manifest and
+  multi-import examples while selectively invalidating
+  `.vibe/build/cache/vibe_selfhost_*` entries, which lights up the
+  persistent-cache read paths a single compile can never reach;
+- **a generated error corpus** (`scripts/coverage_gen_errcorpus.sh` →
+  `_build/errcorpus/`): deliberately ill-typed and mis-parsing programs, which
+  reach the diagnostic functions. A failed compile still dumps its bitmap on
+  abort, so pick an entry name that exists in the file (a test file uses the
+  sentinel and `_start`).
 
-注意点（ドッグフーディングで判明）:
-- **計測対象は「コンパイル」のみ**。生成された wasm を実行しても、それは別の
-  （非計測）バイナリなので計測コンパイラのカバレッジは増えない。
-- 失敗ファイルも abort 時に bitmap を dump する（commit 1ea7b6f 以降）。
-  **エントリ名はファイルに実在するものを選ぶ**こと（test ファイルは
-  sentinel → `_start`）。
-- bump モード（既定）は Perceus（`pc_*`/`elaborate_rw`）を踏まないので、
-  heap-heavy な小プログラムを `VIBE_RC=1` で別途 compile する RC-stress を含める。
+Output goes to `_build/coverage/selfhost-corpus/` (`acc.json`, the running
+union, `merged.json`, `fails.txt`). The corpus only measures **compiling**:
+running the generated wasm executes a different, uninstrumented binary.
 
-#### 分岐カバレッジの実効上限（2026-06-24, ブラックボックス計測）
+`coverage_corpus.sh` checks that the generated compiler sources and its required
+inputs exist and are current, but does not regenerate them; when they are
+missing or stale it says to run `bash scripts/ensure_generated.sh`.
 
-`vibe test --coverage` / corpus は **「コンパイラに任意の入力を食わせて
-コンパイルさせる」ブラックボックス計測**なので、構造的な上限がある。
-広いコーパス + cache-orch + error/feature corpus を総動員しても **分岐 ~67%
-で頭打ち**になる（関数は ~87%）。未到達 ~2189 分岐の内訳:
-
-| 区分 | 未到達分岐 | 性質 |
-|------|-----------|------|
-| 散在する防御アーム（"other", 371 fns） | ~795 | 各関数 1〜2 個の "should not happen" throw / レアパス。関数ごとに専用トリガが要る |
-| parser 防御アーム | ~301 | 特定トークンが unexpected になる組合せ（`tk_name` の 87 アームは各トークン種ごとに別プログラムが要る） |
-| persistent-cache 状態 | ~272 | manifest header 再読込・fingerprint mismatch 等、多段の cache 状態を厳密に作り込む必要 |
-| checker アーム（`check_expr`/`unify`/`types_equal`） | ~239 | 大半が型エラー診断・防御分岐 |
-| codegen アーム（`compile_call`/`compile_expr`/`compile_wasi_*`） | ~201 | builtin dispatch・compile mode/flag の分岐 |
-| import/module rewrite | ~191 | private 値/型・alias import の multi-file 構成が要る |
-| 診断フォーマット（`type_to_string`/`__to_string`/`tk_name`） | ~190 | 各型/トークン形ごとにエラーを起こす専用入力が要る。`__to_string`(24) は通常 compile 経路で呼ばれない |
-
-#### test-execution 計測（2026-06-24, 上記方式 #1 を実装）
-
-`scripts/coverage_testexec.sh` は `lib/@vibe/compiler/*_test.vibe` を
-**coverage 付きでコンパイル → 生成 wasm を実行**し、実行された分岐を corpus に
-`(関数名, 関数内 local 分岐 index)` キーで union する（別バイナリだが同一ソース
-関数なら local 分岐順が一致するのでマージできる）。テストは `type_to_string` /
-`unify` / `types_equal` 等の内部関数を assert で直接呼ぶため、ブラックボックス
-compile では届かない分岐が点灯する（例: `types_test` 実行で `type_to_string`
-21/29、黒箱では ~3/29）。
-
-multi-module ワークロード（`coverage_gen_errcorpus.sh` の `mod_*/`: private
-enum/struct/type-alias を export API 経由で使う・alias import・re-export facade・
-diamond import）で namespace 経路も点灯（`namespace_private_value_stmts` 2→22 等）。
-
-実測（黒箱 corpus + test-execution）: **分岐 4695/6694 (70.1%)**・関数 87%。
-black-box corpus 単体は 68.8%。
-
-#### driver 計測（cyclic blocker を迂回した直接呼び出し）
-
-flat module source（`_cli_adapter_module_source.vibe` = コンパイラ全体を
-import 無しで 1 ファイルに inline したもの）は循環 re-export を持たない。ここへ
-`scripts/coverage/cov_driver.vibe` を append し、entry `cov_driver_main` で
-compile+run すると、コンパイラの型/trait/env 関数を**直接** edge-case 入力で
-叩ける（`type_to_string`/`serialize_type` を全 Type variant、`unify`/`types_equal`
-を全ペア、trait 付き TypeEnv で `trait_supers`/`type_implements_trait`、
-`canonical_builtin_name`/`lookup_array_group_b`/`type_name_prefix` 等）。
-黒箱 compile では絶対に踏めない arm が点灯する: `type_to_string` 3→27/29、
-`types_equal` 66→83/99、`subst_apply` ~0→21/22、`type_name_prefix` 0→13/13。
+Black-box compiles saturate: past a broad corpus, more whole-program compiles
+add almost nothing, because what is left are defensive arms, per-token parser
+errors, multi-stage cache states and similar. The remaining levers call the
+compiler's functions **directly**:
 
 ```bash
-scripts/coverage_driver.sh   # corpus acc.json へ (fn,local_branch) キーで union
+bash scripts/coverage_corpus.sh          # base acc.json + compiler_cov.wasm
+bash scripts/coverage_testexec.sh        # run the compiler's own *_test.vibe with coverage
+bash scripts/coverage_unittests.sh       # the compiler's root unit tests, through exact-path exposure
+bash scripts/coverage_drivers.sh         # registered direct-call drivers (scripts/coverage/cov_*.vibe)
+bash scripts/coverage_manifestcache.sh   # manifest-header cache: cold / warm / partial invalidation
+bash scripts/coverage_multimodule.sh     # private-name and alias-collision multi-module projects
+bash scripts/coverage_features.sh        # trait / effect / mut capture / pattern breadth
 ```
 
-driver は flat source の全 top-level 関数（export 有無を問わず同一ファイル内で
-in-scope）を直接叩ける。型/trait/env に加え以下も edge-case 入力で網羅する:
-- **tk_name / is_non_pipe_infix**: 全 Token variant を構築して呼ぶ
-  (tk_name 38→86/87、is_non_pipe_infix 2→19/19)。各 token の error 表示 arm は
-  パーサが各 token で失敗しないと踏めないが、driver は 1 回で全部踏む。
-- **persistent-cache parsers**: `parse_persistent_manifest_header_cache` /
-  `source_list_cache` / `source_group_cache` / `split_header_values` を多様な
-  TSV 文字列で呼ぶ。FS compile 経路では grouped path が辿らず 0% だが純粋
-  String parser なので直接到達 (manifest_header_cache 0→18/26 等)。
-- **canonical_builtin_name**: 全 Fs/Env/Profiler builtin 名で呼ぶ (2→20/20)。
-- **Expr 系**: 全 Expr variant を構築し `expr_projects_or_matches` (18→46/60)・
-  `desugar_loop_body` (12→23/26)・`rewrite_private_type_ctor_expr` (16→34/35)。
-- 一方 `compile_*` / `check_expr` / `fold_expr` 等は 728-file corpus が compile
-  時に必ず通すので driver からは +0〜+4（冗長）。
+These merge into the corpus `acc.json` by `(function name, local branch
+index)`: across binaries the global ids differ, but the same source function
+lowers its branches in the same order.
 
-実測（黒箱 corpus + driver + test-execution の union）:
-**分岐 4955/6694 (74.02%)**・関数 1026/1176 (87.24%)。
-内訳: corpus 68.76% → +driver 74.0% (+255) → +test-exec 74.02%。
+**Drivers reach functions through exact-path exposure** (#1633). A driver in
+`scripts/coverage/` imports the one compiler `.vibe` file that defines what it
+calls; the production export/private namespacing plan decides the final target
+name, and the shadow-aware import rewriter updates the driver's references
+before entry-based DCE from the driver entry. Missing, duplicate,
+out-of-closure, type/constructor, mutable-global, extern, method and collision
+requests fail with a diagnostic. The internal mode
+(`VIBE_EMIT_COVERAGE_DRIVER_SOURCE=1` + `VIBE_COVERAGE_DRIVER_PATH`) is invoked
+only by `coverage_drivers.sh`; it does not widen normal import visibility or
+change `VIBE_EMIT_MERGED_SOURCE` output. Because the target is named, it is
+always clear which function was measured. The emitting compiler is the
+`compiler_cov.wasm` the corpus run built from current source; the pinned seed
+only compiles the emitted source with coverage. `scripts/coverage_driver.sh`
+(singular) runs just the `cov_driver.vibe` entry of the same suite
+(`VIBE_COV_DRIVER_FILTER=driver`).
 
-#### 80% 達成（no-DCE merged source + direct-call drivers）
+The merge checks the command status and the `base now total` schema, and fails
+the whole coverage run unless `total > 0`, the denominator is unchanged, the
+hit count did not decrease, and the written file's stat matches.
 
-> **#1633 migration status: done for `coverage_drivers.sh`.** The historical raw
-> concatenation described below has been deleted; all 39 registered drivers use
-> compiler-owned exact-path value exposure. Their imports name one `.vibe` file
-> in the collected compiler closure, the production export/private namespacing
-> plan determines the final target name, and the existing shadow-aware import
-> rewriter updates driver references before entry-based DCE. Missing, duplicate,
-> out-of-closure, type/constructor, mutable-global, extern, method, and collision
-> requests fail with a diagnostic. The internal mode
-> (`VIBE_EMIT_COVERAGE_DRIVER_SOURCE=1` + `VIBE_COVERAGE_DRIVER_PATH`) is invoked
-> only by `coverage_drivers.sh`; it does not widen normal import visibility or
-> change `VIBE_EMIT_MERGED_SOURCE` output.
->
-> なぜ raw concat を残せなかったか: あの walk は**相対 import しか辿らない**ので
-> `.vpkg` パッケージ import (#1269/#897) 以降は数ホップで止まり、~5MB のはずの
-> base が 67KB しか出ていなかった (= 全 driver が `unknown name` で死ぬ)。
-> 仮に walk を直しても、300 ファイルを無資格に連結した base は同名の private
-> ヘルパを first-match roulette で解決するので、どの関数のカバレッジを測ったのか
-> が決まらない。exposure が production の rename plan を経由するのはそのため。
+## Mechanism
 
-**分岐 5711/6694 (85.32%)**・関数 1037/1176 (88.18%) に到達（85% = 5690 に対し +21 のマージン、下限ガード 80% に対し +355）。
-74% で頭打ちだった主因（コンパイラ自身の unit test 120/148 が builtins⇄checker
-の循環 re-export で FS-compile 不能）を、**循環 re-export を直さずに**回避した。
+Compiling with `VIBE_COVERAGE=1` makes codegen:
 
-鍵は **DCE を跨いで関数へ到達する**こと。flat module source
-(`_cli_adapter_module_source.vibe`) は `build_module_source_from_source` が
-entry `cli_main` から DCE するため、テストだけが使う ~530 関数が欠落していた。
+- insert, at the entry of every user function, a store that sets that
+  function's hit flag (one byte per function in a reserved region below the
+  heap), and embed a `vibe_cov` custom section with `cov_base` / `cov_count`
+  and the function names;
+- insert the same kind of one-byte store at the start of every `if`
+  then/else and every `match` arm (catch-all included, when there is at least
+  one conditional arm). Branch ids are numbered in codegen traversal order, and
+  a `vibe_cov_branch` custom section records `base` / `count` and each branch's
+  owner function.
 
-当時の答えは **no-DCE merged source** (`_build/coverage/merged_nodce.vibe`)
-＝ manifest 全ファイルを import 除去で連結した base だった（全 top-level 関数が
-in-scope、import 文が無いので循環 re-export blocker も踏まない）。**この lane は
-#1633 で削除済み**（上の blockquote 参照）。今は driver 側が exact-path import で
-必要な関数を名指しし、その driver entry を根に DCE する — 目的（テストしか呼ばない
-関数へ到達する）は同じで、どの関数を測っているかが名前で決まる点だけが違う。
+Running the instrumented binary fills both bitmaps. When `VIBE_COV_OUT` names a
+report path, the runner reads them from memory after the run and writes the
+report, aggregating branches per owner function (`branch.per_fn`, with the
+functions holding the most unreached branches in `branch.top_gaps`).
+`VIBE_COV_RAW=1` adds the id-level bitmaps (`raw.fn_bitmap` /
+`raw.branch_bitmap`) and the static name/owner tables.
 
-driver を base へ足したものを coverage 付き compile+run し、実行分岐を
-corpus acc.json に (fn_name, local_branch_index) キーで union する。分母（seed
-コンパイラの分岐）は不変なので、seed に存在する関数の未踏 arm だけが点灯する。
+- A build without `VIBE_COVERAGE` is **byte-identical** to an uninstrumented
+  one; the gate's stage2 == stage3 fixpoint holds that, so coverage cannot
+  affect the bootstrap.
+- Branches are `if` / `match` only; `&&` / `||` short-circuits are not
+  counted. There is no line coverage.
 
-レバー別の寄与（76.25% から）:
-- **no-DCE unit-tests** (`coverage_unittests.sh` + `VIBE_COV_FLAT`):
-  flat の代わりに no-DCE merged を base にし、`*_test.vibe` を 28→**68 本**実行
-  (+82)。残 80 本は seed に無い standalone module（`desugar`/`monoify`/`cst_lower`/
-  `analyze_purity` 等）を import するため分母外で無意味。
-- **direct-call drivers** (`coverage_drivers.sh`): seed の under-tested
-  関数を crafted 入力で直接叩く。**黒箱 compile では構造的に踏めない category**:
-  - `cov_async.vibe`: inlined async/stream builtin (`Stream::next`/`await`/…)
-    — examples に async プログラムが無い (+32)。`Task::*` を叩いていた分は
-    #1227 の eager prototype 撤去で外した。
-  - `cov_lookup.vibe`: builtin name→Type dispatch chain
-    (`lookup_array`/`lookup_io_b`) を全 builtin 名で呼ぶ (+25)。
-  - `cov_cachetext.vibe`: persistent-cache フォーマット parser の version/arity/
-    unknown-tag/CR arm を crafted TSV で (+16)。
-  - `cov_units.vibe` / `cov_units2.vibe`: 小 helper を直接呼ぶ
-    (`strip_trailing_cr`/`emit_assignop_op`/`lookup_iter_intrinsic`/
-    `matches_cached_file_spec` の exists/stat/fingerprint 全 arm 等) (+26)。
-  - `cov_traitenv.vibe`: `type_implements_check_super` の TypeEnv 全 variant
-    (`EnvTraitImpl` の eq+sub/eq+nosub/neq、`EnvFlat`/`EnvCached`/…) を構築 (+11)。
-  - `cov_link.vibe`: `compile_wasi_module_linked_impl` の linked_imports>0 /
-    library_mode arm（shipped compiler では DCE 済み caller 経由でしか到達不能）
-    を synthetic linked import で直接 (+11)。
-  - `cov_builtins.vibe` / `cov_parse.vibe`: Array/String/Map/Bytes builtin、parser
-    arm（多くは self-compile で既出、残差を補う）。
-  - `cov_helpers.vibe`: **unique-named** pure helper を全入力 partition で叩く
-    (`comp_valtype_to_core` の全 valtype、`parse_int_unwrap` の符号/空/非数字、
-    `lookup_io_a`/`lookup_io_c` の dispatch chain、`double_to_string_compiler` の
-    繰り上げ/frac==0、`entry_declares_async_int`) (+28)。注: `(fn,local)` merge は
-    関数名で union するため、merged source 内に**重複定義**を持つ helper
-    (`strip_trailing_cr`/`parse_struct_fields_rest` 等) は local-index がずれて
-    点灯しない — driver は unique-named 関数に限定する。
-  - `cov_syntax.vibe`: parser を corpus が踏まない arm へ — slice 記法
-    (`a[:]`/`a[1:]`/`a[:2]`)、block-local `let rec`/`let mut`/enum/struct
-    (`parse_impl_block`)、if/else-if・is-pattern・match expression mode
-    (`parse_impl_dispatch`)。`load_and_parse` で parse のみ走らせ error は握り潰す。
-  - `cov_exprwalk.vibe`: unique な再帰 Expr/Pat walker を全 variant 構築で直接叩く
-    — `is_mut_captured_in`(`||` 短絡の else 側・`let n==name` shadowing arm)、
-    `rewrite_import_alias_expr`、`wrap_placeholder_arg`、`pat_binds_name`(全 Pat
-    variant)。Expr/Pat コンストラクタを手で組むため compile 不要で全 arm を踏む
-    (`pat_binds_name`/`wrap_placeholder_arg` は 0 dark まで到達) (+25)。注:
-    whole-program compile を増やしても corpus が飽和済みで +0〜+1（実測で確認）—
-    伸びるのは「特定 helper/walker を直接呼ぶ」driver に限る。
-  - `cov_fscache.vibe`: `load_source_if_cached_file_spec_matches`（unique な 8-arm
-    Fs validator: missing / stat-match / stat-miss+fp-match / +fp-miss / +fp-empty /
-    no-stat+fp-{match,miss,empty}）を、実 fixture `_build/covfs/f.vibe` の本物の
-    `Fs::stat_token` / `compact_string_fingerprint` 値と、わざと外した値で全 arm 踏破
-    （0 dark 到達）(+11)。注: その Bool twin `matches_cached_file_spec` は merged
-    source に重複定義があり 10 dark は dead copy（駆動不能）。
-- **manifest-header cache** (`coverage_manifestcache.sh`): 非 special な
-  manifest project を cold/warm/部分 invalidation で FS-compile し、
-  `matches_cached_file_spec`/`try_collect_manifest_source_groups_fs`/
-  `collect_needed_paths_from_manifest_headers` を点灯 (+32)。コンパイラ自身の
-  manifest は cold で trap するため cache が書かれず、この cluster が dark だった。
-- **multi-module merge** (`coverage_multimodule.sh`): 非 entry module が
-  private let/enum/struct/type-alias を持ち、entry が同名 export を別 alias で
-  import する（衝突）project を FS-compile → `namespace_private_value_stmts`/
-  `append_import_alias_collision_defs_from_sources` 系を点灯 (+16)。
-- **feature programs** (`coverage_features.sh`): trait/効果/mut capture/
-  pattern 等の breadth (+14)。
+Low-level use:
 
-再現:
-```bash
-scripts/coverage_corpus.sh        # base acc.json + compiler_cov.wasm
-scripts/coverage_unittests.sh     # base は flat module source (#1633 で no-DCE merged base は無くなった)
-scripts/coverage_drivers.sh       # async/lookup/cachetext/units/traitenv/link/helpers/…
-scripts/coverage_manifestcache.sh
-scripts/coverage_multimodule.sh
-scripts/coverage_features.sh
-```
+- `VIBE_COVERAGE=1 cli_main <src> <out.wasm> <entry>` produces an instrumented
+  wasm;
+- `VIBE_COV_OUT=<report.json>` passed to the runner dumps the bitmaps after the
+  run.
 
-`coverage_corpus.sh` は実行前に生成 compiler source と必須入力の存在・鮮度を
-検証するだけで、自動再生成はしない。不足・stale の場合は
-`bash scripts/ensure_generated.sh` を実行するよう診断する。repository 内の
-host path を Python `relpath` + containment check で作るため、GNU
-`realpath --relative-to` を持たない BSD/macOS でも同じ入力を使う。driver の
-checkout-local merge tool は corpus が生成した現在の `compiler_cov.wasm` で
-compile する（committed seed は compiler が emit した通常の merged source を
-compile する役割だけ）。merge は command status と `base now total` schema を
-検査し、`total > 0`、分母不変、hit 非減少、書込み後 stat 一致を満たさなければ
-coverage run 全体を失敗させる。
-
-#1633 の production exact-path exposure へは、`coverage_drivers.sh` に登録された
-**39 本すべてが移行済み**。legacy raw base (`_build/coverage/merged_nodce.vibe`)
-とそれを作っていた Python walk は削除した。`cov_driver.vibe` は現在の
-`coverage_drivers.sh` に登録されない historical monolith（`coverage_driver.sh`
-単数形からのみ参照され、そちらは flat module source への raw concat のまま）なので、
-移行対象へ戻すか退役するかを別途決める。ここで件数へ含めたり暗黙に実行済みとは
-扱わない。
-
-移行で分かったこと: 全 driver が壊れたまま放置されていた間に、driver が呼ぶ
-コンパイラ側 API が動いていた。AST ノードのアリティ (`EIdent`/`ECall`/`EDot` の
-byte offset スロット、`SEnum` の derives、`SStruct` の #829 スロット)、
-parser 内部の `starts: Array[Int]` (#1567 located diagnostics) と `parse_recur`
-コールバック、`check_pattern` の errors シンク、`flatten_module_body` が
-alias 配列ではなく rewriter を取るようになった点など。消えた target
-(`lookup_array_group_b` → `lookup_array`、`lookup_io_c` → `lookup_io_b` へ吸収、
-`lookup_assert` → checker.vibe のインライン名前判定、`parse_int_unwrap` →
-`parse_int_or`) は現行の後継へ差し替えるか、後継が無いものは理由付きで削った。
-
-#### 構造的に到達不能な残差（~19 dark）
-
-80% 到達後も残るのは大半が構造的:
-- `__to_string`(18): runtime builtin が intercept する host-shadowed 関数（vibe
-  本体は dead）。
-- `compile_wasi_module_linked_impl` 残 arm: 実 linked dep の resolved_type_stmts
-  を要する path（synthetic linked import では届かない）。
-- `check_expr`/`compile_expr`/`compile_call` の深い防御 arm: 728-file corpus が
-  既に飽和しており、ordinary/error プログラムでは +0（battery/error 実測で確認）。
-
-KPI: **分岐 80% を下限ガード**、関数（~88%）と併用。driver suite は
-seed に新関数が増えても (fn,local) merge でそのままスケールする。
-
-仕組み:
-- `VIBE_COVERAGE=1` でコンパイルすると、codegen が
-  - 各 user 関数の入口に「ヒットフラグを 1 立てる」store を挿入し（heap 直下の
-    予約領域に 1 byte/関数の bitmap）、`vibe_cov` custom section に `cov_base` /
-    `cov_count` / 関数名を埋め込む。
-  - 各 `if` の then/else と各 `match` アーム（catch-all 含む。条件アームが 1 つ
-    以上あるときのみ）の先頭に、同じく 1 byte/分岐の store を挿入する。分岐 id は
-    codegen 走査順に採番（`CovState` の可変セル経由）、固定上限 65536。
-    `vibe_cov_branch` custom section に `base` / `count` / 各分岐の所属関数 index
-    を埋め込む。
-- 計測コンパイラを実行 → 両 bitmap が埋まる → runner が `VIBE_COV_OUT` 指定時に
-  memory を読み、関数名・所属関数と突き合わせて report.json を出力。分岐は所属
-  関数ごとに集計され、未到達分岐の多い関数が `branch.top_gaps` に並ぶ。
-- `VIBE_COVERAGE` を立てない通常ビルドは **byte 単位で従来と同一**（gate の
-  stage2==stage3 fixpoint で担保）。計測は bootstrap に影響しない。
-- 分岐は `if`/`match` のみ（`&&`/`||` の短絡は未計測）。真の **行単位**カバレッジは
-  AST がソース位置を持たず、recursive-descent parser に byte 位置を配線する大改修が
-  必要なため未実装（別タスク）。
-
-生成物 (`_build/coverage/selfhost-fn/`):
-- `compiler_cov.wasm` — 計測コンパイラ
-- `report.json` — `{total, hit, missed, rate, hit_fns[], missed_fns[],
-  branch: {total, hit, missed, rate, per_fn{}, top_gaps[]}}`。
-  `per_fn[fn]` は `{total, hit, mask}` で、`mask` は branch 1つにつき
-  `'1'`/`'0'` 1文字 (owner 関数内 ordinal の昇順) — 別 program 間で branch を
-  同定できる唯一の鍵 (#1556)
-
-環境変数:
-- `VIBE_COV_SEED` (計測ビルドに使う seed; 既定は committed seed)
-- `VIBE_COV_DIR` (出力先)
-- `VIBE_COV_SHOW_MISSED` / `VIBE_COV_SHOW_BRANCH_GAPS` (サマリ詳細)
-- `VIBE_COV_SHOW_MISSED` (`1` で未実行関数を表示)
-
-低レベル API:
-- `VIBE_COVERAGE=1 cli_main <src> <out.wasm> <entry>` — 計測 wasm を生成
-- `VIBE_COV_OUT=<report.json>` を runner に渡すと、実行後に bitmap を dump
-
-粒度は関数レベル（line/branch ではない）。AST がソース位置を保持しないため
-line/branch は span 配線が前提で別途実装が必要。関数レベルでも「未到達・
-未テスト経路の検出」には十分有効（例: dead な `__to_string` inline path のような
-穴は missed_fns に現れる）。
-
-## vibe ソース span ベース WASM カバレッジ
-
-vibe ソース基準の line/branch ヒットは、**runner が書く `.cov.json`** から
-集計する (`VIBE_COV_OUT` / `VIBE_COV_RAW=1` — `scripts/coverage_drivers.sh`,
-`scripts/vibe_run.sh`)。
-
-**`vibe compile --coverage` は何もしない。** 実測 (2026-08-20): 同じソースを
-`--coverage` 付き / 無しでコンパイルすると、出力 `.wasm` も併走する
-`.funcmap` も**バイト単位で同一**。`.funcmap` (`NAME<TAB>INDEX`) は
-`--coverage` とは無関係に FS compile が常に書くもので、消費するのは
-coverage ではなく失敗時のスタック注釈 (`scripts/vibe_test.sh`,
-`test_vibe_break_line.sh`, `test_vibe_step.sh`)。
-
-動く経路:
-
-```bash
-# テストファイル単位 (JSON は _build/vibe_test/coverage/ へ)
-bash scripts/vibe_test.sh --coverage lib/@vibe/builtin/bool_test.vibe
-
-# .vibex を走らせて計測 (_build/vibe_run/<name>.cov.json)
-bash scripts/vibe_run.sh --coverage prog.vibex
-```
-
-実測例:
-
-```
-ok   lib/@vibe/builtin/bool_test.vibe  [cov fn 20/32, branch 6/6]
-[vibe-test] coverage: functions 20/32 (62.50%), branches 6/6 (100.00%)
-```
-
-The old `coverage_wasm_source.sh` pipeline was retired with the MoonBit host.
-Its source-map report format and scratch-sidecar task were removed rather than
-leaving unreachable controls that appeared to work. `VIBE_TEST_COVERAGE=1` is
-also not a supported control. Use `bash scripts/vibe_test.sh --coverage`.
-
-### Measure all @vibe/builtin tests
-
-`coverage-wasm-std` selects every `*_test.vibe` file under `@vibe/builtin` and
-runs the maintained test coverage path:
-
-```bash
-pkf run coverage-wasm-std
-```
-
-The command prints per-file and aggregate function/branch coverage and writes
-per-file JSON to `_build/vibe_test/coverage/`. Any compile or test failure makes
-the task fail; measuring zero selected files also fails.
-
-`VIBE_WASM_STD_COVERAGE_FILTER` and `VIBE_WASM_STD_COVERAGE_EXCLUDE` accept
-**POSIX extended regular expressions** (`grep -E`) for a focused run. They took
-`rg` patterns until #2252 removed ripgrep from `scripts/` -- CI does not have
-it -- and the two dialects are not the same language: `\d`, `(?i)` and the
-other PCRE/Rust-regex constructs are rejected rather than reinterpreted. An
-invalid pattern fails the run and says so; it is not reported as an empty
-corpus. `VIBE_TEST_CLI_WASM` selects the compiler, following
-the same contract as `scripts/vibe_test.sh`. Variables from the retired
-wasm-source report pipeline are rejected instead of being silently ignored.
-
-## 一括実行
-
-```bash
-pkf run coverage                            # selfhost suite coverage 集計
-pkf run coverage-suite-branch-gate # branch coverage gate
-pkf run coverage-suite-next-branches  # 未到達分岐の提案
-```
-
-> `coverage-wasm-std` is a live `pkf` task over
-> `scripts/coverage_wasm_std.sh`.
+`report.json` is
+`{total, hit, missed, rate, hit_fns[], missed_fns[], branch: {total, hit, missed, rate, per_fn{}, top_gaps[]}}`,
+where `per_fn[fn]` is `{total, hit, mask}` and `mask` holds one `'1'`/`'0'`
+per branch in owner-ordinal order — the only key that identifies a branch
+across programs (#1556).

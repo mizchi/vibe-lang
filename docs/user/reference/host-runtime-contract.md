@@ -99,7 +99,7 @@ from `codegen/wasi/linked_compile.vibe` and 23 from `codegen/gc/backend_body.vib
 agreeing where both emit. `node scripts/host_capability_probe.mjs <module.wasm>`
 reports what one artifact actually imports.
 
-#1346 remains open for:
+Not covered yet (what was left when #1346 closed; no open issue tracks it):
 
 - executable signature comparison against the NODE provider (the viberun half
   has landed: 51 `func_wrap` closures are compared against the emitter's core

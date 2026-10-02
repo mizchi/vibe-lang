@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Process-pool frontend pre-warm (#1239 step 4(D)).
 #
-# WHAT THIS REPLACES
+# WHAT THIS IS
 #
-# `runtime/vibe --jobs=N` already pre-warms the persistent type-env cache
-# before its serial compile, but only through scripts/parallel_frontend_warm.mjs
-# -- which needs node AND the dev-repo `scripts/` tree. A shipped toolchain has
-# neither, so `--jobs` there prints a note and silently compiles serially. This
-# script is the same pre-warm with no node and no dev-only dependency: bash,
-# plus the compiler image the launcher already picked.
+# The persistent type-env cache pre-warm of scripts/parallel_frontend_warm.mjs,
+# with no node and no dev-only dependency: bash, plus a compiler image. It
+# ships in the toolchain (lib/parallel_warm_pool.sh), but no CLI verb runs it:
+# since #2858, `--jobs N` on `vibe build` / `compile` / `check` is validated
+# and does not change what is built (docs/internal/design/compiler-parallelism.md,
+# Phase 2). scripts/test_parallel_warm_pool_gate.sh exercises it.
 #
 # WHY A PROCESS POOL
 #
@@ -22,8 +22,8 @@
 #
 # THE SAME ADVISORY CONTRACT AS THE NODE DRIVER
 #
-# This is a cache pre-warm and NEVER a second source of truth. runtime/vibe
-# always runs its serial compile afterward regardless of what happens here, and
+# This is a cache pre-warm and NEVER a second source of truth. A caller must
+# always run its serial compile afterward regardless of what happens here, and
 # a module that fails to check here is simply absent from the publish manifest
 # -- the serial walk rechecks it from scratch and reports the identical
 # diagnostic. Nothing here can change what a build produces, only how much

@@ -33,9 +33,6 @@ still has to read.
   be newest on disk. `scripts/resolve_stage2.sh`'s `resolve_stage2_strict`
   is the resolver that refuses both. `vibe check` is the type-check verb.
   `vibe diagnostics` is the deprecated alias.
-- Treat `docs/internal/design/decisions.md`'s "marker-only, no trait methods"
-  bullet as the current trait model. The builtin `Eq` dispatches (#2523).
-  That file is a locked list that has not been revised.
 
 ## Gates that already cover part of this
 

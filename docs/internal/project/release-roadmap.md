@@ -6,18 +6,19 @@
 ## Version ladder
 
 The repository's first stable version tag was `v0.0.1`
-(2026-04-14, from the retired MoonBit host); `v0.1.0-rc.1` and
-`v0.1.0-rc.2` were published as pre-releases. Older labels such as "0.1.0 sign-off", "0.2.0"
-and "0.3.0 GA" in planning documents did not denote published releases. The
-ladder below numbers releases by what actually ships.
+(2026-04-14, from the retired MoonBit host). `v0.1.0-rc.1`, `v0.1.0-rc.2` and
+`v0.1.0-rc.3` were published as pre-releases. Older labels such as "0.1.0
+sign-off", "0.2.0" and "0.3.0 GA" in planning documents did not denote
+published releases. The ladder below numbers releases by what actually ships.
 
 | version | meaning | state |
 | --- | --- | --- |
 | `v0.0.1` | The one historical release (MoonBit host era) | tagged 2026-04-14 |
 | `0.0.x` | Everything since: the selfhost cutover and all development, including the content once prepared as "0.3.0 GA" | never released |
-| `0.1.0-rc.1` | The first candidate to publish assets. Its bug hunt came back clean | published 2026-09-21 as a pre-release; superseded |
-| `0.1.0-rc.2` | The second candidate. Its merged compiler tree passed the generative bug hunt; one pre-existing mutation diagnostic is tracked as #3226 | published 2026-09-28 as a pre-release; superseded by milestone fixes |
-| **`0.1.0`** | **The first release usable by anyone but the author** | final publication and verification remain in #2834; see [release-notes-0.1.0.md](../../user/getting-started/release-notes-0.1.0.md) |
+| `0.1.0-rc.1` | The first candidate to publish assets | published 2026-09-21 as a pre-release; superseded |
+| `0.1.0-rc.2` | The second candidate | published 2026-09-28 as a pre-release; superseded |
+| `0.1.0-rc.3` | The third candidate; prebuilt installs take the CLI compiler built from the release's own source (#3252) | published 2026-09-30 as a pre-release |
+| **`0.1.0`** | **The first release usable by anyone but the author** | the tag and the verification of the published install remain in #2834; see [release-notes-0.1.0.md](../../user/getting-started/release-notes-0.1.0.md) |
 | `0.2.0` | Structured concurrency, a type system aimed at formalization, a dedicated agent harness | after 0.1.0 |
 | `1.0.0` | Maturity. Not a synonym for the first public release | unscheduled |
 
@@ -26,7 +27,8 @@ architecture experiments, repository tooling, stdlib additions — lives in the
 [Backlog (unscheduled) milestone](https://github.com/mizchi/vibe-lang/milestone/4)
 rather than in a version above. It is not a fourth rung of the ladder.
 
-`runtime/vibe` reports `0.1.0` on the final release candidate.
+`runtime/vibe`'s `VIBE_VERSION` names the version being prepared: the current
+candidate's `0.1.0-rc.N`, and `0.1.0` for the final tag.
 `scripts/build_release_assets.sh` requires `VIBE_VERSION` to equal the tag being
 built, so a candidate cannot be published under the release's own number, and
 `scripts/check_version_ladder.sh` keeps this table, the launcher, and the
@@ -50,31 +52,23 @@ not expressed as one.
 
 So a botched candidate is not retried under its own number; the candidate line
 moves up. `0.1.0-rc.0` was published with zero assets by the pre-#2951
-workflow, and `0.1.0-rc.1` was the candidate for that reason and no other --
-the tree it was cut from carries no compiler change on that account.
+workflow, which is the only reason the first candidate with assets is rc.1.
 
-**`0.1.0-rc.2` moves the line for a different reason, and a healthier one.**
-`0.1.0-rc.1` published cleanly: ten assets, checksums verified, and
-`release-install` green on fresh Ubuntu and macOS. Nothing about it failed.
-The line moves because the TREE moved -- a candidate names a commit, and the
-commit rc.1 names is no longer main's -- and because rc.1's number is spent
-the moment it is published, whether or not anything went wrong with it. A
-candidate exists to be hunted for bugs, so leaving one in place while its tree
-is superseded would be asking people to look for problems in something nobody
-is going to ship.
+A candidate also names one commit. Once main moves past that commit, the
+candidate describes a tree nobody is going to ship, and a candidate exists to
+be hunted for bugs. rc.2 and rc.3 each moved the line for that reason, not
+because the previous candidate failed.
 
-The corollary is the rule this section really encodes: **every new candidate
-costs a number, so cut one when the tree is worth hunting, not on a
-schedule.**
+The rule this section encodes: **every new candidate costs a number, so cut
+one when the tree is worth hunting, not on a schedule.**
 
 ### What promotes an rc to the release
 
 The rc exists because "every checklist item is ticked" and "we have looked for
-bugs" are different claims. At the first candidate, only the checklist claim
-had evidence. A feature-complete candidate whose failure modes nobody went
-hunting for is not a release; the project's own priority order says the worst
-way to break is to be **silently wrong**, and a checklist cannot find those —
-it can only confirm the things someone already thought to write down.
+bugs" are different claims. A feature-complete candidate whose failure modes
+nobody went hunting for is not a release; the project's own priority order says
+the worst way to break is to be **silently wrong**, and a checklist cannot find
+those — it can only confirm the things someone already thought to write down.
 
 So the rc is promoted by a **bug hunt**, not by more features:
 
@@ -96,109 +90,92 @@ So the rc is promoted by a **bug hunt**, not by more features:
 A finding that turns out to be a pre-existing limitation with a written reason
 does not block promotion; an unexplained divergence between two lanes does.
 
-The merged compiler tree for rc.2 completed the hunt: 750/750 generated
-programs produced no divergence, and 300/300 mutation seeds produced one
-pre-existing diagnostic finding on invalid input, tracked as #3226. Further
-milestone fixes changed the compiler tree after rc.2. After #3110 merged, the
-final candidate's own stage2 completed 750/750 extended generated programs
-without a finding; 300/300 mutation seeds reproduced only the same #3226
-diagnostic. Direct RC leak and shadowing investigations closed #3193, #3223,
-#3215, #3203, #3110 and #3240. The compiler identity, commands and triage are
-recorded in [#2834](https://github.com/mizchi/vibe-lang/issues/2834).
-The subsequent checkout-installer fix #3242 did not change compiler sources;
-the installed Hello World program now runs with a Cargo-built native runner.
-The final tag and published-install evidence remain in #2834.
+Each campaign's compiler identity, commands, counts and finding triage are
+recorded on [#2834](https://github.com/mizchi/vibe-lang/issues/2834), next to
+the install, registry round-trip and release-gate evidence. Read the current
+state there rather than from a copy here.
 
 The stable surface that the `0.1.0` tag freezes is
-[spec/stable-surface.md](../../user/reference/stable-surface.md) (ADR-0057). While the toolchain
+[stable-surface.md](../../user/reference/stable-surface.md) (ADR-0057). While the toolchain
 is on 0.x, SemVer shifts one step: a breaking change to that surface is a
 **Minor** bump, a compatible change is a **Patch**.
 
-### What 0.1.0 needs
+### What 0.1.0 has to be true of
 
-"Usable by anyone but the author" is the bar, so the remaining work is about
-someone else's first hour, not about compiler internals:
+"Usable by anyone but the author" is the bar, so the criteria are about
+someone else's first hour, not about compiler internals. #2834 records the
+evidence for each.
 
-1. **Install and run on a machine that is not the author's.** The
-   `cli-install` workflow already covers multi-OS install smoke; what it does
-   not cover is the path a newcomer takes from the README to a running program.
+1. **Install and run on a machine that is not the author's.** The README's
+   installer installs a published release with no checkout, and `release.yml`
+   installs the freshly published release on Ubuntu and macOS and runs a
+   program with it.
 2. **Package distribution end to end** — `vibe new` / `add` / `fetch` /
-   `publish` against the registry slice that landed, with the lock file as the
-   contract (ADR-0065, ADR-0063/0064, ADR-0070).
+   `publish` against an isolated registry, with dependencies pinned by content
+   hash in the root `index.vpkg` (ADR-0065, ADR-0063/0064, ADR-0070). The
+   `require` line is the lock; there is no lock file.
 3. **The book reads true.** Every ` ```vibe run ` block is compiled by doctest,
    and the Japanese translation records the same output
    (`pkf run check-tutorial-translation-parity`).
 4. **The stable surface is real** — every name in
-   [spec/stable-surface.md](../../user/reference/stable-surface.md) §3 resolves in the shipped
+   [stable-surface.md](../../user/reference/stable-surface.md) §3 resolves in the shipped
    compiler (`pkf run check-freeze-surface`).
 5. **Editor integration** — `vibe lsp` plus the query primitives
    (`vibe check` / `symbols` / `type-at` / `binding-at` / `deps` / `grep`).
-6. **Apache License 2.0.** The `0.1.0` tag is the first release usable by
-   anyone but the author; it does not ship under MIT.
+6. **Apache License 2.0.** The `0.1.0` tag does not ship under MIT.
 7. **One entry spelling.** `fn main allows Console` / `test "n" allows Http`
    is what every document teaches and the only spelling the compiler reads
-   (ADR-0088): `with` on an entry is a parse error naming the edit, since the
-   bootstrap bump to `seed/entry-allows-2026-09-11` (#2654).
+   (ADR-0088): `with` on an entry is a parse error naming the edit.
 8. **The seed is fetchable.** The release tag that `bootstrap/seed.json` pins
    exists, so a cold checkout does not rebuild the seed from source
    (`scripts/ensure_seed.sh`'s rebuild fallback is for the window inside a
    bump, not for a release).
-9. **The browser playground runs the shipped language.** Build its compiler
-   component from the candidate stage2 and run every preset in Chromium. The
-   browser gate must load the built assets and execute the programs, not only
-   type-check their source.
+9. **The browser playground runs the shipped language.** Its compiler
+   component is built from the candidate stage2, and CI runs every preset in
+   Chromium against the built assets rather than only type-checking their
+   source.
 
-### Release work and durable decisions
+### Release scope
 
 The [0.1.0 milestone](https://github.com/mizchi/vibe-lang/milestone/2) is the
-current release scope; [#2834](https://github.com/mizchi/vibe-lang/issues/2834)
-owns the candidate's final acceptance evidence. Settle before the tag:
+release scope; [#2834](https://github.com/mizchi/vibe-lang/issues/2834) owns
+the final acceptance evidence. An issue assigned to the milestone is resolved,
+or removed from it with a written scope reason, before the tag. Query the
+milestone instead of copying its contents here — a copied list is stale the day
+the first item closes.
 
-- Comparison witness semantics and derived implementations (#2523), including
-  the existing fail-closed restrictions until dispatch is correct.
-- Synchronous capability grants and host/provider ABI (#2828, #1962, #1346).
-  #2828 tracks the newer instantiate-time proposal recorded by #2825; the
-  ADR amendment is in PR #2811, which was still open at the 2026-09-15 audit.
-  A branch decision is not a claim about current production lowering.
-- Package/contract identity formats (#2829), public naming and constructor
-  qualification (#2830), and the ownership surface (#2392).
-- Stable-surface correctness, actionable diagnostics (#2820, #2831, #2199),
-  and bounded quality improvements such as Array reservation (#2554), memo
-  limits (#2521), builtin classification (#2584), and gate reachability (#2592).
-
-The document organization work (#2002, #2565, #2566, #2567) has prepared branch
-changes; it is complete only when those changes are reviewed and merged. Keep
-the public contract and the book current as each release decision lands.
-
-Internal compiler optimization is tracked separately by
-[#2833](https://github.com/mizchi/vibe-lang/issues/2833), under the
+Internal compiler optimization is indexed by
+[#2833](https://github.com/mizchi/vibe-lang/issues/2833) under the
 [Backlog (unscheduled) milestone](https://github.com/mizchi/vibe-lang/milestone/4).
-The 128 MiB per-unit compiler, per-module production prelude, complete TypeEnv
-nodes, and broader body relocation are measured backlog, not implicit
-prerequisites for 0.1.0.
-Preserve the existing cold/warm selfhost metrics and choose additional CI
-observation according to its cost; do not require a new expensive benchmark
-lane merely to complete this inventory.
+The 128 MiB per-unit compiler, per-module compilation, and broader body
+relocation are measured backlog, not implicit prerequisites for 0.1.0.
+Compiler size, mid-size memory and incremental build KPIs are observed, not
+promised. Preserve the existing cold/warm selfhost metrics and choose
+additional CI observation according to its cost; do not add an expensive
+benchmark lane merely to complete an inventory.
 
 ### What 0.2.0 holds
 
-The [0.2.0 milestone](https://github.com/mizchi/vibe-lang/milestone/3) holds all
-remaining async work: #1537, #2064, #2065, #2066, #2221, #2500 and #2832, plus
-the async half of the standard-effect metadata migration (#1963). Existing async
-APIs remain unstable in 0.1.0.
+ADR-0109 gives 0.2.0 three themes:
 
-1. **Shared-nothing structured concurrency** — `Task` bound to a generative
-   nursery, typed channels, `Send`, cooperative cancellation as the public
-   model ([ADR-0068 detail](../design/concurrency.md)). JSPI + Worker, the WASI Component
-   Model, and shared-everything threads are interchangeable lowerings of that
-   semantics; none of them is a blocker. #488 stays an opt-in probe until its
-   intrinsic/type gaps and the backend differential gate are resolved.
+1. **Shared-nothing structured concurrency** as the public model — `Task`
+   bound to a generative nursery, typed channels, `Send`, cooperative
+   cancellation ([ADR-0068 detail](../design/concurrency.md)). JSPI + Worker,
+   the WASI Component Model, and shared-everything threads are interchangeable
+   lowerings of that semantics; none of them is a blocker. The
+   `@vibe/concurrent` core (`TaskGroup`, `TaskHandle`, channels,
+   `Parallel::map`, the `Send` rule) is already on the 0.1.0 stable surface
+   (#3172, stable-surface §3.1); the suspendable-task lane and the WASI 0.3
+   component surface are not (stable-surface §6).
 2. **A type system designed for formalization** — the redesign that follows the
    type-soundness ADR series, aimed at a specification that can be mechanically
    checked.
 3. **A dedicated agent harness** — for AI agents writing and verifying vibe.
    Its predecessor, the language evaluation loop `eval/lang-review/`, already
    runs.
+
+The [0.2.0 milestone](https://github.com/mizchi/vibe-lang/milestone/3) is the
+live list of scheduled work; read it there.
 
 ---
 
@@ -210,8 +187,8 @@ It stays short because every other kind of detail has a better home:
 | you want | read |
 | --- | --- |
 | why a design is the way it is | [adr.md](../design/adr.md) |
-| what is being worked on now | GitHub Issues (`gh issue list --state open`) |
+| what is being worked on now | GitHub Issues and milestones (queries in [issue-triage.md](issue-triage.md)) |
 | how a decision was reached | the issue thread, and `git log` |
 | what the language can do today | [cheatsheet.md](../../user/reference/cheatsheet.md), [book/en](../../../book/en) |
-| what 0.1.0 promises not to break | [spec/stable-surface.md](../../user/reference/stable-surface.md) |
+| what 0.1.0 promises not to break | [stable-surface.md](../../user/reference/stable-surface.md) |
 | how to prioritise an issue | [issue-triage.md](issue-triage.md) |

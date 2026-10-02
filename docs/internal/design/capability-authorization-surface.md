@@ -1,13 +1,17 @@
 # ADR-0088: capability authorization surface — `allows` at the entry, optional capabilities, `perform?`, and preflight authorization
 
-Status: partial (the surface below is built; the production grant ladder is #2332)
+Status: partial. The surface in §1–§3 and §5 is built. Of the §4 ladder, L1
+(launcher flags) and L3 (the required-capability preflight) are connected for
+`vibe run`; the instantiate-time branch is #2825, and L2 (a persisted
+`BindingLock`) has no owner (§4).
 
 Date: 2026-07-31, revised 2026-09-11
 
 Related: #1218, ADR-0071 (effectset), ADR-0075 (`.vibex`
 runtime contract), ADR-0084 (effect classes / entry-row admission), ADR-0085
-(`Exception[E]`). Background and alternatives:
-[effect-taxonomy-review.md](effect-taxonomy-review.md).
+(`Exception[E]`). Background: [effect-taxonomy-entry-policy.md](effect-taxonomy-entry-policy.md)
+(ADR-0084); the host side of the grant:
+[capability-host-contract.md](capability-host-contract.md).
 
 ## Context
 
@@ -161,15 +165,40 @@ name the block as written (`entry point test "x" cannot discharge ..`).
 
 ### 4. Resolution ladder — build → apply → instantiate, never mid-run
 
-Unchanged. An optional grant is resolved exactly once at the earliest phase
-available and is invariant for the run (ADR-0075): build flags (`--allow-*`
-/ `--deny-*`, L1) const-fold the `perform?`
-match and DCE the dead arm; apply records `BindingLock.optional_resolution`;
-instantiate performs one preflight before the first instruction of `main`
-(non-TTY: unresolved Optional → `NotGranted`, unresolved Required → abort,
-naming the flag). A non-interactive compile today lowers an unresolved
-optional operation to `NotGranted` on both backends (#2236); the production
-wiring of the ladder is #2332.
+An optional grant is resolved exactly once, at the earliest phase that has the
+fact, and is invariant for the run (ADR-0075). The rungs:
+
+- **L1, the launcher's flags.** `--allow-<provider>` / `--deny-<provider>` on
+  `vibe run`. No flag grants every standard provider (ambient authority); an
+  `--allow-*` switches to an allow-list; a `--deny-*` always subtracts and wins
+  over an `--allow-*` of the same provider (`host_granted_from_flags`).
+- **L2, apply.** `BindingLock.optional_resolution`, recorded once when a
+  deployment is applied.
+- **L3, instantiate.** One preflight before the first instruction of `main`: a
+  required capability the host does not grant aborts, naming the flag that
+  supplies it and the `allows X?` alternative. An interactive run may prompt
+  once, before this preflight (ADR-0075).
+
+**Amended (2026-09-15, #2825): `perform?` is an instantiate-time branch.**
+Both arms stay in the emitted code and select on a grant the host sets before
+`main` ([capability-host-contract.md](capability-host-contract.md) §3), so a
+body no longer depends on the build's grants. The non-interactive default that
+lowered an unresolved optional to `NotGranted` (#2236) is withdrawn:
+insufficient authority becomes a build error naming the edit, unless a parent
+supplies an explicit handler.
+
+What is implemented:
+
+| | state |
+| --- | --- |
+| L1 + L3 on `vibe run` | **connected** (#2828 rung 1). `preflight_instantiate` runs before the artifact is built; pinned by `scripts/check_capability_preflight.sh` |
+| `perform?` on `vibe run` | **resolves from the L1 grant** (#2828 rung 2). `optional_grants_from_flags` turns the flags into a frozen `(provider, "Granted")` table, threaded to the lowering on every allocator lane; `opq_resolution` matches operation, then provider, then `"*"`, whose absence means `NotGranted`. The lowering still selects the arm at compile time and erases the other one |
+| `perform?` in `vibe build` / `compile` / `serve` | resolves `NotGranted`: those commands pass no launcher grants (`no_grants()`), which is #2236's default, still in force there (`fixtures/typecheck/perform_question_not_lowered.vibe`) |
+| `perform?` in a `test` / `bench` / `example` artifact | resolves `Granted`: a test artifact runs with full authority (`optional_perform_artifact_resolution`), which is why §3 refuses a `perform?` written directly in a block |
+| the instantiate-time branch, and withdrawing the `NotGranted` default | not implemented; #2825 owns the sequence (lowering, then the breaking checker change) |
+| L2, a persisted `BindingLock` | not implemented: `freeze_binding_lock` exists and has no production caller, and the CLI has no `apply` phase for it to run in. No open issue owns it |
+| the interactive prompt | not implemented, no owner |
+| `Errored(E)` | the branch is reachable since rung 2 (the `Granted` arm is now emitted); a catchable host-failure ABI that lets a host operation report into it is not implemented, no owner |
 
 ### 5. `with` on an entry is a parse error
 
@@ -212,7 +241,7 @@ that reads the keyword.
   operations are host imports (a WIT interface the runtime satisfies, or a
   provider composed at the root per ADR-0075) would be the same `allows` row
   with a new owner class; the declaration form and the runner-side import
-  injection are open and have their own issue.
+  injection are open (#2656).
 
 ## Formal contract
 

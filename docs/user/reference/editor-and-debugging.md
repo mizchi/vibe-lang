@@ -560,8 +560,7 @@ either, for the same reason: a row is printed at a trap, so a placeholder
 file there would be a fabricated location. Genuine **instruction-offset breakpoints** (pausing
 mid-statement, at an arbitrary sub-expression) remain future work: it
 needs every `Expr` node to carry its own source span, not just statements,
-which the linemap alone doesn't provide
-(docs/internal/project/release-roadmap.md テーマ3, 3-P0's "残").
+which the linemap alone doesn't provide.
 
 **wasm-gc / bump**: production `vibe.linemap` is the linear/RC FS lane
 (`vibe run` / `vibe test`). `VIBE_RC=0` (bump) does not fill newline tables,
@@ -602,7 +601,7 @@ exits.
 ## Keeping the compiler up to date
 
 The runner (`viberun`) and the compiler wasm are distributed and updated
-independently (ADR-0056 / テーマ1). To swap in a newer compiler artifact
+independently (ADR-0056, ADR-0111). To swap in a newer compiler artifact
 without rebuilding the runner:
 
 ```bash

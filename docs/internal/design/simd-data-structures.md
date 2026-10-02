@@ -1,14 +1,17 @@
-# SIMD-first data structures: where vibe stands and what to build
+# SIMD-first data structures: the measured record
 
-Written 2026-08-26. Every number below was measured on this checkout with
-`vibe bench`; the benches are committed next to the claims (`bench/bench_simd_*.vibe`)
-so any of them can be re-run or refuted.
+The record of epic #2340 (closed 2026-09-12): what SIMD and succinct data
+structures buy in vibe, measured, and what was built as a result. The numbers
+were measured with `vibe bench` in August 2026; the benches are committed next
+to the claims (`bench/bench_simd_*.vibe`) so any of them can be re-run or
+refuted. [simd-api-design.md](simd-api-design.md) is the short current-state
+guide.
 
 The starting point is [`mizchi/jsimd`](https://github.com/mizchi/jsimd), which
 asked "how much do succinct/SIMD data structures actually buy?" for JavaScript
 hot paths and answered it with ~30 measured subpaths and a written admission
 policy. This document asks the same question for vibe, keeps the parts of
-jsimd's answer that transfer, and proposes what to add or change in vibe's
+jsimd's answer that transfer, and records what was added or changed in vibe's
 own data-structure foundation.
 
 ## Re-running the evidence
@@ -49,10 +52,10 @@ Measured here on a 4000-key lookup (§3.4), same table, same packed query
 column, the only difference being where the loop lives: 2.7 ns/lookup with the
 loop inside the kernel, 3.6 ns/lookup with it in vibe. **1.32x** for the
 per-call boundary alone. A third lane that also moves the queries back into an
-`Array[Int]` costs 6.6 ns/lookup — so in the first draft of this document, which
-had no packed-query point lane, the boundary looked like 1.9x because it was
-carrying the query representation with it. Two variables, one number; the fix
-was another lane, not a softer sentence. jsimd states the bulk-vs-point rule as
+`Array[Int]` costs 6.6 ns/lookup — without the packed-query point lane, the
+boundary looks like 1.9x because it carries the query representation with it.
+Two variables, one number; the fix is another lane, not a softer sentence.
+jsimd states the bulk-vs-point rule as
 a contract — "individual gets were 12.5x slower" is written into
 `byte-key-flat-hash`'s own row — and vibe should do the same rather than let a
 fast structure be quoted at its slowest call.
@@ -94,30 +97,34 @@ Two unrelated mechanisms exist today, and they are very far apart in quality.
 `codegen/expr/compile_call.vibe`). Nine exist. Five are lexer-shaped scans with
 their needle baked in: `simd_skip_ws`, `simd_scan_alnum`, `simd_scan_alnum_str`,
 `simd_scan_string_special_str`, `simd_scan_line_end_str`. Four are the Layer 2
-`Bytes` searches this document proposed, landed in #2372: `Bytes::index_of`,
+`Bytes` searches, landed in #2372: `Bytes::index_of`,
 `Bytes::last_index_of`, `Bytes::count`, `Bytes::index_of_bytes`. They keep the
 `v128` on the operand stack for the whole loop and are fast.
 
-Every kernel costs a compiler change, a registry row, a per-lane index arm, and
-a name in each of several hand-maintained declaration lists that nothing points
-at — two effect-lowering allowlists, four borrow-arg0 masks, a `.vpkg` contract
-(#2373). **This does not scale to a data-structure library**: adding four
-builtins meant editing eleven places, and every one that was missed was caught
-by a human rather than by a gate.
+Every kernel costs a compiler change: a registry row, a per-lane index arm,
+and, when the four `Bytes` searches landed, a name in each of several
+hand-maintained declaration lists — two effect-lowering allowlists, four
+borrow-arg0 masks, a `.vpkg` contract. Adding four builtins meant editing
+eleven places, and every one that was missed was caught by a human rather than
+by a gate (#2373 and #2584 have since moved classification onto the registry
+row and checked the mirrors). Even so, **a compiler change per kernel does not
+scale to a data-structure library.**
 
 **Inline wasm** (`fn f(b: Bytes, n: Int) -> Int = wasm "..."`, #805/ADR-0072).
-A ~600-line WAT assembler with the full integer/float/SIMD opcode set, `v128`
-locals, `i8x16.shuffle`, structured control flow. This is the mechanism that
-makes a SIMD data-structure library possible in *library* code —
-`lib/@vibe/blake3/simd/simd.vibe` already proves it at scale, and every kernel in the
-benches here is written this way. It is linear-backend only (the wasm-gc backend
-rejects it).
+A WAT assembler with the full integer/float/SIMD opcode set, `v128` locals,
+`i8x16.shuffle`, structured control flow, and operand-type and stack-depth
+checking (#2401). This is the mechanism that makes a SIMD data-structure
+library possible in *library* code — `lib/@vibe/blake3/simd/simd.vibe` already
+proves it at scale, and every kernel in the benches here is written this way.
+A kernel takes `Int`, `Bytes` or `Array[Int]` parameters and may `call`
+another inline-wasm `fn` of the same module (#2348). It is linear-backend only
+(the wasm-gc backend rejects it).
 
 **The `V128` intrinsic surface** (`v128_load`, `v128_eq_i8x16`, … — 12 names)
 sat between the two and belonged to neither. It is measured in §3.1 and has
 since been **removed** (#2342).
 
-## 3. Measured: four gaps, two of them now closed
+## 3. Measured: four gaps
 
 ### 3.1 The `V128` intrinsics were the wrong shape (retired, #2342)
 
@@ -209,8 +216,10 @@ row, so those names exist only as signatures. (The `v128_*` block was the other
 reachable example until #2342 retired it; §3.1.)
 
 So the surface #2344 added is a designed one on `Int`, lowered to the
-corresponding wasm opcode — not those raw names un-hidden (#2343 covers the
-declarations that still overstate themselves):
+corresponding wasm opcode — not those raw names un-hidden. #2343 made
+`declarations.vibe` say which of its blocks are codegen-internal, and section
+4g of the early compiler gate checks that the low-level block really does not
+resolve from user code:
 
 ```
 Int::popcount(Int) -> Int      // i64.popcnt on the untagged value
@@ -260,11 +269,13 @@ between. jsimd's entire middle layer (`i32-array`, `f32-vector`, `columnar`,
 `bit-sliced-column`, `blocked-vector-array`, `matrix2d/3d`) is built on typed
 arrays that vibe has no type for.
 
-There is a second, harder edge here: **a SIMD kernel cannot see an `Array[T]`
-at all.** Inline wasm accepts only `Int` and `Bytes` params —
-`fn f(xs: Array[Int]) -> Bytes = wasm "..."` is rejected with "param must be
-typed Int or Bytes". So the tagged lane above had to rebuild the tagged layout
-inside a `Bytes` by hand to be measurable.
+When this was measured a SIMD kernel could not see an `Array[T]` at all, so
+the tagged lane above rebuilt the tagged layout inside a `Bytes` by hand to be
+measurable. #2348 added `Array[Int]` parameters: the body receives the array's
+header address (`[capacity@0][length@4][data_ptr@8]`, masked to the same
+address on both lanes), and each element is an `Int` in its lane's
+representation (`n<<1` under RC, raw under bump), so tag-transparent operations
+such as `i64x2.add` are correct over the slots on both lanes.
 
 ### 3.4 `MutMap`'s probe metadata is 8x wider than it needs to be
 
@@ -339,17 +350,18 @@ initially wrong:
   win; a zero-argument constant function in the innermost probe loop is not
   free. The constants are spelled as literals with a comment instead.
 
-## 4. Proposal: five layers, bottom-up
+## 4. Five layers, bottom-up
 
 Each layer is useful on its own and each is a precondition for the next. The
-ordering is deliberate — it puts the cheapest and least SIMD-dependent work
-first, because that is where the measurements say the value is.
+ordering puts the cheapest and least SIMD-dependent work first, because that
+is where the measurements say the value is. Layers 0–2 landed; Layers 3–5 wait
+for a workload (§5, §7).
 
 ### Layer 0 — the SIMD surface (decided, §3.1)
 
 **Done: `V128` is retired** (#2342), leaving inline wasm as the one way to
-write a kernel. Independently, three inline-wasm gaps block kernels in library
-code:
+write a kernel. Three inline-wasm gaps blocked kernels in library code; all
+three are closed:
 
 1. ~~**Out-of-range `i32.const` produces an invalid module with no
    diagnostic.**~~ **Fixed** (#2341). It used to be: `(i32.const 2654435761)` —
@@ -361,20 +373,20 @@ code:
    assembles to the same bytes as `-1640531535`) and gives a located error for
    what is genuinely out of range — for `v128.const` lanes, which silently
    truncated, and for an integer literal longer than a vibe `Int`, which
-   silently wrapped, as well. Until the next bootstrap bump the committed seed
-   predates the fix, and `vibe test` compiles with the seed by default — so the
-   benches here still spell that constant the signed way, and
-   `bench/bench_simd_hash_probe.vibe` says why at the top.
-2. **No `call`.** Kernels cannot compose, so every structure re-inlines its own
-   hash, its own group probe, its own tail handling. Allowing a call to another
-   inline-wasm `fn` in the same module would remove most of the duplication.
-3. **`Bytes` params only.** See §3.3. At minimum, a supported way to hand a
-   kernel the payload pointer and length of an `Array[T]`.
+   silently wrapped, as well. The committed seed includes the fix, so either
+   spelling compiles under `vibe test`; `bench/bench_simd_hash_probe.vibe`
+   keeps the signed spelling it was written with.
+2. ~~**No `call`.**~~ **Fixed** (#2348). A kernel may `call` another
+   inline-wasm `fn` in the same module, in folded form; the assembler adds
+   the closure-env argument and checks the operand count and that each operand
+   yields one `i64`. An ordinary vibe `fn` is still not callable from a kernel.
+3. ~~**`Bytes` params only.**~~ **Fixed** (#2348): `Array[Int]` parameters
+   (§3.3).
 
 ### Layer 1 — scalar bit primitives (§3.2)
 
-**Done** (#2344): `Int::popcount` / `Int::ctz` / `Int::clz` / `Int::select1`.
-No SIMD, both backends, ~344x on rank. `~` remains open as its own slice.
+**Done** (#2344): `Int::popcount` / `Int::ctz` / `Int::clz` / `Int::select1`,
+and the `~` operator. No SIMD, both backends, ~344x on rank.
 
 ### Layer 2 — `Bytes` bulk kernels
 
@@ -422,17 +434,16 @@ top-level `fn X::y` replaces the builtin named `X::y` for the whole linked
 program, including at call sites in files that never imported it
 ([#2378](https://github.com/mizchi/vibe-lang/issues/2378)). Such a
 re-implementation is therefore not a second implementation alongside the
-kernel — it *is* the one that runs, for every dependent. Measured: `import
-@vibe/builtin { String::trim }` alone moved a sparse `String::index_of` from
-0.8 µs to 174 µs (~218×).
+kernel — it *is* the one that runs, for every dependent. Measured before the
+fix: `import @vibe/builtin { String::trim }` alone moved a sparse
+`String::index_of` from 0.8 µs to 174 µs (~218×).
 
-Two names in `lib/@vibe/builtin/string.vibe` still shadow their builtins,
-deliberately: `String::equals` and `String::trim`. Both were measured
-equivalent to the builtin (20/20 answers, including tab/LF/CR/VT/FF padding
-and the equality edge cases) and performance-neutral, so what runs is the same
-work under a different symbol. The six search functions were neither, which is
-what made them worth removing. Nothing enforces the rule — #2378 is where the
-diagnostic belongs.
+`lib/@vibe/builtin/string.vibe` now defines none of them: `String::equals`,
+`String::trim` and the search functions are published declarations with no
+body, answered by the builtin registry. The rule is enforced (#2378): a module
+that defines a `fn` at a builtin's qualified name is refused where another
+module links it, with a diagnostic that names the rename; a program's own
+root module may still define one, and its calls answer to it.
 
 Cost of the routing, net of haystack construction
 (`bench/bench_string_scan_routing.vibe`, p50):
@@ -456,8 +467,10 @@ instead, so none of them depends on this being resolved.
 
 ### Layer 3 — packed columns (§3.3)
 
-Not a new primitive type: a **frozen typed view over `Bytes`, built through a
-builder**, matching vibe's existing `Builder::freeze` idiom.
+**Not planned** (#2347 closed 2026-10-02). The design below is kept as the
+shape such a type would take if a measured workload asks for it under §5's
+admission policy: not a new primitive type, but a **frozen typed view over
+`Bytes`, built through a builder**, matching vibe's existing builder idiom.
 
 ```
 I32Column::builder() -> I32ColumnBuilder
@@ -504,8 +517,8 @@ Separately and independently of any of this, and now **done** (#2346):
 `MutMap`'s `state: Array[Int]` is a `Bytes` control array carrying a 7-bit
 fingerprint. One file, no new language surface, and it shipped with the
 before/after bench §3.4 demanded — 1.02x to 1.25x depending on how expensive
-the key compare it skips is, plus 11% less allocation on build. It remains the
-cheapest change proposed here by a wide margin, and `MutSet` got it for free by
+the key compare it skips is, plus 11% less allocation on build. It was the
+cheapest change in this record by a wide margin, and `MutSet` got it for free by
 being a thin wrapper over `MutMap`.
 
 ## 5. Admission policy
@@ -545,34 +558,27 @@ before it is written, not after.
 The same goes for symmetric naming. jsimd's queue ends with "do not add
 symmetric names such as `SimdFloat32Array`, `SimdInt32Vector`, or a standalone
 `BitVector` without a measured workload that wins after boundary costs." The
-layers above are proposed in dependency order for that reason, and Layer 3's
-`F32Column` and `U8Column` are explicitly gated behind a workload that wants
-them.
+layers above are ordered by dependency for that reason, and Layers 3–5 are
+gated behind a workload that wants them.
 
-## 7. Issue tree
+## 7. Outcome
 
-Parent [#2340](https://github.com/mizchi/vibe-lang/issues/2340), three-axis
-labels per [docs/internal/project/issue-triage.md](../project/issue-triage.md). Priority is the symptom the
-issue states and nothing else, so most of this is P2 — almost none of it is
-something that works today being broken.
-
-| # | item | kind | priority |
-| :-- | :--- | :--- | :--- |
-| [#2340](https://github.com/mizchi/vibe-lang/issues/2340) | SIMD-first data-structure foundation (index) | `epic` | P2 |
-| [#2341](https://github.com/mizchi/vibe-lang/issues/2341) | inline wasm: out-of-range `i32.const` passes `vibe check`, fails at module load (§4/Layer 0) | `bug` | **P0** |
-| [#2342](https://github.com/mizchi/vibe-lang/issues/2342) | `V128` intrinsics heap-box every vector and never reclaim it — **retired** (§3.1) | `bug` `performance` | P1 |
-| [#2343](https://github.com/mizchi/vibe-lang/issues/2343) | the low-level wasm intrinsic block in `declarations.vibe` does not resolve from user code (§3.2) | `bug` | P2 |
-| [#2344](https://github.com/mizchi/vibe-lang/issues/2344) | `Int::popcount` / `ctz` / `clz` / `select1`, and `~` (§3.2) | `enhancement` `blocker` | P2 |
-| [#2345](https://github.com/mizchi/vibe-lang/issues/2345) | `Bytes` search/compare/count kernels; route `String::*` through them (§4/Layer 2) | `enhancement` | P2 |
-| [#2346](https://github.com/mizchi/vibe-lang/issues/2346) | `MutMap`: `Array[Int]` state -> `Bytes` control byte + fingerprint (§3.4) | `performance` | P2 |
-| [#2347](https://github.com/mizchi/vibe-lang/issues/2347) | `I32Column` builder/frozen pair (§4/Layer 3) | `enhancement` | P2 |
-| [#2348](https://github.com/mizchi/vibe-lang/issues/2348) | inline wasm: no `call` between kernels, no `Array[T]` param (§3.3, §4/Layer 0) | `enhancement` | P2 |
-
-Layers 4 and 5 have no issue yet, deliberately: by §5 each needs a documented
+Epic [#2340](https://github.com/mizchi/vibe-lang/issues/2340) is closed.
+Layers 4 and 5 never had issues, deliberately: by §5 each needs a documented
 end-to-end workload that wins against a native builtin before it is written.
 
-The order falls out of the triage rules — #2341, then #2342, then #2344 (the
-`blocker`), then the rest. #2341 and #2342 are done. None of
-#2343 / #2344 / #2345 / #2346 waited on the #2342 decision. Of those, #2343, #2345 and #2346 need no new language surface
-at all; #2344 does — `Int::popcount` and friends are builtin additions, and `~`
-is a new operator, so it touches the lexer, the parser and the printer as well.
+| issue | item | outcome |
+| :-- | :--- | :--- |
+| [#2341](https://github.com/mizchi/vibe-lang/issues/2341) | inline wasm: out-of-range `i32.const` passed `vibe check` and failed at module load (Layer 0) | fixed |
+| [#2342](https://github.com/mizchi/vibe-lang/issues/2342) | `V128` intrinsics heap-boxed every vector and never reclaimed it (§3.1) | retired |
+| [#2343](https://github.com/mizchi/vibe-lang/issues/2343) | the low-level wasm intrinsic block in `declarations.vibe` did not resolve from user code (§3.2) | documented as codegen-internal; gate 4g checks it |
+| [#2344](https://github.com/mizchi/vibe-lang/issues/2344) | `Int::popcount` / `ctz` / `clz` / `select1`, and `~` (§3.2) | landed |
+| [#2345](https://github.com/mizchi/vibe-lang/issues/2345) | `Bytes` search/compare/count kernels; route `String::*` through them (Layer 2) | landed |
+| [#2346](https://github.com/mizchi/vibe-lang/issues/2346) | `MutMap`: `Array[Int]` state → `Bytes` control byte + fingerprint (§3.4) | landed |
+| [#2347](https://github.com/mizchi/vibe-lang/issues/2347) | `I32Column` builder/frozen pair (Layer 3) | not planned |
+| [#2348](https://github.com/mizchi/vibe-lang/issues/2348) | inline wasm: `call` between kernels, `Array[T]` parameters (§3.3, Layer 0) | landed (`Array[Int]`) |
+| [#2378](https://github.com/mizchi/vibe-lang/issues/2378) | a `fn` at a builtin's qualified name replaced the builtin for every dependent (Layer 2) | refused at import |
+
+Still open by design: the `Bytes` tail-slack guarantee (Layer 2), and any
+packed column, bit-level structure or frozen collection until a workload
+earns it.

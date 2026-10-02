@@ -242,7 +242,7 @@ export fn compile_expr_tail2(buf: Bytes, expr: Expr, local_names: Array[String],
     Array::push(local_names, "__tuple_ptr")
     let mut nl = next_local + 1
     if ctx.enable_rc {
-      // RC layout (docs/spec/selfhost-rc-port.md):
+      // RC layout (docs/internal/design/uniform-value-repr.md):
       //   block_start: [alloc_size@0][rc_count@4][type_id@8][length@12][payload@16...]
       // The tuple value is block_start+8 (points at type_id), so the live header
       // is [alloc_size@ptr-8][rc_count@ptr-4][type_id@ptr+0][length@ptr+4] and the
@@ -358,15 +358,15 @@ export fn compile_expr_tail2(buf: Bytes, expr: Expr, local_names: Array[String],
     let elems = get_earray_elems(expr)
     let n_elems = Array::length(elems)
     if ctx.enable_rc {
-      // RC array literal: inline-allocate the array object with the tuple-style
-      // RC layout so it drops like a tuple (value = block+8, untagged). Object
+      // RC array literal: inline-allocate the array object with an RC header
+      // so it drops through the array arm (class 5; value = (block+8)|1). Object
       // layout at the value pointer matches the array runtime
       // (`[capacity@0][length@4][data_ptr@8][inline_data@12...]`); data_ptr points
       // at the inline buffer (value+12). capacity defaults to 8 (as array_new)
       // but is sized up for larger literals so all elements fit inline.
       // The header behind is [alloc_size@-8][rc_count@-4]; the array runtime
       // (Array::get / length / push) reads value+0/+4/+8, unchanged.
-      // (docs/spec/selfhost-rc-port.md)
+      // (docs/internal/design/uniform-value-repr.md)
       let cap = if n_elems > 8 {
         n_elems
       } else {

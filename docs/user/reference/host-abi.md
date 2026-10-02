@@ -146,8 +146,7 @@ for Tier 1 only on a host that implements the vibe host ABI.
   wraps the module as a WASI component through the canonical ABI
   (`cabi_realloc`) and a Preview 1 adapter. Its target is standard I/O over
   `wasi:io` (Preview 2) and then p3 async
-  ([wasi-p3-async.md](../../internal/design/wasi-p3-async.md),
-  [decisions.md](../../internal/design/decisions.md)).
+  ([wasi-p3-async.md](../../internal/design/wasi-p3-async.md)).
 - So "I/O assumes wasip3" is the **component path's** direction. Moving the
   core path's effects onto wasip3 would need a separate adapter that maps
   `vibe::fs_*` to `wasi:filesystem` / `wasi:cli`.
