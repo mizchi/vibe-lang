@@ -132,7 +132,6 @@ the repo; not the user manual.
 | [internal/design/vibex-runtime-contract.md](internal/design/vibex-runtime-contract.md) | ADR-0075, proposed |
 | [internal/design/wasip3-effect-alignment.md](internal/design/wasip3-effect-alignment.md) | ADR-0089, proposed |
 | [internal/design/zero-alloc-check.md](internal/design/zero-alloc-check.md) | ADR-0091, current conservative allocation verification |
-| [internal/design/mutability-control-review.md](internal/design/mutability-control-review.md) | Survey / fitness review |
 | [internal/design/side-effect-consolidation.md](internal/design/side-effect-consolidation.md) | |
 | [internal/design/decisions.md](internal/design/decisions.md) | Locked language decisions |
 | [internal/design/memory-contract.md](internal/design/memory-contract.md) | Linear / wasm-gc / RC |
