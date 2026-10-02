@@ -18,7 +18,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/core {
-  array_empty, struct MutMap
+  array_empty, struct MutMap, struct MutSet
 }
 
 import @vibe/ast {
@@ -925,17 +925,32 @@ export fn env_fn_sigs(env: TypeEnv) -> (Array[String], Array[Array[String]], Arr
 export fn env_row_labels_from(sigs: (Array[String], Array[Array[String]], Array[Array[Array[String]]]), local_names: Array[String]) -> Array[String] {
   let (names, effs, peffs) = sigs
   let out = no_str_labels()
+  // Large modules otherwise scan every local name for every env signature.
+  // Keep this membership index local to the completed signature query; small
+  // tables retain the allocation-free scan. Output still follows env order.
+  let local_index: Option[MutSet[String]] = if Array::length(local_names) >= 64 && Array::length(effs) >= 64 {
+    let index = MutSet::new_string()
+    let mut oi = 0
+    while oi < Array::length(local_names) {
+      MutSet::add(index, Array::get(local_names, oi))
+      oi = oi + 1
+    }
+    Some(index)
+  } else {
+    None
+  }
   let mut i = 0
   while i < Array::length(effs) {
     // The checked env also binds this module's own declarations; their rows
     // are what is being validated, so they cannot vouch for themselves.
-    let mut own = false
-    let mut oi = 0
-    while oi < Array::length(local_names) {
-      if Array::get(local_names, oi) == Array::get(names, i) {
-        own = true
+    let own = match local_index {
+      Some(index) => MutSet::has(index, Array::get(names, i)),
+      // With no local names the original loop never read the name column.
+      None => if Array::length(local_names) == 0 {
+        false
+      } else {
+        str_list_has(local_names, Array::get(names, i))
       }
-      oi = oi + 1
     }
     if !own {
       let row = Array::get(effs, i)

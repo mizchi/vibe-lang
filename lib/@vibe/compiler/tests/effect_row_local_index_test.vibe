@@ -1,0 +1,109 @@
+import @vibe/compiler/checker {
+  env_row_labels_from
+}
+
+import @vibe/compiler/runtime {
+  collect_all_diagnostics
+}
+
+import @vibe/core {
+  array_empty
+}
+
+// The output is an ordered multiset of external row labels. It must keep
+// spelling, parameter rows and duplicates while excluding every local name.
+test "external labels keep order duplicates and parameter rows" {
+  let sigs = (["local", "imported", "callback"], [
+    ["Missing"],
+    ["Exception[Int]", "Fs", "Fs"],
+    ["State[String]"]
+  ], [[["Hidden"]], [["Async"], ["Fs"]], [["Exception[String]"]]])
+  assert(env_row_labels_from(sigs, ["local"]) == [
+    "Exception[Int]",
+    "Fs",
+    "Fs",
+    "Async",
+    "Fs",
+    "State[String]",
+    "Exception[String]"
+  ])
+}
+
+test "local name exclusion uses exact spelling and excludes duplicates" {
+  let sigs = (["f", "f", "F", "f::run", ""], [["A"], ["B"], ["C"], ["D"], ["E"]], [
+    [],
+    [],
+    [],
+    [],
+    []
+  ])
+  assert(env_row_labels_from(sigs, ["f", "f", ""]) == ["C", "D"])
+}
+
+test "empty local names retain every external label" {
+  assert(env_row_labels_from((["f"], [["Fs", "Fs"]], [[["Async"]]]), []) == [
+    "Fs",
+    "Fs",
+    "Async"
+  ])
+  assert(env_row_labels_from(([], [], []), ["unused"]) == [])
+}
+
+test "empty local names do not read the signature name column" {
+  // Only the row columns are queried when there is no local name to exclude.
+  // The original scan accepted this tuple without reading names[0].
+  assert(env_row_labels_from(([], [["Fs"]], [[["Async"]]]), []) == [
+    "Fs",
+    "Async"
+  ])
+}
+
+test "large local sets preserve external order and exclude all local signatures" {
+  let names = array_empty()
+  let effs = array_empty()
+  let peffs = array_empty()
+  let locals = array_empty()
+  let mut i = 0
+  while i < 800 {
+    let name = String::concat("local_", __to_string(i))
+    Array::push(locals, name)
+    Array::push(names, name)
+    Array::push(effs, ["NotAuthority"])
+    Array::push(peffs, [["NotAuthorityEither"]])
+    i = i + 1
+  }
+  Array::push(locals, "local_0")
+  Array::push(names, "Local_0")
+  Array::push(effs, ["External", "External"])
+  Array::push(peffs, [["Exception[Int]"], ["State[String]"]])
+  Array::push(names, "imported")
+  Array::push(effs, ["Fs"])
+  Array::push(peffs, [])
+  assert(env_row_labels_from((names, effs, peffs), locals) == [
+    "External",
+    "External",
+    "Exception[Int]",
+    "State[String]",
+    "Fs"
+  ])
+}
+
+test "large declaration tables do not authorize their own unknown effect rows" {
+  let mut source = ""
+  let mut i = 0
+  while i < 80 {
+    source = String::concat(source, String::concat("fn f_", String::concat(__to_string(i), "() -> Int { 0 }\n")))
+    i = i + 1
+  }
+  source = String::concat(source, "fn bad() -> Int with Missing { 0 }\n")
+  let diagnostics = collect_all_diagnostics(source)
+  let mut found = false
+  let mut d = 0
+  while d < Array::length(diagnostics) {
+    if String::contains(Array::get(diagnostics, d), "unknown effect `Missing`") {
+      found = true
+    }
+    d = d + 1
+  }
+  assert_true(found)
+}
