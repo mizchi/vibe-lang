@@ -38,7 +38,7 @@ implementation:
 
 | entry point | reached by | lane |
 |---|---|---|
-| `runtime/vibe build --component` | what a user types | `VIBE_BUILD_COMPONENT=1` → `cli_adapter.vibe`'s `adapter_command_component` |
+| `runtime/vibe build --component` | what a user types | `VIBE_BUILD_COMPONENT=1` → `adapter_command_component` (`lib/@vibe/compiler/cli_adapter_cli_main_with_lanes.vibe`) |
 | `build --component` on the user CLI | `lib/@vibe/cli/dispatch.vibe` | `selfhost_cli_build_args` |
 
 Both call `comp_emit_component_wasm_command`, so they cannot pick different
@@ -228,9 +228,11 @@ access, or to declare `with Fs` and be handed the strict one.
   `env-get` and the write imports for real, with the authority decided at
   build time the way every other capability is (ADR-0075/0084). Or return a
   host-action plan as the payload and let the launcher execute it — the shape
-  `runtime/vibe` already uses, though today it carries exactly one kind
-  (`run-guest-profile`, via `VIBE_HOST_ACTION_OUT`), so that route is an
-  expansion of the plan vocabulary and not just a new caller.
+  `runtime/vibe` already uses (`execute_host_action`, via
+  `VIBE_HOST_ACTION_OUT`), though its vocabulary is the launcher's own six
+  kinds (`run-guest`, `run-guest-profile`, `minify`, `run-tests`,
+  `run-benches`, `wasmtime-serve`) and none of them is a file write, so that
+  route is an expansion of the plan vocabulary and not just a new caller.
 - **Stream stdout.** Output comes back as the returned string, so a long-running
   command prints nothing until it finishes.
 - **`--component --minify`.** `vibe-opt` optimizes core modules; running it over
@@ -358,7 +360,7 @@ The capability half is designed in
 (ADR-0112): the wrap becomes the generated world of used operations (inline
 interfaces, not `import vibe:host/fs` whole), and a `vibe-commands-v2` row
 carries the verb's requirement so authority is settled before the artifact
-is read.
+is read. None of that design is implemented, and no open issue owns it.
 
 **The order of the remaining work is set by what was measured, not by what is
 cheapest.** Capability comes first: of the verbs worth splitting out, `check`
