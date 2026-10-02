@@ -2,7 +2,7 @@
 
 > **Status (2026-06-23, #594):** vibe is now **selfhost-only**. The MoonBit host
 > implementation (`src/`, `moon.mod`) was retired. The compiler is built,
-> checked, and run entirely from the committed seed (`bootstrap/seed/`)
+> checked, and run entirely from the pinned seed (`bootstrap/seed.json`)
 > + selfhost source (`lib/@vibe/compiler/`, `lib/@vibe/cli/`) via the Rust/node wasm runner
 > — **no MoonBit toolchain (`moon`) is required**. The default gate is
 > `pkf run release-check` → `scripts/compiler_gate.sh`.
@@ -27,8 +27,7 @@ effect row, not by a return-value wrapper. **Types and diagnostics are tuned
 for an LLM's evaluation loop** — the worst way to break is to be silently
 wrong, which is why triage ranks P0 = silent-wrong above "it crashes" (P1). A
 diagnostic leads with **the edit that fixes it**, not with internal terms
-(pass names, ADR numbers). One concept, one spelling — with these **decided
-but not yet implemented** (do not confuse them with today's behavior):
+(pass names, ADR numbers). One concept, one spelling — and these hold today:
 structural `==` in every context (ADR-0097, #1526 — **measured 2026-08-19,
 no silent reference equality is left**. Bare, through a name, inside a tuple,
 inside a struct, nested arrays, `Array[String]` / `Array[(Int, Int)]` /
@@ -107,11 +106,10 @@ This paragraph used to list four cases as "remaining reference equality";
 measurement showed three of them are structural. The fourth — an erased type
 variable (the `T` of `[T: Eq]`) — is **not** structural either, and this
 sentence used to say it was ("goes through a witness, so it is correct for … a
-`derive(Eq)` struct"). `Eq` is a **marker trait**:
-`lib/@vibe/builtin/builtin_traits.vibe` declares a bare `export trait Eq` with
-no methods, and its impls are only `Int` / `Double` / `Bool` / `Char` /
-`String`. There is no dictionary to dispatch through, so `[T: Eq]` can be
-correct only at a type whose raw comparison IS content equality — and that is
+`derive(Eq)` struct"). Until #2523 (below) `Eq` was a **marker trait**: no
+methods, and impls only for `Int` / `Double` / `Bool` / `Char` / `String`.
+There was no dictionary to dispatch through, so `[T: Eq]` could be correct
+only at a type whose raw comparison IS content equality — and that was
 **four** of those five, not five. This sentence said five until #2895 measured
 it.
 
@@ -160,10 +158,10 @@ message names the edit (`unsatisfied_bound_hint`, #1503). A container is refused
 the same way (`fn eq2[T: Eq](a: T, b: T) { a == b }` applied to `Array[Int]`
 gives ``no impl `Eq` for `Array[Int]` ``).
 
-**The guard has a deletion condition**: it tests `trait_is_marker`, so an `Eq`
-that carries a method dispatches through a real witness dictionary and the
-guard does not fire. Giving `Eq` a real method (ADR-0097, **#2523**, now P1) is
-the fix, and landing it removes the arm rather than working around it.
+**The guard keys on markers**: it tests `trait_is_marker`, so the
+method-bearing `Eq` (#2523) dispatches through a real witness dictionary and
+the guard does not fire for it, while `Ord` and a program's own marker `Eq`
+still trip it.
 `fixtures/structural_eq_contexts_test.vibe`,
 `lib/@vibe/compiler/tests/marker_cmp_bound_test.vibe` and
 `fixtures/err_type_{eq,ord}_marker_bound_struct.vibe` hold the regression.
@@ -212,8 +210,9 @@ fixture's content went; `scripts/check_lambda_bound_refusal.sh` no longer
 carries a `lambda_bound_dispatch_*` family at all, and its `*)` arm rejects a
 fixture in no family so the family cannot return unchecked. `==` was never
 refused here — it falls back to the ladder, which is #2523's subject, and
-`dtd_eq_witness_dict` keeps its own shadowing check because `Eq` is a marker
-trait with no method to dispatch through.
+`dtd_eq_witness_dict` keeps its own shadowing check (`dtd_formal_is_shadowed`):
+it synthesizes the `equals` call after the checker has run, so it must itself
+refuse a formal a nested binder rebinds.
 
 **Interpolating an erased formal requires a renderer** (#2745, #2840).
 Top-level generic bodies are not specialized, so moving an unbounded lambda to
@@ -266,15 +265,16 @@ one lowering a generic body gets would otherwise compare an aggregate
 instantiation by reference identity. Measured before the check, all of
 `lib/` had four such sites, every one a compiler test
 (`lib/@vibe/compiler/tests/eq_unbounded_formal_test.vibe` pins both sides). The cheatsheet's "`==` on `Array` / `Bytes` (#1526)" is
-the full contract), pipeline combinators over `F[_]` (ADR-0110) with eager
-Array plus pull `AsyncIter` as two execution layers (ADR-0099, #1559), and
-`Exception` as the truth with `Error`
-deprecated at the 1.0 freeze (ADR-0085, #1564). Code examples in `docs/` are
+the full contract), eager Array operations plus pull `AsyncIter` as two
+execution layers, each with its own namespace and no shared
+constructor-polymorphic trait (ADR-0099, ADR-0110), and `Exception` as the
+only spelling of the exception effect (ADR-0085; `Error` was retired in #1461
+and is a parse error). Code examples in `docs/` are
 checked by doctest against the current compiler — the spec and the
 implementation do not get to disagree.
 
 **2. Self-hosted on wasm, using wasm's newest features.** The compiler is
-written in vibe and built from the committed seed. **Internal representations
+written in vibe and built from the pinned seed. **Internal representations
 stay close to what wasm and WIT can express without friction** — a value is a
 tagged i64, a `String` is a byte string (indexed by byte offset, ADR-0098 —
 semantics that match what the memory actually is), and what may cross the WIT
@@ -291,8 +291,8 @@ capability rides the row, and the expression at the call site stays an
 ordinary function call. Authorization is settled **once, in the earliest
 phase** of build → apply → instantiate, and authority does not change during a
 run (ADR-0075/0084/0088). **Incremental builds** for notebook-driven
-development (the `vibe check` lane has typing reuse on by default and is being
-extended to semantic-module granularity, #1379). **Capabilities fixed at build
+development (the `vibe check` lane has typing reuse on by default; reuse beyond
+typing is tracked in #2825). **Capabilities fixed at build
 time drive progressive code generation for the target platform's wasm runtime**
 — `--allow-*` drops the code for capabilities that were not granted, via
 const-fold plus DCE, and the generated wasm declares the feature level it
@@ -318,7 +318,7 @@ consumes on its own:
   write **new** sections and new `docs/internal/design/adr.md` rows in English from the start.
   Each is read on its own, so it does not inherit the surrounding language.
   Size is not the test: a living document is **revised section by section and
-  read section by section**. `docs/internal/design/adr.md` is 192 lines and living because each
+  read section by section**. `docs/internal/design/adr.md` is living because each
   ADR is entered alone; `CONTRIBUTION.md` is the same shape even though it is
   longer than `docs/internal/design/adr.md`.
 
@@ -436,7 +436,8 @@ pkf run run -- prog.vibex # run a .vibex root (entry `main`); args after a 2nd -
 # `lib/**/*.vibe` + `lib/**/*.vpkg` 全体を --check で lint しており
 # enforce されている** —
 # scripts/generate_bundle.sh が生成する圧縮/ミニファイド bundle 成果物
-# (compiler_sources_bundle.vibe 等、手でフォーマットする対象ではない) だけが
+# (compiler_sources_bundle.vibe 等、手でフォーマットする対象ではない) と、
+# vibe 構文ではない `lib/@vibe/compiler/builtins/declarations.vibe` (#2636) が
 # scripts/vibe_fmt_allowlist.txt に恒久的な例外として載っている。
 # moon 依存の `check`/`info`/`test-update` や per-package `test:*` は
 # dead-task cleanup で Taskfile から削除済み。
@@ -450,7 +451,6 @@ selfhost-only (#594) 以降、ソースはすべて vibe (`.vibe`)。旧 MoonBit
 - `*.vibe` - Source files (compiler・stdlib・テスト・fixtures すべて)
 - `*_test.vibe` - Test files (`test { ... }` / `test "name" { ... }` ブロック)
 - `*_bench.vibe` - Benchmark files (`bench { ... }` ブロック)
-- `index.vibe` - パッケージのエントリ (`lib/@vibe/<pkg>/index.vibe`)
 - `index.vpkg` - パッケージの契約 (ヘッダ + bodyless 宣言、境界かつ公開 API。
   ADR-0070/#1269)。**`index.vibei` は legacy で境界ではなく、リポジトリにも
   もう存在しない** — 詳細は [docs/internal/project/adding-modules.md](docs/internal/project/adding-modules.md)
@@ -492,7 +492,8 @@ compiler source 自体で使う場合は、先に seed compiler がその syntax
   `pkf run full-gate` で確認する
 
 CI shard では:
-- `scripts/pkfire/gates_shard.sh bootstrap|cli|check|coverage` がゲートを走らせる
+- ジョブ分割は `.github/workflows/ci.yml` が決める (`compiler-gate (early|mid|late|…)`、
+  `unit-tests (shard N/8)` など)
 - `pkf run full-gate` を継続運用判断の主 gate とする
 
 ### Executable fixture snapshots (#1571)
@@ -523,9 +524,8 @@ test expectations, and remain gitignored.
 ## Coding Convention
 
 - `///|` は MoonBit (`.mbt`) 時代の block separator 記法。新規コードでは
-  使わないこと — ただし移植時の残骸が `lib/@vibe/compiler/core/types.vibe`
-  ほか数ファイルにまだ残っている(2026-07-28 時点で4ファイル)。見つけたら
-  削除して構わないが、一括削除はこの PR ではやっていない。**vibe の doc
+  使わないこと — 移植時の残骸は `lib/@vibe/parser/parser_base.vibe` の 3 箇所だけ
+  残っている。見つけたら削除して構わない。**vibe の doc
   comment は `///`** (Rust 風、宣言の直前に置くとその宣言の doc として
   hover/`vibe doc-at` から拾われる。実装は `lib/@vibe/parser/lexer.vibe`
   `collect_doc_comments`)。**`vibe symbols` も doc comment を返す** —
@@ -581,71 +581,19 @@ test expectations, and remain gitignored.
 先へ進まない。CLI が答えられない質問はそのまま、LLM がこのリポジトリで
 作業するときのコストとして毎回効いてくる。
 
-A gap that still bites (treat it as a violation of this policy):
-**a type error's location is a POINT, and it anchors the enclosing
-construct rather than the expression** (**#2831**, the rest of #1567) --
-except where the operand is a string literal, which now carries both.
-
-This section has been wrong twice, in opposite directions. It first said type
-errors carry NO location; measurement on 2026-08-19 disproved that. It then
-said they carry a point and never a range, which #2199 (`EString` gained an
-offset slot) and #2868 (`locate_type_error` recovers the token end from the
-source) disproved for a string literal -- both of those are ON MAIN now, so the
-old text described a compiler this tree no longer builds. Measured 2026-09-18
-against a stage2 built from main at 254ffcf, the same on the FS lane and under
-`--single-file`:
-
-| input | reported |
-|---|---|
-| `  let a: Int = "not an int"` | `2:16-28` -- the LITERAL, as a range |
-| `  let x: String = 42` | `2:7` -- the binder name, point |
-| `  let y: Int = true` | `2:7` -- the binder name, point |
-| `  let b = takes("nope")` | `6:11` -- the CALLEE name, point |
-| `  no_such_name_here(1)` | `2:3-20` -- the contrast: a range, at the name |
-
-Byte columns stay correct after multibyte text (the ADR-0108 contract): with
-`let s = "日本語ですよ"` bound first, the `takes(s)` mismatch still reports the
-callee's own byte column.
-
-So what remains is narrower than "no range, wrong anchor", and it is TWO
-defects rather than one:
-
-1. **Literals other than `String` carry no offset slot** (`EInt(Int)` /
-   `EFloat(Double)` / `EBool(Bool)` against `EString(String, Int)` and
-   `EIdent(String, Int)` in `lib/@vibe/ast/index.vpkg`). The slot is still
-   missing -- widening those constructors is an AST ABI bump across 174 files
-   -- but **the diagnostic no longer needs it** (#2831): `locate_type_error`
-   reads the range back from the SOURCE, the way `string_token_end` already
-   recovers a string token's end, so `let v: Int = true` reports `2:16-20`
-   slicing `true` instead of `2:7` at the binder. It fires only when no end was
-   supplied, the message is a binding mismatch, the anchor is an identifier,
-   and what follows `=` is a bare literal; anything else keeps the binder
-   anchor rather than guessing.
-2. **The ARGUMENT path anchors the callee** even when the argument IS a string
-   literal that already has an offset -- `takes("nope")` reports `takes`, not
-   `"nope"`. That is not a missing slot; it is a call site declining to read
-   the one it has, so it is cheaper than (1) and independent of it.
-
-The anchor machinery itself (`off_marker` / `railway_expr_off`) works;
-`check_assignable_set_end` supplies an end and `string_token_end` corrects it
-to the lexer's span.
-
-**A separate hole found by the same measurement, now CLOSED**: lexer errors
-came back with no line, no column and not even a path -- `unexpected
-character: 日`. This paragraph called it "outside #2831" on the grounds that a
-lex error is not a type error. Measurement showed it was inside after all, and
-for a sharper reason than the missing text: the position was never missing.
-`check_linked_file_source_groups` lexed the entry file with the THROWING
-`lex_with_offsets`, beside a comment explaining that the PARSE below it is
-recovering precisely so errors get an exact `line:col`, and threw the offset
-away -- while `vibe check --single-file --json` printed it correctly for the
-same file and the FS lane's own `--json` answered `0:0` with
-`"data":{"synthetic":true}`. An INVENTED location for a real node is what
-criterion 1 forbids; the two `--json` lanes disagreeing is what criterion 2
-forbids. Both lanes now answer `line 2:11: unexpected character: 日` and its
-LSP conversion byte-identically, and
-`scripts/check_check_json_lane_parity.sh`'s fourth probe fails on a stage2
-from before the fix.
+Where a diagnostic points, and how many come back, is specified in
+[docs/user/reference/source-range-contract.md](docs/user/reference/source-range-contract.md)
+and was the subject of #2831 (closed: all four criteria landed). In short:
+`vibe check` reports **every** collected diagnostic, one per line and one JSON
+element each; a type error carries a byte RANGE over the offending expression
+-- a binding's initializer, or the argument for an argument mismatch (#2885)
+-- and falls back to the enclosing anchor only where the AST has no offset for
+the node; a lexer error carries `line:col` on every lane; and the FS lane and
+`--single-file` answer `--json` byte-identically
+(`scripts/check_check_json_lane_parity.sh`). The residue is one AST shape:
+`EInt` / `EFloat` / `EBool` still have no offset slot, so an offset-less
+literal *argument* still anchors the callee (a binding's literal initializer
+is recovered from the source text instead).
 
 > **解決済み: 「どちらの動詞を使うか」問題 (#1567)。** かつて `vibe check` と
 > `vibe diagnostics` が同じ質問に別の答え方をしていた (import 解決の有無・
@@ -714,15 +662,9 @@ vibe binding-at file.vibe <line> <col>
 # **空出力 = clean、診断ありは exit 1**。import は FS から解決するので、これ
 # 単体で「このファイルはコンパイルが通るか」に答えられる。
 #
-# **ただし報告されるのは常に 1 件だけ** (#2831 criterion 4、実測 2026-09-19)。
-# ここにはかつて「parse error 全件 + 型エラー」と書いてあったが、独立した 2
-# つの型エラー・別関数の 2 つの unknown name・2 つの parse error のいずれでも
-# 出力は 1 行だった。原因は recovery が無いことではない — checker は全件を
-# `frozen_errors` に**収集した上で**先頭だけを投げる
-# (`checker_stmt.vibe` の `throw(Array::get(frozen_errors, 0))`)。
-# `unknown name` は push が 3 箇所、throw が 0 箇所。つまり criterion 4 は
-# 「recovery を作る」ではなく「既に集めたものを捨てるのをやめる」。
-# `--json` が配列を返すのもこのため (要素数は常に 1)。
+# Every collected diagnostic is reported, one per line (#2831): three
+# independent type errors or three parse errors give three lines, and
+# `--json` a three-element array.
 vibe check file.vibe
 
 # 同じ質問をバッファ単位で (import を辿らない)。未保存バッファを見る
@@ -822,7 +764,7 @@ vibe lsp        # stdin/stdout で LSP を話す。任意の LSP client を向�
 diagnostics / hover / document symbols / go-to-def / references / rename /
 completion / signature help を提供する。詳細は
 [docs/user/reference/editor-and-debugging.md](docs/user/reference/editor-and-debugging.md)。標準ライブラリ API
-の発見も `vibe symbols` で該当モジュールの `index.vibe` を見るのが速い。
+の発見も `vibe symbols` で該当パッケージの `index.vpkg` を見るのが速い。
 
 ## `Int` constraints
 
@@ -906,7 +848,7 @@ completion / signature help を提供する。詳細は
 > 検証は `pkf` のゲートと `vibe` CLI を使う。
 
 - `pkf run test` — operation gate (`scripts/compiler_gate.sh`)。commit 前の主チェック。
-- `pkf run release-check` — full gate (fmt + info + check + test + operation gates)。
+- `pkf run release-check` — full sign-off (bundle/module-source sync + seed→stage1→stage2→stage3 fixpoint + compile/run validation)。
 - `pkf run test-affected` — 変更影響範囲のテストのみ (fast inner loop)。選択は
   コンパイラ自身の解決済み import グラフ (`vibe deps`) を遡る。判定できない
   変更は全件に倒れる。`pkf run test-local` (flaker) はディレクトリ選択なので
@@ -935,8 +877,9 @@ completion / signature help を提供する。詳細は
   コードベースは2026-07-28に `pkf run fmt` で一括整形済みで fixpoint —
   残る `scripts/vibe_fmt_allowlist.txt` のエントリは
   `scripts/generate_bundle.sh` が生成する圧縮/ミニファイド bundle 成果物
-  (`compiler_sources_bundle.vibe` 等、手でフォーマットする対象ではない)
-  だけの恒久的な例外。新規に allowlist エントリが増える場合は debt として
+  (`compiler_sources_bundle.vibe` 等、手でフォーマットする対象ではない) と、
+  vibe 構文ではない `lib/@vibe/compiler/builtins/declarations.vibe` (#2636)
+  の恒久的な例外。新規に allowlist エントリが増える場合は debt として
   扱い、`bash scripts/vibe_fmt.sh <file>` で整形してから追加を検討する。
 
 ### Selecting the backend for `vibe test` / `vibe bench`
@@ -1047,7 +990,7 @@ pkf run test-affected -- --changed lib/@vibe/parser/token.vibe   # 明示指定
 facade・`.vpkg` contract とその兄弟実装・`@scope/pkg` の store/lib 解決・
 directory-shared vpkg import・re-export といった実際の解決規則から**ずれない**。
 インクリメンタルビルドの persistent header cache に乗るので、1 ファイル編集なら
-再問い合わせも 1 ファイル (index 全構築は 1068 files / ~32s、warm は ~0.3s)。
+再問い合わせも 1 ファイル。
 
 **判定できないときは必ず全件に倒れる** (fail open)。import グラフの外の変更
 (`scripts/`・seed・`Taskfile.pkl`・`fixtures/`)、stage2 が無い、index が
@@ -1059,14 +1002,15 @@ directory-shared vpkg import・re-export といった実際の解決規則から
 > から import しているテストを落とす。実測 (575 entries): `core/types.vibe` の
 > 変更は実際には 217 件に影響するが **0 件**しか選ばれない (そのディレクトリに
 > `*_test.vibe` が無いため)。`parser/token.vibe` は 190 件に対して 1 件。
-> flaker 側に custom resolver フックを入れるのが #988 の残り半分。
+> flaker 側に custom resolver フックを入れれば直るが、未着手 (追跡 issue なし)。
 
 ```bash
 pkf run test-local -- --profile ci          # CI と同じ hybrid サンプリング (30%)
 pkf run test-local -- --profile scheduled   # 全テスト (データ蓄積用)
 ```
 
-`pkf run test` は全テスト実行。commit 前の最終確認や CI 用。
+`pkf run test` は operation gate (`scripts/compiler_gate.sh`)。全 `*_test.vibe` を
+回すのは `pkf run test-unit`。
 
 ### Which compiler answered? — `vibe test` runs on the seed by default
 
@@ -1082,7 +1026,7 @@ A measured instance, one file, `x - y` through a labeled-argument lambda:
 | compiler | result |
 |---|---:|
 | committed seed | 0 — a bug fixed in #1925 |
-| stage2 from the same checkout | -7 — the still-open half of #1899 |
+| stage2 from the same checkout | -7 — a second bug, #1899 (since fixed) |
 
 Neither run reports an error. So: **when you are testing a compiler change, pass
 the compiler explicitly.**
@@ -1153,7 +1097,7 @@ Four related rules, all learned the same way:
 ## Before Commit
 
 ```bash
-pkf run release-check  # fmt + info + check + test + vibe-normalize + operation gates
+pkf run release-check  # seed→stage3 fixpoint + bundle sync + compile/run validation
 ```
 
 ## 生成物 (ビルド時生成、非 tracked)
@@ -1181,9 +1125,8 @@ bash scripts/ensure_generated.sh --check  # 生成せずに鮮度だけ判定 (s
 
 ## pkfire
 
-タスク runner は `Taskfile.pkl` (129 tasks、dead-task cleanup 後)。`pkspec/` は
-Taskfile から参照されなくなったため削除済み。
-CI は `~/.cache/pkfire` を `actions/cache` でキャッシュしているため、
+タスク runner は `Taskfile.pkl` (と `scripts/pkfire/*.pkl`。一覧は `pkf list`)。
+CI は `~/.cache/pkfire-mbt` を `actions/cache` でキャッシュしているため、
 変更がない subgraph は cache hit でスキップされる。
 詳細は [docs/internal/operations/pkfire-pkspec.md](docs/internal/operations/pkfire-pkspec.md)。
 ## レビュー・Bug Issue 起点の再発防止
@@ -1218,7 +1161,7 @@ PR レビューや Bug Issue の修正で、同種の問題が今後も起こり
 
 - **新しい gate script には `scripts/<name>_test.sh` を付ける。**
   実入力を**変異させて** gate が FAIL することを主張する。
-  `scripts/check_gate_self_tests.sh` が強制する (ratchet — 既存 18 件は
+  `scripts/check_gate_self_tests.sh` が強制する (ratchet — 既存分は
   `scripts/gate_self_test_allowlist.txt`、**削除のみ可**)。
 - **red test は「変異が当たったこと」を先に検証する。** 何にもマッチしない編集は
   合格しながら何も証明しない。実際に踏んだ: order ブロックが複数行なので

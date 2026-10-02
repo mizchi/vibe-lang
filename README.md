@@ -77,16 +77,17 @@ wrappers. Types and diagnostics are tuned for the LLM evaluation loop — the
 worst failure class is *silently wrong* (it outranks "crashes" in triage),
 diagnostics must lead with an actionable edit rather than internal pass names,
 one concept gets exactly one spelling, and every code block in the docs is
-compile-checked against the current compiler. The one-spelling rule is being
-applied as decided-but-landing work: `==` becomes structural in every context
-(ADR-0097, #1526 — today bare `Array`/`Bytes` `==` is still reference
-equality), pipeline combinators are constructor-polymorphic over `F[_]`
-(ADR-0110) with eager Array and pull `AsyncIter` as the two execution layers
-(ADR-0099, #1559), and `Exception` is the canonical spelling with
-`Error` deprecated at the 1.0 freeze (ADR-0085, #1564).
+compile-checked against the current compiler. The one-spelling rule in
+practice: `==` compares by content in every context (ADR-0097, #1526), and a
+comparison the compiler cannot resolve fails loudly rather than being
+answered by reference; eager Array operations and the pull `AsyncIter` are the
+two execution layers, each with its own namespace rather than one
+constructor-polymorphic trait (ADR-0099, ADR-0110); and `Exception` is the only
+spelling of the exception effect (ADR-0085 — `Error` was retired in #1461 and
+is a parse error).
 
 **2. Self-hosted on wasm, using wasm's newest capabilities.** The compiler is
-written in vibe and built from a committed seed — no other toolchain. Internal
+written in vibe and built from a pinned, sha256-verified seed — no other toolchain. Internal
 representations stay friction-free with wasm and WIT rather than hiding them:
 values are tagged i64, `String` is officially a byte string indexed by byte
 offset (ADR-0098 — what the memory actually holds), and what may cross a WIT
@@ -119,8 +120,8 @@ capabilities, and emitted binaries declare which wasm feature level they need.
 | Target | Description |
 |--------|-------------|
 | Native CLI | Compiled execution via the host runtime (`run` / `test` / `shell`) |
-| WASM (linear) | **Production default**: `compile --wasm`, `build --release`, `test`, `bench` (tagged-i64, bump allocator) |
-| WASM GC | Long-term primary target; backend exists (`lib/@vibe/compiler/codegen/gc/`) but is not yet wired into the CLI compile path — see [docs/internal/design/memory-contract.md](docs/internal/design/memory-contract.md) |
+| WASM (linear) | **Production default**: `compile --wasm`, `build --release`, `test`, `bench` (tagged-i64, Perceus reference counting; `VIBE_RC=0` selects the legacy bump allocator) |
+| WASM GC | Opt-in and experimental: `VIBE_BACKEND=gc` (or `VIBE_TEST_BACKEND=gc` / `VIBE_BENCH_BACKEND=gc`) selects `lib/@vibe/compiler/codegen/gc/` — see [docs/internal/design/memory-contract.md](docs/internal/design/memory-contract.md) |
 | Component Model | WASI/component packaging for composition |
 
 ### Editor & debugging
