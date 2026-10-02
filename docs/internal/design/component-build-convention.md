@@ -1,11 +1,14 @@
 # Component build convention: the export surface is the contract, WIT is derived, vibe-to-vibe is transparent
 
-Status: proposed — the build-side half of
+Status: proposed, and not implemented beyond the command kind (below). It was
+written as the build-side half of
 [host-contract-artifact-lazy-cli.md](host-contract-artifact-lazy-cli.md)
-(ADR-0112, [#1346](https://github.com/mizchi/vibe-lang/issues/1346)); the
-import half of #2064. Accepted when `vibe build --component` derives both
-artifacts in §5 from one source, a vibe consumer imports a vibe component with
-an ordinary `import`, and the round-trip gate in §8 rejects its own mutations.
+(ADR-0112, #1346) and the import half of #2064. Both issues closed without its
+artifacts: there is no `vibe.contract` or `vibe.entry` section, no `service`
+kind, no component store, and no round-trip gate. **No open issue owns the
+remainder.** Accepted when `vibe build --component` derives both artifacts in
+§5 from one source, a vibe consumer imports a vibe component with an ordinary
+`import`, and the round-trip gate in §8 rejects its own mutations.
 
 Date: 2026-09-17
 
@@ -17,6 +20,22 @@ for `Future` / `stream<u8>`), ADR-0093 (contract identities),
 which this convention subsumes), [component-lazy-dispatch.md](component-lazy-dispatch.md)
 (the command kind), `lib/@vibe/wit_runtime` (the boundary `Result`),
 `lib/@vibex/wasm_wit_parser` (the WIT reader the inverse projection needs).
+
+## What exists today
+
+The pieces of this convention that shipped, and where they live:
+
+| piece | state |
+| --- | --- |
+| the `command` kind | `vibe build --component` builds a module whose only export is `vibe_command(args: String) -> String` into a component exporting `run: func(args: string) -> string`, choosing a pure or a trapping vfs wrap from the core's own imports; `.vibex`, `--wit`, `--entry`, `--minify` and `--debug` are refused by name ([component-lazy-dispatch.md](component-lazy-dispatch.md)) |
+| the `handler` kind | `vibe serve` composes a `handler(method, url, headers, body)` export, as a sync lift for a `String` body and an async lift with `body: stream<u8>` for a `HostStream` body (#1540), and under the `wasi:http/service` world when the handler awaits WIT responses (#2066; [wasi-p3-async.md](wasi-p3-async.md) §4) |
+| WIT generation for exports | `vibe compile --wit` projects exports and declared user effects, with `Async` exports as `async func` and `Result[T, E]` as `result<T, E>` ([effect-wit-mapping.md](effect-wit-mapping.md)); host capabilities remain a comment, and `struct` / `enum` do not project to `record` / `variant` |
+| reading foreign WIT for imports | `from_wit_future_imports` (`lib/@vibex/wasm_wit_parser/from_wit.vibe`) derives vibe bindings from a WIT file's `async func() -> s64` and `async func(..) -> response` functions (#2064, #2066), refusing any other function by name; the composer imports each one with exactly the WIT's type, as a subtask (#3131; [async-host-contract.md](async-host-contract.md)) |
+
+Everything else below — the `service` kind, `vibe.contract` / `vibe.entry`,
+the record / variant bijection, `Exception[E]` as `result<T, E>`, the store
+and transparent `import`, the `wasi-command` producer for roots, and the
+round-trip gate — is unimplemented.
 
 ## The two rules
 
