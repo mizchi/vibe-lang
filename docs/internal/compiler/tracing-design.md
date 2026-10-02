@@ -1,17 +1,26 @@
-# 内部 Span トレーシング設計 (提案)
+# Internal span tracing
 
-`vibe bench` / `--profile-tsv` / `node --cpu-prof` が今それぞれ別々に答えている
-「どこに時間とメモリが行ったか」を、**1つのネストしたスパン木**に統合するための
-設計。将来 OpenTelemetry へ写せる形を最初から意識する。
+A design for unifying "where did the time and memory go", which `vibe bench`,
+`--profile-tsv` and `node --cpu-prof` each answer separately today, into **one
+nested span tree**, shaped from the start so it can be mapped onto
+OpenTelemetry.
 
-**Span は代数 effect として表現する。** §3 の実測がその選択を支持している —
-perform は素の関数呼び出しより 1.7 倍高いだけで、アロケーションはゼロ、
-何も perform しない関数が row に `Trace` を持つコストは測定限界以下だった。
+**Status.** Stage 0 — host-side, one span per process, propagated through
+`VIBE_TRACEPARENT` — is implemented (`scripts/trace_lib.sh`,
+`scripts/trace_span.sh`, `scripts/trace_report.mjs`, regression-locked by
+`scripts/test_trace_spans.sh`) and wired into `scripts/generations.sh`,
+`scripts/generate_bundle.sh` and `scripts/unit_test_runner.sh` (§5.6–§5.11).
+The guest-side surface — the `effect Trace` of §2 inside the compiler — is
+**not implemented**: an attempt was rejected by the handle-eligibility check
+and reverted (§5.5). §6 has the stages and their state.
 
-これは提案であり、まだ実装されていない。§3 の数値は
-[`bench/tracing/trace_effect_bench.vibe`](../../../bench/tracing/trace_effect_bench.vibe) と
+**Spans are an algebraic effect.** The measurements in §3 support that choice:
+a perform costs 1.7× a plain function call with zero allocation, and carrying
+`Trace` on the row of a function that never performs costs nothing measurable.
+§3's numbers come from compiling and running
+[`bench/tracing/trace_effect_bench.vibe`](../../../bench/tracing/trace_effect_bench.vibe) and
 [`bench/tracing/trace_effect_shapes_test.vibe`](../../../bench/tracing/trace_effect_shapes_test.vibe)
-を現行 stage2 で実際にコンパイル・実行して得たもので、どちらもコミットされている。
+(both committed) on the stage2 of the time.
 
 ## 1. 現状の計測手段と、それぞれが答えられないこと
 
@@ -215,9 +224,9 @@ VIBE_RUNNER=$PWD/runtime/viberun/target/release/viberun \
 | test | 形 | 結果 |
 |---|---|---|
 | perform behind a named fn | 名前付き fn の中で perform、handler は1つ上 | ok |
-| perform inside a while loop | **`while` ループの中で perform** | ok (§8.3) |
+| perform inside a while loop | **`while` ループの中で perform** | ok |
 | perform four call levels down | 4段の名前付き fn を越えて perform | ok |
-| handled body calls a local closure | handled body が**ローカルクロージャ**を呼ぶ | ok (§8.2) |
+| handled body calls a local closure | handled body が**ローカルクロージャ**を呼ぶ | ok |
 | perform inside an annotated closure literal | **row 注釈付きクロージャリテラルの中で** perform (#761) | ok |
 | stateful handler builds a span tree | handler が配列と深さを持ち **span 木を組み立てる** | ok |
 
@@ -229,33 +238,19 @@ VIBE_RUNNER=$PWD/runtime/viberun/target/release/viberun \
 > `*_test.vibe` しか拾わない。設計が採用されたら `lib/` へ移してバッテリで
 > ロックする。
 
-### 3.5 backend: linear だけでなく wasm-gc でも動く
+### 3.5 Backend: wasm-gc as well as linear
 
-`bench/tracing/trace_effect_shapes_test.vibe` は **`VIBE_TEST_BACKEND=gc`
-でも全 test が pass する。** 第一級 `resume` を値として保存する suspend 形も
-別 probe で確認した。
+Every test in `bench/tracing/trace_effect_shapes_test.vibe` also passes under
+`VIBE_TEST_BACKEND=gc`, and a separate probe confirmed the suspend shape that
+stores a first-class `resume` as a value.
 
-この文書の初版は「代数 effect handler は linear backend のみ、
-`codegen/gc/backend_expr.vibe` は `with Exception` のスタブだけ」と書いていた。**誤り。**
-ADR-0076 の Context 節 (2026-07-22、Phase 3 着地前の状態を記述) と、
-`codegen/gc/backend_expr.vibe` の `EHandle` 分岐に残っていた古いコメントを
-そのまま引いていた。
-
-実際の構造は、effect の lowering が **codegen より前**にあり、両 backend で
-共有されていること:
-
-```
-lib/@vibe/compiler/codegen/gc/backend_body.vibe:411
-  inline_direct_performs(stmts)
-  let edp_errs = evidence_dict_pass(stmts, entry_name)
-```
-
-`codegen/gc/backend_expr.vibe` の `EHandle` 分岐 (`try_table`) は、これらのパスが
-**消しきれなかった** handle の受け皿であって、migration の失敗は
-`evidence_dict_pass` の `edp_errs` が報告する。tail-resumptive にせよ
-suspend-CPS にせよ、codegen に届く前に消えている。
-
-したがって **`Trace` は gc backend でも使える。**
+Effects are lowered **before** codegen, by passes both backends share: the gc
+backend runs `evidence_dict_pass` (`codegen/gc/backend_body_wasi_module_gc_impl.vibe`)
+and fails the compile with its `edp_errs`. The `EHandle` arm of
+`codegen/gc/backend_expr.vibe` (`try_table`) only receives the handles those
+passes leave in place; a tail-resumptive or suspend-CPS handler is gone before
+codegen. **So `Trace` works on the gc backend too.** Two older texts still say
+otherwise; §8 lists them.
 
 ## 4. 分散トレーシングへの写像
 
@@ -657,24 +652,21 @@ seed wasm・manifest・manifest が名指す全ソース・`generate_bundle.sh`�
   キャッシュは最適化であって、stale な tool を使う理由になってはならない
 - 冒頭で `rm -f "$stamp"` — wasm を消して stamp を残す窓を作らない
 
-## 6. 実装順
+## 6. Implementation order
 
-| 段 | 内容 | コンパイラ変更 |
-|---|---|---|
-| 0 | `VIBE_TRACEPARENT` 伝播 + ホスト側だけで1プロセス1 span の NDJSON 出力 | **着地済み (§5.6 / §5.7)**。`generations.sh` のステージ hop + `unit_test_runner.sh` の per-file。doctest fan-out が残り |
-| 1 | `effect Trace` を contract に置き、`--profile-tsv` の7タプル配線を perform へ置き換える | **§5.5 で試して拒否された。handle 適格性の拡張が先** |
-| 2 | `vibe bench` が bench ブロックごとに span 内訳を出す | 要 (runner) |
-| 3 | `span {}` スコープ構文 (§2.2 の脱糖。`throw` → `perform Exception::Throw` と同じ層) | 要 (parser/desugar のみ) |
-| 4 | OTLP エクスポータ | 不要 |
+| stage | content | compiler change | state |
+|---|---|---|---|
+| 0 | `VIBE_TRACEPARENT` propagation plus one NDJSON span per process, host side only | none | **implemented** (§5.6–§5.11): stage hops in `generations.sh`, the flat-source preparation in `generate_bundle.sh`, one span per file in `unit_test_runner.sh`, and per-document / per-block spans in the doctest fan-out (`doctest_extract_run.sh`) |
+| 1 | `effect Trace` in a contract, replacing the 7-tuple plumbing of `--profile-tsv` with performs | yes | **blocked**: the attempt in §5.5 was rejected by the handle-eligibility check and reverted. It needs the eligibility check to follow the compiler's call graph, or spans pushed down to positions it accepts |
+| 2 | `vibe bench` reports a span breakdown per bench block | yes (runner) | not started |
+| 3 | the scoped `span {}` syntax (the desugaring of §2.2, at the same layer as `throw` → `perform Exception::Throw`) | yes (parser/desugar only) | not started |
+| 4 | an OTLP exporter | none | not started |
 
-段0 は §5.6 / §5.7 で着地した (`generations.sh` のステージ hop と
-`unit_test_runner.sh` の per-file)。残るのは doctest fan-out。
-段1 は §5.5 の適格性が解けるまで止まっている。
-
-**段0 だけで、次に手を入れる場所が2つ specific に出た** — 538ファイル中2つが
-バッテリの1/6を占めていること (§5.7)、そして bootstrap でもバッテリでも
-「どのフェーズにも属さない」時間が半分前後あること (§5.6 の 48%、
-§5.7 の 65%) である。
+Stage 0 alone pointed at two specific places to work on: two of 538 test files
+take a sixth of the battery (§5.7), and both the bootstrap build and the
+battery spent about half their time outside any phase (48% in §5.6, 65% in
+§5.7), which §5.8–§5.11 traced to repeated compiler runs inside the bundle
+generation.
 
 ## 7. この設計が引き受けていないこと
 
@@ -687,30 +679,23 @@ seed wasm・manifest・manifest が名指す全ソース・`generate_bundle.sh`�
   決めていない (フェーズ境界から始めるのが自然)。
 
 
-## 8. 副産物: ドキュメントとの食い違い
+## 8. Documents that disagree with the measurements
 
-probe を書く過程で cheatsheet と実測が合わない点が3つ出た。いずれも未修正。
+Writing the probes turned up places where a document or comment did not match
+what the compiler does. Two are still open:
 
-1. **handle arm の区切りは `,` ではなく `;`。** cheatsheet の代数 effect の例
-   (`docs/user/reference/cheatsheet.md:912`) は arm が1つしかないので、複数 arm の綴りが
-   どこにも書かれていない。`,` で書くと
-   `expected ';' or '}' in handle arm list` になる。
-2. **「handled body がローカルクロージャを呼ぶと NG」は現行では再現しない。**
-   cheatsheet の適格性表 (`docs/user/reference/cheatsheet.md:1264` 付近) は
-   `handle { bump(ask_once()) }` で `bump` がローカルクロージャなら **NG** と
-   書いているが、`bench/tracing/trace_effect_shapes_test.vibe` の
-   "handled body calls a local closure" はまさにその形で**コンパイルも実行も通った**。
-   その後の修正で通るようになったのか、元の再現に自分が写しそこねた差異が
-   あるのかは切り分けていない — 表を直す前に再測定が要る。
-3. **`gc/backend_expr.vibe` の `EHandle` コメントが、削除済みの機構を根拠に
-   していた** — 「algebraic user effects still need the linear backend's memo
-   machinery」の memo/replay engine は ADR-0076 追記34 V2 で物理削除済み。
-   ADR-0076 の Context 節も Phase 3 着地前の記述のまま。この2つが
-   「wasm-gc では代数 effect が使えない」という誤解の出所で、初版の
-   この文書もそれを引き写していた (§3.5)。コメントは本 PR で修正した。
-4. **「loop 内の perform は compile error」は tail-resumptive には当てはまらない。**
-   この記述は first-class resume (suspend CPS) の制約リストの中にあるが、
-   読むと一般則に見える。上のテストの "perform inside a while loop" は
-   tail-resumptive な handler で
-   ループ内 perform が通る。制約の適用範囲が2つに分かれていることが
-   本文から読み取れない。
+1. **The handle-arm separator is not documented in the cheatsheet.** The arms of
+   a handler are separated by `;` or a newline, not `,`. A `,` is a parse error
+   that names the edit (``replace this `,` with `;` …``, located at the comma
+   since #3072), but the cheatsheet's examples all have a single arm, and its section
+   "The separator depends on the context" lists match arms (`,`) and declaration
+   members (`;`) without mentioning handler arms.
+2. **ADR-0076's opening still describes the replay implementation as current.**
+   Its row in [adr.md](../design/adr.md) begins with the pre-Phase-3 replay
+   design ("現行の `handle` は replay 実装 …"), which ADR-0076 addendum 34 V2
+   physically deleted. A stale comment of the same kind remains in
+   `codegen/gc/backend_call_named_1.vibe` ("Algebraic (user-effect) performs need
+   the replay-memo machinery and are not ported yet"). These are where the
+   mistaken belief that wasm-gc cannot run user effects comes from; the
+   corresponding comment in `codegen/gc/backend_expr.vibe`'s `EHandle` arm has
+   already been corrected.

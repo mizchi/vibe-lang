@@ -207,10 +207,8 @@ Phase benches: selfhost_{lexer,parser,checker,codegen}_bench.vibe.
 ## 4. After a fix, validate in exactly this order
 
 ```bash
-# a. bundle regen (mandatory when compiler source was touched)
-VIBE_REGEN_MODULE_SOURCE=1 \
-  VIBE_ADAPTER_MODULE_SOURCE_OUT=lib/@vibe/compiler/_cli_adapter_module_source.vibe \
-  bash scripts/generate_bundle.sh
+# a. regenerate the generated compiler files (a ~1s no-op when they are current)
+bash scripts/ensure_generated.sh
 
 # b. stage rebuild + fixpoint (stage2 == stage3 is non-negotiable)
 bash scripts/generations.sh build --out-dir /tmp/gen --stage3 --skip-run-validation

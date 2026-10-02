@@ -14,10 +14,10 @@ backend X(wasm-gc lane 等)でコンパイルしたコンパイラ(以下「X-co
 ## 前提となる成果物とコマンド
 
 ```bash
-# 1. 修正入りの linear CLI(stage2e)を作る: committed bundle を最新 stage2 でコンパイル
-VIBE_REGEN_MODULE_SOURCE=1 \
-  VIBE_ADAPTER_MODULE_SOURCE_OUT=lib/@vibe/compiler/_cli_adapter_module_source.vibe \
-  bash scripts/generate_bundle.sh
+# 1. Build the linear CLI with the fix (stage2e): regenerate the flat module source
+#    (lib/@vibe/compiler/_cli_adapter_module_source.vibe; a ~1s no-op when current),
+#    then compile it with the latest stage2
+bash scripts/ensure_generated.sh
 STAGE2="$(ls -t _build/selfhost/generations/*/stage2.wasm | head -1)"
 env VIBE_RC=0 VIBE_PREOPEN_DIR="$PWD" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$STAGE2" \
