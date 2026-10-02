@@ -199,8 +199,9 @@ either design.
   and [`bit_not_test.vibe`](../../../fixtures/bit_not_test.vibe) pin 63-bit
   wrapping and the tagged `~` constant.
 - [`rc_reclaim_leak_test.vibe`](../../../fixtures/rc_reclaim_leak_test.vibe)
-  bounds the heap of allocation loops; `scripts/verify_rc.sh` runs the heap e2e
-  suite on both lanes.
+  bounds the heap of allocation loops; `scripts/verify_rc.sh` builds the
+  compiler on the RC lane and requires it to reproduce the bump-built
+  compiler's output byte for byte.
 - [`rc_shadow_regression_test.vibe`](../../../fixtures/rc_shadow_regression_test.vibe)
   runs the RC bug-shape corpus under `VIBE_RC=shadow`.
 - Sections 88 and 89 of `tests/gates/late/typed_exception_e_rows.sh` pin the
