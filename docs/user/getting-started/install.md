@@ -281,8 +281,8 @@ temp dir after a verb exits.
 
 `VIBE_CACHE` and `VIBE_TEST_CACHE` are not read: the vendoring lane whose
 fetch cache the first one named is gone, and the test result cache is always
-`$VIBE_HOME/cache/test/`. Compiler and test knobs (`VIBE_TEST_JOBS`, the
-`--unstable-*` flags) are in [cli-commands.md](../reference/cli-commands.md).
+`$VIBE_HOME/cache/test/`. Compiler and test knobs (`vibe test --jobs N`,
+`VIBE_UNSTABLE=1`) are in [cli-commands.md](../reference/cli-commands.md).
 
 ## Dependencies
 

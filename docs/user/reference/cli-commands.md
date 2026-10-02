@@ -11,67 +11,60 @@ in #594; new command behavior is added only in `lib/@vibe/compiler/` /
 
 | Command | Audience | Purpose |
 |---------|----------|---------|
-| `build` | User | Produce a standalone `.wasm` binary from a `.vibe` file (debug or release) |
-| `compile` | User | Full-featured compilation with format selection (WASM, Component, WIT, IR, WAC) |
+| `compile` | User | Compile a `.vibe` / `.vibex` file to a core `.wasm`, a command component (`--component`), or its WIT world (`--wit`) |
+| `build` | User | The same command as `compile` (an alias) |
 | `serve` | User | Compile an HTTP handler + compose with the wasi-http P3 adapter + `wasmtime serve` (#537) |
 
 ## User-Facing Commands
 
 ### run
 
-Execute a vibe script. The final top-level expression must be pure.
+Compile a `.vibex` executable root and run its fixed `fn main` entry.
 
 ```
-vibe run <file>
+vibe run <file.vibex> [-- args]
 ```
 
-Compiles and runs the script via WASM. By default this uses the one-shot execution path; set `VIBE_USE_SESSION_HTTP=1` to opt into the persistent session worker. Set `VIBE_LINKED_CACHE_BACKGROUND=1` to populate the linked debug cache in the background after a successful run.
+`--trace`, `--break <fn>[,<fn>...]`, `--mem` and `--alloc-site[=N]` add a
+call trace, an interactive breakpoint, a heap report and per-line allocation
+attribution; `vibe help` lists them with their exact output.
 
-### build
+### compile / build
 
-Produce a standalone `.wasm` binary from a `.vibe` file. This is the recommended command for producing distributable WASM artifacts.
-
-```
-vibe build <file.vibe>
-vibe build --release <file.vibe>          # optimized (-Oz), default
-vibe build --debug <file.vibe>            # fast incremental (linked debug mode)
-vibe build -o output.wasm <file.vibe>     # explicit output path
-```
-
-- **`--release`** (default): Full compilation with `-Oz` optimization. Falls back to unoptimized if the optimizer does not support generated opcodes.
-- **`--debug`**: Uses a linked debug fast path that caches library WASM modules and only recompiles user code when sources change. Significantly faster for iterative development.
-- Output defaults to `.vibe/build/out/<basename>.wasm` under the project root (#2675, [install.md](../getting-started/install.md#project-layout)); `-o` chooses another path, relative to the directory you ran from.
-
-### compile
-
-Full-featured compilation with explicit control over output format, optimization level, and advanced options. Use this when you need a specific output format or features not available through `build`.
+`build` is an alias of `compile`: both read the same arguments and produce the
+same artifacts.
 
 ```
-vibe compile <file.vibe>                              # default: core WASM (linear backend)
-vibe compile --wasm <file.vibe>                       # the same, explicit (`--wasm-linear` is an alias)
-vibe compile --wit <file.vibe>                        # Generate the WIT world for the file's
-                                                      #   effect surface (docs/internal/design/effect-wit-mapping.md)
-vibe compile -o out.wasm <file.vibe>                  # explicit output path
-vibe compile --no-dce <file.vibe>                     # disable dead code elimination
+vibe compile <file.vibe|file.vibex>              # core WASM (linear backend)
+vibe compile -o out.wasm <file.vibe>             # explicit output path
+vibe compile --wit <file.vibe>                   # the WIT world for the file's effect
+                                                 #   surface (docs/internal/design/effect-wit-mapping.md)
+vibe compile --component <file.vibe>             # a command component from the
+                                                 #   module's `vibe_command` export
+vibe compile --minify <file.vibe>                # post-optimize with vibe-opt.wasm (#1107)
+vibe build --debug <file.vibe>                   # the linked debug lane
+vibe compile --entry <name> <file.vibe>          # entry other than `main` (not for .vibex)
 ```
 
-Output defaults to `dist/<basename>.wasm` (`dist/<basename>.wit` with `--wit`).
-`-O<level>`, `--debug-errors` and `--http-host-imports` are accepted and have
-no effect on the output; the optimized `-Oz` artifact is `build --release`.
-
-These flags of the retired MoonBit host are **refused**, each with a message
-naming the flag: `--wasm-gc`, `--wasm-js-string`, `--component`,
-`--component-string-lift`, `--wit-component`, `--wac`, `--compose-p3`,
-`--adapter`, `--coverage`, `--library`. The wasm-gc backend is reached through
-`VIBE_TEST_BACKEND=gc` / `VIBE_BENCH_BACKEND=gc` for pure tests and benches
-([cheatsheet](cheatsheet.md)). Use `vibe build --component <file.vibe>` for a
-command component exporting `vibe_command(args: String) -> String`, or
-`vibe serve` (below) for an HTTP component.
-
-### When to use `build` vs `compile`
-
-- **Use `build`** for the common case: you want a `.wasm` file and don't need fine-grained control over the output format.
-- **Use `compile`** when you need the WIT world, an unoptimized or DCE-free module, or the HTTP host-import wiring.
+- Output defaults to `.vibe/build/out/<name>.wasm` under the project root
+  (`<name>.wit` with `--wit`, `<name>.component.wasm` with `--component`;
+  #2675, [install.md](../getting-started/install.md#project-layout)). `-o`
+  chooses another path, relative to the directory you ran from.
+- **`--debug`** builds through the linked debug lane: library modules are
+  cached as linked wasm files and only the entry is recompiled. It cannot be
+  combined with `--component`, `--wit` or `--minify`.
+- **`--minify`** runs the standalone `vibe-opt.wasm` optimizer over the core
+  module after it is written. The default artifact is not post-optimized.
+- `--wasm`, `--wasm-linear` and `--release` are accepted and change nothing:
+  linear core WASM is what `compile` always produces. `--jobs N` is accepted.
+- **Any other option is refused** with `unknown option: <flag>`. That includes
+  the retired MoonBit host's flags (`--no-dce`, `-O<level>`, `--wasm-gc`,
+  `--wac`, `--library`, ...). The wasm-gc backend is reached through
+  `VIBE_BACKEND=gc` (or `VIBE_TEST_BACKEND=gc` / `VIBE_BENCH_BACKEND=gc` for
+  pure tests and benches; [cheatsheet](cheatsheet.md)).
+- `--component` and `--wit` produce different artifacts and are refused
+  together; a `.vibex` has no export surface, so `--component`, `--wit` and
+  `--entry` are refused for it. Use `vibe serve` (below) for an HTTP component.
 
 ### serve (#537)
 
@@ -232,17 +225,15 @@ store copy against the pin every time. An optional content hash makes the
 initial `add` verify the fetched package before installing it. A full commit
 hash can be used as `<ref>` instead of a tag.
 
-### Formatting (no `vibe fmt`)
+### Formatting (`vibe fmt`)
 
-The CST-token formatter is real, but it is **not** a CLI verb -- `vibe fmt`
-answers `unknown command`. It is reached through the script, or the task that
-formats the whole tree:
+`vibe fmt` runs the CST-token formatter over one file:
 
 ```bash
-bash scripts/vibe_fmt.sh <file.vibe>            # rewrite in place
-bash scripts/vibe_fmt.sh --check <file.vibe>    # exit 1 if not formatted
-bash scripts/vibe_fmt.sh --stdout <file.vibe>   # print, do not write
-pkf run fmt                                     # all of lib/**/*.vibe + *.vpkg
+vibe fmt <file.vibe|file.vpkg>           # rewrite in place
+vibe fmt --check <file.vibe>             # exit 1 if not formatted
+vibe fmt --stdout <file.vibe>            # print, do not write
+pkf run fmt                              # all of lib/**/*.vibe + *.vpkg (repository task)
 ```
 
 **Collection wrapping** (ADR-0107, #2103/#2104). A bracket literal is written
@@ -349,16 +340,9 @@ the compiler entries directly.
 (The retired MoonBit-host `shell-stdin` / `wasm-shell-stdin` modes were
 removed in #594; both are covered by piping into `vibe shell`.)
 
-## Global Flags
-
-| Flag | Description |
-|------|-------------|
-| `--syntax vibe` | Select parser mode |
-
 ## Environment Variables
 
 | Variable | Description |
 |----------|-------------|
-| `VIBE_TEST_JOBS` | Default parallelism for `test` (max 16) |
 | `VIBE_UNSTABLE` | `1` allows importing `@vibe/concurrent/experimental` (the suspendable-task lane); without it `check` and `build` refuse the import |
 | `VIBE_BUILD_DIR` | Overrides `<root>/.vibe/build`, where every artifact lands; the launcher derives `VIBE_BUILD_CACHE_DIR=$VIBE_BUILD_DIR/cache` unless that is already set, so the compiler cache moves with it (#2675) |
