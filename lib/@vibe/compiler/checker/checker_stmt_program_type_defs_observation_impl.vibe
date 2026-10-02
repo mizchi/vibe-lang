@@ -58,6 +58,10 @@ import @vibe/compiler/core {
   typed_lowering_float_key
 }
 
+import ./checker_merge_capture_provenance.vibe {
+  eq_formal_row_of
+}
+
 import ./checker.vibe {
   TypedOccurrenceRoleLaneCapture,
   callee_formal_bindings,
@@ -776,6 +780,40 @@ export fn string_binop_offsets_from_capture(checked: CheckedProgram, capture: Ty
 /// row is simply absent (the syntactic classifiers stay in charge, which is
 /// today's behavior; absent, never wrong).
 export fn eq_channel_type_expr(ty: Type) -> Option[TypeExpr] {
+  eq_channel_type_expr_impl(ty, false)
+}
+
+/// #3283: the `==` row extraction's lowering. It differs from
+/// `eq_channel_type_expr` in exactly one place: a TYPE ARGUMENT of a named
+/// type that is still an unresolved inference variable against the final
+/// substitution is lowered to `Unit` instead of dropping the whole row.
+///
+/// `let a = Ok([1, 2])` types as `Res[Array[Int], e]`, and nothing in the
+/// program ever constrains `e`. Dropping the row for that left `a == b` to the
+/// syntactic classifiers, whose `Ok` / `Err` match compares an `Array` payload
+/// by identity: two equal values answered `false` (measured on main at
+/// `ac8f8cc`). An unconstrained variable has no value in the operands -- a
+/// generalized `Res[Array[Int], e]` cannot hold an `Err`, there is no `e` to
+/// put in it -- so the comparator that position gets is dead code, and `Unit`
+/// (a raw `==`, which is also what that payload compared with before) is as
+/// good as any type. The cases where a value of such a variable CAN exist (a
+/// let-polymorphic lambda's own parameter) keep that same raw `==` for the
+/// position and gain the typed comparator for every other one.
+///
+/// What is NOT filled in:
+///   - a FORMAL of an enclosing binder (`T` of `fn f[T: Eq]`): it has values,
+///     and its comparator is the witness, never `Unit`. `eq_formal_row_of`
+///     reads the table the check that produced this capture filled; an id
+///     collision only makes a variable look like a formal, which keeps the row
+///     absent.
+///   - a variable anywhere else: an `Array` element, an `Option` payload, a
+///     tuple slot, or the whole operand. Those already have their own rungs
+///     (the untyped-empty arm, `opt_eq_match`, the tuple walk) and keep them.
+fn eq_channel_row_type_expr(ty: Type) -> Option[TypeExpr] {
+  eq_channel_type_expr_impl(ty, true)
+}
+
+fn eq_channel_type_expr_impl(ty: Type, fill_free_args: Bool) -> Option[TypeExpr] {
   match ty {
     CtInt => Some(TyName("Int")),
     CtDouble => Some(TyName("Double")),
@@ -784,15 +822,15 @@ export fn eq_channel_type_expr(ty: Type) -> Option[TypeExpr] {
     CtChar => Some(TyName("Char")),
     CtBytes => Some(TyName("Bytes")),
     CtUnit => Some(TyUnit),
-    CtTuple(items) => match eq_channel_type_exprs(items) {
+    CtTuple(items) => match eq_channel_type_exprs(items, fill_free_args) {
       Some(out) => Some(TyTuple(out)),
       None => None
     },
-    CtArray(t) => match eq_channel_type_expr(t) {
+    CtArray(t) => match eq_channel_type_expr_impl(t, fill_free_args) {
       Some(inner) => Some(TyApp("Array", [inner])),
       None => None
     },
-    CtOption(t) => match eq_channel_type_expr(t) {
+    CtOption(t) => match eq_channel_type_expr_impl(t, fill_free_args) {
       Some(inner) => Some(TyApp("Option", [inner])),
       None => None
     },
@@ -811,7 +849,7 @@ export fn eq_channel_type_expr(ty: Type) -> Option[TypeExpr] {
     } else if Array::length(args) == 0 {
       Some(TyName(n))
     } else {
-      match eq_channel_type_exprs(args) {
+      match eq_channel_type_args(args, fill_free_args) {
         Some(out) => Some(TyApp(n, out)),
         None => None
       }
@@ -830,7 +868,7 @@ export fn eq_channel_type_expr(ty: Type) -> Option[TypeExpr] {
       if String::length(head_name) == 0 || String::starts_with(head_name, "#") {
         None
       } else {
-        match eq_channel_type_exprs(args) {
+        match eq_channel_type_args(args, fill_free_args) {
           Some(out) => Some(TyApp(head_name, out)),
           None => None
         }
@@ -840,12 +878,45 @@ export fn eq_channel_type_expr(ty: Type) -> Option[TypeExpr] {
   }
 }
 
-fn eq_channel_type_exprs(items: Array[Type]) -> Option[Array[TypeExpr]] {
+/// The type arguments of a named head. With `fill_free_args`, an unresolved
+/// non-formal variable lowers to `Unit` (see `eq_channel_row_type_expr`);
+/// everything else lowers as any other position does.
+fn eq_channel_type_args(args: Array[Type], fill_free_args: Bool) -> Option[Array[TypeExpr]] {
+  let out: Array[TypeExpr] = []
+  let mut i = 0
+  let mut ok = true
+  while i < Array::length(args) {
+    let arg = Array::get(args, i)
+    let lowered = match arg {
+      CtVar(vid) => if fill_free_args && eq_formal_row_of(vid) < 0 {
+        Some(TyUnit)
+      } else {
+        None
+      },
+      _ => eq_channel_type_expr_impl(arg, fill_free_args)
+    }
+    match lowered {
+      Some(te) => Array::push(out, te),
+      None => {
+        ok = false
+        i = Array::length(args)
+      }
+    }
+    i = i + 1
+  }
+  if ok {
+    Some(out)
+  } else {
+    None
+  }
+}
+
+fn eq_channel_type_exprs(items: Array[Type], fill_free_args: Bool) -> Option[Array[TypeExpr]] {
   let out: Array[TypeExpr] = []
   let mut i = 0
   let mut ok = true
   while i < Array::length(items) {
-    match eq_channel_type_expr(Array::get(items, i)) {
+    match eq_channel_type_expr_impl(Array::get(items, i), fill_free_args) {
       Some(te) => Array::push(out, te),
       None => {
         ok = false
@@ -894,8 +965,8 @@ export fn eq_binop_type_keys_from_capture(checked: CheckedProgram, capture: Type
     let off = Array::get(capture.binop_offsets, i)
     let kind = Array::get(capture.binop_kinds, i)
     if kind == 3 {
-      let lte = eq_channel_type_expr(subst_apply(checked.final_subst, Array::get(capture.binop_types, i)))
-      let rte = eq_channel_type_expr(subst_apply(checked.final_subst, Array::get(capture.binop_types, i + 1)))
+      let lte = eq_channel_row_type_expr(subst_apply(checked.final_subst, Array::get(capture.binop_types, i)))
+      let rte = eq_channel_row_type_expr(subst_apply(checked.final_subst, Array::get(capture.binop_types, i + 1)))
       let row_key = match (lte, rte) {
         (Some(lt), Some(rt)) => if eq_channel_type_expr_is_scalar(lt) {
           ""
