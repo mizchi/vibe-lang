@@ -108,8 +108,7 @@ the repo; not the user manual.
 | [internal/design/exception-effect.md](internal/design/exception-effect.md) | ADR-0085. User surface is the cheatsheet |
 | [internal/design/compiler-host-boundary.md](internal/design/compiler-host-boundary.md) | ADR-0086: what a runner must provide for the compiler's own `cli_main`. Not the generated-program contract, which is [user/reference/host-runtime-contract.md](user/reference/host-runtime-contract.md) |
 | [internal/design/module-system-oracle.md](internal/design/module-system-oracle.md) | Executable ADR-0070 oracle |
-| [internal/design/module-system-v2.md](internal/design/module-system-v2.md) | |
-| [internal/design/perceus-reuse.md](internal/design/perceus-reuse.md) | ADR-0092: the Perceus plan, constructor reuse and release |
+| [internal/design/perceus-reuse.md](internal/design/perceus-reuse.md) | ADR-0092 (partial): the Perceus plan, constructor reuse and release |
 | [internal/design/region-mutable-state.md](internal/design/region-mutable-state.md) | ADR-0090, current region storage and RC integration requirements |
 | [internal/design/compiler-memory-experiments.md](internal/design/compiler-memory-experiments.md) | Measured memory experiments and adoption criteria |
 | [internal/design/compiler-memory-baseline.json](internal/design/compiler-memory-baseline.json) | Raw compiler comparison and region/GC observations |
