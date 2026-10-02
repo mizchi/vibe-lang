@@ -526,9 +526,8 @@ that.
   that `perform?` returns (the type and `unwrap_or` / `is_granted` are in
   `@vibe/core`), and preflight authorization. The entry keyword itself --
   `fn main allows ..`, `test "n" allows ..` -- is stable: it is the spelling
-  the book teaches. ADR-0043's `--allow-*` / `--deny-*` / `--profile` presets
-  were not built as a separate feature; they were absorbed into L1 of this
-  resolution ladder.
+  the book teaches. `--allow-*` / `--deny-*` are L1 of this resolution
+  ladder, not a separate feature.
 - **`_start` capability declarations and the top-level effect rule**
   (ADR-0041/0042, `proposed`).
 - **The SIMD API** (`spec/simd-api-design.md`): the fused scan builtins
