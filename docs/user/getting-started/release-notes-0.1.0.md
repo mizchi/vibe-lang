@@ -5,8 +5,8 @@
 > release *is*, as opposed to what changed in it, is
 > [spec/0-1.md](../../spec/0-1.md).
 
-The previous stable release is `v0.0.1` (2026-04-14); `v0.1.0-rc.1` and
-`v0.1.0-rc.2` were published as pre-releases. This candidate also fixes
+The previous stable release is `v0.0.1` (2026-04-14); `v0.1.0-rc.1`,
+`v0.1.0-rc.2` and `v0.1.0-rc.3` were published as pre-releases. This candidate also fixes
 RC ownership of store views, local closure captures, recursive closures, and
 closures returned from `Option` payloads (#3215, #3203, #3110, #3240); makes
 qualified constructor patterns through
@@ -137,7 +137,7 @@ read, and every feature below is one the compiler itself depends on.
   RFC6962-shaped transparency log.
 - Six packages ship with the toolchain: `@vibe/core`, `@vibe/ast`,
   `@vibe/parser`, `@vibe/builtin`, `@vibe/console`, `@vibe/wit_runtime`. The
-  rest of the 26 `@vibe/*` and 18 `@vibex/*` packages in the tree are the
+  rest of the 26 `@vibe/*` and 19 `@vibex/*` packages in the tree are the
   compiler's own dependencies, not part of the install.
 - `install/install.sh` is the curl entry point and is smoke-tested on multiple
   operating systems by the `cli-install` workflow. A release installs with
@@ -183,9 +183,11 @@ the edit that fixes them rather than an internal pass name.
 - Generated wasm declares the feature level it requires
   ([wasm/feature-levels.md](../reference/feature-levels.md)); `--allow-*` const-folds and
   DCEs away the code for capabilities that were not granted.
-- Async, structured concurrency, and the WASI 0.3 component surface work — the
-  async serve lane streams a request body to its handler (#1540) — but remain on
-  the **unstable** surface (ADR-0012/0068).
+- Structured concurrency (`@vibe/concurrent`: `TaskGroup`, `TaskHandle`,
+  channels) is part of the stable surface (#3172). The suspendable-task lane
+  (`@vibe/concurrent/experimental`, `VIBE_UNSTABLE=1`) and the WASI 0.3
+  component surface work — the async serve lane streams a request body to its
+  handler (#1540) — but remain **unstable** (ADR-0012/0068).
 - Region storage and guarded Perceus constructor reuse are implemented
   (ADR-0090/0092). Their effects depend on the workload; release allocator
   choices do not follow from a historical RC/bump ratio. `#zero_alloc`
@@ -196,6 +198,9 @@ the edit that fixes them rather than an internal pass name.
 - **The Vibe Book** (`book/en/`) has 20 doctest-checked chapters, and every ` ```vibe run `
   block in it is compiled and executed by doctest, with its output checked
   against the recorded ` ```output `. A chapter cannot go stale silently.
+- The Japanese book (`book/ja/`) translates all 20 chapters, and
+  `pkf run check-tutorial-translation-parity` checks that both record identical
+  program output; English is canonical.
 - [docs/user/reference/cheatsheet.md](../reference/cheatsheet.md) is the language reference and is
   doctest-checked the same way.
 - [spec/stable-surface.md](../reference/stable-surface.md) states what 0.1.0 promises
@@ -206,28 +211,15 @@ the edit that fixes them rather than an internal pass name.
 
 ## Known gaps
 
-- **The Japanese book is a translation of all 20 chapters**, checked for
-  identical program output by `pkf run check-tutorial-translation-parity`;
-  English (`book/en/`) is canonical.
-- **`vibe check --json` is available on both the FS lane and `--single-file`.**
-  Diagnostics, exit codes (`[]` + 0 when clean, array + 1 when not), and the
-  LSP conversion of byte offsets are the same contract. #1567 is complete for
-  command consolidation. Literal type-mismatch ranges now come from the
-  string literal's parser offset when that offset is present; a node the
-  parser never saw still reports `synthetic: true` with null bounds rather
-  than an invented `0:0`. Remaining measured limits of #2831 are recorded in
-  [source-range-contract.md](../reference/source-range-contract.md), with the
-  counts: **every** collected diagnostic is reported, on both lanes and in
-  `--json`, each with its own range — it was one type error however many a
-  file contained, because the exception channel carries a single string and
-  nothing downstream split it. A **lexer** error now carries `line:col` on
-  every lane too; the FS lane used to print none at all and its JSON answered
-  `0:0` with `synthetic: true` for that same real node. Both are pinned by
-  `scripts/check_check_json_lane_parity.sh`, which fails on a compiler from
-  before either change.
+- `EInt` / `EFloat` / `EBool` carry no source offset, so a type mismatch on
+  such a literal passed as an *argument* still points at the callee. A
+  binding's literal initializer is located from the source text instead, and
+  every other type error carries its own range; `vibe check` reports every
+  collected diagnostic, identically on the FS lane, `--single-file` and
+  `--json` ([source-range-contract.md](../reference/source-range-contract.md)).
 - Everything in §6 of [spec/stable-surface.md](../reference/stable-surface.md) is
-  outside the SemVer promise, most notably async/structured concurrency and the
-  capability authorization surface.
+  outside the SemVer promise, most notably the suspendable-task lane, the
+  capability authorization surface and the wasm-gc backend.
 
 ## Release verification
 

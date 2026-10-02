@@ -70,14 +70,14 @@ packages it depends on) must go through the full selfhost verification cycle
 before you commit:
 
 ```bash
-pkf run release-check  # fmt + info + check + test + vibe-normalize + bundle-size + selfhost gates
+pkf run release-check  # seed->stage3 fixpoint + bundle sync + compile/run validation
 ```
 
 See [CLAUDE.md](CLAUDE.md) ("Tooling" / "Local Test Execution" sections) for
-the exact regen → gate → full-unit-allowlist sequence, cache-corruption
-recovery steps, and the manifest transitive-import rules — that level of
-detail is kept in CLAUDE.md since it's primarily useful for scripted/agent
-workflows, but it applies equally to manual development.
+which compiler a test runs on, how affected tests are selected, and the rules
+for a performance measurement — that level of detail is kept in CLAUDE.md
+since it's primarily useful for scripted/agent workflows, but it applies
+equally to manual development.
 
 ## Distribution artifacts
 
@@ -96,7 +96,11 @@ workflows, but it applies equally to manual development.
 - `bash scripts/test_wasm_vibe_wasmtime.sh` で `wasmtime --invoke vibe_check`
   疎通確認 (コミット済み成果物に対しては現在も通る)
 - `pkf run build-release-assets v0.0.1` で GitHub Release 添付用の versioned asset を `dist/release/v0.0.1/` に生成
-- `v*` tag push で `.github/workflows/release.yml` が `vibe-v*.wasm` と checksum を GitHub Release に公開
+- `v*` tag push で `.github/workflows/release.yml` が `scripts/build_release_assets.sh` の出力
+  (`dist/release/<tag>/`) を GitHub Release に公開する: `vibe-compiler-<tag>.wasm`、
+  `vibe-cli-<tag>.wasm`、`vibe-toolchain-<tag>.tar.gz`、target ごとの
+  `viberun-<tag>-<target>.tar.gz`、`vibe-compiler-seed-<tag>.json`、
+  `release-manifest.json`、`SHA256SUMS.txt`
 
 ## CLI (development reference)
 
@@ -209,43 +213,45 @@ Everything is now vibe source (`.vibe`); the retired MoonBit host tree (`src/`,
 lib/                      # All vibe source: stdlib + compiler + experimental
 ├── @vibe/                # official packages
 │   ├── compiler/         #   selfhost compiler
-│   │   ├── syntax/       #     lexer + parser
+│   │   ├── syntax/       #     lexer + parser entry points
 │   │   ├── checker/      #     type checker with effects
+│   │   ├── lowering/ normalize/ #  desugaring + lowering passes
 │   │   ├── codegen/      #     WASM code generation (linear + gc lanes)
+│   │   ├── perceus/      #     ownership / reference-counting plan
 │   │   ├── core/         #     AST types and serialization
-│   │   ├── loader/       #     source/lock resolution + module loading
-│   │   ├── contract/     #     index.vpkg contract grammar + conformance engine
-│   │   ├── perceus/ ripple/ #  ownership / reference-counting passes
-│   │   ├── normalize/ fmt/  #  normalization + formatter
-│   │   ├── cache/ runtime/  #  caches, compiler hooks, shell support
-│   │   ├── builtins/     #     builtin signature SSoT (declarations.vibe)
-│   │   └── entry/        #     compiler entrypoints
+│   │   ├── loader/ module_graph/ contract/ # module resolution + index.vpkg contracts
+│   │   ├── cache/ incremental/ #  persistent caches + incremental reuse
+│   │   ├── runtime/ entry/  #  compiler drivers + entrypoints
+│   │   ├── fmt/ refactor/   #  formatter + checked refactorings
+│   │   ├── builtins/     #     reference list of builtin signatures (documentation only)
+│   │   └── tests/        #     compiler unit tests
 │   ├── cli/              #   selfhost CLI command surface + entrypoints
-│   ├── wasi/              #   WASI p2/p3 runtime adapters
-│   └── …                 #   stdlib: prelude, io, path, fs, http, json, socket,
-│                         #   time, process, shell, random, collection, module,
-│                         #   core, ast, parser
-└── @vibex/               #   experimental: math, regexp, url, uuid, toml, diff,
-                          #   fmt, color, template, semver, quickcheck, base64, …
+│   ├── wasi/             #   WASI p2/p3 runtime adapters
+│   └── …                 #   ast, parser, builtin, core, console, fs, path, http,
+│                         #   json, socket, time, process, random, scan, semver,
+│                         #   concurrent, module, symbol, blake3, lsp, optimizer, …
+└── @vibex/               #   experimental: argparse, book, color, fmt, immut,
+                          #   jsonschema, quickcheck, regexp, shell, tasks, toml,
+                          #   url, zlib, wasm_* parsers/encoders
 
 runtime/                  # Host runtime: wasmtime runner (viberun),
 │                         #   daemon client (viberun_client), `vibe` launcher
 clients/                  # Embeddings + distribution artifacts
 ├── js/                   #   JS bindings (LSP / IDE / DAP / graph-query)
 └── wasm/                 #   distributed compiler wasm (vibe.wasm)
-bootstrap/                # Committed seed compiler (seed/ + seed.json)
+bootstrap/                # Pinned seed (seed.json; the wasm is fetched and sha256-verified)
 tools/                    # Dev tooling: wasmtime_bench (raw-wasmtime microbench,
                           #   standalone Rust crate, not wired into pkf/CI)
 tools/async_host/         # Rust/wasmtime host runtime for async (sleep)
 integrations/             # Editor plugins (treesitter / vscode / zed)
 examples/                 # Example scripts (examples/wasm/ needs a host)
 fixtures/                 # Test fixtures (compiler regression corpus)
-scripts/ pkspec/          # Build/test scripts + pkfire/pkspec definitions
+scripts/                  # Build/test scripts + pkfire task modules (scripts/pkfire/)
 ```
 
 See also [docs/internal/project/adding-modules.md](docs/internal/project/adding-modules.md) for the module
-placement conventions, and CLAUDE.md's "MoonBit host vs selfhost" section for
-where new compiler work should land.
+placement conventions, and CLAUDE.md's "変更の入れ先" section for where new
+compiler work should land.
 
 ## Fixtures
 
@@ -268,9 +274,8 @@ warning snapshots live in `lib/@vibe/compiler/tests/warning_snapshots/`.
 vibe bench examples/simple_bench.vibe
 ```
 
-`<file|dir...>` 指定時の canonical backend は `--backend compiled` で、`--backend wasm` は互換 alias として受け付ける。
-legacy の式ベンチ (`--expr/--case/--cases`) は廃止。`bench {}` を含む `.vibe` file を渡す。
-compiled bench path ではサイズ優先で `--no-dce -Oz` 相当のコンパイルを使い、各ケースに `wasm_bytes=<size>` を出力する。
+`vibe bench <file.vibe> [--iters N] [--warmup N] [--guest-profile DIR]`。`bench {}` を含む
+`.vibe` file を渡す。wasm-gc lane で測るときは `VIBE_BENCH_BACKEND=gc`。
 
 コンパイラ内部のマイクロベンチは pkf タスクではなく `bench {}` ブロックを
 持つファイルで、`vibe bench` に直接渡す:
