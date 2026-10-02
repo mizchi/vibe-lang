@@ -29,12 +29,14 @@ proposal, and this document does not cover it.
   `simd_scan_*`), it includes String equality and comparison, and
   `Bytes::index_of` / `last_index_of` / `count` / `compare` and substring
   search. The list is not exhaustive: the builtin bodies under
-  `lib/@vibe/compiler/codegen/builtin_bodies/` are authoritative. An ordinary
-  build reduces every builtin the program does not call to an `unreachable`
-  stub, so a program that uses none of them carries no `v128` instruction. A
-  `--break` build skips that pruning and needs SIMD regardless.
+  `lib/@vibe/compiler/codegen/builtin_bodies/` are authoritative. **Whether a
+  module needs SIMD is a property of the emitted module, not of the source:**
+  look for `v128` instructions in it. An ordinary build reduces the builtins
+  nothing calls to `unreachable` stubs, so a program that uses none of them
+  usually carries no `v128`, but the pruning is conservative (a byte that
+  merely looks like a call keeps a helper), and a `--break` build skips it.
 - **A program with no host capability runs on any WASI Preview 1 host** that
-  also supports SIMD if the program uses one of those builtins. Plain
+  also supports SIMD if the module contains `v128` instructions. Plain
   `wasmtime run pure.wasm` prints `5`. Effects the program declares and handles
   itself (a user `effect`, or `Exception` caught by a `handle`) import nothing.
 - **A program that uses a host capability (`Fs`, `Console`, `Http`, ...)
@@ -49,7 +51,7 @@ proposal, and this document does not cover it.
 | Item | Value |
 |---|---|
 | module kind | core wasm, linear memory (not a component) |
-| proposals | exception-handling, only when the module defines a tag (§3); fixed-width SIMD, only when it uses a `v128` builtin (Summary) |
+| proposals | exception-handling, only when the module defines a tag (§3); fixed-width SIMD, only when the module contains `v128` instructions (Summary) |
 | exports | `_start` (the WASI command entry), the entry function (`main`, or the name given to `--entry`), `memory`, `__heap_ptr` (global); plus the `error` and `__exception_throw_tag` tags when the module uses exceptions |
 
 `_start` writes the entry's result to stdout through `fd_write`, so **every
@@ -127,8 +129,8 @@ All measured.
   module runs on any WASI Preview 1 host (wasmtime, wasmer, Node's
   `node:wasi`, a browser WASI shim, ...): without the exception-handling
   proposal unless it throws or handles an exception, and without SIMD unless
-  it uses a `v128` builtin. Measured: `wasmtime run pure.wasm` prints `5`
-  (`add(2, 3)`).
+  the module contains `v128` instructions. Measured: `wasmtime run pure.wasm`
+  prints `5` (`add(2, 3)`).
 - **Tier 1: host capabilities.** The module also imports `vibe::*`, so it needs a host
   that implements the vibe ABI. A module that throws or handles an exception
   also defines tags, and so did the measured `Fs` program; such a module needs
