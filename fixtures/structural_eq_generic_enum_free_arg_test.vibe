@@ -1,0 +1,93 @@
+//# #3283: `==` on two unannotated values of a generic enum whose other type
+//# argument nothing in the program constrains. `let a = Ok([1, 2])` types as
+//# `Res[Array[Int], e]` with `e` free; the comparison used to fall back to
+//# identity and answer `false` for equal values.
+
+enum Res[T, E] {
+  Ok(T);
+  Err(E)
+}
+
+enum Two[A, B] {
+  Left(A);
+  Right(B)
+}
+
+enum One[A] {
+  Only(A);
+  Nothing
+}
+
+enum Kinded[T, F[_]] {
+  KOk(T);
+  KErr(F[Int])
+}
+
+test "Ok values with a free error type compare by content" {
+  let a = Ok([1, 2])
+  let b = Ok([1, 2])
+  let c = Ok([1, 3])
+  inspect(a == b, "true")
+  inspect(a != b, "false")
+  inspect(a == c, "false")
+  inspect(a != c, "true")
+}
+
+test "Err values with a free ok type compare by content" {
+  let a = Err([4, 5])
+  let b = Err([4, 5])
+  let c = Err([4, 6])
+  inspect(a == b, "true")
+  inspect(a == c, "false")
+}
+
+test "any two-parameter enum, either constructor" {
+  let l1 = Left([1, 2])
+  let l2 = Left([1, 2])
+  let l3 = Left([9])
+  inspect(l1 == l2, "true")
+  inspect(l1 == l3, "false")
+  let r1 = Right(["x", "y"])
+  let r2 = Right(["x", "y"])
+  inspect(r1 == r2, "true")
+}
+
+test "a free argument nested inside another enum" {
+  let a = Ok(Left([1, 2]))
+  let b = Ok(Left([1, 2]))
+  let c = Ok(Left([2, 1]))
+  inspect(a == b, "true")
+  inspect(a == c, "false")
+}
+
+test "different constructors stay unequal" {
+  let a = Ok([1, 2])
+  let b = Err([1, 2])
+  inspect(a == b, "false")
+}
+
+test "controls that already compared by content" {
+  let o1 = Only([1, 2])
+  let o2 = Only([1, 2])
+  inspect(o1 == o2, "true")
+  let s1 = Some([1, 2])
+  let s2 = Some([1, 2])
+  inspect(s1 == s2, "true")
+  let t1: Res[Array[Int], Int] = Ok([1, 2])
+  let t2: Res[Array[Int], Int] = Ok([1, 2])
+  inspect(t1 == t2, "true")
+  let v = Ok([1, 2])
+  inspect(v == Ok([1, 2]), "true")
+}
+
+// A free argument whose declared parameter is a type CONSTRUCTOR is not
+// filled: `Unit` has the wrong arity for `F[_]` (Codex on #3286). Those rows
+// stay absent, so the equal-content answer is unchanged by #3283 and is not
+// pinned here; what is pinned is that the program compiles, runs, and keeps
+// the answers that hold either way.
+test "a free type-constructor argument is left alone" {
+  let a = KOk([1, 2])
+  let c = KOk([1, 3])
+  inspect(a == c, "false")
+  inspect(a != c, "true")
+}

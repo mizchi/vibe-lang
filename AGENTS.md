@@ -54,6 +54,14 @@ where the declared-field allow-list below admits the element — a pushed name,
 and pushes made inside a function the array is merely passed to, answer by
 content (`fixtures/structural_eq_untyped_empty_*_typed.vibe`). A lane with no
 typed rows (`rc_query`, the flat single-source lane) still traps there.
+A row also survives a type argument nothing in the program constrains
+(#3283): `let a = Ok([1, 2])` types as `Res[Array[Int], e]`, and the
+extraction reads a free, non-formal argument of a named type as `Unit` — no
+value of `e` exists, so that arm's comparator is dead code. Before this, two
+such bindings fell to an `Ok`/`Err` match that compared the arrays by
+identity and answered `false`
+(`fixtures/structural_eq_generic_enum_free_arg_test.vibe`). A formal is never
+filled in.
 Generic struct literals preserve concrete type arguments in the equality
 shape. The compiler emits a comparator for each concrete instantiation and
 substitutes those arguments into its field types, so `Box[Double]`,
