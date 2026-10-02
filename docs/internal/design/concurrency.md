@@ -889,7 +889,12 @@ nursery scope`).
   generalized, with or without `mut` on the binding: measured with
   `struct Cell[T] { mut v: Option[T] }` and `let c = Cell::{ v: None }`, a
   task handle stored into `c.v` from the body escapes the group, and the
-  program compiles and runs. Only the return check is a guarantee.
+  program compiles and runs. A binding annotated with a concrete type is not
+  checked either: with `let c: Array[Option[TaskHandle[Int]]] = [None]`, an
+  `Array::set(c, 0, Some(h))` from the body compiles. Joining an escaped
+  handle after the group returns the task's value (measured), so the program
+  is not answered wrongly today, but nothing enforces that the handle stays in
+  its group. Only the return check is a guarantee.
 - **Spawning after a failure.** A spawn into a group that is cancelling
   after a child failed traps with a bare `unreachable` (measured), as do the
   stack-driving deadlocks; neither names the problem.

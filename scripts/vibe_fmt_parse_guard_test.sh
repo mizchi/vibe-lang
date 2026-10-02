@@ -172,7 +172,7 @@ if ! grep -q '^fn double(n: Int) -> Int {$' "$batch_pin"; then
   exit 1
 fi
 
-# #730 D-3 (module-system-v2 §6): pinned form is canonical, so fmt COMPLETES
+# #730 D-3 (ADR-0063; module-system-oracle.md "Pins and updates"): pinned form is canonical, so fmt COMPLETES
 # an unpinned `require @scope/name x.y.z` head line with `= #hash` when the
 # package is installed in the workspace store -- offline, best-effort. A
 # package the store cannot answer leaves its line byte-identical (fetching

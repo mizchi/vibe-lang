@@ -296,7 +296,7 @@ contract — this is a naming *rule*, not a per-type coincidence:
 **"Frozen" and "persistent" are not synonyms.** `Map`/`StringSet` are
 persistent (functional-update) but are *not* `Send`-eligible under the
 current allowlist — the canonical one is
-[concurrency.md](../../internal/design/concurrency.md#send-と-capture-safety), pinned by
+[concurrency.md](../../internal/design/concurrency.md#send-and-capture-safety), pinned by
 `send_allowlist_test.vibe`. Reach for `FrozenArray`
 specifically when a value needs to cross a `spawn`/task boundary; reach for
 a bare-named persistent type for ordinary functional-update code.
@@ -1058,7 +1058,7 @@ impl [T: Eq] Eq for Array[T]              // 宣言はできるが bound には�
 
 // `Send` (ADR-0068) is a COMPILER-JUDGED structural marker, not a user
 // trait; `impl Send for X` is an error. The allowlist is stated once, in
-// docs/internal/design/concurrency.md "Send と capture safety".
+// docs/internal/design/concurrency.md "`Send` and capture safety".
 
 // `Default` (#1847) は builtin trait: prelude が marker + primitive impl
 // (Int/Float/Double/Bool/String) を登録するので `[T: Default]` bound は
