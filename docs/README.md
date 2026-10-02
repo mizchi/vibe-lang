@@ -51,7 +51,7 @@ Install, learn, write, build, test, package, debug, deploy.
 | [user/reference/cli-commands.md](user/reference/cli-commands.md) | |
 | [user/reference/editor-and-debugging.md](user/reference/editor-and-debugging.md) | LSP, DAP, editor query CLI |
 | [user/reference/source-range-contract.md](user/reference/source-range-contract.md) | What a reported position MEANS (byte, ADR-0108). Written because [user/reference/editor-and-debugging.md](user/reference/editor-and-debugging.md) called byte offsets "char offsets"; enforced by `scripts/check_source_range_contract.sh` |
-| [user/guide/when-to-use-effects.md](user/guide/when-to-use-effects.md) | Its former sibling `builtin-effect-migration.md` is internal ([internal/design/](internal/design/builtin-effect-migration.md)) |
+| [user/guide/when-to-use-effects.md](user/guide/when-to-use-effects.md) | |
 | [user/reference/vibe.md](user/reference/vibe.md) | Implemented language design outside pure syntax |
 | [user/reference/syntax.md](user/reference/syntax.md) | Canonical implemented surface syntax |
 | [user/reference/stable-surface.md](user/reference/stable-surface.md) | Stable surface / SemVer. Takes effect at the `0.1.0` tag (ADR-0109) |
@@ -136,18 +136,14 @@ the repo; not the user manual.
 | [internal/design/vibex-runtime-contract.md](internal/design/vibex-runtime-contract.md) | ADR-0075, proposed |
 | [internal/design/wasip3-effect-alignment.md](internal/design/wasip3-effect-alignment.md) | ADR-0089, proposed |
 | [internal/design/zero-alloc-check.md](internal/design/zero-alloc-check.md) | ADR-0091, current conservative allocation verification |
-| [internal/design/builtin-effect-migration.md](internal/design/builtin-effect-migration.md) | Compiler/language migration plan |
 | [internal/design/mutability-control-review.md](internal/design/mutability-control-review.md) | Survey / fitness review |
 | [internal/design/side-effect-consolidation.md](internal/design/side-effect-consolidation.md) | |
 | [internal/design/decisions.md](internal/design/decisions.md) | Locked language decisions |
-| [internal/design/builtin-ssot-design.md](internal/design/builtin-ssot-design.md) | |
 | [internal/design/memory-contract.md](internal/design/memory-contract.md) | Linear / wasm-gc / RC |
 | [internal/design/profiling.md](internal/design/profiling.md) | |
 | [internal/design/rc-cutover-readiness.md](internal/design/rc-cutover-readiness.md) | ADR-0055 status |
 | [internal/design/rc-port.md](internal/design/rc-port.md) | ADR-0055 design record |
-| [internal/design/show-trait-design.md](internal/design/show-trait-design.md) | |
 | [internal/design/simd-api-design.md](internal/design/simd-api-design.md) | |
-| [internal/design/structured-shell-design.md](internal/design/structured-shell-design.md) | |
 | [internal/design/test-example-capabilities.md](internal/design/test-example-capabilities.md) | Proposal, partial |
 | [internal/design/uniform-value-repr.md](internal/design/uniform-value-repr.md) | ADR-0055 |
 | [internal/design/wasi-p3-async.md](internal/design/wasi-p3-async.md) | |
