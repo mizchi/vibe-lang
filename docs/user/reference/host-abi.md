@@ -23,7 +23,14 @@ proposal, and this document does not cover it.
   measured `Fs` program; both export an `error` tag. A program with no effects,
   or one that only prints, defines no tag and runs on a host without the
   proposal (#716/#733).
-- **A program with no effects runs on any WASI Preview 1 host.** Plain
+- **The fixed-width SIMD proposal (`v128`) is needed only by a module that
+  uses a builtin implemented with it**: the SIMD scan builtins (`simd_skip_ws`
+  and the other `simd_scan_*`), and the 16-byte scans behind `Bytes::index_of`
+  and substring search ([cheatsheet](cheatsheet.md)). A builtin's body is
+  emitted only when the program uses it, so a program that calls none of them
+  carries no `v128` instruction.
+- **A program with no effects runs on any WASI Preview 1 host** that also
+  supports SIMD if the program uses one of those builtins. Plain
   `wasmtime run pure.wasm` prints `5`.
 - **A program that uses effects needs a host that implements the `vibe::*`
   ABI**, which today is `viberun`. A host with only standard WASI fails to
@@ -36,7 +43,7 @@ proposal, and this document does not cover it.
 | Item | Value |
 |---|---|
 | module kind | core wasm, linear memory (not a component) |
-| proposals | exception-handling, only when the module defines a tag (§3); nothing else on the linear lane |
+| proposals | exception-handling, only when the module defines a tag (§3); fixed-width SIMD, only when it uses a `v128` builtin (Summary) |
 | exports | `_start` (the WASI command entry), `main`, `memory`, `__heap_ptr` (global); plus the `error` and `__exception_throw_tag` tags when the module uses exceptions |
 
 `_start` writes the result of `main` to stdout through `fd_write`, so **every
@@ -113,7 +120,8 @@ All measured.
 - **Tier 0: no effects.** The only import is `fd_write`, and there is no tag,
   so the module runs on any WASI Preview 1 host (wasmtime, wasmer, Node's
   `node:wasi`, a browser WASI shim, ...) without the exception-handling
-  proposal. Measured: `wasmtime run pure.wasm` prints `5` (`add(2, 3)`).
+  proposal, and without SIMD unless it uses a `v128` builtin. Measured:
+  `wasmtime run pure.wasm` prints `5` (`add(2, 3)`).
 - **Tier 1: effects.** The module also imports `vibe::*`, so it needs a host
   that implements the vibe ABI. A module that throws or handles an exception
   also defines tags, and so did the measured `Fs` program; such a module needs
@@ -142,7 +150,8 @@ for Tier 1 only on a host that implements the vibe host ABI.
 
 To run effectful output in another environment (JS, Rust, Go, ...):
 
-1. Enable the **exception-handling proposal** if the module defines a tag.
+1. Enable the **exception-handling proposal** if the module defines a tag,
+   and **fixed-width SIMD** if it contains `v128` instructions.
 2. Provide `wasi_snapshot_preview1::fd_write` (writing stdout is enough).
 3. Implement **only the `vibe::*` functions the module imports** (§2.2).
    Values are tagged i64s; read packed strings and bytes from the exported
