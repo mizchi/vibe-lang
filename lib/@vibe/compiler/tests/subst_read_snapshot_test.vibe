@@ -1,0 +1,116 @@
+import @vibe/compiler/core {
+  Subst, Type, subst_apply, subst_bounds_for, subst_cache_read_snapshot, subst_lookup, types_equal
+}
+
+fn assert_subst_type(s: Subst, id: Int, expected: Type) -> Unit {
+  match subst_lookup(subst_cache_read_snapshot(s), id) {
+    Some(actual) => assert_true(types_equal(actual, expected)),
+    None => assert(false)
+  }
+}
+
+fn cached_types(rows: Array[(String, Type)], rest: Subst) -> Subst {
+  let mut types: Map[String, Type] = Map::new()
+  for row in rows {
+    let (key, ty) = row
+    types = Map::set(types, key, ty)
+  }
+  let bounds: Map[String, Array[String]] = Map::new()
+  SubstCached(types, bounds, rest)
+}
+
+test "subst lookup scans uncached chains and retains the nearest binding" {
+  assert(subst_lookup(SubstEmpty, 0) is None)
+  let s = SubstBound(0, ["Eq"], SubstEffBind("e", "Log", SubstBind(0, CtBool, SubstBind(0, CtString, SubstEmpty))))
+  assert_subst_type(s, 0, CtBool)
+  assert(subst_lookup(s, 1) is None)
+}
+
+test "subst lookup uses decimal keys for zero negative and wide ids" {
+  let s = cached_types([
+    ("0", CtUnit),
+    ("-1", CtBool),
+    ("2147483647", CtChar),
+    ("4294967297", CtInt),
+    ("-4294967297", CtString)
+  ], SubstEmpty)
+  assert_subst_type(s, 0, CtUnit)
+  assert_subst_type(s, -1, CtBool)
+  assert_subst_type(s, 2147483647, CtChar)
+  assert_subst_type(s, 4294967297, CtInt)
+  assert_subst_type(s, -4294967297, CtString)
+  assert(subst_lookup(s, 9) is None)
+}
+
+test "subst lookup falls through multiple caches and respects cache hits" {
+  let tail = cached_types([("-1", CtString)], SubstBind(-1, CtChar, SubstEmpty))
+  let middle = cached_types([("2", CtUnit)], tail)
+  let head = cached_types([("3", CtInt)], middle)
+  assert_subst_type(head, -1, CtString)
+  assert_subst_type(head, 2, CtUnit)
+  assert_subst_type(head, 3, CtInt)
+  assert(subst_lookup(head, 4) is None)
+  assert_subst_type(SubstBind(-1, CtBool, head), -1, CtBool)
+}
+
+test "subst lookup keeps bounds separate and falls through to ordinary bindings" {
+  let types: Map[String, Type] = Map::new()
+  let bounds = Map::from_pairs([("7", ["Eq"])])
+  let s = SubstCached(types, bounds, SubstBound(7, ["Show"], SubstEffBind("e", "Log", SubstBind(7, CtInt, SubstEmpty))))
+  assert_subst_type(s, 7, CtInt)
+  let actual = subst_bounds_for(s, 7)
+  assert_eq(Array::length(actual), 2)
+  assert_eq(Array::get(actual, 0), "Eq")
+  assert_eq(Array::get(actual, 1), "Show")
+}
+
+test "subst apply resolves mixed cached ordinary and effect substitutions" {
+  let s = cached_types([("1", CtVar(2))], SubstEffBind("e", "Log", SubstBind(2, CtString, SubstEmpty)))
+  let source = CtFn([CtVar(1)], CtVar(2), Some("e"))
+  assert_true(types_equal(subst_apply(subst_cache_read_snapshot(s), source), CtFn([
+    CtString
+  ], CtString, Some("Log"))))
+}
+
+test "read snapshot preserves value answers across multiple map chunks" {
+  let mut s = SubstEmpty
+  let mut i = 0
+  while i < 800 {
+    s = SubstBind(i, CtNamed(__to_string(i), []), s)
+    i = i + 1
+  }
+  s = SubstBind(0, CtBool, s)
+  let snapshot = subst_cache_read_snapshot(s)
+  for id in [0, 1, 255, 256, 511, 512, 799] {
+    match (subst_lookup(s, id), subst_lookup(snapshot, id)) {
+      (Some(before), Some(after)) => assert_true(types_equal(before, after)),
+      _ => assert(false)
+    }
+  }
+  assert(subst_lookup(snapshot, 800) is None)
+  assert_subst_type(SubstBind(256, CtChar, snapshot), 256, CtChar)
+}
+
+test "read snapshot leaves cached and ordinary bound contributions unchanged" {
+  let types: Map[String, Type] = Map::new()
+  let bounds = Map::from_pairs([("7", ["Eq"])])
+  let s = SubstBound(7, ["Show"], SubstCached(types, bounds, SubstBound(7, [
+    "Hash"
+  ], SubstBind(7, CtInt, SubstEmpty))))
+  let before = subst_bounds_for(s, 7)
+  let after = subst_bounds_for(subst_cache_read_snapshot(s), 7)
+  assert_eq(Array::length(before), Array::length(after))
+  let mut i = 0
+  while i < Array::length(before) {
+    assert_eq(Array::get(before, i), Array::get(after, i))
+    i = i + 1
+  }
+}
+
+test "read snapshot preserves transitive aliases open variables and cycles" {
+  let s = SubstBind(0, CtVar(1), SubstBind(1, CtVar(0), SubstBind(2, CtVar(3), SubstBind(3, CtString, SubstEmpty))))
+  let snapshot = subst_cache_read_snapshot(s)
+  for ty in [CtVar(0), CtVar(1), CtVar(2), CtVar(4), CtArray(CtVar(2))] {
+    assert_true(types_equal(subst_apply(s, ty), subst_apply(snapshot, ty)))
+  }
+}

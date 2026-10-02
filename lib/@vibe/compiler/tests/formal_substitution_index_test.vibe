@@ -1,0 +1,40 @@
+import @vibe/compiler/core {
+  Subst, Type
+}
+
+import @vibe/compiler/checker {
+  callee_formal_bindings, callee_formal_marked_bindings, callee_formal_query_subst, callee_inst_types_cell
+}
+
+fn fill_calls(count: Int) -> Unit {
+  Array::truncate(callee_inst_types_cell, 0)
+  let scheme = CtForAll([0], [], CtFn([CtVar(0)], CtInt, Some("State[S$0]")))
+  let inst = CtFn([CtVar(7)], CtInt, Some("State[S$0]"))
+  let mut i = 0
+  while i < count {
+    Array::push(callee_inst_types_cell, (i, scheme, inst, "get"))
+    i = i + 1
+  }
+}
+
+test "small formal tables keep the original substitution" {
+  fill_calls(255)
+  let s = SubstBind(7, CtString, SubstEmpty)
+  assert(callee_formal_query_subst(s) is SubstBind(_, _, _))
+  Array::truncate(callee_inst_types_cell, 0)
+}
+
+test "large formal tables preserve display and marked publication rows" {
+  fill_calls(256)
+  let s = SubstBind(7, CtString, SubstEmpty)
+  let before = callee_formal_bindings([], s)
+  let marked_before = callee_formal_marked_bindings([], s)
+  let snapshot = callee_formal_query_subst(s)
+  assert(snapshot is SubstCached(_, _, _))
+  assert(before == callee_formal_bindings([], snapshot))
+  assert(marked_before == callee_formal_marked_bindings([], snapshot))
+  assert_eq(Array::length(before), 256)
+  let (_, first) = Array::get(before, 0)
+  assert_true(Array::length(first) > 0)
+  Array::truncate(callee_inst_types_cell, 0)
+}
