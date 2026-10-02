@@ -1,15 +1,42 @@
 # Capability host contract: the not-granted stub, and the grant a host sets at instantiate
 
-Status: proposed — [#2825](https://github.com/mizchi/vibe-lang/issues/2825)
-step 1, the blocker in front of the `perform?` lowering change.
+Status: partial. Hosts can withhold a capability, and `vibe run` resolves
+`perform?` from the grant its launcher froze. The instantiate-time half — the
+`vibe.capabilities` section and the `__vibe_granted$<label>` globals that let
+`perform?` keep both arms — is designed here and not built; it is step 1 of
+[#2825](https://github.com/mizchi/vibe-lang/issues/2825)'s sequence, in front
+of the lowering change.
 
 Date: 2026-09-15
 
 Related: ADR-0088 (amended 2026-09-15 — `perform?` becomes an instantiate-time
-branch), ADR-0075 (`Entry.requires ⊆ ComposedHost.provides`), ADR-0086
+branch; [capability-authorization-surface.md](capability-authorization-surface.md)
+§4), ADR-0075 (`Entry.requires ⊆ ComposedHost.provides`), ADR-0086
 ([compiler-host-boundary.md](compiler-host-boundary.md) — the *compiler's own*
 host boundary, a sibling surface with the same two implementations),
 [effect-wit-mapping.md](effect-wit-mapping.md).
+
+## Where this stands
+
+A `perform?` is still resolved at **compile** time. The lowering selects one
+arm from a frozen grant table and erases the other, together with the host
+import only that arm called:
+
+- `vibe run` freezes the table from its L1 flags (`--allow-*` / `--deny-*`;
+  no flag grants every standard provider), #2828 rung 2;
+- a `test` / `bench` / `example` artifact resolves every optional grant to
+  `Granted`;
+- `vibe build`, `compile` and `serve` pass no launcher grant, so every
+  optional capability resolves `NotGranted` there.
+
+The required side is settled before the module is built: `vibe run` refuses a
+required capability its flags withhold, naming the flag (#2828 rung 1). Both
+runners can withhold a capability by import field (`VIBE_HOST_WITHHOLD`), and
+the withheld import traps when called.
+
+What does not exist yet is everything a HOST would need to decide an optional
+grant itself: no compiler emits `vibe.capabilities` or a grant global, and no
+runner reads them. The rest of this document is that contract.
 
 ## What the amendment takes away
 
@@ -34,7 +61,7 @@ depend on which runner you happen to be using:
 - **Selection**: how does the module learn, before `main`, which optional
   capabilities were granted?
 
-## What the hosts do today — measured, not read
+## What the hosts did before withholding existed — measured, not read
 
 Measured on `945d755`, against a stage2 built from that checkout
 (`_build/selfhost/generations/bytes-capacity-2026-09-15_945d755/stage2.wasm`,
@@ -62,20 +89,24 @@ instantiate with an unknown import before user code runs".
 The node runner's half was not stated anywhere. Its `vibe` import module is a
 `Proxy` whose `get` handler ends `return () => 0n;`, so **a capability the
 runner does not implement is not absent — it is present and answers zero**.
+That fallthrough is still the last line of the `get` trap in `main()`
+(`scripts/wasm_vibe_host_runner.js`); a withheld name (§2) and the async
+imports #2928 refuses are answered before it.
 
-### This is not a live wrong answer today, and that is the point
+### Why that was not a live wrong answer
 
-`docs/generated/host-runtime-contract.json` already partitions all 59 emitted import
-fields into bands, and `scripts/check_host_runtime_contract.py` enforces them
-fail-closed (`pkf run check-host-runtime-contract`, measured ok at `945d755`:
-59 static imports, 49 portable):
+`docs/generated/host-runtime-contract.json` partitions every emitted import
+field into bands, and `scripts/check_host_runtime_contract.py` enforces them
+fail-closed (run in the compiler gate's mid lane, with its mutation suite under
+`pkf run test-check-host-runtime-contract`). The manifest today holds 68
+static fields and 5 name patterns:
 
 | band | count | who provides it |
 |---|---:|---|
 | `portableCore` | 49 | **both** runners, required |
 | `nodeCoreOnly` | 1 | the node runner only (`resolve_path`) |
 | `viberunDebugOnly` | 2 | viberun only (`dbg_break`, `dbg_line`) |
-| `componentAdapterOnly` | 7 | the component adapter; the gate REJECTS these leaking into either standalone runner |
+| `componentAdapterOnly` | 16 + 5 patterns | the component adapter; the gate REJECTS these leaking into either standalone runner |
 
 So the fallback is not silently answering a capability some in-contract module
 asked for — every `portableCore` name is implemented on both sides, and the
@@ -83,13 +114,14 @@ gate proves it. The fallback is what lets an out-of-band module (one carrying
 `componentAdapterOnly` imports, say) instantiate under the node runner anyway,
 answering `0`, where viberun refuses.
 
-What the measurement actually establishes is narrower and more useful:
+What the measurement actually established is narrower and more useful:
 
-> **Neither host can express "linkable, but not callable".** The node runner
-> cannot refuse — deleting a method from `vibeModule` does not withhold the
-> capability, it makes the capability answer `0`. viberun cannot do anything
+> **Neither host could express "linkable, but not callable".** The node runner
+> could not refuse — deleting a method from `vibeModule` does not withhold the
+> capability, it makes the capability answer `0`. viberun could not do anything
 > *but* refuse — an import it does not register makes the whole module fail to
-> instantiate.
+> instantiate. `VIBE_HOST_WITHHOLD` (see *What of this has landed*) gave both
+> runners that third answer.
 
 That is precisely the shape an optional capability needs. #2825 §4 predicted
 the blocker as "the module stops instantiating"; that is viberun's half. The
@@ -97,7 +129,7 @@ node runner's half is the opposite and worse — it would keep going and hand th
 program a zero — and it is invisible from either runner's source, because
 nothing in the contract has ever needed to distinguish a capability a host
 *withholds* from one it does not implement. Until `perform?` is a branch,
-nothing ever withholds.
+nothing but the withholding gate ever withholds.
 
 ## The contract
 
@@ -173,12 +205,12 @@ Chosen over the alternatives for four reasons:
 - **No import-surface change.** A grant delivered as an imported global or a
   query function is itself an import, so an old host fails to link a module it
   could otherwise have run correctly.
-- **The default is fail-closed and is exactly today's behaviour.** A host that
-  does nothing leaves every global `0`, so every `perform?` takes `NotGranted`
-  — which is what a production compile does today, since `linked_compile`
-  passes an empty resolution table and `opq_resolution` defaults to
-  `NotGranted`. The lowering change is therefore behaviour-preserving for every
-  existing host, including ones nobody in this repo controls.
+- **The default is fail-closed.** A host that does nothing leaves every global
+  `0`, so every `perform?` takes `NotGranted` — what a compile with no launcher
+  grant (`vibe build`) produces today, since `opq_resolution` defaults to
+  `NotGranted` on an empty table. A host that knows nothing of this contract
+  therefore sees the behaviour of today's `vibe build` artifacts, including
+  hosts nobody in this repo controls.
 - **No cap and no ordering dependency.** A bitmask over an ordered label list
   is smaller, and it breaks silently at 64 labels and on any reordering.
 - **Host-enumerable without the section.** `WebAssembly.Module.exports` and
@@ -203,18 +235,20 @@ Before instantiating, a host reads `vibe.capabilities` and:
    `docs/generated/host-runtime-contract.json` already decides this, and nothing
    here changes it.
 
-Step 1 is the rung ADR-0075 calls preflight and #2332 still lists as
-outstanding. It becomes implementable here because the section plus the
-manifest are together the machine-readable form of `Entry.requires`.
+Step 1 is the rung ADR-0075 calls preflight. `vibe run` already performs it
+from its own L1 flags, before the module is built (#2828 rung 1); the section
+plus the manifest are what would let any host answer it from the artifact
+alone, since together they are the machine-readable form of
+`Entry.requires`.
 
 ## What each host has to change
 
 | | `scripts/wasm_vibe_host_runner.js` | `runtime/viberun` | a component host (WIT) |
 |---|---|---|---|
 | read `vibe.capabilities` | new | new | new |
-| a way to withhold at all | **new** — today every `vibe.*` field resolves, implemented or not | it has one: do not register the import | the composed host chooses what it provides |
-| refusal names the capability | new (today: nothing to name — it never refuses) | new (today: wasmtime's raw "unknown import") | ADR-0075 preflight |
-| trapping stub for a withheld optional | **new** — reuse the `policy raw import denied` throw in the `vibe` proxy handler, in place of `() => 0n` | **new** — `Linker::func_new` returning `Err`, in place of not registering | a stub implementation in the composed host |
+| a way to withhold at all | **landed** — `VIBE_HOST_WITHHOLD`, checked before the implemented methods | it had one (do not register the import); `VIBE_HOST_WITHHOLD` adds the linkable form | the composed host chooses what it provides |
+| refusal names the capability | new (it never refuses an unknown field; it answers `0`) | new (today: wasmtime's raw "unknown import") | ADR-0075 preflight |
+| trapping stub for a withheld optional | **landed** — `capabilityWithheldStub` throws `vibe capability withheld: <field>` | **landed** — `Linker::func_new` with the module's own import type, returning `Err` | a stub implementation in the composed host |
 | write the grant globals | `instance.exports["__vibe_granted$L"].value = 1n` | `Instance::get_global(..).set(..)` | component-model global, or a host-set config value |
 
 The WIT surface needs the third row to be expressible: `Entry.requires` has to
@@ -225,20 +259,13 @@ different implementation.
 
 ## What of this has landed
 
-Design, plus two pieces: the one the measurement justifies on its own — a host
-has to be able to withhold a capability before any of the rest can be tested —
-and, since #2828 rung 1, the required-capability preflight, which needed
-neither the section nor the globals because a REQUIRED capability is decided
-before the module is built rather than by the host at instantiate time.
-
-Rung 1 measured that **an optional capability answered `NotGranted`
-unconditionally** — with `--allow-fs`, with no flags, on a file that existed and
-on one that did not. `perform?` was a constant, so the `Granted` and `Errored`
-arms were dead code in every program that wrote them.
-
-**#2828 rung 2 ended that**, and with it #2236's default. `perform?` now
-resolves from the grant the launcher froze, and the `Granted` arm runs the real
-operation. Measured on the same program, reading a file that exists:
+Design, plus three pieces: withholding on both runners, which the measurement
+above justifies on its own (a host has to be able to withhold a capability
+before any of the rest can be tested); the required-capability preflight
+(#2828 rung 1), which needed neither the section nor the globals because a
+REQUIRED capability is decided before the module is built; and the launcher's
+frozen grant reaching `perform?` on `vibe run` (#2828 rung 2). Measured on one
+program reading a file that exists:
 
 | flags | `perform? Fs::read_file(..)` |
 |---|---|
@@ -247,6 +274,9 @@ operation. Measured on the same program, reading a file that exists:
 | `--allow-fs --allow-stdout` | `Granted`, and the call runs |
 | `--deny-fs --allow-stdout` | `NotGranted` |
 | `--allow-fs --deny-fs` | `NotGranted` — deny beats allow |
+
+Before rung 2 every row answered `NotGranted`: the `Granted` and `Errored` arms
+were dead code in every program that wrote them.
 
 ### The frozen-grant constant (#1346 criterion 4)
 
@@ -265,10 +295,9 @@ same ambient authority the L3 preflight already assumes.
 
 **The grant is a property of the run, not of the allocator.** Every arm of
 `compile_release_lane` carries the same table, so `VIBE_RC=0`, `shadow` and the
-default answer alike. This is stated because it was briefly untrue: rung 2 first
-wired only the default arm, and the other two answered `NotGranted` for every
-optional capability whatever the run was granted. `check_capability_preflight.sh`
-case 11 pins it by naming the three lanes rather than inheriting one.
+default answer alike. `check_capability_preflight.sh` case 11 pins it by naming
+the three lanes rather than inheriting one, because the first wiring reached
+only the default arm.
 
 ### The denied-operation stub (#1346 criterion 4)
 
@@ -288,14 +317,14 @@ outstanding (below); what is fixed here is that the branch now exists.
 
 | | state |
 |---|---|
-| the measurement, re-runnable | `node scripts/host_capability_probe.mjs <wasm>`, unit-tested in `scripts/host_capability_probe.test.mjs` (`pkf run test-host-capability-probe`) |
+| the measurement, re-runnable | `node scripts/host_capability_probe.mjs <wasm>`, unit-tested by `node --test scripts/host_capability_probe.test.mjs` |
 | node runner can withhold | **landed** — `VIBE_HOST_WITHHOLD=<import-field>[,...]` links a trapping stub in place of the implementation |
-| viberun can withhold | **landed** — the same variable; `Linker::func_new` shadows the real implementation with a stub whose type comes from the module's own import section, so no list here can drift from the 59 fields the emitter can produce |
+| viberun can withhold | **landed** — the same variable; `Linker::func_new` shadows the real implementation with a stub whose type comes from the module's own import section, so no list here can drift from the fields the emitter can produce |
 | the trap is proven to fire | **landed** — `scripts/host_capability_withhold_test.sh` (`pkf run test-host-capability-withhold`, and in `tests/gates/selftests/run.sh`) runs both runners: the granted run reads the file, the withheld run traps by name *after* instantiating (asserted via the wasm frame in the backtrace, so a link failure cannot pass for a stub) and prints no value. The node half also carries a source mutation — with the withhold branch removed, the same run succeeds — which pins the trap to that branch. The viberun half has the env-var control only: rebuilding the Rust runner per case costs ~80 s, so the counterfactual is the same binary and wasm with only the variable differing. Verified once by hand at the rebuild: with the stub never installed, the withheld run prints `read: apple` and the gate fails on it |
 | `vibe.capabilities` section | not done — nothing emits an `optional` row until the lowering does |
 | grant globals | not done — same reason |
 | optional-capability grants reach the lowering | **landed for `vibe run`** (#2828 rung 2) — `optional_grants_from_flags` turns the L1 flags into the frozen-grant table above and threads it to `optional_perform_artifact_resolution` on every allocator lane. Pinned by `check_capability_preflight.sh` cases 7–11, whose red input is a real pre-rung-2 stage2 rather than a mutation |
-| required-capability preflight | **landed for `vibe run`** (#2828 rung 1) — `preflight_instantiate` runs before the artifact is built, and a required authority the host does not grant aborts naming both edits (`--allow-fs`, and the `allows X?` alternative). It takes the REFUSE side of "Open for the owner" item 2 below, as this table already did. Driven by L1 flags (`--allow-*` / `--deny-*`, new in the same rung); it does NOT read the section or the globals, because neither is emitted yet. No flag leaves every provider granted, so an existing program is unaffected. Pinned by `scripts/check_capability_preflight.sh` and its red test |
+| required-capability preflight | **landed for `vibe run`** (#2828 rung 1) — `preflight_instantiate` runs before the artifact is built, and a required authority the host does not grant aborts naming both edits (`--allow-fs`, and the `allows X?` alternative). It takes the REFUSE side of the question in *Decided* below. Driven by L1 flags (`--allow-*` / `--deny-*`, new in the same rung); it does NOT read the section or the globals, because neither is emitted yet. No flag leaves every provider granted, so an existing program is unaffected. Pinned by `scripts/check_capability_preflight.sh` and its red test |
 
 Withholding is named by the wasm **import field** (`fs_read_file`), not the
 capability label (`Fs::read_file`), because the field is what the module
@@ -310,13 +339,23 @@ map one to the other; until then the field is the only name both sides have.
 - **The checker change** (step 3), which is breaking and needs its own
   migration note.
 - **Who decides the grant.** The host reads it from somewhere — a CLI flag, a
-  manifest, a `BindingLock` (ADR-0075 L2). That is #2332's rung, and the
-  contract above is the same whichever way it is answered.
+  manifest, a `BindingLock` (ADR-0075 L2). `vibe run` answers with its L1
+  flags today; a persisted L2 `BindingLock` has no `apply` phase to be written
+  in and no open owner. The contract above is the same whichever way it is
+  answered.
 - **`Errored(E)`'s ABI.** The branch is reachable as of rung 2, but a catchable
-  host-failure ABI is listed in ADR-0088 as outstanding and is untouched here:
-  the required-surface stub traps, it does not produce `Errored`.
+  host-failure ABI is outstanding (ADR-0088 §4, no open owner) and is untouched
+  here: the required-surface stub traps, it does not produce `Errored`.
 
-## Open for the owner
+## Decided
+
+**A withheld required capability refuses; it does not degrade.** Treating
+every capability as optional, so a program always runs and always branches,
+would erase the distinction between "this program asked for permission" and
+"this program needs it", which is not what ADR-0088's `?` grade means. `vibe
+run`'s preflight (#2828 rung 1) implements the refusal.
+
+## Open
 
 1. **Whether the absence of an `optional` row is the right default.** The
    contract above reads "no row" as required, so a module built before it, and
@@ -324,15 +363,16 @@ map one to the other; until then the field is the only name both sides have.
    correctly. The cost is that the section cannot distinguish "this compiler
    emits rows and had none to emit" from "this compiler predates rows"; if a
    future grade needs that distinction, the `version=1` line is where it goes.
-2. **Whether a withheld required capability should refuse or should be
-   permitted to degrade.** The table above refuses. The alternative — treat
-   every capability as optional, so a program always runs and always branches —
-   erases the distinction between "this program asked for permission" and "this
-   program needs it", and is not what ADR-0088's `?` grade means.
-3. **Whether the node runner's `() => 0n` fallback should survive at all.** It
-   is out of band for every import the manifest names, and it is the reason
-   that runner cannot withhold anything. Replacing it with a throw is a
-   one-line change with a blast radius nobody has measured: it is what lets an
-   out-of-band module (`componentAdapterOnly` imports under the node runner)
-   run at all today. Doing it is independent of the lowering and is the
-   smallest item on this page.
+   Decided when the section is first emitted (#2825).
+2. **Whether the node runner's `() => 0n` fallback should survive at all.**
+   It is still the last answer of the `vibe` Proxy's `get` trap in `main()`
+   (`scripts/wasm_vibe_host_runner.js`), for every field the runner neither
+   implements nor was told to withhold. Two narrower answers have landed in
+   front of it: a name in `VIBE_HOST_WITHHOLD` gets the trapping stub (§2),
+   and #2928 refuses, on call, the async host imports it lists
+   (`isUnimplementedAsyncImport` in `scripts/wasm_vibe_host_runtime.js`;
+   [async-host-contract.md](async-host-contract.md) names the
+   `componentAdapterOnly` imports that list does not cover). Replacing the
+   fallthrough itself with a throw is a one-line change with a blast radius
+   nobody has measured. It is independent of the lowering, and no open issue
+   owns it.
