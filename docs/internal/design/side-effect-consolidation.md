@@ -7,7 +7,7 @@
 > #1262 の region 推論、`Map`/`ImmutMap`/`HashMap` の三重化 —— を
 > **1つの規則に畳めるか**を、実測を取ってから判断する。
 > 参考: [Verse 13. Effects](https://verselang.github.io/book/13_effects/)。
-> Related: #1262, ADR-0017, ADR-0021, ADR-0052, ADR-0055, ADR-0060(superseded),
+> Related: #1262, ADR-0017, ADR-0021, ADR-0052, ADR-0055, ADR-0090,
 > ADR-0068, ADR-0071, ADR-0075, ADR-0082, ADR-0084, ADR-0088, ADR-0090,
 > ADR-0091, ADR-0092。
 > 計測スクリプト: [bench/bench_state_representation.vibe](../../../bench/bench_state_representation.vibe)

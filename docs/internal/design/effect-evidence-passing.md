@@ -9,7 +9,7 @@ Date: 2026-07-22
 > effect row 上の `Error` は #1461 で退役したので、現在の綴りは
 > `with Exception`。記録としての正確さのためログ本文は当時のまま残す。
 
-Related: ADR-0003, ADR-0012, ADR-0021, ADR-0050, ADR-0060, ADR-0068, ADR-0071,
+Related: ADR-0003, ADR-0012, ADR-0021, ADR-0050, ADR-0068, ADR-0071,
 ADR-0073, #626, #806, #817, #818
 
 ## Context
