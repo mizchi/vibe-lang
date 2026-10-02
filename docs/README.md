@@ -103,7 +103,6 @@ the repo; not the user manual.
 | [internal/design/concurrency.md](internal/design/concurrency.md) | ADR-0068, proposed. The user concurrency guide is the book's [17_concurrency](../book/en/17_concurrency.vibe.md) |
 | [internal/design/effect-evidence-passing.md](internal/design/effect-evidence-passing.md) | ADR-0076, proposed |
 | [internal/design/effect-taxonomy-entry-policy.md](internal/design/effect-taxonomy-entry-policy.md) | ADR-0084, proposed |
-| [internal/design/effect-taxonomy-review.md](internal/design/effect-taxonomy-review.md) | Review, not the user effect tutorial |
 | [internal/design/effect-wit-mapping.md](internal/design/effect-wit-mapping.md) | Compiler `--wit` mapping |
 | [internal/design/effectset.md](internal/design/effectset.md) | ADR-0071, proposed |
 | [internal/design/exception-effect.md](internal/design/exception-effect.md) | ADR-0085. User surface is the cheatsheet |

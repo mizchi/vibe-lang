@@ -1,24 +1,21 @@
 # ADR-0084: Effect classification and the `.vibex` entry-row admission rule
 
-Status: proposed
+Status: proposed. The entry-admission rule is implemented against the
+standard policy registry (#1683); the resource-qualified classifier the
+Decision describes is not. It becomes accepted when operations carry their
+resource kind and the standard policies classify by it (#3143).
 
 Date: 2026-07-30
 
-Related: #1218, ADR-0071 (effectset), ADR-0075 (`.vibex` runtime contract),
-ADR-0073 (checked `Error`), ADR-0068 (concurrency). Background and the
-alternatives considered are in
-[effect-taxonomy-review.md](effect-taxonomy-review.md).
-
-> **Implementation boundary (#1496, #1683):** The full resource-qualified
-> taxonomy in the formal model remains prospective. The current compiler uses
-> the narrower `core/standard_effect_policy.vibe` registry as an executable
-> entry-admission boundary: a row label is admitted when a standard host
-> provider or the entry/runtime policy owns it; every other source effect must
-> be handled before `main` / `_start`.
+Related: #1218, #3143, ADR-0071 ([effectset.md](effectset.md)), ADR-0075
+(`.vibex` runtime contract, [vibex-runtime-contract.md](vibex-runtime-contract.md)),
+ADR-0085 (`Exception`, [exception-effect.md](exception-effect.md)), ADR-0068
+(concurrency), ADR-0088 (`allows`), ADR-0094 (resource kind parameters,
+[resource-kind-parameters.md](resource-kind-parameters.md)).
 
 ## Context
 
-vibe's effect rows currently keep `Fs`, `Env`, `Error`, `Async`, and a
+vibe's effect rows keep `Fs`, `Env`, `Exception`, `Async`, and a
 user-defined `Logger` as the same kind of string label. But they differ in
 whether the host can resolve them or whether a handler inside the program has
 to.
@@ -37,7 +34,7 @@ effect` was added by #1458).
 |---|---|---|---|
 | **capability effect** | host / provider (outside the wasm boundary) | yes | Fs, Http, Socket, Env, Console (current tty; Stdin/Stdout/Stderr are legacy labels for the same host imports), Process, Profiler |
 | **algebraic effect** | a `handle` inside the program | no | Log, State, Ask, ParseRecur, … (every name not in this table) |
-| **core ambient effect** | nobody (the entry treats it abortively) | no | Exception[E] / Error |
+| **core ambient effect** | nobody (the entry treats it abortively) | no | `Exception` / `Exception[E]` |
 | **runtime effect** | the runtime itself | no | Async |
 
 1. A **capability effect** is an effect carrying a resource kind parameter.
@@ -47,33 +44,38 @@ effect` was added by #1458).
    parameter. It exists for in-process handlers/DI and must be discharged by
    `handle` before reaching a `.vibex` `main`.
 3. A **core ambient effect** is one of a small language-reserved set.
-   ADR-0085's typed `Exception[E]` (`Error` is a transitional alias)
-   qualifies. The entry boundary's runtime handler converts it into a
+   ADR-0085's `Exception` and its typed form `Exception[E]` qualify. The
+   entry boundary's runtime handler converts an escaping exception into a
    diagnosed failure, so it is allowed to remain on `main`'s row.
 4. A **runtime effect** (#1458) is an effect the runtime drives. Its only
    member today is `Async`, which per ADR-0089 Decision 5 is **a backend
    choice, not a permission**. It is allowed to remain on `main`'s row.
 
-   Separating it from core ambient is not just taxonomic tidiness. Both
-   "pass through the row", but **for opposite reasons** — a core ambient
-   effect may remain because nobody discharges it, a runtime effect because
-   the runtime discharges it. While `Async` was lumped in with core ambient,
-   both the checker and wit_gen carried comments readable as "`Error` and
-   `Async` are here for the same reason".
-
-   This is prospective admission-model terminology. In the current compiler,
-   checker row filtering and WIT import filtering instead use the narrow
-   `is_entry_runtime_managed_effect` execution-policy predicate.
+   It is a class of its own, not a core ambient effect: both pass through
+   the row, but for opposite reasons — a core ambient effect remains because
+   nobody discharges it, a runtime effect because the runtime does.
 
 The residual row on a `.vibex` `main` may contain capability effects, core
 ambient effects, and runtime effects. A program whose row still carries an
 algebraic effect is a type error before WIT generation or host preflight.
 This does not restrict the rows of ordinary functions.
 
-Source compatibility for existing builtins is preserved. In Phase 1, existing
-`with Fs` and `Fs::read_file(...)` lower internally to the implicit singleton
-resource `Fs[Process::Root]`. Explicit resource syntax is a Phase 2+ addition;
-this ADR does not decide its surface syntax.
+**How the compiler applies it today** (#1496, #1683). The four classes are
+the admission model; the compiler does not yet classify by resource kind.
+Instead `lib/@vibe/compiler/core/standard_effect_policy.vibe` is the
+executable boundary: a label is admitted on `main` / `_start` when a standard
+host provider owns it (`has_standard_host_provider`) or the entry and runtime
+manage it (`is_entry_runtime_managed_effect`: the exception effect and
+`Async`), and every other source effect must be handled before the entry
+(`is_entry_admitted_effect`). Checker row filtering and WIT import filtering
+use the same predicates. Moving from this label-keyed registry to
+resource-kind metadata on the operation is #3143.
+
+Source compatibility for existing builtins is preserved: once operations
+carry a resource kind (implementation step 1), `with Fs` and
+`Fs::read_file(...)` mean the implicit singleton resource
+`Fs[Process::Root]` (`process_root_resource_kind` in the policy module). The
+declaration syntax for resource kinds is ADR-0094's subject, not this ADR's.
 
 ## Consequences
 
@@ -82,12 +84,10 @@ this ADR does not decide its surface syntax.
 - User-defined algebraic effects stay usable as before in ordinary functions,
   higher-order functions, and inside handlers; they just have to be
   discharged before the entry.
-- `Error`'s existing entry-boundary treatment is kept. Since the rename is
-  not done first, no mass source change or bootstrap bump is needed.
 - The current entry-row check admits the existing providers in the standard
   policy registry plus the entry/runtime owners, and fails closed on
   everything else (#1683). Explicit resource kinds and metadata-driven
-  classification remain follow-up phases. A user operation on a same-named
+  classification are #3143. A user operation on a same-named
   effect gains no provider authority; conversely, a same-named effect in a
   linked module does not cost a registry-owned operation its authority. An
   open row containing a row variable is also rejected as an entry contract.
@@ -97,8 +97,8 @@ this ADR does not decide its surface syntax.
 - Deciding the surface syntax for resource kind parameters or kind bounds.
 - Implementing the `resource` plan/apply/bind lifecycle, optional
   capabilities, or the WIT ABI — those are follow-up phases of ADR-0075.
-- Renaming `Error` to `Exception[E]`. The rename, typed identity, and the
-  relationship with Wasm EH are defined by [ADR-0085](exception-effect.md).
+- The exception effect's typed identity and its relationship with Wasm
+  exception handling, which are [ADR-0085](exception-effect.md)'s subject.
 - Making `TaskGroup::spawn` row-polymorphic or implementing fork-safe
   evidence transfer; those are individual pieces of ADR-0068 / ADR-0075.
 
@@ -112,8 +112,7 @@ this ADR does not decide its surface syntax.
 3. Classify the row remaining on a `.vibex` `main` / `_start` under the
    current standard policy: reject user effects, accept host providers /
    Exception / Async. **The current-policy slice landed in #1683.** Replacing
-   it with the resource-qualified taxonomy comes after the Phase 1/2 metadata
-   work.
+   it with the resource-qualified taxonomy comes after steps 1 and 2 (#3143).
 4. Pass only that residual row to WIT / `Entry.requires` / host preflight.
 
 ## Formal contract
@@ -205,15 +204,15 @@ necessary.
 | item | evidence / observation | conclusion |
 | --- | --- | --- |
 | expected contract | ADR-0075 requires a closed/exact row on `main` and host preflight | the entry row must be host-resolvable |
-| implementation observation | `checker_effects.vibe` checks the `main` / `_start` row via `is_entry_admitted_effect` (#1683) | user effects with no host/runtime owner are rejected before WIT/codegen |
+| implementation observation | `lib/@vibe/compiler/checker/checker_effects_decl_authorizes_effect.vibe` checks the `main` / `_start` row via `is_entry_admitted_effect` (#1683) | user effects with no host/runtime owner are rejected before WIT/codegen |
 | implementation observation | effects are still string labels, but no production compiler site decides a standard policy from a label's spelling: `Async` scheduling, the entry `Exception` boundary, the legacy console providers, host providers and their `--allow-*` flags, test/bench defaults and entry-cache safety are answered by `core/standard_effect_policy.vibe` and `core/exception_effect.vibe` (#1963). `scripts/review_lint.vibex` refuses a label compared to `Async` / `Exception` / `Stdin` / `Stdout` / `Stderr` outside those two owners, and no site carries its suppression marker | the standard policy is explicit label-keyed metadata; resource-kind metadata on `OperationRef` is still the prerequisite for the resource-qualified classifier |
-| regression guard | `main with Ask` / `_start with Ask` reject; `main with Fs + Exception + Async` accepts | pinned in checker tests (#1683) |
+| regression guard | a user effect granted on `main` / `_start` (`allows Ask`) is rejected; host providers, `Exception` and `Async` are admitted | pinned in `lib/@vibe/compiler/tests/checker_entry_effect_test.vibe` (#1683) |
 | formal model | taxonomy-level requirements, entry/host/spawn judgements, and handler discharge are defined in Lean | the ADR's semantics are machine-checked; checker correspondence is unproven |
 | metadata classifier | classifies a complete row from exactly-one metadata lookups and argument shapes, failing closed on unknown/duplicate/malformed | the implementation metadata is to be brought into correspondence with this contract |
 | Oracle corpus | 15 positive/negative cases generated from Lean into TSV, with `formal-check` rejecting stale snapshots | contract regression guarding is automated; the selfhost differential waits on the metadata API |
 | contract refinement | exact capabilities project onto operations/claims/bindings, and the implication from taxonomy admission to the ADR-0075 preflight is proven in Lean | the taxonomy check is mandatory before WIT/host projection |
 | path-scope policy | overlap of restricted globs is equivalent to the existence of a common path, with sound diagnostic witnesses and authority uniqueness proven | overlaps under different authorities reject exactly, across the logical/physical layers, reporting the common path |
 
-Phase 3's current-policy slice is pinned by #1683's checker tests. Full
+Step 3's current-policy slice is pinned by #1683's checker tests. Full
 correspondence between the resource-qualified classifier and the Lean
-contract remains work that follows the metadata API.
+contract follows the metadata work of #3143.
