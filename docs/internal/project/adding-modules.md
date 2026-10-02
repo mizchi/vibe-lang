@@ -1,18 +1,15 @@
 # Adding and repairing a module — a maintenance guide
 
-> Status: written up 2026-07-04 from the practice established by #741/#742/#745
-> (boundary spelling updated to `index.vpkg` 2026-08-01, #1269).
-> The rules for boundaries, visibility and pins are normative in
-> [module-system-oracle.md's "current model" section](../design/module-system-oracle.md#現行モデル-canonical--ここが唯一の現行記述).
-> The design history is [module-system-v2.md](../design/module-system-v2.md) (ADR-0063/0064).
-> Assumes selfhost-only (#594).
+The rules for boundaries, visibility and pins are normative in the "current
+model" section of [module-system-oracle.md](../design/module-system-oracle.md)
+(ADR-0063/0064/0070). This guide is the procedure that applies them.
 
 In this repository, a library is alive only while a `*_test.vibe` of its own is
 running in the battery. Untested code is never compiled by the compiler at all,
 and rot from the host era accumulates in it — the rot #742 dug out of json /
 base64 / fmt is what that looks like. **Always add a module together with its
 tests.** Registering the test takes no step of its own: `discover()` picks it up
-(the old allowlist was removed in #1231; see step 3 of §2).
+(see step 3 of §2).
 
 ## 1. Where to put it
 
@@ -39,9 +36,10 @@ pin exists the hash is checked wherever the package was found. Under
 ## 2. The procedure
 
 1. **Implement**: write `<pkg>/foo.vibe`. Mark the public API `export`.
-   - String indexing `s[i]` yields an Int (a byte value). Compare characters
-     with `String::char_code_at` plus a char literal (`'x'`) — the lesson of the
-     base64/fmt rot in #742.
+   - String indexing `s[i]` yields an Int (a byte value, ADR-0098). Compare
+     bytes with `String::byte_at` plus a char literal (`'x'`) — the lesson of
+     the base64/fmt rot in #742. `String::char_code_at` is a deprecated alias
+     that `vibe check` warns about.
    - An `r#` raw identifier is re-escaped by the printer (#741), but binding a
      keyword name is best avoided anyway.
 2. **Contract (for `lib/@vibe`)**: add `import ./foo.vibe {}` at the top of
@@ -52,7 +50,7 @@ pin exists the hash is checked wherever the package was found. Under
    exercised too — that is how #745 was found. `scripts/unit_test_runner.sh`
    runs the battery over every `*_test.vibe` under `examples/`, `lib/` and
    `fixtures/` that `discover()` finds, unconditionally. There is no allowlist
-   file (removed in #1231), so no registration step is needed. Only files the
+   file, so no registration step is needed. Only files the
    generic harness cannot run — fixtures needing dedicated gate settings or a GC backend
    — go in `EXCLUDE_PATTERNS` in `scripts/unit_test_runner.sh`, with a reason.
    **A file with a `test` block placed under `fixtures/` must be named
@@ -63,9 +61,9 @@ pin exists the hash is checked wherever the package was found. Under
    enumerate fixtures").
 4. **Only when the compiler consumes it**: add a row under the `vibe_core` group
    of `lib/@vibe/compiler/compiler_sources_manifest.tsv`, pointing at
-   `../../../lib/@vibe/<pkg>/...`. Inlining into the bundle and the knock-on
-   effect on the codegen fingerprint are handled by `generate_bundle.sh`
-   (#741, #766).
+   `../../../lib/@vibe/<pkg>/...`. Inlining into the generated bundles and the
+   knock-on effect on the codegen fingerprint follow from that row:
+   `bash scripts/ensure_generated.sh` regenerates them (#741, #766).
 
 ### Reaching a sibling file inside the same package
 
@@ -101,7 +99,7 @@ files becomes a declared contract entry — public surface. Extracting N private
 helpers into a sibling module publishes N names. When the helpers are a
 self-contained sub-language rather than a handful of utilities, a **nested
 package** (`<pkg>/<sub>/index.vpkg`) is the better boundary: the internals stay
-private and only the entry points are declared. See #1849 and #2001.
+private and only the entry points are declared.
 
 ## 3. Verification (always, before committing)
 
@@ -129,21 +127,24 @@ alone** (it declines rather than corrupting). If a file will not format, suspect
 the header spelling first.
 
 If you touched the compiler itself (`lib/@vibe/compiler/`, or the parts of
-`lib/@vibe/` it consumes), always:
+`lib/@vibe/` it consumes), also rebuild it and check the fixpoint:
 
 ```bash
-VIBE_REGEN_MODULE_SOURCE=1 \
-  VIBE_ADAPTER_MODULE_SOURCE_OUT=lib/@vibe/compiler/_cli_adapter_module_source.vibe \
-  bash scripts/generate_bundle.sh
+bash scripts/ensure_generated.sh      # regenerate the generated compiler files if stale
 bash scripts/generations.sh build --stage3 --out-dir _build/gen
 cmp _build/gen/stage2.wasm _build/gen/stage3.wasm   # fixpoint
 ```
 
-## 4. Language and checker traps people hit (as of 2026-07)
+`vibe test` compiles with the committed seed unless told otherwise, so a test
+of a compiler change has to name the new compiler:
+`VIBE_TEST_CLI_WASM=_build/gen/stage2.wasm bash scripts/vibe_test.sh <file>`
+(AGENTS.md, "Which compiler answered?").
+
+## 4. Language and checker traps people hit
 
 - **Failure rides the effect row, not the return value** (#1324): write
   `-> T with Exception[E]` rather than `-> Result[T, E]`, raise with `throw(e)`,
-  and receive with `handle { .. } with Exception[E] { Throw(e) => .. }`.
+  and receive with `handle { .. } with { Exception[E]::Throw(e) => .. }`.
   **`Result` is in neither the language nor the prelude** — a bare `Ok`/`Err` is
   `unknown name: Err`. The only place a two-track return value is really needed
   is the **WIT boundary**, and there `import @vibe/wit_runtime { Result }` is the
@@ -151,33 +152,13 @@ cmp _build/gen/stage2.wasm _build/gen/stage3.wasm   # fixpoint
   ([effect-wit-mapping.md](../design/effect-wit-mapping.md)). Declaring your own
   `enum Result[T, E] { Ok(T); Err(E) }` for anything else is allowed, but it is
   an ordinary user enum with no special treatment whatsoever.
-- **Qualified constructor patterns** such as `Result::Ok(v) =>` have worked since
-  #742 (including against an enum you declared yourself, as above).
+- **Qualified constructor patterns** such as `Result::Ok(v) =>` work, including
+  against an enum you declared yourself, as above.
 - Importing the owner declaration activates its namespace: for example,
   `import @vibe/core { struct MutMap }` makes exported `MutMap::*` members
   available. Name `Type::method` explicitly only when importing a narrower
   surface or assigning the member an alias.
-- **Stringifying a Double**: `"\{x}"` is only correct where the value is
-  statically known to be floatish — a literal, a float-tracked local, float
-  arithmetic, or an annotated parameter (#744). Route the result of a plain user
-  function call through an annotated parameter, or multiply by `* 1.0` first.
-- **No bare export in a facade**: never place a bare `export { A }` next to an
-  `export ./file { A }` — the FS merge produces a garbage facade (#726/#742).
-- **A deeply recursive perform across an effect handler** is unresolved (#737);
-  libraries should call the builtins directly (`Fs::read_file` and friends).
 
-## 5. Known remaining gaps (tracked as issues)
-
-- #737: perform inside deep recursion destroys the outer handler's resume
-- #739: a contract's bodyless type declaration does not preserve type arity
-- #740: the seed's cold-cache whole-tree FS-compile goes out of bounds (worked
-  around in the module_source lane)
-- #534: factoring vibe/types and vibe/parser out of the compiler (layout)
-- #415: a shared builtin registry across the two backends (so adding a builtin
-  is one place). The registry row is that place: its four classification
-  flags (pure / non-allocating / borrow-returning / safe-mut) are what the
-  lists are derived from (#2584). A name with every flag false that is on
-  neither census table fails
-  `lib/@vibe/compiler/tests/builtin_classification_census_test.vibe`. Names
-  that are not registry rows stay in small extras tables next to the
-  derived lists.
+The language reference's own list of measured traps is the "落とし穴" section of
+[cheatsheet.md](../../user/reference/cheatsheet.md); add a new trap there, with
+the measurement, rather than here.

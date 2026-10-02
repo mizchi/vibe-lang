@@ -1,97 +1,81 @@
-# pkfire / pkspec
+# pkfire
 
-[`pkfire`](https://github.com/mizchi/pkfire) (typed task runner with
-content-addressed caching) is the **canonical task runner** for vibe-lang —
-it replaces the former `justfile`.
+[`pkfire`](https://github.com/mizchi/pkfire) (`pkf`, a typed task runner with
+content-addressed caching) is the task runner for vibe-lang. Task definitions
+live in `Taskfile.pkl` and the modules it imports from `scripts/pkfire/`
+(`common.pkl` for shared source lists and factories, `quality_tasks.pkl` for
+the lint, check and KPI tasks). Multi-line shell that does not fit a single
+Pkl `cmd =` lives in `scripts/` and is invoked directly. CI runs its jobs
+through `pkf run …`.
 
-[`pkspec`](https://github.com/mizchi/pkspec) is no longer part of this repo.
-`pkspec/VibeSpec.pkl` / `VibeTest.pkl` — a spec↔test coverage companion tool —
-were removed first: they were never consumed by `pkf run test` / `test-local` /
-any CI job beyond a standalone `pkspec check`/`coverage` step, and had sat
-unused since they were added. `pkspec/Packages.pkl` (the package list that
-generated one `test:<pkg>` task per package) went with those tasks in
-#881/#987. That left `pkspec/` holding nothing but a `.gitignore` for schemas
-nothing regenerates, so the directory was deleted. If a spec-coverage gate is
-wanted again, re-run `pkspec init --dir pkspec` and re-author `VibeTest.pkl`
-from scratch rather than resurrecting the old files.
-
-The task definitions live in `Taskfile.pkl` (~100 tasks after the dead-task cleanup). Multi-line
-shell that doesn't fit a single Pkl `cmd =` lives in `scripts/pkfire/*.sh`
-and is invoked directly. CI runs every job through `pkf run …` with
-`~/.cache/pkfire` persisted via `actions/cache` so unchanged subgraphs are
-cache hits.
+`pkf list` prints the visible tasks with their descriptions; `pkf list --all`
+adds the internal ones (such as `post-generation-gate`).
 
 ## Install
 
-The repo's `nix develop` shell ships `pkgs.pkl`. The pkfire binary is not
-in nixpkgs — install it via:
+The version is pinned in **`.github/pkfire-version`**, the single source of the
+pin; `scripts/check_pkfire_pin.sh` checks that every declaration in CI and the
+SessionStart hook agrees with it.
 
 ```bash
-# Nix (uses the upstream flake)
-nix run github:mizchi/pkfire -- list
-
-# go install (needs the Pkl CLI on PATH for pkfire)
-go install github.com/mizchi/pkfire/cmd/pkf@latest
+# pkf + the Pkl CLI it needs, at the pinned versions, into
+# ~/.local/share/vibe-pkfire/bin (override with PKFIRE_INSTALL_DIR)
+bash scripts/install_pkfire_release.sh
+export PATH="$HOME/.local/share/vibe-pkfire/bin:$PATH"
+pkf version
 ```
 
-CI uses the `mizchi/pkfire@v0.16.0` composite action via
-`.github/actions/setup-vibe` (set `pkfire: 'true'` on the caller). Pass
-`pkfire-cache: 'true'` to also hydrate `~/.cache/pkfire`.
+The script downloads release binaries for Linux (x86_64, aarch64) and macOS
+(arm64) and refuses to install if either binary does not report the pinned
+version.
 
-## pkfire — `Taskfile.pkl`
+In CI, `.github/actions/setup-vibe` with `pkfire: 'true'` runs the same script
+(with the binaries cached on the pin and the script's hash). Pass
+`pkfire-cache: 'true'` to also restore the task cache, `~/.cache/pkfire-mbt`.
+The SessionStart hook installs the pinned release into a dedicated nix profile.
 
-`Taskfile.pkl` is the sole source of task definitions (the former `justfile`
-was retired). Simple recipes are inlined via `cmd = …`; complex multi-line
-shell lives in `scripts/pkfire/*.sh` (or other `scripts/*.sh`) and is invoked
-directly.
+## `Taskfile.pkl`
 
-Highlights (post-#594 selfhost-only):
+Simple recipes are inlined via `cmd = …`; a recipe that is one script uses the
+`scriptTask(name, "scripts/X.sh")` factory. Tasks reference each other as Pkl
+values (`deps { checkDocCommands }`), so a typo fails at evaluation time rather
+than at run time.
 
-| Task           | Behaviour                          | Notes                                |
-|----------------|------------------------------------|--------------------------------------|
-| `fmt`          | `true` (no-op placeholder)         | fmt not ported (#594)       |
-| `test`         | `bash scripts/compiler_gate.sh`| operation gate — the main pre-commit check |
-| `test-local`   | affected tests via `flaker`        | fast inner loop                      |
-| `run`          | `bash scripts/vibe_run.sh $@`      | `acceptsArgs` — pass via `--`        |
-| `release-check`| `deps { compiler-gate }`           | sign-off: bundle/module-source sync + seed→stage1→stage2→stage3 fixpoint + compile/run validation |
-| `info` / `check` / `test-update` | legacy `moon …`  | depended on the MoonBit host, so dead since #594. Verify with `test` / `release-check` / `vibe check` |
+Frequently used tasks:
 
-Two helper factories keep the file readable:
-
-- `scriptTask(name, "scripts/X.sh")` — wraps a single-shell-script recipe
+| Task | Behaviour | Notes |
+|---|---|---|
+| `fmt` | `bash scripts/vibe_fmt_apply.sh` | formats `lib/**/*.vibe` and `lib/**/*.vpkg` in place; `check-vibe-fmt` is the read-only CI counterpart |
+| `test` | `bash scripts/compiler_gate.sh` | operation gate — the main pre-commit check |
+| `test-affected` | tests reachable from the change through the compiler's resolved import graph | falls back to the full set when it cannot decide (#988) |
+| `test-local` | affected tests via `flaker` | selects by directory, so it misses importers elsewhere (AGENTS.md, "Local Test Execution") |
+| `run` | `bash scripts/vibe_run.sh $@` | `acceptsArgs` — pass a `.vibex` root via `--` |
+| `full-gate` | `generation-gate` → `post-generation-gate` | the complete selfhost sign-off ([operation-gate.md](operation-gate.md)) |
+| `release-check` | `compiler-gate` plus the release checks | full sign-off before a release |
 
 Run from the repo root:
 
 ```bash
 pkf list
 pkf run test
-pkf run run -- prog.vibex        # `run` is scripts/vibe_run.sh: one .vibex root
-pkf graph --format tree
-pkf run --explain-cache test
+pkf run run -- prog.vibex          # `run` is scripts/vibe_run.sh: one .vibex root
+pkf graph                          # the dependency tree
+pkf run test --explain-cache       # why a task did or did not hit the cache
+pkf affected Taskfile.pkl          # tasks whose declared inputs include a path
 ```
 
-The cache lives in `~/.cache/pkfire` (global, per-user); `.pkfire/` in the
-repo is git-ignored as a fallback.
+The cache lives in `~/.cache/pkfire-mbt` (per user); `.pkfire/` in the repo is
+git-ignored as a fallback.
 
-### Why pkfire
+### The cache makes inputs load-bearing
 
-- **Typed deps**: `deps { checkDocCommands }` is a Pkl value, not a string —
-  a typo fails at evaluation time rather than at run time.
-- **Content-addressed cache**: re-running a task after a no-op edit is a cache
-  hit, keyed on the task's declared `inputs`. That makes the inputs
-  load-bearing: a task whose inputs omit something it reads will replay a
-  stale verdict, which is why `pkf run check-task-inputs` exists.
-- **`pkf affected --since=origin/main`**: cheap PR-diff aware runs.
-
-This section used to argue pkfire against `just`, and the one below described
-one generated task per moon package under `src/` (`test:parser`,
-`test:checker`, … 32 of them) wrapping `moon test -p`. `just`, `moon` and
-`src/` were all retired with the MoonBit host (#594), and the per-package
-`test:*` tasks went in the dead-task cleanup. Test selection is now
-`pkf run test-affected`, which walks the compiler's own resolved import graph
-(`vibe deps --direct`) and falls back to running everything whenever it cannot
-decide — see the "Local Test Execution" section of
-[AGENTS.md](../../../AGENTS.md).
+Re-running a task after a no-op edit is a cache hit, keyed on the task's
+declared `inputs`. A task whose inputs omit something it reads will therefore
+replay a stale verdict. `pkf run check-task-inputs` checks that a task which
+runs the compiler keys on the compiler, and AGENTS.md's "Which compiler
+answered?" section covers the related rule that a gate asking the compiler a
+question must be handed the generation it is about
+(`deps { selfhostGeneration }`).
 
 ## git hooks (`pkf hooks`)
 
@@ -99,12 +83,12 @@ decide — see the "Local Test Execution" section of
 `pkf run <hook-name>` — pkfire binds a git hook to the task whose name
 matches the hook (e.g. the `pre-commit` task).
 
-This repo ships a **`pre-commit`** task that runs `scripts/precommit.sh`: the
-review-derived structural lint gates (architecture-debt, review-regressions,
-lock-check). The `moon fmt` staged-`.mbt` hook it used to run went with the
-MoonBit host (#594); formatting is enforced instead by the required
-`vibe-fmt-check` CI job. Hooks live under `.git/`
-(not version-controlled), so each clone must opt in once:
+This repo ships a **`pre-commit`** task that runs `scripts/precommit.sh` against
+a snapshot of the staged index: the review-derived lint
+(`scripts/lint_review_regressions.sh`), the architecture-debt ratchet, the
+guest-profile contract lint, and the doc path-citation check. Formatting is
+enforced by the required `vibe-fmt-check` CI job instead. Hooks live under
+`.git/` (not version-controlled), so each clone must opt in once:
 
 ```bash
 pkf hooks install      # wire .git/hooks → pkf run
@@ -112,9 +96,10 @@ pkf hooks list         # show which hooks are installed / declared
 pkf hooks uninstall    # remove the shims
 ```
 
-## Status
+## The `pkfire-pkspec.yml` workflow
 
-`Taskfile.pkl` imports nothing from `pkspec` any more and the directory is
-gone. The `.github/workflows/pkfire-pkspec.yml` workflow (name kept — it is a
-required check) now only runs `pkf format --check` + `pkf lint` — both required
-(no `continue-on-error`), sub-10s per PR.
+The workflow keeps its file name because it is a required check; it validates
+pkfire configuration only. It installs the pinned pkf, asserts `pkf version`
+matches `.github/pkfire-version`, and runs `pkf format --check` over
+`Taskfile.pkl` and the `scripts/pkfire/*.pkl` modules plus `pkf lint`. It runs
+on changes to those files, in well under a minute.

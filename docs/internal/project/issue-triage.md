@@ -1,8 +1,10 @@
 # Issue triage — deciding kind and priority mechanically
 
-Release scheduling is maintained in the [0.1.0 milestone](https://github.com/mizchi/vibe-lang/milestone/2)
-and [0.2.0 milestone](https://github.com/mizchi/vibe-lang/milestone/3).
-The 2026-09-15 audit replaced stale status tables with live issue queries.
+Release scheduling is maintained in the [0.1.0 milestone](https://github.com/mizchi/vibe-lang/milestone/2),
+the [0.2.0 milestone](https://github.com/mizchi/vibe-lang/milestone/3) and the
+[Backlog (unscheduled) milestone](https://github.com/mizchi/vibe-lang/milestone/4).
+This document defines what the labels and milestones mean; the live queries
+below say what they currently hold.
 
 So that "what do I do next" does not have to be re-derived every time, **each
 label means exactly one thing**. Every issue is labelled independently on three
@@ -63,21 +65,17 @@ or explicitly removed from that milestone before the tag.
 
 **0.1.0** owns durable language/API/package/host contract decisions, defects in
 the shipped synchronous surface, and bounded improvements with demonstrated
-value. Its current work includes comparison witnesses (#2523), capability and
-provider semantics (#2828, #1962, #1346), package identities (#2829), naming and
-constructor decisions (#2830), ownership documentation (#2392), and diagnostic
-locations (#2831). The final acceptance checklist is #2834.
+value. Its final acceptance checklist is #2834.
 
-**0.2.0** owns async/structured concurrency, WIT-derived async imports, TaskGroup
-host waits, outbound async HTTP, suspend state and experimental WasmFX. The
-synchronous host ABI and frozen authorization contract can be settled before
-those implementations. The async host ABI has its own task, #2832.
+**0.2.0** owns the themes ADR-0109 assigns it: shared-nothing structured
+concurrency beyond the core `@vibe/concurrent` surface that 0.1.0 already
+freezes, the type-system work aimed at formalization, and the agent harness.
+Work that a release decision moved there is scheduled in the same milestone.
 
 **Backlog (unscheduled)** holds useful work carrying no release commitment:
 internal compiler optimization, architecture experiments, repository tooling,
-and stdlib additions. Examples are the per-module production driver (#2826),
-measured compiler tuning (#2833), and internal artifact/TypeEnv redesigns. Keep
-these experiments off by default until their correctness and cost criteria hold;
+and stdlib additions. Its compiler-performance index is #2833. Keep
+experiments off by default until their correctness and cost criteria hold;
 a successful experiment does not by itself create a release requirement.
 Promote one to a release milestone only for a reproduced correctness or resource
 failure, or a durable contract decision.
@@ -131,13 +129,15 @@ are the units of work.**
 ├── #2509 mid-size memory KPI on reserved pages   ← blocker
 ├── #2507 four build units along the existing seams
 ├── #2508 restate the self-build fixpoint per build unit
-└── #2826 per-module production prelude
+└── #2826 per-module compilation: production witness ABI and diagnostic parity
 ```
+
+(The open children of #2494 as of 2026-10-02; closed children stay attached
+to the parent and drop out of what to do next.)
 
 A parent issue's body holds **only where things stand and an index of its
 children**; the history goes in comments. Piling a checklist into the body makes
-"what do I do next" harder to read the more items land — the five-issue cleanup
-(2026-08-07) was undoing exactly that state.
+"what do I do next" harder to read the more items land.
 
 ## Coordinating independent work
 
