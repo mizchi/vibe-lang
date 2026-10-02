@@ -128,16 +128,16 @@ the repo; not the user manual.
 | [internal/design/compiler-single-rebind.json](internal/design/compiler-single-rebind.json) | Reassignment lifetime and generated-name collision fixes, leak bounds, and cold/warm selfhost comparisons |
 | [internal/design/registry-design.md](internal/design/registry-design.md) | ADR-0065 Phase 5 |
 | [internal/design/resource-kind-parameters.md](internal/design/resource-kind-parameters.md) | ADR-0094, proposed |
-| [internal/design/simd-data-structures.md](internal/design/simd-data-structures.md) | Measured proposal: SIMD-first data-structure foundation |
+| [internal/design/simd-data-structures.md](internal/design/simd-data-structures.md) | Measured record of the SIMD-first data-structure epic (#2340) |
 | [internal/design/vibex-runtime-contract.md](internal/design/vibex-runtime-contract.md) | ADR-0075, proposed |
 | [internal/design/wasip3-effect-alignment.md](internal/design/wasip3-effect-alignment.md) | ADR-0089, proposed |
 | [internal/design/zero-alloc-check.md](internal/design/zero-alloc-check.md) | ADR-0091, current conservative allocation verification |
-| [internal/design/side-effect-consolidation.md](internal/design/side-effect-consolidation.md) | |
+| [internal/design/side-effect-consolidation.md](internal/design/side-effect-consolidation.md) | Measured basis of ADR-0100 / ADR-0101: mutation authority and collection naming |
 | [internal/design/decisions.md](internal/design/decisions.md) | Locked language decisions |
 | [internal/design/memory-contract.md](internal/design/memory-contract.md) | Linear / wasm-gc / RC |
-| [internal/design/profiling.md](internal/design/profiling.md) | |
+| [internal/design/profiling.md](internal/design/profiling.md) | `vibe run --mem` / `--mem-sample` / `--alloc-site`, `vibe bench`, guest CPU profiles |
 | [internal/design/rc-cutover-readiness.md](internal/design/rc-cutover-readiness.md) | ADR-0055 status |
-| [internal/design/simd-api-design.md](internal/design/simd-api-design.md) | |
+| [internal/design/simd-api-design.md](internal/design/simd-api-design.md) | Current SIMD surface: fused builtins and inline-wasm kernels |
 | [internal/design/test-example-capabilities.md](internal/design/test-example-capabilities.md) | Proposal, partial |
 | [internal/design/uniform-value-repr.md](internal/design/uniform-value-repr.md) | ADR-0055: value tagging, object headers, drop classes, RC allocator |
 | [internal/design/wasi-p3-async.md](internal/design/wasi-p3-async.md) | |
