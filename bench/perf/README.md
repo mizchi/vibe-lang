@@ -3,6 +3,19 @@
 CI heap KPI gate, micro benches, and perf-investigation postmortems for the
 compiler / checker.
 
+## Substitution value-key bounds (2026-10-03)
+
+Repeated full-chain misses dominate substitution lookup on the compiler-sized
+corpus. Factory-owned maximum-key frames reduce the flat selfcompile median
+from 16.984 s to 15.366 s (−9.52%) while preserving binding authority and existing
+transport formats. Reserved Wasm capacity is unchanged across all measured
+corpora. This is a CPU improvement; the allocation differences are tiny.
+
+The [investigation report](../../docs/internal/reports/substitution-value-key-bounds-2026-10-03.md)
+and [raw record](analysis/substitution-value-key-bounds-2026-10-03.json) include
+54 controlled A/B samples, 30 A/A controls, profiles, diagnostic visit counts,
+compiler/source receipts, and 282 actual test blocks with bump/RC allocation.
+
 ## Selfcompile KPI heap gate (CI, #987)
 
 Driver: `scripts/selfcompile_kpi.sh <stage2.wasm> [input.vibe]`.
