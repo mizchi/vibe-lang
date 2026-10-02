@@ -13,16 +13,27 @@ pub(super) fn from_environment() -> Option<Cache> {
     make_cache(
         std::env::var_os("VIBE_NATIVE_CACHE").as_deref(),
         std::env::var_os("VIBE_NATIVE_CACHE_DIR").as_deref(),
+        std::env::var_os("VIBE_HOME").as_deref(),
     )
 }
 
-fn make_cache(mode: Option<&OsStr>, directory: Option<&OsStr>) -> Option<Cache> {
+fn make_cache(
+    mode: Option<&OsStr>,
+    directory: Option<&OsStr>,
+    home: Option<&OsStr>,
+) -> Option<Cache> {
     if mode == Some(OsStr::new("0")) {
         return None;
     }
     let mut config = CacheConfig::new();
-    if let Some(directory) = directory.filter(|d| !d.is_empty()) {
-        let directory = PathBuf::from(directory);
+    let directory = directory
+        .filter(|d| !d.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            home.filter(|h| !h.is_empty())
+                .map(|h| PathBuf::from(h).join("cache"))
+        });
+    if let Some(directory) = directory {
         let directory = if directory.is_absolute() {
             directory
         } else {
@@ -56,7 +67,7 @@ mod tests {
         }
 
         fn cache(&self) -> Cache {
-            make_cache(None, Some(self.0.join("cache").as_os_str())).unwrap()
+            make_cache(None, Some(self.0.join("cache").as_os_str()), None).unwrap()
         }
     }
 
@@ -136,11 +147,11 @@ mod tests {
     fn disabled_and_unavailable_caches_do_not_block_execution() {
         let directory = TestDirectory::new();
         let unused = directory.0.join("unused");
-        assert!(make_cache(Some(OsStr::new("0")), Some(unused.as_os_str())).is_none());
+        assert!(make_cache(Some(OsStr::new("0")), Some(unused.as_os_str()), None).is_none());
         assert!(!unused.exists());
         let file = directory.0.join("not-a-directory");
         fs::write(&file, "file").unwrap();
-        assert!(make_cache(None, Some(file.as_os_str())).is_none());
+        assert!(make_cache(None, Some(file.as_os_str()), None).is_none());
     }
 
     #[test]
@@ -148,13 +159,33 @@ mod tests {
         let directory = TestDirectory::new();
         let neighbor = directory.0.join("keep.txt");
         fs::write(&neighbor, "not a cache entry").unwrap();
-        let cache = make_cache(None, Some(directory.0.as_os_str())).unwrap();
+        let cache = make_cache(None, Some(directory.0.as_os_str()), None).unwrap();
         assert_eq!(
             cache.directory(),
             &directory.0.join("viberun-native").canonicalize().unwrap()
         );
         assert_eq!(value(&engine(cache, false), ONE, false), 1);
         assert_eq!(fs::read_to_string(neighbor).unwrap(), "not a cache entry");
+    }
+
+    #[test]
+    fn home_cache_is_private_and_explicit_directory_takes_precedence() {
+        let directory = TestDirectory::new();
+        let home = directory.0.join("home");
+        let cache = make_cache(None, None, Some(home.as_os_str())).unwrap();
+        assert_eq!(
+            cache.directory(),
+            &home.join("cache/viberun-native").canonicalize().unwrap()
+        );
+        let explicit = directory.0.join("explicit");
+        let cache = make_cache(None, Some(explicit.as_os_str()), Some(home.as_os_str())).unwrap();
+        assert_eq!(
+            cache.directory(),
+            &explicit.join("viberun-native").canonicalize().unwrap()
+        );
+        let disabled = directory.0.join("disabled-home");
+        assert!(make_cache(Some(OsStr::new("0")), None, Some(disabled.as_os_str())).is_none());
+        assert!(!disabled.exists());
     }
 
     fn corrupt_files(directory: &std::path::Path) {

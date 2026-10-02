@@ -24,8 +24,13 @@ its existing path; this change adds no custom deserialization.
 `VIBE_NATIVE_CACHE=0` disables the cache. `VIBE_NATIVE_CACHE_DIR` selects an
 isolated root; relative roots resolve against the process working directory.
 Its `viberun-native` child is the directory Wasmtime owns, so cleanup cannot
-remove neighboring caller files. Otherwise Wasmtime's default cache directory and cleanup settings
-apply. Unavailable cache storage falls back to normal compilation. Corrupt
+remove neighboring caller files. By default, a nonempty `VIBE_HOME` selects
+`$VIBE_HOME/cache/viberun-native`,
+so installations remain isolated and `self uninstall --purge` removes it.
+An explicit cache root takes precedence. When `VIBE_HOME` is absent or empty,
+Wasmtime's standard OS cache directory applies. Its cleanup settings apply
+in either case. Unavailable cache storage falls back to normal compilation.
+Corrupt
 entries are rebuilt by Wasmtime. This is independent of the compiler's
 `VIBE_BUILD_CACHE_DIR` and persisted source/module products.
 
@@ -64,9 +69,9 @@ Final paired samples, executable identities and receipts are recorded in
 
 | Probe | Cache disabled | Cache enabled | Change |
 | --- | ---: | ---: | ---: |
-| Fresh native cache, first startup | 459.0ms | 516.9ms | +12.6% (+57.9ms) |
-| Same native cache, second startup | 476.2ms | 29.8ms | -93.7% |
-| Whole grep driver-parity gate, fresh native cache | 39.671s | 30.297s | -23.6% |
+| Fresh native cache, first startup | 436.8ms | 480.5ms | +10.0% (+43.7ms) |
+| Same native cache, second startup | 432.0ms | 30.4ms | -93.0% |
+| Whole grep driver-parity gate, fresh native cache | 39.373s | 30.158s | -23.4% |
 
 The enabled gate includes its first cache publication. Every property passed
 in all eight paired gate runs. The startup's initial cost pays back on the
@@ -89,23 +94,27 @@ the cache; repeated processes using the same Wasm amortize that cost.
 
 ## Regression validation
 
-Seven Rust unit tests prove reuse across engines with fresh guest state,
+Eight Rust unit tests prove reuse across engines with fresh guest state,
 changed bytes at the same path, fuel configuration separation and continued
 metering, unavailable/disabled storage, corrupt entry recovery, and concurrent
-writers and isolation from neighboring files. Three subprocess tests prove the actual runner entrypoint populates
+writers, isolation from neighboring files, and default/explicit home
+precedence. Four subprocess tests prove the actual runner entrypoint populates
 the cache, still executes a changed trapping module, recovers corrupt code,
-handles disabled/unavailable storage, and confines cleanup to its namespace. The entrypoint test fails against
+handles disabled/unavailable storage, confines cleanup to its namespace, and
+isolates the default cache under each
+installation home. The home test fails against the pre-review runner. The
+entrypoint test fails against
 the pre-change runner because that runner creates no native cache.
 
-`cargo test --manifest-path runtime/viberun/Cargo.toml` passes all 37 unit
-tests and all three integration tests. The regression task runs the same std-only
+`cargo test --manifest-path runtime/viberun/Cargo.toml` passes all 38 unit
+tests and all four integration tests. The regression task runs the same std-only
 integration source against the existing release runner, using `rustc --test`.
 This avoids relinking the runner because restored Cargo source mtimes changed.
 It is required by `release-check` and runs in the CI job that already prepares
-the native runner.
+the native runner. The playground CI job enables pkfire setup explicitly.
 
-`pkf run release-check --timing` passes: 119 tasks, 54 run and 65 cached.
-PKF reports 20m34s; the external process timer records 1,358.365s. The cached
+`pkf run release-check --timing` passes: 119 tasks, 53 run and 66 cached.
+PKF reports 20m34s; the external process timer records 1,355.919s. The cached
 compiler-gate log is replayed, so it is not credited as a new gate run. A
 fresh seed → stage1 → stage2 generation was built, and its stage2 matches
 the fixed compiler used by the measurements. A fresh forward stage3 compiled
@@ -116,9 +125,9 @@ The timing table identifies remaining work in this checkout:
 
 | Executed task | PKF task time |
 | --- | ---: |
-| `generation` | 4m45s |
-| `check-compile-only-lanes` | 2m50s |
-| `test-check-grep-driver-parity` | 2m16s |
+| `generation` | 4m55s |
+| `check-compile-only-lanes` | 2m47s |
+| `test-check-grep-driver-parity` | 2m24s |
 | `test-check-grep-memory-budget` | 1m59s |
 
 These are one-run workflow observations, not new optimization percentages.

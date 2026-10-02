@@ -36,18 +36,58 @@ impl Fixture {
     }
 
     fn run(&self, enabled: bool, cache: &Path) -> Output {
+        self.run_with_paths(enabled, Some(cache), None)
+    }
+
+    fn run_with_paths(&self, enabled: bool, cache: Option<&Path>, home: Option<&Path>) -> Output {
         let runner = std::env::var_os("VIBE_NATIVE_CACHE_TEST_BIN")
             .unwrap_or_else(|| env!("CARGO_BIN_EXE_viberun").into());
-        Command::new(runner)
+        let mut command = Command::new(runner);
+        command
             .arg(self.0.join("input.wasm"))
             .env("VIBE_NATIVE_CACHE", if enabled { "1" } else { "0" })
-            .env("VIBE_NATIVE_CACHE_DIR", cache)
+            .env_remove("VIBE_NATIVE_CACHE_DIR")
+            .env_remove("VIBE_HOME")
             .env_remove("VIBE_FUEL")
             .env_remove("VIBE_MEM_SAMPLE_MS")
-            .env_remove("VIBE_CRASH_DIAG_OUT")
-            .output()
-            .unwrap()
+            .env_remove("VIBE_CRASH_DIAG_OUT");
+        if let Some(cache) = cache {
+            command.env("VIBE_NATIVE_CACHE_DIR", cache);
+        }
+        if let Some(home) = home {
+            command.env("VIBE_HOME", home);
+        }
+        command.output().unwrap()
     }
+}
+
+#[test]
+fn default_cache_follows_home_and_explicit_override_wins() {
+    let fixture = Fixture::new();
+    let first = fixture.0.join("home-a");
+    let second = fixture.0.join("home-b");
+    for home in [&first, &second] {
+        assert!(fixture
+            .run_with_paths(true, None, Some(home))
+            .status
+            .success());
+        let cache = home.join("cache/viberun-native");
+        assert!(cache.is_dir(), "native cache escaped VIBE_HOME");
+        assert!(!artifact_files(&cache).is_empty());
+    }
+    let unused = fixture.0.join("unused-home");
+    let explicit = fixture.0.join("explicit");
+    assert!(fixture
+        .run_with_paths(true, Some(&explicit), Some(&unused))
+        .status
+        .success());
+    assert!(explicit.join("viberun-native").is_dir());
+    assert!(!unused.exists());
+    assert!(fixture
+        .run_with_paths(false, None, Some(&unused))
+        .status
+        .success());
+    assert!(!unused.exists());
 }
 
 impl Drop for Fixture {
