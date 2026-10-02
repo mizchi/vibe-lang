@@ -100,12 +100,15 @@ equally to manual development.
 Release assets:
 - `pkf run build-release-assets v0.0.1` writes the versioned assets for a
   GitHub Release to `dist/release/v0.0.1/`.
-- Pushing a `v*` tag runs `.github/workflows/release.yml`, which publishes the
-  output of `scripts/build_release_assets.sh` (`dist/release/<tag>/`) to the
-  GitHub Release: `vibe-compiler-<tag>.wasm`, `vibe-cli-<tag>.wasm`,
+- Pushing a `v*` tag runs `.github/workflows/release.yml`, which publishes
+  everything `scripts/build_release_assets.sh` writes to
+  `dist/release/<tag>/`: `vibe-cli-<tag>.wasm` (the compiler installs run),
   `vibe-toolchain-<tag>.tar.gz`, one `viberun-<tag>-<target>.tar.gz` per
-  target, `vibe-compiler-seed-<tag>.json`, `release-manifest.json` and
-  `SHA256SUMS.txt`.
+  target, the seed trio `vibe-compiler-<tag>.wasm` /
+  `vibe-compiler-module-source-<tag>.vibe` / `vibe-compiler-seed-<tag>.json`
+  (what `scripts/fetch_compiler.sh` uses for a reproducible bootstrap),
+  `release-manifest.json` and `SHA256SUMS.txt`. What each asset contains is
+  in [install.md](docs/user/getting-started/install.md#updating).
 
 ## CLI (development reference)
 

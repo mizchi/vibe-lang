@@ -411,12 +411,13 @@ Per `vX.Y.Z` tag, `.github/workflows/release.yml` publishes:
 | --- | --- |
 | `viberun-<tag>-<target>.tar.gz` | one prebuilt runner per target: `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `aarch64-apple-darwin` (and `x86_64-apple-darwin` while a CI runner exists) |
 | `vibe-toolchain-<tag>.tar.gz` | the platform-independent part of `toolchains/<name>/`: launcher, `vibe_pkg.sh`, `parallel_warm_pool.sh`, the LSP scripts, `context-pack.md`, the stdlib packages with their hashes |
-| `vibe-compiler-<tag>.wasm`, `vibe-compiler-module-source-<tag>.vibe`, `vibe-compiler-seed-<tag>.json` | the compiler and its seed provenance |
+| `vibe-cli-<tag>.wasm` | the compiler CLI an install runs (`compiler_wasm` in the manifest) |
+| `vibe-compiler-<tag>.wasm`, `vibe-compiler-module-source-<tag>.vibe`, `vibe-compiler-seed-<tag>.json` | the seed trio `scripts/fetch_compiler.sh` uses to bootstrap a reproducible build |
 | `release-manifest.json` | every asset with its sha256, the runner per target, and the wasmtime version the runners embed |
 | `SHA256SUMS.txt` | checksums of all of the above |
 
 `vibe self update` needs the runner for this host, the toolchain bundle and
-the compiler wasm; a release with no runner for the host names the targets
+`vibe-cli-<tag>.wasm`; a release with no runner for the host names the targets
 it ships.
 
 The runner and the compiler wasm also version independently. To move only the
