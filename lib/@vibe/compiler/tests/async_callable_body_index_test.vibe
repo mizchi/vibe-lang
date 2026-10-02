@@ -1,0 +1,96 @@
+import @vibe/compiler/core {
+  Expr, Pat, Stmt, TypeEnv, TypeExpr
+}
+import @vibe/core {
+  array_empty
+}
+import @vibe/compiler/checker {
+  afe_collect_callable_bodies,
+  afe_expr_head_name,
+  afe_handler_arm_locals,
+  afe_no_locals,
+  check_async_effects_expr,
+  check_async_effects_stmt,
+  check_async_effects_stmts
+}
+
+fn helper_body(head: String) -> Expr {
+  EFn(array_empty(), array_empty(), array_empty(), Some(TyName("Unit")), Some("Carry"), ECall(EIdent("perform", -1), [
+    ECall(EIdent("Carry::Yield", -1), [
+      ERecord(head, array_empty(), array_empty())
+    ], -1, [])
+  ], -1, []))
+}
+
+fn helper(name: String, head: String) -> Stmt {
+  SLet(false, false, name, None, helper_body(head))
+}
+
+// Exercise the actual callable lookup through handler-payload inference,
+// rather than a second implementation of its name/ambiguity rules.
+fn payload_head(name: String) -> Option[String] {
+  let call = ECall(EIdent(name, -1), array_empty(), -1, [])
+  let locals = afe_handler_arm_locals(call, PCtor("Carry::Yield", [PBind("it")]), EnvEmpty, afe_no_locals())
+  afe_expr_head_name(EIdent("it", -1), EnvEmpty, locals)
+}
+
+fn begin(stmts: Array[Stmt]) -> Unit {
+  let _ = check_async_effects_stmts(stmts, EnvEmpty)
+  ()
+}
+
+test "callable payload lookup retains unique names and rejects missing names" {
+  begin([helper("emit", "Left"), helper("other", "Right")])
+  assert(payload_head("emit") is Some("Left"))
+  assert(payload_head("other") is Some("Right"))
+  assert(payload_head("missing") is None)
+}
+
+test "duplicate callable names remain ambiguous in either order" {
+  begin([helper("emit", "Left"), helper("emit", "Right")])
+  assert(payload_head("emit") is None)
+  begin([helper("emit", "Right"), helper("emit", "Left")])
+  assert(payload_head("emit") is None)
+  begin([helper("emit", "Left"), helper("emit", "Left")])
+  assert(payload_head("emit") is None)
+}
+
+test "nested modules and function declarations participate in callable ambiguity" {
+  begin([SModule(false, "Nested", [helper("emit", "Left")])])
+  assert(payload_head("emit") is Some("Left"))
+  afe_collect_callable_bodies([
+    SFnDecl(false, "emit", helper_body("Right"), array_empty(), array_empty())
+  ])
+  assert(payload_head("emit") is None)
+}
+
+test "collecting additional bodies updates positive and missing lookups" {
+  begin([helper("emit", "Left")])
+  assert(payload_head("emit") is Some("Left"))
+  assert(payload_head("added") is None)
+  afe_collect_callable_bodies([helper("added", "Right"), helper("emit", "Left")])
+  assert(payload_head("added") is Some("Right"))
+  assert(payload_head("emit") is None)
+}
+
+test "program entries reset callable names and prior ambiguity" {
+  begin([helper("emit", "Left"), helper("emit", "Right")])
+  assert(payload_head("emit") is None)
+  begin([helper("emit", "Right")])
+  assert(payload_head("emit") is Some("Right"))
+  begin([])
+  assert(payload_head("emit") is None)
+  begin([helper("emit", "Left")])
+  assert(payload_head("emit") is Some("Left"))
+}
+
+test "expression and statement entries clear the preceding program bodies" {
+  begin([helper("emit", "Left")])
+  assert(payload_head("emit") is Some("Left"))
+  let _ = check_async_effects_expr(EInt(0), EnvEmpty, false)
+  assert(payload_head("emit") is None)
+  begin([helper("emit", "Right")])
+  assert(payload_head("emit") is Some("Right"))
+  let _ = check_async_effects_stmt(SExpr(EInt(0)), EnvEmpty)
+  assert(payload_head("emit") is None)
+}
