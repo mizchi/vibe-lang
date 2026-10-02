@@ -2,7 +2,10 @@
 
 This is the current contract of the selfhost compiler. Experimental changes
 and their acceptance evidence belong in
-[compiler memory experiments](compiler-memory-experiments.md).
+[compiler memory experiments](compiler-memory-experiments.md). Value tagging,
+object headers, drop classes and the RC allocator are specified in
+[uniform-value-repr.md](uniform-value-repr.md); the Perceus plan (retain,
+release and constructor reuse) in [perceus-reuse.md](perceus-reuse.md).
 
 ## Three mechanisms, two code-generation backends
 

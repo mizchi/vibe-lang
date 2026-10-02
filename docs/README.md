@@ -109,7 +109,7 @@ the repo; not the user manual.
 | [internal/design/compiler-host-boundary.md](internal/design/compiler-host-boundary.md) | ADR-0086: what a runner must provide for the compiler's own `cli_main`. Not the generated-program contract, which is [user/reference/host-runtime-contract.md](user/reference/host-runtime-contract.md) |
 | [internal/design/module-system-oracle.md](internal/design/module-system-oracle.md) | Executable ADR-0070 oracle |
 | [internal/design/module-system-v2.md](internal/design/module-system-v2.md) | |
-| [internal/design/perceus-reuse.md](internal/design/perceus-reuse.md) | ADR-0092, proposed |
+| [internal/design/perceus-reuse.md](internal/design/perceus-reuse.md) | ADR-0092: the Perceus plan, constructor reuse and release |
 | [internal/design/region-mutable-state.md](internal/design/region-mutable-state.md) | ADR-0090, current region storage and RC integration requirements |
 | [internal/design/compiler-memory-experiments.md](internal/design/compiler-memory-experiments.md) | Measured memory experiments and adoption criteria |
 | [internal/design/compiler-memory-baseline.json](internal/design/compiler-memory-baseline.json) | Raw compiler comparison and region/GC observations |
@@ -138,10 +138,9 @@ the repo; not the user manual.
 | [internal/design/memory-contract.md](internal/design/memory-contract.md) | Linear / wasm-gc / RC |
 | [internal/design/profiling.md](internal/design/profiling.md) | |
 | [internal/design/rc-cutover-readiness.md](internal/design/rc-cutover-readiness.md) | ADR-0055 status |
-| [internal/design/rc-port.md](internal/design/rc-port.md) | ADR-0055 design record |
 | [internal/design/simd-api-design.md](internal/design/simd-api-design.md) | |
 | [internal/design/test-example-capabilities.md](internal/design/test-example-capabilities.md) | Proposal, partial |
-| [internal/design/uniform-value-repr.md](internal/design/uniform-value-repr.md) | ADR-0055 |
+| [internal/design/uniform-value-repr.md](internal/design/uniform-value-repr.md) | ADR-0055: value tagging, object headers, drop classes, RC allocator |
 | [internal/design/wasi-p3-async.md](internal/design/wasi-p3-async.md) | |
 
 ### Compiler
