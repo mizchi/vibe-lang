@@ -267,4 +267,13 @@ if run_gate; then fail "case 8: a flake.lock resolving another pkfire tag was ac
 grep -q "flake.lock" "$TMP/out" || fail "case 8: the message does not name flake.lock"
 echo "check_pkfire_pin_test: ok: case 8: a stale flake.lock ref is rejected"
 
-echo "check_pkfire_pin_test: ok (2 controls + 15 cases)"
+# --- case 8b: flake.nix without flake.lock -> refuse, do not skip ---------
+scaffold
+rm "$TMP/tree/flake.lock"
+[ -f "$TMP/tree/flake.nix" ] || fail "case 8b: the scaffold lost flake.nix"
+[ -f "$TMP/tree/flake.lock" ] && fail "case 8b: mutation did not land"
+if run_gate; then fail "case 8b: a flake with no lock was accepted"; fi
+grep -q "flake.lock does not" "$TMP/out" || fail "case 8b: the message does not say the lock is missing"
+echo "check_pkfire_pin_test: ok: case 8b: a missing flake.lock is rejected"
+
+echo "check_pkfire_pin_test: ok (2 controls + 16 cases)"

@@ -166,8 +166,13 @@ if [ -f "$FLAKE" ]; then
       rc=1
     fi
   done
+  # A flake with no lock is not "nothing to check": `nix develop` writes a fresh
+  # lock from whatever the tag resolves to then, which is the drift this guards.
   LOCK="flake.lock"
-  if [ -f "$LOCK" ]; then
+  if [ ! -f "$LOCK" ]; then
+    echo "[pkfire-pin] FAIL: $FLAKE exists but $LOCK does not -- run: nix flake lock" >&2
+    rc=1
+  else
     lock_refs="$(python3 - "$LOCK" <<'PYEOF'
 import json, sys
 nodes = json.load(open(sys.argv[1], encoding="utf-8")).get("nodes", {})

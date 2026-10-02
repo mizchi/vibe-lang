@@ -29,9 +29,10 @@ proposal, and this document does not cover it.
   `simd_scan_*`), it includes String equality and comparison, and
   `Bytes::index_of` / `last_index_of` / `count` / `compare` and substring
   search. The list is not exhaustive: the builtin bodies under
-  `lib/@vibe/compiler/codegen/builtin_bodies/` are authoritative. A builtin's
-  body is emitted only when the program uses it, so a program that uses none
-  of them carries no `v128` instruction.
+  `lib/@vibe/compiler/codegen/builtin_bodies/` are authoritative. An ordinary
+  build reduces every builtin the program does not call to an `unreachable`
+  stub, so a program that uses none of them carries no `v128` instruction. A
+  `--break` build skips that pruning and needs SIMD regardless.
 - **A program with no host capability runs on any WASI Preview 1 host** that
   also supports SIMD if the program uses one of those builtins. Plain
   `wasmtime run pure.wasm` prints `5`. Effects the program declares and handles
