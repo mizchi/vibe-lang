@@ -96,9 +96,7 @@ effect (Fs/Env/...) の transitive 強制、`Error`/`Async` の設計判断の
   (golden 候補になる)。
 - **semantics** — 担当: semantics_consistency, diagnostics。
   docs/user/reference/cheatsheet.md と docs/internal/design/adr.md を読む。
-  `docs/internal/design/decisions.md` の「trait は marker-only でメソッドが
-  無い」は現行の `Eq` について偽（#2523 で witness を通る）。現行の記述として
-  使わない。意味論のコーナー
+  意味論のコーナー
   ケース (評価順序、mut、==、match、文字列、effect resume) を 10 個以上
   プローブし、「予想と違う」「docs と違う」を全部記録。診断の質も
   エラーを意図的に起こして評価。
