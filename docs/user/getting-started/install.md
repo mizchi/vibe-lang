@@ -3,8 +3,8 @@
 vibe is distributed as a small **wasmtime runner** (`viberun`) plus a
 **portable compiler wasm** (`vibe-cli.wasm`). At install time the compiler wasm
 is AOT-compiled to a host-specific `vibe-cli.cwasm` so the compiler is not
-re-JITed on every command. See `docs/internal/project/release-roadmap.md` (テーマ1) for the
-rationale behind this split.
+re-JITed on every command. The layout is ADR-0111 in
+[adr.md](../../internal/design/adr.md).
 
 ## Quick install (release)
 
@@ -383,9 +383,10 @@ language-servers = ["vibe-lsp"]
 Diagnostics carry an exact line:col for parse errors and common type errors
 (unknown name / arity / field / ctor), and identifier-use positions resolve to
 their inferred type via the per-node type table (typed hover). Rename /
-references are AST-accurate (scope-aware binding occurrences). Remaining
-precision work (call-site / expression-node spans) is tracked as span-arc in
-[docs/internal/project/release-roadmap.md](../../internal/project/release-roadmap.md) テーマ4.
+references are AST-accurate (scope-aware binding occurrences). Not every
+expression node carries a source offset yet (integer, float and boolean
+literals, tuples, arrays and `if` have none), so most diagnostics about one
+of those point at an enclosing construct instead.
 
 ## Updating
 
