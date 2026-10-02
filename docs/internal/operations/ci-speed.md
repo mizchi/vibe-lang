@@ -5,7 +5,10 @@ battery's cost model has to be sub-linear in test count. This page records
 the measured cost model, the mechanisms that keep it flat, and the knobs to
 turn as the suite grows.
 
-## Where a unit-shard job's wall time goes (measured 2026-08-01)
+## Where a unit-shard job's wall time goes
+
+The per-test costs were measured 2026-08-01; the stage2 row describes the
+current job layout.
 
 | phase | cost | scaling behavior |
 |---|---|---|
