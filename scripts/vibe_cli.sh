@@ -11,7 +11,7 @@
 # the lib/@vibe/cli/main.vibex ADR-0075 entry -- #1137 stage 1) implements —
 # compile / build / check / compile-lite / bundle. Other commands (run, test,
 # fmt, normalize, bench, ...) are not yet ported (see
-# docs/moonbit-retirement.md, Stage 4.5) and must still go through the host CLI;
+# the MoonBit-retirement plan, Stage 4.5) and must still go through the host CLI;
 # this shim does not handle them.
 #
 # Path args are interpreted relative to the repo root (the wasm preopen dir).

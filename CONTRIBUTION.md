@@ -9,7 +9,7 @@ vibe is **selfhost-only**: the compiler, type checker, and codegen are all
 written in vibe itself (`lib/@vibe/compiler/`, `lib/@vibe/cli/`) and built
 from a committed seed (`bootstrap/seed/`) via a Rust/node wasm runner — no
 MoonBit toolchain is required (the original MoonBit host was retired in #594;
-see [docs/archive/moonbit-retirement.md](docs/archive/moonbit-retirement.md)).
+its last state is tag `moonbit-host-final-2026-06-23`).
 
 The task runner is [pkfire](https://github.com/mizchi/pkfire) (`pkf`), defined
 in `Taskfile.pkl`. If you're working with an AI coding agent on

@@ -3267,7 +3267,7 @@ closure literal。最初は clone だけに入れており、`handle { for x in 
 - wasm_of_ocaml, 選択的 CPS — 「pure-by-default + 静的 effect row から
   CPS 対象をゼロコストで判定する」という本 ADR の yield bubbling 適用
   範囲の絞り込み方針の直接の参考。
-- `docs/archive/adr/0021-mut-effect-handler.md` — tail-resumptive
+- ADR-0021 — tail-resumptive
   ゼロコスト化の元祖の提案 (旧 MoonBit host 限定で実装され、#594 で
   当該実装は退役。本 ADR が selfhost 上での再実装にあたる)。
 - `docs/internal/design/effectset.md` (ADR-0071) — operation-level 正規化 row。本 ADR の

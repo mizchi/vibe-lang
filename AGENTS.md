@@ -10,8 +10,9 @@
 > Sections below that reference `moon` (`moon fmt/test/check/info`) or `src/`
 > describe the **retired** host flow and are kept only for historical context;
 > they no longer run. Recovery point for the last MoonBit-host state: tag
-> `moonbit-host-final-2026-06-23` (`59ef040`). Migration record:
-> [docs/archive/moonbit-retirement.md](docs/archive/moonbit-retirement.md).
+> `moonbit-host-final-2026-06-23` (`59ef040`). The migration record is in git
+> history (`docs/archive/moonbit-retirement.md`, deleted with the rest of
+> `docs/archive/` in #3272).
 
 ## Design policy (hold an unclear decision up against this)
 
@@ -365,9 +366,9 @@ admitting it already failed at its job. Fix it at the source instead:
 - **The design was dropped** → delete it.
 - **Something still links to it** → repoint the links, then delete.
 
-`git log` is the archive. `docs/archive/` is only for documents still actively
-cited as history (e.g. [docs/archive/moonbit-retirement.md](docs/archive/moonbit-retirement.md));
-it is not a place to move things you were too cautious to delete.
+`git log` is the archive, and the only one: there is no `docs/archive/`
+directory (deleted in #3272). A document that stops being current is rewritten
+or deleted, not moved somewhere to be kept.
 
 ### ADR log rules ([docs/internal/design/adr.md](docs/internal/design/adr.md))
 
@@ -1027,7 +1028,7 @@ P2 = 機能追加)。「重要そう」は優先度に入れない。新規起�
 経緯はコメントに残す。本文にチェックリストを積み上げると、着地した項目が増えるほど
 「次に何をやるか」が読めなくなる。
 
-設計判断は `docs/internal/design/adr.md` に記録する。旧個別ファイルは `docs/archive/adr/`。
+設計判断は `docs/internal/design/adr.md` に記録する。
 
 ## Local Test Execution
 

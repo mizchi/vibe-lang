@@ -17,8 +17,7 @@ Cargo instead of copying a possibly stale runner from `target/release` (#3242).
 Between `v0.0.1` and 0.1.0 the language was
 rewritten in itself, so these notes describe a different compiler rather than
 a list of fixes. The work once prepared under the name
-"0.3.0 GA" is part of this release; the record of that intermediate state is
-[archive/release-notes-0.3.0.md](../../archive/release-notes-0.3.0.md).
+"0.3.0 GA" is part of this release.
 
 ## Changes in 0.1.0-rc.3
 

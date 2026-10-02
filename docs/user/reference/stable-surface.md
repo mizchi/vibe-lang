@@ -71,11 +71,9 @@ The rest of §6 is still a reading obligation rather than an enforced boundary.
 
 ## 2. Frozen language core (syntax & semantics)
 
-Everything below is demonstrated by the selfhost usability sign-off
-(`docs/archive/report/0-1-0-usability-signoff.md` — an internal quality
-milestone from 2026-06, not a release; see ADR-0109). The canonical definition
-of each item is [spec/syntax.md](syntax.md) and the
-[cheatsheet](cheatsheet.md).
+The canonical definition of each item below is [spec/syntax.md](syntax.md)
+and the [cheatsheet](cheatsheet.md), whose `vibe` examples doctest
+compile-checks against the current compiler.
 
 ### 2.1 Values and types
 - Primitives: `Int` (63-bit tagged, literals up to 2^62-1, arithmetic wraps as

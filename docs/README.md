@@ -2,7 +2,7 @@
 
 Audience index for [#2002](https://github.com/mizchi/vibe-lang/issues/2002).
 Paths are relative to this file. The tree is laid out by primary reader:
-`user/`, `internal/`, `generated/`, `archive/` (#2565, #2566), plus `spec/`
+`user/`, `internal/`, `generated/` (#2565, #2566), plus `spec/`
 for the version-pinned release specifications — those are classified by reader
 like everything else (`spec/0-1.md` is user documentation), but they do not
 live under `user/` because they do not track `main`: one file describes one
@@ -31,7 +31,7 @@ external links to The Vibe Book (decided in #2565).
 [internal/operations/operation-gate.md](internal/operations/operation-gate.md) · [internal/design/adr.md](internal/design/adr.md) ·
 [internal/project/issue-triage.md](internal/project/issue-triage.md)
 
-This file is the audience router. It is not one of the four classes below.
+This file is the audience router. It is not one of the three classes below.
 
 Classification is by primary reader (#2002). A public wasm/effect/package
 contract stays user-facing even if maintainers also read it. An ADR, design
@@ -203,27 +203,6 @@ Machine-produced. Do not edit by hand. Generator / freshness is noted where know
 | [generated/feature-matrix.json](generated/feature-matrix.json) | Fetched by `scripts/wasm_feature_matrix_fetch.sh` |
 | [generated/feature-levels.expected.json](generated/feature-levels.expected.json) | Oracle for feature-level checks |
 | [generated/host-runtime-contract.json](generated/host-runtime-contract.json) | Machine-checked companion of [user/reference/host-runtime-contract.md](user/reference/host-runtime-contract.md) |
-
-## 4. Archive
-
-[archive/](archive/) only. Git history is the default archive; keep a file here
-only while it is still cited.
-
-| Path | Notes |
-| --- | --- |
-| [archive/adr/](archive/adr/) | Historical individual ADRs; living log is [internal/design/adr.md](internal/design/adr.md) |
-| [archive/advanced-graph.md](archive/advanced-graph.md) | |
-| [archive/bench_advanced_graph_report.md](archive/bench_advanced_graph_report.md) | |
-| [archive/build-optimization-analysis.md](archive/build-optimization-analysis.md) | |
-| [archive/codegen/](archive/codegen/) | [vibe-output-analysis.md](archive/codegen/vibe-output-analysis.md), [wasm-gc-vs-selfhost-analysis.md](archive/codegen/wasm-gc-vs-selfhost-analysis.md) |
-| [archive/compiler_language_incidents.md](archive/compiler_language_incidents.md) | Cited from [user/reference/vibe.md](user/reference/vibe.md) |
-| [archive/moonbit-retirement.md](archive/moonbit-retirement.md) | Cited recovery record (`moonbit-host-final-2026-06-23`) |
-| [archive/mut-effect-plan.md](archive/mut-effect-plan.md) | |
-| [archive/report/](archive/report/) | Dated evaluations |
-| [archive/release-notes-0.3.0.md](archive/release-notes-0.3.0.md) | A release that was never cut (renumbered by ADR-0109). Kept as the record of 2026-06 to 2026-07-17; carries a status banner, so a delete candidate by the AGENTS.md rule |
-| [archive/review-by-x-markdown.md](archive/review-by-x-markdown.md) | |
-| [archive/spec/](archive/spec/) | Retired spec notes |
-| [archive/wasmtime-v43.md](archive/wasmtime-v43.md) | |
 
 ## Inventory coverage
 

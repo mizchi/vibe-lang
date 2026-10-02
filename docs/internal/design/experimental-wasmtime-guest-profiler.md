@@ -19,10 +19,9 @@ These answer different questions from Wasmtime's `GuestProfiler`: which Vibe
 guest functions occupy the sampled Wasm stack, and which guest-to-host calls
 divide those samples.
 
-This is a restoration as much as a new feature. The archived May 2026 report
-records a working `vibe profile ... --out ... --interval-us ...` workflow using
+This is a restoration as much as a new feature. A May 2026 report recorded a
+working `vibe profile ... --out ... --interval-us ...` workflow using
 `GuestProfiler`, but that command is no longer present in the current launcher.
-See `docs/archive/report/profile-wasm-gc-vs-linear-2026-05-26.md`.
 
 ## Wasmtime contract
 

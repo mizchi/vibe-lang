@@ -17,9 +17,8 @@ async モデルへ寄せていくための設計判断を定める。北極星�
 | §4, §5 | WIT 境界マッピング / バージョン整合 | 現行仕様 |
 | §6, §7 | 現在地・残作業・未解決 | 現行状態 |
 
-着地までの経緯・撤去した surface・当時の見立ては
-[archive/spec/wasi-p3-async-history.md](../../archive/spec/wasi-p3-async-history.md)
-へ退避してある。
+着地までの経緯・撤去した surface・当時の見立ては git 履歴にある
+(`docs/archive/spec/wasi-p3-async-history.md`、#3272 で削除)。
 
 > **言語表面との整合**: `Async` ラベル二重定義の統一、phantom
 > `Future[T]` の実体化、eager `Stream[T]` の退役と AsyncIter への一本化、
@@ -27,8 +26,8 @@ async モデルへ寄せていくための設計判断を定める。北極星�
 > `async func` マッピングは [ADR-0089](wasip3-effect-alignment.md) が
 > 決定した。本ドキュメントは lowering / ABI 側の source of truth のまま。
 
-旧 [docs/archive/report/support-wasip3.md](../../archive/report/support-wasip3.md)（2026-05-22、
-同期 effect ベースの Model 1）の async 部分は本ドキュメントが supersede する。
+2026-05-22 の同期 effect ベースの Model 1 の async 部分は本ドキュメントが
+supersede する。
 同期 effect capability（`HttpRequest`/`HttpResponse`/`HttpClient` を `perform`
 で扱う）は引き続き有効で、async はその上位に位置づける。
 
@@ -53,8 +52,7 @@ async モデルへ寄せていくための設計判断を定める。北極星�
 ## 2. 言語モデル
 
 > この節は**現行仕様だけ**を書く。着地までの経緯・撤去した surface・当時の
-> 見立ては [archive/spec/wasi-p3-async-history.md](../../archive/spec/wasi-p3-async-history.md)
-> へ退避した (2026-08-07、#1230/#1341 の棚卸し)。実装の現在地は §6、
+> 見立ては git 履歴にある (2026-08-07、#1230/#1341 の棚卸しで本文から外した)。実装の現在地は §6、
 > ABI 実測は §3。
 
 ### 2.1 `async` キーワードは無い — `Async` は effect row のラベル
@@ -2043,9 +2041,8 @@ wasmtime 46.0.1 リリースに合わせて ratified `wasi:http@0.3.0` への cu
 
 ## 6. 現在地と残作業
 
-> 着地済み stage の全行 (M0 〜 ADR-0089 D3、34 行) は
-> [archive/spec/wasi-p3-async-history.md](../../archive/spec/wasi-p3-async-history.md)
-> へ退避した (2026-08-07)。ここには**動いているもの**と**残っているもの**だけを書く。
+> 着地済み stage の全行 (M0 〜 ADR-0089 D3、34 行) は git 履歴にある
+> (2026-08-07 に本文から外した)。ここには**動いているもの**と**残っているもの**だけを書く。
 > ABI の実測記録は §3 (§3.1〜§3.19) がそのまま source of truth。
 
 ### 6.1 動いている縦串 (2026-08-07)

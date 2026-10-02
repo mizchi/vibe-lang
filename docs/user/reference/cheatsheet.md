@@ -4,7 +4,7 @@ WASM-targeting, pure-by-default language with algebraic effects. The compiler
 is self-hosted: it is built from the committed seed (`bootstrap/seed/`) plus
 the selfhost sources (`lib/@vibe/compiler/`, `lib/@vibe/cli/`) via the wasm
 runner — no MoonBit toolchain is required (the MoonBit host implementation was
-retired in #594; see `docs/archive/moonbit-retirement.md`).
+retired in #594).
 
 ## Quick Start
 
@@ -1979,9 +1979,7 @@ payload binding(s), got 1` (#814). The evidence-passing migration (#817) is
 complete but brought no non-tail continuation, and `resume(v)` is **restricted
 to the arm's tail position** (`resume(10) + 1` is rejected with `resume(...)
 must be the last expression of the handler arm`, #942/ADR-0050). Call the
-continuation with a tail `resume(v)`. The convention's details are in
-[archive/mut-effect-plan.md](../../archive/mut-effect-plan.md), "継続呼び出し規約"
-(#627).
+continuation with a tail `resume(v)` (#627).
 
 ### Effect polymorphism
 
