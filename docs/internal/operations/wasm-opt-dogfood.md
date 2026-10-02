@@ -134,7 +134,13 @@ outputs for the DCE/renumbering tests are confirmed VALID by `wasm-opt` and run
 to the correct value by `wasmtime` before being asserted byte-for-byte in
 `wasm_opt_test.vibe`.
 
-## Current numbers (vs `wasm-opt -Oz`)
+## Numbers (vs `wasm-opt -Oz`)
+
+Measured 2026-06-23 (#592). The five fixture rows stay pinned: the `parity:`
+tests in `lib/@vibe/optimizer/fixtures_inline_test.vibe` assert each
+`minify_converge` result against the `wasm-opt -Oz` size, so they are re-checked
+on every battery run. The `base64` row is the one-off end-to-end dogfood
+measurement and is not re-measured by any gate.
 
 | fixture              | orig | wasm-opt -Oz | vibe minify_converge | status |
 |----------------------|-----:|-------------:|---------------------:|--------|
