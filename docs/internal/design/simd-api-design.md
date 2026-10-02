@@ -1,6 +1,6 @@
 # SIMD in vibe: what exists, and how to write a kernel
 
-Updated 2026-08-26. This document describes the **current** state.
+This document describes the current state.
 
 There are two supported ways to get wasm SIMD into generated code, and they
 serve different callers.
@@ -24,6 +24,11 @@ either: a lowering that hands a vector back as a value has to heap-allocate it
 | `simd_scan_string_special_str` | `(String, Int, Int) -> Int` | `lib/@vibe/parser/lexer.vibe` |
 | `simd_scan_line_end_str` | `(String, Int, Int) -> Int` | `lib/@vibe/parser/lexer.vibe` |
 
+The `Bytes` search builtins `Bytes::index_of`, `Bytes::last_index_of`,
+`Bytes::count` and `Bytes::index_of_bytes` are built the same way and are
+public API (#2372); `String::index_of` and its relatives use a windowed v128
+search (ADR-0054).
+
 Adding one costs a compiler change: a row in `core/builtin_registry.vibe`, a
 body in `codegen/builtin_bodies/` or an inline lowering in
 `codegen/expr/compile_call.vibe`, and one index arm per lane. That is
@@ -44,10 +49,15 @@ Worked examples: `lib/@vibe/blake3/simd/simd.vibe` (a full BLAKE3 compression) a
 `bench/bench_simd_*.vibe` (byte search, rank, an i32 column sum, a
 group-of-16 hash probe).
 
-Limits, all of them live: linear backend only (the wasm-gc backend rejects
-inline wasm), `Int` and `Bytes` parameters only, and no `call` between kernels
-(#2348). The ABI is the raw tagged one — see the cheatsheet's inline-wasm
-section.
+Since #2348 a kernel can take an `Array[Int]` parameter (the body sees the
+array's header address, `[capacity@0][length@4][data_ptr@8]`, the same on
+both lanes) and can `call` another inline-wasm `fn` of the same module, with
+the operand count and widths checked. Limits: linear backend only (the wasm-gc
+backend rejects inline wasm); parameters typed `Int`, `Bytes` or `Array[Int]`
+and an `Int` result; a callee must itself be an inline-wasm `fn`, not an
+ordinary vibe `fn`. The ABI is the raw tagged one, and an `Array[Int]`
+element is an `Int` in its lane's representation — see the cheatsheet's
+inline-wasm section.
 
 ## 3. What the measurements said
 
@@ -72,11 +82,14 @@ data/whitespace blocks, where the distribution is the other way round.
 **rank/select is a popcount story, not a SIMD story.** `bench/bench_simd_rank.vibe`,
 32 Kibit: a vibe loop 159834 ns, `i64.popcnt` 465 ns, `v128.load` + two
 popcounts 365 ns, `i8x16.popcnt` with a horizontal sum 518 ns. One scalar
-instruction carries 344x of the 438x. Tracked as #2344.
+instruction carries 344x of the 438x. `Int::popcount` / `ctz` / `clz` /
+`select1` (#2344) are the result.
 
 **The honest baseline is a native builtin.** A 4 KiB byte search: hand-written
-SIMD kernel 248 ns, native scalar `String::index_of` 352 ns, a vibe-level loop
-25001 ns. 1.4x over the builtin, 101x over the loop. Quoting the second number
-as the value of SIMD would be quoting the cost of not having a builtin.
+SIMD kernel 248 ns, the `String::index_of` builtin (itself a v128 window
+search) 352 ns, a vibe-level loop 25001 ns. 1.4x over the builtin, 101x over
+the loop. Quoting the second number as the value of SIMD would be quoting the
+cost of not having a builtin; the native scalar baseline is in
+`bench/bench_simd_bytes_find.vibe`.
 
-Full write-up and the rest of the proposal: [../simd-data-structures.md](simd-data-structures.md).
+Full write-up and the data-structure record: [simd-data-structures.md](simd-data-structures.md).

@@ -35,7 +35,7 @@ or a deterministic collection time.
 
 The table describes normal compilation, without coverage/debug instrumentation.
 `fs_lane_request` and `ss_lane_request` in
-[`cli_adapter.vibe`](../../../lib/@vibe/compiler/cli_adapter.vibe) choose the
+[`cli_adapter_fs_lane_request.vibe`](../../../lib/@vibe/compiler/cli_adapter_fs_lane_request.vibe) choose the
 backend. GC selection precedes RC selection: setting `VIBE_RC=1` alongside
 `VIBE_BACKEND=gc` does not add Perceus to the GC backend.
 
@@ -110,9 +110,9 @@ restore the arena; this is logical reuse, not shrinking linear memory or
 returning pages to the OS. Copy-out results are allocated outside the arena.
 
 The linear backend's `need_region_arena` explicitly requires `!enable_rc` in
-[`linked_compile.vibe`](../../../lib/@vibe/compiler/codegen/wasi/linked_compile.vibe).
+[`linked_compile_wasi_module_linked_impl_with_split_grants.vibe`](../../../lib/@vibe/compiler/codegen/wasi/linked_compile_wasi_module_linked_impl_with_split_grants.vibe).
 The GC backend enables it in
-[`backend_body.vibe`](../../../lib/@vibe/compiler/codegen/gc/backend_body.vibe)
+[`backend_body_wasi_module_gc_impl.vibe`](../../../lib/@vibe/compiler/codegen/gc/backend_body_wasi_module_gc_impl.vibe)
 because these collection buffers are still linear-memory objects. See the
 [region contract](region-mutable-state.md) for escape rules, exit coverage,
 and prerequisites for an RC experiment.
