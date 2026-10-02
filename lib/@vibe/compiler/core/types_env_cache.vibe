@@ -33,7 +33,7 @@ import ./env_name_index.vibe {
 }
 
 import @vibe/core {
-  array_empty
+  array_empty, struct MutMap
 }
 
 //# Types
@@ -1317,6 +1317,64 @@ export fn find_typedef(defs: Array[TypeDef], name: String) -> Option[TypeDef] {
     }
   }
   result
+}
+
+fn subst_read_snapshot_push(key: String, ty: Type, seen: MutMap[String, Int], rows: Array[(String, Type)]) -> Unit {
+  if !MutMap::has(seen, key) {
+    MutMap::set(seen, key, 1)
+    Array::push(rows, (key, ty))
+  }
+}
+
+/// Index current value lookup answers for a completed substitution's read
+/// phase. Keep the original chain for bounds, effects and missing values.
+/// Bounded map chunks avoid quadratic builder work on a large substitution.
+export fn subst_cache_read_snapshot(s: Subst) -> Subst {
+  let seen: MutMap[String, Int] = MutMap::new_string()
+  let rows: Array[(String, Type)] = []
+  let mut cur = s
+  let mut done = false
+  while !done {
+    match cur {
+      SubstEmpty => done = true,
+      SubstBind(id, ty, rest) => {
+        subst_read_snapshot_push(__to_string(id), ty, seen, rows)
+        cur = rest
+      },
+      SubstBound(_, _, rest) => cur = rest,
+      SubstEffBind(_, _, rest) => cur = rest,
+      SubstCached(cache, _, rest) => {
+        for key in Map::keys(cache) {
+          subst_read_snapshot_push(key, Map::get(cache, key), seen, rows)
+        }
+        cur = rest
+      }
+    }
+  }
+  let caches: Array[Map[String, Type]] = []
+  let mut i = 0
+  while i < Array::length(rows) {
+    let builder = MapBuilder::new()
+    let end = if i + 256 < Array::length(rows) {
+      i + 256
+    } else {
+      Array::length(rows)
+    }
+    while i < end {
+      let (key, ty) = Array::get(rows, i)
+      MapBuilder::set(builder, key, ty)
+      i = i + 1
+    }
+    Array::push(caches, MapBuilder::freeze(builder))
+  }
+  let empty_bounds: Map[String, Array[String]] = Map::new()
+  let mut out = s
+  let mut j = Array::length(caches)
+  while j > 0 {
+    j = j - 1
+    out = SubstCached(Array::get(caches, j), empty_bounds, out)
+  }
+  out
 }
 
 export fn subst_lookup(s: Subst, id: Int) -> Option[Type] {
