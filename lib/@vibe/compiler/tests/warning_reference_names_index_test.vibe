@@ -1,0 +1,211 @@
+// Query-local exact-name membership preserves reference collection semantics.
+import @vibe/compiler/core {
+  Expr, Pat, Stmt, TypeExpr
+}
+import @vibe/compiler/checker {
+  collect_referenced_names_stmts, recursive_alias_flags
+}
+
+fn names_equal(actual: Array[String], expected: Array[String]) -> Unit {
+  assert(Array::length(actual) == Array::length(expected))
+  let mut i = 0
+  while i < Array::length(expected) {
+    assert(Array::get(actual, i) == Array::get(expected, i))
+    i = i + 1
+  }
+}
+
+test "existing duplicate prefix and first encounter order are preserved" {
+  let out: Array[String] = ["seed", "seed"]
+  collect_referenced_names_stmts([
+    SExpr(EArray([
+      EIdent("seed", -1),
+      EIdent("new", -1),
+      EIdent("new", -1),
+      EIdent("New", -1),
+      EIdent("新", -1),
+      EIdent("@pkg::value", -1)
+    ]))
+  ], out)
+  names_equal(out, ["seed", "seed", "new", "New", "新", "@pkg::value"])
+}
+
+test "public calls rebuild membership from each current output" {
+  let first: Array[String] = []
+  let second: Array[String] = []
+  collect_referenced_names_stmts([SExpr(EIdent("same", -1))], first)
+  collect_referenced_names_stmts([SExpr(EIdent("same", -1))], second)
+  names_equal(first, ["same"])
+  names_equal(second, ["same"])
+  Array::truncate(first, 0)
+  collect_referenced_names_stmts([SExpr(EIdent("same", -1))], first)
+  names_equal(first, ["same"])
+}
+
+test "let and recursive let scopes preserve free names" {
+  let out: Array[String] = []
+  collect_referenced_names_stmts([
+    SExpr(ELet("local", EIdent("ambient", -1), EIdent("local", -1), -1)),
+    SExpr(EIdent("local", -1)),
+    SExpr(ELetRec("rec", EIdent("rec", -1), EIdent("rec", -1))),
+    SExpr(EIdent("rec", -1))
+  ], out)
+  names_equal(out, ["ambient", "local", "rec"])
+}
+
+test "function annotations and record type references keep their order" {
+  let out: Array[String] = ["Box"]
+  collect_referenced_names_stmts([
+    SExpr(EFn([], [], [
+      ("local~", Some(TyApp("Box", [TyName("Arg")]))),
+      ("optional?", None)
+    ], Some(TyName("Ret")), None, EArray([
+      EIdent("local", -1),
+      EIdent("optional", -1),
+      EIdent("external", -1)
+    ]))),
+    SExpr(ERecord("Record", [("field", EIdent("payload", -1))], [
+      TyName("Param")
+    ]))
+  ], out)
+  names_equal(out, [
+    "Box",
+    "Arg",
+    "Ret",
+    "external",
+    "Record",
+    "payload",
+    "Param"
+  ])
+}
+
+test "loop initializers and for indices preserve lexical boundaries" {
+  let out: Array[String] = []
+  collect_referenced_names_stmts([
+    SExpr(EForIn("item", Some("index"), EIdent("items", -1), EArray([
+      EIdent("item", -1),
+      EIdent("index", -1),
+      EIdent("inside", -1)
+    ]))),
+    SExpr(EIdent("index", -1)),
+    SExpr(ELoop([("x", EIdent("x", -1)), ("y", EIdent("y", -1))], EArray([
+      EIdent("x", -1),
+      EIdent("y", -1),
+      EIdent("loop_free", -1)
+    ])))
+  ], out)
+  names_equal(out, ["items", "inside", "index", "x", "y", "loop_free"])
+}
+
+test "match and handle pattern scopes do not leak" {
+  let out: Array[String] = []
+  collect_referenced_names_stmts([
+    SExpr(EMatch(EIdent("scrutinee", -1), [
+      (PStruct("Frame", [("field", PBind("local"))]), EArray([
+        EIdent("local", -1),
+        EIdent("match_free", -1)
+      ]))
+    ])),
+    SExpr(EHandle(EIdent("handled", -1), [
+      (PBind("error"), EArray([EIdent("error", -1), EIdent("handle_free", -1)]))
+    ])),
+    SExpr(EIdent("local", -1)),
+    SExpr(EIdent("error", -1))
+  ], out)
+  names_equal(out, [
+    "scrutinee",
+    "match_free",
+    "handled",
+    "handle_free",
+    "local",
+    "error"
+  ])
+}
+
+test "nested modules and declaration type positions preserve global order" {
+  let out: Array[String] = ["existing", "existing"]
+  collect_referenced_names_stmts([
+    STypeAlias(false, "Alias", [], TyApp("Box", [TyName("Arg")])),
+    SStruct(false, "Container", [("field", TyName("Field"))], [], [], []),
+    SModule(false, "Nested", [
+      SExpr(EIdent("existing", -1)),
+      SExpr(EIdent("module_free", -1)),
+      SModule(false, "Deep", [SExpr(EIdent("module_free", -1))])
+    ]),
+    SExpr(EIdent("after", -1))
+  ], out)
+  names_equal(out, [
+    "existing",
+    "existing",
+    "Box",
+    "Arg",
+    "Field",
+    "module_free",
+    "after"
+  ])
+}
+
+test "large repeated exact names append only once after the original prefix" {
+  let out: Array[String] = ["seed", "seed"]
+  let exprs: Array[Expr] = []
+  let mut round = 0
+  while round < 4 {
+    let mut i = 0
+    while i < 500 {
+      Array::push(exprs, EIdent(String::concat("n", __to_string(i)), -1))
+      i = i + 1
+    }
+    round = round + 1
+  }
+  collect_referenced_names_stmts([SExpr(EArray(exprs))], out)
+  assert(Array::length(out) == 502)
+  assert(Array::get(out, 0) == "seed")
+  assert(Array::get(out, 1) == "seed")
+  let mut i = 0
+  while i < 500 {
+    assert(Array::get(out, i + 2) == String::concat("n", __to_string(i)))
+    i = i + 1
+  }
+}
+
+fn collect_transient_name(out: Array[String]) -> Unit {
+  let stmts = [
+    SExpr(EIdent(String::concat("transient_", __to_string(2719)), -1))
+  ]
+  collect_referenced_names_stmts(stmts, out)
+}
+
+test "reference strings survive the temporary AST and local membership index" {
+  let out: Array[String] = []
+  collect_transient_name(out)
+  let pressure: Array[String] = []
+  let mut i = 0
+  while i < 200 {
+    Array::push(pressure, String::concat("replacement_", __to_string(i)))
+    i = i + 1
+  }
+  assert(Array::length(pressure) == 200)
+  names_equal(out, ["transient_2719"])
+}
+
+test "empty statements leave an existing output prefix untouched" {
+  let out: Array[String] = ["keep", "keep", ""]
+  collect_referenced_names_stmts([], out)
+  names_equal(out, ["keep", "keep", ""])
+}
+
+test "shared type-reference collection preserves recursive alias flags" {
+  let flags = recursive_alias_flags([
+    STypeAlias(false, "Direct", [], TyApp("Direct", [TyName("Direct")])),
+    STypeAlias(false, "Left", [], TyName("Right")),
+    STypeAlias(false, "Right", [], TyName("Left")),
+    STypeAlias(false, "Plain", [], TyApp("Box", [TyName("Int"), TyName("Int")])),
+    STypeAlias(false, "Shadow", ["Shadow"], TyName("Shadow"))
+  ])
+  assert(Array::length(flags) == 5)
+  assert(Array::get(flags, 0))
+  assert(Array::get(flags, 1))
+  assert(Array::get(flags, 2))
+  assert(!Array::get(flags, 3))
+  assert(!Array::get(flags, 4))
+}

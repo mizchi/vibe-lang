@@ -5,7 +5,7 @@ import ./checker_trait.vibe {
 }
 
 import @vibe/core {
-  array_empty, struct MutMap
+  array_empty, struct MutMap, struct MutSet
 }
 
 import @vibe/compiler/checker/diagnostics {
@@ -919,7 +919,7 @@ fn alias_decl_body(stmts: Array[Stmt], name: String) -> Option[(Array[String], T
 
 fn alias_type_expr_reaches(stmts: Array[Stmt], te: TypeExpr, shadow: Array[String], target: String, seen: Array[String]) -> Bool {
   let refs = array_empty()
-  collect_texpr_ref_names(te, refs)
+  collect_texpr_ref_names(te, refs, MutSet::new_string())
   let mut i = 0
   let mut reaches = false
   while i < Array::length(refs) && !reaches {
@@ -1022,25 +1022,11 @@ export fn type_param_index(params: Array[String], name: String) -> Int {
 // top-level package (the direction checker_trait.vibe's relocation into
 // this package, noted above, was moved to avoid).
 
-fn warning_names_contains(arr: Array[String], s: String) -> Bool {
-  let len = Array::length(arr)
-  let mut i = 0
-  let mut found = false
-  while i < len {
-    if Array::get(arr, i) == s {
-      found = true
-      i = len
-    } else {
-      i = i + 1
-    }
-  }
-  found
-}
-
-fn push_ref_name(out: Array[String], name: String) -> Unit {
-  if warning_names_contains(out, name) {
+fn push_ref_name(out: Array[String], name: String, seen: MutSet[String]) -> Unit {
+  if MutSet::has(seen, name) {
     ()
   } else {
+    MutSet::add(seen, name)
     Array::push(out, name)
   }
 }
@@ -1050,29 +1036,29 @@ fn push_ref_name(out: Array[String], name: String) -> Unit {
 /// `TyTuple` members) -- so an imported `type X` counted "used" only via a
 /// type ANNOTATION (e.g. `fn f(x: X) -> Unit`) is not misreported as unused
 /// just because it never appears as a value-position `EIdent`.
-fn collect_texpr_ref_names(te: TypeExpr, out: Array[String]) -> Unit {
+fn collect_texpr_ref_names(te: TypeExpr, out: Array[String], seen: MutSet[String]) -> Unit {
   match te {
-    TyName(name) => push_ref_name(out, name),
+    TyName(name) => push_ref_name(out, name, seen),
     TyApp(name, args) => {
-      push_ref_name(out, name)
+      push_ref_name(out, name, seen)
       let mut i = 0
       while i < Array::length(args) {
-        collect_texpr_ref_names(Array::get(args, i), out)
+        collect_texpr_ref_names(Array::get(args, i), out, seen)
         i = i + 1
       }
     },
     TyFn(params, ret, _) => {
       let mut i = 0
       while i < Array::length(params) {
-        collect_texpr_ref_names(Array::get(params, i), out)
+        collect_texpr_ref_names(Array::get(params, i), out, seen)
         i = i + 1
       }
-      collect_texpr_ref_names(ret, out)
+      collect_texpr_ref_names(ret, out, seen)
     },
     TyTuple(items) => {
       let mut i = 0
       while i < Array::length(items) {
-        collect_texpr_ref_names(Array::get(items, i), out)
+        collect_texpr_ref_names(Array::get(items, i), out, seen)
         i = i + 1
       }
     },
@@ -1080,9 +1066,9 @@ fn collect_texpr_ref_names(te: TypeExpr, out: Array[String]) -> Unit {
   }
 }
 
-fn collect_opt_texpr_ref_names(ty: Option[TypeExpr], out: Array[String]) -> Unit {
+fn collect_opt_texpr_ref_names(ty: Option[TypeExpr], out: Array[String], seen: MutSet[String]) -> Unit {
   match ty {
-    Some(te) => collect_texpr_ref_names(te, out),
+    Some(te) => collect_texpr_ref_names(te, out, seen),
     None => ()
   }
 }
@@ -1102,12 +1088,12 @@ fn collect_opt_texpr_ref_names(ty: Option[TypeExpr], out: Array[String]) -> Unit
 /// case pushes its bound name(s) before recursing into the scope they cover
 /// and truncates back to the saved length afterward, so a name is only
 /// shadowed for the span of code it actually covers.
-fn collect_referenced_names_expr(expr: Expr, bound: Array[String], out: Array[String]) -> Unit {
+fn collect_referenced_names_expr(expr: Expr, bound: Array[String], out: Array[String], seen: MutSet[String]) -> Unit {
   match expr {
     EIdent(name, _) => if labeled_walk_shadowed(bound, name) {
       ()
     } else {
-      push_ref_name(out, name)
+      push_ref_name(out, name, seen)
     },
     EInt(_) => (),
     EFloat(_) => (),
@@ -1115,29 +1101,29 @@ fn collect_referenced_names_expr(expr: Expr, bound: Array[String], out: Array[St
     EBool(_) => (),
     EUnit => (),
     EBreak(opt) => match opt {
-      Some(e) => collect_referenced_names_expr(e, bound, out),
+      Some(e) => collect_referenced_names_expr(e, bound, out, seen),
       None => ()
     },
     EContinue(items) => {
       let mut i = 0
       while i < Array::length(items) {
-        collect_referenced_names_expr(Array::get(items, i), bound, out)
+        collect_referenced_names_expr(Array::get(items, i), bound, out, seen)
         i = i + 1
       }
     },
-    EReturn(e) => collect_referenced_names_expr(e, bound, out),
-    EUnaryOp(_, e) => collect_referenced_names_expr(e, bound, out),
+    EReturn(e) => collect_referenced_names_expr(e, bound, out, seen),
+    EUnaryOp(_, e) => collect_referenced_names_expr(e, bound, out, seen),
     ETuple(items) => {
       let mut i = 0
       while i < Array::length(items) {
-        collect_referenced_names_expr(Array::get(items, i), bound, out)
+        collect_referenced_names_expr(Array::get(items, i), bound, out, seen)
         i = i + 1
       }
     },
     EArray(items) => {
       let mut i = 0
       while i < Array::length(items) {
-        collect_referenced_names_expr(Array::get(items, i), bound, out)
+        collect_referenced_names_expr(Array::get(items, i), bound, out, seen)
         i = i + 1
       }
     },
@@ -1145,98 +1131,98 @@ fn collect_referenced_names_expr(expr: Expr, bound: Array[String], out: Array[St
       // #1204 Codex review: the record's OWN name (`Type::{ .. }`) is a real
       // reference to `Type` -- struct/enum names are top-level-only (never
       // locally bound), so no `bound` check applies here.
-      push_ref_name(out, name)
+      push_ref_name(out, name, seen)
       let mut i = 0
       while i < Array::length(fields) {
         let (_, val) = Array::get(fields, i)
-        collect_referenced_names_expr(val, bound, out)
+        collect_referenced_names_expr(val, bound, out, seen)
         i = i + 1
       }
       let mut ti = 0
       while ti < Array::length(targs) {
-        collect_texpr_ref_names(Array::get(targs, ti), out)
+        collect_texpr_ref_names(Array::get(targs, ti), out, seen)
         ti = ti + 1
       }
     },
     EBinOp(_, l, r, _) => {
-      collect_referenced_names_expr(l, bound, out)
-      collect_referenced_names_expr(r, bound, out)
+      collect_referenced_names_expr(l, bound, out, seen)
+      collect_referenced_names_expr(r, bound, out, seen)
     },
     ECall(callee, args, _, _) => {
-      collect_referenced_names_expr(callee, bound, out)
+      collect_referenced_names_expr(callee, bound, out, seen)
       let mut i = 0
       while i < Array::length(args) {
-        collect_referenced_names_expr(Array::get(args, i), bound, out)
+        collect_referenced_names_expr(Array::get(args, i), bound, out, seen)
         i = i + 1
       }
     },
     EIf(cond, then_e, else_e) => {
-      collect_referenced_names_expr(cond, bound, out)
-      collect_referenced_names_expr(then_e, bound, out)
-      collect_referenced_names_expr(else_e, bound, out)
+      collect_referenced_names_expr(cond, bound, out, seen)
+      collect_referenced_names_expr(then_e, bound, out, seen)
+      collect_referenced_names_expr(else_e, bound, out, seen)
     },
     ELet(name, val, body, _) => {
       // `val` is evaluated BEFORE `name` is bound (not visible to itself).
-      collect_referenced_names_expr(val, bound, out)
+      collect_referenced_names_expr(val, bound, out, seen)
       let mark = Array::length(bound)
       Array::push(bound, name)
-      collect_referenced_names_expr(body, bound, out)
+      collect_referenced_names_expr(body, bound, out, seen)
       Array::truncate(bound, mark)
     },
     ELetRec(name, val, body) => {
       // Recursive: `name` is visible in its OWN value too.
       let mark = Array::length(bound)
       Array::push(bound, name)
-      collect_referenced_names_expr(val, bound, out)
-      collect_referenced_names_expr(body, bound, out)
+      collect_referenced_names_expr(val, bound, out, seen)
+      collect_referenced_names_expr(body, bound, out, seen)
       Array::truncate(bound, mark)
     },
     ELetMut(name, val, body, _) => {
-      collect_referenced_names_expr(val, bound, out)
+      collect_referenced_names_expr(val, bound, out, seen)
       let mark = Array::length(bound)
       Array::push(bound, name)
-      collect_referenced_names_expr(body, bound, out)
+      collect_referenced_names_expr(body, bound, out, seen)
       Array::truncate(bound, mark)
     },
     EAssign(_, val, body) => {
-      collect_referenced_names_expr(val, bound, out)
-      collect_referenced_names_expr(body, bound, out)
+      collect_referenced_names_expr(val, bound, out, seen)
+      collect_referenced_names_expr(body, bound, out, seen)
     },
     EAssignOp(_, _, val, body) => {
-      collect_referenced_names_expr(val, bound, out)
-      collect_referenced_names_expr(body, bound, out)
+      collect_referenced_names_expr(val, bound, out, seen)
+      collect_referenced_names_expr(body, bound, out, seen)
     },
     ESeq(l, r) => {
-      collect_referenced_names_expr(l, bound, out)
-      collect_referenced_names_expr(r, bound, out)
+      collect_referenced_names_expr(l, bound, out, seen)
+      collect_referenced_names_expr(r, bound, out, seen)
     },
     EMatch(scr, arms) => {
-      collect_referenced_names_expr(scr, bound, out)
+      collect_referenced_names_expr(scr, bound, out, seen)
       let mut i = 0
       while i < Array::length(arms) {
         let (pat, body) = Array::get(arms, i)
         let mark = Array::length(bound)
         labeled_walk_pat_binds(pat, bound)
-        collect_referenced_names_expr(body, bound, out)
+        collect_referenced_names_expr(body, bound, out, seen)
         Array::truncate(bound, mark)
         i = i + 1
       }
     },
     EHandle(body_expr, arms) => {
-      collect_referenced_names_expr(body_expr, bound, out)
+      collect_referenced_names_expr(body_expr, bound, out, seen)
       let mut i = 0
       while i < Array::length(arms) {
         let (pat, arm_body) = Array::get(arms, i)
         let mark = Array::length(bound)
         labeled_walk_pat_binds(pat, bound)
-        collect_referenced_names_expr(arm_body, bound, out)
+        collect_referenced_names_expr(arm_body, bound, out, seen)
         Array::truncate(bound, mark)
         i = i + 1
       }
     },
     EWhile(cond, body) => {
-      collect_referenced_names_expr(cond, bound, out)
-      collect_referenced_names_expr(body, bound, out)
+      collect_referenced_names_expr(cond, bound, out, seen)
+      collect_referenced_names_expr(body, bound, out, seen)
     },
     ELoop(params, body) => {
       // Every init is evaluated against the OUTER scope (no loop var is
@@ -1246,7 +1232,7 @@ fn collect_referenced_names_expr(expr: Expr, bound: Array[String], out: Array[St
       let mut i = 0
       while i < Array::length(params) {
         let (_, init) = Array::get(params, i)
-        collect_referenced_names_expr(init, bound, out)
+        collect_referenced_names_expr(init, bound, out, seen)
         i = i + 1
       }
       let mut j = 0
@@ -1255,7 +1241,7 @@ fn collect_referenced_names_expr(expr: Expr, bound: Array[String], out: Array[St
         Array::push(bound, pname)
         j = j + 1
       }
-      collect_referenced_names_expr(body, bound, out)
+      collect_referenced_names_expr(body, bound, out, seen)
       Array::truncate(bound, mark)
     },
     EForIn(name, idx_opt, iter, body) => {
@@ -1263,14 +1249,14 @@ fn collect_referenced_names_expr(expr: Expr, bound: Array[String], out: Array[St
       // name and the optional index name as loop locals -- only pushing
       // `name` let an import shadowed solely by the index (`i` above) keep
       // reading as "used" via the body's own reference to its own index var.
-      collect_referenced_names_expr(iter, bound, out)
+      collect_referenced_names_expr(iter, bound, out, seen)
       let mark = Array::length(bound)
       Array::push(bound, name)
       match idx_opt {
         Some(idx) => Array::push(bound, idx),
         None => ()
       }
-      collect_referenced_names_expr(body, bound, out)
+      collect_referenced_names_expr(body, bound, out, seen)
       Array::truncate(bound, mark)
     },
     EFn(_, _, params, ret, _, body) => {
@@ -1278,31 +1264,31 @@ fn collect_referenced_names_expr(expr: Expr, bound: Array[String], out: Array[St
       let mut i = 0
       while i < Array::length(params) {
         let (pname, pty) = Array::get(params, i)
-        collect_opt_texpr_ref_names(pty, out)
+        collect_opt_texpr_ref_names(pty, out, seen)
         Array::push(bound, labeled_param_base_name(pname))
         i = i + 1
       }
-      collect_opt_texpr_ref_names(ret, out)
-      collect_referenced_names_expr(body, bound, out)
+      collect_opt_texpr_ref_names(ret, out, seen)
+      collect_referenced_names_expr(body, bound, out, seen)
       Array::truncate(bound, mark)
     },
-    EDot(obj, _, _, _) => collect_referenced_names_expr(obj, bound, out),
-    ELabeledArg(_, _, e) => collect_referenced_names_expr(e, bound, out),
+    EDot(obj, _, _, _) => collect_referenced_names_expr(obj, bound, out, seen),
+    ELabeledArg(_, _, e) => collect_referenced_names_expr(e, bound, out, seen),
     EMap(fields) => {
       let mut i = 0
       while i < Array::length(fields) {
         let (_, val) = Array::get(fields, i)
-        collect_referenced_names_expr(val, bound, out)
+        collect_referenced_names_expr(val, bound, out, seen)
         i = i + 1
       }
     },
-    ESpread(e) => collect_referenced_names_expr(e, bound, out),
+    ESpread(e) => collect_referenced_names_expr(e, bound, out, seen),
     EStringInterp(_) => ()
   }
 }
 
-fn collect_referenced_names_expr_top(expr: Expr, out: Array[String]) -> Unit {
-  collect_referenced_names_expr(expr, array_empty(), out)
+fn collect_referenced_names_expr_top(expr: Expr, out: Array[String], seen: MutSet[String]) -> Unit {
+  collect_referenced_names_expr(expr, array_empty(), out, seen)
 }
 
 /// Broader than check_stmts' own local hoist walks: every place a name from
@@ -1312,25 +1298,40 @@ fn collect_referenced_names_expr_top(expr: Expr, out: Array[String]) -> Unit {
 /// target, trait method signatures, extern-let/effect-op types, and
 /// (recursively) nested `SModule` bodies.
 export fn collect_referenced_names_stmts(stmts: Array[Stmt], out: Array[String]) -> Unit {
+  if Array::length(stmts) == 0 {
+    ()
+  } else {
+    let seen = MutSet::new_string()
+    let mut i = 0
+    while i < Array::length(out) {
+      MutSet::add(seen, Array::get(out, i))
+      i = i + 1
+    }
+    collect_referenced_names_stmts_indexed(stmts, out, seen)
+  }
+}
+
+// Keep one membership index across the statement query and nested modules.
+fn collect_referenced_names_stmts_indexed(stmts: Array[Stmt], out: Array[String], seen: MutSet[String]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
       SLet(_, _, _, ann, val) => {
-        collect_opt_texpr_ref_names(ann, out)
-        collect_referenced_names_expr_top(val, out)
+        collect_opt_texpr_ref_names(ann, out, seen)
+        collect_referenced_names_expr_top(val, out, seen)
       },
       SLetMut(_, ann, val) => {
-        collect_opt_texpr_ref_names(ann, out)
-        collect_referenced_names_expr_top(val, out)
+        collect_opt_texpr_ref_names(ann, out, seen)
+        collect_referenced_names_expr_top(val, out, seen)
       },
-      SLetPat(_, val) => collect_referenced_names_expr_top(val, out),
+      SLetPat(_, val) => collect_referenced_names_expr_top(val, out, seen),
       SEnum(_, _, _, variants, _) => {
         let mut vi = 0
         while vi < Array::length(variants) {
           let (_, vtypes) = Array::get(variants, vi)
           let mut ti = 0
           while ti < Array::length(vtypes) {
-            collect_texpr_ref_names(Array::get(vtypes, ti), out)
+            collect_texpr_ref_names(Array::get(vtypes, ti), out, seen)
             ti = ti + 1
           }
           vi = vi + 1
@@ -1342,7 +1343,7 @@ export fn collect_referenced_names_stmts(stmts: Array[Stmt], out: Array[String])
           let (_, vtypes) = Array::get(variants, vi)
           let mut ti = 0
           while ti < Array::length(vtypes) {
-            collect_texpr_ref_names(Array::get(vtypes, ti), out)
+            collect_texpr_ref_names(Array::get(vtypes, ti), out, seen)
             ti = ti + 1
           }
           vi = vi + 1
@@ -1352,42 +1353,42 @@ export fn collect_referenced_names_stmts(stmts: Array[Stmt], out: Array[String])
         let mut fi = 0
         while fi < Array::length(fields) {
           let (_, fty) = Array::get(fields, fi)
-          collect_texpr_ref_names(fty, out)
+          collect_texpr_ref_names(fty, out, seen)
           fi = fi + 1
         }
       },
-      STypeAlias(_, _, _, te) => collect_texpr_ref_names(te, out),
+      STypeAlias(_, _, _, te) => collect_texpr_ref_names(te, out, seen),
       STrait(_, _, _, methods, _, _) => {
         let mut mi = 0
         while mi < Array::length(methods) {
           let (_, ptypes, rty) = Array::get(methods, mi)
           let mut pi = 0
           while pi < Array::length(ptypes) {
-            collect_texpr_ref_names(Array::get(ptypes, pi), out)
+            collect_texpr_ref_names(Array::get(ptypes, pi), out, seen)
             pi = pi + 1
           }
-          collect_texpr_ref_names(rty, out)
+          collect_texpr_ref_names(rty, out, seen)
           mi = mi + 1
         }
       },
-      SExternLet(_, te) => collect_texpr_ref_names(te, out),
+      SExternLet(_, te) => collect_texpr_ref_names(te, out, seen),
       SEffectDef(_, _, _, ops) => {
         let mut oi = 0
         while oi < Array::length(ops) {
           let (_, ptypes, rty) = Array::get(ops, oi)
           let mut pi = 0
           while pi < Array::length(ptypes) {
-            collect_texpr_ref_names(Array::get(ptypes, pi), out)
+            collect_texpr_ref_names(Array::get(ptypes, pi), out, seen)
             pi = pi + 1
           }
-          collect_texpr_ref_names(rty, out)
+          collect_texpr_ref_names(rty, out, seen)
           oi = oi + 1
         }
       },
-      STest(_, val) => collect_referenced_names_expr_top(val, out),
-      SBench(_, val) => collect_referenced_names_expr_top(val, out),
-      SExpr(val) => collect_referenced_names_expr_top(val, out),
-      SModule(_, _, body) => collect_referenced_names_stmts(body, out),
+      STest(_, val) => collect_referenced_names_expr_top(val, out, seen),
+      SBench(_, val) => collect_referenced_names_expr_top(val, out, seen),
+      SExpr(val) => collect_referenced_names_expr_top(val, out, seen),
+      SModule(_, _, body) => collect_referenced_names_stmts_indexed(body, out, seen),
       _ => ()
     }
     i = i + 1
