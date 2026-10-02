@@ -31,7 +31,7 @@
 vibe file's **effect surface** as a WIT world. `vibe serve` writes the same
 WIT next to the handler component. Implementation:
 `lib/@vibe/compiler/wit_gen.vibe`; pinned by `fixtures/wit_gen_http.golden.wit`
-(gate step 40i) and unit-tested by `lib/@vibe/compiler/wit_gen_test.vibe`.
+(gate step 40i) and unit-tested by `lib/@vibe/compiler/tests/wit_gen_test.vibe`.
 
 ## The contract
 

@@ -708,9 +708,9 @@ wit-bindgen 0.60 の `spawn_local` を使った probe を新規構築し
   event に再入する明示的 state machine）由来と考えられる。ただし後述の通り、
   これは「stackful 方式なら interleaving spawn も executor 無しでいける」
   ことの証明にはなっていない。
-- 手書き WAT（`spawned_future/component.wat`）で「待機ループを `$writer`
+- 手書き WAT（`tools/wasip3_component_probe/spawned_future/component.wat`）で「待機ループを `$writer`
   という**ただの内部 wasm 関数**に分離し、`$run` がそれを呼んで
-  `task.return` する」という構造にしても、`stackful/component.wat`
+  `task.return` する」という構造にしても、`tools/wasip3_component_probe/stackful/component.wat`
   と全く同じ canon 集合（`task.return`、`[async-lower]<host-import>`、
   `waitable-set.new/.wait/.drop`、`waitable.join`、`subtask.drop`）だけで
   正しく動作する（300ms の genuine suspend を経て 42 を返す、wasmtime 47
@@ -928,7 +928,7 @@ emitter（固定シェイプの component 合成）は本節では作ってい�
 `scripts/test_future_value_component_gate.sh` /
 `scripts/test_stream_value_component_gate.sh`)。probe は
 `tools/wasip3_component_probe/future_value/component.wat` と
-`stream_value/component.wat`（hand-authored、wasmtime 47 実測 42）。
+`tools/wasip3_component_probe/stream_value/component.wat`（hand-authored、wasmtime 47 実測 42）。
 
 **§3.3 の「self round-trip は deadlock」の回避方法が確定**: M2c-3 spike は
 BLOCKING read で producer 不在 → deadlock だったが、**read/write の両方に
@@ -2022,8 +2022,8 @@ wasmtime 46.0.1 リリースに合わせて ratified `wasi:http@0.3.0` への cu
 - `lib/@vibe/wasi/wit/p3/`（vendored WIT）を `wasmtime-wasi-http` 46.0.1 の
   `src/p3/wit/` から再 vendor。差分は機械的なバージョン文字列置換のみ
   （`0.3.0-rc-2026-03-15` → `0.3.0`）＋ 2 件の非構造差分
-  （`deps/cli.wit` の `cli-exit-with-code` が `@unstable` → `@since(0.3.0)`
-  に昇格、`deps/sockets.wit` のドキュメントリンク更新）。詳細は
+  （`lib/@vibe/wasi/wit/p3/deps/cli.wit` の `cli-exit-with-code` が `@unstable` → `@since(0.3.0)`
+  に昇格、`lib/@vibe/wasi/wit/p3/deps/sockets.wit` のドキュメントリンク更新）。詳細は
   `lib/@vibe/wasi/wit/p3/VENDOR.md`。
 - `scripts/build_wasi_http_p3_full_adapter.sh` の `include` 文字列、
   `scripts/test_wasi_p3_guarantee_gate.sh` の `VIBE_P3_WIT_PIN` 既定値を

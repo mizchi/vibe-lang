@@ -178,7 +178,7 @@ byte-exact emitter), the order is:
    - The task/waitable machinery matches the bare-async probe exactly: a
      future value only adds the future.* family.
    
-   Details: `future_value/canon-imports-exports.wit-abi.txt`. The host-side
+   Details: `tools/wasip3_component_probe/future_value/canon-imports-exports.wit-abi.txt`. The host-side
    driver (writing the value through wasmtime's FutureWriter) was not built;
    the end-to-end check at emitter time provides it.
 2. The `future.*` / `stream.*` canon emitters. **Done** (#1218):
@@ -189,7 +189,7 @@ byte-exact emitter), the order is:
      `comp_emit_component_wasm_stream_value`: a self-contained single-task
      read/write rendezvous. The probe found that putting the async canonopt
      on both sides avoids the §3.3 self-round-trip deadlock.
-   - Probes: `future_value/component.wat` and `stream_value/component.wat`
+   - Probes: `tools/wasip3_component_probe/future_value/component.wat` and `tools/wasip3_component_probe/stream_value/component.wat`
      (42 measured on wasmtime 47; `-W component-model-more-async-builtins=y`
      is required). Gates: `scripts/test_future_value_component_gate.sh` and
      `scripts/test_stream_value_component_gate.sh`.
@@ -283,7 +283,7 @@ byte-exact emitter), the order is:
    - viberun has a `get-future` import. wasmtime 47 has no FutureWriter type,
      so it uses the producer form of `FutureReader::new`, resolved by a tokio
      timer.
-   - The probe is `host_future_value/component.wat`, and its byte-exact port
+   - The probe is `tools/wasip3_component_probe/host_future_value/component.wat`, and its byte-exact port
      is `comp_emit_component_wasm_host_future_value`: async-lowered import →
      `future.read` BLOCKED → `waitable.join` → the task really suspends in
      `waitable-set.wait` → it wakes on the FUTURE_READ completion event.

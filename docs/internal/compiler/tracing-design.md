@@ -236,9 +236,9 @@ VIBE_RUNNER=$PWD/runtime/viberun/target/release/viberun \
 別 probe で確認した。
 
 この文書の初版は「代数 effect handler は linear backend のみ、
-`gc/backend_expr.vibe` は `with Exception` のスタブだけ」と書いていた。**誤り。**
+`codegen/gc/backend_expr.vibe` は `with Exception` のスタブだけ」と書いていた。**誤り。**
 ADR-0076 の Context 節 (2026-07-22、Phase 3 着地前の状態を記述) と、
-`gc/backend_expr.vibe` の `EHandle` 分岐に残っていた古いコメントを
+`codegen/gc/backend_expr.vibe` の `EHandle` 分岐に残っていた古いコメントを
 そのまま引いていた。
 
 実際の構造は、effect の lowering が **codegen より前**にあり、両 backend で
@@ -250,7 +250,7 @@ lib/@vibe/compiler/codegen/gc/backend_body.vibe:411
   let edp_errs = evidence_dict_pass(stmts, entry_name)
 ```
 
-`gc/backend_expr.vibe` の `EHandle` 分岐 (`try_table`) は、これらのパスが
+`codegen/gc/backend_expr.vibe` の `EHandle` 分岐 (`try_table`) は、これらのパスが
 **消しきれなかった** handle の受け皿であって、migration の失敗は
 `evidence_dict_pass` の `edp_errs` が報告する。tail-resumptive にせよ
 suspend-CPS にせよ、codegen に届く前に消えている。
