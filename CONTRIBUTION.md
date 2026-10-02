@@ -81,26 +81,31 @@ equally to manual development.
 
 ## Distribution artifacts
 
-`clients/js/` には配布用 wasm (`clients/wasm/vibe.wasm`) を呼ぶ JS バインディングを置く:
+`clients/js/` holds the JS bindings that call the distributed wasm
+(`clients/wasm/vibe.wasm`):
 - `clients/js/index.js` / `clients/js/index.d.ts` (`createVibeService`, `init`, `check`, `format`, `checkProject`, `ideOutline`, `idePeekDef`, `ideSearch`)
-  - `createVibeService({ bootstrap: { prelude, kv } })` または `service.init({ prelude, kv })` で初期状態を注入可能
-  - `checkProject({ entry, files })` と IDE request (`{ entry, path, files, ... }`) は import 解決対応（init で注入した `kv` も解決対象）
-- `clients/js/cli.js` shell から使う JS CLI (`vibe ide` 相当)
-- `clients/js/lsp.js` / `clients/js/lsp.d.ts` (stdio/ws 非依存の transport 抽象)
+  - The initial state can be injected with `createVibeService({ bootstrap: { prelude, kv } })` or `service.init({ prelude, kv })`.
+  - `checkProject({ entry, files })` and the IDE requests (`{ entry, path, files, ... }`) resolve imports, including the `kv` injected by `init`.
+- `clients/js/cli.js` — a JS CLI for the shell (the equivalent of `vibe ide`)
+- `clients/js/lsp.js` / `clients/js/lsp.d.ts` — a transport abstraction independent of stdio/ws
 
-`clients/wasm/` には配布用 wasm を置く:
-- `clients/wasm/vibe.wasm` — selfhost compiler をビルドした成果物。
-  **これを再生成する仕組みはリポジトリに無い** (最後の生成は MoonBit host 時代
-  の #900、当時のタスクは #594 で host ごと撤去された)。コミット済みバイナリ
-  そのものが成果物。
-- `bash scripts/test_wasm_vibe_wasmtime.sh` で `wasmtime --invoke vibe_check`
-  疎通確認 (コミット済み成果物に対しては現在も通る)
-- `pkf run build-release-assets v0.0.1` で GitHub Release 添付用の versioned asset を `dist/release/v0.0.1/` に生成
-- `v*` tag push で `.github/workflows/release.yml` が `scripts/build_release_assets.sh` の出力
-  (`dist/release/<tag>/`) を GitHub Release に公開する: `vibe-compiler-<tag>.wasm`、
-  `vibe-cli-<tag>.wasm`、`vibe-toolchain-<tag>.tar.gz`、target ごとの
-  `viberun-<tag>-<target>.tar.gz`、`vibe-compiler-seed-<tag>.json`、
-  `release-manifest.json`、`SHA256SUMS.txt`
+`clients/wasm/` holds the distributed wasm:
+- `clients/wasm/vibe.wasm` — a build of the selfhost compiler. **Nothing in the
+  repository regenerates it**: it was last produced in the MoonBit-host era
+  (#900), and the task that built it was removed with the host in #594. The
+  committed binary is the artifact.
+- `bash scripts/test_wasm_vibe_wasmtime.sh` checks that `wasmtime --invoke
+  vibe_check` works against it (it still passes on the committed artifact).
+
+Release assets:
+- `pkf run build-release-assets v0.0.1` writes the versioned assets for a
+  GitHub Release to `dist/release/v0.0.1/`.
+- Pushing a `v*` tag runs `.github/workflows/release.yml`, which publishes the
+  output of `scripts/build_release_assets.sh` (`dist/release/<tag>/`) to the
+  GitHub Release: `vibe-compiler-<tag>.wasm`, `vibe-cli-<tag>.wasm`,
+  `vibe-toolchain-<tag>.tar.gz`, one `viberun-<tag>-<target>.tar.gz` per
+  target, `vibe-compiler-seed-<tag>.json`, `release-manifest.json` and
+  `SHA256SUMS.txt`.
 
 ## CLI (development reference)
 
@@ -268,36 +273,33 @@ warning snapshots live in `lib/@vibe/compiler/tests/warning_snapshots/`.
 
 ## Bench
 
-`vibe bench` は `bench {}` ブロックを言語機能として実行する:
+`vibe bench` runs `bench {}` blocks as a language feature:
 
 ```bash
 vibe bench examples/simple_bench.vibe
 ```
 
-`vibe bench <file.vibe> [--iters N] [--warmup N] [--guest-profile DIR]`。`bench {}` を含む
-`.vibe` file を渡す。wasm-gc lane で測るときは `VIBE_BENCH_BACKEND=gc`。
+The form is `vibe bench <file.vibe> [--iters N] [--warmup N] [--guest-profile DIR]`,
+given a `.vibe` file that contains `bench {}` blocks. Set
+`VIBE_BENCH_BACKEND=gc` to measure on the wasm-gc lane.
 
-コンパイラ内部のマイクロベンチは pkf タスクではなく `bench {}` ブロックを
-持つファイルで、`vibe bench` に直接渡す:
+The compiler's internal microbenchmarks are files with `bench {}` blocks, not
+pkf tasks. Pass them to `vibe bench` directly:
 
 ```bash
-vibe bench lib/@vibe/compiler/checker_bench.vibe   # 型検査
+vibe bench lib/@vibe/compiler/checker_bench.vibe   # type checking
 vibe bench lib/@vibe/compiler/codegen_bench.vibe   # codegen
 vibe bench lib/@vibe/compiler/fmt_bench.vibe       # formatter
-vibe bench bench/bench_string.vibe                 # stdlib 側は bench/ 以下
+vibe bench bench/bench_string.vibe                 # stdlib benches live under bench/
 ```
 
-タスクとして残っているのは以下の3つ:
+Three bench tasks remain:
 
 ```bash
-pkf run bench-compile-hotspots -- <stage2.wasm>  # 実コンパイルの self-time 表
+pkf run bench-compile-hotspots -- <stage2.wasm>  # self-time table of a real compile
 pkf run bench-http
 pkf run bench-module-job-pool
 ```
-
-(`bench-typechecker` / `bench-symbol-index` / `bench-advanced-graph` /
-`bench-array-build` / `bench-char-conversion` / `bench-jsonschema` /
-`bench-bundle-size-monitor-strict` はいずれも存在しないタスクだった。)
 
 ## Task management
 
