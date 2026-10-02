@@ -28,7 +28,7 @@
 #                other way, and it is what a move without a link rewrite leaves
 #                behind.
 #
-# A row whose path is a DIRECTORY (`internal/compiler/wit/`, `archive/adr/`)
+# A row whose path is a DIRECTORY (`research/other-languages/`)
 # covers every file beneath it. A directory with no row of its own (`user/`,
 # `internal/design/`) is classified child by child, so the scan descends rather
 # than matching a prefix and stopping.

@@ -146,6 +146,88 @@ if [ "$withs" -lt "$refs" ]; then
   rc=1
 fi
 
+# The nix dev shell pins pkfire as a flake input. It cannot read the pin file
+# (a flake input URL is a literal), so it restates the tag, and this checks the
+# restatement. flake.nix pinned v0.14.2 for a month while CI ran 0.16.0 because
+# nothing compared them.
+#
+# The question is "which repository and tag does the `pkfire` input resolve
+# to", and every lexical shortcut answered a different one (Codex, three
+# rounds): a URL anywhere in the file, `nodes.pkfire` instead of the node the
+# root maps, a ref without its repository. So the answer is read where it is
+# unambiguous and anything else is refused:
+#   - flake.nix must declare the input as ONE `pkfire = { ... };` block whose
+#     single `url = "...";` line equals the canonical URL exactly. Another
+#     spelling (`pkfire.url = ...`, two blocks, two urls) is a FAIL that names
+#     the expected form, not a pass the scanner could not see past.
+#   - flake.lock is parsed: the root node's `inputs.pkfire` names the node,
+#     whose `original` and `locked` must both be git + this repository + tag.
+FLAKE="flake.nix"
+if [ -f "$FLAKE" ]; then
+  flake_scan="$(mktemp)"
+  if ! python3 - "$FLAKE" "flake.lock" "$want" "$PIN_FILE" > "$flake_scan" <<'PYEOF'
+import json, os, re, sys
+
+flake, lock, want, pin_file = sys.argv[1:5]
+repo = "https://github.com/mizchi/pkfire"
+want_url = f"git+{repo}?ref=refs/tags/v{want}"
+want_ref = f"refs/tags/v{want}"
+form = f'`pkfire = {{ url = "{want_url}"; ... }};`'
+
+lines = open(flake, encoding="utf-8").read().splitlines()
+starts = [i for i, l in enumerate(lines) if re.fullmatch(r"\s*pkfire = \{\s*", l)]
+if any(re.match(r"\s*(inputs\.)?pkfire\.url\s*=", l) for l in lines):
+    print(f"{flake} sets pkfire.url outside the input block -- declare it as {form}")
+if len(starts) != 1:
+    print(f"{flake} declares {len(starts)} `pkfire = {{` input blocks, expected one: {form}")
+else:
+    urls, i = [], starts[0] + 1
+    while i < len(lines) and not re.fullmatch(r"\s*\};\s*", lines[i]):
+        m = re.fullmatch(r'\s*url = "([^"]*)";\s*', lines[i])
+        if m:
+            urls.append(m.group(1))
+        i += 1
+    if i == len(lines):
+        print(f"{flake}: the pkfire input block is not closed by a `}};` line")
+    elif len(urls) != 1:
+        print(f"{flake}: the pkfire input block declares no single `url = \"...\";` (found {len(urls)}) -- expected {form}")
+    elif urls[0] != want_url:
+        print(f"{flake} pins pkfire at '{urls[0]}', {pin_file} says {want} -- expected '{want_url}'")
+
+# A flake with no lock is not "nothing to check": `nix develop` writes a fresh
+# lock from whatever the tag resolves to then, which is the drift this guards.
+if not os.path.isfile(lock):
+    print(f"{flake} exists but {lock} does not -- run: nix flake lock")
+else:
+    doc = json.load(open(lock, encoding="utf-8"))
+    nodes = doc.get("nodes", {})
+    root = nodes.get(doc.get("root", "root"))
+    target = ((root if isinstance(root, dict) else {}).get("inputs") or {}).get("pkfire")
+    node = nodes.get(target) if isinstance(target, str) else None
+    if not isinstance(node, dict):
+        print(f"{lock}'s root node maps no 'pkfire' input to a node -- run: nix flake update pkfire")
+    else:
+        expected = {"type": "git", "url": repo, "ref": want_ref}
+        for key in ("original", "locked"):
+            entry = node.get(key) or {}
+            for field, exp in expected.items():
+                got = entry.get(field, "")
+                if got != exp:
+                    print(f"{lock} {target}.{key} {field} is '{got}', expected '{exp}' -- run: nix flake update pkfire")
+PYEOF
+  then
+    echo "[pkfire-pin] FAIL: the flake scan could not run (see above)" >&2
+    rm -f "$flake_scan"
+    exit 1
+  fi
+  while IFS= read -r finding; do
+    [ -n "$finding" ] || continue
+    echo "[pkfire-pin] FAIL: $finding" >&2
+    rc=1
+  done < "$flake_scan"
+  rm -f "$flake_scan"
+fi
+
 # The hook must READ the pin, not restate it.
 HOOK=".claude/hooks/session-start.sh"
 if [ -f "$HOOK" ]; then

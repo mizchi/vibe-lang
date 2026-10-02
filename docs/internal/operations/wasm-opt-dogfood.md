@@ -251,6 +251,10 @@ artifact** instead of a local-only hook:
 
 - `scripts/vibe_opt.vibex` — standalone entry (`vibe-opt <in.wasm> <out.wasm>`,
   runs `minify_converge`; anomaly guard writes the input through unchanged).
+- `scripts/vibe_opt_debug.vibex` — a bisection tool, not a gate: it applies the
+  minify pipeline one pass at a time and writes each intermediate module to
+  `<prefix>.NN.wasm`, so a loop can find the first pass whose output stops
+  validating or running correctly.
 - `bash scripts/build_vibe_opt.sh` — builds `_build/vibe-opt.wasm` (~300 KB)
   with the committed seed (or `$VIBE_STAGE2_WASM`). The compiler itself stays
   uncoupled, per the constraint at the top of this note.

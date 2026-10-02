@@ -78,7 +78,10 @@ generates**. They do not rewrite the running compiler's allocator.
   `VIBE_RC` and `VIBE_RC=1` produce identical output, distinct from bump.
 - [`generations.sh`](../../../scripts/generations.sh) defaults the compiler
   self-build to `VIBE_RC=0`, while accepting an explicit override. Performance
-  comparisons must therefore supply separately built compiler binaries.
+  comparisons must therefore supply separately built compiler binaries;
+  [`selfcompile_kpi_rc_lane.sh`](../../../scripts/selfcompile_kpi_rc_lane.sh)
+  builds both from the current tree and reports the RC / bump selfcompile
+  ratio.
 - `vibe compile --wasm` / `--wasm-linear` use the normal compilation route.
   The explicit `--wasm-gc` compile flag is still rejected by
   [`dispatch.vibe`](../../../lib/@vibe/cli/dispatch.vibe), although the compiler

@@ -153,7 +153,6 @@ the repo; not the user manual.
 | [internal/compiler/vibec-component.md](internal/compiler/vibec-component.md) | Compiler-core component split |
 | [internal/compiler/gc-value-abi.md](internal/compiler/gc-value-abi.md) | wasm-gc value ABI |
 | [internal/compiler/wasm_threads_requirements.md](internal/compiler/wasm_threads_requirements.md) | Which Wasmtime thread surfaces vibe can rely on, and the measurements behind it (#488) |
-| [internal/compiler/wit/](internal/compiler/wit/) | [vibe-compiler-host.wit](internal/compiler/wit/vibe-compiler-host.wit) |
 
 ### Reports / dated snapshots
 

@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
-# ADR-0092 exit-criterion lane: selfcompile KPI for an RC-built stage2 vs the
-# bump-built baseline, as one parseable ratio line.
+# Selfcompile KPI for an RC-built stage2 vs the bump-built baseline, as one
+# parseable ratio line.
 #
-# compiler_gate.sh pins the SELF-BUILD to VIBE_RC=0 (bump) as a performance
-# default; ADR-0092's exit criterion for lifting that pin is
-#   wall(RC-built stage2) / wall(bump-built stage2)  <=  1.2
-# on the same workload. This script builds both stage2 artifacts from the
-# current tree (VIBE_RC=0 and VIBE_RC=1 self-builds), then times them.
+# scripts/generations.sh pins the compiler SELF-BUILD to VIBE_RC=0 (bump) as a
+# performance default (docs/internal/design/memory-contract.md). This measures
+# what lifting that pin would cost on the same workload:
+#   wall(RC-built stage2) / wall(bump-built stage2)
+# It builds both stage2 artifacts from the current tree (VIBE_RC=0 and
+# VIBE_RC=1 self-builds), then times them. No ratio is a decision threshold:
+# ADR-0092 prescribes no bootstrap allocator.
 #
 #   scripts/selfcompile_kpi_rc_lane.sh [runs] [input.vibe]
 #
