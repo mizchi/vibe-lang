@@ -180,9 +180,11 @@ Not normative.
 | [internal/reports/compiler-data-reservation-2026-09-16.json](internal/reports/compiler-data-reservation-2026-09-16.json) | Raw samples and artifact provenance for the data buffer reservation measurements |
 | [internal/reports/compiler-file-split-memory-2026-10-01.md](internal/reports/compiler-file-split-memory-2026-10-01.md) | Source-split allocation attribution, local fixes and measured optimization follow-ups |
 | [internal/reports/dependency-interface-views-2026-10-01.md](internal/reports/dependency-interface-views-2026-10-01.md) | Immutable dependency-view ownership, cache parity and controlled allocation measurements |
+| [internal/reports/effect-name-membership-2026-10-02.md](internal/reports/effect-name-membership-2026-10-02.md) | Effect name indexes, shared AST traversal storage and controlled CPU/allocation comparisons |
 | [internal/reports/parser-simd-scan-2026-08-15.md](internal/reports/parser-simd-scan-2026-08-15.md) | |
 | [internal/reports/perf-snapshot-2026-08-07.md](internal/reports/perf-snapshot-2026-08-07.md) | |
 | [internal/reports/pl-survey-2026-07.md](internal/reports/pl-survey-2026-07.md) | |
+| [internal/reports/resolved-array-callees-2026-10-02.md](internal/reports/resolved-array-callees-2026-10-02.md) | Array mutation/capacity operation identities, backend parity and source-controlled allocation measurements |
 | [internal/reports/resolved-mutlist-callees-2026-10-01.md](internal/reports/resolved-mutlist-callees-2026-10-01.md) | MutList operation identities, transport, shadow regression and controlled compiler measurements |
 | [internal/reports/code-size-linear-vs-gc.md](internal/reports/code-size-linear-vs-gc.md) | Measured 2026-08-15/16 |
 

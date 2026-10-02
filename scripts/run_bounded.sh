@@ -49,6 +49,22 @@
 # It exists for scripts/run_bounded_test.sh alone, which has to exercise the
 # watchdog on a machine that has GNU timeout.
 
+# Linux's uptime is independent of realtime steps; read it with shell builtins
+# so every bounded command does not need another runtime process. Other hosts
+# can use the repository's Node runtime. Without either clock, use the marker
+# watchdog rather than guessing whether SIGKILL came from timeout.
+run_bounded_monotonic_seconds() {
+  local elapsed idle
+  if [ -r /proc/uptime ]; then
+    read -r elapsed idle < /proc/uptime || return 1
+    printf '%s\n' "${elapsed%%.*}"
+  elif command -v node >/dev/null 2>&1; then
+    node -p '(process.hrtime.bigint() / 1000000000n).toString()'
+  else
+    return 1
+  fi
+}
+
 run_bounded() { # <seconds> <cmd...>
   if [ "$#" -lt 2 ]; then
     echo "run_bounded: usage: run_bounded <seconds> <cmd...>" >&2
@@ -88,14 +104,19 @@ run_bounded() { # <seconds> <cmd...>
       # crash to callers that classify 124 as a hang (tests/fuzz). A 137 past
       # the bound is the escalation; one before it is a real SIGKILL (the OOM
       # killer), and stays 137.
-      local bin="$impl" start rc=0
-      start="$(date +%s)"
+      local bin="$impl" start end rc=0
+      if ! start="$(run_bounded_monotonic_seconds)"; then
+        run_bounded_watchdog "$secs" "$@"
+        return $?
+      fi
       "$bin" -k 2 "$secs" "$@" || rc=$?
       # Whole seconds: a kill before the bound reads at most `secs` elapsed
       # (it can round UP to it), so only a 137 strictly past it -- where the
       # bound's TERM was already sent -- is the escalation (#3099 review).
-      if [ "$rc" -eq 137 ] && [ $(($(date +%s) - start)) -gt "$secs" ]; then
-        rc=124
+      if [ "$rc" -eq 137 ] && end="$(run_bounded_monotonic_seconds)"; then
+        if [ $((end - start)) -gt "$secs" ]; then
+          rc=124
+        fi
       fi
       return "$rc"
       ;;
@@ -172,6 +193,7 @@ run_bounded_watchdog() { # <seconds> <cmd...>
 # exported, is `command not found` there -- exit 127 again, the very failure
 # this file exists to remove.
 export -f run_bounded run_bounded_watchdog
+export -f run_bounded_monotonic_seconds
 
 # Executed rather than sourced: run the command given on the command line.
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
