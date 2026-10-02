@@ -30,15 +30,17 @@ Client:
 
 Notes:
 
-- **The server operations have no host implementation yet.** `listen`,
-  `accept`, `respond` and the `request_*` readers `perform` the matching
-  `Http::` effect operation (`Http::Listen`, `Http::Accept`, ...), so an
-  unhandled call throws. A program that uses them handles those operations
-  itself; `lib/@vibe/http/http_effect_test.vibe` shows the handler shape with
-  its own effect declaration. The client operations
-  call the runner's `vibe.http_*` imports directly and reach the network with
-  no handler. To serve HTTP today, use `vibe serve` (a wasi-http component;
-  see [cli-commands.md](cli-commands.md)).
+- **The server operations are not usable yet.** `listen`, `accept`,
+  `respond` and the `request_*` readers `perform` the matching `Http::`
+  operation (`Http::Listen`, `Http::Accept`, ...). No runner implements
+  those operations, so an unhandled call throws, and a program cannot handle
+  them either: `Http` is a builtin effect with no operation list, so the
+  lowering cannot build a handler for it (`evidence_poison_expr.vibe`).
+  `lib/@vibe/http/http_effect_test.vibe` exercises the same shape through a
+  user-declared `HttpServer` effect, not through these functions. The client
+  operations call the runner's `vibe.http_*` imports directly and reach the
+  network with no handler. To serve HTTP today, use `vibe serve` (a wasi-http
+  component; see [cli-commands.md](cli-commands.md)).
 - Every `Int` handle is **opaque**; its value is not part of the contract.
 - `headers` is the wire-format string (`"name: value\nname2: value2"`).
   `headers_to_wire` builds it from a `Map[String, String]`, and the typed
