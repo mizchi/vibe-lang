@@ -32,6 +32,7 @@ use wasmtime::{
 };
 
 mod commands;
+mod native_cache;
 
 const FFI_END_OF_STRING_ARRAY: &str = "ffi_end_of_/string_array";
 const WASI_ERRNO_SUCCESS: i32 = 0;
@@ -513,6 +514,7 @@ fn store_mem_limits() -> StoreLimits {
 
 fn engine_config() -> Config {
     let mut cfg = Config::new();
+    cfg.cache(native_cache::from_environment());
     cfg.strategy(Strategy::Cranelift);
     cfg.cranelift_opt_level(wasmtime::OptLevel::Speed);
     cfg.wasm_reference_types(true);

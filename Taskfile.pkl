@@ -1225,6 +1225,29 @@ local ensureViberun = new Task {
     "scripts/ensure_viberun.sh"
   }
 }
+local testViberunNativeCache = new Task {
+  name = "test-viberun-native-cache"
+  description = "native code-cache entrypoint, invalidation, corruption and fallback regressions"
+  // This std-only integration test also runs under cargo test. Compile it
+  // directly here so restored Cargo mtimes do not relink the runner in CI.
+  cmd =
+    """
+    set -eu
+    mkdir -p _build/viberun
+    CARGO_BIN_EXE_viberun="$PWD/runtime/viberun/target/release/viberun" \
+      rustc --test runtime/viberun/tests/native_cache.rs -o _build/viberun/native-cache-test
+    _build/viberun/native-cache-test
+    """
+  cache = false
+  deps { ensureViberun }
+  inputs {
+    "runtime/viberun/src/**"
+    "runtime/viberun/tests/native_cache.rs"
+    "runtime/viberun/Cargo.toml"
+    "runtime/viberun/Cargo.lock"
+    "rust-toolchain.toml"
+  }
+}
 // #2914: the two `vibe grep` drivers answer alike. `runtime/vibe` is
 // self-contained by design -- it installs standalone and can source nothing --
 // so the chunked-sweep loop is written twice, against two different CLI entry
@@ -2269,6 +2292,7 @@ local releaseCheck = new Task {
     "selfhost-only sign-off: bundle/module-source sync + seed->stage1->stage2->stage3 fixpoint + compile/run validation"
   deps {
     selfhostOnlyGate
+    testViberunNativeCache
     checkVibeFmt
     testEnsureEntryWasm
     testEnsureSeed
@@ -2578,6 +2602,7 @@ tasks {
   testSelfhostBatchWeights
   testFlakerRun
   testAffectedShell
+  testViberunNativeCache
   testMeasureFsHeap
   testRunCachedVibe
   testSelfhostGenerations
