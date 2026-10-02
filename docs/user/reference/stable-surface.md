@@ -71,11 +71,9 @@ The rest of §6 is still a reading obligation rather than an enforced boundary.
 
 ## 2. Frozen language core (syntax & semantics)
 
-Everything below is demonstrated by the selfhost usability sign-off
-(`docs/archive/report/0-1-0-usability-signoff.md` — an internal quality
-milestone from 2026-06, not a release; see ADR-0109). The canonical definition
-of each item is [spec/syntax.md](syntax.md) and the
-[cheatsheet](cheatsheet.md).
+The canonical definition of each item below is [spec/syntax.md](syntax.md)
+and the [cheatsheet](cheatsheet.md), whose `vibe` examples doctest
+compile-checks against the current compiler.
 
 ### 2.1 Values and types
 - Primitives: `Int` (63-bit tagged, literals up to 2^62-1, arithmetic wraps as
@@ -526,9 +524,8 @@ that.
   that `perform?` returns (the type and `unwrap_or` / `is_granted` are in
   `@vibe/core`), and preflight authorization. The entry keyword itself --
   `fn main allows ..`, `test "n" allows ..` -- is stable: it is the spelling
-  the book teaches. ADR-0043's `--allow-*` / `--deny-*` / `--profile` presets
-  were not built as a separate feature; they were absorbed into L1 of this
-  resolution ladder.
+  the book teaches. `--allow-*` / `--deny-*` are L1 of this resolution
+  ladder, not a separate feature.
 - **`_start` capability declarations and the top-level effect rule**
   (ADR-0041/0042, `proposed`).
 - **The SIMD API** (`spec/simd-api-design.md`): the fused scan builtins

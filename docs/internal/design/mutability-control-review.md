@@ -42,7 +42,7 @@
   `mut_needs_ref_cell`(`codegen/common_analysis/common_analysis.vibe`):
   closure に捕獲されたら heap-box(RC 下では class-8 RC セル、scalar 限定)、
   されなければ plain local。escape は自由で、`fn make_counter()` パターンは
-  合法(実測 pin 済み、`docs/archive/mut-effect-plan.md`)。ADR-0060 の
+  合法(実測 pin 済み、`fixtures/closure_test.vibe`)。ADR-0060 の
   `Write[r]` 統一はこの実測と矛盾して停滞、taxonomy review が「retrofit は
   撤回し `region[r] {}` を opt-in で別途追加」とすでに結論している。
 - **Perceus RC は production default**(ADR-0055 #493 cutover。`VIBE_RC=0`

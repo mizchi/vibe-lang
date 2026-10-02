@@ -2,8 +2,9 @@
 # check_doc_classification.sh -- every document under docs/ has exactly one
 # audience class, and a new one fails closed (#2562, part of #2002).
 #
-# docs/README.md is the audience router: four classes (user, maintainer /
-# internal, generated, archive), one table row per document. It was written as
+# docs/README.md is the audience router: three classes (user, maintainer /
+# internal, generated), one table row per document. (An archive class went
+# with docs/archive/ in #3272.) It was written as
 # an inventory and it has no enforcement, so the only thing standing between the
 # classification and the tree is its own "Inventory coverage" section -- a list
 # of names copied by hand from `ls docs/` at one commit.

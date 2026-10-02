@@ -5,7 +5,7 @@ Status: accepted for the core (`@vibe/concurrent`); the suspendable-task lane
 
 Date: 2026-07-16
 
-Related: ADR-0012, ADR-0050, ADR-0060, ADR-0068, ADR-0071, ADR-0075, ADR-0076,
+Related: ADR-0012, ADR-0050, ADR-0068, ADR-0071, ADR-0075, ADR-0076,
 #488, #806, #817, #818, #906
 
 ## Scope

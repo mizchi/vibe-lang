@@ -88,11 +88,19 @@ Nothing dangling here any more.
 EOF
 expect 1 "a stale allowlist entry fails" "no longer cites"
 
-# But an entry for a document this run did not scan is not evidence of
-# staleness: the pre-commit hook lints a staged snapshot, which may not contain
-# every document.
+# An entry whose DOCUMENT is gone is stale too. This case used to assert the
+# opposite ("an unscanned document's entry is left alone"), on the theory that
+# the pre-commit snapshot might not hold every document -- but that snapshot is
+# a `checkout-index --all` export, and the exemption let four entries for a
+# document deleted in #1911 survive with the check reporting ok.
 rm "$TMP/docs/bad.md"
-expect 0 "an unscanned document's entry is left alone"
+expect 1 "an entry for a deleted document fails" "docs/bad.md no longer exists"
+
+# A tree with no docs/ at all (precommit_test.sh's synthetic repo) is not
+# evidence that anything was deleted, so its entries are left alone.
+mv "$TMP/docs" "$TMP/docs.away"
+expect 0 "a tree without docs/ leaves allowlist entries alone"
+mv "$TMP/docs.away" "$TMP/docs"
 
 # `.vibei` is a real extension in this repository's history, so a path ending in
 # it has to be a citation. Without it in EXT the regex matched `.vibe` and then

@@ -9,7 +9,7 @@ vibe is **selfhost-only**: the compiler, type checker, and codegen are all
 written in vibe itself (`lib/@vibe/compiler/`, `lib/@vibe/cli/`) and built
 from a committed seed (`bootstrap/seed/`) via a Rust/node wasm runner — no
 MoonBit toolchain is required (the original MoonBit host was retired in #594;
-see [docs/archive/moonbit-retirement.md](docs/archive/moonbit-retirement.md)).
+its last state is tag `moonbit-host-final-2026-06-23`).
 
 The task runner is [pkfire](https://github.com/mizchi/pkfire) (`pkf`), defined
 in `Taskfile.pkl`. If you're working with an AI coding agent on
@@ -70,33 +70,45 @@ packages it depends on) must go through the full selfhost verification cycle
 before you commit:
 
 ```bash
-pkf run release-check  # fmt + info + check + test + vibe-normalize + bundle-size + selfhost gates
+pkf run release-check  # seed->stage3 fixpoint + bundle sync + compile/run validation
 ```
 
 See [CLAUDE.md](CLAUDE.md) ("Tooling" / "Local Test Execution" sections) for
-the exact regen → gate → full-unit-allowlist sequence, cache-corruption
-recovery steps, and the manifest transitive-import rules — that level of
-detail is kept in CLAUDE.md since it's primarily useful for scripted/agent
-workflows, but it applies equally to manual development.
+which compiler a test runs on, how affected tests are selected, and the rules
+for a performance measurement — that level of detail is kept in CLAUDE.md
+since it's primarily useful for scripted/agent workflows, but it applies
+equally to manual development.
 
 ## Distribution artifacts
 
-`clients/js/` には配布用 wasm (`clients/wasm/vibe.wasm`) を呼ぶ JS バインディングを置く:
+`clients/js/` holds the JS bindings that call the distributed wasm
+(`clients/wasm/vibe.wasm`):
 - `clients/js/index.js` / `clients/js/index.d.ts` (`createVibeService`, `init`, `check`, `format`, `checkProject`, `ideOutline`, `idePeekDef`, `ideSearch`)
-  - `createVibeService({ bootstrap: { prelude, kv } })` または `service.init({ prelude, kv })` で初期状態を注入可能
-  - `checkProject({ entry, files })` と IDE request (`{ entry, path, files, ... }`) は import 解決対応（init で注入した `kv` も解決対象）
-- `clients/js/cli.js` shell から使う JS CLI (`vibe ide` 相当)
-- `clients/js/lsp.js` / `clients/js/lsp.d.ts` (stdio/ws 非依存の transport 抽象)
+  - The initial state can be injected with `createVibeService({ bootstrap: { prelude, kv } })` or `service.init({ prelude, kv })`.
+  - `checkProject({ entry, files })` and the IDE requests (`{ entry, path, files, ... }`) resolve imports, including the `kv` injected by `init`.
+- `clients/js/cli.js` — a JS CLI for the shell (the equivalent of `vibe ide`)
+- `clients/js/lsp.js` / `clients/js/lsp.d.ts` — a transport abstraction independent of stdio/ws
 
-`clients/wasm/` には配布用 wasm を置く:
-- `clients/wasm/vibe.wasm` — selfhost compiler をビルドした成果物。
-  **これを再生成する仕組みはリポジトリに無い** (最後の生成は MoonBit host 時代
-  の #900、当時のタスクは #594 で host ごと撤去された)。コミット済みバイナリ
-  そのものが成果物。
-- `bash scripts/test_wasm_vibe_wasmtime.sh` で `wasmtime --invoke vibe_check`
-  疎通確認 (コミット済み成果物に対しては現在も通る)
-- `pkf run build-release-assets v0.0.1` で GitHub Release 添付用の versioned asset を `dist/release/v0.0.1/` に生成
-- `v*` tag push で `.github/workflows/release.yml` が `vibe-v*.wasm` と checksum を GitHub Release に公開
+`clients/wasm/` holds the distributed wasm:
+- `clients/wasm/vibe.wasm` — a build of the selfhost compiler. **Nothing in the
+  repository regenerates it**: it was last produced in the MoonBit-host era
+  (#900), and the task that built it was removed with the host in #594. The
+  committed binary is the artifact.
+- `bash scripts/test_wasm_vibe_wasmtime.sh` checks that `wasmtime --invoke
+  vibe_check` works against it (it still passes on the committed artifact).
+
+Release assets:
+- `pkf run build-release-assets v0.0.1` writes the versioned assets for a
+  GitHub Release to `dist/release/v0.0.1/`.
+- Pushing a `v*` tag runs `.github/workflows/release.yml`, which publishes
+  everything `scripts/build_release_assets.sh` writes to
+  `dist/release/<tag>/`: `vibe-cli-<tag>.wasm` (the compiler installs run),
+  `vibe-toolchain-<tag>.tar.gz`, one `viberun-<tag>-<target>.tar.gz` per
+  target, the seed trio `vibe-compiler-<tag>.wasm` /
+  `vibe-compiler-module-source-<tag>.vibe` / `vibe-compiler-seed-<tag>.json`
+  (what `scripts/fetch_compiler.sh` uses for a reproducible bootstrap),
+  `release-manifest.json` and `SHA256SUMS.txt`. What each asset contains is
+  in [install.md](docs/user/getting-started/install.md#updating).
 
 ## CLI (development reference)
 
@@ -209,43 +221,45 @@ Everything is now vibe source (`.vibe`); the retired MoonBit host tree (`src/`,
 lib/                      # All vibe source: stdlib + compiler + experimental
 ├── @vibe/                # official packages
 │   ├── compiler/         #   selfhost compiler
-│   │   ├── syntax/       #     lexer + parser
+│   │   ├── syntax/       #     lexer + parser entry points
 │   │   ├── checker/      #     type checker with effects
+│   │   ├── lowering/ normalize/ #  desugaring + lowering passes
 │   │   ├── codegen/      #     WASM code generation (linear + gc lanes)
+│   │   ├── perceus/      #     ownership / reference-counting plan
 │   │   ├── core/         #     AST types and serialization
-│   │   ├── loader/       #     source/lock resolution + module loading
-│   │   ├── contract/     #     index.vpkg contract grammar + conformance engine
-│   │   ├── perceus/ ripple/ #  ownership / reference-counting passes
-│   │   ├── normalize/ fmt/  #  normalization + formatter
-│   │   ├── cache/ runtime/  #  caches, compiler hooks, shell support
-│   │   ├── builtins/     #     builtin signature SSoT (declarations.vibe)
-│   │   └── entry/        #     compiler entrypoints
+│   │   ├── loader/ module_graph/ contract/ # module resolution + index.vpkg contracts
+│   │   ├── cache/ incremental/ #  persistent caches + incremental reuse
+│   │   ├── runtime/ entry/  #  compiler drivers + entrypoints
+│   │   ├── fmt/ refactor/   #  formatter + checked refactorings
+│   │   ├── builtins/     #     reference list of builtin signatures (documentation only)
+│   │   └── tests/        #     compiler unit tests
 │   ├── cli/              #   selfhost CLI command surface + entrypoints
-│   ├── wasi/              #   WASI p2/p3 runtime adapters
-│   └── …                 #   stdlib: prelude, io, path, fs, http, json, socket,
-│                         #   time, process, shell, random, collection, module,
-│                         #   core, ast, parser
-└── @vibex/               #   experimental: math, regexp, url, uuid, toml, diff,
-                          #   fmt, color, template, semver, quickcheck, base64, …
+│   ├── wasi/             #   WASI p2/p3 runtime adapters
+│   └── …                 #   ast, parser, builtin, core, console, fs, path, http,
+│                         #   json, socket, time, process, random, scan, semver,
+│                         #   concurrent, module, symbol, blake3, lsp, optimizer, …
+└── @vibex/               #   experimental: argparse, book, color, fmt, immut,
+                          #   jsonschema, quickcheck, regexp, shell, tasks, toml,
+                          #   url, zlib, wasm_* parsers/encoders
 
 runtime/                  # Host runtime: wasmtime runner (viberun),
 │                         #   daemon client (viberun_client), `vibe` launcher
 clients/                  # Embeddings + distribution artifacts
 ├── js/                   #   JS bindings (LSP / IDE / DAP / graph-query)
 └── wasm/                 #   distributed compiler wasm (vibe.wasm)
-bootstrap/                # Committed seed compiler (seed/ + seed.json)
+bootstrap/                # Pinned seed (seed.json; the wasm is fetched and sha256-verified)
 tools/                    # Dev tooling: wasmtime_bench (raw-wasmtime microbench,
                           #   standalone Rust crate, not wired into pkf/CI)
 tools/async_host/         # Rust/wasmtime host runtime for async (sleep)
 integrations/             # Editor plugins (treesitter / vscode / zed)
 examples/                 # Example scripts (examples/wasm/ needs a host)
 fixtures/                 # Test fixtures (compiler regression corpus)
-scripts/ pkspec/          # Build/test scripts + pkfire/pkspec definitions
+scripts/                  # Build/test scripts + pkfire task modules (scripts/pkfire/)
 ```
 
 See also [docs/internal/project/adding-modules.md](docs/internal/project/adding-modules.md) for the module
-placement conventions, and CLAUDE.md's "MoonBit host vs selfhost" section for
-where new compiler work should land.
+placement conventions, and CLAUDE.md's "変更の入れ先" section for where new
+compiler work should land.
 
 ## Fixtures
 
@@ -262,37 +276,33 @@ warning snapshots live in `lib/@vibe/compiler/tests/warning_snapshots/`.
 
 ## Bench
 
-`vibe bench` は `bench {}` ブロックを言語機能として実行する:
+`vibe bench` runs `bench {}` blocks as a language feature:
 
 ```bash
 vibe bench examples/simple_bench.vibe
 ```
 
-`<file|dir...>` 指定時の canonical backend は `--backend compiled` で、`--backend wasm` は互換 alias として受け付ける。
-legacy の式ベンチ (`--expr/--case/--cases`) は廃止。`bench {}` を含む `.vibe` file を渡す。
-compiled bench path ではサイズ優先で `--no-dce -Oz` 相当のコンパイルを使い、各ケースに `wasm_bytes=<size>` を出力する。
+The form is `vibe bench <file.vibe> [--iters N] [--warmup N] [--guest-profile DIR]`,
+given a `.vibe` file that contains `bench {}` blocks. Set
+`VIBE_BENCH_BACKEND=gc` to measure on the wasm-gc lane.
 
-コンパイラ内部のマイクロベンチは pkf タスクではなく `bench {}` ブロックを
-持つファイルで、`vibe bench` に直接渡す:
+The compiler's internal microbenchmarks are files with `bench {}` blocks, not
+pkf tasks. Pass them to `vibe bench` directly:
 
 ```bash
-vibe bench lib/@vibe/compiler/checker_bench.vibe   # 型検査
+vibe bench lib/@vibe/compiler/checker_bench.vibe   # type checking
 vibe bench lib/@vibe/compiler/codegen_bench.vibe   # codegen
 vibe bench lib/@vibe/compiler/fmt_bench.vibe       # formatter
-vibe bench bench/bench_string.vibe                 # stdlib 側は bench/ 以下
+vibe bench bench/bench_string.vibe                 # stdlib benches live under bench/
 ```
 
-タスクとして残っているのは以下の3つ:
+Three bench tasks remain:
 
 ```bash
-pkf run bench-compile-hotspots -- <stage2.wasm>  # 実コンパイルの self-time 表
+pkf run bench-compile-hotspots -- <stage2.wasm>  # self-time table of a real compile
 pkf run bench-http
 pkf run bench-module-job-pool
 ```
-
-(`bench-typechecker` / `bench-symbol-index` / `bench-advanced-graph` /
-`bench-array-build` / `bench-char-conversion` / `bench-jsonschema` /
-`bench-bundle-size-monitor-strict` はいずれも存在しないタスクだった。)
 
 ## Task management
 

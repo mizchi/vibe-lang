@@ -1,7 +1,7 @@
 # Benchmarks
 
 Continuously-runnable regression signals, as opposed to one-off measurement
-notes (e.g. `docs/archive/adr/0038-perceus-rc-binary-optimization.md`).
+notes (e.g. the ADR-0038 row in `docs/internal/design/adr.md`).
 Currently covers wasm binary size; other categories (compile throughput,
 runtime perf) live in `bench/` and `docs/internal/reports/pl-survey-2026-07.md`'s roadmap.
 
@@ -75,8 +75,8 @@ unstripped vs stripped.
 
 RC's header + dup/drop instrumentation costs roughly 1.2–1.5x on these small
 programs (largest on `variant_float`, which allocates the most distinct heap
-shapes: an array of enum values). See
-`docs/archive/adr/0038-perceus-rc-binary-optimization.md` for the RC binary
+shapes: an array of enum values). See ADR-0038 in
+`docs/internal/design/adr.md` for the RC binary
 size optimizations already applied (br_table dispatch, conditional free-list,
 etc.) and `docs/internal/design/rc-cutover-readiness.md` for RC's overall status (drop
 codegen, in progress).

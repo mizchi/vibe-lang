@@ -4,7 +4,7 @@ Status: partial (the surface below is built; the production grant ladder is #233
 
 Date: 2026-07-31, revised 2026-09-11
 
-Related: #1218, ADR-0043 (absorbed), ADR-0071 (effectset), ADR-0075 (`.vibex`
+Related: #1218, ADR-0071 (effectset), ADR-0075 (`.vibex`
 runtime contract), ADR-0084 (effect classes / entry-row admission), ADR-0085
 (`Exception[E]`). Background and alternatives:
 [effect-taxonomy-review.md](effect-taxonomy-review.md).
@@ -163,7 +163,7 @@ name the block as written (`entry point test "x" cannot discharge ..`).
 
 Unchanged. An optional grant is resolved exactly once at the earliest phase
 available and is invariant for the run (ADR-0075): build flags (`--allow-*`
-/ `--deny-*`, the L1 that absorbed ADR-0043) const-fold the `perform?`
+/ `--deny-*`, L1) const-fold the `perform?`
 match and DCE the dead arm; apply records `BindingLock.optional_resolution`;
 instantiate performs one preflight before the first instruction of `main`
 (non-TTY: unresolved Optional → `NotGranted`, unresolved Required → abort,

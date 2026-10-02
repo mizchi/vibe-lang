@@ -14,7 +14,7 @@ ladder below numbers releases by what actually ships.
 | version | meaning | state |
 | --- | --- | --- |
 | `v0.0.1` | The one historical release (MoonBit host era) | tagged 2026-04-14 |
-| `0.0.x` | Everything since: the selfhost cutover and all development, including the content once prepared as "0.3.0 GA" ([archive/release-notes-0.3.0.md](../../archive/release-notes-0.3.0.md)) | never released |
+| `0.0.x` | Everything since: the selfhost cutover and all development, including the content once prepared as "0.3.0 GA" | never released |
 | `0.1.0-rc.1` | The first candidate to publish assets. Its bug hunt came back clean | published 2026-09-21 as a pre-release; superseded |
 | `0.1.0-rc.2` | The second candidate. Its merged compiler tree passed the generative bug hunt; one pre-existing mutation diagnostic is tracked as #3226 | published 2026-09-28 as a pre-release; superseded by milestone fixes |
 | **`0.1.0`** | **The first release usable by anyone but the author** | final publication and verification remain in #2834; see [release-notes-0.1.0.md](../../user/getting-started/release-notes-0.1.0.md) |

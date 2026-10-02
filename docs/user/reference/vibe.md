@@ -11,8 +11,6 @@ typed, pure functional language with explicit effects, built for WASM/wasip3.
 - Items explicitly marked as "future", "proposal", or "draft" are non-normative.
 - Package boundaries, visibility, and pinning are specified separately:
   - `docs/internal/design/module-system-oracle.md` (canonical)
-- Incident log for compiler/language regressions:
-  - `docs/archive/compiler_language_incidents.md`
 
 ## Goals
 

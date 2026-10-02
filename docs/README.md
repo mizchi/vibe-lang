@@ -2,7 +2,7 @@
 
 Audience index for [#2002](https://github.com/mizchi/vibe-lang/issues/2002).
 Paths are relative to this file. The tree is laid out by primary reader:
-`user/`, `internal/`, `generated/`, `archive/` (#2565, #2566), plus `spec/`
+`user/`, `internal/`, `generated/` (#2565, #2566), plus `spec/`
 for the version-pinned release specifications — those are classified by reader
 like everything else (`spec/0-1.md` is user documentation), but they do not
 live under `user/` because they do not track `main`: one file describes one
@@ -23,7 +23,6 @@ containing it: it has its own gates (`scripts/check_book_links.sh`,
 external links to The Vibe Book (decided in #2565).
 
 **Users:** [user/getting-started/install.md](user/getting-started/install.md) · [The Vibe Book](../book/README.md) ·
-[user/tutorial/README.md](user/tutorial/README.md) ·
 [user/reference/cheatsheet.md](user/reference/cheatsheet.md) · [user/reference/cli-commands.md](user/reference/cli-commands.md) ·
 [user/reference/editor-and-debugging.md](user/reference/editor-and-debugging.md)
 
@@ -31,7 +30,7 @@ external links to The Vibe Book (decided in #2565).
 [internal/operations/operation-gate.md](internal/operations/operation-gate.md) · [internal/design/adr.md](internal/design/adr.md) ·
 [internal/project/issue-triage.md](internal/project/issue-triage.md)
 
-This file is the audience router. It is not one of the four classes below.
+This file is the audience router. It is not one of the three classes below.
 
 Classification is by primary reader (#2002). A public wasm/effect/package
 contract stays user-facing even if maintainers also read it. An ADR, design
@@ -46,12 +45,11 @@ Install, learn, write, build, test, package, debug, deploy.
 | --- | --- |
 | [user/getting-started/install.md](user/getting-started/install.md) | |
 | [../book/](../book/README.md) | The Vibe Book. Canonical tour + language + systems. Children: [SUMMARY.md](../book/SUMMARY.md), [src/](../book/en/), [ja/](../book/ja/) |
-| [user/tutorial/](user/tutorial/) | Pointer only. Chapters moved to `book/en/` and `book/ja/`. |
 | [user/reference/cheatsheet.md](user/reference/cheatsheet.md) | Language reference. Absorbed `language-tour/`. |
 | [user/reference/cli-commands.md](user/reference/cli-commands.md) | |
 | [user/reference/editor-and-debugging.md](user/reference/editor-and-debugging.md) | LSP, DAP, editor query CLI |
 | [user/reference/source-range-contract.md](user/reference/source-range-contract.md) | What a reported position MEANS (byte, ADR-0108). Written because [user/reference/editor-and-debugging.md](user/reference/editor-and-debugging.md) called byte offsets "char offsets"; enforced by `scripts/check_source_range_contract.sh` |
-| [user/guide/when-to-use-effects.md](user/guide/when-to-use-effects.md) | Its former sibling `builtin-effect-migration.md` is internal ([internal/design/](internal/design/builtin-effect-migration.md)) |
+| [user/guide/when-to-use-effects.md](user/guide/when-to-use-effects.md) | |
 | [user/reference/vibe.md](user/reference/vibe.md) | Implemented language design outside pure syntax |
 | [user/reference/syntax.md](user/reference/syntax.md) | Canonical implemented surface syntax |
 | [user/reference/stable-surface.md](user/reference/stable-surface.md) | Stable surface / SemVer. Takes effect at the `0.1.0` tag (ADR-0109) |
@@ -136,18 +134,14 @@ the repo; not the user manual.
 | [internal/design/vibex-runtime-contract.md](internal/design/vibex-runtime-contract.md) | ADR-0075, proposed |
 | [internal/design/wasip3-effect-alignment.md](internal/design/wasip3-effect-alignment.md) | ADR-0089, proposed |
 | [internal/design/zero-alloc-check.md](internal/design/zero-alloc-check.md) | ADR-0091, current conservative allocation verification |
-| [internal/design/builtin-effect-migration.md](internal/design/builtin-effect-migration.md) | Compiler/language migration plan |
 | [internal/design/mutability-control-review.md](internal/design/mutability-control-review.md) | Survey / fitness review |
 | [internal/design/side-effect-consolidation.md](internal/design/side-effect-consolidation.md) | |
 | [internal/design/decisions.md](internal/design/decisions.md) | Locked language decisions |
-| [internal/design/builtin-ssot-design.md](internal/design/builtin-ssot-design.md) | |
 | [internal/design/memory-contract.md](internal/design/memory-contract.md) | Linear / wasm-gc / RC |
 | [internal/design/profiling.md](internal/design/profiling.md) | |
 | [internal/design/rc-cutover-readiness.md](internal/design/rc-cutover-readiness.md) | ADR-0055 status |
 | [internal/design/rc-port.md](internal/design/rc-port.md) | ADR-0055 design record |
-| [internal/design/show-trait-design.md](internal/design/show-trait-design.md) | |
 | [internal/design/simd-api-design.md](internal/design/simd-api-design.md) | |
-| [internal/design/structured-shell-design.md](internal/design/structured-shell-design.md) | |
 | [internal/design/test-example-capabilities.md](internal/design/test-example-capabilities.md) | Proposal, partial |
 | [internal/design/uniform-value-repr.md](internal/design/uniform-value-repr.md) | ADR-0055 |
 | [internal/design/wasi-p3-async.md](internal/design/wasi-p3-async.md) | |
@@ -207,27 +201,6 @@ Machine-produced. Do not edit by hand. Generator / freshness is noted where know
 | [generated/feature-matrix.json](generated/feature-matrix.json) | Fetched by `scripts/wasm_feature_matrix_fetch.sh` |
 | [generated/feature-levels.expected.json](generated/feature-levels.expected.json) | Oracle for feature-level checks |
 | [generated/host-runtime-contract.json](generated/host-runtime-contract.json) | Machine-checked companion of [user/reference/host-runtime-contract.md](user/reference/host-runtime-contract.md) |
-
-## 4. Archive
-
-[archive/](archive/) only. Git history is the default archive; keep a file here
-only while it is still cited.
-
-| Path | Notes |
-| --- | --- |
-| [archive/adr/](archive/adr/) | Historical individual ADRs; living log is [internal/design/adr.md](internal/design/adr.md) |
-| [archive/advanced-graph.md](archive/advanced-graph.md) | |
-| [archive/bench_advanced_graph_report.md](archive/bench_advanced_graph_report.md) | |
-| [archive/build-optimization-analysis.md](archive/build-optimization-analysis.md) | |
-| [archive/codegen/](archive/codegen/) | [vibe-output-analysis.md](archive/codegen/vibe-output-analysis.md), [wasm-gc-vs-selfhost-analysis.md](archive/codegen/wasm-gc-vs-selfhost-analysis.md) |
-| [archive/compiler_language_incidents.md](archive/compiler_language_incidents.md) | Cited from [user/reference/vibe.md](user/reference/vibe.md) |
-| [archive/moonbit-retirement.md](archive/moonbit-retirement.md) | Cited recovery record (`moonbit-host-final-2026-06-23`) |
-| [archive/mut-effect-plan.md](archive/mut-effect-plan.md) | |
-| [archive/report/](archive/report/) | Dated evaluations |
-| [archive/release-notes-0.3.0.md](archive/release-notes-0.3.0.md) | A release that was never cut (renumbered by ADR-0109). Kept as the record of 2026-06 to 2026-07-17; carries a status banner, so a delete candidate by the AGENTS.md rule |
-| [archive/review-by-x-markdown.md](archive/review-by-x-markdown.md) | |
-| [archive/spec/](archive/spec/) | Retired spec notes |
-| [archive/wasmtime-v43.md](archive/wasmtime-v43.md) | |
 
 ## Inventory coverage
 

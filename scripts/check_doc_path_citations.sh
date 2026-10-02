@@ -215,14 +215,27 @@ if unresolved:
     print(f"  Adding it to {allowlist_path} records it as debt instead.", file=sys.stderr)
     sys.exit(1)
 
-# Only a document this run actually scanned can be judged. The pre-commit hook
-# lints a staged snapshot, and precommit_test.sh runs against a synthetic repo
-# with no docs/ at all -- neither is evidence that an entry is obsolete.
+# An entry is stale when its document no longer cites the path, or when its
+# document no longer exists. The second needs a tree that has docs/ at all:
+# precommit_test.sh runs against a synthetic repo with no docs/, which is not
+# evidence that anything was deleted. The pre-commit hook's staged snapshot is a
+# `checkout-index --all` export, so it does hold every document. Judging only
+# scanned documents let the four entries of a document deleted in #1911 sit
+# here for six weeks with this check reporting ok.
 cited = {(f[0], f[2]) for f in findings}
-stale = sorted(e for e in allowed if e[0] in scanned and e not in cited)
+has_docs = os.path.isdir(os.path.join(docs_root, "docs"))
+def doc_gone(doc):
+    return has_docs and not os.path.exists(os.path.join(docs_root, doc))
+stale = sorted(
+    e for e in allowed
+    if (e[0] in scanned and e not in cited) or doc_gone(e[0])
+)
 if stale:
     for doc, target in stale:
-        print(f"{allowlist_path}: {doc} no longer cites `{target}`", file=sys.stderr)
+        if doc_gone(doc):
+            print(f"{allowlist_path}: {doc} no longer exists (entry for `{target}`)", file=sys.stderr)
+        else:
+            print(f"{allowlist_path}: {doc} no longer cites `{target}`", file=sys.stderr)
     print("", file=sys.stderr)
     print(
         "check-doc-path-citations: FAIL: the allowlist has entries that are no longer "

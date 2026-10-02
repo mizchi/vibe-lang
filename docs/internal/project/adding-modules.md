@@ -5,7 +5,7 @@
 > The rules for boundaries, visibility and pins are normative in
 > [module-system-oracle.md's "current model" section](../design/module-system-oracle.md#現行モデル-canonical--ここが唯一の現行記述).
 > The design history is [module-system-v2.md](../design/module-system-v2.md) (ADR-0063/0064).
-> Assumes selfhost-only ([archive/moonbit-retirement.md](../../archive/moonbit-retirement.md)).
+> Assumes selfhost-only (#594).
 
 In this repository, a library is alive only while a `*_test.vibe` of its own is
 running in the battery. Untested code is never compiled by the compiler at all,

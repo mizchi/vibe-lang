@@ -1,77 +1,65 @@
-# HTTP Server Builtins Contract (Phase 2-1)
+# HTTP Server Builtins Contract
 
-`Http::listen` / `Http::accept` / `Http::respond` の API 契約をここで固定する。
+The raw-handle HTTP surface that `@vibe/http` publishes
+(`lib/@vibe/http/index.vpkg`). Each operation is exported under the
+collision-safe `Http::` name and, inside the package, under its bare name.
 
-## Type Contract
+## Type contract
 
-- `Http::listen(port: Int) -> Int with Net`
-- `Http::accept(server_handle: Int) -> Int with Net`
-- `Http::respond(request_handle: Int, status: Int, headers: String, body: String) -> Unit with Net`
+Server:
 
-補足:
+- `Http::listen(port: Int) -> Int with Http`
+- `Http::accept(server_fd: Int) -> Int with Http`
+- `Http::respond(req_fd: Int, status: Int, headers: String, body: String) -> Unit with Http`
 
-- `Int` は **opaque handle** として扱う（値の中身は公開契約に含めない）。
-- `headers` は wire format 文字列（`"name: value\nname2: value2"`）を受け取る。
+Incoming request, on a handle `accept` returned:
 
-## Runtime Error Contract
+- `Http::request_method(fd: Int) -> String with Http`
+- `Http::request_url(fd: Int) -> String with Http`
+- `Http::request_header(fd: Int, name: String) -> String with Http`
+- `Http::request_body(fd: Int) -> String with Http`
 
-compiled runtime / wasm host runner では、観測面は内部例外型ではなく thrown `Error` の文字列で固定する。
+Client:
 
-- capability deny:
-  - `PermissionDenied: net_connect:<host>:<port>`
-  - `PermissionDenied: net_response_status` / `net_response_header` / `net_response_body` / `net_close`
-  - `PermissionDenied: net_listen:<port>`
-  - `PermissionDenied: net_accept`
-  - `PermissionDenied: net_request_method` / `net_request_url` / `net_request_header` / `net_request_body` / `net_respond`
-- capability 判定前の URL 解析失敗:
-  - `invalid URL for network capability check: ...`
-- invalid handle や socket/listen 失敗などの backend 実行失敗:
-  - backend 依存の `Error` 文字列
+- `Http::request(method: String, url: String, headers: String, body: String) -> Int with Http`
+- `Http::response_status(fd: Int) -> Int with Http`
+- `Http::response_header(fd: Int, name: String) -> String with Http`
+- `Http::response_body(fd: Int) -> String with Http`
+- `Http::close(fd: Int) -> Unit with Http` — closes a response handle
+  `request` returned. It is not a server operation.
 
-## Capability Contract
+Notes:
 
-compiled runtime / wasm host runner では `NetListen` capability をサーバー API に適用する。
+- **The server operations are not usable yet.** `listen`, `accept`,
+  `respond` and the `request_*` readers `perform` the matching `Http::`
+  operation (`Http::Listen`, `Http::Accept`, ...). No runner implements
+  those operations, so an unhandled call throws, and a program cannot handle
+  them either: `Http` is a builtin effect with no operation list, so the
+  lowering cannot build a handler for it (`evidence_poison_expr.vibe`).
+  `lib/@vibe/http/http_effect_test.vibe` exercises the same shape through a
+  user-declared `HttpServer` effect, not through these functions. The client
+  operations call the runner's `vibe.http_*` imports directly and reach the
+  network with no handler. To serve HTTP today, use `vibe serve` (a wasi-http
+  component; see [cli-commands.md](cli-commands.md)).
+- Every `Int` handle is **opaque**; its value is not part of the contract.
+- `headers` is the wire-format string (`"name: value\nname2: value2"`).
+  `headers_to_wire` builds it from a `Map[String, String]`, and the typed
+  helpers in the same package (`make_request`, `make_response`,
+  `request_with`, `respond_with`, `status_*`, `headers_*`) are thin wrappers
+  over the operations above.
 
-- `Http::listen(port)`:
-  - `caps.can_listen(port)` が `false` の場合、`PermissionDenied: net_listen:<port>`
-- `Http::accept(server_handle)`:
-  - `caps.can_listen_any()` が `false` の場合、`PermissionDenied: net_accept`
-- `Http::respond(request_handle, ...)`:
-  - `caps.can_listen_any()` が `false` の場合、`PermissionDenied: net_respond`
+## Authority
 
-加えてクライアント API では `NetConnect` capability を適用する。
+`Http` is a host capability carried in the effect row. A function that calls
+these operations declares `with Http`, and the entry point that runs it grants
+`allows Http`, or only the operations it uses (`allows Http::request +
+Http::close`). Authorization is settled before `main` runs and does not change
+during the run (ADR-0088); a program whose row does not grant `Http` does not
+build. See the cheatsheet's capability sections for the grant ladder.
 
-- `Http::request(method, url, headers, body)`:
-  - URL が `http://` / `https://` で host/port 抽出できない場合:
-    - `invalid URL for network capability check: ...`
-  - `caps.can_connect(host, port)` が `false` の場合:
-    - `PermissionDenied: net_connect:<host>:<port>`
-- `Http::response_status(handle)` / `Http::response_header(handle, name)` / `Http::response_body(handle)` / `Http::close(handle)`:
-  - `caps.can_connect_any()` が `false` の場合:
-    - `PermissionDenied: net_response_status` / `net_response_header` / `net_response_body` / `net_close`
+## Coverage
 
-サーバー request handle API では `NetListen` capability を適用する。
-
-- `Http::request_method(handle)` / `Http::request_url(handle)` / `Http::request_header(handle, name)` / `Http::request_body(handle)`:
-  - `caps.can_listen_any()` が `false` の場合:
-    - `PermissionDenied: net_request_method` / `net_request_url` / `net_request_header` / `net_request_body`
-
-## Locked By Tests
-
-- checker 契約:
-  - `src/checker/typecheck_call_builtin_wbtest.mbt`
-- runtime 契約:
-  - `src/runtime_compile/builtin_contract_wbtest.mbt`
-- wasm host-import 契約（capability parity + request/response/listen/accept/respond e2e）:
-  - `scripts/test_http_wasm_host_imports.sh`
-  - deny ケース:
-    - `PermissionDenied: net_connect:<host>:<port>`
-    - `PermissionDenied: net_response_status`
-    - `PermissionDenied: net_listen:<port>`
-    - `PermissionDenied: net_accept`
-  - allow ケース:
-    - call order に `Http::request_method` / `Http::request_url` / `Http::request_header` / `Http::request_body` を含み、`request handle` API が host-import 経路で往復すること
-    - host 側が `vibe_http_host_string_new` export を使って文字列オブジェクトを guest ヒープに確保し、`http_request_*` の戻り値として返せること
-- compiled 実行系 host runner 契約:
-  - `scripts/test_compiled_backend_http_policy.sh`
-  - `VIBE_HTTP_ALLOW_CONNECT` / `VIBE_HTTP_ALLOW_LISTEN` で deny/allow を切り替え、`PermissionDenied: net_*` を検証
+- `lib/@vibe/http/index_import_test.vibe` imports every `Http::` operation
+  through the package contract.
+- `lib/@vibe/compiler/tests/checker_builtins_test.vibe` pins the checker's
+  builtin signatures (for example `Http::respond` returning `Unit`).
