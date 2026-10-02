@@ -564,10 +564,13 @@ load-bearing magic numbers:
 | `req < 0` | sleep debt of `-req` ms → `sleep_blocking` |
 | `req == 0` | cooperative yield |
 | `req == 1` | poll wait — **deterministically traps** (it would livelock under the tail-resumptive boundary) |
-| `2 ≤ req ≤ 1025` | host-future waitable, handle `req - 2` |
+| `2 ≤ req < 2048` | host-future waitable, handle `req - 2` |
 | `req ≥ 2048` | host-stream read, handle `req - lc_hs_req_base()` |
 
-The future band's top, `1025`, is `2 + comp_hf_max_handles()` — and
+The dispatch tests `1 < req` and `2047 < req`. What keeps a future request
+below `2048` is the handle spaces: a host future's handle is at most
+`comp_hf_max_handles()` (so `req ≤ 1025`), and a WIT call's handle is
+`1024 + slot` over 512 result slots (so `req ≤ 1537`, see *Host futures*).
 `comp_hf_max_handles() = 1023` lives in the composer
 (`component_codegen_comp_generate_serve_stream_adapter_module.vibe`) while
 `lc_hs_req_base() = 2048` lives in the linker

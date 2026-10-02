@@ -1,105 +1,99 @@
-# WASI 0.3 (Preview 3) async — 設計と段階移行
+# WASI 0.3 (Preview 3) async — design and lowering
 
-Status: **proposed** (ADR-0012 を更新)。最終更新 2026-08-07（#1230/#1341 の棚卸しで §2/§6/§7 を現行仕様だけに整理）。
+Status: the language model of ADR-0012 and the decisions of
+[ADR-0089](wasip3-effect-alignment.md) are implemented. This document is the
+source of truth for how async lowers onto the Component Model's async ABI;
+what is still open is §6.2.
 
-WASI 0.3 は 2026-06-11 に ratify され、`stream<T>` / `future<T>` が Component
-Model の first-class 型として導入された。本ドキュメントは vibe を WASI 0.3 の
-async モデルへ寄せていくための設計判断を定める。北極星は
-**`Async` effect row + `Future[T]` + AsyncIter**、stream の抽象哲学は
-**既存 `Iterator` に寄せた pull ベース**。
+WASI 0.3 was ratified on 2026-06-11 and made `stream<T>` / `future<T>`
+first-class Component Model types. vibe's async model is **an `Async` effect
+row + `Future[T]` + AsyncIter**, with a pull-based stream protocol modelled on
+the existing `Iterator`.
 
-### この文書の読み方
+### How to read this document
 
-| 節 | 中身 | 性質 |
+| section | contents | nature |
 |---|---|---|
-| §1, §2 | 言語モデル (型・await・stream・effect row) | **現行仕様**。ここだけ読めば今の言語が分かる |
-| §3 | codegen / ABI の実測記録 (§3.1〜§3.19) | **実測ログ**。canon built-in の byte encoding・実機で確かめた制約の source of truth。時系列で積む |
-| §4, §5 | WIT 境界マッピング / バージョン整合 | 現行仕様 |
-| §6, §7 | 現在地・残作業・未解決 | 現行状態 |
+| §1, §2 | the language model: types, `await`, streams, the effect row | **current specification**; enough on its own to understand today's language |
+| §3 | codegen / ABI measurements (§3.1–§3.19) | **measurement record**: the byte encodings of the canonical built-ins and the constraints measured on a real runtime. Each subsection records what was measured when it was taken; where it names open work, a later subsection or §6 records how that closed |
+| §4, §5 | the WIT boundary mapping, versions and pins | current specification |
+| §6, §7 | what runs, what is open, unresolved questions | current state |
 
-着地までの経緯・撤去した surface・当時の見立ては git 履歴にある
-(`docs/archive/spec/wasi-p3-async-history.md`、#3272 で削除)。
+The language-surface decisions — one `Async` label, the materialized
+`Future[T]`, retiring the eager `Stream[T]` for AsyncIter, the two-layer
+coroutine / `stream` split and the `future<T>` / `stream<T>` / `async func` WIT
+mapping — are ADR-0089's. Synchronous capability effects keep working as
+before; async sits on top of them.
 
-> **言語表面との整合**: `Async` ラベル二重定義の統一、phantom
-> `Future[T]` の実体化、eager `Stream[T]` の退役と AsyncIter への一本化、
-> `Coroutine`↔`stream` の二層対応、wit_gen の `future<T>`/`stream<T>`/
-> `async func` マッピングは [ADR-0089](wasip3-effect-alignment.md) が
-> 決定した。本ドキュメントは lowering / ABI 側の source of truth のまま。
+## 1. What changes from WASI 0.2 to 0.3
 
-2026-05-22 の同期 effect ベースの Model 1 の async 部分は本ドキュメントが
-supersede する。
-同期 effect capability（`HttpRequest`/`HttpResponse`/`HttpClient` を `perform`
-で扱う）は引き続き有効で、async はその上位に位置づける。
+- `pollable` becomes `future<T>`, and `input-stream` / `output-stream` become
+  `stream<u8>`. `wasi:io`'s poll / pollable is absorbed into the canonical ABI.
+- Instead of taking a pollable through `subscribe()`, a function returns a
+  `future<...>`. Two-step `start-foo` / `finish-foo` APIs merge into one
+  `foo: async func(...)`.
+- Example: `read-via-stream: func() -> result<input-stream, error-code>`
+  becomes `read-via-stream: func() -> tuple<stream<u8>, future<result<_,
+  error-code>>>`.
+- `wasi:http` drops 0.2's `proxy` world for two worlds, **`wasi:http/service`**
+  and **`wasi:http/middleware`** (vendored:
+  `lib/@vibe/wasi/wit/p3/deps/http.wit`, `world service` / `world
+  middleware`).
+- The runtime is **wasmtime 47.0.2**, which ships the ratified `0.3.0` with
+  component-model async on by default (§5).
 
-## 1. WASI 0.2 → 0.3 の要点
+## 2. The language model
 
-- `pollable` → `future<T>`、`input-stream`/`output-stream` → `stream<u8>`。
-  `wasi:io` の poll/pollable は canonical ABI に吸収。
-- `subscribe()` で pollable を取る代わりに、関数が `future<...>` を返す。
-  `start-foo` / `finish-foo` の 2 段 API は `foo: async func(...)` に統合。
-- 例: `read-via-stream: func() -> result<input-stream, error-code>`
-  → `read-via-stream: func() -> tuple<stream<u8>, future<result<_, error-code>>>`。
-- `wasi:http` は 0.2 の `proxy` world を廃し、**`wasi:http/service`** と
-  **`wasi:http/middleware`** の 2 world に（vendored submodule で確認:
-  `lib/@vibe/wasi/wit/p3/deps/http.wit` の `world service` /
-  `world middleware`）。
-- ランタイム: wasmtime **45** は 0.3 を **release candidate** として
-  フラグ付きで実行（`-W component-model-async=y -W
-  component-model-async-builtins=y` 等）。**46**（46.0.1）は ratified
-  `0.3.0` を async-by-default で同梱し、#821 でそちらへ cutover 済み
-  （§5 参照）。
+This section describes the current specification only. Where the
+implementation stands is §6; the ABI measurements are §3.
 
-## 2. 言語モデル
+### 2.1 There is no `async` keyword — `Async` is an effect-row label
 
-> この節は**現行仕様だけ**を書く。着地までの経緯・撤去した surface・当時の
-> 見立ては git 履歴にある (2026-08-07、#1230/#1341 の棚卸しで本文から外した)。実装の現在地は §6、
-> ABI 実測は §3。
+vibe has no function colouring; side effects are carried by the effect row. So
+**there is no `async` keyword**: an "async function" is **a function whose row
+contains `Async`** (`with Async`).
 
-### 2.1 `async` キーワードは無い — `Async` は effect row のラベル
+- `await(f)` is the builtin `(Future[T]) -> T with Async`
+  (`checker/builtins_async.vibe`). It is not a reserved word, so the parser is
+  unchanged (`ECall(EIdent("await"), [f])`).
+- Using an `Async` computation in a context without `Async` is rejected by the
+  effect-escape check (`EEEffectfulCallOutsideEffect`).
+- **`effect Async { Suspend(Int) -> Int }` is declared in
+  `lib/@vibe/concurrent/experimental/concurrent.vibe`** (#752's "the
+  declaration is the contract") and matches the checker's builtin row label
+  `"Async"` by name. That is why `handle .. with Async` can discharge it, as
+  `TaskGroup::spawn_suspend` does. **Nothing stops a handler from discharging
+  the builtin row**: what matches is the name, and the route is `perform`.
 
-vibe には `fn` の色付けが無く、副作用は effect row で表す。したがって
-**`async` キーワードは導入しない**。「async 関数」= **row に `Async` を持つ
-関数** (`with Async`) である。
+### 2.2 `Future[T]` — the two-word cell `[state, payload]`
 
-- `await(f)` は `(Future[T]) -> T with Async` の builtin
-  (`checker/builtins_async.vibe`)。予約語ではないので parser 変更は無い
-  (`ECall(EIdent("await"), [f])`)。
-- `Async` を持つ計算を非 `Async` 文脈で使うと effect-escape 検査
-  (`EEEffectfulCallOutsideEffect`) が落とす。
-- `effect Async { Suspend(Int) -> Int }` の**宣言は
-  `lib/@vibe/concurrent/experimental/concurrent.vibe`** にあり (#752 の「宣言が契約」方式)、
-  checker builtin の row ラベル `"Async"` と名前で一致する。だから
-  `handle .. with Async` で discharge できる (`TaskGroup::spawn_suspend` が
-  実際にそうしている)。**builtin の nominal row を handler が放電できない
-  という制約は無い** — 一致しているのは名前であって、経路は perform。
+`Future[T]` is not a type-level phantom: **at run time it is a two-element
+array** (`future_ready_expr` and its siblings in `codegen/expr/`). The state
+slot can say "not resolved yet", so adding a producer never means redesigning
+the representation.
 
-### 2.2 `Future[T]` — 2 語セル `[state, payload]`
-
-`Future[T]` は型レベルの phantom ではなく、**実行時に 2 要素配列**である
-(`compile_call.vibe` の `future_ready_expr` 系)。state slot が「まだ解決して
-いない」を持てるので、producer を足すたびに表現を作り直さずに済む。
-
-| state | 意味 | payload | producer |
+| state | meaning | payload | producer |
 |---|---|---|---|
-| 0 | ready | 値 | `Future::ready(x)` / `Stream::next` |
-| 1 | guest 内 pending | 未定 (resolve が書く) | `Future::pending()` |
-| 2 | host future (waitable) | host future handle | `host_future_get()` / `host_future_named("x")` |
-| 3 | host stream セル | readable end の handle | `host_stream_named("x")` |
+| 0 | ready | the value | `Future::ready(x)` |
+| 1 | pending in the guest | not yet (resolve writes it) | `Future::pending()` |
+| 2 | host future (a waitable) | the host future handle | `host_future_get()` / `host_future_named("x")` / a WIT-derived binding (`host_response_named`) |
+| 3 | host stream cell | the readable end's handle | `host_stream_named("x")`, `HostResponse::body`, a `HostStream` parameter |
 
-state 3 を future と別値にしてあるのは、**stream セルを future として await
-できないようにする**ため (逆も同じ)。
+State 3 is distinct from the future states so that **a stream cell can never
+be awaited as a future**, and the reverse.
 
-`Future::resolve(f, v)` が state 1 のセルを完了させる。**payload を書いてから
-state をクリアする**順序が load-bearing で、逆順だと awaiter が「ready なのに
-値がまだ」を観測しうる。
+`Future::resolve(f, v)` completes a state-1 cell. **It writes the payload
+before clearing the state**, and the order is load-bearing: the other order
+lets an awaiter observe "ready, but no value yet".
 
-#### `await` の lowering — codegen ではなく AST パス
+#### Lowering `await` — an AST pass, not codegen
 
-`await` は `await_poll_pass` (`codegen/common_base/inline_direct_perform.vibe`)
-が **`__aw_poll(fut)` 呼び出しへ書き換える**。`desugar_trait_dicts` の直後、
-全 effect パスの**前**に走る。`compile_call` で wasm を直接吐く位置は
-`suspend_cps_pass` / `evidence_dict_pass` の後なので、そこで
-`perform Async::Suspend` を出しても discharge する相手がいないため。
+`await` is rewritten into a call of `__aw_poll(fut)` by `await_poll_pass`
+(`lowering/effects/await/await.vibe`). It runs right after
+`desugar_trait_dicts` and **before** every effect pass: the position where
+`compile_call` emits wasm comes after `suspend_cps_pass` /
+`evidence_dict_pass`, so a `perform Async::Suspend` emitted there would have
+nothing left to discharge it.
 
 ```text
 __aw_poll(fut) -> Int with Async:
@@ -110,211 +104,274 @@ __aw_poll(fut) -> Int with Async:
   Array::get(fut, 1)
 ```
 
-`Suspend` の payload 帯 (`@vibe/concurrent` の規約 + ADR-0089):
+The `Suspend` payload bands (the `@vibe/concurrent` convention plus ADR-0089),
+dispatched by the entry boundary's `__entry_settle`:
 
-| payload | 意味 |
+| payload | meaning |
 |---|---|
 | 0 | yield |
 | 1 | poll wait (retry) |
-| 負 | sleep debt |
-| handle + 2 | host future の waitable 帯 |
-| handle + 2048 | host stream の read 帯 |
+| negative | sleep debt (`-ms`) |
+| 2 ≤ p < 2048 | host-future waitable, `handle + 2` |
+| p ≥ 2048 | host-stream read, `handle + 2048` |
 
-**展開は式の位置ではなく spine へ持ち上げる** (`awp_tail`)。`let a = await(x)`
-は `let __aw_f = x; while ..; let a = Array::get(__aw_f, 1)` になる。式の位置で
-入れ子にすると「ソース構文では書けない形」(`let` の value に `let`+`while`)
-が下流パスへ流れ、複数 await でコンパイラが無限再帰する — 実際に踏んだ
-(#1230)。
+[async-host-contract.md](async-host-contract.md) records which handles land in
+each band and the adapter-side constants.
 
-条件は `EBinOp("<")` であって builtin `lt` ではない。evidence migration の
-see-through 走査が `lt` を pure callee として知らないため、`while lt(..)` に
-すると `await` を含む handle が全部 ineligible になる (実測済み)。
+**The expansion is hoisted onto the spine, not left in expression position**
+(`awp_tail`). `let a = await(x)` becomes `let __aw_f = x; while ..; let a =
+Array::get(__aw_f, 1)`. Nested in expression position, it produces shapes
+source syntax cannot write (a `let` + `while` as a `let`'s value), which flow
+into later passes; with several awaits the compiler recursed without bound —
+that happened (#1230).
 
-`waiter_hooks` が立つと round は `__aw_wait(fut)` を通り、resolve 側が直接
-起こす (O(rounds×awaiters) の解消、§3.15)。notify が漏れても once-per-progress
-の fallback valve で poll へ縮退し、deadlock trap は保存される。
+The loop condition is `EBinOp("<")`, not the builtin `lt`: the see-through
+walk of evidence migration does not know `lt` as a pure callee, so `while
+lt(..)` makes every `handle` containing an `await` ineligible (measured).
 
-#### `Future[T]` と `Spawnable` — region を持たせないという決定
+When `waiter_hooks` is on, a round goes through `__aw_wait(fut)` and the
+resolving side wakes the waiter directly (removing the O(rounds × awaiters)
+polling, §3.15). A missed notify degrades to polling through a once-per-progress
+fallback valve, and the deadlock trap is preserved.
 
-`TaskGroup::spawn` の capture 検査 (`checker_spawnable.vibe` の
-`sp_spawnable_ok`) は、`TaskGroup[r]` / `TaskHandle[r,_]` / `Sender[r,_]` /
-`Receiver[r,_]` を **同じ nursery の region `r` と一致するときだけ**通す。
-`Future[T]` は **region パラメータを持たず、無条件に通す**。
+#### `Future[T]` and `Spawnable` — no region parameter
 
-> **決定 (実装済み)**: `Future` に region 引数は足さない。現在の poll モデルでは
-> セルは**スケジューラ結合ゼロの共有メモリ**で (await は state slot を再読する
-> だけ、resolve は 2 ストア)、guest は single-threaded なので、`Send` が防ぐ
-> ような cross-nursery hazard が存在しない。
+The capture check of `TaskGroup::spawn` (`sp_spawnable_ok`,
+`checker_spawnable.vibe`) admits `TaskGroup[r]` / `TaskHandle[r,_]` /
+`Sender[r,_]` / `Receiver[r,_]` **only when `r` is the same nursery's region**.
+`Future[T]` **has no region parameter and is admitted unconditionally**.
+
+> **Decision (implemented)**: `Future` does not get a region argument. In the
+> poll model the cell is **shared memory with no scheduler coupling** (await
+> re-reads the state slot; resolve is two stores), and the guest is
+> single-threaded, so there is no cross-nursery hazard of the kind `Send`
+> prevents.
 >
-> **再検討の条件**: セルが**スケジューラから見える waiter list** を持った
-> 時点で、`Future` は region tag を持ち `sp_same_region` 側の分岐へ移る必要が
-> ある。
+> **Revisit when** the cell carries a **waiter list the scheduler can see**:
+> then `Future` needs a region tag and moves to the `sp_same_region` branch.
 >
-> (#1230 の議論では一度「`Future[r, T]` へ arity を増やす」と記録したが、
-> 実装時にこちらを採った。arity を増やしても `Future::pending()` は引数が
-> 無いので `r` が fresh 変数のままで spawn サイトの region と結びつかず、
-> `Sender` のように `TaskGroup` を引数に取る constructor へ作り替えない限り
-> 検査は成立しない — つまり「型引数を 1 本足す」では済まなかった。)
+> Adding a region by arity (`Future[r, T]`) would not have been enough on its
+> own: `Future::pending()` takes no argument, so `r` would stay a fresh
+> variable unrelated to the spawn site's region, and the check would only hold
+> once the constructor took a `TaskGroup` the way `Sender`'s does.
 
-#### suspend lowering の適格性 (ADR-0076)
+A future whose value owns a host stream is the exception: a response future
+has one owner, and `sp_spawnable_ok` refuses to capture it in a spawned task
+(#3152; [async-host-contract.md](async-host-contract.md)).
 
-`await` が `perform` になる以上、await を含むコードは suspend CPS split
-(`scps_*`) の適格性に従う。現在の境界:
+#### Eligibility for the suspend lowering (ADR-0076)
 
-- **適格**: let / seq / tail / branch-tail の spine、`while` + `let mut`
-  (#1230 で widening 済み。`let mut x = v` → 1 要素セル、`while` → `let rec`
-  ローカル closure への末尾再帰)、**sequence HEAD に立つ let 連鎖複合式**
-  (brace block 文・文位置の async-iterator `for` の脱糖出力 — #1536 (a) v3
-  の let-floating が継続 spine へ再バランスする、ADR-0076 追記42)、
-  **row-free closure パラメータの呼び出しのうち、全 by-name call site の
-  実引数が suspend-inert と証明できるもの** (#1536 (a)。下記)、`if` condition /
-  `match` scrutinee が direct target perform・concrete needing call・CPS-local call
-  そのものの形 (fresh let へ一回評価してから selection、ADR-0076 追記44)、
-  **継続 spine 上の通常代入 (`=`) の RHS が同じ direct 形そのもの** (fresh let
-  へ一回評価してから一回だけ代入、追記45)、**`while` condition が同じ direct
-  形そのもの** (再帰 loop closure 内で check ごとに一回評価、追記46)、
-  **ループ内の `break` / `continue`** (脱出継続を closure に切り出し、transfer を
-  CPS spine 上の呼び出しにする、追記47)、**複合式に埋まった suspension**
-  (被演算子・呼び出し引数・コンストラクタ引数・compound な `while` 条件・
-  `+=` 等の compound assignment — 元の評価順のまま let 連鎖へ線形化する、追記48)、
-  **`let` / `let mut` の値そのものである `if` / `match`** (束縛と継続を枝へ分配する。
-  condition / scrutinee は元の位置で一回だけ評価され、`match` の腕は継続を移す前に
-  alpha-rename される、追記49)、**`let` / `let mut` の値そのものである block**
-  (`{ 文..; 値 }` — 束縛を文前置の内側へ移す。float した binder は alpha-rename される、
-  追記50。これにより「文を含む枝」が通る)、**代入 (`=`) の RHS が同じ selection / block
-  そのもの** (box した target は cellify の前に、spine 外の target は継続 spine 上で、
-  同じ 2 つの書き換えを受ける、追記51)、**compound の中にネストした `if` / `match`**
-  (枝へは降りず selection を丸ごと名前に束ねてから追記49 の分配へ渡す、追記52)、
-  **non-tail の `&&` / `||`** (同じく右辺へは降りず短絡式を丸ごと名前に束ねる。
-  受け側の let-shortcircuit が受理すると判定手続き自身に訊いてからのみ、追記53。
-  bypass は保たれる)、**`return`** (追記55-57)。`return` の扱いは置かれた場所で決まる:
-  needing fn の clone / closure literal では `return v` = 「この computation の値が v」なので
-  **split の前に tail へ寄せる**; loop 内では値を控えて `break` で出て loop の外で返す
-  (入れ子 loop は各段に guard を置いて exit を 1 段ずつ外へ運ぶ); handle body 内では
-  「囲む関数から抜ける」意味なので **cell を handle の外に置いて handle の後で返す**。
-  **寄せきれない `return` が残ればその body は refuse される** (追記54) ので、この書き換えが
-  不完全であることのコストは拒否であって miscompile ではない
-  、**iterand の種別を構文的に示せる `for-in`** (`Array[..]` / `String` 注釈の引数、
-  配列 / 文字列リテラルの束縛、**iterand 位置のリテラル** (`for x in [1, 2]` /
-  `for c in "ab"`)、宣言戻り値型を持つ callee への**呼び出し** — iterand 位置でも、
-  その呼び出しに束縛された名前経由でも。split の前に Array なら indexed while 形、
-  String なら `String::char_code_at` 形へ落とす。示せない iterand は書き換えない:
-  codegen は実行時に String を判別して byte を materialize するので (#807)、
-  Array 形へ書き換えれば 0 回反復で黙って誤る、追記58/60/63)。
-  **callee 名の引き当てはスコープ盲な binder プローブで守る** — 同じ綴りの局所束縛が
-  歩いている式のどこかにあれば証明を捨てる。守らないと top-level の宣言を信じて
-  String を Array として index し、診断も trap も無く誤答する (#1714、追記63)。
-  **適格性判定は 1 本の lexical classification stack を authority にする** —
-  現在見える最後の binder だけを inert / CPS / opaque に分類し、inert/CPS は受理、
-  opaque は拒否する。その後でだけ、未束縛の generated prefix、builtin / ctor / needing、
-  `scps_fn_row_of` / `scps_callee_first_order` を引く。独立した名前集合では古い inert/CPS
-  証明が同名の新しい opaque binder を飛び越えるため不可。source-bound `__scps_*` も
-  opaque のまま。適格性と culprit 診断は同じ predicate と scope 遷移を共有する
-  (#1718、追記64)
-- **不適格**: **種別を示せない `for` 形**、**選ばれた `&&` / `||` 右辺が
-  `return` / `break` / `continue` する形**、実引数証明が
-  成立しない closure パラメータの呼び出し、row 変数 callee (`with e`)。closure
-  literal は prepass が literal 自身の spine で step-split し、supported nested
-  different-effect handles は既存の handler-ownership lowering を維持するため、
-  compound ANF の blanket rejection には含めない
+Because `await` becomes a `perform`, code containing an `await` is subject to
+the eligibility rules of the suspend CPS split (`scps_*`). The boundary today:
 
-closure param を**無条件に**許すのは不健全 — closure literal 内の `perform`
-は「リテラルが置かれた関数の row」に字句的に計上されるので (#761)、「宣言
-row が空 ⇒ perform しない」が成り立たない。#1536 (a) の受理はそのため
-**実引数フローの証明**に基づく: CPS clone `__scps_cps_E_f` に到達するのは
-`f` の by-name call site だけ (値経由の呼び出しは untouched な original を
-走る) なので、全 by-name site が当該 slot に suspend-inert な値 — perform を
-一切含まず・needing 名を参照せず・不透明 callee を呼ばない closure literal、
-または委譲元 fn 自身の同様に証明済みの row-free param (`AsyncIter::any` →
-`AsyncIter::find` の転送形) — を渡すと証明できた slot に限り、clone 内の
-`pred(v)` を plain call として受理する。1 site でも perform する literal を
-渡せば slot 全体が taint し、従来どおり `cannot see through` で拒否される
-(fixtures/err_effect_closure_param_taint.vibe)。これで `AsyncIter::find` /
-`AsyncIter::any` / `AsyncIter::all` は suspend body から呼べる。`await(Stream::next(s))` は
-synthetic retarget (#1536 (a) v2, ADR-0076 追記41) で書けるようになり、
-`for` 駆動の terminal (`AsyncIter::collect` / `AsyncIter::fold` / `AsyncIter::count`) は
-let-floating (#1536 (a) v3, 追記42) で書けるようになった。
+- **Eligible**:
+  - the let / seq / tail / branch-tail spine, and `while` + `let mut` (#1230:
+    `let mut x = v` becomes a one-element cell, `while` a tail-recursive local
+    `let rec` closure);
+  - **a let-chain compound at the HEAD of a sequence** (a brace block
+    statement, the desugared output of an async-iterator `for` in statement
+    position — #1536 (a) v3's let-floating rebalances it onto the continuation
+    spine, ADR-0076 addendum 42);
+  - **a call of a row-free closure parameter whose every by-name call site
+    passes a provably suspend-inert argument** (#1536 (a), below);
+  - an `if` condition or `match` scrutinee that is itself a direct target
+    perform, a concrete needing call or a CPS-local call (evaluated once into a
+    fresh `let`, then selected — addendum 44);
+  - **an ordinary assignment (`=`) on the continuation spine whose right-hand
+    side is that direct shape** (evaluated once into a fresh `let`, assigned
+    once — addendum 45), and **a `while` condition of that shape** (evaluated
+    once per check inside the recursive loop closure — addendum 46);
+  - **`break` / `continue` inside a loop** (the exit continuation is cut out as
+    a closure and the transfer becomes a call on the CPS spine — addendum 47);
+  - **a suspension embedded in a compound expression** — operands, call and
+    constructor arguments, a compound `while` condition, compound assignment
+    such as `+=` — linearized into a let chain in the original evaluation
+    order (addendum 48);
+  - **an `if` / `match` that is the whole value of a `let` / `let mut`** (the
+    binding and the continuation are distributed into the branches; the
+    condition or scrutinee is evaluated once in place, and `match` arms are
+    alpha-renamed before the continuation moves — addendum 49), and **a block
+    that is the whole value of a `let` / `let mut`** (`{ stmts..; value }`; the
+    binding moves inside the statement prefix and floated binders are
+    alpha-renamed — addendum 50, which is what lets "branches containing
+    statements" through);
+  - **the right-hand side of an assignment that is such a selection or block**
+    (a boxed target before cellification, an off-spine target on the
+    continuation spine, by the same two rewrites — addendum 51);
+  - **an `if` / `match` nested inside a compound** (bound to a name whole,
+    without descending into the branches, then handed to addendum 49's
+    distribution — addendum 52);
+  - **a non-tail `&&` / `||`** (also bound whole, without descending into the
+    right operand, and only after asking the receiving let-short-circuit
+    procedure whether it accepts it; the bypass is kept — addendum 53);
+  - **`return`** (addenda 55–57). Where it sits decides the treatment: in a
+    needing function's clone or a closure literal, `return v` means "this
+    computation's value is v" and is **moved to the tail before the split**;
+    inside a loop the value is saved, the loop is left with `break`, and the
+    value returned outside (nested loops put a guard at each level and carry
+    the exit outward one level at a time); inside a `handle` body it means
+    "leave the enclosing function", so **the cell lives outside the `handle`
+    and the return happens after it**. **A `return` that cannot be moved this
+    way makes the body refused** (addendum 54), so the cost of an incomplete
+    rewrite is a refusal, never a miscompile;
+  - **a `for-in` whose iterand kind can be shown syntactically**: an argument
+    annotated `Array[..]` / `String`, a binding of an array / string literal, a
+    **literal in iterand position** (`for x in [1, 2]` / `for c in "ab"`), or
+    a **call** of a callee with a declared return type, in iterand position or
+    through a name bound to the call. Before the split an Array becomes the
+    indexed `while` form and a String the `String::char_code_at` form. An
+    iterand whose kind cannot be shown is not rewritten: codegen tells a
+    String apart at run time and materializes its bytes (#807), so rewriting it
+    into the Array form would iterate zero times and be silently wrong
+    (addenda 58 / 60 / 63).
+- **Callee names are resolved behind a scope-blind binder probe**: if a local
+  binding with the same spelling occurs anywhere in the walked expression, the
+  proof is dropped. Without the probe, trusting the top-level declaration
+  indexed a String as an Array and answered wrongly with neither a diagnostic
+  nor a trap (#1714, addendum 63).
+- **One lexical classification stack is the authority for eligibility.** Only
+  the last visible binder of a name is classified — inert, CPS or opaque;
+  inert and CPS are accepted, opaque refused. Only then are the unbound
+  generated prefixes, builtins / constructors / needing functions,
+  `scps_fn_row_of` and `scps_callee_first_order` consulted. Independent name
+  sets would let an old inert or CPS proof leap over a newer opaque binder of
+  the same name. A source-bound `__scps_*` stays opaque. Eligibility and the
+  culprit diagnostic share the same predicate and scope transitions (#1718,
+  addendum 64).
+- **Ineligible**: a `for` whose iterand kind cannot be shown; a selected `&&` /
+  `||` right operand that does `return` / `break` / `continue`; a call of a
+  closure parameter whose argument proof fails; a row-variable callee (`with
+  e`). A closure literal is step-split on its own spine by the prepass, and
+  supported nested handles of different effects keep the existing
+  handler-ownership lowering, so neither is part of a blanket compound-ANF
+  refusal.
 
-### 2.3 同期 effect との関係
+Admitting closure parameters **unconditionally** would be unsound: a
+`perform` in a closure literal is charged lexically to the row of the
+function the literal sits in (#761), so "the declared row is empty, therefore
+it does not perform" does not hold. #1536 (a)'s acceptance therefore rests on
+**a proof about the argument flow**. Only `f`'s by-name call sites reach the
+CPS clone `__scps_cps_E_f` (a call through a value runs the untouched
+original), so for a slot where every by-name site can be shown to pass a
+suspend-inert value — a closure literal that contains no perform, references
+no needing name and calls no opaque callee, or the delegating function's own
+row-free parameter proven the same way (the `AsyncIter::any` →
+`AsyncIter::find` forwarding shape) — `pred(v)` in the clone is accepted as a
+plain call. One site passing a literal that performs taints the whole slot,
+which is refused as before with `cannot see through`
+(`fixtures/err_effect_closure_param_taint.vibe`). This is what lets a suspend
+body call `AsyncIter::find` / `AsyncIter::any` / `AsyncIter::all`; the
+`for`-driven terminals (`AsyncIter::collect` / `AsyncIter::fold` /
+`AsyncIter::count`) became writable with the let-floating of #1536 (a) v3
+(addendum 42).
 
-同期 effect (`handle`/`perform`/`resume`) は evidence-passing で実装されて
-おり (#817、replay は全廃)、`Async` もその上に乗る。`Async::Suspend` は
-ただの operation で、特別扱いされるのは **payload 帯の意味づけ**と、
-`await_poll_pass` がそれを合成する点だけ。同期 effect の意味論は不変。
+### 2.3 Relationship to synchronous effects
+
+Synchronous effects (`handle` / `perform` / `resume`) are implemented by
+evidence passing (#817; replay is gone entirely), and `Async` rides on top of
+them. `Async::Suspend` is an ordinary operation; the only special treatment is
+**the meaning of its payload bands** and the fact that `await_poll_pass`
+synthesizes it. The semantics of synchronous effects do not change.
 
 ### 2.4 Stream types
 
 The language has three deliberately distinct stream roles:
 
-| 型 | 実行時表現 | 用途 | 位置づけ |
+| type | run-time representation | used for | role |
 |---|---|---|---|
-| `ByteStream` | nominal byte sequence | `String::to_bytes` / `ByteStream::to_string` and WIT `stream<u8>` boundaries | Boundary specialization; never a generic guest stream |
-| `HostStream` | two-word cell `[3, handle]` | `host_stream_named` / `host_stream_next` / `host_stream_close` | Host-owned named-stream protocol; its final `next` API is tracked by #1955 |
-| AsyncIter | trait (`lib/@vibe/builtin/async_iter.vibe`) | guest pull iteration | Guest-only protocol; rejected in WIT signatures |
+| `ByteStream` | nominal byte sequence | `String::to_bytes` / `ByteStream::to_string` and WIT `stream<u8>` boundaries | the boundary specialization; never a generic guest stream |
+| `HostStream` | the two-word cell `[3, handle]` | `host_stream_named`, `HostStream::next` (`-> Option[Int] with Async`), `HostStream::close` (idempotent), and the scalar `host_stream_next` / `host_stream_close` the generated loops use | a readable `stream<u8>` end owned by the host (#1955) |
+| AsyncIter | a trait (`lib/@vibe/builtin/async_iter.vibe`) | guest pull iteration | guest-only protocol; refused in WIT signatures |
 
-The removed `Stream[T]` type was an eager Array-backed prototype. It no longer
-resolves as a compiler-owned nominal type, and `Stream::next` and
-`Stream::to_string` no longer resolve as builtins. This prevents an Array-backed
-guest value from being advertised as a component stream.
+The removed `Stream[T]` was an eager, Array-backed prototype. It no longer
+resolves as a compiler-owned nominal type, and `Stream::next` /
+`Stream::to_string` no longer resolve as builtins (#1538), so an Array-backed
+guest value cannot be advertised as a component stream. stdin is not a
+`HostStream`: `wasi:cli/stdin@0.3.0` hands over a stream and a completion
+future together, which the opaque `StdinStream` carries (§3.18.3, #1539).
 
-`for x in s { ... }` は iterand の型で eager ループか await ループかが決まる。
-**`for await` という別綴りは #1350 で廃止** — iteration が suspend しうる
-ことは effect row が既に語っており、構文マーカーは二重表現だった。
-その `for` 自身が `Async` を要求するかどうかは **iterand の型**から読む
-(#1358): `next` が `Future` を返す iterator trait を実装した型、または
-`HostStream` なら、囲む row に `Async` が要る。desugar が await ループを
-選ぶのと同じビットを見ているので、両者の判定は定義上一致する。
+Whether `for x in s { ... }` is an eager loop or an await loop is decided by
+the iterand's type. **The separate `for await` spelling was removed by
+#1350**: that an iteration may suspend is already said by the effect row, so a
+syntactic marker said it twice. Whether the `for` itself requires `Async` is
+read from **the iterand's type** (#1358): a type implementing an iterator
+trait whose `next` returns a `Future`, or a `HostStream`, needs `Async` in the
+enclosing row. The desugar reads the same bit to choose the await loop, so the
+two decisions agree by construction.
 
-`ByteStream` is nominal even though the current linear conversion lowering
-materializes bytes internally. Array builtins reject it, so that representation
-is not part of the source contract. Exact-byte and empty-stream conversion are
-covered by the linear/component gates.
+`ByteStream` is nominal even though today's linear conversion lowering
+materializes the bytes internally. Array builtins reject it, so that
+representation is not part of the source contract. Exact-byte and empty-stream
+conversion are covered by the linear and component gates.
 
-### 2.5 `Task[T]` was removed (#1227)
+### 2.5 `Task[T]` was removed (#1227); concurrency is `@vibe/concurrent`
 
 `Task::spawn` / `join` / `cancel` / `race` / `timeout` were **removed** from the
-front end; writing them gives `unknown name`. `spawn` ran its thunk immediately,
-so `spawn(f); spawn(g)` was always serial -- it looked concurrent and was
-silently serial, with no warning and no failure.
+front end; writing them gives `unknown name`. `spawn` ran its thunk
+immediately, so `spawn(f); spawn(g)` was always serial — it looked concurrent
+and was silently serial, with no warning and no failure.
 
-The concurrency surface that ships is `lib/@vibe/concurrent`: the stable core
-(`TaskGroup::run` / `spawn`, `TaskHandle::join`, channels, `Parallel::map`) in
-`@vibe/concurrent`, and the suspendable-task lane (`TaskGroup::spawn_suspend` /
-`sleep_wait`) in `@vibe/concurrent/experimental` behind `VIBE_UNSTABLE=1`. The
-source of truth for the public semantics is the
-[ADR-0068 detailed specification](concurrency.md). A true subtask spawn
-(waitable-set / `future.cancel-*`) is M-conc-2 and has not started.
+The concurrency surface is `lib/@vibe/concurrent`
+([concurrency.md](concurrency.md), ADR-0068):
 
-## 3. codegen 戦略: Component Model async canonical ABI（stackless）
+- the stable core, `TaskGroup::run` / `TaskGroup::spawn`, `TaskHandle::join`,
+  channels and `Parallel::map`, in `@vibe/concurrent`;
+- the suspendable-task lane — `TaskGroup::spawn_suspend`, `pump` /
+  `pump_all`, `sleep_wait`, `send_wait` / `recv_wait`, `result_wait` and the
+  task-level `effect Async` — in `@vibe/concurrent/experimental` behind
+  `VIBE_UNSTABLE=1`. Promoting it is #3200.
 
-vibe は compiled でネイティブ coroutine を持たないため、各 `async` 関数を
-**状態機械（stackless coroutine）に lower** し、Component Model async の
-canonical built-ins を直接呼ぶ。これは wit-bindgen が Python/JS/C# 向けに採る
-方式と同じで、**WASM stack-switching proposal（エンジン未安定）に依存しない**。
+In a component, suspendable tasks really interleave on host waits (#1537,
+#2065): a task that awaits a host future, reads a host stream or sleeps parks
+on it, and the group waits on all of them in one shared waitable set,
+dispatching on whichever completes (§3.11's completion-order dispatch).
+Cancellation releases a parked read with `future.cancel-read` /
+`stream.cancel-read` and a pending call or timer with `subtask.cancel`
+([async-host-contract.md](async-host-contract.md)). **The tasks are guest
+fibers** scheduled inside one component instance, not Component Model
+subtasks the host can see, schedule or cancel; backing them with subtasks is
+#3147.
 
-使用する canonical built-ins（wasmtime 45 のフラグ — §3.1 の M1b spike で
-確定 — `-W concurrency-support=y -W component-model-async=y` ＋ stackful
-form では `-W component-model-async-stackful=y`）:
+## 3. Codegen strategy: the Component Model async canonical ABI
 
-- `future.new` / `future.read` / `future.write` / `future.cancel-read`
-- `stream.new` / `stream.read` / `stream.write` / `stream.cancel-read`
-- `task.return`（async export の結果返却）/ `task.wait` 相当の
-  `waitable-set.new` / `waitable-set.wait` / `waitable.join`
-- `async-lower` / `async-lift`（import/export の async 呼び出し規約）
+vibe calls the Component Model's async canonical built-ins directly and does
+not depend on the Wasm stack-switching proposal. Entries are lifted in the
+**stackful, callback-less** form (§3.1): the lifted core function returns
+nothing and delivers its result through `task.return`, and a wait is a call to
+`waitable-set.wait` that suspends the whole task on the host's fiber. The
+emitted code is therefore straight-line — compute, `task.return`, return — and
+no explicit state machine is generated for the entry. wit-bindgen's callback
+form, which does need one, is recorded as a portable fallback and is not
+implemented.
 
-lowering 概要:
+The canonical built-ins in use:
 
-1. `async fn` を、suspend point（各 `await` / async `for` の `stream.read`）で
-   分割した状態機械関数へ変換。ローカルは線形メモリ上の frame に退避。
-2. `await f` は `future.read` を発行し、`BLOCKED` なら `waitable-set.wait` に
-   登録して制御を返す。完了時に状態機械を resume。
-3. `Stream[T]::next()` は `stream.read`（1 要素ぶん）を `future` 化して返す。
-   async `for` はこれを繰り返し、`None`（EOF）で終了。
-4. async export（HTTP handler 等）は `task.return` で結果を返し、
-   `async-lift` 規約で wasmtime に lift される。
+- `task.return` for an async export's result; `subtask.drop` / `subtask.cancel`;
+- `future.new` / `future.read` / `future.write` / `future.drop-readable` /
+  `future.drop-writable` / `future.cancel-read`;
+- `stream.new` / `stream.read` / `stream.write` / `stream.drop-readable` /
+  `stream.drop-writable` / `stream.cancel-read`;
+- `waitable-set.new` / `waitable-set.wait` / `waitable-set.drop`,
+  `waitable.join`;
+- `canon lower ... async` for imports and `canon lift ... async` for exports.
 
-この lowering は `lib/@vibe/compiler/codegen/` に実装する（CLAUDE.md の source-of-truth 方針）。
-既存の effect region / replay 機構とは独立した新パスとする。
+Where each piece lives:
+
+- **The guest's await** is §2.2's AST rewrite: `await` performs
+  `Async::Suspend` with a payload naming what it waits on, and the entry
+  boundary's `__entry_settle` settles it by calling into the adapter.
+- **The adapter**, a core module the composer generates
+  (`comp_generate_hostfuture_adapter_core_module` and its siblings in
+  `lib/@vibe/compiler/entry/source_compile/wasi_only/component_codegen*.vibe`),
+  owns every canonical call: it issues the reads, parks in
+  `waitable-set.wait`, and hands values to the guest through raw `vibe.*`
+  imports ([async-host-contract.md](async-host-contract.md)).
+- **Concurrency between guest tasks** is the in-guest scheduler resuming tasks
+  in the order their waits complete (§3.11, #1537), not a second stack.
+
+These emitters are separate from the evidence-passing effect lowering. On
+wasmtime 47 component-model async is on by default; the flags the gates pass
+are listed in §5.
 
 ### 3.1 M1b feasibility spike（landed、実測 — wasmtime 45.0.0 / x86_64 linux）
 
@@ -356,6 +413,70 @@ proposal（非 x86_64 で未サポート）とは別物のため、エンジン�
 
 検証基盤: 既存 `src/x/cm_async/cm_async_probe.wat`（flag 受理の sync probe）に
 加え、本 spike の `cm_async_lift_probe.wat`（async-lift 実動 probe）を追加。
+
+### 3.2 M1b 実装ブループリント（byte-level encoding map）
+
+`cm_async_lift_probe.wat` を `wasm-tools dump` して抽出した、component encoder が
+emit すべき正確なバイト列（wasmtime 45 で検証済み）。`component_codegen.vibe`
+は既に async func type opcode `0x43`(67) と sync canon lift を持つので、不足は
+(a) async lift option、(b) `task.return` canon、(c) core 側の import + void entry。
+
+**core module**（`linked_compile.vibe`、async entry のとき）:
+- import section: `import "cm" "task-return"`、func 型 `(param i32) (result)`
+  = `02 63 6d  0b 74 61 73 6b 2d 72 65 74 75 72 6e  00 00`
+  （module名"cm" / name"task-return" / kind=func(00) / typeidx=0）。
+- entry func body: 値を計算し `call $task_return` して **void で return**
+  = 例 `41 2a  10 00  0b`（i32.const 42; call task_return; end）。
+- 型: task_return 用 `(param i32)->()` = `60 01 7f 00`、entry `()->()` = `60 00 00`。
+
+**component sections**（`component_codegen.vibe`）:
+- task.return canon: section `08`、内容 `01` + `09 00 79 00`
+  （`09`=task.return opcode、`00 79`=result Some(u32, valtype `0x79`)、`00`=options空）。
+  valtype をパラメタ化（s32=`0x7a`? 等は要確認、u32=`0x79` は実測済み）。
+- async component func type: `43 00 00 79`
+  （`0x43`=async functype opcode、`00`=params数0、`00`=result-form tag、`79`=u32）。
+  既存 `emit_comp_func_type(is_async=1)` が `0x43` を出すが result は s64(`0x78`)
+  固定 — 結果型をパラメタ化する必要あり。
+- core instance: task.return core func を `FromExports`("task-return") で 1 つの
+  core instance にし、main module 実体化の `cm` 引数に渡す。
+- async canon lift: `00 00 <core_func_idx> 01 06 00`
+  （`00`=lift, `00`=func sort, core_func_idx, options vec len `01`, **async opt
+  `0x06`**, type_idx）。現 `emit_canon_lift_func` は options に async(`0x06`)を
+  含めないので async 変種を追加する。
+- export: 既存 `emit_comp_export_section` を流用。
+
+**フラグ**: `-W concurrency-support=y -W component-model-async=y
+-W component-model-async-stackful=y`。
+
+最初の縦串 PoC は await 無し（`() -> Int with Async` の body が定数 / 純粋
+計算）で `task.return` 経路を通し、その後 `await(Future::ready(x))` → 単一
+`future.read` ブロックへ広げる。
+
+### 3.2.1 M1b codegen stage 1（landed）+ stage 2 の前提発見
+
+**stage 1（done）**: `component_codegen.vibe` に async component emitter を実装:
+`emit_canon_task_return` / `emit_canon_lift_async_section`（async canonopt
+`0x06`）/ `emit_comp_async_functype_section`（opcode `0x43`）/
+`comp_emit_component_wasm_async`。`component_codegen_test.vibe` 10/10 で、emit
+結果が §3.2 の検証済みバイト列と一致すること（および sync lift には async
+option が混入しないこと）を確認。emitter は既存 sync lift と同じ構成ヘルパ
+（header / core module / core instance / alias / export）を再利用するため、
+runnable な probe とのバイト一致＝全体も valid と判断できる。
+
+**stage 2 で判明した前提（重要）**: selfhost ツリーには **`--component`
+オーケストレーションが存在しない**（`comp_emit_component_wasm*` は定義・テスト
+のみで、CLI からは呼ばれていない。`vibe compile --component` / `--compose-p3`
+の実体は host (`src/`) 側）。したがって「実 `.vibe` → async component を
+`vibe compile` で生成して wasmtime で動かす」真の E2E には、まず **selfhost 側に
+component-compile オーケストレーション（entry → core wasm → component wrap）を
+構築する**必要がある。これは linked_compile の小改修ではなく独立した feature で、
+core-side の async entry 生成（`cm.task-return` import + void entry）もその中に
+位置づくべき。M1b は「emitter（stage 1, done）」と「orchestration + core-side
+（stage 2, 別 feature）」に再分割する。
+
+stage 2 の真の E2E 検証は、selfhost component-compile orchestration 着地後に
+`vibe compile --component async.vibe` → wasmtime 45 で実施する。それまでの
+emitter の正しさは byte-exact 一致（runnable probe 基準）で担保する。
 
 ### 3.3 M2c-3 feasibility spike: 真の `stream<u8>` canonical built-ins（landed）
 
@@ -421,70 +542,6 @@ codegen は「self stream を作って書いて読む」ではなく、「**impo
   で Array に読み込み、`for` / `Stream::next` をそのループへ lower。
 - (c) gate / probe は host 提供 stream を使う（`--invoke` だけでは host stream を
   供給できないため、wasi:http world での e2e、もしくは host harness を用意する）。
-
-### 3.2 M1b 実装ブループリント（byte-level encoding map）
-
-`cm_async_lift_probe.wat` を `wasm-tools dump` して抽出した、component encoder が
-emit すべき正確なバイト列（wasmtime 45 で検証済み）。`component_codegen.vibe`
-は既に async func type opcode `0x43`(67) と sync canon lift を持つので、不足は
-(a) async lift option、(b) `task.return` canon、(c) core 側の import + void entry。
-
-**core module**（`linked_compile.vibe`、async entry のとき）:
-- import section: `import "cm" "task-return"`、func 型 `(param i32) (result)`
-  = `02 63 6d  0b 74 61 73 6b 2d 72 65 74 75 72 6e  00 00`
-  （module名"cm" / name"task-return" / kind=func(00) / typeidx=0）。
-- entry func body: 値を計算し `call $task_return` して **void で return**
-  = 例 `41 2a  10 00  0b`（i32.const 42; call task_return; end）。
-- 型: task_return 用 `(param i32)->()` = `60 01 7f 00`、entry `()->()` = `60 00 00`。
-
-**component sections**（`component_codegen.vibe`）:
-- task.return canon: section `08`、内容 `01` + `09 00 79 00`
-  （`09`=task.return opcode、`00 79`=result Some(u32, valtype `0x79`)、`00`=options空）。
-  valtype をパラメタ化（s32=`0x7a`? 等は要確認、u32=`0x79` は実測済み）。
-- async component func type: `43 00 00 79`
-  （`0x43`=async functype opcode、`00`=params数0、`00`=result-form tag、`79`=u32）。
-  既存 `emit_comp_func_type(is_async=1)` が `0x43` を出すが result は s64(`0x78`)
-  固定 — 結果型をパラメタ化する必要あり。
-- core instance: task.return core func を `FromExports`("task-return") で 1 つの
-  core instance にし、main module 実体化の `cm` 引数に渡す。
-- async canon lift: `00 00 <core_func_idx> 01 06 00`
-  （`00`=lift, `00`=func sort, core_func_idx, options vec len `01`, **async opt
-  `0x06`**, type_idx）。現 `emit_canon_lift_func` は options に async(`0x06`)を
-  含めないので async 変種を追加する。
-- export: 既存 `emit_comp_export_section` を流用。
-
-**フラグ**: `-W concurrency-support=y -W component-model-async=y
--W component-model-async-stackful=y`。
-
-最初の縦串 PoC は await 無し（`() -> Int with Async` の body が定数 / 純粋
-計算）で `task.return` 経路を通し、その後 `await(Future::ready(x))` → 単一
-`future.read` ブロックへ広げる。
-
-### 3.3 M1b codegen stage 1（landed）+ stage 2 の前提発見
-
-**stage 1（done）**: `component_codegen.vibe` に async component emitter を実装:
-`emit_canon_task_return` / `emit_canon_lift_async_section`（async canonopt
-`0x06`）/ `emit_comp_async_functype_section`（opcode `0x43`）/
-`comp_emit_component_wasm_async`。`component_codegen_test.vibe` 10/10 で、emit
-結果が §3.2 の検証済みバイト列と一致すること（および sync lift には async
-option が混入しないこと）を確認。emitter は既存 sync lift と同じ構成ヘルパ
-（header / core module / core instance / alias / export）を再利用するため、
-runnable な probe とのバイト一致＝全体も valid と判断できる。
-
-**stage 2 で判明した前提（重要）**: selfhost ツリーには **`--component`
-オーケストレーションが存在しない**（`comp_emit_component_wasm*` は定義・テスト
-のみで、CLI からは呼ばれていない。`vibe compile --component` / `--compose-p3`
-の実体は host (`src/`) 側）。したがって「実 `.vibe` → async component を
-`vibe compile` で生成して wasmtime で動かす」真の E2E には、まず **selfhost 側に
-component-compile オーケストレーション（entry → core wasm → component wrap）を
-構築する**必要がある。これは linked_compile の小改修ではなく独立した feature で、
-core-side の async entry 生成（`cm.task-return` import + void entry）もその中に
-位置づくべき。M1b は「emitter（stage 1, done）」と「orchestration + core-side
-（stage 2, 別 feature）」に再分割する。
-
-stage 2 の真の E2E 検証は、selfhost component-compile orchestration 着地後に
-`vibe compile --component async.vibe` → wasmtime 45 で実施する。それまでの
-emitter の正しさは byte-exact 一致（runnable probe 基準）で担保する。
 
 ### 3.4 M1b-2 アプローチ確定（trampoline、実測済み）
 
@@ -1364,6 +1421,50 @@ lane（future 30 + stream 5+7 = 42、両 import が WIT に出る）。byte leve
 検証済みの consume 形: 直列 let 読み、while ループ、自己再帰、EOS 後の
 再読（latch で -1）。
 
+#### 3.18.1 `host_stream_close` — 部分消費した stream の明示解放（done）
+
+§3.18 が follow-up として残していた制限（途中で読むのをやめた stream の
+readable end を解放する surface が無い）を埋めたスライス。read 半分は EOS に
+到達したときだけ drop するので、それ以前に読むのをやめた handle は component
+instance の寿命まで残っていた。
+
+surface は `host_stream_close: (HostStream) -> Unit`。**`Async` は付かない** —
+`stream.drop-readable` は block しない canon call なので park も予約帯も
+boundary settle arm も要らず、注入 fn `__hs_close` が adapter を直接呼ぶ。
+
+```vibe skip
+// doctest-skip: needs an Async-row entry + component adapter; not runnable standalone
+let run: () -> Int with Async = () -> {
+  let s = host_stream_named("body")
+  let a = host_stream_next(s)
+  let b = host_stream_next(s)
+  host_stream_close(s)          // 残りは読まない
+  host_stream_close(s)          // 二重 close は no-op
+  let after = host_stream_next(s)  // close 後の read は -1
+  a + b + (after + 1)
+}
+```
+
+冪等性は **cell の state word が担保する**（飾りではなく load-bearing:
+1つの handle に `stream.drop-readable` を2回投げると host 側で trap する）。
+`__hs_close` は state 3 のときだけ drop し、同じ step で cell を閉じる
+(3 → 0) ので、2回目の close も close 後の read も adapter には届かない。
+inline-terminal read が立てた CLOSED latch も同時にクリアする — その drop が
+まさに latch の待っていた settle なので。
+
+**gating on use（byte 互換の要）**: `__hs_close` は source が実際に
+`host_stream_close` を呼んだときだけ注入される。`vibe_hs_close_raw` を参照する
+のはこの注入 fn だけで、import はその名前の使用で gate されるため、無条件に
+注入すると **drain するだけの program にも close import と adapter func が
+生えて**、既に pin されている stream composition のバイトが動く。adapter 側の
+close func も同じ sniff（guest が `vibe.host_stream_close` を import するか）で
+gate し、**func list の最後に append** するので既存 index は不変。
+
+gate lane = `test_named_hoststreams_component_gate.sh` の close lane
+（5 bytes 中 2 bytes だけ読んで close → 再 close → close 後 read で 42、
+かつ drain-only component に close import が無いこと + closing component に
+guest import と adapter export が両方あることを .wat で確認）。
+
 #### 3.18.2 `for b in <host stream>` — 表現の分離と読み出しへの接続（done, #1341）
 
 D3 の「AsyncIter への接続」の最初のスライス。**着手前に測った事実が設計を
@@ -1471,49 +1572,192 @@ migration に弾かれて**コンパイルすら通らない**（"the site is no
 for evidence-passing migration"）ので、これは D3 の接続作業ではなく
 suspend lowering 側の適格性の話。eager `Stream[T]` combinator の退役も別途。
 
-#### 3.18.1 `host_stream_close` — 部分消費した stream の明示解放（done）
+#### 3.18.3 #1539 — `wasi:cli/stdin@0.3.0` lifecycle measurement and shadow provider prerequisite
 
-§3.18 が follow-up として残していた制限（途中で読むのをやめた stream の
-readable end を解放する surface が無い）を埋めたスライス。read 半分は EOS に
-到達したときだけ drop するので、それ以前に読むのをやめた handle は component
-instance の寿命まで残っていた。
+`tools/wasip3_component_probe/stdin_read_via_stream/component.wat` retains the
+ratified `wasi:cli/stdin@0.3.0` result type
+`tuple<stream<u8>, future<result<_, error-code>>>`, including the nominal
+`wasi:cli/types@0.3.0/error-code` alias. It also retains the preview-2
+`wasi:cli/run@0.2.12` command export. Thus an error result cannot be silently
+accepted as a representation-compatible non-nominal value.
 
-surface は `host_stream_close: (HostStream) -> Unit`。**`Async` は付かない** —
-`stream.drop-readable` は block しない canon call なので park も予約帯も
-boundary settle arm も要らず、注入 fn `__hs_close` が adapter を直接呼ぶ。
+**Measured on pinned wasmtime 47.0.2:** with binary stdin `10,15,17`, `drain`
+performs canonical async `stream.read` calls for each byte, observes the
+separate zero-item EOF status, drops the readable stream, and awaits canonical
+`future.read` completion success; it returns `42`. `drop` obtains the same
+pair, drops its readable stream immediately, awaits completion success, and
+returns `43`. BLOCKED stream/future reads use `waitable-set.new`,
+`waitable.join`, and `waitable-set.wait`; the end is unjoined before its set is
+dropped. Other statuses, events, byte values, EOF forms, and result tags are
+diagnostic return paths, not success.
 
-```vibe skip
-// doctest-skip: needs an Async-row entry + component adapter; not runnable standalone
-let run: () -> Int with Async = () -> {
-  let s = host_stream_named("body")
-  let a = host_stream_next(s)
-  let b = host_stream_next(s)
-  host_stream_close(s)          // 残りは読まない
-  host_stream_close(s)          // 二重 close は no-op
-  let after = host_stream_next(s)  // close 後の read は -1
-  a + b + (after + 1)
-}
+`bash scripts/test_wasi_cli_stdin_p3_probe_gate.sh` is the merged executable
+probe/gate for this measurement. The generated shadow is validated by
+`bash scripts/test_wasi_cli_stdin_provider_component_gate.sh`; phase C of
+`scripts/test_wasi_p3_guarantee_gate.sh` (`pkf run test-wasi-p3`) invokes both.
+It parses, validates, and prints the component, generates deterministic binary
+input, and executes both async-lifted lanes. Required mode requires exactly
+wasmtime 47.0.2; missing tools, an unpinned provider, and
+ABI/type/link/command-export failures fail closed. The default local mode skips
+unavailable tools or an unpinned provider. The aggregate is IN `ci-required`:
+it is the only lane that runs a composed component end to end under a real
+host, so a componentized regression has nowhere else to be caught. The cost of
+folding it in is that an unavailable host implementation or an unpinned
+wasmtime blocks a merge rather than reporting.
+
+##### Why the current `HostStream` ABI cannot represent stdin
+
+The current generic `HostStream` cell is exactly `[3, handle]`: one readable
+`stream<u8>` handle identified by a named host-stream getter. It has no slot
+for another owned resource, no provider identity, and its
+`host_stream_named("name")` import is modeled as a getter for that one stream.
+It is therefore correct for the generic named-host-stream contract in §3.18,
+but it is not a lossless carrier for stdin.
+
+`wasi:cli/stdin@0.3.0::read-via-stream` is instead a **synchronous
+acquisition** which returns **two separately owned readable handles** in one
+result: the readable byte stream and the readable completion future. The latter
+settles the stdin lifecycle after the stream is drained or dropped. Replacing
+that call with `host_stream_named("stdin")` would discard the completion handle
+at acquisition, make its ownership unrepresentable, and make lifecycle failure
+invisible. It must not be treated as an alias or special name of the generic
+HostStream ABI.
+
+In particular, `stream.drop-readable` releases only the stream resource. It
+does **not** by itself complete the stdin lifecycle: the completion future must
+still be read, its result checked, and then released. This corrects the stale
+short-hand that described stream drop alone as a completed stdin close.
+
+##### Provider-aware contract (shadow lifecycle + atomic public source route)
+
+The #1539 prerequisite is a distinct, opaque provider-aware handle whose
+adapter state retains both owned ends from `read-via-stream`:
+
+```text
+acquire stdin provider (sync, Stdin authority)
+  -> opaque stdin-provider handle { readable-stream, completion-future, state }
+read opaque handle -> byte | EOF                  with Async
+close opaque handle -> lifecycle-complete result  with Async
 ```
 
-冪等性は **cell の state word が担保する**（飾りではなく load-bearing:
-1つの handle に `stream.drop-readable` を2回投げると host 側で trap する）。
-`__hs_close` は state 3 のときだけ drop し、同じ step で cell を閉じる
-(3 → 0) ので、2回目の close も close 後の read も adapter には届かない。
-inline-terminal read が立てた CLOSED latch も同時にクリアする — その drop が
-まさに latch の待っていた settle なので。
+The compiler now exposes this contract through one unforgeable nominal scalar:
 
-**gating on use（byte 互換の要）**: `__hs_close` は source が実際に
-`host_stream_close` を呼んだときだけ注入される。`vibe_hs_close_raw` を参照する
-のはこの注入 fn だけで、import はその名前の使用で gate されるため、無条件に
-注入すると **drain するだけの program にも close import と adapter func が
-生えて**、既に pin されている stream composition のバイトが動く。adapter 側の
-close func も同じ sniff（guest が `vibe.host_stream_close` を import するか）で
-gate し、**func list の最後に append** するので既存 index は不変。
+```text
+Stdin::read_via_stream() -> StdinStream with Stdin
+StdinStream::next(StdinStream) -> Int with Async
+StdinStream::close(StdinStream) -> Unit with Async
+StdinStream::read_chunk(StdinStream, Int) -> Option[String] with Async
+```
 
-gate lane = `test_named_hoststreams_component_gate.sh` の close lane
-（5 bytes 中 2 bytes だけ読んで close → 再 close → close 後 read で 42、
-かつ drain-only component に close import が無いこと + closing component に
-guest import と adapter export が両方あることを .wat で確認）。
+`StdinStream` is neither `Int`, generic `HostStream`, nor `Stream[T]`; source
+cannot construct it and it is not `Send`. The four public provider builtins are
+**direct-call-only**: any value-position reference (local/top-level alias,
+chain, compound/container/field, returned value, or unknown HOF transport) is a
+checker error. A user-defined wrapper with an explicit `Stdin` or `Async` row is
+an ordinary function and may be passed as a value under the existing effect
+rules. This deliberately does not add the generic higher-order effect-flow
+propagation deferred by #1536. Their observable authority and effect
+requirements are fixed as follows:
+
+- Acquisition is synchronous but requires `Stdin` authority. It calls
+  `read-via-stream` once and transfers ownership of **both** returned readable
+  handles into the opaque provider state.
+- Reads require `Async` because canonical `stream.read` may block. They retain
+  the existing byte/EOF behavior only after the provider adapter has performed
+  the required read/wait/unjoin work.
+- EOF and early close both require `Async`: each must release the stream end,
+  await the completion future, validate success, and release the future end.
+  Therefore lifecycle-complete close cannot be a synchronous operation.
+- A completion `error-code` is fail-closed. There is no approved public
+  `Stdin`/`Exception`/`Result` mapping yet; an adapter must not turn it into
+  EOF, success, a generic integer, or a legacy `Option` value.
+- `read_chunk(stream, n)` is a direct compiler-owned, use-gated operation with
+  `Async`. For positive `n`, it reads one provider byte at a time and returns
+  exactly `n` bytes except for the final short chunk. Bytes are validated as
+  `0..255` and appended through one-byte `String::from_char_code`, without
+  UTF-8 expansion. It does not promise to preserve internal provider read
+  boundaries. EOF settles before `None`; subsequent calls return `None`. An
+  exact multiple needs one extra call to observe EOF. For `n <= 0`, it returns
+  `None` without reading or settling, so the caller must close the stream.
+  Early stopping likewise requires explicit, idempotent `close`. A pull
+  closure/direct-`for` adapter remains blocked on transitive higher-order
+  effect evidence (#1536) and is not part of this surface.
+
+The existing `host_stream_close(HostStream) -> Unit` is deliberately
+synchronous and only drops its one generic stream handle (§3.18.1). It cannot
+wait for or validate a missing completion future, so it **cannot safely
+implement** provider stdin close. Reusing it would either leak/unjoin the
+future or silently report a failed lifecycle as a successful close.
+
+##### Staged prerequisite and invariants
+
+Stages 1--3 were first implemented by the production-unused shadow emitter
+`comp_emit_component_wasm_stdin_provider_shadow` and its private component
+scenarios. #1539 now also has a bounded **core-only** route: `linked_compile`
+reserves checker-invisible raw rows for exact core imports
+`vibe.stdin_provider_acquire () -> i64`, `stdin_provider_read (i64) -> i64`,
+and `stdin_provider_close (i64) -> i64`; the stdin-first wrapper sniffs parsed
+module/name pairs and the dedicated arbitrary-core composer validates exact
+signatures before composing the nominal stdin/types imports.
+
+The guest receives only a tagged-i64 bridge instance. The bridge rejects odd
+or high-bit-aliased wire IDs before i32 narrowing, and only then calls the
+proven opaque lifecycle functions. The full shadow instance, scenario exports,
+canonical stream handle, and completion-future handle never cross into the
+compiled guest. The bridge ABI is `wire = value << 1`; read returns tagged
+bytes or tagged `-1` after settlement and close returns tagged zero.
+
+The three raw registry rows remain `checker_visible=false`. Exact direct calls
+lower through compiler-owned ABI wrappers to those imports; the `read_chunk`
+wrapper additionally implements repeated hidden raw reads. Public operation
+values never reach codegen because the checker rejects them. Source
+emits only the exact `vibe.stdin_provider_*` core imports and the nominal
+`wasi:cli/types@0.3.0` + `wasi:cli/stdin@0.3.0` component imports.
+
+`stdin_stream`, generic HostStream, and named future/stream behavior remain
+unchanged. `host_stream_named("stdin")` is reserved and rejected. A source core
+that mixes stdin-provider imports with named future/stream imports is explicitly
+rejected in this bounded slice. GC and standalone/non-Async-entry compilation
+are also rejected explicitly; linear and RC component lanes are supported.
+
+The provider permits multiple active acquisitions. Adapter IDs allocate
+monotonically from 16 slots and are never recycled: capacity overflow traps
+before another canonical acquisition, while concurrent/reentrant use of the
+same open slot traps on its non-open phase. Successful EOF/close remains
+idempotent through aliases. Wasmtime 47 source gates measure drain, early close,
+function aliases, a sequential second acquisition, and two simultaneously open
+acquisitions.
+
+Load-bearing invariants for stages 1--3:
+
+- Each successful acquisition owns exactly one stream end and one
+  completion-future end; up to 16 acquisitions may coexist, and neither end may
+  escape as a generic `[3, handle]` HostStream.
+- EOF and early close converge on one settlement state machine. Once settlement
+  begins, subsequent reads/closes are idempotent at the opaque-handle boundary
+  and cannot issue a second drop, read, join, or unjoin.
+- Every successful join has exactly one unjoin before its waitable set is
+  dropped. Each stream/future readable end is dropped exactly once, including
+  all diagnostic/failure exits.
+- A completion error, unexpected status, or unexpected event is a failing
+  transition, never EOF or successful close. Public propagation remains
+  intentionally undecided and fail-closed.
+
+The synthetic compiled-shaped drain and early-close cores are composed and
+validated by `test_wasi_cli_stdin_provider_guest_component_gate.sh`; they check
+bytes 10/15/17, EOF/repeated reads, early settlement, and repeated close on the
+pinned Wasmtime 47.0.2 lane. The original shadow gate and exact 208-byte nominal
+prefix remain separately preserved.
+
+This is only the successful-close lifecycle slice. **Read-error injection is
+unmeasured** (`io`, `illegal-byte-sequence`, and `pipe` have no claimed runtime
+measurement). The forced completion-tag, wrong-byte, and extra-byte
+expected-trap scenarios are controls of cleanup/fail-closed branches, not
+measurements of provider-generated errors. Each byte-mismatch control settles
+and drops both owned ends through the shared close path before trapping. Those
+shadow-scenario controls introduced no API by themselves; the production
+checker-visible `StdinStream` source/console API is the surface documented in
+§3.18.3 above.
 
 #### 3.18.4 `HostStream` as a PARAMETER — the serve lane's request body (done, #1540)
 
@@ -1564,15 +1808,17 @@ export let handler = (method: String, url: String, headers: String, body: HostSt
   whose import is `handler(.., body: stream<u8>)`. There is no
   `.collect().await` anywhere in it; the reader goes straight through.
 
-> **Known gap (#1924): reads in this lane must complete EAGERLY today.** Every
-> body the gate serves arrives buffered, so each `stream.read` returns a byte
-> without blocking. Two shapes trap in the guest with `uninitialized element`
-> inside the injected `__hs_next` — a chunked upload slow enough that a read
-> actually parks, and a handler that stops reading before end of stream. Both
-> are main's CPS lowering, not the adapter (which has no tables at all), and
-> both reproduce against the emitter as first committed. The named-host-stream
-> lane's delayed path parks correctly under the same compiler, so this is
-> specific to the serve lane rather than to parking in general.
+**Reads that park, and a handler that stops early, work in this lane.** The
+first version served only buffered bodies, whose reads all complete eagerly;
+a chunked upload slow enough that a read actually parks, and a handler that
+stops reading before the end, trapped with `uninitialized element` inside the
+injected `__hs_next`. PR #1931 (#1924) fixed the component realloc — the
+trampoline's `cabi_realloc` writes back MAIN's `__heap_ptr`, and an allocator
+that left it odd corrupted the handler's first heap object, so the lane worked
+or trapped depending on the length of the request strings — and added
+regressions for both shapes. `scripts/test_serve_body_stream_gate.sh` pins a
+chunked upload fed a byte at a time (the adapter's park branch) and the same
+body under request strings of every length mod 8.
 
 > **Pitfall (measured 2026-08-16): the `vibe.*` Int ABI is NOT "always tagged".**
 > §3.13/§3.18 say "i64 values are guest-tagged on the wire (the adapter
@@ -1687,405 +1933,198 @@ Everything else on that composition is byte-identical: the sleep functype,
 imports, canon defs and adapter func are all emitted last and only when the
 core imports `vibe.sleep`.
 
-### 3.18.3 #1539 — `wasi:cli/stdin@0.3.0` lifecycle measurement and shadow provider prerequisite
+### 3.19 ADR-0089 Decision 3 — the real provider: `wasi:http`'s incoming body (#1540)
 
-`tools/wasip3_component_probe/stdin_read_via_stream/component.wat` retains the
-ratified `wasi:cli/stdin@0.3.0` result type
-`tuple<stream<u8>, future<result<_, error-code>>>`, including the nominal
-`wasi:cli/types@0.3.0/error-code` alias. It also retains the preview-2
-`wasi:cli/run@0.2.12` command export. Thus an error result cannot be silently
-accepted as a representation-compatible non-nominal value.
+§3.18's host streams were measured against viberun's test provider
+(`VIBE_ASYNC_STREAMS="body=10|15|17"`, wasmtime's own `Vec<u8>`
+StreamProducer). The production producer is `wasi:http`'s incoming request
+body, and connecting it was not a provider swap: the serve lane and the
+host-stream lane were two disjoint compositions.
 
-**Measured on pinned wasmtime 47.0.2:** with binary stdin `10,15,17`, `drain`
-performs canonical async `stream.read` calls for each byte, observes the
-separate zero-item EOF status, drops the readable stream, and awaits canonical
-`future.read` completion success; it returns `42`. `drop` obtains the same
-pair, drops its readable stream immediately, awaits completion success, and
-returns `43`. BLOCKED stream/future reads use `waitable-set.new`,
-`waitable.join`, and `waitable-set.wait`; the end is unjoined before its set is
-dropped. Other statuses, events, byte values, EOF forms, and result tags are
-diagnostic return paths, not success.
-
-`bash scripts/test_wasi_cli_stdin_p3_probe_gate.sh` is the merged executable
-probe/gate for this measurement. The generated shadow is validated by
-`bash scripts/test_wasi_cli_stdin_provider_component_gate.sh`; phase C of
-`scripts/test_wasi_p3_guarantee_gate.sh` (`pkf run test-wasi-p3`) invokes both.
-It parses, validates, and prints the component, generates deterministic binary
-input, and executes both async-lifted lanes. Required mode requires exactly
-wasmtime 47.0.2; missing tools, an unpinned provider, and
-ABI/type/link/command-export failures fail closed. The default local mode skips
-unavailable tools or an unpinned provider. The aggregate is IN `ci-required`:
-it is the only lane that runs a composed component end to end under a real
-host, so a componentized regression has nowhere else to be caught. The cost of
-folding it in is that an unavailable host implementation or an unpinned
-wasmtime blocks a merge rather than reporting.
-
-#### Why the current `HostStream` ABI cannot represent stdin
-
-The current generic `HostStream` cell is exactly `[3, handle]`: one readable
-`stream<u8>` handle identified by a named host-stream getter. It has no slot
-for another owned resource, no provider identity, and its
-`host_stream_named("name")` import is modeled as a getter for that one stream.
-It is therefore correct for the generic named-host-stream contract in §3.18,
-but it is not a lossless carrier for stdin.
-
-`wasi:cli/stdin@0.3.0::read-via-stream` is instead a **synchronous
-acquisition** which returns **two separately owned readable handles** in one
-result: the readable byte stream and the readable completion future. The latter
-settles the stdin lifecycle after the stream is drained or dropped. Replacing
-that call with `host_stream_named("stdin")` would discard the completion handle
-at acquisition, make its ownership unrepresentable, and make lifecycle failure
-invisible. It must not be treated as an alias or special name of the generic
-HostStream ABI.
-
-In particular, `stream.drop-readable` releases only the stream resource. It
-does **not** by itself complete the stdin lifecycle: the completion future must
-still be read, its result checked, and then released. This corrects the stale
-short-hand that described stream drop alone as a completed stdin close.
-
-#### Provider-aware contract (shadow lifecycle + atomic public source route)
-
-The #1539 prerequisite is a distinct, opaque provider-aware handle whose
-adapter state retains both owned ends from `read-via-stream`:
-
-```text
-acquire stdin provider (sync, Stdin authority)
-  -> opaque stdin-provider handle { readable-stream, completion-future, state }
-read opaque handle -> byte | EOF                  with Async
-close opaque handle -> lifecycle-complete result  with Async
-```
-
-The compiler now exposes this contract through one unforgeable nominal scalar:
-
-```text
-Stdin::read_via_stream() -> StdinStream with Stdin
-StdinStream::next(StdinStream) -> Int with Async
-StdinStream::close(StdinStream) -> Unit with Async
-StdinStream::read_chunk(StdinStream, Int) -> Option[String] with Async
-```
-
-`StdinStream` is neither `Int`, generic `HostStream`, nor `Stream[T]`; source
-cannot construct it and it is not `Send`. The four public provider builtins are
-**direct-call-only**: any value-position reference (local/top-level alias,
-chain, compound/container/field, returned value, or unknown HOF transport) is a
-checker error. A user-defined wrapper with an explicit `Stdin` or `Async` row is
-an ordinary function and may be passed as a value under the existing effect
-rules. This deliberately does not add the generic higher-order effect-flow
-propagation deferred by #1536. Their observable authority and effect
-requirements are fixed as follows:
-
-- Acquisition is synchronous but requires `Stdin` authority. It calls
-  `read-via-stream` once and transfers ownership of **both** returned readable
-  handles into the opaque provider state.
-- Reads require `Async` because canonical `stream.read` may block. They retain
-  the existing byte/EOF behavior only after the provider adapter has performed
-  the required read/wait/unjoin work.
-- EOF and early close both require `Async`: each must release the stream end,
-  await the completion future, validate success, and release the future end.
-  Therefore lifecycle-complete close cannot be a synchronous operation.
-- A completion `error-code` is fail-closed. There is no approved public
-  `Stdin`/`Exception`/`Result` mapping yet; an adapter must not turn it into
-  EOF, success, a generic integer, or a legacy `Option` value.
-- `read_chunk(stream, n)` is a direct compiler-owned, use-gated operation with
-  `Async`. For positive `n`, it reads one provider byte at a time and returns
-  exactly `n` bytes except for the final short chunk. Bytes are validated as
-  `0..255` and appended through one-byte `String::from_char_code`, without
-  UTF-8 expansion. It does not promise to preserve internal provider read
-  boundaries. EOF settles before `None`; subsequent calls return `None`. An
-  exact multiple needs one extra call to observe EOF. For `n <= 0`, it returns
-  `None` without reading or settling, so the caller must close the stream.
-  Early stopping likewise requires explicit, idempotent `close`. A pull
-  closure/direct-`for` adapter remains blocked on transitive higher-order
-  effect evidence (#1536) and is not part of this surface.
-
-The existing `host_stream_close(HostStream) -> Unit` is deliberately
-synchronous and only drops its one generic stream handle (§3.18.1). It cannot
-wait for or validate a missing completion future, so it **cannot safely
-implement** provider stdin close. Reusing it would either leak/unjoin the
-future or silently report a failed lifecycle as a successful close.
-
-#### Staged prerequisite and invariants
-
-Stages 1--3 were first implemented by the production-unused shadow emitter
-`comp_emit_component_wasm_stdin_provider_shadow` and its private component
-scenarios. #1539 now also has a bounded **core-only** route: `linked_compile`
-reserves checker-invisible raw rows for exact core imports
-`vibe.stdin_provider_acquire () -> i64`, `stdin_provider_read (i64) -> i64`,
-and `stdin_provider_close (i64) -> i64`; the stdin-first wrapper sniffs parsed
-module/name pairs and the dedicated arbitrary-core composer validates exact
-signatures before composing the nominal stdin/types imports.
-
-The guest receives only a tagged-i64 bridge instance. The bridge rejects odd
-or high-bit-aliased wire IDs before i32 narrowing, and only then calls the
-proven opaque lifecycle functions. The full shadow instance, scenario exports,
-canonical stream handle, and completion-future handle never cross into the
-compiled guest. The bridge ABI is `wire = value << 1`; read returns tagged
-bytes or tagged `-1` after settlement and close returns tagged zero.
-
-The three raw registry rows remain `checker_visible=false`. Exact direct calls
-lower through compiler-owned ABI wrappers to those imports; the `read_chunk`
-wrapper additionally implements repeated hidden raw reads. Public operation
-values never reach codegen because the checker rejects them. Source
-emits only the exact `vibe.stdin_provider_*` core imports and the nominal
-`wasi:cli/types@0.3.0` + `wasi:cli/stdin@0.3.0` component imports.
-
-`stdin_stream`, generic HostStream, and named future/stream behavior remain
-unchanged. `host_stream_named("stdin")` is reserved and rejected. A source core
-that mixes stdin-provider imports with named future/stream imports is explicitly
-rejected in this bounded slice. GC and standalone/non-Async-entry compilation
-are also rejected explicitly; linear and RC component lanes are supported.
-
-The provider permits multiple active acquisitions. Adapter IDs allocate
-monotonically from 16 slots and are never recycled: capacity overflow traps
-before another canonical acquisition, while concurrent/reentrant use of the
-same open slot traps on its non-open phase. Successful EOF/close remains
-idempotent through aliases. Wasmtime 47 source gates measure drain, early close,
-function aliases, a sequential second acquisition, and two simultaneously open
-acquisitions.
-
-Load-bearing invariants for stages 1--3:
-
-- Each successful acquisition owns exactly one stream end and one
-  completion-future end; up to 16 acquisitions may coexist, and neither end may
-  escape as a generic `[3, handle]` HostStream.
-- EOF and early close converge on one settlement state machine. Once settlement
-  begins, subsequent reads/closes are idempotent at the opaque-handle boundary
-  and cannot issue a second drop, read, join, or unjoin.
-- Every successful join has exactly one unjoin before its waitable set is
-  dropped. Each stream/future readable end is dropped exactly once, including
-  all diagnostic/failure exits.
-- A completion error, unexpected status, or unexpected event is a failing
-  transition, never EOF or successful close. Public propagation remains
-  intentionally undecided and fail-closed.
-
-The synthetic compiled-shaped drain and early-close cores are composed and
-validated by `test_wasi_cli_stdin_provider_guest_component_gate.sh`; they check
-bytes 10/15/17, EOF/repeated reads, early settlement, and repeated close on the
-pinned Wasmtime 47.0.2 lane. The original shadow gate and exact 208-byte nominal
-prefix remain separately preserved.
-
-This is only the successful-close lifecycle slice. **Read-error injection is
-unmeasured** (`io`, `illegal-byte-sequence`, and `pipe` have no claimed runtime
-measurement). The forced completion-tag, wrong-byte, and extra-byte
-expected-trap scenarios are controls of cleanup/fail-closed branches, not
-measurements of provider-generated errors. Each byte-mismatch control settles
-and drops both owned ends through the shared close path before trapping. Those
-shadow-scenario controls introduced no API by themselves; the production
-checker-visible `StdinStream` source/console API is the surface documented in
-§3.18.3 above.
-
-### 3.19 ADR-0089 Decision 3 — `wasi:http` incoming-body の実 provider 配線（未着手 / 設計）
-
-§3.18 + §3.18.1 の host stream は **viberun の test provider**
-（`VIBE_ASYNC_STREAMS="body=10|15|17"`、wasmtime 自身の `Vec<u8>`
-StreamProducer）を相手に実測されている。production の相手 —
-`wasi:http` の incoming request body — に繋ぐのが D3 の残件だが、これは
-「provider を差し替える」配線作業では**ない**。以下が実測した構造的な壁。
-
-**現状、serve 経路と host-stream 経路は互いに素な2つの composition である**:
-
-| | serve 経路 | host-stream 経路 |
+| | serve lane (before #1540) | host-stream lane |
 |---|---|---|
-| emitter | `comp_emit_component_wasm_string_handler`（`VIBE_SERVE_COMPONENT=1`） | `comp_emit_component_wasm_async_hostfuture` |
+| emitter | `comp_emit_component_wasm_string_handler` (`VIBE_SERVE_COMPONENT=1`) | `comp_emit_component_wasm_async_hostfuture` |
 | guest surface | `handler(method, url, headers, body: String) -> String` | `host_stream_named(name) -> HostStream` |
-| body の扱い | full adapter が **materialize** する（`Request::consume_body` + `StreamReader::collect` → String） | 生の `stream<u8>` を per-name component import として受ける |
-| compose | `wac plug`（adapter component + guest） | 自前の core module 合成（adapter core module を同梱） |
+| the body | **materialized** by the full adapter (`Request::consume_body` + `collect` → String) | a raw `stream<u8>`, one component import per name |
+| composition | `wac plug` (adapter component + guest) | its own core-module composition, adapter core module included |
 
-つまり body は guest に届く時点で既に String に潰れており、`stream<u8>` は
-adapter の内部で消費し終わっている。
+The body reached the guest already collapsed into a String; the `stream<u8>`
+had been consumed inside the adapter.
 
-**実測で棄却した形** (#1540 / #1796): adapter が
-`body: func() -> stream<u8>` を export し、guest がそれを import する「2辺」
-composition は、adapter→guest の `handler` 辺との**循環**になる。`wac plug`
-は接続できない `body` import を root world に押し上げたまま exit 0 となり、
-`wac compose` の字句順 DAG では相互参照自体を書けない。同一 instance の
-`body()` export を request-local slot として使う案も、並行 request の identity
-が無く不健全である。この形を実装対象にしてはならない。
+**The shape measured and rejected** (#1540, #1796): the adapter exports
+`body: func() -> stream<u8>` and the guest imports it. Together with the
+adapter → guest `handler` edge that is a **cycle**. `wac plug` exits 0 having
+pushed the unconnectable `body` import up to the root world, and `wac
+compose`'s lexical DAG cannot write the mutual reference at all. Using one
+instance's `body()` export as a request-local slot is unsound too: concurrent
+requests have no identity there. **Do not implement this shape.**
 
-**実測で成立した非循環形**: request body を既存の handler 辺の引数に乗せる。
+**The shape that shipped**: the body rides on the existing handler edge as an
+argument.
 
 ```wit
 import handler: func(method: string, url: string, headers: string, body: stream<u8>) -> string;
 ```
 
-`wit-bindgen` 0.54 はこの import を生成でき、adapter は
-`Request::consume_body` の reader を collect せず渡せる。probe は componentize
-と validate、`wac plug` 後の root import が host 提供の
-`wasi:http/types@0.3.0` だけであること、`wasmtime serve` への body 付き POST
-が guest 固有応答を返すところまで検証する。再現は
-`scripts/test_http_body_stream_probe_gate.sh`。required-tools CI では
-`scripts/test_wasi_p3_guarantee_gate.sh` の http phase から実行する。
+`wit-bindgen` generates that import, and the adapter passes
+`Request::consume_body`'s reader through without collecting it (the variant
+`VIBE_HTTP_ADAPTER_BODY_STREAM=1` builds). `scripts/test_http_body_stream_probe_gate.sh`
+is the probe: it componentizes and validates, checks that after `wac plug` the
+only root imports are the host's `wasi:http/types@0.3.0`, and has `wasmtime
+serve` answer a POST with a body with a guest-specific response. The rest of
+the work is §3.18.4: the string-bearing async lift's `task.return` option set
+was measured (`scripts/test_async_string_lift_probe_gate.sh`), the canon
+emitters were generalized without moving existing scalar callers' bytes, the
+serve handler accepts `body: HostStream` with `Async` as an async lift, and the
+incoming handle reaches the guest's read path as a `[3, handle]` cell.
+`scripts/test_serve_body_stream_gate.sh` pins it end to end; all of these run in
+phase B of `scripts/test_wasi_p3_guarantee_gate.sh`.
 
-ただし probe guest は stream をまだ**読まない**。残る実装スコープは:
+## 4. The WASI 0.3 boundary mapping
 
-1. `stream.read` を用いる string-bearing async handler の canonical encoding
-   （async lift / `task.return` の memory・realloc・string-encoding option の
-   正確な集合）を byte-level probe で確定する。現 probe はこの option 集合を
-   実測していない。
-2. `emit_canon_lift_async_section` / `emit_canon_task_return` を、1 の実測結果に
-   沿って一般化する。既存 scalar caller の byte 列は不変に保つ。
-3. serve handler を async lift + `stream<u8>` 引数へ拡張する。
-   `validate_serve_handler` の4引数全 String 決め打ちと effect 制約も同時に扱う。
-4. nominal `HostStream` を handler 引数型として綴り、incoming stream handle を
-   guest の stream-read lowering に渡せる frontend / component ABI を定義する。
-
-したがってこれは単純な provider 差し替えではないが、serve と host-stream を
-2辺の循環 composition に合流させる作業でもない。**body stream を handler の
-request-local 引数として運ぶ1辺の async composition** が設計の基準となる。
-
-## 4. WASI 0.3 境界マッピング
-
-| vibe | WASI 0.3 |
+| vibe | WASI 0.3 / Component Model |
 |---|---|
-| `Future[T]` | `future<T'>`（`T'` は T の canonical 表現） |
-| `Stream[T]` | `stream<T'>`、`ByteStream` = `stream<u8>` |
-| `async fn handler(...)` export | `wasi:http/service` の `handle: async func(request) -> result<response>` |
-| outbound `await HttpClient::fetch(...)` | an async func of the `wasi:http` client (`-> response`; the call itself is the subtask, #3131) |
-| request body / response body | `stream<u8>`（`ByteStream`）。Phase1 の "body 渡せない" 問題を 0.3 ネイティブに解消 |
+| `Future[T]` | `future<T'>` (`T'` is the canonical form of `T`) |
+| `ByteStream` (nominal) | `stream<u8>`; a guest AsyncIter in a component signature is refused |
+| an export whose row carries `Async` | `async func` |
+| a `vibe serve` handler `(method, url, headers, body: String) -> String` | the guest exports a sync `handler: func(string, string, string, string) -> string`; the full adapter (§4.1) wraps it in `wasi:http/handler` |
+| a `vibe serve` handler `(.., body: HostStream) -> String with Async` | an async-lifted `handler(.., body: stream<u8>) -> string`; the body-stream adapter hands the request body over uncollected (§3.19) |
+| awaiting a WIT `async func(..) -> response` binding (outbound, e.g. a `fetch(url)` derived by `from_wit_future_imports`) | a subtask of that function, imported with exactly the WIT's type (#3131); `response` is the binding's `record { status: s32, body: stream<u8> }` |
+| request and response bodies | `stream<u8>` |
 
-worlds: 受信は `wasi:http/service`、proxy/中継は `wasi:http/middleware`。
+**Worlds.** An incoming handler is served as `wasi:http/service`. A handler that
+also awaits WIT responses is composed by
+`comp_emit_component_wasm_service_handler` into one component that exports
+`handler` and imports the binding's interface; a provider implements that
+interface over `wasi:http/client` (`scripts/build_http_client_provider.sh`), so
+the plugged result exports `handler` and imports `wasi:http/client`
+(`fixtures/serve_service_world`). With the provider in `handler` mode it
+forwards to an imported `wasi:http/handler` instead, which makes the composition
+a `wasi:http/middleware` (`fixtures/serve_middleware_world`).
+`scripts/test_serve_body_stream_gate.sh` runs both under `wasmtime serve`.
 
-### 4.1 M3 — async HTTP handler（wasmtime 45 で実動、full adapter に集約）
+### 4.1 The HTTP handler under `wasmtime serve`
 
-vibe handler → host `--compose-p3` → `wasmtime serve` → curl の縦串を wasmtime 45
-で確立した。試行錯誤で複数の adapter 派生（status / body / reqbody / status_body）
-を作ったが、**最 comprehensive な `build_wasi_http_p3_full_adapter.sh` に集約し、
-派生は削除**した（CI gate も `test_wasi_http_p3_full_gate.sh` 1 本）。
+`vibe serve` (the `wasmtime-serve` host action of `runtime/vibe`) composes a
+handler and serves it:
 
-**full adapter のコントラクト**: handler は
-`(method: String, url: String, headers: String, body: String) -> String`。
-- 入力: request の method / url / **headers**（`request.get-headers().copy-all()`
-  を `"name: value\n"` 行に serialize）/ **body**（`Request::consume-body` +
-  `StreamReader::collect`）。
-- 出力: HTTP 応答風文字列 `"STATUS\n<Header: value 行>\n\n<body>"`。先頭行 =
-  status code、空行までの行 = response headers（`Fields::append`）、残り = body。
-  空行が無ければ `"STATUS\nBODY"` に degrade。
+1. the compiler componentizes the handler: the packed-string trampoline
+   (`comp_emit_component_wasm_string_handler`, matching the `(ptr << 32) | len`
+   string ABI) for a `String` body, the stream lane
+   (`comp_emit_component_wasm_stream_handler`) for a `HostStream` body, or
+   `comp_emit_component_wasm_service_handler` when the handler awaits WIT
+   responses;
+2. `wac plug` composes it with the full adapter
+   (`scripts/build_wasi_http_p3_full_adapter.sh`, built with
+   `VIBE_HTTP_ADAPTER_BODY_STREAM=1` for the stream lane);
+3. `wasmtime serve -Sp3 -Shttp -W exceptions=y -W concurrency-support=y -W
+   component-model-async=y -W component-model-async-stackful=y` serves the
+   result.
 
-実測（wasmtime 45、auth + routing + headers）:
-`handler = (method, url, headers, body) -> String { if String::contains(headers,
-"x-token: secret") { "200\ncontent-type: text/plain\n\nok" } else { "401\n
-unauthorized" } }` → `x-token` ありで **200 "ok"**（`content-type` ヘッダ付き）、
-なしで **401 "unauthorized"**。gate `test_wasi_http_p3_full_gate.sh`（pkf
-`test-wasi-http-p3-full`、CI gates-shard cli shard、serve+curl で検証、
-tooling 不在時 skip）。
+**The full adapter's contract.** The handler is `(method: String, url: String,
+headers: String, body: String) -> String`, or the same with `body:
+HostStream` and `Async`.
 
-**確立できた point**:
-- serve フラグ（wasmtime 45）: `-Sp3 -Shttp -W exceptions=y -W
-  concurrency-support=y -W component-model-async=y
-  -W component-model-async-stackful=y`。旧 P3 スクリプトの
-  `-W component-model-async-builtins=y` は **wasmtime 45 で無効**（reject）だった。
-- handler 戻り値の status untag は不要: vibe `Int`/`String` は default 経路で
-  **raw**（untag 済み）で component 境界を渡る。
+- In: the request's method; its path with query as `url`; its headers,
+  serialized as `"name: value"` lines (`get-headers().copy-all()`); its body,
+  collected into a String through `Request::consume-body`, or handed over as
+  the stream.
+- Out: one response string, `"STATUS\n<Header: value lines>\n\n<body>"`. The
+  first line is the status code (200 when it does not parse), the lines up to
+  the blank line are response headers (`Fields::append`), and the rest is the
+  body. Without a blank line the string reads as `"STATUS\nBODY"`.
 
-**#537 で selfhost 経路化済み（2026-07）**: handler の componentize は selfhost
-compiler の `VIBE_SERVE_COMPONENT=1`（packed-string trampoline、
-`comp_emit_component_wasm_string_handler`、`(offset<<32)|len` の現行 string ABI
-に一致）に置き換え、compose は `wac plug`、起動は `runtime/vibe serve`。
-legacy `vibe.exe --compose-p3` 依存は解消（gate:
-`test_wasi_http_p3_full_gate.sh` selfhost 版）。effect→WIT surface は
-[../effect-wit-mapping.md](effect-wit-mapping.md)。
+The response is one encoded string because the handler's export returns one
+value. Returning a structured response, or exporting `wasi:http/handler` from
+the guest itself, needs vibe bindings for the `request` / `response` / `fields`
+resources — the bindings #3142 asks for on the client side; the server side
+has no open issue.
 
-**未解決（architectural）**:
-- clean な `-> tuple<s64, string>` 返却は不可: string-lift trampoline が
-  **single-value 返却のみ対応**（vibe tuple は core で `(result i64 i64)`）。
-  そのため status+headers+body を単一文字列規約で符号化している。本来の
-  tuple/record 返却には trampoline の multi-value 拡張が必要。
-- trailers、client/proxy（outbound）経路は後続。
+**Values cross untagged.** The serve lane compiles its core with RC off
+(`compile_wasi_module_no_dce_impl`), and the stream adapter accepts only
+`vibe.tagmode` 0 (§3.18.5, ADR-0106).
 
-## 5. バージョン / WIT 整合（M0、本コミットで実施）
+**Gates.** `scripts/test_wasi_http_p3_full_gate.sh` (`pkf run
+test-wasi-http-p3-full`) serves `fixtures/serve_handler_smoke.vibe` through the
+whole pipeline and checks auth by request header: with `x-token: secret` the
+answer is 200 `ok:GET:/`, without it 401 `unauthorized`.
+`scripts/test_serve_body_stream_gate.sh` covers the stream, service and
+middleware lanes. Both run in phase B of `scripts/test_wasi_p3_guarantee_gate.sh`
+(`pkf run test-wasi-p3`, the CI `wasi-p3-gate` job).
 
-WASI 0.3 RC のバージョン文字列がリポジトリ内で 3 重にズレていた:
+**Open:**
 
-- repo の P3 アダプタ/プローブスクリプト: `@0.3.0-rc-2026-02-09`
-- vendored wasmtime submodule の WIT: `@0.3.0-rc-2026-03-15`
-- legacy MoonBit host codegen (`src/codegen/*`): `@0.3.0-draft`
-- ratify 済み最終版: `@0.3.0`
+- **Trailers.** The adapter ignores the request's trailers and sends none with
+  the response. No open issue owns them.
+- **The guest importing `wasi:http/client` itself**, with a request that
+  carries a method, headers and a streamed body, rather than reaching the
+  client through a provider component: #3142.
 
-M0 では **selfhost / adapter 経路を vendored submodule の実体
-`@0.3.0-rc-2026-03-15` に統一**する（アダプタの `include`/`import` 文字列が
-ランタイム提供の WIT と一致しないと wit-bindgen が解決失敗するため、これは
-correctness 修正）。`src/codegen/*` の `@0.3.0-draft` は legacy host 経路
-（CLAUDE.md: `src/` は通常触らない）なので M0 では据え置き、別途追跡する。
-wasmtime install 既定は 45.0.0 → 45.0.2（WASIp1 fd_renumber leak の security
-patch、p3 WIT 不変）。
+## 5. Versions and pins
 
-### 5.1 ratified `0.3.0` cutover（wasmtime 46、#821、done）
+- **WIT.** `lib/@vibe/wasi/wit/p3/` is a byte-identical copy of
+  `wasmtime-wasi-http` 46.0.1's `src/p3/wit/`, the ratified `wasi:http@0.3.0`
+  (`lib/@vibe/wasi/wit/p3/VENDOR.md`). `scripts/build_wasi_http_p3_full_adapter.sh`
+  includes `wasi:http/service@0.3.0` from it, and phase D of
+  `scripts/test_wasi_p3_guarantee_gate.sh` asserts that a composed serve
+  component references `wasi:http@0.3.0` (`VIBE_P3_WIT_PIN`), so drift between
+  the adapter, the vendored WIT and the runtime fails loudly.
+- **Runtime.** wasmtime **47.0.2**: `runtime/viberun/Cargo.toml` (with the
+  `component-model`, `component-model-async` and `async` features),
+  `scripts/install_wasmtime_release.sh`, the CI `wasi-p3-gate` job (one leg,
+  phases `async,http,stdin`) and the other workflows. It serves the ratified
+  `0.3.0` world with component-model async on by default. The pre-ratification
+  RC world (`0.3.0-rc-2026-03-15`) does not link against it (`resource
+  implementation is missing`), and there is no 45.x compatibility leg.
+- **Flags.** The gates and `vibe serve` pass `-W exceptions=y -W
+  concurrency-support=y -W component-model-async=y -W
+  component-model-async-stackful=y` (plus `-Sp3 -Shttp` to serve). Compiled
+  cores use Wasm exception handling, hence `exceptions`; the async flags are
+  defaults since wasmtime 46 and harmless. A hand-written probe that uses the
+  `future.*` / `stream.*` built-ins also needs `-W
+  component-model-more-async-builtins=y` (§3.3, §3.12).
+- **Tools.** The CI job pins `wasm-tools` 1.253.0 and `wac` 0.10.1 (older `wac`
+  releases failed on the `wasi:http@0.3` async-lift shape). The adapters build
+  with `wit-bindgen` 0.54.
 
-wasmtime 46.0.1 リリースに合わせて ratified `wasi:http@0.3.0` への cutover を
-実施した。要点:
+## 6. Where it stands
 
-- 46 は `wasi:http@0.3.0`（RC サフィックスなし）を serve する。旧 RC world
-  （`@0.3.0-rc-2026-03-15`）を link しようとすると
-  `resource implementation is missing` で失敗する（2026-07-12 の再検証で確認）。
-- `lib/@vibe/wasi/wit/p3/`（vendored WIT）を `wasmtime-wasi-http` 46.0.1 の
-  `src/p3/wit/` から再 vendor。差分は機械的なバージョン文字列置換のみ
-  （`0.3.0-rc-2026-03-15` → `0.3.0`）＋ 2 件の非構造差分
-  （`lib/@vibe/wasi/wit/p3/deps/cli.wit` の `cli-exit-with-code` が `@unstable` → `@since(0.3.0)`
-  に昇格、`lib/@vibe/wasi/wit/p3/deps/sockets.wit` のドキュメントリンク更新）。詳細は
-  `lib/@vibe/wasi/wit/p3/VENDOR.md`。
-- `scripts/build_wasi_http_p3_full_adapter.sh` の `include` 文字列、
-  `scripts/test_wasi_p3_guarantee_gate.sh` の `VIBE_P3_WIT_PIN` 既定値を
-  `0.3.0` に更新。
-- `component-model-async` は 46 で default-on のため、45 world 起源の RC flag
-  （`-W exceptions=y -W concurrency-support=y -W component-model-async=y
-  -W component-model-async-stackful=y`）は 46 上では無害な no-op として
-  受理される（実害はないが、もはや必須ではない）。
-- CI (`ci.yml` `wasi-p3-gate`): wasmtime 46.0.1 leg を primary にし
-  `phases: async,http` 両方を実行。旧 pin 45.0.2 leg は
-  「vendored WIT がもう RC world を持たないため phase B は 46 でしか
-  link できない」ことを踏まえ `phases: async` のみの compat leg として
-  残す（phase A は wasi:http WIT に依存しないため 45 でも無回帰で通る）。
-  `WASMTIME_VERSION` 系の pin（`ci.yml` の `compiler-gate` /
-  `cli-install.yml` / `scripts/install_wasmtime_release.sh`）もすべて
-  46.0.1 に統一。
+### 6.1 What runs
 
-## 6. 現在地と残作業
-
-> 着地済み stage の全行 (M0 〜 ADR-0089 D3、34 行) は git 履歴にある
-> (2026-08-07 に本文から外した)。ここには**動いているもの**と**残っているもの**だけを書く。
-> ABI の実測記録は §3 (§3.1〜§3.19) がそのまま source of truth。
-
-### 6.1 動いている縦串 (2026-08-07)
-
-| 縦串 | 実体 | gate |
+| vertical | what | gate |
 |---|---|---|
-| async component の生成と実行 | `.vibe` の `() -> Int with Async` entry → async lift + trampoline → wasmtime 47 の production runtime (`runtime/viberun`) が `instantiate_async` / `run_concurrent` で駆動 | `test_async_component_gate.sh` |
-| ready future の await | `Future::ready` / `Stream::next` → `[0, payload]`、`__aw_poll` が slot 1 を読む | 同上 (7 lane) |
-| guest 内 pending future | `Future::pending()` → `[1, _]`、`Future::resolve` が完了、await は poll-wait で park。resolve → direct wake の waiter list 付き (§3.15) | `fixtures/async_future_pending.vibe` |
-| host future の await | `host_future_get()` / `host_future_named("x")` → `[2, handle]` → `Suspend(handle+2)` → boundary settle → adapter の `future.read` + `waitable-set.wait` | `test_hostfuture_source_component_gate.sh` / `test_named_hostfutures_component_gate.sh` |
-| 並行 await | 複数 host 操作を同時に in-flight (2×1000ms が 1015ms) | `test_concurrent_awaits_component_gate.sh` |
-| host stream の読み | `host_stream_named("body")` → `[3, handle]`、`host_stream_next` (1 byte / -1 = EOS) → `Suspend(handle+2048)` → adapter の per-read `stream.read` + park。`host_stream_close` で部分消費した readable end を解放 | `test_named_hoststreams_component_gate.sh` |
-| `for` からの host stream 消費 | iterand の型で await ループを選ぶ (#1366)。`{ Async }` 無しの row は reject | 同上 (`for` lane) |
-| component 内 sleep | `sleep(ms)` → `Suspend(-ms)` → boundary の `sleep_blocking` → adapter が `sleep-for: async func(ms: u32) -> u32` を async-lower し、返る **subtask** を `waitable-set.wait` で park (#1342、§3.18.6)。sleep 前に作った host future は sleep 中も進む (D 同士で ~D) | `test_async_sleep_component_gate.sh` |
-| WIT マッピング | `with Async` export → `async func`、`Future[T]` → `future<T'>`、nominal `ByteStream` → `stream<u8>` | `wit_gen_test` (D5 pin) |
+| generating and running an async component | a `.vibe` entry `() -> Int with Async` → async lift + trampoline, driven by `runtime/viberun` (wasmtime 47) through `instantiate_async` / `run_concurrent` | `test_async_component_gate.sh` |
+| awaiting a ready future | `Future::ready` → `[0, payload]`; `__aw_poll` reads slot 1 | same |
+| a pending guest future | `Future::pending()` → `[1, _]`, completed by `Future::resolve`; the await parks by poll wait, with the direct-wake waiter list (§3.15) | `fixtures/async_future_pending.vibe` |
+| awaiting a host future | `host_future_get()` / `host_future_named("x")` → `[2, handle]` → `Suspend(handle + 2)` → boundary settle → the adapter's `future.read` + `waitable-set.wait` | `test_hostfuture_source_component_gate.sh`, `test_named_hostfutures_component_gate.sh` |
+| concurrent awaits | several host operations in flight at once (two 1000 ms calls in 1015 ms) | `test_concurrent_awaits_component_gate.sh` |
+| reading a host stream | `host_stream_named("body")` → `[3, handle]`; `HostStream::next` / `host_stream_next` (a byte, or the end) → `Suspend(handle + 2048)` → the adapter's per-read `stream.read` + park; `HostStream::close` releases a partly read end | `test_named_hoststreams_component_gate.sh` |
+| `for` over a host stream | the iterand's type selects the await loop; a row without `Async` is refused | same (`for` lane) |
+| `sleep` in a component | `sleep(ms)` → `Suspend(-ms)` → the boundary's `sleep_blocking` → the adapter async-lowers `sleep-for: async func(ms: u32) -> u32` and parks on the returned subtask (#1342, §3.18.6); a host future created before the sleep progresses during it | `test_async_sleep_component_gate.sh` |
+| spawned tasks on host waits | `TaskGroup::spawn_suspend` tasks park on host futures, stream reads and timers in one shared waitable set and resume in completion order; cancelling the last waiter releases its read or timer (#1537, #2065) | `test_named_hostfutures_component_gate.sh`, `test_named_hoststreams_component_gate.sh`, `test_wit_async_import_component_gate.sh` (`fixtures/async_spawn_host_futures/`) |
+| WIT-derived async imports | `from_wit_future_imports` derives bindings for a WIT file's `async func() -> s64` and `async func(..) -> response`; each call is a subtask of the function as written (#2064, #3131) | `test_wit_async_import_component_gate.sh` |
+| outbound HTTP | a `fetch(url)` binding awaited as `Future[HostResponse]` (status and a streaming body), answered by viberun's `http` mode or, under `wasmtime serve`, by a provider over `wasi:http/client` (#2066) | `test_wit_async_import_component_gate.sh`, `test_serve_body_stream_gate.sh` |
+| serve: the request body as a stream | `handler(.., body: HostStream) with Async` → an async lift with `body: stream<u8>` (#1540, §3.18.4) | `test_serve_body_stream_gate.sh` |
+| serve: service and middleware worlds | a handler awaiting WIT responses composes into `wasi:http/service`, and with the provider's `handler` mode into `wasi:http/middleware` (#2066, §4) | `test_serve_body_stream_gate.sh` |
+| stdin as a provider | `Stdin::read_via_stream()` → `StdinStream` (`next` / `read_chunk` / `close`) over `wasi:cli/stdin@0.3.0` (#1539, §3.18.3) | phase C of `test_wasi_p3_guarantee_gate.sh` |
+| the WIT mapping | `with Async` export → `async func`, `Future[T]` → `future<T'>`, nominal `ByteStream` → `stream<u8>` | `wit_gen_test` |
 
 ### 6.2 Remaining work
 
-| Item | Scope | Depends on |
+| item | scope | owner |
 |---|---|---|
-| **Suspend-lowering eligibility** (#1536) | Row-variable callees and residual literal-parameter flow do not pass `scps_calls_ok`. Done: row-free closure-parameter flow, the eager `await(Stream::next(s))` retarget, floating a sequence-HEAD `let` chain (the `for`-driven terminal), and a direct if-condition / match-scrutinee (end of §2.2) | — (ADR-0076 itself) |
-| **Unify on AsyncIter** (#1538) | Retire the eager `Stream[T]` combinators and reimplement them over AsyncIter; connect the `Stream::next` protocol to the host stream read | The eligibility row above |
-| **stdin provider / `StdinStream` P3 connection** (#1539, #1956) | **The atomic public source route and compiler-owned direct chunk operation are implemented.** `StdinStream` is nominal and unforgeable, carries exact authority/effects, uses the exact `vibe.stdin_provider_*` raw imports and tagged-i64 bridge, and supports arbitrary-core composition plus stdin-first sniffing. `StdinStream::read_chunk` is the only chunked pull surface; the legacy standalone `stdin_stream(chunk_size)` closure has been removed. A direct `for` adapter still waits for transitive HOF effect evidence (#1536). | Wasmtime 47 real-source drain/early-close/function-alias/sequential-reacquire/multiple-active + binary `00 80 ff 41 42` manual while-loop chunks (linear/RC, n=4/1/0/negative, EOF/post-close) gate; GC/standalone/mixed reject; generic `[3, handle]` `HostStream` import remains unused. |
-| **A real provider: `wasi:http` incoming-body** (#1540) | Needs the serve composition and the host-stream composition merged (§3.19 gives the structural reason and a three-part breakdown) | — |
-| **M-conc-2: real subtask spawn** (#1537) | Real concurrency and cancellation through waitable sets and `future.cancel-*`, lowering ADR-0068's nursery to the backend. A cancelled host-future read is released through `future.cancel-read` (the M1b-3c-1c row); a guest task is still not a canonical subtask | ADR-0076 CPS/suspend lowering |
-| **M1b-3c-1c: interleaving spawn** (#1537) | **Landed for host futures:** a `TaskGroup::spawn_suspend` task that awaits a host future parks on its handle; when no task can run, `pump` arms every pending handle into one shared waitable set (`host_future_arm`) and resumes whichever lands (`host_future_wait_any`, dispatching on `payload[0]` as §3.11 measured), with its value. `fixtures/async_spawn_host_futures/main.vibe`: a 300ms task and a task doing two 150ms reads in sequence finish in ~330ms, not the ~450ms park order would take (`test_named_hostfutures_component_gate.sh`). WIT-addressed futures work from spawned tasks too (the root `sleep-for` import `@vibe/concurrent/experimental` brings is component func 0, the interface's aliased functions after it; `test_wit_async_import_component_gate.sh`). Host stream reads park the same way (`host_stream_arm` starts a one-byte read in the shared set; `fixtures/async_spawn_host_futures/streams.vibe`: two three-byte streams at 100ms a byte drain in ~330ms, not ~600ms). A sleeping task and host waiters share the wait: the earliest sleeper's `sleep-for` subtask joins the same set (`host_sleep_arm`), so `fixtures/async_spawn_host_futures/sleep_and_host.vibe` / `sleep_short.vibe` finish in ~300ms whichever lands first. Cancelling the last task parked on a host future cancels its read and releases the handle (`host_future_cancel`: `future.cancel-read`, then `future.drop-readable`); `fixtures/async_spawn_host_futures/cancel_many.vibe` parks and cancels 1100 tasks, past the adapter's 1023-handle ceiling. A cancelled stream reader's read is cancelled and the stream released the same way (`host_stream_cancel`: `stream.cancel-read`, then `stream.drop-readable`; a host stream cannot be captured by another task), pinned by `stream_cancel_many.vibe`. **Remaining:** `subtask.cancel`, which needs a guest task to be a canonical subtask (the M-conc-2 row) | ADR-0076 CPS/suspend lowering |
-| **M3** (#2066) | **Landed:** `Future[HostResponse]` from a WIT `async func() -> response` (`record { status: s32, body: stream<u8> }` from the package `types` interface): `host_response_named`, derived by `from_wit_future_imports`, composed as a `types` + API instance import pair, the body read through the shared host-stream half, two responses in flight in one producer delay (`scripts/test_wit_async_import_component_gate.sh`, contract in `async-host-contract.md`). A response function may take one `string` parameter (the request URL: `host_response_named_with`, bytes pushed into the adapter's argument buffer, `fixtures/wit_response_request`). **Remaining:** richer requests (method and headers as records, a realloc-capable read), mixing responses with runner-private `future<u32>` root futures in one component (a scalar WIT future of the same interface and named host streams now mix: `fixtures/wit_response_mixed`, `fixtures/wit_response_import/stream_main.vibe`), and the guest importing `wasi:http/client` itself rather than through a provider component. **The `middleware` world is composed too:** the provider's `handler` mode sends the binding's `fetch` to an imported `wasi:http/handler`, so the composed middleware imports and exports `handler`, and a `vibe serve` backend plugged into that import makes a chain `wasmtime serve` runs (`fixtures/serve_middleware_world`). **WIT async imports are lowered as written** (#3131): `async func() -> T` is imported with that type and each call is a subtask whose result lands in an adapter slot, so a provider generated from the source WIT plugs in (`scripts/build_http_client_provider.sh` builds from `fixtures/wit_response_request/client.wit` itself). **The `wasi:http/service` world is composed:** a `vibe serve` handler that awaits a `from_wit` response binding goes through `comp_emit_component_wasm_service_handler`, which puts the run lane's response imports under the stream lane's handler export. `scripts/build_http_client_provider.sh` implements the binding's interface over `wasi:http/client`, and `wac plug` yields one component that exports `handler` and imports `wasi:http/client`. Under `wasmtime serve`, `fixtures/serve_service_world/handler.vibe` makes two upstream fetches in flight in about one delay (`scripts/test_serve_body_stream_gate.sh`). A real HTTP provider also answers the `fetch(url)` WIT function from the runner (viberun's `http` mode, `fixtures/wit_response_request/http_main.vibe`) | the provider above |
-| **M4** | Parity, gates, CI and docs; ADR-0012 → accepted | Everything above |
+| Component Model subtasks as `TaskGroup`'s backend | tasks are guest fibers inside one instance; start a task as a Component Model async subtask with its own handle, joined through the shared waitable set, with `TaskHandle::cancel` reaching it as `subtask.cancel` | #3147 |
+| the guest importing `wasi:http/client` directly | vibe bindings for the `request` / `response` / `fields` resources; a request with a method, headers and a streamed body | #3142 |
+| promoting the suspendable-task lane | `TaskGroup::spawn` runs a suspending body, `TaskGroup::run` drives parked tasks itself, and the lane's names move into `@vibe/concurrent`'s contract | #3200 |
+| a `handle` that reaches `Async` across an await | abortive handles split with the body (#1537); a `handle` that resumes, or that handles `Async` itself, is still refused | no open issue |
+| suspend-lowering eligibility | the ineligible shapes listed in §2.2 | no open issue |
+| HTTP trailers, and a guest-exported `wasi:http/handler` | §4.1 | no open issue |
+| streaming a real provider's response body | viberun's `http` mode buffers the body before the future lands (`VIBE_HTTP_BODY_LIMIT`, `VIBE_HTTP_TIMEOUT_MS`) | no open issue |
+| runner-private root futures beside WIT futures | refused by name in one component ([async-host-contract.md](async-host-contract.md)) | no open issue |
 
-## 7. 未解決事項
+## 7. Unresolved questions
 
-- **await をまたぐ task 状態の表現** (ADR-0076 の CPS/suspend lowering)。
-  §3.11 が「ABI 側に追加機構は要らない」を実機で確定させたので、これは
-  未知ではなく**目標形の分かっている codegen 作業**。現在の `scps` パスが
-  取りこぼす形は §2.2 末尾に列挙してある。
-- `T` → canonical `T'` の表現 (特に enum/record を `future`/`stream` の要素に
-  する場合)。現在の host future/stream は `u32` / `u8` に限られている。
-- eager `Stream[T]` を退役させたあとの `ByteStream` の綴り
-  (nominal 型として残すか、AsyncIter の特殊化にするか)。ADR-0089 Decision 4
-  の boundary 規則 (何が WIT に出られるか) と一体で決める。
-
-> **解決済み**: canonical ABI の frame レイアウト / suspend-resume 表現
-> (§3.7〜§3.11 で確定、stackful lift + `waitable-set.wait` の完了順
-> ディスパッチ)。`Async` effect row と既存 row 推論の統合 (§2.1 —
-> `async` キーワードを導入せず row のラベルにした時点で特別規則は無い)。
-> wasmtime 46 の ratified `0.3.0` cutover (#821、§5.1)。
+- **The canonical form `T'` of a payload `T`**, in particular an enum or a
+  record as the element of a `future` or `stream`. Host futures and streams
+  carry `u32` / `u8`, and WIT-derived imports `s64` and the `response` record;
+  nothing more general is lowered.
