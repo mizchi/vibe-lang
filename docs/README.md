@@ -181,6 +181,7 @@ Not normative.
 | [internal/reports/compiler-file-split-memory-2026-10-01.md](internal/reports/compiler-file-split-memory-2026-10-01.md) | Source-split allocation attribution, local fixes and measured optimization follow-ups |
 | [internal/reports/dependency-interface-views-2026-10-01.md](internal/reports/dependency-interface-views-2026-10-01.md) | Immutable dependency-view ownership, cache parity and controlled allocation measurements |
 | [internal/reports/effect-name-membership-2026-10-02.md](internal/reports/effect-name-membership-2026-10-02.md) | Effect name indexes, shared AST traversal storage and controlled CPU/allocation comparisons |
+| [internal/reports/user-function-index-2026-10-02.md](internal/reports/user-function-index-2026-10-02.md) | User-prefix lookup through the existing sorted table, backend invariants and controlled compiler measurements |
 | [internal/reports/parser-simd-scan-2026-08-15.md](internal/reports/parser-simd-scan-2026-08-15.md) | |
 | [internal/reports/perf-snapshot-2026-08-07.md](internal/reports/perf-snapshot-2026-08-07.md) | |
 | [internal/reports/pl-survey-2026-07.md](internal/reports/pl-survey-2026-07.md) | |
