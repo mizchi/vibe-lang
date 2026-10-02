@@ -380,7 +380,8 @@ refused or rewritten to `let rec`.
 The entry is the one exception to "full annotations required", and it is
 deliberate (#3119). `fn main { .. }` and `fn main allows R { .. }` omit both
 the parameter list and the return type: they are sugar for
-`fn main() -> Unit { .. }` (ADR-0069). Every other function writes its return
+`fn main() -> Unit { .. }` and `fn main() -> Unit allows R { .. }`
+(ADR-0069). Every other function writes its return
 type, and so does `fn main` once it has parens: `fn main() { .. }` is
 `expected -> but got {`.
 
@@ -3199,8 +3200,11 @@ let r = match s { Circle(r) => r, _ => 0 }        // match arms: ,
 Declaration bodies (struct fields, enum variants) separate their members with
 `;`. Literals, patterns, arguments and match arms separate items with `,`.
 This split is a decided rule, not an accident (#3122). Using `,` between
-declaration members is a parse error. Separating match arms with `;` is
-`unexpected in pattern: ;`.
+declaration members is a parse error (`use ';' to separate declaration
+members`). Match arms are the one list that also accepts `;` (#2972): the
+lexer ends a line with `;` when the next line starts with `(`, so an arm whose
+pattern begins with `(` must still parse. Write `,`; the `;` is tolerated, not
+a second spelling.
 
 ### top-level に裸の式は置けない (ADR-0069)
 
