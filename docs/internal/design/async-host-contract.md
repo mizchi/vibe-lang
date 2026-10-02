@@ -15,11 +15,14 @@ Names and core types are already machine-checked by
 cannot: the meaning of the bits.** Where a claim here is mechanically
 checkable, it has a gate and this file names it; where it is not, it says so.
 
-Measured against `779f1b6`; the `vibe.sleep` section re-measured after #2903's fix.
+Measured against `779f1b6`; the `vibe.sleep` section re-measured after #2903's
+fix. Source locations are cited by function name: the compiler sources were
+split by responsibility after that measurement (#3254), so line numbers do not
+survive.
 
 ## Two bands
 
-| | `vibe.sleep` | the other nine |
+| | `vibe.sleep` | the `componentAdapterOnly` band |
 |---|---|---|
 | manifest band | `portableCore` | `componentAdapterOnly` + `componentAdapterPatterns` |
 | implementations | **two** (`runtime/viberun`, `scripts/wasm_vibe_host_runner.js`) | **one** (the adapter the composer emits) |
@@ -31,51 +34,57 @@ the one that diverged, and #2903 showed the divergence was not between the
 hosts: both read the module's own `vibe.abi` declaration and both obeyed it.
 The emitter was the party that did not.
 
-The other nine were counted as safe because each has a single implementer. That
-count was wrong: a runner does not have to register an import to answer it.
-`wasm_vibe_host_runner.js`'s fallthrough supplied every one of them as `0`, so
-they had two implementations — the adapter's, and a zero — and nothing said so.
-See the `componentAdapterOnly` section for the measurement and for what #2928
-changed.
+The adapter-only imports were counted as safe because each has a single
+implementer. That count was wrong: a runner does not have to register an import
+to answer it. `wasm_vibe_host_runner.js`'s fallthrough supplied every one of
+them as `0`, so they had two implementations — the adapter's, and a zero — and
+nothing said so. See the `componentAdapterOnly` section for the measurement,
+for what #2928 changed, and for the names it did not cover.
 
 ## The import set
 
-Emitted by `lib/@vibe/compiler/codegen/wasi/linked_compile.vibe` in one import
-section, in reserved-index order, each demand-gated on a `used_builtin_names`
-lookup (gating at `:9587-9648`, emission at `:13508-13620`).
+Emitted by `lc_emit_module_sections`
+(`lib/@vibe/compiler/codegen/wasi/linked_compile_module_sections.vibe`) in one
+import section, in reserved-index order. Each import is demand-gated on a
+`used_builtin_names` lookup in `lc_build_host_plan`
+(`codegen/wasi/linked_compile_host_plan.vibe`).
 
 ### portableCore — linked by a core runner
 
-| import | core type | emitted | implemented by |
-|---|---|---|---|
-| `vibe.sleep` | 1 · `(i64) -> ()` | `:13512` | `viberun/src/main.rs:3449`, `wasm_vibe_host_runner.js:2814` |
-| `vibe.stdin_read_char` | 5 · `() -> i64` | `:13522` | both runners, **synchronously** |
-| `vibe.stdin_read_stream` | 3 · `(i64) -> i64` | `:13646` | both runners |
+| import | core type | implemented by |
+|---|---|---|
+| `vibe.sleep` | 1 · `(i64) -> ()` | `runtime/viberun` (`register_vibe_imports`, `src/host_imports.rs`), `scripts/wasm_vibe_host_runner.js` (`sleep` in `main()`'s `vibe` import object) |
+| `vibe.stdin_read_char` | 5 · `() -> i64` | both runners, **synchronously** |
+| `vibe.stdin_read_stream` | 3 · `(i64) -> i64` | both runners |
 
-`stdin_read_char` is described at `linked_compile.vibe:9593-9597` as
-"implemented async by the host". Both shipped runners implement it with a
-blocking read. The description is a statement about an intended host, not about
-either host that exists.
+`stdin_read_char` is described in `lc_build_host_plan` as "Implemented async
+by the host". Both shipped runners implement it with a blocking read. The
+description is a statement about an intended host, not about either host that
+exists.
 
 ### componentAdapterOnly — never linked by a core runner
 
-| import | core type | emitted |
+The band in `docs/generated/host-runtime-contract.json`, 16 fixed names and 5
+name patterns:
+
+| imports | core type | what they are |
 |---|---|---|
-| `vibe.host_future_get` | 5 · `() -> i64` | `:13535` |
-| `vibe.host_future_wait` | 3 · `(i64) -> i64` | `:13543` |
-| `vibe.host_stream_read` | 3 · `(i64) -> i64` | `:13569` |
-| `vibe.host_stream_close` | 3 · `(i64) -> i64` | `:13581` |
-| `vibe.stdin_provider_acquire` | 5 · `() -> i64` | `:13591` |
-| `vibe.stdin_provider_read` | 3 · `(i64) -> i64` | `:13599` |
-| `vibe.stdin_provider_close` | 3 · `(i64) -> i64` | `:13607` |
-| `vibe.host_future_get$<name>` | 5 · `() -> i64` | `:13556`, one per sorted-deduped name |
-| `vibe.host_stream_get$<name>` | 5 · `() -> i64` | `:13616`, one per sorted-deduped name |
+| `vibe.host_future_get` | 5 · `() -> i64` | the anonymous host future (see *Host futures*) |
+| `vibe.host_future_wait` | 3 · `(i64) -> i64` | the shared wait half |
+| `vibe.host_future_arm`, `vibe.host_stream_arm`, `vibe.host_sleep_arm` | 3 · `(i64) -> i64` | joins to the shared waitable set (#1537) |
+| `vibe.host_future_wait_any` | 5 · `() -> i64` | the wait on that set (#1537) |
+| `vibe.host_future_cancel`, `vibe.host_stream_cancel`, `vibe.host_sleep_cancel` | 3 · `(i64) -> i64` | the read-side cancels (see *Cancellation*) |
+| `vibe.host_arg_push`, `vibe.host_stream_claim` | 3 · `(i64) -> i64` | a WIT response's request argument and body claim (#2066) |
+| `vibe.host_stream_read`, `vibe.host_stream_close` | 3 · `(i64) -> i64` | the shared host-stream halves |
+| `vibe.stdin_provider_acquire` | 5 · `() -> i64` | the stdin provider (#1539) |
+| `vibe.stdin_provider_read`, `vibe.stdin_provider_close` | 3 · `(i64) -> i64` | |
+| `vibe.host_future_get$<name>`, `vibe.wit_future_get$<address>`, `vibe.wit_response_get$<address>`, `vibe.wit_response_arg_get$<address>`, `vibe.host_stream_get$<name>` | 5 · `() -> i64` | one per sorted-deduped name (see *Dynamic import prefixes*) |
 
 Neither `scripts/wasm_vibe_host_runner.js` nor `runtime/viberun`'s core lane
 registers any of these, and that is by design: they are satisfied inside the
-composed component by the adapter
-`lib/@vibe/compiler/entry/source_compile/wasi_only/component_codegen.vibe`
-emits.
+composed component by the adapter the composer emits
+(`comp_generate_hostfuture_adapter_core_module` and its siblings in
+`lib/@vibe/compiler/entry/source_compile/wasi_only/component_codegen_*.vibe`).
 
 This paragraph used to end "A core module importing them and run through either
 runner fails at instantiation, not at the call", verified by ABSENCE from each
@@ -88,9 +97,20 @@ importing `vibe.host_stream_get$body` and `vibe.host_stream_read` instantiated,
 ran, printed `sum=0` and exited 0; the loop shapes that test for the `-1` EOS
 sentinel instead trapped with a bare `RuntimeError: unreachable`.
 
-Since #2928 the node runner refuses these names on CALL, with a message naming
-the import and the viberun lane that implements it. Not on instantiation: a
-program that links one and never reaches it does not need the capability.
+Since #2928 the node runner refuses some of these names on CALL, with a
+message naming the import and the viberun lane that implements it
+(`isUnimplementedAsyncImport` / `unimplementedAsyncImportStub` in
+`scripts/wasm_vibe_host_runtime.js`). Not on instantiation: a program that
+links one and never reaches it does not need the capability. The refusal list
+is `host_future_get`, `host_future_wait`, `host_stream_read`,
+`host_stream_close` and the `host_future_get$` / `wit_future_get$` /
+`host_stream_get$` prefixes. **The rest of the band still falls through to
+`() => 0n`**: the `stdin_provider_*` trio, the #1537 arm / wait-any / cancel
+imports, `host_arg_push`, `host_stream_claim`, and the `wit_response_get$` /
+`wit_response_arg_get$` prefixes. Most of them are imported only beside a
+refused name, so a program reaches a refusal first. The `stdin_provider_*`
+imports are not: read from the code (not measured), a core module importing
+them would get `0` from the node runner. No gate asks that question yet.
 
 `runtime/viberun`'s core lane is the one that fails at instantiation, and that
 is measured rather than inherited from the design — the same module, the same
@@ -114,12 +134,12 @@ Five import families are minted per program rather than listed:
 `vibe.host_future_get$<name>`, `vibe.wit_future_get$<address>` (#2064),
 `vibe.wit_response_get$<address>` and `vibe.wit_response_arg_get$<address>`
 (#2066), and `vibe.host_stream_get$<name>`.
-Each has its own emission loop in `linked_compile.vibe` and its own
+Each has its own emission loop in `lc_emit_module_sections` and its own
 `componentAdapterPatterns` row in `docs/generated/host-runtime-contract.json`.
 `check_host_runtime_contract.py`'s `validate_emitter_contract` compares the two
 by **exact dict equality**, so a loop added without its row (or a row without
 its loop) turns the required gate red in the same change. The composer reads
-the prefixes back in `component_codegen.vibe` (`comp_is_wit_future_get_import`,
+the prefixes back in the composer (`comp_is_wit_future_get_import`,
 `comp_is_wit_response_get_import`, `comp_is_wit_response_arg_import`,
 `comp_wit_future_interface` /
 `comp_wit_future_func`).
@@ -130,11 +150,11 @@ the prefixes back in `component_codegen.vibe` (`comp_is_wit_future_get_import`,
 
 **The module declares its own answer.** Every emitted core module carries a
 `vibe.abi` custom section reading `host_import_abi=raw`
-(`codegen/wasm_emit/metadata.vibe:45`; every call site passes `"raw"`, and
-nothing in the tree ever emits `tagged`). Under that declaration the `i64` a
+(`emit_vibe_abi_custom_section` in `codegen/wasm_emit/metadata.vibe`; every
+call site passes `"raw"`, and nothing in the tree ever emits `tagged`). Under that declaration the `i64` a
 host receives IS the millisecond count, and the **guest** is what untags: the
-RC raw-ABI shim in `codegen/expr/compile_call.vibe`
-(`cc_raw_abi_shim_applies`) removes the `n << 1` tag before the import call,
+RC raw-ABI shim (`cc_raw_abi_shim_applies`,
+`codegen/expr/compile_call_cc_ladder_names.vibe`) removes the `n << 1` tag before the import call,
 gated on `ctx.enable_rc`. That is option 1 of the two #2903 laid out, and it
 was already the design — it just had a hole in it.
 
@@ -142,8 +162,11 @@ The hole was one name. `sleep_blocking` was absent from the shim's name list
 while `sleep` was present, so the argument reached the host still tagged and
 `sleep(1000)` handed it `2000`. It is not an obscure spelling: the injected
 `__entry_settle` pays a suspend sleep debt by calling `sleep_blocking`
-(`linked_compile.vibe:4222`, `:4255`), and both names resolve to the same
-`vibe.sleep` import (`:10996`), so an ordinary `sleep(ms)` inside `allows
+(`lc_inject_async_sleep_boundary`,
+`codegen/wasi/linked_compile_lc_inject_async_sleep_boundary.vibe`), and both
+names resolve to the same `vibe.sleep` import
+(`compile_wasi_module_linked_impl_with_split_grants` maps `sleep_blocking` to
+`sleep_idx`), so an ordinary `sleep(ms)` inside `allows
 Async` reached the host through the uncovered name. Measured on the same
 program before and after, with `VIBE_RC=0` as the control:
 
@@ -155,19 +178,22 @@ program before and after, with `VIBE_RC=0` as the control:
 So the two shipped core runners were never in disagreement with each other on
 a module this compiler produces: `runtime/viberun` passes the `i64` through,
 and the node runner's `decodeHostInt` returns `Number(value)` unshifted once
-`detectHostImportAbi` reads `raw` off the section (`:708`, `:1313`).
+`detectHostImportAbi` reads `raw` off the section (both in
+`scripts/wasm_vibe_host_runtime.js`).
 
-Pinned by `tests/gates/early/run.sh` gate `27g/27`, which asserts the VALUE
+Pinned by gate `27g/27` (`tests/gates/early/async_for_loop_classification.sh`,
+run from `tests/gates/early/run.sh`), which asserts the VALUE
 handed to `vibe.sleep` on both RC lanes with an observer that decodes nothing.
 
 **One decoder is still stale, and it is unreachable.**
-`decodeTaggedOrRawInt` (`wasm_vibe_host_runner.js:686`) shifts by **2**, a tag
+`decodeTaggedOrRawInt` (`scripts/wasm_vibe_host_runtime.js`) shifts by **2**, a tag
 width the RC lane stopped using, and it is a heuristic on the low two bits —
 which for `ms << 1` are a function of `ms`'s parity, so it would reinterpret
 the same import per call site. It runs only when the ABI is not `raw`, and the
 only way to get there is `VIBE_IMPORT_ABI=tagged`, an env override that
-**wins over the module's own declaration** (`:2470`). No module in the tree
-declares `tagged` and nothing in the repo sets that variable, so this is a
+**wins over the module's own declaration** (the runner's `main()` reads the
+section only when `VIBE_IMPORT_ABI` is unset). No module in the tree declares
+`tagged`, and the scripts that set the variable set it to `raw`, so this is a
 dead lane rather than a live divergence — but it is a loaded one, and the
 override silently contradicting a module that says `raw` is the hazard #2903's
 "fifth implementer" paragraph is about. Not fixed here; see the list below.
@@ -269,7 +295,8 @@ override silently contradicting a module that says `raw` is the hazard #2903's
 - **Drop** is conditional -- this is *the conditional-drop rule* the
   runtime-neutral list below names. A call that completed eagerly (status
   RETURNED, code `2`) created no subtask, so it is neither joined nor dropped
-  (`component_codegen.vibe:2760-2761`). The probe in
+  (the `sleep` half of `comp_generate_hostfuture_adapter_core_module`, and
+  `comp_generate_concurrent_awaits_guest_core_module`). The probe in
   `tools/wasip3_component_probe/` traps on eager completion and so never
   exercised this branch; the composer reaches it.
 - **A settled cell latches**, so awaiting the same `Future[T]` twice costs one
@@ -469,7 +496,8 @@ override silently contradicting a module that says `raw` is the hazard #2903's
   calls would double-read.
 - **Read** (`host_stream_read`) returns one byte, or `-1` at end of stream.
   End of stream has **two** shapes and both are handled
-  (`component_codegen.vibe:2096`): a zero-transfer CLOSED code `1` (drop the
+  (the `host_stream_read` body of `comp_generate_hostfuture_adapter_core_module`):
+  a zero-transfer CLOSED code `1` (drop the
   readable end, return `-1`), or the final byte arriving *with* the CLOSED code
   (latch `comp_hs_closed_base` so the next call settles to `-1`). Any other
   zero-transfer code traps loudly rather than being read as EOS.
@@ -482,8 +510,9 @@ override silently contradicting a module that says `raw` is the hazard #2903's
 ### Canonical read encodings
 
 Every constant here is a measurement taken against
-`tools/wasip3_component_probe/host_stream_value`, not a choice
-(`component_codegen.vibe:2091-2098`):
+`tools/wasip3_component_probe/host_stream_value`, not a choice (the doc
+comment on `comp_generate_body_read_guest_module`, which states them for the
+read loop it emits):
 
 | what | encoding |
 |---|---|
@@ -501,7 +530,7 @@ error.
 
 A `Future[T]` is a two-word cell `[state, payload]`, and the state word is
 what distinguishes the four things that share the representation
-(`checker/builtins_async.vibe:21-23`):
+(the header comment of `checker/builtins_async.vibe`):
 
 | state | meaning | payload |
 |---|---|---|
@@ -511,20 +540,24 @@ what distinguishes the four things that share the representation
 | `3` | host stream | the handle |
 
 `HostStream` is the state-3 cell. The states are disjoint on purpose:
-`compile_call.vibe:3372-3373` records that the host-stream state is "distinct
+The `host_stream_named` arm of `cc_compile_named_1`
+(`codegen/expr/compile_call_named_1.vibe`) records that the host-stream state is "distinct
 from every future cell state so a future cell can never be read as a stream or
 vice versa".
 
 A host stream arriving as a **parameter** is the bare handle, not a cell, and
 the parameter is shadowed by a cell built at the top of the body — without
 that, a read would pull state and handle out of a single integer
-(`tests/gates/mid/run.sh:301-304`, the #1540 lane).
+(`lc_wrap_host_stream_params` in `codegen/wasi/linked_compile_lc_retarget_call.vibe`;
+gate `40c5/40`, `tests/gates/mid/retired_v128_intrinsics_stay_retired.sh`, the
+#1540 lane).
 
 ## The suspend-request band protocol
 
-The injected `__entry_settle` (`linked_compile.vibe:4190-4260`) dispatches a
-single `Int` request. The bands are documented at `lc_hs_req_base`
-(`linked_compile.vibe:2966-2977`) and are load-bearing magic numbers:
+The injected `__entry_settle` (built by `lc_inject_async_sleep_boundary`)
+dispatches a single `Int` request. The bands are documented at
+`lc_hs_req_base` (`codegen/wasi/linked_compile_lc_retarget_call.vibe`) and are
+load-bearing magic numbers:
 
 | request | meaning |
 |---|---|
@@ -535,15 +568,20 @@ single `Int` request. The bands are documented at `lc_hs_req_base`
 | `req ≥ 2048` | host-stream read, handle `req - lc_hs_req_base()` |
 
 The future band's top, `1025`, is `2 + comp_hf_max_handles()` — and
-`comp_hf_max_handles() = 1023` lives in `component_codegen.vibe:5778` while
-`lc_hs_req_base() = 2048` lives in `linked_compile.vibe:2975`. The bands are
+`comp_hf_max_handles() = 1023` lives in the composer
+(`component_codegen_comp_generate_serve_stream_adapter_module.vibe`) while
+`lc_hs_req_base() = 2048` lives in the linker
+(`linked_compile_lc_retarget_call.vibe`). The bands are
 disjoint "by construction, not by runtime discipline", as that comment says,
-and the construction spans two files that nothing read together until
+and the construction spans two packages that nothing read together until
 `scripts/check_async_band_contract.sh`.
 
 ## The adapter slot bands
 
-`component_codegen.vibe:5738-5781`:
+`comp_hf_value_base` / `comp_hf_state_base`
+(`component_codegen_comp_generate_host_future_value_guest_core_module.vibe`)
+and `comp_hs_value_base` / `comp_hs_closed_base` / `comp_hf_max_handles`
+(`component_codegen_comp_generate_serve_stream_adapter_module.vibe`):
 
 | base | value |
 |---|---|
@@ -576,7 +614,9 @@ re-throws unchanged after the release. On that throw the group's parked
 children are cancelled first, which releases their host reads the same way
 fail-fast does. `future.cancel-write` and `task.cancel` are
 not emitted: the guest never writes a host future, and a guest task is not a
-Component Model task (#1537 scope item 3).
+Component Model task. Backing a task with a Component Model subtask that the
+host can see, schedule and cancel (`TaskHandle::cancel` as `subtask.cancel`) is
+#3147.
 
 ## Runtime-neutral vs Wasmtime-specific
 
@@ -594,14 +634,15 @@ runner can honour: `future.read`'s `BLOCKED` = `0xffffffff`, the
 `waitable-set.drop` / `stream.drop-readable` opcodes, the `[async-lower]`
 call-to-subtask folding.
 
-**Wasmtime configuration** — the flags `runtime/vibe:929` passes
+**Wasmtime configuration** — the flags the `serve` arm of `runtime/vibe`'s
+`execute_host_action` passes
 (`-Sp3 -Shttp -W exceptions=y -W concurrency-support=y -W
 component-model-async=y -W component-model-async-stackful=y`), and
 `VIBE_ASYNC_FUTURES` / `VIBE_ASYNC_STREAMS`, which are a **test harness**, not
-part of the contract: they exist only in `runtime/viberun/src/main.rs:917`
-and `:1000` and link named root imports from an env spec. The runner reserves
-`get-future`, `get-async`, `get-after` and `sleep-for` against redefinition
-(`:935`, `:1011`).
+part of the contract: they exist only in `run_async_component`
+(`runtime/viberun/src/component_runtime.rs`) and link named root imports from
+an env spec. The same function reserves `get-future`, `get-async`, `get-after`
+and `sleep-for` against redefinition.
 
 ## What is still not pinned
 
@@ -612,6 +653,10 @@ and `:1000` and link named root imports from an env spec. The runner reserves
   quietly answering differently.
 - The `stdin_read_char` "async by the host" description, which no host
   implements that way.
+- The node runner's `() => 0n` fallthrough for the adapter-only names #2928's
+  refusal list does not cover (see *componentAdapterOnly*). The list is a
+  hand-kept subset of the manifest band, so a name added to the band is not
+  refused unless someone also adds it there.
 - What an abandoned future or stream does to the HOST side beyond the canon
   cancel: wasmtime drops the producer's future, and a second runtime could do
   otherwise without any conformance row here noticing.
