@@ -13,15 +13,15 @@ import @vibe/core {
 // WASI 0.3 async front-end (M1a/M2/M-conc). See docs/internal/design/wasi-p3-async.md,
 // ADR-0012.
 //
-// `Future[T]` / `Stream[T]` / `HostStream` are represented structurally as
+// `Future[T]` / `HostStream` are represented structurally as
 // CtNamed(name, _) so no core `Type` enum change is needed, and element/result
 // types use CtUnknown (gradual), consistent with the rest of the builtin table.
 //
 // They are NOT type-level only. Each has a runtime representation (spec §2.2 /
 // §2.4): a `Future[T]` is the two-word cell `[state, payload]` (0 ready /
-// 1 guest pending / 2 host future / 3 host stream), a `Stream[T]` is the eager
-// backing `Array[T]`, and a `HostStream` is a state-3 cell. `Task[T]` was
-// retired in #1227 -- see lookup_concurrency below. Operations that
+// 1 guest pending / 2 host future / 3 host stream), and a `HostStream` is a
+// state-3 cell. The eager Array-backed `Stream[T]` was retired in #1538, and
+// `Task[T]` in #1227 -- see lookup_concurrency below. Operations that
 // suspend or touch the async runtime carry the open-string `Async` effect, so
 // the existing effect-escape check (checker_effects.vibe) requires them to be
 // used inside `with Async` (or a handle body) — exactly like `throw`/`Error`.
@@ -108,9 +108,10 @@ fn lookup_future(name: String) -> Option[Type] {
   }
 }
 
-/// Host-owned component streams. Their scalar next protocol is tracked by
-/// #1955 and intentionally remains distinct from the nominal ByteStream value
-/// conversion below.
+/// Host-owned component streams. #1955 settled their source protocol
+/// (`HostStream::next`, `-> Option[Int] with Async`); the scalar primitive
+/// stays internal and distinct from the nominal ByteStream value conversion
+/// below.
 fn lookup_stream(name: String) -> Option[Type] {
   if name == "host_stream_named" {
     // host_stream_named: (String) -> Stream[Int]   (pure; a NAMED host stream)
@@ -145,8 +146,8 @@ fn lookup_stream(name: String) -> Option[Type] {
     // the entry boundary settles it via `stream.read` (+ waitable-set.wait
     // when the read blocks) in the component adapter.
     //
-    // This is the direct scalar read the p3 lowering supports today. Its final
-    // protocol is intentionally left to #1955.
+    // This is the direct scalar read the p3 lowering supports. The public
+    // protocol over it is `HostStream::next` (#1955).
     Some(CtFn([CtNamed("HostStream", array_empty())], CtInt, Some("Async")))
   } else if name == "HostStream::next" {
     // Public nominal protocol. The scalar primitive remains internal to
@@ -184,8 +185,9 @@ fn lookup_stream(name: String) -> Option[Type] {
 ///
 /// The working surface is `@vibe/concurrent`: `TaskGroup::spawn_suspend` for a
 /// suspendable task, `TaskHandle::join`, and `sleep_wait` (#1253) for a sleep
-/// that overlaps instead of blocking. Real subtask spawn over waitable-set /
-/// `future.cancel-*` remains M-conc-2 (ADR-0068, spec §2.5).
+/// that overlaps instead of blocking. Suspendable tasks interleave on host
+/// waits since #1537; backing them with Component Model subtasks is #3147
+/// (docs/internal/design/wasi-p3-async.md §2.5).
 fn lookup_concurrency(name: String) -> Option[Type] {
   let _ = name
   None
