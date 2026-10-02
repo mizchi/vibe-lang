@@ -124,6 +124,7 @@ fingerprint_inputs() {
       fi
     }
     hash_as "$SCRIPT_DIR/generate_bundle.sh" scripts/generate_bundle.sh
+    hash_as "$SCRIPT_DIR/bundle_source_functions.py" scripts/bundle_source_functions.py
     hash_as "${BASH_SOURCE[0]}" scripts/ensure_generated.sh
     # Column 2 of the manifest is the path, relative to $COMPILER_DIR, with
     # ../../../ meaning repo root (see generate_bundle.sh).

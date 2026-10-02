@@ -12,7 +12,7 @@ const SCRIPTS = [
   "selfcompile_heap_policy_container.mjs",
   "selfcompile_heap_policy_hostile_wasm.mjs",
   "selfcompile_heap_policy_policy_runner.sh",
-  "generations.sh", "generate_bundle.sh", "trace_lib.sh",
+  "generations.sh", "generate_bundle.sh", "bundle_source_functions.py", "trace_lib.sh",
   "wasm_vibe_host_runner.js",
   "wasm_vibe_host_runtime.js",
   "wasm_vibe_host_runner_http_worker.js", "wasm_vibe_host_runner_tcp_worker.js",
@@ -65,7 +65,7 @@ function makeWorldReadable(path) {
   else fail("unsafe-container-input-node", { path });
 }
 
-function prepareTrustedPolicy(trustedRoot, lease, seedSha) {
+export function prepareTrustedPolicy(trustedRoot, lease, seedSha) {
   const policy = join(lease, "container-policy");
   rmSync(policy, { recursive: true, force: true });
   mkdirSync(join(policy, "scripts"), { recursive: true, mode: 0o700 });

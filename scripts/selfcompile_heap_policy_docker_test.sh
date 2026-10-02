@@ -67,6 +67,9 @@ exit 97
 EOF
   chmod +x "$scratch/repo/scripts/$script"
 done
+cat >"$scratch/repo/scripts/bundle_source_functions.py" <<'PY'
+raise SystemExit("HEAD_SCRIPT_EXECUTED:bundle_source_functions.py")
+PY
 git -C "$scratch/repo" add scripts
 git -C "$scratch/repo" commit --quiet -m 'hostile materialized script sentinels'
 head="$(git -C "$scratch/repo" rev-parse --verify 'HEAD^{commit}')"
