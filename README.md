@@ -49,7 +49,7 @@ fn main allows Console {
   let result = handle {
     safe_div(10, 2) + Point::manhattan(Point::{ x: 3, y: 4 })
   } with {
-    Exception::Throw(msg) => {
+    Exception[String]::Throw(msg) => {
       println("failed: \{msg}")
       0 - 1
     }

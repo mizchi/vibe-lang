@@ -245,7 +245,7 @@ export fn parse_port(s: String) -> Int with Exception[String] {
 ```
 
 derives `parse-port: func(s: string) -> result<s64, string>` and a lift that
-runs `handle { Ok(body) } with { Exception::Throw(e) => Err(e) }` — the
+runs `handle { Ok(body) } with { Exception[String]::Throw(e) => Err(e) }` — the
 success branch is wrapped in `Ok` inside the handler, the shape
 `lib/@vibe/wit_runtime/index.vpkg` already documents, so both arms have the
 `Result[T, E]` type;

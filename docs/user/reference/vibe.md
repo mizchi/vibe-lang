@@ -187,7 +187,7 @@ fn run_core(raw: String) -> Int with Exception[String] {
 
 fn run_cli(raw: String) -> Int {
   handle { run_core(raw) } with {
-    Exception::Throw(_) => 0 - 1
+    Exception[String]::Throw(_) => 0 - 1
   }
 }
 ```
