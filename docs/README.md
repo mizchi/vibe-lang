@@ -133,7 +133,6 @@ the repo; not the user manual.
 | [internal/design/wasip3-effect-alignment.md](internal/design/wasip3-effect-alignment.md) | ADR-0089, proposed |
 | [internal/design/zero-alloc-check.md](internal/design/zero-alloc-check.md) | ADR-0091, current conservative allocation verification |
 | [internal/design/side-effect-consolidation.md](internal/design/side-effect-consolidation.md) | Measured basis of ADR-0100 / ADR-0101: mutation authority and collection naming |
-| [internal/design/decisions.md](internal/design/decisions.md) | Locked language decisions |
 | [internal/design/memory-contract.md](internal/design/memory-contract.md) | Linear / wasm-gc / RC |
 | [internal/design/profiling.md](internal/design/profiling.md) | `vibe run --mem` / `--mem-sample` / `--alloc-site`, `vibe bench`, guest CPU profiles |
 | [internal/design/rc-cutover-readiness.md](internal/design/rc-cutover-readiness.md) | ADR-0055 status |

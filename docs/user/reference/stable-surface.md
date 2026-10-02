@@ -1,8 +1,8 @@
 # vibe stable surface
 
 > Status: **accepted** — the record of what vibe promises SemVer stability for,
-> and what it deliberately does not. Fine-grained locked decisions live in
-> [spec/decisions.md](../../internal/design/decisions.md); the full decision log is [adr.md](../../internal/design/adr.md).
+> and what it deliberately does not. The full decision log is
+> [adr.md](../../internal/design/adr.md).
 >
 > **The freeze takes effect at the `0.1.0` tag** — the first release usable by
 > anyone but the author (ADR-0109). Until then this document describes the
@@ -30,8 +30,8 @@ applies literally from 1.0.0 on.
 | Compatible addition to the stable surface | **Minor** | New syntax sugar, new prelude symbol, new CLI flag |
 | Change with no observable behavior difference | **Patch** | Bug fix, better diagnostic message, internal optimization |
 
-Trait bound compatibility follows the lock in [decisions.md](../../internal/design/decisions.md):
-**tighter bounds = Major / looser bounds = Minor**.
+Trait bounds on an exported declaration follow the same table: **tightening a
+bound is a breaking change (Major), loosening one is compatible (Minor)**.
 
 The **unstable surface (§6)** is outside this guarantee. Those parts can break
 within a Minor.
@@ -71,7 +71,7 @@ The rest of §6 is still a reading obligation rather than an enforced boundary.
 
 ## 2. Frozen language core (syntax & semantics)
 
-The canonical definition of each item below is [spec/syntax.md](syntax.md)
+The canonical definition of each item below is [syntax.md](syntax.md)
 and the [cheatsheet](cheatsheet.md), whose `vibe` examples doctest
 compile-checks against the current compiler.
 
@@ -251,8 +251,16 @@ they could never be right.
   `let f: (T) -> U = (x) -> { ... }`.
 - Labeled arguments `f(x=10)` / `x~`.
 - Shorthands: sections `_ * 2`, the `_` placeholder.
-- **Pipe-first** `x |> f` (ADR-0020) with `_` slot substitution.
-- `.` is field access only — there is no method-call sugar.
+- **Pipe-first** `x |> f` (ADR-0020) with `_` slot substitution: `x |> f` is
+  `f(x)` and `x |> f(a, b)` is `f(x, a, b)`. The desugaring happens in the
+  parser. Mixing `|>` with another infix operator without parentheses
+  (`1 + 1 |> double`) is a parse error that says so.
+- `.` reads a field. `recv.method(args)` is accepted for a user type that
+  declares `Type::method` and means `Type::method(recv, args)`. The qualified
+  form is canonical, and `vibe normalize` rewrites a dot call to it wherever
+  it can recover the receiver's type from the file (ADR-0081); a builtin
+  receiver (`xs.length()`) is refused with the qualified call it should be. A
+  function stored in a field is called as `(obj.f)(x)`.
 - Name resolution order: local > lexical > import > prelude.
 
 ### 2.3a Naming (#2830, ADR-0083)
@@ -286,9 +294,19 @@ spelling at all — `Option::Some` reports `unknown name`, so write `Some`.
 
 ### 2.5 Type definitions and traits
 - `type` aliases, `enum`, `struct`, `derive(Eq)` (ADR-0045).
-- Traits: nominal and marker (v0, decisions.md), supertraits `trait Ord: Eq`,
-  `export trait` (sealed) / `export open trait` (extensible), conditional impls
-  `impl [T: Eq] Eq for Array[T]`.
+- **Declaration members are separated by `;`**: `struct P { x: Int; y: Int }`,
+  `enum E { A; B }`. A `,` there is a parse error naming the edit, and a bare
+  newline is not a separator either (ADR-0107).
+- Traits are nominal. A trait may declare methods (`Iterator[T]`'s
+  `iter_length` / `iter_get`; `Eq`'s `equals` since #2523) or be a marker
+  (`Ord`). Supertraits `trait Ord: Eq`, conjunctive bounds `[T: A + B]`,
+  conditional impls `impl [T: Eq] Eq for Array[T]`.
+- `export trait` and `export open trait` are both accepted, and `open trait`
+  without `export` is a parse error. **The two exported spellings currently
+  mean the same thing**: sealing is not enforced, so a module that imports an
+  `export trait` may `impl` it (measured on the committed seed; the parser
+  discards `open`). Enforcing it later would reject programs that compile
+  today, which makes it a breaking change.
 
 ### 2.6 Effect system
 - Effects are declared with `with E` annotations. **What an empty row
@@ -325,16 +343,21 @@ spelling at all — `Option::Some` reports `unknown name`, so write `Some`.
   passes any `Exception[K]` — no false positives, known misses. Tightening
   any of this rejects programs and is a breaking change.
 - User-defined algebraic effects: `effect` / `perform` / `handle ... with` /
-  `resume` (one-shot, lexically scoped — ADR-0050, ADR-0021 Phase 1
-  tail-resumptive).
+  `resume` (one-shot, lexically scoped — ADR-0050). How a handler is lowered
+  (evidence passing, ADR-0076) is not part of the surface.
 - Effect polymorphism `with e`.
 
 ### 2.7 Module system
 - `export` / `import ./path { names }` / `as` renaming / `type` and `trait`
-  imports / re-export.
-- `module Name { ... }` blocks, qualified `Type::method` / `Module::name`.
-- Package references `@json` / `@lib/path`.
-- An import path may not escape the file's root (locked).
+  imports / re-export (`export ./path { names }`).
+- Qualified `Type::method` / `Effect::op`. `module Name { ... }` blocks were
+  removed (#728): writing one is a parse error that names the edit (use file
+  boundaries and import / export). The boundary and visibility rules are
+  [module-system-oracle.md](../../internal/design/module-system-oracle.md)'s.
+- Package references `@scope/name`. A pinned copy in `.vibe/store/` wins, then
+  the workspace `lib/`, then `VIBE_LIB`; the pin lives in the root
+  `index.vpkg` (§4).
+- An import path may not escape the file's root.
 
 ---
 
@@ -487,12 +510,12 @@ frozen:
 
 ## 5. Frozen formatting / canonicalization
 
-As locked in [decisions.md](../../internal/design/decisions.md):
-- The enum variant separator canonicalizes to `;`.
+- The enum variant and struct field separator is `;` (§2.5).
 - Struct literals use the `Type::{ ... }` style.
 - The formatter (`vibe fmt`) is idempotent.
-- Type naming: user types are CamelCase; the wasm builtin primitives (`i32`,
-  `f32`, `f64`) are reserved in lowercase.
+- Type naming: user types are CamelCase by convention (§2.3a; a lowercase
+  type name is accepted). The lowercase builtin type names such as `i32` are
+  reserved: declaring a struct named `i32` is refused.
 
 ---
 
@@ -517,8 +540,9 @@ that.
   can reach (`StdinStream::next(StdinStream) -> Int with Async`), where `vibe
   check` enforces it like any other row element. The unsettled part is the
   suspendable lane built on top of it, not the vocabulary.
-- **Component Model `#import` integration** (ADR-0021 Phase 2/3): CPS lowering
-  of non-tail-resumptive handlers, capability effects.
+- **Component builds and component imports** (ADR-0113, `proposed`): what
+  `vibe build --component` derives from an export surface, and importing a vibe
+  component by name. Neither is surface yet.
 - **Capability authorization surface** (ADR-0088, `partial`): the `?` grade
   for optional capabilities on an entry's `allows` row, the `Attempt[T, E]`
   that `perform?` returns (the type and `unwrap_or` / `is_granted` are in
@@ -526,16 +550,22 @@ that.
   `fn main allows ..`, `test "n" allows ..` -- is stable: it is the spelling
   the book teaches. `--allow-*` / `--deny-*` are L1 of this resolution
   ladder, not a separate feature.
-- **`_start` capability declarations and the top-level effect rule**
-  (ADR-0041/0042, `proposed`).
-- **The SIMD API** (`spec/simd-api-design.md`): the fused scan builtins
+- **Entry points and the module top level** (ADR-0069, `proposed`; it absorbed
+  ADR-0041 and ADR-0042): retiring the legacy `let main` and explicit `_start`
+  entries, exit-code behaviour, and whether `main` must declare its row. What
+  the compiler already enforces: a top-level expression is refused (move it
+  into `fn main`), and so is a top-level `let` whose initializer performs an
+  effect. An entry's capability row is the `allows` grant (above).
+- **The SIMD API** ([simd-api-design.md](../../internal/design/simd-api-design.md)): the fused scan builtins
   (`simd_scan_line_end_str` and friends) and inline wasm as the way to write a
   kernel. The `V128` value type and its 12 `v128_*` intrinsics were **removed**
   in #2342 — measured at 22x an inline-wasm kernel with an unreclaimable
   16-byte box per operation — so nothing here promises them.
-- **Line-granularity debugger stepping and call-site hover** (span-arc):
-  function-granularity stepping and typed hover are stable; line-granularity
-  stepping and arbitrary-expression watch are a future extension.
+- **Debugger and hover precision**: function-granularity breakpoints and typed
+  hover are stable. Statement-line breakpoints and stepping (`--break
+  file:line`, `s` / `n`) work but are not frozen; expression-level breakpoints,
+  arbitrary-expression watch and call-site hover need a source span on every
+  expression node and are a future extension (ADR-0035).
 - **Incremental analysis in the LSP** (optional).
 - **The wasm-gc backend is opt-in and experimental.**
   `VIBE_TEST_BACKEND=gc` resolves the same filesystem module graph and projected
