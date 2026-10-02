@@ -377,6 +377,13 @@ that name inside ensures conditions. `vibe normalize` and the AST printer
 round-trip fn declarations in fn + where form — fn sources are no longer
 refused or rewritten to `let rec`.
 
+The entry is the one exception to "full annotations required", and it is
+deliberate (#3119). `fn main { .. }` and `fn main allows R { .. }` omit both
+the parameter list and the return type: they are sugar for
+`fn main() -> Unit { .. }` (ADR-0069). Every other function writes its return
+type, and so does `fn main` once it has parens: `fn main() { .. }` is
+`expected -> but got {`.
+
 ```vibe
 // let form: values, computed functions, higher-order returns
 let add: (Int, Int) -> Int = (x, y) -> { x + y }
@@ -713,7 +720,11 @@ let arrays = [1, 2]
 ```
 
 `Iterator::map` and `filter` return arrays; `fold`, `find`, `any`, and `all`
-are eager terminals. Array calls devirtualize to the existing `Array::*`
+are eager terminals. Despite the name, `Iterator` is not a lazy cursor as in
+Rust: every operation runs to completion, and laziness lives in `AsyncIter`
+(below). The trait is an imported `@vibe/builtin` API, not a no-import prelude
+name, and that spelling is part of the frozen surface (`stable-surface.md`,
+#3116). Array calls devirtualize to the existing `Array::*`
 intrinsics, so the trait spelling adds no loop or allocation overhead. Option
 does not implement `Iterator`. `AsyncIter` is the separate pull layer
 (ADR-0099), entered explicitly with `Array::iter`:
@@ -3177,17 +3188,19 @@ Console::write_stream()        // function arity mismatch: expected 1 args, got 
 They are checked the same way as `Array::*`, `String::*`, `Bytes::*`, and a
 user-defined function.
 
-### 区切り文字は文脈で違う
+### The separator depends on the context
 
 ```vibe skip
 // doctest-skip: shows both separators side by side, including the rejected one
-enum Shape { Circle(Int); Rect(Int, Int) }        // 宣言メンバは ;
-let r = match s { Circle(r) => r, _ => 0 }        // match arm は ,
+enum Shape { Circle(Int); Rect(Int, Int) }        // declaration members: ;
+let r = match s { Circle(r) => r, _ => 0 }        // match arms: ,
 ```
 
-`,` を宣言メンバの区切りに使うのは parse error。逆に match arm を `;` で
-区切ると `unexpected in pattern: ;`。この cheatsheet 自身がこの2行を並べて
-説明している場所で間違えていた (#1506 で修正)。
+Declaration bodies (struct fields, enum variants) separate their members with
+`;`. Literals, patterns, arguments and match arms separate items with `,`.
+This split is a decided rule, not an accident (#3122). Using `,` between
+declaration members is a parse error. Separating match arms with `;` is
+`unexpected in pattern: ;`.
 
 ### top-level に裸の式は置けない (ADR-0069)
 
