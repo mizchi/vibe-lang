@@ -14,7 +14,7 @@ vibe test examples/syntax.vibe
 
 ## Language Features
 
-- `effects.vibe`: `with Exception` / `handle { ... } with Exception { ... }`
+- `effects.vibe`: `with Exception` / `handle { ... } with { Exception::Throw(_) => ... }`
 - `async.vibe`: `await` and async effect combinations
 - `perform_handle.vibe`: layered effects and recovery with `perform Effect::Op(...)` and `handle`
 - `effect_demo.vibe`: functions sharing a named effect declaration (#752)

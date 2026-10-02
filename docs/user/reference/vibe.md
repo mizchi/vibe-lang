@@ -121,7 +121,7 @@ let g2: (String) -> Int with Exception = (msg) -> { fail(msg) }
 
 // ok: effect is localized by handler pattern
 let g3: (String) -> Int = (msg) -> {
-  handle { fail(msg) } with Exception { Throw(_) => 0 }
+  handle { fail(msg) } with { Exception::Throw(_) => 0 }
 }
 ```
 
@@ -186,8 +186,8 @@ fn run_core(raw: String) -> Int with Exception[String] {
 }
 
 fn run_cli(raw: String) -> Int {
-  handle { run_core(raw) } with Exception[String] {
-    Throw(_) => 0 - 1
+  handle { run_core(raw) } with {
+    Exception::Throw(_) => 0 - 1
   }
 }
 ```
@@ -838,7 +838,7 @@ Rules:
   supported`); there is no generator form.
 - Errors travel as the `Exception` effect; `Result` was removed from the
   language in #1324.
-- Error boundary syntax is `handle { ... } with Exception { Throw(_) => ... }`.
+- Error boundary syntax is `handle { ... } with { Exception::Throw(_) => ... }`.
 
 ## Test blocks
 

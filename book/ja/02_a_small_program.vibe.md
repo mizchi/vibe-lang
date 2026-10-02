@@ -48,8 +48,8 @@ fn show(e: Expr) -> String {
 fn report(e: Expr) -> String {
   handle {
     "\{show(e)} = \{eval(e)}"
-  } with Exception {
-    Throw(message) => "\{show(e)} failed: \{message}"
+  } with {
+    Exception::Throw(message) => "\{show(e)} failed: \{message}"
   }
 }
 
