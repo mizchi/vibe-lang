@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { createHmac } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { createHash, createHmac } from "node:crypto";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -10,6 +10,7 @@ import {
   dockerEnvironment,
   inspectDockerAuthority,
   parseDockerContextEndpoint,
+  prepareTrustedPolicy,
   validateDockerAuthorityEnvironment,
   verifyPinnedRepoDigest,
   verifyRecord,
@@ -18,6 +19,40 @@ import { canonicalJson } from "./selfcompile_heap_policy_canonical_json.mjs";
 import { writeHostileWasmFixtures } from "./selfcompile_heap_policy_hostile_wasm.mjs";
 
 const lock = JSON.parse(readFileSync(new URL("./selfcompile_heap_policy_image.lock.json", import.meta.url), "utf8"));
+
+test("trusted policy package executes its source helper and refuses a missing trusted copy", () => {
+  const dir = mkdtempSync(join(os.tmpdir(), "vibe-policy-source-package-"));
+  try {
+    const trusted = join(dir, "trusted");
+    cpSync(new URL(".", import.meta.url), join(trusted, "scripts"), { recursive: true });
+    mkdirSync(join(trusted, "bootstrap", "seed"), { recursive: true });
+    const seed = Buffer.from([0, 97, 115, 109, 1, 0, 0, 0]);
+    writeFileSync(join(trusted, "bootstrap", "seed", "compiler.wasm"), seed);
+    writeFileSync(join(trusted, "bootstrap", "seed.json"), "{}\n");
+    const seedSha = createHash("sha256").update(seed).digest("hex");
+    const lease = join(dir, "lease");
+    const policy = prepareTrustedPolicy(trusted, lease, seedSha);
+    const helper = join(policy, "scripts", "bundle_source_functions.py");
+    assert.deepEqual(readFileSync(helper), readFileSync(join(trusted, "scripts", "bundle_source_functions.py")));
+    const materialized = join(dir, "materialized");
+    mkdirSync(join(materialized, "scripts"), { recursive: true });
+    writeFileSync(join(materialized, "scripts", "bundle_source_functions.py"), 'raise SystemExit("HEAD_HELPER_EXECUTED")\n');
+    const input = join(materialized, "input.vibe");
+    const content = "let answer = 42\n";
+    writeFileSync(input, content);
+    const result = spawnSync("python3", [helper, "raw"], {
+      cwd: materialized, encoding: "utf8",
+      input: ["source_0", "lib/input.vibe", input, ""].join("\0"),
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, `let source_0 = () -> (String, String) {\n  ("lib/input.vibe",\n${JSON.stringify(content)})\n}\n\n`);
+    rmSync(join(trusted, "scripts", "bundle_source_functions.py"));
+    assert.throws(() => prepareTrustedPolicy(trusted, lease, seedSha), error =>
+      error.reason === "trusted-harness-missing" && error.details.name === "bundle_source_functions.py");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test("immutable policy wrapper contains every generation and measurement runner invocation", () => {
   const wrapper = readFileSync(new URL("./selfcompile_heap_policy_policy_runner.sh", import.meta.url), "utf8");

@@ -88,3 +88,22 @@ report = json.loads(Path("bench/perf/analysis/batched-source-embedding-2026-10-0
 exec(compile(report["reproduction_python"], "source-batching-reproduction", "exec"))
 PY
 ```
+
+## Trusted Docker policy packaging
+
+The heap-policy container copies a fixed trusted script set. The batch helper
+is included in that set and in the policy test inputs. A regression invokes
+the real package builder and executes the copied Python helper while a
+poisoned materialized-project helper is present. It also proves that a missing
+trusted helper is refused. Removing the package entry reproduces the original
+missing-file failure. These checks run in release-check and CI; the Docker
+hostile-script test also poisons the materialized helper.
+
+All 44 related Node policy tests and nine embedding tests pass. Full Docker
+validation was not run locally because the Docker Desktop WSL executable is
+unavailable in this distro. The unit test exercises the real packaging path
+and helper execution without substituting a fake package builder.
+
+After the trusted packaging fix, full `pkf run release-check --timing`
+passed with a fresh compiler gate and fixpoint (48m38s reported wall time).
+This is a validation receipt, not an A/B performance comparison.
