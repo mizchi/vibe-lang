@@ -183,6 +183,7 @@ Not normative.
 | [internal/reports/effect-name-membership-2026-10-02.md](internal/reports/effect-name-membership-2026-10-02.md) | Effect name indexes, shared AST traversal storage and controlled CPU/allocation comparisons |
 | [internal/reports/user-function-index-2026-10-02.md](internal/reports/user-function-index-2026-10-02.md) | User-prefix lookup through the existing sorted table, backend invariants and controlled compiler measurements |
 | [internal/reports/native-wasm-cache-2026-10-02.md](internal/reports/native-wasm-cache-2026-10-02.md) | Repeated native compilation in validation, code-cache measurements and runner regressions |
+| [internal/reports/batched-source-embedding-2026-10-02.md](internal/reports/batched-source-embedding-2026-10-02.md) | Source embedding process overhead, byte-identical products and paired cold/warm generation measurements |
 | [internal/reports/parser-simd-scan-2026-08-15.md](internal/reports/parser-simd-scan-2026-08-15.md) | |
 | [internal/reports/perf-snapshot-2026-08-07.md](internal/reports/perf-snapshot-2026-08-07.md) | |
 | [internal/reports/pl-survey-2026-07.md](internal/reports/pl-survey-2026-07.md) | |
