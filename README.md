@@ -48,8 +48,8 @@ fn main allows Console {
   // `handle` is where the row is discharged — no per-call unwrapping.
   let result = handle {
     safe_div(10, 2) + Point::manhattan(Point::{ x: 3, y: 4 })
-  } with Exception[String] {
-    Throw(msg) => {
+  } with {
+    Exception[String]::Throw(msg) => {
       println("failed: \{msg}")
       0 - 1
     }

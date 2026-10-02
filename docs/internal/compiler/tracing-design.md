@@ -109,24 +109,22 @@ capability builtin だと sink はランタイムに焼き付き、切り替え�
 かかるから ring buffer が必須」という前提で書いていたが、§3 の実測で
 perform は host call より1桁安いことが分かったので、その前提は崩れた。
 
-### 2.2 スコープ構文 `span "name" { body }`
+### 2.2 Scope syntax `span "name" { body }`
 
-**これは純粋な脱糖で書ける。言語機能の追加は要らない。**
+**This is a pure desugaring. It needs no new language feature.**
 
-当初この節は「`span` の代数的な解は scoped operation (計算を引数に取る
-operation) だが、higher-order effectful block は #1347-2 で非対応と
-明文化されているので今すぐ書けない」と書いていた。**それは要求を取り違えていた。**
-必要なのは「両方の出口で SpanEnd が走る」ことだけで、それは try/finally であり、
-今の vibe で書ける:
+What `span` needs is for `SpanEnd` to run on both exits of the body — the
+normal one and the throwing one. That is try/finally, and current vibe can
+write it:
 
 ```vibe
 span "risky" { body }
 
-// ↓ 脱糖後 (これがそのまま今コンパイルできる形)
+// desugars to (this form compiles today)
 
 let sp = perform Trace::SpanBegin("risky")
-let r = handle { body } with Exception {
-  Throw(e) => {
+let r = handle { body } with {
+  Exception::Throw(e) => {
     perform Trace::SpanEnd(sp)
     throw(e)
   }
@@ -135,30 +133,32 @@ perform Trace::SpanEnd(sp)
 r
 ```
 
-`throw(x)` が parse 時に `perform Exception::Throw(x)` へ脱糖されるのと同じ層
-(#640) で処理できる — **parser/desugar の仕事であって、effect system の
-仕事ではない。**
+It belongs in the same layer that desugars `throw(x)` to
+`perform Exception::Throw(x)` at parse time (#640): **this is parser/desugar
+work, not effect-system work.**
 
-実測 (`bench/tracing/trace_effect_shapes_test.vibe` の
-"spans close on the throw path too")。ネストした2つの span を、正常終了と
-throw の両方で通したときの trace log:
+Measured (`bench/tracing/trace_effect_shapes_test.vibe`, "spans close on the
+throw path too"): the trace log for two nested spans, run once to normal
+completion and once through a throw:
 
 ```
 normal: r=6   log=0>outer,1>inner,<1,<0   depth_after=0
 throw:  r=-1  log=0>outer,1>inner,<1,<0   depth_after=0
 ```
 
-**log がバイト単位で一致する。** span は LIFO で閉じ、深さは 0 に戻る。
-scoped span に求められる性質はこれで全部満たされている。
+**The two logs are byte-identical.** Spans close in LIFO order and the depth
+returns to 0, which is every property a scoped span needs.
 
-scoped operation の方が概念的には綺麗だが、それは
-「evidence を arm 境界を越えて migrate する」ための機構 (資料 p133 の
-evidence vector、ADR-0076 に残っている spine) を必要とする。
-**その機構は span のためには要らない。**
+A scoped operation (an operation that takes a computation as its argument)
+would be the conceptually cleaner answer, but it needs the machinery for
+migrating evidence across an arm boundary (the evidence vector on p133 of the
+reference material; its spine survives in ADR-0076). **`span` does not need
+that machinery.**
 
-> 残る差: OTel の span には `status` があり、異常終了を記録できる。上の脱糖なら
-> Exception arm の側で `perform Trace::SpanAttr(sp, "status", "error")` を
-> 足すだけでよく、これも脱糖で閉じる。
+> What remains: an OTel span has a `status` that records abnormal termination.
+> With the desugaring above, the Exception arm adds
+> `perform Trace::SpanAttr(sp, "status", "error")`, so this closes within the
+> desugaring too.
 
 ## 3. 実測 — 代数 effect にしてよいのか
 

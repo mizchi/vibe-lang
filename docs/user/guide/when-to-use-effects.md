@@ -1,18 +1,20 @@
 # When to Use Effects vs let mut
 
-## 判断基準: 1つの質問
+## The one question
 
-**「この状態変更は、関数の呼び出し元から見て透過的か？」**
+**Should the caller of this function see, or decide, how this state changes?**
 
-- **Yes → `let mut`**: 呼び出し元は内部の状態を知る必要がない
-- **No → `effect`**: 呼び出し元が実装を制御する必要がある
+- **No → `let mut`**: the state is part of how the function works, and the
+  caller has no reason to know about it.
+- **Yes → an effect**: the caller decides how the operation is carried out —
+  a test swaps in a mock, production uses the real thing.
 
-## let mut を使う場面
+## When `let mut` is the right tool
 
-### 1. ループカウンタ
+### 1. Loop counters
 
 ```vibe
-// ✅ let mut: 内部の反復制御
+// let mut: iteration control inside the function
 let sum: (Array[Int]) -> Int = (arr) -> {
   let mut total = 0
   let mut i = 0
@@ -24,12 +26,12 @@ let sum: (Array[Int]) -> Int = (arr) -> {
 }
 ```
 
-理由: `i` と `total` は関数の内部実装。呼び出し元は気にしない。
+`i` and `total` are how `sum` works. The caller only sees the result.
 
 ### 2. StringBuilder / ArrayBuilder
 
 ```vibe
-// ✅ let mut: 構築中の中間状態
+// let mut: intermediate state while building a value
 let join: (Array[String], String) -> String = (parts, sep) -> {
   let sb = StringBuilder::new()
   let mut first = true
@@ -42,17 +44,17 @@ let join: (Array[String], String) -> String = (parts, sep) -> {
 }
 ```
 
-理由: 中間バッファは外から見えない。結果は immutable String。
+The buffer is invisible from outside; the result is an immutable `String`.
 
-### 3. 局所的な条件フラグ
+### 3. Local flags
 
 ```vibe
-// ✅ let mut: 関数内のフラグ
+// let mut: a flag that never leaves the function
 let has_uppercase: (String) -> Bool = (s) -> {
   let mut found = false
   let mut i = 0
   while i < String::length(s) {
-    if String::char_code_at(s, i) >= 65 && String::char_code_at(s, i) <= 90 {
+    if String::byte_at(s, i) >= 65 && String::byte_at(s, i) <= 90 {
       found = true
     }
     i = i + 1
@@ -61,10 +63,10 @@ let has_uppercase: (String) -> Bool = (s) -> {
 }
 ```
 
-### 4. アキュムレータ（for-in との組み合わせ）
+### 4. Accumulators with `for ... in`
 
 ```vibe
-// ✅ let mut: 集計は内部ロジック
+// let mut: the tally is internal logic
 let count_even: (Array[Int]) -> Int = (arr) -> {
   let mut count = 0
   for x in arr {
@@ -74,33 +76,35 @@ let count_even: (Array[Int]) -> Int = (arr) -> {
 }
 ```
 
-## effect を使う場面
+## When an effect is the right tool
 
-### 1. 外部サービス呼び出し（DB, HTTP, ファイル）
+### 1. Calls to an external service
+
+Files and HTTP already arrive as effects — the built-in `Fs` and `Http`
+capabilities. Declare your own effect for a service the language does not
+know about, such as a database:
 
 ```vibe
-// ✅ effect: テスト時に mock したい
+// effect: a test wants to replace the database
 effect Db { Query(String) -> String }
 
 let get_user: () -> String with Db = () -> {
   perform Db::Query("SELECT name FROM users WHERE id=1")
 }
 
-// テスト: mock handler
-handle { get_user() } with Db { Query(_sql) => resume("Alice") }
-
-// 本番: real handler (P3 adapter 経由)
+// in a test: a mock handler answers the query
+let get_user_mocked: () -> String = () -> {
+  handle { get_user() } with { Db::Query(_sql) => resume("Alice") }
+}
 ```
 
-理由: DB 呼び出しは外部依存。テストで差し替え可能にすべき。
+A database call is an external dependency; a test should be able to swap it.
 
-### 2. 設定・環境の注入（DI）
+### 2. Configuration (dependency injection)
 
 ```vibe
-// ✅ effect: 実行環境ごとに値が異なる
-effect Config {
-  Get(String) -> String
-}
+// effect: the values differ per environment
+effect Config { Get(String) -> String }
 
 let connect: () -> String with Config = () -> {
   let host = perform Config::Get("DB_HOST")
@@ -108,169 +112,217 @@ let connect: () -> String with Config = () -> {
   String::concat(host, String::concat(":", port))
 }
 
-// 開発環境
-handle { connect() } with Config {
-  Get(key) => if String::equals(key, "DB_HOST") {
-    resume("localhost")
-  } else { resume("5432") }
+// development settings
+let connect_dev: () -> String = () -> {
+  handle { connect() } with {
+    Config::Get(key) => if key == "DB_HOST" {
+      resume("localhost")
+    } else {
+      resume("5432")
+    }
+  }
 }
 ```
 
-理由: 設定値は環境で変わる。ハードコードすべきでない。
+Configuration changes with the environment, so it should not be hardcoded.
 
-### 3. ロギング・メトリクス（観測可能性）
+### 3. Logging and metrics
 
 ```vibe
-// ✅ effect: ログの出力先を変えたい
-effect Log { Info(String) -> Unit; Error(String) -> Unit }
+// effect: the caller chooses where log lines go
+effect Log { Info(String) -> Unit; Warn(String) -> Unit }
 
 let process: (String) -> Int with Log = (data) -> {
   perform Log::Info("processing started")
   let result = String::length(data)
   if result == 0 {
-    perform Log::Error("empty data")
+    perform Log::Warn("empty data")
   }
   result
 }
 
-// テスト: ログを無視
-handle { process("hello") } with Log {
-  Info(_msg) => resume(0);
-  Error(_msg) => resume(0)
+// in a test: discard the log
+let process_quietly: (String) -> Int = (data) -> {
+  handle { process(data) } with {
+    Log::Info(_msg) => resume(());
+    Log::Warn(_msg) => resume(())
+  }
 }
 ```
 
-理由: ログは副作用。テストでは不要、本番では必要。
+Logging is a side effect: a test does not need it, production does.
 
-### 4. 認証・認可（セキュリティ境界）
+### 4. Authentication and authorization
 
 ```vibe
-// ✅ effect: 認証ロジックを差し替え可能に
+// effect: the check can be replaced
 effect Auth { Verify(String) -> Bool }
 
 let protected_action: () -> Int with Auth = () -> {
   let ok = perform Auth::Verify("token")
   if ok { 200 } else { 401 }
 }
+
+// in a test: every token is accepted
+let protected_action_trusted: () -> Int = () -> {
+  handle { protected_action() } with { Auth::Verify(_token) => resume(true) }
+}
 ```
 
-理由: 認証はセキュリティ境界。テストで「常に認証成功」にできるべき。
+Authentication is a security boundary; a test should be able to make it
+always succeed (or always fail).
 
-### 5. 乱数生成
+### 5. Random numbers
 
 ```vibe
-// ✅ effect: テストで決定的にしたい
+// effect: a test wants a deterministic answer
 effect Random { NextInt(Int, Int) -> Int }
 
 let roll_dice: () -> Int with Random = () -> {
   perform Random::NextInt(1, 6)
 }
 
-// テスト: 常に 4
-handle { roll_dice() } with Random { NextInt(_lo, _hi) => resume(4) }
+// in a test: always 4
+let roll_dice_fixed: () -> Int = () -> {
+  handle { roll_dice() } with { Random::NextInt(_lo, _hi) => resume(4) }
+}
 ```
 
-理由: 乱数は非決定的。テストでは決定的にすべき。
+Randomness is nondeterministic; a test should not be.
 
-### 6. CPS 蓄積（fold/reduce）
+### 6. Values produced for the caller to consume
 
 ```vibe
-// ✅ effect + k: 値の蓄積を handler で制御
+// effect: the producer emits, the caller decides what to do with each value
 effect Emit { Emit(Int) -> Unit }
 
-let total = handle {
+let produce: () -> Unit with Emit = () -> {
   perform Emit::Emit(10)
   perform Emit::Emit(20)
   perform Emit::Emit(30)
-  0
-} { Emit::Emit(v, k) => v + k(0) }
-// 10 + 20 + 30 + 0 = 60
+}
+
+// this caller sums the values: 10 + 20 + 30 = 60
+let total: () -> Int = () -> {
+  let mut sum = 0
+  handle { produce() } with {
+    Emit::Emit(v) => {
+      sum = sum + v
+      resume(())
+    }
+  }
+  sum
+}
 ```
 
-理由: 蓄積ロジック（sum, product, count）を handler で切り替え可能。
+Another caller could count, print, or stop early without `produce` changing.
+A handler arm ends with `resume(...)`: it cannot add to what `resume`
+returns, so the running total is a `let mut` the arm updates.
 
-## 判断フローチャート
+## Decision flowchart
 
 ```
-この変数/操作は…
+This variable / operation…
 │
-├─ 関数の外に影響するか？
-│  ├─ Yes → effect
-│  │  ├─ DB/HTTP/ファイル？ → effect Db/HttpClient/Fs
-│  │  ├─ 設定値？ → effect Config
-│  │  ├─ ログ？ → effect Log
-│  │  ├─ 認証？ → effect Auth
-│  │  └─ 乱数？ → effect Random
+├─ Does it affect anything outside the function?
+│  ├─ Yes → an effect
+│  │  ├─ Files / HTTP? → the built-in Fs / Http capabilities
+│  │  ├─ A database or other service? → effect Db
+│  │  ├─ Configuration? → effect Config
+│  │  ├─ Logging? → effect Log
+│  │  ├─ Authentication? → effect Auth
+│  │  └─ Randomness? → effect Random
 │  │
 │  └─ No → let mut
-│     ├─ ループカウンタ？ → let mut i = 0
-│     ├─ 集計？ → let mut total = 0
-│     ├─ 構築中？ → StringBuilder/ArrayBuilder
-│     └─ フラグ？ → let mut found = false
+│     ├─ Loop counter? → let mut i = 0
+│     ├─ Running total? → let mut total = 0
+│     ├─ Building a value? → StringBuilder / ArrayBuilder
+│     └─ Flag? → let mut found = false
 │
-└─ テスト時に差し替えたいか？
-   ├─ Yes → effect (mock handler で差し替え)
-   └─ No → let mut (内部実装のまま)
+└─ Will a test want to replace it?
+   ├─ Yes → an effect (a mock handler replaces it)
+   └─ No → let mut (it stays an implementation detail)
 ```
 
-## アンチパターン
+## Anti-patterns
 
-### ❌ ループカウンタを effect にしない
+### Don't turn a counter into an effect
 
 ```vibe
-// BAD: 不必要な effect 化
+// BAD: an effect for state only this function sees
 effect Counter { Inc() -> Unit; Get() -> Int }
-let count = handle {
-  perform Counter::Inc()
-  perform Counter::Inc()
-  perform Counter::Get()
-} with Counter {
-  Inc() => ...
-  Get() => ...
+
+let count_bad: () -> Int = () -> {
+  let mut n = 0
+  handle {
+    perform Counter::Inc()
+    perform Counter::Inc()
+    perform Counter::Get()
+  } with {
+    Counter::Inc() => {
+      n = n + 1
+      resume(())
+    };
+    Counter::Get() => resume(n)
+  }
 }
 
-// GOOD: let mut で十分
-{
-  let mut count = 0
-  count = count + 1
-  count = count + 1
-  count
+// GOOD: a let mut is enough
+let count_good: () -> Int = () -> {
+  let mut n = 0
+  n = n + 1
+  n = n + 1
+  n
 }
 ```
 
-### ❌ 純粋関数の入出力を effect にしない
+### Don't turn a pure function into an effect
 
 ```vibe
-// BAD: 文字列操作は副作用ではない
+// BAD: concatenating strings is not a side effect
 effect StringOps { Concat(String, String) -> String }
 
-// GOOD: 直接呼ぶ
-String::concat(a, b)
+// GOOD: call the function
+let greet: (String) -> String = (name) -> { String::concat("hello, ", name) }
 ```
 
-### ❌ 全ての `let mut` を排除しようとしない
+### Don't try to remove every `let mut`
 
 ```vibe
-// BAD: while ループの accumulator を CPS effect で書く
+// BAD: an effect whose only handler sits in the same function
 effect Acc { Add(Int) -> Unit }
-handle { for x in arr { perform Acc::Add(x) }; 0 } with Acc {
-  Add(v) => v + resume(0)
+
+let sum_bad: (Array[Int]) -> Int = (arr) -> {
+  let mut total = 0
+  handle {
+    for x in arr { perform Acc::Add(x) }
+  } with {
+    Acc::Add(v) => {
+      total = total + v
+      resume(())
+    }
+  }
+  total
 }
 
-// GOOD: let mut で書く（シンプル、高速）
-{
+// GOOD: write the let mut directly (simpler and faster)
+let sum_good: (Array[Int]) -> Int = (arr) -> {
   let mut total = 0
   for x in arr { total = total + x }
   total
 }
 ```
 
-## まとめ
+Section 6 above has the same shape, but there the producer is a separate
+function whose callers each choose a handler. Here nothing else ever
+handles `Acc`, so the effect only adds indirection.
 
-| 基準 | let mut | effect |
-|------|---------|--------|
-| **スコープ** | 関数内 | モジュール/システム境界 |
-| **テスト** | 不要 | mock handler で差し替え |
-| **可視性** | 呼び出し元から隠蔽 | 型シグネチャに表出 |
-| **コスト** | ゼロ | ゼロ (tail-resumptive inline) |
-| **典型例** | カウンタ, Builder, フラグ | DB, HTTP, Config, Log, Auth |
+## Summary
+
+| | `let mut` | effect |
+|---|---|---|
+| **Scope** | inside one function | module / system boundary |
+| **Testing** | nothing to replace | a mock handler replaces it |
+| **Visibility** | hidden from the caller | appears in the type signature |
+| **Cost** | a wasm local; a heap cell if a closure captures it (`vibe escapes` lists those) | a `perform` costs about 1.7× a function call and allocates nothing; carrying the effect in a row costs nothing measurable ([measurements](../../internal/compiler/tracing-design.md)) |
+| **Typical uses** | counters, builders, flags | databases, HTTP, configuration, logging, authentication |
