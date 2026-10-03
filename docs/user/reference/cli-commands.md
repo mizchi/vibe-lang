@@ -2,10 +2,9 @@
 
 This document clarifies the role of each `vibe` CLI command, with special attention to the compile/build variants and other commonly confused command pairs.
 
-Implementation policy: the canonical CLI source lives in `lib/@vibe/compiler/` and
-`lib/@vibe/cli/`. The MoonBit host (including the `src/cmd/*` entrypoints) was retired
-in #594; new command behavior is added only in `lib/@vibe/compiler/` /
-`lib/@vibe/cli/`.
+Compiler-backed commands are implemented in `lib/@vibe/compiler/` and
+`lib/@vibe/cli/`; project and toolchain commands (`new`, `add`, `fetch`,
+`toolchain`, `self`) live in the `runtime/vibe` launcher.
 
 ## Quick Reference: Compile & Build Commands
 
@@ -145,14 +144,52 @@ vibe test <file|dir...>
 vibe test --jobs 4 <dir...>
 ```
 
+To update a stale `inspect(value, content)` snapshot to the value the run
+actually produced, add `--update`; the file is patched, recompiled and rerun:
+
+```
+vibe test --update <file_test.vibe|dir...>
+```
+
 ### check
 
-Parse and type-check scripts without producing output.
+Parse and type-check without producing output. Diagnostics go to stdout, one
+per line; **empty output and exit 0 mean clean**, anything reported exits 1.
+Imports are resolved from the filesystem, so `vibe check` alone answers "does
+this compile".
 
 ```
 vibe check <file...>
+vibe check --single-file <file>          # this buffer only, imports not followed
+vibe check --json <file>                 # LSP Diagnostic array (`[]` when clean)
 vibe check --profile-tsv timing.tsv <file...>
 ```
+
+`--single-file` is the editor's mode for unsaved text: a name that comes from
+an import reports as unknown there, so it does not answer whether the file
+compiles. Positions and their units are specified in
+[source-range-contract.md](source-range-contract.md). `vibe diagnostics` is the
+deprecated spelling of `vibe check --single-file`, kept unchanged for editors
+already on it.
+
+### Editor queries
+
+The semantic queries behind `vibe lsp`, available from the shell. Positions
+are 1-based line and 1-based **byte** column; spans are 0-based half-open byte
+offsets ([source-range-contract.md](source-range-contract.md)).
+
+```
+vibe type-at    <file.vibe> <line> <col>   # inferred type of the identifier there
+vibe doc-at     <file.vibe> <line> <col>   # its `///` doc comment
+vibe binding-at <file.vibe> <line> <col>   # every occurrence of that binding (START END per line)
+vibe symbols [--with-path] <path>...       # declaration outline (NAME KIND START END [DOC])
+vibe escapes [--strict] <file.vibe>        # `let mut` bindings a closure captures (NAME START END)
+vibe refactor extract-function <file.vibe> <start-byte> <end-byte> <name> [--write]
+                                           # preview, or with --write apply, a checked extraction
+```
+
+[editor-and-debugging.md](editor-and-debugging.md) documents the output of each
+one and how the LSP builds on them.
 
 ### shell (Compiled REPL) (#805)
 
@@ -205,9 +242,8 @@ Caveats (by design of the compiled model):
   (`import ./lib/@vibe/...`) resolve; other relative imports do not move
   with the session.
 
-The pre-#594 MoonBit-host `shell` variants (`--tui`, `--ai`, `--no-posix`)
-and the separate `shell-stdin` command were retired; `vibe shell` reads
-stdin line-oriented whenever stdin is not a tty.
+`vibe shell` reads stdin line-oriented, without prompts, whenever stdin is
+not a tty.
 
 ### add / fetch
 
@@ -299,6 +335,7 @@ There is no `vibe init`; scaffolding is `vibe new`.
 | Command | Description |
 |---------|-------------|
 | `bench <file\|dir...>` | Run compiled `bench {}` blocks with optional `--iters`, `--warmup` |
+| `profile <file.vibex> [--out FILE] [--interval-us N]` | Capture a Wasmtime guest CPU profile of a run |
 | `allocs <file>` | Possible heap-allocation sites (`FN KIND OFFSET` per line) |
 | `symbols [--legend] <file>` | Declaration outline (`NAME KIND START END [DOC]` per line) |
 | `rc-classify <file>` | RC classifier sets (`NAME SET[,SET...]`; empty = none) |
@@ -321,31 +358,9 @@ There is no `vibe init`; scaffolding is `vibe new`.
 
 `vibe help` prints the authoritative list; `runtime/vibe` is where it is
 defined, and `scripts/check_doc_commands.sh` compares every command shown in
-this repository's documents against it.
-
-This table used to list `save`, `finalize`, `apply`, `explain-import`,
-`ide`, `lsif`, `expand` and `history reset`. The CLI answers `unknown command`
-to every one of them (measured 2026-08-20). `clean` was on that list too and
-came back in #2675 with the meaning above.
-
-## Internal Commands
-
-There is no longer an internal command surface on the `vibe` binary. The
-`compile-lite`, `compile-closure-payload`, `emit-module-source`,
-`emit-closure-payload`, `session-http`, `session-json`, `write-file` and
-`index` commands this section used to document are all answered with
-`unknown command`; the work they named is reached from the gate scripts and
+this repository's documents against it. The `vibe` binary has no internal
+command surface: compiler-internal work is reached from the gate scripts and
 the compiler entries directly.
-
-## Shell Mode Comparison
-
-| Mode | Interface | Use Case |
-|------|-----------|----------|
-| `shell` (tty) | prompt loop, compiled REPL | Interactive exploration |
-| `shell` (piped stdin) | line-oriented, no prompts | Scripting, CI, editor integration |
-
-(The retired MoonBit-host `shell-stdin` / `wasm-shell-stdin` modes were
-removed in #594; both are covered by piping into `vibe shell`.)
 
 ## Environment Variables
 

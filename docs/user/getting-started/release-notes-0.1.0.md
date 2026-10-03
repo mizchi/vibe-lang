@@ -75,10 +75,11 @@ read, and every feature below is one the compiler itself depends on.
   both backends under non-interactive compilation. The persisted
   `BindingLock` (rung 3) waits on an `apply` phase that does not exist yet, so
   the capability authorization surface stays in §6 of
-  [spec/stable-surface.md](../reference/stable-surface.md), outside the SemVer
+  [stable-surface.md](../reference/stable-surface.md), outside the SemVer
   promise.
-- **`Result` was removed** (#1324). Errors are the `Exception` effect, and
-  `Error` is deprecated at the freeze in favour of it (ADR-0085).
+- **`Result` was removed** (#1324). Errors are the `Exception` effect, the
+  only spelling of it: `Error` was retired (#1461) and is a parse error
+  (ADR-0085).
 - **`==` compares by content, and what cannot be compared soundly is a compile
   error rather than a guess** (ADR-0097, #1526, #2474, #2523). At a concrete
   type, arrays, tuples, structs and their nestings compare structurally —
@@ -181,7 +182,7 @@ the edit that fixes them rather than an internal pass name.
   an actionable diagnostic (#1976). Remaining builtin-level differences each have a row in
   `scripts/builtin_parity_classification.tsv`, enforced at the gate.
 - Generated wasm declares the feature level it requires
-  ([wasm/feature-levels.md](../reference/feature-levels.md)); `--allow-*` const-folds and
+  ([feature-levels.md](../reference/feature-levels.md)); `--allow-*` const-folds and
   DCEs away the code for capabilities that were not granted.
 - Structured concurrency (`@vibe/concurrent`: `TaskGroup`, `TaskHandle`,
   channels) is part of the stable surface (#3172). The suspendable-task lane
@@ -203,7 +204,7 @@ the edit that fixes them rather than an internal pass name.
   program output; English is canonical.
 - [docs/user/reference/cheatsheet.md](../reference/cheatsheet.md) is the language reference and is
   doctest-checked the same way.
-- [spec/stable-surface.md](../reference/stable-surface.md) states what 0.1.0 promises
+- [stable-surface.md](../reference/stable-surface.md) states what 0.1.0 promises
   SemVer stability for, and `pkf run check-freeze-surface` derives the symbol
   list from that document and probes each name against the compiler — a name it
   promises cannot quietly stop existing.
@@ -217,7 +218,7 @@ the edit that fixes them rather than an internal pass name.
   every other type error carries its own range; `vibe check` reports every
   collected diagnostic, identically on the FS lane, `--single-file` and
   `--json` ([source-range-contract.md](../reference/source-range-contract.md)).
-- Everything in §6 of [spec/stable-surface.md](../reference/stable-surface.md) is
+- Everything in §6 of [stable-surface.md](../reference/stable-surface.md) is
   outside the SemVer promise, most notably the suspendable-task lane, the
   capability authorization surface and the wasm-gc backend.
 
