@@ -825,6 +825,21 @@ export fn eq_channel_type_expr(ty: Type) -> Option[TypeExpr] {
 /// dead code. Before this the row stayed absent there and the comparison fell
 /// to the derived `R::equals`, whose `T` payload compares an aggregate by
 /// identity.
+///
+/// `Unit` has the wrong kind for `F`, and the generated comparator's
+/// signature says `R[Array[Int], Unit]`. That is tolerated because it lives
+/// only in generated comparators, which are not type-checked again: an
+/// application of `F` becomes `Unit`, and `F` passed on unapplied
+/// (`Phantom[F]`, Codex on #3296) or through an alias reaches the same
+/// substitution one declaration further down. A kind-correct placeholder
+/// would have to be a real constructor, and that is unsound: a lambda
+/// let-generalized over `F` holds live `F[Int]` values while `F` stays free
+/// here, so `Array` would compare an `Option` as an array. `Unit` keeps that
+/// position's raw `==`, which is what it compared with before (measured: still
+/// `false` for two equal arrays there). Declining the row instead would
+/// restore the identity answer for every other position.
+/// `fixtures/structural_eq_kinded_ctor_arg_test.vibe` pins that generation
+/// succeeds for all three routes.
 fn eq_channel_row_type_expr(ty: Type, defs: Array[TypeDef]) -> Option[TypeExpr] {
   eq_channel_type_expr_impl(ty, Some(defs))
 }
