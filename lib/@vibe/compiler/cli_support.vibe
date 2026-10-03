@@ -361,43 +361,50 @@ export fn strip_off_marker(msg: String) -> String {
 /// marker still unresolved is stripped: a raw ` [@off=N]` indexes the merged
 /// program, not a file the reader can open.
 ///
-/// Only a well-formed marker at the END of a line is stripped. A path the
-/// reader passed may legally contain `[@off=1]`, and stripping that would point
-/// the diagnostic at a file that does not exist.
-export fn finalize_thrown_diagnostic(msg: String) -> String {
-  let lines = String::split(verify_culprit_off_marker_fs_fail_closed(msg), "\n")
-  let mut out = ""
-  let mut i = 0
-  while i < Array::length(lines) {
-    if i > 0 {
-      out = String::concat(out, "\n")
-    } else {
-      ()
+/// Only the compiler's own marker shapes at the END of a line are stripped:
+/// at most one ` [@fn=name]`, then at most one ` [@off=N]` / ` [@off=N:M]` or
+/// ` [@assign-target]`. `args` is the command line: when any argument contains
+/// `[@`, a path the reader typed may itself end in a marker-shaped suffix, so
+/// the message is printed exactly as thrown rather than risk naming a file
+/// that does not exist.
+export fn finalize_thrown_diagnostic(msg: String, args: Array[String]) -> String {
+  if args_carry_marker_text(args) {
+    msg
+  } else {
+    let lines = String::split(verify_culprit_off_marker_fs_fail_closed(msg), "\n")
+    let mut out = ""
+    let mut i = 0
+    while i < Array::length(lines) {
+      if i > 0 {
+        out = String::concat(out, "\n")
+      } else {
+        ()
+      }
+      out = String::concat(out, strip_trailing_markers(Array::get(lines, i)))
+      i = i + 1
     }
-    out = String::concat(out, strip_trailing_markers(Array::get(lines, i)))
+    out
+  }
+}
+
+fn args_carry_marker_text(args: Array[String]) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while !found && i < Array::length(args) {
+    found = String::contains(Array::get(args, i), "[@")
     i = i + 1
   }
-  out
+  found
 }
 
-/// Remove ` [@off=N]` / ` [@off=N:M]`, ` [@fn=name]` and ` [@assign-target]`
-/// markers from the end of `line`, innermost last. Anything that is not
-/// exactly such a marker ends the scan and stays.
 fn strip_trailing_markers(line: String) -> String {
-  let mut out = line
-  let mut going = true
-  while going {
-    let stripped = strip_one_trailing_marker(out)
-    if String::length(stripped) == String::length(out) {
-      going = false
-    } else {
-      out = stripped
-    }
-  }
-  out
+  let after_fn = strip_one_trailing_marker(line, true)
+  strip_one_trailing_marker(after_fn, false)
 }
 
-fn strip_one_trailing_marker(line: String) -> String {
+/// Strip one trailing marker: the ` [@fn=..]` kind when `fn_kind`, else the
+/// ` [@off=..]` / ` [@assign-target]` kind. Anything else is left as is.
+fn strip_one_trailing_marker(line: String, fn_kind: Bool) -> String {
   let n = String::length(line)
   if n == 0 || String::byte_at(line, n - 1) != 93 {
     line
@@ -407,7 +414,7 @@ fn strip_one_trailing_marker(line: String) -> String {
       line
     } else {
       let body = String::substring(line, open_at + 3, n - 1)
-      if marker_body_ok(body) {
+      if marker_body_ok(body, fn_kind) {
         String::substring(line, 0, open_at)
       } else {
         line
@@ -435,12 +442,12 @@ fn last_marker_open(line: String) -> Int {
 }
 
 /// `body` is the text between ` [@` and the closing `]`.
-fn marker_body_ok(body: String) -> Bool {
-  if String::starts_with(body, "off=") {
+fn marker_body_ok(body: String, fn_kind: Bool) -> Bool {
+  if fn_kind {
+    String::starts_with(body, "fn=") && String::length(body) > 3 && !String::contains(body, " ") && !String::contains(body, "]")
+  } else if String::starts_with(body, "off=") {
     let digits = String::substring(body, 4, String::length(body))
     String::length(digits) > 0 && all_offset_chars(digits)
-  } else if String::starts_with(body, "fn=") {
-    String::length(body) > 3 && !String::contains(body, " ") && !String::contains(body, "]")
   } else {
     body == "assign-target"
   }

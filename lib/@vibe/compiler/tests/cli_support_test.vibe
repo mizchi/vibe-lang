@@ -51,7 +51,7 @@ test "an unresolved interpolation refusal reaches the reader without its marker"
   // thrown diagnostic as is. With no merge recorded no file owns the offset.
   merged_offset_space_reset()
   let msg = "cannot interpolate `d`: its type is an Option, Array, tuple, Bytes or record whose shape the renderer could not resolve here (#2987) [@off=94021]"
-  let shown = finalize_thrown_diagnostic(msg)
+  let shown = finalize_thrown_diagnostic(msg, ["run", "a.vibex"])
   assert(String::contains(shown, "cannot interpolate `d`"))
   assert(!String::contains(shown, "[@off="))
 }
@@ -62,7 +62,7 @@ test "a refusal whose merged offset a recorded file owns is located there" {
   merged_offset_space_add("/tmp/located.vibex", source, 1000)
   let local = String::index_of(source, "{d}") + 1
   let msg = String::concat("cannot interpolate `d`: shape unknown (#2987) [@off=", String::concat(__to_string(1000 + local), "]"))
-  let shown = finalize_thrown_diagnostic(msg)
+  let shown = finalize_thrown_diagnostic(msg, ["run", "a.vibex"])
   merged_offset_space_reset()
   inspect(shown, content = "/tmp/located.vibex: line 3:14: cannot interpolate `d`: shape unknown (#2987)")
 }
@@ -645,12 +645,24 @@ test "shared-import sibling missing-Show locates against the physical file" {
 test "a marker-like fragment inside a path is not stripped" {
   merged_offset_space_reset()
   let msg = "cannot read /tmp/example [@off=1].vibe: no such file"
-  assert_eq(finalize_thrown_diagnostic(msg), msg)
+  assert_eq(finalize_thrown_diagnostic(msg, ["run", "a.vibex"]), msg)
 }
 
 test "only well-formed trailing markers are stripped, each line on its own" {
   merged_offset_space_reset()
-  assert_eq(finalize_thrown_diagnostic("unknown name: x [@assign-target]"), "unknown name: x")
-  assert_eq(finalize_thrown_diagnostic("bad [@off=12:15] [@fn=main]\nnext [@off=3]"), "bad\nnext")
-  assert_eq(finalize_thrown_diagnostic("keeps [@off=abc]"), "keeps [@off=abc]")
+  assert_eq(finalize_thrown_diagnostic("unknown name: x [@assign-target]", []), "unknown name: x")
+  assert_eq(finalize_thrown_diagnostic("bad [@off=12:15] [@fn=main]\nnext [@off=3]", [
+  ]), "bad\nnext")
+  assert_eq(finalize_thrown_diagnostic("keeps [@off=abc]", []), "keeps [@off=abc]")
+}
+
+test "a marker-shaped suffix the reader typed is printed as thrown" {
+  merged_offset_space_reset()
+  let msg = "no such input file: /tmp/example [@off=1]"
+  assert_eq(finalize_thrown_diagnostic(msg, ["build", "/tmp/example [@off=1]"]), msg)
+}
+
+test "repeated markers of one kind are not all stripped" {
+  merged_offset_space_reset()
+  assert_eq(finalize_thrown_diagnostic("x [@off=1] [@off=2]", []), "x [@off=1]")
 }
