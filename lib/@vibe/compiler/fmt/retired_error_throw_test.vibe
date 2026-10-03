@@ -1,0 +1,47 @@
+//# #3284: `Error` was retired as an effect spelling in #1461, but a qualified
+// handler arm `Error::Throw(_)` still parsed and silently meant `Exception`. The
+// parser refuses it now, and the formatter rewrites it to `Exception::Throw`
+// so `vibe fmt` is the migration.
+
+//# Imports
+
+import ./format.vibe {
+  format_script
+}
+
+//# Tests
+
+test "a braced Error::Throw arm is rewritten to Exception::Throw" {
+  let src = "fn g() -> Int {\n  handle { 1 } with { Error::Throw(_) => 0 }\n}\n"
+  assert_eq(format_script(src), "fn g() -> Int {\n  handle {\n    1\n  } with { Exception::Throw(_) => 0 }\n}\n")
+}
+
+test "a suffix Error::Throw arm is rewritten to Exception::Throw" {
+  let src = "fn g() -> Int {\n  1 with Error::Throw(_) => 0\n}\n"
+  assert_eq(format_script(src), "fn g() -> Int {\n  1 with Exception::Throw(_) => 0\n}\n")
+}
+
+test "a spaced Error :: Throw arm is rewritten in one pass" {
+  let src = "fn g() -> Int {\n  1 with Error :: Throw(_) => 0\n}\n"
+  assert_eq(format_script(src), "fn g() -> Int {\n  1 with Exception::Throw(_) => 0\n}\n")
+}
+
+test "a typed Error[Kind]::Throw arm is rewritten" {
+  let src = "fn g() -> Int {\n  1 with Error[Oops]::Throw(_) => 0\n}\n"
+  assert_eq(format_script(src), "fn g() -> Int {\n  1 with Exception[Oops]::Throw(_) => 0\n}\n")
+}
+
+test "the Error trait name is left alone" {
+  let src = "impl Error for Oops {\n  fn message(self: Oops) -> String {\n    \"oops\"\n  }\n}\n"
+  assert_eq(format_script(src), src)
+}
+
+test "a program's own Error enum is left alone" {
+  let src = "enum Error {\n  Throw(Int)\n}\n\nfn g(e: Error) -> Int {\n  match e {\n    Error::Throw(n) => n\n  }\n}\n\nfn h() -> Error {\n  Error::Throw(1)\n}\n"
+  assert_eq(format_script(src), src)
+}
+
+test "a perform of Error::Throw is left alone" {
+  let src = "fn g() -> Int with Exception {\n  perform Error::Throw(\"x\")\n}\n"
+  assert_eq(format_script(src), src)
+}

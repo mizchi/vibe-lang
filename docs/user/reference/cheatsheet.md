@@ -1654,20 +1654,20 @@ enclosing `handle .. with Exception` must discharge it. An exception
 that escapes `fn main allows Exception` becomes a diagnosed abort at the
 runtime boundary.
 
-The effect spelling **`Error` is retired** (#1461, #1501). Either place
-that named an effect is a parse error:
+The effect spelling **`Error` is retired** (#1461, #1501, #3284). Every place
+that names a handled effect is a parse error:
 
 ```
 fn f() -> Int with Error { .. }              // row item        -> parse error
 handle { .. } with Error { Throw(_) => .. }  // handled effect  -> parse error
+handle { .. } with { Error::Throw(_) => .. } // qualified arm   -> parse error
 ```
 
-`vibe fmt` rewrites both to `Exception` (token-level, so it can convert
+`vibe fmt` rewrites all three to `Exception` (token-level, so it can convert
 sources the parser no longer accepts).
 
-一方 **`perform Error::Throw(x)` は今も通る** — operation 修飾子は row 項目では
-なく、runtime が dispatch する operation を名指しているだけで、そこに row を
-綴っているわけではないため。
+**`perform Error::Throw(x)` is still accepted.** That qualifier does not spell
+a row or a handled effect; it names the operation the runtime dispatches.
 
 ### Typed exceptions (`Exception[E]`, ADR-0085 / #1344)
 
