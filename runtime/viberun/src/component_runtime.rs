@@ -75,8 +75,8 @@ pub(super) const ASYNC_COMPONENT_GET_VALUE: u32 = 42;
 )]
 #[component(record)]
 pub(super) struct HostResponse {
-    status: i32,
-    body: wasmtime::component::StreamReader<u8>,
+    pub(super) status: i32,
+    pub(super) body: wasmtime::component::StreamReader<u8>,
 }
 
 pub(super) struct DelayedByteStreamProducer {
@@ -465,6 +465,7 @@ pub(super) fn run_async_component(path: &str) -> Result<i32> {
                 .map_err(|e| format_err!("link {name}: {e}"))?;
         }
     }
+    super::checker_workers::link(&mut linker)?;
     // #2066: WIT responses. VIBE_ASYNC_RESPONSES="iface#func=status:delay_ms:
     // b1|b2|b3" links `func: async func() -> response` inside `iface`,
     // returning a future that resolves after `delay_ms` to `{ status, body }`

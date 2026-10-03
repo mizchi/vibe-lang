@@ -29,7 +29,8 @@
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { runParallelProject } from "./parallel_scheduler_prototype.mjs";
 
@@ -79,7 +80,7 @@ async function readIfPresent(path) {
 // module's dependencies precede it -- runParallelProject does not require
 // that, but it makes the input to a wave-at-a-time dispatcher deterministic
 // regardless of how the graph was traversed.
-async function discoverProjectViaPlan(runnerPath, compilerWasm, projectRoot, entryFile, cacheDir) {
+export async function discoverProjectViaPlan(runnerPath, compilerWasm, projectRoot, entryFile, cacheDir) {
   const planPath = join(cacheDir, "plan.txt");
   await rm(planPath, { force: true });
   await rm(`${planPath}.diag`, { force: true });
@@ -141,7 +142,7 @@ async function discoverProjectViaPlan(runnerPath, compilerWasm, projectRoot, ent
 // extra wasm invocation. Diagnosed modules are simply absent from the
 // manifest -- see the file header for why that is sufficient for
 // correctness rather than a gap that needs its own handling.
-async function publishCheckedOutcomes(runnerPath, compilerWasm, projectRoot, outcomes) {
+export async function publishCheckedOutcomes(runnerPath, compilerWasm, projectRoot, outcomes) {
   const toPublish = [];
   for (const outcome of outcomes.values()) {
     if (outcome.kind === "checked" && outcome.artifact?.env) {
@@ -219,7 +220,9 @@ async function main() {
   console.log(JSON.stringify({ modules: modules.length, checked, diagnosed, warmed }));
 }
 
-main().catch((error) => {
-  console.error(String(error?.stack ?? error));
-  process.exit(1);
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  main().catch((error) => {
+    console.error(String(error?.stack ?? error));
+    process.exit(1);
+  });
+}

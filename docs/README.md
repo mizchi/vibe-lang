@@ -186,6 +186,10 @@ Not normative.
 | [internal/reports/checked-worker-lowering-2026-10-03.md](internal/reports/checked-worker-lowering-2026-10-03.md) | Checked worker lowering products, duplicate-check measurements and aggregate memory limits |
 | [internal/reports/checked-worker-lowering-2026-10-03.samples.ndjson](internal/reports/checked-worker-lowering-2026-10-03.samples.ndjson) | All 48 controlled whole-build samples and source/compiler/runtime receipts |
 | [internal/reports/checked-worker-lowering-2026-10-03.summary.json](internal/reports/checked-worker-lowering-2026-10-03.summary.json) | Cold/warm serial and pre-warm timing, telemetry and memory medians |
+| [internal/reports/taskgroup-checker-2026-10-03.md](internal/reports/taskgroup-checker-2026-10-03.md) | TaskGroup CPU checker dogfood, ownership proof, measured costs and build commands |
+| [internal/reports/taskgroup-checker-2026-10-03.samples.ndjson](internal/reports/taskgroup-checker-2026-10-03.samples.ndjson) | All 60 guarded compiler/CLI comparisons and runtime provenance |
+| [internal/reports/taskgroup-checker-2026-10-03.summary.json](internal/reports/taskgroup-checker-2026-10-03.summary.json) | Controlled timings, process-tree memory and native named-profile summaries |
+| [internal/reports/taskgroup-checker-2026-10-03.profiles.ndjson.gz](internal/reports/taskgroup-checker-2026-10-03.profiles.ndjson.gz) | Six actual CLI-batch Wasmtime profiles with function names, before/after worker policy |
 | [internal/reports/parser-simd-scan-2026-08-15.md](internal/reports/parser-simd-scan-2026-08-15.md) | |
 | [internal/reports/perf-snapshot-2026-08-07.md](internal/reports/perf-snapshot-2026-08-07.md) | |
 | [internal/reports/pl-survey-2026-07.md](internal/reports/pl-survey-2026-07.md) | |

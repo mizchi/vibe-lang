@@ -55,7 +55,12 @@ import { pathToFileURL } from "node:url";
 const [repo, compiler] = process.argv.slice(2);
 const { parseIncrementalTelemetry } = await import(pathToFileURL(join(repo, "scripts/edit_cycle_kpi.mjs")));
 const runner = join(repo, "scripts/run_wasm_vibe_host_runner.sh");
-const driver = join(repo, "scripts/parallel_frontend_warm.mjs");
+const taskgroup = process.env.VIBE_PARALLEL_BACKEND === "taskgroup";
+const driver = join(repo, taskgroup ? "scripts/taskgroup_frontend_warm.mjs" : "scripts/parallel_frontend_warm.mjs");
+const artifacts = process.env.VIBE_TASKGROUP_ARTIFACT_DIR;
+if (taskgroup && !artifacts) throw new Error("TaskGroup oracle requires VIBE_TASKGROUP_ARTIFACT_DIR");
+const extra = taskgroup ? [join(artifacts, "worker.wasm"), join(artifacts, "coordinator.component.wasm"),
+  join(repo, "runtime/viberun/target/release/viberun")] : [];
 const work = mkdtempSync(join(repo, "_build/parallel-lowering-oracle-"));
 const project = join(work, "project");
 mkdirSync(project);
@@ -73,7 +78,7 @@ function invoke(command, args, env, cwd = project) {
   return result;
 }
 function prewarm(source, jobs, cache) {
-  const result = invoke("node", [driver, compiler, source, String(jobs), project, runner], environment(cache));
+  const result = invoke("node", [driver, compiler, source, String(jobs), project, runner, ...extra], environment(cache));
   assert.equal(result.status, 0, result.stderr);
   const summary = JSON.parse(result.stdout);
   console.log(`[jobs-warm] jobs=${jobs} ${source}: ${JSON.stringify(summary)}`);

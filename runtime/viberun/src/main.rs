@@ -31,6 +31,7 @@ use wasmtime::{
     ValType,
 };
 
+mod checker_workers;
 mod commands;
 mod native_cache;
 

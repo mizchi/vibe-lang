@@ -1,0 +1,66 @@
+import @vibe/concurrent/experimental {
+  TaskGroup, TaskHandle
+}
+
+// The native bridge supplies only immutable batch counts and starts bounded
+// checker processes. TaskGroup owns every wait, failure and child lifetime.
+// Source discovery, dependency snapshots and canonical publication surround
+// this wave; neither child closures nor this component need filesystem access.
+export fn run() -> Int with Async + Exception {
+  let response = await(host_response_named("vibe:checker/worker@0.0.1#load-plan"))
+  if HostResponse::status(response) != 0 {
+    throw("checker: load-plan failed")
+  } else ()
+  let mut text = ""
+  for b in HostResponse::body(response) {
+    let digit = if b == 44 {
+      ","
+    } else if b >= 48 && b <= 57 {
+      String::substring("0123456789", b - 48, b - 47)
+    } else {
+      throw("checker: malformed wave counts")
+    }
+    text = String::concat(text, digit)
+  }
+  let rows = String::split(text, ",")
+  if Array::length(rows) != 5 || Array::get(rows, 0) != "1" {
+    throw("checker: unsupported wave plan")
+  } else ()
+  let counts: Array[Int] = []
+  let mut i = 1
+  while i < 5 {
+    let count = match Int::parse(Array::get(rows, i)) {
+      Some(n) => n,
+      None => throw("checker: invalid wave count")
+    }
+    Array::push(counts, count)
+    i = i + 1
+  }
+  TaskGroup::run((g) -> {
+    let handles = []
+    let mut slot = 0
+    while slot < 4 {
+      let worker_slot = slot
+      let batches = Array::get(counts, slot)
+      let task = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+        let mut failed = 0
+        let mut batch = 0
+        while batch < batches {
+          let result = await(host_response_named_with("vibe:checker/worker@0.0.1#check?slot", __to_string(worker_slot)))
+          host_stream_close(HostResponse::body(result))
+          failed = failed + HostResponse::status(result)
+          batch = batch + 1
+        }
+        failed
+      })
+      Array::push(handles, task)
+      slot = slot + 1
+    }
+    TaskGroup::pump_all(g)
+    let mut failed = 0
+    for task in handles {
+      failed = failed + TaskHandle::join(task)
+    }
+    failed
+  })
+}
