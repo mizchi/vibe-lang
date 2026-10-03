@@ -1,0 +1,131 @@
+//# Imports
+
+// #3297: `==` / `!=` inside a `let`-bound function on a value whose type the
+// binding is generalized over is rejected by the checker. Each call
+// instantiates its own copy of the quantified variable, but the body is
+// lowered once for all of them, so the comparison has no type to compare by:
+// measured before this check, `let same = (a, b) -> a == b` answered `true`
+// for `same(1, 1)` and `false` for `same([1, 2], [1, 2])`, and `(x, y) ->
+// Err(x) == Err(y)` answered `false` for two equal arrays. It is #2474's
+// refusal for a declared type parameter, applied to the implicit one a `let`
+// introduces; the edit is the parameters' annotation.
+
+import @vibe/compiler/checker {
+  check_program
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+//# Functions
+
+/// The first checker diagnostic for `source`, or "" when it type-checks.
+/// Continuation lines (`hint: `, or anything indented) belong to the
+/// diagnostic above them -- the same rule `format_check_report` frames by.
+fn first_reported_diagnostic(msg: String) -> String {
+  let lines = String::split(msg, "\n")
+  let out: Array[String] = []
+  let mut i = 0
+  let mut done = false
+  while !done && i < Array::length(lines) {
+    let line = Array::get(lines, i)
+    let is_cont = if String::starts_with(line, "hint: ") {
+      true
+    } else if String::length(line) == 0 {
+      false
+    } else {
+      let c = String::byte_at(line, 0)
+      c == 32 || c == 9
+    }
+    if i == 0 || is_cont {
+      if String::length(line) > 0 || i == 0 {
+        Array::push(out, line)
+      } else {
+        ()
+      }
+    } else {
+      done = true
+    }
+    i = i + 1
+  }
+  String::join(out, "\n")
+}
+
+fn first_check_error(source: String) -> String {
+  handle {
+    let _ = check_program(parse_program(lex(source)))
+    ""
+  } with { Exception::Throw(msg) => first_reported_diagnostic(msg) }
+}
+
+//# Rejected
+
+test "#3297: a generic enum payload of a generalized parameter is rejected" {
+  let src = "enum Res[T, E] {\n  Ok(T);\n  Err(E)\n}\nfn main() -> Bool {\n  let cmp = (x, y) -> {\n    let a = Err(x)\n    let b = Err(y)\n    a == b\n  }\n  cmp([1, 2], [1, 2])\n}\n"
+  inspect(first_check_error(src), content = "annotate `x`, `y` with concrete types, or write the function as a top-level `fn` with an `Eq`-bounded type parameter; `==` compares two values of type `Res[_, _]`, which this `let`-bound function leaves open for every caller, so its one compiled body cannot compare them by content")
+}
+
+test "#3297: a bare generalized parameter is rejected" {
+  let src = "fn main() -> Bool {\n  let same = (a, b) -> a == b\n  same(1, 1)\n}\n"
+  inspect(first_check_error(src), content = "annotate `a`, `b` with concrete types, or write the function as a top-level `fn` with an `Eq`-bounded type parameter; `==` compares two values of type `_`, which this `let`-bound function leaves open for every caller, so its one compiled body cannot compare them by content")
+}
+
+test "#3297: a generalized type-constructor variable is rejected" {
+  let src = "enum K[T, F[_]] {\n  A(T);\n  B(F[Int])\n}\nfn main() -> Bool {\n  let cmp = (x, y) -> B(x) == B(y)\n  cmp([1, 2], [1, 2])\n}\n"
+  inspect(first_check_error(src), content = "annotate `x`, `y` with concrete types, or write the function as a top-level `fn` with an `Eq`-bounded type parameter; `==` compares two values of type `K[_, _]`, which this `let`-bound function leaves open for every caller, so its one compiled body cannot compare them by content")
+}
+
+test "#3297: `!=` is the same operator" {
+  let src = "fn main() -> Bool {\n  let differ = (a, b) -> a != b\n  differ(1, 2)\n}\n"
+  inspect(first_check_error(src), content = "annotate `a`, `b` with concrete types, or write the function as a top-level `fn` with an `Eq`-bounded type parameter; `!=` compares two values of type `_`, which this `let`-bound function leaves open for every caller, so its one compiled body cannot compare them by content")
+}
+
+test "#3297: an enclosing binding's quantification is caught" {
+  // `inner` cannot quantify `q`'s type, which it shares with the captured
+  // `p`; `outer` quantifies it, and that is where the comparison's type
+  // becomes open for every caller.
+  let src = "fn main() -> Bool {\n  let outer = (p) -> {\n    let inner = (q) -> q == p\n    inner(p)\n  }\n  outer(1)\n}\n"
+  inspect(first_check_error(src), content = "annotate `p` with concrete types, or write the function as a top-level `fn` with an `Eq`-bounded type parameter; `==` compares two values of type `_`, which this `let`-bound function leaves open for every caller, so its one compiled body cannot compare them by content")
+}
+
+test "#3297: a top-level `let` is generalized the same way" {
+  let src = "let same = (a, b) -> a == b\nfn main() -> Bool {\n  same([1], [1])\n}\n"
+  inspect(first_check_error(src), content = "annotate `a`, `b` with concrete types, or write the function as a top-level `fn` with an `Eq`-bounded type parameter; `==` compares two values of type `_`, which this `let`-bound function leaves open for every caller, so its one compiled body cannot compare them by content")
+}
+
+//# Accepted
+
+test "#3297: annotated parameters are accepted" {
+  let src = "enum Res[T, E] {\n  Ok(T);\n  Err(E)\n}\nfn main() -> Bool {\n  let cmp = (x: Array[Int], y: Array[Int]) -> Bool {\n    let a = Err(x)\n    let b = Err(y)\n    a == b\n  }\n  cmp([1, 2], [1, 2])\n}\n"
+  inspect(first_check_error(src), content = "")
+}
+
+test "#3297: a lambda passed straight to a call is not generalized" {
+  let src = "fn main() -> Array[Bool] {\n  Array::map([[1, 2]], (x) -> x == [1, 2])\n}\n"
+  inspect(first_check_error(src), content = "")
+}
+
+test "#3297: a comparison that does not mention the quantified type is accepted" {
+  let src = "fn main() -> Bool {\n  let count_is = (xs, n) -> Array::length(xs) == n\n  count_is([1, 2], 2)\n}\n"
+  inspect(first_check_error(src), content = "")
+}
+
+test "#3297: an explicit `Eq`-bounded binder is the witness route, not this refusal" {
+  let src = "fn main() -> Bool {\n  let same = [T: Eq](a: T, b: T) -> Bool {\n    a == b\n  }\n  same(1, 1)\n}\n"
+  inspect(first_check_error(src), content = "")
+}
+
+test "#3297: an unbounded explicit binder keeps #2474's message, not this one" {
+  // A lambda with its own `[T]` is already generic before the `let`
+  // generalizes it; its formal is #2474's to refuse.
+  let src = "fn main() -> Bool {\n  let same = [T](a: T, b: T) -> Bool {\n    a == b\n  }\n  same(1, 1)\n}\n"
+  inspect(first_check_error(src), content = "`==` compares two values of type `T`, but the type parameter `T` has no `Eq` bound, so they cannot be compared by content here; declare the bound (`[T: Eq]`) or compare at a concrete type")
+}
+
+test "#3297: a generalized value that holds no parameter is accepted" {
+  // `a`'s error type is quantified by its own `let`, but each use takes a
+  // fresh copy; nothing the comparison reads is a quantified variable.
+  let src = "enum Res[T, E] {\n  Ok(T);\n  Err(E)\n}\nfn main() -> Bool {\n  let a = Ok([1, 2])\n  let b = Ok([1, 2])\n  a == b\n}\n"
+  inspect(first_check_error(src), content = "")
+}

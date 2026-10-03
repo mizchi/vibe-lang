@@ -1,0 +1,64 @@
+//# #3297 controls: the `let`-bound lambdas the generalization refusal must
+//# NOT reject, each answering by content. The refusal fires only when a
+//# compared value's type mentions a variable the `let` quantifies; an
+//# annotated parameter, a lambda that is not generalized, and a comparison
+//# that never reaches the parameter's type all keep compiling.
+
+enum Res[T, E] {
+  Ok(T);
+  Err(E)
+}
+
+struct Box[T] {
+  v: T
+} derive (Eq)
+
+struct Pt {
+  x: Int;
+  tags: Array[Int]
+} derive (Eq)
+
+test "annotated parameters" {
+  let cmp = (x: Array[Int], y: Array[Int]) -> Bool {
+    let a = Err(x)
+    let b = Err(y)
+    a == b
+  }
+  inspect(cmp([1, 2], [1, 2]), "true")
+  inspect(cmp([1, 2], [2, 1]), "false")
+  let same = (a: Array[Int], b: Array[Int]) -> Bool {
+    a == b
+  }
+  inspect(same([1, 2], [1, 2]), "true")
+}
+
+test "a lambda passed straight to a call is not generalized" {
+  let hits: Array[Bool] = Array::map([[1, 2], [3]], (x) -> Err(x) == Err([1, 2]))
+  inspect(hits, "[true, false]")
+}
+
+test "a comparison that does not mention the parameter's type" {
+  let count_is = (xs, n) -> Array::length(xs) == n
+  inspect(count_is([1, 2], 2), "true")
+  inspect(count_is(["a"], 2), "false")
+  let fixed = (x) -> {
+    let a = Ok([1, 2])
+    let _ = x
+    a == Ok([1, 2])
+  }
+  inspect(fixed("ignored"), "true")
+  let empty_box = (x) -> {
+    let _ = x
+    Box::{ v: None } == Box::{ v: None }
+  }
+  inspect(empty_box(1), "true")
+}
+
+test "a top-level bounded fn is the generic alternative" {
+  inspect(same_by_witness(Pt::{ x: 1, tags: [1, 2] }, Pt::{ x: 1, tags: [1, 2] }), "true")
+  inspect(same_by_witness(Pt::{ x: 1, tags: [1, 2] }, Pt::{ x: 1, tags: [2] }), "false")
+}
+
+fn same_by_witness[T: Eq](a: T, b: T) -> Bool {
+  a == b
+}

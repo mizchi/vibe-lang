@@ -424,6 +424,17 @@ ur_refused fixtures/err_threaded_generic_exception_arm_value_refused.vibe 'its `
 ur_refused fixtures/err_eq_nested_witness_unreadable_refused.vibe 'the type `T` stands for is needed for its `Eq` witness and is not available here' 'annotate the argument this call reads `T` from'
 ur_refused fixtures/err_eq_nested_witness_fn_unreadable_refused.vibe 'the type `T` stands for is needed for its `Eq` witness and is not available here' 'annotate the argument this call reads `T` from'
 ur_refused fixtures/err_eq_witness_missing_refused.vibe 'the `Eq` witness for `T` does not reach this comparison' 'compare at a concrete type, or pass the comparison in as a parameter'
+# #3297: a comparison whose complete type does not reach the ladder, known
+# only by its generic head or by an `Ok` / `Err` payload typed by a formal.
+# The derived comparator, or the raw payload match, would compare that
+# position by reference (each answered `false` for equal values), so the build
+# is refused at the operator with the annotation edit. The annotated twins
+# answer by content in fixtures/eq_derived_generic_annotated_witness_test.vibe.
+ur_refused fixtures/err_eq_derived_generic_struct_refused.vibe 'the derived `Box::equals` compares a field or payload typed by a type parameter by reference' 'annotate the compared values with their complete type (`let a: Box[<type>] = ...`)' linear 'fixtures/err_eq_derived_generic_struct_refused.vibe: line 23:5'
+ur_refused fixtures/err_eq_derived_generic_struct_refused.vibe 'the derived `Box::equals` compares a field or payload typed by a type parameter by reference' 'annotate the compared values with their complete type (`let a: Box[<type>] = ...`)' gc 'fixtures/err_eq_derived_generic_struct_refused.vibe: line 23:5'
+ur_refused fixtures/err_eq_derived_generic_enum_refused.vibe 'the derived `Wr::equals` compares a field or payload typed by a type parameter by reference' 'annotate the compared values with their complete type (`let a: Wr[<type>, <type>] = ...`)' linear 'fixtures/err_eq_derived_generic_enum_refused.vibe: line 20:5'
+ur_refused fixtures/err_eq_formal_payload_refused.vibe 'compares values with a payload typed by `T`' 'annotate the compared values with their complete type' linear 'fixtures/err_eq_formal_payload_refused.vibe: line 25:5'
+ur_refused fixtures/err_eq_formal_payload_refused.vibe 'compares values with a payload typed by `T`' 'annotate the compared values with their complete type' gc 'fixtures/err_eq_formal_payload_refused.vibe: line 25:5'
 # #3019 rides the same helper: a lowering-time refusal asserted on its message
 # and its edit, not on the bare fact that the build failed.
 ur_refused fixtures/err_handle_resume_capture_loop_break_refused.vibe 'leaves a loop outside it' 'set a flag inside the handle'

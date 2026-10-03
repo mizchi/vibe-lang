@@ -801,9 +801,19 @@ export fn eq_channel_type_expr(ty: Type) -> Option[TypeExpr] {
 /// generalized `Res[Array[Int], e]` cannot hold an `Err`, there is no `e` to
 /// put in it -- so the comparator that position gets is dead code, and `Unit`
 /// (a raw `==`, which is also what that payload compared with before) is as
-/// good as any type. The cases where a value of such a variable CAN exist (a
-/// let-polymorphic lambda's own parameter) keep that same raw `==` for the
-/// position and gain the typed comparator for every other one.
+/// good as any type. The one way a value of such a variable CAN exist is a
+/// `let` that generalizes over it (a lambda's unannotated parameter): each
+/// call instantiates its own copy, so the variable at the site stays free
+/// while values flow through it. Since #3297 that is a checker error
+/// (`refuse_generalized_eq_sites`), so a variable still free here holds no
+/// value.
+///
+/// #3297: by the same argument a free variable NESTED inside a type argument
+/// -- `Box[Option[t]]` from `Box::{ v: None }`, an `Array` element, a tuple
+/// slot -- lowers to `Unit` too. Before this the row was absent there, the
+/// literal's syntactic shape (`Box[Option[?EqUnknown]]`) was refused, and the
+/// comparison fell to the derived `Box::equals`, whose `T` field compared the
+/// two heap-allocated `None`s by identity and answered `false`.
 ///
 /// What is NOT filled in:
 ///   - a FORMAL of an enclosing binder (`T` of `fn f[T: Eq]`): it has values,
@@ -811,9 +821,10 @@ export fn eq_channel_type_expr(ty: Type) -> Option[TypeExpr] {
 ///     reads the table the check that produced this capture filled; an id
 ///     collision only makes a variable look like a formal, which keeps the row
 ///     absent.
-///   - a variable anywhere else: an `Array` element, an `Option` payload, a
-///     tuple slot, or the whole operand. Those already have their own rungs
-///     (the untyped-empty arm, `opt_eq_match`, the tuple walk) and keep them.
+///   - a variable that is not inside a named type's argument: an `Array`
+///     element, an `Option` payload, a tuple slot, or the whole operand. Those
+///     already have their own rungs (the untyped-empty arm, `opt_eq_match`, the
+///     tuple walk) and keep them.
 ///   - a head whose declaration is not in `defs`: the parameter's arity is
 ///     read from the head's own declaration (`type_param_arity` of its
 ///     `params` key), and without one there is nothing to read.
@@ -833,12 +844,10 @@ export fn eq_channel_type_expr(ty: Type) -> Option[TypeExpr] {
 /// application of `F` becomes `Unit`, and `F` passed on unapplied
 /// (`Phantom[F]`, Codex on #3296) or through an alias reaches the same
 /// substitution one declaration further down. A kind-correct placeholder
-/// would have to be a real constructor, and that is unsound: a lambda
-/// let-generalized over `F` holds live `F[Int]` values while `F` stays free
-/// here, so `Array` would compare an `Option` as an array. `Unit` keeps that
-/// position's raw `==`, which is what it compared with before (measured: still
-/// `false` for two equal arrays there). Declining the row instead would
-/// restore the identity answer for every other position.
+/// would have to be a real constructor, and nothing is gained by one: the
+/// position holds no value. A lambda let-generalized over `F` (which would
+/// hold live `F[Int]` values while `F` stays free here) is refused by the
+/// checker since #3297, so it never reaches this extraction.
 /// `fixtures/structural_eq_kinded_ctor_arg_test.vibe` pins that generation
 /// succeeds for all three routes.
 fn eq_channel_row_type_expr(ty: Type, defs: Array[TypeDef]) -> Option[TypeExpr] {
@@ -848,6 +857,14 @@ fn eq_channel_row_type_expr(ty: Type, defs: Array[TypeDef]) -> Option[TypeExpr] 
 /// `fill_defs`: `None` lowers every variable to an absent row; `Some(defs)`
 /// fills a free type argument as `eq_channel_row_type_expr` describes.
 fn eq_channel_type_expr_impl(ty: Type, fill_defs: Option[Array[TypeDef]]) -> Option[TypeExpr] {
+  eq_channel_type_expr_at(ty, fill_defs, false)
+}
+
+/// `in_arg`: `ty` sits somewhere inside a type argument of a named head. With
+/// `fill_defs`, a free non-formal variable there that is not itself the
+/// argument (an `Option` payload, an `Array` element, a tuple slot) lowers to
+/// `Unit` (#3297); the argument position itself is `eq_channel_type_args`'s.
+fn eq_channel_type_expr_at(ty: Type, fill_defs: Option[Array[TypeDef]], in_arg: Bool) -> Option[TypeExpr] {
   match ty {
     CtInt => Some(TyName("Int")),
     CtDouble => Some(TyName("Double")),
@@ -856,16 +873,24 @@ fn eq_channel_type_expr_impl(ty: Type, fill_defs: Option[Array[TypeDef]]) -> Opt
     CtChar => Some(TyName("Char")),
     CtBytes => Some(TyName("Bytes")),
     CtUnit => Some(TyUnit),
-    CtTuple(items) => match eq_channel_type_exprs(items, fill_defs) {
+    CtTuple(items) => match eq_channel_type_exprs(items, fill_defs, in_arg) {
       Some(out) => Some(TyTuple(out)),
       None => None
     },
-    CtArray(t) => match eq_channel_type_expr_impl(t, fill_defs) {
+    CtArray(t) => match eq_channel_type_expr_at(t, fill_defs, in_arg) {
       Some(inner) => Some(TyApp("Array", [inner])),
       None => None
     },
-    CtOption(t) => match eq_channel_type_expr_impl(t, fill_defs) {
+    CtOption(t) => match eq_channel_type_expr_at(t, fill_defs, in_arg) {
       Some(inner) => Some(TyApp("Option", [inner])),
+      None => None
+    },
+    CtVar(vid) => match fill_defs {
+      Some(_) => if in_arg && eq_formal_row_of(vid) < 0 {
+        Some(TyUnit)
+      } else {
+        None
+      },
       None => None
     },
     CtEnum(n) => if String::starts_with(n, "#") {
@@ -941,7 +966,7 @@ fn eq_channel_type_args(head: String, args: Array[Type], fill_defs: Option[Array
       } else {
         Some(TyName(n))
       },
-      _ => eq_channel_type_expr_impl(arg, fill_defs)
+      _ => eq_channel_type_expr_at(arg, fill_defs, true)
     }
     match lowered {
       Some(te) => Array::push(out, te),
@@ -995,12 +1020,12 @@ fn eq_declared_param_arity(defs: Array[TypeDef], head: String, index: Int) -> In
   out
 }
 
-fn eq_channel_type_exprs(items: Array[Type], fill_defs: Option[Array[TypeDef]]) -> Option[Array[TypeExpr]] {
+fn eq_channel_type_exprs(items: Array[Type], fill_defs: Option[Array[TypeDef]], in_arg: Bool) -> Option[Array[TypeExpr]] {
   let out: Array[TypeExpr] = []
   let mut i = 0
   let mut ok = true
   while i < Array::length(items) {
-    match eq_channel_type_expr_impl(Array::get(items, i), fill_defs) {
+    match eq_channel_type_expr_at(Array::get(items, i), fill_defs, in_arg) {
       Some(te) => Array::push(out, te),
       None => {
         ok = false

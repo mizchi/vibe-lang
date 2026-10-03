@@ -1,0 +1,81 @@
+//# #3297: `==` on two unannotated values of a generic type whose type
+//# argument holds a variable nothing in the program constrains, NESTED inside
+//# the argument rather than being the argument itself. `Box::{ v: None }`
+//# types as `Box[Option[t]]` with `t` free. #3283 filled a free argument with
+//# `Unit` but not a variable inside one, so the comparison fell to the derived
+//# `Box::equals`, which compares the `T` field with the raw `==` -- identity
+//# for the heap-allocated `None` -- and answered `false` for equal values.
+//# `None` holds no value of `t`, so `Box[Option[Unit]]` compares the same
+//# values by content.
+
+struct Box[T] {
+  v: T
+} derive (Eq)
+
+enum One[A] {
+  Only(A);
+  Nothing
+}
+
+enum Res[T, E] {
+  Ok(T);
+  Err(E)
+}
+
+test "a None field of a generic struct" {
+  let a = Box::{ v: None }
+  let b = Box::{ v: None }
+  inspect(a == b, "true")
+  inspect(a != b, "false")
+}
+
+test "a None field compared with a Some field" {
+  let a = Box::{ v: None }
+  let b = Box::{ v: Some(1) }
+  inspect(a == b, "false")
+  inspect(a != b, "true")
+}
+
+test "a free variable deeper inside the argument" {
+  let a = Box::{ v: [None] }
+  let b = Box::{ v: [None] }
+  let c = Box::{ v: [None, None] }
+  inspect(a == b, "true")
+  inspect(a == c, "false")
+  let p = Box::{ v: (None, 1) }
+  let q = Box::{ v: (None, 1) }
+  let r = Box::{ v: (None, 2) }
+  inspect(p == q, "true")
+  inspect(p == r, "false")
+  let n = Box::{ v: Box::{ v: None } }
+  let m = Box::{ v: Box::{ v: None } }
+  inspect(n == m, "true")
+}
+
+test "a None payload of a generic enum" {
+  let a = Only(None)
+  let b = Only(None)
+  inspect(a == b, "true")
+  let c = Ok(None)
+  let d = Ok(None)
+  inspect(c == d, "true")
+  let e = Err([None])
+  let f = Err([None])
+  let g = Err([])
+  inspect(e == f, "true")
+  inspect(e == g, "false")
+}
+
+test "controls that already compared by content" {
+  let a = Box::{ v: Some(1) }
+  let b = Box::{ v: Some(1) }
+  let c = Box::{ v: Some(2) }
+  inspect(a == b, "true")
+  inspect(a == c, "false")
+  let d: Box[Option[Int]] = Box::{ v: None }
+  let e: Box[Option[Int]] = Box::{ v: None }
+  inspect(d == e, "true")
+  let f = Box::{ v: [1, 2] }
+  let g = Box::{ v: [1, 2] }
+  inspect(f == g, "true")
+}

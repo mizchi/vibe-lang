@@ -28,9 +28,14 @@ for an LLM's evaluation loop** — the worst way to break is to be silently
 wrong, which is why triage ranks P0 = silent-wrong above "it crashes" (P1). A
 diagnostic leads with **the edit that fixes it**, not with internal terms
 (pass names, ADR numbers). One concept, one spelling — and these hold today:
-structural `==` in every context (ADR-0097, #1526 — **measured 2026-08-19,
-no silent reference equality is left**, except the residual #3297 tracks: a
-derived generic comparator reached by name. Bare, through a name, inside a tuple,
+structural `==` in every context (ADR-0097, #1526 — **no silent reference
+equality is left**: where the complete operand type does not reach the
+lowering, the comparison is refused with the edit rather than answered by
+identity (#3297, below). One measured exception remains (#3312): when the
+program's only `Eq` bound sits inside a `test` block (no `fn` / `let` / `impl`
+carries one), the bound's method is never injected, so a `[T: Eq]` lambda
+there receives no witness and `same(1.5, 1.5)` answers `false`. Any other
+`Eq` bound in the program makes the same lambda answer `true`. Bare, through a name, inside a tuple,
 inside a struct, nested arrays, `Array[String]` / `Array[(Int, Int)]` /
 `Array[Struct]`, through a function's return value, empty-literal bindings,
 and through a parameterized type alias (`type AL[V] = Array[V]` as `AL[Int]`,
@@ -68,6 +73,27 @@ a bound constructor argument (`K[Array[Int], Option]`) substitutes as the
 payload's head (`Option[Int]`). Before #3288 both fell to the derived
 `K::equals`, whose `T` payload compared by identity, annotation or not
 (`fixtures/structural_eq_kinded_ctor_arg_test.vibe`).
+A free variable NESTED inside such an argument is filled the same way
+(#3297): `Box::{ v: None }` types as `Box[Option[t]]` and compares as
+`Box[Option[Unit]]`; before, it fell to the derived `Box::equals` and two
+`None` fields answered `false`
+(`fixtures/structural_eq_generic_free_nested_arg_test.vibe`). The fill is
+sound because a variable still free at the site holds no value. The one way a
+free variable can carry values is a `let` that generalizes over it, and
+**`==` on a type a `let`-bound function is generalized over is a checker
+error** (#3297): `let same = (a, b) -> a == b` and `(x, y) -> Err(x) ==
+Err(y)` are lowered once for every caller, and answered `true` for
+`same(1, 1)` but `false` for two equal arrays. It is #2474's refusal for the
+implicit type parameter a `let` introduces, and the message names the
+parameters to annotate (`fixtures/typecheck/err_type_eq_generalized_lambda_*.vibe`,
+`lib/@vibe/compiler/tests/eq_generalized_lambda_test.vibe`). Where no complete
+type reaches the `==` ladder at all (a formal of an enclosing binder, a lane
+with no typed rows), a generic head known only by name whose derived
+comparator reads a type parameter, and an `Ok` / `Err` / `Some` payload typed
+by a formal, are **refused at build time** at the operator, asking for the
+bindings' annotation (`fixtures/err_eq_derived_generic_{struct,enum}_refused.vibe`,
+`fixtures/err_eq_formal_payload_refused.vibe`); with it they compare through
+the witness (`fixtures/eq_derived_generic_annotated_witness_test.vibe`).
 Generic struct literals preserve concrete type arguments in the equality
 shape. The compiler emits a comparator for each concrete instantiation and
 substitutes those arguments into its field types, so `Box[Double]`,

@@ -717,6 +717,10 @@ fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Arra
 /// executed used to compile and run, and no longer does. `vibe check` does not
 /// run this pass, so it stays clean; the refusal lands on `vibe build` /
 /// `vibe run` / `vibe test`.
+///
+/// A refusal may carry its site as a ` [@off=N]` marker (#3297). The driver
+/// locates only the FIRST marker of a message, at its start, so a marker on a
+/// later line is stripped rather than shown raw or used to place the first.
 fn eq_refusals_report() -> Unit with Exception {
   if Array::length(dtd_eq_refusals) == 0 {
     ()
@@ -724,13 +728,34 @@ fn eq_refusals_report() -> Unit with Exception {
     let mut out = ""
     let mut i = 0
     while i < Array::length(dtd_eq_refusals) {
+      let reason = if i == 0 {
+        Array::get(dtd_eq_refusals, i)
+      } else {
+        eq_strip_off_marker(Array::get(dtd_eq_refusals, i))
+      }
       out = String::concat(out, String::concat(if i == 0 {
         ""
       } else {
         "\n"
-      }, String::concat("structural `==` cannot be decided here: ", Array::get(dtd_eq_refusals, i))))
+      }, String::concat("structural `==` cannot be decided here: ", reason)))
       i = i + 1
     }
     throw(out)
+  }
+}
+
+/// `msg` without its ` [@off=N]` site marker, if it has one.
+fn eq_strip_off_marker(msg: String) -> String {
+  let mi = String::index_of(msg, " [@off=")
+  if mi < 0 {
+    msg
+  } else {
+    let rest = String::substring(msg, mi, String::length(msg))
+    let close = String::index_of(rest, "]")
+    if close < 0 {
+      String::substring(msg, 0, mi)
+    } else {
+      String::concat(String::substring(msg, 0, mi), String::substring(rest, close + 1, String::length(rest)))
+    }
   }
 }
