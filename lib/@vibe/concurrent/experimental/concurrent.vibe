@@ -764,8 +764,11 @@ fn conc_host_release_timer[rg, e](n: TaskGroup[rg, e]) -> Unit {
 /// Deferred spawn: the child is queued Ready and does NOT run here (the
 /// eager builtin prototype is out of contract). The thunk may throw —
 /// an Exception::Throw reaching the child boundary becomes Failed(msg) and
-/// triggers fail-fast. Spawning into a task group that is no longer Open
-/// (closing/closed, or cancelling after a sibling failure) traps.
+/// triggers fail-fast. A spawn is accepted only while the group is open,
+/// which is the rule the lifecycle model in formal/VibeFormal/Async proves
+/// against. Spawning into a group that is cancelling after a sibling failure,
+/// or after the group's body returned (closing/closed), traps with a message
+/// naming which (#3277: both trapped with a bare `unreachable`).
 ///
 /// #1181: `f`'s row also allows the enclosing TaskGroup's own `e` capability
 /// row alongside Error, so spawned tasks can shell out to subprocesses or
@@ -776,7 +779,13 @@ fn conc_host_release_timer[rg, e](n: TaskGroup[rg, e]) -> Unit {
 /// nothing beyond `{ Error }` still requires no extra capability from its
 /// caller.
 export fn TaskGroup::spawn[rg, e, T: Send](n: TaskGroup[rg, e], f: () -> T with Exception + e) -> TaskHandle[rg, e, T] {
-  conc_require(n.phase == 0)
+  if n.phase == 1 {
+    abort("vibe: TaskGroup::spawn into a group that is cancelling after a sibling failed: a group takes new tasks only while it is open; check the failure (a caught join) before spawning")
+  } else if n.phase >= 2 {
+    abort("vibe: TaskGroup::spawn after the group's body returned: a task can only be spawned while TaskGroup::run's body is running; spawn it inside the body")
+  } else {
+    ()
+  }
   let rc = ResCell::{
     value: None
   }
@@ -892,7 +901,11 @@ export fn TaskHandle::join[rg, e, T](h: TaskHandle[rg, e, T]) -> T with Exceptio
       throw(Cancelled)
     }
     // s == 1: join cycle through the dispatch stack — deadlock.
-    conc_require(s == 0 || s == 5)
+    if s == 1 {
+      abort("vibe: deadlock in TaskHandle::join: the task being joined is running further up this stack (a task joins itself, or a task that is joining it); join it from the group's body instead")
+    } else {
+      ()
+    }
     // s == 0: the target is still Ready somewhere in the queue.
     // s == 5: it is PARKED (a suspendable task awaiting a host waitable, a
     // timer, a future or a channel). Joining one used to trap as if it were
@@ -902,7 +915,11 @@ export fn TaskHandle::join[rg, e, T](h: TaskHandle[rg, e, T]) -> T with Exceptio
     // time advances for sleepers, and a stalled sweep with nothing to wake
     // it still traps as a deadlock.
     if s == 0 {
-      conc_require(drive_one(h.group))
+      if !drive_one(h.group) {
+        conc_deadlock()
+      } else {
+        ()
+      }
     } else if drive_one(h.group) {
       // A queued run-to-completion task ran first: the target may be
       // waiting on it (a producer resolving its future), and the pump
@@ -1018,7 +1035,11 @@ export fn Sender::send[rg, e, T](s: Sender[rg, e, T], v: T) -> Unit with Excepti
     if chan_closed(c) {
       throw(Closed)
     }
-    conc_require(drive_one(c.group))
+    if !drive_one(c.group) {
+      conc_deadlock()
+    } else {
+      ()
+    }
     continue (d)
   }
 }
@@ -1124,7 +1145,11 @@ export fn Receiver::recv[rg, e, T](rh: Receiver[rg, e, T]) -> Option[T] with e {
     if chan_closed(c) {
       break None
     }
-    conc_require(drive_one(c.group))
+    if !drive_one(c.group) {
+      conc_deadlock()
+    } else {
+      ()
+    }
     continue (d)
   }
   c.waiting_recv = c.waiting_recv - 1
@@ -1247,7 +1272,13 @@ export fn TaskGroup::spawn_suspend[rg, e, T: Send](n: TaskGroup[rg, e], f: () ->
 /// first suspend) at the adoption site immediately after, so the cell
 /// starts Running rather than Ready; it never enters the drive_one queue.
 export fn TaskGroup::adopt[rg, e, T: Send](n: TaskGroup[rg, e]) -> TaskHandle[rg, e, T] {
-  conc_require(n.phase == 0)
+  if n.phase == 1 {
+    abort("vibe: TaskGroup::adopt into a group that is cancelling after a sibling failed: an adopted task starts running at once, so it cannot be cancelled before it runs; check the failure before adopting")
+  } else if n.phase >= 2 {
+    abort("vibe: TaskGroup::adopt after the group's body returned: a task can only be adopted while TaskGroup::run's body is running")
+  } else {
+    ()
+  }
   let rc = ResCell::{
     value: None
   }

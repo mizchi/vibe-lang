@@ -190,9 +190,13 @@ close. Dispatch is FIFO in spawn order. `TaskGroup::spawn_suspend` differs:
 its body starts at once and runs to its first suspension (see the
 suspendable lane below).
 
-A spawn is accepted only while the group is open. Spawning into a group that
-is closing, closed, or cancelling after a child failed traps -- including a
-spawn from a body that caught the failed child's `join` and carried on.
+A spawn is accepted only while the group is open, the rule the lifecycle model
+in `formal/VibeFormal/Async/Transition.lean` proves against. A spawn into a
+group that is cancelling after a child failed -- including from a body that
+caught the failed child's `join` and carried on -- traps with a message saying
+the group is cancelling, and a spawn after the body returned (closing or
+closed) traps with a message saying so (#3277). `TaskGroup::adopt` (the
+suspendable lane) follows the same rule.
 
 ### Join
 
@@ -206,8 +210,8 @@ is not terminal, `join` drives the group on the caller's stack:
   parked.
 
 Joining a task that is currently running -- a join that cycles back through
-the tasks being driven -- traps, as does a join whose target can never be
-woken.
+the tasks being driven -- traps with a message naming the cycle, and a join
+whose target can never be woken traps as a deadlock.
 
 ### Cancel
 
@@ -269,10 +273,9 @@ failures. They end the instance.
 The scheduler is deterministic, so a wait that nothing in the group can satisfy
 never resolves. Such a wait traps instead of hanging:
 
-- a stack-driving `join`, `send` or `recv` with no ready task to run traps on
-  an internal contract, without a message;
-- `pump_all`, `join` on a parked task, or a group close, when every task left
-  waits on something no task in the group can produce, traps with one:
+- a stack-driving `join`, `send` or `recv` with no ready task to run, and
+  `pump_all`, `join` on a parked task, or a group close, when every task left
+  waits on something no task in the group can produce, trap with one message:
   ``vibe: deadlock in TaskGroup::run: every task left is waiting on something
   no task in the group can produce ...``.
 
@@ -895,9 +898,6 @@ nursery scope`).
   handle after the group returns the task's value (measured), so the program
   is not answered wrongly today, but nothing enforces that the handle stays in
   its group. Only the return check is a guarantee.
-- **Spawning after a failure.** A spawn into a group that is cancelling
-  after a child failed traps with a bare `unreachable` (measured), as do the
-  stack-driving deadlocks; neither names the problem.
 - **Mid-run cancellation.** A cancel request is observed at dispatch and at a
   parked task only. A running task, and a suspendable task that is running
   when the request arrives, are not interrupted.
