@@ -19,9 +19,11 @@ import @vibe/compiler/core {
   env_cache,
   env_cache_binding,
   env_cache_complete,
+  env_cache_read_snapshot,
   env_cached,
   env_cached_after_tail_change,
   env_flat_bindings,
+  env_has_reexport_surface_binding,
   env_lookup,
   env_lookup_binding,
   env_lookup_binding_including_surface,
@@ -31,6 +33,7 @@ import @vibe/compiler/core {
   env_name_index_length,
   env_preserve_type_definition_origins,
   env_value_binding,
+  env_value_binding_with_origin,
   resolve_type_expr_core_shadowed,
   subst_apply_except,
   type_to_string,
@@ -684,4 +687,176 @@ test "canonical snapshot invalidation also discards stale positive value rows" {
     },
     _ => assert(false)
   }
+}
+
+fn preallocated_temporary_env() -> TypeEnv {
+  let ty = CtNamed(String::concat("owned", "Type"), [CtArray(CtString)])
+  let path = String::concat("/dep", ".vibe")
+  let name = String::concat("source", "_name")
+  env_cache(env_bind_with_origin(EnvEmpty, "payload", ty, BindingOriginModuleExport(path, name)))
+}
+
+test "preallocated cache rows retain payload and provenance after temporaries expire" {
+  let result = env_lookup_binding(preallocated_temporary_env(), "payload")
+  let pressure: Array[String] = []
+  let mut i = 0
+  while i < 200 {
+    Array::push(pressure, String::concat("replacement", __to_string(i)))
+    i = i + 1
+  }
+  assert(Array::length(pressure) == 200)
+  match result {
+    None => assert(false),
+    Some(binding) => {
+      assert(types_equal(binding.ty, CtNamed("ownedType", [CtArray(CtString)])))
+      match binding.origin {
+        BindingOriginModuleExport(path, name) => {
+          assert(path == "/dep.vibe")
+          assert(name == "source_name")
+        },
+        _ => assert(false)
+      }
+    }
+  }
+}
+
+test "preallocated cache rows preserve empty and singleton lookups" {
+  let empty = env_cache(EnvEmpty)
+  assert(env_lookup(empty, "missing") is None)
+  let single = env_cache(env_bind(EnvEmpty, "only", CtInt))
+  assert(env_lookup(single, "only") is Some(CtInt))
+  assert(env_lookup(single, "missing") is None)
+  assert(env_lookup(env_cache(single), "only") is Some(CtInt))
+}
+
+fn assert_surface_binding(env: TypeEnv, name: String, expected: Bool) -> Unit {
+  let actual = env_has_reexport_surface_binding(env, name)
+  assert(actual == expected)
+}
+fn bind_surface_binding(env: TypeEnv, name: String) -> TypeEnv {
+  env_bind_with_origin(env, name, CtString, BindingOriginReExportSurface("facade", name))
+}
+test "surface binding handles empty and plain environments" {
+  assert_surface_binding(EnvEmpty, "x", false)
+  assert_surface_binding(env_bind(EnvEmpty, "x", CtInt), "x", false)
+  assert_surface_binding(env_cache_complete(env_bind(EnvEmpty, "x", CtInt)), "missing", false)
+}
+test "surface binding keeps raw and complete surface positives" {
+  let env = bind_surface_binding(EnvEmpty, "x")
+  assert_surface_binding(env, "x", true)
+  assert_surface_binding(env_cache(env), "x", true)
+  assert_surface_binding(env_cache_complete(env), "x", true)
+  assert_surface_binding(env_cache_complete(env), "missing", false)
+}
+test "surface binding does not stop at a newer ordinary binding" {
+  let hidden = env_bind(bind_surface_binding(EnvEmpty, "x"), "x", CtInt)
+  assert_surface_binding(hidden, "x", true)
+  assert_surface_binding(env_cache(hidden), "x", true)
+  assert_surface_binding(env_cache_complete(hidden), "x", true)
+  assert_surface_binding(env_cache_complete(env_bind(hidden, "x", CtBool)), "x", true)
+}
+test "surface binding retains positives in front of an absent complete index" {
+  let base = env_cache_complete(env_bind(EnvEmpty, "base", CtInt))
+  let direct = EnvBind("x", env_value_binding_with_origin(CtString, BindingOriginReExportSurface("facade", "x")), base)
+  assert_surface_binding(direct, "x", true)
+  assert_surface_binding(direct, "missing", false)
+}
+test "surface binding tracks shared branch additions conservatively" {
+  let base = env_cache_complete(env_bind(EnvEmpty, "base", CtInt))
+  let left = bind_surface_binding(base, "added")
+  let right = env_bind(base, "added", CtBool)
+  assert_surface_binding(left, "added", true)
+  assert_surface_binding(right, "added", false)
+  assert_surface_binding(base, "added", false)
+  assert_surface_binding(env_bind(left, "added", CtInt), "added", true)
+  assert_surface_binding(env_cache_complete(left), "added", true)
+}
+test "surface binding falls through a partial cache miss" {
+  let partial = env_cached(["other"], [env_value_binding(CtInt)], bind_surface_binding(EnvEmpty, "x"))
+  assert_surface_binding(partial, "x", true)
+  assert_surface_binding(partial, "missing", false)
+  assert_surface_binding(env_cache_complete(partial), "x", true)
+}
+test "surface binding does not grant cached positive rows surface authority" {
+  let partial = env_cached(["x"], [env_value_binding(CtInt)], bind_surface_binding(EnvEmpty, "x"))
+  assert_surface_binding(partial, "x", true)
+  let stale = env_cached(["x"], [
+    env_value_binding_with_origin(CtString, BindingOriginReExportSurface("facade", "x"))
+  ], EnvEmpty)
+  assert_surface_binding(stale, "x", false)
+  assert_surface_binding(env_cache_complete(stale), "x", false)
+}
+test "surface binding checks historical flat rows" {
+  let flat = EnvFlat([
+    ("x", env_value_binding(CtInt)),
+    ("x", env_value_binding_with_origin(CtString, BindingOriginReExportSurface("facade", "x"))),
+    ("y", env_value_binding(CtBool))
+  ])
+  assert_surface_binding(flat, "x", true)
+  assert_surface_binding(env_cache_complete(flat), "x", true)
+  assert_surface_binding(env_cache_complete(flat), "y", false)
+  assert_surface_binding(env_cache_complete(flat), "missing", false)
+}
+test "surface binding traverses all metadata variants" {
+  let env = EnvTraitDef("Marker", [], true, [], EnvTraitImpl("Marker", CtInt, EnvTraitImplGen("Marker", [
+  ], [], CtBool, EnvTypeDefs([], [], EnvMutCell("cell", false, bind_surface_binding(EnvEmpty, "x"))))), [
+  ], [])
+  assert_surface_binding(env, "x", true)
+  assert_surface_binding(env_cache_complete(env), "x", true)
+  assert_surface_binding(env_cache_complete(env), "missing", false)
+}
+test "surface binding drops invalidated complete miss authority" {
+  let base = env_cache_complete(env_bind(EnvEmpty, "base", CtInt))
+  match base {
+    EnvCached(names, bindings, _) => {
+      let changed = env_cached_after_tail_change(names, bindings, bind_surface_binding(EnvEmpty, "new"))
+      assert_surface_binding(changed, "new", true)
+      assert_surface_binding(env_cache_complete(changed), "new", true)
+    },
+    _ => assert(false)
+  }
+}
+test "surface binding falls through partial cached tail transformations" {
+  let base = env_cached(["base"], [env_value_binding(CtInt)], EnvEmpty)
+  match base {
+    EnvCached(names, bindings, _) => {
+      let changed = env_cached_after_tail_change(names, bindings, bind_surface_binding(EnvEmpty, "new"))
+      assert_surface_binding(changed, "new", true)
+    },
+    _ => assert(false)
+  }
+}
+test "surface binding can pass a partial cache into an older complete miss" {
+  let base = env_cache_complete(bind_surface_binding(EnvEmpty, "x"))
+  let outer = env_cached(["extra"], [env_value_binding(CtInt)], base)
+  assert_surface_binding(outer, "x", true)
+  assert_surface_binding(outer, "missing", false)
+  assert_surface_binding(bind_surface_binding(outer, "new"), "new", true)
+}
+
+test "surface binding retains historical answers behind read snapshots" {
+  let hidden = env_bind(bind_surface_binding(EnvEmpty, "x"), "x", CtInt)
+  let snapshot = env_cache_read_snapshot(hidden)
+  assert_surface_binding(snapshot, "x", true)
+  assert_surface_binding(snapshot, "missing", false)
+  assert_surface_binding(env_cache_read_snapshot(snapshot), "x", true)
+  let base = env_cache_read_snapshot(env_bind(EnvEmpty, "base", CtInt))
+  let left = bind_surface_binding(base, "added")
+  let right = env_bind(base, "added", CtBool)
+  assert_surface_binding(env_cache_read_snapshot(left), "added", true)
+  assert_surface_binding(env_cache_read_snapshot(right), "added", false)
+  assert_surface_binding(env_cache_read_snapshot(base), "added", false)
+  let partial = env_cached(["x"], [
+    env_value_binding_with_origin(CtString, BindingOriginReExportSurface("facade", "x"))
+  ], EnvEmpty)
+  assert_surface_binding(env_cache_read_snapshot(partial), "x", false)
+}
+
+test "surface binding falls through malformed partial ordering" {
+  let partial = env_cached(["z", "a"], [
+    env_value_binding(CtInt),
+    env_value_binding(CtBool)
+  ], bind_surface_binding(EnvEmpty, "x"))
+  assert_surface_binding(partial, "x", true)
+  assert_surface_binding(partial, "missing", false)
 }

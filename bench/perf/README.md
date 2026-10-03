@@ -3,6 +3,35 @@
 CI heap KPI gate, micro benches, and perf-investigation postmortems for the
 compiler / checker.
 
+## Re-export surface query miss bounds (2026-10-03)
+
+Proven complete-cache name absence ends historical surface scans while
+positive/partial rows preserve their canonical fallback. The compiler-sized
+flat wall median improves -2.44%; all five
+paired trials improve. FS cold improves -2.30%;
+FS warm and package wall effects remain inconclusive.
+
+The [report](../../docs/internal/reports/reexport-surface-miss-bounds-2026-10-03.md)
+and [raw record](analysis/reexport-surface-miss-bounds-2026-10-03.json) retain
+360 controlled samples, both predicate-order variants, six ordinary default KPI
+runs and 216 actual blocks across bump/RC suites per variant. Flat allocation and all
+controlled reserved capacities stay unchanged; ordinary default allocation
+changes +3,112 B. The committed heap baseline and tolerance remain.
+
+## Known-size environment index arrays (2026-10-03)
+
+Four preallocated permutation/name/binding/probe arrays reduce compiler-sized
+bump allocation by 29,620,104 B (1.42%, 28.25 MiB), with lower allocation on all
+measured FS/package corpora. Names ownership, first-binding semantics and the
+512-statement cache cadence remain intact. Reserved capacity is unchanged;
+wall effects remain inconclusive after timing follow-ups.
+
+The [investigation report](../../docs/internal/reports/env-index-array-capacity-2026-10-03.md)
+and [raw record](analysis/env-index-array-capacity-2026-10-03.json) retain 228
+controlled samples, six ordinary default KPI runs and 188 actual bump/RC blocks.
+The ordinary cold KPI improves 1,026,358,856 → 1,019,539,416 B; the committed
+absolute baseline is ratcheted down with its +10% tolerance unchanged.
+
 ## Substitution value-key bounds (2026-10-03)
 
 Repeated full-chain misses dominate substitution lookup on the compiler-sized

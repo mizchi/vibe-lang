@@ -613,7 +613,7 @@ export fn env_cache(env: TypeEnv) -> TypeEnv {
     // (which was fed outermost-first specifically to get this same result).
     let perm = sort_perm_by_names(na)
     let names_sorted = apply_perm_strings(na, perm)
-    let types_sorted = array_empty()
+    let types_sorted: Array[EnvValueBinding] = Array::with_capacity(Array::length(perm))
     let mut i = 0
     while i < Array::length(perm) {
       Array::push(types_sorted, Array::get(ta, Array::get(perm, i)))
@@ -1006,10 +1006,15 @@ export fn env_has_reexport_surface_binding(env: TypeEnv, name: String) -> Bool {
         }
         done = true
       },
-      EnvCached(_, _, rest) => {
-        // The authoritative chain retains surface-only entries even though
-        // the acceleration arrays intentionally omit them.
-        cur = rest
+      EnvCached(names, _, rest) => {
+        // Complete snapshots cover every canonical name, including surface
+        // entries and older same-name bindings. Only a proven name miss can
+        // stop this historical scan; a positive row may hide an older surface.
+        if env_name_index_miss_is_final(names, name) && env_name_index_find(names, name) < 0 {
+          done = true
+        } else {
+          cur = rest
+        }
       }
     }
   }
