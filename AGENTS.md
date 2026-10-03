@@ -31,11 +31,14 @@ diagnostic leads with **the edit that fixes it**, not with internal terms
 structural `==` in every context (ADR-0097, #1526 — **no silent reference
 equality is left**: where the complete operand type does not reach the
 lowering, the comparison is refused with the edit rather than answered by
-identity (#3297, below). One measured exception remains (#3312): when the
-program's only `Eq` bound sits inside a `test` block (no `fn` / `let` / `impl`
-carries one), the bound's method is never injected, so a `[T: Eq]` lambda
-there receives no witness and `same(1.5, 1.5)` answers `false`. Any other
-`Eq` bound in the program makes the same lambda answer `true`. Bare, through a name, inside a tuple,
+identity (#3297, below). One measured exception remains (#3327): a program
+that declares its own marker `trait Eq {}` and bounds a formal by a subtrait
+of it (`trait Key: Eq {}`, `[T: Key]`) compares by reference, because the
+#2612 guard recognises a marker comparison bound only when it is spelled
+`Eq` / `Ord` / `Add`; two equal `Pt` values answer `false`. The builtin `Eq` has no
+such gap: an `Eq` bound anywhere in the program, a `test` block included,
+injects its method, and a methodless subtrait of it (`trait Key: Eq {}`)
+dispatches through the witness (#3312). Bare, through a name, inside a tuple,
 inside a struct, nested arrays, `Array[String]` / `Array[(Int, Int)]` /
 `Array[Struct]`, through a function's return value, empty-literal bindings,
 and through a parameterized type alias (`type AL[V] = Array[V]` as `AL[Int]`,
