@@ -159,108 +159,124 @@ export class SelfhostChecker {
     const stem = fingerprint(module.id).slice(0, 16);
     const jobName = `job-${stem}`;
     const jobDir = join(this.workRoot, jobName);
-    await rm(jobDir, { recursive: true, force: true });
-    await mkdir(jobDir, { recursive: true });
-
-    const byId = new Map(dependencies.map((dependency) => [dependency.id, dependency]));
-    const occurrences = module.dependencyOccurrences ?? dependencies.map((d) => d.id);
-
-    const rows = ["version\t1", `path\t${module.id}`];
-    for (const depId of occurrences) {
-      const dependency = byId.get(depId);
-      if (!dependency) {
-        throw new Error(
-          `"${module.id}" has a dependencyOccurrences entry "${depId}" the scheduler never resolved a terminal outcome for`,
-        );
-      }
-      const depFingerprint = dependency.outcome?.artifact?.fingerprint;
-      if (typeof depFingerprint !== "string" || depFingerprint.length === 0) {
-        throw new Error(
-          `dependency "${depId}" of "${module.id}" has no checked fingerprint -- cannot compute a canonical fingerprint for "${module.id}" without it`,
-        );
-      }
-      rows.push(`dep\t${depId}\t${depFingerprint}`);
-    }
-    await writeFile(join(jobDir, "job.txt"), `${rows.join("\n")}\n`, "utf8");
-    await writeFile(join(jobDir, "source.vibe"), module.source, "utf8");
-    for (const [index, depId] of occurrences.entries()) {
-      const env = byId.get(depId)?.outcome?.artifact?.env;
-      if (typeof env !== "string" || env.length === 0) continue;
-      await writeFile(join(jobDir, `dep${index}.env`), env, "utf8");
-    }
+    await prepareModuleJob(jobDir, module, dependencies);
 
     const response = await this.request([jobName, `${jobName}/worker.out`, "__no_entry__"]);
-    const outcome = (await this.readIfPresent(join(jobDir, "outcome.txt")))?.trim() ?? "";
-    const diagnostic = (await this.readIfPresent(join(jobDir, "diag.txt")))?.trim() ?? "";
-    const env = await this.readIfPresent(join(jobDir, "env.out"));
-    const cacheProduct = await this.readIfPresent(join(jobDir, "cache.out"));
-    const computedFingerprint = (
-      await this.readIfPresent(join(jobDir, "fingerprint.out"))
-    )?.trim();
-    const workerDiag = (
-      await this.readIfPresent(join(jobDir, "worker.out.diag"))
-    )?.trim();
-    await rm(jobDir, { recursive: true, force: true });
+    return readModuleJobProduct(jobDir, module, response);
+  }
+}
 
-    // A missing outcome.txt is an infrastructure failure, never a
-    // diagnostic: the worker writes it last precisely so its absence means
-    // "this did not finish", not "this module is fine".
-    if (outcome.length === 0) {
+async function readIfPresent(path) {
+  try { return await readFile(path, "utf8"); }
+  catch (error) { if (error?.code === "ENOENT") return null; throw error; }
+}
+
+// Shared job wire format: the Node daemon and TaskGroup process bridge prepare
+// exactly the same dependency-occurrence snapshots and consume checked products.
+export async function prepareModuleJob(jobDir, module, dependencies = []) {
+  await rm(jobDir, { recursive: true, force: true });
+  await mkdir(jobDir, { recursive: true });
+
+  const byId = new Map(dependencies.map((dependency) => [dependency.id, dependency]));
+  const occurrences = module.dependencyOccurrences ?? dependencies.map((d) => d.id);
+
+  const rows = ["version\t1", `path\t${module.id}`];
+  for (const depId of occurrences) {
+    const dependency = byId.get(depId);
+    if (!dependency) {
       throw new Error(
-        workerDiag ??
-          response.error ??
-          `selfhost worker exited ${response.exit_code} without writing an outcome`,
+        `"${module.id}" has a dependencyOccurrences entry "${depId}" the scheduler never resolved a terminal outcome for`,
       );
     }
-    if (outcome === "ok") {
-      if (response.exit_code !== 0) {
-        throw new Error(
-          `selfhost worker reported ok but exited ${response.exit_code}`,
-        );
-      }
-      // An "ok" with no usable environment must NOT be published as a
-      // checked outcome. Dependents skip writing dep<i>.env for an empty
-      // env, which makes their imports lenient again -- so a truncated or
-      // missing env.out would quietly turn real type errors in every
-      // dependent into a clean check. Even an empty environment
-      // serializes a version header, so "nonempty" is the right bar, and
-      // failing the run is the right response to a malformed worker
-      // answer.
-      if (typeof env !== "string" || env.trim().length === 0) {
-        throw new Error(
-          `selfhost worker reported ok for "${module.id}" without a usable env.out`,
-        );
-      }
-      // Same failure shape as the env.out check above: a missing
-      // fingerprint.out must not be papered over with an invented one.
-      // Nothing else in the pipeline can verify a made-up value against
-      // check_module's canonical build_fingerprint, so a dependent job
-      // would carry it forward as if it were real and never notice.
-      if (typeof computedFingerprint !== "string" || computedFingerprint.length === 0) {
-        throw new Error(
-          `selfhost worker reported ok for "${module.id}" without a fingerprint.out`,
-        );
-      }
-      if (cacheProduct !== null && !cacheProduct.startsWith(`checked-worker-cache\t1\t${computedFingerprint}\n`)) {
-        throw new Error(`selfhost worker reported ok for "${module.id}" with an unbound cache.out`);
-      }
-      return { diagnostic: null, env, fingerprint: computedFingerprint, cacheProduct };
+    const depFingerprint = dependency.outcome?.artifact?.fingerprint;
+    if (typeof depFingerprint !== "string" || depFingerprint.length === 0) {
+      throw new Error(
+        `dependency "${depId}" of "${module.id}" has no checked fingerprint -- cannot compute a canonical fingerprint for "${module.id}" without it`,
+      );
     }
-    if (outcome !== "diag") {
-      throw new Error(`unknown module job outcome: ${JSON.stringify(outcome)}`);
-    }
-    if (diagnostic.length === 0) {
-      throw new Error("selfhost worker reported a diagnostic outcome with no diagnostic");
-    }
-    return {
-      diagnostic: {
-        module: module.id,
-        start: 0,
-        end: module.source.length,
-        code: "E_SELFHOST_CHECK",
-        message: diagnostic,
-      },
-      env: "",
-    };
+    rows.push(`dep\t${depId}\t${depFingerprint}`);
   }
+  await writeFile(join(jobDir, "job.txt"), `${rows.join("\n")}\n`, "utf8");
+  await writeFile(join(jobDir, "source.vibe"), module.source, "utf8");
+  for (const [index, depId] of occurrences.entries()) {
+    const env = byId.get(depId)?.outcome?.artifact?.env;
+    if (typeof env !== "string" || env.length === 0) continue;
+    await writeFile(join(jobDir, `dep${index}.env`), env, "utf8");
+  }
+
+}
+
+export async function readModuleJobProduct(jobDir, module, response, { cleanup = true } = {}) {
+  const outcome = (await readIfPresent(join(jobDir, "outcome.txt")))?.trim() ?? "";
+  const diagnostic = (await readIfPresent(join(jobDir, "diag.txt")))?.trim() ?? "";
+  const env = await readIfPresent(join(jobDir, "env.out"));
+  const cacheProduct = await readIfPresent(join(jobDir, "cache.out"));
+  const computedFingerprint = (
+    await readIfPresent(join(jobDir, "fingerprint.out"))
+  )?.trim();
+  const workerDiag = (
+    await readIfPresent(join(jobDir, "worker.out.diag"))
+  )?.trim();
+  if (cleanup) await rm(jobDir, { recursive: true, force: true });
+
+  // A missing outcome.txt is an infrastructure failure, never a
+  // diagnostic: the worker writes it last precisely so its absence means
+  // "this did not finish", not "this module is fine".
+  if (outcome.length === 0) {
+    throw new Error(
+      workerDiag ??
+        response.error ??
+        `selfhost worker exited ${response.exit_code} without writing an outcome`,
+    );
+  }
+  if (outcome === "ok") {
+    if (response.exit_code !== 0) {
+      throw new Error(
+        `selfhost worker reported ok but exited ${response.exit_code}`,
+      );
+    }
+    // An "ok" with no usable environment must NOT be published as a
+    // checked outcome. Dependents skip writing dep<i>.env for an empty
+    // env, which makes their imports lenient again -- so a truncated or
+    // missing env.out would quietly turn real type errors in every
+    // dependent into a clean check. Even an empty environment
+    // serializes a version header, so "nonempty" is the right bar, and
+    // failing the run is the right response to a malformed worker
+    // answer.
+    if (typeof env !== "string" || env.trim().length === 0) {
+      throw new Error(
+        `selfhost worker reported ok for "${module.id}" without a usable env.out`,
+      );
+    }
+    // Same failure shape as the env.out check above: a missing
+    // fingerprint.out must not be papered over with an invented one.
+    // Nothing else in the pipeline can verify a made-up value against
+    // check_module's canonical build_fingerprint, so a dependent job
+    // would carry it forward as if it were real and never notice.
+    if (typeof computedFingerprint !== "string" || computedFingerprint.length === 0) {
+      throw new Error(
+        `selfhost worker reported ok for "${module.id}" without a fingerprint.out`,
+      );
+    }
+    if (cacheProduct !== null && !cacheProduct.startsWith(`checked-worker-cache\t1\t${computedFingerprint}\n`)) {
+      throw new Error(`selfhost worker reported ok for "${module.id}" with an unbound cache.out`);
+    }
+    return { diagnostic: null, env, fingerprint: computedFingerprint, cacheProduct };
+  }
+  if (outcome !== "diag") {
+    throw new Error(`unknown module job outcome: ${JSON.stringify(outcome)}`);
+  }
+  if (diagnostic.length === 0) {
+    throw new Error("selfhost worker reported a diagnostic outcome with no diagnostic");
+  }
+  return {
+    diagnostic: {
+      module: module.id,
+      start: 0,
+      end: module.source.length,
+      code: "E_SELFHOST_CHECK",
+      message: diagnostic,
+    },
+    env: "",
+  };
 }

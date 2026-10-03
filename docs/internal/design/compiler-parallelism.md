@@ -8,6 +8,17 @@ validated, and has no effect, and on `vibe test` it runs N test files at once.
 Phases 3 and 4 are not scheduled; no open issue owns them. The owning issues
 (#906, #1239, #1259) are closed.
 
+An opt-in TaskGroup dogfood path now exists separately from the public CLI:
+`scripts/build_taskgroup_checker.sh` builds a core checker worker and an RC
+coordinator component; `scripts/build_taskgroup_project.sh` runs checks through
+the native `vibe:checker/worker@0.0.1` WIT bridge before the final serial build.
+It supports jobs 1/2/4, ready-wave barriers, bounded fresh worker batches, and
+canonical publication of complete lowering products. The worker still imports
+the broad compiler/runtime facade; this does not complete the checker/codegen
+responsibility split. Compiler/CLI parity, costs and memory limits are recorded
+in [the TaskGroup dogfood report](../reports/taskgroup-checker-2026-10-03.md).
+This experimental path remains slower than ordinary builds.
+
 Related: ADR-0040, ADR-0059, ADR-0068, ADR-0071.
 
 ## Position
@@ -18,10 +29,11 @@ receives an immutable job and returns a value, and one coordinator commits the
 values in a canonical order. There is no second, compiler-only concurrency model
 built on shared mutable memory.
 
-The compiler does not run its workers on `@vibe/concurrent`. That scheduler is
-cooperative and never runs two task bodies at once, so parallelism here comes
-from a host running several compiler instances -- `node:worker_threads` or an
-OS process pool -- each with its own heap.
+The original prewarm prototype uses host workers. The opt-in dogfood coordinator
+uses `@vibe/concurrent/experimental` TaskGroup to own task waits and cancellation.
+Its requestful WIT calls run independent native checker processes, each with its
+own heap. The language scheduler remains cooperative; the CPU parallelism comes
+from those host processes. No shared mutable compiler state is introduced.
 
 The first parallel unit is a module's parse and typecheck over the import DAG.
 Function-body codegen comes later, if at all (see [Codegen split](#codegen-split)).

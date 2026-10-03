@@ -1,0 +1,26 @@
+// TaskGroup probe: each await supervises a real isolated checker.
+// The host receives prepared snapshots; this probe never reads source files.
+import @vibe/concurrent/experimental {
+  TaskGroup, TaskHandle
+}
+
+let run: () -> Int with Async + Exception = () -> {
+  TaskGroup::run((g) -> {
+    let a = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      let status = await(host_future_named("checker-0"))
+      if status != 0 {
+        throw("checker-0 failed")
+      } else ()
+      status
+    })
+    let b = TaskGroup::spawn_suspend(g, () -> Int with Async + Exception {
+      let status = await(host_future_named("checker-1"))
+      if status != 0 {
+        throw("checker-1 failed")
+      } else ()
+      status
+    })
+    TaskGroup::pump_all(g)
+    TaskHandle::join(a) + TaskHandle::join(b)
+  })
+}

@@ -1,0 +1,38 @@
+import @vibe/compiler/config {
+  configure_compiler_cfg_flags
+}
+import @vibe/compiler/checker {
+  set_error_row_checked
+}
+
+import @vibe/compiler/runtime {
+  run_module_job_dir
+}
+
+// Keep the existing job-dir invocation and checked product wire contract.
+// This artifact checks one supplied snapshot and emits no linked program.
+export fn cli_main() -> Int with Env + Exception + Fs {
+  if Env::args_len() != 3 {
+    throw("checker worker: expected job directory, output path and entry placeholder")
+  } else ()
+  configure_compiler_cfg_flags()
+  set_error_row_checked(Env::get("VIBE_CHECK_ERROR_ROW") != "0")
+  let dir = String::concat("", Env::args_get(0))
+  if Env::get("VIBE_CHECKER_BATCH") == "1" {
+    let rows = String::split(Fs::read_file(String::concat(dir, "/jobs.list")), "\n")
+    if Array::length(rows) < 3 || Array::get(rows, 0) != "checked-worker-batch\t1" {
+      throw("checker worker: invalid batch manifest")
+    } else ()
+    let mut i = 1
+    while i < Array::length(rows) {
+      let job = Array::get(rows, i)
+      if job != "" {
+        run_module_job_dir(job)
+      } else ()
+      i = i + 1
+    }
+  } else {
+    run_module_job_dir(dir)
+  }
+  0
+}
