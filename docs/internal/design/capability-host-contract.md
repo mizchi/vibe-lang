@@ -61,7 +61,7 @@ depend on which runner you happen to be using:
 - **Selection**: how does the module learn, before `main`, which optional
   capabilities were granted?
 
-## What the hosts did before withholding existed — measured, not read
+## What the hosts do with an import they do not provide
 
 Measured on `945d755`, against a stage2 built from that checkout
 (`_build/selfhost/generations/bytes-capacity-2026-09-15_945d755/stage2.wasm`,
@@ -78,22 +78,23 @@ except one capability, once per capability, and reports what happened.
 |---|---|
 | a strict host (a plain import object) | **refuses to instantiate** — `LinkError: ... module="vibe" function="env-get": function import requires a callable` |
 | `runtime/viberun` (wasmtime `Linker`) | **refuses to instantiate** — unknown import, before user code runs |
-| `scripts/wasm_vibe_host_runner.js` | **instantiates, and the call answers `0`** |
+| `scripts/wasm_vibe_host_runner.js` | **instantiates; a call throws**, naming the import |
 
-All 18 capabilities, both shapes, same answer each: `refused` / `silent`.
+All 18 capabilities, both shapes, same answer each. The node runner's row is
+pinned by `scripts/wasm_vibe_host_runner_unknown_import.test.cjs`.
 
 viberun's own source states its half in two places, so this is not a surprise
 there — "Without this import a program using `Env::args_len` fails to
 instantiate with an unknown import before user code runs".
 
-The node runner's half was not stated anywhere. Its `vibe` import module is a
-`Proxy` whose `get` handler ends `return () => 0n;`, so **a capability the
-runner does not implement is not absent — it is present and answers zero**.
-That fallthrough is still the last line of the `get` trap in `main()`
-(`scripts/wasm_vibe_host_runner.js`); a withheld name (§2) and the async
-imports #2928 refuses are answered before it.
+The node runner's `vibe` import module is a `Proxy` whose `get` handler ends
+in a stub that throws on call, naming the import and the lane that serves it
+(`unimplementedImportStub` in `scripts/wasm_vibe_host_runtime.js`). A
+withheld name (§2) and the async imports #2928 refuses are answered before it
+with their own messages. The module still instantiates, so a name it links but
+never calls costs nothing.
 
-### Why that was not a live wrong answer
+### Which modules reach the fallback
 
 `docs/generated/host-runtime-contract.json` partitions every emitted import
 field into bands, and `scripts/check_host_runtime_contract.py` enforces them
@@ -108,28 +109,22 @@ static fields and 5 name patterns:
 | `viberunDebugOnly` | 2 | viberun only (`dbg_break`, `dbg_line`) |
 | `componentAdapterOnly` | 16 + 5 patterns | the component adapter; the gate REJECTS these leaking into either standalone runner |
 
-So the fallback is not silently answering a capability some in-contract module
-asked for — every `portableCore` name is implemented on both sides, and the
-gate proves it. The fallback is what lets an out-of-band module (one carrying
-`componentAdapterOnly` imports, say) instantiate under the node runner anyway,
-answering `0`, where viberun refuses.
+So no in-contract module reaches the fallback: every `portableCore` name is
+implemented on both sides, and the gate proves it. The fallback is what lets an
+out-of-band module (one carrying `componentAdapterOnly` imports, say)
+instantiate under the node runner, where viberun refuses, and a call to such an
+import throws.
 
-What the measurement actually established is narrower and more useful:
+> **"Linkable, but not callable" is the answer an optional capability needs.**
+> viberun alone cannot give it: an import it does not register makes the whole
+> module fail to instantiate. `VIBE_HOST_WITHHOLD` (see *What of this has
+> landed*) gives both runners that answer for a withheld capability, and the
+> node runner's fallback gives the same shape, a trap on call, for an import it
+> does not implement.
 
-> **Neither host could express "linkable, but not callable".** The node runner
-> could not refuse — deleting a method from `vibeModule` does not withhold the
-> capability, it makes the capability answer `0`. viberun could not do anything
-> *but* refuse — an import it does not register makes the whole module fail to
-> instantiate. `VIBE_HOST_WITHHOLD` (see *What of this has landed*) gave both
-> runners that third answer.
-
-That is precisely the shape an optional capability needs. #2825 §4 predicted
-the blocker as "the module stops instantiating"; that is viberun's half. The
-node runner's half is the opposite and worse — it would keep going and hand the
-program a zero — and it is invisible from either runner's source, because
-nothing in the contract has ever needed to distinguish a capability a host
-*withholds* from one it does not implement. Until `perform?` is a branch,
-nothing but the withholding gate ever withholds.
+#2825 §4 predicted the blocker as "the module stops instantiating"; that is
+viberun's half. Until `perform?` is a branch, nothing but the withholding gate
+ever withholds.
 
 ## The contract
 
@@ -364,15 +359,3 @@ run`'s preflight (#2828 rung 1) implements the refusal.
    emits rows and had none to emit" from "this compiler predates rows"; if a
    future grade needs that distinction, the `version=1` line is where it goes.
    Decided when the section is first emitted (#2825).
-2. **Whether the node runner's `() => 0n` fallback should survive at all.**
-   It is still the last answer of the `vibe` Proxy's `get` trap in `main()`
-   (`scripts/wasm_vibe_host_runner.js`), for every field the runner neither
-   implements nor was told to withhold. Two narrower answers have landed in
-   front of it: a name in `VIBE_HOST_WITHHOLD` gets the trapping stub (§2),
-   and #2928 refuses, on call, the async host imports it lists
-   (`isUnimplementedAsyncImport` in `scripts/wasm_vibe_host_runtime.js`;
-   [async-host-contract.md](async-host-contract.md) names the
-   `componentAdapterOnly` imports that list does not cover). Replacing the
-   fallthrough itself with a throw is a one-line change with a blast radius
-   nobody has measured. It is independent of the lowering, and no open issue
-   owns it.

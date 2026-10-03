@@ -86,31 +86,22 @@ composed component by the adapter the composer emits
 (`comp_generate_hostfuture_adapter_core_module` and its siblings in
 `lib/@vibe/compiler/entry/source_compile/wasi_only/component_codegen_*.vibe`).
 
-This paragraph used to end "A core module importing them and run through either
-runner fails at instantiation, not at the call", verified by ABSENCE from each
-runner's member list. That was the wrong thing to verify, and the claim was
-false for one of the two runners. `wasm_vibe_host_runner.js` builds its `vibe`
-import object as a Proxy whose fallthrough answers an unknown field with
-`() => 0n`, so absence from the member list does not refuse the import — it
-supplies a function that returns zero. Measured before #2928, a core module
-importing `vibe.host_stream_get$body` and `vibe.host_stream_read` instantiated,
-ran, printed `sum=0` and exited 0; the loop shapes that test for the `-1` EOS
-sentinel instead trapped with a bare `RuntimeError: unreachable`.
-
-Since #2928 the node runner refuses some of these names on CALL, with a
-message naming the import and the viberun lane that implements it
-(`isUnimplementedAsyncImport` / `unimplementedAsyncImportStub` in
-`scripts/wasm_vibe_host_runtime.js`). Not on instantiation: a program that
-links one and never reaches it does not need the capability. The refusal list
-is `host_future_get`, `host_future_wait`, `host_stream_read`,
-`host_stream_close` and the `host_future_get$` / `wit_future_get$` /
-`host_stream_get$` prefixes. **The rest of the band still falls through to
-`() => 0n`**: the `stdin_provider_*` trio, the #1537 arm / wait-any / cancel
-imports, `host_arg_push`, `host_stream_claim`, and the `wit_response_get$` /
-`wit_response_arg_get$` prefixes. Most of them are imported only beside a
-refused name, so a program reaches a refusal first. The `stdin_provider_*`
-imports are not: read from the code (not measured), a core module importing
-them would get `0` from the node runner. No gate asks that question yet.
+A core module importing these names still instantiates under the node runner:
+`wasm_vibe_host_runner.js` builds its `vibe` import object as a Proxy, so
+absence from the runner's member list does not refuse an import. The refusal is
+on CALL, with a message naming the import and the viberun lane that implements
+it (`isUnimplementedAsyncImport` / `unimplementedAsyncImportStub` in
+`scripts/wasm_vibe_host_runtime.js`). Not on instantiation: a program that links
+one and never reaches it does not need the capability. The async refusal list is
+`host_future_get`, `host_future_wait`, `host_stream_read`, `host_stream_close`
+and the `host_future_get$` / `wit_future_get$` / `host_stream_get$` prefixes.
+Every other name the runner does not implement is refused on call the same way
+(`unimplementedImportStub`): the `stdin_provider_*` trio, the #1537 arm /
+wait-any / cancel imports, `host_arg_push`, `host_stream_claim`, and the
+`wit_response_get$` / `wit_response_arg_get$` prefixes. No unimplemented import
+answers a value. `scripts/wasm_vibe_host_runner_unknown_import.test.cjs` pins
+it, with a red row that replaces the stub with a zero-returning function and
+watches the call exit 0.
 
 `runtime/viberun`'s core lane is the one that fails at instantiation, and that
 is measured rather than inherited from the design — the same module, the same
@@ -656,10 +647,6 @@ and `sleep-for` against redefinition.
   quietly answering differently.
 - The `stdin_read_char` "async by the host" description, which no host
   implements that way.
-- The node runner's `() => 0n` fallthrough for the adapter-only names #2928's
-  refusal list does not cover (see *componentAdapterOnly*). The list is a
-  hand-kept subset of the manifest band, so a name added to the band is not
-  refused unless someone also adds it there.
 - What an abandoned future or stream does to the HOST side beyond the canon
   cancel: wasmtime drops the producer's future, and a second runtime could do
   otherwise without any conformance row here noticing.

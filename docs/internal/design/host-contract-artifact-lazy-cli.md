@@ -779,11 +779,10 @@ fields are `portableCore`. What remains is the class of bug #2758 described:
 "the two runners agreeing is a property nothing currently checks". §5 adds
 that check.
 
-The node runner's `() => 0n` fallback for an unimplemented `vibe.*` import
-(capability-host-contract.md, open item 3) is replaced by the throw its
-withhold path already has. Under §2.4 every field the module declares is
-either provided, stubbed to trap, or refused before instantiation; a silent
-zero has no remaining case to serve.
+The node runner's fallback for an unimplemented `vibe.*` import throws on call,
+as its withhold path does. Under §2.4 every field the
+module declares is either provided, stubbed to trap, or refused before
+instantiation; a silent zero has no remaining case to serve.
 
 ## 5. The conformance gate, and how it is proved to bite
 

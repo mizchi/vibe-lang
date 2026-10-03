@@ -62,6 +62,7 @@ const {
   tcpWorkerCall,
   tryDecodeExceptionString,
   unimplementedAsyncImportStub,
+  unimplementedImportStub,
   usage,
   withheldCapabilities,
   writeProfileRequest,
@@ -911,7 +912,7 @@ async function main() {
         if (withheldCapabilities.has(name)) {
           return capabilityWithheldStub(name);
         }
-        if (key in target) {
+        if (Object.hasOwn(target, key)) {
           const fn = target[key];
           if (!host.policyRawFsConfig || typeof fn !== "function") return fn;
           return (...args) => {
@@ -925,7 +926,7 @@ async function main() {
         if (isUnimplementedAsyncImport(name)) {
           return unimplementedAsyncImportStub(name);
         }
-        return () => 0n;
+        return unimplementedImportStub(name);
       },
     },
   );

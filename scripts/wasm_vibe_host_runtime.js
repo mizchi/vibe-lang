@@ -1469,6 +1469,56 @@ function unimplementedAsyncImportStub(name) {
   };
 }
 
+// Every other `vibe.*` name this runner does not implement (the
+// `stdin_provider_*` trio, the #1537 arm / wait-any / cancel band,
+// `host_arg_push`, `wit_response*`). Answering such a call with 0 would read as
+// real data (#3278), so it fails on call, naming the import; instantiation still succeeds, so a module
+// that imports such a name but never calls it keeps running.
+//
+// The hint names the lane that does serve the import, read from the host
+// contract's bands (docs/generated/host-runtime-contract.json, enforced by
+// scripts/check_host_runtime_contract.py): the component adapter, viberun's
+// core runner for the debug band, or none for a name no lane declares.
+let hostRuntimeContractBands = null;
+
+function hostRuntimeContractBand(name) {
+  if (hostRuntimeContractBands === null) {
+    try {
+      const contract = JSON.parse(
+        fs.readFileSync(path.join(__dirname, "..", "docs", "generated", "host-runtime-contract.json"), "utf8"),
+      );
+      hostRuntimeContractBands = {
+        adapter: new Set(contract.componentAdapterOnly || []),
+        adapterPrefixes: (contract.componentAdapterPatterns || []).map((p) => p.prefix),
+        debug: new Set(contract.viberunDebugOnly || []),
+      };
+    } catch (_) {
+      hostRuntimeContractBands = { adapter: new Set(), adapterPrefixes: [], debug: new Set() };
+    }
+  }
+  const bands = hostRuntimeContractBands;
+  if (bands.adapter.has(name) || bands.adapterPrefixes.some((prefix) => name.startsWith(prefix))) {
+    return "adapter";
+  }
+  if (bands.debug.has(name)) return "debug";
+  return "unknown";
+}
+
+function unimplementedImportStub(name) {
+  const band = hostRuntimeContractBand(name);
+  const hint =
+    band === "adapter"
+      ? `It is served by the component adapter; build a component and run it there, or drop the call.`
+      : band === "debug"
+        ? `It is a debug import served by viberun's core runner; run the program with viberun, or build without debug hooks.`
+        : `No host lane declares it, so check the import name, or drop the call.`;
+  return () => {
+    throw new Error(
+      `vibe.${name} is not implemented by this runner, so the call has no answer. ${hint}`,
+    );
+  };
+}
+
 function capabilityWithheldStub(name) {
   return () => {
     throw new Error(`vibe capability withheld: ${name}`);
@@ -2631,6 +2681,7 @@ function writeProfileRequest(req, elapsedUs) {
     tcpWorkerCall,
     tryDecodeExceptionString,
     unimplementedAsyncImportStub,
+    unimplementedImportStub,
     usage,
     withheldCapabilities,
     writeProfileRequest,
