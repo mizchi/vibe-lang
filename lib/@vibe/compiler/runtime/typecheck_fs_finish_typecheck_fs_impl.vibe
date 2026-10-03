@@ -621,15 +621,37 @@ fn diag_line_is_continuation(line: String) -> Bool {
   }
 }
 
-/// An assignment node stores the target spelling but no offset. Recover its
-/// exact token from the source only when there is one matching assignment;
-/// ambiguity stays unlocated instead of pointing at an unrelated occurrence.
+/// #3248: locate an unknown assignment target at its OWN token.
+///
+/// The checker appends ` [@assign-target=N]`, where `N` is the start byte of
+/// the target token the parser keeps on `EAssign` / `EAssignOp`. The token's
+/// extent is read back from the lexer, so `r#name` stays whole, and it must
+/// still spell the name the message reports. A synthesized assignment has no
+/// token: it carries the bare ` [@assign-target]` and is left unlocated.
+///
+/// Nothing is recovered by searching the text. Before the parser kept the
+/// offset (#3244), the token was found by scanning for the one assignment
+/// spelling the name -- so two functions assigning the same unknown name were
+/// both left at a synthetic `0:0`, and a source-order guess could have named
+/// another assignment after desugaring.
 fn locate_assignment_target(source: String, msg: String, marker_at: Int) -> String {
-  let marker = " [@assign-target]"
-  let stripped = String::concat(String::substring(msg, 0, marker_at), String::substring(msg, marker_at + String::length(marker), String::length(msg)))
+  let marker = " [@assign-target"
+  let body_start = marker_at + String::length(marker)
+  let rel_close = String::index_of(String::substring(msg, body_start, String::length(msg)), "]")
+  if rel_close < 0 {
+    return String::substring(msg, 0, marker_at)
+  }
+  let close = body_start + rel_close
+  let body = String::substring(msg, body_start, close)
+  let stripped = String::concat(String::substring(msg, 0, marker_at), String::substring(msg, close + 1, String::length(msg)))
+  let off = if String::starts_with(body, "=") {
+    parse_offset_digits(body, 1, String::length(body))
+  } else {
+    0 - 1
+  }
   let name_marker = "unknown name: "
   let start = String::index_of(stripped, name_marker)
-  if start < 0 {
+  if off < 0 || start < 0 {
     return stripped
   }
   let name_start = start + String::length(name_marker)
@@ -639,62 +661,24 @@ fn locate_assignment_target(source: String, msg: String, marker_at: Int) -> Stri
   }
   let name = String::substring(stripped, name_start, name_end)
   let (tokens, starts, ends, _, _) = lex_with_offsets_recovering(source)
-  let mut found = -1
-  let mut found_end = -1
-  let mut matches = 0
-  let mut i = 0
-  while i + 1 < Array::length(tokens) {
-    let is_target = match Array::get(tokens, i) {
-      TIdent(n) => n == name,
+  let at = lit_token_index_at(tokens, starts, off)
+  let named = if at < 0 {
+    false
+  } else {
+    match Array::get(tokens, at) {
+      TIdent(spelled) => spelled == name,
       _ => false
     }
-    let is_assignment = match Array::get(tokens, i + 1) {
-      TEq => true,
-      TPlusEq => true,
-      TMinusEq => true,
-      TStarEq => true,
-      TSlashEq => true,
-      TPercentEq => true,
-      _ => false
-    }
-    let is_declaration = if i == 0 {
-      false
-    } else {
-      match Array::get(tokens, i - 1) {
-        TLet => true,
-        TMut => true,
-        TRec => true,
-        TDot => true,
-        _ => false
-      }
-    }
-    // A labeled call argument also spells `name = value`, but cannot be an
-    // assignment expression. Its preceding token is `(` or `,`.
-    let is_call_label = if i == 0 {
-      false
-    } else {
-      match Array::get(tokens, i - 1) {
-        TLParen => true,
-        TComma => true,
-        _ => false
-      }
-    }
-    if is_target && is_assignment && !is_declaration && !is_call_label {
-      found = Array::get(starts, i)
-      found_end = Array::get(ends, i)
-      matches = matches + 1
-    }
-    i = i + 1
   }
-  if matches == 1 {
-    String::concat(offset_line_col_range_prefix(source, found, found_end), stripped)
+  if named {
+    String::concat(offset_line_col_range_prefix(source, Array::get(starts, at), Array::get(ends, at)), stripped)
   } else {
     stripped
   }
 }
 
 export fn locate_type_error(source: String, msg: String) -> String {
-  let assign_at = String::index_of(msg, " [@assign-target]")
+  let assign_at = String::index_of(msg, " [@assign-target")
   if assign_at >= 0 {
     return locate_assignment_target(source, msg, assign_at)
   }

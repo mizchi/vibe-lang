@@ -270,3 +270,19 @@ end in exactly that path, and the outermost is matched to its closer. Any
 other shape keeps the element itself, a position inside the argument. An
 argument literal with no such element — `f([1, 2])` — still anchors the
 callee.
+
+### Assignment targets (#3248)
+
+`EAssign` and `EAssignOp` keep the byte offset of their TARGET token, so an
+unknown assignment target is located at the token the reader has to edit,
+each occurrence at its own:
+
+| source | before | now |
+| --- | --- | --- |
+| `missing = 1` in one function, `r#missing += 2` in another | one diagnostic: `--single-file` unlocated (`0:0`, `synthetic: true`), the FS lane at a first-occurrence guess (`2:3`, a point, with the path inside the message) | two, on both lanes: `2:3-10` and `6:3-12` |
+
+The locator reads the token's extent back from the lexer, so a raw `r#name`
+target is covered whole, and it requires that token to spell the name the
+diagnostic reports. Nothing is recovered by searching the text for a matching
+assignment: an assignment the compiler synthesized has no token and stays
+unlocated.

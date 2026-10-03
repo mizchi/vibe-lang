@@ -94,8 +94,8 @@ fn edp_body_may_perform(body: Expr, ename: String, perf_fns: Array[String], iner
       ELetMut(_, v, b, _) => edp_body_may_perform(v, ename, perf_fns, inert, fn_names) || edp_body_may_perform(b, ename, perf_fns, inert, fn_names),
       ELetRec(_, v, b) => edp_body_may_perform(v, ename, perf_fns, inert, fn_names) || edp_body_may_perform(b, ename, perf_fns, inert, fn_names),
       ESeq(a, b) => edp_body_may_perform(a, ename, perf_fns, inert, fn_names) || edp_body_may_perform(b, ename, perf_fns, inert, fn_names),
-      EAssign(_, v, c) => edp_body_may_perform(v, ename, perf_fns, inert, fn_names) || edp_body_may_perform(c, ename, perf_fns, inert, fn_names),
-      EAssignOp(_, _, v, c) => edp_body_may_perform(v, ename, perf_fns, inert, fn_names) || edp_body_may_perform(c, ename, perf_fns, inert, fn_names),
+      EAssign(_, v, c, _) => edp_body_may_perform(v, ename, perf_fns, inert, fn_names) || edp_body_may_perform(c, ename, perf_fns, inert, fn_names),
+      EAssignOp(_, _, v, c, _) => edp_body_may_perform(v, ename, perf_fns, inert, fn_names) || edp_body_may_perform(c, ename, perf_fns, inert, fn_names),
       EReturn(e2) => edp_body_may_perform(e2, ename, perf_fns, inert, fn_names),
       EDot(o, _, _, _) => edp_body_may_perform(o, ename, perf_fns, inert, fn_names),
       EBinOp(_, l, r, _) => edp_body_may_perform(l, ename, perf_fns, inert, fn_names) || edp_body_may_perform(r, ename, perf_fns, inert, fn_names),
@@ -270,8 +270,8 @@ fn edp_erase_effect_handles_expr(expr: Expr, ename: String, analyze: Bool, perf_
     ELetMut(n, v, b, off) => ELetMut(n, edp_erase_effect_handles_expr(v, ename, analyze, perf_fns, inert, fn_names), edp_erase_effect_handles_expr(b, ename, analyze, perf_fns, inert, fn_names), off),
     ELetRec(n, v, b) => ELetRec(n, edp_erase_effect_handles_expr(v, ename, analyze, perf_fns, inert, fn_names), edp_erase_effect_handles_expr(b, ename, analyze, perf_fns, inert, fn_names)),
     ESeq(a, b) => ESeq(edp_erase_effect_handles_expr(a, ename, analyze, perf_fns, inert, fn_names), edp_erase_effect_handles_expr(b, ename, analyze, perf_fns, inert, fn_names)),
-    EAssign(n, v, c) => EAssign(n, edp_erase_effect_handles_expr(v, ename, analyze, perf_fns, inert, fn_names), edp_erase_effect_handles_expr(c, ename, analyze, perf_fns, inert, fn_names)),
-    EAssignOp(n, op, v, c) => EAssignOp(n, op, edp_erase_effect_handles_expr(v, ename, analyze, perf_fns, inert, fn_names), edp_erase_effect_handles_expr(c, ename, analyze, perf_fns, inert, fn_names)),
+    EAssign(n, v, c, target_off) => EAssign(n, edp_erase_effect_handles_expr(v, ename, analyze, perf_fns, inert, fn_names), edp_erase_effect_handles_expr(c, ename, analyze, perf_fns, inert, fn_names), target_off),
+    EAssignOp(n, op, v, c, target_off) => EAssignOp(n, op, edp_erase_effect_handles_expr(v, ename, analyze, perf_fns, inert, fn_names), edp_erase_effect_handles_expr(c, ename, analyze, perf_fns, inert, fn_names), target_off),
     EReturn(e2) => EReturn(edp_erase_effect_handles_expr(e2, ename, analyze, perf_fns, inert, fn_names)),
     EDot(o, f, off1, off2) => EDot(edp_erase_effect_handles_expr(o, ename, analyze, perf_fns, inert, fn_names), f, off1, off2),
     ECall(callee, args, off, callee_resolution) => ECall(edp_erase_effect_handles_expr(callee, ename, analyze, perf_fns, inert, fn_names), edp_erase_effect_handles_exprs(args, ename, analyze, perf_fns, inert, fn_names), off, callee_resolution),
@@ -522,12 +522,12 @@ fn edp_collect_prefixed_expr(expr: Expr, prefix: String, out: Array[String]) -> 
       edp_collect_prefixed_expr(a, prefix, out)
       edp_collect_prefixed_expr(b, prefix, out)
     },
-    EAssign(n, v, c) => {
+    EAssign(n, v, c, _) => {
       edp_prefix_push(n, prefix, out)
       edp_collect_prefixed_expr(v, prefix, out)
       edp_collect_prefixed_expr(c, prefix, out)
     },
-    EAssignOp(n, _, v, c) => {
+    EAssignOp(n, _, v, c, _) => {
       edp_prefix_push(n, prefix, out)
       edp_collect_prefixed_expr(v, prefix, out)
       edp_collect_prefixed_expr(c, prefix, out)
@@ -737,8 +737,8 @@ export fn edp_ar_expr(expr: Expr, seed: Array[String], env_names: Array[String],
       ELetRec(n2, v2, b2)
     },
     ESeq(a, b) => ESeq(edp_ar_expr(a, seed, env_names, env_repl, counter, taken), edp_ar_expr(b, seed, env_names, env_repl, counter, taken)),
-    EAssign(n, v, c) => EAssign(edp_ar_lookup(env_names, env_repl, n), edp_ar_expr(v, seed, env_names, env_repl, counter, taken), edp_ar_expr(c, seed, env_names, env_repl, counter, taken)),
-    EAssignOp(n, op, v, c) => EAssignOp(edp_ar_lookup(env_names, env_repl, n), op, edp_ar_expr(v, seed, env_names, env_repl, counter, taken), edp_ar_expr(c, seed, env_names, env_repl, counter, taken)),
+    EAssign(n, v, c, target_off) => EAssign(edp_ar_lookup(env_names, env_repl, n), edp_ar_expr(v, seed, env_names, env_repl, counter, taken), edp_ar_expr(c, seed, env_names, env_repl, counter, taken), target_off),
+    EAssignOp(n, op, v, c, target_off) => EAssignOp(edp_ar_lookup(env_names, env_repl, n), op, edp_ar_expr(v, seed, env_names, env_repl, counter, taken), edp_ar_expr(c, seed, env_names, env_repl, counter, taken), target_off),
     EReturn(e2) => EReturn(edp_ar_expr(e2, seed, env_names, env_repl, counter, taken)),
     EDot(o, f, off1, off2) => EDot(edp_ar_expr(o, seed, env_names, env_repl, counter, taken), f, off1, off2),
     ECall(callee, args, off, callee_resolution) => ECall(edp_ar_expr(callee, seed, env_names, env_repl, counter, taken), edp_ar_exprs(args, seed, env_names, env_repl, counter, taken), off, callee_resolution),
@@ -1224,11 +1224,11 @@ export fn edp_collect_handle_sites_expr(expr: Expr, ename: String, out: Array[(E
       edp_collect_handle_sites_expr(r, ename, out)
     },
     EUnaryOp(_, e2) => edp_collect_handle_sites_expr(e2, ename, out),
-    EAssign(_, v, c) => {
+    EAssign(_, v, c, _) => {
       edp_collect_handle_sites_expr(v, ename, out)
       edp_collect_handle_sites_expr(c, ename, out)
     },
-    EAssignOp(_, _, v, c) => {
+    EAssignOp(_, _, v, c, _) => {
       edp_collect_handle_sites_expr(v, ename, out)
       edp_collect_handle_sites_expr(c, ename, out)
     },
@@ -1623,11 +1623,11 @@ fn edp_collect_poison_expr(e: Expr, ename: String, needing: Array[String], es_na
       edp_collect_poison_expr(r, ename, needing, es_names, es_members_list, poison)
     },
     EUnaryOp(_, x) => edp_collect_poison_expr(x, ename, needing, es_names, es_members_list, poison),
-    EAssign(_, v, c) => {
+    EAssign(_, v, c, _) => {
       edp_collect_poison_expr(v, ename, needing, es_names, es_members_list, poison)
       edp_collect_poison_expr(c, ename, needing, es_names, es_members_list, poison)
     },
-    EAssignOp(_, _, v, c) => {
+    EAssignOp(_, _, v, c, _) => {
       edp_collect_poison_expr(v, ename, needing, es_names, es_members_list, poison)
       edp_collect_poison_expr(c, ename, needing, es_names, es_members_list, poison)
     },
@@ -1791,11 +1791,11 @@ fn edp_row_lit_scan_expr(e: Expr, ename: String, needing: Array[String], es_name
       edp_row_lit_scan_expr(r, ename, needing, es_names, es_members_list, binds, lits)
     },
     EUnaryOp(_, x) => edp_row_lit_scan_expr(x, ename, needing, es_names, es_members_list, binds, lits),
-    EAssign(_, v, c) => {
+    EAssign(_, v, c, _) => {
       edp_row_lit_scan_expr(v, ename, needing, es_names, es_members_list, binds, lits)
       edp_row_lit_scan_expr(c, ename, needing, es_names, es_members_list, binds, lits)
     },
-    EAssignOp(_, _, v, c) => {
+    EAssignOp(_, _, v, c, _) => {
       edp_row_lit_scan_expr(v, ename, needing, es_names, es_members_list, binds, lits)
       edp_row_lit_scan_expr(c, ename, needing, es_names, es_members_list, binds, lits)
     },
