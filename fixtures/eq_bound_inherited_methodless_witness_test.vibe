@@ -1,0 +1,50 @@
+//# A METHODLESS subtrait of the builtin `Eq` dispatches through its witness (#3312).
+//
+// The sibling `eq_bound_inherited_builtin_witness_test.vibe` gives `Key` a
+// method of its own. Here `Key` declares none, so the only method its witness
+// dictionary can hold is the `equals` it inherits from the builtin `Eq`.
+//
+// The lowering collects its table of method-bearing traits BEFORE it injects
+// the builtin `Eq` signature (#2523). At that point `trait Key: Eq {}`
+// flattened to no methods and was dropped, and appending `Eq` afterwards did
+// not bring it back. `[T: Key]` then threaded no witness, and `x == y`
+// compared raw values: `same(1.5, 1.5)` and two equal `derive (Eq)` structs
+// answered `false` after a clean `vibe check`. The injection now re-admits
+// every trait that inherits a method from the injected parent.
+//
+// Keep `Key` methodless and `[T: Key]` the only bound in this file. A `Key`
+// with a method of its own is the sibling's shape, which already answered
+// `true` before this was fixed.
+
+trait Key: Eq {
+}
+
+struct Pt {
+  v: Int
+} derive (Eq)
+
+impl Key for Double {
+}
+
+impl Key for Pt {
+}
+
+fn same[T: Key](x: T, y: T) -> Bool {
+  x == y
+}
+
+fn differ[T: Key](x: T, y: T) -> Bool {
+  x != y
+}
+
+test "a methodless subtrait of the builtin Eq compares Doubles by value" {
+  inspect(same(1.5, 1.5), "true")
+  inspect(same(1.5, 2.5), "false")
+  inspect(differ(1.5, 1.5), "false")
+}
+
+test "a methodless subtrait of the builtin Eq compares a derived struct by content" {
+  inspect(same(Pt::{ v: 1 }, Pt::{ v: 1 }), "true")
+  inspect(same(Pt::{ v: 1 }, Pt::{ v: 2 }), "false")
+  inspect(differ(Pt::{ v: 1 }, Pt::{ v: 1 }), "false")
+}
