@@ -24,7 +24,7 @@ import @vibe/core {
 }
 
 import @vibe/compiler/codegen/common_analysis {
-  collect_free_vars, collect_strings_stmts, emit_closure_call_tail, emit_closure_resolve, emit_i64_extend_i32_u, mut_needs_ref_cell
+  collect_strings_stmts, emit_closure_call_tail, emit_closure_resolve, emit_i64_extend_i32_u, mut_needs_ref_cell
 }
 
 import @vibe/compiler/codegen/common_base {
@@ -215,6 +215,10 @@ import ./backend_lambda_body.vibe {
   compile_lambda_gc
 }
 
+import ./backend_lambda_collect.vibe {
+  collect_lambda_captures_gc
+}
+
 import ./backend_typed_local_scan.vibe {
   gc_direct_abi_name_slot, gc_sibling_scope_start
 }
@@ -278,20 +282,6 @@ fn gc_expr_is_intish(e: Expr) -> Bool {
     // keeps `!` alone -- `~x` is an Int, not a Bool.
     EUnaryOp(op, _) => op == "!" || op == "~",
     _ => false
-  }
-}
-
-fn gbe_strip_param_label_marker(n: String) -> String {
-  let ln = String::length(n)
-  if ln > 0 {
-    let c = String::char_code_at(n, ln - 1)
-    if c == '~' || c == '?' {
-      n[0: ln - 1]
-    } else {
-      n
-    }
-  } else {
-    n
   }
 }
 
@@ -1686,62 +1676,68 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
     },
     ELetRec(name, value, body) => {
       let local_idx = next_local
+      let name_slot = Array::length(local_names)
       Array::push(local_names, name)
-      let nl = ce(buf, value, local_names, next_local + 1, ld)
-      emit_local_set(buf, local_idx)
-      match value {
+      // The closure's env slot for its own name is patched after the closure
+      // exists, so the slot index must come from the SAME capture list
+      // `compile_lambda_gc` builds for this lambda: same function, same
+      // enclosing names, asked before the value compiles so `local_names` is
+      // exactly what the lambda sees. A recomputation that disagrees names
+      // the wrong slot -- the self-closure is stored outside its environment
+      // and the call traps or runs something else. Two disagreements were
+      // measured: a labeled parameter (`n~`) left unstripped (#2422 review),
+      // and a self name that is also a top-level function, which the lambda
+      // captures (its `let rec` shadows the function, #3338) while a scan
+      // that ignored the enclosing names did not.
+      let self_cap_idx = match value {
         EFn(_, _, params, _, _, fn_body) => {
-          let param_names_bp = array_empty()
-          let mut bpi = 0
-          while bpi < Array::length(params) {
-            let (pn, _) = Array::get(params, bpi)
-            // The parser keeps the label marker ON THE NAME (`n~`), while the
-            // body says `n`. Pushing the raw name leaves `n` unbound for
-            // `collect_free_vars`, so it becomes a bogus capture, every later
-            // capture shifts, and `self_cap_idx` names the wrong slot -- the
-            // self-closure is then stored outside its environment and the call
-            // traps with "uninitialized element". Measured: a `let rec` lambda
-            // with a labeled parameter trapped on gc and ran on linear; the
-            // same lambda without the label was fine on both (#2422 review).
-            //
-            // This is the fourth binding site in the #2404 family. Defined
-            // beside its caller rather than imported: a brand-new cross-file
-            // export plus its first cross-file caller in one change does not
-            // survive the merge-flatten (the gotcha `edp_strip_tilde` records).
-            Array::push(param_names_bp, gbe_strip_param_label_marker(pn))
-            bpi = bpi + 1
-          }
-          let caps = collect_free_vars(fn_body, param_names_bp, Array::concat(ctx.func_table.names, ctx.gc_ctor_table.names))
-          let mut self_cap_idx = -1
+          let (caps, _, _) = collect_lambda_captures_gc(params, fn_body, ctx, local_names)
+          let mut found = -1
           let mut bci = 0
           while bci < Array::length(caps) {
             if Array::get(caps, bci) == name {
-              self_cap_idx = bci
+              found = bci
             }
             bci = bci + 1
           }
-          if self_cap_idx >= 0 {
-            emit_local_get(buf, local_idx)
-            emit_i64_const(buf, -4)
-            emit_i64_and(buf)
-            emit_i32_wrap_i64(buf)
-            emit_local_get(buf, local_idx)
-            emit_i64_store(buf, 3, 8 + self_cap_idx * 8)
-          }
-          0
+          found
         },
-        _ => 0
+        _ => -1
       }
-      ce(buf, body, local_names, nl, ld)
+      let nl = ce(buf, value, local_names, next_local + 1, ld)
+      emit_local_set(buf, local_idx)
+      if self_cap_idx >= 0 {
+        emit_local_get(buf, local_idx)
+        emit_i64_const(buf, -4)
+        emit_i64_and(buf)
+        emit_i32_wrap_i64(buf)
+        emit_local_get(buf, local_idx)
+        emit_i64_store(buf, 3, 8 + self_cap_idx * 8)
+      }
+      // #3338: the binder's scope ends with its body, as an ELet's does
+      // (#3225). A lambda captures every enclosing name that shadows a
+      // top-level function, so a name left behind here would hijack a later
+      // closure's `twice(..)`, as it already hijacked a later direct call.
+      let scoped_nl = ce(buf, body, local_names, nl, ld)
+      gc_restore_local_scope(local_names, ctx, name_slot, scoped_nl)
+      scoped_nl
     },
     ELetMut(name, value, body, _) => {
       let local_idx = next_local
+      let name_slot = Array::length(local_names)
       Array::push(local_names, name)
-      if mut_needs_ref_cell(body, name) {
+      // #3338: the ELet discipline -- the initializer cannot see the binder
+      // it initializes (#2160, the linear lane's #1120 masks `let mut` too),
+      // and the binder's scope ends with its body (#3225). Both matter more
+      // now that a lambda captures every enclosing name that shadows a
+      // top-level function: in `let mut twice = (x) -> twice(x)` the call is
+      // the top-level `twice`, and a `let mut` whose block has ended must not
+      // shadow it afterwards.
+      Array::set(local_names, name_slot, "")
+      let scoped_nl = if mut_needs_ref_cell(body, name) {
         if gc_expr_is_floatish(value, local_names, ctx) {
           Array::push(ctx.gc_float_locals, local_idx)
         }
-        Array::push(ctx.ref_cell_names, name)
         // Linear-memory cell: local = cell address (i64), value stored at +0.
         emit_global_get(buf, 0)
         emit_i64_extend_i32_u(buf)
@@ -1756,8 +1752,19 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
         let nl = ce(buf, value, local_names, next_local + 1, ld)
         emit_i64_store(buf, 3, 0)
         Array::push(ctx.ref_local_indices, local_idx)
-        let nl2 = ce(buf, body, local_names, nl, ld)
-        nl2
+        // `ref_cell_names` is keyed by NAME, so the mark covers exactly the
+        // binder's scope: set once the initializer has compiled (marking it
+        // first made a same-named outer binding the initializer reads, as in
+        // `let mut f = (x) -> f(x) + 1` over an earlier `let f`, load through
+        // as a cell) and dropped with the body (a later `let f` after the
+        // block was read through as a cell as well).
+        let cells_before = Array::length(ctx.ref_cell_names)
+        Array::push(ctx.ref_cell_names, name)
+        gc_restore_local_scope(local_names, ctx, name_slot + 1, nl)
+        Array::set(local_names, name_slot, name)
+        let cell_body_nl = ce(buf, body, local_names, nl, ld)
+        Array::truncate(ctx.ref_cell_names, cells_before)
+        cell_body_nl
       } else {
         if gc_expr_is_floatish(value, local_names, ctx) {
           // #1032: logged by SLOT (local_idx), not name -- see
@@ -1782,9 +1789,12 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
         }
         let nl = ce(buf, value, local_names, next_local + 1, ld)
         emit_local_set(buf, local_idx)
-        let nl2 = ce(buf, body, local_names, nl, ld)
-        nl2
+        gc_restore_local_scope(local_names, ctx, name_slot + 1, nl)
+        Array::set(local_names, name_slot, name)
+        ce(buf, body, local_names, nl, ld)
       }
+      gc_restore_local_scope(local_names, ctx, name_slot, scoped_nl)
+      scoped_nl
     },
     EAssign(name, value, body) => {
       let idx = resolve_local(local_names, name, "gc_var")
