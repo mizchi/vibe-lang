@@ -11,8 +11,16 @@ import @vibe/compiler/core {
   Expr, TypeExpr
 }
 
+import @vibe/ast {
+  impl_target_from_key
+}
+
 import @vibe/core {
   array_empty
+}
+
+import ./callable_names.vibe {
+  impl_target_fn_key
 }
 
 import ./equality_aliases.vibe {
@@ -371,29 +379,43 @@ fn function_arg_type(arg: Expr, var_types: Array[(String, String)], fn_returns: 
       None => if constructor_binding_is_masked(var_types, n) {
         None
       } else {
-        match fn_return_type(fn_returns, fn_eq_shape_key(n)) {
-          Some(sh) => {
-            let t = shape_to_eq_ty(sh)
-            if ty_contains_eq_unknown(t) {
-              None
-            } else {
-              Some(TyFn([], t, None))
-            }
-          },
-          None => match fn_return_type(fn_returns, n) {
-            // Only a scalar head is a complete type: a declared name here may
-            // be a generic head whose arguments `fn_returns` does not keep.
-            Some(head) => if is_scalar_type_name(head) {
-              Some(TyFn([], TyName(head), None))
-            } else {
-              None
+        // The declared return type, kept whole (`-> Pt`, `-> Option[Double]`)
+        // whenever it does not mention the function's own formals (Codex on
+        // #3302: a nominal result was refused although it says what `T` is).
+        match declared_return_type(n, fn_returns) {
+          Some(t) => Some(TyFn([], t, None)),
+          None => match fn_return_type(fn_returns, fn_eq_shape_key(n)) {
+            Some(sh) => {
+              let t = shape_to_eq_ty(sh)
+              if ty_contains_eq_unknown(t) {
+                None
+              } else {
+                Some(TyFn([], t, None))
+              }
             },
-            None => None
+            None => match fn_return_type(fn_returns, n) {
+              // Only a scalar head is a complete type: a declared name here
+              // may be a generic head whose arguments `fn_returns` does not
+              // keep.
+              Some(head) => if is_scalar_type_name(head) {
+                Some(TyFn([], TyName(head), None))
+              } else {
+                None
+              },
+              None => None
+            }
           }
         }
       }
     },
     _ => None
+  }
+}
+
+fn declared_return_type(n: String, fn_returns: Array[(String, String)]) -> Option[TypeExpr] {
+  match fn_return_type(fn_returns, impl_target_fn_key(n)) {
+    Some(key) => impl_target_from_key(key),
+    None => None
   }
 }
 
