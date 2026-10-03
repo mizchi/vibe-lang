@@ -15,7 +15,8 @@ vibe version
 バージョンを指定しないと、インストーラはソースから vibe をビルドします。
 そのため `git`・`cargo`・Node.js が必要で、数分かかります。公開済みの
 リリースなら `bash -s -- --version X.Y.Z` (または `latest`) でビルド済みの
-ファイルを取得でき、必要なのは `bash`・`curl`・`tar` だけです。両方とも
+ファイルを取得でき、必要なのは `bash`・`curl` (または `wget`)・`tar`・
+`sha256sum` (または `shasum`) だけです。両方とも
 [インストールガイド](../../docs/user/getting-started/install.md) にあります。
 
 このリポジトリのチェックアウトからなら `bash install/install.sh` で同じことが

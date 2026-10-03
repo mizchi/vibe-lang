@@ -15,8 +15,8 @@ vibe version
 Without a version, the installer builds vibe from source, so it needs
 `git`, `cargo` and Node.js on your machine and takes several minutes.
 With a published release, `bash -s -- --version X.Y.Z` (or `latest`)
-downloads prebuilt files instead and needs only `bash`, `curl` and
-`tar`; [the install guide](../../docs/user/getting-started/install.md)
+downloads prebuilt files instead and needs only `bash`, `curl` (or
+`wget`), `tar` and `sha256sum` (or `shasum`); [the install guide](../../docs/user/getting-started/install.md)
 has both.
 
 From a checkout of this repository, `bash install/install.sh` does the
