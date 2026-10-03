@@ -1227,8 +1227,15 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
             // shape (a plain function call, a bare identifier, ...) stays
             // untracked, falling through infer_arg_type_name to `None`,
             // which keeps the plain scalar `==`/`!=` codegen path.
-            let body_vars = extend_var_types(var_types, name, railway_bind_payload_type(val, struct_sets, var_types, fn_returns))
-            let rwrest = rewrite_expr(rest, gens, traits, struct_sets, dict_binds, body_vars, fn_returns)
+            // `name` is a local binding in `rest`, so it masks a function of
+            // the same spelling the way any other binder does: in the gens, so
+            // a threaded generic's dictionary is not handed to it, and in
+            // `var_types`, so a call through it is not typed by that
+            // function's declared result (Codex on #3299).
+            let body_vars = dtd_mask_shadowed_params(extend_var_types(var_types, name, railway_bind_payload_type(val, struct_sets, var_types, fn_returns)), [
+              (name, None)
+            ], fn_returns)
+            let rwrest = rewrite_expr(rest, gens_masked_by(gens, [name]), traits, struct_sets, dict_binds, body_vars, fn_returns)
             lower_try_bind(rwval, name, rwrest)
           },
           _ => EUnit
@@ -2250,10 +2257,11 @@ fn dtd_check_threaded_generic_value(name: String, gens: Array[DictGen], var_type
 }
 
 /// `gens` with every name in `names` that a gen binds masked by a gen that
-/// threads nothing, the way `gens_after_let` masks one for a `let`. A lambda
-/// or `loop` parameter, or a `for` binder, of a generic's spelling is a local
-/// value, not that generic: its calls take no dictionary, and naming it as a
-/// value is not a reference to the generic (Codex on #3299).
+/// threads nothing, the way `gens_after_let` masks one for a `let`. Every
+/// other binder of a generic's spelling -- a parameter of a lambda, a `loop`
+/// or a top-level function, a `for` binder, a pattern binder, a `let*` binder
+/// -- is a local value, not that generic: its calls take no dictionary, and
+/// naming it as a value is not a reference to the generic (Codex on #3299).
 fn gens_masked_by(gens: Array[DictGen], names: Array[String]) -> Array[DictGen] {
   let mut out = gens
   for n in names {
@@ -2550,7 +2558,9 @@ export fn rewrite_stmt(stmt: Stmt, gens: Array[DictGen], traits: Array[(String, 
           // frame for it -- a `[T: Trait]` formal colliding with an imported
           // `struct T` still dispatched `T::equals` on erased operands.
           scope_formals_push(tparams, bounds, false)
-          let new_body = rewrite_expr(fbody, gens, traits, struct_sets, binds, seeded, fn_returns)
+          // A parameter of a threaded generic's spelling is a local value
+          // inside this body; a call through it takes no dictionary.
+          let new_body = rewrite_expr(fbody, gens_masked_by(gens, param_names(params)), traits, struct_sets, binds, seeded, fn_returns)
           scope_formals_pop()
           SLet(exp, isrec, fname, ann, EFn(tparams, bounds, new_params, ret, eff, new_body))
         },
@@ -2572,7 +2582,7 @@ export fn rewrite_stmt(stmt: Stmt, gens: Array[DictGen], traits: Array[(String, 
       None => match body {
         EFn(tparams, bounds, params, ret, eff, fbody) => {
           scope_formals_push(tparams, bounds, false)
-          let new_body = rewrite_expr(fbody, gens, traits, struct_sets, no_binds, dtd_mask_shadowed_params(seed_var_types(params, tparams, toplevel_vars), params, fn_returns), fn_returns)
+          let new_body = rewrite_expr(fbody, gens_masked_by(gens, param_names(params)), traits, struct_sets, no_binds, dtd_mask_shadowed_params(seed_var_types(params, tparams, toplevel_vars), params, fn_returns), fn_returns)
           scope_formals_pop()
           SLet(exp, isrec, fname, ann, EFn(tparams, bounds, params, ret, eff, new_body))
         },
