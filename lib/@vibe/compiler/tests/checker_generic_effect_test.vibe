@@ -188,3 +188,60 @@ test "an unannotated callback lambda is not pinned by the enclosing row" {
   let diags = collect_all_diagnostics(src)
   assert(eq(Array::length(diags), 0))
 }
+
+// #3275 follow-up (Codex on #3315): a kinded effect parameter (`F` of
+// `Read[F[_]]`) takes a bare constructor in the row. It was resolved as a
+// complete type, so `F[Int]` matched no payload: a correct `Array[Int]` under
+// `with Read[Array]` was refused (`expected Array[Int], got Array[Int]`), and a
+// `Cell[String]` under `with Read[Cell]` was accepted.
+
+test "a kinded row's constructor fixes the payload" {
+  let src = "effect Read[F[_]] {\n  Put(F[Int]) -> Int\n}\n\nfn producer() -> Int with Read[Array] {\n  perform Read::Put(Some(1))\n}\n"
+  let diags = collect_all_diagnostics(src)
+  assert(eq(Array::length(diags), 1))
+  assert(String::contains(Array::get(diags, 0), "perform argument type mismatch for Read::Put: expected Array[Int], got Option[Int]"))
+}
+
+test "a kinded row accepts a payload and a value of its constructor" {
+  let put_src = "effect Read[F[_]] {\n  Put(F[Int]) -> Int\n}\n\nfn producer() -> Int with Read[Array] {\n  perform Read::Put([1, 2])\n}\n"
+  assert(eq(Array::length(collect_all_diagnostics(put_src)), 0))
+  let option_src = "effect Read[F[_]] {\n  Put(F[Int]) -> Int\n}\n\nfn producer() -> Int with Read[Option] {\n  perform Read::Put(Some(1))\n}\n"
+  assert(eq(Array::length(collect_all_diagnostics(option_src)), 0))
+  let get_src = "effect Src[F[_]] {\n  Get() -> F[Int]\n}\n\nfn reader() -> Int with Src[Array] {\n  let xs: Array[Int] = perform Src::Get()\n  Array::length(xs)\n}\n"
+  assert(eq(Array::length(collect_all_diagnostics(get_src)), 0))
+}
+
+test "a kinded row passes a declared generic type as its constructor" {
+  let src = "effect Read[F[_]] {\n  Put(F[Int]) -> Int\n}\n\nstruct Cell[T] {\n  value: T\n}\n\nfn producer() -> Int with Read[Cell] {\n  perform Read::Put(Cell::{ value: \"s\" })\n}\n"
+  let diags = collect_all_diagnostics(src)
+  assert(eq(Array::length(diags), 1))
+  assert(String::contains(Array::get(diags, 0), "perform argument type mismatch for Read::Put: expected Cell[Int], got Cell[String]"))
+  let ok_src = "effect Read[F[_]] {\n  Put(F[Int]) -> Int\n}\n\nstruct Cell[T] {\n  value: T\n}\n\nfn producer() -> Int with Read[Cell] {\n  perform Read::Put(Cell::{ value: 1 })\n}\n"
+  assert(eq(Array::length(collect_all_diagnostics(ok_src)), 0))
+}
+
+test "a kinded row passes a parameterized alias as its constructor" {
+  let src = "effect Read[F[_]] {\n  Put(F[Int]) -> Int\n}\n\ntype List[T] = Array[T]\n\nfn producer() -> Int with Read[List] {\n  perform Read::Put(Some(1))\n}\n"
+  let diags = collect_all_diagnostics(src)
+  assert(eq(Array::length(diags), 1))
+  assert(String::contains(Array::get(diags, 0), "expected Array[Int], got Option[Int]"))
+  let ok_src = "effect Read[F[_]] {\n  Put(F[Int]) -> Int\n}\n\ntype List[T] = Array[T]\n\nfn producer() -> Int with Read[List] {\n  perform Read::Put([1])\n}\n"
+  assert(eq(Array::length(collect_all_diagnostics(ok_src)), 0))
+}
+
+test "a wrong-kinded row argument is reported and never bound" {
+  let int_src = "effect Read[F[_]] {\n  Put(F[Int]) -> Int\n}\n\nfn producer() -> Int with Read[Int] {\n  perform Read::Put([1])\n}\n"
+  let int_diags = collect_all_diagnostics(int_src)
+  assert(eq(Array::length(int_diags), 1))
+  assert(String::contains(Array::get(int_diags, 0), "expects a constructor"))
+  let map_src = "effect Read[F[_]] {\n  Put(F[Int]) -> Int\n}\n\nfn producer() -> Int with Read[Map] {\n  perform Read::Put([1])\n}\n"
+  let map_diags = collect_all_diagnostics(map_src)
+  assert(eq(Array::length(map_diags), 1))
+  assert(String::contains(Array::get(map_diags, 0), "but `Map` has 2"))
+}
+
+test "a kinded formal in the row is left to the formal" {
+  let src = "effect Read[F[_]] {\n  Put(F[Int]) -> Int\n}\n\nfn producer[G[_]](xs: G[Int]) -> Int with Read[G] {\n  perform Read::Put(xs)\n}\n"
+  let diags = collect_all_diagnostics(src)
+  assert(eq(Array::length(diags), 0))
+}

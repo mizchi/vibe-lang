@@ -42,8 +42,10 @@ import @vibe/compiler/core {
   find_typedef,
   fresh_var,
   instantiate,
+  is_alias_constructor,
   is_hkt_app,
   resolve_builtin,
+  resolve_type_constructor_args,
   subst_add_bound,
   subst_apply,
   subst_apply_except,
@@ -52,6 +54,7 @@ import @vibe/compiler/core {
   trait_defined,
   trait_method_sig_deep,
   type_constructor_name,
+  type_expr_name_is_shadowed,
   type_to_string,
   types_equal,
   unify
@@ -2199,9 +2202,10 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
 ///
 /// An explicit row also masks an instantiation inherited from an enclosing
 /// function or handle: a bare `with Box`, two different labels for the same
-/// effect, or an argument the type parser cannot read binds `CtUnit`, which
-/// `effect_inst_lookup` rejects, so those performs keep a fresh instantiation.
-/// A repeated identical label is the same instantiation.
+/// effect, an argument the type parser cannot read, or a kinded parameter's
+/// argument that is not a bare constructor of its kind (`row_constructor_arg`)
+/// binds `CtUnit`, which `effect_inst_lookup` rejects, so those performs keep a
+/// fresh instantiation. A repeated identical label is the same instantiation.
 ///
 /// The instantiation is also recorded under `effect_row_inst_key`, so an
 /// unannotated lambda can tell it came from an enclosing ROW rather than a
@@ -2248,10 +2252,23 @@ fn bind_row_effect_instantiations(env: TypeEnv, row: Option[String], defs: Array
             } else {
               None
             }
+            let param = Array::get(effect_tparams(defs, base), 0)
             let inst = match parsed {
-              Some(arg_te) => CtTuple([
-                resolve_tparams_in(resolve_type_expr_shadowed(arg_te, defs, formal_shadow(arg_te, env, tparams)), env)
-              ]),
+              Some(arg_te) => {
+                let shadow = formal_shadow(arg_te, env, tparams)
+                if type_param_arity(param) > 0 {
+                  // A kinded parameter (`F` of `Read[F[_]]`) takes a bare
+                  // constructor, not a complete type.
+                  match row_constructor_arg(param, arg_te, defs, shadow) {
+                    Some(ctor) => CtTuple([ctor]),
+                    None => CtUnit
+                  }
+                } else {
+                  CtTuple([
+                    resolve_tparams_in(resolve_type_expr_shadowed(arg_te, defs, shadow), env)
+                  ])
+                }
+              },
               None => CtUnit
             }
             out = env_bind(env_bind(out, effect_inst_env_key(base), inst), effect_row_inst_key(base), inst)
@@ -2267,6 +2284,99 @@ fn bind_row_effect_instantiations(env: TypeEnv, row: Option[String], defs: Array
 
 fn effect_row_inst_key(eff: String) -> String {
   String::concat("$einst_row$", eff)
+}
+
+/// #3275 follow-up (Codex on #3315): the constructor a row passes to a kinded
+/// effect parameter `param` (`with Read[Array]` for `effect Read[F[_]]`),
+/// reified the way a kinded type argument is everywhere else
+/// (`resolve_type_constructor_args`): `Array` and `Option` as `CtConstructor`,
+/// a declared generic type as its constructor, a parameterized alias as an
+/// alias constructor. Substituting it into the operation's `F[Int]` then gives
+/// `Array[Int]`. Resolving the bare name as a complete type instead gave a
+/// head with no arguments, so `F[Int]` became an application no payload
+/// matches: `perform Read::Put([1, 2])` under `with Read[Array]` was refused
+/// with `expected Array[Int], got Array[Int]`, and a `Cell[String]` payload
+/// under `with Read[Cell]` was accepted.
+///
+/// None -- the parameter stays fresh -- for anything else: an applied or
+/// complete type, a constructor whose arity is not the parameter's or that
+/// itself takes a constructor, an unknown name, and a formal in scope, whose
+/// kind this does not judge. A wrong-kinded argument is the row-item check's
+/// to report (`expects a constructor with N argument(s)`); it is never bound.
+fn row_constructor_arg(param: String, arg_te: TypeExpr, defs: Array[TypeDef], shadow: Array[String]) -> Option[Type] {
+  match arg_te {
+    TyName(name) => if type_expr_name_is_shadowed(shadow, name) {
+      None
+    } else {
+      let params: Array[String] = [param]
+      let source_args: Array[TypeExpr] = [arg_te]
+      let resolved = resolve_type_expr_shadowed(arg_te, defs, shadow)
+      let resolved_args: Array[Type] = [resolved]
+      let reified = Array::get(resolve_type_constructor_args(params, source_args, resolved_args, defs, shadow), 0)
+      let want = type_param_arity(param)
+      match reified {
+        CtConstructor(ctor, arity) => if arity == want && constructor_params_plain(defs, ctor) {
+          Some(reified)
+        } else {
+          None
+        },
+        CtApplied(_, meta) => if is_alias_constructor(reified) && Array::length(meta) == want + 1 && alias_constructor_params_plain(meta) {
+          Some(reified)
+        } else {
+          None
+        },
+        _ => None
+      }
+    },
+    _ => None
+  }
+}
+
+/// Does the type declared as `name` take only complete types (no parameter
+/// of its own is a constructor)? A compiler-owned head (`Array`, `Option`)
+/// has no declaration and takes complete types.
+fn constructor_params_plain(defs: Array[TypeDef], name: String) -> Bool {
+  let params = match find_typedef(defs, name) {
+    Some(td) => match td {
+      TDStruct(_, _, _, sps) => sps,
+      TDEnum(_, eps, _) => eps,
+      TDAlias(_, aps, _) => aps,
+      _ => array_empty()
+    },
+    None => array_empty()
+  }
+  let mut plain = true
+  let mut i = 0
+  while i < Array::length(params) {
+    if type_param_arity(Array::get(params, i)) > 0 {
+      plain = false
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  plain
+}
+
+/// An alias constructor's binders (everything after its body) are all
+/// complete-type parameters.
+fn alias_constructor_params_plain(meta: Array[Type]) -> Bool {
+  let mut plain = true
+  let mut i = 1
+  while i < Array::length(meta) {
+    match Array::get(meta, i) {
+      CtNamed(n, _) => if type_param_arity(n) > 0 {
+        plain = false
+      } else {
+        ()
+      },
+      _ => {
+        plain = false
+      }
+    }
+    i = i + 1
+  }
+  plain
 }
 
 /// #3275 (Codex on #3304): a lambda with no `with` row does not inherit an

@@ -1,0 +1,87 @@
+// #3275 follow-up after #3304: a kinded effect parameter (`F` of
+// `Read[F[_]]`) takes the bare constructor the row names, so under
+// `with Read[Array]` the payload of `Read::Put(F[Int])` is an `Array[Int]`.
+// The constructor used to be resolved as a complete type, so `F[Int]` matched
+// no payload and these correct programs were refused
+// (`expected Array[Int], got Array[Int]`). The refusals are the
+// `generic_effect_row_kinded_*_reject` rows in fixtures/typecheck/expected.tsv.
+effect Read[F[_]] {
+  Put(F[Int]) -> Int
+}
+
+effect Src[F[_]] {
+  Get() -> F[Int]
+}
+
+type List[T] = Array[T]
+
+struct Cell[T] {
+  value: T
+}
+
+fn put_array() -> Int with Read[Array] {
+  perform Read::Put([4, 5, 6])
+}
+
+// A parameterized alias is a constructor too: `List[Int]` is `Array[Int]`.
+fn put_list() -> Int with Read[List] {
+  perform Read::Put([7, 8])
+}
+
+// A declared generic type is its constructor: `Cell[Int]`.
+fn put_cell() -> Int with Read[Cell] {
+  perform Read::Put(Cell::{ value: 9 })
+}
+
+// The value an operation answers takes the constructor as well.
+fn read_option() -> Int with Src[Option] {
+  match perform Src::Get() {
+    Some(n) => n + 1,
+    None => 0
+  }
+}
+
+test "a kinded row's constructor shapes the payload" {
+  let r = handle {
+    put_array()
+  } with {
+    Read::Put(xs) => {
+      let a: Array[Int] = xs
+      resume(Array::length(a) * 100 + Array::get(a, 0))
+    }
+  }
+  inspect(r, "304")
+}
+
+test "an alias constructor shapes the payload" {
+  let r = handle {
+    put_list()
+  } with {
+    Read::Put(xs) => {
+      let a: Array[Int] = xs
+      resume(Array::length(a) * 100 + Array::get(a, 1))
+    }
+  }
+  inspect(r, "208")
+}
+
+test "a declared constructor shapes the payload" {
+  let r = handle {
+    put_cell()
+  } with {
+    Read::Put(c) => {
+      let cell: Cell[Int] = c
+      resume(cell.value * 2)
+    }
+  }
+  inspect(r, "18")
+}
+
+test "a kinded row's constructor shapes the answered value" {
+  let r = handle {
+    read_option()
+  } with {
+    Src::Get() => resume(Some(41))
+  }
+  inspect(r, "42")
+}
