@@ -419,6 +419,7 @@ ur_refused fixtures/err_interp_generic_call_missing_show_refused.vibe 'cannot in
 ur_refused fixtures/err_threaded_generic_value_refused.vibe 'its `[T: Eq]` bound is supplied at each call, so it cannot be passed as a value' 'wrap `same` in a lambda that takes concrete parameter types and calls it'
 ur_refused fixtures/err_threaded_generic_qualified_value_refused.vibe 'its `[T: Eq]` bound is supplied at each call, so it cannot be passed as a value' 'wrap `Util::same` in a lambda that takes concrete parameter types and calls it'
 ur_refused fixtures/err_threaded_generic_local_value_refused.vibe 'its `[T: Eq]` bound is supplied at each call, so it cannot be passed as a value' 'wrap `same` in a lambda that takes concrete parameter types and calls it'
+ur_refused fixtures/err_threaded_generic_exception_arm_value_refused.vibe 'its `[T: Eq]` bound is supplied at each call, so it cannot be passed as a value' 'wrap `resume` in a lambda that takes concrete parameter types and calls it'
 # #3019 rides the same helper: a lowering-time refusal asserted on its message
 # and its edit, not on the bare fact that the build failed.
 ur_refused fixtures/err_handle_resume_capture_loop_break_refused.vibe 'leaves a loop outside it' 'set a flag inside the handle'
