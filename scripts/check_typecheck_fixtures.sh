@@ -68,8 +68,8 @@ WORK="_build/_gate_typecheck_fixtures"
 # "this program is rejected". Measured on a declaration-only fixture, whose
 # entry-lane diagnostic reads in full:
 #
-#   entry `main` not found: no exported function named `main`
-#   (use __no_entry__ to build a test runner)
+#   entry `main` not found: define `fn main()` in this file, or pass
+#   `--entry <name>` naming a zero-argument function it already has
 #
 # If that wording ever changes, every declaration-only row starts being read as
 # a rejection and the counts printed at the end move -- which is why the count
