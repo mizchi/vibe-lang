@@ -4,16 +4,18 @@ Issue [#3257](https://github.com/mizchi/vibe-lang/issues/3257) removes inert
 render rows introduced by the split compiler's wider import surface. On one
 immutable post-#3254 compiler input, three alternating A/B pairs reduce bump
 heap high-water by 4.21% cold and 4.47% warm. With complete checked-module
-reuse enabled, the reductions are 3.40% and 2.87%. Every emitted user Wasm is
+reuse enabled, the reductions are 3.40% and 2.86%. Every emitted user Wasm is
 byte-identical. Reserved linear-memory pages are unchanged.
 
 Raw samples, selectors, compiler/source hashes, telemetry and cache-carrier
 counts are in
 [`bench/perf/analysis/imported-show-wrapper-metadata-2026-10-03.json`](../../../bench/perf/analysis/imported-show-wrapper-metadata-2026-10-03.json).
-Full `pkf run release-check` passes, including the compiler gate and every
-required companion self-test. AST-required staged pre-commit passes. These
-measurements and validation use the pre-rebase base below; fresh validation
-and A/B measurement will accompany publication against current main.
+The baseline and candidate are rebuilt on main
+`f5391add9ee36afe0ab6ee62ef70aabfd1b717aa`, including #3296. AST-required
+review lint passes against the complete main-to-candidate diff. The complete
+`pkf run release-check` passes on this rebased tree (122 tasks, including the
+compiler gate, every required companion self-test, documentation and
+distribution checks).
 
 ## Measured cost
 
@@ -28,7 +30,8 @@ inside 628 cold render-collector calls. Lowering-memo publication itself uses
 51,568 bytes; combined environment/lowering text encoding uses approximately
 25.56 MB. The encoder figure includes the entire environment and all lowering
 rows. Inclusive counter totals are not additive and do not predict the saving.
-Eight counter/control cold/warm observations preserve user Wasm; enabling the
+These attribution counters use the pre-rebase baseline. Eight counter/control
+cold/warm observations preserve user Wasm; enabling the
 counters changes whole-compile heap high-water by at most 24 bytes.
 
 The optimization is measured with an ordinary compiler, including fact
@@ -76,15 +79,17 @@ The input is the tracked tree at `94da0d000e2e5c6c461bd6ee55cf3aa8c6041977`,
 plus its five generated compiler files: 5,427 hashed files, verified unchanged.
 The entry is `lib/@vibe/compiler/tests/codegen_lexer_test.vibe`. Each sample
 uses a fresh Node host-runner process, a bump compiler, a linear-RC target,
-and disabled AST/body caches. Each round/mode/compiler has a separate empty
+and disabled AST/body caches. Both compiler artifacts use current main as
+their source base; the immutable workload remains the earlier post-#3254 tree.
+Each round/mode/compiler has a separate empty
 cold cache; its warm sample consumes that populated cache. A/B order alternates.
 
 | Checked-module cache | Temperature | Baseline bytes | Candidate bytes | Delta |
 |---|---|---:|---:|---:|
-| Off | Cold | 1,021,933,464 | 978,925,096 | -43,008,368 (-4.21%) |
-| Off | Warm | 619,047,136 | 591,347,880 | -27,699,256 (-4.47%) |
-| On | Cold | 1,321,263,592 | 1,276,286,088 | -44,977,504 (-3.40%) |
-| On | Warm | 1,467,494,832 | 1,425,448,816 | -42,046,016 (-2.87%) |
+| Off | Cold | 1,021,928,056 | 978,926,488 | -43,001,568 (-4.21%) |
+| Off | Warm | 619,043,368 | 591,348,376 | -27,694,992 (-4.47%) |
+| On | Cold | 1,321,257,760 | 1,276,288,432 | -44,969,328 (-3.40%) |
+| On | Warm | 1,467,490,832 | 1,425,449,576 | -42,041,256 (-2.86%) |
 
 Each value repeats exactly in all three trials. Compiler telemetry confirms
 zero cold reuse, 314/314 warm reuse with the cache off, and 311/314 checked
@@ -108,7 +113,10 @@ observations are retained as advisory data; no CPU/wall improvement is claimed.
 Four red tests on the original compiler catch ordinary imports, ordinary
 aliases/re-exports and a same-typed wrapper-body edit. Three controls already
 pass. The final import suite adds qualified names and unknown re-export facts;
-all nine pass. Seven transport tests exercise cached canonical facts, text and
+all nine pass. Additional non-simple concrete renderers (a local alias, an
+extra statement and a second parameter) preserve Double/Bool/Char rendering
+and byte-identical Wasm. Unsupported erased-generic bodies are refused with
+the same diagnostics by both compilers. Seven transport tests exercise cached canonical facts, text and
 binary round-trips, unavailable versus empty facts, same-length corruption,
 old versions and dependency-key freshness.
 
@@ -123,9 +131,14 @@ checks the cold/warm artifact result. The existing module-job oracle passes
 real worker publication/import plus diagnostic and malformed-job controls.
 
 Fresh final stage2 equals stage3, SHA-256
-`fb4ac8e9e11c7bca7f24010d9a644a7c4d58c3716d4221ecd67e020b6d1336f6`.
+`87df48a987017f4e09edb5cb172f2e00a3db5bb6b4ae640545d7df869d5a3087`.
 The default production KPI uses the current input tree, separately from the
 fixed-tree A/B experiment. Three ordinary cold invocations agree on
-977,159,096 bytes and 18,663 pages. The committed baseline ratchets down from
-1,019,539,416 to 977,159,096 with its +10% tolerance intact; the historical
+977,343,584 bytes and 18,663 pages. The committed baseline ratchets down from
+1,019,539,416 to 977,343,584 with its +10% tolerance intact; the historical
 baseline difference is not attributed wholesale to this patch.
+
+The full AST-required main-to-candidate review lint passes. The final release
+record updates only documentation and benchmark evidence; compiler source
+digests and the just-built fixpoint remain unchanged. Historical pre-rebase
+A/B summaries are retained separately in the raw record.

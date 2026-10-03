@@ -7,7 +7,7 @@ compiler / checker.
 
 Module-owned wrapper facts remove inert render rows from ordinary imported
 calls. Three fixed-tree A/B pairs reduce bump allocation by 4.21% cold and
-4.47% warm; checked-module reuse on improves 3.40% and 2.87%. All user Wasm
+4.47% warm; checked-module reuse on improves 3.40% and 2.86%. All user Wasm
 is byte-identical and reserved pages stay unchanged. Actual wrapper rendering,
 alias chains, worker/persistent transport and body-edit freshness are checked.
 
