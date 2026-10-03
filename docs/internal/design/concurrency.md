@@ -190,15 +190,13 @@ close. Dispatch is FIFO in spawn order. `TaskGroup::spawn_suspend` differs:
 its body starts at once and runs to its first suspension (see the
 suspendable lane below).
 
-A spawn is accepted while the group's body runs. A spawn into a group that is
-cancelling after a child failed -- a body that caught the failed child's
-`join` and carried on -- queues the task like any other, and the dispatch
-cancel point resolves it as cancelled without running it, so its `join` throws
-`Cancelled` and the group still throws the first failure (#3277). A spawn
-after the body returned (closing or closed) traps with a message saying so.
-`TaskGroup::adopt` (the suspendable lane) starts its task at once, so it cannot
-be cancelled before it runs: adopting into a cancelling group traps with a
-message instead.
+A spawn is accepted only while the group is open, the rule the lifecycle model
+in `formal/VibeFormal/Async/Transition.lean` proves against. A spawn into a
+group that is cancelling after a child failed -- including from a body that
+caught the failed child's `join` and carried on -- traps with a message saying
+the group is cancelling, and a spawn after the body returned (closing or
+closed) traps with a message saying so (#3277). `TaskGroup::adopt` (the
+suspendable lane) follows the same rule.
 
 ### Join
 

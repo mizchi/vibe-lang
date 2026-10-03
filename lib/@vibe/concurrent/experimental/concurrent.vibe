@@ -764,12 +764,11 @@ fn conc_host_release_timer[rg, e](n: TaskGroup[rg, e]) -> Unit {
 /// Deferred spawn: the child is queued Ready and does NOT run here (the
 /// eager builtin prototype is out of contract). The thunk may throw —
 /// an Exception::Throw reaching the child boundary becomes Failed(msg) and
-/// triggers fail-fast. Spawning into a group that is cancelling after a
-/// sibling failure queues the child like any other, and the dispatch cancel
-/// point resolves it Cancelled without running it, so its `join` throws
-/// `TaskError::Cancelled` (#3277: this trapped with a bare `unreachable`).
-/// Spawning after the group's body returned (closing/closed) traps with a
-/// message.
+/// triggers fail-fast. A spawn is accepted only while the group is open,
+/// which is the rule the lifecycle model in formal/VibeFormal/Async proves
+/// against. Spawning into a group that is cancelling after a sibling failure,
+/// or after the group's body returned (closing/closed), traps with a message
+/// naming which (#3277: both trapped with a bare `unreachable`).
 ///
 /// #1181: `f`'s row also allows the enclosing TaskGroup's own `e` capability
 /// row alongside Error, so spawned tasks can shell out to subprocesses or
@@ -780,7 +779,9 @@ fn conc_host_release_timer[rg, e](n: TaskGroup[rg, e]) -> Unit {
 /// nothing beyond `{ Error }` still requires no extra capability from its
 /// caller.
 export fn TaskGroup::spawn[rg, e, T: Send](n: TaskGroup[rg, e], f: () -> T with Exception + e) -> TaskHandle[rg, e, T] {
-  if n.phase >= 2 {
+  if n.phase == 1 {
+    abort("vibe: TaskGroup::spawn into a group that is cancelling after a sibling failed: a group takes new tasks only while it is open; check the failure (a caught join) before spawning")
+  } else if n.phase >= 2 {
     abort("vibe: TaskGroup::spawn after the group's body returned: a task can only be spawned while TaskGroup::run's body is running; spawn it inside the body")
   } else {
     ()
