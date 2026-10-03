@@ -104,7 +104,9 @@ for js in lsp_server.js symbol_index.js graph_query.js; do
 done
 bash "$PROJECT_ROOT/scripts/gen_context_pack.sh" "$PROJECT_ROOT" > "$tc_stage/lib/context-pack.md"
 : > "$tc_stage/stdlib-hashes.tsv"
-for pkg in @vibe/core @vibe/ast @vibe/parser @vibe/builtin @vibe/console @vibe/wit_runtime; do
+# Keep this list in step with install/install.sh: @vibe/concurrent re-exports
+# @vibe/concurrent/experimental, a nested package, so both ship.
+for pkg in @vibe/core @vibe/ast @vibe/parser @vibe/builtin @vibe/console @vibe/wit_runtime @vibe/concurrent @vibe/concurrent/experimental; do
   src="$PROJECT_ROOT/lib/$pkg"
   [ -f "$src/index.vpkg" ] || { echo "release-assets: stdlib package missing: $src" >&2; exit 1; }
   dest="$tc_stage/lib/$pkg"

@@ -122,7 +122,7 @@ SH
 for script in vibe_pkg.sh parallel_warm_pool.sh run_bounded.sh; do
   : > "$WORK/t/scripts/$script"
 done
-for pkg in core ast parser builtin console wit_runtime; do
+for pkg in core ast parser builtin console wit_runtime concurrent concurrent/experimental; do
   mkdir -p "$WORK/t/lib/@vibe/$pkg"
   : > "$WORK/t/lib/@vibe/$pkg/index.vpkg"
 done
