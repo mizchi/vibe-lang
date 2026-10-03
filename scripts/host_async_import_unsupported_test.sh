@@ -156,26 +156,49 @@ echo "ok: vibe.sleep, which this runner does implement, still runs"
 
 cp scripts/wasm_vibe_host_runtime.js "$work/wasm_vibe_host_runtime.js"
 
-# 3. RED, by source mutation: without the guard branch the same program prints
-#    `sum=0` and exits 0. A gate that cannot show the old behaviour returning is
-#    a gate that would keep passing if the branch were deleted (#2248).
+# 3. RED, by source mutation (#2248). Two mutations, because two branches now
+#    stand between the guest and the old `() => 0n` (#3278 added a blanket
+#    refusal behind this guard):
+#    a. without the async guard the call still fails, but through the blanket
+#       refusal, whose message lacks the async lane's ADR-0089 hint -- so that
+#       hint is this guard's;
+#    b. without both, the program prints `sum=0` and exits 0, the behaviour
+#       being fixed.
 sed 's|        if (isUnimplementedAsyncImport(name)) {|        if (false) {|' \
   scripts/wasm_vibe_host_runner.js > "$work/runner_noguard.js"
 if cmp -s scripts/wasm_vibe_host_runner.js "$work/runner_noguard.js"; then
   echo "host-async-import-unsupported: FAIL the red mutation matched nothing -- the guard moved, and this gate is asserting against a shape that no longer exists" >&2
   exit 1
 fi
-if ! node "$work/runner_noguard.js" "$work/stream.wasm" > "$work/red.txt" 2>&1; then
-  echo "host-async-import-unsupported: FAIL without the guard the run should have SUCCEEDED (that is the behaviour being fixed); it failed instead" >&2
+if node "$work/runner_noguard.js" "$work/stream.wasm" > "$work/red.txt" 2>&1; then
+  echo "host-async-import-unsupported: FAIL without the async guard the blanket refusal should still have stopped the call" >&2
   cat "$work/red.txt" >&2
   exit 1
 fi
-grep -q '^sum=0$' "$work/red.txt" || {
-  echo "host-async-import-unsupported: FAIL without the guard the program should print sum=0 -- the refusal is not pinned to the guard branch" >&2
+if grep -q 'ADR-0089' "$work/red.txt" || ! grep -q 'so the call has no answer' "$work/red.txt"; then
+  echo "host-async-import-unsupported: FAIL without the async guard the refusal should be the blanket one -- the async hint is not pinned to the guard branch" >&2
   cat "$work/red.txt" >&2
   exit 1
+fi
+echo "ok: removing the async guard leaves only the blanket refusal, so the async hint is that branch"
+
+sed 's|        return unimplementedImportStub(name);|        return () => 0n;|' \
+  "$work/runner_noguard.js" > "$work/runner_nofallback.js"
+if cmp -s "$work/runner_noguard.js" "$work/runner_nofallback.js"; then
+  echo "host-async-import-unsupported: FAIL the fallback mutation matched nothing -- the blanket refusal moved" >&2
+  exit 1
+fi
+if ! node "$work/runner_nofallback.js" "$work/stream.wasm" > "$work/red2.txt" 2>&1; then
+  echo "host-async-import-unsupported: FAIL without both refusals the run should have SUCCEEDED (that is the behaviour being fixed); it failed instead" >&2
+  cat "$work/red2.txt" >&2
+  exit 1
+fi
+grep -q '^sum=0$' "$work/red2.txt" || {
+  echo "host-async-import-unsupported: FAIL without both refusals the program should print sum=0 -- the refusal is not pinned to those branches" >&2
+  cat "$work/red2.txt" >&2
+  exit 1
 }
-echo "ok: removing the guard restores the silent sum=0, so the refusal is that branch"
+echo "ok: removing both refusals restores the silent sum=0"
 
 # 4. the other runner, asked the same question about the same module: viberun's
 #    core lane does not register these imports either, and there the failure is
