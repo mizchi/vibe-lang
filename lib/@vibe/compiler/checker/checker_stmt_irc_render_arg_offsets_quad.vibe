@@ -20,6 +20,10 @@ import ./checker_pattern.vibe {
   check_qualified_pattern_refs
 }
 
+import ./checker_handler_or_arm_resume.vibe {
+  check_handler_or_arm_resume_types
+}
+
 import ./builtins.vibe {
   lookup_builtin
 }
@@ -41,6 +45,7 @@ import @vibe/compiler/core {
   TypeExpr,
   env_cache,
   expr_children,
+  handler_or_arms_to_split,
   resolved_callee_capture_reset,
   resolved_callee_capture_rows,
   split_handler_or_arms,
@@ -903,8 +908,12 @@ export fn check_program_type_table(stmts: Array[Stmt]) -> (Array[(Int, Type)], S
   derive_trait_namespace_operations(stmts)
   // #3301 (Codex on #3337): hover types an or-pattern handler arm's body the
   // way the check does -- split it into one arm per operation first, or the
-  // `POr` arm is skipped and `let k = resume` inside it has no type.
-  split_handler_or_arms(stmts, false)
+  // `POr` arm is skipped and `let k = resume` inside it has no type. A
+  // program the split refuses to expand is hovered unsplit, as the check
+  // refuses it.
+  handle {
+    split_handler_or_arms(stmts, false)
+  } with { Exception::Throw(_) => () }
   let empty_defs = array_empty()
   let seeded_raw_env = if trait_defined(EnvEmpty, "Eq") {
     EnvEmpty
@@ -974,6 +983,7 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
       // #1571: see check_program.
       desugar_inspect_calls(stmts)
       // #3301: see check_program.
+      let handler_or_arms = handler_or_arms_to_split(stmts, false)
       split_handler_or_arms(stmts, false)
       // #1962 (Option 1): a direct host-builtin call inside a `handle` whose arms
       // name the same operation becomes `perform <Op>(..)`. BEFORE checking, so
@@ -1045,6 +1055,8 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
       // #1455 step 3: `empty_defs` holds the imported enums seeded above plus
       // this module's own, which is exactly the set a qualifier may name.
       check_qualified_pattern_refs(qualified_pattern_refs, empty_defs, frozen_errors)
+      // #3301: see check_program.
+      check_handler_or_arm_resume_types(handler_or_arms, empty_defs, frozen_errors)
       if Array::length(frozen_errors) > 0 {
         throw(Array::get(frozen_errors, 0))
       }

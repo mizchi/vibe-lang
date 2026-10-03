@@ -20,6 +20,10 @@ import ./checker_pattern.vibe {
   check_qualified_pattern_refs
 }
 
+import ./checker_handler_or_arm_resume.vibe {
+  check_handler_or_arm_resume_types
+}
+
 import ./builtins.vibe {
   lookup_builtin
 }
@@ -45,6 +49,7 @@ import @vibe/compiler/core {
   expr_children_pop,
   expr_children_push,
   expr_children_top,
+  handler_or_arms_to_split,
   sort_perm_by_names,
   split_handler_or_arms,
   subst_apply,
@@ -196,6 +201,8 @@ export fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: 
   // `B => body`. Split here, before anything reads a handler arm, so the
   // checker types, counts and discharges each operation the way codegen
   // lowers it. An alternative that binds a name stays whole, to be refused.
+  // The arms are read first, as written, for the check after typing.
+  let handler_or_arms = handler_or_arms_to_split(stmts, false)
   split_handler_or_arms(stmts, false)
   // #1962 (Option 1): a direct host-builtin call inside a `handle` whose arms
   // name the same operation becomes `perform <Op>(..)`. BEFORE checking, so
@@ -268,6 +275,9 @@ export fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: 
   // #1455 step 3: `empty_defs` is the finished enum table by now, so the
   // qualifiers drained above can finally be checked against it.
   check_qualified_pattern_refs(qualified_pattern_refs, empty_defs, frozen_errors)
+  // #3301: and every effect's operations, so an or-pattern arm whose
+  // `resume` the split typed at two types can be refused.
+  check_handler_or_arm_resume_types(handler_or_arms, empty_defs, frozen_errors)
   if Array::length(frozen_errors) > 0 {
     // #2831 criterion 4: report EVERY diagnostic this check collected, not
     // just the first. They are all computed by the time we get here, and

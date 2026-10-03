@@ -27,6 +27,16 @@ effect Inner {
   J -> Int
 }
 
+effect Mixed {
+  M(Int) -> Int
+  N(String) -> String
+}
+
+effect Same {
+  S(Int) -> Int
+  T(String) -> Int
+}
+
 fn three_alternatives() -> Int {
   handle {
     perform Logger::A + perform Logger::B + perform Logger::C
@@ -86,6 +96,35 @@ fn nested_handlers() -> Int {
   }
 }
 
+// An arm that never names `resume` reads nothing that differs between its
+// operations, so their signatures may differ. One that does needs them to
+// resume with one type, and payload types may still differ.
+fn differing_signatures_return() -> Int {
+  handle {
+    perform Mixed::M(1) + String::length(perform Mixed::N("x"))
+  } with Mixed {
+    M(_)|N(_) => return 42
+  }
+}
+
+fn differing_signatures_throw() -> Int {
+  handle {
+    handle {
+      perform Mixed::M(1) + String::length(perform Mixed::N("x"))
+    } with Mixed {
+      M(_)|N(_) => throw("stop")
+    }
+  } with { Exception::Throw(_) => 43 }
+}
+
+fn differing_payloads_one_resume_type() -> Int {
+  handle {
+    perform Same::S(1) + perform Same::T("x")
+  } with Same {
+    S(_)|T(_) => resume(5)
+  }
+}
+
 test "an or-pattern handler arm handles each of its operations" {
   inspect(three_alternatives(), "21")
   inspect(after_a_plain_arm(), "21")
@@ -93,4 +132,7 @@ test "an or-pattern handler arm handles each of its operations" {
   inspect(resume_captured(), "21")
   inspect(resume_in_a_lambda(), "21")
   inspect(nested_handlers(), "60")
+  inspect(differing_signatures_return(), "42")
+  inspect(differing_signatures_throw(), "43")
+  inspect(differing_payloads_one_resume_type(), "10")
 }

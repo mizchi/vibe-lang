@@ -9,13 +9,20 @@
 // and its handle survived lowering for codegen to compile to `unreachable`.
 // Splitting the arm before those passes run hands each of them the separate
 // arms it already handles, so they cannot disagree about what the arm means.
+//
+// Each alternative gets its own copy of the body, and an or-pattern arm in
+// that body is split again inside every copy, so nested or-pattern arms
+// multiply: a chain of n arms with two alternatives each copies its innermost
+// body 2^n times. The split refuses a `handle` it would copy more than
+// hoa_copy_limit times rather than expand it; moving that `handle` into a
+// function makes each copy a call.
 
 import ./ast.vibe {
   Expr, Pat, Stmt
 }
 
 import ./expr_children.vibe {
-  expr_any_node
+  expr_any_node, expr_child_at, expr_children_pop, expr_children_push, expr_children_top
 }
 
 //# Patterns
@@ -73,6 +80,13 @@ fn hoa_alternatives_into(pat: Pat, out: Array[Pat]) -> Unit {
       hoa_alternatives_into(right, out)
     },
     _ => Array::push(out, pat)
+  }
+}
+
+fn hoa_alternative_count(pat: Pat) -> Int {
+  match pat {
+    POr(left, right) => hoa_alternative_count(left) + hoa_alternative_count(right),
+    _ => 1
   }
 }
 
@@ -216,15 +230,231 @@ fn hoa_exprs_need_split(exprs: Array[Expr], with_binders: Bool) -> Bool {
   found
 }
 
+//# Copy limit
+
+/// The most copies the split makes of one `handle` that has an or-pattern arm
+/// of its own. Bounding that, rather than the depth, keeps the expansion a
+/// function of how large the program is instead of an exponential of how deep
+/// its or-pattern arms nest. Measured with a chain of nested two-alternative
+/// arms (#3301): `vibe check` took 1.6 s at 8 levels, 5.8 s at 12 and 92 s
+/// at 14, and had not finished 16 after five minutes. At this limit a chain
+/// of nine still compiles, as does an or-pattern arm of up to 256
+/// alternatives around another one.
+let hoa_copy_limit: Int = 256
+
+/// The smallest source offset any node of `expr` carries, or -1.
+fn hoa_first_offset(expr: Expr) -> Int {
+  let mut first = match expr {
+    EIdent(_, off) => off,
+    EString(_, off) => off,
+    ELet(_, _, _, off) => off,
+    ELetMut(_, _, _, off) => off,
+    ECall(_, _, off, _) => off,
+    EBinOp(_, _, _, off) => off,
+    EDot(_, _, off, _) => off,
+    _ => -1
+  }
+  let mark = expr_children_push(expr)
+  let top = expr_children_top()
+  let mut i = mark
+  while i < top {
+    let child = hoa_first_offset(expr_child_at(i))
+    if child >= 0 && (first < 0 || child < first) {
+      first = child
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  expr_children_pop(mark)
+  first
+}
+
+/// The first `handle` in `expr`, in source order, that has an or-pattern arm
+/// to split and that the enclosing or-pattern arms would copy more than
+/// hoa_copy_limit times, with that count. `copies` is how many times the
+/// split copies `expr`: an arm's body is copied once per alternative of that
+/// arm, on top of the copies of the arm itself.
+fn hoa_over_limit(expr: Expr, copies: Int, with_binders: Bool) -> Option[(Expr, Int)] {
+  match expr {
+    EHandle(body, arms) => if copies > hoa_copy_limit && hoa_arms_split_any(arms, with_binders) {
+      Some((expr, copies))
+    } else {
+      let mut hit = hoa_over_limit(body, copies, with_binders)
+      let mut i = 0
+      while hoa_no_hit(hit) && i < Array::length(arms) {
+        let (pat, arm_body) = Array::get(arms, i)
+        let arm_copies = if hoa_splits(pat, with_binders) {
+          copies * hoa_alternative_count(pat)
+        } else {
+          copies
+        }
+        hit = hoa_over_limit(arm_body, arm_copies, with_binders)
+        i = i + 1
+      }
+      hit
+    },
+    _ => {
+      let mark = expr_children_push(expr)
+      let top = expr_children_top()
+      let mut hit: Option[(Expr, Int)] = None
+      let mut i = mark
+      while hoa_no_hit(hit) && i < top {
+        hit = hoa_over_limit(expr_child_at(i), copies, with_binders)
+        i = i + 1
+      }
+      expr_children_pop(mark)
+      hit
+    }
+  }
+}
+
+fn hoa_no_hit(hit: Option[(Expr, Int)]) -> Bool {
+  match hit {
+    Some(_) => false,
+    None => true
+  }
+}
+
+/// The refusal for the first `handle` in `stmts` that the split would copy
+/// more than hoa_copy_limit times, located at that `handle`; None when every
+/// `handle` stays within it.
+fn hoa_copy_refusal(stmts: Array[Stmt], with_binders: Bool) -> Option[String] {
+  let exprs: Array[Expr] = []
+  hoa_stmt_exprs_into(stmts, exprs)
+  let mut refusal: Option[String] = None
+  let mut i = 0
+  while i < Array::length(exprs) {
+    let expr = Array::get(exprs, i)
+    match refusal {
+      Some(_) => (),
+      None => if hoa_needs_split(expr, with_binders) {
+        match hoa_over_limit(expr, 1, with_binders) {
+          Some((site, copies)) => {
+            let off = hoa_first_offset(site)
+            let marker = if off >= 0 {
+              String::concat(" [@off=", String::concat(__to_string(off), "]"))
+            } else {
+              ""
+            }
+            refusal = Some(String::concat("move this `handle` into a function and call that function here: an or-pattern handler arm (`A | B => ..`) is compiled once per operation, and the or-pattern arms around this `handle` would compile it ", String::concat(__to_string(copies), String::concat(" times, over the limit of ", String::concat(__to_string(hoa_copy_limit), marker)))))
+          },
+          None => ()
+        }
+      } else {
+        ()
+      }
+    }
+    i = i + 1
+  }
+  refusal
+}
+
 //# Statements
 
 /// #3301: split every handler arm `A | B => body` in `stmts` into
 /// `A => body` and `B => body`, in place, so each arm names one operation.
 /// A statement with no or-pattern handler arm is left as it was, unvisited by
 /// the rebuild. With `with_binders` false an alternative that binds a name
-/// keeps its arm whole, for the checker to refuse.
-export fn split_handler_or_arms(stmts: Array[Stmt], with_binders: Bool) -> Unit {
-  let _changed = hoa_split_stmts(stmts, with_binders)
+/// keeps its arm whole, for the checker to refuse. A `handle` the split would
+/// copy more than hoa_copy_limit times is refused before anything is split.
+export fn split_handler_or_arms(stmts: Array[Stmt], with_binders: Bool) -> Unit with Exception {
+  match hoa_copy_refusal(stmts, with_binders) {
+    Some(refusal) => throw(refusal),
+    None => {
+      let _changed = hoa_split_stmts(stmts, with_binders)
+    }
+  }
+}
+
+/// #3301: every or-pattern handler arm `split_handler_or_arms(stmts,
+/// with_binders)` would split, read before it splits them: each arm's
+/// alternatives and its body as written. The split checks one body once per
+/// operation, so the checker reads these after typing, when it knows every
+/// operation's signature, to refuse an arm whose operations would give the
+/// same expression two types.
+export fn handler_or_arms_to_split(stmts: Array[Stmt], with_binders: Bool) -> Array[(Array[Pat], Expr)] {
+  let exprs: Array[Expr] = []
+  hoa_stmt_exprs_into(stmts, exprs)
+  let out: Array[(Array[Pat], Expr)] = []
+  let mut i = 0
+  while i < Array::length(exprs) {
+    let expr = Array::get(exprs, i)
+    if hoa_needs_split(expr, with_binders) {
+      hoa_collect(expr, with_binders, out)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Every arm the split takes in `expr`, outer arms before the arms nested in
+/// their bodies.
+fn hoa_collect(expr: Expr, with_binders: Bool, out: Array[(Array[Pat], Expr)]) -> Unit {
+  hoa_collect_node(expr, with_binders, out)
+  let mark = expr_children_push(expr)
+  let top = expr_children_top()
+  let mut i = mark
+  while i < top {
+    hoa_collect(expr_child_at(i), with_binders, out)
+    i = i + 1
+  }
+  expr_children_pop(mark)
+}
+
+fn hoa_collect_node(node: Expr, with_binders: Bool, out: Array[(Array[Pat], Expr)]) -> Unit {
+  match node {
+    EHandle(_, arms) => {
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (pat, body) = Array::get(arms, i)
+        if hoa_splits(pat, with_binders) {
+          let alternatives: Array[Pat] = []
+          hoa_alternatives_into(pat, alternatives)
+          Array::push(out, (alternatives, body))
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+/// Every expression a statement in `stmts` holds, the ones
+/// hoa_split_stmts rebuilds.
+fn hoa_stmt_exprs_into(stmts: Array[Stmt], out: Array[Expr]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, expr) => Array::push(out, expr),
+      SLetMut(_, _, expr) => Array::push(out, expr),
+      SExpr(expr) => Array::push(out, expr),
+      STest(_, expr) => Array::push(out, expr),
+      SBench(_, expr) => Array::push(out, expr),
+      SExample(_, expr) => Array::push(out, expr),
+      SLetPat(_, expr) => Array::push(out, expr),
+      SFnDecl(_, _, value, requires, ensures) => {
+        Array::push(out, value)
+        let mut j = 0
+        while j < Array::length(requires) {
+          Array::push(out, Array::get(requires, j))
+          j = j + 1
+        }
+        let mut k = 0
+        while k < Array::length(ensures) {
+          Array::push(out, Array::get(ensures, k))
+          k = k + 1
+        }
+      },
+      SModule(_, _, inner) => hoa_stmt_exprs_into(inner, out),
+      _ => ()
+    }
+    i = i + 1
+  }
 }
 
 /// Whether any statement was rebuilt. A module's statements are split in a

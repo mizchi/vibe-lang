@@ -1879,7 +1879,13 @@ An or-pattern arm `A | B => body` is the two arms `A => body` and
 resumes its own `perform`, and counts toward the handler's exhaustiveness, and
 `resume` inside it is the continuation even when a top-level `fn resume`
 exists. As in a `match`, an or-pattern cannot bind a payload: `P(x) | Q(x)` is
-refused; write `P(_) | Q(_)` or separate arms with the same body.
+refused; write `P(_) | Q(_)` or separate arms with the same body. For the same
+reason the arm's `resume` has one type: an arm that names `resume` is refused
+when its operations resume with different types (`A -> Int`, `B -> String`),
+while one that never names it (`A(_) | B(_) => return 0`) may mix signatures.
+Because each alternative compiles its own copy of the body, or-pattern arms
+nested in one another multiply; a `handle` they would copy more than 256 times
+is refused, and moving that `handle` into a function makes each copy a call.
 
 Call resolution for an effect row follows the same lexical scope as ordinary
 value resolution. When a local closure, a function parameter, or a pattern /

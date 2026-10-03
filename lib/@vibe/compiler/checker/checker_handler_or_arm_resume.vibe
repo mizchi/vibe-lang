@@ -1,0 +1,85 @@
+//# Or-pattern handler arms and their `resume` (#3301)
+//
+// The checker types an or-pattern arm `A | B => body` the way the split
+// (core/handler_or_arms.vibe) hands it over: as `A => body` and `B => body`,
+// so each expression of the body is typed once per operation, at one source
+// offset. The one name in that body whose type depends on the operation is
+// `resume` -- an or-pattern arm cannot bind a payload -- and it is
+// `(A's return type) -> ..` in one copy and `(B's) -> ..` in the other. When
+// those differ, the source holds one `resume` at two types, and every reader
+// of the per-offset type table (`vibe type-at`, hover, `vibe grep --where`)
+// answers with whichever copy was typed last. Such an arm is refused, the way
+// an or-pattern in Rust or a `match` arm binds each name at one type. An arm
+// that never names `resume` reads nothing that differs between its
+// operations, so their signatures may differ there.
+
+import @vibe/compiler/core {
+  Expr, Pat, Type, TypeDef, type_to_string, types_equal
+}
+
+import @vibe/compiler/checker/diagnostics {
+  off_marker, off_marker_len
+}
+
+import @vibe/compiler/checker/resume {
+  arm_first_resume_ref
+}
+
+import ./checker_eq_unbounded_formal_msg.vibe {
+  effect_op_sig
+}
+
+/// #3301: refuse each or-pattern handler arm in `arms` (the arms the split
+/// took, with their bodies as written: `handler_or_arms_to_split`) whose body
+/// names its `resume` while its operations resume with different types. Read
+/// after checking, when `defs` holds every declared effect's operations; an
+/// alternative whose operation is not declared there is not typed against a
+/// signature, and is skipped.
+export fn check_handler_or_arm_resume_types(arms: Array[(Array[Pat], Expr)], defs: Array[TypeDef], errors: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (alternatives, body) = Array::get(arms, i)
+    match arm_first_resume_ref(body, false) {
+      Some(at) => match or_arm_resume_disagreement(alternatives, defs) {
+        Some(msg) => Array::push(errors, String::concat(msg, match at {
+          EIdent(name, off) => off_marker_len(off, String::length(name)),
+          _ => off_marker(-1)
+        })),
+        None => ()
+      },
+      None => ()
+    }
+    i = i + 1
+  }
+}
+
+/// The message for the first alternative whose operation resumes with a type
+/// other than the first declared alternative's, or None when they all agree.
+fn or_arm_resume_disagreement(alternatives: Array[Pat], defs: Array[TypeDef]) -> Option[String] {
+  let mut first: Option[(String, Type)] = None
+  let mut found: Option[String] = None
+  let mut j = 0
+  while j < Array::length(alternatives) {
+    match found {
+      Some(_) => (),
+      None => match Array::get(alternatives, j) {
+        PCtor(qname, _) => match effect_op_sig(defs, qname) {
+          Some((_, ret)) => match first {
+            None => {
+              first = Some((qname, ret))
+            },
+            Some((first_name, first_ret)) => if types_equal(first_ret, ret) {
+              ()
+            } else {
+              found = Some(String::concat("write `", String::concat(first_name, String::concat(" => ..` and `", String::concat(qname, String::concat(" => ..` as separate arms: `resume` here would take ", String::concat(type_to_string(first_ret), String::concat(" for `", String::concat(first_name, String::concat("` but ", String::concat(type_to_string(ret), String::concat(" for `", String::concat(qname, "`, and an or-pattern arm has one `resume`")))))))))))))
+            }
+          },
+          None => ()
+        },
+        _ => ()
+      }
+    }
+    j = j + 1
+  }
+  found
+}
