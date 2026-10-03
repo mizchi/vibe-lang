@@ -1,0 +1,56 @@
+// #3311 (Codex on #3340) controls: a lambda passed to an IMPORTED callee's
+// callback parameter performs at the instantiation the parameter's row names,
+// read from the callee's published type. These are the correct programs that
+// rule must keep compiling, each answering through the imported handler; the
+// refusals are the generic_effect_row_callback_imported_*_reject rows in
+// fixtures/typecheck/expected.tsv.
+//
+// The effect-row pass charges a callback's performs to the function that
+// writes the lambda, so each test discharges `Box` once more around the call.
+// That outer arm never runs: it answers -1, and no expected value contains it.
+// A local alias of an imported callee (`let local = run_len`) is pinned only
+// as a refusal (generic_effect_row_callback_imported_local_alias_reject):
+// calling the alias with a row-carrying lambda is refused by the evidence
+// lowering (ADR-0076), as it is without this rule.
+import ./modules/generic_effect_row_callback_dep.vibe {
+  effect Box, run_len, run_len_alias, run_pt, Pt
+}
+
+test "an imported generic callee's callback performs at this call's type" {
+  let r = handle {
+    run_len("abc", () -> {
+      perform Box::Put("defg")
+    }, (s) -> String::length(s))
+  } with {
+    Box::Put(_) => resume(0 - 1)
+  }
+  inspect(r, "4")
+}
+
+// Two calls under one handle, each at its own `T`: the lambdas do not share
+// the handle's instantiation. An exported alias reads its own quantifiers.
+test "each call of an imported generic callee fixes its own instantiation" {
+  let r = handle {
+    let a = run_len_alias(3, () -> {
+      perform Box::Put(40)
+    }, (n) -> n)
+    let b = run_len([1], () -> {
+      perform Box::Put([2, 3])
+    }, (xs) -> Array::length(xs))
+    a * 10 + b
+  } with {
+    Box::Put(_) => resume(0 - 1)
+  }
+  inspect(r, "402")
+}
+
+test "an imported callback row naming an imported type fixes the payload" {
+  let r = handle {
+    run_pt(() -> {
+      perform Box::Put(Pt::{ x: 7 })
+    })
+  } with {
+    Box::Put(_) => resume(0 - 1)
+  }
+  inspect(r, "70")
+}

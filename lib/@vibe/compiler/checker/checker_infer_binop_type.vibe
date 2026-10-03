@@ -36,6 +36,7 @@ import @vibe/compiler/core {
   generalize,
   hkt_apply_ctor,
   instantiate,
+  is_exception_label,
   strip_published_formal_suffixes,
   subst_add_bound,
   subst_apply,
@@ -134,6 +135,11 @@ import ./checker_merge_capture_provenance.vibe {
 /// formal by spelling rather than by variable, and it reaches the importer
 /// verbatim, so this is the whole transport: no interface field, no codec
 /// change. `type_to_string` renders the spelling back as `NAME`.
+///
+/// #3311 (Codex on #3340): the row of a function type among the parameters or
+/// the result (`f: () -> Int with Box[T]`) is spelled the same way, so an
+/// importer passing a lambda for `f` can read `T` as the type its call gives
+/// it. An exception kind there is left as written.
 export fn publish_row_formals(t: Type, val: Expr, env: TypeEnv, defs: Array[TypeDef]) -> Type {
   // The declaration whose formals the row names: the value itself, or -- for
   // `export let get = get0` -- the aliased binding's, whose formals sit at the
@@ -151,10 +157,7 @@ export fn publish_row_formals(t: Type, val: Expr, env: TypeEnv, defs: Array[Type
     _ => None
   }
   match (t, decl) {
-    (CtForAll(vars, bounds, CtFn(sparams, sret, Some(row0))), Some((tps, params, ret))) => {
-      // An aliased row may already carry markers indexed against its source's
-      // quantifier list; they are respelled against this scheme's.
-      let row = strip_published_formal_suffixes(row0)
+    (CtForAll(vars, bounds, CtFn(sparams, sret, row_opt)), Some((tps, params, ret))) => {
       let name_ids: Array[(String, Int)] = []
       decl_formal_ids(tps, params, ret, sparams, sret, defs, name_ids)
       let renames: Array[(String, String)] = []
@@ -173,7 +176,21 @@ export fn publish_row_formals(t: Type, val: Expr, env: TypeEnv, defs: Array[Type
       if Array::length(renames) == 0 {
         t
       } else {
-        CtForAll(vars, bounds, CtFn(sparams, sret, Some(rename_row_bracket_words(row, renames))))
+        // An aliased row may already carry markers indexed against its
+        // source's quantifier list; they are respelled against this scheme's.
+        let mark = (row: String) -> String {
+          rename_row_bracket_words(strip_published_formal_suffixes(row), renames)
+        }
+        let mark_nested = (row: String) -> String {
+          rename_generic_label_words(strip_published_formal_suffixes(row), renames)
+        }
+        let marked_row = match row_opt {
+          Some(row0) => Some(mark(row0)),
+          None => None
+        }
+        CtForAll(vars, bounds, CtFn(for p in sparams {
+          map_fn_rows(p, mark_nested)
+        }, map_fn_rows(sret, mark_nested), marked_row))
       }
     },
     // An alias of an IMPORTED generic has no declaration here, only the
@@ -182,15 +199,101 @@ export fn publish_row_formals(t: Type, val: Expr, env: TypeEnv, defs: Array[Type
     // order (`f[A, B](b: B, a: A)` aliased generalizes as `B, A`), so each
     // marker is respelled against the variable it now stands for, found by
     // position in the two signatures (Codex on #3056).
-    (CtForAll(vars, bounds, CtFn(sparams, sret, Some(row0))), None) => match val {
+    (CtForAll(vars, bounds, CtFn(sparams, sret, row_opt)), None) => match val {
       EIdent(src, _) => match env_lookup(env, src) {
-        Some(CtForAll(src_vars, _, src_body)) => CtForAll(vars, bounds, CtFn(sparams, sret, Some(respell_imported_markers(row0, src_vars, src_body, vars, CtFn(sparams, sret, None))))),
+        Some(CtForAll(src_vars, _, src_body)) => {
+          let respell = (row: String) -> String {
+            respell_imported_markers(row, src_vars, src_body, vars, CtFn(sparams, sret, None))
+          }
+          let respelled_row = match row_opt {
+            Some(row0) => Some(respell(row0)),
+            None => None
+          }
+          CtForAll(vars, bounds, CtFn(for p in sparams {
+            map_fn_rows(p, respell)
+          }, map_fn_rows(sret, respell), respelled_row))
+        },
         _ => t
       },
       _ => t
     },
     _ => t
   }
+}
+
+/// #3311: `t` with `f` applied to the row of every function type in it, at any
+/// depth. A parameter's or the result's own row is the caller's to rewrite.
+fn map_fn_rows(t: Type, f: (String) -> String) -> Type {
+  match t {
+    CtFn(params, ret, row) => CtFn(for p in params {
+      map_fn_rows(p, f)
+    }, map_fn_rows(ret, f), match row {
+      Some(r) => Some(f(r)),
+      None => None
+    }),
+    CtArray(e) => CtArray(map_fn_rows(e, f)),
+    CtOption(e) => CtOption(map_fn_rows(e, f)),
+    CtTuple(items) => CtTuple(for item in items {
+      map_fn_rows(item, f)
+    }),
+    CtNamed(n, args) => if Array::length(args) == 0 {
+      t
+    } else {
+      CtNamed(n, for a in args {
+        map_fn_rows(a, f)
+      })
+    },
+    CtApplied(head, args) => CtApplied(map_fn_rows(head, f), for a in args {
+      map_fn_rows(a, f)
+    }),
+    CtRecord(fields) => CtRecord(for field in fields {
+      let (fname, fty) = field
+      (fname, map_fn_rows(fty, f))
+    }),
+    _ => t
+  }
+}
+
+/// `rename_row_bracket_words` for each label of `row` but an exception label,
+/// whose kind is compared as written (#3033); the separators are kept.
+fn rename_generic_label_words(row: String, renames: Array[(String, String)]) -> String {
+  let n = String::length(row)
+  let sb = StringBuilder::new()
+  let mut depth = 0
+  let mut start = 0
+  let mut i = 0
+  while i <= n {
+    let c = if i < n {
+      String::char_code_at(row, i)
+    } else {
+      0
+    }
+    if c == 91 {
+      depth = depth + 1
+    } else if c == 93 {
+      depth = depth - 1
+    } else {
+      ()
+    }
+    if i == n || (c == 44 && depth == 0) {
+      let label = String::substring(row, start, i)
+      if is_exception_label(String::trim(label)) {
+        StringBuilder::push(sb, label)
+      } else {
+        StringBuilder::push(sb, rename_row_bracket_words(label, renames))
+      }
+      if i < n {
+        StringBuilder::push(sb, ",")
+      } else {
+        ()
+      }
+      start = i + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  StringBuilder::freeze(sb)
 }
 
 /// `row` with each published marker `NAME$K`, K indexing `src_vars`, respelled

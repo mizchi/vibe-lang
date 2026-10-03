@@ -46,6 +46,7 @@ import @vibe/compiler/core {
   is_hkt_app,
   resolve_builtin,
   resolve_type_constructor_args,
+  strip_published_formal_suffixes,
   subst_add_bound,
   subst_apply,
   subst_apply_except,
@@ -128,6 +129,7 @@ import ./checker_eq_unbounded_formal_msg.vibe {
   env_has_active_region,
   generic_decl_of_scheme,
   interp_is_shim_body,
+  published_row_formal_ids,
   return_provenance_was_written,
   row_variable_labels,
   scheme_formal_head_bound,
@@ -2696,13 +2698,20 @@ fn row_names_instantiation(row: String) -> Bool {
 /// holding only the callee's formals, each bound to the type this call gives
 /// it. A wrong-kinded argument is reported where the callee's annotation is
 /// checked, not at every call, so the binder's reports are dropped here.
+///
+/// A generic callee with no declaration in this module (an imported one)
+/// names its formals in the row by the markers its published type carries
+/// (`T$0`, `publish_row_formals`); each is the type this call gives that
+/// quantified variable (Codex on #3340). Before, such a callee handed the
+/// lambda nothing, so an imported `run[T](x: T, f: () -> Int with Box[T])`
+/// let `run("s", () -> { perform Box::Put(1) })` through.
 fn callback_row_instantiations(row: String, callee: Option[(Type, Type)], defs: Array[TypeDef]) -> Array[Type] {
   let formals: Array[String] = []
   let mut scope = EnvEmpty
   let mut declared = true
   match callee {
     Some((scheme, inst)) => match scheme {
-      CtForAll(_, _, _) => match generic_decl_of_scheme(scheme) {
+      CtForAll(vars, _, _) => match generic_decl_of_scheme(scheme) {
         Some((tps, dparams, dret)) => {
           for tp in tps {
             Array::push(formals, tp)
@@ -2722,13 +2731,35 @@ fn callback_row_instantiations(row: String, callee: Option[(Type, Type)], defs: 
         },
         None => {
           declared = false
+          let marked: Array[(String, Int)] = []
+          published_row_formal_ids(Some(row), vars, marked)
+          let (_, id_tys) = callee_formal_ids(None, scheme, inst, defs)
+          for mark in marked {
+            let (word, mid) = mark
+            let fname = strip_published_formal_suffixes(word)
+            if !checker_string_array_has(formals, fname) {
+              Array::push(formals, fname)
+            } else {
+              ()
+            }
+            for id_ty in id_tys {
+              let (kid, kty) = id_ty
+              if kid == mid {
+                scope = env_bind(scope, fname, kty)
+              } else {
+                ()
+              }
+            }
+          }
         }
       },
       _ => ()
     },
     None => ()
   }
-  let bound = bind_row_effect_instantiations(scope, Some(row), defs, formals, array_empty())
+  // A marker is not a word the type parser reads; the scope above binds the
+  // formal by its own name.
+  let bound = bind_row_effect_instantiations(scope, Some(strip_published_formal_suffixes(row)), defs, formals, array_empty())
   let out: Array[Type] = []
   for d in defs {
     match d {
@@ -2753,11 +2784,12 @@ fn callback_row_instantiations(row: String, callee: Option[(Type, Type)], defs: 
 
 /// Can a callback row's type argument `t`, read in the callee's scope, be
 /// bound for the lambda's performs? A callee formal this call fixes reads as
-/// the variable the call instantiated it with. One still spelled by its own
-/// name is a formal the call does not fix (only the row names it), so it is
-/// not bound; nor is a name nothing declares. A generic callee with no
-/// declaration in this module (`declared` false) cannot tell its formals from
-/// type names, so only compiler-owned types are read there.
+/// the variable the call instantiated it with; that is the only way a variable
+/// reaches the row's scope. One still spelled by its own name is a formal the
+/// call does not fix (only the row names it), so it is not bound; nor is a
+/// name nothing declares. For a generic callee with no declaration in this
+/// module (`declared` false) a formal the published row does not mark cannot
+/// be told from a type name, so only compiler-owned types are read there.
 fn callback_type_exact(t: Type, formals: Array[String], declared: Bool, defs: Array[TypeDef]) -> Bool {
   match t {
     CtInt => true,
@@ -2771,7 +2803,7 @@ fn callback_type_exact(t: Type, formals: Array[String], declared: Bool, defs: Ar
     CtOption(e) => callback_type_exact(e, formals, declared, defs),
     CtTuple(es) => callback_types_exact(es, formals, declared, defs),
     CtConstructor(n, _) => declared || n == "Array" || n == "Option",
-    CtVar(_) => declared,
+    CtVar(_) => true,
     CtStruct(_) => declared,
     CtEnum(_) => declared,
     CtNamed(n, args) => {
