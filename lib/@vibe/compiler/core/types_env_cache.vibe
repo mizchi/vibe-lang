@@ -166,7 +166,10 @@ export enum Subst {
   // that is compatible with everything — `unify` records their binding here and
   // `subst_apply` resolves CtFn effects through it, so `e` actually unifies to
   // its first binding and a later conflicting use is a type error.
-  SubstEffBind(String, String, Subst)
+  SubstEffBind(String, String, Subst);
+  // Factory-owned upper bound for all value keys in rest. The binding chain
+  // remains authoritative; arbitrary cached maps have unknown coverage.
+  SubstValueRange(Int, Subst)
 }
 
 //# Functions
@@ -610,7 +613,7 @@ export fn env_cache(env: TypeEnv) -> TypeEnv {
     // (which was fed outermost-first specifically to get this same result).
     let perm = sort_perm_by_names(na)
     let names_sorted = apply_perm_strings(na, perm)
-    let types_sorted = array_empty()
+    let types_sorted: Array[EnvValueBinding] = Array::with_capacity(Array::length(perm))
     let mut i = 0
     while i < Array::length(perm) {
       Array::push(types_sorted, Array::get(ta, Array::get(perm, i)))
@@ -1003,10 +1006,15 @@ export fn env_has_reexport_surface_binding(env: TypeEnv, name: String) -> Bool {
         }
         done = true
       },
-      EnvCached(_, _, rest) => {
-        // The authoritative chain retains surface-only entries even though
-        // the acceleration arrays intentionally omit them.
-        cur = rest
+      EnvCached(names, _, rest) => {
+        // Complete snapshots cover every canonical name, including surface
+        // entries and older same-name bindings. Only a proven name miss can
+        // stop this historical scan; a positive row may hide an older surface.
+        if env_name_index_miss_is_final(names, name) && env_name_index_find(names, name) < 0 {
+          done = true
+        } else {
+          cur = rest
+        }
       }
     }
   }
@@ -1343,6 +1351,7 @@ export fn subst_cache_read_snapshot(s: Subst) -> Subst {
       },
       SubstBound(_, _, rest) => cur = rest,
       SubstEffBind(_, _, rest) => cur = rest,
+      SubstValueRange(_, rest) => cur = rest,
       SubstCached(cache, _, rest) => {
         for key in Map::keys(cache) {
           subst_read_snapshot_push(key, Map::get(cache, key), seen, rows)
@@ -1377,7 +1386,67 @@ export fn subst_cache_read_snapshot(s: Subst) -> Subst {
   out
 }
 
+/// Add a value binding with a conservative maximum-key query frame. Existing
+/// scopes retain their own immutable bound and authoritative binding chain.
+/// A partial cached map prevents publishing a bound for its enclosing chain.
+export fn subst_bind_value(id: Int, ty: Type, s: Subst) -> Subst {
+  match s {
+    SubstValueRange(max_key, rest) => SubstValueRange(if id > max_key {
+      id
+    } else {
+      max_key
+    }, SubstBind(id, ty, rest)),
+    SubstEmpty => SubstValueRange(id, SubstBind(id, ty, s)),
+    _ => {
+      let mut cur = s
+      let mut maximum = id
+      let mut done = false
+      let mut covered = true
+      while !done {
+        match cur {
+          SubstEmpty => done = true,
+          SubstValueRange(max_key, _) => {
+            if max_key > maximum {
+              maximum = max_key
+            }
+            done = true
+          },
+          SubstBind(key, _, rest) => {
+            if key > maximum {
+              maximum = key
+            }
+            cur = rest
+          },
+          SubstBound(_, _, rest) => cur = rest,
+          SubstEffBind(_, _, rest) => cur = rest,
+          SubstCached(_, _, _) => {
+            covered = false
+            done = true
+          }
+        }
+      }
+      let chain = SubstBind(id, ty, s)
+      if covered {
+        SubstValueRange(maximum, chain)
+      } else {
+        chain
+      }
+    }
+  }
+}
+
 export fn subst_lookup(s: Subst, id: Int) -> Option[Type] {
+  match s {
+    SubstValueRange(max_key, _) => if id > max_key {
+      None
+    } else {
+      subst_lookup_chain(s, id)
+    },
+    _ => subst_lookup_chain(s, id)
+  }
+}
+
+fn subst_lookup_chain(s: Subst, id: Int) -> Option[Type] {
   let mut cur = s
   let mut out = None
   let mut done = false
@@ -1405,6 +1474,11 @@ export fn subst_lookup(s: Subst, id: Int) -> Option[Type] {
       }
       ,
       SubstEffBind(_, _, rest) => {
+        cur = rest
+      },
+      SubstValueRange(max_key, rest) => if id > max_key {
+        done = true
+      } else {
         cur = rest
       }
     }

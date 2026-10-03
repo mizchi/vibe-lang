@@ -3,6 +3,61 @@
 CI heap KPI gate, micro benches, and perf-investigation postmortems for the
 compiler / checker.
 
+## Monotonic selfcompile KPI timing (2026-10-03)
+
+selfcompile_kpi.sh measures elapsed time with Linux uptime or a Node monotonic
+clock. A realtime backstep previously produced a negative wall_ms and bypassed
+the optional time budget. Eight regression tests cover both backends and
+runner/heap/cleanup contracts. Eight actual default cold compiles preserve
+user Wasm, allocation volume and reserved pages exactly.
+
+Linux uptime has centisecond resolution; Node fallback helper startup
+contributes to the advisory interval. Heap policy and the baseline remain.
+See the [report](../../docs/internal/reports/monotonic-selfcompile-kpi-2026-10-03.md)
+and [raw record](analysis/monotonic-selfcompile-kpi-2026-10-03.json).
+
+## Re-export surface query miss bounds (2026-10-03)
+
+Proven complete-cache name absence ends historical surface scans while
+positive/partial rows preserve their canonical fallback. The compiler-sized
+flat wall median improves -2.44%; all five
+paired trials improve. FS cold improves -2.30%;
+FS warm and package wall effects remain inconclusive.
+
+The [report](../../docs/internal/reports/reexport-surface-miss-bounds-2026-10-03.md)
+and [raw record](analysis/reexport-surface-miss-bounds-2026-10-03.json) retain
+360 controlled samples, both predicate-order variants, six ordinary default KPI
+runs and 216 actual blocks across bump/RC suites per variant. Flat allocation and all
+controlled reserved capacities stay unchanged; ordinary default allocation
+changes +3,112 B. The committed heap baseline and tolerance remain.
+
+## Known-size environment index arrays (2026-10-03)
+
+Four preallocated permutation/name/binding/probe arrays reduce compiler-sized
+bump allocation by 29,620,104 B (1.42%, 28.25 MiB), with lower allocation on all
+measured FS/package corpora. Names ownership, first-binding semantics and the
+512-statement cache cadence remain intact. Reserved capacity is unchanged;
+wall effects remain inconclusive after timing follow-ups.
+
+The [investigation report](../../docs/internal/reports/env-index-array-capacity-2026-10-03.md)
+and [raw record](analysis/env-index-array-capacity-2026-10-03.json) retain 228
+controlled samples, six ordinary default KPI runs and 188 actual bump/RC blocks.
+The ordinary cold KPI improves 1,026,358,856 → 1,019,539,416 B; the committed
+absolute baseline is ratcheted down with its +10% tolerance unchanged.
+
+## Substitution value-key bounds (2026-10-03)
+
+Repeated full-chain misses dominate substitution lookup on the compiler-sized
+corpus. Factory-owned maximum-key frames reduce the flat selfcompile median
+from 16.984 s to 15.366 s (−9.52%) while preserving binding authority and existing
+transport formats. Reserved Wasm capacity is unchanged across all measured
+corpora. This is a CPU improvement; the allocation differences are tiny.
+
+The [investigation report](../../docs/internal/reports/substitution-value-key-bounds-2026-10-03.md)
+and [raw record](analysis/substitution-value-key-bounds-2026-10-03.json) include
+54 controlled A/B samples, 30 A/A controls, profiles, diagnostic visit counts,
+compiler/source receipts, and 282 actual test blocks with bump/RC allocation.
+
 ## Selfcompile KPI heap gate (CI, #987)
 
 Driver: `scripts/selfcompile_kpi.sh <stage2.wasm> [input.vibe]`.

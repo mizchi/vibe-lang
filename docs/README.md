@@ -177,6 +177,11 @@ Not normative.
 | [internal/reports/formal-substitution-index-2026-10-02.md](internal/reports/formal-substitution-index-2026-10-02.md) | Completed substitution read indexes for formal publication, lookup preservation and paired CPU/allocation comparisons |
 | [internal/reports/effect-row-local-index-2026-10-02.md](internal/reports/effect-row-local-index-2026-10-02.md) | Local-name membership hotspot in effect-row validation, ordered-label preservation and paired CPU/allocation comparisons |
 | [internal/reports/host-geometric-growth-2026-10-02.md](internal/reports/host-geometric-growth-2026-10-02.md) | Controlled host-growth capacity comparison with bounded-memory fallback and package probes |
+| [internal/reports/warning-reference-name-index-2026-10-03.md](internal/reports/warning-reference-name-index-2026-10-03.md) | Query-local reference membership, controlled CPU/memory comparison and bump/RC regressions |
+| [internal/reports/substitution-value-key-bounds-2026-10-03.md](internal/reports/substitution-value-key-bounds-2026-10-03.md) | Conservative maximum-key frames, controlled selfcompile timing/allocation and bump/RC regressions |
+| [internal/reports/env-index-array-capacity-2026-10-03.md](internal/reports/env-index-array-capacity-2026-10-03.md) | Known-size index arrays, controlled allocation/timing follow-ups, default KPI ratchet and bump/RC regressions |
+| [internal/reports/reexport-surface-miss-bounds-2026-10-03.md](internal/reports/reexport-surface-miss-bounds-2026-10-03.md) | Complete-cache surface miss bounds, retained timing controls and bump/RC semantic regressions |
+| [internal/reports/monotonic-selfcompile-kpi-2026-10-03.md](internal/reports/monotonic-selfcompile-kpi-2026-10-03.md) | Realtime backstep reproduction, monotonic KPI clocks and actual compiler/heap parity |
 | [internal/reports/parser-simd-scan-2026-08-15.md](internal/reports/parser-simd-scan-2026-08-15.md) | |
 | [internal/reports/perf-snapshot-2026-08-07.md](internal/reports/perf-snapshot-2026-08-07.md) | |
 | [internal/reports/pl-survey-2026-07.md](internal/reports/pl-survey-2026-07.md) | |
