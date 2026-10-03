@@ -235,3 +235,29 @@ test "kinded constructor Eq specializes Array fields" {
   assert(String::contains(arrays, "__arr_equals__"))
   inspect(desugared_check_message(src), content = "")
 }
+
+// #3288: an annotated binding's shape carries a bare constructor argument
+// (`Kinded[Array[Int], Option]`). On a lane with no typed `==` rows, that
+// shape is the only route to the specialized comparator, and the decoder read
+// the bare `Option` as an Option VALUE with an unknown payload: the operand
+// dropped to the derived `Kinded::equals`, whose `T` payload compares an
+// aggregate by identity. The parameter's declared kind decides now.
+test "3288: a bare constructor argument specializes a kinded enum" {
+  let src = "enum Kinded[T, F[_]] {\n  KOk(T);\n  KErr(F[Int])\n}\nfn eq_it() -> Bool {\n  let a: Kinded[Array[Int], Option] = KOk([1, 2])\n  let b: Kinded[Array[Int], Option] = KOk([1, 2])\n  a == b\n}"
+  inspect(generated_helper_sigs(src, "Kinded::equals__"), content = "Kinded::equals__A5_ArrayC1N3_Int__N6_Option[](Kinded[Array[Int],Option],Kinded[Array[Int],Option])")
+  inspect(desugared_check_message(src), content = "")
+}
+
+test "3288: a bare constructor argument specializes a kinded struct" {
+  let src = "struct KSt[F[_], A] {\n  value: F[A]\n} derive (Eq)\nfn eq_it() -> Bool {\n  let a: KSt[Option, Array[Int]] = KSt::{ value: Some([1, 2]) }\n  let b: KSt[Option, Array[Int]] = KSt::{ value: Some([1, 2]) }\n  a == b\n}"
+  inspect(generated_helper_sigs(src, "KSt::equals__"), content = "KSt::equals__N6_Option__A5_ArrayC1N3_Int[](KSt[Option,Array[Int]],KSt[Option,Array[Int]])")
+  inspect(desugared_check_message(src), content = "")
+}
+
+// The control: at a parameter of kind `*`, a bare `Option` in a literal's
+// shape is an Option VALUE (`Box::{ v: None }`), never the constructor, so no
+// `Box[Option]` instantiation may be minted from it.
+test "3288: a bare Option at a value parameter is not read as a constructor" {
+  let src = "struct Box[T] {\n  v: T\n} derive (Eq, Show)\nfn eq_it() -> Bool {\n  let a = Box::{ v: None }\n  let b = Box::{ v: None }\n  a == b\n}"
+  inspect(String::contains(generated_helper_sigs(src, "Box::equals__"), "N6_Option"), content = "false")
+}

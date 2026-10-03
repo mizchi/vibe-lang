@@ -4,6 +4,10 @@ import @vibe/compiler/core {
   Expr, Pat, TypeExpr
 }
 
+import @vibe/ast {
+  type_param_arity
+}
+
 import ./binding_shape_queries.vibe {
   array_elem_type_of, shape_inner
 }
@@ -33,7 +37,7 @@ import ./shape_environment.vibe {
 }
 
 import ./state.vibe {
-  dtd_eq_generic_structs
+  dtd_eq_enum_decls, dtd_eq_generic_structs
 }
 
 import ./type_names.vibe {
@@ -137,12 +141,53 @@ export fn fn_eq_shape_key(fname: String) -> String {
 /// here are type constructors (`KBox[Array, Int]`), not complete values, so
 /// they must round-trip as `TyName` rather than the `?EqUnknown` marker
 /// `shape_to_eq_ty` uses for an element-free array binding.
-fn shape_to_eq_ctor_arg(sh: String) -> TypeExpr {
-  if sh == "Array" || sh == "Map" || sh == "Tuple" {
+///
+/// #3288: where `Head`'s declaration says the parameter is a type
+/// CONSTRUCTOR (`F` of `enum R[T, F[_]]`), any bare name is one --
+/// `R[Array[Int], Option]` round-trips as `TyName("Option")`, where
+/// `shape_to_eq_ty` read `Option` as an Option VALUE with an unknown payload
+/// and the whole operand fell back to the derived `R::equals`. A shape that
+/// is not a bare name cannot be a constructor and stays unknown. Where the
+/// parameter is a value type, a bare `Option` keeps its value meaning: a
+/// literal's shape (`Box::{ v: None }`) records one that way.
+fn shape_to_eq_ctor_arg(head: String, index: Int, sh: String) -> TypeExpr {
+  let arity = eq_shape_head_param_arity(head, index)
+  if arity > 0 {
+    if shape_is_bare_name(sh) {
+      TyName(sh)
+    } else {
+      TyName("?EqUnknown")
+    }
+  } else if sh == "Array" || sh == "Map" || sh == "Tuple" {
     TyName(sh)
   } else {
     shape_to_eq_ty(sh)
   }
+}
+
+fn shape_is_bare_name(sh: String) -> Bool {
+  String::length(sh) > 0 && !String::starts_with(sh, "{") && !String::starts_with(sh, "[") && !String::starts_with(sh, "(") && !String::contains(sh, ",")
+}
+
+/// The arity of the `index`th type parameter `head`'s generic struct or enum
+/// declaration names, or -1 when there is no such declaration or parameter.
+fn eq_shape_head_param_arity(head: String, index: Int) -> Int {
+  let mut out = 0 - 1
+  for decl in dtd_eq_generic_structs {
+    if decl.0 == head && index < Array::length(decl.1) {
+      out = type_param_arity(Array::get(decl.1, index))
+    } else {
+      ()
+    }
+  }
+  for edecl in dtd_eq_enum_decls {
+    if edecl.0 == head && index < Array::length(edecl.1) {
+      out = type_param_arity(Array::get(edecl.1, index))
+    } else {
+      ()
+    }
+  }
+  out
 }
 
 /// A shape string back into the TypeExpr `eq_for_typed` dispatches on. An
@@ -197,7 +242,7 @@ export fn shape_to_eq_ty(sh: String) -> TypeExpr {
       let args = empty_type_exprs()
       let mut i = 0
       while i + 1 < Array::length(parts) {
-        Array::push(args, shape_to_eq_ctor_arg(Array::get(parts, i + 1)))
+        Array::push(args, shape_to_eq_ctor_arg(Array::get(parts, 0), i, Array::get(parts, i + 1)))
         i = i + 1
       }
       TyApp(Array::get(parts, 0), args)
