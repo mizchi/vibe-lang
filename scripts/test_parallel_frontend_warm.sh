@@ -178,6 +178,16 @@ export fn typed_main() -> Int {
   exercise("typed", "typed_main.vibe", "typed_main", 0, 3);
 
   if (jobCache) {
+    // Compiler cache paths treat an empty override just like an absent one.
+    // Exercise both through the actual driver, including publication.
+    for (const override of [undefined, ""]) {
+      const summary = prewarm("main.vibe", 4, override);
+      assert.equal(summary.checked, 3);
+      const directory = join(project, ".vibe/build/cache/taskgroup-jobs-v1");
+      assert.equal(readdirSync(directory).filter(name => name.endsWith(".json")).length > 0, true);
+      assert.equal(existsSync(join(project, "taskgroup-jobs-v1")), false,
+        "empty cache override wrote replay records outside the default cache");
+    }
     const replayCache = cacheFor("replay-controls");
     assert.equal(prewarm("main.vibe", 4, replayCache).executed, 3);
     const control = compile("replay-control", "main.vibe", "main_value", replayCache);

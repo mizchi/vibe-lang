@@ -21,7 +21,7 @@ export class TaskGroupJobCache {
     const environment = Object.entries(process.env).filter(([name]) => !observation.has(name))
       .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
     const context = objectSha({ version: 1, projectRoot, images: hashes, environment });
-    const root = join(resolve(projectRoot, process.env.VIBE_BUILD_CACHE_DIR ?? ".vibe/build/cache"), "taskgroup-jobs-v1");
+    const root = join(resolve(projectRoot, process.env.VIBE_BUILD_CACHE_DIR || ".vibe/build/cache"), "taskgroup-jobs-v1");
     await mkdir(root, { recursive: true });
     return new TaskGroupJobCache(root, images, hashes, context);
   }
