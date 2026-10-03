@@ -574,7 +574,9 @@ fn same_some[T: Eq](x: T, y: T) -> Bool {
 `b`: every call picks its own, and the one lowered body cannot compare them
 by content (it answered `true` for `same(1, 1)` and `false` for two equal
 arrays). The checker rejects the comparison and names the parameters to
-annotate; a top-level `fn` with an `Eq` bound is the generic alternative:
+annotate; a top-level `fn` with an `Eq` bound is the generic alternative. A
+phantom type parameter (`struct Tagged[T] { n: Int }`) is not refused: the
+derived comparator never reads it, so `Tagged::equals` is right for every `T`.
 
 ```vibe skip
 // rejected: annotate `a`, `b` with concrete types, or write the function as

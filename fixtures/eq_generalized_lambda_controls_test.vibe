@@ -18,6 +18,38 @@ struct Pt {
   tags: Array[Int]
 } derive (Eq)
 
+struct Tagged[T] {
+  n: Int
+} derive (Eq)
+
+struct TaggedPair[T] {
+  first: Tagged[T];
+  second: Int
+} derive (Eq)
+
+enum Chain[T] {
+  End;
+  Link(Int, Chain[T])
+} derive (Eq)
+
+fn tag[T](x: T, n: Int) -> Tagged[T] {
+  let _ = x
+  Tagged::{ n: n }
+}
+
+fn tag_pair[T](x: T, n: Int) -> TaggedPair[T] {
+  TaggedPair::{ first: tag(x, n), second: n }
+}
+
+fn chain[T](x: T, n: Int) -> Chain[T] {
+  let _ = x
+  if n == 0 {
+    End
+  } else {
+    Link(n, End)
+  }
+}
+
 test "annotated parameters" {
   let cmp = (x: Array[Int], y: Array[Int]) -> Bool {
     let a = Err(x)
@@ -61,4 +93,20 @@ test "a top-level bounded fn is the generic alternative" {
 
 fn same_by_witness[T: Eq](a: T, b: T) -> Bool {
   a == b
+}
+
+// Codex P2 on #3324: a phantom parameter holds no value, so the derived
+// comparator is right for every type the lambda is generalized over and the
+// generalization refusal does not reject it. Each answer is the comparison of
+// the non-phantom fields.
+test "a phantom parameter the derived comparator never reads" {
+  let same_tag = (x, y, n, m) -> tag(x, n) == tag(y, m)
+  inspect(same_tag([1], [2], 3, 3), "true")
+  inspect(same_tag("a", "b", 3, 4), "false")
+  let same_pair = (x, y, n, m) -> tag_pair(x, n) == tag_pair(y, m)
+  inspect(same_pair(Some(1), None, 5, 5), "true")
+  inspect(same_pair(1.5, 2.5, 5, 6), "false")
+  let same_chain = (x, y, n, m) -> chain(x, n) == chain(y, m)
+  inspect(same_chain([1], [9], 2, 2), "true")
+  inspect(same_chain([1], [9], 2, 0), "false")
 }

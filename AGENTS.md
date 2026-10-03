@@ -86,7 +86,12 @@ Err(y)` are lowered once for every caller, and answered `true` for
 `same(1, 1)` but `false` for two equal arrays. It is #2474's refusal for the
 implicit type parameter a `let` introduces, and the message names the
 parameters to annotate (`fixtures/typecheck/err_type_eq_generalized_lambda_*.vibe`,
-`lib/@vibe/compiler/tests/eq_generalized_lambda_test.vibe`). Where no complete
+`lib/@vibe/compiler/tests/eq_generalized_lambda_test.vibe`). A quantified
+variable counts only where a comparator can read it: an argument of a declared
+type is walked only when that type's derived comparator reads the parameter,
+transitively, so a phantom one (`struct Tagged[T] { n: Int }`) compiles and
+compares its other fields; a program-written `::equals` is assumed to read
+every parameter (`fixtures/eq_generalized_lambda_controls_test.vibe`). Where no complete
 type reaches the `==` ladder at all (a formal of an enclosing binder, a lane
 with no typed rows), a generic head known only by name whose derived
 comparator reads a type parameter, and an `Ok` / `Err` / `Some` payload typed
