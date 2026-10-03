@@ -569,6 +569,32 @@ fn same_some[T: Eq](x: T, y: T) -> Bool {
 }
 ```
 
+**The same holds for a `let`-bound function's unannotated parameters**
+(#3297). `let same = (a, b) -> a == b` is generic in the type of `a` and
+`b`: every call picks its own, and the one lowered body cannot compare them
+by content (it answered `true` for `same(1, 1)` and `false` for two equal
+arrays). The checker rejects the comparison and names the parameters to
+annotate; a top-level `fn` with an `Eq` bound is the generic alternative. A
+phantom type parameter (`struct Tagged[T] { n: Int }`) is not refused: the
+derived comparator never reads it, so `Tagged::equals` is right for every `T`.
+
+```vibe skip
+// rejected: annotate `a`, `b` with concrete types, or write the function as
+// a top-level `fn` with an `Eq`-bounded type parameter; `==` compares two
+// values of type `_`, which this `let`-bound function leaves open for every
+// caller, so its one compiled body cannot compare them by content
+let same = (a, b) -> a == b
+```
+
+```vibe
+test "an annotated lambda compares by content" {
+  let same = (a: Array[Int], b: Array[Int]) -> Bool {
+    a == b
+  }
+  assert(same([1, 2], [1, 2]))
+}
+```
+
 **The builtin `Eq` dispatches** (#2523). `builtin_traits.vibe` still spells
 `export trait Eq` with no methods, but the checker registers that trait as
 method-bearing and the lowering injects `equals(Self, Self) -> Bool` when a

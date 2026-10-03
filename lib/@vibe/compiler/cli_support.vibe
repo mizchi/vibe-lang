@@ -305,6 +305,10 @@ export fn verify_culprit_off_marker(source: String, msg: String) -> String {
 /// interpolation refusal does.
 let index_refusal_prefix: String = "cannot tell whether this "
 
+/// #3297: the lead of a structural-`==` refusal (`eq_refusals_report`). One
+/// that names its site carries the merged offset of the `==` / `!=` operator.
+let eq_refusal_prefix: String = "structural `==` cannot be decided here: "
+
 /// FS/build compilation does not yet return the grouped-source snapshot that
 /// produced a Throw. Without same-snapshot ownership evidence, keep the culprit
 /// name but strip its unproven transport offset (#1596).
@@ -319,10 +323,13 @@ export fn verify_culprit_off_marker_fs_fail_closed(msg: String) -> String {
   if String::contains(msg, " [@off=") && String::contains(msg, " (here: the call to '") {
     verify_culprit_off_marker("", msg)
   } else if String::starts_with(msg, "cannot interpolate ") && String::contains(msg, " [@off=") {
-    locate_merged_interp_refusal(msg, false)
+    locate_merged_interp_refusal(msg, 0)
   } else if String::starts_with(msg, index_refusal_prefix) && String::contains(msg, " [@off=") {
     // #3133: an index refusal is keyed by the index's `[`.
-    locate_merged_interp_refusal(msg, true)
+    locate_merged_interp_refusal(msg, 1)
+  } else if String::starts_with(msg, eq_refusal_prefix) && String::contains(msg, " [@off=") {
+    // #3297: an equality refusal is keyed by its operator.
+    locate_merged_interp_refusal(msg, 2)
   } else {
     msg
   }
@@ -474,9 +481,11 @@ fn all_offset_chars(s: String) -> Bool {
 /// interpolation around it): an offset anywhere else says the basis is not
 /// this record, and no position beats a wrong one.
 ///
-/// #3133: `index_site` says the refusal is an index refusal, keyed by the
-/// `[` of `xs[k]`; its offset must name that bracket instead.
-fn locate_merged_interp_refusal(msg: String, index_site: Bool) -> String {
+/// #3133: `site` 1 says the refusal is an index refusal, keyed by the `[` of
+/// `xs[k]`; its offset must name that bracket instead. #3297: `site` 2 is an
+/// equality refusal, keyed by the first byte of its `==` / `!=` operator.
+/// `site` 0 is an interpolation refusal.
+fn locate_merged_interp_refusal(msg: String, site: Int) -> String {
   let marker = " [@off="
   let mi = String::index_of(msg, marker)
   let inner_start = mi + String::length(marker)
@@ -503,9 +512,11 @@ fn locate_merged_interp_refusal(msg: String, index_site: Bool) -> String {
       match merged_offset_owner(start) {
         Some((path, source, local)) => {
           let transformed = String::starts_with(source, vpkg_shared_import_marker) || String::starts_with(source, contract_facade_marker)
-          let site_ok = if index_site {
+          let site_ok = if site == 1 {
             // #3139: a written `Array::set(..)` is keyed by its name.
             local >= 0 && local < String::length(source) && (String::char_code_at(source, local) == '[' || offset_starts_name(source, local))
+          } else if site == 2 {
+            local >= 0 && local + 1 < String::length(source) && (String::byte_at(source, local) == 61 || String::byte_at(source, local) == 33) && String::byte_at(source, local + 1) == 61
           } else {
             offset_inside_interpolation(source, local) || offset_starts_name(source, local)
           }

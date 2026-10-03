@@ -12,6 +12,10 @@ import ./equality_aliases.vibe {
   eq_expand_alias_ty, eq_subst_ty
 }
 
+import ./equality_requests.vibe {
+  eq_refuse
+}
+
 import ./equality_registry.vibe {
   eq_generic_enum_declared, eq_has_explicit_equals, generic_eq_formal_is_observed, generic_eq_struct_declared
 }
@@ -28,7 +32,9 @@ import ./state.vibe {
   dtd_eq_enum_decls,
   dtd_eq_enum_formal_visit_stack,
   dtd_eq_enum_inst_check_stack,
+  dtd_eq_generic_source_equals,
   dtd_eq_generic_structs,
+  dtd_eq_generic_types,
   dtd_eq_specialization_ancestries,
   dtd_eq_specialization_stack,
   dtd_eq_specializations
@@ -569,6 +575,88 @@ fn eq_generic_enum_formal_is_observed(head: String, formal: String) -> Bool {
     Array::truncate(dtd_eq_enum_formal_visit_stack, Array::length(dtd_eq_enum_formal_visit_stack) - 1)
     observed
   }
+}
+
+/// #3297: would the DERIVED `head::equals` of a declared generic struct or
+/// enum compare a field or payload through one of its type parameters?
+///
+/// The derived comparator is generated once per declaration, not per
+/// instantiation, so a field typed by a formal (`v: T` of `struct Box[T]`)
+/// compares with the raw `==`. That is reference identity for an aggregate
+/// and for the heap-allocated `None`: measured, `Box::{ v: None } ==
+/// Box::{ v: None }` answered `false` through it, and so did two `Err([1, 2])`
+/// of `enum Res[T, E]` compared inside a lambda generalized over the payload.
+/// A caller that knows only the head name must therefore not call it for such
+/// a head. A phantom parameter (`struct Tagged[T] { n: Int }`) is not read,
+/// a program-written `::equals` is the author's contract, and a non-generic
+/// head has no formal to read -- all three answer `false`.
+export fn eq_derived_comparator_reads_formal(head: String) -> Bool {
+  if !str_array_contains(dtd_eq_generic_types, head) || str_array_contains(dtd_eq_generic_source_equals, head) {
+    false
+  } else {
+    let struct_formals = eq_generic_struct_formals(head)
+    let enum_formals = eq_generic_enum_formals(head)
+    let mut reads = false
+    let mut i = 0
+    while i < Array::length(struct_formals) && !reads {
+      reads = generic_eq_formal_is_observed(head, Array::get(struct_formals, i), empty_str_array())
+      i = i + 1
+    }
+    let mut j = 0
+    while j < Array::length(enum_formals) && !reads {
+      reads = eq_generic_enum_formal_is_observed(head, Array::get(enum_formals, j))
+      j = j + 1
+    }
+    reads
+  }
+}
+
+/// #3297: the build-time refusal for `==` / `!=` whose operand is known here
+/// only by its head, `head`, when `eq_derived_comparator_reads_formal(head)`:
+/// the derived comparator would answer by reference for an aggregate
+/// argument, so the comparison is refused with the edit that supplies the
+/// arguments. `off` is the operator's source offset (-1 when the node has
+/// none); the report carries it as the diagnostic's site.
+export fn eq_derived_generic_refused(op: String, head: String, off: Int) -> Expr {
+  let arity = Array::length(eq_generic_struct_formals(head)) + Array::length(eq_generic_enum_formals(head))
+  let slots = empty_str_array()
+  let mut i = 0
+  while i < arity {
+    Array::push(slots, "<type>")
+    i = i + 1
+  }
+  let spelled = String::concat(head, String::concat("[", String::concat(String::join(slots, ", "), "]")))
+  let marker = if off >= 0 {
+    String::concat(" [@off=", String::concat(idx_str(off), "]"))
+  } else {
+    ""
+  }
+  let reason = String::concat("annotate the compared values with their complete type (`let a: ", String::concat(spelled, String::concat(" = ...`), or compare them at a concrete type: this `", String::concat(op, String::concat("` compares two `", String::concat(head, String::concat("` values whose type arguments are not known here, and the derived `", String::concat(head, String::concat("::equals` compares a field or payload typed by a type parameter by reference, not by content", marker)))))))))
+  let trapped = eq_refuse(reason)
+  if op == "==" {
+    trapped
+  } else {
+    ECall(EIdent("not", -1), [trapped], -1, [])
+  }
+}
+
+/// #3297: the build-time refusal for the `Option` / `Result` rungs when no
+/// complete type reaches them and an operand's recorded shape mentions the
+/// formals `formals`: those rungs compare each payload with the raw `==`, which
+/// is reference identity for an aggregate the formal stands for. `off` is the
+/// operator's source offset (-1 when the node has none).
+export fn eq_formal_payload_refused(op: String, formals: Array[String], off: Int) -> Expr {
+  let quoted = empty_str_array()
+  for f in formals {
+    Array::push(quoted, String::concat("`", String::concat(f, "`")))
+  }
+  let marker = if off >= 0 {
+    String::concat(" [@off=", String::concat(idx_str(off), "]"))
+  } else {
+    ""
+  }
+  let reason = String::concat("annotate the compared values with their complete type (`let a: <type> = ...`), or compare them at a concrete type: this `", String::concat(op, String::concat("` compares values with a payload typed by ", String::concat(String::join(quoted, ", "), String::concat(", but their complete type is not known here, so the payload would compare by reference, not by content", marker)))))
+  eq_refuse(reason)
 }
 
 /// Where `inst` stands against the instantiations being walked: 1 when the

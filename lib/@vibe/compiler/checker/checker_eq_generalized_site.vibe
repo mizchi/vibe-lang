@@ -1,0 +1,440 @@
+// lib/@vibe/compiler/checker -- `==` on a type a `let`-bound function leaves
+// open (#3297).
+
+import @vibe/compiler/checker/diagnostics {
+  off_marker
+}
+
+import @vibe/compiler/core {
+  Expr, Stmt, Subst, Type, TypeDef, collect_tvars, find_typedef, subst_apply, type_to_string
+}
+
+import @vibe/ast {
+  type_param_name
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import ./checker_merge_capture_provenance.vibe {
+  checker_string_array_has, deferred_eq_sites, eq_formal_vars, eq_source_comparator_heads, int_array_has
+}
+
+//# Recording
+
+/// #3297: file an `==` / `!=` site whose operand type still mentions a type
+/// variable, for `refuse_generalized_eq_sites`. `resolved` is the operand
+/// type against the substitution the operator was checked with; `off` is the
+/// diagnostic anchor the refusal is reported at.
+export fn note_open_eq_site(op: String, resolved: Type, off: Int) -> Unit {
+  if Array::length(collect_tvars(resolved)) > 0 {
+    Array::push(deferred_eq_sites, (off, resolved, op))
+  } else {
+    ()
+  }
+}
+
+/// #3297 (Codex P2 on #3324): record the declared types whose `::equals`
+/// this statement list WRITES -- a top-level `fn Head::equals`, or an impl
+/// method lowered to `Head::equals` / `Head$impl$..::equals`. The checker
+/// binds a `Head::equals` for every struct and enum, so the environment cannot
+/// tell a hand-written comparator from a derived one; the statements can.
+/// `eq_head_reads_param` treats every parameter of such a head as read.
+export fn note_source_comparator_heads(stmts: Array[Stmt], from: Int) -> Unit {
+  let suffix = "::equals"
+  let mut i = from
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, _) => if String::ends_with(name, suffix) && String::length(name) > String::length(suffix) {
+        let owner = String::substring(name, 0, String::length(name) - String::length(suffix))
+        let cut = String::index_of(owner, "$")
+        let head = if cut > 0 {
+          String::substring(owner, 0, cut)
+        } else {
+          owner
+        }
+        if !checker_string_array_has(eq_source_comparator_heads, head) {
+          Array::push(eq_source_comparator_heads, head)
+        } else {
+          ()
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+//# Refusal
+
+/// #3297: refuse every pending `==` / `!=` whose operand type mentions a
+/// variable that the `let` binding just generalized has QUANTIFIED.
+///
+/// `let cmp = (x, y) -> Err(x) == Err(y)` is generalized: `x`'s type is a
+/// quantified variable, and every call instantiates a fresh copy of it. The
+/// body is lowered ONCE for all of those callers, so the comparison has no
+/// type to compare by, and whatever the lowering picks is wrong for some
+/// caller. Measured before this refusal, `cmp([1, 2], [1, 2])` answered
+/// `false`: the comparison reached the derived `Res::equals`, which compares
+/// the `E` payload with the raw `==`, and that is reference identity for an
+/// array. A `[T]` formal of a declared generic gets the same refusal from
+/// #2474 at the operator itself; a quantified lambda parameter only becomes
+/// one here, after the body that compares it has been checked.
+///
+/// A variable that stands for a recorded binder formal is not this check's:
+/// an `Eq`-bounded one dispatches through its witness and an unbounded one is
+/// refused by #2474. A variable that is still free here but never quantified
+/// holds no value at all (nothing produces one), and the `==` row extraction
+/// fills it in (`eq_channel_row_type_expr`). Rows whose type resolved are
+/// dropped; the rest wait for an enclosing generalization.
+///
+/// `val` is the bound expression, `vt` its type before generalization and
+/// `gen` after; only a `CtForAll` that the generalization introduced can
+/// quantify anything. A value that was ALREADY a `CtForAll` -- a lambda with an
+/// explicit binder, `[T: Eq](a: T, b: T) -> ...` -- passes through
+/// `let_generalize` unchanged, and its variables are declared formals: an
+/// `Eq`-bounded one dispatches through its witness, an unbounded one is
+/// #2474's, and the compiler's own `__Vfp_` helpers are exempt there. Called
+/// right after each `let_generalize`, with the substitution it used.
+export fn refuse_generalized_eq_sites(val: Expr, vt: Type, gen: Type, s: Subst, defs: Array[TypeDef], errors: Array[String]) -> Unit {
+  let explicit = match subst_apply(s, vt) {
+    CtForAll(_, _, _) => true,
+    _ => false
+  }
+  match gen {
+    CtForAll(vars, _, body) => if !explicit && Array::length(deferred_eq_sites) > 0 {
+      let kept: Array[(Int, Type, String)] = []
+      let mut i = 0
+      while i < Array::length(deferred_eq_sites) {
+        let (off, ty, op) = Array::get(deferred_eq_sites, i)
+        let resolved = subst_apply(s, ty)
+        let hits: Array[Int] = []
+        eq_quantified_vars_in(resolved, vars, s, defs, hits)
+        if Array::length(hits) > 0 {
+          Array::push(errors, String::concat(generalized_eq_message(op, resolved, hits, val, body, s), off_marker(off)))
+        } else if Array::length(collect_tvars(resolved)) > 0 {
+          Array::push(kept, (off, ty, op))
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      Array::truncate(deferred_eq_sites, 0)
+      let mut k = 0
+      while k < Array::length(kept) {
+        Array::push(deferred_eq_sites, Array::get(kept, k))
+        k = k + 1
+      }
+    } else {
+      ()
+    },
+    _ => ()
+  }
+}
+
+/// Does variable `id` stand for a recorded binder formal under `s`?
+fn eq_var_is_binder_formal(id: Int, s: Subst) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(eq_formal_vars) && !found {
+    let (vid, _) = Array::get(eq_formal_vars, i)
+    if vid == id {
+      found = true
+    } else {
+      match subst_apply(s, CtVar(vid)) {
+        CtVar(rid) => if rid == id {
+          found = true
+        } else {
+          ()
+        },
+        _ => ()
+      }
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Collect the variables of `ty` that are in `vars` and are not binder
+/// formals, walking the shapes a comparator descends -- the walk of #2474's
+/// `eq_unbounded_formals_in`, except that a declared type's argument is
+/// descended only when that type's comparator reads the corresponding
+/// parameter (`eq_head_reads_param`). A phantom argument
+/// (`struct Tagged[T] { n: Int }`) holds no value of `T`, so `Tagged::equals`
+/// is right for every `T` and a quantified `T` there is no reason to refuse
+/// (Codex P2 on #3324). A function type never compares, so it is not
+/// descended.
+fn eq_quantified_vars_in(ty: Type, vars: Array[Int], s: Subst, defs: Array[TypeDef], out: Array[Int]) -> Unit {
+  match ty {
+    CtVar(id) => if int_array_has(vars, id) && !int_array_has(out, id) && !eq_var_is_binder_formal(id, s) {
+      Array::push(out, id)
+    } else {
+      ()
+    },
+    CtNamed(n, args) => eq_quantified_vars_in_read_args(n, args, vars, s, defs, out),
+    CtArray(e) => eq_quantified_vars_in(e, vars, s, defs, out),
+    CtOption(e) => eq_quantified_vars_in(e, vars, s, defs, out),
+    CtTuple(items) => eq_quantified_vars_in_all(items, vars, s, defs, out),
+    CtRecord(rfields) => {
+      let mut i = 0
+      while i < Array::length(rfields) {
+        let (_, fty) = Array::get(rfields, i)
+        eq_quantified_vars_in(fty, vars, s, defs, out)
+        i = i + 1
+      }
+    },
+    CtApplied(head, args) => match head {
+      CtNamed(n, hargs) => if Array::length(hargs) == 0 {
+        eq_quantified_vars_in_read_args(n, args, vars, s, defs, out)
+      } else {
+        eq_quantified_vars_in(head, vars, s, defs, out)
+        eq_quantified_vars_in_all(args, vars, s, defs, out)
+      },
+      _ => {
+        eq_quantified_vars_in(head, vars, s, defs, out)
+        eq_quantified_vars_in_all(args, vars, s, defs, out)
+      }
+    },
+    _ => ()
+  }
+}
+
+fn eq_quantified_vars_in_all(items: Array[Type], vars: Array[Int], s: Subst, defs: Array[TypeDef], out: Array[Int]) -> Unit {
+  let mut i = 0
+  while i < Array::length(items) {
+    eq_quantified_vars_in(Array::get(items, i), vars, s, defs, out)
+    i = i + 1
+  }
+}
+
+/// The arguments of the declared type `n` that its comparator reads, walked.
+fn eq_quantified_vars_in_read_args(n: String, args: Array[Type], vars: Array[Int], s: Subst, defs: Array[TypeDef], out: Array[Int]) -> Unit {
+  let mut i = 0
+  while i < Array::length(args) {
+    let visiting: Array[String] = []
+    if eq_head_reads_param(defs, n, i, visiting) {
+      eq_quantified_vars_in(Array::get(args, i), vars, s, defs, out)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
+/// Can the comparator of the declared type `head` reach a value of its
+/// `index`th type parameter? Fail-closed: `true` whenever that cannot be
+/// decided -- a head with no declaration in `defs` (a builtin, an opaque or
+/// unseen type), an index past the declaration's parameters, a declaration
+/// kind this walk does not model, and a head whose `::equals` the program
+/// writes itself (`note_source_comparator_heads`), whose reads the checker
+/// cannot see. A derived comparator reads the parameter exactly when some
+/// field or payload type reads it (`eq_type_reads_param`), through nested
+/// declared types and aliases. A `(head, parameter)` pair met again inside
+/// its own walk answers `false`: the recursive occurrence is compared by the
+/// comparator under examination, which reads the parameter only if some other
+/// position does, and that position is still walked -- the coinductive answer
+/// the lowering's `eq_generic_enum_formal_is_observed` gives.
+fn eq_head_reads_param(defs: Array[TypeDef], head: String, index: Int, visiting: Array[String]) -> Bool {
+  if checker_string_array_has(eq_source_comparator_heads, head) {
+    true
+  } else {
+    match find_typedef(defs, head) {
+      Some(TDStruct(_, fields, _, tparams)) => if index >= Array::length(tparams) {
+        true
+      } else {
+        let field_tys: Array[Type] = []
+        let mut i = 0
+        while i < Array::length(fields) {
+          let (_, fty) = Array::get(fields, i)
+          Array::push(field_tys, fty)
+          i = i + 1
+        }
+        eq_decl_reads_param(defs, head, type_param_name(Array::get(tparams, index)), field_tys, visiting)
+      },
+      Some(TDEnum(_, tparams, variants)) => if index >= Array::length(tparams) {
+        true
+      } else {
+        let payload_tys: Array[Type] = []
+        let mut i = 0
+        while i < Array::length(variants) {
+          let (_, payload) = Array::get(variants, i)
+          let mut j = 0
+          while j < Array::length(payload) {
+            Array::push(payload_tys, Array::get(payload, j))
+            j = j + 1
+          }
+          i = i + 1
+        }
+        eq_decl_reads_param(defs, head, type_param_name(Array::get(tparams, index)), payload_tys, visiting)
+      },
+      Some(TDAlias(_, aparams, target)) => if index >= Array::length(aparams) {
+        true
+      } else {
+        eq_type_reads_param(defs, target, type_param_name(Array::get(aparams, index)), visiting)
+      },
+      _ => true
+    }
+  }
+}
+
+/// Does any of a declaration's field or payload types `tys` read its
+/// parameter `p`? `visiting` holds the `(head, parameter)` pairs being walked.
+fn eq_decl_reads_param(defs: Array[TypeDef], head: String, p: String, tys: Array[Type], visiting: Array[String]) -> Bool {
+  let key = String::concat(head, String::concat("::", p))
+  if checker_string_array_has(visiting, key) {
+    false
+  } else {
+    Array::push(visiting, key)
+    let mut reads = false
+    let mut i = 0
+    while i < Array::length(tys) && !reads {
+      reads = eq_type_reads_param(defs, Array::get(tys, i), p, visiting)
+      i = i + 1
+    }
+    Array::truncate(visiting, Array::length(visiting) - 1)
+    reads
+  }
+}
+
+/// Does a value of the declaration-level type `t` (a field, payload or alias
+/// target, where the parameter `p` is spelled `CtNamed(p, ..)`) let a
+/// comparator reach a value of `p`? A declared type's argument counts only
+/// when that type reads the matching parameter; a shape this walk does not
+/// know answers `true`.
+fn eq_type_reads_param(defs: Array[TypeDef], t: Type, p: String, visiting: Array[String]) -> Bool {
+  match t {
+    CtNamed(n, targs) => if n == p {
+      true
+    } else {
+      let mut reads = false
+      let mut i = 0
+      while i < Array::length(targs) && !reads {
+        reads = eq_type_reads_param(defs, Array::get(targs, i), p, visiting) && eq_head_reads_param(defs, n, i, visiting)
+        i = i + 1
+      }
+      reads
+    },
+    CtArray(e) => eq_type_reads_param(defs, e, p, visiting),
+    CtOption(e) => eq_type_reads_param(defs, e, p, visiting),
+    CtTuple(items) => eq_types_read_param(defs, items, p, visiting),
+    CtRecord(rfields) => {
+      let mut reads = false
+      let mut i = 0
+      while i < Array::length(rfields) && !reads {
+        let (_, fty) = Array::get(rfields, i)
+        reads = eq_type_reads_param(defs, fty, p, visiting)
+        i = i + 1
+      }
+      reads
+    },
+    CtFn(params, ret, _) => eq_type_reads_param(defs, ret, p, visiting) || eq_types_read_param(defs, params, p, visiting),
+    CtApplied(h, targs) => eq_type_reads_param(defs, h, p, visiting) || eq_types_read_param(defs, targs, p, visiting),
+    CtInt => false,
+    CtDouble => false,
+    CtBool => false,
+    CtString => false,
+    CtChar => false,
+    CtBytes => false,
+    CtUnit => false,
+    CtEnum(_) => false,
+    CtStruct(_) => false,
+    _ => true
+  }
+}
+
+fn eq_types_read_param(defs: Array[TypeDef], ts: Array[Type], p: String, visiting: Array[String]) -> Bool {
+  let mut reads = false
+  let mut i = 0
+  while i < Array::length(ts) && !reads {
+    reads = eq_type_reads_param(defs, Array::get(ts, i), p, visiting)
+    i = i + 1
+  }
+  reads
+}
+
+/// Does `ty` mention any variable of `ids`?
+fn eq_type_mentions_any(ty: Type, ids: Array[Int]) -> Bool {
+  let tvs = collect_tvars(ty)
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(tvs) && !found {
+    if int_array_has(ids, Array::get(tvs, i)) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// The unannotated parameters of `val` (when it is a lambda) whose type in
+/// the generalized `body` mentions one of `hits` -- the parameters an
+/// annotation fixes.
+fn eq_open_param_names(val: Expr, body: Type, hits: Array[Int], s: Subst) -> Array[String] {
+  let out: Array[String] = []
+  match val {
+    EFn(_, _, params, _, _, _) => match subst_apply(s, body) {
+      CtFn(ptypes, _, _) => if Array::length(ptypes) == Array::length(params) {
+        let mut i = 0
+        while i < Array::length(params) {
+          let (pname, pann) = Array::get(params, i)
+          let unannotated = match pann {
+            Some(_) => false,
+            None => true
+          }
+          if unannotated && eq_type_mentions_any(subst_apply(s, Array::get(ptypes, i)), hits) {
+            Array::push(out, pname)
+          } else {
+            ()
+          }
+          i = i + 1
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    },
+    _ => ()
+  }
+  out
+}
+
+/// `ty` with every type variable spelled `_`: the variables have no source
+/// name, and the reader needs the shape, not an inference id.
+fn eq_open_display_type(ty: Type) -> String {
+  let tvs = collect_tvars(ty)
+  let mut sub = SubstEmpty
+  let mut i = 0
+  while i < Array::length(tvs) {
+    sub = SubstBind(Array::get(tvs, i), CtNamed("_", array_empty()), sub)
+    i = i + 1
+  }
+  type_to_string(subst_apply(sub, ty))
+}
+
+/// The refusal text. Leads with the edit: annotate the parameters whose type
+/// the function leaves open. The alternative it names is a top-level `fn`
+/// with an `Eq`-bounded type parameter, whose witness compares by content
+/// (#2523 / #3287). A bound on the lambda itself is not suggested: measured,
+/// `let same = [T: Eq](a: T, b: T) -> Bool { a == b }` written in a `test`
+/// block answered `false` for two equal `derive (Eq)` values, where the same
+/// lambda in a `fn` body and a top-level `fn` answered `true`.
+fn generalized_eq_message(op: String, resolved: Type, hits: Array[Int], val: Expr, body: Type, s: Subst) -> String {
+  let names = eq_open_param_names(val, body, hits, s)
+  let quoted: Array[String] = []
+  let mut i = 0
+  while i < Array::length(names) {
+    Array::push(quoted, String::concat("`", String::concat(Array::get(names, i), "`")))
+    i = i + 1
+  }
+  let subject = if Array::length(names) == 0 {
+    "the parameters of this `let`-bound function"
+  } else {
+    String::join(quoted, ", ")
+  }
+  String::concat("annotate ", String::concat(subject, String::concat(" with concrete types, or write the function as a top-level `fn` with an `Eq`-bounded type parameter; `", String::concat(op, String::concat("` compares two values of type `", String::concat(eq_open_display_type(resolved), "`, which this `let`-bound function leaves open for every caller, so its one compiled body cannot compare them by content"))))))
+}

@@ -142,7 +142,7 @@ import ./generic_dispatch.vibe {
 }
 
 import ./generic_equality.vibe {
-  opt_eq_match, result_eq_match
+  eq_derived_comparator_reads_formal, eq_derived_generic_refused, eq_formal_payload_refused, opt_eq_match, result_eq_match
 }
 
 import ./inspect_rewrite.vibe {
@@ -291,7 +291,7 @@ import ./witness_generation.vibe {
 }
 
 import ./witnessed_equality.vibe {
-  dtd_eq_witnessed_compare, opt_expr_is_some, opt_expr_or_unit
+  dtd_eq_operand_formals, dtd_eq_witnessed_compare, opt_expr_is_some, opt_expr_or_unit
 }
 
 /// Render one sub-expression by re-entering the interpolation rewrite on a
@@ -2001,7 +2001,14 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
                         // (merged) program declares under that name -- the
                         // struct dispatch would call `T::equals` on erased
                         // operands and read garbage.
-                        None => if struct_set_has(struct_sets, t) && !formal_in_scope(t) {
+                        None => if struct_set_has(struct_sets, t) && !formal_in_scope(t) && eq_derived_comparator_reads_formal(t) {
+                          // #3297: only the head is known here, and the
+                          // derived comparator of this generic head compares a
+                          // formal-typed field or payload by reference. Every
+                          // complete-type rung above declined, so refuse
+                          // rather than call it.
+                          eq_derived_generic_refused(op, t, boff)
+                        } else if struct_set_has(struct_sets, t) && !formal_in_scope(t) {
                           let call = ECall(EIdent(String::concat(t, "::equals"), -1), [
                             rl,
                             rr
@@ -2036,7 +2043,16 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
                             } else {
                               eq_for_typed(te, rl, rr, dtd_eq_known_types)
                             },
-                            None => opt_eq_match(rl, rr)
+                            None => {
+                              // #3297: a payload typed by a formal would
+                              // compare by reference in the raw match.
+                              let formals = dtd_eq_operand_formals(l, r, struct_sets, var_types, fn_returns)
+                              if Array::length(formals) > 0 {
+                                eq_formal_payload_refused(op, formals, boff)
+                              } else {
+                                opt_eq_match(rl, rr)
+                              }
+                            }
                           }
                           if op == "==" {
                             eqm
@@ -2050,7 +2066,14 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
                             } else {
                               eq_for_typed(te, rl, rr, dtd_eq_known_types)
                             },
-                            None => result_eq_match(rl, rr)
+                            None => {
+                              let formals = dtd_eq_operand_formals(l, r, struct_sets, var_types, fn_returns)
+                              if Array::length(formals) > 0 {
+                                eq_formal_payload_refused(op, formals, boff)
+                              } else {
+                                result_eq_match(rl, rr)
+                              }
+                            }
                           }
                           if op == "==" {
                             eqm
