@@ -1,0 +1,53 @@
+//# An `Eq` bound written only inside `test` blocks dispatches through its witness (#3312).
+//
+// The lowering injects the builtin `Eq` signature (`equals(Self, Self) ->
+// Bool`, #2523) only when some binder in the program carries an `Eq` bound.
+// The scan that answered that question read top-level `let` / `fn` values and
+// `impl` bounds and nothing else, so a bound whose only home was a `test`
+// body was never seen. `Eq` then stayed a marker, the lambdas below threaded
+// no witness, and `a == b` compared raw values: two equal boxed `Double`s
+// answered `false` while `vibe check` stayed clean. The same test answered
+// `true` as soon as any `fn` elsewhere in the program carried an `[T: Eq]`
+// lambda.
+//
+// Keep every `Eq` bound in this file inside a `test` block. A top-level
+// generic with one triggers the injection by itself and would hide the
+// regression. `derive (Eq)` does not trigger it: the impl it registers carries
+// no bound.
+
+struct Pt {
+  v: Int
+} derive (Eq)
+
+test "a bounded lambda in a test block compares Doubles by value" {
+  let same = [T: Eq](a: T, b: T) -> Bool {
+    a == b
+  }
+  inspect(same(1.5, 1.5), "true")
+  inspect(same(1.5, 2.5), "false")
+}
+
+test "a bounded lambda in a test block compares a derived struct by content" {
+  let same = [T: Eq](a: T, b: T) -> Bool {
+    a == b
+  }
+  inspect(same(Pt::{ v: 1 }, Pt::{ v: 1 }), "true")
+  inspect(same(Pt::{ v: 1 }, Pt::{ v: 2 }), "false")
+}
+
+// The pattern binder is re-bound with an annotation because the call reads
+// `T` from its argument: an unannotated `x` is refused at build time with that
+// edit, in a `test` block exactly as in a `fn` (#3287).
+test "a bounded lambda nested in a match arm of a test block" {
+  let answer = match Some(1.5) {
+    Some(x) => {
+      let v: Double = x
+      let same = [T: Eq](a: T, b: T) -> Bool {
+        a == b
+      }
+      same(v, 1.5)
+    },
+    None => false
+  }
+  inspect(answer, "true")
+}

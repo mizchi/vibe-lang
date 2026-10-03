@@ -1,0 +1,114 @@
+// #3312: the builtin `Eq` signature (`equals(Self, Self) -> Bool`, #2523) is
+// injected into the lowering's trait table only when some binder in the
+// program carries an `Eq` bound. The scan that decides it read top-level
+// `let` / `fn` values and `impl` bounds only, so a bound that lived in a
+// `test` or `bench` body was never seen: `Eq` stayed a marker, the bound
+// threaded no witness, and `a == b` compared raw values (`false` for two
+// equal boxed `Double`s, after a clean `vibe check`).
+//
+// These drive the injection directly rather than through a compiled program.
+// A compiled program can only show the scan through its runtime answer, and
+// one bound anywhere in a file answers for every other shape in it; here each
+// case is the program's ONLY bound, so each row says whether the scan reached
+// that shape. The runtime answers live in
+// `fixtures/eq_bound_test_block_witness_test.vibe`.
+//
+// The last rows read the method-bearing trait table the injection leaves
+// behind. A methodless `trait Key: Eq {}` was collected out of that table
+// before `Eq` was injected into it, so `[T: Key]` threaded no witness either
+// (`fixtures/eq_bound_inherited_methodless_witness_test.vibe`).
+
+import @vibe/compiler/core {
+  TypeExpr
+}
+
+import @vibe/compiler/lowering/trait_namespaces {
+  collect_method_traits, collect_trait_supers
+}
+
+import @vibe/parser {
+  lex, parse_program
+}
+
+import ./trait_bounds.vibe {
+  dtd_trait_supers_set
+}
+
+import ./witness_targets.vibe {
+  dtd_eq_was_injected, dtd_inject_builtin_eq
+}
+
+fn injects(source: String) -> Bool with Exception {
+  let stmts = parse_program(lex(source))
+  let traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])] = []
+  dtd_inject_builtin_eq(stmts, traits)
+  dtd_eq_was_injected()
+}
+
+// The method-bearing trait names after the injection, built in `dtd_run`'s
+// order: the supertrait graph, then the table, then the injection.
+fn method_traits(source: String) -> String with Exception {
+  let stmts = parse_program(lex(source))
+  dtd_trait_supers_set(collect_trait_supers(stmts))
+  let traits = collect_method_traits(stmts)
+  dtd_inject_builtin_eq(stmts, traits)
+  let names: Array[String] = []
+  for entry in traits {
+    let (name, _) = entry
+    Array::push(names, name)
+  }
+  dtd_trait_supers_set([])
+  String::join(names, ",")
+}
+
+test "a bound on a top-level generic fn is seen" {
+  inspect(injects("fn same[T: Eq](a: T, b: T) -> Bool {\n  a == b\n}\n"), "true")
+}
+
+test "a bounded lambda in a test block is seen" {
+  inspect(injects("test \"t\" {\n  let same = [T: Eq](a: T, b: T) -> Bool {\n    a == b\n  }\n  assert(same(1.5, 1.5))\n}\n"), "true")
+}
+
+test "a bounded lambda in a bench block is seen" {
+  inspect(injects("bench \"b\" {\n  let same = [T: Eq](a: T, b: T) -> Bool {\n    a == b\n  }\n  let _ = same(1.5, 1.5)\n}\n"), "true")
+}
+
+test "a bounded lambda in a match arm inside a test block is seen" {
+  inspect(injects("test \"t\" {\n  let ok = match Some(1.5) {\n    Some(x) => {\n      let same = [T: Eq](a: T, b: T) -> Bool {\n        a == b\n      }\n      same(x, 1.5)\n    },\n    None => false\n  }\n  assert(ok)\n}\n"), "true")
+}
+
+test "a bounded lambda nested in another lambda inside a test block is seen" {
+  inspect(injects("test \"t\" {\n  let outer = (x: Double) -> Bool {\n    let same = [T: Eq](a: T, b: T) -> Bool {\n      a == b\n    }\n    same(x, x)\n  }\n  assert(outer(1.5))\n}\n"), "true")
+}
+
+test "a trait method's own Eq binder is seen" {
+  inspect(injects("trait Cmp {\n  same: [X: Eq](Self, X, X) -> Bool\n}\n"), "true")
+}
+
+test "a program with no Eq bound injects nothing" {
+  inspect(injects("test \"t\" {\n  let same = [T](a: T, b: T) -> Int {\n    1\n  }\n  assert(same(1.5, 1.5) == 1)\n}\n"), "false")
+}
+
+test "a bound other than Eq injects nothing" {
+  inspect(injects("trait Show {\n  to_string(Self) -> String\n}\n\ntest \"t\" {\n  let show = [T: Show](a: T) -> String {\n    T::to_string(a)\n  }\n  assert(show(1) == \"1\")\n}\n"), "false")
+}
+
+test "a program declaring its own trait Eq injects nothing" {
+  inspect(injects("trait Eq {\n  equals(Self, Self) -> Bool\n}\n\ntest \"t\" {\n  let same = [T: Eq](a: T, b: T) -> Bool {\n    a == b\n  }\n  assert(same(1, 1))\n}\n"), "false")
+}
+
+test "a methodless subtrait of the injected Eq joins the method-bearing table" {
+  inspect(method_traits("trait Key: Eq {\n}\n\nfn same[T: Key](x: T, y: T) -> Bool {\n  x == y\n}\n"), "Eq,Key")
+}
+
+test "a methodless chain over the injected Eq joins the table whole" {
+  inspect(method_traits("trait A: Eq {\n}\n\ntrait B: A {\n}\n\nfn same[T: B](x: T, y: T) -> Bool {\n  x == y\n}\n"), "Eq,A,B")
+}
+
+test "a methodless subtrait of a program's own marker Eq stays a marker" {
+  inspect(method_traits("trait Eq {\n}\n\ntrait Key: Eq {\n}\n\nfn same[T: Key](x: T, y: T) -> Bool {\n  x == y\n}\n"), "")
+}
+
+test "a methodless subtrait of Eq with no bound anywhere admits nothing" {
+  inspect(method_traits("trait Key: Eq {\n}\n\nfn id(x: Int) -> Int {\n  x\n}\n"), "")
+}

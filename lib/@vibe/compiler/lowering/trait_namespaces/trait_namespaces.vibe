@@ -55,15 +55,44 @@ export fn dict_param_name(trait_name: String, tparam: String) -> String {
 /// A marker-only trait stays inert, while `trait Child: Parent` is retained
 /// when `Parent` contributes a method to the child's witness dictionary.
 export fn collect_method_traits(stmts: Array[Stmt]) -> Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])] {
-  let declared = collect_namespace_traits(stmts)
-  let flattened = flatten_traits(declared, collect_trait_supers(stmts))
   let out = array_empty()
+  push_method_traits(stmts, out)
+  out
+}
+
+/// Append to `table` every declared trait it did not already hold whose
+/// flattened signature contains a method -- `collect_method_traits`'s rule,
+/// with `table`'s own entries joining the declarations as parents.
+///
+/// #3312: that second source of parents is the builtin `Eq` the lowering
+/// injects as a SIGNATURE, with no declaration behind it (#2523). Collected
+/// before the injection, a methodless `trait Key: Eq {}` flattened to nothing
+/// and was dropped, and appending `Eq` afterwards could not bring it back:
+/// `[T: Key]` threaded no witness and `x == y` compared two equal `Double`s
+/// raw (`false`). The injection calls this again once `Eq` is in the table.
+/// A marker parent contributes no method, so a methodless subtrait of a
+/// program's own marker `Eq` stays a marker.
+export fn push_method_traits(stmts: Array[Stmt], table: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])]) -> Unit {
+  let declared = collect_namespace_traits(stmts)
+  let held = Array::length(table)
+  let graph = array_empty()
+  let mut g = 0
+  while g < held {
+    Array::push(graph, Array::get(table, g))
+    g = g + 1
+  }
+  let mut d = 0
+  while d < Array::length(declared) {
+    Array::push(graph, Array::get(declared, d))
+    d = d + 1
+  }
+  let flattened = flatten_traits(graph, collect_trait_supers(stmts))
   let mut i = 0
   while i < Array::length(declared) {
     let (trait_name, declared_methods) = Array::get(declared, i)
     match lookup_trait_sigs(flattened, trait_name) {
-      Some(methods) => if Array::length(methods) > 0 {
-        Array::push(out, (trait_name, declared_methods))
+      Some(methods) => if Array::length(methods) > 0 && !table_prefix_holds(table, held, trait_name) {
+        Array::push(table, (trait_name, declared_methods))
       } else {
         ()
       },
@@ -71,7 +100,17 @@ export fn collect_method_traits(stmts: Array[Stmt]) -> Array[(String, Array[(Str
     }
     i = i + 1
   }
-  out
+}
+
+fn table_prefix_holds(table: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], limit: Int, name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < limit {
+    let (tname, _) = Array::get(table, i)
+    found = tname == trait_ref_name(name)
+    i = i + 1
+  }
+  found
 }
 
 /// Collect every declared trait signature. Namespace derivation and dictionary
