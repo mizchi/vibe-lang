@@ -252,6 +252,32 @@ test "fail-fast: sibling still Ready when a child fails is cancelled" {
   }
 }
 
+/// #3277: a spawn into a group that is already cancelling (a sibling failed
+/// and its failure was observed) used to trap with a bare `unreachable`. The
+/// child is queued and the dispatch cancel point resolves it, so its join
+/// throws `Cancelled` and the group still reports the first failure.
+test "spawn after a sibling failed is cancelled, not a trap" {
+  let r = handle {
+    TaskGroup::run((n) -> {
+      let bad = TaskGroup::spawn(n, () -> {
+        throw("boom")
+        0
+      })
+      assert(caught_join(bad) is Some(TaskError::Failed("boom")))
+      let later = TaskGroup::spawn(n, () -> {
+        1
+      })
+      assert(caught_join(later) is Some(TaskError::Cancelled))
+      0
+    })
+    None
+  } with { Exception[TaskError]::Throw(err) => Some(err) }
+  match r {
+    Some(TaskError::Failed(msg)) => assert_eq(msg, "boom"),
+    _ => assert(false)
+  }
+}
+
 test "child Err value is a recoverable result, not a task failure" {
   let r = TaskGroup::run((n) -> {
     let t = TaskGroup::spawn(n, () -> {
