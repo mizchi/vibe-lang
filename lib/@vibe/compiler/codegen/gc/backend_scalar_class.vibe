@@ -1,0 +1,239 @@
+// lib/@vibe/compiler/codegen/gc/backend_scalar_class.vibe -- the gc lane's
+// static scalar classifiers: "is this expression statically a Double / a
+// Bool", plus the checker-channel lookups both read first.
+//
+// Each of these used to exist twice: once in backend_expr.vibe (gc_*) and a
+// "local mirror" in backend_call_named_2.vibe (bc_*), because backend_call
+// cannot import backend_expr without a cycle. The bodies were identical apart
+// from the prefix, and every fix had to land twice (#2158, #2464). A leaf
+// module both files import removes the reason for the mirror.
+
+import @vibe/compiler/core {
+  Expr, builtin_returns_bool, typed_lowering_arg_offset, typed_lowering_float_key
+}
+
+import @vibe/compiler/codegen/common_base {
+  CompileCtxGc, find_local_slot, func_table_user_index_of
+}
+
+import @vibe/compiler/codegen/common_extractors {
+  array_contains_int, array_contains_str
+}
+
+//# Functions
+
+/// #2424: did the CHECKER say this exact node is an `Int`? An extra `||` term,
+/// never a replacement: it can only ADD a classification the slot log missed.
+/// Both ends fail closed, so where it does not fire nothing changes.
+///
+/// The key comes from `typed_lowering_arg_offset` (@vibe/compiler/core), shared
+/// with the producer rather than restated here: a projection is keyed by its
+/// FIELD-NAME offset, and a consumer that spelled that rule for itself would
+/// read a key the producer never wrote and classify nothing, silently.
+export fn gc_offset_says_int(e: Expr, ctx: CompileCtxGc) -> Bool {
+  let off = typed_lowering_arg_offset(e)
+  off >= 0 && array_contains_int(ctx.gc_int_render_offsets, off)
+}
+
+/// #2462/#2464: does the CHECKER say this render/`eq` argument is a `Bool`?
+/// The gc twin of `bool_offset_says_bool` (codegen/expr/compile_call.vibe),
+/// reading the same channel under the same key.
+fn gc_offset_says_bool(e: Expr, ctx: CompileCtxGc) -> Bool {
+  let off = typed_lowering_arg_offset(e)
+  off >= 0 && array_contains_int(ctx.gc_bool_render_offsets, off)
+}
+
+/// #2424: did the CHECKER say this exact node is a `Double`?
+///
+/// The Double twin of the Int render/`eq` term. Same contract, same fail-closed
+/// ends: an extra term in FRONT of the syntactic classifier, never a
+/// replacement, so the table can only add a classification the shape rules
+/// missed. The key is `typed_lowering_float_key` (@vibe/compiler/core), shared
+/// with the producer rather than restated here: a projection answers with its
+/// FIELD-NAME offset, and a bare NAME answers -1, because a call node's offset
+/// is its callee identifier's offset and this array carries call results. Its
+/// doc comment carries the whole argument.
+///
+/// This is what closes the row `float_call_offsets` structurally could not: a
+/// Double-typed STRUCT FIELD. That table is keyed by CALL offsets, so it had no
+/// projection arm at all, and measured before this change `b.ratio` on a
+/// `struct DBox { ratio: Double }` rendered `256` on the RC lane and trapped on
+/// gc, while the same Double through a tuple element or a plain `let` answered
+/// `1.5`. Tag 4 rows arrive in the SAME array (see split_typed_lowering_offsets)
+/// because both answer one question, and they agree on calls: a call node's
+/// `typed_lowering_arg_offset` IS its call offset.
+fn gc_offset_says_float(e: Expr, ctx: CompileCtxGc) -> Bool {
+  let off = typed_lowering_float_key(e)
+  off >= 0 && array_contains_int(ctx.gc_float_call_offsets, off)
+}
+
+/// #2158: does `fname` name a user function DECLARED `-> Double` / `-> Float`?
+///
+/// `local_names` first: the table is keyed by NAME, and a local binding of
+/// the same name is a different callable (#2156 review).
+fn gc_fn_returns_float(local_names: Array[String], ctx: CompileCtxGc, fname: String) -> Bool {
+  if find_local_slot(local_names, fname) >= 0 {
+    false
+  } else {
+    array_contains_str(ctx.gc_float_ret_fns, fname)
+  }
+}
+
+/// #538 P4.5: shape-based "holds f64 raw bits" test. Float literals,
+/// int->float conversions, arithmetic over a floatish operand, and let-bound
+/// locals recorded in ctx.gc_float_locals count; anything else (annotated
+/// Double params, tuple-destructured floats) is best-effort untracked.
+/// #1032: a bare ident resolves to its CURRENT slot (find_local_slot) before
+/// checking ctx.gc_float_locals -- mirrors gc_expr_is_boolish below, so a
+/// name reused with a non-float binding in a sibling scope is not
+/// misclassified via its old, now-stale slot entry.
+export fn gc_expr_is_floatish(e: Expr, local_names: Array[String], ctx: CompileCtxGc) -> Bool {
+  gc_offset_says_float(e, ctx) || gc_expr_is_floatish_syntactic(e, local_names, ctx)
+}
+
+fn gc_expr_is_floatish_syntactic(e: Expr, local_names: Array[String], ctx: CompileCtxGc) -> Bool {
+  match e {
+    EFloat(_) => true,
+    EIdent(fname, _) => {
+      let slot = find_local_slot(local_names, fname)
+      slot >= 0 && array_contains_int(ctx.gc_float_locals, slot)
+    },
+    EBinOp(op, l, r, _) => (op == "+" || op == "-" || op == "*" || op == "/") && (gc_expr_is_floatish(l, local_names, ctx) || gc_expr_is_floatish(r, local_names, ctx)),
+    EUnaryOp(op, x) => op == "-" && gc_expr_is_floatish(x, local_names, ctx),
+    ECall(fcallee, _, call_off, _) => match fcallee {
+      EIdent(cn, _) => array_contains_int(ctx.gc_float_call_offsets, call_off) || cn == "Int::to_double" || cn == "Double::from_i64_bits" || cn == "Float::to_double" || cn == "Double::to_float" || cn == "Int::to_float" || gc_fn_returns_float(local_names, ctx, cn),
+      _ => false
+    },
+    // #2426 follow-up (Codex review on #2430): a Double arriving through a
+    // JOIN. Without these arms `let a = if c { 0.0 } else { 1.0 }` left the
+    // slot unlogged, and `a == b` then took a raw bit compare -- measured
+    // before this change, the `if`, `match` and block forms each answered
+    // `0.0 == -0.0` false and `nan == nan` true, on this lane and on both
+    // linear ones. AND semantics (every way out of the join must be a
+    // Double) is the fail-closed direction, and it matches how the linear
+    // lane's `expr_is_boolish` has treated joins since #825.
+    //
+    // Only the FLOAT classifier gets them here. The gc boolish and intish
+    // predicates have the same gap and are deliberately left alone: they
+    // route `__to_string` and `==`, where widening the answer changes more
+    // than one lowering, and their gap is #2424's subject rather than this
+    // one's.
+    EIf(_, jt, jf) => gc_expr_is_floatish(jt, local_names, ctx) && gc_expr_is_floatish(jf, local_names, ctx),
+    // A join arm that ends in its OWN binder -- `if c { let x = 0.0; x }` --
+    // is the shape a bare body recursion misses: the body is `EIdent(x)` and
+    // `x` has no slot at classification time (Codex review on #2432).
+    // Answerable WITHOUT an environment, because the body is a single
+    // identifier and the `let` immediately above binds that exact name, so no
+    // inner scope intervenes and no outer binding of the name is reachable.
+    // One hop further -- `let x = 0.0; let z = x; z` -- is not, and stays
+    // open (measured: still a raw bit compare on all three lanes). That one
+    // needs the binding's TYPE, i.e. #2424's channel.
+    ELet(jlbn, jlbv, jlb, _) => match jlb {
+      EIdent(jlbn2, _) => if jlbn == jlbn2 {
+        gc_expr_is_floatish(jlbv, local_names, ctx)
+      } else {
+        gc_expr_is_floatish(jlb, local_names, ctx)
+      },
+      _ => gc_expr_is_floatish(jlb, local_names, ctx)
+    },
+    ELetRec(jrbn, jrbv, jrb) => match jrb {
+      EIdent(jrbn2, _) => if jrbn == jrbn2 {
+        gc_expr_is_floatish(jrbv, local_names, ctx)
+      } else {
+        gc_expr_is_floatish(jrb, local_names, ctx)
+      },
+      _ => gc_expr_is_floatish(jrb, local_names, ctx)
+    },
+    ELetMut(jmbn, jmbv, jmb, _) => match jmb {
+      EIdent(jmbn2, _) => if jmbn == jmbn2 {
+        gc_expr_is_floatish(jmbv, local_names, ctx)
+      } else {
+        gc_expr_is_floatish(jmb, local_names, ctx)
+      },
+      _ => gc_expr_is_floatish(jmb, local_names, ctx)
+    },
+    ESeq(_, jsb) => gc_expr_is_floatish(jsb, local_names, ctx),
+    EMatch(_, jarms) => {
+      let jn = Array::length(jarms)
+      if jn == 0 {
+        false
+      } else {
+        let mut jall = true
+        let mut ji = 0
+        while ji < jn {
+          let (_, jbody) = Array::get(jarms, ji)
+          if !gc_expr_is_floatish(jbody, local_names, ctx) {
+            jall = false
+          } else {
+            ()
+          }
+          ji = ji + 1
+        }
+        jall
+      }
+    },
+    _ => false
+  }
+}
+
+/// #1015: shape-based "is this statically a Bool" test. Bool literals,
+/// comparison/logical operators, unary `!`, and -- via ctx.gc_bool_locals -- a
+/// bare ident CURRENTLY bound (via find_local_slot) to a slot tracked as
+/// boolish. Bool and Int share the same gc-lane numeric representation (no
+/// distinguishing runtime type tag), so this static classification is the only
+/// way to route a Bool argument to the "true"/"false" formatter instead of the
+/// generic runtime `__to_string` dispatch, which cannot tell them apart.
+/// #2462/#2464: the checker's answer first, then the syntactic arms.
+export fn gc_expr_is_boolish(e: Expr, local_names: Array[String], ctx: CompileCtxGc) -> Bool {
+  if gc_offset_says_bool(e, ctx) {
+    true
+  } else {
+    match e {
+      EBool(_) => true,
+      EIdent(fname, _) => {
+        let slot = find_local_slot(local_names, fname)
+        slot >= 0 && array_contains_int(ctx.gc_bool_locals, slot)
+      },
+      EBinOp(op, _, _, _) => op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">=" || op == "&&" || op == "||",
+      EUnaryOp(op, _) => op == "!",
+      // #2464: the ECall arm this classifier never had, so
+      // `__to_string(eq(a, b))` rendered "0" here while linear rendered
+      // "false" -- and the committed seed answers "false" on gc too, so that
+      // was a regression.
+      //
+      // TWO of the linear twin's four clauses are deliberately NOT ported.
+      // `__arr_equals__*` and `T::equals` classify the `==` rewrite's output,
+      // and measured through `compile_wasi_gc` (empty tables, so only this
+      // predicate can answer) gc emits BYTE-IDENTICAL modules with and without
+      // them -- 6446 for a struct `==`, 6227 for an array `==` either way. They
+      // are dead here, and they are not harmless: `T::equals` matches on the
+      // NAME, so a user's own `fn Foo::equals(a: Int, b: Int) -> Int` had its
+      // Int result rendered "true". Measured, main: linear "true", gc "42" --
+      // gc was right precisely because it had no arm. Porting all four would
+      // have spread that. The guard linear needs cannot be the user-function
+      // table either, because `desugar_derives` GENERATES `T::equals` into
+      // that same table; linear's copy still carries the hole, reported
+      // separately rather than half-fixed here.
+      ECall(callee, args, _, _) => match callee {
+        EIdent(cn, _) =>
+        (cn == "not" && Array::length(args) == 1 && find_local_slot(local_names, "not") < 0 && func_table_user_index_of(ctx.func_table, "not", ctx.num_user_funcs) < 0 && gc_expr_is_boolish(Array::get(args, 0), local_names, ctx)) || gc_builtin_ret_is_bool(cn, local_names, ctx),
+        _ => false
+      },
+      _ => false
+    }
+  }
+}
+
+/// #2464: the gc twin of the linear `cc_builtin_call_ret_kind == 1` test --
+/// is `n` a Bool-returning BUILTIN that this program has not shadowed?
+///
+/// Both lanes read the declared return type from the shared registry
+/// (`builtin_returns_bool`), so a builtin classifies where it is declared;
+/// the typed-lowering Bool channel above still covers what that misses.
+fn gc_builtin_ret_is_bool(n: String, local_names: Array[String], ctx: CompileCtxGc) -> Bool {
+  let known = builtin_returns_bool(n)
+  // A local of the same name, or a USER function of that name, owns the call
+  // -- its return type is unknown here, so classify nothing rather than
+  // assume Bool. Same two guards the linear `cc_builtin_call_ret_kind` applies.
+  known && find_local_slot(local_names, n) < 0 && func_table_user_index_of(ctx.func_table, n, ctx.num_user_funcs) < 0
+}

@@ -164,9 +164,11 @@ import ./backend_builtins_string_extra.vibe {
   gc_gen_str_char_code_at_body
 }
 
+import ./backend_scalar_class.vibe {
+  gc_expr_is_boolish, gc_expr_is_floatish
+}
+
 import ./backend_call_named_2.vibe {
-  bc_expr_is_boolish,
-  bc_expr_is_floatish,
   bc_expr_is_intish,
   bc_offset_refuses_render,
   emit_call_resolved,
@@ -1817,7 +1819,7 @@ fn gc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_names: 
     // in compile_call.vibe); it was never ported here. One operand is
     // enough: `==` already routes that way (`emit_gc_eq_value`), and a
     // scalar can only be equal to another scalar's bit pattern.
-    if bc_expr_is_floatish(Array::get(args, 0), local_names, ctx) || bc_expr_is_floatish(Array::get(args, 1), local_names, ctx) {
+    if gc_expr_is_floatish(Array::get(args, 0), local_names, ctx) || gc_expr_is_floatish(Array::get(args, 1), local_names, ctx) {
       // #2426: a provably Double operand takes a real f64 comparison,
       // like `==` does (emit_gc_eq_value) and like the linear lane's own
       // `eq` arm has since #745. Without it BOTH remaining arms answer on
@@ -1913,21 +1915,21 @@ fn gc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_names: 
     // the same message, rather than print an address.
     throw(unrenderable_render_message(Array::get(args, 0)))
   }
-  else if fname == "__to_string" && Array::length(args) == 1 && bc_expr_is_floatish(Array::get(args, 0), local_names, ctx) {
+  else if fname == "__to_string" && Array::length(args) == 1 && gc_expr_is_floatish(Array::get(args, 0), local_names, ctx) {
     // #744 (gc mirror of the linear fix): a statically-floatish argument
     // takes the synthesized Double formatter — the runtime-dispatch
     // builtin below reads the raw f64 bits as an integer.
     double_runtime_require(ctx.func_table, double_runtime_to_string_name())
     ce(buf, double_to_string_expr(Array::get(args, 0)), local_names, next_local, ld)
   }
-  else if fname == "__to_string" && Array::length(args) == 1 && bc_expr_is_boolish(Array::get(args, 0), local_names, ctx) {
+  else if fname == "__to_string" && Array::length(args) == 1 && gc_expr_is_boolish(Array::get(args, 0), local_names, ctx) {
     // #1015 (gc mirror of the linear fix): a statically-boolish argument
     // takes the "true"/"false" formatter directly — the runtime-dispatch
     // builtin below cannot distinguish Bool from Int (same
     // representation on this lane) and would mis-render `true` as "1".
     ce(buf, EIf(Array::get(args, 0), EString("true", -1), EString("false", -1)), local_names, next_local, ld)
   }
-  else if fname == "to_string" && ctx.gc_to_string_is_show_wrapper && Array::length(args) == 1 && (bc_expr_is_floatish(Array::get(args, 0), local_names, ctx) || bc_expr_is_boolish(Array::get(args, 0), local_names, ctx)) {
+  else if fname == "to_string" && ctx.gc_to_string_is_show_wrapper && Array::length(args) == 1 && (gc_expr_is_floatish(Array::get(args, 0), local_names, ctx) || gc_expr_is_boolish(Array::get(args, 0), local_names, ctx)) {
     // #1015: gc-lane counterpart of the linear call-site fast path in
     // expr/compile_call.vibe. The gc lane has no cross-file #716
     // export-name mangling to key off (VIBE_BACKEND=gc is always a
@@ -1938,7 +1940,7 @@ fn gc_compile_named_1(buf: Bytes, callee: Expr, args: Array[Expr], local_names: 
     // -> String { __to_string(x) }`-shaped wrapper). Inside that
     // wrapper's body `x` has the opaque generic type param T, so no
     // param/let seeding (concrete "Bool"/"Float" annotations only) can
-    // make `bc_expr_is_boolish`/`bc_expr_is_floatish` recognize it --
+    // make `gc_expr_is_boolish`/`gc_expr_is_floatish` recognize it --
     // the SAME root cause as the linear bug. Bypass the wrapper call
     // entirely and inline `__to_string(arg)` with the ORIGINAL call-site
     // argument expression, which the two branches above then classify
