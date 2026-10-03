@@ -1,0 +1,108 @@
+//# A generic whose `[T: Eq]` bound is supplied at each call is refused as a
+//# value (`fixtures/err_threaded_generic_value_refused.vibe`). These are the
+//# shapes that must keep compiling: a local binding that shadows the
+//# generic's name, and the lambda the refusal's message suggests.
+
+fn same[T: Eq](x: T, y: T) -> Bool {
+  x == y
+}
+
+fn apply2(f: (Int, Int) -> Bool, a: Int, b: Int) -> Bool {
+  f(a, b)
+}
+
+fn run_param(same: (Int, Int) -> Bool) -> Bool {
+  let h = same
+  h(1, 2) && same(1, 2)
+}
+
+fn bind_payload(o: Option[Int]) -> Option[Int] {
+  let* same = o
+  let g = same
+  Some(g + 1)
+}
+
+test "a lambda that calls the generic at a concrete type" {
+  let g = (a: Double, b: Double) -> same(a, b)
+  inspect(g(1.5, 1.5), "true")
+  inspect(g(1.5, 2.5), "false")
+  inspect(apply2((a: Int, b: Int) -> same(a, b), 3, 3), "true")
+}
+
+test "a local binding that shadows the generic's name" {
+  let same = (a: Int, b: Int) -> a < b
+  let g = same
+  inspect(g(1, 2), "true")
+  inspect(apply2(same, 2, 1), "false")
+}
+
+test "a parameter that shadows the generic's name" {
+  let run = (same: (Int, Int) -> Bool) -> {
+    let h = same
+    h(4, 4)
+  }
+  inspect(run((a: Int, b: Int) -> a == b), "true")
+}
+
+test "a loop parameter that shadows the generic's name" {
+  let lt = (a: Int, b: Int) -> a < b
+  let found = loop (same = lt, n = 0) {
+    let h = same
+    if n >= 2 {
+      break(h(1, 2))
+    }
+    continue(same, n + 1)
+  }
+  inspect(found, "true")
+}
+
+test "a for binder that shadows the generic's name" {
+  let fs = [(a: Int, b: Int) -> a == b]
+  let mut hits = 0
+  for same in fs {
+    let h = same
+    if h(5, 5) {
+      hits = hits + 1
+    } else {
+      ()
+    }
+  }
+  inspect(hits, "1")
+}
+
+test "an index binder that shadows the generic's name" {
+  let items = [10, 20, 30]
+  let mut total = 0
+  for same, item in items {
+    let n = same
+    total = total + n + item
+  }
+  inspect(total, "63")
+}
+
+test "a pattern binder that shadows a bounded local lambda" {
+  let same = [T: Eq](x: T, y: T) -> Bool {
+    x == y
+  }
+  inspect(same(2, 2), "true")
+  let picked = match Some((a: Int, b: Int) -> a < b) {
+    Some(same) => {
+      let g = same
+      g(1, 2)
+    },
+    None => false
+  }
+  inspect(picked, "true")
+}
+
+// A call through the parameter used to be handed `same`'s dictionary and
+// trapped (`null function or function signature mismatch`).
+test "a top-level function parameter that shadows the generic's name" {
+  inspect(run_param((a: Int, b: Int) -> a < b), "true")
+  inspect(same(1, 1), "true")
+}
+
+test "a let* binder that shadows the generic's name" {
+  inspect(bind_payload(Some(4)), "Some(5)")
+  inspect(bind_payload(None), "None")
+}

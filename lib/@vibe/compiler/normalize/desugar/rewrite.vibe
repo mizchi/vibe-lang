@@ -12,12 +12,13 @@ import @vibe/compiler/core {
   TypeExpr,
   __to_string,
   builtin_iterator_serialized_boundary_markers,
+  is_exception_operation_name,
   namespace_rename_original,
   typed_lowering_arg_offset
 }
 
 import @vibe/ast {
-  builtin_ref, trait_ref_args, type_param_name
+  builtin_ref, trait_ref_args, trait_ref_name, type_param_name
 }
 
 import @vibe/core {
@@ -42,9 +43,11 @@ import ./binding_shape_inference.vibe {
 
 import ./binding_shape_queries.vibe {
   array_elem_type_of,
+  constructor_binding_is_masked,
   dtd_mask_shadowed_fn_into,
   dtd_mask_shadowed_params,
   dtd_mask_shadowed_pat,
+  dtd_pat_binder_names,
   interp_shape,
   shape_inner,
   shape_is_composite,
@@ -164,6 +167,10 @@ import ./interpolation_witnesses.vibe {
 
 import ./iteration.vibe {
   classify_sync_for_loop, classify_trait_free_for_loop
+}
+
+import ./labeled_args.vibe {
+  strip_label_tilde
 }
 
 import ./lambda_return_shapes.vibe {
@@ -978,12 +985,18 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
               // `Enum::Variant` this arm resolves, and that is a real
               // resolution, not a missing witness.
               dtd_check_unthreaded_dispatch(as_method, head, member, name, traits, fn_returns)
+              // A qualified generic (`fn Util::same[T: Eq]`) named as a value
+              // loses its witness the same way an unqualified one does.
+              dtd_check_threaded_generic_value(name, gens, var_types)
               expr
             }
           }
         }
       },
-      None => expr
+      None => {
+        dtd_check_threaded_generic_value(name, gens, var_types)
+        expr
+      }
     },
     ECall(callee, args, off, callee_resolution) => {
       // #635: type-directed lowering of the railway sentinels emitted by the
@@ -1215,8 +1228,15 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
             // shape (a plain function call, a bare identifier, ...) stays
             // untracked, falling through infer_arg_type_name to `None`,
             // which keeps the plain scalar `==`/`!=` codegen path.
-            let body_vars = extend_var_types(var_types, name, railway_bind_payload_type(val, struct_sets, var_types, fn_returns))
-            let rwrest = rewrite_expr(rest, gens, traits, struct_sets, dict_binds, body_vars, fn_returns)
+            // `name` is a local binding in `rest`, so it masks a function of
+            // the same spelling the way any other binder does: in the gens, so
+            // a threaded generic's dictionary is not handed to it, and in
+            // `var_types`, so a call through it is not typed by that
+            // function's declared result (Codex on #3299).
+            let body_vars = dtd_mask_shadowed_params(extend_var_types(var_types, name, railway_bind_payload_type(val, struct_sets, var_types, fn_returns)), [
+              (name, None)
+            ], fn_returns)
+            let rwrest = rewrite_expr(rest, gens_masked_by(gens, [name]), traits, struct_sets, dict_binds, body_vars, fn_returns)
             lower_try_bind(rwval, name, rwrest)
           },
           _ => EUnit
@@ -1657,7 +1677,9 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
           arm_vars0
         }
         let arm_vars = dtd_mask_shadowed_pat(arm_vars1, p, fn_returns)
-        Array::push(out, (p, rewrite_expr(b, gens, traits, struct_sets, dict_binds, arm_vars, fn_returns)))
+        // A pattern binder of a generic's spelling is the arm's own value
+        // (Codex on #3299), in the gens as in `var_types`.
+        Array::push(out, (p, rewrite_expr(b, gens_masked_by(gens, dtd_pat_binder_names(p)), traits, struct_sets, dict_binds, arm_vars, fn_returns)))
         i = i + 1
       }
       EMatch(rewrite_expr(scrut, gens, traits, struct_sets, dict_binds, var_types, fn_returns), out)
@@ -1667,29 +1689,57 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
       let mut i = 0
       while i < Array::length(arms) {
         let (p, b) = Array::get(arms, i)
-        let arm_vars = dtd_exception_kind_arm_var_types(p, dtd_mask_shadowed_pat(if Array::get(dtd_constructor_tracking, 0) {
+        // An operation arm binds `resume` besides its pattern's names, as the
+        // checker's arm scope does, so a function of that spelling is masked
+        // there like any other shadowed binding. An exception arm binds none,
+        // so there `resume` still names the function (Codex on #3299).
+        let arm_names = dtd_pat_binder_names(p)
+        let resume_binders: Array[(String, Option[TypeExpr])] = if handler_arm_binds_resume(p) {
+          Array::push(arm_names, "resume")
+          [("resume", None)]
+        } else {
+          []
+        }
+        let arm_vars = dtd_exception_kind_arm_var_types(p, dtd_mask_shadowed_params(dtd_mask_shadowed_pat(if Array::get(dtd_constructor_tracking, 0) {
           constructor_handler_arm_var_types(scrut, p, gens, struct_sets, var_types, fn_returns)
         } else {
           var_types
-        }, p, fn_returns))
-        Array::push(out, (p, rewrite_expr(b, gens, traits, struct_sets, dict_binds, arm_vars, fn_returns)))
+        }, p, fn_returns), resume_binders, fn_returns))
+        Array::push(out, (p, rewrite_expr(b, gens_masked_by(gens, arm_names), traits, struct_sets, dict_binds, arm_vars, fn_returns)))
         i = i + 1
       }
       EHandle(rewrite_expr(scrut, gens, traits, struct_sets, dict_binds, var_types, fn_returns), out)
     },
     EWhile(c, b) => EWhile(rewrite_expr(c, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(b, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
-    ELoop(params, body) => ELoop(for param in params {
-      let (name, init) = param
-      (name, rewrite_expr(init, gens, traits, struct_sets, dict_binds, var_types, fn_returns))
-    }, rewrite_expr(body, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+    ELoop(params, body) => {
+      // The loop parameters are local bindings in the body (Codex on #3299).
+      let loop_names = for param in params {
+        param.0
+      }
+      let loop_ps = for n in loop_names {
+        (n, None)
+      }
+      ELoop(for param in params {
+        let (name, init) = param
+        (name, rewrite_expr(init, gens, traits, struct_sets, dict_binds, var_types, fn_returns))
+      }, rewrite_expr(body, gens_masked_by(gens, loop_names), traits, struct_sets, dict_binds, dtd_mask_shadowed_params(var_types, loop_ps, fn_returns), fn_returns))
+    },
     EForIn(name, idx, iter, body) => {
       let body_vars0 = if Array::get(dtd_constructor_tracking, 0) {
         constructor_for_body_var_types(iter, name, idx, struct_sets, var_types, fn_returns)
       } else {
         var_types
       }
-      let body_vars = dtd_mask_shadowed_params(body_vars0, [(name, None)], fn_returns)
-      let rbody = rewrite_expr(body, gens, traits, struct_sets, dict_binds, body_vars, fn_returns)
+      // Both binders are local: the value and, in `for i, x in ..`, the index
+      // (Codex on #3299).
+      let for_names = match idx {
+        Some(iname) => [name, iname],
+        None => [name]
+      }
+      let body_vars = dtd_mask_shadowed_params(body_vars0, for for_name in for_names {
+        (for_name, None)
+      }, fn_returns)
+      let rbody = rewrite_expr(body, gens_masked_by(gens, for_names), traits, struct_sets, dict_binds, body_vars, fn_returns)
       // #1350: one surface, one classification. A plain `for x in e` is
       // iterator/iterable/array-classified only when a method-bearing trait is
       // present (without one there are no `impl ::next` methods to dispatch),
@@ -2104,7 +2154,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
           ()
         }
         scope_formals_push(tp, bs, true)
-        let rbody = rewrite_expr(body, gens, traits, struct_sets, binds, dtd_mask_shadowed_params(seed_var_types(ps, tp, var_types), ps, fn_returns), fn_returns)
+        let rbody = rewrite_expr(body, gens_masked_by(gens, param_names(ps)), traits, struct_sets, binds, dtd_mask_shadowed_params(seed_var_types(ps, tp, var_types), ps, fn_returns), fn_returns)
         scope_formals_pop()
         if shim_body {
           show_shim_body_leave()
@@ -2114,7 +2164,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
         EFn(tp, bs, new_params, ret, eff, rbody)
       } else {
         scope_formals_push(tp, bs, true)
-        let rbody = rewrite_expr(body, gens, traits, struct_sets, dict_binds, dtd_mask_shadowed_params(seed_var_types(ps, tp, var_types), ps, fn_returns), fn_returns)
+        let rbody = rewrite_expr(body, gens_masked_by(gens, param_names(ps)), traits, struct_sets, dict_binds, dtd_mask_shadowed_params(seed_var_types(ps, tp, var_types), ps, fn_returns), fn_returns)
         scope_formals_pop()
         EFn(tp, bs, ps, ret, eff, rbody)
       }
@@ -2187,6 +2237,73 @@ fn gen_prepends_dicts(gen: DictGen) -> Bool {
     // those methods really do take -- measured, that is what stopped
     // `s5_wasm_test` self-compiling the compiler.
     true
+  }
+}
+
+/// A generic whose call sites receive witness dictionaries, named as a VALUE.
+///
+/// The reference carries no dictionary, so the lowered function takes more
+/// parameters than any call through the value supplies. Measured on main at
+/// 618951a: `let g = f` for `fn f[T: Eq](x: T, y: T)` followed by
+/// `g(1.5, 1.5)` compiled clean and produced a module the wasm validator
+/// rejected (`not enough arguments on the stack for call (need 4, got 3)`).
+/// A local binding of the same spelling masks the function
+/// (`constructor_binding_is_masked`), so only the top-level generic, or a
+/// bounded local lambda's own gen, is refused.
+fn dtd_check_threaded_generic_value(name: String, gens: Array[DictGen], var_types: Array[(String, String)]) -> Unit with Exception {
+  match lookup_gen_entry(gens, name) {
+    // The LATEST gen answers. A local lambda's own gen is the binding in
+    // scope even where a top-level function of the same spelling set the
+    // mask (Codex on #3299); only a top-level gen yields to a local that
+    // shadows it.
+    Some(gen) => if gen.impl_trait != lambda_gen_marker() && constructor_binding_is_masked(var_types, name) {
+      ()
+    } else if gen_prepends_dicts(gen) && Array::length(gen.threaded) > 0 {
+      let (tp, trait_name, _) = Array::get(gen.threaded, 0)
+      throw("wrap `" + name + "` in a lambda that takes concrete parameter types and calls it: its `[" + tp + ": " + trait_ref_name(trait_name) + "]` bound is supplied at each call, so it cannot be passed as a value")
+    } else {
+      ()
+    },
+    None => ()
+  }
+}
+
+/// `gens` with every name in `names` that a gen binds masked by a gen that
+/// threads nothing, the way `gens_after_let` masks one for a `let`. Every
+/// other binder of a generic's spelling -- a parameter of a lambda, a `loop`
+/// or a top-level function, a `for` binder, a pattern binder, an operation
+/// arm's `resume`, a `let*` binder -- is a local value, not that generic: its
+/// calls take no dictionary, and naming it as a value is not a reference to
+/// the generic (Codex on #3299).
+fn gens_masked_by(gens: Array[DictGen], names: Array[String]) -> Array[DictGen] {
+  let mut out = gens
+  for n in names {
+    if gens_name_bound(out, n) {
+      out = gens_plus(out, dict_gen_of_lambda(n, [], empty_threaded()))
+    } else {
+      ()
+    }
+  }
+  out
+}
+
+/// Whether a handler arm binds `resume`. The checker binds it in an arm for
+/// an operation of a declared effect (`Effect::Op(..)`); an exception arm is
+/// typed apart and binds none, since an exception is never resumed. An
+/// or-pattern arm (`A | B => ..`) binds it when every alternative does; a
+/// mixed one keeps the generic visible, so the value guard refuses rather
+/// than guesses (Codex on #3299).
+fn handler_arm_binds_resume(p: Pat) -> Bool {
+  match p {
+    PCtor(label, _) => String::index_of(label, "::") > 0 && !is_exception_operation_name(label),
+    POr(l, r) => handler_arm_binds_resume(l) && handler_arm_binds_resume(r),
+    _ => false
+  }
+}
+
+fn param_names(ps: Array[(String, Option[TypeExpr])]) -> Array[String] {
+  for p in ps {
+    strip_label_tilde(p.0)
   }
 }
 
@@ -2468,7 +2585,9 @@ export fn rewrite_stmt(stmt: Stmt, gens: Array[DictGen], traits: Array[(String, 
           // frame for it -- a `[T: Trait]` formal colliding with an imported
           // `struct T` still dispatched `T::equals` on erased operands.
           scope_formals_push(tparams, bounds, false)
-          let new_body = rewrite_expr(fbody, gens, traits, struct_sets, binds, seeded, fn_returns)
+          // A parameter of a threaded generic's spelling is a local value
+          // inside this body; a call through it takes no dictionary.
+          let new_body = rewrite_expr(fbody, gens_masked_by(gens, param_names(params)), traits, struct_sets, binds, seeded, fn_returns)
           scope_formals_pop()
           SLet(exp, isrec, fname, ann, EFn(tparams, bounds, new_params, ret, eff, new_body))
         },
@@ -2490,7 +2609,7 @@ export fn rewrite_stmt(stmt: Stmt, gens: Array[DictGen], traits: Array[(String, 
       None => match body {
         EFn(tparams, bounds, params, ret, eff, fbody) => {
           scope_formals_push(tparams, bounds, false)
-          let new_body = rewrite_expr(fbody, gens, traits, struct_sets, no_binds, dtd_mask_shadowed_params(seed_var_types(params, tparams, toplevel_vars), params, fn_returns), fn_returns)
+          let new_body = rewrite_expr(fbody, gens_masked_by(gens, param_names(params)), traits, struct_sets, no_binds, dtd_mask_shadowed_params(seed_var_types(params, tparams, toplevel_vars), params, fn_returns), fn_returns)
           scope_formals_pop()
           SLet(exp, isrec, fname, ann, EFn(tparams, bounds, params, ret, eff, new_body))
         },
