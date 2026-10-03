@@ -912,7 +912,7 @@ async function main() {
         if (withheldCapabilities.has(name)) {
           return capabilityWithheldStub(name);
         }
-        if (key in target) {
+        if (Object.hasOwn(target, key)) {
           const fn = target[key];
           if (!host.policyRawFsConfig || typeof fn !== "function") return fn;
           return (...args) => {

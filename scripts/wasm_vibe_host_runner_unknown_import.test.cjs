@@ -84,6 +84,16 @@ test("a call to an unimplemented vibe import fails and names it", () => {
   });
 });
 
+test("a name inherited from Object.prototype is not an implemented import", () => {
+  // `key in target` saw `toString` through the prototype chain and handed the
+  // guest Object.prototype.toString instead of the refusal.
+  withGuest("toString", true, (_dir, wasm) => {
+    const r = run(RUNNER, wasm);
+    assert.equal(r.status, 1, r.stderr);
+    assert.match(r.stderr, /vibe\.toString is not implemented by this runner/);
+  });
+});
+
 test("importing an unimplemented name without calling it still runs", () => {
   withGuest("stdin_provider_open", false, (_dir, wasm) => {
     const r = run(RUNNER, wasm);
