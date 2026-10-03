@@ -21,11 +21,15 @@ import ./constructor_annotations.vibe {
 }
 
 import ./equality_shape_queries.vibe {
-  eq_formal_shape_key, eq_shape_key
+  eq_fn_result_key, eq_formal_shape_key, eq_shape_key
 }
 
 import ./equality_type_shapes.vibe {
   ty_to_eq_shape
+}
+
+import ./formal_scope.vibe {
+  formal_in_scope
 }
 
 import ./labeled_args.vibe {
@@ -56,6 +60,28 @@ import ./witness_targets.vibe {
   impl_target_var_key
 }
 
+fn ty_mentions_scope_formal(t: TypeExpr) -> Bool {
+  match t {
+    TyName(n) => formal_in_scope(n),
+    TyApp(h, args) => formal_in_scope(h) || tys_mention_scope_formal(args),
+    TyTuple(items) => tys_mention_scope_formal(items),
+    TyFn(ps, r, _) => tys_mention_scope_formal(ps) || ty_mentions_scope_formal(r),
+    TyUnit => false
+  }
+}
+
+fn tys_mention_scope_formal(ts: Array[TypeExpr]) -> Bool {
+  let mut hit = false
+  for t in ts {
+    if ty_mentions_scope_formal(t) {
+      hit = true
+    } else {
+      ()
+    }
+  }
+  hit
+}
+
 /// Seed a var-type environment from a function's parameters whose annotation is
 /// a bare type name `T` — concrete (`Point`) for call-site dict synthesis, or a
 /// type parameter (`T`) for generic->generic dict forwarding. The distinction is
@@ -75,6 +101,7 @@ export fn seed_var_types(params: Array[(String, Option[TypeExpr])], tparams: Arr
     Array::push(shadowed, shape_key(pname))
     Array::push(shadowed, eq_shape_key(pname))
     Array::push(shadowed, eq_formal_shape_key(pname))
+    Array::push(shadowed, eq_fn_result_key(pname))
     Array::push(shadowed, constructor_head_key(pname))
     Array::push(shadowed, dtd_interp_lamret_key(pname))
   }
@@ -117,6 +144,18 @@ export fn seed_var_types(params: Array[(String, Option[TypeExpr])], tparams: Arr
         }
       },
       None => ()
+    }
+    // Codex on #3302: a FUNCTION-VALUED parameter whose result mentions a
+    // formal. A call through it (`make()` for `make: () -> T`) has that type,
+    // which the `==` ladder and the call-site witness reading cannot otherwise
+    // see: `make() == make()` compared by identity even with `T` threaded.
+    match ann {
+      Some(TyFn(_, fret, _)) => if ty_mentions_name_in(fret, tparams) || ty_mentions_scope_formal(fret) {
+        Array::push(out, (eq_fn_result_key(pname), impl_target_key(fret)))
+      } else {
+        ()
+      },
+      _ => ()
     }
     // #2745 (Codex, P1 round 20 on #2761): a FUNCTION-VALUED parameter.
     // `[T](a: T, f: (T) -> T) { "\{f(a)}" }` reached leaf inference, which

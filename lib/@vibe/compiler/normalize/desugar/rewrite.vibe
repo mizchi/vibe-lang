@@ -243,8 +243,10 @@ import ./trait_bounds.vibe {
   empty_threaded,
   encode_array_elem_recv_index,
   encode_constructor_recv_index,
+  encode_nested_recv_index,
   find_array_elem_recv_index,
   find_dict_for_method,
+  find_nested_recv_indices,
   find_recv_index,
   return_constructor_param
 }
@@ -1524,7 +1526,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
               // enclosing formal got no dictionary at all.
               let threaded = lambda_threaded_sig(tp, bs, ps, traits, dict_binds)
               if Array::length(threaded) > 0 {
-                match synth_dicts(tp, threaded, array_empty(), [], args, traits, struct_sets, var_types, dict_binds, fn_returns, gens) {
+                match synth_dicts(tp, threaded, array_empty(), lambda_nested_recvs(bs, ps), args, traits, struct_sets, var_types, dict_binds, fn_returns, gens) {
                   Some(dicts) => ECall(rewritten, concat_expr_arrays(dicts, rwargs), off, callee_resolution),
                   None => ECall(rewritten, rwargs, off, callee_resolution)
                 }
@@ -2488,7 +2490,15 @@ fn threaded_from_lambda_sig(bounds: Array[(String, Array[String])], params: Arra
               if widx >= 0 {
                 Array::push(threaded, (tpname, tr, encode_array_elem_recv_index(widx)))
               } else {
-                ()
+                // #3287 (Codex on #3302): `T` only nested
+                // (`a: Option[T]`), as `build_gens` threads a top-level
+                // generic. A marker trait has no dictionary to pass.
+                let nested = find_nested_recv_indices(params, tpname)
+                if Array::length(nested) > 0 && trait_has_methods(traits, tr) {
+                  Array::push(threaded, (tpname, tr, encode_nested_recv_index(Array::get(nested, 0))))
+                } else {
+                  ()
+                }
               }
             }
           }
@@ -2512,6 +2522,10 @@ fn lambda_gen_marker() -> String {
 }
 
 fn dict_gen_of_lambda(name: String, tparams: Array[String], threaded: Array[(String, String, Int)]) -> DictGen {
+  dict_gen_of_lambda_nested(name, tparams, threaded, [])
+}
+
+fn dict_gen_of_lambda_nested(name: String, tparams: Array[String], threaded: Array[(String, String, Int)], nested_recvs: Array[(String, Int, TypeExpr)]) -> DictGen {
   DictGen::{
     name: name,
     type_params: tparams,
@@ -2521,7 +2535,32 @@ fn dict_gen_of_lambda(name: String, tparams: Array[String], threaded: Array[(Str
     impl_params: [],
     impl_target: None,
     constructor_recvs: [],
-    nested_recvs: []
+    nested_recvs: nested_recvs
+  }
+}
+
+/// Every parameter carrying a bounded formal of a lambda binder nested, read
+/// at the lambda's call sites the way `build_gens` records a top-level
+/// generic's (`DictGen.nested_recvs`).
+fn lambda_nested_recvs(bounds: Array[(String, Array[String])], params: Array[(String, Option[TypeExpr])]) -> Array[(String, Int, TypeExpr)] {
+  let out = array_empty()
+  for b in bounds {
+    let (tp, _) = b
+    let tpname = type_param_name(tp)
+    for ni in find_nested_recv_indices(params, tpname) {
+      match Array::get(params, ni).1 {
+        Some(ann) => Array::push(out, (tpname, ni, ann)),
+        None => ()
+      }
+    }
+  }
+  out
+}
+
+fn trait_has_methods(traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], tr: String) -> Bool {
+  match lookup_trait_sigs(traits, tr) {
+    Some(sigs) => Array::length(sigs) > 0,
+    None => false
   }
 }
 
@@ -2566,7 +2605,7 @@ fn lambda_dict_gen(name: String, val: Expr, traits: Array[(String, Array[(String
       let own = threaded_from_lambda_sig(bounds, params, traits)
       let threaded = concat_threaded(threaded_from_outer_binds(dict_binds, tparams), own)
       if Array::length(threaded) > 0 {
-        Some(dict_gen_of_lambda(name, tparams, threaded))
+        Some(dict_gen_of_lambda_nested(name, tparams, threaded, lambda_nested_recvs(bounds, params)))
       } else {
         None
       }

@@ -255,11 +255,13 @@ export fn decode_nested_recv_index(idx: Int) -> Int {
   0 - 2000000000 - idx
 }
 
-/// #3287: every parameter whose annotation mentions `tp` in a DATA position:
-/// a type argument or a tuple element, at any depth. A function type's
-/// parameters and result are not data -- a closure argument holds no value of
-/// `T` whose type the call site could read. Asked only after the direct,
-/// constructor and array-element receivers have all missed.
+/// #3287: every parameter whose annotation mentions `tp` where a value of `tp`
+/// can reach the body: a type argument or a tuple element at any depth, or a
+/// function type's RESULT (`make: () -> T` hands the body a `T` each call; the
+/// call site reads `T` off the function argument's type). A function type's
+/// parameters are not counted: a value flows from the body into them, never
+/// out. Asked only after the direct, constructor and array-element receivers
+/// have all missed.
 ///
 /// Before this, a bound whose formal appeared only nested got no dictionary
 /// at all, and nothing said so: `fn f[T: Eq](a: Option[T], b: Option[T])`
@@ -289,6 +291,11 @@ fn ty_has_data_occurrence(t: TypeExpr, tp: String) -> Bool {
     TyName(n) => n == tp,
     TyApp(_, args) => tys_have_data_occurrence(args, tp),
     TyTuple(items) => tys_have_data_occurrence(items, tp),
+    // Codex on #3302: a function's result is a carrier too. Leaving it out
+    // threaded no witness for `fn f[T: Eq](make: () -> T)`, and it let a call
+    // whose other carrier was `None` take the placeholder witness while the
+    // function argument produced real values of `T`.
+    TyFn(_, ret, _) => ty_has_data_occurrence(ret, tp),
     _ => false
   }
 }
@@ -914,7 +921,7 @@ export fn dtd_formal_is_shadowed(n: String) -> Bool {
 /// `flatten_traits` runs at this pass's entry and copies a supertrait's methods
 /// into the sub-trait's sigs, so an inherited method counts -- the same reading
 /// `dtd_bound_entails_eq` relies on (#2739).
-fn dtd_formal_bound_promises(traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], n: String, member: String) -> Bool {
+export fn dtd_formal_bound_promises(traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], n: String, member: String) -> Bool {
   let mut i = Array::length(dtd_scope_formals)
   let mut keys = empty_str_array()
   let mut found = false

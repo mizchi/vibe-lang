@@ -23,12 +23,20 @@ import ./equality_inference.vibe {
   infer_eq_shape
 }
 
+import ./binding_shape_queries.vibe {
+  constructor_binding_is_masked
+}
+
 import ./equality_shape_queries.vibe {
-  eq_formal_shape_of_name, shape_to_eq_ty, ty_contains_eq_unknown
+  eq_fn_result_of_name, eq_formal_shape_of_name, fn_eq_shape_key, shape_to_eq_ty, ty_contains_eq_unknown
 }
 
 import ./formal_scope.vibe {
-  is_marked_formal_name
+  is_marked_formal_name, is_scalar_type_name
+}
+
+import ./type_names.vibe {
+  fn_return_type
 }
 
 import ./state.vibe {
@@ -342,7 +350,51 @@ fn candidate_arg_types(arg: Expr, struct_sets: Array[(String, Array[String])], v
     },
     _ => ()
   }
+  match function_arg_type(arg, var_types, fn_returns) {
+    Some(t) => Array::push(out, unmark_formals(t)),
+    None => ()
+  }
   out
+}
+
+/// The type of a FUNCTION-valued argument, for a parameter that carries the
+/// formal in its result (`make: () -> T`): only the result is read, so the
+/// parameter list is left empty. Read from a lambda's declared result, from
+/// a caller's own function-typed parameter, or from a top-level function's
+/// declared result. Anything else is unknown, and the call is refused with
+/// the edit rather than guessed.
+fn function_arg_type(arg: Expr, var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[TypeExpr] {
+  match arg {
+    EFn(_, _, _, Some(ret), _, _) => Some(TyFn([], ret, None)),
+    EIdent(n, _) => match eq_fn_result_of_name(var_types, n) {
+      Some(ret) => Some(TyFn([], ret, None)),
+      None => if constructor_binding_is_masked(var_types, n) {
+        None
+      } else {
+        match fn_return_type(fn_returns, fn_eq_shape_key(n)) {
+          Some(sh) => {
+            let t = shape_to_eq_ty(sh)
+            if ty_contains_eq_unknown(t) {
+              None
+            } else {
+              Some(TyFn([], t, None))
+            }
+          },
+          None => match fn_return_type(fn_returns, n) {
+            // Only a scalar head is a complete type: a declared name here may
+            // be a generic head whose arguments `fn_returns` does not keep.
+            Some(head) => if is_scalar_type_name(head) {
+              Some(TyFn([], TyName(head), None))
+            } else {
+              None
+            },
+            None => None
+          }
+        }
+      }
+    },
+    _ => None
+  }
 }
 
 /// Every position of `formal` in `ann`, read off `actual`. A position whose
@@ -377,6 +429,13 @@ fn collect_formal_positions(ann: TypeExpr, actual: TypeExpr, formal: String, out
         collect_unknown_positions(ann, formal, out)
       },
       _ => collect_unknown_positions(ann, formal, out)
+    },
+    // A function's RESULT is read; its parameters carry no value of the
+    // formal into the callee (`find_nested_recv_indices`). A function
+    // argument is never absent: it can always be called.
+    TyFn(_, aret, _) => match actual {
+      TyFn(_, bret, _) => collect_formal_positions(aret, bret, formal, out),
+      _ => collect_unknown_positions(aret, formal, out)
     },
     _ => ()
   }

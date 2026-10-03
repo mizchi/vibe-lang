@@ -278,15 +278,22 @@ a renderer; binding its type parameter alone does not make rendering safe.
 Option[T])` received none. Then `a == b`, and even `x == y` on two `T` values
 matched out of them, compared by identity: `f(Some(1.5), Some(1.5))` answered
 `false`. A formal nested anywhere in a parameter (`Option[T]`, `(T, Int)`,
-`Res[A, T]`) is threaded now. Each call reads `T` by matching that parameter's
-annotation against the argument (`nested_witness.vibe`), and an argument it
-cannot read is refused with the edit (annotate it). An aggregate operand that
-mentions a witnessed formal compares those positions through the witness
+`Res[A, T]`), or in a function parameter's result (`make: () -> T`), is
+threaded now, at a top-level generic and at a local generic lambda alike. Each
+call reads `T` by matching that parameter's annotation against the argument
+(`nested_witness.vibe`; a function argument by its declared result), and an
+argument it cannot read is refused with the edit (annotate it). A call through
+a function-typed parameter has the type its annotation declares, so
+`make() == make()` reaches the witness. An aggregate operand that mentions a
+witnessed formal compares those positions through the witness
 (`witnessed_equality.vibe`): `Option` and tuples recurse; `Array[T]` and a
 declared generic enum or struct expand inline, because their generated helpers
 cannot see the dictionary; a recursive generic, or a `Map` holding the formal,
-fails closed. Pinned by `fixtures/eq_bound_nested_witness_test.vibe` and
-`fixtures/err_eq_nested_witness_unreadable_refused.vibe`.
+fails closed. A formal whose bound promises `equals` but that no witness
+reaches is refused at the comparison with the edit, rather than compared by
+identity. Pinned by `fixtures/eq_bound_nested_witness_test.vibe` and the
+`fixtures/err_eq_{nested_witness_unreadable,nested_witness_fn_unreadable,witness_missing}_refused.vibe`
+rows.
 
 **The bound itself is required** (#2474): `==` / `!=`
 on an operand whose type mentions a formal with no `Eq` bound (bare `T`,

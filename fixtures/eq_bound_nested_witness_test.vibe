@@ -83,6 +83,35 @@ struct Holder {
   o: Option[Double]
 }
 
+// A formal reached only through a function's result (Codex on #3302): the
+// call reads `T` off the function argument's type, and a call through the
+// parameter has the type its annotation declares.
+fn via_fn[T: Eq](make: () -> T) -> Bool {
+  make() == make()
+}
+
+fn via_fn_opt[T: Eq](make: () -> Option[T]) -> Bool {
+  make() == make()
+}
+
+fn with_carrier[T: Eq](x: T, make: () -> T) -> Bool {
+  make() == make()
+}
+
+// The `Option` argument is `None` here, but the function argument still
+// produces values of `T`, so `T` must be read from it, not filled in.
+fn mixed[T: Eq](a: Option[T], make: () -> T) -> Bool {
+  Some(make()) == Some(make())
+}
+
+fn forward_fn[U: Eq](mk: () -> U) -> Bool {
+  via_fn(mk)
+}
+
+fn d() -> Double {
+  1.5
+}
+
 fn annotated_let[T: Eq](a: Option[T], b: Option[T]) -> Bool {
   let c: Option[T] = a
   c == b
@@ -150,4 +179,25 @@ test "arguments read from a field and from an array element" {
 test "calls that carry no value of the formal" {
   inspect(same_opt(None, None), "true")
   inspect(same_res(Ok([1, 2]), Ok([1, 2])), "true")
+}
+
+test "a formal reached only through a function result" {
+  inspect(via_fn(d), "true")
+  inspect(via_fn(() -> Double { 2.5 }), "true")
+  inspect(via_fn_opt(() -> Option[Double] { Some(1.5) }), "true")
+  inspect(with_carrier(7.5, d), "true")
+  inspect(forward_fn(d), "true")
+}
+
+test "a function argument is read when the data argument holds no value" {
+  inspect(mixed(None, d), "true")
+}
+
+test "a local generic lambda over Option[T]" {
+  let same = [T: Eq](a: Option[T], b: Option[T]) -> Bool {
+    a == b
+  }
+  inspect(same(Some(1.5), Some(1.5)), "true")
+  inspect(same(Some(1.5), Some(2.5)), "false")
+  inspect(same(Some(Pt::{ x: 1, ys: [2] }), Some(Pt::{ x: 1, ys: [2] })), "true")
 }

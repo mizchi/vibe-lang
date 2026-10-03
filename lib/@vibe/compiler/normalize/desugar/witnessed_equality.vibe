@@ -24,7 +24,7 @@ import ./equality_inference.vibe {
 }
 
 import ./equality_shape_queries.vibe {
-  eq_formal_shape_of_name, shape_to_eq_ty, ty_contains_eq_unknown
+  eq_fn_result_of_name, eq_formal_shape_of_name, shape_to_eq_ty, ty_contains_eq_unknown
 }
 
 import ./formal_scope.vibe {
@@ -36,7 +36,11 @@ import ./interpolation_witnesses.vibe {
 }
 
 import ./state.vibe {
-  dtd_eq_formal_witnesses, dtd_eq_known_types, scope_formal_mark_prefix
+  dtd_eq_formal_witnesses, dtd_eq_known_types, dtd_scope_formals, scope_formal_mark_prefix
+}
+
+import ./trait_bounds.vibe {
+  dtd_eq_witness_method, dtd_formal_bound_promises, dtd_formal_is_shadowed
 }
 
 import ./typed_equality.vibe {
@@ -93,16 +97,34 @@ fn collect_formals(t: TypeExpr, out: Array[String]) -> Unit {
   }
 }
 
-/// The operand type and the witness of every formal it mentions, or None when
-/// the operand mentions no formal, or one without an `Eq` witness in scope
-/// (that one keeps the existing ladder).
-fn witnessed_operand(e: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)], dict_binds: Array[(String, String, String, Array[String])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])]) -> Option[(TypeExpr, Array[(String, String)])] {
+/// The operand's type when it mentions a formal: an aggregate shape, or a
+/// call through a function-typed parameter whose declared result mentions
+/// one (`make()` for `make: () -> T`, Codex on #3302).
+fn operand_type(e: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[TypeExpr] {
   let sh = operand_shape(e, struct_sets, var_types, fn_returns)
-  if !shape_is_composite(sh) {
-    None
+  if shape_is_composite(sh) {
+    Some(shape_to_eq_ty(sh))
   } else {
-    let t = shape_to_eq_ty(sh)
-    if ty_contains_eq_unknown(t) {
+    match e {
+      ECall(EIdent(f, _), _, _, _) => eq_fn_result_of_name(var_types, f),
+      _ => None
+    }
+  }
+}
+
+/// The operand type and the witness of every formal it mentions, or None when
+/// the operand mentions no formal, which keeps the existing ladder.
+///
+/// A formal whose bound promises `equals` and that has no witness here is
+/// REFUSED rather than handed back to the ladder, whose rungs compare it with
+/// a raw `==`: by identity for a boxed `Double` or an aggregate (Codex on
+/// #3302). A marker `Eq` (inside `@vibe/builtin`) promises nothing, and a
+/// formal a nested binder rebinds keeps the ladder, as `dtd_eq_witness_dict`
+/// declines it.
+fn witnessed_operand(e: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)], dict_binds: Array[(String, String, String, Array[String])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])]) -> Option[(TypeExpr, Array[(String, String)])] with Exception {
+  match operand_type(e, struct_sets, var_types, fn_returns) {
+    None => None,
+    Some(t) => if ty_contains_eq_unknown(t) {
       None
     } else {
       let formals = array_empty()
@@ -116,6 +138,11 @@ fn witnessed_operand(e: Expr, struct_sets: Array[(String, Array[String])], var_t
           match dtd_eq_witness_dict(dict_binds, traits, f) {
             Some(dict) => Array::push(table, (f, dict)),
             None => {
+              if !dtd_formal_is_shadowed(f) && dtd_formal_bound_promises(traits, f, dtd_eq_witness_method()) {
+                throw("compare at a concrete type, or pass the comparison in as a parameter (`eq: (" + f + ", " + f + ") -> Bool`) and call it: the `Eq` witness for `" + f + "` does not reach this comparison, so `==` cannot compare by content")
+              } else {
+                ()
+              }
               complete = false
             }
           }
@@ -133,8 +160,10 @@ fn witnessed_operand(e: Expr, struct_sets: Array[(String, Array[String])], var_t
 /// #3287: the `==` comparison of two operands whose type mentions an
 /// `Eq`-bounded formal, compared through the formal's witness; None for every
 /// other comparison, which keeps the ladder it had.
-export fn dtd_eq_witnessed_compare(l: Expr, r: Expr, rl: Expr, rr: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)], dict_binds: Array[(String, String, String, Array[String])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])]) -> Option[Expr] {
-  if Array::length(dict_binds) == 0 {
+export fn dtd_eq_witnessed_compare(l: Expr, r: Expr, rl: Expr, rr: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)], dict_binds: Array[(String, String, String, Array[String])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])]) -> Option[Expr] with Exception {
+  // No formal in scope: nothing here can mention one. (A body with formals
+  // but no dictionaries still runs, so a missing witness is refused.)
+  if Array::length(dtd_scope_formals) == 0 {
     None
   } else {
     let found = match witnessed_operand(l, struct_sets, var_types, fn_returns, dict_binds, traits) {

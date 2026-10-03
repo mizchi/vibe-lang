@@ -13,7 +13,7 @@ import ./binding_shape_queries.vibe {
 }
 
 import ./equality_shape_queries.vibe {
-  eq_shape_key, fn_eq_shape_key, infer_static_eq_type, shape_to_eq_ty, ty_contains_eq_unknown, ty_needs_typed_eq
+  eq_fn_result_of_name, eq_shape_key, fn_eq_shape_key, infer_static_eq_type, shape_to_eq_ty, ty_contains_eq_unknown, ty_needs_typed_eq
 }
 
 import ./equality_type_shapes.vibe {
@@ -110,7 +110,13 @@ export fn infer_eq_shape(e: Expr, struct_sets: Array[(String, Array[String])], v
     } else if (fname == "Err" || fname == "Result::Err") && Array::length(args) == 1 {
       String::concat("{r:?EqUnknown,", String::concat(infer_eq_shape(Array::get(args, 0), struct_sets, var_types, fn_returns), "}"))
     } else {
-      let local_shape = lookup_var_type(var_types, eq_shape_key(fname))
+      // Codex on #3302: a call through a function-typed parameter whose
+      // declared result mentions a formal has that type, so `Some(make())`
+      // for `make: () -> T` is `Option[T]`, not an unknown payload.
+      let local_shape = match eq_fn_result_of_name(var_types, fname) {
+        Some(rt) => Some(ty_to_eq_shape(rt)),
+        None => lookup_var_type(var_types, eq_shape_key(fname))
+      }
       match local_shape {
         Some(s) => s,
         None => match fn_return_type(fn_returns, fn_eq_shape_key(fname)) {
