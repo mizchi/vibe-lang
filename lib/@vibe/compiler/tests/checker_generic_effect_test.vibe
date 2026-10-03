@@ -240,8 +240,18 @@ test "a wrong-kinded row argument is reported and never bound" {
   assert(String::contains(Array::get(map_diags, 0), "but `Map` has 2"))
 }
 
-test "a kinded formal in the row is left to the formal" {
+// Codex on #3315: a constructor formal in the row binds to the formal, so the
+// payload is the parameter's own `G[Int]`. Left fresh, `Some(1)` checked clean
+// and a caller passing an `Array[Int]` handed the option to a `Read[Array]` arm.
+test "a kinded formal in the row fixes the payload at the formal" {
   let src = "effect Read[F[_]] {\n  Put(F[Int]) -> Int\n}\n\nfn producer[G[_]](xs: G[Int]) -> Int with Read[G] {\n  perform Read::Put(xs)\n}\n"
-  let diags = collect_all_diagnostics(src)
-  assert(eq(Array::length(diags), 0))
+  assert(eq(Array::length(collect_all_diagnostics(src)), 0))
+  let bad_src = "effect Read[F[_]] {\n  Put(F[Int]) -> Int\n}\n\nfn producer[G[_]](xs: G[Int]) -> Int with Read[G] {\n  perform Read::Put(Some(1))\n}\n"
+  let diags = collect_all_diagnostics(bad_src)
+  assert(eq(Array::length(diags), 1))
+  assert(String::contains(Array::get(diags, 0), "perform argument type mismatch for Read::Put: expected G[Int], got Option[Int]"))
+  let lambda_src = "effect Read[F[_]] {\n  Put(F[Int]) -> Int\n}\n\nfn outer[G[_]](xs: G[Int]) -> Int {\n  let inner = () -> Int with Read[G] {\n    perform Read::Put(Some(1))\n  }\n  0\n}\n"
+  let lambda_diags = collect_all_diagnostics(lambda_src)
+  assert(eq(Array::length(lambda_diags), 1))
+  assert(String::contains(Array::get(lambda_diags, 0), "expected G[Int], got Option[Int]"))
 }

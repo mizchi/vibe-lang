@@ -2259,7 +2259,7 @@ fn bind_row_effect_instantiations(env: TypeEnv, row: Option[String], defs: Array
                 if type_param_arity(param) > 0 {
                   // A kinded parameter (`F` of `Read[F[_]]`) takes a bare
                   // constructor, not a complete type.
-                  match row_constructor_arg(param, arg_te, defs, shadow) {
+                  match row_constructor_arg(param, arg_te, defs, shadow, env) {
                     Some(ctor) => CtTuple([ctor]),
                     None => CtUnit
                   }
@@ -2298,15 +2298,23 @@ fn effect_row_inst_key(eff: String) -> String {
 /// with `expected Array[Int], got Array[Int]`, and a `Cell[String]` payload
 /// under `with Read[Cell]` was accepted.
 ///
+/// A constructor FORMAL in scope (`with Read[G]` in `fn producer[G[_]]`)
+/// binds to the formal itself, as the row did before the kinded arm existed,
+/// so `F[Int]` becomes `G[Int]` -- the type a `xs: G[Int]` parameter has.
+/// Leaving it fresh (Codex on #3315) accepted `perform Read::Put(Some(1))` in
+/// that body, and a caller passing an `Array[Int]` handed an `Option[Int]` to
+/// a `Read[Array]` arm. A formal of the wrong kind never reaches the body: the
+/// row-item check refuses `with Read[A]` for a plain `A`.
+///
 /// None -- the parameter stays fresh -- for anything else: an applied or
 /// complete type, a constructor whose arity is not the parameter's or that
-/// itself takes a constructor, an unknown name, and a formal in scope, whose
-/// kind this does not judge. A wrong-kinded argument is the row-item check's
-/// to report (`expects a constructor with N argument(s)`); it is never bound.
-fn row_constructor_arg(param: String, arg_te: TypeExpr, defs: Array[TypeDef], shadow: Array[String]) -> Option[Type] {
+/// itself takes a constructor, and an unknown name. A wrong-kinded argument is
+/// the row-item check's to report (`expects a constructor with N
+/// argument(s)`); it is never bound.
+fn row_constructor_arg(param: String, arg_te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], env: TypeEnv) -> Option[Type] {
   match arg_te {
     TyName(name) => if type_expr_name_is_shadowed(shadow, name) {
-      None
+      Some(resolve_tparams_in(resolve_type_expr_shadowed(arg_te, defs, shadow), env))
     } else {
       let params: Array[String] = [param]
       let source_args: Array[TypeExpr] = [arg_te]
