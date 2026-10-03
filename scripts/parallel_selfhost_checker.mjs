@@ -143,7 +143,7 @@ export class SelfhostChecker {
   // would compute a DIFFERENT fingerprint than the serial compiler would
   // for the same source (#1126 Codex review).
   //
-  // Returns { diagnostic, env, fingerprint }: `env` is the module's
+  // Returns { diagnostic, env, fingerprint, cacheProduct }: `env` is the module's
   // serialized public environment, which the coordinator hands to this
   // module's dependents (a worker cannot look a dependency up in the
   // type-env cache -- the key derives from the transitive source snapshot
@@ -151,6 +151,9 @@ export class SelfhostChecker {
   // computed by check_module (build_fingerprint) from its source and its
   // dependencies' fingerprints -- never invented here, so it lands at the
   // exact persistent-cache key a serial compile would look under.
+  // `cacheProduct` retains the check-derived lowering table along with that
+  // environment. Its header binds it to the computed fingerprint; the compiler
+  // publisher validates the complete canonical record before disk reuse.
   async check(module, dependencies = []) {
     await this.start();
     const stem = fingerprint(module.id).slice(0, 16);
@@ -190,6 +193,7 @@ export class SelfhostChecker {
     const outcome = (await this.readIfPresent(join(jobDir, "outcome.txt")))?.trim() ?? "";
     const diagnostic = (await this.readIfPresent(join(jobDir, "diag.txt")))?.trim() ?? "";
     const env = await this.readIfPresent(join(jobDir, "env.out"));
+    const cacheProduct = await this.readIfPresent(join(jobDir, "cache.out"));
     const computedFingerprint = (
       await this.readIfPresent(join(jobDir, "fingerprint.out"))
     )?.trim();
@@ -237,7 +241,10 @@ export class SelfhostChecker {
           `selfhost worker reported ok for "${module.id}" without a fingerprint.out`,
         );
       }
-      return { diagnostic: null, env, fingerprint: computedFingerprint };
+      if (cacheProduct !== null && !cacheProduct.startsWith(`checked-worker-cache\t1\t${computedFingerprint}\n`)) {
+        throw new Error(`selfhost worker reported ok for "${module.id}" with an unbound cache.out`);
+      }
+      return { diagnostic: null, env, fingerprint: computedFingerprint, cacheProduct };
     }
     if (outcome !== "diag") {
       throw new Error(`unknown module job outcome: ${JSON.stringify(outcome)}`);

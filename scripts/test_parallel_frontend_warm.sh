@@ -44,119 +44,176 @@ fi
 [ -s "$COMPILER_WASM" ] || { echo "[jobs-warm] compiler not found: $COMPILER_WASM" >&2; exit 1; }
 COMPILER_WASM="$(cd "$(dirname "$COMPILER_WASM")" && pwd)/$(basename "$COMPILER_WASM")"
 
-RUNNER="$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh"
-DRIVER="$PROJECT_ROOT/scripts/parallel_frontend_warm.mjs"
-FIXTURE_DIR="$PROJECT_ROOT/scripts/fixtures/parallel_project_sample"
-
-work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
-cp "$FIXTURE_DIR"/*.vibe "$work/"
-
-fail=0
-note() { echo "[jobs-warm] $*"; }
-die() { echo "[jobs-warm] FAIL: $*" >&2; fail=1; }
-
-# serial_compile <src> <entry> <out> -> sets COMPILE_EXIT, writes <out>.diag on error
-serial_compile() {
-  local src="$1" entry="$2" out="$3"
-  rm -f "$out" "$out.diag"
-  set +e
-  VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-    bash "$RUNNER" --invoke cli_main "$COMPILER_WASM" "$src" "$out" "$entry" \
-    >/dev/null 2>&1
-  COMPILE_EXIT=$?
-  set -e
+# Each build uses an isolated cache. Matching bytes alone cannot prove reuse:
+# the strict compiler telemetry must report zero checks after publication.
+node --input-type=module - "$PROJECT_ROOT" "$COMPILER_WASM" <<'NODE'
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+const [repo, compiler] = process.argv.slice(2);
+const { parseIncrementalTelemetry } = await import(pathToFileURL(join(repo, "scripts/edit_cycle_kpi.mjs")));
+const runner = join(repo, "scripts/run_wasm_vibe_host_runner.sh");
+const driver = join(repo, "scripts/parallel_frontend_warm.mjs");
+const work = mkdtempSync(join(repo, "_build/parallel-lowering-oracle-"));
+const project = join(work, "project");
+mkdirSync(project);
+for (const name of readdirSync(join(repo, "scripts/fixtures/parallel_project_sample"))) {
+  if (name.endsWith(".vibe")) copyFileSync(join(repo, "scripts/fixtures/parallel_project_sample", name), join(project, name));
 }
+const base = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("VIBE_")));
+const environment = cache => ({ ...base, VIBE_PREOPEN_DIR: project, VIBE_LIB: join(repo, "lib"),
+  VIBE_BUILD_CACHE_DIR: cache, VIBE_CHECKED_MODULE_CACHE: "off", VIBE_CODEGEN_BODY_CACHE: "off",
+  VIBE_EXPERIMENTAL_AST_CACHE: "0", VIBE_IMPORT_ABI: "raw", VIBE_RC: "1" });
+const samples = [];
+function invoke(command, args, env, cwd = project) {
+  const result = spawnSync(command, args, { cwd, env, encoding: "utf8", timeout: 300_000 });
+  assert.ifError(result.error);
+  return result;
+}
+function prewarm(source, jobs, cache) {
+  const result = invoke("node", [driver, compiler, source, String(jobs), project, runner], environment(cache));
+  assert.equal(result.status, 0, result.stderr);
+  const summary = JSON.parse(result.stdout);
+  console.log(`[jobs-warm] jobs=${jobs} ${source}: ${JSON.stringify(summary)}`);
+  return summary;
+}
+function compile(label, source, entry, cache, expectedFailure = false) {
+  const output = join(work, `${label}.wasm`);
+  const telemetry = join(work, `${label}.telemetry.json`);
+  const result = invoke("bash", [runner, "--invoke", "cli_main", compiler, source, output, entry], {
+    ...environment(cache), VIBE_FS_COMPILE: "1", VIBE_RUNNER_EXIT_WITH_RESULT: "1",
+    VIBE_INCREMENTAL_TELEMETRY_OUT: telemetry,
+  });
+  const diagnostic = existsSync(`${output}.diag`) ? readFileSync(`${output}.diag`, "utf8") : null;
+  if (expectedFailure) {
+    assert.notEqual(result.status, 0, "broken source unexpectedly compiled");
+    assert(diagnostic, "failed compile produced no diagnostic");
+    return diagnostic;
+  }
+  assert.equal(result.status, 0, diagnostic ?? result.stderr);
+  assert(existsSync(output), "compile produced no Wasm");
+  const counters = parseIncrementalTelemetry(readFileSync(telemetry, "utf8"), telemetry);
+  samples.push({ label, counters });
+  console.log(`[jobs-warm] ${label}: ${counters.checker_executions} checker executions`);
+  return { bytes: readFileSync(output), output, counters };
+}
+function cacheFor(label) {
+  const cache = join(work, `${label}-cache`);
+  mkdirSync(cache);
+  return cache;
+}
+function run(output, entry, expected) {
+  const result = invoke("bash", [runner, "--invoke", entry, output], {
+    ...base, VIBE_PREOPEN_DIR: project, VIBE_IMPORT_ABI: "raw",
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim().split("\n").at(-1), String(expected));
+}
+function exercise(label, source, entry, expected, moduleCount) {
+  const serialCache = cacheFor(`${label}-serial`);
+  const cold = compile(`${label}-serial-cold`, source, entry, serialCache);
+  assert(cold.counters.checker_executions > 0, "cold control did not actually check");
+  const warm = compile(`${label}-serial-warm`, source, entry, serialCache);
+  assert.equal(warm.counters.checker_executions, 0);
+  assert.deepEqual(warm.bytes, cold.bytes);
+  run(cold.output, entry, expected);
+  for (const jobs of [1, 2, 4]) {
+    const cache = cacheFor(`${label}-jobs-${jobs}`);
+    for (const temperature of ["cold", "warm"]) {
+      const summary = prewarm(source, jobs, cache);
+      assert.equal(summary.modules, moduleCount);
+      assert.equal(summary.checked, moduleCount);
+      assert.equal(summary.warmed, moduleCount);
+      const compiled = compile(`${label}-jobs-${jobs}-${temperature}`, source, entry, cache);
+      assert.equal(compiled.counters.checker_executions, 0, "published workers were rechecked");
+      assert.deepEqual(compiled.bytes, cold.bytes, "worker lowering changed emitted bytes");
+      run(compiled.output, entry, expected);
+    }
+  }
+  return cold;
+}
+try {
+  exercise("diamond", "main.vibe", "main_value", 28, 3);
+  writeFileSync(join(project, "typed_leaf.vibe"), `export fn render[T](value: T) -> String { __to_string(value) }
+export fn mono(value: Bool) -> String { __to_string(value) }
+export fn take(value: Double) -> Double { value + 0.5 }
+`);
+  writeFileSync(join(project, "typed_facade.vibe"), "export ./typed_leaf.vibe { render as show, mono, take }\n");
+  writeFileSync(join(project, "typed_main.vibe"), `import ./typed_facade.vibe { show, mono, take }
+export fn typed_main() -> Int {
+  let b = () -> Bool { 1 < 2 }
+  let d = () -> Double { 2.5 }
+  let a = () -> Array[Bool] { [1 < 2, 2 < 1] }
+  assert(show(b()) == "true")
+  assert(show(d()) == "2.5")
+  assert(show(a()) == "[true, false]")
+  assert(mono(b()) == "true")
+  assert(take(d()) == 3.0)
+  let v = [1, 2]
+  let w = [1, 3]
+  let left = []
+  let right = []
+  let other = []
+  Array::push(left, v)
+  Array::push(right, v)
+  Array::push(other, w)
+  assert(left == right)
+  assert(left != other)
+  0
+}
+`);
+  exercise("typed", "typed_main.vibe", "typed_main", 0, 3);
 
-# --- 1. baseline: plain serial compile, no pre-warm ----------------------
-serial_compile "$work/main.vibe" "main_value" "$work/out_serial.wasm"
-[ "$COMPILE_EXIT" -eq 0 ] && [ -s "$work/out_serial.wasm" ] || die "serial baseline compile failed"
-note "serial baseline ok"
+  // An unchanged signature with an edited dependency body must not keep the
+  // old fingerprint, lowering product, or rendered behavior.
+  const editCache = cacheFor("edit");
+  prewarm("main.vibe", 4, editCache);
+  const before = compile("before-edit", "main.vibe", "main_value", editCache);
+  const leafPath = join(project, "leaf.vibe");
+  const leaf = readFileSync(leafPath, "utf8");
+  const editedLeaf = leaf.replace("n + 10", "n + 11");
+  assert.notEqual(editedLeaf, leaf, "body-edit mutation did not land");
+  writeFileSync(leafPath, editedLeaf);
+  prewarm("main.vibe", 4, editCache);
+  const edited = compile("edited-warmed", "main.vibe", "main_value", editCache);
+  const editedControl = compile("edited-control", "main.vibe", "main_value", cacheFor("edited-control"));
+  assert.equal(edited.counters.checker_executions, 0);
+  assert.notDeepEqual(edited.bytes, before.bytes);
+  assert.deepEqual(edited.bytes, editedControl.bytes);
+  run(edited.output, "main_value", 30);
 
-# --- 2. pre-warm via the driver at jobs=4, then compile again ------------
-warm_json="$(node "$DRIVER" "$COMPILER_WASM" "$work/main.vibe" 4 "$work" "$RUNNER")"
-note "driver summary: $warm_json"
-warmed="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).warmed))' "$warm_json")"
-checked="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).checked))' "$warm_json")"
-[ "$checked" -eq 3 ] || die "expected 3 checked modules (leaf/mid/main), got $checked"
-[ "$warmed" -eq 3 ] || die "expected 3 warmed cache entries, got $warmed"
-note "cache warmed: $warmed modules"
+  const serialDiagnostic = compile("broken-serial", "main_broken.vibe", "main_value", cacheFor("broken-serial"), true);
+  const brokenCache = cacheFor("broken-parallel");
+  const broken = prewarm("main_broken.vibe", 4, brokenCache);
+  assert.equal(broken.diagnosed, 1);
+  assert.equal(broken.warmed, 2, "diagnosed module must not publish a cache entry");
+  const parallelDiagnostic = compile("broken-parallel", "main_broken.vibe", "main_value", brokenCache, true);
+  assert.equal(parallelDiagnostic, serialDiagnostic);
 
-serial_compile "$work/main.vibe" "main_value" "$work/out_jobs4.wasm"
-[ "$COMPILE_EXIT" -eq 0 ] && [ -s "$work/out_jobs4.wasm" ] || die "post-warm compile failed"
-if cmp -s "$work/out_serial.wasm" "$work/out_jobs4.wasm"; then
-  note "byte-identical: serial vs pre-warmed compile"
-else
-  die "post-warm compile produced DIFFERENT bytes than the serial baseline"
-fi
-
-# --- 3. error case: warm must not publish a diagnosed module's cache, and
-#        the serial fallback must report the IDENTICAL diagnostic ---------
-serial_compile "$work/main_broken.vibe" "main_value" "$work/out_broken_serial.wasm"
-[ "$COMPILE_EXIT" -ne 0 ] || die "main_broken.vibe unexpectedly compiled cleanly (serial)"
-serial_diag="$(cat "$work/out_broken_serial.wasm.diag" 2>/dev/null || true)"
-[ -n "$serial_diag" ] || die "serial error case produced no .diag"
-
-warm_broken_json="$(node "$DRIVER" "$COMPILER_WASM" "$work/main_broken.vibe" 4 "$work" "$RUNNER")"
-note "driver summary (broken): $warm_broken_json"
-diagnosed="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).diagnosed))' "$warm_broken_json")"
-[ "$diagnosed" -ge 1 ] || die "expected at least 1 diagnosed module for main_broken.vibe, got $diagnosed"
-
-serial_compile "$work/main_broken.vibe" "main_value" "$work/out_broken_jobs4.wasm"
-[ "$COMPILE_EXIT" -ne 0 ] || die "main_broken.vibe unexpectedly compiled cleanly (post-warm)"
-jobs4_diag="$(cat "$work/out_broken_jobs4.wasm.diag" 2>/dev/null || true)"
-if [ "$serial_diag" = "$jobs4_diag" ]; then
-  note "identical diagnostic: serial vs post-warm ($serial_diag)"
-else
-  die "diagnostic mismatch: serial=[$serial_diag] post-warm=[$jobs4_diag]"
-fi
-
-# --- 4. regression pin (Codex review, PR #1144): a RELATIVE entry path
-#        must warm the SAME cache key the serial walk looks up. build_fingerprint
-#        folds each dependency's PATH (not just its content hash) into the
-#        importer's own fingerprint, so passing an absolute path to the warm
-#        pass and a relative one to compile_to (or vice versa) makes every
-#        non-leaf warmed entry land under a key the serial walk never
-#        requests -- silently turning `--jobs` into a no-op for exactly the
-#        common `vibe build src/main.vibe` case. This drives the real
-#        `runtime/vibe --jobs` entry point, not the driver script directly,
-#        since the bug was in how runtime/vibe passed $src to each phase.
-cache_keys() { find "$1/_build" -iname "*selfhost_type_env_v3*" 2>/dev/null | sed 's#.*/##' | sort; }
-
-rel_warm="$(mktemp -d)"
-cp "$work"/leaf.vibe "$work"/mid.vibe "$work"/main.vibe "$rel_warm/"
-( cd "$rel_warm" && VIBE_RUNNER="$RUNNER" VIBE_CLI_WASM="$COMPILER_WASM" \
-    bash "$PROJECT_ROOT/runtime/vibe" build main.vibe -o out.wasm --entry main_value --jobs 4 \
-    >/dev/null 2>rel_warm_err.txt ) || true
-warm_keys="$(cache_keys "$rel_warm")"
-if grep -qi "pre-warm failed" "$rel_warm/rel_warm_err.txt" 2>/dev/null; then
-  die "relative-path --jobs run's pre-warm silently failed: $(cat "$rel_warm/rel_warm_err.txt")"
-elif [ -z "$warm_keys" ]; then
-  die "relative-path --jobs run produced no persistent cache entries at all"
-fi
-
-rel_serial="$(mktemp -d)"
-cp "$work"/leaf.vibe "$work"/mid.vibe "$work"/main.vibe "$rel_serial/"
-( cd "$rel_serial" && VIBE_RUNNER="$RUNNER" VIBE_CLI_WASM="$COMPILER_WASM" \
-    bash "$PROJECT_ROOT/runtime/vibe" build main.vibe -o out.wasm --entry main_value \
-    >/dev/null 2>&1 )
-serial_keys="$(cache_keys "$rel_serial")"
-
-if [ "$warm_keys" = "$serial_keys" ]; then
-  note "relative-path cache-key parity ok ($(echo "$warm_keys" | grep -c .) keys, warm and serial agree)"
-else
-  die "relative-path cache-key MISMATCH between --jobs warm and plain serial: warm=[$warm_keys] serial=[$serial_keys]"
-fi
-if cmp -s "$rel_warm/out.wasm" "$rel_serial/out.wasm"; then
-  note "byte-identical: relative-path --jobs vs plain serial output"
-else
-  die "relative-path --jobs output differs from plain serial output"
-fi
-rm -rf "$rel_warm" "$rel_serial"
-
-if [ "$fail" -eq 0 ]; then
-  echo "[jobs-warm] ok"
-  exit 0
-else
-  exit 1
-fi
+  // Exercise the public relative-path --jobs adapter; canonical cache keys
+  // must agree with ordinary serial builds in a separate project directory.
+  const builds = [];
+  for (const jobs of [1, 4]) {
+    const cwd = join(work, `relative-${jobs}`);
+    mkdirSync(cwd);
+    for (const name of ["leaf.vibe", "mid.vibe", "main.vibe"]) copyFileSync(join(project, name), join(cwd, name));
+    const cache = cacheFor(`relative-${jobs}`);
+    const result = invoke("bash", [join(repo, "runtime/vibe"), "build", "main.vibe", "-o", "out.wasm",
+      "--entry", "main_value", "--jobs", String(jobs)], {
+      ...environment(cache), VIBE_PREOPEN_DIR: cwd, VIBE_RUNNER: runner, VIBE_CLI_WASM: compiler,
+    }, cwd);
+    assert.equal(result.status, 0, result.stderr);
+    assert.doesNotMatch(result.stderr, /pre-warm failed/i);
+    const keys = readdirSync(cache).filter(name => name.includes("selfhost_type_env_")).sort();
+    assert.equal(keys.length, 3, "relative build did not publish all module cache entries");
+    builds.push({ keys, bytes: readFileSync(join(cwd, "out.wasm")) });
+  }
+  assert.deepEqual(builds[0], builds[1], "relative --jobs changed cache keys or emitted bytes");
+  writeFileSync(join(work, "results.json"), JSON.stringify({ status: "passed", compiler, samples }, null, 2) + "\n");
+  console.log(`[jobs-warm] lowering reuse, execution, invalidation, diagnostics, relative paths passed: ${work}`);
+} finally {
+  if (!process.env.VIBE_PARALLEL_ORACLE_KEEP) rmSync(work, { recursive: true, force: true });
+}
+NODE

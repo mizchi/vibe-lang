@@ -73,6 +73,7 @@ async function compile(job) {
     artifact: {
       module: job.module.id,
       env: checked.env,
+      cacheProduct: checked.cacheProduct ?? null,
       // The selfhost checker returns the CANONICAL fingerprint --
       // check_module's own build_fingerprint(source, dep_fps), the same
       // value the serial compiler would derive for this module -- not a

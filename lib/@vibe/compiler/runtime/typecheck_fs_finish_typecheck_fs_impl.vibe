@@ -96,7 +96,7 @@ import ./persistent_env_codec.vibe {
 }
 
 import ./typed_lowering_codec.vibe {
-  module_typed_lowering_text
+  module_typed_lowering_text, parse_module_typed_lowering_offsets_text
 }
 
 import ./typecheck_fs_bind_import_names_from_cache_collecting.vibe {
@@ -1111,6 +1111,13 @@ fn parse_job_rows(job_text: String) -> (String, Array[String], Array[String]) wi
   match outcome {
     Checked(_, fingerprint, env, _, _, _, _) => {
       Fs::write_file(job_dir_path(dir, "env.out"), persistent_type_env_cache_text(env))
+      // The same successful check populated the lowering memo. An absent
+      // table is an infrastructure failure, never an authorized empty table.
+      let cache_text = match module_typed_lowering_memo_get_by_fp(fingerprint) {
+        Some(rows) => persistent_module_cache_text(env, Some(rows)),
+        None => throw("module job: successful check has no lowering product")
+      }
+      Fs::write_file(job_dir_path(dir, "cache.out"), String::concat(String::concat("checked-worker-cache\t1\t", fingerprint), String::concat("\n", cache_text)))
       // The module's own identity, as check_module computed it -- an
       // OUTPUT of this job, needed by the coordinator to build the NEXT
       // job's `dep\t<path>\t<fingerprint>` row for this module's
@@ -1126,10 +1133,10 @@ fn parse_job_rows(job_text: String) -> (String, Array[String], Array[String]) wi
   }
 }
 /// Batch worker publication. Each manifest row supplies a fingerprint and a
-/// relative env.out filename. Validate canonical TypeEnv-v10 transport before
-/// wrapping it in the v11 disk record with an explicitly unavailable table.
-/// A later serial check supplies lowering rows before that entry can be reused.
-fn parse_publish_manifest_rows(text: String) -> Array[(String, String)] with Exception {
+/// relative env.out filename, optionally followed by a checked cache product.
+/// Two-column legacy rows retain unavailable lowering. Three-column rows must
+/// carry the successful check's actual, fingerprint-bound complete product.
+fn parse_publish_manifest_rows(text: String) -> Array[(String, String, String)] with Exception {
   let lines = String::split(normalize_persistent_cache_text(text), "\n")
   let rows = array_empty()
   let mut i = 0
@@ -1140,15 +1147,20 @@ fn parse_publish_manifest_rows(text: String) -> Array[(String, String)] with Exc
       ()
     } else {
       let parts = String::split(line, "\t")
-      if Array::length(parts) != 2 {
-        throw(String::concat("invalid publish manifest row (want fingerprint + envfile): ", line))
+      if Array::length(parts) != 2 && Array::length(parts) != 3 {
+        throw(String::concat("invalid publish manifest row (want fingerprint + envfile + optional cachefile): ", line))
       } else {
         let fingerprint = Array::get(parts, 0)
         let env_file = Array::get(parts, 1)
-        if String::length(fingerprint) == 0 || String::length(env_file) == 0 {
-          throw(String::concat("invalid publish manifest row (empty fingerprint or envfile): ", line))
+        let cache_file = if Array::length(parts) == 3 {
+          Array::get(parts, 2)
         } else {
-          Array::push(rows, (fingerprint, env_file))
+          ""
+        }
+        if String::length(fingerprint) == 0 || String::length(env_file) == 0 || (Array::length(parts) == 3 && String::length(cache_file) == 0) {
+          throw(String::concat("invalid publish manifest row (empty fingerprint, envfile or cachefile): ", line))
+        } else {
+          Array::push(rows, (fingerprint, env_file, cache_file))
         }
       }
     }
@@ -1160,18 +1172,48 @@ fn parse_publish_manifest_rows(text: String) -> Array[(String, String)] with Exc
   let mut i = 0
   let len = Array::length(rows)
   while i < len {
-    let (fingerprint, env_file) = Array::get(rows, i)
+    let (fingerprint, env_file, cache_file) = Array::get(rows, i)
     let env_text = Fs::read_file(job_dir_path(dir, env_file))
     match parse_persistent_type_env(env_text) {
       Some(env) => {
         let canonical = persistent_type_env_cache_text(env)
         if env_text == canonical {
-          Fs::write_file(persistent_type_env_cache_path(fingerprint), persistent_module_cache_text(env, None))
+          let cache_text = if String::length(cache_file) == 0 {
+            persistent_module_cache_text(env, None)
+          } else {
+            let product = Fs::read_file(job_dir_path(dir, cache_file))
+            let header = String::concat(String::concat("checked-worker-cache\t1\t", fingerprint), "\n")
+            if !String::starts_with(product, header) {
+              throw("publish manifest: checked cache product fingerprint or version mismatch")
+            } else ()
+            let record_text = product[String::length(header): String::length(product)]
+            // The v10 wire and v11 record carry the exact same length-delimited
+            // environment. Compare its already validated canonical bytes rather
+            // than decoding and serializing the large TypeEnv a second time.
+            let env_prefix = String::concat("version\t11\n", canonical[String::length("version\t10\n"): String::length(canonical)])
+            if !String::starts_with(record_text, env_prefix) {
+              throw("publish manifest: checked cache product is non-canonical or disagrees with its environment")
+            } else ()
+            let lowering_text = record_text[String::length(env_prefix): String::length(record_text)]
+            if lowering_text == "lowering\tmissing\n" {
+              throw("publish manifest: checked cache product has unavailable lowering")
+            } else ()
+            match parse_module_typed_lowering_offsets_text(lowering_text) {
+              Some((offsets, eq_offs, eq_keys)) => {
+                if module_typed_lowering_text(offsets, eq_offs, eq_keys) != lowering_text {
+                  throw("publish manifest: checked cache product has non-canonical lowering")
+                } else ()
+                record_text
+              },
+              None => throw("publish manifest: checked cache product is unreadable")
+            }
+          }
+          Fs::write_file(persistent_type_env_cache_path(fingerprint), cache_text)
         } else {
-          throw(String::concat("publish manifest has non-canonical v4 environment: ", env_file))
+          throw(String::concat("publish manifest has non-canonical v10 environment: ", env_file))
         }
       },
-      None => throw(String::concat("publish manifest has unreadable v4 environment: ", env_file))
+      None => throw(String::concat("publish manifest has unreadable v10 environment: ", env_file))
     }
     i = i + 1
   }
