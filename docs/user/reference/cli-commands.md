@@ -46,6 +46,9 @@ vibe build --debug <file.vibe>                   # the linked debug lane
 vibe compile --entry <name> <file.vibe>          # entry other than `main` (not for .vibex)
 ```
 
+- A core module needs an entry: `fn main`, or `--entry <name>` naming an
+  exported zero-parameter function. A library module with neither is refused
+  (``entry `main` not found``); `--wit` and `--component` do not need one.
 - Output defaults to `.vibe/build/out/<name>.wasm` under the project root
   (`<name>.wit` with `--wit`, `<name>.component.wasm` with `--component`;
   #2675, [install.md](../getting-started/install.md#project-layout)). `-o`
