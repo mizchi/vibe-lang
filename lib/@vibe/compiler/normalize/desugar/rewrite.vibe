@@ -167,6 +167,10 @@ import ./iteration.vibe {
   classify_sync_for_loop, classify_trait_free_for_loop
 }
 
+import ./labeled_args.vibe {
+  strip_label_tilde
+}
+
 import ./lambda_return_shapes.vibe {
   dtd_show_witness_dict
 }
@@ -979,6 +983,9 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
               // `Enum::Variant` this arm resolves, and that is a real
               // resolution, not a missing witness.
               dtd_check_unthreaded_dispatch(as_method, head, member, name, traits, fn_returns)
+              // A qualified generic (`fn Util::same[T: Eq]`) named as a value
+              // loses its witness the same way an unqualified one does.
+              dtd_check_threaded_generic_value(name, gens, var_types)
               expr
             }
           }
@@ -1682,10 +1689,19 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
       EHandle(rewrite_expr(scrut, gens, traits, struct_sets, dict_binds, var_types, fn_returns), out)
     },
     EWhile(c, b) => EWhile(rewrite_expr(c, gens, traits, struct_sets, dict_binds, var_types, fn_returns), rewrite_expr(b, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
-    ELoop(params, body) => ELoop(for param in params {
-      let (name, init) = param
-      (name, rewrite_expr(init, gens, traits, struct_sets, dict_binds, var_types, fn_returns))
-    }, rewrite_expr(body, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
+    ELoop(params, body) => {
+      // The loop parameters are local bindings in the body (Codex on #3299).
+      let loop_names = for param in params {
+        param.0
+      }
+      let loop_ps = for n in loop_names {
+        (n, None)
+      }
+      ELoop(for param in params {
+        let (name, init) = param
+        (name, rewrite_expr(init, gens, traits, struct_sets, dict_binds, var_types, fn_returns))
+      }, rewrite_expr(body, gens_masked_by(gens, loop_names), traits, struct_sets, dict_binds, dtd_mask_shadowed_params(var_types, loop_ps, fn_returns), fn_returns))
+    },
     EForIn(name, idx, iter, body) => {
       let body_vars0 = if Array::get(dtd_constructor_tracking, 0) {
         constructor_for_body_var_types(iter, name, idx, struct_sets, var_types, fn_returns)
@@ -1693,7 +1709,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
         var_types
       }
       let body_vars = dtd_mask_shadowed_params(body_vars0, [(name, None)], fn_returns)
-      let rbody = rewrite_expr(body, gens, traits, struct_sets, dict_binds, body_vars, fn_returns)
+      let rbody = rewrite_expr(body, gens_masked_by(gens, [name]), traits, struct_sets, dict_binds, body_vars, fn_returns)
       // #1350: one surface, one classification. A plain `for x in e` is
       // iterator/iterable/array-classified only when a method-bearing trait is
       // present (without one there are no `impl ::next` methods to dispatch),
@@ -2108,7 +2124,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
           ()
         }
         scope_formals_push(tp, bs, true)
-        let rbody = rewrite_expr(body, gens, traits, struct_sets, binds, dtd_mask_shadowed_params(seed_var_types(ps, tp, var_types), ps, fn_returns), fn_returns)
+        let rbody = rewrite_expr(body, gens_masked_by(gens, param_names(ps)), traits, struct_sets, binds, dtd_mask_shadowed_params(seed_var_types(ps, tp, var_types), ps, fn_returns), fn_returns)
         scope_formals_pop()
         if shim_body {
           show_shim_body_leave()
@@ -2118,7 +2134,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
         EFn(tp, bs, new_params, ret, eff, rbody)
       } else {
         scope_formals_push(tp, bs, true)
-        let rbody = rewrite_expr(body, gens, traits, struct_sets, dict_binds, dtd_mask_shadowed_params(seed_var_types(ps, tp, var_types), ps, fn_returns), fn_returns)
+        let rbody = rewrite_expr(body, gens_masked_by(gens, param_names(ps)), traits, struct_sets, dict_binds, dtd_mask_shadowed_params(seed_var_types(ps, tp, var_types), ps, fn_returns), fn_returns)
         scope_formals_pop()
         EFn(tp, bs, ps, ret, eff, rbody)
       }
@@ -2205,18 +2221,43 @@ fn gen_prepends_dicts(gen: DictGen) -> Bool {
 /// (`constructor_binding_is_masked`), so only the top-level generic, or a
 /// bounded local lambda's own gen, is refused.
 fn dtd_check_threaded_generic_value(name: String, gens: Array[DictGen], var_types: Array[(String, String)]) -> Unit with Exception {
-  if constructor_binding_is_masked(var_types, name) {
-    ()
-  } else {
-    match lookup_gen_entry(gens, name) {
-      Some(gen) => if gen_prepends_dicts(gen) && Array::length(gen.threaded) > 0 {
-        let (tp, trait_name, _) = Array::get(gen.threaded, 0)
-        throw("wrap `" + name + "` in a lambda that calls it with concrete argument types (for example `(x: Int) -> " + name + "(x)`): its `[" + tp + ": " + trait_ref_name(trait_name) + "]` bound is supplied at each call, so it cannot be passed as a value")
-      } else {
-        ()
-      },
-      None => ()
+  match lookup_gen_entry(gens, name) {
+    // The LATEST gen answers. A local lambda's own gen is the binding in
+    // scope even where a top-level function of the same spelling set the
+    // mask (Codex on #3299); only a top-level gen yields to a local that
+    // shadows it.
+    Some(gen) => if gen.impl_trait != lambda_gen_marker() && constructor_binding_is_masked(var_types, name) {
+      ()
+    } else if gen_prepends_dicts(gen) && Array::length(gen.threaded) > 0 {
+      let (tp, trait_name, _) = Array::get(gen.threaded, 0)
+      throw("wrap `" + name + "` in a lambda that takes concrete parameter types and calls it: its `[" + tp + ": " + trait_ref_name(trait_name) + "]` bound is supplied at each call, so it cannot be passed as a value")
+    } else {
+      ()
+    },
+    None => ()
+  }
+}
+
+/// `gens` with every name in `names` that a gen binds masked by a gen that
+/// threads nothing, the way `gens_after_let` masks one for a `let`. A lambda
+/// or `loop` parameter, or a `for` binder, of a generic's spelling is a local
+/// value, not that generic: its calls take no dictionary, and naming it as a
+/// value is not a reference to the generic (Codex on #3299).
+fn gens_masked_by(gens: Array[DictGen], names: Array[String]) -> Array[DictGen] {
+  let mut out = gens
+  for n in names {
+    if gens_name_bound(out, n) {
+      out = gens_plus(out, dict_gen_of_lambda(n, [], empty_threaded()))
+    } else {
+      ()
     }
+  }
+  out
+}
+
+fn param_names(ps: Array[(String, Option[TypeExpr])]) -> Array[String] {
+  for p in ps {
+    strip_label_tilde(p.0)
   }
 }
 
