@@ -834,16 +834,16 @@ Rules:
   a `with` row, and it never had a braceless spelling to collapse into.
 
 - The exception effect is spelled `Exception`. `Error` was its name through the
-  ADR-0085 migration and is now rejected by name (#1461, #1501) in BOTH places
-  a source effect name appears -- a row item (`-> T with Error`) and the handled
-  effect (`handle { .. } with Error { .. }`). #1461 covered only the first, so
-  for one release the two positions disagreed while `vibe fmt` rewrote both;
-  #1501 closed that. `vibe fmt` remains the migration path, on the same
-  token-level argument as the braced row above.
+  ADR-0085 migration and is rejected by name in every place a source effect
+  name appears: a row item (`-> T with Error`), the handled effect
+  (`handle { .. } with Error { .. }`), and a qualified handler arm
+  (`with { Error::Throw(_) => .. }` or the suffix `with Error::Throw(_) => ..`).
+  `vibe fmt` rewrites all three, on the same token-level argument as the braced
+  row above.
 
   `perform Error::Throw(x)` is unaffected and stays legal. An operation
-  qualifier is not a row item: it names the operation the runtime dispatches,
-  and no row is being spelled there.
+  qualifier on a `perform` is not a row item or a handled effect: it names the
+  operation the runtime dispatches, and no row is being spelled there.
 
   The separator is `+`, not `,`, because a comma cannot be told apart from an
   enclosing list's comma once the braces are gone: in `((Int) -> Int with A, B)`
