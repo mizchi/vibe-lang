@@ -813,14 +813,33 @@ export fn eq_channel_type_expr(ty: Type) -> Option[TypeExpr] {
 ///   - a variable anywhere else: an `Array` element, an `Option` payload, a
 ///     tuple slot, or the whole operand. Those already have their own rungs
 ///     (the untyped-empty arm, `opt_eq_match`, the tuple walk) and keep them.
-///   - an argument whose declared parameter is a type CONSTRUCTOR (`F` of
-///     `enum R[T, F[_]]`, Codex on #3286). `Unit` has arity 0, so substituting
-///     it for `F` leaves the payload `F[Int]` unresolvable in the specialized
-///     comparator. No placeholder of every arity exists, so the row stays
-///     absent there -- today's answer, not a new wrong one. The parameter's
-///     arity is read from the head's own declaration (`type_param_arity` of
-///     its `params` key); a head whose declaration is not in `defs` is not
-///     filled either.
+///   - a head whose declaration is not in `defs`: the parameter's arity is
+///     read from the head's own declaration (`type_param_arity` of its
+///     `params` key), and without one there is nothing to read.
+///
+/// #3288: an argument whose declared parameter is a type CONSTRUCTOR (`F` of
+/// `enum R[T, F[_]]`) is filled with `Unit` too, read as the CONSTANT
+/// constructor of that arity: the desugar's substitution turns the payload
+/// `F[Int]` into `Unit` (`eq_subst_ty`), so the position compares with the
+/// same raw `==` the arity-0 fill gives it, and by the same argument it is
+/// dead code. Before this the row stayed absent there and the comparison fell
+/// to the derived `R::equals`, whose `T` payload compares an aggregate by
+/// identity.
+///
+/// `Unit` has the wrong kind for `F`, and the generated comparator's
+/// signature says `R[Array[Int], Unit]`. That is tolerated because it lives
+/// only in generated comparators, which are not type-checked again: an
+/// application of `F` becomes `Unit`, and `F` passed on unapplied
+/// (`Phantom[F]`, Codex on #3296) or through an alias reaches the same
+/// substitution one declaration further down. A kind-correct placeholder
+/// would have to be a real constructor, and that is unsound: a lambda
+/// let-generalized over `F` holds live `F[Int]` values while `F` stays free
+/// here, so `Array` would compare an `Option` as an array. `Unit` keeps that
+/// position's raw `==`, which is what it compared with before (measured: still
+/// `false` for two equal arrays there). Declining the row instead would
+/// restore the identity answer for every other position.
+/// `fixtures/structural_eq_kinded_ctor_arg_test.vibe` pins that generation
+/// succeeds for all three routes.
 fn eq_channel_row_type_expr(ty: Type, defs: Array[TypeDef]) -> Option[TypeExpr] {
   eq_channel_type_expr_impl(ty, Some(defs))
 }
@@ -893,9 +912,14 @@ fn eq_channel_type_expr_impl(ty: Type, fill_defs: Option[Array[TypeDef]]) -> Opt
 }
 
 /// The type arguments of the named head `head`. With `fill_defs`, an
-/// unresolved non-formal variable whose declared parameter has arity 0 lowers
-/// to `Unit` (see `eq_channel_row_type_expr`); everything else lowers as any
+/// unresolved non-formal variable whose head's declaration is known lowers to
+/// `Unit` (see `eq_channel_row_type_expr`); everything else lowers as any
 /// other position does.
+///
+/// #3288: a type CONSTRUCTOR argument (`Option` in `R[Array[Int], Option]`)
+/// lowers to its bare name, which the desugar substitutes as the head of the
+/// payload's application (`F[Int]` becomes `Option[Int]`). It is lowered only
+/// here: a constructor is never a whole operand type.
 fn eq_channel_type_args(head: String, args: Array[Type], fill_defs: Option[Array[TypeDef]]) -> Option[Array[TypeExpr]] {
   let out: Array[TypeExpr] = []
   let mut i = 0
@@ -904,12 +928,17 @@ fn eq_channel_type_args(head: String, args: Array[Type], fill_defs: Option[Array
     let arg = Array::get(args, i)
     let lowered = match arg {
       CtVar(vid) => match fill_defs {
-        Some(defs) => if eq_formal_row_of(vid) < 0 && eq_declared_param_arity(defs, head, i) == 0 {
+        Some(defs) => if eq_formal_row_of(vid) < 0 && eq_declared_param_arity(defs, head, i) >= 0 {
           Some(TyUnit)
         } else {
           None
         },
         None => None
+      },
+      CtConstructor(n, _) => if String::starts_with(n, "#") {
+        None
+      } else {
+        Some(TyName(n))
       },
       _ => eq_channel_type_expr_impl(arg, fill_defs)
     }

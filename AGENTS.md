@@ -61,7 +61,12 @@ value of `e` exists, so that arm's comparator is dead code. Before this, two
 such bindings fell to an `Ok`/`Err` match that compared the arrays by
 identity and answered `false`
 (`fixtures/structural_eq_generic_enum_free_arg_test.vibe`). A formal is never
-filled in.
+filled in. At a type-CONSTRUCTOR parameter (`F` of `enum K[T, F[_]]`) the fill
+is the constant constructor, so the payload `F[Int]` reads as `Unit` too, and
+a bound constructor argument (`K[Array[Int], Option]`) substitutes as the
+payload's head (`Option[Int]`). Before #3288 both fell to the derived
+`K::equals`, whose `T` payload compared by identity, annotation or not
+(`fixtures/structural_eq_kinded_ctor_arg_test.vibe`).
 Generic struct literals preserve concrete type arguments in the equality
 shape. The compiler emits a comparator for each concrete instantiation and
 substitutes those arguments into its field types, so `Box[Double]`,
