@@ -153,15 +153,18 @@ vibe test --update <file_test.vibe|dir...>
 
 ### check
 
-Parse and type-check without producing output. Diagnostics go to stdout, one
-per line; **empty output and exit 0 mean clean**, anything reported exits 1.
+Parse and type-check without producing output. Errors go to stdout, one per
+line, and exit 1; **empty stdout and exit 0 mean the file compiles**. Warnings
+never change the exit code: in text mode they go to stderr, and with `--json`
+they appear in the array with severity 2. (The unused-import warning is
+currently reported by `--single-file` only.)
 Imports are resolved from the filesystem, so `vibe check` alone answers "does
 this compile".
 
 ```
 vibe check <file...>
 vibe check --single-file <file>          # this buffer only, imports not followed
-vibe check --json <file>                 # LSP Diagnostic array (`[]` when clean)
+vibe check --json <file>                 # LSP Diagnostic array (`[]` when nothing is reported)
 vibe check --profile-tsv timing.tsv <file...>
 ```
 
