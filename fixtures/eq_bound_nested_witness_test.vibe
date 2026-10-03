@@ -1,0 +1,203 @@
+//# #3287: `==` inside a generic body on a value whose type mentions an
+//# `Eq`-bounded formal. A generic body is lowered once, so the formal's
+//# positions compare through the witness dictionary the caller passes.
+//#
+//# Before the fix two things went wrong together. A formal that appeared only
+//# nested in the parameters (`a: Option[T]`) was threaded no witness at all, so
+//# even a bare `x == y` on two `T` values reached through a match compared by
+//# identity. And an aggregate around a formal (`Option[T]`, `(T, Int)`,
+//# `Array[T]`, a generic enum) compared its formal leaves with a raw `==`,
+//# where only a bare `T` operand used the witness. A boxed `Double` and any
+//# aggregate answered `false` for two equal values.
+
+enum Res[T, E] {
+  Ok(T);
+  Err(E)
+}
+
+struct Pt {
+  x: Int;
+  ys: Array[Int]
+} derive (Eq)
+
+struct Box[T] {
+  v: T
+} derive (Eq)
+
+fn same_opt[T: Eq](a: Option[T], b: Option[T]) -> Bool {
+  a == b
+}
+
+fn differ_opt[T: Eq](a: Option[T], b: Option[T]) -> Bool {
+  a != b
+}
+
+fn same_res[T: Eq](a: Res[Array[Int], T], b: Res[Array[Int], T]) -> Bool {
+  a == b
+}
+
+fn same_tuple[T: Eq](a: (T, Int), b: (T, Int)) -> Bool {
+  a == b
+}
+
+fn same_bare[T: Eq](a: T, b: T) -> Bool {
+  a == b
+}
+
+fn same_arr[T: Eq](a: Array[T], b: Array[T]) -> Bool {
+  a == b
+}
+
+fn same_box[T: Eq](a: Box[T], b: Box[T]) -> Bool {
+  a == b
+}
+
+fn payloads_equal[T: Eq](a: Option[T], b: Option[T]) -> Bool {
+  match (a, b) {
+    (Some(x), Some(y)) => x == y,
+    (None, None) => true,
+    _ => false
+  }
+}
+
+fn payloads_equal_qualified[T: Eq](a: Option[T], b: Option[T]) -> Bool {
+  match (a, b) {
+    (Some(x), Some(y)) => T::equals(x, y),
+    (None, None) => true,
+    _ => false
+  }
+}
+
+fn forward[U: Eq](a: Option[U], b: Option[U]) -> Bool {
+  same_opt(a, b)
+}
+
+fn rebuilt[T: Eq](a: Option[T], b: Option[T]) -> Bool {
+  match (a, b) {
+    (Some(x), Some(y)) => Some(x) == Some(y),
+    _ => false
+  }
+}
+
+struct Holder {
+  o: Option[Double]
+}
+
+// A formal reached only through a function's result (Codex on #3302): the
+// call reads `T` off the function argument's type, and a call through the
+// parameter has the type its annotation declares.
+fn via_fn[T: Eq](make: () -> T) -> Bool {
+  make() == make()
+}
+
+fn via_fn_opt[T: Eq](make: () -> Option[T]) -> Bool {
+  make() == make()
+}
+
+fn with_carrier[T: Eq](x: T, make: () -> T) -> Bool {
+  make() == make()
+}
+
+// The `Option` argument is `None` here, but the function argument still
+// produces values of `T`, so `T` must be read from it, not filled in.
+fn mixed[T: Eq](a: Option[T], make: () -> T) -> Bool {
+  Some(make()) == Some(make())
+}
+
+fn forward_fn[U: Eq](mk: () -> U) -> Bool {
+  via_fn(mk)
+}
+
+fn d() -> Double {
+  1.5
+}
+
+fn annotated_let[T: Eq](a: Option[T], b: Option[T]) -> Bool {
+  let c: Option[T] = a
+  c == b
+}
+
+test "Option[T] at Double and at a derive(Eq) struct" {
+  inspect(same_opt(Some(1.5), Some(1.5)), "true")
+  inspect(same_opt(Some(1.5), Some(2.5)), "false")
+  inspect(same_opt(Some(Pt::{ x: 1, ys: [2] }), Some(Pt::{ x: 1, ys: [2] })), "true")
+  inspect(same_opt(Some(Pt::{ x: 1, ys: [2] }), Some(Pt::{ x: 1, ys: [3] })), "false")
+  inspect(same_opt(Some(7), Some(7)), "true")
+  inspect(same_opt(Some(7), None), "false")
+  inspect(differ_opt(Some(1.5), Some(1.5)), "false")
+  inspect(differ_opt(Some(1.5), Some(2.5)), "true")
+}
+
+test "a generic enum whose other argument is concrete" {
+  inspect(same_res(Err(1.5), Err(1.5)), "true")
+  inspect(same_res(Err(1.5), Err(2.5)), "false")
+  inspect(same_res(Ok([1, 2]), Ok([1, 2])), "true")
+  inspect(same_res(Ok([1, 2]), Ok([1, 3])), "false")
+  inspect(same_res(Ok([1, 2]), Err(1.5)), "false")
+}
+
+test "a tuple, an array and a generic struct around the formal" {
+  inspect(same_tuple((1.5, 1), (1.5, 1)), "true")
+  inspect(same_tuple((1.5, 1), (1.5, 2)), "false")
+  inspect(same_arr([1.5, 2.5], [1.5, 2.5]), "true")
+  inspect(same_arr([1.5, 2.5], [1.5, 3.5]), "false")
+  inspect(same_arr([Pt::{ x: 1, ys: [2] }], [Pt::{ x: 1, ys: [2] }]), "true")
+  inspect(same_box(Box::{ v: 1.5 }, Box::{ v: 1.5 }), "true")
+  inspect(same_box(Box::{ v: 1.5 }, Box::{ v: 2.5 }), "false")
+  inspect(same_bare(1.5, 1.5), "true")
+}
+
+test "a bare formal reached through a match uses the witness" {
+  inspect(payloads_equal(Some(1.5), Some(1.5)), "true")
+  inspect(payloads_equal(Some(Pt::{ x: 1, ys: [2] }), Some(Pt::{ x: 1, ys: [2] })), "true")
+  inspect(payloads_equal(Some(1.5), Some(2.5)), "false")
+  inspect(payloads_equal_qualified(Some(1.5), Some(1.5)), "true")
+  inspect(payloads_equal_qualified(Some(1.5), Some(2.5)), "false")
+}
+
+test "forwarded, rebuilt and annotated operands" {
+  inspect(forward(Some(1.5), Some(1.5)), "true")
+  inspect(forward(Some(1.5), Some(2.5)), "false")
+  inspect(rebuilt(Some(1.5), Some(1.5)), "true")
+  inspect(rebuilt(Some(1.5), Some(2.5)), "false")
+  inspect(annotated_let(Some(1.5), Some(1.5)), "true")
+  inspect(annotated_let(Some(1.5), Some(2.5)), "false")
+}
+
+test "arguments read from a field and from an array element" {
+  let h = Holder::{ o: Some(1.5) }
+  let k = Holder::{ o: Some(1.5) }
+  inspect(same_opt(h.o, k.o), "true")
+  let xs: Array[Option[Double]] = [Some(1.5), Some(1.5), Some(2.5)]
+  inspect(same_opt(Array::get(xs, 0), Array::get(xs, 1)), "true")
+  inspect(same_opt(Array::get(xs, 0), Array::get(xs, 2)), "false")
+}
+
+// Each argument is a constructor literal whose variant holds no value of the
+// formal, so nothing of type `T` reaches the callee and any `Eq` witness is
+// sound for it.
+test "calls that carry no value of the formal" {
+  inspect(same_opt(None, None), "true")
+  inspect(same_res(Ok([1, 2]), Ok([1, 2])), "true")
+}
+
+test "a formal reached only through a function result" {
+  inspect(via_fn(d), "true")
+  inspect(via_fn(() -> Double { 2.5 }), "true")
+  inspect(via_fn_opt(() -> Option[Double] { Some(1.5) }), "true")
+  inspect(with_carrier(7.5, d), "true")
+  inspect(forward_fn(d), "true")
+}
+
+test "a function argument is read when the data argument holds no value" {
+  inspect(mixed(None, d), "true")
+}
+
+test "a local generic lambda over Option[T]" {
+  let same = [T: Eq](a: Option[T], b: Option[T]) -> Bool {
+    a == b
+  }
+  inspect(same(Some(1.5), Some(1.5)), "true")
+  inspect(same(Some(1.5), Some(2.5)), "false")
+  inspect(same(Some(Pt::{ x: 1, ys: [2] }), Some(Pt::{ x: 1, ys: [2] })), "true")
+}

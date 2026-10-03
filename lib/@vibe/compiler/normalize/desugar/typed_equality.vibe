@@ -21,7 +21,7 @@ import ./derive_operations.vibe {
 }
 
 import ./equality_aliases.vibe {
-  eq_expand_alias_ty
+  eq_expand_alias_ty, eq_subst_ty
 }
 
 import ./equality_content_types.vibe {
@@ -52,7 +52,7 @@ import ./equality_requests.vibe {
 }
 
 import ./formal_scope.vibe {
-  is_scalar_type_name, subst_scope_formals_ty
+  is_marked_formal_name, is_scalar_type_name, subst_scope_formals_ty
 }
 
 import ./generic_equality.vibe {
@@ -64,7 +64,17 @@ import ./name_encoding.vibe {
 }
 
 import ./state.vibe {
-  dtd_eq_invisible_nominals, dtd_eq_type_owners
+  dtd_eq_enum_decls,
+  dtd_eq_formal_witnesses,
+  dtd_eq_generic_structs,
+  dtd_eq_invisible_nominals,
+  dtd_eq_type_owners,
+  dtd_eq_witness_inline_stack,
+  scope_formal_mark_prefix
+}
+
+import ./trait_bounds.vibe {
+  dtd_eq_witness_method
 }
 
 import ./utilities.vibe {
@@ -83,6 +93,218 @@ import ./utilities.vibe {
 /// structural equality MUST be resolved here at the AST level where the static
 /// type is known. (#695.)
 export fn eq_for_typed(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String]) -> Expr {
+  if Array::length(dtd_eq_formal_witnesses) == 0 {
+    eq_for_typed_plain(fty0, lhs, rhs, known_types)
+  } else {
+    match eq_for_typed_witnessed(eq_expand_alias_ty(subst_scope_formals_ty(fty0)), lhs, rhs, known_types) {
+      Some(e) => e,
+      None => eq_for_typed_plain(fty0, lhs, rhs, known_types)
+    }
+  }
+}
+
+fn is_none[A](o: Option[A]) -> Bool {
+  match o {
+    Some(_) => false,
+    None => true
+  }
+}
+
+/// #3287: the formal's witness dictionary, when the comparison being lowered
+/// compares this formal through it. Matches the source spelling and the
+/// re-spelled one (`subst_scope_formals_ty`), which name the same formal.
+fn eq_formal_witness_dict(n: String) -> Option[String] {
+  let source = if is_marked_formal_name(n) {
+    String::substring(n, String::length(scope_formal_mark_prefix), String::length(n))
+  } else {
+    n
+  }
+  let mut result = None
+  for w in dtd_eq_formal_witnesses {
+    if w.0 == source && is_none(result) {
+      result = Some(w.1)
+    } else {
+      ()
+    }
+  }
+  result
+}
+
+fn eq_ty_mentions_witnessed_formal(t: TypeExpr) -> Bool {
+  match t {
+    TyName(n) => match eq_formal_witness_dict(n) {
+      Some(_) => true,
+      None => false
+    },
+    TyApp(_, args) => {
+      let mut found = false
+      for a in args {
+        if eq_ty_mentions_witnessed_formal(a) {
+          found = true
+        } else {
+          ()
+        }
+      }
+      found
+    },
+    TyTuple(items) => {
+      let mut found = false
+      for x in items {
+        if eq_ty_mentions_witnessed_formal(x) {
+          found = true
+        } else {
+          ()
+        }
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+/// #3287: the comparison of a type that mentions a formal compared through its
+/// `Eq` witness, or None for the plain lowering. A generic body is lowered
+/// once, so every position that reads such a formal has to reach the
+/// dictionary from where it is written:
+///
+///   - the formal itself calls the witness;
+///   - `Array[t]` compares inline, because the `__arr_equals__` helper is a
+///     separate function the dictionary parameter is not in scope of;
+///   - a declared generic enum or struct expands inline for the same reason,
+///     with each payload or field substituted; a type met again inside its own
+///     expansion (`List[T]`) fails closed, as its specialization does;
+///   - a `Map` keyed or valued by the formal fails closed: its helper cannot
+///     reach the dictionary either.
+///
+/// Everything else -- `Option`, tuples, concrete positions -- is the plain
+/// lowering, which recurses through `eq_for_typed` and so reaches the cases
+/// above.
+fn eq_for_typed_witnessed(fty: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String]) -> Option[Expr] {
+  match fty {
+    TyName(n) => match eq_formal_witness_dict(n) {
+      Some(dict) => Some(ECall(EDot(EIdent(dict, -1), dtd_eq_witness_method(), -1, -1), [
+        lhs,
+        rhs
+      ], -1, [])),
+      None => None
+    },
+    TyApp(head, args) => if !eq_ty_mentions_witnessed_formal(fty) {
+      None
+    } else if head == "Array" && Array::length(args) == 1 {
+      Some(eq_inline_array_witnessed(Array::get(args, 0), lhs, rhs, known_types))
+    } else if head == "Map" || head == "StringMap" {
+      Some(eq_trap())
+    } else if (head == "Option" || head == "Result") && eq_builtin_enum_arm_applies(head) && !eq_builtin_head_owned_by_nonenum(head) {
+      None
+    } else if eq_has_explicit_equals(head) {
+      None
+    } else if eq_generic_enum_declared(head) || generic_eq_struct_declared(head) {
+      Some(eq_inline_generic_witnessed(head, args, lhs, rhs, known_types))
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
+fn eq_inline_array_witnessed(elem: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String]) -> Expr {
+  let uid = idx_str(eq_tuple_uid_next())
+  let la = String::concat("__weq_xs", uid)
+  let lb = String::concat("__weq_ys", uid)
+  let iv = String::concat("__weq_i", uid)
+  let okv = String::concat("__weq_ok", uid)
+  let len_of = (name: String) -> Expr {
+    ECall(builtin_ref("Array::length"), [EIdent(name, -1)], -1, [])
+  }
+  let elem_of = (name: String) -> Expr {
+    ECall(builtin_ref("Array::get"), [EIdent(name, -1), EIdent(iv, -1)], -1, [])
+  }
+  let elem_eq = eq_for_typed(elem, elem_of(la), elem_of(lb), known_types)
+  let set_false = EIf(ECall(EIdent("not", -1), [elem_eq], -1, []), EAssign(okv, EBool(false), EUnit), EUnit)
+  let incr = EAssign(iv, EBinOp("+", EIdent(iv, -1), EInt(1), -1), EUnit)
+  let cond = EBinOp("&&", EIdent(okv, -1), EBinOp("<", EIdent(iv, -1), len_of(la), -1), -1)
+  let walk = ELetMut(iv, EInt(0), ELetMut(okv, EBool(true), ESeq(EWhile(cond, ESeq(set_false, incr)), EIdent(okv, -1)), -1), -1)
+  let body = EIf(EBinOp("!=", len_of(la), len_of(lb), -1), EBool(false), walk)
+  ELet(la, lhs, ELet(lb, rhs, body, -1), -1)
+}
+
+fn eq_inline_generic_witnessed(head: String, args: Array[TypeExpr], lhs: Expr, rhs: Expr, known_types: Array[String]) -> Expr {
+  let mut on_stack = false
+  for h in dtd_eq_witness_inline_stack {
+    if h == head {
+      on_stack = true
+    } else {
+      ()
+    }
+  }
+  if on_stack {
+    eq_trap()
+  } else {
+    Array::push(dtd_eq_witness_inline_stack, head)
+    let uid = idx_str(eq_tuple_uid_next())
+    let ln = String::concat("__weq_l", uid)
+    let rn = String::concat("__weq_r", uid)
+    let mut body = eq_trap()
+    for decl in dtd_eq_generic_structs {
+      let (sname, formals, fields) = decl
+      if sname == head && Array::length(formals) == Array::length(args) {
+        let mut conj = EBool(true)
+        let mut fi = Array::length(fields) - 1
+        while fi >= 0 {
+          let (fname, fty) = Array::get(fields, fi)
+          let sub = eq_expand_alias_ty(eq_subst_ty(fty, formals, args))
+          conj = EBinOp("&&", eq_for_typed(sub, EDot(EIdent(ln, -1), fname, -1, -1), EDot(EIdent(rn, -1), fname, -1, -1), known_types), conj, -1)
+          fi = fi - 1
+        }
+        body = conj
+      } else {
+        ()
+      }
+    }
+    for edecl in dtd_eq_enum_decls {
+      let (ename, formals, variants) = edecl
+      if ename == head && Array::length(formals) == Array::length(args) {
+        let outer_arms = array_empty()
+        let mut vi = 0
+        while vi < Array::length(variants) {
+          let (vname, payloads) = Array::get(variants, vi)
+          let apre = String::concat(String::concat("__weq_a", uid), String::concat("_", idx_str(vi)))
+          let bpre = String::concat(String::concat("__weq_b", uid), String::concat("_", idx_str(vi)))
+          let abinds = array_empty()
+          let bbinds = array_empty()
+          let mut pi = 0
+          while pi < Array::length(payloads) {
+            Array::push(abinds, PBind(String::concat(apre, String::concat("_", idx_str(pi)))))
+            Array::push(bbinds, PBind(String::concat(bpre, String::concat("_", idx_str(pi)))))
+            pi = pi + 1
+          }
+          let mut conj = EBool(true)
+          let mut bi = Array::length(payloads) - 1
+          while bi >= 0 {
+            let sub = eq_expand_alias_ty(eq_subst_ty(Array::get(payloads, bi), formals, args))
+            let av = EIdent(String::concat(apre, String::concat("_", idx_str(bi))), -1)
+            let bv = EIdent(String::concat(bpre, String::concat("_", idx_str(bi))), -1)
+            conj = EBinOp("&&", eq_for_typed(sub, av, bv, known_types), conj, -1)
+            bi = bi - 1
+          }
+          let inner = EMatch(EIdent(rn, -1), [
+            (PCtor(vname, bbinds), conj),
+            (PWild, EBool(false))
+          ])
+          Array::push(outer_arms, (PCtor(vname, abinds), inner))
+          vi = vi + 1
+        }
+        body = EMatch(EIdent(ln, -1), outer_arms)
+      } else {
+        ()
+      }
+    }
+    Array::truncate(dtd_eq_witness_inline_stack, Array::length(dtd_eq_witness_inline_stack) - 1)
+    ELet(ln, lhs, ELet(rn, rhs, body, -1), -1)
+  }
+}
+
+fn eq_for_typed_plain(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String]) -> Expr {
   // #2141 (Codex round on #2183): re-spell in-scope formals for the WHOLE
   // type at the entry, not per-arm -- a composite shape reaching typed-eq
   // dispatch at rewrite time must never leave a sibling `TyName(<formal>)`

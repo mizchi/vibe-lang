@@ -420,6 +420,10 @@ ur_refused fixtures/err_threaded_generic_value_refused.vibe 'its `[T: Eq]` bound
 ur_refused fixtures/err_threaded_generic_qualified_value_refused.vibe 'its `[T: Eq]` bound is supplied at each call, so it cannot be passed as a value' 'wrap `Util::same` in a lambda that takes concrete parameter types and calls it'
 ur_refused fixtures/err_threaded_generic_local_value_refused.vibe 'its `[T: Eq]` bound is supplied at each call, so it cannot be passed as a value' 'wrap `same` in a lambda that takes concrete parameter types and calls it'
 ur_refused fixtures/err_threaded_generic_exception_arm_value_refused.vibe 'its `[T: Eq]` bound is supplied at each call, so it cannot be passed as a value' 'wrap `resume` in a lambda that takes concrete parameter types and calls it'
+# #3287: a call whose argument does not say what the nested formal is.
+ur_refused fixtures/err_eq_nested_witness_unreadable_refused.vibe 'the type `T` stands for is needed for its `Eq` witness and is not available here' 'annotate the argument this call reads `T` from'
+ur_refused fixtures/err_eq_nested_witness_fn_unreadable_refused.vibe 'the type `T` stands for is needed for its `Eq` witness and is not available here' 'annotate the argument this call reads `T` from'
+ur_refused fixtures/err_eq_witness_missing_refused.vibe 'the `Eq` witness for `T` does not reach this comparison' 'compare at a concrete type, or pass the comparison in as a parameter'
 # #3019 rides the same helper: a lowering-time refusal asserted on its message
 # and its edit, not on the bare fact that the build failed.
 ur_refused fixtures/err_handle_resume_capture_loop_break_refused.vibe 'leaves a loop outside it' 'set a flag inside the handle'

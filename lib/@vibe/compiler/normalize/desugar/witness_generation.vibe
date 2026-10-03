@@ -36,6 +36,10 @@ import ./models.vibe {
   DictGen
 }
 
+import ./nested_witness.vibe {
+  NestedBinding, nested_recv_binding
+}
+
 import ./state.vibe {
   dtd_eq_derived_generic, dtd_eq_known_types
 }
@@ -47,6 +51,7 @@ import ./trait_bounds.vibe {
   find_dict_for_trait,
   is_array_elem_recv_index,
   is_constructor_recv_index,
+  is_nested_recv_index,
   trait_ref_mentions_param
 }
 
@@ -249,12 +254,48 @@ fn build_concrete_dict(cname: String, trait_name: String, traits: Array[(String,
   build_concrete_dict_for_target(target, trait_name, traits, gens, struct_sets, var_types, fn_returns, Some(arg_expr))
 }
 
+/// #3287: the dictionary for a formal the callee receives NESTED
+/// (`a: Option[T]`). The formal's type is read by matching each carrying
+/// parameter's annotation against the argument (`nested_recv_binding`).
+///
+/// When every carrying argument is a constructor literal whose variant holds
+/// no value of the formal (`None`, or `Ok(..)` of `Res[A, T]` read for `T`),
+/// no value of it reaches the callee, and the `Eq` witness -- whose one method
+/// consumes values and produces none -- is never applied; any `Eq` dictionary
+/// is sound there, and `Int`'s is used. Any other trait could build a value
+/// from its dictionary, so it still needs the type. An argument whose type
+/// cannot be read is refused with the edit, rather than emitting the call
+/// short its dictionary, which fails wasm validation.
+fn synth_nested_dict(type_param: String, trait_name: String, callee_type_params: Array[String], nested_recvs: Array[(String, Int, TypeExpr)], orig_args: Array[Expr], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], dict_binds: Array[(String, String, String, Array[String])], fn_returns: Array[(String, String)], gens: Array[DictGen]) -> Option[Expr] with Exception {
+  let binding = nested_recv_binding(type_param, nested_recvs, orig_args, struct_sets, var_types, fn_returns)
+  let target = match binding {
+    NestedFound(t) => Some(t),
+    NestedAbsent => if trait_ref_name(trait_name) == dtd_eq_witness_trait() {
+      Some(TyName("Int"))
+    } else {
+      None
+    },
+    NestedUnknown => None
+  }
+  match target {
+    Some(t) => {
+      let nm = impl_target_head(t)
+      let concrete_trait = specialize_applied_trait_for_target(trait_name, callee_type_params, t, gens)
+      match find_dict_for_trait(dict_binds, nm, concrete_trait) {
+        Some(dict_pname) => Some(EIdent(dict_pname, -1)),
+        None => build_concrete_dict_for_target(t, concrete_trait, traits, gens, struct_sets, var_types, fn_returns, None)
+      }
+    },
+    None => throw("annotate the argument this call reads `" + type_param + "` from (for example `let a: Option[Int] = None`, or a lambda's result type: `() -> Int { .. }`): the type `" + type_param + "` stands for is needed for its `" + trait_ref_name(trait_name) + "` witness and is not available here")
+  }
+}
+
 /// None when any receiver's witness cannot be determined (the call is then left
 /// unrewritten). Each bound is satisfied either by a concrete dict literal (the
 /// receiver type is syntactically known) or by forwarding the caller's own dict
 /// parameter (the receiver is a type parameter bound by the same trait in the
 /// enclosing generic — the generic->generic case).
-export fn synth_dicts(callee_type_params: Array[String], threaded: Array[(String, String, Int)], constructor_recvs: Array[(String, Int)], orig_args: Array[Expr], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], dict_binds: Array[(String, String, String, Array[String])], fn_returns: Array[(String, String)], gens: Array[DictGen]) -> Option[Array[Expr]] with Exception {
+export fn synth_dicts(callee_type_params: Array[String], threaded: Array[(String, String, Int)], constructor_recvs: Array[(String, Int)], nested_recvs: Array[(String, Int, TypeExpr)], orig_args: Array[Expr], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], dict_binds: Array[(String, String, String, Array[String])], fn_returns: Array[(String, String)], gens: Array[DictGen]) -> Option[Array[Expr]] with Exception {
   let dicts = empty_expr_array()
   let mut ok = true
   let mut bi = 0
@@ -273,7 +314,14 @@ export fn synth_dicts(callee_type_params: Array[String], threaded: Array[(String
     } else {
       recv_idx_raw
     }
-    if ok && recv_idx < 0 {
+    if ok && is_nested_recv_index(recv_idx_raw) {
+      match synth_nested_dict(type_param, trait_name, callee_type_params, nested_recvs, orig_args, traits, struct_sets, var_types, dict_binds, fn_returns, gens) {
+        Some(dict) => Array::push(dicts, dict),
+        None => {
+          ok = false
+        }
+      }
+    } else if ok && recv_idx < 0 {
       // Enclosing formal forwarded into a nested lambda: the witness is
       // already in `dict_binds` under the outer spelling, not inferred from
       // this call's arguments.

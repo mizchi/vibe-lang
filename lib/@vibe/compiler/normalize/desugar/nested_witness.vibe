@@ -1,0 +1,524 @@
+// Nested witness receivers (#3287).
+//
+// A generic whose bounded formal appears only NESTED in its parameters
+// (`fn f[T: Eq](a: Option[T], b: Option[T])`) is threaded a dictionary like
+// any other (`build_gens`, `find_nested_recv_indices`). This module answers
+// the call site's question: which type does `T` stand for here? It matches
+// each carrying parameter's annotation against the argument's type, read off
+// the argument's own syntax, the way every other receiver kind is resolved.
+
+import @vibe/compiler/core {
+  Expr, TypeExpr
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import ./equality_aliases.vibe {
+  eq_expand_alias_ty, eq_subst_ty
+}
+
+import ./equality_inference.vibe {
+  infer_eq_shape
+}
+
+import ./binding_shape_queries.vibe {
+  constructor_binding_is_masked
+}
+
+import ./equality_shape_queries.vibe {
+  eq_fn_result_of_name, eq_formal_shape_of_name, fn_eq_shape_key, shape_to_eq_ty, ty_contains_eq_unknown
+}
+
+import ./formal_scope.vibe {
+  is_marked_formal_name, is_scalar_type_name
+}
+
+import ./type_names.vibe {
+  fn_return_type
+}
+
+import ./state.vibe {
+  dtd_eq_enum_decls, dtd_struct_field_decls, scope_formal_mark_prefix
+}
+
+import ./utilities.vibe {
+  split_qualified
+}
+
+import ./witness_targets.vibe {
+  infer_impl_target_expr
+}
+
+/// What the call site learned about the formal.
+///
+///   `NestedFound(t)`  the formal stands for `t` here;
+///   `NestedAbsent`    every carrying argument is a constructor literal whose
+///                     variant holds no value of the formal (`None`, or
+///                     `Ok(..)` of `Res[A, T]` read for `T`), so no value of
+///                     it reaches the callee through these arguments;
+///   `NestedUnknown`   neither: the argument's type is not readable here.
+export enum NestedBinding {
+  NestedFound(TypeExpr);
+  NestedAbsent;
+  NestedUnknown
+}
+
+fn is_none[A](o: Option[A]) -> Bool {
+  match o {
+    Some(_) => false,
+    None => true
+  }
+}
+
+fn absent_marker() -> String {
+  "?EqAbsent"
+}
+
+fn unknown_marker() -> String {
+  "?EqUnknown"
+}
+
+fn unmark_formal(n: String) -> String {
+  if is_marked_formal_name(n) {
+    String::substring(n, String::length(scope_formal_mark_prefix), String::length(n))
+  } else {
+    n
+  }
+}
+
+fn unmark_formals(t: TypeExpr) -> TypeExpr {
+  match t {
+    TyName(n) => TyName(unmark_formal(n)),
+    TyApp(h, args) => TyApp(unmark_formal(h), for a in args {
+      unmark_formals(a)
+    }),
+    TyTuple(items) => TyTuple(for x in items {
+      unmark_formals(x)
+    }),
+    TyFn(ps, r, eff) => TyFn(for p in ps {
+      unmark_formals(p)
+    }, unmark_formals(r), eff),
+    TyUnit => TyUnit
+  }
+}
+
+fn ty_mentions_name(t: TypeExpr, name: String) -> Bool {
+  match t {
+    TyName(n) => n == name,
+    TyApp(h, args) => if h == name {
+      true
+    } else {
+      let mut found = false
+      for a in args {
+        if ty_mentions_name(a, name) {
+          found = true
+        } else {
+          ()
+        }
+      }
+      found
+    },
+    TyTuple(items) => {
+      let mut found = false
+      for x in items {
+        if ty_mentions_name(x, name) {
+          found = true
+        } else {
+          ()
+        }
+      }
+      found
+    },
+    TyFn(ps, r, _) => {
+      let mut found = ty_mentions_name(r, name)
+      for p in ps {
+        if ty_mentions_name(p, name) {
+          found = true
+        } else {
+          ()
+        }
+      }
+      found
+    },
+    TyUnit => false
+  }
+}
+
+/// The declared generic enum a constructor spelling belongs to, as
+/// (enum, formals, payload types of that variant).
+fn generic_variant_of(cname: String) -> Option[(String, Array[String], Array[TypeExpr])] {
+  let variant = match split_qualified(cname) {
+    Some(parts) => parts.1,
+    None => cname
+  }
+  let mut result = None
+  for decl in dtd_eq_enum_decls {
+    let (ename, formals, variants) = decl
+    if Array::length(formals) > 0 {
+      for v in variants {
+        if v.0 == variant && is_none(result) {
+          result = Some((ename, formals, v.1))
+        } else {
+          ()
+        }
+      }
+    } else {
+      ()
+    }
+  }
+  result
+}
+
+/// A constructor literal's type with the formals its variant does not carry
+/// marked absent, and the ones it carries but whose payload this pass cannot
+/// type marked unknown. `None` is the compiler's own `Option` and needs no
+/// declaration.
+fn constructor_literal_type(arg: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[TypeExpr] {
+  match arg {
+    EIdent(cname, _) => if cname == "None" || cname == "Option::None" {
+      Some(TyApp("Option", [TyName(absent_marker())]))
+    } else {
+      match generic_variant_of(cname) {
+        Some(found) => {
+          let (ename, formals, payloads) = found
+          if Array::length(payloads) == 0 {
+            Some(TyApp(ename, for _f in formals {
+              TyName(absent_marker())
+            }))
+          } else {
+            None
+          }
+        },
+        None => None
+      }
+    },
+    ECall(EIdent(cname, _), cargs, _, _) => match generic_variant_of(cname) {
+      Some(found) => {
+        let (ename, formals, payloads) = found
+        if Array::length(payloads) != Array::length(cargs) {
+          None
+        } else {
+          let args = array_empty()
+          for f in formals {
+            let mut carried = false
+            let mut bound = TyName(unknown_marker())
+            let mut pi = 0
+            while pi < Array::length(payloads) {
+              let pty = Array::get(payloads, pi)
+              if ty_mentions_name(pty, f) {
+                carried = true
+                match pty {
+                  TyName(pn) => if pn == f {
+                    match first_known_type(Array::get(cargs, pi), struct_sets, var_types, fn_returns) {
+                      Some(t) => {
+                        bound = t
+                      },
+                      None => ()
+                    }
+                  } else {
+                    ()
+                  },
+                  _ => ()
+                }
+              } else {
+                ()
+              }
+              pi = pi + 1
+            }
+            Array::push(args, if carried {
+              bound
+            } else {
+              TyName(absent_marker())
+            })
+          }
+          Some(TyApp(ename, args))
+        }
+      },
+      None => None
+    },
+    _ => None
+  }
+}
+
+fn first_known_type(arg: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[TypeExpr] {
+  let mut result = None
+  for t in candidate_arg_types(arg, struct_sets, var_types, fn_returns) {
+    if is_none(result) && !ty_contains_eq_unknown(t) && !ty_mentions_name(t, absent_marker()) {
+      result = Some(t)
+    } else {
+      ()
+    }
+  }
+  result
+}
+
+/// A field read or an array element read, typed off its receiver: `h.o` is the
+/// declared type of `H`'s field `o`, with a generic struct's arguments
+/// substituted; `Array::get(xs, i)` is `xs`'s element type.
+fn projected_arg_type(arg: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[TypeExpr] {
+  match arg {
+    EDot(obj, field, _, _) => match receiver_type(obj, struct_sets, var_types, fn_returns) {
+      Some(rt) => declared_field_type(rt, field),
+      None => None
+    },
+    ECall(EIdent(fname, _), cargs, _, _) => if fname == "Array::get" && Array::length(cargs) == 2 {
+      match receiver_type(Array::get(cargs, 0), struct_sets, var_types, fn_returns) {
+        Some(TyApp(head, elems)) => if head == "Array" && Array::length(elems) == 1 {
+          Some(Array::get(elems, 0))
+        } else {
+          None
+        },
+        _ => None
+      }
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
+fn receiver_type(e: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[TypeExpr] {
+  match infer_impl_target_expr(e, struct_sets, var_types, fn_returns) {
+    Some(t) => Some(unmark_formals(t)),
+    None => projected_arg_type(e, struct_sets, var_types, fn_returns)
+  }
+}
+
+fn declared_field_type(rt: TypeExpr, field: String) -> Option[TypeExpr] {
+  let (head, args) = match rt {
+    TyName(n) => (n, array_empty()),
+    TyApp(n, xs) => (n, xs),
+    _ => ("", array_empty())
+  }
+  let mut result = None
+  for decl in dtd_struct_field_decls {
+    let (sname, formals, fields) = decl
+    if sname == head && is_none(result) {
+      for f in fields {
+        if f.0 == field && is_none(result) {
+          result = Some(if Array::length(formals) > 0 && Array::length(formals) == Array::length(args) {
+            eq_subst_ty(f.1, formals, args)
+          } else {
+            f.1
+          })
+        } else {
+          ()
+        }
+      }
+    } else {
+      ()
+    }
+  }
+  result
+}
+
+/// Every reading of an argument's type this pass has, best first: the literal
+/// constructor's partial type, the impl-target reading the other receivers
+/// use, then the recorded equality shape.
+fn candidate_arg_types(arg: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Array[TypeExpr] {
+  let out = array_empty()
+  match constructor_literal_type(arg, struct_sets, var_types, fn_returns) {
+    Some(t) => Array::push(out, t),
+    None => ()
+  }
+  match infer_impl_target_expr(arg, struct_sets, var_types, fn_returns) {
+    Some(t) => Array::push(out, unmark_formals(t)),
+    None => ()
+  }
+  match projected_arg_type(arg, struct_sets, var_types, fn_returns) {
+    Some(t) => Array::push(out, unmark_formals(t)),
+    None => ()
+  }
+  let sh = infer_eq_shape(arg, struct_sets, var_types, fn_returns)
+  if String::length(sh) > 0 {
+    Array::push(out, unmark_formals(shape_to_eq_ty(sh)))
+  } else {
+    ()
+  }
+  // A caller's own parameter whose type mentions its formal (`a: Option[U]`
+  // forwarded to `same_opt(a, b)`): the formal shape it recorded.
+  match arg {
+    EIdent(n, _) => {
+      let fsh = eq_formal_shape_of_name(var_types, n)
+      if String::length(fsh) > 0 {
+        Array::push(out, unmark_formals(shape_to_eq_ty(fsh)))
+      } else {
+        ()
+      }
+    },
+    _ => ()
+  }
+  match function_arg_type(arg, var_types, fn_returns) {
+    Some(t) => Array::push(out, unmark_formals(t)),
+    None => ()
+  }
+  out
+}
+
+/// The type of a FUNCTION-valued argument, for a parameter that carries the
+/// formal in its result (`make: () -> T`): only the result is read, so the
+/// parameter list is left empty. Read from a lambda's declared result, from
+/// a caller's own function-typed parameter, or from a top-level function's
+/// declared result. Anything else is unknown, and the call is refused with
+/// the edit rather than guessed.
+fn function_arg_type(arg: Expr, var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[TypeExpr] {
+  match arg {
+    EFn(_, _, _, Some(ret), _, _) => Some(TyFn([], ret, None)),
+    EIdent(n, _) => match eq_fn_result_of_name(var_types, n) {
+      Some(ret) => Some(TyFn([], ret, None)),
+      None => if constructor_binding_is_masked(var_types, n) {
+        None
+      } else {
+        match fn_return_type(fn_returns, fn_eq_shape_key(n)) {
+          Some(sh) => {
+            let t = shape_to_eq_ty(sh)
+            if ty_contains_eq_unknown(t) {
+              None
+            } else {
+              Some(TyFn([], t, None))
+            }
+          },
+          None => match fn_return_type(fn_returns, n) {
+            // Only a scalar head is a complete type: a declared name here may
+            // be a generic head whose arguments `fn_returns` does not keep.
+            Some(head) => if is_scalar_type_name(head) {
+              Some(TyFn([], TyName(head), None))
+            } else {
+              None
+            },
+            None => None
+          }
+        }
+      }
+    },
+    _ => None
+  }
+}
+
+/// Every position of `formal` in `ann`, read off `actual`. A position whose
+/// counterpart is missing or of another shape reads as unknown.
+fn collect_formal_positions(ann: TypeExpr, actual: TypeExpr, formal: String, out: Array[TypeExpr]) -> Unit {
+  match ann {
+    TyName(n) => if n == formal {
+      Array::push(out, actual)
+    } else {
+      ()
+    },
+    TyApp(h, as_) => match actual {
+      TyApp(h2, bs) => if h == h2 && Array::length(as_) == Array::length(bs) {
+        let mut i = 0
+        while i < Array::length(as_) {
+          collect_formal_positions(Array::get(as_, i), Array::get(bs, i), formal, out)
+          i = i + 1
+        }
+      } else {
+        collect_unknown_positions(ann, formal, out)
+      },
+      _ => collect_unknown_positions(ann, formal, out)
+    },
+    TyTuple(xs) => match actual {
+      TyTuple(ys) => if Array::length(xs) == Array::length(ys) {
+        let mut i = 0
+        while i < Array::length(xs) {
+          collect_formal_positions(Array::get(xs, i), Array::get(ys, i), formal, out)
+          i = i + 1
+        }
+      } else {
+        collect_unknown_positions(ann, formal, out)
+      },
+      _ => collect_unknown_positions(ann, formal, out)
+    },
+    // A function's RESULT is read; its parameters carry no value of the
+    // formal into the callee (`find_nested_recv_indices`). A function
+    // argument is never absent: it can always be called.
+    TyFn(_, aret, _) => match actual {
+      TyFn(_, bret, _) => collect_formal_positions(aret, bret, formal, out),
+      _ => collect_unknown_positions(aret, formal, out)
+    },
+    _ => ()
+  }
+}
+
+fn collect_unknown_positions(ann: TypeExpr, formal: String, out: Array[TypeExpr]) -> Unit {
+  if ty_mentions_name(ann, formal) {
+    Array::push(out, TyName(unknown_marker()))
+  } else {
+    ()
+  }
+}
+
+/// The binding of `formal` at a call, from every parameter that carries it
+/// nested. The first concrete reading wins. `NestedAbsent` needs EVERY
+/// position of the formal, in every carrying argument, to be provably empty.
+export fn nested_recv_binding(formal: String, nested_recvs: Array[(String, Int, TypeExpr)], orig_args: Array[Expr], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> NestedBinding {
+  let mut found = None
+  let mut all_absent = true
+  let mut any_position = false
+  for recv in nested_recvs {
+    let (f, idx, ann0) = recv
+    if f == formal && idx >= 0 && idx < Array::length(orig_args) && is_none(found) {
+      let ann = eq_expand_alias_ty(ann0)
+      let arg = Array::get(orig_args, idx)
+      let mut arg_absent = false
+      let mut arg_positions = 0
+      for actual0 in candidate_arg_types(arg, struct_sets, var_types, fn_returns) {
+        if is_none(found) {
+          let actual = eq_expand_alias_ty(actual0)
+          let positions = array_empty()
+          collect_formal_positions(ann, actual, formal, positions)
+          let mut every_absent = Array::length(positions) > 0
+          for p in positions {
+            match p {
+              TyName(pn) => if pn == absent_marker() {
+                ()
+              } else if pn == unknown_marker() {
+                every_absent = false
+              } else {
+                every_absent = false
+                found = Some(p)
+              },
+              _ => {
+                every_absent = false
+                if !ty_contains_eq_unknown(p) && !ty_mentions_name(p, absent_marker()) && is_none(found) {
+                  found = Some(p)
+                } else {
+                  ()
+                }
+              }
+            }
+          }
+          if every_absent {
+            arg_absent = true
+          } else {
+            ()
+          }
+          arg_positions = arg_positions + Array::length(positions)
+        } else {
+          ()
+        }
+      }
+      if arg_positions > 0 {
+        any_position = true
+      } else {
+        ()
+      }
+      if !arg_absent {
+        all_absent = false
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+  }
+  match found {
+    Some(t) => NestedFound(t),
+    None => if all_absent && any_position {
+      NestedAbsent
+    } else {
+      NestedUnknown
+    }
+  }
+}
