@@ -328,6 +328,42 @@ export fn verify_culprit_off_marker_fs_fail_closed(msg: String) -> String {
   }
 }
 
+/// Remove a ` [@off=...]` side-channel marker WITHOUT resolving it. The marker
+/// is internal transport for a source offset (#1514); a lane that does not know
+/// which source text the offset indexes (the FS-compile lane compiles MERGED
+/// module text) must degrade to the unlocated message -- never print the raw
+/// marker (#1445's leaked `[@off=135]` is the failure mode this guards against).
+fn strip_side_marker(msg: String, marker: String) -> String {
+  let mut out = msg
+  let mut mi = String::index_of(out, marker)
+  while mi >= 0 {
+    let inner_start = mi + String::length(marker)
+    let rest = String::substring(out, inner_start, String::length(out))
+    let rel = String::index_of(rest, "]")
+    if rel < 0 {
+      out = String::substring(out, 0, mi)
+    } else {
+      out = String::concat(String::substring(out, 0, mi), String::substring(out, inner_start + rel + 1, String::length(out)))
+    }
+    mi = String::index_of(out, marker)
+  }
+  out
+}
+
+export fn strip_off_marker(msg: String) -> String {
+  strip_side_marker(strip_side_marker(strip_side_marker(msg, " [@off="), " [@fn="), " [@assign-target")
+}
+
+/// #3090 / book review: the last step before a thrown diagnostic is printed
+/// by a door that has no source snapshot of its own (lib/@vibe/cli/entry.vibe,
+/// which `vibe run` / `vibe build` reach when a compile throws). A refusal
+/// carrying a merged offset is located against the recorded merge, and any
+/// marker still unresolved is stripped: a raw ` [@off=N]` indexes the merged
+/// program, not a file the reader can open.
+export fn finalize_thrown_diagnostic(msg: String) -> String {
+  strip_off_marker(verify_culprit_off_marker_fs_fail_closed(msg))
+}
+
 /// #3090: resolve an interpolation refusal's merged `[@off=N]` (or
 /// `[@off=N:M]`) to `path: line L:C: ...` against the file the merge placed at
 /// N. Fails closed -- returns `msg` unchanged, and the caller strips the

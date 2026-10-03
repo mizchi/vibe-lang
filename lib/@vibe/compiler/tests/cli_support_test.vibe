@@ -1,11 +1,15 @@
 //# Imports
 
 import ../cli_support.vibe {
-  compile_release_file_mode, check_linked_file, check_deprecated_warnings_from_source_groups, check_redundant_import_warnings, check_redundant_import_warnings_from_source_groups, verify_culprit_off_marker, verify_culprit_off_marker_fs_fail_closed, verify_culprit_off_marker_snapshot
+  compile_release_file_mode, check_linked_file, check_deprecated_warnings_from_source_groups, check_redundant_import_warnings, check_redundant_import_warnings_from_source_groups, finalize_thrown_diagnostic, verify_culprit_off_marker, verify_culprit_off_marker_fs_fail_closed, verify_culprit_off_marker_snapshot
 }
 
 import @vibe/compiler/loader {
   collect_source_groups_fs, ingest_source_text_fs
+}
+
+import @vibe/compiler/core {
+  merged_offset_space_add, merged_offset_space_reset
 }
 
 import @vibe/core {
@@ -39,6 +43,28 @@ test "FS/build culprit marker is fail-closed without its compile snapshot (#1596
   let verified = verify_culprit_off_marker_fs_fail_closed(msg)
   assert(String::contains(verified, "here: the call to 'bump'"))
   assert(!String::contains(verified, "[@off="))
+}
+
+test "an unresolved interpolation refusal reaches the reader without its marker" {
+  // Book review (2026-10-03): `vibe run` printed `... (#2987) [@off=94021]`,
+  // an offset into the merged program, because the CLI entry door printed a
+  // thrown diagnostic as is. With no merge recorded no file owns the offset.
+  merged_offset_space_reset()
+  let msg = "cannot interpolate `d`: its type is an Option, Array, tuple, Bytes or record whose shape the renderer could not resolve here (#2987) [@off=94021]"
+  let shown = finalize_thrown_diagnostic(msg)
+  assert(String::contains(shown, "cannot interpolate `d`"))
+  assert(!String::contains(shown, "[@off="))
+}
+
+test "a refusal whose merged offset a recorded file owns is located there" {
+  merged_offset_space_reset()
+  let source = "fn main allows Console {\n  let d = 1\n  println(\"\\{d}\")\n}\n"
+  merged_offset_space_add("/tmp/located.vibex", source, 1000)
+  let local = String::index_of(source, "{d}") + 1
+  let msg = String::concat("cannot interpolate `d`: shape unknown (#2987) [@off=", String::concat(__to_string(1000 + local), "]"))
+  let shown = finalize_thrown_diagnostic(msg)
+  merged_offset_space_reset()
+  inspect(shown, content = "/tmp/located.vibex: line 3:14: cannot interpolate `d`: shape unknown (#2987)")
 }
 
 test "cli support dispatches mvp through pruned compile path" {
