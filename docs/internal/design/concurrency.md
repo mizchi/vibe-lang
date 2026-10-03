@@ -529,6 +529,69 @@ A joined result, or a handle kept in a local declared inside the body, is not
 an escape. Neither is a nested group storing the outer group's handle in a
 local of the outer body.
 
+**Code written outside the body is checked where the token reaches it.** A
+call made inside the region that passes a value carrying the region -- a
+handle, an endpoint, the group, a closure that captured one -- to a function
+declared in the module, or to a `let`-bound closure literal, checks that
+callee's lambda again under the call's region:
+
+- the callee's own scope (the module for a top-level function, the scope the
+  closure was written in) lies outside the region, so a top-level binding and
+  every binding the callee captured are outer bindings, as they are for a
+  write in the body;
+- each parameter is bound to its argument's type at the call, so the token is
+  seen even where the callee's annotation spells the type without a region
+  (`TaskHandle[Int]`);
+- a parameter whose argument is a location declared before the region stands
+  for that outer binding, for that region only (a nested group's helper may
+  still store the outer group's handle in a local of the outer body).
+
+A write the second check refuses refuses the call, naming the callee:
+
+```text
+region escapes its nursery scope: this call to `put` stores this
+TaskGroup::run call's own Nursery/Task/Sender/Receiver token in a binding
+declared outside the body -- join the task (or use the endpoint) inside the
+body and pass the result instead, or declare the binding inside the body
+```
+
+This covers a helper that stores its argument (`fn put[T](c: Cell[T], v: T)
+{ c.v = Some(v) }` called as `put(c, handle)`) wherever it is declared and
+however many calls away the write is, a method (`c.put(handle)`), a closure
+bound before the group or inside the body (`stash(handle)`), directly or
+through a `let` alias, and a lambda applied where it is written. A body passed
+by name (`TaskGroup::run(body)`) is checked the same way, its group parameter
+carrying the region as a literal body's does:
+
+```text
+region escapes its nursery scope: `body`, the body this TaskGroup::run call
+runs, stores the call's own Nursery/Task/Sender/Receiver token in a binding
+declared outside it -- join the task (or use the endpoint) inside the body and
+store the result instead, or declare the binding inside the body
+```
+
+A callee that keeps nothing -- one that only reads its argument, or stores a
+joined result -- is accepted. A function the callee is passed is followed: the
+parameter stands for the argument's own body during the second check, so a
+helper that calls `f(handle)` judges the closure it was handed. A closure that
+captured a value of the region is checked at each call even when no argument
+carries the region, since it may hand that value to such a function.
+
+A function VALUE whose body the checker cannot see is judged by where it comes
+from. A parameter of a lambda written inside the region (or checked again
+under it) is answered for at that lambda's own calls, where its argument is
+known, so `let apply = (f) -> f(n)` followed by `apply((g) -> 1)` is accepted.
+Any other -- a parameter of the function that minted the region
+(`fn run_with(cb: (TaskHandle[Int]) -> Unit)` calling `cb(handle)` in its
+group), a value a call returned, a `let mut` closure, a function stored in a
+field -- is refused when it is handed the token, since nothing about what it
+keeps is known (`this call passes this TaskGroup::run call's own ... token to
+`cb`, a function whose body the checker cannot see`). A function imported from
+another module is not checked again; see [Known gaps](#known-gaps). The second
+check runs only inside a region and only for such a call; its diagnostics,
+types and substitution are discarded, and the per-run tables it touches are
+restored (`lib/@vibe/compiler/checker/checker_region_retention.vibe`).
+
 After the body is checked, the call is also refused when:
 
 - **the returned value mentions the region** -- the body returns a task
@@ -555,14 +618,22 @@ and, through the sugar, `fixtures/err_taskgroup_sugar_region_escape.vibe`. The
 write check is pinned by the `taskgroup_escape_*_reject` rows of
 `fixtures/typecheck/expected.tsv` (generic struct field, annotated array set
 and push, annotated `let mut`, an alias, a closure, the sugar, an alias of
-`run`, a channel endpoint) and by `fixtures/taskgroup_outer_write_ok_test.vibe`
-(the writes that stay legal).
+`run`, a channel endpoint; and, for code written outside the body, a helper
+declared above or below the call, a helper two calls away, a helper writing a
+top-level array, a helper whose annotation hides the region, a method, a
+closure bound before the group, inside the body and through an alias, a body
+passed by name, a helper and a closure that hand the handle to the callback
+they are passed, and a function-typed parameter of the function that minted
+the group) and by
+`fixtures/taskgroup_outer_write_ok_test.vibe` (the writes and calls that stay
+legal).
 
 ADR-0090's `region r { .. }` mints its region the same way for region-bound
-mutable storage. The write check above is that construct's own, applied to a
-task group's body; only the diagnostic's wording differs. A write made by a
-function or closure defined outside the body, and a body passed by name, are
-not covered (see [Known gaps](#known-gaps)).
+mutable storage. The write check above, and the second check of code written
+outside the body, are that construct's own, applied to a task group's body;
+only the diagnostic's wording differs (`region escapes its scope: this call to
+`put` stores a value that captures this region into an outer binding`, pinned
+by `region_escape_helper_push_reject`).
 
 ## Safe parallel API
 
@@ -910,21 +981,25 @@ nursery scope`).
 
 ## Known gaps
 
-- **Writes made by code defined outside the body.** The write check sees the
-  writes written in a `TaskGroup::run` body and in the closures written in it.
-  A write made by a function or closure defined elsewhere is checked where
-  that code was written, outside any region, so these still store a task
-  handle where it outlives its group, and compile and run (measured): a
-  helper that stores its argument into a container it was passed
-  (`fn put[T](c: Cell[T], v: T) { c.v = Some(v) }` called as
-  `put(c, handle)`), a closure bound before the call that writes an outer
-  binding (`let stash = (h) -> { c.v = Some(h) }` called as
-  `stash(handle)`), and a body bound to a name and passed as
-  `TaskGroup::run(body)`. ADR-0090's `region r { .. }` has the same hole for
-  a helper. Closing it needs a summary of which arguments a function retains.
-  Joining an escaped handle after the group returns the task's value
+- **Functions imported from another module.** Code written outside a body is
+  checked again where the token reaches it, which needs the callee's body; a
+  module's interface carries only types. A helper imported from another module
+  that stores its argument (`put(c, handle)` with `put` exported by
+  `./cells.vibe`) is trusted, so it still keeps the handle past its group, and
+  the program compiles and runs (measured). Refusing every imported callee
+  instead would refuse the library itself (`TaskHandle::join(h)`,
+  `Sender::send(tx, v)`); the standard library's own retaining operations are
+  listed by name and checked like `Array::push`. Closing it needs a summary of
+  which arguments a function keeps, published in the module's interface.
+- **A closure literal handed to a library function.** A closure written in the
+  body is checked before the call it is passed to has fixed its parameter's
+  type, so a write of that parameter does not yet carry the region:
+  `Array::map(hs, (h) -> { Array::push(outer, h); 0 })` keeps the handles in
+  an outer array, and compiles and runs (measured). The `for h in hs` loop is
+  refused, because its variable is typed from `hs` first. On both routes,
+  joining the escaped handle after the group returns the task's value
   (measured), so no program is answered wrongly today, but nothing enforces
-  that the handle stays in its group on these routes.
+  that the handle stays in its group.
 - **Mid-run cancellation.** A cancel request is observed at dispatch and at a
   parked task only. A running task, and a suspendable task that is running
   when the request arrives, are not interrupted.

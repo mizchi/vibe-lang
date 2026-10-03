@@ -1,0 +1,29 @@
+// #3343: a closure written in the body captures the group and hands a task
+// handle to the function it is passed; no argument of `apply(..)` carries the
+// group. A closure that captured the region is re-checked at each call, its
+// parameter standing for the closure it is passed, so the write that keeps
+// the handle is found. This compiled and the handle was joined after its
+// group closed.
+import @vibe/concurrent { TaskGroup, TaskHandle }
+
+struct Cell[T] {
+  mut v: Option[T]
+}
+
+fn main() -> Unit allows Exception + Console {
+  let c = Cell::{ v: None }
+  let r = TaskGroup::run((n) -> {
+    let apply = (f) -> {
+      f(TaskGroup::spawn(n, () -> { 41 }))
+    }
+    apply((x) -> {
+      c.v = Some(x)
+    })
+    1
+  })
+  let after = match c.v {
+    Some(h) => TaskHandle::join(h),
+    None => 0 - 1
+  }
+  println("r=\{r} after=\{after}")
+}

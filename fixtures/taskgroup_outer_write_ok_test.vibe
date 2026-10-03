@@ -79,3 +79,112 @@ fn outer_writes() -> String with Exception {
 test "joined results and body-local handles stay legal around a task group" allows Exception {
   inspect(outer_writes(), "r=108 results=3 open=3 total=30 c=5 last=6")
 }
+
+// #3343: a call inside the body that hands the group's token to a function or
+// `let`-bound closure re-checks the callee under the group's region
+// (fixtures/typecheck/taskgroup_escape_{helper,prebound,named,..}_reject.vibe).
+// These calls keep nothing past the group and must stay legal: a helper that
+// only reads its argument, helpers that store a JOINED result in an outer
+// location, a generic helper, a method and a closure storing a handle in a
+// location created inside the body, a body passed by name that stores a
+// joined result, a nested group storing the OUTER group's handle, through a
+// helper, in a local of the outer body, and a handle handed to a callback
+// that joins it -- through a helper, and through a closure that captured the
+// group.
+fn peek(h: TaskHandle[Int]) -> Int with Exception {
+  TaskHandle::join(h)
+}
+
+fn put[T](c: Cell[T], v: T) -> Unit {
+  c.v = Some(v)
+}
+
+fn Cell::keep[T](self: Cell[T], v: T) -> Unit {
+  self.v = Some(v)
+}
+
+fn keep_joined(c: Cell[Int], h: TaskHandle[Int]) -> Unit with Exception {
+  c.v = Some(TaskHandle::join(h))
+}
+
+fn keep_joined_generic[T](c: Cell[T], h: TaskHandle[T]) -> Unit with Exception {
+  c.v = Some(TaskHandle::join(h))
+}
+
+fn apply_to[T, U](h: T, f: (T) -> U) -> U {
+  f(h)
+}
+
+fn cell_value(c: Cell[Int]) -> Int {
+  match c.v {
+    Some(x) => x,
+    None => 0 - 1
+  }
+}
+
+fn helper_calls() -> String with Exception {
+  let a = Cell::{ v: None }
+  let b: Cell[Int] = Cell::{ v: None }
+  let g: Cell[Int] = Cell::{ v: None }
+  let named: Cell[Int] = Cell::{ v: None }
+  let mut total = 0
+  let note = (x) -> {
+    total = total + x
+  }
+  let r = TaskGroup::run((n) -> {
+    let local = Cell::{ v: None }
+    put(local, TaskGroup::spawn(n, () -> { 40 }))
+    let joined = match local.v {
+      Some(lh) => peek(lh),
+      None => 0
+    }
+    put(a, joined + 1)
+    keep_joined(b, TaskGroup::spawn(n, () -> { 2 }))
+    keep_joined_generic(g, TaskGroup::spawn(n, () -> { 3 }))
+    note(joined)
+    let by_method = Cell::{ v: None }
+    by_method.keep(TaskGroup::spawn(n, () -> { 4 }))
+    let stash_local = (x) -> {
+      local.v = Some(x)
+    }
+    stash_local(TaskGroup::spawn(n, () -> { 5 }))
+    let outer_local = Cell::{ v: None }
+    let inner = TaskGroup::run((m) -> {
+      put(outer_local, TaskGroup::spawn(n, () -> { 100 }))
+      TaskHandle::join(TaskGroup::spawn(m, () -> { 1 }))
+    })
+    let from_outer = match outer_local.v {
+      Some(oh) => TaskHandle::join(oh),
+      None => 0
+    }
+    let from_method = match by_method.v {
+      Some(mh) => TaskHandle::join(mh),
+      None => 0
+    }
+    let from_stash = match local.v {
+      Some(sh) => TaskHandle::join(sh),
+      None => 0
+    }
+    let via_callback = apply_to(TaskGroup::spawn(n, () -> { 6 }), (x) -> {
+      TaskHandle::join(x)
+    })
+    let with_group = (f) -> {
+      f(TaskGroup::spawn(n, () -> { 8 }))
+    }
+    let via_captured = with_group((x) -> {
+      TaskHandle::join(x)
+    })
+    inner + from_outer + from_method + from_stash + via_callback + via_captured
+  })
+  let body = (n) -> {
+    let h = TaskGroup::spawn(n, () -> { 7 })
+    named.v = Some(TaskHandle::join(h))
+    1
+  }
+  let r2 = TaskGroup::run(body)
+  "r=\{r} r2=\{r2} a=\{cell_value(a)} b=\{cell_value(b)} g=\{cell_value(g)} named=\{cell_value(named)} total=\{total}"
+}
+
+test "helpers and closures that keep nothing past the group stay legal" allows Exception {
+  inspect(helper_calls(), "r=124 r2=1 a=41 b=2 g=3 named=7 total=40")
+}

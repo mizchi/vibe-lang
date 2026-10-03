@@ -1,0 +1,25 @@
+// #3343: a closure written INSIDE the body that stores its parameter in an
+// outer binding. The closure's own write was checked while its parameter was
+// still an unsolved variable, so it saw no group; the call `stash(handle)`
+// compiled and the handle was joined after its group closed.
+import @vibe/concurrent { TaskGroup, TaskHandle }
+
+struct Cell[T] {
+  mut v: Option[T]
+}
+
+fn main() -> Unit allows Exception + Console {
+  let c = Cell::{ v: None }
+  let r = TaskGroup::run((n) -> {
+    let stash = (h) -> {
+      c.v = Some(h)
+    }
+    stash(TaskGroup::spawn(n, () -> { 41 }))
+    1
+  })
+  let after = match c.v {
+    Some(h) => TaskHandle::join(h),
+    None => 0 - 1
+  }
+  println("r=\{r} after=\{after}")
+}

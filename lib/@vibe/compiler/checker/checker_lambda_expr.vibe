@@ -172,6 +172,10 @@ import ./checker_merge_capture_provenance.vibe {
   type_mentions_named
 }
 
+import ./checker_region_retention.vibe {
+  retention_bind_param_callee, take_retention_param_override
+}
+
 import ./checker_throw_kind_of_type.vibe {
   bind_trait_bound_self_reference,
   bind_trait_bound_tparams,
@@ -1674,6 +1678,7 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
   match expr {
     EFn(tparams, tbounds, params, ret_ty, effect, body) => {
       let run_body_param = take_run_body_param()
+      let retention_override = take_retention_param_override()
       // An aliased re-export publishes a trait spelling but does not bind it
       // in this module (#2310). The import projection retains an origin marker
       // so this declaration site can report the invalid bound immediately,
@@ -1899,11 +1904,39 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
         } else {
           ns
         }
+        // #3343: a region re-check binds the parameter to its argument's type
+        // at the call being judged -- the annotation may spell it without the
+        // region (`TaskHandle[Int]`) -- marks it an alias of an outer binding
+        // for the regions that argument's location predates, and records what
+        // a function argument is, so a call of the parameter is judged too.
+        let has_override = pi < Array::length(retention_override)
+        let (pt, ns) = if has_override {
+          let (expected, _, _) = Array::get(retention_override, pi)
+          match unify(pt, expected, ns) {
+            Some(seeded) => (expected, seeded),
+            None => (expected, ns)
+          }
+        } else {
+          (pt, ns)
+        }
         let marked_pt = add_param_capture_dependency(pt, nc)
         let marked_nc = nc + 1
         fn_env = env_bind(fn_env, name, marked_pt)
         fn_env = env_bind(fn_env, String::concat("__param_marker__", name), CtNamed(String::concat("#param[", String::concat(__to_string(nc), "]")), [
         ]))
+        if has_override {
+          let (_, predates, callee) = Array::get(retention_override, pi)
+          if Array::length(predates) > 0 {
+            fn_env = env_bind(fn_env, String::concat("__region_outer_alias__", name), CtTuple(for rname in predates {
+              CtNamed(rname, [])
+            }))
+          } else {
+            ()
+          }
+          fn_env = retention_bind_param_callee(fn_env, name, callee)
+        } else {
+          ()
+        }
         Array::push(param_types, marked_pt)
         s1 = ns
         c1 = marked_nc
