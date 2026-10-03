@@ -1,0 +1,911 @@
+import @vibe/ast {
+  TypeExpr
+}
+import @vibe/compiler/core {
+  BindingOrigin, EnvValueBinding, Expr, Stmt, Type, TypeDef
+}
+import @vibe/compiler/syntax {
+  Token
+}
+import ./dependency_projection.vibe {
+  DependencyInterfaceSet,
+  engine_build_import_envs_from_interfaces,
+  engine_dependency_interface_set_new,
+  engine_dependency_interface_set_supply_missing,
+  engine_type_diagnostic_display,
+  engine_typecheck_fs_build_fingerprint
+}
+import ./diagnostics_parse.vibe {
+  engine_find_fn_anchor_off,
+  engine_incremental_interface_trace_enabled,
+  engine_incremental_typecheck_telemetry_add,
+  engine_locate_type_error_heuristic,
+  engine_offset_line_col_prefix,
+  engine_offset_line_col_range_prefix,
+  engine_parse_offset_digits,
+  engine_parse_program_with_path_impl,
+  engine_typecheck_ident_run
+}
+import ./publication.vibe {
+  engine_checked_module_public_env_for_path,
+  engine_incremental_checked_env_identity,
+  engine_incremental_implementation_identity,
+  engine_incremental_interface_identity,
+  engine_incremental_persistent_type_env_transport_identity
+}
+import ./type_members.vibe {
+  engine_empty_stack,
+  engine_module_typed_lowering_bind_source,
+  engine_module_typed_lowering_memo_get_by_fp,
+  engine_module_typed_lowering_memo_put
+}
+import @vibe/checker/transport/env {
+  decode_checked_environment, encode_checked_environment, encode_checked_module_product
+}
+import @vibe/compiler/cache {
+  cache_source_text_memo_reset, compact_source_fingerprint_memo, compact_source_fingerprint_memo_reset, normalize_persistent_cache_text
+}
+import @vibe/compiler/checker {
+  CheckedProgram, check_program_with_projected_import_env_typed_lowering_located_observation, typing_semantics_seed
+}
+import @vibe/compiler/checker/artifacts {
+  checked_exported_interface_artifact_from_checked_program,
+  checked_module_typing_artifact_v2_matches_exact_inputs,
+  encode_checked_module_typing_artifact_v2,
+  shadow_unattested_checked_module_typing_artifact_v2_from_checked_program
+}
+import @vibe/compiler/checker/artifacts/module {
+  CheckedModuleArtifact
+}
+import @vibe/compiler/checker/artifacts/program {
+  encode_checked_program
+}
+import @vibe/compiler/core {
+  Stmt, TypeEnv, dir_of_path
+}
+import @vibe/compiler/syntax {
+  lex_with_offsets_recovering
+}
+import @vibe/core {
+  array_empty
+}
+
+/// Decode ` [@fn=name]` (the #1941 fallback when a return-type mismatch has
+/// no AST offset). Always strips the marker. When `name` is found in
+/// `source`, prefix the exact name span; otherwise fall through to the
+/// first-occurrence heuristic on the cleaned message.
+fn engine_locate_fn_name_marker(source: String, msg: String, mi: Int) -> String {
+  let marker = " [@fn="
+  let inner_start = mi + String::length(marker)
+  let rel_end = String::index_of(String::substring(msg, inner_start, String::length(msg)), "]")
+  if rel_end < 0 {
+    engine_locate_type_error_heuristic(source, String::substring(msg, 0, mi))
+  } else {
+    let close = inner_start + rel_end
+    let name = String::substring(msg, inner_start, close)
+    let stripped = String::concat(String::substring(msg, 0, mi), String::substring(msg, close + 1, String::length(msg)))
+    let off = engine_find_fn_anchor_off(source, name)
+    if off >= 0 {
+      String::concat(engine_offset_line_col_range_prefix(source, off, off + String::length(name)), stripped)
+    } else {
+      engine_locate_type_error_heuristic(source, stripped)
+    }
+  }
+}
+/// Decode (and ALWAYS strip) the ` [@off=N]` marker the checker may have
+/// appended. If N is a valid in-range offset, prefix the stripped message with
+/// its exact `line:col`. Otherwise strip the marker and fall through to the
+/// existing first-occurrence heuristics on the cleaned message. If no marker is
+/// present, returns msg unchanged.
+/// The end offset of the string literal token starting at `start`, or
+/// `fallback` when `start` is not one.
+///
+/// Scans to the matching close, honouring `\` escapes, so the span is the
+/// LEXER's rather than the decoded value's length. An interpolated string is
+/// not an `EString`, so no `\{` can appear here; an unterminated literal has
+/// no close to find and keeps the fallback. The result is never SHORTER than
+/// the fallback -- escapes only make the source longer than the decoded value
+/// -- so this can extend a range to the closing quote and never pull one in.
+fn engine_string_token_end(source: String, start: Int, fallback: Int) -> Int {
+  let slen = String::length(source)
+  if start < 0 || start >= slen || String::byte_at(source, start) != 34 {
+    fallback
+  } else {
+    let mut i = start + 1
+    let mut found = 0 - 1
+    while i < slen {
+      let c = String::byte_at(source, i)
+      if c == 92 {
+        i = i + 2
+      } else if c == 34 {
+        found = i + 1
+        i = slen
+      } else {
+        i = i + 1
+      }
+    }
+    if found > fallback {
+      found
+    } else {
+      fallback
+    }
+  }
+}
+/// #2831 criterion 1: the range of a BINDING's literal initializer, or
+/// `(n, -1)` when this does not apply.
+///
+/// `EInt` / `EFloat` / `EBool` carry no offset slot -- `EString` and `EIdent`
+/// do -- so a mismatch on one of them anchors the enclosing binder instead.
+/// Measured on a stage2 from this checkout:
+///
+///   let a: Int = "not an int"   5:16-28   the literal, as a range
+///   let b: String = 42          5:7       the BINDER NAME, a point
+///   let c: Int = true           5:7       the binder
+///   let d: Int = 1.5            5:7       the binder
+///
+/// Widening those three constructors is an AST ABI bump across 174 files.
+/// This is the same answer without one, and by the same means `string_token_end`
+/// above already uses: the AST has no offset, this function has the SOURCE, so
+/// the honest range is derived from it. Nothing is invented -- the bytes are
+/// read back, and when they are not a literal the binder anchor stands.
+///
+/// Four conditions, each one narrowing:
+///   * no end was supplied (`m < 0`), so this cannot touch a case that already
+///     has a real range -- the string literal above keeps its own;
+///   * the message IS a binding mismatch, so a callee or argument anchor
+///     (#2885) is never moved;
+///   * `n` lands on an identifier start, i.e. a binder name;
+///   * the initializer after `=` is a bare INT / FLOAT / BOOL literal. Anything
+///     else -- a name, a call, a string, a leading `-` -- returns no answer.
+fn engine_binding_literal_range(source: String, stripped: String, n: Int) -> (Int, Int) {
+  let slen = String::length(source)
+  if n < 0 || n >= slen {
+    (n, 0 - 1)
+  } else if !String::starts_with(stripped, "binding type mismatch") {
+    (n, 0 - 1)
+  } else if !engine_lit_is_ident_start(String::byte_at(source, n)) {
+    (n, 0 - 1)
+  } else {
+    let eq = engine_lit_scan_to_eq(source, n, slen)
+    if eq < 0 {
+      (n, 0 - 1)
+    } else {
+      let start = engine_lit_skip_ws(source, eq + 1, slen)
+      let end = engine_lit_token_end(source, start, slen)
+      if end > start {
+        (start, end)
+      } else {
+        (n, 0 - 1)
+      }
+    }
+  }
+}
+fn engine_lit_is_ident_start(c: Int) -> Bool {
+  (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || c == 95
+}
+fn engine_lit_is_digit(c: Int) -> Bool {
+  c >= 48 && c <= 57
+}
+fn engine_lit_is_ident_char(c: Int) -> Bool {
+  engine_lit_is_ident_start(c) || engine_lit_is_digit(c)
+}
+fn engine_lit_skip_ws(source: String, from: Int, slen: Int) -> Int {
+  let mut i = from
+  while i < slen && (String::byte_at(source, i) == 32 || String::byte_at(source, i) == 9 || String::byte_at(source, i) == 10 || String::byte_at(source, i) == 13) {
+    i = i + 1
+  }
+  i
+}
+/// The binding's `=`, or -1. A comparison (`==` `!=` `<=` `>=`) is not it, and
+/// neither is anything after the statement ends -- `;` or `}` stop the scan so
+/// a binder with NO initializer on this line cannot reach a later statement's.
+fn engine_lit_scan_to_eq(source: String, from: Int, slen: Int) -> Int {
+  let mut i = from
+  let mut found = 0 - 1
+  while found < 0 && i < slen {
+    let c = String::byte_at(source, i)
+    if c == 59 || c == 125 {
+      i = slen
+    } else if c == 61 {
+      let prev = if i > from {
+        String::byte_at(source, i - 1)
+      } else {
+        0
+      }
+      let next = if i + 1 < slen {
+        String::byte_at(source, i + 1)
+      } else {
+        0
+      }
+      if next == 61 || prev == 61 || prev == 33 || prev == 60 || prev == 62 {
+        i = i + 1
+      } else {
+        found = i
+      }
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+/// The end of a bare INT / FLOAT / BOOL literal starting at `from`, or `from`
+/// when what is there is something else. A leading `-` is deliberately NOT
+/// accepted: that is a unary operator over a literal, a different node, and
+/// guessing at its extent is how an invented range gets in.
+fn engine_lit_token_end(source: String, from: Int, slen: Int) -> Int {
+  if from >= slen {
+    from
+  } else {
+    let c = String::byte_at(source, from)
+    if engine_lit_is_digit(c) {
+      let mut i = from
+      while i < slen && (engine_lit_is_digit(String::byte_at(source, i)) || engine_lit_is_ident_char(String::byte_at(source, i))) {
+        i = i + 1
+      }
+      // A fractional part, and an exponent, each only when a digit follows.
+      let mut j = i
+      if j < slen && String::byte_at(source, j) == 46 && j + 1 < slen && engine_lit_is_digit(String::byte_at(source, j + 1)) {
+        j = j + 1
+        while j < slen && engine_lit_is_ident_char(String::byte_at(source, j)) {
+          j = j + 1
+        }
+      } else {
+        ()
+      }
+      j
+    } else if engine_lit_word_at(source, from, slen, "true") {
+      from + 4
+    } else if engine_lit_word_at(source, from, slen, "false") {
+      from + 5
+    } else {
+      from
+    }
+  }
+}
+/// `word` at `from`, not followed by another identifier character -- so
+/// `truely` is not `true`.
+fn engine_lit_word_at(source: String, from: Int, slen: Int, word: String) -> Bool {
+  let wlen = String::length(word)
+  if from + wlen > slen {
+    false
+  } else if String::substring(source, from, from + wlen) != word {
+    false
+  } else if from + wlen == slen {
+    true
+  } else {
+    !engine_lit_is_ident_char(String::byte_at(source, from + wlen))
+  }
+}
+/// #2831: locate and path-prefix each diagnostic in a `\n`-joined message.
+///
+/// One entry per line, in order, blank lines dropped. A single-diagnostic
+/// message goes through unchanged, so this is the same answer it always gave
+/// for the one-error case.
+fn engine_locate_each_line(path: String, source: String, msg: String) -> Array[String] with Exception {
+  let parts = engine_split_diagnostics(msg)
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(parts) {
+    let part = Array::get(parts, i)
+    let located = engine_locate_type_error(source, part)
+    match engine_type_diagnostic_display(path, source, located) {
+      (disp_path, disp_msg) => Array::push(out, String::concat(String::concat(disp_path, ": "), disp_msg))
+    }
+    i = i + 1
+  }
+  out
+}
+/// #2831: a `\n`-joined report split into ONE STRING PER DIAGNOSTIC.
+///
+/// Not per line. A diagnostic may carry continuation lines -- `hint: ...`, and
+/// anything indented -- and `format_check_report` has kept them attached since
+/// #1888 so that `grep -c '^error: '` is an exact count. Splitting on every
+/// newline instead turned the one-error program
+///
+///   fn f() -> Unit { println("x") }
+///
+/// into TWO reported diagnostics, the second being its own hint. Measured; it
+/// is what the 1315-file corpus caught and the fixtures did not.
+///
+/// The continuation rule is a verbatim twin of `is_check_report_continuation`
+/// in user_dispatch.vibe. It is duplicated rather than shared because the
+/// framing and the locating live on opposite sides of the compiler, and a
+/// brand-new cross-file export plus its first caller in one commit is the
+/// shape the merge/flatten tool drops.
+export fn engine_split_diagnostics(msg: String) -> Array[String] {
+  let lines = String::split(msg, "\n")
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(lines) {
+    let line = Array::get(lines, i)
+    if String::length(line) == 0 {
+      ()
+    } else if engine_diag_line_is_continuation(line) && Array::length(out) > 0 {
+      let last = Array::length(out) - 1
+      Array::set(out, last, String::concat(Array::get(out, last), String::concat("\n", line)))
+    } else {
+      Array::push(out, line)
+    }
+    i = i + 1
+  }
+  out
+}
+fn engine_diag_line_is_continuation(line: String) -> Bool {
+  if String::starts_with(line, "hint: ") {
+    true
+  } else if String::length(line) == 0 {
+    false
+  } else {
+    let c = String::byte_at(line, 0)
+    c == 32 || c == 9
+  }
+}
+/// An assignment node stores the target spelling but no offset. Recover its
+/// exact token from the source only when there is one matching assignment;
+/// ambiguity stays unlocated instead of pointing at an unrelated occurrence.
+fn engine_locate_assignment_target(source: String, msg: String, marker_at: Int) -> String {
+  let marker = " [@assign-target]"
+  let stripped = String::concat(String::substring(msg, 0, marker_at), String::substring(msg, marker_at + String::length(marker), String::length(msg)))
+  let name_marker = "unknown name: "
+  let start = String::index_of(stripped, name_marker)
+  if start < 0 {
+    return stripped
+  }
+  let name_start = start + String::length(name_marker)
+  let name_end = engine_typecheck_ident_run(stripped, name_start)
+  if name_end <= name_start {
+    return stripped
+  }
+  let name = String::substring(stripped, name_start, name_end)
+  let (tokens, starts, ends, _, _) = lex_with_offsets_recovering(source)
+  let mut found = -1
+  let mut found_end = -1
+  let mut matches = 0
+  let mut i = 0
+  while i + 1 < Array::length(tokens) {
+    let is_target = match Array::get(tokens, i) {
+      TIdent(n) => n == name,
+      _ => false
+    }
+    let is_assignment = match Array::get(tokens, i + 1) {
+      TEq => true,
+      TPlusEq => true,
+      TMinusEq => true,
+      TStarEq => true,
+      TSlashEq => true,
+      TPercentEq => true,
+      _ => false
+    }
+    let is_declaration = if i == 0 {
+      false
+    } else {
+      match Array::get(tokens, i - 1) {
+        TLet => true,
+        TMut => true,
+        TRec => true,
+        TDot => true,
+        _ => false
+      }
+    }
+    // A labeled call argument also spells `name = value`, but cannot be an
+    // assignment expression. Its preceding token is `(` or `,`.
+    let is_call_label = if i == 0 {
+      false
+    } else {
+      match Array::get(tokens, i - 1) {
+        TLParen => true,
+        TComma => true,
+        _ => false
+      }
+    }
+    if is_target && is_assignment && !is_declaration && !is_call_label {
+      found = Array::get(starts, i)
+      found_end = Array::get(ends, i)
+      matches = matches + 1
+    }
+    i = i + 1
+  }
+  if matches == 1 {
+    String::concat(engine_offset_line_col_range_prefix(source, found, found_end), stripped)
+  } else {
+    stripped
+  }
+}
+export fn engine_locate_type_error(source: String, msg: String) -> String {
+  let assign_at = String::index_of(msg, " [@assign-target]")
+  if assign_at >= 0 {
+    return engine_locate_assignment_target(source, msg, assign_at)
+  }
+  let marker = " [@off="
+  let mi = String::index_of(msg, marker)
+  let fn_mi = String::index_of(msg, " [@fn=")
+  if mi < 0 {
+    if fn_mi < 0 {
+      engine_locate_type_error_heuristic(source, msg)
+    } else {
+      engine_locate_fn_name_marker(source, msg, fn_mi)
+    }
+  } else {
+    let inner_start = mi + String::length(marker)
+    let rel_end = String::index_of(String::substring(msg, inner_start, String::length(msg)), "]")
+    if rel_end < 0 {
+      // Malformed marker (no closing `]`): strip from the marker onward.
+      engine_locate_type_error_heuristic(source, String::substring(msg, 0, mi))
+    } else {
+      let close = inner_start + rel_end
+      // inner is `N` (start only) or `N:M` (start:end). Split on `:`.
+      let inner = String::substring(msg, inner_start, close)
+      let colon = String::index_of(inner, ":")
+      let n = if colon < 0 {
+        engine_parse_offset_digits(inner, 0, String::length(inner))
+      } else {
+        engine_parse_offset_digits(inner, 0, colon)
+      }
+      let m = if colon < 0 {
+        -1
+      } else {
+        engine_parse_offset_digits(inner, colon + 1, String::length(inner))
+      }
+      // Strip the full ` [@off=...]` segment (marker .. closing `]` inclusive).
+      let stripped = String::concat(String::substring(msg, 0, mi), String::substring(msg, close + 1, String::length(msg)))
+      let slen = String::length(source)
+      // #2868 (Codex P2): recover a string literal's TOKEN end from the source.
+      // `string_lit_end` in the checker computes `off + 2 + String::length(s)`,
+      // the DECODED length, so `"\n"` -- two source bytes, one decoded -- ends
+      // the range inside the token, and every escape costs another byte. The
+      // AST carries no token end and the checker has no source text; this
+      // function has both, so the honest end is derived here.
+      let m = engine_string_token_end(source, n, m)
+      // #2831: a literal with no offset slot anchors its BINDER; move to the
+      // literal when the source says that is what the initializer is.
+      let (n, m) = if m < 0 {
+        match engine_binding_literal_range(source, stripped, n) {
+          (ln, lm) => (ln, lm)
+        }
+      } else {
+        (n, m)
+      }
+      if n >= 0 && n < slen {
+        if m > n && m <= slen {
+          String::concat(engine_offset_line_col_range_prefix(source, n, m), stripped)
+        } else {
+          String::concat(engine_offset_line_col_prefix(source, n), stripped)
+        }
+      } else {
+        engine_locate_type_error_heuristic(source, stripped)
+      }
+    }
+  }
+}
+export enum ModuleOutcome {
+  // The final strings are trace-only interface, checked-value-env, and
+  // complete persistent TypeEnv v10 transport identities. They are computed
+  // from this successful check's typed environment, never used as cache
+  // inputs, and are empty unless the invalidation trace is enabled. The final
+  // optional string is a canonical in-memory-only #1550 module artifact
+  // observation. This production path populates it only after its actual
+  // checker invocation succeeds; ordinary checks leave it absent.
+  Checked(String, String, TypeEnv, String, String, String, Option[String]);
+  Diagnosed(String, Array[String])
+}
+export enum CheckedModuleTypingArtifactFreshnessAttestation {
+  AttestedCheckedModuleTypingArtifact(String)
+}
+fn engine_checked_module_dependency_interface_assumptions(dep_envs: Array[(String, TypeEnv)]) -> Array[(String, String)] with Exception {
+  let assumptions = array_empty()
+  let mut i = 0
+  while i < Array::length(dep_envs) {
+    let (path, env) = Array::get(dep_envs, i)
+    // check_module receives dependency environments only after they have been
+    // restricted to their published export surfaces. Preserve their actual
+    // import order and fingerprint exactly that checker-visible interface.
+    Array::push(assumptions, (path, engine_incremental_persistent_type_env_transport_identity(env)))
+    i = i + 1
+  }
+  assumptions
+}
+let checked_module_typing_artifact_construction_attempts: Array[Int] = [0]
+let checked_module_typing_artifact_validation_attempts: Array[Int] = [0]
+/// Test-observation counter. It measures entry into artifact construction, not
+/// checker execution: ordinary and diagnosed paths remain zero.
+export fn engine_checked_module_typing_artifact_construction_attempt_count() -> Int {
+  Array::get(checked_module_typing_artifact_construction_attempts, 0)
+}
+export fn engine_reset_checked_module_typing_artifact_construction_attempt_count() -> Unit {
+  Array::set(checked_module_typing_artifact_construction_attempts, 0, 0)
+}
+/// Test-only count of entries into the explicit freshness validator.
+export fn engine_checked_module_typing_artifact_validation_attempt_count() -> Int {
+  Array::get(checked_module_typing_artifact_validation_attempts, 0)
+}
+export fn engine_reset_checked_module_typing_artifact_validation_attempt_count() -> Unit {
+  Array::set(checked_module_typing_artifact_validation_attempts, 0, 0)
+}
+fn engine_checked_module_typing_artifact_bytes(checked: CheckedProgram, job: CheckJob) -> Option[String] with Exception {
+  Array::set(checked_module_typing_artifact_construction_attempts, 0, Array::get(checked_module_typing_artifact_construction_attempts, 0) + 1)
+  // Both identities are derived here from the exact same already-ingested
+  // CheckJob.source; there is no filesystem reread or caller identity input.
+  let source_identity = compact_source_fingerprint_memo(job.path, job.source)
+  let implementation_identity = engine_incremental_implementation_identity(job.source)
+  match checked_exported_interface_artifact_from_checked_program(checked) {
+    Some(exported_interface) => match shadow_unattested_checked_module_typing_artifact_v2_from_checked_program(checked, job.path, source_identity, source_identity, implementation_identity, implementation_identity, engine_checked_module_dependency_interface_assumptions(job.dep_envs), [
+      (job.path, "provisional_token_stream_v1", implementation_identity)
+    ], exported_interface) {
+      Some(artifact) => Some(encode_checked_module_typing_artifact_v2(artifact)),
+      None => None
+    },
+    None => None
+  }
+}
+/// Read the optional snapshot retained in a Checked outcome. Diagnosed outcomes
+/// have no snapshot. These observations are not persisted or consulted by
+/// planning, cache lookup, TypeEnv assembly or reuse.
+export fn engine_checked_module_typing_artifact_observation(outcome: ModuleOutcome) -> Option[String] {
+  match outcome {
+    Checked(_, _, _, _, _, _, observation) => observation,
+    Diagnosed(_, _) => None
+  }
+}
+/// Validate one opaque successful outcome against one current, already-ingested
+/// ModuleJob and bind the authority to the exact retained bytes. Validation is
+/// strict v2 decoding plus exact owner, source, implementation, dependency, and
+/// singleton-closure matching. Missing, malformed, stale, or diagnosed inputs
+/// return None. Nothing is published, persisted, planned, cached, or reused.
+export fn engine_checked_module_typing_artifact_freshness_attestation_for_job(job: CheckJob, outcome: ModuleOutcome) -> Option[CheckedModuleTypingArtifactFreshnessAttestation] with Exception {
+  Array::set(checked_module_typing_artifact_validation_attempts, 0, Array::get(checked_module_typing_artifact_validation_attempts, 0) + 1)
+  match outcome {
+    Checked(_, _, _, _, _, _, Some(bytes)) => if checked_module_typing_artifact_v2_matches_exact_inputs(bytes, job.path, compact_source_fingerprint_memo(job.path, job.source), engine_incremental_implementation_identity(job.source), engine_checked_module_dependency_interface_assumptions(job.dep_envs)) {
+      Some(AttestedCheckedModuleTypingArtifact(bytes))
+    } else {
+      None
+    },
+    Checked(_, _, _, _, _, _, None) => None,
+    Diagnosed(_, _) => None
+  }
+}
+/// Return the exact retained bytes that were validated when the opaque
+/// attestation was minted. This does not decode or re-encode the artifact.
+export fn engine_checked_module_typing_artifact_freshness_attestation_snapshot(attestation: CheckedModuleTypingArtifactFreshnessAttestation) -> String {
+  match attestation {
+    AttestedCheckedModuleTypingArtifact(bytes) => bytes
+  }
+}
+/// Compatibility observation over the opaque attestation API.
+export fn engine_checked_module_typing_artifact_observation_is_fresh_for_job(job: CheckJob, outcome: ModuleOutcome) -> Bool with Exception {
+  match engine_checked_module_typing_artifact_freshness_attestation_for_job(job, outcome) {
+    Some(_) => true,
+    None => false
+  }
+}
+/// Use the same checker invocation for publication, lowering and optional observations.
+/// Pure module check implementation. Artifact observation is explicitly opt-in:
+/// the production incremental path must not allocate canonical shadow bytes for
+/// every checked module when no observer consumes them.
+export fn engine_check_module_impl(job: CheckJob, observe_typing_artifact: Bool, program_transport: Option[Array[Bytes]], artifact_output: Option[(Bytes, Array[CheckedModuleArtifact])], interfaces: Option[DependencyInterfaceSet]) -> ModuleOutcome with Env + Exception {
+  // Parse stays OUTSIDE the handler below: parse errors currently
+  // propagate verbatim, while type errors get located and path-prefixed.
+  // Folding both into one handler would relabel every parse diagnostic.
+  let stmts = engine_parse_program_with_path_impl(job.path, job.source, true)
+  // Match the shared parser's ownership contract: Stmt values are immutable,
+  // while checker desugars replace entries in their top-level array.
+  let parsed_snapshot: Array[Stmt] = []
+  if artifact_output is Some(_) {
+    for stmt in stmts {
+      Array::push(parsed_snapshot, stmt)
+    }
+  }
+  // #1521: importing a name the dependency does not export used to bind
+  // CtUnknown silently, so `vibe check` said ok and `vibe build` died in
+  // codegen with `undefined variable (ident): X` -- no file, no line. The
+  // names are collected during env construction and reported here, before
+  // the body is checked, so the diagnostic names the import rather than
+  // whatever the body happened to do with it.
+  let unresolved_imports = array_empty()
+  let published = match interfaces {
+    Some(shared) => shared,
+    None => engine_dependency_interface_set_new()
+  }
+  engine_dependency_interface_set_supply_missing(published, job.dep_envs)
+  let (import_env, reexport_declarations) = engine_build_import_envs_from_interfaces(stmts, dir_of_path(job.path), published, for row in job.dep_envs {
+    row.0
+  }, unresolved_imports)
+  // The CANONICAL fingerprint, computed the same way the serial walk
+  // computes it (build_fingerprint, same file) from the same inputs: this
+  // module's own source and each dependency's fingerprint in declaration
+  // order. A worker that invented its own cache key -- or trusted one
+  // handed to it -- could publish a checked environment that the serial
+  // driver would never look up, which would make a parallel pre-check pass
+  // silently do nothing.
+  let fingerprint = engine_typecheck_fs_build_fingerprint(job.path, job.source, job.dep_fps, typing_semantics_seed())
+  if Array::length(unresolved_imports) > 0 {
+    Diagnosed(job.path, for msg in unresolved_imports {
+      String::concat(String::concat(job.path, ": "), msg)
+    })
+  } else {
+    handle {
+      // Retain the opaque-producing checker result from this exact production
+      // invocation. No caller-supplied CheckedProgram or diagnostic assertion
+      // participates in the #1550 observation.
+      engine_incremental_typecheck_telemetry_add(6, 1)
+      // #2391: one checker invocation, two outputs -- the CheckedProgram this
+      // function always produced (EnvEmpty delegates to the plain check, so
+      // both former arms are preserved), plus this module's Double
+      // call-result offsets for the FS lanes' float_call_offsets channel.
+      let (checked_program, located_offsets, eq_offs, eq_keys) = check_program_with_projected_import_env_typed_lowering_located_observation(stmts, import_env)
+      // `None` (the parse carried no offsets) cannot happen on this lane --
+      // parse_program_with_path_impl lexes with offsets -- but if it did, an
+      // empty table classifies nothing and leaves the syntactic classifier
+      // in charge, deterministically.
+      engine_module_typed_lowering_memo_put(job.path, fingerprint, match located_offsets {
+        Some(offsets) => offsets,
+        None => array_empty()
+      }, eq_offs, eq_keys)
+      engine_module_typed_lowering_bind_source(job.path, fingerprint, job.source)
+      let full_checked_env = checked_program.final_env
+      // #1533: what leaves this function is the module's PUBLISHED
+      // environment -- restricted to its export surface -- because every
+      // consumer of `Checked`'s env (env cache, persistent store, worker
+      // transport, TDRE10, trace identities) is a publication path. The full
+      // environment never needs to outlive the check itself.
+      // #2762: this call REFUSES a module whose aggregate `export { }` names
+      // something it neither declares nor imports, by throwing -- so the
+      // handler below turns it into this module's `Diagnosed`, and the
+      // `program_transport` bytes and `CheckedModuleArtifact` pushed further
+      // down are never published for it. That matters: a refused module that
+      // still cached an artifact would be reused through
+      // `checked_module_artifact_outcome` on the next build, and the refusal
+      // would disappear.
+      let checked_env = engine_checked_module_public_env_for_path(job.path, stmts, full_checked_env, reexport_declarations)
+      let interface_identity = if engine_incremental_interface_trace_enabled() {
+        engine_incremental_interface_identity(job.source, checked_env)
+      } else {
+        ""
+      }
+      let checked_env_identity = if engine_incremental_interface_trace_enabled() {
+        engine_incremental_checked_env_identity(checked_env)
+      } else {
+        ""
+      }
+      let persistent_type_env_transport_identity = if engine_incremental_interface_trace_enabled() {
+        engine_incremental_persistent_type_env_transport_identity(checked_env)
+      } else {
+        ""
+      }
+      let module_typing_artifact = if observe_typing_artifact {
+        engine_checked_module_typing_artifact_bytes(checked_program, job)
+      } else {
+        None
+      }
+      match program_transport {
+        Some(output) => Array::push(output, encode_checked_program(checked_program)),
+        None => ()
+      }
+      match artifact_output {
+        Some((input_identity, output)) => Array::push(output, CheckedModuleArtifact::{
+          input_identity,
+          parsed_stmts: parsed_snapshot,
+          checked_program,
+          lowering_offsets: match located_offsets {
+            Some(offsets) => offsets,
+            None => array_empty()
+          },
+          eq_offsets: eq_offs,
+          eq_keys
+        }),
+        None => ()
+      }
+      Checked(job.path, fingerprint, checked_env, interface_identity, checked_env_identity, persistent_type_env_transport_identity, module_typing_artifact)
+    } with { Exception::Throw(msg) => {
+      // #2831 criterion 4: the checker now throws EVERY diagnostic it
+      // collected, `\n`-joined. Locate and path-prefix each one -- the
+      // markers are per-diagnostic, so running this over the joined string
+      // would stamp the FIRST `[@off=]` it found onto the whole report and
+      // leave the rest unlocated (measured).
+      Diagnosed(job.path, engine_locate_each_line(job.path, job.source, msg))
+    } }
+  }
+}
+/// Run one production module check without constructing optional artifact observations.
+/// Production module check. No Fs: dependency environments are already values
+/// inside the job. Shadow artifact observation stays disabled by default.
+export fn engine_check_module(job: CheckJob) -> ModuleOutcome with Env + Exception {
+  engine_check_module_impl(job, false, None, None, None)
+}
+/// Retain the optional canonical observation from this actual successful check.
+/// Opt-in trusted #1550 observation producer. This runs the same complete module
+/// checker and retains canonical bytes only in its opaque successful outcome.
+export fn engine_check_module_with_typing_artifact_observation(job: CheckJob) -> ModuleOutcome with Env + Exception {
+  engine_check_module_impl(job, true, None, None, None)
+}
+/// Transport the result of the actual check; diagnosed modules produce no program bytes.
+/// Check against the job's actual import environment and retain the complete
+/// result from that one successful invocation. Diagnosed modules have no bytes;
+/// parse failures propagate exactly as in check_module. This transport has no
+/// persistent identity or cache authority until a coordinator binds its inputs.
+export fn engine_check_module_with_program_transport(job: CheckJob) -> (ModuleOutcome, Option[Bytes]) with Env + Exception {
+  let output: Array[Bytes] = []
+  let outcome = engine_check_module_impl(job, false, Some(output), None, None)
+  let bytes = if Array::length(output) == 1 {
+    Some(Array::get(output, 0))
+  } else {
+    None
+  }
+  (outcome, bytes)
+}
+/// --- #906 Phase 2: worker entry ------------------------------------------
+///
+/// The transport boundary. A worker is handed a JOB DIRECTORY and may touch
+/// nothing else -- it is the whole preopen sandbox:
+///
+///   <dir>/job.txt      version / path / fingerprint / dep rows
+///   <dir>/source.vibe  the module source, verbatim
+///   <dir>/dep<i>.env   dependency i's serialized public environment
+///   <dir>/outcome.txt  written here: "ok" or "diag"
+///   <dir>/env.out      written here on ok: the checked environment
+///   <dir>/diag.txt     written here on diag: one diagnostic per line
+///
+/// This is what docs/internal/design/compiler-parallelism.md calls the missing in-memory
+/// ModuleJob -> ModuleArtifact API. Without it a worker could only check
+/// leaf modules: the type-env cache is keyed by a fingerprint derived from
+/// the whole transitive source snapshot, which is precisely what a worker
+/// must not see, so a worker can never look its own dependencies up. Here
+/// the driver hands them over as values instead.
+///
+/// `path` in job.txt is the module's LOGICAL path, not the materialized
+/// temp file. It never gets opened -- it is the base directory that
+/// build_import_env resolves each import against, so the dep<i>.env entries
+/// bind to the same names they would in a serial compile. Getting this
+/// wrong does not fail loudly; it silently binds imports to nothing.
+export fn engine_job_dir_path(dir: String, name: String) -> String {
+  String::concat(String::concat(dir, "/"), name)
+}
+/// `dep` rows carry the dependency's path AND its already-computed
+/// fingerprint (`dep\t<path>\t<fingerprint>`) -- three columns, unlike every
+/// other row. There is deliberately no `fingerprint` row for the job's OWN
+/// identity: that is check_module's output (via build_fingerprint), never
+/// an input a caller could get wrong or fail to keep in sync.
+export fn engine_parse_job_rows(job_text: String) -> (String, Array[String], Array[String]) with Exception {
+  let lines = String::split(normalize_persistent_cache_text(job_text), "\n")
+  let len = Array::length(lines)
+  let deps = engine_empty_stack()
+  let dep_fps = engine_empty_stack()
+  let mut path = ""
+  let mut version_ok = false
+  let mut i = 0
+  while i < len {
+    let line = Array::get(lines, i)
+    if String::length(line) == 0 {
+      ()
+    } else {
+      let parts = String::split(line, "\t")
+      let plen = Array::length(parts)
+      let key = if plen > 0 {
+        Array::get(parts, 0)
+      } else {
+        ""
+      }
+      if key == "dep" {
+        let dep_path = Array::get(parts, 1)
+        let dep_fp = Array::get(parts, 2)
+        if plen != 3 {
+          throw(String::concat("invalid module job dep row (want path + fingerprint): ", line))
+        } else if String::length(dep_path) == 0 || String::length(dep_fp) == 0 {
+          // Codex review (#1126): a row with an empty path or fingerprint
+          // column (e.g. a trailing tab, `dep\t/dep.vibe\t`) still has 3
+          // parts and would otherwise pass the column-count check above.
+          // An empty fingerprint folds into build_fingerprint the same way
+          // regardless of which dependency revision produced it, so two
+          // different revisions would silently collide on one fingerprint
+          // instead of the job being rejected as malformed.
+          throw(String::concat("invalid module job dep row (empty path or fingerprint): ", line))
+        } else {
+          Array::push(deps, dep_path)
+          Array::push(dep_fps, dep_fp)
+        }
+      } else if plen != 2 {
+        throw(String::concat("invalid module job row: ", line))
+      } else {
+        let value = Array::get(parts, 1)
+        if key == "version" {
+          if value == "1" {
+            version_ok = true
+          } else {
+            throw(String::concat("unsupported module job version: ", value))
+          }
+        } else if key == "path" {
+          path = value
+        } else {
+          throw(String::concat("unknown module job row: ", line))
+        }
+      }
+    }
+    i = i + 1
+  }
+  if !version_ok {
+    throw("module job is missing its version row")
+  } else if String::length(path) == 0 {
+    throw("module job is missing its path row")
+  } else {
+    (path, deps, dep_fps)
+  }
+}
+/// Read one frozen job snapshot and write the outcome marker after complete checked products.
+export fn engine_run_module_job_dir(dir: String) -> Unit with Env + Exception + Fs {
+  // The source-text fingerprint memo spans one compile (the serial walk
+  // resets it at its start). A worker process runs one module job after
+  // another with no walk around them, so it resets the memo per job: the
+  // job's key is built through the memo like the walk's, and the memo holds
+  // this job's source, not every source the worker has ever been handed.
+  // The source-text memo (#2386) is reset per job for the same reason.
+  compact_source_fingerprint_memo_reset()
+  cache_source_text_memo_reset()
+  let (path, deps, dep_fps) = engine_parse_job_rows(Fs::read_file(engine_job_dir_path(dir, "job.txt")))
+  let source = Fs::read_file(engine_job_dir_path(dir, "source.vibe"))
+  let dep_envs = array_empty()
+  let job_dep_fps = array_empty()
+  let mut i = 0
+  let dlen = Array::length(deps)
+  while i < dlen {
+    let dep_path = Array::get(deps, i)
+    Array::push(job_dep_fps, (dep_path, Array::get(dep_fps, i)))
+    let env_file = engine_job_dir_path(dir, String::concat(String::concat("dep", __to_string(i)), ".env"))
+    if Fs::exists(env_file) {
+      match decode_checked_environment(Fs::read_file(env_file)) {
+        Some(env) => Array::push(dep_envs, (dep_path, env)),
+        // A dep<i>.env that exists but does not decode is an
+        // INFRASTRUCTURE failure, not "no environment". Skipping it would
+        // drop the dependency's interface and make its imports lenient
+        // again, so a truncated file would turn real type errors into a
+        // clean check -- the silent-success mode this whole transport is
+        // built to avoid. (decode_checked_environment returns None only for
+        // a missing version header, i.e. an empty or truncated file; a
+        // malformed row already throws.)
+        None => throw(String::concat("module job: unreadable dependency environment: ", env_file))
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  let job = CheckJob::{
+    path: path,
+    source: source,
+    deps: deps,
+    dep_fps: job_dep_fps,
+    dep_envs: dep_envs
+  }
+  // Parse errors are still an `Error` out of check_module (see the Phase 1
+  // note above). At the transport boundary they have to become a value
+  // regardless -- a worker that throws is an infrastructure failure, which
+  // the coordinator treats as fatal rather than as a compiler diagnostic.
+  let outcome = handle {
+    engine_check_module(job)
+  } with { Exception::Throw(msg) => Diagnosed(path, [msg]) }
+  // outcome.txt is written LAST in both arms. It is the commit marker: a
+  // coordinator that sees it knows env.out / diag.txt are already complete,
+  // so a worker killed mid-write leaves an obviously unfinished job dir
+  // rather than a plausible-looking wrong answer.
+  match outcome {
+    Checked(_, fingerprint, env, _, _, _, _) => {
+      Fs::write_file(engine_job_dir_path(dir, "env.out"), encode_checked_environment(env))
+      // The same successful check populated the lowering memo. An absent
+      // table is an infrastructure failure, never an authorized empty table.
+      let cache_text = match engine_module_typed_lowering_memo_get_by_fp(fingerprint) {
+        Some(rows) => encode_checked_module_product(env, Some(rows)),
+        None => throw("module job: successful check has no lowering product")
+      }
+      Fs::write_file(engine_job_dir_path(dir, "cache.out"), String::concat(String::concat("checked-worker-cache\t1\t", fingerprint), String::concat("\n", cache_text)))
+      // The module's own identity, as check_module computed it -- an
+      // OUTPUT of this job, needed by the coordinator to build the NEXT
+      // job's `dep\t<path>\t<fingerprint>` row for this module's
+      // dependents, and eventually to publish this environment at the
+      // real persistent-cache path a serial compile would look under.
+      Fs::write_file(engine_job_dir_path(dir, "fingerprint.out"), fingerprint)
+      Fs::write_file(engine_job_dir_path(dir, "outcome.txt"), "ok")
+    },
+    Diagnosed(_, diags) => {
+      Fs::write_file(engine_job_dir_path(dir, "diag.txt"), String::join(diags, "\n"))
+      Fs::write_file(engine_job_dir_path(dir, "outcome.txt"), "diag")
+    }
+  }
+}
