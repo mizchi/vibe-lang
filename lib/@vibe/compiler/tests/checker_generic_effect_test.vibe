@@ -188,3 +188,125 @@ test "an unannotated callback lambda is not pinned by the enclosing row" {
   let diags = collect_all_diagnostics(src)
   assert(eq(Array::length(diags), 0))
 }
+
+// #3275 follow-up (Codex on #3315): a kinded effect parameter (`F` of
+// `Read[F[_]]`) takes a bare constructor in the row. It was resolved as a
+// complete type, so `F[Int]` matched no payload: a correct `Array[Int]` under
+// `with Read[Array]` was refused (`expected Array[Int], got Array[Int]`), and a
+// `Cell[String]` under `with Read[Cell]` was accepted.
+
+test "a kinded row's constructor fixes the payload" {
+  let src = "effect Read[F[_]] {\n  Put(F[Int]) -> Int\n}\n\nfn producer() -> Int with Read[Array] {\n  perform Read::Put(Some(1))\n}\n"
+  let diags = collect_all_diagnostics(src)
+  assert(eq(Array::length(diags), 1))
+  assert(String::contains(Array::get(diags, 0), "perform argument type mismatch for Read::Put: expected Array[Int], got Option[Int]"))
+}
+
+test "a kinded row accepts a payload and a value of its constructor" {
+  let put_src = "effect Read[F[_]] {\n  Put(F[Int]) -> Int\n}\n\nfn producer() -> Int with Read[Array] {\n  perform Read::Put([1, 2])\n}\n"
+  assert(eq(Array::length(collect_all_diagnostics(put_src)), 0))
+  let option_src = "effect Read[F[_]] {\n  Put(F[Int]) -> Int\n}\n\nfn producer() -> Int with Read[Option] {\n  perform Read::Put(Some(1))\n}\n"
+  assert(eq(Array::length(collect_all_diagnostics(option_src)), 0))
+  let get_src = "effect Src[F[_]] {\n  Get() -> F[Int]\n}\n\nfn reader() -> Int with Src[Array] {\n  let xs: Array[Int] = perform Src::Get()\n  Array::length(xs)\n}\n"
+  assert(eq(Array::length(collect_all_diagnostics(get_src)), 0))
+}
+
+test "a kinded row passes a declared generic type as its constructor" {
+  let src = "effect Read[F[_]] {\n  Put(F[Int]) -> Int\n}\n\nstruct Cell[T] {\n  value: T\n}\n\nfn producer() -> Int with Read[Cell] {\n  perform Read::Put(Cell::{ value: \"s\" })\n}\n"
+  let diags = collect_all_diagnostics(src)
+  assert(eq(Array::length(diags), 1))
+  assert(String::contains(Array::get(diags, 0), "perform argument type mismatch for Read::Put: expected Cell[Int], got Cell[String]"))
+  let ok_src = "effect Read[F[_]] {\n  Put(F[Int]) -> Int\n}\n\nstruct Cell[T] {\n  value: T\n}\n\nfn producer() -> Int with Read[Cell] {\n  perform Read::Put(Cell::{ value: 1 })\n}\n"
+  assert(eq(Array::length(collect_all_diagnostics(ok_src)), 0))
+}
+
+test "a kinded row passes a parameterized alias as its constructor" {
+  let src = "effect Read[F[_]] {\n  Put(F[Int]) -> Int\n}\n\ntype List[T] = Array[T]\n\nfn producer() -> Int with Read[List] {\n  perform Read::Put(Some(1))\n}\n"
+  let diags = collect_all_diagnostics(src)
+  assert(eq(Array::length(diags), 1))
+  assert(String::contains(Array::get(diags, 0), "expected Array[Int], got Option[Int]"))
+  let ok_src = "effect Read[F[_]] {\n  Put(F[Int]) -> Int\n}\n\ntype List[T] = Array[T]\n\nfn producer() -> Int with Read[List] {\n  perform Read::Put([1])\n}\n"
+  assert(eq(Array::length(collect_all_diagnostics(ok_src)), 0))
+}
+
+// A wrong-kinded row argument is reported once, with the edit, wherever the
+// row is written: the checker reports it while binding the row, because the
+// later row-item check does not run once type checking has found an error and
+// does not walk a lambda nested in a body. The parameter is then left fresh,
+// so the perform adds no second, derived mismatch.
+test "a wrong-kinded row argument is reported once" {
+  let int_src = "effect Read[F[_]] {\n  Put(F[Int]) -> Int\n}\n\nfn producer() -> Int with Read[Int] {\n  perform Read::Put([1])\n}\n"
+  let int_diags = collect_all_diagnostics(int_src)
+  assert(eq(Array::length(int_diags), 1))
+  assert(String::contains(Array::get(int_diags, 0), "effect Read expects a constructor with 1 argument(s), but `Int` has 0"))
+  let map_src = "effect Read[F[_]] {\n  Put(F[Int]) -> Int\n}\n\nfn producer() -> Int with Read[Map] {\n  perform Read::Put([1])\n}\n"
+  let map_diags = collect_all_diagnostics(map_src)
+  assert(eq(Array::length(map_diags), 1))
+  assert(String::contains(Array::get(map_diags, 0), "but `Map` has 2"))
+}
+
+// Codex on #3315: `struct Higher[G[_]]` has the arity `Read[F[_]]` asks for,
+// but its parameter is a constructor, so it cannot stand for `F` (applied to
+// `Int` in `F[Int]`). Comparing arities alone reported nothing, and the first
+// cut of the kinded arm left `F` fresh, so `Some(1)` checked clean.
+test "a constructor whose parameter is a constructor is not a kinded row argument" {
+  let src = "effect Read[F[_]] {\n  Put(F[Int]) -> Int\n}\n\nstruct Higher[G[_]] {\n  v: G[Int]\n}\n\nfn producer() -> Int with Read[Higher] {\n  perform Read::Put(Some(1))\n}\n"
+  let diags = collect_all_diagnostics(src)
+  assert(eq(Array::length(diags), 1))
+  assert(String::contains(Array::get(diags, 0), "effect Read applies its parameter to types, but a parameter of `Higher` takes a constructor"))
+  let bare_src = "effect Read[F[_]] {\n  Put(F[Int]) -> Int\n}\n\nstruct Higher[G[_]] {\n  v: G[Int]\n}\n\nfn producer() -> Int with Read[Higher] {\n  0\n}\n"
+  let bare_diags = collect_all_diagnostics(bare_src)
+  assert(eq(Array::length(bare_diags), 1))
+  assert(String::contains(Array::get(bare_diags, 0), "a parameter of `Higher` takes a constructor"))
+}
+
+// The row-item check walks a function's own row, not a lambda nested in its
+// body; the row binder reports a wrong-kinded row there too.
+test "a wrong-kinded row on a nested lambda is reported" {
+  let nested = (row: String) -> Array[String] {
+    collect_all_diagnostics(String::concat("effect Read[F[_]] {\n  Put(F[Int]) -> Int\n}\n\nstruct Higher[G[_]] {\n  v: G[Int]\n}\n\nfn outer() -> Int {\n  let inner = () -> Int with ", String::concat(row, " {\n    perform Read::Put(Some(1))\n  }\n  0\n}\n")))
+  }
+  let int_diags = nested("Read[Int]")
+  assert(eq(Array::length(int_diags), 1))
+  assert(String::contains(Array::get(int_diags, 0), "but `Int` has 0"))
+  let nope_diags = nested("Read[Nope]")
+  assert(eq(Array::length(nope_diags), 1))
+  assert(String::contains(Array::get(nope_diags, 0), "but `Nope` has 0"))
+  let higher_diags = nested("Read[Higher]")
+  assert(eq(Array::length(higher_diags), 1))
+  assert(String::contains(Array::get(higher_diags, 0), "a parameter of `Higher` takes a constructor"))
+  assert(eq(Array::length(nested("Read[Option]")), 0))
+}
+
+// Codex on #3315: a formal in scope is bound as itself only when its declared
+// arity is the parameter's; otherwise it is reported like any other
+// wrong-kinded argument, including on a nested lambda the row-item check
+// never walks.
+test "a formal of the wrong kind in a kinded row is reported" {
+  let decl = "effect Read[F[_]] {\n  Put(F[Int]) -> Int\n}\n\n"
+  let plain_nested = collect_all_diagnostics(String::concat(decl, "fn outer[T](x: T) -> Int {\n  let f = () -> Int with Read[T] {\n    0\n  }\n  0\n}\n"))
+  assert(eq(Array::length(plain_nested), 1))
+  assert(String::contains(Array::get(plain_nested, 0), "effect Read expects a constructor with 1 argument(s), but `T` has 0"))
+  let binary_nested = collect_all_diagnostics(String::concat(decl, "fn outer[H[_, _]](x: H[Int, Int]) -> Int {\n  let f = () -> Int with Read[H] {\n    0\n  }\n  0\n}\n"))
+  assert(eq(Array::length(binary_nested), 1))
+  assert(String::contains(Array::get(binary_nested, 0), "but `H` has 2"))
+  let own_plain = collect_all_diagnostics(String::concat(decl, "fn producer[A](x: A) -> Int with Read[A] {\n  0\n}\n"))
+  assert(eq(Array::length(own_plain), 1))
+  assert(String::contains(Array::get(own_plain, 0), "but `A` has 0"))
+}
+
+// Codex on #3315: a constructor formal in the row binds to the formal, so the
+// payload is the parameter's own `G[Int]`. Left fresh, `Some(1)` checked clean
+// and a caller passing an `Array[Int]` handed the option to a `Read[Array]` arm.
+test "a kinded formal in the row fixes the payload at the formal" {
+  let src = "effect Read[F[_]] {\n  Put(F[Int]) -> Int\n}\n\nfn producer[G[_]](xs: G[Int]) -> Int with Read[G] {\n  perform Read::Put(xs)\n}\n"
+  assert(eq(Array::length(collect_all_diagnostics(src)), 0))
+  let bad_src = "effect Read[F[_]] {\n  Put(F[Int]) -> Int\n}\n\nfn producer[G[_]](xs: G[Int]) -> Int with Read[G] {\n  perform Read::Put(Some(1))\n}\n"
+  let diags = collect_all_diagnostics(bad_src)
+  assert(eq(Array::length(diags), 1))
+  assert(String::contains(Array::get(diags, 0), "perform argument type mismatch for Read::Put: expected G[Int], got Option[Int]"))
+  let lambda_src = "effect Read[F[_]] {\n  Put(F[Int]) -> Int\n}\n\nfn outer[G[_]](xs: G[Int]) -> Int {\n  let inner = () -> Int with Read[G] {\n    perform Read::Put(Some(1))\n  }\n  0\n}\n"
+  let lambda_diags = collect_all_diagnostics(lambda_src)
+  assert(eq(Array::length(lambda_diags), 1))
+  assert(String::contains(Array::get(lambda_diags, 0), "expected G[Int], got Option[Int]"))
+}
