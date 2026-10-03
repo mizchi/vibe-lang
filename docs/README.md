@@ -182,6 +182,7 @@ Not normative.
 | [internal/reports/env-index-array-capacity-2026-10-03.md](internal/reports/env-index-array-capacity-2026-10-03.md) | Known-size index arrays, controlled allocation/timing follow-ups, default KPI ratchet and bump/RC regressions |
 | [internal/reports/reexport-surface-miss-bounds-2026-10-03.md](internal/reports/reexport-surface-miss-bounds-2026-10-03.md) | Complete-cache surface miss bounds, retained timing controls and bump/RC semantic regressions |
 | [internal/reports/monotonic-selfcompile-kpi-2026-10-03.md](internal/reports/monotonic-selfcompile-kpi-2026-10-03.md) | Realtime backstep reproduction, monotonic KPI clocks and actual compiler/heap parity |
+| [internal/reports/imported-show-wrapper-metadata-2026-10-03.md](internal/reports/imported-show-wrapper-metadata-2026-10-03.md) | Module-owned Show-wrapper facts, fixed-tree allocation comparison and rendering/transport freshness |
 | [internal/reports/parser-simd-scan-2026-08-15.md](internal/reports/parser-simd-scan-2026-08-15.md) | |
 | [internal/reports/perf-snapshot-2026-08-07.md](internal/reports/perf-snapshot-2026-08-07.md) | |
 | [internal/reports/pl-survey-2026-07.md](internal/reports/pl-survey-2026-07.md) | |

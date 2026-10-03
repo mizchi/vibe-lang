@@ -15,7 +15,7 @@
 // exactly what acceptance turns on.
 //
 //   file    := "VART1" u32le(payload_len) payload          (@vibe/cache/cache.vibe)
-//   payload := "vMOD" u8(1) u32le(sum1) u32le(sum2)
+//   payload := "vMOD" u8(2) u32le(sum1) u32le(sum2)
 //              varint(len(identity)) identity ...          (artifacts/module)
 //   identity:= str("checked-module-input-v1") str(context) str(path) str(source) ...
 //   str     := varint(byte length) bytes                   (ast_binary_write_string)
@@ -31,7 +31,7 @@ export const ENVELOPE_MAGIC = Buffer.from("VART1");
 /// how a harness can ask "did the cold run populate THIS cache" without
 /// reconstructing a filename it cannot compute.
 export const PAYLOAD_MAGICS = {
-  checked_module: Buffer.from([118, 77, 79, 68, 1]), // "vMOD", version 1
+  checked_module: Buffer.from([118, 77, 79, 68, 2]), // "vMOD", version 2
   codegen_body_cache: Buffer.from("VBW2"),
 };
 export const PAYLOAD_MAGIC = PAYLOAD_MAGICS.checked_module;

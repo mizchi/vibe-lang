@@ -59,7 +59,7 @@ export fn encode_checked_program(checked: CheckedProgram) -> Bytes {
   Bytes::push(out, 'C')
   Bytes::push(out, 'H')
   Bytes::push(out, 'K')
-  ast_binary_write_varint(out, 1)
+  ast_binary_write_varint(out, 2)
   let (first, second) = cp_checksum(payload, 0)
   ast_binary_write_varint(out, first)
   ast_binary_write_varint(out, second)
@@ -76,7 +76,7 @@ export fn decode_checked_program(bytes: Bytes) -> Option[CheckedProgram] {
     ast_binary_read_byte_checked(reader) != 'C' ||
     ast_binary_read_byte_checked(reader) != 'H' ||
     ast_binary_read_byte_checked(reader) != 'K' ||
-    ast_binary_read_varint_checked(reader) != 1 {
+    ast_binary_read_varint_checked(reader) != 2 {
       throw("checked program: unsupported header")
     }
     let first = ast_binary_read_varint_checked(reader)
@@ -451,6 +451,12 @@ fn cp_write_env(out: Bytes, value: TypeEnv) -> Unit {
       cp_write_array_binding(out, field_1)
       cp_write_env(out, field_2)
     },
+    EnvShowWrappers(wrappers, unknown, rest) => {
+      Bytes::push(out, 10)
+      cp_write_array_string(out, wrappers)
+      cp_write_array_string(out, unknown)
+      cp_write_env(out, rest)
+    },
   }
 }
 
@@ -514,6 +520,12 @@ fn cp_read_env(reader: AstBinaryReader) -> TypeEnv with Exception {
         throw("checked program: cached environment rows disagree")
       }
       env_cached(field_0, field_1, field_2)
+    },
+    10 => {
+      let wrappers = cp_read_array_string(reader)
+      let unknown = cp_read_array_string(reader)
+      let rest = cp_read_env(reader)
+      EnvShowWrappers(wrappers, unknown, rest)
     },
     _ => throw("checked program: unknown TypeEnv tag")
   }

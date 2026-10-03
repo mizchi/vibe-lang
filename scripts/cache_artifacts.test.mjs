@@ -54,7 +54,7 @@ test("reads past the one-byte varint boundary", () => {
 
 test("rejects an envelope that is not a checked-module artifact", () => {
   for (const bytes of [artifact({ envelopeMagic: Buffer.from("VART2") }),
-    artifact({ payloadMagic: Buffer.from([118, 77, 79, 68, 2]) }), Buffer.alloc(0), Buffer.from("VART1")]) {
+    artifact({ payloadMagic: Buffer.from([118, 77, 79, 68, 1]) }), Buffer.alloc(0), Buffer.from("VART1")]) {
     assert.equal(isModuleArtifact(bytes), false);
     assert.throws(() => moduleArtifactIdentity(bytes), /not a vMOD artifact envelope/);
   }

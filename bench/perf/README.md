@@ -3,6 +3,17 @@
 CI heap KPI gate, micro benches, and perf-investigation postmortems for the
 compiler / checker.
 
+## Precise imported Show wrappers (2026-10-03)
+
+Module-owned wrapper facts remove inert render rows from ordinary imported
+calls. Three fixed-tree A/B pairs reduce bump allocation by 4.21% cold and
+4.47% warm; checked-module reuse on improves 3.40% and 2.86%. All user Wasm
+is byte-identical and reserved pages stay unchanged. Actual wrapper rendering,
+alias chains, worker/persistent transport and body-edit freshness are checked.
+
+See the [report](../../docs/internal/reports/imported-show-wrapper-metadata-2026-10-03.md)
+and [raw record](analysis/imported-show-wrapper-metadata-2026-10-03.json).
+
 ## Monotonic selfcompile KPI timing (2026-10-03)
 
 selfcompile_kpi.sh measures elapsed time with Linux uptime or a Node monotonic

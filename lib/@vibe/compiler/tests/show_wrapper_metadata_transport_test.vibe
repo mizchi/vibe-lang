@@ -1,0 +1,159 @@
+import @vibe/compiler/core {
+  Subst, Type, TypeEnv, env_bind, env_cache, env_show_wrapper_facts, env_with_show_wrapper_facts
+}
+import @vibe/compiler/checker {
+  CheckedProgram
+}
+import @vibe/compiler/checker/artifacts/program {
+  decode_checked_program, encode_checked_program
+}
+import @vibe/compiler/checker/artifacts/module {
+  CheckedModuleArtifact, decode_checked_module_artifact, encode_checked_module_artifact
+}
+import @vibe/compiler/runtime {
+  parse_persistent_module_cache,
+  parse_persistent_type_env,
+  persistent_module_cache_text,
+  persistent_type_env_cache_text,
+  typing_dependency_transport_input_key
+}
+
+fn show_transport_env() -> TypeEnv {
+  env_cache(env_with_show_wrapper_facts(env_bind(EnvEmpty, "show", CtFn([CtBool], CtString, None)), [
+    "show"
+  ], ["legacy"]))
+}
+
+fn show_transport_assert(env: TypeEnv) -> Unit {
+  match env_show_wrapper_facts(env) {
+    Some((wrappers, unknown)) => {
+      assert(wrappers == ["show"])
+      assert(unknown == ["legacy"])
+    },
+    None => assert(false)
+  }
+}
+
+fn show_transport_program(env: TypeEnv) -> CheckedProgram {
+  CheckedProgram::{
+    checked_stmts: [],
+    final_env: env,
+    type_defs: [],
+    final_subst: SubstEmpty,
+    typed_occurrences: []
+  }
+}
+
+fn show_transport_replace(text: String, before: String, after: String) -> String {
+  let at = String::index_of(text, before)
+  assert(at >= 0)
+  String::concat(text[0: at], String::concat(after, text[at + String::length(before): String::length(text)]))
+}
+
+test "worker transport retains precise and unavailable facts through a cached env" {
+  let wire = persistent_type_env_cache_text(show_transport_env())
+  match parse_persistent_type_env(wire) {
+    Some(env) => {
+      show_transport_assert(env)
+      assert(persistent_type_env_cache_text(env) == wire)
+    },
+    None => assert(false)
+  }
+}
+
+test "combined environment and lowering record retains wrapper facts" {
+  let wire = persistent_module_cache_text(show_transport_env(), Some(([7], [9], [
+    "#render:B"
+  ])))
+  match parse_persistent_module_cache(wire) {
+    Some(record) => {
+      show_transport_assert(record.env)
+      assert(persistent_module_cache_text(record.env, record.lowering) == wire)
+    },
+    None => assert(false)
+  }
+}
+
+test "checked program and complete module artifact retain wrapper facts" {
+  let checked = show_transport_program(show_transport_env())
+  let bytes = encode_checked_program(checked)
+  match decode_checked_program(bytes) {
+    Some(decoded) => {
+      show_transport_assert(decoded.final_env)
+      assert(encode_checked_program(decoded) == bytes)
+    },
+    None => assert(false)
+  }
+  let artifact = CheckedModuleArtifact::{
+    input_identity: Bytes::from_array([1, 2]),
+    parsed_stmts: [],
+    checked_program: checked,
+    lowering_offsets: [],
+    eq_offsets: [],
+    eq_keys: []
+  }
+  let module_bytes = encode_checked_module_artifact(artifact)
+  match decode_checked_module_artifact(module_bytes, artifact.input_identity) {
+    Some(decoded) => {
+      show_transport_assert(decoded.checked_program.final_env)
+      assert(encode_checked_module_artifact(decoded) == module_bytes)
+    },
+    None => assert(false)
+  }
+}
+
+test "unavailable metadata and a checked empty wrapper set remain distinct" {
+  let missing = env_bind(EnvEmpty, "ordinary", CtFn([CtBool], CtBool, None))
+  let empty = env_with_show_wrapper_facts(missing, [], [])
+  assert(env_show_wrapper_facts(missing) is None)
+  match env_show_wrapper_facts(empty) {
+    Some((known, unknown)) => assert(Array::length(known) + Array::length(unknown) == 0),
+    None => assert(false)
+  }
+  assert(persistent_type_env_cache_text(missing) != persistent_type_env_cache_text(empty))
+}
+
+test "a same-length damaged wrapper name invalidates both text transports" {
+  let wire = persistent_type_env_cache_text(show_transport_env())
+  let damaged = show_transport_replace(wire, "H1[4:show]", "H1[4:slow]")
+  let rejected = handle {
+    parse_persistent_type_env(damaged) is None
+  } with { Exception::Throw(_) => true }
+  assert(rejected)
+  let combined = persistent_module_cache_text(show_transport_env(), Some(([], [], [
+  ])))
+  assert(parse_persistent_module_cache(show_transport_replace(combined, "H1[4:show]", "H1[4:slow]")) is None)
+}
+
+test "old transport versions cannot supply trusted empty metadata" {
+  assert(parse_persistent_type_env("version\t9\nenv\t1:0\n") is None)
+  assert(parse_persistent_module_cache("version\t10\nenv\t1:0\nlowering\tmissing\n") is None)
+  let bytes = encode_checked_program(show_transport_program(show_transport_env()))
+  Bytes::set(bytes, 4, 1)
+  assert(decode_checked_program(bytes) is None)
+  let artifact = CheckedModuleArtifact::{
+    input_identity: Bytes::from_array([1]),
+    parsed_stmts: [],
+    checked_program: show_transport_program(show_transport_env()),
+    lowering_offsets: [],
+    eq_offsets: [],
+    eq_keys: []
+  }
+  let module_bytes = encode_checked_module_artifact(artifact)
+  Bytes::set(module_bytes, 4, 1)
+  assert(decode_checked_module_artifact(module_bytes, artifact.input_identity) is None)
+}
+
+test "unchanged signatures with changed wrapper facts invalidate dependency reuse" {
+  let binding = env_bind(EnvEmpty, "show", CtFn([CtBool], CtString, None))
+  let before = env_with_show_wrapper_facts(binding, ["show"], [])
+  let after = env_with_show_wrapper_facts(binding, [], [])
+  let source = "import ./dep.vibe { show }\nlet value = show(true)"
+  let first = typing_dependency_transport_input_key("/user.vibe", source, "semantics", [
+    ("/dep.vibe", before)
+  ])
+  let second = typing_dependency_transport_input_key("/user.vibe", source, "semantics", [
+    ("/dep.vibe", after)
+  ])
+  assert(first != second)
+}

@@ -337,7 +337,7 @@ export fn collect_module_diagnostics() -> Bool {
 ///   5 current-source parse executions (ModuleJob parse memo misses)
 ///   6 checker executions
 ///   7 modules reused by conservative fingerprint authority
-///   8 modules reused by validated TDRE9 dependency transport authority
+///   8 modules reused by validated TDRE10 dependency transport authority
 ///   9 modules reused by the complete checked-module artifact
 ///  10 non-walk parse operations (the build's merge lane and friends)
 ///
@@ -384,9 +384,9 @@ let incremental_checked_env_trace_observations: Array[(String, String)] = []
 let incremental_persistent_type_env_transport_trace_observations: Array[(String, String)] = [
 ]
 
-// TDRE9 aliases only an exact v9 decoded TypeEnv when every direct dependency
+// TDRE10 aliases only an exact v10 decoded TypeEnv when every direct dependency
 // transport environment is unchanged. It is not a CheckedProgram or typed-IR
-// transport; v9 retains kinded applications, constructor-bound self references,
+// transport; v10 retains kinded applications, constructor-bound self references,
 // and binding provenance
 // in the TypeEnv declaration, trait, and impl chain. The empty cell is
 // conservative for direct FS consumers. The CLI check-only lane explicitly
@@ -744,16 +744,16 @@ export fn store_persistent_type_env(fingerprint: String, env: TypeEnv) -> String
   text
 }
 
-// TDRE9 binds the logical checker input, conservative fingerprint, and
-// exact canonical v10 disk record, including lowering rows. Dependency inputs
-// and worker transport continue to use TypeEnv v9 independently of storage.
+// TDRE10 binds the logical checker input, conservative fingerprint, and
+// exact canonical v11 disk record, including lowering rows. Dependency inputs
+// and worker transport continue to use TypeEnv v10 independently of storage.
 // The target text is intentionally not replaced by a compact fingerprint:
 // cache corruption must not turn a fingerprint collision into checker reuse.
-let typing_dependency_env_reuse_alias_v9_tag: String = "TDRE9A"
-let typing_dependency_env_reuse_witness_v9_tag: String = "TDRE9W"
+let typing_dependency_env_reuse_alias_v10_tag: String = "TDRE10A"
+let typing_dependency_env_reuse_witness_v10_tag: String = "TDRE10W"
 
 /// One `<byte length>:<text>` segment, pushed into a builder as its pieces
-/// (#2945). The TDRE9 texts embed a module's verbatim source and its
+/// (#2945). The TDRE10 texts embed a module's verbatim source and its
 /// dependencies' exact env texts, so they are as large as the source closure
 /// they describe (the CLI's generated adapter bundle alone is 30 MB).
 /// Materializing each segment with nested `String::concat` copied that text
@@ -831,11 +831,11 @@ fn parse_typing_dependency_reuse_binding(text: String, tag: String) -> Option[(S
 /// source, effective typing semantics, resolution authority, and every resolved direct dependency row of
 /// ModuleJob.dep_envs in its actual array order. finish_typecheck_fs_impl builds
 /// this table once with project_exact_dependency_envs and gives the same value
-/// to both check_module and TDRE9 lookup/publication, so ambient coordinator
+/// to both check_module and TDRE10 lookup/publication, so ambient coordinator
 /// cache rows are neither checker-visible nor part of this canonical text.
 export fn typing_dependency_transport_input_key(path: String, source: String, semantics_seed: String, dep_envs: Array[(String, TypeEnv)]) -> String with Env {
   let out = StringBuilder::new()
-  StringBuilder::push(out, "vibe-typing-dependency-transport-env:v9")
+  StringBuilder::push(out, "vibe-typing-dependency-transport-env:v10")
   push_typing_reuse_segment(out, normalize_path(path))
   push_typing_reuse_segment(out, source)
   push_typing_reuse_segment(out, semantics_seed)
@@ -881,7 +881,7 @@ fn typing_dependency_env_reuse_witness_binding(fingerprint: String) -> Option[(S
   if !Fs::exists(witness_path) {
     None
   } else {
-    match parse_typing_dependency_reuse_binding(Fs::read_file(witness_path), typing_dependency_env_reuse_witness_v9_tag) {
+    match parse_typing_dependency_reuse_binding(Fs::read_file(witness_path), typing_dependency_env_reuse_witness_v10_tag) {
       Some((input_key, target_fingerprint, target_text)) =>
       if target_fingerprint != fingerprint {
         None
@@ -933,7 +933,7 @@ fn typing_dependency_env_reuse_eligibility_is_valid(fingerprint: String) -> Bool
   }
 }
 
-/// Eligibility is transitively witnessed by successful canonical v10 module
+/// Eligibility is transitively witnessed by successful canonical v11 module
 /// commits. Missing, malformed, stale, torn, or cross-spliced witnesses fail
 /// closed before the alias lookup.
 export fn typing_dependency_env_reuse_is_eligible(dep_fps: Array[(String, String)]) -> Bool with Env + Fs {
@@ -952,7 +952,7 @@ export fn typing_dependency_env_reuse_is_eligible(dep_fps: Array[(String, String
 }
 
 export fn publish_typing_dependency_env_reuse_eligibility(input_key: String, fingerprint: String, target_text: String) -> Unit with Env + Fs {
-  let witness_text = typing_dependency_reuse_binding_text(typing_dependency_env_reuse_witness_v9_tag, input_key, fingerprint, target_text)
+  let witness_text = typing_dependency_reuse_binding_text(typing_dependency_env_reuse_witness_v10_tag, input_key, fingerprint, target_text)
   Fs::write_file(persistent_typing_dependency_env_reuse_eligibility_path(fingerprint), witness_text)
 }
 
@@ -961,7 +961,7 @@ export fn load_typing_dependency_env_reuse_target(path: String, input_key: Strin
   if !Fs::exists(sidecar_path) {
     None
   } else {
-    match parse_typing_dependency_reuse_binding(Fs::read_file(sidecar_path), typing_dependency_env_reuse_alias_v9_tag) {
+    match parse_typing_dependency_reuse_binding(Fs::read_file(sidecar_path), typing_dependency_env_reuse_alias_v10_tag) {
       Some((alias_input_key, target_fingerprint, target_text)) =>
       if alias_input_key != input_key {
         None
@@ -994,7 +994,7 @@ export fn load_typing_dependency_env_reuse_target(path: String, input_key: Strin
 }
 
 export fn write_typing_dependency_env_reuse_sidecar(input_key: String, target_fingerprint: String, target_text: String) -> Unit with Env + Fs {
-  let alias_text = typing_dependency_reuse_binding_text(typing_dependency_env_reuse_alias_v9_tag, input_key, target_fingerprint, target_text)
+  let alias_text = typing_dependency_reuse_binding_text(typing_dependency_env_reuse_alias_v10_tag, input_key, target_fingerprint, target_text)
   Fs::write_file(persistent_typing_dependency_env_reuse_sidecar_path(input_key), alias_text)
 }
 

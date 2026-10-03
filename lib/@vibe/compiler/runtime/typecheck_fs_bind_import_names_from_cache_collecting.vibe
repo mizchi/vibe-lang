@@ -5,7 +5,7 @@ import @vibe/compiler/cache {
 }
 
 import @vibe/core {
-  array_empty
+  array_empty, struct MutMap
 }
 
 import @vibe/ast {
@@ -48,9 +48,11 @@ import @vibe/compiler/core {
   env_lookup_flat,
   env_preserve_type_definition_origins,
   env_selectable_type_defs,
+  env_show_wrapper_facts,
   env_trait_def_names_into,
   env_type_defs,
   env_value_binding,
+  env_with_show_wrapper_facts,
   find_typedef,
   is_alias_constructor,
   is_builtin_iterator_serialized_boundary_path,
@@ -134,7 +136,8 @@ struct DependencyInterfaceView {
   traits: Array[String];
   upper_slots: Array[Int];
   declared_names: Array[String];
-  markers: Array[(String, Type)]
+  markers: Array[(String, Type)];
+  show_facts: Option[(Array[String], Array[String])]
 }
 
 /// Owned by one compile or an explicitly published in-memory snapshot.
@@ -177,7 +180,8 @@ fn dependency_interface_view(env: TypeEnv) -> DependencyInterfaceView {
     traits,
     upper_slots,
     declared_names,
-    markers: type_reference_markers(env)
+    markers: type_reference_markers(env),
+    show_facts: env_show_wrapper_facts(env)
   }
 }
 
@@ -356,6 +360,9 @@ fn prepend_dependency_trait_nodes(dep_env: TypeEnv, mappings: Array[(String, Str
         done = true
       },
       EnvBind(_, _, rest) => {
+        cur = rest
+      },
+      EnvShowWrappers(_, _, rest) => {
         cur = rest
       },
       EnvMutCell(_, _, rest) => {
@@ -758,6 +765,9 @@ fn foreign_trait_impl_collisions(dep_env: TypeEnv, mappings: Array[(String, Stri
         EnvBind(_, _, rest) => {
           cur = rest
         },
+        EnvShowWrappers(_, _, rest) => {
+          cur = rest
+        },
         EnvMutCell(_, _, rest) => {
           cur = rest
         },
@@ -801,6 +811,9 @@ fn type_reference_markers(env: TypeEnv) -> Array[(String, Type)] {
         } else {
           ()
         }
+        cur = rest
+      },
+      EnvShowWrappers(_, _, rest) => {
         cur = rest
       },
       EnvMutCell(_, _, rest) => {
@@ -1551,6 +1564,7 @@ fn note_trait_identities(dep_env: TypeEnv, mappings: Array[(String, String)], ra
           None => (array_empty(), "", rest)
         },
         EnvBind(_, _, rest) => (array_empty(), "", rest),
+        EnvShowWrappers(_, _, rest) => (array_empty(), "", rest),
         EnvMutCell(_, _, rest) => (array_empty(), "", rest),
         EnvTypeDefs(_, _, rest) => (array_empty(), "", rest),
         EnvFlat(_) => (array_empty(), "", EnvEmpty),
@@ -1652,6 +1666,9 @@ export fn bind_type_reference_definitions(value_surface: Array[String], publicat
         cur = rest
       },
       EnvBind(_, _, rest) => {
+        cur = rest
+      },
+      EnvShowWrappers(_, _, rest) => {
         cur = rest
       },
       EnvMutCell(_, _, rest) => {
@@ -2128,6 +2145,34 @@ export fn build_import_envs_from_published_cache(stmts: Array[Stmt], base_dir: S
 }
 
 fn build_import_envs_using_interfaces(stmts: Array[Stmt], base_dir: String, cache: Array[(String, TypeEnv)], interfaces: DependencyInterfaceSet, unresolved: Array[String]) -> (TypeEnv, TypeEnv) with Env {
+  let show_status: MutMap[String, Int] = MutMap::new_string()
+  let show_names: Array[String] = []
+  let select_show_facts = (resolved: String, names: Array[ImportItem]) -> {
+    let facts = match dependency_interface_lookup(interfaces, resolved) {
+      Some(view) => view.show_facts,
+      None => None
+    }
+    for item in names {
+      let bound = match item.alias {
+        Some(name) => name,
+        None => item.name
+      }
+      let status = match facts {
+        Some((wrappers, unknown)) => if contains_str(wrappers, item.name) {
+          1
+        } else {
+          if contains_str(unknown, item.name) {
+            2
+          } else {
+            0
+          }
+        },
+        None => 2
+      }
+      MutMap::set(show_status, bound, status)
+      Array::push(show_names, bound)
+    }
+  }
   let trait_claims = array_empty()
   let local_types = local_declared_type_names(stmts)
   // #3036: the type names this module's imports bring in, with the
@@ -2140,13 +2185,25 @@ fn build_import_envs_using_interfaces(stmts: Array[Stmt], base_dir: String, cach
     } else {
       let (next_local, next_surface) = match Array::get(stmts, i) {
         SImport(raw_path, names) => if is_builtin_iterator_serialized_boundary_path(raw_path) {
+          // This serialized boundary supplies no dependency publication. Keep
+          // its candidates unknown even when another import has precise facts.
+          for item in names {
+            let bound = match item.alias {
+              Some(name) => name,
+              None => item.name
+            }
+            MutMap::set(show_status, bound, 2)
+            Array::push(show_names, bound)
+          }
           (local_acc, surface_acc)
         } else {
           let resolved = resolve_cached_import_path(base_dir, raw_path, cache)
+          select_show_facts(resolved, names)
           (bind_import_names_from_cache_collecting(local_acc, resolved, raw_path, names, names, interfaces, unresolved, trait_claims, false, local_types, seen_types), surface_acc)
         },
         SReExport(raw_path, names) => {
           let resolved = resolve_cached_import_path(base_dir, raw_path, cache)
+          select_show_facts(resolved, names)
           let local_declarations = reexport_items_with_alias(names, false)
           let surface_declarations = reexport_items_with_alias(names, true)
           let carried = note_reexport_surface_identities(resolved, raw_path, surface_declarations, interfaces, seen_types, unresolved)
@@ -2157,7 +2214,21 @@ fn build_import_envs_using_interfaces(stmts: Array[Stmt], base_dir: String, cach
       go(i + 1, next_local, next_surface)
     }
   }
-  go(0, EnvEmpty, EnvEmpty)
+  let (local_env, surface_env) = go(0, EnvEmpty, EnvEmpty)
+  let wrappers: Array[String] = []
+  let unknown: Array[String] = []
+  for name in show_names {
+    match MutMap::get(show_status, name) {
+      Some(1) => Array::push(wrappers, name),
+      Some(2) => Array::push(unknown, name),
+      _ => ()
+    }
+    MutMap::set(show_status, name, 0)
+  }
+  match local_env {
+    EnvEmpty => (local_env, surface_env),
+    _ => (env_with_show_wrapper_facts(local_env, wrappers, unknown), surface_env)
+  }
 }
 
 fn build_import_env_collecting(stmts: Array[Stmt], base_dir: String, cache: Array[(String, TypeEnv)], unresolved: Array[String]) -> TypeEnv with Env {

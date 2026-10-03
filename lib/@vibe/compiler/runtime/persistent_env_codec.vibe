@@ -422,8 +422,24 @@ fn write_value_bindings(out: CacheTextWriter, items: Array[(String, EnvValueBind
   cache_push(out, "]")
 }
 
+/// Bind both known and unavailable-name rows to the exact serialized facts.
+/// A damaged empty/nonempty distinction must not become a trusted empty set.
+fn show_wrapper_facts_digest(wrappers: Array[String], unknown: Array[String]) -> String {
+  let out = cache_text_writer()
+  write_string_array(out, wrappers)
+  write_string_array(out, unknown)
+  compact_string_fingerprint(String::join(out.parts, ""))
+}
+
 fn write_type_env(out: CacheTextWriter, env: TypeEnv) -> Unit {
   match env {
+    EnvShowWrappers(wrappers, unknown, rest) => {
+      cache_push(out, "H")
+      write_string_array(out, wrappers)
+      write_string_array(out, unknown)
+      cache_segment(out, show_wrapper_facts_digest(wrappers, unknown))
+      write_type_env(out, rest)
+    },
     EnvEmpty => cache_push(out, "0"),
     EnvBind(name, binding, rest) => {
       cache_push(out, "B")
@@ -1016,6 +1032,16 @@ fn parse_persistent_type_env_payload(text: String, pos: Int) -> (TypeEnv, Int) w
     throw("invalid persistent type env")
   } else {
     match String::char_code_at(text, pos) {
+      'H' => {
+        let (wrappers, after_wrappers) = parse_string_array(text, pos + 1)
+        let (unknown, after_unknown) = parse_string_array(text, after_wrappers)
+        let (digest, after_digest) = parse_segment(text, after_unknown)
+        if digest != show_wrapper_facts_digest(wrappers, unknown) {
+          throw("invalid persistent Show-wrapper facts digest")
+        }
+        let (rest, next) = parse_persistent_type_env_payload(text, after_digest)
+        (EnvShowWrappers(wrappers, unknown, rest), next)
+      },
       '0' => (EnvEmpty, pos + 1),
       'B' => {
         let (name, after_name) = parse_segment(text, pos + 1)
@@ -1166,24 +1192,24 @@ export fn load_persistent_dep_list(path: String, source: String) -> Option[Array
   }
 }
 
-/// Strict v9 module-interface wire format. It preserves declaration closure,
+/// Strict v10 module-interface wire format. It preserves declaration closure,
 /// binding provenance,
 /// plus the distinct selected declaration surface. Older bytes are rejected
 /// rather than being misread as authority.
 export fn parse_persistent_type_env(text: String) -> Option[TypeEnv] with Exception {
   let normalized = normalize_persistent_cache_text(text)
-  let header = "version\t9\nenv\t"
+  let header = "version\t10\nenv\t"
   let header_len = String::length(header)
   if String::length(normalized) < header_len || normalized[0: header_len] != header {
     None
   } else {
     let (payload, after_payload) = parse_segment(normalized, header_len)
     if after_payload + 1 != String::length(normalized) || String::char_code_at(normalized, after_payload) != '\n' {
-      throw("invalid persistent type env v9 envelope")
+      throw("invalid persistent type env v10 envelope")
     } else {
       let (env, end) = parse_persistent_type_env_payload(payload, 0)
       if end != String::length(payload) {
-        throw("invalid persistent type env v9 payload")
+        throw("invalid persistent type env v10 payload")
       } else {
         Some(env)
       }
@@ -1191,8 +1217,8 @@ export fn parse_persistent_type_env(text: String) -> Option[TypeEnv] with Except
   }
 }
 
-/// Filesystem entries require the complete v10 envelope. The TypeEnv-only
-/// v9 codec below remains the worker/dependency transport representation.
+/// Filesystem entries require the complete v11 envelope. The TypeEnv-only
+/// v10 codec below remains the worker/dependency transport representation.
 export fn load_persistent_type_env(fingerprint: String) -> Option[TypeEnv] with Env + Exception + Fs {
   match load_persistent_module_cache(fingerprint) {
     Some(record) => Some(record.env),
@@ -1216,7 +1242,7 @@ export fn load_persistent_module_cache(fingerprint: String) -> Option[Persistent
 /// section. The v8 lowering codec retains its count/digest/end-marker checks.
 export fn persistent_module_cache_text(env: TypeEnv, lowering: Option[(Array[Int], Array[Int], Array[String])]) -> String {
   let out = cache_text_writer()
-  cache_push(out, "version\t10\nenv\t")
+  cache_push(out, "version\t11\nenv\t")
   write_type_env_segment(out, env)
   cache_push(out, "\n")
   match lowering {
@@ -1231,7 +1257,7 @@ export fn persistent_module_cache_text(env: TypeEnv, lowering: Option[(Array[Int
 export fn parse_persistent_module_cache(text: String) -> Option[PersistentModuleCache] {
   handle {
     let normalized = normalize_persistent_cache_text(text)
-    let header = "version\t10\nenv\t"
+    let header = "version\t11\nenv\t"
     if !String::starts_with(normalized, header) {
       None
     } else {
@@ -1263,7 +1289,7 @@ export fn parse_persistent_module_cache(text: String) -> Option[PersistentModule
 
 export fn persistent_type_env_cache_text(env: TypeEnv) -> String {
   let out = cache_text_writer()
-  cache_push(out, "version\t9\nenv\t")
+  cache_push(out, "version\t10\nenv\t")
   write_type_env_segment(out, env)
   cache_push(out, "\n")
   String::join(out.parts, "")

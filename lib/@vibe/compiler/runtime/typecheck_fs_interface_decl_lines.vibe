@@ -17,6 +17,7 @@ import @vibe/compiler/checker {
   aggregate_export_names,
   collect_builtin_shadowing_names,
   export_local_nonvalue_kind,
+  irc_show_wrapper_facts,
   is_explicit_builtin_declaration,
   unresolved_aggregate_export_name,
   unresolved_export_message
@@ -55,6 +56,7 @@ import @vibe/compiler/core {
   env_trait_def_names_into,
   env_type_defs,
   env_value_binding,
+  env_with_show_wrapper_facts,
   is_contract_ext
 }
 
@@ -642,6 +644,7 @@ fn restrict_env_to_export_surface_with_defs(value_surface: Array[String], trait_
     // #1262: `let mut` escape markers are function-local, so a module's export
     // surface never carries one. Drop it with its scope rather than inventing
     // a rule for publishing mutability across a boundary.
+    EnvShowWrappers(_, _, rest) => restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs, members, strict),
     EnvMutCell(_, _, rest) => restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs, members, strict),
     EnvTraitDef(name, supers, is_auto, methods, rest, params, method_gens) => {
       let restricted = restrict_env_to_export_surface_with_defs(value_surface, trait_surface, type_surface, rest, all_defs, members, strict)
@@ -768,6 +771,7 @@ fn append_env_tail(head: TypeEnv, tail: TypeEnv) -> TypeEnv {
     EnvTraitImpl(name, target, rest) => EnvTraitImpl(name, target, append_env_tail(rest, tail)),
     EnvTraitImplGen(name, params, bounds, target, rest) => EnvTraitImplGen(name, params, bounds, target, append_env_tail(rest, tail)),
     EnvTypeDefs(defs, selectable, rest) => EnvTypeDefs(defs, selectable, append_env_tail(rest, tail)),
+    EnvShowWrappers(wrappers, unknown, rest) => EnvShowWrappers(wrappers, unknown, append_env_tail(rest, tail)),
     EnvMutCell(name, escapes, rest) => EnvMutCell(name, escapes, append_env_tail(rest, tail)),
     EnvFlat(bindings) => {
       let mut out = tail
@@ -851,7 +855,24 @@ fn checked_module_public_env_publishing(stmts: Array[Stmt], full_checked_env: Ty
     Some(name) => throw(unresolved_export_message(name)),
     None => ()
   }
-  published_env
+  let (wrappers, unknown) = irc_show_wrapper_facts(stmts, full_checked_env)
+  let exported_wrappers: Array[String] = []
+  let exported_unknown: Array[String] = []
+  for name in wrappers {
+    if contains_str(value_surface, name) {
+      Array::push(exported_wrappers, name)
+    } else {
+      ()
+    }
+  }
+  for name in unknown {
+    if contains_str(value_surface, name) {
+      Array::push(exported_unknown, name)
+    } else {
+      ()
+    }
+  }
+  env_with_show_wrapper_facts(published_env, exported_wrappers, exported_unknown)
 }
 
 export fn checked_module_public_env(stmts: Array[Stmt], full_checked_env: TypeEnv) -> TypeEnv with Exception {
@@ -1675,7 +1696,7 @@ export fn incremental_invalidation_trace_json(entry_path: String, run_nonce: Str
       None => throw(String::concat("incremental invalidation trace: missing complete persistent TypeEnv transport observation for ", path))
     }
     StringBuilder::push(out, incremental_trace_json_string(persistent_type_env_transport_fingerprint))
-    StringBuilder::push(out, ",\"persistent_type_env_transport_fingerprint_kind\":\"compact_string_fingerprint(persistent_type_env_cache_text:v9 complete TypeEnv transport only; not CheckedProgram, typed IR, exported interface, cache key, or reuse decision)\",\"decision\":")
+    StringBuilder::push(out, ",\"persistent_type_env_transport_fingerprint_kind\":\"compact_string_fingerprint(persistent_type_env_cache_text:v10 complete TypeEnv transport only; not CheckedProgram, typed IR, exported interface, cache key, or reuse decision)\",\"decision\":")
     StringBuilder::push(out, incremental_trace_json_string(decision))
     StringBuilder::push(out, "}")
     i = i + 1

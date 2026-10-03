@@ -40,6 +40,7 @@ import @vibe/compiler/core {
   TypeEnv,
   TypeExpr,
   env_cache,
+  env_show_wrapper_facts,
   expr_child_at,
   expr_children_pop,
   expr_children_push,
@@ -1579,6 +1580,112 @@ fn irc_is_show_shim_value(v: Expr) -> Bool {
       false
     },
     _ => false
+  }
+}
+
+/// Classify source declarations and the selected dependency publication together.
+/// Unknown dependency facts remain unknown when this module re-exports them.
+/// Local declarations override imported spellings, including ordinary functions.
+export fn irc_show_wrapper_facts(stmts: Array[Stmt], env: TypeEnv) -> (Array[String], Array[String]) {
+  let status: MutMap[String, Int] = MutMap::new_string()
+  let candidates: Array[String] = []
+  match env_show_wrapper_facts(env) {
+    Some((wrappers, unknown)) => {
+      for name in wrappers {
+        MutMap::set(status, name, 1)
+        Array::push(candidates, name)
+      }
+      for name in unknown {
+        MutMap::set(status, name, 2)
+        Array::push(candidates, name)
+      }
+    },
+    None => for statement in stmts {
+      match statement {
+        SImport(_, items) => {
+          let names: Array[String] = []
+          irc_push_bound_import_names(items, names)
+          for name in names {
+            MutMap::set(status, name, 2)
+            Array::push(candidates, name)
+          }
+        },
+        SReExport(_, items) => {
+          let names: Array[String] = []
+          irc_push_bound_import_names(items, names)
+          for name in names {
+            MutMap::set(status, name, 2)
+            Array::push(candidates, name)
+          }
+        },
+        _ => ()
+      }
+    }
+  }
+  for statement in stmts {
+    match statement {
+      SLet(_, _, name, _, value) => {
+        let wrapper = irc_is_show_shim_value(value)
+        if wrapper || MutMap::get(status, name) != None {
+          MutMap::set(status, name, if wrapper {
+            1
+          } else {
+            0
+          })
+        } else {
+          ()
+        }
+        if wrapper {
+          Array::push(candidates, name)
+        } else {
+          ()
+        }
+      },
+      SFnDecl(_, name, value, _, _) => {
+        let wrapper = irc_is_show_shim_value(value)
+        if wrapper || MutMap::get(status, name) != None {
+          MutMap::set(status, name, if wrapper {
+            1
+          } else {
+            0
+          })
+        } else {
+          ()
+        }
+        if wrapper {
+          Array::push(candidates, name)
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+  }
+  let wrappers: Array[String] = []
+  let unknown: Array[String] = []
+  // Taking a candidate clears its status, so repeated imports/declarations do
+  // not duplicate publication rows. The map belongs only to this query.
+  for name in candidates {
+    match MutMap::get(status, name) {
+      Some(1) => Array::push(wrappers, name),
+      Some(2) => Array::push(unknown, name),
+      _ => ()
+    }
+    MutMap::set(status, name, 0)
+  }
+  (wrappers, unknown)
+}
+
+export fn irc_show_shim_names_with_env(stmts: Array[Stmt], env: TypeEnv) -> Array[String] {
+  match env_show_wrapper_facts(env) {
+    None => irc_show_shim_names(stmts),
+    Some(_) => {
+      let (wrappers, unknown) = irc_show_wrapper_facts(stmts, env)
+      for name in unknown {
+        Array::push(wrappers, name)
+      }
+      wrappers
+    }
   }
 }
 
