@@ -1,12 +1,14 @@
 //# Imports
 
-// #2523: `Eq` and `Ord` are MARKER traits -- `lib/@vibe/builtin/builtin_traits.vibe`
-// declares `export trait Eq` with no methods -- so a `[T: Eq]` bound's `==` has
-// no dictionary to dispatch through and lowers to the builtin comparison. That
-// is correct for the five scalars the markers register impls for, and REFERENCE
-// identity for anything else.
+// #2523: a MARKER comparison trait -- an `Eq` or `Ord` declared with no
+// methods -- gives a `[T: Eq]` bound's `==` no dictionary to dispatch through,
+// so it lowers to the builtin comparison. That is correct for the scalars that
+// are tagged immediates or byte strings (`Int`, `Bool`, `Char`, `String`), and
+// REFERENCE identity for anything else. The builtin `Eq` is no longer a marker
+// (the checker registers it with `equals`), so these rows declare their own;
+// the prelude's `Ord` still is one.
 //
-// Both ways a program could reach for it ended badly. `derive (Eq)` alone does
+// Both ways a program could reach for it ended badly. `derive (Eq)` alone did
 // not satisfy the bound (`no impl `Eq` for `Pt``); adding `impl Eq for Pt`
 // replaced that error with a wrong answer. Measured on the production
 // linear/RC lane with `fn bare[T: Eq](x: T, y: T) { x == y }`:
@@ -19,8 +21,12 @@
 //
 // What is refused is the BOUND at this instantiation, not the impl: the impl
 // stays a legal declaration (a marker impl can be a tag) and the concrete site
-// keeps answering by content. Giving `Eq` a real method makes it non-marker,
-// dispatches through a witness dictionary, and deletes this guard (ADR-0097).
+// keeps answering by content. Giving `Eq` an `equals(Self, Self) -> Bool`
+// method makes it dispatch through a witness dictionary (ADR-0097); a method of
+// any other name stands this guard down without making `==` dispatch.
+//
+// #3327: a bound that EXTENDS a marker (`trait Key: Eq {}`) is judged as that
+// marker. It used to be read by its own name only and compared by reference.
 
 import @vibe/compiler/checker {
   check_program
@@ -47,6 +53,10 @@ fn rejects(src: String) -> Bool {
 /// also has one, and a bounded generic that compares.
 let eq_prelude = "trait Eq\nimpl Eq for Int\nimpl Eq for String\nstruct Pt {\n  v: Int\n}\nimpl Eq for Pt\nfn bare[T: Eq](x: T, y: T) -> Bool {\n  x == y\n}\n"
 
+/// #3327: the same marker `Eq`, reached only through a methodless subtrait
+/// `Key`, with impls of both at the scalars, at `Double` and at a struct.
+let key_prelude = "trait Eq\ntrait Key: Eq\nimpl Eq for Int\nimpl Key for Int\nimpl Eq for String\nimpl Key for String\nimpl Eq for Double\nimpl Key for Double\nstruct Pt {\n  v: Int\n}\nimpl Eq for Pt\nimpl Key for Pt\nfn same[T: Key](x: T, y: T) -> Bool {\n  x == y\n}\n"
+
 //# Tests
 
 test "a marker Eq bound at a declared struct is refused" {
@@ -57,7 +67,7 @@ test "the refusal names the edit, not just the missing impl" {
   let msg = diags_of(String::concat(eq_prelude, "let r = bare(Pt::{ v: 1 }, Pt::{ v: 1 })\n"))
   inspect(String::contains(msg, "is a marker trait (declared with no methods)"), "true")
   inspect(String::contains(msg, "compare `Pt` by REFERENCE"), "true")
-  inspect(String::contains(msg, "Give `Eq` at least one method"), "true")
+  inspect(String::contains(msg, "Give `Eq` an `equals(Self, Self) -> Bool` method"), "true")
 }
 
 test "the same bound at a scalar is accepted" {
@@ -112,5 +122,84 @@ test "a non-comparison marker trait is untouched" {
   // `Sealed` is a tag: its bound never lowers to `==` or `<`, so nothing about
   // it can be silently wrong and this guard has no business refusing it.
   let src = "trait Sealed\nstruct Pt {\n  v: Int\n}\nimpl Sealed for Pt\nfn tagged[T: Sealed](x: T) -> Int {\n  0\n}\nlet r = tagged(Pt::{ v: 1 })\n"
+  inspect(rejects(src), "false")
+}
+
+test "an Ord refusal does not advise giving Ord a method" {
+  // `<` on an erased formal has no witness to dispatch through, so a method on
+  // the program's `Ord` would stand the guard down and leave `<` comparing by
+  // reference (#3327).
+  let src = "trait Ord\nimpl Ord for Int\nstruct Token {\n  value: Int\n}\nimpl Ord for Token\nfn smaller[T: Ord](a: T, b: T) -> Bool {\n  a < b\n}\nlet r = smaller(Token::{ value: 1 }, Token::{ value: 2 })\n"
+  let msg = diags_of(src)
+  inspect(String::contains(msg, "giving `Ord` a method would not help"), "true")
+  inspect(String::contains(msg, "at least one method"), "false")
+}
+
+test "a marker Eq bound at a struct with no impl does not claim one is declared" {
+  let src = "trait Eq\nstruct Pt {\n  v: Int\n}\nfn bare[T: Eq](x: T, y: T) -> Bool {\n  x == y\n}\nlet r = bare(Pt::{ v: 1 }, Pt::{ v: 1 })\n"
+  let msg = diags_of(src)
+  inspect(String::contains(msg, "declaring `impl Eq for Pt` would not help"), "true")
+  inspect(String::contains(msg, "IS declared"), "false")
+}
+
+// #3327: a bound that EXTENDS a marker comparison trait. Measured on main at
+// 5f4de5023, every refused shape below checked clean and answered `false` for
+// two equal values at run time.
+test "a subtrait of a marker Eq is refused at a declared struct" {
+  let msg = diags_of(String::concat(key_prelude, "let r = same(Pt::{ v: 1 }, Pt::{ v: 1 })\n"))
+  inspect(String::contains(msg, "no impl `Eq` for `Pt` (`Key` extends `Eq`)"), "true")
+  inspect(String::contains(msg, "compare `Pt` by REFERENCE"), "true")
+  inspect(String::contains(msg, "Give `Eq` an `equals(Self, Self) -> Bool` method"), "true")
+}
+
+test "a subtrait of a marker Eq is refused at Double" {
+  inspect(rejects(String::concat(key_prelude, "let r = same(1.5, 1.5)\n")), "true")
+}
+
+test "a subtrait of a marker Eq is accepted at a by-value scalar" {
+  inspect(rejects(String::concat(key_prelude, "let r = same(1, 1)\n")), "false")
+  inspect(rejects(String::concat(key_prelude, "let r = same(\"a\", \"a\")\n")), "false")
+}
+
+test "the supertrait chain is followed" {
+  let src = "trait Eq\ntrait A: Eq\ntrait B: A\nstruct Pt {\n  v: Int\n}\nimpl Eq for Pt\nimpl A for Pt\nimpl B for Pt\nfn same[T: B](x: T, y: T) -> Bool {\n  x == y\n}\nlet r = same(Pt::{ v: 1 }, Pt::{ v: 1 })\n"
+  inspect(String::contains(diags_of(src), "no impl `Eq` for `Pt` (`B` extends `Eq`)"), "true")
+}
+
+test "a method of the subtrait's own does not make its marker parent compare" {
+  // `KeyDict` carries `key_of` and nothing `==` can dispatch through, so the
+  // comparison still lowers to the builtin one.
+  let src = "trait Eq\ntrait Key: Eq {\n  key_of(Self) -> Int\n}\nstruct Pt {\n  v: Int\n}\nimpl Eq for Pt\nimpl Key for Pt {\n  key_of(a: Pt) -> Int {\n    a.v\n  }\n}\nfn same[T: Key](x: T, y: T) -> Bool {\n  x == y\n}\nlet r = same(Pt::{ v: 1 }, Pt::{ v: 1 })\n"
+  inspect(rejects(src), "true")
+}
+
+test "a subtrait that declares equals(Self, Self) -> Bool is accepted" {
+  // `==` dispatches through that method -- measured correct before #3327 --
+  // so the marker parent is not what compares.
+  let src = "trait Eq\ntrait Key: Eq {\n  equals(Self, Self) -> Bool\n}\nstruct Pt {\n  v: Int\n}\nimpl Eq for Pt\nimpl Key for Pt {\n  equals(a: Pt, b: Pt) -> Bool {\n    a.v == b.v\n  }\n}\nfn same[T: Key](x: T, y: T) -> Bool {\n  x == y\n}\nlet r = same(Pt::{ v: 1 }, Pt::{ v: 1 })\n"
+  inspect(rejects(src), "false")
+}
+
+test "an equals of another shape on the subtrait is no witness" {
+  // The desugar dispatches only through `(Self, Self) -> Bool`
+  // (fixtures/eq_bound_witness_shape_test.vibe).
+  let src = "trait Eq\ntrait Key: Eq {\n  equals(Int, Int) -> Bool\n}\nstruct Pt {\n  v: Int\n}\nimpl Eq for Pt\nimpl Key for Pt {\n  equals(a: Int, b: Int) -> Bool {\n    true\n  }\n}\nfn same[T: Key](x: T, y: T) -> Bool {\n  x == y\n}\nlet r = same(Pt::{ v: 1 }, Pt::{ v: 1 })\n"
+  inspect(rejects(src), "true")
+}
+
+test "a subtrait of the builtin Eq is untouched" {
+  // The builtin `Eq` carries `equals`, and a methodless subtrait dispatches
+  // through it (fixtures/eq_bound_inherited_methodless_witness_test.vibe).
+  let src = "trait Key: Eq\nstruct Pt {\n  v: Int\n} derive (Eq)\nimpl Key for Pt\nfn same[T: Key](x: T, y: T) -> Bool {\n  x == y\n}\nlet r = same(Pt::{ v: 1 }, Pt::{ v: 1 })\n"
+  inspect(rejects(src), "false")
+}
+
+test "a subtrait of the prelude's marker Ord is refused at a struct" {
+  let src = "trait Ordered: Ord\nstruct Token {\n  value: Int\n}\nimpl Ord for Token\nimpl Ordered for Token\nfn keep[T: Ordered](a: T) -> T {\n  a\n}\nlet r = keep(Token::{ value: 1 })\n"
+  inspect(String::contains(diags_of(src), "no impl `Ord` for `Token` (`Ordered` extends `Ord`)"), "true")
+}
+
+test "a subtrait of a non-comparison marker is untouched" {
+  let src = "trait Sealed\ntrait Tagged: Sealed\nstruct Pt {\n  v: Int\n}\nimpl Sealed for Pt\nimpl Tagged for Pt\nfn tagged[T: Tagged](x: T) -> Int {\n  0\n}\nlet r = tagged(Pt::{ v: 1 })\n"
   inspect(rejects(src), "false")
 }

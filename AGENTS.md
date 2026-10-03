@@ -31,14 +31,22 @@ diagnostic leads with **the edit that fixes it**, not with internal terms
 structural `==` in every context (ADR-0097, #1526 — **no silent reference
 equality is left**: where the complete operand type does not reach the
 lowering, the comparison is refused with the edit rather than answered by
-identity (#3297, below). One measured exception remains (#3327): a program
-that declares its own marker `trait Eq {}` and bounds a formal by a subtrait
-of it (`trait Key: Eq {}`, `[T: Key]`) compares by reference, because the
-#2612 guard recognises a marker comparison bound only when it is spelled
-`Eq` / `Ord` / `Add`; two equal `Pt` values answer `false`. The builtin `Eq` has no
-such gap: an `Eq` bound anywhere in the program, a `test` block included,
-injects its method, and a methodless subtrait of it (`trait Key: Eq {}`)
-dispatches through the witness (#3312). Bare, through a name, inside a tuple,
+identity (#3297, below). A bound that extends a program's own marker
+`trait Eq {}` (`trait Key: Eq {}`, `[T: Key]`) is refused at a non-scalar
+instantiation exactly like `[T: Eq]` itself (#3327): the #2612 guard follows
+supertraits, so a chain or a subtrait of the prelude's marker `Ord` is judged
+as the marker it extends, and only a subtrait that declares `equals(Self,
+Self) -> Bool` itself is exempt, because `==` dispatches through that. The
+builtin `Eq` has no such refusal: an `Eq` bound anywhere in the program, a
+`test` block included, injects its method, and a methodless subtrait of it
+(`trait Key: Eq {}`) dispatches through the witness (#3312). Three measured
+exceptions remain, each a bound the guard does not judge whose comparison
+reaches no witness, and each answers by reference after a clean
+`vibe check` (measured with #3327's fix): a program `Eq` whose only method is
+not `equals(Self, Self) -> Bool`, a program `Ord` given any method (`<` under
+`[T: Ord]`), and a marker `Eq` bound on a generic impl's type parameter
+(`impl [T: Eq] Same for Box[T]`), whose bound is satisfied without consulting
+the guard. Bare, through a name, inside a tuple,
 inside a struct, nested arrays, `Array[String]` / `Array[(Int, Int)]` /
 `Array[Struct]`, through a function's return value, empty-literal bindings,
 and through a parameterized type alias (`type AL[V] = Array[V]` as `AL[Int]`,
@@ -209,10 +217,18 @@ gives ``no impl `Eq` for `Array[Int]` ``).
 **The guard keys on markers**: it tests `trait_is_marker`, so the
 method-bearing `Eq` (#2523) dispatches through a real witness dictionary and
 the guard does not fire for it, while `Ord` and a program's own marker `Eq`
-still trip it.
+still trip it — and so does any bound that extends one of them through its
+supertraits (#3327, `inherited_marker_cmp_unsound`; the message names the
+subtrait: ``no impl `Eq` for `Pt` (`Key` extends `Eq`)``). The edit it names
+for `Eq` is an `equals(Self, Self) -> Bool` method, not "a method": a program
+`Eq` with only some other method stops being a marker yet `==` still
+compares by reference, and `Ord`'s `<` has no witness to dispatch through at
+all.
 `fixtures/structural_eq_contexts_test.vibe`,
-`lib/@vibe/compiler/tests/marker_cmp_bound_test.vibe` and
-`fixtures/err_type_{eq,ord}_marker_bound_struct.vibe` hold the regression.
+`lib/@vibe/compiler/tests/marker_cmp_bound_test.vibe`,
+`fixtures/err_type_{eq,ord}_marker_bound_struct.vibe`,
+`fixtures/err_type_{eq_marker,ord}_subtrait_*.vibe` and
+`fixtures/eq_marker_subtrait_bound_accepted_test.vibe` hold the regression.
 **A nested binder's bound is threaded too** (#2737, #2778). `build_gens` /
 `thread_dict_params` thread a witness dictionary for a top-level `fn` / `let`
 generic. `rewrite_expr`'s `EFn` arm used to rebuild a nested lambda with its

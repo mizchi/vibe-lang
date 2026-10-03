@@ -86,7 +86,7 @@ import ./checker.vibe {
 }
 
 import @vibe/ast {
-  type_param_arity, type_param_name
+  trait_ref_name, type_param_arity, type_param_name
 }
 
 import ./checked_expression_structure_core.vibe {
@@ -132,9 +132,18 @@ import ./checker_stmt_stmts_with_binders.vibe {
 /// REFERENCE equality on `Array` / `Bytes`: a bare `[1, 2] == [1, 2]` is
 /// `false`). Say so, and name the edit that fixes it.
 ///
-/// Returns "" when no impl for this trait mentions the type's constructor, i.e.
-/// when "no impl" is the whole truth.
-fn unsatisfied_bound_hint(env: TypeEnv, trait_name: String, resolved: Type) -> String {
+/// Returns "" when "no impl" is the whole truth: no impl for this trait
+/// mentions the type's constructor, and the bound is not a comparison marker
+/// refused at this type.
+///
+/// #3327: the edit for a comparison marker is named by `marker_cmp_edit`, not
+/// "give it at least one method". That advice was a trap for `Eq` and `Ord`:
+/// measured on main at 5f4de5023, a program `Eq` whose one method is
+/// `tag(Self) -> Int` stood the guard down and `[T: Eq]` then answered `false`
+/// for two equal `Pt`, and an `Ord` with a method answered `true` for
+/// `smaller(2, 1)` -- `==` dispatches only through `equals(Self, Self) ->
+/// Bool`, and `<` through nothing.
+fn unsatisfied_bound_hint(env: TypeEnv, s: Subst, trait_name: String, resolved: Type) -> String {
   if trait_reference_display(trait_name) == "Add" && marker_cmp_bound_is_unsound(env, trait_name, resolved) {
     // #3158 review: the `+` twin of the comparison messages below.
     let display = trait_reference_display(trait_name)
@@ -152,7 +161,11 @@ fn unsatisfied_bound_hint(env: TypeEnv, trait_name: String, resolved: Type) -> S
     let declared = String::concat(": an `impl ", String::concat(display, String::concat(" for ", String::concat(ctor, "` IS declared, but `"))))
     let why = String::concat(display, String::concat("` is a marker trait (declared with no methods) so it dispatches to the builtin `==` / `<`, and those compare `", String::concat(ctor, "` by REFERENCE")))
     let cost = " -- honouring the impl would make the comparison silently wrong: two equal values answer `false`, and one value compared with itself answers `true`"
-    let edit = String::concat(". Give `", String::concat(display, "` at least one method so the impl dispatches through the witness dictionary, or drop the bound"))
+    let edit = if marker_cmp_bound_is_unsound(env, trait_name, resolved) {
+      marker_cmp_edit(display, type_to_string(resolved))
+    } else {
+      String::concat(". Give `", String::concat(display, "` at least one method so the impl dispatches through the witness dictionary, or drop the bound"))
+    }
     String::concat(declared, String::concat(why, String::concat(cost, edit)))
   } else if marker_cmp_bound_is_unsound(env, trait_name, resolved) {
     // #2895: the branch above can NEVER fire for a primitive.
@@ -163,15 +176,33 @@ fn unsatisfied_bound_hint(env: TypeEnv, trait_name: String, resolved: Type) -> S
     // the prelude DOES declare `impl Eq for Double`.
     //
     // The edit differs from the struct case too. Nobody can add a method to
-    // the prelude's `Eq` from their own program, so the actionable advice is
+    // the prelude's `Ord` from their own program, so the actionable advice is
     // to compare at the concrete type instead of through the bound.
+    //
+    // #3327: claim only what holds. This branch is also reached by a struct
+    // with no `impl Eq` written for it -- `[T: Eq]` at a struct with no impl
+    // at all, or at one whose only impl is a subtrait's (`impl Key for Pt`,
+    // which satisfies `Eq` through `trait Key: Eq`) -- and both used to be
+    // told "an `impl Eq for Pt` IS declared by the prelude".
     let display = trait_reference_display(trait_name)
     let shown = type_to_string(resolved)
-    let declared = String::concat(": an `impl ", String::concat(display, String::concat(" for ", String::concat(shown, "` IS declared by the prelude, but `"))))
-    let why = String::concat(display, String::concat("` is a marker trait (declared with no methods) so it dispatches to the builtin `==` / `<`, and a `", String::concat(shown, "` is not a tagged immediate -- those read the BOX, not the number")))
-    let cost = " -- honouring the impl would make the comparison silently wrong: two equal values answer `false`, and `<` answers the same way in both directions"
-    let edit = String::concat(". Compare at the concrete type (take a `", String::concat(shown, "` parameter) instead of through the bound, or drop the bound"))
-    String::concat(declared, String::concat(why, String::concat(cost, edit)))
+    let ctor = type_constructor_name(resolved)
+    let declared = if type_implements_trait(env, s, resolved, trait_name) {
+      String::concat(": `", String::concat(shown, String::concat("` implements `", String::concat(display, "`, but `"))))
+    } else {
+      String::concat(": declaring `impl ", String::concat(display, String::concat(" for ", String::concat(shown, "` would not help, because `"))))
+    }
+    let why = if ctor == "" {
+      String::concat(display, String::concat("` is a marker trait (declared with no methods) so it dispatches to the builtin `==` / `<`, and a `", String::concat(shown, "` is not a tagged immediate -- those read the BOX, not the number")))
+    } else {
+      String::concat(display, String::concat("` is a marker trait (declared with no methods) so it dispatches to the builtin `==` / `<`, and those compare `", String::concat(ctor, "` by REFERENCE")))
+    }
+    let cost = if ctor == "" {
+      " -- satisfying the bound would make the comparison silently wrong: two equal values answer `false`, and `<` answers the same way in both directions"
+    } else {
+      " -- satisfying the bound would make the comparison silently wrong: two equal values answer `false`, and one value compared with itself answers `true`"
+    }
+    String::concat(declared, String::concat(why, String::concat(cost, marker_cmp_edit(display, shown))))
   } else {
     ""
   }
@@ -236,9 +267,14 @@ fn marker_cmp_is_by_value(ty: Type) -> Bool {
 /// #1503 and until now could only fire when the bound failed for some other
 /// reason.
 ///
-/// A program whose own `Eq` carries a method is not a marker, dispatches
-/// through a real witness dictionary, and is left alone -- that is the shape
-/// ADR-0097 wants, and landing it deletes this guard.
+/// A program whose own `Eq` carries a method is not a marker and is left alone.
+/// With `equals(Self, Self) -> Bool` it dispatches through a real witness
+/// dictionary -- the shape ADR-0097 wants. With only some OTHER method it does
+/// not, and `==` still compares by reference; this guard does not see that
+/// shape, which is why `marker_cmp_edit` names `equals` rather than "a method".
+///
+/// This reads the bound's own name only. A bound that EXTENDS a marker
+/// (`trait Key: Eq {}`) is judged by `inherited_marker_cmp_unsound` (#3327).
 fn marker_cmp_bound_is_unsound(env: TypeEnv, trait_bound: String, resolved: Type) -> Bool {
   let display = trait_reference_display(trait_bound)
   if display != "Eq" && display != "Ord" && display != "Add" {
@@ -249,6 +285,146 @@ fn marker_cmp_bound_is_unsound(env: TypeEnv, trait_bound: String, resolved: Type
     not(marker_add_is_by_value(resolved))
   } else {
     not(marker_cmp_is_by_value(resolved))
+  }
+}
+
+/// #3327: the comparison marker a bound EXTENDS -- an `Eq` / `Ord` / `Add`
+/// reached through its supertraits, transitively, that cannot compare or add
+/// `resolved` by value -- or "" when there is none.
+///
+/// `marker_cmp_bound_is_unsound` reads the bound's own name, so a subtrait of a
+/// marker got past it. With a program's own `trait Eq {}` and `trait Key: Eq
+/// {}`, `fn same[T: Key](x: T, y: T) { x == y }` checked clean and answered
+/// `false` for two equal `Pt`; measured on main at 5f4de5023 it answered the
+/// same through a chain (`trait B: A {}`, `trait A: Eq {}`), through a `Key`
+/// that declares a method of its own, at `Double`, with no `impl Eq for Pt` at
+/// all, and through a subtrait of the builtin marker `Ord`. Nothing the marker
+/// contributes to the subtrait's dictionary can compare by content, so `==`
+/// lowers to the builtin comparison exactly as it does under `[T: Eq]`. The
+/// walk is `bound_entails_send`'s, which judges `trait Work: Send` this way.
+///
+/// One shape is exempt: a bound whose supertrait closure declares the witness
+/// `==` dispatches through, `equals(Self, Self) -> Bool` (`trait Key: Eq {
+/// equals(Self, Self) -> Bool }`). The desugar compares through that method,
+/// and measured, it answered `true` and `false` correctly before this guard.
+fn inherited_marker_cmp_unsound(env: TypeEnv, trait_bound: String, resolved: Type) -> String {
+  let start = trait_ref_name(trait_bound)
+  let seen: Array[String] = [start]
+  let pending: Array[String] = []
+  push_trait_supers(env, start, pending)
+  let mut found = ""
+  while found == "" && Array::length(pending) > 0 {
+    let cur = Array::get(pending, Array::length(pending) - 1)
+    Array::truncate(pending, Array::length(pending) - 1)
+    let name = trait_ref_name(cur)
+    if trait_name_seen(seen, name) {
+      ()
+    } else {
+      Array::push(seen, name)
+      if marker_cmp_bound_is_unsound(env, cur, resolved) && not(trait_reference_display(cur) == "Eq" && bound_declares_self_equals(env, trait_bound)) {
+        found = cur
+      } else {
+        push_trait_supers(env, name, pending)
+      }
+    }
+  }
+  found
+}
+
+/// #3327: does `bound`, or a trait it extends, declare the `==` witness
+/// `equals(Self, Self) -> Bool`? Every `equals` in the closure must have that
+/// shape: the desugar dispatches through the first one it finds
+/// (`dtd_trait_has_self_eq_method`), so a second, wrong-shaped one is read as
+/// "no witness" rather than guessed past.
+fn bound_declares_self_equals(env: TypeEnv, bound: String) -> Bool {
+  let pending: Array[String] = [trait_ref_name(bound)]
+  let seen: Array[String] = []
+  let mut good = false
+  let mut bad = false
+  while Array::length(pending) > 0 {
+    let cur = Array::get(pending, Array::length(pending) - 1)
+    Array::truncate(pending, Array::length(pending) - 1)
+    if trait_name_seen(seen, cur) {
+      ()
+    } else {
+      Array::push(seen, cur)
+      match trait_definition(env, cur) {
+        Some((supers, methods, _, _)) => {
+          let mut i = 0
+          while i < Array::length(methods) {
+            let (mname, params, ret) = Array::get(methods, i)
+            if mname == "equals" {
+              if Array::length(params) == 2 && type_expr_is_name(Array::get(params, 0), "Self") && type_expr_is_name(Array::get(params, 1), "Self") && type_expr_is_name(ret, "Bool") {
+                good = true
+              } else {
+                bad = true
+              }
+            } else {
+              ()
+            }
+            i = i + 1
+          }
+          let mut j = 0
+          while j < Array::length(supers) {
+            Array::push(pending, trait_ref_name(Array::get(supers, j)))
+            j = j + 1
+          }
+        },
+        None => ()
+      }
+    }
+  }
+  good && not(bad)
+}
+
+fn type_expr_is_name(te: TypeExpr, name: String) -> Bool {
+  match te {
+    TyName(n) => n == name,
+    _ => false
+  }
+}
+
+fn push_trait_supers(env: TypeEnv, name: String, pending: Array[String]) -> Unit {
+  match trait_definition(env, name) {
+    Some((supers, _, _, _)) => {
+      let mut i = 0
+      while i < Array::length(supers) {
+        Array::push(pending, Array::get(supers, i))
+        i = i + 1
+      }
+    },
+    None => ()
+  }
+}
+
+fn trait_name_seen(seen: Array[String], name: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while !found && i < Array::length(seen) {
+    if Array::get(seen, i) == name {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// #3327: the edit a refused comparison-marker bound names.
+///
+/// `Eq` gets `equals(Self, Self) -> Bool` by name, because that is the only
+/// method `==` dispatches through: a program `Eq` given some other method stops
+/// being a marker, stands this guard down, and still compares by reference
+/// (measured: `false` for two equal `Pt`). `Ord` gets no "add a method" advice
+/// at all -- `<` on an erased formal has no witness to dispatch through, and an
+/// `Ord` with a method answered `true` for `smaller(2, 1)`.
+fn marker_cmp_edit(display: String, shown: String) -> String {
+  let concrete = String::concat("the concrete type (take a `", String::concat(shown, "` parameter) instead of through the bound"))
+  if display == "Eq" {
+    String::concat(". Give `Eq` an `equals(Self, Self) -> Bool` method so `==` dispatches through the witness dictionary, or compare at ", concrete)
+  } else {
+    String::concat(". Compare at ", String::concat(concrete, String::concat(", or pass the comparison in as a function: `<` has no witness to dispatch through, so giving `", String::concat(display, "` a method would not help"))))
   }
 }
 
@@ -347,13 +523,24 @@ export fn check_program_bounds(env: TypeEnv, s: Subst, defs: Array[TypeDef], err
             type_implements_trait(env, s, resolved, resolved_bound)
           }
           if resolved_bound != "" && not(sat) {
-            Array::push(errors, String::concat("no impl `", String::concat(trait_reference_display(resolved_bound), String::concat("` for `", String::concat(type_to_string(resolved), String::concat("`", unsatisfied_bound_hint(env, resolved_bound, resolved)))))))
-          } else if resolved_bound != "" && resolved_bound != "Send" && bound_entails_send(env, resolved_bound) && not(type_send_ok(env, s, defs, resolved)) {
-            // #3156 review: a bound that EXTENDS `Send` (`trait Work: Send`)
-            // counts as Send inside the generic body (`type_send_ok`), so
-            // its instantiation must be Send too -- an impl of `Work` alone
-            // does not make a type Send, since `Send` has no user impls.
-            Array::push(errors, String::concat("no impl `Send` for `", String::concat(type_to_string(resolved), String::concat("`: `", String::concat(trait_reference_display(resolved_bound), "` extends `Send`, so a type used at it must be Send -- pass a Send value (no `Array`, `Bytes`, closure or `mut` field)")))))
+            Array::push(errors, String::concat("no impl `", String::concat(trait_reference_display(resolved_bound), String::concat("` for `", String::concat(type_to_string(resolved), String::concat("`", unsatisfied_bound_hint(env, s, resolved_bound, resolved)))))))
+          } else if resolved_bound != "" && resolved_bound != "Send" {
+            if bound_entails_send(env, resolved_bound) && not(type_send_ok(env, s, defs, resolved)) {
+              // #3156 review: a bound that EXTENDS `Send` (`trait Work: Send`)
+              // counts as Send inside the generic body (`type_send_ok`), so
+              // its instantiation must be Send too -- an impl of `Work` alone
+              // does not make a type Send, since `Send` has no user impls.
+              Array::push(errors, String::concat("no impl `Send` for `", String::concat(type_to_string(resolved), String::concat("`: `", String::concat(trait_reference_display(resolved_bound), "` extends `Send`, so a type used at it must be Send -- pass a Send value (no `Array`, `Bytes`, closure or `mut` field)")))))
+            }
+            // #3327: the same for a bound that EXTENDS a comparison marker
+            // (`trait Key: Eq {}` over a program's own marker `Eq`): judged
+            // as that marker, with the marker's message.
+            let marker = inherited_marker_cmp_unsound(env, resolved_bound, resolved)
+            if marker != "" {
+              let shown_marker = trait_reference_display(marker)
+              let via = String::concat(" (`", String::concat(trait_reference_display(resolved_bound), String::concat("` extends `", String::concat(shown_marker, "`)"))))
+              Array::push(errors, String::concat("no impl `", String::concat(shown_marker, String::concat("` for `", String::concat(type_to_string(resolved), String::concat("`", String::concat(via, unsatisfied_bound_hint(env, s, marker, resolved))))))))
+            }
           }
           bi = bi + 1
         }

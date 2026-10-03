@@ -955,8 +955,23 @@ send_check_reject "err_type_send_nonregular_recursion.vibe" 'no impl `Send` for 
 # above, and the hint is what names the edit.
 send_check_reject "err_type_eq_marker_bound_struct.vibe" 'no impl `Eq` for `Pt`' "eqmarker"
 send_check_reject "err_type_eq_marker_bound_struct.vibe" 'is a marker trait (declared with no methods)' "eqmarker2"
-send_check_reject "err_type_eq_marker_bound_struct.vibe" 'Give `Eq` at least one method' "eqmarker3"
+# #3327: the edit names `equals(Self, Self) -> Bool`, not "at least one method":
+# a program `Eq` given some other method stops being a marker, stands the guard
+# down, and still compares by reference.
+send_check_reject "err_type_eq_marker_bound_struct.vibe" 'Give `Eq` an `equals(Self, Self) -> Bool` method' "eqmarker3"
 send_check_reject "err_type_ord_marker_bound_struct.vibe" 'no impl `Ord` for `Token`' "ordmarker"
+# #3327: a bound that EXTENDS a comparison marker is judged as that marker, the
+# way `trait Work: Send` is judged as `Send` above. `trait Key: Eq {}` over the
+# program's own marker `Eq` checked clean and answered `false` for two equal
+# `Pt`; a subtrait of the prelude's `Ord` did the same for two equal `Token`.
+send_check_reject "err_type_eq_marker_subtrait_bound_struct.vibe" 'no impl `Eq` for `Pt` (`Key` extends `Eq`)' "eqsub"
+send_check_reject "err_type_eq_marker_subtrait_bound_struct.vibe" 'is a marker trait (declared with no methods)' "eqsub2"
+send_check_reject "err_type_eq_marker_subtrait_bound_struct.vibe" 'Give `Eq` an `equals(Self, Self) -> Bool` method' "eqsub3"
+# With no `impl Eq for Pt` written, the message must not say one is declared:
+# `Pt` satisfies `Eq` only through `impl Key for Pt`.
+send_check_reject "err_type_eq_marker_subtrait_no_parent_impl.vibe" 'no impl `Eq` for `Pt` (`Key` extends `Eq`): `Pt` implements `Eq`, but `Eq` is a marker trait' "eqsubnoimpl"
+send_check_reject "err_type_ord_subtrait_bound_struct.vibe" 'no impl `Ord` for `Token` (`Ordered` extends `Ord`)' "ordsub"
+send_check_reject "err_type_ord_subtrait_bound_struct.vibe" 'giving `Ord` a method would not help' "ordsub2"
 # #2895: `Double` is the instantiation the guard used to wave through, and it
 # was the silent wrong answer the guard exists to prevent -- `lt[T: Ord](2.5,
 # 1.5)` answered TRUE and `gt[T: Ord](2.5, 1.5)` answered FALSE, i.e. reading

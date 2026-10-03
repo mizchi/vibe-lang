@@ -1,0 +1,77 @@
+//# What the marker-subtrait refusal (#3327) leaves alone.
+//
+// A bound that extends a program's own marker `Eq` is refused at a type the
+// builtin comparison cannot compare by content
+// (fixtures/err_type_eq_marker_subtrait_bound_struct.vibe). These three
+// shapes must keep compiling and answering:
+//
+// - at a scalar the builtin `==` compares by value (`Int`, `String`), the
+//   same instantiations `[T: Eq]` itself accepts;
+// - a subtrait that declares the witness `equals(Self, Self) -> Bool` itself:
+//   `==` dispatches through it, and measured on main at 5f4de5023 it already
+//   answered `true` and `false` correctly;
+// - a subtrait of a marker that is not a comparison (`Sealed`).
+
+trait Eq {}
+
+trait Key: Eq {}
+
+trait Witnessed: Eq {
+  equals(Self, Self) -> Bool
+}
+
+trait Sealed {}
+
+trait Tagged: Sealed {}
+
+impl Eq for Int {}
+
+impl Key for Int {}
+
+impl Eq for String {}
+
+impl Key for String {}
+
+struct Pt {
+  v: Int
+}
+
+impl Eq for Pt {}
+
+impl Witnessed for Pt {
+  equals(a: Pt, b: Pt) -> Bool {
+    a.v == b.v
+  }
+}
+
+impl Sealed for Pt {}
+
+impl Tagged for Pt {}
+
+fn same_key[T: Key](x: T, y: T) -> Bool {
+  x == y
+}
+
+fn same_witnessed[T: Witnessed](x: T, y: T) -> Bool {
+  x == y
+}
+
+fn keep_tagged[T: Tagged](x: T) -> T {
+  x
+}
+
+test "a marker-Eq subtrait at a by-value scalar compares by value" {
+  inspect(same_key(1, 1), "true")
+  inspect(same_key(1, 2), "false")
+  inspect(same_key("ab", "ab"), "true")
+  inspect(same_key("ab", "ba"), "false")
+}
+
+test "a subtrait declaring equals(Self, Self) -> Bool compares through it" {
+  inspect(same_witnessed(Pt::{ v: 1 }, Pt::{ v: 1 }), "true")
+  inspect(same_witnessed(Pt::{ v: 1 }, Pt::{ v: 2 }), "false")
+}
+
+test "a subtrait of a non-comparison marker is untouched" {
+  inspect(keep_tagged(Pt::{ v: 3 }).v, "3")
+}
