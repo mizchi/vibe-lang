@@ -1,0 +1,57 @@
+//# A bound that inherits the BUILTIN `Eq` dispatches through its witness (#3312).
+//
+// The sibling `eq_bound_witness_inherited_test.vibe` declares its own `Eq`, so
+// it never asks the lowering to inject the builtin one. This file relies on
+// the builtin `Eq`, and its only bound is `[T: Key]` with `trait Key: Eq`.
+//
+// Whether to inject the builtin `Eq` signature is decided by a scan that asks
+// whether each bound ENTAILS `Eq`, and entailment walks the supertrait graph.
+// That graph was recorded only after the injection had run, so the scan read
+// the previous run's graph (in a fresh process, none), found no bound entailing
+// `Eq`, and injected nothing. `KeyDict` then had no `equals`, and `x == y`
+// compared raw values: `via_key(1.5, 1.5)` answered `false` after a clean
+// `vibe check`. Adding any unrelated `fn f[T: Eq]` to the program made it
+// answer `true`.
+//
+// Keep `[T: Key]` the only bound in this file. A direct `Eq` bound anywhere
+// would trigger the injection by itself and hide the regression.
+
+trait Key: Eq {
+  key_of(Self) -> Int
+}
+
+struct Pt {
+  v: Int
+} derive (Eq)
+
+impl Key for Pt {
+  key_of(a: Pt) -> Int {
+    a.v
+  }
+}
+
+impl Key for Double {
+  key_of(a: Double) -> Int {
+    0
+  }
+}
+
+fn via_key[T: Key](x: T, y: T) -> Bool {
+  x == y
+}
+
+fn via_key_ne[T: Key](x: T, y: T) -> Bool {
+  x != y
+}
+
+test "a bound inheriting the builtin Eq compares Doubles by value" {
+  inspect(via_key(1.5, 1.5), "true")
+  inspect(via_key(1.5, 2.5), "false")
+  inspect(via_key_ne(1.5, 1.5), "false")
+}
+
+test "a bound inheriting the builtin Eq compares a derived struct by content" {
+  inspect(via_key(Pt::{ v: 1 }, Pt::{ v: 1 }), "true")
+  inspect(via_key(Pt::{ v: 1 }, Pt::{ v: 2 }), "false")
+  inspect(via_key_ne(Pt::{ v: 1 }, Pt::{ v: 1 }), "false")
+}

@@ -342,15 +342,74 @@ export fn dtd_eq_was_injected() -> Bool {
 /// trait-namespace derivation. The pass already holds this principle a few
 /// lines below the injection site: "Witness dict structs are only needed when
 /// method-bearing traits exist."
+///
+/// #3312: the scan must reach EVERY statement that can hold a binder. It used
+/// to read only `SLet` values and `SImpl` bounds, so a program whose only
+/// `[T: Eq]` lambda sat in a `test` block never injected the signature: the
+/// lambda threaded no witness and `a == b` compared raw values -- `false` for
+/// two equal boxed `Double`s, after a clean `vibe check`. The match in
+/// `dtd_stmt_has_eq_bound` is exhaustive on purpose, so a new `Stmt` variant
+/// fails to compile here instead of being skipped silently.
 fn dtd_program_has_eq_bound(stmts: Array[Stmt]) -> Bool {
   let mut i = 0
   let mut found = false
   while !found && i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SLet(_, _, _, _, v) => found = dtd_expr_has_eq_bound(v),
-      SImpl(_, tbounds, _, _) => found = dtd_bounds_have_eq(tbounds),
-      _ => ()
-    }
+    found = dtd_stmt_has_eq_bound(Array::get(stmts, i))
+    i = i + 1
+  }
+  found
+}
+
+fn dtd_stmt_has_eq_bound(stmt: Stmt) -> Bool {
+  match stmt {
+    SLet(_, _, _, _, v) => dtd_expr_has_eq_bound(v),
+    SLetMut(_, _, v) => dtd_expr_has_eq_bound(v),
+    SLetPat(_, v) => dtd_expr_has_eq_bound(v),
+    STest(_, body) => dtd_expr_has_eq_bound(body),
+    SBench(_, body) => dtd_expr_has_eq_bound(body),
+    SExample(_, body) => dtd_expr_has_eq_bound(body),
+    SExpr(e) => dtd_expr_has_eq_bound(e),
+    SFnDecl(_, _, v, requires, ensures) => dtd_expr_has_eq_bound(v) || dtd_exprs_have_eq_bound(requires) || dtd_exprs_have_eq_bound(ensures),
+    SModule(_, _, body) => dtd_program_has_eq_bound(body),
+    SImpl(_, tbounds, _, _) => dtd_bounds_have_eq(tbounds),
+    // A trait method's own binder (`same: [X: Eq](Self, X, X) -> Bool`,
+    // #684). The impl's function only receives it from
+    // `inject_trait_method_generics_with`, which runs AFTER the injection.
+    STrait(_, _, _, _, method_gens, _) => dtd_method_gens_have_eq(method_gens),
+    SEnum(_, _, _, _, _) => false,
+    SSuberror(_, _, _) => false,
+    SStruct(_, _, _, _, _, _) => false,
+    STypeAlias(_, _, _, _) => false,
+    SExternLet(_, _) => false,
+    SImport(_, _) => false,
+    SExport(_) => false,
+    SReExport(_, _) => false,
+    SAliasDecl(_, _) => false,
+    SReExportSourceBoundary(_, _) => false,
+    SQualifiedPatternRefs(_) => false,
+    STestEffectRows(_) => false,
+    SEffectDef(_, _, _, _) => false,
+    SEffectSet(_, _, _) => false,
+    SResource(_, _) => false
+  }
+}
+
+fn dtd_exprs_have_eq_bound(exprs: Array[Expr]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(exprs) {
+    found = dtd_expr_has_eq_bound(Array::get(exprs, i))
+    i = i + 1
+  }
+  found
+}
+
+fn dtd_method_gens_have_eq(method_gens: Array[(String, Array[String], Array[(String, Array[String])])]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(method_gens) {
+    let (_, _, bounds) = Array::get(method_gens, i)
+    found = dtd_bounds_have_eq(bounds)
     i = i + 1
   }
   found

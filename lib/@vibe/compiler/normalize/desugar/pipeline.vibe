@@ -558,13 +558,19 @@ fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Arra
   // record was built without its field: `unknown struct field: equals` on
   // `bare[T: Eq](1, 1)`, measured. The two halves have to arrive together.
   let traits_raw = collect_method_traits(stmts)
-  dtd_inject_builtin_eq(stmts, traits_raw)
-  let trait_type_params = collect_trait_type_params(stmts)
   let supers_map = collect_trait_supers(stmts)
-  let traits = flatten_traits(traits_raw, supers_map)
   // #2523: the `==` rung's entailment test reads the same graph the flattening
   // walked -- see dtd_bound_entails_eq.
+  //
+  // #3312: set it BEFORE the injection, whose scan asks the same question of
+  // every bound. Set after, the scan read the previous run's graph (or none):
+  // with `trait Key: Eq` and only `[T: Key]` in the program, the scan saw no
+  // bound entailing `Eq`, injected nothing, and `x == y` compared two equal
+  // `Double`s raw (`false`).
   dtd_trait_supers_set(supers_map)
+  dtd_inject_builtin_eq(stmts, traits_raw)
+  let trait_type_params = collect_trait_type_params(stmts)
+  let traits = flatten_traits(traits_raw, supers_map)
   // Rank-1 method generics (#684): re-attach each trait method's `[X: Bound]`
   // binder to its impl free functions (and annotate their params) BEFORE
   // build_gens, so `C::m` is registered as a bounded generic and the existing
