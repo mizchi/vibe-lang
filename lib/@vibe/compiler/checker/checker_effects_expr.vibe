@@ -1007,10 +1007,33 @@ fn dh_for_names(name: String, index_name: Option[String]) -> Array[String] {
   names
 }
 
+/// The closure literal a local binding holds, when it carries no effect row.
+///
+/// #3270: an annotation the parser cannot distribute onto the literal -- a
+/// type alias, `let side: Thunk = () -> Int { .. }` -- is kept as the identity
+/// ascription `((__asc: Thunk) -> __asc)(lit)` (`ascribe_wrap`). Matching only
+/// a bare `EFn` recorded such a binding as no closure at all, so a handle that
+/// reaches a `perform` through it was refused as reaching none, instead of
+/// naming the closure and the row edit (#3180). The ascription only passes
+/// its argument through, so the literal inside it is the binding's closure.
+/// An annotation that spells a row itself is not rowless.
 fn dh_lc_closure(val: Expr) -> Option[Expr] {
   match val {
     EFn(_, _, _, _, eff, _) => if Array::length(effect_row_labels(effect_row_parse(eff))) == 0 {
       Some(val)
+    } else {
+      None
+    },
+    ECall(EFn(_, _, params, _, _, EIdent(body_name, _)), args, _, _) => if Array::length(params) == 1 && Array::length(args) == 1 && body_name == "__asc" {
+      match Array::get(params, 0) {
+        ("__asc", Some(TyFn(_, _, ann_eff))) => if Array::length(effect_row_labels(effect_row_parse(ann_eff))) == 0 {
+          dh_lc_closure(Array::get(args, 0))
+        } else {
+          None
+        },
+        ("__asc", Some(_)) => dh_lc_closure(Array::get(args, 0)),
+        _ => None
+      }
     } else {
       None
     },

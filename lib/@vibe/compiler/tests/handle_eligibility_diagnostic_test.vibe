@@ -260,3 +260,26 @@ test "#3180: a rowless closure that performs is named, and both edits compile" {
   let inlined = program(String::concat("fn run() -> Int with Ask {\n  handle {\n    perform Ask::Get()\n  } with {\n    Ask::Get() => resume(42)\n  }\n}\n", driver))
   assert(compiles_both(inlined))
 }
+
+test "#3270: a rowless closure behind an alias annotation is named too" {
+  // An alias annotation is not distributed onto the literal: the binding
+  // holds the ascription `((__asc: Thunk) -> __asc)(lit)`. The closure walk
+  // matched only a bare literal, so this fell back to "can never fire ...
+  // reaches no `perform`" with no position, for `let` and `let mut` alike.
+  let lets = ["let", "let mut"]
+  let mut i = 0
+  while i < Array::length(lets) {
+    let src = program(String::concat("type Thunk = () -> Int\n\nfn run() -> Int with Ask {\n  ", String::concat(Array::get(lets, i), " side: Thunk = () -> Int {\n    perform Ask::Get()\n  }\n  handle {\n    side()\n  } with {\n    Ask::Get() => resume(42)\n  }\n}\n")))
+    assert(!compiles_linear(src))
+    let msg = reject_message(src)
+    assert(String::contains(msg, "give the local closure `side` an effect row"))
+    assert(String::contains(msg, "with Ask { .. }"))
+    assert(!String::contains(msg, "can never fire"))
+    assert(!String::contains(msg, "reaches no"))
+    i = i + 1
+  }
+  // The edit as the message spells it -- the row on an unannotated literal.
+  let driver = "\ntest \"t\" {\n  let r = handle {\n    run()\n  } with {\n    Ask::Get() => resume(1)\n  }\n  assert_eq(r, 42)\n}\n"
+  let with_row = program(String::concat("type Thunk = () -> Int\n\nfn run() -> Int with Ask {\n  let side = () -> Int with Ask {\n    perform Ask::Get()\n  }\n  handle {\n    side()\n  } with {\n    Ask::Get() => resume(42)\n  }\n}\n", driver))
+  assert(compiles_both(with_row))
+}
