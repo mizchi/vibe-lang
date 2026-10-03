@@ -176,6 +176,7 @@ Not normative.
 | [internal/reports/async-effect-environment-index-2026-10-02.md](internal/reports/async-effect-environment-index-2026-10-02.md) | Async-effect environment lookup hotspot, entry-local canonical snapshot and paired CPU/allocation comparisons |
 | [internal/reports/formal-substitution-index-2026-10-02.md](internal/reports/formal-substitution-index-2026-10-02.md) | Completed substitution read indexes for formal publication, lookup preservation and paired CPU/allocation comparisons |
 | [internal/reports/effect-row-local-index-2026-10-02.md](internal/reports/effect-row-local-index-2026-10-02.md) | Local-name membership hotspot in effect-row validation, ordered-label preservation and paired CPU/allocation comparisons |
+| [internal/reports/host-geometric-growth-2026-10-02.md](internal/reports/host-geometric-growth-2026-10-02.md) | Controlled host-growth capacity comparison with bounded-memory fallback and package probes |
 | [internal/reports/parser-simd-scan-2026-08-15.md](internal/reports/parser-simd-scan-2026-08-15.md) | |
 | [internal/reports/perf-snapshot-2026-08-07.md](internal/reports/perf-snapshot-2026-08-07.md) | |
 | [internal/reports/pl-survey-2026-07.md](internal/reports/pl-survey-2026-07.md) | |
