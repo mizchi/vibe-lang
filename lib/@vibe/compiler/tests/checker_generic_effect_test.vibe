@@ -173,3 +173,18 @@ test "a nested lambda with its own bare row is not pinned by the outer row" {
   let diags = collect_all_diagnostics(src)
   assert(eq(Array::length(diags), 0))
 }
+
+test "a repeated identical row label keeps the instantiation" {
+  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn producer() -> Int with Box[Int] + Box[Int] {\n  perform Box::Put(\"x\")\n}\n\nlet main = () -> Int {\n  42\n}\n"
+  let diags = collect_all_diagnostics(src)
+  assert(eq(Array::length(diags), 1))
+  assert(String::contains(Array::get(diags, 0), "perform argument type mismatch for Box::Put"))
+}
+
+test "an unannotated callback lambda is not pinned by the enclosing row" {
+  // Codex on #3304: the lambda's performs belong to the callback parameter's
+  // `Box[String]` row, which `run_cb` handles, not to `producer`'s `Box[Int]`.
+  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn run_cb(f: () -> Int with Box[String]) -> Int {\n  handle {\n    f()\n  } with {\n    Box::Put(s) => resume(String::length(s))\n  }\n}\n\nfn producer() -> Int with Box[Int] {\n  run_cb(() -> {\n    perform Box::Put(\"x\")\n  }) + perform Box::Put(1)\n}\n\nlet main = () -> Int {\n  42\n}\n"
+  let diags = collect_all_diagnostics(src)
+  assert(eq(Array::length(diags), 0))
+}
