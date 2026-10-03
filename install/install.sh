@@ -22,7 +22,7 @@
 #   $VIBE_HOME/toolchain                      default toolchain name
 #   $VIBE_HOME/toolchains/<name>/bin/{vibe,viberun}
 #   $VIBE_HOME/toolchains/<name>/lib/{vibe-cli.wasm,vibe-cli.cwasm,lsp...}
-#   $VIBE_HOME/toolchains/<name>/lib/@vibe/{core,ast,parser,builtin,console,wit_runtime}
+#   $VIBE_HOME/toolchains/<name>/lib/@vibe/{core,ast,parser,builtin,console,wit_runtime,concurrent}
 #   $VIBE_HOME/toolchains/<name>/manifest.json
 #   $VIBE_HOME/lib/@scope/name                shared packages (`vibe pkg install`)
 #   $VIBE_HOME/cache/...
@@ -630,7 +630,15 @@ if [ "$DO_STDLIB" = "1" ]; then
   # for users. A package documented for users but materialized only in a repo
   # checkout would resolve in dev and fail on an installed toolchain -- which
   # is exactly what tests/integration/install/install_test.sh probes.
-  for pkg in @vibe/core @vibe/ast @vibe/parser @vibe/builtin @vibe/console @vibe/wit_runtime; do
+  # @vibe/concurrent is the stable structured-concurrency package
+  # (docs/user/reference/stable-surface.md 3.1, book chapter 17). Its
+  # implementation is re-exported from @vibe/concurrent/experimental, a
+  # package of its own in a subdirectory, so both are shipped. The parent
+  # comes first: materializing a package removes its destination directory,
+  # which would remove a nested package copied before it. Each package's hash
+  # covers only the files its own index.vpkg owns, so the nested one does not
+  # enter the parent's.
+  for pkg in @vibe/core @vibe/ast @vibe/parser @vibe/builtin @vibe/console @vibe/wit_runtime @vibe/concurrent @vibe/concurrent/experimental; do
     src="$ROOT_DIR/lib/$pkg"
     [ -f "$src/index.vpkg" ] || { say "stdlib $pkg missing in checkout; skipped"; continue; }
     src_hash="$("$TC_DIR/bin/vibe" hash "$src" | awk '/^package /{print $2}')"

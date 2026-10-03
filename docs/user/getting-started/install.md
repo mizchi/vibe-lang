@@ -50,8 +50,9 @@ This will:
 3. AOT-compile it to `vibe-cli.cwasm` for this machine,
 4. install the launcher into the toolchain + the dispatcher onto your `PATH`,
 5. materialize the stdlib packages (`@vibe/core`, `@vibe/ast`, `@vibe/parser`,
-   `@vibe/builtin`, `@vibe/console`, `@vibe/wit_runtime`) into the toolchain's
-   own `lib/`, hash-verified (`vibe hash`), and write its `manifest.json`.
+   `@vibe/builtin`, `@vibe/console`, `@vibe/wit_runtime`, `@vibe/concurrent`)
+   into the toolchain's own `lib/`, hash-verified (`vibe hash`), and write its
+   `manifest.json`.
 
 Then:
 
@@ -77,7 +78,7 @@ $VIBE_HOME/                           default ~/.vibe
     lib/vibe-cli.cwasm                host-specific AOT build of it
     lib/{lsp_server.js,symbol_index.js,graph_query.js}
     lib/{vibe_pkg.sh,parallel_warm_pool.sh,context-pack.md}
-    lib/@vibe/{core,ast,parser,builtin,console,wit_runtime}
+    lib/@vibe/{core,ast,parser,builtin,console,wit_runtime,concurrent}
                                       stdlib, per toolchain
     manifest.json                     version, ref, commit, installed_at, source,
                                       sha256 of runner and compiler wasm,

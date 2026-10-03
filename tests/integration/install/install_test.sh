@@ -67,6 +67,11 @@ tc_a="$VIBE_HOME/toolchains/main"
 # @vibe/builtin is user-facing (#1949): chapter-01's first import form is
 # `import @vibe/console { println }`. A fresh install must ship it.
 [ -f "$tc_a/lib/@vibe/builtin/index.vpkg" ] || { echo "FAIL: stdlib @vibe/builtin not materialized" >&2; exit 1; }
+# @vibe/concurrent is stable and user-facing (book chapter 17). It re-exports
+# @vibe/concurrent/experimental, so a toolchain without the nested package
+# fails to resolve the stable one.
+[ -f "$tc_a/lib/@vibe/concurrent/index.vpkg" ] || { echo "FAIL: stdlib @vibe/concurrent not materialized" >&2; exit 1; }
+[ -f "$tc_a/lib/@vibe/concurrent/experimental/index.vpkg" ] || { echo "FAIL: stdlib @vibe/concurrent/experimental not materialized (removed by the parent's copy?)" >&2; exit 1; }
 [ -f "$tc_a/manifest.json" ] || { echo "FAIL: manifest.json not written" >&2; exit 1; }
 echo "ok: install produced launcher + .cwasm + default toolchain + per-toolchain stdlib + manifest"
 pass=$((pass + 1))
@@ -94,6 +99,15 @@ printf 'import @vibe/console {\n  println\n}\nfn main allows Console {\n  printl
   cd "$proj"
   unset VIBE_LIB || true
   check "vibe run prelude import (no repo lib/)" "42" "$(run_number "$proj/prelude_hello.vibex")"
+)
+# Book chapter 17's first example: `@vibe/concurrent` is stable and needs no
+# opt-in, so an installed toolchain must resolve it (and the nested
+# @vibe/concurrent/experimental it re-exports) with no repo lib/.
+printf 'import @vibe/concurrent {\n  TaskGroup, TaskHandle\n}\nfn main allows Console + Exception {\n  let answer = TaskGroup::run((n) -> {\n    let h = TaskGroup::spawn(n, () -> {\n      21 * 2\n    })\n    TaskHandle::join(h)\n  })\n  println("\\{answer}")\n}\n' > "$proj/concurrent_hello.vibex"
+(
+  cd "$proj"
+  unset VIBE_LIB || true
+  check "vibe run @vibe/concurrent (no repo lib/)" "42" "$(run_number "$proj/concurrent_hello.vibex")"
 )
 # #2675 (docs/user/getting-started/install.md): everything the toolchain generates lands
 # under <root>/.vibe/build/. $proj has no index.vpkg, so the run above (cwd =
