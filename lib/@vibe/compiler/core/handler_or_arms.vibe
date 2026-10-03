@@ -1,0 +1,298 @@
+//# Or-pattern handler arms (#3301)
+//
+// A handler arm `A | B => body` means the two arms `A => body` and
+// `B => body`: each alternative is its own operation, with its own payload
+// and its own continuation `resume`. Every pass that reads a handler arm --
+// the checker's typing, exhaustiveness and effect rows, the host-call
+// interception, and both effect lowerings -- names ONE operation per arm, and
+// none of them read an or-pattern arm. Such an arm was never type-checked,
+// and its handle survived lowering for codegen to compile to `unreachable`.
+// Splitting the arm before those passes run hands each of them the separate
+// arms it already handles, so they cannot disagree about what the arm means.
+
+import ./ast.vibe {
+  Expr, Pat, Stmt
+}
+
+import ./expr_children.vibe {
+  expr_any_node
+}
+
+//# Patterns
+
+fn hoa_pat_binds(pat: Pat) -> Bool {
+  match pat {
+    PWild => false,
+    PBind(_) => true,
+    PInt(_) => false,
+    PFloat(_) => false,
+    PString(_) => false,
+    PBool(_) => false,
+    PCtor(_, subs) => hoa_pats_bind(subs),
+    PTuple(subs) => hoa_pats_bind(subs),
+    POr(left, right) => hoa_pat_binds(left) || hoa_pat_binds(right),
+    PStruct(_, fields) => {
+      let mut found = false
+      let mut i = 0
+      while !found && i < Array::length(fields) {
+        let (_, field_pat) = Array::get(fields, i)
+        found = hoa_pat_binds(field_pat)
+        i = i + 1
+      }
+      found
+    }
+  }
+}
+
+fn hoa_pats_bind(pats: Array[Pat]) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while !found && i < Array::length(pats) {
+    found = hoa_pat_binds(Array::get(pats, i))
+    i = i + 1
+  }
+  found
+}
+
+/// Whether the split rewrites an arm with this pattern. An or-pattern whose
+/// alternatives bind no name always is. One that binds a name is split only
+/// `with_binders`: the checker leaves it in place so it can refuse it, as it
+/// refuses a binding or-pattern in a `match` arm, and the lowerings split it
+/// anyway, so no lane can compile it to a handle nothing lowers.
+fn hoa_splits(pat: Pat, with_binders: Bool) -> Bool {
+  match pat {
+    POr(_, _) => with_binders || !hoa_pat_binds(pat),
+    _ => false
+  }
+}
+
+fn hoa_alternatives_into(pat: Pat, out: Array[Pat]) -> Unit {
+  match pat {
+    POr(left, right) => {
+      hoa_alternatives_into(left, out)
+      hoa_alternatives_into(right, out)
+    },
+    _ => Array::push(out, pat)
+  }
+}
+
+fn hoa_arms_split_any(arms: Array[(Pat, Expr)], with_binders: Bool) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while !found && i < Array::length(arms) {
+    let (pat, _) = Array::get(arms, i)
+    found = hoa_splits(pat, with_binders)
+    i = i + 1
+  }
+  found
+}
+
+//# Expressions
+
+/// Each arm the split takes becomes one arm per alternative, left to right,
+/// in its place, so the first arm that names an operation still wins. Every
+/// copy gets a body of its own: the passes after this one rewrite arm bodies,
+/// and two arms sharing one tree would share any in-place edit as well.
+fn hoa_arms(arms: Array[(Pat, Expr)], split: Bool, with_binders: Bool) -> Array[(Pat, Expr)] {
+  let out: Array[(Pat, Expr)] = []
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (pat, body) = Array::get(arms, i)
+    if split && hoa_splits(pat, with_binders) {
+      let alternatives: Array[Pat] = []
+      hoa_alternatives_into(pat, alternatives)
+      let mut j = 0
+      while j < Array::length(alternatives) {
+        Array::push(out, (Array::get(alternatives, j), hoa_expr(body, with_binders)))
+        j = j + 1
+      }
+    } else {
+      Array::push(out, (pat, hoa_expr(body, with_binders)))
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn hoa_exprs(exprs: Array[Expr], with_binders: Bool) -> Array[Expr] {
+  let out: Array[Expr] = []
+  let mut i = 0
+  while i < Array::length(exprs) {
+    Array::push(out, hoa_expr(Array::get(exprs, i), with_binders))
+    i = i + 1
+  }
+  out
+}
+
+fn hoa_named(pairs: Array[(String, Expr)], with_binders: Bool) -> Array[(String, Expr)] {
+  let out: Array[(String, Expr)] = []
+  let mut i = 0
+  while i < Array::length(pairs) {
+    let (name, value) = Array::get(pairs, i)
+    Array::push(out, (name, hoa_expr(value, with_binders)))
+    i = i + 1
+  }
+  out
+}
+
+fn hoa_expr(expr: Expr, with_binders: Bool) -> Expr {
+  match expr {
+    EInt(_) => expr,
+    EFloat(_) => expr,
+    EString(_, _) => expr,
+    EBool(_) => expr,
+    EIdent(_, _) => expr,
+    EStringInterp(_) => expr,
+    EUnit => expr,
+    ETuple(elems) => ETuple(hoa_exprs(elems, with_binders)),
+    EArray(elems) => EArray(hoa_exprs(elems, with_binders)),
+    ERecord(name, fields, targs) => ERecord(name, hoa_named(fields, with_binders), targs),
+    EIf(cond, then_e, else_e) => EIf(hoa_expr(cond, with_binders), hoa_expr(then_e, with_binders), hoa_expr(else_e, with_binders)),
+    ELet(name, value, body, off) => ELet(name, hoa_expr(value, with_binders), hoa_expr(body, with_binders), off),
+    ELetRec(name, value, body) => ELetRec(name, hoa_expr(value, with_binders), hoa_expr(body, with_binders)),
+    ELetMut(name, value, body, off) => ELetMut(name, hoa_expr(value, with_binders), hoa_expr(body, with_binders), off),
+    EAssign(name, value, cont) => EAssign(name, hoa_expr(value, with_binders), hoa_expr(cont, with_binders)),
+    EAssignOp(name, op, value, cont) => EAssignOp(name, op, hoa_expr(value, with_binders), hoa_expr(cont, with_binders)),
+    ESeq(first, second) => ESeq(hoa_expr(first, with_binders), hoa_expr(second, with_binders)),
+    EMatch(scrutinee, arms) => EMatch(hoa_expr(scrutinee, with_binders), hoa_arms(arms, false, with_binders)),
+    EHandle(body, arms) => EHandle(hoa_expr(body, with_binders), hoa_arms(arms, true, with_binders)),
+    EWhile(cond, body) => EWhile(hoa_expr(cond, with_binders), hoa_expr(body, with_binders)),
+    ELoop(params, body) => ELoop(hoa_named(params, with_binders), hoa_expr(body, with_binders)),
+    EForIn(name, index, iter, body) => EForIn(name, index, hoa_expr(iter, with_binders), hoa_expr(body, with_binders)),
+    ECall(callee, args, off, resolution) => ECall(hoa_expr(callee, with_binders), hoa_exprs(args, with_binders), off, resolution),
+    EBinOp(op, left, right, off) => EBinOp(op, hoa_expr(left, with_binders), hoa_expr(right, with_binders), off),
+    EUnaryOp(op, operand) => EUnaryOp(op, hoa_expr(operand, with_binders)),
+    EFn(tparams, bounds, params, ret, eff, body) => EFn(tparams, bounds, params, ret, eff, hoa_expr(body, with_binders)),
+    EDot(receiver, field, off, field_off) => EDot(hoa_expr(receiver, with_binders), field, off, field_off),
+    ELabeledArg(label, name, value) => ELabeledArg(label, name, hoa_expr(value, with_binders)),
+    EReturn(value) => EReturn(hoa_expr(value, with_binders)),
+    EBreak(value) => match value {
+      Some(v) => EBreak(Some(hoa_expr(v, with_binders))),
+      None => expr
+    },
+    EContinue(args) => EContinue(hoa_exprs(args, with_binders)),
+    EMap(entries) => EMap(hoa_named(entries, with_binders)),
+    ESpread(value) => ESpread(hoa_expr(value, with_binders))
+  }
+}
+
+fn hoa_node_splits_with_binders(node: Expr) -> Bool {
+  match node {
+    EHandle(_, arms) => hoa_arms_split_any(arms, true),
+    _ => false
+  }
+}
+
+fn hoa_node_splits_without_binders(node: Expr) -> Bool {
+  match node {
+    EHandle(_, arms) => hoa_arms_split_any(arms, false),
+    _ => false
+  }
+}
+
+fn hoa_needs_split(expr: Expr, with_binders: Bool) -> Bool {
+  if with_binders {
+    expr_any_node(expr, hoa_node_splits_with_binders)
+  } else {
+    expr_any_node(expr, hoa_node_splits_without_binders)
+  }
+}
+
+fn hoa_split(expr: Expr, with_binders: Bool) -> Expr {
+  if hoa_needs_split(expr, with_binders) {
+    hoa_expr(expr, with_binders)
+  } else {
+    expr
+  }
+}
+
+fn hoa_exprs_need_split(exprs: Array[Expr], with_binders: Bool) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while !found && i < Array::length(exprs) {
+    found = hoa_needs_split(Array::get(exprs, i), with_binders)
+    i = i + 1
+  }
+  found
+}
+
+//# Statements
+
+/// #3301: split every handler arm `A | B => body` in `stmts` into
+/// `A => body` and `B => body`, in place, so each arm names one operation.
+/// A statement with no or-pattern handler arm is left as it was, unvisited by
+/// the rebuild. With `with_binders` false an alternative that binds a name
+/// keeps its arm whole, for the checker to refuse.
+export fn split_handler_or_arms(stmts: Array[Stmt], with_binders: Bool) -> Unit {
+  let _changed = hoa_split_stmts(stmts, with_binders)
+}
+
+/// Whether any statement was rebuilt. A module's statements are split in a
+/// copy: the array may be shared with a cached parse, and only `stmts` itself
+/// belongs to the caller.
+fn hoa_split_stmts(stmts: Array[Stmt], with_binders: Bool) -> Bool {
+  let mut changed = false
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let rebuilt = match Array::get(stmts, i) {
+      SLet(exported, is_rec, name, ty, expr) => if hoa_needs_split(expr, with_binders) {
+        Some(SLet(exported, is_rec, name, ty, hoa_expr(expr, with_binders)))
+      } else {
+        None
+      },
+      SLetMut(name, ty, expr) => if hoa_needs_split(expr, with_binders) {
+        Some(SLetMut(name, ty, hoa_expr(expr, with_binders)))
+      } else {
+        None
+      },
+      SExpr(expr) => if hoa_needs_split(expr, with_binders) {
+        Some(SExpr(hoa_expr(expr, with_binders)))
+      } else {
+        None
+      },
+      STest(name, expr) => if hoa_needs_split(expr, with_binders) {
+        Some(STest(name, hoa_expr(expr, with_binders)))
+      } else {
+        None
+      },
+      SBench(name, expr) => if hoa_needs_split(expr, with_binders) {
+        Some(SBench(name, hoa_expr(expr, with_binders)))
+      } else {
+        None
+      },
+      SExample(name, expr) => if hoa_needs_split(expr, with_binders) {
+        Some(SExample(name, hoa_expr(expr, with_binders)))
+      } else {
+        None
+      },
+      SLetPat(pat, expr) => if hoa_needs_split(expr, with_binders) {
+        Some(SLetPat(pat, hoa_expr(expr, with_binders)))
+      } else {
+        None
+      },
+      SFnDecl(exported, name, value, requires, ensures) => if hoa_needs_split(value, with_binders) || hoa_exprs_need_split(requires, with_binders) || hoa_exprs_need_split(ensures, with_binders) {
+        Some(SFnDecl(exported, name, hoa_split(value, with_binders), hoa_exprs(requires, with_binders), hoa_exprs(ensures, with_binders)))
+      } else {
+        None
+      },
+      SModule(exported, name, inner) => {
+        let copy = Array::slice(inner, 0, Array::length(inner))
+        if hoa_split_stmts(copy, with_binders) {
+          Some(SModule(exported, name, copy))
+        } else {
+          None
+        }
+      },
+      _ => None
+    }
+    match rebuilt {
+      Some(stmt) => {
+        Array::set(stmts, i, stmt)
+        changed = true
+      },
+      None => ()
+    }
+    i = i + 1
+  }
+  changed
+}

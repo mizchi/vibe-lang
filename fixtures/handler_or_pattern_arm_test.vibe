@@ -1,0 +1,96 @@
+//# #3301: a handler arm `A | B => body` is the arms `A => body` and
+//# `B => body`. Each alternative resumes its own `perform`, so every answer
+//# here equals the one the same handler gives with the arms written apart.
+//# Before the fix the checker skipped such an arm and the lowering left its
+//# handle for codegen, which compiled it to `unreachable`: every call below
+//# trapped, and an or-pattern arm after a plain one was refused as a
+//# non-exhaustive handler.
+
+effect Logger {
+  A -> Int
+  B -> Int
+  C -> Int
+}
+
+effect Pay {
+  P(Int) -> Int
+  Q(Int, Int) -> Int
+}
+
+effect Outer {
+  X -> Int
+  Y -> Int
+}
+
+effect Inner {
+  I -> Int
+  J -> Int
+}
+
+fn three_alternatives() -> Int {
+  handle {
+    perform Logger::A + perform Logger::B + perform Logger::C
+  } with Logger {
+    A|B|C => resume(7)
+  }
+}
+
+fn after_a_plain_arm() -> Int {
+  handle {
+    perform Logger::A + perform Logger::B + perform Logger::C
+  } with Logger {
+    A => resume(1);
+    B|C => resume(10)
+  }
+}
+
+fn wildcard_payloads() -> Int {
+  handle {
+    perform Pay::P(1) + perform Pay::Q(2, 3)
+  } with Pay {
+    P(_)|Q(_, _) => resume(5)
+  }
+}
+
+fn resume_captured() -> Int {
+  handle {
+    perform Logger::A + perform Logger::B + perform Logger::C
+  } with Logger {
+    A|B|C => {
+      let k = resume
+      k(7)
+    }
+  }
+}
+
+fn resume_in_a_lambda() -> Int {
+  handle {
+    perform Logger::A + perform Logger::B + perform Logger::C
+  } with Logger {
+    A|B|C => {
+      let f = (x: Int) -> resume(x)
+      f(7)
+    }
+  }
+}
+
+fn nested_handlers() -> Int {
+  handle {
+    handle {
+      perform Inner::I + perform Inner::J
+    } with Inner {
+      I|J => resume(perform Outer::X * 10)
+    }
+  } with Outer {
+    X|Y => resume(3)
+  }
+}
+
+test "an or-pattern handler arm handles each of its operations" {
+  inspect(three_alternatives(), "21")
+  inspect(after_a_plain_arm(), "21")
+  inspect(wildcard_payloads(), "10")
+  inspect(resume_captured(), "21")
+  inspect(resume_in_a_lambda(), "21")
+  inspect(nested_handlers(), "60")
+}

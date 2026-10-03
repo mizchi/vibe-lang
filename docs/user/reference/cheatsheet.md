@@ -1874,6 +1874,13 @@ stores `resume` as a value (the suspend shape below) keeps the other rule: its
 own value is the handle's result. Only `Exception` arms abort; a declared
 effect has no abortive operations.
 
+An or-pattern arm `A | B => body` is the two arms `A => body` and
+`B => body` (#3301): each alternative is typed against its own operation,
+resumes its own `perform`, and counts toward the handler's exhaustiveness, and
+`resume` inside it is the continuation even when a top-level `fn resume`
+exists. As in a `match`, an or-pattern cannot bind a payload: `P(x) | Q(x)` is
+refused; write `P(_) | Q(_)` or separate arms with the same body.
+
 Call resolution for an effect row follows the same lexical scope as ordinary
 value resolution. When a local closure, a function parameter, or a pattern /
 loop binder has the same name as a top-level `fn`, the local binding wins. So
