@@ -853,6 +853,109 @@ export fn runtime_prelude_dispatched_builtin_name(name: String) -> Bool {
   name == "String::unicode_length" || name == "String::utf16_length" || name == "String::utf8_length" || name == "Double::to_string" || name == "Float::to_string" || name == "Double::parse"
 }
 
+/// The declared return type of the builtin spelled `name`, or `None` when no
+/// builtin has that spelling. A registry row answers first; the few builtins
+/// typed without a row (the runtime-prelude ones above and the checker's
+/// per-namespace lookups) answer from `builtin_return_extra`.
+///
+/// Codegen used to keep its own spelling lists for "this builtin returns Int"
+/// (`ts_int_returning_builtin_name`) and "returns Bool / String"
+/// (`cc_builtin_call_ret_kind` and two gc copies). Nothing tied them to the
+/// rows, so they drifted: `Bytes::get`, `Char::to_int` and `Int::popcount`
+/// were Int to the checker and unknown to codegen. Reading the row makes a
+/// new builtin classify where it is declared.
+///
+/// Spelling only: the caller still owes the shadow check (a local or a user
+/// `fn` of the same name owns the call, and its return type is not this one).
+/// Any row counts, checker-visible or not -- an invisible row is still the
+/// type the lowered call returns.
+export fn builtin_declared_return(name: String) -> Option[Type] {
+  let row = registry_first_row(name)
+  if row < 0 {
+    builtin_return_extra(name)
+  } else {
+    let (_, ty, _, _, _, _, _, _, _) = Array::get(registry_typed_rows, row)
+    match ty {
+      CtFn(_, ret, _) => Some(ret),
+      _ => None
+    }
+  }
+}
+
+/// Return types of the builtins codegen classifies that have no registry row.
+/// A name here must not also be a row (`builtin_return_extras_with_rows`
+/// keeps that true), or the two answers could disagree.
+let builtin_return_extras: Array[(String, Type)] = [
+  ("String::unicode_length", CtInt),
+  ("String::utf16_length", CtInt),
+  ("String::utf8_length", CtInt),
+  ("Array::any", CtBool),
+  ("Array::all", CtBool),
+  ("Map::has_key", CtBool),
+  ("Map::has", CtBool),
+  ("Path::is_absolute", CtBool),
+  ("Int::to_string", CtString),
+  ("Double::to_string", CtString),
+  ("Float::to_string", CtString)
+]
+
+fn builtin_return_extra(name: String) -> Option[Type] {
+  let mut i = 0
+  let mut found = None
+  while i < Array::length(builtin_return_extras) {
+    let (extra, ret) = Array::get(builtin_return_extras, i)
+    if extra == name {
+      found = Some(ret)
+      i = Array::length(builtin_return_extras)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// The `builtin_return_extras` names that ALSO have a registry row -- empty
+/// unless a row was added for one of them, in which case the extra entry is
+/// dead and should go. Pinned empty by core/builtin_declared_return_test.vibe.
+export fn builtin_return_extras_with_rows() -> Array[String] {
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(builtin_return_extras) {
+    let (name, _) = Array::get(builtin_return_extras, i)
+    if registry_first_row(name) >= 0 {
+      Array::push(out, name)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// `builtin_declared_return(name)` is `Int`. Spelling only; see there.
+export fn builtin_returns_int(name: String) -> Bool {
+  match builtin_declared_return(name) {
+    Some(CtInt) => true,
+    _ => false
+  }
+}
+
+/// `builtin_declared_return(name)` is `Bool`. Spelling only; see there.
+export fn builtin_returns_bool(name: String) -> Bool {
+  match builtin_declared_return(name) {
+    Some(CtBool) => true,
+    _ => false
+  }
+}
+
+/// `builtin_declared_return(name)` is `String`. Spelling only; see there.
+export fn builtin_returns_string(name: String) -> Bool {
+  match builtin_declared_return(name) {
+    Some(CtString) => true,
+    _ => false
+  }
+}
+
 /// Every registry effect label must have standard provider or entry-execution
 /// policy metadata. The registry is operation-keyed while this policy is
 /// label-keyed, so this guard prevents a new host builtin from silently

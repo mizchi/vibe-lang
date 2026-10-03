@@ -1,0 +1,123 @@
+// `builtin_declared_return` is the one answer codegen reads for "which
+// builtins return Int / Bool / String". It replaced four spelling lists (one
+// Int list, one Bool + String list on the linear lane, two Bool copies on the
+// gc lane) that nothing tied to the registry rows.
+//
+// The first test pins every name those lists held, so retiring them dropped
+// no classification. The second pins the names the old Int list had drifted
+// away from: the checker typed them Int and codegen did not.
+
+import ../core {
+  builtin_return_extras_with_rows, builtin_returns_bool, builtin_returns_int, builtin_returns_string
+}
+
+//# Tests
+
+test "every name the retired spelling lists held still classifies" {
+  let ints = [
+    "Fs::stat_token",
+    "vibe_fs_stat_token_raw",
+    "Profiler::now_us",
+    "Profiler::heap_bytes",
+    "Env::args_len",
+    "String::length",
+    "String::unicode_length",
+    "String::utf16_length",
+    "String::utf8_length",
+    "Array::length",
+    "Bytes::length",
+    "String::char_code_at",
+    "String::index_of",
+    "String::last_index_of",
+    "Stdin::read_char"
+  ]
+  let bools = [
+    "eq",
+    "not",
+    "String::equals",
+    "String::contains",
+    "String::starts_with",
+    "String::ends_with",
+    "Array::any",
+    "Array::all",
+    "Map::has_key",
+    "Map::has",
+    "map_has",
+    "MapBuilder::has_key",
+    "Path::is_absolute",
+    "Fs::exists",
+    "Fs::is_dir",
+    "Fs::is_file"
+  ]
+  let strings = [
+    "__to_string",
+    "Int::to_string",
+    "Double::to_string",
+    "Float::to_string",
+    "String::concat",
+    "String::substring",
+    "String::trim",
+    "String::from_char_code",
+    "String::join",
+    "Env::get",
+    "Env::args_get",
+    "Fs::read_file",
+    "Fs::getcwd",
+    "sh"
+  ]
+  let missing: Array[String] = []
+  let mut i = 0
+  while i < Array::length(ints) {
+    if !builtin_returns_int(Array::get(ints, i)) {
+      Array::push(missing, "Int " + Array::get(ints, i))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  i = 0
+  while i < Array::length(bools) {
+    if !builtin_returns_bool(Array::get(bools, i)) {
+      Array::push(missing, "Bool " + Array::get(bools, i))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  i = 0
+  while i < Array::length(strings) {
+    if !builtin_returns_string(Array::get(strings, i)) {
+      Array::push(missing, "String " + Array::get(strings, i))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  inspect(String::join(missing, ", "), content = "")
+}
+
+test "names the old Int list missed are Int" {
+  assert(builtin_returns_int("Bytes::get"))
+  assert(builtin_returns_int("Char::to_int"))
+  assert(builtin_returns_int("Double::to_int"))
+  assert(builtin_returns_int("Int64Array::get"))
+  assert(builtin_returns_int("Int::popcount"))
+  assert(builtin_returns_int("Int::ctz"))
+  assert(builtin_returns_int("Int::clz"))
+  assert(builtin_returns_bool("Fs::publish_immutable_text"))
+}
+
+test "a kind answers for exactly one return type" {
+  assert(!builtin_returns_bool("String::length"))
+  assert(!builtin_returns_string("String::length"))
+  assert(!builtin_returns_int("String::concat"))
+  assert(!builtin_returns_int("Array::get"))
+  assert(!builtin_returns_int("Bytes::slice"))
+  assert(!builtin_returns_int("not_a_builtin"))
+  assert(!builtin_returns_bool("not_a_builtin"))
+  assert(!builtin_returns_string("not_a_builtin"))
+}
+
+test "no extra entry duplicates a registry row" {
+  inspect(String::join(builtin_return_extras_with_rows(), ", "), content = "")
+}
