@@ -148,7 +148,9 @@ import ./checker_merge_capture_provenance.vibe {
   direct_result_field_param_index,
   direct_result_param_indices,
   efn_substituted_formals,
+  eq_formal_arity,
   eq_formal_group,
+  eq_formal_rigid_row,
   eq_formal_row_of,
   eq_formal_vars,
   eq_group_begin,
@@ -2261,7 +2263,7 @@ fn bind_row_effect_instantiations(env: TypeEnv, row: Option[String], defs: Array
                 if type_param_arity(param) > 0 {
                   // A kinded parameter (`F` of `Read[F[_]]`) takes a bare
                   // constructor, not a complete type.
-                  kinded_row_inst(label, base, param, arg_te, defs, shadow, env, errors)
+                  kinded_row_inst(label, base, param, arg_te, defs, shadow, tparams, env, errors)
                 } else {
                   row_arg_as_type(arg_te, defs, shadow, env)
                 }
@@ -2300,7 +2302,10 @@ fn row_arg_as_type(arg_te: TypeExpr, defs: Array[TypeDef], shadow: Array[String]
 ///   `Array[Int]`;
 /// - a constructor formal in scope (`with Read[G]` in `fn producer[G[_]]`) is
 ///   bound as the formal itself, so the payload is `G[Int]`, the type a
-///   `xs: G[Int]` parameter has;
+///   `xs: G[Int]` parameter has. A formal whose declared arity is not the
+///   parameter's (`with Read[T]` for a plain `T`, or an `H[_, _]`) is reported
+///   like any other wrong-kinded argument (Codex on #3315): bound as itself it
+///   let a nested lambda's row through unchecked;
 /// - a wrong-kinded argument is REPORTED here with the row-item check's
 ///   message, and the parameter is left fresh, since the program is refused
 ///   anyway. Leaving the report to `geff_row_targ_errors_into` was not enough:
@@ -2311,25 +2316,86 @@ fn row_arg_as_type(arg_te: TypeExpr, defs: Array[TypeDef], shadow: Array[String]
 ///   nested lambda;
 /// - anything else is bound as the argument resolved as a type, an
 ///   application no payload of the parameter's shape matches.
-fn kinded_row_inst(label: String, base: String, param: String, arg_te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], env: TypeEnv, errors: Array[String]) -> Type {
+fn kinded_row_inst(label: String, base: String, param: String, arg_te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], tparams: Array[String], env: TypeEnv, errors: Array[String]) -> Type {
+  let want = type_param_arity(param)
   match row_constructor_arg(param, arg_te, defs, shadow) {
     Some(ctor) => CtTuple([ctor]),
     None => {
-      let formal = match arg_te {
-        TyName(name) => type_expr_name_is_shadowed(shadow, name),
-        _ => false
+      let formal_name = match arg_te {
+        TyName(name) => if type_expr_name_is_shadowed(shadow, name) {
+          name
+        } else {
+          ""
+        },
+        _ => ""
       }
-      if formal {
+      let msg = if formal_name != "" {
+        let farity = row_formal_arity(formal_name, tparams, env)
+        if farity >= 0 && farity != want {
+          kinded_row_kind_message(label, base, want, farity, true)
+        } else {
+          ""
+        }
+      } else {
+        kinded_row_arg_message(label, base, want, arg_te, defs)
+      }
+      if msg == "" {
         row_arg_as_type(arg_te, defs, shadow, env)
       } else {
-        let msg = kinded_row_arg_message(label, base, type_param_arity(param), arg_te, defs)
-        if msg == "" {
-          row_arg_as_type(arg_te, defs, shadow, env)
-        } else {
-          Array::push(errors, msg)
-          CtUnit
-        }
+        Array::push(errors, msg)
+        CtUnit
       }
+    }
+  }
+}
+
+/// The declared arity of the type formal `name` in scope: the row's own
+/// binder's (`tparams`, keys such as `G[_]`), or an enclosing binder's, read
+/// from the formal table the EFn arm fills (`record_eq_formal_var`); -1 when
+/// neither records it.
+fn row_formal_arity(name: String, tparams: Array[String], env: TypeEnv) -> Int {
+  let mut own = 0 - 1
+  let mut i = 0
+  while i < Array::length(tparams) {
+    let key = Array::get(tparams, i)
+    if type_param_name(key) == name {
+      own = type_param_arity(key)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if own >= 0 {
+    own
+  } else {
+    let row = match env_lookup(env, name) {
+      Some(t) => match t {
+        CtVar(vid) => {
+          let r = eq_formal_row_of(vid)
+          if r >= 0 {
+            let (_, rname) = Array::get(eq_formal_vars, r)
+            if rname == name {
+              r
+            } else {
+              0 - 1
+            }
+          } else {
+            0 - 1
+          }
+        },
+        CtNamed(n, _) => if n == String::concat("#hktformal.", name) {
+          eq_formal_rigid_row(name)
+        } else {
+          0 - 1
+        },
+        _ => 0 - 1
+      },
+      None => 0 - 1
+    }
+    if row >= 0 {
+      Array::get(eq_formal_arity, row)
+    } else {
+      0 - 1
     }
   }
 }
@@ -2340,18 +2406,24 @@ fn kinded_row_inst(label: String, base: String, param: String, arg_te: TypeExpr,
 /// An unknown name and an applied type count as taking no arguments, as they
 /// do there.
 fn kinded_row_arg_message(label: String, base: String, want: Int, arg_te: TypeExpr, defs: Array[TypeDef]) -> String {
-  let bi = String::index_of(label, "[")
-  let inner = if bi > 0 && String::ends_with(label, "]") {
-    String::trim(label[bi + 1: String::length(label) - 1])
-  } else {
-    label
-  }
   let (arity, plain) = match arg_te {
     TyName(name) => match compiler_owned_type_arity(name) {
       Some(owned) => (owned, true),
       None => (Array::length(declared_type_params(defs, name)), constructor_params_plain(defs, name))
     },
     _ => (0, true)
+  }
+  kinded_row_kind_message(label, base, want, arity, plain)
+}
+
+/// The message itself: `arity` is what the row's argument takes and `plain`
+/// whether all its parameters are types; "" when both fit.
+fn kinded_row_kind_message(label: String, base: String, want: Int, arity: Int, plain: Bool) -> String {
+  let bi = String::index_of(label, "[")
+  let inner = if bi > 0 && String::ends_with(label, "]") {
+    String::trim(label[bi + 1: String::length(label) - 1])
+  } else {
+    label
   }
   let head = String::concat("effect row item `", String::concat(label, String::concat("`: effect ", base)))
   if arity != want {

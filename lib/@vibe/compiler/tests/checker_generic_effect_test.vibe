@@ -278,6 +278,23 @@ test "a wrong-kinded row on a nested lambda is reported" {
   assert(eq(Array::length(nested("Read[Option]")), 0))
 }
 
+// Codex on #3315: a formal in scope is bound as itself only when its declared
+// arity is the parameter's; otherwise it is reported like any other
+// wrong-kinded argument, including on a nested lambda the row-item check
+// never walks.
+test "a formal of the wrong kind in a kinded row is reported" {
+  let decl = "effect Read[F[_]] {\n  Put(F[Int]) -> Int\n}\n\n"
+  let plain_nested = collect_all_diagnostics(String::concat(decl, "fn outer[T](x: T) -> Int {\n  let f = () -> Int with Read[T] {\n    0\n  }\n  0\n}\n"))
+  assert(eq(Array::length(plain_nested), 1))
+  assert(String::contains(Array::get(plain_nested, 0), "effect Read expects a constructor with 1 argument(s), but `T` has 0"))
+  let binary_nested = collect_all_diagnostics(String::concat(decl, "fn outer[H[_, _]](x: H[Int, Int]) -> Int {\n  let f = () -> Int with Read[H] {\n    0\n  }\n  0\n}\n"))
+  assert(eq(Array::length(binary_nested), 1))
+  assert(String::contains(Array::get(binary_nested, 0), "but `H` has 2"))
+  let own_plain = collect_all_diagnostics(String::concat(decl, "fn producer[A](x: A) -> Int with Read[A] {\n  0\n}\n"))
+  assert(eq(Array::length(own_plain), 1))
+  assert(String::contains(Array::get(own_plain, 0), "but `A` has 0"))
+}
+
 // Codex on #3315: a constructor formal in the row binds to the formal, so the
 // payload is the parameter's own `G[Int]`. Left fresh, `Some(1)` checked clean
 // and a caller passing an `Array[Int]` handed the option to a `Read[Array]` arm.
