@@ -22,11 +22,14 @@
 // What is refused is the BOUND at this instantiation, not the impl: the impl
 // stays a legal declaration (a marker impl can be a tag) and the concrete site
 // keeps answering by content. Giving `Eq` an `equals(Self, Self) -> Bool`
-// method makes it dispatch through a witness dictionary (ADR-0097); a method of
-// any other name stands this guard down without making `==` dispatch.
+// method makes it dispatch through a witness dictionary (ADR-0097).
 //
 // #3327: a bound that EXTENDS a marker (`trait Key: Eq {}`) is judged as that
 // marker. It used to be read by its own name only and compared by reference.
+//
+// #3350: the question is whether the operator reaches a witness, not whether
+// the trait is a marker. An `Eq` whose methods are something else, any `Ord`
+// or `Add`, and a generic impl's parameter bound are judged the same way.
 
 import @vibe/compiler/checker {
   check_program
@@ -106,7 +109,7 @@ test "the impl on its own is still a legal declaration" {
   inspect(rejects(eq_prelude), "false")
 }
 
-test "an Eq that carries a method is not a marker and is left alone" {
+test "an Eq that carries equals(Self, Self) -> Bool is left alone" {
   // The ADR-0097 shape: a real witness dictionary, so the bound is sound and
   // this guard must not fire.
   let src = "trait Eq {\n  equals(Self, Self) -> Bool\n}\nstruct Pt {\n  v: Int\n}\nimpl Eq for Pt {\n  equals(a: Pt, b: Pt) -> Bool {\n    a.v == b.v\n  }\n}\nfn bare[T: Eq](x: T, y: T) -> Bool {\n  T::equals(x, y)\n}\nlet r = bare(Pt::{ v: 1 }, Pt::{ v: 1 })\n"
@@ -223,5 +226,66 @@ test "a subtrait of the prelude's marker Ord is refused at a struct" {
 
 test "a subtrait of a non-comparison marker is untouched" {
   let src = "trait Sealed\ntrait Tagged: Sealed\nstruct Pt {\n  v: Int\n}\nimpl Sealed for Pt\nimpl Tagged for Pt\nfn tagged[T: Tagged](x: T) -> Int {\n  0\n}\nlet r = tagged(Pt::{ v: 1 })\n"
+  inspect(rejects(src), "false")
+}
+
+// #3350: the guard asks whether the operator reaches a witness, not whether
+// the trait is a marker. Measured on the #3327 compiler (43ee1c792), every
+// refused shape below checked clean and answered by reference at run time.
+test "an Eq whose methods do not include equals(Self, Self) is refused at a struct" {
+  let src = "trait Eq {\n  tag(Self) -> Int\n}\nstruct Pt {\n  v: Int\n}\nimpl Eq for Pt {\n  tag(a: Pt) -> Int {\n    a.v\n  }\n}\nfn same[T: Eq](x: T, y: T) -> Bool {\n  x == y\n}\nlet r = same(Pt::{ v: 1 }, Pt::{ v: 1 })\n"
+  let msg = diags_of(src)
+  inspect(String::contains(msg, "`Eq` declares no `equals(Self, Self) -> Bool`"), "true")
+  inspect(String::contains(msg, "marker trait"), "false")
+}
+
+test "the same Eq is accepted at a by-value scalar" {
+  let src = "trait Eq {\n  tag(Self) -> Int\n}\nimpl Eq for Int {\n  tag(a: Int) -> Int {\n    a\n  }\n}\nfn same[T: Eq](x: T, y: T) -> Bool {\n  x == y\n}\nlet r = same(1, 1)\n"
+  inspect(rejects(src), "false")
+}
+
+test "an Ord with a method is refused at a struct" {
+  let src = "trait Ord {\n  rank(Self) -> Int\n}\nstruct Token {\n  value: Int\n}\nimpl Ord for Token {\n  rank(a: Token) -> Int {\n    a.value\n  }\n}\nfn smaller[T: Ord](a: T, b: T) -> Bool {\n  a < b\n}\nlet r = smaller(Token::{ value: 2 }, Token::{ value: 1 })\n"
+  inspect(String::contains(diags_of(src), "`<` on the erased type has no witness to dispatch through"), "true")
+}
+
+test "an Add with a method is refused at Double" {
+  let src = "trait Add {\n  plus(Self, Self) -> Self\n}\nimpl Add for Double {\n  plus(a: Double, b: Double) -> Double {\n    a + b\n  }\n}\nfn add2[T: Add](a: T, b: T) -> T {\n  a + b\n}\nlet r = add2(1.5, 2.25)\n"
+  inspect(String::contains(diags_of(src), "no impl `Add` for `Double`"), "true")
+}
+
+/// A marker `Eq` and a generic impl of `Same` whose parameter is bounded by
+/// `bound`; the caller appends the instantiation.
+fn generic_impl_src(bound: String) -> String {
+  let head = "trait Eq\ntrait Key: Eq\nimpl Eq for Int\nimpl Key for Int\nstruct Pt {\n  v: Int\n}\nimpl Eq for Pt\nimpl Key for Pt\ntrait Same {\n  same(Self, Self) -> Bool\n}\nstruct Box[T] {\n  v: T\n}\n"
+  let imp = String::concat("impl [T: ", String::concat(bound, "] Same for Box[T] {\n  same(a: Box[T], b: Box[T]) -> Bool {\n    a.v == b.v\n  }\n}\nfn f[U: Same](a: U, b: U) -> Bool {\n  U::same(a, b)\n}\n"))
+  String::concat(head, imp)
+}
+
+test "a generic impl's comparison bound is refused at a struct argument" {
+  let msg = diags_of(String::concat(generic_impl_src("Eq"), "let r = f(Box::{ v: Pt::{ v: 1 } }, Box::{ v: Pt::{ v: 1 } })\n"))
+  inspect(String::contains(msg, "no impl `Same` for `Box[Pt]` (its generic impl needs `Pt: Eq`)"), "true")
+}
+
+test "a generic impl's subtrait bound is refused the same way" {
+  let msg = diags_of(String::concat(generic_impl_src("Key"), "let r = f(Box::{ v: Pt::{ v: 1 } }, Box::{ v: Pt::{ v: 1 } })\n"))
+  inspect(String::contains(msg, "(its generic impl needs `Pt: Key`, and `Key` extends `Eq`)"), "true")
+}
+
+test "a direct call of the generic impl's method is refused too" {
+  inspect(rejects(String::concat(generic_impl_src("Eq"), "let r = Same::same(Box::{ v: Pt::{ v: 1 } }, Box::{ v: Pt::{ v: 1 } })\n")), "true")
+}
+
+test "a generic impl's comparison bound still applies at a by-value scalar" {
+  inspect(rejects(String::concat(generic_impl_src("Eq"), "let r = f(Box::{ v: 1 }, Box::{ v: 1 })\n")), "false")
+}
+
+test "over the builtin Eq, a wrong-shaped first equals is refused and named" {
+  let src = "trait Good {\n  equals(Self, Self) -> Bool\n}\ntrait Bad {\n  equals(Int, Int) -> Bool\n}\ntrait Key: Bad + Good + Eq\nstruct Pt {\n  v: Int\n}\nimpl Key for Pt {\n  equals(a: Int, b: Int) -> Bool {\n    true\n  }\n}\nfn same[T: Key](x: T, y: T) -> Bool {\n  x == y\n}\nlet r = same(Pt::{ v: 1 }, Pt::{ v: 1 })\n"
+  inspect(String::contains(diags_of(src), "witness dictionary keeps is `Bad`'s"), "true")
+}
+
+test "over the builtin Eq, a right-shaped first equals is accepted" {
+  let src = "trait Good {\n  equals(Self, Self) -> Bool\n}\ntrait Bad {\n  equals(Int, Int) -> Bool\n}\ntrait Key: Good + Bad + Eq\nstruct Pt {\n  v: Int\n}\nimpl Key for Pt {\n  equals(a: Pt, b: Pt) -> Bool {\n    a.v == b.v\n  }\n}\nfn same[T: Key](x: T, y: T) -> Bool {\n  x == y\n}\nlet r = same(Pt::{ v: 1 }, Pt::{ v: 1 })\n"
   inspect(rejects(src), "false")
 }

@@ -975,6 +975,18 @@ send_check_reject "err_type_eq_marker_subtrait_no_parent_impl.vibe" 'no impl `Eq
 # keeps `Bad`'s `equals(Int, Int)`, so it is refused; `Good + Bad + Eq` is
 # accepted and answers in fixtures/eq_marker_subtrait_bound_accepted_test.vibe.
 send_check_reject "err_type_eq_marker_subtrait_wrong_first_equals.vibe" 'no impl `Eq` for `Pt` (`Key` extends `Eq`)' "eqsubfirst"
+# #3350: what decides the refusal is whether the operator reaches a witness,
+# not whether the trait is a marker. Each of these checked clean on the #3327
+# compiler and answered by reference (`false` for equal values, `true` for
+# `smaller(2, 1)`, `0` for `1.5 + 2.25`).
+send_check_reject "err_type_eq_no_equals_method_bound.vibe" '`Eq` declares no `equals(Self, Self) -> Bool`' "eqnoequals"
+send_check_reject "err_type_eq_witness_wrong_shape_bound.vibe" '`Eq`'"'"'s `equals` is not declared `(Self, Self) -> Bool`' "eqwrongshape"
+send_check_reject "err_type_ord_method_bound_struct.vibe" '`<` on the erased type has no witness to dispatch through' "ordmethod"
+send_check_reject "err_type_add_method_bound_double.vibe" 'no impl `Add` for `Double`' "addmethod"
+send_check_reject "err_type_eq_builtin_subtrait_wrong_first_equals.vibe" 'witness dictionary keeps is `Bad`'"'"'s' "eqbuiltinfirst"
+# A generic impl's parameter bound is judged by the same guard: the impl does
+# not apply at `Box[Pt]`, and the message names the parameter bound.
+send_check_reject "err_type_eq_generic_impl_param_bound.vibe" 'no impl `Same` for `Box[Pt]` (its generic impl needs `Pt: Eq`)' "eqgenimpl"
 send_check_reject "err_type_ord_subtrait_bound_struct.vibe" 'no impl `Ord` for `Token` (`Ordered` extends `Ord`)' "ordsub"
 send_check_reject "err_type_ord_subtrait_bound_struct.vibe" 'giving `Ord` a method would not help' "ordsub2"
 # #2895: `Double` is the instantiation the guard used to wave through, and it
