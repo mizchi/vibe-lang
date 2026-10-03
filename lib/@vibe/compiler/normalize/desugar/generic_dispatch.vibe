@@ -26,8 +26,10 @@ import ./trait_bounds.vibe {
   empty_threaded,
   encode_array_elem_recv_index,
   encode_constructor_recv_index,
+  encode_nested_recv_index,
   find_array_elem_recv_index,
   find_constructor_recv_index,
+  find_nested_recv_indices,
   find_recv_index,
   generic_impl_target_is_total,
   impl_pattern_binding,
@@ -109,6 +111,7 @@ export fn build_gens(stmts: Array[Stmt], traits: Array[(String, Array[(String, A
           }
           let constructor_recvs = collect_constructor_recvs(tparams, params, stmts)
           let threaded = empty_threaded()
+          let nested_recvs: Array[(String, Int, TypeExpr)] = []
           let mut bi = 0
           while bi < Array::length(bounds) {
             let (tp, trait_list) = Array::get(bounds, bi)
@@ -117,7 +120,7 @@ export fn build_gens(stmts: Array[Stmt], traits: Array[(String, Array[(String, A
             while ti < Array::length(trait_list) {
               let tr = Array::get(trait_list, ti)
               match lookup_trait_sigs(traits, tr) {
-                Some(_) => {
+                Some(sigs) => {
                   let ridx = find_recv_index(params, tpname)
                   if ridx >= 0 {
                     Array::push(threaded, (tpname, tr, ridx))
@@ -146,7 +149,21 @@ export fn build_gens(stmts: Array[Stmt], traits: Array[(String, Array[(String, A
                       if widx >= 0 {
                         Array::push(threaded, (tpname, tr, encode_array_elem_recv_index(widx)))
                       } else {
-                        ()
+                        // #3287: `T` only nested (`a: Option[T]`). A marker
+                        // trait has no dictionary to pass, so it threads
+                        // nothing, as before.
+                        let nested = find_nested_recv_indices(params, tpname)
+                        if Array::length(nested) > 0 && Array::length(sigs) > 0 {
+                          Array::push(threaded, (tpname, tr, encode_nested_recv_index(Array::get(nested, 0))))
+                          for ni in nested {
+                            match Array::get(params, ni).1 {
+                              Some(ann) => Array::push(nested_recvs, (tpname, ni, ann)),
+                              None => ()
+                            }
+                          }
+                        } else {
+                          ()
+                        }
                       }
                     }
                   }
@@ -168,7 +185,8 @@ export fn build_gens(stmts: Array[Stmt], traits: Array[(String, Array[(String, A
                 impl_trait: info.trait_name,
                 impl_params: info.type_params,
                 impl_target: Some(info.target),
-                constructor_recvs
+                constructor_recvs,
+                nested_recvs
               }),
               None => Array::push(out, DictGen::{
                 name: fname,
@@ -178,7 +196,8 @@ export fn build_gens(stmts: Array[Stmt], traits: Array[(String, Array[(String, A
                 impl_trait: "",
                 impl_params: [],
                 impl_target: None,
-                constructor_recvs
+                constructor_recvs,
+                nested_recvs
               })
             }
           } else {

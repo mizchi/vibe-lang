@@ -728,6 +728,23 @@ export fn arm_binder_var_types(scrut: Expr, p: Pat, var_types: Array[(String, St
   arm_binder_var_types_env(scrut, p, var_types, empty_struct_sets(), empty_fn_returns())
 }
 
+/// The binders of the `idx`th element pattern of a tuple LITERAL scrutinee,
+/// typed the way that element alone would be (#3287). Any other scrutinee
+/// binds nothing here.
+fn tuple_item_binders(scrut: Expr, idx: Int, p: Pat, var_types: Array[(String, String)], struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
+  match scrut {
+    ETuple(titems) => if idx < Array::length(titems) {
+      match p {
+        PBind(_) => var_types,
+        _ => arm_binder_var_types_env(Array::get(titems, idx), p, var_types, struct_sets, fn_returns)
+      }
+    } else {
+      var_types
+    },
+    _ => var_types
+  }
+}
+
 export fn arm_binder_var_types_env(scrut: Expr, p: Pat, var_types: Array[(String, String)], struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
   // #1878: a PTuple arm over a tuple that carries anonymous records — either
   // a NAME whose var_types entry is the compound `__anontup:` sentinel, or a
@@ -803,7 +820,9 @@ export fn arm_binder_var_types_env(scrut: Expr, p: Pat, var_types: Array[(String
                   eacc = extend_var_types(eacc, ev, Some(ety))
                 }
               },
-              _ => ()
+              other => {
+                eacc = tuple_item_binders(scrut, epi, other, eacc, struct_sets, fn_returns)
+              }
             }
           } else {
             ()
@@ -813,6 +832,25 @@ export fn arm_binder_var_types_env(scrut: Expr, p: Pat, var_types: Array[(String
         return eacc
       } else {
         ()
+      }
+      // #3287: a tuple LITERAL scrutinee of names, matched element-wise by
+      // constructor patterns (`match (a, b) { (Some(x), Some(y)) => .. }`):
+      // each element is the single-name case below, so `x` gets `a`'s payload
+      // type. Without it the binders were untyped, and `x == y` on two values
+      // of an `Eq`-bounded formal never reached the witness.
+      match scrut {
+        ETuple(titems) => if Array::length(titems) == Array::length(tup_pats) {
+          let mut cacc = var_types
+          let mut ci = 0
+          while ci < Array::length(tup_pats) {
+            cacc = tuple_item_binders(scrut, ci, Array::get(tup_pats, ci), cacc, struct_sets, fn_returns)
+            ci = ci + 1
+          }
+          return cacc
+        } else {
+          ()
+        },
+        _ => ()
       }
     },
     _ => ()

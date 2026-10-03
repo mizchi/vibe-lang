@@ -29,7 +29,8 @@ wrong, which is why triage ranks P0 = silent-wrong above "it crashes" (P1). A
 diagnostic leads with **the edit that fixes it**, not with internal terms
 (pass names, ADR numbers). One concept, one spelling — and these hold today:
 structural `==` in every context (ADR-0097, #1526 — **measured 2026-08-19,
-no silent reference equality is left**. Bare, through a name, inside a tuple,
+no silent reference equality is left**, except the residual #3297 tracks: a
+derived generic comparator reached by name. Bare, through a name, inside a tuple,
 inside a struct, nested arrays, `Array[String]` / `Array[(Int, Int)]` /
 `Array[Struct]`, through a function's return value, empty-literal bindings,
 and through a parameterized type alias (`type AL[V] = Array[V]` as `AL[Int]`,
@@ -270,6 +271,22 @@ a renderer; binding its type parameter alone does not make rendering safe.
 `inspect(value, expected)` remains a call-site expansion. Regression coverage:
 `interp_unbounded_formal_test.vibe`, `generic_renderer_witness_test.vibe`,
 `string_set_key_renderer_test.vibe`, and the existing lambda refusal fixtures.
+
+**A formal reached through a parameter's type gets its witness too** (#3287).
+`build_gens` used to thread a dictionary only through a bare `x: T`, an
+`Array[T]` or an `F[..]` parameter, so `fn f[T: Eq](a: Option[T], b:
+Option[T])` received none. Then `a == b`, and even `x == y` on two `T` values
+matched out of them, compared by identity: `f(Some(1.5), Some(1.5))` answered
+`false`. A formal nested anywhere in a parameter (`Option[T]`, `(T, Int)`,
+`Res[A, T]`) is threaded now. Each call reads `T` by matching that parameter's
+annotation against the argument (`nested_witness.vibe`), and an argument it
+cannot read is refused with the edit (annotate it). An aggregate operand that
+mentions a witnessed formal compares those positions through the witness
+(`witnessed_equality.vibe`): `Option` and tuples recurse; `Array[T]` and a
+declared generic enum or struct expand inline, because their generated helpers
+cannot see the dictionary; a recursive generic, or a `Map` holding the formal,
+fails closed. Pinned by `fixtures/eq_bound_nested_witness_test.vibe` and
+`fixtures/err_eq_nested_witness_unreadable_refused.vibe`.
 
 **The bound itself is required** (#2474): `==` / `!=`
 on an operand whose type mentions a formal with no `Eq` bound (bare `T`,

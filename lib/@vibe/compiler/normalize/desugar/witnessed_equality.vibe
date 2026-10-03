@@ -1,0 +1,172 @@
+// Witnessed equality (#3287).
+//
+// `==` inside a generic body on an operand whose type mentions an
+// `Eq`-bounded formal: `Option[T]`, `(T, Int)`, `Array[T]`, `Res[Array[Int],
+// T]`. A generic body is lowered once, so the formal's positions have to be
+// compared through the threaded witness dictionary; before this only a BARE
+// `T` operand reached it, and every aggregate around one compared its formal
+// leaves with a raw `==` -- by identity for a boxed `Double` or an aggregate.
+
+import @vibe/compiler/core {
+  Expr, TypeExpr
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import ./binding_shape_queries.vibe {
+  shape_is_composite
+}
+
+import ./equality_inference.vibe {
+  infer_eq_shape
+}
+
+import ./equality_shape_queries.vibe {
+  eq_formal_shape_of_name, shape_to_eq_ty, ty_contains_eq_unknown
+}
+
+import ./formal_scope.vibe {
+  formal_in_scope, is_marked_formal_name
+}
+
+import ./interpolation_witnesses.vibe {
+  dtd_eq_witness_dict
+}
+
+import ./state.vibe {
+  dtd_eq_formal_witnesses, dtd_eq_known_types, scope_formal_mark_prefix
+}
+
+import ./typed_equality.vibe {
+  eq_for_typed
+}
+
+fn unmark_formal(n: String) -> String {
+  if is_marked_formal_name(n) {
+    String::substring(n, String::length(scope_formal_mark_prefix), String::length(n))
+  } else {
+    n
+  }
+}
+
+fn operand_shape(e: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
+  let sh = infer_eq_shape(e, struct_sets, var_types, fn_returns)
+  if shape_is_composite(sh) {
+    sh
+  } else {
+    match e {
+      EIdent(n, _) => eq_formal_shape_of_name(var_types, n),
+      _ => ""
+    }
+  }
+}
+
+fn collect_formals(t: TypeExpr, out: Array[String]) -> Unit {
+  match t {
+    TyName(n) => if is_marked_formal_name(n) || formal_in_scope(n) {
+      let source = unmark_formal(n)
+      let mut seen = false
+      for f in out {
+        if f == source {
+          seen = true
+        } else {
+          ()
+        }
+      }
+      if !seen {
+        Array::push(out, source)
+      } else {
+        ()
+      }
+    } else {
+      ()
+    },
+    TyApp(_, args) => for a in args {
+      collect_formals(a, out)
+    },
+    TyTuple(items) => for x in items {
+      collect_formals(x, out)
+    },
+    _ => ()
+  }
+}
+
+/// The operand type and the witness of every formal it mentions, or None when
+/// the operand mentions no formal, or one without an `Eq` witness in scope
+/// (that one keeps the existing ladder).
+fn witnessed_operand(e: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)], dict_binds: Array[(String, String, String, Array[String])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])]) -> Option[(TypeExpr, Array[(String, String)])] {
+  let sh = operand_shape(e, struct_sets, var_types, fn_returns)
+  if !shape_is_composite(sh) {
+    None
+  } else {
+    let t = shape_to_eq_ty(sh)
+    if ty_contains_eq_unknown(t) {
+      None
+    } else {
+      let formals = array_empty()
+      collect_formals(t, formals)
+      if Array::length(formals) == 0 {
+        None
+      } else {
+        let table = array_empty()
+        let mut complete = true
+        for f in formals {
+          match dtd_eq_witness_dict(dict_binds, traits, f) {
+            Some(dict) => Array::push(table, (f, dict)),
+            None => {
+              complete = false
+            }
+          }
+        }
+        if complete {
+          Some((t, table))
+        } else {
+          None
+        }
+      }
+    }
+  }
+}
+
+/// #3287: the `==` comparison of two operands whose type mentions an
+/// `Eq`-bounded formal, compared through the formal's witness; None for every
+/// other comparison, which keeps the ladder it had.
+export fn dtd_eq_witnessed_compare(l: Expr, r: Expr, rl: Expr, rr: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)], dict_binds: Array[(String, String, String, Array[String])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])]) -> Option[Expr] {
+  if Array::length(dict_binds) == 0 {
+    None
+  } else {
+    let found = match witnessed_operand(l, struct_sets, var_types, fn_returns, dict_binds, traits) {
+      Some(w) => Some(w),
+      None => witnessed_operand(r, struct_sets, var_types, fn_returns, dict_binds, traits)
+    }
+    match found {
+      Some(w) => {
+        let (t, table) = w
+        let saved = Array::length(dtd_eq_formal_witnesses)
+        for entry in table {
+          Array::push(dtd_eq_formal_witnesses, entry)
+        }
+        let call = eq_for_typed(t, rl, rr, dtd_eq_known_types)
+        Array::truncate(dtd_eq_formal_witnesses, saved)
+        Some(call)
+      },
+      None => None
+    }
+  }
+}
+
+export fn opt_expr_is_some(e: Option[Expr]) -> Bool {
+  match e {
+    Some(_) => true,
+    None => false
+  }
+}
+
+export fn opt_expr_or_unit(e: Option[Expr]) -> Expr {
+  match e {
+    Some(x) => x,
+    None => EUnit
+  }
+}

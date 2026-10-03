@@ -231,11 +231,76 @@ export fn encode_constructor_recv_index(idx: Int) -> Int {
 }
 
 export fn is_constructor_recv_index(idx: Int) -> Bool {
-  idx <= (0 - 1000000)
+  idx <= (0 - 1000000) && idx > (0 - 2000000000)
 }
 
 export fn decode_constructor_recv_index(idx: Int) -> Int {
   0 - 1000000 - idx
+}
+
+/// #3287: a NESTED receiver -- a parameter whose annotation carries `T` in a
+/// data position the receiver kinds above do not cover (`Option[T]`,
+/// `(T, Int)`, `Res[Array[Int], T]`). Its own range, below the constructor
+/// range. The call site reads `T` by matching the annotation against the
+/// argument's type; `DictGen.nested_recvs` keeps the annotations.
+export fn encode_nested_recv_index(idx: Int) -> Int {
+  0 - 2000000000 - idx
+}
+
+export fn is_nested_recv_index(idx: Int) -> Bool {
+  idx <= (0 - 2000000000)
+}
+
+export fn decode_nested_recv_index(idx: Int) -> Int {
+  0 - 2000000000 - idx
+}
+
+/// #3287: every parameter whose annotation mentions `tp` in a DATA position:
+/// a type argument or a tuple element, at any depth. A function type's
+/// parameters and result are not data -- a closure argument holds no value of
+/// `T` whose type the call site could read. Asked only after the direct,
+/// constructor and array-element receivers have all missed.
+///
+/// Before this, a bound whose formal appeared only nested got no dictionary
+/// at all, and nothing said so: `fn f[T: Eq](a: Option[T], b: Option[T])`
+/// compared its payloads with a raw `==`, so `f(Some(1.5), Some(1.5))` was
+/// `false`, and an explicit `T::equals` there was refused for want of a
+/// carrier.
+export fn find_nested_recv_indices(params: Array[(String, Option[TypeExpr])], tp: String) -> Array[Int] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(params) {
+    let (_, ann) = Array::get(params, i)
+    match ann {
+      Some(te) => if ty_has_data_occurrence(te, tp) {
+        Array::push(out, i)
+      } else {
+        ()
+      },
+      None => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn ty_has_data_occurrence(t: TypeExpr, tp: String) -> Bool {
+  match t {
+    TyName(n) => n == tp,
+    TyApp(_, args) => tys_have_data_occurrence(args, tp),
+    TyTuple(items) => tys_have_data_occurrence(items, tp),
+    _ => false
+  }
+}
+
+fn tys_have_data_occurrence(ts: Array[TypeExpr], tp: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(ts) && !found {
+    found = ty_has_data_occurrence(Array::get(ts, i), tp)
+    i = i + 1
+  }
+  found
 }
 
 /// The constructor formal that owns a generic function's result, after
@@ -387,7 +452,7 @@ export fn collect_undispatchable_trait_method_errors(stmts: Array[Stmt], env: Ty
           while bi < Array::length(bounds) {
             let (tp, trait_list) = Array::get(bounds, bi)
             let tpname = type_param_name(tp)
-            let has_carrier = find_recv_index(params, tpname) >= 0 || find_constructor_recv_index(params, tpname, stmts) >= 0 || find_array_elem_recv_index(params, tpname) >= 0 || str_array_contains(gimpl_owners, qualified_head(fname))
+            let has_carrier = find_recv_index(params, tpname) >= 0 || find_constructor_recv_index(params, tpname, stmts) >= 0 || find_array_elem_recv_index(params, tpname) >= 0 || Array::length(find_nested_recv_indices(params, tpname)) > 0 || str_array_contains(gimpl_owners, qualified_head(fname))
             if has_carrier {
               ()
             } else {

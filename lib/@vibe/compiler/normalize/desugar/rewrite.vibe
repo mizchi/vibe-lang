@@ -288,6 +288,10 @@ import ./witness_generation.vibe {
   synth_dicts
 }
 
+import ./witnessed_equality.vibe {
+  dtd_eq_witnessed_compare, opt_expr_is_some, opt_expr_or_unit
+}
+
 /// Render one sub-expression by re-entering the interpolation rewrite on a
 /// synthetic `__to_string(sub)`, so a nested wrapper or a derive(Show) value
 /// inside one is rendered too.
@@ -1418,7 +1422,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
                 None => match as_method {
                   Some(dict_pname) => ECall(EDot(EIdent(dict_pname, -1), member_of(name), -1, -1), rwargs, off, callee_resolution),
                   None => match lookup_gen_entry(gens, name) {
-                    Some(gen) => match synth_dicts_if(gen_prepends_dicts(gen), gen.type_params, gen.threaded, gen.constructor_recvs, args, traits, struct_sets, var_types, dict_binds, fn_returns, gens) {
+                    Some(gen) => match synth_dicts_if(gen_prepends_dicts(gen), gen.type_params, gen.threaded, gen.constructor_recvs, gen.nested_recvs, args, traits, struct_sets, var_types, dict_binds, fn_returns, gens) {
                       Some(dicts) => ECall(EIdent(name, coff), concat_expr_arrays(dicts, rwargs), off, callee_resolution),
                       None => ECall(EIdent(name, coff), rwargs, off, callee_resolution)
                     },
@@ -1503,7 +1507,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
                   // falling back to the un-dicted call (same as the EIdent
                   // arm's own fallback) when synth_dicts can't resolve one.
                   Some(qual) => match lookup_gen_entry(gens, qual) {
-                    Some(gen) => match synth_dicts_if(gen_prepends_dicts(gen), gen.type_params, gen.threaded, gen.constructor_recvs, prepend_expr(obj, args), traits, struct_sets, var_types, dict_binds, fn_returns, gens) {
+                    Some(gen) => match synth_dicts_if(gen_prepends_dicts(gen), gen.type_params, gen.threaded, gen.constructor_recvs, gen.nested_recvs, prepend_expr(obj, args), traits, struct_sets, var_types, dict_binds, fn_returns, gens) {
                       Some(dicts) => ECall(EIdent(qual, doff), concat_expr_arrays(dicts, prepend_expr(robj, rwargs)), off, callee_resolution),
                       None => ECall(EIdent(qual, doff), prepend_expr(robj, rwargs), off, callee_resolution)
                     },
@@ -1520,7 +1524,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
               // enclosing formal got no dictionary at all.
               let threaded = lambda_threaded_sig(tp, bs, ps, traits, dict_binds)
               if Array::length(threaded) > 0 {
-                match synth_dicts(tp, threaded, array_empty(), args, traits, struct_sets, var_types, dict_binds, fn_returns, gens) {
+                match synth_dicts(tp, threaded, array_empty(), [], args, traits, struct_sets, var_types, dict_binds, fn_returns, gens) {
                   Some(dicts) => ECall(rewritten, concat_expr_arrays(dicts, rwargs), off, callee_resolution),
                   None => ECall(rewritten, rwargs, off, callee_resolution)
                 }
@@ -1799,6 +1803,13 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
           Some(t) => Some(subst_scope_formals_ty(t)),
           None => None
         }
+        // #3287: an operand whose type mentions an `Eq`-bounded formal compares
+        // that formal's positions through the threaded witness.
+        let witnessed = if empty_lit_l || empty_lit_r {
+          None
+        } else {
+          dtd_eq_witnessed_compare(l, r, rl, rr, struct_sets, var_types, fn_returns, dict_binds, traits)
+        }
         if empty_lit_l || empty_lit_r {
           // An empty LITERAL decides the answer on its own: the array it is
           // compared against is equal to it exactly when that array is empty.
@@ -1814,6 +1825,13 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
             lencmp
           } else {
             ECall(EIdent("not", -1), [lencmp], -1, [])
+          }
+        } else if opt_expr_is_some(witnessed) {
+          let call = opt_expr_or_unit(witnessed)
+          if op == "==" {
+            call
+          } else {
+            ECall(EIdent("not", -1), [call], -1, [])
           }
         } else if (empty_bound_l || empty_bound_r) && !opt_ty_is_some(arr_elem) {
           // An unannotated `let xs = []` whose element type #2157's push scan
@@ -2206,9 +2224,9 @@ fn concat_threaded(a: Array[(String, String, Int)], b: Array[(String, String, In
 
 /// `synth_dicts` when the callee actually declares dict parameters, None when
 /// it does not -- see gen_prepends_dicts.
-fn synth_dicts_if(prepend: Bool, callee_type_params: Array[String], threaded: Array[(String, String, Int)], constructor_recvs: Array[(String, Int)], args: Array[Expr], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], dict_binds: Array[(String, String, String, Array[String])], fn_returns: Array[(String, String)], gens: Array[DictGen]) -> Option[Array[Expr]] with Exception {
+fn synth_dicts_if(prepend: Bool, callee_type_params: Array[String], threaded: Array[(String, String, Int)], constructor_recvs: Array[(String, Int)], nested_recvs: Array[(String, Int, TypeExpr)], args: Array[Expr], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], dict_binds: Array[(String, String, String, Array[String])], fn_returns: Array[(String, String)], gens: Array[DictGen]) -> Option[Array[Expr]] with Exception {
   if prepend {
-    synth_dicts(callee_type_params, threaded, constructor_recvs, args, traits, struct_sets, var_types, dict_binds, fn_returns, gens)
+    synth_dicts(callee_type_params, threaded, constructor_recvs, nested_recvs, args, traits, struct_sets, var_types, dict_binds, fn_returns, gens)
   } else {
     None
   }
@@ -2502,7 +2520,8 @@ fn dict_gen_of_lambda(name: String, tparams: Array[String], threaded: Array[(Str
     impl_trait: lambda_gen_marker(),
     impl_params: [],
     impl_target: None,
-    constructor_recvs: []
+    constructor_recvs: [],
+    nested_recvs: []
   }
 }
 
