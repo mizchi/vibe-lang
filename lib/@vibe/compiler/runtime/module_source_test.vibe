@@ -97,3 +97,21 @@ test "#2654: the builder's switch does not leak into an ordinary parse" {
   } with { Exception::Throw(m) => m }
   assert(String::contains(again, "uses the reserved `__Vfp_` prefix"))
 }
+
+//# #3331: the merged program is printed before the trait-dictionary desugar
+
+// The printer spells an impl as a bodyless header plus one `<owner>::<method>`
+// binding per method, each its own statement. Before the desugar no
+// dictionary references a method and a `[C: Facts]` body names none, so only
+// the impl itself can keep them; dropping them leaves a kept impl with no
+// bodies, which the next compile refuses with "add a body".
+
+let split_impl_program: String = "trait Facts {\n  is_float(Self, String) -> Bool\n}\nstruct Lane { prefix: String }\nimpl Facts for Lane\nlet rec Lane::is_float = (self, name) -> Bool { String::starts_with(name, self.prefix) }\nlet rec count_in = [C: Facts](ctx: C, name: String) -> Int { if Facts::is_float(ctx, name) { 1 } else { 0 } }\nlet rec unused = () -> Int { 0 }\nlet cli_main = () -> { count_in(Lane::{ prefix: \"f_\" }, \"f_x\") }\n"
+
+test "#3331: a split impl keeps its method bindings" {
+  let out = build_module_source_from_source(split_impl_program, "cli_main")
+  assert(String::contains(out, "impl Facts for Lane"))
+  assert(String::contains(out, "let rec Lane::is_float = (self, name) -> Bool"))
+  assert(String::contains(out, "let rec count_in = [C: Facts]"))
+  assert(not(String::contains(out, "unused")))
+}
