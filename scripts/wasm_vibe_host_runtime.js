@@ -1469,6 +1469,23 @@ function unimplementedAsyncImportStub(name) {
   };
 }
 
+// #3278: every other `vibe.*` name this runner does not implement. The Proxy's
+// fallthrough used to answer `() => 0n`, so a call to an adapter-only import
+// (the `stdin_provider_*` trio, the #1537 arm / wait-any / cancel band,
+// `host_arg_push`, `wit_response*`) returned 0 as if it were real data. It
+// fails on call, naming the import; instantiation still succeeds, so a module
+// that imports such a name but never calls it keeps running.
+function unimplementedImportStub(name) {
+  return () => {
+    throw new Error(
+      `vibe.${name} is not implemented by this runner, so the call has no answer. ` +
+        `It is served on the component lane (runtime/viberun or the component ` +
+        `adapter); run the program there, or drop the call. This used to answer ` +
+        `0, which read as real data (#3278).`,
+    );
+  };
+}
+
 function capabilityWithheldStub(name) {
   return () => {
     throw new Error(`vibe capability withheld: ${name}`);
@@ -2631,6 +2648,7 @@ function writeProfileRequest(req, elapsedUs) {
     tcpWorkerCall,
     tryDecodeExceptionString,
     unimplementedAsyncImportStub,
+    unimplementedImportStub,
     usage,
     withheldCapabilities,
     writeProfileRequest,

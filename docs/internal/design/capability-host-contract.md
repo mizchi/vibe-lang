@@ -87,11 +87,13 @@ there — "Without this import a program using `Env::args_len` fails to
 instantiate with an unknown import before user code runs".
 
 The node runner's half was not stated anywhere. Its `vibe` import module is a
-`Proxy` whose `get` handler ends `return () => 0n;`, so **a capability the
-runner does not implement is not absent — it is present and answers zero**.
-That fallthrough is still the last line of the `get` trap in `main()`
-(`scripts/wasm_vibe_host_runner.js`); a withheld name (§2) and the async
-imports #2928 refuses are answered before it.
+`Proxy` whose `get` handler used to end `return () => 0n;`, so **a capability
+the runner did not implement was not absent — it was present and answered
+zero**. Since #3278 that last line returns a stub that throws on call, naming
+the import (`unimplementedImportStub` in `scripts/wasm_vibe_host_runtime.js`);
+a withheld name (§2) and the async imports #2928 refuses are answered before
+it with their own messages. The module still instantiates, so a name it links
+but never calls costs nothing.
 
 ### Why that was not a live wrong answer
 
@@ -108,11 +110,12 @@ static fields and 5 name patterns:
 | `viberunDebugOnly` | 2 | viberun only (`dbg_break`, `dbg_line`) |
 | `componentAdapterOnly` | 16 + 5 patterns | the component adapter; the gate REJECTS these leaking into either standalone runner |
 
-So the fallback is not silently answering a capability some in-contract module
-asked for — every `portableCore` name is implemented on both sides, and the
-gate proves it. The fallback is what lets an out-of-band module (one carrying
+So the fallback never answered a capability some in-contract module asked for
+— every `portableCore` name is implemented on both sides, and the gate proves
+it. The fallback is what lets an out-of-band module (one carrying
 `componentAdapterOnly` imports, say) instantiate under the node runner anyway,
-answering `0`, where viberun refuses.
+where viberun refuses; since #3278 a call to such an import throws instead of
+answering `0`.
 
 What the measurement actually established is narrower and more useful:
 
@@ -364,15 +367,3 @@ run`'s preflight (#2828 rung 1) implements the refusal.
    emits rows and had none to emit" from "this compiler predates rows"; if a
    future grade needs that distinction, the `version=1` line is where it goes.
    Decided when the section is first emitted (#2825).
-2. **Whether the node runner's `() => 0n` fallback should survive at all.**
-   It is still the last answer of the `vibe` Proxy's `get` trap in `main()`
-   (`scripts/wasm_vibe_host_runner.js`), for every field the runner neither
-   implements nor was told to withhold. Two narrower answers have landed in
-   front of it: a name in `VIBE_HOST_WITHHOLD` gets the trapping stub (§2),
-   and #2928 refuses, on call, the async host imports it lists
-   (`isUnimplementedAsyncImport` in `scripts/wasm_vibe_host_runtime.js`;
-   [async-host-contract.md](async-host-contract.md) names the
-   `componentAdapterOnly` imports that list does not cover). Replacing the
-   fallthrough itself with a throw is a one-line change with a blast radius
-   nobody has measured. It is independent of the lowering, and no open issue
-   owns it.

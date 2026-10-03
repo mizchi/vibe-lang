@@ -62,6 +62,7 @@ const {
   tcpWorkerCall,
   tryDecodeExceptionString,
   unimplementedAsyncImportStub,
+  unimplementedImportStub,
   usage,
   withheldCapabilities,
   writeProfileRequest,
@@ -925,7 +926,7 @@ async function main() {
         if (isUnimplementedAsyncImport(name)) {
           return unimplementedAsyncImportStub(name);
         }
-        return () => 0n;
+        return unimplementedImportStub(name);
       },
     },
   );
