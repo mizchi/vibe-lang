@@ -190,6 +190,12 @@ Not normative.
 | [internal/reports/taskgroup-checker-2026-10-03.samples.ndjson](internal/reports/taskgroup-checker-2026-10-03.samples.ndjson) | All 60 guarded compiler/CLI comparisons and runtime provenance |
 | [internal/reports/taskgroup-checker-2026-10-03.summary.json](internal/reports/taskgroup-checker-2026-10-03.summary.json) | Controlled timings, process-tree memory and native named-profile summaries |
 | [internal/reports/taskgroup-checker-2026-10-03.profiles.ndjson.gz](internal/reports/taskgroup-checker-2026-10-03.profiles.ndjson.gz) | Six actual CLI-batch Wasmtime profiles with function names, before/after worker policy |
+| [internal/reports/taskgroup-checker-replay-2026-10-04.md](internal/reports/taskgroup-checker-replay-2026-10-04.md) | Successful checker replay, controlled cold/warm costs and current-source build parity |
+| [internal/reports/taskgroup-checker-replay-2026-10-04.samples.jsonl](internal/reports/taskgroup-checker-replay-2026-10-04.samples.jsonl) | Controlled build samples, source/image receipts and current-source functional checks |
+| [internal/reports/taskgroup-checker-replay-2026-10-04.compiler-b-cold.json.gz](internal/reports/taskgroup-checker-replay-2026-10-04.compiler-b-cold.json.gz) | Initial compiler cold host CPU profile with file readback |
+| [internal/reports/taskgroup-checker-replay-2026-10-04.compiler-b-warm.json.gz](internal/reports/taskgroup-checker-replay-2026-10-04.compiler-b-warm.json.gz) | Initial compiler warm host CPU profile with file readback |
+| [internal/reports/taskgroup-checker-replay-2026-10-04.cli-b-cold.json.gz](internal/reports/taskgroup-checker-replay-2026-10-04.cli-b-cold.json.gz) | Initial CLI cold host CPU profile with file readback |
+| [internal/reports/taskgroup-checker-replay-2026-10-04.cli-b-warm.json.gz](internal/reports/taskgroup-checker-replay-2026-10-04.cli-b-warm.json.gz) | Initial CLI warm host CPU profile with file readback |
 | [internal/reports/parser-simd-scan-2026-08-15.md](internal/reports/parser-simd-scan-2026-08-15.md) | |
 | [internal/reports/perf-snapshot-2026-08-07.md](internal/reports/perf-snapshot-2026-08-07.md) | |
 | [internal/reports/pl-survey-2026-07.md](internal/reports/pl-survey-2026-07.md) | |
