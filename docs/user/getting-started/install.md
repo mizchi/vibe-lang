@@ -355,7 +355,7 @@ signature help, and **scope-accurate find-references / rename**.
 Point your editor's LSP client at `vibe lsp` for the `vibe` language.
 
 > Full feature list, the underlying query primitives (`vibe type-at` /
-> `binding-at` / `diagnostics`), and the interactive debugger are documented in
+> `binding-at` / `check --single-file`), and the interactive debugger are documented in
 > [editor-and-debugging.md](../reference/editor-and-debugging.md).
 
 **VS Code**: install `integrations/vscode-vibe` (it launches `vibe lsp`).
@@ -380,13 +380,15 @@ file-types = ["vibe"]
 language-servers = ["vibe-lsp"]
 ```
 
-Diagnostics carry an exact line:col for parse errors and common type errors
-(unknown name / arity / field / ctor), and identifier-use positions resolve to
-their inferred type via the per-node type table (typed hover). Rename /
-references are AST-accurate (scope-aware binding occurrences). Not every
-expression node carries a source offset yet (integer, float and boolean
-literals, tuples, arrays and `if` have none), so most diagnostics about one
-of those point at an enclosing construct instead.
+Diagnostics carry a byte range over the offending expression where the
+parser recorded one, and identifier-use positions resolve to their inferred
+type via the per-node type table (typed hover). Rename / references are
+AST-accurate (scope-aware binding occurrences). Integer, float and boolean
+literals and tuple and array literals carry no source offset yet: a mismatch
+on one passed as an argument points at the callee, and one bound by `let`
+points at the binder (a bare `Int` / `Double` / `Bool` initializer is
+recovered from the source text). The rules are in
+[source-range-contract.md](../reference/source-range-contract.md).
 
 ## Updating
 

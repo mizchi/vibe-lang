@@ -20,7 +20,7 @@ print_help() {
   cat <<'EOF'
 vibe grep [flags] --pattern '<pattern>' [paths...]
 
-Structural AST search. Metavariables are `$(name:kind)`, kind = exp / id / const / arg / args / pat / type.
+Structural AST search. Metavariables are `$(name:kind)`, kind = exp / id / const / arg / args / pat / type / arms.
 Unlike moongrep / ast-grep, the filters run on the CHECKER's answers, not on the grammar alone:
   --where '$x : Array[Int]'    the capture's INFERRED type (`_` wildcard)
   --where '$f = Iterator::map' the capture's RESOLVED name
