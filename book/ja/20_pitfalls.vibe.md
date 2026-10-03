@@ -88,9 +88,10 @@ top-level expressions are not allowed; move it into fn main
 
 ## `Error` と `Exception`
 
-effect は `Exception`。effect の綴りとしての `Error` は deprecated
-(ADR-0085)。古い row では `Error` が**操作の修飾子**として今も見えるが、
-新しく増やさないこと。
+effect は `Exception`。effect の綴りとしての `Error` は廃止された
+(#1461): `with Error` は拒否され、メッセージが `Exception` を示す。
+古いコードでは `Error::Throw` が**操作の修飾子**として今も見え、受理は
+されるが、新しく増やさないこと。
 
 ## 配列の `==`
 

@@ -10,9 +10,11 @@ scanner (keywords from the lexer, PascalCase types, numbers, `@pkg`
 paths, `#directives`). No external highlighter crate.
 
 ```bash
-# prove the examples
+# prove the examples against a stage2 built from this checkout
+pkf run vibe-md-tutorial-gated
+# quicker, but may fall back to the committed seed, which can reject
+# syntax this checkout's compiler accepts
 bash scripts/vibe_md.sh check book/en/*.vibe.md
-pkf run vibe-md-tutorial
 
 # render _build/book/index.html
 bash scripts/vibe_book.sh
