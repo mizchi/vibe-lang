@@ -420,6 +420,7 @@ its whole filesystem sandbox, and answer with a value:
 <dir>/dep<i>.env       dependency i's serialized public environment
 <dir>/outcome.txt      "ok" or "diag", written LAST as the commit marker
 <dir>/env.out          on ok: the checked environment
+<dir>/cache.out        on ok: the fingerprint-bound environment + actual lowering product
 <dir>/fingerprint.out  on ok: the module's own fingerprint, as check_module computed it
 <dir>/diag.txt         on diag: one diagnostic per line
 ```
@@ -435,12 +436,30 @@ see -- so the driver serializes each dependency's environment
 (`parse_persistent_type_env`). The `path` row is the module's logical path:
 never opened, but the directory every import resolves against.
 
+The successful check also populates the typed-lowering memo. `cache.out`
+freezes that result, including legitimately empty tables; absence is an
+infrastructure failure. Its first line is
+`checked-worker-cache<TAB>1<TAB><fingerprint>`, followed by a complete v11
+persistent module record with a v8 lowering table. The coordinator retains
+this product separately from the v10 `env.out` used by dependent checks.
+
+Three-column publication rows (`fingerprint<TAB>envfile<TAB>cachefile`) require
+that exact fingerprint/version header, a readable complete lowering table,
+and canonical bytes whose environment agrees with `envfile`. The existing
+lowering decoder validates counts, digest and end marker. The compiler writes
+the record only after validation. Legacy two-column rows still publish
+`lowering<TAB>missing`, which the serial compiler rechecks; they never become
+an authorized empty table.
+
 `scripts/module_job_dir_test.sh` pins the contract in the late compiler gate.
 Its discriminator is not "a module with an import checks clean" -- an
 unresolved import is lenient, so that passes even when the environment is
 dropped. It asserts that calling an imported function with the wrong argument
 type is diagnosed, and is lenient once the environment is withheld; and that
 changing only a dependency's fingerprint changes the importer's.
+It also publishes a real nonempty Double-call lowering product and rejects
+missing/truncated products, mismatched fingerprints/environments, old
+versions, invalid counts/digests, unavailable lowering and noncanonical bytes.
 `parallel_scheduler_selfhost.test.mjs` runs a two-module DAG through real
 workers at `jobs=1/2/4` with identical output, and
 `scripts/parallel_project_driver.mjs` discovers a real on-disk project's DAG
@@ -496,20 +515,23 @@ The pieces:
    process pool that needs no node (`scripts/parallel_warm_pool.sh`, which
    the installer still copies into the toolchain).
 3. **Publication.** `VIBE_PUBLISH_ENV_CACHE=1` (`run_publish_env_cache_dir`)
-   writes each checked module's environment to the real persistent-cache path
+   writes each checked module's complete product to the real persistent-cache path
    the serial walk looks under. The path is read out of the compiler rather
    than re-derived on the host, because it folds in the build's own codegen
-   fingerprint. Workers return no typed-lowering table, so a published record
-   marks it unavailable, and the serial compile re-checks that module and
-   replaces the record (#2546).
+   fingerprint. The Node bridge carries the worker's actual lowering table
+   and uses the three-column publication contract above. Environment-only
+   legacy callers still publish unavailable lowering and require a recheck.
 4. **The serial compile then runs unchanged.** A `Diagnosed` module is absent
    from the publish manifest, so the serial walk re-checks it and reports the
-   identical diagnostic. The pre-warm can only save work or do nothing, so it
-   needs no soundness argument of its own.
+   identical diagnostic. Checked products must preserve all lowering facts;
+   an invented empty table would silently change generated code.
 
 `scripts/test_parallel_frontend_warm.sh` (`pkf run test-parallel-frontend-warm`)
-asserts identical diagnostics and byte-identical Wasm with and without the
-pre-warm, and `scripts/jobs_kpi.sh` (`pkf run jobs-kpi`) reports cold and warm
+asserts zero serial checker executions after publication at jobs=1/2/4,
+identical diagnostics and byte-identical Wasm, with isolated cold/warm caches.
+It executes Double calls, imported/re-exported Show wrappers and typed
+structural equality, and checks a same-signature dependency body edit and the
+relative-path adapter. `scripts/jobs_kpi.sh` (`pkf run jobs-kpi`) reports cold and warm
 wall time, peak guest heap and host RSS for it. Neither is part of `test` or
 `full-gate`.
 

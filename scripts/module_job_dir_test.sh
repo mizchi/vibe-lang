@@ -43,7 +43,7 @@ die() { echo "[module-job] FAIL: $*" >&2; fail=1; }
 # run_job <jobdir> -> sets JOB_EXIT, JOB_OUTCOME, JOB_DIAG
 run_job() {
   local dir="$1"
-  rm -f "$dir/outcome.txt" "$dir/env.out" "$dir/diag.txt" "$dir/worker.out.diag"
+  rm -f "$dir/outcome.txt" "$dir/env.out" "$dir/cache.out" "$dir/fingerprint.out" "$dir/diag.txt" "$dir/worker.out.diag"
   set +e
   # The job dir is passed ABSOLUTE. The host runner resolves guest paths
   # against the process working directory, not against VIBE_PREOPEN_DIR, so
@@ -301,8 +301,8 @@ else
   note "dep row with empty path column rejected (exit $JOB_EXIT)"
 fi
 
-# #2546: worker transport stays v9; disk publication explicitly records that
-# this worker did not transport a lowering table. Test the actual adapter.
+# Legacy two-column publication deliberately keeps lowering unavailable.
+# It must remain a cache miss rather than authorizing an invented empty table.
 publish="$work/publish"
 mkdir -p "$publish/cache"
 cp "$leaf/env.out" "$publish/leaf.env"
@@ -330,6 +330,81 @@ then
   die "worker TypeEnv transport was not wrapped as an unavailable-table record"
 else
   note "worker v10 transport publishes one v11 record with lowering unavailable"
+fi
+
+# Publish an actual nonempty lowering product, then mutate its inputs to prove
+# that the real adapter refuses corrupt or unbound products before writing.
+typed="$work/typed"; mkdir -p "$typed"
+cat > "$typed/source.vibe" <<'EOF'
+export fn take(value: Double) -> Double { value + 0.5 }
+export fn probe() -> Double { take(1.5) }
+EOF
+printf 'version\t1\npath\t%s/typed.vibe\n' "$LOGICAL_ROOT" > "$typed/job.txt"
+run_job "$typed"
+if [ "$JOB_EXIT" -ne 0 ] || [ "$JOB_OUTCOME" != "ok" ]; then
+  die "typed worker did not produce a successful lowering product"
+elif ! node - "$work" "$STAGE2_ABS" "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" <<'NODE'
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+const { spawnSync } = require("node:child_process");
+const [work, compiler, runner] = process.argv.slice(2);
+const read = (dir, name) => fs.readFileSync(path.join(work, dir, name), "utf8");
+const fp = read("typed", "fingerprint.out").trim();
+const env = read("typed", "env.out");
+const product = read("typed", "cache.out");
+const header = `checked-worker-cache\t1\t${fp}\n`;
+assert(product.startsWith(header), "worker product must bind its computed fingerprint");
+const record = product.slice(header.length);
+const marker = "module_typed_lowering_offsets\tv8\n";
+const tableAt = record.indexOf(marker);
+assert(tableAt > 0, "successful worker must transport a complete lowering table");
+assert.match(record, /module_typed_lowering_offsets\tcount\t[1-9][0-9]*\n/,
+  "Double-call control must exercise nonempty lowering rows");
+function publish(label, cacheProduct, environment = env, manifest = `${fp}\tmodule.env\tcache.out\n`) {
+  const dir = path.join(work, `product-${label}`);
+  fs.mkdirSync(path.join(dir, "cache"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "module.env"), environment);
+  fs.writeFileSync(path.join(dir, "manifest.txt"), manifest);
+  if (cacheProduct !== null) fs.writeFileSync(path.join(dir, "cache.out"), cacheProduct);
+  const result = spawnSync("bash", [runner, "--invoke", "cli_main", compiler,
+    dir, path.join(dir, "publish.out"), "__no_entry__"], {
+    env: { ...process.env, VIBE_PREOPEN_DIR: dir, VIBE_BUILD_CACHE_DIR: path.join(dir, "cache"),
+      VIBE_PUBLISH_ENV_CACHE: "1", VIBE_IMPORT_ABI: "raw", VIBE_RUNNER_EXIT_WITH_RESULT: "1" },
+    encoding: "utf8", timeout: 300_000,
+  });
+  assert.ifError(result.error);
+  const files = fs.readdirSync(path.join(dir, "cache"));
+  if (label === "valid") {
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(files.length, 1);
+    assert.equal(fs.readFileSync(path.join(dir, "cache", files[0]), "utf8"), record);
+  } else {
+    assert.notEqual(result.status, 0, `${label} product was accepted`);
+    assert.equal(files.length, 0, `${label} published a cache entry before validation`);
+  }
+  console.log(`[module-job] checked product ${label}: ${label === "valid" ? "published" : "rejected"}`);
+}
+publish("valid", product);
+publish("missing", null);
+publish("truncated", product.slice(0, -8));
+publish("wrong-fingerprint", product.replace(header, `checked-worker-cache\t1\t${fp}-other\n`));
+publish("wrong-version", product.replace("checked-worker-cache\t1\t", "checked-worker-cache\t0\t"));
+publish("old-record", product.replace("version\t11\n", "version\t10\n"));
+publish("old-table", product.replace(marker, "module_typed_lowering_offsets\tv7\n"));
+const badCount = product.replace(/(module_typed_lowering_offsets\tcount\t)[0-9]+\n/, "$1999999\n");
+assert.notEqual(badCount, product, "count mutation did not land");
+publish("bad-count", badCount);
+const badDigest = product.replace(/(module_typed_lowering_offsets\tdigest\t)[^\n]+/, "$1invalid");
+assert.notEqual(badDigest, product, "digest mutation did not land");
+publish("bad-digest", badDigest);
+publish("unavailable", header + record.slice(0, tableAt) + "lowering\tmissing\n");
+publish("different-env", product, read("leaf", "env.out"));
+publish("noncanonical", product + "\n");
+publish("empty-cache-column", product, env, `${fp}\tmodule.env\t\n`);
+NODE
+then
+  die "checked lowering publication contract failed"
 fi
 
 if [ "$fail" -ne 0 ]; then

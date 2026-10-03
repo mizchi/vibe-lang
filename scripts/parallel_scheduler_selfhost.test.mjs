@@ -107,6 +107,14 @@ test("a dependency's interface crosses the worker boundary", async () => {
   const CANONICAL_FP = /^\d+:\d+:\d+$/;
   assert.match(ok.outcomes.get(DEP_ID).artifact.fingerprint, CANONICAL_FP);
   assert.match(ok.outcomes.get(MAIN_ID).artifact.fingerprint, CANONICAL_FP);
+  for (const id of [DEP_ID, MAIN_ID]) {
+    const artifact = ok.outcomes.get(id).artifact;
+    assert.ok(artifact.cacheProduct.startsWith(
+      `checked-worker-cache\t1\t${artifact.fingerprint}\nversion\t11\nenv\t`,
+    ), "scheduler dropped or rebound the check-derived cache product");
+    assert.match(artifact.cacheProduct, /module_typed_lowering_offsets\tv8\n/);
+    assert.doesNotMatch(artifact.cacheProduct, /\nlowering\tmissing\n/);
+  }
 
   // Sensitivity: MAIN's fingerprint must depend on DEP's, not just on
   // MAIN's own source. Re-running with an unrelated extra dependency-free

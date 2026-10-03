@@ -1,7 +1,7 @@
 // #906 Phase 2 (real-build wiring): pre-warm the persistent type-env cache
 // for a real `vibe build`/`compile` invocation by checking the entry file's
 // import DAG in parallel, then publishing every successfully-checked
-// module's environment to the REAL persistent cache path via the
+// module's environment and lowering product to the REAL persistent cache via the
 // VIBE_PUBLISH_ENV_CACHE adapter mode (run_publish_env_cache_dir,
 // runtime/typecheck_fs.vibe).
 //
@@ -137,7 +137,7 @@ async function discoverProjectViaPlan(runnerPath, compilerWasm, projectRoot, ent
   return modules;
 }
 
-// Publish every Checked outcome's env to the REAL persistent cache in one
+// Publish every Checked outcome's complete product to the persistent cache in one
 // extra wasm invocation. Diagnosed modules are simply absent from the
 // manifest -- see the file header for why that is sufficient for
 // correctness rather than a gap that needs its own handling.
@@ -154,8 +154,13 @@ async function publishCheckedOutcomes(runnerPath, compilerWasm, projectRoot, out
     const manifestLines = [];
     for (const [i, artifact] of toPublish.entries()) {
       const envFile = `env${i}.env`;
+      const cacheFile = `cache${i}.out`;
+      if (typeof artifact.cacheProduct !== "string" || artifact.cacheProduct.length === 0) {
+        throw new Error("parallel frontend requires checked worker lowering products; rebuild the compiler");
+      }
       await writeFile(join(publishDir, envFile), artifact.env);
-      manifestLines.push(`${artifact.fingerprint}\t${envFile}`);
+      await writeFile(join(publishDir, cacheFile), artifact.cacheProduct);
+      manifestLines.push(`${artifact.fingerprint}\t${envFile}\t${cacheFile}`);
     }
     await writeFile(join(publishDir, "manifest.txt"), `${manifestLines.join("\n")}\n`);
     const exitCode = await runVibe(

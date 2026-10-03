@@ -183,6 +183,9 @@ Not normative.
 | [internal/reports/reexport-surface-miss-bounds-2026-10-03.md](internal/reports/reexport-surface-miss-bounds-2026-10-03.md) | Complete-cache surface miss bounds, retained timing controls and bump/RC semantic regressions |
 | [internal/reports/monotonic-selfcompile-kpi-2026-10-03.md](internal/reports/monotonic-selfcompile-kpi-2026-10-03.md) | Realtime backstep reproduction, monotonic KPI clocks and actual compiler/heap parity |
 | [internal/reports/imported-show-wrapper-metadata-2026-10-03.md](internal/reports/imported-show-wrapper-metadata-2026-10-03.md) | Module-owned Show-wrapper facts, fixed-tree allocation comparison and rendering/transport freshness |
+| [internal/reports/checked-worker-lowering-2026-10-03.md](internal/reports/checked-worker-lowering-2026-10-03.md) | Checked worker lowering products, duplicate-check measurements and aggregate memory limits |
+| [internal/reports/checked-worker-lowering-2026-10-03.samples.ndjson](internal/reports/checked-worker-lowering-2026-10-03.samples.ndjson) | All 48 controlled whole-build samples and source/compiler/runtime receipts |
+| [internal/reports/checked-worker-lowering-2026-10-03.summary.json](internal/reports/checked-worker-lowering-2026-10-03.summary.json) | Cold/warm serial and pre-warm timing, telemetry and memory medians |
 | [internal/reports/parser-simd-scan-2026-08-15.md](internal/reports/parser-simd-scan-2026-08-15.md) | |
 | [internal/reports/perf-snapshot-2026-08-07.md](internal/reports/perf-snapshot-2026-08-07.md) | |
 | [internal/reports/pl-survey-2026-07.md](internal/reports/pl-survey-2026-07.md) | |
