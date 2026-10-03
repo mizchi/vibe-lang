@@ -88,9 +88,10 @@ does not.
 
 ## `Error` vs `Exception`
 
-`Exception` is the effect. `Error` as an effect spelling is deprecated
-(ADR-0085). You will still see `Error` as an *operation qualifier* in
-older rows; do not add new ones.
+`Exception` is the effect. `Error` as an effect spelling was retired
+(#1461): `with Error` is refused, and the message names `Exception`.
+You may still see `Error::Throw` as an *operation qualifier* in older
+code; it is accepted, but do not add new ones.
 
 ## `==` on arrays
 

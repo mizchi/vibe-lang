@@ -66,8 +66,10 @@ vibe check hello.vibe            # empty
 symbols 行の `12` は関数の LSP SymbolKind で、その後の2つの数値は名前の
 byte offset です — kind の表は `vibe symbols --legend` が出します。
 `type-at` は 1-based の行と byte 列を受け取り、その位置の識別子について
-答えます。識別子の無い位置では何も出力せず exit 0 — ほかと同じ
-「空出力 = clean」の規約です。
+答えます。識別子の無い位置 (空白・キーワード・リテラル・行末より後) は
+エラーで、stderr に `type-at: no identifier at FILE:L:C` を出して exit 1
+します。空出力で exit 0 が意味するのは一つだけ — そこに識別子はあるが、
+型が分からない、ということです。
 
 `vibe test file.vibe` は `test { }` / `test "name" { }` ブロックを全部
 コンパイルする。`inspect(value, "expected")` がスナップショット形式で、

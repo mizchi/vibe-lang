@@ -124,7 +124,7 @@ fn main allows Console {
   println("max + 1 = \{max + 1}")
   println("hex 0xFF = \{0xFF}")
   println("1 << 4 = \{1 << 4}")
-  let neg = 0 - 8
+  let neg = -8
   println("(-8) >> 1 = \{neg >> 1}")
   println("~5 = \{~5}")
   println("~(-8) = \{~neg}")

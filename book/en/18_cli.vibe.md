@@ -64,9 +64,11 @@ vibe check hello.vibe            # empty
 The `12` in the symbols lines is the LSP SymbolKind for a function, and
 the two numbers after it are byte offsets of the name —
 `vibe symbols --legend` prints the kind table. `type-at` takes a 1-based
-line and byte column and answers for the identifier there; on a position
-with no identifier it prints nothing and exits 0, the same empty-is-clean
-convention as everything else.
+line and byte column and answers for the identifier there. A position
+with no identifier (whitespace, a keyword, a literal, past the end of the
+line) is an error: `type-at: no identifier at FILE:L:C` on stderr and
+exit 1. Empty output with exit 0 means one thing only: there is an
+identifier there, and it has no known type.
 
 `vibe test file.vibe` compiles every `test { }` / `test "name" { }` block.
 `inspect(value, "expected")` is the snapshot form; `vibe test --update`
