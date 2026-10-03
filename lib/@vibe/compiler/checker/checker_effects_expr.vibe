@@ -41,6 +41,7 @@ import ./checker_effects_dh_call_to_binding.vibe {
   dh_call_to_binding,
   dh_collect_performed_effects,
   dh_declared_effects,
+  dh_expand_type_alias,
   dh_labels_may_be,
   dh_params_may_be,
   dh_perform_effect,
@@ -54,6 +55,7 @@ import ./checker_effects_dh_call_to_binding.vibe {
   optional_grade_errors,
   set_callee_sigs,
   set_callee_sigs_from,
+  set_dh_type_aliases,
   set_test_effect_rows,
   stmt_type_rows,
   test_ambient_effects,
@@ -325,7 +327,7 @@ export fn check_perform_effects_stmts_env_published_sigs(stmts: Array[Stmt], env
 fn dh_mutable_alias_call(expr: Expr, ename: String, fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], ov_names: Array[String], ov_effs: Array[Array[String]]) -> Option[(String, Int)] {
   match expr {
     ELetMut(name, value, body, _) => {
-      let (an, ae) = overlay_bind_local(ov_names, ov_effs, name, value, fn_names, fn_effs, fn_index)
+      let (an, ae) = dh_overlay_bind_local(ov_names, ov_effs, name, value, fn_names, fn_effs, fn_index)
       let carries = match lookup_fn_effs(an, ae, name) {
         Some(effs) => dh_labels_may_be(effs, ename),
         None => false
@@ -347,14 +349,14 @@ fn dh_mutable_alias_call(expr: Expr, ename: String, fn_names: Array[String], fn_
       }
     },
     ELet(name, value, body, _) => {
-      let (bn, be) = overlay_bind_local(ov_names, ov_effs, name, value, fn_names, fn_effs, fn_index)
+      let (bn, be) = dh_overlay_bind_local(ov_names, ov_effs, name, value, fn_names, fn_effs, fn_index)
       match dh_mutable_alias_call(value, ename, fn_names, fn_effs, fn_index, ov_names, ov_effs) {
         Some(found) => Some(found),
         None => dh_mutable_alias_call(body, ename, fn_names, fn_effs, fn_index, bn, be)
       }
     },
     ELetRec(name, value, body) => {
-      let (bn, be) = overlay_bind_local(ov_names, ov_effs, name, value, fn_names, fn_effs, fn_index)
+      let (bn, be) = dh_overlay_bind_local(ov_names, ov_effs, name, value, fn_names, fn_effs, fn_index)
       match dh_mutable_alias_call(value, ename, fn_names, fn_effs, fn_index, bn, be) {
         Some(found) => Some(found),
         None => dh_mutable_alias_call(body, ename, fn_names, fn_effs, fn_index, bn, be)
@@ -539,7 +541,7 @@ fn dh_widened_only_alias_call(body: Expr, ename: String, fn_names: Array[String]
       widened || dh_widened_only_alias_in(args, ename, fn_names, fn_effs, fn_index, ov_names, ov_effs)
     },
     ELet(name, value, continuation, _) => {
-      let (bn, be) = overlay_bind_local(ov_names, ov_effs, name, value, fn_names, fn_effs, fn_index)
+      let (bn, be) = dh_overlay_bind_local(ov_names, ov_effs, name, value, fn_names, fn_effs, fn_index)
       (!dh_named_alias_ascription(value, ov_names, ov_effs, fn_index) && dh_widened_only_alias_call(value, ename, fn_names, fn_effs, fn_index, ov_names, ov_effs)) || dh_widened_only_alias_call(continuation, ename, fn_names, fn_effs, fn_index, bn, be)
     },
     ELetMut(name, value, continuation, _) => {
@@ -547,7 +549,7 @@ fn dh_widened_only_alias_call(body: Expr, ename: String, fn_names: Array[String]
       dh_widened_only_alias_call(value, ename, fn_names, fn_effs, fn_index, ov_names, ov_effs) || dh_widened_only_alias_call(continuation, ename, fn_names, fn_effs, fn_index, bn, be)
     },
     ELetRec(name, value, continuation) => {
-      let (bn, be) = overlay_bind_local(ov_names, ov_effs, name, value, fn_names, fn_effs, fn_index)
+      let (bn, be) = dh_overlay_bind_local(ov_names, ov_effs, name, value, fn_names, fn_effs, fn_index)
       (!dh_named_alias_ascription(value, bn, be, fn_index) && dh_widened_only_alias_call(value, ename, fn_names, fn_effs, fn_index, bn, be)) || dh_widened_only_alias_call(continuation, ename, fn_names, fn_effs, fn_index, bn, be)
     },
     EFn(_, _, _, _, _, _) => false,
@@ -637,7 +639,7 @@ fn dh_may_reach(expr: Expr, ename: String, fn_names: Array[String], fn_effs: Arr
       // was answering with a false "can never fire" (measured on the committed
       // seed too, so the false positive predates the row fix -- it was just
       // unreachable while the row was never required).
-      ELet(lname, lval, lbody, _) => match overlay_bind_local(ov_names, ov_effs, lname, lval, fn_names, fn_effs, fn_index) {
+      ELet(lname, lval, lbody, _) => match dh_overlay_bind_local(ov_names, ov_effs, lname, lval, fn_names, fn_effs, fn_index) {
         (bn, be) => (!dh_named_alias_ascription(lval, ov_names, ov_effs, fn_index) && dh_may_reach(lval, ename, fn_names, fn_effs, fn_index, ov_names, ov_effs)) || dh_may_reach(lbody, ename, fn_names, fn_effs, fn_index, bn, be)
       },
       // Assignment can change this callee after initialization. Only the
@@ -647,7 +649,7 @@ fn dh_may_reach(expr: Expr, ename: String, fn_names: Array[String], fn_effs: Arr
       },
       // `let rec` may reference itself, so both sides see the rebound overlay
       // (same asymmetry the transitive walk's ELetRec arm keeps).
-      ELetRec(lname, lval, lbody) => match overlay_bind_local(ov_names, ov_effs, lname, lval, fn_names, fn_effs, fn_index) {
+      ELetRec(lname, lval, lbody) => match dh_overlay_bind_local(ov_names, ov_effs, lname, lval, fn_names, fn_effs, fn_index) {
         (rn, re) => dh_may_reach(lval, ename, fn_names, fn_effs, fn_index, rn, re) || dh_may_reach(lbody, ename, fn_names, fn_effs, fn_index, rn, re)
       },
       _ => false
@@ -1016,7 +1018,13 @@ fn dh_for_names(name: String, index_name: Option[String]) -> Array[String] {
 /// reaches a `perform` through it was refused as reaching none, instead of
 /// naming the closure and the row edit (#3180). The ascription only passes
 /// its argument through, so the literal inside it is the binding's closure.
-/// An annotation that spells a row itself is not rowless.
+///
+/// #3347: the annotation decides, read through the program's type aliases. A
+/// function type whose row is empty makes the literal the binding's rowless
+/// closure; one with a row -- written out, or carried by the alias -- is not
+/// rowless. An annotation that does not expand to a function type here (an
+/// alias from another module, a generic alias named without its arguments)
+/// is left unclassified, so no edit is suggested on a guess.
 fn dh_lc_closure(val: Expr) -> Option[Expr] {
   match val {
     EFn(_, _, _, _, eff, _) => if Array::length(effect_row_labels(effect_row_parse(eff))) == 0 {
@@ -1026,18 +1034,73 @@ fn dh_lc_closure(val: Expr) -> Option[Expr] {
     },
     ECall(EFn(_, _, params, _, _, EIdent(body_name, _)), args, _, _) => if Array::length(params) == 1 && Array::length(args) == 1 && body_name == "__asc" {
       match Array::get(params, 0) {
-        ("__asc", Some(TyFn(_, _, ann_eff))) => if Array::length(effect_row_labels(effect_row_parse(ann_eff))) == 0 {
-          dh_lc_closure(Array::get(args, 0))
-        } else {
-          None
+        ("__asc", Some(ann)) => match dh_expand_type_alias(ann) {
+          Some(TyFn(_, _, ann_eff)) => if Array::length(effect_row_labels(effect_row_parse(ann_eff))) == 0 {
+            dh_lc_closure(Array::get(args, 0))
+          } else {
+            None
+          },
+          _ => None
         },
-        ("__asc", Some(_)) => dh_lc_closure(Array::get(args, 0)),
         _ => None
       }
     } else {
       None
     },
     _ => None
+  }
+}
+
+/// #3347: the row a local closure literal takes from its annotation when the
+/// parser could not distribute that annotation onto the literal -- an alias,
+/// `let side: Thunk = () -> Int { .. }` with `type Thunk = () -> Int with
+/// Ask`. The binding's type carries the alias's row exactly as
+/// `let side: () -> Int with Ask = ..` carries the written one, so a call
+/// through it must reach the same handlers. Empty when the value is not an
+/// ascribed closure literal or the annotation does not expand to a function
+/// type here.
+fn dh_ascribed_closure_row(val: Expr) -> Array[String] {
+  match val {
+    ECall(EFn(_, _, params, _, _, EIdent(body_name, _)), args, _, _) => if Array::length(params) == 1 && Array::length(args) == 1 && body_name == "__asc" && dh_lc_is_fn_literal(Array::get(args, 0)) {
+      match Array::get(params, 0) {
+        ("__asc", Some(ann)) => match dh_expand_type_alias(ann) {
+          Some(TyFn(_, _, ann_eff)) => effect_row_labels(effect_row_parse(ann_eff)),
+          _ => no_str_labels()
+        },
+        _ => no_str_labels()
+      }
+    } else {
+      no_str_labels()
+    },
+    _ => no_str_labels()
+  }
+}
+
+fn dh_lc_is_fn_literal(val: Expr) -> Bool {
+  match val {
+    EFn(_, _, _, _, _, _) => true,
+    _ => false
+  }
+}
+
+/// `overlay_bind_local` for this walk: a closure literal whose row comes from
+/// its alias annotation (`dh_ascribed_closure_row`) is registered with that
+/// row, first, so `lookup_fn_effs` finds it before anything it shadows.
+fn dh_overlay_bind_local(names: Array[String], effs: Array[Array[String]], name: String, val: Expr, fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int]) -> (Array[String], Array[Array[String]]) {
+  let (bn, be) = overlay_bind_local(names, effs, name, val, fn_names, fn_effs, fn_index)
+  let row = dh_ascribed_closure_row(val)
+  if Array::length(row) == 0 {
+    (bn, be)
+  } else {
+    let out_names = [name]
+    let out_effs = [row]
+    let mut i = 0
+    while i < Array::length(bn) {
+      Array::push(out_names, Array::get(bn, i))
+      Array::push(out_effs, Array::get(be, i))
+      i = i + 1
+    }
+    (out_names, out_effs)
   }
 }
 
@@ -1545,12 +1608,12 @@ fn dh_check_expr(expr: Expr, declared: Array[String], performed: Array[String], 
     },
     ELet(name, val, body, _) => {
       dh_check_expr(val, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, mutable_aliases, lc, errors)
-      let (bn, be) = overlay_bind_local(ov_names, ov_effs, name, val, fn_names, fn_effs, fn_index)
+      let (bn, be) = dh_overlay_bind_local(ov_names, ov_effs, name, val, fn_names, fn_effs, fn_index)
       dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, bn, be, dh_mutable_alias_bind(mutable_aliases, name, val, false), dh_lc_bind(lc, name, val), errors)
     },
     ELetMut(name, val, body, _) => {
       dh_check_expr(val, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, mutable_aliases, lc, errors)
-      let (an, ae) = overlay_bind_local(ov_names, ov_effs, name, val, fn_names, fn_effs, fn_index)
+      let (an, ae) = dh_overlay_bind_local(ov_names, ov_effs, name, val, fn_names, fn_effs, fn_index)
       let labels = match lookup_fn_effs(an, ae, name) {
         Some(effs) => effs,
         None => []
@@ -1588,7 +1651,7 @@ fn dh_check_expr(expr: Expr, declared: Array[String], performed: Array[String], 
       dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, mutable_aliases, dh_lc_after_assigns(cond, lc), errors)
     },
     ELetRec(name, val, body) => {
-      let (rn, re) = overlay_bind_local(ov_names, ov_effs, name, val, fn_names, fn_effs, fn_index)
+      let (rn, re) = dh_overlay_bind_local(ov_names, ov_effs, name, val, fn_names, fn_effs, fn_index)
       let rlc = dh_lc_bind(lc, name, val)
       let ras = dh_mutable_alias_bind(mutable_aliases, name, val, true)
       dh_check_expr(val, declared, performed, fn_names, fn_effs, fn_index, rn, re, ras, rlc, errors)
@@ -1682,6 +1745,7 @@ fn dh_check_binding(ty: Option[TypeExpr], body: Expr, declared: Array[String], p
 
 fn check_dead_handles_stmts(stmts: Array[Stmt], fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int]) -> Array[EffectError] {
   let errors = array_empty()
+  set_dh_type_aliases(stmts)
   let declared = dh_declared_effects(stmts)
   if Array::length(declared) == 0 {
     errors
