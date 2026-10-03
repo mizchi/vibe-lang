@@ -1,6 +1,7 @@
 import @vibe/compiler/core {
   Subst,
   Type,
+  compiler_owned_type_arity,
   exception_effect_kind,
   exception_effect_labels_equal,
   exception_label_kind,
@@ -888,6 +889,57 @@ fn nominal_name_of(t: Type) -> Option[String] {
   }
 }
 
+/// #3326: true for a source-declared generic struct or enum APPLIED to
+/// arguments (`Cell[Int]`, `Wrap[String]`, and `Cell[T]` / `Cell[?t]` too).
+/// Its HEAD is certain whatever the arguments are. A rigid formal surfaces
+/// as `CtNamed(T, [])` (no arguments) or `CtNamed(T, [CtUnknown])` (excluded
+/// below); a constructor formal applied to arguments resolves to `CtApplied`
+/// or a `#hkt` application, not to this; and an alias is expanded by
+/// resolution (`type L[T] = Array[T]` resolves `L[Int]` to `Array[Int]`).
+/// So no instantiation of the arguments can turn it into a builtin value --
+/// `fn get[T](c: Cell[T])` applied to `[7]` is as wrong as `Cell[Int]` is.
+///
+/// Compiler-owned heads are excluded and keep their own treatment: several
+/// share `Array`'s layout on purpose (`FixedArray` is a checker-only phantom
+/// over it, #1140), and the ones that must not mix carry a `head_kind`. So
+/// are `#`-prefixed internal encodings (`#hkt` applications), which
+/// `rigid_applied_mismatch` owns.
+fn is_applied_declared_nominal(t: Type) -> Bool {
+  match t {
+    CtNamed(n, args) => if Array::length(args) == 0 || String::starts_with(n, "#") || is_unknown_arg_sentinel(args) {
+      false
+    } else {
+      match compiler_owned_type_arity(n) {
+        Some(_) => false,
+        None => true
+      }
+    },
+    _ => false
+  }
+}
+
+fn is_unknown_arg_sentinel(args: Array[Type]) -> Bool {
+  Array::length(args) == 1 && match Array::get(args, 0) {
+    CtUnknown => true,
+    _ => false
+  }
+}
+
+/// #3326: true for a type whose head is a builtin VALUE shape -- an `Array`, a
+/// tuple, a function, an anonymous record or a scalar. None of those is ever
+/// a declared struct or enum, so against `is_applied_declared_nominal` no
+/// instantiation can reconcile the two. `Option` is absent because
+/// `nominal_name_of` already names it.
+fn has_builtin_value_head(t: Type) -> Bool {
+  match t {
+    CtArray(_) => true,
+    CtTuple(_) => true,
+    CtFn(_, _, _) => true,
+    CtRecord(_) => true,
+    _ => is_builtin_scalar(t)
+  }
+}
+
 /// #1001: true when `expected` and `actual` carry a corresponding pair of
 /// nominal names that DIFFER, anywhere in their structure -- e.g.
 /// `Result[Int,String]` (`CtNamed`) vs `Option[Int]` (the builtin `CtOption`),
@@ -901,6 +953,12 @@ fn nominal_name_of(t: Type) -> Option[String] {
 /// `Box[Int]` vs `Box[String]`, #981) and never even inspects a
 /// `CtArray[Option[Int]]` vs `CtArray[Result[Int,String]]` pair's nested heads,
 /// nor a builtin `CtOption` against a `CtNamed`/`CtEnum` nominal type, at all.
+///
+/// #3326: an applied declared type against a builtin value head
+/// (`Cell[Int]` vs `Array[Int]`) is the same kind of conflict, checked by
+/// `declared_vs_builtin` because neither side carries a nominal name. Without
+/// it an array passed as a `Cell[Int]` compiles clean and `x.value` reads the
+/// array's packed representation.
 fn nominal_head_conflict(expected: Type, actual: Type) -> Bool {
   let direct_conflict = match nominal_name_of(expected) {
     Some(en) => match nominal_name_of(actual) {
@@ -909,7 +967,8 @@ fn nominal_head_conflict(expected: Type, actual: Type) -> Bool {
     },
     None => false
   }
-  if direct_conflict {
+  let declared_vs_builtin = (is_applied_declared_nominal(expected) && has_builtin_value_head(actual)) || (has_builtin_value_head(expected) && is_applied_declared_nominal(actual))
+  if direct_conflict || declared_vs_builtin {
     true
   } else {
     match expected {
