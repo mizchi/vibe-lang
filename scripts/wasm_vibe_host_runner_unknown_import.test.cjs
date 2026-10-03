@@ -94,6 +94,22 @@ test("a name inherited from Object.prototype is not an implemented import", () =
   });
 });
 
+test("the hint names the lane that serves the import", () => {
+  const cases = [
+    ["stdin_provider_acquire", /served by the component adapter/],
+    ["host_arg_push", /served by the component adapter/],
+    ["dbg_line", /debug import served by viberun's core runner/],
+    ["stdin_provider_open", /No host lane declares it/],
+  ];
+  for (const [importName, hint] of cases) {
+    withGuest(importName, true, (_dir, wasm) => {
+      const r = run(RUNNER, wasm);
+      assert.equal(r.status, 1, r.stderr);
+      assert.match(r.stderr, hint, importName);
+    });
+  }
+});
+
 test("importing an unimplemented name without calling it still runs", () => {
   withGuest("stdin_provider_open", false, (_dir, wasm) => {
     const r = run(RUNNER, wasm);
