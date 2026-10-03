@@ -46,8 +46,8 @@ vibe build --debug <file.vibe>                   # the linked debug lane
 vibe compile --entry <name> <file.vibe>          # entry other than `main` (not for .vibex)
 ```
 
-- A core module needs an entry: `fn main`, or `--entry <name>` naming an
-  exported zero-parameter function. A library module with neither is refused
+- A core module needs an entry: `fn main`, or `--entry <name>` naming a
+  zero-parameter function (it need not be exported). A library module with neither is refused
   (``entry `main` not found``); `--wit` and `--component` do not need one.
 - Output defaults to `.vibe/build/out/<name>.wasm` under the project root
   (`<name>.wit` with `--wit`, `<name>.component.wasm` with `--component`;
@@ -158,9 +158,9 @@ vibe test --update <file_test.vibe|dir...>
 
 Parse and type-check without producing output. Errors go to stdout, one per
 line, and exit 1; **empty stdout and exit 0 mean the file compiles**. Warnings
-never change the exit code: in text mode they go to stderr, and with `--json`
-they appear in the array with severity 2. (The unused-import warning is
-currently reported by `--single-file` only.)
+never change the exit code: in text mode they go to stderr. With
+`--single-file --json` they appear in the array with severity 2; the FS lane's
+`--json` array does not include them.
 Imports are resolved from the filesystem, so `vibe check` alone answers "does
 this compile".
 
