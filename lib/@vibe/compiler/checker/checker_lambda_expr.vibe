@@ -141,6 +141,7 @@ import ./checker_infer_binop_type.vibe {
   append_legacy_typed_occurrence,
   effect_inst_env_key,
   param_types_are_spawn_shaped,
+  published_marker_words,
   record_receiver_kind,
   resolve_tparams_in
 }
@@ -2705,6 +2706,13 @@ fn row_names_instantiation(row: String) -> Bool {
 /// quantified variable (Codex on #3340). Before, such a callee handed the
 /// lambda nothing, so an imported `run[T](x: T, f: () -> Int with Box[T])`
 /// let `run("s", () -> { perform Box::Put(1) })` through.
+///
+/// Every other word of a published row names a type, read in this module's
+/// scope (Codex on #3340: `Box[Wrap[T]]` handed nothing, and the lambda chose
+/// the payload). That reads the exporter's type: a name in a published row is
+/// part of the callee's signature, and a module whose `Wrap` is a different
+/// declaration is refused at the import (#3035 / #3036, "are different types
+/// that share the name"). A name this module cannot resolve is not bound.
 fn callback_row_instantiations(row: String, callee: Option[(Type, Type)], defs: Array[TypeDef]) -> Array[Type] {
   let formals: Array[String] = []
   let mut scope = EnvEmpty
@@ -2729,25 +2737,37 @@ fn callback_row_instantiations(row: String, callee: Option[(Type, Type)], defs: 
             }
           }
         },
-        None => {
-          declared = false
-          let marked: Array[(String, Int)] = []
-          published_row_formal_ids(Some(row), vars, marked)
-          let (_, id_tys) = callee_formal_ids(None, scheme, inst, defs)
-          for mark in marked {
-            let (word, mid) = mark
-            let fname = strip_published_formal_suffixes(word)
-            if !checker_string_array_has(formals, fname) {
-              Array::push(formals, fname)
-            } else {
-              ()
-            }
-            for id_ty in id_tys {
-              let (kid, kty) = id_ty
-              if kid == mid {
-                scope = env_bind(scope, fname, kty)
+        None => match inst {
+          // A generic callee checked as an expression is not instantiated
+          // before its arguments, and its row names its formals unmarked.
+          CtUnknown => {
+            declared = false
+          },
+          _ => {
+            // Every formal of a published row is marked; one past the
+            // quantifier list (only the row names it) has no variable, so it
+            // stays unbound and is never read as a type of the same name.
+            for word in published_marker_words(row) {
+              let fname = strip_published_formal_suffixes(word)
+              if !checker_string_array_has(formals, fname) {
+                Array::push(formals, fname)
               } else {
                 ()
+              }
+            }
+            let marked: Array[(String, Int)] = []
+            published_row_formal_ids(Some(row), vars, marked)
+            let (_, id_tys) = callee_formal_ids(None, scheme, inst, defs)
+            for mark in marked {
+              let (word, mid) = mark
+              let fname = strip_published_formal_suffixes(word)
+              for id_ty in id_tys {
+                let (kid, kty) = id_ty
+                if kid == mid {
+                  scope = env_bind(scope, fname, kty)
+                } else {
+                  ()
+                }
               }
             }
           }
@@ -2787,9 +2807,10 @@ fn callback_row_instantiations(row: String, callee: Option[(Type, Type)], defs: 
 /// the variable the call instantiated it with; that is the only way a variable
 /// reaches the row's scope. One still spelled by its own name is a formal the
 /// call does not fix (only the row names it), so it is not bound; nor is a
-/// name nothing declares. For a generic callee with no declaration in this
-/// module (`declared` false) a formal the published row does not mark cannot
-/// be told from a type name, so only compiler-owned types are read there.
+/// name nothing declares. For a generic callee whose formals are unknown
+/// (`declared` false: one checked as an expression, whose row is not
+/// published) a formal cannot be told from a type name, so only
+/// compiler-owned types are read there.
 fn callback_type_exact(t: Type, formals: Array[String], declared: Bool, defs: Array[TypeDef]) -> Bool {
   match t {
     CtInt => true,

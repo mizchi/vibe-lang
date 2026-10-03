@@ -28,10 +28,42 @@ fn run_len0[T](x: T, f: () -> Int with Box[T], len: (T) -> Int) -> Int {
 // An alias of a private generic is published with its own quantifier indices.
 export let run_len_alias = run_len0
 
+// The arm's payload is annotated: an unannotated field read in an arm
+// (`resume(p.x)`) fixes the formal of a generic declared after it at `Int`,
+// a separate checker bug this fixture should not lean on.
 export fn run_pt(f: () -> Int with Box[Pt]) -> Int {
   handle {
     f()
   } with {
-    Box::Put(p) => resume(p.x)
+    Box::Put(p) => {
+      let q: Pt = p
+      resume(q.x)
+    }
+  }
+}
+
+export struct Wrap[T] {
+  v: T
+}
+
+// A nominal type around the formal: the payload is a `Wrap[T]`.
+export fn run_wrap[T](x: T, f: () -> Int with Box[Wrap[T]], len: (T) -> Int) -> Int {
+  handle {
+    f()
+  } with {
+    Box::Put(w) => {
+      let ww: Wrap[T] = w
+      resume(len(ww.v) + len(x) * 0)
+    }
+  }
+}
+
+// `U` is named only by the callback row: the callee is parametric in it, and
+// an importer's own type named `U` is not it.
+export fn run_u[T, U](x: T, f: () -> Int with Box[U]) -> Int {
+  handle {
+    f()
+  } with {
+    Box::Put(_) => resume(0)
   }
 }

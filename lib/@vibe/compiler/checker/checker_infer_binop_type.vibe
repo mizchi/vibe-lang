@@ -50,7 +50,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/ast {
-  impl_encode_name
+  impl_encode_name, type_param_name
 }
 
 import @vibe/parser {
@@ -173,20 +173,47 @@ export fn publish_row_formals(t: Type, val: Expr, env: TypeEnv, defs: Array[Type
         }
         ni = ni + 1
       }
-      if Array::length(renames) == 0 {
+      // #3311 (Codex on #3340): a formal no parameter or result mentions
+      // (`U` of `fn run[T, U](x: T, f: () -> Int with Box[U])`) has no
+      // variable to index, but in a callback row it is still a formal and
+      // not the importer's type of that name. It is marked with an index past
+      // the quantifier list, which no reader resolves to a variable.
+      let nested_renames: Array[(String, String)] = []
+      for rename in renames {
+        Array::push(nested_renames, rename)
+      }
+      for tp in tps {
+        let tpn = type_param_name(tp)
+        let mut named = false
+        for rename in renames {
+          let (from, _) = rename
+          if from == tpn {
+            named = true
+          } else {
+            ()
+          }
+        }
+        if !named {
+          Array::push(nested_renames, (tpn, String::concat(tpn, String::concat("$", __to_string(Array::length(vars))))))
+        } else {
+          ()
+        }
+      }
+      if Array::length(nested_renames) == 0 {
         t
       } else {
         // An aliased row may already carry markers indexed against its
         // source's quantifier list; they are respelled against this scheme's.
-        let mark = (row: String) -> String {
-          rename_row_bracket_words(strip_published_formal_suffixes(row), renames)
+        let marked_row = if Array::length(renames) == 0 {
+          row_opt
+        } else {
+          match row_opt {
+            Some(row0) => Some(rename_row_bracket_words(strip_published_formal_suffixes(row0), renames)),
+            None => None
+          }
         }
         let mark_nested = (row: String) -> String {
-          rename_generic_label_words(strip_published_formal_suffixes(row), renames)
-        }
-        let marked_row = match row_opt {
-          Some(row0) => Some(mark(row0)),
-          None => None
+          rename_generic_label_words(strip_published_formal_suffixes(row), nested_renames)
         }
         CtForAll(vars, bounds, CtFn(for p in sparams {
           map_fn_rows(p, mark_nested)
@@ -202,16 +229,17 @@ export fn publish_row_formals(t: Type, val: Expr, env: TypeEnv, defs: Array[Type
     (CtForAll(vars, bounds, CtFn(sparams, sret, row_opt)), None) => match val {
       EIdent(src, _) => match env_lookup(env, src) {
         Some(CtForAll(src_vars, _, src_body)) => {
-          let respell = (row: String) -> String {
-            respell_imported_markers(row, src_vars, src_body, vars, CtFn(sparams, sret, None))
+          let body = CtFn(sparams, sret, None)
+          let respell_nested = (row: String) -> String {
+            respell_imported_markers(row, src_vars, src_body, vars, body, true)
           }
           let respelled_row = match row_opt {
-            Some(row0) => Some(respell(row0)),
+            Some(row0) => Some(respell_imported_markers(row0, src_vars, src_body, vars, body, false)),
             None => None
           }
           CtForAll(vars, bounds, CtFn(for p in sparams {
-            map_fn_rows(p, respell)
-          }, map_fn_rows(sret, respell), respelled_row))
+            map_fn_rows(p, respell_nested)
+          }, map_fn_rows(sret, respell_nested), respelled_row))
         },
         _ => t
       },
@@ -298,12 +326,23 @@ fn rename_generic_label_words(row: String, renames: Array[(String, String)]) -> 
 
 /// `row` with each published marker `NAME$K`, K indexing `src_vars`, respelled
 /// `NAME$K2`, K2 indexing `vars` at the variable found in the same position of
-/// `body` as the source variable's in `src_body`. A marker with no such
-/// variable keeps its base name only.
-fn respell_imported_markers(row: String, src_vars: Array[Int], src_body: Type, vars: Array[Int], body: Type) -> String {
+/// `body` as the source variable's in `src_body`. In the binding's own row a
+/// marker with no such variable keeps its base name only.
+///
+/// `nested` (#3311): `row` is a callback row among the parameters or the
+/// result. Every marker there stays a marker -- one with no such variable, or
+/// past the source's quantifier list (a formal no parameter mentions), is
+/// spelled past this scheme's -- so an importer never reads a formal as a type
+/// of the same name; and an exception kind is left as written.
+fn respell_imported_markers(row: String, src_vars: Array[Int], src_body: Type, vars: Array[Int], body: Type, nested: Bool) -> String {
   let marked: Array[(String, Int)] = []
   published_row_formal_ids(Some(row), src_vars, marked)
-  if Array::length(marked) == 0 {
+  let marker_words = if nested {
+    published_marker_words(row)
+  } else {
+    array_empty()
+  }
+  if Array::length(marked) == 0 && Array::length(marker_words) == 0 {
     row
   } else {
     let pairs: Array[(Int, Type)] = []
@@ -331,8 +370,65 @@ fn respell_imported_markers(row: String, src_vars: Array[Int], src_body: Type, v
       }
       mi = mi + 1
     }
-    rename_row_bracket_words(strip_published_formal_suffixes(row), renames)
+    if nested {
+      for word in marker_words {
+        let base = strip_published_formal_suffixes(word)
+        let mut renamed = false
+        for rename in renames {
+          let (from, _) = rename
+          if from == base {
+            renamed = true
+          } else {
+            ()
+          }
+        }
+        if !renamed {
+          Array::push(renames, (base, String::concat(base, String::concat("$", __to_string(Array::length(vars))))))
+        } else {
+          ()
+        }
+      }
+      rename_generic_label_words(strip_published_formal_suffixes(row), renames)
+    } else {
+      rename_row_bracket_words(strip_published_formal_suffixes(row), renames)
+    }
   }
+}
+
+/// Every word of `row` spelled as a published formal (`NAME$K`), in range of
+/// a quantifier list or not.
+export fn published_marker_words(row: String) -> Array[String] {
+  let out: Array[String] = []
+  let n = String::length(row)
+  let mut start = 0 - 1
+  let mut i = 0
+  while i <= n {
+    let c = if i < n {
+      String::char_code_at(row, i)
+    } else {
+      0
+    }
+    let word_char = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 95 || c == 36
+    if word_char {
+      if start < 0 {
+        start = i
+      } else {
+        ()
+      }
+    } else if start >= 0 {
+      let w = String::substring(row, start, i)
+      if strip_published_formal_suffixes(w) != w {
+        Array::push(out, w)
+      } else {
+        ()
+      }
+      start = 0 - 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
 }
 
 /// `row` with every whole word inside a label's brackets renamed per
