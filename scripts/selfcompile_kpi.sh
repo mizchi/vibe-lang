@@ -124,13 +124,30 @@ STATS_FILE="$OUT_DIR/stats.txt"
 CACHE_DIR="$OUT_DIR/cache"
 mkdir -p "$CACHE_DIR"
 
-start_ns=$(date +%s%N)
+# Realtime clock changes must not make elapsed time negative or bypass the gate.
+# Read Linux uptime with shell builtins; other hosts use the repository's Node runtime.
+kpi_monotonic_ms() {
+  local elapsed idle whole fraction
+  if [ -r /proc/uptime ]; then
+    read -r elapsed idle < /proc/uptime || return 1
+    whole="${elapsed%%.*}"
+    fraction="${elapsed#*.}000"
+    printf '%s\n' "$((10#$whole * 1000 + 10#${fraction:0:3}))"
+  elif command -v node >/dev/null 2>&1; then
+    node -p '(process.hrtime.bigint() / 1000000n).toString()'
+  else
+    echo "[selfcompile-kpi] no monotonic clock available" >&2
+    return 1
+  fi
+}
+
+start_ms=$(kpi_monotonic_ms)
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   VIBE_WASM_MEMORY_STATS=1 VIBE_BUILD_CACHE_DIR="$CACHE_DIR" \
   bash "${VIBE_KPI_RUNNER_SCRIPT:-scripts/run_wasm_vibe_host_runner.sh}" --invoke cli_main "$STAGE2" \
   "$INPUT" "$OUT_WASM" __no_entry__ 2>"$STATS_FILE"
-end_ns=$(date +%s%N)
-wall_ms=$(( (end_ns - start_ns) / 1000000 ))
+end_ms=$(kpi_monotonic_ms)
+wall_ms=$((end_ms - start_ms))
 
 if [ ! -s "$OUT_WASM" ]; then
   echo "[selfcompile-kpi] compile produced no output wasm (REJECT?):" >&2

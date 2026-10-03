@@ -3,6 +3,19 @@
 CI heap KPI gate, micro benches, and perf-investigation postmortems for the
 compiler / checker.
 
+## Monotonic selfcompile KPI timing (2026-10-03)
+
+selfcompile_kpi.sh measures elapsed time with Linux uptime or a Node monotonic
+clock. A realtime backstep previously produced a negative wall_ms and bypassed
+the optional time budget. Eight regression tests cover both backends and
+runner/heap/cleanup contracts. Eight actual default cold compiles preserve
+user Wasm, allocation volume and reserved pages exactly.
+
+Linux uptime has centisecond resolution; Node fallback helper startup
+contributes to the advisory interval. Heap policy and the baseline remain.
+See the [report](../../docs/internal/reports/monotonic-selfcompile-kpi-2026-10-03.md)
+and [raw record](analysis/monotonic-selfcompile-kpi-2026-10-03.json).
+
 ## Re-export surface query miss bounds (2026-10-03)
 
 Proven complete-cache name absence ends historical surface scans while
