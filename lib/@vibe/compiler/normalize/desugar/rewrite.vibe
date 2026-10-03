@@ -46,6 +46,7 @@ import ./binding_shape_queries.vibe {
   dtd_mask_shadowed_fn_into,
   dtd_mask_shadowed_params,
   dtd_mask_shadowed_pat,
+  dtd_pat_binder_names,
   interp_shape,
   shape_inner,
   shape_is_composite,
@@ -1668,7 +1669,9 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
           arm_vars0
         }
         let arm_vars = dtd_mask_shadowed_pat(arm_vars1, p, fn_returns)
-        Array::push(out, (p, rewrite_expr(b, gens, traits, struct_sets, dict_binds, arm_vars, fn_returns)))
+        // A pattern binder of a generic's spelling is the arm's own value
+        // (Codex on #3299), in the gens as in `var_types`.
+        Array::push(out, (p, rewrite_expr(b, gens_masked_by(gens, dtd_pat_binder_names(p)), traits, struct_sets, dict_binds, arm_vars, fn_returns)))
         i = i + 1
       }
       EMatch(rewrite_expr(scrut, gens, traits, struct_sets, dict_binds, var_types, fn_returns), out)
@@ -1683,7 +1686,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
         } else {
           var_types
         }, p, fn_returns))
-        Array::push(out, (p, rewrite_expr(b, gens, traits, struct_sets, dict_binds, arm_vars, fn_returns)))
+        Array::push(out, (p, rewrite_expr(b, gens_masked_by(gens, dtd_pat_binder_names(p)), traits, struct_sets, dict_binds, arm_vars, fn_returns)))
         i = i + 1
       }
       EHandle(rewrite_expr(scrut, gens, traits, struct_sets, dict_binds, var_types, fn_returns), out)
@@ -1708,8 +1711,16 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
       } else {
         var_types
       }
-      let body_vars = dtd_mask_shadowed_params(body_vars0, [(name, None)], fn_returns)
-      let rbody = rewrite_expr(body, gens_masked_by(gens, [name]), traits, struct_sets, dict_binds, body_vars, fn_returns)
+      // Both binders are local: the value and, in `for i, x in ..`, the index
+      // (Codex on #3299).
+      let for_names = match idx {
+        Some(iname) => [name, iname],
+        None => [name]
+      }
+      let body_vars = dtd_mask_shadowed_params(body_vars0, for for_name in for_names {
+        (for_name, None)
+      }, fn_returns)
+      let rbody = rewrite_expr(body, gens_masked_by(gens, for_names), traits, struct_sets, dict_binds, body_vars, fn_returns)
       // #1350: one surface, one classification. A plain `for x in e` is
       // iterator/iterable/array-classified only when a method-bearing trait is
       // present (without one there are no `impl ::next` methods to dispatch),
