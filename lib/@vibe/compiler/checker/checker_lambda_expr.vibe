@@ -53,6 +53,7 @@ import @vibe/compiler/core {
   trait_method_sig_deep,
   type_constructor_name,
   type_to_string,
+  types_equal,
   unify
 }
 
@@ -61,7 +62,7 @@ import @vibe/ast {
 }
 
 import @vibe/parser {
-  lex
+  lex, parse_type
 }
 
 import ./builtins.vibe {
@@ -119,6 +120,7 @@ import ./checker_eq_unbounded_formal_msg.vibe {
   check_assignable,
   check_assignable_set_end,
   direct_result_enum_payload_param_indices,
+  effect_tparams,
   env_has_active_region,
   interp_is_shim_body,
   return_provenance_was_written,
@@ -128,7 +130,12 @@ import ./checker_eq_unbounded_formal_msg.vibe {
 }
 
 import ./checker_infer_binop_type.vibe {
-  TypedOccurrenceRoleLaneCapture, append_legacy_typed_occurrence, param_types_are_spawn_shaped, record_receiver_kind, resolve_tparams_in
+  TypedOccurrenceRoleLaneCapture,
+  append_legacy_typed_occurrence,
+  effect_inst_env_key,
+  param_types_are_spawn_shaped,
+  record_receiver_kind,
+  resolve_tparams_in
 }
 
 import ./checker_merge_capture_provenance.vibe {
@@ -1902,7 +1909,8 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
       }
       // Only a direct top-level declaration is expanded by collect_show_shims.
       // Consume the marker so a nested lambda cannot inherit the exemption.
-      let body_env = env_bind(env_bind(return_env, "#interp.top.fn", CtUnit), "#interp.shim.body", if top_level && interp_is_shim_body(params, body) {
+      let row_inst_env = bind_row_effect_instantiations(return_env, effect, defs, tparams)
+      let body_env = env_bind(env_bind(row_inst_env, "#interp.top.fn", CtUnit), "#interp.shim.body", if top_level && interp_is_shim_body(params, body) {
         CtBool
       } else {
         CtUnit
@@ -2180,4 +2188,111 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
     },
     _ => (CtUnknown, s, c)
   }
+}
+
+/// #3275: publish the instantiation a function's own `with` row writes for a
+/// declared generic effect (`with Box[Int]`) under the key a `handle` uses
+/// (`effect_instantiate`), so a `perform Box::Put(..)` in the body is checked
+/// against `Int` instead of a fresh variable. Without it the payload was never
+/// compared with the row, and `perform Box::Put("x")` under `with Box[Int]`
+/// compiled and handed a pointer to an arm reading an `Int`.
+///
+/// An explicit row also masks an instantiation inherited from an enclosing
+/// function or handle: a bare `with Box`, two different labels for the same
+/// effect, or an argument the type parser cannot read binds `CtUnit`, which
+/// `effect_inst_lookup` rejects, so those performs keep a fresh instantiation.
+/// A repeated identical label is the same instantiation.
+///
+/// The instantiation is also recorded under `effect_row_inst_key`, so an
+/// unannotated lambda can tell it came from an enclosing ROW rather than a
+/// `handle` (`mask_row_effect_instantiations`).
+fn bind_row_effect_instantiations(env: TypeEnv, row: Option[String], defs: Array[TypeDef], tparams: Array[String]) -> TypeEnv {
+  match row {
+    None => mask_row_effect_instantiations(env, defs),
+    Some(text) => {
+      let seen_bases = array_empty()
+      let seen_labels = array_empty()
+      let mut out = env
+      for raw in String::split(text, ",") {
+        let label = String::trim(raw)
+        let bi = String::index_of(label, "[")
+        let base = if bi > 0 {
+          label[0: bi]
+        } else {
+          label
+        }
+        if Array::length(effect_tparams(defs, base)) == 1 {
+          let mut prior = 0 - 1
+          let mut si = 0
+          while si < Array::length(seen_bases) {
+            if Array::get(seen_bases, si) == base {
+              prior = si
+            }
+            si = si + 1
+          }
+          if prior >= 0 {
+            if Array::get(seen_labels, prior) != label {
+              Array::set(seen_labels, prior, "#conflict")
+              out = env_bind(env_bind(out, effect_inst_env_key(base), CtUnit), effect_row_inst_key(base), CtUnit)
+            } else {
+              ()
+            }
+          } else {
+            Array::push(seen_bases, base)
+            Array::push(seen_labels, label)
+            let parsed = if bi > 0 && String::ends_with(label, "]") {
+              handle {
+                let (arg_te, _) = parse_type(lex(label[bi + 1: String::length(label) - 1]), 0)
+                Some(arg_te)
+              } with { Exception::Throw(_unreadable) => None }
+            } else {
+              None
+            }
+            let inst = match parsed {
+              Some(arg_te) => CtTuple([
+                resolve_tparams_in(resolve_type_expr_shadowed(arg_te, defs, formal_shadow(arg_te, env, tparams)), env)
+              ]),
+              None => CtUnit
+            }
+            out = env_bind(env_bind(out, effect_inst_env_key(base), inst), effect_row_inst_key(base), inst)
+          }
+        } else {
+          ()
+        }
+      }
+      out
+    }
+  }
+}
+
+fn effect_row_inst_key(eff: String) -> String {
+  String::concat("$einst_row$", eff)
+}
+
+/// #3275 (Codex on #3304): a lambda with no `with` row does not inherit an
+/// instantiation an enclosing function's ROW chose. Its row is derived where
+/// it is used -- passed to a callback parameter typed `() -> Int with
+/// Box[String]`, its performs belong to that row, not the outer `Box[Int]`.
+/// An instantiation a `handle` chose is a different binding (fresh variables,
+/// so not equal to the row's) and is still inherited, as before.
+fn mask_row_effect_instantiations(env: TypeEnv, defs: Array[TypeDef]) -> TypeEnv {
+  let mut out = env
+  for d in defs {
+    match d {
+      TDEffect(name, _, etps) => if Array::length(etps) == 1 {
+        match (env_lookup(env, effect_row_inst_key(name)), env_lookup(env, effect_inst_env_key(name))) {
+          (Some(row_inst), Some(inst)) => if types_equal(row_inst, inst) {
+            out = env_bind(out, effect_inst_env_key(name), CtUnit)
+          } else {
+            ()
+          },
+          _ => ()
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+  }
+  out
 }

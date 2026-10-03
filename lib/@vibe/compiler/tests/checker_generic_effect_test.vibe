@@ -130,3 +130,61 @@ test "a row instantiated twice does not match a row carrying an extra effect" {
   let diags = collect_all_diagnostics(src)
   assert(Array::length(diags) > 0)
 }
+
+// #3275: a function's own `with Box[Int]` row instantiates the effect for the
+// performs in its body. Before, the perform got a fresh `T`, so a `String`
+// payload under `with Box[Int]` was accepted and an arm read the pointer as
+// an `Int`.
+
+test "a perform payload is checked against the row's type argument" {
+  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn producer() -> Int with Box[Int] {\n  perform Box::Put(\"x\")\n}\n\nlet main = () -> Int {\n  handle {\n    producer()\n  } with {\n    Box::Put(v) => resume(v + 1)\n  }\n}\n"
+  let diags = collect_all_diagnostics(src)
+  assert(eq(Array::length(diags), 1))
+  assert(String::contains(Array::get(diags, 0), "perform argument type mismatch for Box::Put"))
+}
+
+test "a perform's value is typed by the row's type argument" {
+  let src = "effect St[S] {\n  Get() -> S\n}\n\nfn reader() -> String with St[Int] {\n  perform St::Get()\n}\n\nlet main = () -> Int {\n  42\n}\n"
+  let diags = collect_all_diagnostics(src)
+  assert(eq(Array::length(diags), 1))
+  assert(String::contains(Array::get(diags, 0), "return type mismatch"))
+}
+
+test "a payload that agrees with the row's type argument still checks" {
+  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn producer() -> Int with Box[Int] {\n  perform Box::Put(41)\n}\n\nlet main = () -> Int {\n  handle {\n    producer()\n  } with {\n    Box::Put(v) => resume(v + 1)\n  }\n}\n"
+  let diags = collect_all_diagnostics(src)
+  assert(eq(Array::length(diags), 0))
+}
+
+test "a bare generic row label leaves the instantiation open" {
+  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn producer() -> Int with Box {\n  perform Box::Put(\"x\")\n}\n\nlet main = () -> Int {\n  42\n}\n"
+  let diags = collect_all_diagnostics(src)
+  assert(eq(Array::length(diags), 0))
+}
+
+test "a handle inside the function chooses its own instantiation" {
+  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn producer() -> Int with Box[Int] {\n  let n = handle {\n    perform Box::Put(\"x\")\n  } with {\n    Box::Put(s) => resume(String::length(s))\n  }\n  perform Box::Put(n)\n}\n\nlet main = () -> Int {\n  42\n}\n"
+  let diags = collect_all_diagnostics(src)
+  assert(eq(Array::length(diags), 0))
+}
+
+test "a nested lambda with its own bare row is not pinned by the outer row" {
+  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn producer() -> Int with Box[Int] {\n  let f = () -> Int with Box {\n    perform Box::Put(\"x\")\n  }\n  perform Box::Put(1)\n}\n\nlet main = () -> Int {\n  42\n}\n"
+  let diags = collect_all_diagnostics(src)
+  assert(eq(Array::length(diags), 0))
+}
+
+test "a repeated identical row label keeps the instantiation" {
+  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn producer() -> Int with Box[Int] + Box[Int] {\n  perform Box::Put(\"x\")\n}\n\nlet main = () -> Int {\n  42\n}\n"
+  let diags = collect_all_diagnostics(src)
+  assert(eq(Array::length(diags), 1))
+  assert(String::contains(Array::get(diags, 0), "perform argument type mismatch for Box::Put"))
+}
+
+test "an unannotated callback lambda is not pinned by the enclosing row" {
+  // Codex on #3304: the lambda's performs belong to the callback parameter's
+  // `Box[String]` row, which `run_cb` handles, not to `producer`'s `Box[Int]`.
+  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn run_cb(f: () -> Int with Box[String]) -> Int {\n  handle {\n    f()\n  } with {\n    Box::Put(s) => resume(String::length(s))\n  }\n}\n\nfn producer() -> Int with Box[Int] {\n  run_cb(() -> {\n    perform Box::Put(\"x\")\n  }) + perform Box::Put(1)\n}\n\nlet main = () -> Int {\n  42\n}\n"
+  let diags = collect_all_diagnostics(src)
+  assert(eq(Array::length(diags), 0))
+}
