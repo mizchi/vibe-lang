@@ -3,6 +3,20 @@
 CI heap KPI gate, micro benches, and perf-investigation postmortems for the
 compiler / checker.
 
+## Known-size environment index arrays (2026-10-03)
+
+Four preallocated permutation/name/binding/probe arrays reduce compiler-sized
+bump allocation by 29,620,104 B (1.42%, 28.25 MiB), with lower allocation on all
+measured FS/package corpora. Names ownership, first-binding semantics and the
+512-statement cache cadence remain intact. Reserved capacity is unchanged;
+wall effects remain inconclusive after timing follow-ups.
+
+The [investigation report](../../docs/internal/reports/env-index-array-capacity-2026-10-03.md)
+and [raw record](analysis/env-index-array-capacity-2026-10-03.json) retain 228
+controlled samples, six ordinary default KPI runs and 188 actual bump/RC blocks.
+The ordinary cold KPI improves 1,026,358,856 → 1,019,539,416 B; the committed
+absolute baseline is ratcheted down with its +10% tolerance unchanged.
+
 ## Substitution value-key bounds (2026-10-03)
 
 Repeated full-chain misses dominate substitution lookup on the compiler-sized

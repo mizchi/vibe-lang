@@ -685,3 +685,43 @@ test "canonical snapshot invalidation also discards stale positive value rows" {
     _ => assert(false)
   }
 }
+
+fn preallocated_temporary_env() -> TypeEnv {
+  let ty = CtNamed(String::concat("owned", "Type"), [CtArray(CtString)])
+  let path = String::concat("/dep", ".vibe")
+  let name = String::concat("source", "_name")
+  env_cache(env_bind_with_origin(EnvEmpty, "payload", ty, BindingOriginModuleExport(path, name)))
+}
+
+test "preallocated cache rows retain payload and provenance after temporaries expire" {
+  let result = env_lookup_binding(preallocated_temporary_env(), "payload")
+  let pressure: Array[String] = []
+  let mut i = 0
+  while i < 200 {
+    Array::push(pressure, String::concat("replacement", __to_string(i)))
+    i = i + 1
+  }
+  assert(Array::length(pressure) == 200)
+  match result {
+    None => assert(false),
+    Some(binding) => {
+      assert(types_equal(binding.ty, CtNamed("ownedType", [CtArray(CtString)])))
+      match binding.origin {
+        BindingOriginModuleExport(path, name) => {
+          assert(path == "/dep.vibe")
+          assert(name == "source_name")
+        },
+        _ => assert(false)
+      }
+    }
+  }
+}
+
+test "preallocated cache rows preserve empty and singleton lookups" {
+  let empty = env_cache(EnvEmpty)
+  assert(env_lookup(empty, "missing") is None)
+  let single = env_cache(env_bind(EnvEmpty, "only", CtInt))
+  assert(env_lookup(single, "only") is Some(CtInt))
+  assert(env_lookup(single, "missing") is None)
+  assert(env_lookup(env_cache(single), "only") is Some(CtInt))
+}
