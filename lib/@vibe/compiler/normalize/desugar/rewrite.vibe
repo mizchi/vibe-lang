@@ -1688,12 +1688,17 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
       let mut i = 0
       while i < Array::length(arms) {
         let (p, b) = Array::get(arms, i)
-        let arm_vars = dtd_exception_kind_arm_var_types(p, dtd_mask_shadowed_pat(if Array::get(dtd_constructor_tracking, 0) {
+        // Every handler arm binds `resume` besides its pattern's names, as
+        // the checker's arm scope does, so a function of that spelling is
+        // masked here like any other shadowed binding (Codex on #3299).
+        let arm_vars = dtd_exception_kind_arm_var_types(p, dtd_mask_shadowed_params(dtd_mask_shadowed_pat(if Array::get(dtd_constructor_tracking, 0) {
           constructor_handler_arm_var_types(scrut, p, gens, struct_sets, var_types, fn_returns)
         } else {
           var_types
-        }, p, fn_returns))
-        Array::push(out, (p, rewrite_expr(b, gens_masked_by(gens, dtd_pat_binder_names(p)), traits, struct_sets, dict_binds, arm_vars, fn_returns)))
+        }, p, fn_returns), [("resume", None)], fn_returns))
+        let arm_names = dtd_pat_binder_names(p)
+        Array::push(arm_names, "resume")
+        Array::push(out, (p, rewrite_expr(b, gens_masked_by(gens, arm_names), traits, struct_sets, dict_binds, arm_vars, fn_returns)))
         i = i + 1
       }
       EHandle(rewrite_expr(scrut, gens, traits, struct_sets, dict_binds, var_types, fn_returns), out)
@@ -2259,9 +2264,10 @@ fn dtd_check_threaded_generic_value(name: String, gens: Array[DictGen], var_type
 /// `gens` with every name in `names` that a gen binds masked by a gen that
 /// threads nothing, the way `gens_after_let` masks one for a `let`. Every
 /// other binder of a generic's spelling -- a parameter of a lambda, a `loop`
-/// or a top-level function, a `for` binder, a pattern binder, a `let*` binder
-/// -- is a local value, not that generic: its calls take no dictionary, and
-/// naming it as a value is not a reference to the generic (Codex on #3299).
+/// or a top-level function, a `for` binder, a pattern binder, a handler arm's
+/// `resume`, a `let*` binder -- is a local value, not that generic: its calls
+/// take no dictionary, and naming it as a value is not a reference to the
+/// generic (Codex on #3299).
 fn gens_masked_by(gens: Array[DictGen], names: Array[String]) -> Array[DictGen] {
   let mut out = gens
   for n in names {

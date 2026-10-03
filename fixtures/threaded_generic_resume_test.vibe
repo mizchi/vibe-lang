@@ -1,0 +1,42 @@
+//# Every handler arm binds `resume`, so a top-level generic of that spelling
+//# whose `[T: Eq]` bound is supplied at each call is shadowed inside the arm.
+//# Capturing the continuation (`let k = resume`) was refused as if it named
+//# the generic, and calling it (`resume(n * 100)`) was handed the generic's
+//# dictionary and refused for a missing `Eq` type.
+
+effect Ask {
+  Get(Int) -> Int
+}
+
+fn resume[T: Eq](a: T, b: T) -> Bool {
+  a == b
+}
+
+fn asks() -> Int with Ask {
+  perform Ask::Get(1) + perform Ask::Get(2)
+}
+
+let captured = () -> Int {
+  handle {
+    asks()
+  } with {
+    Ask::Get(n) => {
+      let k = resume
+      k(n + 10)
+    }
+  }
+}
+
+let called = () -> Int {
+  handle {
+    asks()
+  } with {
+    Ask::Get(n) => resume(n * 100)
+  }
+}
+
+test "a handler arm's resume shadows a threaded generic named resume" {
+  inspect(captured(), "23")
+  inspect(called(), "300")
+  inspect(resume(2, 2), "true")
+}
