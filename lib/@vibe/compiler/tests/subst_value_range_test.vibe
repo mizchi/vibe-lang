@@ -1,0 +1,165 @@
+// Conservative key bounds accelerate misses without replacing binding authority.
+import @vibe/compiler/core {
+  Subst, Type, collect_subst_bounds_pairs, subst_apply, subst_bind_value, subst_bounds_for, subst_lookup, types_equal
+}
+
+fn authoritative(s: Subst) -> Subst {
+  match s {
+    SubstEmpty => SubstEmpty,
+    SubstBind(id, ty, rest) => SubstBind(id, ty, authoritative(rest)),
+    SubstBound(id, bounds, rest) => SubstBound(id, bounds, authoritative(rest)),
+    SubstCached(values, bounds, rest) => SubstCached(values, bounds, authoritative(rest)),
+    SubstEffBind(name, value, rest) => SubstEffBind(name, value, authoritative(rest)),
+    SubstValueRange(_, rest) => authoritative(rest)
+  }
+}
+
+fn assert_result(actual: Option[Type], expected: Option[Type]) -> Unit {
+  match actual {
+    None => assert(expected is None),
+    Some(a) => match expected {
+      Some(b) => assert(types_equal(a, b)),
+      None => assert(false)
+    }
+  }
+}
+
+fn agrees(s: Subst, ids: Array[Int]) -> Unit {
+  let original = authoritative(s)
+  for id in ids {
+    assert_result(subst_lookup(s, id), subst_lookup(original, id))
+  }
+  ()
+}
+
+fn cache(key: String, value: Type, rest: Subst) -> Subst {
+  let values: Map[String, Type] = Map::new()
+  let bounds: Map[String, Array[String]] = Map::new()
+  SubstCached(Map::set(values, key, value), bounds, rest)
+}
+
+test "negative first keys do not borrow a zero upper bound" {
+  let s = subst_bind_value(-20, CtInt, SubstEmpty)
+  assert(s is SubstValueRange(-20, _))
+  assert_result(subst_lookup(s, -20), Some(CtInt))
+  agrees(s, [-21, -20, -19, 0, 1])
+}
+
+test "duplicate keys retain the newest binding and earlier snapshots" {
+  let old = subst_bind_value(7, CtInt, SubstEmpty)
+  let newer = subst_bind_value(7, CtString, old)
+  assert_result(subst_lookup(old, 7), Some(CtInt))
+  assert_result(subst_lookup(newer, 7), Some(CtString))
+  agrees(old, [6, 7, 8])
+  agrees(newer, [6, 7, 8])
+}
+
+test "forks with reused ids keep their own values and maxima" {
+  let common = subst_bind_value(3, CtBool, SubstEmpty)
+  let left = subst_bind_value(100, CtInt, common)
+  let right = subst_bind_value(100, CtString, common)
+  let separate = subst_bind_value(-2, CtUnit, SubstEmpty)
+  agrees(common, [-2, 3, 100, 101])
+  agrees(left, [3, 99, 100, 101])
+  agrees(right, [3, 99, 100, 101])
+  agrees(separate, [-3, -2, 3, 100])
+  assert_result(subst_lookup(common, 100), None)
+}
+
+test "raw prefixes are included before a range is published" {
+  let indexed = subst_bind_value(5, CtInt, SubstEmpty)
+  let raw = SubstBind(900, CtString, SubstBound(2000, ["Eq"], SubstEffBind("e", "Fs", indexed)))
+  let s = subst_bind_value(6, CtBool, raw)
+  assert(s is SubstValueRange(900, _))
+  agrees(s, [4, 5, 6, 899, 900, 901, 2000])
+}
+
+test "an uncached raw chain is admitted from its actual keys" {
+  let raw = SubstBind(-1, CtString, SubstBind(-100, CtInt, SubstEmpty))
+  let s = subst_bind_value(-10, CtBool, raw)
+  assert(s is SubstValueRange(-1, _))
+  agrees(s, [-101, -100, -10, -1, 0])
+}
+
+test "arbitrary cached keys disable enclosing upper-bound coverage" {
+  let indexed = subst_bind_value(2, CtInt, SubstEmpty)
+  let cached = cache("1000000", CtString, indexed)
+  let s = subst_bind_value(3, CtBool, cached)
+  assert(s is SubstBind(_, _, _))
+  assert_result(subst_lookup(s, 1000000), Some(CtString))
+  agrees(s, [1, 2, 3, 4, 1000000, 1000001])
+}
+
+test "cached head precedence and partial-cache misses remain exact" {
+  let old = subst_bind_value(7, CtInt, subst_bind_value(8, CtBool, SubstEmpty))
+  let head = cache("7", CtString, old)
+  let s = subst_bind_value(6, CtUnit, head)
+  assert_result(subst_lookup(s, 7), Some(CtString))
+  assert_result(subst_lookup(s, 8), Some(CtBool))
+  agrees(s, [5, 6, 7, 8, 9])
+}
+
+test "cached key spelling is not normalized or used as a bound" {
+  let s = subst_bind_value(1, CtUnit, cache("07", CtString, cache("-3", CtBool, SubstEmpty)))
+  agrees(s, [-4, -3, -2, 1, 7, 8])
+  assert_result(subst_lookup(s, 7), None)
+  assert_result(subst_lookup(s, -3), Some(CtBool))
+}
+
+test "signed large ids use full integer comparisons" {
+  let big = 1<<40
+  let s = subst_bind_value(big, CtInt, subst_bind_value(0 - big, CtString, SubstEmpty))
+  agrees(s, [0 - big - 1, 0 - big, 0, big - 1, big, big + 1])
+}
+
+test "bounds and effects do not become value-binding keys" {
+  let s = subst_bind_value(-9, CtInt, SubstBound(1000, ["Show"], SubstEffBind("e", "Log", SubstEmpty)))
+  assert(s is SubstValueRange(-9, _))
+  agrees(s, [-10, -9, -8, 0, 1000])
+}
+
+test "growing indexed chains preserve all hits and misses" {
+  let mut s = SubstEmpty
+  let mut i = 0
+  while i < 512 {
+    s = subst_bind_value(i * 2, CtVar(i), s)
+    i = i + 1
+  }
+  agrees(s, [-1, 0, 1, 100, 101, 1022, 1023, 100000])
+}
+
+fn temporary_payload() -> Subst {
+  subst_bind_value(7, CtNamed(String::concat("owned", "Type"), [
+    CtArray(CtString)
+  ]), SubstEmpty)
+}
+
+test "returned payloads survive temporary ranges and allocation pressure" {
+  let result = subst_lookup(temporary_payload(), 7)
+  let pressure: Array[String] = []
+  let mut i = 0
+  while i < 200 {
+    Array::push(pressure, String::concat("replacement", __to_string(i)))
+    i = i + 1
+  }
+  assert(Array::length(pressure) == 200)
+  assert_result(result, Some(CtNamed("ownedType", [CtArray(CtString)])))
+}
+
+test "range frames preserve bound order duplicates and pair observations" {
+  let old = subst_bind_value(1, CtBool, SubstBound(7, ["Old"], SubstEmpty))
+  let s = subst_bind_value(2, CtString, SubstBound(7, ["New", "New"], old))
+  let bounds = subst_bounds_for(s, 7)
+  assert(bounds == ["New", "New", "Old"])
+  let rows = collect_subst_bounds_pairs(s)
+  assert(Array::length(rows) == 1)
+  let (id, first) = Array::get(rows, 0)
+  assert(id == 7)
+  assert(first == ["New", "New"])
+}
+
+test "range frames remain transparent to effect and nested type resolution" {
+  let s = subst_bind_value(1, CtInt, SubstEffBind("e", "f", SubstEffBind("f", "Fs", SubstEmpty)))
+  let actual = subst_apply(s, CtFn([CtVar(1), CtVar(99)], CtArray(CtVar(1)), Some("e")))
+  assert(types_equal(actual, CtFn([CtInt, CtVar(99)], CtArray(CtInt), Some("Fs"))))
+}
