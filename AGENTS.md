@@ -35,8 +35,12 @@ identity (#3297, below). A bound that extends a program's own marker
 `trait Eq {}` (`trait Key: Eq {}`, `[T: Key]`) is refused at a non-scalar
 instantiation exactly like `[T: Eq]` itself (#3327): the #2612 guard follows
 supertraits, so a chain or a subtrait of the prelude's marker `Ord` is judged
-as the marker it extends, and only a subtrait that declares `equals(Self,
-Self) -> Bool` itself is exempt, because `==` dispatches through that. The
+as the marker it extends, and only a subtrait whose witness dictionary carries
+`equals(Self, Self) -> Bool` is exempt, because `==` dispatches through that.
+Which `equals` the dictionary carries is the first one its supertraits flatten
+to, and the guard asks the same flattening (`bound_flat_self_equals`): `trait
+Key: Good + Bad + Eq {}` keeps `Good`'s and is accepted, `Bad + Good + Eq`
+keeps `Bad`'s `equals(Int, Int)` and is refused. The
 builtin `Eq` has no such refusal: an `Eq` bound anywhere in the program, a
 `test` block included, injects its method, and a methodless subtrait of it
 (`trait Key: Eq {}`) dispatches through the witness (#3312). Three measured

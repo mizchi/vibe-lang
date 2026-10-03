@@ -1588,6 +1588,185 @@ export fn trait_definition(env: TypeEnv, name: String) -> Option[(Array[String],
   }
 }
 
+//# Flattened trait signatures: the one rule the witness dictionary and the checker share
+
+/// The signatures `trait_name` declares in a `(trait, sigs)` table, matched
+/// by its bare name.
+export fn lookup_flat_trait_sigs(traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], name: String) -> Option[Array[(String, Array[TypeExpr], TypeExpr)]] {
+  let mut i = 0
+  let mut result = None
+  while i < Array::length(traits) {
+    let (tname, sigs) = Array::get(traits, i)
+    if tname == trait_ref_name(name) {
+      result = Some(sigs)
+      i = Array::length(traits)
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+
+fn flat_lookup_supers(supers_map: Array[(String, Array[String])], name: String) -> Array[String] {
+  let mut i = 0
+  let mut result: Array[String] = []
+  while i < Array::length(supers_map) {
+    let (tname, supers) = Array::get(supers_map, i)
+    if tname == trait_ref_name(name) {
+      result = supers
+      i = Array::length(supers_map)
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+
+fn flat_names_have(names: Array[String], name: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while !found && i < Array::length(names) {
+    if Array::get(names, i) == name {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Flatten a trait's method signatures with those of its (transitive) method-
+/// bearing supertraits, deduplicating by method name, so `[T: B]` for
+/// `trait B: A` can dispatch both B's and A's methods through one flat witness
+/// dictionary. `acc_names` / `out` accumulate across the recursion.
+///
+/// Supertrait methods are emitted BEFORE the trait's own, so an inherited method
+/// keeps the same field index in every dict that contains it (e.g. `measure`
+/// is index 0 in both `MeasurableDict` and `SizedDict`). This matters because
+/// codegen resolves `dict.field` by a global first-match field-name search
+/// (compile_expr_tail4.vibe), not by the object's static type — so a shared
+/// field name must sit at a consistent index across structs. (Single supertrait
+/// chains only; multiple-supertrait ordering is a deferred slice.)
+/// `owners` records `(method name, the trait that DECLARES it)` in lockstep
+/// with `out`. A flattened list copies a supertrait's methods into the child,
+/// so the dict struct's owner is not the declaring trait of every field --
+/// see `synthesized_dict_field_trait` (#2286, Codex review on #2313).
+///
+/// It lives in core (#3327 review) because the checker asks the same question
+/// the dictionary answers -- which `equals` does `[T: Key]` dispatch through?
+/// -- and a parallel scan of the supertrait closure answered it differently:
+/// with `trait Key: Good + Bad + Eq {}`, the first `equals` wins and the
+/// second is dropped here, while the scan rejected the bound for the dropped
+/// one.
+export fn flatten_trait_sigs_into(tname: String, traits_raw: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], supers_map: Array[(String, Array[String])], acc_names: Array[String], out: Array[(String, Array[TypeExpr], TypeExpr)], owners: Array[(String, String)], visiting: Array[String]) -> Unit {
+  if flat_names_have(visiting, tname) {
+    ()
+  } else {
+    let visiting_len = Array::length(visiting)
+    Array::push(visiting, tname)
+    let supers = flat_lookup_supers(supers_map, tname)
+    let mut s = 0
+    while s < Array::length(supers) {
+      flatten_trait_sigs_into(Array::get(supers, s), traits_raw, supers_map, acc_names, out, owners, visiting)
+      s = s + 1
+    }
+    Array::truncate(visiting, visiting_len)
+    match lookup_flat_trait_sigs(traits_raw, tname) {
+      Some(sigs) => {
+        let mut i = 0
+        while i < Array::length(sigs) {
+          let (mname, params, ret) = Array::get(sigs, i)
+          if flat_names_have(acc_names, mname) {
+            ()
+          } else {
+            Array::push(acc_names, mname)
+            Array::push(out, (mname, params, ret))
+            Array::push(owners, (mname, tname))
+          }
+          i = i + 1
+        }
+      },
+      None => ()
+    }
+  }
+}
+
+/// Is the FIRST signature named `method` in `sigs` declared `(Self, Self) ->
+/// Bool` -- the shape a comparison witness needs? The first one is the one a
+/// flattened dictionary keeps, so it is the one dispatch would call.
+///
+/// Both parameters must be spelled `Self`, not merely counted. Codex on #2734
+/// measured the hole: `trait Eq { equals(Int, Int) -> Bool }` with a constant
+/// body answered `true` for two DIFFERENT `Pt`, because the rung handed erased
+/// `Pt` values to a method declared over `Int`.
+export fn trait_sigs_first_self_relation(sigs: Array[(String, Array[TypeExpr], TypeExpr)], method: String) -> Bool {
+  let mut i = 0
+  let mut ok = false
+  while i < Array::length(sigs) {
+    let (m, params, ret) = Array::get(sigs, i)
+    if m == method {
+      ok = Array::length(params) == 2 && flat_type_expr_is(Array::get(params, 0), "Self") && flat_type_expr_is(Array::get(params, 1), "Self") && flat_type_expr_is(ret, "Bool")
+      i = Array::length(sigs)
+    } else {
+      i = i + 1
+    }
+  }
+  ok
+}
+
+fn flat_type_expr_is(te: TypeExpr, name: String) -> Bool {
+  match te {
+    TyName(n) => n == name,
+    _ => false
+  }
+}
+
+/// #3327 review: does the witness dictionary for `bound` carry
+/// `equals(Self, Self) -> Bool`, the one method `==` dispatches through?
+///
+/// Built from the trait declarations in `env` with `flatten_trait_sigs_into`,
+/// the rule `flatten_traits` applies to the program's own table, and judged
+/// with `trait_sigs_first_self_relation`, the predicate the desugar's
+/// `dtd_trait_has_self_eq_method` applies. So the answer is the dictionary's:
+/// with `trait Key: Good + Bad + Eq {}` the flattened `equals` is `Good`'s and
+/// `==` compares through it, and with `trait Key: Bad + Good + Eq {}` it is
+/// `Bad`'s `equals(Int, Int)`, which `==` does not call.
+export fn bound_flat_self_equals(env: TypeEnv, bound: String) -> Bool {
+  let traits_raw: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])] = [
+  ]
+  let supers_map: Array[(String, Array[String])] = []
+  let pending: Array[String] = [trait_ref_name(bound)]
+  let seen: Array[String] = []
+  while Array::length(pending) > 0 {
+    let cur = Array::get(pending, Array::length(pending) - 1)
+    Array::truncate(pending, Array::length(pending) - 1)
+    if flat_names_have(seen, cur) {
+      ()
+    } else {
+      Array::push(seen, cur)
+      match trait_definition(env, cur) {
+        Some((supers, methods, _, _)) => {
+          Array::push(traits_raw, (cur, methods))
+          Array::push(supers_map, (cur, supers))
+          let mut i = 0
+          while i < Array::length(supers) {
+            Array::push(pending, trait_ref_name(Array::get(supers, i)))
+            i = i + 1
+          }
+        },
+        None => ()
+      }
+    }
+  }
+  let acc_names: Array[String] = []
+  let flat: Array[(String, Array[TypeExpr], TypeExpr)] = []
+  let owners: Array[(String, String)] = []
+  let visiting: Array[String] = []
+  flatten_trait_sigs_into(trait_ref_name(bound), traits_raw, supers_map, acc_names, flat, owners, visiting)
+  trait_sigs_first_self_relation(flat, "equals")
+}
+
 /// The type formals in scope for one trait method's declared signature: the
 /// trait header's own params (`trait Iter[T]`) followed by that method's own
 /// generics (`map[U](Self, (T) -> U)`). Anything in this list is a binder, not

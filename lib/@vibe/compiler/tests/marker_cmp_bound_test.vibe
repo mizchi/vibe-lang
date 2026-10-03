@@ -187,6 +187,28 @@ test "an equals of another shape on the subtrait is no witness" {
   inspect(rejects(src), "true")
 }
 
+/// Two supertraits that both declare `equals`, in the order `trait Key: <first>
+/// + <second> + Eq {}`: the flattened dictionary keeps the FIRST one.
+fn two_equals_src(first: String, second: String, body: String) -> String {
+  let traits = "trait Eq\ntrait Good {\n  equals(Self, Self) -> Bool\n}\ntrait Bad {\n  equals(Int, Int) -> Bool\n}\n"
+  let key = String::concat("trait Key: ", String::concat(first, String::concat(" + ", String::concat(second, " + Eq\n"))))
+  let rest = String::concat("struct Pt {\n  v: Int\n}\nimpl Eq for Pt\nimpl Key for Pt {\n", String::concat(body, "}\nfn same[T: Key](x: T, y: T) -> Bool {\n  x == y\n}\nlet r = same(Pt::{ v: 1 }, Pt::{ v: 1 })\n"))
+  String::concat(traits, String::concat(key, rest))
+}
+
+test "the witness is the flattened dictionary's first equals: Good first is accepted" {
+  // Codex on #3349: the flattening keeps `Good`'s `equals(Self, Self)` and
+  // drops `Bad`'s by name, so `==` dispatches through `Good`'s. A scan of the
+  // whole closure refused this bound for the `equals` the dictionary drops.
+  inspect(rejects(two_equals_src("Good", "Bad", "  equals(a: Pt, b: Pt) -> Bool {\n    a.v == b.v\n  }\n")), "false")
+}
+
+test "the witness is the flattened dictionary's first equals: Bad first is refused" {
+  // Here the kept `equals` is `Bad`'s `(Int, Int)`, which `==` does not call,
+  // so the comparison would fall back to the builtin one.
+  inspect(rejects(two_equals_src("Bad", "Good", "  equals(a: Int, b: Int) -> Bool {\n    true\n  }\n")), "true")
+}
+
 test "a subtrait of the builtin Eq is untouched" {
   // The builtin `Eq` carries `equals`, and a methodless subtrait dispatches
   // through it (fixtures/eq_bound_inherited_methodless_witness_test.vibe).

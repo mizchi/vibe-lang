@@ -48,6 +48,7 @@ import @vibe/compiler/core {
   TypeDef,
   TypeEnv,
   TypeExpr,
+  bound_flat_self_equals,
   collect_subst_bounds_pairs,
   compiler_owned_type_arity,
   env_lookup,
@@ -303,10 +304,15 @@ fn marker_cmp_bound_is_unsound(env: TypeEnv, trait_bound: String, resolved: Type
 /// lowers to the builtin comparison exactly as it does under `[T: Eq]`. The
 /// walk is `bound_entails_send`'s, which judges `trait Work: Send` this way.
 ///
-/// One shape is exempt: a bound whose supertrait closure declares the witness
+/// One shape is exempt: a bound whose witness dictionary carries the method
 /// `==` dispatches through, `equals(Self, Self) -> Bool` (`trait Key: Eq {
 /// equals(Self, Self) -> Bool }`). The desugar compares through that method,
 /// and measured, it answered `true` and `false` correctly before this guard.
+/// Which `equals` the dictionary carries is `bound_flat_self_equals`'s
+/// answer, computed by the flattening the dictionary itself is built with: a
+/// scan of the whole closure rejected `trait Key: Good + Bad + Eq {}`, whose
+/// flattened `equals` is `Good`'s, for `Bad`'s dropped `equals(Int, Int)`
+/// (Codex on #3349).
 fn inherited_marker_cmp_unsound(env: TypeEnv, trait_bound: String, resolved: Type) -> String {
   let start = trait_ref_name(trait_bound)
   let seen: Array[String] = [start]
@@ -321,7 +327,7 @@ fn inherited_marker_cmp_unsound(env: TypeEnv, trait_bound: String, resolved: Typ
       ()
     } else {
       Array::push(seen, name)
-      if marker_cmp_bound_is_unsound(env, cur, resolved) && not(trait_reference_display(cur) == "Eq" && bound_declares_self_equals(env, trait_bound)) {
+      if marker_cmp_bound_is_unsound(env, cur, resolved) && not(trait_reference_display(cur) == "Eq" && bound_flat_self_equals(env, trait_bound)) {
         found = cur
       } else {
         push_trait_supers(env, name, pending)
@@ -329,59 +335,6 @@ fn inherited_marker_cmp_unsound(env: TypeEnv, trait_bound: String, resolved: Typ
     }
   }
   found
-}
-
-/// #3327: does `bound`, or a trait it extends, declare the `==` witness
-/// `equals(Self, Self) -> Bool`? Every `equals` in the closure must have that
-/// shape: the desugar dispatches through the first one it finds
-/// (`dtd_trait_has_self_eq_method`), so a second, wrong-shaped one is read as
-/// "no witness" rather than guessed past.
-fn bound_declares_self_equals(env: TypeEnv, bound: String) -> Bool {
-  let pending: Array[String] = [trait_ref_name(bound)]
-  let seen: Array[String] = []
-  let mut good = false
-  let mut bad = false
-  while Array::length(pending) > 0 {
-    let cur = Array::get(pending, Array::length(pending) - 1)
-    Array::truncate(pending, Array::length(pending) - 1)
-    if trait_name_seen(seen, cur) {
-      ()
-    } else {
-      Array::push(seen, cur)
-      match trait_definition(env, cur) {
-        Some((supers, methods, _, _)) => {
-          let mut i = 0
-          while i < Array::length(methods) {
-            let (mname, params, ret) = Array::get(methods, i)
-            if mname == "equals" {
-              if Array::length(params) == 2 && type_expr_is_name(Array::get(params, 0), "Self") && type_expr_is_name(Array::get(params, 1), "Self") && type_expr_is_name(ret, "Bool") {
-                good = true
-              } else {
-                bad = true
-              }
-            } else {
-              ()
-            }
-            i = i + 1
-          }
-          let mut j = 0
-          while j < Array::length(supers) {
-            Array::push(pending, trait_ref_name(Array::get(supers, j)))
-            j = j + 1
-          }
-        },
-        None => ()
-      }
-    }
-  }
-  good && not(bad)
-}
-
-fn type_expr_is_name(te: TypeExpr, name: String) -> Bool {
-  match te {
-    TyName(n) => n == name,
-    _ => false
-  }
 }
 
 fn push_trait_supers(env: TypeEnv, name: String, pending: Array[String]) -> Unit {

@@ -970,6 +970,11 @@ send_check_reject "err_type_eq_marker_subtrait_bound_struct.vibe" 'Give `Eq` an 
 # With no `impl Eq for Pt` written, the message must not say one is declared:
 # `Pt` satisfies `Eq` only through `impl Key for Pt`.
 send_check_reject "err_type_eq_marker_subtrait_no_parent_impl.vibe" 'no impl `Eq` for `Pt` (`Key` extends `Eq`): `Pt` implements `Eq`, but `Eq` is a marker trait' "eqsubnoimpl"
+# Codex on #3349: the exemption for a subtrait that carries `equals(Self, Self)`
+# follows the flattened dictionary's FIRST `equals`. `Key: Bad + Good + Eq`
+# keeps `Bad`'s `equals(Int, Int)`, so it is refused; `Good + Bad + Eq` is
+# accepted and answers in fixtures/eq_marker_subtrait_bound_accepted_test.vibe.
+send_check_reject "err_type_eq_marker_subtrait_wrong_first_equals.vibe" 'no impl `Eq` for `Pt` (`Key` extends `Eq`)' "eqsubfirst"
 send_check_reject "err_type_ord_subtrait_bound_struct.vibe" 'no impl `Ord` for `Token` (`Ordered` extends `Ord`)' "ordsub"
 send_check_reject "err_type_ord_subtrait_bound_struct.vibe" 'giving `Ord` a method would not help' "ordsub2"
 # #2895: `Double` is the instantiation the guard used to wave through, and it

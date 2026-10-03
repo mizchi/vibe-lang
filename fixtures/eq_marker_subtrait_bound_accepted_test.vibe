@@ -2,14 +2,19 @@
 //
 // A bound that extends a program's own marker `Eq` is refused at a type the
 // builtin comparison cannot compare by content
-// (fixtures/err_type_eq_marker_subtrait_bound_struct.vibe). These three
-// shapes must keep compiling and answering:
+// (fixtures/err_type_eq_marker_subtrait_bound_struct.vibe). These shapes must
+// keep compiling and answering:
 //
 // - at a scalar the builtin `==` compares by value (`Int`, `String`), the
 //   same instantiations `[T: Eq]` itself accepts;
 // - a subtrait that declares the witness `equals(Self, Self) -> Bool` itself:
 //   `==` dispatches through it, and measured on main at 5f4de5023 it already
 //   answered `true` and `false` correctly;
+// - a subtrait whose FLATTENED dictionary keeps such an `equals` from one
+//   supertrait and drops a wrong-shaped one from another
+//   (`trait GoodFirst: Good + Bad + Eq {}`, Codex on #3349): the first
+//   `equals` wins, and the reverse order is refused
+//   (fixtures/err_type_eq_marker_subtrait_wrong_first_equals.vibe);
 // - a subtrait of a marker that is not a comparison (`Sealed`).
 
 trait Eq {}
@@ -19,6 +24,16 @@ trait Key: Eq {}
 trait Witnessed: Eq {
   equals(Self, Self) -> Bool
 }
+
+trait Good {
+  equals(Self, Self) -> Bool
+}
+
+trait Bad {
+  equals(Int, Int) -> Bool
+}
+
+trait GoodFirst: Good + Bad + Eq {}
 
 trait Sealed {}
 
@@ -74,4 +89,25 @@ test "a subtrait declaring equals(Self, Self) -> Bool compares through it" {
 
 test "a subtrait of a non-comparison marker is untouched" {
   inspect(keep_tagged(Pt::{ v: 3 }).v, "3")
+}
+
+struct Qt {
+  v: Int
+}
+
+impl Eq for Qt {}
+
+impl GoodFirst for Qt {
+  equals(a: Qt, b: Qt) -> Bool {
+    a.v == b.v
+  }
+}
+
+fn same_good_first[T: GoodFirst](x: T, y: T) -> Bool {
+  x == y
+}
+
+test "the flattened dictionary's first equals is the witness" {
+  inspect(same_good_first(Qt::{ v: 1 }, Qt::{ v: 1 }), "true")
+  inspect(same_good_first(Qt::{ v: 1 }, Qt::{ v: 2 }), "false")
 }

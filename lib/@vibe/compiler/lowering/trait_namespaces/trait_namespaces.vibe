@@ -1,5 +1,5 @@
 import @vibe/compiler/core {
-  Expr, ImportItem, ImportKind, Stmt, TypeEnv, TypeExpr, __to_string, trait_definition
+  Expr, ImportItem, ImportKind, Stmt, TypeEnv, TypeExpr, __to_string, flatten_trait_sigs_into, lookup_flat_trait_sigs, trait_definition
 }
 
 import @vibe/ast {
@@ -1231,70 +1231,6 @@ export fn collect_trait_supers(stmts: Array[Stmt]) -> Array[(String, Array[Strin
   out
 }
 
-fn lookup_supers(supers_map: Array[(String, Array[String])], name: String) -> Array[String] {
-  let mut i = 0
-  let mut result = empty_str_array()
-  while i < Array::length(supers_map) {
-    let (tname, supers) = Array::get(supers_map, i)
-    if tname == trait_ref_name(name) {
-      result = supers
-      i = Array::length(supers_map)
-    } else {
-      i = i + 1
-    }
-  }
-  result
-}
-
-/// Flatten a trait's method signatures with those of its (transitive) method-
-/// bearing supertraits, deduplicating by method name, so `[T: B]` for
-/// `trait B: A` can dispatch both B's and A's methods through one flat witness
-/// dictionary. `acc_names` / `out` accumulate across the recursion.
-///
-/// Supertrait methods are emitted BEFORE the trait's own, so an inherited method
-/// keeps the same field index in every dict that contains it (e.g. `measure`
-/// is index 0 in both `MeasurableDict` and `SizedDict`). This matters because
-/// codegen resolves `dict.field` by a global first-match field-name search
-/// (compile_expr_tail4.vibe), not by the object's static type — so a shared
-/// field name must sit at a consistent index across structs. (Single supertrait
-/// chains only; multiple-supertrait ordering is a deferred slice.)
-/// `owners` records `(method name, the trait that DECLARES it)` in lockstep
-/// with `out`. A flattened list copies a supertrait's methods into the child,
-/// so the dict struct's owner is not the declaring trait of every field --
-/// see `synthesized_dict_field_trait` (#2286, Codex review on #2313).
-fn flatten_trait_sigs_into(tname: String, traits_raw: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], supers_map: Array[(String, Array[String])], acc_names: Array[String], out: Array[(String, Array[TypeExpr], TypeExpr)], owners: Array[(String, String)], visiting: Array[String]) -> Unit {
-  if str_array_contains(visiting, tname) {
-    ()
-  } else {
-    let visiting_len = Array::length(visiting)
-    Array::push(visiting, tname)
-    let supers = lookup_supers(supers_map, tname)
-    let mut s = 0
-    while s < Array::length(supers) {
-      flatten_trait_sigs_into(Array::get(supers, s), traits_raw, supers_map, acc_names, out, owners, visiting)
-      s = s + 1
-    }
-    Array::truncate(visiting, visiting_len)
-    match lookup_trait_sigs(traits_raw, tname) {
-      Some(sigs) => {
-        let mut i = 0
-        while i < Array::length(sigs) {
-          let (mname, params, ret) = Array::get(sigs, i)
-          if str_array_contains(acc_names, mname) {
-            ()
-          } else {
-            Array::push(acc_names, mname)
-            Array::push(out, (mname, params, ret))
-            Array::push(owners, (mname, tname))
-          }
-          i = i + 1
-        }
-      },
-      None => ()
-    }
-  }
-}
-
 /// Produce a method-trait table whose signatures are flattened across
 /// supertraits, so all downstream code (dict struct, dispatch names, witness
 /// materialization) sees one flat method set per trait.
@@ -1340,18 +1276,7 @@ export fn flatten_trait_owners(tname: String, traits_raw: Array[(String, Array[(
 }
 
 export fn lookup_trait_sigs(traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], name: String) -> Option[Array[(String, Array[TypeExpr], TypeExpr)]] {
-  let mut i = 0
-  let mut result = None
-  while i < Array::length(traits) {
-    let (tname, sigs) = Array::get(traits, i)
-    if tname == trait_ref_name(name) {
-      result = Some(sigs)
-      i = Array::length(traits)
-    } else {
-      i = i + 1
-    }
-  }
-  result
+  lookup_flat_trait_sigs(traits, name)
 }
 
 fn constructor_alias_arg(params: Array[String], args: Array[TypeExpr], name: String) -> Option[TypeExpr] {

@@ -608,8 +608,10 @@ A program may still declare its **own** marker `trait Eq` with no methods.
 That bound is refused, and `Ord` is still a marker. A bound that extends
 either through its supertraits is refused the same way (#3327): with
 `trait Key: Eq {}` over the program's marker `Eq`, `[T: Key]` at a struct
-gives ``no impl `Eq` for `Pt` (`Key` extends `Eq`)``, unless `Key` itself declares
-`equals(Self, Self) -> Bool`, which `==` then dispatches through. The edit
+gives ``no impl `Eq` for `Pt` (`Key` extends `Eq`)``, unless `Key`'s witness
+dictionary carries `equals(Self, Self) -> Bool` -- declared by `Key`, or the
+first `equals` its supertraits flatten to -- which `==` then dispatches
+through. The edit
 that makes the marker `Eq` work is that same method; a method of any other
 name does not make `==` compare by content. Those refusals stay in
 `lib/@vibe/compiler/tests/marker_cmp_bound_test.vibe`. Writing both
