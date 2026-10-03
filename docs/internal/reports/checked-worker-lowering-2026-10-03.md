@@ -95,11 +95,11 @@ there is no named-function CPU profile or CPU hotspot claim in this report.
   `157769eefd514d3aeba298899ae461c769fd28d30f37e39ef395acb89db231a4`.
 - Original raw JSON SHA-256:
   `5f8fb0500d7bfaeffa7202a981cfcd9cb16ba9c11c8ddec8b9595a893a0a83a5`.
-- [Raw results](checked-worker-lowering.samples.ndjson) preserve that JSON's
+- [Raw results](checked-worker-lowering-2026-10-03.samples.ndjson) preserve that JSON's
   metadata and all 48 complete sample objects, one JSON object per line.
   The first line is metadata; the rest retain observed phase times, CPU,
   aggregate RSS, compiler telemetry, guest heap and emitted Wasm hash.
-- [Median summary](checked-worker-lowering.summary.json) includes the serial
+- [Median summary](checked-worker-lowering-2026-10-03.summary.json) includes the serial
   memory controls as well as jobs=4.
 
 Build the parent and candidate with `scripts/generations.sh` from the pinned
