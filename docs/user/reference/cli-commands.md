@@ -361,9 +361,9 @@ There is no `vibe init`; scaffolding is `vibe new`.
 
 `vibe help` prints the authoritative list; `runtime/vibe` is where it is
 defined, and `scripts/check_doc_commands.sh` compares every command shown in
-this repository's documents against it. The `vibe` binary has no internal
-command surface: compiler-internal work is reached from the gate scripts and
-the compiler entries directly.
+this repository's documents against it. Verbs not listed there (such as
+`inspect-update`, which `vibe test --update` calls) are internal plumbing for
+the launcher and carry no compatibility promise.
 
 ## Environment Variables
 
