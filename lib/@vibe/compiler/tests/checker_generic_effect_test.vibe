@@ -310,3 +310,60 @@ test "a kinded formal in the row fixes the payload at the formal" {
   assert(eq(Array::length(lambda_diags), 1))
   assert(String::contains(Array::get(lambda_diags, 0), "expected G[Int], got Option[Int]"))
 }
+
+// #3311: a lambda passed to a parameter whose function type has a row
+// (`f: () -> Int with Box[String]`) performs at that row's instantiation.
+// Before, it was checked with no expectation, its perform got a fresh `T`, and
+// `run_cb`'s arm read the `Int` payload as a `String`.
+let callback_decls = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn run_cb(f: () -> Int with Box[String]) -> Int {\n  handle {\n    f()\n  } with {\n    Box::Put(s) => resume(String::length(s))\n  }\n}\n\nfn run2[T: Eq](x: T, f: () -> Int with Box[T]) -> Int {\n  handle {\n    f()\n  } with {\n    Box::Put(v) => resume(if v == x {\n      1\n    } else {\n      0\n    })\n  }\n}\n\nfn run3[T](f: () -> Int with Box[T]) -> Int {\n  handle {\n    f()\n  } with {\n    Box::Put(_) => resume(0)\n  }\n}\n\n"
+
+test "a callback lambda performs at its parameter row's instantiation" {
+  let diags = collect_all_diagnostics(String::concat(callback_decls, "fn producer() -> Int with Box {\n  run_cb(() -> {\n    perform Box::Put(1)\n  })\n}\n"))
+  assert(eq(Array::length(diags), 1))
+  assert(String::contains(Array::get(diags, 0), "perform argument type mismatch for Box::Put: expected String, got Int"))
+  let ok = collect_all_diagnostics(String::concat(callback_decls, "fn producer() -> Int with Box {\n  run_cb(() -> {\n    perform Box::Put(\"x\")\n  })\n}\n"))
+  assert(eq(Array::length(ok), 0))
+}
+
+// The row is the callee's: a formal it names is the type this call gives it,
+// never a formal of the caller spelled the same, and the arguments to the
+// lambda's left fix it before the lambda is checked.
+test "a callback row naming the callee's formal takes this call's type" {
+  let bad = collect_all_diagnostics(String::concat(callback_decls, "fn producer[T](y: T) -> Int with Box {\n  run2(\"s\", () -> {\n    perform Box::Put(1)\n  })\n}\n"))
+  assert(eq(Array::length(bad), 1))
+  assert(String::contains(Array::get(bad, 0), "perform argument type mismatch for Box::Put: expected String, got Int"))
+  let ok = collect_all_diagnostics(String::concat(callback_decls, "fn producer[T](y: T) -> Int with Box {\n  run2(\"s\", () -> {\n    perform Box::Put(\"t\")\n  }) + run2(5, () -> {\n    perform Box::Put(6)\n  })\n}\n"))
+  assert(eq(Array::length(ok), 0))
+}
+
+// A formal only the callback row names is not fixed by the call, so the
+// lambda's perform is left open, as before.
+test "a callback row formal the call does not fix leaves the perform open" {
+  let src = String::concat(callback_decls, "fn producer() -> Int with Box {\n  run3(() -> {\n    perform Box::Put(1)\n  }) + run3(() -> {\n    perform Box::Put(\"x\")\n  })\n}\n")
+  assert(eq(Array::length(collect_all_diagnostics(src)), 0))
+}
+
+// A bare callback row (`with Box`) hands the lambda nothing: it keeps the
+// enclosing handle's instantiation, which a forwarding callee passes the
+// perform to. A fresh instantiation would have accepted the `String`.
+test "a bare callback row keeps the enclosing handle's instantiation" {
+  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn pass(f: () -> Int with Box) -> Int with Box {\n  f()\n}\n\nfn main_like() -> Int {\n  handle {\n    pass(() -> {\n      perform Box::Put(\"x\")\n    })\n  } with {\n    Box::Put(n) => resume(n + 1)\n  }\n}\n"
+  assert(Array::length(collect_all_diagnostics(src)) > 0)
+}
+
+// #3319: a generic effect's type argument in a row is a type name, checked
+// like one in an annotation, wherever the row is written.
+test "an unknown type in a generic effect's row argument is reported" {
+  let decl = "effect Box[T] {\n  Put(T) -> Int\n}\n\n"
+  let own = collect_all_diagnostics(String::concat(decl, "fn f() -> Int with Box[Nope] {\n  perform Box::Put(1)\n}\n"))
+  assert(eq(Array::length(own), 1))
+  assert(String::contains(Array::get(own, 0), "unknown type `Nope` in the effect row item `Box[Nope]`"))
+  let nested = collect_all_diagnostics(String::concat(decl, "fn f() -> Int {\n  let g = () -> Int with Box[Array[Nope]] {\n    0\n  }\n  0\n}\n"))
+  assert(eq(Array::length(nested), 1))
+  assert(String::contains(Array::get(nested, 0), "unknown type `Nope`"))
+  let annotated = collect_all_diagnostics(String::concat(decl, "fn run(f: () -> Int with Box[Nope]) -> Int {\n  0\n}\n"))
+  assert(eq(Array::length(annotated), 1))
+  assert(String::contains(Array::get(annotated, 0), "unknown type `Nope`"))
+  let known = collect_all_diagnostics(String::concat(decl, "struct P {\n  x: Int\n}\n\nfn f[T](x: T) -> Int with Box[T] {\n  let g = () -> Int with Box[T] {\n    0\n  }\n  perform Box::Put(x)\n}\n\nfn h(f: () -> Int with Box[Option[P]]) -> Int with Box[Array[Int]] {\n  0\n}\n"))
+  assert(eq(Array::length(known), 0))
+}

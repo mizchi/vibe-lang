@@ -120,11 +120,13 @@ import ./checker_closure_capture_row.vibe {
 }
 
 import ./checker_eq_unbounded_formal_msg.vibe {
+  callee_formal_ids,
   check_assignable,
   check_assignable_set_end,
   direct_result_enum_payload_param_indices,
   effect_tparams,
   env_has_active_region,
+  generic_decl_of_scheme,
   interp_is_shim_body,
   return_provenance_was_written,
   row_variable_labels,
@@ -1914,7 +1916,7 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
       }
       // Only a direct top-level declaration is expanded by collect_show_shims.
       // Consume the marker so a nested lambda cannot inherit the exemption.
-      let row_inst_env = bind_row_effect_instantiations(return_env, effect, defs, tparams, errors)
+      let row_inst_env = bind_lambda_row_effect_instantiations(return_env, effect, defs, tparams, errors)
       let body_env = env_bind(env_bind(row_inst_env, "#interp.top.fn", CtUnit), "#interp.shim.body", if top_level && interp_is_shim_body(params, body) {
         CtBool
       } else {
@@ -2558,4 +2560,243 @@ fn mask_row_effect_instantiations(env: TypeEnv, defs: Array[TypeDef]) -> TypeEnv
     }
   }
   out
+}
+
+/// #3311: the generic-effect instantiations a lambda's body is checked under.
+/// A lambda with its own `with` row is bound by that row
+/// (`bind_row_effect_instantiations`). A lambda with none, passed as an
+/// argument, takes the instantiations the parameter's row names
+/// (`callback_arg_env` hands them over): its performs belong to that callback
+/// row, as if the lambda had been written with it. The hand-off is consumed
+/// here, so a lambda nested in the body does not inherit it.
+fn bind_lambda_row_effect_instantiations(env: TypeEnv, row: Option[String], defs: Array[TypeDef], tparams: Array[String], errors: Array[String]) -> TypeEnv {
+  let own = bind_row_effect_instantiations(env, row, defs, tparams, errors)
+  match env_lookup(env, callback_row_inst_key()) {
+    Some(CtTuple(items)) => {
+      let mut out = env_bind(own, callback_row_inst_key(), CtUnit)
+      match row {
+        Some(_) => out,
+        None => {
+          for item in items {
+            match item {
+              CtNamed(base, insts) => if Array::length(insts) == 1 {
+                let inst = Array::get(insts, 0)
+                out = env_bind(env_bind(out, effect_inst_env_key(base), inst), effect_row_inst_key(base), inst)
+              },
+              _ => ()
+            }
+          }
+          out
+        }
+      }
+    },
+    _ => own
+  }
+}
+
+/// #3311: the env key under which a call hands a lambda argument the
+/// instantiations its parameter's row names, as a `CtTuple` of
+/// `CtNamed(effect, [instantiation])`.
+fn callback_row_inst_key() -> String {
+  "#callback_row_inst"
+}
+
+/// #3311: the environment a call checks the argument `arg` in. When `arg` is a
+/// lambda literal with no `with` row and the parameter it is passed to has a
+/// function type whose row instantiates a declared generic effect
+/// (`f: () -> Int with Box[String]`), the lambda's performs belong to that row,
+/// so its instantiations are handed to the EFn arm. Before, the lambda was
+/// checked with no expectation, its perform got a fresh `T`, and
+/// `perform Box::Put(1)` reached a handler that read the `Int` as a `String`.
+///
+/// The row is the callee's, written where the callee is declared, so it is
+/// resolved there and not in the caller's scope. `callee` is a generic
+/// callee's scheme and this call's instantiation of it: a formal the row names
+/// (`fn run[T](f: () -> Int with Box[T], x: T)`) is the type this call gives
+/// it. An instantiation that cannot be read exactly (`callback_type_exact`),
+/// and a bare label (`with Box`), are not handed over: the lambda is checked
+/// as before, an enclosing row's instantiation masked and an enclosing
+/// handle's kept, since a callee may forward such a row to that handle.
+export fn callback_arg_env(env: TypeEnv, arg: Expr, param_ty: Type, s: Subst, callee: Option[(Type, Type)], defs: Array[TypeDef]) -> TypeEnv {
+  match arg {
+    EFn(_, _, _, _, None, _) => match subst_apply(s, param_ty) {
+      CtFn(_, _, Some(row)) => {
+        let items = callback_row_instantiations(row, callee, defs)
+        if Array::length(items) == 0 {
+          env
+        } else {
+          env_bind(env, callback_row_inst_key(), CtTuple(items))
+        }
+      },
+      _ => env
+    },
+    _ => env
+  }
+}
+
+/// #3311: the substitution a callback lambda passed to a generic callee is
+/// checked under. The arguments to its left are unified with their parameters
+/// first, so a formal they fix (`x: T` in `run2("s", () -> { .. })`) is the
+/// type the lambda's performs are checked against, and a perform that
+/// disagrees is reported at the perform. Otherwise the perform would fix `T`
+/// itself and the mismatch would be reported at `"s"`, the argument that is
+/// right. A pair that does not unify is left for the call's own argument check
+/// to report.
+export fn callback_prefix_subst(arg: Expr, param_tys: Array[Type], arg_tys: Array[Type], s: Subst, callee: Option[(Type, Type)]) -> Subst {
+  let ai = Array::length(arg_tys)
+  match callee {
+    Some(_) => match arg {
+      EFn(_, _, _, _, None, _) => if ai > 0 && ai < Array::length(param_tys) {
+        match subst_apply(s, Array::get(param_tys, ai)) {
+          CtFn(_, _, Some(row)) => if row_names_instantiation(row) {
+            let mut out = s
+            let mut j = 0
+            while j < ai {
+              match unify(Array::get(param_tys, j), Array::get(arg_tys, j), out) {
+                Some(su) => {
+                  out = su
+                },
+                None => ()
+              }
+              j = j + 1
+            }
+            out
+          } else {
+            s
+          },
+          _ => s
+        }
+      } else {
+        s
+      },
+      _ => s
+    },
+    None => s
+  }
+}
+
+/// Does the row text name an effect with a type argument (`Box[T]`)? The
+/// checker's own provenance labels (`#param[0]`) do not count.
+fn row_names_instantiation(row: String) -> Bool {
+  let mut found = false
+  for raw in String::split(row, ",") {
+    let label = String::trim(raw)
+    if !String::starts_with(label, "#") && String::contains(label, "[") {
+      found = true
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+/// The instantiation the callback row `row` gives each declared one-parameter
+/// generic effect it names exactly, as `CtNamed(effect, [instantiation])`. The
+/// row is read by the binder a lambda's own row goes through, in a scope
+/// holding only the callee's formals, each bound to the type this call gives
+/// it. A wrong-kinded argument is reported where the callee's annotation is
+/// checked, not at every call, so the binder's reports are dropped here.
+fn callback_row_instantiations(row: String, callee: Option[(Type, Type)], defs: Array[TypeDef]) -> Array[Type] {
+  let formals: Array[String] = []
+  let mut scope = EnvEmpty
+  let mut declared = true
+  match callee {
+    Some((scheme, inst)) => match scheme {
+      CtForAll(_, _, _) => match generic_decl_of_scheme(scheme) {
+        Some((tps, dparams, dret)) => {
+          for tp in tps {
+            Array::push(formals, tp)
+          }
+          let (name_ids, id_tys) = callee_formal_ids(Some((tps, dparams, dret)), scheme, inst, defs)
+          for name_id in name_ids {
+            let (fname, fid) = name_id
+            for id_ty in id_tys {
+              let (kid, kty) = id_ty
+              if kid == fid && formals_contain_source_name(tps, fname) {
+                scope = env_bind(scope, fname, kty)
+              } else {
+                ()
+              }
+            }
+          }
+        },
+        None => {
+          declared = false
+        }
+      },
+      _ => ()
+    },
+    None => ()
+  }
+  let bound = bind_row_effect_instantiations(scope, Some(row), defs, formals, array_empty())
+  let out: Array[Type] = []
+  for d in defs {
+    match d {
+      TDEffect(name, _, etps) => if Array::length(etps) == 1 {
+        match env_lookup(bound, effect_inst_env_key(name)) {
+          Some(inst) => match inst {
+            CtTuple(args) => if callback_types_exact(args, formals, declared, defs) {
+              Array::push(out, CtNamed(name, [inst]))
+            } else {
+              ()
+            },
+            _ => ()
+          },
+          None => ()
+        }
+      },
+      _ => ()
+    }
+  }
+  out
+}
+
+/// Can a callback row's type argument `t`, read in the callee's scope, be
+/// bound for the lambda's performs? A callee formal this call fixes reads as
+/// the variable the call instantiated it with. One still spelled by its own
+/// name is a formal the call does not fix (only the row names it), so it is
+/// not bound; nor is a name nothing declares. A generic callee with no
+/// declaration in this module (`declared` false) cannot tell its formals from
+/// type names, so only compiler-owned types are read there.
+fn callback_type_exact(t: Type, formals: Array[String], declared: Bool, defs: Array[TypeDef]) -> Bool {
+  match t {
+    CtInt => true,
+    CtDouble => true,
+    CtBool => true,
+    CtString => true,
+    CtChar => true,
+    CtUnit => true,
+    CtBytes => true,
+    CtArray(e) => callback_type_exact(e, formals, declared, defs),
+    CtOption(e) => callback_type_exact(e, formals, declared, defs),
+    CtTuple(es) => callback_types_exact(es, formals, declared, defs),
+    CtConstructor(n, _) => declared || n == "Array" || n == "Option",
+    CtVar(_) => declared,
+    CtStruct(_) => declared,
+    CtEnum(_) => declared,
+    CtNamed(n, args) => {
+      let known = match find_typedef(defs, n) {
+        Some(_) => true,
+        None => match compiler_owned_type_arity(n) {
+          Some(_) => true,
+          None => false
+        }
+      }
+      declared && known && !formals_contain_source_name(formals, n) && callback_types_exact(args, formals, declared, defs)
+    },
+    CtApplied(h, args) => declared && callback_type_exact(h, formals, declared, defs) && callback_types_exact(args, formals, declared, defs),
+    _ => false
+  }
+}
+
+fn callback_types_exact(ts: Array[Type], formals: Array[String], declared: Bool, defs: Array[TypeDef]) -> Bool {
+  let mut all = true
+  for t in ts {
+    if !callback_type_exact(t, formals, declared, defs) {
+      all = false
+    } else {
+      ()
+    }
+  }
+  all
 }

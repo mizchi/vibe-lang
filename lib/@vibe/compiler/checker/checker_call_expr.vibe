@@ -169,6 +169,8 @@ import ./checker_infer_binop_type.vibe {
 import ./checker_lambda_expr.vibe {
   array_reader_second_key,
   bind_array_arg,
+  callback_arg_env,
+  callback_prefix_subst,
   field_write_mut_check,
   record_array_receiver,
   retaining_write_region_check,
@@ -1866,7 +1868,8 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                   let lookup_name = railway_ident_lookup_name(name)
                   // #3146: a call the compiler synthesized skips the program's
                   // same-named function and reaches the builtin below.
-                  let (ct, s1, c1) = match env_lookup_unless_synthesized_builtin(env, lookup_name, callee_off) {
+                  let callee_binding = env_lookup_unless_synthesized_builtin(env, lookup_name, callee_off)
+                  let (ct, s1, c1) = match callee_binding {
                     Some(t) => {
                       let (ti, nc, new_bounds) = instantiate(t, c)
                       // #3027: the handle check reads a generic callee's
@@ -1898,13 +1901,30 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                     CtFn(params, _, _) => params,
                     _ => array_empty()
                   }
+                  // #3311: a generic callee's scheme and this call's
+                  // instantiation, so a callback row naming its formal reads
+                  // the type this call gives it.
+                  let callee_inst = match callee_binding {
+                    Some(t) => match t {
+                      CtForAll(_, _, _) => Some((t, ct)),
+                      _ => None
+                    },
+                    None => None
+                  }
                   let alen = Array::length(args)
                   let arg_tys = array_empty()
                   let mut ai = 0
                   let mut s2 = s1
                   let mut c2 = c1
                   while ai < alen {
-                    let (at, ns, nc) = check_child(Array::get(args, ai), env, defs, s2, c2, errors, tytab, capture, lane)
+                    let arg = Array::get(args, ai)
+                    let arg_env = if ai < Array::length(inferred_param_tys) {
+                      callback_arg_env(env, arg, Array::get(inferred_param_tys, ai), s2, callee_inst, defs)
+                    } else {
+                      env
+                    }
+                    let arg_s = callback_prefix_subst(arg, inferred_param_tys, arg_tys, s2, callee_inst)
+                    let (at, ns, nc) = check_child(arg, arg_env, defs, arg_s, c2, errors, tytab, capture, lane)
                     Array::push(arg_tys, at)
                     if ai < Array::length(inferred_param_tys) {
                       s2 = refine_trait_bounds_from_receiver(env, ns, Array::get(inferred_param_tys, ai), at)
@@ -2096,7 +2116,8 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
               }
             } else {
               let direct_ret = direct_call_return(env, qualified, 0 - 1)
-              let method_ty = match env_lookup(env, qualified) {
+              let method_binding = env_lookup(env, qualified)
+              let method_ty = match method_binding {
                 Some(t) => {
                   let (ti, c2, _) = instantiate(t, c1)
                   (ti, s1, c2)
@@ -2107,6 +2128,19 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                 }
               }
               let (mt, s2, c2) = method_ty
+              // #3311: the method's parameter types, for a callback row's
+              // instantiation (see the named-call path).
+              let method_param_tys = match mt {
+                CtFn(params, _, _) => params,
+                _ => array_empty()
+              }
+              let method_inst = match method_binding {
+                Some(t) => match t {
+                  CtForAll(_, _, _) => Some((t, mt)),
+                  _ => None
+                },
+                None => None
+              }
               let all_args = prepend_expr(obj, args)
               retaining_write_region_check(qualified, all_args, env, defs, s2, c2, errors, check_plain)
               let alen = Array::length(all_args)
@@ -2116,7 +2150,14 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
               let mut s3 = s2
               let mut c3 = c2
               while ai < alen {
-                let (at, ns, nc) = check_child(Array::get(all_args, ai), env, defs, s3, c3, errors, tytab, capture, lane)
+                let marg = Array::get(all_args, ai)
+                let marg_env = if ai < Array::length(method_param_tys) {
+                  callback_arg_env(env, marg, Array::get(method_param_tys, ai), s3, method_inst, defs)
+                } else {
+                  env
+                }
+                let marg_s = callback_prefix_subst(marg, method_param_tys, arg_tys, s3, method_inst)
+                let (at, ns, nc) = check_child(marg, marg_env, defs, marg_s, c3, errors, tytab, capture, lane)
                 Array::push(arg_tys, at)
                 s3 = ns
                 c3 = nc
@@ -2328,13 +2369,20 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                 },
                 None => {
                   let (ct, s1, c1) = check_child(callee, env, defs, s, c, errors, tytab, capture, lane)
+                  let (callee_param_tys, callee_inst) = callee_callback_params(ct)
                   let alen = Array::length(args)
                   let arg_tys = array_empty()
                   let mut ai = 0
                   let mut s2 = s1
                   let mut c2 = c1
                   while ai < alen {
-                    let (at, ns, nc) = check_child(Array::get(args, ai), env, defs, s2, c2, errors, tytab, capture, lane)
+                    let arg = Array::get(args, ai)
+                    let arg_env = if ai < Array::length(callee_param_tys) {
+                      callback_arg_env(env, arg, Array::get(callee_param_tys, ai), s2, callee_inst, defs)
+                    } else {
+                      env
+                    }
+                    let (at, ns, nc) = check_child(arg, arg_env, defs, s2, c2, errors, tytab, capture, lane)
                     Array::push(arg_tys, at)
                     s2 = ns
                     c2 = nc
@@ -2365,13 +2413,20 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
               }
             } else {
               let (ct, s1, c1) = check_child(callee, env, defs, s, c, errors, tytab, capture, lane)
+              let (callee_param_tys, callee_inst) = callee_callback_params(ct)
               let alen = Array::length(args)
               let arg_tys = array_empty()
               let mut ai = 0
               let mut s2 = s1
               let mut c2 = c1
               while ai < alen {
-                let (at, ns, nc) = check_child(Array::get(args, ai), env, defs, s2, c2, errors, tytab, capture, lane)
+                let arg = Array::get(args, ai)
+                let arg_env = if ai < Array::length(callee_param_tys) {
+                  callback_arg_env(env, arg, Array::get(callee_param_tys, ai), s2, callee_inst, defs)
+                } else {
+                  env
+                }
+                let (at, ns, nc) = check_child(arg, arg_env, defs, s2, c2, errors, tytab, capture, lane)
                 Array::push(arg_tys, at)
                 s2 = ns
                 c2 = nc
@@ -2425,5 +2480,17 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
       }
     },
     _ => (CtUnknown, s, c)
+  }
+}
+
+/// #3311: the parameter types of a callee checked as an expression, for
+/// `callback_arg_env`. A generic one is not instantiated before its arguments
+/// are checked, so it is handed over with no instantiation, and a callback row
+/// that names one of its formals hands the lambda nothing.
+fn callee_callback_params(ct: Type) -> (Array[Type], Option[(Type, Type)]) {
+  match ct {
+    CtFn(params, _, _) => (params, None),
+    CtForAll(_, _, CtFn(params, _, _)) => (params, Some((ct, CtUnknown))),
+    _ => (array_empty(), None)
   }
 }
