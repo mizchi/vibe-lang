@@ -717,6 +717,17 @@ fn parse_qualified_handle_arm(tokens: Array[Token], starts: Array[Int], pos: Int
     // to the one part of the source that was already correct.
     TLBrace => throw("a braced handler set belongs to a `handle { ... } with { ... }`; a SUFFIX handler is written `with Effect::Op(_) => expr`, with no braces at #\{pos}"),
     TIdent(effect_name) => {
+      // #3284: a qualified arm names the HANDLED effect, as the legacy
+      // `with Error { .. }` header and a row item do, so the retired spelling
+      // is refused here too. Before this it was accepted and silently meant
+      // `Exception`, the one position #1461's rejection did not reach.
+      // `perform Error::Throw(x)` stays legal: that qualifier names the
+      // operation dispatched, not a handled effect (parser_base.vibe).
+      if effect_name == "Error" {
+        throw("`Error` was retired as an effect spelling in #1461 -- write `Exception::Throw` (or `Exception[Kind]::Throw` for a typed arm). `vibe fmt` rewrites the old spelling for you. at #\{pos}")
+      } else {
+        ()
+      }
       let (label, after_label) = match peek(tokens, pos + 1) {
         TLBracket => collect_row_item_targs(tokens, pos + 2, 1, String::concat(effect_name, "[")),
         _ => (effect_name, pos + 1)

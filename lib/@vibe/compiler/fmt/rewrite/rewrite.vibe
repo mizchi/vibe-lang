@@ -511,6 +511,12 @@ fn normalize_effect_rows(toks: Array[LTok]) -> Array[LTok] {
 /// `impl Error for ..`), and none of its uses sit in any of those three
 /// positions; a textual rewrite, or one that renamed every `Error` token,
 /// would have corrupted all of them.
+///
+/// The one exception is the qualified operation spelling `Error::Throw`. As a
+/// handler arm the parser refuses it since #3284 (it silently meant `Exception`), and
+/// as a `perform` it is the retired spelling of `Exception::Throw`. The trait
+/// has no `Throw` member, so that three-token sequence is only ever the
+/// retired effect and is renamed wherever it appears.
 fn normalize_retired_effect_labels(toks: Array[LTok]) -> Array[LTok] {
   let out = Array::slice([LTok::{ kind: k_none, text: "" }], 0, 0)
   let n = Array::length(toks)
@@ -518,7 +524,8 @@ fn normalize_retired_effect_labels(toks: Array[LTok]) -> Array[LTok] {
   let mut item_start = false
   while i < n {
     let t = Array::get(toks, i)
-    if item_start && t.kind == k_name && t.text == "Error" {
+    let qualified_throw = t.kind == k_name && t.text == "Error" && i + 2 < n && Array::get(toks, i + 1).kind == k_double_colon && Array::get(toks, i + 2).kind == k_name && Array::get(toks, i + 2).text == "Throw"
+    if (item_start || qualified_throw) && t.kind == k_name && t.text == "Error" {
       Array::push(out, LTok::{
         kind: k_name,
         text: "Exception"
