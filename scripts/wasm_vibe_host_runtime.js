@@ -1469,11 +1469,10 @@ function unimplementedAsyncImportStub(name) {
   };
 }
 
-// #3278: every other `vibe.*` name this runner does not implement. The Proxy's
-// fallthrough used to answer `() => 0n`, so a call to an adapter-only import
-// (the `stdin_provider_*` trio, the #1537 arm / wait-any / cancel band,
-// `host_arg_push`, `wit_response*`) returned 0 as if it were real data. It
-// fails on call, naming the import; instantiation still succeeds, so a module
+// Every other `vibe.*` name this runner does not implement (the
+// `stdin_provider_*` trio, the #1537 arm / wait-any / cancel band,
+// `host_arg_push`, `wit_response*`). Answering such a call with 0 would read as
+// real data (#3278), so it fails on call, naming the import; instantiation still succeeds, so a module
 // that imports such a name but never calls it keeps running.
 //
 // The hint names the lane that does serve the import, read from the host
@@ -1515,8 +1514,7 @@ function unimplementedImportStub(name) {
         : `No host lane declares it, so check the import name, or drop the call.`;
   return () => {
     throw new Error(
-      `vibe.${name} is not implemented by this runner, so the call has no answer. ${hint} ` +
-        `This used to answer 0, which read as real data (#3278).`,
+      `vibe.${name} is not implemented by this runner, so the call has no answer. ${hint}`,
     );
   };
 }

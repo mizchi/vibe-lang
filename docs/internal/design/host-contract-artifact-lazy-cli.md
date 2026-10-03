@@ -779,8 +779,8 @@ fields are `portableCore`. What remains is the class of bug #2758 described:
 "the two runners agreeing is a property nothing currently checks". §5 adds
 that check.
 
-The node runner's fallback for an unimplemented `vibe.*` import throws on call
-since #3278, as its withhold path already did. Under §2.4 every field the
+The node runner's fallback for an unimplemented `vibe.*` import throws on call,
+as its withhold path does. Under §2.4 every field the
 module declares is either provided, stubbed to trap, or refused before
 instantiation; a silent zero has no remaining case to serve.
 
