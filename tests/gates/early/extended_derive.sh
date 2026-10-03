@@ -414,6 +414,9 @@ ur_refused fixtures/err_interp_function_value_refused.vibe 'cannot interpolate a
 ur_refused fixtures/err_interp_generic_enum_unknown_refused.vibe 'its type arguments are not known here' 'bind it with a type annotation' gc 'fixtures/err_interp_generic_enum_unknown_refused.vibe: line 12:4'
 ur_refused fixtures/err_interp_generic_struct_recursive_refused.vibe 'cannot interpolate a recursive `L`' 'render the value with a function you write' gc 'fixtures/err_interp_generic_struct_recursive_refused.vibe: line 12:14'
 ur_refused fixtures/err_interp_generic_call_missing_show_refused.vibe 'cannot interpolate a value of type `Hidden`' 'add `derive(Show)` to `Hidden`' gc 'fixtures/err_interp_generic_call_missing_show_refused.vibe: line 14:14'
+# A generic whose bound is passed as a witness at each call, named as a value:
+# the reference carries no witness, and the module failed wasm validation.
+ur_refused fixtures/err_threaded_generic_value_refused.vibe 'its `[T: Eq]` bound is supplied at each call, so it cannot be passed as a value' 'wrap `same` in a lambda that calls it with concrete argument types'
 # #3019 rides the same helper: a lowering-time refusal asserted on its message
 # and its edit, not on the bare fact that the build failed.
 ur_refused fixtures/err_handle_resume_capture_loop_break_refused.vibe 'leaves a loop outside it' 'set a flag inside the handle'

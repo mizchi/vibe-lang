@@ -17,7 +17,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/ast {
-  builtin_ref, trait_ref_args, type_param_name
+  builtin_ref, trait_ref_args, trait_ref_name, type_param_name
 }
 
 import @vibe/core {
@@ -42,6 +42,7 @@ import ./binding_shape_inference.vibe {
 
 import ./binding_shape_queries.vibe {
   array_elem_type_of,
+  constructor_binding_is_masked,
   dtd_mask_shadowed_fn_into,
   dtd_mask_shadowed_params,
   dtd_mask_shadowed_pat,
@@ -983,7 +984,10 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
           }
         }
       },
-      None => expr
+      None => {
+        dtd_check_threaded_generic_value(name, gens, var_types)
+        expr
+      }
     },
     ECall(callee, args, off, callee_resolution) => {
       // #635: type-directed lowering of the railway sentinels emitted by the
@@ -2187,6 +2191,32 @@ fn gen_prepends_dicts(gen: DictGen) -> Bool {
     // those methods really do take -- measured, that is what stopped
     // `s5_wasm_test` self-compiling the compiler.
     true
+  }
+}
+
+/// A generic whose call sites receive witness dictionaries, named as a VALUE.
+///
+/// The reference carries no dictionary, so the lowered function takes more
+/// parameters than any call through the value supplies. Measured on main at
+/// 618951a: `let g = f` for `fn f[T: Eq](x: T, y: T)` followed by
+/// `g(1.5, 1.5)` compiled clean and produced a module the wasm validator
+/// rejected (`not enough arguments on the stack for call (need 4, got 3)`).
+/// A local binding of the same spelling masks the function
+/// (`constructor_binding_is_masked`), so only the top-level generic, or a
+/// bounded local lambda's own gen, is refused.
+fn dtd_check_threaded_generic_value(name: String, gens: Array[DictGen], var_types: Array[(String, String)]) -> Unit with Exception {
+  if constructor_binding_is_masked(var_types, name) {
+    ()
+  } else {
+    match lookup_gen_entry(gens, name) {
+      Some(gen) => if gen_prepends_dicts(gen) && Array::length(gen.threaded) > 0 {
+        let (tp, trait_name, _) = Array::get(gen.threaded, 0)
+        throw("wrap `" + name + "` in a lambda that calls it with concrete argument types (for example `(x: Int) -> " + name + "(x)`): its `[" + tp + ": " + trait_ref_name(trait_name) + "]` bound is supplied at each call, so it cannot be passed as a value")
+      } else {
+        ()
+      },
+      None => ()
+    }
   }
 }
 
