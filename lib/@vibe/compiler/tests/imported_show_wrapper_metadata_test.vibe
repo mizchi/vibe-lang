@@ -1,0 +1,103 @@
+import @vibe/compiler/core {
+  Type, TypeEnv, env_bind
+}
+import @vibe/compiler/syntax {
+  lex_with_offsets, parse_program_located
+}
+import @vibe/compiler/checker {
+  CheckedProgram, check_program_with_projected_import_env_typed_lowering_located_observation, checked_bool_render_offsets
+}
+import @vibe/compiler/runtime {
+  build_import_envs_collecting, checked_module_public_env_with_reexport_declarations
+}
+
+// Use the production import projection and publication boundaries. No caller
+// supplies a wrapper classification; declarations and dependency products own it.
+fn show_metadata_check(source: String, dependencies: Array[(String, TypeEnv)]) -> (CheckedProgram, TypeEnv) with Env + Exception {
+  let (tokens, starts, _) = lex_with_offsets(source)
+  let statements = parse_program_located(tokens, starts, source)
+  let errors: Array[String] = []
+  let (imports, reexports) = build_import_envs_collecting(statements, "/", dependencies, errors)
+  assert(Array::length(errors) == 0)
+  let (checked, _, _, _) = check_program_with_projected_import_env_typed_lowering_located_observation(statements, imports)
+  let published = checked_module_public_env_with_reexport_declarations(statements, checked.final_env, reexports)
+  (checked, published)
+}
+
+fn show_metadata_rows(source: String, dependencies: Array[(String, TypeEnv)]) -> Int with Env + Exception {
+  let (checked, _) = show_metadata_check(source, dependencies)
+  Array::length(checked_bool_render_offsets(checked))
+}
+
+fn show_metadata_dependency(source: String) -> TypeEnv with Env + Exception {
+  let (_, published) = show_metadata_check(source, [])
+  published
+}
+
+test "ordinary imported functions do not publish inert render rows" {
+  let dependency = show_metadata_dependency("export fn ordinary(value: Bool) -> Bool { value }")
+  let source = "import ./dep.vibe { ordinary }\nlet l = () -> Bool { 1 < 2 }\nlet result = ordinary(l())"
+  inspect(show_metadata_rows(source, [("/dep.vibe", dependency)]), "0")
+}
+
+test "an imported direct wrapper keeps its Bool argument row" {
+  let dependency = show_metadata_dependency("export fn show(value: Bool) -> String { __to_string(value) }")
+  let source = "import ./dep.vibe { show }\nlet l = () -> Bool { 1 < 2 }\nlet result = show(l())"
+  inspect(show_metadata_rows(source, [("/dep.vibe", dependency)]), "1")
+}
+
+test "an ordinary function aliased to a wrapper spelling remains ordinary" {
+  let dependency = show_metadata_dependency("export fn ordinary(value: Bool) -> Bool { value }")
+  let source = "import ./dep.vibe { ordinary as show }\nlet l = () -> Bool { 1 < 2 }\nlet result = show(l())"
+  inspect(show_metadata_rows(source, [("/dep.vibe", dependency)]), "0")
+}
+
+test "an imported wrapper survives two re-export alias projections" {
+  let original = show_metadata_dependency("export fn show(value: Bool) -> String { __to_string(value) }")
+  let (_, middle) = show_metadata_check("export ./dep.vibe { show as first }", [
+    ("/dep.vibe", original)
+  ])
+  let (_, final) = show_metadata_check("export ./middle.vibe { first as last }", [
+    ("/middle.vibe", middle)
+  ])
+  let source = "import ./final.vibe { last as render }\nlet l = () -> Bool { 1 < 2 }\nlet result = render(l())"
+  inspect(show_metadata_rows(source, [("/final.vibe", final)]), "1")
+}
+
+test "ordinary re-export aliases do not publish render rows" {
+  let original = show_metadata_dependency("export fn ordinary(value: Bool) -> Bool { value }")
+  let (_, middle) = show_metadata_check("export ./dep.vibe { ordinary as show }", [
+    ("/dep.vibe", original)
+  ])
+  let source = "import ./middle.vibe { show }\nlet l = () -> Bool { 1 < 2 }\nlet result = show(l())"
+  inspect(show_metadata_rows(source, [("/middle.vibe", middle)]), "0")
+}
+
+test "a same-typed wrapper body edit replaces the published classification" {
+  let source = "import ./dep.vibe { show }\nlet l = () -> Bool { 1 < 2 }\nlet result = show(l())"
+  let original = show_metadata_dependency("export fn show(value: Bool) -> String { __to_string(value) }")
+  inspect(show_metadata_rows(source, [("/dep.vibe", original)]), "1")
+  let edited = show_metadata_dependency("export fn show(value: Bool) -> String { \"plain\" }")
+  inspect(show_metadata_rows(source, [("/dep.vibe", edited)]), "0")
+}
+
+test "unavailable dependency metadata retains conservative wrapper candidates" {
+  let unknown = env_bind(EnvEmpty, "show", CtFn([CtBool], CtString, None))
+  let source = "import ./dep.vibe { show }\nlet l = () -> Bool { 1 < 2 }\nlet result = show(l())"
+  inspect(show_metadata_rows(source, [("/dep.vibe", unknown)]), "1")
+}
+
+test "a qualified wrapper name and alias keep render rows" {
+  let dependency = show_metadata_dependency("export fn Render::show(value: Bool) -> String { __to_string(value) }")
+  let source = "import ./dep.vibe { Render::show as render }\nlet l = () -> Bool { 1 < 2 }\nlet result = render(l())"
+  inspect(show_metadata_rows(source, [("/dep.vibe", dependency)]), "1")
+}
+
+test "unknown wrapper facts survive a re-export alias" {
+  let unknown = env_bind(EnvEmpty, "show", CtFn([CtBool], CtString, None))
+  let (_, published) = show_metadata_check("export ./dep.vibe { show as render }", [
+    ("/dep.vibe", unknown)
+  ])
+  let source = "import ./middle.vibe { render }\nlet l = () -> Bool { 1 < 2 }\nlet result = render(l())"
+  inspect(show_metadata_rows(source, [("/middle.vibe", published)]), "1")
+}

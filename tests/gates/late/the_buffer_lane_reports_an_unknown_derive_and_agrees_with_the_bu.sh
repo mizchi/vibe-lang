@@ -761,12 +761,12 @@ for pass in cold warm; do
     exit 1
   fi
 done
-# #2546: each module publishes one v10 record, never a separate offsets file.
+# #2546: each module publishes one v11 record, never a separate offsets file.
 if find "$ffsdir/cache" -type f -name '*selfhost_module_typed_lowering_offsets_v1*' | grep -q .; then
   echo "[compiler-gate] FAIL: separate lowering cache files are still published (#2546)" >&2
   exit 1
 fi
-if ! grep -rl '^version' "$ffsdir/cache" | xargs grep -l '^version[[:space:]]10$' >/dev/null; then
+if ! grep -rl '^version' "$ffsdir/cache" | xargs grep -l '^version[[:space:]]11$' >/dev/null; then
   echo "[compiler-gate] FAIL: no unified module cache record was published (#2546)" >&2
   exit 1
 fi

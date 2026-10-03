@@ -319,17 +319,17 @@ const fs = require("node:fs");
 const path = require("node:path");
 const dir = process.argv[2];
 const wire = fs.readFileSync(path.join(dir, "leaf.env"), "utf8");
-assert.ok(wire.startsWith("version\t9\nenv\t"));
+assert.ok(wire.startsWith("version\t10\nenv\t"));
 const records = fs.readdirSync(path.join(dir, "cache"));
 assert.equal(records.length, 1, "one worker outcome must publish one cache file");
 assert.ok(records[0].includes("selfhost_type_env_v10"));
 const disk = fs.readFileSync(path.join(dir, "cache", records[0]), "utf8");
-assert.equal(disk, "version\t10\n" + wire.slice("version\t9\n".length) + "lowering\tmissing\n");
+assert.equal(disk, "version\t11\n" + wire.slice("version\t10\n".length) + "lowering\tmissing\n");
 NODE
 then
   die "worker TypeEnv transport was not wrapped as an unavailable-table record"
 else
-  note "worker v9 transport publishes one v10 record with lowering unavailable"
+  note "worker v10 transport publishes one v11 record with lowering unavailable"
 fi
 
 if [ "$fail" -ne 0 ]; then

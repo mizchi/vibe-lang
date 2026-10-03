@@ -130,6 +130,9 @@ echo "[compiler-gate] char diagnostics locate invalid width and missing quotes w
 echo "[compiler-gate] checked-module cache parity (#2505)"
 VIBE_STAGE2_WASM="$stage2_wasm" bash scripts/checked_module_cache_parity.sh
 
+echo "[compiler-gate] imported Show metadata rendering and body-edit freshness (#3257)"
+node scripts/imported_show_wrapper_metadata_oracle.mjs "$stage2_wasm"
+
 # 4b. deep-recursion effect resume regression (#737): a perform issued from a
 #     RECURSIVE frame, handled by an in-language handler OUTSIDE the recursion
 #     that bridges to a host builtin, used to deliver the FIRST resume's value

@@ -51,11 +51,13 @@ and typed-equality offset/key rows that codegen reads independently of it.
 Syntax trees use the existing [AST Binary ABI](ast_binary_abi.md), including
 exact IEEE-754 float bits. There is no second syntax codec.
 
-## Wire format: `vCHK` version 1
+## Wire format: `vCHK` version 2
 
-Four bytes `vCHK`, unsigned canonical LEB128 version `1`, two unsigned checksum
+Four bytes `vCHK`, unsigned canonical LEB128 version `2`, two unsigned checksum
 values, then the five fields in table order. The AST field includes its `vAST`
-header. Arrays encode a count followed by elements; tuples and structs retain
+header. The canonical TypeEnv chain includes Show-wrapper facts; unavailable
+facts differ from an explicitly empty wrapper set. Older transport versions
+are rejected. Arrays encode a count followed by elements; tuples and structs retain
 field order. Primitive encodings and checked readers come from the AST codec.
 
 Checksums cover every payload byte using the codegen body cache's arithmetic:
@@ -70,7 +72,7 @@ payload shape requires a new version.
 | `Type` | `CtInt`, `CtDouble`, `CtBool`, `CtString`, `CtChar`, `CtUnit`, `CtTuple`, `CtArray`, `CtOption`, `CtFn`, `CtEnum`, `CtStruct`, `CtBytes`, `CtNamed`, `CtConstructor`, `CtApplied`, `CtVar`, `CtForAll`, `CtUnknown`, `CtRecord` |
 | `TypeDef` | `TDEnum`, `TDStruct`, `TDAlias`, `TDEffect`, `TDEffectSet` |
 | `BindingOrigin` | `BindingOriginUnavailable`, `BindingOriginModuleExport`, `BindingOriginReExportSurface` |
-| `TypeEnv` | `EnvEmpty`, `EnvBind`, `EnvTraitDef`, `EnvTraitImpl`, `EnvTraitImplGen`, `EnvTypeDefs`, `EnvMutCell`, `EnvFlat`, `EnvCached` |
+| `TypeEnv` | `EnvEmpty`, `EnvBind`, `EnvTraitDef`, `EnvTraitImpl`, `EnvTraitImplGen`, `EnvTypeDefs`, `EnvMutCell`, `EnvFlat`, `EnvCached`, `EnvShowWrappers` |
 | `Subst` | `SubstEmpty`, `SubstBind`, `SubstBound`, `SubstCached`, `SubstEffBind` |
 
 `EnvValueBinding` encodes its type then origin. Substitution maps encode entries
@@ -83,6 +85,12 @@ agree. Unsupported versions, unknown tags, invalid primitives, truncation,
 checksum mismatch, inconsistent indexes and trailing bytes return `None`.
 Writers match every constructor explicitly; extending an enum requires updating
 its codec and conformance tests.
+
+`EnvShowWrappers` stores precise direct-wrapper names, names whose dependency
+metadata is unavailable, and the canonical tail. The distinction survives
+worker TypeEnv v10, combined environment/lowering v11, and complete module v2
+transport. Text facts carry a checksum over both name lists; damaged facts
+invalidate the whole record. An absent node retains conservative collection.
 
 ## Source and identity boundaries
 
@@ -100,7 +108,7 @@ must refresh even when the typed public interface is unchanged.
 
 ## Module format and cache policy
 
-`vMOD` version 1 starts with four magic bytes, a canonical unsigned version
+`vMOD` version 2 starts with four magic bytes, a canonical unsigned version
 varint, then two little-endian unsigned 32-bit checksum fields. Its payload is
 an exact binary input identity, the complete located parser AST, the five
 `vCHK` program fields, packed lowering offsets, equality offsets and equality
@@ -187,7 +195,7 @@ the two caveats (today's codec; peak-versus-total memory) in
 
 When this cache is enabled, `VIBE_INCREMENTAL_TELEMETRY_OUT` uses schema 5 and
 reports `modules_reused_checked_module_artifact` separately from conservative
-fingerprint and TDRE9 hits. The three reuse reasons sum to `modules_reused`.
+fingerprint and TDRE10 hits. The three reuse reasons sum to `modules_reused`.
 With the cache off, schema 4 is emitted instead — the same counters without
 that field. (They were 3 and 2 before #2766 added the two lane-parse counters
 to both.) The edit-cycle KPI reader accepts both schemas and validates their

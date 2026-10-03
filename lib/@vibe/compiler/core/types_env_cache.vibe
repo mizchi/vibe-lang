@@ -153,7 +153,11 @@ export enum TypeEnv {
   // Immutable names resolve to local row IDs in the parallel binding array.
   // The chain remains authoritative: a cache miss continues into rest, and
   // rebuilding an index ignores any older cached rows.
-  EnvCached(EnvNameIndex, Array[EnvValueBinding], TypeEnv)
+  EnvCached(EnvNameIndex, Array[EnvValueBinding], TypeEnv);
+  // Module-owned render facts. Absence of this node means unavailable facts;
+  // a present empty pair is a known ordinary surface. Unknown names preserve
+  // conservative candidates independently of the known wrapper names.
+  EnvShowWrappers(Array[String], Array[String], TypeEnv)
 }
 
 export enum Subst {
@@ -173,6 +177,38 @@ export enum Subst {
 }
 
 //# Functions
+
+/// Facts belong to the canonical environment, never accelerator rows. A fresh
+/// module/import publication owns both arrays and treats them as read-only.
+export fn env_with_show_wrapper_facts(env: TypeEnv, wrappers: Array[String], unknown: Array[String]) -> TypeEnv {
+  EnvShowWrappers(wrappers, unknown, env)
+}
+
+/// None is unavailable metadata, including old or caller-built environments.
+/// Some(([], [])) is deliberately distinct: all published names are ordinary.
+export fn env_show_wrapper_facts(env: TypeEnv) -> Option[(Array[String], Array[String])] {
+  let mut current = env
+  let mut done = false
+  let mut result = None
+  while !done {
+    match current {
+      EnvShowWrappers(wrappers, unknown, _) => {
+        result = Some((wrappers, unknown))
+        done = true
+      },
+      EnvBind(_, _, rest) => current = rest,
+      EnvTraitDef(_, _, _, _, rest, _, _) => current = rest,
+      EnvTraitImpl(_, _, rest) => current = rest,
+      EnvTraitImplGen(_, _, _, _, rest) => current = rest,
+      EnvTypeDefs(_, _, rest) => current = rest,
+      EnvMutCell(_, _, rest) => current = rest,
+      EnvCached(_, _, rest) => current = rest,
+      EnvEmpty => done = true,
+      EnvFlat(_) => done = true
+    }
+  }
+  result
+}
 
 export fn env_bind(env: TypeEnv, name: String, ty: Type) -> TypeEnv {
   env_bind_with_origin(env, name, ty, BindingOriginUnavailable)
@@ -264,6 +300,7 @@ export fn env_mut_escape(env: TypeEnv, name: String) -> Option[Bool] {
       } else {
         cur = rest
       },
+      EnvShowWrappers(_, _, rest) => cur = rest,
       EnvBind(n, _, rest) => if String::equals(n, name) {
         done = true
       } else {
@@ -314,6 +351,9 @@ export fn env_type_defs(env: TypeEnv) -> Array[TypeDef] {
         cur = rest
       },
       EnvTraitImpl(_, _, rest) => {
+        cur = rest
+      },
+      EnvShowWrappers(_, _, rest) => {
         cur = rest
       },
       EnvMutCell(_, _, rest) => {
@@ -395,6 +435,9 @@ export fn env_type_definition_origin(env: TypeEnv, name: String) -> Option[Bindi
           cur = rest
         }
       },
+      EnvShowWrappers(_, _, rest) => {
+        cur = rest
+      },
       EnvMutCell(_, _, rest) => {
         cur = rest
       },
@@ -456,6 +499,7 @@ export fn env_preserve_type_definition_origins(env: TypeEnv, source: TypeEnv) ->
       }
       out
     },
+    EnvShowWrappers(wrappers, unknown, rest) => EnvShowWrappers(wrappers, unknown, env_preserve_type_definition_origins(rest, source)),
     EnvMutCell(name, escapes, rest) => EnvMutCell(name, escapes, env_preserve_type_definition_origins(rest, source)),
     EnvFlat(bindings) => EnvFlat(bindings),
     EnvCached(names, bindings, rest) => env_cached_after_tail_change(names, bindings, env_preserve_type_definition_origins(rest, source))
@@ -480,6 +524,9 @@ export fn env_selectable_type_defs(env: TypeEnv) -> Array[String] {
         cur = rest
       },
       EnvTraitImpl(_, _, rest) => {
+        cur = rest
+      },
+      EnvShowWrappers(_, _, rest) => {
         cur = rest
       },
       EnvMutCell(_, _, rest) => {
@@ -543,6 +590,9 @@ export fn env_cache(env: TypeEnv) -> TypeEnv {
           cur = rest
         },
         EnvTraitImpl(_, _, rest) => {
+          cur = rest
+        },
+        EnvShowWrappers(_, _, rest) => {
           cur = rest
         },
         EnvMutCell(_, _, rest) => {
@@ -633,6 +683,7 @@ fn env_without_complete_prefix(env: TypeEnv) -> TypeEnv {
     EnvTraitImpl(name, target, rest) => EnvTraitImpl(name, target, env_without_complete_prefix(rest)),
     EnvTraitImplGen(name, params, bounds, target, rest) => EnvTraitImplGen(name, params, bounds, target, env_without_complete_prefix(rest)),
     EnvTypeDefs(defs, selectable, rest) => EnvTypeDefs(defs, selectable, env_without_complete_prefix(rest)),
+    EnvShowWrappers(wrappers, unknown, rest) => EnvShowWrappers(wrappers, unknown, env_without_complete_prefix(rest)),
     EnvMutCell(name, escapes, rest) => EnvMutCell(name, escapes, env_without_complete_prefix(rest)),
     EnvCached(names, _, rest) => if env_name_index_has_tail_names(names) {
       rest
@@ -690,6 +741,7 @@ export fn env_cache_read_snapshot(env: TypeEnv) -> TypeEnv {
           EnvTraitImpl(_, _, rest) => cur = rest,
           EnvTraitImplGen(_, _, _, _, rest) => cur = rest,
           EnvTypeDefs(_, _, rest) => cur = rest,
+          EnvShowWrappers(_, _, rest) => cur = rest,
           EnvMutCell(_, _, rest) => cur = rest,
           EnvFlat(rows) => {
             let mut i = 0
@@ -979,6 +1031,9 @@ export fn env_has_reexport_surface_binding(env: TypeEnv, name: String) -> Bool {
       EnvTraitImpl(_, _, rest) => {
         cur = rest
       },
+      EnvShowWrappers(_, _, rest) => {
+        cur = rest
+      },
       EnvMutCell(_, _, rest) => {
         cur = rest
       },
@@ -1032,6 +1087,7 @@ fn env_without_reexport_surface_bindings(env: TypeEnv) -> TypeEnv {
     EnvTraitImpl(name, target, rest) => EnvTraitImpl(name, target, env_without_reexport_surface_bindings(rest)),
     EnvTraitImplGen(name, params, bounds, target, rest) => EnvTraitImplGen(name, params, bounds, target, env_without_reexport_surface_bindings(rest)),
     EnvTypeDefs(defs, selectable, rest) => EnvTypeDefs(defs, selectable, env_without_reexport_surface_bindings(rest)),
+    EnvShowWrappers(wrappers, unknown, rest) => EnvShowWrappers(wrappers, unknown, env_without_reexport_surface_bindings(rest)),
     EnvMutCell(name, escapes, rest) => EnvMutCell(name, escapes, env_without_reexport_surface_bindings(rest)),
     EnvFlat(bindings) => {
       let kept = array_empty()
@@ -1113,6 +1169,9 @@ export fn env_lookup_binding(env: TypeEnv, name: String) -> Option[EnvValueBindi
       EnvTraitImpl(_, _, rest) => {
         cur = rest
       },
+      EnvShowWrappers(_, _, rest) => {
+        cur = rest
+      },
       EnvMutCell(_, _, rest) => {
         cur = rest
       },
@@ -1191,6 +1250,9 @@ export fn env_lookup_binding_including_surface(env: TypeEnv, name: String) -> Op
         cur = rest
       },
       EnvTraitImpl(_, _, rest) => {
+        cur = rest
+      },
+      EnvShowWrappers(_, _, rest) => {
         cur = rest
       },
       EnvMutCell(_, _, rest) => {
@@ -1495,6 +1557,7 @@ export fn trait_supers(env: TypeEnv, name: String) -> Array[String] {
       supers
     } else trait_supers(rest, name),
     EnvTraitImpl(_, _, rest) => trait_supers(rest, name),
+    EnvShowWrappers(_, _, rest) => trait_supers(rest, name),
     EnvMutCell(_, _, rest) => trait_supers(rest, name),
     EnvTraitImplGen(_, _, _, _, rest) => trait_supers(rest, name),
     EnvTypeDefs(_, _, rest) => trait_supers(rest, name),
@@ -1516,6 +1579,7 @@ export fn trait_definition(env: TypeEnv, name: String) -> Option[(Array[String],
       trait_definition(rest, name)
     },
     EnvTraitImpl(_, _, rest) => trait_definition(rest, name),
+    EnvShowWrappers(_, _, rest) => trait_definition(rest, name),
     EnvMutCell(_, _, rest) => trait_definition(rest, name),
     EnvTraitImplGen(_, _, _, _, rest) => trait_definition(rest, name),
     EnvTypeDefs(_, _, rest) => trait_definition(rest, name),
@@ -1588,6 +1652,7 @@ export fn trait_method_sig_binders(env: TypeEnv, trait_name: String, method_name
       }
     } else trait_method_sig_binders(rest, trait_name, method_name),
     EnvTraitImpl(_, _, rest) => trait_method_sig_binders(rest, trait_name, method_name),
+    EnvShowWrappers(_, _, rest) => trait_method_sig_binders(rest, trait_name, method_name),
     EnvMutCell(_, _, rest) => trait_method_sig_binders(rest, trait_name, method_name),
     EnvTraitImplGen(_, _, _, _, rest) => trait_method_sig_binders(rest, trait_name, method_name),
     EnvTypeDefs(_, _, rest) => trait_method_sig_binders(rest, trait_name, method_name),

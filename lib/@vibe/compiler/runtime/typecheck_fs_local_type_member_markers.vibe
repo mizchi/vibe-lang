@@ -140,17 +140,17 @@ export fn valid_persistent_leaf_fingerprint(path: String, source: String) -> Opt
 //
 // The memo is scoped to ONE typecheck walk: ensure_fingerprint_fs_impl
 // resets it up front, every module the walk accepts (checked, reused, or
-// TDRE9-transported) binds its own path row before the walk returns, and the
+// TDRE10-transported) binds its own path row before the walk returns, and the
 // FS merge unions the rows right after. That lifecycle is what makes the two
 // consumer-side hazards structural non-events rather than policies: a row
 // can never be STALE (nothing from an earlier compile of a since-edited file
 // survives the reset), and nothing EVICTS a row the active compile still
 // needs (the memo is bounded by the closure's module count, so a daemon's
-// memory is bounded per compile without an eviction cap). The v10 disk record
+// memory is bounded per compile without an eviction cap). The v11 disk record
 // holds the TypeEnv and lowering table under their shared module fingerprint.
 // Every accepting load validates both sections before populating this memo.
 // Missing/corrupt tables force one real check. The #906 worker transport still
-// carries only TypeEnv v9, so its disk record marks lowering unavailable and a
+// carries only TypeEnv v10, so its disk record marks lowering unavailable and a
 // later in-driver compile re-checks instead of silently losing offsets.
 
 // The publication pass owns this scratch row and refills it before use.
@@ -742,6 +742,7 @@ export fn local_type_member_markers(stmts: Array[Stmt], env: TypeEnv) -> Array[S
         }
         cur = rest
       },
+      EnvShowWrappers(_, _, rest) => cur = rest,
       EnvMutCell(_, _, rest) => cur = rest,
       EnvTraitDef(tname, supers, _, methods, rest, _, _) => {
         Array::push(traits, (trait_ref_name(tname), supers, methods))
@@ -856,6 +857,7 @@ export fn env_type_member_names(env: TypeEnv) -> Array[String] {
         }
         cur = rest
       },
+      EnvShowWrappers(_, _, rest) => cur = rest,
       EnvMutCell(_, _, rest) => cur = rest,
       EnvTraitDef(_, _, _, _, rest, _, _) => cur = rest,
       EnvTraitImpl(_, _, rest) => cur = rest,
@@ -987,6 +989,7 @@ fn selected_authoritative_binding_origin(env: TypeEnv, name: String) -> Option[B
       } else {
         cur = rest
       },
+      EnvShowWrappers(_, _, rest) => cur = rest,
       EnvMutCell(_, _, rest) => cur = rest,
       EnvTraitDef(_, _, _, _, rest, _, _) => cur = rest,
       EnvTraitImpl(_, _, rest) => cur = rest,
@@ -1304,6 +1307,7 @@ fn trait_projection_def_fingerprint_scan(cur: TypeEnv, full: TypeEnv, name: Stri
       trait_projection_def_fingerprint_scan(rest, full, name, visited)
     },
     EnvTraitImpl(_, _, rest) => trait_projection_def_fingerprint_scan(rest, full, name, visited),
+    EnvShowWrappers(_, _, rest) => trait_projection_def_fingerprint_scan(rest, full, name, visited),
     EnvMutCell(_, _, rest) => trait_projection_def_fingerprint_scan(rest, full, name, visited),
     EnvTraitImplGen(_, _, _, _, rest) => trait_projection_def_fingerprint_scan(rest, full, name, visited),
     EnvTypeDefs(_, _, rest) => trait_projection_def_fingerprint_scan(rest, full, name, visited),
@@ -1403,6 +1407,7 @@ export fn trait_projection_supers(env: TypeEnv, name: String) -> Array[String] {
       trait_projection_supers(rest, name)
     },
     EnvTraitImpl(_, _, rest) => trait_projection_supers(rest, name),
+    EnvShowWrappers(_, _, rest) => trait_projection_supers(rest, name),
     EnvMutCell(_, _, rest) => trait_projection_supers(rest, name),
     EnvTraitImplGen(_, _, _, _, rest) => trait_projection_supers(rest, name),
     EnvTypeDefs(_, _, rest) => trait_projection_supers(rest, name),
@@ -1417,6 +1422,7 @@ export fn trait_projection_collect_generic_impl_bounds(dep_env: TypeEnv, trait_n
     EnvBind(_, _, rest) => trait_projection_collect_generic_impl_bounds(rest, trait_name, mappings, traits),
     EnvTraitDef(_, _, _, _, rest, _, _) => trait_projection_collect_generic_impl_bounds(rest, trait_name, mappings, traits),
     EnvTraitImpl(_, _, rest) => trait_projection_collect_generic_impl_bounds(rest, trait_name, mappings, traits),
+    EnvShowWrappers(_, _, rest) => trait_projection_collect_generic_impl_bounds(rest, trait_name, mappings, traits),
     EnvMutCell(_, _, rest) => trait_projection_collect_generic_impl_bounds(rest, trait_name, mappings, traits),
     EnvTraitImplGen(candidate, _, bounds, _, rest) => {
       if trait_ref_name(candidate) == trait_ref_name(trait_name) {
