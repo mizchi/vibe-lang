@@ -1,0 +1,34 @@
+//# A missing entry names the edit that fixes it
+
+// `vibe build` / `vibe compile` on a file with no function of the entry's name
+// refuses the build. The message names the two public edits: define the entry,
+// or pick another one with `--entry`. It does not mention the internal
+// test-runner sentinel, which no user command accepts.
+
+//# Imports
+
+import @vibe/compiler/entry/source_compile {
+  compile_source_wasi
+}
+
+//# Helpers
+
+fn entry_message(src: String, entry: String) -> String {
+  handle {
+    let _ = compile_source_wasi(src, entry)
+    ""
+  } with { Exception::Throw(msg) => msg }
+}
+
+//# Tests
+
+test "a library module with no main names fn main and --entry" {
+  let msg = entry_message("export fn add(a: Int, b: Int) -> Int {\n  a + b\n}\n", "main")
+  inspect(msg, content = "entry `main` not found: define `fn main()` in this file, or pass `--entry <name>` naming a zero-argument function it already has")
+}
+
+test "a mistyped --entry names the entry it was given" {
+  let msg = entry_message("fn main() -> Unit {\n  ()\n}\n", "nope")
+  assert(String::starts_with(msg, "entry `nope` not found: define `fn nope()`"))
+  assert(!String::contains(msg, "__no_entry__"))
+}
