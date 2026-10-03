@@ -1,0 +1,20 @@
+// #3301 (Codex on #3337): hover types an or-pattern handler arm's body the way
+// the check does. `check_program_type_table` used to receive the unsplit arm,
+// skip it, and leave `k` untyped, while `resume` answered with the top-level
+// `fn resume`'s `(Int) -> Int` rather than the arm's continuation.
+
+import ./type_at.vibe {
+  type_at_source
+}
+
+fn or_arm_src() -> String {
+  "effect Name {\n  A(Int) -> String\n  B(Int) -> String\n}\n\nfn resume(x: Int) -> Int {\n  x * 1000\n}\n\nfn work() -> String with Name {\n  String::concat(perform Name::A(1), perform Name::B(2))\n}\n\nfn run() -> String {\n  handle {\n    work()\n  } with Name {\n    A(_)|B(_) => {\n      let k = resume\n      k(\"x\")\n    }\n  }\n}\n"
+}
+
+test "#3301: a binding in an or-pattern arm has the continuation's type" {
+  inspect(type_at_source(or_arm_src(), 19, 11), content = "(String) -> String")
+}
+
+test "#3301: resume in an or-pattern arm is the continuation, not the top-level fn" {
+  inspect(type_at_source(or_arm_src(), 19, 15), content = "(String) -> String")
+}
