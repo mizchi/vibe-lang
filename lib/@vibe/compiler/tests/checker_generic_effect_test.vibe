@@ -389,3 +389,43 @@ test "a row formal the body keeps generic is accepted" {
   let diags = collect_all_diagnostics(src)
   assert(eq(Array::length(diags), 0))
 }
+
+test "a named lambda passed to a callback performs at the parameter's row" {
+  // #3341: checked at its `let` with a fresh instantiation, the lambda's
+  // perform reached the callee's `String` handler with an `Int`.
+  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn run_cb(f: () -> Int with Box[String]) -> Int with Box[String] {\n  f()\n}\n\nfn named_passed() -> Int with Box[String] {\n  let g = () -> Int { perform Box::Put(1) }\n  run_cb(g)\n}\n"
+  let diags = collect_all_diagnostics(src)
+  assert(eq(Array::length(diags), 1))
+  assert(String::contains(Array::get(diags, 0), "make the function passed to `run_cb` perform `Box` at `String`: it performs `Box` at `Int`"))
+}
+
+test "a lambda called directly performs at the instantiation in scope" {
+  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn direct_call() -> Int with Box[String] {\n  let g = () -> Int { perform Box::Put(2) }\n  g()\n}\n"
+  let diags = collect_all_diagnostics(src)
+  assert(eq(Array::length(diags), 1))
+  assert(String::contains(Array::get(diags, 0), "make `g` perform `Box` at `String`, or handle `Box` around this call"))
+}
+
+test "a lambda's own row is compared with the parameter's row" {
+  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn run_cb(f: () -> Int with Box[String]) -> Int with Box[String] {\n  f()\n}\n\nfn own_row_mismatch() -> Int with Box[String] {\n  run_cb(() -> Int with Box[Int] { perform Box::Put(3) })\n}\n"
+  let diags = collect_all_diagnostics(src)
+  assert(eq(Array::length(diags), 1))
+  assert(String::contains(Array::get(diags, 0), "it performs `Box` at `Int`, but the parameter's row is `Box[String]`"))
+}
+
+test "a named lambda passed to a callee that handles its own row is accepted" {
+  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn run_int(f: () -> Int with Box[Int]) -> Int {\n  handle {\n    f()\n  } with {\n    Box::Put(n) => resume(n + 1)\n  }\n}\n\nfn other_row() -> Int with Box[String] {\n  let g = () -> Int { perform Box::Put(41) }\n  run_int(g) + perform Box::Put(\"s\")\n}\n"
+  let diags = collect_all_diagnostics(src)
+  assert(eq(Array::length(diags), 0))
+}
+
+test "a generic lambda applied where it is written hands its callback row over" {
+  // #3341 (Codex on #3340): the scheme is opened before the arguments, so the
+  // callback's perform is checked at the `T` that `"s"` gives the lambda.
+  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn via_iife() -> Int with Box[String] {\n  ([T](x: T, f: () -> Int with Box[T]) -> Int with Box[T] {\n    f()\n  })(\"s\", () -> { perform Box::Put(1) })\n}\n"
+  let diags = collect_all_diagnostics(src)
+  assert(eq(Array::length(diags), 1))
+  assert(String::contains(Array::get(diags, 0), "perform argument type mismatch for Box::Put: expected String, got Int"))
+  let ok = collect_all_diagnostics("effect Box[T] {\n  Put(T) -> Int\n}\n\nfn via_iife() -> Int with Box[String] {\n  ([T](x: T, f: () -> Int with Box[T]) -> Int with Box[T] {\n    f()\n  })(\"s\", () -> { perform Box::Put(\"t\") })\n}\n")
+  assert(eq(Array::length(ok), 0))
+}

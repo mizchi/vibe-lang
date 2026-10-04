@@ -1,0 +1,95 @@
+// #3318 / #3341: generic-effect instantiations that agree with the place a
+// lambda is used, and row formals kept generic, still compile and answer.
+// The refusals are the `generic_effect_row_{formal_pinned,named_lambda,
+// direct_call_lambda,own_row_mismatch,handle_call_lambda,annotated_alias,
+// returned_lambda}_*reject` rows in fixtures/typecheck/expected.tsv.
+//
+// The effect-row pass charges a lambda's performs to the function that
+// writes it, not to the callee that handles them, so each such function
+// declares the row and each test discharges it once more around the call.
+// That outer arm never runs: it answers -1, and no expected value contains it.
+effect Box[T] {
+  Put(T) -> Int
+}
+
+fn run_str(f: () -> Int with Box[String]) -> Int {
+  handle {
+    f()
+  } with {
+    Box::Put(s) => resume(String::length(s))
+  }
+}
+
+fn run_int(f: () -> Int with Box[Int]) -> Int {
+  handle {
+    f()
+  } with {
+    Box::Put(n) => resume(n + 1)
+  }
+}
+
+// A named lambda performs at the row of the parameter it is passed to.
+fn named_str() -> Int with Box[String] {
+  let g = () -> Int { perform Box::Put("abc") }
+  run_str(g)
+}
+
+// Inside a `Box[String]` function, passed to a callee that handles `Box[Int]`
+// itself: it belongs to the parameter's row, not to the enclosing one.
+fn named_other_row() -> Int with Box[String] {
+  let g = () -> Int { perform Box::Put(41) }
+  run_int(g)
+}
+
+// Called directly, it performs at the function's own row.
+fn direct_str() -> Int with Box[String] {
+  let g = () -> Int { perform Box::Put("hello") }
+  g() + g()
+}
+
+// A type parameter the row names, kept generic by the body.
+fn put_any[T](x: T) -> Int with Box[T] {
+  perform Box::Put(x)
+}
+
+test "a named lambda performs at the callback row it is passed to" {
+  let r = handle {
+    named_str()
+  } with {
+    Box::Put(_) => resume(0 - 1)
+  }
+  inspect(r, "3")
+}
+
+test "a named lambda passed to a callee that handles its own row" {
+  let r = handle {
+    named_other_row()
+  } with {
+    Box::Put(_) => resume(0 - 1)
+  }
+  inspect(r, "42")
+}
+
+test "a lambda called directly performs at the function's row" {
+  let r = handle {
+    direct_str()
+  } with {
+    Box::Put(s) => resume(String::length(s))
+  }
+  inspect(r, "10")
+}
+
+test "a row formal kept generic is instantiated by each handler" {
+  let s = handle {
+    put_any("hello")
+  } with {
+    Box::Put(v) => resume(String::length(v))
+  }
+  let n = handle {
+    put_any(9)
+  } with {
+    Box::Put(v) => resume(v + 1)
+  }
+  inspect(s, "5")
+  inspect(n, "10")
+}
