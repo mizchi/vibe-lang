@@ -1733,6 +1733,34 @@ fn flat_type_expr_is(te: TypeExpr, name: String) -> Bool {
 /// `==` compares through it, and with `trait Key: Bad + Good + Eq {}` it is
 /// `Bad`'s `equals(Int, Int)`, which `==` does not call.
 export fn bound_flat_self_equals(env: TypeEnv, bound: String) -> Bool {
+  let (flat, _) = bound_flat_sigs(env, bound)
+  trait_sigs_first_self_relation(flat, "equals")
+}
+
+/// #3350: the trait that declares the `equals` `bound`'s witness dictionary
+/// keeps -- the first one its supertraits flatten to -- or "" when it keeps
+/// none. A diagnostic names it when that `equals` is not the `(Self, Self) ->
+/// Bool` witness: with `trait Key: Bad + Good + Eq {}` it is `Bad`, and the
+/// edit is to reorder or rename, not to give `Eq` a method.
+export fn bound_flat_equals_owner(env: TypeEnv, bound: String) -> String {
+  let (_, owners) = bound_flat_sigs(env, bound)
+  let mut owner = ""
+  let mut i = 0
+  while i < Array::length(owners) {
+    let (m, tname) = Array::get(owners, i)
+    if m == "equals" {
+      owner = tname
+      i = Array::length(owners)
+    } else {
+      i = i + 1
+    }
+  }
+  owner
+}
+
+/// `bound`'s flattened signatures and their declaring traits, built from the
+/// trait declarations in `env` by `flatten_trait_sigs_into`.
+fn bound_flat_sigs(env: TypeEnv, bound: String) -> (Array[(String, Array[TypeExpr], TypeExpr)], Array[(String, String)]) {
   let traits_raw: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])] = [
   ]
   let supers_map: Array[(String, Array[String])] = []
@@ -1764,7 +1792,7 @@ export fn bound_flat_self_equals(env: TypeEnv, bound: String) -> Bool {
   let owners: Array[(String, String)] = []
   let visiting: Array[String] = []
   flatten_trait_sigs_into(trait_ref_name(bound), traits_raw, supers_map, acc_names, flat, owners, visiting)
-  trait_sigs_first_self_relation(flat, "equals")
+  (flat, owners)
 }
 
 /// The type formals in scope for one trait method's declared signature: the
