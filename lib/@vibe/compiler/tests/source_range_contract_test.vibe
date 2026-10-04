@@ -32,7 +32,7 @@
 //# Imports
 
 import @vibe/compiler/runtime {
-  binding_occurrences, collect_all_diagnostics, escape_spans, symbol_spans, type_at_source
+  binding_occurrences, collect_all_diagnostics, escape_spans, locate_type_error, symbol_spans, type_at_source
 }
 
 //# Misc
@@ -94,6 +94,13 @@ fn diag_range(message: String) -> (Int, Int, Int) {
     let end_col = parse_int(String::substring(tail, 0, end_colon))
     (line, start_col, end_col)
   }
+}
+
+/// The source text a `line L:C-E:` diagnostic's range names.
+fn diag_slice(src: String, message: String) -> String {
+  let (line, start_col, end_col) = diag_range(message)
+  let base = line_start_offset(src, line)
+  String::substring(src, base + start_col - 1, base + end_col - 1)
 }
 
 //# Tests
@@ -261,4 +268,72 @@ test "type-at reads the same 1-based byte column the other queries do" {
   let src = "// 日本語\nfn add(a: Int, b: Int) -> Int {\n  a + b\n}\n"
   // `add` on line 2, byte column 4.
   assert_eq(type_at_source(src, 2, 4), "(Int, Int) -> Int")
+}
+
+test "a tuple or array binding initializer slices the literal, not the binder (#3305)" {
+  // `ETuple` / `EArray` carry no offset slot, so these anchored the binder
+  // `t` / `xs` as a point (`line 2:7`). The locator reads the literal's
+  // brackets back from the source tokens.
+  let tuple = "fn main() -> Int {\n  let t: (Int, Int) = (\"a\", 1)\n  0\n}\n"
+  assert_eq(diag_slice(tuple, Array::get(collect_all_diagnostics(tuple), 0)), "(\"a\", 1)")
+  let array = "fn main() -> Int {\n  let xs: Array[Int] = [\"a\", \"b\"]\n  0\n}\n"
+  assert_eq(diag_slice(array, Array::get(collect_all_diagnostics(array), 0)), "[\"a\", \"b\"]")
+  // No element has an offset at all here; the range is still the literal.
+  let ints = "fn main() -> Int {\n  let xs: Array[String] = [1, 2]\n  0\n}\n"
+  assert_eq(diag_slice(ints, Array::get(collect_all_diagnostics(ints), 0)), "[1, 2]")
+}
+
+test "a literal that is only an operand keeps the binder anchor (#3305)" {
+  // The statement does not end at the literal's bracket, so the literal is
+  // not the initializer: the binder stands rather than one operand.
+  let src = "fn main() -> Int {\n  let t: Int = (1, 2) == (1, 2)\n  0\n}\n"
+  let diags = collect_all_diagnostics(src)
+  assert(Array::length(diags) > 0)
+  assert(String::contains(Array::get(diags, 0), "line 2:7: "))
+}
+
+test "a name initializer is not read on into the next statement (#3305)" {
+  // `x` is the VALUE's own offset, not a binder; reading on from it to the
+  // next `=` used to report `let b = 2`'s `2` (line 4) for this mismatch.
+  let src = "fn main() -> Int {\n  let x = \"s\"\n  let a: Int = x\n  let b = 2\n  b\n}\n"
+  let diags = collect_all_diagnostics(src)
+  assert(Array::length(diags) > 0)
+  assert(String::contains(Array::get(diags, 0), "line 3:16"))
+}
+
+test "a tuple or array argument slices the argument, not the callee (#3305)" {
+  // These anchored the callee `f` (`line 3:3`). A located element inside the
+  // literal is widened to the literal's own brackets.
+  let array = "fn f(xs: Array[Int]) -> Int { 0 }\nfn main() -> Int {\n  f([\"a\"])\n}\n"
+  assert_eq(diag_slice(array, Array::get(collect_all_diagnostics(array), 0)), "[\"a\"]")
+  let tuple = "fn f(t: (Int, Int)) -> Int { 0 }\nfn main() -> Int {\n  f((\"a\", 1))\n}\n"
+  assert_eq(diag_slice(tuple, Array::get(collect_all_diagnostics(tuple), 0)), "(\"a\", 1)")
+  let nested = "fn f(ps: Array[(Int, Int)]) -> Int { 0 }\nfn main() -> Int {\n  f([(1, \"a\")])\n}\n"
+  assert_eq(diag_slice(nested, Array::get(collect_all_diagnostics(nested), 0)), "[(1, \"a\")]")
+}
+
+test "each repeated unknown assignment target is located at its own token (#3248)" {
+  // `EAssign` / `EAssignOp` carried no offset, so a target spelled the same in
+  // two places could not be told apart: both were left at a synthetic `0:0`
+  // (and deduped to one). The parser now keeps the target token's start, and
+  // the locator reads the token -- `r#missing` included -- back from the lexer.
+  let src = "fn first() -> Int {\n  missing = 1\n  0\n}\nfn second() -> Int {\n  r#missing += 2\n  0\n}\n"
+  let diags = collect_all_diagnostics(src)
+  assert_eq(Array::length(diags), 2)
+  let (first_line, _, _) = diag_range(Array::get(diags, 0))
+  let (second_line, _, _) = diag_range(Array::get(diags, 1))
+  assert_eq(first_line, 2)
+  assert_eq(second_line, 6)
+  assert_eq(diag_slice(src, Array::get(diags, 0)), "missing")
+  assert_eq(diag_slice(src, Array::get(diags, 1)), "r#missing")
+}
+
+test "an assignment target with no recorded token stays unlocated (#3248)" {
+  // A synthesized assignment carries the bare marker. Even with exactly one
+  // matching assignment in the text, nothing is inferred from it.
+  let src = "fn first() -> Int {\n  missing = 1\n  0\n}\n"
+  assert_eq(locate_type_error(src, "unknown name: missing [@assign-target]"), "unknown name: missing")
+  // A recorded offset that does not start the named token is not trusted.
+  assert_eq(locate_type_error(src, "unknown name: missing [@assign-target=3]"), "unknown name: missing")
+  assert(String::starts_with(locate_type_error(src, "unknown name: missing [@assign-target=22]"), "line 2:3-10: "))
 }

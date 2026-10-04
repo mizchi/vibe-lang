@@ -705,8 +705,8 @@ fn gc_native_array_escape_gate(expr: Expr, name: String, allow_tail: Bool, abi_n
     ELet(n, _, _, _) => n != name && gc_native_array_children_are_safe(expr, name, abi_names, abi_param_refs),
     ELetMut(n, _, _, _) => n != name && gc_native_array_children_are_safe(expr, name, abi_names, abi_param_refs),
     ELetRec(n, _, _) => n != name && gc_native_array_children_are_safe(expr, name, abi_names, abi_param_refs),
-    EAssign(n, _, _) => n != name && gc_native_array_children_are_safe(expr, name, abi_names, abi_param_refs),
-    EAssignOp(n, _, _, _) => n != name && gc_native_array_children_are_safe(expr, name, abi_names, abi_param_refs),
+    EAssign(n, _, _, _) => n != name && gc_native_array_children_are_safe(expr, name, abi_names, abi_param_refs),
+    EAssignOp(n, _, _, _, _) => n != name && gc_native_array_children_are_safe(expr, name, abi_names, abi_param_refs),
     EFn(_, _, _, _, _, _) => false,
     EMatch(_, _) => false,
     EHandle(_, _) => false,
@@ -830,8 +830,8 @@ fn gc_native_struct_scope_is_safe(expr: Expr, name: String) -> Bool {
     ELet(n, _, _, _) => n != name && gc_native_struct_children_are_safe(expr, name),
     ELetMut(n, _, _, _) => n != name && gc_native_struct_children_are_safe(expr, name),
     ELetRec(n, _, _) => n != name && gc_native_struct_children_are_safe(expr, name),
-    EAssign(n, _, _) => n != name && gc_native_struct_children_are_safe(expr, name),
-    EAssignOp(n, _, _, _) => n != name && gc_native_struct_children_are_safe(expr, name),
+    EAssign(n, _, _, _) => n != name && gc_native_struct_children_are_safe(expr, name),
+    EAssignOp(n, _, _, _, _) => n != name && gc_native_struct_children_are_safe(expr, name),
     _ => gc_native_struct_children_are_safe(expr, name)
   }
 }
@@ -1796,7 +1796,7 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       gc_restore_local_scope(local_names, ctx, name_slot, scoped_nl)
       scoped_nl
     },
-    EAssign(name, value, body) => {
+    EAssign(name, value, body, _) => {
       let idx = resolve_local(local_names, name, "gc_var")
       if array_contains_str(ctx.ref_cell_names, name) {
         emit_local_get(buf, idx)
@@ -1810,10 +1810,10 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
         ce(buf, body, local_names, nl, ld)
       }
     },
-    EAssignOp(name, op, value, body) => {
+    EAssignOp(name, op, value, body, target_off) => {
       let idx = resolve_local(local_names, name, "gc_var")
       if (op == "+" || op == "-" || op == "*" || op == "/") && (array_contains_int(ctx.gc_float_locals, idx) || gc_expr_is_floatish(value, local_names, ctx)) {
-        ce(buf, EAssign(name, EBinOp(op, EIdent(name, -1), value, -1), body), local_names, next_local, ld)
+        ce(buf, EAssign(name, EBinOp(op, EIdent(name, -1), value, -1), body, target_off), local_names, next_local, ld)
       } else if array_contains_str(ctx.ref_cell_names, name) {
         emit_local_get(buf, idx)
         emit_i32_wrap_i64(buf)
