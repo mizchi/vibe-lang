@@ -60,6 +60,21 @@ fn library_lane(dir: String, source: String) -> String with Env + Fs {
   } with { Exception::Throw(m) => m }
 }
 
+/// Two or-pattern arms whose operations share a prefix, each `handle`
+/// making all three types Int (Codex on #3337: the shorter arm used to claim
+/// the longer one's first two copies).
+fn prefix_dep() -> String {
+  "effect Three[A, B, C] {\n  X -> A\n  Y -> B\n  Z -> C\n}\n\nexport fn prefix_arms() -> Int {\n  let first = handle {\n    perform Three::X + perform Three::Y\n  } with Three {\n    X|Y => resume(1);\n    Z => resume(0)\n  }\n  let second = handle {\n    perform Three::X + perform Three::Y + perform Three::Z\n  } with Three {\n    X|Y|Z => resume(2)\n  }\n  first + second\n}\n"
+}
+
+/// Arms written apart are never compared as the copies of one or-pattern
+/// arm, even where nothing tells them apart but their source: here the
+/// second `handle`'s `P` and `Q` resume with Int and String and repeat one
+/// body, in the order of the first `handle`'s or-pattern arm.
+fn written_apart_dep() -> String {
+  String::concat(generic_effect(), "export fn apart() -> Int {\n  let one = handle {\n    perform E::X + perform E::Y\n  } with E {\n    X|Y => resume(1)\n  }\n  let two = handle {\n    let a: Int = perform E::X\n    let b: String = perform E::Y\n    a + String::length(b)\n  } with E {\n    X => {\n      let k = resume\n      0\n    };\n    Y => {\n      let k = resume\n      0\n    }\n  }\n  one + two\n}\n")
+}
+
 //# Misc
 
 test "the library lane accepts an or-pattern arm its handle instantiates alike" {
@@ -76,4 +91,12 @@ test "the merged entry lane compiles an entry calling it" {
   Fs::write_bytes(String::concat(dir, "/dep.vibe"), string_to_bytes(agreeing_dep()))
   Fs::write_bytes(String::concat(dir, "/main.vibe"), string_to_bytes("import ./dep.vibe { both_int }\nexport fn answer() -> Int { both_int() }\n"))
   inspect(is_wasm(compile_file_wasi_only(String::concat(dir, "/main.vibe"), "answer")), content = "true")
+}
+
+test "the library lane takes or-pattern arms sharing a prefix as two arms" {
+  inspect(library_lane("/tmp/vibe_or_arm_unlocated_prefix", prefix_dep()), content = "wasm")
+}
+
+test "the library lane never compares arms written apart" {
+  inspect(library_lane("/tmp/vibe_or_arm_unlocated_apart", written_apart_dep()), content = "wasm")
 }

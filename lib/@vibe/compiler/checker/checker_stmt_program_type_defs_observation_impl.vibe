@@ -45,11 +45,12 @@ import @vibe/compiler/core {
   TypeExpr,
   env_cache,
   env_show_wrapper_facts,
+  erase_handler_or_arm_stamps,
   expr_child_at,
   expr_children_pop,
   expr_children_push,
   expr_children_top,
-  handler_or_arms_to_split,
+  handler_or_arm_groups,
   sort_perm_by_names,
   split_handler_or_arms,
   subst_apply,
@@ -201,9 +202,10 @@ export fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: 
   // `B => body`. Split here, before anything reads a handler arm, so the
   // checker types, counts and discharges each operation the way codegen
   // lowers it. An alternative that binds a name stays whole, to be refused.
-  // The arms are read first, as written, for the check after typing.
-  let handler_or_arms = handler_or_arms_to_split(stmts, false)
+  // The arms it took are kept, by the group id it stamps on their copies,
+  // for the check after typing.
   split_handler_or_arms(stmts, false)
+  let handler_or_arms = Array::slice(handler_or_arm_groups(), 0, Array::length(handler_or_arm_groups()))
   // #1962 (Option 1): a direct host-builtin call inside a `handle` whose arms
   // name the same operation becomes `perform <Op>(..)`. BEFORE checking, so
   // the effect row the checker computes is the one the program actually has.
@@ -280,6 +282,8 @@ export fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: 
   // #3301: and every effect's operations, so an or-pattern arm whose
   // `resume` the split typed at two types can be refused.
   check_handler_or_arm_resume_types(handler_or_arms, empty_defs, final_s, frozen_errors)
+  // The split's group stamps are the checker's alone.
+  erase_handler_or_arm_stamps(stmts)
   if Array::length(frozen_errors) > 0 {
     // #2831 criterion 4: report EVERY diagnostic this check collected, not
     // just the first. They are all computed by the time we get here, and

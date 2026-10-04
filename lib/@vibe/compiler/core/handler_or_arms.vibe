@@ -144,6 +144,14 @@ fn hoa_arms_split_any(arms: Array[(Pat, Expr)], with_binders: Bool) -> Bool {
 /// in its place, so the first arm that names an operation still wins. Every
 /// copy gets a body of its own: the passes after this one rewrite arm bodies,
 /// and two arms sharing one tree would share any in-place edit as well.
+///
+/// For the checker (`with_binders` false) the arm also gets a group id, and
+/// every copy's body is stamped with it (hoa_stamp): the checker compares the
+/// copies of one source arm, and the stamp is the only thing that says which
+/// arms those are -- it reads no offset, order or shape, so a lane that parses
+/// without offsets answers as the others do, and two arms the program wrote
+/// apart are never taken for one. erase_handler_or_arm_stamps removes the
+/// stamps once the check is done.
 fn hoa_arms(arms: Array[(Pat, Expr)], split: Bool, with_binders: Bool) -> Array[(Pat, Expr)] {
   let out: Array[(Pat, Expr)] = []
   let mut i = 0
@@ -152,9 +160,21 @@ fn hoa_arms(arms: Array[(Pat, Expr)], split: Bool, with_binders: Bool) -> Array[
     if split && hoa_splits(pat, with_binders) {
       let alternatives: Array[Pat] = []
       hoa_alternatives_into(pat, alternatives)
+      let group = if with_binders {
+        -1
+      } else {
+        let id = Array::length(hoa_groups)
+        Array::push(hoa_groups, (alternatives, body))
+        id
+      }
       let mut j = 0
       while j < Array::length(alternatives) {
-        Array::push(out, (Array::get(alternatives, j), hoa_expr(body, with_binders)))
+        let copy = hoa_expr(body, with_binders)
+        Array::push(out, (Array::get(alternatives, j), if group >= 0 {
+          ELet(hoa_stamp_name, EInt(group), copy, -1)
+        } else {
+          copy
+        }))
         j = j + 1
       }
     } else {
@@ -387,6 +407,75 @@ fn hoa_copy_refusal(stmts: Array[Stmt], with_binders: Bool) -> Option[String] {
   refusal
 }
 
+//# Group stamps
+
+/// The or-pattern arms the last checker split took, by group id: each arm's
+/// alternatives and its body as written.
+let hoa_groups: Array[(Array[Pat], Expr)] = Array::slice([([PWild], EUnit)], 0, 0)
+
+/// The binder of the `let` the checker split wraps each copy's body in, its
+/// value the arm's group id. `$` cannot begin a name a program writes.
+let hoa_stamp_name: String = "$or_arm_group"
+
+/// #3301: the or-pattern arms the last `split_handler_or_arms(_, false)`
+/// took, indexed by the group id it stamped on their copies
+/// (handler_or_arm_stamp): each arm's alternatives and its body as written.
+export fn handler_or_arm_groups() -> Array[(Array[Pat], Expr)] {
+  hoa_groups
+}
+
+/// #3301: the group id the checker split stamped on an arm body, with the
+/// body under the stamp; (-1, body) for a body that carries none.
+export fn handler_or_arm_stamp(body: Expr) -> (Int, Expr) {
+  match body {
+    ELet(name, EInt(group), inner, _) => if name == hoa_stamp_name {
+      (group, inner)
+    } else {
+      (-1, body)
+    }
+    _ => (-1, body)
+  }
+}
+
+/// #3301: take the checker split's stamps off every arm in `stmts`, in place,
+/// so nothing after the check sees them.
+export fn erase_handler_or_arm_stamps(stmts: Array[Stmt]) -> Unit {
+  let exprs: Array[Expr] = []
+  hoa_stmt_exprs_into(stmts, exprs)
+  let mut i = 0
+  while i < Array::length(exprs) {
+    hoa_erase_stamps(Array::get(exprs, i))
+    i = i + 1
+  }
+}
+
+fn hoa_erase_stamps(expr: Expr) -> Unit {
+  match expr {
+    EHandle(_, arms) => {
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (pat, body) = Array::get(arms, i)
+        let (group, inner) = handler_or_arm_stamp(body)
+        if group >= 0 {
+          Array::set(arms, i, (pat, inner))
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+  let mark = expr_children_push(expr)
+  let top = expr_children_top()
+  let mut i = mark
+  while i < top {
+    hoa_erase_stamps(expr_child_at(i))
+    i = i + 1
+  }
+  expr_children_pop(mark)
+}
+
 //# Statements
 
 /// #3301: split every handler arm `A | B => body` in `stmts` into
@@ -396,68 +485,16 @@ fn hoa_copy_refusal(stmts: Array[Stmt], with_binders: Bool) -> Option[String] {
 /// keeps its arm whole, for the checker to refuse. A `handle` the split would
 /// copy more than hoa_copy_limit times is refused before anything is split.
 export fn split_handler_or_arms(stmts: Array[Stmt], with_binders: Bool) -> Unit with Exception {
+  if !with_binders {
+    Array::truncate(hoa_groups, 0)
+  } else {
+    ()
+  }
   match hoa_copy_refusal(stmts, with_binders) {
     Some(refusal) => throw(refusal),
     None => {
       let _changed = hoa_split_stmts(stmts, with_binders)
     }
-  }
-}
-
-/// #3301: every or-pattern handler arm `split_handler_or_arms(stmts,
-/// with_binders)` would split, read before it splits them: each arm's
-/// alternatives and its body as written. The split checks one body once per
-/// operation, so the checker reads these after typing, when it knows every
-/// operation's signature, to refuse an arm whose operations would give the
-/// same expression two types.
-export fn handler_or_arms_to_split(stmts: Array[Stmt], with_binders: Bool) -> Array[(Array[Pat], Expr)] {
-  let exprs: Array[Expr] = []
-  hoa_stmt_exprs_into(stmts, exprs)
-  let out: Array[(Array[Pat], Expr)] = []
-  let mut i = 0
-  while i < Array::length(exprs) {
-    let expr = Array::get(exprs, i)
-    if hoa_needs_split(expr, with_binders) {
-      hoa_collect(expr, with_binders, out)
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  out
-}
-
-/// Every arm the split takes in `expr`, outer arms before the arms nested in
-/// their bodies.
-fn hoa_collect(expr: Expr, with_binders: Bool, out: Array[(Array[Pat], Expr)]) -> Unit {
-  hoa_collect_node(expr, with_binders, out)
-  let mark = expr_children_push(expr)
-  let top = expr_children_top()
-  let mut i = mark
-  while i < top {
-    hoa_collect(expr_child_at(i), with_binders, out)
-    i = i + 1
-  }
-  expr_children_pop(mark)
-}
-
-fn hoa_collect_node(node: Expr, with_binders: Bool, out: Array[(Array[Pat], Expr)]) -> Unit {
-  match node {
-    EHandle(_, arms) => {
-      let mut i = 0
-      while i < Array::length(arms) {
-        let (pat, body) = Array::get(arms, i)
-        if hoa_splits(pat, with_binders) {
-          let alternatives: Array[Pat] = []
-          hoa_alternatives_into(pat, alternatives)
-          Array::push(out, (alternatives, body))
-        } else {
-          ()
-        }
-        i = i + 1
-      }
-    },
-    _ => ()
   }
 }
 
