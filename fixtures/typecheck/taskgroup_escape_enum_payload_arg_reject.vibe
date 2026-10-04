@@ -1,0 +1,32 @@
+// #3343 (Codex on #3359): an enum payload holding the handle is handed to a
+// helper that stores it in an outer cell. The argument's nominal type `Slot`
+// does not show the handle, so the helper was not checked again; this
+// compiled and the handle was joined after its group closed. The call is
+// refused.
+import @vibe/concurrent { TaskGroup, TaskHandle }
+
+enum Slot {
+  Has(TaskHandle[Int]);
+  Empty
+}
+
+struct Cell[T] {
+  mut v: Option[T]
+}
+
+fn put(c: Cell[Slot], s: Slot) -> Unit {
+  c.v = Some(s)
+}
+
+fn main() -> Unit allows Exception + Console {
+  let c: Cell[Slot] = Cell::{ v: None }
+  let r = TaskGroup::run((n) -> {
+    put(c, Has(TaskGroup::spawn(n, () -> { 41 })))
+    1
+  })
+  let after = match c.v {
+    Some(Has(h)) => TaskHandle::join(h),
+    _ => 0 - 1
+  }
+  println("r=\{r} after=\{after}")
+}

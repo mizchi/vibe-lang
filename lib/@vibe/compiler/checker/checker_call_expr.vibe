@@ -193,6 +193,9 @@ import ./checker_region_retention.vibe {
   retention_expr_callee_region_check,
   retention_named_run_body,
   retention_named_run_body_message,
+  retention_region_listed,
+  retention_result_regions,
+  retention_type_hides_region,
   retention_type_may_hide_region
 }
 
@@ -1526,16 +1529,24 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                           match unify(CtFn(body_params, body_ret, body_eff), bt, s_body) {
                             Some(s_unified) => {
                               let zonked_ret = subst_apply(s_unified, body_ret)
-                              // #3343 (Codex on #3359): a struct value built
-                              // from the token has a nominal type that does
-                              // not show its fields; ask the body's tail, as
-                              // the `region` block's return check does.
+                              // #3343 (Codex on #3359): a value whose type
+                              // may hide the region -- a struct built from
+                              // the token, a handle under an erased
+                              // annotation, a closure -- is asked by what the
+                              // body's tail and its explicit `return`s read.
                               let tail_returns = match body_arg {
                                 EFn(_, _, fn_params, _, _, fn_body) => if literal_body && retention_type_may_hide_region(zonked_ret) {
                                   let (raw_pname, _) = Array::get(fn_params, 0)
                                   let pname = resume_walk_param_base(raw_pname)
                                   let lit_env = env_bind(env_bind(body_env, "__capture_boundary__", CtUnit), pname, subst_apply(s_unified, Array::get(body_params, 0)))
-                                  tail_named_record_mentions_region(fn_body, lit_env, defs, s_unified, c_body, skolem_name, check_plain)
+                                  // The body's own result type, too: a
+                                  // value the checker could not type
+                                  // leaves the run's result open.
+                                  let own_ret = match subst_apply(s_unified, bt) {
+                                    CtFn(_, own, _) => subst_apply(s_unified, own),
+                                    _ => zonked_ret
+                                  }
+                                  tail_named_record_mentions_region(fn_body, lit_env, defs, s_unified, c_body, skolem_name, check_plain) || ((retention_type_hides_region(zonked_ret, defs) || retention_type_hides_region(own_ret, defs)) && retention_region_listed(retention_result_regions(fn_body, lit_env, defs, s_unified), skolem_name))
                                 } else {
                                   false
                                 },
@@ -1671,7 +1682,9 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
               let (body_ty, s1, c1) = check_child(fn_body, env_body, defs, s, c + 1, errors, tytab, capture, lane)
               typed_occurrence_capture_restore_frame_depth(capture, virtual_parent_depth)
               let zonked_ret = subst_apply(s1, body_ty)
-              if type_mentions_named(zonked_ret, skolem_name) || tail_named_record_mentions_region(fn_body, env_body, defs, s, c + 1, skolem_name, check_plain) {
+              // #3343 (Codex on #3359): a value whose type may hide the
+              // region is asked by what the body's tail reads, too.
+              if type_mentions_named(zonked_ret, skolem_name) || tail_named_record_mentions_region(fn_body, env_body, defs, s, c + 1, skolem_name, check_plain) || (retention_type_hides_region(zonked_ret, defs) && retention_region_listed(retention_result_regions(fn_body, env_body, defs, s1), skolem_name)) {
                 Array::push(errors, String::concat("region escapes its scope: the value returned from this region body still depends on the region's own token", off_marker_len(region_off, String::length(name))))
               } else {
                 ()

@@ -1,0 +1,37 @@
+// #3343 (Codex on #3359): the `return` that hands the handle back sits in a
+// `match` arm, wrapped in an enum payload whose nominal type `Slot` does not
+// show it. This compiled and the handle was joined after its group closed; the
+// caller's write of the result is refused.
+import @vibe/concurrent { TaskGroup, TaskHandle }
+
+enum Slot {
+  Has(TaskHandle[Int]);
+  Empty
+}
+
+struct Cell[T] {
+  mut v: Option[T]
+}
+
+fn pick(h: TaskHandle[Int], k: Option[Int]) -> Slot {
+  match k {
+    Some(_) => {
+      return Has(h)
+    },
+    None => ()
+  }
+  Empty
+}
+
+fn main() -> Unit allows Exception + Console {
+  let c: Cell[Slot] = Cell::{ v: None }
+  let r = TaskGroup::run((n) -> {
+    c.v = Some(pick(TaskGroup::spawn(n, () -> { 41 }), Some(1)))
+    1
+  })
+  let after = match c.v {
+    Some(Has(h)) => TaskHandle::join(h),
+    _ => 0 - 1
+  }
+  println("r=\{r} after=\{after}")
+}

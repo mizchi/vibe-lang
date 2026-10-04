@@ -203,7 +203,7 @@ import ./checker_merge_capture_provenance.vibe {
 }
 
 import ./checker_region_retention.vibe {
-  retention_bind_let
+  retention_assign_hidden_region, retention_bind_carry, retention_bind_let
 }
 
 import ./checker_throw_kind_of_type.vibe {
@@ -327,6 +327,14 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         // callee an alias stands for -- so a call inside a region can check
         // the body for what it keeps.
         cenv = retention_bind_let(cenv, name, val, gen, false)
+        // #3343 (Codex on #3359): inside a region, record which regions the
+        // value carries where its type may hide them, so a later write,
+        // return or call of `name` is judged by the value it was bound to.
+        if spine_region_active {
+          cenv = retention_bind_carry(cenv, def_env, name, val, subst_apply(ns, gen), defs, ns)
+        } else {
+          ()
+        }
         s1 = ns
         c1 = nc
         typed_occurrence_capture_enter_virtual_child(capture, 1, Array::length(expr_children(body)))
@@ -844,8 +852,21 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
     EAssign(name, val, body) => {
       let (vt, s1, c1) = check_expr_capture(val, env, defs, s, c, errors, tytab, capture, lane)
       let assigned_ty = subst_apply(s1, vt)
-      if assignment_crosses_region(name, assigned_ty, env) || (binding_predates_active_region(name, env) && expression_mentions_active_region(val, env, defs, s1, c1, check_expr)) {
-        Array::push(errors, String::concat(region_write_escape_message(assigned_ty, env, "region escapes its scope: an assignment stores a value that captures this region into an outer binding"), off_marker(tail_expr_off(val))))
+      // #3343 (Codex on #3359): a value whose type may hide the region is
+      // asked by what it reads, too (`retention_assign_hidden_region`).
+      let predates_region = binding_predates_active_region(name, env)
+      let hidden_region = if predates_region && !assignment_crosses_region(name, assigned_ty, env) {
+        retention_assign_hidden_region(name, val, assigned_ty, env, defs, s1)
+      } else {
+        ""
+      }
+      if assignment_crosses_region(name, assigned_ty, env) || (predates_region && (hidden_region != "" || expression_mentions_active_region(val, env, defs, s1, c1, check_expr))) {
+        let shown_ty = if hidden_region != "" {
+          CtNamed(hidden_region, [])
+        } else {
+          assigned_ty
+        }
+        Array::push(errors, String::concat(region_write_escape_message(shown_ty, env, "region escapes its scope: an assignment stores a value that captures this region into an outer binding"), off_marker(tail_expr_off(val))))
       }
       // The assigned value must be assignable to the variable's type
       // (previously unchecked — `y = "s"` for `let mut y = 1` was accepted).

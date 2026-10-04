@@ -516,10 +516,21 @@ from a closure written in it, to an outer binding directly or through a local
 alias of one. The target's declared type does not matter -- a generic struct
 value whose type argument is still open, an array annotated
 `Array[Option[TaskHandle[Int]]]`, an unannotated `let mut slot = None` are all
-refused the same way. Neither does the stored value's type alone: a struct
-built from the token (`Some(Box::{ h: handle })`) has a nominal type that does
-not show its fields, so the value itself is asked, as the `region` block's
-return check asks it:
+refused the same way. Neither does the stored value's type alone. A type
+names the region only as far as it has room for it: a struct or enum does not
+show its fields' types, an annotation may spell `TaskHandle[Int]` for a handle
+of the group, and a closure's type does not list what it captured. Where the
+stored value's type may hide a region, the value is judged by what it READS --
+a value can carry a region only if a variable it reads carries it, since the
+token itself is a variable. A variable carries what its type shows, or, where
+its type may hide a region, what its binding recorded: a `let` records what
+its value read, a parameter of a re-checked callee (below) what its argument
+carried, and a binding that records nothing (a `let mut`, a pattern, a loop
+variable, a parameter of a lambda written in the body) carries every region it
+was declared inside. So `Some(Box::{ h: handle })`, `let b = Box::{ h: handle
+}` written later, an enum payload, a struct two levels deep, and the result of
+a helper declared `-> TaskHandle[Int]` or `-> Box` are all refused when stored
+outside:
 
 ```text
 region escapes its nursery scope: this write stores this TaskGroup::run call's
@@ -580,24 +591,27 @@ refused, since it was checked where it was written, outside the region
 inline at the call, or bind it with `let` to a closure literal and pass that
 name`).
 
-The second check also asks which regions the callee's RESULT carries -- by
-the body's own type, before a return annotation can hide it, or through a
-struct built in its tail. A call whose result type at the call does not name
-such a region is refused: a helper declared `-> TaskHandle[Int]` that hands
-its argument back, or one returning a struct, a tuple or a closure built from
-it, would otherwise launder the token past the caller's own write check:
+An argument whose type may hide the region -- a struct built from the
+handle, say -- is judged by what it reads, as a stored value is, so
+`put(c, Box::{ h: handle })` re-checks `put`, whose parameter then carries
+what the argument carried.
 
-```text
-region escapes its nursery scope: this call to `passthrough` returns this
-TaskGroup::run call's own Nursery/Task/Sender/Receiver token as a value whose
-type does not name the region, so the checker cannot follow it -- declare the
-result with a type parameter that carries the argument's type (as
-`fn f[T](x: T) -> T` or a generic struct does), or join the task (or use the
-endpoint) inside the body and pass the result instead
-```
+What the callee RETURNS is not judged at the call. Its result reads the
+call's arguments, so where the result's type may hide a region it carries
+every region they carry: the result of `fn start(g: TaskGroup) ->
+TaskHandle[Int]`, of a helper that returns a struct, tuple or closure built
+from its argument, or that hands it back with an explicit `return` in any
+branch, carries the group's region into the caller. Joining or matching on it
+inside the body is legal; storing it outside, returning it from the body, or
+handing it to a function that keeps it is refused by the same checks as the
+handle itself. A generic `fn id[T](x: T) -> T` shows the region in its result
+type, which answers the same way.
 
-A generic `fn id[T](x: T) -> T` keeps the region in its result type, so the
-caller's write of the result is judged by the write check as usual.
+A callee is checked again once per distinct call shape -- the callee, and for
+each argument whether it carries the region, the regions its location
+predates, and, for a function argument, which function it is -- so a helper
+that recurses with a different callback (`walk(safe, h)` calling
+`walk(stash, h)`) checks that callback too.
 
 A callee that keeps nothing -- one that only reads its argument, or stores a
 joined result -- is accepted. A function the callee is passed is followed: the
@@ -624,9 +638,10 @@ restored (`lib/@vibe/compiler/checker/checker_region_retention.vibe`).
 After the body is checked, the call is also refused when:
 
 - **the returned value mentions the region** -- the body returns a task
-  handle, an endpoint, or anything containing one, a struct built from one in
-  the body's tail included: `region escapes its nursery scope: the value
-  returned from this TaskGroup::run body still depends on its own
+  handle, an endpoint, or anything containing one, through its tail or an
+  explicit `return`, a value whose type hides the region judged by what it
+  reads as above: `region escapes its nursery scope: the value returned from
+  this TaskGroup::run body still depends on its own
   Nursery/Task/Sender/Receiver token`;
 - **a binding visible at the call now mentions the region**: `region escapes
   its nursery scope: an outer binding now depends on this TaskGroup::run
@@ -655,17 +670,22 @@ closure bound before the group, inside the body and through an alias, a body
 passed by name, a helper and a closure that hand the handle to the callback
 they are passed, and a function-typed parameter of the function that minted
 the group; and a helper returning the handle under `TaskHandle[Int]`, in a
-struct, a closure or a tuple, a struct written directly or returned from a
-literal body, and a `let mut`, call-result or field body) and by
+struct, a closure or a tuple, or with an explicit `return` in a branch or a
+`match` arm, a struct written directly, through a `let`, two levels deep or
+handed to a helper, an enum payload written directly or handed to a helper, a
+struct returned from a literal body through its tail, an explicit `return`, an
+`if` or `match` tail or two structs deep, a helper recursing with another
+callback, and a `let mut`, call-result or field body) and by
 `fixtures/taskgroup_outer_write_ok_test.vibe` (the writes and calls that stay
-legal).
+legal, a helper's erased result joined inside the body among them).
 
 ADR-0090's `region r { .. }` mints its region the same way for region-bound
 mutable storage. The write check above, and the second check of code written
 outside the body, are that construct's own, applied to a task group's body;
 only the diagnostic's wording differs (`region escapes its scope: this call to
 `put` stores a value that captures this region into an outer binding`, pinned
-by `region_escape_helper_push_reject`).
+by `region_escape_helper_push_reject` and, for a region-bound list handed over
+inside a struct, `region_escape_struct_arg_reject`).
 
 ## Safe parallel API
 

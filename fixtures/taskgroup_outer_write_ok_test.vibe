@@ -215,3 +215,144 @@ fn helper_calls() -> String with Exception {
 test "helpers and closures that keep nothing past the group stay legal" allows Exception {
   inspect(helper_calls(), "r=133 r2=1 a=41 b=2 g=3 named=7 total=40 s1=11 s2=12")
 }
+
+// #3343 (Codex on #3359): a value whose type does not show the group's region
+// -- a handle a helper returns under `TaskHandle[Int]` (as `start` does in
+// fixtures/async_spawn_host_futures/stream_folded_spawn.vibe), a struct or an
+// enum built from one, handed back by an explicit `return` or not -- carries
+// the region of every value it was made from. It is refused only where it
+// would outlive the group (the `taskgroup_escape_*_reject` rows); joined,
+// matched or handed to a helper that keeps a joined result, inside the body,
+// it stays legal. So does a box of the OUTER group's handle written to a
+// local of the outer body from a nested group, a closure that captured only a
+// joined result, and a closure made before the group, each written outside.
+struct Box {
+  h: TaskHandle[Int]
+}
+
+enum Slot {
+  Has(TaskHandle[Int]);
+  Empty
+}
+
+fn start(g: TaskGroup, k: Int) -> TaskHandle[Int] {
+  TaskGroup::spawn(g, () -> { k })
+}
+
+fn boxit(h: TaskHandle[Int]) -> Box {
+  return Box::{ h: h }
+}
+
+fn wrap(h: TaskHandle[Int], keep: Bool) -> Slot {
+  if keep {
+    return Has(h)
+  } else {
+    ()
+  }
+  Empty
+}
+
+fn unbox(b: Box) -> Int with Exception {
+  TaskHandle::join(b.h)
+}
+
+fn keep_unboxed(c: Cell[Int], b: Box) -> Unit with Exception {
+  c.v = Some(TaskHandle::join(b.h))
+}
+
+fn erased_in_body() -> String with Exception {
+  let kept: Cell[Int] = Cell::{ v: None }
+  let fs: Cell[() -> Int] = Cell::{ v: None }
+  let pre_fs: Cell[() -> Int] = Cell::{ v: None }
+  let pre = () -> { 9 }
+  let r = TaskGroup::run((n) -> {
+    let t = start(n, 1)
+    let b = boxit(TaskGroup::spawn(n, () -> { 2 }))
+    let s = match wrap(start(n, 3), true) {
+      Has(h) => TaskHandle::join(h),
+      Empty => 0
+    }
+    keep_unboxed(kept, Box::{ h: start(n, 4) })
+    let local_box = Cell::{ v: None }
+    local_box.v = Some(boxit(start(n, 5)))
+    let from_local = match local_box.v {
+      Some(lb) => unbox(lb),
+      None => 0
+    }
+    let outer_local_box: Cell[Box] = Cell::{ v: None }
+    let inner = TaskGroup::run((m) -> {
+      outer_local_box.v = Some(Box::{ h: TaskGroup::spawn(n, () -> { 6 }) })
+      TaskHandle::join(TaskGroup::spawn(m, () -> { 10 }))
+    })
+    let from_outer = match outer_local_box.v {
+      Some(ob) => unbox(ob),
+      None => 0
+    }
+    let j = TaskHandle::join(start(n, 7))
+    fs.v = Some(() -> { j + 1 })
+    pre_fs.v = Some(pre)
+    TaskHandle::join(t) + unbox(b) + s + from_local + inner + from_outer
+  })
+  let f = match fs.v {
+    Some(ff) => ff(),
+    None => 0 - 1
+  }
+  let p = match pre_fs.v {
+    Some(pf) => pf(),
+    None => 0 - 1
+  }
+  let k = match kept.v {
+    Some(x) => x,
+    None => 0 - 1
+  }
+  "r=\{r} kept=\{k} f=\{f} pre=\{p}"
+}
+
+test "values whose type hides the group's region stay legal inside the body" allows Exception {
+  inspect(erased_in_body(), "r=27 kept=4 f=8 pre=9")
+}
+
+// #3343 (Codex on #3359): the same values built through a branch, a `match`
+// arm, or two structs deep, and a helper that recurses with the callback it
+// was handed (which keeps nothing), stay legal while they stay in the body
+// (fixtures/typecheck/taskgroup_escape_{branch_tail,match_tail,nested_tail,
+// recursive_callback}_reject.vibe return or keep them outside).
+struct Wrapper {
+  inner: Box
+}
+
+fn ignore(h: TaskHandle[Int]) -> Unit {
+  let _ = h
+  ()
+}
+
+fn walk_cb(cb: (TaskHandle[Int]) -> Unit, h: TaskHandle[Int], first: Bool) -> Unit {
+  if first {
+    walk_cb(cb, h, false)
+  } else {
+    cb(h)
+  }
+}
+
+fn nested_and_branches(flag: Bool) -> String with Exception {
+  let r = TaskGroup::run((n) -> {
+    let picked = if flag {
+      Box::{ h: start(n, 1) }
+    } else {
+      Box::{ h: start(n, 2) }
+    }
+    let matched = match Some(3) {
+      Some(k) => Box::{ h: start(n, k) },
+      None => Box::{ h: start(n, 0) }
+    }
+    let w = Wrapper::{ inner: Box::{ h: start(n, 4) } }
+    let h5 = start(n, 5)
+    walk_cb(ignore, h5, true)
+    unbox(picked) + unbox(matched) + unbox(w.inner) + TaskHandle::join(h5)
+  })
+  "r=\{r}"
+}
+
+test "branch, match and nested values and a recursive callback stay legal inside the body" allows Exception {
+  inspect(nested_and_branches(true), "r=13")
+}

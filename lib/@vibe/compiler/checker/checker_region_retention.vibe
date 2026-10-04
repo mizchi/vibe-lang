@@ -34,13 +34,14 @@
 //#     function is, so a call of it inside the callee is judged in turn.
 //#
 //# The ordinary write checks then answer, and a write they refuse refuses the
-//# call, with the call's own diagnostic. The re-check also asks which regions
-//# the callee's RESULT carries -- by the body's type before a return
-//# annotation can hide it, or through a struct built in the tail -- and a
-//# call whose result type at the call does not name such a region is refused
-//# too: a helper declared `-> TaskHandle[Int]`, or returning a struct, would
-//# otherwise launder the token past the caller's own write check (Codex on
-//# #3359). A closure is re-checked when it
+//# call, with the call's own diagnostic. What the callee RETURNS is not judged
+//# at the call: a value whose type may hide a region carries every region the
+//# variables it reads carry (see "Provenance a type does not show" below), so
+//# the result of `start(g)` declared `-> TaskHandle[Int]`, or of a helper
+//# returning a struct built from the handle, carries the group's region into
+//# the caller, where the caller's own write, return or call of it is judged --
+//# and a caller that joins it inside the body is legal. A closure is
+//# re-checked when it
 //# captured a value carrying the region, too, since it may hand that value to
 //# a function it is passed. The re-check is a throwaway lane: its diagnostics,
 //# type table and substitution are dropped, its fresh variables come from a
@@ -62,7 +63,21 @@ import @vibe/compiler/checker/diagnostics {
 }
 
 import @vibe/compiler/core {
-  Expr, Stmt, Subst, Type, TypeDef, TypeEnv, env_bind, env_cache_binding, env_lookup, env_name_index_find, instantiate, subst_apply, unify
+  Expr,
+  Stmt,
+  Subst,
+  Type,
+  TypeDef,
+  TypeEnv,
+  env_bind,
+  env_cache_binding,
+  env_lookup,
+  env_name_index_find,
+  expr_child_at,
+  expr_children_pop,
+  expr_children_push,
+  expr_children_top,
+  subst_apply
 }
 
 import @vibe/core {
@@ -73,12 +88,16 @@ import ./builtin_call_arms.vibe {
   builtin_resolves_at
 }
 
+import ./checker_effects_mutability_expr_into.vibe {
+  collect_pat_binds_into
+}
+
 import ./checker_spawnable.vibe {
   closure_free_names, env_marker_before
 }
 
 import ./checker_builtin_arg_head_rest.vibe {
-  ascription_lambda_ann, call_result_with_provenance, let_rhs_closure_literal
+  ascription_lambda_ann, let_rhs_closure_literal
 }
 
 import ./checker_eq_unbounded_formal_msg.vibe {
@@ -113,23 +132,29 @@ let retention_closures: Array[(Expr, String, Bool)] = []
 /// top-level function's body is re-checked in.
 let retention_module_env_cell: Array[TypeEnv] = []
 
-/// `(parameter type, regions, callee)` for each parameter of the lambda a
-/// re-check is about to check, taken by `check_lambda_expr` on entry: the
-/// argument's type, the regions its location predates, and what a function
-/// argument is (a `p:` index into `retention_arg_lambdas`, `o` for a function
-/// nothing is known about, empty otherwise).
-let retention_param_override_cell: Array[(Type, Array[String], String)] = []
+/// `(parameter type, regions, callee, carried)` for each parameter of the
+/// lambda a re-check is about to check, taken by `check_lambda_expr` on
+/// entry: the argument's type, the regions its location predates, what a
+/// function argument is (a `p:` index into `retention_arg_lambdas`, `o` for a
+/// function nothing is known about, empty otherwise), and the regions the
+/// argument's value carries where its type does not show them
+/// (`retention_value_regions`).
+let retention_param_override_cell: Array[(Type, Array[String], String, Array[String])] = [
+]
 
 /// The lambdas a re-check's function arguments stand for, with the scope each
-/// is checked in, while that re-check runs.
-let retention_arg_lambdas: Array[(Expr, TypeEnv)] = []
+/// is checked in and what the lambda IS (`retention_arg_identity`), while
+/// that re-check runs.
+let retention_arg_lambdas: Array[(Expr, TypeEnv, String)] = []
 
 /// The re-checks in progress, by callee and argument shape.
 let retention_recheck_stack: Array[String] = []
 
 /// The active regions the result of the lambda a re-check checked carries --
-/// by its type, or through a struct value built in its tail -- written by
-/// `check_lambda_expr` for that lambda alone (`retention_note_result`).
+/// by its type, or by what its tail and explicit `return`s read where the
+/// type may hide one -- written by `check_lambda_expr` for that lambda alone
+/// (`retention_note_result`). A body passed to `TaskGroup::run` by name is
+/// refused when it returns the group's region.
 let retention_result_cell: Array[String] = []
 
 /// Fresh variables of a re-check start this far above the counter the real
@@ -189,7 +214,7 @@ export fn retention_note_module_env(env: TypeEnv) -> Unit {
 
 /// #3343: the parameter types a re-check hands the lambda it checks, taken
 /// once, on entry, by that lambda alone.
-export fn take_retention_param_override() -> Array[(Type, Array[String], String)] {
+export fn take_retention_param_override() -> Array[(Type, Array[String], String, Array[String])] {
   let taken = Array::slice(retention_param_override_cell, 0, Array::length(retention_param_override_cell))
   Array::truncate(retention_param_override_cell, 0)
   taken
@@ -255,6 +280,816 @@ export fn retention_type_may_hide_region(t: Type) -> Bool {
     },
     _ => true
   }
+}
+
+//# Provenance a type does not show
+//#
+//# A value's type names the regions it carries only as far as the type has
+//# room for them. A nominal struct or enum hides its fields' types, an
+//# annotation may spell `TaskHandle[Int]` for a handle of the group, and a
+//# closure's type does not list everything it captured. Codex found three
+//# rounds of holes on #3359 that were all this one fact, each patched where
+//# it was seen (a struct literal in a tail, a callee's result, an explicit
+//# `return`, a struct argument). The answer below does not depend on where
+//# the value is built or how it travels: a value can carry a region only if
+//# a variable it reads carries it, since the region's token is itself a
+//# variable and every region-carrying value is made from it. So where a
+//# value's type may hide a region (`retention_type_hides_region`), the
+//# regions it carries are those carried by the variables its expression
+//# reads (`retention_value_regions`): by their types where those show them,
+//# and otherwise by what their own binding recorded (`#retain_carry:`, from
+//# the value a `let` bound or the argument a re-checked parameter was
+//# passed), or, for a binding that recorded nothing -- a `let mut`, a
+//# pattern, a loop variable, a parameter of a lambda written in the region
+//# -- by every region the binding was declared inside. Every escape check
+//# that reads a stored, assigned or returned value's type asks this too.
+
+/// The region-carrying builtin heads: their region is an argument of the
+/// type, so a use of the head with no `#region_` argument is a spelling that
+/// erased it (`TaskHandle[Int]`, a struct field `MutList[Int]`).
+fn retention_is_region_head(name: String) -> Bool {
+  name == "TaskHandle" || name == "TaskGroup" || name == "Sender" || name == "Receiver" || name == "Channel" || name == "MutList" || name == "MutBytes" || name == "Region" || name == "Task" || name == "Nursery"
+}
+
+fn retention_type_has_region_skolem(t: Type) -> Bool {
+  match t {
+    CtNamed(n, args) => if String::starts_with(n, "#region_") {
+      true
+    } else {
+      let mut found = false
+      for a in args {
+        if retention_type_has_region_skolem(a) {
+          found = true
+        } else {
+          ()
+        }
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+/// `t` with each of `names` (a declaration's type parameters) replaced by
+/// the argument at the same position, where there is one.
+fn retention_subst_params(t: Type, names: Array[String], args: Array[Type]) -> Type {
+  if Array::length(names) == 0 {
+    t
+  } else {
+    match t {
+      CtNamed(n, targs) => {
+        let mut hit = -1
+        let mut i = 0
+        while i < Array::length(names) && i < Array::length(args) {
+          if hit < 0 && String::equals(Array::get(names, i), n) && Array::length(targs) == 0 {
+            hit = i
+          } else {
+            ()
+          }
+          i = i + 1
+        }
+        if hit >= 0 {
+          Array::get(args, hit)
+        } else {
+          CtNamed(n, for a in targs {
+            retention_subst_params(a, names, args)
+          })
+        }
+      },
+      CtArray(e) => CtArray(retention_subst_params(e, names, args)),
+      CtOption(e) => CtOption(retention_subst_params(e, names, args)),
+      CtTuple(items) => CtTuple(for item in items {
+        retention_subst_params(item, names, args)
+      }),
+      CtRecord(fields) => CtRecord(for field in fields {
+        let (fname, fty) = field
+        (fname, retention_subst_params(fty, names, args))
+      }),
+      CtFn(ps, ret, eff) => CtFn(for p in ps {
+        retention_subst_params(p, names, args)
+      }, retention_subst_params(ret, names, args), eff),
+      _ => t
+    }
+  }
+}
+
+fn retention_any_hides(items: Array[Type], defs: Array[TypeDef], visiting: Array[String]) -> Bool {
+  let mut any = false
+  for item in items {
+    if !any && retention_hides(item, defs, visiting) {
+      any = true
+    } else {
+      ()
+    }
+  }
+  any
+}
+
+/// Whether a declared type `name` applied to `args` holds a value whose
+/// region its type would not show. A declaration already being asked about
+/// answers no: the first visit answers for the recursion.
+fn retention_named_hides(name: String, args: Array[Type], defs: Array[TypeDef], visiting: Array[String]) -> Bool {
+  if retention_string_has(visiting, name) {
+    false
+  } else {
+    let mut found = false
+    let mut answer = false
+    for d in defs {
+      if !found {
+        match d {
+          TDStruct(dn, fields, _, tparams) => if String::equals(dn, name) {
+            found = true
+            Array::push(visiting, name)
+            answer = retention_any_hides(for field in fields {
+              let (_, fty) = field
+              retention_subst_params(fty, tparams, args)
+            }, defs, visiting)
+            Array::truncate(visiting, Array::length(visiting) - 1)
+          } else {
+            ()
+          },
+          TDEnum(dn, tparams, variants) => if String::equals(dn, name) {
+            found = true
+            Array::push(visiting, name)
+            let payloads = array_empty()
+            for v in variants {
+              let (_, tys) = v
+              for t in tys {
+                Array::push(payloads, retention_subst_params(t, tparams, args))
+              }
+            }
+            answer = retention_any_hides(payloads, defs, visiting)
+            Array::truncate(visiting, Array::length(visiting) - 1)
+          } else {
+            ()
+          },
+          TDAlias(dn, tparams, body) => if String::equals(dn, name) {
+            found = true
+            Array::push(visiting, name)
+            answer = retention_hides(retention_subst_params(body, tparams, args), defs, visiting)
+            Array::truncate(visiting, Array::length(visiting) - 1)
+          } else {
+            ()
+          },
+          _ => ()
+        }
+      } else {
+        ()
+      }
+    }
+    if found {
+      answer
+    } else if Array::length(args) == 0 {
+      // An opaque type whose declaration is not visible here may hold
+      // anything; a lowercase spelling is a type or row variable's name
+      // (`e` of `TaskHandle[r, e, T]`), not a declaration.
+      let head = if String::length(name) > 0 {
+        String::byte_at(name, 0)
+      } else {
+        0
+      }
+      !(head >= 97 && head <= 122)
+    } else {
+      retention_any_hides(args, defs, visiting)
+    }
+  }
+}
+
+fn retention_hides(t: Type, defs: Array[TypeDef], visiting: Array[String]) -> Bool {
+  match t {
+    CtInt => false,
+    CtDouble => false,
+    CtBool => false,
+    CtString => false,
+    CtChar => false,
+    CtUnit => false,
+    CtBytes => false,
+    CtVar(_) => false,
+    // A type the checker gave up on may hold anything: a struct literal
+    // whose field spells a region-carrying type without its region
+    // (`struct Box { h: TaskHandle[Int] }`) is typed this way.
+    CtUnknown => true,
+    CtConstructor(_, _) => false,
+    CtArray(e) => retention_hides(e, defs, visiting),
+    CtOption(e) => retention_hides(e, defs, visiting),
+    CtTuple(items) => retention_any_hides(items, defs, visiting),
+    CtRecord(fields) => retention_any_hides(for field in fields {
+      let (_, fty) = field
+      fty
+    }, defs, visiting),
+    // A closure's type does not list everything it captured.
+    CtFn(_, _, _) => true,
+    CtForAll(_, _, body) => retention_hides(body, defs, visiting),
+    CtApplied(_, _) => true,
+    CtStruct(name) => retention_named_hides(name, array_empty(), defs, visiting),
+    CtEnum(name) => retention_named_hides(name, array_empty(), defs, visiting),
+    CtNamed(name, args) => if String::starts_with(name, "#region_") {
+      false
+    } else if retention_is_region_head(name) {
+      let mut shown = false
+      for a in args {
+        if retention_type_has_region_skolem(a) {
+          shown = true
+        } else {
+          ()
+        }
+      }
+      !shown || retention_any_hides(args, defs, visiting)
+    } else {
+      retention_named_hides(name, args, defs, visiting)
+    }
+  }
+}
+
+/// #3343 (Codex on #3359): whether a value of type `t` may carry a region
+/// its type does not name -- a region-carrying builtin spelled without its
+/// region, a closure, a declared struct or enum holding either (through its
+/// type arguments too), a type whose declaration is not visible, or a type
+/// the checker could not determine.
+export fn retention_type_hides_region(t: Type, defs: Array[TypeDef]) -> Bool {
+  retention_hides(t, defs, array_empty())
+}
+
+fn retention_carry_marker(name: String) -> String {
+  String::concat("#retain_carry:", name)
+}
+
+/// What the binding `name` recorded about the regions its value carries,
+/// when the binding `name` resolves to recorded it.
+fn retention_recorded_carry(env: TypeEnv, name: String) -> Option[Array[String]] {
+  let marker = retention_carry_marker(name)
+  let mut cur = env
+  let mut result = None
+  let mut done = false
+  while !done {
+    match cur {
+      EnvBind(n, binding, rest) => if String::equals(n, marker) {
+        result = Some(match binding.ty {
+          CtTuple(items) => {
+            let out = array_empty()
+            for item in items {
+              match item {
+                CtNamed(rname, _) => Array::push(out, rname),
+                _ => ()
+              }
+            }
+            out
+          },
+          _ => array_empty()
+        })
+        done = true
+      } else if String::equals(n, name) {
+        done = true
+      } else {
+        cur = rest
+      },
+      EnvMutCell(n, _, rest) => if String::equals(n, name) {
+        done = true
+      } else {
+        cur = rest
+      },
+      EnvShowWrappers(_, _, rest) => {
+        cur = rest
+      },
+      EnvTraitDef(_, _, _, _, rest, _, _) => {
+        cur = rest
+      },
+      EnvTraitImpl(_, _, rest) => {
+        cur = rest
+      },
+      EnvTraitImplGen(_, _, _, _, rest) => {
+        cur = rest
+      },
+      EnvTypeDefs(_, _, rest) => {
+        cur = rest
+      },
+      EnvCached(index, _, rest) => if env_name_index_find(index, name) >= 0 {
+        done = true
+      } else {
+        cur = rest
+      },
+      _ => {
+        done = true
+      }
+    }
+  }
+  result
+}
+
+fn retention_union_into(out: Array[String], items: Array[String]) -> Unit {
+  for item in items {
+    if !retention_string_has(out, item) {
+      Array::push(out, item)
+    } else {
+      ()
+    }
+  }
+  ()
+}
+
+/// The active regions (`active`) the value of the binding `name` resolves to
+/// may carry: those its type names, and, where its type may hide one, those
+/// its binding recorded, or every active region it was declared inside.
+fn retention_name_carried(env: TypeEnv, name: String, active: Array[String], defs: Array[TypeDef], s: Subst) -> Array[String] {
+  match env_lookup(env, name) {
+    Some(raw) => {
+      let ty = subst_apply(s, raw)
+      let out = array_empty()
+      for rname in active {
+        if type_mentions_named(ty, rname) {
+          Array::push(out, rname)
+        } else {
+          ()
+        }
+      }
+      if retention_type_hides_region(ty, defs) {
+        match retention_recorded_carry(env, name) {
+          Some(recorded) => {
+            for rname in recorded {
+              if retention_string_has(active, rname) {
+                retention_union_into(out, [rname])
+              } else {
+                ()
+              }
+            }
+            ()
+          },
+          None => retention_union_into(out, retention_name_inside(env, name, active))
+        }
+      } else {
+        ()
+      }
+      out
+    },
+    None => array_empty()
+  }
+}
+
+/// The active regions (`active`) the binding `name` resolves to was declared
+/// inside: those whose marker lies further from the head of the chain than
+/// the binding. A name the chain holds only in an accelerator index -- an
+/// import, cached at the head before any region began -- or does not hold
+/// at all was declared inside none, and so does a local alias of an outer
+/// binding for the regions it records.
+fn retention_name_inside(env: TypeEnv, name: String, active: Array[String]) -> Array[String] {
+  let passed = array_empty()
+  let mut cur = env
+  let mut found = false
+  let mut done = false
+  while !done {
+    match cur {
+      EnvBind(n, binding, rest) => if String::equals(n, name) {
+        found = true
+        done = true
+      } else {
+        if String::equals(n, "#active_region") {
+          match binding.ty {
+            CtNamed(rname, _) => retention_union_into(passed, [rname]),
+            _ => ()
+          }
+        } else {
+          ()
+        }
+        cur = rest
+      },
+      EnvMutCell(n, _, rest) => if String::equals(n, name) {
+        found = true
+        done = true
+      } else {
+        cur = rest
+      },
+      EnvShowWrappers(_, _, rest) => {
+        cur = rest
+      },
+      EnvTraitDef(_, _, _, _, rest, _, _) => {
+        cur = rest
+      },
+      EnvTraitImpl(_, _, rest) => {
+        cur = rest
+      },
+      EnvTraitImplGen(_, _, _, _, rest) => {
+        cur = rest
+      },
+      EnvTypeDefs(_, _, rest) => {
+        cur = rest
+      },
+      EnvCached(_, _, rest) => {
+        cur = rest
+      },
+      _ => {
+        done = true
+      }
+    }
+  }
+  if found {
+    let aliased = retention_name_predates(env, name)
+    let out = array_empty()
+    for rname in active {
+      if !retention_string_has(passed, rname) && !retention_string_has(aliased, rname) {
+        Array::push(out, rname)
+      } else {
+        ()
+      }
+    }
+    out
+  } else {
+    array_empty()
+  }
+}
+
+fn retention_local_find(local: Array[(String, Array[String])], name: String) -> Int {
+  let mut i = Array::length(local) - 1
+  let mut hit = -1
+  while i >= 0 && hit < 0 {
+    let (ln, _) = Array::get(local, i)
+    if String::equals(ln, name) {
+      hit = i
+    } else {
+      ()
+    }
+    i = i - 1
+  }
+  hit
+}
+
+fn retention_ident_carried(name: String, env: TypeEnv, local: Array[(String, Array[String])], active: Array[String], defs: Array[TypeDef], s: Subst) -> Array[String] {
+  let i = retention_local_find(local, name)
+  if i >= 0 {
+    let (_, rs) = Array::get(local, i)
+    rs
+  } else {
+    retention_name_carried(env, name, active, defs, s)
+  }
+}
+
+/// The names a closure body reads from outside it, callees included.
+fn retention_free_names_into(expr: Expr, bound: Array[String], out: Array[String]) -> Unit {
+  match expr {
+    EIdent(name, _) => if !retention_string_has(bound, name) {
+      retention_union_into(out, [name])
+    } else {
+      ()
+    },
+    ELet(name, val, body, _) => {
+      retention_free_names_into(val, bound, out)
+      Array::push(bound, name)
+      retention_free_names_into(body, bound, out)
+      Array::truncate(bound, Array::length(bound) - 1)
+    },
+    ELetMut(name, val, body, _) => {
+      retention_free_names_into(val, bound, out)
+      Array::push(bound, name)
+      retention_free_names_into(body, bound, out)
+      Array::truncate(bound, Array::length(bound) - 1)
+    },
+    ELetRec(name, val, body) => {
+      Array::push(bound, name)
+      retention_free_names_into(val, bound, out)
+      retention_free_names_into(body, bound, out)
+      Array::truncate(bound, Array::length(bound) - 1)
+    },
+    EAssign(name, val, body) => {
+      if !retention_string_has(bound, name) {
+        retention_union_into(out, [name])
+      } else {
+        ()
+      }
+      retention_free_names_into(val, bound, out)
+      retention_free_names_into(body, bound, out)
+    },
+    EAssignOp(name, _, val, body) => {
+      if !retention_string_has(bound, name) {
+        retention_union_into(out, [name])
+      } else {
+        ()
+      }
+      retention_free_names_into(val, bound, out)
+      retention_free_names_into(body, bound, out)
+    },
+    EFn(_, _, params, _, _, body) => {
+      let mark = Array::length(bound)
+      for param in params {
+        let (pname, _) = param
+        Array::push(bound, retention_param_base(pname))
+      }
+      retention_free_names_into(body, bound, out)
+      Array::truncate(bound, mark)
+    },
+    ELoop(params, body) => {
+      let mark = Array::length(bound)
+      for param in params {
+        let (pname, init) = param
+        retention_free_names_into(init, bound, out)
+        Array::push(bound, pname)
+      }
+      retention_free_names_into(body, bound, out)
+      Array::truncate(bound, mark)
+    },
+    EForIn(name, index_name, iter, body) => {
+      retention_free_names_into(iter, bound, out)
+      let mark = Array::length(bound)
+      Array::push(bound, name)
+      match index_name {
+        Some(index) => Array::push(bound, index),
+        None => ()
+      }
+      retention_free_names_into(body, bound, out)
+      Array::truncate(bound, mark)
+    },
+    EMatch(scrutinee, arms) => {
+      retention_free_names_into(scrutinee, bound, out)
+      for arm in arms {
+        let (pat, body) = arm
+        let mark = Array::length(bound)
+        collect_pat_binds_into(pat, bound)
+        retention_free_names_into(body, bound, out)
+        Array::truncate(bound, mark)
+      }
+      ()
+    },
+    EHandle(scrutinee, arms) => {
+      retention_free_names_into(scrutinee, bound, out)
+      for arm in arms {
+        let (pat, body) = arm
+        let mark = Array::length(bound)
+        collect_pat_binds_into(pat, bound)
+        Array::push(bound, "resume")
+        retention_free_names_into(body, bound, out)
+        Array::truncate(bound, mark)
+      }
+      ()
+    },
+    _ => {
+      let mark = expr_children_push(expr)
+      let end = expr_children_top()
+      let mut i = mark
+      while i < end {
+        retention_free_names_into(expr_child_at(i), bound, out)
+        i = i + 1
+      }
+      expr_children_pop(mark)
+    }
+  }
+  ()
+}
+
+/// A labeled (`x~`) or optional (`x?`) parameter keeps its marker on the
+/// name; the body binds the bare name.
+fn retention_param_base(raw_name: String) -> String {
+  let len = String::length(raw_name)
+  if len > 0 && (String::byte_at(raw_name, len - 1) == 126 || String::byte_at(raw_name, len - 1) == 63) {
+    String::substring(raw_name, 0, len - 1)
+  } else {
+    raw_name
+  }
+}
+
+/// The active regions the value of `expr` may carry, read from the variables
+/// it reads (see the section header). `local` holds the bindings this walk
+/// made itself, with what each carries; a value an explicit `return` (or a
+/// `break`) hands out of the expression goes to `returns`.
+fn retention_walk(expr: Expr, env: TypeEnv, local: Array[(String, Array[String])], active: Array[String], defs: Array[TypeDef], s: Subst, returns: Array[String]) -> Array[String] {
+  match expr {
+    EIdent(name, _) => retention_ident_carried(name, env, local, active, defs, s),
+    EInt(_) => array_empty(),
+    EFloat(_) => array_empty(),
+    EString(_, _) => array_empty(),
+    EBool(_) => array_empty(),
+    EUnit => array_empty(),
+    EStringInterp(_) => array_empty(),
+    ELet(name, val, body, _) => {
+      let rv = retention_walk(val, env, local, active, defs, s, returns)
+      let mark = Array::length(local)
+      Array::push(local, (name, rv))
+      let r = retention_walk(body, env, local, active, defs, s, returns)
+      Array::truncate(local, mark)
+      r
+    },
+    // A `let mut` may be assigned anything later on; it carries every
+    // region it is declared inside.
+    ELetMut(name, val, body, _) => {
+      let _ = retention_walk(val, env, local, active, defs, s, returns)
+      let mark = Array::length(local)
+      Array::push(local, (name, active))
+      let r = retention_walk(body, env, local, active, defs, s, returns)
+      Array::truncate(local, mark)
+      r
+    },
+    ELetRec(name, val, body) => {
+      let mark = Array::length(local)
+      Array::push(local, (name, active))
+      let rv = retention_walk(val, env, local, active, defs, s, returns)
+      Array::truncate(local, mark)
+      Array::push(local, (name, rv))
+      let r = retention_walk(body, env, local, active, defs, s, returns)
+      Array::truncate(local, mark)
+      r
+    },
+    EAssign(_, val, body) => {
+      let _ = retention_walk(val, env, local, active, defs, s, returns)
+      retention_walk(body, env, local, active, defs, s, returns)
+    },
+    EAssignOp(_, _, val, body) => {
+      let _ = retention_walk(val, env, local, active, defs, s, returns)
+      retention_walk(body, env, local, active, defs, s, returns)
+    },
+    ESeq(left, right) => {
+      let _ = retention_walk(left, env, local, active, defs, s, returns)
+      retention_walk(right, env, local, active, defs, s, returns)
+    },
+    EIf(cond, then_expr, else_expr) => {
+      let _ = retention_walk(cond, env, local, active, defs, s, returns)
+      let out = retention_walk(then_expr, env, local, active, defs, s, returns)
+      let out2 = array_empty()
+      retention_union_into(out2, out)
+      retention_union_into(out2, retention_walk(else_expr, env, local, active, defs, s, returns))
+      out2
+    },
+    // A pattern's bindings are parts of the scrutinee.
+    EMatch(scrutinee, arms) => {
+      let rs = retention_walk(scrutinee, env, local, active, defs, s, returns)
+      let out = array_empty()
+      for arm in arms {
+        let (pat, body) = arm
+        let names = array_empty()
+        collect_pat_binds_into(pat, names)
+        let mark = Array::length(local)
+        for n in names {
+          Array::push(local, (n, rs))
+        }
+        retention_union_into(out, retention_walk(body, env, local, active, defs, s, returns))
+        Array::truncate(local, mark)
+      }
+      out
+    },
+    // A handler arm's bindings are an operation's arguments, made anywhere
+    // in the handled body.
+    EHandle(scrutinee, arms) => {
+      let out = array_empty()
+      retention_union_into(out, retention_walk(scrutinee, env, local, active, defs, s, returns))
+      for arm in arms {
+        let (pat, body) = arm
+        let names = array_empty()
+        collect_pat_binds_into(pat, names)
+        let mark = Array::length(local)
+        for n in names {
+          Array::push(local, (n, active))
+        }
+        retention_union_into(out, retention_walk(body, env, local, active, defs, s, returns))
+        Array::truncate(local, mark)
+      }
+      out
+    },
+    EWhile(cond, body) => {
+      let _ = retention_walk(cond, env, local, active, defs, s, returns)
+      let _ = retention_walk(body, env, local, active, defs, s, returns)
+      array_empty()
+    },
+    ELoop(params, body) => {
+      let mark = Array::length(local)
+      for param in params {
+        let (pname, init) = param
+        let _ = retention_walk(init, env, local, active, defs, s, returns)
+        Array::push(local, (pname, active))
+      }
+      let r = retention_walk(body, env, local, active, defs, s, returns)
+      Array::truncate(local, mark)
+      r
+    },
+    EForIn(name, index_name, iter, body) => {
+      let ri = retention_walk(iter, env, local, active, defs, s, returns)
+      let mark = Array::length(local)
+      Array::push(local, (name, ri))
+      match index_name {
+        Some(index) => Array::push(local, (index, array_empty())),
+        None => ()
+      }
+      let _ = retention_walk(body, env, local, active, defs, s, returns)
+      Array::truncate(local, mark)
+      array_empty()
+    },
+    // A closure carries what it captured: every name it reads from outside.
+    EFn(_, _, params, _, _, body) => {
+      let bound = array_empty()
+      for param in params {
+        let (pname, _) = param
+        Array::push(bound, retention_param_base(pname))
+      }
+      let names = array_empty()
+      retention_free_names_into(body, bound, names)
+      let out = array_empty()
+      for n in names {
+        retention_union_into(out, retention_ident_carried(n, env, local, active, defs, s))
+      }
+      out
+    },
+    EReturn(val) => {
+      retention_union_into(returns, retention_walk(val, env, local, active, defs, s, returns))
+      array_empty()
+    },
+    EBreak(val) => {
+      match val {
+        Some(v) => retention_union_into(returns, retention_walk(v, env, local, active, defs, s, returns)),
+        None => ()
+      }
+      array_empty()
+    },
+    _ => {
+      let out = array_empty()
+      let mark = expr_children_push(expr)
+      let end = expr_children_top()
+      let mut i = mark
+      while i < end {
+        retention_union_into(out, retention_walk(expr_child_at(i), env, local, active, defs, s, returns))
+        i = i + 1
+      }
+      expr_children_pop(mark)
+      out
+    }
+  }
+}
+
+/// #3343 (Codex on #3359): the active regions of `env` the value of `expr`
+/// may carry, read from the variables it reads (see the section header).
+/// Ask it where the value's type may hide a region; where the type shows
+/// one, the type answers.
+export fn retention_value_regions(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst) -> Array[String] {
+  let active = retention_active_region_names(env)
+  if Array::length(active) == 0 {
+    array_empty()
+  } else {
+    retention_walk(expr, env, array_empty(), active, defs, s, array_empty())
+  }
+}
+
+/// #3343 (Codex on #3359): the active regions of `env` the RESULT of a body
+/// may carry -- its value, and every value an explicit `return` in it hands
+/// back, at any depth outside a nested lambda.
+export fn retention_result_regions(body: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst) -> Array[String] {
+  let active = retention_active_region_names(env)
+  if Array::length(active) == 0 {
+    array_empty()
+  } else {
+    let returns = array_empty()
+    let out = retention_walk(body, env, array_empty(), active, defs, s, returns)
+    retention_union_into(out, returns)
+    out
+  }
+}
+
+/// #3343 (Codex on #3359): whether a write of `val` (of type `val_ty`) keeps
+/// one of `regions` -- the regions its target was declared before -- where
+/// the type does not show it. The first such region, or "".
+fn retention_hidden_write_region(val: Expr, val_ty: Type, regions: Array[String], env: TypeEnv, defs: Array[TypeDef], s: Subst) -> String {
+  if Array::length(regions) == 0 || !retention_type_hides_region(val_ty, defs) {
+    ""
+  } else {
+    let carried = retention_value_regions(val, env, defs, s)
+    let mut hit = ""
+    for rname in regions {
+      if hit == "" && retention_string_has(carried, rname) {
+        hit = rname
+      } else {
+        ()
+      }
+    }
+    hit
+  }
+}
+
+/// #3343 (Codex on #3359): the region `name` was declared before that
+/// assigning `val` (of type `val_ty`) to it would keep where the value's type
+/// does not show it, or "".
+export fn retention_assign_hidden_region(name: String, val: Expr, val_ty: Type, env: TypeEnv, defs: Array[TypeDef], s: Subst) -> String {
+  if retention_type_hides_region(val_ty, defs) {
+    retention_hidden_write_region(val, val_ty, retention_name_predates(env, name), env, defs, s)
+  } else {
+    ""
+  }
+}
+
+/// #3343: whether `rname` is one of `names`.
+export fn retention_region_listed(names: Array[String], rname: String) -> Bool {
+  retention_string_has(names, rname)
+}
+
+/// #3343 (Codex on #3359): record, in front of a `let` binding `name` made
+/// inside a region, which regions its value carries, when its type may hide
+/// them. `def_env` is the scope the value was written in.
+export fn retention_bind_carry(env: TypeEnv, def_env: TypeEnv, name: String, val: Expr, ty: Type, defs: Array[TypeDef], s: Subst) -> TypeEnv {
+  if retention_type_hides_region(ty, defs) {
+    retention_bind_param_carry(env, name, retention_value_regions(val, def_env, defs, s))
+  } else {
+    env
+  }
+}
+
+/// #3343 (Codex on #3359): record, in front of the binding `name`, that its
+/// value carries `regions` (see `retention_recorded_carry`).
+export fn retention_bind_param_carry(env: TypeEnv, name: String, regions: Array[String]) -> TypeEnv {
+  env_bind(env, retention_carry_marker(name), CtTuple(for rname in regions {
+    CtNamed(rname, [])
+  }))
 }
 
 /// #3343: bind, in front of a re-checked lambda's parameter `name`, what its
@@ -543,7 +1378,7 @@ fn retention_marker_callee(env: TypeEnv, name: String, payload: Type) -> Retenti
       // was at the call being judged.
       let index = decimal_text(String::substring(text, 2, String::length(text)))
       if index >= 0 && index < Array::length(retention_arg_lambdas) {
-        let (lit, scope) = Array::get(retention_arg_lambdas, index)
+        let (lit, scope, _) = Array::get(retention_arg_lambdas, index)
         RetentionVisible(lit, scope, text)
       } else {
         RetentionOpaque
@@ -565,7 +1400,7 @@ fn decimal_text(text: String) -> Int {
     let mut ok = true
     let mut i = 0
     while i < String::length(text) {
-      let d = String::char_code_at(text, i) - 48
+      let d = String::byte_at(text, i) - 48
       if d < 0 || d > 9 {
         ok = false
       } else {
@@ -814,7 +1649,7 @@ struct RetentionCheckpoint {
   throw_sites: Int;
   efn_formals: Int;
   let_rhs: Array[Bool];
-  override_cell: Array[(Type, Array[String], String)]
+  override_cell: Array[(Type, Array[String], String, Array[String])]
 }
 
 fn retention_checkpoint() -> RetentionCheckpoint {
@@ -872,10 +1707,6 @@ fn retention_escape_kind(errors: Array[String]) -> Int {
     if String::starts_with(e, "region escapes its") {
       if String::contains(e, " stores ") {
         kind = 1
-      } else if kind != 1 && (String::contains(e, " returns ") || String::contains(e, " loses track of ")) {
-        // A call inside the callee returned the token under a type that
-        // hides it, so the callee's own writes could not see it.
-        kind = 6
       } else if kind == 0 && String::contains(e, " passes ") {
         kind = 2
       } else {
@@ -928,7 +1759,7 @@ fn retention_region_env(base: TypeEnv, regions: Array[(String, Bool)]) -> TypeEn
 /// callee and the argument shape; a re-check already in progress for the same
 /// key answers nothing new, and a chain of re-checks deeper than any real
 /// program builds is refused rather than cut off silently.
-fn retention_recheck(lit: Expr, scope: TypeEnv, regions: Array[(String, Bool)], overrides: Array[(Type, Array[String], String)], key: String, defs: Array[TypeDef], s: Subst, c: Int, check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> (Int, Array[String]) {
+fn retention_recheck(lit: Expr, scope: TypeEnv, regions: Array[(String, Bool)], overrides: Array[(Type, Array[String], String, Array[String])], key: String, defs: Array[TypeDef], s: Subst, c: Int, check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> (Int, Array[String]) {
   if retention_string_has(retention_recheck_stack, key) {
     (0, array_empty())
   } else if Array::length(retention_recheck_stack) >= 24 {
@@ -1000,14 +1831,6 @@ fn retention_call_message(callee: String, nursery: Bool, kind: Int) -> String {
     } else {
       String::concat(head, "` stores a value that captures this region into an outer binding")
     }
-  } else if kind == 3 {
-    String::concat(head, String::concat("` returns ", String::concat(token, String::concat(" as a value whose type does not name the region, so the checker cannot follow it -- declare the result with a type parameter that carries the argument's type (as `fn f[T](x: T) -> T` or a generic struct does)", if nursery {
-      ", or join the task (or use the endpoint) inside the body and pass the result instead"
-    } else {
-      ""
-    }))))
-  } else if kind == 6 {
-    String::concat(head, String::concat("` loses track of ", String::concat(token, String::concat(": a function it calls hands it back as a value whose type does not name the region -- declare that result with a type parameter that carries the argument's type", fix))))
   } else {
     String::concat(head, String::concat("` passes ", String::concat(token, String::concat(" on to a function whose body the checker cannot see", fix))))
   }
@@ -1044,15 +1867,28 @@ fn retention_arg_types(args: Array[Expr], env: TypeEnv, defs: Array[TypeDef], s:
 
 /// The active regions a closure literal's captured bindings carry, read in
 /// the scope it was written in.
-fn retention_captured_regions(lit: Expr, scope: TypeEnv, s: Subst, regions: Array[(String, Bool)]) -> Array[(String, Bool)] {
+fn retention_captured_regions(lit: Expr, scope: TypeEnv, defs: Array[TypeDef], s: Subst, regions: Array[(String, Bool)]) -> Array[(String, Bool)] {
   let out = array_empty()
   match lit {
     EFn(_, _, params, _, _, body) => {
+      // What a captured binding carries without its type showing it is
+      // asked only for the regions active where the closure was written: a
+      // closure written before a region captured nothing of it.
+      let scope_active = retention_active_region_names(scope)
       for name in closure_free_names(body, params) {
         match env_lookup(scope, name) {
           Some(ty) => {
             for r in retention_regions_mentioned(subst_apply(s, ty), regions) {
               Array::push(out, r)
+            }
+            let hidden = retention_name_carried(scope, name, scope_active, defs, s)
+            for r in regions {
+              let (rname, _) = r
+              if retention_string_has(hidden, rname) {
+                Array::push(out, r)
+              } else {
+                ()
+              }
             }
             ()
           },
@@ -1083,15 +1919,21 @@ fn retention_type_may_be_function(ty: Type) -> Bool {
 /// enclosing lambda written inside the regions (its own calls answer for
 /// it), `o` for anything else.
 fn retention_arg_callee(arg: Expr, arg_ty: Type, env: TypeEnv) -> String {
-  let lambda_index = (lit: Expr, scope: TypeEnv) -> {
-    Array::push(retention_arg_lambdas, (lit, scope))
-    String::concat("p:", __to_string(Array::length(retention_arg_lambdas) - 1))
+  let lambda_index = (lit: Expr, scope: TypeEnv, identity: String) -> {
+    let index = Array::length(retention_arg_lambdas)
+    let named = if identity == "" {
+      String::concat("lit@", __to_string(index))
+    } else {
+      identity
+    }
+    Array::push(retention_arg_lambdas, (lit, scope, named))
+    String::concat("p:", __to_string(index))
   }
   match arg {
-    EFn(_, _, _, _, _, _) => lambda_index(arg, env),
+    EFn(_, _, _, _, _, _) => lambda_index(arg, env, ""),
     EIdent(an, _) => if retention_type_may_be_function(arg_ty) {
       match retention_named_callee(env, an) {
-        RetentionVisible(lit, scope, _) => lambda_index(lit, scope),
+        RetentionVisible(lit, scope, key) => lambda_index(lit, scope, retention_callee_identity(key)),
         RetentionTrusted => "t",
         RetentionParam(pn) => if Array::length(retention_name_predates(env, pn)) == 0 {
           ""
@@ -1111,6 +1953,28 @@ fn retention_arg_callee(arg: Expr, arg_ty: Type, env: TypeEnv) -> String {
   }
 }
 
+/// Codex on #3359: what a callee key names, the same at every level of a
+/// recursion -- a `p:` key is a slot of this re-check's argument table, which
+/// a recursive call fills again, so it answers for the lambda the slot holds
+/// (a top-level function or `let`-bound closure by its own key, a literal by
+/// the slot it was first given). Two calls whose arguments are different
+/// functions must not share a re-check: a helper that recurses with another
+/// callback (`loop(safe, h)` calling `loop(stash, h)`) would otherwise have
+/// only the first callback checked.
+fn retention_callee_identity(key: String) -> String {
+  if String::starts_with(key, "p:") {
+    let index = decimal_text(String::substring(key, 2, String::length(key)))
+    if index >= 0 && index < Array::length(retention_arg_lambdas) {
+      let (_, _, identity) = Array::get(retention_arg_lambdas, index)
+      identity
+    } else {
+      key
+    }
+  } else {
+    key
+  }
+}
+
 fn retention_regions_intersect(names: Array[String], regions: Array[(String, Bool)]) -> Bool {
   let mut hit = false
   for r in regions {
@@ -1122,47 +1986,6 @@ fn retention_regions_intersect(names: Array[String], regions: Array[(String, Boo
     }
   }
   hit
-}
-
-/// The type the call's result is given where it is written: the callee's
-/// type at the call (`callee_expr` is its name or the literal), applied to
-/// the argument types, with the provenance a parameter's capture hands on.
-/// `None` when the callee is not a function type here.
-fn retention_call_result_type(callee_expr: Expr, arg_tys: Array[Type], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> Option[Type] {
-  let (raw, s0, c0) = match callee_expr {
-    EIdent(name, _) => match env_lookup(env, name) {
-      Some(t) => {
-        let (ti, nc, _) = instantiate(t, c)
-        (ti, s, nc)
-      },
-      None => (CtUnknown, s, c)
-    },
-    _ => {
-      let cp = retention_checkpoint()
-      let (t, ns, nc) = check_child(callee_expr, env, defs, s, c, array_empty(), array_empty(), None, "AuxiliaryRetentionRecheck")
-      retention_restore(cp)
-      let (ti, nc2, _) = instantiate(subst_apply(ns, t), nc)
-      (ti, ns, nc2)
-    }
-  }
-  let _ = c0
-  match subst_apply(s0, raw) {
-    CtFn(params, ret, _) => {
-      let mut su = s0
-      let mut i = 0
-      while i < Array::length(params) && i < Array::length(arg_tys) {
-        match unify(Array::get(params, i), Array::get(arg_tys, i), su) {
-          Some(next) => {
-            su = next
-          },
-          None => ()
-        }
-        i = i + 1
-      }
-      Some(call_result_with_provenance(ret, params, arg_tys, su))
-    },
-    _ => None
-  }
 }
 
 /// The shared core of a call check: `callee` already classified,
@@ -1177,10 +2000,32 @@ fn retention_check_callee(callee: RetentionCallee, callee_expr: Expr, label: Str
       let (arg_tys, s_args, c_args) = retention_arg_types(args, env, defs, s, c, check_child)
       retention_restore(cp)
       let mentioned = array_empty()
-      for t in arg_tys {
+      // Codex on #3359: an argument may carry a region its type does not
+      // show -- a struct built from the token, a closure that captured it --
+      // so its value is asked too, and the parameter it is passed to records
+      // what it carries.
+      let hidden_by_arg = array_empty()
+      let mut hi = 0
+      while hi < Array::length(arg_tys) {
+        let t = Array::get(arg_tys, hi)
         for r in retention_regions_mentioned(t, regions) {
           Array::push(mentioned, r)
         }
+        let hidden = if retention_type_hides_region(t, defs) {
+          retention_value_regions(Array::get(args, hi), env, defs, s_args)
+        } else {
+          array_empty()
+        }
+        for r in regions {
+          let (rname, _) = r
+          if retention_string_has(hidden, rname) {
+            Array::push(mentioned, r)
+          } else {
+            ()
+          }
+        }
+        Array::push(hidden_by_arg, hidden)
+        hi = hi + 1
       }
       match callee {
         RetentionVisible(lit, scope, key) => {
@@ -1191,63 +2036,41 @@ fn retention_check_callee(callee: RetentionCallee, callee_expr: Expr, label: Str
           for r in mentioned {
             Array::push(triggers, r)
           }
-          for r in retention_captured_regions(lit, scope, s_args, regions) {
+          for r in retention_captured_regions(lit, scope, defs, s_args, regions) {
             Array::push(triggers, r)
           }
           if Array::length(triggers) > 0 {
             let lambdas_before = Array::length(retention_arg_lambdas)
             let overrides = array_empty()
-            let mut shape = key
+            // The key names the callee and, for each argument, whether it
+            // carries a region (and which, where its type hides them), the
+            // regions its location predates, and the function it is.
+            let mut shape = retention_callee_identity(key)
             let mut ai = 0
             while ai < Array::length(args) {
               let arg = Array::get(args, ai)
               let arg_ty = Array::get(arg_tys, ai)
               let predates = retention_arg_predates(arg, env)
-              Array::push(overrides, (arg_ty, predates, retention_arg_callee(arg, arg_ty, env)))
-              let carries = Array::length(retention_regions_mentioned(arg_ty, regions)) > 0
+              let hidden = Array::get(hidden_by_arg, ai)
+              let fn_arg = retention_arg_callee(arg, arg_ty, env)
+              Array::push(overrides, (arg_ty, predates, fn_arg, hidden))
+              let carries = Array::length(retention_regions_mentioned(arg_ty, regions)) > 0 || Array::length(hidden) > 0
               shape = String::concat(shape, String::concat(if carries {
                 "|r"
               } else {
                 "|-"
-              }, String::join(predates, ",")))
+              }, String::concat(String::join(predates, ","), String::concat("/", String::concat(String::join(hidden, ","), String::concat("/", retention_callee_identity(fn_arg)))))))
               ai = ai + 1
             }
-            let (written_kind, result_regions) = retention_recheck(lit, scope, regions, overrides, shape, defs, s_args, c_args, check_child)
+            let (kind, _) = retention_recheck(lit, scope, regions, overrides, shape, defs, s_args, c_args, check_child)
             Array::truncate(retention_arg_lambdas, lambdas_before)
-            // Codex on #3359: a callee that keeps nothing may still RETURN the
-            // token under a type that does not name the region -- an
-            // annotation that spells `TaskHandle[Int]`, or a struct whose
-            // fields its type does not show -- and the caller's own write of
-            // that result would then see no region. Refused unless the
-            // result's type at the call names every region the callee's
-            // result carries.
-            let kind = if written_kind == 0 && Array::length(result_regions) > 0 {
-              let main_ret = retention_call_result_type(callee_expr, arg_tys, env, defs, s_args, c_args + retention_counter_gap(), check_child)
-              let mut launders = false
-              for r in triggers {
-                let (rname, _) = r
-                if retention_string_has(result_regions, rname) {
-                  let shown = match main_ret {
-                    Some(t) => type_mentions_named(t, rname),
-                    None => false
-                  }
-                  if !shown {
-                    launders = true
-                  } else {
-                    ()
-                  }
-                } else {
-                  ()
-                }
-              }
-              if launders {
-                3
-              } else {
-                0
-              }
-            } else {
-              written_kind
-            }
+            // A callee that keeps nothing may still RETURN the token, under
+            // a type that does not show it (`-> TaskHandle[Int]`, a struct).
+            // That is not refused here: the call's result carries every
+            // region its arguments carry (`retention_value_regions`), so the
+            // caller's own write, return or call of the result is judged as
+            // if the token were in plain view, and a caller that keeps the
+            // result inside the body -- joins it, matches on it -- is legal.
             if kind > 0 {
               Array::push(errors, String::concat(retention_call_message(label, retention_any_nursery(triggers), kind), marker))
             } else {
@@ -1331,8 +2154,8 @@ export fn retention_named_run_body(body: Expr, env: TypeEnv, defs: Array[TypeDef
             Array::push(all_regions, r)
           }
           let (kind, result_regions) = retention_recheck(lit, scope, all_regions, [
-            (group_ty, array_empty(), "")
-          ], String::concat("run|", key), defs, s, c + retention_counter_gap(), check_child)
+            (group_ty, array_empty(), "", array_empty())
+          ], String::concat("run|", retention_callee_identity(key)), defs, s, c + retention_counter_gap(), check_child)
           (kind, retention_string_has(result_regions, rname))
         },
         // A function imported from another module: see the header.

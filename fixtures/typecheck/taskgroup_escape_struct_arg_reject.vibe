@@ -1,0 +1,32 @@
+// #3343 (Codex on #3359): the handle reaches the helper inside a struct
+// argument, whose nominal type `Box` does not show its fields, so no argument
+// seemed to carry the group's region and the helper was not checked again.
+// This compiled and the handle was joined after its group closed; the
+// argument's value now says what it carries, and the helper's write refuses
+// the call.
+import @vibe/concurrent { TaskGroup, TaskHandle }
+
+struct Box {
+  h: TaskHandle[Int]
+}
+
+struct Cell[T] {
+  mut v: Option[T]
+}
+
+fn put(c: Cell[Box], b: Box) -> Unit {
+  c.v = Some(b)
+}
+
+fn main() -> Unit allows Exception + Console {
+  let c: Cell[Box] = Cell::{ v: None }
+  let r = TaskGroup::run((n) -> {
+    put(c, Box::{ h: TaskGroup::spawn(n, () -> { 41 }) })
+    1
+  })
+  let after = match c.v {
+    Some(b) => TaskHandle::join(b.h),
+    None => 0 - 1
+  }
+  println("r=\{r} after=\{after}")
+}

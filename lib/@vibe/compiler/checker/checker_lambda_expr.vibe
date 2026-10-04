@@ -175,8 +175,12 @@ import ./checker_merge_capture_provenance.vibe {
 import ./checker_region_retention.vibe {
   retention_active_region_names,
   retention_bind_param_callee,
+  retention_bind_param_carry,
   retention_note_result,
-  retention_type_may_hide_region,
+  retention_region_listed,
+  retention_result_regions,
+  retention_type_hides_region,
+  retention_value_regions,
   take_retention_param_override
 }
 
@@ -389,15 +393,17 @@ export fn retaining_write_region_check(name: String, args: Array[Expr], env: Typ
         let stored_ty = subst_apply(s1, val_ty)
         if container_write_crosses_region(Array::get(args, 0), stored_ty, env) {
           Array::push(errors, String::concat(region_write_escape_message(stored_ty, env, "region escapes its scope: a container write stores a value that captures this region into an outer binding"), off_marker(tail_expr_off(Array::get(args, value_index)))))
-        } else if retention_type_may_hide_region(stored_ty) {
-          // #3343 (Codex on #3359): a struct value built from the token has
-          // a nominal type that does not show its fields, so ask the value
-          // itself, one region at a time -- the target may be outer to an
-          // inner region and local to an outer one.
+        } else if retention_type_hides_region(stored_ty, defs) {
+          // #3343 (Codex on #3359): a value whose type may hide a region --
+          // a struct built from the token, a handle under an annotation that
+          // erased its region, a closure -- is asked by what it reads, one
+          // region at a time: the target may be outer to an inner region and
+          // local to an outer one.
+          let carried = retention_value_regions(Array::get(args, value_index), env, defs, s1)
           let mut refused = false
           for rname in retention_active_region_names(env) {
             let region_ty = CtNamed(rname, [])
-            if !refused && container_write_crosses_region(Array::get(args, 0), region_ty, env) && tail_named_record_mentions_region(Array::get(args, value_index), env, defs, s1, c1, rname, ce) {
+            if !refused && retention_region_listed(carried, rname) && container_write_crosses_region(Array::get(args, 0), region_ty, env) {
               refused = true
               Array::push(errors, String::concat(region_write_escape_message(region_ty, env, "region escapes its scope: a container write stores a value that captures this region into an outer binding"), off_marker(tail_expr_off(Array::get(args, value_index)))))
             } else {
@@ -1931,7 +1937,7 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
         // a function argument is, so a call of the parameter is judged too.
         let has_override = pi < Array::length(retention_override)
         let (pt, ns) = if has_override {
-          let (expected, _, _) = Array::get(retention_override, pi)
+          let (expected, _, _, _) = Array::get(retention_override, pi)
           match unify(pt, expected, ns) {
             Some(seeded) => (expected, seeded),
             None => (expected, ns)
@@ -1945,7 +1951,12 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
         fn_env = env_bind(fn_env, String::concat("__param_marker__", name), CtNamed(String::concat("#param[", String::concat(__to_string(nc), "]")), [
         ]))
         if has_override {
-          let (_, predates, callee) = Array::get(retention_override, pi)
+          let (_, predates, callee, carried) = Array::get(retention_override, pi)
+          // What the argument carries where its type does not show it (a
+          // struct built from the token), so a write of the parameter is
+          // judged by the argument's value rather than by every region the
+          // parameter is declared inside.
+          fn_env = retention_bind_param_carry(fn_env, name, carried)
           if Array::length(predates) > 0 {
             fn_env = env_bind(fn_env, String::concat("__region_outer_alias__", name), CtTuple(for rname in predates {
               CtNamed(rname, [])
@@ -2017,16 +2028,20 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
       let (bt, s2_body, c2) = check_child(body, body_env, defs, s1, return_c, errors, tytab, capture, lane)
       // #3343 (Codex on #3359): a region re-check asks which regions this
       // lambda's RESULT carries -- by the body's own type, before any return
-      // annotation can hide it, or through a struct value built in the tail,
-      // whose nominal type does not show its fields.
+      // annotation can hide it, or, where the type may hide one, by what the
+      // values it returns (its tail and every explicit `return`) read.
       if Array::length(retention_override) > 0 {
         let body_ty = subst_apply(s2_body, bt)
-        let tail_ce = (e: Expr, en: TypeEnv, d: Array[TypeDef], ts: Subst, tc: Int, te: Array[String], tt: Array[(Int, Type)]) -> {
-          check_child(e, en, d, ts, tc, te, tt, None, "AuxiliaryRetentionRecheck")
+        // The values explicit `return`s hand back, merged by the EReturn arm.
+        let returned_ty = subst_apply(s2_body, return_provenance)
+        let hidden = if retention_type_hides_region(body_ty, defs) || retention_type_hides_region(returned_ty, defs) {
+          retention_result_regions(body, body_env, defs, s2_body)
+        } else {
+          array_empty()
         }
         let carried = array_empty()
         for rname in retention_active_region_names(body_env) {
-          if type_mentions_named(body_ty, rname) || (retention_type_may_hide_region(body_ty) && tail_named_record_mentions_region(body, body_env, defs, s2_body, c2, rname, tail_ce)) {
+          if type_mentions_named(body_ty, rname) || type_mentions_named(returned_ty, rname) || retention_region_listed(hidden, rname) {
             Array::push(carried, rname)
           } else {
             ()

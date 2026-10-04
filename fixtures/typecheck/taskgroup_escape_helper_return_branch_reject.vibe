@@ -1,0 +1,37 @@
+// #3343 (Codex on #3359): the `return` that hands the handle back sits in one
+// branch of an `if`, and the tail returns a box the caller already joined.
+// This compiled and the handle was joined after its group closed; the
+// caller's write of the result is refused.
+import @vibe/concurrent { TaskGroup, TaskHandle }
+
+struct Box {
+  h: TaskHandle[Int]
+}
+
+struct Cell[T] {
+  mut v: Option[T]
+}
+
+fn boxit(h: TaskHandle[Int], d: Box, k: Int) -> Box {
+  if k > 0 {
+    return Box::{ h: h }
+  } else {
+    ()
+  }
+  d
+}
+
+fn main() -> Unit allows Exception + Console {
+  let c: Cell[Box] = Cell::{ v: None }
+  let r = TaskGroup::run((n) -> {
+    let d = Box::{ h: TaskGroup::spawn(n, () -> { 1 }) }
+    let first = TaskHandle::join(d.h)
+    c.v = Some(boxit(TaskGroup::spawn(n, () -> { 41 }), d, 1))
+    first
+  })
+  let after = match c.v {
+    Some(b) => TaskHandle::join(b.h),
+    None => 0 - 1
+  }
+  println("r=\{r} after=\{after}")
+}
