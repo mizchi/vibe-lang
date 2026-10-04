@@ -105,7 +105,7 @@ bash "$SCRIPT_DIR/build_taskgroup_checker.sh" "$OUT_DIR/$CLI_WASM_NAME" "$checke
 for artifact in worker.wasm coordinator.component.wasm build.json; do
   install -m 0644 "$checker_stage/$artifact" "$tc_stage/lib/checker-taskgroup/$artifact"
 done
-for helper in taskgroup_build_frontend.mjs taskgroup_frontend_warm.mjs parallel_project_transport.mjs parallel_scheduler_trace.mjs parallel_selfhost_checker.mjs; do
+for helper in taskgroup_build_frontend.mjs taskgroup_frontend_warm.mjs taskgroup_job_cache.mjs parallel_project_transport.mjs parallel_scheduler_trace.mjs parallel_selfhost_checker.mjs; do
   install -m 0644 "$PROJECT_ROOT/scripts/$helper" "$tc_stage/lib/checker-taskgroup/$helper"
 done
 for js in lsp_server.js symbol_index.js graph_query.js; do

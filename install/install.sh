@@ -536,7 +536,7 @@ install -m 0644 "$ROOT_DIR/scripts/run_bounded.sh" "$TC_DIR/lib/run_bounded.sh"
 # The frontend uses Node for transport; CPU task creation and waiting run in Vibe.
 if [ -f "$ROOT_DIR/scripts/taskgroup_build_frontend.mjs" ]; then
   mkdir -p "$TC_DIR/lib/checker-taskgroup"
-  for helper in taskgroup_build_frontend.mjs taskgroup_frontend_warm.mjs parallel_project_transport.mjs parallel_scheduler_trace.mjs parallel_selfhost_checker.mjs; do
+  for helper in taskgroup_build_frontend.mjs taskgroup_frontend_warm.mjs taskgroup_job_cache.mjs parallel_project_transport.mjs parallel_scheduler_trace.mjs parallel_selfhost_checker.mjs; do
     install -m 0644 "$ROOT_DIR/scripts/$helper" "$TC_DIR/lib/checker-taskgroup/$helper"
   done
 fi

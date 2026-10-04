@@ -16,7 +16,11 @@ RUNNER="$ROOT_DIR/runtime/viberun/target/release/viberun"
 python3 scripts/checker_taskgroup_worker_test.py --compiler "$COMPILER" --worker "$OUT/worker.wasm" --runner "$RUNNER"
 python3 scripts/checker_taskgroup_batch_test.py --compiler "$COMPILER" --worker "$OUT/worker.wasm" \
   --runner "$RUNNER" --coordinator "$OUT/coordinator.component.wasm"
-VIBE_PARALLEL_BACKEND=taskgroup VIBE_TASKGROUP_ARTIFACT_DIR="$OUT" \
-  bash scripts/test_parallel_frontend_warm.sh "$COMPILER"
+for replay in 0 1; do
+  VIBE_PARALLEL_BACKEND=taskgroup VIBE_TASKGROUP_ARTIFACT_DIR="$OUT" \
+    VIBE_TASKGROUP_JOB_CACHE="$replay" \
+    bash scripts/test_parallel_frontend_warm.sh "$COMPILER"
+done
 python3 scripts/test_taskgroup_build_launcher.py "$COMPILER" "$OUT"
+python3 scripts/test_taskgroup_public_replay.py "$COMPILER" "$OUT"
 echo "TaskGroup checker dogfood oracle passed; artifacts: $OUT"
