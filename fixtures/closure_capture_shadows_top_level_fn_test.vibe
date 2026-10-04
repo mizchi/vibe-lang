@@ -1,0 +1,254 @@
+//# #3338: a closure that calls a local binding named like a top-level
+//# function calls the LOCAL. On the wasm-gc lane the capture scan treated
+//# every top-level name as global, so `twice` was left out of the closure's
+//# environment and `g(7)` below called the top-level `twice`: 7000 instead
+//# of 14, with no diagnostic. The scan now yields to an enclosing local, as
+//# the linear lane's does (#1114). Every answer here is the same on the
+//# bump, RC and gc lanes; tests/gates/early/extended_derive.sh runs all three.
+
+fn twice(x: Int) -> Int {
+  x * 1000
+}
+
+fn pair(a: Int, b: Int) -> Int {
+  a * 100 + b
+}
+
+let base = 10
+
+fn make_adder(n: Int) -> (Int) -> Int {
+  (x) -> x + n
+}
+
+let add5 = make_adder(5)
+
+fn local_in_closure() -> Int {
+  let twice = (x: Int) -> x * 2
+  let g = (y: Int) -> twice(y)
+  g(7)
+}
+
+fn param_in_closure(twice: (Int) -> Int) -> Int {
+  let g = (y: Int) -> twice(y)
+  g(7)
+}
+
+fn direct_call() -> Int {
+  let twice = (x: Int) -> x * 2
+  twice(7)
+}
+
+fn two_levels() -> Int {
+  let twice = (x: Int) -> x * 2
+  let outer = (a: Int) -> {
+    let inner = (b: Int) -> twice(b)
+    inner(a)
+  }
+  outer(7)
+}
+
+fn returned_as_value() -> Int {
+  let twice = (x: Int) -> x * 2
+  let g = () -> twice
+  let h = g()
+  h(7)
+}
+
+fn passed_to_map() -> Int {
+  let twice = (x: Int) -> x * 2
+  let ys = Array::map([1, 2, 3], (x) -> twice(x))
+  Array::get(ys, 2)
+}
+
+// The local's type and arity differ from the top-level function's. Calling
+// the top-level `pair` here emitted a module that failed to validate.
+fn other_arity() -> Int {
+  let pair = (s: String) -> String::length(s)
+  let g = (y: String) -> pair(y)
+  g("abcde")
+}
+
+fn mut_local() -> Int {
+  let mut twice = (x: Int) -> x * 2
+  let g = (y: Int) -> twice(y)
+  let first = g(7)
+  twice = (x: Int) -> x * 3
+  first * 100 + g(7)
+}
+
+// A `let rec` that shadows a top-level function calls ITSELF, directly and
+// through a closure.
+fn rec_shadow() -> Int {
+  let rec twice = (n: Int) -> if n <= 0 {
+    0
+  } else {
+    2 + twice(n - 1)
+  }
+  twice(7)
+}
+
+fn rec_shadow_in_closure() -> Int {
+  let rec twice = (n: Int) -> if n <= 0 {
+    0
+  } else {
+    2 + twice(n - 1)
+  }
+  let g = (y: Int) -> twice(y)
+  g(7)
+}
+
+// A local shadows a module-level constant or computed global the same way.
+fn constant_shadow() -> Int {
+  let base = 3
+  let g = () -> base
+  g()
+}
+
+fn global_shadow() -> Int {
+  let add5 = (x: Int) -> x * 2
+  let g = (y: Int) -> add5(y)
+  g(7)
+}
+
+// An initializer does not see the binder it initializes, so the lambda
+// inside it reaches the outer `twice`.
+fn let_initializer() -> Int {
+  let twice = (x: Int) -> twice(x) + 1
+  twice(1)
+}
+
+fn mut_initializer() -> Int {
+  let mut twice = (x: Int) -> twice(x) + 1
+  twice(1)
+}
+
+fn mut_initializer_sees_previous_local() -> Int {
+  let twice = (x: Int) -> x * 2
+  let mut twice = (x: Int) -> twice(x) + 1
+  let g = (y: Int) -> twice(y)
+  g(1)
+}
+
+// A `let mut` binds only inside its block. On gc the inner name outlived the
+// block and the tail read it: 200 instead of 7.
+fn inner_let_mut_scope() -> Int {
+  let x = 7
+  let y = {
+    {
+      let mut x = 100
+      x = 200
+      0
+    }
+    x
+  }
+  y
+}
+
+// A `let mut` a closure captures lives in a cell. Once its block has ended, a
+// later binding of the same name is an ordinary value again.
+fn cell_after_block() -> Int {
+  let a = {
+    let mut f = (x: Int) -> x + 1
+    let h = () -> f(1)
+    h()
+  }
+  let f = (x: Int) -> x * 10
+  f(3) + a
+}
+
+// The other direction: with no local of that name in scope, a closure calls
+// the top-level function.
+fn no_local() -> Int {
+  let g = (y: Int) -> twice(y)
+  g(7)
+}
+
+fn no_local_other_arity() -> Int {
+  let g = (y: Int) -> pair(y, 2)
+  g(1)
+}
+
+fn no_local_global() -> Int {
+  let g = (y: Int) -> add5(y)
+  g(7)
+}
+
+fn after_match_arm(o: Option[(Int) -> Int]) -> Int {
+  let a = match o {
+    Some(twice) => twice(1),
+    None => 0
+  }
+  let g = (y: Int) -> twice(y)
+  g(7) + twice(1) + a
+}
+
+fn after_for(fs: Array[(Int) -> Int]) -> Int {
+  let mut a = 0
+  for twice in fs {
+    a = a + twice(1)
+  }
+  let g = (y: Int) -> twice(y)
+  g(7) + twice(1) + a
+}
+
+fn after_if_branch(c: Bool) -> Int {
+  let mut acc = 0
+  if c {
+    let mut twice = (x: Int) -> x * 2
+    acc = acc + twice(1)
+  } else {
+    ()
+  }
+  let g = (y: Int) -> twice(y)
+  acc + g(7) + twice(7)
+}
+
+test "a captured local shadows a top-level fn of the same name" {
+  inspect(local_in_closure(), "14")
+  inspect(param_in_closure((x) -> x * 2), "14")
+  inspect(direct_call(), "14")
+  inspect(two_levels(), "14")
+  inspect(returned_as_value(), "14")
+  inspect(passed_to_map(), "6")
+  inspect(other_arity(), "5")
+  inspect(mut_local(), "1421")
+}
+
+test "a let rec that shadows a top-level fn calls itself" {
+  inspect(rec_shadow(), "14")
+  inspect(rec_shadow_in_closure(), "14")
+}
+
+test "a captured local shadows a module constant or global" {
+  inspect(constant_shadow(), "3")
+  inspect(global_shadow(), "14")
+}
+
+test "an initializer sees the binding outside it" {
+  inspect(let_initializer(), "1001")
+  inspect(mut_initializer(), "1001")
+  inspect(mut_initializer_sees_previous_local(), "3")
+}
+
+test "a let mut and its cell end with its block" {
+  inspect(inner_let_mut_scope(), "7")
+  inspect(cell_after_block(), "32")
+}
+
+test "with no local in scope a closure calls the top-level fn" {
+  inspect(no_local(), "7000")
+  inspect(no_local_other_arity(), "102")
+  inspect(no_local_global(), "12")
+  inspect(after_match_arm(Some((x) -> x * 2)), "8002")
+  inspect(after_for([(x) -> x * 2]), "8002")
+  inspect(after_if_branch(true), "14002")
+  inspect(twice(2), "2000")
+  inspect(pair(1, 2), "102")
+  inspect(base, "10")
+}
+
+test "a captured local shadows a top-level fn inside a test block" {
+  let twice = (x: Int) -> x * 2
+  let g = (y: Int) -> twice(y)
+  inspect(g(7), "14")
+}

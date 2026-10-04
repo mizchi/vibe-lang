@@ -4,6 +4,15 @@
 set -euo pipefail
 : "${VIBE_RC:=0}"; export VIBE_RC  # cutover: pin the compiler self-build / gate baseline to bump (RC only when explicitly VIBE_RC=1)
 : "${VIBE_INTERNAL_TRUSTED_SOURCE:=1}"; export VIBE_INTERNAL_TRUSTED_SOURCE
+# #3331: the flatten prints the merged program as SOURCE, and the compile that
+# reads it back lowers trait dictionaries after its check. The pinned seed's
+# single-source lane predates that order: it desugars BEFORE it checks, so it
+# refuses any method-bearing trait handed to it as source (``no impl `Hash` for
+# `Self` `` on @vibe/core's own `trait Hash`). Until the seed is bumped past
+# #3331, ask both flattens for the lowered form. Delete this line in that bump:
+# only then can compiler source use a trait-bounded generic
+# (docs/internal/operations/bootstrap.md).
+export VIBE_MERGED_SOURCE_LOWER_TRAIT_DICTS=1
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT_PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"

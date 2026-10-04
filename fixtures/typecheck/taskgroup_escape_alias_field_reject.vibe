@@ -1,0 +1,23 @@
+// #3276: a local name inside the body that aliases an outer binding is the
+// outer binding. `let a = c` followed by `a.v = Some(handle)` compiled and the
+// handle was joined after its group closed; the write through the alias is
+// refused like the write through `c`.
+import @vibe/concurrent { TaskGroup, TaskHandle }
+
+struct Cell[T] {
+  mut v: Option[T]
+}
+
+fn main() -> Unit allows Exception + Console {
+  let c = Cell::{ v: None }
+  let r = TaskGroup::run((n) -> {
+    let a = c
+    a.v = Some(TaskGroup::spawn(n, () -> { 41 }))
+    1
+  })
+  let after = match c.v {
+    Some(h) => TaskHandle::join(h),
+    None => 0 - 1
+  }
+  println("r=\{r} after=\{after}")
+}

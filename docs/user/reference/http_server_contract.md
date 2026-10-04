@@ -61,5 +61,5 @@ build. See the cheatsheet's capability sections for the grant ladder.
 
 - `lib/@vibe/http/index_import_test.vibe` imports every `Http::` operation
   through the package contract.
-- `lib/@vibe/compiler/tests/checker_builtins_test.vibe` pins the checker's
+- `lib/@vibe/compiler/builtins/declarations.vibe` declares the checker's
   builtin signatures (for example `Http::respond` returning `Unit`).

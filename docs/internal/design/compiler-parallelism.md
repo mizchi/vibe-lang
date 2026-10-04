@@ -19,6 +19,15 @@ responsibility split. Compiler/CLI parity, costs and memory limits are recorded
 in [the TaskGroup dogfood report](../reports/taskgroup-checker-2026-10-03.md).
 This experimental path remains slower than ordinary builds.
 
+Successful products for an identical job snapshot can optionally replay with
+`VIBE_TASKGROUP_JOB_CACHE=1`. Lookup binds the source, ordered dependency
+occurrences and Env bytes, producer images and execution environment; misses
+still run real TaskGroup CPU workers. Diagnostics are checked again. The
+compiler validates canonical publication before new entries are stored.
+This avoids warm worker checks and input-directory writes, while adding a cold
+cost. It remains opt-in; [the replay report](../reports/taskgroup-checker-replay-2026-10-04.md)
+records complete-build timings, memory limits and the exact measurement basis.
+
 Related: ADR-0040, ADR-0059, ADR-0068, ADR-0071.
 
 ## Position

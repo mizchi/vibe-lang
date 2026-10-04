@@ -129,7 +129,7 @@ import ./checker_builtin_arg_head_rest.vibe {
 }
 
 import ./checker_closure_capture_row.vibe {
-  railway_ident_lookup_name, tail_expr_off
+  nursery_write_escape_message, railway_ident_lookup_name, tail_expr_off
 }
 
 import ./checker_eq_unbounded_formal_msg.vibe {
@@ -172,6 +172,7 @@ import ./checker_lambda_expr.vibe {
   field_write_mut_check,
   record_array_receiver,
   retaining_write_region_check,
+  run_body_param_cell,
   tab_call_ty,
   tail_named_record_mentions_region
 }
@@ -1451,7 +1452,46 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                           let skolem_name = String::concat("#region_", __to_string(c1))
                           let s_skolem = SubstBind(rv_id, CtNamed(skolem_name, [
                           ]), s0)
-                          let (bt, s_body, c_body) = check_child(Array::get(args, 0), env, defs, s_skolem, c1 + 1, errors, tytab, capture, lane)
+                          // #3276: a literal body is checked INSIDE the
+                          // region, the way `region r { .. }` is: its group
+                          // parameter carries the skolem from the start
+                          // (`run_body_param_cell`), and `#active_region`
+                          // marks every binding above it as outer. Each
+                          // write in the body -- an assignment, a field
+                          // write, `Array::set` / `push` -- is then refused
+                          // when it stores the group's token in an outer
+                          // location, whatever that location's declared
+                          // type. The scan of outer bindings below used to
+                          // be the only check, and it could see a leak only
+                          // through a binding whose type was still open: a
+                          // generalized generic struct value or a binding
+                          // annotated with a concrete type hid it.
+                          // `#active_nursery` only picks the edit the
+                          // diagnostic names.
+                          let body_arg = Array::get(args, 0)
+                          let literal_body = match body_arg {
+                            EFn(_, _, fn_params, _, _, _) => Array::length(fn_params) == 1,
+                            _ => false
+                          }
+                          let region_ty = CtNamed(skolem_name, [])
+                          let body_env = if literal_body {
+                            Array::truncate(run_body_param_cell, 0)
+                            Array::push(run_body_param_cell, subst_apply(s_skolem, Array::get(body_params, 0)))
+                            env_cache_binding(env_bind(env_bind(env, "#active_nursery", region_ty), "#active_region", region_ty), "#active_region", region_ty)
+                          } else {
+                            env
+                          }
+                          let errors_before_body = Array::length(errors)
+                          let (bt, s_body, c_body) = check_child(body_arg, body_env, defs, s_skolem, c1 + 1, errors, tytab, capture, lane)
+                          Array::truncate(run_body_param_cell, 0)
+                          let mut write_refused = false
+                          let mut ei = errors_before_body
+                          while ei < Array::length(errors) {
+                            if String::starts_with(Array::get(errors, ei), nursery_write_escape_message()) {
+                              write_refused = true
+                            }
+                            ei = ei + 1
+                          }
                           match unify(CtFn(body_params, body_ret, body_eff), bt, s_body) {
                             Some(s_unified) => {
                               let zonked_ret = subst_apply(s_unified, body_ret)
@@ -1473,7 +1513,10 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                                 }
                                 oi = oi + 1
                               }
-                              if leaked {
+                              // A write the body check already refused
+                              // names the write; this would only repeat it
+                              // at the call.
+                              if leaked && !write_refused {
                                 Array::push(errors, String::concat("region escapes its nursery scope: an outer binding now depends on this TaskGroup::run call's own Nursery/Task/Sender/Receiver token", off_marker_len(callee_off, String::length(name))))
                               } else {
                                 ()

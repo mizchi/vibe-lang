@@ -22,7 +22,7 @@ import @vibe/core {
 }
 
 import @vibe/ast {
-  is_builtin_ref_offset
+  is_builtin_ref_offset, type_param_name
 }
 
 import ./builtins.vibe {
@@ -1239,6 +1239,11 @@ export fn dh_labels_may_be(labels: Array[String], ename: String) -> Bool {
 /// (`((__asc: T) -> __asc)(e)`, ascribe_wrap), so its row survives only in the
 /// ascription lambda's PARAMETER annotation -- see fixtures/effect_crossfn_test
 /// .vibe, where the handled body's only callee is such a binding.
+///
+/// #3347: an annotation spelled with a type ALIAS reaches this walk unexpanded
+/// (`let side: Thunk = ..`), so its row is read through the alias. An alias
+/// this walk cannot expand answers true: that is the conservative direction
+/// here, which only ever spares a handle from a dead-handle report.
 export fn dh_texpr_may_be(t: TypeExpr, ename: String) -> Bool {
   match t {
     TyFn(ps, ret, eff) => if dh_labels_may_be(effect_row_labels(effect_row_parse(eff)), ename) {
@@ -1246,9 +1251,140 @@ export fn dh_texpr_may_be(t: TypeExpr, ename: String) -> Bool {
     } else {
       dh_texprs_may_be(ps, ename) || dh_texpr_may_be(ret, ename)
     },
-    TyApp(_, args) => dh_texprs_may_be(args, ename),
+    TyName(_) => dh_alias_may_be(t, ename),
+    TyApp(_, args) => if dh_type_alias_head(t) {
+      dh_alias_may_be(t, ename)
+    } else {
+      dh_texprs_may_be(args, ename)
+    },
     TyTuple(elems) => dh_texprs_may_be(elems, ename),
     _ => false
+  }
+}
+
+fn dh_alias_may_be(t: TypeExpr, ename: String) -> Bool {
+  if !dh_type_alias_head(t) {
+    false
+  } else {
+    match dh_expand_type_alias(t) {
+      Some(expanded) => dh_texpr_may_be(expanded, ename),
+      None => true
+    }
+  }
+}
+
+/// #3347: the program's type aliases, `(name, params, body)`, for the
+/// dead-handle walk. That walk has no type environment, so an annotation it
+/// reads is a `TypeExpr` as written. Rebuilt by `check_dead_handles_stmts`
+/// for every program, so no table survives into the next one.
+let dh_type_alias_tbl: Array[(String, Array[String], TypeExpr)] = array_empty()
+
+export fn set_dh_type_aliases(stmts: Array[Stmt]) -> Unit {
+  Array::truncate(dh_type_alias_tbl, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      STypeAlias(_, name, params, body) => Array::push(dh_type_alias_tbl, (name, params, body)),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+fn dh_type_alias_index(name: String) -> Int {
+  let mut found = 0 - 1
+  let mut i = 0
+  while i < Array::length(dh_type_alias_tbl) && found < 0 {
+    let (alias, _, _) = Array::get(dh_type_alias_tbl, i)
+    if alias == name {
+      found = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn dh_type_alias_head(t: TypeExpr) -> Bool {
+  match t {
+    TyName(name) => dh_type_alias_index(name) >= 0,
+    TyApp(name, _) => dh_type_alias_index(name) >= 0,
+    _ => false
+  }
+}
+
+/// #3347: `t` with its head alias expanded, transitively, or `t` itself when
+/// its head is not an alias of this program. `None` when the expansion cannot
+/// be trusted -- a generic alias named without its arguments, an argument
+/// count that does not match, or a chain that does not end -- so a caller
+/// leaves the annotation unclassified instead of guessing its row.
+export fn dh_expand_type_alias(t: TypeExpr) -> Option[TypeExpr] {
+  let no_args: Array[TypeExpr] = []
+  let mut current = t
+  let mut fuel = 32
+  let mut answer = None
+  let mut done = false
+  while !done {
+    if fuel == 0 {
+      done = true
+    } else {
+      fuel = fuel - 1
+      let (name, args) = match current {
+        TyName(n) => (n, no_args),
+        TyApp(n, xs) => (n, xs),
+        _ => ("", no_args)
+      }
+      let at = if String::length(name) == 0 {
+        0 - 1
+      } else {
+        dh_type_alias_index(name)
+      }
+      if at < 0 {
+        answer = Some(current)
+        done = true
+      } else {
+        let (_, params, body) = Array::get(dh_type_alias_tbl, at)
+        if Array::length(params) != Array::length(args) {
+          done = true
+        } else {
+          current = dh_alias_subst(body, params, args)
+        }
+      }
+    }
+  }
+  answer
+}
+
+/// The alias body with each type parameter replaced by its argument. A
+/// parameter used as a type CONSTRUCTOR (`F[Int]` for `F[_]`) is left as
+/// written: its head is then no alias and no function type, which keeps the
+/// annotation unclassified.
+fn dh_alias_subst(t: TypeExpr, params: Array[String], args: Array[TypeExpr]) -> TypeExpr {
+  match t {
+    TyName(n) => {
+      let mut out = t
+      let mut i = 0
+      while i < Array::length(params) {
+        if type_param_name(Array::get(params, i)) == n {
+          out = Array::get(args, i)
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      out
+    },
+    TyApp(n, xs) => TyApp(n, for x in xs {
+      dh_alias_subst(x, params, args)
+    }),
+    TyFn(ps, ret, eff) => TyFn(for p in ps {
+      dh_alias_subst(p, params, args)
+    }, dh_alias_subst(ret, params, args), eff),
+    TyTuple(xs) => TyTuple(for x in xs {
+      dh_alias_subst(x, params, args)
+    }),
+    _ => t
   }
 }
 

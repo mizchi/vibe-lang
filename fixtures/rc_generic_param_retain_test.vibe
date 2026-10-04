@@ -1,0 +1,59 @@
+// #3332: a parameter typed by a generic's own formal (`ctx: C`) holds
+// whatever the caller passes, heap values included. On the RC lane each
+// owning call releases its argument, so a body that hands that parameter to
+// two owning calls must retain it once first. It did not: the parameter was
+// classified as a scalar and never retained, the first call freed it, and the
+// second read whatever `churn()` had since allocated in that block, so the
+// walk answered `false`. The value is passed on its LAST use, so the callee
+// owns the only reference and reads it after `churn()` reused a freed block.
+
+trait Facts {
+  call_off(Self, Int) -> Bool
+  backing(Self, Int) -> Option[Array[Int]]
+}
+
+struct Lane {
+  calls: Array[Int];
+  floats: Array[Int];
+  slot: Int;
+  elems: Array[Int];
+  asc: Bool
+}
+
+impl Facts for Lane {
+  call_off(self, off: Int) -> Bool {
+    Array::length(self.calls) > 0 && Array::get(self.calls, 0) == off
+  }
+  backing(self, slot: Int) -> Option[Array[Int]] {
+    if slot == self.slot {
+      Some(self.elems)
+    } else {
+      None
+    }
+  }
+}
+
+fn churn(k: Int) -> Int {
+  let a = [k, k, k]
+  let b = [k, k]
+  let c = Lane::{ calls: [9], floats: [9], slot: 9, elems: [9], asc: true }
+  let d = Some(c)
+  Array::length(a) + Array::length(b)
+}
+
+fn elem_is[C: Facts](k: Int, want: Int, ctx: C) -> Bool {
+  let n = churn(k)
+  match C::backing(ctx, 0) {
+    Some(elems) => k < Array::length(elems) && Array::get(elems, k) == want,
+    None => false
+  }
+}
+
+fn bounded_walk[C: Facts](off: Int, ctx: C) -> Bool {
+  C::call_off(ctx, off) || elem_is(1, 25, ctx)
+}
+
+test "a bounded formal handed to two owning calls stays alive" {
+  let lane = Lane::{ calls: [], floats: [], slot: 0, elems: [1, 25], asc: false }
+  inspect(bounded_walk(-1, lane), content="true")
+}

@@ -1,0 +1,268 @@
+name = @vibe/compiler/codegen/component
+version = 0.0.1
+description =
+  #|@vibe/compiler/codegen/component — WebAssembly component-model encoder
+deps = {
+  @vibe/compiler/codegen/wasm_emit : 0.0.1
+  @vibe/compiler/core : 0.0.1
+  @vibe/core : 0.2.0
+}
+
+generated_hash =
+
+// @vibe/compiler/codegen/component — wraps a compiled core wasm module in a
+// WebAssembly component: the component header and sections, canonical
+// lift/lower, the async / stream / future adapter core modules, and the WIT
+// surfaces the HTTP and CLI worlds need. Directory-shared-scope package.
+//
+// It reads core wasm bytes and emits component bytes; it does not compile
+// vibe source. entry/source_compile/wasi_only is its caller: it compiles the
+// entry, then hands the core module here.
+//
+// `comp_emit_wasi_cli_stdin_import_surface_for_test` is a private fn promoted
+// to sibling visibility by a bare `export { .. }` block for the adjacent
+// exact-byte test, so it is intentionally absent from this contract.
+
+// --- component_codegen.vibe
+fn comp_generate_string_trampoline(string_param_count: Int, call_run_init: Int) -> Bytes
+fn comp_emit_component_wasm(core_wasm: Bytes) -> Bytes
+fn comp_emit_component_wasm_with_lift(core_wasm: Bytes, export_name: String) -> Bytes
+fn comp_emit_component_wasm_with_string_lift(core_wasm: Bytes, target_func_name: String, export_name: String, string_param_count: Int, param_names: Array[String], is_async: Int) -> Bytes
+fn comp_emit_component_wasm_async(core_wasm: Bytes, export_name: String, result_valtype: Int) -> Bytes
+fn comp_emit_component_wasm_async_trampolined(main_core_wasm: Bytes, export_name: String, comp_result_valtype: Int) -> Bytes
+fn comp_emit_component_wasm_async_trampolined_p1(main_core_wasm: Bytes, export_name: String, comp_result_valtype: Int) -> Bytes
+fn comp_emit_component_wasm_async_spawned_future(export_name: String, comp_result_valtype: Int) -> Bytes with Exception
+fn comp_emit_component_wasm_async_concurrent_awaits(export_name: String, comp_result_valtype: Int) -> Bytes with Exception
+fn comp_emit_component_wasm_future_value(export_name: String, comp_result_valtype: Int) -> Bytes with Exception
+fn comp_emit_component_wasm_stream_value(export_name: String, comp_result_valtype: Int) -> Bytes with Exception
+// ADR-0089 D2 / step 4 (#1218): host-supplied future<u32> -- imports
+// `get-future`, parks the read on waitable-set.wait until the host's
+// producer resolves (driven by runtime/viberun's FutureReader import).
+fn comp_emit_component_wasm_host_future_value(export_name: String, comp_result_valtype: Int) -> Bytes with Exception
+// #1539: production-unused stdin provider shadow component. This is an
+// internal gate emitter only; it has no end-user API or linked_compile route.
+fn comp_emit_component_wasm_stdin_provider_shadow() -> Bytes
+// #1539 bounded checker-hidden core route. The fixture is internal to the
+// structural/runtime gate (0 drain, 1 early close, 2/3/4 malformed-wire traps).
+// `vibe build --component` face selection: does the core import anything
+// from the host `vibe` module? (component_codegen.vibe)
+fn comp_core_imports_vibe_host(core_wasm: Bytes) -> Bool
+// The command-component wrap itself: picks the face from that answer, so
+// every caller of `vibe build --component` gets the same one.
+fn comp_emit_component_wasm_command(core_wasm: Bytes, target_func_name: String, export_name: String) -> Bytes with Exception
+fn comp_core_imports_stdin_provider(core_wasm: Bytes) -> Bool
+fn comp_emit_component_wasm_async_stdin_provider(main_core_wasm: Bytes, export_name: String) -> Bytes with Exception
+fn comp_emit_component_wasm_async_stdin_provider_fixture(mode: Int) -> Bytes with Exception
+
+// #1540: byte-shape fixture for the widened async canon emitters.
+fn comp_emit_async_string_canon_fixture() -> Bytes
+
+// #1540: memhost module that also exports cabi_realloc.
+fn comp_emit_memhost_realloc_fixture() -> Bytes
+
+// #1540: the whole async string component, from the widened emitters alone.
+fn comp_emit_async_string_component(export_name: String, param_name: String, reply: String) -> Bytes
+
+// #1540: the body-read component -- a handler whose last param is a stream.
+fn comp_emit_body_read_component(export_name: String, string_param_names: Array[String], stream_param_name: String) -> Bytes
+
+// #1540: the ASYNC serve lane -- same handler surface, async lift + task.return.
+fn comp_emit_component_wasm_string_handler_async(core_wasm: Bytes, target_func_name: String, export_name: String, param_names: Array[String]) -> Bytes with Exception
+
+// #1540 scope 3: byte-shape fixture for the stream-parameter trampoline.
+fn comp_emit_stream_trampoline_fixture(string_param_count: Int) -> Bytes
+
+// #1540 scope 4: the serve lane for a handler whose last param is a HostStream.
+fn comp_emit_component_wasm_stream_handler(core_wasm: Bytes, target_func_name: String, export_name: String, param_names: Array[String]) -> Bytes with Exception
+fn comp_emit_component_wasm_service_handler(core_wasm: Bytes, target_func_name: String, export_name: String, param_names: Array[String]) -> Bytes with Exception
+// ADR-0089 step 4 (#1218): REAL-source wiring -- wrap a compiled core whose
+// program calls `host_future_get` (core imports vibe.host_future_get/_wait,
+// sniffed by comp_core_imports_host_future) into the adapter-backed async
+// component (get-future import + waitable-set.wait park + u32 lift).
+fn comp_core_imports_host_future(core_wasm: Bytes) -> Bool
+// ADR-0089 (c) (#1218): the host-future GET core import names, in
+// declaration order -- the list both the adapter layout and the component's
+// import/lower order are derived from.
+fn comp_core_host_future_names(core_wasm: Bytes) -> Array[String]
+// ADR-0089 Decision 3 (#1218): the host-stream siblings -- named
+// `vibe.host_stream_get$<name>` core imports become per-name `stream<u8>`
+// component imports on the same adapter-backed composition (spec §3.18).
+fn comp_core_imports_host_stream(core_wasm: Bytes) -> Bool
+fn comp_core_host_stream_names(core_wasm: Bytes) -> Array[String]
+// #1342: `vibe.sleep` keys the same adapter-backed composition -- the composer
+// adds a `sleep-for` component import and an adapter func that parks on its
+// subtask, so an async component can sleep.
+fn comp_core_imports_sleep(core_wasm: Bytes) -> Bool
+// #1342: fail closed instead of emitting a component whose compiled core has
+// an import nothing in the composition provides.
+fn comp_reject_unsatisfiable_selfcontained_imports(core_wasm: Bytes) -> Unit with Exception
+fn comp_emit_component_wasm_async_hostfuture(main_core_wasm: Bytes, export_name: String) -> Bytes with Exception
+fn comp_emit_component_wasm_async_wit_future_fixture() -> Bytes with Exception
+fn comp_emit_component_wasm_async_wit_future_mixed_fixture() -> Bytes with Exception
+// #2064: versioned real-interface import for the first WIT-derived async
+// payload slice. `wit_result_type` must currently be exactly `future<s64>`;
+// unsupported record/enum payloads fail closed.
+fn comp_emit_wit_async_future_import_surface(interface_id: String, func_name: String, wit_result_type: String) -> Bytes with Exception
+fn comp_wit_async_payload_landing_layout(wit_result_type: String) -> String with Exception
+fn comp_wit_outbound_http_request_descriptor() -> String
+fn comp_wit_outbound_http_response_descriptor() -> String
+fn comp_wit_outbound_http_response_body_contract() -> String
+fn comp_emit_wit_outbound_http_dual_fetch_surface() -> Bytes
+fn comp_wit_http_world_contract(world: String) -> String with Exception
+fn comp_wit_http_body_boundary_contract(direction: String, guest_type: String) -> String with Exception
+fn comp_emit_wit_http_error_code_type_surface() -> Bytes
+fn comp_emit_wit_http_client_send_surface() -> Bytes
+fn comp_generate_string_trampoline_packed(string_param_count: Int) -> Bytes
+fn comp_emit_component_wasm_string_handler(core_wasm: Bytes, target_func_name: String, export_name: String, param_names: Array[String]) -> Bytes with Exception
+fn comp_emit_component_wasm_string_handler_stubbed(core_wasm: Bytes, target_func_name: String, export_name: String, param_names: Array[String]) -> Bytes with Exception
+fn comp_emit_component_wasm_string_handler_vfs(core_wasm: Bytes, target_func_name: String, export_name: String, param_names: Array[String]) -> Bytes with Exception
+fn comp_vfs_read_dir_import(core_wasm: Bytes) -> String
+// The same wrap with EVERY non-read `vibe.*` import trapping: no benign
+// zero for env-get / the fs write pair / profile-now-us. `vibe build
+// --component` takes this one (#2861).
+fn comp_emit_component_wasm_string_handler_vfs_trapping(core_wasm: Bytes, target_func_name: String, export_name: String, param_names: Array[String]) -> Bytes with Exception
+
+// Shared implementation helpers from component_codegen.vibe.
+let section_type: Int
+let core_sort_mem: Int
+fn new_int_array() -> Array[Int]
+let section_alias: Int
+let section_canon: Int
+let core_sort_func: Int
+let section_import: Int
+let comp_extern_func: Int
+let comp_valtype_s32: Int
+let comp_valtype_s64: Int
+fn emit_raw_content(buf: Bytes, content: Bytes) -> Unit
+fn emit_alias_section(buf: Bytes, core_instance_idx: Int, names: Array[String], sorts: Array[Int]) -> Unit
+let comp_valtype_string: Int
+let comp_valtype_bool: Int
+fn emit_canon_lift_func(content: Bytes, core_func_idx: Int, type_idx: Int, need_string: Int, memory_idx: Int, realloc_idx: Int) -> Unit
+fn emit_component_header(buf: Bytes) -> Unit
+let section_core_instance: Int
+fn parse_core_exports(core_wasm: Bytes, out_names: Array[String], out_func_indices: Array[Int], out_type_sigs: Array[Array[Int]]) -> Int
+fn parse_core_imports(core_wasm: Bytes, out_module_names: Array[String], out_func_names: Array[String], out_type_indices: Array[Int], out_type_sigs: Array[Array[Int]]) -> Int
+fn comp_core_tag_mode(core_wasm: Bytes) -> Int with Exception
+fn comp_require_tag_mode(core_wasm: Bytes, expected: Int, context: String) -> Unit with Exception
+fn emit_comp_import_section(buf: Bytes, import_names: Array[String], count: Int) -> Unit
+fn emit_core_module_section(buf: Bytes, core_wasm: Bytes) -> Unit
+fn emit_comp_func_type(content: Bytes, param_types: Array[Int], param_names: Array[String], result_types: Array[Int], is_async: Int) -> Unit
+fn emit_comp_export_section(buf: Bytes, name: String, func_idx: Int) -> Unit
+fn emit_core_instance_from_exports(buf: Bytes, num_modules: Int, module_binding_counts: Array[Int], binding_func_names: Array[String], binding_func_indices: Array[Int]) -> Unit
+fn emit_core_instance_instantiate_section(buf: Bytes, module_index: Int, module_names: Array[String]) -> Unit
+fn emit_canon_task_return(buf: Bytes, result_valtype: Int) -> Unit
+fn emit_canon_task_return_opts(buf: Bytes, result_valtype: Int, mem_idx: Int, utf8: Bool) -> Unit
+fn emit_canon_lift_async_section(buf: Bytes, core_func_idx: Int, type_idx: Int) -> Unit
+fn emit_canon_lift_async_opts(buf: Bytes, core_func_idx: Int, type_idx: Int, mem_idx: Int, realloc_idx: Int, utf8: Bool) -> Unit
+fn emit_comp_async_functype_section(buf: Bytes, result_valtype: Int) -> Unit
+fn emit_comp_async_functype_params(buf: Bytes, param_names: Array[String], param_valtypes: Array[Int], result_valtype: Int) -> Unit
+fn comp_valtype_to_core(v: Int) -> Int
+fn comp_generate_async_trampoline(core_valtype: Int) -> Bytes
+fn emit_core_instance_instantiate_args(buf: Bytes, module_index: Int, arg_names: Array[String], arg_instance_indices: Array[Int]) -> Unit
+fn comp_generate_wasi_fd_write_stub() -> Bytes
+fn comp_core_imports_func(core_wasm: Bytes, module_name: String, func_name: String) -> Bool
+let comp_valtype_u32: Int
+fn emit_canon_lower_async_section(buf: Bytes, comp_func_idx: Int, memory_core_idx: Int) -> Unit
+fn emit_canon_waitable_set_new(buf: Bytes) -> Unit
+fn emit_canon_waitable_join(buf: Bytes) -> Unit
+fn emit_canon_waitable_set_wait(buf: Bytes, memory_core_idx: Int) -> Unit
+fn emit_canon_waitable_set_drop(buf: Bytes) -> Unit
+fn emit_canon_subtask_drop(buf: Bytes) -> Unit
+fn emit_canon_subtask_cancel(buf: Bytes) -> Unit
+fn emit_comp_future_type_section(buf: Bytes, elem_valtype: Int) -> Unit
+fn emit_canon_future_new(buf: Bytes, type_idx: Int) -> Unit
+fn emit_canon_future_read(buf: Bytes, type_idx: Int, memory_core_idx: Int) -> Unit
+fn emit_canon_future_write(buf: Bytes, type_idx: Int, memory_core_idx: Int) -> Unit
+fn emit_canon_future_cancel_read(buf: Bytes, type_idx: Int) -> Unit
+fn emit_canon_stream_cancel_read(buf: Bytes, type_idx: Int) -> Unit
+fn emit_canon_future_drop_readable(buf: Bytes, type_idx: Int) -> Unit
+fn emit_canon_future_drop_writable(buf: Bytes, type_idx: Int) -> Unit
+let comp_valtype_u8: Int
+fn emit_comp_stream_type_section(buf: Bytes, elem_valtype: Int) -> Unit
+fn emit_canon_stream_new(buf: Bytes, type_idx: Int) -> Unit
+fn emit_canon_stream_read(buf: Bytes, type_idx: Int, memory_core_idx: Int) -> Unit
+fn emit_canon_stream_write(buf: Bytes, type_idx: Int, memory_core_idx: Int) -> Unit
+fn emit_canon_stream_drop_readable(buf: Bytes, type_idx: Int) -> Unit
+fn emit_canon_stream_drop_writable(buf: Bytes, type_idx: Int) -> Unit
+fn comp_generate_memhost_realloc_module(heap_start: Int) -> Bytes
+fn comp_generate_memhost_module() -> Bytes
+fn comp_generate_spawned_future_guest_core_module() -> Bytes
+fn comp_generate_future_value_guest_core_module() -> Bytes
+fn emit_comp_async_functype_section_result_type(buf: Bytes, result_type_idx: Int) -> Unit
+fn emit_comp_import_section_typed(buf: Bytes, import_name: String, functype_idx: Int) -> Unit
+fn emit_comp_instance_import_section(buf: Bytes, import_name: String, instance_type_idx: Int) -> Unit
+fn emit_comp_instance_export_alias_section(buf: Bytes, instance_idx: Int, export_name: String, sort: Int) -> Unit
+fn emit_comp_wasi_cli_stdin_import_prefix(buf: Bytes) -> Unit
+fn comp_wit_types_interface_id(interface_id: String) -> String with Exception
+fn emit_comp_wit_payload_types_instance_type_named(buf: Bytes, payload: String, type_name: String) -> Unit with Exception
+fn comp_wit_response_type_name() -> String
+fn comp_wit_response_payload_descriptor() -> String
+fn emit_comp_wit_async_response_api_type(buf: Bytes, func_names: Array[String]) -> Unit
+fn emit_comp_wit_async_api_type_general(buf: Bytes, core_names: Array[String]) -> Unit with Exception
+fn emit_comp_wit_async_mixed_api_type(buf: Bytes, response_funcs: Array[String], scalar_funcs: Array[String]) -> Unit
+fn emit_comp_wit_async_future_instance_type(buf: Bytes, func_names: Array[String]) -> Unit
+fn emit_canon_lower_memory_section(buf: Bytes, comp_func_idx: Int, memory_core_idx: Int) -> Unit
+fn emit_comp_result_error_type_section(buf: Bytes, error_type_idx: Int) -> Unit
+fn comp_generate_stdin_provider_adapter_core_module() -> Bytes
+fn comp_generate_stdin_provider_tagged_bridge_core_module() -> Bytes
+fn comp_generate_stdin_provider_synthetic_core(mode: Int) -> Bytes
+fn comp_core_imports_vibe_name(core_wasm: Bytes, name: String) -> Bool
+fn comp_is_host_stream_get_import(nm: String) -> Bool
+fn comp_core_imports_host_stream_close(core_wasm: Bytes) -> Bool
+fn comp_hoststream_import_label(core_name: String) -> String
+fn comp_is_host_future_get_import(nm: String) -> Bool
+fn comp_is_wit_future_get_import(nm: String) -> Bool
+fn comp_is_wit_response_get_import(nm: String) -> Bool
+fn comp_is_wit_response_arg_import(nm: String) -> Bool
+fn comp_wit_response_arg_label(core_name: String) -> String
+fn comp_wit_future_interface(core_name: String) -> String with Exception
+fn comp_wit_future_func(core_name: String) -> String with Exception
+fn comp_string_array_index(items: Array[String], needle: String) -> Int
+fn comp_wit_future_interfaces(core_names: Array[String]) -> Array[String] with Exception
+fn comp_any_wit_response_arg(core_names: Array[String]) -> Bool
+fn comp_wit_future_funcs_of_kind(core_names: Array[String], interface_id: String, want: Bool) -> Array[String] with Exception
+fn comp_wit_future_funcs(core_names: Array[String], interface_id: String) -> Array[String] with Exception
+fn comp_hf_value_base() -> Int
+fn comp_hf_state_base() -> Int
+fn comp_hf_arm_ws_slot() -> Int
+fn comp_sleep_arm_results_slot() -> Int
+fn comp_timer_band_base() -> Int
+fn comp_timer_counter_slot() -> Int
+fn comp_timer_id_base() -> Int
+fn comp_emit_response_value(buf: Bytes, addr_local: Int, tag_mode: Int) -> Unit
+fn comp_body_claim_body(tag_mode: Int) -> Bytes
+fn comp_ws_state_base() -> Int
+fn comp_ws_sub_base() -> Int
+fn comp_ws_handle_base() -> Int
+fn comp_emit_ws_band_addr(buf: Bytes, slot_local: Int, base: Int) -> Unit
+fn comp_emit_ws_result_addr(buf: Bytes, slot_local: Int) -> Unit
+fn comp_emit_ws_hslot_addr(buf: Bytes, handle_local: Int) -> Unit
+fn comp_emit_ws_decode_slot(buf: Bytes, slot_local: Int, tag_mode: Int) -> Unit
+fn comp_emit_ws_value(buf: Bytes, slot_local: Int, addr_local: Int, mixed: Bool, response_payload: Bool, tag_mode: Int) -> Unit
+fn comp_ws_getter_body(lower_idx: Int, takes_arg: Bool, mixed: Bool, is_response: Bool, tag_mode: Int, ws_new_idx: Int, join_idx: Int, ws_wait_idx: Int, ws_drop_idx: Int, sdrop_idx: Int) -> Bytes
+fn comp_arg_len_slot() -> Int
+fn comp_arg_buf_base() -> Int
+fn comp_emit_hf_kind_addr(buf: Bytes, fut_local: Int) -> Unit
+fn comp_emit_drop_by_kind(buf: Bytes, mixed: Bool, fut_local: Int, response_drop: Int, scalar_drop: Int) -> Unit
+fn comp_first_kind_index(kinds: Array[Bool], want: Bool) -> Int
+fn comp_hs_value_base() -> Int
+fn comp_hs_pending_base() -> Int
+fn comp_hs_status_base() -> Int
+fn comp_hs_closed_base() -> Int
+fn comp_hf_max_handles() -> Int
+fn comp_response_stream_label() -> String
+fn comp_hostfuture_import_label(core_name: String) -> String with Exception
+fn comp_emit_encode_i64_value(buf: Bytes, tag_mode: Int) -> Unit
+fn comp_emit_decode_i64_value(buf: Bytes, tag_mode: Int) -> Unit
+fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], stream_core_names: Array[String], want_stream_close: Bool, want_sleep: Bool, tag_mode: Int, future_s64: Bool, response_payload: Bool, want_wait_any: Bool, want_stream_arm: Bool, want_sleep_arm: Bool, want_cancel: Bool, want_stream_cancel: Bool, response_kinds: Array[Bool], want_arg_push: Bool, want_timer_cancel: Bool, exit_stubs: Array[String], want_claim: Bool) -> Bytes with Exception
+fn comp_emit_service_handler_export(buf: Bytes, main_inst: Int, next_func: Int, target_func_name: String, export_name: String, param_names: Array[String], stream_type_idx: Int, functype_idx: Int, comp_func_count: Int) -> Unit with Exception
+let core_sort_global: Int
+fn emit_core_instance_from_exports_sorted(buf: Bytes, names: Array[String], sorts: Array[Int], indices: Array[Int]) -> Unit
+fn comp_generate_string_trampoline_packed_async_opt(string_param_count: Int, export_name: String, stream_param: Bool) -> Bytes
+fn comp_repeat_valtype(valtype: Int, count: Int) -> Array[Int]
+fn comp_generate_bump_realloc_body() -> Bytes
+fn comp_generate_host_stub_module(vibe_names: Array[String], vibe_sigs: Array[Array[Int]]) -> Bytes
+fn comp_generate_host_stub_module_with_policy(vibe_names: Array[String], vibe_sigs: Array[Array[Int]], zero_stub_benign: Bool) -> Bytes
+fn comp_generate_serve_stream_adapter_module() -> Bytes
+fn comp_check_stream_handler_vibe_imports(core_wasm: Bytes) -> Unit with Exception
+fn comp_check_stream_handler_target(core_wasm: Bytes, target_func_name: String, string_param_count: Int) -> Unit with Exception

@@ -265,7 +265,7 @@ carries the grade column.
   and the grade check in nested rows —
   `fixtures/typecheck/{test_allows_user_effect,entry_optional_provider_grant,optional_grade_nested_row}.vibe`
   pin the same three on the fixture lane);
-- `lib/@vibe/compiler/runtime/deprecated_scan_test.vibe` (the legacy-spelling
+- `lib/@vibe/compiler/query/deprecated_scan_test.vibe` (the legacy-spelling
   warning);
 - `lib/@vibe/compiler/tests/perform_question_lowering_test.vibe`,
   `fixtures/typecheck/perform_question_not_lowered.vibe` (the `NotGranted`

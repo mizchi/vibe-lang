@@ -1152,10 +1152,17 @@ fn normalized_expr_bytes(expr: Expr, depth: Int) -> Option[String] {
       },
       None => None
     },
-    EAssign(name, value, body) => normalized_named_expr_pair_bytes("A", name, value, body, depth),
-    EAssignOp(name, op, value, body) => match normalized_named_expr_pair_bytes("H", name, value, body, depth) {
+    // #3248 (Codex on #3346): the assignment target's offset decides where an
+    // unknown-name diagnostic points, so it is identity like ELetMut's.
+    EAssign(name, value, body, target_off) => match normalized_named_expr_pair_bytes("A", name, value, body, depth) {
+      Some(prefix) => {
+        let out = StringBuilder::new(); StringBuilder::push(out, prefix); body_push_piece(out, __to_string(target_off)); Some(StringBuilder::freeze(out))
+      },
+      None => None
+    },
+    EAssignOp(name, op, value, body, target_off) => match normalized_named_expr_pair_bytes("H", name, value, body, depth) {
       Some(base) => {
-        let out = StringBuilder::new(); StringBuilder::push(out, base); body_push_piece(out, op); Some(StringBuilder::freeze(out))
+        let out = StringBuilder::new(); StringBuilder::push(out, base); body_push_piece(out, op); body_push_piece(out, __to_string(target_off)); Some(StringBuilder::freeze(out))
       },
       None => None
     },
@@ -1470,17 +1477,20 @@ fn normalized_expr_valid(text: String, depth: Int) -> Bool {
         None => false
       }
     }
-    else if tag == 82 || tag == 65 {
+    else if tag == 82 {
       normalized_named_expr_pair_valid(text, depth, false)
     }
-    else if tag == 77 {
+    else if tag == 77 || tag == 65 {
       normalized_named_expr_pair_valid(text, depth, true)
     }
     else if tag == 72 {
       match body_piece(text, 1) {
         Some((name, p1)) => match body_piece(text, p1) {
           Some((pair, p2)) => match body_piece(text, p2) {
-            Some((op, end)) => String::length(name) > 0 && String::length(op) > 0 && end == String::length(text) && normalized_expr_pair_payload_valid(pair, depth + 1),
+            Some((op, p3)) => match body_piece(text, p3) {
+              Some((off, end)) => String::length(name) > 0 && String::length(op) > 0 && end == String::length(text) && normalized_decimal_piece_valid(off) && normalized_expr_pair_payload_valid(pair, depth + 1),
+              None => false
+            },
             None => false
           },
           None => false

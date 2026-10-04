@@ -1,0 +1,76 @@
+//# #3353: array literals whose elements DO agree keep compiling and running.
+//
+// Every element of a literal is now unified with the first
+// (fixtures/typecheck/array_literal_*_reject.vibe). These are the shapes that
+// must not move with that rule: struct, tuple, generic-struct and enum
+// elements; an `Option` literal that opens with `None`; an empty row first; a
+// parameterized alias; a `FixedArray` beside an `Array`; closures; and `Char`
+// beside `Int`.
+
+type L[T] = Array[T]
+
+struct P {
+  v: Int
+}
+
+struct Cell[T] {
+  value: T
+}
+
+enum W[T] {
+  A(T);
+  B
+}
+
+fn count_a(ws: Array[W[Int]]) -> Int {
+  let mut n = 0
+  for w in ws {
+    match w {
+      A(x) => {
+        n = n + x
+      },
+      B => ()
+    }
+  }
+  n
+}
+
+test "struct, tuple and generic-struct elements" {
+  let ps = [P::{ v: 1 }, P::{ v: 2 }, P::{ v: 3 }]
+  inspect(Array::get(ps, 2).v, "3")
+  let ts = [(1, "a"), (2, "b")]
+  let (n, s) = Array::get(ts, 1)
+  inspect(n, "2")
+  inspect(s, "b")
+  let cs = [Cell::{ value: 4 }, Cell::{ value: 5 }]
+  inspect(Array::get(cs, 1).value, "5")
+  let nested = [[P::{ v: 6 }], [P::{ v: 7 }, P::{ v: 8 }]]
+  inspect(Array::get(Array::get(nested, 1), 1).v, "8")
+}
+
+test "enum and option elements, whichever constructor comes first" {
+  inspect(count_a([W::B, W::A(10), W::A(5)]), "15")
+  let os = [None, Some(1), Some(2)]
+  inspect(Array::length(os), "3")
+  match Array::get(os, 2) {
+    Some(x) => inspect(x, "2"),
+    None => inspect(0, "2")
+  }
+}
+
+test "an empty row first, an alias, a FixedArray beside an Array" {
+  let rows = [[], [1, 2]]
+  inspect(Array::length(Array::get(rows, 1)), "2")
+  let aliased: Array[L[Int]] = [[1], [2, 3]]
+  inspect(Array::get(Array::get(aliased, 1), 1), "3")
+  let f = FixedArray::make(2, 9)
+  let mixed = [f, [1, 2, 3]]
+  inspect(Array::length(Array::get(mixed, 1)), "3")
+}
+
+test "closures, and Char beside Int" {
+  let fs = [(x: Int) -> x, (y: Int) -> y + 1]
+  inspect(Array::get(fs, 1)(4), "5")
+  let cs = ['a', 98]
+  inspect(Array::get(cs, 1), "98")
+}
