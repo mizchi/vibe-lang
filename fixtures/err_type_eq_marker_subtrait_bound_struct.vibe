@@ -1,0 +1,32 @@
+// #3327: a bound that EXTENDS a marker `Eq` is refused the way the marker
+// bound itself is (fixtures/err_type_eq_marker_bound_struct.vibe).
+//
+// The program declares its own `Eq` with no methods, so `trait Key: Eq {}`
+// inherits nothing a dictionary could compare with, and `x == y` under
+// `[T: Key]` lowers to the builtin comparison: REFERENCE identity on a `Pt`.
+// The #2612 guard read only the bound's own name, so it refused `[T: Eq]` here
+// and let `[T: Key]` through. Measured on main at 5f4de5023: `vibe check` was
+// clean and `same(Pt::{ v: 1 }, Pt::{ v: 1 })` answered `false`.
+//
+// The guard now follows supertraits, as `bound_entails_send` does for
+// `trait Work: Send` (fixtures/err_type_send_supertrait_bound.vibe).
+
+trait Eq {}
+
+trait Key: Eq {}
+
+struct Pt {
+  v: Int
+}
+
+impl Eq for Pt {}
+
+impl Key for Pt {}
+
+fn same[T: Key](x: T, y: T) -> Bool {
+  x == y
+}
+
+fn main() -> Unit allows Console {
+  println(__to_string(same(Pt::{ v: 1 }, Pt::{ v: 1 })))
+}
