@@ -261,7 +261,7 @@ copy_key="$(key_of "$srcs")"
   echo "component-lazy self-test [compiler source in the cache key]: the scratch copy of lib/ does not hash like the checkout ($copy_key vs $stamp_before) -- the case would prove nothing" >&2
   exit 1
 }
-probe="$srcs/lib/@vibe/compiler/entry/source_compile/wasi_only/component_codegen.vibe"
+probe="$srcs/lib/@vibe/compiler/codegen/component/component_codegen.vibe"
 printf '\n// self-test: proves the cache key covers the compiler sources.\n' >> "$probe"
 grep -qF 'proves the cache key covers the compiler sources' "$probe" || {
   echo "component-lazy self-test [compiler source in the cache key]: the mutation did not land" >&2
