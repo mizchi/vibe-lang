@@ -1,0 +1,40 @@
+// #3350: a generic impl's parameter bound is judged by the same comparison
+// guard as a function's.
+//
+// `impl [T: Eq] Same for Box[T]` compares `a.v == b.v` over the erased `T`.
+// With the program's marker `Eq` there is no witness to dispatch through, so
+// at `Box[Pt]` that compared two `Pt` by reference. The guard ran only on a
+// function's own bounds, never on an impl's, so this checked clean and
+// answered `false` for two equal boxes (measured on the #3327 stage2,
+// 43ee1c792). At `Box[Int]` the builtin comparison is content equality and the
+// impl still applies (fixtures/eq_generic_impl_param_scalar_test.vibe).
+
+trait Eq {}
+
+struct Pt {
+  v: Int
+}
+
+impl Eq for Pt {}
+
+trait Same {
+  same(Self, Self) -> Bool
+}
+
+struct Box[T] {
+  v: T
+}
+
+impl [T: Eq] Same for Box[T] {
+  same(a: Box[T], b: Box[T]) -> Bool {
+    a.v == b.v
+  }
+}
+
+fn f[U: Same](a: U, b: U) -> Bool {
+  U::same(a, b)
+}
+
+fn main() -> Unit allows Console {
+  println(__to_string(f(Box::{ v: Pt::{ v: 1 } }, Box::{ v: Pt::{ v: 1 } })))
+}
