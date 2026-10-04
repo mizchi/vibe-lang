@@ -429,3 +429,17 @@ test "a generic lambda applied where it is written hands its callback row over" 
   let ok = collect_all_diagnostics("effect Box[T] {\n  Put(T) -> Int\n}\n\nfn via_iife() -> Int with Box[String] {\n  ([T](x: T, f: () -> Int with Box[T]) -> Int with Box[T] {\n    f()\n  })(\"s\", () -> { perform Box::Put(\"t\") })\n}\n")
   assert(eq(Array::length(ok), 0))
 }
+
+test "a lambda passed to a function-typed struct field performs at the field's row" {
+  // Codex on #3340: a field call found the field's type only after its
+  // arguments, so the lambda was handed nothing and chose `Int`.
+  let head = "effect Box[T] {\n  Put(T) -> Int\n}\n\nstruct Runner {\n  run: (() -> Int with Box[String]) -> Int\n}\n\nstruct GRunner[T] {\n  run: (() -> Int with Box[T]) -> Int\n}\n\n"
+  let bad = collect_all_diagnostics(String::concat(head, "fn producer(r: Runner) -> Int with Box[String] {\n  r.run(() -> { perform Box::Put(1) })\n}\n"))
+  assert(eq(Array::length(bad), 1))
+  assert(String::contains(Array::get(bad, 0), "perform argument type mismatch for Box::Put: expected String, got Int"))
+  let bad_generic = collect_all_diagnostics(String::concat(head, "fn producer(r: GRunner[String]) -> Int with Box[String] {\n  r.run(() -> { perform Box::Put(1) })\n}\n"))
+  assert(eq(Array::length(bad_generic), 1))
+  assert(String::contains(Array::get(bad_generic, 0), "perform argument type mismatch for Box::Put: expected String, got Int"))
+  let ok = collect_all_diagnostics(String::concat(head, "fn producer(r: Runner) -> Int with Box[String] {\n  r.run(() -> { perform Box::Put(\"s\") })\n}\n\nfn producer_int(r: GRunner[Int]) -> Int with Box[Int] {\n  r.run(() -> { perform Box::Put(1) })\n}\n"))
+  assert(eq(Array::length(ok), 0))
+}

@@ -179,7 +179,13 @@ import ./checker_lambda_expr.vibe {
 }
 
 import ./checker_row_effect_inst.vibe {
-  callback_arg_env, callback_prefix_subst, effect_inst_annotation_check, effect_inst_arg_check, effect_inst_call_check
+  callback_arg_env,
+  callback_prefix_subst,
+  effect_inst_annotation_check,
+  effect_inst_arg_check,
+  effect_inst_call_check,
+  field_callback_arg_env,
+  field_effect_inst_arg_check
 }
 
 import ./checker_merge_capture_provenance.vibe {
@@ -2194,6 +2200,21 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                 },
                 None => None
               }
+              // Codex on #3340: with no `T::method`, `r.f(..)` may call a
+              // function-typed field of the receiver's struct. Its parameter
+              // types are found below, after the arguments; a callback
+              // argument's row is read from them here, before (see
+              // `field_callback_arg_env`). The receiver is not an argument of
+              // the field, so explicit argument `ai` is field parameter
+              // `ai - 1`.
+              let field_recv = subst_apply(s2, obj_ty)
+              let field_param_tys = match mt {
+                CtUnknown => match receiver_struct_field_type(defs, field_recv, method) {
+                  Some(CtFn(fpts, _, _)) => fpts,
+                  _ => array_empty()
+                },
+                _ => array_empty()
+              }
               let all_args = prepend_expr(obj, args)
               retaining_write_region_check(qualified, all_args, env, defs, s2, c2, errors, check_plain)
               let alen = Array::length(all_args)
@@ -2206,6 +2227,8 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                 let marg = Array::get(all_args, ai)
                 let marg_env = if ai < Array::length(method_param_tys) {
                   callback_arg_env(env, marg, Array::get(method_param_tys, ai), s3, method_inst, defs)
+                } else if ai - 1 < Array::length(field_param_tys) {
+                  field_callback_arg_env(env, marg, Array::get(field_param_tys, ai - 1), s3, field_recv, defs)
                 } else {
                   env
                 }
@@ -2215,6 +2238,8 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                 // #3341: see the named-call path.
                 s3 = if ai < Array::length(method_param_tys) {
                   effect_inst_arg_check(env, marg, at, Array::get(method_param_tys, ai), ns, method_inst, qualified, defs, errors)
+                } else if ai - 1 < Array::length(field_param_tys) {
+                  field_effect_inst_arg_check(env, marg, at, Array::get(field_param_tys, ai - 1), ns, field_recv, method, defs, errors)
                 } else {
                   ns
                 }

@@ -74,6 +74,10 @@ import ./checker_merge_capture_provenance.vibe {
   record_eq_formal_var
 }
 
+import ./checker_builtin_arg_head_rest.vibe {
+  inst_struct_field_ty
+}
+
 import ./checker_throw_kind_of_type.vibe {
   railway_expr_off
 }
@@ -499,10 +503,30 @@ fn callback_row_inst_key() -> String {
 /// as before, an enclosing row's instantiation masked and an enclosing
 /// handle's kept, since a callee may forward such a row to that handle.
 export fn callback_arg_env(env: TypeEnv, arg: Expr, param_ty: Type, s: Subst, callee: Option[(Type, Type)], defs: Array[TypeDef]) -> TypeEnv {
+  callback_arg_env_read(env, arg, param_ty, s, (row: String) -> Array[Type] {
+    callback_row_instantiations(row, callee, defs)
+  })
+}
+
+/// Codex on #3340: the environment a field call `r.f(..)` checks the argument
+/// `arg` in, when `f` is a function-typed field of the receiver's struct. The
+/// field's row is written in the struct's declaration, so it is read there:
+/// a type parameter of the struct is the receiver's type argument
+/// (`struct_field_row_instantiations`). Before, a field call checked its
+/// arguments before it found the field's type, so a lambda passed to
+/// `r.run` with `run: (() -> Int with Box[String]) -> Int` was handed
+/// nothing and its `perform Box::Put(1)` chose `Int`.
+export fn field_callback_arg_env(env: TypeEnv, arg: Expr, param_ty: Type, s: Subst, recv: Type, defs: Array[TypeDef]) -> TypeEnv {
+  callback_arg_env_read(env, arg, param_ty, s, (row: String) -> Array[Type] {
+    struct_field_row_instantiations(row, recv, defs)
+  })
+}
+
+fn callback_arg_env_read(env: TypeEnv, arg: Expr, param_ty: Type, s: Subst, read: (String) -> Array[Type]) -> TypeEnv {
   match arg {
     EFn(_, _, _, _, None, _) => match subst_apply(s, param_ty) {
       CtFn(_, _, Some(row)) => {
-        let items = callback_row_instantiations(row, callee, defs)
+        let items = read(row)
         if Array::length(items) == 0 {
           env
         } else {
@@ -655,21 +679,46 @@ fn callback_row_instantiations(row: String, callee: Option[(Type, Type)], defs: 
     },
     None => ()
   }
+  callback_row_instantiations_in(row, formals, scope, declared, defs)
+}
+
+/// The instantiations of `row` read with `formals` in scope, each bound in
+/// `scope` to the type this use gives it (`callback_row_instantiations`).
+fn callback_row_instantiations_in(row: String, formals: Array[String], scope: TypeEnv, declared: Bool, defs: Array[TypeDef]) -> Array[Type] {
+  callback_row_instantiations_at(row, formals, scope, declared, defs, array_empty(), array_empty())
+}
+
+/// `callback_row_instantiations_in`, with each formal in `params` that is
+/// still spelled by its own name replaced by the matching type in `args`
+/// before the instantiation is judged exact.
+fn callback_row_instantiations_at(row: String, formals: Array[String], scope: TypeEnv, declared: Bool, defs: Array[TypeDef], params: Array[String], args: Array[Type]) -> Array[Type] {
   // A marker is not a word the type parser reads; the scope above binds the
   // formal by its own name.
   let bound = bind_row_effect_instantiations(scope, Some(strip_published_formal_suffixes(row)), defs, formals, array_empty())
+  let substituted = Array::length(params) > 0
   let out: Array[Type] = []
   for d in defs {
     match d {
       TDEffect(name, _, etps) => if Array::length(etps) == 1 {
         match env_lookup(bound, effect_inst_env_key(name)) {
-          Some(inst) => match inst {
-            CtTuple(args) => if callback_types_exact(args, formals, declared, defs) {
-              Array::push(out, CtNamed(name, [inst]))
+          Some(read) => {
+            let inst = if substituted {
+              inst_struct_field_ty(read, params, args)
             } else {
-              ()
-            },
-            _ => ()
+              read
+            }
+            match inst {
+              CtTuple(targs) => if callback_types_exact(targs, if substituted {
+                array_empty()
+              } else {
+                formals
+              }, declared, defs) {
+                Array::push(out, CtNamed(name, [inst]))
+              } else {
+                ()
+              },
+              _ => ()
+            }
           },
           None => ()
         }
@@ -678,6 +727,29 @@ fn callback_row_instantiations(row: String, callee: Option[(Type, Type)], defs: 
     }
   }
   out
+}
+
+/// Codex on #3340: the instantiations a function-typed struct field's
+/// callback row gives, read in the struct's declaration: each type parameter
+/// of the struct is the receiver's type argument, so `run: (() -> Int with
+/// Box[T]) -> Int` in a `GRunner[String]` hands over `String`. The field's
+/// parameter types are already instantiated this way (`inst_struct_field_ty`);
+/// its row is text, so the struct's formals are bound here.
+fn struct_field_row_instantiations(row: String, recv: Type, defs: Array[TypeDef]) -> Array[Type] {
+  match recv {
+    CtNamed(sname, targs) => match find_typedef(defs, sname) {
+      Some(TDStruct(_, _, _, tparams)) => if Array::length(tparams) > 0 && Array::length(tparams) == Array::length(targs) {
+        // Read with the struct's formals in scope, so each stays spelled by
+        // its own name, then substitute the receiver's arguments the way
+        // `inst_struct_field_ty` instantiates the field's parameters.
+        callback_row_instantiations_at(row, tparams, EnvEmpty, true, defs, tparams, targs)
+      } else {
+        callback_row_instantiations_in(row, array_empty(), EnvEmpty, true, defs)
+      },
+      _ => callback_row_instantiations_in(row, array_empty(), EnvEmpty, true, defs)
+    },
+    _ => callback_row_instantiations_in(row, array_empty(), EnvEmpty, true, defs)
+  }
 }
 
 /// Can a callback row's type argument `t`, read in the callee's scope, be
@@ -970,7 +1042,18 @@ export fn effect_inst_arg_check(env: TypeEnv, arg: Expr, arg_ty: Type, param_ty:
   } else {
     "the function passed here"
   }
-  effect_inst_value_check(env, arg, arg_ty, param_ty, s, callee, subject, "the parameter's row", defs, errors)
+  effect_inst_value_check(env, arg, arg_ty, param_ty, s, (row: String) -> Array[Type] {
+    callback_row_instantiations(row, callee, defs)
+  }, subject, "the parameter's row", defs, errors)
+}
+
+/// Codex on #3340: `effect_inst_arg_check` for a field call `r.f(..)`, whose
+/// parameter's row is read in the receiver's struct
+/// (`struct_field_row_instantiations`).
+export fn field_effect_inst_arg_check(env: TypeEnv, arg: Expr, arg_ty: Type, param_ty: Type, s: Subst, recv: Type, field: String, defs: Array[TypeDef], errors: Array[String]) -> Subst {
+  effect_inst_value_check(env, arg, arg_ty, param_ty, s, (row: String) -> Array[Type] {
+    struct_field_row_instantiations(row, recv, defs)
+  }, "the function passed to `\{field}`", "the parameter's row", defs, errors)
 }
 
 /// #3341: the same comparison for a function value bound by an annotated
@@ -978,10 +1061,12 @@ export fn effect_inst_arg_check(env: TypeEnv, arg: Expr, arg_ty: Type, param_ty:
 /// this scope, so only the names it resolves to exactly are read
 /// (`callback_type_exact`).
 export fn effect_inst_annotation_check(env: TypeEnv, value: Expr, value_ty: Type, want_ty: Type, s: Subst, subject: String, slot: String, defs: Array[TypeDef], errors: Array[String]) -> Subst {
-  effect_inst_value_check(env, value, value_ty, want_ty, s, None, subject, slot, defs, errors)
+  effect_inst_value_check(env, value, value_ty, want_ty, s, (row: String) -> Array[Type] {
+    callback_row_instantiations(row, None, defs)
+  }, subject, slot, defs, errors)
 }
 
-fn effect_inst_value_check(env: TypeEnv, arg: Expr, arg_ty: Type, param_ty: Type, s: Subst, callee: Option[(Type, Type)], subject: String, slot: String, defs: Array[TypeDef], errors: Array[String]) -> Subst {
+fn effect_inst_value_check(env: TypeEnv, arg: Expr, arg_ty: Type, param_ty: Type, s: Subst, read: (String) -> Array[Type], subject: String, slot: String, defs: Array[TypeDef], errors: Array[String]) -> Subst {
   // Both types are read as written: a parameter or annotation with a generic
   // row is a function type there, and so is a value that carries labels.
   // Nothing is substituted unless both sides can take part.
@@ -993,7 +1078,7 @@ fn effect_inst_value_check(env: TypeEnv, arg: Expr, arg_ty: Type, param_ty: Type
           if Array::length(haves) == 0 {
             s
           } else {
-            let wants = callback_row_instantiations(prow, callee, defs)
+            let wants = read(prow)
             let mut out = s
             for have_pair in haves {
               let (eff, have) = have_pair
