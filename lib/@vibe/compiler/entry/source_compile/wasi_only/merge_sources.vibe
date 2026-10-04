@@ -738,12 +738,50 @@ fn append_coverage_driver_stmts(entry_path: String, driver_path: String, driver_
   append_import_alias_rewritten_non_import_stmts_with_renames(merged, driver_stmts, array_empty(), renames)
 }
 
+/// #3331: the tail both merged-program printers share, from the merged
+/// statements to their text.
+///
+/// The text is SOURCE: whoever reads it back (`emit-module-source`, then the
+/// single-source compile of every stage) checks it and only then lowers trait
+/// dictionaries (#3069). So it carries the interpolation expansion -- the
+/// checker's render tables are keyed on the `__to_string` calls that writes --
+/// and not the trait-dictionary desugar. Printing the desugared program handed
+/// that check its own lowering: a bounded generic's synthesized
+/// `__dict_<Trait>_<T>` parameter (refused as a reserved prefix), the hoisted
+/// operation `Trait::op` (a reserved name), and a `<Trait>Dict` struct whose
+/// fields mention `Self`. Compiler source could not use a trait-bounded
+/// generic at all.
+///
+/// `lower_trait_dicts` prints the desugared program instead. It exists for one
+/// reader: a pinned seed from before #3331, whose single-source lane desugars
+/// BEFORE it checks and so refuses any method-bearing trait it is handed as
+/// source (``no impl `Hash` for `Self` `` on `@vibe/core`'s own `trait Hash`).
+/// The bootstrap scripts ask for it with `VIBE_MERGED_SOURCE_LOWER_TRAIT_DICTS=1`
+/// until the seed is bumped past this change (docs/internal/operations/bootstrap.md).
+fn print_merged_program(stmts: Array[Stmt], lower_trait_dicts: Bool) -> String with Exception {
+  // Complete source-scoped special-call rewrites while the in-memory boundary
+  // metadata still exists. The printed program carries a parseable internal
+  // sentinel so the trusted single-source bundle lane can preserve Iterator
+  // devirtualization. Ordinary FS ingestion rejects that reserved syntax: a
+  // source file cannot prove from its own bytes that the compiler produced it.
+  validate_serializable_reexport_references(stmts)
+  desugar_inspect_calls(stmts)
+  if lower_trait_dicts {
+    expand_interp_stmts(stmts)
+  } else {
+    expand_interp_only(stmts)
+  }
+  serialize_builtin_iterator_boundaries(stmts)
+  print_program(stmts)
+}
+
 /// #1633: merge the compiler entry with one coverage driver whose imports name
 /// exact source files in that compiler closure. Import items may expose only
 /// top-level immutable values. Their references are rewritten to the exact
 /// names produced by the ordinary export/private namespacing pipeline; no
-/// guessed mangling or visibility broadening is involved.
-export fn coverage_driver_program_source_fs(entry_path: String, driver_path: String) -> String with Env + Exception + Fs {
+/// guessed mangling or visibility broadening is involved. The pinned seed
+/// compiles the result, so `lower_trait_dicts` is `print_merged_program`'s.
+export fn coverage_driver_program_source_fs(entry_path: String, driver_path: String, lower_trait_dicts: Bool) -> String with Env + Exception + Fs {
   let file_paths = array_empty()
   let file_stmts = array_empty()
   let visited = path_set_new()
@@ -756,11 +794,7 @@ export fn coverage_driver_program_source_fs(entry_path: String, driver_path: Str
   // it, so source-scoped builtin classification must start a fresh range.
   Array::push(merged, SReExportSourceBoundary(builtin_iterator_namespace_markers(driver_stmts), array_empty()))
   append_coverage_driver_stmts(entry_path, driver_path, driver_stmts, file_paths, file_stmts, plan, merged)
-  validate_serializable_reexport_references(merged)
-  desugar_inspect_calls(merged)
-  expand_interp_stmts(merged)
-  serialize_builtin_iterator_boundaries(merged)
-  print_program(merged)
+  print_merged_program(merged, lower_trait_dicts)
 }
 
 /// #726: the merged whole program AS SOURCE TEXT. Resolves imports from the
@@ -772,23 +806,21 @@ export fn coverage_driver_program_source_fs(entry_path: String, driver_path: Str
 /// duplicate top-level defs resolved by fn-table first-match roulette; the
 /// merge machinery renames them so the flat source has ZERO duplicates and
 /// carries the #716 visibility guarantees. Comments are dropped (printer
-/// output) — acceptable for a generated bundle artifact.
+/// output) — acceptable for a generated bundle artifact. Trait dictionaries
+/// are left to the compile that reads the text back (#3331).
 export fn merged_program_source_fs(entry_path: String) -> String with Env + Exception + Fs {
+  merged_program_source_with_fs(entry_path, false)
+}
+
+/// `merged_program_source_fs`, choosing the trait-dictionary form: see
+/// `print_merged_program` for when `lower_trait_dicts` is wanted.
+export fn merged_program_source_with_fs(entry_path: String, lower_trait_dicts: Bool) -> String with Env + Exception + Fs {
   // #2205: the rename table describes ONE merged program.
   namespace_rename_originals_reset()
   let stmts = empty_stmt_array()
   let visited = path_set_new()
   collect_merged_stmts_recursive(entry_path, stmts, visited)
-  // Complete source-scoped special-call rewrites while the in-memory boundary
-  // metadata still exists. The printed program carries a parseable internal
-  // sentinel so the trusted single-source bundle lane can preserve Iterator
-  // devirtualization. Ordinary FS ingestion rejects that reserved syntax: a
-  // source file cannot prove from its own bytes that the compiler produced it.
-  validate_serializable_reexport_references(stmts)
-  desugar_inspect_calls(stmts)
-  expand_interp_stmts(stmts)
-  serialize_builtin_iterator_boundaries(stmts)
-  print_program(stmts)
+  print_merged_program(stmts, lower_trait_dicts)
 }
 
 export fn compile_file_wasi_only(entry_path: String, entry_name: String) -> Bytes with Env + Exception + Fs {

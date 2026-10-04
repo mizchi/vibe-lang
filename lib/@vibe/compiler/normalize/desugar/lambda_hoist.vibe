@@ -122,8 +122,8 @@ fn dlh_has_perform(expr: Expr) -> Bool {
     ELet(_, v, b, _) => dlh_has_perform(v) || dlh_has_perform(b),
     ELetRec(_, v, b) => dlh_has_perform(v) || dlh_has_perform(b),
     ELetMut(_, v, b, _) => dlh_has_perform(v) || dlh_has_perform(b),
-    EAssign(_, v, c) => dlh_has_perform(v) || dlh_has_perform(c),
-    EAssignOp(_, _, v, c) => dlh_has_perform(v) || dlh_has_perform(c),
+    EAssign(_, v, c, _) => dlh_has_perform(v) || dlh_has_perform(c),
+    EAssignOp(_, _, v, c, _) => dlh_has_perform(v) || dlh_has_perform(c),
     ESeq(a, b) => dlh_has_perform(a) || dlh_has_perform(b),
     EWhile(c, b) => dlh_has_perform(c) || dlh_has_perform(b),
     EForIn(_, _, it, b) => dlh_has_perform(it) || dlh_has_perform(b),
@@ -226,11 +226,11 @@ fn dlh_collect_performed_effect_names(expr: Expr, out: Array[String]) -> Unit {
       dlh_collect_performed_effect_names(v, out)
       dlh_collect_performed_effect_names(b, out)
     },
-    EAssign(_, v, c) => {
+    EAssign(_, v, c, _) => {
       dlh_collect_performed_effect_names(v, out)
       dlh_collect_performed_effect_names(c, out)
     },
-    EAssignOp(_, _, v, c) => {
+    EAssignOp(_, _, v, c, _) => {
       dlh_collect_performed_effect_names(v, out)
       dlh_collect_performed_effect_names(c, out)
     },
@@ -375,7 +375,7 @@ fn dlh_scan_free(expr: Expr, bound: Array[String], bad: Array[String]) -> Unit {
       dlh_scan_free(v, bound, bad)
       dlh_scan_free(b, dlh_with(bound, name), bad)
     },
-    EAssign(name, v, c) => {
+    EAssign(name, v, c, _) => {
       if dlh_name_ok(name) || str_array_contains(bound, name) {
         ()
       } else {
@@ -384,7 +384,7 @@ fn dlh_scan_free(expr: Expr, bound: Array[String], bad: Array[String]) -> Unit {
       dlh_scan_free(v, bound, bad)
       dlh_scan_free(c, bound, bad)
     },
-    EAssignOp(name, _, v, c) => {
+    EAssignOp(name, _, v, c, _) => {
       if dlh_name_ok(name) || str_array_contains(bound, name) {
         ()
       } else {
@@ -527,8 +527,8 @@ fn dlh_subst(expr: Expr, from: String, to: String) -> Expr {
     } else {
       dlh_subst(b, from, to)
     }, soff),
-    EAssign(name, v, c) => EAssign(name, dlh_subst(v, from, to), dlh_subst(c, from, to)),
-    EAssignOp(name, op, v, c) => EAssignOp(name, op, dlh_subst(v, from, to), dlh_subst(c, from, to)),
+    EAssign(name, v, c, target_off) => EAssign(name, dlh_subst(v, from, to), dlh_subst(c, from, to), target_off),
+    EAssignOp(name, op, v, c, target_off) => EAssignOp(name, op, dlh_subst(v, from, to), dlh_subst(c, from, to), target_off),
     ESeq(a, b) => ESeq(dlh_subst(a, from, to), dlh_subst(b, from, to)),
     EWhile(c, b) => EWhile(dlh_subst(c, from, to), dlh_subst(b, from, to)),
     EForIn(name, idxn, it, b) => {
@@ -697,8 +697,8 @@ fn dlh_prepend_and_rename_calls(expr: Expr, marker: String, fresh: String, extra
     ELet(n, v, b, soff) => ELet(n, dlh_prepend_and_rename_calls(v, marker, fresh, extra_names), dlh_prepend_and_rename_calls(b, marker, fresh, extra_names), soff),
     ELetRec(n, v, b) => ELetRec(n, dlh_prepend_and_rename_calls(v, marker, fresh, extra_names), dlh_prepend_and_rename_calls(b, marker, fresh, extra_names)),
     ELetMut(n, v, b, soff) => ELetMut(n, dlh_prepend_and_rename_calls(v, marker, fresh, extra_names), dlh_prepend_and_rename_calls(b, marker, fresh, extra_names), soff),
-    EAssign(n, v, c) => EAssign(n, dlh_prepend_and_rename_calls(v, marker, fresh, extra_names), dlh_prepend_and_rename_calls(c, marker, fresh, extra_names)),
-    EAssignOp(n, op, v, c) => EAssignOp(n, op, dlh_prepend_and_rename_calls(v, marker, fresh, extra_names), dlh_prepend_and_rename_calls(c, marker, fresh, extra_names)),
+    EAssign(n, v, c, target_off) => EAssign(n, dlh_prepend_and_rename_calls(v, marker, fresh, extra_names), dlh_prepend_and_rename_calls(c, marker, fresh, extra_names), target_off),
+    EAssignOp(n, op, v, c, target_off) => EAssignOp(n, op, dlh_prepend_and_rename_calls(v, marker, fresh, extra_names), dlh_prepend_and_rename_calls(c, marker, fresh, extra_names), target_off),
     ESeq(a, b) => ESeq(dlh_prepend_and_rename_calls(a, marker, fresh, extra_names), dlh_prepend_and_rename_calls(b, marker, fresh, extra_names)),
     EWhile(c, b) => EWhile(dlh_prepend_and_rename_calls(c, marker, fresh, extra_names), dlh_prepend_and_rename_calls(b, marker, fresh, extra_names)),
     EForIn(n, idxn, it, b) => EForIn(n, idxn, dlh_prepend_and_rename_calls(it, marker, fresh, extra_names), dlh_prepend_and_rename_calls(b, marker, fresh, extra_names)),
@@ -1312,8 +1312,8 @@ fn dlh_hoist_expr(expr: Expr, hoisted: Array[Stmt], ctr: Array[Int]) -> Expr {
     EIf(c, t, e) => EIf(dlh_hoist_expr(c, hoisted, ctr), dlh_hoist_expr(t, hoisted, ctr), dlh_hoist_expr(e, hoisted, ctr)),
     ELetRec(name, v, b) => ELetRec(name, dlh_hoist_expr(v, hoisted, ctr), dlh_hoist_expr(b, hoisted, ctr)),
     ELetMut(name, v, b, soff) => ELetMut(name, dlh_hoist_expr(v, hoisted, ctr), dlh_hoist_expr(b, hoisted, ctr), soff),
-    EAssign(name, v, c) => EAssign(name, dlh_hoist_expr(v, hoisted, ctr), dlh_hoist_expr(c, hoisted, ctr)),
-    EAssignOp(name, op, v, c) => EAssignOp(name, op, dlh_hoist_expr(v, hoisted, ctr), dlh_hoist_expr(c, hoisted, ctr)),
+    EAssign(name, v, c, target_off) => EAssign(name, dlh_hoist_expr(v, hoisted, ctr), dlh_hoist_expr(c, hoisted, ctr), target_off),
+    EAssignOp(name, op, v, c, target_off) => EAssignOp(name, op, dlh_hoist_expr(v, hoisted, ctr), dlh_hoist_expr(c, hoisted, ctr), target_off),
     ESeq(a, b) => ESeq(dlh_hoist_expr(a, hoisted, ctr), dlh_hoist_expr(b, hoisted, ctr)),
     EWhile(c, b) => EWhile(dlh_hoist_expr(c, hoisted, ctr), dlh_hoist_expr(b, hoisted, ctr)),
     EForIn(name, idxn, it, b) => EForIn(name, idxn, dlh_hoist_expr(it, hoisted, ctr), dlh_hoist_expr(b, hoisted, ctr)),

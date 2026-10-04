@@ -300,13 +300,13 @@ fn collect_refs_into(graph: DceGraph, expr: Expr, bound: Array[String], out: Arr
       Array::truncate(bound, mark)
       0
     },
-    EAssign(name, val, body) => {
+    EAssign(name, val, body, _) => {
       add_ref(graph, out, bound, name)
       collect_refs_into(graph, val, bound, out)
       collect_refs_into(graph, body, bound, out)
       0
     },
-    EAssignOp(name, _, val, body) => {
+    EAssignOp(name, _, val, body, _) => {
       add_ref(graph, out, bound, name)
       collect_refs_into(graph, val, bound, out)
       collect_refs_into(graph, body, bound, out)
@@ -746,6 +746,15 @@ export fn dce_keep_flags(stmts: Array[Stmt], entry_names: Array[String]) -> Arra
 /// structural and always kept), so each of those method bindings is a root:
 /// whatever a method calls must survive, or the flat source does not
 /// compile. The flags still index `stmts`.
+///
+/// The same holds when the impl reaches this pass already split -- the
+/// merged program the compiler prints writes a bodyless `impl` header and one
+/// `<owner>::<method>` binding per method, each its own statement in `stmts`.
+/// That program is printed BEFORE the trait-dictionary desugar (#3331), so
+/// no dictionary references a method yet and a `[C: Trait]` body names none
+/// of them: every impl method is rooted (`dce_impl_method_roots`, #3111), or
+/// the flat source keeps the impl and drops its bodies, and its compile
+/// refuses the impl with "add a body".
 export fn dce_keep_flags_via(stmts: Array[Stmt], reach_stmts: Array[Stmt], entry_names: Array[String]) -> Array[Bool] {
   let flags = array_empty()
   if Array::length(stmts) == 0 {
@@ -765,6 +774,12 @@ export fn dce_keep_flags_via(stmts: Array[Stmt], reach_stmts: Array[Stmt], entry
     while en < Array::length(entry_names) {
       Array::push(roots, Array::get(entry_names, en))
       en = en + 1
+    }
+    let impl_roots = dce_impl_method_roots(reach_stmts)
+    let mut ir = 0
+    while ir < Array::length(impl_roots) {
+      Array::push(roots, Array::get(impl_roots, ir))
+      ir = ir + 1
     }
     let mut rn = 0
     while rn < Array::length(reach_stmts) {

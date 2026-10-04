@@ -214,11 +214,11 @@ export fn lc_inject_stdin_surface_wrappers(stmts: Array[Stmt]) -> Bool {
       ECall(EIdent("String::from_char_code", -1), [
         EIdent("__stdin_chunk_byte", -1)
       ], -1, [])
-    ], -1, []), EAssign("__stdin_chunk_len", EBinOp("+", EIdent("__stdin_chunk_len", -1), EInt(1), -1), EUnit))
+    ], -1, []), EAssign("__stdin_chunk_len", EBinOp("+", EIdent("__stdin_chunk_len", -1), EInt(1), -1), EUnit, -1))
     let chunk_accept = EIf(chunk_byte_valid, chunk_push, ECall(EIdent("assert_true", -1), [
       EBool(false)
     ], -1, []))
-    let chunk_step = ELet("__stdin_chunk_byte", chunk_read, EIf(EBinOp("==", EIdent("__stdin_chunk_byte", -1), EInt(0 - 1), -1), EAssign("__stdin_chunk_eof", EBool(true), EUnit), chunk_accept), -1)
+    let chunk_step = ELet("__stdin_chunk_byte", chunk_read, EIf(EBinOp("==", EIdent("__stdin_chunk_byte", -1), EInt(0 - 1), -1), EAssign("__stdin_chunk_eof", EBool(true), EUnit, -1), chunk_accept), -1)
     // review-lint: allow-fixed-synthetic-name
     let chunk_loop_cond = EBinOp("&&", EBinOp("<", EIdent("__stdin_chunk_len", -1), EIdent("__stdin_chunk_size", -1), -1), EBinOp("==", EIdent("__stdin_chunk_eof", -1), EBool(false), -1), -1)
     let chunk_result = EIf(EBinOp("==", EIdent("__stdin_chunk_len", -1), EInt(0), -1), ECall(EIdent("None", -1), array_empty(), -1, [
@@ -348,8 +348,8 @@ export fn lc_retarget_call(e: Expr, active: Bool, from_name: String, to_name: St
     },
     EBinOp(op, l, r, boff) => EBinOp(op, lc_retarget_call(l, active, from_name, to_name, wrap), lc_retarget_call(r, active, from_name, to_name, wrap), boff),
     EUnaryOp(op, a) => EUnaryOp(op, lc_retarget_call(a, active, from_name, to_name, wrap)),
-    EAssign(x, v, b) => EAssign(x, lc_retarget_call(v, active, from_name, to_name, wrap), lc_retarget_call(b, active, from_name, to_name, wrap)),
-    EAssignOp(n, op, v, b) => EAssignOp(n, op, lc_retarget_call(v, active, from_name, to_name, wrap), lc_retarget_call(b, active, from_name, to_name, wrap)),
+    EAssign(x, v, b, target_off) => EAssign(x, lc_retarget_call(v, active, from_name, to_name, wrap), lc_retarget_call(b, active, from_name, to_name, wrap), target_off),
+    EAssignOp(n, op, v, b, target_off) => EAssignOp(n, op, lc_retarget_call(v, active, from_name, to_name, wrap), lc_retarget_call(b, active, from_name, to_name, wrap), target_off),
     EReturn(a) => EReturn(lc_retarget_call(a, active, from_name, to_name, wrap)),
     EDot(o, f, m, off) => EDot(lc_retarget_call(o, active, from_name, to_name, wrap), f, m, off),
     ELabeledArg(l, s, v) => ELabeledArg(l, s, lc_retarget_call(v, active, from_name, to_name, wrap)),
@@ -529,8 +529,8 @@ export fn lc_expr_has_async_handle(e: Expr) -> Bool {
     },
     EBinOp(_, l, r, _) => lc_expr_has_async_handle(l) || lc_expr_has_async_handle(r),
     EUnaryOp(_, a) => lc_expr_has_async_handle(a),
-    EAssign(_, v, b) => lc_expr_has_async_handle(v) || lc_expr_has_async_handle(b),
-    EAssignOp(_, _, v, b) => lc_expr_has_async_handle(v) || lc_expr_has_async_handle(b),
+    EAssign(_, v, b, _) => lc_expr_has_async_handle(v) || lc_expr_has_async_handle(b),
+    EAssignOp(_, _, v, b, _) => lc_expr_has_async_handle(v) || lc_expr_has_async_handle(b),
     EReturn(a) => lc_expr_has_async_handle(a),
     EDot(o, _, _, _) => lc_expr_has_async_handle(o),
     ELabeledArg(_, _, v) => lc_expr_has_async_handle(v),
@@ -652,11 +652,11 @@ export fn lc_mark_calls(e: Expr, targets: Array[String], hits: Array[Bool], ment
       lc_mark_calls(r, targets, hits, mentions)
     },
     EUnaryOp(_, a) => lc_mark_calls(a, targets, hits, mentions),
-    EAssign(_, v, b) => {
+    EAssign(_, v, b, _) => {
       lc_mark_calls(v, targets, hits, mentions)
       lc_mark_calls(b, targets, hits, mentions)
     },
-    EAssignOp(_, _, v, b) => {
+    EAssignOp(_, _, v, b, _) => {
       lc_mark_calls(v, targets, hits, mentions)
       lc_mark_calls(b, targets, hits, mentions)
     },
@@ -849,11 +849,11 @@ fn lc_expr_collect_hf_names(e: Expr, active: Bool, target: String, out: Array[St
       lc_expr_collect_hf_names(r, active, target, out)
     },
     EUnaryOp(_, a) => lc_expr_collect_hf_names(a, active, target, out),
-    EAssign(_, v, b) => {
+    EAssign(_, v, b, _) => {
       lc_expr_collect_hf_names(v, active, target, out)
       lc_expr_collect_hf_names(b, active, target, out)
     },
-    EAssignOp(_, _, v, b) => {
+    EAssignOp(_, _, v, b, _) => {
       lc_expr_collect_hf_names(v, active, target, out)
       lc_expr_collect_hf_names(b, active, target, out)
     },
@@ -1107,11 +1107,11 @@ fn lc_expr_collect_hs_names(e: Expr, active: Bool, out: Array[String]) -> Unit {
       lc_expr_collect_hs_names(r, active, out)
     },
     EUnaryOp(_, a) => lc_expr_collect_hs_names(a, active, out),
-    EAssign(_, v, b) => {
+    EAssign(_, v, b, _) => {
       lc_expr_collect_hs_names(v, active, out)
       lc_expr_collect_hs_names(b, active, out)
     },
-    EAssignOp(_, _, v, b) => {
+    EAssignOp(_, _, v, b, _) => {
       lc_expr_collect_hs_names(v, active, out)
       lc_expr_collect_hs_names(b, active, out)
     },
@@ -1375,8 +1375,8 @@ fn lc_expr_mentions_name(e: Expr, target: String) -> Bool {
     EWhile(c, b) => lc_expr_mentions_name(c, target) || lc_expr_mentions_name(b, target),
     EForIn(n, ix, it, b) => n == target || lc_option_name_equals(ix, target) || lc_expr_mentions_name(it, target) || lc_expr_mentions_name(b, target),
     ELoop(pairs, b) => lc_pairs_mention_name(pairs, target) || lc_expr_mentions_name(b, target),
-    EAssign(n, v, b) => n == target || lc_expr_mentions_name(v, target) || lc_expr_mentions_name(b, target),
-    EAssignOp(n, _, v, b) => n == target || lc_expr_mentions_name(v, target) || lc_expr_mentions_name(b, target),
+    EAssign(n, v, b, _) => n == target || lc_expr_mentions_name(v, target) || lc_expr_mentions_name(b, target),
+    EAssignOp(n, _, v, b, _) => n == target || lc_expr_mentions_name(v, target) || lc_expr_mentions_name(b, target),
     EReturn(a) => lc_expr_mentions_name(a, target),
     EDot(o, _, _, _) => lc_expr_mentions_name(o, target),
     ECall(callee, args, _, _) => lc_expr_mentions_name(callee, target) || lc_exprs_mention_name(args, target),
@@ -1716,8 +1716,8 @@ export fn lc_rename_sleep_scoped(e: Expr) -> Expr {
     },
     EBinOp(op, l, r, boff) => EBinOp(op, lc_rename_sleep_scoped(l), lc_rename_sleep_scoped(r), boff),
     EUnaryOp(op, a) => EUnaryOp(op, lc_rename_sleep_scoped(a)),
-    EAssign(x, v, b) => EAssign(x, lc_rename_sleep_scoped(v), lc_rename_sleep_scoped(b)),
-    EAssignOp(n, op, v, b) => EAssignOp(n, op, lc_rename_sleep_scoped(v), lc_rename_sleep_scoped(b)),
+    EAssign(x, v, b, target_off) => EAssign(x, lc_rename_sleep_scoped(v), lc_rename_sleep_scoped(b), target_off),
+    EAssignOp(n, op, v, b, target_off) => EAssignOp(n, op, lc_rename_sleep_scoped(v), lc_rename_sleep_scoped(b), target_off),
     EReturn(a) => EReturn(lc_rename_sleep_scoped(a)),
     EDot(o, f, m, off) => EDot(lc_rename_sleep_scoped(o), f, m, off),
     ELabeledArg(l, s, v) => ELabeledArg(l, s, lc_rename_sleep_scoped(v)),
@@ -1818,8 +1818,8 @@ export fn lc_expr_has_spawn_suspend(e: Expr) -> Bool {
     // guard: it reads as "this is checked" while answering a narrower question.
     EBinOp(_, l, r, _) => lc_expr_has_spawn_suspend(l) || lc_expr_has_spawn_suspend(r),
     EUnaryOp(_, a) => lc_expr_has_spawn_suspend(a),
-    EAssign(_, v, b) => lc_expr_has_spawn_suspend(v) || lc_expr_has_spawn_suspend(b),
-    EAssignOp(_, _, v, b) => lc_expr_has_spawn_suspend(v) || lc_expr_has_spawn_suspend(b),
+    EAssign(_, v, b, _) => lc_expr_has_spawn_suspend(v) || lc_expr_has_spawn_suspend(b),
+    EAssignOp(_, _, v, b, _) => lc_expr_has_spawn_suspend(v) || lc_expr_has_spawn_suspend(b),
     EWhile(c, b) => lc_expr_has_spawn_suspend(c) || lc_expr_has_spawn_suspend(b),
     EForIn(_, _, it, b) => lc_expr_has_spawn_suspend(it) || lc_expr_has_spawn_suspend(b),
     ELoop(pairs, b) => lc_pairs_have_spawn_suspend(pairs) || lc_expr_has_spawn_suspend(b),
