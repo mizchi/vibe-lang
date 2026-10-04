@@ -1,0 +1,1521 @@
+// lib/@vibe/compiler/codegen/component/component_codegen.vibe — comp generate serve stream adapter module.
+
+import @vibe/compiler/core {
+  bytebuf_length,
+  bytebuf_new,
+  bytebuf_push,
+  bytebuf_push_buf,
+  bytebuf_push_section,
+  bytebuf_push_vec_header,
+  bytebuf_to_bytes,
+  leb128_encode_u32
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import @vibe/compiler/codegen/wasm_emit {
+  emit_call,
+  emit_code_section,
+  emit_else,
+  emit_end,
+  emit_export_section,
+  emit_export_section_multi,
+  emit_func_type_raw,
+  emit_function_section,
+  emit_header,
+  emit_i32_add,
+  emit_i32_and,
+  emit_i32_const,
+  emit_i32_eq,
+  emit_i32_eqz,
+  emit_i32_gt_u,
+  emit_i32_load,
+  emit_i32_load8_u,
+  emit_i32_ne,
+  emit_i32_shl,
+  emit_i32_shr_u,
+  emit_i32_store,
+  emit_i32_wrap_i64,
+  emit_i64_const,
+  emit_i64_shl,
+  emit_i64_shr_s,
+  emit_if_void,
+  emit_local_get,
+  emit_local_set,
+  emit_name,
+  emit_return
+}
+
+import ./component_codegen_comp_generate_spawned_future_guest_core_module.vibe {
+  comp_generate_async_trampoline,
+  comp_valtype_to_core,
+  core_sort_func,
+  emit_alias_section,
+  emit_canon_lift_async_section,
+  emit_canon_task_return,
+  emit_comp_async_functype_section,
+  emit_comp_export_section,
+  emit_component_header,
+  emit_core_instance_from_exports,
+  emit_core_instance_instantiate_args,
+  emit_core_instance_instantiate_section,
+  emit_core_module_section,
+  emit_raw_content,
+  new_int_array,
+  parse_core_imports,
+  section_canon,
+  section_type
+}
+
+/// M1b-2d: a no-op `wasi_snapshot_preview1.fd_write` stub core module
+/// (`(i32,i32,i32,i32) -> i32` returning 0). Compiled core modules
+/// import fd_write from wasi_snapshot_preview1 for their runtime preamble; the
+/// stub satisfies that import so the async component is self-contained and
+/// instantiable without an external preview1 adapter.
+export fn comp_generate_wasi_fd_write_stub() -> Bytes {
+  let out = bytebuf_new()
+  emit_header(out)
+  let tc = bytebuf_new()
+  bytebuf_push_vec_header(tc, 1)
+  emit_func_type_raw(tc, [127, 127, 127, 127], [127])
+  bytebuf_push_section(out, 1, tc)
+  emit_function_section(out, [0])
+  emit_export_section(out, "fd_write", 0)
+  let body = bytebuf_new()
+  emit_i32_const(body, 0)
+  emit_code_section(out, [body])
+  bytebuf_to_bytes(out)
+}
+
+/// Like comp_emit_component_wasm_async_trampolined, but for a main core module
+/// that imports `wasi_snapshot_preview1.fd_write` (every compiled core does). A
+/// fd_write stub module is instantiated first and supplied to the main module's
+/// instantiation, making the async component fully self-contained / runnable.
+/// core instances: 0=wasi-stub, 1=main(+wasi), 2=cm(task-return), 3=env(run),
+/// 4=trampoline. core funcs: 0=task.return, 1=main.run, 2=trampoline.run.
+export fn comp_emit_component_wasm_async_trampolined_p1(main_core_wasm: Bytes, export_name: String, comp_result_valtype: Int) -> Bytes {
+  let needs_stderr = comp_core_imports_func(main_core_wasm, "vibe", "stderr_write_stream")
+  // #2976: the exception boundary exits through `vibe.process_exit` after
+  // writing its diagnosis, so the trapping stub serves it there -- the trap
+  // IS the boundary's non-zero outcome. An exit the program wrote itself is
+  // refused before this runs -- by comp_reject_unsatisfiable_selfcontained_imports
+  // when no stderr import accompanies it, and by the source lane's provenance
+  // check (`maybe_wrap_async_component`) when one does -- because a trapping
+  // stub would turn `exit(0)` into a failure.
+  let needs_exit = needs_stderr && comp_core_imports_func(main_core_wasm, "vibe", "process_exit")
+  let needs_vibe = needs_stderr
+  let buf = bytebuf_new()
+  emit_component_header(buf)
+  emit_core_module_section(buf, main_core_wasm)
+  emit_core_module_section(buf, comp_generate_async_trampoline(comp_valtype_to_core(comp_result_valtype)))
+  if needs_vibe {
+    // The exception boundary only needs these imports on its failing path. A
+    // local trapping stub keeps the self-contained component valid and
+    // preserves the same non-zero outcome as core launchers; components that
+    // import neither retain their exact pre-existing bytes.
+    let stub_names = array_empty()
+    let stub_sigs = array_empty()
+    if needs_stderr {
+      Array::push(stub_names, "stderr_write_stream")
+      Array::push(stub_sigs, [1, 126, 0])
+    }
+    if needs_exit {
+      Array::push(stub_names, "process_exit")
+      Array::push(stub_sigs, [1, 126, 0])
+    }
+    emit_core_module_section(buf, comp_generate_host_stub_module(stub_names, stub_sigs))
+  } else {
+    emit_core_module_section(buf, comp_generate_wasi_fd_write_stub())
+  }
+  emit_core_instance_instantiate_section(buf, 2, array_empty())
+  if needs_vibe {
+    emit_core_instance_instantiate_args(buf, 0, [
+      "wasi_snapshot_preview1",
+      "vibe"
+    ], [0, 0])
+  } else {
+    emit_core_instance_instantiate_args(buf, 0, ["wasi_snapshot_preview1"], [0])
+  }
+  emit_canon_task_return(buf, comp_result_valtype)
+  emit_core_instance_from_exports(buf, 1, [1], ["task-return"], [0])
+  emit_alias_section(buf, 1, ["run"], [core_sort_func])
+  emit_core_instance_from_exports(buf, 1, [1], ["run"], [1])
+  emit_core_instance_instantiate_args(buf, 1, ["main", "cm"], [3, 2])
+  emit_comp_async_functype_section(buf, comp_result_valtype)
+  emit_alias_section(buf, 4, ["run"], [core_sort_func])
+  emit_canon_lift_async_section(buf, 2, 0)
+  emit_comp_export_section(buf, export_name, 0)
+  bytebuf_to_bytes(buf)
+}
+
+export fn comp_core_imports_func(core_wasm: Bytes, module_name: String, func_name: String) -> Bool {
+  let modules = array_empty()
+  let names = array_empty()
+  let type_indices = new_int_array()
+  let type_sigs = array_empty()
+  let count = parse_core_imports(core_wasm, modules, names, type_indices, type_sigs)
+  let mut found = false
+  let mut i = 0
+  while i < count {
+    if Array::get(modules, i) == module_name && Array::get(names, i) == func_name {
+      found = true
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// #1230 M1b-3c-1b: component valtype for u32, matching the
+/// wasip3_component_probe's own result type (see spawned_future/ below).
+export let comp_valtype_u32: Int = 121
+
+/// #1230 M1b-3c-1b: canon `lower <f> async (memory M)` -- the async
+/// counterpart to emit_canon_lower_section above (which only ever emits the
+/// sync, zero-canonopt form). Byte shape recovered from a validated,
+/// actually-running component via `wasm-tools dump` against
+/// tools/wasip3_component_probe/spawned_future/component.wat's compiled
+/// output (not hand-derived from the spec): `01 00 <funcidx> 02 06 03
+/// <memidx>` -- opcode=lower(1), reserved byte(0), funcidx, canonopt-count=2,
+/// async tag(6), memory tag(3)+core-memory-idx.
+export fn emit_canon_lower_async_section(buf: Bytes, comp_func_idx: Int, memory_core_idx: Int) -> Unit {
+  bytebuf_push(buf, section_canon)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 1)
+  bytebuf_push(content, 0)
+  leb128_encode_u32(content, comp_func_idx)
+  leb128_encode_u32(content, 2)
+  bytebuf_push(content, 6)
+  bytebuf_push(content, 3)
+  leb128_encode_u32(content, memory_core_idx)
+  emit_raw_content(buf, content)
+}
+
+/// #1230 M1b-3c-1b: canon waitable-set.new -- single-byte opcode 0x1f (31),
+/// verified via wasm-tools dump against spawned_future/component.wat.
+export fn emit_canon_waitable_set_new(buf: Bytes) -> Unit {
+  bytebuf_push(buf, section_canon)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 31)
+  emit_raw_content(buf, content)
+}
+
+/// #1230 M1b-3c-1b: canon waitable.join -- single-byte opcode 0x23 (35).
+export fn emit_canon_waitable_join(buf: Bytes) -> Unit {
+  bytebuf_push(buf, section_canon)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 35)
+  emit_raw_content(buf, content)
+}
+
+/// #1230 M1b-3c-1b: canon waitable-set.wait (memory M) -- opcode 0x20 (32),
+/// a cancellable flag byte (0 = not cancellable, matching the probe), then
+/// the memory core index.
+export fn emit_canon_waitable_set_wait(buf: Bytes, memory_core_idx: Int) -> Unit {
+  bytebuf_push(buf, section_canon)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 32)
+  bytebuf_push(content, 0)
+  leb128_encode_u32(content, memory_core_idx)
+  emit_raw_content(buf, content)
+}
+
+/// #1230 M1b-3c-1b: canon waitable-set.drop -- single-byte opcode 0x22 (34).
+export fn emit_canon_waitable_set_drop(buf: Bytes) -> Unit {
+  bytebuf_push(buf, section_canon)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 34)
+  emit_raw_content(buf, content)
+}
+
+/// #1230 M1b-3c-1b: canon subtask.drop -- single-byte opcode 0x0d (13).
+export fn emit_canon_subtask_drop(buf: Bytes) -> Unit {
+  bytebuf_push(buf, section_canon)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 13)
+  emit_raw_content(buf, content)
+}
+
+/// #1537: canon subtask.cancel (synchronous) -- opcode 0x06 then the
+/// async? flag 0x00, byte shape recovered with `wasm-tools parse` of
+/// `(canon subtask.cancel)`. `(i32 subtask) -> (i32 status)`.
+export fn emit_canon_subtask_cancel(buf: Bytes) -> Unit {
+  bytebuf_push(buf, section_canon)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 6)
+  bytebuf_push(content, 0)
+  emit_raw_content(buf, content)
+}
+
+/// ADR-0089 step 2 (#1218): component type section defining `(future <T>)`.
+/// Byte shape recovered via `wasm-tools dump` against
+/// tools/wasip3_component_probe/future_value/component.wat's compiled
+/// output: defvaltype future = 0x65 (101), then an option tag 0x01 + the
+/// payload's component valtype (an absent-payload `future` would carry
+/// 0x00 and no valtype). The type lands in the COMPONENT type index space
+/// (shared with the async functypes), and every future.* canon below
+/// references it by that index.
+export fn emit_comp_future_type_section(buf: Bytes, elem_valtype: Int) -> Unit {
+  bytebuf_push(buf, section_type)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 101)
+  bytebuf_push(content, 1)
+  bytebuf_push(content, elem_valtype)
+  emit_raw_content(buf, content)
+}
+
+/// ADR-0089 step 2: canon future.new <ty> -- opcode 0x15 (21) + the
+/// component type index of the `(future T)` type. Core signature
+/// `[] -> [i64]`, the i64 packing (writable << 32) | readable -- readable
+/// end in the LOW 32 bits (pinned by the probe: swapping them makes
+/// future.read trap with a wrong-handle-kind error).
+export fn emit_canon_future_new(buf: Bytes, type_idx: Int) -> Unit {
+  bytebuf_push(buf, section_canon)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 21)
+  leb128_encode_u32(content, type_idx)
+  emit_raw_content(buf, content)
+}
+
+/// ADR-0089 step 2: canon future.read <ty> async (memory M) -- opcode 0x16
+/// (22) + type index + 2 canonopts (async tag 6, memory tag 3 + core memory
+/// index), same canonopt encoding as emit_canon_lower_async_section. Core
+/// signature `[handle, buf_ptr] -> [status]`; with the async canonopt a
+/// read with no pending writer returns BLOCKED (0xffffffff) and parks the
+/// readable end as a waitable instead of parking the fiber.
+export fn emit_canon_future_read(buf: Bytes, type_idx: Int, memory_core_idx: Int) -> Unit {
+  bytebuf_push(buf, section_canon)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 22)
+  leb128_encode_u32(content, type_idx)
+  leb128_encode_u32(content, 2)
+  bytebuf_push(content, 6)
+  bytebuf_push(content, 3)
+  leb128_encode_u32(content, memory_core_idx)
+  emit_raw_content(buf, content)
+}
+
+/// ADR-0089 step 2: canon future.write <ty> async (memory M) -- opcode 0x17
+/// (23), same shape as future.read. Core signature
+/// `[handle, buf_ptr] -> [status]`; a write against an already-pending read
+/// performs the copy immediately and returns COMPLETED (not BLOCKED) --
+/// the rendezvous the future-value guest module relies on.
+export fn emit_canon_future_write(buf: Bytes, type_idx: Int, memory_core_idx: Int) -> Unit {
+  bytebuf_push(buf, section_canon)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 23)
+  leb128_encode_u32(content, type_idx)
+  leb128_encode_u32(content, 2)
+  bytebuf_push(content, 6)
+  bytebuf_push(content, 3)
+  leb128_encode_u32(content, memory_core_idx)
+  emit_raw_content(buf, content)
+}
+
+/// #1537: canon future.cancel-read <ty> (synchronous) -- opcode 0x18 (24),
+/// type index, then the async flag (0). Core signature `[handle] ->
+/// [status]` (measured with wasm-tools 1.253: `18 00 00`).
+export fn emit_canon_future_cancel_read(buf: Bytes, type_idx: Int) -> Unit {
+  bytebuf_push(buf, section_canon)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 24)
+  leb128_encode_u32(content, type_idx)
+  bytebuf_push(content, 0)
+  emit_raw_content(buf, content)
+}
+
+/// #1537: canon stream.cancel-read <ty> (synchronous) -- opcode 0x11 (17),
+/// type index, then the async flag (0). Core signature `[handle] ->
+/// [status]` (measured with wasm-tools 1.253: `11 00 00`).
+export fn emit_canon_stream_cancel_read(buf: Bytes, type_idx: Int) -> Unit {
+  bytebuf_push(buf, section_canon)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 17)
+  leb128_encode_u32(content, type_idx)
+  bytebuf_push(content, 0)
+  emit_raw_content(buf, content)
+}
+
+/// ADR-0089 step 2: canon future.drop-readable <ty> -- opcode 0x1a (26) +
+/// type index. Core signature `[handle] -> []`.
+export fn emit_canon_future_drop_readable(buf: Bytes, type_idx: Int) -> Unit {
+  bytebuf_push(buf, section_canon)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 26)
+  leb128_encode_u32(content, type_idx)
+  emit_raw_content(buf, content)
+}
+
+/// ADR-0089 step 2: canon future.drop-writable <ty> -- opcode 0x1b (27) +
+/// type index. Core signature `[handle] -> []`.
+export fn emit_canon_future_drop_writable(buf: Bytes, type_idx: Int) -> Unit {
+  bytebuf_push(buf, section_canon)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 27)
+  leb128_encode_u32(content, type_idx)
+  emit_raw_content(buf, content)
+}
+
+/// ADR-0089 step 2: component valtype u8 (0x7d) -- the element type of
+/// `ByteStream` = `stream<u8>` (docs/internal/design/wasi-p3-async.md §4).
+export let comp_valtype_u8: Int = 125
+
+/// ADR-0089 step 2: component type section defining `(stream <T>)`.
+/// Byte shape from wasm-tools dump of stream_value/component.wat:
+/// defvaltype stream = 0x66 (102), then option tag 0x01 + the element's
+/// component valtype -- same layout as the future type, one opcode apart.
+export fn emit_comp_stream_type_section(buf: Bytes, elem_valtype: Int) -> Unit {
+  bytebuf_push(buf, section_type)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 102)
+  bytebuf_push(content, 1)
+  bytebuf_push(content, elem_valtype)
+  emit_raw_content(buf, content)
+}
+
+/// ADR-0089 step 2: canon stream.new <ty> -- opcode 0x0e (14) + the
+/// component type index of the `(stream T)` type. Core signature
+/// `[] -> [i64]`, packed exactly like future.new: readable end in the LOW
+/// 32 bits, writable in the high.
+export fn emit_canon_stream_new(buf: Bytes, type_idx: Int) -> Unit {
+  bytebuf_push(buf, section_canon)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 14)
+  leb128_encode_u32(content, type_idx)
+  emit_raw_content(buf, content)
+}
+
+/// ADR-0089 step 2: canon stream.read <ty> async (memory M) -- opcode 0x0f
+/// (15) + type index + 2 canonopts (async, memory). Core signature
+/// `[handle, buf_ptr, count] -> [status]` -- one param more than
+/// future.read (the element count). With the async canonopt a read with no
+/// pending writer returns BLOCKED (0xffffffff) and parks the readable end
+/// as a waitable; a completed copy packs `(amount << 4) | code`.
+export fn emit_canon_stream_read(buf: Bytes, type_idx: Int, memory_core_idx: Int) -> Unit {
+  bytebuf_push(buf, section_canon)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 15)
+  leb128_encode_u32(content, type_idx)
+  leb128_encode_u32(content, 2)
+  bytebuf_push(content, 6)
+  bytebuf_push(content, 3)
+  leb128_encode_u32(content, memory_core_idx)
+  emit_raw_content(buf, content)
+}
+
+/// ADR-0089 step 2: canon stream.write <ty> async (memory M) -- opcode 0x10
+/// (16), same shape as stream.read. A write against an already-pending
+/// read copies min(counts) elements inside the call and returns the packed
+/// completed status, not BLOCKED.
+export fn emit_canon_stream_write(buf: Bytes, type_idx: Int, memory_core_idx: Int) -> Unit {
+  bytebuf_push(buf, section_canon)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 16)
+  leb128_encode_u32(content, type_idx)
+  leb128_encode_u32(content, 2)
+  bytebuf_push(content, 6)
+  bytebuf_push(content, 3)
+  leb128_encode_u32(content, memory_core_idx)
+  emit_raw_content(buf, content)
+}
+
+/// ADR-0089 step 2: canon stream.drop-readable <ty> -- opcode 0x13 (19) +
+/// type index. Core signature `[handle] -> []`.
+export fn emit_canon_stream_drop_readable(buf: Bytes, type_idx: Int) -> Unit {
+  bytebuf_push(buf, section_canon)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 19)
+  leb128_encode_u32(content, type_idx)
+  emit_raw_content(buf, content)
+}
+
+/// ADR-0089 step 2: canon stream.drop-writable <ty> -- opcode 0x14 (20) +
+/// type index. Core signature `[handle] -> []`.
+export fn emit_canon_stream_drop_writable(buf: Bytes, type_idx: Int) -> Unit {
+  bytebuf_push(buf, section_canon)
+  let content = bytebuf_new()
+  leb128_encode_u32(content, 1)
+  bytebuf_push(content, 20)
+  leb128_encode_u32(content, type_idx)
+  emit_raw_content(buf, content)
+}
+
+/// ADR-0089 Decision 3 (#1218): is `nm` a host-stream GET core import?
+/// (There is no anonymous host stream -- the surface is named-only.)
+export fn comp_is_host_stream_get_import(nm: String) -> Bool {
+  String::starts_with(nm, "host_stream_get$")
+}
+
+/// ADR-0089 Decision 3 follow-up (#1218): does the module import the shared
+/// CLOSE half? linked_compile reserves `vibe.host_stream_close` only when
+/// the source actually called `host_stream_close`, so this byte sniff is
+/// exactly "this program drops readable ends early". The adapter appends
+/// its close func only then, which is what keeps every already-pinned
+/// stream composition byte-identical.
+export fn comp_core_imports_host_stream_close(core_wasm: Bytes) -> Bool {
+  let imp_modules = array_empty()
+  let imp_names = array_empty()
+  let imp_type_indices = new_int_array()
+  let imp_type_sigs = array_empty()
+  let import_count = parse_core_imports(core_wasm, imp_modules, imp_names, imp_type_indices, imp_type_sigs)
+  let mut i = 0
+  let mut found = false
+  while i < import_count {
+    if Array::get(imp_modules, i) == "vibe" && Array::get(imp_names, i) == "host_stream_close" {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// ADR-0089 Decision 3 (#1218): every host-stream GET core import name the
+/// module declares, in DECLARATION ORDER (linked_compile emits them
+/// sorted). Same single-source-of-truth role as
+/// comp_core_host_future_names: the adapter's func layout and the
+/// component's stream import order both derive from this list.
+export fn comp_core_host_stream_names(core_wasm: Bytes) -> Array[String] {
+  let imp_modules = array_empty()
+  let imp_names = array_empty()
+  let imp_type_indices = new_int_array()
+  let imp_type_sigs = array_empty()
+  let import_count = parse_core_imports(core_wasm, imp_modules, imp_names, imp_type_indices, imp_type_sigs)
+  let out = array_empty()
+  let mut i = 0
+  while i < import_count {
+    let nm = Array::get(imp_names, i)
+    if Array::get(imp_modules, i) == "vibe" && comp_is_host_stream_get_import(nm) {
+      Array::push(out, nm)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// The COMPONENT-level import name a host-stream GET core import asks for:
+/// exactly its `$` suffix, validated as a component label by compile_call.
+export fn comp_hoststream_import_label(core_name: String) -> String {
+  String::substring(core_name, String::length("host_stream_get$"), String::length(core_name))
+}
+
+/// ADR-0089 (c) (#1218): is `nm` a host-future GET core import -- the
+/// anonymous `host_future_get` or a named `host_future_get$<label>`?
+export fn comp_is_host_future_get_import(nm: String) -> Bool {
+  nm == "host_future_get" || String::starts_with(nm, "host_future_get$") || comp_is_wit_future_get_import(nm)
+}
+
+/// A WIT-addressed future: `wit_future_get$` (`future<s64>`, #2064) or
+/// `wit_response_get$` (`future<record{status: s32, body: stream<u8>}>`,
+/// #2066). Both name `<versioned-interface>#<func>` after the prefix.
+export fn comp_is_wit_future_get_import(nm: String) -> Bool {
+  String::starts_with(nm, "wit_future_get$") || comp_is_wit_response_get_import(nm)
+}
+
+export fn comp_is_wit_response_get_import(nm: String) -> Bool {
+  String::starts_with(nm, "wit_response_get$") || comp_is_wit_response_arg_import(nm)
+}
+
+/// #2066: a response whose function takes one `string`
+/// (`wit_response_arg_get$<interface>#<func>?<label>`); its argument arrives
+/// through `vibe.host_arg_push`.
+export fn comp_is_wit_response_arg_import(nm: String) -> Bool {
+  String::starts_with(nm, "wit_response_arg_get$")
+}
+
+/// The WIT label of an argument response's one parameter.
+export fn comp_wit_response_arg_label(core_name: String) -> String {
+  let q = String::index_of(core_name, "?")
+  String::substring(core_name, q + 1, String::length(core_name))
+}
+
+fn comp_wit_future_prefix_length(core_name: String) -> Int {
+  if comp_is_wit_response_arg_import(core_name) {
+    String::length("wit_response_arg_get$")
+  } else if comp_is_wit_response_get_import(core_name) {
+    String::length("wit_response_get$")
+  } else {
+    String::length("wit_future_get$")
+  }
+}
+
+fn comp_wit_future_separator(core_name: String) -> Int with Exception {
+  let suffix = String::substring(core_name, comp_wit_future_prefix_length(core_name), String::length(core_name))
+  let sep = String::index_of(suffix, "#")
+  if sep <= 0 || sep + 1 >= String::length(suffix) {
+    throw("component(wit-async-import): malformed core metadata '\{core_name}'; expected wit_future_get$<versioned-interface>#<func>")
+  }
+  sep
+}
+
+export fn comp_wit_future_interface(core_name: String) -> String with Exception {
+  let start = comp_wit_future_prefix_length(core_name)
+  let interface_id = String::substring(core_name, start, start + comp_wit_future_separator(core_name))
+  if !String::contains(interface_id, ":") || !String::contains(interface_id, "/") || !String::contains(interface_id, "@") {
+    throw("component(wit-async-import): interface id in '\{core_name}' must be versioned (`namespace:package/interface@version`)")
+  }
+  interface_id
+}
+
+export fn comp_wit_future_func(core_name: String) -> String with Exception {
+  let start = comp_wit_future_prefix_length(core_name)
+  let sep = comp_wit_future_separator(core_name)
+  // An argument response's name ends at its `?<label>`.
+  let end = if comp_is_wit_response_arg_import(core_name) {
+    String::index_of(core_name, "?")
+  } else {
+    String::length(core_name)
+  }
+  String::substring(core_name, start + sep + 1, end)
+}
+
+export fn comp_string_array_index(items: Array[String], needle: String) -> Int {
+  let mut i = 0
+  let mut found = -1
+  while i < Array::length(items) && found < 0 {
+    if Array::get(items, i) == needle {
+      found = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Unique WIT interfaces in first core-declaration order. This is the
+/// canonical component instance-import order.
+export fn comp_wit_future_interfaces(core_names: Array[String]) -> Array[String] with Exception {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(core_names) {
+    let core_name = Array::get(core_names, i)
+    if comp_is_wit_future_get_import(core_name) {
+      let interface_id = comp_wit_future_interface(core_name)
+      if comp_string_array_index(out, interface_id) < 0 {
+        Array::push(out, interface_id)
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Functions owned by one interface, preserving core-declaration order.
+export fn comp_any_wit_response_arg(core_names: Array[String]) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(core_names) {
+    if comp_is_wit_response_arg_import(Array::get(core_names, i)) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// comp_wit_future_funcs restricted to responses (`want` true) or to scalar
+/// futures (`want` false).
+export fn comp_wit_future_funcs_of_kind(core_names: Array[String], interface_id: String, want: Bool) -> Array[String] with Exception {
+  let picked: Array[String] = []
+  let mut i = 0
+  while i < Array::length(core_names) {
+    let nm = Array::get(core_names, i)
+    if comp_is_wit_response_get_import(nm) == want {
+      Array::push(picked, nm)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  comp_wit_future_funcs(picked, interface_id)
+}
+
+export fn comp_wit_future_funcs(core_names: Array[String], interface_id: String) -> Array[String] with Exception {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(core_names) {
+    let core_name = Array::get(core_names, i)
+    if comp_is_wit_future_get_import(core_name) && comp_wit_future_interface(core_name) == interface_id {
+      let func_name = comp_wit_future_func(core_name)
+      if comp_string_array_index(out, func_name) >= 0 {
+        throw("component(wit-async-import): duplicate function '\{func_name}' in interface '\{interface_id}'")
+      }
+      Array::push(out, func_name)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// #2066: the argument buffer of responses taking a `string`: its length
+/// word, its base and capacity (to the end of the adapter's one page).
+export fn comp_arg_len_slot() -> Int {
+  64
+}
+
+/// #2066: the argument buffer starts at page 1, above every fixed adapter
+/// band, and grows the memory as a string needs it (Codex on #3091): a WIT
+/// `string` has no length bound, so neither does the buffer.
+export fn comp_arg_buf_base() -> Int {
+  65536
+}
+
+/// #2066: per-handle payload KIND of a mixed composition (1 = a response, 0 =
+/// a scalar `future<s64>`), past the timer id band (28672 + 1024 * 8).
+fn comp_hf_kind_base() -> Int {
+  36864
+}
+
+/// Push `comp_hf_kind_base() + fut * 4`, `fut` in local `fut_local`.
+export fn comp_emit_hf_kind_addr(buf: Bytes, fut_local: Int) -> Unit {
+  emit_local_get(buf, fut_local)
+  emit_i32_const(buf, 2)
+  emit_i32_shl(buf)
+  emit_i32_const(buf, comp_hf_kind_base())
+  emit_i32_add(buf)
+}
+
+/// Drop the readable end in local `fut_local` through the canon drop of its
+/// kind's type (only one type unless `mixed`).
+export fn comp_emit_drop_by_kind(buf: Bytes, mixed: Bool, fut_local: Int, response_drop: Int, scalar_drop: Int) -> Unit {
+  if mixed {
+    comp_emit_hf_kind_addr(buf, fut_local)
+    emit_i32_load(buf, 2, 0)
+    emit_if_void(buf)
+    emit_local_get(buf, fut_local)
+    emit_call(buf, response_drop)
+    emit_else(buf)
+    emit_local_get(buf, fut_local)
+    emit_call(buf, scalar_drop)
+    emit_end(buf)
+  } else {
+    emit_local_get(buf, fut_local)
+    emit_call(buf, response_drop)
+  }
+}
+
+/// Index of the first name whose kind is `want` (a response when true).
+export fn comp_first_kind_index(kinds: Array[Bool], want: Bool) -> Int {
+  let mut found = 0 - 1
+  let mut i = 0
+  while i < Array::length(kinds) {
+    if found < 0 && Array::get(kinds, i) == want {
+      found = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+export fn comp_hs_value_base() -> Int {
+  12288
+}
+
+/// ADR-0089 Decision 3 follow-up (#1218): the per-handle stream CLOSED-flag
+/// band. The end of a stream arrives in TWO measured shapes (wasmtime 47,
+/// 2026-08-02, both pinned by the probe gate's delayed run): a separate
+/// zero-transfer read (`amount 0 / code 1`) from a buffering producer, or
+/// INLINE with the final byte (`amount 1 / code 1`) from a per-item
+/// producer -- and a further `stream.read` after either notification traps
+/// host-side ("cannot read after being notified that the writable end
+/// dropped"). `host_stream_next` returns one byte per call, so the inline
+/// shape must hand its byte back NOW and remember the end for the next
+/// call; this band is that memory. The flag is set INSTEAD of dropping the
+/// readable end (the handle index stays occupied, so it cannot be recycled
+/// into a new stream while the flag is up -- the aliasing Codex flagged on
+/// the first cut of this fix), and the NEXT read clears it, drops the end
+/// and returns -1 in one step, after which the guest cell latches closed.
+/// #1537: per-handle stream read ARMED by `host_stream_arm` (0 = none, 1 =
+/// blocked and waiting in the shared set, 2 = completed with its status in
+/// comp_hs_status_base), so `host_stream_read` settles that read instead of
+/// issuing a second one.
+export fn comp_hs_pending_base() -> Int {
+  20480
+}
+
+export fn comp_hs_status_base() -> Int {
+  24576
+}
+
+export fn comp_hs_closed_base() -> Int {
+  16384
+}
+
+/// Largest handle the bands above can address. A component-model handle
+/// is a small instance-table index, so this is a generous ceiling; exceeding
+/// it traps rather than silently aliasing another future's slot.
+export fn comp_hf_max_handles() -> Int {
+  1023
+}
+
+/// #2066: the `$root` label of the shared stream read/drop pair when the only
+/// streams are response bodies (no named stream supplies a label).
+export fn comp_response_stream_label() -> String {
+  "response-body"
+}
+
+export fn comp_hostfuture_import_label(core_name: String) -> String with Exception {
+  if comp_is_wit_future_get_import(core_name) {
+    comp_wit_future_func(core_name)
+  } else if core_name == "host_future_get" {
+    "get-future"
+  } else {
+    String::substring(core_name, String::length("host_future_get$"), String::length(core_name))
+  }
+}
+
+/// ADR-0089 step 4 (#1218): the ADAPTER core module that implements the
+/// guest's `vibe.host_future_get` / `vibe.host_future_wait` raw imports
+/// over the canon built-ins (spec §3.13's sequence, factored out of the
+/// fixed-shape comp_generate_host_future_value_guest_core_module and
+/// re-targeted at a REAL compiled core module).
+///
+/// Values are value-passed (i64) in the guest's TAGGED convention
+/// (internal Int = value << 1, the generic vibe.* call path): the adapter
+/// shifts on entry/exit, so no compile_call shim is needed and the raw ABI
+/// stays pointer-free -- which is what makes this composition acyclic
+/// (buffers live in the memhost memory, never the guest's; the vfs
+/// shim/fixup dance is not needed).
+///
+/// ADR-0089 (c) (#1218): generalized to N host futures. `core_names` is
+/// comp_core_host_future_names' list; with K = its length, import func
+/// indices are 0..K-1 (one `[async-lower]<label>` per name), then K = future
+/// .read, K+1 = future.drop-readable, K+2 = waitable-set.new,
+/// K+3 = waitable.join, K+4 = waitable-set.wait, K+5 = waitable-set.drop,
+/// plus env.memory (memhost). Local funcs K+6 .. K+6+K-1 are the per-name
+/// getters (exported under their CORE import names, so the guest's
+/// `vibe.host_future_get$<name>` resolves), and K+6+K is the single shared
+/// `host_future_wait (i64) -> i64` -- parking is per-HANDLE, so one wait
+/// serves every name. K=1 with the anonymous name reproduces the step-4
+/// module's index layout exactly (imports 0-6, funcs 7/8); only the eager
+/// read below changed the bodies.
+///
+/// The read/drop canon defs are shared across names: every host future here
+/// is a `future<u32>`, i.e. the same component type, so one pair of canon
+/// definitions covers them all. Their $root export names are the composer's
+/// choice; keeping the first name's spelling is what makes the single-name
+/// case identical to step 4's import list.
+///
+/// Scratch layout in memhost memory: 8 = async-lower results slot,
+/// 16 = waitable-set.wait payload area, then the per-handle bands
+/// (comp_hf_value_base / comp_hf_state_base). The results slot is reused
+/// across names: an async-lowered call runs to completion (eagerly, by
+/// contract) before the next one starts. The per-handle bands are NOT
+/// shared, because several reads are in flight at once.
+/// Contract violations (non-eager get, out-of-band handle, awaiting a
+/// handle with no started read, non-FUTURE_READ wake) trap with
+/// `unreachable`: the adapter runs inside the lifted task, so the
+/// fixed-shape's task.return diagnostic bands are not available here.
+/// Complete one scalar/handle conversion at the component boundary. Keeping
+/// the shift in these two helpers prevents a new return or handle path from
+/// spelling a subtly different value convention.
+export fn comp_emit_encode_i64_value(buf: Bytes, tag_mode: Int) -> Unit {
+  if tag_mode == 1 {
+    emit_i64_const(buf, 1)
+    emit_i64_shl(buf)
+  } else {
+    ()
+  }
+}
+
+export fn comp_emit_decode_i64_value(buf: Bytes, tag_mode: Int) -> Unit {
+  if tag_mode == 1 {
+    emit_i64_const(buf, 1)
+    emit_i64_shr_s(buf)
+  } else {
+    ()
+  }
+}
+
+/// #1540: `<count>` copies of one core valtype -- the shape both trampolines
+/// spell out param lists with.
+export fn comp_repeat_valtype(valtype: Int, count: Int) -> Array[Int] {
+  let out = new_int_array()
+  let mut i = 0
+  while i < count {
+    Array::push(out, valtype)
+    i = i + 1
+  }
+  out
+}
+
+/// #1540: the `__heap_ptr`-bumping `cabi_realloc` body, LENGTH-PREFIXED for a
+/// code section -- shared by both string trampolines so the allocator the
+/// canonical ABI lowers through cannot drift between the sync and async lanes.
+///
+/// params: 0 = old_ptr, 1 = old_size, 2 = align, 3 = new_size; local 4 = the
+/// aligned pointer. Fresh allocations only: the canonical lowering of bare
+/// string params never reallocates, so old_ptr / old_size are ignored.
+export fn comp_generate_bump_realloc_body() -> Bytes {
+  let realloc_body = bytebuf_new()
+  leb128_encode_u32(realloc_body, 1)
+  leb128_encode_u32(realloc_body, 1)
+  bytebuf_push(realloc_body, 127)
+  // p = (heap + align - 1) & (0 - align)
+  bytebuf_push(realloc_body, 35)
+  leb128_encode_u32(realloc_body, 0)
+  emit_local_get(realloc_body, 2)
+  emit_i32_add(realloc_body)
+  emit_i32_const(realloc_body, 1)
+  bytebuf_push(realloc_body, 107)
+  emit_i32_const(realloc_body, 0)
+  emit_local_get(realloc_body, 2)
+  bytebuf_push(realloc_body, 107)
+  bytebuf_push(realloc_body, 113)
+  emit_local_set(realloc_body, 4)
+  // __heap_ptr = p + new_size, ROUNDED UP TO 8.
+  //
+  // The rounding is the whole point, not tidiness. This allocator hands out
+  // space in the MAIN module's memory and writes back MAIN's `__heap_ptr`, and
+  // main's own allocator keeps that pointer 8-aligned -- it starts at 80 and
+  // every bump is `(x + 7) & -8`. vibe's value representation depends on that:
+  // pointers carry tags in their low bits (`obj | 1` for the effect-handler
+  // object the suspend lowering builds, a 2-bit tag on values), so an ODD heap
+  // pointer makes `ptr | 1` a no-op and the matching `& -2` hand back
+  // `ptr - 1`. The read that follows lands one byte off and the program
+  // dereferences garbage.
+  //
+  // Leaving `p + new_size` unrounded made that depend on the LENGTH OF THE
+  // LIFTED STRINGS: `vibe serve` lifts method/url/headers through here before
+  // the handler runs, so a request whose strings summed to an odd length
+  // corrupted the handler's first heap object and an even one did not. It
+  // looked like a bug about suspending stream reads (#1924) because a chunked
+  // upload and a buffered one send different `content-length` /
+  // `transfer-encoding` headers -- different lengths, different parity.
+  emit_local_get(realloc_body, 4)
+  emit_local_get(realloc_body, 3)
+  emit_i32_add(realloc_body)
+  emit_i32_const(realloc_body, 7)
+  emit_i32_add(realloc_body)
+  emit_i32_const(realloc_body, 0 - 8)
+  bytebuf_push(realloc_body, 113)
+  bytebuf_push(realloc_body, 36)
+  leb128_encode_u32(realloc_body, 0)
+  // if (__heap_ptr > memory.size << 16) memory.grow(pages needed)
+  bytebuf_push(realloc_body, 35)
+  leb128_encode_u32(realloc_body, 0)
+  bytebuf_push(realloc_body, 63)
+  bytebuf_push(realloc_body, 0)
+  emit_i32_const(realloc_body, 16)
+  bytebuf_push(realloc_body, 116)
+  bytebuf_push(realloc_body, 75)
+  bytebuf_push(realloc_body, 4)
+  bytebuf_push(realloc_body, 64)
+  bytebuf_push(realloc_body, 35)
+  leb128_encode_u32(realloc_body, 0)
+  emit_i32_const(realloc_body, 65535)
+  emit_i32_add(realloc_body)
+  emit_i32_const(realloc_body, 16)
+  bytebuf_push(realloc_body, 118)
+  bytebuf_push(realloc_body, 63)
+  bytebuf_push(realloc_body, 0)
+  bytebuf_push(realloc_body, 107)
+  bytebuf_push(realloc_body, 64)
+  bytebuf_push(realloc_body, 0)
+  bytebuf_push(realloc_body, 26)
+  bytebuf_push(realloc_body, 11)
+  emit_local_get(realloc_body, 4)
+  bytebuf_push(realloc_body, 11)
+  let out = bytebuf_new()
+  leb128_encode_u32(out, Bytes::length(realloc_body))
+  bytebuf_push_buf(out, realloc_body)
+  bytebuf_to_bytes(out)
+}
+
+/// #537: string trampoline for the CURRENT wasi linear backend ABI.
+/// A vibe string value is the packed i64 `(byte_offset << 32) | byte_len`
+/// (mode-invariant: identical under bump and RC; see gen_str_len_body /
+/// gen_str_char_code_at_body). The legacy comp_generate_string_trampoline
+/// predates this and builds retired-host heap-object strings, so it cannot
+/// call today's core modules.
+///
+/// Imports (module "env", all supplied from the main core instance):
+///   target_func : (i64 x N) -> i64      the exported vibe handler
+///   memory      : the main linear memory
+///   __heap_ptr  : mut i32 global        the main module's bump frontier
+/// Exports:
+///   cabi_realloc : (i32,i32,i32,i32) -> i32
+///     Canonical-ABI allocator used by the host to lower string params into
+///     the main memory (and by canon_func for the string-result ret area).
+///     Bumps __heap_ptr (align-adjusted) and memory.grows as needed. Fresh
+///     allocations only (old_ptr is ignored) — the canonical lowering of
+///     bare string params/results never reallocates.
+///   canon_func : (i32 x 2N) -> i32
+///     Canonical-ABI core shape of `(string x N) -> string`: N (ptr,len)
+///     pairs in, retptr out. Packs each pair into a vibe string value, calls
+///     target_func, unpacks the returned value into an 8-byte (ptr,len)
+///     return area allocated via cabi_realloc.
+export fn comp_generate_string_trampoline_packed(string_param_count: Int) -> Bytes {
+  let buf = bytebuf_new()
+  emit_header(buf)
+  // types: 0 = target_func (i64 x N) -> i64; 1 = canon_func (i32 x 2N) -> i32;
+  // 2 = cabi_realloc (i32,i32,i32,i32) -> i32
+  let type_sec = bytebuf_new()
+  bytebuf_push_vec_header(type_sec, 3)
+  bytebuf_push(type_sec, 96)
+  // +1: top-level vibe functions carry a trailing closure-env i64 param
+  // (callers pass 0); see linked_compile's entry invocation.
+  leb128_encode_u32(type_sec, string_param_count + 1)
+  let mut ti = 0
+  while ti < (string_param_count + 1) {
+    bytebuf_push(type_sec, 126)
+    ti = ti + 1
+  }
+  bytebuf_push(type_sec, 1)
+  bytebuf_push(type_sec, 126)
+  bytebuf_push(type_sec, 96)
+  leb128_encode_u32(type_sec, string_param_count * 2)
+  let mut ci = 0
+  while ci < (string_param_count * 2) {
+    bytebuf_push(type_sec, 127)
+    ci = ci + 1
+  }
+  bytebuf_push(type_sec, 1)
+  bytebuf_push(type_sec, 127)
+  bytebuf_push(type_sec, 96)
+  leb128_encode_u32(type_sec, 4)
+  bytebuf_push(type_sec, 127)
+  bytebuf_push(type_sec, 127)
+  bytebuf_push(type_sec, 127)
+  bytebuf_push(type_sec, 127)
+  bytebuf_push(type_sec, 1)
+  bytebuf_push(type_sec, 127)
+  bytebuf_push_section(buf, 1, type_sec)
+  // imports: env.target_func (func 0), env.__heap_ptr (mut i32 global), env.memory
+  let import_sec = bytebuf_new()
+  leb128_encode_u32(import_sec, 3)
+  emit_name(import_sec, "env")
+  emit_name(import_sec, "target_func")
+  bytebuf_push(import_sec, 0)
+  leb128_encode_u32(import_sec, 0)
+  emit_name(import_sec, "env")
+  emit_name(import_sec, "__heap_ptr")
+  bytebuf_push(import_sec, 3)
+  bytebuf_push(import_sec, 127)
+  bytebuf_push(import_sec, 1)
+  emit_name(import_sec, "env")
+  emit_name(import_sec, "memory")
+  bytebuf_push(import_sec, 2)
+  bytebuf_push(import_sec, 0)
+  leb128_encode_u32(import_sec, 0)
+  bytebuf_push_section(buf, 2, import_sec)
+  // funcs: 1 = canon_func (type 1), 2 = cabi_realloc (type 2)
+  let func_sec = bytebuf_new()
+  leb128_encode_u32(func_sec, 2)
+  leb128_encode_u32(func_sec, 1)
+  leb128_encode_u32(func_sec, 2)
+  bytebuf_push_section(buf, 3, func_sec)
+  let export_sec = bytebuf_new()
+  leb128_encode_u32(export_sec, 2)
+  emit_name(export_sec, "canon_func")
+  bytebuf_push(export_sec, 0)
+  leb128_encode_u32(export_sec, 1)
+  emit_name(export_sec, "cabi_realloc")
+  bytebuf_push(export_sec, 0)
+  leb128_encode_u32(export_sec, 2)
+  bytebuf_push_section(buf, 7, export_sec)
+  let code_sec = bytebuf_new()
+  leb128_encode_u32(code_sec, 2)
+  // canon_func body. locals: params 0..2N-1 (i32); 2N = result i64; 2N+1 = retptr i32
+  let canon_body = bytebuf_new()
+  leb128_encode_u32(canon_body, 2)
+  leb128_encode_u32(canon_body, 1)
+  bytebuf_push(canon_body, 126)
+  leb128_encode_u32(canon_body, 1)
+  bytebuf_push(canon_body, 127)
+  let result_local = string_param_count * 2
+  let retptr_local = result_local + 1
+  let mut si = 0
+  while si < string_param_count {
+    // (extend_u(ptr) << 32) | extend_u(len)
+    emit_local_get(canon_body, si * 2)
+    bytebuf_push(canon_body, 173)
+    emit_i64_const(canon_body, 32)
+    bytebuf_push(canon_body, 134)
+    emit_local_get(canon_body, (si * 2) + 1)
+    bytebuf_push(canon_body, 173)
+    bytebuf_push(canon_body, 132)
+    si = si + 1
+  }
+  // Trailing closure-env argument (0 for a top-level function).
+  emit_i64_const(canon_body, 0)
+  bytebuf_push(canon_body, 16)
+  leb128_encode_u32(canon_body, 0)
+  emit_local_set(canon_body, result_local)
+  // retptr = cabi_realloc(0, 0, 4, 8)
+  emit_i32_const(canon_body, 0)
+  emit_i32_const(canon_body, 0)
+  emit_i32_const(canon_body, 4)
+  emit_i32_const(canon_body, 8)
+  bytebuf_push(canon_body, 16)
+  leb128_encode_u32(canon_body, 2)
+  emit_local_set(canon_body, retptr_local)
+  // [retptr] = wrap(result >> 32); [retptr+4] = wrap(result & 0xFFFFFFFF)
+  emit_local_get(canon_body, retptr_local)
+  emit_local_get(canon_body, result_local)
+  emit_i64_const(canon_body, 32)
+  bytebuf_push(canon_body, 136)
+  bytebuf_push(canon_body, 167)
+  emit_i32_store(canon_body, 2, 0)
+  emit_local_get(canon_body, retptr_local)
+  emit_local_get(canon_body, result_local)
+  bytebuf_push(canon_body, 167)
+  emit_i32_store(canon_body, 2, 4)
+  emit_local_get(canon_body, retptr_local)
+  bytebuf_push(canon_body, 11)
+  leb128_encode_u32(code_sec, Bytes::length(canon_body))
+  bytebuf_push_buf(code_sec, canon_body)
+  // The allocator the canonical ABI lowers through, shared with the async
+  // trampoline so the two lanes cannot drift apart.
+  bytebuf_push_buf(code_sec, comp_generate_bump_realloc_body())
+  bytebuf_push_section(buf, 10, code_sec)
+  bytebuf_to_bytes(buf)
+}
+
+/// One stub core module exporting `fd_write` plus a same-signature stub for
+/// each requested `vibe.*` import (see comp_emit_component_wasm_string_handler_stubbed).
+/// With empty inputs it degenerates to the fd_write-only stub.
+export fn comp_generate_host_stub_module(vibe_names: Array[String], vibe_sigs: Array[Array[Int]]) -> Bytes {
+  comp_generate_host_stub_module_with_policy(vibe_names, vibe_sigs, true)
+}
+
+/// `zero_stub_benign` picks which of the two answers the four benign-stubbable
+/// names get. See the comment on the branch below: dropping a write is right
+/// for a core whose only writer is a CACHE, and silently wrong for a command
+/// module, where a write is what the user asked for.
+export fn comp_generate_host_stub_module_with_policy(vibe_names: Array[String], vibe_sigs: Array[Array[Int]], zero_stub_benign: Bool) -> Bytes {
+  let out = bytebuf_new()
+  emit_header(out)
+  let n = Array::length(vibe_names)
+  let tc = bytebuf_new()
+  bytebuf_push_vec_header(tc, n + 1)
+  emit_func_type_raw(tc, [127, 127, 127, 127], [127])
+  let mut ti = 0
+  while ti < n {
+    let sig = Array::get(vibe_sigs, ti)
+    let pc = Array::get(sig, 0)
+    let params = new_int_array()
+    let mut pi = 0
+    while pi < pc {
+      Array::push(params, Array::get(sig, 1 + pi))
+      pi = pi + 1
+    }
+    let rc = Array::get(sig, 1 + pc)
+    let results = new_int_array()
+    let mut ri = 0
+    while ri < rc {
+      Array::push(results, Array::get(sig, 2 + pc + ri))
+      ri = ri + 1
+    }
+    emit_func_type_raw(tc, params, results)
+    ti = ti + 1
+  }
+  bytebuf_push_section(out, 1, tc)
+  let ftypes = new_int_array()
+  Array::push(ftypes, 0)
+  let mut fsi = 0
+  while fsi < n {
+    Array::push(ftypes, fsi + 1)
+    fsi = fsi + 1
+  }
+  emit_function_section(out, ftypes)
+  let exp_names = array_empty()
+  let exp_idxs = new_int_array()
+  Array::push(exp_names, "fd_write")
+  Array::push(exp_idxs, 0)
+  let mut ei = 0
+  while ei < n {
+    Array::push(exp_names, Array::get(vibe_names, ei))
+    Array::push(exp_idxs, ei + 1)
+    ei = ei + 1
+  }
+  emit_export_section_multi(out, exp_names, exp_idxs)
+  let bodies = Array::slice([(bytebuf_new())], 0, 0)
+  let fd_body = bytebuf_new()
+  emit_i32_const(fd_body, 0)
+  Array::push(bodies, fd_body)
+  let mut bi = 0
+  while bi < n {
+    let body = bytebuf_new()
+    let sn = Array::get(vibe_names, bi)
+    // Zero-stubs: env-get -> raw-ABI empty string ("unset"); the fs WRITE
+    // pair -> silently dropped (the only writer on the compile path is the
+    // persistent header/artifact cache, and dropping a cache write is
+    // semantically a cache miss); profile-now-us -> 0 (no clock). Everything
+    // else traps (`unreachable`) — those imports are dynamically dead per
+    // the lifted entry's effect row, and trapping (instead of fabricating a
+    // value) surfaces any violation of that proof immediately.
+    // `zero_stub_benign` is FALSE for a command component (#2861, Codex
+    // review). The rationale above is the vibec core's: its only writer is the
+    // persistent cache, so a dropped write is a cache miss. A command module's
+    // write is the user's intent, and dropping it made
+    // `Fs::write_file(p, s)` build, dispatch, print its success line and exit
+    // 0 having written nothing -- measured, and the exact silently-wrong
+    // failure this project ranks worst. Under `false` every one of the four
+    // traps like the rest.
+    if zero_stub_benign && (sn == "env-get" || sn == "fs_write_file" || sn == "fs_write_bytes" || sn == "profile-now-us") {
+      // Match the import's declared result shape: nothing for void, a typed
+      // zero otherwise (i64 for the raw ABI, i32 defensively).
+      let sig = Array::get(vibe_sigs, bi)
+      let pc = Array::get(sig, 0)
+      let rc = Array::get(sig, 1 + pc)
+      if rc >= 1 {
+        if Array::get(sig, 2 + pc) == 127 {
+          emit_i32_const(body, 0)
+        } else {
+          emit_i64_const(body, 0)
+        }
+      } else {
+        ()
+      }
+    } else {
+      bytebuf_push(body, 0)
+    }
+    Array::push(bodies, body)
+    bi = bi + 1
+  }
+  emit_code_section(out, bodies)
+  bytebuf_to_bytes(out)
+}
+
+/// #1540 scope 4: scratch layout for the serve lane's host-stream adapter.
+///
+/// These are addresses in a memhost page the adapter OWNS, not in the main
+/// module's memory. That is the whole reason the memhost exists here: the
+/// canons need a memory for the read landing slot and the wait payload, and
+/// the only other memory in this component is the vibe heap. Writing fixed
+/// addresses into that would corrupt whatever the program had there.
+///
+/// EVERY band is indexed by handle, because a serve component instance
+/// carries MANY request tasks at once. The load-bearing one is the read
+/// landing slot: `stream.read(h, addr, 1)` registers `addr` with the canon
+/// and then blocks, so the producer writes there whenever it delivers -- and
+/// two requests blocked on their own bodies would be handing the same address
+/// to two producers. That is the reason the named adapter bands its own slot
+/// (comp_hs_value_base), and it corrupts bodies silently rather than trapping.
+///
+/// Handles are capped at comp_hf_max_handles() (1023), so the three bands end
+/// at 16384, well inside the single page.
+
+/// One WORD per handle (the byte lands in its low end), indexed by handle * 4.
+let comp_ss_scratch_base: Int = 0
+
+/// TWO words per handle, indexed by handle * 8: `waitable-set.wait` writes the
+/// event in the first and the status in the second. Unlike the slot above this
+/// one is written at RESUME time, with no suspension point between the wait
+/// returning and the load -- so sharing it would in fact be safe. It is banded
+/// anyway: the page is the adapter's own and 8 KiB of it is free, and a
+/// layout where one band is per-handle "because it must be" and its neighbour
+/// is shared "because the argument works out" is one refactor away from being
+/// wrong.
+let comp_ss_payload_base: Int = 4096
+
+/// One word per handle, indexed by handle * 4 -- the CLOSED latch.
+let comp_ss_closed_base: Int = 12288
+
+/// #1540 scope 4: `vibe.host_stream_read` for the serve lane.
+///
+/// The compiled handler imports `vibe.host_stream_read (i64) -> (i64)` -- and
+/// `vibe.host_stream_close` too if it stops reading early -- and nothing else
+/// (#1871 scope 3): the stream arrives as a parameter, so there is no named
+/// getter. This module exports both halves, unconditionally.
+///
+/// Deliberately NOT `comp_generate_hostfuture_adapter_core_module`, which
+/// implements the same function: that one emits it only when there is at least
+/// one NAMED stream, and its entire index layout is derived from the named
+/// future/stream counts. Teaching it "no names, still a reader" moves every
+/// index in a module four other lanes depend on, and supplying a dummy name
+/// would reintroduce the `[async-lower]<label>` component import that #1796
+/// ruled out as a composition cycle.
+///
+/// The loop is the measured one (tools/wasip3_component_probe/host_stream_value
+/// and http_body_read): BLOCKED is 0xffffffff, a completion packs
+/// `(amount << 4) | code`, the read wake event is 2, the wait payload's SECOND
+/// word is the status, and the end of the stream arrives EITHER as a
+/// zero-transfer code 1 OR riding along with the final byte. That second shape
+/// is why there is a latch: reading again after an inline close traps, so the
+/// close is recorded and settled on the NEXT call.
+///
+/// Values cross as PLAIN i64 -- no tag shift on either side, unlike the named
+/// adapter's half. Both are right for their own lane: an Int's representation
+/// is `enable_rc`'s (linked_compile's tag_mode), the named lane's core comes
+/// from the CLI's RC compile (`value << 1`), and this lane's comes from
+/// `compile_wasi_module_no_dce_impl` with enable_rc = false (plain i64).
+/// Mixing them is the whole failure mode this convention exists to avoid: it
+/// does not trap, it silently doubles every byte the handler reads.
+///
+/// So: the handle arrives untagged from the trampoline, the byte goes back
+/// untagged, and end of stream is a plain `-1` -- the value the injected
+/// `__hs_fin` latches on.
+export fn comp_generate_serve_stream_adapter_module() -> Bytes {
+  let out = bytebuf_new()
+  emit_header(out)
+  // types: 0 = stream.read (h, ptr, n) -> status; 1 = (h) -> () for
+  // drop-readable and waitable-set.drop; 2 = () -> set; 3 = (a, b) -> () for
+  // waitable.join; 4 = (set, ptr) -> event; 5 = (i64) -> i64, the shape BOTH
+  // halves of the vibe-side surface share.
+  let tc = bytebuf_new()
+  bytebuf_push_vec_header(tc, 6)
+  emit_func_type_raw(tc, comp_repeat_valtype(127, 3), [127])
+  emit_func_type_raw(tc, comp_repeat_valtype(127, 1), array_empty())
+  emit_func_type_raw(tc, array_empty(), [127])
+  emit_func_type_raw(tc, comp_repeat_valtype(127, 2), array_empty())
+  emit_func_type_raw(tc, comp_repeat_valtype(127, 2), [127])
+  emit_func_type_raw(tc, [126], [126])
+  bytebuf_push_section(out, 1, tc)
+  let ic = bytebuf_new()
+  bytebuf_push_vec_header(ic, 7)
+  emit_name(ic, "$root")
+  emit_name(ic, "[async-lower][stream-read-0]body")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 0)
+  emit_name(ic, "$root")
+  emit_name(ic, "[stream-drop-readable-0]body")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 1)
+  emit_name(ic, "$root")
+  emit_name(ic, "[waitable-set-new]")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 2)
+  emit_name(ic, "$root")
+  emit_name(ic, "[waitable-join]")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 3)
+  emit_name(ic, "$root")
+  emit_name(ic, "[waitable-set-wait]")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 4)
+  emit_name(ic, "$root")
+  emit_name(ic, "[waitable-set-drop]")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 1)
+  emit_name(ic, "env")
+  emit_name(ic, "memory")
+  bytebuf_push(ic, 2)
+  bytebuf_push(ic, 0)
+  leb128_encode_u32(ic, 1)
+  bytebuf_push_section(out, 2, ic)
+  emit_function_section(out, [5, 5])
+  // Both halves of the surface, ALWAYS. `host_stream_close` is what a handler
+  // that stops reading early lowers to (`__hs_close` -> `vibe.host_stream_close`,
+  // spec §3.18.1), and a core that imports it cannot be instantiated against an
+  // adapter that does not export it. Emitting it unconditionally costs a few
+  // bytes in the components that never call it and keeps "take the first four
+  // bytes and hang up" from being a shape `vibe serve` refuses to compose.
+  let export_sec = bytebuf_new()
+  leb128_encode_u32(export_sec, 2)
+  emit_name(export_sec, "host_stream_read")
+  bytebuf_push(export_sec, 0)
+  leb128_encode_u32(export_sec, 6)
+  emit_name(export_sec, "host_stream_close")
+  bytebuf_push(export_sec, 0)
+  leb128_encode_u32(export_sec, 7)
+  bytebuf_push_section(out, 7, export_sec)
+  // param 0 = the handle (i64, untagged); locals (i32) 1 = handle, 2 = status,
+  // 3 = waitable set, 4 = event, 5 = the latch address, 6 = the read slot.
+  let b = bytebuf_new()
+  emit_local_get(b, 0)
+  emit_i32_wrap_i64(b)
+  emit_local_set(b, 1)
+  // Same cap the named adapter enforces, for the same reason: the latch band
+  // is `handle * 4 + comp_ss_closed_base` in a ONE-page memory, so an
+  // unbounded handle would silently walk past the page instead of saying so.
+  // Trapping here names the limit; growing past it is a change to the band,
+  // not something to discover as an out-of-bounds store.
+  emit_local_get(b, 1)
+  emit_i32_const(b, comp_hf_max_handles())
+  emit_i32_gt_u(b)
+  emit_if_void(b)
+  bytebuf_push(b, 0)
+  emit_end(b)
+  emit_local_get(b, 1)
+  emit_i32_const(b, 2)
+  emit_i32_shl(b)
+  emit_i32_const(b, comp_ss_closed_base)
+  emit_i32_add(b)
+  emit_local_set(b, 5)
+  emit_local_get(b, 1)
+  emit_i32_const(b, 2)
+  emit_i32_shl(b)
+  emit_i32_const(b, comp_ss_scratch_base)
+  emit_i32_add(b)
+  emit_local_set(b, 6)
+  // A latch set by a previous inline close: this call is the settle it was
+  // waiting for. Drop the readable end now and report the end of the stream.
+  emit_local_get(b, 5)
+  emit_i32_load(b, 2, 0)
+  emit_if_void(b)
+  emit_local_get(b, 5)
+  emit_i32_const(b, 0)
+  emit_i32_store(b, 2, 0)
+  emit_local_get(b, 1)
+  emit_call(b, 1)
+  emit_i64_const(b, 0 - 1)
+  emit_return(b)
+  emit_end(b)
+  // One byte per call: the current host-stream read shape, and the worst case
+  // for status handling.
+  emit_local_get(b, 1)
+  emit_local_get(b, 6)
+  emit_i32_const(b, 1)
+  emit_call(b, 0)
+  emit_local_set(b, 2)
+  emit_local_get(b, 2)
+  emit_i32_const(b, -1)
+  emit_i32_eq(b)
+  emit_if_void(b)
+  // BLOCKED: park until the producer delivers, then UNJOIN before dropping
+  // the set -- dropping one that still has members traps.
+  emit_call(b, 2)
+  emit_local_set(b, 3)
+  emit_local_get(b, 1)
+  emit_local_get(b, 3)
+  emit_call(b, 3)
+  emit_local_get(b, 3)
+  emit_local_get(b, 1)
+  emit_i32_const(b, 3)
+  emit_i32_shl(b)
+  emit_i32_const(b, comp_ss_payload_base)
+  emit_i32_add(b)
+  emit_call(b, 4)
+  emit_local_set(b, 4)
+  emit_local_get(b, 1)
+  emit_i32_const(b, 0)
+  emit_call(b, 3)
+  emit_local_get(b, 3)
+  emit_call(b, 5)
+  emit_local_get(b, 4)
+  emit_i32_const(b, 2)
+  emit_i32_ne(b)
+  emit_if_void(b)
+  bytebuf_push(b, 0)
+  emit_end(b)
+  emit_local_get(b, 1)
+  emit_i32_const(b, 3)
+  emit_i32_shl(b)
+  emit_i32_const(b, comp_ss_payload_base + 4)
+  emit_i32_add(b)
+  emit_i32_load(b, 2, 0)
+  emit_local_set(b, 2)
+  emit_end(b)
+  // Nothing transferred = the end of the stream. Any zero-transfer code other
+  // than the measured CLOSED (1) is an assumption that moved: trap rather than
+  // report an end that may not be one.
+  emit_local_get(b, 2)
+  emit_i32_const(b, 4)
+  emit_i32_shr_u(b)
+  emit_i32_eqz(b)
+  emit_if_void(b)
+  emit_local_get(b, 2)
+  emit_i32_const(b, 15)
+  emit_i32_and(b)
+  emit_i32_const(b, 1)
+  emit_i32_ne(b)
+  emit_if_void(b)
+  bytebuf_push(b, 0)
+  emit_end(b)
+  emit_local_get(b, 1)
+  emit_call(b, 1)
+  emit_i64_const(b, 0 - 1)
+  emit_return(b)
+  emit_end(b)
+  // A byte landed. If the end came WITH it, latch that: reading again after
+  // the notification traps, so the drop happens on the next call instead.
+  emit_local_get(b, 2)
+  emit_i32_const(b, 15)
+  emit_i32_and(b)
+  emit_i32_const(b, 1)
+  emit_i32_eq(b)
+  emit_if_void(b)
+  emit_local_get(b, 5)
+  emit_i32_const(b, 1)
+  emit_i32_store(b, 2, 0)
+  emit_end(b)
+  emit_local_get(b, 6)
+  emit_i32_load8_u(b, 0, 0)
+  bytebuf_push(b, 173)
+  // host_stream_close: release a readable end the handler stopped reading.
+  // No `stream.read` and no park -- dropping is synchronous. The guest's cell
+  // state gates the ONE call (`__hs_close` drops only from state 3 and closes
+  // the cell in the same step), which matters because a second
+  // `stream.drop-readable` on a dropped end traps host-side. Clearing the
+  // latch first keeps a pending inline-close from firing a second drop.
+  //
+  // Returns 0: the surface is `-> Unit`, but the raw ABI is uniformly
+  // `(i64) -> i64`, so the injected wrapper discards this.
+  let cb = bytebuf_new()
+  emit_local_get(cb, 0)
+  emit_i32_wrap_i64(cb)
+  emit_local_set(cb, 1)
+  emit_local_get(cb, 1)
+  emit_i32_const(cb, comp_hf_max_handles())
+  emit_i32_gt_u(cb)
+  emit_if_void(cb)
+  bytebuf_push(cb, 0)
+  emit_end(cb)
+  emit_local_get(cb, 1)
+  emit_i32_const(cb, 2)
+  emit_i32_shl(cb)
+  emit_i32_const(cb, comp_ss_closed_base)
+  emit_i32_add(cb)
+  emit_i32_const(cb, 0)
+  emit_i32_store(cb, 2, 0)
+  emit_local_get(cb, 1)
+  emit_call(cb, 1)
+  emit_i64_const(cb, 0)
+  let code_sec = bytebuf_new()
+  leb128_encode_u32(code_sec, 2)
+  let fb = bytebuf_new()
+  leb128_encode_u32(fb, 1)
+  leb128_encode_u32(fb, 7)
+  bytebuf_push(fb, 127)
+  bytebuf_push_buf(fb, b)
+  bytebuf_push(fb, 11)
+  leb128_encode_u32(code_sec, bytebuf_length(fb))
+  bytebuf_push_buf(code_sec, fb)
+  let cfb = bytebuf_new()
+  leb128_encode_u32(cfb, 1)
+  leb128_encode_u32(cfb, 1)
+  bytebuf_push(cfb, 127)
+  bytebuf_push_buf(cfb, cb)
+  bytebuf_push(cfb, 11)
+  leb128_encode_u32(code_sec, bytebuf_length(cfb))
+  bytebuf_push_buf(code_sec, cfb)
+  bytebuf_push_section(out, 10, code_sec)
+  bytebuf_to_bytes(out)
+}

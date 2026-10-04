@@ -84,8 +84,9 @@ import ./compile_match.vibe {
   compile_match
 }
 
-/// #745: local mirror of compile_expr_tail's expr_is_floatish/slot_is_floatish
-/// (importing them here would be a cycle: compile_expr_tail imports this file).
+/// #745: the slot-log half of the floatish classifier. compile_expr_tail keeps
+/// an exported `slot_is_floatish` with the same body for its own `let` logging
+/// (importing it here would be a cycle: compile_expr_tail imports this file).
 /// Used to route `eq(a, b)` with a float operand onto the unbox + f64.eq path
 /// under RC — the scalar i64.eq below compares BOX POINTERS for boxed floats,
 /// so `eq(0.0125, 0.0125)` came out false and the assert trapped.
@@ -169,9 +170,15 @@ export fn cc_expr_is_floatish(raw_e: Expr, local_names: Array[String], ctx: Comp
 }
 
 fn cc_expr_is_floatish_syntactic(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
-  // fbox (#797): mirror of expr_is_floatish's EDot tuple-projection case --
-  // `t.N` on a tracked tuple-literal binding recurses into the backing
-  // ETuple element via the #724 agg log.
+  // fbox (#797): `t.N` tuple projection survives to codegen as EDot (expr_tag
+  // -1), NOT as __rec_field (that lowering is only produced for tuple
+  // DESTRUCTURING and record-pattern desugars). Heap fields store floats as
+  // raw f64 bits (boxed under RC), so the reader must recover float-ness
+  // statically -- without this, `let t = (1.5, 2.5); t.0 + t.1` integer-adds
+  // two bit patterns into NaN and Double::to_int traps. The #724 agg log
+  // keeps the backing ETuple expression per slot; recurse into the projected
+  // element. Untracked bindings stay false (same over-approximation as the
+  // rest of this predicate).
   let dot_float = match e {
     EDot(dobj, dfield, _, _) => {
       let fc = String::char_code_at(dfield, 0)
@@ -234,6 +241,10 @@ fn cc_expr_is_floatish_syntactic(e: Expr, local_names: Array[String], ctx: Compi
     }
   } else if tag == 5 {
     let op = get_ebinop_op(e)
+    // #744: arithmetic only. A float COMPARISON (`n < 0.0`) yields a Bool —
+    // including `<`/`>`/`<=`/`>=` here marked a let-bound comparison result
+    // as floatish, and a later `neg && ...` on that Bool took the float binop
+    // path and threw "unsupported float binop: &&".
     if op == "+" || op == "-" || op == "*" || op == "/" {
       cc_expr_is_floatish(get_ebinop_lhs(e), local_names, ctx) || cc_expr_is_floatish(get_ebinop_rhs(e), local_names, ctx)
     } else {
@@ -351,10 +362,14 @@ fn cc_expr_is_floatish_syntactic(e: Expr, local_names: Array[String], ctx: Compi
         // table to read it from. CompileCtx.float_ret_fns is that table.
         true
       } else if fname == "__rec_field" {
-        // fbox (#797): mirror of expr_is_floatish's tuple-projection case --
-        // `t.0` on a tracked tuple-literal binding recurses into the backing
-        // ETuple element via the #724 agg log (heap fields hold raw f64 bits,
-        // so the reader must recover float-ness statically).
+        // fbox (#797): `t.0` on a TRACKED tuple-literal binding (`let t =
+        // (1.5, 2.5)`). Heap fields store floats as RAW f64 bits, so the
+        // reader must recover float-ness statically -- without this, `t.0 +
+        // t.1` integer-adds two bit patterns into NaN and `Double::to_int`
+        // traps ("invalid conversion to integer"). The #724 agg log already
+        // keeps the backing ETuple expression per slot; recurse into the
+        // projected element. Non-literal / untracked bindings stay false
+        // (same over-approximation as the rest of this predicate).
         let args = get_ecall_args(e)
         if Array::length(args) == 2 && is_eident(Array::get(args, 0)) && expr_tag(Array::get(args, 1)) == 0 {
           let slot = find_local_slot(local_names, get_eident_name(Array::get(args, 0)))
@@ -386,13 +401,26 @@ fn cc_expr_is_floatish_syntactic(e: Expr, local_names: Array[String], ctx: Compi
         false
       }
     } else if is_efn(callee) && Array::length(get_ecall_args(e)) == 1 {
-      // #1153/#1185 (+ #1207 Codex review P2): mirror of expr_is_floatish's
-      // identical ascribe_wrap case (compile_expr_tail.vibe) for this
-      // file's local copy -- see that fix's comment for the full mechanism
-      // and for why the match requires the COMPLETE synthetic identity-
-      // lambda shape (no type params, no declared return type, no effect
-      // row, body exactly `EIdent(<the param's own name>, _)`), not just
-      // the param's own name/type.
+      // #1153/#1185 (+ #1207 Codex review P2): `let x: Double = e` / `let x:
+      // Float = e` parses to the ascription marker `((__asc: Double) ->
+      // __asc)(e)` (parser_expr_dispatch's ascribe_wrap) -- mirrors
+      // expr_is_boolish's identical `is_efn(callee)` case for `Bool` (#815),
+      // just never extended to Float/Double. Without this, an explicitly-
+      // annotated Double/Float `let` is invisible to float_local_slots:
+      // under RC a float is a BOXED heap value (#704), so a `==`/`!=`
+      // between two such misclassified slots falls through emit_eq_value's
+      // generic `eq` fallback, which compares the two DISTINCT boxes by
+      // pointer rather than unboxing and comparing values -- silently
+      // `false` for equal doubles. The same misclassification also feeds
+      // `__to_string`/string interpolation, which then reads the boxed
+      // pointer as if it were a plain Int (#1153: garbage output).
+      // Matches the COMPLETE synthetic identity-lambda shape (no type
+      // params, no declared return type, no effect row, body exactly
+      // `EIdent(<the param's own name>, _)`) -- the same precision
+      // checker.vibe's `ascription_lambda_ann` uses for this identical
+      // marker -- so a hand-written IIFE that merely happens to name its
+      // param `__asc`/`__shadow_*___asc` (e.g. `((__asc: Double) -> String
+      // { "hello" })(1.0)`) isn't misread as this marker.
       match callee {
         EFn(tparams, _, params, ret_ty, effect, body) => if Array::length(tparams) == 0 && Array::length(params) == 1 && (match ret_ty {
           None => true,

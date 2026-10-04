@@ -159,7 +159,7 @@ if command -v wasm-tools >/dev/null 2>&1; then
   mhdir="_build/_gate_memhost_realloc"
   rm -rf "$mhdir"; mkdir -p "$mhdir"
   cat > "$mhdir/emit.vibe" <<'MHEOF'
-import @vibe/compiler/entry/source_compile/wasi_only {
+import @vibe/compiler/codegen/component {
   comp_emit_memhost_realloc_fixture
 }
 
@@ -212,7 +212,7 @@ if command -v wasm-tools >/dev/null 2>&1 && [ -n "$gate_wasmtime_bin" ] \
   asdir="_build/_gate_async_string_component"
   rm -rf "$asdir"; mkdir -p "$asdir"
   cat > "$asdir/emit.vibe" <<'ASEOF'
-import @vibe/compiler/entry/source_compile/wasi_only {
+import @vibe/compiler/codegen/component {
   comp_emit_async_string_component
 }
 

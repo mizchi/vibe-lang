@@ -1,7 +1,7 @@
 // lib/@vibe/compiler/codegen/expr/compile_expr_tail.vibe — expr is floatish syntactic.
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeExpr, bytebuf_length, bytebuf_push, typed_lowering_arg_offset, typed_lowering_float_key
+  Expr, Pat, Stmt, TypeExpr, bytebuf_length, bytebuf_push
 }
 
 import @vibe/core {
@@ -19,52 +19,17 @@ import @vibe/compiler/codegen/common_base {
   LambdaTable,
   LineMapState,
   StrTable,
-  agg_expr_lookup,
-  agg_slot_lookup,
   emit_i32_eqz,
   emit_i32_mul,
   emit_i32_ne,
   emit_i32_sub,
   expr_tag,
-  find_local_slot,
-  func_table_user_index_of,
-  get_arm_body,
   get_ebinop_op,
-  get_efn_body,
-  get_eif_else,
-  get_eif_then,
-  get_elet_body,
-  get_elet_name,
-  get_elet_val,
-  is_efn,
-  is_eident,
-  is_etuple
+  get_efn_body
 }
 
 import @vibe/compiler/codegen/common_extractors {
-  array_contains_int,
-  array_contains_str,
-  first_offset,
-  get_ebinop_lhs,
-  get_ebinop_rhs,
-  get_ecall_args,
-  get_ecall_callee,
-  get_ecall_off,
-  get_efn_params,
-  get_eident_name,
-  get_eint_value,
-  get_eletmut_body,
-  get_eletmut_name,
-  get_eletmut_val,
-  get_eletrec_body,
-  get_eletrec_name,
-  get_eletrec_val,
-  get_eseq_second,
-  get_etuple_elems,
-  get_eunaryop_expr,
-  get_eunaryop_op,
-  get_match_arms,
-  offset_to_line
+  array_contains_str, first_offset, get_efn_params, get_eident_name, get_eunaryop_op, offset_to_line
 }
 
 import @vibe/compiler/perceus {
@@ -87,7 +52,7 @@ import @vibe/compiler/codegen/wasm_emit {
 }
 
 import ./compile_call.vibe {
-  cc_builtin_call_ret_kind, cc_fn_returns_float, compile_call
+  cc_expr_is_boolish, cc_expr_is_floatish, compile_call
 }
 
 import ./compile_expr_tail2.vibe {
@@ -291,23 +256,6 @@ export fn slot_is_intish(ctx: CompileCtx, slot: Int) -> Bool {
   result
 }
 
-/// #769: is the local in `slot` known to hold specifically a Bool (kind 3)?
-fn slot_is_boolish(ctx: CompileCtx, slot: Int) -> Bool {
-  let arr = ctx.int_local_slots
-  let mut j = Array::length(arr) - 1
-  let mut result = false
-  while j >= 0 {
-    let entry = Array::get(arr, j)
-    if entry / 4 == slot {
-      result = (entry % 4) == 3
-      j = -1
-    } else {
-      j = j - 1
-    }
-  }
-  result
-}
-
 /// #950: is the local in `slot` known to hold specifically a String (kind 2)?
 /// Consulted only by the rebind-clear logic at the `let`/`let mut` logging
 /// sites (a non-string rebind of a previously-stringish slot must log a
@@ -329,442 +277,19 @@ export fn slot_is_stringish(ctx: CompileCtx, slot: Int) -> Bool {
   result
 }
 
-/// #2462/#2464: does the CHECKER say this render/`eq` argument is a `Bool`?
-/// Keyed by `typed_lowering_arg_offset`, the producer's own key -- see
-/// `bool_offset_says_bool` in compile_call.vibe, the twin of this.
-fn tail_offset_says_bool(e: Expr, ctx: CompileCtx) -> Bool {
-  let off = typed_lowering_arg_offset(e)
-  off >= 0 && array_contains_int(ctx.bool_render_offsets, off)
-}
-
-/// #769: does `e` statically evaluate to a Bool? Bool literals, comparison /
-/// logical operators, `!`, and -- via the kind-3 slot log above -- a bare ident
-/// `let`-bound to a boolish value. Syntactic over-approximation like
-/// expr_is_intish; consumers use it only to pick "true"/"false" formatting.
+/// #769: does `e` statically evaluate to a Bool? The linear lane's one
+/// classifier lives in compile_call (`cc_expr_is_boolish`), which this file
+/// imports; compile_call cannot import this file back without a cycle, which
+/// is why there used to be a second, identical copy here.
 export fn expr_is_boolish(raw_e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
-  let e = cl_return_operand(raw_e)
-  let tag = expr_tag(e)
-  // #2462/#2464: the checker's answer first, as an extra `||` -- same channel
-  // and same key as `cc_expr_is_boolish`'s arm in compile_call.vibe. These two
-  // copies must agree; a table consulted by only one of them is a coin flip on
-  // which copy a given site reaches.
-  if tail_offset_says_bool(e, ctx) {
-    true
-  } else if tag == 1 {
-    true
-  } else if tag == 4 {
-    let nm = get_eident_name(e)
-    let mut i = Array::length(local_names) - 1
-    let mut slot = -1
-    while i >= 0 {
-      if Array::get(local_names, i) == nm {
-        slot = i
-        i = -1
-      } else {
-        i = i - 1
-      }
-    }
-    if slot >= 0 {
-      slot_is_boolish(ctx, slot)
-    } else {
-      false
-    }
-  } else if tag == 5 {
-    let op = get_ebinop_op(e)
-    op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">=" || op == "&&" || op == "||"
-  } else if tag == 6 {
-    get_eunaryop_op(e) == "!"
-  } else if tag == 16 {
-    // #815: an `is` expression desugars at parse time to a match whose arms
-    // all return Bool literals — classify such a match as boolish so
-    // `"\{opt is None}"` prints true/false instead of the raw 0/1.
-    // #825: arm bodies recurse through expr_is_boolish (not just Bool
-    // literals), because the structural `==` dispatch on Option/Result/tuple
-    // lowers to nested matches whose leaf arms are `==`/`&&` chains and Bool
-    // literals — so `"\{Some(1) == Some(1)}"` prints true, not 1.
-    let arms = get_match_arms(e)
-    let alen2 = Array::length(arms)
-    if alen2 == 0 {
-      false
-    } else {
-      let mut all_bool = true
-      let mut bi2 = 0
-      while bi2 < alen2 {
-        if !expr_is_boolish(get_arm_body(Array::get(arms, bi2)), local_names, ctx) {
-          all_bool = false
-        } else {
-          ()
-        }
-        bi2 = bi2 + 1
-      }
-      all_bool
-    }
-  } else if tag == 9 {
-    // #825: the normalize pass lifts a non-ident match scrutinee into
-    // `let __m_scrut_N = <e> in match ...` (lift_match_scrutinees), so a
-    // boolish match arrives here wrapped in a let — classify by the BODY.
-    // Same for the other body-position wrappers below.
-    expr_is_boolish(get_elet_body(e), local_names, ctx)
-  } else if tag == 10 {
-    expr_is_boolish(get_eletrec_body(e), local_names, ctx)
-  } else if tag == 11 {
-    expr_is_boolish(get_eletmut_body(e), local_names, ctx)
-  } else if tag == 14 {
-    expr_is_boolish(get_eseq_second(e), local_names, ctx)
-  } else if tag == 7 {
-    // An if-expression is boolish when BOTH branches are.
-    expr_is_boolish(get_eif_then(e), local_names, ctx) && expr_is_boolish(get_eif_else(e), local_names, ctx)
-  } else if tag == 8 {
-    // #815: the `==` desugar rewrites array equality to the compiler-emitted
-    // `__arr_equals__<key>` helper and struct/enum equality to `T::equals`
-    // (both Bool-returning), so the EBinOp shape above is gone by codegen.
-    // `__arr_equals__` is a reserved compiler prefix; `::equals` (2 args) is
-    // the == rewrite's exact output shape. A `not(...)` wrap (the `!=`
-    // rewrite's output) is classified only when its single argument is itself
-    // boolish, `not` is not locally shadowed, AND no USER function is named
-    // `not` -- see the cc_expr_is_boolish twin in compile_call.vibe for what
-    // that last guard fixed and why the typed channel could not.
-    let bcallee = get_ecall_callee(e)
-    if is_eident(bcallee) {
-      let bcn = get_eident_name(bcallee)
-      String::starts_with(bcn, "__arr_equals__") || (String::ends_with(bcn, "::equals") && Array::length(get_ecall_args(e)) == 2) || (bcn == "not" && Array::length(get_ecall_args(e)) == 1 && find_local_slot(local_names, "not") < 0 && func_table_user_index_of(ctx.func_table, "not", ctx.num_user_funcs) < 0 && expr_is_boolish(Array::get(get_ecall_args(e), 0), local_names, ctx)) || cc_builtin_call_ret_kind(e, local_names, ctx) == 1
-    } else if is_efn(bcallee) && Array::length(get_ecall_args(e)) == 1 {
-      // #815: `let x: Bool = e` parses to the ascription marker
-      // `((__asc: Bool) -> __asc)(e)` (ELet carries no type field, see
-      // parser_expr_dispatch's ascribe_wrap) — honor the annotation so the
-      // binding's slot is logged boolish even when `e` itself is opaque.
-      // The SECOND and later ascriptions in one function arrive with the
-      // param renamed to `__shadow_<n>___asc` (normalize's
-      // uniquify_shadowed_bindings; per-function `seen` de-dup), so match
-      // that renamed form too — otherwise only the first annotated let per
-      // function was classified (#825 follow-up).
-      let fparams = get_efn_params(bcallee)
-      if Array::length(fparams) == 1 {
-        let (asc_name, asc_ty) = Array::get(fparams, 0)
-        (asc_name == "__asc" || (String::starts_with(asc_name, "__shadow_") && String::ends_with(asc_name, "___asc"))) && (match asc_ty {
-          Some(TyName(tn)) => tn == "Bool",
-          _ => false
-        })
-      } else {
-        false
-      }
-    } else {
-      false
-    }
-  } else {
-    false
-  }
+  cc_expr_is_boolish(raw_e, local_names, ctx)
 }
 
 /// Blocker-3 (ADR-0055): does `e` statically evaluate to an f64 bit pattern?
-/// Syntactic over-approximation (the AST is untyped): float literals, float
-/// arithmetic / comparison over floatish operands, float-producing conversions,
-/// and — crucially — a *variable* bound to a floatish value (tracked in
-/// ctx.float_local_slots as `let`s compile). This lets `let x = 1.5; x + y`
-/// take the f64 path. Shared by compile_expr (binop/unary instruction choice)
-/// and the `let` handler below (which populates float_local_slots).
-/// #2424: did the CHECKER say this exact node is a `Double`?
-///
-/// The Double twin of the Int render/`eq` term. Same contract, same fail-closed
-/// ends: an extra term in FRONT of the syntactic classifier, never a
-/// replacement, so the table can only add a classification the shape rules
-/// missed. The key is `typed_lowering_float_key` (@vibe/compiler/core), shared
-/// with the producer rather than restated here: a projection answers with its
-/// FIELD-NAME offset, and a bare NAME answers -1, because a call node's offset
-/// is its callee identifier's offset and this array carries call results. Its
-/// doc comment carries the whole argument.
-///
-/// This is what closes the row `float_call_offsets` structurally could not: a
-/// Double-typed STRUCT FIELD. That table is keyed by CALL offsets, so it had no
-/// projection arm at all, and measured before this change `b.ratio` on a
-/// `struct DBox { ratio: Double }` rendered `256` on the RC lane and trapped on
-/// gc, while the same Double through a tuple element or a plain `let` answered
-/// `1.5`. Tag 4 rows arrive in the SAME array (see split_typed_lowering_offsets)
-/// because both answer one question, and they agree on calls: a call node's
-/// `typed_lowering_arg_offset` IS its call offset.
-fn tail_offset_says_float(e: Expr, ctx: CompileCtx) -> Bool {
-  let off = typed_lowering_float_key(e)
-  off >= 0 && array_contains_int(ctx.float_call_offsets, off)
-}
-
+/// Delegates to compile_call's `cc_expr_is_floatish` for the same reason as
+/// `expr_is_boolish` above: one copy of the classifier per lane.
 export fn expr_is_floatish(raw_e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
-  let e = cl_return_operand(raw_e)
-  tail_offset_says_float(e, ctx) || expr_is_floatish_syntactic(e, local_names, ctx)
-}
-
-fn expr_is_floatish_syntactic(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
-  // fbox (#797): `t.N` tuple projection survives to codegen as EDot (expr_tag
-  // -1), NOT as __rec_field (that lowering is only produced for tuple
-  // DESTRUCTURING and record-pattern desugars). Heap fields store floats as
-  // raw f64 bits (boxed under RC), so the reader must recover float-ness
-  // statically -- without this, `let t = (1.5, 2.5); t.0 + t.1` integer-adds
-  // two bit patterns into NaN and Double::to_int traps. The #724 agg log
-  // keeps the backing ETuple expression per slot; recurse into the projected
-  // element. Untracked bindings stay false (same over-approximation as the
-  // rest of this predicate).
-  let dot_float = match e {
-    EDot(dobj, dfield, _, _) => {
-      let fc = String::char_code_at(dfield, 0)
-      if fc >= 48 && fc <= 57 && is_eident(dobj) {
-        let slot = find_local_slot(local_names, get_eident_name(dobj))
-        if slot >= 0 {
-          let info = agg_slot_lookup(ctx.agg_local_slots, slot)
-          if info >= 0 && info / 64 == 1 {
-            let backing = agg_expr_lookup(ctx.agg_local_slots, ctx.agg_local_exprs, slot)
-            if is_etuple(backing) {
-              let elems = get_etuple_elems(backing)
-              let mut k = 0
-              let mut fp = 0
-              while fp < String::length(dfield) {
-                k = k * 10 + (String::char_code_at(dfield, fp) - 48)
-                fp = fp + 1
-              }
-              if k >= 0 && k < Array::length(elems) {
-                expr_is_floatish(Array::get(elems, k), local_names, ctx)
-              } else {
-                false
-              }
-            } else {
-              false
-            }
-          } else {
-            false
-          }
-        } else {
-          false
-        }
-      } else {
-        false
-      }
-    },
-    _ => false
-  }
-  let tag = expr_tag(e)
-  if dot_float {
-    true
-  } else if tag == 2 {
-    true
-  } else if tag == 4 {
-    let nm = get_eident_name(e)
-    let len = Array::length(local_names)
-    let mut i = len - 1
-    let mut slot = -1
-    while i >= 0 {
-      if Array::get(local_names, i) == nm {
-        slot = i
-        i = -1
-      } else {
-        i = i - 1
-      }
-    }
-    if slot >= 0 {
-      slot_is_floatish(ctx, slot)
-    } else {
-      false
-    }
-  } else if tag == 5 {
-    let op = get_ebinop_op(e)
-    // #744: arithmetic only. A float COMPARISON (`n < 0.0`) yields a Bool —
-    // including `<`/`>`/`<=`/`>=` here marked a let-bound comparison result
-    // as floatish, and a later `neg && ...` on that Bool took the float binop
-    // path and threw "unsupported float binop: &&".
-    if op == "+" || op == "-" || op == "*" || op == "/" {
-      expr_is_floatish(get_ebinop_lhs(e), local_names, ctx) || expr_is_floatish(get_ebinop_rhs(e), local_names, ctx)
-    } else {
-      false
-    }
-  } else if tag == 6 {
-    let op = get_eunaryop_op(e)
-    if op == "-" {
-      expr_is_floatish(get_eunaryop_expr(e), local_names, ctx)
-    } else {
-      false
-    }
-  } else if tag == 7 || tag == 9 || tag == 10 || tag == 11 || tag == 14 || tag == 16 {
-    // #2426 follow-up (Codex review on #2430): a Double that arrives through a
-    // JOIN was invisible here, so `let a = if c { 0.0 } else { 1.0 }` left the
-    // slot unclassified and `a == b` fell back to a raw bit compare -- on
-    // every lane, RC included. Measured before this change: the `if`, `match`
-    // and block forms all answered `0.0 == -0.0` false and `nan == nan` true.
-    //
-    // The arms are the ones `expr_is_boolish`, in this same file, has had since #825
-    // -- if / match / the three let wrappers the normalize pass introduces /
-    // sequence -- with the same AND semantics, which is the fail-closed
-    // direction: a join is a Double only when EVERY way out of it is.
-    if tag == 7 {
-      expr_is_floatish(get_eif_then(e), local_names, ctx) && expr_is_floatish(get_eif_else(e), local_names, ctx)
-    } else if tag == 9 {
-      // A join arm that ends in its OWN binder -- `if c { let x = 0.0; x }` --
-      // is the shape a bare body recursion misses, because the body is
-      // `EIdent(x)` and `x` has no slot at classification time (Codex review
-      // on #2432). It is answerable WITHOUT an environment: the body is a
-      // single identifier and the `let` immediately above it binds that exact
-      // name, so no inner scope can intervene and no outer binding of the same
-      // name is reachable. Anything further -- `let x = 0.0; let z = x; z` --
-      // is NOT answerable this way and stays open, measured: it still compares
-      // by raw bits on all three lanes. Closing it needs the binding's TYPE,
-      // which is #2424's channel; the alternative, an environment carried
-      // through the descent, is the design CLAUDE.md records going silently
-      // wrong (an outer `let v = 1` read for an inner `v` of another type).
-      let jb9 = get_elet_body(e)
-      if expr_tag(jb9) == 4 && get_eident_name(jb9) == get_elet_name(e) {
-        expr_is_floatish(get_elet_val(e), local_names, ctx)
-      } else {
-        expr_is_floatish(jb9, local_names, ctx)
-      }
-    } else if tag == 10 {
-      let jb10 = get_eletrec_body(e)
-      if expr_tag(jb10) == 4 && get_eident_name(jb10) == get_eletrec_name(e) {
-        expr_is_floatish(get_eletrec_val(e), local_names, ctx)
-      } else {
-        expr_is_floatish(jb10, local_names, ctx)
-      }
-    } else if tag == 11 {
-      let jb11 = get_eletmut_body(e)
-      if expr_tag(jb11) == 4 && get_eident_name(jb11) == get_eletmut_name(e) {
-        expr_is_floatish(get_eletmut_val(e), local_names, ctx)
-      } else {
-        expr_is_floatish(jb11, local_names, ctx)
-      }
-    } else if tag == 14 {
-      expr_is_floatish(get_eseq_second(e), local_names, ctx)
-    } else {
-      let jarms = get_match_arms(e)
-      let jn = Array::length(jarms)
-      if jn == 0 {
-        false
-      } else {
-        let mut jall = true
-        let mut ji = 0
-        while ji < jn {
-          if !expr_is_floatish(get_arm_body(Array::get(jarms, ji)), local_names, ctx) {
-            jall = false
-          } else {
-            ()
-          }
-          ji = ji + 1
-        }
-        jall
-      }
-    }
-  } else if tag == 8 {
-    let callee = get_ecall_callee(e)
-    if array_contains_int(ctx.float_call_offsets, get_ecall_off(e)) {
-      // #2158: the CHECKER said this exact call node's result is a Double.
-      // The twin of the term cc_expr_is_floatish (compile_call.vibe) adds --
-      // this file holds the linear lane's SECOND hand-written copy of the
-      // classifier, and #2158 already had to be fixed twice for exactly that
-      // reason, so both copies get it. See CompileCtx.float_call_offsets.
-      //
-      // Asked before the callee shape, for the reason its twin records: the
-      // table is offset-keyed, so nesting it under `is_eident` hid it from
-      // every call whose callee is not a name.
-      true
-    } else if is_eident(callee) {
-      let fname = get_eident_name(callee)
-      if fname == "Int::to_double" || fname == "Int::to_float" || fname == "Float::to_double" || fname == "Double::to_float" || fname == "Double::from_i64_bits" {
-        true
-      } else if cc_fn_returns_float(local_names, ctx, fname) {
-        // #2158: a call to a user function DECLARED `-> Double` / `-> Float`.
-        // Without this, `let a = half(5.0)` left the slot unclassified, so a
-        // later `${a}` fell through to __to_string's runtime bit-pattern
-        // heuristic and printed the f64 bits as an Int.
-        true
-      } else if fname == "__rec_field" {
-        // fbox (#797): `t.0` on a TRACKED tuple-literal binding (`let t =
-        // (1.5, 2.5)`). Heap fields store floats as RAW f64 bits, so the
-        // reader must recover float-ness statically -- without this, `t.0 +
-        // t.1` integer-adds two bit patterns into NaN and `Double::to_int`
-        // traps ("invalid conversion to integer"). The #724 agg log already
-        // keeps the backing ETuple expression per slot; recurse into the
-        // projected element. Non-literal / untracked bindings stay false
-        // (same over-approximation as the rest of this predicate).
-        let args = get_ecall_args(e)
-        if Array::length(args) == 2 && is_eident(Array::get(args, 0)) && expr_tag(Array::get(args, 1)) == 0 {
-          let slot = find_local_slot(local_names, get_eident_name(Array::get(args, 0)))
-          if slot >= 0 {
-            let info = agg_slot_lookup(ctx.agg_local_slots, slot)
-            if info >= 0 && info / 64 == 1 {
-              let backing = agg_expr_lookup(ctx.agg_local_slots, ctx.agg_local_exprs, slot)
-              if is_etuple(backing) {
-                let elems = get_etuple_elems(backing)
-                let k = get_eint_value(Array::get(args, 1))
-                if k >= 0 && k < Array::length(elems) {
-                  expr_is_floatish(Array::get(elems, k), local_names, ctx)
-                } else {
-                  false
-                }
-              } else {
-                false
-              }
-            } else {
-              false
-            }
-          } else {
-            false
-          }
-        } else {
-          false
-        }
-      } else {
-        false
-      }
-    } else if is_efn(callee) && Array::length(get_ecall_args(e)) == 1 {
-      // #1153/#1185 (+ #1207 Codex review P2): `let x: Double = e` / `let x:
-      // Float = e` parses to the ascription marker `((__asc: Double) ->
-      // __asc)(e)` (parser_expr_dispatch's ascribe_wrap) -- mirrors
-      // expr_is_boolish's identical `is_efn(callee)` case for `Bool` (#815),
-      // just never extended to Float/Double. Without this, an explicitly-
-      // annotated Double/Float `let` is invisible to float_local_slots:
-      // under RC a float is a BOXED heap value (#704), so a `==`/`!=`
-      // between two such misclassified slots falls through emit_eq_value's
-      // generic `eq` fallback, which compares the two DISTINCT boxes by
-      // pointer rather than unboxing and comparing values -- silently
-      // `false` for equal doubles. The same misclassification also feeds
-      // `__to_string`/string interpolation, which then reads the boxed
-      // pointer as if it were a plain Int (#1153: garbage output).
-      // Matches the COMPLETE synthetic identity-lambda shape (no type
-      // params, no declared return type, no effect row, body exactly
-      // `EIdent(<the param's own name>, _)`) -- the same precision
-      // checker.vibe's `ascription_lambda_ann` uses for this identical
-      // marker -- so a hand-written IIFE that merely happens to name its
-      // param `__asc`/`__shadow_*___asc` (e.g. `((__asc: Double) -> String
-      // { "hello" })(1.0)`) isn't misread as this marker.
-      match callee {
-        EFn(tparams, _, params, ret_ty, effect, body) => if Array::length(tparams) == 0 && Array::length(params) == 1 && (match ret_ty {
-          None => true,
-          Some(_) => false
-        }) && (match effect {
-          None => true,
-          Some(_) => false
-        }) {
-          let (asc_name, asc_ty) = Array::get(params, 0)
-          if asc_name == "__asc" || (String::starts_with(asc_name, "__shadow_") && String::ends_with(asc_name, "___asc")) {
-            match body {
-              EIdent(bname, _) => if bname == asc_name {
-                match asc_ty {
-                  Some(TyName(tn)) => tn == "Double" || tn == "Float",
-                  _ => false
-                }
-              } else {
-                false
-              },
-              _ => false
-            }
-          } else {
-            false
-          }
-        } else {
-          false
-        },
-        _ => false
-      }
-    } else {
-      false
-    }
-  } else {
-    false
-  }
+  cc_expr_is_floatish(raw_e, local_names, ctx)
 }
 
 /// #678: is `e` unambiguously an integer/bool scalar — never a string or float?

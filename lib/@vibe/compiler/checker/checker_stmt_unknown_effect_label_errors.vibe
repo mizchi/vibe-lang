@@ -48,16 +48,20 @@ import @vibe/compiler/core {
   TypeDef,
   TypeEnv,
   TypeExpr,
+  bound_flat_equals_owner,
+  bound_flat_self_equals,
   collect_subst_bounds_pairs,
   compiler_owned_type_arity,
   env_lookup,
   env_type_defs,
+  erased_cmp_bound_refusal,
   expr_child_at,
   expr_children,
   expr_children_into,
   expr_children_pop,
   expr_children_push,
   expr_children_top,
+  generic_impl_cmp_refusal,
   has_standard_effect_policy,
   has_standard_host_provider,
   is_exception_effect_name,
@@ -86,7 +90,7 @@ import ./checker.vibe {
 }
 
 import @vibe/ast {
-  type_param_arity, type_param_name
+  trait_ref_name, type_param_arity, type_param_name
 }
 
 import ./checked_expression_structure_core.vibe {
@@ -132,18 +136,15 @@ import ./checker_stmt_stmts_with_binders.vibe {
 /// REFERENCE equality on `Array` / `Bytes`: a bare `[1, 2] == [1, 2]` is
 /// `false`). Say so, and name the edit that fixes it.
 ///
-/// Returns "" when no impl for this trait mentions the type's constructor, i.e.
-/// when "no impl" is the whole truth.
-fn unsatisfied_bound_hint(env: TypeEnv, trait_name: String, resolved: Type) -> String {
-  if trait_reference_display(trait_name) == "Add" && marker_cmp_bound_is_unsound(env, trait_name, resolved) {
-    // #3158 review: the `+` twin of the comparison messages below.
-    let display = trait_reference_display(trait_name)
-    let shown = type_to_string(resolved)
-    let declared = String::concat(": an `impl ", String::concat(display, String::concat(" for ", String::concat(shown, "` may be declared, but `"))))
-    let why = String::concat(display, String::concat("` is a marker trait (declared with no methods) so `+` on the erased type adds `Int`s and joins `String`s and nothing else -- on a `", String::concat(shown, "` it adds the raw representation, not the value")))
-    let cost = " -- honouring the impl would make the sum silently wrong (`1.5 + 2.25` answered `0`)"
-    let edit = String::concat(". Add at the concrete type (take a `", String::concat(shown, "` parameter) instead of through the bound, or pass the addition in as a function"))
-    String::concat(declared, String::concat(why, String::concat(cost, edit)))
+/// Three refusals explain themselves here: a comparison bound that reaches no
+/// witness at this type (`erased_cmp_bound_refusal` names the bound itself,
+/// `erased_cmp_hint`), the #1503 marker-impl gate, and a generic impl whose
+/// parameter bound is such a comparison (#3350, `generic_impl_cmp_refusal`).
+/// Returns "" when "no impl" is the whole truth.
+fn unsatisfied_bound_hint(env: TypeEnv, s: Subst, trait_name: String, resolved: Type) -> String {
+  let refused = erased_cmp_bound_refusal(env, trait_name, resolved)
+  if refused != "" && trait_ref_name(refused) == trait_ref_name(trait_name) {
+    erased_cmp_hint(env, s, trait_name, trait_name, resolved)
   } else if trait_impl_declared_for_ctor(env, trait_name, resolved) && trait_is_marker(env, trait_name) {
     let display = trait_reference_display(trait_name)
     let ctor = type_constructor_name(resolved)
@@ -154,120 +155,129 @@ fn unsatisfied_bound_hint(env: TypeEnv, trait_name: String, resolved: Type) -> S
     let cost = " -- honouring the impl would make the comparison silently wrong: two equal values answer `false`, and one value compared with itself answers `true`"
     let edit = String::concat(". Give `", String::concat(display, "` at least one method so the impl dispatches through the witness dictionary, or drop the bound"))
     String::concat(declared, String::concat(why, String::concat(cost, edit)))
-  } else if marker_cmp_bound_is_unsound(env, trait_name, resolved) {
-    // #2895: the branch above can NEVER fire for a primitive.
-    // `trait_impl_declared_for_ctor` keys on `type_constructor_name`, whose
-    // `_ => ""` arm covers `CtDouble`, and an empty head returns false. So
-    // `Double` -- the one primitive the guard now rejects -- got the bare
-    // ``no impl `Eq` for `Double` ``, which is the misleading half on its own:
-    // the prelude DOES declare `impl Eq for Double`.
-    //
-    // The edit differs from the struct case too. Nobody can add a method to
-    // the prelude's `Eq` from their own program, so the actionable advice is
-    // to compare at the concrete type instead of through the bound.
-    let display = trait_reference_display(trait_name)
-    let shown = type_to_string(resolved)
-    let declared = String::concat(": an `impl ", String::concat(display, String::concat(" for ", String::concat(shown, "` IS declared by the prelude, but `"))))
-    let why = String::concat(display, String::concat("` is a marker trait (declared with no methods) so it dispatches to the builtin `==` / `<`, and a `", String::concat(shown, "` is not a tagged immediate -- those read the BOX, not the number")))
-    let cost = " -- honouring the impl would make the comparison silently wrong: two equal values answer `false`, and `<` answers the same way in both directions"
-    let edit = String::concat(". Compare at the concrete type (take a `", String::concat(shown, "` parameter) instead of through the bound, or drop the bound"))
-    String::concat(declared, String::concat(why, String::concat(cost, edit)))
+  } else {
+    match generic_impl_cmp_refusal(env, s, trait_name, resolved) {
+      Some((bound, inner, arg)) => {
+        // #3350: `impl [T: Eq] Same for Box[T]` at `Box[Pt]`. The impl is
+        // declared; what fails is its parameter bound at `Pt`, so say which.
+        let needs = String::concat(" (its generic impl needs `", String::concat(type_to_string(arg), String::concat(": ", String::concat(trait_reference_display(bound), "`"))))
+        let via = if trait_ref_name(inner) == trait_ref_name(bound) {
+          ")"
+        } else {
+          String::concat(", and `", String::concat(trait_reference_display(bound), String::concat("` extends `", String::concat(trait_reference_display(inner), "`)"))))
+        }
+        String::concat(needs, String::concat(via, erased_cmp_hint(env, s, inner, bound, arg)))
+      },
+      None => ""
+    }
+  }
+}
+
+/// #3350: why a comparison bound that reaches no witness is refused at
+/// `resolved`, and the edit. `trait_name` is the trait `erased_cmp_bound_refusal`
+/// named: an `Eq` with no `equals(Self, Self) -> Bool`, any `Ord`, or any
+/// `Add`.
+///
+/// It says an impl is declared only when one is. A type with none reaches here
+/// too -- `[T: Eq]` at a struct with no impl, or one whose only impl is a
+/// subtrait's (`impl Key for Pt` satisfies `Eq` through `trait Key: Eq`) --
+/// and both used to be told "an `impl Eq for Pt` IS declared by the prelude".
+/// A non-marker trait is not called a marker: a program `Eq` that declares
+/// `tag(Self) -> Int` is refused for lacking `equals`, not for having no
+/// methods.
+///
+/// `via` is the bound as written (`Key` for `[T: Key]` with `trait Key: Eq`),
+/// whose witness dictionary decides which `equals` `==` would call. When that
+/// dictionary keeps a WRONG-shaped `equals` -- `trait Key: Bad + Good + Eq {}`
+/// flattens `Bad`'s `equals(Int, Int)` first -- the message names the trait it
+/// came from and the edit is to reorder or rename: giving `Eq` an `equals`
+/// would not displace it.
+fn erased_cmp_hint(env: TypeEnv, s: Subst, trait_name: String, via: String, resolved: Type) -> String {
+  let display = trait_reference_display(trait_name)
+  let name = trait_ref_name(trait_name)
+  let shown = type_to_string(resolved)
+  let ctor = type_constructor_name(resolved)
+  let marker = trait_is_marker(env, trait_name)
+  let written = trait_impl_declared_for_ctor(env, trait_name, resolved)
+  let eq_owner = if name == "Eq" {
+    bound_flat_equals_owner(env, via)
   } else {
     ""
   }
-}
-
-/// #2523: does the builtin `==` / `<` compare a value of this type by VALUE?
-///
-/// NOT simply "the scalars `lib/@vibe/builtin/builtin_traits.vibe` registers
-/// marker impls for", which is what this used to say and what put `Double` on
-/// the list. Everything else -- `Array`, `Bytes`, a tuple, an `Option`, a
-/// declared struct or enum -- is compared by REFERENCE where the type has been
-/// erased, which is the whole reason this predicate exists.
-///
-/// **`Double` is NOT on the list** (#2895). It has a marker impl like the other
-/// four, so it read as safe, and it is the one type that guard waved through
-/// while being exactly the failure the guard exists to prevent. Measured on the
-/// committed seed and on a stage2 from this branch, identical both ways:
-///
-///   bare[T: Eq](1.5, 1.5)       FALSE   <- two equal Doubles
-///   bare[T: Eq](0.0, 0.0)       FALSE
-///   1.5 == 1.5  (concrete)      true    <- the contrast
-///   lt[T: Ord](2.5, 1.5)        TRUE    <- and Ord is worse: both
-///   gt[T: Ord](2.5, 1.5)        FALSE      directions answer the same way
-///
-/// A `Double` is not a tagged immediate the way an `Int` is, so the raw
-/// comparison the erased bound falls back to reads the box, not the number.
-///
-/// Erring toward `false` costs a correct program a diagnostic, which the gates
-/// see; erring toward `true` keeps a silently wrong answer, which nothing sees.
-/// `Double` was the standing proof of the second half.
-fn marker_cmp_is_by_value(ty: Type) -> Bool {
-  match ty {
-    CtInt => true,
-    CtBool => true,
-    CtChar => true,
-    CtString => true,
-    CtNamed(name, args) => Array::length(args) == 0 && (name == "Int" || name == "Bool" || name == "Char" || name == "String"),
-    _ => false
-  }
-}
-
-/// #2523: would satisfying this bound make the comparison silently wrong?
-///
-/// `Eq` and `Ord` are declared in `@vibe/builtin` as MARKER traits -- `export
-/// trait Eq` with no methods -- so there is no dictionary for `[T: Eq]`'s `==`
-/// to dispatch through and it lowers to the builtin comparison. That is right
-/// for the five scalars the markers register impls for, and REFERENCE identity
-/// for anything else.
-///
-/// So a user `impl Eq for Pt` turned a clear error into a wrong answer.
-/// Measured on the production linear/RC lane with `fn bare[T: Eq](x: T, y: T)
-/// { x == y }`: `bare(p1, p2)` on two EQUAL, distinct `Pt` answered `false`
-/// and `bare(p1, p1)` on the same object answered `true`, while `p1 == p2` at a
-/// concrete site and `Pt::equals(p1, p2)` both answered `true`. The comparator
-/// exists and works; the bound simply never reaches it.
-///
-/// What is refused is the BOUND at this instantiation, not the impl. That is
-/// what keeps it narrow: `impl Eq for Pt` remains a legal declaration (a marker
-/// impl can be a tag), a concrete `p1 == p2` still compares structurally, and
-/// only the instantiation that would answer by identity is rejected. The edit
-/// is named by `unsatisfied_bound_hint`, which has said exactly this since
-/// #1503 and until now could only fire when the bound failed for some other
-/// reason.
-///
-/// A program whose own `Eq` carries a method is not a marker, dispatches
-/// through a real witness dictionary, and is left alone -- that is the shape
-/// ADR-0097 wants, and landing it deletes this guard.
-fn marker_cmp_bound_is_unsound(env: TypeEnv, trait_bound: String, resolved: Type) -> Bool {
-  let display = trait_reference_display(trait_bound)
-  if display != "Eq" && display != "Ord" && display != "Add" {
-    false
-  } else if not(trait_is_marker(env, trait_bound)) {
-    false
-  } else if display == "Add" {
-    not(marker_add_is_by_value(resolved))
+  let shadowed = eq_owner != "" && not(bound_flat_self_equals(env, via))
+  let declared = if written {
+    String::concat(": an `impl ", String::concat(display, String::concat(" for ", String::concat(ctor, "` IS declared, but "))))
+  } else if type_implements_trait(env, s, resolved, trait_name) {
+    String::concat(": `", String::concat(shown, String::concat("` implements `", String::concat(display, "`, but "))))
   } else {
-    not(marker_cmp_is_by_value(resolved))
+    String::concat(": declaring `impl ", String::concat(display, String::concat(" for ", String::concat(shown, "` would not help, because "))))
+  }
+  if name == "Add" {
+    // #3158 review: the `+` twin of the comparison message below.
+    let why = if marker {
+      String::concat("`", String::concat(display, "` is a marker trait (declared with no methods) so `+` on the erased type adds `Int`s and joins `String`s and nothing else"))
+    } else {
+      String::concat("`+` on the erased type has no witness to dispatch through, so `", String::concat(display, "`'s methods never reach it: it adds `Int`s and joins `String`s and nothing else"))
+    }
+    let raw = String::concat(" -- on a `", String::concat(shown, "` it adds the raw representation, not the value"))
+    let cost = " -- satisfying the bound would make the sum silently wrong (`1.5 + 2.25` answered `0`)"
+    let edit = String::concat(". Add at the concrete type (take a `", String::concat(shown, "` parameter) instead of through the bound, or pass the addition in as a function"))
+    String::concat(declared, String::concat(why, String::concat(raw, String::concat(cost, edit))))
+  } else {
+    let why = if shadowed && eq_owner == trait_ref_name(via) {
+      String::concat("`", String::concat(eq_owner, "`'s `equals` is not declared `(Self, Self) -> Bool`, so `==` on the erased type dispatches to the builtin comparison"))
+    } else if shadowed {
+      String::concat("the `equals` that `", String::concat(trait_reference_display(via), String::concat("`'s witness dictionary keeps is `", String::concat(eq_owner, "`'s, which is not declared `(Self, Self) -> Bool` (supertraits flatten in declaration order and the first `equals` wins), so `==` on the erased type dispatches to the builtin comparison"))))
+    } else if marker {
+      String::concat("`", String::concat(display, "` is a marker trait (declared with no methods) so it dispatches to the builtin `==` / `<`"))
+    } else if name == "Eq" {
+      String::concat("`", String::concat(display, "` declares no `equals(Self, Self) -> Bool`, so `==` on the erased type dispatches to the builtin comparison"))
+    } else {
+      String::concat("`<` on the erased type has no witness to dispatch through, so `", String::concat(display, "`'s methods never reach it and it lowers to the builtin comparison"))
+    }
+    let tail = if ctor == "" {
+      String::concat(", and a `", String::concat(shown, "` is not a tagged immediate -- those read the BOX, not the number"))
+    } else {
+      String::concat(", and those compare `", String::concat(ctor, "` by REFERENCE"))
+    }
+    let who = if written {
+      " -- honouring the impl"
+    } else {
+      " -- satisfying the bound"
+    }
+    let cost = if ctor == "" {
+      " would make the comparison silently wrong: two equal values answer `false`, and `<` answers the same way in both directions"
+    } else {
+      " would make the comparison silently wrong: two equal values answer `false`, and one value compared with itself answers `true`"
+    }
+    let edit = if shadowed {
+      String::concat(". Declare `", String::concat(eq_owner, String::concat("`'s `equals` as `equals(Self, Self) -> Bool`, or list a supertrait that does before `", String::concat(eq_owner, String::concat("`, so `==` dispatches through the witness dictionary, or compare at the concrete type (take a `", String::concat(shown, "` parameter) instead of through the bound"))))))
+    } else {
+      marker_cmp_edit(name, display, shown)
+    }
+    String::concat(declared, String::concat(why, String::concat(tail, String::concat(who, String::concat(cost, edit)))))
   }
 }
 
-/// #3158 review: does the erased `+` an `[T: Add]` body lowers to
-/// (`__generic_add`) add a value of this type correctly?
+/// #3327: the edit a refused comparison bound names.
 ///
-/// `Add` is a marker trait too, so `a + b` over an erased `T` cannot dispatch
-/// through a witness: it lowers to `__generic_add`, which concatenates two
-/// packed strings and otherwise runs a raw `i64.add`. That is right for `Int`
-/// (a tagged immediate) and `String`, and wrong for everything else. The
-/// prelude declares `impl Add for Double`, and measured on main at 18a0dcef3,
-/// `add2[T: Add](1.5, 2.25)` printed `add=0` on the linear lane: the raw add of
-/// two boxes. A user `impl Add for Pt` would add two pointers the same way.
-fn marker_add_is_by_value(ty: Type) -> Bool {
-  match ty {
-    CtInt => true,
-    CtString => true,
-    CtNamed(name, args) => Array::length(args) == 0 && (name == "Int" || name == "String"),
-    _ => false
+/// `Eq` gets `equals(Self, Self) -> Bool` by name, because that is the only
+/// method `==` dispatches through: a program `Eq` given some other method is
+/// refused just the same (#3350). `Ord` gets no "add a method" advice at all --
+/// `<` on an erased formal has no witness to dispatch through, and an `Ord`
+/// with a method answered `true` for `smaller(2, 1)`.
+///
+/// It branches on the bare trait `name`, not on `display`: an applied
+/// reference (`[T: Eq[Int]]` with `trait Eq[A]`) displays as `Eq[Int]`, and
+/// comparing that against "Eq" handed an equality refusal the `<` advice --
+/// "giving `Eq[Int]` a method would not help" -- when an `equals(Self, Self)
+/// -> Bool` method is exactly the fix (Codex on #3349).
+fn marker_cmp_edit(name: String, display: String, shown: String) -> String {
+  let concrete = String::concat("the concrete type (take a `", String::concat(shown, "` parameter) instead of through the bound"))
+  if name == "Eq" {
+    String::concat(". Give `", String::concat(display, String::concat("` an `equals(Self, Self) -> Bool` method so `==` dispatches through the witness dictionary, or compare at ", concrete)))
+  } else {
+    String::concat(". Compare at ", String::concat(concrete, String::concat(", or pass the comparison in as a function: `<` has no witness to dispatch through, so giving `", String::concat(display, "` a method would not help"))))
   }
 }
 
@@ -333,27 +343,46 @@ export fn check_program_bounds(env: TypeEnv, s: Subst, defs: Array[TypeDef], err
         while bi < bn {
           let b = Array::get(bounds, bi)
           let resolved_bound = resolve_trait_bound_self_reference(b, resolved, s, defs)
+          // #2523 / #3327 / #3350: the trait through which this bound would
+          // compare `resolved` with no witness -- the bound itself, or a trait
+          // it extends -- or "".
+          let refused = if resolved_bound == "" || resolved_bound == "Send" {
+            ""
+          } else {
+            erased_cmp_bound_refusal(env, resolved_bound, resolved)
+          }
+          let refused_here = refused != "" && trait_ref_name(refused) == trait_ref_name(resolved_bound)
           let sat = if resolved_bound == "" {
             true
           } else if resolved_bound == "Send" {
             // ADR-0068: `Send` is judged structurally from the type
             // definitions (type_send_ok), not from user impls.
             type_send_ok(env, s, defs, resolved)
-          } else if marker_cmp_bound_is_unsound(env, resolved_bound, resolved) {
-            // #2523: a marker `Eq` / `Ord` cannot make a non-scalar compare by
-            // content, so no impl may satisfy it here.
+          } else if refused_here {
+            // No witness reaches the bound's own comparison, so no impl may
+            // satisfy it here.
             false
           } else {
             type_implements_trait(env, s, resolved, resolved_bound)
           }
           if resolved_bound != "" && not(sat) {
-            Array::push(errors, String::concat("no impl `", String::concat(trait_reference_display(resolved_bound), String::concat("` for `", String::concat(type_to_string(resolved), String::concat("`", unsatisfied_bound_hint(env, resolved_bound, resolved)))))))
-          } else if resolved_bound != "" && resolved_bound != "Send" && bound_entails_send(env, resolved_bound) && not(type_send_ok(env, s, defs, resolved)) {
-            // #3156 review: a bound that EXTENDS `Send` (`trait Work: Send`)
-            // counts as Send inside the generic body (`type_send_ok`), so
-            // its instantiation must be Send too -- an impl of `Work` alone
-            // does not make a type Send, since `Send` has no user impls.
-            Array::push(errors, String::concat("no impl `Send` for `", String::concat(type_to_string(resolved), String::concat("`: `", String::concat(trait_reference_display(resolved_bound), "` extends `Send`, so a type used at it must be Send -- pass a Send value (no `Array`, `Bytes`, closure or `mut` field)")))))
+            Array::push(errors, String::concat("no impl `", String::concat(trait_reference_display(resolved_bound), String::concat("` for `", String::concat(type_to_string(resolved), String::concat("`", unsatisfied_bound_hint(env, s, resolved_bound, resolved)))))))
+          } else if resolved_bound != "" && resolved_bound != "Send" {
+            if bound_entails_send(env, resolved_bound) && not(type_send_ok(env, s, defs, resolved)) {
+              // #3156 review: a bound that EXTENDS `Send` (`trait Work: Send`)
+              // counts as Send inside the generic body (`type_send_ok`), so
+              // its instantiation must be Send too -- an impl of `Work` alone
+              // does not make a type Send, since `Send` has no user impls.
+              Array::push(errors, String::concat("no impl `Send` for `", String::concat(type_to_string(resolved), String::concat("`: `", String::concat(trait_reference_display(resolved_bound), "` extends `Send`, so a type used at it must be Send -- pass a Send value (no `Array`, `Bytes`, closure or `mut` field)")))))
+            }
+            // #3327: the same for a bound that EXTENDS such a trait
+            // (`trait Key: Eq {}` over a program's own marker `Eq`): judged
+            // as that trait, with its message.
+            if refused != "" {
+              let shown_refused = trait_reference_display(refused)
+              let via = String::concat(" (`", String::concat(trait_reference_display(resolved_bound), String::concat("` extends `", String::concat(shown_refused, "`)"))))
+              Array::push(errors, String::concat("no impl `", String::concat(shown_refused, String::concat("` for `", String::concat(type_to_string(resolved), String::concat("`", String::concat(via, erased_cmp_hint(env, s, refused, resolved_bound, resolved))))))))
+            }
           }
           bi = bi + 1
         }
@@ -408,7 +437,44 @@ fn geff_arg_kind_arity(name: String, ctor_names: Array[String], ctor_arities: Ar
   }
 }
 
-fn geff_row_targ_errors_into(row: Option[String], ed_names: Array[String], ed_tpcounts: Array[Int], ed_tparities: Array[Int], es_names: Array[String], ctor_names: Array[String], ctor_arities: Array[Int], formal_keys: Array[String], errors: Array[String]) -> Unit {
+/// #3275 follow-up (Codex on #3315): record `name` when one of its type
+/// parameters is itself a constructor (`struct Higher[G[_]]`). Such a type has
+/// the right arity for `effect Read[F[_]]` but cannot stand for `F`, because
+/// the operation applies `F` to types (`F[Int]`), and comparing arities alone
+/// let `with Read[Higher]` through with no diagnostic.
+fn geff_note_higher_ctor(higher_ctors: Array[String], name: String, tparams: Array[String]) -> Unit {
+  let mut i = 0
+  let mut higher = false
+  while i < Array::length(tparams) {
+    if type_param_arity(Array::get(tparams, i)) > 0 {
+      higher = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if higher {
+    Array::push(higher_ctors, name)
+  } else {
+    ()
+  }
+}
+
+fn geff_names_has(names: Array[String], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(names) {
+    if Array::get(names, i) == name {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn geff_row_targ_errors_into(row: Option[String], ed_names: Array[String], ed_tpcounts: Array[Int], ed_tparities: Array[Int], es_names: Array[String], ctor_names: Array[String], ctor_arities: Array[Int], higher_ctors: Array[String], formal_keys: Array[String], errors: Array[String]) -> Unit {
   match row {
     None => (),
     Some(r) => {
@@ -455,6 +521,8 @@ fn geff_row_targ_errors_into(row: Option[String], ed_names: Array[String], ed_tp
               let actual_kind = geff_arg_kind_arity(inner, ctor_names, ctor_arities, formal_keys)
               if actual_kind != expected_kind {
                 Array::push(errors, String::concat("effect row item `", String::concat(label, String::concat("`: effect ", String::concat(base, String::concat(" expects a constructor with ", String::concat(__to_string(expected_kind), String::concat(" argument(s), but `", String::concat(inner, String::concat("` has ", String::concat(__to_string(actual_kind), " -- pass a bare constructor with the required arity")))))))))))
+              } else if geff_names_has(higher_ctors, inner) {
+                Array::push(errors, String::concat("effect row item `", String::concat(label, String::concat("`: effect ", String::concat(base, String::concat(" applies its parameter to types, but a parameter of `", String::concat(inner, "` takes a constructor -- pass a constructor whose parameters are all types, such as `Array` or `Option`")))))))
               } else {
                 ()
               }
@@ -476,28 +544,28 @@ fn geff_row_targ_errors_into(row: Option[String], ed_names: Array[String], ed_tp
 /// in parameter/return position) and an EFn value's inline row + parameter
 /// annotations. Nested closure literals inside bodies are not walked (same
 /// coverage boundary as the effectset expansion pass).
-fn geff_check_texpr_rows(te: TypeExpr, ed_names: Array[String], ed_tpcounts: Array[Int], ed_tparities: Array[Int], es_names: Array[String], ctor_names: Array[String], ctor_arities: Array[Int], formal_keys: Array[String], errors: Array[String]) -> Unit {
+fn geff_check_texpr_rows(te: TypeExpr, ed_names: Array[String], ed_tpcounts: Array[Int], ed_tparities: Array[Int], es_names: Array[String], ctor_names: Array[String], ctor_arities: Array[Int], higher_ctors: Array[String], formal_keys: Array[String], errors: Array[String]) -> Unit {
   match te {
     TyFn(params, ret, eff) => {
-      geff_row_targ_errors_into(eff, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, formal_keys, errors)
+      geff_row_targ_errors_into(eff, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, higher_ctors, formal_keys, errors)
       let mut i = 0
       while i < Array::length(params) {
-        geff_check_texpr_rows(Array::get(params, i), ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, formal_keys, errors)
+        geff_check_texpr_rows(Array::get(params, i), ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, higher_ctors, formal_keys, errors)
         i = i + 1
       }
-      geff_check_texpr_rows(ret, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, formal_keys, errors)
+      geff_check_texpr_rows(ret, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, higher_ctors, formal_keys, errors)
     },
     TyApp(_, args) => {
       let mut i = 0
       while i < Array::length(args) {
-        geff_check_texpr_rows(Array::get(args, i), ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, formal_keys, errors)
+        geff_check_texpr_rows(Array::get(args, i), ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, higher_ctors, formal_keys, errors)
         i = i + 1
       }
     },
     TyTuple(elems) => {
       let mut i = 0
       while i < Array::length(elems) {
-        geff_check_texpr_rows(Array::get(elems, i), ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, formal_keys, errors)
+        geff_check_texpr_rows(Array::get(elems, i), ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, higher_ctors, formal_keys, errors)
         i = i + 1
       }
     },
@@ -505,9 +573,9 @@ fn geff_check_texpr_rows(te: TypeExpr, ed_names: Array[String], ed_tpcounts: Arr
   }
 }
 
-fn geff_check_opt_texpr_rows(te: Option[TypeExpr], ed_names: Array[String], ed_tpcounts: Array[Int], ed_tparities: Array[Int], es_names: Array[String], ctor_names: Array[String], ctor_arities: Array[Int], formal_keys: Array[String], errors: Array[String]) -> Unit {
+fn geff_check_opt_texpr_rows(te: Option[TypeExpr], ed_names: Array[String], ed_tpcounts: Array[Int], ed_tparities: Array[Int], es_names: Array[String], ctor_names: Array[String], ctor_arities: Array[Int], higher_ctors: Array[String], formal_keys: Array[String], errors: Array[String]) -> Unit {
   match te {
-    Some(t) => geff_check_texpr_rows(t, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, formal_keys, errors),
+    Some(t) => geff_check_texpr_rows(t, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, higher_ctors, formal_keys, errors),
     None => ()
   }
 }
@@ -519,17 +587,17 @@ fn geff_expr_formals(e: Expr) -> Array[String] {
   }
 }
 
-fn geff_check_value_rows(e: Expr, ed_names: Array[String], ed_tpcounts: Array[Int], ed_tparities: Array[Int], es_names: Array[String], ctor_names: Array[String], ctor_arities: Array[Int], errors: Array[String]) -> Unit {
+fn geff_check_value_rows(e: Expr, ed_names: Array[String], ed_tpcounts: Array[Int], ed_tparities: Array[Int], es_names: Array[String], ctor_names: Array[String], ctor_arities: Array[Int], higher_ctors: Array[String], errors: Array[String]) -> Unit {
   match e {
     EFn(tparams, _, params, ret, eff, _) => {
-      geff_row_targ_errors_into(eff, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, tparams, errors)
+      geff_row_targ_errors_into(eff, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, higher_ctors, tparams, errors)
       let mut i = 0
       while i < Array::length(params) {
         let (_, pty) = Array::get(params, i)
-        geff_check_opt_texpr_rows(pty, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, tparams, errors)
+        geff_check_opt_texpr_rows(pty, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, higher_ctors, tparams, errors)
         i = i + 1
       }
-      geff_check_opt_texpr_rows(ret, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, tparams, errors)
+      geff_check_opt_texpr_rows(ret, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, higher_ctors, tparams, errors)
     },
     _ => ()
   }
@@ -542,6 +610,7 @@ fn geff_validate_row_targs(stmts: Array[Stmt], errors: Array[String]) -> Unit {
   let es_names = array_empty()
   let ctor_names = array_empty()
   let ctor_arities = array_empty()
+  let higher_ctors: Array[String] = []
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
@@ -559,14 +628,17 @@ fn geff_validate_row_targs(stmts: Array[Stmt], errors: Array[String]) -> Unit {
       SStruct(_, sname, _, _, _, tparams) => {
         Array::push(ctor_names, sname)
         Array::push(ctor_arities, Array::length(tparams))
+        geff_note_higher_ctor(higher_ctors, sname, tparams)
       },
       SEnum(_, ename, tparams, _, _) => {
         Array::push(ctor_names, ename)
         Array::push(ctor_arities, Array::length(tparams))
+        geff_note_higher_ctor(higher_ctors, ename, tparams)
       },
       STypeAlias(_, aname, tparams, _) => {
         Array::push(ctor_names, aname)
         Array::push(ctor_arities, Array::length(tparams))
+        geff_note_higher_ctor(higher_ctors, aname, tparams)
       },
       _ => ()
     }
@@ -577,13 +649,13 @@ fn geff_validate_row_targs(stmts: Array[Stmt], errors: Array[String]) -> Unit {
     match Array::get(stmts, j) {
       SLet(_, _, _, ty, body) => {
         let formals = geff_expr_formals(body)
-        geff_check_opt_texpr_rows(ty, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, formals, errors)
-        geff_check_value_rows(body, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, errors)
+        geff_check_opt_texpr_rows(ty, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, higher_ctors, formals, errors)
+        geff_check_value_rows(body, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, higher_ctors, errors)
       },
       SLetMut(_, ty, body) => {
         let formals = geff_expr_formals(body)
-        geff_check_opt_texpr_rows(ty, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, formals, errors)
-        geff_check_value_rows(body, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, errors)
+        geff_check_opt_texpr_rows(ty, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, higher_ctors, formals, errors)
+        geff_check_value_rows(body, ed_names, ed_tpcounts, ed_tparities, es_names, ctor_names, ctor_arities, higher_ctors, errors)
       },
       _ => ()
     }
