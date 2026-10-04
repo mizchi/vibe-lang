@@ -1010,6 +1010,16 @@ run_test_block_fixtures_gc "builtin value form ctor shadow (gc)" fixtures/builti
 run_test_block_fixtures_rc "builtin value form ctor shadow (linear, RC)" fixtures/builtin_value_form_shadow_ctor_test.vibe
 echo '[compiler-gate] builtin value form ok'
 
+# 15b-3b2. #3355/#3356: name resolution after a local's scope ends, and a
+#          module Int constant read from a lambda, on the two linear lanes
+#          (the unit runner covers only the default one). A local named like a
+#          top-level function or builtin kept shadowing it after its block
+#          ended (16 for 7002), and a lambda read a module Int constant as 0.
+echo '[compiler-gate] 15b-3b2/15 ended scopes and module constants in lambdas (#3355/#3356)'
+run_test_block_fixtures "ended scope / module constant (linear, bump)" fixtures/ended_scope_shadow_top_level_test.vibe fixtures/lambda_reads_module_constant_test.vibe
+run_test_block_fixtures_rc "ended scope / module constant (linear, RC)" fixtures/ended_scope_shadow_top_level_test.vibe fixtures/lambda_reads_module_constant_test.vibe
+echo '[compiler-gate] ended scopes and module constants in lambdas ok'
+
 # 15b-3c. #2630: the three length views of a byte string (`unicode_length` /
 #         `utf16_length` / `utf8_length`) are served by a callsite lowering on
 #         each lane -- a shared synthesis, but two `ce` dispatchers -- and were

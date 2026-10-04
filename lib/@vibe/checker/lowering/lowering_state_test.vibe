@@ -1,0 +1,76 @@
+import ./lowering_state.vibe {
+  bind_checked_lowering_source,
+  checked_eq_rows_for_path,
+  checked_lowering_for_path,
+  checked_lowering_for_source,
+  ensure_checked_lowering_for_source,
+  publish_checked_lowering,
+  rebind_checked_lowering,
+  record_checked_lowering,
+  reset_checked_lowering_memo,
+  split_checked_lowering,
+  union_checked_lowering
+}
+
+test "a changed fingerprint cannot reuse another source's lowering identities" {
+  reset_checked_lowering_memo()
+  record_checked_lowering("module", "first", [80], [11], ["Int"])
+  bind_checked_lowering_source("module", "first", "first source")
+  assert(checked_lowering_for_source("module", "first source") == Some([80]))
+  assert(checked_lowering_for_source("module", "other source") == None)
+  bind_checked_lowering_source("module", "wrong", "other source")
+  assert(checked_lowering_for_source("module", "other source") == None)
+  record_checked_lowering("module", "first", [88], [12], ["Int"])
+  assert(checked_lowering_for_source("module", "first source") == Some([88]))
+  record_checked_lowering("module", "second", [96], [], [])
+  assert(checked_lowering_for_source("module", "first source") == None)
+}
+
+test "fingerprint rebinding transfers the accepted source witness to another path" {
+  reset_checked_lowering_memo()
+  record_checked_lowering("left", "same", [80], [11], ["Int"])
+  bind_checked_lowering_source("left", "same", "same source")
+  assert(rebind_checked_lowering("right", "same"))
+  assert(checked_lowering_for_source("right", "same source") == Some([80]))
+  assert(checked_eq_rows_for_path("right") == Some(([11], ["Int"])))
+  assert(!rebind_checked_lowering("missing", "unknown"))
+  assert(checked_lowering_for_path("missing") == None)
+}
+
+test "checked empty lowering remains available while an absent fingerprint refuses reuse" {
+  reset_checked_lowering_memo()
+  publish_checked_lowering("empty", "checked", None, [], [])
+  assert(ensure_checked_lowering_for_source("empty", "checked", "empty source"))
+  assert(checked_lowering_for_source("empty", "empty source") == Some([]))
+  assert(!ensure_checked_lowering_for_source("absent", "unknown", "source"))
+  reset_checked_lowering_memo()
+  assert(checked_lowering_for_source("empty", "empty source") == None)
+}
+
+test "merged lowering preserves builtin identity payloads and ignores unchecked modules" {
+  reset_checked_lowering_memo()
+  record_checked_lowering("checked", "fp", [80, 89, 1048655], [], [])
+  assert(union_checked_lowering(["unchecked", "checked"], [99, 5]) == [
+    120,
+    129,
+    3670095
+  ])
+}
+
+test "render refusal and resolved callees keep distinct merged channels" {
+  let (floats, relations, pluses, ints, bools) = split_checked_lowering([
+    80,
+    89,
+    98,
+    107,
+    116,
+    125,
+    166,
+    1048655
+  ])
+  assert(floats == [10, 14])
+  assert(relations == [11])
+  assert(pluses == [12])
+  assert(ints == [13, -21])
+  assert(bools == [15])
+}
