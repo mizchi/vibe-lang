@@ -1,0 +1,71 @@
+//# Imports
+
+import @vibe/compiler/entry/source_compile/wasi_only {
+  compile_generated_source_wasi_only, merged_program_source_fs, merged_program_source_with_fs
+}
+
+import @vibe/compiler/runtime {
+  build_module_source_from_source
+}
+
+//# Functions
+
+/// #3331: a trait-bounded generic in the shape compiler source would use it --
+/// one trait and one generic helper bounded by it, an impl per codegen lane,
+/// and a caller. Returns the entry path.
+fn write_trait_bounded_program(base_dir: String) -> String with Fs {
+  Fs::mkdir_p(base_dir)
+  let facts_path = String::concat(base_dir, "/facts.vibe")
+  let lanes_path = String::concat(base_dir, "/lanes.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::write_file(facts_path, "export trait FloatFacts {\n  slot_is_float(Self, String) -> Bool\n}\n\nexport fn expr_is_floatish_in[C: FloatFacts](ctx: C, names: Array[String]) -> Int {\n  let mut n = 0\n  for name in names {\n    if FloatFacts::slot_is_float(ctx, name) {\n      n = n + 1\n    }\n  }\n  n\n}\n")
+  Fs::write_file(lanes_path, "import ./facts.vibe { trait FloatFacts, expr_is_floatish_in }\n\nstruct LinearCtx {\n  floats: Array[String]\n}\n\nstruct GcCtx {\n  prefix: String\n}\n\nimpl FloatFacts for LinearCtx {\n  slot_is_float(self, name) -> Bool {\n    let mut hit = false\n    for f in self.floats {\n      if f == name {\n        hit = true\n      }\n    }\n    hit\n  }\n}\n\nimpl FloatFacts for GcCtx {\n  slot_is_float(self, name) -> Bool {\n    String::starts_with(name, self.prefix)\n  }\n}\n\nexport fn linear_count(names: Array[String]) -> Int {\n  expr_is_floatish_in(LinearCtx::{ floats: [\"x\", \"z\"] }, names)\n}\n\nexport fn gc_count(names: Array[String]) -> Int {\n  expr_is_floatish_in(GcCtx::{ prefix: \"f_\" }, names)\n}\n")
+  Fs::write_file(main_path, "import ./lanes.vibe { linear_count, gc_count }\n\nexport fn answer() -> Int {\n  linear_count([\"x\", \"y\", \"z\"]) * 10 + gc_count([\"f_a\", \"b\", \"f_c\", \"f_d\"])\n}\n")
+  main_path
+}
+
+fn is_wasm(bytes: Bytes) -> Bool {
+  Bytes::length(bytes) > 4 && Bytes::get(bytes, 0) == 0 && Bytes::get(bytes, 1) == 97 && Bytes::get(bytes, 2) == 115 && Bytes::get(bytes, 3) == 109
+}
+
+//# Misc
+
+// `scripts/generate_bundle.sh` prints the merged compiler, DCEs it with
+// `emit-module-source`, and compiles that text again as the next stage. The
+// compile checks the text and only then lowers trait dictionaries (#3069), so
+// the printed program must still be source: before #3331 it carried the
+// lowering, and the check refused its own output -- the `__dict_` reserved
+// prefix, `remove declaration FloatFacts::slot_is_float`, and
+// ``no impl `FloatFacts` for `Self` `` from the synthesized dictionary struct.
+
+test "#3331: the merged program keeps a trait-bounded generic as source" {
+  let merged = merged_program_source_fs(write_trait_bounded_program("/tmp/vibe_merged_source_trait_bound_a"))
+  inspect(String::contains(merged, "__dict_"), content = "false")
+  inspect(String::contains(merged, "FloatFactsDict"), content = "false")
+  inspect(String::contains(merged, "let rec FloatFacts::slot_is_float"), content = "false")
+  inspect(String::contains(merged, "export trait FloatFacts {\n  slot_is_float(Self, String) -> Bool\n}"), content = "true")
+  inspect(String::contains(merged, "[C: FloatFacts](ctx: C, names: Array[String]) -> Int"), content = "true")
+}
+
+test "#3331: the module source of a trait-bounded generic compiles again" {
+  let merged = merged_program_source_fs(write_trait_bounded_program("/tmp/vibe_merged_source_trait_bound_b"))
+  let module_source = build_module_source_from_source(merged, "answer")
+  inspect(String::contains(module_source, "__dict_"), content = "false")
+  inspect(String::contains(module_source, "export trait FloatFacts {"), content = "true")
+  let compiled = handle {
+    is_wasm(compile_generated_source_wasi_only(module_source, "answer"))
+  } with { Exception::Throw(msg) => {
+    println(msg)
+    false
+  } }
+  inspect(compiled, content = "true")
+}
+
+// The lowered form is what `VIBE_MERGED_SOURCE_LOWER_TRAIT_DICTS=1` asks for:
+// a pinned seed from before #3331 desugars before it checks and so compiles
+// only this. It must stay the desugared program until that switch is deleted.
+test "#3331: the lowered form still carries the dictionaries" {
+  let lowered = merged_program_source_with_fs(write_trait_bounded_program("/tmp/vibe_merged_source_trait_bound_c"), true)
+  inspect(String::contains(lowered, "__dict_FloatFacts_C: FloatFactsDict[C]"), content = "true")
+  inspect(String::contains(lowered, "struct FloatFactsDict"), content = "true")
+}

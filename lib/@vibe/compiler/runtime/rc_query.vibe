@@ -28,7 +28,7 @@ import @vibe/compiler/codegen/wasi {
 }
 
 import @vibe/compiler/codegen/common_analysis {
-  compute_borrow_param_user_fns, compute_may_return_view_fns
+  collect_free_vars_used_builtins, compute_borrow_param_user_fns, compute_may_return_view_fns
 }
 
 import @vibe/compiler/codegen/expr {
@@ -296,6 +296,35 @@ fn rcq_emit_fn_plan(acc: StringBuilder, first: Array[Bool], fname: String, param
   }
 }
 
+/// #3355: the shadow uniquify's starting `seen` set, the same one
+/// linked_compile_function_bodies.vibe's `lc_body_free_names` hands it: every
+/// name the function reads that nothing inside it binds. A local binder of
+/// such a name is renamed there, so it is renamed here, or this surface would
+/// print a binding name the compiler no longer uses.
+fn rcq_body_free_names(e: Expr) -> Array[String] {
+  match e {
+    EFn(_, _, params, _, _, body) => {
+      let pnames: Array[String] = []
+      for p in params {
+        let (pn, _) = p
+        let n = String::length(pn)
+        let last = if n > 0 {
+          String::char_code_at(pn, n - 1)
+        } else {
+          0
+        }
+        Array::push(pnames, if last == '~' || last == '?' {
+          pn[0: n - 1]
+        } else {
+          pn
+        })
+      }
+      collect_free_vars_used_builtins(body, pnames, [])
+    },
+    _ => collect_free_vars_used_builtins(e, [], [])
+  }
+}
+
 /// FN BINDING ACTION COUNT per collapsed Perceus action. `fn_filter` empty
 /// means every user function; a non-empty filter that names no function
 /// throws so "the query broke" stays distinguishable from an empty plan.
@@ -328,7 +357,7 @@ export fn rc_plan_source(source: String, fn_filter: String) -> String with Excep
           // function receives depend on every function before it. A filter
           // that skipped the transform for non-emitted functions would
           // print `__m_scrut_N` numbers the codegen never uses.
-          let seen: Array[String] = []
+          let seen = rcq_body_free_names(value)
           let norm = lift_match_scrutinees(uniquify_shadowed_bindings_fresh(value, uq_shadow_counter, seen), m_scrut_counter)
           let take = fn_filter == "" || fn_filter == name
           if take {

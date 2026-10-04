@@ -557,8 +557,8 @@ fn scps_tail_is_step(e: Expr, eff: String, own: Array[String]) -> Bool {
     ELetRec(x, v, b) => scps_tail_is_step(b, eff, scps_step_names_bind(own, x, scps_fn_tail_is_step(v, eff, scps_step_names_bind(own, x, false)))),
     ELetMut(x, _, b, _) => scps_tail_is_step(b, eff, scps_step_names_bind(own, x, false)),
     ESeq(_, b) => scps_tail_is_step(b, eff, own),
-    EAssign(_, _, b) => scps_tail_is_step(b, eff, own),
-    EAssignOp(_, _, _, b) => scps_tail_is_step(b, eff, own),
+    EAssign(_, _, b, _) => scps_tail_is_step(b, eff, own),
+    EAssignOp(_, _, _, b, _) => scps_tail_is_step(b, eff, own),
     EIf(_, t, el) => scps_tail_is_step(t, eff, own) || scps_tail_is_step(el, eff, own),
     EMatch(_, arms) => scps_arms_tail_is_step(arms, eff, own),
     EHandle(b, arms) => scps_tail_is_step(b, eff, own) || scps_arms_tail_is_step(arms, eff, own),
@@ -668,8 +668,8 @@ export fn scps_calls_step_local(e: Expr, eff: String, names: Array[String], add:
       EWhile(c, b) => scps_calls_step_local(c, eff, names, add, skip_discharged) || scps_calls_step_local(b, eff, names, add, skip_discharged),
       EBinOp(_, l, r, _) => scps_calls_step_local(l, eff, names, add, skip_discharged) || scps_calls_step_local(r, eff, names, add, skip_discharged),
       EUnaryOp(_, a) => scps_calls_step_local(a, eff, names, add, skip_discharged),
-      EAssign(_, v, b) => scps_calls_step_local(v, eff, names, add, skip_discharged) || scps_calls_step_local(b, eff, names, add, skip_discharged),
-      EAssignOp(_, _, v, b) => scps_calls_step_local(v, eff, names, add, skip_discharged) || scps_calls_step_local(b, eff, names, add, skip_discharged),
+      EAssign(_, v, b, _) => scps_calls_step_local(v, eff, names, add, skip_discharged) || scps_calls_step_local(b, eff, names, add, skip_discharged),
+      EAssignOp(_, _, v, b, _) => scps_calls_step_local(v, eff, names, add, skip_discharged) || scps_calls_step_local(b, eff, names, add, skip_discharged),
       EReturn(a) => scps_calls_step_local(a, eff, names, add, skip_discharged),
       EDot(o, _, _, _) => scps_calls_step_local(o, eff, names, add, skip_discharged),
       ELabeledArg(_, _, v) => scps_calls_step_local(v, eff, names, add, skip_discharged),
@@ -857,20 +857,20 @@ export fn scps_cellify(e: Expr, x: String) -> Expr {
     } else {
       e
     },
-    EAssign(nm, v, b) => if nm == x {
+    EAssign(nm, v, b, target_off) => if nm == x {
       ESeq(scps_cell_set(nm, scps_cellify(v, x)), scps_cellify(b, x))
     } else {
-      EAssign(nm, scps_cellify(v, x), scps_cellify(b, x))
+      EAssign(nm, scps_cellify(v, x), scps_cellify(b, x), target_off)
     },
     // EAssignOp is (NAME, op, value, continuation) -- the target comes first,
     // the operator second. Reading them the other way round made this test
     // compare `"+"` against a variable name, so it never fired: `x += v` was
     // left writing the raw local while every read of `x` around it had become
     // a cell read, and the write was silently lost across the suspension.
-    EAssignOp(nm, op, v, b) => if nm == x {
+    EAssignOp(nm, op, v, b, target_off) => if nm == x {
       ESeq(scps_cell_set(nm, EBinOp(op, scps_cell_get(nm, -1), scps_cellify(v, x), -1)), scps_cellify(b, x))
     } else {
-      EAssignOp(nm, op, scps_cellify(v, x), scps_cellify(b, x))
+      EAssignOp(nm, op, scps_cellify(v, x), scps_cellify(b, x), target_off)
     },
     ELet(nm, v, b, off) => ELet(nm, scps_cellify(v, x), if nm == x {
       b
@@ -1219,8 +1219,8 @@ export fn scps_seq_append(e: Expr, k: Expr) -> Expr {
     ELetMut(x, v, b, off) => ELetMut(x, v, scps_seq_append(b, k), off),
     ELetRec(x, v, b) => ELetRec(x, v, scps_seq_append(b, k)),
     ESeq(a, b) => ESeq(a, scps_seq_append(b, k)),
-    EAssign(nm, v, b) => EAssign(nm, v, scps_seq_append(b, k)),
-    EAssignOp(nm, op, v, b) => EAssignOp(nm, op, v, scps_seq_append(b, k)),
+    EAssign(nm, v, b, target_off) => EAssign(nm, v, scps_seq_append(b, k), target_off),
+    EAssignOp(nm, op, v, b, target_off) => EAssignOp(nm, op, v, scps_seq_append(b, k), target_off),
     EIf(c, t, el) => EIf(c, scps_seq_append(t, k), scps_seq_append(el, k)),
     EMatch(s, arms) => {
       let out = scps_empty_arms()
@@ -1282,17 +1282,17 @@ export fn scps_rename_ident(e: Expr, x: String, nx: String) -> Expr {
     } else {
       e
     },
-    EAssign(nm, v, b) => if nm == x {
-      EAssign(nx, scps_rename_ident(v, x, nx), scps_rename_ident(b, x, nx))
+    EAssign(nm, v, b, target_off) => if nm == x {
+      EAssign(nx, scps_rename_ident(v, x, nx), scps_rename_ident(b, x, nx), target_off)
     } else {
-      EAssign(nm, scps_rename_ident(v, x, nx), scps_rename_ident(b, x, nx))
+      EAssign(nm, scps_rename_ident(v, x, nx), scps_rename_ident(b, x, nx), target_off)
     },
     // (NAME, op, ..) again: read the other way round, a floated binder's
     // rename skipped `x op= v` targets while renaming everything else.
-    EAssignOp(nm, op, v, b) => if nm == x {
-      EAssignOp(nx, op, scps_rename_ident(v, x, nx), scps_rename_ident(b, x, nx))
+    EAssignOp(nm, op, v, b, target_off) => if nm == x {
+      EAssignOp(nx, op, scps_rename_ident(v, x, nx), scps_rename_ident(b, x, nx), target_off)
     } else {
-      EAssignOp(nm, op, scps_rename_ident(v, x, nx), scps_rename_ident(b, x, nx))
+      EAssignOp(nm, op, scps_rename_ident(v, x, nx), scps_rename_ident(b, x, nx), target_off)
     },
     ELet(nm, v, b, off) => ELet(nm, scps_rename_ident(v, x, nx), if nm == x {
       b
@@ -1558,8 +1558,8 @@ fn scps_bind_block_float(is_mut: Bool, x: String, v: Expr, b: Expr, off: Int, si
     // nothing, so it moves out unchanged. (A write to a mutable this spine
     // boxed has already become an `Array::set` statement by now; this is the
     // spelling a target bound outside the spine still has.)
-    EAssign(y, v1, v2) => Some(EAssign(y, v1, scps_mk_bind(is_mut, x, v2, b, off))),
-    EAssignOp(y, op, v1, v2) => Some(EAssignOp(y, op, v1, scps_mk_bind(is_mut, x, v2, b, off))),
+    EAssign(y, v1, v2, target_off) => Some(EAssign(y, v1, scps_mk_bind(is_mut, x, v2, b, off), target_off)),
+    EAssignOp(y, op, v1, v2, target_off) => Some(EAssignOp(y, op, v1, scps_mk_bind(is_mut, x, v2, b, off), target_off)),
     ELet(y, v1, v2, o) => {
       let ny = scps_seq_float_fresh(y, v2, b, site)
       Some(ELet(ny, v1, scps_mk_bind(is_mut, x, scps_rename_ident(v2, y, ny), b, off), o))
@@ -1613,7 +1613,7 @@ fn scps_assign_float_match_arms(arms: Array[(Pat, Expr)], x: String, b: Expr, si
   while i < Array::length(arms) {
     let (p, body) = Array::get(arms, i)
     let (p2, body2) = scps_float_match_arm_rename(p, body, b, site, i)
-    Array::push(out, (p2, EAssign(x, body2, b)))
+    Array::push(out, (p2, EAssign(x, body2, b, -1)))
     i = i + 1
   }
   out
@@ -1630,24 +1630,24 @@ fn scps_assign_float_match_arms(arms: Array[(Pat, Expr)], x: String, b: Expr, si
 /// arm renames its pattern binders (the continuation was outside the match).
 export fn scps_assign_value_float(x: String, v: Expr, b: Expr, site: Int) -> Option[Expr] {
   match v {
-    ESeq(a, v2) => Some(ESeq(a, EAssign(x, v2, b))),
+    ESeq(a, v2) => Some(ESeq(a, EAssign(x, v2, b, -1))),
     // An assignment statement inside the block carries the rest of the block
     // as its own continuation, so the prefix is already spelled this way
     // rather than as an ESeq. It binds nothing, so it just moves out.
-    EAssign(y, v1, v2) => Some(EAssign(y, v1, EAssign(x, v2, b))),
-    EAssignOp(y, op, v1, v2) => Some(EAssignOp(y, op, v1, EAssign(x, v2, b))),
+    EAssign(y, v1, v2, target_off) => Some(EAssign(y, v1, EAssign(x, v2, b, -1), target_off)),
+    EAssignOp(y, op, v1, v2, target_off) => Some(EAssignOp(y, op, v1, EAssign(x, v2, b, -1), target_off)),
     ELet(y, v1, v2, o) => {
       let ny = scps_seq_float_fresh(y, v2, b, site)
-      Some(ELet(ny, v1, EAssign(x, scps_rename_ident(v2, y, ny), b), o))
+      Some(ELet(ny, v1, EAssign(x, scps_rename_ident(v2, y, ny), b, -1), o))
     },
     ELetMut(y, v1, v2, o) => {
       let ny = scps_seq_float_fresh(y, v2, b, site)
-      Some(ELetMut(ny, v1, EAssign(x, scps_rename_ident(v2, y, ny), b), o))
+      Some(ELetMut(ny, v1, EAssign(x, scps_rename_ident(v2, y, ny), b, -1), o))
     },
     EIf(c, t, el) => if scps_has_loop_ctl(v) {
       None
     } else {
-      Some(EIf(c, EAssign(x, t, b), EAssign(x, el, b)))
+      Some(EIf(c, EAssign(x, t, b, -1), EAssign(x, el, b, -1)))
     },
     EMatch(s, arms) => if scps_has_loop_ctl(v) {
       None
@@ -1820,8 +1820,8 @@ export fn scps_inert_taint(e: Expr, eff: String, needing: Array[String], locals:
     },
     EBinOp(_, l, r, _) => scps_inert_taint(l, eff, needing, locals, ctx) || scps_inert_taint(r, eff, needing, locals, ctx),
     EUnaryOp(_, a) => scps_inert_taint(a, eff, needing, locals, ctx),
-    EAssign(_, v, b) => scps_inert_taint(v, eff, needing, locals, ctx) || scps_inert_taint(b, eff, needing, locals, ctx),
-    EAssignOp(_, _, v, b) => scps_inert_taint(v, eff, needing, locals, ctx) || scps_inert_taint(b, eff, needing, locals, ctx),
+    EAssign(_, v, b, _) => scps_inert_taint(v, eff, needing, locals, ctx) || scps_inert_taint(b, eff, needing, locals, ctx),
+    EAssignOp(_, _, v, b, _) => scps_inert_taint(v, eff, needing, locals, ctx) || scps_inert_taint(b, eff, needing, locals, ctx),
     EReturn(a) => scps_inert_taint(a, eff, needing, locals, ctx),
     EDot(o, _, _, _) => scps_inert_taint(o, eff, needing, locals, ctx),
     ELabeledArg(_, _, v) => scps_inert_taint(v, eff, needing, locals, ctx),

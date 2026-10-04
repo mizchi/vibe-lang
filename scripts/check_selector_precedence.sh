@@ -63,9 +63,14 @@ adapter, launcher, mode, enforced = sys.argv[1], sys.argv[2], sys.argv[3], sys.a
 # already selected, and every compile lane is later in the order, so ordering it
 # would have selector_clears_before unset it on exactly the lanes it exists for.
 # VIBE_CHECKED_MODULE_CACHE configures reuse within the selected lane.
+# VIBE_MERGED_SOURCE_LOWER_TRAIT_DICTS (#3331) picks the form the two
+# merged-source modes print (VIBE_EMIT_MERGED_SOURCE /
+# VIBE_EMIT_COVERAGE_DRIVER_SOURCE, already selected); the bootstrap scripts set
+# it for the pinned seed, and it selects no branch of its own.
 OBSERVATION_ONLY = {"VIBE_DIAGNOSTICS_ALL", "VIBE_PROFILE_MEMORY_MARKS", "VIBE_UNSTABLE",
                     "VIBE_UNSTABLE_TYPING_DEP_ENV_REUSE_COMPILE",
-                    "VIBE_CHECKED_MODULE_CACHE"}
+                    "VIBE_CHECKED_MODULE_CACHE",
+                    "VIBE_MERGED_SOURCE_LOWER_TRAIT_DICTS"}
 
 # The order is SOURCE ORDER, and a selector counts wherever it is tested --
 # `let bytes = if Env::get("VIBE_COVERAGE") == "1" { .. } else if
