@@ -1,0 +1,52 @@
+//# #3301 (Codex on #3337): an or-pattern arm's `resume` has one type, and for
+//# a generic effect that type is the one the handle instantiated, not the
+//# declaration's template. `X -> A` and `Y -> B` differ as written, but the
+//# handled computation below makes both `Int`, so `X|Y => resume(1)` resumes
+//# both operations at `Int`. Comparing the templates refused it.
+//# The other instantiation, `E[Int, String]`, is refused
+//# (`fixtures/typecheck/handler_or_pattern_generic_resume_differ_reject.vibe`),
+//# and so are templates nothing instantiates
+//# (`fixtures/typecheck/handler_or_pattern_generic_resume_unresolved_reject.vibe`).
+
+effect E[A, B] {
+  X -> A
+  Y -> B
+}
+
+effect Same[S] {
+  P -> S
+  Q -> S
+}
+
+fn both_int_called() -> Int {
+  handle {
+    perform E::X + perform E::Y
+  } with E {
+    X|Y => resume(1)
+  }
+}
+
+fn both_int_captured() -> Int {
+  handle {
+    perform E::X + perform E::Y
+  } with E {
+    X|Y => {
+      let k = resume
+      k(5)
+    }
+  }
+}
+
+fn one_template() -> String {
+  handle {
+    String::concat(perform Same::P, perform Same::Q)
+  } with Same {
+    P|Q => resume("ab")
+  }
+}
+
+test "a generic or-pattern arm resumes at the instantiated type" {
+  inspect(both_int_called(), "2")
+  inspect(both_int_captured(), "10")
+  inspect(one_template(), "abab")
+}

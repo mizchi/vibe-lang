@@ -12,9 +12,17 @@
 // an or-pattern in Rust or a `match` arm binds each name at one type. An arm
 // that never names `resume` reads nothing that differs between its
 // operations, so their signatures may differ there.
+//
+// The types compared are the ones the arms were checked at. A generic
+// effect's declaration says `X -> A` and `Y -> B`, but the handle
+// instantiates `A` and `B`, and at `E[Int, Int]` both copies type `resume`
+// alike. So the arm loop records, for each copy of an or-pattern arm, the
+// return type it instantiated, and the comparison reads those through the
+// program's final substitution (Codex on #3337). Two variables nothing
+// resolved are two types, not one: the arm is refused rather than trusted.
 
 import @vibe/compiler/core {
-  Expr, Pat, Type, TypeDef, type_to_string, types_equal
+  Expr, Pat, Subst, Type, TypeDef, handler_or_arm_body_key, subst_apply, type_to_string, types_equal
 }
 
 import @vibe/compiler/checker/diagnostics {
@@ -25,22 +33,97 @@ import @vibe/compiler/checker/resume {
   arm_first_resume_ref
 }
 
+import @vibe/compiler/checker/type_relations {
+  type_is_ground
+}
+
 import ./checker_eq_unbounded_formal_msg.vibe {
   effect_op_sig
 }
 
-/// #3301: refuse each or-pattern handler arm in `arms` (the arms the split
-/// took, with their bodies as written: `handler_or_arms_to_split`) whose body
-/// names its `resume` while its operations resume with different types. Read
-/// after checking, when `defs` holds every declared effect's operations; an
-/// alternative whose operation is not declared there is not typed against a
-/// signature, and is skipped.
-export fn check_handler_or_arm_resume_types(arms: Array[(Array[Pat], Expr)], defs: Array[TypeDef], errors: Array[String]) -> Unit {
+/// The body keys (`handler_or_arm_body_key`) of the or-pattern arms that name
+/// their `resume`, set by handler_or_arm_resume_begin; the arm loop records
+/// only arms whose body has one of these keys.
+let or_arm_resume_keys: Array[Int] = []
+
+/// One row per checked copy of such an arm: the `handle` it belongs to (a
+/// handler_or_arm_handle_instance number), its body key, the operation it
+/// handles, and the operation's return type as that handle instantiated it,
+/// before the final substitution.
+let or_arm_resume_rows: Array[(Int, Int, String, Type)] = []
+
+let or_arm_handle_next: Array[Int] = [0]
+
+/// #3301: start recording for one program's check. `arms` are the or-pattern
+/// arms the split took (`handler_or_arms_to_split`), with their bodies as
+/// written; the split keeps every offset, so a copy's body has its arm's key.
+export fn handler_or_arm_resume_begin(arms: Array[(Array[Pat], Expr)]) -> Unit {
+  Array::truncate(or_arm_resume_keys, 0)
+  Array::truncate(or_arm_resume_rows, 0)
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (_, body) = Array::get(arms, i)
+    match arm_first_resume_ref(body, false) {
+      Some(_) => {
+        let key = handler_or_arm_body_key(body)
+        if key >= 0 {
+          Array::push(or_arm_resume_keys, key)
+        } else {
+          ()
+        }
+      },
+      None => ()
+    }
+    i = i + 1
+  }
+}
+
+/// A number for the `handle` the checker is about to check, so the rows of
+/// two handles never meet in one comparison.
+export fn handler_or_arm_handle_instance() -> Int {
+  let n = Array::get(or_arm_handle_next, 0)
+  Array::set(or_arm_handle_next, 0, n + 1)
+  n
+}
+
+/// Called by the arm loop for every declared-effect arm it checks: `ret` is
+/// the operation's return type at this handle's instantiation. Kept only for
+/// a copy of an or-pattern arm that names `resume`.
+export fn record_handler_or_arm_resume(instance: Int, body: Expr, qname: String, ret: Type) -> Unit {
+  if Array::length(or_arm_resume_keys) > 0 {
+    let key = handler_or_arm_body_key(body)
+    if key >= 0 && or_arm_key_known(key) {
+      Array::push(or_arm_resume_rows, (instance, key, qname, ret))
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+}
+
+fn or_arm_key_known(key: Int) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while !found && i < Array::length(or_arm_resume_keys) {
+    found = Array::get(or_arm_resume_keys, i) == key
+    i = i + 1
+  }
+  found
+}
+
+/// #3301: refuse each or-pattern handler arm in `arms` (as given to
+/// handler_or_arm_resume_begin) whose body names its `resume` while its
+/// operations resume with different types. Read after checking, when `defs`
+/// holds every declared effect's operations and `final_s` every variable the
+/// check resolved. An alternative whose operation is not declared there is
+/// not typed against a signature, and is skipped. Clears the recording.
+export fn check_handler_or_arm_resume_types(arms: Array[(Array[Pat], Expr)], defs: Array[TypeDef], final_s: Subst, errors: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(arms) {
     let (alternatives, body) = Array::get(arms, i)
     match arm_first_resume_ref(body, false) {
-      Some(at) => match or_arm_resume_disagreement(alternatives, defs) {
+      Some(at) => match or_arm_resume_disagreement(alternatives, body, defs, final_s) {
         Some(msg) => Array::push(errors, String::concat(msg, match at {
           EIdent(name, off) => off_marker_len(off, String::length(name)),
           _ => off_marker(-1)
@@ -51,11 +134,108 @@ export fn check_handler_or_arm_resume_types(arms: Array[(Array[Pat], Expr)], def
     }
     i = i + 1
   }
+  Array::truncate(or_arm_resume_keys, 0)
+  Array::truncate(or_arm_resume_rows, 0)
 }
 
-/// The message for the first alternative whose operation resumes with a type
-/// other than the first declared alternative's, or None when they all agree.
-fn or_arm_resume_disagreement(alternatives: Array[Pat], defs: Array[TypeDef]) -> Option[String] {
+fn or_arm_names(alternatives: Array[Pat]) -> Array[String] {
+  let names: Array[String] = []
+  let mut j = 0
+  while j < Array::length(alternatives) {
+    match Array::get(alternatives, j) {
+      PCtor(qname, _) => Array::push(names, qname),
+      _ => ()
+    }
+    j = j + 1
+  }
+  names
+}
+
+fn names_contain(names: Array[String], name: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while !found && i < Array::length(names) {
+    found = Array::get(names, i) == name
+    i = i + 1
+  }
+  found
+}
+
+/// The message for the first copy whose instantiated resume type differs
+/// from its handle's first copy, or None when every handle's copies agree.
+/// With no recorded copy (a body without a located node) the declared
+/// signatures are compared instead, which can refuse a generic arm the
+/// instantiation would have allowed, but never accepts two types.
+fn or_arm_resume_disagreement(alternatives: Array[Pat], body: Expr, defs: Array[TypeDef], final_s: Subst) -> Option[String] {
+  let names = or_arm_names(alternatives)
+  let key = handler_or_arm_body_key(body)
+  let mut seen = false
+  let mut found: Option[String] = None
+  let mut r = 0
+  while r < Array::length(or_arm_resume_rows) {
+    let (instance, row_key, qname, ret) = Array::get(or_arm_resume_rows, r)
+    if key >= 0 && row_key == key && names_contain(names, qname) {
+      seen = true
+      match found {
+        Some(_) => (),
+        None => found = or_arm_row_disagreement(r, instance, key, names, qname, ret, defs, final_s)
+      }
+    } else {
+      ()
+    }
+    r = r + 1
+  }
+  if seen {
+    found
+  } else {
+    or_arm_declared_disagreement(alternatives, defs)
+  }
+}
+
+/// Compare the recorded copy at `row` with the first copy of the same
+/// `handle`. A return type the check could not name (`CtUnknown`) agrees with
+/// nothing: two of them are not known to be one type.
+fn or_arm_row_disagreement(row: Int, instance: Int, key: Int, names: Array[String], qname: String, ret: Type, defs: Array[TypeDef], final_s: Subst) -> Option[String] {
+  let mut found: Option[String] = None
+  let mut done = false
+  let mut r = 0
+  while !done && r < row {
+    let (first_instance, first_key, first_name, first_ret) = Array::get(or_arm_resume_rows, r)
+    if first_instance == instance && first_key == key && names_contain(names, first_name) {
+      done = true
+      let first_now = subst_apply(final_s, first_ret)
+      let now = subst_apply(final_s, ret)
+      let agree = match first_now {
+        CtUnknown => false,
+        _ => types_equal(first_now, now)
+      }
+      if !agree {
+        found = Some(if type_is_ground(first_now) && type_is_ground(now) {
+          or_arm_message(first_name, first_now, qname, now)
+        } else {
+          or_arm_message(first_name, or_arm_declared_ret(defs, first_name, first_now), qname, or_arm_declared_ret(defs, qname, now))
+        })
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    r = r + 1
+  }
+  found
+}
+
+/// A type the check left unresolved is named by its declaration (`A`), which
+/// says more than a fresh variable would.
+fn or_arm_declared_ret(defs: Array[TypeDef], qname: String, fallback: Type) -> Type {
+  match effect_op_sig(defs, qname) {
+    Some((_, ret)) => ret,
+    None => fallback
+  }
+}
+
+fn or_arm_declared_disagreement(alternatives: Array[Pat], defs: Array[TypeDef]) -> Option[String] {
   let mut first: Option[(String, Type)] = None
   let mut found: Option[String] = None
   let mut j = 0
@@ -71,7 +251,7 @@ fn or_arm_resume_disagreement(alternatives: Array[Pat], defs: Array[TypeDef]) ->
             Some((first_name, first_ret)) => if types_equal(first_ret, ret) {
               ()
             } else {
-              found = Some(String::concat("write `", String::concat(first_name, String::concat(" => ..` and `", String::concat(qname, String::concat(" => ..` as separate arms: `resume` here would take ", String::concat(type_to_string(first_ret), String::concat(" for `", String::concat(first_name, String::concat("` but ", String::concat(type_to_string(ret), String::concat(" for `", String::concat(qname, "`, and an or-pattern arm has one `resume`")))))))))))))
+              found = Some(or_arm_message(first_name, first_ret, qname, ret))
             }
           },
           None => ()
@@ -82,4 +262,8 @@ fn or_arm_resume_disagreement(alternatives: Array[Pat], defs: Array[TypeDef]) ->
     j = j + 1
   }
   found
+}
+
+fn or_arm_message(first_name: String, first_ret: Type, qname: String, ret: Type) -> String {
+  String::concat("write `", String::concat(first_name, String::concat(" => ..` and `", String::concat(qname, String::concat(" => ..` as separate arms: `resume` here would take ", String::concat(type_to_string(first_ret), String::concat(" for `", String::concat(first_name, String::concat("` but ", String::concat(type_to_string(ret), String::concat(" for `", String::concat(qname, "`, and an or-pattern arm has one `resume`"))))))))))))
 }
