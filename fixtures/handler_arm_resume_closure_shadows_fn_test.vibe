@@ -1,0 +1,70 @@
+//# #3338: inside a handler arm, `resume` is the arm's continuation even when
+//# a top-level `fn resume` exists -- also when a lambda in the arm is what
+//# calls it. On the wasm-gc lane the lambda's capture scan treated `resume`
+//# as the top-level function, so `f(7)` below answered 7000 instead of 8.
+//# Outside a handler the top-level function still answers.
+
+effect Ask {
+  Get() -> Int
+}
+
+fn resume(x: Int) -> Int {
+  x * 1000
+}
+
+fn arm_called() -> Int {
+  handle {
+    perform Ask::Get() + 1
+  } with {
+    Ask::Get() => resume(7)
+  }
+}
+
+fn arm_lambda() -> Int {
+  handle {
+    perform Ask::Get() + 1
+  } with {
+    Ask::Get() => {
+      let f = (x: Int) -> resume(x)
+      f(7)
+    }
+  }
+}
+
+fn arm_nested_lambda() -> Int {
+  handle {
+    perform Ask::Get() + 1
+  } with {
+    Ask::Get() => {
+      let outer = (a: Int) -> {
+        let inner = (b: Int) -> resume(b)
+        inner(a)
+      }
+      outer(7)
+    }
+  }
+}
+
+fn arm_captured() -> Int {
+  handle {
+    perform Ask::Get() + 1
+  } with {
+    Ask::Get() => {
+      let k = resume
+      k(7)
+    }
+  }
+}
+
+fn outside_handler() -> Int {
+  let g = (y: Int) -> resume(y)
+  g(2)
+}
+
+test "a lambda in a handler arm resumes the arm's continuation" {
+  inspect(arm_called(), "8")
+  inspect(arm_lambda(), "8")
+  inspect(arm_nested_lambda(), "8")
+  inspect(arm_captured(), "8")
+  inspect(outside_handler(), "2000")
+}

@@ -11,7 +11,8 @@ import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 import { discoverProjectViaPlan, publishCheckedOutcomes } from "./parallel_project_transport.mjs";
 import { normalizeParallelProject } from "./parallel_scheduler_trace.mjs";
-import { prepareModuleJob, readModuleJobProduct } from "./parallel_selfhost_checker.mjs";
+import { moduleJobInputs, writeModuleJobInputs, readModuleJobProduct } from "./parallel_selfhost_checker.mjs";
+import { TaskGroupJobCache } from "./taskgroup_job_cache.mjs";
 
 function runCoordinator(nativeRunner, component, manifest, cwd) {
   return new Promise((resolvePromise, reject) => {
@@ -58,6 +59,10 @@ export async function warmTaskGroupProject({ compilerWasm, entryFile, jobs, proj
   workerWasm = resolve(workerWasm); coordinatorWasm = resolve(coordinatorWasm); nativeRunner = resolve(nativeRunner);
   const start = performance.now();
   const timing = {};
+  const cache = process.env.VIBE_TASKGROUP_JOB_CACHE === "1" ? await TaskGroupJobCache.create(projectRoot,
+    [compilerWasm, workerWasm, coordinatorWasm, nativeRunner]) : null;
+  const fresh = [];
+  let executed = 0, reused = 0;
   const work = await mkdtemp(join(tmpdir(), "vibe-taskgroup-frontend-"));
   try {
     const discoveryStart = performance.now();
@@ -85,36 +90,51 @@ export async function warmTaskGroupProject({ compilerWasm, entryFile, jobs, proj
       const waveStart = performance.now();
       const queues = [[], [], [], []];
       const directories = new Map();
+      const cached = new Map(), keys = new Map();
+      let misses = 0;
       for (const [index, id] of ready.entries()) {
         const dir = join(work, `wave-${waves.length}-job-${index}`);
-        await prepareModuleJob(dir, modules.get(id), modules.get(id).dependencies.map((dep) => ({ id: dep, outcome: outcomes.get(dep) })));
-        queues[index % jobs].push(dir); directories.set(id, dir);
+        const inputs = moduleJobInputs(modules.get(id), modules.get(id).dependencies.map((dep) => ({ id: dep, outcome: outcomes.get(dep) })));
+        directories.set(id, dir);
+        const key = cache ? cache.inputKey(inputs) : null;
+        keys.set(id, key);
+        const product = cache ? await cache.lookup(key, modules.get(id)) : null;
+        if (product) { cached.set(id, product); reused++; }
+        else {
+          await writeModuleJobInputs(dir, inputs);
+          queues[misses % jobs].push(dir); misses++; executed++;
+        }
       }
       const manifest = join(work, `wave-${waves.length}.json`);
       await writeFile(manifest, JSON.stringify({ version: 1, wasm: workerWasm, cwd: projectRoot, queues }));
       const prepared = performance.now();
-      const result = await runCoordinator(nativeRunner, coordinatorWasm, manifest, projectRoot);
+      const result = misses ? await runCoordinator(nativeRunner, coordinatorWasm, manifest, projectRoot)
+        : { diagnosed: 0, events: [] };
       const checked = performance.now();
       let diagnosed = 0;
       for (const id of ready) {
         const module = modules.get(id);
-        const product = await readModuleJobProduct(directories.get(id), module, { exit_code: 0 }, { cleanup: false });
+        const product = cached.get(id) ?? await readModuleJobProduct(directories.get(id), module, { exit_code: 0 }, { cleanup: false });
         if (product.diagnostic) { outcomes.set(id, { kind: "diagnosed", diagnostics: [product.diagnostic] }); diagnosed++; }
         else {
           if (!product.cacheProduct) throw new Error(`worker has no checked lowering product for ${id}`);
           outcomes.set(id, { kind: "checked", artifact: { module: id, ...product } });
+          if (cache && !cached.has(id)) fresh.push([keys.get(id), directories.get(id)]);
         }
         pending.delete(id);
       }
       if (diagnosed !== result.diagnosed) throw new Error("TaskGroup diagnostic count disagrees with committed worker outcomes");
       const read = performance.now();
-      waves.push({ modules: ready.length, diagnosed, events: result.events,
+      waves.push({ modules: ready.length, executed: misses, reused: cached.size, diagnosed, events: result.events,
         prepare_ms: prepared - waveStart, coordinator_ms: checked - prepared, read_ms: read - checked });
     }
     // Publication order is independent of completion or wave order.
     const canonical = new Map([...outcomes.entries()].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0));
     const publicationStart = performance.now();
+    if (cache) await cache.verifyImages();
     const warmed = await publishCheckedOutcomes(runnerPath, compilerWasm, projectRoot, canonical, nativeCompiler);
+    // The compiler validates canonical environments and complete lowering first.
+    if (cache) for (const [key, dir] of fresh) await cache.store(key, dir);
     timing.publication_ms = performance.now() - publicationStart;
     timing.prepare_ms = waves.reduce((sum, wave) => sum + wave.prepare_ms, 0);
     timing.coordinator_ms = waves.reduce((sum, wave) => sum + wave.coordinator_ms, 0);
@@ -122,7 +142,7 @@ export async function warmTaskGroupProject({ compilerWasm, entryFile, jobs, proj
     timing.total_ms = performance.now() - start;
     const counts = { checked: 0, diagnosed: 0, blocked: 0 };
     for (const outcome of canonical.values()) counts[outcome.kind]++;
-    const report = { modules: modules.size, ...counts, warmed, timing, waves, ...(keepWork ? { work } : {}) };
+    const report = { modules: modules.size, ...counts, executed, reused, warmed, timing, waves, ...(keepWork ? { work } : {}) };
     if (process.env.VIBE_TASKGROUP_TRACE_OUT) await writeFile(process.env.VIBE_TASKGROUP_TRACE_OUT, JSON.stringify(report));
     return report;
   } finally {

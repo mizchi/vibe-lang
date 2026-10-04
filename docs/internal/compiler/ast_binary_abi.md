@@ -35,14 +35,20 @@ be added, removed or renamed without this document following it.
 ```
 +----------------+------------------+----------------+
 | magic (4B)     | version (varint) | module body    |
-| "vAST"         | = 3              |                |
+| "vAST"         | = 4              |                |
 +----------------+------------------+----------------+
 ```
 
 Magic: ASCII `'v' 'A' 'S' 'T'` (`0x76 0x41 0x53 0x54`). Followed by a
-varint version number; this document defines **version 3**. The
+varint version number; this document defines **version 4**. The
 deserializer rejects any other magic or any version it doesn't
 recognize.
+
+**v3 -> v4**: `EAssign` and `EAssignOp` append the byte offset of their
+TARGET token as an `svarint` (#3248), `-1` when the assignment is synthesized.
+v3 rebuilt neither offset, so a cached parse could not say which of two
+assignments to the same unknown name a diagnostic is about. The deserializer
+rejects v3 rather than reading it short.
 
 **v2 -> v3**: `ECall` appends a call-owned resolution cell, encoded as
 `array<svarint>`. An empty cell is unresolved/unmigrated; `[-1]` resolves a
@@ -65,7 +71,7 @@ rewrites; it never derives an identity from the callee's diagnostic spelling.
 Tag 7 rebasing therefore adds `base * 65536 * 8`, while existing tags add `base * 8`.
 All consumers use `resolved_callee_row_rebase` for this distinction. The wider
 identity field keeps IDs above 7 distinct from source offsets; unknown IDs are
-not restored. The AST binary layout remains v3 because its signed-varint cell
+not restored. The AST binary layout stayed v3 because its signed-varint cell
 already carries these IDs; older v3 readers reject the new operations explicitly.
 The compiler source fingerprint invalidates older carrier entries.
 
@@ -88,7 +94,7 @@ than reading it short.
 | `opt<T>`      | One byte present flag (`0x00`=None, `0x01`=Some) + `T` if Some. |
 | `f64`         | `varint` lo + `varint` hi: the IEEE-754 binary64 bit pattern split into two UNSIGNED 32-bit halves, low half first. See below. |
 | `(A, B)`      | `A` then `B`, no tag — the field's declared type says which. Likewise for wider tuples. |
-| `span`        | `svarint(start) svarint(end)`. Implemented and tested, but **no node in this AST uses it**: vibe's AST carries bare byte offsets in named `Int` slots (`EIdent`, `ELet`, `ELetMut`, `ECall`, `EBinOp`, `EDot`) rather than start/end pairs, so those encode as plain `svarint`. Retained because it predates the vibe AST and costs nothing. |
+| `span`        | `svarint(start) svarint(end)`. Implemented and tested, but **no node in this AST uses it**: vibe's AST carries bare byte offsets in named `Int` slots (`EIdent`, `ELet`, `ELetMut`, `EAssign`, `EAssignOp`, `ECall`, `EBinOp`, `EDot`) rather than start/end pairs, so those encode as plain `svarint`. Retained because it predates the vibe AST and costs nothing. |
 
 There is no `f32`, `char`, or `map<K,V>` primitive: nothing in this AST is
 a `Float`, a `Char`, or a `Map`. `EMap` is an `Array[(String, Expr)]`, so
@@ -206,8 +212,8 @@ ImportItem : opt<ImportKind>(kind) string(name) optstr(alias)
 | 0x0A | `ELet(String, Expr, Expr, Int)` | `string(name) Expr(value) Expr(body) svarint(byte_offset)` |
 | 0x0B | `ELetRec(String, Expr, Expr)` | `string(name) Expr(value) Expr(body)` |
 | 0x0C | `ELetMut(String, Expr, Expr, Int)` | `string(name) Expr(value) Expr(body) svarint(byte_offset)` |
-| 0x0D | `EAssign(String, Expr, Expr)` | `string(name) Expr(value) Expr(body)` |
-| 0x0E | `EAssignOp(String, String, Expr, Expr)` | `string(target) string(op) Expr(value) Expr(body)` |
+| 0x0D | `EAssign(String, Expr, Expr, Int)` | `string(name) Expr(value) Expr(body) svarint(target_byte_offset)` |
+| 0x0E | `EAssignOp(String, String, Expr, Expr, Int)` | `string(target) string(op) Expr(value) Expr(body) svarint(target_byte_offset)` |
 | 0x0F | `ESeq(Expr, Expr)` | `Expr(first) Expr(second)` |
 | 0x10 | `EMatch(Expr, Array[(Pat, Expr)])` | `Expr(scrutinee) array<(Pat, Expr)>(arms)` |
 | 0x11 | `EHandle(Expr, Array[(Pat, Expr)])` | `Expr(body) array<(Pat, Expr)>(arms)` |

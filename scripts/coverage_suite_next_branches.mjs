@@ -9,7 +9,7 @@ export const branchFocusedExtraEntries = [
   "lib/@vibe/compiler/tests/lexer_test.vibe",
   "lib/@vibe/compiler/tests/printer_test.vibe",
   "lib/@vibe/compiler/tests/checker_test.vibe",
-  "lib/@vibe/compiler/tests/checker_builtins_test.vibe",
+  "lib/@vibe/compiler/tests/builtins_test.vibe",
   "lib/@vibe/compiler/tests/s5_test.vibe",
 ];
 

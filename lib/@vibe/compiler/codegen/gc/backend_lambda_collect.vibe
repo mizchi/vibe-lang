@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Expr, TypeExpr
+  Expr, TypeExpr, sorted_names_of
 }
 
 import @vibe/core {
@@ -9,7 +9,7 @@ import @vibe/core {
 }
 
 import @vibe/compiler/codegen/common_analysis {
-  collect_free_vars
+  collect_free_vars_indexed_self
 }
 
 import ./backend_direct_abi_names.vibe {
@@ -44,7 +44,19 @@ fn glc_strip_param_label_marker(n: String) -> String {
   }
 }
 
-export fn collect_lambda_captures_gc(params: Array[(String, Option[TypeExpr])], fn_body: Expr, ctx: CompileCtxGc) -> (Array[String], Int, Int) {
+/// The names a lambda literal closes over, in env-slot order, plus the
+/// capture count and the parameter count.
+///
+/// `encl` is the ENCLOSING scope's `local_names` (#3338). A local binding
+/// shadows a top-level function, constant or global of the same name, so a
+/// name the body reads that `encl` binds is a capture even when `globals`
+/// also lists it -- the linear lane's #1114 rule (`compile_lambda` passes its
+/// `local_names` the same way). Without it `let twice = (x) -> x * 2` and
+/// then `(y) -> twice(y)` beside a top-level `fn twice` left `twice` out of
+/// the env, and the closure called the top-level function with no
+/// diagnostic. The `let rec` self-slot patch in backend_expr.vibe asks this
+/// same function with the same `encl`, so the two lists cannot disagree.
+export fn collect_lambda_captures_gc(params: Array[(String, Option[TypeExpr])], fn_body: Expr, ctx: CompileCtxGc, encl: Array[String]) -> (Array[String], Int, Int) {
   let param_names_arr = array_empty()
   let func_table = ctx.func_table
   let ctor_table = ctx.gc_ctor_table
@@ -89,7 +101,7 @@ export fn collect_lambda_captures_gc(params: Array[(String, Option[TypeExpr])], 
   // the func table nor the direct-ABI list. Asking the shared predicate --
   // which canonicalizes, then re-checks BOTH the direct-ABI list and the
   // `globals` computed above -- covers every alias, present and future.
-  let raw_captures = collect_free_vars(fn_body, param_names_arr, globals)
+  let raw_captures = collect_free_vars_indexed_self(fn_body, param_names_arr, sorted_names_of(globals), "", encl)
   let captures = array_empty()
   let mut ci = 0
   while ci < Array::length(raw_captures) {

@@ -111,7 +111,7 @@ expect_red "$MUTANT" "$GATE" "$MUTANT" "the refusal probe asks for resume" \
 
 # A corpus with no matches makes every comparison hold vacuously.
 expect_red "$MUTANT" "$GATE" "$MUTANT" "a corpus with no matches" \
-  "s|^CORPUS=.*|CORPUS=\"lib/@vibe/compiler/runtime/grep_fs.vibe\"\nPATTERN='ThisNameDoesNotExistAnywhere(\$(x:exp))'|"
+  "s|^CORPUS=.*|CORPUS=\"lib/@vibe/compiler/query/grep_fs.vibe\"\nPATTERN='ThisNameDoesNotExistAnywhere(\$(x:exp))'|"
 
 # The refusal's MESSAGE is what tells a budget stop from a wasm trap: both
 # produce no answer.

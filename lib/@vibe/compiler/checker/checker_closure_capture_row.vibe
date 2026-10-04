@@ -960,6 +960,48 @@ fn type_mentions_active_region(ty: Type, env: TypeEnv) -> Bool {
   }
 }
 
+fn type_mentions_active_nursery(ty: Type, env: TypeEnv) -> Bool {
+  match env {
+    EnvEmpty => false,
+    EnvBind(name, binding, rest) => if name == "#active_nursery" {
+      match binding.ty {
+        CtNamed(region_name, _) => type_mentions_named(ty, region_name) || type_mentions_active_nursery(ty, rest),
+        _ => type_mentions_active_nursery(ty, rest)
+      }
+    } else {
+      type_mentions_active_nursery(ty, rest)
+    },
+    EnvTraitDef(_, _, _, _, rest, _, _) => type_mentions_active_nursery(ty, rest),
+    EnvTraitImpl(_, _, rest) => type_mentions_active_nursery(ty, rest),
+    EnvShowWrappers(_, _, rest) => type_mentions_active_nursery(ty, rest),
+    EnvMutCell(_, _, rest) => type_mentions_active_nursery(ty, rest),
+    EnvTraitImplGen(_, _, _, _, rest) => type_mentions_active_nursery(ty, rest),
+    EnvTypeDefs(_, _, rest) => type_mentions_active_nursery(ty, rest),
+    EnvCached(_, _, rest) => type_mentions_active_nursery(ty, rest),
+    EnvFlat(_) => false
+  }
+}
+
+/// #3276: the refusal for a write, inside a `TaskGroup::run` body, that
+/// stores the group's own token -- a task handle, an endpoint, the group, or
+/// anything holding one -- in a location declared before the body. The write
+/// check is the `region` block's; only the edit it names is the nursery's.
+export fn nursery_write_escape_message() -> String {
+  "region escapes its nursery scope: this write stores this TaskGroup::run call's own Nursery/Task/Sender/Receiver token in a binding declared outside the body -- join the task (or use the endpoint) inside the body and store the result instead, or declare the binding inside the body"
+}
+
+/// #3276: the diagnostic for a write `assignment_crosses_region` or
+/// `container_write_crosses_region` refused. A `TaskGroup::run` body binds
+/// `#active_nursery` beside `#active_region`, so a value of one of its regions
+/// gets the nursery's edit; any other region keeps `region_message`.
+export fn region_write_escape_message(ty: Type, env: TypeEnv, region_message: String) -> String {
+  if type_mentions_active_nursery(ty, env) {
+    nursery_write_escape_message()
+  } else {
+    region_message
+  }
+}
+
 /// A target declared before the relevant active-region marker can outlive the
 /// region; a target found first in the environment chain is region-local.
 export fn assignment_crosses_region(name: String, ty: Type, env: TypeEnv) -> Bool {

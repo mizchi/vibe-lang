@@ -92,6 +92,7 @@ fn engine_locate_fn_name_marker(source: String, msg: String, mi: Int) -> String 
     }
   }
 }
+
 /// Decode (and ALWAYS strip) the ` [@off=N]` marker the checker may have
 /// appended. If N is a valid in-range offset, prefix the stripped message with
 /// its exact `line:col`. Otherwise strip the marker and fall through to the
@@ -131,151 +132,325 @@ fn engine_string_token_end(source: String, start: Int, fallback: Int) -> Int {
     }
   }
 }
-/// #2831 criterion 1: the range of a BINDING's literal initializer, or
-/// `(n, -1)` when this does not apply.
+
+/// #2831 criterion 1 / #3305: the range of a BINDING's literal initializer,
+/// or `(n, -1)` when this does not apply.
 ///
-/// `EInt` / `EFloat` / `EBool` carry no offset slot -- `EString` and `EIdent`
-/// do -- so a mismatch on one of them anchors the enclosing binder instead.
-/// Measured on a stage2 from this checkout:
+/// `EInt` / `EFloat` / `EBool` carry no offset slot, and neither do the tuple
+/// and array literals `ETuple` / `EArray` -- `EString` and `EIdent` do -- so
+/// a mismatch on one of them anchors the enclosing binder instead. Measured on
+/// a stage2 before each change:
 ///
-///   let a: Int = "not an int"   5:16-28   the literal, as a range
-///   let b: String = 42          5:7       the BINDER NAME, a point
-///   let c: Int = true           5:7       the binder
-///   let d: Int = 1.5            5:7       the binder
+///   let a: Int = "not an int"        2:16-28   the literal, as a range
+///   let b: String = 42               2:7       the BINDER NAME, a point
+///   let t: (Int, Int) = ("a", 1)     2:7       the binder
+///   let xs: Array[Int] = ["a", "b"]  2:7       the binder
 ///
-/// Widening those three constructors is an AST ABI bump across 174 files.
-/// This is the same answer without one, and by the same means `string_token_end`
-/// above already uses: the AST has no offset, this function has the SOURCE, so
-/// the honest range is derived from it. Nothing is invented -- the bytes are
-/// read back, and when they are not a literal the binder anchor stands.
+/// Widening those constructors is an AST ABI bump. This is the same answer
+/// without one, and by the same means `engine_string_token_end` above already uses:
+/// the AST has no offset, this function has the SOURCE, so the honest range is
+/// read back from its tokens -- the lexer's own, synthetic `;` included, so a
+/// statement ends exactly where the parser ends it. Nothing is invented, and
+/// when the tokens are not a whole literal the binder anchor stands.
 ///
-/// Four conditions, each one narrowing:
-///   * no end was supplied (`m < 0`), so this cannot touch a case that already
-///     has a real range -- the string literal above keeps its own;
+/// Five conditions, each one narrowing:
+///   * no end was supplied (the caller asks only when `m < 0`), so this cannot
+///     touch a case that already has a real range -- the string literal above
+///     keeps its own;
 ///   * the message IS a binding mismatch, so a callee or argument anchor
 ///     (#2885) is never moved;
-///   * `n` lands on an identifier start, i.e. a binder name;
-///   * the initializer after `=` is a bare INT / FLOAT / BOOL literal. Anything
-///     else -- a name, a call, a string, a leading `-` -- returns no answer.
+///   * `n` is a binder NAME: an identifier token right after `let` or `mut`.
+///     A value's own identifier is not one -- `let a: Int = x` anchors `x`,
+///     and reading on from `x` to the next statement's `=` once reported
+///     `let b = 2`'s `2` for it;
+///   * the initializer after the binding's `=` is a bare INT / FLOAT / BOOL
+///     literal, or a `(` / `[` literal through its matching bracket. A name, a
+///     call, a string, a leading `-` -- anything else returns no answer;
+///   * the statement ENDS right after it, so `(1, 2) == p` or `1 + x` keeps
+///     the binder anchor rather than naming one operand as the initializer.
 fn engine_binding_literal_range(source: String, stripped: String, n: Int) -> (Int, Int) {
-  let slen = String::length(source)
-  if n < 0 || n >= slen {
-    (n, 0 - 1)
-  } else if !String::starts_with(stripped, "binding type mismatch") {
-    (n, 0 - 1)
-  } else if !engine_lit_is_ident_start(String::byte_at(source, n)) {
+  if n < 0 || n >= String::length(source) || !String::starts_with(stripped, "binding type mismatch") {
     (n, 0 - 1)
   } else {
-    let eq = engine_lit_scan_to_eq(source, n, slen)
-    if eq < 0 {
+    let (tokens, starts, ends, _, _) = lex_with_offsets_recovering(source)
+    let binder = engine_lit_token_index_at(tokens, starts, n)
+    let is_binder = if binder < 1 {
+      false
+    } else {
+      match (Array::get(tokens, binder - 1), Array::get(tokens, binder)) {
+        (TLet, TIdent(_)) => true,
+        (TMut, TIdent(_)) => true,
+        _ => false
+      }
+    }
+    let eq = if is_binder {
+      engine_lit_binding_eq(tokens, binder + 1)
+    } else {
+      0 - 1
+    }
+    let last = if eq < 0 {
+      0 - 1
+    } else {
+      engine_lit_initializer_last(tokens, eq + 1)
+    }
+    if last < 0 {
+      (n, 0 - 1)
+    } else if !engine_lit_statement_ends_at(source, tokens, starts, ends, last + 1) {
       (n, 0 - 1)
     } else {
-      let start = engine_lit_skip_ws(source, eq + 1, slen)
-      let end = engine_lit_token_end(source, start, slen)
-      if end > start {
-        (start, end)
-      } else {
-        (n, 0 - 1)
-      }
+      (Array::get(starts, eq + 1), Array::get(ends, last))
     }
   }
 }
-fn engine_lit_is_ident_start(c: Int) -> Bool {
-  (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || c == 95
-}
-fn engine_lit_is_digit(c: Int) -> Bool {
-  c >= 48 && c <= 57
-}
-fn engine_lit_is_ident_char(c: Int) -> Bool {
-  engine_lit_is_ident_start(c) || engine_lit_is_digit(c)
-}
-fn engine_lit_skip_ws(source: String, from: Int, slen: Int) -> Int {
-  let mut i = from
-  while i < slen && (String::byte_at(source, i) == 32 || String::byte_at(source, i) == 9 || String::byte_at(source, i) == 10 || String::byte_at(source, i) == 13) {
-    i = i + 1
-  }
-  i
-}
-/// The binding's `=`, or -1. A comparison (`==` `!=` `<=` `>=`) is not it, and
-/// neither is anything after the statement ends -- `;` or `}` stop the scan so
-/// a binder with NO initializer on this line cannot reach a later statement's.
-fn engine_lit_scan_to_eq(source: String, from: Int, slen: Int) -> Int {
-  let mut i = from
+
+/// The index of the real token starting at byte `off`, or -1. The synthetic
+/// `;` the lexer inserts before a line opening with `(` or `[` shares that
+/// token's start, so it is passed over.
+fn engine_lit_token_index_at(tokens: Array[Token], starts: Array[Int], off: Int) -> Int {
   let mut found = 0 - 1
-  while found < 0 && i < slen {
-    let c = String::byte_at(source, i)
-    if c == 59 || c == 125 {
-      i = slen
-    } else if c == 61 {
-      let prev = if i > from {
-        String::byte_at(source, i - 1)
-      } else {
-        0
+  let mut i = 0
+  while found < 0 && i < Array::length(starts) {
+    let at = Array::get(starts, i)
+    if at > off {
+      i = Array::length(starts)
+    } else if at == off {
+      let synthetic = match Array::get(tokens, i) {
+        TSemicolon => i + 1 < Array::length(starts) && Array::get(starts, i + 1) == off,
+        TEof => true,
+        _ => false
       }
-      let next = if i + 1 < slen {
-        String::byte_at(source, i + 1)
-      } else {
-        0
-      }
-      if next == 61 || prev == 61 || prev == 33 || prev == 60 || prev == 62 {
-        i = i + 1
-      } else {
+      if !synthetic {
         found = i
+      } else {
+        ()
       }
     } else {
-      i = i + 1
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// 1 for `[`, 2 for `(`, 3 for `{`; the negation for the closer; 0 otherwise.
+fn engine_lit_bracket_kind(tok: Token) -> Int {
+  match tok {
+    TLBracket => 1,
+    TLParen => 2,
+    TLBrace => 3,
+    TRBracket => 0 - 1,
+    TRParen => 0 - 2,
+    TRBrace => 0 - 3,
+    _ => 0
+  }
+}
+
+/// The index of the bracket closing the one opened at `opener`, or -1.
+fn engine_lit_matching_close(tokens: Array[Token], opener: Int) -> Int {
+  let mut depth = 0
+  let mut found = 0 - 1
+  let mut i = opener
+  while found < 0 && i < Array::length(tokens) {
+    let k = engine_lit_bracket_kind(Array::get(tokens, i))
+    if k > 0 {
+      depth = depth + 1
+    } else if k < 0 {
+      depth = depth - 1
+      if depth == 0 {
+        found = i
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// The binding's own `=`: the first one outside the annotation's brackets,
+/// before the statement ends. -1 when there is none.
+fn engine_lit_binding_eq(tokens: Array[Token], from: Int) -> Int {
+  let mut depth = 0
+  let mut found = 0 - 1
+  let mut i = from
+  while found < 0 && i < Array::length(tokens) {
+    let tok = Array::get(tokens, i)
+    let k = engine_lit_bracket_kind(tok)
+    if k > 0 {
+      depth = depth + 1
+    } else if k < 0 {
+      depth = depth - 1
+    } else {
+      ()
+    }
+    let stop = if depth < 0 {
+      true
+    } else if depth == 0 {
+      match tok {
+        TEq => {
+          found = i
+          false
+        },
+        TSemicolon => true,
+        TEof => true,
+        _ => false
+      }
+    } else {
+      false
+    }
+    i = if stop {
+      Array::length(tokens)
+    } else {
+      i + 1
     }
   }
   found
 }
-/// The end of a bare INT / FLOAT / BOOL literal starting at `from`, or `from`
-/// when what is there is something else. A leading `-` is deliberately NOT
-/// accepted: that is a unary operator over a literal, a different node, and
-/// guessing at its extent is how an invented range gets in.
-fn engine_lit_token_end(source: String, from: Int, slen: Int) -> Int {
-  if from >= slen {
-    from
+
+/// The last token of a literal initializer starting at `first`: the literal
+/// itself for an INT / FLOAT / BOOL, the matching bracket for `(` / `[`. -1
+/// for anything else.
+fn engine_lit_initializer_last(tokens: Array[Token], first: Int) -> Int {
+  if first >= Array::length(tokens) {
+    0 - 1
   } else {
-    let c = String::byte_at(source, from)
-    if engine_lit_is_digit(c) {
-      let mut i = from
-      while i < slen && (engine_lit_is_digit(String::byte_at(source, i)) || engine_lit_is_ident_char(String::byte_at(source, i))) {
-        i = i + 1
-      }
-      // A fractional part, and an exponent, each only when a digit follows.
-      let mut j = i
-      if j < slen && String::byte_at(source, j) == 46 && j + 1 < slen && engine_lit_is_digit(String::byte_at(source, j + 1)) {
-        j = j + 1
-        while j < slen && engine_lit_is_ident_char(String::byte_at(source, j)) {
-          j = j + 1
-        }
+    match Array::get(tokens, first) {
+      TInt(_) => first,
+      TFloat(_) => first,
+      TIdent(word) => if word == "true" || word == "false" {
+        first
       } else {
-        ()
-      }
-      j
-    } else if engine_lit_word_at(source, from, slen, "true") {
-      from + 4
-    } else if engine_lit_word_at(source, from, slen, "false") {
-      from + 5
-    } else {
-      from
+        0 - 1
+      },
+      TLParen => engine_lit_matching_close(tokens, first),
+      TLBracket => engine_lit_matching_close(tokens, first),
+      _ => 0 - 1
     }
   }
 }
-/// `word` at `from`, not followed by another identifier character -- so
-/// `truely` is not `true`.
-fn engine_lit_word_at(source: String, from: Int, slen: Int, word: String) -> Bool {
-  let wlen = String::length(word)
-  if from + wlen > slen {
-    false
-  } else if String::substring(source, from, from + wlen) != word {
-    false
-  } else if from + wlen == slen {
+
+/// Does the statement end at token `next`? A `;` (the lexer's synthetic one
+/// included), a closing `}` or the end of the file does, and so does a token
+/// on a LATER line that can only begin a statement. An operator, `.`, `?` or
+/// `as` there continues the expression, so it does not.
+fn engine_lit_statement_ends_at(source: String, tokens: Array[Token], starts: Array[Int], ends: Array[Int], next: Int) -> Bool {
+  if next >= Array::length(tokens) {
     true
   } else {
-    !engine_lit_is_ident_char(String::byte_at(source, from + wlen))
+    match Array::get(tokens, next) {
+      TSemicolon => true,
+      TRBrace => true,
+      TEof => true,
+      tok => if engine_lit_newline_between(source, Array::get(ends, next - 1), Array::get(starts, next)) {
+        engine_lit_token_starts_statement(tok)
+      } else {
+        false
+      }
+    }
   }
 }
+
+fn engine_lit_newline_between(source: String, from: Int, to: Int) -> Bool {
+  let mut found = false
+  let mut i = from
+  while !found && i < to {
+    found = String::byte_at(source, i) == 10
+    i = i + 1
+  }
+  found
+}
+
+fn engine_lit_token_starts_statement(tok: Token) -> Bool {
+  match tok {
+    TIdent(_) => true,
+    TInt(_) => true,
+    TFloat(_) => true,
+    TString(_) => true,
+    TStringInterp(_, _) => true,
+    TLet => true,
+    TIf => true,
+    TMatch => true,
+    TWhile => true,
+    TFor => true,
+    TLoop => true,
+    TReturn => true,
+    TBreak => true,
+    TContinue => true,
+    THandle => true,
+    TThrow => true,
+    TFn => true,
+    TGuard => true,
+    THash => true,
+    TExport => true,
+    TTest => true,
+    _ => false
+  }
+}
+
+/// #3305: the range of the tuple / array literal an argument mismatch names,
+/// or `(-1, -1)`.
+///
+/// The checker cannot give the literal an offset (`ETuple` / `EArray` carry
+/// none), so it anchors the first element that has one -- a string or a
+/// name -- and appends the bracket path from the argument down to that element
+/// as ` [@off=N::PATH]` (`off_marker_enclosing`). This widens that position to
+/// the argument's own brackets by reading the source tokens: the brackets
+/// still open at the element's token must END in exactly that path, and the
+/// outermost of them is matched to its closer. Any other shape -- `N` is not
+/// the start of a string or name token, or a bracket of another kind is open
+/// in between -- returns no range, and the element itself stands.
+fn engine_enclosing_literal_range(source: String, elem: Int, path: String) -> (Int, Int) {
+  let (tokens, starts, ends, _, _) = lex_with_offsets_recovering(source)
+  let at = engine_lit_token_index_at(tokens, starts, elem)
+  let depth = String::length(path)
+  let anchored = if at < 0 || depth == 0 {
+    false
+  } else {
+    match Array::get(tokens, at) {
+      TString(_) => true,
+      TIdent(_) => true,
+      _ => false
+    }
+  }
+  if !anchored {
+    (0 - 1, 0 - 1)
+  } else {
+    let opened: Array[Int] = []
+    let mut i = 0
+    while i < at {
+      let k = engine_lit_bracket_kind(Array::get(tokens, i))
+      if k > 0 {
+        Array::push(opened, i)
+      } else if k < 0 && Array::length(opened) > 0 {
+        Array::truncate(opened, Array::length(opened) - 1)
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    let base = Array::length(opened) - depth
+    let mut ok = base >= 0
+    let mut j = 0
+    while ok && j < depth {
+      let want = String::byte_at(path, j) - 48
+      ok = engine_lit_bracket_kind(Array::get(tokens, Array::get(opened, base + j))) == want
+      j = j + 1
+    }
+    let close = if ok {
+      engine_lit_matching_close(tokens, Array::get(opened, base))
+    } else {
+      0 - 1
+    }
+    if close < 0 {
+      (0 - 1, 0 - 1)
+    } else {
+      (Array::get(starts, Array::get(opened, base)), Array::get(ends, close))
+    }
+  }
+}
+
 /// #2831: locate and path-prefix each diagnostic in a `\n`-joined message.
 ///
 /// One entry per line, in order, blank lines dropped. A single-diagnostic
@@ -295,6 +470,7 @@ fn engine_locate_each_line(path: String, source: String, msg: String) -> Array[S
   }
   out
 }
+
 /// #2831: a `\n`-joined report split into ONE STRING PER DIAGNOSTIC.
 ///
 /// Not per line. A diagnostic may carry continuation lines -- `hint: ...`, and
@@ -330,6 +506,7 @@ export fn engine_split_diagnostics(msg: String) -> Array[String] {
   }
   out
 }
+
 fn engine_diag_line_is_continuation(line: String) -> Bool {
   if String::starts_with(line, "hint: ") {
     true
@@ -340,15 +517,38 @@ fn engine_diag_line_is_continuation(line: String) -> Bool {
     c == 32 || c == 9
   }
 }
-/// An assignment node stores the target spelling but no offset. Recover its
-/// exact token from the source only when there is one matching assignment;
-/// ambiguity stays unlocated instead of pointing at an unrelated occurrence.
+
+/// #3248: locate an unknown assignment target at its OWN token.
+///
+/// The checker appends ` [@assign-target=N]`, where `N` is the start byte of
+/// the target token the parser keeps on `EAssign` / `EAssignOp`. The token's
+/// extent is read back from the lexer, so `r#name` stays whole, and it must
+/// still spell the name the message reports. A synthesized assignment has no
+/// token: it carries the bare ` [@assign-target]` and is left unlocated.
+///
+/// Nothing is recovered by searching the text. Before the parser kept the
+/// offset (#3244), the token was found by scanning for the one assignment
+/// spelling the name -- so two functions assigning the same unknown name were
+/// both left at a synthetic `0:0`, and a source-order guess could have named
+/// another assignment after desugaring.
 fn engine_locate_assignment_target(source: String, msg: String, marker_at: Int) -> String {
-  let marker = " [@assign-target]"
-  let stripped = String::concat(String::substring(msg, 0, marker_at), String::substring(msg, marker_at + String::length(marker), String::length(msg)))
+  let marker = " [@assign-target"
+  let body_start = marker_at + String::length(marker)
+  let rel_close = String::index_of(String::substring(msg, body_start, String::length(msg)), "]")
+  if rel_close < 0 {
+    return String::substring(msg, 0, marker_at)
+  }
+  let close = body_start + rel_close
+  let body = String::substring(msg, body_start, close)
+  let stripped = String::concat(String::substring(msg, 0, marker_at), String::substring(msg, close + 1, String::length(msg)))
+  let off = if String::starts_with(body, "=") {
+    engine_parse_offset_digits(body, 1, String::length(body))
+  } else {
+    0 - 1
+  }
   let name_marker = "unknown name: "
   let start = String::index_of(stripped, name_marker)
-  if start < 0 {
+  if off < 0 || start < 0 {
     return stripped
   }
   let name_start = start + String::length(name_marker)
@@ -358,61 +558,24 @@ fn engine_locate_assignment_target(source: String, msg: String, marker_at: Int) 
   }
   let name = String::substring(stripped, name_start, name_end)
   let (tokens, starts, ends, _, _) = lex_with_offsets_recovering(source)
-  let mut found = -1
-  let mut found_end = -1
-  let mut matches = 0
-  let mut i = 0
-  while i + 1 < Array::length(tokens) {
-    let is_target = match Array::get(tokens, i) {
-      TIdent(n) => n == name,
+  let at = engine_lit_token_index_at(tokens, starts, off)
+  let named = if at < 0 {
+    false
+  } else {
+    match Array::get(tokens, at) {
+      TIdent(spelled) => spelled == name,
       _ => false
     }
-    let is_assignment = match Array::get(tokens, i + 1) {
-      TEq => true,
-      TPlusEq => true,
-      TMinusEq => true,
-      TStarEq => true,
-      TSlashEq => true,
-      TPercentEq => true,
-      _ => false
-    }
-    let is_declaration = if i == 0 {
-      false
-    } else {
-      match Array::get(tokens, i - 1) {
-        TLet => true,
-        TMut => true,
-        TRec => true,
-        TDot => true,
-        _ => false
-      }
-    }
-    // A labeled call argument also spells `name = value`, but cannot be an
-    // assignment expression. Its preceding token is `(` or `,`.
-    let is_call_label = if i == 0 {
-      false
-    } else {
-      match Array::get(tokens, i - 1) {
-        TLParen => true,
-        TComma => true,
-        _ => false
-      }
-    }
-    if is_target && is_assignment && !is_declaration && !is_call_label {
-      found = Array::get(starts, i)
-      found_end = Array::get(ends, i)
-      matches = matches + 1
-    }
-    i = i + 1
   }
-  if matches == 1 {
-    String::concat(engine_offset_line_col_range_prefix(source, found, found_end), stripped)
+  if named {
+    String::concat(engine_offset_line_col_range_prefix(source, Array::get(starts, at), Array::get(ends, at)), stripped)
   } else {
     stripped
   }
 }
+
 export fn engine_locate_type_error(source: String, msg: String) -> String {
-  let assign_at = String::index_of(msg, " [@assign-target]")
+  let assign_at = String::index_of(msg, " [@assign-target")
   if assign_at >= 0 {
     return engine_locate_assignment_target(source, msg, assign_at)
   }
@@ -433,8 +596,20 @@ export fn engine_locate_type_error(source: String, msg: String) -> String {
       engine_locate_type_error_heuristic(source, String::substring(msg, 0, mi))
     } else {
       let close = inner_start + rel_end
-      // inner is `N` (start only) or `N:M` (start:end). Split on `:`.
-      let inner = String::substring(msg, inner_start, close)
+      // inner is `N` (start only), `N:M` (start:end), or `N::PATH` (#3305: an
+      // element inside a tuple / array literal, widened below). Split on `:`.
+      let whole = String::substring(msg, inner_start, close)
+      let path_at = String::index_of(whole, "::")
+      let inner = if path_at < 0 {
+        whole
+      } else {
+        String::substring(whole, 0, path_at)
+      }
+      let path = if path_at < 0 {
+        ""
+      } else {
+        String::substring(whole, path_at + 2, String::length(whole))
+      }
       let colon = String::index_of(inner, ":")
       let n = if colon < 0 {
         engine_parse_offset_digits(inner, 0, String::length(inner))
@@ -449,6 +624,20 @@ export fn engine_locate_type_error(source: String, msg: String) -> String {
       // Strip the full ` [@off=...]` segment (marker .. closing `]` inclusive).
       let stripped = String::concat(String::substring(msg, 0, mi), String::substring(msg, close + 1, String::length(msg)))
       let slen = String::length(source)
+      // #3305: widen an element of a tuple / array literal to the literal.
+      // When the source does not show exactly that literal, the element
+      // stands -- a position inside the literal, never outside it.
+      let (n, m) = if String::length(path) > 0 {
+        match engine_enclosing_literal_range(source, n, path) {
+          (ls, le) => if ls >= 0 {
+            (ls, le)
+          } else {
+            (n, m)
+          }
+        }
+      } else {
+        (n, m)
+      }
       // #2868 (Codex P2): recover a string literal's TOKEN end from the source.
       // `string_lit_end` in the checker computes `off + 2 + String::length(s)`,
       // the DECODED length, so `"\n"` -- two source bytes, one decoded -- ends

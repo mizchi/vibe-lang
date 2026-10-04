@@ -129,7 +129,7 @@ printf 'worker\n' > "$2/worker.wasm"
 printf 'coordinator\n' > "$2/coordinator.component.wasm"
 printf '{}\n' > "$2/build.json"
 SH
-for helper in taskgroup_build_frontend.mjs taskgroup_frontend_warm.mjs parallel_project_transport.mjs parallel_scheduler_trace.mjs parallel_selfhost_checker.mjs; do
+for helper in taskgroup_build_frontend.mjs taskgroup_frontend_warm.mjs taskgroup_job_cache.mjs parallel_project_transport.mjs parallel_scheduler_trace.mjs parallel_selfhost_checker.mjs; do
   : > "$WORK/t/scripts/$helper"
 done
 for pkg in core ast parser builtin console wit_runtime concurrent concurrent/experimental; do
@@ -157,7 +157,7 @@ for name in (cli, seed):
 with tarfile.open(out / 'vibe-toolchain-v0.1.0-rc.3.tar.gz') as archive:
     names = set(archive.getnames())
     for name in ['worker.wasm', 'coordinator.component.wasm', 'build.json',
-                 'taskgroup_build_frontend.mjs', 'taskgroup_frontend_warm.mjs',
+                 'taskgroup_build_frontend.mjs', 'taskgroup_frontend_warm.mjs', 'taskgroup_job_cache.mjs',
                  'parallel_project_transport.mjs', 'parallel_scheduler_trace.mjs', 'parallel_selfhost_checker.mjs']:
         assert 'lib/checker-taskgroup/' + name in names, name
 PY

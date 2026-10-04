@@ -536,8 +536,8 @@ fn fold_expr(expr: Expr) -> Expr {
     ELet(n, v, b, soff) => ELet(n, fold_expr(v), fold_expr(b), soff),
     ELetRec(n, v, b) => ELetRec(n, fold_expr(v), fold_expr(b)),
     ELetMut(n, v, b, soff) => ELetMut(n, fold_expr(v), fold_expr(b), soff),
-    EAssign(n, v, b) => EAssign(n, fold_expr(v), fold_expr(b)),
-    EAssignOp(n, op, v, b) => EAssignOp(n, op, fold_expr(v), fold_expr(b)),
+    EAssign(n, v, b, target_off) => EAssign(n, fold_expr(v), fold_expr(b), target_off),
+    EAssignOp(n, op, v, b, target_off) => EAssignOp(n, op, fold_expr(v), fold_expr(b), target_off),
     ESeq(a, b) => ESeq(fold_expr(a), fold_expr(b)),
     EMatch(s, arms) => EMatch(fold_expr(s), for a in arms {
       let (p, e) = a
@@ -694,8 +694,8 @@ fn uq_reserve_source(expr: Expr, out: Array[String]) -> Unit {
     ELet(n, _, _, _) => uq_reserve_name(n, out),
     ELetMut(n, _, _, _) => uq_reserve_name(n, out),
     ELetRec(n, _, _) => uq_reserve_name(n, out),
-    EAssign(n, _, _) => uq_reserve_name(n, out),
-    EAssignOp(n, _, _, _) => uq_reserve_name(n, out),
+    EAssign(n, _, _, _) => uq_reserve_name(n, out),
+    EAssignOp(n, _, _, _, _) => uq_reserve_name(n, out),
     EFn(_, _, params, _, _, _) => {
       let mut i = 0
       while i < Array::length(params) {
@@ -799,12 +799,12 @@ fn uq_rebind_region(expr: Expr, name: String) -> Int {
       0
     },
     EFn(_, _, _, _, _, _) => 2,
-    EAssign(n, _, _) => if n == name {
+    EAssign(n, _, _, _) => if n == name {
       2
     } else {
       0
     },
-    EAssignOp(n, _, _, _) => if n == name {
+    EAssignOp(n, _, _, _, _) => if n == name {
       2
     } else {
       0
@@ -837,7 +837,7 @@ fn uq_single_rebind(name: String, body: Expr) -> Bool {
     // Only split when uses actually span the store. Besides avoiding needless
     // rewrites, this preserves the old slot's eager release on an overwrite
     // that never reads it.
-    EAssign(n, value, rest) => n == name && uq_rebind_region(value, name) == 1 && uq_rebind_region(rest, name) == 1,
+    EAssign(n, value, rest, _) => n == name && uq_rebind_region(value, name) == 1 && uq_rebind_region(rest, name) == 1,
     _ => false
   }
 }
@@ -1288,7 +1288,7 @@ fn uniquify_shadowed_bindings(expr: Expr, env: UqEnv, counter: Array[Int], seen:
       // handed us an owned reference, which that view classification can lose.
       if uq_single_rebind(n, b) {
         match b {
-          EAssign(_, replacement, rest) => {
+          EAssign(_, replacement, rest, _) => {
             uq_mark()
             uniquify_shadowed_bindings(ELetMut(n, v, ELetMut(n, replacement, rest, -1), soff), env, counter, seen)
           },
@@ -1308,7 +1308,7 @@ fn uniquify_shadowed_bindings(expr: Expr, env: UqEnv, counter: Array[Int], seen:
         }
       }
     },
-    EAssign(n, v, b) => {
+    EAssign(n, v, b, target_off) => {
       let before = uq_marks_now()
       let n2 = uq_lookup(env, n)
       let v2 = uniquify_shadowed_bindings(v, env, counter, seen)
@@ -1316,10 +1316,10 @@ fn uniquify_shadowed_bindings(expr: Expr, env: UqEnv, counter: Array[Int], seen:
       if uq_marks_now() == before {
         expr
       } else {
-        EAssign(n2, v2, b2)
+        EAssign(n2, v2, b2, target_off)
       }
     },
-    EAssignOp(n, op, v, b) => {
+    EAssignOp(n, op, v, b, target_off) => {
       let before = uq_marks_now()
       let n2 = uq_lookup(env, n)
       let v2 = uniquify_shadowed_bindings(v, env, counter, seen)
@@ -1327,7 +1327,7 @@ fn uniquify_shadowed_bindings(expr: Expr, env: UqEnv, counter: Array[Int], seen:
       if uq_marks_now() == before {
         expr
       } else {
-        EAssignOp(n2, op, v2, b2)
+        EAssignOp(n2, op, v2, b2, target_off)
       }
     },
     ESeq(a, b) => {
@@ -1590,8 +1590,8 @@ export fn lift_match_scrutinees(expr: Expr, counter: Array[Int]) -> Expr {
     ELet(n, v, b, soff) => ELet(n, lift_match_scrutinees(v, counter), lift_match_scrutinees(b, counter), soff),
     ELetRec(n, v, b) => ELetRec(n, lift_match_scrutinees(v, counter), lift_match_scrutinees(b, counter)),
     ELetMut(n, v, b, soff) => ELetMut(n, lift_match_scrutinees(v, counter), lift_match_scrutinees(b, counter), soff),
-    EAssign(n, v, b) => EAssign(n, lift_match_scrutinees(v, counter), lift_match_scrutinees(b, counter)),
-    EAssignOp(n, op, v, b) => EAssignOp(n, op, lift_match_scrutinees(v, counter), lift_match_scrutinees(b, counter)),
+    EAssign(n, v, b, target_off) => EAssign(n, lift_match_scrutinees(v, counter), lift_match_scrutinees(b, counter), target_off),
+    EAssignOp(n, op, v, b, target_off) => EAssignOp(n, op, lift_match_scrutinees(v, counter), lift_match_scrutinees(b, counter), target_off),
     ESeq(a, b) => ESeq(lift_match_scrutinees(a, counter), lift_match_scrutinees(b, counter)),
     EMatch(s, arms) => {
       let lifted_arms = for a in arms {
@@ -2047,8 +2047,8 @@ fn normalize_dot_calls_expr(expr: Expr, struct_sets: Array[(String, Array[String
       ELetRec(n, v2, normalize_dot_calls_expr(b, struct_sets, var_types2, fn_returns))
     },
     ELetMut(n, v, b, soff) => ELetMut(n, normalize_dot_calls_expr(v, struct_sets, var_types, fn_returns), normalize_dot_calls_expr(b, struct_sets, var_types, fn_returns), soff),
-    EAssign(n, v, b) => EAssign(n, normalize_dot_calls_expr(v, struct_sets, var_types, fn_returns), normalize_dot_calls_expr(b, struct_sets, var_types, fn_returns)),
-    EAssignOp(n, op, v, b) => EAssignOp(n, op, normalize_dot_calls_expr(v, struct_sets, var_types, fn_returns), normalize_dot_calls_expr(b, struct_sets, var_types, fn_returns)),
+    EAssign(n, v, b, target_off) => EAssign(n, normalize_dot_calls_expr(v, struct_sets, var_types, fn_returns), normalize_dot_calls_expr(b, struct_sets, var_types, fn_returns), target_off),
+    EAssignOp(n, op, v, b, target_off) => EAssignOp(n, op, normalize_dot_calls_expr(v, struct_sets, var_types, fn_returns), normalize_dot_calls_expr(b, struct_sets, var_types, fn_returns), target_off),
     ESeq(a, b) => ESeq(normalize_dot_calls_expr(a, struct_sets, var_types, fn_returns), normalize_dot_calls_expr(b, struct_sets, var_types, fn_returns)),
     EMatch(s, arms) => EMatch(normalize_dot_calls_expr(s, struct_sets, var_types, fn_returns), for a in arms {
       let (p, e2) = a

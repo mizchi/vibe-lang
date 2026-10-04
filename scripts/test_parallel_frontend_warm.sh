@@ -62,6 +62,7 @@ const { parseIncrementalTelemetry } = await import(pathToFileURL(join(repo, "scr
 const runner = join(repo, "scripts/run_wasm_vibe_host_runner.sh");
 const publicRunner = join(repo, "runtime/viberun/target/release/viberun");
 const taskgroup = process.env.VIBE_PARALLEL_BACKEND === "taskgroup";
+const jobCache = taskgroup && process.env.VIBE_TASKGROUP_JOB_CACHE === "1";
 const driver = join(repo, taskgroup ? "scripts/taskgroup_frontend_warm.mjs" : "scripts/parallel_frontend_warm.mjs");
 const artifacts = process.env.VIBE_TASKGROUP_ARTIFACT_DIR;
 if (taskgroup && !artifacts) throw new Error("TaskGroup oracle requires VIBE_TASKGROUP_ARTIFACT_DIR");
@@ -76,15 +77,16 @@ for (const name of readdirSync(join(repo, "scripts/fixtures/parallel_project_sam
 const base = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("VIBE_")));
 const environment = cache => ({ ...base, VIBE_PREOPEN_DIR: project, VIBE_LIB: join(repo, "lib"),
   VIBE_BUILD_CACHE_DIR: cache, VIBE_CHECKED_MODULE_CACHE: "off", VIBE_CODEGEN_BODY_CACHE: "off",
-  VIBE_EXPERIMENTAL_AST_CACHE: "0", VIBE_IMPORT_ABI: "raw", VIBE_RC: "1" });
+  VIBE_EXPERIMENTAL_AST_CACHE: "0", VIBE_IMPORT_ABI: "raw", VIBE_RC: "1",
+  ...(jobCache ? { VIBE_TASKGROUP_JOB_CACHE: "1" } : {}) });
 const samples = [];
 function invoke(command, args, env, cwd = project) {
   const result = spawnSync(command, args, { cwd, env, encoding: "utf8", timeout: 300_000 });
   assert.ifError(result.error);
   return result;
 }
-function prewarm(source, jobs, cache) {
-  const result = invoke("node", [driver, compiler, source, String(jobs), project, runner, ...extra], environment(cache));
+function prewarm(source, jobs, cache, settings = {}, images = extra) {
+  const result = invoke("node", [driver, compiler, source, String(jobs), project, runner, ...images], { ...environment(cache), ...settings });
   assert.equal(result.status, 0, result.stderr);
   const summary = JSON.parse(result.stdout);
   console.log(`[jobs-warm] jobs=${jobs} ${source}: ${JSON.stringify(summary)}`);
@@ -137,6 +139,10 @@ function exercise(label, source, entry, expected, moduleCount) {
       assert.equal(summary.modules, moduleCount);
       assert.equal(summary.checked, moduleCount);
       assert.equal(summary.warmed, moduleCount);
+      if (jobCache) {
+        assert.equal(summary.executed, temperature === "cold" ? moduleCount : 0);
+        assert.equal(summary.reused, temperature === "cold" ? 0 : moduleCount);
+      }
       const compiled = compile(`${label}-jobs-${jobs}-${temperature}`, source, entry, cache);
       assert.equal(compiled.counters.checker_executions, 0, "published workers were rechecked");
       assert.deepEqual(compiled.bytes, cold.bytes, "worker lowering changed emitted bytes");
@@ -177,6 +183,65 @@ export fn typed_main() -> Int {
 `);
   exercise("typed", "typed_main.vibe", "typed_main", 0, 3);
 
+  if (jobCache) {
+    // Compiler cache paths treat an empty override just like an absent one.
+    // Exercise both through the actual driver, including publication.
+    for (const override of [undefined, ""]) {
+      const summary = prewarm("main.vibe", 4, override);
+      assert.equal(summary.checked, 3);
+      const directory = join(project, ".vibe/build/cache/taskgroup-jobs-v1");
+      assert.equal(readdirSync(directory).filter(name => name.endsWith(".json")).length > 0, true);
+      assert.equal(existsSync(join(project, "taskgroup-jobs-v1")), false,
+        "empty cache override wrote replay records outside the default cache");
+    }
+    const replayCache = cacheFor("replay-controls");
+    assert.equal(prewarm("main.vibe", 4, replayCache).executed, 3);
+    const control = compile("replay-control", "main.vibe", "main_value", replayCache);
+    assert.equal(prewarm("main.vibe", 4, replayCache).executed, 0);
+    const directory = join(replayCache, "taskgroup-jobs-v1");
+    const entry = join(directory, readdirSync(directory).find((name) => name.endsWith(".json")));
+    const mutations = [
+      (record) => { record.version = 999; },
+      (record) => { record.input = "0".repeat(64); },
+      (record) => { record.context = "0".repeat(64); },
+      (record) => { record.files[2] += "corrupted lowering"; },
+    ];
+    for (const [index, mutate] of mutations.entries()) {
+      const original = readFileSync(entry, "utf8");
+      const record = JSON.parse(original); mutate(record);
+      const changed = JSON.stringify(record);
+      assert.notEqual(changed, original, "cache corruption mutation did not land");
+      writeFileSync(entry, changed);
+      const summary = prewarm("main.vibe", 4, replayCache);
+      assert.equal(summary.executed, 1, "corrupt cache did not force a real check");
+      assert.equal(summary.reused, 2);
+      const repaired = compile(`replay-repaired-${index}`, "main.vibe", "main_value", replayCache);
+      assert.equal(repaired.counters.checker_executions, 0);
+      assert.deepEqual(repaired.bytes, control.bytes);
+    }
+    assert.equal(prewarm("main.vibe", 4, replayCache, { VIBE_CFG: "dev" }).executed, 3);
+    assert.equal(prewarm("main.vibe", 4, replayCache, { VIBE_CFG: "dev" }).executed, 0);
+    assert.equal(prewarm("main.vibe", 4, replayCache, { VIBE_CHECK_ERROR_ROW: "0" }).executed, 3);
+    assert.equal(prewarm("main.vibe", 4, replayCache, { VIBE_CHECK_ERROR_ROW: "0" }).executed, 0);
+
+    const producerCache = cacheFor("replay-producer");
+    assert.equal(prewarm("main.vibe", 4, producerCache).executed, 3);
+    const copiedWorker = join(work, "worker-control.wasm");
+    copyFileSync(extra[0], copiedWorker);
+    const images = [copiedWorker, ...extra.slice(1)];
+    assert.equal(prewarm("main.vibe", 4, producerCache, {}, images).executed, 0);
+    // A valid, unused custom section changes producer bytes at the SAME path.
+    // Its behavior is unchanged, but its products must come from real checks.
+    const originalWorker = readFileSync(copiedWorker);
+    const name = Buffer.from("cache-control");
+    const changedWorker = Buffer.concat([originalWorker, Buffer.from([0, name.length + 1, name.length]), name]);
+    assert.notDeepEqual(changedWorker, originalWorker, "producer mutation did not land");
+    writeFileSync(copiedWorker, changedWorker);
+    assert.equal(prewarm("main.vibe", 4, producerCache, {}, images).executed, 3);
+    assert.equal(prewarm("main.vibe", 4, producerCache, {}, images).executed, 0);
+    assert.deepEqual(compile("replay-producer", "main.vibe", "main_value", producerCache).bytes, control.bytes);
+  }
+
   // An unchanged signature with an edited dependency body must not keep the
   // old fingerprint, lowering product, or rendered behavior.
   const editCache = cacheFor("edit");
@@ -202,6 +267,13 @@ export fn typed_main() -> Int {
   assert.equal(broken.warmed, 2, "diagnosed module must not publish a cache entry");
   const parallelDiagnostic = compile("broken-parallel", "main_broken.vibe", "main_value", brokenCache, true);
   assert.equal(parallelDiagnostic, serialDiagnostic);
+  if (jobCache) {
+    const repeated = prewarm("main_broken.vibe", 4, brokenCache);
+    assert.equal(repeated.executed, 1, "diagnosed module must be checked again");
+    assert.equal(repeated.reused, 2, "only successful dependency products may replay");
+    assert.equal(repeated.diagnosed, 1);
+    assert.equal(compile("broken-repeated", "main_broken.vibe", "main_value", brokenCache, true), serialDiagnostic);
+  }
 
   // Exercise the public relative-path --jobs adapter; canonical cache keys
   // must agree with ordinary serial builds in a separate project directory.

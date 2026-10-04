@@ -104,8 +104,8 @@ fn map_expr_offsets(expr: Expr, f: (Int) -> Int, context: Option[ParserBinderCon
       ELet(n, v, b, soff) => ELet(n, map_expr_offsets(v, f, context), map_expr_offsets(b, f, context), map_located_off(soff, f)),
       ELetRec(n, v, b) => ELetRec(n, map_expr_offsets(v, f, context), map_expr_offsets(b, f, context)),
       ELetMut(n, v, b, soff) => ELetMut(n, map_expr_offsets(v, f, context), map_expr_offsets(b, f, context), map_located_off(soff, f)),
-      EAssign(n, v, b) => EAssign(n, map_expr_offsets(v, f, context), map_expr_offsets(b, f, context)),
-      EAssignOp(n, op, v, b) => EAssignOp(n, op, map_expr_offsets(v, f, context), map_expr_offsets(b, f, context)),
+      EAssign(n, v, b, target_off) => EAssign(n, map_expr_offsets(v, f, context), map_expr_offsets(b, f, context), map_located_off(target_off, f)),
+      EAssignOp(n, op, v, b, target_off) => EAssignOp(n, op, map_expr_offsets(v, f, context), map_expr_offsets(b, f, context), map_located_off(target_off, f)),
       ESeq(a, b) => ESeq(map_expr_offsets(a, f, context), map_expr_offsets(b, f, context)),
       EMatch(s, arms) => EMatch(map_expr_offsets(s, f, context), map_arm_exprs(arms, f, context)),
       EHandle(s, arms) => EHandle(map_expr_offsets(s, f, context), map_arm_exprs(arms, f, context)),
@@ -288,8 +288,8 @@ fn tl_scan_expr(expr: Expr, rels: Array[Int], pluses: Array[Int], anchor: (Int, 
     ELet(_, v, b, _) => tl_scan_expr(v, rels, pluses, anchor) || tl_scan_expr(b, rels, pluses, anchor),
     ELetRec(_, v, b) => tl_scan_expr(v, rels, pluses, anchor) || tl_scan_expr(b, rels, pluses, anchor),
     ELetMut(_, v, b, _) => tl_scan_expr(v, rels, pluses, anchor) || tl_scan_expr(b, rels, pluses, anchor),
-    EAssign(_, v, b) => tl_scan_expr(v, rels, pluses, anchor) || tl_scan_expr(b, rels, pluses, anchor),
-    EAssignOp(_, _, v, b) => tl_scan_expr(v, rels, pluses, anchor) || tl_scan_expr(b, rels, pluses, anchor),
+    EAssign(_, v, b, _) => tl_scan_expr(v, rels, pluses, anchor) || tl_scan_expr(b, rels, pluses, anchor),
+    EAssignOp(_, _, v, b, _) => tl_scan_expr(v, rels, pluses, anchor) || tl_scan_expr(b, rels, pluses, anchor),
     ESeq(a, b) => tl_scan_expr(a, rels, pluses, anchor) || tl_scan_expr(b, rels, pluses, anchor),
     EMatch(s, arms) => tl_scan_expr(s, rels, pluses, anchor) || tl_scan_arms(arms, rels, pluses, anchor),
     EHandle(s, arms) => tl_scan_expr(s, rels, pluses, anchor) || tl_scan_arms(arms, rels, pluses, anchor),
@@ -349,8 +349,8 @@ fn tl_rewrite_expr(expr: Expr, rels: Array[Int], pluses: Array[Int], anchor: (In
     ELet(n, v, b, soff) => ELet(n, tl_rewrite_expr(v, rels, pluses, anchor), tl_rewrite_expr(b, rels, pluses, anchor), soff),
     ELetRec(n, v, b) => ELetRec(n, tl_rewrite_expr(v, rels, pluses, anchor), tl_rewrite_expr(b, rels, pluses, anchor)),
     ELetMut(n, v, b, soff) => ELetMut(n, tl_rewrite_expr(v, rels, pluses, anchor), tl_rewrite_expr(b, rels, pluses, anchor), soff),
-    EAssign(n, v, b) => EAssign(n, tl_rewrite_expr(v, rels, pluses, anchor), tl_rewrite_expr(b, rels, pluses, anchor)),
-    EAssignOp(n, op, v, b) => EAssignOp(n, op, tl_rewrite_expr(v, rels, pluses, anchor), tl_rewrite_expr(b, rels, pluses, anchor)),
+    EAssign(n, v, b, target_off) => EAssign(n, tl_rewrite_expr(v, rels, pluses, anchor), tl_rewrite_expr(b, rels, pluses, anchor), target_off),
+    EAssignOp(n, op, v, b, target_off) => EAssignOp(n, op, tl_rewrite_expr(v, rels, pluses, anchor), tl_rewrite_expr(b, rels, pluses, anchor), target_off),
     ESeq(a, b) => ESeq(tl_rewrite_expr(a, rels, pluses, anchor), tl_rewrite_expr(b, rels, pluses, anchor)),
     EMatch(s, arms) => EMatch(tl_rewrite_expr(s, rels, pluses, anchor), tl_rewrite_arms(arms, rels, pluses, anchor)),
     EHandle(s, arms) => EHandle(tl_rewrite_expr(s, rels, pluses, anchor), tl_rewrite_arms(arms, rels, pluses, anchor)),
@@ -644,7 +644,7 @@ fn join_loop_params(param_names: Array[String]) -> String {
 fn desugar_loop_body(expr: Expr, param_names: Array[String], context: Option[ParserBinderContext]) -> Expr with Exception {
   match expr {
     EBreak(opt) => match opt {
-      Some(val) => EAssign("__loop_result", desugar_loop_body(val, param_names, context), EBreak(None)),
+      Some(val) => EAssign("__loop_result", desugar_loop_body(val, param_names, context), EBreak(None), -1),
       None => EBreak(None)
     },
     EContinue(args) => {
@@ -660,7 +660,7 @@ fn desugar_loop_body(expr: Expr, param_names: Array[String], context: Option[Par
           let mut result = EContinue(Array::slice([EUnit], 0, 0))
           let mut ci = nargs - 1
           while ci >= 0 {
-            result = EAssign(Array::get(param_names, ci), EIdent(String::concat("__lt", __to_string(ci)), -1), result)
+            result = EAssign(Array::get(param_names, ci), EIdent(String::concat("__lt", __to_string(ci)), -1), result, -1)
             ci = ci - 1
           }
           let mut ci2 = nargs - 1
@@ -679,7 +679,7 @@ fn desugar_loop_body(expr: Expr, param_names: Array[String], context: Option[Par
     ELet(n, v, b, soff) => ELet(n, desugar_loop_body(v, param_names, context), desugar_loop_body(b, param_names, context), soff),
     ELetMut(n, v, b, soff) => ELetMut(n, desugar_loop_body(v, param_names, context), desugar_loop_body(b, param_names, context), soff),
     ESeq(a, b) => ESeq(desugar_loop_body(a, param_names, context), desugar_loop_body(b, param_names, context)),
-    EAssign(n, v, c) => EAssign(n, desugar_loop_body(v, param_names, context), desugar_loop_body(c, param_names, context)),
+    EAssign(n, v, c, target_off) => EAssign(n, desugar_loop_body(v, param_names, context), desugar_loop_body(c, param_names, context), target_off),
     // #808: recurse into match/handle arm bodies so `break v` / `continue(args)`
     // inside an arm get the loop desugar (the raw EBreak/EContinue otherwise
     // reach codegen with their payloads dropped — `continue(i + 1)` looped
@@ -718,7 +718,7 @@ fn desugar_loop_body(expr: Expr, param_names: Array[String], context: Option[Par
     ELetRec(n, v, b) => ELetRec(n, desugar_loop_body(v, param_names, context), desugar_loop_body(b, param_names, context)),
     EUnaryOp(op, e) => EUnaryOp(op, desugar_loop_body(e, param_names, context)),
     EDot(obj, field, off, fdoff) => EDot(desugar_loop_body(obj, param_names, context), field, off, fdoff),
-    EAssignOp(n, op, v, c) => EAssignOp(n, op, desugar_loop_body(v, param_names, context), desugar_loop_body(c, param_names, context)),
+    EAssignOp(n, op, v, c, target_off) => EAssignOp(n, op, desugar_loop_body(v, param_names, context), desugar_loop_body(c, param_names, context), target_off),
     _ => expr
   }
 }

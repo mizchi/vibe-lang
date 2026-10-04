@@ -95,8 +95,11 @@ echo "[serve-async] adapter imports handler as an async func"
 REL_OUT="${OUT_DIR#"$PROJECT_ROOT"/}"
 cat >"$OUT_DIR/emit.vibe" <<EMITEOF
 import @vibe/compiler/entry/source_compile/wasi_only {
-  comp_emit_component_wasm_string_handler_async,
   compile_file_wasi_only
+}
+
+import @vibe/compiler/codegen/component {
+  comp_emit_component_wasm_string_handler_async
 }
 
 fn main() -> Int allows Env + Exception + Fs {

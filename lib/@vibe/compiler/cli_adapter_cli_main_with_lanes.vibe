@@ -1,13 +1,11 @@
 // lib/@vibe/compiler/cli_adapter.vibe — cli main with lanes.
 
 import @vibe/compiler/entry/source_compile/wasi_only {
-  comp_emit_component_wasm_command,
-  comp_emit_component_wasm_stream_handler,
-  comp_emit_component_wasm_string_handler,
-  coverage_driver_program_source_fs,
-  maybe_wrap_stdin_provider_core,
-  merged_program_source_fs,
-  reject_stdin_provider_core
+  coverage_driver_program_source_fs, maybe_wrap_stdin_provider_core, merged_program_source_with_fs, reject_stdin_provider_core
+}
+
+import @vibe/compiler/codegen/component {
+  comp_emit_component_wasm_command, comp_emit_component_wasm_stream_handler, comp_emit_component_wasm_string_handler
 }
 
 import @vibe/compiler/entry/source_compile/gc_only {
@@ -19,11 +17,27 @@ import ./user_dispatch.vibe {
 }
 
 import @vibe/compiler/runtime {
-  alloc_spans,
-  binding_occurrences,
   build_funcmap_from_source,
   build_module_source_from_source,
   collect_all_diagnostics_with_unstable_for_path,
+  incremental_invalidation_trace_json,
+  incremental_typecheck_telemetry_json,
+  locate_type_error,
+  locate_type_error_lines,
+  module_plan_manifest_fs,
+  run_module_job_dir,
+  run_publish_env_cache_dir,
+  set_collect_module_diagnostics,
+  set_dep_order_seed,
+  set_experimental_typing_dependency_env_reuse_enabled,
+  set_incremental_interface_trace_enabled,
+  set_incremental_typecheck_telemetry_enabled,
+  set_scheduler_trace_path
+}
+
+import @vibe/compiler/query {
+  alloc_spans,
+  binding_occurrences,
   doc_at_source,
   escape_spans,
   escape_spans_strict,
@@ -32,21 +46,8 @@ import @vibe/compiler/runtime {
   grep_list_files,
   grep_read_file_list,
   grep_scan_files_report,
-  incremental_invalidation_trace_json,
-  incremental_typecheck_telemetry_json,
-  locate_type_error,
-  locate_type_error_lines,
-  module_plan_manifest_fs,
   rc_classify_source,
   rc_plan_source,
-  run_module_job_dir,
-  run_publish_env_cache_dir,
-  set_collect_module_diagnostics,
-  set_dep_order_seed,
-  set_experimental_typing_dependency_env_reuse_enabled,
-  set_incremental_interface_trace_enabled,
-  set_incremental_typecheck_telemetry_enabled,
-  set_scheduler_trace_path,
   symbol_spans_fs_report,
   symbol_spans_locate_failure,
   symbol_spans_with_docs_for_path,
@@ -315,7 +316,7 @@ fn emit_compile_diag(output_path: String, msg: String) -> Int with Fs {
 /// compile-path message. Only a diagnostic that states where it came from gets a
 /// position from this.
 fn emit_compile_diag_located(output_path: String, msg: String, source: String) -> Int with Fs {
-  if String::contains(msg, " [@off=") || String::contains(msg, " [@fn=") || String::contains(msg, " [@assign-target]") {
+  if String::contains(msg, " [@off=") || String::contains(msg, " [@fn=") || String::contains(msg, " [@assign-target") {
     emit_compile_diag(output_path, String::join(locate_type_error_lines(source, msg), "\n"))
   } else {
     emit_compile_diag(output_path, msg)
@@ -1851,7 +1852,7 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String) -> (Bytes,
       } else {
         ()
       }
-      let merged_src = coverage_driver_program_source_fs(input_path, driver_path)
+      let merged_src = coverage_driver_program_source_fs(input_path, driver_path, merged_source_lowers_trait_dicts())
       // Prune before the pinned seed type-checks the result. The full no-DCE
       // compiler contains intentionally dormant generic scaffolding that is
       // not a valid standalone program; the driver and every exact target it
@@ -1863,7 +1864,7 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String) -> (Bytes,
   }
   if Env::get("VIBE_EMIT_MERGED_SOURCE") == "1" {
     return handle {
-      let merged_src = merged_program_source_fs(input_path)
+      let merged_src = merged_program_source_with_fs(input_path, merged_source_lowers_trait_dicts())
       Fs::write_file(output_path, merged_src)
       0
     } with { Exception::Throw(msg) => emit_compile_diag(output_path, msg) }
@@ -1992,6 +1993,14 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String) -> (Bytes,
       Exception::Throw(msg) => emit_compile_diag_located(output_path, located_lex_message(source_cfg, msg), source_cfg)
     }
   }
+}
+
+/// #3331: does the caller want the merged program printed AFTER the
+/// trait-dictionary desugar? Only for a pinned seed that desugars before it
+/// checks; it modifies the two merged-source modes above and selects nothing.
+/// The default is the source form every current compiler reads back.
+fn merged_source_lowers_trait_dicts() -> Bool with Env {
+  Env::get("VIBE_MERGED_SOURCE_LOWER_TRAIT_DICTS") == "1"
 }
 
 /// #1137: run the production CLI via a real `fn main -> Unit` (ADR-0075's

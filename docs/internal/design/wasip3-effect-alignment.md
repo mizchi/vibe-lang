@@ -48,12 +48,18 @@ abstraction.
 
 ### Cross-cutting findings
 
-1. **Generic effects are checked** (#1340). `effect State[S]` is registered;
-   `perform` and `handle` sites are checked against a signature instantiated
-   with fresh inference variables per use (one instantiation per `handle`,
-   shared by its arms), and `with State[Int]` parses (one type argument). Row
-   containment still compares base names only; telling `State[Int]` from
-   `State[String]` in a row is ADR-0071's `OperationRef` normalization (#3143).
+1. **Generic effects are checked** (#1340). `effect State[S]` is registered,
+   and `with State[Int]` parses (one type argument). A `handle` instantiates
+   the effect once, shared by its body and its arms. A `perform` outside any
+   handle of the effect takes the type arguments of the enclosing function's
+   own row (#3275), so under `with State[Int]` it sends and receives an
+   `Int`, and a kinded parameter takes a bare constructor (`with Read[Array]`
+   makes `Read::Put(F[Int])` take an `Array[Int]`). A bare `with State`
+   leaves each perform instantiated on its own, and a lambda with no row of
+   its own does not take the enclosing function's: its row is decided where
+   it is used. A row naming `State[Int]` does not cover a callee's
+   `State[String]` (#3053), and a handle whose arms answer one instantiation
+   refuses a handled call that declares another (#3010).
 2. **A tail-resumptive arm cannot abort.** An `Error` / `Exception` arm and a
    suspend-class arm discard the continuation; an arm of an ordinary
    tail-resumptive user effect must end in `resume(v)`, and a bare tail value
