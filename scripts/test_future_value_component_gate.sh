@@ -2,7 +2,7 @@
 # Future-value async component regression gate (ADR-0089 step 2, #1218).
 #
 # Verifies comp_emit_component_wasm_future_value
-# (lib/@vibe/compiler/entry/source_compile/wasi_only/component_codegen.vibe):
+# (lib/@vibe/compiler/codegen/component/component_codegen.vibe):
 # the fixed-shape "self-contained future<u32> value round-trip" component --
 # a byte-exact port of tools/wasip3_component_probe/future_value/
 # component.wat -- compiles, validates, and actually runs the literal
@@ -71,7 +71,7 @@ echo "[future-value-component-gate] compiler: $COMPILER"
 # input to prepare).
 HARNESS="$OUT_DIR/dump.vibex"
 cat >"$HARNESS" <<'EOF'
-import @vibe/compiler/entry/source_compile/wasi_only {
+import @vibe/compiler/codegen/component {
   comp_emit_component_wasm_future_value
 }
 

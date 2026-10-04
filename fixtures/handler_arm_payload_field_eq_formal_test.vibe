@@ -1,0 +1,81 @@
+//# #3362, the case that made it silently wrong: a field read on a handler
+//# arm's payload (`resume(p.x)`) made the checker type the NEXT generic
+//# function's formal `T` as `Int` (the arm's `resume` re-check reused
+//# type-variable numbers; see handler_arm_payload_field_generic_test.vibe).
+//# A caller declared EARLIER is checked against the declared signature, so it
+//# could still pass Strings. On the committed seed the generic's body was then
+//# lowered with `T` as `Int`, and `Some("ab") == Some("ab")` compared the two
+//# pointers: `false`, and the same for the tuple and array shapes. Main
+//# already answered `true` before the fix, because these comparisons go
+//# through the `Eq` witness (#3287) whatever the formal resolved to; this file
+//# keeps that combination pinned. Each handler function below is followed by
+//# the declaration it used to corrupt.
+
+effect Box[T] {
+  Put(T) -> Int
+}
+
+effect Two[T] {
+  A(T) -> Int
+  B(T) -> Int
+}
+
+struct Pt {
+  x: Int
+}
+
+// Checked before the generics they call, against their declared signatures.
+fn same_opt_strings() -> Bool {
+  same_opt(Some(String::concat("a", "b")), Some("ab"))
+}
+
+fn same_tup_strings() -> Bool {
+  same_tup((String::concat("a", "b"), 1), ("ab", 1))
+}
+
+fn same_arr_strings() -> Bool {
+  same_arr([String::concat("a", "b")], ["ab"])
+}
+
+fn run_pt_a(f: () -> Int with Box[Pt]) -> Int {
+  handle {
+    f()
+  } with {
+    Box::Put(p) => resume(p.x)
+  }
+}
+
+fn same_opt[T: Eq](a: Option[T], b: Option[T]) -> Bool {
+  a == b
+}
+
+fn run_pt_b(f: () -> Int with Box[Pt]) -> Int {
+  handle {
+    f()
+  } with {
+    Box::Put(p) => resume(p.x * 2)
+  }
+}
+
+fn same_tup[T: Eq](a: (T, Int), b: (T, Int)) -> Bool {
+  a == b
+}
+
+fn run_two(f: () -> Int with Two[Pt]) -> Int {
+  handle {
+    f()
+  } with {
+    Two::A(p) => resume(p.x);
+    Two::B(q) => resume(q.x + 1)
+  }
+}
+
+fn same_arr[T: Eq](a: Array[T], b: Array[T]) -> Bool {
+  a == b
+}
+
+test "Eq through a formal compares Strings by content" {
+  inspect(same_opt_strings(), "true")
+  inspect(same_tup_strings(), "true")
+  inspect(same_arr_strings(), "true")
+}

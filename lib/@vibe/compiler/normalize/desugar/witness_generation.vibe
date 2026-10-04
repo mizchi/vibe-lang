@@ -100,6 +100,26 @@ fn constructor_substs_from_recvs(recvs: Array[(String, Int)], orig_args: Array[E
   out
 }
 
+/// #3365: how many value parameters the trait declares for `method` -- the
+/// arity of the dictionary slot that holds it. The first signature of that
+/// name wins, as in the flattened table the dictionary struct is built from.
+fn trait_method_arity(sigs: Array[(String, Array[TypeExpr], TypeExpr)], method: String) -> Int {
+  let mut arity = 0
+  let mut found = false
+  let mut i = 0
+  while !found && i < Array::length(sigs) {
+    let (m, params, _) = Array::get(sigs, i)
+    if m == method {
+      arity = Array::length(params)
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  arity
+}
+
 fn build_concrete_dict_for_target(actual_target: TypeExpr, trait_name: String, traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)], arg_expr: Option[Expr]) -> Option[Expr] with Exception {
   let cname = impl_target_head(actual_target)
   match lookup_trait_sigs(traits, trait_ref_name(trait_name)) {
@@ -217,10 +237,22 @@ fn build_concrete_dict_for_target(actual_target: TypeExpr, trait_name: String, t
                 bi = bi + 1
               }
               if subok {
-                Array::push(callargs, EIdent("__w", -1))
-                let closure = EFn(empty_str_array(), array_empty(), Array::slice([
-                  ("__w", None)
-                ], 0, 1), None, None, ECall(EIdent(qm, -1), callargs, -1, []))
+                // #3365: the slot holds the impl method with its own
+                // dictionaries applied, so the closure takes exactly the
+                // method's value parameters. It used to take one (`(__w) ->
+                // qm(dicts, __w)`), right for `show(Self)` and one argument
+                // short for `same(Self, Self)`: the call failed wasm
+                // validation ("not enough arguments on the stack").
+                let wparams: Array[(String, Option[TypeExpr])] = array_empty()
+                let mut wi = 0
+                while wi < trait_method_arity(sigs, m) {
+                  let wname = String::concat("__w", __to_string(wi))
+                  Array::push(wparams, (wname, None))
+                  Array::push(callargs, EIdent(wname, -1))
+                  wi = wi + 1
+                }
+                let closure = EFn(empty_str_array(), array_empty(), wparams, None, None, ECall(EIdent(qm, -1), callargs, -1, [
+                ]))
                 Array::push(recfields, (m, closure))
               } else {
                 failed = true

@@ -18,7 +18,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 GATE="scripts/check_async_band_contract.sh"
-CC_REAL="lib/@vibe/compiler/entry/source_compile/wasi_only/component_codegen.vibe"
+CC_REAL="lib/@vibe/compiler/codegen/component/component_codegen.vibe"
 LC_REAL="lib/@vibe/compiler/codegen/wasi/linked_compile.vibe"
 
 WORK="$(mktemp -d)"

@@ -3,7 +3,7 @@
 # step 4, #1218).
 #
 # Verifies comp_emit_component_wasm_host_future_value
-# (lib/@vibe/compiler/entry/source_compile/wasi_only/component_codegen.vibe):
+# (lib/@vibe/compiler/codegen/component/component_codegen.vibe):
 # the fixed-shape component that reads a HOST-SUPPLIED `future<u32>` --
 # a byte-exact port of tools/wasip3_component_probe/host_future_value/
 # component.wat. Unlike the self-contained future-value shape (where the
@@ -102,7 +102,7 @@ echo "[host-future-value-component-gate] runner: $RUNNER"
 # shape, no core-module input to prepare).
 HARNESS="$OUT_DIR/dump.vibex"
 cat >"$HARNESS" <<'EOF'
-import @vibe/compiler/entry/source_compile/wasi_only {
+import @vibe/compiler/codegen/component {
   comp_emit_component_wasm_host_future_value
 }
 
