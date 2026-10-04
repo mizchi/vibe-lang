@@ -122,7 +122,7 @@ for compile_lane in fs single-file; do
   if ! grep -qF 'unknown name: accI' "$WORK/assign_unknown.$compile_lane.wasm.diag" 2>/dev/null; then
     bad "assign_unknown: $compile_lane build lost the unbound-target diagnostic"
   fi
-  if grep -qF '[@assign-target]' "$WORK/assign_unknown.$compile_lane.wasm.diag" 2>/dev/null; then
+  if grep -qF '[@assign-target' "$WORK/assign_unknown.$compile_lane.wasm.diag" 2>/dev/null; then
     bad "assign_unknown: $compile_lane build leaked an internal marker"
   fi
 done
@@ -168,7 +168,7 @@ for compile_lane in fs single-file; do
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE="$compile_fs" VIBE_IMPORT_ABI=raw \
     bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" --invoke cli_main "$STAGE2" \
     "$WORK/assign_many.vibe" "$WORK/assign_many.$compile_lane.wasm" main >/dev/null 2>&1 || true
-  if grep -qF '[@assign-target]' "$WORK/assign_many.$compile_lane.wasm.diag" 2>/dev/null; then
+  if grep -qF '[@assign-target' "$WORK/assign_many.$compile_lane.wasm.diag" 2>/dev/null; then
     bad "assign_many: $compile_lane build leaked an internal marker"
   fi
   if [ "$compile_lane" = single-file ]; then
@@ -193,6 +193,50 @@ assert row['message'] == 'unknown name: accI', row
 assert row['range'] == {'start': {'line': 4, 'character': 2}, 'end': {'line': 4, 'character': 6}}, row
 assert row['data'] is None, row
 PY
+
+# #3248: one unknown name assigned in two functions. `EAssign` / `EAssignOp`
+# carried no offset, so the locator could only search the text, gave up on
+# the repeated spelling, and both lanes answered a synthetic 0:0 for a single
+# deduplicated diagnostic. The parser keeps the target token's offset now:
+# each assignment is located at its own token, the raw `r#` spelling whole.
+printf 'fn first() -> Int {\n  missing = 1\n  0\n}\nfn second() -> Int {\n  r#missing += 2\n  0\n}\n' > "$WORK/assign_repeated.vibe"
+probe assign_repeated 1
+python3 - "$WORK/assign_repeated.fs.json" <<'PY' || bad "assign_repeated: each target must be located at its own token"
+import json, sys
+rows = json.load(open(sys.argv[1]))
+assert [row['message'] for row in rows] == ['unknown name: missing', 'unknown name: missing'], rows
+assert rows[0]['range'] == {'start': {'line': 1, 'character': 2}, 'end': {'line': 1, 'character': 9}}, rows
+assert rows[1]['range'] == {'start': {'line': 5, 'character': 2}, 'end': {'line': 5, 'character': 11}}, rows
+assert all(row['data'] is None for row in rows), rows
+PY
+for lane in fs single-file; do
+  if [ "$lane" = single-file ]; then set -- --single-file; else set --; fi
+  plain="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" --invoke cli_main "$STAGE2" check "$@" "$WORK/assign_repeated.vibe" 2>&1 || true)"
+  for want in 'line 2:3-10: unknown name: missing' 'line 6:3-12: unknown name: missing'; do
+    case "$plain" in
+      *"$want"*) ;;
+      *) bad "assign_repeated: plain $lane diagnostic is missing '$want': $plain" ;;
+    esac
+  done
+done
+# The compile adapters carry the offset-bearing marker too, and must never
+# print it. The single-file lane locates against its own source.
+for compile_lane in fs single-file; do
+  if [ "$compile_lane" = fs ]; then compile_fs=1; else compile_fs=0; fi
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE="$compile_fs" VIBE_IMPORT_ABI=raw \
+    bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" --invoke cli_main "$STAGE2" \
+    "$WORK/assign_repeated.vibe" "$WORK/assign_repeated.$compile_lane.wasm" main >/dev/null 2>&1 || true
+  if grep -qF '[@assign-target' "$WORK/assign_repeated.$compile_lane.wasm.diag" 2>/dev/null; then
+    bad "assign_repeated: $compile_lane build leaked an internal marker"
+  fi
+  if [ "$compile_lane" = single-file ]; then
+    for expected in 'line 2:3-10: unknown name: missing' 'line 6:3-12: unknown name: missing'; do
+      if ! grep -qF "$expected" "$WORK/assign_repeated.$compile_lane.wasm.diag" 2>/dev/null; then
+        bad "assign_repeated: single-file build lost a diagnostic location: $expected"
+      fi
+    done
+  fi
+done
 
 printf 'export fn main() -> Int {\n  let acc = 0\n  acc = 1\n  0\n}\n' > "$WORK/assign_immutable.vibe"
 probe assign_immutable 1
@@ -262,4 +306,4 @@ if grep -qF 'unlocated.vibe' "$WORK/unlocated.fs.json" 2>/dev/null; then
 fi
 
 [ "$fails" -eq 0 ] || exit 1
-echo "[check-json-parity] ok (12 probes: both lanes agree on diagnostics, exit code, and UTF-16 offsets)"
+echo "[check-json-parity] ok (13 probes: both lanes agree on diagnostics, exit code, and UTF-16 offsets)"

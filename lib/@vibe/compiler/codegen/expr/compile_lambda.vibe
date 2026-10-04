@@ -466,8 +466,8 @@ fn cl_own_return_into(e: Expr, needed: Array[String], tail: Bool) -> Expr {
         let body = cl_own_return_into(b, needed, tail)
         ESeq(cl_own_return_into(a, needed, false), body)
       },
-      EAssign(n, v, b) => EAssign(n, cl_own_return_into(v, needed, false), cl_own_return_into(b, needed, tail)),
-      EAssignOp(n, op, v, b) => EAssignOp(n, op, cl_own_return_into(v, needed, false), cl_own_return_into(b, needed, tail)),
+      EAssign(n, v, b, target_off) => EAssign(n, cl_own_return_into(v, needed, false), cl_own_return_into(b, needed, tail), target_off),
+      EAssignOp(n, op, v, b, target_off) => EAssignOp(n, op, cl_own_return_into(v, needed, false), cl_own_return_into(b, needed, tail), target_off),
       ETuple(items) => ETuple(cl_own_return_list(items, needed)),
       EArray(items) => EArray(cl_own_return_list(items, needed)),
       ERecord(n, fields, args) => ERecord(n, cl_own_return_fields(fields, needed), args),
@@ -498,8 +498,8 @@ fn cl_own_binding_value(e: Expr, needed: Array[String]) -> Expr {
     ELetMut(_, _, _, _) => cl_own_return_into(e, needed, true),
     ELetRec(_, _, _) => cl_own_return_into(e, needed, true),
     ESeq(_, _) => cl_own_return_into(e, needed, true),
-    EAssign(_, _, _) => cl_own_return_into(e, needed, true),
-    EAssignOp(_, _, _, _) => cl_own_return_into(e, needed, true),
+    EAssign(_, _, _, _) => cl_own_return_into(e, needed, true),
+    EAssignOp(_, _, _, _, _) => cl_own_return_into(e, needed, true),
     _ => cl_own_return_into(e, needed, false)
   }
 }
@@ -750,8 +750,8 @@ export fn rs_map(e: Expr, shadow: Array[String], leaf: (Expr, Array[String]) -> 
     ELetMut(n, v, b, off) => ELetMut(n, v, rs_map(b, rs_with(shadow, n), leaf, bind), off),
     ELetRec(n, v, b) => ELetRec(n, v, rs_map(b, rs_with(shadow, n), leaf, bind)),
     ESeq(a, b) => ESeq(a, rs_map(b, shadow, leaf, bind)),
-    EAssign(n, v, b) => EAssign(n, v, rs_map(b, shadow, leaf, bind)),
-    EAssignOp(n, op, v, b) => EAssignOp(n, op, v, rs_map(b, shadow, leaf, bind)),
+    EAssign(n, v, b, target_off) => EAssign(n, v, rs_map(b, shadow, leaf, bind), target_off),
+    EAssignOp(n, op, v, b, target_off) => EAssignOp(n, op, v, rs_map(b, shadow, leaf, bind), target_off),
     ELabeledArg(n, l, v) => ELabeledArg(n, l, rs_map(v, shadow, leaf, bind)),
     ELoop(params, body) => {
       let names = array_empty()
@@ -774,8 +774,8 @@ export fn rs_has_tail(e: Expr) -> Bool {
     ELetMut(_, _, _, _) => true,
     ELetRec(_, _, _) => true,
     ESeq(_, _) => true,
-    EAssign(_, _, _) => true,
-    EAssignOp(_, _, _, _) => true,
+    EAssign(_, _, _, _) => true,
+    EAssignOp(_, _, _, _, _) => true,
     ELabeledArg(_, _, _) => true,
     ELoop(_, _) => true,
     _ => false
@@ -827,8 +827,8 @@ fn rs_breaks(e: Expr, shadow: Array[String], leaf: (Expr, Array[String]) -> Expr
     ELetMut(n, v, b, off) => ELetMut(n, rs_breaks(v, shadow, leaf, bind), rs_breaks(b, rs_with(shadow, n), leaf, bind), off),
     ELetRec(n, v, b) => ELetRec(n, v, rs_breaks(b, rs_with(shadow, n), leaf, bind)),
     ESeq(a, b) => ESeq(rs_breaks(a, shadow, leaf, bind), rs_breaks(b, shadow, leaf, bind)),
-    EAssign(n, v, b) => EAssign(n, rs_breaks(v, shadow, leaf, bind), rs_breaks(b, shadow, leaf, bind)),
-    EAssignOp(n, op, v, b) => EAssignOp(n, op, rs_breaks(v, shadow, leaf, bind), rs_breaks(b, shadow, leaf, bind)),
+    EAssign(n, v, b, target_off) => EAssign(n, rs_breaks(v, shadow, leaf, bind), rs_breaks(b, shadow, leaf, bind), target_off),
+    EAssignOp(n, op, v, b, target_off) => EAssignOp(n, op, rs_breaks(v, shadow, leaf, bind), rs_breaks(b, shadow, leaf, bind), target_off),
     _ => e
   }
 }
@@ -986,16 +986,16 @@ fn cl_own_cells(e: Expr, cells: Array[String]) -> Expr {
       let inner = cl_cells_without(cells, n)
       ELetRec(n, cl_own_cells(v, inner), cl_own_cells(b, inner))
     },
-    EAssign(n, v, b) => {
+    EAssign(n, v, b, target_off) => {
       let v2 = cl_own_cells(v, cells)
       let v3 = if array_contains_str(cells, n) {
         cl_cell_store_value(v2)
       } else {
         cl_cell_tails(v2, cells, false)
       }
-      EAssign(n, v3, cl_own_cells(b, cells))
+      EAssign(n, v3, cl_own_cells(b, cells), target_off)
     },
-    EAssignOp(n, op, v, b) => EAssignOp(n, op, cl_own_cells(v, cells), cl_own_cells(b, cells)),
+    EAssignOp(n, op, v, b, target_off) => EAssignOp(n, op, cl_own_cells(v, cells), cl_own_cells(b, cells), target_off),
     ESeq(a, b) => {
       // A discarded `for` collects nothing, so its body is no owning place.
       let a2 = if forin_is_discarded_seq_head(a) {
