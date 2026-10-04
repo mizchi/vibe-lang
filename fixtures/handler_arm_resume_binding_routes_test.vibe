@@ -1,0 +1,54 @@
+//# #3375: inside a handler arm, `resume` is that arm's continuation whatever
+//# else is in scope under the name -- a parameter of the enclosing function, a
+//# `let` written before the `handle`, or the continuation of an arm the handle
+//# sits in -- and the value it resumes with is checked against the arm's own
+//# operation. The check used to stand down whenever another `resume` was in
+//# scope (fixtures/typecheck/handler_arm_resume_value_shadowed_*_reject.vibe).
+//# These are the accepted side: each resumes its own `perform`.
+
+effect G {
+  Op -> Int
+}
+
+effect H {
+  P -> String
+}
+
+fn via_param(resume: (Int) -> Int) -> Int {
+  handle {
+    perform G::Op + 1
+  } with G {
+    Op => resume(7)
+  }
+}
+
+fn via_let() -> Int {
+  let resume = (x: Int) -> x * 1000
+  let unused = resume(0)
+  handle {
+    perform G::Op + 1 + unused
+  } with G {
+    Op => resume(7)
+  }
+}
+
+fn arm_in_a_lambda_in_an_arm() -> Int {
+  handle {
+    perform G::Op + 1
+  } with G {
+    Op => {
+      let g = () -> handle {
+        String::length(perform H::P)
+      } with H {
+        P => resume("abc")
+      }
+      resume(g())
+    }
+  }
+}
+
+test "resume is the innermost arm's continuation" {
+  inspect(via_param((x: Int) -> x * 1000), "8")
+  inspect(via_let(), "8")
+  inspect(arm_in_a_lambda_in_an_arm(), "4")
+}

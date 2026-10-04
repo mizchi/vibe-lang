@@ -22,7 +22,7 @@
 // resolved are two types, not one: the arm is refused rather than trusted.
 
 import @vibe/compiler/core {
-  Expr, Pat, Subst, Type, TypeDef, handler_or_arm_body_key, subst_apply, type_to_string, types_equal
+  Expr, Pat, Subst, Type, TypeDef, subst_apply, type_to_string, types_equal
 }
 
 import @vibe/compiler/checker/diagnostics {
@@ -41,38 +41,48 @@ import ./checker_eq_unbounded_formal_msg.vibe {
   effect_op_sig
 }
 
-/// The body keys (`handler_or_arm_body_key`) of the or-pattern arms that name
-/// their `resume`, set by handler_or_arm_resume_begin; the arm loop records
-/// only arms whose body has one of these keys.
+/// The keys (or_arm_resume_key) of the or-pattern arms that name their
+/// `resume`, set by handler_or_arm_resume_begin; the arm loop records only
+/// arms whose body has one of these keys.
 let or_arm_resume_keys: Array[Int] = []
 
 /// One row per checked copy of such an arm: the `handle` it belongs to (a
-/// handler_or_arm_handle_instance number), its body key, the operation it
+/// handler_or_arm_handle_instance number), its key, the operation it
 /// handles, and the operation's return type as that handle instantiated it,
 /// before the final substitution.
 let or_arm_resume_rows: Array[(Int, Int, String, Type)] = []
 
 let or_arm_handle_next: Array[Int] = [0]
 
+/// The key an arm is known by: the offset of the first reference in its body
+/// to its OWN continuation, or -1 when it names none (or the parse carries no
+/// offsets). That reference belongs to exactly one arm -- a nested handle's
+/// arm rebinds `resume` for itself -- so an arm nested in another, or written
+/// next to it, never shares its key, while every copy the split makes of one
+/// arm keeps the offset and so the key. (A body's smallest offset is not
+/// enough: an outer arm whose first located node sits inside an inner arm's
+/// body would take that arm's key, Codex on #3337.)
+fn or_arm_resume_key(body: Expr) -> Int {
+  match arm_first_resume_ref(body, false) {
+    Some(EIdent(_, off)) => off,
+    _ => -1
+  }
+}
+
 /// #3301: start recording for one program's check. `arms` are the or-pattern
 /// arms the split took (`handler_or_arms_to_split`), with their bodies as
-/// written; the split keeps every offset, so a copy's body has its arm's key.
+/// written.
 export fn handler_or_arm_resume_begin(arms: Array[(Array[Pat], Expr)]) -> Unit {
   Array::truncate(or_arm_resume_keys, 0)
   Array::truncate(or_arm_resume_rows, 0)
   let mut i = 0
   while i < Array::length(arms) {
     let (_, body) = Array::get(arms, i)
-    match arm_first_resume_ref(body, false) {
-      Some(_) => {
-        let key = handler_or_arm_body_key(body)
-        if key >= 0 {
-          Array::push(or_arm_resume_keys, key)
-        } else {
-          ()
-        }
-      },
-      None => ()
+    let key = or_arm_resume_key(body)
+    if key >= 0 {
+      Array::push(or_arm_resume_keys, key)
+    } else {
+      ()
     }
     i = i + 1
   }
@@ -91,7 +101,7 @@ export fn handler_or_arm_handle_instance() -> Int {
 /// a copy of an or-pattern arm that names `resume`.
 export fn record_handler_or_arm_resume(instance: Int, body: Expr, qname: String, ret: Type) -> Unit {
   if Array::length(or_arm_resume_keys) > 0 {
-    let key = handler_or_arm_body_key(body)
+    let key = or_arm_resume_key(body)
     if key >= 0 && or_arm_key_known(key) {
       Array::push(or_arm_resume_rows, (instance, key, qname, ret))
     } else {
@@ -168,7 +178,7 @@ fn names_contain(names: Array[String], name: String) -> Bool {
 /// instantiation would have allowed, but never accepts two types.
 fn or_arm_resume_disagreement(alternatives: Array[Pat], body: Expr, defs: Array[TypeDef], final_s: Subst) -> Option[String] {
   let names = or_arm_names(alternatives)
-  let key = handler_or_arm_body_key(body)
+  let key = or_arm_resume_key(body)
   let mut seen = false
   let mut found: Option[String] = None
   let mut r = 0

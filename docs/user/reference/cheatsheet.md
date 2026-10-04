@@ -1879,7 +1879,10 @@ An or-pattern arm `A | B => body` is the two arms `A => body` and
 resumes its own `perform`, and counts toward the handler's exhaustiveness, and
 `resume` inside it is the continuation even when a top-level `fn resume`
 exists. As in a `match`, an or-pattern cannot bind a payload: `P(x) | Q(x)` is
-refused; write `P(_) | Q(_)` or separate arms with the same body. For the same
+refused; write `P(_) | Q(_)` or separate arms with the same body. Nor can it
+test one: `P(1) | Q(_)` is refused, because the effect lowerings dispatch on
+the operation and never match an arm's payload pattern, so write one arm per
+operation and test the payload with `if` in its body. For the same
 reason the arm's `resume` has one type: an arm that names `resume` is refused
 when its operations resume with different types (`A -> Int`, `B -> String`,
 or a generic effect's `X -> A`, `Y -> B` at a handle that makes them differ or

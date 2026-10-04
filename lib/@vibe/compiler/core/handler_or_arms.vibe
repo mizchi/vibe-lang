@@ -63,13 +63,49 @@ fn hoa_pats_bind(pats: Array[Pat]) -> Bool {
 }
 
 /// Whether the split rewrites an arm with this pattern. An or-pattern whose
-/// alternatives bind no name always is. One that binds a name is split only
-/// `with_binders`: the checker leaves it in place so it can refuse it, as it
-/// refuses a binding or-pattern in a `match` arm, and the lowerings split it
-/// anyway, so no lane can compile it to a handle nothing lowers.
+/// alternatives bind no name and test no payload always is. One that binds a
+/// name, or tests a payload, is split only `with_binders`: the checker leaves
+/// it in place so it can refuse it, as it refuses a binding or-pattern in a
+/// `match` arm, and the lowerings split it anyway, so no lane can compile it
+/// to a handle nothing lowers.
 fn hoa_splits(pat: Pat, with_binders: Bool) -> Bool {
   match pat {
-    POr(_, _) => with_binders || !hoa_pat_binds(pat),
+    POr(_, _) => with_binders || (!hoa_pat_binds(pat) && !hoa_tests_payload(pat)),
+    _ => false
+  }
+}
+
+/// Whether an alternative tests a payload's value: a literal, a constructor,
+/// a tuple or a struct where an operation's payload takes `_` or a name.
+/// Neither effect lowering matches an arm's payload patterns -- both bind
+/// the payload and dispatch on the operation alone, so `P(1) => ..` runs for
+/// `perform P(3)` too -- and the split must not hand them another route to
+/// that (#3301, Codex on #3337).
+fn hoa_tests_payload(pat: Pat) -> Bool {
+  match pat {
+    POr(left, right) => hoa_tests_payload(left) || hoa_tests_payload(right),
+    PCtor(_, subs) => {
+      let mut found = false
+      let mut i = 0
+      while !found && i < Array::length(subs) {
+        found = match Array::get(subs, i) {
+          PWild => false,
+          PBind(_) => false,
+          _ => true
+        }
+        i = i + 1
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+/// #3301: whether an or-pattern handler arm tests a payload's value
+/// (`P(1) | Q(_)`), which the split leaves for the checker to refuse.
+export fn handler_or_arm_tests_payload(pat: Pat) -> Bool {
+  match pat {
+    POr(_, _) => hoa_tests_payload(pat),
     _ => false
   }
 }
@@ -242,14 +278,6 @@ fn hoa_exprs_need_split(exprs: Array[Expr], with_binders: Bool) -> Bool {
 /// of nine still compiles, as does an or-pattern arm of up to 256
 /// alternatives around another one.
 let hoa_copy_limit: Int = 256
-
-/// #3301: the key the checker knows an or-pattern arm's body by: the
-/// smallest source offset any node of `body` carries, or -1 when none does.
-/// The split copies a body with every offset kept, so each copy of an arm has
-/// that arm's key, and two arms of one `handle` have two.
-export fn handler_or_arm_body_key(body: Expr) -> Int {
-  hoa_first_offset(body)
-}
 
 /// The smallest source offset any node of `expr` carries, or -1.
 fn hoa_first_offset(expr: Expr) -> Int {
