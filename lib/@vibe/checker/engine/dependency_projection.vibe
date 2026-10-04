@@ -1,0 +1,2231 @@
+import @vibe/ast {
+  TypeExpr
+}
+import @vibe/compiler/core {
+  BindingOrigin, EnvValueBinding, Expr, Stmt, Type, TypeDef
+}
+import @vibe/compiler/syntax {
+  Token
+}
+import ./diagnostics_parse.vibe {
+  engine_interface_sorted_unique, engine_is_vpkg_types_stub_path
+}
+import ./type_members.vibe {
+  engine_bind_enum_constructor_companions,
+  engine_dependency_trait_projection_mappings,
+  engine_resolve_cached_import_path,
+  engine_selected_module_binding_origin,
+  engine_starts_with_upper,
+  engine_trait_in_list,
+  engine_trait_projection_claim_mappings,
+  engine_trait_projection_map_method_bound_rows,
+  engine_trait_projection_map_method_gens,
+  engine_trait_projection_map_ref,
+  engine_trait_projection_map_type_bounds,
+  engine_trait_projection_mapping,
+  engine_typedef_projection_add_named,
+  engine_typedef_projection_contains,
+  engine_typedef_projection_name,
+  engine_uppercase_binding_slots_into
+}
+import @vibe/ast {
+  TypeExpr, TypeExpr::is_array_of_int, trait_ref_args, trait_ref_name, type_param_arity, type_param_name
+}
+import @vibe/compiler/cache {
+  compact_source_fingerprint_memo, typing_module_fingerprint
+}
+import @vibe/compiler/checker {
+  import_item_kind_errors
+}
+import @vibe/compiler/contract {
+  vpkg_path_escape_one_line, vpkg_types_contract_of_source, vpkg_types_decl_pos_for_line
+}
+import @vibe/compiler/core {
+  Stmt,
+  Type,
+  TypeDef,
+  TypeEnv,
+  env_bind,
+  env_bind_with_origin,
+  env_flat_bindings,
+  env_lookup,
+  env_lookup_flat,
+  env_preserve_type_definition_origins,
+  env_selectable_type_defs,
+  env_show_wrapper_facts,
+  env_trait_def_names_into,
+  env_type_defs,
+  env_value_binding,
+  env_with_show_wrapper_facts,
+  find_typedef,
+  is_alias_constructor,
+  is_builtin_iterator_serialized_boundary_path,
+  is_exception_effect_name,
+  resolve_builtin
+}
+import @vibe/compiler/loader {
+  vpkg_types_module_path_prefix
+}
+import @vibe/compiler/runtime/eval_loader {
+  contains_str
+}
+import @vibe/core {
+  array_empty, struct MutMap
+}
+
+/// A view is derived from this exact published chain, never from EnvCached
+/// accelerator rows. All arrays are private and read-only after construction.
+/// Selection, aliasing, collisions and scratch remain importer-owned.
+struct DependencyInterfaceView {
+  env: TypeEnv;
+  bindings: Array[(String, Type)];
+  defs: Array[TypeDef];
+  selectable: Array[String];
+  traits: Array[String];
+  upper_slots: Array[Int];
+  declared_names: Array[String];
+  markers: Array[(String, Type)];
+  show_facts: Option[(Array[String], Array[String])]
+}
+/// Owned by one compile or an explicitly published in-memory snapshot.
+/// Replacing a publication replaces its whole view, including empty facts.
+/// There is no process-global path memo and no caller-visible mutable array.
+struct DependencyInterfaceProduct {
+  env: TypeEnv;
+  mut view: Option[DependencyInterfaceView]
+}
+export struct DependencyInterfaceSet {
+  rows: Array[(String, DependencyInterfaceProduct)]
+}
+export fn engine_dependency_interface_set_new() -> DependencyInterfaceSet {
+  DependencyInterfaceSet::{ rows: [] }
+}
+fn engine_dependency_interface_view(env: TypeEnv) -> DependencyInterfaceView {
+  let bindings = env_flat_bindings(env)
+  let defs = env_type_defs(env)
+  let traits: Array[String] = []
+  let upper_slots: Array[Int] = []
+  let declared_names: Array[String] = []
+  env_trait_def_names_into(env, traits)
+  engine_uppercase_binding_slots_into(bindings, upper_slots)
+  for def in defs {
+    match def {
+      TDEnum(name, _, _) => Array::push(declared_names, name),
+      TDStruct(name, _, _, _) => Array::push(declared_names, name),
+      TDAlias(name, _, _) => Array::push(declared_names, name),
+      _ => ()
+    }
+  }
+  DependencyInterfaceView::{
+    env,
+    bindings,
+    defs,
+    selectable: env_selectable_type_defs(env),
+    traits,
+    upper_slots,
+    declared_names,
+    markers: engine_type_reference_markers(env),
+    show_facts: env_show_wrapper_facts(env)
+  }
+}
+export fn engine_dependency_interface_slot(interfaces: DependencyInterfaceSet, path: String) -> Int {
+  let mut i = 0
+  let mut found = -1
+  while i < Array::length(interfaces.rows) && found < 0 {
+    if Array::get(interfaces.rows, i).0 == path {
+      found = i
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+/// Replace a published dependency product and invalidate its derived immutable view.
+/// Call only when publishing a new authoritative interface. Re-publication
+/// invalidates all derived facts, even at the same path and spelling.
+export fn engine_dependency_interface_set_publish(interfaces: DependencyInterfaceSet, path: String, env: TypeEnv) -> Unit {
+  // A warm walk that reuses every check does not need any projection arrays.
+  // Retain the actual product now; derive its immutable facts on first use.
+  let row = (path, DependencyInterfaceProduct::{ env, view: None })
+  let slot = engine_dependency_interface_slot(interfaces, path)
+  if slot < 0 {
+    Array::push(interfaces.rows, row)
+  } else {
+    Array::set(interfaces.rows, slot, row)
+  }
+}
+/// Supply cached dependency products without replacing already published authoritative rows.
+/// A standalone worker owns a fresh set. The serial walk already published
+/// stepped dependencies and supplies only any cached frontier not stepped in
+/// this walk. Changed stepped products were explicitly replaced on publish.
+export fn engine_dependency_interface_set_supply_missing(interfaces: DependencyInterfaceSet, envs: Array[(String, TypeEnv)]) -> Unit {
+  for row in envs {
+    let (path, env) = row
+    if engine_dependency_interface_slot(interfaces, path) < 0 {
+      engine_dependency_interface_set_publish(interfaces, path, env)
+    } else {
+      ()
+    }
+  }
+  ()
+}
+fn engine_dependency_interface_lookup(interfaces: DependencyInterfaceSet, path: String) -> Option[DependencyInterfaceView] {
+  let slot = engine_dependency_interface_slot(interfaces, path)
+  if slot < 0 {
+    None
+  } else {
+    let product = Array::get(interfaces.rows, slot).1
+    match product.view {
+      Some(view) => Some(view),
+      None => {
+        let view = engine_dependency_interface_view(product.env)
+        product.view = Some(view)
+        Some(view)
+      }
+    }
+  }
+}
+/// The path resolver sees precisely the job's dependency paths, in their
+/// original order. Its environment and all projection facts come from the
+/// same published view, so no independent accelerator can replace authority.
+export fn engine_build_import_envs_from_interfaces(stmts: Array[Stmt], base_dir: String, interfaces: DependencyInterfaceSet, dependency_paths: Array[String], unresolved: Array[String]) -> (TypeEnv, TypeEnv) with Env {
+  let cache: Array[(String, TypeEnv)] = []
+  for path in dependency_paths {
+    match engine_dependency_interface_lookup(interfaces, path) {
+      Some(view) => Array::push(cache, (path, view.env)),
+      None => ()
+    }
+  }
+  engine_build_import_envs_using_interfaces(stmts, base_dir, cache, interfaces, unresolved)
+}
+fn engine_dependency_typedef_projection(view: DependencyInterfaceView, names: Array[ImportItem]) -> Array[TypeDef] {
+  let dep_defs = view.defs
+  let selectable = view.selectable
+  let selected = array_empty()
+  let mut i = 0
+  while i < Array::length(names) {
+    let item = Array::get(names, i)
+    let name = item.name
+    let alias = item.alias
+    let before = Array::length(selected)
+    if contains_str(selectable, name) {
+      engine_typedef_projection_add_named(name, dep_defs, selected)
+    } else {
+      ()
+    }
+    if Array::length(selected) > before {
+      match alias {
+        Some(local_name) => if local_name != name && !engine_typedef_projection_contains(selected, local_name) {
+          let source = Array::get(selected, before)
+          let alias_def = match source {
+            TDEnum(_, params, _) => TDAlias(local_name, params, CtNamed(name, for param in params {
+              CtNamed(param, array_empty())
+            })),
+            TDStruct(_, _, _, params) => TDAlias(local_name, params, CtNamed(name, for param in params {
+              CtNamed(param, array_empty())
+            })),
+            TDAlias(_, params, target) => TDAlias(local_name, params, target),
+            TDEffect(_, ops, params) => TDEffect(local_name, ops, params),
+            TDEffectSet(_, members) => TDEffectSet(local_name, members)
+          }
+          Array::push(selected, alias_def)
+        } else {
+          ()
+        },
+        None => ()
+      }
+    } else if contains_str(selectable, name) && name == "StdinStream" {
+      // Compiler-owned builtin types have no TypeDef node in the dependency
+      // interface. Preserve this one opaque identity under an explicit import
+      // alias instead of degrading `S` to an ordinary forgeable CtNamed. Keep
+      // the exception exact: user/generic typedef projection is unchanged.
+      match alias {
+        Some(local_name) => if local_name != name {
+          match resolve_builtin(name) {
+            Some(target) => Array::push(selected, TDAlias(local_name, array_empty(), target)),
+            None => ()
+          }
+        } else {
+          ()
+        },
+        None => ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  selected
+}
+fn engine_prepend_dependency_type_defs(view: DependencyInterfaceView, names: Array[ImportItem], tail: TypeEnv) -> TypeEnv {
+  let defs = engine_dependency_typedef_projection(view, names)
+  if Array::length(defs) == 0 {
+    tail
+  } else {
+    // Only the explicitly requested names are selectable; recursive closure
+    // entries merely make their signatures intelligible to this checker.
+    let selectable = array_empty()
+    let published = view.selectable
+    let mut i = 0
+    while i < Array::length(names) {
+      let item = Array::get(names, i)
+      let source = item.name
+      let alias = item.alias
+      if contains_str(published, source) {
+        Array::push(selectable, match alias {
+          Some(local) => local,
+          None => source
+        })
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    env_preserve_type_definition_origins(EnvTypeDefs(defs, selectable, tail), view.env)
+  }
+}
+fn engine_prepend_dependency_trait_nodes(dep_env: TypeEnv, mappings: Array[(String, String)], tail: TypeEnv) -> TypeEnv {
+  // Preserve every generic implementation in source order. Its parameters and
+  // bounds are semantic payload, so deduplicating by target alone could
+  // silently change obligation satisfaction.
+  let retained = array_empty()
+  let seen_defs = array_empty()
+  let mut cur = dep_env
+  let mut done = false
+  while !done {
+    match cur {
+      EnvEmpty => {
+        done = true
+      },
+      EnvBind(_, _, rest) => {
+        cur = rest
+      },
+      EnvShowWrappers(_, _, rest) => {
+        cur = rest
+      },
+      EnvMutCell(_, _, rest) => {
+        cur = rest
+      },
+      EnvTraitDef(name, supers, is_auto, methods, rest, params, method_gens) => {
+        match engine_trait_projection_mapping(mappings, name) {
+          Some(local_name) => if !contains_str(seen_defs, local_name) {
+            let local_supers = array_empty()
+            let mut j = 0
+            while j < Array::length(supers) {
+              let super_name = Array::get(supers, j)
+              Array::push(local_supers, engine_trait_projection_map_ref(super_name, mappings))
+              j = j + 1
+            }
+            Array::push(retained, EnvTraitDef(local_name, local_supers, is_auto, methods, EnvEmpty, params, engine_trait_projection_map_method_gens(method_gens, mappings)))
+            Array::push(seen_defs, local_name)
+          } else {
+            ()
+          },
+          None => ()
+        }
+        cur = rest
+      },
+      EnvTraitImpl(name, target, rest) => {
+        match engine_trait_projection_mapping(mappings, trait_ref_name(name)) {
+          Some(_) => Array::push(retained, EnvTraitImpl(engine_trait_projection_map_ref(name, mappings), engine_trait_projection_map_type_bounds(target, mappings), EnvEmpty)),
+          None => ()
+        }
+        cur = rest
+      },
+      EnvTraitImplGen(name, params, bounds, target, rest) => {
+        match engine_trait_projection_mapping(mappings, trait_ref_name(name)) {
+          Some(_) => Array::push(retained, EnvTraitImplGen(engine_trait_projection_map_ref(name, mappings), params, engine_trait_projection_map_method_bound_rows(bounds, mappings), engine_trait_projection_map_type_bounds(target, mappings), EnvEmpty)),
+          None => ()
+        }
+        cur = rest
+      },
+      EnvTypeDefs(_, _, rest) => {
+        cur = rest
+      },
+      EnvFlat(_) => {
+        done = true
+      },
+      EnvCached(_, _, rest) => {
+        cur = rest
+      }
+    }
+  }
+  let mut out = tail
+  let mut i = Array::length(retained) - 1
+  while i >= 0 {
+    out = match Array::get(retained, i) {
+      EnvTraitDef(name, supers, is_auto, methods, _, params, method_gens) => EnvTraitDef(name, supers, is_auto, methods, out, params, method_gens),
+      EnvTraitImpl(name, target, _) => EnvTraitImpl(name, target, out),
+      EnvTraitImplGen(name, params, bounds, target, _) => EnvTraitImplGen(name, params, bounds, target, out),
+      _ => out
+    }
+    i = i - 1
+  }
+  out
+}
+/// #3026: the nominal type names this module declares at top level. A type
+/// is identified by its bare name (`CtEnum("IoErr")`), so one of these names
+/// appearing inside an IMPORTED signature is a different declaration spelled
+/// the same way -- see `foreign_type_name_collisions`.
+fn engine_local_declared_type_names(stmts: Array[Stmt]) -> Array[String] {
+  let out: Array[String] = []
+  for stmt in stmts {
+    match stmt {
+      SEnum(_, name, _, _, _) => Array::push(out, name),
+      SStruct(_, name, _, _, _, _) => Array::push(out, name),
+      STypeAlias(_, name, _, _) => Array::push(out, name),
+      SSuberror(_, name, _) => Array::push(out, name),
+      _ => ()
+    }
+  }
+  out
+}
+/// Type names written inside the brackets of an effect row. A row is a
+/// string, so this reads the spelling: every identifier that starts with an
+/// uppercase letter at bracket depth > 0. Inside an exception label's kind
+/// (`Exception[K]`) the name is always a type -- a kind that names a type
+/// parameter is refused where it is declared -- so it goes to `out`. Inside any
+/// other effect's brackets (`Read[G]`) it may be the scheme's own formal, so it
+/// goes to `named_out` for the caller's declared-type filter.
+fn engine_row_bracketed_type_names_into(row: String, out: Array[String], named_out: Array[String]) -> Unit {
+  let len = String::length(row)
+  let mut depth = 0
+  // Depth at which the innermost enclosing `Exception[` opened; 0 = none.
+  let mut exception_depth = 0
+  let mut last_ident = ""
+  let mut i = 0
+  while i < len {
+    let c = String::char_code_at(row, i)
+    if c == 91 {
+      depth = depth + 1
+      // #1963: the exception owner, not a name compare (`last_ident` holds
+      // no bracket, so this is exactly the two erased spellings).
+      if exception_depth == 0 && is_exception_effect_name(last_ident) {
+        exception_depth = depth
+      }
+      last_ident = ""
+      i = i + 1
+    } else if c == 93 {
+      if depth == exception_depth {
+        exception_depth = 0
+      }
+      depth = depth - 1
+      last_ident = ""
+      i = i + 1
+    } else if engine_row_ident_char(c) {
+      let start = i
+      while i < len && engine_row_ident_char(String::char_code_at(row, i)) {
+        i = i + 1
+      }
+      last_ident = String::substring(row, start, i)
+      // A published formal (`S$0`, #3051) is a quantified variable, never a
+      // reference to a declaration, whatever its base spelling.
+      if c >= 65 && c <= 90 && !String::contains(last_ident, "$") {
+        if depth == 0 {
+          // A row label: an effect or effect set, a reference to the
+          // declaration by that name when the dependency has one (#3036).
+          Array::push(named_out, last_ident)
+        } else if exception_depth > 0 {
+          Array::push(out, last_ident)
+        } else {
+          Array::push(named_out, last_ident)
+        }
+      }
+    } else {
+      last_ident = ""
+      i = i + 1
+    }
+  }
+}
+fn engine_row_ident_char(c: Int) -> Bool {
+  // `$` joins a published formal's marker to its spelling (`S$0`).
+  c >= 65 && c <= 90 || c >= 97 && c <= 122 || c >= 48 && c <= 57 || c == 95 || c == 36
+}
+/// `out` receives names that are nominal by construction (`CtEnum`,
+/// `CtStruct`). `named_out` receives spellings that may also be a formal: a
+/// `CtNamed` head (a type parameter of an alias body or an effect signature is
+/// a rigid `CtNamed`) and a row's bracketed name. The caller keeps a
+/// `named_out` entry only when the dependency declares a type by that name.
+fn engine_nominal_type_names_into(ty: Type, out: Array[String], named_out: Array[String]) -> Unit {
+  match ty {
+    CtEnum(name) => Array::push(out, name),
+    CtStruct(name) => Array::push(out, name),
+    CtNamed(name, args) => {
+      Array::push(named_out, name)
+      for arg in args {
+        engine_nominal_type_names_into(arg, out, named_out)
+      }
+    },
+    CtTuple(items) => for item in items {
+      engine_nominal_type_names_into(item, out, named_out)
+    },
+    CtArray(inner) => engine_nominal_type_names_into(inner, out, named_out),
+    CtOption(inner) => engine_nominal_type_names_into(inner, out, named_out),
+    CtFn(params, ret, row) => {
+      for p in params {
+        engine_nominal_type_names_into(p, out, named_out)
+      }
+      engine_nominal_type_names_into(ret, out, named_out)
+      match row {
+        Some(r) => engine_row_bracketed_type_names_into(r, out, named_out),
+        None => ()
+      }
+    },
+    CtApplied(head, args) => if is_alias_constructor(ty) {
+      // `CtApplied(CtNamed("#alias_ctor", []), [body, <binder>...])`: the
+      // trailing entries are the alias declaration's own parameter names, and
+      // the body mentions them as rigid `CtNamed`s. Neither is a reference.
+      let binders: Array[String] = []
+      let mut bi = 1
+      while bi < Array::length(args) {
+        match Array::get(args, bi) {
+          CtNamed(bn, _) => Array::push(binders, bn),
+          _ => ()
+        }
+        bi = bi + 1
+      }
+      let body_named: Array[String] = []
+      engine_nominal_type_names_into(Array::get(args, 0), out, body_named)
+      for n in body_named {
+        if !contains_str(binders, n) {
+          Array::push(named_out, n)
+        }
+      }
+    } else {
+      engine_nominal_type_names_into(head, out, named_out)
+      for arg in args {
+        engine_nominal_type_names_into(arg, out, named_out)
+      }
+    },
+    // A nominal type passed bare to a higher-kinded slot (`Holder[Box]`).
+    CtConstructor(name, _) => Array::push(named_out, name),
+    CtForAll(_, bounds, body) => {
+      // A bound (`[T: Builds[Err]]`) is carried as its spelling; a type it
+      // names reaches the value's callers as surely as a parameter type.
+      for b in bounds {
+        let (_, refs) = b
+        for r in refs {
+          // A bound is a `trait_ref_key` (an applied one is encoded), so it
+          // is decoded before its names are read -- its ARGUMENTS only: the
+          // head names a trait, which is not a type (Codex on #3076).
+          for te in trait_ref_args(r) {
+            engine_type_expr_reference_names_into(te, array_empty(), named_out)
+          }
+        }
+      }
+      engine_nominal_type_names_into(body, out, named_out)
+    },
+    CtRecord(fields) => for field in fields {
+      let (_, fty) = field
+      engine_nominal_type_names_into(fty, out, named_out)
+    },
+    _ => ()
+  }
+}
+/// #3026: an imported value's published type names nominal types by their
+/// bare spelling, and so does this module's own declaration of a type. When
+/// the two spellings agree, the checker cannot tell the dependency's type from
+/// the local one, and unifies them: a dependency's `struct Err { code: Int }`
+/// was read through this module's `struct Err { name: String }` -- as a
+/// value, and as the payload of an `Exception[Err]` handler -- with `vibe
+/// check` clean. The import cannot be the local declaration (a dependency
+/// never sees its importer's types), so the collision is refused here, naming
+/// the edit.
+///
+/// One dependency is exempt by construction: a package contract's generated
+/// type stub (`is_vpkg_types_stub_path`). A contract's `type MutMap[K, V]`
+/// is DEFERRED to the package's implementation, so when a sibling that
+/// declares `struct MutMap` imports the stub's `HashMap = MutMap[K, V]`, the
+/// stub's `MutMap` is that sibling's own declaration, not a different one.
+fn engine_foreign_type_name_collisions(imported: String, raw_path: String, resolved: String, ty: Type, dep_types: Array[String], local_types: Array[String], unresolved: Array[String], reported: Array[String]) -> Unit {
+  if Array::length(local_types) > 0 && !engine_is_vpkg_types_stub_path(resolved) {
+    for name in engine_collision_type_names(ty, array_empty(), dep_types) {
+      engine_report_foreign_type_name(name, imported, raw_path, local_types, unresolved, reported)
+    }
+  }
+}
+/// Every type name `ty` refers to as a nominal type. `CtEnum` / `CtStruct` and
+/// an exception kind's names always count. A spelled name (`CtNamed`,
+/// `CtConstructor`, another effect's bracket) may be a formal -- the
+/// scheme's own (`Read[G]` under `fn f[G[_]]()`) or a declaration's
+/// (`value: A` in `struct Box[A]`) -- so it counts only when it is not one of
+/// `binders` and the dependency declares a type by that name.
+fn engine_collision_type_names(ty: Type, binders: Array[String], dep_types: Array[String]) -> Array[String] {
+  let out: Array[String] = []
+  let named: Array[String] = []
+  engine_nominal_type_names_into(ty, out, named)
+  for n in named {
+    if !contains_str(binders, n) && contains_str(dep_types, n) {
+      Array::push(out, n)
+    }
+  }
+  out
+}
+fn engine_report_foreign_type_name(name: String, imported: String, raw_path: String, local_types: Array[String], unresolved: Array[String], reported: Array[String]) -> Unit {
+  if contains_str(local_types, name) && !contains_str(reported, name) {
+    Array::push(reported, name)
+    Array::push(unresolved, "rename this module's type `" + name + "`: imported `" + imported + "` from '" + raw_path + "' uses a different type also named `" + name + "`, and the two would be treated as one type")
+  }
+}
+fn engine_typedef_payload_types(def: TypeDef) -> (Array[String], Array[Type]) {
+  let tys: Array[Type] = []
+  match def {
+    TDEnum(_, params, variants) => {
+      for v in variants {
+        let (_, fields) = v
+        for f in fields {
+          Array::push(tys, f)
+        }
+      }
+      (params, tys)
+    },
+    TDStruct(_, fields, _, params) => {
+      for f in fields {
+        let (_, fty) = f
+        Array::push(tys, fty)
+      }
+      (params, tys)
+    },
+    TDAlias(_, params, target) => {
+      Array::push(tys, target)
+      (params, tys)
+    },
+    TDEffect(_, ops, params) => {
+      for op in ops {
+        let (_, ps, ret) = op
+        for pt in ps {
+          Array::push(tys, pt)
+        }
+        Array::push(tys, ret)
+      }
+      (params, tys)
+    },
+    TDEffectSet(_, _) => (array_empty(), tys)
+  }
+}
+/// #3026, the declaration half: importing a TYPE brings its declaration and,
+/// to interpret it, every dependency type its payload names -- and the checker
+/// keeps a local declaration over a projected one of the same name. So `import
+/// ./dep { Wrap }` with the dependency's `enum Wrap { Bad(Err) }` and a local
+/// `struct Err` reads `Bad`'s payload at the local `Err`. This walks the
+/// selected declaration's payload transitively through the dependency's
+/// declarations, subtracting each declaration's own parameters (`value: A` in
+/// `struct Box[A]` is not the dependency's `struct A`), and refuses a name the
+/// importer declares locally. The selected name itself shadowed by a local
+/// declaration stays legal (#2292), except under an alias to an enum or
+/// struct: that alias is projected as `CtNamed(<source name>)`, which the
+/// local declaration would then answer.
+fn engine_foreign_type_declaration_collisions(item: ImportItem, raw_path: String, resolved: String, dep_env: TypeEnv, dep_types: Array[String], local_types: Array[String], unresolved: Array[String], reported: Array[String]) -> Unit {
+  if Array::length(local_types) > 0 && !engine_is_vpkg_types_stub_path(resolved) {
+    let dep_defs = env_type_defs(dep_env)
+    let queue: Array[TypeDef] = []
+    let visited: Array[String] = []
+    for def in dep_defs {
+      if engine_typedef_projection_name(def) == item.name && Array::length(queue) == 0 {
+        Array::push(queue, def)
+      }
+    }
+    Array::push(visited, item.name)
+    match item.alias {
+      Some(a) => if a != item.name && Array::length(queue) > 0 {
+        match Array::get(queue, 0) {
+          TDEnum(_, _, _) => engine_report_foreign_type_name(item.name, item.name, raw_path, local_types, unresolved, reported),
+          TDStruct(_, _, _, _) => engine_report_foreign_type_name(item.name, item.name, raw_path, local_types, unresolved, reported),
+          _ => ()
+        }
+      } else {
+        ()
+      },
+      None => ()
+    }
+    let mut qi = 0
+    while qi < Array::length(queue) {
+      let (binders, tys) = engine_typedef_payload_types(Array::get(queue, qi))
+      for ty in tys {
+        for n in engine_collision_type_names(ty, binders, dep_types) {
+          if contains_str(local_types, n) {
+            engine_report_foreign_type_name(n, item.name, raw_path, local_types, unresolved, reported)
+          } else if !contains_str(visited, n) {
+            Array::push(visited, n)
+            for def in dep_defs {
+              if engine_typedef_projection_name(def) == n {
+                Array::push(queue, def)
+              }
+            }
+          }
+        }
+      }
+      qi = qi + 1
+    }
+  }
+}
+/// #3026, the trait half: importing a trait retains the dependency's impls of
+/// it (`prepend_dependency_trait_nodes`). An impl whose target names a type the
+/// importer declares locally would let the LOCAL type satisfy the dependency's
+/// impl -- and dispatch into code compiled for the dependency's layout.
+fn engine_foreign_trait_impl_collisions(dep_env: TypeEnv, mappings: Array[(String, String)], raw_path: String, resolved: String, dep_types: Array[String], local_types: Array[String], unresolved: Array[String], reported: Array[String]) -> Unit {
+  if Array::length(local_types) > 0 && Array::length(mappings) > 0 && !engine_is_vpkg_types_stub_path(resolved) {
+    let mut cur = dep_env
+    let mut done = false
+    while !done {
+      match cur {
+        EnvEmpty => {
+          done = true
+        },
+        EnvTraitImpl(name, target, rest) => {
+          match engine_trait_projection_mapping(mappings, trait_ref_name(name)) {
+            Some(_) => for n in engine_collision_type_names(target, array_empty(), dep_types) {
+              engine_report_foreign_type_name(n, trait_ref_name(name), raw_path, local_types, unresolved, reported)
+            },
+            None => ()
+          }
+          cur = rest
+        },
+        EnvTraitImplGen(name, params, _, target, rest) => {
+          match engine_trait_projection_mapping(mappings, trait_ref_name(name)) {
+            Some(_) => for n in engine_collision_type_names(target, params, dep_types) {
+              engine_report_foreign_type_name(n, trait_ref_name(name), raw_path, local_types, unresolved, reported)
+            },
+            None => ()
+          }
+          cur = rest
+        },
+        EnvBind(_, _, rest) => {
+          cur = rest
+        },
+        EnvShowWrappers(_, _, rest) => {
+          cur = rest
+        },
+        EnvMutCell(_, _, rest) => {
+          cur = rest
+        },
+        EnvTraitDef(_, _, _, _, rest, _, _) => {
+          cur = rest
+        },
+        EnvTypeDefs(_, _, rest) => {
+          cur = rest
+        },
+        EnvFlat(_) => {
+          done = true
+        },
+        EnvCached(_, _, rest) => {
+          cur = rest
+        }
+      }
+    }
+  }
+}
+/// #3036: the definitions a dependency's env can give for a bare type name,
+/// read once per dependency rather than once per lookup. A declaration node
+/// (`env_type_defs`) wins; otherwise the reference marker publication bound
+/// for a type an exported signature only mentions
+/// (`bind_type_reference_definitions`). The markers come back in chain order,
+/// so the first row for a name is the one an env lookup would find.
+fn engine_type_reference_markers(env: TypeEnv) -> Array[(String, Type)] {
+  let prefix = engine_type_reference_definition_marker("")
+  let plen = String::length(prefix)
+  let out: Array[(String, Type)] = []
+  let mut cur = env
+  let mut done = false
+  while !done {
+    match cur {
+      EnvEmpty => {
+        done = true
+      },
+      EnvBind(n, binding, rest) => {
+        if String::starts_with(n, prefix) {
+          Array::push(out, (n[plen: String::length(n)], binding.ty))
+        } else {
+          ()
+        }
+        cur = rest
+      },
+      EnvShowWrappers(_, _, rest) => {
+        cur = rest
+      },
+      EnvMutCell(_, _, rest) => {
+        cur = rest
+      },
+      EnvTraitDef(_, _, _, _, rest, _, _) => {
+        cur = rest
+      },
+      EnvTraitImpl(_, _, rest) => {
+        cur = rest
+      },
+      EnvTraitImplGen(_, _, _, _, rest) => {
+        cur = rest
+      },
+      EnvTypeDefs(_, _, rest) => {
+        cur = rest
+      },
+      EnvFlat(bindings) => {
+        let mut i = 0
+        while i < Array::length(bindings) {
+          let (n, binding) = Array::get(bindings, i)
+          if String::starts_with(n, prefix) {
+            Array::push(out, (n[plen: String::length(n)], binding.ty))
+          } else {
+            ()
+          }
+          i = i + 1
+        }
+        done = true
+      },
+      EnvCached(_, _, rest) => {
+        cur = rest
+      }
+    }
+  }
+  out
+}
+fn engine_type_reference_marker_lookup(markers: Array[(String, Type)], name: String) -> Option[Type] {
+  let mut i = 0
+  let mut found = false
+  let mut result = None
+  while !found && i < Array::length(markers) {
+    let (n, t) = Array::get(markers, i)
+    if n == name {
+      result = Some(t)
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+/// #3036: which declaration a dependency's type name is, identified by its
+/// DEFINITION rather than by the module path that delivered it. The same
+/// declaration reaches an importer through routes whose paths cannot be
+/// canonicalised -- a package facade and the sibling file that declares it, a
+/// re-export, a signature that merely mentions it -- and every route carries
+/// the one TypeDef the declaring module checked. Two same-named declarations
+/// with different layouts carry different TypeDefs.
+///
+/// Two DISTINCT declarations whose definitions are identical (same name, same
+/// type parameters, same fields or variants with the same types in the same
+/// order) are deliberately one identity: reading one through the other's
+/// layout reads the same slot with the same type, which is not the wrong
+/// answer the refusal exists to prevent (`dup_type_same_layout_ok`).
+///
+/// A definition is the declaration node when the dependency carries one
+/// (`Some(def)`, the `Type` unused), else the `typedef_identity` its reference
+/// marker carries. `None` means no definition is visible -- a builtin or
+/// primitive, which is never a user declaration -- and such a name takes no
+/// part in the comparison. The node is kept as a node: comparing two nodes
+/// allocates nothing, and `typedef_identity` is built only to compare a node
+/// with a marker.
+fn engine_identity_definition(defs: Array[TypeDef], markers: Array[(String, Type)], name: String) -> Option[(Option[TypeDef], Type)] {
+  match find_typedef(defs, name) {
+    Some(def) => Some((Some(def), CtUnknown)),
+    None => match engine_type_reference_marker_lookup(markers, name) {
+      Some(t) => Some((None, t)),
+      None => None
+    }
+  }
+}
+fn engine_identity_definition_type(def: Option[TypeDef], ty: Type) -> Type {
+  match def {
+    Some(d) => engine_typedef_identity(d),
+    None => ty
+  }
+}
+fn engine_same_type_definition(a_def: Option[TypeDef], a_ty: Type, b_def: Option[TypeDef], b_ty: Type) -> Bool {
+  match a_def {
+    Some(a) => match b_def {
+      // Structural equality first (no allocation); two declarations that
+      // differ only in their formals' spellings (`Box[T]` / `Box[U]`) are
+      // the same declaration, which the positional identity sees.
+      Some(b) => a == b || engine_typedef_identity(a) == engine_typedef_identity(b),
+      None => engine_typedef_identity(a) == b_ty
+    },
+    None => match b_def {
+      Some(b) => a_ty == engine_typedef_identity(b),
+      None => a_ty == b_ty
+    }
+  }
+}
+/// A declaration's formals by POSITION: a binder's spelling is not part of
+/// its identity (`Box[T]` and `Box[U]` are one declaration).
+fn engine_identity_formals(params: Array[String]) -> Array[Type] {
+  let out: Array[Type] = []
+  let mut i = 0
+  while i < Array::length(params) {
+    // A constructor binder (`F[_]`) keeps its arity: `Box[F[_]]` and
+    // `Box[T]` are different declarations even with one formal each.
+    let arity = type_param_arity(Array::get(params, i))
+    let name = if arity > 0 {
+      String::concat(engine_identity_formal_name(i), String::concat("/", Int::to_string(arity)))
+    } else {
+      engine_identity_formal_name(i)
+    }
+    Array::push(out, CtNamed(name, array_empty()))
+    i = i + 1
+  }
+  out
+}
+fn engine_identity_formal_name(i: Int) -> String {
+  String::concat("#formal.", Int::to_string(i))
+}
+/// The position of the formal that `n` spells, or -1. A formal is stored as
+/// its `type_param_key` (a constructor binder's arity is encoded in it), and
+/// an occurrence spells the bare name or its constructor tag (`#ctor.F`).
+fn engine_identity_formal_index(params: Array[String], n: String) -> Int {
+  let mut hit = 0 - 1
+  let mut i = 0
+  while i < Array::length(params) {
+    let pn = type_param_name(Array::get(params, i))
+    if hit < 0 && (n == pn || n == String::concat("#ctor.", pn)) {
+      hit = i
+    }
+    i = i + 1
+  }
+  hit
+}
+/// `ty` with every occurrence of a formal in `params` replaced by its
+/// positional placeholder (`identity_formal`).
+fn engine_identity_rename_formals(ty: Type, params: Array[String]) -> Type {
+  // No early exit on an empty `params`: an alias constructor below carries a
+  // binder scope of its own, even inside a declaration with no formals.
+  match ty {
+    CtNamed(n, args) => {
+      let renamed = for a in args {
+        engine_identity_rename_formals(a, params)
+      }
+      let hit = engine_identity_formal_index(params, n)
+      if hit >= 0 {
+        // Applied or not (`F[Int]` keeps its arguments), only the head is
+        // the binder.
+        CtNamed(engine_identity_formal_name(hit), renamed)
+      } else {
+        CtNamed(n, renamed)
+      }
+    },
+    CtTuple(items) => CtTuple(for t in items {
+      engine_identity_rename_formals(t, params)
+    }),
+    CtArray(t) => CtArray(engine_identity_rename_formals(t, params)),
+    CtOption(t) => CtOption(engine_identity_rename_formals(t, params)),
+    CtFn(args, ret, label) => CtFn(for t in args {
+      engine_identity_rename_formals(t, params)
+    }, engine_identity_rename_formals(ret, params), match label {
+      Some(row) => Some(engine_identity_rename_row(row, params)),
+      None => None
+    }),
+    CtApplied(head, args) => if is_alias_constructor(ty) {
+      // A bare parameterized alias in a constructor slot carries its body
+      // and its OWN binder names, a scope apart from `params`: normalize
+      // that scope by position on its own (`Inner[X]` = `Inner[Y]`).
+      let own: Array[String] = []
+      let mut ai = 1
+      while ai < Array::length(args) {
+        match Array::get(args, ai) {
+          CtNamed(b, _) => Array::push(own, b),
+          _ => ()
+        }
+        ai = ai + 1
+      }
+      let meta: Array[Type] = [
+        engine_identity_rename_formals(Array::get(args, 0), own)
+      ]
+      for f in engine_identity_formals(own) {
+        Array::push(meta, f)
+      }
+      CtApplied(head, meta)
+    } else {
+      CtApplied(engine_identity_rename_formals(head, params), for t in args {
+        engine_identity_rename_formals(t, params)
+      })
+    },
+    CtForAll(ids, bounds, body) => CtForAll(ids, bounds, engine_identity_rename_formals(body, params)),
+    CtRecord(fields) => CtRecord(for f in fields {
+      let (fname, fty) = f
+      (fname, engine_identity_rename_formals(fty, params))
+    }),
+    _ => ty
+  }
+}
+/// A function type's effect row is carried as its spelling (`Probe[T]`,
+/// `Log + Probe[T]`): every identifier in it that names a formal becomes that
+/// formal's positional placeholder, the rest is kept as written.
+fn engine_identity_rename_row(row: String, params: Array[String]) -> String {
+  let len = String::length(row)
+  let mut out = ""
+  let mut start = 0 - 1
+  let mut i = 0
+  while i <= len {
+    let c = if i < len {
+      String::char_code_at(row, i)
+    } else {
+      32
+    }
+    let ident = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 95
+    if ident {
+      if start < 0 {
+        start = i
+      }
+    } else {
+      if start >= 0 {
+        let word = String::substring(row, start, i)
+        let hit = engine_identity_formal_index(params, word)
+        out = String::concat(out, if hit >= 0 {
+          engine_identity_formal_name(hit)
+        } else {
+          word
+        })
+        start = 0 - 1
+      }
+      if i < len {
+        out = String::concat(out, String::substring(row, i, i + 1))
+      }
+    }
+    i = i + 1
+  }
+  engine_identity_canonical_row(out)
+}
+/// A row is a set (Codex on #3076): `Fs + Env` and `Env + Fs + Env` are one
+/// row, so its members -- split at a top-level `,` or `+`, outside brackets --
+/// are sorted and deduplicated, the way effect-row equality treats them.
+fn engine_identity_canonical_row(row: String) -> String {
+  let members: Array[String] = []
+  let len = String::length(row)
+  let mut depth = 0
+  let mut start = 0
+  let mut i = 0
+  while i <= len {
+    let c = if i < len {
+      String::char_code_at(row, i)
+    } else {
+      44
+    }
+    if c == 91 || c == 40 {
+      depth = depth + 1
+    } else if c == 93 || c == 41 {
+      depth = depth - 1
+    } else if (c == 44 || c == 43) && depth == 0 {
+      let m = String::trim(String::substring(row, start, i))
+      if String::length(m) > 0 {
+        Array::push(members, m)
+      }
+      start = i + 1
+    }
+    i = i + 1
+  }
+  String::join(engine_interface_sorted_unique(members), ", ")
+}
+fn engine_identity_rename_all(tys: Array[Type], params: Array[String]) -> Array[Type] {
+  for t in tys {
+    engine_identity_rename_formals(t, params)
+  }
+}
+/// #3036: a TypeDef as a `Type`, so a definition can travel in an ordinary
+/// value binding (the reference marker below) through publication and the
+/// persistent cache. Injective over what distinguishes two declarations'
+/// layouts: the kind, the name, the formals, and every field, variant,
+/// operation or member with its type, in declaration order. A field's type
+/// names a nested declaration by its bare spelling only; the nested
+/// declaration's own definition is compared under ITS name, because every
+/// route that brings a type in also brings the closure of declarations it
+/// names (`identity_closure`).
+fn engine_typedef_identity(def: TypeDef) -> Type {
+  match def {
+    TDEnum(name, params, variants) => CtTuple([
+      CtNamed(String::concat("#typeid.enum.", name), engine_identity_formals(params)),
+      CtRecord(for v in variants {
+        let (vname, payload) = v
+        (vname, CtTuple(engine_identity_rename_all(payload, params)))
+      })
+    ]),
+    TDStruct(name, fields, muts, params) => CtTuple([
+      CtNamed(String::concat("#typeid.struct.", name), engine_identity_formals(params)),
+      engine_identity_rename_formals(CtRecord(fields), params),
+      CtTuple(for m in muts {
+        CtNamed(m, array_empty())
+      })
+    ]),
+    TDAlias(name, params, target) => CtTuple([
+      CtNamed(String::concat("#typeid.type.", name), engine_identity_formals(params)),
+      engine_identity_rename_formals(target, params)
+    ]),
+    TDEffect(name, ops, params) => CtTuple([
+      CtNamed(String::concat("#typeid.effect.", name), engine_identity_formals(params)),
+      CtRecord(for op in ops {
+        let (oname, args, ret) = op
+        (oname, CtFn(engine_identity_rename_all(args, params), engine_identity_rename_formals(ret, params), None))
+      })
+    ]),
+    // An effect set is a set: `{ Read, Write }` and `{ Write, Read }` are one
+    // declaration, as the interface fingerprint already treats them.
+    TDEffectSet(name, members) => CtNamed(String::concat("#typeid.effectset.", name), for m in engine_interface_sorted_unique(members) {
+      CtNamed(m, array_empty())
+    })
+  }
+}
+/// The bare names `ty` may refer to a declaration by: every nominal head, and
+/// every `CtNamed` head or row label that is not one of `binders`. Whether a
+/// name IS a declaration is the lookup's answer (`identity_definition`), so a
+/// formal's spelling that no declaration has simply finds nothing.
+fn engine_push_reference_names(ty: Type, binders: Array[String], out: Array[String]) -> Unit {
+  let nominal: Array[String] = []
+  let named: Array[String] = []
+  engine_nominal_type_names_into(ty, nominal, named)
+  let mut i = 0
+  while i < Array::length(nominal) {
+    let n = Array::get(nominal, i)
+    if !contains_str(out, n) {
+      Array::push(out, n)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  let mut j = 0
+  while j < Array::length(named) {
+    let n = Array::get(named, j)
+    if engine_identity_formal_index(binders, n) < 0 && !contains_str(out, n) {
+      Array::push(out, n)
+    } else {
+      ()
+    }
+    j = j + 1
+  }
+}
+/// The declarations `def`'s own definition names: its payload, field, target
+/// or operation types, less its own formals; an effect set's members.
+fn engine_typedef_reference_names(def: TypeDef) -> Array[String] {
+  let out: Array[String] = []
+  match def {
+    TDEnum(_, params, variants) => {
+      let mut vi = 0
+      while vi < Array::length(variants) {
+        let (_, payload) = Array::get(variants, vi)
+        let mut pi = 0
+        while pi < Array::length(payload) {
+          engine_push_reference_names(Array::get(payload, pi), params, out)
+          pi = pi + 1
+        }
+        vi = vi + 1
+      }
+    },
+    TDStruct(_, fields, _, params) => {
+      let mut fi = 0
+      while fi < Array::length(fields) {
+        let (_, fty) = Array::get(fields, fi)
+        engine_push_reference_names(fty, params, out)
+        fi = fi + 1
+      }
+    },
+    TDAlias(_, params, target) => engine_push_reference_names(target, params, out),
+    TDEffect(_, ops, params) => {
+      let mut oi = 0
+      while oi < Array::length(ops) {
+        let (_, args, ret) = Array::get(ops, oi)
+        let mut ai = 0
+        while ai < Array::length(args) {
+          engine_push_reference_names(Array::get(args, ai), params, out)
+          ai = ai + 1
+        }
+        engine_push_reference_names(ret, params, out)
+        oi = oi + 1
+      }
+    },
+    TDEffectSet(_, members) => {
+      // A member is a row entry's spelling (`Exception[Err]`, `Log`): every
+      // name in it may be a declaration, the kind argument included.
+      let mut mi = 0
+      while mi < Array::length(members) {
+        for n in engine_row_member_names(Array::get(members, mi)) {
+          if !contains_str(out, n) {
+            Array::push(out, n)
+          }
+        }
+        mi = mi + 1
+      }
+    }
+  }
+  out
+}
+/// The identifiers in an effect-set member's spelling: `Exception[Err]` gives
+/// `Exception` and `Err`, `Pkg::Err` stays one name -- and its head `Pkg` is
+/// named too, because an operation-level member (`Fail::Raise`) is reached
+/// through the effect `Fail`, the only declaration there is (Codex on #3076).
+fn engine_row_member_names(member: String) -> Array[String] {
+  let out: Array[String] = []
+  let len = String::length(member)
+  let mut start = 0 - 1
+  let mut i = 0
+  while i <= len {
+    let c = if i < len {
+      String::char_code_at(member, i)
+    } else {
+      32
+    }
+    let ident = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 95 || c == 58
+    if ident && start < 0 {
+      start = i
+    } else if !ident && start >= 0 {
+      let name = String::substring(member, start, i)
+      Array::push(out, name)
+      let sep = String::index_of(name, "::")
+      if sep > 0 {
+        Array::push(out, String::substring(name, 0, sep))
+      }
+      start = 0 - 1
+    }
+    i = i + 1
+  }
+  out
+}
+/// `typedef_reference_names` read back out of a `typedef_identity`, for a
+/// definition that arrived as a reference marker.
+fn engine_identity_reference_names(identity: Type) -> Array[String] {
+  let out: Array[String] = []
+  match identity {
+    CtTuple(parts) => if Array::length(parts) >= 2 {
+      match Array::get(parts, 0) {
+        CtNamed(_, formals) => {
+          let binders: Array[String] = []
+          let mut fi = 0
+          while fi < Array::length(formals) {
+            match Array::get(formals, fi) {
+              CtNamed(b, _) => Array::push(binders, b),
+              _ => ()
+            }
+            fi = fi + 1
+          }
+          // Only the definition part: a struct identity's third part spells
+          // its mutable field NAMES as `CtNamed`s, which are not references.
+          engine_push_reference_names(Array::get(parts, 1), binders, out)
+        },
+        _ => ()
+      }
+    } else {
+      ()
+    },
+    CtNamed(head, members) => if String::starts_with(head, "#typeid.effectset.") {
+      let mut mi = 0
+      while mi < Array::length(members) {
+        match Array::get(members, mi) {
+          CtNamed(m, _) => for n in engine_row_member_names(m) {
+            if !contains_str(out, n) {
+              Array::push(out, n)
+            }
+          },
+          _ => ()
+        }
+        mi = mi + 1
+      }
+    } else {
+      ()
+    },
+    _ => ()
+  }
+  out
+}
+/// #3036: `roots` and every declaration their definitions name,
+/// transitively, each with its definition and the root that reached it. A
+/// type's identity is its own definition AND the definitions of the
+/// declarations it names: `A.Outer { inner: A.Inner }` and `B.Outer { inner:
+/// B.Inner }` define `Outer` identically, and only `Inner` tells them apart.
+/// Comparing every closure member under its own name is that transitive
+/// identity, and names the member that actually differs.
+///
+/// A name is visited once per `walked` set, which is per dependency: that
+/// terminates a cycle (`enum List { Cons(Int, List); Nil }`, or two types
+/// naming each other) and does not re-walk a closure several imported
+/// signatures share.
+fn engine_identity_closure(roots: Array[String], defs: Array[TypeDef], markers: Array[(String, Type)], walked: Array[String]) -> Array[(String, Option[TypeDef], Type, String)] {
+  let out: Array[(String, Option[TypeDef], Type, String)] = []
+  let queue: Array[(String, String)] = []
+  let mut ri = 0
+  while ri < Array::length(roots) {
+    let r = Array::get(roots, ri)
+    Array::push(queue, (r, r))
+    ri = ri + 1
+  }
+  let mut qi = 0
+  while qi < Array::length(queue) {
+    let (n, root) = Array::get(queue, qi)
+    if !contains_str(walked, n) {
+      Array::push(walked, n)
+      match engine_identity_definition(defs, markers, n) {
+        Some((def, ty)) => {
+          Array::push(out, (n, def, ty, root))
+          let refs = match def {
+            Some(d) => engine_typedef_reference_names(d),
+            None => engine_identity_reference_names(ty)
+          }
+          let mut k = 0
+          while k < Array::length(refs) {
+            Array::push(queue, (Array::get(refs, k), root))
+            k = k + 1
+          }
+        },
+        None => ()
+      }
+    } else {
+      ()
+    }
+    qi = qi + 1
+  }
+  out
+}
+/// What one dependency contributes to this module's identity table. `keep` is
+/// the names the import projects as declaration nodes into this module's env;
+/// every other member of a walked closure is `carried` into the env as a
+/// reference marker, so a signature of this module that mentions it --
+/// re-exported, or its own -- publishes its definition on (two hops, pinned
+/// by `dup_type_transit2_reject` and `dup_type_nested_transit_reject`).
+fn engine_any_unwalked(roots: Array[String], walked: Array[String]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(roots) {
+    if contains_str(walked, Array::get(roots, i)) {
+      i = i + 1
+    } else {
+      found = true
+    }
+  }
+  found
+}
+fn engine_note_identity_closure(roots: Array[String], route: String, defs: Array[TypeDef], markers: Array[(String, Type)], walked: Array[String], keep: Array[String], carried: Array[(String, Type)], seen: Array[(String, Option[TypeDef], Type, String)], unresolved: Array[String]) -> Unit {
+  let reached = engine_identity_closure(roots, defs, markers, walked)
+  let mut i = 0
+  while i < Array::length(reached) {
+    let (n, def, ty, root) = Array::get(reached, i)
+    let what = if n == root {
+      String::concat("`", String::concat(n, String::concat("` ", route)))
+    } else {
+      String::concat("`", String::concat(n, String::concat("` (named inside `", String::concat(root, String::concat("`) ", route)))))
+    }
+    engine_note_imported_type_identity(n, def, ty, what, seen, unresolved)
+    if !contains_str(keep, n) {
+      Array::push(carried, (n, engine_identity_definition_type(def, ty)))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+/// The type names a trait's method signatures mention, less the trait's own
+/// formals, each method's own formals within that method, and `Self`.
+fn engine_trait_method_reference_names(methods: Array[(String, Array[TypeExpr], TypeExpr)], params: Array[String], method_gens: Array[(String, Array[String], Array[(String, Array[String])])]) -> Array[String] {
+  let binders: Array[String] = ["Self"]
+  let mut pi = 0
+  while pi < Array::length(params) {
+    Array::push(binders, Array::get(params, pi))
+    pi = pi + 1
+  }
+  let out: Array[String] = []
+  let mut mi = 0
+  while mi < Array::length(methods) {
+    let (mname, args, ret) = Array::get(methods, mi)
+    // A method's own formals bind only in ITS signature: another method may
+    // spell a concrete imported type the same way.
+    let own: Array[String] = []
+    for b in binders {
+      Array::push(own, b)
+    }
+    let bound_refs: Array[String] = []
+    let mut gi = 0
+    while gi < Array::length(method_gens) {
+      let (gname, formals, bounds) = Array::get(method_gens, gi)
+      if gname == mname {
+        for f in formals {
+          Array::push(own, f)
+        }
+        // The method's bounds (`run[T: Builds[Err]]`) name types too.
+        for b in bounds {
+          let (_, refs) = b
+          for r in refs {
+            // The trait's arguments, not its head (a trait is not a type).
+            for te in trait_ref_args(r) {
+              engine_type_expr_reference_names_into(te, array_empty(), bound_refs)
+            }
+          }
+        }
+      }
+      gi = gi + 1
+    }
+    for n in bound_refs {
+      engine_push_reference_name(n, own, out)
+    }
+    let mut ai = 0
+    while ai < Array::length(args) {
+      engine_type_expr_reference_names_into(Array::get(args, ai), own, out)
+      ai = ai + 1
+    }
+    engine_type_expr_reference_names_into(ret, own, out)
+    mi = mi + 1
+  }
+  out
+}
+fn engine_push_reference_name(name: String, binders: Array[String], out: Array[String]) -> Unit {
+  // Binders are `type_param_key`s: a kinded one (`F[_]`) is encoded, while
+  // the source spells it `F`.
+  if engine_identity_formal_index(binders, name) < 0 && !contains_str(out, name) {
+    Array::push(out, name)
+  } else {
+    ()
+  }
+}
+fn engine_type_expr_reference_names_into(te: TypeExpr, binders: Array[String], out: Array[String]) -> Unit {
+  match te {
+    TyName(n) => engine_push_reference_name(n, binders, out),
+    TyApp(n, args) => {
+      engine_push_reference_name(n, binders, out)
+      let mut i = 0
+      while i < Array::length(args) {
+        engine_type_expr_reference_names_into(Array::get(args, i), binders, out)
+        i = i + 1
+      }
+    },
+    TyFn(params, ret, row) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        engine_type_expr_reference_names_into(Array::get(params, i), binders, out)
+        i = i + 1
+      }
+      engine_type_expr_reference_names_into(ret, binders, out)
+      match row {
+        Some(r) => {
+          let labels: Array[String] = []
+          let named: Array[String] = []
+          engine_row_bracketed_type_names_into(r, labels, named)
+          let mut li = 0
+          while li < Array::length(labels) {
+            engine_push_reference_name(Array::get(labels, li), binders, out)
+            li = li + 1
+          }
+          let mut ni = 0
+          while ni < Array::length(named) {
+            engine_push_reference_name(Array::get(named, ni), binders, out)
+            ni = ni + 1
+          }
+        },
+        None => ()
+      }
+    },
+    TyTuple(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        engine_type_expr_reference_names_into(Array::get(items, i), binders, out)
+        i = i + 1
+      }
+    },
+    TyUnit => ()
+  }
+}
+/// #3036: every type an implementation names -- its target, the arguments of
+/// an applied trait (`impl Decoder[Err] for Token`) and its bounds
+/// (`impl [T: Builds[Err]] Use for Box[T]`) -- less the implementation's own
+/// formals. The one reader both publication and import use, so a route one
+/// of them reads cannot be missed by the other.
+fn engine_trait_impl_reference_names(name: String, params: Array[String], bounds: Array[(String, Array[String])], target: Type) -> Array[String] {
+  let names: Array[String] = []
+  engine_push_reference_names(target, params, names)
+  // The implemented trait's and each bound's ARGUMENTS: a trait head is not a
+  // type, and a type of the same name must not be read in its place.
+  for te in trait_ref_args(name) {
+    engine_type_expr_reference_names_into(te, params, names)
+  }
+  for b in bounds {
+    let (_, refs) = b
+    for r in refs {
+      for te in trait_ref_args(r) {
+        engine_type_expr_reference_names_into(te, params, names)
+      }
+    }
+  }
+  names
+}
+/// #3036: an imported trait brings its dependency's definition and
+/// implementations along, and both name types by their bare spelling. A
+/// method signature's `Err` is resolved in THIS module, so an imported
+/// trait whose `probe(Self, Err)` meant A's `Err` beside B's `Err` imported
+/// here would read B's value through A's layout; and A's `make() -> Err`
+/// beside B's trait with `impl Show for Err` (B's different `Err`) would let
+/// B's implementation dispatch on A's value with B's layout. So the names in
+/// each retained trait's method signatures and each retained implementation
+/// target join the identity table, closures included.
+fn engine_note_trait_identities(dep_env: TypeEnv, mappings: Array[(String, String)], raw_path: String, defs: Array[TypeDef], markers: Array[(String, Type)], walked: Array[String], keep: Array[String], carried: Array[(String, Type)], seen: Array[(String, Option[TypeDef], Type, String)], unresolved: Array[String]) -> Unit {
+  if Array::length(mappings) > 0 {
+    let mut cur = dep_env
+    let mut done = false
+    while !done {
+      let (roots, route, next) = match cur {
+        EnvEmpty => (array_empty(), "", EnvEmpty),
+        EnvTraitDef(name, _, _, methods, rest, params, method_gens) => match engine_trait_projection_mapping(mappings, name) {
+          Some(_) => (engine_trait_method_reference_names(methods, params, method_gens), String::concat("(in the method signatures of `", String::concat(name, String::concat("` from '", String::concat(raw_path, "')")))), rest),
+          None => (array_empty(), "", rest)
+        },
+        EnvTraitImpl(name, target, rest) => match engine_trait_projection_mapping(mappings, trait_ref_name(name)) {
+          Some(_) => (engine_trait_impl_reference_names(name, array_empty(), array_empty(), target), String::concat("(`", String::concat(trait_ref_name(name), String::concat("`'s implementation from '", String::concat(raw_path, "')")))), rest),
+          None => (array_empty(), "", rest)
+        },
+        EnvTraitImplGen(name, params, bounds, target, rest) => match engine_trait_projection_mapping(mappings, trait_ref_name(name)) {
+          Some(_) => (engine_trait_impl_reference_names(name, params, bounds, target), String::concat("(`", String::concat(trait_ref_name(name), String::concat("`'s implementation from '", String::concat(raw_path, "')")))), rest),
+          None => (array_empty(), "", rest)
+        },
+        EnvBind(_, _, rest) => (array_empty(), "", rest),
+        EnvShowWrappers(_, _, rest) => (array_empty(), "", rest),
+        EnvMutCell(_, _, rest) => (array_empty(), "", rest),
+        EnvTypeDefs(_, _, rest) => (array_empty(), "", rest),
+        EnvFlat(_) => (array_empty(), "", EnvEmpty),
+        EnvCached(_, _, rest) => (array_empty(), "", rest)
+      }
+      if Array::length(roots) > 0 {
+        engine_note_identity_closure(roots, route, defs, markers, walked, keep, carried, seen, unresolved)
+      } else {
+        ()
+      }
+      match cur {
+        EnvEmpty => {
+          done = true
+        },
+        EnvFlat(_) => {
+          done = true
+        },
+        _ => {
+          cur = next
+        }
+      }
+    }
+  } else {
+    ()
+  }
+}
+/// #3036: a published env keeps only the declarations its export surface
+/// names, so a type an exported signature merely MENTIONS -- imported by this
+/// module and not re-exported (`parser_source_span.vibe`'s `source_wrap_pat`
+/// returning `@vibe/ast`'s `Pat`) -- leaves no declaration node behind. This
+/// marker carries that declaration's definition (`typedef_identity`) instead,
+/// so an importer can still tell it from a different type spelled the same
+/// way. A spelling no source identifier has, bound to a value no program can
+/// name.
+fn engine_type_reference_definition_marker(name: String) -> String {
+  String::concat("#typeref-def:", name)
+}
+/// #3036: one reference marker for every declaration the published surface
+/// names that the published env keeps no node for -- mentioned by an
+/// exported value's signature, by an exported trait's method signatures or a
+/// retained implementation's target, or named inside a kept declaration --
+/// and, transitively, for every declaration THOSE name. An importer compares
+/// each member of the closure under its own name (`identity_closure`), so it
+/// needs `Inner`'s definition as well as `Outer`'s.
+export fn engine_bind_type_reference_definitions(value_surface: Array[String], publication_env: TypeEnv, published: TypeEnv) -> TypeEnv {
+  let roots: Array[String] = []
+  let mut i = 0
+  while i < Array::length(value_surface) {
+    match env_lookup(publication_env, Array::get(value_surface, i)) {
+      Some(t) => engine_push_reference_names(t, array_empty(), roots),
+      None => ()
+    }
+    i = i + 1
+  }
+  let published_defs = env_type_defs(published)
+  let markers = engine_type_reference_markers(publication_env)
+  // Every kept declaration is scanned, markers or not: the projection keeps
+  // a declaration's closure by its members' literal spellings, so a type
+  // named only inside an effect-set member (`Exception[Err]`) can be left
+  // without a node even when this module declares it.
+  let mut di = 0
+  while di < Array::length(published_defs) {
+    let def = Array::get(published_defs, di)
+    let refs = engine_typedef_reference_names(def)
+    let mut ri = 0
+    while ri < Array::length(refs) {
+      engine_push_reference_name(Array::get(refs, ri), array_empty(), roots)
+      ri = ri + 1
+    }
+    di = di + 1
+  }
+  // The trait nodes `published` keeps are exactly the exported traits and
+  // their retained implementations.
+  let mut cur = published
+  let mut done = false
+  while !done {
+    match cur {
+      EnvTraitDef(_, _, _, methods, rest, params, method_gens) => {
+        let names = engine_trait_method_reference_names(methods, params, method_gens)
+        let mut ni = 0
+        while ni < Array::length(names) {
+          engine_push_reference_name(Array::get(names, ni), array_empty(), roots)
+          ni = ni + 1
+        }
+        cur = rest
+      },
+      EnvTraitImpl(name, target, rest) => {
+        for n in engine_trait_impl_reference_names(name, array_empty(), array_empty(), target) {
+          engine_push_reference_name(n, array_empty(), roots)
+        }
+        cur = rest
+      },
+      EnvTraitImplGen(name, params, bounds, target, rest) => {
+        for n in engine_trait_impl_reference_names(name, params, bounds, target) {
+          engine_push_reference_name(n, array_empty(), roots)
+        }
+        cur = rest
+      },
+      EnvBind(_, _, rest) => {
+        cur = rest
+      },
+      EnvShowWrappers(_, _, rest) => {
+        cur = rest
+      },
+      EnvMutCell(_, _, rest) => {
+        cur = rest
+      },
+      EnvTypeDefs(_, _, rest) => {
+        cur = rest
+      },
+      EnvCached(_, _, rest) => {
+        cur = rest
+      },
+      EnvFlat(_) => {
+        done = true
+      },
+      EnvEmpty => {
+        done = true
+      }
+    }
+  }
+  if Array::length(roots) == 0 {
+    published
+  } else {
+    let reached = engine_identity_closure(roots, env_type_defs(publication_env), markers, array_empty())
+    let mut out = published
+    let mut k = 0
+    while k < Array::length(reached) {
+      let (n, def, ty, _) = Array::get(reached, k)
+      match find_typedef(published_defs, n) {
+        Some(_) => (),
+        None => {
+          out = EnvBind(engine_type_reference_definition_marker(n), env_value_binding(engine_identity_definition_type(def, ty)), out)
+        }
+      }
+      k = k + 1
+    }
+    out
+  }
+}
+/// #3036: types are identified by their bare name, so two imports that bring
+/// two DIFFERENT declarations spelled the same way are unified: one module's
+/// `struct Err { code: Int }` was read through another's `struct Err { name:
+/// String }` with `vibe check` clean. #3035 refuses the clash with a type this
+/// module declares; this refuses the clash between two imports. The same
+/// declaration reached twice (directly and through a re-export) is one
+/// identity and stays legal.
+fn engine_note_imported_type_identity(name: String, def: Option[TypeDef], ty: Type, what: String, seen: Array[(String, Option[TypeDef], Type, String)], unresolved: Array[String]) -> Unit {
+  let mut clash = ""
+  let mut same = false
+  let mut i = 0
+  while !same && i < Array::length(seen) {
+    let (n, sd, st, w) = Array::get(seen, i)
+    if n == name {
+      if engine_same_type_definition(sd, st, def, ty) {
+        same = true
+      } else if String::length(clash) == 0 {
+        clash = w
+      }
+    }
+    i = i + 1
+  }
+  // One report per distinct definition: a definition already recorded
+  // has either been accepted or already been reported.
+  if !same {
+    if String::length(clash) > 0 {
+      Array::push(unresolved, String::concat(what, String::concat(" and ", String::concat(clash, String::concat(" are different types that share the name `", String::concat(name, "`, and the checker would treat them as one; import only one of them, or rename one of the types"))))))
+    }
+    Array::push(seen, (name, def, ty, what))
+  }
+}
+/// #3036: every declaration an import projects into this module, not only
+/// the names it selected. Selecting `enum Left { A(Err) }` also projects the
+/// `Err` its payload names, under that bare name, so two selected roots whose
+/// closures hold different `Err`s unify them exactly as two direct imports
+/// would. An import alias does not separate them: the alias is a synonym for
+/// the projected bare name, so `struct X as A` and another module's `struct X
+/// as B` both resolve through one `X` (measured on main: `B::{ .. }` was
+/// checked against `A`'s declaration). A projected declaration that names a
+/// type the dependency holds only as a reference marker reaches it through
+/// the closure walk.
+fn engine_note_imported_declaration_identities(view: DependencyInterfaceView, raw_path: String, names: Array[ImportItem], defs: Array[TypeDef], markers: Array[(String, Type)], walked: Array[String], keep: Array[String], carried: Array[(String, Type)], seen: Array[(String, Option[TypeDef], Type, String)], unresolved: Array[String]) -> Unit {
+  let selected = array_empty()
+  let aliases = array_empty()
+  let mut i = 0
+  while i < Array::length(names) {
+    let item = Array::get(names, i)
+    Array::push(selected, item.name)
+    match item.alias {
+      Some(local) => if local != item.name {
+        Array::push(aliases, local)
+      } else {
+        ()
+      },
+      None => ()
+    }
+    i = i + 1
+  }
+  let projected = engine_dependency_typedef_projection(view, names)
+  let selected_roots: Array[String] = []
+  let closure_roots: Array[String] = []
+  let mut j = 0
+  while j < Array::length(projected) {
+    let n = engine_typedef_projection_name(Array::get(projected, j))
+    // Projected as a node into this module's env: no marker needed.
+    Array::push(keep, n)
+    // An alias node is this import's own synonym, not a declaration.
+    if contains_str(selected, n) {
+      Array::push(selected_roots, n)
+    } else if !contains_str(aliases, n) {
+      Array::push(closure_roots, n)
+    } else {
+      ()
+    }
+    j = j + 1
+  }
+  engine_note_identity_closure(selected_roots, String::concat("imported from '", String::concat(raw_path, "'")), defs, markers, walked, keep, carried, seen, unresolved)
+  engine_note_identity_closure(closure_roots, String::concat("brought in by an import from '", String::concat(raw_path, "'")), defs, markers, walked, keep, carried, seen, unresolved)
+  // An import alias is a NAME in this module too (Codex on #3076): `X as Y`
+  // projects `Y -> X`, and another import's own `Y` would be shadowed by it,
+  // or shadow it, with no diagnostic. The alias is recorded under its local
+  // name with the source's definition, so a different `Y` is refused.
+  let mut ai = 0
+  while ai < Array::length(names) {
+    let item = Array::get(names, ai)
+    match item.alias {
+      Some(local) => if local != item.name {
+        match engine_identity_definition(defs, markers, item.name) {
+          Some((def, ty)) => engine_note_imported_type_identity(local, def, ty, String::concat("`", String::concat(local, String::concat("` (`", String::concat(item.name, String::concat("` imported under that name from '", String::concat(raw_path, "')")))))), seen, unresolved),
+          None => ()
+        }
+      },
+      None => ()
+    }
+    ai = ai + 1
+  }
+}
+fn engine_bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_path: String, names: Array[ImportItem], declaration_names: Array[ImportItem], interfaces: DependencyInterfaceSet, unresolved: Array[String], trait_claims: Array[(String, String, Bool, String)], reexport_surface_only: Bool, local_types: Array[String], seen_types: Array[(String, Option[TypeDef], Type, String)]) -> TypeEnv {
+  let cached = engine_dependency_interface_lookup(interfaces, resolved)
+  let view = match cached {
+    Some(v) => v,
+    None => engine_dependency_interface_view(EnvEmpty)
+  }
+  let dep_env = view.env
+  let dep_bindings = view.bindings
+  engine_builtin_shadow_diagnostics_into(dep_bindings, resolved, unresolved)
+  let dep_traits = view.traits
+  let dep_upper_slots = view.upper_slots
+  let dep_selectable_type_defs = view.selectable
+  let dep_types = view.declared_names
+  let collision_reported: Array[String] = []
+  // #3036: this dependency's definitions, read once, and the state of the
+  // closure walk that feeds the cross-import identity table
+  // (`note_identity_closure`). A package contract's generated type stub is
+  // tracked like any module (Codex on #3076): it holds the contract's
+  // TRANSPARENT declarations verbatim and is imported into every sibling, so
+  // exempting it let an external `Err` shadow the contract's own. Its
+  // deferred (opaque) names are declared by the implementation and have no
+  // definition in the stub, so the closure walk never reaches them.
+  let id_defs = view.defs
+  let id_markers = view.markers
+  let id_walked: Array[String] = []
+  // The declarations this import projects as nodes; every other closure
+  // member is carried on as a reference marker.
+  let id_keep: Array[String] = []
+  let carried_references: Array[(String, Type)] = []
+  // Kind advice is useful only for names the module actually publishes. A
+  // private declaration may remain in the TypeDef closure solely to describe
+  // a public type; suggesting a different qualifier cannot make it importable.
+  let kind_items: Array[ImportItem] = array_empty()
+  let mut kii = 0
+  while kii < Array::length(names) {
+    let item = Array::get(names, kii)
+    if contains_str(dep_selectable_type_defs, item.name) || engine_trait_in_list(dep_traits, item.name) || env_lookup_flat(dep_bindings, item.name) != None {
+      Array::push(kind_items, item)
+    } else {
+      ()
+    }
+    kii = kii + 1
+  }
+  let kind_errors = import_item_kind_errors(kind_items, dep_env, raw_path == "@vibe/builtin", raw_path)
+  let mut kei = 0
+  while kei < Array::length(kind_errors) {
+    Array::push(unresolved, Array::get(kind_errors, kei))
+    kei = kei + 1
+  }
+  // Explicit trait aliases must be known before values are bound: a selected
+  // value can mention the trait before its `trait X as Local` row appears.
+  let trait_mappings = engine_dependency_trait_projection_mappings(dep_env, dep_bindings, dep_traits, dep_upper_slots, names, unresolved)
+  engine_trait_projection_claim_mappings(trait_claims, resolved, dep_env, trait_mappings, unresolved)
+  // Whether the dependency was CHECKED, not whether it happens to bind any
+  // values. A module that exports only types or only traits is checked and
+  // cached, and its flat value environment is legitimately empty -- deriving
+  // "known" from the binding count silently switched the check off for
+  // exactly those dependencies, so a bogus import from a trait-only module
+  // went back to failing in codegen (Codex review, PR #1532).
+  let dep_known = match cached {
+    Some(_) => true,
+    None => false
+  }
+  let nlen = Array::length(names)
+  let rec bind_names: (Int, TypeEnv) -> TypeEnv = (j, nacc) -> {
+    if j >= nlen {
+      nacc
+    } else {
+      let item = Array::get(names, j)
+      let name = item.name
+      let alias = item.alias
+      let bound_name = match alias {
+        Some(a) => a,
+        None => name
+      }
+      // A plain re-export's original name is also present in the merged
+      // program and remains locally resolvable for compatibility. Only an
+      // alias is surface-only: the merge emits no binding under that spelling
+      // and the parser records no local binder for it (#2287).
+      let surface_only_item = reexport_surface_only && alias != None
+      let imported_ty = env_lookup_flat(dep_bindings, name)
+      let binding_origin = engine_selected_module_binding_origin(dep_env, resolved, name, surface_only_item)
+      let ty = match imported_ty {
+        Some(t) => {
+          engine_foreign_type_name_collisions(name, raw_path, resolved, t, dep_types, local_types, unresolved, collision_reported)
+          let roots: Array[String] = []
+          engine_push_reference_names(t, array_empty(), roots)
+          // Most imported signatures name only types an earlier one already
+          // walked; the route text is built only when needed.
+          if engine_any_unwalked(roots, id_walked) {
+            engine_note_identity_closure(roots, String::concat("used by `", String::concat(name, String::concat("` from '", String::concat(raw_path, "'")))), id_defs, id_markers, id_walked, id_keep, carried_references, seen_types, unresolved)
+          } else {
+            ()
+          }
+          engine_trait_projection_map_type_bounds(t, trait_mappings)
+        },
+        None => {
+          // Declaration authority travels explicitly in EnvTypeDefs, so
+          // uppercase is never evidence that an import is valid. Effects and
+          // effectsets use the same selected declaration channel.
+          if dep_known && !contains_str(dep_selectable_type_defs, name) && !engine_trait_in_list(dep_traits, name) {
+            Array::push(unresolved, String::concat(String::concat(String::concat("imported name '", name), "' is not exported by '"), String::concat(raw_path, "'")))
+          } else {
+            ()
+          }
+          CtUnknown
+        }
+      }
+      let with_name = match imported_ty {
+        Some(_) => env_bind_with_origin(nacc, bound_name, ty, binding_origin),
+        None => if contains_str(dep_selectable_type_defs, name) || engine_trait_in_list(dep_traits, name) {
+          // Declaration aliases travel in the separate publication projection
+          // below. Retain the declaration's origin on its existing unknown
+          // value-space marker so semantic checks can distinguish a projected
+          // builtin type from an unrelated same-named local declaration.
+          env_bind_with_origin(nacc, bound_name, ty, binding_origin)
+        } else {
+          env_bind(nacc, bound_name, ty)
+        }
+      }
+      let with_companions = match ty {
+        CtEnum(enum_name) => engine_bind_enum_constructor_companions(with_name, dep_env, resolved, dep_bindings, enum_name, bound_name, trait_mappings, surface_only_item),
+        _ => if engine_starts_with_upper(name) {
+          engine_bind_enum_constructor_companions(with_name, dep_env, resolved, dep_bindings, name, bound_name, trait_mappings, surface_only_item)
+        } else {
+          with_name
+        }
+      }
+      bind_names(j + 1, with_companions)
+    }
+  }
+  for item in declaration_names {
+    if contains_str(dep_selectable_type_defs, item.name) {
+      engine_foreign_type_declaration_collisions(item, raw_path, resolved, dep_env, dep_types, local_types, unresolved, collision_reported)
+    }
+  }
+  engine_note_imported_declaration_identities(view, raw_path, declaration_names, id_defs, id_markers, id_walked, id_keep, carried_references, seen_types, unresolved)
+  let declaration_trait_mappings = engine_dependency_trait_projection_mappings(dep_env, dep_bindings, dep_traits, dep_upper_slots, declaration_names, array_empty())
+  engine_foreign_trait_impl_collisions(dep_env, declaration_trait_mappings, raw_path, resolved, dep_types, local_types, unresolved, collision_reported)
+  engine_note_trait_identities(dep_env, declaration_trait_mappings, raw_path, id_defs, id_markers, id_walked, id_keep, carried_references, seen_types, unresolved)
+  let bound = bind_names(0, engine_prepend_dependency_trait_nodes(dep_env, declaration_trait_mappings, engine_prepend_dependency_type_defs(view, declaration_names, acc)))
+  let mut with_references = bound
+  let mut ci = 0
+  while ci < Array::length(carried_references) {
+    let (tn, def) = Array::get(carried_references, ci)
+    with_references = EnvBind(engine_type_reference_definition_marker(tn), env_value_binding(def), with_references)
+    ci = ci + 1
+  }
+  with_references
+}
+fn engine_reexport_items_with_alias(items: Array[ImportItem], want_alias: Bool) -> Array[ImportItem] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(items) {
+    let item = Array::get(items, i)
+    if (item.alias != None) == want_alias {
+      Array::push(out, item)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+/// Declaration authority from an aliased re-export is needed by the module's
+/// published interface, but the re-export statement introduces no local type
+/// or trait binder. Keep that projection apart from the checker environment;
+/// check_module_impl joins it back only while constructing the public env.
+/// #3036: an aliased re-export (`export ./a.vibe { X as Left }`) publishes
+/// `X`'s declaration under its bare name beside the alias, so two aliased
+/// re-exports of different `X`s would hand an importer of `Left` and `Right`
+/// one `X` for both. They are checked here, in the re-exporting module, like
+/// any other pair of imports.
+fn engine_note_reexport_surface_identities(resolved: String, raw_path: String, names: Array[ImportItem], interfaces: DependencyInterfaceSet, seen: Array[(String, Option[TypeDef], Type, String)], unresolved: Array[String]) -> Array[(String, Type)] {
+  // The types the aliased declarations name without publishing, carried on
+  // as reference markers by `prepend_reexport_alias_declarations`.
+  let carried: Array[(String, Type)] = []
+  // A generated type stub is tracked too, as on the ordinary import path.
+  if Array::length(names) > 0 {
+    match engine_dependency_interface_lookup(interfaces, resolved) {
+      Some(view) => {
+        let dep_env = view.env
+        let defs = view.defs
+        let markers = view.markers
+        let walked: Array[String] = []
+        let keep: Array[String] = []
+        engine_note_imported_declaration_identities(view, raw_path, names, defs, markers, walked, keep, carried, seen, unresolved)
+        // An aliased TRAIT is walked like an imported one (Codex on #3076):
+        // its method signatures and retained implementations name types too.
+        let dep_bindings = view.bindings
+        let dep_traits = view.traits
+        let dep_upper_slots = view.upper_slots
+        let mappings = engine_dependency_trait_projection_mappings(dep_env, dep_bindings, dep_traits, dep_upper_slots, names, array_empty())
+        engine_note_trait_identities(dep_env, mappings, raw_path, defs, markers, walked, keep, carried, seen, unresolved)
+      },
+      None => ()
+    }
+  } else {
+    ()
+  }
+  carried
+}
+fn engine_prepend_reexport_alias_declarations(acc: TypeEnv, resolved: String, names: Array[ImportItem], interfaces: DependencyInterfaceSet, carried: Array[(String, Type)]) -> TypeEnv {
+  let cached = engine_dependency_interface_lookup(interfaces, resolved)
+  let view = match cached {
+    Some(v) => v,
+    None => engine_dependency_interface_view(EnvEmpty)
+  }
+  let dep_env = view.env
+  let dep_bindings = view.bindings
+  let dep_traits = view.traits
+  let dep_upper_slots = view.upper_slots
+  let ignored = array_empty()
+  let mappings = engine_dependency_trait_projection_mappings(dep_env, dep_bindings, dep_traits, dep_upper_slots, names, ignored)
+  let mut out = engine_prepend_dependency_trait_nodes(dep_env, mappings, engine_prepend_dependency_type_defs(view, names, acc))
+  // #3036: the published surface names each carried type's declaration, so
+  // an importer of the alias checks it against its other imports.
+  let mut ci = 0
+  while ci < Array::length(carried) {
+    let (tn, def) = Array::get(carried, ci)
+    out = EnvBind(engine_type_reference_definition_marker(tn), env_value_binding(def), out)
+    ci = ci + 1
+  }
+  out
+}
+/// #2378: the marker a checked module's PUBLISHED environment carries for
+/// each `fn` (or bound lambda) it defines at a qualified name the builtin
+/// registry owns (`collect_builtin_shadowing_names`, checker_stmt.vibe). It
+/// rides the environment because that is the one channel every consumer of a
+/// checked module already reads -- the env cache, the persistent store, the
+/// worker transport -- so the fact survives exactly as long as the check does
+/// and needs no cache key of its own; and because the fact is a property of
+/// the MODULE, not of the role it was checked in: the same module checked as
+/// a root (`vibe check dep.vibe`, where its shadow is explicit and legal) and
+/// later linked as a dependency reuses the same cached environment, and a
+/// marker in it is what lets the importer be refused either way. Spelled like
+/// the loader's export markers (`__vibe_internal_export__:`): a name no
+/// import item can select, bound to `CtUnit`.
+fn engine_builtin_shadow_marker_prefix() -> String {
+  "__vibe_internal_builtin_shadow__:"
+}
+export fn engine_bind_builtin_shadow_markers(env: TypeEnv, names: Array[String]) -> TypeEnv {
+  let mut acc = env
+  let mut i = 0
+  while i < Array::length(names) {
+    acc = env_bind(acc, String::concat(engine_builtin_shadow_marker_prefix(), Array::get(names, i)), CtUnit)
+    i = i + 1
+  }
+  acc
+}
+/// The importer's side of #2378: a dependency whose environment carries a
+/// shadow marker is refused HERE, in the module that links it, because that
+/// module is the one surprised -- it never imported the name and would get
+/// the override anyway (measured on the seed: `String::index_of("hello
+/// world", "world")` answered -999 through an import of one unrelated name).
+/// The diagnostic leads with the edit and names the file that needs it.
+/// Collected into `unresolved` with the #1521 import diagnostics, so it is
+/// reported before the body is checked and carries the importer's path like
+/// they do.
+fn engine_builtin_shadow_diagnostics_into(dep_bindings: Array[(String, Type)], resolved: String, unresolved: Array[String]) -> Unit {
+  let prefix = engine_builtin_shadow_marker_prefix()
+  let plen = String::length(prefix)
+  let mut i = 0
+  while i < Array::length(dep_bindings) {
+    let (bname, _) = Array::get(dep_bindings, i)
+    if String::starts_with(bname, prefix) {
+      let name = String::substring(bname, plen, String::length(bname))
+      Array::push(unresolved, String::concat("rename `", String::concat(name, String::concat("` in ", String::concat(resolved, ": it is a builtin, and a `fn` defined at a builtin's qualified name replaces that builtin for EVERY program that links that file -- this one included, though it never imports the name (#2378). A bare or differently qualified name keeps the builtin, and a `let` alias of it (`let X::y = my_fn`) is fine")))))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+export fn engine_build_import_envs_using_interfaces(stmts: Array[Stmt], base_dir: String, cache: Array[(String, TypeEnv)], interfaces: DependencyInterfaceSet, unresolved: Array[String]) -> (TypeEnv, TypeEnv) with Env {
+  let show_status: MutMap[String, Int] = MutMap::new_string()
+  let show_names: Array[String] = []
+  let select_show_facts = (resolved: String, names: Array[ImportItem]) -> {
+    let facts = match engine_dependency_interface_lookup(interfaces, resolved) {
+      Some(view) => view.show_facts,
+      None => None
+    }
+    for item in names {
+      let bound = match item.alias {
+        Some(name) => name,
+        None => item.name
+      }
+      let status = match facts {
+        Some((wrappers, unknown)) => if contains_str(wrappers, item.name) {
+          1
+        } else {
+          if contains_str(unknown, item.name) {
+            2
+          } else {
+            0
+          }
+        },
+        None => 2
+      }
+      MutMap::set(show_status, bound, status)
+      Array::push(show_names, bound)
+    }
+  }
+  let trait_claims = array_empty()
+  let local_types = engine_local_declared_type_names(stmts)
+  // #3036: the type names this module's imports bring in, with the
+  // declaration each one names.
+  let seen_types: Array[(String, Option[TypeDef], Type, String)] = []
+  let len = Array::length(stmts)
+  let rec go: (Int, TypeEnv, TypeEnv) -> (TypeEnv, TypeEnv) = (i, local_acc, surface_acc) -> {
+    if i >= len {
+      (local_acc, surface_acc)
+    } else {
+      let (next_local, next_surface) = match Array::get(stmts, i) {
+        SImport(raw_path, names) => if is_builtin_iterator_serialized_boundary_path(raw_path) {
+          // This serialized boundary supplies no dependency publication. Keep
+          // its candidates unknown even when another import has precise facts.
+          for item in names {
+            let bound = match item.alias {
+              Some(name) => name,
+              None => item.name
+            }
+            MutMap::set(show_status, bound, 2)
+            Array::push(show_names, bound)
+          }
+          (local_acc, surface_acc)
+        } else {
+          let resolved = engine_resolve_cached_import_path(base_dir, raw_path, cache)
+          select_show_facts(resolved, names)
+          (engine_bind_import_names_from_cache_collecting(local_acc, resolved, raw_path, names, names, interfaces, unresolved, trait_claims, false, local_types, seen_types), surface_acc)
+        },
+        SReExport(raw_path, names) => {
+          let resolved = engine_resolve_cached_import_path(base_dir, raw_path, cache)
+          select_show_facts(resolved, names)
+          let local_declarations = engine_reexport_items_with_alias(names, false)
+          let surface_declarations = engine_reexport_items_with_alias(names, true)
+          let carried = engine_note_reexport_surface_identities(resolved, raw_path, surface_declarations, interfaces, seen_types, unresolved)
+          (engine_bind_import_names_from_cache_collecting(local_acc, resolved, raw_path, names, local_declarations, interfaces, unresolved, trait_claims, true, local_types, seen_types), engine_prepend_reexport_alias_declarations(surface_acc, resolved, surface_declarations, interfaces, carried))
+        },
+        _ => (local_acc, surface_acc)
+      }
+      go(i + 1, next_local, next_surface)
+    }
+  }
+  let (local_env, surface_env) = go(0, EnvEmpty, EnvEmpty)
+  let wrappers: Array[String] = []
+  let unknown: Array[String] = []
+  for name in show_names {
+    match MutMap::get(show_status, name) {
+      Some(1) => Array::push(wrappers, name),
+      Some(2) => Array::push(unknown, name),
+      _ => ()
+    }
+    MutMap::set(show_status, name, 0)
+  }
+  match local_env {
+    EnvEmpty => (local_env, surface_env),
+    _ => (env_with_show_wrapper_facts(local_env, wrappers, unknown), surface_env)
+  }
+}
+/// #2317: the path a TYPE diagnostic about `path` should name.
+///
+/// A `.vpkg` whose contract declares transparent types is materialized into a
+/// generated module under `.vibe/build/vpkg_types/` (#1840), and that module
+/// is what the checker walks -- so a `derive` naming an unknown trait reported
+/// `.vibe/build/vpkg_types/types_114_….vibe: unknown trait: Foo`, pointing the
+/// reader at a build artifact to go edit. The stub's content is the contract's
+/// own type-family definitions, so the diagnostic is about text the AUTHOR
+/// wrote, and the contract is the honest place to name.
+///
+/// TYPE diagnostics only. A parse or import failure inside the stub is about
+/// the GENERATED text, not about anything in the contract, and naming the
+/// contract for one of those would send the reader to a file that is fine.
+///
+/// UNLOCATED messages only, and that is the whole subtlety (Codex review on
+/// #2324). `locate_type_error` computes its line and column against the STUB's
+/// source, and the stub carries neither the contract's header nor its
+/// formatting -- so a located message renamed to the contract pairs a file the
+/// author wrote with a line number from a generated one. Measured: a contract
+/// whose `struct Box[T]` sits on line 13 reports `line 4:15-18` against the
+/// stub, and line 4 of that contract is inside its `description` block.
+///
+/// A stub path with a stub-relative line is at least self-consistent -- the
+/// reader can open that file and find the line. A contract path with a stub
+/// line is confidently wrong, which this repo ranks above unhelpful. So a
+/// located diagnostic keeps the generated path until the stub carries a real
+/// offset mapping back to the contract; that needs the generator to emit one,
+/// and is tracked with the rest of #2317.
+///
+/// The owner is read from the module's OWN text, not from a registry. A types
+/// module is also checked by an isolated worker under `VIBE_MODULE_JOB_DIR`,
+/// which is handed `source.vibe` plus its dependencies' environments and never
+/// runs the loader -- so a process-local registry is empty there, and the same
+/// contract would be named in one lane and not in the other. Lanes disagreeing
+/// about one file is the bug #2317 is about, so the fix must not add a new
+/// instance of it (Codex review on #2324).
+///
+/// Falls back to the stub path when the marker is absent, which is what a stub
+/// generated before it existed will have. That is the behavior this replaces,
+/// so a miss degrades rather than misreports.
+/// #2324: the EXACT shape the loader writes, not a substring test.
+///
+/// `is_vpkg_types_stub_path` matches any path CONTAINING `.vibe/build/vpkg_types/`.
+/// That is fine for its own callers, which only decide whether to load a file
+/// from disk, but far too loose to gate an attribution: an ordinary module
+/// under a directory of that name could carry a `// vibe: generated from ...`
+/// comment and have its diagnostics attributed to whatever path that comment
+/// names -- a file the reader never edited (Codex review on #2324).
+///
+/// The marker is only trusted for a path the loader itself generates, under
+/// the build directory the compiler owns. The prefix is shared with the
+/// generator so the two cannot drift apart.
+fn engine_is_generated_vpkg_types_path(path: String) -> Bool {
+  if !String::starts_with(path, vpkg_types_module_path_prefix) || !String::ends_with(path, ".vibe") {
+    false
+  } else {
+    // The WHOLE basename, not just the ends. Prefix plus extension alone still
+    // accepts a nested `types_fake/source.vibe`, which is an ordinary file the
+    // author wrote (Codex review on #2324). The loader can only ever produce
+    // `types_<fingerprint>.vibe` in that one directory, and it builds the
+    // fingerprint by replacing every non-identifier byte with `_`, so the
+    // basename is exactly [0-9A-Za-z_]+ -- a `/`, a `.`, or anything else in
+    // there means some other producer wrote it.
+    let plen = String::length(vpkg_types_module_path_prefix)
+    let stem_end = String::length(path) - 5
+    let mut i = plen
+    let mut ok = stem_end > plen
+    while i < stem_end && ok {
+      let c = String::char_code_at(path, i)
+      let ident = (c >= 48 && c <= 57) || (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || c == 95
+      if ident {
+        i = i + 1
+      } else {
+        ok = false
+      }
+    }
+    ok
+  }
+}
+/// #2317: split a located message into its 1-based line number and the body
+/// after the `line L:C: ` prefix. `(-1, msg)` when it carries no prefix.
+///
+/// The prefix ends at the first `": "`, which is unambiguous: the position is
+/// `L:C` or `L:C-E`, and neither contains a space.
+fn engine_located_line_and_body(msg: String) -> (Int, String) {
+  if !String::starts_with(msg, "line ") {
+    return (0 - 1, msg)
+  } else {
+    ()
+  }
+  let n = String::length(msg)
+  let mut i = 5
+  let mut num = 0
+  let mut digits = 0
+  while i < n {
+    let c = String::char_code_at(msg, i)
+    if c >= 48 && c <= 57 {
+      num = num * 10 + (c - 48)
+      digits = digits + 1
+      i = i + 1
+    } else {
+      i = n
+    }
+  }
+  if digits == 0 {
+    return (0 - 1, msg)
+  } else {
+    ()
+  }
+  let sep = String::index_of(msg, ": ")
+  if sep < 0 {
+    (0 - 1, msg)
+  } else {
+    (num, String::substring(msg, sep + 2, String::length(msg)))
+  }
+}
+export fn engine_type_diagnostic_display(path: String, source: String, located_msg: String) -> (String, String) with Exception {
+  if !engine_is_generated_vpkg_types_path(path) {
+    return (path, located_msg)
+  } else {
+    ()
+  }
+  let owner_raw = vpkg_types_contract_of_source(source)
+  if owner_raw == "" {
+    return (path, located_msg)
+  } else {
+    ()
+  }
+  // Escaped for DISPLAY. The marker round-trips a path exactly, newlines
+  // included, and this string goes straight into a diagnostic -- rendered
+  // verbatim it would split one record across lines, and crafted path
+  // components could resemble further diagnostics (Codex review on #2324).
+  let owner = vpkg_path_escape_one_line(owner_raw)
+  let (lno, body) = engine_located_line_and_body(located_msg)
+  if lno < 0 {
+    // Unlocated: nothing to remap, and nothing to get wrong.
+    return (owner, located_msg)
+  } else {
+    ()
+  }
+  // #2317: located. The stub records each declaration's contract `line:col`
+  // beside it, so the message can name the contract AND point at the
+  // declaration the author wrote. Declaration-granular: `print_stmt` rebuilds
+  // the declaration from the AST, so the column inside it is gone -- what is
+  // recovered is WHICH declaration, which is what the reader acts on.
+  //
+  // Without a marker the stub path and its own line are kept together. That
+  // pair is at least self-consistent; pairing the contract with a stub line is
+  // the confidently-wrong shape #2324 exists to avoid.
+  let pos = vpkg_types_decl_pos_for_line(source, lno)
+  if pos == "" {
+    (path, located_msg)
+  } else {
+    (owner, String::concat("line ", String::concat(pos, String::concat(": ", body))))
+  }
+}
+/// The module's typing fingerprint (typing_module_fingerprint, the one
+/// spelling of the formula) over the per-compile memo of its source
+/// fingerprint: the leaf-fingerprint probe already asked the memo for this
+/// path and text, so the text is hashed once per compile, not once more
+/// behind a prefix here.
+export fn engine_typecheck_fs_build_fingerprint(path: String, source: String, dep_fps: Array[(String, String)], semantics_seed: String) -> String {
+  typing_module_fingerprint(compact_source_fingerprint_memo(path, source), dep_fps, semantics_seed)
+}

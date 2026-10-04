@@ -64,7 +64,17 @@ vibe compile --entry <name> <file.vibe>          # entry other than `main` (not 
 - `--wasm`, `--wasm-linear` and `--release` are accepted and change nothing.
   They do **not** select a backend: `compile` produces linear core WASM by
   default, and `VIBE_BACKEND=gc` switches it to wasm-gc even when
-  `--wasm-linear` is on the command line. `--jobs N` is accepted.
+  `--wasm-linear` is on the command line.
+- **`--jobs 1|2|4`** checks independent modules with native Vibe `TaskGroup`
+  workers before final code generation. Source discovery and cache publication
+  use Node.js; task creation, waiting and cancellation use the native runner.
+  It needs compiler-matched checker images and cannot be combined with
+  `--debug`, `--component` or `--wit`. Builds without the flag keep the ordinary
+  serial path. No speedup is promised; discovery and publication also cost time.
+  In a checkout, build images with `scripts/build_taskgroup_checker.sh <compiler.wasm>`
+  and set `VIBE_TASKGROUP_ARTIFACT_DIR` when using another output directory.
+  To install those images, pass `--taskgroup-artifacts <directory>` together
+  with the same `--cli-wasm` to `install/install.sh`. Release bundles ship them.
 - **Any other option is refused** with `unknown option: <flag>`. That includes
   the retired MoonBit host's flags (`--no-dce`, `-O<level>`, `--wasm-gc`,
   `--wac`, `--library`, ...). The wasm-gc backend is reached through
