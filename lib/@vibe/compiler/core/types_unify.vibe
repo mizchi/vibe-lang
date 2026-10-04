@@ -1288,21 +1288,13 @@ fn type_implements_check_super(e2: TypeEnv, full_env: TypeEnv, s: Subst, trait_n
       }
       else type_implements_check_super(rest, full_env, s, trait_name, resolved)
     } else type_implements_check_super(rest, full_env, s, trait_name, resolved),
-    EnvTraitImplGen(itrait, tparams, bounds, target, rest) => {
-      let head = type_constructor_name(resolved)
-      let shape_ok = head != "" && type_constructor_name(target) == head && trait_is_method_bearing(full_env, trait_name) && trait_is_subtrait(full_env, itrait, trait_name) && itrait != trait_name
-      if shape_ok {
-        match generic_target_args(tparams, target, resolved) {
-          Some(args) => if generic_bounds_hold(full_env, s, tparams, bounds, args) {
-            true
-          } else {
-            type_implements_check_super(rest, full_env, s, trait_name, resolved)
-          },
-          None => type_implements_check_super(rest, full_env, s, trait_name, resolved)
-        }
+    EnvTraitImplGen(itrait, tparams, bounds, target, rest) => match generic_subtrait_impl_args(full_env, itrait, tparams, target, trait_name, resolved) {
+      Some(args) => if generic_bounds_hold(full_env, s, tparams, bounds, args) {
+        true
       } else {
         type_implements_check_super(rest, full_env, s, trait_name, resolved)
-      }
+      },
+      None => type_implements_check_super(rest, full_env, s, trait_name, resolved)
     },
     EnvTypeDefs(_, _, rest) => type_implements_check_super(rest, full_env, s, trait_name, resolved),
     EnvFlat(_) => false,
@@ -1580,6 +1572,39 @@ fn generic_target_args(tparams: Array[String], target: Type, resolved: Type) -> 
   }
 }
 
+/// The target arguments of a generic impl of `itrait` (`impl [tparams]
+/// itrait for target`) when it stands for `trait_name` itself at `resolved`,
+/// before its parameter bounds are judged; None when it does not. The rule
+/// `generic_impl_satisfies` applies, shared with `generic_impl_cmp_refusal`.
+fn generic_direct_impl_args(full: TypeEnv, itrait: String, tparams: Array[String], target: Type, trait_name: String, resolved: Type) -> Option[Array[Type]] {
+  let head = type_constructor_name(resolved)
+  if head != "" && type_constructor_name(target) == head && trait_is_method_bearing(full, trait_name) {
+    match generic_target_args(tparams, target, resolved) {
+      Some(args) => if generic_trait_ref_matches(itrait, trait_name, tparams, args) {
+        Some(args)
+      } else {
+        None
+      },
+      None => None
+    }
+  } else {
+    None
+  }
+}
+
+/// The same for a generic impl of a SUBTRAIT of `trait_name` (`impl [T: Eq]
+/// Child for Box[T]` standing for `Base` with `trait Child: Base`): the rule
+/// `type_implements_check_super` applies, shared with
+/// `generic_impl_cmp_refusal`.
+fn generic_subtrait_impl_args(full: TypeEnv, itrait: String, tparams: Array[String], target: Type, trait_name: String, resolved: Type) -> Option[Array[Type]] {
+  let head = type_constructor_name(resolved)
+  if head != "" && type_constructor_name(target) == head && trait_is_method_bearing(full, trait_name) && trait_is_subtrait(full, itrait, trait_name) && itrait != trait_name {
+    generic_target_args(tparams, target, resolved)
+  } else {
+    None
+  }
+}
+
 /// Does an in-env method-bearing generic impl cover the concrete `resolved`
 /// type? The retained target is matched structurally and each bound is checked
 /// against the concrete argument bound to its own impl parameter. The
@@ -1594,19 +1619,13 @@ fn generic_impl_satisfies(scan: TypeEnv, full: TypeEnv, s: Subst, trait_name: St
     EnvTraitImpl(_, _, rest) => generic_impl_satisfies(rest, full, s, trait_name, resolved),
     EnvShowWrappers(_, _, rest) => generic_impl_satisfies(rest, full, s, trait_name, resolved),
     EnvMutCell(_, _, rest) => generic_impl_satisfies(rest, full, s, trait_name, resolved),
-    EnvTraitImplGen(itrait, tparams, bounds, target, rest) => {
-      let head = type_constructor_name(resolved)
-      let shape_ok = head != "" && type_constructor_name(target) == head && trait_is_method_bearing(full, trait_name)
-      if shape_ok {
-        match generic_target_args(tparams, target, resolved) {
-          Some(args) => if generic_trait_ref_matches(itrait, trait_name, tparams, args) && generic_bounds_hold(full, s, tparams, bounds, args) {
-            true
-          } else {
-            generic_impl_satisfies(rest, full, s, trait_name, resolved)
-          },
-          None => generic_impl_satisfies(rest, full, s, trait_name, resolved)
-        }
-      } else generic_impl_satisfies(rest, full, s, trait_name, resolved)
+    EnvTraitImplGen(itrait, tparams, bounds, target, rest) => match generic_direct_impl_args(full, itrait, tparams, target, trait_name, resolved) {
+      Some(args) => if generic_bounds_hold(full, s, tparams, bounds, args) {
+        true
+      } else {
+        generic_impl_satisfies(rest, full, s, trait_name, resolved)
+      },
+      None => generic_impl_satisfies(rest, full, s, trait_name, resolved)
     },
     EnvTypeDefs(_, _, rest) => generic_impl_satisfies(rest, full, s, trait_name, resolved),
     EnvFlat(_) => false,
@@ -1614,8 +1633,9 @@ fn generic_impl_satisfies(scan: TypeEnv, full: TypeEnv, s: Subst, trait_name: St
   }
 }
 
-/// #3350: the parameter bound that keeps a generic impl of `trait_name` from
-/// applying to `resolved` because it reaches no comparison witness there --
+/// #3350: the parameter bound that keeps a generic impl of `trait_name`, or
+/// of a subtrait of it, from applying to `resolved` because it reaches no
+/// comparison witness there --
 /// `Some((bound, refused, arg))`, where `refused` is the trait
 /// `erased_cmp_bound_refusal` names for `bound` at the argument `arg` -- or
 /// None. The checker names the edit from it; `generic_bounds_hold` is what
@@ -1637,20 +1657,23 @@ fn gicr_scan(scan: TypeEnv, full: TypeEnv, s: Subst, trait_name: String, resolve
     EnvTraitImpl(_, _, rest) => gicr_scan(rest, full, s, trait_name, resolved, head),
     EnvShowWrappers(_, _, rest) => gicr_scan(rest, full, s, trait_name, resolved, head),
     EnvMutCell(_, _, rest) => gicr_scan(rest, full, s, trait_name, resolved, head),
-    EnvTraitImplGen(itrait, tparams, bounds, target, rest) => if type_constructor_name(target) == head {
-      match generic_target_args(tparams, target, resolved) {
-        Some(args) => if generic_trait_ref_matches(itrait, trait_name, tparams, args) {
-          match gicr_bound_refusal(full, s, tparams, bounds, args) {
-            Some(found) => Some(found),
-            None => gicr_scan(rest, full, s, trait_name, resolved, head)
-          }
-        } else {
-          gicr_scan(rest, full, s, trait_name, resolved, head)
+    EnvTraitImplGen(itrait, tparams, bounds, target, rest) => {
+      // Codex on #3349: the impls resolution would use -- of `trait_name`
+      // itself (`generic_impl_satisfies`) or of a subtrait of it
+      // (`type_implements_check_super`) -- by the same two rules, so a
+      // `[U: Base]` refused because `impl [T: Eq] Child for Box[T]`'s bound
+      // reaches no witness names that bound too.
+      let candidate = match generic_direct_impl_args(full, itrait, tparams, target, trait_name, resolved) {
+        Some(args) => Some(args),
+        None => generic_subtrait_impl_args(full, itrait, tparams, target, trait_name, resolved)
+      }
+      match candidate {
+        Some(args) => match gicr_bound_refusal(full, s, tparams, bounds, args) {
+          Some(found) => Some(found),
+          None => gicr_scan(rest, full, s, trait_name, resolved, head)
         },
         None => gicr_scan(rest, full, s, trait_name, resolved, head)
       }
-    } else {
-      gicr_scan(rest, full, s, trait_name, resolved, head)
     },
     EnvTypeDefs(_, _, rest) => gicr_scan(rest, full, s, trait_name, resolved, head),
     EnvFlat(_) => None,
