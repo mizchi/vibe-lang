@@ -203,7 +203,7 @@ import ./checker_merge_capture_provenance.vibe {
 }
 
 import ./checker_region_retention.vibe {
-  retention_assign_hidden_region, retention_bind_carry, retention_bind_let
+  retention_assign_hidden_region, retention_bind_carry, retention_bind_let, retention_note_let_mut
 }
 
 import ./checker_throw_kind_of_type.vibe {
@@ -344,7 +344,7 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         // value carries where its type may hide them, so a later write,
         // return or call of `name` is judged by the value it was bound to.
         if spine_region_active {
-          cenv = retention_bind_carry(cenv, def_env, name, val, subst_apply(ns, gen), defs, ns)
+          cenv = retention_bind_carry(cenv, def_env, name, val, subst_apply(ns, gen), defs, ns, let_off)
         } else {
           ()
         }
@@ -372,6 +372,13 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         // `env_mut_escape` (checker_spawnable) instead of re-deriving
         // mutability from the raw AST.
         let escapes = mut_binding_escapes(body, name)
+        // #3343 (Codex on #3359): what the binding may carry, for a later
+        // walk of this body (`retention_note_let_mut`).
+        if spine_region_active {
+          retention_note_let_mut(let_off, cenv, subst_apply(ns, vt), defs)
+        } else {
+          ()
+        }
         if name == "__loop_result" {
           let (lr_tv, nc2) = fresh_var(nc)
           cenv = env_bind_mut(cenv, name, lr_tv, escapes)

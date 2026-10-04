@@ -886,6 +886,12 @@ export fn struct_fields_ground(dfields: Array[(String, Type)], defs: Array[TypeD
   ok
 }
 
+/// The compiler-owned heads whose region (and effect) slots a source
+/// annotation may leave out: the value's own type supplies them.
+fn region_slot_erasable_head(n: String) -> Bool {
+  n == "TaskHandle" || n == "TaskGroup" || n == "Sender" || n == "Receiver" || n == "MutList" || n == "MutBytes"
+}
+
 fn struct_field_type_ground(t: Type, defs: Array[TypeDef], tparams: Array[String]) -> Bool {
   match t {
     CtNamed(n, args) => {
@@ -893,7 +899,12 @@ fn struct_field_type_ground(t: Type, defs: Array[TypeDef], tparams: Array[String
         false
       } else {
         match compiler_owned_type_arity(n) {
-          Some(arity) => arity == Array::length(args),
+          // #3343: a region-carrying head spelled without its region slot
+          // (`h: TaskHandle[Int]`, `xs: MutList[Int]`) is the spelling a
+          // parameter annotation already accepts. Typing the literal as
+          // CtUnknown left every use of the struct unchecked and hid the
+          // handle from the region checks.
+          Some(arity) => arity == Array::length(args) || (Array::length(args) < arity && region_slot_erasable_head(n)),
           None => match find_typedef(defs, n) {
             Some(TDStruct(_, _, _, tps)) => Array::length(tps) == Array::length(args),
             Some(TDEnum(_, tps, _)) => Array::length(tps) == Array::length(args),

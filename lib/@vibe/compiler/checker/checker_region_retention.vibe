@@ -150,6 +150,14 @@ let retention_arg_lambdas: Array[(Expr, TypeEnv, String)] = []
 /// The re-checks in progress, by callee and argument shape.
 let retention_recheck_stack: Array[String] = []
 
+/// `(let offset, regions)` for every local `let` / `let mut` checked inside
+/// a region: the regions its value carries, by its type and, where the type
+/// may hide one, by what its value read -- the TYPED answer, which
+/// `retention_walk` takes for a binding of the body it walks (the walk itself
+/// has no types, so it could not tell `MutList::to_array(l)`, a copy, from
+/// the list). The newest row for an offset is the latest check of that `let`.
+let retention_let_rows: Array[(Int, Array[String])] = []
+
 /// The active regions the result of the lambda a re-check checked carries --
 /// by its type, or by what its tail and explicit `return`s read where the
 /// type may hide one -- written by `check_lambda_expr` for that lambda alone
@@ -183,6 +191,7 @@ export fn retention_begin_module(stmts: Array[Stmt]) -> (Array[(String, Expr)], 
   Array::truncate(retention_closures, 0)
   Array::truncate(retention_module_env_cell, 0)
   Array::truncate(retention_arg_lambdas, 0)
+  Array::truncate(retention_let_rows, 0)
   retention_collect_decls(stmts)
   saved
 }
@@ -203,6 +212,7 @@ export fn retention_end_module(saved: (Array[(String, Expr)], Array[(Expr, Strin
     Array::push(retention_module_env_cell, m)
   }
   Array::truncate(retention_arg_lambdas, 0)
+  Array::truncate(retention_let_rows, 0)
   ()
 }
 
@@ -373,10 +383,10 @@ fn retention_subst_params(t: Type, names: Array[String], args: Array[Type]) -> T
   }
 }
 
-fn retention_any_hides(items: Array[Type], defs: Array[TypeDef], visiting: Array[String]) -> Bool {
+fn retention_any_hides(items: Array[Type], defs: Array[TypeDef], visiting: Array[String], unknown: Bool) -> Bool {
   let mut any = false
   for item in items {
-    if !any && retention_hides(item, defs, visiting) {
+    if !any && retention_hides(item, defs, visiting, unknown) {
       any = true
     } else {
       ()
@@ -403,7 +413,7 @@ fn retention_named_hides(name: String, args: Array[Type], defs: Array[TypeDef], 
             answer = retention_any_hides(for field in fields {
               let (_, fty) = field
               retention_subst_params(fty, tparams, args)
-            }, defs, visiting)
+            }, defs, visiting, false)
             Array::truncate(visiting, Array::length(visiting) - 1)
           } else {
             ()
@@ -418,7 +428,7 @@ fn retention_named_hides(name: String, args: Array[Type], defs: Array[TypeDef], 
                 Array::push(payloads, retention_subst_params(t, tparams, args))
               }
             }
-            answer = retention_any_hides(payloads, defs, visiting)
+            answer = retention_any_hides(payloads, defs, visiting, false)
             Array::truncate(visiting, Array::length(visiting) - 1)
           } else {
             ()
@@ -426,7 +436,7 @@ fn retention_named_hides(name: String, args: Array[Type], defs: Array[TypeDef], 
           TDAlias(dn, tparams, body) => if String::equals(dn, name) {
             found = true
             Array::push(visiting, name)
-            answer = retention_hides(retention_subst_params(body, tparams, args), defs, visiting)
+            answer = retention_hides(retention_subst_params(body, tparams, args), defs, visiting, false)
             Array::truncate(visiting, Array::length(visiting) - 1)
           } else {
             ()
@@ -450,12 +460,12 @@ fn retention_named_hides(name: String, args: Array[Type], defs: Array[TypeDef], 
       }
       !(head >= 97 && head <= 122)
     } else {
-      retention_any_hides(args, defs, visiting)
+      retention_any_hides(args, defs, visiting, false)
     }
   }
 }
 
-fn retention_hides(t: Type, defs: Array[TypeDef], visiting: Array[String]) -> Bool {
+fn retention_hides(t: Type, defs: Array[TypeDef], visiting: Array[String], unknown: Bool) -> Bool {
   match t {
     CtInt => false,
     CtDouble => false,
@@ -465,21 +475,21 @@ fn retention_hides(t: Type, defs: Array[TypeDef], visiting: Array[String]) -> Bo
     CtUnit => false,
     CtBytes => false,
     CtVar(_) => false,
-    // A type the checker gave up on may hold anything: a struct literal
-    // whose field spells a region-carrying type without its region
-    // (`struct Box { h: TaskHandle[Int] }`) is typed this way.
-    CtUnknown => true,
+    // A value whose own type the checker gave up on may hold anything; an
+    // element or type argument it could not resolve (`FrozenArray[?]` from a
+    // list whose element type stayed open) is a copy-out, not a value.
+    CtUnknown => unknown,
     CtConstructor(_, _) => false,
-    CtArray(e) => retention_hides(e, defs, visiting),
-    CtOption(e) => retention_hides(e, defs, visiting),
-    CtTuple(items) => retention_any_hides(items, defs, visiting),
+    CtArray(e) => retention_hides(e, defs, visiting, false),
+    CtOption(e) => retention_hides(e, defs, visiting, unknown),
+    CtTuple(items) => retention_any_hides(items, defs, visiting, unknown),
     CtRecord(fields) => retention_any_hides(for field in fields {
       let (_, fty) = field
       fty
-    }, defs, visiting),
+    }, defs, visiting, unknown),
     // A closure's type does not list everything it captured.
     CtFn(_, _, _) => true,
-    CtForAll(_, _, body) => retention_hides(body, defs, visiting),
+    CtForAll(_, _, body) => retention_hides(body, defs, visiting, unknown),
     CtApplied(_, _) => true,
     CtStruct(name) => retention_named_hides(name, array_empty(), defs, visiting),
     CtEnum(name) => retention_named_hides(name, array_empty(), defs, visiting),
@@ -494,7 +504,7 @@ fn retention_hides(t: Type, defs: Array[TypeDef], visiting: Array[String]) -> Bo
           ()
         }
       }
-      !shown || retention_any_hides(args, defs, visiting)
+      !shown || retention_any_hides(args, defs, visiting, false)
     } else {
       retention_named_hides(name, args, defs, visiting)
     }
@@ -507,7 +517,7 @@ fn retention_hides(t: Type, defs: Array[TypeDef], visiting: Array[String]) -> Bo
 /// type arguments too), a type whose declaration is not visible, or a type
 /// the checker could not determine.
 export fn retention_type_hides_region(t: Type, defs: Array[TypeDef]) -> Bool {
-  retention_hides(t, defs, array_empty())
+  retention_hides(t, defs, array_empty(), true)
 }
 
 fn retention_carry_marker(name: String) -> String {
@@ -857,8 +867,12 @@ fn retention_walk(expr: Expr, env: TypeEnv, local: Array[(String, Array[String])
     EBool(_) => array_empty(),
     EUnit => array_empty(),
     EStringInterp(_) => array_empty(),
-    ELet(name, val, body, _) => {
-      let rv = retention_walk(val, env, local, active, defs, s, returns)
+    ELet(name, val, body, let_off) => {
+      let walked = retention_walk(val, env, local, active, defs, s, returns)
+      let rv = match retention_let_row(let_off) {
+        Some(recorded) => recorded,
+        None => walked
+      }
       let mark = Array::length(local)
       Array::push(local, (name, rv))
       let r = retention_walk(body, env, local, active, defs, s, returns)
@@ -867,10 +881,14 @@ fn retention_walk(expr: Expr, env: TypeEnv, local: Array[(String, Array[String])
     },
     // A `let mut` may be assigned anything later on; it carries every
     // region it is declared inside.
-    ELetMut(name, val, body, _) => {
+    ELetMut(name, val, body, let_off) => {
       let _ = retention_walk(val, env, local, active, defs, s, returns)
+      let rv = match retention_let_row(let_off) {
+        Some(recorded) => recorded,
+        None => active
+      }
       let mark = Array::length(local)
-      Array::push(local, (name, active))
+      Array::push(local, (name, rv))
       let r = retention_walk(body, env, local, active, defs, s, returns)
       Array::truncate(local, mark)
       r
@@ -1073,14 +1091,84 @@ export fn retention_region_listed(names: Array[String], rname: String) -> Bool {
   retention_string_has(names, rname)
 }
 
-/// #3343 (Codex on #3359): record, in front of a `let` binding `name` made
-/// inside a region, which regions its value carries, when its type may hide
-/// them. `def_env` is the scope the value was written in.
-export fn retention_bind_carry(env: TypeEnv, def_env: TypeEnv, name: String, val: Expr, ty: Type, defs: Array[TypeDef], s: Subst) -> TypeEnv {
+/// The regions the newest row for `let_off` recorded, if any.
+fn retention_let_row(let_off: Int) -> Option[Array[String]] {
+  if let_off < 0 {
+    None
+  } else {
+    let mut i = Array::length(retention_let_rows) - 1
+    let mut hit = -1
+    while i >= 0 && hit < 0 {
+      let (off, _) = Array::get(retention_let_rows, i)
+      if off == let_off {
+        hit = i
+      } else {
+        ()
+      }
+      i = i - 1
+    }
+    if hit >= 0 {
+      let (_, regions) = Array::get(retention_let_rows, hit)
+      Some(regions)
+    } else {
+      None
+    }
+  }
+}
+
+fn retention_visible_regions(ty: Type, active: Array[String]) -> Array[String] {
+  let out = array_empty()
+  for rname in active {
+    if type_mentions_named(ty, rname) {
+      Array::push(out, rname)
+    } else {
+      ()
+    }
+  }
+  out
+}
+
+/// #3343 (Codex on #3359): record, for a `let` binding `name` made inside a
+/// region (its keyword at `let_off`), which regions its value carries, and,
+/// when its type may hide them, bind that in front of the binding too.
+/// `def_env` is the scope the value was written in.
+export fn retention_bind_carry(env: TypeEnv, def_env: TypeEnv, name: String, val: Expr, ty: Type, defs: Array[TypeDef], s: Subst, let_off: Int) -> TypeEnv {
+  let active = retention_active_region_names(def_env)
+  let carried = retention_visible_regions(ty, active)
+  let hidden = if retention_type_hides_region(ty, defs) {
+    retention_value_regions(val, def_env, defs, s)
+  } else {
+    array_empty()
+  }
+  retention_union_into(carried, hidden)
+  if let_off >= 0 {
+    Array::push(retention_let_rows, (let_off, carried))
+  } else {
+    ()
+  }
   if retention_type_hides_region(ty, defs) {
-    retention_bind_param_carry(env, name, retention_value_regions(val, def_env, defs, s))
+    retention_bind_param_carry(env, name, hidden)
   } else {
     env
+  }
+}
+
+/// #3343 (Codex on #3359): record, for a `let mut` made inside a region (its
+/// keyword at `let_off`), which regions it may carry: those its type names,
+/// and, where its type may hide one, every region it was declared inside --
+/// it may be assigned anything later.
+export fn retention_note_let_mut(let_off: Int, def_env: TypeEnv, ty: Type, defs: Array[TypeDef]) -> Unit {
+  if let_off >= 0 {
+    let active = retention_active_region_names(def_env)
+    let carried = retention_visible_regions(ty, active)
+    if retention_type_hides_region(ty, defs) {
+      retention_union_into(carried, active)
+    } else {
+      ()
+    }
+    Array::push(retention_let_rows, (let_off, carried))
+  } else {
+    ()
   }
 }
 
