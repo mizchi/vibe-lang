@@ -1,0 +1,79 @@
+//# #3301 (Codex on #3337): the or-pattern arm `resume` rule answers the same
+//# on a lane that parses without source offsets. `vibe build --debug` compiles
+//# each dependency through `compile_file_wasi_library`, whose
+//# `parse_program(lex(..))` gives every node the offset -1; the copies of an
+//# arm used to be found by the offset of their `resume`, so none was found
+//# there, and the declared `X -> A` / `Y -> B` refused an arm the handle
+//# instantiates at Int and Int, which the located lanes accept.
+
+//# Imports
+
+import @vibe/core {
+  array_empty
+}
+
+import @vibe/compiler/entry/source_compile/wasi_only {
+  compile_file_wasi_library, compile_file_wasi_only
+}
+
+//# Functions
+
+fn string_to_bytes(s: String) -> Bytes {
+  let out = array_empty()
+  let len = String::length(s)
+  let mut i = 0
+  while i < len {
+    Array::push(out, String::byte_at(s, i))
+    i = i + 1
+  }
+  Bytes::from_array(out)
+}
+
+fn is_wasm(bytes: Bytes) -> Bool {
+  Bytes::length(bytes) > 4 && Bytes::get(bytes, 0) == 0 && Bytes::get(bytes, 1) == 97 && Bytes::get(bytes, 2) == 115 && Bytes::get(bytes, 3) == 109
+}
+
+fn generic_effect() -> String {
+  "effect E[A, B] {\n  X -> A\n  Y -> B\n}\n\n"
+}
+
+/// A dependency whose `handle` makes `A` and `B` both Int: one resume type.
+fn agreeing_dep() -> String {
+  String::concat(generic_effect(), "export fn both_int() -> Int {\n  handle {\n    perform E::X + perform E::Y\n  } with E {\n    X|Y => resume(1)\n  }\n}\n")
+}
+
+/// One whose `handle` makes `A` Int and `B` String: two resume types.
+fn disagreeing_dep() -> String {
+  String::concat(generic_effect(), "export fn mixed() -> Int {\n  handle {\n    let a: Int = perform E::X\n    let b: String = perform E::Y\n    a + String::length(b)\n  } with E {\n    X|Y => {\n      let k = resume\n      0\n    }\n  }\n}\n")
+}
+
+fn library_lane(dir: String, source: String) -> String with Env + Fs {
+  let path = String::concat(dir, "/dep.vibe")
+  Fs::mkdir_p(dir)
+  Fs::write_bytes(path, string_to_bytes(source))
+  handle {
+    if is_wasm(compile_file_wasi_library(path)) {
+      "wasm"
+    } else {
+      "not wasm"
+    }
+  } with { Exception::Throw(m) => m }
+}
+
+//# Misc
+
+test "the library lane accepts an or-pattern arm its handle instantiates alike" {
+  inspect(library_lane("/tmp/vibe_or_arm_unlocated_agree", agreeing_dep()), content = "wasm")
+}
+
+test "the library lane refuses one its handle instantiates apart" {
+  inspect(library_lane("/tmp/vibe_or_arm_unlocated_differ", disagreeing_dep()), content = "write `E::X => ..` and `E::Y => ..` as separate arms: `resume` here would take Int for `E::X` but String for `E::Y`, and an or-pattern arm has one `resume`")
+}
+
+test "the merged entry lane compiles an entry calling it" {
+  let dir = "/tmp/vibe_or_arm_unlocated_entry"
+  Fs::mkdir_p(dir)
+  Fs::write_bytes(String::concat(dir, "/dep.vibe"), string_to_bytes(agreeing_dep()))
+  Fs::write_bytes(String::concat(dir, "/main.vibe"), string_to_bytes("import ./dep.vibe { both_int }\nexport fn answer() -> Int { both_int() }\n"))
+  inspect(is_wasm(compile_file_wasi_only(String::concat(dir, "/main.vibe"), "answer")), content = "true")
+}
