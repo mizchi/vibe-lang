@@ -235,6 +235,9 @@ LITCASE
 lit_case int   'String = 42'  '2:19-21'   # "42"
 lit_case bool  'Int = true'   '2:16-20'   # "true"
 lit_case float 'Int = 1.5'    '2:16-19'   # "1.5"
+# #3305: tuple and array literals have no offset slot either.
+lit_case tuple '(Int, Int) = ("a", 1)'   '2:23-31'   # ("a", 1)
+lit_case array 'Array[Int] = ["a", "b"]' '2:23-33'   # ["a", "b"]
 
 # 11. An UNLOCATED result must not emit a number where an offset goes, and the
 #     two output modes must agree about which results those are.

@@ -178,8 +178,8 @@ fn stc_expr_binds_name(expr: Expr, target: String) -> Bool {
     ECall(callee, args, _, _) => stc_expr_binds_name(callee, target) || stc_exprs_bind_name(args, target),
     EBinOp(_, l, r, _) => stc_expr_binds_name(l, target) || stc_expr_binds_name(r, target),
     EUnaryOp(_, e2) => stc_expr_binds_name(e2, target),
-    EAssign(_, v, c) => stc_expr_binds_name(v, target) || stc_expr_binds_name(c, target),
-    EAssignOp(_, _, v, c) => stc_expr_binds_name(v, target) || stc_expr_binds_name(c, target),
+    EAssign(_, v, c, _) => stc_expr_binds_name(v, target) || stc_expr_binds_name(c, target),
+    EAssignOp(_, _, v, c, _) => stc_expr_binds_name(v, target) || stc_expr_binds_name(c, target),
     EDot(o, _, _, _) => stc_expr_binds_name(o, target),
     ELabeledArg(_, _, v) => stc_expr_binds_name(v, target),
     EReturn(e2) => stc_expr_binds_name(e2, target),
@@ -341,8 +341,8 @@ fn stc_expr_has_handle_or_return(expr: Expr) -> Bool {
     ECall(callee, args, _, _) => stc_expr_has_handle_or_return(callee) || stc_exprs_have_handle_or_return(args),
     EBinOp(_, l, r, _) => stc_expr_has_handle_or_return(l) || stc_expr_has_handle_or_return(r),
     EUnaryOp(_, e2) => stc_expr_has_handle_or_return(e2),
-    EAssign(_, v, c) => stc_expr_has_handle_or_return(v) || stc_expr_has_handle_or_return(c),
-    EAssignOp(_, _, v, c) => stc_expr_has_handle_or_return(v) || stc_expr_has_handle_or_return(c),
+    EAssign(_, v, c, _) => stc_expr_has_handle_or_return(v) || stc_expr_has_handle_or_return(c),
+    EAssignOp(_, _, v, c, _) => stc_expr_has_handle_or_return(v) || stc_expr_has_handle_or_return(c),
     EDot(o, _, _, _) => stc_expr_has_handle_or_return(o),
     ELabeledArg(_, _, v) => stc_expr_has_handle_or_return(v),
     EBreak(opt) => match opt {
@@ -439,8 +439,8 @@ fn stc_tail_has_self_call(expr: Expr, name: String, arity: Int) -> Bool {
     ELetMut(_, _, b, _) => stc_tail_has_self_call(b, name, arity),
     ELetRec(_, _, b) => stc_tail_has_self_call(b, name, arity),
     ESeq(_, b) => stc_tail_has_self_call(b, name, arity),
-    EAssign(_, _, c) => stc_tail_has_self_call(c, name, arity),
-    EAssignOp(_, _, _, c) => stc_tail_has_self_call(c, name, arity),
+    EAssign(_, _, c, _) => stc_tail_has_self_call(c, name, arity),
+    EAssignOp(_, _, _, c, _) => stc_tail_has_self_call(c, name, arity),
     _ => stc_is_self_call(expr, name, arity)
   }
 }
@@ -489,12 +489,12 @@ fn stc_rewrite_tail(expr: Expr, name: String, param_names: Array[String], arity:
     ELetMut(n, v, b, off) => ELetMut(n, v, stc_rewrite_tail(b, name, param_names, arity, seq), off),
     ELetRec(n, v, b) => ELetRec(n, v, stc_rewrite_tail(b, name, param_names, arity, seq)),
     ESeq(a, b) => ESeq(a, stc_rewrite_tail(b, name, param_names, arity, seq)),
-    EAssign(n, v, c) => EAssign(n, v, stc_rewrite_tail(c, name, param_names, arity, seq)),
-    EAssignOp(n, op, v, c) => EAssignOp(n, op, v, stc_rewrite_tail(c, name, param_names, arity, seq)),
+    EAssign(n, v, c, target_off) => EAssign(n, v, stc_rewrite_tail(c, name, param_names, arity, seq), target_off),
+    EAssignOp(n, op, v, c, target_off) => EAssignOp(n, op, v, stc_rewrite_tail(c, name, param_names, arity, seq), target_off),
     _ => if stc_is_self_call(expr, name, arity) {
       stc_build_continue(expr, param_names, arity, seq)
     } else {
-      EAssign("__stc_result", expr, EBreak(None))
+      EAssign("__stc_result", expr, EBreak(None), -1)
     }
   }
 }
@@ -523,7 +523,7 @@ fn stc_build_continue(call_expr: Expr, param_names: Array[String], arity: Int, s
       let mut ai = arity - 1
       while ai >= 0 {
         let tmp = stc_temp_name(seq, ai)
-        result = EAssign(Array::get(param_names, ai), EIdent(tmp, -1), result)
+        result = EAssign(Array::get(param_names, ai), EIdent(tmp, -1), result, -1)
         ai = ai - 1
       }
       let mut aj = arity - 1
