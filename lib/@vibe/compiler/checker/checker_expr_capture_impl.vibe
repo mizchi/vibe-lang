@@ -2494,8 +2494,8 @@ fn handler_payload_is_literal(p: Pat) -> Bool {
   }
 }
 
-/// A tuple or struct pattern that cannot fail, so the edit is a `let` in the
-/// arm body rather than a test.
+/// A tuple, struct or record pattern that cannot fail: its trouble is that
+/// its names bind nothing, not that it is never tested.
 fn handler_payload_is_destructure(p: Pat) -> Bool {
   match handler_payload_unwrap(p) {
     PTuple(elems) => {
@@ -2533,52 +2533,13 @@ fn handler_payload_is_irrefutable(p: Pat) -> Bool {
   }
 }
 
-fn handler_payload_text(p: Pat) -> String {
-  match handler_payload_unwrap(p) {
-    PCtor(name, args) => if Array::length(args) == 0 {
-      name
-    } else {
-      String::concat(name, String::concat("(", String::concat(handler_payload_texts(args), ")")))
-    },
-    // A nested `record { .. }` pattern parses to a tuple of its field
-    // patterns, labels dropped; only a record makes a one-element tuple
-    // (`(p)` is a group), so that one is not printed as a tuple.
-    PTuple(elems) => if Array::length(elems) == 1 {
-      "record { .. }"
-    } else {
-      String::concat("(", String::concat(handler_payload_texts(elems), ")"))
-    },
-    POr(left, right) => String::concat(handler_payload_text(left), String::concat(" | ", handler_payload_text(right))),
-    PStruct(name, fields) => {
-      let parts = for field in fields {
-        handler_payload_field_text(field)
-      }
-      let head = if name == "record" {
-        "record { "
-      } else {
-        String::concat(name, "::{ ")
-      }
-      String::concat(head, String::concat(String::join(parts, ", "), " }"))
-    },
-    _ => print_pat(handler_payload_unwrap(p))
-  }
-}
-
-fn handler_payload_texts(ps: Array[Pat]) -> String {
-  let parts = for p in ps {
-    handler_payload_text(p)
-  }
-  String::join(parts, ", ")
-}
-
-fn handler_payload_field_text(field: (String, Pat)) -> String {
-  let (fname, fpat) = field
-  let inner = handler_payload_text(fpat)
-  if String::length(fname) == 0 || inner == fname {
-    inner
-  } else {
-    String::concat(fname, String::concat(": ", inner))
-  }
+/// The source spelling of a name, `_` or scalar literal. Nothing else is
+/// printed back: the parser drops a variant's qualifier (`Api::A` arrives as
+/// `A`) and reads a nested `record { .. }` as a tuple of its field patterns,
+/// so a composite pattern printed from the AST is not what was written, and
+/// an edit built from it may not compile.
+fn handler_payload_source_text(p: Pat) -> String {
+  print_pat(handler_payload_unwrap(p))
 }
 
 fn handler_payload_binders_into(p: Pat, out: Array[String]) -> Unit {
@@ -2634,10 +2595,12 @@ fn handler_payload_is_wild(p: Pat) -> Bool {
   Array::length(bound) == 0 && handler_payload_is_irrefutable(p)
 }
 
-/// The refusal leads with the edit: the arm rewritten to bind each refused
-/// position to a fresh name, with the test (a literal), the `let` (a pattern
-/// that cannot fail) or the `match` (anything else) moved into the body. A
-/// position whose pattern cannot fail and binds nothing becomes `_`.
+/// The refusal leads with the edit, and every edit it prints compiles: the
+/// arm rewritten to bind each refused position to a fresh name (`_` for a
+/// pattern that cannot fail and binds nothing). A scalar literal is moved into
+/// an `if` in the body, spelled as written. Any other pattern is not printed
+/// back (see `handler_payload_source_text`): the message asks for a `match`
+/// against the pattern the reader wrote.
 fn handler_arm_payload_message(op: String, payloads: Array[Pat], offending: Array[Int]) -> String {
   let taken = array_empty()
   let mut i = 0
@@ -2646,19 +2609,24 @@ fn handler_arm_payload_message(op: String, payloads: Array[Pat], offending: Arra
     i = i + 1
   }
   let tested = array_empty()
+  let mut all_literal = true
+  let mut all_destructure = true
   let mut w = 0
   while w < Array::length(offending) {
-    let pos = Array::get(offending, w)
-    if !handler_payload_is_wild(Array::get(payloads, pos)) {
-      Array::push(tested, pos)
+    let p = Array::get(payloads, Array::get(offending, w))
+    if !handler_payload_is_literal(p) {
+      all_literal = false
+    }
+    if !handler_payload_is_wild(p) {
+      Array::push(tested, Array::get(offending, w))
+      if !handler_payload_is_destructure(p) {
+        all_destructure = false
+      }
     }
     w = w + 1
   }
   let several = Array::length(tested) > 1
   let names = array_empty()
-  let bad = array_empty()
-  let mut all_literal = true
-  let mut all_destructure = true
   let mut k = 0
   while k < Array::length(tested) {
     let mut name = if several {
@@ -2671,14 +2639,6 @@ fn handler_arm_payload_message(op: String, payloads: Array[Pat], offending: Arra
     }
     Array::push(taken, name)
     Array::push(names, name)
-    let p = Array::get(payloads, Array::get(tested, k))
-    Array::push(bad, handler_payload_text(p))
-    if !handler_payload_is_literal(p) {
-      all_literal = false
-    }
-    if !handler_payload_is_destructure(p) {
-      all_destructure = false
-    }
     k = k + 1
   }
   let head_parts = array_empty()
@@ -2694,55 +2654,55 @@ fn handler_arm_payload_message(op: String, payloads: Array[Pat], offending: Arra
       Array::push(head_parts, "_")
       next_off = next_off + 1
     } else {
-      Array::push(head_parts, handler_payload_text(Array::get(payloads, j)))
+      Array::push(head_parts, handler_payload_source_text(Array::get(payloads, j)))
     }
     j = j + 1
   }
   let head = String::concat(op, String::concat("(", String::concat(String::join(head_parts, ", "), ")")))
-  let original = String::concat(op, String::concat("(", String::concat(handler_payload_texts(payloads), ")")))
-  let first_bad = handler_payload_text(Array::get(payloads, Array::get(offending, 0)))
   if Array::length(tested) == 0 {
-    String::concat("write `_` for the payload: `", String::concat(head, String::concat(" => ..` -- a handler arm binds a payload to a name or `_` and nothing else, and `", String::concat(first_bad, String::concat("` in `", String::concat(original, "` matches every value anyway"))))))
-  } else {
-    let steps = array_empty()
+    String::concat("write `_` for the payload: `", String::concat(head, " => ..` -- a handler arm binds a payload to a name or `_` and nothing else, and the pattern written there matches every value anyway"))
+  } else if all_literal {
+    // Every position is a name, `_` or a literal, so the arm as written can be
+    // quoted exactly.
+    let original_parts = for p in payloads {
+      handler_payload_source_text(p)
+    }
+    let original = String::concat(op, String::concat("(", String::concat(String::join(original_parts, ", "), ")")))
+    let tests = array_empty()
     let mut t = 0
     while t < Array::length(names) {
-      if all_literal {
-        Array::push(steps, String::concat(Array::get(names, t), String::concat(" == ", Array::get(bad, t))))
-      } else {
-        Array::push(steps, String::concat("let ", String::concat(Array::get(bad, t), String::concat(" = ", Array::get(names, t)))))
-      }
+      let lit = handler_payload_source_text(Array::get(payloads, Array::get(tested, t)))
+      Array::push(tests, String::concat(Array::get(names, t), String::concat(" == ", lit)))
       t = t + 1
     }
-    let body = if all_literal {
-      String::concat("if ", String::concat(String::join(steps, " && "), " { .. } else { .. }"))
-    } else if all_destructure {
-      String::concat("{ ", String::concat(String::join(steps, "; "), "; .. }"))
-    } else if several {
-      String::concat("match (", String::concat(String::join(names, ", "), String::concat(") { (", String::concat(String::join(bad, ", "), ") => .., _ => .. }"))))
-    } else {
-      String::concat("match ", String::concat(Array::get(names, 0), String::concat(" { ", String::concat(Array::get(bad, 0), " => .., _ => .. }"))))
-    }
+    let first_lit = handler_payload_source_text(Array::get(payloads, Array::get(tested, 0)))
     let subject = if several {
-      "bind the payloads to names and "
+      "bind the payloads to names and test them in the arm body: `"
     } else {
-      "bind the payload to a name and "
+      "bind the payload to a name and test it in the arm body: `"
     }
-    let verb = if all_destructure {
-      "destructure"
+    String::concat(subject, String::concat(head, String::concat(" => if ", String::concat(String::join(tests, " && "), String::concat(" { .. } else { .. }` -- a handler arm selects on the operation alone, so `", String::concat(first_lit, String::concat("` in `", String::concat(original, String::concat("` is never tested and the arm would run for every `", String::concat(op, "` payload"))))))))))
+  } else {
+    let subject = if several {
+      "bind the payloads to names (`"
     } else {
-      "test"
+      "bind the payload to a name (`"
+    }
+    let scrutinee = if several {
+      String::concat("(", String::concat(String::join(names, ", "), ")"))
+    } else {
+      Array::get(names, 0)
     }
     let object = if several {
-      " them in the arm body: `"
+      "` against your patterns in the arm body -- "
     } else {
-      " it in the arm body: `"
+      "` against your pattern in the arm body -- "
     }
     let why = if all_destructure {
-      String::concat("a handler arm binds a payload to a name or `_` and nothing else, so `", String::concat(Array::get(bad, 0), String::concat("` in `", String::concat(original, "` would bind nothing"))))
+      "a handler arm binds a payload to a name or `_` and nothing else, so the names in a payload pattern would bind nothing"
     } else {
-      String::concat("a handler arm selects on the operation alone, so `", String::concat(Array::get(bad, 0), String::concat("` in `", String::concat(original, String::concat("` is never tested and the arm would run for every `", String::concat(op, "` payload"))))))
+      String::concat("a handler arm selects on the operation alone, so a payload pattern is never tested and the arm would run for every `", String::concat(op, "` payload"))
     }
-    String::concat(subject, String::concat(verb, String::concat(object, String::concat(head, String::concat(" => ", String::concat(body, String::concat("` -- ", why)))))))
+    String::concat(subject, String::concat(head, String::concat(" => ..`) and `match ", String::concat(scrutinee, String::concat(object, why)))))
   }
 }

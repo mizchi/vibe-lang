@@ -1906,11 +1906,11 @@ fn pick(x: Int) -> Int {
 
 Before, such a pattern was silently treated as `_`: `Pick::P(1) => ..` ran
 for `perform Pick::P(3)`, and the names of a destructure bound nothing, so
-`Pair::Diff((a, b)) => resume(a)` read an outer `a` when there was one. A
-constructor test moves into a `match` in the body
-(`Paint::Use(c) => match c { Red => .., _ => .. }`), and a tuple or struct
-destructure into a `let` (`Pair::Diff(p) => { let (a, b) = p; .. }`). This
-holds for `Exception::Throw` too: `Throw("boom") => ..` caught every throw.
+`Pair::Diff((a, b)) => resume(a)` read an outer `a` when there was one. Any
+other pattern moves into a `match` in the body, spelled as you wrote it:
+`Paint::Use(c) => match c { Color::Red => .., _ => .. }`, or
+`Pair::Diff(p) => match p { (a, b) => .. }`. This holds for
+`Exception::Throw` too: `Throw("boom") => ..` caught every throw.
 
 Call resolution for an effect row follows the same lexical scope as ordinary
 value resolution. When a local closure, a function parameter, or a pattern /
