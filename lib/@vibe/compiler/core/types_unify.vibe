@@ -33,6 +33,7 @@ import ./types_env_cache.vibe {
   Type,
   TypeEnv,
   apply_type_constructor,
+  bound_flat_self_equals,
   hkt_app_name,
   hkt_ctor,
   hkt_ctor_prefix,
@@ -1287,21 +1288,13 @@ fn type_implements_check_super(e2: TypeEnv, full_env: TypeEnv, s: Subst, trait_n
       }
       else type_implements_check_super(rest, full_env, s, trait_name, resolved)
     } else type_implements_check_super(rest, full_env, s, trait_name, resolved),
-    EnvTraitImplGen(itrait, tparams, bounds, target, rest) => {
-      let head = type_constructor_name(resolved)
-      let shape_ok = head != "" && type_constructor_name(target) == head && trait_is_method_bearing(full_env, trait_name) && trait_is_subtrait(full_env, itrait, trait_name) && itrait != trait_name
-      if shape_ok {
-        match generic_target_args(tparams, target, resolved) {
-          Some(args) => if generic_bounds_hold(full_env, s, tparams, bounds, args) {
-            true
-          } else {
-            type_implements_check_super(rest, full_env, s, trait_name, resolved)
-          },
-          None => type_implements_check_super(rest, full_env, s, trait_name, resolved)
-        }
+    EnvTraitImplGen(itrait, tparams, bounds, target, rest) => match generic_subtrait_impl_args(full_env, itrait, tparams, target, trait_name, resolved) {
+      Some(args) => if generic_bounds_hold(full_env, s, tparams, bounds, args) {
+        true
       } else {
         type_implements_check_super(rest, full_env, s, trait_name, resolved)
-      }
+      },
+      None => type_implements_check_super(rest, full_env, s, trait_name, resolved)
     },
     EnvTypeDefs(_, _, rest) => type_implements_check_super(rest, full_env, s, trait_name, resolved),
     EnvFlat(_) => false,
@@ -1579,6 +1572,39 @@ fn generic_target_args(tparams: Array[String], target: Type, resolved: Type) -> 
   }
 }
 
+/// The target arguments of a generic impl of `itrait` (`impl [tparams]
+/// itrait for target`) when it stands for `trait_name` itself at `resolved`,
+/// before its parameter bounds are judged; None when it does not. The rule
+/// `generic_impl_satisfies` applies, shared with `generic_impl_cmp_refusal`.
+fn generic_direct_impl_args(full: TypeEnv, itrait: String, tparams: Array[String], target: Type, trait_name: String, resolved: Type) -> Option[Array[Type]] {
+  let head = type_constructor_name(resolved)
+  if head != "" && type_constructor_name(target) == head && trait_is_method_bearing(full, trait_name) {
+    match generic_target_args(tparams, target, resolved) {
+      Some(args) => if generic_trait_ref_matches(itrait, trait_name, tparams, args) {
+        Some(args)
+      } else {
+        None
+      },
+      None => None
+    }
+  } else {
+    None
+  }
+}
+
+/// The same for a generic impl of a SUBTRAIT of `trait_name` (`impl [T: Eq]
+/// Child for Box[T]` standing for `Base` with `trait Child: Base`): the rule
+/// `type_implements_check_super` applies, shared with
+/// `generic_impl_cmp_refusal`.
+fn generic_subtrait_impl_args(full: TypeEnv, itrait: String, tparams: Array[String], target: Type, trait_name: String, resolved: Type) -> Option[Array[Type]] {
+  let head = type_constructor_name(resolved)
+  if head != "" && type_constructor_name(target) == head && trait_is_method_bearing(full, trait_name) && trait_is_subtrait(full, itrait, trait_name) && itrait != trait_name {
+    generic_target_args(tparams, target, resolved)
+  } else {
+    None
+  }
+}
+
 /// Does an in-env method-bearing generic impl cover the concrete `resolved`
 /// type? The retained target is matched structurally and each bound is checked
 /// against the concrete argument bound to its own impl parameter. The
@@ -1593,24 +1619,221 @@ fn generic_impl_satisfies(scan: TypeEnv, full: TypeEnv, s: Subst, trait_name: St
     EnvTraitImpl(_, _, rest) => generic_impl_satisfies(rest, full, s, trait_name, resolved),
     EnvShowWrappers(_, _, rest) => generic_impl_satisfies(rest, full, s, trait_name, resolved),
     EnvMutCell(_, _, rest) => generic_impl_satisfies(rest, full, s, trait_name, resolved),
-    EnvTraitImplGen(itrait, tparams, bounds, target, rest) => {
-      let head = type_constructor_name(resolved)
-      let shape_ok = head != "" && type_constructor_name(target) == head && trait_is_method_bearing(full, trait_name)
-      if shape_ok {
-        match generic_target_args(tparams, target, resolved) {
-          Some(args) => if generic_trait_ref_matches(itrait, trait_name, tparams, args) && generic_bounds_hold(full, s, tparams, bounds, args) {
-            true
-          } else {
-            generic_impl_satisfies(rest, full, s, trait_name, resolved)
-          },
-          None => generic_impl_satisfies(rest, full, s, trait_name, resolved)
-        }
-      } else generic_impl_satisfies(rest, full, s, trait_name, resolved)
+    EnvTraitImplGen(itrait, tparams, bounds, target, rest) => match generic_direct_impl_args(full, itrait, tparams, target, trait_name, resolved) {
+      Some(args) => if generic_bounds_hold(full, s, tparams, bounds, args) {
+        true
+      } else {
+        generic_impl_satisfies(rest, full, s, trait_name, resolved)
+      },
+      None => generic_impl_satisfies(rest, full, s, trait_name, resolved)
     },
     EnvTypeDefs(_, _, rest) => generic_impl_satisfies(rest, full, s, trait_name, resolved),
     EnvFlat(_) => false,
     EnvCached(_, _, rest) => generic_impl_satisfies(rest, full, s, trait_name, resolved)
   }
+}
+
+/// #3350: the parameter bound that keeps a generic impl of `trait_name`, or
+/// of a subtrait of it, from applying to `resolved` because it reaches no
+/// comparison witness there --
+/// `Some((bound, refused, arg))`, where `refused` is the trait
+/// `erased_cmp_bound_refusal` names for `bound` at the argument `arg` -- or
+/// None. The checker names the edit from it; `generic_bounds_hold` is what
+/// refuses.
+export fn generic_impl_cmp_refusal(env: TypeEnv, s: Subst, trait_name: String, resolved: Type) -> Option[(String, String, Type)] {
+  let head = type_constructor_name(resolved)
+  if head == "" {
+    None
+  } else {
+    gicr_scan(env, env, s, trait_name, resolved, head)
+  }
+}
+
+fn gicr_scan(scan: TypeEnv, full: TypeEnv, s: Subst, trait_name: String, resolved: Type, head: String) -> Option[(String, String, Type)] {
+  match scan {
+    EnvEmpty => None,
+    EnvBind(_, _, rest) => gicr_scan(rest, full, s, trait_name, resolved, head),
+    EnvTraitDef(_, _, _, _, rest, _, _) => gicr_scan(rest, full, s, trait_name, resolved, head),
+    EnvTraitImpl(_, _, rest) => gicr_scan(rest, full, s, trait_name, resolved, head),
+    EnvShowWrappers(_, _, rest) => gicr_scan(rest, full, s, trait_name, resolved, head),
+    EnvMutCell(_, _, rest) => gicr_scan(rest, full, s, trait_name, resolved, head),
+    EnvTraitImplGen(itrait, tparams, bounds, target, rest) => {
+      // Codex on #3349: the impls resolution would use -- of `trait_name`
+      // itself (`generic_impl_satisfies`) or of a subtrait of it
+      // (`type_implements_check_super`) -- by the same two rules, so a
+      // `[U: Base]` refused because `impl [T: Eq] Child for Box[T]`'s bound
+      // reaches no witness names that bound too.
+      let candidate = match generic_direct_impl_args(full, itrait, tparams, target, trait_name, resolved) {
+        Some(args) => Some(args),
+        None => generic_subtrait_impl_args(full, itrait, tparams, target, trait_name, resolved)
+      }
+      match candidate {
+        Some(args) => match gicr_bound_refusal(full, s, tparams, bounds, args) {
+          Some(found) => Some(found),
+          None => gicr_scan(rest, full, s, trait_name, resolved, head)
+        },
+        None => gicr_scan(rest, full, s, trait_name, resolved, head)
+      }
+    },
+    EnvTypeDefs(_, _, rest) => gicr_scan(rest, full, s, trait_name, resolved, head),
+    EnvFlat(_) => None,
+    EnvCached(_, _, rest) => gicr_scan(rest, full, s, trait_name, resolved, head)
+  }
+}
+
+fn gicr_bound_refusal(full: TypeEnv, s: Subst, tparams: Array[String], bounds: Array[(String, Array[String])], args: Array[Type]) -> Option[(String, String, Type)] {
+  let mut found: Option[(String, String, Type)] = None
+  let mut have = false
+  let mut bi = 0
+  while bi < Array::length(bounds) {
+    let (param, btraits) = Array::get(bounds, bi)
+    let ai = generic_param_index(tparams, param)
+    let mut ti = 0
+    while ti < Array::length(btraits) {
+      let bt = Array::get(btraits, ti)
+      if !have && bt != "" && ai >= 0 && ai < Array::length(args) {
+        match subst_apply(s, Array::get(args, ai)) {
+          CtUnknown => (),
+          CtVar(_) => (),
+          arg => {
+            let refused = erased_cmp_bound_refusal(full, bt, arg)
+            if refused != "" {
+              found = Some((bt, refused, arg))
+              have = true
+            } else {
+              ()
+            }
+          }
+        }
+      } else {
+        ()
+      }
+      ti = ti + 1
+    }
+    bi = bi + 1
+  }
+  found
+}
+
+//# Comparison bounds that reach no witness (#2523, #3327, #3350)
+
+/// #2523: does the builtin `==` / `<` compare a value of this type by VALUE?
+///
+/// An erased formal compares with the builtin `==` / `<` whenever no witness
+/// reaches it. That is content comparison for the tagged immediates and the
+/// byte string (`Int`, `Bool`, `Char`, `String`), and REFERENCE identity for
+/// everything else: `Array`, `Bytes`, a tuple, an `Option`, a declared struct
+/// or enum.
+///
+/// **`Double` is NOT on the list** (#2895). It is not a tagged immediate the
+/// way an `Int` is, so the raw comparison reads the box, not the number:
+/// `bare[T: Eq](1.5, 1.5)` over a marker `Eq` answered FALSE, and under
+/// `[T: Ord]` both `lt(2.5, 1.5)` and `gt(2.5, 1.5)` answered as if the
+/// operands were addresses.
+///
+/// Erring toward `false` costs a correct program a diagnostic, which the gates
+/// see; erring toward `true` keeps a silently wrong answer, which nothing sees.
+fn erased_cmp_is_by_value(ty: Type) -> Bool {
+  match ty {
+    CtInt => true,
+    CtBool => true,
+    CtChar => true,
+    CtString => true,
+    CtNamed(name, args) => Array::length(args) == 0 && (name == "Int" || name == "Bool" || name == "Char" || name == "String"),
+    _ => false
+  }
+}
+
+/// #3158 review: does the erased `+` an `[T: Add]` body lowers to
+/// (`__generic_add`) add a value of this type correctly? It concatenates two
+/// packed strings and otherwise runs a raw `i64.add`: right for `Int` (a tagged
+/// immediate) and `String`, the raw add of two boxes for anything else
+/// (`add2(1.5, 2.25)` printed `add=0`).
+fn erased_add_is_by_value(ty: Type) -> Bool {
+  match ty {
+    CtInt => true,
+    CtString => true,
+    CtNamed(name, args) => Array::length(args) == 0 && (name == "Int" || name == "String"),
+    _ => false
+  }
+}
+
+/// #3350: the trait through which `bound` would compare (or add) a `resolved`
+/// value WITHOUT a witness -- the bound itself, or a trait it extends through
+/// its supertraits, transitively -- or "" when every comparison it licenses is
+/// sound at `resolved`.
+///
+/// What decides it is whether the operator can reach a witness, not whether the
+/// trait declares methods:
+///
+/// - `==` dispatches only through `equals(Self, Self) -> Bool`
+///   (`dtd_eq_witness_dict`). A bound that reaches a trait named `Eq` is sound
+///   when its witness dictionary carries that method -- the first `equals` its
+///   supertraits flatten to, which `bound_flat_self_equals` computes with the
+///   dictionary's own flattening: the builtin `Eq`, a program `Eq` that
+///   declares it, a subtrait that declares it (`trait Key: Eq { equals(Self,
+///   Self) -> Bool }`), or a sibling supertrait flattened first. Measured on
+///   the #3327 stage2 (43ee1c792), a program `Eq` whose one method was
+///   `tag(Self) -> Int` answered `false` for two equal `Pt`, and so did
+///   `trait Key: Bad + Good + Eq {}` over the BUILTIN `Eq`, whose dictionary
+///   keeps `Bad`'s `equals(Int, Int)` (#3350).
+/// - `<` has no witness path at all, so a trait named `Ord` is judged by the
+///   type alone: a program `Ord` with `rank` or `compare` answered `true` for
+///   `smaller(Token 2, Token 1)`.
+/// - `+` likewise lowers to `__generic_add` whatever `Add` declares: a program
+///   `Add` with `plus(Self, Self) -> Self` answered `0` for `add2(1.5, 2.25)`.
+///
+/// Every other trait, and every comparison at a type the builtin compares by
+/// value, is left alone. The walk mirrors `bound_entails_send` and keeps a
+/// visited set, so a cyclic declaration terminates.
+export fn erased_cmp_bound_refusal(env: TypeEnv, bound: String, resolved: Type) -> String {
+  let pending: Array[String] = [bound]
+  let seen: Array[String] = []
+  let mut found = ""
+  while found == "" && Array::length(pending) > 0 {
+    let cur = Array::get(pending, Array::length(pending) - 1)
+    Array::truncate(pending, Array::length(pending) - 1)
+    let name = trait_ref_name(cur)
+    if ecb_seen(seen, name) {
+      ()
+    } else {
+      Array::push(seen, name)
+      let refused = if name == "Eq" {
+        not(erased_cmp_is_by_value(resolved)) && not(bound_flat_self_equals(env, bound))
+      } else if name == "Ord" {
+        not(erased_cmp_is_by_value(resolved))
+      } else if name == "Add" {
+        not(erased_add_is_by_value(resolved))
+      } else {
+        false
+      }
+      if refused {
+        found = cur
+      } else {
+        let supers = trait_supers(env, name)
+        let mut i = 0
+        while i < Array::length(supers) {
+          Array::push(pending, Array::get(supers, i))
+          i = i + 1
+        }
+      }
+    }
+  }
+  found
+}
+
+fn ecb_seen(seen: Array[String], name: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while !found && i < Array::length(seen) {
+    if Array::get(seen, i) == name {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
 }
 
 /// Decode an instantiated bound reference while preserving its fresh type
@@ -1794,9 +2017,20 @@ fn generic_bounds_hold(full: TypeEnv, s: Subst, tparams: Array[String], bounds: 
         // threads the nested witness or fails loudly. This mirrors how a
         // `CtUnknown` receiver skips the top-level bound check, so accepting
         // it here is no less sound.
+        //
+        // #3350: a comparison bound that reaches no witness at this argument
+        // does not hold either. The impl's body compares the parameter with
+        // the builtin `==` / `<` / `+`, so `impl [T: Eq] Same for Box[T]`
+        // over a marker `Eq` answered `false` for two equal `Box[Pt]`. A
+        // still-open argument is judged where its own formal is instantiated.
         match subst_apply(s, Array::get(args, ai)) {
           CtUnknown => (),
-          _ => if not(type_implements_trait(full, s, Array::get(args, ai), bt)) {
+          CtVar(_) => if not(type_implements_trait(full, s, Array::get(args, ai), bt)) {
+            ok = false
+          } else {
+            ()
+          },
+          arg => if not(type_implements_trait(full, s, arg, bt)) || erased_cmp_bound_refusal(full, bt, arg) != "" {
             ok = false
           } else {
             ()

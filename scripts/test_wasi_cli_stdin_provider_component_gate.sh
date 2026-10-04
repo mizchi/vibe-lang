@@ -65,7 +65,7 @@ COMPONENT="$OUT_DIR/generated.component.wasm"
 PRINTED="$OUT_DIR/generated.wat"
 WIT="$OUT_DIR/generated.wit"
 cat >"$HARNESS" <<'EOF'
-import @vibe/compiler/entry/source_compile/wasi_only {
+import @vibe/compiler/codegen/component {
   comp_emit_component_wasm_stdin_provider_shadow
 }
 

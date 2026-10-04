@@ -217,8 +217,8 @@ fi
 # operator string instead of the assignment target.
 git -C "$TMP_ROOT" reset -q HEAD -- .
 git -C "$TMP_ROOT" restore .
-mkdir -p "$TMP_ROOT/lib/@vibe/compiler/runtime"
-cat > "$TMP_ROOT/lib/@vibe/compiler/runtime/grep.vibe" <<'EOF'
+mkdir -p "$TMP_ROOT/lib/@vibe/compiler/query"
+cat > "$TMP_ROOT/lib/@vibe/compiler/query/grep.vibe" <<'EOF'
 fn bad_order(e: Expr) -> Bool {
   match e { EAssignOp(_, name, _, _) => name == "x", _ => false }
 }
@@ -229,7 +229,7 @@ cat > "$TMP_ROOT/fake-vibe-assign-op" <<EOF
 #!/usr/bin/env bash
 root="\${@: -1}"
 if [[ "\$*" == *'EAssignOp('* ]]; then
-  jq -n --arg path "\$root/lib/@vibe/compiler/runtime/grep.vibe" \
+  jq -n --arg path "\$root/lib/@vibe/compiler/query/grep.vibe" \
     '[{path:\$path,line:2,col:13,start:1,end:2,text:"EAssignOp(_, name, _, _)",captures:{target:{text:"_",start:1},operator:{text:"name",start:2},rest:{text:"_, _",start:3}}}]'
 else
   echo '[]'

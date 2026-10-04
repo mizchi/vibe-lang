@@ -2,7 +2,7 @@
 # Concurrent-awaits async component gate (#1230 M1b-3c-3).
 #
 # Verifies comp_emit_component_wasm_async_concurrent_awaits
-# (lib/@vibe/compiler/entry/source_compile/wasi_only/component_codegen.vibe):
+# (lib/@vibe/compiler/codegen/component/component_codegen.vibe):
 # the fixed-shape "two host operations genuinely in flight at once"
 # component -- a byte-level port of
 # tools/wasip3_component_probe/concurrent_awaits/component.wat -- compiles,
@@ -108,7 +108,7 @@ echo "[concurrent-awaits-gate] runner: $RUNNER"
 # dump, not an async `run` entry itself.
 HARNESS="$OUT_DIR/dump.vibex"
 cat >"$HARNESS" <<'EOF'
-import @vibe/compiler/entry/source_compile/wasi_only {
+import @vibe/compiler/codegen/component {
   comp_emit_component_wasm_async_concurrent_awaits
 }
 

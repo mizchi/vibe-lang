@@ -2,7 +2,7 @@
 # Spawned-future async component regression gate (#1230 M1b-3c-1b).
 #
 # Verifies comp_emit_component_wasm_async_spawned_future
-# (lib/@vibe/compiler/entry/source_compile/wasi_only/component_codegen.vibe):
+# (lib/@vibe/compiler/codegen/component/component_codegen.vibe):
 # the fixed-shape "self-contained future via a spawned writer subtask"
 # component -- a byte-exact port of
 # tools/wasip3_component_probe/spawned_future/component.wat -- compiles,
@@ -124,7 +124,7 @@ echo "[spawned-future-component-gate] runner: $RUNNER"
 # so this is a plain Fs::write_bytes dump, not an async `run` entry itself.
 HARNESS="$OUT_DIR/dump.vibex"
 cat >"$HARNESS" <<'EOF'
-import @vibe/compiler/entry/source_compile/wasi_only {
+import @vibe/compiler/codegen/component {
   comp_emit_component_wasm_async_spawned_future
 }
 

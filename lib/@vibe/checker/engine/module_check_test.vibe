@@ -1,0 +1,95 @@
+import @vibe/checker/engine {
+  CheckJob,
+  ModuleOutcome,
+  engine_check_module,
+  engine_check_module_with_typing_artifact_observation,
+  engine_checked_module_typing_artifact_construction_attempt_count,
+  engine_checked_module_typing_artifact_observation,
+  engine_checked_module_typing_artifact_observation_is_fresh_for_job,
+  engine_reset_checked_module_typing_artifact_construction_attempt_count
+}
+
+test "the ordinary engine check retains published values without allocating shadow artifacts" {
+  engine_reset_checked_module_typing_artifact_construction_attempt_count()
+  let job = CheckJob::{
+    path: "leaf.vibe",
+    source: "export fn value() -> Int { 42 }",
+    deps: [],
+    dep_fps: [],
+    dep_envs: []
+  }
+  let outcome = engine_check_module(job)
+  assert(engine_checked_module_typing_artifact_observation(outcome) == None)
+  assert(engine_checked_module_typing_artifact_construction_attempt_count() == 0)
+  match outcome {
+    Checked(path, fingerprint, _, _, _, _, _) => {
+      assert(path == "leaf.vibe")
+      assert(String::length(fingerprint) > 0)
+    },
+    Diagnosed(_, _) => assert(false)
+  }
+}
+
+test "the engine's observed product is bound to the exact current job" {
+  let job = CheckJob::{
+    path: "observed.vibe",
+    source: "export fn value() -> Int { 42 }",
+    deps: [],
+    dep_fps: [],
+    dep_envs: []
+  }
+  let outcome = engine_check_module_with_typing_artifact_observation(job)
+  assert(engine_checked_module_typing_artifact_observation_is_fresh_for_job(job, outcome))
+  let changed = CheckJob::{
+    path: job.path,
+    source: "export fn value() -> Int { 43 }",
+    deps: [],
+    dep_fps: [],
+    dep_envs: []
+  }
+  assert(!engine_checked_module_typing_artifact_observation_is_fresh_for_job(changed, outcome))
+}
+
+test "diagnosed engine outcomes preserve the source path and location" {
+  let job = CheckJob::{
+    path: "bad.vibe",
+    source: "export fn value() -> Int { \"wrong\" }",
+    deps: [],
+    dep_fps: [],
+    dep_envs: []
+  }
+  match engine_check_module(job) {
+    Diagnosed(path, diagnostics) => {
+      assert(path == "bad.vibe")
+      assert(Array::length(diagnostics) > 0)
+      assert(String::contains(Array::get(diagnostics, 0), "bad.vibe: line 1:"))
+    },
+    Checked(_, _, _, _, _, _, _) => assert(false)
+  }
+}
+
+test "dependent checks consume the first module's actual published environment" {
+  let first = CheckJob::{
+    path: "a.vibe",
+    source: "export fn value() -> Int { 42 }",
+    deps: [],
+    dep_fps: [],
+    dep_envs: []
+  }
+  match engine_check_module(first) {
+    Checked(_, fingerprint, env, _, _, _, _) => {
+      let second = CheckJob::{
+        path: "b.vibe",
+        source: "import ./a.vibe { value }\nexport fn result() -> Int { value() }",
+        deps: ["a.vibe"],
+        dep_fps: [("a.vibe", fingerprint)],
+        dep_envs: [("a.vibe", env)]
+      }
+      match engine_check_module(second) {
+        Checked(_, _, _, _, _, _, _) => (),
+        Diagnosed(_, _) => assert(false)
+      }
+    },
+    Diagnosed(_, _) => assert(false)
+  }
+}

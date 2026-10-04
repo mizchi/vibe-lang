@@ -4,6 +4,10 @@ description =
   #|@vibe/compiler/runtime — ADR-0070 / #897 compiler-internal contract,
 deps = {
   @vibe/ast : 0.0.1
+  @vibe/checker/engine : 0.0.1
+  @vibe/checker/lowering : 0.0.1
+  @vibe/checker/transport : 0.0.1
+  @vibe/checker/transport/env : 0.0.1
   @vibe/compiler/cache : 0.0.1
   @vibe/compiler/checker : 0.0.1
   @vibe/compiler/checker/artifacts : 0.0.1
@@ -11,36 +15,40 @@ deps = {
   @vibe/compiler/checker/artifacts/program : 0.0.1
   @vibe/compiler/codegen : 0.0.1
   @vibe/compiler/codegen/common_analysis : 0.0.1
-  @vibe/compiler/codegen/expr : 0.0.1
-  @vibe/compiler/codegen/wasi : 0.0.1
   @vibe/compiler/contract : 0.0.1
   @vibe/compiler/core : 0.0.1
   @vibe/compiler/entry/source_compile/wasi_only : 0.0.1
   @vibe/compiler/incremental : 0.0.1
   @vibe/compiler/loader : 0.0.1
   @vibe/compiler/module_graph : 0.0.1
-  @vibe/compiler/normalize : 0.0.1
-  @vibe/compiler/perceus : 0.0.1
   @vibe/compiler/runtime/checked_module_cache : 0.0.1
   @vibe/compiler/runtime/eval_loader : 0.0.1
   @vibe/compiler/syntax : 0.0.1
   @vibe/core : 0.2.0
-  @vibe/parser : 0.1.0
 }
 
 generated_hash =
 
+struct ModuleJob {
+  path: String;
+  source: String;
+  deps: Array[String];
+  dep_fps: Array[(String, String)];
+  dep_envs: Array[(String, TypeEnv)]
+}
+opaque type ModuleOutcome
+opaque type CheckedModuleTypingArtifactFreshnessAttestation
+opaque type DependencyInterfaceSet
+
 // @vibe/compiler/runtime — ADR-0070 / #897 compiler-internal contract,
 // compiler-internal batch 8. Directory-shared-scope package (originally 7
-// impl files, ~4275 lines; doc_at.vibe added under #854): the incremental
+// impl files at the start): the incremental
 // type-check database (`TypeDb` + the
 // db_new/db_set_source/db_check_env/db_typecheck*/db_merged_source/
 // db_module_source/db_load_artifact/db_store_artifact family, runtime.vibe),
 // module-source reconstruction for the debugger funcmap sidecar
-// (module_source.vibe), editor-query primitives backing `vibe type-at` /
-// `vibe binding-at` / `vibe symbols` / `vibe doc-at` (type_at.vibe,
-// binding_at.vibe, symbol_spans.vibe, doc_at.vibe), filesystem-driven
-// typecheck + diagnostics collection (typecheck_fs.vibe), and the
+// (module_source.vibe), filesystem-driven typecheck + diagnostics
+// collection (typecheck_fs.vibe), and the
 // persistent dep-list / type-env / leaf-fingerprint cache codec
 // (persistent_env_codec.vibe).
 //
@@ -53,8 +61,7 @@ generated_hash =
 // of its own (the whole `TypeDb` incremental-cache state machine) in
 // addition to importing and re-exporting a hand-picked subset of its
 // siblings' surfaces via existing `export ./file.vibe { .. }` SReExport
-// blocks (module_source.vibe, type_at.vibe, binding_at.vibe,
-// symbol_spans.vibe, typecheck_fs.vibe — added under #847). Those blocks
+// blocks (module_source.vibe, typecheck_fs.vibe — added under #847). Those blocks
 // stay untouched: this contract is now the actual source of truth for the
 // package's full export surface (all names below, across all 7 files), so
 // runtime.vibe's partial, hand-picked re-export list is no longer
@@ -118,10 +125,14 @@ generated_hash =
 // loader/ imports `../runtime/eval_loader` (a distinct, already-migrated
 // subpackage), never this directory's own index.vpkg/runtime.vibe.
 //
+// The editor and repository queries (`vibe type-at` / `binding-at` /
+// `symbols` / `doc-at` / `escapes` / `rc-*` / `grep`) live in
+// @vibe/compiler/query, which imports this package; nothing here imports it
+// back.
+//
 // Compiled into the compiler itself via compiler_sources_manifest.tsv
 // (group `runtime`): the old single `runtime/index.vibe` row becomes a
 // dual row (this contract + runtime/runtime.vibe); typecheck_fs.vibe,
-// type_at.vibe, binding_at.vibe, symbol_spans.vibe,
 // persistent_env_codec.vibe, module_source.vibe already had their own rows
 // and are unchanged.
 
@@ -177,107 +188,6 @@ fn db_store_artifact(db: TypeDb, _path: String, kind: String, entry_name: String
 // --- module_source.vibe
 fn build_module_source_from_source(source: String, entry_name: String) -> String with Exception
 fn build_funcmap_from_source(source: String) -> String with Exception
-
-// --- type_at.vibe
-fn type_at_source(source: String, line: Int, col: Int) -> String
-fn type_at_ident_at(source: String, line: Int, col: Int) -> String
-
-// --- binding_at.vibe
-fn binding_occurrences(source: String, line: Int, col: Int) -> Array[(Int, Int)]
-fn local_binder_sites(source: String) -> Array[(String, Int)]
-fn let_rec_anchor_at(source: String, boff: Int) -> Int
-
-// --- doc_at.vibe (#854): `///` doc comment lookup, same single-file-scope
-// limitation as type_at.vibe/binding_at.vibe above.
-fn doc_at_source(source: String, line: Int, col: Int) -> String
-
-// --- symbol_spans.vibe
-fn symbol_spans(source: String) -> Array[(String, Int, Int, Int)] with Exception
-fn symbol_spans_with_docs(source: String) -> Array[(String, Int, Int, Int, String)] with Exception
-fn symbol_spans_with_docs_for_path(path: String, source: String) -> Array[(String, Int, Int, Int, String)] with Exception
-fn symbol_spans_locate_failure(path: String, source: String, msg: String) -> String
-
-// --- source_walk.vibe: the ONE directory walk the repo-wide query primitives
-// share. The skip policy is a user-visible answer -- two sweeps disagreeing
-// about it report different corpora for the same root -- so it has one home.
-fn source_walk_empty_paths() -> Array[String]
-fn source_walk_is_source_name(name: String) -> Bool
-fn source_walk_skip_dir(name: String) -> Bool
-fn source_walk_join(dir: String, name: String) -> String
-fn source_walk_collect_files(root: String, out: Array[String]) -> Unit with Fs
-fn source_walk_collect_files_with_contracts(root: String, out: Array[String]) -> Unit with Fs
-fn source_walk_is_source_or_contract_name(name: String) -> Bool
-
-// --- symbol_spans_fs.vibe (#2381): the same declaration outline over a whole
-// tree, each row carrying its path. Parse-only, like the single-file query.
-// The `_report` form returns the rows it read AND the files it could not: a
-// partial declaration inventory that does not say so reads as a complete one,
-// and aborting at the first bad file loses the sweep the mode exists for.
-fn symbol_spans_fs_report(root: String) -> (Array[(String, String, Int, Int, Int, String)], Array[String]) with Exception + Fs
-fn symbol_spans_fs(root: String) -> Array[(String, String, Int, Int, Int, String)] with Exception + Fs
-
-// --- escape_spans.vibe (#1262): the `let mut` bindings a closure captures, so
-// codegen lowers them to a heap ref cell instead of a wasm local. Calls
-// codegen's own `is_mut_captured_in`, so the answer IS the lowering decision.
-fn alloc_spans(source: String) -> Array[(String, String, Int)] with Exception
-fn escape_spans(source: String) -> Array[(String, Int, Int)] with Exception
-fn escape_spans_strict(source: String) -> Array[(String, Int, Int)] with Exception
-
-// --- rc_query.vibe (issue 1981): `vibe rc-classify` / `vibe rc-plan`.
-// Same prelude + classifier / planner functions as linked_compile.
-fn rc_classify_source(source: String) -> String with Exception
-fn rc_plan_source(source: String, fn_filter: String) -> String with Exception
-
-// --- grep.vibe (#1572): `vibe grep` — AST pattern search whose filters run on
-// the CHECKER's answers (a capture's inferred type / effect row / resolved
-// name, and whether the declaration around the match type-checks), not on the
-// grammar alone the way moongrep and ast-grep do.
-//
-// The three types are `opaque` for the same reason graph's `RippleDb` and this
-// package's own `ModuleOutcome` are: the only thing outside grep.vibe that
-// ever holds one is grep_fs.vibe, and it exclusively passes them back in.
-// Everything below except `grep_scan_fs` exists to serve that one caller plus
-// grep_test.vibe -- grep.vibe deliberately does not import typecheck_fs.vibe
-// (whose `ModuleJob` is declared here rather than in the file, so any file
-// reaching it needs this contract in scope), which is what keeps the whole
-// pattern language testable through plain sibling leaf imports.
-opaque type GrepHit
-opaque type GrepPattern
-opaque type GrepTyped
-
-fn grep_compile_pattern(pattern: String) -> GrepPattern with Exception
-fn grep_check_filters(pat: GrepPattern, wheres: Array[String], where_rows: Array[String]) -> Unit with Exception
-fn grep_file_hits(path: String, source: String, pat: GrepPattern) -> Array[GrepHit] with Exception
-fn grep_empty_hits() -> Array[GrepHit]
-fn grep_empty_strings() -> Array[String]
-fn grep_needs_typing(wheres: Array[String], where_rows: Array[String], only: String) -> Bool
-fn grep_typed_context(source: String, typed_source: String, import_env: TypeEnv) -> GrepTyped
-fn grep_untyped_context() -> GrepTyped
-fn grep_typed_context_error(source: String, message: String) -> GrepTyped
-fn grep_emit_hits(source: String, hits: Array[GrepHit], ctx: GrepTyped, typed: Bool, wheres: Array[String], where_rows: Array[String], only: String, json: Bool, out: Array[String]) -> Unit with Exception
-fn grep_join_lines(lines: Array[String], json: Bool) -> String
-// Single-source seam: typed filters resolved against THIS FILE ALONE. Only
-// grep_test.vibe uses it; `vibe grep` always goes through grep_scan_fs.
-fn grep_scan_source(path: String, source: String, pattern: String, wheres: Array[String], where_rows: Array[String], only: String, json: Bool) -> String with Exception
-
-// --- grep_fs.vibe (#1572 scope 3): the filesystem tier. Typing runs only for
-// files that already have a structural match, through the same FS import walk
-// `vibe check` uses.
-fn grep_scan_fs(root: String, pattern: String, wheres: Array[String], where_rows: Array[String], only: String, json: Bool) -> String with Env + Exception + Fs + Profiler
-fn grep_scan_fs_report(root: String, pattern: String, wheres: Array[String], where_rows: Array[String], only: String, json: Bool) -> (String, String) with Env + Exception + Fs + Profiler
-fn grep_collect_files(root: String) -> Array[String] with Fs
-fn grep_list_files(root: String) -> String with Fs
-fn grep_file_list_banner() -> String
-fn grep_split_file_list(text: String) -> Array[String]
-fn grep_read_file_list(path: String) -> Array[String] with Exception + Fs
-fn grep_scan_files_report(files: Array[String], pattern: String, wheres: Array[String], where_rows: Array[String], only: String, json: Bool, named_files: Array[String], resume_out: String) -> (String, String) with Env + Exception + Fs + Profiler
-
-// --- deprecated_scan.vibe (#1262 / ADR-0101): uses, in entry_source, of
-// names whose declarations carry a `#deprecated` marker (in the entry itself
-// or any dep source). Token-level; one formatted `warning:` line per use.
-fn deprecated_warning_lines(entry_source: String, dep_sources: Array[String]) -> Array[String] with Exception
-fn deprecated_warning_lines_visible(entry_source: String, dep_sources: Array[String], visible_names: Option[Array[String]]) -> Array[String] with Exception
-fn legacy_handler_warning_lines(source: String) -> Array[String] with Exception
 
 // --- typing_dependency_record_codec.vibe
 // Compiler-internal generic framing only; TDRE8 semantic field schemas remain
@@ -369,20 +279,11 @@ fn projected_import_env_for_test(source: String, path: String, deps: Array[Strin
 import @vibe/compiler/core {
   TypeEnv
 }
-struct ModuleJob {
-  path: String;
-  source: String;
-  deps: Array[String];
-  dep_fps: Array[(String, String)];
-  dep_envs: Array[(String, TypeEnv)]
-}
 // Declared opaque like graph's RippleDb / json's RpcMessage: nothing
 // outside the package inspects it yet. Phase 2's driver will need either
 // accessors or a real variant declaration here.
-opaque type ModuleOutcome
 // Proof of exact v2-byte freshness is likewise opaque: only the runtime's
 // successful ModuleOutcome validator can mint it; decoders/manual bytes cannot.
-opaque type CheckedModuleTypingArtifactFreshnessAttestation
 fn check_module(job: ModuleJob) -> ModuleOutcome with Env + Exception
 fn check_module_with_typing_artifact_observation(job: ModuleJob) -> ModuleOutcome with Env + Exception
 fn check_module_with_program_transport(job: ModuleJob) -> (ModuleOutcome, Option[Bytes]) with Env + Exception
@@ -541,7 +442,6 @@ fn step_module_fs(plan_leaf_fps: Array[(String, String)], plan_edges: Array[(Str
 fn module_plan_data_fs(entry_path: String) -> (Array[String], Array[Int], Array[Array[String]], Array[String]) with Env + Exception + Fs
 
 // Compile-owned immutable dependency projections (#3256).
-opaque type DependencyInterfaceSet
 fn dependency_interface_set_new() -> DependencyInterfaceSet
 fn dependency_interface_set_publish(interfaces: DependencyInterfaceSet, path: String, env: TypeEnv) -> Unit
 fn build_import_envs_from_interfaces(stmts: Array[Stmt], base_dir: String, interfaces: DependencyInterfaceSet, dependency_paths: Array[String], unresolved: Array[String]) -> (TypeEnv, TypeEnv) with Env
