@@ -74,7 +74,7 @@ test("computeNextBranchEntries: returns missing branch-focused preset entries", 
   };
   assert.deepEqual(computeNextBranchEntries(report), [
     "lib/@vibe/compiler/tests/checker_test.vibe",
-    "lib/@vibe/compiler/tests/checker_builtins_test.vibe",
+    "lib/@vibe/compiler/tests/builtins_test.vibe",
     "lib/@vibe/compiler/tests/s5_test.vibe",
   ]);
 });
@@ -123,7 +123,7 @@ test("buildTextReport: includes top gaps and suggested entries", () => {
   );
   assert.match(
     text,
-    /suggested_extra_entries: lib\/@vibe\/compiler\/tests\/checker_test\.vibe,lib\/@vibe\/compiler\/tests\/checker_builtins_test\.vibe,lib\/@vibe\/compiler\/tests\/s5_test\.vibe/,
+    /suggested_extra_entries: lib\/@vibe\/compiler\/tests\/checker_test\.vibe,lib\/@vibe\/compiler\/tests\/builtins_test\.vibe,lib\/@vibe\/compiler\/tests\/s5_test\.vibe/,
   );
 });
 
@@ -156,7 +156,7 @@ test("buildJsonReport: emits suggested entries and gaps", () => {
     "lib/@vibe/compiler/tests/lexer_test.vibe",
     "lib/@vibe/compiler/tests/printer_test.vibe",
     "lib/@vibe/compiler/tests/checker_test.vibe",
-    "lib/@vibe/compiler/tests/checker_builtins_test.vibe",
+    "lib/@vibe/compiler/tests/builtins_test.vibe",
     "lib/@vibe/compiler/tests/s5_test.vibe",
   ]);
 });
