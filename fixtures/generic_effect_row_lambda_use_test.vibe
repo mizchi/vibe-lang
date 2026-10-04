@@ -1,8 +1,9 @@
 // #3318 / #3341: generic-effect instantiations that agree with the place a
 // lambda is used, and row formals kept generic, still compile and answer.
 // The refusals are the `generic_effect_row_{formal_pinned,named_lambda,
-// direct_call_lambda,own_row_mismatch,handle_call_lambda,annotated_alias,
-// returned_lambda}_*reject` rows in fixtures/typecheck/expected.tsv.
+// direct_call_lambda,own_row_mismatch,annotated_alias,returned_lambda,
+// generalized_lambda,callback_iife,callback_fn_alias,named_fn_alias}_*reject`
+// rows in fixtures/typecheck/expected.tsv.
 //
 // The effect-row pass charges a lambda's performs to the function that
 // writes it, not to the callee that handles them, so each such function
@@ -45,6 +46,24 @@ fn named_other_row() -> Int with Box[String] {
 fn direct_str() -> Int with Box[String] {
   let g = () -> Int { perform Box::Put("hello") }
   g() + g()
+}
+
+type Mapper = (Int) -> Int
+
+fn run_map(f: () -> Int with Box[Mapper]) -> Int {
+  handle {
+    f()
+  } with {
+    Box::Put(m) => resume(m(41))
+  }
+}
+
+// A function-typed instantiation, read through an alias, is handed to the
+// lambda like any other.
+fn mapper_inc() -> Int with Box[Mapper] {
+  run_map(() -> {
+    perform Box::Put((n: Int) -> Int { n + 1 })
+  })
 }
 
 // A type parameter the row names, kept generic by the body.
@@ -92,4 +111,13 @@ test "a row formal kept generic is instantiated by each handler" {
   }
   inspect(s, "5")
   inspect(n, "10")
+}
+
+test "a function-typed instantiation through an alias" {
+  let r = handle {
+    mapper_inc()
+  } with {
+    Box::Put(_) => resume(0 - 1)
+  }
+  inspect(r, "42")
 }

@@ -689,6 +689,15 @@ fn callback_row_instantiations(row: String, callee: Option[(Type, Type)], defs: 
 /// (`declared` false: one checked as an expression, whose row is not
 /// published) a formal cannot be told from a type name, so only
 /// compiler-owned types are read there.
+///
+/// Every structure a row argument resolves to is read by its parts, so a
+/// function type is bound like a tuple (Codex on #3340). A row argument is
+/// written as a name or an application, but an alias expands to whatever it
+/// names: under `type Mapper = (Int) -> Int`, `with Box[Mapper]` resolves to a
+/// function type, which this used to call inexact, so a callback performing
+/// `Box::Put((s: String) -> Int { .. })` was handed nothing and its handler
+/// called the closure with an `Int`. A function type's own row is read as
+/// written, the way the callee's handler reads it.
 fn callback_type_exact(t: Type, formals: Array[String], declared: Bool, defs: Array[TypeDef]) -> Bool {
   match t {
     CtInt => true,
@@ -716,7 +725,22 @@ fn callback_type_exact(t: Type, formals: Array[String], declared: Bool, defs: Ar
       declared && known && !formals_contain_source_name(formals, n) && callback_types_exact(args, formals, declared, defs)
     },
     CtApplied(h, args) => declared && callback_type_exact(h, formals, declared, defs) && callback_types_exact(args, formals, declared, defs),
-    _ => false
+    CtFn(params, ret, _) => callback_types_exact(params, formals, declared, defs) && callback_type_exact(ret, formals, declared, defs),
+    CtRecord(fields) => {
+      let mut all = true
+      for field in fields {
+        let (_, ft) = field
+        if !callback_type_exact(ft, formals, declared, defs) {
+          all = false
+        } else {
+          ()
+        }
+      }
+      all
+    },
+    // Neither is a type a written row argument resolves to.
+    CtForAll(_, _, _) => false,
+    CtUnknown => false
   }
 }
 
