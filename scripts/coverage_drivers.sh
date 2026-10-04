@@ -146,7 +146,9 @@ run_driver() { # entry driver_file label
   # value requests, and rewrites them to the ordinary merge's final names.
   # The pinned seed only compiles the emitted ordinary source; no seed bump.
   rm -f "$d/src.vibe" "$d/src.vibe.diag"
-  VIBE_EMIT_COVERAGE_DRIVER_SOURCE=1 \
+  # #3331: the pinned seed desugars trait dictionaries before it checks, so it
+  # compiles the lowered form only (see scripts/generate_bundle.sh).
+  VIBE_EMIT_COVERAGE_DRIVER_SOURCE=1 VIBE_MERGED_SOURCE_LOWER_TRAIT_DICTS=1 \
     VIBE_COVERAGE_DRIVER_PATH="$file" \
     VIBE_PREOPEN_DIR="$ROOT" VIBE_IMPORT_ABI=raw \
     bash "$RUNNER" --invoke cli_main "$COMPILER_COV" \

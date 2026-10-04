@@ -230,8 +230,8 @@ const modeArms = [
     { role: "let-name", pattern: "ELet(n, _, _, _)", body: "n == name" },
     { role: "letrec-name", pattern: "ELetRec(n, _, _)", body: "n == name" },
     { role: "letmut-name", pattern: "ELetMut(n, _, _, _)", body: "n == name" },
-    { role: "assign-target", pattern: "EAssign(n, _, _)", body: "n == name" },
-    { role: "assignop-target", pattern: "EAssignOp(n, _, _, _)", body: "n == name" },
+    { role: "assign-target", pattern: "EAssign(n, _, _, _)", body: "n == name" },
+    { role: "assignop-target", pattern: "EAssignOp(n, _, _, _, _)", body: "n == name" },
     { role: "for-name", pattern: "EForIn(v, _, _, _)", body: "v == name" },
     { role: "parameter-name", pattern: "EFn(_, _, params, _, _, _)", body: "dinsp_params_bind(params, name)" },
     { role: "match-name", pattern: "EMatch(_, arms)", body: "dinsp_arms_bind(arms, name)" },
@@ -248,8 +248,8 @@ const modeArms = [
   ] },
   { mode: 4, arms: [
     { role: "marker-value", pattern: "EIdent(n, _)", body: "n == name" },
-    { role: "marker-assign", pattern: "EAssign(n, _, _)", body: "n == name" },
-    { role: "marker-assignop", pattern: "EAssignOp(n, _, _, _)", body: "n == name" },
+    { role: "marker-assign", pattern: "EAssign(n, _, _, _)", body: "n == name" },
+    { role: "marker-assignop", pattern: "EAssignOp(n, _, _, _, _)", body: "n == name" },
     { role: "marker-default", pattern: "_", body: "false" }
   ] },
   // #2386: the third and last reason the relabel walk can change a statement
@@ -262,8 +262,8 @@ const modeArms = [
   ] },
   // The `else`, i.e. mode 5.
   { mode: 5, arms: [
-    { role: "captured-assign", pattern: "EAssign(n, _, _)", body: "n == name" },
-    { role: "captured-assignop", pattern: "EAssignOp(n, _, _, _)", body: "n == name" },
+    { role: "captured-assign", pattern: "EAssign(n, _, _, _)", body: "n == name" },
+    { role: "captured-assignop", pattern: "EAssignOp(n, _, _, _, _)", body: "n == name" },
     { role: "assignment-default", pattern: "_", body: "false" }
   ] }
 ];
@@ -288,7 +288,7 @@ const hereBindsArms = [
 const recursiveArms = [
   ["int-leaf", "EInt(_)", "false"], ["float-leaf", "EFloat(_)", "false"], ["string-leaf", "EString(_, _)", "false"], ["bool-leaf", "EBool(_)", "false"], ["unit-leaf", "EUnit", "false"], ["identifier-leaf", "EIdent(_, _)", "false"], ["interpolation-opaque", "EStringInterp(_)", "false"],
   ["tuple-items", "ETuple(items)", "dinsp_scan_list(items, mode, name)"], ["array-items", "EArray(items)", "dinsp_scan_list(items, mode, name)"], ["record-values", "ERecord(_, fields, _)", "dinsp_scan_fields(fields, mode, name)"], ["map-values", "EMap(fields)", "dinsp_scan_fields(fields, mode, name)"],
-  ["if-condition-then-else", "EIf(c, t, f)", "dinsp_scan(c, mode, name) || dinsp_scan(t, mode, name) || dinsp_scan(f, mode, name)"], ["let-value-body", "ELet(_, v, b, _)", "dinsp_scan(v, mode, name) || dinsp_scan(b, mode, name)"], ["letrec-value-body", "ELetRec(_, v, b)", "dinsp_scan(v, mode, name) || dinsp_scan(b, mode, name)"], ["letmut-value-body", "ELetMut(_, v, b, _)", "dinsp_scan(v, mode, name) || dinsp_scan(b, mode, name)"], ["assign-value-continuation", "EAssign(_, v, b)", "dinsp_scan(v, mode, name) || dinsp_scan(b, mode, name)"], ["assignop-value-continuation", "EAssignOp(_, _, v, b)", "dinsp_scan(v, mode, name) || dinsp_scan(b, mode, name)"], ["sequence-head-tail", "ESeq(a, b)", "dinsp_scan(a, mode, name) || dinsp_scan(b, mode, name)"],
+  ["if-condition-then-else", "EIf(c, t, f)", "dinsp_scan(c, mode, name) || dinsp_scan(t, mode, name) || dinsp_scan(f, mode, name)"], ["let-value-body", "ELet(_, v, b, _)", "dinsp_scan(v, mode, name) || dinsp_scan(b, mode, name)"], ["letrec-value-body", "ELetRec(_, v, b)", "dinsp_scan(v, mode, name) || dinsp_scan(b, mode, name)"], ["letmut-value-body", "ELetMut(_, v, b, _)", "dinsp_scan(v, mode, name) || dinsp_scan(b, mode, name)"], ["assign-value-continuation", "EAssign(_, v, b, _)", "dinsp_scan(v, mode, name) || dinsp_scan(b, mode, name)"], ["assignop-value-continuation", "EAssignOp(_, _, v, b, _)", "dinsp_scan(v, mode, name) || dinsp_scan(b, mode, name)"], ["sequence-head-tail", "ESeq(a, b)", "dinsp_scan(a, mode, name) || dinsp_scan(b, mode, name)"],
   ["match-scrutinee-arms", "EMatch(sc, arms)", "dinsp_scan(sc, mode, name) || dinsp_scan_arms(arms, mode, name)"], ["handle-scrutinee-arms", "EHandle(sc, arms)", "dinsp_scan(sc, mode, name) || dinsp_scan_arms(arms, mode, name)"], ["while-condition-body", "EWhile(c, b)", "dinsp_scan(c, mode, name) || dinsp_scan(b, mode, name)"], ["loop-initializers-body", "ELoop(params, b)", "dinsp_scan_fields(params, mode, name) || dinsp_scan(b, mode, name)"], ["for-iterable-body", "EForIn(_, _, it, b)", "dinsp_scan(it, mode, name) || dinsp_scan(b, mode, name)"],
   ["call-callee-then-args-with-direct-marker-exemption", "ECall(callee, args, _, _)", `if mode == 4 { match callee { EIdent(n, _) => if n == name { dinsp_scan_list(args, mode, name) } else { dinsp_scan(callee, mode, name) || dinsp_scan_list(args, mode, name) }, _ => dinsp_scan(callee, mode, name) || dinsp_scan_list(args, mode, name) } } else { dinsp_scan(callee, mode, name) || dinsp_scan_list(args, mode, name) }`],
   ["binary-left-right", "EBinOp(_, l, r, _)", "dinsp_scan(l, mode, name) || dinsp_scan(r, mode, name)"], ["unary-value", "EUnaryOp(_, v)", "dinsp_scan(v, mode, name)"], ["function-body", "EFn(_, _, _, _, _, body)", "dinsp_scan(body, mode, name)"], ["dot-object", "EDot(inner, _, _, _)", "dinsp_scan(inner, mode, name)"], ["labeled-child", "ELabeledArg(_, _, v)", "dinsp_scan(v, mode, name)"], ["return-value", "EReturn(v)", "dinsp_scan(v, mode, name)"], ["optional-break", "EBreak(opt)", "match opt { Some(v) => dinsp_scan(v, mode, name), None => false }"], ["continue-values", "EContinue(args)", "dinsp_scan_list(args, mode, name)"], ["spread-value", "ESpread(v)", "dinsp_scan(v, mode, name)"]

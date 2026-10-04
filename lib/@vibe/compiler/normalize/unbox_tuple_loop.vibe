@@ -183,12 +183,12 @@ fn utl_count(e: Expr, name: String) -> Int {
     } else {
       utl_count(v, name) + utl_count(b, name)
     },
-    EAssign(x, v, c) => (if String::equals(x, name) {
+    EAssign(x, v, c, _) => (if String::equals(x, name) {
       1
     } else {
       0
     }) + utl_count(v, name) + utl_count(c, name),
-    EAssignOp(x, _, v, c) => (if String::equals(x, name) {
+    EAssignOp(x, _, v, c, _) => (if String::equals(x, name) {
       1
     } else {
       0
@@ -377,7 +377,7 @@ fn utl_recognized(e: Expr, name: String, n: Int, temps: Array[String]) -> Int {
       1
     } else {
       match e {
-        EAssign(x, v, c) => if String::equals(x, name) {
+        EAssign(x, v, c, _) => if String::equals(x, name) {
           match v {
             ETuple(xs) => if Array::length(xs) == n {
               1 + utl_recognized_list(xs, name, n, temps) + utl_recognized(c, name, n, temps)
@@ -396,7 +396,7 @@ fn utl_recognized(e: Expr, name: String, n: Int, temps: Array[String]) -> Int {
         ELet(_, v, b, _) => utl_recognized(v, name, n, temps) + utl_recognized(b, name, n, temps),
         ELetMut(_, v, b, _) => utl_recognized(v, name, n, temps) + utl_recognized(b, name, n, temps),
         ELetRec(_, v, b) => utl_recognized(v, name, n, temps) + utl_recognized(b, name, n, temps),
-        EAssignOp(_, _, v, c) => utl_recognized(v, name, n, temps) + utl_recognized(c, name, n, temps),
+        EAssignOp(_, _, v, c, _) => utl_recognized(v, name, n, temps) + utl_recognized(c, name, n, temps),
         ESeq(a, b) => utl_recognized(a, name, n, temps) + utl_recognized(b, name, n, temps),
         EIf(c, t, e2) => utl_recognized(c, name, n, temps) + utl_recognized(t, name, n, temps) + utl_recognized(e2, name, n, temps),
         EBinOp(_, l, r, _) => utl_recognized(l, name, n, temps) + utl_recognized(r, name, n, temps),
@@ -503,8 +503,8 @@ fn utl_temp_binding_children(e: Expr, t: String, n: Int) -> Int {
     ELet(_, v, b, _) => utl_temp_binding_count(v, t, n) + utl_temp_binding_count(b, t, n),
     ELetMut(_, v, b, _) => utl_temp_binding_count(v, t, n) + utl_temp_binding_count(b, t, n),
     ELetRec(_, v, b) => utl_temp_binding_count(v, t, n) + utl_temp_binding_count(b, t, n),
-    EAssign(_, v, c) => utl_temp_binding_count(v, t, n) + utl_temp_binding_count(c, t, n),
-    EAssignOp(_, _, v, c) => utl_temp_binding_count(v, t, n) + utl_temp_binding_count(c, t, n),
+    EAssign(_, v, c, _) => utl_temp_binding_count(v, t, n) + utl_temp_binding_count(c, t, n),
+    EAssignOp(_, _, v, c, _) => utl_temp_binding_count(v, t, n) + utl_temp_binding_count(c, t, n),
     ESeq(a, b) => utl_temp_binding_count(a, t, n) + utl_temp_binding_count(b, t, n),
     EIf(c, t2, e2) => utl_temp_binding_count(c, t, n) + utl_temp_binding_count(t2, t, n) + utl_temp_binding_count(e2, t, n),
     EBinOp(_, l, r, _) => utl_temp_binding_count(l, t, n) + utl_temp_binding_count(r, t, n),
@@ -595,7 +595,7 @@ fn utl_assign_chain(names: Array[String], srcs: Array[String], cont: Expr) -> Ex
   let mut out = cont
   let mut i = Array::length(names) - 1
   while i >= 0 {
-    out = EAssign(Array::get(names, i), EIdent(Array::get(srcs, i), -1), out)
+    out = EAssign(Array::get(names, i), EIdent(Array::get(srcs, i), -1), out, -1)
     i = i - 1
   }
   out
@@ -653,7 +653,7 @@ fn utl_rw2(e: Expr, name: String, n: Int, names: Array[String], temps: Array[Str
         } else {
           ELet(x, utl_rw2(v, name, n, names, temps), utl_rw2(b, name, n, names, temps), off)
         },
-        EAssign(x, v, c) => if String::equals(x, name) {
+        EAssign(x, v, c, target_off) => if String::equals(x, name) {
           match v {
             ETuple(xs) => {
               // fresh per-element temps so `s = (s.1, s.0)` still swaps
@@ -667,14 +667,14 @@ fn utl_rw2(e: Expr, name: String, n: Int, names: Array[String], temps: Array[Str
               out
             },
             EIdent(t, _) => utl_assign_chain(names, utl_names_for(t, n), utl_rw2(c, name, n, names, temps)),
-            _ => EAssign(x, utl_rw2(v, name, n, names, temps), utl_rw2(c, name, n, names, temps))
+            _ => EAssign(x, utl_rw2(v, name, n, names, temps), utl_rw2(c, name, n, names, temps), target_off)
           }
         } else {
-          EAssign(x, utl_rw2(v, name, n, names, temps), utl_rw2(c, name, n, names, temps))
+          EAssign(x, utl_rw2(v, name, n, names, temps), utl_rw2(c, name, n, names, temps), target_off)
         },
         ELetMut(x, v, b, off) => ELetMut(x, utl_rw2(v, name, n, names, temps), utl_rw2(b, name, n, names, temps), off),
         ELetRec(x, v, b) => ELetRec(x, utl_rw2(v, name, n, names, temps), utl_rw2(b, name, n, names, temps)),
-        EAssignOp(nm, op, v, c) => EAssignOp(nm, op, utl_rw2(v, name, n, names, temps), utl_rw2(c, name, n, names, temps)),
+        EAssignOp(nm, op, v, c, target_off) => EAssignOp(nm, op, utl_rw2(v, name, n, names, temps), utl_rw2(c, name, n, names, temps), target_off),
         ESeq(a, b) => ESeq(utl_rw2(a, name, n, names, temps), utl_rw2(b, name, n, names, temps)),
         EIf(c, t, e2) => EIf(utl_rw2(c, name, n, names, temps), utl_rw2(t, name, n, names, temps), utl_rw2(e2, name, n, names, temps)),
         EBinOp(op, l, r, boff) => EBinOp(op, utl_rw2(l, name, n, names, temps), utl_rw2(r, name, n, names, temps), boff),
@@ -876,8 +876,8 @@ fn utl_drive(e: Expr) -> Expr {
     },
     ELet(x, v, b, off) => ELet(x, utl_drive(v), utl_drive(b), off),
     ELetRec(x, v, b) => ELetRec(x, utl_drive(v), utl_drive(b)),
-    EAssign(x, v, c) => EAssign(x, utl_drive(v), utl_drive(c)),
-    EAssignOp(nm, op, v, c) => EAssignOp(nm, op, utl_drive(v), utl_drive(c)),
+    EAssign(x, v, c, target_off) => EAssign(x, utl_drive(v), utl_drive(c), target_off),
+    EAssignOp(nm, op, v, c, target_off) => EAssignOp(nm, op, utl_drive(v), utl_drive(c), target_off),
     ESeq(a, b) => ESeq(utl_drive(a), utl_drive(b)),
     EIf(c, t, e2) => EIf(utl_drive(c), utl_drive(t), utl_drive(e2)),
     EBinOp(op, l, r, boff) => EBinOp(op, utl_drive(l), utl_drive(r), boff),

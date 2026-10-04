@@ -1,0 +1,180 @@
+//# #3355: a local whose scope has ended no longer shadows a top-level
+//# function or a builtin of the same name. Codegen keeps an ended binder in
+//# its list of locals (only a branch or an arm truncates it), and the shadow
+//# uniquify that keeps such a dead entry from capturing a live name only
+//# renamed a binder that shadowed ANOTHER local. So after
+//# `let a = { let twice = .. }` the later `twice(7)` called the dead local:
+//# 16 instead of 7002 on the bump and RC lanes, directly or through a
+//# closure, and a `let rec` left in a `while` body or a bare block overflowed
+//# the stack. A binder named like a name the function also reads free is now
+//# renamed as well. tests/gates/early/extended_derive.sh runs this file on
+//# the bump and RC lanes.
+
+fn twice(x: Int) -> Int {
+  x * 1000
+}
+
+fn after_block() -> Int {
+  let a = {
+    let twice = (x: Int) -> x * 2
+    twice(1)
+  }
+  twice(7) + a
+}
+
+fn after_block_closure() -> Int {
+  let a = {
+    let twice = (x: Int) -> x * 2
+    twice(1)
+  }
+  let g = (y: Int) -> twice(y)
+  g(7) + a
+}
+
+fn after_while_mut() -> Int {
+  let mut acc = 0
+  let mut i = 0
+  while i < 1 {
+    let mut twice = (x: Int) -> x * 2
+    acc = acc + twice(1)
+    i = i + 1
+  }
+  let g = (y: Int) -> twice(y)
+  acc + g(7) + twice(7)
+}
+
+fn after_while_rec() -> Int {
+  let mut acc = 0
+  let mut i = 0
+  while i < 1 {
+    let rec twice = (n: Int) -> if n <= 0 {
+      0
+    } else {
+      2 + twice(n - 1)
+    }
+    acc = acc + twice(1)
+    i = i + 1
+  }
+  let g = (y: Int) -> twice(y)
+  acc + g(7) + twice(7)
+}
+
+fn after_bare_block_mut() -> Int {
+  let mut acc = 0
+  {
+    let mut twice = (x: Int) -> x * 2
+    acc = acc + twice(1)
+  }
+  let g = (y: Int) -> twice(y)
+  acc + g(7) + twice(7)
+}
+
+fn after_bare_block_rec() -> Int {
+  let mut acc = 0
+  {
+    let rec twice = (n: Int) -> if n <= 0 {
+      0
+    } else {
+      2 + twice(n - 1)
+    }
+    acc = acc + twice(1)
+  }
+  let g = (y: Int) -> twice(y)
+  acc + g(7) + twice(7)
+}
+
+// The else branch keeps its binders past the `if` in codegen; the then
+// branch's were already dropped.
+fn after_else_branch(c: Bool) -> Int {
+  let mut acc = 0
+  if c {
+    ()
+  } else {
+    let twice = (x: Int) -> x * 2
+    acc = acc + twice(1)
+  }
+  let g = (y: Int) -> twice(y)
+  acc + g(7) + twice(7)
+}
+
+fn after_then_branch(c: Bool) -> Int {
+  let mut acc = 0
+  if c {
+    let mut twice = (x: Int) -> x * 2
+    acc = acc + twice(1)
+  } else {
+    ()
+  }
+  let g = (y: Int) -> twice(y)
+  acc + g(7) + twice(7)
+}
+
+fn after_match_arm(o: Option[(Int) -> Int]) -> Int {
+  let a = match o {
+    Some(twice) => twice(1),
+    None => 0
+  }
+  let g = (y: Int) -> twice(y)
+  g(7) + twice(1) + a
+}
+
+fn after_for(fs: Array[(Int) -> Int]) -> Int {
+  let mut a = 0
+  for twice in fs {
+    a = a + twice(1)
+  }
+  let g = (y: Int) -> twice(y)
+  g(7) + twice(1) + a
+}
+
+// A builtin's name is shadowed and released the same way.
+fn after_block_builtin_not() -> Int {
+  let a = {
+    let not = (b: Bool) -> b
+    if not(true) {
+      1
+    } else {
+      0
+    }
+  }
+  if not(true) {
+    10 + a
+  } else {
+    20 + a
+  }
+}
+
+// The local stays in force inside its scope, through a closure too.
+fn inside_scope() -> Int {
+  let twice = (x: Int) -> x * 2
+  let g = (y: Int) -> twice(y)
+  twice(1) + g(7)
+}
+
+test "a local whose block ended does not shadow the top-level fn" {
+  inspect(after_block(), "7002")
+  inspect(after_block_closure(), "7002")
+  inspect(after_bare_block_mut(), "14002")
+  inspect(after_bare_block_rec(), "14002")
+}
+
+test "a let mut or let rec in a loop body ends with the body" {
+  inspect(after_while_mut(), "14002")
+  inspect(after_while_rec(), "14002")
+}
+
+test "a branch's binder ends with the branch" {
+  inspect(after_else_branch(false), "14002")
+  inspect(after_then_branch(true), "14002")
+  inspect(after_match_arm(Some((x) -> x * 2)), "8002")
+  inspect(after_for([(x) -> x * 2]), "8002")
+}
+
+test "a builtin is shadowed only inside the local's scope" {
+  inspect(after_block_builtin_not(), "21")
+}
+
+test "inside its scope the local still wins" {
+  inspect(inside_scope(), "16")
+  inspect(twice(2), "2000")
+}

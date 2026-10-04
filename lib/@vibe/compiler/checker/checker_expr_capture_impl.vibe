@@ -220,6 +220,19 @@ fn tab_dot_field_name_ty(tytab: Array[(Int, Type)], field_off: Int, ty: Type, ca
   append_legacy_typed_occurrence(tytab, field_off, ty, capture, "DotFieldName", lane)
 }
 
+/// #3248: the marker an unknown assignment target carries. ` [@assign-target=N]`
+/// names the target token the parser recorded (`N` is its start byte, so the
+/// locator can read the token's own extent back, `r#name` included). A
+/// synthesized assignment has no token (`off < 0`) and gets the bare
+/// ` [@assign-target]`, which the locator strips without inventing a position.
+fn assign_target_marker(off: Int) -> String {
+  if off >= 0 {
+    String::concat(" [@assign-target=", String::concat(__to_string(off), "]"))
+  } else {
+    " [@assign-target]"
+  }
+}
+
 /// Iteratively check a sequence/let SPINE (`ESeq` and `ELet`/`ELetMut`/`ELetRec`
 /// chains) instead of recursing into each `body`, so a long function body — a
 /// deep right-nested `let` chain — does not exhaust the wasm call stack during
@@ -470,8 +483,8 @@ fn check_resume_values(e: Expr, ret_ty: Type, env: TypeEnv, defs: Array[TypeDef]
     },
     EBinOp(_, l, r, _) => check_resume_values(r, ret_ty, env, defs, check_resume_values(l, ret_ty, env, defs, s, c, errors, tytab, capture), c, errors, tytab, capture),
     EUnaryOp(_, inner) => check_resume_values(inner, ret_ty, env, defs, s, c, errors, tytab, capture),
-    EAssign(_, v, b) => check_resume_values(b, ret_ty, env, defs, check_resume_values(v, ret_ty, env, defs, s, c, errors, tytab, capture), c, errors, tytab, capture),
-    EAssignOp(_, _, v, b) => check_resume_values(b, ret_ty, env, defs, check_resume_values(v, ret_ty, env, defs, s, c, errors, tytab, capture), c, errors, tytab, capture),
+    EAssign(_, v, b, _) => check_resume_values(b, ret_ty, env, defs, check_resume_values(v, ret_ty, env, defs, s, c, errors, tytab, capture), c, errors, tytab, capture),
+    EAssignOp(_, _, v, b, _) => check_resume_values(b, ret_ty, env, defs, check_resume_values(v, ret_ty, env, defs, s, c, errors, tytab, capture), c, errors, tytab, capture),
     EFn(_, _, fparams, _, _, fb) => {
       // The lambda's own parameters are binders for its body (#3005: a
       // `resume(v)` whose `v` is the lambda's parameter answered "unknown
@@ -832,7 +845,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         }
       } else (CtUnknown, s1, c1)
     },
-    EAssign(name, val, body) => {
+    EAssign(name, val, body, target_off) => {
       let (vt, s1, c1) = check_expr_capture(val, env, defs, s, c, errors, tytab, capture, lane)
       let assigned_ty = subst_apply(s1, vt)
       if assignment_crosses_region(name, assigned_ty, env) || (binding_predates_active_region(name, env) && expression_mentions_active_region(val, env, defs, s1, c1, check_expr)) {
@@ -845,17 +858,17 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         // The mutability pass only knows which bindings are mutable. Letting
         // an absent target reach it reports the misleading `let mut` edit.
         None => {
-          Array::push(errors, String::concat("unknown name: ", String::concat(name, " [@assign-target]")))
+          Array::push(errors, String::concat("unknown name: ", String::concat(name, assign_target_marker(target_off))))
           s1
         }
       }
       check_expr_capture(body, env, defs, s1b, c1, errors, tytab, capture, lane)
     },
-    EAssignOp(name, _, val, body) => {
+    EAssignOp(name, _, val, body, target_off) => {
       let (_, s1, c1) = check_expr_capture(val, env, defs, s, c, errors, tytab, capture, lane)
       match env_lookup(env, name) {
         Some(_) => (),
-        None => Array::push(errors, String::concat("unknown name: ", String::concat(name, " [@assign-target]")))
+        None => Array::push(errors, String::concat("unknown name: ", String::concat(name, assign_target_marker(target_off))))
       }
       check_expr_capture(body, env, defs, s1, c1, errors, tytab, capture, lane)
     },

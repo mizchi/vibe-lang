@@ -273,8 +273,8 @@ enum BlockStep {
   StepLet(String, Expr, Int);
   StepLetMut(String, Expr, Int);
   StepLetRec(String, Expr);
-  StepAssign(String, Expr);
-  StepAssignOp(String, String, Expr);
+  StepAssign(String, Expr, Int);
+  StepAssignOp(String, String, Expr, Int);
   StepPattern(Pat, Expr);
   StepPatternElse(Pat, Expr, Expr, Array[SourceBinder]);
   StepStructDestr(Pat, Expr);
@@ -342,10 +342,10 @@ fn arm_assign_follows(tk: Token) -> Bool {
 /// is named exactly once in the dispatch below, without an Option to carry it.
 fn parse_arm_compound_assign(tokens: Array[Token], body: Expr, at: Int, op: String, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
   match source_expr(body) {
-    EIdent(name, _) => {
+    EIdent(name, target_at) => {
       let (val, next) = parse_recur(tokens, at + 1, 0, context)
       source_record_slot("target", name, at - 1, at, context)
-      (source_wrap_expr(EAssignOp(name, op, val, EUnit), at - 1, next, context), next)
+      (source_wrap_expr(EAssignOp(name, op, val, EUnit, target_at), at - 1, next, context), next)
     },
     _ => throw("invalid assignment target")
   }
@@ -376,10 +376,10 @@ fn parse_arm_assign_tail(tokens: Array[Token], body: Expr, at: Int, parse_recur:
     TSlashEq => parse_arm_compound_assign(tokens, body, at, "/", parse_recur, context),
     TPercentEq => parse_arm_compound_assign(tokens, body, at, "%", parse_recur, context),
     TEq => match source_expr(body) {
-      EIdent(name, _) => {
+      EIdent(name, target_at) => {
         let (val, next) = parse_recur(tokens, at + 1, 0, context)
         source_record_slot("target", name, at - 1, at, context)
-        (source_wrap_expr(EAssign(name, val, EUnit), at - 1, next, context), next)
+        (source_wrap_expr(EAssign(name, val, EUnit, target_at), at - 1, next, context), next)
       },
       EDot(obj, field, _, _) => {
         let (val, next) = parse_recur(tokens, at + 1, 0, context)
@@ -841,13 +841,13 @@ fn parse_block_after_expr(tokens: Array[Token], pos: Int, e: Expr, parse_recur: 
       (ESeq(e, rest), end)
     },
     TEq => match source_expr(e) {
-      EIdent(name, _) => {
+      EIdent(name, target_at) => {
         let val_pair = parse_recur(tokens, pos + 1, 0, context)
         let val = val_pair.0
         let val_next = val_pair.1
         let a = skip_semi(tokens, val_next)
         let (rest, end) = parse_recur(tokens, a, 20, context)
-        (EAssign(name, val, rest), end)
+        (EAssign(name, val, rest, target_at), end)
       },
       EDot(obj, field, _, _) => {
         let val_pair = parse_recur(tokens, pos + 1, 0, context)
@@ -889,57 +889,57 @@ fn parse_block_after_expr(tokens: Array[Token], pos: Int, e: Expr, parse_recur: 
       _ => throw("invalid assignment target")
     },
     TPlusEq => match source_expr(e) {
-      EIdent(name, _) => {
+      EIdent(name, target_at) => {
         let val_pair = parse_recur(tokens, pos + 1, 0, context)
         let val = val_pair.0
         let val_next = val_pair.1
         let a = skip_semi(tokens, val_next)
         let (rest, end) = parse_recur(tokens, a, 20, context)
-        (EAssignOp(name, "+", val, rest), end)
+        (EAssignOp(name, "+", val, rest, target_at), end)
       },
       _ => throw("invalid assignment target")
     },
     TMinusEq => match source_expr(e) {
-      EIdent(name, _) => {
+      EIdent(name, target_at) => {
         let val_pair = parse_recur(tokens, pos + 1, 0, context)
         let val = val_pair.0
         let val_next = val_pair.1
         let a = skip_semi(tokens, val_next)
         let (rest, end) = parse_recur(tokens, a, 20, context)
-        (EAssignOp(name, "-", val, rest), end)
+        (EAssignOp(name, "-", val, rest, target_at), end)
       },
       _ => throw("invalid assignment target")
     },
     TStarEq => match source_expr(e) {
-      EIdent(name, _) => {
+      EIdent(name, target_at) => {
         let val_pair = parse_recur(tokens, pos + 1, 0, context)
         let val = val_pair.0
         let val_next = val_pair.1
         let a = skip_semi(tokens, val_next)
         let (rest, end) = parse_recur(tokens, a, 20, context)
-        (EAssignOp(name, "*", val, rest), end)
+        (EAssignOp(name, "*", val, rest, target_at), end)
       },
       _ => throw("invalid assignment target")
     },
     TSlashEq => match source_expr(e) {
-      EIdent(name, _) => {
+      EIdent(name, target_at) => {
         let val_pair = parse_recur(tokens, pos + 1, 0, context)
         let val = val_pair.0
         let val_next = val_pair.1
         let a = skip_semi(tokens, val_next)
         let (rest, end) = parse_recur(tokens, a, 20, context)
-        (EAssignOp(name, "/", val, rest), end)
+        (EAssignOp(name, "/", val, rest, target_at), end)
       },
       _ => throw("invalid assignment target")
     },
     TPercentEq => match source_expr(e) {
-      EIdent(name, _) => {
+      EIdent(name, target_at) => {
         let val_pair = parse_recur(tokens, pos + 1, 0, context)
         let val = val_pair.0
         let val_next = val_pair.1
         let a = skip_semi(tokens, val_next)
         let (rest, end) = parse_recur(tokens, a, 20, context)
-        (EAssignOp(name, "%", val, rest), end)
+        (EAssignOp(name, "%", val, rest, target_at), end)
       },
       _ => throw("invalid assignment target")
     },
@@ -1117,8 +1117,8 @@ fn apply_block_step(step: BlockStep, rest: Expr, context: Option[ParserBinderCon
     StepLet(name, val, soff) => ELet(name, val, rest, soff),
     StepLetMut(name, val, soff) => ELetMut(name, val, rest, soff),
     StepLetRec(name, val) => ELetRec(name, val, rest),
-    StepAssign(name, val) => EAssign(name, val, rest),
-    StepAssignOp(name, op, val) => EAssignOp(name, op, val, rest),
+    StepAssign(name, val, target_at) => EAssign(name, val, rest, target_at),
+    StepAssignOp(name, op, val, target_at) => EAssignOp(name, op, val, rest, target_at),
     StepPattern(pat, val) => EMatch(val, [(pat, rest)]),
     // #760(1): `let PAT = val else { alt }` — bind on match, else run the
     // diverging fallback. Desugars to a two-arm match whose wildcard arm is
@@ -1191,8 +1191,8 @@ fn expr_always_exits_guard(e: Expr) -> Bool {
     ELet(_, _, b, _) => expr_always_exits_guard(b),
     ELetMut(_, _, b, _) => expr_always_exits_guard(b),
     ELetRec(_, _, b) => expr_always_exits_guard(b),
-    EAssign(_, _, c) => expr_always_exits_guard(c),
-    EAssignOp(_, _, _, c) => expr_always_exits_guard(c),
+    EAssign(_, _, c, _) => expr_always_exits_guard(c),
+    EAssignOp(_, _, _, c, _) => expr_always_exits_guard(c),
     // An `if` with no `else` parses with EUnit in the else slot, which does
     // not exit — so a one-armed `if` correctly fails the check.
     EIf(_, t, f) => expr_always_exits_guard(t) && expr_always_exits_guard(f),
@@ -1563,10 +1563,10 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
               p = next + 1
             },
             TEq => match source_expr(e) {
-              EIdent(name, _) => {
+              EIdent(name, target_at) => {
                 let (val, next_pos) = parse_block_value_only(tokens, next + 1, parse_recur, context)
                 source_record_slot("target", name, p, p + 1, context)
-                ArrayBuilder::push(steps, locate_block_step(StepAssign(name, val), p, block_source_end(tokens, next_pos), context))
+                ArrayBuilder::push(steps, locate_block_step(StepAssign(name, val, target_at), p, block_source_end(tokens, next_pos), context))
                 p = next_pos
               },
               EDot(obj, field, _, _) => {
@@ -1601,46 +1601,46 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
               _ => throw("invalid assignment target")
             },
             TPlusEq => match source_expr(e) {
-              EIdent(name, _) => {
+              EIdent(name, target_at) => {
                 let (val, next_pos) = parse_block_value_only(tokens, next + 1, parse_recur, context)
                 source_record_slot("target", name, p, p + 1, context)
-                ArrayBuilder::push(steps, locate_block_step(StepAssignOp(name, "+", val), p, block_source_end(tokens, next_pos), context))
+                ArrayBuilder::push(steps, locate_block_step(StepAssignOp(name, "+", val, target_at), p, block_source_end(tokens, next_pos), context))
                 p = next_pos
               },
               _ => throw("invalid assignment target")
             },
             TMinusEq => match source_expr(e) {
-              EIdent(name, _) => {
+              EIdent(name, target_at) => {
                 let (val, next_pos) = parse_block_value_only(tokens, next + 1, parse_recur, context)
                 source_record_slot("target", name, p, p + 1, context)
-                ArrayBuilder::push(steps, locate_block_step(StepAssignOp(name, "-", val), p, block_source_end(tokens, next_pos), context))
+                ArrayBuilder::push(steps, locate_block_step(StepAssignOp(name, "-", val, target_at), p, block_source_end(tokens, next_pos), context))
                 p = next_pos
               },
               _ => throw("invalid assignment target")
             },
             TStarEq => match source_expr(e) {
-              EIdent(name, _) => {
+              EIdent(name, target_at) => {
                 let (val, next_pos) = parse_block_value_only(tokens, next + 1, parse_recur, context)
                 source_record_slot("target", name, p, p + 1, context)
-                ArrayBuilder::push(steps, locate_block_step(StepAssignOp(name, "*", val), p, block_source_end(tokens, next_pos), context))
+                ArrayBuilder::push(steps, locate_block_step(StepAssignOp(name, "*", val, target_at), p, block_source_end(tokens, next_pos), context))
                 p = next_pos
               },
               _ => throw("invalid assignment target")
             },
             TSlashEq => match source_expr(e) {
-              EIdent(name, _) => {
+              EIdent(name, target_at) => {
                 let (val, next_pos) = parse_block_value_only(tokens, next + 1, parse_recur, context)
                 source_record_slot("target", name, p, p + 1, context)
-                ArrayBuilder::push(steps, locate_block_step(StepAssignOp(name, "/", val), p, block_source_end(tokens, next_pos), context))
+                ArrayBuilder::push(steps, locate_block_step(StepAssignOp(name, "/", val, target_at), p, block_source_end(tokens, next_pos), context))
                 p = next_pos
               },
               _ => throw("invalid assignment target")
             },
             TPercentEq => match source_expr(e) {
-              EIdent(name, _) => {
+              EIdent(name, target_at) => {
                 let (val, next_pos) = parse_block_value_only(tokens, next + 1, parse_recur, context)
                 source_record_slot("target", name, p, p + 1, context)
-                ArrayBuilder::push(steps, locate_block_step(StepAssignOp(name, "%", val), p, block_source_end(tokens, next_pos), context))
+                ArrayBuilder::push(steps, locate_block_step(StepAssignOp(name, "%", val, target_at), p, block_source_end(tokens, next_pos), context))
                 p = next_pos
               },
               _ => throw("invalid assignment target")

@@ -174,9 +174,12 @@ async function readIfPresent(path) {
 // Shared job wire format: the Node daemon and TaskGroup process bridge prepare
 // exactly the same dependency-occurrence snapshots and consume checked products.
 export async function prepareModuleJob(jobDir, module, dependencies = []) {
-  await rm(jobDir, { recursive: true, force: true });
-  await mkdir(jobDir, { recursive: true });
+  await writeModuleJobInputs(jobDir, moduleJobInputs(module, dependencies));
+}
 
+// Keep the exact wire bytes available before any filesystem work. A replay key
+// must describe the same source and ordered dependency occurrences as the CPU job.
+export function moduleJobInputs(module, dependencies = []) {
   const byId = new Map(dependencies.map((dependency) => [dependency.id, dependency]));
   const occurrences = module.dependencyOccurrences ?? dependencies.map((d) => d.id);
 
@@ -196,19 +199,26 @@ export async function prepareModuleJob(jobDir, module, dependencies = []) {
     }
     rows.push(`dep\t${depId}\t${depFingerprint}`);
   }
-  await writeFile(join(jobDir, "job.txt"), `${rows.join("\n")}\n`, "utf8");
-  await writeFile(join(jobDir, "source.vibe"), module.source, "utf8");
+  const inputs = [["job.txt", `${rows.join("\n")}\n`], ["source.vibe", module.source]];
   for (const [index, depId] of occurrences.entries()) {
     const env = byId.get(depId)?.outcome?.artifact?.env;
     if (typeof env !== "string" || env.length === 0) continue;
-    await writeFile(join(jobDir, `dep${index}.env`), env, "utf8");
+    inputs.push([`dep${index}.env`, env]);
   }
+  return inputs;
+}
 
+export async function writeModuleJobInputs(jobDir, inputs) {
+  await rm(jobDir, { recursive: true, force: true });
+  await mkdir(jobDir, { recursive: true });
+  for (const [name, contents] of inputs) {
+    await writeFile(join(jobDir, name), contents, "utf8");
+  }
 }
 
 export async function readModuleJobProduct(jobDir, module, response, { cleanup = true } = {}) {
-  const outcome = (await readIfPresent(join(jobDir, "outcome.txt")))?.trim() ?? "";
-  const diagnostic = (await readIfPresent(join(jobDir, "diag.txt")))?.trim() ?? "";
+  const outcome = await readIfPresent(join(jobDir, "outcome.txt"));
+  const diagnostic = await readIfPresent(join(jobDir, "diag.txt"));
   const env = await readIfPresent(join(jobDir, "env.out"));
   const cacheProduct = await readIfPresent(join(jobDir, "cache.out"));
   const computedFingerprint = (
@@ -218,6 +228,16 @@ export async function readModuleJobProduct(jobDir, module, response, { cleanup =
     await readIfPresent(join(jobDir, "worker.out.diag"))
   )?.trim();
   if (cleanup) await rm(jobDir, { recursive: true, force: true });
+
+  return parseModuleJobProduct(module, response, { outcome, diagnostic, env,
+    cacheProduct, computedFingerprint, workerDiag });
+}
+
+// Validate identical producer bytes for a live job and an input-bound replay.
+export function parseModuleJobProduct(module, response, fields) {
+  const outcome = fields.outcome?.trim() ?? "";
+  const diagnostic = fields.diagnostic?.trim() ?? "";
+  const { env, cacheProduct, computedFingerprint, workerDiag } = fields;
 
   // A missing outcome.txt is an infrastructure failure, never a
   // diagnostic: the worker writes it last precisely so its absence means

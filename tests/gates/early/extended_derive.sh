@@ -1010,6 +1010,16 @@ run_test_block_fixtures_gc "builtin value form ctor shadow (gc)" fixtures/builti
 run_test_block_fixtures_rc "builtin value form ctor shadow (linear, RC)" fixtures/builtin_value_form_shadow_ctor_test.vibe
 echo '[compiler-gate] builtin value form ok'
 
+# 15b-3b2. #3355/#3356: name resolution after a local's scope ends, and a
+#          module Int constant read from a lambda, on the two linear lanes
+#          (the unit runner covers only the default one). A local named like a
+#          top-level function or builtin kept shadowing it after its block
+#          ended (16 for 7002), and a lambda read a module Int constant as 0.
+echo '[compiler-gate] 15b-3b2/15 ended scopes and module constants in lambdas (#3355/#3356)'
+run_test_block_fixtures "ended scope / module constant (linear, bump)" fixtures/ended_scope_shadow_top_level_test.vibe fixtures/lambda_reads_module_constant_test.vibe
+run_test_block_fixtures_rc "ended scope / module constant (linear, RC)" fixtures/ended_scope_shadow_top_level_test.vibe fixtures/lambda_reads_module_constant_test.vibe
+echo '[compiler-gate] ended scopes and module constants in lambdas ok'
+
 # 15b-3c. #2630: the three length views of a byte string (`unicode_length` /
 #         `utf16_length` / `utf8_length`) are served by a callsite lowering on
 #         each lane -- a shared synthesis, but two `ce` dispatchers -- and were
@@ -1183,6 +1193,23 @@ run_test_block_fixtures "uncalled user-effect perform (linear, bump)" fixtures/u
 run_test_block_fixtures_gc "uncalled user-effect perform (gc)" fixtures/uncalled_user_effect_perform_test.vibe
 run_test_block_fixtures_rc "uncalled user-effect perform (linear, RC)" fixtures/uncalled_user_effect_perform_test.vibe
 echo '[compiler-gate] uncalled user-effect perform ok'
+
+# 15b-6. #3338: a closure that calls a local named like a top-level function
+#        calls the local. The gc lane's capture scan treated every top-level
+#        name as global, so the closure called the top-level function instead
+#        (7000 for 14) with no diagnostic. All three lanes, because the claim
+#        is that they agree. The `_gc_lane` file holds shapes the linear lane
+#        still answers wrongly (a binder whose block has ended keeps
+#        shadowing), so it runs on gc alone; its header has the numbers.
+#        lambda_bound_nested_concrete_test.vibe joins the gc run: its
+#        `shadowed_assign_scope` row read an inner block's `let mut x` after
+#        the block ended and rendered a heap address (241) for 7 on gc, the
+#        same scope leak.
+echo '[compiler-gate] 15b-6/15 a captured local shadows a top-level fn (#3338)'
+run_test_block_fixtures "captured local shadows top-level fn (linear, bump)" fixtures/closure_capture_shadows_top_level_fn_test.vibe fixtures/handler_arm_resume_closure_shadows_fn_test.vibe
+run_test_block_fixtures_gc "captured local shadows top-level fn (gc)" fixtures/closure_capture_shadows_top_level_fn_test.vibe fixtures/handler_arm_resume_closure_shadows_fn_test.vibe fixtures/scope_ended_shadow_gc_lane.vibe fixtures/lambda_bound_nested_concrete_test.vibe
+run_test_block_fixtures_rc "captured local shadows top-level fn (linear, RC)" fixtures/closure_capture_shadows_top_level_fn_test.vibe fixtures/handler_arm_resume_closure_shadows_fn_test.vibe
+echo '[compiler-gate] captured local shadows top-level fn ok'
 
 # 15c. railway `let*` / `?` generalized to Option (#635): the parser emits a
 #      type-directed sentinel that the pre-check desugar lowers by the operand's
