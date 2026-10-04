@@ -1,0 +1,82 @@
+import @vibe/compiler/codegen/common_extractors {
+  build_newline_offsets, offset_to_line
+}
+
+/// The specification counts all newline positions strictly before the offset.
+/// Returns a query index, so a disagreement at a negative offset is detectable.
+/// This oracle does not rely on a search algorithm or on query order.
+fn newline_lookup_first_disagreement(nl: Array[Int], start: Int, end: Int) -> Int {
+  let mut off = start
+  let mut bad = 0 - 1
+  while off <= end && bad < 0 {
+    let mut expected = 1
+    let mut i = 0
+    while i < Array::length(nl) {
+      if Array::get(nl, i) < off {
+        expected = expected + 1
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    if offset_to_line(nl, off) != expected {
+      bad = off - start
+    } else {
+      ()
+    }
+    off = off + 1
+  }
+  bad
+}
+
+test "newline lookup keeps exact boundaries and counts duplicate positions" {
+  let empty: Array[Int] = []
+  assert(offset_to_line(empty, 0 - 1) == 1)
+  assert(offset_to_line(empty, 100) == 1)
+  let nl: Array[Int] = [0, 2, 2, 6]
+  assert(offset_to_line(nl, 0 - 1) == 1)
+  assert(offset_to_line(nl, 0) == 1)
+  assert(offset_to_line(nl, 1) == 2)
+  assert(offset_to_line(nl, 2) == 2)
+  assert(offset_to_line(nl, 3) == 4)
+  assert(offset_to_line(nl, 6) == 4)
+  assert(offset_to_line(nl, 7) == 5)
+  assert(offset_to_line(nl, 100) == 5)
+  // Descending queries also leave the input table unchanged.
+  assert(offset_to_line(nl, 2) == 2)
+  assert(Array::get(nl, 0) == 0 && Array::get(nl, 3) == 6)
+}
+
+test "newline lookup agrees with the strict count across source offsets" {
+  let sources: Array[String] = [
+    "",
+    "plain",
+    "\n",
+    "\n\n\n",
+    "a\n\nb\n",
+    "// 日本語\nlet s = \"café 😀\"\n"
+  ]
+  let mut i = 0
+  while i < Array::length(sources) {
+    let source = Array::get(sources, i)
+    assert(newline_lookup_first_disagreement(build_newline_offsets(source), 0 - 1, String::length(source) + 2) < 0)
+    i = i + 1
+  }
+  let nl: Array[Int] = []
+  let mut j = 0
+  while j < 64 {
+    Array::push(nl, j * j + j)
+    j = j + 1
+  }
+  assert(newline_lookup_first_disagreement(nl, 0 - 1, 4034) < 0)
+}
+
+test "newline lookup preserves rebased file offsets" {
+  let nl: Array[Int] = [2000000000, 2000000002, 2000000002, 2000000006]
+  assert(offset_to_line(nl, 1999999999) == 1)
+  assert(offset_to_line(nl, 2000000000) == 1)
+  assert(offset_to_line(nl, 2000000002) == 2)
+  assert(offset_to_line(nl, 2000000003) == 4)
+  assert(offset_to_line(nl, 2000000006) == 4)
+  assert(offset_to_line(nl, 2000000007) == 5)
+}
