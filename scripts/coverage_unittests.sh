@@ -55,7 +55,8 @@ for f in lib/@vibe/compiler/*_test.vibe; do
     mv "$d/driver.tmp" "$d/driver.vibe"
   fi
   rm -f "$d/src.vibe" "$d/src.vibe.diag"
-  VIBE_EMIT_COVERAGE_DRIVER_SOURCE=1 VIBE_COVERAGE_DRIVER_PATH="$d/driver.vibe" \
+  # #3331: the lowered form, for the pinned seed (see scripts/generate_bundle.sh).
+  VIBE_EMIT_COVERAGE_DRIVER_SOURCE=1 VIBE_MERGED_SOURCE_LOWER_TRAIT_DICTS=1 VIBE_COVERAGE_DRIVER_PATH="$d/driver.vibe" \
     VIBE_PREOPEN_DIR="$ROOT" VIBE_IMPORT_ABI=raw \
     bash "$RUNNER" --invoke cli_main "$COMPILER_COV" \
     "$COMPILER_ENTRY" "$d/src.vibe" cov_driver_main >"$d/expose.log" 2>&1 || true

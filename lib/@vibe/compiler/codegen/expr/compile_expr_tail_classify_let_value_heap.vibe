@@ -366,8 +366,8 @@ fn seq_discard_owns_result_in(e: Expr, local_names: Array[String], bound: Array[
       owned
     },
     ESeq(_, body) => seq_discard_owns_result_in(body, local_names, bound, ctx),
-    EAssign(_, _, body) => seq_discard_owns_result_in(body, local_names, bound, ctx),
-    EAssignOp(_, _, _, body) => seq_discard_owns_result_in(body, local_names, bound, ctx),
+    EAssign(_, _, body, _) => seq_discard_owns_result_in(body, local_names, bound, ctx),
+    EAssignOp(_, _, _, body, _) => seq_discard_owns_result_in(body, local_names, bound, ctx),
     _ => false
   }
 }
@@ -919,8 +919,8 @@ export fn mib_spine_leaf(e: Expr, binders: Array[String]) -> Expr {
       mib_spine_leaf(b, binders)
     },
     ESeq(_, b) => mib_spine_leaf(b, binders),
-    EAssign(_, _, b) => mib_spine_leaf(b, binders),
-    EAssignOp(_, _, _, b) => mib_spine_leaf(b, binders),
+    EAssign(_, _, b, _) => mib_spine_leaf(b, binders),
+    EAssignOp(_, _, _, b, _) => mib_spine_leaf(b, binders),
     _ => e
   }
 }
@@ -994,8 +994,8 @@ fn rc_scope_borrow_arg_reaches_owner(e: Expr, owner: String, local_names: Array[
     ELetMut(bound, value, tail, _) => bound != owner && !assign_value_mentions(value, owner) && rc_scope_borrow_arg_reaches_owner(tail, owner, local_names, ctx),
     ELetRec(bound, value, tail) => bound != owner && !assign_value_mentions(value, owner) && rc_scope_borrow_arg_reaches_owner(tail, owner, local_names, ctx),
     ESeq(head, tail) => !assign_value_mentions(head, owner) && rc_scope_borrow_arg_reaches_owner(tail, owner, local_names, ctx),
-    EAssign(target, value, tail) => target != owner && !assign_value_mentions(value, owner) && rc_scope_borrow_arg_reaches_owner(tail, owner, local_names, ctx),
-    EAssignOp(target, _, value, tail) => target != owner && !assign_value_mentions(value, owner) && rc_scope_borrow_arg_reaches_owner(tail, owner, local_names, ctx),
+    EAssign(target, value, tail, _) => target != owner && !assign_value_mentions(value, owner) && rc_scope_borrow_arg_reaches_owner(tail, owner, local_names, ctx),
+    EAssignOp(target, _, value, tail, _) => target != owner && !assign_value_mentions(value, owner) && rc_scope_borrow_arg_reaches_owner(tail, owner, local_names, ctx),
     _ => false
   }
 }
@@ -1026,8 +1026,8 @@ fn rc_mut_rec_result_is_name(e: Expr, name: String) -> Bool {
     ELetMut(bound, value, tail, _) => bound != name && !assign_value_mentions(value, name) && rc_mut_rec_result_is_name(tail, name),
     ELetRec(bound, value, tail) => bound != name && !assign_value_mentions(value, name) && rc_mut_rec_result_is_name(tail, name),
     ESeq(head, tail) => !assign_value_mentions(head, name) && rc_mut_rec_result_is_name(tail, name),
-    EAssign(target, value, tail) => target != name && !assign_value_mentions(value, name) && rc_mut_rec_result_is_name(tail, name),
-    EAssignOp(target, _, value, tail) => target != name && !assign_value_mentions(value, name) && rc_mut_rec_result_is_name(tail, name),
+    EAssign(target, value, tail, _) => target != name && !assign_value_mentions(value, name) && rc_mut_rec_result_is_name(tail, name),
+    EAssignOp(target, _, value, tail, _) => target != name && !assign_value_mentions(value, name) && rc_mut_rec_result_is_name(tail, name),
     _ => false
   }
 }
@@ -1095,15 +1095,15 @@ fn rc_mut_rec_retain_passthrough_source(e: Expr, local_names: Array[String], ctx
     } else {
       ESeq(head, rc_mut_rec_retain_passthrough_source(tail, local_names, ctx, shadowed))
     },
-    EAssign(target, value, tail) => if rc_mut_rec_prefix_reads_owner(value, local_names, ctx, shadowed) || rc_mut_rec_owner_slot(target, local_names, ctx) {
+    EAssign(target, value, tail, target_off) => if rc_mut_rec_prefix_reads_owner(value, local_names, ctx, shadowed) || rc_mut_rec_owner_slot(target, local_names, ctx) {
       e
     } else {
-      EAssign(target, value, rc_mut_rec_retain_passthrough_source(tail, local_names, ctx, shadowed))
+      EAssign(target, value, rc_mut_rec_retain_passthrough_source(tail, local_names, ctx, shadowed), target_off)
     },
-    EAssignOp(target, op, value, tail) => if rc_mut_rec_prefix_reads_owner(value, local_names, ctx, shadowed) || rc_mut_rec_owner_slot(target, local_names, ctx) {
+    EAssignOp(target, op, value, tail, target_off) => if rc_mut_rec_prefix_reads_owner(value, local_names, ctx, shadowed) || rc_mut_rec_owner_slot(target, local_names, ctx) {
       e
     } else {
-      EAssignOp(target, op, value, rc_mut_rec_retain_passthrough_source(tail, local_names, ctx, shadowed))
+      EAssignOp(target, op, value, rc_mut_rec_retain_passthrough_source(tail, local_names, ctx, shadowed), target_off)
     },
     _ => e
   }
@@ -1177,8 +1177,8 @@ export fn rc_mut_rec_transfer_value(e: Expr, local_names: Array[String], ctx: Co
       ELetRec(name, value, next_body)
     },
     ESeq(head, tail) => ESeq(head, rc_mut_rec_transfer_value(tail, local_names, ctx, shadowed)),
-    EAssign(name, value, body) => EAssign(name, value, rc_mut_rec_transfer_value(body, local_names, ctx, shadowed)),
-    EAssignOp(name, op, value, body) => EAssignOp(name, op, value, rc_mut_rec_transfer_value(body, local_names, ctx, shadowed)),
+    EAssign(name, value, body, target_off) => EAssign(name, value, rc_mut_rec_transfer_value(body, local_names, ctx, shadowed), target_off),
+    EAssignOp(name, op, value, body, target_off) => EAssignOp(name, op, value, rc_mut_rec_transfer_value(body, local_names, ctx, shadowed), target_off),
     EHandle(body, arms) => EHandle(rc_mut_rec_transfer_value(body, local_names, ctx, shadowed), for arm in arms {
       let mark = Array::length(shadowed)
       let _ = collect_pattern_bindings(arm.0, shadowed)
@@ -1206,8 +1206,8 @@ export fn rc_scope_tail_borrows_name(e: Expr, owner: String, local_names: Array[
     ELetMut(n, value, body, _) => rc_scope_tail_borrows_name(body, owner, local_names, ctx) || (rc_scope_unknown_result_may_be_owner(value, owner, local_names, ctx) && rc_scope_tail_borrows_name(body, n, local_names, ctx)),
     ELetRec(_, _, body) => rc_scope_tail_borrows_name(body, owner, local_names, ctx),
     ESeq(_, body) => rc_scope_tail_borrows_name(body, owner, local_names, ctx),
-    EAssign(_, _, body) => rc_scope_tail_borrows_name(body, owner, local_names, ctx),
-    EAssignOp(_, _, _, body) => rc_scope_tail_borrows_name(body, owner, local_names, ctx),
+    EAssign(_, _, body, _) => rc_scope_tail_borrows_name(body, owner, local_names, ctx),
+    EAssignOp(_, _, _, body, _) => rc_scope_tail_borrows_name(body, owner, local_names, ctx),
     EReturn(value) => rc_scope_tail_borrows_name(value, owner, local_names, ctx),
     EIf(_, yes, no) => rc_scope_tail_borrows_name(yes, owner, local_names, ctx) || rc_scope_tail_borrows_name(no, owner, local_names, ctx),
     EMatch(_, arms) => {
@@ -1416,8 +1416,8 @@ export fn assign_retain_view_tails(e: Expr, local_names: Array[String], inner: A
       ELetRec(n, v, assign_retain_view_tails(b, local_names, with_name(inner, n), next_owned, ctx))
     },
     ESeq(a, b) => ESeq(a, assign_retain_view_tails(b, local_names, inner, inner_owned, ctx)),
-    EAssign(n, v, b) => EAssign(n, v, assign_retain_view_tails(b, local_names, inner, inner_owned, ctx)),
-    EAssignOp(n, op, v, b) => EAssignOp(n, op, v, assign_retain_view_tails(b, local_names, inner, inner_owned, ctx)),
+    EAssign(n, v, b, target_off) => EAssign(n, v, assign_retain_view_tails(b, local_names, inner, inner_owned, ctx), target_off),
+    EAssignOp(n, op, v, b, target_off) => EAssignOp(n, op, v, assign_retain_view_tails(b, local_names, inner, inner_owned, ctx), target_off),
     _ => e
   }
 }
@@ -1460,8 +1460,8 @@ export fn assign_retain_store_dup_tails(e: Expr, local_names: Array[String], inn
     ELetMut(n, v, b, soff) => ELetMut(n, v, assign_retain_store_dup_tails(b, local_names, with_name(inner, n), ctx), soff),
     ELetRec(n, v, b) => ELetRec(n, v, assign_retain_store_dup_tails(b, local_names, with_name(inner, n), ctx)),
     ESeq(a, b) => ESeq(a, assign_retain_store_dup_tails(b, local_names, inner, ctx)),
-    EAssign(n, v, b) => EAssign(n, v, assign_retain_store_dup_tails(b, local_names, inner, ctx)),
-    EAssignOp(n, op, v, b) => EAssignOp(n, op, v, assign_retain_store_dup_tails(b, local_names, inner, ctx)),
+    EAssign(n, v, b, target_off) => EAssign(n, v, assign_retain_store_dup_tails(b, local_names, inner, ctx), target_off),
+    EAssignOp(n, op, v, b, target_off) => EAssignOp(n, op, v, assign_retain_store_dup_tails(b, local_names, inner, ctx), target_off),
     _ => e
   }
 }
@@ -1499,8 +1499,8 @@ export fn assign_tails_retained(e: Expr) -> Bool {
     ELetMut(_, _, b, _) => assign_tails_retained(b),
     ELetRec(_, _, b) => assign_tails_retained(b),
     ESeq(_, b) => assign_tails_retained(b),
-    EAssign(_, _, b) => assign_tails_retained(b),
-    EAssignOp(_, _, _, b) => assign_tails_retained(b),
+    EAssign(_, _, b, _) => assign_tails_retained(b),
+    EAssignOp(_, _, _, b, _) => assign_tails_retained(b),
     _ => false
   }
 }
@@ -1586,8 +1586,8 @@ export fn retain_wrap_branch_tails(e: Expr, local_names: Array[String], inner: A
     // both its value and the body, so it joins the inner scope here.
     ELetRec(n, v, b) => ELetRec(n, v, retain_wrap_branch_tails(b, local_names, with_name(inner, n), ctx)),
     ESeq(a, b) => ESeq(a, retain_wrap_branch_tails(b, local_names, inner, ctx)),
-    EAssign(n, v, b) => EAssign(n, v, retain_wrap_branch_tails(b, local_names, inner, ctx)),
-    EAssignOp(n, op, v, b) => EAssignOp(n, op, v, retain_wrap_branch_tails(b, local_names, inner, ctx)),
+    EAssign(n, v, b, target_off) => EAssign(n, v, retain_wrap_branch_tails(b, local_names, inner, ctx), target_off),
+    EAssignOp(n, op, v, b, target_off) => EAssignOp(n, op, v, retain_wrap_branch_tails(b, local_names, inner, ctx), target_off),
     _ => e
   }
 }
@@ -1632,8 +1632,8 @@ export fn value_has_borrowed_branch_tail(e: Expr, local_names: Array[String], in
     ELetMut(n, _, b, _) => value_has_borrowed_branch_tail(b, local_names, with_name(inner, n), ctx),
     ELetRec(n, _, b) => value_has_borrowed_branch_tail(b, local_names, with_name(inner, n), ctx),
     ESeq(_, b) => value_has_borrowed_branch_tail(b, local_names, inner, ctx),
-    EAssign(_, _, b) => value_has_borrowed_branch_tail(b, local_names, inner, ctx),
-    EAssignOp(_, _, _, b) => value_has_borrowed_branch_tail(b, local_names, inner, ctx),
+    EAssign(_, _, b, _) => value_has_borrowed_branch_tail(b, local_names, inner, ctx),
+    EAssignOp(_, _, _, b, _) => value_has_borrowed_branch_tail(b, local_names, inner, ctx),
     _ => false
   }
 }
@@ -1796,8 +1796,8 @@ export fn path_value_owned(e: Expr, local_names: Array[String], bound: Array[Str
       r
     },
     ESeq(_, b) => path_value_owned(b, local_names, bound, ctx),
-    EAssign(_, _, b) => path_value_owned(b, local_names, bound, ctx),
-    EAssignOp(_, _, _, b) => path_value_owned(b, local_names, bound, ctx),
+    EAssign(_, _, b, _) => path_value_owned(b, local_names, bound, ctx),
+    EAssignOp(_, _, _, b, _) => path_value_owned(b, local_names, bound, ctx),
     _ => false
   }
 }
@@ -1910,8 +1910,8 @@ fn value_spine_borrowed(e: Expr, local_names: Array[String], bound: Array[String
     },
     ELetRec(n, v, b) => vsb_under_binder(n, v, b, local_names, bound, bound_owned, ctx),
     ESeq(_, b) => value_spine_borrowed(b, local_names, bound, bound_owned, ctx),
-    EAssign(_, _, b) => value_spine_borrowed(b, local_names, bound, bound_owned, ctx),
-    EAssignOp(_, _, _, b) => value_spine_borrowed(b, local_names, bound, bound_owned, ctx),
+    EAssign(_, _, b, _) => value_spine_borrowed(b, local_names, bound, bound_owned, ctx),
+    EAssignOp(_, _, _, b, _) => value_spine_borrowed(b, local_names, bound, bound_owned, ctx),
     _ => false
   }
 }
@@ -2034,8 +2034,8 @@ export fn cet_strip_owned_markers(e: Expr) -> Expr {
     ELetMut(n, v, b, off) => ELetMut(n, v, cet_strip_owned_markers(b), off),
     ELetRec(n, v, b) => ELetRec(n, v, cet_strip_owned_markers(b)),
     ESeq(a, b) => ESeq(a, cet_strip_owned_markers(b)),
-    EAssign(n, v, b) => EAssign(n, v, cet_strip_owned_markers(b)),
-    EAssignOp(n, op, v, b) => EAssignOp(n, op, v, cet_strip_owned_markers(b)),
+    EAssign(n, v, b, target_off) => EAssign(n, v, cet_strip_owned_markers(b), target_off),
+    EAssignOp(n, op, v, b, target_off) => EAssignOp(n, op, v, cet_strip_owned_markers(b), target_off),
     _ => e
   }
 }
@@ -2065,8 +2065,8 @@ export fn branch_tail_calls_borrow(e: Expr, local_names: Array[String], inner: A
     ELetMut(n, _, b, _) => branch_tail_calls_borrow(b, local_names, with_name(inner, n), ctx),
     ELetRec(n, _, b) => branch_tail_calls_borrow(b, local_names, with_name(inner, n), ctx),
     ESeq(_, b) => branch_tail_calls_borrow(b, local_names, inner, ctx),
-    EAssign(_, _, b) => branch_tail_calls_borrow(b, local_names, inner, ctx),
-    EAssignOp(_, _, _, b) => branch_tail_calls_borrow(b, local_names, inner, ctx),
+    EAssign(_, _, b, _) => branch_tail_calls_borrow(b, local_names, inner, ctx),
+    EAssignOp(_, _, _, b, _) => branch_tail_calls_borrow(b, local_names, inner, ctx),
     _ => false
   }
 }

@@ -5,7 +5,7 @@ import @vibe/compiler/checker/annotations {
 }
 
 import @vibe/compiler/checker/type_relations {
-  head_kind
+  check_assignable_set_enclosing, head_kind
 }
 
 import @vibe/compiler/checker/resume {
@@ -193,15 +193,24 @@ export fn unify_call_args(param_tys: Array[Type], arg_tys: Array[Type], arg_expr
     // which never mismatches. The length guard keeps a caller that cannot
     // supply the expressions on the old callee anchor rather than on a
     // MISALIGNED one -- a wrong location is worse than a coarse one.
-    let a_off = if have_exprs {
+    //
+    // #3305: a tuple or array literal has no offset of its own, so it is
+    // anchored at a located element inside it, and the locator widens that
+    // to the literal's brackets (`literal_arg_anchor`).
+    let (a_off, a_path) = if have_exprs {
       let ao = railway_expr_off(Array::get(arg_exprs, ui))
       if ao >= 0 {
-        ao
+        (ao, "")
       } else {
-        off
+        let (lo, lpath) = literal_arg_anchor(Array::get(arg_exprs, ui))
+        if lo >= 0 {
+          (lo, lpath)
+        } else {
+          (off, "")
+        }
       }
     } else {
-      off
+      (off, "")
     }
     out = if label == "__to_string" {
       match unify(pty, aty, out) {
@@ -213,14 +222,59 @@ export fn unify_call_args(param_tys: Array[Type], arg_tys: Array[Type], arg_expr
       // one argument onto the next argument's diagnostic.
       if have_exprs {
         check_assignable_set_end(string_lit_end(Array::get(arg_exprs, ui)))
+        check_assignable_set_enclosing(a_path)
       } else {
         ()
       }
-      check_assignable_for(pty, aty, out, errors, "argument type mismatch for ", label, a_off)
+      let checked = check_assignable_for(pty, aty, out, errors, "argument type mismatch for ", label, a_off)
+      // A check that reported nothing leaves the path unconsumed.
+      check_assignable_set_enclosing("")
+      checked
     }
     ui = ui + 1
   }
   out
+}
+
+/// #3305: where a tuple or array literal ARGUMENT can be anchored, as
+/// `(offset, path)`. `ETuple` / `EArray` carry no offset, so a mismatch on one
+/// anchored the callee: `f(["a"])` reported the `f`. The first element whose
+/// offset is the start of its own token -- a string or a name, directly or
+/// inside a nested literal -- is a position inside the argument. `path` is the
+/// bracket path from the argument down to it, outermost first (`1` for `[`,
+/// `2` for `(`); the locator widens the element back to the argument's own
+/// brackets with it (`off_marker_enclosing`). `(-1, "")` when no element
+/// qualifies (`f([1, 2])`), and the callee anchor stands.
+fn literal_arg_anchor(e: Expr) -> (Int, String) {
+  match e {
+    EArray(items) => literal_items_anchor(items, "1"),
+    ETuple(items) => literal_items_anchor(items, "2"),
+    _ => (0 - 1, "")
+  }
+}
+
+fn literal_items_anchor(items: Array[Expr], kind: String) -> (Int, String) {
+  let mut off = 0 - 1
+  let mut path = ""
+  let mut i = 0
+  while off < 0 && i < Array::length(items) {
+    let item = Array::get(items, i)
+    let (item_off, item_path) = match item {
+      EString(_, so) => (so, ""),
+      EIdent(_, io) => (io, ""),
+      EArray(_) => literal_arg_anchor(item),
+      ETuple(_) => literal_arg_anchor(item),
+      _ => (0 - 1, "")
+    }
+    if item_off >= 0 {
+      off = item_off
+      path = String::concat(kind, item_path)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  (off, path)
 }
 
 export fn param_marker_index(label: String) -> Option[Int] {
