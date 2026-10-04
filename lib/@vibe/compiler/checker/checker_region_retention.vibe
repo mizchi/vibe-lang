@@ -34,7 +34,13 @@
 //#     function is, so a call of it inside the callee is judged in turn.
 //#
 //# The ordinary write checks then answer, and a write they refuse refuses the
-//# call, with the call's own diagnostic. A closure is re-checked when it
+//# call, with the call's own diagnostic. The re-check also asks which regions
+//# the callee's RESULT carries -- by the body's type before a return
+//# annotation can hide it, or through a struct built in the tail -- and a
+//# call whose result type at the call does not name such a region is refused
+//# too: a helper declared `-> TaskHandle[Int]`, or returning a struct, would
+//# otherwise launder the token past the caller's own write check (Codex on
+//# #3359). A closure is re-checked when it
 //# captured a value carrying the region, too, since it may hand that value to
 //# a function it is passed. The re-check is a throwaway lane: its diagnostics,
 //# type table and substitution are dropped, its fresh variables come from a
@@ -56,7 +62,7 @@ import @vibe/compiler/checker/diagnostics {
 }
 
 import @vibe/compiler/core {
-  Expr, Stmt, Subst, Type, TypeDef, TypeEnv, env_bind, env_cache_binding, env_lookup, env_name_index_find, subst_apply
+  Expr, Stmt, Subst, Type, TypeDef, TypeEnv, env_bind, env_cache_binding, env_lookup, env_name_index_find, instantiate, subst_apply, unify
 }
 
 import @vibe/core {
@@ -72,7 +78,7 @@ import ./checker_spawnable.vibe {
 }
 
 import ./checker_builtin_arg_head_rest.vibe {
-  ascription_lambda_ann, let_rhs_closure_literal
+  ascription_lambda_ann, call_result_with_provenance, let_rhs_closure_literal
 }
 
 import ./checker_eq_unbounded_formal_msg.vibe {
@@ -120,6 +126,11 @@ let retention_arg_lambdas: Array[(Expr, TypeEnv)] = []
 
 /// The re-checks in progress, by callee and argument shape.
 let retention_recheck_stack: Array[String] = []
+
+/// The active regions the result of the lambda a re-check checked carries --
+/// by its type, or through a struct value built in its tail -- written by
+/// `check_lambda_expr` for that lambda alone (`retention_note_result`).
+let retention_result_cell: Array[String] = []
 
 /// Fresh variables of a re-check start this far above the counter the real
 /// check is at, so no id it hands out is ever handed out again by the real
@@ -182,6 +193,68 @@ export fn take_retention_param_override() -> Array[(Type, Array[String], String)
   let taken = Array::slice(retention_param_override_cell, 0, Array::length(retention_param_override_cell))
   Array::truncate(retention_param_override_cell, 0)
   taken
+}
+
+/// #3343 (Codex on #3359): record the regions the re-checked lambda's result
+/// carries. `check_lambda_expr` answers this for the lambda that took a
+/// parameter override, once its body is checked.
+export fn retention_note_result(regions: Array[String]) -> Unit {
+  Array::truncate(retention_result_cell, 0)
+  for r in regions {
+    Array::push(retention_result_cell, r)
+  }
+  ()
+}
+
+/// #3343: the names of the regions active in `env`, innermost first.
+export fn retention_active_region_names(env: TypeEnv) -> Array[String] {
+  for r in retention_active_regions(env) {
+    let (rname, _) = r
+    rname
+  }
+}
+
+/// #3343 (Codex on #3359): whether a value of type `t` may hold a region's
+/// token without its type naming the region -- a nominal type (whose fields
+/// the type does not show), a function (whose captures it may not), or a
+/// type not yet known. A scalar, and an array, option, tuple or record of
+/// scalars, cannot.
+export fn retention_type_may_hide_region(t: Type) -> Bool {
+  match t {
+    CtInt => false,
+    CtDouble => false,
+    CtBool => false,
+    CtString => false,
+    CtChar => false,
+    CtUnit => false,
+    CtBytes => false,
+    CtArray(e) => retention_type_may_hide_region(e),
+    CtOption(e) => retention_type_may_hide_region(e),
+    CtTuple(items) => {
+      let mut any = false
+      for item in items {
+        if retention_type_may_hide_region(item) {
+          any = true
+        } else {
+          ()
+        }
+      }
+      any
+    },
+    CtRecord(fields) => {
+      let mut any = false
+      for field in fields {
+        let (_, fty) = field
+        if retention_type_may_hide_region(fty) {
+          any = true
+        } else {
+          ()
+        }
+      }
+      any
+    },
+    _ => true
+  }
 }
 
 /// #3343: bind, in front of a re-checked lambda's parameter `name`, what its
@@ -799,6 +872,10 @@ fn retention_escape_kind(errors: Array[String]) -> Int {
     if String::starts_with(e, "region escapes its") {
       if String::contains(e, " stores ") {
         kind = 1
+      } else if kind != 1 && (String::contains(e, " returns ") || String::contains(e, " loses track of ")) {
+        // A call inside the callee returned the token under a type that
+        // hides it, so the callee's own writes could not see it.
+        kind = 6
       } else if kind == 0 && String::contains(e, " passes ") {
         kind = 2
       } else {
@@ -851,11 +928,11 @@ fn retention_region_env(base: TypeEnv, regions: Array[(String, Bool)]) -> TypeEn
 /// callee and the argument shape; a re-check already in progress for the same
 /// key answers nothing new, and a chain of re-checks deeper than any real
 /// program builds is refused rather than cut off silently.
-fn retention_recheck(lit: Expr, scope: TypeEnv, regions: Array[(String, Bool)], overrides: Array[(Type, Array[String], String)], key: String, defs: Array[TypeDef], s: Subst, c: Int, check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> Int {
+fn retention_recheck(lit: Expr, scope: TypeEnv, regions: Array[(String, Bool)], overrides: Array[(Type, Array[String], String)], key: String, defs: Array[TypeDef], s: Subst, c: Int, check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> (Int, Array[String]) {
   if retention_string_has(retention_recheck_stack, key) {
-    0
+    (0, array_empty())
   } else if Array::length(retention_recheck_stack) >= 24 {
-    1
+    (1, array_empty())
   } else {
     Array::push(retention_recheck_stack, key)
     let cp = retention_checkpoint()
@@ -863,12 +940,15 @@ fn retention_recheck(lit: Expr, scope: TypeEnv, regions: Array[(String, Bool)], 
     for o in overrides {
       Array::push(retention_param_override_cell, o)
     }
+    Array::truncate(retention_result_cell, 0)
     let rc_errors = array_empty()
     let rc_tab = array_empty()
     let _ = check_child(lit, retention_region_env(scope, regions), defs, s, c, rc_errors, rc_tab, None, "AuxiliaryRetentionRecheck")
+    let result_regions = Array::slice(retention_result_cell, 0, Array::length(retention_result_cell))
+    Array::truncate(retention_result_cell, 0)
     retention_restore(cp)
     Array::truncate(retention_recheck_stack, Array::length(retention_recheck_stack) - 1)
-    retention_escape_kind(rc_errors)
+    (retention_escape_kind(rc_errors), result_regions)
   }
 }
 
@@ -899,16 +979,37 @@ fn retention_any_nursery(regions: Array[(String, Bool)]) -> Bool {
 }
 
 fn retention_call_message(callee: String, nursery: Bool, kind: Int) -> String {
-  if nursery {
-    if kind == 1 {
-      String::concat("region escapes its nursery scope: this call to `", String::concat(callee, "` stores this TaskGroup::run call's own Nursery/Task/Sender/Receiver token in a binding declared outside the body -- join the task (or use the endpoint) inside the body and pass the result instead, or declare the binding inside the body"))
-    } else {
-      String::concat("region escapes its nursery scope: this call to `", String::concat(callee, "` passes this TaskGroup::run call's own Nursery/Task/Sender/Receiver token on to a function whose body the checker cannot see -- join the task (or use the endpoint) inside the body and pass the result instead"))
-    }
-  } else if kind == 1 {
-    String::concat("region escapes its scope: this call to `", String::concat(callee, "` stores a value that captures this region into an outer binding"))
+  let head = String::concat(if nursery {
+    "region escapes its nursery scope: this call to `"
   } else {
-    String::concat("region escapes its scope: this call to `", String::concat(callee, "` passes a value that captures this region on to a function whose body the checker cannot see"))
+    "region escapes its scope: this call to `"
+  }, callee)
+  let token = if nursery {
+    "this TaskGroup::run call's own Nursery/Task/Sender/Receiver token"
+  } else {
+    "a value that captures this region"
+  }
+  let fix = if nursery {
+    " -- join the task (or use the endpoint) inside the body and pass the result instead"
+  } else {
+    ""
+  }
+  if kind == 1 {
+    if nursery {
+      String::concat(head, String::concat("` stores ", String::concat(token, String::concat(" in a binding declared outside the body", String::concat(fix, ", or declare the binding inside the body")))))
+    } else {
+      String::concat(head, "` stores a value that captures this region into an outer binding")
+    }
+  } else if kind == 3 {
+    String::concat(head, String::concat("` returns ", String::concat(token, String::concat(" as a value whose type does not name the region, so the checker cannot follow it -- declare the result with a type parameter that carries the argument's type (as `fn f[T](x: T) -> T` or a generic struct does)", if nursery {
+      ", or join the task (or use the endpoint) inside the body and pass the result instead"
+    } else {
+      ""
+    }))))
+  } else if kind == 6 {
+    String::concat(head, String::concat("` loses track of ", String::concat(token, String::concat(": a function it calls hands it back as a value whose type does not name the region -- declare that result with a type parameter that carries the argument's type", fix))))
+  } else {
+    String::concat(head, String::concat("` passes ", String::concat(token, String::concat(" on to a function whose body the checker cannot see", fix))))
   }
 }
 
@@ -1023,9 +1124,51 @@ fn retention_regions_intersect(names: Array[String], regions: Array[(String, Boo
   hit
 }
 
-/// The shared core of a call check: `callee` already classified, `label` the
-/// spelling the diagnostic names, `marker` its location.
-fn retention_check_callee(callee: RetentionCallee, label: String, marker: String, args: Array[Expr], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> Unit {
+/// The type the call's result is given where it is written: the callee's
+/// type at the call (`callee_expr` is its name or the literal), applied to
+/// the argument types, with the provenance a parameter's capture hands on.
+/// `None` when the callee is not a function type here.
+fn retention_call_result_type(callee_expr: Expr, arg_tys: Array[Type], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> Option[Type] {
+  let (raw, s0, c0) = match callee_expr {
+    EIdent(name, _) => match env_lookup(env, name) {
+      Some(t) => {
+        let (ti, nc, _) = instantiate(t, c)
+        (ti, s, nc)
+      },
+      None => (CtUnknown, s, c)
+    },
+    _ => {
+      let cp = retention_checkpoint()
+      let (t, ns, nc) = check_child(callee_expr, env, defs, s, c, array_empty(), array_empty(), None, "AuxiliaryRetentionRecheck")
+      retention_restore(cp)
+      let (ti, nc2, _) = instantiate(subst_apply(ns, t), nc)
+      (ti, ns, nc2)
+    }
+  }
+  let _ = c0
+  match subst_apply(s0, raw) {
+    CtFn(params, ret, _) => {
+      let mut su = s0
+      let mut i = 0
+      while i < Array::length(params) && i < Array::length(arg_tys) {
+        match unify(Array::get(params, i), Array::get(arg_tys, i), su) {
+          Some(next) => {
+            su = next
+          },
+          None => ()
+        }
+        i = i + 1
+      }
+      Some(call_result_with_provenance(ret, params, arg_tys, su))
+    },
+    _ => None
+  }
+}
+
+/// The shared core of a call check: `callee` already classified,
+/// `callee_expr` the callee as written, `label` the spelling the diagnostic
+/// names, `marker` its location.
+fn retention_check_callee(callee: RetentionCallee, callee_expr: Expr, label: String, marker: String, args: Array[Expr], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> Unit {
   match callee {
     RetentionTrusted => (),
     _ => {
@@ -1069,8 +1212,42 @@ fn retention_check_callee(callee: RetentionCallee, label: String, marker: String
               }, String::join(predates, ",")))
               ai = ai + 1
             }
-            let kind = retention_recheck(lit, scope, regions, overrides, shape, defs, s_args, c_args, check_child)
+            let (written_kind, result_regions) = retention_recheck(lit, scope, regions, overrides, shape, defs, s_args, c_args, check_child)
             Array::truncate(retention_arg_lambdas, lambdas_before)
+            // Codex on #3359: a callee that keeps nothing may still RETURN the
+            // token under a type that does not name the region -- an
+            // annotation that spells `TaskHandle[Int]`, or a struct whose
+            // fields its type does not show -- and the caller's own write of
+            // that result would then see no region. Refused unless the
+            // result's type at the call names every region the callee's
+            // result carries.
+            let kind = if written_kind == 0 && Array::length(result_regions) > 0 {
+              let main_ret = retention_call_result_type(callee_expr, arg_tys, env, defs, s_args, c_args + retention_counter_gap(), check_child)
+              let mut launders = false
+              for r in triggers {
+                let (rname, _) = r
+                if retention_string_has(result_regions, rname) {
+                  let shown = match main_ret {
+                    Some(t) => type_mentions_named(t, rname),
+                    None => false
+                  }
+                  if !shown {
+                    launders = true
+                  } else {
+                    ()
+                  }
+                } else {
+                  ()
+                }
+              }
+              if launders {
+                3
+              } else {
+                0
+              }
+            } else {
+              written_kind
+            }
             if kind > 0 {
               Array::push(errors, String::concat(retention_call_message(label, retention_any_nursery(triggers), kind), marker))
             } else {
@@ -1107,7 +1284,7 @@ fn retention_check_callee(callee: RetentionCallee, label: String, marker: String
 /// and a runner or spawner (checked by their own branches) are left alone.
 export fn retention_call_region_check(name: String, name_off: Int, span_len: Int, args: Array[Expr], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> Unit {
   if Array::length(args) > 0 && env_has_active_region(env) && !builtin_resolves_at(env, name, name_off) && !callee_is_run_shaped(env, s, name) && !callee_is_spawn_shaped(env, s, name) {
-    retention_check_callee(retention_named_callee(env, name), name, off_marker_len(name_off, span_len), args, env, defs, s, c, errors, check_child)
+    retention_check_callee(retention_named_callee(env, name), EIdent(name, name_off), name, off_marker_len(name_off, span_len), args, env, defs, s, c, errors, check_child)
   } else {
     ()
   }
@@ -1123,22 +1300,29 @@ export fn retention_expr_callee_region_check(callee: Expr, label: String, marker
       EFn(_, _, _, _, _, _) => RetentionVisible(callee, env, String::concat("lambda:", __to_string(marker_off))),
       _ => RetentionOpaque
     }
-    retention_check_callee(classified, label, off_marker(marker_off), args, env, defs, s, c, errors, check_child)
+    retention_check_callee(classified, callee, label, off_marker(marker_off), args, env, defs, s, c, errors, check_child)
   } else {
     ()
   }
 }
 
 /// #3343: whether the body a `TaskGroup::run` call is handed BY NAME keeps
-/// the call's own token past the group: 0 no, 1 a write stores it in a
-/// binding declared outside the body, 2 it hands the token to a function
-/// nothing is known about. A literal body is checked inside the region
-/// already; a name bound to a closure literal or a top-level function is
-/// re-checked under the region with its parameter bound to the group.
-export fn retention_named_run_body(body: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, region_ty: Type, group_ty: Type, check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> Int {
-  match body {
-    EIdent(name, _) => match region_ty {
-      CtNamed(rname, _) => match retention_named_callee(env, name) {
+/// the call's own token past the group, and whether its result carries the
+/// token. The kind is 0 no, 1 a write stores it in a binding declared
+/// outside the body, 2 or 6 it hands the token to a function that loses
+/// track of it, 5 the body is not visible here at all. A literal body is
+/// checked inside the region already; a name bound to a closure literal or
+/// a top-level function is re-checked under the region with its parameter
+/// bound to the group; anything else -- a `let mut` closure, a parameter, a
+/// call's result, a function stored in a field (Codex on #3359) -- is
+/// refused, except a function imported from another module (see the header).
+export fn retention_named_run_body(body: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, region_ty: Type, group_ty: Type, check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> (Int, Bool) {
+  match region_ty {
+    CtNamed(rname, _) => match body {
+      // A literal is checked inside the region where it is written; one of
+      // another arity is a type error reported by the call.
+      EFn(_, _, _, _, _, _) => (0, false),
+      EIdent(name, _) => match retention_named_callee(env, name) {
         RetentionVisible(lit, scope, key) => {
           let regions = retention_active_regions(env)
           let all_regions = array_empty()
@@ -1146,24 +1330,38 @@ export fn retention_named_run_body(body: Expr, env: TypeEnv, defs: Array[TypeDef
           for r in regions {
             Array::push(all_regions, r)
           }
-          retention_recheck(lit, scope, all_regions, [
+          let (kind, result_regions) = retention_recheck(lit, scope, all_regions, [
             (group_ty, array_empty(), "")
           ], String::concat("run|", key), defs, s, c + retention_counter_gap(), check_child)
+          (kind, retention_string_has(result_regions, rname))
         },
-        _ => 0
+        // A function imported from another module: see the header.
+        RetentionTrusted => (0, false),
+        // Codex on #3359: a `let mut` closure, a value no closure literal is
+        // bound to, a parameter -- checked where it was written, outside
+        // this region, and nothing about what it keeps is known.
+        _ => (5, false)
       },
-      _ => 0
+      // A call's result, a function stored in a field, a branch: the same.
+      _ => (5, false)
     },
-    _ => 0
+    _ => (0, false)
   }
 }
 
 /// #3343: the refusal for a body passed by name, by `retention_named_run_body`'s
 /// answer.
 export fn retention_named_run_body_message(body_name: String, kind: Int) -> String {
-  if kind == 1 {
-    String::concat("region escapes its nursery scope: `", String::concat(body_name, "`, the body this TaskGroup::run call runs, stores the call's own Nursery/Task/Sender/Receiver token in a binding declared outside it -- join the task (or use the endpoint) inside the body and store the result instead, or declare the binding inside the body"))
+  let named = if body_name == "" {
+    "the body this TaskGroup::run call runs"
   } else {
-    String::concat("region escapes its nursery scope: `", String::concat(body_name, "`, the body this TaskGroup::run call runs, passes the call's own Nursery/Task/Sender/Receiver token on to a function whose body the checker cannot see -- join the task (or use the endpoint) inside the body and pass the result instead"))
+    String::concat("`", String::concat(body_name, "`, the body this TaskGroup::run call runs,"))
+  }
+  if kind == 1 {
+    String::concat("region escapes its nursery scope: ", String::concat(named, " stores the call's own Nursery/Task/Sender/Receiver token in a binding declared outside it -- join the task (or use the endpoint) inside the body and store the result instead, or declare the binding inside the body"))
+  } else if kind == 5 {
+    String::concat("region escapes its nursery scope: ", String::concat(named, " is a function whose body the checker cannot see, so what it keeps of the call's own Nursery/Task/Sender/Receiver token cannot be checked -- write the body inline at the call, or bind it with `let` to a closure literal and pass that name"))
+  } else {
+    String::concat("region escapes its nursery scope: ", String::concat(named, " passes the call's own Nursery/Task/Sender/Receiver token on to a function whose body the checker cannot see -- join the task (or use the endpoint) inside the body and pass the result instead"))
   }
 }

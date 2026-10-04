@@ -516,7 +516,10 @@ from a closure written in it, to an outer binding directly or through a local
 alias of one. The target's declared type does not matter -- a generic struct
 value whose type argument is still open, an array annotated
 `Array[Option[TaskHandle[Int]]]`, an unannotated `let mut slot = None` are all
-refused the same way:
+refused the same way. Neither does the stored value's type alone: a struct
+built from the token (`Some(Box::{ h: handle })`) has a nominal type that does
+not show its fields, so the value itself is asked, as the `region` block's
+return check asks it:
 
 ```text
 region escapes its nursery scope: this write stores this TaskGroup::run call's
@@ -570,6 +573,32 @@ declared outside it -- join the task (or use the endpoint) inside the body and
 store the result instead, or declare the binding inside the body
 ```
 
+A body passed to `TaskGroup::run` whose code is not visible here -- a `let mut`
+closure, a parameter, a call's result, a function stored in a field -- is
+refused, since it was checked where it was written, outside the region
+(`... is a function whose body the checker cannot see ... -- write the body
+inline at the call, or bind it with `let` to a closure literal and pass that
+name`).
+
+The second check also asks which regions the callee's RESULT carries -- by
+the body's own type, before a return annotation can hide it, or through a
+struct built in its tail. A call whose result type at the call does not name
+such a region is refused: a helper declared `-> TaskHandle[Int]` that hands
+its argument back, or one returning a struct, a tuple or a closure built from
+it, would otherwise launder the token past the caller's own write check:
+
+```text
+region escapes its nursery scope: this call to `passthrough` returns this
+TaskGroup::run call's own Nursery/Task/Sender/Receiver token as a value whose
+type does not name the region, so the checker cannot follow it -- declare the
+result with a type parameter that carries the argument's type (as
+`fn f[T](x: T) -> T` or a generic struct does), or join the task (or use the
+endpoint) inside the body and pass the result instead
+```
+
+A generic `fn id[T](x: T) -> T` keeps the region in its result type, so the
+caller's write of the result is judged by the write check as usual.
+
 A callee that keeps nothing -- one that only reads its argument, or stores a
 joined result -- is accepted. A function the callee is passed is followed: the
 parameter stands for the argument's own body during the second check, so a
@@ -595,9 +624,10 @@ restored (`lib/@vibe/compiler/checker/checker_region_retention.vibe`).
 After the body is checked, the call is also refused when:
 
 - **the returned value mentions the region** -- the body returns a task
-  handle, an endpoint, or anything containing one: `region escapes its nursery
-  scope: the value returned from this TaskGroup::run body still depends on its
-  own Nursery/Task/Sender/Receiver token`;
+  handle, an endpoint, or anything containing one, a struct built from one in
+  the body's tail included: `region escapes its nursery scope: the value
+  returned from this TaskGroup::run body still depends on its own
+  Nursery/Task/Sender/Receiver token`;
 - **a binding visible at the call now mentions the region**: `region escapes
   its nursery scope: an outer binding now depends on this TaskGroup::run
   call's own Nursery/Task/Sender/Receiver token`. This scan sees a binding
@@ -624,7 +654,9 @@ top-level array, a helper whose annotation hides the region, a method, a
 closure bound before the group, inside the body and through an alias, a body
 passed by name, a helper and a closure that hand the handle to the callback
 they are passed, and a function-typed parameter of the function that minted
-the group) and by
+the group; and a helper returning the handle under `TaskHandle[Int]`, in a
+struct, a closure or a tuple, a struct written directly or returned from a
+literal body, and a `let mut`, call-result or field body) and by
 `fixtures/taskgroup_outer_write_ok_test.vibe` (the writes and calls that stay
 legal).
 
