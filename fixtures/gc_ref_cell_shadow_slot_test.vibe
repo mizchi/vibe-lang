@@ -1,0 +1,149 @@
+//# #3357, wasm-gc lane: a `let mut` captured by a closure lives in a heap cell,
+//# and the gc backend recorded the cell by NAME, so every later binding of
+//# the same name in that scope -- an immutable `let f`, a `let rec f`, a match
+//# or handler arm's `f`, a lambda's capture of the newer `f` -- was read
+//# through the first binding's cell. `issue_shape` trapped with
+//# `uninitialized element` on gc while linear answered 32. The cell is now
+//# recorded by SLOT, and every read asks about the slot its name resolves to.
+//# The same answers on every lane: this file runs on linear (unit runner and
+//# tests/gates/early/extended_derive.sh 15b-7) and on gc.
+
+effect Ask {
+  Get() -> Int
+}
+
+fn issue_shape() -> Int {
+  let mut f = (x: Int) -> x + 1
+  let h = () -> f(1)
+  let a = h()
+  let f = (x: Int) -> x * 10
+  f(3) + a
+}
+
+// The cell is still read and written through the outer binding once the
+// inner block's `f` has ended.
+fn nested_block() -> Int {
+  let mut f = (x: Int) -> x + 1
+  let h = () -> f(1)
+  let inner = {
+    let f = (x: Int) -> x * 10
+    f(3)
+  }
+  f = (x: Int) -> x + 100
+  inner + h() + f(0)
+}
+
+// A lambda that captures the NEWER, plain `f` holds its value, not a cell.
+fn capture_newer() -> Int {
+  let mut f = (x: Int) -> x + 1
+  let h = () -> f(1)
+  let f = (x: Int) -> x * 10
+  let k = () -> f(2)
+  k() + h()
+}
+
+// An immutable shadow of a captured `let mut` Int, read and interpolated.
+fn int_shadow() -> String {
+  let mut n = 1
+  let bump = () -> {
+    n = n + 1
+    n
+  }
+  let b = bump()
+  let n = 40
+  "\{n + b}"
+}
+
+fn rec_shadow() -> Int {
+  let mut f = (x: Int) -> x + 1
+  let h = () -> f(1)
+  let a = h()
+  let rec f = (x: Int) -> if x <= 0 {
+    0
+  } else {
+    x + f(x - 1)
+  }
+  f(4) + a
+}
+
+fn match_arm_shadow() -> Int {
+  let mut f = 5
+  let h = () -> {
+    f = f + 1
+    f
+  }
+  let a = h()
+  let picked = match Some(30) {
+    Some(f) => f + 1,
+    None => 0
+  }
+  picked + a + f
+}
+
+fn handler_arm_shadow() -> Int {
+  let mut f = 2
+  let h = () -> {
+    f = f * 10
+    f
+  }
+  let a = h()
+  let got = handle {
+    perform Ask::Get() + 1
+  } with {
+    Ask::Get() => {
+      let f = 100
+      resume(f)
+    }
+  }
+  got + a + f
+}
+
+// Two captured `let mut` cells of one name: each reads and writes its own.
+fn two_cells() -> Int {
+  let mut f = 1
+  let bump_outer = () -> {
+    f = f + 1
+    f
+  }
+  let first = bump_outer()
+  let mut f = 100
+  let bump_inner = () -> {
+    f = f + 10
+    f
+  }
+  let second = bump_inner()
+  let third = bump_outer()
+  first + second + third + f
+}
+
+test "the issue's shape: an immutable `let f` after a captured `let mut f`" {
+  inspect(issue_shape(), "32")
+}
+
+test "the cell is the outer binding again after an inner block's `f` ends" {
+  inspect(nested_block(), "231")
+}
+
+test "a lambda capturing the newer plain `f` holds its value" {
+  inspect(capture_newer(), "22")
+}
+
+test "an Int shadow of a captured `let mut` Int" {
+  inspect(int_shadow(), "42")
+}
+
+test "a `let rec` shadowing a captured `let mut`" {
+  inspect(rec_shadow(), "12")
+}
+
+test "a match arm's binder shadowing a captured `let mut`" {
+  inspect(match_arm_shadow(), "43")
+}
+
+test "a handler arm's binding shadowing a captured `let mut`" {
+  inspect(handler_arm_shadow(), "141")
+}
+
+test "two captured `let mut` cells of one name" {
+  inspect(two_cells(), "225")
+}
