@@ -36,7 +36,7 @@ import @vibe/compiler/codegen/common_base {
 }
 
 import @vibe/compiler/codegen/common_extractors {
-  array_contains_int, array_contains_str, emit_memory_copy
+  array_contains_int, emit_memory_copy
 }
 
 import @vibe/compiler/codegen/wasm_emit {
@@ -353,6 +353,7 @@ export fn gc_reset_join_arm_slots(local_names: Array[String], ctx: CompileCtxGc,
   agg_log_reset_above(ctx.gc_agg_local_slots, names_len_before)
   gc_slot_log_reset_above(ctx.gc_bool_locals, names_len_before)
   gc_slot_log_reset_above(ctx.gc_int_locals, names_len_before)
+  gc_slot_log_reset_above(ctx.ref_local_indices, names_len_before)
   gc_slot_log_reset_above(ctx.gc_float_locals, names_len_before)
   gc_slot_log_reset_above(ctx.gc_native_array_locals, names_len_before)
   gc_slot_map_reset_above(ctx.gc_native_struct_scope, names_len_before)
@@ -1524,8 +1525,9 @@ export fn gc_compile_named_2(buf: Bytes, callee: Expr, args: Array[Expr], local_
         emit_local_get(buf, local_idx2)
       }
       // #2012: see the linear compile_call path — boxed `let mut`
-      // locals store a cell address.
-      if global_callee_idx < 0 && array_contains_str(ctx.ref_cell_names, fname) {
+      // locals store a cell address. #3357: asked of the SLOT the name
+      // resolves to, so a later same-named `let` is called directly.
+      if global_callee_idx < 0 && array_contains_int(ctx.ref_local_indices, local_idx2) {
         emit_i32_wrap_i64(buf)
         emit_i64_load(buf, 3, 0)
       } else {

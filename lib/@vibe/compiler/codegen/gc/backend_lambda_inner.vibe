@@ -13,7 +13,7 @@ import @vibe/compiler/codegen/common_base {
 }
 
 import @vibe/compiler/codegen/common_extractors {
-  array_contains_int, array_contains_str
+  array_contains_int
 }
 
 import @vibe/compiler/codegen/wasm_emit {
@@ -77,8 +77,12 @@ export fn compile_lambda_inner_gc(params: Array[(String, Option[TypeExpr])], fn_
     emit_i64_load(lam_buf, 3, 8 + ci3 * 8)
     emit_local_set(lam_buf, cap_local)
     Array::push(lam_locals, cap_name)
-    if array_contains_str(ctx.ref_cell_names, cap_name) {
-      Array::push(lam_ref_cells, cap_name)
+    // #3357: the env holds what the captured SLOT holds -- a cell address
+    // exactly when the binding the name resolves to out there is a `let mut`
+    // cell, whatever other binding of the name is also in scope.
+    let cap_outer_slot = find_local_slot(outer_names, cap_name)
+    if cap_outer_slot >= 0 && array_contains_int(ctx.ref_local_indices, cap_outer_slot) {
+      Array::push(lam_ref_local_indices, cap_local)
     }
     lam_nl = lam_nl + 1
     ci3 = ci3 + 1

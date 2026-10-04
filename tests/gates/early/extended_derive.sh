@@ -1201,6 +1201,20 @@ run_test_block_fixtures_gc "captured local shadows top-level fn (gc)" fixtures/c
 run_test_block_fixtures_rc "captured local shadows top-level fn (linear, RC)" fixtures/closure_capture_shadows_top_level_fn_test.vibe fixtures/handler_arm_resume_closure_shadows_fn_test.vibe
 echo '[compiler-gate] captured local shadows top-level fn ok'
 
+# 15b-7. #3357: a later binding of a captured `let mut`'s name is its own
+#        local. The gc lane recorded the `let mut`'s heap cell by NAME, so an
+#        immutable `let f`, a `let rec f`, a match or handler arm's binder,
+#        and a lambda's capture of the newer `f` were all read through the
+#        first binding's cell: the issue's shape trapped (`uninitialized
+#        element`) and three shapes answered silently wrong (2 for 42, 13 for
+#        43, a heap word for 141). The cell is recorded by slot now. All three
+#        lanes, because the claim is that they agree.
+echo '[compiler-gate] 15b-7/15 a captured let mut is a slot, not a name (#3357)'
+run_test_block_fixtures "captured let mut shadowed (linear, bump)" fixtures/gc_ref_cell_shadow_slot_test.vibe
+run_test_block_fixtures_gc "captured let mut shadowed (gc)" fixtures/gc_ref_cell_shadow_slot_test.vibe
+run_test_block_fixtures_rc "captured let mut shadowed (linear, RC)" fixtures/gc_ref_cell_shadow_slot_test.vibe
+echo '[compiler-gate] captured let mut shadowed ok'
+
 # 15c. railway `let*` / `?` generalized to Option (#635): the parser emits a
 #      type-directed sentinel that the pre-check desugar lowers by the operand's
 #      head type — `Option` (Some/None) or `Result` (Ok/Err, the default). The
