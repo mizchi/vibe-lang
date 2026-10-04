@@ -1958,13 +1958,12 @@ fi
 # escapes via the body's return value. Positive: a plain spawn+join inside
 # one nursery keeps compiling and running (region_ok_basic.vibe, 42).
 # Negative: returning a `TaskHandle` obtained inside the nursery is a
-# STATIC error (err_region_escape_return.vibe). Known gap, documented
-# rather than silently claimed: an outer-capture check also runs (scans
-# every binding visible at the call site after the body is checked) and
-# refuses a leak into an outer binding whose type is still open, but a
-# binding the checker generalized (a generic struct value) or annotated with
-# a concrete type is not seen (concurrency.md "Known gaps") -- only the
-# return-position escape is a hard guarantee here.
+# STATIC error (err_region_escape_return.vibe). A literal body is also
+# checked inside the region (#3276), so a write that stores the group's
+# token in a location declared before the body is refused whatever that
+# location's declared type; those rows live in fixtures/typecheck/expected.tsv
+# (taskgroup_escape_*) and the remaining routes are in concurrency.md
+# "Known gaps".
 echo "[compiler-gate] 59/59 ADR-0068 region generativity (#1081 step 3)"
 regiondir="_build/_gate_region"
 rm -rf "$regiondir"; mkdir -p "$regiondir"

@@ -117,7 +117,13 @@ import ./checker_builtin_arg_head_rest.vibe {
 }
 
 import ./checker_closure_capture_row.vibe {
-  captured_escape_tvars, closure_capture_row, container_write_crosses_region, env_reachable_tvars, esc_ids_intersect, tail_expr_off
+  captured_escape_tvars,
+  closure_capture_row,
+  container_write_crosses_region,
+  env_reachable_tvars,
+  esc_ids_intersect,
+  region_write_escape_message,
+  tail_expr_off
 }
 
 import ./checker_eq_unbounded_formal_msg.vibe {
@@ -377,8 +383,9 @@ export fn retaining_write_region_check(name: String, args: Array[Expr], env: Typ
         let throwaway = array_empty()
         let throwtab = array_empty()
         let (val_ty, s1, _) = ce(Array::get(args, value_index), env, defs, s, c, throwaway, throwtab)
-        if container_write_crosses_region(Array::get(args, 0), subst_apply(s1, val_ty), env) {
-          Array::push(errors, String::concat("region escapes its scope: a container write stores a value that captures this region into an outer binding", off_marker(tail_expr_off(Array::get(args, value_index)))))
+        let stored_ty = subst_apply(s1, val_ty)
+        if container_write_crosses_region(Array::get(args, 0), stored_ty, env) {
+          Array::push(errors, String::concat(region_write_escape_message(stored_ty, env, "region escapes its scope: a container write stores a value that captures this region into an outer binding"), off_marker(tail_expr_off(Array::get(args, value_index)))))
         } else {
           ()
         }
@@ -1649,10 +1656,29 @@ export fn map_literal_ground(t: Type) -> Bool {
   }
 }
 
+/// #3276: the parameter type a `TaskGroup::run` call hands its literal body,
+/// set immediately before that one closure is checked and taken by
+/// `check_lambda_expr` before anything else, so no nested lambda can see it.
+/// Without it the body's parameter is a fresh variable that meets the call's
+/// region only after the whole body is checked, and a write inside the body
+/// cannot tell that the value it stores belongs to the group.
+export let run_body_param_cell: Array[Type] = []
+
+fn take_run_body_param() -> Option[Type] {
+  if Array::length(run_body_param_cell) == 0 {
+    None
+  } else {
+    let expected = Array::get(run_body_param_cell, 0)
+    Array::truncate(run_body_param_cell, 0)
+    Some(expected)
+  }
+}
+
 // Check generic lambda binders and return values through the caller's recursive checker.
 export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture], lane: String, discarded_root: Bool, check_child: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)], Option[TypedOccurrenceRoleLaneCapture], String) -> (Type, Subst, Int)) -> (Type, Subst, Int) {
   match expr {
     EFn(tparams, tbounds, params, ret_ty, effect, body) => {
+      let run_body_param = take_run_body_param()
       // An aliased re-export publishes a trait spelling but does not bind it
       // in this module (#2310). The import projection retains an origin marker
       // so this declaration site can report the invalid bound immediately,
@@ -1862,6 +1888,21 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
             let (tv, nc2) = fresh_var(c1)
             (tv, s1, nc2)
           }
+        }
+        // #3276: a `TaskGroup::run` body's group parameter carries the call's
+        // region from the start, so every write in the body sees it. An
+        // annotation that disagrees is left to the call's own unification,
+        // which reports the mismatch.
+        let ns = if plen == 1 {
+          match run_body_param {
+            Some(expected) => match unify(pt, expected, ns) {
+              Some(seeded) => seeded,
+              None => ns
+            },
+            None => ns
+          }
+        } else {
+          ns
         }
         let marked_pt = add_param_capture_dependency(pt, nc)
         let marked_nc = nc + 1

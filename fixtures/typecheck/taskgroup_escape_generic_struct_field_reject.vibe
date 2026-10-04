@@ -1,0 +1,25 @@
+// #3276: a task handle stored from a `TaskGroup::run` body into a field of a
+// generic struct value bound before the group escapes the group. The value's
+// open type argument is generalized, so the scan of outer bindings after the
+// body never saw it; this compiled and printed `r=1 after=41`, joining the
+// handle after its group had closed. The body is now checked inside the
+// group's region, so the field write itself is refused.
+import @vibe/concurrent { TaskGroup, TaskHandle }
+
+struct Cell[T] {
+  mut v: Option[T]
+}
+
+fn main() -> Unit allows Exception + Console {
+  let c = Cell::{ v: None }
+  let r = TaskGroup::run((n) -> {
+    let h = TaskGroup::spawn(n, () -> { 41 })
+    c.v = Some(h)
+    1
+  })
+  let after = match c.v {
+    Some(h) => TaskHandle::join(h),
+    None => 0 - 1
+  }
+  println("r=\{r} after=\{after}")
+}
