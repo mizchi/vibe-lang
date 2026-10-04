@@ -11,12 +11,12 @@ OUT="$ROOT/_build/wit_async_import_component_gate"
 mkdir -p "$OUT"
 
 cat >"$OUT/emit_test.vibe" <<'EOF'
-import @vibe/compiler/entry/source_compile/wasi_only {
+import @vibe/compiler/codegen/component {
   comp_emit_component_wasm_async_wit_future_fixture,
   comp_emit_wit_async_future_import_surface,
-  comp_emit_wit_outbound_http_dual_fetch_surface,
-  comp_emit_wit_http_error_code_type_surface,
   comp_emit_wit_http_client_send_surface,
+  comp_emit_wit_http_error_code_type_surface,
+  comp_emit_wit_outbound_http_dual_fetch_surface,
   comp_wit_outbound_http_response_descriptor
 }
 

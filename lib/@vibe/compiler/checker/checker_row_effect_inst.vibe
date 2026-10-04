@@ -1,0 +1,1458 @@
+// lib/@vibe/compiler/checker -- the instantiation a generic effect's
+// perform is checked against: the one a function's or lambda's own `with`
+// row writes, or the one a callback parameter's row hands a lambda passed to
+// it (#3275, #3311).
+
+import @vibe/compiler/checker/annotations {
+  formals_contain_source_name
+}
+
+import @vibe/compiler/core {
+  Expr,
+  Subst,
+  Type,
+  TypeDef,
+  TypeEnv,
+  TypeExpr,
+  collect_tvars,
+  compiler_owned_type_arity,
+  env_bind,
+  env_lookup,
+  find_typedef,
+  fresh_var,
+  is_alias_constructor,
+  is_effect_inst_label,
+  resolve_type_constructor_args,
+  strip_published_formal_suffixes,
+  strip_published_row_marks,
+  subst_apply,
+  subst_lookup,
+  type_expr_name_is_shadowed,
+  type_to_string,
+  types_equal,
+  unify
+}
+
+import @vibe/compiler/checker/diagnostics {
+  off_marker
+}
+
+import @vibe/ast {
+  type_param_arity, type_param_name
+}
+
+import @vibe/parser {
+  lex, parse_type
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import ./checker_resolve.vibe {
+  resolve_type_expr_shadowed
+}
+
+import ./checker_eq_unbounded_formal_msg.vibe {
+  callee_formal_ids, effect_tparams, generic_decl_of_scheme, published_row_formal_ids
+}
+
+import ./checker_infer_binop_type.vibe {
+  callback_row_refusal,
+  callback_row_unreadable_labels,
+  effect_inst_env_key,
+  published_marker_words,
+  published_nominal_names,
+  published_nominal_words,
+  resolve_tparams_in,
+  vouch_published_nominals
+}
+
+import ./checker_merge_capture_provenance.vibe {
+  checker_string_array_has,
+  effect_inst_used_vars,
+  eq_formal_arity,
+  eq_formal_rigid_row,
+  eq_formal_row_of,
+  eq_formal_vars,
+  formal_shadow,
+  int_array_has,
+  merge_provenance_row,
+  note_effect_inst_used,
+  record_eq_formal_var
+}
+
+import ./checker_builtin_arg_head_rest.vibe {
+  inst_struct_field_ty
+}
+
+import ./checker_throw_kind_of_type.vibe {
+  railway_expr_off
+}
+
+/// #3275: publish the instantiation a function's own `with` row writes for a
+/// declared generic effect (`with Box[Int]`) under the key a `handle` uses
+/// (`effect_instantiate`), so a `perform Box::Put(..)` in the body is checked
+/// against `Int` instead of a fresh variable. Without it the payload was never
+/// compared with the row, and `perform Box::Put("x")` under `with Box[Int]`
+/// compiled and handed a pointer to an arm reading an `Int`.
+///
+/// An explicit row also masks an instantiation inherited from an enclosing
+/// function or handle: a bare `with Box`, two different labels for the same
+/// effect, or an argument the type parser cannot read binds `CtUnit`, which
+/// `effect_inst_lookup` rejects, so those performs keep a fresh
+/// instantiation. A repeated identical label is the same instantiation.
+///
+/// A kinded parameter's argument is bound by `kinded_row_inst`, which reports
+/// a wrong-kinded argument rather than leaving the perform unchecked.
+///
+/// The instantiation is also recorded under `effect_row_inst_key`, so an
+/// unannotated lambda can tell it came from an enclosing ROW rather than a
+/// `handle` (`mask_row_effect_instantiations`).
+fn bind_row_effect_instantiations(env: TypeEnv, row: Option[String], defs: Array[TypeDef], tparams: Array[String], errors: Array[String]) -> TypeEnv {
+  match row {
+    None => mask_row_effect_instantiations(env, defs),
+    Some(text) => {
+      let seen_bases = array_empty()
+      let seen_labels = array_empty()
+      let mut out = env
+      for raw in String::split(text, ",") {
+        let label = String::trim(raw)
+        let bi = String::index_of(label, "[")
+        let base = if bi > 0 {
+          label[0: bi]
+        } else {
+          label
+        }
+        if Array::length(effect_tparams(defs, base)) == 1 {
+          let mut prior = 0 - 1
+          let mut si = 0
+          while si < Array::length(seen_bases) {
+            if Array::get(seen_bases, si) == base {
+              prior = si
+            }
+            si = si + 1
+          }
+          if prior >= 0 {
+            if Array::get(seen_labels, prior) != label {
+              Array::set(seen_labels, prior, "#conflict")
+              out = env_bind(env_bind(out, effect_inst_env_key(base), CtUnit), effect_row_inst_key(base), CtUnit)
+            } else {
+              ()
+            }
+          } else {
+            Array::push(seen_bases, base)
+            Array::push(seen_labels, label)
+            let parsed = if bi > 0 && String::ends_with(label, "]") {
+              handle {
+                let (arg_te, _) = parse_type(lex(label[bi + 1: String::length(label) - 1]), 0)
+                Some(arg_te)
+              } with { Exception::Throw(_unreadable) => None }
+            } else {
+              None
+            }
+            let param = Array::get(effect_tparams(defs, base), 0)
+            let inst = match parsed {
+              Some(arg_te) => {
+                let shadow = formal_shadow(arg_te, env, tparams)
+                if type_param_arity(param) > 0 {
+                  // A kinded parameter (`F` of `Read[F[_]]`) takes a bare
+                  // constructor, not a complete type.
+                  kinded_row_inst(label, base, param, arg_te, defs, shadow, tparams, env, errors)
+                } else {
+                  row_arg_as_type(arg_te, defs, shadow, env)
+                }
+              },
+              None => CtUnit
+            }
+            out = env_bind(env_bind(out, effect_inst_env_key(base), inst), effect_row_inst_key(base), inst)
+          }
+        } else {
+          ()
+        }
+      }
+      out
+    }
+  }
+}
+
+fn effect_row_inst_key(eff: String) -> String {
+  String::concat("$einst_row$", eff)
+}
+
+/// A row argument resolved as a complete type, its formals mapped to the
+/// enclosing binders' variables.
+fn row_arg_as_type(arg_te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], env: TypeEnv) -> Type {
+  CtTuple([
+    resolve_tparams_in(resolve_type_expr_shadowed(arg_te, defs, shadow), env)
+  ])
+}
+
+/// #3275 follow-up (Codex on #3315): the instantiation the row item `label`
+/// gives the kinded parameter `param` of effect `base`. A perform the row
+/// governs is never left unchecked:
+///
+/// - a bare constructor of the parameter's kind is bound as that constructor
+///   (`row_constructor_arg`), so `with Read[Array]` makes `F[Int]` an
+///   `Array[Int]`;
+/// - a constructor formal in scope (`with Read[G]` in `fn producer[G[_]]`) is
+///   bound as the formal itself, so the payload is `G[Int]`, the type a
+///   `xs: G[Int]` parameter has. A formal whose declared arity is not the
+///   parameter's (`with Read[T]` for a plain `T`, or an `H[_, _]`) is reported
+///   like any other wrong-kinded argument (Codex on #3315): bound as itself it
+///   let a nested lambda's row through unchecked;
+/// - a wrong-kinded argument is REPORTED here with the row-item check's
+///   message, and the parameter is left fresh, since the program is refused
+///   anyway. Leaving the report to `geff_row_targ_errors_into` was not enough:
+///   that check runs only once type checking found nothing, it does not walk a
+///   lambda nested in a body, and it compared arities only, so
+///   `perform Read::Put(Some(1))` checked clean under `with Read[Higher]`
+///   (`struct Higher[G[_]]`), and under `Read[Int]` or `Read[Nope]` in a
+///   nested lambda;
+/// - anything else is bound as the argument resolved as a type, an
+///   application no payload of the parameter's shape matches.
+fn kinded_row_inst(label: String, base: String, param: String, arg_te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], tparams: Array[String], env: TypeEnv, errors: Array[String]) -> Type {
+  let want = type_param_arity(param)
+  match row_constructor_arg(param, arg_te, defs, shadow) {
+    Some(ctor) => CtTuple([ctor]),
+    None => {
+      let formal_name = match arg_te {
+        TyName(name) => if type_expr_name_is_shadowed(shadow, name) {
+          name
+        } else {
+          ""
+        },
+        _ => ""
+      }
+      let msg = if formal_name != "" {
+        let farity = row_formal_arity(formal_name, tparams, env)
+        if farity >= 0 && farity != want {
+          kinded_row_kind_message(label, base, want, farity, true)
+        } else {
+          ""
+        }
+      } else {
+        kinded_row_arg_message(label, base, want, arg_te, defs)
+      }
+      if msg == "" {
+        row_arg_as_type(arg_te, defs, shadow, env)
+      } else {
+        Array::push(errors, msg)
+        CtUnit
+      }
+    }
+  }
+}
+
+/// The declared arity of the type formal `name` in scope: the row's own
+/// binder's (`tparams`, keys such as `G[_]`), or an enclosing binder's, read
+/// from the formal table the EFn arm fills (`record_eq_formal_var`); -1 when
+/// neither records it.
+fn row_formal_arity(name: String, tparams: Array[String], env: TypeEnv) -> Int {
+  let mut own = 0 - 1
+  let mut i = 0
+  while i < Array::length(tparams) {
+    let key = Array::get(tparams, i)
+    if type_param_name(key) == name {
+      own = type_param_arity(key)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if own >= 0 {
+    own
+  } else {
+    let row = match env_lookup(env, name) {
+      Some(t) => match t {
+        CtVar(vid) => {
+          let r = eq_formal_row_of(vid)
+          if r >= 0 {
+            let (_, rname) = Array::get(eq_formal_vars, r)
+            if rname == name {
+              r
+            } else {
+              0 - 1
+            }
+          } else {
+            0 - 1
+          }
+        },
+        CtNamed(n, _) => if n == String::concat("#hktformal.", name) {
+          eq_formal_rigid_row(name)
+        } else {
+          0 - 1
+        },
+        _ => 0 - 1
+      },
+      None => 0 - 1
+    }
+    if row >= 0 {
+      Array::get(eq_formal_arity, row)
+    } else {
+      0 - 1
+    }
+  }
+}
+
+/// The row-item check's message (`geff_row_targ_errors_into`) for a
+/// wrong-kinded argument of a kinded effect parameter that takes `want` type
+/// arguments, or "" when the argument's kind is right as far as this can tell.
+/// An unknown name and an applied type count as taking no arguments, as they
+/// do there.
+fn kinded_row_arg_message(label: String, base: String, want: Int, arg_te: TypeExpr, defs: Array[TypeDef]) -> String {
+  let (arity, plain) = match arg_te {
+    TyName(name) => match compiler_owned_type_arity(name) {
+      Some(owned) => (owned, true),
+      None => (Array::length(declared_type_params(defs, name)), constructor_params_plain(defs, name))
+    },
+    _ => (0, true)
+  }
+  kinded_row_kind_message(label, base, want, arity, plain)
+}
+
+/// The message itself: `arity` is what the row's argument takes and `plain`
+/// whether all its parameters are types; "" when both fit.
+fn kinded_row_kind_message(label: String, base: String, want: Int, arity: Int, plain: Bool) -> String {
+  let bi = String::index_of(label, "[")
+  let inner = if bi > 0 && String::ends_with(label, "]") {
+    String::trim(label[bi + 1: String::length(label) - 1])
+  } else {
+    label
+  }
+  let head = String::concat("effect row item `", String::concat(label, String::concat("`: effect ", base)))
+  if arity != want {
+    String::concat(head, String::concat(" expects a constructor with ", String::concat(__to_string(want), String::concat(" argument(s), but `", String::concat(inner, String::concat("` has ", String::concat(__to_string(arity), " -- pass a bare constructor with the required arity")))))))
+  } else if !plain {
+    String::concat(head, String::concat(" applies its parameter to types, but a parameter of `", String::concat(inner, "` takes a constructor -- pass a constructor whose parameters are all types, such as `Array` or `Option`")))
+  } else {
+    ""
+  }
+}
+
+/// #3275 follow-up (Codex on #3315): the constructor a row passes to a kinded
+/// effect parameter `param` (`with Read[Array]` for `effect Read[F[_]]`),
+/// reified the way a kinded type argument is everywhere else
+/// (`resolve_type_constructor_args`): `Array` and `Option` as `CtConstructor`,
+/// a declared generic type as its constructor, a parameterized alias as an
+/// alias constructor. Substituting it into the operation's `F[Int]` then gives
+/// `Array[Int]`. Resolving the bare name as a complete type instead gave a
+/// head with no arguments, so `F[Int]` became an application no payload
+/// matches: `perform Read::Put([1, 2])` under `with Read[Array]` was refused
+/// with `expected Array[Int], got Array[Int]`, and a `Cell[String]` payload
+/// under `with Read[Cell]` was accepted.
+///
+/// None for anything else -- a formal in scope, an applied or complete type,
+/// a constructor whose arity is not the parameter's or that itself takes a
+/// constructor, an unknown name -- which `kinded_row_inst` handles.
+fn row_constructor_arg(param: String, arg_te: TypeExpr, defs: Array[TypeDef], shadow: Array[String]) -> Option[Type] {
+  match arg_te {
+    TyName(name) => if type_expr_name_is_shadowed(shadow, name) {
+      None
+    } else {
+      let params: Array[String] = [param]
+      let source_args: Array[TypeExpr] = [arg_te]
+      let resolved = resolve_type_expr_shadowed(arg_te, defs, shadow)
+      let resolved_args: Array[Type] = [resolved]
+      let reified = Array::get(resolve_type_constructor_args(params, source_args, resolved_args, defs, shadow), 0)
+      let want = type_param_arity(param)
+      match reified {
+        CtConstructor(ctor, arity) => if arity == want && constructor_params_plain(defs, ctor) {
+          Some(reified)
+        } else {
+          None
+        },
+        CtApplied(_, meta) => if is_alias_constructor(reified) && Array::length(meta) == want + 1 && alias_constructor_params_plain(meta) {
+          Some(reified)
+        } else {
+          None
+        },
+        _ => None
+      }
+    },
+    _ => None
+  }
+}
+
+/// The type parameters of the type declared as `name`, or none when no
+/// struct, enum or alias of that name is declared.
+fn declared_type_params(defs: Array[TypeDef], name: String) -> Array[String] {
+  match find_typedef(defs, name) {
+    Some(td) => match td {
+      TDStruct(_, _, _, sps) => sps,
+      TDEnum(_, eps, _) => eps,
+      TDAlias(_, aps, _) => aps,
+      _ => array_empty()
+    },
+    None => array_empty()
+  }
+}
+
+/// Does the type declared as `name` take only complete types (no parameter
+/// of its own is a constructor)? A compiler-owned head (`Array`, `Option`)
+/// has no declaration and takes complete types.
+fn constructor_params_plain(defs: Array[TypeDef], name: String) -> Bool {
+  let params = declared_type_params(defs, name)
+  let mut plain = true
+  let mut i = 0
+  while i < Array::length(params) {
+    if type_param_arity(Array::get(params, i)) > 0 {
+      plain = false
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  plain
+}
+
+/// An alias constructor's binders (everything after its body) are all
+/// complete-type parameters.
+fn alias_constructor_params_plain(meta: Array[Type]) -> Bool {
+  let mut plain = true
+  let mut i = 1
+  while i < Array::length(meta) {
+    match Array::get(meta, i) {
+      CtNamed(n, _) => if type_param_arity(n) > 0 {
+        plain = false
+      } else {
+        ()
+      },
+      _ => {
+        plain = false
+      }
+    }
+    i = i + 1
+  }
+  plain
+}
+
+/// #3275 (Codex on #3304): a lambda with no `with` row does not inherit an
+/// instantiation an enclosing function's ROW chose. Its row is derived where
+/// it is used -- passed to a callback parameter typed `() -> Int with
+/// Box[String]`, its performs belong to that row, not the outer `Box[Int]`.
+/// An instantiation a `handle` chose is a different binding (fresh variables,
+/// so not equal to the row's) and is still inherited, as before.
+fn mask_row_effect_instantiations(env: TypeEnv, defs: Array[TypeDef]) -> TypeEnv {
+  let mut out = env
+  for d in defs {
+    match d {
+      TDEffect(name, _, etps) => if Array::length(etps) == 1 {
+        match (env_lookup(env, effect_row_inst_key(name)), env_lookup(env, effect_inst_env_key(name))) {
+          (Some(row_inst), Some(inst)) => if types_equal(row_inst, inst) {
+            out = env_bind(out, effect_inst_env_key(name), CtUnit)
+          } else {
+            ()
+          },
+          _ => ()
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+  }
+  out
+}
+
+/// #3311: the generic-effect instantiations a lambda's body is checked under.
+/// A lambda with its own `with` row is bound by that row
+/// (`bind_row_effect_instantiations`). A lambda with none, passed as an
+/// argument, takes the instantiations the parameter's row names
+/// (`callback_arg_env` hands them over): its performs belong to that callback
+/// row, as if the lambda had been written with it. The hand-off is consumed
+/// here, so a lambda nested in the body does not inherit it.
+export fn bind_lambda_row_effect_instantiations(env: TypeEnv, row: Option[String], defs: Array[TypeDef], tparams: Array[String], errors: Array[String]) -> TypeEnv {
+  let own = bind_row_effect_instantiations(env, row, defs, tparams, errors)
+  match env_lookup(env, callback_row_inst_key()) {
+    Some(CtTuple(items)) => {
+      let mut out = env_bind(own, callback_row_inst_key(), CtUnit)
+      match row {
+        Some(_) => out,
+        None => {
+          for item in items {
+            match item {
+              CtNamed(base, insts) => if Array::length(insts) == 1 {
+                let inst = Array::get(insts, 0)
+                out = env_bind(env_bind(out, effect_inst_env_key(base), inst), effect_row_inst_key(base), inst)
+              },
+              _ => ()
+            }
+          }
+          out
+        }
+      }
+    },
+    _ => own
+  }
+}
+
+/// #3311: the env key under which a call hands a lambda argument the
+/// instantiations its parameter's row names, as a `CtTuple` of
+/// `CtNamed(effect, [instantiation])`.
+fn callback_row_inst_key() -> String {
+  "#callback_row_inst"
+}
+
+/// #3311: the environment a call checks the argument `arg` in. When `arg` is a
+/// lambda literal with no `with` row and the parameter it is passed to has a
+/// function type whose row instantiates a declared generic effect
+/// (`f: () -> Int with Box[String]`), the lambda's performs belong to that row,
+/// so its instantiations are handed to the EFn arm. Before, the lambda was
+/// checked with no expectation, its perform got a fresh `T`, and
+/// `perform Box::Put(1)` reached a handler that read the `Int` as a `String`.
+///
+/// The row is the callee's, written where the callee is declared, so it is
+/// resolved there and not in the caller's scope. `callee` is a generic
+/// callee's scheme and this call's instantiation of it: a formal the row names
+/// (`fn run[T](f: () -> Int with Box[T], x: T)`) is the type this call gives
+/// it. An instantiation that cannot be read exactly (`callback_type_exact`),
+/// and a bare label (`with Box`), are not handed over: the lambda is checked
+/// as before, an enclosing row's instantiation masked and an enclosing
+/// handle's kept, since a callee may forward such a row to that handle.
+export fn callback_arg_env(env: TypeEnv, arg: Expr, param_ty: Type, s: Subst, callee: Option[(Type, Type)], defs: Array[TypeDef]) -> TypeEnv {
+  callback_arg_env_read(env, arg, param_ty, s, (row: String) -> Array[Type] {
+    callback_row_instantiations(row, callee, defs)
+  })
+}
+
+/// Codex on #3340: the environment a field call `r.f(..)` checks the argument
+/// `arg` in, when `f` is a function-typed field of the receiver's struct. The
+/// field's row is written in the struct's declaration, so it is read there:
+/// a type parameter of the struct is the receiver's type argument
+/// (`struct_field_row_instantiations`). Before, a field call checked its
+/// arguments before it found the field's type, so a lambda passed to
+/// `r.run` with `run: (() -> Int with Box[String]) -> Int` was handed
+/// nothing and its `perform Box::Put(1)` chose `Int`.
+export fn field_callback_arg_env(env: TypeEnv, arg: Expr, param_ty: Type, s: Subst, recv: Type, defs: Array[TypeDef]) -> TypeEnv {
+  callback_arg_env_read(env, arg, param_ty, s, (row: String) -> Array[Type] {
+    struct_field_row_instantiations(row, recv, defs)
+  })
+}
+
+fn callback_arg_env_read(env: TypeEnv, arg: Expr, param_ty: Type, s: Subst, read: (String) -> Array[Type]) -> TypeEnv {
+  match arg {
+    EFn(_, _, _, _, None, _) => match subst_apply(s, param_ty) {
+      CtFn(_, _, Some(row)) => {
+        let items = read(row)
+        if Array::length(items) == 0 {
+          env
+        } else {
+          env_bind(env, callback_row_inst_key(), CtTuple(items))
+        }
+      },
+      _ => env
+    },
+    _ => env
+  }
+}
+
+/// #3311: the substitution a callback lambda passed to a generic callee is
+/// checked under. The arguments to its left are unified with their parameters
+/// first, so a formal they fix (`x: T` in `run2("s", () -> { .. })`) is the
+/// type the lambda's performs are checked against, and a perform that
+/// disagrees is reported at the perform. Otherwise the perform would fix `T`
+/// itself and the mismatch would be reported at `"s"`, the argument that is
+/// right. A pair that does not unify is left for the call's own argument check
+/// to report.
+export fn callback_prefix_subst(arg: Expr, param_tys: Array[Type], arg_tys: Array[Type], s: Subst, callee: Option[(Type, Type)]) -> Subst {
+  let ai = Array::length(arg_tys)
+  match callee {
+    Some(_) => match arg {
+      EFn(_, _, _, _, None, _) => if ai > 0 && ai < Array::length(param_tys) {
+        match subst_apply(s, Array::get(param_tys, ai)) {
+          CtFn(_, _, Some(row)) => if row_names_instantiation(row) {
+            let mut out = s
+            let mut j = 0
+            while j < ai {
+              match unify(Array::get(param_tys, j), Array::get(arg_tys, j), out) {
+                Some(su) => {
+                  out = su
+                },
+                None => ()
+              }
+              j = j + 1
+            }
+            out
+          } else {
+            s
+          },
+          _ => s
+        }
+      } else {
+        s
+      },
+      _ => s
+    },
+    None => s
+  }
+}
+
+/// Does the row text name an effect with a type argument (`Box[T]`)? The
+/// checker's own provenance labels (`#param[0]`) do not count.
+fn row_names_instantiation(row: String) -> Bool {
+  let mut found = false
+  for raw in String::split(row, ",") {
+    let label = String::trim(raw)
+    if !String::starts_with(label, "#") && String::contains(label, "[") {
+      found = true
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+/// The instantiation the callback row `row` gives each declared one-parameter
+/// generic effect it names exactly, as `CtNamed(effect, [instantiation])`. The
+/// row is read by the binder a lambda's own row goes through, in a scope
+/// holding only the callee's formals, each bound to the type this call gives
+/// it. A wrong-kinded argument is reported where the callee's annotation is
+/// checked, not at every call, so the binder's reports are dropped here.
+///
+/// A generic callee with no declaration in this module (an imported one)
+/// names its formals in the row by the markers its published type carries
+/// (`T$0`, `publish_row_formals`); each is the type this call gives that
+/// quantified variable (Codex on #3340). Before, such a callee handed the
+/// lambda nothing, so an imported `run[T](x: T, f: () -> Int with Box[T])`
+/// let `run("s", () -> { perform Box::Put(1) })` through.
+///
+/// Every other word of a published row names a type, read in this module's
+/// scope (Codex on #3340: `Box[Wrap[T]]` handed nothing, and the lambda chose
+/// the payload). That reads the exporter's type: a name in a published row is
+/// part of the callee's signature, and a module whose `Wrap` is a different
+/// declaration is refused at the import (#3035 / #3036, "are different types
+/// that share the name").
+///
+/// A struct or enum the exporter marked (`^Pt`, `publish_row_nominals`) is
+/// that type even in a module that does not import it (#3351: the lambda's
+/// `perform Box::Put(41)` against `Box[Pt]` used to go unchecked, and the
+/// callee's arm read the Int as a `Pt`). Any other name this module cannot
+/// read -- an alias, or a constructor an effect parameter takes -- hands the
+/// effect a refusal (`callback_row_refusal`), so a perform of it in the lambda
+/// is refused with the edit instead of left unchecked.
+fn callback_row_instantiations(row: String, callee: Option[(Type, Type)], defs: Array[TypeDef]) -> Array[Type] {
+  let formals: Array[String] = []
+  let mut scope = EnvEmpty
+  let mut declared = true
+  match callee {
+    Some((scheme, inst)) => match scheme {
+      CtForAll(vars, _, _) => match generic_decl_of_scheme(scheme) {
+        Some((tps, dparams, dret)) => {
+          for tp in tps {
+            Array::push(formals, tp)
+          }
+          let (name_ids, id_tys) = callee_formal_ids(Some((tps, dparams, dret)), scheme, inst, defs)
+          for name_id in name_ids {
+            let (fname, fid) = name_id
+            for id_ty in id_tys {
+              let (kid, kty) = id_ty
+              if kid == fid && formals_contain_source_name(tps, fname) {
+                scope = env_bind(scope, fname, kty)
+              } else {
+                ()
+              }
+            }
+          }
+        },
+        None => match inst {
+          // A generic callee checked as an expression is not instantiated
+          // before its arguments, and its row names its formals unmarked.
+          CtUnknown => {
+            declared = false
+          },
+          _ => {
+            // Every formal of a published row is marked; one past the
+            // quantifier list (only the row names it) has no variable, so it
+            // stays unbound and is never read as a type of the same name.
+            for word in published_marker_words(row) {
+              let fname = strip_published_formal_suffixes(word)
+              if !checker_string_array_has(formals, fname) {
+                Array::push(formals, fname)
+              } else {
+                ()
+              }
+            }
+            let marked: Array[(String, Int)] = []
+            published_row_formal_ids(Some(row), vars, marked)
+            let (_, id_tys) = callee_formal_ids(None, scheme, inst, defs)
+            for mark in marked {
+              let (word, mid) = mark
+              let fname = strip_published_formal_suffixes(word)
+              for id_ty in id_tys {
+                let (kid, kty) = id_ty
+                if kid == mid {
+                  scope = env_bind(scope, fname, kty)
+                } else {
+                  ()
+                }
+              }
+            }
+          }
+        }
+      },
+      _ => ()
+    },
+    None => ()
+  }
+  callback_row_instantiations_in(row, formals, scope, declared, defs)
+}
+
+/// The instantiations of `row` read with `formals` in scope, each bound in
+/// `scope` to the type this use gives it (`callback_row_instantiations`).
+fn callback_row_instantiations_in(row: String, formals: Array[String], scope: TypeEnv, declared: Bool, defs: Array[TypeDef]) -> Array[Type] {
+  callback_row_instantiations_at(row, formals, scope, declared, defs, array_empty(), array_empty())
+}
+
+/// `callback_row_instantiations_in`, with each formal in `params` that is
+/// still spelled by its own name replaced by the matching type in `args`
+/// before the instantiation is judged exact.
+fn callback_row_instantiations_at(row: String, formals: Array[String], scope: TypeEnv, declared: Bool, defs: Array[TypeDef], params: Array[String], args: Array[Type]) -> Array[Type] {
+  // A marker is not a word the type parser reads; the scope above binds the
+  // formal by its own name; exporter-marked nominal types retain their identity.
+  let nominals = published_nominal_words(row)
+  let vouched = published_nominal_names(nominals)
+  let readable = strip_published_row_marks(row)
+  let bound = bind_row_effect_instantiations(scope, Some(readable), defs, formals, array_empty())
+  let unreadable = callback_row_unreadable_labels(readable, defs, formals, vouched)
+  let substituted = Array::length(params) > 0
+  let out: Array[Type] = []
+  for d in defs {
+    match d {
+      TDEffect(name, _, etps) => if Array::length(etps) == 1 {
+        let mut refused = false
+        if declared {
+          for entry in unreadable {
+            let (base, label, missing) = entry
+            if base == name && !refused {
+              refused = true
+              Array::push(out, CtNamed(name, [
+                callback_row_refusal(label, missing)
+              ]))
+            } else {
+              ()
+            }
+          }
+        } else {
+          ()
+        }
+        if !refused {
+          match env_lookup(bound, effect_inst_env_key(name)) {
+            Some(read) => {
+              let inst = if substituted {
+                inst_struct_field_ty(read, params, args)
+              } else {
+                read
+              }
+              match inst {
+                CtTuple(targs) => if callback_types_exact(targs, if substituted {
+                  array_empty()
+                } else {
+                  formals
+                }, declared, defs, vouched) {
+                  Array::push(out, CtNamed(name, [
+                    vouch_published_nominals(inst, nominals, formals)
+                  ]))
+                } else {
+                  ()
+                },
+                _ => ()
+              }
+            },
+            None => ()
+          }
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+  }
+  out
+}
+
+/// Codex on #3340: the instantiations a function-typed struct field's
+/// callback row gives, read in the struct's declaration: each type parameter
+/// of the struct is the receiver's type argument, so `run: (() -> Int with
+/// Box[T]) -> Int` in a `GRunner[String]` hands over `String`. The field's
+/// parameter types are already instantiated this way (`inst_struct_field_ty`);
+/// its row is text, so the struct's formals are bound here.
+fn struct_field_row_instantiations(row: String, recv: Type, defs: Array[TypeDef]) -> Array[Type] {
+  match recv {
+    CtNamed(sname, targs) => match find_typedef(defs, sname) {
+      Some(TDStruct(_, _, _, tparams)) => if Array::length(tparams) > 0 && Array::length(tparams) == Array::length(targs) {
+        // Read with the struct's formals in scope, so each stays spelled by
+        // its own name, then substitute the receiver's arguments the way
+        // `inst_struct_field_ty` instantiates the field's parameters.
+        callback_row_instantiations_at(row, tparams, EnvEmpty, true, defs, tparams, targs)
+      } else {
+        callback_row_instantiations_in(row, array_empty(), EnvEmpty, true, defs)
+      },
+      _ => callback_row_instantiations_in(row, array_empty(), EnvEmpty, true, defs)
+    },
+    _ => callback_row_instantiations_in(row, array_empty(), EnvEmpty, true, defs)
+  }
+}
+
+/// Can a callback row's type argument `t`, read in the callee's scope, be
+/// bound for the lambda's performs? A callee formal this call fixes reads as
+/// the variable the call instantiated it with; that is the only way a variable
+/// reaches the row's scope. One still spelled by its own name is a formal the
+/// call does not fix (only the row names it), so it is not bound; nor is a
+/// name nothing declares. For a generic callee whose formals are unknown
+/// (`declared` false: one checked as an expression, whose row is not
+/// published) a formal cannot be told from a type name, so only
+/// compiler-owned types are read there.
+///
+/// Every structure a row argument resolves to is read by its parts, so a
+/// function type is bound like a tuple (Codex on #3340). A row argument is
+/// written as a name or an application, but an alias expands to whatever it
+/// names: under `type Mapper = (Int) -> Int`, `with Box[Mapper]` resolves to a
+/// function type, which this used to call inexact, so a callback performing
+/// `Box::Put((s: String) -> Int { .. })` was handed nothing and its handler
+/// called the closure with an `Int`. A function type's own row is read as
+/// written, the way the callee's handler reads it.
+fn callback_type_exact(t: Type, formals: Array[String], declared: Bool, defs: Array[TypeDef], vouched: Array[String]) -> Bool {
+  match t {
+    CtInt => true,
+    CtDouble => true,
+    CtBool => true,
+    CtString => true,
+    CtChar => true,
+    CtUnit => true,
+    CtBytes => true,
+    CtArray(e) => callback_type_exact(e, formals, declared, defs, vouched),
+    CtOption(e) => callback_type_exact(e, formals, declared, defs, vouched),
+    CtTuple(es) => callback_types_exact(es, formals, declared, defs, vouched),
+    CtConstructor(n, _) => declared || n == "Array" || n == "Option",
+    CtVar(_) => true,
+    CtStruct(_) => declared,
+    CtEnum(_) => declared,
+    CtNamed(n, args) => {
+      let known = match find_typedef(defs, n) {
+        Some(_) => true,
+        None => match compiler_owned_type_arity(n) {
+          Some(_) => true,
+          None => checker_string_array_has(vouched, n)
+        }
+      }
+      declared && known && !formals_contain_source_name(formals, n) && callback_types_exact(args, formals, declared, defs, vouched)
+    },
+    CtApplied(h, args) => declared && callback_type_exact(h, formals, declared, defs, vouched) && callback_types_exact(args, formals, declared, defs, vouched),
+    CtFn(params, ret, _) => callback_types_exact(params, formals, declared, defs, vouched) && callback_type_exact(ret, formals, declared, defs, vouched),
+    CtRecord(fields) => {
+      let mut all = true
+      for field in fields {
+        let (_, ft) = field
+        if !callback_type_exact(ft, formals, declared, defs, vouched) {
+          all = false
+        } else {
+          ()
+        }
+      }
+      all
+    },
+    // Neither is a type a written row argument resolves to.
+    CtForAll(_, _, _) => false,
+    CtUnknown => false
+  }
+}
+
+fn callback_types_exact(ts: Array[Type], formals: Array[String], declared: Bool, defs: Array[TypeDef], vouched: Array[String]) -> Bool {
+  let mut all = true
+  for t in ts {
+    if !callback_type_exact(t, formals, declared, defs, vouched) {
+      all = false
+    } else {
+      ()
+    }
+  }
+  all
+}
+
+//# A lambda's own instantiation (#3341)
+
+/// #3341: the generic-effect instantiations a lambda's body is checked under,
+/// and the variables its type records them by. On top of
+/// `bind_lambda_row_effect_instantiations`:
+///
+/// - a lambda with no row of its own, not passed straight to a callback
+///   parameter and not inside a `handle` of the effect, performs each
+///   one-parameter generic effect at ONE variable of its own, so its
+///   performs agree with each other. Before, each perform took a fresh
+///   instantiation and nothing compared it with the place the lambda was
+///   used: `let g = () -> Int { perform Box::Put(1) }` passed to a
+///   `() -> Int with Box[String]` parameter, or called inside a `with
+///   Box[String]` function, checked clean and a `String` arm read the `Int`;
+/// - a lambda whose own row writes `Box[Int]` records that instantiation the
+///   same way, so it is compared where it is used too: function types unify
+///   row labels by base name (#1340), and a `Box[Int]` lambda passed to a
+///   `Box[String]` parameter was accepted.
+///
+/// The variables reach the lambda's type as `#einst:` labels
+/// (`lambda_effect_inst_row`), which `effect_inst_arg_check` and
+/// `effect_inst_call_check` read at an argument and at a direct call. A
+/// top-level declaration (`top_level`) and a generic lambda (`generic`) take
+/// none: a declaration's row is its contract, and a generic lambda's variables
+/// may be quantified with its formals.
+export fn bind_lambda_effect_instantiations(env: TypeEnv, row: Option[String], defs: Array[TypeDef], tparams: Array[String], errors: Array[String], s: Subst, c: Int, top_level: Bool, generic: Bool) -> (TypeEnv, Subst, Int, Array[(String, Int)]) {
+  let handed = match env_lookup(env, callback_row_inst_key()) {
+    Some(CtTuple(_)) => true,
+    _ => false
+  }
+  let base = bind_lambda_row_effect_instantiations(env, row, defs, tparams, errors)
+  let pairs: Array[(String, Int)] = []
+  if top_level || generic {
+    (base, s, c, pairs)
+  } else {
+    let mut out = base
+    let mut s1 = s
+    let mut c1 = c
+    for d in defs {
+      match d {
+        TDEffect(name, _, etps) => if Array::length(etps) == 1 && type_param_arity(Array::get(etps, 0)) == 0 {
+          match row {
+            Some(text) => if row_writes_effect_instantiation(text, name) {
+              match env_lookup(base, effect_inst_env_key(name)) {
+                Some(CtTuple(targs)) => if Array::length(targs) == 1 {
+                  let (tid, nc) = fresh_unbound_var(s1, c1)
+                  c1 = nc
+                  match unify(CtVar(tid), Array::get(targs, 0), s1) {
+                    Some(ns) => {
+                      s1 = ns
+                      Array::push(pairs, (name, tid))
+                    },
+                    None => ()
+                  }
+                } else {
+                  ()
+                },
+                _ => ()
+              }
+            } else {
+              ()
+            },
+            None => if !handed {
+              match env_lookup(base, effect_inst_env_key(name)) {
+                // An enclosing handle's instantiation is inherited, as before.
+                Some(CtTuple(_)) => (),
+                _ => {
+                  let (tid, nc) = fresh_unbound_var(s1, c1)
+                  c1 = nc
+                  let own_inst = CtTuple([CtVar(tid)])
+                  out = env_bind(env_bind(out, effect_inst_env_key(name), own_inst), effect_row_inst_key(name), own_inst)
+                  Array::push(pairs, (name, tid))
+                }
+              }
+            } else {
+              ()
+            }
+          }
+        } else {
+          ()
+        },
+        _ => ()
+      }
+    }
+    (out, s1, c1, pairs)
+  }
+}
+
+/// A variable `s` does not bind yet, and the next counter. The counter can
+/// hand out an id an earlier declaration's check already bound (measured: a
+/// `handle` arm resuming with a generic struct literal), and a label on such a
+/// variable would compare the lambda's performs with that unrelated type.
+fn fresh_unbound_var(s: Subst, c: Int) -> (Int, Int) {
+  let mut next = c
+  let mut id = 0 - 1
+  while id < 0 {
+    let (_, nc) = fresh_var(next)
+    match subst_lookup(s, nc - 1) {
+      Some(_) => (),
+      None => {
+        id = nc - 1
+      }
+    }
+    next = nc
+  }
+  (id, next)
+}
+
+/// Does the row text write `name` with a type argument (`Box[Int]`)?
+fn row_writes_effect_instantiation(row: String, name: String) -> Bool {
+  let mut found = false
+  for raw in String::split(row, ",") {
+    let label = String::trim(raw)
+    let bi = String::index_of(label, "[")
+    if bi > 0 && label[0: bi] == name {
+      found = true
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+/// #3341: the lambda's row with an `#einst:<effect>:<id>` label for each of
+/// its own instantiation variables (`bind_lambda_effect_instantiations`). One
+/// its own row writes is always recorded; one a row-less lambda made is
+/// recorded only when its body read it (`effect_inst_used_vars`), so a lambda
+/// that never performs `Box` is not tied to any `Box` instantiation.
+export fn lambda_effect_inst_row(effect: Option[String], row: Option[String], pairs: Array[(String, Int)]) -> Option[String] {
+  let mut out = effect
+  for pair in pairs {
+    let (name, id) = pair
+    let used = match row {
+      Some(_) => true,
+      None => int_array_has(effect_inst_used_vars, id)
+    }
+    if used {
+      out = merge_provenance_row(out, Some(effect_inst_label(name, id)))
+    } else {
+      ()
+    }
+  }
+  out
+}
+
+fn effect_inst_label(eff: String, id: Int) -> String {
+  String::concat("#einst:", String::concat(eff, String::concat(":", __to_string(id))))
+}
+
+/// #3341: (effect, instantiation variable) for each `#einst:` label of `row`.
+export fn effect_inst_labels(row: Option[String]) -> Array[(String, Int)] {
+  let out: Array[(String, Int)] = []
+  let text = match row {
+    Some(r) => r,
+    None => ""
+  }
+  if String::contains(text, "#einst:") {
+    for raw in String::split(text, ",") {
+      let label = String::trim(raw)
+      if is_effect_inst_label(label) {
+        let rest = String::substring(label, 7, String::length(label))
+        let n = String::length(rest)
+        let mut cut = 0 - 1
+        let mut i = 0
+        while i < n {
+          if String::byte_at(rest, i) == 58 {
+            cut = i
+          } else {
+            ()
+          }
+          i = i + 1
+        }
+        if cut > 0 && cut + 1 < n {
+          let mut id = 0
+          let mut digits = true
+          let mut p = cut + 1
+          while p < n {
+            let ch = String::byte_at(rest, p)
+            if ch >= 48 && ch <= 57 {
+              id = id * 10 + (ch - 48)
+            } else {
+              digits = false
+            }
+            p = p + 1
+          }
+          if digits {
+            Array::push(out, (String::substring(rest, 0, cut), id))
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+    }
+    ()
+  } else {
+    ()
+  }
+  out
+}
+
+/// #3341: compare the instantiations a function value records
+/// (`#einst:` labels) with the row of the parameter it is passed to. The
+/// parameter's row is read in the callee's scope (`callback_row_instantiations`),
+/// so a formal it names is the type this call gives it.
+export fn effect_inst_arg_check(env: TypeEnv, arg: Expr, arg_ty: Type, param_ty: Type, s: Subst, callee: Option[(Type, Type)], callee_name: String, defs: Array[TypeDef], errors: Array[String]) -> Subst {
+  let subject = if String::length(callee_name) > 0 {
+    "the function passed to `\{callee_name}`"
+  } else {
+    "the function passed here"
+  }
+  effect_inst_value_check(env, arg, arg_ty, param_ty, s, (row: String) -> Array[Type] {
+    callback_row_instantiations(row, callee, defs)
+  }, subject, "the parameter's row", defs, errors)
+}
+
+/// Codex on #3340: `effect_inst_arg_check` for a field call `r.f(..)`, whose
+/// parameter's row is read in the receiver's struct
+/// (`struct_field_row_instantiations`).
+export fn field_effect_inst_arg_check(env: TypeEnv, arg: Expr, arg_ty: Type, param_ty: Type, s: Subst, recv: Type, field: String, defs: Array[TypeDef], errors: Array[String]) -> Subst {
+  effect_inst_value_check(env, arg, arg_ty, param_ty, s, (row: String) -> Array[Type] {
+    struct_field_row_instantiations(row, recv, defs)
+  }, "the function passed to `\{field}`", "the parameter's row", defs, errors)
+}
+
+/// #3341: the same comparison for a function value bound by an annotated
+/// `let` or returned under a declared return type: `want_ty` was written in
+/// this scope, so only the names it resolves to exactly are read
+/// (`callback_type_exact`).
+export fn effect_inst_annotation_check(env: TypeEnv, value: Expr, value_ty: Type, want_ty: Type, s: Subst, subject: String, slot: String, defs: Array[TypeDef], errors: Array[String]) -> Subst {
+  effect_inst_value_check(env, value, value_ty, want_ty, s, (row: String) -> Array[Type] {
+    callback_row_instantiations(row, None, defs)
+  }, subject, slot, defs, errors)
+}
+
+fn effect_inst_value_check(env: TypeEnv, arg: Expr, arg_ty: Type, param_ty: Type, s: Subst, read: (String) -> Array[Type], subject: String, slot: String, defs: Array[TypeDef], errors: Array[String]) -> Subst {
+  // Both types are read as written: a parameter or annotation with a generic
+  // row is a function type there, and so is a value that carries labels.
+  // Nothing is substituted unless both sides can take part.
+  match param_ty {
+    CtFn(_, _, Some(prow)) => if row_names_instantiation(prow) {
+      match arg_ty {
+        CtFn(_, _, Some(arow)) => if String::contains(arow, "[") || String::contains(arow, "#einst:") {
+          let haves = value_effect_instantiations(env, arg, arg_ty, arow, s, defs)
+          if Array::length(haves) == 0 {
+            s
+          } else {
+            let wants = read(prow)
+            let mut out = s
+            for have_pair in haves {
+              let (eff, have) = have_pair
+              for item in wants {
+                match item {
+                  CtNamed(iname, iargs) => if iname == eff && Array::length(iargs) == 1 {
+                    match Array::get(iargs, 0) {
+                      CtTuple(ws) => if Array::length(ws) == 1 {
+                        let want = Array::get(ws, 0)
+                        match unify(have, want, out) {
+                          Some(ns) => {
+                            out = ns
+                          },
+                          None => Array::push(errors, effect_inst_value_message(subject, slot, eff, subst_apply(out, have), subst_apply(out, want), effect_inst_arg_anchor(arg)))
+                        }
+                      } else {
+                        ()
+                      },
+                      _ => ()
+                    }
+                  } else {
+                    ()
+                  },
+                  _ => ()
+                }
+              }
+              ()
+            }
+            out
+          }
+        } else {
+          s
+        },
+        _ => s
+      }
+    } else {
+      s
+    },
+    _ => s
+  }
+}
+
+/// The instantiation a function value performs each one-parameter generic
+/// effect at, as far as its type says: an `#einst:` label's variable, read at
+/// this use (`label_type_at_use`), else a row item whose argument names a type
+/// exactly, read with no formal in scope (`callback_row_instantiations`): a
+/// top-level function's own row, or a callback parameter's. A row item naming
+/// a formal is not read. `arg_ty` is the value's type at this use.
+fn value_effect_instantiations(env: TypeEnv, arg: Expr, arg_ty: Type, arow: String, s: Subst, defs: Array[TypeDef]) -> Array[(String, Type)] {
+  let out: Array[(String, Type)] = []
+  let labels = effect_inst_labels(Some(arow))
+  let binding = match arg {
+    EIdent(name, _) => if Array::length(labels) == 0 {
+      None
+    } else {
+      env_lookup(env, name)
+    },
+    _ => None
+  }
+  let labeled: Array[String] = []
+  for label in labels {
+    let (eff, id) = label
+    Array::push(labeled, eff)
+    match label_type_at_use(s, id, binding, arg_ty) {
+      Some(t) => Array::push(out, (eff, t)),
+      None => ()
+    }
+  }
+  if row_names_instantiation(arow) {
+    for item in callback_row_instantiations(arow, None, defs) {
+      match item {
+        CtNamed(iname, iargs) => if Array::length(iargs) == 1 && !string_list_has(labeled, iname) {
+          match Array::get(iargs, 0) {
+            CtTuple(ts) => if Array::length(ts) == 1 {
+              Array::push(out, (iname, Array::get(ts, 0)))
+            } else {
+              ()
+            },
+            _ => ()
+          }
+        } else {
+          ()
+        },
+        _ => ()
+      }
+    }
+    ()
+  } else {
+    ()
+  }
+  out
+}
+
+fn string_list_has(xs: Array[String], x: String) -> Bool {
+  let mut found = false
+  for v in xs {
+    if v == x {
+      found = true
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+/// #3341: compare the instantiations a called function value records with
+/// the one in scope at the call: the enclosing function's own row's, or an
+/// enclosing row-less lambda's own variable -- the row the performs are
+/// charged to. An enclosing `handle`'s is left to the handle's own check of
+/// the callees it reaches (#3010, #3022), and the effect pass refuses a
+/// row-less lambda called under a handle. `binding` is the callee's type as
+/// bound and `callee_ty` its type at this call (`label_type_at_use`). The
+/// callee's type is read as written: a value that carries labels is a
+/// function type.
+export fn effect_inst_call_check(env: TypeEnv, binding: Option[Type], callee_ty: Type, callee_name: String, off: Int, s: Subst, errors: Array[String]) -> Subst {
+  match callee_ty {
+    CtFn(_, _, Some(row)) => if String::contains(row, "#einst:") {
+      let labels = effect_inst_labels(Some(row))
+      let mut out = s
+      for label in labels {
+        let (eff, id) = label
+        let from_row = match (env_lookup(env, effect_row_inst_key(eff)), env_lookup(env, effect_inst_env_key(eff))) {
+          (Some(row_inst), Some(inst)) => types_equal(row_inst, inst),
+          _ => false
+        }
+        match env_lookup(env, effect_inst_env_key(eff)) {
+          Some(CtTuple(targs)) => if Array::length(targs) == 1 && from_row {
+            match label_type_at_use(out, id, binding, callee_ty) {
+              Some(have) => {
+                note_effect_inst_used(targs)
+                let want = Array::get(targs, 0)
+                match unify(have, want, out) {
+                  Some(ns) => {
+                    out = ns
+                  },
+                  None => Array::push(errors, effect_inst_call_message(callee_name, eff, subst_apply(out, have), subst_apply(out, want), off))
+                }
+              },
+              None => ()
+            }
+          } else {
+            ()
+          },
+          _ => ()
+        }
+      }
+      out
+    } else {
+      s
+    },
+    _ => s
+  }
+}
+
+/// The type a label's variable `id` stands for at one use of a binding.
+/// A let-generalized lambda generic in its payload (`let g = (x) -> {
+/// perform Box::Put(x) }`) has a scheme that quantifies the payload's
+/// variable, and the label, being text, still names the scheme's variable.
+/// Each quantified variable it reaches is read at the position the scheme
+/// holds it in `used`, this use's instantiated type. None when one has no
+/// such position, so nothing is compared.
+fn label_type_at_use(s: Subst, id: Int, binding: Option[Type], used: Type) -> Option[Type] {
+  let lt = subst_apply(s, CtVar(id))
+  match binding {
+    Some(CtForAll(vs, _, body)) => {
+      let reached: Array[Int] = []
+      for v in collect_tvars(lt) {
+        if int_array_has(vs, v) && !int_array_has(reached, v) {
+          Array::push(reached, v)
+        } else {
+          ()
+        }
+      }
+      if Array::length(reached) == 0 {
+        Some(lt)
+      } else {
+        let pairs: Array[(Int, Type)] = []
+        pair_quantified(body, used, vs, pairs)
+        let mut sub = SubstEmpty
+        let mut complete = true
+        for v in reached {
+          let mut found = false
+          for pair in pairs {
+            let (q, t) = pair
+            if q == v && !found {
+              found = true
+              sub = SubstBind(v, t, sub)
+            } else {
+              ()
+            }
+          }
+          if !found {
+            complete = false
+          } else {
+            ()
+          }
+        }
+        if complete {
+          Some(subst_apply(sub, lt))
+        } else {
+          None
+        }
+      }
+    },
+    _ => Some(lt)
+  }
+}
+
+/// Pair each quantified variable of `scheme` with what `used` holds at the
+/// same position.
+fn pair_quantified(scheme: Type, used: Type, vs: Array[Int], out: Array[(Int, Type)]) -> Unit {
+  match scheme {
+    CtVar(q) => if int_array_has(vs, q) {
+      Array::push(out, (q, used))
+    } else {
+      ()
+    },
+    CtFn(ps, r, _) => match used {
+      CtFn(ups, ur, _) => {
+        pair_quantified_lists(ps, ups, vs, out)
+        pair_quantified(r, ur, vs, out)
+      },
+      _ => ()
+    },
+    CtArray(e) => match used {
+      CtArray(ue) => pair_quantified(e, ue, vs, out),
+      _ => ()
+    },
+    CtOption(e) => match used {
+      CtOption(ue) => pair_quantified(e, ue, vs, out),
+      _ => ()
+    },
+    CtTuple(es) => match used {
+      CtTuple(ues) => pair_quantified_lists(es, ues, vs, out),
+      _ => ()
+    },
+    CtNamed(n, args) => match used {
+      CtNamed(un, uargs) => if n == un {
+        pair_quantified_lists(args, uargs, vs, out)
+      } else {
+        ()
+      },
+      _ => ()
+    },
+    _ => ()
+  }
+}
+
+fn pair_quantified_lists(xs: Array[Type], ys: Array[Type], vs: Array[Int], out: Array[(Int, Type)]) -> Unit {
+  if Array::length(xs) == Array::length(ys) {
+    let mut i = 0
+    while i < Array::length(xs) {
+      pair_quantified(Array::get(xs, i), Array::get(ys, i), vs, out)
+      i = i + 1
+    }
+  } else {
+    ()
+  }
+}
+
+fn effect_inst_arg_anchor(arg: Expr) -> Int {
+  match arg {
+    EFn(_, _, _, _, _, body) => railway_expr_off(body),
+    _ => railway_expr_off(arg)
+  }
+}
+
+fn effect_inst_value_message(subject: String, slot: String, eff: String, have: Type, want: Type, off: Int) -> String {
+  let have_text = type_to_string(have)
+  let want_text = type_to_string(want)
+  "make \{subject} perform `\{eff}` at `\{want_text}`: it performs `\{eff}` at `\{have_text}`, but \{slot} is `\{eff}[\{want_text}]` (its handler would read the `\{have_text}` as `\{want_text}`)\{off_marker(off)}"
+}
+
+fn effect_inst_call_message(callee_name: String, eff: String, have: Type, want: Type, off: Int) -> String {
+  let callee = if String::length(callee_name) > 0 {
+    String::concat("`", String::concat(callee_name, "`"))
+  } else {
+    "the called function"
+  }
+  let have_text = type_to_string(have)
+  let want_text = type_to_string(want)
+  "make \{callee} perform `\{eff}` at `\{want_text}`, or handle `\{eff}` around this call: it performs `\{eff}` at `\{have_text}`, and the `\{eff}` in scope here is `\{eff}[\{want_text}]`\{off_marker(off)}"
+}
+
+/// #3341: a type with every `#einst:` label dropped from its rows. A
+/// top-level binding is published without them: their variables belong to
+/// this check, and an importer or a cache would read them as its own.
+export fn strip_effect_inst_labels(t: Type) -> Type {
+  match t {
+    CtFn(params, ret, eff) => CtFn(for p in params {
+      strip_effect_inst_labels(p)
+    }, strip_effect_inst_labels(ret), strip_effect_inst_row(eff)),
+    CtArray(e) => CtArray(strip_effect_inst_labels(e)),
+    CtOption(e) => CtOption(strip_effect_inst_labels(e)),
+    CtTuple(items) => CtTuple(for item in items {
+      strip_effect_inst_labels(item)
+    }),
+    CtRecord(fields) => CtRecord(for field in fields {
+      let (fname, fty) = field
+      (fname, strip_effect_inst_labels(fty))
+    }),
+    CtNamed(name, args) => CtNamed(name, for arg in args {
+      strip_effect_inst_labels(arg)
+    }),
+    CtApplied(head, args) => CtApplied(strip_effect_inst_labels(head), for arg in args {
+      strip_effect_inst_labels(arg)
+    }),
+    CtForAll(vs, bounds, body) => CtForAll(vs, bounds, strip_effect_inst_labels(body)),
+    _ => t
+  }
+}
+
+fn strip_effect_inst_row(eff: Option[String]) -> Option[String] {
+  match eff {
+    Some(row) => if String::contains(row, "#einst:") {
+      let kept = array_empty()
+      for raw in String::split(row, ",") {
+        let label = String::trim(raw)
+        if !is_effect_inst_label(label) && String::length(label) > 0 {
+          Array::push(kept, label)
+        } else {
+          ()
+        }
+      }
+      if Array::length(kept) == 0 {
+        None
+      } else {
+        Some(String::join(kept, ", "))
+      }
+    } else {
+      eff
+    },
+    None => None
+  }
+}

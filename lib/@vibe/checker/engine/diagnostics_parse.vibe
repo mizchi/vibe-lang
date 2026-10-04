@@ -1,0 +1,1016 @@
+import @vibe/ast {
+  TypeExpr
+}
+import @vibe/compiler/core {
+  BindingOrigin, EnvValueBinding, Expr, Stmt, Type, TypeDef, is_effect_inst_label
+}
+import @vibe/compiler/syntax {
+  Token
+}
+import ./type_members.vibe {
+  engine_module_typed_lowering_offsets_for_source
+}
+import @vibe/compiler/core {
+  Stmt, restore_resolved_callees, str_lt
+}
+import @vibe/compiler/loader {
+  ast_cache_prefetch_count_reset,
+  ingestion_pipeline_telemetry_add,
+  parse_program_located_shared,
+  parse_program_located_shared_mark_semantic,
+  parse_program_located_shared_ran_parser,
+  parse_program_located_shared_semantic_pending
+}
+import @vibe/compiler/runtime/checked_module_cache {
+  checked_module_artifact_stmts
+}
+import @vibe/compiler/syntax {
+  offset_to_line_col
+}
+import @vibe/core {
+  array_empty
+}
+
+export fn engine_is_vpkg_types_stub_path(path: String) -> Bool {
+  String::index_of(path, ".vibe/build/vpkg_types/") >= 0
+}
+export fn engine_typecheck_fs_lookup_string_pair(pairs: Array[(String, String)], key: String) -> Option[String] {
+  let len = Array::length(pairs)
+  let mut i = 0
+  let mut result = None
+  let mut done = false
+  while !done {
+    if i >= len {
+      done = true
+    } else {
+      let (k, v) = Array::get(pairs, i)
+      if k == key {
+        result = Some(v)
+        done = true
+      } else {
+        i = i + 1
+      }
+    }
+  }
+  result
+}
+export fn engine_typecheck_fs_upsert_string_pair(pairs: Array[(String, String)], key: String, value: String) -> Array[(String, String)] {
+  let len = Array::length(pairs)
+  let mut i = 0
+  let mut found = false
+  while i < len && !found {
+    let (k, _) = Array::get(pairs, i)
+    if k == key {
+      Array::set(pairs, i, (key, value))
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  if !found {
+    Array::push(pairs, (key, value))
+  }
+  pairs
+}
+let incremental_typecheck_telemetry_enabled_cell: Array[Bool] = array_empty()
+let incremental_typecheck_telemetry_counters: Array[Int] = array_empty()
+let incremental_typecheck_telemetry_decisions: Array[(String, String)] = []
+let incremental_interface_trace_enabled_cell: Array[Bool] = array_empty()
+let incremental_interface_trace_observations: Array[(String, String)] = []
+let incremental_checked_env_trace_observations: Array[(String, String)] = []
+let incremental_persistent_type_env_transport_trace_observations: Array[(String, String)] = [
+]
+fn engine_incremental_typecheck_telemetry_enabled() -> Bool {
+  if Array::length(incremental_typecheck_telemetry_enabled_cell) > 0 {
+    Array::get(incremental_typecheck_telemetry_enabled_cell, 0)
+  } else {
+    false
+  }
+}
+/// Reset and configure the single telemetry owner used by runtime and checker callers.
+export fn engine_set_incremental_typecheck_telemetry_enabled(enabled: Bool) -> Unit {
+  Array::truncate(incremental_typecheck_telemetry_enabled_cell, 0)
+  Array::push(incremental_typecheck_telemetry_enabled_cell, enabled)
+  Array::truncate(incremental_typecheck_telemetry_counters, 0)
+  Array::truncate(incremental_typecheck_telemetry_decisions, 0)
+  ast_cache_prefetch_count_reset()
+  let mut i = 0
+  while i < 11 {
+    Array::push(incremental_typecheck_telemetry_counters, 0)
+    i = i + 1
+  }
+}
+/// Reset and configure the shared interface observation cells.
+/// Enable the observation-only interface identity for one check invocation.
+/// The CLI calls this only for VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT.
+export fn engine_set_incremental_interface_trace_enabled(enabled: Bool) -> Unit {
+  Array::truncate(incremental_interface_trace_enabled_cell, 0)
+  Array::push(incremental_interface_trace_enabled_cell, enabled)
+  Array::truncate(incremental_interface_trace_observations, 0)
+  Array::truncate(incremental_checked_env_trace_observations, 0)
+  Array::truncate(incremental_persistent_type_env_transport_trace_observations, 0)
+}
+export fn engine_incremental_interface_trace_enabled() -> Bool {
+  if Array::length(incremental_interface_trace_enabled_cell) > 0 {
+    Array::get(incremental_interface_trace_enabled_cell, 0)
+  } else {
+    false
+  }
+}
+export fn engine_incremental_typecheck_telemetry_add(index: Int, amount: Int) -> Unit {
+  if engine_incremental_typecheck_telemetry_enabled() {
+    Array::set(incremental_typecheck_telemetry_counters, index, Array::get(incremental_typecheck_telemetry_counters, index) + amount)
+  } else {
+    ()
+  }
+}
+export fn engine_incremental_typecheck_telemetry_decide(path: String, decision: String) -> Unit {
+  if engine_incremental_typecheck_telemetry_enabled() {
+    Array::push(incremental_typecheck_telemetry_decisions, (path, decision))
+  } else {
+    ()
+  }
+}
+export fn engine_incremental_interface_trace_observe(path: String, interface_identity: String, checked_env_identity: String, persistent_type_env_transport_identity: String) -> Unit {
+  if engine_incremental_interface_trace_enabled() {
+    engine_typecheck_fs_upsert_string_pair(incremental_interface_trace_observations, path, interface_identity)
+    engine_typecheck_fs_upsert_string_pair(incremental_checked_env_trace_observations, path, checked_env_identity)
+    engine_typecheck_fs_upsert_string_pair(incremental_persistent_type_env_transport_trace_observations, path, persistent_type_env_transport_identity)
+    ()
+  } else {
+    ()
+  }
+}
+export fn engine_incremental_interface_trace_observation_of(path: String) -> Option[String] {
+  engine_typecheck_fs_lookup_string_pair(incremental_interface_trace_observations, path)
+}
+export fn engine_incremental_checked_env_trace_observation_of(path: String) -> Option[String] {
+  engine_typecheck_fs_lookup_string_pair(incremental_checked_env_trace_observations, path)
+}
+export fn engine_incremental_persistent_type_env_transport_trace_observation_of(path: String) -> Option[String] {
+  engine_typecheck_fs_lookup_string_pair(incremental_persistent_type_env_transport_trace_observations, path)
+}
+export fn engine_incremental_typecheck_telemetry_decision_of(path: String) -> Option[String] {
+  let mut i = 0
+  let mut result = None
+  while i < Array::length(incremental_typecheck_telemetry_decisions) {
+    let (candidate, decision) = Array::get(incremental_typecheck_telemetry_decisions, i)
+    if candidate == path {
+      result = Some(decision)
+      i = Array::length(incremental_typecheck_telemetry_decisions)
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+export fn engine_incremental_typecheck_telemetry_counter(index: Int) -> Int {
+  if engine_incremental_typecheck_telemetry_enabled() {
+    Array::get(incremental_typecheck_telemetry_counters, index)
+  } else {
+    0
+  }
+}
+export fn engine_interface_segment(text: String) -> String {
+  String::concat(__to_string(String::length(text)), String::concat(":", text))
+}
+export fn engine_interface_sorted_unique(items: Array[String]) -> Array[String] {
+  let out = Array::slice(items, 0, Array::length(items))
+  let mut i = 1
+  while i < Array::length(out) {
+    let key = Array::get(out, i)
+    let mut j = i
+    while j > 0 && str_lt(key, Array::get(out, j - 1)) {
+      Array::set(out, j, Array::get(out, j - 1))
+      j = j - 1
+    }
+    Array::set(out, j, key)
+    i = i + 1
+  }
+  let unique = array_empty()
+  let mut k = 0
+  while k < Array::length(out) {
+    if k == 0 || Array::get(out, k) != Array::get(out, k - 1) {
+      Array::push(unique, Array::get(out, k))
+    } else {
+      ()
+    }
+    k = k + 1
+  }
+  unique
+}
+export fn engine_interface_effect_set_with_vars(effect_name: Option[String], ids: Array[Int], names: Array[String]) -> String {
+  match effect_name {
+    None => "[]",
+    Some(raw) => {
+      let labels = array_empty()
+      let pieces = String::split(raw, ",")
+      let mut i = 0
+      while i < Array::length(pieces) {
+        let label = String::trim(Array::get(pieces, i))
+        if String::starts_with(label, "#capture[") {
+          let close = String::index_of(label, "]")
+          let mut capture_id = 0
+          let mut p = 9
+          while p < close {
+            capture_id = capture_id * 10 + (String::char_code_at(label, p) - 48)
+            p = p + 1
+          }
+          let mut found = false
+          let mut vi = 0
+          while vi < Array::length(ids) && !found {
+            if Array::get(ids, vi) == capture_id {
+              Array::push(labels, String::concat("#capture[", String::concat(Array::get(names, vi), "]")))
+              found = true
+            } else {
+              vi = vi + 1
+            }
+          }
+        } else if String::starts_with(label, "#region_") || String::starts_with(label, "#param[") || String::starts_with(label, "#aliasparam[") || String::starts_with(label, "#fieldparam[") || is_effect_inst_label(label) {
+          ()
+        } else if String::length(label) > 0 {
+          Array::push(labels, label)
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      String::concat("[", String::concat(String::join(engine_interface_sorted_unique(labels), ","), "]"))
+    }
+  }
+}
+/// Share the loader located parse and preserve first semantic-use telemetry.
+/// #2386: the ModuleJob parse goes through the loader's shared located-parse
+/// memo (`parse_program_located_shared`, header_cache.vibe), which the header
+/// pass fills during planning -- on a cold compile every module used to be
+/// lexed and parsed twice, once for its header and once here (#1100 measured
+/// the merge's third parse at 102 MB of a ~850 MB cold selfcompile; this
+/// removes the second). The contract is the memo's: keyed by (path, EXACT
+/// source text), a shallow top-level copy on every hand-out, a throwing
+/// parse never memoized, bounded for the daemon.
+///
+/// `current_source_parse_executions` (counter 5, and ingestion slot 15)
+/// keeps its observable: one per FIRST semantic use of a (path, text) in
+/// the process. With the walk's own memo that was exactly "this check
+/// parsed" -- the header pass never filled it, so the first check of a text
+/// always parsed, and a later check of the same text never did. The parser
+/// may now have run in planning instead, so the count is taken from the
+/// memo's consumed flag rather than from whether the parser ran here; the
+/// typing-env-reuse oracle and the cache probe pin it per scenario. Counted
+/// before the parse and marked after a successful one, as before: a
+/// throwing parse counts and is asked again.
+export fn engine_parse_program_with_path_impl(path: String, source: String, observe_current_source_parse: Bool) -> Array[Stmt] with Exception {
+  let first_use = observe_current_source_parse && parse_program_located_shared_semantic_pending(path, source)
+  if first_use {
+    engine_incremental_typecheck_telemetry_add(5, 1)
+    ingestion_pipeline_telemetry_add(15, 1)
+  } else {
+    ()
+  }
+  let stmts = parse_program_located_shared(path, source)
+  if first_use {
+    parse_program_located_shared_mark_semantic(path, source)
+  } else {
+    ()
+  }
+  stmts
+}
+/// The NON-WALK parse entry: the build's merge/flatten lane, plus the handful
+/// of import-env and interface-observation sites. The TypeDb walk calls
+/// `parse_program_with_path_impl` directly instead, with the current-source
+/// observable on.
+///
+/// #2766: a parser run reached through here is counted separately
+/// (`non_walk_parse_operations`). `parse_operations` spans planning and the
+/// walk and nothing else, which is truthful for a CHECK and was read as a
+/// statement about a BUILD -- a warm build reported 0 parses while the merge
+/// lane parsed every source in the closure. The counter that was 0 is still
+/// 0 and still means what it says; the work it never covered now has its own.
+export fn engine_parse_program_with_path(path: String, source: String) -> Array[Stmt] with Exception {
+  let result = match checked_module_artifact_stmts(path, source) {
+    Some(stmts) => stmts,
+    None => {
+      let stmts = engine_parse_program_with_path_impl(path, source, false)
+      // Asked AFTER the call and of the memo, not of this function: the point
+      // is whether the PARSER ran, so a memo or AST-cache hand-out must not
+      // count. A throwing parse does not reach here, the same way the walk's
+      // own counter treats one.
+      if parse_program_located_shared_ran_parser() {
+        engine_incremental_typecheck_telemetry_add(10, 1)
+      } else {
+        ()
+      }
+      stmts
+    }
+  }
+  match engine_module_typed_lowering_offsets_for_source(path, source) {
+    Some(rows) => restore_resolved_callees(result, rows),
+    None => ()
+  }
+  result
+}
+/// Span of an identifier run starting at `start` (returns the end offset).
+export fn engine_typecheck_ident_run(s: String, start: Int) -> Int {
+  let len = String::length(s)
+  let mut e = start
+  let mut go = true
+  while go && e < len {
+    let c = String::char_code_at(s, e)
+    let is_id = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
+    if is_id {
+      e = e + 1
+    } else {
+      go = false
+    }
+  }
+  e
+}
+/// Best-effort `line:col` for a type error: pull the symbol out of
+/// `unknown name: X` and locate its first occurrence in the source. Real
+/// expression-level spans (AST node positions) remain future work; this gives
+/// the common case a line number in both CLI and LSP (which parses the prefix).
+/// Built with String::concat only (not `+`) to avoid this NUL fragility.
+/// Prefix `msg` with the source `line:col` of the symbol that follows `marker`
+/// in `msg` (if both are found); otherwise return `msg` unchanged.
+fn engine_locate_by_marker(source: String, msg: String, marker: String) -> String {
+  let mi = String::index_of(msg, marker)
+  if mi < 0 {
+    msg
+  } else {
+    let sstart = mi + String::length(marker)
+    let send = engine_typecheck_ident_run(msg, sstart)
+    if send <= sstart {
+      msg
+    } else {
+      let sym = String::substring(msg, sstart, send)
+      let off = String::index_of(source, sym)
+      if off < 0 {
+        msg
+      } else {
+        let (line, col) = offset_to_line_col(source, off)
+        let loc = String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), ": "))))
+        String::concat(loc, msg)
+      }
+    }
+  }
+}
+/// The exact text between `marker` and the NEXT `'` in `msg` -- unlike
+/// `locate_by_marker`'s `typecheck_ident_run` (which only captures plain
+/// identifier chars), this captures the quoted substring verbatim, so a
+/// symbol like `@shell` (not a bare identifier) comes out whole. Returns ""
+/// if `marker` or the closing quote isn't found.
+fn engine_extract_quoted_after(msg: String, marker: String) -> String {
+  let mi = String::index_of(msg, marker)
+  if mi < 0 {
+    ""
+  } else {
+    let rest = String::substring(msg, mi + String::length(marker), String::length(msg))
+    let rel_end = String::index_of(rest, "'")
+    if rel_end < 0 {
+      ""
+    } else {
+      String::substring(rest, 0, rel_end)
+    }
+  }
+}
+/// First occurrence of `sym` in `source` at or after char offset `from`
+/// (clamped into range), or -1.
+fn engine_index_of_after(source: String, sym: String, from: Int) -> Int {
+  if String::length(sym) == 0 {
+    0 - 1
+  } else {
+    let start = if from < 0 {
+      0
+    } else if from > String::length(source) {
+      String::length(source)
+    } else {
+      from
+    }
+    let rel = String::index_of(String::substring(source, start, String::length(source)), sym)
+    if rel < 0 {
+      0 - 1
+    } else {
+      start + rel
+    }
+  }
+}
+/// #1205 Codex review: a plain first-occurrence search for the bare
+/// name/alias (the #1204 approach) can land on an EARLIER, unrelated
+/// occurrence of the same spelling -- a comment or string mentioning the
+/// name before the import statement itself, or another import of the same
+/// name from a different path. `detect_unused_imports`' own message embeds
+/// the import's PATH too (`imported name 'X' from 'PATH' ..` / `import alias
+/// '@A' for 'PATH' ..`) -- a path is far less likely to collide with
+/// unrelated text than a short bare identifier, so anchor on the path's OWN
+/// first occurrence and search for the name/alias only from there forward:
+/// the import statement's own occurrence of its item names always comes
+/// shortly after its own path in the source. Degrades to an unanchored
+/// search (starting from offset 0) if the path itself can't be found, which
+/// is no worse than the #1204 behavior this replaces.
+fn engine_locate_unused_import_msg(source: String, msg: String) -> String {
+  let name_marker = "imported name '"
+  let alias_marker = "import alias '"
+  let is_alias = String::index_of(msg, alias_marker) >= 0
+  if not(is_alias) && String::index_of(msg, name_marker) < 0 {
+    msg
+  } else {
+    let sym = if is_alias {
+      engine_extract_quoted_after(msg, alias_marker)
+    } else {
+      engine_extract_quoted_after(msg, name_marker)
+    }
+    let path = if is_alias {
+      engine_extract_quoted_after(msg, "' for '")
+    } else {
+      engine_extract_quoted_after(msg, "' from '")
+    }
+    if sym == "" {
+      msg
+    } else {
+      let anchor = if path == "" {
+        0
+      } else {
+        let p = String::index_of(source, path)
+        if p < 0 {
+          0
+        } else {
+          p
+        }
+      }
+      let off = engine_index_of_after(source, sym, anchor)
+      if off < 0 {
+        msg
+      } else {
+        String::concat(engine_offset_line_col_prefix(source, off), msg)
+      }
+    }
+  }
+}
+/// Does `msg` already carry a `line N:C` location?
+///
+/// Two shapes reach the final locate pass already located:
+///   `line 3:3-4: <msg>`                 -- located, not yet path-prefixed
+///   `/path/to/mod.vibe: line 3:3-4: ..` -- located AND path-prefixed by the
+///                                          per-module pass (see the
+///                                          `job.path + ": "` concat below)
+///
+/// The second shape used to slip past the guard, which only tested for the
+/// location at index 0. A path-prefixed message then went through the
+/// first-occurrence heuristic AGAIN -- against the ENTRY module's source, which
+/// is not necessarily the source the error came from -- and got a SECOND,
+/// earlier location glued to its front:
+///
+///   error: line 1:12: /tmp/x.vibe: line 3:3-4: function arity mismatch for g
+///          ^^^^^^^^^ g's DECLARATION      ^^^^^^^^ the actual call site
+///
+/// Both locations are real positions of `g`, so nothing looks malformed; the
+/// first one is simply the wrong one, and it is the one a reader (or an LSP
+/// parsing `^line N:C`) takes. Reporting a confident wrong location is worse
+/// than reporting none, so recognize the path-prefixed shape too.
+///
+/// Recognized by SHAPE, at any position: `line <digits>:<digits>` sitting
+/// either at the start of the message or right after a `: ` delimiter. An
+/// earlier revision anchored on the FIRST `: ` on the theory that a path cannot
+/// contain one -- but `: ` is legal in a POSIX path (`/tmp/foo: bar/x.vibe`),
+/// and there the anchor lands inside the path, the guard returns false, and the
+/// heuristic prepends its wrong location again: the exact bug this is here to
+/// stop (#1628 review, Codex P2). Scanning every candidate makes the answer
+/// depend on the message's shape rather than on assumptions about path
+/// contents.
+///
+/// Erring toward "already located" is the safe direction. A false positive
+/// costs a location the heuristic might have guessed; a false negative
+/// reinstates a CONFIDENTLY WRONG one. Missing information beats misinformation
+/// (docs/internal/project/issue-triage.md ranks silent-wrong above every other failure).
+export fn engine_diag_already_located(msg: String) -> Bool {
+  let lead = "line "
+  let lead_len = String::length(lead)
+  let total = String::length(msg)
+  let mut cursor = 0
+  let mut found = false
+  while !found && cursor < total {
+    let rel = String::index_of(String::substring(msg, cursor, total), lead)
+    if rel < 0 {
+      cursor = total
+    } else {
+      let at = cursor + rel
+      // Delimited: message start, or the `: ` a path prefix ends with. Without
+      // this, prose containing the word "line " would match on shape alone.
+      let delimited = if at == 0 {
+        true
+      } else {
+        at >= 2 && String::char_code_at(msg, at - 2) == ':' && String::char_code_at(msg, at - 1) == ' '
+      }
+      if delimited && engine_location_shape_at(msg, at + lead_len) {
+        found = true
+      } else {
+        cursor = at + lead_len
+      }
+    }
+  }
+  found
+}
+/// Does `msg` read as `<digits>:<digits>` starting at `start`? The `line `
+/// keyword alone is too weak a signal (it occurs in ordinary prose); the
+/// digit-colon-digit shape after it is what makes a location a location.
+fn engine_location_shape_at(msg: String, start: Int) -> Bool {
+  let total = String::length(msg)
+  let mut i = start
+  while i < total && engine_parse_offset_digits(msg, i, i + 1) >= 0 {
+    i = i + 1
+  }
+  if i == start || i >= total {
+    false
+  } else if String::char_code_at(msg, i) != ':' {
+    false
+  } else {
+    i + 1 < total && engine_parse_offset_digits(msg, i + 1, i + 2) >= 0
+  }
+}
+/// A path character. `.` `/` `@` `-` continue a path; a space or `{` ends it.
+/// `import @vibe/core` must not match inside `import @vibe/core/checker`.
+fn engine_import_path_char(c: Int) -> Bool {
+  engine_loc_ident_char(c) || c == '/' || c == '.' || c == '@' || c == '-'
+}
+fn engine_import_stmt_end(source: String, from: Int) -> Int {
+  let slen = String::length(source)
+  let mut i = from
+  while i < slen && (String::char_code_at(source, i) == ' ' || String::char_code_at(source, i) == '\t') {
+    i = i + 1
+  }
+  if i < slen && String::char_code_at(source, i) == '{' {
+    let mut j = i + 1
+    while j < slen && String::char_code_at(source, j) != '}' {
+      j = j + 1
+    }
+    if j < slen {
+      j + 1
+    } else {
+      slen
+    }
+  } else {
+    let mut j = from
+    while j < slen && String::char_code_at(source, j) != '\n' {
+      j = j + 1
+    }
+    j
+  }
+}
+/// Name offsets of `kw path` statements that are not inside a comment or a
+/// string. Zero or several means the diagnostic stays unlocated: a comment
+/// that quotes the import, a longer path that only starts with this one, and
+/// an import plus a re-export of the same path are all confident wrong
+/// columns if the first hit wins.
+fn engine_import_kind_name_offs(source: String, kw: String, path: String, sym: String) -> Array[Int] {
+  let out: Array[Int] = []
+  let slen = String::length(source)
+  let klen = String::length(kw)
+  let plen = String::length(path)
+  let mut i = 0
+  let mut in_line = false
+  let mut in_str = false
+  while i < slen {
+    let c = String::char_code_at(source, i)
+    if in_line {
+      if c == '\n' {
+        in_line = false
+      } else {
+        ()
+      }
+      i = i + 1
+    } else if in_str {
+      if c == '\\' {
+        i = i + 2
+      } else if c == '"' {
+        in_str = false
+        i = i + 1
+      } else {
+        i = i + 1
+      }
+    } else if c == '"' {
+      in_str = true
+      i = i + 1
+    } else if c == '/' && i + 1 < slen && String::char_code_at(source, i + 1) == '/' {
+      in_line = true
+      i = i + 2
+    } else if engine_loc_word_at(source, i, kw) {
+      let mut path_at = i + klen
+      while path_at < slen && (String::char_code_at(source, path_at) == ' ' || String::char_code_at(source, path_at) == '\t') {
+        path_at = path_at + 1
+      }
+      let path_end = path_at + plen
+      if path_at + plen <= slen && String::substring(source, path_at, path_end) == path && (path_end >= slen || !engine_import_path_char(String::char_code_at(source, path_end))) {
+        let stmt_end = engine_import_stmt_end(source, path_end)
+        let off = engine_index_word_after(source, sym, path_end)
+        if off >= 0 && off < stmt_end {
+          Array::push(out, off)
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      i = i + 1
+    } else {
+      i = i + 1
+    }
+  }
+  out
+}
+/// `import kind mismatch: `Name` ... (from 'path')`. The name is searched
+/// only inside the one `import` / `export` of that path. A comment, a longer
+/// path, or two statements that both contain the name leave the message
+/// unlocated.
+fn engine_locate_import_kind_msg(source: String, msg: String) -> String {
+  let marker = "import kind mismatch: `"
+  if String::index_of(msg, marker) < 0 {
+    msg
+  } else {
+    let sym = engine_extract_until_code(msg, marker, 96)
+    let path = engine_extract_quoted_after(msg, " (from '")
+    if sym == "" || path == "" {
+      msg
+    } else {
+      let imported = engine_import_kind_name_offs(source, "import", path, sym)
+      let exported = engine_import_kind_name_offs(source, "export", path, sym)
+      let mut offs = imported
+      let mut ei = 0
+      while ei < Array::length(exported) {
+        Array::push(offs, Array::get(exported, ei))
+        ei = ei + 1
+      }
+      if Array::length(offs) != 1 {
+        msg
+      } else {
+        String::concat(engine_offset_line_col_prefix(source, Array::get(offs, 0)), msg)
+      }
+    }
+  }
+}
+fn engine_extract_until_code(msg: String, marker: String, end_code: Int) -> String {
+  let mi = String::index_of(msg, marker)
+  if mi < 0 {
+    ""
+  } else {
+    let start = mi + String::length(marker)
+    let mut i = start
+    let total = String::length(msg)
+    while i < total && String::char_code_at(msg, i) != end_code {
+      i = i + 1
+    }
+    if i <= start || i >= total {
+      ""
+    } else {
+      String::substring(msg, start, i)
+    }
+  }
+}
+fn engine_index_word_after(source: String, sym: String, from: Int) -> Int {
+  let mut off = engine_index_of_after(source, sym, from)
+  while off >= 0 && !engine_loc_word_at(source, off, sym) {
+    off = engine_index_of_after(source, sym, off + 1)
+  }
+  off
+}
+/// First-occurrence heuristic locator (the original behavior). Kept separate so
+/// the offset-marker path can fall through to it on the marker-stripped message.
+export fn engine_locate_type_error_heuristic(source: String, msg: String) -> String {
+  // Already located (e.g. a parse error that bubbled here)? leave it.
+  if engine_diag_already_located(msg) {
+    msg
+  } else {
+    let with_name = engine_locate_by_marker(source, msg, "unknown name: ")
+    if with_name != msg {
+      with_name
+    } else {
+      let with_arity = engine_locate_by_marker(source, msg, "function arity mismatch for ")
+      if with_arity != msg {
+        with_arity
+      } else {
+        let with_field = engine_locate_by_marker(source, msg, "unknown field ")
+        if with_field != msg {
+          with_field
+        } else {
+          let with_ctor = engine_locate_by_marker(source, msg, "unknown constructor ")
+          if with_ctor != msg {
+            with_ctor
+          } else {
+            // #1204/#1205: detect_unused_imports' two message shapes (named
+            // import / package alias), path-anchored -- see
+            // locate_unused_import_msg's own doc comment.
+            let with_import = engine_locate_unused_import_msg(source, msg)
+            if with_import != msg {
+              with_import
+            } else {
+              let with_kind = engine_locate_import_kind_msg(source, msg)
+              if with_kind != msg {
+                with_kind
+              } else {
+                let with_inline_wasm = engine_locate_by_marker(source, msg, "inline wasm (fn ")
+                if with_inline_wasm != msg {
+                  // #946(4): inline-wasm codegen errors ("inline wasm (fn
+                  // <name>): ...") carry no [@off=] marker (the offset they DO
+                  // carry is a WAT-text offset, not a source char offset) --
+                  // locate by the enclosing fn's name instead, same
+                  // first-occurrence heuristic as the other markers.
+                  with_inline_wasm
+                } else {
+                  // #2762: `declare or import <name> in this module, ...`. The
+                  // first-occurrence heuristic is EXACT here rather than a
+                  // guess: the message is emitted only when nothing in the
+                  // module declares or imports the name, so its first
+                  // occurrence in the source is its `export { }` entry.
+                  engine_locate_by_marker(source, msg, "declare or import ")
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+/// Build the `line L:col C: ` prefix for a source char offset (same format as
+/// locate_by_marker). String::concat only — the `+`/interpolation NUL
+/// hazard applies here too.
+export fn engine_offset_line_col_prefix(source: String, off: Int) -> String {
+  let (line, col) = offset_to_line_col(source, off)
+  String::concat("line ", String::concat(__to_string(line), String::concat(":", String::concat(__to_string(col), ": "))))
+}
+/// Build a `line L:colC-E: ` RANGE prefix from a (start, end) char-offset span.
+/// When start and end fall on the same source line this carries the exact end
+/// column so the LSP can highlight the precise token (incl. qualified names);
+/// when end is on a later line (or not greater than start) it degrades to the
+/// point prefix. Backward compatible: `line L:` still leads, so existing
+/// `grep -F "line N:"` assertions keep matching. String::concat only.
+export fn engine_offset_line_col_range_prefix(source: String, start: Int, endo: Int) -> String {
+  let (l1, c1) = offset_to_line_col(source, start)
+  let (l2, c2) = offset_to_line_col(source, endo)
+  if l1 == l2 && endo > start {
+    String::concat("line ", String::concat(__to_string(l1), String::concat(":", String::concat(__to_string(c1), String::concat("-", String::concat(__to_string(c2), ": "))))))
+  } else {
+    engine_offset_line_col_prefix(source, start)
+  }
+}
+/// Parse a non-negative decimal integer from msg[start..end). Returns -1 if the
+/// span is empty or contains a non-digit (callers then fall through to the text
+/// heuristic).
+export fn engine_parse_offset_digits(msg: String, start: Int, end: Int) -> Int {
+  if end <= start {
+    -1
+  } else {
+    let mut i = start
+    let mut acc = 0
+    let mut ok = true
+    while ok && i < end {
+      let c = String::char_code_at(msg, i)
+      if c >= '0' && c <= '9' {
+        acc = acc * 10 + (c - '0')
+        i = i + 1
+      } else {
+        ok = false
+      }
+    }
+    if ok {
+      acc
+    } else {
+      -1
+    }
+  }
+}
+/// Whole-word identifier character (ASCII letter / digit / underscore).
+fn engine_loc_ident_char(c: Int) -> Bool {
+  c >= 97 && c <= 122 || (c >= 65 && c <= 90) || (c >= 48 && c <= 57) || c == 95
+}
+fn engine_loc_space_char(c: Int) -> Bool {
+  c == 32 || c == 9 || c == 10 || c == 13
+}
+fn engine_loc_skip_ws_back(source: String, off: Int) -> Int {
+  let mut i = off
+  while i > 0 && engine_loc_space_char(String::char_code_at(source, i - 1)) {
+    i = i - 1
+  }
+  i
+}
+fn engine_loc_word_at(source: String, off: Int, name: String) -> Bool {
+  let nlen = String::length(name)
+  let slen = String::length(source)
+  if nlen == 0 || off < 0 || off + nlen > slen {
+    false
+  } else if String::substring(source, off, off + nlen) != name {
+    false
+  } else {
+    let left_ok = off == 0 || !engine_loc_ident_char(String::char_code_at(source, off - 1))
+    let right_ok = off + nlen == slen || !engine_loc_ident_char(String::char_code_at(source, off + nlen))
+    left_ok && right_ok
+  }
+}
+fn engine_loc_kw_before(source: String, off: Int, kw: String) -> Bool {
+  let i = engine_loc_skip_ws_back(source, off)
+  let klen = String::length(kw)
+  if i < klen {
+    false
+  } else if String::substring(source, i - klen, i) != kw {
+    false
+  } else {
+    i - klen == 0 || !engine_loc_ident_char(String::char_code_at(source, i - klen - 1))
+  }
+}
+/// Recover the source offset of a declaration name tagged `[@fn=name]`.
+/// Prefer a `fn name` declaration, then `let name` / `let mut name`, then a
+/// plain whole-word occurrence. -1 when the name cannot be found.
+///
+/// #2244 review: the scan is a raw-text heuristic, and three failure modes
+/// made it confidently wrong -- a comment or string literal spelling the
+/// declaration (`// let v used to be ...`) anchored the diagnostic at the
+/// comment, a shadowed binder anchored at the FIRST `let v` rather than
+/// the failing one, and a cross-kind collision (`fn v` at top level while
+/// the failing binding is a local `let v`) anchored at the unrelated fn --
+/// the marker records only the NAME, so the kind cannot break the tie.
+/// So the scan skips `//` comments and string literals, and it anchors
+/// only when exactly ONE declaration of the name exists across BOTH
+/// declaration kinds (`fn name` and `let name` combined), falling back to
+/// a bare occurrence only when it is the name's sole appearance. Anything
+/// ambiguous (shadowing, re-declaration, fn/let collision) returns -1 and
+/// the message stays unlocated -- missing information beats misinformation.
+export fn engine_find_fn_anchor_off(source: String, name: String) -> Int {
+  let nlen = String::length(name)
+  if nlen == 0 {
+    0 - 1
+  } else {
+    let slen = String::length(source)
+    let mut i = 0
+    let mut fn_off = 0 - 1
+    let mut fn_count = 0
+    let mut let_off = 0 - 1
+    let mut let_count = 0
+    let mut first_off = 0 - 1
+    let mut occ_count = 0
+    // #2244 round 7: a string literal's TEXT never hosts a declaration,
+    // but its `\{...}` interpolation fragments are parsed as expression
+    // code and can declare the very binder this anchor is looking for --
+    // skipping whole literals handed a same-named outside declaration
+    // sole ownership. So the scan is a small mode machine: string text is
+    // skipped, `\{` re-enters code scanning until the fragment's matching
+    // `}` (brace-counted; nested strings and fragments push further), and
+    // `//` comments are skipped in code positions only.
+    let mut in_string = false
+    let depths = [0]
+    let mut frag_top = 0
+    while i < slen {
+      let c = String::char_code_at(source, i)
+      if in_string {
+        if c == 92 {
+          if i + 1 < slen && String::char_code_at(source, i + 1) == 123 {
+            in_string = false
+            frag_top = frag_top + 1
+            if frag_top >= Array::length(depths) {
+              Array::push(depths, 1)
+            } else {
+              Array::set(depths, frag_top, 1)
+            }
+            i = i + 2
+          } else {
+            i = i + 2
+          }
+        } else if c == 34 {
+          in_string = false
+          i = i + 1
+        } else {
+          i = i + 1
+        }
+      } else if c == 47 && i + 1 < slen && String::char_code_at(source, i + 1) == 47 {
+        // `//` line comment: skip to end of line.
+        while i < slen && String::char_code_at(source, i) != 10 {
+          i = i + 1
+        }
+      } else if c == 39 {
+        // #2244 round 9: a character literal's byte can be `"` -- letting
+        // it reach the branch below flipped string mode and swallowed the
+        // declarations after it (measured: `let q = '\"'` before the
+        // binder handed a same-named outside fn the anchor). Skip the
+        // literal, honoring one `\` escape. Inside a fragment this stays
+        // brace-parity with the lexer: a `'}'`/`'\"'` there does not lex
+        // (scan_interp_end counts raw bytes the same way), so no compiling
+        // program puts a counted byte inside a fragment char literal.
+        i = i + 1
+        if i < slen && String::char_code_at(source, i) == 92 {
+          i = i + 2
+        } else {
+          i = i + 1
+        }
+        if i < slen && String::char_code_at(source, i) == 39 {
+          i = i + 1
+        } else {
+          ()
+        }
+      } else if c == 35 && i + 1 < slen && String::char_code_at(source, i + 1) == 124 {
+        // #2244 round 11 (measured: `let s = #|raw text` compiles): a
+        // `#|` line is a RAW multiline-string segment running to end of
+        // line -- its text can spell declarations and quotes, and reading
+        // it as code both counted a fake declaration and flipped string
+        // mode (anchoring INSIDE the raw text). Skip the whole line; each
+        // continuation line's own `#|` is skipped the same way when the
+        // scan reaches it, so the indent-match rule needs no bookkeeping.
+        while i < slen && String::char_code_at(source, i) != 10 {
+          i = i + 1
+        }
+      } else if c == 114 && i + 1 < slen && String::char_code_at(source, i + 1) == 34 && (i == 0 || !engine_loc_ident_char(String::char_code_at(source, i - 1))) {
+        // #2244 round 10 (measured: `let q = r"\"` compiles): a
+        // whole-token `r` before `"` opens a RAW string, which the lexer
+        // ends at the next quote with no escape processing -- the
+        // escape-honoring string mode below would read a trailing
+        // backslash as escaping the closing quote and swallow the
+        // declarations after it. Skip to the next quote verbatim; no
+        // interpolation fires inside a raw string for the same reason.
+        i = i + 2
+        while i < slen && String::char_code_at(source, i) != 34 {
+          i = i + 1
+        }
+        i = i + 1
+      } else if c == 34 {
+        in_string = true
+        i = i + 1
+      } else if frag_top > 0 && c == 123 {
+        Array::set(depths, frag_top, Array::get(depths, frag_top) + 1)
+        i = i + 1
+      } else if frag_top > 0 && c == 125 {
+        let d = Array::get(depths, frag_top) - 1
+        if d == 0 {
+          // The fragment closed; the enclosing string resumes.
+          frag_top = frag_top - 1
+          in_string = true
+        } else {
+          Array::set(depths, frag_top, d)
+        }
+        i = i + 1
+      } else if i + nlen <= slen && engine_loc_word_at(source, i, name) {
+        occ_count = occ_count + 1
+        if first_off < 0 {
+          first_off = i
+        } else {
+          ()
+        }
+        // #2244 review round 6 (measured: `let r#v = 1` compiles): a
+        // raw-identifier binder lexes to the bare name, so the occurrence
+        // matches -- but the `r#` prefix sat between the name and its
+        // keyword, making the scan count it as a bare occurrence and hand
+        // a same-named plain declaration sole ownership. Probe the keyword
+        // from before a whole-word `r#` so raw spellings count as the
+        // declarations they are.
+        let decl_probe = if i >= 2 && String::char_code_at(source, i - 1) == 35 && String::char_code_at(source, i - 2) == 114 && (i - 2 == 0 || !engine_loc_ident_char(String::char_code_at(source, i - 3))) {
+          i - 2
+        } else {
+          i
+        }
+        if engine_loc_kw_before(source, decl_probe, "fn") {
+          fn_count = fn_count + 1
+          if fn_off < 0 {
+            fn_off = i
+          } else {
+            ()
+          }
+        } else {
+          // #2244 round 8: `rec` joins `mut` as an intervening keyword --
+          // `let rec v` is a declaration of `v` (both spell 3 bytes, so
+          // one backtrack serves them).
+          // #3073: a nominal type's declaration anchors the same way, so a
+          // `[@fn=Outer]` refusal about a `struct Outer` lands on its name.
+          let is_let_decl = if engine_loc_kw_before(source, decl_probe, "let") || engine_loc_kw_before(source, decl_probe, "struct") || engine_loc_kw_before(source, decl_probe, "enum") || engine_loc_kw_before(source, decl_probe, "suberror") {
+            true
+          } else if engine_loc_kw_before(source, decl_probe, "mut") || engine_loc_kw_before(source, decl_probe, "rec") {
+            let before_name = engine_loc_skip_ws_back(source, decl_probe)
+            engine_loc_kw_before(source, before_name - 3, "let")
+          } else {
+            false
+          }
+          if is_let_decl {
+            let_count = let_count + 1
+            if let_off < 0 {
+              let_off = i
+            } else {
+              ()
+            }
+          } else {
+            ()
+          }
+        }
+        i = i + nlen
+      } else {
+        i = i + 1
+      }
+    }
+    let decl_count = fn_count + let_count
+    if decl_count == 1 {
+      if fn_count == 1 {
+        fn_off
+      } else {
+        let_off
+      }
+    } else if decl_count == 0 && occ_count == 1 {
+      first_off
+    } else {
+      0 - 1
+    }
+  }
+}

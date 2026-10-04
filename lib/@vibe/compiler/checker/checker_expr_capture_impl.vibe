@@ -417,10 +417,21 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
   result
 }
 
-fn check_resume_values(e: Expr, ret_ty: Type, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture]) -> Subst {
+/// The handler-arm `resume(x)` re-check: each `x` must be assignable to the
+/// operation's return type. Answers the substitution AND the next free type
+/// variable (#3362). Re-checking `x` allocates variables of its own -- a field
+/// read on an unannotated payload (`resume(p.x)`) records a deferred read with
+/// a fresh result variable -- and the substitution this walk returns keeps
+/// what they were bound to. Handing back the counter it was given let the
+/// checker allocate those same numbers again -- for the next declaration's
+/// formal `T`, or a later lambda parameter in the same function -- which then
+/// met the binding the re-check had made and was typed `Int`, refusing
+/// correct calls.
+fn check_resume_values(e: Expr, ret_ty: Type, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture]) -> (Subst, Int) {
   match e {
     ECall(callee, args, _, _) => {
       let mut s1 = s
+      let mut c1 = c
       // #942 (Codex P2 on #970): `env` is the normal lexical TypeEnv threaded
       // through check_expr, already containing every enclosing binder (the
       // top-level fn/let hoist, the arm's own payload binders via henv, and
@@ -435,7 +446,8 @@ fn check_resume_values(e: Expr, ret_ty: Type, env: TypeEnv, defs: Array[TypeDef]
           // statement-position Unit tolerance elsewhere; the existing idiom
           // `Print(s) => resume(0)` for `Print(String) -> Unit` stays legal).
           if nm == "resume" && !resume_shadowed && Array::length(args) == 1 && !(ret_ty is CtUnit) {
-            let (aty, ns, _) = check_expr_capture(Array::get(args, 0), env, defs, s1, c, errors, tytab, capture, "AuxiliaryResumeValueRecheck")
+            let (aty, ns, nc) = check_expr_capture(Array::get(args, 0), env, defs, s1, c1, errors, tytab, capture, "AuxiliaryResumeValueRecheck")
+            c1 = nc
             s1 = check_assignable(ret_ty, subst_apply(ns, aty), ns, errors, "resume value type mismatch", tail_expr_off(Array::get(args, 0)))
           } else if nm == "resume" && !resume_shadowed && Array::length(args) == 0 && !(ret_ty is CtUnit) {
             // #828: `resume()` on a value-returning op used to reach codegen,
@@ -447,44 +459,82 @@ fn check_resume_values(e: Expr, ret_ty: Type, env: TypeEnv, defs: Array[TypeDef]
           }
         },
         _ => {
-          s1 = check_resume_values(callee, ret_ty, env, defs, s1, c, errors, tytab, capture)
+          let (cs, cc) = check_resume_values(callee, ret_ty, env, defs, s1, c1, errors, tytab, capture)
+          s1 = cs
+          c1 = cc
         }
       }
       let mut ri = 0
       while ri < Array::length(args) {
-        s1 = check_resume_values(Array::get(args, ri), ret_ty, env, defs, s1, c, errors, tytab, capture)
+        let (as1, ac1) = check_resume_values(Array::get(args, ri), ret_ty, env, defs, s1, c1, errors, tytab, capture)
+        s1 = as1
+        c1 = ac1
         ri = ri + 1
       }
-      s1
+      (s1, c1)
     },
-    EHandle(_, _) => s,
-    ELet(ln, v, b, _) => check_resume_values(b, ret_ty, env_bind(env, ln, CtUnknown), defs, check_resume_values(v, ret_ty, env, defs, s, c, errors, tytab, capture), c, errors, tytab, capture),
-    ELetMut(ln, v, b, _) => check_resume_values(b, ret_ty, env_bind(env, ln, CtUnknown), defs, check_resume_values(v, ret_ty, env, defs, s, c, errors, tytab, capture), c, errors, tytab, capture),
-    ELetRec(ln, v, b) => check_resume_values(b, ret_ty, env_bind(env, ln, CtUnknown), defs, check_resume_values(v, ret_ty, env_bind(env, ln, CtUnknown), defs, s, c, errors, tytab, capture), c, errors, tytab, capture),
-    ESeq(a, b) => check_resume_values(b, ret_ty, env, defs, check_resume_values(a, ret_ty, env, defs, s, c, errors, tytab, capture), c, errors, tytab, capture),
-    EIf(cnd, t, el) => check_resume_values(el, ret_ty, env, defs, check_resume_values(t, ret_ty, env, defs, check_resume_values(cnd, ret_ty, env, defs, s, c, errors, tytab, capture), c, errors, tytab, capture), c, errors, tytab, capture),
+    EHandle(_, _) => (s, c),
+    ELet(ln, v, b, _) => {
+      let (vs, vc) = check_resume_values(v, ret_ty, env, defs, s, c, errors, tytab, capture)
+      check_resume_values(b, ret_ty, env_bind(env, ln, CtUnknown), defs, vs, vc, errors, tytab, capture)
+    },
+    ELetMut(ln, v, b, _) => {
+      let (vs, vc) = check_resume_values(v, ret_ty, env, defs, s, c, errors, tytab, capture)
+      check_resume_values(b, ret_ty, env_bind(env, ln, CtUnknown), defs, vs, vc, errors, tytab, capture)
+    },
+    ELetRec(ln, v, b) => {
+      let renv = env_bind(env, ln, CtUnknown)
+      let (vs, vc) = check_resume_values(v, ret_ty, renv, defs, s, c, errors, tytab, capture)
+      check_resume_values(b, ret_ty, renv, defs, vs, vc, errors, tytab, capture)
+    },
+    ESeq(a, b) => {
+      let (as1, ac1) = check_resume_values(a, ret_ty, env, defs, s, c, errors, tytab, capture)
+      check_resume_values(b, ret_ty, env, defs, as1, ac1, errors, tytab, capture)
+    },
+    EIf(cnd, t, el) => {
+      let (cs, cc) = check_resume_values(cnd, ret_ty, env, defs, s, c, errors, tytab, capture)
+      let (ts, tc) = check_resume_values(t, ret_ty, env, defs, cs, cc, errors, tytab, capture)
+      check_resume_values(el, ret_ty, env, defs, ts, tc, errors, tytab, capture)
+    },
     EMatch(scr, marms) => {
-      let mut s1 = check_resume_values(scr, ret_ty, env, defs, s, c, errors, tytab, capture)
+      let (ms, mc) = check_resume_values(scr, ret_ty, env, defs, s, c, errors, tytab, capture)
+      let mut s1 = ms
+      let mut c1 = mc
       let mut mi = 0
       while mi < Array::length(marms) {
         let (mp, mb) = Array::get(marms, mi)
-        s1 = check_resume_values(mb, ret_ty, resume_walk_bind_pat(mp, env), defs, s1, c, errors, tytab, capture)
+        let (as1, ac1) = check_resume_values(mb, ret_ty, resume_walk_bind_pat(mp, env), defs, s1, c1, errors, tytab, capture)
+        s1 = as1
+        c1 = ac1
         mi = mi + 1
       }
-      s1
+      (s1, c1)
     },
-    EWhile(cnd, b) => check_resume_values(b, ret_ty, env, defs, check_resume_values(cnd, ret_ty, env, defs, s, c, errors, tytab, capture), c, errors, tytab, capture),
+    EWhile(cnd, b) => {
+      let (cs, cc) = check_resume_values(cnd, ret_ty, env, defs, s, c, errors, tytab, capture)
+      check_resume_values(b, ret_ty, env, defs, cs, cc, errors, tytab, capture)
+    },
     EForIn(fname, fidx, it, b) => {
       let fenv = match fidx {
         Some(fi) => env_bind(env_bind(env, fname, CtUnknown), fi, CtUnknown),
         None => env_bind(env, fname, CtUnknown)
       }
-      check_resume_values(b, ret_ty, fenv, defs, check_resume_values(it, ret_ty, env, defs, s, c, errors, tytab, capture), c, errors, tytab, capture)
+      let (is1, ic1) = check_resume_values(it, ret_ty, env, defs, s, c, errors, tytab, capture)
+      check_resume_values(b, ret_ty, fenv, defs, is1, ic1, errors, tytab, capture)
     },
-    EBinOp(_, l, r, _) => check_resume_values(r, ret_ty, env, defs, check_resume_values(l, ret_ty, env, defs, s, c, errors, tytab, capture), c, errors, tytab, capture),
+    EBinOp(_, l, r, _) => {
+      let (ls, lc) = check_resume_values(l, ret_ty, env, defs, s, c, errors, tytab, capture)
+      check_resume_values(r, ret_ty, env, defs, ls, lc, errors, tytab, capture)
+    },
     EUnaryOp(_, inner) => check_resume_values(inner, ret_ty, env, defs, s, c, errors, tytab, capture),
-    EAssign(_, v, b, _) => check_resume_values(b, ret_ty, env, defs, check_resume_values(v, ret_ty, env, defs, s, c, errors, tytab, capture), c, errors, tytab, capture),
-    EAssignOp(_, _, v, b, _) => check_resume_values(b, ret_ty, env, defs, check_resume_values(v, ret_ty, env, defs, s, c, errors, tytab, capture), c, errors, tytab, capture),
+    EAssign(_, v, b, _) => {
+      let (vs, vc) = check_resume_values(v, ret_ty, env, defs, s, c, errors, tytab, capture)
+      check_resume_values(b, ret_ty, env, defs, vs, vc, errors, tytab, capture)
+    },
+    EAssignOp(_, _, v, b, _) => {
+      let (vs, vc) = check_resume_values(v, ret_ty, env, defs, s, c, errors, tytab, capture)
+      check_resume_values(b, ret_ty, env, defs, vs, vc, errors, tytab, capture)
+    },
     EFn(_, _, fparams, _, _, fb) => {
       // The lambda's own parameters are binders for its body (#3005: a
       // `resume(v)` whose `v` is the lambda's parameter answered "unknown
@@ -502,23 +552,29 @@ fn check_resume_values(e: Expr, ret_ty: Type, env: TypeEnv, defs: Array[TypeDef]
     EDot(obj, _, _, _) => check_resume_values(obj, ret_ty, env, defs, s, c, errors, tytab, capture),
     ETuple(items) => {
       let mut s1 = s
+      let mut c1 = c
       let mut ti = 0
       while ti < Array::length(items) {
-        s1 = check_resume_values(Array::get(items, ti), ret_ty, env, defs, s1, c, errors, tytab, capture)
+        let (is1, ic1) = check_resume_values(Array::get(items, ti), ret_ty, env, defs, s1, c1, errors, tytab, capture)
+        s1 = is1
+        c1 = ic1
         ti = ti + 1
       }
-      s1
+      (s1, c1)
     },
     EArray(items) => {
       let mut s1 = s
+      let mut c1 = c
       let mut ti = 0
       while ti < Array::length(items) {
-        s1 = check_resume_values(Array::get(items, ti), ret_ty, env, defs, s1, c, errors, tytab, capture)
+        let (is1, ic1) = check_resume_values(Array::get(items, ti), ret_ty, env, defs, s1, c1, errors, tytab, capture)
+        s1 = is1
+        c1 = ic1
         ti = ti + 1
       }
-      s1
+      (s1, c1)
     },
-    _ => s
+    _ => (s, c)
   }
 }
 
@@ -1395,7 +1451,9 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                   // resume(x): x must be assignable to the op's declared
                   // return type (ground-gated). Throwaway walk — nested
                   // handles are skipped (their resumes belong to inner arms).
-                  hs1 = check_resume_values(hbody, hret, henv, defs, hs1, hc1, errors, tytab, capture)
+                  let (hrv_s, hrv_c) = check_resume_values(hbody, hret, henv, defs, hs1, hc1, errors, tytab, capture)
+                  hs1 = hrv_s
+                  hc1 = hrv_c
                 },
                 None => Array::push(errors, String::concat("handler arm `", String::concat(String::substring(hqname, hci + 2, String::length(hqname)), String::concat("` is not an operation of effect ", String::substring(hqname, 0, hci)))))
               }
@@ -2179,12 +2237,15 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         let mut s1 = s
         let mut c1 = c
         let mut elem_ty = CtUnknown
-        // Cross-check elements only when the first element is a simple scalar, or
-        // a one-level array of scalars (`[[1], ["x"]]` — `Array[Int]` vs
-        // `Array[String]`) — see EMatch: this catches the cheap, bounded cases
-        // while skipping the per-element `subst_apply` for arrays of large
-        // struct/tuple values that pressure the self-compile heap.
-        let mut check_elems = false
+        // #3353: EVERY element is unified with the first one's type. The
+        // check used to run only when the first element was a scalar, an
+        // array of scalars or an unresolved variable, so `[P::{ v: 1 }, [5]]`
+        // typed as `Array[P]` and the second element, an `Array[Int]`, was
+        // read as a `P`. The narrowing came from #667, when a per-element
+        // `subst_apply` on the compiler's own aggregate-typed literals pushed
+        // the seed's self-compile heap over its ~64MB cap. That cap is gone:
+        // measured cold on the compiler's self-compile, checking every
+        // element adds 0.01% to the heap high-water mark (#3353).
         let mut ai = 0
         while ai < ilen {
           let (it, ns, nc) = check_expr_capture(Array::get(items, ai), env, defs, s1, c1, errors, tytab, capture, lane)
@@ -2192,45 +2253,8 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           c1 = nc
           if ai == 0 {
             elem_ty = it
-            check_elems = match subst_apply(s1, it) {
-              CtInt => true,
-              CtDouble => true,
-              CtBool => true,
-              CtString => true,
-              CtChar => true,
-              CtArray(inner) => match inner {
-                CtInt => true,
-                CtDouble => true,
-                CtBool => true,
-                CtString => true,
-                CtChar => true,
-                // #2893: an EMPTY literal first (`[[], [a]]`). #2447 gives it a
-                // real element slot -- `CtArray(<fresh var>)` -- and that var is
-                // what the whole literal's element type becomes. Falling to
-                // `false` here meant no later element was ever unified with it,
-                // so it stayed unconstrained and absorbed anything: measured,
-                //
-                //   let xs = [[], [a]]            // a: T
-                //   let v: Int = Array::get(Array::get(xs, 1), 0)
-                //
-                // compiled clean and printed 233, the allocation address. The
-                // same literal with the empty row SECOND (`[xs, []]`) was
-                // rejected, because then a real type went in first.
-                //
-                // Cross-checking costs one `subst_apply` per element, and a
-                // variable is not the "large struct/tuple" case the comment
-                // above is protecting against.
-                CtVar(_) => true,
-                _ => false
-              },
-              _ => false
-            }
           } else {
-            if check_elems {
-              s1 = check_assignable(elem_ty, subst_apply(s1, it), s1, errors, "array elements have incompatible types", railway_expr_off(Array::get(items, ai)))
-            } else {
-              ()
-            }
+            s1 = check_assignable(elem_ty, subst_apply(s1, it), s1, errors, "array elements have incompatible types", railway_expr_off(Array::get(items, ai)))
           }
           ai = ai + 1
         }

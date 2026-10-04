@@ -99,6 +99,15 @@ install -m 0644 "$PROJECT_ROOT/scripts/vibe_pkg.sh" "$tc_stage/lib/vibe_pkg.sh"
 install -m 0644 "$PROJECT_ROOT/scripts/parallel_warm_pool.sh" "$tc_stage/lib/parallel_warm_pool.sh"
 # Sourced by the pool from its own directory (#2958).
 install -m 0644 "$PROJECT_ROOT/scripts/run_bounded.sh" "$tc_stage/lib/run_bounded.sh"
+mkdir -p "$tc_stage/lib/checker-taskgroup"
+checker_stage="$OUT_DIR/.taskgroup-images"
+bash "$SCRIPT_DIR/build_taskgroup_checker.sh" "$OUT_DIR/$CLI_WASM_NAME" "$checker_stage" >/dev/null
+for artifact in worker.wasm coordinator.component.wasm build.json; do
+  install -m 0644 "$checker_stage/$artifact" "$tc_stage/lib/checker-taskgroup/$artifact"
+done
+for helper in taskgroup_build_frontend.mjs taskgroup_frontend_warm.mjs taskgroup_job_cache.mjs parallel_project_transport.mjs parallel_scheduler_trace.mjs parallel_selfhost_checker.mjs; do
+  install -m 0644 "$PROJECT_ROOT/scripts/$helper" "$tc_stage/lib/checker-taskgroup/$helper"
+done
 for js in lsp_server.js symbol_index.js graph_query.js; do
   [ -f "$PROJECT_ROOT/clients/js/$js" ] && install -m 0644 "$PROJECT_ROOT/clients/js/$js" "$tc_stage/lib/$js"
 done

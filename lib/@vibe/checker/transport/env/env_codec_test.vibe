@@ -1,0 +1,76 @@
+import ./env_codec.vibe {
+  decode_checked_dependency_paths,
+  decode_checked_environment,
+  decode_checked_module_product,
+  encode_checked_dependency_paths,
+  encode_checked_environment,
+  encode_checked_module_product
+}
+import @vibe/compiler/core {
+  Type, TypeEnv, env_bind, env_lookup
+}
+
+test "checked environment preserves the v10 golden wire" {
+  let env = env_bind(EnvEmpty, "answer", CtInt)
+  let expected = "version\t10\nenv\t12:B6:answerIU0\n"
+  assert(encode_checked_environment(env) == expected)
+  match decode_checked_environment(expected) {
+    Some(decoded) => {
+      assert(encode_checked_environment(decoded) == expected)
+      match env_lookup(decoded, "answer") {
+        Some(CtInt) => (),
+        _ => assert(false)
+      }
+    },
+    None => assert(false)
+  }
+}
+
+test "checked module product preserves missing versus checked empty lowering" {
+  let missing = "version\t11\nenv\t1:0\nlowering\tmissing\n"
+  let empty = "version\t11\nenv\t1:0\nmodule_typed_lowering_offsets\tv8\nmodule_typed_lowering_offsets\tcount\t0\nmodule_typed_lowering_offsets\teqcount\t0\nmodule_typed_lowering_offsets\tdigest\t0:17:29\nmodule_typed_lowering_offsets\tend\n"
+  assert(encode_checked_module_product(EnvEmpty, None) == missing)
+  assert(encode_checked_module_product(EnvEmpty, Some(([], [], []))) == empty)
+  match decode_checked_module_product(missing) {
+    Some((_, None)) => (),
+    _ => assert(false)
+  }
+  match decode_checked_module_product(empty) {
+    Some((_, Some((offs, eq_offs, eq_keys)))) => {
+      assert(Array::length(offs) + Array::length(eq_offs) + Array::length(eq_keys) == 0)
+    },
+    _ => assert(false)
+  }
+  let damaged = String::concat(empty, "unexpected\n")
+  assert(damaged != empty)
+  match decode_checked_module_product(damaged) {
+    None => (),
+    Some(_) => assert(false)
+  }
+}
+
+test "checked dependency codec preserves versions and repeated occurrences" {
+  let cases = [
+    ([], ""),
+    (["a"], "version\t3\na"),
+    (["a", "a"], "version\t2\n2[1:a1:a]")
+  ]
+  for item in cases {
+    let (paths, expected) = item
+    assert(encode_checked_dependency_paths(paths) == expected)
+    assert(decode_checked_dependency_paths(expected, "cache/file") == paths)
+  }
+}
+
+test "checked dependency codec rejects malformed bodies and headers" {
+  let body_message = handle {
+    decode_checked_dependency_paths("version\t2\n1[1:a]tail", "cache/file")
+    "accepted"
+  } with { Exception::Throw(message) => message }
+  assert(body_message == "invalid persistent dep list body: cache/file")
+  let header_message = handle {
+    decode_checked_dependency_paths("version\t99\n", "cache/file")
+    "accepted"
+  } with { Exception::Throw(message) => message }
+  assert(header_message == "invalid persistent dep list header: cache/file")
+}

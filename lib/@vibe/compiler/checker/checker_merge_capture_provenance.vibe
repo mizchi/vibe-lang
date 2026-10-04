@@ -32,6 +32,7 @@ import @vibe/compiler/core {
   find_typedef,
   instantiate,
   is_builtin_type_name,
+  is_effect_inst_label,
   let_rec_binding_anchor,
   subst_apply,
   subst_bounds_for,
@@ -273,7 +274,7 @@ export fn merge_provenance_row(expected: Option[String], actual: Option[String])
   match actual {
     Some(row) => for raw in String::split(row, ",") {
       let label = String::trim(raw)
-      if (String::starts_with(label, "#region_") || String::starts_with(label, "#capture[") || String::starts_with(label, "#param[") || String::starts_with(label, "#aliasparam[") || String::starts_with(label, "#fieldparam[")) && !checker_string_array_has(labels, label) {
+      if (String::starts_with(label, "#region_") || String::starts_with(label, "#capture[") || String::starts_with(label, "#param[") || String::starts_with(label, "#aliasparam[") || String::starts_with(label, "#fieldparam[") || is_effect_inst_label(label)) && !checker_string_array_has(labels, label) {
         Array::push(labels, label)
       }
     },
@@ -1130,6 +1131,28 @@ export fn reset_eq_formal_vars() -> Unit {
   Array::truncate(deferred_field_reads, 0)
   Array::truncate(deferred_eq_sites, 0)
   Array::truncate(eq_source_comparator_heads, 0)
+  Array::truncate(effect_inst_used_vars, 0)
+}
+
+/// #3341: the instantiation variables a generic effect's perform (or a call
+/// of a function that performs it) has read from the environment in this
+/// check. A lambda records in its type only the instantiations its body
+/// used. Reset per run with the other tables, since variable ids restart.
+export let effect_inst_used_vars: Array[Int] = []
+
+/// #3341: note that the instantiation `targs` was read from the environment.
+export fn note_effect_inst_used(targs: Array[Type]) -> Unit {
+  for t in targs {
+    match t {
+      CtVar(id) => if !int_array_has(effect_inst_used_vars, id) {
+        Array::push(effect_inst_used_vars, id)
+      } else {
+        ()
+      },
+      _ => ()
+    }
+  }
+  ()
 }
 
 /// Open a generic declaration: allocate its group id and push it.
