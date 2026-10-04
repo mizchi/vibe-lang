@@ -1,0 +1,26 @@
+// #3276: a write made by a local closure inside the body is a write inside
+// the body. The closure's environment extends the body's, so the outer field
+// is still outside the group; this compiled and the handle was joined after
+// its group closed.
+import @vibe/concurrent { TaskGroup, TaskHandle }
+
+struct Cell[T] {
+  mut v: Option[T]
+}
+
+fn main() -> Unit allows Exception + Console {
+  let c = Cell::{ v: None }
+  let r = TaskGroup::run((n) -> {
+    let h = TaskGroup::spawn(n, () -> { 41 })
+    let stash = () -> {
+      c.v = Some(h)
+    }
+    stash()
+    1
+  })
+  let after = match c.v {
+    Some(h) => TaskHandle::join(h),
+    None => 0 - 1
+  }
+  println("r=\{r} after=\{after}")
+}
