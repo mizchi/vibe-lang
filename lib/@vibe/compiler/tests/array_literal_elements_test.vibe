@@ -1,0 +1,44 @@
+//# Imports
+
+import ./checker_parity_test_support.vibe {
+  check_source_err_contains, check_source_ok
+}
+
+//# Misc
+
+// #3353: every element of an array literal is unified with the first one's
+// type. The check used to run only when the first element was a scalar, an
+// array of scalars or an unresolved variable, so with any other first
+// element the rest went unchecked: `[P::{ v: 1 }, [5]]` typed as `Array[P]`
+// and the `Array[Int]` was read as a `P` (21474836794, then a trap).
+
+test "3353: a struct, tuple, option or function first no longer exempts the rest" {
+  assert(check_source_err_contains("struct P { v: Int }\nfn main() -> Int { let xs: Array[P] = [P::{ v: 1 }, [5]]; Array::get(xs, 1).v }", "array elements have incompatible types: expected P, got Array[Int]"))
+  assert(check_source_err_contains("struct P { v: Int }\nfn main() -> Int { let xs = [P::{ v: 1 }, [5]]; Array::get(xs, 1).v }", "array elements have incompatible types: expected P, got Array[Int]"))
+  assert(check_source_err_contains("fn main() -> Int { let xs = [(1, 2), \"x\"]; 0 }", "array elements have incompatible types: expected (Int, Int), got String"))
+  assert(check_source_err_contains("fn main() -> Int { let xs = [Some(1), Some(\"x\")]; 0 }", "array elements have incompatible types: expected Option[Int], got Option[String]"))
+  assert(check_source_err_contains("fn main() -> Int { let fs = [(x: Int) -> x, (s: String) -> 1]; 0 }", "array elements have incompatible types: expected (Int) -> Int, got (String) -> Int"))
+  assert(check_source_err_contains("fn main() -> Int { let xs = [(1, 2), (1, 2, 3)]; 0 }", "array elements have incompatible types: expected (Int, Int), got (Int, Int, Int)"))
+  assert(check_source_err_contains("fn main() -> Int { let xs = [record { a: 1 }, record { b: 2 }]; 0 }", "array elements have incompatible types: expected record { a: Int }, got record { b: Int }"))
+}
+
+test "3353: nested literals and later elements are checked too" {
+  assert(check_source_err_contains("struct P { v: Int }\nfn main() -> Int { let xs = [[P::{ v: 1 }], [[1]]]; 0 }", "array elements have incompatible types: expected Array[P], got Array[Array[Int]]"))
+  assert(check_source_err_contains("struct P { v: Int }\nfn main() -> Int { let xs = [P::{ v: 1 }, P::{ v: 2 }, 3]; 0 }", "array elements have incompatible types: expected P, got Int"))
+  assert(check_source_err_contains("struct P { v: Int }\nenum E { A; B }\nfn main() -> Int { let xs = [E::A, P::{ v: 1 }]; 0 }", "array elements have incompatible types: expected E, got P"))
+}
+
+test "3353: literals whose elements agree stay accepted" {
+  assert(check_source_ok("struct P { v: Int }\nfn main() -> Int { let xs = [P::{ v: 1 }, P::{ v: 2 }]; Array::length(xs) }"))
+  assert(check_source_ok("fn main() -> Int { let xs = [(1, \"a\"), (2, \"b\")]; Array::length(xs) }"))
+  assert(check_source_ok("fn main() -> Int { let xs = [None, Some(1)]; Array::length(xs) }"))
+  assert(check_source_ok("fn main() -> Int { let xs = [[], [1]]; Array::length(xs) }"))
+  assert(check_source_ok("type L[T] = Array[T]\nfn main() -> Int { let xs: Array[L[Int]] = [[1], [2, 3]]; Array::length(xs) }"))
+  assert(check_source_ok("fn main() -> Int { let a = FixedArray::make(2, 0); let xs = [a, [1, 2]]; Array::length(xs) }"))
+  assert(check_source_ok("fn main() -> Int { let a = FixedArray::make(2, 0); let xs = [[1, 2], a]; Array::length(xs) }"))
+  assert(check_source_ok("struct Cell[T] { value: T }\nfn main() -> Int { let xs = [Cell::{ value: 1 }, Cell::{ value: 2 }]; Array::length(xs) }"))
+  assert(check_source_ok("enum W[T] { A(T); B }\nfn main() -> Int { let xs = [W::B, W::A(1)]; Array::length(xs) }"))
+  assert(check_source_ok("fn main() -> Int { let xs = ['a', 98]; Array::length(xs) }"))
+  assert(check_source_ok("fn f[T](x: T, y: T) -> Int { let xs = [x, y]; Array::length(xs) }\nfn main() -> Int { f(1, 2) }"))
+  assert(check_source_ok("fn main() -> Int { let fs = [(x: Int) -> x, (y: Int) -> y + 1]; Array::length(fs) }"))
+}
