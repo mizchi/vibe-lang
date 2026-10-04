@@ -1887,7 +1887,8 @@ leaves them unknown), while one that never names it (`A(_) | B(_) => return 0`)
 may mix signatures.
 Because each alternative compiles its own copy of the body, or-pattern arms
 nested in one another multiply; a `handle` they would copy more than 256 times
-is refused, and moving that `handle` into a function makes each copy a call.
+is refused. Moving that `handle` into a top-level `fn` makes each copy a call;
+a closure written in place is inside the arm, so it is copied with it.
 
 Call resolution for an effect row follows the same lexical scope as ordinary
 value resolution. When a local closure, a function parameter, or a pattern /

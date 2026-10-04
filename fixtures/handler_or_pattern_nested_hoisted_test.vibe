@@ -1,11 +1,11 @@
-// #3301: an or-pattern handler arm is compiled once per operation, and an
-// or-pattern arm nested in its body once per copy of that body, so a chain of
-// n two-operation arms copies its innermost `handle` 2^(n-1) times. Before
-// the copy limit, sixteen levels did not finish `vibe check` in five minutes.
-// Ten levels copy the last `handle` 512 times, over the limit of 256, and
-// the message names the edit: move that `handle` into a top-level `fn`. The
-// closure each level already wraps it in is inside the arm, so it does not
-// help; a top-level `fn` holding the last level compiles and answers 3070.
+//# #3301 (Codex on #3337): the edit the copy-limit refusal names has to work.
+//# `fixtures/typecheck/handler_or_pattern_nested_copies_reject.vibe` nests ten
+//# levels of two-operation or-pattern arms, each inside a closure, and is
+//# refused at the tenth `handle`, which the arms around it would copy 512
+//# times. That closure does not help: it is written inside the arm, so it is
+//# copied with it. Moving the tenth level into the top-level `deeper` leaves
+//# each copy a call, and the program compiles and answers what the ten levels
+//# would.
 
 effect E0 {
   A0 -> Int
@@ -57,7 +57,17 @@ effect E9 {
   B9 -> Int
 }
 
-fn main() -> Int {
+fn deeper() -> Int {
+  handle {
+    perform E9::A9 + perform E9::B9
+  } with E9 {
+    A9|B9 => {
+      let f = () -> 1; resume(f() + 1)
+    }
+  }
+}
+
+fn nested() -> Int {
   handle {
     perform E0::A0 + perform E0::B0
   } with E0 {
@@ -94,39 +104,28 @@ fn main() -> Int {
                                     perform E8::A8 + perform E8::B8
                                   } with E8 {
                                     A8|B8 => {
-                                      let f = () -> handle {
-                                        perform E9::A9 + perform E9::B9
-                                      } with E9 {
-                                        A9|B9 => {
-                                          let f = () -> 1
-                                          resume(f() + 1)
-                                        }
-                                      }
-                                      resume(f() + 1)
+                                      let f = () -> deeper(); resume(f() + 1)
                                     }
-                                  }
-                                  resume(f() + 1)
+                                  }; resume(f() + 1)
                                 }
-                              }
-                              resume(f() + 1)
+                              }; resume(f() + 1)
                             }
-                          }
-                          resume(f() + 1)
+                          }; resume(f() + 1)
                         }
-                      }
-                      resume(f() + 1)
+                      }; resume(f() + 1)
                     }
-                  }
-                  resume(f() + 1)
+                  }; resume(f() + 1)
                 }
-              }
-              resume(f() + 1)
+              }; resume(f() + 1)
             }
-          }
-          resume(f() + 1)
+          }; resume(f() + 1)
         }
-      }
-      resume(f() + 1)
+      }; resume(f() + 1)
     }
   }
 }
+
+test "the copy-limit refusal's edit compiles: the last handle in a top-level fn" {
+  inspect(nested(), "3070")
+}
+
