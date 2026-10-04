@@ -344,7 +344,7 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         // value carries where its type may hide them, so a later write,
         // return or call of `name` is judged by the value it was bound to.
         if spine_region_active {
-          cenv = retention_bind_carry(cenv, def_env, name, val, subst_apply(ns, gen), defs, ns, let_off)
+          cenv = retention_bind_carry(cenv, def_env, name, val, body, subst_apply(ns, gen), defs, ns, let_off)
         } else {
           ()
         }
@@ -372,13 +372,7 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         // `env_mut_escape` (checker_spawnable) instead of re-deriving
         // mutability from the raw AST.
         let escapes = mut_binding_escapes(body, name)
-        // #3343 (Codex on #3359): what the binding may carry, for a later
-        // walk of this body (`retention_note_let_mut`).
-        if spine_region_active {
-          retention_note_let_mut(let_off, cenv, subst_apply(ns, vt), defs)
-        } else {
-          ()
-        }
+        let mut_def_env = cenv
         if name == "__loop_result" {
           let (lr_tv, nc2) = fresh_var(nc)
           cenv = env_bind_mut(cenv, name, lr_tv, escapes)
@@ -386,6 +380,14 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         } else {
           cenv = env_bind_mut(cenv, name, vt, escapes)
           c1 = nc
+        }
+        // #3343 (Codex on #3359): what the binding may carry -- what it
+        // starts with and what is written into it anywhere in its scope --
+        // for a later walk of this body or write of the binding.
+        if spine_region_active {
+          cenv = retention_note_let_mut(cenv, mut_def_env, name, val, body, subst_apply(ns, vt), defs, ns, let_off)
+        } else {
+          ()
         }
         s1 = ns
         typed_occurrence_capture_enter_virtual_child(capture, 1, Array::length(expr_children(body)))

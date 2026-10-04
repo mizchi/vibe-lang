@@ -523,14 +523,18 @@ of the group, and a closure's type does not list what it captured. Where the
 stored value's type may hide a region, the value is judged by what it READS --
 a value can carry a region only if a variable it reads carries it, since the
 token itself is a variable. A variable carries what its type shows, or, where
-its type may hide a region, what its binding recorded: a `let` records what
-its value read, a parameter of a re-checked callee (below) what its argument
-carried, and a binding that records nothing (a `let mut`, a pattern, a loop
-variable, a parameter of a lambda written in the body) carries every region it
-was declared inside. So `Some(Box::{ h: handle })`, `let b = Box::{ h: handle
-}` written later, an enum payload, a struct two levels deep, and the result of
-a helper declared `-> TaskHandle[Int]` or `-> Box` are all refused when stored
-outside:
+its type may hide a region, what its binding recorded: a `let` or `let mut`
+records what its value read AND what every write into it anywhere in its scope
+writes (a field write, `Array::push` / `Array::set`, an assignment, a write
+through an alias of it or by a helper handed it -- a flow-insensitive union,
+so a write later in a loop than the read that stores the binding counts too),
+a parameter of a re-checked callee (below) what its argument carried, and a
+binding that records nothing (a pattern, a loop variable, a parameter of a
+lambda written in the body) carries every region it was declared inside. So
+`Some(Box::{ h: handle })`, `let b = Box::{ h: handle }` written later, `let b
+= Box::{ h: None }` with `b.h = Some(handle)` after it, an enum payload, a
+struct two levels deep, and the result of a helper declared `->
+TaskHandle[Int]` or `-> Box` are all refused when stored outside:
 
 ```text
 region escapes its nursery scope: this write stores this TaskGroup::run call's
@@ -679,7 +683,9 @@ struct, a closure or a tuple, or with an explicit `return` in a branch or a
 handed to a helper, an enum payload written directly or handed to a helper, a
 struct returned from a literal body through its tail, an explicit `return`, an
 `if` or `match` tail or two structs deep, a helper recursing with another
-callback, and a `let mut`, call-result or field body) and by
+callback, a body-local binding the handle is written into later -- by a field
+write, `Array::push`, `Array::set`, an assignment, an alias or a helper, or
+later in a loop -- and a `let mut`, call-result or field body) and by
 `fixtures/taskgroup_outer_write_ok_test.vibe` (the writes and calls that stay
 legal, a helper's erased result joined inside the body among them).
 

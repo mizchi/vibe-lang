@@ -158,6 +158,13 @@ let retention_recheck_stack: Array[String] = []
 /// the list). The newest row for an offset is the latest check of that `let`.
 let retention_let_rows: Array[(Int, Array[String])] = []
 
+/// Beside each let row: the regions the binding's value may carry where its
+/// type does not show them, and the binding's type when it was made. They
+/// count only while that type, solved as far as the walk's substitution
+/// goes, may still hide a region -- a `MutList::to_array` copy whose element
+/// type was open at its `let` carries nothing once it is `Array[Int]`.
+let retention_let_hidden_rows: Array[(Int, Array[String], Type)] = []
+
 /// `(callee offset, regions)` for every call of a function or closure of this
 /// module made inside a region: the regions its RESULT carries, as the second
 /// check of the callee found them (`retention_note_result`) -- so a helper
@@ -202,6 +209,7 @@ export fn retention_begin_module(stmts: Array[Stmt]) -> (Array[(String, Expr)], 
   Array::truncate(retention_module_env_cell, 0)
   Array::truncate(retention_arg_lambdas, 0)
   Array::truncate(retention_let_rows, 0)
+  Array::truncate(retention_let_hidden_rows, 0)
   Array::truncate(retention_call_rows, 0)
   retention_collect_decls(stmts)
   saved
@@ -224,6 +232,7 @@ export fn retention_end_module(saved: (Array[(String, Expr)], Array[(Expr, Strin
   }
   Array::truncate(retention_arg_lambdas, 0)
   Array::truncate(retention_let_rows, 0)
+  Array::truncate(retention_let_hidden_rows, 0)
   Array::truncate(retention_call_rows, 0)
   ()
 }
@@ -748,8 +757,10 @@ fn retention_ident_carried(name: String, env: TypeEnv, local: Array[(String, Arr
   }
 }
 
-/// The names a closure body reads from outside it, callees included.
-fn retention_free_names_into(expr: Expr, bound: Array[String], out: Array[String]) -> Unit {
+/// The names a closure body reads from outside it -- with `callees`, the
+/// names it calls too; without, only the values it reads (a call's callee
+/// spelled by name is not a value the call hands anything to).
+fn retention_free_names_into(expr: Expr, bound: Array[String], out: Array[String], callees: Bool) -> Unit {
   match expr {
     EIdent(name, _) => if !retention_string_has(bound, name) {
       retention_union_into(out, [name])
@@ -757,21 +768,21 @@ fn retention_free_names_into(expr: Expr, bound: Array[String], out: Array[String
       ()
     },
     ELet(name, val, body, _) => {
-      retention_free_names_into(val, bound, out)
+      retention_free_names_into(val, bound, out, callees)
       Array::push(bound, name)
-      retention_free_names_into(body, bound, out)
+      retention_free_names_into(body, bound, out, callees)
       Array::truncate(bound, Array::length(bound) - 1)
     },
     ELetMut(name, val, body, _) => {
-      retention_free_names_into(val, bound, out)
+      retention_free_names_into(val, bound, out, callees)
       Array::push(bound, name)
-      retention_free_names_into(body, bound, out)
+      retention_free_names_into(body, bound, out, callees)
       Array::truncate(bound, Array::length(bound) - 1)
     },
     ELetRec(name, val, body) => {
       Array::push(bound, name)
-      retention_free_names_into(val, bound, out)
-      retention_free_names_into(body, bound, out)
+      retention_free_names_into(val, bound, out, callees)
+      retention_free_names_into(body, bound, out, callees)
       Array::truncate(bound, Array::length(bound) - 1)
     },
     EAssign(name, val, body, _) => {
@@ -780,8 +791,8 @@ fn retention_free_names_into(expr: Expr, bound: Array[String], out: Array[String
       } else {
         ()
       }
-      retention_free_names_into(val, bound, out)
-      retention_free_names_into(body, bound, out)
+      retention_free_names_into(val, bound, out, callees)
+      retention_free_names_into(body, bound, out, callees)
     },
     EAssignOp(name, _, val, body, _) => {
       if !retention_string_has(bound, name) {
@@ -789,8 +800,22 @@ fn retention_free_names_into(expr: Expr, bound: Array[String], out: Array[String
       } else {
         ()
       }
-      retention_free_names_into(val, bound, out)
-      retention_free_names_into(body, bound, out)
+      retention_free_names_into(val, bound, out, callees)
+      retention_free_names_into(body, bound, out, callees)
+    },
+    ECall(callee, args, _, _) => {
+      match callee {
+        EIdent(_, _) => if callees {
+          retention_free_names_into(callee, bound, out, callees)
+        } else {
+          ()
+        },
+        _ => retention_free_names_into(callee, bound, out, callees)
+      }
+      for arg in args {
+        retention_free_names_into(arg, bound, out, callees)
+      }
+      ()
     },
     EFn(_, _, params, _, _, body) => {
       let mark = Array::length(bound)
@@ -798,49 +823,49 @@ fn retention_free_names_into(expr: Expr, bound: Array[String], out: Array[String
         let (pname, _) = param
         Array::push(bound, retention_param_base(pname))
       }
-      retention_free_names_into(body, bound, out)
+      retention_free_names_into(body, bound, out, callees)
       Array::truncate(bound, mark)
     },
     ELoop(params, body) => {
       let mark = Array::length(bound)
       for param in params {
         let (pname, init) = param
-        retention_free_names_into(init, bound, out)
+        retention_free_names_into(init, bound, out, callees)
         Array::push(bound, pname)
       }
-      retention_free_names_into(body, bound, out)
+      retention_free_names_into(body, bound, out, callees)
       Array::truncate(bound, mark)
     },
     EForIn(name, index_name, iter, body) => {
-      retention_free_names_into(iter, bound, out)
+      retention_free_names_into(iter, bound, out, callees)
       let mark = Array::length(bound)
       Array::push(bound, name)
       match index_name {
         Some(index) => Array::push(bound, index),
         None => ()
       }
-      retention_free_names_into(body, bound, out)
+      retention_free_names_into(body, bound, out, callees)
       Array::truncate(bound, mark)
     },
     EMatch(scrutinee, arms) => {
-      retention_free_names_into(scrutinee, bound, out)
+      retention_free_names_into(scrutinee, bound, out, callees)
       for arm in arms {
         let (pat, body) = arm
         let mark = Array::length(bound)
         collect_pat_binds_into(pat, bound)
-        retention_free_names_into(body, bound, out)
+        retention_free_names_into(body, bound, out, callees)
         Array::truncate(bound, mark)
       }
       ()
     },
     EHandle(scrutinee, arms) => {
-      retention_free_names_into(scrutinee, bound, out)
+      retention_free_names_into(scrutinee, bound, out, callees)
       for arm in arms {
         let (pat, body) = arm
         let mark = Array::length(bound)
         collect_pat_binds_into(pat, bound)
         Array::push(bound, "resume")
-        retention_free_names_into(body, bound, out)
+        retention_free_names_into(body, bound, out, callees)
         Array::truncate(bound, mark)
       }
       ()
@@ -850,7 +875,7 @@ fn retention_free_names_into(expr: Expr, bound: Array[String], out: Array[String
       let end = expr_children_top()
       let mut i = mark
       while i < end {
-        retention_free_names_into(expr_child_at(i), bound, out)
+        retention_free_names_into(expr_child_at(i), bound, out, callees)
         i = i + 1
       }
       expr_children_pop(mark)
@@ -885,9 +910,12 @@ fn retention_walk(expr: Expr, env: TypeEnv, local: Array[(String, Array[String])
     EStringInterp(_) => array_empty(),
     ELet(name, val, body, let_off) => {
       let walked = retention_walk(val, env, local, active, defs, s, returns)
-      let rv = match retention_let_row(let_off) {
+      let rv = match retention_let_row(let_off, defs, s) {
         Some(recorded) => recorded,
-        None => walked
+        None => {
+          retention_union_into(walked, retention_scope_writes(name, body, env, local, active, defs, s))
+          walked
+        }
       }
       let mark = Array::length(local)
       Array::push(local, (name, rv))
@@ -895,13 +923,15 @@ fn retention_walk(expr: Expr, env: TypeEnv, local: Array[(String, Array[String])
       Array::truncate(local, mark)
       r
     },
-    // A `let mut` may be assigned anything later on; it carries every
-    // region it is declared inside.
+    // A `let mut` carries what it starts with and what is assigned to it.
     ELetMut(name, val, body, let_off) => {
-      let _ = retention_walk(val, env, local, active, defs, s, returns)
-      let rv = match retention_let_row(let_off) {
+      let walked = retention_walk(val, env, local, active, defs, s, returns)
+      let rv = match retention_let_row(let_off, defs, s) {
         Some(recorded) => recorded,
-        None => active
+        None => {
+          retention_union_into(walked, retention_scope_writes(name, body, env, local, active, defs, s))
+          walked
+        }
       }
       let mark = Array::length(local)
       Array::push(local, (name, rv))
@@ -1010,7 +1040,7 @@ fn retention_walk(expr: Expr, env: TypeEnv, local: Array[(String, Array[String])
         Array::push(bound, retention_param_base(pname))
       }
       let names = array_empty()
-      retention_free_names_into(body, bound, names)
+      retention_free_names_into(body, bound, names, true)
       let out = array_empty()
       for n in names {
         retention_union_into(out, retention_ident_carried(n, env, local, active, defs, s))
@@ -1059,6 +1089,497 @@ fn retention_walk_children(expr: Expr, env: TypeEnv, local: Array[(String, Array
   }
   expr_children_pop(mark)
   out
+}
+
+//# Writes into a binding
+//#
+//# A binding's value can gain a region after it is made: a field write
+//# (`b.h = Some(handle)`), a container write (`Array::push(xs, handle)`), an
+//# assignment, or a helper handed the binding together with the handle. Codex
+//# on #3359: a body that made `let b = Box::{ h: None }` and then wrote the
+//# handle into `b.h` could return `b` with nothing seeing the region. So a
+//# binding made inside a region carries, besides what its value read, what
+//# every write into it ANYWHERE in its scope writes -- a flow-insensitive
+//# union, so a read before the write in a loop, or a write in a closure that
+//# runs later, counts too. "Into it" follows aliases both ways: a name bound
+//# from it, a pattern or loop variable over it, a location it is stored
+//# into, a location stored into it, a container or helper it is handed to
+//# with other arguments, and the captures of a closure of this scope that is
+//# called with it. What a write inside a closure writes from the closure's
+//# own parameters is not known here, so it counts as every region.
+
+/// `t` contains a part the checker has not determined yet, which may still
+/// become a type that hides a region.
+fn retention_type_open(t: Type) -> Bool {
+  match t {
+    CtVar(_) => true,
+    CtUnknown => true,
+    CtArray(e) => retention_type_open(e),
+    CtOption(e) => retention_type_open(e),
+    CtTuple(items) => {
+      let mut any = false
+      for item in items {
+        if retention_type_open(item) {
+          any = true
+        } else {
+          ()
+        }
+      }
+      any
+    },
+    CtNamed(_, args) => {
+      let mut any = false
+      for a in args {
+        if retention_type_open(a) {
+          any = true
+        } else {
+          ()
+        }
+      }
+      any
+    },
+    CtForAll(_, _, body) => retention_type_open(body),
+    _ => false
+  }
+}
+
+/// The values `expr` reads by name (a callee spelled by name excluded).
+fn retention_value_names(expr: Expr) -> Array[String] {
+  let out = array_empty()
+  retention_free_names_into(expr, array_empty(), out, false)
+  out
+}
+
+fn retention_any_listed(names: Array[String], set: Array[String]) -> Bool {
+  let mut any = false
+  for n in names {
+    if !any && retention_string_has(set, n) {
+      any = true
+    } else {
+      ()
+    }
+  }
+  any
+}
+
+/// Add `names` to `set`; whether any was new.
+fn retention_add_names(set: Array[String], names: Array[String]) -> Bool {
+  let mut changed = false
+  for n in names {
+    if !retention_string_has(set, n) {
+      Array::push(set, n)
+      changed = true
+    } else {
+      ()
+    }
+  }
+  changed
+}
+
+/// The parts of a call that values flow between: its arguments, the
+/// receiver of a method call, and a lambda applied where it is written.
+fn retention_call_parts(callee: Expr, args: Array[Expr]) -> Array[Expr] {
+  let parts = array_empty()
+  match callee {
+    EDot(obj, _, _, _) => Array::push(parts, obj),
+    EFn(_, _, _, _, _, _) => Array::push(parts, callee),
+    _ => ()
+  }
+  for arg in args {
+    Array::push(parts, arg)
+  }
+  parts
+}
+
+/// Every `let`-bound closure literal of `expr`, with the values it reads.
+fn retention_collect_closures(expr: Expr, out: Array[(String, Array[String])]) -> Unit {
+  match expr {
+    ELet(name, val, body, _) => {
+      match let_rhs_closure_literal(val) {
+        Some(lit) => Array::push(out, (name, retention_value_names(lit))),
+        None => ()
+      }
+      retention_collect_closures(val, out)
+      retention_collect_closures(body, out)
+    },
+    _ => {
+      let mark = expr_children_push(expr)
+      let end = expr_children_top()
+      let mut i = mark
+      while i < end {
+        retention_collect_closures(expr_child_at(i), out)
+        i = i + 1
+      }
+      expr_children_pop(mark)
+    }
+  }
+  ()
+}
+
+/// `target` and the values `val` reads become aliases of each other.
+fn retention_alias_link(target: String, val: Expr, aliases: Array[String]) -> Bool {
+  let names = retention_value_names(val)
+  let mut changed = false
+  if retention_string_has(aliases, target) {
+    if retention_add_names(aliases, names) {
+      changed = true
+    } else {
+      ()
+    }
+  } else if retention_any_listed(names, aliases) {
+    Array::push(aliases, target)
+    changed = true
+  } else {
+    ()
+  }
+  changed
+}
+
+/// One round of the alias closure over `expr`; whether `aliases` grew.
+fn retention_alias_step(expr: Expr, aliases: Array[String], closures: Array[(String, Array[String])]) -> Bool {
+  match expr {
+    ELet(name, val, body, _) => {
+      let a = retention_alias_link(name, val, aliases)
+      let b = retention_alias_step(val, aliases, closures)
+      let c = retention_alias_step(body, aliases, closures)
+      a || b || c
+    },
+    ELetMut(name, val, body, _) => {
+      let a = retention_alias_link(name, val, aliases)
+      let b = retention_alias_step(val, aliases, closures)
+      let c = retention_alias_step(body, aliases, closures)
+      a || b || c
+    },
+    ELetRec(name, val, body) => {
+      let a = retention_alias_link(name, val, aliases)
+      let b = retention_alias_step(val, aliases, closures)
+      let c = retention_alias_step(body, aliases, closures)
+      a || b || c
+    },
+    EAssign(name, val, body, _) => {
+      let a = retention_alias_link(name, val, aliases)
+      let b = retention_alias_step(val, aliases, closures)
+      let c = retention_alias_step(body, aliases, closures)
+      a || b || c
+    },
+    EAssignOp(name, _, val, body, _) => {
+      let a = retention_alias_link(name, val, aliases)
+      let b = retention_alias_step(val, aliases, closures)
+      let c = retention_alias_step(body, aliases, closures)
+      a || b || c
+    },
+    ECall(callee, args, _, _) => {
+      let names = array_empty()
+      for part in retention_call_parts(callee, args) {
+        retention_union_into(names, retention_value_names(part))
+      }
+      let mut changed = false
+      if retention_any_listed(names, aliases) {
+        if retention_add_names(aliases, names) {
+          changed = true
+        } else {
+          ()
+        }
+        // A closure of this scope called with an alias may store it in
+        // what it captured.
+        match callee {
+          EIdent(cname, _) => for entry in closures {
+            let (closure_name, captured) = entry
+            if String::equals(closure_name, cname) && retention_add_names(aliases, captured) {
+              changed = true
+            } else {
+              ()
+            }
+          },
+          _ => ()
+        }
+        ()
+      } else {
+        ()
+      }
+      let mut inner = false
+      let mark = expr_children_push(expr)
+      let end = expr_children_top()
+      let mut i = mark
+      while i < end {
+        if retention_alias_step(expr_child_at(i), aliases, closures) {
+          inner = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      expr_children_pop(mark)
+      changed || inner
+    },
+    EMatch(scrutinee, arms) => {
+      let names = retention_value_names(scrutinee)
+      let mut changed = retention_alias_step(scrutinee, aliases, closures)
+      for arm in arms {
+        let (pat, body) = arm
+        let binders = array_empty()
+        collect_pat_binds_into(pat, binders)
+        if retention_any_listed(binders, aliases) && retention_add_names(aliases, names) {
+          changed = true
+        } else {
+          ()
+        }
+        if retention_any_listed(names, aliases) && retention_add_names(aliases, binders) {
+          changed = true
+        } else {
+          ()
+        }
+        if retention_alias_step(body, aliases, closures) {
+          changed = true
+        } else {
+          ()
+        }
+      }
+      changed
+    },
+    EForIn(name, _, iter, body) => {
+      let a = retention_alias_link(name, iter, aliases)
+      let b = retention_alias_step(iter, aliases, closures)
+      let c = retention_alias_step(body, aliases, closures)
+      a || b || c
+    },
+    _ => {
+      let mut changed = false
+      let mark = expr_children_push(expr)
+      let end = expr_children_top()
+      let mut i = mark
+      while i < end {
+        if retention_alias_step(expr_child_at(i), aliases, closures) {
+          changed = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      expr_children_pop(mark)
+      changed
+    }
+  }
+}
+
+/// What every write into an alias in `expr` writes, into `out`. `local`
+/// holds the bindings of `expr` passed so far, as `retention_walk`'s does.
+fn retention_write_pass(expr: Expr, aliases: Array[String], env: TypeEnv, local: Array[(String, Array[String])], active: Array[String], defs: Array[TypeDef], s: Subst, out: Array[String]) -> Unit {
+  let walk = (e: Expr) -> {
+    retention_walk(e, env, local, active, defs, s, array_empty())
+  }
+  match expr {
+    ELet(name, val, body, _) => {
+      retention_write_pass(val, aliases, env, local, active, defs, s, out)
+      let rv = walk(val)
+      if retention_string_has(aliases, name) {
+        retention_union_into(out, rv)
+      } else {
+        ()
+      }
+      let mark = Array::length(local)
+      Array::push(local, (name, rv))
+      retention_write_pass(body, aliases, env, local, active, defs, s, out)
+      Array::truncate(local, mark)
+    },
+    ELetMut(name, val, body, _) => {
+      retention_write_pass(val, aliases, env, local, active, defs, s, out)
+      let rv = walk(val)
+      if retention_string_has(aliases, name) {
+        retention_union_into(out, rv)
+      } else {
+        ()
+      }
+      let mark = Array::length(local)
+      Array::push(local, (name, rv))
+      retention_write_pass(body, aliases, env, local, active, defs, s, out)
+      Array::truncate(local, mark)
+    },
+    ELetRec(name, val, body) => {
+      let mark = Array::length(local)
+      Array::push(local, (name, active))
+      retention_write_pass(val, aliases, env, local, active, defs, s, out)
+      let rv = walk(val)
+      Array::truncate(local, mark)
+      if retention_string_has(aliases, name) {
+        retention_union_into(out, rv)
+      } else {
+        ()
+      }
+      Array::push(local, (name, rv))
+      retention_write_pass(body, aliases, env, local, active, defs, s, out)
+      Array::truncate(local, mark)
+    },
+    EAssign(name, val, body, _) => {
+      retention_write_pass(val, aliases, env, local, active, defs, s, out)
+      if retention_string_has(aliases, name) {
+        retention_union_into(out, walk(val))
+      } else {
+        ()
+      }
+      retention_write_pass(body, aliases, env, local, active, defs, s, out)
+    },
+    EAssignOp(name, _, val, body, _) => {
+      retention_write_pass(val, aliases, env, local, active, defs, s, out)
+      if retention_string_has(aliases, name) {
+        retention_union_into(out, walk(val))
+      } else {
+        ()
+      }
+      retention_write_pass(body, aliases, env, local, active, defs, s, out)
+    },
+    ECall(callee, args, _, _) => {
+      let parts = retention_call_parts(callee, args)
+      let names = array_empty()
+      for part in parts {
+        retention_union_into(names, retention_value_names(part))
+      }
+      if retention_any_listed(names, aliases) {
+        for part in parts {
+          retention_union_into(out, walk(part))
+        }
+        // A closure called with the alias may store what it captured.
+        match callee {
+          EIdent(_, _) => retention_union_into(out, walk(callee)),
+          _ => ()
+        }
+        ()
+      } else {
+        ()
+      }
+      let mark = expr_children_push(expr)
+      let end = expr_children_top()
+      let mut i = mark
+      while i < end {
+        retention_write_pass(expr_child_at(i), aliases, env, local, active, defs, s, out)
+        i = i + 1
+      }
+      expr_children_pop(mark)
+    },
+    EMatch(scrutinee, arms) => {
+      retention_write_pass(scrutinee, aliases, env, local, active, defs, s, out)
+      let rs = walk(scrutinee)
+      for arm in arms {
+        let (pat, body) = arm
+        let binders = array_empty()
+        collect_pat_binds_into(pat, binders)
+        if retention_any_listed(binders, aliases) {
+          retention_union_into(out, rs)
+        } else {
+          ()
+        }
+        let mark = Array::length(local)
+        for n in binders {
+          Array::push(local, (n, rs))
+        }
+        retention_write_pass(body, aliases, env, local, active, defs, s, out)
+        Array::truncate(local, mark)
+      }
+      ()
+    },
+    EHandle(scrutinee, arms) => {
+      retention_write_pass(scrutinee, aliases, env, local, active, defs, s, out)
+      for arm in arms {
+        let (pat, body) = arm
+        let binders = array_empty()
+        collect_pat_binds_into(pat, binders)
+        let mark = Array::length(local)
+        for n in binders {
+          Array::push(local, (n, active))
+        }
+        retention_write_pass(body, aliases, env, local, active, defs, s, out)
+        Array::truncate(local, mark)
+      }
+      ()
+    },
+    EForIn(name, index_name, iter, body) => {
+      retention_write_pass(iter, aliases, env, local, active, defs, s, out)
+      let ri = walk(iter)
+      if retention_string_has(aliases, name) {
+        retention_union_into(out, ri)
+      } else {
+        ()
+      }
+      let mark = Array::length(local)
+      Array::push(local, (name, ri))
+      match index_name {
+        Some(index) => Array::push(local, (index, array_empty())),
+        None => ()
+      }
+      retention_write_pass(body, aliases, env, local, active, defs, s, out)
+      Array::truncate(local, mark)
+    },
+    ELoop(params, body) => {
+      let mark = Array::length(local)
+      for param in params {
+        let (pname, init) = param
+        retention_write_pass(init, aliases, env, local, active, defs, s, out)
+        Array::push(local, (pname, active))
+      }
+      retention_write_pass(body, aliases, env, local, active, defs, s, out)
+      Array::truncate(local, mark)
+    },
+    // A closure's parameters are whatever its callers pass: every region.
+    EFn(_, _, params, _, _, body) => {
+      let mark = Array::length(local)
+      for param in params {
+        let (pname, _) = param
+        Array::push(local, (retention_param_base(pname), active))
+      }
+      retention_write_pass(body, aliases, env, local, active, defs, s, out)
+      Array::truncate(local, mark)
+    },
+    _ => {
+      let mark = expr_children_push(expr)
+      let end = expr_children_top()
+      let mut i = mark
+      while i < end {
+        retention_write_pass(expr_child_at(i), aliases, env, local, active, defs, s, out)
+        i = i + 1
+      }
+      expr_children_pop(mark)
+    }
+  }
+  ()
+}
+
+/// The active regions (`active`) the writes into the binding `name` anywhere
+/// in its scope `scope` write (see the section header), read in `env` with
+/// `local`'s bindings. An alias closure that does not settle answers every
+/// region.
+fn retention_scope_writes(name: String, scope: Expr, env: TypeEnv, local: Array[(String, Array[String])], active: Array[String], defs: Array[TypeDef], s: Subst) -> Array[String] {
+  if Array::length(active) == 0 || !retention_string_has(retention_value_names(scope), name) {
+    array_empty()
+  } else {
+    let aliases = array_empty()
+    Array::push(aliases, name)
+    let closures = array_empty()
+    retention_collect_closures(scope, closures)
+    let mut changed = true
+    let mut rounds = 0
+    while changed && rounds < 16 {
+      changed = retention_alias_step(scope, aliases, closures)
+      rounds = rounds + 1
+    }
+    if changed {
+      Array::slice(active, 0, Array::length(active))
+    } else {
+      let found = array_empty()
+      let mark = Array::length(local)
+      Array::push(local, (name, array_empty()))
+      retention_write_pass(scope, aliases, env, local, active, defs, s, found)
+      Array::truncate(local, mark)
+      let out = array_empty()
+      for rname in found {
+        if retention_string_has(active, rname) {
+          retention_union_into(out, [rname])
+        } else {
+          ()
+        }
+      }
+      out
+    }
+  }
 }
 
 /// #3343 (Codex on #3359): the active regions of `env` the value of `expr`
@@ -1150,8 +1671,39 @@ fn retention_row(rows: Array[(Int, Array[String])], off: Int) -> Option[Array[St
   }
 }
 
-fn retention_let_row(let_off: Int) -> Option[Array[String]] {
-  retention_row(retention_let_rows, let_off)
+/// What the `let` at `let_off` recorded its binding carries: what its type
+/// showed, and what it may carry where its type does not show it while that
+/// type, as `s` solves it, may still hide a region.
+fn retention_let_row(let_off: Int, defs: Array[TypeDef], s: Subst) -> Option[Array[String]] {
+  match retention_row(retention_let_rows, let_off) {
+    Some(shown) => {
+      let out = Array::slice(shown, 0, Array::length(shown))
+      let mut i = Array::length(retention_let_hidden_rows) - 1
+      let mut hit = -1
+      while i >= 0 && hit < 0 {
+        let (off, _, _) = Array::get(retention_let_hidden_rows, i)
+        if off == let_off {
+          hit = i
+        } else {
+          ()
+        }
+        i = i - 1
+      }
+      if hit >= 0 {
+        let (_, hidden, raw) = Array::get(retention_let_hidden_rows, hit)
+        let ty = subst_apply(s, raw)
+        if retention_type_hides_region(ty, defs) || retention_type_open(ty) {
+          retention_union_into(out, hidden)
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      Some(out)
+    },
+    None => None
+  }
 }
 
 fn retention_visible_regions(ty: Type, active: Array[String]) -> Array[String] {
@@ -1167,47 +1719,50 @@ fn retention_visible_regions(ty: Type, active: Array[String]) -> Array[String] {
 }
 
 /// #3343 (Codex on #3359): record, for a `let` binding `name` made inside a
-/// region (its keyword at `let_off`), which regions its value carries, and,
-/// when its type may hide them, bind that in front of the binding too.
+/// region (its keyword at `let_off`), which regions its value carries -- by
+/// its type and, where its type may hide one (now, or once its open parts
+/// are solved), by what its value read and what every write into it in its
+/// scope `scope` writes -- and bind that in front of the binding too.
 /// `def_env` is the scope the value was written in.
-export fn retention_bind_carry(env: TypeEnv, def_env: TypeEnv, name: String, val: Expr, ty: Type, defs: Array[TypeDef], s: Subst, let_off: Int) -> TypeEnv {
+export fn retention_bind_carry(env: TypeEnv, def_env: TypeEnv, name: String, val: Expr, scope: Expr, ty: Type, defs: Array[TypeDef], s: Subst, let_off: Int) -> TypeEnv {
   let active = retention_active_region_names(def_env)
   let carried = retention_visible_regions(ty, active)
-  let hidden = if retention_type_hides_region(ty, defs) {
-    retention_value_regions(val, def_env, defs, s)
+  // A type still open may become one that hides a region once its writes
+  // are solved (`let xs = []` filled with boxes later), so its writes are
+  // read; its value is read only when its type hides one already -- a
+  // call's result whose element type is still open (`MutList::to_array(l)`)
+  // is read by its type, not by the arguments of the call.
+  let hides_now = retention_type_hides_region(ty, defs)
+  let may_hide = hides_now || retention_type_open(ty)
+  let hidden = if may_hide {
+    let from_value = if hides_now {
+      retention_value_regions(val, def_env, defs, s)
+    } else {
+      array_empty()
+    }
+    retention_union_into(from_value, retention_scope_writes(name, scope, def_env, array_empty(), active, defs, s))
+    from_value
   } else {
     array_empty()
   }
-  retention_union_into(carried, hidden)
   if let_off >= 0 {
     Array::push(retention_let_rows, (let_off, carried))
+    Array::push(retention_let_hidden_rows, (let_off, hidden, ty))
   } else {
     ()
   }
-  if retention_type_hides_region(ty, defs) {
+  if may_hide {
     retention_bind_param_carry(env, name, hidden)
   } else {
     env
   }
 }
 
-/// #3343 (Codex on #3359): record, for a `let mut` made inside a region (its
-/// keyword at `let_off`), which regions it may carry: those its type names,
-/// and, where its type may hide one, every region it was declared inside --
-/// it may be assigned anything later.
-export fn retention_note_let_mut(let_off: Int, def_env: TypeEnv, ty: Type, defs: Array[TypeDef]) -> Unit {
-  if let_off >= 0 {
-    let active = retention_active_region_names(def_env)
-    let carried = retention_visible_regions(ty, active)
-    if retention_type_hides_region(ty, defs) {
-      retention_union_into(carried, active)
-    } else {
-      ()
-    }
-    Array::push(retention_let_rows, (let_off, carried))
-  } else {
-    ()
-  }
+/// #3343 (Codex on #3359): `retention_bind_carry` for a `let mut`: what it
+/// starts with, and what every assignment or other write into it in its
+/// scope writes. `env` already binds it.
+export fn retention_note_let_mut(env: TypeEnv, def_env: TypeEnv, name: String, val: Expr, scope: Expr, ty: Type, defs: Array[TypeDef], s: Subst, let_off: Int) -> TypeEnv {
+  retention_bind_carry(env, def_env, name, val, scope, ty, defs, s, let_off)
 }
 
 /// #3343 (Codex on #3359): record, in front of the binding `name`, that its

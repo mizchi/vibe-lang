@@ -356,3 +356,51 @@ fn nested_and_branches(flag: Bool) -> String with Exception {
 test "branch, match and nested values and a recursive callback stay legal inside the body" allows Exception {
   inspect(nested_and_branches(true), "r=13")
 }
+
+// #3343 (Codex on #3359): a binding made in the body carries what is written
+// into it later -- a field write, `Array::push` / `Array::set`, an
+// assignment, a helper handed it (fixtures/typecheck/taskgroup_escape_local_*
+// _reject.vibe return or store such bindings outside). Joined inside the
+// body they stay legal, and so does a container of closures that captured
+// only joined values, returned from the body.
+struct HandleSlot {
+  mut h: Option[TaskHandle[Int]]
+}
+
+fn fill_slot(s: HandleSlot, h: TaskHandle[Int]) -> Unit {
+  s.h = Some(h)
+}
+
+fn slot_value(s: HandleSlot) -> Int with Exception {
+  match s.h {
+    Some(h) => TaskHandle::join(h),
+    None => 0
+  }
+}
+
+fn local_writes() -> String with Exception {
+  let fs = TaskGroup::run((n) -> {
+    let s = HandleSlot::{ h: None }
+    s.h = Some(start(n, 1))
+    let filled = HandleSlot::{ h: None }
+    fill_slot(filled, start(n, 2))
+    let hs: Array[TaskHandle[Int]] = []
+    Array::push(hs, start(n, 3))
+    Array::set(hs, 0, start(n, 4))
+    let mut later = None
+    later = Some(start(n, 5))
+    let from_later = match later {
+      Some(h) => TaskHandle::join(h),
+      None => 0
+    }
+    let total = slot_value(s) + slot_value(filled) + TaskHandle::join(Array::get(hs, 0)) + from_later
+    let out = []
+    Array::push(out, () -> total)
+    out
+  })
+  "f=\{(Array::get(fs, 0))()}"
+}
+
+test "writes into a binding made in the body stay legal while it stays there" allows Exception {
+  inspect(local_writes(), "f=12")
+}
