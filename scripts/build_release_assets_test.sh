@@ -122,6 +122,16 @@ SH
 for script in vibe_pkg.sh parallel_warm_pool.sh run_bounded.sh; do
   : > "$WORK/t/scripts/$script"
 done
+cat > "$WORK/t/scripts/build_taskgroup_checker.sh" <<'SH'
+set -eu
+mkdir -p "$2"
+printf 'worker\n' > "$2/worker.wasm"
+printf 'coordinator\n' > "$2/coordinator.component.wasm"
+printf '{}\n' > "$2/build.json"
+SH
+for helper in taskgroup_build_frontend.mjs taskgroup_frontend_warm.mjs parallel_project_transport.mjs parallel_scheduler_trace.mjs parallel_selfhost_checker.mjs; do
+  : > "$WORK/t/scripts/$helper"
+done
 for pkg in core ast parser builtin console wit_runtime concurrent concurrent/experimental; do
   mkdir -p "$WORK/t/lib/@vibe/$pkg"
   : > "$WORK/t/lib/@vibe/$pkg/index.vpkg"
@@ -131,7 +141,7 @@ printf 'wasmtime = { version = "47.0.2" }\n' > "$WORK/t/runtime/viberun/Cargo.to
 run v0.1.0-rc.3
 check "packaging exit" "$RC" "0"
 if ! python3 - "$WORK/t/dist/release/v0.1.0-rc.3" <<'PY'
-import hashlib, json, pathlib, sys
+import hashlib, json, pathlib, sys, tarfile
 out = pathlib.Path(sys.argv[1])
 manifest = json.loads((out / 'release-manifest.json').read_text())
 cli = manifest['compiler_wasm']
@@ -144,6 +154,12 @@ for name in (cli, seed):
     assert manifest['assets'][name] == sha, name
     assert name in manifest['artifacts'], name
     assert f'{sha}  {name}' in (out / 'SHA256SUMS.txt').read_text(), name
+with tarfile.open(out / 'vibe-toolchain-v0.1.0-rc.3.tar.gz') as archive:
+    names = set(archive.getnames())
+    for name in ['worker.wasm', 'coordinator.component.wasm', 'build.json',
+                 'taskgroup_build_frontend.mjs', 'taskgroup_frontend_warm.mjs',
+                 'parallel_project_transport.mjs', 'parallel_scheduler_trace.mjs', 'parallel_selfhost_checker.mjs']:
+        assert 'lib/checker-taskgroup/' + name in names, name
 PY
 then
   note "  FAIL product compiler selection or checksums"

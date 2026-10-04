@@ -470,6 +470,13 @@ fn selfhost_cli_user_check_args(args: Array[String]) -> Int with Exception + Fs 
 /// artifact (a Component Model binary wrapping the core), so folding it into
 /// the wit/minify booleans would lose the refusals below.
 export fn parse_user_compile_args(args: Array[String]) -> (String, String, String, Bool, Bool, Bool) with Exception {
+  let (src, out, entry, wit, minify, component, _) = parse_user_compile_request(args)
+  (src, out, entry, wit, minify, component)
+}
+
+/// Full compile request. Zero jobs preserves ordinary compilation; an explicit
+/// one/two/four selects the native TaskGroup frontend, including its one-slot control.
+fn parse_user_compile_request(args: Array[String]) -> (String, String, String, Bool, Bool, Bool, Int) with Exception {
   if Array::length(args) == 0 {
     throw("compile: expected command")
   } else {
@@ -484,6 +491,7 @@ export fn parse_user_compile_args(args: Array[String]) -> (String, String, Strin
       let mut wit = false
       let mut component = false
       let mut minify = false
+      let mut jobs = 0
       let mut i = 1
       while i < Array::length(args) {
         let arg = Array::get(args, i)
@@ -507,7 +515,12 @@ export fn parse_user_compile_args(args: Array[String]) -> (String, String, Strin
           ()
         } else if arg == "--jobs" {
           i = i + 1
-          let _ = parse_jobs_value(need_value(args, i, cmd, arg))
+          jobs = parse_jobs_value(need_value(args, i, cmd, arg))
+          if jobs != 1 && jobs != 2 && jobs != 4 {
+            throw("build --jobs supports 1, 2 or 4 workers")
+          } else {
+            ()
+          }
           ()
         } else if arg == "--wasm" || arg == "--wasm-linear" || arg == "--release" {
           ()
@@ -565,7 +578,7 @@ export fn parse_user_compile_args(args: Array[String]) -> (String, String, Strin
         } else {
           out
         }
-        (src, resolved_out, resolved_entry, wit, minify, component)
+        (src, resolved_out, resolved_entry, wit, minify, component, jobs)
       }
     }
   }
@@ -606,7 +619,7 @@ fn args_has_flag(args: Array[String], flag: String) -> Bool {
 }
 
 fn selfhost_cli_user_compile_args(args: Array[String]) -> Int with Exception + Fs + Env + Console {
-  let (src, out, entry, wit, minify, component) = parse_user_compile_args(args)
+  let (src, out, entry, wit, minify, component, jobs) = parse_user_compile_request(args)
   // `--debug` is the linked debug lane docs/user/reference/cli-commands.md
   // documents for `vibe build`: library modules cached as linked wasm files,
   // only the entry recompiled. The parser accepted the flag and this function
@@ -616,6 +629,25 @@ fn selfhost_cli_user_compile_args(args: Array[String]) -> Int with Exception + F
   let out_given = args_has_flag(args, "-o") || args_has_flag(args, "--output") || args_has_flag(args, "--out")
   if !Fs::exists(src) {
     throw(String::concat("not found: ", src))
+  } else if jobs > 0 && (debug || component || wit) {
+    throw("--jobs selects the core build frontend; omit --debug, --component and --wit")
+  } else if jobs > 0 {
+    let action = Env::get("VIBE_HOST_ACTION_OUT")
+    if action == "" {
+      throw("--jobs needs the vibe host launcher to run native TaskGroup workers")
+    } else {
+      let resolved = resolve_user_build_output(out, out_given)
+      if String::contains(src, "\n") || String::contains(resolved, "\n") || String::contains(entry, "\n") {
+        throw("--jobs cannot encode a newline in a source, output or entry name")
+      } else {
+        let minify_flag = if minify {
+          "1"
+        } else {
+          "0"
+        }
+        write_host_action(action, "vibe-host-action-v1\nbuild-taskgroup\n\{src}\n\{resolved}\n\{entry}\n\{jobs}\n\{minify_flag}\n")
+      }
+    }
   } else if debug && (component || wit || minify) {
     throw("--debug selects the linked debug lane and cannot be combined with --component, --wit or --minify")
   } else if debug {

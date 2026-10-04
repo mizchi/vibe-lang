@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
-import { discoverProjectViaPlan, publishCheckedOutcomes } from "./parallel_frontend_warm.mjs";
+import { discoverProjectViaPlan, publishCheckedOutcomes } from "./parallel_project_transport.mjs";
 import { normalizeParallelProject } from "./parallel_scheduler_trace.mjs";
 import { prepareModuleJob, readModuleJobProduct } from "./parallel_selfhost_checker.mjs";
 
@@ -51,7 +51,7 @@ function runCoordinator(nativeRunner, component, manifest, cwd) {
 }
 
 export async function warmTaskGroupProject({ compilerWasm, entryFile, jobs, projectRoot, runnerPath,
-  workerWasm, coordinatorWasm, nativeRunner, keepWork = false }) {
+  workerWasm, coordinatorWasm, nativeRunner, keepWork = false, nativeCompiler = false }) {
   if (![1, 2, 4].includes(jobs)) throw new Error("TaskGroup jobs must be 1, 2 or 4");
   projectRoot = resolve(projectRoot);
   compilerWasm = resolve(compilerWasm); runnerPath = resolve(runnerPath);
@@ -61,7 +61,7 @@ export async function warmTaskGroupProject({ compilerWasm, entryFile, jobs, proj
   const work = await mkdtemp(join(tmpdir(), "vibe-taskgroup-frontend-"));
   try {
     const discoveryStart = performance.now();
-    const project = await discoverProjectViaPlan(runnerPath, compilerWasm, projectRoot, entryFile, work);
+    const project = await discoverProjectViaPlan(runnerPath, compilerWasm, projectRoot, entryFile, work, nativeCompiler);
     const modules = normalizeParallelProject(project);
     timing.discovery_ms = performance.now() - discoveryStart;
     const pending = new Set(modules.keys());
@@ -114,7 +114,7 @@ export async function warmTaskGroupProject({ compilerWasm, entryFile, jobs, proj
     // Publication order is independent of completion or wave order.
     const canonical = new Map([...outcomes.entries()].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0));
     const publicationStart = performance.now();
-    const warmed = await publishCheckedOutcomes(runnerPath, compilerWasm, projectRoot, canonical);
+    const warmed = await publishCheckedOutcomes(runnerPath, compilerWasm, projectRoot, canonical, nativeCompiler);
     timing.publication_ms = performance.now() - publicationStart;
     timing.prepare_ms = waves.reduce((sum, wave) => sum + wave.prepare_ms, 0);
     timing.coordinator_ms = waves.reduce((sum, wave) => sum + wave.coordinator_ms, 0);
@@ -131,12 +131,12 @@ export async function warmTaskGroupProject({ compilerWasm, entryFile, jobs, proj
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  const [compilerWasm, entryFile, count, projectRoot, runnerPath, workerWasm, coordinatorWasm, nativeRunner] = process.argv.slice(2);
+  const [compilerWasm, entryFile, count, projectRoot, runnerPath, workerWasm, coordinatorWasm, nativeRunner, transport] = process.argv.slice(2);
   if (![compilerWasm, entryFile, count, projectRoot, runnerPath, workerWasm, coordinatorWasm, nativeRunner].every(Boolean)) {
     throw new Error("usage: taskgroup_frontend_warm.mjs <compiler> <entry> <jobs> <root> <runner-script> <worker> <coordinator> <native-runner>");
   }
   warmTaskGroupProject({ compilerWasm, entryFile, jobs: Number(count), projectRoot, runnerPath,
-    workerWasm, coordinatorWasm, nativeRunner, keepWork: process.env.VIBE_TASKGROUP_KEEP_JOBS === "1" }).then((report) => {
+    workerWasm, coordinatorWasm, nativeRunner, nativeCompiler: transport === "native", keepWork: process.env.VIBE_TASKGROUP_KEEP_JOBS === "1" }).then((report) => {
     const { waves, ...summary } = report;
     console.log(JSON.stringify({ ...summary, waves: waves.length }));
   }).catch((error) => { console.error(String(error?.stack ?? error)); process.exitCode = 1; });
