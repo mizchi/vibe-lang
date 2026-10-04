@@ -959,6 +959,9 @@ send_check_reject "err_type_eq_marker_bound_struct.vibe" 'is a marker trait (dec
 # a program `Eq` given some other method stops being a marker, stands the guard
 # down, and still compares by reference.
 send_check_reject "err_type_eq_marker_bound_struct.vibe" 'Give `Eq` an `equals(Self, Self) -> Bool` method' "eqmarker3"
+# Codex on #3349: an applied `Eq[Int]` is still equality, so it gets the
+# `equals` edit, not the `<` advice that a method would not help.
+send_check_reject "err_type_eq_applied_marker_bound.vibe" 'Give `Eq[Int]` an `equals(Self, Self) -> Bool` method' "eqapplied"
 send_check_reject "err_type_ord_marker_bound_struct.vibe" 'no impl `Ord` for `Token`' "ordmarker"
 # #3327: a bound that EXTENDS a comparison marker is judged as that marker, the
 # way `trait Work: Send` is judged as `Send` above. `trait Key: Eq {}` over the
