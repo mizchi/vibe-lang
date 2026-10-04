@@ -1,23 +1,25 @@
 # ADR-0068 companion: compiler parallelism
 
 Status: the worker contract, the canonical order, the determinism contract and
-the oracles that check them are implemented. Phases 0 and 1 are done. Phase 2's
-worker transport and cache pre-warm driver exist and are tested, but no CLI
-command runs them: `--jobs N` on `vibe build` / `compile` / `check` is accepted,
-validated, and has no effect, and on `vibe test` it runs N test files at once.
-Phases 3 and 4 are not scheduled; no open issue owns them. The owning issues
-(#906, #1239, #1259) are closed.
+the oracles that check them are implemented. Phases 0 and 1 are done. The public
+`vibe build --jobs 1|2|4` launcher runs the TaskGroup checker transport before
+the final serial build. It validates the worker and coordinator images against
+the selected compiler's build receipt. On `vibe test`, `--jobs N` runs N test
+files at once. Function-body codegen fan-out remains unimplemented. The original
+owning issues (#906, #1239, #1259) are closed.
 
-An opt-in TaskGroup dogfood path now exists separately from the public CLI:
+The TaskGroup dogfood path is also available through scripts:
 `scripts/build_taskgroup_checker.sh` builds a core checker worker and an RC
 coordinator component; `scripts/build_taskgroup_project.sh` runs checks through
 the native `vibe:checker/worker@0.0.1` WIT bridge before the final serial build.
 It supports jobs 1/2/4, ready-wave barriers, bounded fresh worker batches, and
-canonical publication of complete lowering products. The worker still imports
-the broad compiler/runtime facade; this does not complete the checker/codegen
-responsibility split. Compiler/CLI parity, costs and memory limits are recorded
+canonical publication of complete lowering products. The worker calls
+`@vibe/checker/engine` rather than the compiler/runtime facade. The engine and
+environment transport are separate packages; this does not complete the
+checker/codegen responsibility split. Initial compiler/CLI parity, costs and memory limits are recorded
 in [the TaskGroup dogfood report](../reports/taskgroup-checker-2026-10-03.md).
-This experimental path remains slower than ordinary builds.
+That report measures the initial experimental path, which was slower than
+ordinary builds; it is not a measurement of every later launcher revision.
 
 Successful products for an identical job snapshot can optionally replay with
 `VIBE_TASKGROUP_JOB_CACHE=1`. Lookup binds the source, ordered dependency
@@ -233,6 +235,13 @@ refining the plan, without changing a byte of output.
 
 What exists:
 
+- **Body product transport** (`@vibe/codegen/transport`). The single
+  `CodegenBodyCache` definition, constructors and VBC6 codec compile without
+  compiler, AST or parser imports. The existing common-base facade re-exports
+  the same product and API. Record/replay still uses `LambdaTable` and
+  `LineMapState` in common-base. This separates the exchange representation;
+  it does not freeze a whole-program plan, make its mutable arrays `Send`, or
+  implement function-body workers.
 - **Planned lambda indices** (#1277). A lambda's function index, which is
   baked into its enclosing body as a table-slot immediate, comes from a
   counting pass that gives each function a base in canonical order, not from
