@@ -127,6 +127,21 @@ fn record_arm(dx: Int) -> Int {
   }
 }
 
+// The refusal for `Pick::P(1) => resume(v + v1)` with `v` and `v1` in scope
+// suggests the binder `v2`, so the moved body still reads the outer names.
+fn hygiene_arm(v: Int, v1: Int, x: Int) -> Int {
+  handle {
+    perform Pick::P(x)
+  } with {
+    Pick::P(v2) => if v2 == 1 {
+      resume(v + v1)
+    } else {
+      resume(5)
+    };
+    Pick::Q(_) => resume(7)
+  }
+}
+
 fn suspend_arm(x: Int) -> Int {
   handle {
     perform Pick::P(x)
@@ -195,6 +210,11 @@ test "a tuple destructure moves into a let in the arm body" {
 test "a record pattern moves into a match in the arm body" {
   inspect(record_arm(10), content = "7")
   inspect(record_arm(20), content = "17")
+}
+
+test "the suggested binder leaves outer names to the moved body" {
+  inspect(hygiene_arm(10, 20, 1), content = "30")
+  inspect(hygiene_arm(10, 20, 3), content = "5")
 }
 
 test "a suspend arm tests its payload in the body" {

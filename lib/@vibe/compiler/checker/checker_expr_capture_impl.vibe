@@ -85,7 +85,7 @@ import ./checker_effects.vibe {
 }
 
 import ./checker_escape.vibe {
-  mut_binding_escapes
+  expr_free_in, mut_binding_escapes
 }
 
 import ./checker_builtin_arg_head_rest.vibe {
@@ -1232,7 +1232,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       while hai < Array::length(harms) {
         let (hpat, hbody) = Array::get(harms, hai)
         // #3371: a payload position other than a name or `_` is never tested.
-        reject_handler_arm_payload_patterns(hpat, hbody, body, errors)
+        reject_handler_arm_payload_patterns(hpat, hbody, body, env, defs, errors)
         match hpat {
           PCtor(hqname, hbinds) => {
             let hci = String::index_of(hqname, "::")
@@ -2434,11 +2434,11 @@ fn check_unmatched_call_args(args: Array[Expr], env: TypeEnv, defs: Array[TypeDe
 /// meaning. Every handler spelling -- the `with { E::Op(..) => .. }` set, the
 /// `with E { Op(..) => .. }` header, a suffix `with E::Op(..) => ..`, and each
 /// alternative of an or-pattern arm -- reaches the arm loop as this pattern.
-fn reject_handler_arm_payload_patterns(arm_pat: Pat, arm_body: Expr, handle_body: Expr, errors: Array[String]) -> Unit {
+fn reject_handler_arm_payload_patterns(arm_pat: Pat, arm_body: Expr, handle_body: Expr, env: TypeEnv, defs: Array[TypeDef], errors: Array[String]) -> Unit {
   match handler_payload_unwrap(arm_pat) {
     POr(left, right) => {
-      reject_handler_arm_payload_patterns(left, arm_body, handle_body, errors)
-      reject_handler_arm_payload_patterns(right, arm_body, handle_body, errors)
+      reject_handler_arm_payload_patterns(left, arm_body, handle_body, env, defs, errors)
+      reject_handler_arm_payload_patterns(right, arm_body, handle_body, env, defs, errors)
     },
     PCtor(op, payloads) => {
       let offending = array_empty()
@@ -2455,7 +2455,7 @@ fn reject_handler_arm_payload_patterns(arm_pat: Pat, arm_body: Expr, handle_body
         } else {
           railway_expr_off(handle_body)
         }
-        Array::push(errors, String::concat(handler_arm_payload_message(op, payloads, offending), off_marker(off)))
+        Array::push(errors, String::concat(handler_arm_payload_message(op, payloads, offending, handler_op_param_types(defs, op), arm_body, env), off_marker(off)))
       }
     },
     _ => ()
@@ -2595,13 +2595,116 @@ fn handler_payload_is_wild(p: Pat) -> Bool {
   Array::length(bound) == 0 && handler_payload_is_irrefutable(p)
 }
 
+/// The declared parameter types of a declared effect's operation, or none
+/// when the operation is not one (`Exception::Throw`, an unknown effect).
+fn handler_op_param_types(defs: Array[TypeDef], op: String) -> Array[Type] {
+  let ci = String::index_of(op, "::")
+  if ci > 0 && effect_is_declared(defs, String::substring(op, 0, ci)) {
+    match effect_op_sig(defs, op) {
+      Some(sig) => sig.0,
+      None => array_empty()
+    }
+  } else {
+    array_empty()
+  }
+}
+
+/// The type a scalar literal pattern has.
+fn handler_literal_type_name(p: Pat) -> String {
+  match handler_payload_unwrap(p) {
+    PInt(_) => "Int",
+    PFloat(_) => "Double",
+    PString(_) => "String",
+    PBool(_) => "Bool",
+    _ => ""
+  }
+}
+
+/// Whether the literal at payload position `pos` has the type the operation
+/// declares there: 1 it does, -1 it cannot (a different scalar, or a
+/// structured type), 0 unknown (a formal, an alias, an untyped payload). Only
+/// a 1 lets the message offer `v == <literal>`; a -1 is reported as the type
+/// mismatch it is.
+fn handler_literal_fit(p: Pat, params: Array[Type], pos: Int) -> Int {
+  if pos >= Array::length(params) {
+    0
+  } else {
+    let lit = handler_literal_type_name(p)
+    let declared = match Array::get(params, pos) {
+      CtInt => "Int",
+      CtDouble => "Double",
+      CtString => "String",
+      CtBool => "Bool",
+      CtChar => "Char",
+      CtUnit => "Unit",
+      CtBytes => "Bytes",
+      CtTuple(_) => "-",
+      CtArray(_) => "-",
+      CtOption(_) => "-",
+      CtFn(_, _, _) => "-",
+      CtEnum(_) => "-",
+      CtStruct(_) => "-",
+      CtRecord(_) => "-",
+      _ => ""
+    }
+    if String::length(lit) == 0 || String::length(declared) == 0 {
+      0
+    } else if lit == declared {
+      1
+    } else {
+      -1
+    }
+  }
+}
+
+fn handler_with_article(type_name: String) -> String {
+  let first = if String::length(type_name) > 0 {
+    String::substring(type_name, 0, 1)
+  } else {
+    ""
+  }
+  if first == "A" || first == "E" || first == "I" || first == "O" || first == "U" {
+    String::concat("an ", type_name)
+  } else {
+    String::concat("a ", type_name)
+  }
+}
+
+/// A binder name for the suggested arm that captures nothing: not bound by
+/// the payload pattern, not free in the arm body (the body moves under the
+/// new binder, so a free `v` there would silently start reading the
+/// payload), not bound around the handle, and not already chosen. Tries `v`
+/// (when `first` is 0), then `v1`, `v2`, ...
+fn handler_fresh_binder(first: Int, taken: Array[String], arm_body: Expr, env: TypeEnv) -> String {
+  let mut n = first
+  let mut found = ""
+  while String::length(found) == 0 {
+    let cand = if n == 0 {
+      "v"
+    } else {
+      String::concat("v", __to_string(n))
+    }
+    let bound_around = match env_lookup(env, cand) {
+      Some(_) => true,
+      None => false
+    }
+    if !handler_payload_name_taken(taken, cand) && !bound_around && !expr_free_in(arm_body, cand) {
+      found = cand
+    }
+    n = n + 1
+  }
+  found
+}
+
 /// The refusal leads with the edit, and every edit it prints compiles: the
 /// arm rewritten to bind each refused position to a fresh name (`_` for a
-/// pattern that cannot fail and binds nothing). A scalar literal is moved into
-/// an `if` in the body, spelled as written. Any other pattern is not printed
-/// back (see `handler_payload_source_text`): the message asks for a `match`
-/// against the pattern the reader wrote.
-fn handler_arm_payload_message(op: String, payloads: Array[Pat], offending: Array[Int]) -> String {
+/// pattern that cannot fail and binds nothing). A scalar literal of the
+/// operation's declared type is moved into an `if` in the body, spelled as
+/// written; a literal of another type is reported as that mismatch, with no
+/// `==` to copy. Any other pattern is not printed back (see
+/// `handler_payload_source_text`): the message asks for a `match` against the
+/// pattern the reader wrote.
+fn handler_arm_payload_message(op: String, payloads: Array[Pat], offending: Array[Int], params: Array[Type], arm_body: Expr, env: TypeEnv) -> String {
   let taken = array_empty()
   let mut i = 0
   while i < Array::length(payloads) {
@@ -2610,15 +2713,26 @@ fn handler_arm_payload_message(op: String, payloads: Array[Pat], offending: Arra
   }
   let tested = array_empty()
   let mut all_literal = true
+  let mut all_fit = true
   let mut all_destructure = true
+  let mut mismatch = -1
   let mut w = 0
   while w < Array::length(offending) {
-    let p = Array::get(payloads, Array::get(offending, w))
-    if !handler_payload_is_literal(p) {
+    let pos = Array::get(offending, w)
+    let p = Array::get(payloads, pos)
+    if handler_payload_is_literal(p) {
+      let fit = handler_literal_fit(p, params, pos)
+      if fit != 1 {
+        all_fit = false
+      }
+      if fit == -1 && mismatch < 0 {
+        mismatch = pos
+      }
+    } else {
       all_literal = false
     }
     if !handler_payload_is_wild(p) {
-      Array::push(tested, Array::get(offending, w))
+      Array::push(tested, pos)
       if !handler_payload_is_destructure(p) {
         all_destructure = false
       }
@@ -2629,14 +2743,11 @@ fn handler_arm_payload_message(op: String, payloads: Array[Pat], offending: Arra
   let names = array_empty()
   let mut k = 0
   while k < Array::length(tested) {
-    let mut name = if several {
-      String::concat("v", __to_string(k + 1))
+    let name = handler_fresh_binder(if several {
+      1
     } else {
-      "v"
-    }
-    while handler_payload_name_taken(taken, name) {
-      name = String::concat(name, "_")
-    }
+      0
+    }, taken, arm_body, env)
     Array::push(taken, name)
     Array::push(names, name)
     k = k + 1
@@ -2659,11 +2770,21 @@ fn handler_arm_payload_message(op: String, payloads: Array[Pat], offending: Arra
     j = j + 1
   }
   let head = String::concat(op, String::concat("(", String::concat(String::join(head_parts, ", "), ")")))
-  if Array::length(tested) == 0 {
+  if mismatch >= 0 {
+    let lit_pat = Array::get(payloads, mismatch)
+    let declared = handler_with_article(type_to_string(Array::get(params, mismatch)))
+    let where_ = if Array::length(params) == 1 {
+      String::concat("`", String::concat(op, String::concat("` takes ", declared)))
+    } else {
+      String::concat("argument ", String::concat(__to_string(mismatch + 1), String::concat(" of `", String::concat(op, String::concat("` is ", declared)))))
+    }
+    let lead = String::concat("`", String::concat(handler_payload_source_text(lit_pat), String::concat("` is ", String::concat(handler_with_article(handler_literal_type_name(lit_pat)), String::concat(", but ", where_)))))
+    String::concat(lead, String::concat(" -- and a handler arm's payload is a name or `_`: bind it (`", String::concat(head, " => ..`) and test it in the arm body")))
+  } else if Array::length(tested) == 0 {
     String::concat("write `_` for the payload: `", String::concat(head, " => ..` -- a handler arm binds a payload to a name or `_` and nothing else, and the pattern written there matches every value anyway"))
-  } else if all_literal {
-    // Every position is a name, `_` or a literal, so the arm as written can be
-    // quoted exactly.
+  } else if all_literal && all_fit {
+    // Every position is a name, `_` or a literal of the declared type, so the
+    // arm as written can be quoted exactly and `==` type-checks.
     let original_parts = for p in payloads {
       handler_payload_source_text(p)
     }
