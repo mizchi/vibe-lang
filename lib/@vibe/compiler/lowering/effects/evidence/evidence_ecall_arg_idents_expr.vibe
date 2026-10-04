@@ -385,6 +385,13 @@ fn edp_etawrap_value(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String
 /// current scope for body and arms alike, and a handle for `ename` itself
 /// puts only its BODY in scope (its arms are never rewritten by either).
 export fn edp_etawrap_stmts(stmts: Array[Stmt], needing: Array[String], ename: String, fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], es_names: Array[String], es_members_list: Array[Array[String]]) -> Unit {
+  let _ = edp_etawrap_stmts_with_rebuild(stmts, needing, ename, fn_defs, es_names, es_members_list)
+}
+
+/// Report every statement rebuild, including identity rewrites, so callers
+/// can invalidate observations of the previous tree conservatively.
+export fn edp_etawrap_stmts_with_rebuild(stmts: Array[Stmt], needing: Array[String], ename: String, fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], es_names: Array[String], es_members_list: Array[Array[String]]) -> Bool {
+  let mut rebuilt = false
   let wc = (stmts, fn_defs, es_names, es_members_list)
   // #1875 R3: the walk only ever changes a call ARGUMENT that is a bare
   // identifier of a needing function -- on every other statement it is an
@@ -396,26 +403,31 @@ export fn edp_etawrap_stmts(stmts: Array[Stmt], needing: Array[String], ename: S
     match Array::get(stmts, i) {
       SLet(ex, isrec, nm, ty, expr) => if edp_rq_fold(nq, expr) > 0 {
         let scope = edp_str_array_contains(needing, nm)
+        rebuilt = true
         Array::set(stmts, i, SLet(ex, isrec, nm, ty, edp_etawrap_expr(expr, scope, needing, ename, wc, array_empty())))
       } else {
         ()
       },
       SLetMut(nm, ty, expr) => if edp_rq_fold(nq, expr) > 0 {
+        rebuilt = true
         Array::set(stmts, i, SLetMut(nm, ty, edp_etawrap_expr(expr, false, needing, ename, wc, array_empty())))
       } else {
         ()
       },
       SExpr(expr) => if edp_rq_fold(nq, expr) > 0 {
+        rebuilt = true
         Array::set(stmts, i, SExpr(edp_etawrap_expr(expr, false, needing, ename, wc, array_empty())))
       } else {
         ()
       },
       STest(nm, expr) => if edp_rq_fold(nq, expr) > 0 {
+        rebuilt = true
         Array::set(stmts, i, STest(nm, edp_etawrap_expr(expr, false, needing, ename, wc, array_empty())))
       } else {
         ()
       },
       SBench(nm, expr) => if edp_rq_fold(nq, expr) > 0 {
+        rebuilt = true
         Array::set(stmts, i, SBench(nm, edp_etawrap_expr(expr, false, needing, ename, wc, array_empty())))
       } else {
         ()
@@ -424,6 +436,7 @@ export fn edp_etawrap_stmts(stmts: Array[Stmt], needing: Array[String], ename: S
     }
     i = i + 1
   }
+  rebuilt
 }
 
 /// After checking, an ascribed alias of a needing function has the same value

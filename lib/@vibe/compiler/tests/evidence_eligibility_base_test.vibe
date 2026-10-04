@@ -1,0 +1,87 @@
+import @vibe/compiler/core {
+  Expr, Pat, Stmt, TypeExpr
+}
+import @vibe/compiler/lowering/effects/evidence {
+  edp_all_sites_eligible,
+  edp_all_sites_eligible_with_base,
+  edp_append_ctor_inert_names,
+  edp_append_free_host_inert_names,
+  edp_append_visible_pure_lambda_names,
+  edp_collect_fn_defs,
+  edp_collect_handle_sites,
+  edp_etawrap_stmts_with_rebuild,
+  edp_fn_row_label_table,
+  edp_pure_fn_names
+}
+
+fn top(name: String, value: Expr) -> Stmt {
+  SLet(false, false, name, None, value)
+}
+
+fn pure_names(stmts: Array[Stmt]) -> Array[String] {
+  let names: Array[String] = []
+  edp_append_visible_pure_lambda_names(stmts, names)
+  names
+}
+
+test "a direct call leaves the eligibility base valid" {
+  let stmts = [
+    top("f", EFn([], [], [("x", None)], None, Some("Ask"), EInt(1))),
+    top("outer", EFn([], [], [], None, Some("Ask"), ECall(EIdent("f", -1), [
+      EInt(7)
+    ], -1, []))),
+    top("__edpw_0", EFn([], [], [], None, None, EInt(2)))
+  ]
+  let before = pure_names(stmts)
+  assert(!edp_etawrap_stmts_with_rebuild(stmts, ["f", "outer"], "Ask", edp_collect_fn_defs(stmts), [
+  ], []))
+  inspect(before, content = "[__edpw_0]")
+  assert_eq(pure_names(stmts), before)
+}
+
+test "an eta wrapper introduces a binder that invalidates earlier purity" {
+  let stmts = [
+    top("f", EFn([], [], [("x", None)], None, Some("Ask"), EInt(1))),
+    top("outer", EFn([], [], [], None, Some("Ask"), ECall(EIdent("consume", -1), [
+      EIdent("f", -1)
+    ], -1, []))),
+    top("consume", EFn([], [], [
+      ("callback", Some(TyFn([TyName("Int")], TyName("Int"), None)))
+    ], None, Some("Console"), EUnit)),
+    top("__edpw_0", EFn([], [], [], None, None, EInt(2)))
+  ]
+  inspect(pure_names(stmts), content = "[__edpw_0]")
+  assert(edp_etawrap_stmts_with_rebuild(stmts, ["f", "outer"], "Ask", edp_collect_fn_defs(stmts), [
+  ], []))
+  // The wrapper's parameter shadows this spelling in another scope.
+  // Reusing the pre-wrap result would wrongly retain a globally inert name.
+  inspect(pure_names(stmts), content = "[]")
+}
+
+test "eligibility reuses a base without changing it between attempts" {
+  let stmts = [
+    SEffectDef(false, "Ask", [], [("Get", [], TyName("Int"))]),
+    top("ask", EFn([], [], [], Some(TyName("Int")), Some("Ask"), ECall(EIdent("perform", 0), [
+      ECall(EIdent("Ask::Get", 0), [], 0, [])
+    ], 0, []))),
+    top("side", EFn([], [], [], Some(TyName("Int")), Some("Console"), EInt(7))),
+    top("main", EFn([], [], [], Some(TyName("Int")), None, EHandle(ECall(EIdent("ask", 0), [
+    ], 0, []), [
+      (PCtor("Ask::Get", []), ECall(EIdent("resume", 0), [EInt(42)], 0, []))
+    ])))
+  ]
+  let defs = edp_collect_fn_defs(stmts)
+  let rows = edp_fn_row_label_table(defs, [], [])
+  let sites = edp_collect_handle_sites(stmts, "Ask")
+  let base = edp_pure_fn_names(defs)
+  edp_append_free_host_inert_names(stmts, base)
+  edp_append_ctor_inert_names(stmts, base)
+  edp_append_visible_pure_lambda_names(stmts, base)
+  let before = String::join(base, "\n")
+  let fresh = edp_all_sites_eligible(stmts, "Ask", ["ask"], sites, defs, rows)
+  assert(fresh)
+  for attempt in [0, 1] {
+    assert_eq(edp_all_sites_eligible_with_base(stmts, "Ask", ["ask"], sites, defs, rows, Some(base)), fresh)
+    assert_eq(String::join(base, "\n"), before)
+  }
+}
