@@ -3,7 +3,7 @@
 # the stream twin of test_future_value_component_gate.sh.
 #
 # Verifies comp_emit_component_wasm_stream_value
-# (lib/@vibe/compiler/entry/source_compile/wasi_only/component_codegen.vibe):
+# (lib/@vibe/compiler/codegen/component/component_codegen.vibe):
 # the fixed-shape "self-contained stream<u8> round-trip" component --
 # a byte-exact port of tools/wasip3_component_probe/stream_value/
 # component.wat -- compiles, validates, and actually runs the literal
@@ -72,7 +72,7 @@ echo "[stream-value-component-gate] compiler: $COMPILER"
 # input to prepare).
 HARNESS="$OUT_DIR/dump.vibex"
 cat >"$HARNESS" <<'EOF'
-import @vibe/compiler/entry/source_compile/wasi_only {
+import @vibe/compiler/codegen/component {
   comp_emit_component_wasm_stream_value
 }
 

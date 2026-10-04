@@ -47,7 +47,7 @@ ODD_WIRE="$OUT_DIR/odd-wire.component.wasm"
 OUT_OF_U32_WIRE="$OUT_DIR/out-of-u32-wire.component.wasm"
 HIGH_BIT_WIRE="$OUT_DIR/high-bit-wire.component.wasm"
 cat >"$HARNESS" <<'EOF'
-import @vibe/compiler/entry/source_compile/wasi_only {
+import @vibe/compiler/codegen/component {
   comp_emit_component_wasm_async_stdin_provider_fixture
 }
 

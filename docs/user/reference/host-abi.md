@@ -148,7 +148,7 @@ for Tier 1 only on a host that implements the vibe host ABI.
 - **The default linear path** (`vibe build`, `viberun`) uses Preview 1
   `fd_write` plus `vibe::*`. It is **not** wasip3.
 - **The component path**
-  (`lib/@vibe/compiler/entry/source_compile/wasi_only/component_codegen.vibe`)
+  (`lib/@vibe/compiler/codegen/component/component_codegen.vibe`)
   wraps the module as a WASI component through the canonical ABI
   (`cabi_realloc`) and a Preview 1 adapter. Its target is standard I/O over
   `wasi:io` (Preview 2) and then p3 async
