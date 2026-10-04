@@ -1,0 +1,39 @@
+import @vibe/compiler/runtime {
+  ensure_module_typed_lowering_offsets_for_source,
+  module_typed_eq_rows_for_path,
+  module_typed_lowering_bind_source,
+  module_typed_lowering_memo_put,
+  module_typed_lowering_memo_reset,
+  module_typed_lowering_offsets_for_source
+}
+import @vibe/checker/lowering {
+  bind_checked_lowering_source, checked_eq_rows_for_path, checked_lowering_for_source, record_checked_lowering, reset_checked_lowering_memo
+}
+
+test "runtime publication and checker queries share one source-bound lowering owner" {
+  module_typed_lowering_memo_reset()
+  module_typed_lowering_memo_put("from-runtime", "first", [80], [11], ["Int"])
+  module_typed_lowering_bind_source("from-runtime", "first", "first source")
+  assert(checked_lowering_for_source("from-runtime", "first source") == Some([
+    80
+  ]))
+  assert(checked_eq_rows_for_path("from-runtime") == Some(([11], ["Int"])))
+  reset_checked_lowering_memo()
+  assert(module_typed_lowering_offsets_for_source("from-runtime", "first source") == None)
+}
+
+test "checker publication and runtime acceptance use the same fingerprint and source witness" {
+  reset_checked_lowering_memo()
+  record_checked_lowering("from-checker", "first", [88], [12], ["Int"])
+  bind_checked_lowering_source("from-checker", "first", "first source")
+  assert(module_typed_lowering_offsets_for_source("from-checker", "first source") == Some([
+    88
+  ]))
+  assert(module_typed_eq_rows_for_path("from-checker") == Some(([12], ["Int"])))
+  record_checked_lowering("from-checker", "second", [96], [], [])
+  assert(module_typed_lowering_offsets_for_source("from-checker", "first source") == None)
+  assert(ensure_module_typed_lowering_offsets_for_source("alias", "second", "second source"))
+  assert(checked_lowering_for_source("alias", "second source") == Some([96]))
+  module_typed_lowering_memo_reset()
+  assert(checked_lowering_for_source("alias", "second source") == None)
+}
