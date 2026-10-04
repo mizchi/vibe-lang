@@ -49,7 +49,7 @@ import @vibe/ast {
 }
 
 import @vibe/parser {
-  lex, parse_type
+  lex, parse_type, print_pat
 }
 
 import ./builtins.vibe {
@@ -1231,6 +1231,8 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       let mut hai = 0
       while hai < Array::length(harms) {
         let (hpat, hbody) = Array::get(harms, hai)
+        // #3371: a payload position other than a name or `_` is never tested.
+        reject_handler_arm_payload_patterns(hpat, hbody, body, errors)
         match hpat {
           PCtor(hqname, hbinds) => {
             let hci = String::index_of(hqname, "::")
@@ -2415,4 +2417,332 @@ fn check_unmatched_call_args(args: Array[Expr], env: TypeEnv, defs: Array[TypeDe
     i = i + 1
   }
   (s1, c1)
+}
+
+/// #3371: a handler arm's payload is a name or `_`, and nothing else. The
+/// evidence pass binds each payload position to its name or to nothing
+/// (`edp_pat_bind_names`), and the exception tag binds a name and drops
+/// anything else, on the linear and the gc lane alike. So a literal, a
+/// constructor, a tuple, a struct or record, or an or-pattern in a payload
+/// position was never tested and never destructured: `Pick::P(1) => ..` ran
+/// for `perform Pick::P(3)`, a `P(1)` arm lost to a later `P(_)` for
+/// `perform P(1)`, and `Pair::Diff((a, b)) => resume(a)` read an outer `a`.
+/// Nor was such a pattern typed against the payload: `(_, "s")` for an `Int`
+/// compiled. Only the suspend lowering (an arm that stores `resume`)
+/// matched the payload, and it trapped when no arm did; which lowering a
+/// handle takes depends on its other arms, so the same arm could not keep one
+/// meaning. Every handler spelling -- the `with { E::Op(..) => .. }` set, the
+/// `with E { Op(..) => .. }` header, a suffix `with E::Op(..) => ..`, and each
+/// alternative of an or-pattern arm -- reaches the arm loop as this pattern.
+fn reject_handler_arm_payload_patterns(arm_pat: Pat, arm_body: Expr, handle_body: Expr, errors: Array[String]) -> Unit {
+  match handler_payload_unwrap(arm_pat) {
+    POr(left, right) => {
+      reject_handler_arm_payload_patterns(left, arm_body, handle_body, errors)
+      reject_handler_arm_payload_patterns(right, arm_body, handle_body, errors)
+    },
+    PCtor(op, payloads) => {
+      let offending = array_empty()
+      let mut i = 0
+      while i < Array::length(payloads) {
+        if !handler_payload_is_binder(Array::get(payloads, i)) {
+          Array::push(offending, i)
+        }
+        i = i + 1
+      }
+      if Array::length(offending) > 0 {
+        let off = if railway_expr_off(arm_body) >= 0 {
+          railway_expr_off(arm_body)
+        } else {
+          railway_expr_off(handle_body)
+        }
+        Array::push(errors, String::concat(handler_arm_payload_message(op, payloads, offending), off_marker(off)))
+      }
+    },
+    _ => ()
+  }
+}
+
+/// A tooling parse wraps a pattern in a `$source_span` node; the rule reads
+/// the wrapped shape.
+fn handler_payload_unwrap(p: Pat) -> Pat {
+  match p {
+    PCtor(marker, wrapped) => if marker == "$source_span" && Array::length(wrapped) > 0 {
+      handler_payload_unwrap(Array::get(wrapped, 0))
+    } else {
+      p
+    },
+    _ => p
+  }
+}
+
+/// The payload shapes every effect lowering honours: a name, or `_`.
+fn handler_payload_is_binder(p: Pat) -> Bool {
+  match handler_payload_unwrap(p) {
+    PBind(_) => true,
+    PWild => true,
+    _ => false
+  }
+}
+
+fn handler_payload_is_literal(p: Pat) -> Bool {
+  match handler_payload_unwrap(p) {
+    PInt(_) => true,
+    PFloat(_) => true,
+    PString(_) => true,
+    PBool(_) => true,
+    _ => false
+  }
+}
+
+/// A tuple or struct pattern that cannot fail, so the edit is a `let` in the
+/// arm body rather than a test.
+fn handler_payload_is_destructure(p: Pat) -> Bool {
+  match handler_payload_unwrap(p) {
+    PTuple(elems) => {
+      let mut ok = true
+      let mut i = 0
+      while i < Array::length(elems) {
+        if !handler_payload_is_irrefutable(Array::get(elems, i)) {
+          ok = false
+        }
+        i = i + 1
+      }
+      ok
+    },
+    PStruct(_, fields) => {
+      let mut ok = true
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fp) = Array::get(fields, i)
+        if !handler_payload_is_irrefutable(fp) {
+          ok = false
+        }
+        i = i + 1
+      }
+      ok
+    },
+    _ => false
+  }
+}
+
+fn handler_payload_is_irrefutable(p: Pat) -> Bool {
+  if handler_payload_is_binder(p) {
+    true
+  } else {
+    handler_payload_is_destructure(p)
+  }
+}
+
+fn handler_payload_text(p: Pat) -> String {
+  match handler_payload_unwrap(p) {
+    PCtor(name, args) => if Array::length(args) == 0 {
+      name
+    } else {
+      String::concat(name, String::concat("(", String::concat(handler_payload_texts(args), ")")))
+    },
+    // A nested `record { .. }` pattern parses to a tuple of its field
+    // patterns, labels dropped; only a record makes a one-element tuple
+    // (`(p)` is a group), so that one is not printed as a tuple.
+    PTuple(elems) => if Array::length(elems) == 1 {
+      "record { .. }"
+    } else {
+      String::concat("(", String::concat(handler_payload_texts(elems), ")"))
+    },
+    POr(left, right) => String::concat(handler_payload_text(left), String::concat(" | ", handler_payload_text(right))),
+    PStruct(name, fields) => {
+      let parts = for field in fields {
+        handler_payload_field_text(field)
+      }
+      let head = if name == "record" {
+        "record { "
+      } else {
+        String::concat(name, "::{ ")
+      }
+      String::concat(head, String::concat(String::join(parts, ", "), " }"))
+    },
+    _ => print_pat(handler_payload_unwrap(p))
+  }
+}
+
+fn handler_payload_texts(ps: Array[Pat]) -> String {
+  let parts = for p in ps {
+    handler_payload_text(p)
+  }
+  String::join(parts, ", ")
+}
+
+fn handler_payload_field_text(field: (String, Pat)) -> String {
+  let (fname, fpat) = field
+  let inner = handler_payload_text(fpat)
+  if String::length(fname) == 0 || inner == fname {
+    inner
+  } else {
+    String::concat(fname, String::concat(": ", inner))
+  }
+}
+
+fn handler_payload_binders_into(p: Pat, out: Array[String]) -> Unit {
+  match handler_payload_unwrap(p) {
+    PBind(n) => Array::push(out, n),
+    PCtor(_, args) => {
+      let mut i = 0
+      while i < Array::length(args) {
+        handler_payload_binders_into(Array::get(args, i), out)
+        i = i + 1
+      }
+    },
+    PTuple(elems) => {
+      let mut i = 0
+      while i < Array::length(elems) {
+        handler_payload_binders_into(Array::get(elems, i), out)
+        i = i + 1
+      }
+    },
+    POr(left, right) => {
+      handler_payload_binders_into(left, out)
+      handler_payload_binders_into(right, out)
+    },
+    PStruct(_, fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fp) = Array::get(fields, i)
+        handler_payload_binders_into(fp, out)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+fn handler_payload_name_taken(taken: Array[String], name: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(taken) {
+    if Array::get(taken, i) == name {
+      found = true
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// A pattern that cannot fail and binds nothing: lowering it as `_` is
+/// exactly its meaning, so the edit is to write `_`.
+fn handler_payload_is_wild(p: Pat) -> Bool {
+  let bound = array_empty()
+  handler_payload_binders_into(p, bound)
+  Array::length(bound) == 0 && handler_payload_is_irrefutable(p)
+}
+
+/// The refusal leads with the edit: the arm rewritten to bind each refused
+/// position to a fresh name, with the test (a literal), the `let` (a pattern
+/// that cannot fail) or the `match` (anything else) moved into the body. A
+/// position whose pattern cannot fail and binds nothing becomes `_`.
+fn handler_arm_payload_message(op: String, payloads: Array[Pat], offending: Array[Int]) -> String {
+  let taken = array_empty()
+  let mut i = 0
+  while i < Array::length(payloads) {
+    handler_payload_binders_into(Array::get(payloads, i), taken)
+    i = i + 1
+  }
+  let tested = array_empty()
+  let mut w = 0
+  while w < Array::length(offending) {
+    let pos = Array::get(offending, w)
+    if !handler_payload_is_wild(Array::get(payloads, pos)) {
+      Array::push(tested, pos)
+    }
+    w = w + 1
+  }
+  let several = Array::length(tested) > 1
+  let names = array_empty()
+  let bad = array_empty()
+  let mut all_literal = true
+  let mut all_destructure = true
+  let mut k = 0
+  while k < Array::length(tested) {
+    let mut name = if several {
+      String::concat("v", __to_string(k + 1))
+    } else {
+      "v"
+    }
+    while handler_payload_name_taken(taken, name) {
+      name = String::concat(name, "_")
+    }
+    Array::push(taken, name)
+    Array::push(names, name)
+    let p = Array::get(payloads, Array::get(tested, k))
+    Array::push(bad, handler_payload_text(p))
+    if !handler_payload_is_literal(p) {
+      all_literal = false
+    }
+    if !handler_payload_is_destructure(p) {
+      all_destructure = false
+    }
+    k = k + 1
+  }
+  let head_parts = array_empty()
+  let mut next_off = 0
+  let mut next_tested = 0
+  let mut j = 0
+  while j < Array::length(payloads) {
+    if next_tested < Array::length(tested) && Array::get(tested, next_tested) == j {
+      Array::push(head_parts, Array::get(names, next_tested))
+      next_tested = next_tested + 1
+      next_off = next_off + 1
+    } else if next_off < Array::length(offending) && Array::get(offending, next_off) == j {
+      Array::push(head_parts, "_")
+      next_off = next_off + 1
+    } else {
+      Array::push(head_parts, handler_payload_text(Array::get(payloads, j)))
+    }
+    j = j + 1
+  }
+  let head = String::concat(op, String::concat("(", String::concat(String::join(head_parts, ", "), ")")))
+  let original = String::concat(op, String::concat("(", String::concat(handler_payload_texts(payloads), ")")))
+  let first_bad = handler_payload_text(Array::get(payloads, Array::get(offending, 0)))
+  if Array::length(tested) == 0 {
+    String::concat("write `_` for the payload: `", String::concat(head, String::concat(" => ..` -- a handler arm binds a payload to a name or `_` and nothing else, and `", String::concat(first_bad, String::concat("` in `", String::concat(original, "` matches every value anyway"))))))
+  } else {
+    let steps = array_empty()
+    let mut t = 0
+    while t < Array::length(names) {
+      if all_literal {
+        Array::push(steps, String::concat(Array::get(names, t), String::concat(" == ", Array::get(bad, t))))
+      } else {
+        Array::push(steps, String::concat("let ", String::concat(Array::get(bad, t), String::concat(" = ", Array::get(names, t)))))
+      }
+      t = t + 1
+    }
+    let body = if all_literal {
+      String::concat("if ", String::concat(String::join(steps, " && "), " { .. } else { .. }"))
+    } else if all_destructure {
+      String::concat("{ ", String::concat(String::join(steps, "; "), "; .. }"))
+    } else if several {
+      String::concat("match (", String::concat(String::join(names, ", "), String::concat(") { (", String::concat(String::join(bad, ", "), ") => .., _ => .. }"))))
+    } else {
+      String::concat("match ", String::concat(Array::get(names, 0), String::concat(" { ", String::concat(Array::get(bad, 0), " => .., _ => .. }"))))
+    }
+    let subject = if several {
+      "bind the payloads to names and "
+    } else {
+      "bind the payload to a name and "
+    }
+    let verb = if all_destructure {
+      "destructure"
+    } else {
+      "test"
+    }
+    let object = if several {
+      " them in the arm body: `"
+    } else {
+      " it in the arm body: `"
+    }
+    let why = if all_destructure {
+      String::concat("a handler arm binds a payload to a name or `_` and nothing else, so `", String::concat(Array::get(bad, 0), String::concat("` in `", String::concat(original, "` would bind nothing"))))
+    } else {
+      String::concat("a handler arm selects on the operation alone, so `", String::concat(Array::get(bad, 0), String::concat("` in `", String::concat(original, String::concat("` is never tested and the arm would run for every `", String::concat(op, "` payload"))))))
+    }
+    String::concat(subject, String::concat(verb, String::concat(object, String::concat(head, String::concat(" => ", String::concat(body, String::concat("` -- ", why)))))))
+  }
 }

@@ -1885,6 +1885,33 @@ stores `resume` as a value (the suspend shape below) keeps the other rule: its
 own value is the handle's result. Only `Exception` arms abort; a declared
 effect has no abortive operations.
 
+**A payload is a name or `_`** (#3371). A handler arm selects its operation
+and binds the operation's arguments; it never tests them. A literal, a
+constructor, a tuple, a struct or record pattern, or an or-pattern in a
+payload position is refused, in every handler spelling, with the arm to write
+instead: bind a name and test it in the body.
+
+```vibe
+effect Pick {
+  P(Int) -> Int
+}
+
+fn pick(x: Int) -> Int {
+  handle { perform Pick::P(x) } with {
+    // not `Pick::P(1) => ..`
+    Pick::P(n) => if n == 1 { resume(100) } else { resume(5) }
+  }
+}
+```
+
+Before, such a pattern was silently treated as `_`: `Pick::P(1) => ..` ran
+for `perform Pick::P(3)`, and the names of a destructure bound nothing, so
+`Pair::Diff((a, b)) => resume(a)` read an outer `a` when there was one. A
+constructor test moves into a `match` in the body
+(`Paint::Use(c) => match c { Red => .., _ => .. }`), and a tuple or struct
+destructure into a `let` (`Pair::Diff(p) => { let (a, b) = p; .. }`). This
+holds for `Exception::Throw` too: `Throw("boom") => ..` caught every throw.
+
 Call resolution for an effect row follows the same lexical scope as ordinary
 value resolution. When a local closure, a function parameter, or a pattern /
 loop binder has the same name as a top-level `fn`, the local binding wins. So
