@@ -604,8 +604,19 @@ whose erased comparison used to read the box. Pinned by
 `fixtures/eq_bound_derive_test.vibe`, including `Box[Double]` /
 `Box[Array[Int]]` through the bound.
 
-A program may still declare its **own** marker `trait Eq` with no methods.
-That bound is refused, and `Ord` is still a marker. Those refusals stay in
+A program may still declare its **own** `trait Eq`. At a type the builtin
+`==` does not compare by content (anything but `Int` / `Bool` / `Char` /
+`String`), a bound on it is refused unless its witness dictionary carries
+`equals(Self, Self) -> Bool` -- a marker `Eq`, or one whose only methods are
+something else, is refused (#3350). So is a bound that extends one through
+its supertraits (#3327): with `trait Key: Eq {}` over the program's marker
+`Eq`, `[T: Key]` at a struct gives ``no impl `Eq` for `Pt` (`Key` extends
+`Eq`)``, unless `Key`'s dictionary carries that method -- declared by `Key`,
+or the first `equals` its supertraits flatten to -- which `==` then
+dispatches through. `Ord` and `Add` are judged by the type alone, methods or
+not, because `<` and `+` on an erased formal have no witness to dispatch
+through, and a generic impl's parameter bound (`impl [T: Eq] Same for
+Box[T]`) is judged the same way. Those refusals stay in
 `lib/@vibe/compiler/tests/marker_cmp_bound_test.vibe`. Writing both
 `derive (Eq)` and `impl Eq for T` for the same type is an overlap: the derive
 already supplied the impl.
