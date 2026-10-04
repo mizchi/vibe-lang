@@ -47,6 +47,7 @@ import @vibe/compiler/core {
   resolve_builtin,
   resolve_type_constructor_args,
   strip_published_formal_suffixes,
+  strip_published_row_marks,
   subst_add_bound,
   subst_apply,
   subst_apply_except,
@@ -139,11 +140,16 @@ import ./checker_eq_unbounded_formal_msg.vibe {
 import ./checker_infer_binop_type.vibe {
   TypedOccurrenceRoleLaneCapture,
   append_legacy_typed_occurrence,
+  callback_row_refusal,
+  callback_row_unreadable_labels,
   effect_inst_env_key,
   param_types_are_spawn_shaped,
   published_marker_words,
+  published_nominal_names,
+  published_nominal_words,
   record_receiver_kind,
-  resolve_tparams_in
+  resolve_tparams_in,
+  vouch_published_nominals
 }
 
 import ./checker_merge_capture_provenance.vibe {
@@ -2712,7 +2718,15 @@ fn row_names_instantiation(row: String) -> Bool {
 /// the payload). That reads the exporter's type: a name in a published row is
 /// part of the callee's signature, and a module whose `Wrap` is a different
 /// declaration is refused at the import (#3035 / #3036, "are different types
-/// that share the name"). A name this module cannot resolve is not bound.
+/// that share the name").
+///
+/// A struct or enum the exporter marked (`^Pt`, `publish_row_nominals`) is
+/// that type even in a module that does not import it (#3351: the lambda's
+/// `perform Box::Put(41)` against `Box[Pt]` used to go unchecked, and the
+/// callee's arm read the Int as a `Pt`). Any other name this module cannot
+/// read -- an alias, or a constructor an effect parameter takes -- hands the
+/// effect a refusal (`callback_row_refusal`), so a perform of it in the lambda
+/// is refused with the edit instead of left unchecked.
 fn callback_row_instantiations(row: String, callee: Option[(Type, Type)], defs: Array[TypeDef]) -> Array[Type] {
   let formals: Array[String] = []
   let mut scope = EnvEmpty
@@ -2778,22 +2792,49 @@ fn callback_row_instantiations(row: String, callee: Option[(Type, Type)], defs: 
     None => ()
   }
   // A marker is not a word the type parser reads; the scope above binds the
-  // formal by its own name.
-  let bound = bind_row_effect_instantiations(scope, Some(strip_published_formal_suffixes(row)), defs, formals, array_empty())
+  // formal by its own name, and a struct or enum the exporter marked
+  // (`^Pt` / `^^Color`, `publish_row_nominals`) is that type.
+  let nominals = published_nominal_words(row)
+  let vouched = published_nominal_names(nominals)
+  let readable = strip_published_row_marks(row)
+  let bound = bind_row_effect_instantiations(scope, Some(readable), defs, formals, array_empty())
+  let unreadable = callback_row_unreadable_labels(readable, defs, formals, vouched)
   let out: Array[Type] = []
   for d in defs {
     match d {
       TDEffect(name, _, etps) => if Array::length(etps) == 1 {
-        match env_lookup(bound, effect_inst_env_key(name)) {
-          Some(inst) => match inst {
-            CtTuple(args) => if callback_types_exact(args, formals, declared, defs) {
-              Array::push(out, CtNamed(name, [inst]))
+        let mut refused = false
+        if declared {
+          for entry in unreadable {
+            let (base, label, missing) = entry
+            if base == name && !refused {
+              refused = true
+              Array::push(out, CtNamed(name, [
+                callback_row_refusal(label, missing)
+              ]))
             } else {
               ()
+            }
+          }
+        } else {
+          ()
+        }
+        if !refused {
+          match env_lookup(bound, effect_inst_env_key(name)) {
+            Some(inst) => match inst {
+              CtTuple(args) => if callback_types_exact(args, formals, declared, defs, vouched) {
+                Array::push(out, CtNamed(name, [
+                  vouch_published_nominals(inst, nominals, formals)
+                ]))
+              } else {
+                ()
+              },
+              _ => ()
             },
-            _ => ()
-          },
-          None => ()
+            None => ()
+          }
+        } else {
+          ()
         }
       },
       _ => ()
@@ -2807,11 +2848,12 @@ fn callback_row_instantiations(row: String, callee: Option[(Type, Type)], defs: 
 /// the variable the call instantiated it with; that is the only way a variable
 /// reaches the row's scope. One still spelled by its own name is a formal the
 /// call does not fix (only the row names it), so it is not bound; nor is a
-/// name nothing declares. For a generic callee whose formals are unknown
-/// (`declared` false: one checked as an expression, whose row is not
-/// published) a formal cannot be told from a type name, so only
-/// compiler-owned types are read there.
-fn callback_type_exact(t: Type, formals: Array[String], declared: Bool, defs: Array[TypeDef]) -> Bool {
+/// name nothing declares. A name the exporter marked as a struct or enum
+/// (`vouched`) is that nominal type even without a declaration here (#3351).
+/// For a generic callee whose formals are unknown (`declared` false: one
+/// checked as an expression, whose row is not published) a formal cannot be
+/// told from a type name, so only compiler-owned types are read there.
+fn callback_type_exact(t: Type, formals: Array[String], declared: Bool, defs: Array[TypeDef], vouched: Array[String]) -> Bool {
   match t {
     CtInt => true,
     CtDouble => true,
@@ -2820,9 +2862,9 @@ fn callback_type_exact(t: Type, formals: Array[String], declared: Bool, defs: Ar
     CtChar => true,
     CtUnit => true,
     CtBytes => true,
-    CtArray(e) => callback_type_exact(e, formals, declared, defs),
-    CtOption(e) => callback_type_exact(e, formals, declared, defs),
-    CtTuple(es) => callback_types_exact(es, formals, declared, defs),
+    CtArray(e) => callback_type_exact(e, formals, declared, defs, vouched),
+    CtOption(e) => callback_type_exact(e, formals, declared, defs, vouched),
+    CtTuple(es) => callback_types_exact(es, formals, declared, defs, vouched),
     CtConstructor(n, _) => declared || n == "Array" || n == "Option",
     CtVar(_) => true,
     CtStruct(_) => declared,
@@ -2832,20 +2874,20 @@ fn callback_type_exact(t: Type, formals: Array[String], declared: Bool, defs: Ar
         Some(_) => true,
         None => match compiler_owned_type_arity(n) {
           Some(_) => true,
-          None => false
+          None => checker_string_array_has(vouched, n)
         }
       }
-      declared && known && !formals_contain_source_name(formals, n) && callback_types_exact(args, formals, declared, defs)
+      declared && known && !formals_contain_source_name(formals, n) && callback_types_exact(args, formals, declared, defs, vouched)
     },
-    CtApplied(h, args) => declared && callback_type_exact(h, formals, declared, defs) && callback_types_exact(args, formals, declared, defs),
+    CtApplied(h, args) => declared && callback_type_exact(h, formals, declared, defs, vouched) && callback_types_exact(args, formals, declared, defs, vouched),
     _ => false
   }
 }
 
-fn callback_types_exact(ts: Array[Type], formals: Array[String], declared: Bool, defs: Array[TypeDef]) -> Bool {
+fn callback_types_exact(ts: Array[Type], formals: Array[String], declared: Bool, defs: Array[TypeDef], vouched: Array[String]) -> Bool {
   let mut all = true
   for t in ts {
-    if !callback_type_exact(t, formals, declared, defs) {
+    if !callback_type_exact(t, formals, declared, defs, vouched) {
       all = false
     } else {
       ()

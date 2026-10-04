@@ -151,6 +151,7 @@ import ./checker_eq_unbounded_formal_msg.vibe {
 
 import ./checker_infer_binop_type.vibe {
   TypedOccurrenceRoleLaneCapture,
+  callback_row_unreadable,
   callee_is_run_shaped,
   callee_is_spawn_shaped,
   effect_instantiate,
@@ -316,18 +317,22 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                         let eff_of_op = String::substring(op_qname, 0, String::index_of(op_qname, "::"))
                         let etps = effect_tparams(defs, eff_of_op)
                         let mut c1b = c1
+                        let mut unreadable = false
                         let (sig_params, sig_ret, ret_usable) = if Array::length(etps) > 0 {
                           let (ftargs, nc) = effect_instantiate(env, eff_of_op, etps, c1b)
                           c1b = nc
+                          unreadable = refuse_unreadable_callback_row(ftargs, op_qname, op_off, errors)
                           let ip = for p in sig_params_decl {
                             subst_type_params(p, etps, ftargs)
                           }
-                          (ip, subst_type_params(sig_ret_decl, etps, ftargs), type_is_ground_except(sig_ret_decl, etps))
+                          (ip, subst_type_params(sig_ret_decl, etps, ftargs), type_is_ground_except(sig_ret_decl, etps) && !unreadable)
                         } else {
                           (sig_params_decl, sig_ret_decl, type_is_ground(sig_ret_decl))
                         }
                         if Array::length(sig_params) != oalen {
                           Array::push(errors, String::concat("perform ", String::concat(op_qname, String::concat(" expects ", String::concat(__to_string(Array::length(sig_params)), String::concat(" argument(s), got ", String::concat(__to_string(oalen), off_marker(op_off))))))))
+                        } else if unreadable {
+                          ()
                         } else {
                           let mut vi = 0
                           while vi < oalen {
@@ -429,7 +434,8 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                     let (bare_ret, bare_ret_usable) = if Array::length(betps) > 0 {
                       let (bftargs, bnc) = effect_instantiate(env, bare_eff, betps, bc1)
                       bc1 = bnc
-                      (subst_type_params(bare_ret_decl, betps, bftargs), type_is_ground_except(bare_ret_decl, betps))
+                      let bare_unreadable = refuse_unreadable_callback_row(bftargs, bare_qname, bare_off, errors)
+                      (subst_type_params(bare_ret_decl, betps, bftargs), type_is_ground_except(bare_ret_decl, betps) && !bare_unreadable)
                     } else {
                       (bare_ret_decl, type_is_ground(bare_ret_decl))
                     }
@@ -2492,5 +2498,20 @@ fn callee_callback_params(ct: Type) -> (Array[Type], Option[(Type, Type)]) {
     CtFn(params, _, _) => (params, None),
     CtForAll(_, _, CtFn(params, _, _)) => (params, Some((ct, CtUnknown))),
     _ => (array_empty(), None)
+  }
+}
+
+/// #3351: refuse a perform whose effect instantiation `targs` is the refusal
+/// a callback row hands a lambda when it names a type this module cannot read
+/// (`callback_row_unreadable`), with the edit, and answer whether it did. The
+/// perform's arguments are then not checked against that instantiation, and
+/// its value is not typed by it.
+fn refuse_unreadable_callback_row(targs: Array[Type], op_qname: String, op_off: Int, errors: Array[String]) -> Bool {
+  match callback_row_unreadable(targs) {
+    Some((label, missing)) => {
+      Array::push(errors, "import `\{missing}` into this module: perform \{op_qname} is checked against `\{label}`, the effect row of the parameter this lambda is passed to, and `\{missing}` is not a type here\{off_marker(op_off)}")
+      true
+    },
+    None => false
   }
 }
