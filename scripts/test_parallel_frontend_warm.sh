@@ -4,10 +4,9 @@
 # real compile produces, and that it actually warms the persistent cache
 # rather than silently no-op'ing.
 #
-# This intentionally does NOT go through runtime/vibe (which needs the
-# viberun Rust runner built) -- it drives the exact same VIBE_FS_COMPILE=1
-# invocation compile_to() uses, directly against the Node runner, mirroring
-# how every other scripts/test_*.sh in this repo exercises the compiler.
+# Private frontend checks use the Node runner. The public relative-path
+# build --jobs checks use the native runner and compiler-matched TaskGroup
+# images; build those images when the caller has not supplied them.
 #
 # Usage: bash scripts/test_parallel_frontend_warm.sh [stage2.wasm]
 set -euo pipefail
@@ -43,6 +42,12 @@ if [ -z "$COMPILER_WASM" ] || [ ! -s "$COMPILER_WASM" ]; then
 fi
 [ -s "$COMPILER_WASM" ] || { echo "[jobs-warm] compiler not found: $COMPILER_WASM" >&2; exit 1; }
 COMPILER_WASM="$(cd "$(dirname "$COMPILER_WASM")" && pwd)/$(basename "$COMPILER_WASM")"
+if [ -z "${VIBE_TASKGROUP_ARTIFACT_DIR:-}" ]; then
+  mkdir -p "$PROJECT_ROOT/_build"
+  VIBE_TASKGROUP_ARTIFACT_DIR="$(mktemp -d "$PROJECT_ROOT/_build/parallel-public-images-XXXXXX")"
+  bash "$PROJECT_ROOT/scripts/build_taskgroup_checker.sh" "$COMPILER_WASM" "$VIBE_TASKGROUP_ARTIFACT_DIR" >/dev/null
+  export VIBE_TASKGROUP_ARTIFACT_DIR
+fi
 
 # Each build uses an isolated cache. Matching bytes alone cannot prove reuse:
 # the strict compiler telemetry must report zero checks after publication.
@@ -55,6 +60,7 @@ import { pathToFileURL } from "node:url";
 const [repo, compiler] = process.argv.slice(2);
 const { parseIncrementalTelemetry } = await import(pathToFileURL(join(repo, "scripts/edit_cycle_kpi.mjs")));
 const runner = join(repo, "scripts/run_wasm_vibe_host_runner.sh");
+const publicRunner = join(repo, "runtime/viberun/target/release/viberun");
 const taskgroup = process.env.VIBE_PARALLEL_BACKEND === "taskgroup";
 const driver = join(repo, taskgroup ? "scripts/taskgroup_frontend_warm.mjs" : "scripts/parallel_frontend_warm.mjs");
 const artifacts = process.env.VIBE_TASKGROUP_ARTIFACT_DIR;
@@ -207,7 +213,8 @@ export fn typed_main() -> Int {
     const cache = cacheFor(`relative-${jobs}`);
     const result = invoke("bash", [join(repo, "runtime/vibe"), "build", "main.vibe", "-o", "out.wasm",
       "--entry", "main_value", "--jobs", String(jobs)], {
-      ...environment(cache), VIBE_PREOPEN_DIR: cwd, VIBE_RUNNER: runner, VIBE_CLI_WASM: compiler,
+      ...environment(cache), VIBE_PREOPEN_DIR: cwd, VIBE_RUNNER: publicRunner, VIBE_CLI_WASM: compiler,
+      VIBE_TASKGROUP_ARTIFACT_DIR: artifacts,
     }, cwd);
     assert.equal(result.status, 0, result.stderr);
     assert.doesNotMatch(result.stderr, /pre-warm failed/i);

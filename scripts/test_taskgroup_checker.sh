@@ -18,4 +18,5 @@ python3 scripts/checker_taskgroup_batch_test.py --compiler "$COMPILER" --worker 
   --runner "$RUNNER" --coordinator "$OUT/coordinator.component.wasm"
 VIBE_PARALLEL_BACKEND=taskgroup VIBE_TASKGROUP_ARTIFACT_DIR="$OUT" \
   bash scripts/test_parallel_frontend_warm.sh "$COMPILER"
+python3 scripts/test_taskgroup_build_launcher.py "$COMPILER" "$OUT"
 echo "TaskGroup checker dogfood oracle passed; artifacts: $OUT"

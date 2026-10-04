@@ -36,6 +36,7 @@
 #   bash install/install.sh [--repo URL] [--ref REF] [--prefix DIR]
 #       [--runner PATH] [--cli-wasm PATH] [--bin-dir DIR] [--no-link]
 #       [--no-modify-path] [--toolchain NAME] [--set-default] [--no-stdlib]
+#       [--taskgroup-artifacts DIR]
 #
 # Curl arguments follow `bash -s --`, for example:
 #   curl -fsSL URL | bash -s -- --version 0.1.0 --no-modify-path
@@ -69,6 +70,7 @@ Install options:
   --prefix DIR           VIBE_HOME (default ~/.vibe)
   --runner PATH          prebuilt viberun executable
   --cli-wasm PATH        portable compiler wasm
+  --taskgroup-artifacts DIR  compiler-matched worker images for build --jobs
   --bin-dir DIR          optional extra symlink directory
   --toolchain NAME       installed toolchain name
   --set-default          select this toolchain as default
@@ -271,7 +273,7 @@ release_install() {
       --no-link) do_link=0; shift ;;
       --no-modify-path) do_modify_path=0; shift ;;
       --set-default) set_default=1; shift ;;
-      --toolchain|--runner|--cli-wasm|--no-stdlib)
+      --toolchain|--runner|--cli-wasm|--taskgroup-artifacts|--no-stdlib)
         bootstrap_die "$1 applies to a checkout install; a release install is named by its version and ships its runner, compiler and stdlib" ;;
       -h|--help) usage; exit 0 ;;
       *) bootstrap_die "unknown argument: $1" ;;
@@ -416,6 +418,7 @@ VIBE_HOME="${VIBE_HOME:-$HOME/.vibe}"
 BIN_DIR="${VIBE_BIN_DIR:-}"
 RUNNER_SRC=""
 CLI_WASM_SRC=""
+TASKGROUP_ARTIFACTS=""
 DO_LINK=1
 DO_STDLIB=1
 DO_MODIFY_PATH=1
@@ -428,6 +431,7 @@ while [ "$#" -gt 0 ]; do
     --bin-dir) BIN_DIR="$2"; shift 2 ;;
     --runner) RUNNER_SRC="$2"; shift 2 ;;
     --cli-wasm) CLI_WASM_SRC="$2"; shift 2 ;;
+    --taskgroup-artifacts) TASKGROUP_ARTIFACTS="$2"; shift 2 ;;
     --toolchain) TOOLCHAIN="$2"; shift 2 ;;
     --set-default) SET_DEFAULT=1; shift ;;
     --no-link) DO_LINK=0; shift ;;
@@ -529,6 +533,21 @@ install -m 0644 "$ROOT_DIR/scripts/parallel_warm_pool.sh" "$TC_DIR/lib/parallel_
 # The pool bounds each compile through run_bounded.sh, sourced from beside
 # it: GNU timeout(1) is absent on a stock macOS (#2958).
 install -m 0644 "$ROOT_DIR/scripts/run_bounded.sh" "$TC_DIR/lib/run_bounded.sh"
+# The frontend uses Node for transport; CPU task creation and waiting run in Vibe.
+if [ -f "$ROOT_DIR/scripts/taskgroup_build_frontend.mjs" ]; then
+  mkdir -p "$TC_DIR/lib/checker-taskgroup"
+  for helper in taskgroup_build_frontend.mjs taskgroup_frontend_warm.mjs parallel_project_transport.mjs parallel_scheduler_trace.mjs parallel_selfhost_checker.mjs; do
+    install -m 0644 "$ROOT_DIR/scripts/$helper" "$TC_DIR/lib/checker-taskgroup/$helper"
+  done
+fi
+if [ -n "$TASKGROUP_ARTIFACTS" ]; then
+  command -v node >/dev/null 2>&1 || die "--taskgroup-artifacts requires Node.js"
+  node "$ROOT_DIR/scripts/taskgroup_build_frontend.mjs" --verify "$TC_DIR/lib/vibe-cli.wasm" "$TASKGROUP_ARTIFACTS" \
+    || die "TaskGroup artifacts must match the installed compiler"
+  for artifact in worker.wasm coordinator.component.wasm build.json; do
+    install -m 0644 "$TASKGROUP_ARTIFACTS/$artifact" "$TC_DIR/lib/checker-taskgroup/$artifact"
+  done
+fi
 say "pkg tool -> $TC_DIR/lib/vibe_pkg.sh"
 if [ -f "$ROOT_DIR/clients/js/lsp_server.js" ]; then
   install -m 0644 "$ROOT_DIR/clients/js/lsp_server.js" "$TC_DIR/lib/lsp_server.js"
