@@ -43,7 +43,7 @@ import @vibe/compiler/core {
 
 //# Constants ===
 
-export let AST_BINARY_VERSION: Int = 3
+export let AST_BINARY_VERSION: Int = 4
 export let AST_BINARY_MAGIC_V: Int = 118
 /// 'v'
 export let AST_BINARY_MAGIC_A: Int = 65
@@ -674,7 +674,8 @@ export fn ast_binary_read_svarint_checked(r: AstBinaryReader) -> Int with Except
     // SKIPPED and the decoder answers 0. Measured on nine 0x80 bytes then
     // 0x7f: 0, for a value the format cannot hold. svarint carries `EInt`
     // and `PInt` literals and the byte-offset slots on `EIdent` / `ELet` /
-    // `ELetMut` / `ECall` / `EBinOp` / `EDot`, so that is a changed literal
+    // `ELetMut` / `EAssign` / `EAssignOp` / `ECall` / `EBinOp` / `EDot`, so
+    // that is a changed literal
     // or a diagnostic pointing at the wrong place, not a miss.
     let sign_pad = if (result>>62)&1 == 1 {
       127
@@ -1137,18 +1138,20 @@ export fn ast_binary_write_expr(buf: Bytes, e: Expr) -> Unit {
       ast_binary_write_expr(buf, body)
       ast_binary_write_svarint(buf, off)
     }
-    EAssign(name, v, body) => {
+    EAssign(name, v, body, off) => {
       Bytes::push(buf, AST_BINARY_TAG_E_ASSIGN)
       ast_binary_write_string(buf, name)
       ast_binary_write_expr(buf, v)
       ast_binary_write_expr(buf, body)
+      ast_binary_write_svarint(buf, off)
     }
-    EAssignOp(target, op, v, body) => {
+    EAssignOp(target, op, v, body, off) => {
       Bytes::push(buf, AST_BINARY_TAG_E_ASSIGN_OP)
       ast_binary_write_string(buf, target)
       ast_binary_write_string(buf, op)
       ast_binary_write_expr(buf, v)
       ast_binary_write_expr(buf, body)
+      ast_binary_write_svarint(buf, off)
     }
     ESeq(a, b) => {
       Bytes::push(buf, AST_BINARY_TAG_E_SEQ)
@@ -1309,13 +1312,15 @@ export fn ast_binary_read_expr(r: AstBinaryReader) -> Expr with Exception {
     let name = ast_binary_read_string_checked(r)
     let v = ast_binary_read_expr(r)
     let body = ast_binary_read_expr(r)
-    EAssign(name, v, body)
+    let off = ast_binary_read_svarint_checked(r)
+    EAssign(name, v, body, off)
   } else if tag == AST_BINARY_TAG_E_ASSIGN_OP {
     let target = ast_binary_read_string_checked(r)
     let op = ast_binary_read_string_checked(r)
     let v = ast_binary_read_expr(r)
     let body = ast_binary_read_expr(r)
-    EAssignOp(target, op, v, body)
+    let off = ast_binary_read_svarint_checked(r)
+    EAssignOp(target, op, v, body, off)
   } else if tag == AST_BINARY_TAG_E_SEQ {
     let a = ast_binary_read_expr(r)
     let b = ast_binary_read_expr(r)

@@ -31,11 +31,25 @@ diagnostic leads with **the edit that fixes it**, not with internal terms
 structural `==` in every context (ADR-0097, #1526 — **no silent reference
 equality is left**: where the complete operand type does not reach the
 lowering, the comparison is refused with the edit rather than answered by
-identity (#3297, below). One measured exception remains (#3312): when the
-program's only `Eq` bound sits inside a `test` block (no `fn` / `let` / `impl`
-carries one), the bound's method is never injected, so a `[T: Eq]` lambda
-there receives no witness and `same(1.5, 1.5)` answers `false`. Any other
-`Eq` bound in the program makes the same lambda answer `true`. Bare, through a name, inside a tuple,
+identity (#3297, below). The same holds for a comparison through a trait
+bound: a bound is refused at an instantiation the builtin `==` / `<` / `+`
+cannot compare by content (anything but `Int` / `Bool` / `Char` / `String`,
+and only `Int` / `String` for `+`) whenever the operator reaches no witness
+(`erased_cmp_bound_refusal`, #2612 → #3327 → #3350). `==` dispatches only
+through `equals(Self, Self) -> Bool`, so a bound that reaches a trait named
+`Eq` is sound exactly when its witness dictionary carries that method — the
+first `equals` its supertraits flatten to, asked of the dictionary's own
+flattening (`bound_flat_self_equals`). That covers the builtin `Eq` (an `Eq`
+bound anywhere, a `test` block included, injects its method, and a methodless
+subtrait of it dispatches through the witness, #3312), a program `Eq` that
+declares it, and `trait Key: Good + Bad + Eq {}`, which keeps `Good`'s;
+it refuses a program's marker `Eq`, an `Eq` whose only methods are something
+else, a subtrait or chain over either, and `Bad + Good + Eq`, whose dictionary
+keeps `Bad`'s `equals(Int, Int)` — over the builtin `Eq` too. `<` and `+`
+have no witness path at all, so any trait named `Ord` or `Add` is judged by
+the type alone, methods or not. A generic impl's parameter bound gets the
+same judgement (`impl [T: Eq] Same for Box[T]` does not apply at `Box[Pt]`),
+and the message names the edit in every case. Bare, through a name, inside a tuple,
 inside a struct, nested arrays, `Array[String]` / `Array[(Int, Int)]` /
 `Array[Struct]`, through a function's return value, empty-literal bindings,
 and through a parameterized type alias (`type AL[V] = Array[V]` as `AL[Int]`,
@@ -203,13 +217,28 @@ message names the edit (`unsatisfied_bound_hint`, #1503). A container is refused
 the same way (`fn eq2[T: Eq](a: T, b: T) { a == b }` applied to `Array[Int]`
 gives ``no impl `Eq` for `Array[Int]` ``).
 
-**The guard keys on markers**: it tests `trait_is_marker`, so the
-method-bearing `Eq` (#2523) dispatches through a real witness dictionary and
-the guard does not fire for it, while `Ord` and a program's own marker `Eq`
-still trip it.
+**The guard keys on witnesses, not on markers** (#3350). It used to test
+`trait_is_marker`, which stood it down for any trait with a method — so a
+program `Eq` with only `tag(Self) -> Int`, or an `Ord` / `Add` with any
+method, compared by reference after a clean check. `erased_cmp_bound_refusal`
+(core) asks instead whether the operator reaches a witness: for `Eq`, whether
+the bound's flattened dictionary carries `equals(Self, Self) -> Bool`; for
+`Ord` and `Add`, never. The method-bearing builtin `Eq` (#2523) passes, and a
+bound that extends a refused trait is refused too (#3327; the message names
+the subtrait: ``no impl `Eq` for `Pt` (`Key` extends `Eq`)``). The same
+predicate runs on a generic impl's parameter bounds (`generic_bounds_hold`),
+where it used to be skipped. The edit named for `Eq` is an `equals(Self,
+Self) -> Bool` method (or, when the dictionary keeps another trait's
+wrong-shaped `equals`, reordering or renaming that one); `Ord` and `Add` get
+"compare at the concrete type", because no method reaches `<` or `+`.
 `fixtures/structural_eq_contexts_test.vibe`,
-`lib/@vibe/compiler/tests/marker_cmp_bound_test.vibe` and
-`fixtures/err_type_{eq,ord}_marker_bound_struct.vibe` hold the regression.
+`lib/@vibe/compiler/tests/marker_cmp_bound_test.vibe`,
+`fixtures/err_type_{eq,ord}_marker_bound_struct.vibe`,
+`fixtures/err_type_{eq_marker,ord}_subtrait_*.vibe`,
+`fixtures/eq_marker_subtrait_bound_accepted_test.vibe` and the #3350 rows
+(`fixtures/err_type_{eq_no_equals_method,eq_witness_wrong_shape,ord_method,add_method,eq_generic_impl_param,eq_builtin_subtrait_wrong_first_equals}*.vibe`
+refused; `fixtures/{eq_generic_impl_param_scalar,ord_method_bound_scalar,eq_builtin_subtrait_first_equals}_test.vibe`
+accepted) hold the regression.
 **A nested binder's bound is threaded too** (#2737, #2778). `build_gens` /
 `thread_dict_params` thread a witness dictionary for a top-level `fn` / `let`
 generic. `rewrite_expr`'s `EFn` arm used to rebuild a nested lambda with its

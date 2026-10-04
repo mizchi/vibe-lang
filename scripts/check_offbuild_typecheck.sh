@@ -43,17 +43,17 @@ fi
 
 # Excluded, each for a reason that is a property of the file and not "it fails":
 #
-#   _cli_probe_entry.vibe, _cli_stage1_entry.vibe
-#     Alternate CLI entry points built with their own effect configuration.
-#     Standalone they report an effect-row mismatch on their entry function,
-#     which is correct -- the row is supplied by the build that uses them.
+#   _cli_probe_entry.vibe
+#     An alternate CLI entry point built with its own effect configuration.
+#     Standalone it reports an effect-row mismatch on its entry function,
+#     which is correct -- the row is supplied by the build that uses it.
 #   builtins/declarations.vibe
 #     A `declare` table, not a module. `declare` is not source syntax and the
 #     parser rejects it outside the loader that reads this file.
 #
 # Anything else failing here is a real regression. Resist growing this list:
 # an entry belongs here only when the file is genuinely not standalone-checkable.
-EXCLUDE_RE='(_cli_probe_entry\.vibe|_cli_stage1_entry\.vibe|builtins/declarations\.vibe)$'
+EXCLUDE_RE='(_cli_probe_entry\.vibe|builtins/declarations\.vibe)$'
 
 listing="$(mktemp)"
 trap 'rm -f "$listing"' EXIT

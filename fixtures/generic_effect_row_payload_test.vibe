@@ -1,0 +1,111 @@
+// #3275 controls: a perform outside any handle takes the type arguments the
+// enclosing function's own `with` row declares (#3304), so under
+// `with Box[Int]` the payload of `Box::Put` is an `Int` and the value
+// `St::Get` answers is an `Int`. These are the correct shapes that rule must
+// keep compiling, each answering through its handler. The kinded shapes are
+// generic_effect_row_kinded_test.vibe; the refusals are the
+// `generic_effect_row_*_reject` rows in fixtures/typecheck/expected.tsv.
+effect Box[T] {
+  Put(T) -> Int
+}
+
+effect St[S] {
+  Get() -> S
+}
+
+effect Pair[A, B] {
+  Ask(A) -> B
+}
+
+fn put_int(n: Int) -> Int with Box[Int] {
+  perform Box::Put(n)
+}
+
+fn read_int() -> Int with St[Int] {
+  perform St::Get() + 1
+}
+
+// A formal in the row: the payload is whatever `T` is at the call.
+fn put_any[T](x: T) -> Int with Box[T] {
+  perform Box::Put(x)
+}
+
+// A row that names two generic effects fixes each one separately.
+fn two_effects() -> Int with Box[Int] + St[String] {
+  let s = perform St::Get()
+  perform Box::Put(String::length(s))
+}
+
+// A two-parameter effect is named bare in a row (a row item takes one type
+// argument), so its performs stay instantiated per site.
+fn ask_pair() -> Int with Pair {
+  perform Pair::Ask("abc")
+}
+
+// A bare `with Box` fixes no instantiation; the handler's arm decides.
+fn bare_row() -> Int with Box {
+  perform Box::Put("bare")
+}
+
+test "a Box[Int] payload reaches the arm as an Int" {
+  let r = handle {
+    put_int(41)
+  } with {
+    Box::Put(v) => resume(v + 1000)
+  }
+  inspect(r, "1041")
+}
+
+test "a St[Int] perform answers an Int" {
+  let r = handle {
+    read_int()
+  } with {
+    St::Get() => resume(41)
+  }
+  inspect(r, "42")
+}
+
+test "a formal row takes the caller's instantiation" {
+  let a = handle {
+    put_any("four")
+  } with {
+    Box::Put(v) => resume(String::length(v))
+  }
+  let b = handle {
+    put_any(7)
+  } with {
+    Box::Put(v) => resume(v * 3)
+  }
+  inspect((a, b), "(4, 21)")
+}
+
+test "two generic effects in one row are fixed separately" {
+  let r = handle {
+    handle {
+      two_effects()
+    } with {
+      St::Get() => resume("seven!!")
+    }
+  } with {
+    Box::Put(v) => resume(v * 10)
+  }
+  inspect(r, "70")
+}
+
+test "a bare two-parameter effect row" {
+  let r = handle {
+    ask_pair()
+  } with {
+    Pair::Ask(s) => resume(String::length(s) + 1)
+  }
+  inspect(r, "4")
+}
+
+test "a bare row leaves the instantiation to the handler" {
+  let r = handle {
+    bare_row()
+  } with {
+    Box::Put(v) => resume(String::length(v))
+  }
+  inspect(r, "4")
+}

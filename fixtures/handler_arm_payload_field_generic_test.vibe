@@ -1,0 +1,103 @@
+//# #3362: a field read on a handler arm's payload (`resume(p.x)`) no longer
+//# changes the type of a declaration checked after it. The arm's `resume`
+//# re-check allocated type variables of its own and handed back the counter
+//# it was given, while the substitution it returned kept what those
+//# variables were bound to. The next variable the checker allocated reused
+//# one of those numbers and came out `Int`: the formal `T` of the following
+//# generic function (`run_other[T]` was typed `(Int, (Int) -> Int) -> Int`,
+//# so `run_other("abc", ..)` was refused), or a local lambda's parameter
+//# later in the same function (`(s) -> String::length(s)` was refused with
+//# `receiver type Int`). The silently wrong half of the bug is pinned in
+//# handler_arm_payload_field_eq_formal_test.vibe. Each handler function below
+//# is followed by the declaration it used to corrupt.
+
+effect Box[T] {
+  Put(T) -> Int
+}
+
+effect Two[T] {
+  A(T) -> Int
+  B(T) -> Int
+}
+
+struct Pt {
+  x: Int
+}
+
+fn run_pt(f: () -> Int with Box[Pt]) -> Int {
+  handle {
+    f()
+  } with {
+    Box::Put(p) => resume(p.x)
+  }
+}
+
+fn run_other[T](x: T, len: (T) -> Int) -> Int {
+  len(x)
+}
+
+fn run_two(f: () -> Int with Two[Pt]) -> Int {
+  handle {
+    f()
+  } with {
+    Two::A(p) => resume(p.x);
+    Two::B(q) => resume(q.x + 1)
+  }
+}
+
+fn pick_first[T](a: T, b: T, keep: (T) -> Bool) -> T {
+  if keep(a) {
+    a
+  } else {
+    b
+  }
+}
+
+fn run_nested(f: () -> Int with Box[Pt], g: () -> Int with Box[Pt]) -> Int {
+  handle {
+    f()
+  } with {
+    Box::Put(p) => {
+      let inner = handle {
+        g()
+      } with {
+        Box::Put(q) => resume(q.x)
+      }
+      resume(p.x + inner)
+    }
+  }
+}
+
+fn run_other2[T](x: T, len: (T) -> Int) -> Int {
+  len(x)
+}
+
+fn run_then_lambda(f: () -> Int with Box[Pt]) -> Int {
+  let a = handle {
+    f()
+  } with {
+    Box::Put(p) => resume(p.x)
+  }
+  let g = (s) -> String::length(s)
+  a + g("xy")
+}
+
+// Runs an arm that reads its payload's field, after every pair above.
+fn run_direct() -> Int {
+  handle {
+    perform Box::Put(Pt::{ x: 5 }) + 1
+  } with {
+    Box::Put(p) => resume(p.x)
+  }
+}
+
+test "a generic declared after the handler keeps its own type parameter" {
+  inspect(run_other("abc", (s) -> String::length(s)), "3")
+  inspect(run_other(7, (n) -> n * 2), "14")
+  inspect(pick_first("ab", "cd", (s) -> String::length(s) > 5), "cd")
+  inspect(run_other2("abcd", (s) -> String::length(s)), "4")
+}
+
+test "a handler arm still reads its payload's field" {
+  inspect(run_direct(), "6")
+}
