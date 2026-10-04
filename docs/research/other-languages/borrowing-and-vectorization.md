@@ -48,7 +48,7 @@ already infers**, which is why it is cheaper than it sounds.
 | existing piece | where | what it gives |
 |---|---|---|
 | per-parameter borrow mask, whole-program fixpoint | `compute_borrow_param_user_fns` in `codegen/common_analysis/common_analysis.vibe` | which parameters are never consumed |
-| `borrow_ret`, `view_ret`, `scalar_ret` sets | `runtime/rc_query.vibe` (`vibe rc-classify`) | whether a result's **root** aliases a parameter (not its interior; A2) |
+| `borrow_ret`, `view_ret`, `scalar_ret` sets | `query/rc_query.vibe` (`vibe rc-classify`) | whether a result's **root** aliases a parameter (not its interior; A2) |
 | consume counting | `md_consume_count` in `common_analysis.vibe` | the usage map Bend uses, mostly computed (loop and closure bodies count once; A4 needs ω there) |
 | guarded constructor reuse | ADR-0092, [perceus-reuse.md](../../internal/design/perceus-reuse.md) | in-place reuse behind a run-time `rc == 1` test |
 | region tokens and escape errors | ADR-0090, `checker/checker.vibe` | return / outer-binding / container-write / capture escape checks |

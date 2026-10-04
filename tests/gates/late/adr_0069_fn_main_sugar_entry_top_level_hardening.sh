@@ -990,6 +990,11 @@ send_check_reject "err_type_eq_builtin_subtrait_wrong_first_equals.vibe" 'witnes
 # A generic impl's parameter bound is judged by the same guard: the impl does
 # not apply at `Box[Pt]`, and the message names the parameter bound.
 send_check_reject "err_type_eq_generic_impl_param_bound.vibe" 'no impl `Same` for `Box[Pt]` (its generic impl needs `Pt: Eq`)' "eqgenimpl"
+# Codex on #3349: the same when the generic impl is of a SUBTRAIT of the
+# bound (`impl [T: Eq] Child for Box[T]` standing for `[U: Base]`). The hint
+# matched only impls of `Base` itself and said a bare "no impl".
+send_check_reject "err_type_eq_subtrait_generic_impl_param_bound.vibe" 'no impl `Base` for `Box[Pt]` (its generic impl needs `Pt: Eq`)' "eqsubgenimpl"
+send_check_reject "err_type_eq_subtrait_generic_impl_param_bound.vibe" 'Give `Eq` an `equals(Self, Self) -> Bool` method' "eqsubgenimpl2"
 send_check_reject "err_type_ord_subtrait_bound_struct.vibe" 'no impl `Ord` for `Token` (`Ordered` extends `Ord`)' "ordsub"
 send_check_reject "err_type_ord_subtrait_bound_struct.vibe" 'giving `Ord` a method would not help' "ordsub2"
 # #2895: `Double` is the instantiation the guard used to wave through, and it
