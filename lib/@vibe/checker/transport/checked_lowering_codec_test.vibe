@@ -1,0 +1,61 @@
+import ./checked_lowering_codec.vibe {
+  append_checked_lowering_text, decode_checked_lowering, encode_checked_lowering
+}
+
+fn golden_lowering_wire() -> String {
+  "module_typed_lowering_offsets\tv8\n3\n10\nmodule_typed_lowering_offsets\tcount\t2\nmodule_typed_lowering_offsets\teqrow\t4\tArray[String]\nmodule_typed_lowering_offsets\teqcount\t1\nmodule_typed_lowering_offsets\tdigest\t56:1456113098:955935568\nmodule_typed_lowering_offsets\tend\n"
+}
+
+test "checked lowering preserves the existing v8 wire bytes" {
+  let encoded = encode_checked_lowering([3, 10], [4], ["Array[String]"])
+  assert(encoded == golden_lowering_wire())
+  match decode_checked_lowering(encoded) {
+    Some((offsets, eq_offs, eq_keys)) => {
+      assert(Array::length(offsets) == 2)
+      assert(Array::get(offsets, 0) == 3)
+      assert(Array::get(offsets, 1) == 10)
+      assert(Array::length(eq_offs) == 1)
+      assert(Array::get(eq_offs, 0) == 4)
+      assert(Array::length(eq_keys) == 1)
+      assert(Array::get(eq_keys, 0) == "Array[String]")
+    },
+    None => assert(false)
+  }
+  let parts = ["prefix\n"]
+  append_checked_lowering_text(parts, [3, 10], [4], ["Array[String]"])
+  assert(String::join(parts, "") == String::concat("prefix\n", encoded))
+}
+
+test "checked empty lowering remains a complete transport" {
+  let encoded = encode_checked_lowering([], [], [])
+  assert(encoded == "module_typed_lowering_offsets\tv8\nmodule_typed_lowering_offsets\tcount\t0\nmodule_typed_lowering_offsets\teqcount\t0\nmodule_typed_lowering_offsets\tdigest\t0:17:29\nmodule_typed_lowering_offsets\tend\n")
+  match decode_checked_lowering(encoded) {
+    Some((offsets, eq_offs, eq_keys)) => {
+      assert(Array::length(offsets) == 0)
+      assert(Array::length(eq_offs) == 0)
+      assert(Array::length(eq_keys) == 0)
+    },
+    None => assert(false)
+  }
+}
+
+test "checked lowering rejects damaged and incomplete transports" {
+  let encoded = golden_lowering_wire()
+  let end = "module_typed_lowering_offsets\tend\n"
+  let mutations = [
+    String::join(String::split(encoded, "3\n10\n"), "10\n3\n"),
+    String::join(String::split(encoded, "count\t2"), "count\t3"),
+    String::join(String::split(encoded, "eqrow\t4"), "eqrow\t5"),
+    String::join(String::split(encoded, "Array[String]"), "Array[Double]"),
+    String::join(String::split(encoded, "\tv8\n"), "\tv7\n"),
+    String::substring(encoded, 0, String::length(encoded) - String::length(end)),
+    String::concat(encoded, "unexpected\n")
+  ]
+  for changed in mutations {
+    assert(changed != encoded)
+    match decode_checked_lowering(changed) {
+      None => (),
+      Some(_) => assert(false)
+    }
+  }
+}
