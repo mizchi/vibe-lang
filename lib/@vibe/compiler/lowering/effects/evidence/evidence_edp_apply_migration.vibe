@@ -74,16 +74,27 @@ import ./evidence_poison_expr.vibe {
 }
 
 export fn edp_all_sites_eligible(stmts: Array[Stmt], ename: String, needing: Array[String], handle_sites: Array[(Expr, Array[(Pat, Expr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], row_labels: Array[Array[String]]) -> Bool {
+  edp_all_sites_eligible_with_base(stmts, ename, needing, handle_sites, fn_defs, row_labels, None)
+}
+
+/// Reuse a base computed from the current tree; copy before effect-specific appends.
+export fn edp_all_sites_eligible_with_base(stmts: Array[Stmt], ename: String, needing: Array[String], handle_sites: Array[(Expr, Array[(Pat, Expr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], row_labels: Array[Array[String]], base_inert: Option[Array[String]]) -> Bool {
   if Array::length(handle_sites) == 0 {
     // Nothing discharges `ename` anywhere -- by the checker's own
     // soundness a `needing` function could never actually run, so there is
     // nothing to gain (and nothing unsound about skipping); leave it alone.
     false
   } else {
-    let pure_fns = edp_pure_fn_names(fn_defs)
-    edp_append_free_host_inert_names(stmts, pure_fns)
-    edp_append_ctor_inert_names(stmts, pure_fns)
-    edp_append_visible_pure_lambda_names(stmts, pure_fns)
+    let pure_fns = match base_inert {
+      Some(base) => Array::concat(base, empty_str_array()),
+      None => {
+        let base = edp_pure_fn_names(fn_defs)
+        edp_append_free_host_inert_names(stmts, base)
+        edp_append_ctor_inert_names(stmts, base)
+        edp_append_visible_pure_lambda_names(stmts, base)
+        base
+      }
+    }
     edp_append_self_discharging_row_fns(stmts, fn_defs, ename, pure_fns, row_labels)
     edp_append_perform_free_row_fns(stmts, fn_defs, ename, pure_fns, row_labels)
     edp_append_effect_irrelevant_row_fns(stmts, fn_defs, ename, pure_fns, row_labels)
