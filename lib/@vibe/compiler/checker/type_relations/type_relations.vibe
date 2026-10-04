@@ -1,10 +1,12 @@
 import @vibe/compiler/core {
   Subst,
   Type,
+  TypeDef,
   compiler_owned_type_arity,
   exception_effect_kind,
   exception_effect_labels_equal,
   exception_label_kind,
+  find_typedef,
   instantiate,
   is_exception_effect_name,
   is_exception_label,
@@ -889,6 +891,31 @@ fn nominal_name_of(t: Type) -> Option[String] {
   }
 }
 
+/// #3326: the program's type declarations, for telling a source type apart
+/// from a compiler-owned head spelled the same way. A program may declare its
+/// own `struct Future[T]` (fixtures/user_future_struct_field_call_test.vibe),
+/// `struct FixedArray[T]`, `enum Task[T]`, ... and both resolve to the same
+/// `CtNamed(name, args)`, so the name alone cannot say whose type it is. Each
+/// checker entry stores the `defs` table it checks with; that table grows in
+/// place as declarations (local and imported) are registered, so a lookup
+/// sees the declarations known at the point of the check.
+let assignable_type_defs: Array[Array[TypeDef]] = [[]]
+
+export fn check_assignable_set_type_defs(defs: Array[TypeDef]) -> Unit {
+  Array::set(assignable_type_defs, 0, defs)
+}
+
+fn source_declares_type(name: String) -> Bool {
+  match find_typedef(Array::get(assignable_type_defs, 0), name) {
+    Some(td) => match td {
+      TDStruct(_, _, _, _) => true,
+      TDEnum(_, _, _) => true,
+      _ => false
+    },
+    None => false
+  }
+}
+
 /// #3326: true for a source-declared generic struct or enum APPLIED to
 /// arguments (`Cell[Int]`, `Wrap[String]`, and `Cell[T]` / `Cell[?t]` too).
 /// Its HEAD is certain whatever the arguments are. A rigid formal surfaces
@@ -899,18 +926,22 @@ fn nominal_name_of(t: Type) -> Option[String] {
 /// So no instantiation of the arguments can turn it into a builtin value --
 /// `fn get[T](c: Cell[T])` applied to `[7]` is as wrong as `Cell[Int]` is.
 ///
-/// Compiler-owned heads are excluded and keep their own treatment: several
-/// share `Array`'s layout on purpose (`FixedArray` is a checker-only phantom
-/// over it, #1140), and the ones that must not mix carry a `head_kind`. So
-/// are `#`-prefixed internal encodings (`#hkt` applications), which
-/// `rigid_applied_mismatch` owns.
+/// A compiler-owned head is excluded and keeps its own treatment: several of
+/// them cross into a builtin on purpose (`FixedArray[T]` is a checker-only
+/// phantom over `Array[T]`'s layout, #1140, and the compiler passes its own
+/// `MutBytes[r]` where `Bytes` is declared), and the ones that must not mix
+/// carry a `head_kind`. The exclusion is the COMPILER's: when a source
+/// declaration owns the spelling (`struct Future[T]`, local or imported),
+/// the type is an ordinary struct or enum and an array read as one is this
+/// bug again. `#`-prefixed internal encodings (`#hkt` applications) are
+/// excluded too; `rigid_applied_mismatch` owns them.
 fn is_applied_declared_nominal(t: Type) -> Bool {
   match t {
     CtNamed(n, args) => if Array::length(args) == 0 || String::starts_with(n, "#") || is_unknown_arg_sentinel(args) {
       false
     } else {
       match compiler_owned_type_arity(n) {
-        Some(_) => false,
+        Some(_) => source_declares_type(n),
         None => true
       }
     },
