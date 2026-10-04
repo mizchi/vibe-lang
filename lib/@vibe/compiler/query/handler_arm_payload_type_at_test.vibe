@@ -1,0 +1,80 @@
+// #3362: a field read on a handler arm's payload (`resume(p.x)`) typed the
+// NEXT generic function's formal as `Int`. The arm's `resume` re-check
+// allocated type variables and handed back the counter it was given, so the
+// formal reused one of those numbers and met the binding the re-check had
+// made: `type-at` on `run_other` answered `forall ?t6. (Int, (Int) -> Int) ->
+// Int`. The answers below hold the formal's place with `?t` (its number
+// depends on everything checked before it).
+
+import ./type_at.vibe {
+  type_at_source
+}
+
+import @vibe/compiler/checker {
+  check_program
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+fn first_check_error(source: String) -> String {
+  handle {
+    let _ = check_program(parse_program(lex(source)))
+    "ok"
+  } with { Exception::Throw(msg) => msg }
+}
+
+/// `?t<digits>` -> `?t`, so an answer can be compared without the variable
+/// numbers the rest of the program decides.
+fn erase_var_numbers(ty: String) -> String {
+  let out = StringBuilder::new()
+  let n = String::length(ty)
+  let mut i = 0
+  while i < n {
+    if i + 1 < n && ty[i: i + 2] == "?t" {
+      StringBuilder::push(out, "?t")
+      i = i + 2
+      while i < n && String::char_code_at(ty, i) >= '0' && String::char_code_at(ty, i) <= '9' {
+        i = i + 1
+      }
+    } else {
+      StringBuilder::push(out, ty[i: i + 1])
+      i = i + 1
+    }
+  }
+  StringBuilder::freeze(out)
+}
+
+fn effect_and_struct() -> String {
+  "effect Box[T] {\n  Put(T) -> Int\n}\nstruct Pt {\n  x: Int\n}\n"
+}
+
+fn decl_src() -> String {
+  String::concat(effect_and_struct(), "fn run_pt(f: () -> Int with Box[Pt]) -> Int {\n  handle {\n    f()\n  } with {\n    Box::Put(p) => resume(p.x)\n  }\n}\nfn run_other[T](x: T, len: (T) -> Int) -> Int {\n  len(x)\n}\n")
+}
+
+fn issue_src() -> String {
+  String::concat(decl_src(), "fn use_it() -> Int {\n  run_other(\"abc\", (s) -> String::length(s))\n}\n")
+}
+
+fn same_fn_src() -> String {
+  String::concat(effect_and_struct(), "fn run_then(f: () -> Int with Box[Pt]) -> Int {\n  let a = handle {\n    f()\n  } with {\n    Box::Put(p) => resume(p.x)\n  }\n  let g = (s) -> String::length(s)\n  a + g(\"xy\")\n}\n")
+}
+
+test "#3362: a generic after the handler keeps its formal" {
+  let src = decl_src()
+  inspect(erase_var_numbers(type_at_source(src, 14, 4)), content = "forall ?t. (?t, (?t) -> Int) -> Int")
+}
+
+test "#3362: calling that generic at String typechecks" {
+  inspect(first_check_error(issue_src()), content = "ok")
+}
+
+test "#3362: a lambda after the handle in the same function keeps its own parameter" {
+  inspect(first_check_error(same_fn_src()), content = "ok")
+}
+
+test "erase_var_numbers" {
+  inspect(erase_var_numbers("forall ?t12 ?t3. (?t12) -> ?t3"), content = "forall ?t ?t. (?t) -> ?t")
+}

@@ -33,6 +33,7 @@
 #   vibe compile --component <file.vibe>  emit a command component from the
 #                                         module's `vibe_command` export
 #   vibe build   <file.vibe> [-o <out>]   alias of compile
+#   vibe build --jobs 1|2|4 <file.vibe>  check modules using native TaskGroup workers
 #   vibe build --debug <file.vibe>        the linked debug lane
 #   vibe compile|build --minify ...       post-optimize the output with the
 #                                         standalone vibe-opt.wasm artifact
@@ -769,6 +770,30 @@ execute_host_action() {
   local own_results total_files t_tests t_exact t_notest r_verdict r_ntests r_exact tab
   kind="$(sed -n '2p' "$plan")"
   case "$kind" in
+    build-taskgroup)
+      local output entry jobs images frontend compiler
+      src="$(sed -n '3p' "$plan")"; output="$(sed -n '4p' "$plan")"
+      entry="$(sed -n '5p' "$plan")"; jobs="$(sed -n '6p' "$plan")"
+      images="${VIBE_TASKGROUP_ARTIFACT_DIR:-$TOOLCHAIN_DIR/lib/checker-taskgroup}"
+      frontend="$TOOLCHAIN_DIR/lib/checker-taskgroup/taskgroup_build_frontend.mjs"
+      if [ ! -f "$frontend" ] && [ -f "$SELF/../scripts/taskgroup_build_frontend.mjs" ]; then
+        frontend="$SELF/../scripts/taskgroup_build_frontend.mjs"
+        images="${VIBE_TASKGROUP_ARTIFACT_DIR:-$SELF/../_build/taskgroup-checker}"
+      fi
+      [ -f "$frontend" ] && [ -s "$images/build.json" ] || {
+        echo "build --jobs: TaskGroup images are missing; build them with scripts/build_taskgroup_checker.sh or install a toolchain containing checker-taskgroup" >&2
+        return 1
+      }
+      command -v node >/dev/null 2>&1 || { echo "build --jobs: Node.js is required" >&2; return 1; }
+      compiler="${VIBE_CLI_WASM:-$CLI_WASM}"
+      ( cd "$PROJECT_ROOT" && env $ADAPTER_MODE_CLEARS \
+          VIBE_PREOPEN_DIR="$PROJECT_ROOT" node "$frontend" "$compiler" "$src" "$jobs" \
+          "$PROJECT_ROOT" "$images" "$RUNNER" ) || return $?
+      local build_args=(build "$src" -o "$output")
+      case "$src" in *.vibex) ;; *) build_args+=(--entry "$entry") ;; esac
+      [ "$(sed -n '7p' "$plan")" = 1 ] && build_args+=(--minify)
+      invoke_cli "${build_args[@]}"
+      ;;
     run-guest)
       wasm="$(sed -n '3p' "$plan")"
       local args=()
@@ -1079,6 +1104,19 @@ invoke_cli() {
   # or as an explained verdict (scripts/test_vibe_allocs_launcher.sh).
   if [ "$status" -gt 2 ] && [ ! -s "$plan" ]; then
     echo "error: vibe $1 runner failed with status $status" >&2
+  fi
+  if [ "$status" = 0 ]; then
+    case "$verb" in
+      build|compile)
+        for arg in "$@"; do
+          if [ "$arg" = "--jobs" ] && [ "$(sed -n '2p' "$plan")" != build-taskgroup ]; then
+            echo "build --jobs: this compiler did not request TaskGroup workers; update the compiler wasm" >&2
+            rm -f "$plan"
+            return 1
+          fi
+        done
+        ;;
+    esac
   fi
   if [ -s "$plan" ] && [ "$(sed -n '1p' "$plan")" = "vibe-host-action-v1" ]; then
     execute_host_action "$plan" || status=$?

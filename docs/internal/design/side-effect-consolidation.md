@@ -385,7 +385,7 @@ arguments.
 
 ### 4.5 `vibe escapes` and the two predicates
 
-`vibe escapes <file.vibe>` (`lib/@vibe/compiler/runtime/escape_spans.vibe`)
+`vibe escapes <file.vibe>` (`lib/@vibe/compiler/query/escape_spans.vibe`)
 prints each escaping `let mut` as `NAME START END` (the byte offsets of the
 name). It changes no type, no row and no error; it makes the lowering decision
 visible.
@@ -494,7 +494,7 @@ replacement; the type names (`HashMap`, `HashSet`, `SortedMap`, `SortedSet`,
 `ImmutMap`) are transparent aliases declared in the package contracts (#1700),
 so an old annotation and a new constructor are the same type across an
 `index.vpkg` boundary. The contract parser of the committed seed rejects `#`
-on a type row, so `runtime/deprecated_scan.vibe` warns on those names through
+on a type row, so `query/deprecated_scan.vibe` warns on those names through
 a table until a bootstrap bump.
 
 ### 5.3 Why the old names broke the rule
