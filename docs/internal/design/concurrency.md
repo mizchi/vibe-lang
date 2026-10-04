@@ -596,16 +596,20 @@ handle, say -- is judged by what it reads, as a stored value is, so
 `put(c, Box::{ h: handle })` re-checks `put`, whose parameter then carries
 what the argument carried.
 
-What the callee RETURNS is not judged at the call. Its result reads the
-call's arguments, so where the result's type may hide a region it carries
-every region they carry: the result of `fn start(g: TaskGroup) ->
-TaskHandle[Int]`, of a helper that returns a struct, tuple or closure built
-from its argument, or that hands it back with an explicit `return` in any
-branch, carries the group's region into the caller. Joining or matching on it
-inside the body is legal; storing it outside, returning it from the body, or
-handing it to a function that keeps it is refused by the same checks as the
-handle itself. A generic `fn id[T](x: T) -> T` shows the region in its result
-type, which answers the same way.
+What the callee RETURNS is not judged at the call. The second check also
+finds which regions the callee's result carries -- by its type, or, where the
+type may hide one, by what its tail and every explicit `return` read -- and
+the call's result carries those into the caller: the result of `fn start(g:
+TaskGroup) -> TaskHandle[Int]`, of a helper that returns a struct, tuple or
+closure built from its argument, or that hands it back with an explicit
+`return` in any branch, carries the group's region, while a helper that is
+handed a closure over the region and returns another closure passes nothing
+on. Joining or matching on the result inside the body is legal; storing it
+outside, returning it from the body, or handing it to a function that keeps
+it is refused by the same checks as the handle itself. A call nothing checks
+again (an imported function) carries what its arguments carry. A generic
+`fn id[T](x: T) -> T` shows the region in its result type, which answers the
+same way.
 
 A callee is checked again once per distinct call shape -- the callee, and for
 each argument whether it carries the region, the regions its location
