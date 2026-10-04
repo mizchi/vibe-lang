@@ -367,3 +367,25 @@ test "an unknown type in a generic effect's row argument is reported" {
   let known = collect_all_diagnostics(String::concat(decl, "struct P {\n  x: Int\n}\n\nfn f[T](x: T) -> Int with Box[T] {\n  let g = () -> Int with Box[T] {\n    0\n  }\n  perform Box::Put(x)\n}\n\nfn h(f: () -> Int with Box[Option[P]]) -> Int with Box[Array[Int]] {\n  0\n}\n"))
   assert(eq(Array::length(known), 0))
 }
+
+test "a row formal the body fixes is refused at the declaration" {
+  // #3318: `perform Box::Put(1)` fixed `T := Int` while the row kept
+  // `Box[T]`, so a caller's handler chose `T` and read the `Int` as its own.
+  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn f[T]() -> Int with Box[T] {\n  perform Box::Put(1)\n}\n"
+  let diags = collect_all_diagnostics(src)
+  assert(eq(Array::length(diags), 1))
+  assert(String::contains(Array::get(diags, 0), "write `Int` in place of the type parameter `T`"))
+}
+
+test "a row formal fixed to another formal is refused" {
+  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn f[A, B](b: B) -> Int with Box[A] {\n  perform Box::Put(b)\n}\n"
+  let diags = collect_all_diagnostics(src)
+  assert(eq(Array::length(diags), 1))
+  assert(String::contains(Array::get(diags, 0), "write `B` in place of the type parameter `A`"))
+}
+
+test "a row formal the body keeps generic is accepted" {
+  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn put_any[T](x: T) -> Int with Box[T] {\n  perform Box::Put(x)\n}\n\nfn silent[T]() -> Int with Box[T] {\n  0\n}\n"
+  let diags = collect_all_diagnostics(src)
+  assert(eq(Array::length(diags), 0))
+}
