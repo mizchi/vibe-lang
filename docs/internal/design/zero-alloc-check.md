@@ -49,7 +49,7 @@ contracts (ADR-0090/0092).
 
 ## Regression evidence
 
-- `lib/@vibe/compiler/runtime/typed_operator_alloc_spans_test.vibe` pins mode
+- `lib/@vibe/compiler/query/typed_operator_alloc_spans_test.vibe` pins mode
   differences, explicit allocations under `assume`, and source-owned names.
 - `lib/@vibe/compiler/runtime/zero_alloc_import_summary_test.vibe` pins
   imported summaries and diagnostics, including allocating `assume` bodies

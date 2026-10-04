@@ -362,7 +362,7 @@ Where each piece lives:
   boundary's `__entry_settle` settles it by calling into the adapter.
 - **The adapter**, a core module the composer generates
   (`comp_generate_hostfuture_adapter_core_module` and its siblings in
-  `lib/@vibe/compiler/entry/source_compile/wasi_only/component_codegen*.vibe`),
+  `lib/@vibe/compiler/codegen/component/component_codegen*.vibe`),
   owns every canonical call: it issues the reads, parks in
   `waitable-set.wait`, and hands values to the guest through raw `vibe.*`
   imports ([async-host-contract.md](async-host-contract.md)).

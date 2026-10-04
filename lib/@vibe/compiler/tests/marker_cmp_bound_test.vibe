@@ -280,6 +280,22 @@ test "a generic impl's comparison bound still applies at a by-value scalar" {
   inspect(rejects(String::concat(generic_impl_src("Eq"), "let r = f(Box::{ v: 1 }, Box::{ v: 1 })\n")), "false")
 }
 
+/// A generic impl of a SUBTRAIT `Child` of the method-bearing `Base`, with a
+/// marker-`Eq` parameter bound, reached through `[U: Base]`.
+let subtrait_impl_src = "trait Eq\nimpl Eq for Int\nstruct Pt {\n  v: Int\n}\nimpl Eq for Pt\ntrait Base {\n  same(Self, Self) -> Bool\n}\ntrait Child: Base\nstruct Box[T] {\n  v: T\n}\nimpl [T: Eq] Child for Box[T] {\n  same(a: Box[T], b: Box[T]) -> Bool {\n    a.v == b.v\n  }\n}\nfn f[U: Base](a: U, b: U) -> Bool {\n  U::same(a, b)\n}\n"
+
+test "a subtrait's generic impl names its refused parameter bound" {
+  // Codex on #3349: the hint matched only impls of `Base` itself, so this was
+  // a bare "no impl `Base` for `Box[Pt]`".
+  let msg = diags_of(String::concat(subtrait_impl_src, "let r = f(Box::{ v: Pt::{ v: 1 } }, Box::{ v: Pt::{ v: 1 } })\n"))
+  inspect(String::contains(msg, "no impl `Base` for `Box[Pt]` (its generic impl needs `Pt: Eq`)"), "true")
+  inspect(String::contains(msg, "Give `Eq` an `equals(Self, Self) -> Bool` method"), "true")
+}
+
+test "a subtrait's generic impl still applies at a by-value scalar" {
+  inspect(rejects(String::concat(subtrait_impl_src, "let r = f(Box::{ v: 1 }, Box::{ v: 1 })\n")), "false")
+}
+
 test "over the builtin Eq, a wrong-shaped first equals is refused and named" {
   let src = "trait Good {\n  equals(Self, Self) -> Bool\n}\ntrait Bad {\n  equals(Int, Int) -> Bool\n}\ntrait Key: Bad + Good + Eq\nstruct Pt {\n  v: Int\n}\nimpl Key for Pt {\n  equals(a: Int, b: Int) -> Bool {\n    true\n  }\n}\nfn same[T: Key](x: T, y: T) -> Bool {\n  x == y\n}\nlet r = same(Pt::{ v: 1 }, Pt::{ v: 1 })\n"
   inspect(String::contains(diags_of(src), "witness dictionary keeps is `Bad`'s"), "true")

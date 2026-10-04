@@ -331,7 +331,7 @@ fi
 
 REL_OUT="${OUT_DIR#"$PROJECT_ROOT"/}"
 cat >"$OUT_DIR/emit.vibe" <<EMITEOF
-import @vibe/compiler/entry/source_compile/wasi_only {
+import @vibe/compiler/codegen/component {
   comp_emit_body_read_component
 }
 

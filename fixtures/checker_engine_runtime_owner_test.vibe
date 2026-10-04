@@ -1,0 +1,74 @@
+import @vibe/compiler/runtime {
+  ModuleJob,
+  check_module,
+  check_module_with_typing_artifact_observation,
+  checked_module_typing_artifact_observation_is_fresh_for_job,
+  incremental_typecheck_telemetry_json,
+  set_incremental_typecheck_telemetry_enabled
+}
+import @vibe/checker/engine {
+  CheckJob,
+  engine_check_module,
+  engine_checked_module_typing_artifact_observation_is_fresh_for_job,
+  engine_incremental_typecheck_telemetry_counter,
+  engine_set_incremental_typecheck_telemetry_enabled
+}
+
+test "runtime telemetry settings apply to the real engine checker" {
+  set_incremental_typecheck_telemetry_enabled(true)
+  let job = CheckJob::{
+    path: "from-engine.vibe",
+    source: "export fn value() -> Int { 42 }",
+    deps: [],
+    dep_fps: [],
+    dep_envs: []
+  }
+  let _ = engine_check_module(job)
+  assert(String::contains(incremental_typecheck_telemetry_json(), "\"checker_executions\":1"))
+  assert(engine_incremental_typecheck_telemetry_counter(6) == 1)
+  engine_set_incremental_typecheck_telemetry_enabled(false)
+  assert(engine_incremental_typecheck_telemetry_counter(6) == 0)
+}
+
+test "engine telemetry settings and runtime checks share one counter owner" {
+  engine_set_incremental_typecheck_telemetry_enabled(true)
+  let job = ModuleJob::{
+    path: "from-runtime.vibe",
+    source: "export fn value() -> Int { 42 }",
+    deps: [],
+    dep_fps: [],
+    dep_envs: []
+  }
+  let _ = check_module(job)
+  assert(engine_incremental_typecheck_telemetry_counter(6) == 1)
+  set_incremental_typecheck_telemetry_enabled(false)
+  assert(engine_incremental_typecheck_telemetry_counter(6) == 0)
+}
+
+test "runtime and engine freshness checks accept the same actual checker outcome" {
+  let legacy = ModuleJob::{
+    path: "shared-outcome.vibe",
+    source: "export fn value() -> Int { 42 }",
+    deps: [],
+    dep_fps: [],
+    dep_envs: []
+  }
+  let job = CheckJob::{
+    path: legacy.path,
+    source: legacy.source,
+    deps: legacy.deps,
+    dep_fps: legacy.dep_fps,
+    dep_envs: legacy.dep_envs
+  }
+  let outcome = check_module_with_typing_artifact_observation(legacy)
+  assert(checked_module_typing_artifact_observation_is_fresh_for_job(legacy, outcome))
+  assert(engine_checked_module_typing_artifact_observation_is_fresh_for_job(job, outcome))
+  let changed = ModuleJob::{
+    path: legacy.path,
+    source: "export fn value() -> Int { 43 }",
+    deps: [],
+    dep_fps: [],
+    dep_envs: []
+  }
+  assert(!checked_module_typing_artifact_observation_is_fresh_for_job(changed, outcome))
+}

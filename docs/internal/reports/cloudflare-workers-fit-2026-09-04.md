@@ -491,7 +491,7 @@ Ordered by bytes recovered per decision, with the line counts that go with them.
    pre-assembled bodies is mechanical and cuts both size and the compile time
    of the compiler itself (`registry_typed_rows` is one 52 KB function body).
 6. **Component / serve codegen** (88 KB in stage2, 185 KB in the library
-   build; `entry/source_compile/wasi_only/component_codegen.vibe` is 9.5 k
+   build; `codegen/component/component_codegen.vibe` is 9.5 k
    lines). Same treatment as the gc backend: a `#cfg` unit.
 7. **`checker/artifacts`** (9.6 k lines, shadow-only per #1958). The DCE
    already drops most of it (7 KB survives), so it is a line-count and
