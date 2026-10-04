@@ -1,0 +1,96 @@
+//# #3356: a lambda that reads a module-level Int constant reads its value.
+//# Such a constant is folded into the constant table, not the function
+//# table, and the lambda capture scan treated every name outside the
+//# function table as a capture. It found no enclosing local named `base`
+//# and stored 0 into the closure's env, so on the bump and RC lanes
+//# `(n) -> n + base` answered `n` and a `let rec` lambda that returned
+//# `base` at the bottom counted to 3 instead of 13. Constants that are not
+//# Int literals (a computed global, a String) were never affected; they are
+//# here as controls. tests/gates/early/extended_derive.sh runs this file on
+//# the bump and RC lanes.
+
+let base = 10
+
+let label = "end"
+
+fn make_adder(n: Int) -> (Int) -> Int {
+  (x) -> x + n
+}
+
+let add5 = make_adder(5)
+
+fn lambda_reads() -> Int {
+  let g = (n: Int) -> n + base
+  g(3)
+}
+
+fn rec_reads() -> Int {
+  let rec f = (n: Int) -> if n <= 0 {
+    base
+  } else {
+    1 + f(n - 1)
+  }
+  f(3)
+}
+
+fn rec_returns_constant() -> Int {
+  let rec f = (n: Int) -> if n <= 0 {
+    base
+  } else {
+    f(n - 1)
+  }
+  f(3)
+}
+
+fn nested_lambda_reads() -> Int {
+  let outer = (a: Int) -> {
+    let inner = (b: Int) -> b * base
+    inner(a)
+  }
+  outer(4)
+}
+
+fn map_lambda_reads() -> Int {
+  let ys = Array::map([1, 2, 3], (x) -> x + base)
+  Array::get(ys, 2)
+}
+
+fn lambda_captures_local_too() -> Int {
+  let k = 100
+  let g = (n: Int) -> n + base + k
+  g(1)
+}
+
+// A local named like the constant still shadows it inside its scope.
+fn local_shadows_constant() -> Int {
+  let base = 3
+  let g = () -> base
+  g()
+}
+
+fn rec_reads_non_int_globals() -> Int {
+  let rec f = (n: Int) -> if n <= 0 {
+    add5(0) + String::length(label)
+  } else {
+    1 + f(n - 1)
+  }
+  f(3)
+}
+
+test "a lambda reads a module Int constant" {
+  inspect(lambda_reads(), "13")
+  inspect(nested_lambda_reads(), "40")
+  inspect(map_lambda_reads(), "13")
+  inspect(lambda_captures_local_too(), "111")
+}
+
+test "a let rec lambda reads a module Int constant" {
+  inspect(rec_reads(), "13")
+  inspect(rec_returns_constant(), "10")
+}
+
+test "controls" {
+  inspect(local_shadows_constant(), "3")
+  inspect(rec_reads_non_int_globals(), "11")
+  inspect(base, "10")
+}

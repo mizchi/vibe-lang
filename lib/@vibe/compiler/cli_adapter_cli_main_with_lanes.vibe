@@ -6,7 +6,7 @@ import @vibe/compiler/entry/source_compile/wasi_only {
   comp_emit_component_wasm_string_handler,
   coverage_driver_program_source_fs,
   maybe_wrap_stdin_provider_core,
-  merged_program_source_fs,
+  merged_program_source_with_fs,
   reject_stdin_provider_core
 }
 
@@ -1851,7 +1851,7 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String) -> (Bytes,
       } else {
         ()
       }
-      let merged_src = coverage_driver_program_source_fs(input_path, driver_path)
+      let merged_src = coverage_driver_program_source_fs(input_path, driver_path, merged_source_lowers_trait_dicts())
       // Prune before the pinned seed type-checks the result. The full no-DCE
       // compiler contains intentionally dormant generic scaffolding that is
       // not a valid standalone program; the driver and every exact target it
@@ -1863,7 +1863,7 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String) -> (Bytes,
   }
   if Env::get("VIBE_EMIT_MERGED_SOURCE") == "1" {
     return handle {
-      let merged_src = merged_program_source_fs(input_path)
+      let merged_src = merged_program_source_with_fs(input_path, merged_source_lowers_trait_dicts())
       Fs::write_file(output_path, merged_src)
       0
     } with { Exception::Throw(msg) => emit_compile_diag(output_path, msg) }
@@ -1992,6 +1992,14 @@ fn cli_main_with_lanes(fs_lanes: (cli_adapter_FsLane, String, String) -> (Bytes,
       Exception::Throw(msg) => emit_compile_diag_located(output_path, located_lex_message(source_cfg, msg), source_cfg)
     }
   }
+}
+
+/// #3331: does the caller want the merged program printed AFTER the
+/// trait-dictionary desugar? Only for a pinned seed that desugars before it
+/// checks; it modifies the two merged-source modes above and selects nothing.
+/// The default is the source form every current compiler reads back.
+fn merged_source_lowers_trait_dicts() -> Bool with Env {
+  Env::get("VIBE_MERGED_SOURCE_LOWER_TRAIT_DICTS") == "1"
 }
 
 /// #1137: run the production CLI via a real `fn main -> Unit` (ADR-0075's

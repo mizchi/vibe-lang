@@ -112,6 +112,22 @@ feature, keep this order:
 source starts using it" are therefore separate. That is what keeps HEAD
 rebuildable from the pinned seed at every commit.
 
+**Trait-bounded generics (#3331)** follow the same order, with one switch to
+remove. The flatten prints the merged program as source, and the
+single-source compile that reads it back checks it first and lowers trait
+dictionaries afterwards. A seed older than #3331 desugars *before* it checks,
+so it refuses a method-bearing trait handed to it as source (``no impl `Hash`
+for `Self` `` on `@vibe/core`'s own `trait Hash`). While such a seed is pinned,
+`scripts/generate_bundle.sh` and the coverage-driver scripts set
+`VIBE_MERGED_SOURCE_LOWER_TRAIT_DICTS=1`, which makes the flatten print the
+lowered program, as it did before #3331. After adopting a seed built from
+#3331 or later, delete every `VIBE_MERGED_SOURCE_LOWER_TRAIT_DICTS=1`
+(`git grep` finds them); compiler source may then declare
+`fn f[C: Trait](ctx: C)`. With the switch still set, such source fails to
+build with the reserved `__dict_` prefix refusal. Once nothing sets it, the
+switch itself (`merged_source_lowers_trait_dicts` and the `lower_trait_dicts`
+parameters in `merge_sources.vibe`) has no caller and goes as well.
+
 Changing what the printer (`lib/@vibe/parser/printer.vibe`) *emits* is not a
 reason for a bump, even though it changes the generated files (the flatten
 writes declarations through `print_program`). A bump is needed only when the
