@@ -297,8 +297,8 @@ export fn scps_inert_local_literals(e: Expr, eff: String, needing: Array[String]
     ELetMut(_, _, b, _) => scps_inert_local_literals(b, eff, needing, ctx, out),
     ELetRec(_, _, b) => scps_inert_local_literals(b, eff, needing, ctx, out),
     ESeq(_, b) => scps_inert_local_literals(b, eff, needing, ctx, out),
-    EAssign(_, _, b) => scps_inert_local_literals(b, eff, needing, ctx, out),
-    EAssignOp(_, _, _, b) => scps_inert_local_literals(b, eff, needing, ctx, out),
+    EAssign(_, _, b, _) => scps_inert_local_literals(b, eff, needing, ctx, out),
+    EAssignOp(_, _, _, b, _) => scps_inert_local_literals(b, eff, needing, ctx, out),
     _ => ()
   }
 }
@@ -1035,20 +1035,20 @@ export fn scps_let_shortcircuit_bind(result: String, rhs: Expr, continuation: Ex
 /// there would mean duplicating the evaluation of the other arguments.
 export fn scps_float_direct_assign(e: Expr, sctx: (String, Array[String], Array[String], Int, Array[String]), site: Int) -> Expr {
   match e {
-    EAssign(x, v, b) => if scps_direct_spine_input(v, sctx) {
+    EAssign(x, v, b, target_off) => if scps_direct_spine_input(v, sctx) {
       let ax = scps_seq_float_fresh("assign", e, EUnit, site)
-      ELet(ax, v, EAssign(x, EIdent(ax, -1), scps_float_direct_assign(b, sctx, site)), -1)
+      ELet(ax, v, EAssign(x, EIdent(ax, -1), scps_float_direct_assign(b, sctx, site), target_off), -1)
     } else if scps_contains_susp(v, sctx) {
       match scps_assign_value_float(x, v, b, site) {
         // Each float strictly shrinks the RHS, so re-running this walk on the
         // result converges instead of looping.
         Some(lowered) => scps_float_direct_assign(lowered, sctx, site),
-        None => EAssign(x, v, scps_float_direct_assign(b, sctx, site))
+        None => EAssign(x, v, scps_float_direct_assign(b, sctx, site), target_off)
       }
     } else {
-      EAssign(x, v, scps_float_direct_assign(b, sctx, site))
+      EAssign(x, v, scps_float_direct_assign(b, sctx, site), target_off)
     },
-    EAssignOp(nm, op, v, b) => EAssignOp(nm, op, v, scps_float_direct_assign(b, sctx, site)),
+    EAssignOp(nm, op, v, b, target_off) => EAssignOp(nm, op, v, scps_float_direct_assign(b, sctx, site), target_off),
     ELet(x, v, b, off) => ELet(x, v, scps_float_direct_assign(b, sctx, site), off),
     ELetMut(x, v, b, off) => ELetMut(x, v, scps_float_direct_assign(b, sctx, site), off),
     ELetRec(x, v, b) => ELetRec(x, v, scps_float_direct_assign(b, sctx, site)),
@@ -1080,7 +1080,7 @@ fn scps_string_for_rewrite(name: String, str_nm: String, body: Expr, iname: Stri
     EIdent(str_nm, -1),
     EIdent(iname, -1)
   ], -1, [])
-  let step = EAssign(iname, EBinOp("+", EIdent(iname, -1), EInt(1), -1), body)
+  let step = EAssign(iname, EBinOp("+", EIdent(iname, -1), EInt(1), -1), body, -1)
   EWhile(EBinOp("<", EIdent(iname, -1), len_call, -1), ELet(name, at_call, step, -1))
 }
 
@@ -1156,7 +1156,7 @@ fn scps_array_for_rewrite(name: String, arr: String, body: Expr, iname: String) 
     EIdent(arr, -1),
     EIdent(iname, -1)
   ], -1, [])
-  let step = EAssign(iname, EBinOp("+", EIdent(iname, -1), EInt(1), -1), body)
+  let step = EAssign(iname, EBinOp("+", EIdent(iname, -1), EInt(1), -1), body, -1)
   EWhile(EBinOp("<", EIdent(iname, -1), len_call, -1), ELet(name, get_call, step, -1))
 }
 
@@ -1255,8 +1255,8 @@ fn scps_elim_for_walk(e: Expr, known: Array[String], kstr: Array[String], site: 
     ELet(x, v, b, off) => ELet(x, v, scps_elim_for_walk(b, scps_array_names_with(known, x, v, None, ctx, root), scps_string_names_with(kstr, x, v, None, ctx, root), site, ctr, ctx, root), off),
     ELetMut(x, v, b, off) => ELetMut(x, v, scps_elim_for_walk(b, scps_array_names_with(known, x, v, None, ctx, root), scps_string_names_with(kstr, x, v, None, ctx, root), site, ctr, ctx, root), off),
     ELetRec(x, v, b) => ELetRec(x, v, scps_elim_for_walk(b, known, kstr, site, ctr, ctx, root)),
-    EAssign(x, v, b) => EAssign(x, v, scps_elim_for_walk(b, known, kstr, site, ctr, ctx, root)),
-    EAssignOp(x, op, v, b) => EAssignOp(x, op, v, scps_elim_for_walk(b, known, kstr, site, ctr, ctx, root)),
+    EAssign(x, v, b, target_off) => EAssign(x, v, scps_elim_for_walk(b, known, kstr, site, ctr, ctx, root), target_off),
+    EAssignOp(x, op, v, b, target_off) => EAssignOp(x, op, v, scps_elim_for_walk(b, known, kstr, site, ctr, ctx, root), target_off),
     EIf(c, t, el) => EIf(c, scps_elim_for_walk(t, known, kstr, site, ctr, ctx, root), scps_elim_for_walk(el, known, kstr, site, ctr, ctx, root)),
     EWhile(c, b) => EWhile(c, scps_elim_for_walk(b, known, kstr, site, ctr, ctx, root)),
     EMatch(sc, arms) => {
@@ -1310,8 +1310,8 @@ fn scps_loop_return_nested(e: Expr) -> Bool {
     ELetMut(_, v, b, _) => scps_loop_return_nested(v) || scps_loop_return_nested(b),
     ELetRec(_, v, b) => scps_loop_return_nested(v) || scps_loop_return_nested(b),
     ESeq(a, b) => scps_loop_return_nested(a) || scps_loop_return_nested(b),
-    EAssign(_, v, b) => scps_loop_return_nested(v) || scps_loop_return_nested(b),
-    EAssignOp(_, _, v, b) => scps_loop_return_nested(v) || scps_loop_return_nested(b),
+    EAssign(_, v, b, _) => scps_loop_return_nested(v) || scps_loop_return_nested(b),
+    EAssignOp(_, _, v, b, _) => scps_loop_return_nested(v) || scps_loop_return_nested(b),
     EIf(c, t, el) => scps_loop_return_nested(c) || scps_loop_return_nested(t) || scps_loop_return_nested(el),
     EMatch(s, arms) => scps_loop_return_nested(s) || scps_loop_arms_return_nested(arms),
     EHandle(b, arms) => scps_loop_return_nested(b) || scps_loop_arms_return_nested(arms),
@@ -1346,9 +1346,9 @@ fn scps_loop_return_guard(flag: String) -> Expr {
 /// Nested closures keep their own `return` (`_ => e` covers EFn).
 fn scps_loop_return_to_break(e: Expr, flag: String, slot: String) -> Expr {
   match e {
-    EReturn(v) => EAssign(slot, v, EAssign(flag, EBool(true), EBreak(None))),
+    EReturn(v) => EAssign(slot, v, EAssign(flag, EBool(true), EBreak(None), -1), -1),
     ESeq(a, b) => match a {
-      EReturn(v) => EAssign(slot, v, EAssign(flag, EBool(true), EBreak(None))),
+      EReturn(v) => EAssign(slot, v, EAssign(flag, EBool(true), EBreak(None), -1), -1),
       // A NESTED loop that returns: rewrite it the same way, then guard the
       // enclosing loop's continuation. `break` leaves one level, so each level
       // needs its own -- that is what carries the exit outward.
@@ -1369,8 +1369,8 @@ fn scps_loop_return_to_break(e: Expr, flag: String, slot: String) -> Expr {
     ELet(x, v, b, off) => ELet(x, v, scps_loop_return_to_break(b, flag, slot), off),
     ELetMut(x, v, b, off) => ELetMut(x, v, scps_loop_return_to_break(b, flag, slot), off),
     ELetRec(x, v, b) => ELetRec(x, v, scps_loop_return_to_break(b, flag, slot)),
-    EAssign(x, v, b) => EAssign(x, v, scps_loop_return_to_break(b, flag, slot)),
-    EAssignOp(x, op, v, b) => EAssignOp(x, op, v, scps_loop_return_to_break(b, flag, slot)),
+    EAssign(x, v, b, target_off) => EAssign(x, v, scps_loop_return_to_break(b, flag, slot), target_off),
+    EAssignOp(x, op, v, b, target_off) => EAssignOp(x, op, v, scps_loop_return_to_break(b, flag, slot), target_off),
     EIf(c, t, el) => EIf(c, scps_loop_return_to_break(t, flag, slot), scps_loop_return_to_break(el, flag, slot)),
     EMatch(s, arms) => {
       let out = scps_empty_arms()
@@ -1437,12 +1437,12 @@ export fn scps_elim_loop_returns(e: Expr, site: Int) -> Option[Expr] {
       Some(b2) => Some(ELetRec(x, v, b2)),
       None => None
     },
-    EAssign(x, v, b) => match scps_elim_loop_returns(b, site) {
-      Some(b2) => Some(EAssign(x, v, b2)),
+    EAssign(x, v, b, target_off) => match scps_elim_loop_returns(b, site) {
+      Some(b2) => Some(EAssign(x, v, b2, target_off)),
       None => None
     },
-    EAssignOp(x, op, v, b) => match scps_elim_loop_returns(b, site) {
-      Some(b2) => Some(EAssignOp(x, op, v, b2)),
+    EAssignOp(x, op, v, b, target_off) => match scps_elim_loop_returns(b, site) {
+      Some(b2) => Some(EAssignOp(x, op, v, b2, target_off)),
       None => None
     },
     // A bare loop in TAIL position has no continuation to guard; the `return`
@@ -1477,7 +1477,7 @@ fn scps_return_terminal(v: Expr, flag: String, slot: String) -> Expr {
   if flag == "" {
     v
   } else {
-    EAssign(slot, v, EAssign(flag, EBool(true), EInt(0)))
+    EAssign(slot, v, EAssign(flag, EBool(true), EInt(0), -1), -1)
   }
 }
 
@@ -1506,8 +1506,8 @@ export fn scps_elim_returns_to(e: Expr, site: Int, flag: String, slot: String) -
     ELet(x, v, b, off) => ELet(x, v, scps_elim_returns_to(b, site, flag, slot), off),
     ELetMut(x, v, b, off) => ELetMut(x, v, scps_elim_returns_to(b, site, flag, slot), off),
     ELetRec(x, v, b) => ELetRec(x, v, scps_elim_returns_to(b, site, flag, slot)),
-    EAssign(x, v, b) => EAssign(x, v, scps_elim_returns_to(b, site, flag, slot)),
-    EAssignOp(x, op, v, b) => EAssignOp(x, op, v, scps_elim_returns_to(b, site, flag, slot)),
+    EAssign(x, v, b, target_off) => EAssign(x, v, scps_elim_returns_to(b, site, flag, slot), target_off),
+    EAssignOp(x, op, v, b, target_off) => EAssignOp(x, op, v, scps_elim_returns_to(b, site, flag, slot), target_off),
     EIf(c, t, el) => EIf(c, scps_elim_returns_to(t, site, flag, slot), scps_elim_returns_to(el, site, flag, slot)),
     EMatch(s, arms) => {
       let out = scps_empty_arms()
@@ -1557,8 +1557,8 @@ fn scps_is_ctl_terminator(e: Expr) -> Bool {
     ELet(_, _, b, _) => scps_is_ctl_terminator(b),
     ELetMut(_, _, b, _) => scps_is_ctl_terminator(b),
     ELetRec(_, _, b) => scps_is_ctl_terminator(b),
-    EAssign(_, _, b) => scps_is_ctl_terminator(b),
-    EAssignOp(_, _, _, b) => scps_is_ctl_terminator(b),
+    EAssign(_, _, b, _) => scps_is_ctl_terminator(b),
+    EAssignOp(_, _, _, b, _) => scps_is_ctl_terminator(b),
     EIf(_, t, el) => scps_is_ctl_terminator(t) && scps_is_ctl_terminator(el),
     EMatch(_, arms) => scps_arms_are_ctl_terminators(arms),
     _ => false
@@ -1608,8 +1608,8 @@ export fn scps_loop_normalize_ctl(e: Expr, site: Int) -> Expr {
     ELet(x, v, b, off) => ELet(x, v, scps_loop_normalize_ctl(b, site), off),
     ELetMut(x, v, b, off) => ELetMut(x, v, scps_loop_normalize_ctl(b, site), off),
     ELetRec(x, v, b) => ELetRec(x, v, scps_loop_normalize_ctl(b, site)),
-    EAssign(nm, v, b) => EAssign(nm, v, scps_loop_normalize_ctl(b, site)),
-    EAssignOp(nm, op, v, b) => EAssignOp(nm, op, v, scps_loop_normalize_ctl(b, site)),
+    EAssign(nm, v, b, target_off) => EAssign(nm, v, scps_loop_normalize_ctl(b, site), target_off),
+    EAssignOp(nm, op, v, b, target_off) => EAssignOp(nm, op, v, scps_loop_normalize_ctl(b, site), target_off),
     EIf(c, t, el) => EIf(c, scps_loop_normalize_ctl(t, site), scps_loop_normalize_ctl(el, site)),
     EMatch(s, arms) => {
       let out = scps_empty_arms()
@@ -1642,8 +1642,8 @@ export fn scps_loop_append_repeat(e: Expr, k: Expr) -> Expr {
     } else {
       ESeq(a, scps_loop_append_repeat(b, k))
     },
-    EAssign(nm, v, b) => EAssign(nm, v, scps_loop_append_repeat(b, k)),
-    EAssignOp(nm, op, v, b) => EAssignOp(nm, op, v, scps_loop_append_repeat(b, k)),
+    EAssign(nm, v, b, target_off) => EAssign(nm, v, scps_loop_append_repeat(b, k), target_off),
+    EAssignOp(nm, op, v, b, target_off) => EAssignOp(nm, op, v, scps_loop_append_repeat(b, k), target_off),
     EIf(c, t, el) => EIf(c, scps_loop_append_repeat(t, k), scps_loop_append_repeat(el, k)),
     EMatch(s, arms) => {
       let out = scps_empty_arms()
@@ -1707,8 +1707,8 @@ export fn scps_loop_rewrite_ctl(e: Expr, lp: String, kname: String) -> Expr {
     ELet(x, v, b, off) => ELet(x, v, scps_loop_rewrite_ctl(b, lp, kname), off),
     ELetMut(x, v, b, off) => ELetMut(x, v, scps_loop_rewrite_ctl(b, lp, kname), off),
     ELetRec(x, v, b) => ELetRec(x, v, scps_loop_rewrite_ctl(b, lp, kname)),
-    EAssign(nm, v, b) => EAssign(nm, v, scps_loop_rewrite_ctl(b, lp, kname)),
-    EAssignOp(nm, op, v, b) => EAssignOp(nm, op, v, scps_loop_rewrite_ctl(b, lp, kname)),
+    EAssign(nm, v, b, target_off) => EAssign(nm, v, scps_loop_rewrite_ctl(b, lp, kname), target_off),
+    EAssignOp(nm, op, v, b, target_off) => EAssignOp(nm, op, v, scps_loop_rewrite_ctl(b, lp, kname), target_off),
     EIf(c, t, el) => EIf(c, scps_loop_rewrite_ctl(t, lp, kname), scps_loop_rewrite_ctl(el, lp, kname)),
     EMatch(s, arms) => {
       let out = scps_empty_arms()
@@ -1747,8 +1747,8 @@ export fn scps_loop_ctl_remains(e: Expr) -> Bool {
     ECall(callee, args, _, _) => scps_loop_ctl_remains(callee) || scps_loop_exprs_ctl_remain(args),
     EBinOp(_, l, r, _) => scps_loop_ctl_remains(l) || scps_loop_ctl_remains(r),
     EUnaryOp(_, a) => scps_loop_ctl_remains(a),
-    EAssign(_, v, b) => scps_loop_ctl_remains(v) || scps_loop_ctl_remains(b),
-    EAssignOp(_, _, v, b) => scps_loop_ctl_remains(v) || scps_loop_ctl_remains(b),
+    EAssign(_, v, b, _) => scps_loop_ctl_remains(v) || scps_loop_ctl_remains(b),
+    EAssignOp(_, _, v, b, _) => scps_loop_ctl_remains(v) || scps_loop_ctl_remains(b),
     EDot(o, _, _, _) => scps_loop_ctl_remains(o),
     ELabeledArg(_, _, v) => scps_loop_ctl_remains(v),
     ETuple(items) => scps_loop_exprs_ctl_remain(items),

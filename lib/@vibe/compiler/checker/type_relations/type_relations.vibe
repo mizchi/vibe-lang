@@ -19,13 +19,16 @@ import @vibe/core {
 }
 
 import @vibe/compiler/checker/diagnostics {
-  off_marker, off_marker_len
+  off_marker, off_marker_enclosing, off_marker_len
 }
 
 let assignable_span_end: Array[Int] = array_empty()
 
+let assignable_enclosing: Array[String] = array_empty()
+
 export fn check_assignable_set_end(end: Int) -> Unit {
   Array::truncate(assignable_span_end, 0)
+  Array::truncate(assignable_enclosing, 0)
   if end > 0 {
     Array::push(assignable_span_end, end)
   } else {
@@ -33,8 +36,28 @@ export fn check_assignable_set_end(end: Int) -> Unit {
   }
 }
 
+/// #3305: the next mismatch's offset is an element INSIDE a tuple or array
+/// literal, and `path` the brackets from that literal down to it
+/// (`off_marker_enclosing`). An empty `path` clears it, and so does
+/// `check_assignable_set_end`. The next reported mismatch consumes it; a
+/// caller whose check reports nothing clears it, so it cannot reach an
+/// unrelated diagnostic.
+export fn check_assignable_set_enclosing(path: String) -> Unit {
+  Array::truncate(assignable_enclosing, 0)
+  if String::length(path) > 0 {
+    Array::push(assignable_enclosing, path)
+  } else {
+    ()
+  }
+}
+
 fn assignable_marker(off: Int) -> String {
-  if Array::length(assignable_span_end) > 0 {
+  if Array::length(assignable_enclosing) > 0 {
+    let path = Array::get(assignable_enclosing, 0)
+    Array::truncate(assignable_enclosing, 0)
+    Array::truncate(assignable_span_end, 0)
+    off_marker_enclosing(off, path)
+  } else if Array::length(assignable_span_end) > 0 {
     let end = Array::get(assignable_span_end, 0)
     Array::truncate(assignable_span_end, 0)
     if end > off {
