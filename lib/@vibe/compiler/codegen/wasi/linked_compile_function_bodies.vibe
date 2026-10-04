@@ -126,7 +126,12 @@ import @vibe/compiler/codegen/reloc {
 }
 
 import @vibe/compiler/codegen/common_analysis {
-  bmask_has, compute_borrow_param_user_fns, count_lambda_sites_expr, scope_tail_proj_root, stmts_contain_exceptions
+  bmask_has,
+  collect_free_vars_used_builtins,
+  compute_borrow_param_user_fns,
+  count_lambda_sites_expr,
+  scope_tail_proj_root,
+  stmts_contain_exceptions
 }
 
 import @vibe/compiler/codegen/common_base {
@@ -227,6 +232,44 @@ import ./linked_compile_lc_rename_sleep_calls.vibe {
 
 import ./linked_compile_linkedhostplan.vibe {
   LinkedBodyInputs, LinkedBodyPlan
+}
+
+/// #3355: the names a function body reads that nothing inside it binds -- the
+/// top-level functions, constants, constructors and builtins it refers to --
+/// as the starting `seen` set of the shadow uniquify below. A local binder
+/// whose name is in it is renamed, so once that binder's scope has ended a
+/// later reference to the top-level name cannot resolve to the dead local.
+/// Codegen keeps an ended binder in `local_names` (an `if`'s then branch, a
+/// match arm and a `for` body are the only scopes it truncates), and the
+/// uniquify only renamed a binder that shadowed ANOTHER local:
+/// `let a = { let twice = .. }` and then `twice(7)` beside a top-level
+/// `fn twice` called the dead local, directly or through a closure that
+/// captured it.
+///
+/// `rc_query.vibe` seeds the same set (`rcq_body_free_names`) so `vibe
+/// rc-plan` keeps planning the body this lane compiles.
+fn lc_body_free_names(e: Expr) -> Array[String] {
+  match e {
+    EFn(_, _, params, _, _, body) => {
+      let pnames: Array[String] = []
+      for p in params {
+        let (pn, _) = p
+        let n = String::length(pn)
+        let last = if n > 0 {
+          String::char_code_at(pn, n - 1)
+        } else {
+          0
+        }
+        Array::push(pnames, if last == '~' || last == '?' {
+          pn[0: n - 1]
+        } else {
+          pn
+        })
+      }
+      collect_free_vars_used_builtins(body, pnames, [])
+    },
+    _ => collect_free_vars_used_builtins(e, [], [])
+  }
 }
 
 // Compile generated and user bodies into the existing shared tables.
@@ -639,6 +682,18 @@ export fn lc_build_function_bodies(input: LinkedBodyInputs, coverage: Bool, debu
     Array::push(capture_index_names, Array::get(ctor_names_list, cib_j))
     cib_j = cib_j + 1
   }
+  // #3356: a module-level Int literal (`let base = 10`) is folded into
+  // `const_int_names`, not the function table, and codegen reads it there
+  // from any frame. Left out of this index, a lambda that read it recorded it
+  // as a CAPTURE, found no enclosing local of that name, and stored 0 into its
+  // env slot: `let g = (n) -> n + base` answered `n`, and a `let rec` lambda
+  // reading it counted down to 0. The lambda plan's walk already counts it as
+  // global (`shadow_names_only` below).
+  let mut cib_k = 0
+  while cib_k < Array::length(const_int_names_list) {
+    Array::push(capture_index_names, Array::get(const_int_names_list, cib_k))
+    cib_k = cib_k + 1
+  }
   let capture_name_index_shared = sorted_names_of(capture_index_names)
   // Codex review on #1186: this was computed inside the `bi < num_user_funcs`
   // loop below, re-sorting the same thunk_names_list once per function
@@ -736,11 +791,15 @@ export fn lc_build_function_bodies(input: LinkedBodyInputs, coverage: Bool, debu
     // name-keyed maps (the pass's own doc already notes it is harmless on
     // this lane). `lift_match_scrutinees` stays RC-only — it exists for
     // Perceus drops.
+    //
+    // #3355: a binding that shadows a TOP-LEVEL name collides the same way
+    // once its scope ends, so `seen` starts with every name the body reads
+    // free (lc_body_free_names).
     let pb_expr = if enable_rc {
-      let pb_seen: Array[String] = []
+      let pb_seen = lc_body_free_names(get_slet_expr(pb_stmt))
       lift_match_scrutinees(uniquify_shadowed_bindings_fresh(get_slet_expr(pb_stmt), uq_shadow_counter, pb_seen), m_scrut_counter)
     } else {
-      let pb_seen: Array[String] = []
+      let pb_seen = lc_body_free_names(get_slet_expr(pb_stmt))
       uniquify_shadowed_bindings_fresh(get_slet_expr(pb_stmt), uq_shadow_counter, pb_seen)
     }
     Array::push(planned_bodies, pb_expr)

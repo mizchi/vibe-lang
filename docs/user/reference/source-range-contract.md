@@ -236,3 +236,53 @@ extent. A node the parser never constructed still reports null bounds and
 = f()` reports at `f()`, because that is where the edit goes. Pinned by
 `lib/@vibe/compiler/tests/source_range_contract_test.vibe` and
 `scripts/check_source_range_contract.sh` checks 9, 10 and 11.
+
+### Tuple and array literals (#3305)
+
+`ETuple` and `EArray` have no offset slot either, so a mismatch on a tuple or
+array literal anchored the binder, or for an argument the CALLEE:
+
+| source | before | now |
+| --- | --- | --- |
+| `let t: (Int, Int) = ("a", 1)` | `2:7` (the binder `t`) | `2:23-31`, slicing `("a", 1)` |
+| `let xs: Array[Int] = ["a", "b"]` | `2:7` (the binder `xs`) | `2:24-34`, slicing `["a", "b"]` |
+| `f(["a"])`, `f(xs: Array[Int])` | `3:3` (the callee `f`) | `3:5-10`, slicing `["a"]` |
+| `f(("a", 1))`, `f(t: (Int, Int))` | `3:3` (the callee `f`) | `3:5-13`, slicing `("a", 1)` |
+
+A **binding** initializer is recovered the same way as the scalar literals
+above: when what follows the binder's `=` is a `(` or `[`, the range runs to
+its matching bracket, read from the lexer's tokens. It applies only when the
+statement ENDS right after that bracket (a `;`, a `}`, the end of the file, or
+a new statement on the next line), so `let t: Int = (1, 2) == p` keeps the
+binder anchor rather than naming one operand as the initializer. The anchor
+must itself be a binder — an identifier right after `let` or `mut` — so a
+value's own identifier (`let a: Int = x`) is never read on into the next
+statement.
+
+An **argument** needs the checker's help, because the source alone cannot
+tell an argument literal from the call's own parentheses. The checker anchors
+the first element of the literal whose offset is the start of its own token —
+a string or a name, directly or inside a nested literal — and records the
+bracket path from the argument down to it, as `[@off=N::PATH]` (`1` for `[`,
+`2` for `(`, outermost first). The locator widens that position to the
+argument's own brackets: the brackets still open at the element's token must
+end in exactly that path, and the outermost is matched to its closer. Any
+other shape keeps the element itself, a position inside the argument. An
+argument literal with no such element — `f([1, 2])` — still anchors the
+callee.
+
+### Assignment targets (#3248)
+
+`EAssign` and `EAssignOp` keep the byte offset of their TARGET token, so an
+unknown assignment target is located at the token the reader has to edit,
+each occurrence at its own:
+
+| source | before | now |
+| --- | --- | --- |
+| `missing = 1` in one function, `r#missing += 2` in another | one diagnostic: `--single-file` unlocated (`0:0`, `synthetic: true`), the FS lane at a first-occurrence guess (`2:3`, a point, with the path inside the message) | two, on both lanes: `2:3-10` and `6:3-12` |
+
+The locator reads the token's extent back from the lexer, so a raw `r#name`
+target is covered whole, and it requires that token to spell the name the
+diagnostic reports. Nothing is recovered by searching the text for a matching
+assignment: an assignment the compiler synthesized has no token and stays
+unlocated.

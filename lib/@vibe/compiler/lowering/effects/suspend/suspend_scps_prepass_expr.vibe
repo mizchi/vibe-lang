@@ -484,8 +484,8 @@ fn scps_inline_fn_aliases(e: Expr, fn_names: Array[String]) -> Expr {
     EWhile(c, b) => EWhile(scps_inline_fn_aliases(c, fn_names), scps_inline_fn_aliases(b, fn_names)),
     EForIn(x, idx, it, b) => EForIn(x, idx, scps_inline_fn_aliases(it, fn_names), scps_inline_fn_aliases(b, fn_names)),
     ELoop(pairs, b) => ELoop(scps_inline_fn_aliases_pairs(pairs, fn_names), scps_inline_fn_aliases(b, fn_names)),
-    EAssign(x, v, b) => EAssign(x, scps_inline_fn_aliases(v, fn_names), scps_inline_fn_aliases(b, fn_names)),
-    EAssignOp(x, op, v, b) => EAssignOp(x, op, scps_inline_fn_aliases(v, fn_names), scps_inline_fn_aliases(b, fn_names)),
+    EAssign(x, v, b, target_off) => EAssign(x, scps_inline_fn_aliases(v, fn_names), scps_inline_fn_aliases(b, fn_names), target_off),
+    EAssignOp(x, op, v, b, target_off) => EAssignOp(x, op, scps_inline_fn_aliases(v, fn_names), scps_inline_fn_aliases(b, fn_names), target_off),
     EBinOp(op, l, r, boff) => EBinOp(op, scps_inline_fn_aliases(l, fn_names), scps_inline_fn_aliases(r, fn_names), boff),
     EUnaryOp(op, a) => EUnaryOp(op, scps_inline_fn_aliases(a, fn_names)),
     EDot(o, f, off, foff) => EDot(scps_inline_fn_aliases(o, fn_names), f, off, foff),
@@ -994,8 +994,8 @@ fn scps_slot_sites_ok(e: Expr, fname: String, slot: Int, has_encl: Bool, encl_pa
     },
     EBinOp(_, l, r, _) => scps_slot_sites_ok(l, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting) && scps_slot_sites_ok(r, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting),
     EUnaryOp(_, a) => scps_slot_sites_ok(a, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting),
-    EAssign(_, v, b) => scps_slot_sites_ok(v, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting) && scps_slot_sites_ok(b, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting),
-    EAssignOp(_, _, v, b) => scps_slot_sites_ok(v, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting) && scps_slot_sites_ok(b, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting),
+    EAssign(_, v, b, _) => scps_slot_sites_ok(v, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting) && scps_slot_sites_ok(b, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting),
+    EAssignOp(_, _, v, b, _) => scps_slot_sites_ok(v, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting) && scps_slot_sites_ok(b, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting),
     EReturn(a) => scps_slot_sites_ok(a, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting),
     EDot(o, _, _, _) => scps_slot_sites_ok(o, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting),
     ELabeledArg(_, _, v) => scps_slot_sites_ok(v, fname, slot, has_encl, encl_params, encl_body, eff, needing, ctx, encl_name, visiting),
@@ -1328,8 +1328,8 @@ fn scps_wrap_tail_resume(expr: Expr, ik: String, sh: Bool) -> Expr {
     ELetMut(n, v, b, off) => ELetMut(n, v, scps_wrap_tail_resume(b, ik, sh || n == "resume"), off),
     ELetRec(n, v, b) => ELetRec(n, v, scps_wrap_tail_resume(b, ik, sh || n == "resume")),
     ESeq(a, b) => ESeq(a, scps_wrap_tail_resume(b, ik, sh)),
-    EAssign(n, v, c) => EAssign(n, v, scps_wrap_tail_resume(c, ik, sh)),
-    EAssignOp(n, op, v, c) => EAssignOp(n, op, v, scps_wrap_tail_resume(c, ik, sh)),
+    EAssign(n, v, c, target_off) => EAssign(n, v, scps_wrap_tail_resume(c, ik, sh), target_off),
+    EAssignOp(n, op, v, c, target_off) => EAssignOp(n, op, v, scps_wrap_tail_resume(c, ik, sh), target_off),
     EReturn(_) => expr,
     ECall(callee, _, _, _) => match callee {
       EIdent(nm, _) => if nm == "resume" && !sh {
@@ -1686,8 +1686,8 @@ fn scps_rewrite(e: Expr, ctx: (Array[Stmt], Array[(String, Array[(String, Array[
     }, off, callee_resolution),
     EBinOp(op, l, r, boff) => EBinOp(op, scps_rewrite(l, ctx, st, cps_effs, scope), scps_rewrite(r, ctx, st, cps_effs, scope), boff),
     EUnaryOp(op, e2) => EUnaryOp(op, scps_rewrite(e2, ctx, st, cps_effs, scope)),
-    EAssign(n, v, c) => EAssign(n, scps_rewrite(v, ctx, st, cps_effs, scope), scps_rewrite(c, ctx, st, cps_effs, scope)),
-    EAssignOp(n, op, v, c) => EAssignOp(n, op, scps_rewrite(v, ctx, st, cps_effs, scope), scps_rewrite(c, ctx, st, cps_effs, scope)),
+    EAssign(n, v, c, target_off) => EAssign(n, scps_rewrite(v, ctx, st, cps_effs, scope), scps_rewrite(c, ctx, st, cps_effs, scope), target_off),
+    EAssignOp(n, op, v, c, target_off) => EAssignOp(n, op, scps_rewrite(v, ctx, st, cps_effs, scope), scps_rewrite(c, ctx, st, cps_effs, scope), target_off),
     EDot(o, f, off1, off2) => EDot(scps_rewrite(o, ctx, st, cps_effs, scope), f, off1, off2),
     ELabeledArg(l, n, v) => ELabeledArg(l, n, scps_rewrite(v, ctx, st, cps_effs, scope)),
     EReturn(e2) => EReturn(scps_rewrite(e2, ctx, st, cps_effs, scope)),
@@ -2012,8 +2012,8 @@ fn scps_prepass_expr(e: Expr, ecfgs: Array[(String, Array[String], Array[String]
     },
     EBinOp(op, l, r, boff) => EBinOp(op, scps_prepass_expr(l, ecfgs, ctx, st, split_effs, scope), scps_prepass_expr(r, ecfgs, ctx, st, split_effs, scope), boff),
     EUnaryOp(op, x) => EUnaryOp(op, scps_prepass_expr(x, ecfgs, ctx, st, split_effs, scope)),
-    EAssign(n, v, c) => EAssign(n, scps_prepass_expr(v, ecfgs, ctx, st, split_effs, scope), scps_prepass_expr(c, ecfgs, ctx, st, split_effs, scope)),
-    EAssignOp(n, op, v, c) => EAssignOp(n, op, scps_prepass_expr(v, ecfgs, ctx, st, split_effs, scope), scps_prepass_expr(c, ecfgs, ctx, st, split_effs, scope)),
+    EAssign(n, v, c, target_off) => EAssign(n, scps_prepass_expr(v, ecfgs, ctx, st, split_effs, scope), scps_prepass_expr(c, ecfgs, ctx, st, split_effs, scope), target_off),
+    EAssignOp(n, op, v, c, target_off) => EAssignOp(n, op, scps_prepass_expr(v, ecfgs, ctx, st, split_effs, scope), scps_prepass_expr(c, ecfgs, ctx, st, split_effs, scope), target_off),
     EDot(o, f, off1, off2) => EDot(scps_prepass_expr(o, ecfgs, ctx, st, split_effs, scope), f, off1, off2),
     ELabeledArg(l, n, v) => ELabeledArg(l, n, scps_prepass_expr(v, ecfgs, ctx, st, split_effs, scope)),
     EReturn(x) => EReturn(scps_prepass_expr(x, ecfgs, ctx, st, split_effs, scope)),
@@ -2155,11 +2155,11 @@ fn scps_guard_untriggered(e: Expr, guard_effs: Array[String], errs: Array[String
       scps_guard_untriggered(r, guard_effs, errs)
     },
     EUnaryOp(_, x) => scps_guard_untriggered(x, guard_effs, errs),
-    EAssign(_, v, c) => {
+    EAssign(_, v, c, _) => {
       scps_guard_untriggered(v, guard_effs, errs)
       scps_guard_untriggered(c, guard_effs, errs)
     },
-    EAssignOp(_, _, v, c) => {
+    EAssignOp(_, _, v, c, _) => {
       scps_guard_untriggered(v, guard_effs, errs)
       scps_guard_untriggered(c, guard_effs, errs)
     },

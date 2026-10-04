@@ -342,8 +342,8 @@ export fn scps_calls_ok(e: Expr, sctx: (String, Array[String], Array[String], In
     },
     EBinOp(_, l, r, _) => scps_calls_ok(l, sctx, ctx, scope) && scps_calls_ok(r, sctx, ctx, scope),
     EUnaryOp(_, e2) => scps_calls_ok(e2, sctx, ctx, scope),
-    EAssign(_, v, c) => scps_calls_ok(v, sctx, ctx, scope) && scps_calls_ok(c, sctx, ctx, scope),
-    EAssignOp(_, _, v, c) => scps_calls_ok(v, sctx, ctx, scope) && scps_calls_ok(c, sctx, ctx, scope),
+    EAssign(_, v, c, _) => scps_calls_ok(v, sctx, ctx, scope) && scps_calls_ok(c, sctx, ctx, scope),
+    EAssignOp(_, _, v, c, _) => scps_calls_ok(v, sctx, ctx, scope) && scps_calls_ok(c, sctx, ctx, scope),
     EReturn(e2) => scps_calls_ok(e2, sctx, ctx, scope),
     EDot(o, _, _, _) => scps_calls_ok(o, sctx, ctx, scope),
     ELabeledArg(_, _, v) => scps_calls_ok(v, sctx, ctx, scope),
@@ -515,8 +515,8 @@ fn scps_first_bad_call_info(e: Expr, sctx: (String, Array[String], Array[String]
     },
     EBinOp(_, l, r, _) => scps_first_bad_call_info_pair(l, r, sctx, ctx, scope),
     EUnaryOp(_, e2) => scps_first_bad_call_info(e2, sctx, ctx, scope),
-    EAssign(_, v, c) => scps_first_bad_call_info_pair(v, c, sctx, ctx, scope),
-    EAssignOp(_, _, v, c) => scps_first_bad_call_info_pair(v, c, sctx, ctx, scope),
+    EAssign(_, v, c, _) => scps_first_bad_call_info_pair(v, c, sctx, ctx, scope),
+    EAssignOp(_, _, v, c, _) => scps_first_bad_call_info_pair(v, c, sctx, ctx, scope),
     EReturn(e2) => scps_first_bad_call_info(e2, sctx, ctx, scope),
     EDot(o, _, _, _) => scps_first_bad_call_info(o, sctx, ctx, scope),
     ELabeledArg(_, _, v) => scps_first_bad_call_info(v, sctx, ctx, scope),
@@ -720,8 +720,8 @@ fn scps_first_opaque_capture(e: Expr, locals: Array[String], ctx: (Array[Stmt], 
     },
     EMatch(s, arms) => scps_first_nonempty(scps_first_opaque_capture(s, locals, ctx), scps_first_opaque_capture_arms(arms, locals, ctx)),
     EHandle(b, arms) => scps_first_nonempty(scps_first_opaque_capture(b, locals, ctx), scps_first_opaque_capture_arms(arms, locals, ctx)),
-    EAssign(_, v, b) => scps_first_nonempty(scps_first_opaque_capture(v, locals, ctx), scps_first_opaque_capture(b, locals, ctx)),
-    EAssignOp(_, _, v, b) => scps_first_nonempty(scps_first_opaque_capture(v, locals, ctx), scps_first_opaque_capture(b, locals, ctx)),
+    EAssign(_, v, b, _) => scps_first_nonempty(scps_first_opaque_capture(v, locals, ctx), scps_first_opaque_capture(b, locals, ctx)),
+    EAssignOp(_, _, v, b, _) => scps_first_nonempty(scps_first_opaque_capture(v, locals, ctx), scps_first_opaque_capture(b, locals, ctx)),
     _ => scps_first_opaque_capture_all(expr_children(e), locals, ctx)
   }
 }
@@ -1246,9 +1246,9 @@ export fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], 
         // whole assignment when minting the binder so assignment targets and
         // continuation names cannot collide with it. Compound RHS and
         // EAssignOp deliberately keep the generic fail-closed path.
-        EAssign(x, v, b) => if scps_direct_spine_input(v, sctx) {
+        EAssign(x, v, b, target_off) => if scps_direct_spine_input(v, sctx) {
           let ax = scps_seq_float_fresh("assign", e, EUnit, site)
-          scps_split_tail(ELet(ax, v, EAssign(x, EIdent(ax, -1), b), -1), sctx, ctx, st)
+          scps_split_tail(ELet(ax, v, EAssign(x, EIdent(ax, -1), b, target_off), -1), sctx, ctx, st)
         } else if scps_contains_susp(v, sctx) {
           // #1536: a block or a selection as the whole RHS moves the assignment
           // inward, exactly as a binding does. A target boxed by cellification
@@ -1262,7 +1262,7 @@ export fn scps_split_tail(e: Expr, sctx: (String, Array[String], Array[String], 
               // makes of it.
               let (aok, abn, abv, av) = scps_anf_compound(v, sctx, e, site)
               if aok {
-                scps_split_tail(scps_anf_wrap(abn, abv, EAssign(x, av, b)), sctx, ctx, st)
+                scps_split_tail(scps_anf_wrap(abn, abv, EAssign(x, av, b, target_off)), sctx, ctx, st)
               } else {
                 (false, e)
               }
