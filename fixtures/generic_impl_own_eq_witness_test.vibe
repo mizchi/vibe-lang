@@ -1,0 +1,48 @@
+//# A generic impl bounded by a program `Eq` that declares `equals` dispatches through it (#3365).
+//
+// The sibling `generic_impl_bound_witness_test.vibe` uses the builtin `Eq`.
+// Here the program declares its own `Eq` with the `(Self, Self) -> Bool`
+// witness, so `[T: Eq]` on the impl's parameter threads that dictionary. The
+// `Same` dictionary for `Box[Pt]` failed wasm validation the same way:
+// "not enough arguments on the stack for call (need 4, got 3)".
+
+trait Eq {
+  equals(Self, Self) -> Bool
+}
+
+struct Pt {
+  v: Int
+}
+
+impl Eq for Pt {
+  equals(a: Pt, b: Pt) -> Bool {
+    a.v == b.v
+  }
+}
+
+trait Same {
+  same(Self, Self) -> Bool
+}
+
+struct Box[T] {
+  v: T
+}
+
+impl [T: Eq] Same for Box[T] {
+  same(a: Box[T], b: Box[T]) -> Bool {
+    a.v == b.v
+  }
+}
+
+fn f[U: Same](a: U, b: U) -> Bool {
+  U::same(a, b)
+}
+
+test "a program Eq witness reaches the generic impl's method" {
+  inspect(f(Box::{ v: Pt::{ v: 1 } }, Box::{ v: Pt::{ v: 1 } }), "true")
+  inspect(f(Box::{ v: Pt::{ v: 1 } }, Box::{ v: Pt::{ v: 2 } }), "false")
+}
+
+test "called directly" {
+  inspect(Same::same(Box::{ v: Pt::{ v: 3 } }, Box::{ v: Pt::{ v: 3 } }), "true")
+}

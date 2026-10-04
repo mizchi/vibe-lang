@@ -1,0 +1,115 @@
+//# A generic impl's own bound dictionary reaches its method through the impl's witness (#3365).
+//
+// `impl [T: Eq] Same for Box[T]` needs `T`'s `Eq` dictionary as well as the
+// two `Box[T]` values, so the `Same` dictionary built for `Box[Pt]` holds the
+// impl method with that inner dictionary applied. The slot was eta-expanded
+// as a ONE-argument closure (`(__w) -> same(eq_dict, __w)`): right for a
+// method like `show(Self)`, one argument short for `same(Self, Self)`. The
+// module then failed wasm validation at instantiate ("not enough arguments on
+// the stack for call (need 4, got 3)"), after a clean `vibe check`, on every
+// shape below except the direct call. The closure now takes exactly the
+// method's parameters.
+
+struct Pt {
+  v: Int
+} derive (Eq)
+
+trait Same {
+  same(Self, Self) -> Bool
+}
+
+struct Box[T] {
+  v: T
+}
+
+impl [T: Eq] Same for Box[T] {
+  same(a: Box[T], b: Box[T]) -> Bool {
+    a.v == b.v
+  }
+}
+
+struct Pair[A, B] {
+  x: A;
+  y: B
+}
+
+impl [A: Eq, B: Eq] Same for Pair[A, B] {
+  same(a: Pair[A, B], b: Pair[A, B]) -> Bool {
+    a.x == b.x && a.y == b.y
+  }
+}
+
+trait Keyed {
+  key(Self) -> Int
+}
+
+impl Keyed for Pt {
+  key(p: Pt) -> Int {
+    p.v
+  }
+}
+
+struct Tag[T] {
+  t: T
+}
+
+impl [T: Keyed] Same for Tag[T] {
+  same(a: Tag[T], b: Tag[T]) -> Bool {
+    T::key(a.t) == T::key(b.t)
+  }
+}
+
+trait Scale {
+  scale(Self, Int) -> Int
+}
+
+impl [T: Keyed] Scale for Tag[T] {
+  scale(a: Tag[T], k: Int) -> Int {
+    T::key(a.t) * k
+  }
+}
+
+fn f[U: Same](a: U, b: U) -> Bool {
+  U::same(a, b)
+}
+
+fn g[V: Same](a: V, b: V) -> Bool {
+  f(a, b)
+}
+
+fn scaled[S: Scale](a: S, k: Int) -> Int {
+  S::scale(a, k)
+}
+
+test "through a formal" {
+  inspect(f(Box::{ v: Pt::{ v: 1 } }, Box::{ v: Pt::{ v: 1 } }), "true")
+  inspect(f(Box::{ v: Pt::{ v: 1 } }, Box::{ v: Pt::{ v: 2 } }), "false")
+  inspect(f(Box::{ v: 1.5 }, Box::{ v: 1.5 }), "true")
+}
+
+test "called directly" {
+  inspect(Same::same(Box::{ v: Pt::{ v: 1 } }, Box::{ v: Pt::{ v: 1 } }), "true")
+  inspect(Same::same(Box::{ v: Pt::{ v: 1 } }, Box::{ v: Pt::{ v: 2 } }), "false")
+  inspect(Same::same(Box::{ v: 1.5 }, Box::{ v: 1.5 }), "true")
+}
+
+test "through a nested formal" {
+  inspect(g(Box::{ v: Pt::{ v: 1 } }, Box::{ v: Pt::{ v: 1 } }), "true")
+  inspect(g(Box::{ v: Pt::{ v: 1 } }, Box::{ v: Pt::{ v: 2 } }), "false")
+  inspect(g(Box::{ v: 1.5 }, Box::{ v: 1.5 }), "true")
+}
+
+test "an impl with two bounded parameters" {
+  inspect(f(Pair::{ x: Pt::{ v: 1 }, y: 2.5 }, Pair::{ x: Pt::{ v: 1 }, y: 2.5 }), "true")
+  inspect(f(Pair::{ x: Pt::{ v: 1 }, y: 2.5 }, Pair::{ x: Pt::{ v: 1 }, y: 3.5 }), "false")
+  inspect(f(Pair::{ x: 7, y: "a" }, Pair::{ x: 7, y: "a" }), "true")
+}
+
+test "a bound on a method-bearing program trait" {
+  inspect(f(Tag::{ t: Pt::{ v: 4 } }, Tag::{ t: Pt::{ v: 4 } }), "true")
+  inspect(f(Tag::{ t: Pt::{ v: 4 } }, Tag::{ t: Pt::{ v: 5 } }), "false")
+}
+
+test "a slot whose method takes a non-Self parameter" {
+  inspect(scaled(Tag::{ t: Pt::{ v: 4 } }, 3), "12")
+}
