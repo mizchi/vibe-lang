@@ -519,7 +519,9 @@ value whose type argument is still open, an array annotated
 refused the same way. Neither does the stored value's type alone. A type
 names the region only as far as it has room for it: a struct or enum does not
 show its fields' types, an annotation may spell `TaskHandle[Int]` for a handle
-of the group, and a closure's type does not list what it captured. Where the
+of the group, and a closure's type does not list what it captured. (A
+program's own type spelled like one of those builtins -- its own `struct
+Sender[T]` -- is that declaration, judged by its fields.) Where the
 stored value's type may hide a region, the value is judged by what it READS --
 a value can carry a region only if a variable it reads carries it, since the
 token itself is a variable. A variable carries what its type shows, or, where
@@ -616,10 +618,12 @@ again (an imported function) carries what its arguments carry. A generic
 same way.
 
 A callee is checked again once per distinct call shape -- the callee, and for
-each argument whether it carries the region, the regions its location
-predates, and, for a function argument, which function it is -- so a helper
-that recurses with a different callback (`walk(safe, h)` calling
-`walk(stash, h)`) checks that callback too.
+each argument which regions it carries (by its type, and where its type hides
+them), the regions its location predates, and, for a function argument, which
+function it is -- so a helper that recurses with a different callback
+(`walk(safe, h)` calling `walk(stash, h)`) checks that callback too, and one
+that recurses with an inner group's handle where the first call had an outer
+one checks that call too.
 
 A callee that keeps nothing -- one that only reads its argument, or stores a
 joined result -- is accepted. A function the callee is passed is followed: the

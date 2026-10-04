@@ -345,6 +345,31 @@ fn retention_is_region_head(name: String) -> Bool {
   name == "TaskHandle" || name == "TaskGroup" || name == "Sender" || name == "Receiver" || name == "Channel" || name == "MutList" || name == "MutBytes" || name == "Region" || name == "Task" || name == "Nursery"
 }
 
+/// Codex on #3359: whether the program declares a struct or enum named
+/// `name` -- itself or through an import. A compiler-owned head spelled the
+/// same way (`struct Sender[T]` of the program's own) is then that
+/// declaration, judged by its fields, the way `source_declares_type` reads
+/// the declaration table for the assignability checks (#3326).
+fn retention_declared_type(name: String, defs: Array[TypeDef]) -> Bool {
+  let mut found = false
+  for d in defs {
+    match d {
+      TDStruct(dn, _, _, _) => if String::equals(dn, name) {
+        found = true
+      } else {
+        ()
+      },
+      TDEnum(dn, _, _) => if String::equals(dn, name) {
+        found = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+  }
+  found
+}
+
 fn retention_type_has_region_skolem(t: Type) -> Bool {
   match t {
     CtNamed(n, args) => if String::starts_with(n, "#region_") {
@@ -521,7 +546,7 @@ fn retention_hides(t: Type, defs: Array[TypeDef], visiting: Array[String]) -> Bo
     CtEnum(name) => retention_named_hides(name, array_empty(), defs, visiting),
     CtNamed(name, args) => if String::starts_with(name, "#region_") {
       false
-    } else if retention_is_region_head(name) {
+    } else if retention_is_region_head(name) && !retention_declared_type(name, defs) {
       let mut shown = false
       for a in args {
         if retention_type_has_region_skolem(a) {
@@ -2742,12 +2767,15 @@ fn retention_check_callee(callee: RetentionCallee, callee_expr: Expr, label: Str
               let hidden = Array::get(hidden_by_arg, ai)
               let fn_arg = retention_arg_callee(arg, arg_ty, env)
               Array::push(overrides, (arg_ty, predates, fn_arg, hidden))
-              let carries = Array::length(retention_regions_mentioned(arg_ty, regions)) > 0 || Array::length(hidden) > 0
-              shape = String::concat(shape, String::concat(if carries {
-                "|r"
-              } else {
-                "|-"
-              }, String::concat(String::join(predates, ","), String::concat("/", String::concat(String::join(hidden, ","), String::concat("/", retention_callee_identity(fn_arg)))))))
+              // Codex on #3359: WHICH regions the argument carries, not
+              // whether it carries one -- a recursive call that moves an
+              // inner group's handle into a parameter the first call gave
+              // an outer one is another shape, and is checked again.
+              let shown = for r in retention_regions_mentioned(arg_ty, regions) {
+                let (rname, _) = r
+                rname
+              }
+              shape = String::concat(shape, String::concat("|", String::concat(String::join(shown, ","), String::concat("/", String::concat(String::join(predates, ","), String::concat("/", String::concat(String::join(hidden, ","), String::concat("/", retention_callee_identity(fn_arg)))))))))
               ai = ai + 1
             }
             let (kind, result_regions) = retention_recheck(lit, scope, regions, overrides, shape, defs, s_args, c_args, check_child)
@@ -2853,7 +2881,10 @@ export fn retention_named_run_body(body: Expr, env: TypeEnv, defs: Array[TypeDef
           }
           let (kind, result_regions) = retention_recheck(lit, scope, all_regions, [
             (group_ty, array_empty(), "", array_empty())
-          ], String::concat("run|", retention_callee_identity(key)), defs, s, c + retention_counter_gap(), check_child)
+          ], String::concat("run|", String::concat(retention_callee_identity(key), String::concat("|", String::join(for r in all_regions {
+            let (an, _) = r
+            an
+          }, ",")))), defs, s, c + retention_counter_gap(), check_child)
           (kind, retention_string_has(result_regions, rname))
         },
         // A function imported from another module: see the header.
