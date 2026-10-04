@@ -1,0 +1,81 @@
+// #3276: a `TaskGroup::run` body is checked inside the group's region, and a
+// write that stores the group's own token in a location declared before the
+// body is refused (fixtures/typecheck/taskgroup_escape_*_reject.vibe). These
+// are the uses that must stay legal, measured by their answers:
+//
+// - joined RESULTS written to outer locations of every declared shape: an
+//   annotated array, an open array, a generic struct field, a `let mut`;
+// - handles and endpoints kept in locals created inside the body -- an array,
+//   a struct, a `let mut` -- and joined there;
+// - a nested group storing an OUTER group's handle in a local of the outer
+//   body: that local is inside the outer group, so nothing escapes.
+import @vibe/concurrent { TaskGroup, TaskHandle, Channel, Sender, Receiver }
+
+struct Cell[T] {
+  mut v: Option[T]
+}
+
+fn outer_writes() -> String with Exception {
+  let results: Array[Int] = []
+  let open_results = []
+  let c = Cell::{ v: None }
+  let mut total = 0
+  let mut last: Option[Int] = None
+  let r = TaskGroup::run((n) -> {
+    let hs = []
+    let mut i = 0
+    while i < 3 {
+      let k = i
+      Array::push(hs, TaskGroup::spawn(n, () -> { k * 10 }))
+      i = i + 1
+    }
+    let local_cell = Cell::{ v: None }
+    local_cell.v = Some(TaskGroup::spawn(n, () -> { 5 }))
+    let mut local_slot = None
+    local_slot = Some(TaskGroup::spawn(n, () -> { 6 }))
+    for h in hs {
+      let v = TaskHandle::join(h)
+      Array::push(results, v)
+      Array::push(open_results, v + 1)
+      total = total + v
+    }
+    match local_cell.v {
+      Some(h) => c.v = Some(TaskHandle::join(h)),
+      None => ()
+    }
+    match local_slot {
+      Some(h) => last = Some(TaskHandle::join(h)),
+      None => ()
+    }
+    let (tx, rx) = Channel::bounded(n, 4)
+    let _p = TaskGroup::spawn(n, () -> {
+      Sender::send(tx, 7)
+      Sender::release(tx)
+      0
+    })
+    let got = match Receiver::recv(rx) {
+      Some(x) => x,
+      None => 0
+    }
+    let outer_local = []
+    let inner = TaskGroup::run((m) -> {
+      Array::push(outer_local, TaskGroup::spawn(n, () -> { 100 }))
+      TaskHandle::join(TaskGroup::spawn(m, () -> { 1 }))
+    })
+    let from_outer = TaskHandle::join(Array::get(outer_local, 0))
+    got + inner + from_outer
+  })
+  let cv = match c.v {
+    Some(x) => x,
+    None => 0 - 1
+  }
+  let lv = match last {
+    Some(x) => x,
+    None => 0 - 1
+  }
+  "r=\{r} results=\{Array::length(results)} open=\{Array::length(open_results)} total=\{total} c=\{cv} last=\{lv}"
+}
+
+test "joined results and body-local handles stay legal around a task group" allows Exception {
+  inspect(outer_writes(), "r=108 results=3 open=3 total=30 c=5 last=6")
+}

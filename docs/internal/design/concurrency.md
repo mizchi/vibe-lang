@@ -39,7 +39,8 @@ observes, this document decides.
 2. **A task group is scoped by a generative region.** Each `TaskGroup::run`
    mints a region that no source text can name. The group, its task handles
    and its channel endpoints carry that region, and the compiler refuses a
-   body that returns one of them.
+   body that returns one of them or stores one in a location declared before
+   the body.
 3. **Failure is an exception row, not a wrapper** (ADR-0085). `run` and
    `join` return the value itself and throw `TaskError`. A task that fails
    cancels the siblings that are not already running, and `run` throws the
@@ -503,7 +504,32 @@ value is refused; a runner whose region an earlier use already fixed is
 refused with the edit (call `TaskGroup::run` directly, or bind it with a local
 `let` at each use).
 
-After the body is checked, the call is refused when:
+A body written as a closure literal at the call -- the usual spelling, and
+the one the `taskgroup { g => .. }` sugar produces -- is checked inside the
+region, the way ADR-0090's `region r { .. }` block is: the group parameter
+carries the region from the first line of the body, and every binding visible
+at the call is outside the region. A **write that stores the region in a
+location declared before the body** is refused where it is written: an
+assignment, a field write, `Array::set` / `Array::push`, or any other mutable
+container write the checker knows retains its argument, made from the body or
+from a closure written in it, to an outer binding directly or through a local
+alias of one. The target's declared type does not matter -- a generic struct
+value whose type argument is still open, an array annotated
+`Array[Option[TaskHandle[Int]]]`, an unannotated `let mut slot = None` are all
+refused the same way:
+
+```text
+region escapes its nursery scope: this write stores this TaskGroup::run call's
+own Nursery/Task/Sender/Receiver token in a binding declared outside the body
+-- join the task (or use the endpoint) inside the body and store the result
+instead, or declare the binding inside the body
+```
+
+A joined result, or a handle kept in a local declared inside the body, is not
+an escape. Neither is a nested group storing the outer group's handle in a
+local of the outer body.
+
+After the body is checked, the call is also refused when:
 
 - **the returned value mentions the region** -- the body returns a task
   handle, an endpoint, or anything containing one: `region escapes its nursery
@@ -511,18 +537,10 @@ After the body is checked, the call is refused when:
   own Nursery/Task/Sender/Receiver token`;
 - **a binding visible at the call now mentions the region**: `region escapes
   its nursery scope: an outer binding now depends on this TaskGroup::run
-  call's own Nursery/Task/Sender/Receiver token`.
-
-The outer-binding check sees a binding only when every use of it shares one
-type instance. An array whose element type is still open is never generalized
-(`let_generalize` keeps it monomorphic), so `let cell = [None]` or
-`let mut cell = [None]` before the call, with a handle stored into it from the
-body, is refused; so is `let mut slot = None` assigned `Some(handle)`. A
-binding the checker does generalize gets a fresh instance at each use, and a
-region stored through it is not seen: measured, an outer `let c = Cell::{ v:
-None }` (or `let mut c`) of a generic struct with a `mut v: Option[T]` field,
-assigned `c.v = Some(handle)` inside the body, compiles and runs (see
-[Known gaps](#known-gaps)). The return check has no such hole.
+  call's own Nursery/Task/Sender/Receiver token`. This scan sees a binding
+  only when every use of it shares one type instance (an array whose element
+  type is still open, a `let mut` option), so it is a backstop behind the
+  write check, which it does not repeat. The return check has no such limit.
 
 Inside the body, a `let` bound to a region-tagged type is not generalized
 (`is_region_tagged_ty` puts it under the same value restriction as an
@@ -533,10 +551,18 @@ Pinned by `fixtures/region_ok_basic.vibe`, `fixtures/err_region_escape_return.vi
 `fixtures/err_region_escape_run_rename.vibe`,
 `fixtures/err_region_escape_run_value.vibe`,
 `fixtures/region_ok_run_local_alias.vibe`, `fixtures/region_ok_not_a_runner.vibe`
-and, through the sugar, `fixtures/err_taskgroup_sugar_region_escape.vibe`.
+and, through the sugar, `fixtures/err_taskgroup_sugar_region_escape.vibe`. The
+write check is pinned by the `taskgroup_escape_*_reject` rows of
+`fixtures/typecheck/expected.tsv` (generic struct field, annotated array set
+and push, annotated `let mut`, an alias, a closure, the sugar, an alias of
+`run`, a channel endpoint) and by `fixtures/taskgroup_outer_write_ok_test.vibe`
+(the writes that stay legal).
 
 ADR-0090's `region r { .. }` mints its region the same way for region-bound
-mutable storage; that is a separate construct with its own escape check.
+mutable storage. The write check above is that construct's own, applied to a
+task group's body; only the diagnostic's wording differs. A write made by a
+function or closure defined outside the body, and a body passed by name, are
+not covered (see [Known gaps](#known-gaps)).
 
 ## Safe parallel API
 
@@ -884,20 +910,21 @@ nursery scope`).
 
 ## Known gaps
 
-- **Outer generalized bindings.** The escape check does not see a region
-  leaking into a binding the checker generalized before `TaskGroup::run`,
-  because each use of it gets its own instance. Arrays with an open element
-  type and `let mut` options are not generalized, so a leak into them is
-  caught. A value of a generic struct whose type argument is still open is
-  generalized, with or without `mut` on the binding: measured with
-  `struct Cell[T] { mut v: Option[T] }` and `let c = Cell::{ v: None }`, a
-  task handle stored into `c.v` from the body escapes the group, and the
-  program compiles and runs. A binding annotated with a concrete type is not
-  checked either: with `let c: Array[Option[TaskHandle[Int]]] = [None]`, an
-  `Array::set(c, 0, Some(h))` from the body compiles. Joining an escaped
-  handle after the group returns the task's value (measured), so the program
-  is not answered wrongly today, but nothing enforces that the handle stays in
-  its group. Only the return check is a guarantee.
+- **Writes made by code defined outside the body.** The write check sees the
+  writes written in a `TaskGroup::run` body and in the closures written in it.
+  A write made by a function or closure defined elsewhere is checked where
+  that code was written, outside any region, so these still store a task
+  handle where it outlives its group, and compile and run (measured): a
+  helper that stores its argument into a container it was passed
+  (`fn put[T](c: Cell[T], v: T) { c.v = Some(v) }` called as
+  `put(c, handle)`), a closure bound before the call that writes an outer
+  binding (`let stash = (h) -> { c.v = Some(h) }` called as
+  `stash(handle)`), and a body bound to a name and passed as
+  `TaskGroup::run(body)`. ADR-0090's `region r { .. }` has the same hole for
+  a helper. Closing it needs a summary of which arguments a function retains.
+  Joining an escaped handle after the group returns the task's value
+  (measured), so no program is answered wrongly today, but nothing enforces
+  that the handle stays in its group on these routes.
 - **Mid-run cancellation.** A cancel request is observed at dispatch and at a
   parked task only. A running task, and a suspendable task that is running
   when the request arrives, are not interrupted.
