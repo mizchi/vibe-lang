@@ -188,17 +188,29 @@ test "3326: what IS an Array keeps accepting one" {
 // spelling (`struct Future[T]`, fixtures/user_future_struct_field_call_test.vibe),
 // and it resolves to the same `CtNamed` as the compiler's head. Ownership is
 // read from the declaration table, not the spelling: a source type is an
-// ordinary nominal, and only the compiler's own heads keep their sanctioned
-// crossings (`FixedArray` / `ArrayBuilder` into an `Array` slot).
+// ordinary nominal type.
 test "3326: a program's own type spelled like a compiler-owned head is not an Array" {
   assert(check_source_err_contains("struct Future[T] { v: T }\nfn main() -> Int { let x: Future[Int] = [1]; x.v }", "expected Future[Int], got Array[Int]"))
   assert(check_source_err("enum Task[T] { Done(T); Pending }\nfn main() -> Int { let x: Task[Int] = [1]; 0 }"))
-  assert(check_source_err("struct MutBytes[T] { v: T }\nfn main() -> Int { let x: MutBytes[Int] = (1, 2); x.v }"))
-  assert(check_source_err_contains("struct FixedArray[T] { v: T }\nfn main() -> Int { let x: FixedArray[Int] = [1]; x.v }", "expected FixedArray[Int], got Array[Int]"))
-  assert(check_source_err("struct FixedArray[T] { v: T }\nfn len(a: Array[Int]) -> Int { Array::length(a) }\nfn main() -> Int { len(FixedArray::{ v: 1 }) }"))
-  assert(check_source_err("struct ArrayBuilder[T] { v: T }\nfn len(a: Array[Int]) -> Int { Array::length(a) }\nfn main() -> Int { len(ArrayBuilder::{ v: 1 }) }"))
+  assert(check_source_err("struct Future[T] { v: T }\nfn main() -> Int { let x: Future[Int] = (1, 2); x.v }"))
+  assert(check_source_err("struct Future[T] { v: T }\nfn len(a: Array[Int]) -> Int { Array::length(a) }\nfn main() -> Int { len(Future::{ v: 1 }) }"))
   // Declared after its use: ownership does not depend on declaration order.
-  assert(check_source_err("fn len(a: Array[Int]) -> Int { Array::length(a) }\nfn main() -> Int { len(FixedArray::{ v: 1 }) }\nstruct FixedArray[T] { v: T }"))
+  assert(check_source_err("fn len(a: Array[Int]) -> Int { Array::length(a) }\nfn main() -> Int { len(Future::{ v: 1 }) }\nstruct Future[T] { v: T }"))
+}
+
+// #3326 review (Codex P2): `FixedArray` / `ArrayBuilder` / `MutBytes` values
+// stand in for a builtin value, and a program's type of the same spelling
+// shares their `CtNamed`, so no owner can be told apart -- the builtin's own
+// `FixedArray::make(..)` was refused where an `Array` is declared, and
+// `let x: FixedArray[Int] = FixedArray::make(2, 7)` read the array as the
+// struct. Those spellings are reserved, at any arity.
+test "3326: a builtin whose values stand in for a builtin value keeps its spelling" {
+  assert(check_source_err_contains("struct FixedArray[T] { v: T }\nfn take(xs: Array[Int]) -> Int { Array::length(xs) }\nfn main() -> Int { take(FixedArray::make(2, 1)) }", "rename this struct: `FixedArray` is a builtin type whose values may be used as `Array`"))
+  assert(check_source_err_contains("enum ArrayBuilder[T] { B(T) }\nfn main() -> Int { 0 }", "rename this enum: `ArrayBuilder` is a builtin type whose values may be used as `Array`"))
+  assert(check_source_err_contains("struct MutBytes { v: Int }\nfn main() -> Int { 0 }", "rename this struct: `MutBytes` is a builtin type whose values may be used as `Bytes`"))
+  assert(check_source_err_contains("struct FixedArray[A, B] { a: A; b: B }\nfn main() -> Int { 0 }", "rename this struct: `FixedArray`"))
+  // Renamed, the builtin's own value crosses into `Array` again.
+  assert(check_source_ok("struct MyFixed[T] { v: T }\nfn take(xs: Array[Int]) -> Int { Array::length(xs) }\nfn main() -> Int { take(FixedArray::make(2, 1)) }"))
 }
 
 test "3326: the compiler's own FixedArray and ArrayBuilder still cross into Array" {
