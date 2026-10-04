@@ -1,0 +1,121 @@
+//# #3338, wasm-gc lane: a local whose scope has ended no longer shadows a
+//# top-level function, for a closure or a direct call, and a `let rec` lambda
+//# that also reads a module constant calls itself.
+//#
+//# The #3338 fix makes a closure capture any enclosing local that shadows a
+//# top-level name, so the closure is exactly as right as the compiler's list
+//# of names in scope. A `let mut` / `let rec` left its name in that list after
+//# its block ended -- inside a `while` body or a bare block -- and a later
+//# direct call `twice(7)` already called the dead local (gc answered 7016
+//# where 14002 is right). Those binders now end their scope as `let` does
+//# (#3225).
+//#
+//# `rec_reads_constant` trapped with `uninitialized element` on gc: the
+//# `let rec` self-slot patch recomputed the capture list with a different
+//# rule than the lambda (it counted the module constant as a capture), so it
+//# patched the wrong env slot.
+//#
+//# THIS FILE RUNS ON THE GC LANE ONLY (tests/gates/early/extended_derive.sh).
+//# It is named without a `_test` suffix because the linear lane still gets
+//# these shapes wrong, so the unit runner's default lane cannot run it: on
+//# the linear lane, measured on main at 12bf2e0, `after_block` answers 16,
+//# `after_block_direct` 16, `after_while_mut` 30, `after_bare_block_mut` 30,
+//# `rec_reads_constant` 3, and `after_while_rec` / `after_bare_block_rec`
+//# overflow the stack.
+
+fn twice(x: Int) -> Int {
+  x * 1000
+}
+
+let base = 10
+
+fn after_block() -> Int {
+  let a = {
+    let twice = (x: Int) -> x * 2
+    twice(1)
+  }
+  let g = (y: Int) -> twice(y)
+  g(7) + a
+}
+
+fn after_block_direct() -> Int {
+  let a = {
+    let twice = (x: Int) -> x * 2
+    twice(1)
+  }
+  twice(7) + a
+}
+
+fn after_while_mut() -> Int {
+  let mut acc = 0
+  let mut i = 0
+  while i < 1 {
+    let mut twice = (x: Int) -> x * 2
+    acc = acc + twice(1)
+    i = i + 1
+  }
+  let g = (y: Int) -> twice(y)
+  acc + g(7) + twice(7)
+}
+
+fn after_while_rec() -> Int {
+  let mut acc = 0
+  let mut i = 0
+  while i < 1 {
+    let rec twice = (n: Int) -> if n <= 0 {
+      0
+    } else {
+      2 + twice(n - 1)
+    }
+    acc = acc + twice(1)
+    i = i + 1
+  }
+  let g = (y: Int) -> twice(y)
+  acc + g(7) + twice(7)
+}
+
+fn after_bare_block_mut() -> Int {
+  let mut acc = 0
+  {
+    let mut twice = (x: Int) -> x * 2
+    acc = acc + twice(1)
+  }
+  let g = (y: Int) -> twice(y)
+  acc + g(7) + twice(7)
+}
+
+fn after_bare_block_rec() -> Int {
+  let mut acc = 0
+  {
+    let rec twice = (n: Int) -> if n <= 0 {
+      0
+    } else {
+      2 + twice(n - 1)
+    }
+    acc = acc + twice(1)
+  }
+  let g = (y: Int) -> twice(y)
+  acc + g(7) + twice(7)
+}
+
+fn rec_reads_constant() -> Int {
+  let rec f = (n: Int) -> if n <= 0 {
+    base
+  } else {
+    1 + f(n - 1)
+  }
+  f(3)
+}
+
+test "a local whose scope ended does not shadow the top-level fn (gc)" {
+  inspect(after_block(), "7002")
+  inspect(after_block_direct(), "7002")
+  inspect(after_while_mut(), "14002")
+  inspect(after_while_rec(), "14002")
+  inspect(after_bare_block_mut(), "14002")
+  inspect(after_bare_block_rec(), "14002")
+}
+
+test "a let rec reading a module constant calls itself (gc)" {
+  inspect(rec_reads_constant(), "13")
+}
