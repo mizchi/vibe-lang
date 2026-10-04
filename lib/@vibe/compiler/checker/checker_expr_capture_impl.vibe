@@ -2237,12 +2237,15 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         let mut s1 = s
         let mut c1 = c
         let mut elem_ty = CtUnknown
-        // Cross-check elements only when the first element is a simple scalar, or
-        // a one-level array of scalars (`[[1], ["x"]]` — `Array[Int]` vs
-        // `Array[String]`) — see EMatch: this catches the cheap, bounded cases
-        // while skipping the per-element `subst_apply` for arrays of large
-        // struct/tuple values that pressure the self-compile heap.
-        let mut check_elems = false
+        // #3353: EVERY element is unified with the first one's type. The
+        // check used to run only when the first element was a scalar, an
+        // array of scalars or an unresolved variable, so `[P::{ v: 1 }, [5]]`
+        // typed as `Array[P]` and the second element, an `Array[Int]`, was
+        // read as a `P`. The narrowing came from #667, when a per-element
+        // `subst_apply` on the compiler's own aggregate-typed literals pushed
+        // the seed's self-compile heap over its ~64MB cap. That cap is gone:
+        // measured cold on the compiler's self-compile, checking every
+        // element adds 0.01% to the heap high-water mark (#3353).
         let mut ai = 0
         while ai < ilen {
           let (it, ns, nc) = check_expr_capture(Array::get(items, ai), env, defs, s1, c1, errors, tytab, capture, lane)
@@ -2250,45 +2253,8 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           c1 = nc
           if ai == 0 {
             elem_ty = it
-            check_elems = match subst_apply(s1, it) {
-              CtInt => true,
-              CtDouble => true,
-              CtBool => true,
-              CtString => true,
-              CtChar => true,
-              CtArray(inner) => match inner {
-                CtInt => true,
-                CtDouble => true,
-                CtBool => true,
-                CtString => true,
-                CtChar => true,
-                // #2893: an EMPTY literal first (`[[], [a]]`). #2447 gives it a
-                // real element slot -- `CtArray(<fresh var>)` -- and that var is
-                // what the whole literal's element type becomes. Falling to
-                // `false` here meant no later element was ever unified with it,
-                // so it stayed unconstrained and absorbed anything: measured,
-                //
-                //   let xs = [[], [a]]            // a: T
-                //   let v: Int = Array::get(Array::get(xs, 1), 0)
-                //
-                // compiled clean and printed 233, the allocation address. The
-                // same literal with the empty row SECOND (`[xs, []]`) was
-                // rejected, because then a real type went in first.
-                //
-                // Cross-checking costs one `subst_apply` per element, and a
-                // variable is not the "large struct/tuple" case the comment
-                // above is protecting against.
-                CtVar(_) => true,
-                _ => false
-              },
-              _ => false
-            }
           } else {
-            if check_elems {
-              s1 = check_assignable(elem_ty, subst_apply(s1, it), s1, errors, "array elements have incompatible types", railway_expr_off(Array::get(items, ai)))
-            } else {
-              ()
-            }
+            s1 = check_assignable(elem_ty, subst_apply(s1, it), s1, errors, "array elements have incompatible types", railway_expr_off(Array::get(items, ai)))
           }
           ai = ai + 1
         }
