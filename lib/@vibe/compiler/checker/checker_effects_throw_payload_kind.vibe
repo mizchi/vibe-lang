@@ -54,7 +54,6 @@ import ./checker_effects_mutability_expr_into.vibe {
   row_nominal_types_cell,
   row_required_formal,
   row_scope_has,
-  row_scope_has_formal,
   row_scope_nested_binds,
   row_scope_unknown,
   set_row_nominal_types,
@@ -112,7 +111,7 @@ enum RowTy {
 }
 
 /// Split a row argument text (spaces removed) into words and `[ ] , ( )`;
-/// a word keeps a leading `'` / `^` mark. None for any other character.
+/// a word keeps a leading `'`, `^` or `^^` mark. None for any other character.
 fn row_ty_tokens(t: String) -> Option[Array[String]] {
   let out = array_empty()
   let n = String::length(t)
@@ -128,7 +127,8 @@ fn row_ty_tokens(t: String) -> Option[Array[String]] {
     let word = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 95 || c == 36 || c == 126
     let mark = c == 39 || c == 94
     if word || mark {
-      if mark && start >= 0 {
+      let enum_mark = c == 94 && start >= 0 && i == start + 1 && String::char_code_at(t, start) == 94
+      if mark && start >= 0 && !enum_mark {
         ok = false
       } else if start < 0 {
         start = i
@@ -180,8 +180,7 @@ fn row_word_class(w: String, mode: Int, nargs: Int) -> RowTy {
   } else if mode == 0 {
     if String::starts_with(w, "^") {
       // #3351: an imported callback row's struct, marked by its exporter
-      // (`publish_row_nominals`); read like a resolved type. An enum's
-      // `^^Name` does not tokenize, so its label is not read at all.
+      // (`publish_row_nominals`); an enum's `^^Name` has the same authority.
       row_word_class(w, 1, nargs)
     } else if row_scope_has(w) {
       if nargs == 0 {
@@ -202,8 +201,15 @@ fn row_word_class(w: String, mode: Int, nargs: Int) -> RowTy {
       RtIndet
     }
   } else if String::starts_with(w, "^") {
-    let h = String::substring(w, 1, String::length(w))
-    if builtin_row_type_name(h) || (str_labels_contain(nominals, h) && !row_scope_has_formal(h)) {
+    let start = if String::starts_with(w, "^^") {
+      2
+    } else {
+      1
+    }
+    let h = String::substring(w, start, String::length(w))
+    // The exporter already resolved this name. Neither a missing local import
+    // nor a same-named local formal can change that declaration's identity.
+    if String::length(h) > 0 {
       RtHead(h, [])
     } else {
       RtIndet

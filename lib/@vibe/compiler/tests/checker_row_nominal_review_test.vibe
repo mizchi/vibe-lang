@@ -1,0 +1,192 @@
+import @vibe/compiler/checker {
+  check_program,
+  check_program_with_projected_import_env_result,
+  publish_row_nominals,
+  row_formal_scope,
+  row_label_args_differ,
+  set_row_nominal_types,
+  vouch_published_nominals
+}
+import @vibe/compiler/core {
+  Type, TypeDef
+}
+import @vibe/compiler/runtime {
+  build_import_envs_from_interfaces, dependency_interface_set_new, dependency_interface_set_publish
+}
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+import ./checker_parity_test_support.vibe {
+  check_source_err_contains, check_source_ok
+}
+
+fn reset_row_scope() -> Unit {
+  Array::truncate(row_formal_scope, 0)
+  set_row_nominal_types([])
+}
+
+fn nominal_defs() -> Array[TypeDef] {
+  [TDStruct("Pt", [("x", CtInt)], [], []), TDEnum("Shade", [], [("Light", [])])]
+}
+
+fn only_callback_row(t: Type) -> String {
+  match t {
+    CtFn(_, _, Some(row)) => row,
+    CtArray(e) => only_callback_row(e),
+    CtOption(e) => only_callback_row(e),
+    CtTuple(items) => only_callback_row(Array::get(items, 0)),
+    CtNamed(_, items) => only_callback_row(Array::get(items, 0)),
+    CtApplied(_, items) => only_callback_row(Array::get(items, 0)),
+    CtRecord(fields) => {
+      let (_, ft) = Array::get(fields, 0)
+      only_callback_row(ft)
+    },
+    CtForAll(_, _, body) => only_callback_row(body),
+    _ => ""
+  }
+}
+
+fn projected_error(dependency: String, importer: String) -> String with Env + Exception {
+  let interfaces = dependency_interface_set_new()
+  dependency_interface_set_publish(interfaces, "/dep.vibe", check_program(parse_program(lex(dependency))))
+  let stmts = parse_program(lex(importer))
+  let errors: Array[String] = []
+  let (env, _) = build_import_envs_from_interfaces(stmts, "/", interfaces, [
+    "/dep.vibe"
+  ], errors)
+  assert_eq(Array::length(errors), 0)
+  handle {
+    let _ = check_program_with_projected_import_env_result(stmts, env)
+    ""
+  } with { Exception::Throw(message) => message }
+}
+
+fn aggregate_dependency() -> String {
+  "export effect Box[T] { Put(T) -> Int }\nexport struct Pt { x: Int }\nexport let fs: Array[() -> Int with Box[Pt]] = [() -> Int with Box[Pt] { perform Box::Put(Pt::{ x: 42 }) }]\n"
+}
+
+fn function_payload_source(payload: String) -> String {
+  "effect Box[T] { Put(T) -> Int }\neffect Inner[T] { Put(T) -> Int }\nstruct Pt { x: Int }\ntype Work = () -> Int with Inner[Pt]\nfn wrong() -> Int with Inner[Int] { perform Inner::Put(41) }\nfn good() -> Int with Inner[Pt] { perform Inner::Put(Pt::{ x: 42 }) }\nfn caller() -> Int with Box[Work] { perform Box::Put(\{payload}) }\n"
+}
+
+fn nested_dependency() -> String {
+  "export effect Box[T] { Put(T) -> Int }\nexport effect Inner[T] { Put(T) -> Int }\nexport struct Pt { x: Int }\nexport type Work = () -> Int with Inner[Pt]\nexport fn use_inner(g: () -> Int with Inner[Pt]) -> Int { handle { g() } with { Inner::Put(p) => { let q: Pt = p; resume(q.x) } } }\nexport fn run_nested(f: () -> Int with Box[Work]) -> Int { handle { f() } with { Box::Put(g) => resume(use_inner(g)) } }\n"
+}
+
+fn nested_importer(imports: String, payload: String) -> String {
+  "import ./dep.vibe { effect Box, effect Inner, run_nested, Work\{imports} }\nfn wrong() -> Int with Inner[Int] { perform Inner::Put(41) }\nfn main_like() -> Int with Box + Inner { run_nested(() -> { perform Box::Put(\{payload}) }) }\n"
+}
+
+test "published struct markers authorize only their nominal without importing it" {
+  reset_row_scope()
+  assert(row_label_args_differ("Box[Int]", "=Box[^Pt]"))
+  assert(row_label_args_differ("Box[Int]", "Box[^Pt]"))
+  assert(!row_label_args_differ("Box[^Pt]", "Box[^Pt]"))
+  assert(!row_label_args_differ("Box[Int]", "Box[Pt]"))
+  reset_row_scope()
+}
+
+test "published enum markers participate in row authorization" {
+  reset_row_scope()
+  assert(row_label_args_differ("Box[Int]", "=Box[^^Shade]"))
+  assert(row_label_args_differ("Box[Array[Int]]", "Box[Array[^^Shade]]"))
+  assert(!row_label_args_differ("Box[^^Shade]", "Box[^^Shade]"))
+  reset_row_scope()
+}
+
+test "a local formal cannot erase the authority of a published nominal" {
+  reset_row_scope()
+  Array::push(row_formal_scope, ["Pt"])
+  assert(row_label_args_differ("Box[Pt]", "=Box[^Pt]"))
+  reset_row_scope()
+}
+
+test "aggregate publication preserves callback row authority at every type shape" {
+  let callback = CtFn([], CtInt, Some("Box[Pt]"))
+  let aggregates = [
+    CtArray(callback),
+    CtOption(callback),
+    CtTuple([callback]),
+    CtRecord([("run", callback)]),
+    CtNamed("Holder", [callback]),
+    CtApplied(CtConstructor("Holder", 1), [callback]),
+    CtForAll([0], [], CtArray(callback))
+  ]
+  for aggregate in aggregates {
+    let row = only_callback_row(publish_row_nominals(aggregate, nominal_defs()))
+    assert_eq(row, "Box[^Pt]")
+    reset_row_scope()
+    assert(row_label_args_differ("Box[Int]", "=" + row))
+  }
+  reset_row_scope()
+}
+
+test "publication keeps the binding's own row and marks its callback rows" {
+  let callback = CtFn([], CtInt, Some("Box[Shade]"))
+  match publish_row_nominals(CtFn([callback], CtInt, Some("Outer[Pt]")), nominal_defs()) {
+    CtFn(params, _, own) => {
+      assert_eq(own, Some("Outer[Pt]"))
+      assert_eq(only_callback_row(Array::get(params, 0)), "Box[^^Shade]")
+    },
+    _ => assert(false)
+  }
+}
+
+test "vouching a nested function preserves the nominal authority of its own row" {
+  let nested = CtFn([], CtInt, Some("Inner[Pt]"))
+  let vouched = vouch_published_nominals(nested, [("Pt", false)], [])
+  assert_eq(only_callback_row(vouched), "Inner[^Pt]")
+  assert_eq(only_callback_row(vouch_published_nominals(vouched, [("Pt", false)], [
+  ])), "Inner[^Pt]")
+  assert_eq(only_callback_row(vouch_published_nominals(CtRecord([
+    ("run", nested)
+  ]), [("Pt", false)], [])), "Inner[^Pt]")
+}
+
+test "vouching distinguishes enums and does not mark an uninstantiated formal" {
+  let nested = CtFn([], CtInt, Some("Inner[Shade]"))
+  assert_eq(only_callback_row(vouch_published_nominals(nested, [("Shade", true)], [
+  ])), "Inner[^^Shade]")
+  assert_eq(only_callback_row(vouch_published_nominals(nested, [("Shade", true)], [
+    "Shade"
+  ])), "Inner[Shade]")
+}
+
+test "vouching without nominal authority leaves an ordinary row unchanged" {
+  let nested = CtFn([], CtInt, Some("Inner[Pt]"))
+  assert_eq(only_callback_row(vouch_published_nominals(nested, [], [])), "Inner[Pt]")
+}
+
+test "an imported aggregate callback cannot satisfy an Int callback contract" {
+  let importer = "import ./dep.vibe { effect Box, fs }\nfn run_int(f: () -> Int with Box[Int]) -> Int with Box[Int] { f() }\nfn caller() -> Int with Box[Int] { run_int(Array::get(fs, 0)) }\n"
+  let message = projected_error(aggregate_dependency(), importer)
+  assert(String::contains(message, "performs `Box` at `Pt`"))
+}
+
+test "an imported aggregate callback keeps compatible bare and nominal rows" {
+  let bare = "import ./dep.vibe { effect Box, fs }\nfn pass(f: () -> Int with Box) -> Int with Box { f() }\nfn caller() -> Int with Box { pass(Array::get(fs, 0)) }\n"
+  assert_eq(projected_error(aggregate_dependency(), bare), "")
+  let nominal = "import ./dep.vibe { effect Box, fs, struct Pt }\nfn pass(f: () -> Int with Box[Pt]) -> Int with Box[Pt] { f() }\nfn caller() -> Int with Box[Pt] { pass(Array::get(fs, 0)) }\n"
+  assert_eq(projected_error(aggregate_dependency(), nominal), "")
+}
+
+test "perform cannot erase a nested function payload's concrete effect row" {
+  assert(check_source_err_contains(function_payload_source("wrong"), "`Inner` at `Pt`"))
+}
+
+test "perform preserves a compatible function payload" {
+  assert(check_source_ok(function_payload_source("good")))
+}
+
+test "an unreadable nominal inside an imported payload alias names the import edit" {
+  let message = projected_error(nested_dependency(), nested_importer("", "wrong"))
+  assert(String::contains(message, "import `Pt` into this module"))
+  assert(!String::contains(message, "#callback-row-unreadable"))
+}
+
+test "importing a nested payload's nominal preserves matching contracts" {
+  let wrong = projected_error(nested_dependency(), nested_importer(", struct Pt", "wrong"))
+  assert(String::contains(wrong, "performs `Inner` at `Int`"))
+  let good = nested_importer(", struct Pt", "() -> Int with Inner[Pt] { perform Inner::Put(Pt::{ x: 42 }) }")
+  assert_eq(projected_error(nested_dependency(), good), "")
+}

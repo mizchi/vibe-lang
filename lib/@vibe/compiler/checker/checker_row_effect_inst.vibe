@@ -59,6 +59,7 @@ import ./checker_eq_unbounded_formal_msg.vibe {
 
 import ./checker_infer_binop_type.vibe {
   callback_row_refusal,
+  callback_row_unreadable,
   callback_row_unreadable_labels,
   effect_inst_env_key,
   published_marker_words,
@@ -1455,9 +1456,17 @@ fn effect_inst_fn_check(env: TypeEnv, arg: Expr, arg_ty: Type, param_ty: Type, s
         match effect_inst_wanted_payload(item) {
           Some((eff, want)) => {
             let mut found = false
+            let mut refused = false
+            match callback_row_unreadable([want]) {
+              Some((label, missing)) => {
+                refused = true
+                Array::push(errors, "import `\{missing}` into this module: \{subject} is checked against `\{label}`, which names a type unavailable here\{off_marker(effect_inst_arg_anchor(arg))}")
+              },
+              None => ()
+            }
             for pair in haves {
               let (name, have) = pair
-              if name == eff {
+              if name == eff && !refused {
                 found = true
                 match unify(have, want, out) {
                   Some(ns) => out = ns,
@@ -1465,7 +1474,7 @@ fn effect_inst_fn_check(env: TypeEnv, arg: Expr, arg_ty: Type, param_ty: Type, s
                 }
               }
             }
-            if !found && effect_inst_row_has_bare(Some(arow), eff) {
+            if !found && !refused && effect_inst_row_has_bare(Some(arow), eff) {
               let want_text = type_to_string(subst_apply(out, want))
               Array::push(errors, "write a concrete `\{eff}[\{want_text}]` row on \{subject}: its bare `\{eff}` contract does not establish the payload type required by \{slot}\{off_marker(effect_inst_arg_anchor(arg))}")
             }

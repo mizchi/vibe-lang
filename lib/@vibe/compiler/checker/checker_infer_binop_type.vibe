@@ -279,6 +279,7 @@ fn map_fn_rows(t: Type, f: (String) -> String) -> Type {
       let (fname, fty) = field
       (fname, map_fn_rows(fty, f))
     }),
+    CtForAll(vars, bounds, body) => CtForAll(vars, bounds, map_fn_rows(body, f)),
     _ => t
   }
 }
@@ -326,8 +327,8 @@ fn rename_generic_label_words(row: String, renames: Array[(String, String)]) -> 
 }
 
 /// #3351: the published type of an exported binding, with each word of a
-/// callback row (a row of a function type among its parameters or its
-/// result) that names a struct declared in `defs` spelled `^Name`, and one
+/// callback row (a row of a function type among its parameters, result or
+/// aggregate members) that names a struct declared in `defs` spelled `^Name`, and one
 /// that names an enum `^^Name`. The row reaches an importer as text, and an importer that does not import
 /// `Pt` cannot otherwise tell the exporter's `Box[Pt]` from a name it has no
 /// declaration for -- so a lambda passed for that parameter was handed
@@ -348,7 +349,7 @@ export fn publish_row_nominals(t: Type, defs: Array[TypeDef]) -> Type {
     CtFn(params, ret, row) => CtFn(for p in params {
       map_fn_rows(p, mark)
     }, map_fn_rows(ret, mark), row),
-    _ => t
+    _ => map_fn_rows(t, mark)
   }
 }
 
@@ -356,6 +357,19 @@ export fn publish_row_nominals(t: Type, defs: Array[TypeDef]) -> Type {
 /// struct in `defs` spelled `^Name`, and an enum `^^Name`; the separators are
 /// kept.
 fn mark_row_nominal_words(row: String, defs: Array[TypeDef]) -> String {
+  mark_nominal_row_words(row, (word: String) -> String {
+    match find_typedef(defs, word) {
+      Some(TDStruct(_, _, _, _)) => "^",
+      Some(TDEnum(_, _, _)) => "^^",
+      _ => ""
+    }
+  })
+}
+
+/// Mark the nominal words of each non-exception label using declaration
+/// authority supplied by the publisher or retained through a parsed payload.
+/// Existing marks and published formals are preserved.
+fn mark_nominal_row_words(row: String, mark: (String) -> String) -> String {
   let n = String::length(row)
   let sb = StringBuilder::new()
   let mut depth = 0
@@ -379,7 +393,7 @@ fn mark_row_nominal_words(row: String, defs: Array[TypeDef]) -> String {
       if is_exception_label(String::trim(label)) {
         StringBuilder::push(sb, label)
       } else {
-        StringBuilder::push(sb, mark_label_nominal_words(label, defs))
+        StringBuilder::push(sb, mark_label_nominal_words(label, mark))
       }
       if i < n {
         StringBuilder::push(sb, ",")
@@ -397,7 +411,7 @@ fn mark_row_nominal_words(row: String, defs: Array[TypeDef]) -> String {
 
 /// One label of `mark_row_nominal_words`. A word already marked (`^Name`,
 /// `NAME$K`) is kept as it is.
-fn mark_label_nominal_words(label: String, defs: Array[TypeDef]) -> String {
+fn mark_label_nominal_words(label: String, mark_word: (String) -> String) -> String {
   let n = String::length(label)
   let sb = StringBuilder::new()
   let mut depth = 0
@@ -423,11 +437,7 @@ fn mark_label_nominal_words(label: String, defs: Array[TypeDef]) -> String {
         let first = String::byte_at(w, 0)
         let candidate = depth > 0 && !after_caret && !String::contains(w, "$") && first >= 65 && first <= 90
         let mark = if candidate {
-          match find_typedef(defs, w) {
-            Some(TDStruct(_, _, _, _)) => "^",
-            Some(TDEnum(_, _, _)) => "^^",
-            _ => ""
-          }
+          mark_word(w)
         } else {
           ""
         }
@@ -597,6 +607,11 @@ export fn published_nominal_names(nominals: Array[(String, Bool)]) -> Array[Stri
 /// through against (#3351). A callee formal the call fixes is a variable
 /// here, and one it does not fix (`formals`) is never a marked name.
 export fn vouch_published_nominals(t: Type, nominals: Array[(String, Bool)], formals: Array[String]) -> Type {
+  if Array::length(nominals) == 0 {
+    return t
+  } else {
+    ()
+  }
   let again = (u: Type) -> Type {
     vouch_published_nominals(u, nominals, formals)
   }
@@ -631,7 +646,34 @@ export fn vouch_published_nominals(t: Type, nominals: Array[(String, Bool)], for
     }),
     CtFn(ps, ret, eff) => CtFn(for p in ps {
       again(p)
-    }, again(ret), eff),
+    }, again(ret), match eff {
+      Some(row) => Some(mark_nominal_row_words(row, (word: String) -> String {
+        let mut mark = ""
+        if !checker_string_array_has(formals, word) {
+          for nominal in nominals {
+            let (name, is_enum) = nominal
+            if name == word {
+              mark = if is_enum {
+                "^^"
+              } else {
+                "^"
+              }
+            } else {
+              ()
+            }
+          }
+        } else {
+          ()
+        }
+        mark
+      })),
+      None => None
+    }),
+    CtRecord(fields) => CtRecord(for field in fields {
+      let (name, ft) = field
+      (name, again(ft))
+    }),
+    CtForAll(vars, bounds, body) => CtForAll(vars, bounds, again(body)),
     _ => t
   }
 }
