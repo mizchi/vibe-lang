@@ -242,6 +242,14 @@ What exists:
   `LineMapState` in common-base. This separates the exchange representation;
   it does not freeze a whole-program plan, make its mutable arrays `Send`, or
   implement function-body workers.
+- **Reusable function preparation** (`LinkedFunctionPlan`). The serial
+  preparation entry normalizes every function and thunk in canonical order,
+  preserves its original type annotation, and assigns lambda bases. Body
+  emission can consume the same plan for multiple slices instead of drawing
+  fresh names and recounting lambdas per slice. The ordinary entry also uses
+  this path. The record's AST arrays are read-only by calling convention,
+  not a `Send` transport. Context tables and coverage/debug ranges still need
+  a complete whole-program plan before body workers can run concurrently.
 - **Planned lambda indices** (#1277). A lambda's function index, which is
   baked into its enclosing body as a table-slot immediate, comes from a
   counting pass that gives each function a base in canonical order, not from

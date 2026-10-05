@@ -33,6 +33,21 @@ fn stmt_name(stmt: Stmt) -> Option[String] {
   }
 }
 
+fn dce_zero_alloc_marker(stmt: Stmt) -> Bool {
+  match stmt {
+    SExpr(EIdent(name, _)) => String::starts_with(name, "@zero_alloc"),
+    _ => false
+  }
+}
+
+fn dce_zero_alloc_target(stmt: Stmt) -> Option[String] {
+  match stmt {
+    SLet(_, _, name, _, EFn(_, _, _, _, _, _)) => Some(name),
+    SFnDecl(_, name, EFn(_, _, _, _, _, _), _, _) => Some(name),
+    _ => None
+  }
+}
+
 /// #2386: a plain loop. This used to allocate a recursive closure (`let rec
 /// search`) per call, and add_ref calls it once per identifier of every
 /// definition: ~3.4 MB of closures per compiler-closure compile on either
@@ -585,9 +600,25 @@ export fn dce_stmts(stmts: Array[Stmt], entry_names: Array[String]) -> Array[Stm
     while i < Array::length(stmts) {
       let stmt = Array::get(stmts, i)
       let id = Array::get(graph.stmt_ids, i)
+      let mut keep = is_type_or_structural(stmt) || id < 0 || Array::get(graph.live, id)
+      if dce_zero_alloc_marker(stmt) {
+        // A marker belongs to the immediately following function. Keeping it
+        // alone would silently attach its allocation contract to another one.
+        if i + 1 >= Array::length(stmts) {
+          return Array::slice(stmts, 0, Array::length(stmts))
+        }
+        match dce_zero_alloc_target(Array::get(stmts, i + 1)) {
+          Some(_) => {
+            let target_id = Array::get(graph.stmt_ids, i + 1)
+            keep = target_id < 0 || Array::get(graph.live, target_id)
+          },
+          // Preserve malformed adjacency so the validator can refuse it.
+          None => return Array::slice(stmts, 0, Array::length(stmts))
+        }
+      }
       // Output remains in source order, independent of ID assignment and
       // traversal order through duplicate definitions.
-      if is_type_or_structural(stmt) || id < 0 || Array::get(graph.live, id) {
+      if keep {
         Array::push(result, stmt)
       } else {
         ()
@@ -698,6 +729,9 @@ fn dce_impl_method_roots(stmts: Array[Stmt]) -> Array[String] {
 /// that runs after the desugar -- the late DCE in `linked_compile` -- sees the
 /// dictionaries and uses plain `dce_stmts`, which removes an impl nobody
 /// dispatches through.
+/// Allocation contracts also need their function and its callees until the
+/// whole-program validator runs. Late DCE removes a dead function together
+/// with its marker after that validation.
 export fn dce_stmts_before_trait_desugar(stmts: Array[Stmt], entry_names: Array[String]) -> Array[Stmt] {
   let roots = array_empty()
   let mut i = 0
@@ -710,6 +744,16 @@ export fn dce_stmts_before_trait_desugar(stmts: Array[Stmt], entry_names: Array[
   while j < Array::length(impl_roots) {
     Array::push(roots, Array::get(impl_roots, j))
     j = j + 1
+  }
+  let mut m = 0
+  while m + 1 < Array::length(stmts) {
+    if dce_zero_alloc_marker(Array::get(stmts, m)) {
+      match dce_zero_alloc_target(Array::get(stmts, m + 1)) {
+        Some(name) => Array::push(roots, name),
+        None => ()
+      }
+    }
+    m = m + 1
   }
   dce_stmts(stmts, roots)
 }
