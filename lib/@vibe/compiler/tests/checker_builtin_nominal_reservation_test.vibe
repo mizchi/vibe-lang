@@ -1,0 +1,39 @@
+import ./checker_parity_test_support.vibe {
+  check_source_err_contains, check_source_ok
+}
+
+// A builtin constructor and a source declaration must never share their
+// nominal head: reading the Future cell or frozen array as a struct returned
+// 234 and 180388626710 instead of the expected field value 42.
+test "builtin constructed nominal names refuse source structs" {
+  assert(check_source_err_contains("struct Future[T] { v: T }\nfn main() -> Int { let x: Future[Int] = Future::ready(42); x.v }", "rename this struct: `Future`"))
+  assert(check_source_err_contains("struct FrozenArray[T] { v: T }\nfn main() -> Int { let x: FrozenArray[Int] = FrozenArray::from_array([42]); x.v }", "rename this struct: `FrozenArray`"))
+}
+
+test "reserved nominal declarations are refused even without a constructor call" {
+  for name in ["Future", "FrozenArray"] {
+    assert(check_source_err_contains("struct \{name} { v: Int }\nfn main() -> Int { 0 }", "rename this struct: `\{name}`"))
+    assert(check_source_err_contains("struct \{name}[A, B] { a: A; b: B }\nfn main() -> Int { 0 }", "rename this struct: `\{name}`"))
+    assert(check_source_err_contains("enum \{name}[T] { Value(T); Empty }\nfn main() -> Int { 0 }", "rename this enum: `\{name}`"))
+  }
+}
+
+test "forward and exported declarations cannot claim a builtin nominal name" {
+  assert(check_source_err_contains("fn main() -> Int { let x: Future[Int] = Future::ready(42); x.v }\nstruct Future[T] { v: T }", "rename this struct: `Future`"))
+  assert(check_source_err_contains("export struct FrozenArray[T] { v: T }\nfn main() -> Int { 0 }", "rename this struct: `FrozenArray`"))
+}
+
+test "ordinary nominal names and function fields stay usable" {
+  assert(check_source_ok("struct MyFuture[T] { apply: (T) -> T }\nfn main() -> Int { let f: MyFuture[Int] = MyFuture::{ apply: (n) -> n + 41 }; f.apply(1) }"))
+  assert(check_source_ok("struct MyFrozenArray[T] { v: T }\nfn main() -> Int { MyFrozenArray::{ v: 42 }.v }"))
+}
+
+test "aliases do not create a second nominal identity" {
+  assert(check_source_ok("type Future[T] = String\nfn main() -> Int { let s: Future[Int] = \"abc\"; String::length(s) }"))
+  assert(check_source_ok("type FrozenArray[T] = Array[T]\nfn main() -> Int { let xs: FrozenArray[Int] = [42]; Array::get(xs, 0) }"))
+}
+
+test "builtin constructors keep working directly and through an alias" {
+  assert(check_source_ok("fn main() -> Int allows Async { let f = Future::ready(42); await(f) }"))
+  assert(check_source_ok("fn main() -> Int { let freeze = FrozenArray::from_array; let xs = freeze([42]); FrozenArray::get(xs, 0) }"))
+}
