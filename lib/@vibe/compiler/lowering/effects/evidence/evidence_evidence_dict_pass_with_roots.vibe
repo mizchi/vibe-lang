@@ -27,6 +27,7 @@ import @vibe/compiler/lowering/effects/direct {
 import @vibe/compiler/lowering/effects/queries {
   EdpReadQuery,
   edp_callee_is_resolvable,
+  edp_collect_program_binders,
   edp_effect_name_of,
   edp_handle_matches_effect,
   edp_has_unsafe_construct,
@@ -42,12 +43,13 @@ import ./evidence_ecall_arg_idents_expr.vibe {
 }
 
 import ./evidence_edp_apply_migration.vibe {
-  edp_all_sites_eligible_with_base, edp_apply_migration, edp_handle_owner_cps
+  edp_all_sites_eligible_with_context, edp_apply_migration, edp_handle_owner_cps
 }
 
 import ./evidence_handle_effect_names_expr.vibe {
   edp_append_ctor_inert_names,
   edp_append_effect_irrelevant_row_fns,
+  edp_append_effect_irrelevant_row_fns_with_binders,
   edp_append_free_host_inert_names,
   edp_append_perform_free_row_fns,
   edp_append_self_discharging_row_fns,
@@ -1622,6 +1624,9 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
   // Eligibility observes the live tree. Its base remains valid across
   // read-only attempts, and every eta rebuild invalidates it before use.
   let mut eligibility_base = plan_base_inert
+  // Every read-only attempt sees the same binder names. Collect lazily so
+  // programs with no migration candidates still pay nothing for this census.
+  let mut eligibility_binders: Option[MutSet[String]] = None
   let mut ei = 0
   while ei < Array::length(effect_defs) {
     let (ename, ops) = Array::get(effect_defs, ei)
@@ -1669,7 +1674,15 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
       let pf_inert = Array::concat(plan_base_inert, empty_str_array())
       edp_append_self_discharging_row_fns(stmts, fn_defs, ename, pf_inert, row_labels)
       edp_append_perform_free_row_fns(stmts, fn_defs, ename, pf_inert, row_labels)
-      edp_append_effect_irrelevant_row_fns(stmts, fn_defs, ename, pf_inert, row_labels)
+      let binders = match eligibility_binders {
+        Some(census) => census,
+        None => {
+          let census = edp_collect_program_binders(stmts)
+          eligibility_binders = Some(census)
+          census
+        }
+      }
+      edp_append_effect_irrelevant_row_fns_with_binders(stmts, fn_defs, ename, pf_inert, row_labels, binders)
       let needing_full = array_empty()
       let mut pfi = 0
       while pfi < Array::length(needing_sd) {
@@ -1695,6 +1708,7 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
       let live_sites = Array::length(needing_full) > 0 && Array::length(pre_sites) > 0
       if live_sites {
         if edp_etawrap_stmts_with_rebuild(stmts, needing_full, ename, fn_defs, es_names, es_members_list) {
+          eligibility_binders = Some(edp_collect_program_binders(stmts))
           eligibility_base = edp_pure_fn_names(fn_defs)
           edp_append_free_host_inert_names(stmts, eligibility_base)
           edp_append_ctor_inert_names(stmts, eligibility_base)
@@ -1725,7 +1739,7 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
       } else {
         ()
       }
-      match edp_try_plan_for_effect(stmts, ename, ops, needing_full, plan_sites, fn_defs, row_labels, eligibility_base) {
+      match edp_try_plan_for_effect(stmts, ename, ops, needing_full, plan_sites, fn_defs, row_labels, eligibility_base, eligibility_binders) {
         Some(plan) => if escaped == "" {
           Array::push(plans, plan)
         } else {
@@ -1750,7 +1764,7 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
           if Array::length(needing_live) == Array::length(needing_full) {
             ()
           } else {
-            match edp_try_plan_for_effect(stmts, ename, ops, needing_live, plan_sites, fn_defs, row_labels, eligibility_base) {
+            match edp_try_plan_for_effect(stmts, ename, ops, needing_live, plan_sites, fn_defs, row_labels, eligibility_base, eligibility_binders) {
               Some(plan2) => {
                 Array::push(plans, plan2)
                 planned2 = true
@@ -1811,7 +1825,7 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
 /// when there is neither a needing function NOR any proven owner param
 /// (nothing to gain; matches the old behavior for every previously-planned
 /// program exactly).
-fn edp_try_plan_for_effect(stmts: Array[Stmt], ename: String, ops: Array[(String, Array[TypeExpr], TypeExpr)], needing: Array[String], handle_sites: Array[(Expr, Array[(Pat, Expr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], row_labels: Array[Array[String]], base_inert: Array[String]) -> Option[(String, Array[(String, Array[TypeExpr], TypeExpr)], Array[String], Array[(Expr, Array[(Pat, Expr)])])] {
+fn edp_try_plan_for_effect(stmts: Array[Stmt], ename: String, ops: Array[(String, Array[TypeExpr], TypeExpr)], needing: Array[String], handle_sites: Array[(Expr, Array[(Pat, Expr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], row_labels: Array[Array[String]], base_inert: Array[String], binders: Option[MutSet[String]]) -> Option[(String, Array[(String, Array[TypeExpr], TypeExpr)], Array[String], Array[(Expr, Array[(Pat, Expr)])])] {
   // ADR-0076 追記31 Vertical C (replay 撤去): a handle site EXISTING is
   // itself worth planning for — a self-discharging dispatcher whose body
   // performs the effect directly (lsp_server.vibe's Lsp handler is the
@@ -1822,11 +1836,11 @@ fn edp_try_plan_for_effect(stmts: Array[Stmt], ename: String, ops: Array[(String
   // (edp_all_sites_eligible returns false on an empty site list).
   // #1875 R3: `handle_sites` is collected once by the caller (it reflects
   // the post-eta-wrap tree) instead of being re-collected here per attempt.
-  let worth = Array::length(needing) > 0 || Array::length(handle_sites) > 0 || edp_any_handle_owner_cp(stmts, ename, needing, fn_defs, row_labels)
+  let worth = Array::length(needing) > 0 || Array::length(handle_sites) > 0 || edp_any_handle_owner_cp(stmts, ename, needing, fn_defs, row_labels, binders)
   if !worth {
     None
   } else {
-    if edp_all_sites_eligible_with_base(stmts, ename, needing, handle_sites, fn_defs, row_labels, Some(base_inert)) {
+    if edp_all_sites_eligible_with_context(stmts, ename, needing, handle_sites, fn_defs, row_labels, Some(base_inert), binders) {
       Some((ename, ops, needing, handle_sites))
     } else {
       None
@@ -1837,14 +1851,17 @@ fn edp_try_plan_for_effect(stmts: Array[Stmt], ename: String, ops: Array[(String
 /// Does ANY top-level function have at least one proven self-discharging-
 /// owner closure param for `ename`? Read-only pre-scan used solely to
 /// decide whether an empty-`needing` effect is still worth planning.
-fn edp_any_handle_owner_cp(stmts: Array[Stmt], ename: String, needing: Array[String], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], row_labels: Array[Array[String]]) -> Bool {
+fn edp_any_handle_owner_cp(stmts: Array[Stmt], ename: String, needing: Array[String], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], row_labels: Array[Array[String]], binders: Option[MutSet[String]]) -> Bool {
   let pure_fns = edp_pure_fn_names(fn_defs)
   edp_append_free_host_inert_names(stmts, pure_fns)
   edp_append_ctor_inert_names(stmts, pure_fns)
   edp_append_visible_pure_lambda_names(stmts, pure_fns)
   edp_append_self_discharging_row_fns(stmts, fn_defs, ename, pure_fns, row_labels)
   edp_append_perform_free_row_fns(stmts, fn_defs, ename, pure_fns, row_labels)
-  edp_append_effect_irrelevant_row_fns(stmts, fn_defs, ename, pure_fns, row_labels)
+  match binders {
+    Some(census) => edp_append_effect_irrelevant_row_fns_with_binders(stmts, fn_defs, ename, pure_fns, row_labels, census),
+    None => edp_append_effect_irrelevant_row_fns(stmts, fn_defs, ename, pure_fns, row_labels)
+  }
   let es_names = array_empty()
   let es_members_list = array_empty()
   edp_es_collect_into(stmts, es_names, es_members_list)
