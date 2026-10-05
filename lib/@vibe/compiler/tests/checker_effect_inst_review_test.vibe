@@ -128,3 +128,121 @@ test "a top-level annotation cannot erase a callback payload mismatch" {
 test "a top-level annotation preserves a compatible callback" {
   assert_eq(Array::length(collect_all_diagnostics(top_annotation_source("\"abc\""))), 0)
 }
+
+fn forwarded_concrete_source(payload: String) -> String {
+  "effect Box[T] { Put(T) -> Int }\nfn pass(f: () -> Int with Box) -> Int with Box[String] { f() }\nfn caller() -> Int with Box[String] { pass(() -> { perform Box::Put(\{payload}) }) }\n"
+}
+
+fn inferred_top_source(payload: String) -> String {
+  "effect Box[T] { Put(T) -> Int }\nlet g = () -> Int { perform Box::Put(\{payload}) }\nfn caller() -> Int with Box[String] { g() }\n"
+}
+
+fn joined_callback_source(kind: String, payload: String) -> String {
+  let first = "() -> { perform Box::Put(\"abc\") }"
+  let other = "() -> { perform Box::Put(\{payload}) }"
+  let value = match kind {
+    "if"|"bound if" => "if c { \{first} } else { \{other} }",
+    "named if" => "if c { first } else { other }",
+    "named array" => "[first, other]",
+    "mixed if" => "if c { () -> Int with Box { perform Box::Put(\"abc\") } } else { other }",
+    "mixed array" => "[() -> Int with Box { perform Box::Put(\"abc\") }, other]",
+    "match" => "match c { true => \{first}, false => \{other} }",
+    _ => "[\{first}, \{other}]"
+  }
+  let body = if kind == "array" || kind == "named array" || kind == "mixed array" {
+    "let values: Array[() -> Int with Box[String]] = \{value}\n  run_str(Array::get(values, 1))"
+  } else if kind == "bound if" {
+    "let selected = \{value}\n  run_str(selected)"
+  } else {
+    "run_str(\{value})"
+  }
+  let declarations = String::concat(callback_declarations(), "fn first() -> Int with Box { perform Box::Put(\"abc\") }\nfn other() -> Int with Box { perform Box::Put(\{payload}) }\n")
+  String::concat(declarations, "fn caller(c: Bool) -> Int with Box {\n  \{body}\n}\n")
+}
+
+test "a concrete forwarded row constrains a bare callback payload" {
+  assert(Array::length(collect_all_diagnostics(forwarded_concrete_source("1"))) > 0)
+}
+
+test "a concrete forwarded row accepts a compatible bare callback" {
+  assert_eq(Array::length(collect_all_diagnostics(forwarded_concrete_source("\"abc\""))), 0)
+}
+
+test "a rowless top-level function cannot supply Int under a String row" {
+  assert(Array::length(collect_all_diagnostics(inferred_top_source("1"))) > 0)
+}
+
+test "a rowless top-level function must declare even a compatible effect" {
+  let diags = collect_all_diagnostics(inferred_top_source("\"abc\""))
+  assert(Array::length(diags) > 0)
+  assert(String::contains(String::join(diags, "\n"), "no 'with' clause"))
+}
+
+test "both conditional callback branches retain their payloads" {
+  assert(Array::length(collect_all_diagnostics(joined_callback_source("if", "1"))) > 0)
+}
+
+test "compatible conditional callback branches remain valid" {
+  assert_eq(Array::length(collect_all_diagnostics(joined_callback_source("if", "\"abc\""))), 0)
+}
+
+test "every array callback element retains its payload" {
+  assert(Array::length(collect_all_diagnostics(joined_callback_source("array", "1"))) > 0)
+}
+
+test "compatible array callback elements remain valid" {
+  assert_eq(Array::length(collect_all_diagnostics(joined_callback_source("array", "\"abc\""))), 0)
+}
+
+test "all match callback arms retain their payloads" {
+  assert(Array::length(collect_all_diagnostics(joined_callback_source("match", "1"))) > 0)
+}
+
+test "compatible match callback arms remain valid" {
+  assert_eq(Array::length(collect_all_diagnostics(joined_callback_source("match", "\"abc\""))), 0)
+}
+
+test "bound if retains every callback payload" {
+  assert(Array::length(collect_all_diagnostics(joined_callback_source("bound if", "1"))) > 0)
+}
+
+test "bound if preserves compatible callback payloads" {
+  assert_eq(Array::length(collect_all_diagnostics(joined_callback_source("bound if", "\"abc\""))), 0)
+}
+
+test "named if retains every callback payload" {
+  assert(Array::length(collect_all_diagnostics(joined_callback_source("named if", "1"))) > 0)
+}
+
+test "named if preserves compatible callback payloads" {
+  assert_eq(Array::length(collect_all_diagnostics(joined_callback_source("named if", "\"abc\""))), 0)
+}
+
+test "named array retains every callback payload" {
+  assert(Array::length(collect_all_diagnostics(joined_callback_source("named array", "1"))) > 0)
+}
+
+test "named array preserves compatible callback payloads" {
+  assert_eq(Array::length(collect_all_diagnostics(joined_callback_source("named array", "\"abc\""))), 0)
+}
+
+test "mixed if retains every callback payload" {
+  assert(Array::length(collect_all_diagnostics(joined_callback_source("mixed if", "1"))) > 0)
+}
+
+test "mixed if preserves compatible callback payloads" {
+  assert_eq(Array::length(collect_all_diagnostics(joined_callback_source("mixed if", "\"abc\""))), 0)
+}
+
+test "mixed array retains every callback payload" {
+  assert(Array::length(collect_all_diagnostics(joined_callback_source("mixed array", "1"))) > 0)
+}
+
+test "mixed array preserves compatible callback payloads" {
+  assert_eq(Array::length(collect_all_diagnostics(joined_callback_source("mixed array", "\"abc\""))), 0)
+}
+
+test "a generic callback row keeps an enclosing formal" {
+  let source = "effect Box[A] { Put(A) -> Int }\nstruct Token { value: Int }\nfn consume[A](x: A, f: () -> Int with Box[A]) -> Int {\n  handle { f() } with { Box::Put(_) => resume(42) }\n}\nfn outer[T](x: T) -> Int {\n  consume(x, () -> Int with Box[T] { perform Box::Put(x) })\n}\n"
+  assert_eq(Array::length(collect_all_diagnostics(source)), 0)
+}

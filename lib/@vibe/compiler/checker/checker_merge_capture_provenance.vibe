@@ -265,6 +265,10 @@ export fn type_mentions_named(ty: Type, name: String) -> Bool {
 }
 
 export fn merge_provenance_row(expected: Option[String], actual: Option[String]) -> Option[String] {
+  merge_provenance_row_at(expected, actual, false)
+}
+
+fn merge_provenance_row_at(expected: Option[String], actual: Option[String], join_values: Bool) -> Option[String] {
   let labels = match expected {
     Some(row) => for raw in String::split(row, ",") {
       String::trim(raw)
@@ -274,7 +278,7 @@ export fn merge_provenance_row(expected: Option[String], actual: Option[String])
   match actual {
     Some(row) => for raw in String::split(row, ",") {
       let label = String::trim(raw)
-      if (String::starts_with(label, "#region_") || String::starts_with(label, "#capture[") || String::starts_with(label, "#param[") || String::starts_with(label, "#aliasparam[") || String::starts_with(label, "#fieldparam[") || is_effect_inst_label(label)) && !checker_string_array_has(labels, label) {
+      if (String::starts_with(label, "#region_") || String::starts_with(label, "#capture[") || String::starts_with(label, "#param[") || String::starts_with(label, "#aliasparam[") || String::starts_with(label, "#fieldparam[") || is_effect_inst_label(label) || (join_values && effect_payload_row_item(label))) && !checker_string_array_has(labels, label) {
         Array::push(labels, label)
       }
     },
@@ -313,6 +317,80 @@ export fn constructor_dependency_row(arity: Int) -> Option[String] {
 /// An explicit return annotation constrains the public shape but must not
 /// erase checker-only capture provenance synthesized on the returned value.
 export fn merge_capture_provenance(expected: Type, actual: Type) -> Type {
+  merge_capture_provenance_at(expected, actual, false)
+}
+
+/// Value-producing alternatives retain every possible effect payload, even
+/// when ordinary function-row compatibility compares only the effect base.
+/// No carrier-bearing type means no substitution walk or aggregate rebuild.
+export fn merge_value_effect_provenance(expected: Type, actual: Type, s: Subst) -> Type {
+  if type_has_effect_payload(actual, s) {
+    merge_capture_provenance_at(subst_apply(s, expected), subst_apply(s, actual), true)
+  } else {
+    expected
+  }
+}
+
+fn effect_payload_row_item(label: String) -> Bool {
+  !String::starts_with(label, "#") && String::index_of(label, "[") > 0
+}
+
+fn type_has_effect_payload(t: Type, s: Subst) -> Bool {
+  match t {
+    CtVar(_) => {
+      let resolved = subst_apply(s, t)
+      match resolved {
+        CtVar(_) => false,
+        _ => type_has_effect_payload(resolved, s)
+      }
+    },
+    CtFn(params, ret, row) => {
+      let mut hit = false
+      match row {
+        Some(text) => if String::contains(text, "#einst:") {
+          hit = true
+        } else if String::contains(text, "[") {
+          for raw in String::split(text, ",") {
+            if effect_payload_row_item(String::trim(raw)) {
+              hit = true
+            }
+          }
+        },
+        None => ()
+      }
+      hit || types_have_effect_payload(params, s) || type_has_effect_payload(ret, s)
+    },
+    CtArray(item) => type_has_effect_payload(item, s),
+    CtOption(item) => type_has_effect_payload(item, s),
+    CtTuple(items) => types_have_effect_payload(items, s),
+    CtNamed(_, items) => types_have_effect_payload(items, s),
+    CtApplied(head, items) => type_has_effect_payload(head, s) || types_have_effect_payload(items, s),
+    CtForAll(_, _, body) => type_has_effect_payload(body, s),
+    CtRecord(fields) => {
+      let mut hit = false
+      for field in fields {
+        let (_, item) = field
+        if type_has_effect_payload(item, s) {
+          hit = true
+        }
+      }
+      hit
+    },
+    _ => false
+  }
+}
+
+fn types_have_effect_payload(items: Array[Type], s: Subst) -> Bool {
+  let mut hit = false
+  let mut i = 0
+  while i < Array::length(items) && !hit {
+    hit = type_has_effect_payload(Array::get(items, i), s)
+    i = i + 1
+  }
+  hit
+}
+
+fn merge_capture_provenance_at(expected: Type, actual: Type, join_values: Bool) -> Type {
   match expected {
     CtFn(eps, eret, eeff) => match actual {
       CtFn(aps, aret, aeff) => {
@@ -320,22 +398,22 @@ export fn merge_capture_provenance(expected: Type, actual: Type) -> Type {
         let mut i = 0
         while i < Array::length(eps) {
           if i < Array::length(aps) {
-            Array::push(params, merge_capture_provenance(Array::get(eps, i), Array::get(aps, i)))
+            Array::push(params, merge_capture_provenance_at(Array::get(eps, i), Array::get(aps, i), join_values))
           } else {
             Array::push(params, Array::get(eps, i))
           }
           i = i + 1
         }
-        CtFn(params, merge_capture_provenance(eret, aret), merge_provenance_row(eeff, aeff))
+        CtFn(params, merge_capture_provenance_at(eret, aret, join_values), merge_provenance_row_at(eeff, aeff, join_values))
       },
       _ => expected
     },
     CtArray(ee) => match actual {
-      CtArray(ae) => CtArray(merge_capture_provenance(ee, ae)),
+      CtArray(ae) => CtArray(merge_capture_provenance_at(ee, ae, join_values)),
       _ => expected
     },
     CtOption(ee) => match actual {
-      CtOption(ae) => CtOption(merge_capture_provenance(ee, ae)),
+      CtOption(ae) => CtOption(merge_capture_provenance_at(ee, ae, join_values)),
       _ => expected
     },
     CtTuple(es) => match actual {
@@ -344,7 +422,7 @@ export fn merge_capture_provenance(expected: Type, actual: Type) -> Type {
         let mut i = 0
         while i < Array::length(es) {
           if i < Array::length(as_) {
-            Array::push(items, merge_capture_provenance(Array::get(es, i), Array::get(as_, i)))
+            Array::push(items, merge_capture_provenance_at(Array::get(es, i), Array::get(as_, i), join_values))
           } else {
             Array::push(items, Array::get(es, i))
           }
@@ -363,7 +441,7 @@ export fn merge_capture_provenance(expected: Type, actual: Type) -> Type {
           let merged = if i < Array::length(afields) {
             let (actual_name, actual_ty) = Array::get(afields, i)
             if name == actual_name {
-              merge_capture_provenance(field_ty, actual_ty)
+              merge_capture_provenance_at(field_ty, actual_ty, join_values)
             } else {
               field_ty
             }
@@ -383,7 +461,7 @@ export fn merge_capture_provenance(expected: Type, actual: Type) -> Type {
         let mut i = 0
         while i < Array::length(eargs) {
           if i < Array::length(aargs) {
-            Array::push(args, merge_capture_provenance(Array::get(eargs, i), Array::get(aargs, i)))
+            Array::push(args, merge_capture_provenance_at(Array::get(eargs, i), Array::get(aargs, i), join_values))
           } else {
             Array::push(args, Array::get(eargs, i))
           }

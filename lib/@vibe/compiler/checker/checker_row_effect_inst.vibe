@@ -1060,9 +1060,23 @@ export fn effect_inst_arg_check(env: TypeEnv, arg: Expr, arg_ty: Type, param_ty:
       None => env_lookup(env, callee_name)
     }
     let forwarded = effect_inst_function_row(binding)
+    let explicit = match forwarded {
+      Some(text) => callback_row_instantiations(text, callee, defs),
+      None => []
+    }
     for raw in String::split(row, ",") {
       let name = String::trim(raw)
-      if effect_inst_row_has_bare(forwarded, name) {
+      let mut concrete = false
+      for item in explicit {
+        match item {
+          CtNamed(eff, _) => if eff == name {
+            concrete = true
+            Array::push(wants, item)
+          },
+          _ => ()
+        }
+      }
+      if !concrete && effect_inst_row_has_bare(forwarded, name) {
         match env_lookup(env, effect_inst_env_key(name)) {
           Some(CtTuple(args)) => if Array::length(args) == 1 {
             Array::push(wants, CtNamed(name, [CtTuple(args)]))
@@ -1267,38 +1281,37 @@ fn value_effect_instantiations(env: TypeEnv, arg: Expr, arg_ty: Type, arow: Stri
   let out: Array[(String, Type)] = []
   let labels = effect_inst_labels(Some(arow))
   let binding = match arg {
-    EIdent(name, _) => if Array::length(labels) == 0 {
-      None
-    } else {
-      env_lookup(env, name)
-    },
+    EIdent(name, _) => env_lookup(env, name),
     _ => None
   }
-  let labeled: Array[String] = []
   for label in labels {
     let (eff, id) = label
-    Array::push(labeled, eff)
     match label_type_at_use(s, id, binding, arg_ty) {
       Some(t) => Array::push(out, (eff, t)),
       None => ()
     }
   }
   if row_names_instantiation(arow) {
-    for item in callback_row_instantiations(arow, None, defs) {
-      match item {
-        CtNamed(iname, iargs) => if Array::length(iargs) == 1 && !string_list_has(labeled, iname) {
-          match Array::get(iargs, 0) {
-            CtTuple(ts) => if Array::length(ts) == 1 {
-              Array::push(out, (iname, Array::get(ts, 0)))
-            } else {
-              ()
-            },
-            _ => ()
-          }
-        } else {
-          ()
-        },
-        _ => ()
+    // A joined value can carry several concrete rows for the same effect.
+    // Read each alternative separately: binding the entire union as one row
+    // would replace contradictory payloads with CtUnit and lose both.
+    let scope = match binding {
+      Some(scheme) => Some((scheme, arg_ty)),
+      None => None
+    }
+    for raw in String::split(arow, ",") {
+      for item in callback_row_instantiations(String::trim(raw), scope, defs) {
+        match item {
+          CtNamed(iname, iargs) => if Array::length(iargs) == 1 {
+            match Array::get(iargs, 0) {
+              CtTuple(ts) => if Array::length(ts) == 1 {
+                Array::push(out, (iname, Array::get(ts, 0)))
+              },
+              _ => ()
+            }
+          },
+          _ => ()
+        }
       }
     }
     ()
@@ -1306,18 +1319,6 @@ fn value_effect_instantiations(env: TypeEnv, arg: Expr, arg_ty: Type, arow: Stri
     ()
   }
   out
-}
-
-fn string_list_has(xs: Array[String], x: String) -> Bool {
-  let mut found = false
-  for v in xs {
-    if v == x {
-      found = true
-    } else {
-      ()
-    }
-  }
-  found
 }
 
 /// #3341: compare the instantiations a called function value records with
