@@ -21,4 +21,6 @@ for replay in 0 1; do
     VIBE_TASKGROUP_JOB_CACHE="$replay" \
     bash scripts/test_parallel_frontend_warm.sh "$COMPILER"
 done
+python3 scripts/test_taskgroup_build_launcher.py "$COMPILER" "$OUT"
+python3 scripts/test_taskgroup_public_replay.py "$COMPILER" "$OUT"
 echo "TaskGroup checker dogfood oracle passed; artifacts: $OUT"

@@ -8,6 +8,7 @@ deps = {
   @vibe/compiler/checker : 0.0.1
   @vibe/compiler/codegen : 0.0.1
   @vibe/compiler/codegen/common_base : 0.0.1
+  @vibe/compiler/codegen/component : 0.0.1
   @vibe/compiler/codegen/gc : 0.0.1
   @vibe/compiler/codegen/wasi : 0.0.1
   @vibe/compiler/config : 0.0.1
@@ -24,6 +25,7 @@ deps = {
   @vibe/compiler/loader : 0.0.1
   @vibe/compiler/module_graph : 0.0.1
   @vibe/compiler/normalize : 0.0.1
+  @vibe/compiler/query : 0.0.1
   @vibe/compiler/refactor : 0.0.1
   @vibe/compiler/runtime : 0.0.1
   @vibe/compiler/runtime/checked_module_cache : 0.0.1
@@ -57,8 +59,7 @@ generated_hash =
 // "0.0.1"` (same fix pattern as core/core.vibe earlier in this series).
 // The same annotation gap existed on 12 more `export let compiler_X = Y`
 // plain-alias bindings in compiler.vibe (re-exporting syntax/parser
-// functions under `compiler_`-prefixed names) and one in
-// coverage_suite_run.vibe (`parse_line_list_export`) — all now annotated
+// functions under `compiler_`-prefixed names) — all now annotated
 // with the aliased function's real type so they satisfy the same "val
 // <type>" fingerprint as bodyless `let name: Type` contract lines below.
 //
@@ -92,11 +93,7 @@ generated_hash =
 // facade's first-impl-unit-wins allocation silently swapping in a stub.
 // Verified via zero manifest/script references (or, for the cli_main/main/
 // compile_cli_request-sharing files, the ABSENCE of any reference besides
-// each other) before excluding: _cli_core_entry.vibe, _cli_command_entry.vibe,
-// _cli_component_entry.vibe (orphaned variants colliding with
-// cli_adapter.vibe's real `cli_main` or with each other; `_cli_gc_entry.vibe`
-// was deleted in #2191),
-// _cli.vibe, _cli_stage1_entry.vibe, _bench_file_compile_mode_same_content_run.vibe,
+// each other) before excluding: _bench_file_compile_mode_same_content_run.vibe,
 // _bench_loader_manifest_groups_run.vibe, _bench_loader_manifest_list_run.vibe
 // (orphaned standalone bench/coverage drivers,
 // several sharing a private `main`), _selfbuild_runtime_entry.vibe (the
@@ -175,43 +172,6 @@ generated_hash =
 // Renamed with the leading-underscore exemption (same mechanism as the (2)
 // group) so contract_sibling_impl_raws' auto-discovery skips it entirely,
 // removing the edge instead of papering over one instance of it.
-//
-// (6) coverage_suite_run.vibe -> _coverage_suite_run.vibe: fixing (5) let
-// db_typecheck_fs's fs-mode graph walk proceed past the cycle for the first
-// time for ANY external consumer of this package, and it immediately hit a
-// second, independent, pre-existing problem living in this file specifically
-// -- confirmed unrelated to (5) by reproducing it standalone (`vibe test
-// lib/@vibe/compiler/coverage_suite_run.vibe` fails identically with zero
-// involvement of cli_probe_entry.vibe or index.vpkg). Two layered issues,
-// both now fixed here:
-//   (a) its `test { }` block called `Double::parse`, which is NOT an
-//   actual checker-known builtin (#776; see
-//   lib/@vibex/wasm/wat_encoder/wat_encoder.vibe's parse_decimal_double,
-//   which hand-rolls the identical workaround for the identical reason).
-//   Replaced the three call sites with a small local decimal parser
-//   (parse_rate_double) instead of adding real Double::parse support
-//   (out of scope for this batch) or reaching into wat_encoder's fuller,
-//   scientific-notation-capable version across an unrelated package.
-//   (b) even once it compiles, the test block itself is unconditional: it
-//   `assert(false)`s unless VIBE_SUITE_REPORT_LIST/JSON/SUMMARY env vars are
-//   set. `vibe test`'s `_start` runs every test block in the WHOLE merged
-//   program, not just the entry file's own -- so as soon as this file's
-//   `test{}` genuinely entered any external consumer's compiled graph (via
-//   this package's blanket re-export), that consumer's own test run started
-//   failing on an unrelated, unconfigured "coverage suite run" test it never
-//   asked for. Confirmed exactly the same failure independent of import
-//   depth (lib/@vibe/cli/dispatch_test.vibe and 4 others, all through
-//   dispatch.vibe -> this package). This mirrors (5)'s hazard exactly:
-//   `coverage_suite_run.vibe` is itself an unreferenced standalone driver
-//   (zero consumers of parse_line_list_export anywhere in the repo, same
-//   verification as (2)/(5); not invoked by scripts/coverage_suite.sh or any
-//   Taskfile/pkspec target under its own name either -- fully dead as an
-//   entry point today), so it gets the same leading-underscore exclusion.
-// Kept the Double::parse fix even though the file is now excluded from the
-// package's facade: it is a real, independently-confirmed bug (not just a
-// vpkg-migration side effect), so leaving the file compilable on its own
-// (e.g. a future direct `vibe test` invocation) costs nothing and is simply
-// correct.
 //
 // Bodyless-declaration conventions used below (matching prior batches):
 // `fn` for every real function (whether written as `export fn` or
@@ -369,9 +329,6 @@ fn selfbuild_probe_incremental_typecheck_telemetry() -> String with Env + Except
 fn selfbuild_probe_type_db_group_merge_counts() -> Int with Env + Exception
 fn selfbuild_probe_type_db_module_source_counts() -> Int with Env + Exception
 fn selfbuild_probe_type_db_fs_multi_dep_parse_counts() -> Int with Env + Exception + Fs
-
-// --- check_component_entry.vibe
-fn check_source_report(source: String) -> String
 
 // --- checker_hotspot_probe.vibe
 fn probe_check_chained_lets() -> Int with Exception
@@ -626,7 +583,6 @@ fn wit_from_program(export_stmts: Array[Stmt], effect_stmts: Array[Stmt], world_
 // --- zero-declaration members (no exports of their own; included so the
 // facade covers every sibling file, per contract_facade_source's
 // "an impl unit with no allocated names must still appear" rule):
-// cache_probe_run.vibe, cli_fixed_adapter.vibe, coverage_compile_vibe_sources.vibe,
 // module_loader_non_manifest_fixture.vibe (a private-only Fs-source-discovery
 // fixture referenced by tests/module_loader_collect_sources_test.vibe by
 // literal path, never by import), selfbuild_run.vibe, stage2_coverage_run.vibe.

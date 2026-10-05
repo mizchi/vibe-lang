@@ -955,8 +955,48 @@ send_check_reject "err_type_send_nonregular_recursion.vibe" 'no impl `Send` for 
 # above, and the hint is what names the edit.
 send_check_reject "err_type_eq_marker_bound_struct.vibe" 'no impl `Eq` for `Pt`' "eqmarker"
 send_check_reject "err_type_eq_marker_bound_struct.vibe" 'is a marker trait (declared with no methods)' "eqmarker2"
-send_check_reject "err_type_eq_marker_bound_struct.vibe" 'Give `Eq` at least one method' "eqmarker3"
+# #3327: the edit names `equals(Self, Self) -> Bool`, not "at least one method":
+# a program `Eq` given some other method stops being a marker, stands the guard
+# down, and still compares by reference.
+send_check_reject "err_type_eq_marker_bound_struct.vibe" 'Give `Eq` an `equals(Self, Self) -> Bool` method' "eqmarker3"
+# Codex on #3349: an applied `Eq[Int]` is still equality, so it gets the
+# `equals` edit, not the `<` advice that a method would not help.
+send_check_reject "err_type_eq_applied_marker_bound.vibe" 'Give `Eq[Int]` an `equals(Self, Self) -> Bool` method' "eqapplied"
 send_check_reject "err_type_ord_marker_bound_struct.vibe" 'no impl `Ord` for `Token`' "ordmarker"
+# #3327: a bound that EXTENDS a comparison marker is judged as that marker, the
+# way `trait Work: Send` is judged as `Send` above. `trait Key: Eq {}` over the
+# program's own marker `Eq` checked clean and answered `false` for two equal
+# `Pt`; a subtrait of the prelude's `Ord` did the same for two equal `Token`.
+send_check_reject "err_type_eq_marker_subtrait_bound_struct.vibe" 'no impl `Eq` for `Pt` (`Key` extends `Eq`)' "eqsub"
+send_check_reject "err_type_eq_marker_subtrait_bound_struct.vibe" 'is a marker trait (declared with no methods)' "eqsub2"
+send_check_reject "err_type_eq_marker_subtrait_bound_struct.vibe" 'Give `Eq` an `equals(Self, Self) -> Bool` method' "eqsub3"
+# With no `impl Eq for Pt` written, the message must not say one is declared:
+# `Pt` satisfies `Eq` only through `impl Key for Pt`.
+send_check_reject "err_type_eq_marker_subtrait_no_parent_impl.vibe" 'no impl `Eq` for `Pt` (`Key` extends `Eq`): `Pt` implements `Eq`, but `Eq` is a marker trait' "eqsubnoimpl"
+# Codex on #3349: the exemption for a subtrait that carries `equals(Self, Self)`
+# follows the flattened dictionary's FIRST `equals`. `Key: Bad + Good + Eq`
+# keeps `Bad`'s `equals(Int, Int)`, so it is refused; `Good + Bad + Eq` is
+# accepted and answers in fixtures/eq_marker_subtrait_bound_accepted_test.vibe.
+send_check_reject "err_type_eq_marker_subtrait_wrong_first_equals.vibe" 'no impl `Eq` for `Pt` (`Key` extends `Eq`)' "eqsubfirst"
+# #3350: what decides the refusal is whether the operator reaches a witness,
+# not whether the trait is a marker. Each of these checked clean on the #3327
+# compiler and answered by reference (`false` for equal values, `true` for
+# `smaller(2, 1)`, `0` for `1.5 + 2.25`).
+send_check_reject "err_type_eq_no_equals_method_bound.vibe" '`Eq` declares no `equals(Self, Self) -> Bool`' "eqnoequals"
+send_check_reject "err_type_eq_witness_wrong_shape_bound.vibe" '`Eq`'"'"'s `equals` is not declared `(Self, Self) -> Bool`' "eqwrongshape"
+send_check_reject "err_type_ord_method_bound_struct.vibe" '`<` on the erased type has no witness to dispatch through' "ordmethod"
+send_check_reject "err_type_add_method_bound_double.vibe" 'no impl `Add` for `Double`' "addmethod"
+send_check_reject "err_type_eq_builtin_subtrait_wrong_first_equals.vibe" 'witness dictionary keeps is `Bad`'"'"'s' "eqbuiltinfirst"
+# A generic impl's parameter bound is judged by the same guard: the impl does
+# not apply at `Box[Pt]`, and the message names the parameter bound.
+send_check_reject "err_type_eq_generic_impl_param_bound.vibe" 'no impl `Same` for `Box[Pt]` (its generic impl needs `Pt: Eq`)' "eqgenimpl"
+# Codex on #3349: the same when the generic impl is of a SUBTRAIT of the
+# bound (`impl [T: Eq] Child for Box[T]` standing for `[U: Base]`). The hint
+# matched only impls of `Base` itself and said a bare "no impl".
+send_check_reject "err_type_eq_subtrait_generic_impl_param_bound.vibe" 'no impl `Base` for `Box[Pt]` (its generic impl needs `Pt: Eq`)' "eqsubgenimpl"
+send_check_reject "err_type_eq_subtrait_generic_impl_param_bound.vibe" 'Give `Eq` an `equals(Self, Self) -> Bool` method' "eqsubgenimpl2"
+send_check_reject "err_type_ord_subtrait_bound_struct.vibe" 'no impl `Ord` for `Token` (`Ordered` extends `Ord`)' "ordsub"
+send_check_reject "err_type_ord_subtrait_bound_struct.vibe" 'giving `Ord` a method would not help' "ordsub2"
 # #2895: `Double` is the instantiation the guard used to wave through, and it
 # was the silent wrong answer the guard exists to prevent -- `lt[T: Ord](2.5,
 # 1.5)` answered TRUE and `gt[T: Ord](2.5, 1.5)` answered FALSE, i.e. reading

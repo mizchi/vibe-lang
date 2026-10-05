@@ -36,7 +36,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-CC="${ASYNC_BAND_COMPONENT_CODEGEN:-lib/@vibe/compiler/entry/source_compile/wasi_only/component_codegen.vibe}"
+CC="${ASYNC_BAND_COMPONENT_CODEGEN:-lib/@vibe/compiler/codegen/component/component_codegen.vibe}"
 LC="${ASYNC_BAND_LINKED_COMPILE:-lib/@vibe/compiler/codegen/wasi/linked_compile.vibe}"
 
 for f in "$CC" "$LC"; do

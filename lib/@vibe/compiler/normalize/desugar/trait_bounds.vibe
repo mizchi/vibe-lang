@@ -5,7 +5,7 @@ import @vibe/compiler/lowering/trait_namespaces {
 }
 
 import @vibe/compiler/core {
-  Expr, Stmt, TypeEnv, TypeExpr, expr_children, trait_method_sig_binders_deep
+  Expr, Stmt, TypeEnv, TypeExpr, expr_children, trait_method_sig_binders_deep, trait_sigs_first_self_relation
 }
 
 import @vibe/ast {
@@ -842,47 +842,24 @@ export fn dtd_trait_entails(sub: String, super_name: String) -> Bool {
   found
 }
 
-fn dtd_ty_is_bool(te: TypeExpr) -> Bool {
-  match te {
-    TyName(n) => n == "Bool",
-    _ => false
-  }
-}
-
-fn dtd_ty_is_self(te: TypeExpr) -> Bool {
-  match te {
-    TyName(n) => n == "Self",
-    _ => false
-  }
-}
-
 /// Does `trait_name` declare `method` with the shape a comparison witness
 /// needs -- `(Self, Self) -> Bool`?
 ///
 /// Both parameters must be spelled `Self`, not merely counted. Codex on #2734
 /// measured the hole: `trait Eq { equals(Int, Int) -> Bool }` with a constant
 /// body answered `true` for two DIFFERENT `Pt`, because the rung handed erased
-/// `Pt` values to a method declared over `Int`. The checker cannot catch it --
-/// it admits `x == y` from the bound's spelling alone (#2474) and never sees
-/// the call this pass synthesizes -- so the shape is this predicate's to
-/// establish. A witness over anything but `Self` falls through to the ladder.
+/// `Pt` values to a method declared over `Int`. The checker cannot see the
+/// call this pass synthesizes, so the shape is this predicate's to establish.
+/// A witness over anything but `Self` falls through to the ladder.
+///
+/// The test itself is `trait_sigs_first_self_relation` in core, over the same
+/// flattened table: the checker's comparison guard (`bound_flat_self_equals`)
+/// asks it too, so the two cannot disagree about which `equals` is the
+/// witness (#3327 review).
 export fn dtd_trait_has_self_eq_method(traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], trait_name: String, method: String) -> Bool {
   match lookup_trait_sigs(traits, trait_ref_name(trait_name)) {
     None => false,
-    Some(sigs) => {
-      let mut i = 0
-      let mut ok = false
-      while i < Array::length(sigs) {
-        let (m, params, ret) = Array::get(sigs, i)
-        if m == method {
-          ok = Array::length(params) == 2 && dtd_ty_is_self(Array::get(params, 0)) && dtd_ty_is_self(Array::get(params, 1)) && dtd_ty_is_bool(ret)
-          i = Array::length(sigs)
-        } else {
-          i = i + 1
-        }
-      }
-      ok
-    }
+    Some(sigs) => trait_sigs_first_self_relation(sigs, method)
   }
 }
 

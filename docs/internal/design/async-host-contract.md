@@ -84,7 +84,7 @@ Neither `scripts/wasm_vibe_host_runner.js` nor `runtime/viberun`'s core lane
 registers any of these, and that is by design: they are satisfied inside the
 composed component by the adapter the composer emits
 (`comp_generate_hostfuture_adapter_core_module` and its siblings in
-`lib/@vibe/compiler/entry/source_compile/wasi_only/component_codegen_*.vibe`).
+`lib/@vibe/compiler/codegen/component/component_codegen_*.vibe`).
 
 A core module importing these names still instantiates under the node runner:
 `wasm_vibe_host_runner.js` builds its `vibe` import object as a Proxy, so

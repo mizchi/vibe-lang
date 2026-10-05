@@ -112,7 +112,7 @@ calls it **in process**. Control measurement (2026-08-13):
 
 | entry | what it exercises | result |
 |---|---|---|
-| `runtime/grep_test.vibe` | calls `grep_scan_source` directly | 264/587 of grep.vibe's branches counted |
+| `query/grep_test.vibe` | calls `grep_scan_source` directly | 264/587 of grep.vibe's branches counted |
 | `tests/import_private_ctor_collision_test.vibe` | private-constructor namespacing, **at compile time** | the program has 8 branches, and none of `import_alias_rewrite`'s functions |
 
 So `cli_adapter.vibe 0/250` means "**not called in process**", not

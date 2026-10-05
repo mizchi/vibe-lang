@@ -71,14 +71,7 @@ import @vibe/compiler/codegen/common_base {
 }
 
 import @vibe/compiler/codegen/common_extractors {
-  array_contains_int,
-  array_contains_str,
-  emit_assignop_op,
-  emit_memory_copy,
-  find_catchall_idx,
-  first_offset,
-  int_div_site_text,
-  int_divisor_may_be_zero
+  array_contains_int, emit_assignop_op, emit_memory_copy, find_catchall_idx, first_offset, int_div_site_text, int_divisor_may_be_zero
 }
 
 import @vibe/compiler/codegen/wasm_emit {
@@ -979,6 +972,7 @@ fn gc_restore_local_scope(local_names: Array[String], ctx: CompileCtxGc, keep: I
   agg_log_reset_above(ctx.gc_agg_local_slots, keep)
   gc_slot_log_reset_above(ctx.gc_bool_locals, keep)
   gc_slot_log_reset_above(ctx.gc_int_locals, keep)
+  gc_slot_log_reset_above(ctx.ref_local_indices, keep)
   gc_slot_log_reset_above(ctx.gc_float_locals, keep)
   gc_slot_log_reset_above(ctx.gc_native_array_locals, keep)
   gc_slot_map_reset_above(ctx.gc_native_struct_scope, keep)
@@ -1212,7 +1206,9 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       }
       let local_idx = try_local(len - 1)
       if local_idx >= 0 {
-        if array_contains_str(ctx.ref_cell_names, name) {
+        // #3357: a ref cell is a SLOT, not a name -- a later `let f` inside
+        // a captured `let mut f`'s scope is its own plain local.
+        if array_contains_int(ctx.ref_local_indices, local_idx) {
           // #538: ref cells are 8-byte linear-memory cells (NOT wasm-gc
           // structs): a (ref $t) value cannot cross the i64 world -- storing
           // a captured cell into a closure env emitted invalid wasm.
@@ -1529,6 +1525,7 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       agg_log_reset_above(ctx.gc_agg_local_slots, names_len_before)
       gc_slot_log_reset_above(ctx.gc_bool_locals, names_len_before)
       gc_slot_log_reset_above(ctx.gc_int_locals, names_len_before)
+      gc_slot_log_reset_above(ctx.ref_local_indices, names_len_before)
       gc_slot_log_reset_above(ctx.gc_float_locals, names_len_before)
       gc_slot_log_reset_above(ctx.gc_native_array_locals, names_len_before)
       gc_slot_map_reset_above(ctx.gc_native_struct_scope, names_len_before)
@@ -1547,6 +1544,7 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       agg_log_reset_above(ctx.gc_agg_local_slots, names_len_before)
       gc_slot_log_reset_above(ctx.gc_bool_locals, names_len_before)
       gc_slot_log_reset_above(ctx.gc_int_locals, names_len_before)
+      gc_slot_log_reset_above(ctx.ref_local_indices, names_len_before)
       gc_slot_log_reset_above(ctx.gc_float_locals, names_len_before)
       gc_slot_log_reset_above(ctx.gc_native_array_locals, names_len_before)
       gc_slot_map_reset_above(ctx.gc_native_struct_scope, names_len_before)
@@ -1751,20 +1749,20 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
         emit_i32_wrap_i64(buf)
         let nl = ce(buf, value, local_names, next_local + 1, ld)
         emit_i64_store(buf, 3, 0)
+        // #3357: the cell is marked by SLOT, once the initializer has
+        // compiled (it cannot see the binder it initializes), and the mark
+        // goes with the slot when the binder's scope ends
+        // (`gc_restore_local_scope`, and each sibling arm that may reuse the
+        // slot). Every read -- a name, an assignment, a call, a capture --
+        // asks about the slot its name resolves to, so a later `let f` in
+        // this scope, a `let rec f`, a handler arm's or a lambda's own `f`
+        // is a plain local and only this binding is read through the cell.
+        // `ref_cell_names` was keyed by NAME and read every same-named
+        // binding in the scope through this cell (#3357).
         Array::push(ctx.ref_local_indices, local_idx)
-        // `ref_cell_names` is keyed by NAME, so the mark covers exactly the
-        // binder's scope: set once the initializer has compiled (marking it
-        // first made a same-named outer binding the initializer reads, as in
-        // `let mut f = (x) -> f(x) + 1` over an earlier `let f`, load through
-        // as a cell) and dropped with the body (a later `let f` after the
-        // block was read through as a cell as well).
-        let cells_before = Array::length(ctx.ref_cell_names)
-        Array::push(ctx.ref_cell_names, name)
         gc_restore_local_scope(local_names, ctx, name_slot + 1, nl)
         Array::set(local_names, name_slot, name)
-        let cell_body_nl = ce(buf, body, local_names, nl, ld)
-        Array::truncate(ctx.ref_cell_names, cells_before)
-        cell_body_nl
+        ce(buf, body, local_names, nl, ld)
       } else {
         if gc_expr_is_floatish(value, local_names, ctx) {
           // #1032: logged by SLOT (local_idx), not name -- see
@@ -1798,7 +1796,7 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
     },
     EAssign(name, value, body, _) => {
       let idx = resolve_local(local_names, name, "gc_var")
-      if array_contains_str(ctx.ref_cell_names, name) {
+      if array_contains_int(ctx.ref_local_indices, idx) {
         emit_local_get(buf, idx)
         emit_i32_wrap_i64(buf)
         let nl = ce(buf, value, local_names, next_local, ld)
@@ -1814,7 +1812,7 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       let idx = resolve_local(local_names, name, "gc_var")
       if (op == "+" || op == "-" || op == "*" || op == "/") && (array_contains_int(ctx.gc_float_locals, idx) || gc_expr_is_floatish(value, local_names, ctx)) {
         ce(buf, EAssign(name, EBinOp(op, EIdent(name, -1), value, -1), body, target_off), local_names, next_local, ld)
-      } else if array_contains_str(ctx.ref_cell_names, name) {
+      } else if array_contains_int(ctx.ref_local_indices, idx) {
         emit_local_get(buf, idx)
         emit_i32_wrap_i64(buf)
         emit_local_get(buf, idx)
@@ -2053,6 +2051,7 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
       agg_log_reset_above(ctx.gc_agg_local_slots, names_len_at_forin)
       gc_slot_log_reset_above(ctx.gc_bool_locals, names_len_at_forin)
       gc_slot_log_reset_above(ctx.gc_int_locals, names_len_at_forin)
+      gc_slot_log_reset_above(ctx.ref_local_indices, names_len_at_forin)
       gc_slot_log_reset_above(ctx.gc_float_locals, names_len_at_forin)
       while Array::length(local_names) < final_nl {
         Array::push(local_names, "")
@@ -2441,6 +2440,7 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
         agg_log_reset_above(ctx.gc_agg_local_slots, names_before_h)
         gc_slot_log_reset_above(ctx.gc_bool_locals, names_before_h)
         gc_slot_log_reset_above(ctx.gc_int_locals, names_before_h)
+        gc_slot_log_reset_above(ctx.ref_local_indices, names_before_h)
         gc_slot_log_reset_above(ctx.gc_float_locals, names_before_h)
         if nl_h2 > nl_h {
           nl_h = nl_h2

@@ -1,0 +1,2183 @@
+// lib/@vibe/compiler/codegen/component/component_codegen.vibe — comp generate hostfuture adapter core module.
+
+import @vibe/compiler/core {
+  bytebuf_new, bytebuf_push, bytebuf_push_buf, bytebuf_push_section, bytebuf_push_vec_header, bytebuf_to_bytes, leb128_encode_u32
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import @vibe/compiler/codegen/wasm_emit {
+  emit_block_void,
+  emit_br,
+  emit_br_if,
+  emit_call,
+  emit_else,
+  emit_end,
+  emit_export_section_multi,
+  emit_func_type_raw,
+  emit_function_section,
+  emit_header,
+  emit_i32_add,
+  emit_i32_and,
+  emit_i32_const,
+  emit_i32_eq,
+  emit_i32_eqz,
+  emit_i32_gt_u,
+  emit_i32_load,
+  emit_i32_load8_u,
+  emit_i32_ne,
+  emit_i32_shl,
+  emit_i32_shr_u,
+  emit_i32_store,
+  emit_i32_sub,
+  emit_i32_wrap_i64,
+  emit_i64_const,
+  emit_if_void,
+  emit_local_get,
+  emit_local_set,
+  emit_loop_void,
+  emit_name,
+  emit_return
+}
+
+import ./component_codegen_comp_generate_host_future_value_guest_core_module.vibe {
+  comp_body_claim_body,
+  comp_emit_response_value,
+  comp_emit_ws_band_addr,
+  comp_emit_ws_decode_slot,
+  comp_emit_ws_hslot_addr,
+  comp_emit_ws_result_addr,
+  comp_emit_ws_value,
+  comp_hf_arm_ws_slot,
+  comp_hf_state_base,
+  comp_hf_value_base,
+  comp_sleep_arm_results_slot,
+  comp_timer_band_base,
+  comp_timer_counter_slot,
+  comp_timer_id_base,
+  comp_ws_getter_body,
+  comp_ws_handle_base,
+  comp_ws_state_base,
+  comp_ws_sub_base
+}
+
+import ./component_codegen_comp_generate_serve_stream_adapter_module.vibe {
+  comp_arg_buf_base,
+  comp_arg_len_slot,
+  comp_emit_decode_i64_value,
+  comp_emit_drop_by_kind,
+  comp_emit_encode_i64_value,
+  comp_emit_hf_kind_addr,
+  comp_first_kind_index,
+  comp_hf_max_handles,
+  comp_hostfuture_import_label,
+  comp_hoststream_import_label,
+  comp_hs_closed_base,
+  comp_hs_pending_base,
+  comp_hs_status_base,
+  comp_hs_value_base,
+  comp_is_wit_response_arg_import,
+  comp_response_stream_label
+}
+
+import ./component_codegen_comp_generate_spawned_future_guest_core_module.vibe {
+  new_int_array
+}
+
+/// Forget the pending subtask of the slot in `slot_local` (its handle in
+/// `handle_local`): leave any set, drop it, clear both maps.
+fn comp_emit_ws_release_subtask(b: Bytes, slot_local: Int, handle_local: Int, join_idx: Int, sdrop_idx: Int) -> Unit {
+  emit_local_get(b, handle_local)
+  emit_i32_const(b, 0)
+  emit_call(b, join_idx)
+  emit_local_get(b, handle_local)
+  emit_call(b, sdrop_idx)
+  comp_emit_ws_hslot_addr(b, handle_local)
+  emit_i32_const(b, 0)
+  emit_i32_store(b, 2, 0)
+  comp_emit_ws_band_addr(b, slot_local, comp_ws_sub_base())
+  emit_i32_const(b, 0)
+  emit_i32_store(b, 2, 0)
+}
+
+/// #3131: host_future_wait for a WIT slot handle. A pending subtask parks
+/// alone in a fresh set until its SUBTASK (1) event reports RETURNED (2) --
+/// an earlier state change only loops -- and the value is then read from the
+/// slot, which is freed.
+fn comp_ws_wait_body(ws_new_idx: Int, join_idx: Int, ws_wait_idx: Int, ws_drop_idx: Int, sdrop_idx: Int, mixed: Bool, response_payload: Bool, tag_mode: Int) -> Bytes {
+  let b = bytebuf_new()
+  // param 0 = core handle (i64); locals (i32): 1 slot, 2 state, 3 ws, 4 ev,
+  // 5 addr, 6 subtask
+  leb128_encode_u32(b, 1)
+  leb128_encode_u32(b, 6)
+  bytebuf_push(b, 127)
+  comp_emit_ws_decode_slot(b, 1, tag_mode)
+  comp_emit_ws_band_addr(b, 1, comp_ws_state_base())
+  emit_i32_load(b, 2, 0)
+  emit_local_set(b, 2)
+  emit_local_get(b, 2)
+  emit_i32_eqz(b)
+  emit_if_void(b)
+  bytebuf_push(b, 0)
+  emit_end(b)
+  emit_local_get(b, 2)
+  emit_i32_const(b, 1)
+  emit_i32_eq(b)
+  emit_if_void(b)
+  comp_emit_ws_band_addr(b, 1, comp_ws_sub_base())
+  emit_i32_load(b, 2, 0)
+  emit_local_set(b, 6)
+  emit_call(b, ws_new_idx)
+  emit_local_set(b, 3)
+  emit_local_get(b, 6)
+  emit_local_get(b, 3)
+  emit_call(b, join_idx)
+  emit_block_void(b)
+  emit_loop_void(b)
+  emit_local_get(b, 3)
+  emit_i32_const(b, 16)
+  emit_call(b, ws_wait_idx)
+  emit_local_set(b, 4)
+  emit_local_get(b, 4)
+  emit_i32_const(b, 1)
+  emit_i32_ne(b)
+  emit_if_void(b)
+  bytebuf_push(b, 0)
+  emit_end(b)
+  emit_i32_const(b, 20)
+  emit_i32_load(b, 2, 0)
+  emit_i32_const(b, 2)
+  emit_i32_eq(b)
+  emit_br_if(b, 1)
+  emit_br(b, 0)
+  emit_end(b)
+  emit_end(b)
+  comp_emit_ws_release_subtask(b, 1, 6, join_idx, sdrop_idx)
+  emit_local_get(b, 3)
+  emit_call(b, ws_drop_idx)
+  emit_end(b)
+  comp_emit_ws_band_addr(b, 1, comp_ws_state_base())
+  emit_i32_const(b, 0)
+  emit_i32_store(b, 2, 0)
+  comp_emit_ws_value(b, 1, 5, mixed, response_payload, tag_mode)
+  bytebuf_push(b, 11)
+  b
+}
+
+/// #3131: host_future_arm for a WIT slot handle: 1 when the value landed,
+/// else the pending subtask joins the shared set and the answer is 0.
+fn comp_ws_arm_body(ws_new_idx: Int, join_idx: Int, tag_mode: Int) -> Bytes {
+  let b = bytebuf_new()
+  // param 0; locals (i32): 1 slot, 2 state, 3 ws
+  leb128_encode_u32(b, 1)
+  leb128_encode_u32(b, 3)
+  bytebuf_push(b, 127)
+  comp_emit_ws_decode_slot(b, 1, tag_mode)
+  comp_emit_ws_band_addr(b, 1, comp_ws_state_base())
+  emit_i32_load(b, 2, 0)
+  emit_local_set(b, 2)
+  emit_local_get(b, 2)
+  emit_i32_const(b, 2)
+  emit_i32_eq(b)
+  emit_if_void(b)
+  emit_i64_const(b, 1)
+  comp_emit_encode_i64_value(b, tag_mode)
+  emit_return(b)
+  emit_end(b)
+  emit_local_get(b, 2)
+  emit_i32_const(b, 1)
+  emit_i32_ne(b)
+  emit_if_void(b)
+  bytebuf_push(b, 0)
+  emit_end(b)
+  emit_i32_const(b, comp_hf_arm_ws_slot())
+  emit_i32_load(b, 2, 0)
+  emit_local_set(b, 3)
+  emit_local_get(b, 3)
+  emit_i32_eqz(b)
+  emit_if_void(b)
+  emit_call(b, ws_new_idx)
+  emit_local_set(b, 3)
+  emit_i32_const(b, comp_hf_arm_ws_slot())
+  emit_local_get(b, 3)
+  emit_i32_store(b, 2, 0)
+  emit_end(b)
+  comp_emit_ws_band_addr(b, 1, comp_ws_sub_base())
+  emit_i32_load(b, 2, 0)
+  emit_local_get(b, 3)
+  emit_call(b, join_idx)
+  emit_i64_const(b, 0)
+  comp_emit_encode_i64_value(b, tag_mode)
+  bytebuf_push(b, 11)
+  b
+}
+
+/// #3131: host_future_cancel for a WIT slot handle. A pending subtask leaves
+/// the set and is cancelled synchronously; if it returned first, its value
+/// counts as landed. A landed response owns its body stream, which is
+/// dropped. The slot is freed either way.
+fn comp_ws_cancel_body(join_idx: Int, sdrop_idx: Int, scancel_idx: Int, stream_drop_idx: Int, mixed: Bool, response_payload: Bool, tag_mode: Int) -> Bytes {
+  let b = bytebuf_new()
+  // param 0; locals (i32): 1 slot, 2 state, 3 subtask
+  leb128_encode_u32(b, 1)
+  leb128_encode_u32(b, 3)
+  bytebuf_push(b, 127)
+  comp_emit_ws_decode_slot(b, 1, tag_mode)
+  comp_emit_ws_band_addr(b, 1, comp_ws_state_base())
+  emit_i32_load(b, 2, 0)
+  emit_local_set(b, 2)
+  emit_local_get(b, 2)
+  emit_i32_eqz(b)
+  emit_if_void(b)
+  emit_i64_const(b, 0)
+  comp_emit_encode_i64_value(b, tag_mode)
+  emit_return(b)
+  emit_end(b)
+  emit_local_get(b, 2)
+  emit_i32_const(b, 1)
+  emit_i32_eq(b)
+  emit_if_void(b)
+  comp_emit_ws_band_addr(b, 1, comp_ws_sub_base())
+  emit_i32_load(b, 2, 0)
+  emit_local_set(b, 3)
+  emit_local_get(b, 3)
+  emit_i32_const(b, 0)
+  emit_call(b, join_idx)
+  emit_local_get(b, 3)
+  emit_call(b, scancel_idx)
+  emit_i32_const(b, 2)
+  emit_i32_eq(b)
+  emit_if_void(b)
+  emit_i32_const(b, 2)
+  emit_local_set(b, 2)
+  emit_end(b)
+  comp_emit_ws_release_subtask(b, 1, 3, join_idx, sdrop_idx)
+  emit_end(b)
+  if response_payload {
+    emit_local_get(b, 2)
+    emit_i32_const(b, 2)
+    emit_i32_eq(b)
+    if mixed {
+      comp_emit_hf_kind_addr(b, 1)
+      emit_i32_load(b, 2, 0)
+      emit_i32_and(b)
+    } else {
+      ()
+    }
+    emit_if_void(b)
+    comp_emit_ws_result_addr(b, 1)
+    emit_i32_load(b, 2, 4)
+    emit_call(b, stream_drop_idx)
+    emit_end(b)
+  } else {
+    ()
+  }
+  comp_emit_ws_band_addr(b, 1, comp_ws_state_base())
+  emit_i32_const(b, 0)
+  emit_i32_store(b, 2, 0)
+  emit_i64_const(b, 0)
+  comp_emit_encode_i64_value(b, tag_mode)
+  bytebuf_push(b, 11)
+  b
+}
+
+/// #1342: the scratch slots the SLEEP half owns. Disjoint from slot 8 (the
+/// getters' async-lower results area) and 16 (their wait payload) on purpose:
+/// unlike a future getter, `sleep-for`'s async-lowered call does NOT complete
+/// before the adapter returns -- the subtask stays outstanding across the park
+/// -- so sharing slot 8 with a getter that ran first would let the timer's
+/// landing write stomp a handle the getter is still holding.
+fn comp_sleep_results_slot() -> Int {
+  24
+}
+
+fn comp_sleep_wait_payload_slot() -> Int {
+  32
+}
+
+export fn comp_generate_hostfuture_adapter_core_module(core_names: Array[String], stream_core_names: Array[String], want_stream_close: Bool, want_sleep: Bool, tag_mode: Int, future_s64: Bool, response_payload: Bool, want_wait_any: Bool, want_stream_arm: Bool, want_sleep_arm: Bool, want_cancel: Bool, want_stream_cancel: Bool, response_kinds: Array[Bool], want_arg_push: Bool, want_timer_cancel: Bool, exit_stubs: Array[String], want_claim: Bool) -> Bytes with Exception {
+  // #1342: a THIRD half -- `vibe.sleep`. It is not a getter/wait pair like the
+  // other two: the host side is an `async func(ms) -> ms`, so its
+  // async-lowered call yields a SUBTASK rather than a future/stream handle,
+  // and the adapter parks on that subtask in the same `waitable-set.wait` the
+  // other halves use. Emitted only when the compiled core imports
+  // `vibe.sleep`, appended after everything else, so every pre-existing
+  // composition keeps its exact bytes.
+  //
+  // ADR-0089 Decision 3 (#1218): generalized again -- K host futures AND L
+  // host streams (K + L >= 1, either may be 0). The future half is
+  // byte-identical for L = 0 (every stream-specific type/import/func is
+  // emitted only when L > 0, appended after the future/waitable layout).
+  // Stream layout: after the waitable quartet come L `[async-lower]<label>`
+  // stream getters, one shared `[async-lower][stream-read-0]<first-label>`
+  // and `[stream-drop-readable-0]<first-label>` (every host stream here is
+  // a `stream<u8>`, one canon pair covers them all). Local funcs append L
+  // per-name getters (exported under their `host_stream_get$<name>` core
+  // import names) and the single shared `host_stream_read (i64) -> i64`:
+  // read ONE byte -- issue `stream.read`, park in `waitable-set.wait` when
+  // it blocks, and report end-of-stream (the measured `amount 0 / code 1`
+  // status, spec §3.17) as -1 after dropping the readable end. Unlike the
+  // future getters there is NO eager read: the park is per READ, and a
+  // pending read left between calls would double-read the stream.
+  // #2066: a RESPONSE payload (`future<record{status: s32, body:
+  // stream<u8>}>`) lands in the same 8-byte slot as an s64 and hands its body
+  // stream to the shared read half, so that half is present even with no
+  // named stream getter (L = 0).
+  let nnames = Array::length(core_names)
+  let nstreams = Array::length(stream_core_names)
+  let stream_half = nstreams > 0 || response_payload
+  let read_idx = nnames
+  let drop_idx = nnames + 1
+  // #2066: MIXED -- WIT responses and scalar `future<s64>` functions in one
+  // component. `response_kinds[i]` says which the i-th name is; a second
+  // canon read/drop pair (the s64 type) follows the response pair, each
+  // getter records its handle's kind (comp_hf_kind_base), and wait, cancel and
+  // teardown pick the pair and the value encoding by that kind.
+  let mixed = Array::length(response_kinds) > 0
+  let read1_idx = nnames + 2
+  let drop1_idx = nnames + 3
+  let ws_base = if nnames > 0 {
+    if mixed {
+      nnames + 4
+    } else {
+      nnames + 2
+    }
+  } else {
+    0
+  }
+  let ws_new_idx = ws_base
+  let join_idx = ws_base + 1
+  let ws_wait_idx = ws_base + 2
+  let ws_drop_idx = ws_base + 3
+  let sget_base = ws_base + 4
+  let sread_idx = sget_base + nstreams
+  let sdrop_idx = sget_base + nstreams + 1
+  let base_func_imports = if stream_half {
+    sget_base + nstreams + 2
+  } else {
+    ws_base + 4
+  }
+  // #1342: the sleep half's two imports come last, so adding them cannot
+  // shift any index above.
+  let sleep_lower_idx = base_func_imports
+  let subtask_drop_idx = base_func_imports + 1
+  let sleep_func_imports = if want_sleep {
+    base_func_imports + 2
+  } else {
+    base_func_imports
+  }
+  // #1537: `future.cancel-read` (sync), after the sleep half for the same
+  // reason -- a composition without it keeps every index.
+  let cancel_read_idx = sleep_func_imports
+  let cancel1_read_idx = sleep_func_imports + 1
+  let cancel_func_imports = if want_cancel {
+    if mixed {
+      sleep_func_imports + 2
+    } else {
+      sleep_func_imports + 1
+    }
+  } else {
+    sleep_func_imports
+  }
+  // #1537: `stream.cancel-read` (sync), after the future cancel half.
+  let scancel_read_idx = cancel_func_imports
+  let scancel_func_imports = if want_stream_cancel {
+    cancel_func_imports + 1
+  } else {
+    cancel_func_imports
+  }
+  // #1537: `subtask.cancel` (sync) for host_sleep_cancel, last of all.
+  let subtask_cancel_idx = scancel_func_imports
+  let timer_func_imports = if want_timer_cancel {
+    scancel_func_imports + 1
+  } else {
+    scancel_func_imports
+  }
+  // #3131: a WIT-derived import is a subtask, not a future: its slot half
+  // drops and cancels subtasks through its own pair, appended last.
+  let wit_subtask = future_s64
+  let wit_sdrop_idx = timer_func_imports
+  let wit_scancel_idx = timer_func_imports + 1
+  let nfunc_imports = if wit_subtask {
+    timer_func_imports + 2
+  } else {
+    timer_func_imports
+  }
+  let out = bytebuf_new()
+  emit_header(out)
+  // types: 0 (i32)->(i32) async-lowered get-future; 1 (i32,i32)->(i32)
+  // future.read & ws_wait & the async-lowered sleep-for; 2 (i32)->()
+  // drop-readable/ws_drop/subtask.drop; 3 ()->(i32) ws_new;
+  // 4 (i32,i32)->() waitable_join; 5 ()->(i64) host_future_get;
+  // 6 (i64)->(i64) host_future_wait; 7 (i32,i32,i32)->(i32) stream.read
+  // (only when streams are present). #1342 appends the sleep func's own
+  // (i64)->() LAST, so the indices above are unchanged by its presence.
+  let sleep_type_idx = if stream_half {
+    8
+  } else {
+    7
+  }
+  let base_ntypes = if want_sleep {
+    sleep_type_idx + 1
+  } else {
+    sleep_type_idx
+  }
+  // #1537: the exception boundary's exit imports (`stderr_write_stream`,
+  // `process_exit`, both `(i64) -> ()`), served as trapping stubs -- the trap
+  // IS the boundary's non-zero outcome (#2976's rule for the p1 wrap). Their
+  // type is appended last.
+  let exit_type_idx = base_ntypes
+  let ntypes = if Array::length(exit_stubs) > 0 {
+    base_ntypes + 1
+  } else {
+    base_ntypes
+  }
+  let tc = bytebuf_new()
+  bytebuf_push_vec_header(tc, ntypes)
+  emit_func_type_raw(tc, [127], [127])
+  emit_func_type_raw(tc, [127, 127], [127])
+  emit_func_type_raw(tc, [127], array_empty())
+  emit_func_type_raw(tc, array_empty(), [127])
+  emit_func_type_raw(tc, [127, 127], array_empty())
+  emit_func_type_raw(tc, array_empty(), [126])
+  emit_func_type_raw(tc, [126], [126])
+  if stream_half {
+    emit_func_type_raw(tc, [127, 127, 127], [127])
+  } else {
+    ()
+  }
+  if want_sleep {
+    emit_func_type_raw(tc, [126], array_empty())
+  } else {
+    ()
+  }
+  if Array::length(exit_stubs) > 0 {
+    emit_func_type_raw(tc, [126], array_empty())
+  } else {
+    ()
+  }
+  bytebuf_push_section(out, 1, tc)
+  // imports: the future half (K getters + shared read/drop, K > 0 only),
+  // the waitable quartet, the stream half (L getters + shared read/drop,
+  // L > 0 only), the sleep half (async-lowered `sleep-for` + subtask.drop,
+  // #1342), and the memhost memory.
+  let ic = bytebuf_new()
+  bytebuf_push_vec_header(ic, nfunc_imports + 1)
+  let mut imp_i = 0
+  while imp_i < nnames {
+    emit_name(ic, "$root")
+    emit_name(ic, String::concat("[async-lower]", comp_hostfuture_import_label(Array::get(core_names, imp_i))))
+    bytebuf_push(ic, 0)
+    // #2066: an argument response's lowering takes the string as (ptr, len)
+    // before its results pointer: type 7, (i32, i32, i32) -> i32, which the
+    // stream half declares (a response component always has one).
+    bytebuf_push(ic, if comp_is_wit_response_arg_import(Array::get(core_names, imp_i)) {
+      7
+    } else {
+      0
+    })
+    imp_i = imp_i + 1
+  }
+  if nnames > 0 {
+    let first_label = comp_hostfuture_import_label(Array::get(core_names, 0))
+    emit_name(ic, "$root")
+    emit_name(ic, String::concat("[async-lower][future-read-0]", first_label))
+    bytebuf_push(ic, 0)
+    bytebuf_push(ic, 1)
+    emit_name(ic, "$root")
+    emit_name(ic, String::concat("[future-drop-readable-0]", first_label))
+    bytebuf_push(ic, 0)
+    bytebuf_push(ic, 2)
+    if mixed {
+      let scalar_label = comp_hostfuture_import_label(Array::get(core_names, comp_first_kind_index(response_kinds, false)))
+      emit_name(ic, "$root")
+      emit_name(ic, String::concat("[async-lower][future-read-1]", scalar_label))
+      bytebuf_push(ic, 0)
+      bytebuf_push(ic, 1)
+      emit_name(ic, "$root")
+      emit_name(ic, String::concat("[future-drop-readable-1]", scalar_label))
+      bytebuf_push(ic, 0)
+      bytebuf_push(ic, 2)
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+  emit_name(ic, "$root")
+  emit_name(ic, "[waitable-set-new]")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 3)
+  emit_name(ic, "$root")
+  emit_name(ic, "[waitable-join]")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 4)
+  emit_name(ic, "$root")
+  emit_name(ic, "[waitable-set-wait]")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 1)
+  emit_name(ic, "$root")
+  emit_name(ic, "[waitable-set-drop]")
+  bytebuf_push(ic, 0)
+  bytebuf_push(ic, 2)
+  if stream_half {
+    let mut simp_i = 0
+    while simp_i < nstreams {
+      emit_name(ic, "$root")
+      emit_name(ic, String::concat("[async-lower]", comp_hoststream_import_label(Array::get(stream_core_names, simp_i))))
+      bytebuf_push(ic, 0)
+      bytebuf_push(ic, 0)
+      simp_i = simp_i + 1
+    }
+    let s_first_label = if nstreams > 0 {
+      comp_hoststream_import_label(Array::get(stream_core_names, 0))
+    } else {
+      comp_response_stream_label()
+    }
+    emit_name(ic, "$root")
+    emit_name(ic, String::concat("[async-lower][stream-read-0]", s_first_label))
+    bytebuf_push(ic, 0)
+    bytebuf_push(ic, 7)
+    emit_name(ic, "$root")
+    emit_name(ic, String::concat("[stream-drop-readable-0]", s_first_label))
+    bytebuf_push(ic, 0)
+    bytebuf_push(ic, 2)
+  } else {
+    ()
+  }
+  if want_sleep {
+    emit_name(ic, "$root")
+    emit_name(ic, "[async-lower]sleep-for")
+    bytebuf_push(ic, 0)
+    bytebuf_push(ic, 1)
+    emit_name(ic, "$root")
+    emit_name(ic, "[subtask-drop]")
+    bytebuf_push(ic, 0)
+    bytebuf_push(ic, 2)
+  } else {
+    ()
+  }
+  if want_cancel {
+    if nnames == 0 {
+      throw("component(async-hostfuture): host_future_cancel without a host future")
+    } else {
+      ()
+    }
+    emit_name(ic, "$root")
+    emit_name(ic, String::concat("[future-cancel-read-0]", comp_hostfuture_import_label(Array::get(core_names, 0))))
+    bytebuf_push(ic, 0)
+    bytebuf_push(ic, 0)
+    if mixed {
+      emit_name(ic, "$root")
+      emit_name(ic, String::concat("[future-cancel-read-1]", comp_hostfuture_import_label(Array::get(core_names, comp_first_kind_index(response_kinds, false)))))
+      bytebuf_push(ic, 0)
+      bytebuf_push(ic, 0)
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+  if want_stream_cancel {
+    if !stream_half {
+      throw("component(async-hostfuture): host_stream_cancel without a host stream")
+    } else {
+      ()
+    }
+    emit_name(ic, "$root")
+    emit_name(ic, String::concat("[stream-cancel-read-0]", if nstreams > 0 {
+      comp_hoststream_import_label(Array::get(stream_core_names, 0))
+    } else {
+      comp_response_stream_label()
+    }))
+    bytebuf_push(ic, 0)
+    bytebuf_push(ic, 0)
+  } else {
+    ()
+  }
+  if want_timer_cancel {
+    if !want_sleep_arm {
+      throw("component(async-hostfuture): host_sleep_cancel without host_sleep_arm")
+    } else {
+      ()
+    }
+    // type 0: (i32) -> (i32)
+    emit_name(ic, "$root")
+    emit_name(ic, "[subtask-cancel]")
+    bytebuf_push(ic, 0)
+    bytebuf_push(ic, 0)
+  } else {
+    ()
+  }
+  if wit_subtask {
+    emit_name(ic, "$root")
+    emit_name(ic, "[subtask-drop-wit]")
+    bytebuf_push(ic, 0)
+    bytebuf_push(ic, 2)
+    emit_name(ic, "$root")
+    emit_name(ic, "[subtask-cancel-wit]")
+    bytebuf_push(ic, 0)
+    bytebuf_push(ic, 0)
+  } else {
+    ()
+  }
+  emit_name(ic, "env")
+  emit_name(ic, "memory")
+  bytebuf_push(ic, 2)
+  bytebuf_push(ic, 0)
+  leb128_encode_u32(ic, 1)
+  bytebuf_push_section(out, 2, ic)
+  // K future getters (type 5, `() -> i64`) + one shared wait (type 6) when
+  // K > 0, then L stream getters (type 5) + one shared read (type 6) when
+  // L > 0.
+  let fn_types = new_int_array()
+  let export_names = array_empty()
+  let export_indices = new_int_array()
+  let mut fs_i = 0
+  while fs_i < nnames {
+    Array::push(fn_types, 5)
+    Array::push(export_names, Array::get(core_names, fs_i))
+    Array::push(export_indices, nfunc_imports + fs_i)
+    fs_i = fs_i + 1
+  }
+  if nnames > 0 {
+    Array::push(fn_types, 6)
+    Array::push(export_names, "host_future_wait")
+    Array::push(export_indices, nfunc_imports + nnames)
+  } else {
+    ()
+  }
+  let s_local_base = if nnames > 0 {
+    nfunc_imports + nnames + 1
+  } else {
+    nfunc_imports
+  }
+  let mut sfs_i = 0
+  while sfs_i < nstreams {
+    Array::push(fn_types, 5)
+    Array::push(export_names, Array::get(stream_core_names, sfs_i))
+    Array::push(export_indices, s_local_base + sfs_i)
+    sfs_i = sfs_i + 1
+  }
+  if stream_half {
+    Array::push(fn_types, 6)
+    Array::push(export_names, "host_stream_read")
+    Array::push(export_indices, s_local_base + nstreams)
+  } else {
+    ()
+  }
+  // ADR-0089 Decision 3 follow-up (#1218): the shared DROP half, appended
+  // LAST so its presence cannot shift any existing index -- a stream
+  // composition whose guest never closes is byte-identical to one built
+  // before this func existed.
+  if stream_half && want_stream_close {
+    Array::push(fn_types, 6)
+    Array::push(export_names, "host_stream_close")
+    Array::push(export_indices, s_local_base + nstreams + 1)
+  } else {
+    ()
+  }
+  // #1342: `vibe.sleep`, appended after every other local func for the same
+  // reason its imports come last -- adding it shifts nothing.
+  if want_sleep {
+    Array::push(export_indices, nfunc_imports + Array::length(fn_types))
+    Array::push(fn_types, sleep_type_idx)
+    Array::push(export_names, "sleep")
+  } else {
+    ()
+  }
+  // #1537: the group-wide wait -- `host_future_arm` joins a pending future to
+  // one shared waitable set, `host_future_wait_any` blocks on that set and
+  // names the future that landed. Appended after everything else.
+  if want_wait_any {
+    Array::push(export_indices, nfunc_imports + Array::length(fn_types))
+    Array::push(fn_types, 6)
+    Array::push(export_names, "host_future_arm")
+    Array::push(export_indices, nfunc_imports + Array::length(fn_types))
+    Array::push(fn_types, 5)
+    Array::push(export_names, "host_future_wait_any")
+  } else {
+    ()
+  }
+  if want_stream_arm {
+    Array::push(export_indices, nfunc_imports + Array::length(fn_types))
+    Array::push(fn_types, 6)
+    Array::push(export_names, "host_stream_arm")
+  } else {
+    ()
+  }
+  if want_sleep_arm {
+    Array::push(export_indices, nfunc_imports + Array::length(fn_types))
+    Array::push(fn_types, 6)
+    Array::push(export_names, "host_sleep_arm")
+  } else {
+    ()
+  }
+  if want_cancel {
+    Array::push(export_indices, nfunc_imports + Array::length(fn_types))
+    Array::push(fn_types, 6)
+    Array::push(export_names, "host_future_cancel")
+  } else {
+    ()
+  }
+  if want_stream_cancel {
+    Array::push(export_indices, nfunc_imports + Array::length(fn_types))
+    Array::push(fn_types, 6)
+    Array::push(export_names, "host_stream_cancel")
+  } else {
+    ()
+  }
+  if want_arg_push {
+    Array::push(export_indices, nfunc_imports + Array::length(fn_types))
+    Array::push(fn_types, 6)
+    Array::push(export_names, "host_arg_push")
+  } else {
+    ()
+  }
+  if want_timer_cancel {
+    Array::push(export_indices, nfunc_imports + Array::length(fn_types))
+    Array::push(fn_types, 6)
+    Array::push(export_names, "host_sleep_cancel")
+  } else {
+    ()
+  }
+  let mut xs_i = 0
+  while xs_i < Array::length(exit_stubs) {
+    Array::push(export_indices, nfunc_imports + Array::length(fn_types))
+    Array::push(fn_types, exit_type_idx)
+    Array::push(export_names, Array::get(exit_stubs, xs_i))
+    xs_i = xs_i + 1
+  }
+  // #2066: the body-claim half, last of all.
+  if want_claim {
+    Array::push(export_indices, nfunc_imports + Array::length(fn_types))
+    Array::push(fn_types, 6)
+    Array::push(export_names, "host_stream_claim")
+  } else {
+    ()
+  }
+  emit_function_section(out, fn_types)
+  emit_export_section_multi(out, export_names, export_indices)
+  let code_sec = bytebuf_new()
+  leb128_encode_u32(code_sec, Array::length(fn_types))
+  // funcs K+6 .. K+6+K-1: the per-name getters. locals (i32): 0=packed,
+  // 1=fut, 2=addr. Identical bodies apart from the lowered import they call.
+  //
+  // The getter STARTS the read (`future.read` into this handle's own landing
+  // slot) instead of leaving it to the wait. That is what makes two host
+  // futures overlap: wasmtime only polls a `FutureReader` producer once a
+  // read is pending on it, so a lazily-read second future would not begin
+  // until the first await returned -- sequential, not concurrent (measured:
+  // 300ms + 100ms took 422ms before this change, ~300ms after).
+  let mut get_i = 0
+  while get_i < nnames && wit_subtask {
+    let ws_get_body = comp_ws_getter_body(get_i, comp_is_wit_response_arg_import(Array::get(core_names, get_i)), mixed, if mixed {
+      Array::get(response_kinds, get_i)
+    } else {
+      response_payload
+    }, tag_mode, ws_new_idx, join_idx, ws_wait_idx, ws_drop_idx, wit_sdrop_idx)
+    leb128_encode_u32(code_sec, Bytes::length(ws_get_body))
+    bytebuf_push_buf(code_sec, ws_get_body)
+    get_i = get_i + 1
+  }
+  while get_i < nnames {
+    let get_body = bytebuf_new()
+    leb128_encode_u32(get_body, 1)
+    leb128_encode_u32(get_body, 3)
+    bytebuf_push(get_body, 127)
+    // packed = <name>(results at 8); pair creation is synchronous by
+    // contract, so the low nibble must be RETURNED (2)
+    let takes_arg = comp_is_wit_response_arg_import(Array::get(core_names, get_i))
+    if takes_arg {
+      // #2066: the string the guest pushed through host_arg_push, as
+      // (ptr, len) in this memory.
+      emit_i32_const(get_body, comp_arg_buf_base())
+      emit_i32_const(get_body, comp_arg_len_slot())
+      emit_i32_load(get_body, 2, 0)
+    } else {
+      ()
+    }
+    emit_i32_const(get_body, 8)
+    emit_call(get_body, get_i)
+    emit_local_set(get_body, 0)
+    if takes_arg {
+      // consumed: the next request starts an empty buffer
+      emit_i32_const(get_body, comp_arg_len_slot())
+      emit_i32_const(get_body, 0)
+      emit_i32_store(get_body, 2, 0)
+    } else {
+      ()
+    }
+    emit_local_get(get_body, 0)
+    emit_i32_const(get_body, 15)
+    emit_i32_and(get_body)
+    emit_i32_const(get_body, 2)
+    emit_i32_ne(get_body)
+    emit_if_void(get_body)
+    bytebuf_push(get_body, 0)
+    emit_end(get_body)
+    // fut = mem[8] (the readable end's handle)
+    emit_i32_const(get_body, 8)
+    emit_i32_load(get_body, 2, 0)
+    emit_local_set(get_body, 1)
+    // Per-handle scratch lives at HF_VALUE_BASE + fut * payload width, so
+    // concurrent reads never share a landing slot. Handles are small
+    // instance-table indices; anything past the reserved band is a contract
+    // violation this adapter cannot represent, so trap.
+    emit_local_get(get_body, 1)
+    emit_i32_const(get_body, if future_s64 {
+      511
+    } else {
+      comp_hf_max_handles()
+    })
+    emit_i32_gt_u(get_body)
+    emit_if_void(get_body)
+    bytebuf_push(get_body, 0)
+    emit_end(get_body)
+    // addr = HF_VALUE_BASE + fut * payload width
+    emit_local_get(get_body, 1)
+    emit_i32_const(get_body, if future_s64 {
+      3
+    } else {
+      2
+    })
+    emit_i32_shl(get_body)
+    emit_i32_const(get_body, comp_hf_value_base())
+    emit_i32_add(get_body)
+    emit_local_set(get_body, 2)
+    // mem[HF_STATE_BASE + fut*4] = (future.read(fut, addr) == BLOCKED) ? 1 : 2
+    emit_local_get(get_body, 2)
+    emit_i32_const(get_body, comp_hf_state_base() - comp_hf_value_base())
+    emit_i32_add(get_body)
+    emit_local_get(get_body, 1)
+    emit_local_get(get_body, 2)
+    emit_call(get_body, if mixed && !Array::get(response_kinds, get_i) {
+      read1_idx
+    } else {
+      read_idx
+    })
+    emit_i32_const(get_body, -1)
+    emit_i32_ne(get_body)
+    emit_i32_const(get_body, 1)
+    emit_i32_add(get_body)
+    emit_i32_store(get_body, 2, 0)
+    if mixed {
+      // mem[HF_KIND_BASE + fut*4] = 1 for a response, 0 for a scalar
+      comp_emit_hf_kind_addr(get_body, 1)
+      emit_i32_const(get_body, if Array::get(response_kinds, get_i) {
+        1
+      } else {
+        0
+      })
+      emit_i32_store(get_body, 2, 0)
+    } else {
+      ()
+    }
+    // Return the handle in the compiled core's value convention.
+    emit_local_get(get_body, 1)
+    bytebuf_push(get_body, 173)
+    comp_emit_encode_i64_value(get_body, tag_mode)
+    bytebuf_push(get_body, 11)
+    leb128_encode_u32(code_sec, Bytes::length(get_body))
+    bytebuf_push_buf(code_sec, get_body)
+    get_i = get_i + 1
+  }
+  // func K+6+K: host_future_wait. param 0 = tagged handle (i64); locals
+  // (i32): 1=fut, 2=st, 3=ws, 4=ev, 5=addr.
+  //
+  // The read is already in flight (the getter issued it), so this only
+  // settles: read the recorded state, park if it was BLOCKED, then take the
+  // value out of THIS handle's landing slot. Re-reading here would be a
+  // second read on a future that already has one pending.
+  let wait_body = bytebuf_new()
+  leb128_encode_u32(wait_body, 1)
+  leb128_encode_u32(wait_body, 5)
+  bytebuf_push(wait_body, 127)
+  // Decode the handle using the compiled core's value convention.
+  emit_local_get(wait_body, 0)
+  comp_emit_decode_i64_value(wait_body, tag_mode)
+  emit_i32_wrap_i64(wait_body)
+  emit_local_set(wait_body, 1)
+  emit_local_get(wait_body, 1)
+  emit_i32_const(wait_body, if future_s64 {
+    3
+  } else {
+    2
+  })
+  emit_i32_shl(wait_body)
+  emit_i32_const(wait_body, comp_hf_value_base())
+  emit_i32_add(wait_body)
+  emit_local_set(wait_body, 5)
+  // st = mem[HF_STATE_BASE + fut*4]  (1 = read blocked, 2 = read completed
+  // eagerly). Anything else means this handle never went through a getter.
+  emit_local_get(wait_body, 5)
+  emit_i32_const(wait_body, comp_hf_state_base() - comp_hf_value_base())
+  emit_i32_add(wait_body)
+  emit_i32_load(wait_body, 2, 0)
+  emit_local_set(wait_body, 2)
+  emit_local_get(wait_body, 2)
+  emit_i32_eqz(wait_body)
+  emit_if_void(wait_body)
+  bytebuf_push(wait_body, 0)
+  emit_end(wait_body)
+  // BLOCKED (1): park as a waitable -- ws = ws_new(); join(fut, ws);
+  // ev = wait(ws, 16); the only waitable in the set, so the event must be
+  // FUTURE_READ (4).
+  emit_local_get(wait_body, 2)
+  emit_i32_const(wait_body, 1)
+  emit_i32_eq(wait_body)
+  emit_if_void(wait_body)
+  emit_call(wait_body, ws_new_idx)
+  emit_local_set(wait_body, 3)
+  emit_local_get(wait_body, 1)
+  emit_local_get(wait_body, 3)
+  emit_call(wait_body, join_idx)
+  emit_local_get(wait_body, 3)
+  emit_i32_const(wait_body, 16)
+  emit_call(wait_body, ws_wait_idx)
+  emit_local_set(wait_body, 4)
+  emit_local_get(wait_body, 4)
+  emit_i32_const(wait_body, 4)
+  emit_i32_ne(wait_body)
+  emit_if_void(wait_body)
+  bytebuf_push(wait_body, 0)
+  emit_end(wait_body)
+  emit_end(wait_body)
+  // teardown: drop the READABLE end (ours; the writable end is host-owned),
+  // then the set if one was created (ends before sets, the children rule).
+  // The state slot is cleared so a stale handle value cannot be awaited
+  // twice against a freed end.
+  comp_emit_drop_by_kind(wait_body, mixed, 1, drop_idx, drop1_idx)
+  emit_local_get(wait_body, 2)
+  emit_i32_const(wait_body, 1)
+  emit_i32_eq(wait_body)
+  emit_if_void(wait_body)
+  emit_local_get(wait_body, 3)
+  emit_call(wait_body, ws_drop_idx)
+  emit_end(wait_body)
+  emit_local_get(wait_body, 5)
+  emit_i32_const(wait_body, comp_hf_state_base() - comp_hf_value_base())
+  emit_i32_add(wait_body)
+  emit_i32_const(wait_body, 0)
+  emit_i32_store(wait_body, 2, 0)
+  // Return the value in the compiled core's value convention.
+  if mixed {
+    // #2066: pick the encoding by the handle's recorded kind.
+    comp_emit_hf_kind_addr(wait_body, 1)
+    emit_i32_load(wait_body, 2, 0)
+    // if (result i64)
+    bytebuf_push(wait_body, 4)
+    bytebuf_push(wait_body, 126)
+    emit_local_get(wait_body, 5)
+    comp_emit_response_value(wait_body, 5, tag_mode)
+    emit_else(wait_body)
+    emit_local_get(wait_body, 5)
+    // i64.load align=3: the scalar future<s64>
+    bytebuf_push(wait_body, 41)
+    leb128_encode_u32(wait_body, 3)
+    leb128_encode_u32(wait_body, 0)
+    comp_emit_encode_i64_value(wait_body, tag_mode)
+    emit_end(wait_body)
+  } else {
+    emit_local_get(wait_body, 5)
+    if response_payload {
+      comp_emit_response_value(wait_body, 5, tag_mode)
+    } else if future_s64 {
+      // i64.load align=3 offset=0. `future<s64>` is already vibe Int's
+      // canonical scalar; only the internal tag convention remains.
+      bytebuf_push(wait_body, 41)
+      leb128_encode_u32(wait_body, 3)
+      leb128_encode_u32(wait_body, 0)
+      comp_emit_encode_i64_value(wait_body, tag_mode)
+    } else {
+      emit_i32_load(wait_body, 2, 0)
+      bytebuf_push(wait_body, 173)
+      comp_emit_encode_i64_value(wait_body, tag_mode)
+    }
+  }
+  bytebuf_push(wait_body, 11)
+  if nnames > 0 && wit_subtask {
+    let ws_wait_body = comp_ws_wait_body(ws_new_idx, join_idx, ws_wait_idx, ws_drop_idx, wit_sdrop_idx, mixed, response_payload, tag_mode)
+    leb128_encode_u32(code_sec, Bytes::length(ws_wait_body))
+    bytebuf_push_buf(code_sec, ws_wait_body)
+  } else if nnames > 0 {
+    leb128_encode_u32(code_sec, Bytes::length(wait_body))
+    bytebuf_push_buf(code_sec, wait_body)
+  } else {
+    ()
+  }
+  // Stream getter bodies: obtain the readable end and hand it back tagged.
+  // No eager read (see the header comment) and no per-handle state record
+  // -- host_stream_read is self-contained per call. locals (i32):
+  // 0=packed, 1=str.
+  let mut sget_i = 0
+  while sget_i < nstreams {
+    let sget_body = bytebuf_new()
+    leb128_encode_u32(sget_body, 1)
+    leb128_encode_u32(sget_body, 2)
+    bytebuf_push(sget_body, 127)
+    // packed = <name>(results at 8); pair creation is synchronous by
+    // contract, so the low nibble must be RETURNED (2)
+    emit_i32_const(sget_body, 8)
+    emit_call(sget_body, sget_base + sget_i)
+    emit_local_set(sget_body, 0)
+    emit_local_get(sget_body, 0)
+    emit_i32_const(sget_body, 15)
+    emit_i32_and(sget_body)
+    emit_i32_const(sget_body, 2)
+    emit_i32_ne(sget_body)
+    emit_if_void(sget_body)
+    bytebuf_push(sget_body, 0)
+    emit_end(sget_body)
+    // str = mem[8] (the readable end's handle), capped like the futures --
+    // the read's landing slot is per-handle in the stream's own reserved
+    // band (comp_hs_value_base).
+    emit_i32_const(sget_body, 8)
+    emit_i32_load(sget_body, 2, 0)
+    emit_local_set(sget_body, 1)
+    emit_local_get(sget_body, 1)
+    emit_i32_const(sget_body, comp_hf_max_handles())
+    emit_i32_gt_u(sget_body)
+    emit_if_void(sget_body)
+    bytebuf_push(sget_body, 0)
+    emit_end(sget_body)
+    // clear the CLOSED flag for this handle (belt-and-braces: the latch is
+    // cleared when the readable end is dropped, so a fresh handle should
+    // never see a stale one -- but the handle-table reuse discipline is the
+    // runtime's, not ours, and a stale latch would silently truncate the
+    // new stream to zero bytes), then return the handle in the core's ABI.
+    emit_local_get(sget_body, 1)
+    emit_i32_const(sget_body, 2)
+    emit_i32_shl(sget_body)
+    emit_i32_const(sget_body, comp_hs_closed_base())
+    emit_i32_add(sget_body)
+    emit_i32_const(sget_body, 0)
+    emit_i32_store(sget_body, 2, 0)
+    emit_local_get(sget_body, 1)
+    bytebuf_push(sget_body, 173)
+    comp_emit_encode_i64_value(sget_body, tag_mode)
+    bytebuf_push(sget_body, 11)
+    leb128_encode_u32(code_sec, Bytes::length(sget_body))
+    bytebuf_push_buf(code_sec, sget_body)
+    sget_i = sget_i + 1
+  }
+  // host_stream_read: one byte per call. param 0 = tagged handle (i64);
+  // locals (i32): 1=str, 2=st, 3=ws, 4=ev, 5=addr. Settle a pending CLOSED
+  // latch first; else issue the read; when it BLOCKS, park in
+  // waitable-set.wait (the canonical ABI suspends the whole task), unjoin,
+  // and take the completion status from the payload. The end of the stream
+  // has TWO measured shapes (spec §3.17): a zero-transfer status carrying
+  // the CLOSED code (1) -- drop the readable end and return -1 -- or the
+  // final byte arriving WITH the CLOSED code, which latches
+  // comp_hs_closed_base so the NEXT call settles to -1 without touching
+  // the (already notified) stream. Any other zero-transfer code traps
+  // loudly.
+  if stream_half {
+    let sread_body = bytebuf_new()
+    leb128_encode_u32(sread_body, 1)
+    leb128_encode_u32(sread_body, 5)
+    bytebuf_push(sread_body, 127)
+    // Decode the handle using the core's ABI; cap; addr = HS_VALUE_BASE + str * 4 (the
+    // stream band -- disjoint from the futures' value/state bands, see
+    // comp_hs_value_base)
+    emit_local_get(sread_body, 0)
+    comp_emit_decode_i64_value(sread_body, tag_mode)
+    emit_i32_wrap_i64(sread_body)
+    emit_local_set(sread_body, 1)
+    emit_local_get(sread_body, 1)
+    emit_i32_const(sread_body, comp_hf_max_handles())
+    emit_i32_gt_u(sread_body)
+    emit_if_void(sread_body)
+    bytebuf_push(sread_body, 0)
+    emit_end(sread_body)
+    emit_local_get(sread_body, 1)
+    emit_i32_const(sread_body, 2)
+    emit_i32_shl(sread_body)
+    emit_i32_const(sread_body, comp_hs_value_base())
+    emit_i32_add(sread_body)
+    emit_local_set(sread_body, 5)
+    // CLOSED latch set (the previous read consumed the final byte with the
+    // inline CLOSED code, see comp_hs_closed_base): clear it, drop the
+    // readable end NOW -- the handle index stayed occupied until this
+    // moment, which is what makes the latch un-aliasable -- and return -1.
+    // A read against the canonical handle here would trap host-side.
+    emit_local_get(sread_body, 1)
+    emit_i32_const(sread_body, 2)
+    emit_i32_shl(sread_body)
+    emit_i32_const(sread_body, comp_hs_closed_base())
+    emit_i32_add(sread_body)
+    emit_i32_load(sread_body, 2, 0)
+    emit_if_void(sread_body)
+    emit_local_get(sread_body, 1)
+    emit_i32_const(sread_body, 2)
+    emit_i32_shl(sread_body)
+    emit_i32_const(sread_body, comp_hs_closed_base())
+    emit_i32_add(sread_body)
+    emit_i32_const(sread_body, 0)
+    emit_i32_store(sread_body, 2, 0)
+    emit_local_get(sread_body, 1)
+    emit_call(sread_body, sdrop_idx)
+    emit_i64_const(sread_body, 0 - 1)
+    comp_emit_encode_i64_value(sread_body, tag_mode)
+    emit_return(sread_body)
+    emit_end(sread_body)
+    if want_stream_arm {
+      // #1537: a read `host_stream_arm` started is settled, never repeated:
+      // completed (2) -> its recorded status; still blocked (1) -> the
+      // BLOCKED path below waits for it (joining a fresh set moves it out
+      // of the shared one); none (0) -> read now.
+      emit_local_get(sread_body, 1)
+      emit_i32_const(sread_body, 2)
+      emit_i32_shl(sread_body)
+      emit_i32_const(sread_body, comp_hs_pending_base())
+      emit_i32_add(sread_body)
+      emit_i32_load(sread_body, 2, 0)
+      emit_local_set(sread_body, 3)
+      emit_local_get(sread_body, 1)
+      emit_i32_const(sread_body, 2)
+      emit_i32_shl(sread_body)
+      emit_i32_const(sread_body, comp_hs_pending_base())
+      emit_i32_add(sread_body)
+      emit_i32_const(sread_body, 0)
+      emit_i32_store(sread_body, 2, 0)
+      emit_local_get(sread_body, 3)
+      emit_i32_const(sread_body, 2)
+      emit_i32_eq(sread_body)
+      emit_if_void(sread_body)
+      emit_local_get(sread_body, 1)
+      emit_i32_const(sread_body, 2)
+      emit_i32_shl(sread_body)
+      emit_i32_const(sread_body, comp_hs_status_base())
+      emit_i32_add(sread_body)
+      emit_i32_load(sread_body, 2, 0)
+      emit_local_set(sread_body, 2)
+      emit_else(sread_body)
+      emit_local_get(sread_body, 3)
+      emit_i32_const(sread_body, 1)
+      emit_i32_eq(sread_body)
+      emit_if_void(sread_body)
+      emit_i32_const(sread_body, -1)
+      emit_local_set(sread_body, 2)
+      emit_else(sread_body)
+      emit_local_get(sread_body, 1)
+      emit_local_get(sread_body, 5)
+      emit_i32_const(sread_body, 1)
+      emit_call(sread_body, sread_idx)
+      emit_local_set(sread_body, 2)
+      emit_end(sread_body)
+      emit_end(sread_body)
+    } else {
+      // st = stream.read(str, addr, 1)
+      emit_local_get(sread_body, 1)
+      emit_local_get(sread_body, 5)
+      emit_i32_const(sread_body, 1)
+      emit_call(sread_body, sread_idx)
+      emit_local_set(sread_body, 2)
+    }
+    // BLOCKED (0xffffffff): park as a waitable, completion status is
+    // payload[1] (mem[20]); the only waitable in the set, so the event
+    // must be STREAM_READ (2). After the wake the stream is UNJOINED
+    // (`waitable.join(str, 0)` -- set 0 means remove) before the set is
+    // dropped: a set deleted while it still has members traps with
+    // "resource has children". MEASURED (wasmtime 47, 2026-08-02) the
+    // moment a per-byte-delay producer made this branch run at all; the
+    // buffered Vec producer never blocks a read, so the original probe
+    // order (drop with the stream still joined) sat latent here and in the
+    // probe itself.
+    emit_local_get(sread_body, 2)
+    emit_i32_const(sread_body, -1)
+    emit_i32_eq(sread_body)
+    emit_if_void(sread_body)
+    emit_call(sread_body, ws_new_idx)
+    emit_local_set(sread_body, 3)
+    emit_local_get(sread_body, 1)
+    emit_local_get(sread_body, 3)
+    emit_call(sread_body, join_idx)
+    emit_local_get(sread_body, 3)
+    emit_i32_const(sread_body, 16)
+    emit_call(sread_body, ws_wait_idx)
+    emit_local_set(sread_body, 4)
+    emit_local_get(sread_body, 1)
+    emit_i32_const(sread_body, 0)
+    emit_call(sread_body, join_idx)
+    emit_local_get(sread_body, 3)
+    emit_call(sread_body, ws_drop_idx)
+    emit_local_get(sread_body, 4)
+    emit_i32_const(sread_body, 2)
+    emit_i32_ne(sread_body)
+    emit_if_void(sread_body)
+    bytebuf_push(sread_body, 0)
+    emit_end(sread_body)
+    emit_i32_const(sread_body, 20)
+    emit_i32_load(sread_body, 2, 0)
+    emit_local_set(sread_body, 2)
+    emit_end(sread_body)
+    // zero transfer = end of stream (code must be the measured CLOSED = 1)
+    emit_local_get(sread_body, 2)
+    emit_i32_const(sread_body, 4)
+    emit_i32_shr_u(sread_body)
+    emit_i32_eqz(sread_body)
+    emit_if_void(sread_body)
+    emit_local_get(sread_body, 2)
+    emit_i32_const(sread_body, 15)
+    emit_i32_and(sread_body)
+    emit_i32_const(sread_body, 1)
+    emit_i32_ne(sread_body)
+    emit_if_void(sread_body)
+    bytebuf_push(sread_body, 0)
+    emit_end(sread_body)
+    emit_local_get(sread_body, 1)
+    emit_call(sread_body, sdrop_idx)
+    emit_i64_const(sread_body, 0 - 1)
+    comp_emit_encode_i64_value(sread_body, tag_mode)
+    emit_return(sread_body)
+    emit_end(sread_body)
+    // a byte landed at THIS handle's slot. If it arrived with the CLOSED
+    // code (the INLINE terminal shape -- a per-item producer hands over its
+    // last byte and drops in one completion), latch the closed flag but do
+    // NOT drop the readable end yet: the next read settles the latch (see
+    // comp_hs_closed_base). Then return the byte in the core's ABI.
+    emit_local_get(sread_body, 2)
+    emit_i32_const(sread_body, 15)
+    emit_i32_and(sread_body)
+    emit_i32_const(sread_body, 1)
+    emit_i32_eq(sread_body)
+    emit_if_void(sread_body)
+    emit_local_get(sread_body, 1)
+    emit_i32_const(sread_body, 2)
+    emit_i32_shl(sread_body)
+    emit_i32_const(sread_body, comp_hs_closed_base())
+    emit_i32_add(sread_body)
+    emit_i32_const(sread_body, 1)
+    emit_i32_store(sread_body, 2, 0)
+    emit_end(sread_body)
+    emit_local_get(sread_body, 5)
+    emit_i32_load8_u(sread_body, 0, 0)
+    bytebuf_push(sread_body, 173)
+    comp_emit_encode_i64_value(sread_body, tag_mode)
+    bytebuf_push(sread_body, 11)
+    leb128_encode_u32(code_sec, Bytes::length(sread_body))
+    bytebuf_push_buf(code_sec, sread_body)
+  } else {
+    ()
+  }
+  // ADR-0089 Decision 3 follow-up (#1218): host_stream_close -- release the
+  // readable end of a stream the guest stopped reading. param 0 = tagged
+  // handle (i64); locals (i32): 1 = str. Clear this handle's CLOSED latch
+  // (an inline-terminal read may have set it, and the drop below is exactly
+  // the settle that latch was waiting for) and drop the readable end.
+  //
+  // No `stream.read` and no park: dropping is synchronous. The guest cell's
+  // state word gates the ONE call -- `__hs_close` drops only from state 3
+  // and closes the cell in the same step -- so this func is never reached
+  // twice for one handle, which matters because a second
+  // `stream.drop-readable` on a dropped end traps host-side.
+  //
+  // Returns tagged 0: the surface is `-> Unit`, but the raw ABI is
+  // uniformly `(i64) -> i64` (the same shape as host_stream_read), so the
+  // adapter hands back a value the injected wrapper discards.
+  if stream_half && want_stream_close {
+    let sclose_body = bytebuf_new()
+    leb128_encode_u32(sclose_body, 1)
+    leb128_encode_u32(sclose_body, 1)
+    bytebuf_push(sclose_body, 127)
+    emit_local_get(sclose_body, 0)
+    comp_emit_decode_i64_value(sclose_body, tag_mode)
+    emit_i32_wrap_i64(sclose_body)
+    emit_local_set(sclose_body, 1)
+    emit_local_get(sclose_body, 1)
+    emit_i32_const(sclose_body, comp_hf_max_handles())
+    emit_i32_gt_u(sclose_body)
+    emit_if_void(sclose_body)
+    bytebuf_push(sclose_body, 0)
+    emit_end(sclose_body)
+    emit_local_get(sclose_body, 1)
+    emit_i32_const(sclose_body, 2)
+    emit_i32_shl(sclose_body)
+    emit_i32_const(sclose_body, comp_hs_closed_base())
+    emit_i32_add(sclose_body)
+    emit_i32_const(sclose_body, 0)
+    emit_i32_store(sclose_body, 2, 0)
+    emit_local_get(sclose_body, 1)
+    emit_call(sclose_body, sdrop_idx)
+    emit_i64_const(sclose_body, 0)
+    bytebuf_push(sclose_body, 11)
+    leb128_encode_u32(code_sec, Bytes::length(sclose_body))
+    bytebuf_push_buf(code_sec, sclose_body)
+  } else {
+    ()
+  }
+  // #1342: `sleep (i64) -> ()`. param 0 = ms in the core's value convention;
+  // locals (i32): 1=packed, 2=sub, 3=ws, 4=ev.
+  //
+  // The host side is an `async func(ms: u32) -> u32`, so the async-lowered
+  // call returns a PACKED status: low nibble = code, high bits = the subtask
+  // index. A real delay comes back not-RETURNED, and the adapter parks on
+  // that subtask in `waitable-set.wait` exactly as the future/stream halves
+  // park on their read -- the canonical ABI suspends the whole task, which is
+  // what makes this a genuine suspend rather than a busy wait.
+  //
+  // A zero (or already-elapsed) delay may complete EAGERLY instead, in which
+  // case no subtask exists: dropping one unconditionally is the bug §3.9
+  // records finding on the `$writer` epilogue, so the drop lives inside the
+  // parked branch.
+  if want_sleep {
+    let sleep_body = bytebuf_new()
+    leb128_encode_u32(sleep_body, 1)
+    leb128_encode_u32(sleep_body, 4)
+    bytebuf_push(sleep_body, 127)
+    // packed = sleep-for(ms, results slot)
+    emit_local_get(sleep_body, 0)
+    // #2903: NO tag decode here. Every core module declares
+    // `vibe.abi: host_import_abi=raw`, and the RC raw-ABI shim
+    // (compile_call.vibe `cc_raw_abi_shim_applies`) untags an Int argument
+    // before ANY host import call -- for both spellings that reach
+    // `vibe.sleep`, `sleep` and `sleep_blocking`. So the ms arriving here is
+    // already the plain millisecond count in both tag modes, and shifting it
+    // again halved every componentized sleep.
+    //
+    // It read correctly before only because the two spellings disagreed:
+    // `sleep_blocking` was missing from the shim list, so the settle route an
+    // async entry actually takes delivered a TAGGED ms and this `>> 1`
+    // cancelled it -- while a direct `sleep` under the same tag mode arrived
+    // raw and was already being halved on this path. Measured end to end with
+    // viberun on `let run: () -> Int with Async` sleeping 300ms: 318ms with
+    // the two bugs cancelling, 165ms with only the shim fixed, 300ms with
+    // both. `tag_mode` still governs the future/stream values below, whose
+    // core-side producers are not shim-covered.
+    emit_i32_wrap_i64(sleep_body)
+    emit_i32_const(sleep_body, comp_sleep_results_slot())
+    emit_call(sleep_body, sleep_lower_idx)
+    emit_local_set(sleep_body, 1)
+    // RETURNED (2) means the host answered without starting a subtask.
+    emit_local_get(sleep_body, 1)
+    emit_i32_const(sleep_body, 15)
+    emit_i32_and(sleep_body)
+    emit_i32_const(sleep_body, 2)
+    emit_i32_ne(sleep_body)
+    emit_if_void(sleep_body)
+    emit_local_get(sleep_body, 1)
+    emit_i32_const(sleep_body, 4)
+    emit_i32_shr_u(sleep_body)
+    emit_local_set(sleep_body, 2)
+    emit_call(sleep_body, ws_new_idx)
+    emit_local_set(sleep_body, 3)
+    emit_local_get(sleep_body, 2)
+    emit_local_get(sleep_body, 3)
+    emit_call(sleep_body, join_idx)
+    emit_local_get(sleep_body, 3)
+    emit_i32_const(sleep_body, comp_sleep_wait_payload_slot())
+    emit_call(sleep_body, ws_wait_idx)
+    emit_local_set(sleep_body, 4)
+    // The set holds exactly one waitable, so the wake must be SUBTASK (1)
+    // and the status in payload[1] must be RETURNED (2). Anything else is a
+    // contract violation this adapter cannot represent -- trap rather than
+    // return as if the sleep had elapsed.
+    emit_local_get(sleep_body, 4)
+    emit_i32_const(sleep_body, 1)
+    emit_i32_ne(sleep_body)
+    emit_if_void(sleep_body)
+    bytebuf_push(sleep_body, 0)
+    emit_end(sleep_body)
+    emit_i32_const(sleep_body, comp_sleep_wait_payload_slot() + 4)
+    emit_i32_load(sleep_body, 2, 0)
+    emit_i32_const(sleep_body, 2)
+    emit_i32_ne(sleep_body)
+    emit_if_void(sleep_body)
+    bytebuf_push(sleep_body, 0)
+    emit_end(sleep_body)
+    // Children before sets (the same teardown order the wait half uses).
+    emit_local_get(sleep_body, 2)
+    emit_call(sleep_body, subtask_drop_idx)
+    emit_local_get(sleep_body, 3)
+    emit_call(sleep_body, ws_drop_idx)
+    emit_end(sleep_body)
+    bytebuf_push(sleep_body, 11)
+    leb128_encode_u32(code_sec, Bytes::length(sleep_body))
+    bytebuf_push_buf(code_sec, sleep_body)
+  } else {
+    ()
+  }
+  if want_wait_any {
+    let shift = if future_s64 {
+      3
+    } else {
+      2
+    }
+    // host_future_arm(h): param 0 = tagged handle; locals (i32) 1=fut,
+    // 2=state addr, 3=st, 4=ws. Answers 1 when the value already landed
+    // (the getter's eager read completed), else joins the future to the
+    // shared set (created on first use, kept in comp_hf_arm_ws_slot) and
+    // answers 0.
+    let arm_body = bytebuf_new()
+    leb128_encode_u32(arm_body, 1)
+    leb128_encode_u32(arm_body, 4)
+    bytebuf_push(arm_body, 127)
+    emit_local_get(arm_body, 0)
+    comp_emit_decode_i64_value(arm_body, tag_mode)
+    emit_i32_wrap_i64(arm_body)
+    emit_local_set(arm_body, 1)
+    emit_local_get(arm_body, 1)
+    emit_i32_const(arm_body, shift)
+    emit_i32_shl(arm_body)
+    emit_i32_const(arm_body, comp_hf_state_base())
+    emit_i32_add(arm_body)
+    emit_local_set(arm_body, 2)
+    emit_local_get(arm_body, 2)
+    emit_i32_load(arm_body, 2, 0)
+    emit_local_set(arm_body, 3)
+    emit_local_get(arm_body, 3)
+    emit_i32_const(arm_body, 2)
+    emit_i32_eq(arm_body)
+    emit_if_void(arm_body)
+    emit_i64_const(arm_body, 1)
+    comp_emit_encode_i64_value(arm_body, tag_mode)
+    bytebuf_push(arm_body, 15)
+    emit_end(arm_body)
+    // Anything but BLOCKED (1) here never went through a getter.
+    emit_local_get(arm_body, 3)
+    emit_i32_const(arm_body, 1)
+    emit_i32_ne(arm_body)
+    emit_if_void(arm_body)
+    bytebuf_push(arm_body, 0)
+    emit_end(arm_body)
+    emit_i32_const(arm_body, comp_hf_arm_ws_slot())
+    emit_i32_load(arm_body, 2, 0)
+    emit_local_set(arm_body, 4)
+    emit_local_get(arm_body, 4)
+    emit_i32_eqz(arm_body)
+    emit_if_void(arm_body)
+    emit_call(arm_body, ws_new_idx)
+    emit_local_set(arm_body, 4)
+    emit_i32_const(arm_body, comp_hf_arm_ws_slot())
+    emit_local_get(arm_body, 4)
+    emit_i32_store(arm_body, 2, 0)
+    emit_end(arm_body)
+    emit_local_get(arm_body, 1)
+    emit_local_get(arm_body, 4)
+    emit_call(arm_body, join_idx)
+    emit_i64_const(arm_body, 0)
+    comp_emit_encode_i64_value(arm_body, tag_mode)
+    bytebuf_push(arm_body, 11)
+    let arm_out = if wit_subtask {
+      comp_ws_arm_body(ws_new_idx, join_idx, tag_mode)
+    } else {
+      arm_body
+    }
+    leb128_encode_u32(code_sec, Bytes::length(arm_out))
+    bytebuf_push_buf(code_sec, arm_out)
+    // host_future_wait_any(): locals (i32) 0=ws, 1=ev, 2=fut. Blocks on the
+    // shared set; the event must be FUTURE_READ (4), whose payload[0] names
+    // the future. It leaves the set (join to 0) and its state becomes
+    // completed (2), so host_future_wait then takes the value without
+    // blocking.
+    let any_body = bytebuf_new()
+    leb128_encode_u32(any_body, 1)
+    leb128_encode_u32(any_body, 3)
+    bytebuf_push(any_body, 127)
+    emit_i32_const(any_body, comp_hf_arm_ws_slot())
+    emit_i32_load(any_body, 2, 0)
+    emit_local_set(any_body, 0)
+    emit_local_get(any_body, 0)
+    emit_i32_eqz(any_body)
+    emit_if_void(any_body)
+    bytebuf_push(any_body, 0)
+    emit_end(any_body)
+    // #3131: a WIT subtask reports each state change; one that has not
+    // RETURNED (2) yet stays joined and the wait goes round again.
+    emit_loop_void(any_body)
+    emit_local_get(any_body, 0)
+    emit_i32_const(any_body, 16)
+    emit_call(any_body, ws_wait_idx)
+    emit_local_set(any_body, 1)
+    // payload[0] names the waitable; it leaves the set either way.
+    emit_i32_const(any_body, 16)
+    emit_i32_load(any_body, 2, 0)
+    emit_local_set(any_body, 2)
+    if wit_subtask {
+      emit_local_get(any_body, 1)
+      emit_i32_const(any_body, 1)
+      emit_i32_eq(any_body)
+      emit_if_void(any_body)
+      comp_emit_ws_hslot_addr(any_body, 2)
+      emit_i32_load(any_body, 2, 0)
+      emit_if_void(any_body)
+      emit_i32_const(any_body, 20)
+      emit_i32_load(any_body, 2, 0)
+      emit_i32_const(any_body, 2)
+      emit_i32_ne(any_body)
+      emit_br_if(any_body, 2)
+      emit_end(any_body)
+      emit_end(any_body)
+    } else {
+      ()
+    }
+    emit_end(any_body)
+    emit_local_get(any_body, 2)
+    emit_i32_const(any_body, 0)
+    emit_call(any_body, join_idx)
+    if wit_subtask {
+      // A WIT subtask RETURNED: its value is in its slot. Drop the subtask,
+      // mark the slot landed, and name it in the future band.
+      emit_local_get(any_body, 1)
+      emit_i32_const(any_body, 1)
+      emit_i32_eq(any_body)
+      emit_if_void(any_body)
+      comp_emit_ws_hslot_addr(any_body, 2)
+      emit_i32_load(any_body, 2, 0)
+      emit_if_void(any_body)
+      // local 0 (the set) is done with: it holds the slot from here on
+      comp_emit_ws_hslot_addr(any_body, 2)
+      emit_i32_load(any_body, 2, 0)
+      emit_i32_const(any_body, 1)
+      emit_i32_sub(any_body)
+      emit_local_set(any_body, 0)
+      emit_local_get(any_body, 2)
+      emit_call(any_body, wit_sdrop_idx)
+      comp_emit_ws_hslot_addr(any_body, 2)
+      emit_i32_const(any_body, 0)
+      emit_i32_store(any_body, 2, 0)
+      comp_emit_ws_band_addr(any_body, 0, comp_ws_sub_base())
+      emit_i32_const(any_body, 0)
+      emit_i32_store(any_body, 2, 0)
+      comp_emit_ws_band_addr(any_body, 0, comp_ws_state_base())
+      emit_i32_const(any_body, 2)
+      emit_i32_store(any_body, 2, 0)
+      emit_local_get(any_body, 0)
+      emit_i32_const(any_body, comp_ws_handle_base() + 2)
+      emit_i32_add(any_body)
+      bytebuf_push(any_body, 173)
+      comp_emit_encode_i64_value(any_body, tag_mode)
+      emit_return(any_body)
+      emit_end(any_body)
+      emit_end(any_body)
+    } else {
+      ()
+    }
+    if want_sleep_arm {
+      // SUBTASK (1): a timer host_sleep_arm started returned (payload[1] is
+      // its state, RETURNED = 2). It is dropped and named in the TIMER band
+      // (subtask + 4096), the id host_sleep_arm answered for it, so each
+      // task group recognises its own timer.
+      emit_local_get(any_body, 1)
+      emit_i32_const(any_body, 1)
+      emit_i32_eq(any_body)
+      emit_if_void(any_body)
+      emit_i32_const(any_body, 20)
+      emit_i32_load(any_body, 2, 0)
+      emit_i32_const(any_body, 2)
+      emit_i32_ne(any_body)
+      emit_if_void(any_body)
+      bytebuf_push(any_body, 0)
+      emit_end(any_body)
+      emit_local_get(any_body, 2)
+      emit_call(any_body, subtask_drop_idx)
+      // its id, recorded by host_sleep_arm (the handle is free for reuse now)
+      emit_local_get(any_body, 2)
+      emit_i32_const(any_body, 3)
+      emit_i32_shl(any_body)
+      emit_i32_const(any_body, comp_timer_id_base())
+      emit_i32_add(any_body)
+      // i64.load align=3
+      bytebuf_push(any_body, 41)
+      leb128_encode_u32(any_body, 3)
+      leb128_encode_u32(any_body, 0)
+      emit_i64_const(any_body, comp_timer_band_base())
+      bytebuf_push(any_body, 124)
+      if want_timer_cancel {
+        // the slot no longer names a live subtask: clear it, so a cancel
+        // for this id finds nothing rather than a reused handle
+        emit_local_get(any_body, 2)
+        emit_i32_const(any_body, 3)
+        emit_i32_shl(any_body)
+        emit_i32_const(any_body, comp_timer_id_base())
+        emit_i32_add(any_body)
+        emit_i64_const(any_body, 0)
+        // i64.store align=3
+        bytebuf_push(any_body, 55)
+        leb128_encode_u32(any_body, 3)
+        leb128_encode_u32(any_body, 0)
+      } else {
+        ()
+      }
+      comp_emit_encode_i64_value(any_body, tag_mode)
+      emit_return(any_body)
+      emit_end(any_body)
+    } else {
+      ()
+    }
+    if want_stream_arm {
+      // STREAM_READ (2): record the completion status (payload[1]) for the
+      // read host_stream_arm started, and name it in the stream band.
+      emit_local_get(any_body, 1)
+      emit_i32_const(any_body, 2)
+      emit_i32_eq(any_body)
+      emit_if_void(any_body)
+      emit_local_get(any_body, 2)
+      emit_i32_const(any_body, 2)
+      emit_i32_shl(any_body)
+      emit_i32_const(any_body, comp_hs_status_base())
+      emit_i32_add(any_body)
+      emit_i32_const(any_body, 20)
+      emit_i32_load(any_body, 2, 0)
+      emit_i32_store(any_body, 2, 0)
+      emit_local_get(any_body, 2)
+      emit_i32_const(any_body, 2)
+      emit_i32_shl(any_body)
+      emit_i32_const(any_body, comp_hs_pending_base())
+      emit_i32_add(any_body)
+      emit_i32_const(any_body, 2)
+      emit_i32_store(any_body, 2, 0)
+      emit_local_get(any_body, 2)
+      bytebuf_push(any_body, 173)
+      emit_i64_const(any_body, 2048)
+      bytebuf_push(any_body, 124)
+      comp_emit_encode_i64_value(any_body, tag_mode)
+      emit_return(any_body)
+      emit_end(any_body)
+    } else {
+      ()
+    }
+    emit_local_get(any_body, 1)
+    emit_i32_const(any_body, 4)
+    emit_i32_ne(any_body)
+    emit_if_void(any_body)
+    bytebuf_push(any_body, 0)
+    emit_end(any_body)
+    emit_local_get(any_body, 2)
+    emit_i32_const(any_body, shift)
+    emit_i32_shl(any_body)
+    emit_i32_const(any_body, comp_hf_state_base())
+    emit_i32_add(any_body)
+    emit_i32_const(any_body, 2)
+    emit_i32_store(any_body, 2, 0)
+    // A future, named in the future band (handle + 2), the payload its task
+    // parked with.
+    emit_local_get(any_body, 2)
+    bytebuf_push(any_body, 173)
+    emit_i64_const(any_body, 2)
+    bytebuf_push(any_body, 124)
+    comp_emit_encode_i64_value(any_body, tag_mode)
+    bytebuf_push(any_body, 11)
+    leb128_encode_u32(code_sec, Bytes::length(any_body))
+    bytebuf_push_buf(code_sec, any_body)
+  } else {
+    ()
+  }
+  if want_stream_arm {
+    // host_stream_arm(h): param 0 = tagged handle; locals (i32) 1=str,
+    // 2=pending addr, 3=st, 4=ws. 1 = the next host_stream_read answers
+    // without blocking (a read completed, or the CLOSED latch is set);
+    // 0 = a one-byte read is pending in the shared set.
+    let sarm_body = bytebuf_new()
+    leb128_encode_u32(sarm_body, 1)
+    leb128_encode_u32(sarm_body, 4)
+    bytebuf_push(sarm_body, 127)
+    emit_local_get(sarm_body, 0)
+    comp_emit_decode_i64_value(sarm_body, tag_mode)
+    emit_i32_wrap_i64(sarm_body)
+    emit_local_set(sarm_body, 1)
+    emit_local_get(sarm_body, 1)
+    emit_i32_const(sarm_body, comp_hf_max_handles())
+    emit_i32_gt_u(sarm_body)
+    emit_if_void(sarm_body)
+    bytebuf_push(sarm_body, 0)
+    emit_end(sarm_body)
+    // CLOSED latch: the read answers -1 at once.
+    emit_local_get(sarm_body, 1)
+    emit_i32_const(sarm_body, 2)
+    emit_i32_shl(sarm_body)
+    emit_i32_const(sarm_body, comp_hs_closed_base())
+    emit_i32_add(sarm_body)
+    emit_i32_load(sarm_body, 2, 0)
+    emit_if_void(sarm_body)
+    emit_i64_const(sarm_body, 1)
+    comp_emit_encode_i64_value(sarm_body, tag_mode)
+    emit_return(sarm_body)
+    emit_end(sarm_body)
+    emit_local_get(sarm_body, 1)
+    emit_i32_const(sarm_body, 2)
+    emit_i32_shl(sarm_body)
+    emit_i32_const(sarm_body, comp_hs_pending_base())
+    emit_i32_add(sarm_body)
+    emit_local_set(sarm_body, 2)
+    emit_local_get(sarm_body, 2)
+    emit_i32_load(sarm_body, 2, 0)
+    emit_i32_const(sarm_body, 2)
+    emit_i32_eq(sarm_body)
+    emit_if_void(sarm_body)
+    emit_i64_const(sarm_body, 1)
+    comp_emit_encode_i64_value(sarm_body, tag_mode)
+    emit_return(sarm_body)
+    emit_end(sarm_body)
+    // No read pending yet: start one into this handle's byte slot.
+    emit_local_get(sarm_body, 2)
+    emit_i32_load(sarm_body, 2, 0)
+    emit_i32_eqz(sarm_body)
+    emit_if_void(sarm_body)
+    emit_local_get(sarm_body, 1)
+    emit_local_get(sarm_body, 1)
+    emit_i32_const(sarm_body, 2)
+    emit_i32_shl(sarm_body)
+    emit_i32_const(sarm_body, comp_hs_value_base())
+    emit_i32_add(sarm_body)
+    emit_i32_const(sarm_body, 1)
+    emit_call(sarm_body, sread_idx)
+    emit_local_set(sarm_body, 3)
+    emit_local_get(sarm_body, 3)
+    emit_i32_const(sarm_body, -1)
+    emit_i32_ne(sarm_body)
+    emit_if_void(sarm_body)
+    // completed inline: keep its status for host_stream_read
+    emit_local_get(sarm_body, 1)
+    emit_i32_const(sarm_body, 2)
+    emit_i32_shl(sarm_body)
+    emit_i32_const(sarm_body, comp_hs_status_base())
+    emit_i32_add(sarm_body)
+    emit_local_get(sarm_body, 3)
+    emit_i32_store(sarm_body, 2, 0)
+    emit_local_get(sarm_body, 2)
+    emit_i32_const(sarm_body, 2)
+    emit_i32_store(sarm_body, 2, 0)
+    emit_i64_const(sarm_body, 1)
+    comp_emit_encode_i64_value(sarm_body, tag_mode)
+    emit_return(sarm_body)
+    emit_end(sarm_body)
+    emit_local_get(sarm_body, 2)
+    emit_i32_const(sarm_body, 1)
+    emit_i32_store(sarm_body, 2, 0)
+    emit_end(sarm_body)
+    // Blocked: join the shared set (created on first use).
+    emit_i32_const(sarm_body, comp_hf_arm_ws_slot())
+    emit_i32_load(sarm_body, 2, 0)
+    emit_local_set(sarm_body, 4)
+    emit_local_get(sarm_body, 4)
+    emit_i32_eqz(sarm_body)
+    emit_if_void(sarm_body)
+    emit_call(sarm_body, ws_new_idx)
+    emit_local_set(sarm_body, 4)
+    emit_i32_const(sarm_body, comp_hf_arm_ws_slot())
+    emit_local_get(sarm_body, 4)
+    emit_i32_store(sarm_body, 2, 0)
+    emit_end(sarm_body)
+    emit_local_get(sarm_body, 1)
+    emit_local_get(sarm_body, 4)
+    emit_call(sarm_body, join_idx)
+    emit_i64_const(sarm_body, 0)
+    comp_emit_encode_i64_value(sarm_body, tag_mode)
+    bytebuf_push(sarm_body, 11)
+    leb128_encode_u32(code_sec, Bytes::length(sarm_body))
+    bytebuf_push_buf(code_sec, sarm_body)
+  } else {
+    ()
+  }
+  if want_sleep_arm {
+    // host_sleep_arm(ms): param 0 = tagged ms; locals (i32) 1=packed, 2=sub,
+    // 3=ws. Starts a timer of its own in the shared set and answers its id
+    // (a fresh id + 4096, the timer band), or 1 when the delay was already over
+    // (no subtask). Every call is its own timer, so task groups nested in one
+    // another each wait on theirs.
+    let tarm_body = bytebuf_new()
+    // locals: (i32) 1=packed, 2=sub, 3=ws; (i64) 4=id
+    leb128_encode_u32(tarm_body, 2)
+    leb128_encode_u32(tarm_body, 3)
+    bytebuf_push(tarm_body, 127)
+    leb128_encode_u32(tarm_body, 1)
+    bytebuf_push(tarm_body, 126)
+    emit_local_get(tarm_body, 0)
+    comp_emit_decode_i64_value(tarm_body, tag_mode)
+    emit_i32_wrap_i64(tarm_body)
+    emit_i32_const(tarm_body, comp_sleep_arm_results_slot())
+    emit_call(tarm_body, sleep_lower_idx)
+    emit_local_set(tarm_body, 1)
+    emit_local_get(tarm_body, 1)
+    emit_i32_const(tarm_body, 15)
+    emit_i32_and(tarm_body)
+    emit_i32_const(tarm_body, 2)
+    emit_i32_eq(tarm_body)
+    emit_if_void(tarm_body)
+    emit_i64_const(tarm_body, 1)
+    comp_emit_encode_i64_value(tarm_body, tag_mode)
+    emit_return(tarm_body)
+    emit_end(tarm_body)
+    emit_local_get(tarm_body, 1)
+    emit_i32_const(tarm_body, 4)
+    emit_i32_shr_u(tarm_body)
+    emit_local_set(tarm_body, 2)
+    emit_i32_const(tarm_body, comp_hf_arm_ws_slot())
+    emit_i32_load(tarm_body, 2, 0)
+    emit_local_set(tarm_body, 3)
+    emit_local_get(tarm_body, 3)
+    emit_i32_eqz(tarm_body)
+    emit_if_void(tarm_body)
+    emit_call(tarm_body, ws_new_idx)
+    emit_local_set(tarm_body, 3)
+    emit_i32_const(tarm_body, comp_hf_arm_ws_slot())
+    emit_local_get(tarm_body, 3)
+    emit_i32_store(tarm_body, 2, 0)
+    emit_end(tarm_body)
+    emit_local_get(tarm_body, 2)
+    emit_local_get(tarm_body, 3)
+    emit_call(tarm_body, join_idx)
+    // A handle past the band cannot record its id: trap rather than alias.
+    emit_local_get(tarm_body, 2)
+    emit_i32_const(tarm_body, comp_hf_max_handles())
+    emit_i32_gt_u(tarm_body)
+    emit_if_void(tarm_body)
+    bytebuf_push(tarm_body, 0)
+    emit_end(tarm_body)
+    // id = ++counter (i64), recorded for this subtask.
+    emit_i32_const(tarm_body, comp_timer_counter_slot())
+    // i64.load align=3
+    bytebuf_push(tarm_body, 41)
+    leb128_encode_u32(tarm_body, 3)
+    leb128_encode_u32(tarm_body, 0)
+    emit_i64_const(tarm_body, 1)
+    bytebuf_push(tarm_body, 124)
+    emit_local_set(tarm_body, 4)
+    emit_i32_const(tarm_body, comp_timer_counter_slot())
+    emit_local_get(tarm_body, 4)
+    // i64.store align=3
+    bytebuf_push(tarm_body, 55)
+    leb128_encode_u32(tarm_body, 3)
+    leb128_encode_u32(tarm_body, 0)
+    emit_local_get(tarm_body, 2)
+    emit_i32_const(tarm_body, 3)
+    emit_i32_shl(tarm_body)
+    emit_i32_const(tarm_body, comp_timer_id_base())
+    emit_i32_add(tarm_body)
+    emit_local_get(tarm_body, 4)
+    bytebuf_push(tarm_body, 55)
+    leb128_encode_u32(tarm_body, 3)
+    leb128_encode_u32(tarm_body, 0)
+    emit_local_get(tarm_body, 4)
+    emit_i64_const(tarm_body, comp_timer_band_base())
+    bytebuf_push(tarm_body, 124)
+    comp_emit_encode_i64_value(tarm_body, tag_mode)
+    bytebuf_push(tarm_body, 11)
+    leb128_encode_u32(code_sec, Bytes::length(tarm_body))
+    bytebuf_push_buf(code_sec, tarm_body)
+  } else {
+    ()
+  }
+  if want_cancel {
+    let shift = if future_s64 {
+      3
+    } else {
+      2
+    }
+    // host_future_cancel(h): param 0 = tagged handle; locals (i32) 1=fut,
+    // 2=state addr, 3=st. Nobody will take this future's value: a read still
+    // BLOCKED (1) leaves the shared set and is cancelled -- a cancel that
+    // finds the value already landed (COMPLETED, 0) counts as landed -- and
+    // the readable end is dropped, as host_future_wait's teardown does. A
+    // landed response also owns its body stream, which is dropped with it.
+    // State 0 (never started, or already taken) is a no-op.
+    let cancel_body = bytebuf_new()
+    leb128_encode_u32(cancel_body, 1)
+    leb128_encode_u32(cancel_body, 3)
+    bytebuf_push(cancel_body, 127)
+    emit_local_get(cancel_body, 0)
+    comp_emit_decode_i64_value(cancel_body, tag_mode)
+    emit_i32_wrap_i64(cancel_body)
+    emit_local_set(cancel_body, 1)
+    emit_local_get(cancel_body, 1)
+    emit_i32_const(cancel_body, shift)
+    emit_i32_shl(cancel_body)
+    emit_i32_const(cancel_body, comp_hf_state_base())
+    emit_i32_add(cancel_body)
+    emit_local_set(cancel_body, 2)
+    emit_local_get(cancel_body, 2)
+    emit_i32_load(cancel_body, 2, 0)
+    emit_local_set(cancel_body, 3)
+    emit_local_get(cancel_body, 3)
+    emit_i32_eqz(cancel_body)
+    emit_if_void(cancel_body)
+    emit_i64_const(cancel_body, 0)
+    comp_emit_encode_i64_value(cancel_body, tag_mode)
+    emit_return(cancel_body)
+    emit_end(cancel_body)
+    emit_local_get(cancel_body, 3)
+    emit_i32_const(cancel_body, 1)
+    emit_i32_eq(cancel_body)
+    emit_if_void(cancel_body)
+    emit_local_get(cancel_body, 1)
+    emit_i32_const(cancel_body, 0)
+    emit_call(cancel_body, join_idx)
+    if mixed {
+      comp_emit_hf_kind_addr(cancel_body, 1)
+      emit_i32_load(cancel_body, 2, 0)
+      // if (result i32)
+      bytebuf_push(cancel_body, 4)
+      bytebuf_push(cancel_body, 127)
+      emit_local_get(cancel_body, 1)
+      emit_call(cancel_body, cancel_read_idx)
+      emit_else(cancel_body)
+      emit_local_get(cancel_body, 1)
+      emit_call(cancel_body, cancel1_read_idx)
+      emit_end(cancel_body)
+    } else {
+      emit_local_get(cancel_body, 1)
+      emit_call(cancel_body, cancel_read_idx)
+    }
+    emit_i32_const(cancel_body, 15)
+    emit_i32_and(cancel_body)
+    emit_i32_eqz(cancel_body)
+    emit_if_void(cancel_body)
+    emit_i32_const(cancel_body, 2)
+    emit_local_set(cancel_body, 3)
+    emit_end(cancel_body)
+    emit_end(cancel_body)
+    if response_payload {
+      emit_local_get(cancel_body, 3)
+      emit_i32_const(cancel_body, 2)
+      emit_i32_eq(cancel_body)
+      if mixed {
+        // only a RESPONSE owns a body stream
+        comp_emit_hf_kind_addr(cancel_body, 1)
+        emit_i32_load(cancel_body, 2, 0)
+        emit_i32_and(cancel_body)
+      } else {
+        ()
+      }
+      emit_if_void(cancel_body)
+      emit_local_get(cancel_body, 2)
+      emit_i32_const(cancel_body, comp_hf_value_base() - comp_hf_state_base() + 4)
+      emit_i32_add(cancel_body)
+      emit_i32_load(cancel_body, 2, 0)
+      emit_call(cancel_body, sdrop_idx)
+      emit_end(cancel_body)
+    } else {
+      ()
+    }
+    comp_emit_drop_by_kind(cancel_body, mixed, 1, drop_idx, drop1_idx)
+    emit_local_get(cancel_body, 2)
+    emit_i32_const(cancel_body, 0)
+    emit_i32_store(cancel_body, 2, 0)
+    emit_i64_const(cancel_body, 0)
+    comp_emit_encode_i64_value(cancel_body, tag_mode)
+    bytebuf_push(cancel_body, 11)
+    let cancel_out = if wit_subtask {
+      comp_ws_cancel_body(join_idx, wit_sdrop_idx, wit_scancel_idx, sdrop_idx, mixed, response_payload, tag_mode)
+    } else {
+      cancel_body
+    }
+    leb128_encode_u32(code_sec, Bytes::length(cancel_out))
+    bytebuf_push_buf(code_sec, cancel_out)
+  } else {
+    ()
+  }
+  if want_stream_cancel {
+    // host_stream_cancel(h): param 0 = tagged handle; locals (i32) 1=str,
+    // 2=pending addr. The task parked on this stream's read was cancelled,
+    // and a host stream cannot be captured by another task (it is neither
+    // Send nor a same-nursery endpoint), so nobody can read it again. A read
+    // still BLOCKED (1) leaves the shared set and is cancelled with a
+    // synchronous `stream.cancel-read` -- dropping a readable end with a read
+    // pending is a canonical-ABI trap -- whatever it transferred is
+    // discarded, the per-handle bands are cleared, and the readable end is
+    // dropped, so the handle is free again.
+    let scancel_body = bytebuf_new()
+    leb128_encode_u32(scancel_body, 1)
+    leb128_encode_u32(scancel_body, 2)
+    bytebuf_push(scancel_body, 127)
+    emit_local_get(scancel_body, 0)
+    comp_emit_decode_i64_value(scancel_body, tag_mode)
+    emit_i32_wrap_i64(scancel_body)
+    emit_local_set(scancel_body, 1)
+    emit_local_get(scancel_body, 1)
+    emit_i32_const(scancel_body, comp_hf_max_handles())
+    emit_i32_gt_u(scancel_body)
+    emit_if_void(scancel_body)
+    bytebuf_push(scancel_body, 0)
+    emit_end(scancel_body)
+    emit_local_get(scancel_body, 1)
+    emit_i32_const(scancel_body, 2)
+    emit_i32_shl(scancel_body)
+    emit_i32_const(scancel_body, comp_hs_pending_base())
+    emit_i32_add(scancel_body)
+    emit_local_set(scancel_body, 2)
+    emit_local_get(scancel_body, 2)
+    emit_i32_load(scancel_body, 2, 0)
+    emit_i32_const(scancel_body, 1)
+    emit_i32_eq(scancel_body)
+    emit_if_void(scancel_body)
+    emit_local_get(scancel_body, 1)
+    emit_i32_const(scancel_body, 0)
+    emit_call(scancel_body, join_idx)
+    emit_local_get(scancel_body, 1)
+    emit_call(scancel_body, scancel_read_idx)
+    bytebuf_push(scancel_body, 26)
+    emit_end(scancel_body)
+    emit_local_get(scancel_body, 2)
+    emit_i32_const(scancel_body, 0)
+    emit_i32_store(scancel_body, 2, 0)
+    emit_local_get(scancel_body, 1)
+    emit_i32_const(scancel_body, 2)
+    emit_i32_shl(scancel_body)
+    emit_i32_const(scancel_body, comp_hs_closed_base())
+    emit_i32_add(scancel_body)
+    emit_i32_const(scancel_body, 0)
+    emit_i32_store(scancel_body, 2, 0)
+    emit_local_get(scancel_body, 1)
+    emit_call(scancel_body, sdrop_idx)
+    emit_i64_const(scancel_body, 0)
+    comp_emit_encode_i64_value(scancel_body, tag_mode)
+    bytebuf_push(scancel_body, 11)
+    leb128_encode_u32(code_sec, Bytes::length(scancel_body))
+    bytebuf_push_buf(code_sec, scancel_body)
+  } else {
+    ()
+  }
+  if want_arg_push {
+    // host_arg_push(b): param 0 = the tagged byte; local (i32) 1=len. Appends
+    // one byte to the argument buffer the next argument getter lowers. The
+    // buffer is the memory's tail from page 1: a byte past the current end
+    // grows the memory by a page first, and only a failed grow traps.
+    let apush_body = bytebuf_new()
+    leb128_encode_u32(apush_body, 1)
+    leb128_encode_u32(apush_body, 1)
+    bytebuf_push(apush_body, 127)
+    emit_i32_const(apush_body, comp_arg_len_slot())
+    emit_i32_load(apush_body, 2, 0)
+    emit_local_set(apush_body, 1)
+    // base + len >= memory.size << 16 (unsigned)
+    emit_local_get(apush_body, 1)
+    emit_i32_const(apush_body, comp_arg_buf_base())
+    emit_i32_add(apush_body)
+    // memory.size 0
+    bytebuf_push(apush_body, 63)
+    bytebuf_push(apush_body, 0)
+    emit_i32_const(apush_body, 16)
+    emit_i32_shl(apush_body)
+    bytebuf_push(apush_body, 79)
+    emit_if_void(apush_body)
+    emit_i32_const(apush_body, 1)
+    // memory.grow 0; a negative answer is a failed grow
+    bytebuf_push(apush_body, 64)
+    bytebuf_push(apush_body, 0)
+    emit_i32_const(apush_body, 0)
+    // i32.lt_s
+    bytebuf_push(apush_body, 72)
+    emit_if_void(apush_body)
+    bytebuf_push(apush_body, 0)
+    emit_end(apush_body)
+    emit_end(apush_body)
+    emit_local_get(apush_body, 1)
+    emit_i32_const(apush_body, comp_arg_buf_base())
+    emit_i32_add(apush_body)
+    emit_local_get(apush_body, 0)
+    comp_emit_decode_i64_value(apush_body, tag_mode)
+    emit_i32_wrap_i64(apush_body)
+    // i32.store8 align=0
+    bytebuf_push(apush_body, 58)
+    leb128_encode_u32(apush_body, 0)
+    leb128_encode_u32(apush_body, 0)
+    emit_i32_const(apush_body, comp_arg_len_slot())
+    emit_local_get(apush_body, 1)
+    emit_i32_const(apush_body, 1)
+    emit_i32_add(apush_body)
+    emit_i32_store(apush_body, 2, 0)
+    emit_i64_const(apush_body, 0)
+    comp_emit_encode_i64_value(apush_body, tag_mode)
+    bytebuf_push(apush_body, 11)
+    leb128_encode_u32(code_sec, Bytes::length(apush_body))
+    bytebuf_push_buf(code_sec, apush_body)
+  } else {
+    ()
+  }
+  if want_timer_cancel {
+    // host_sleep_cancel(t): param 0 = tagged timer (id + 4096); locals (i32)
+    // 1=h, 2=slot; (i64) 3=id. A task group closed with this timer still
+    // pending: find the subtask whose recorded id it is, take it out of the
+    // shared set, cancel it (synchronously -- a timer that already returned
+    // but was not yet delivered answers RETURNED, which is just as done), drop
+    // it and clear its slot. No subtask carries the id (it was delivered and
+    // dropped already) is a no-op.
+    let tcan_body = bytebuf_new()
+    leb128_encode_u32(tcan_body, 2)
+    leb128_encode_u32(tcan_body, 2)
+    bytebuf_push(tcan_body, 127)
+    leb128_encode_u32(tcan_body, 1)
+    bytebuf_push(tcan_body, 126)
+    emit_local_get(tcan_body, 0)
+    comp_emit_decode_i64_value(tcan_body, tag_mode)
+    emit_i64_const(tcan_body, comp_timer_band_base())
+    // i64.sub
+    bytebuf_push(tcan_body, 125)
+    emit_local_set(tcan_body, 3)
+    emit_block_void(tcan_body)
+    emit_loop_void(tcan_body)
+    // h += 1; past the band: not found
+    emit_local_get(tcan_body, 1)
+    emit_i32_const(tcan_body, 1)
+    emit_i32_add(tcan_body)
+    // local.tee 1
+    bytebuf_push(tcan_body, 34)
+    leb128_encode_u32(tcan_body, 1)
+    emit_i32_const(tcan_body, comp_hf_max_handles())
+    emit_i32_gt_u(tcan_body)
+    emit_br_if(tcan_body, 1)
+    emit_local_get(tcan_body, 1)
+    emit_i32_const(tcan_body, 3)
+    emit_i32_shl(tcan_body)
+    emit_i32_const(tcan_body, comp_timer_id_base())
+    emit_i32_add(tcan_body)
+    // local.tee 2
+    bytebuf_push(tcan_body, 34)
+    leb128_encode_u32(tcan_body, 2)
+    // i64.load align=3
+    bytebuf_push(tcan_body, 41)
+    leb128_encode_u32(tcan_body, 3)
+    leb128_encode_u32(tcan_body, 0)
+    emit_local_get(tcan_body, 3)
+    // i64.ne
+    bytebuf_push(tcan_body, 82)
+    emit_br_if(tcan_body, 0)
+    emit_local_get(tcan_body, 1)
+    emit_i32_const(tcan_body, 0)
+    emit_call(tcan_body, join_idx)
+    emit_local_get(tcan_body, 1)
+    emit_call(tcan_body, subtask_cancel_idx)
+    // drop
+    bytebuf_push(tcan_body, 26)
+    emit_local_get(tcan_body, 1)
+    emit_call(tcan_body, subtask_drop_idx)
+    emit_local_get(tcan_body, 2)
+    emit_i64_const(tcan_body, 0)
+    // i64.store align=3
+    bytebuf_push(tcan_body, 55)
+    leb128_encode_u32(tcan_body, 3)
+    leb128_encode_u32(tcan_body, 0)
+    emit_br(tcan_body, 1)
+    emit_end(tcan_body)
+    emit_end(tcan_body)
+    emit_i64_const(tcan_body, 0)
+    comp_emit_encode_i64_value(tcan_body, tag_mode)
+    bytebuf_push(tcan_body, 11)
+    leb128_encode_u32(code_sec, Bytes::length(tcan_body))
+    bytebuf_push_buf(code_sec, tcan_body)
+  } else {
+    ()
+  }
+  let mut xb_i = 0
+  while xb_i < Array::length(exit_stubs) {
+    // no locals; unreachable; end
+    leb128_encode_u32(code_sec, 3)
+    bytebuf_push(code_sec, 0)
+    bytebuf_push(code_sec, 0)
+    bytebuf_push(code_sec, 11)
+    xb_i = xb_i + 1
+  }
+  if want_claim {
+    let claim_body = comp_body_claim_body(tag_mode)
+    leb128_encode_u32(code_sec, Bytes::length(claim_body))
+    bytebuf_push_buf(code_sec, claim_body)
+  } else {
+    ()
+  }
+  bytebuf_push_section(out, 10, code_sec)
+  bytebuf_to_bytes(out)
+}
