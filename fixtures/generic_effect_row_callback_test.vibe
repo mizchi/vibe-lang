@@ -1,0 +1,151 @@
+// #3311 controls: a lambda passed to a parameter whose function type has a
+// row (`f: () -> Int with Box[String]`) performs at the instantiation that row
+// names, so its payload reaches the callee's handler as the type the handler
+// reads. These are the correct shapes that rule must keep compiling, each
+// answering through the callee's handler; the refusals are the
+// `generic_effect_row_callback_*_reject` rows in
+// fixtures/typecheck/expected.tsv.
+//
+// The effect-row pass charges a callback's performs to the function that
+// writes the lambda, not to the callee that handles them, so each test
+// discharges the effect once more around the call. That outer arm never runs:
+// it answers -1, and no expected value below contains it.
+effect Box[T] {
+  Put(T) -> Int
+}
+
+effect Read[F[_]] {
+  Put(F[Int]) -> Int
+}
+
+struct Runner {
+  base: Int
+}
+
+fn run_str(f: () -> Int with Box[String]) -> Int {
+  handle {
+    f()
+  } with {
+    Box::Put(s) => resume(String::length(s))
+  }
+}
+
+fn run_int(f: () -> Int with Box[Int]) -> Int {
+  handle {
+    f()
+  } with {
+    Box::Put(n) => resume(n * 10)
+  }
+}
+
+// The handler compares the payload with `x`, so the payload must be the `T`
+// this call gives `x`.
+fn run_same[T: Eq](f: () -> Int with Box[T], x: T) -> Int {
+  handle {
+    f()
+  } with {
+    Box::Put(v) => resume(if v == x {
+      1
+    } else {
+      0
+    })
+  }
+}
+
+fn run_read(f: () -> Int with Read[Array]) -> Int {
+  handle {
+    f()
+  } with {
+    Read::Put(xs) => {
+      let a: Array[Int] = xs
+      resume(Array::length(a))
+    }
+  }
+}
+
+fn Runner::go(r: Runner, f: () -> Int with Box[String]) -> Int {
+  handle {
+    f()
+  } with {
+    Box::Put(s) => resume(r.base + String::length(s))
+  }
+}
+
+// The function's own row instantiates `Box` at `Int` for its own performs; the
+// callback's performs belong to `run_str`'s `Box[String]`.
+fn mixed() -> Int with Box[Int] {
+  run_str(() -> {
+    perform Box::Put("abc")
+  }) + perform Box::Put(4)
+}
+
+test "a callback performs at the parameter row's instantiation" {
+  let r = handle {
+    run_str(() -> {
+      perform Box::Put("abcd")
+    })
+  } with {
+    Box::Put(_) => resume(0 - 1)
+  }
+  inspect(r, "4")
+}
+
+test "a callback's row is the parameter's, not the enclosing function's" {
+  let r = handle {
+    mixed()
+  } with {
+    Box::Put(n) => resume(n + 100)
+  }
+  inspect(r, "107")
+}
+
+test "a callback row naming the callee's formal takes this call's type" {
+  let r = handle {
+    let a = run_same(() -> {
+      perform Box::Put("k")
+    }, "k")
+    let b = run_same(() -> {
+      perform Box::Put(7)
+    }, 8)
+    a * 10 + b
+  } with {
+    Box::Put(_) => resume(0 - 1)
+  }
+  inspect(r, "10")
+}
+
+test "nested callbacks each perform at their own parameter's row" {
+  let r = handle {
+    run_str(() -> {
+      perform Box::Put("xy") + run_int(() -> {
+        perform Box::Put(5)
+      })
+    })
+  } with {
+    Box::Put(_) => resume(0 - 1)
+  }
+  inspect(r, "52")
+}
+
+test "a kinded callback row fixes the payload's constructor" {
+  let r = handle {
+    run_read(() -> {
+      perform Read::Put([1, 2, 3])
+    })
+  } with {
+    Read::Put(_) => resume(0 - 1)
+  }
+  inspect(r, "3")
+}
+
+test "a method's callback parameter fixes the instantiation" {
+  let runner = Runner::{ base: 10 }
+  let r = handle {
+    runner.go(() -> {
+      perform Box::Put("abc")
+    })
+  } with {
+    Box::Put(_) => resume(0 - 1)
+  }
+  inspect(r, "13")
+}
