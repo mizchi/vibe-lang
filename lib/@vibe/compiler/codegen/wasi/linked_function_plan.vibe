@@ -1,0 +1,185 @@
+// Canonical function normalization and lambda ranges, prepared once before
+// body emission. Consumers read these arrays; they are not a Send transport.
+import @vibe/compiler/core {
+  Expr, Stmt, TypeExpr, sorted_names_of
+}
+import @vibe/compiler/normalize {
+  lift_match_scrutinees, uniquify_shadowed_bindings_fresh
+}
+import @vibe/compiler/codegen/common_analysis {
+  collect_free_vars_used_builtins, count_lambda_sites_expr
+}
+import @vibe/compiler/codegen/common_base {
+  get_slet_expr, get_slet_type, is_efn
+}
+
+export struct LinkedFunctionPlan {
+  bodies: Array[Expr];
+  source_types: Array[Option[TypeExpr]];
+  lambda_bases: Array[Int];
+  lambda_count: Int;
+  enable_rc: Bool
+}
+
+/// #3355: the names a function body reads that nothing inside it binds -- the
+/// top-level functions, constants, constructors and builtins it refers to --
+/// as the starting `seen` set of the shadow uniquify below. A local binder
+/// whose name is in it is renamed, so once that binder's scope has ended a
+/// later reference to the top-level name cannot resolve to the dead local.
+/// Codegen keeps an ended binder in `local_names` (an `if`'s then branch, a
+/// match arm and a `for` body are the only scopes it truncates), and the
+/// uniquify only renamed a binder that shadowed ANOTHER local:
+/// `let a = { let twice = .. }` and then `twice(7)` beside a top-level
+/// `fn twice` called the dead local, directly or through a closure that
+/// captured it.
+///
+/// `rc_query.vibe` seeds the same set (`rcq_body_free_names`) so `vibe
+/// rc-plan` keeps planning the body this lane compiles.
+fn lc_body_free_names(e: Expr) -> Array[String] {
+  match e {
+    EFn(_, _, params, _, _, body) => {
+      let pnames: Array[String] = []
+      for p in params {
+        let (pn, _) = p
+        let n = String::length(pn)
+        let last = if n > 0 {
+          String::char_code_at(pn, n - 1)
+        } else {
+          0
+        }
+        Array::push(pnames, if last == '~' || last == '?' {
+          pn[0: n - 1]
+        } else {
+          pn
+        })
+      }
+      collect_free_vars_used_builtins(body, pnames, [])
+    },
+    _ => collect_free_vars_used_builtins(e, [], [])
+  }
+}
+
+// fn_names_list also includes generated builtins: only its user prefix may
+// shadow a builtin value form. Statement indices include non-EFn thunks.
+export fn lc_prepare_function_plan(stmts: Array[Stmt], fn_stmt_indices: Array[Int], fn_names_list: Array[String], num_user_funcs: Int, const_int_names_list: Array[String], ctor_names_list: Array[String], enable_rc: Bool) -> LinkedFunctionPlan with Exception {
+  // Fresh names must advance across the complete canonical function order.
+  let m_scrut_counter = [0]
+  let uq_shadow_counter = [0]
+  // #1259 step 7: the frozen plan, built BEFORE any body is emitted.
+  //
+  // Each function's body is transformed here (scrutinee lift + shadow
+  // uniquify under RC) rather than inside the body loop, because the count
+  // has to see the same expression codegen will walk. The two counters those
+  // transforms draw fresh names from are shared across functions, so this
+  // loop must visit them in the same order the body loop does -- it does,
+  // both are bi = 0..num_user_funcs, which is why hoisting the transform out
+  // cannot change a name.
+  //
+  // What this buys over counting inside the loop: every function's lambda
+  // base is now known before the first body is compiled, so a body no longer
+  // depends on its predecessors having been compiled. That is the property
+  // step 7's WholeProgramPlan needs.
+  // #2448 (Codex review): the one piece of scope the plan walk needs. A user
+  // program may declare `fn Array::get(...)`, and the checker resolves that
+  // name to the DECLARATION -- so codegen emits the user function's table slot
+  // rather than an eta-expansion of the builtin, and the plan must not reserve
+  // a slot for one.
+  //
+  // Only the FIRST `num_user_funcs` entries: the builtin names are appended to
+  // `fn_names_list` further up (the all-functions table), and `num_user_funcs`
+  // is the length captured before that. Measured on the whole list instead,
+  // EVERY value form planned 0 while the walk emitted 1 -- the guard matched
+  // the builtin's own row, so `let sub = String::substring` failed with
+  // `lambda plan over-count: planned through 0, walk stopped at 1`. The
+  // prefix is the same set codegen tests through the func table, where a user
+  // function is an entry at or above `func_offset`.
+  //
+  // #2442 widened this from "user functions" to every WHOLE-PROGRAM name that
+  // codegen resolves BEFORE the value-form arm. While only qualified names had
+  // a value form, user functions were the only such name that could collide --
+  // nothing else in `compile_expr.vibe`'s ladder can be spelled `A::b`. A bare
+  // name (`eq`, `not`) can be a module-level int constant or a constructor,
+  // and both compile today: measured on ae838ff, `let eq = 5` reads 5 through
+  // `const_int_names` and `enum E { eq }` constructs through the ctor table.
+  // The arm now sits below both, so the plan has to see both or it counts a
+  // slot the walk never allocates.
+  //
+  // Module-level GLOBALS need no row here: on this lane a top-level `let` that
+  // is not an int literal becomes a thunk in `fn_names_list`, so it is already
+  // a user function. (The gc lane keeps them in `gc_global_names`, and that
+  // lane has no lambda plan to agree with.)
+  let shadow_names_only: Array[String] = []
+  let mut ufn_i = 0
+  while ufn_i < num_user_funcs {
+    Array::push(shadow_names_only, Array::get(fn_names_list, ufn_i))
+    ufn_i = ufn_i + 1
+  }
+  let mut shadow_ci = 0
+  while shadow_ci < Array::length(const_int_names_list) {
+    Array::push(shadow_names_only, Array::get(const_int_names_list, shadow_ci))
+    shadow_ci = shadow_ci + 1
+  }
+  let mut shadow_ki = 0
+  while shadow_ki < Array::length(ctor_names_list) {
+    Array::push(shadow_names_only, Array::get(ctor_names_list, shadow_ki))
+    shadow_ki = shadow_ki + 1
+  }
+  let user_fn_names_sorted = sorted_names_of(shadow_names_only)
+  let planned_bodies: Array[Expr] = []
+  let lambda_bases: Array[Int] = []
+  let source_types: Array[Option[TypeExpr]] = []
+  let mut lambda_base_acc = 0
+  let mut pbi = 0
+  while pbi < num_user_funcs {
+    let pb_stmt = Array::get(stmts, Array::get(fn_stmt_indices, pbi))
+    // Shadow uniquify runs in BOTH lanes now. It was RC-only (#712,
+    // name-keyed RC bookkeeping), but the bump lane needs it for a harder
+    // reason: its codegen never restores `local_names` when an inner binding
+    // scope closes mid-function (a match catch-all arm's binders, a
+    // block-valued `let`'s inner lets), so a later same-name reference
+    // resolved to the DEAD inner slot and read its value — silently wrong,
+    // no diagnostic. Renaming every shadowing binding to a unique name
+    // removes the collision at the source, exactly as #712 did for RC's
+    // name-keyed maps (the pass's own doc already notes it is harmless on
+    // this lane). `lift_match_scrutinees` stays RC-only — it exists for
+    // Perceus drops.
+    //
+    // #3355: a binding that shadows a TOP-LEVEL name collides the same way
+    // once its scope ends, so `seen` starts with every name the body reads
+    // free (lc_body_free_names).
+    let pb_expr = if enable_rc {
+      let pb_seen = lc_body_free_names(get_slet_expr(pb_stmt))
+      lift_match_scrutinees(uniquify_shadowed_bindings_fresh(get_slet_expr(pb_stmt), uq_shadow_counter, pb_seen), m_scrut_counter)
+    } else {
+      let pb_seen = lc_body_free_names(get_slet_expr(pb_stmt))
+      uniquify_shadowed_bindings_fresh(get_slet_expr(pb_stmt), uq_shadow_counter, pb_seen)
+    }
+    Array::push(planned_bodies, pb_expr)
+    Array::push(source_types, get_slet_type(pb_stmt))
+    Array::push(lambda_bases, lambda_base_acc)
+    // A function DEFINITION is itself an EFn, and that outer EFn is the
+    // function -- codegen takes its params and compiles its body, it never
+    // routes it through compile_lambda. Counting it would reserve a dead slot
+    // per user function.
+    // #2442: the whole EFn, then minus its own slot, rather than its body --
+    // the walk binds a lambda's PARAMETERS, and a top-level function's
+    // parameters shadow just as a local does. Handing it `get_efn_body`
+    // dropped them, so `fn f(eq: (Int, Int) -> Bool) { let g = eq }` planned a
+    // slot for a use codegen resolves to the parameter. The EFn arm answers
+    // `1 + body`, and the 1 is exactly the dead slot the comment above says
+    // not to count.
+    lambda_base_acc = lambda_base_acc + (if is_efn(pb_expr) {
+      count_lambda_sites_expr(pb_expr, user_fn_names_sorted) - 1
+    } else {
+      count_lambda_sites_expr(pb_expr, user_fn_names_sorted)
+    })
+    pbi = pbi + 1
+  }
+  LinkedFunctionPlan::{
+    bodies: planned_bodies,
+    source_types: source_types,
+    lambda_bases: lambda_bases,
+    lambda_count: lambda_base_acc,
+    enable_rc: enable_rc
+  }
+}

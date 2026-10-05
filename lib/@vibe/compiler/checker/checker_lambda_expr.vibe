@@ -30,7 +30,6 @@ import @vibe/compiler/core {
   Type,
   TypeDef,
   TypeEnv,
-  TypeExpr,
   array_receiver_reads,
   canonical_builtin_name,
   collect_tvars,
@@ -42,10 +41,8 @@ import @vibe/compiler/core {
   find_typedef,
   fresh_var,
   instantiate,
-  is_alias_constructor,
   is_hkt_app,
   resolve_builtin,
-  resolve_type_constructor_args,
   subst_add_bound,
   subst_apply,
   subst_apply_except,
@@ -54,18 +51,12 @@ import @vibe/compiler/core {
   trait_defined,
   trait_method_sig_deep,
   type_constructor_name,
-  type_expr_name_is_shadowed,
   type_to_string,
-  types_equal,
   unify
 }
 
 import @vibe/ast {
   impl_encode_name, impl_method_owner_head, trait_ref_name, type_param_arity, type_param_name
-}
-
-import @vibe/parser {
-  lex, parse_type
 }
 
 import ./builtins.vibe {
@@ -86,6 +77,10 @@ import ./checker_pattern.vibe {
 
 import ./checker_resolve.vibe {
   resolve_type_expr, resolve_type_expr_shadowed
+}
+
+import ./checker_row_effect_inst.vibe {
+  bind_lambda_effect_instantiations, effect_inst_annotation_check, lambda_effect_inst_row
 }
 
 import ./checker_spawnable.vibe {
@@ -129,7 +124,6 @@ import ./checker_eq_unbounded_formal_msg.vibe {
   check_assignable,
   check_assignable_set_end,
   direct_result_enum_payload_param_indices,
-  effect_tparams,
   env_has_active_region,
   interp_is_shim_body,
   return_provenance_was_written,
@@ -139,12 +133,7 @@ import ./checker_eq_unbounded_formal_msg.vibe {
 }
 
 import ./checker_infer_binop_type.vibe {
-  TypedOccurrenceRoleLaneCapture,
-  append_legacy_typed_occurrence,
-  effect_inst_env_key,
-  param_types_are_spawn_shaped,
-  record_receiver_kind,
-  resolve_tparams_in
+  TypedOccurrenceRoleLaneCapture, append_legacy_typed_occurrence, param_types_are_spawn_shaped, record_receiver_kind, resolve_tparams_in
 }
 
 import ./checker_merge_capture_provenance.vibe {
@@ -154,9 +143,7 @@ import ./checker_merge_capture_provenance.vibe {
   direct_result_field_param_index,
   direct_result_param_indices,
   efn_substituted_formals,
-  eq_formal_arity,
   eq_formal_group,
-  eq_formal_rigid_row,
   eq_formal_row_of,
   eq_formal_vars,
   eq_group_begin,
@@ -170,6 +157,10 @@ import ./checker_merge_capture_provenance.vibe {
   parse_tuple_index,
   record_eq_formal_var,
   type_mentions_named
+}
+
+import ./checker_pinned_formal.vibe {
+  pinned_row_formal_errors
 }
 
 import ./checker_throw_kind_of_type.vibe {
@@ -1955,13 +1946,15 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
       }
       // Only a direct top-level declaration is expanded by collect_show_shims.
       // Consume the marker so a nested lambda cannot inherit the exemption.
-      let row_inst_env = bind_row_effect_instantiations(return_env, effect, defs, tparams, errors)
+      // #3341: a lambda also records the instantiations it performs at, so the
+      // place it is used can compare them (`effect_inst_pairs`).
+      let (row_inst_env, s1_inst, c1_inst, effect_inst_pairs) = bind_lambda_effect_instantiations(return_env, effect, defs, tparams, errors, s1, return_c, top_level, tplen > 0)
       let body_env = env_bind(env_bind(row_inst_env, "#interp.top.fn", CtUnit), "#interp.shim.body", if top_level && interp_is_shim_body(params, body) {
         CtBool
       } else {
         CtUnit
       })
-      let (bt, s2_body, c2) = check_child(body, body_env, defs, s1, return_c, errors, tytab, capture, lane)
+      let (bt, s2_body, c2) = check_child(body, body_env, defs, s1_inst, c1_inst, errors, tytab, capture, lane)
       // #2848: a field read on a receiver that was unsolved when checked (an
       // unannotated parameter of a lambda in this body) may have been solved
       // by a call in this body. Judge it now, while this declaration's own
@@ -2004,7 +1997,9 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
           // SLet/ELet then tags those with `[@fn=name]` so locate_type_error
           // recovers the function name instead of a synthetic 0:0 range.
           check_assignable_set_end(string_lit_end(body))
-          let ns = check_assignable(resolved_ret, bt, s2, errors, "return type mismatch", tail_expr_off(body))
+          let ns_ret = check_assignable(resolved_ret, bt, s2, errors, "return type mismatch", tail_expr_off(body))
+          // #3341: a returned function value is used at the declared row.
+          let ns = effect_inst_annotation_check(body_env, body, bt, resolved_ret, ns_ret, "the returned function", "the return type's row", defs, errors)
           (merge_capture_provenance(subst_apply(ns, resolved_ret), subst_apply(ns, bt)), ns)
         },
         None => (subst_apply(s2, bt), s2)
@@ -2101,6 +2096,12 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
         }
         esi = esi + 1
       }
+      // #3318: a formal the row names must stay generic in the body.
+      if tplen > 0 {
+        pinned_row_formal_errors(tparams, tparam_ids, effect, body, defs, s, s2_body, s2, s3, errors)
+      } else {
+        ()
+      }
       let keep_ids = array_empty()
       let mut ki0 = 0
       while ki0 < Array::length(tparam_ids) {
@@ -2190,7 +2191,7 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
         spi2 = spi2 + 1
       }
       let fn_ty = if tplen == 0 {
-        CtFn(param_types, final_ret, dependency_effect)
+        CtFn(param_types, final_ret, lambda_effect_inst_row(dependency_effect, effect, effect_inst_pairs))
       } else {
         CtFn(scheme_params, scheme_ret, dependency_effect)
       }
@@ -2234,369 +2235,4 @@ export fn check_lambda_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: S
     },
     _ => (CtUnknown, s, c)
   }
-}
-
-/// #3275: publish the instantiation a function's own `with` row writes for a
-/// declared generic effect (`with Box[Int]`) under the key a `handle` uses
-/// (`effect_instantiate`), so a `perform Box::Put(..)` in the body is checked
-/// against `Int` instead of a fresh variable. Without it the payload was never
-/// compared with the row, and `perform Box::Put("x")` under `with Box[Int]`
-/// compiled and handed a pointer to an arm reading an `Int`.
-///
-/// An explicit row also masks an instantiation inherited from an enclosing
-/// function or handle: a bare `with Box`, two different labels for the same
-/// effect, or an argument the type parser cannot read binds `CtUnit`, which
-/// `effect_inst_lookup` rejects, so those performs keep a fresh
-/// instantiation. A repeated identical label is the same instantiation.
-///
-/// A kinded parameter's argument is bound by `kinded_row_inst`, which reports
-/// a wrong-kinded argument rather than leaving the perform unchecked.
-///
-/// The instantiation is also recorded under `effect_row_inst_key`, so an
-/// unannotated lambda can tell it came from an enclosing ROW rather than a
-/// `handle` (`mask_row_effect_instantiations`).
-fn bind_row_effect_instantiations(env: TypeEnv, row: Option[String], defs: Array[TypeDef], tparams: Array[String], errors: Array[String]) -> TypeEnv {
-  match row {
-    None => mask_row_effect_instantiations(env, defs),
-    Some(text) => {
-      let seen_bases = array_empty()
-      let seen_labels = array_empty()
-      let mut out = env
-      for raw in String::split(text, ",") {
-        let label = String::trim(raw)
-        let bi = String::index_of(label, "[")
-        let base = if bi > 0 {
-          label[0: bi]
-        } else {
-          label
-        }
-        if Array::length(effect_tparams(defs, base)) == 1 {
-          let mut prior = 0 - 1
-          let mut si = 0
-          while si < Array::length(seen_bases) {
-            if Array::get(seen_bases, si) == base {
-              prior = si
-            }
-            si = si + 1
-          }
-          if prior >= 0 {
-            if Array::get(seen_labels, prior) != label {
-              Array::set(seen_labels, prior, "#conflict")
-              out = env_bind(env_bind(out, effect_inst_env_key(base), CtUnit), effect_row_inst_key(base), CtUnit)
-            } else {
-              ()
-            }
-          } else {
-            Array::push(seen_bases, base)
-            Array::push(seen_labels, label)
-            let parsed = if bi > 0 && String::ends_with(label, "]") {
-              handle {
-                let (arg_te, _) = parse_type(lex(label[bi + 1: String::length(label) - 1]), 0)
-                Some(arg_te)
-              } with { Exception::Throw(_unreadable) => None }
-            } else {
-              None
-            }
-            let param = Array::get(effect_tparams(defs, base), 0)
-            let inst = match parsed {
-              Some(arg_te) => {
-                let shadow = formal_shadow(arg_te, env, tparams)
-                if type_param_arity(param) > 0 {
-                  // A kinded parameter (`F` of `Read[F[_]]`) takes a bare
-                  // constructor, not a complete type.
-                  kinded_row_inst(label, base, param, arg_te, defs, shadow, tparams, env, errors)
-                } else {
-                  row_arg_as_type(arg_te, defs, shadow, env)
-                }
-              },
-              None => CtUnit
-            }
-            out = env_bind(env_bind(out, effect_inst_env_key(base), inst), effect_row_inst_key(base), inst)
-          }
-        } else {
-          ()
-        }
-      }
-      out
-    }
-  }
-}
-
-fn effect_row_inst_key(eff: String) -> String {
-  String::concat("$einst_row$", eff)
-}
-
-/// A row argument resolved as a complete type, its formals mapped to the
-/// enclosing binders' variables.
-fn row_arg_as_type(arg_te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], env: TypeEnv) -> Type {
-  CtTuple([
-    resolve_tparams_in(resolve_type_expr_shadowed(arg_te, defs, shadow), env)
-  ])
-}
-
-/// #3275 follow-up (Codex on #3315): the instantiation the row item `label`
-/// gives the kinded parameter `param` of effect `base`. A perform the row
-/// governs is never left unchecked:
-///
-/// - a bare constructor of the parameter's kind is bound as that constructor
-///   (`row_constructor_arg`), so `with Read[Array]` makes `F[Int]` an
-///   `Array[Int]`;
-/// - a constructor formal in scope (`with Read[G]` in `fn producer[G[_]]`) is
-///   bound as the formal itself, so the payload is `G[Int]`, the type a
-///   `xs: G[Int]` parameter has. A formal whose declared arity is not the
-///   parameter's (`with Read[T]` for a plain `T`, or an `H[_, _]`) is reported
-///   like any other wrong-kinded argument (Codex on #3315): bound as itself it
-///   let a nested lambda's row through unchecked;
-/// - a wrong-kinded argument is REPORTED here with the row-item check's
-///   message, and the parameter is left fresh, since the program is refused
-///   anyway. Leaving the report to `geff_row_targ_errors_into` was not enough:
-///   that check runs only once type checking found nothing, it does not walk a
-///   lambda nested in a body, and it compared arities only, so
-///   `perform Read::Put(Some(1))` checked clean under `with Read[Higher]`
-///   (`struct Higher[G[_]]`), and under `Read[Int]` or `Read[Nope]` in a
-///   nested lambda;
-/// - anything else is bound as the argument resolved as a type, an
-///   application no payload of the parameter's shape matches.
-fn kinded_row_inst(label: String, base: String, param: String, arg_te: TypeExpr, defs: Array[TypeDef], shadow: Array[String], tparams: Array[String], env: TypeEnv, errors: Array[String]) -> Type {
-  let want = type_param_arity(param)
-  match row_constructor_arg(param, arg_te, defs, shadow) {
-    Some(ctor) => CtTuple([ctor]),
-    None => {
-      let formal_name = match arg_te {
-        TyName(name) => if type_expr_name_is_shadowed(shadow, name) {
-          name
-        } else {
-          ""
-        },
-        _ => ""
-      }
-      let msg = if formal_name != "" {
-        let farity = row_formal_arity(formal_name, tparams, env)
-        if farity >= 0 && farity != want {
-          kinded_row_kind_message(label, base, want, farity, true)
-        } else {
-          ""
-        }
-      } else {
-        kinded_row_arg_message(label, base, want, arg_te, defs)
-      }
-      if msg == "" {
-        row_arg_as_type(arg_te, defs, shadow, env)
-      } else {
-        Array::push(errors, msg)
-        CtUnit
-      }
-    }
-  }
-}
-
-/// The declared arity of the type formal `name` in scope: the row's own
-/// binder's (`tparams`, keys such as `G[_]`), or an enclosing binder's, read
-/// from the formal table the EFn arm fills (`record_eq_formal_var`); -1 when
-/// neither records it.
-fn row_formal_arity(name: String, tparams: Array[String], env: TypeEnv) -> Int {
-  let mut own = 0 - 1
-  let mut i = 0
-  while i < Array::length(tparams) {
-    let key = Array::get(tparams, i)
-    if type_param_name(key) == name {
-      own = type_param_arity(key)
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  if own >= 0 {
-    own
-  } else {
-    let row = match env_lookup(env, name) {
-      Some(t) => match t {
-        CtVar(vid) => {
-          let r = eq_formal_row_of(vid)
-          if r >= 0 {
-            let (_, rname) = Array::get(eq_formal_vars, r)
-            if rname == name {
-              r
-            } else {
-              0 - 1
-            }
-          } else {
-            0 - 1
-          }
-        },
-        CtNamed(n, _) => if n == String::concat("#hktformal.", name) {
-          eq_formal_rigid_row(name)
-        } else {
-          0 - 1
-        },
-        _ => 0 - 1
-      },
-      None => 0 - 1
-    }
-    if row >= 0 {
-      Array::get(eq_formal_arity, row)
-    } else {
-      0 - 1
-    }
-  }
-}
-
-/// The row-item check's message (`geff_row_targ_errors_into`) for a
-/// wrong-kinded argument of a kinded effect parameter that takes `want` type
-/// arguments, or "" when the argument's kind is right as far as this can tell.
-/// An unknown name and an applied type count as taking no arguments, as they
-/// do there.
-fn kinded_row_arg_message(label: String, base: String, want: Int, arg_te: TypeExpr, defs: Array[TypeDef]) -> String {
-  let (arity, plain) = match arg_te {
-    TyName(name) => match compiler_owned_type_arity(name) {
-      Some(owned) => (owned, true),
-      None => (Array::length(declared_type_params(defs, name)), constructor_params_plain(defs, name))
-    },
-    _ => (0, true)
-  }
-  kinded_row_kind_message(label, base, want, arity, plain)
-}
-
-/// The message itself: `arity` is what the row's argument takes and `plain`
-/// whether all its parameters are types; "" when both fit.
-fn kinded_row_kind_message(label: String, base: String, want: Int, arity: Int, plain: Bool) -> String {
-  let bi = String::index_of(label, "[")
-  let inner = if bi > 0 && String::ends_with(label, "]") {
-    String::trim(label[bi + 1: String::length(label) - 1])
-  } else {
-    label
-  }
-  let head = String::concat("effect row item `", String::concat(label, String::concat("`: effect ", base)))
-  if arity != want {
-    String::concat(head, String::concat(" expects a constructor with ", String::concat(__to_string(want), String::concat(" argument(s), but `", String::concat(inner, String::concat("` has ", String::concat(__to_string(arity), " -- pass a bare constructor with the required arity")))))))
-  } else if !plain {
-    String::concat(head, String::concat(" applies its parameter to types, but a parameter of `", String::concat(inner, "` takes a constructor -- pass a constructor whose parameters are all types, such as `Array` or `Option`")))
-  } else {
-    ""
-  }
-}
-
-/// #3275 follow-up (Codex on #3315): the constructor a row passes to a kinded
-/// effect parameter `param` (`with Read[Array]` for `effect Read[F[_]]`),
-/// reified the way a kinded type argument is everywhere else
-/// (`resolve_type_constructor_args`): `Array` and `Option` as `CtConstructor`,
-/// a declared generic type as its constructor, a parameterized alias as an
-/// alias constructor. Substituting it into the operation's `F[Int]` then gives
-/// `Array[Int]`. Resolving the bare name as a complete type instead gave a
-/// head with no arguments, so `F[Int]` became an application no payload
-/// matches: `perform Read::Put([1, 2])` under `with Read[Array]` was refused
-/// with `expected Array[Int], got Array[Int]`, and a `Cell[String]` payload
-/// under `with Read[Cell]` was accepted.
-///
-/// None for anything else -- a formal in scope, an applied or complete type,
-/// a constructor whose arity is not the parameter's or that itself takes a
-/// constructor, an unknown name -- which `kinded_row_inst` handles.
-fn row_constructor_arg(param: String, arg_te: TypeExpr, defs: Array[TypeDef], shadow: Array[String]) -> Option[Type] {
-  match arg_te {
-    TyName(name) => if type_expr_name_is_shadowed(shadow, name) {
-      None
-    } else {
-      let params: Array[String] = [param]
-      let source_args: Array[TypeExpr] = [arg_te]
-      let resolved = resolve_type_expr_shadowed(arg_te, defs, shadow)
-      let resolved_args: Array[Type] = [resolved]
-      let reified = Array::get(resolve_type_constructor_args(params, source_args, resolved_args, defs, shadow), 0)
-      let want = type_param_arity(param)
-      match reified {
-        CtConstructor(ctor, arity) => if arity == want && constructor_params_plain(defs, ctor) {
-          Some(reified)
-        } else {
-          None
-        },
-        CtApplied(_, meta) => if is_alias_constructor(reified) && Array::length(meta) == want + 1 && alias_constructor_params_plain(meta) {
-          Some(reified)
-        } else {
-          None
-        },
-        _ => None
-      }
-    },
-    _ => None
-  }
-}
-
-/// The type parameters of the type declared as `name`, or none when no
-/// struct, enum or alias of that name is declared.
-fn declared_type_params(defs: Array[TypeDef], name: String) -> Array[String] {
-  match find_typedef(defs, name) {
-    Some(td) => match td {
-      TDStruct(_, _, _, sps) => sps,
-      TDEnum(_, eps, _) => eps,
-      TDAlias(_, aps, _) => aps,
-      _ => array_empty()
-    },
-    None => array_empty()
-  }
-}
-
-/// Does the type declared as `name` take only complete types (no parameter
-/// of its own is a constructor)? A compiler-owned head (`Array`, `Option`)
-/// has no declaration and takes complete types.
-fn constructor_params_plain(defs: Array[TypeDef], name: String) -> Bool {
-  let params = declared_type_params(defs, name)
-  let mut plain = true
-  let mut i = 0
-  while i < Array::length(params) {
-    if type_param_arity(Array::get(params, i)) > 0 {
-      plain = false
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  plain
-}
-
-/// An alias constructor's binders (everything after its body) are all
-/// complete-type parameters.
-fn alias_constructor_params_plain(meta: Array[Type]) -> Bool {
-  let mut plain = true
-  let mut i = 1
-  while i < Array::length(meta) {
-    match Array::get(meta, i) {
-      CtNamed(n, _) => if type_param_arity(n) > 0 {
-        plain = false
-      } else {
-        ()
-      },
-      _ => {
-        plain = false
-      }
-    }
-    i = i + 1
-  }
-  plain
-}
-
-/// #3275 (Codex on #3304): a lambda with no `with` row does not inherit an
-/// instantiation an enclosing function's ROW chose. Its row is derived where
-/// it is used -- passed to a callback parameter typed `() -> Int with
-/// Box[String]`, its performs belong to that row, not the outer `Box[Int]`.
-/// An instantiation a `handle` chose is a different binding (fresh variables,
-/// so not equal to the row's) and is still inherited, as before.
-fn mask_row_effect_instantiations(env: TypeEnv, defs: Array[TypeDef]) -> TypeEnv {
-  let mut out = env
-  for d in defs {
-    match d {
-      TDEffect(name, _, etps) => if Array::length(etps) == 1 {
-        match (env_lookup(env, effect_row_inst_key(name)), env_lookup(env, effect_inst_env_key(name))) {
-          (Some(row_inst), Some(inst)) => if types_equal(row_inst, inst) {
-            out = env_bind(out, effect_inst_env_key(name), CtUnit)
-          } else {
-            ()
-          },
-          _ => ()
-        }
-      } else {
-        ()
-      },
-      _ => ()
-    }
-  }
-  out
 }

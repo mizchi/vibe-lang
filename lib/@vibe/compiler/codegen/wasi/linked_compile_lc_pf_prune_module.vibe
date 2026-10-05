@@ -1364,40 +1364,18 @@ fn lc_linemap_put_row(dst: Bytes, f: Int, o: Int, file_id: Int, line: Int, prev_
   }
 }
 
-fn lc_pf_linemap_adjust_off(old_off: Int, body_idx: Int, body_start: Array[Int], site: Array[Int], site_from: Array[Int], newidx: Array[Int], mod_bytes: Bytes) -> Int {
-  if body_idx < 0 || body_idx + 1 >= Array::length(site_from) || body_idx >= Array::length(body_start) {
-    old_off
-  } else {
-    let bstart = Array::get(body_start, body_idx)
-    let mut delta = 0
-    let mut k = Array::get(site_from, body_idx)
-    let kend = Array::get(site_from, body_idx + 1)
-    while k < kend {
-      let pk = Array::get(site, k)
-      let pos = pk>>32
-      let target = pk&4294967295
-      if target < Array::length(newidx) && Array::get(newidx, target) >= 0 {
-        let old_leb = lc_pf_skip_leb(mod_bytes, pos) - pos
-        let site_rel = pos - bstart
-        if site_rel < old_off {
-          delta = delta + (lc_pf_leb_len(Array::get(newidx, target)) - old_leb)
-        } else {
-          ()
-        }
-      } else {
-        ()
-      }
-      k = k + 1
-    }
-    old_off + delta
-  }
-}
-
 fn lc_linemap_remap_stream(mod_bytes: Bytes, rec_start: Int, send: Int, cell: Array[Int], newidx: Array[Int], num_imported: Int, body_start: Array[Int], site: Array[Int], site_from: Array[Int], dst: Bytes, write: Bool) -> Int {
   Array::set(cell, 0, rec_start)
   let mut have_in = false
   let mut func = 0
   let mut off = 0
+  // Both records and decoded call sites are ordered by their old offsets.
+  // Each size/write pass owns its cursor; advance each body site once rather
+  // than re-decoding every immediate for every source row. No scratch table.
+  let mut call_next = 0
+  let mut call_end = 0
+  let mut call_body_start = 0
+  let mut call_delta = 0
   let mut have_out = false
   let mut prev_f = 0
   let mut prev_o = 0
@@ -1435,10 +1413,35 @@ fn lc_linemap_remap_stream(mod_bytes: Bytes, rec_start: Int, send: Int, cell: Ar
               }
               off = od
               have_in = true
+              call_next = 0
+              call_end = 0
+              call_delta = 0
+              let body_idx = func - num_imported
+              if body_idx >= 0 && body_idx + 1 < Array::length(site_from) && body_idx < Array::length(body_start) {
+                call_next = Array::get(site_from, body_idx)
+                call_end = Array::get(site_from, body_idx + 1)
+                call_body_start = Array::get(body_start, body_idx)
+              } else {
+                ()
+              }
             }
             if func < Array::length(newidx) && Array::get(newidx, func) >= 0 {
               let nf = Array::get(newidx, func)
-              let no = lc_pf_linemap_adjust_off(off, func - num_imported, body_start, site, site_from, newidx, mod_bytes)
+              // A row at the immediate's start has not crossed its size
+              // change yet. Keep the original strict boundary comparison.
+              while call_next < call_end && (Array::get(site, call_next)>>32) - call_body_start < off {
+                let pk = Array::get(site, call_next)
+                let pos = pk>>32
+                let target = pk&4294967295
+                if target < Array::length(newidx) && Array::get(newidx, target) >= 0 {
+                  let old_leb = lc_pf_skip_leb(mod_bytes, pos) - pos
+                  call_delta = call_delta + lc_pf_leb_len(Array::get(newidx, target)) - old_leb
+                } else {
+                  ()
+                }
+                call_next = call_next + 1
+              }
+              let no = off + call_delta
               if have_out && nf == prev_f && no == prev_o {
                 ()
               } else {

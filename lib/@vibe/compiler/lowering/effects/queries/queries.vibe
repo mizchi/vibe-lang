@@ -1282,23 +1282,34 @@ let edp_argcond_binders: Array[MutSet[String]] = [MutSet::new_string()]
 
 /// Record every locally bound name in `stmts` for `edp_expr_reaches_effect`.
 export fn edp_argcond_note_binders(stmts: Array[Stmt]) -> Unit {
-  Array::set(edp_argcond_binders, 0, MutSet::new_string())
+  edp_argcond_use_binders(edp_collect_program_binders(stmts))
+}
+
+/// Collect one read-only name census for an unchanged statement list.
+export fn edp_collect_program_binders(stmts: Array[Stmt]) -> MutSet[String] {
+  let out = MutSet::new_string()
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SLet(_, _, _, _, e) => edp_collect_binders(e),
-      SLetMut(_, _, e) => edp_collect_binders(e),
-      STest(_, e) => edp_collect_binders(e),
-      SBench(_, e) => edp_collect_binders(e),
-      SExpr(e) => edp_collect_binders(e),
+      SLet(_, _, _, _, e) => edp_collect_binders(e, out),
+      SLetMut(_, _, e) => edp_collect_binders(e, out),
+      STest(_, e) => edp_collect_binders(e, out),
+      SBench(_, e) => edp_collect_binders(e, out),
+      SExpr(e) => edp_collect_binders(e, out),
       SLetPat(p, e) => {
-        edp_note_pat_binders(p)
-        edp_collect_binders(e)
+        edp_note_pat_binders(p, out)
+        edp_collect_binders(e, out)
       },
       _ => ()
     }
     i = i + 1
   }
+  out
+}
+
+/// Select a census already collected from the tree this query will read.
+export fn edp_argcond_use_binders(binders: MutSet[String]) -> Unit {
+  Array::set(edp_argcond_binders, 0, binders)
 }
 
 /// Does some local binding in the program last passed to
@@ -1307,33 +1318,33 @@ export fn edp_is_program_binder(name: String) -> Bool {
   MutSet::has(Array::get(edp_argcond_binders, 0), name)
 }
 
-fn edp_note_binder(name: String) -> Unit {
-  MutSet::insert(Array::get(edp_argcond_binders, 0), name)
+fn edp_note_binder(name: String, out: MutSet[String]) -> Unit {
+  MutSet::insert(out, name)
   ()
 }
 
-fn edp_note_pat_binders(p: Pat) -> Unit {
+fn edp_note_pat_binders(p: Pat, out: MutSet[String]) -> Unit {
   match p {
-    PBind(n) => edp_note_binder(n),
+    PBind(n) => edp_note_binder(n, out),
     PCtor(_, ps) => {
       for q in ps {
-        edp_note_pat_binders(q)
+        edp_note_pat_binders(q, out)
       }
       ()
     },
     PTuple(ps) => {
       for q in ps {
-        edp_note_pat_binders(q)
+        edp_note_pat_binders(q, out)
       }
       ()
     },
     POr(a, b) => {
-      edp_note_pat_binders(a)
-      edp_note_pat_binders(b)
+      edp_note_pat_binders(a, out)
+      edp_note_pat_binders(b, out)
     },
     PStruct(_, fields) => {
       for f in fields {
-        edp_note_pat_binders(f.1)
+        edp_note_pat_binders(f.1, out)
       }
       ()
     },
@@ -1341,41 +1352,41 @@ fn edp_note_pat_binders(p: Pat) -> Unit {
   }
 }
 
-fn edp_collect_binders(e: Expr) -> Unit {
+fn edp_collect_binders(e: Expr, out: MutSet[String]) -> Unit {
   match e {
     EFn(_, _, params, _, _, _) => {
       for param in params {
-        edp_note_binder(param.0)
+        edp_note_binder(param.0, out)
       }
       ()
     },
-    ELet(nm, _, _, _) => edp_note_binder(nm),
-    ELetMut(nm, _, _, _) => edp_note_binder(nm),
-    ELetRec(nm, _, _) => edp_note_binder(nm),
+    ELet(nm, _, _, _) => edp_note_binder(nm, out),
+    ELetMut(nm, _, _, _) => edp_note_binder(nm, out),
+    ELetRec(nm, _, _) => edp_note_binder(nm, out),
     // Loop-state names (`loop (h = f) { .. }`) are bindings too (Codex on
     // #3059).
     ELoop(states, _) => {
       for state in states {
-        edp_note_binder(state.0)
+        edp_note_binder(state.0, out)
       }
       ()
     },
     EForIn(nm, idx, _, _) => {
-      edp_note_binder(nm)
+      edp_note_binder(nm, out)
       match idx {
-        Some(n) => edp_note_binder(n),
+        Some(n) => edp_note_binder(n, out),
         None => ()
       }
     },
     EMatch(_, arms) => {
       for arm in arms {
-        edp_note_pat_binders(arm.0)
+        edp_note_pat_binders(arm.0, out)
       }
       ()
     },
     EHandle(_, arms) => {
       for arm in arms {
-        edp_note_pat_binders(arm.0)
+        edp_note_pat_binders(arm.0, out)
       }
       ()
     },
@@ -1385,7 +1396,7 @@ fn edp_collect_binders(e: Expr) -> Unit {
   let end = expr_children_top()
   let mut i = mark
   while i < end {
-    edp_collect_binders(expr_child_at(i))
+    edp_collect_binders(expr_child_at(i), out)
     i = i + 1
   }
   expr_children_pop(mark)
