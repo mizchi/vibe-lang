@@ -43,6 +43,7 @@ import ./evidence_ecall_arg_idents_expr.vibe {
 import ./evidence_handle_effect_names_expr.vibe {
   edp_append_ctor_inert_names,
   edp_append_effect_irrelevant_row_fns,
+  edp_append_effect_irrelevant_row_fns_with_binders,
   edp_append_free_host_inert_names,
   edp_append_perform_free_row_fns,
   edp_append_self_discharging_row_fns,
@@ -79,6 +80,11 @@ export fn edp_all_sites_eligible(stmts: Array[Stmt], ename: String, needing: Arr
 
 /// Reuse a base computed from the current tree; copy before effect-specific appends.
 export fn edp_all_sites_eligible_with_base(stmts: Array[Stmt], ename: String, needing: Array[String], handle_sites: Array[(Expr, Array[(Pat, Expr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], row_labels: Array[Array[String]], base_inert: Option[Array[String]]) -> Bool {
+  edp_all_sites_eligible_with_context(stmts, ename, needing, handle_sites, fn_defs, row_labels, base_inert, None)
+}
+
+/// A planning attempt may share the inert base and binder census of its tree.
+export fn edp_all_sites_eligible_with_context(stmts: Array[Stmt], ename: String, needing: Array[String], handle_sites: Array[(Expr, Array[(Pat, Expr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], row_labels: Array[Array[String]], base_inert: Option[Array[String]], binders: Option[MutSet[String]]) -> Bool {
   if Array::length(handle_sites) == 0 {
     // Nothing discharges `ename` anywhere -- by the checker's own
     // soundness a `needing` function could never actually run, so there is
@@ -97,7 +103,10 @@ export fn edp_all_sites_eligible_with_base(stmts: Array[Stmt], ename: String, ne
     }
     edp_append_self_discharging_row_fns(stmts, fn_defs, ename, pure_fns, row_labels)
     edp_append_perform_free_row_fns(stmts, fn_defs, ename, pure_fns, row_labels)
-    edp_append_effect_irrelevant_row_fns(stmts, fn_defs, ename, pure_fns, row_labels)
+    match binders {
+      Some(census) => edp_append_effect_irrelevant_row_fns_with_binders(stmts, fn_defs, ename, pure_fns, row_labels, census),
+      None => edp_append_effect_irrelevant_row_fns(stmts, fn_defs, ename, pure_fns, row_labels)
+    }
     let es_names = array_empty()
     let es_members_list = array_empty()
     edp_es_collect_into(stmts, es_names, es_members_list)

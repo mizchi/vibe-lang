@@ -4,6 +4,7 @@ import @vibe/compiler/core {
 import @vibe/compiler/lowering/effects/evidence {
   edp_all_sites_eligible,
   edp_all_sites_eligible_with_base,
+  edp_all_sites_eligible_with_context,
   edp_append_ctor_inert_names,
   edp_append_free_host_inert_names,
   edp_append_visible_pure_lambda_names,
@@ -12,6 +13,12 @@ import @vibe/compiler/lowering/effects/evidence {
   edp_etawrap_stmts_with_rebuild,
   edp_fn_row_label_table,
   edp_pure_fn_names
+}
+import @vibe/compiler/lowering/effects/queries {
+  edp_collect_program_binders
+}
+import @vibe/core {
+  struct MutSet
 }
 
 fn top(name: String, value: Expr) -> Stmt {
@@ -50,12 +57,17 @@ test "an eta wrapper introduces a binder that invalidates earlier purity" {
     ], None, Some("Console"), EUnit)),
     top("__edpw_0", EFn([], [], [], None, None, EInt(2)))
   ]
+  let before_binders = edp_collect_program_binders(stmts)
+  assert(!MutSet::has(before_binders, "__edpw_0"))
   inspect(pure_names(stmts), content = "[__edpw_0]")
   assert(edp_etawrap_stmts_with_rebuild(stmts, ["f", "outer"], "Ask", edp_collect_fn_defs(stmts), [
   ], []))
   // The wrapper's parameter shadows this spelling in another scope.
   // Reusing the pre-wrap result would wrongly retain a globally inert name.
   inspect(pure_names(stmts), content = "[]")
+  let after_binders = edp_collect_program_binders(stmts)
+  assert(MutSet::has(after_binders, "__edpw_0"))
+  assert(!MutSet::has(before_binders, "__edpw_0"))
 }
 
 test "eligibility reuses a base without changing it between attempts" {
@@ -78,10 +90,12 @@ test "eligibility reuses a base without changing it between attempts" {
   edp_append_ctor_inert_names(stmts, base)
   edp_append_visible_pure_lambda_names(stmts, base)
   let before = String::join(base, "\n")
+  let binders = edp_collect_program_binders(stmts)
   let fresh = edp_all_sites_eligible(stmts, "Ask", ["ask"], sites, defs, rows)
   assert(fresh)
   for attempt in [0, 1] {
     assert_eq(edp_all_sites_eligible_with_base(stmts, "Ask", ["ask"], sites, defs, rows, Some(base)), fresh)
+    assert_eq(edp_all_sites_eligible_with_context(stmts, "Ask", ["ask"], sites, defs, rows, Some(base), Some(binders)), fresh)
     assert_eq(String::join(base, "\n"), before)
   }
 }

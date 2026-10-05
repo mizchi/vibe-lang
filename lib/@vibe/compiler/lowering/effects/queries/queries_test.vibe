@@ -1,12 +1,75 @@
 import @vibe/compiler/core {
-  Expr
+  Expr, Pat, Stmt
 }
 import @vibe/compiler/lowering/effects/queries {
-  EdpReadQuery, edp_rq_fold
+  EdpReadQuery, edp_argcond_note_binders, edp_argcond_use_binders, edp_collect_program_binders, edp_is_program_binder, edp_rq_fold
+}
+import @vibe/core {
+  struct MutSet
 }
 
 test "read-only queries find loops below expression containers" {
   let expr = ETuple([EInt(1), EForIn("x", None, EArray([]), EInt(2))])
   inspect(edp_rq_fold(RQContainsForIn, expr), content = "1")
   inspect(edp_rq_fold(RQContainsForIn, EArray([EInt(2)])), content = "0")
+}
+
+test "a binder census includes every existing binder shape and excludes references" {
+  let patterns = EMatch(EInt(0), [
+    (POr(PBind("a"), PStruct("Box", [("value", PBind("b"))])), EUnit)
+  ])
+  let loop_expr = ELoop([("state", EInt(0))], EForIn("item", Some("index"), EArray([
+  ]), patterns))
+  let handled = EHandle(EInt(0), [(PCtor("Ask::Get", [PBind("arm")]), loop_expr)])
+  let lets = ELet("x", EInt(0), ELetMut("y", EInt(0), ELetRec("z", handled, EIdent("reference", -1)), -1), -1)
+  let stmts = [
+    SLet(false, false, "top", None, EFn([], [], [
+      ("p~", None),
+      ("optional?", None)
+    ], None, None, lets)),
+    SLetPat(PTuple([PBind("left"), PBind("right")]), EUnit),
+    SFnDecl(false, "ignored", ELet("unscanned", EInt(0), EUnit, -1), [], [])
+  ]
+  let census = edp_collect_program_binders(stmts)
+  edp_argcond_use_binders(census)
+  for name in [
+    "p~",
+    "optional?",
+    "x",
+    "y",
+    "z",
+    "state",
+    "item",
+    "index",
+    "a",
+    "b",
+    "arm",
+    "left",
+    "right"
+  ] {
+    assert(MutSet::has(census, name))
+    assert(edp_is_program_binder(name))
+  }
+  for name in ["top", "reference", "p", "optional", "ignored", "unscanned"] {
+    assert(!MutSet::has(census, name))
+  }
+  edp_argcond_note_binders([])
+}
+
+test "collecting a new tree neither mutates a saved census nor installs it implicitly" {
+  let stmts = [SExpr(ELet("old", EInt(0), EUnit, -1))]
+  let old = edp_collect_program_binders(stmts)
+  edp_argcond_use_binders(old)
+  Array::set(stmts, 0, SExpr(ELet("new", EInt(0), EUnit, -1)))
+  let fresh = edp_collect_program_binders(stmts)
+  assert(MutSet::has(old, "old"))
+  assert(!MutSet::has(old, "new"))
+  assert(MutSet::has(fresh, "new"))
+  assert(!MutSet::has(fresh, "old"))
+  assert(edp_is_program_binder("old"))
+  edp_argcond_use_binders(fresh)
+  assert(edp_is_program_binder("new"))
+  assert(!edp_is_program_binder("old"))
+  edp_argcond_note_binders([])
+  assert(!edp_is_program_binder("new"))
 }
