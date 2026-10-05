@@ -1,7 +1,7 @@
 //# Imports
 
 import ./checker_parity_test_support.vibe {
-  check_source_err, check_source_ok
+  check_source_err, check_source_err_contains, check_source_ok
 }
 
 //# Misc
@@ -130,4 +130,91 @@ test "1539: explicit effectful wrappers remain first-class" {
 
 test "1001: genuinely generic parameter stays tolerated (no over-rejection)" {
   assert(check_source_ok("struct Box[T] { v: T }\nfn second[T](b: Box[T], d: Int) -> Int { d }\nfn main() -> Int {\n  let b: Box[String] = Box::{ v: \"hello\" }\n  second(b, 42)\n}"))
+}
+
+// #3326: a generic struct or enum APPLIED to arguments (`Cell[Int]`) resolves
+// to `CtNamed`, which `head_kind` puts in the tolerated 0 bucket, and a builtin
+// `Array` / tuple / function / record has no nominal name to compare -- so an
+// `Array[Int]` passed where a `Cell[Int]` is declared fell through every gate,
+// compiled clean, and `x.value` read the array's packed representation
+// (4294967554 for `[1]`). A plain `struct P` was rejected because `CtStruct`
+// has a head of its own, and `Option` because it has a nominal name.
+
+test "3326: an Array is not a generic struct applied to its element type" {
+  assert(check_source_err_contains("struct Cell[T] { value: T }\nfn main() -> Int { let x: Cell[Int] = [1]; x.value }", "expected Cell[Int], got Array[Int]"))
+  assert(check_source_err_contains("struct Cell[T] { value: T }\nfn take(c: Cell[Int]) -> Int { c.value }\nfn main() -> Int { take([7]) }", "argument type mismatch for take: expected Cell[Int], got Array[Int]"))
+  assert(check_source_err_contains("struct Cell[T] { value: T }\nfn mk() -> Cell[Int] { [1] }\nfn main() -> Int { mk().value }", "expected Cell[Int], got Array[Int]"))
+  assert(check_source_err_contains("enum Wrap[T] { W(T); Empty }\nfn main() -> Int { let x: Wrap[Int] = [1]; 0 }", "expected Wrap[Int], got Array[Int]"))
+}
+
+test "3326: the reverse direction and nested positions are rejected too" {
+  assert(check_source_err_contains("struct Cell[T] { value: T }\nfn len(a: Array[Int]) -> Int { Array::length(a) }\nfn main() -> Int { len(Cell::{ value: 1 }) }", "expected Array[Int], got Cell[Int]"))
+  assert(check_source_err("struct Cell[T] { value: T }\nfn main() -> Int { let x: Array[Cell[Int]] = [[1]]; 0 }"))
+  assert(check_source_err("struct Cell[T] { value: T }\nfn main() -> Int { let x: Array[Cell[Int]] = [1]; 0 }"))
+  assert(check_source_err("struct Cell[T] { value: T }\nfn f(o: Option[Cell[Int]]) -> Int { 0 }\nfn main() -> Int { f(Some([1])) }"))
+  assert(check_source_err("struct Cell[T] { value: T }\nfn f(t: (Cell[Int], Int)) -> Int { 0 }\nfn main() -> Int { f(([1], 2)) }"))
+}
+
+test "3326: a tuple, a function or a record is not an applied generic struct" {
+  assert(check_source_err_contains("struct Cell[T] { value: T }\nfn main() -> Int { let x: Cell[Int] = (1, 2); x.value }", "expected Cell[Int], got (Int, Int)"))
+  assert(check_source_err("struct Cell[T] { value: T }\nfn main() -> Int { let x: Cell[Int] = (n: Int) -> n; x.value }"))
+  assert(check_source_err("struct Cell[T] { value: T }\nfn main() -> Int { let x: Cell[Int] = record { value: 1 }; x.value }"))
+}
+
+// The head is certain whatever the arguments are, so a generic callee or a
+// generic body is the same mismatch, not a tolerated rigid formal.
+test "3326: an applied generic struct with formal arguments still has a certain head" {
+  assert(check_source_err("struct Cell[T] { value: T }\nfn get[T](c: Cell[T]) -> T { c.value }\nfn main() -> Int { get([7]) }"))
+  assert(check_source_err("struct Cell[T] { value: T }\nfn f[T](x: T) -> Cell[T] { [x] }\nfn main() -> Int { f(1).value }"))
+  assert(check_source_err("struct Cell[T] { value: T }\nstruct Holder[T] { c: Cell[T] }\nfn main() -> Int { let h: Holder[Int] = Holder::{ c: [1] }; h.c.value }"))
+}
+
+test "3326: what IS an Array keeps accepting one" {
+  // A parameterized alias whose target is `Array` expands at resolution.
+  assert(check_source_ok("type L[T] = Array[T]\nfn f(x: L[Int]) -> Int { Array::length(x) }\nfn main() -> Int { let y: L[Int] = [1]; f([1, 2]) + Array::length(y) }"))
+  // A constructor formal instantiated at `Array`, directly and from a generic body.
+  assert(check_source_ok("fn first[F[_]](x: F[Int]) -> Int { 0 }\nfn main() -> Int { first([1, 2]) }"))
+  assert(check_source_ok("fn idf[F[_], A](x: F[A]) -> F[A] { x }\nfn g[A](xs: Array[A]) -> Array[A] { idf(xs) }\nfn main() -> Int { Array::length(g([1])) }"))
+  assert(check_source_ok("struct Holder[F[_]] { value: F[Int] }\nfn main() -> Int { let h: Holder[Array] = Holder::{ value: [1] }; Array::length(h.value) }"))
+  // `FixedArray` is a compiler-owned phantom over `Array`'s layout (#1140).
+  assert(check_source_ok("fn f(xs: Array[Int]) -> Int { Array::length(xs) }\nfn main() -> Int { f(FixedArray::make(3, 0)) }"))
+  // An Array as the struct's ARGUMENT, concrete and through a generic.
+  assert(check_source_ok("struct Cell[T] { value: T }\nfn main() -> Int { let c: Cell[Array[Int]] = Cell::{ value: [1] }; Array::length(c.value) }"))
+  assert(check_source_ok("struct Cell[T] { value: T }\nfn wrap[T](x: T) -> Cell[T] { Cell::{ value: x } }\nfn main() -> Int { let c: Cell[Array[Int]] = wrap([1]); Array::length(c.value) }"))
+  assert(check_source_ok("struct Cell[T] { value: T }\nfn g[A](c: Cell[Array[A]]) -> Array[A] { c.value }\nfn main() -> Int { Array::length(g(Cell::{ value: [1] })) }"))
+}
+
+// #3326 review: a program may declare its own type under a compiler-owned
+// spelling (`struct Task[T]`, whose legacy builtin is retired),
+// and it resolves to the same `CtNamed` as the compiler's head. Ownership is
+// read from the declaration table, not the spelling: a source type is an
+// ordinary nominal type.
+test "3326: a program's own type spelled like a compiler-owned head is not an Array" {
+  assert(check_source_err_contains("struct Task[T] { v: T }\nfn main() -> Int { let x: Task[Int] = [1]; x.v }", "expected Task[Int], got Array[Int]"))
+  assert(check_source_err("enum Task[T] { Done(T); Pending }\nfn main() -> Int { let x: Task[Int] = [1]; 0 }"))
+  assert(check_source_err("struct Task[T] { v: T }\nfn main() -> Int { let x: Task[Int] = (1, 2); x.v }"))
+  assert(check_source_err("struct Task[T] { v: T }\nfn len(a: Array[Int]) -> Int { Array::length(a) }\nfn main() -> Int { len(Task::{ v: 1 }) }"))
+  // Declared after its use: ownership does not depend on declaration order.
+  assert(check_source_err("fn len(a: Array[Int]) -> Int { Array::length(a) }\nfn main() -> Int { len(Task::{ v: 1 }) }\nstruct Task[T] { v: T }"))
+}
+
+// #3326 review (Codex P2): `FixedArray` / `ArrayBuilder` / `MutBytes` values
+// stand in for a builtin value, and a program's type of the same spelling
+// shares their `CtNamed`, so no owner can be told apart -- the builtin's own
+// `FixedArray::make(..)` was refused where an `Array` is declared, and
+// `let x: FixedArray[Int] = FixedArray::make(2, 7)` read the array as the
+// struct. Those spellings are reserved, at any arity.
+test "3326: a builtin whose values stand in for a builtin value keeps its spelling" {
+  assert(check_source_err_contains("struct FixedArray[T] { v: T }\nfn take(xs: Array[Int]) -> Int { Array::length(xs) }\nfn main() -> Int { take(FixedArray::make(2, 1)) }", "rename this struct: `FixedArray` is a builtin type whose values may be used as `Array`"))
+  assert(check_source_err_contains("enum ArrayBuilder[T] { B(T) }\nfn main() -> Int { 0 }", "rename this enum: `ArrayBuilder` is a builtin type whose values may be used as `Array`"))
+  assert(check_source_err_contains("struct MutBytes { v: Int }\nfn main() -> Int { 0 }", "rename this struct: `MutBytes` is a builtin type whose values may be used as `Bytes`"))
+  assert(check_source_err_contains("struct FixedArray[A, B] { a: A; b: B }\nfn main() -> Int { 0 }", "rename this struct: `FixedArray`"))
+  // Renamed, the builtin's own value crosses into `Array` again.
+  assert(check_source_ok("struct MyFixed[T] { v: T }\nfn take(xs: Array[Int]) -> Int { Array::length(xs) }\nfn main() -> Int { take(FixedArray::make(2, 1)) }"))
+}
+
+test "3326: the compiler's own FixedArray and ArrayBuilder still cross into Array" {
+  assert(check_source_ok("fn f(xs: Array[Int]) -> Int { Array::length(xs) }\nfn main() -> Int { let b = ArrayBuilder::new(); ArrayBuilder::push(b, 1); f(b) }"))
+  assert(check_source_ok("struct H { counts: Array[Int] }\nfn main() -> Int { let c = FixedArray::make(3, 0); let h = H::{ counts: c }; Array::length(h.counts) }"))
+  assert(check_source_ok("struct MyFuture[T] { apply: (T) -> T }\nfn run_it(f: MyFuture[Int], x: Int) -> Int { f.apply(x) }\nfn main() -> Int { let f: MyFuture[Int] = MyFuture::{ apply: (n) -> n + 41 }; run_it(f, 1) }"))
 }
