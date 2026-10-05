@@ -103,6 +103,10 @@ import ./checker_call_expr.vibe {
   check_call_expr
 }
 
+import ./checker_row_effect_inst.vibe {
+  field_effect_inst_arg_check
+}
+
 import ./checker_closure_capture_row.vibe {
   assignment_crosses_region,
   builtin_ident_is_value,
@@ -2141,6 +2145,14 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                   Some(aty) => {
                     // Value type check (ground-gated like check_record_fields).
                     s1 = check_assignable_for(dty, subst_apply(s1, aty), s1, errors, "struct field type mismatch for ", dn, lookup_field_expr_off(fields, dn))
+                    // Compare latent payloads before the struct's field type
+                    // replaces the value's own instantiation evidence.
+                    for field in fields {
+                      let (fname, value) = field
+                      if fname == dn {
+                        s1 = field_effect_inst_arg_check(env, value, aty, dty, s1, CtNamed(rn, fresh_targs), dn, defs, errors)
+                      }
+                    }
                   },
                   None => Array::push(errors, String::concat("missing field `", String::concat(dn, String::concat("` in construction of struct ", rn))))
                 }

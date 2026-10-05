@@ -850,17 +850,18 @@ fn callback_types_exact(ts: Array[Type], formals: Array[String], declared: Bool,
 /// The variables reach the lambda's type as `#einst:` labels
 /// (`lambda_effect_inst_row`), which `effect_inst_arg_check` and
 /// `effect_inst_call_check` read at an argument and at a direct call. A
-/// top-level declaration (`top_level`) and a generic lambda (`generic`) take
-/// none: a declaration's row is its contract, and a generic lambda's variables
-/// may be quantified with its formals.
+/// top-level declaration with a bare row also records the payload its body
+/// fixes. Publication resolves that carrier before dropping session-local
+/// variable IDs. A generic lambda's variables may be quantified with its
+/// formals; its concrete consumers must require an explicit row contract.
 export fn bind_lambda_effect_instantiations(env: TypeEnv, row: Option[String], defs: Array[TypeDef], tparams: Array[String], errors: Array[String], s: Subst, c: Int, top_level: Bool, generic: Bool) -> (TypeEnv, Subst, Int, Array[(String, Int)]) {
-  let handed = match env_lookup(env, callback_row_inst_key()) {
-    Some(CtTuple(_)) => true,
-    _ => false
-  }
   let base = bind_lambda_row_effect_instantiations(env, row, defs, tparams, errors)
   let pairs: Array[(String, Int)] = []
-  if top_level || generic {
+  let top_level_pure = match row {
+    None => top_level,
+    Some(_) => false
+  }
+  if generic || top_level_pure {
     (base, s, c, pairs)
   } else {
     let mut out = base
@@ -871,26 +872,36 @@ export fn bind_lambda_effect_instantiations(env: TypeEnv, row: Option[String], d
         TDEffect(name, _, etps) => if Array::length(etps) == 1 && type_param_arity(Array::get(etps, 0)) == 0 {
           match row {
             Some(text) => if row_writes_effect_instantiation(text, name) {
-              match env_lookup(base, effect_inst_env_key(name)) {
-                Some(CtTuple(targs)) => if Array::length(targs) == 1 {
-                  let (tid, nc) = fresh_unbound_var(s1, c1)
-                  c1 = nc
-                  match unify(CtVar(tid), Array::get(targs, 0), s1) {
-                    Some(ns) => {
-                      s1 = ns
-                      Array::push(pairs, (name, tid))
-                    },
-                    None => ()
-                  }
-                } else {
-                  ()
-                },
-                _ => ()
+              if !top_level {
+                match env_lookup(base, effect_inst_env_key(name)) {
+                  Some(CtTuple(targs)) => if Array::length(targs) == 1 {
+                    let (tid, nc) = fresh_unbound_var(s1, c1)
+                    c1 = nc
+                    match unify(CtVar(tid), Array::get(targs, 0), s1) {
+                      Some(ns) => {
+                        s1 = ns
+                        Array::push(pairs, (name, tid))
+                      },
+                      None => ()
+                    }
+                  } else {
+                    ()
+                  },
+                  _ => ()
+                }
               }
+            } else if effect_inst_row_has_bare(Some(text), name) {
+              let (tid, nc) = fresh_unbound_var(s1, c1)
+              c1 = nc
+              let own_inst = CtTuple([CtVar(tid)])
+              out = env_bind(env_bind(out, effect_inst_env_key(name), own_inst), effect_row_inst_key(name), own_inst)
+              Array::push(pairs, (name, tid))
             } else {
               ()
             },
-            None => if !handed {
+            // A hand-off is per effect: Box[String] + Other supplies
+            // Box's binding but must still track Other independently.
+            None => {
               match env_lookup(base, effect_inst_env_key(name)) {
                 // An enclosing handle's instantiation is inherited, as before.
                 Some(CtTuple(_)) => (),
@@ -902,8 +913,6 @@ export fn bind_lambda_effect_instantiations(env: TypeEnv, row: Option[String], d
                   Array::push(pairs, (name, tid))
                 }
               }
-            } else {
-              ()
             }
           }
         } else {
@@ -961,7 +970,7 @@ export fn lambda_effect_inst_row(effect: Option[String], row: Option[String], pa
   for pair in pairs {
     let (name, id) = pair
     let used = match row {
-      Some(_) => true,
+      Some(text) => row_writes_effect_instantiation(text, name) || int_array_has(effect_inst_used_vars, id),
       None => int_array_has(effect_inst_used_vars, id)
     }
     if used {
@@ -1043,7 +1052,26 @@ export fn effect_inst_arg_check(env: TypeEnv, arg: Expr, arg_ty: Type, param_ty:
     "the function passed here"
   }
   effect_inst_value_check(env, arg, arg_ty, param_ty, s, (row: String) -> Array[Type] {
-    callback_row_instantiations(row, callee, defs)
+    let wants = callback_row_instantiations(row, callee, defs)
+    // A bare callback effect forwarded by the callee reaches the caller's
+    // row. Effects handled inside the callee have no such requirement.
+    let binding = match callee {
+      Some((scheme, _)) => Some(scheme),
+      None => env_lookup(env, callee_name)
+    }
+    let forwarded = effect_inst_function_row(binding)
+    for raw in String::split(row, ",") {
+      let name = String::trim(raw)
+      if effect_inst_row_has_bare(forwarded, name) {
+        match env_lookup(env, effect_inst_env_key(name)) {
+          Some(CtTuple(args)) => if Array::length(args) == 1 {
+            Array::push(wants, CtNamed(name, [CtTuple(args)]))
+          },
+          _ => ()
+        }
+      }
+    }
+    wants
   }, subject, "the parameter's row", defs, errors)
 }
 
@@ -1067,55 +1095,163 @@ export fn effect_inst_annotation_check(env: TypeEnv, value: Expr, value_ty: Type
 }
 
 fn effect_inst_value_check(env: TypeEnv, arg: Expr, arg_ty: Type, param_ty: Type, s: Subst, read: (String) -> Array[Type], subject: String, slot: String, defs: Array[TypeDef], errors: Array[String]) -> Subst {
-  // Both types are read as written: a parameter or annotation with a generic
-  // row is a function type there, and so is a value that carries labels.
-  // Nothing is substituted unless both sides can take part.
-  match param_ty {
-    CtFn(_, _, Some(prow)) => if row_names_instantiation(prow) {
-      match arg_ty {
-        CtFn(_, _, Some(arow)) => if String::contains(arow, "[") || String::contains(arow, "#einst:") {
-          let haves = value_effect_instantiations(env, arg, arg_ty, arow, s, defs)
-          if Array::length(haves) == 0 {
-            s
-          } else {
-            let wants = read(prow)
-            let mut out = s
-            for have_pair in haves {
-              let (eff, have) = have_pair
-              for item in wants {
-                match item {
-                  CtNamed(iname, iargs) => if iname == eff && Array::length(iargs) == 1 {
-                    match Array::get(iargs, 0) {
-                      CtTuple(ws) => if Array::length(ws) == 1 {
-                        let want = Array::get(ws, 0)
-                        match unify(have, want, out) {
-                          Some(ns) => {
-                            out = ns
-                          },
-                          None => Array::push(errors, effect_inst_value_message(subject, slot, eff, subst_apply(out, have), subst_apply(out, want), effect_inst_arg_anchor(arg)))
-                        }
-                      } else {
-                        ()
-                      },
-                      _ => ()
-                    }
-                  } else {
-                    ()
-                  },
-                  _ => ()
-                }
-              }
-              ()
-            }
-            out
-          }
-        } else {
-          s
-        },
-        _ => s
+  match (param_ty, arg_ty) {
+    (CtTuple(wants), CtTuple(haves)) => {
+      let children = match arg {
+        ETuple(items) => items,
+        _ => []
       }
+      effect_inst_items_check(env, arg, children, haves, wants, s, read, subject, slot, defs, errors)
+    },
+    (CtArray(want), CtArray(have)) => match arg {
+      EArray(items) => {
+        let mut out = s
+        for item in items {
+          out = effect_inst_value_check(env, item, have, want, out, read, subject, slot, defs, errors)
+        }
+        out
+      },
+      _ => effect_inst_value_check(env, arg, have, want, s, read, subject, slot, defs, errors)
+    },
+    (CtOption(want), CtOption(have)) => {
+      let child = match arg {
+        ECall(_, items, _, _) => if Array::length(items) == 1 {
+          Array::get(items, 0)
+        } else {
+          arg
+        },
+        _ => arg
+      }
+      effect_inst_value_check(env, child, have, want, s, read, subject, slot, defs, errors)
+    },
+    (CtRecord(wants), CtRecord(haves)) => {
+      let mut out = s
+      for field in wants {
+        let (name, want) = field
+        for actual in haves {
+          let (aname, have) = actual
+          if name == aname {
+            let child = effect_inst_record_child(arg, name)
+            out = effect_inst_value_check(env, child, have, want, out, read, subject, slot, defs, errors)
+          }
+        }
+      }
+      out
+    },
+    (CtNamed(name, wants), CtNamed(aname, haves)) => if name == aname {
+      effect_inst_items_check(env, arg, [], haves, wants, s, read, subject, slot, defs, errors)
     } else {
       s
+    },
+    (CtApplied(head, wants), CtApplied(ahead, haves)) => {
+      let out = effect_inst_value_check(env, arg, ahead, head, s, read, subject, slot, defs, errors)
+      effect_inst_items_check(env, arg, [], haves, wants, out, read, subject, slot, defs, errors)
+    },
+    _ => effect_inst_fn_check(env, arg, arg_ty, param_ty, s, read, subject, slot, defs, errors)
+  }
+}
+
+fn effect_inst_record_child(arg: Expr, name: String) -> Expr {
+  let mut child = arg
+  match arg {
+    ERecord(_, fields, _) => for field in fields {
+      let (fname, value) = field
+      if fname == name {
+        child = value
+      }
+    },
+    _ => ()
+  }
+  child
+}
+
+fn effect_inst_items_check(env: TypeEnv, arg: Expr, children: Array[Expr], haves: Array[Type], wants: Array[Type], s: Subst, read: (String) -> Array[Type], subject: String, slot: String, defs: Array[TypeDef], errors: Array[String]) -> Subst {
+  let mut out = s
+  if Array::length(haves) == Array::length(wants) {
+    let mut i = 0
+    while i < Array::length(haves) {
+      let child = if i < Array::length(children) {
+        Array::get(children, i)
+      } else {
+        arg
+      }
+      out = effect_inst_value_check(env, child, Array::get(haves, i), Array::get(wants, i), out, read, subject, slot, defs, errors)
+      i = i + 1
+    }
+  }
+  out
+}
+
+fn effect_inst_function_row(binding: Option[Type]) -> Option[String] {
+  match binding {
+    Some(CtFn(_, _, row)) => row,
+    Some(CtForAll(_, _, body)) => effect_inst_function_row(Some(body)),
+    _ => None
+  }
+}
+
+fn effect_inst_row_has_bare(row: Option[String], name: String) -> Bool {
+  let mut found = false
+  match row {
+    Some(text) => for raw in String::split(text, ",") {
+      if String::trim(raw) == name {
+        found = true
+      }
+    },
+    None => ()
+  }
+  found
+}
+
+fn effect_inst_wanted_payload(item: Type) -> Option[(String, Type)] {
+  match item {
+    CtNamed(name, args) => if Array::length(args) == 1 {
+      match Array::get(args, 0) {
+        CtTuple(ts) => if Array::length(ts) == 1 {
+          Some((name, Array::get(ts, 0)))
+        } else {
+          None
+        },
+        _ => None
+      }
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
+fn effect_inst_fn_check(env: TypeEnv, arg: Expr, arg_ty: Type, param_ty: Type, s: Subst, read: (String) -> Array[Type], subject: String, slot: String, defs: Array[TypeDef], errors: Array[String]) -> Subst {
+  // Read row text in its declaration's scope; substitutions are only applied
+  // to the payloads that both rows actually name.
+  match (param_ty, arg_ty) {
+    (CtFn(_, _, Some(prow)), CtFn(_, _, Some(arow))) => {
+      let wants = read(prow)
+      let haves = value_effect_instantiations(env, arg, arg_ty, arow, s, defs)
+      let mut out = s
+      for item in wants {
+        match effect_inst_wanted_payload(item) {
+          Some((eff, want)) => {
+            let mut found = false
+            for pair in haves {
+              let (name, have) = pair
+              if name == eff {
+                found = true
+                match unify(have, want, out) {
+                  Some(ns) => out = ns,
+                  None => Array::push(errors, effect_inst_value_message(subject, slot, eff, subst_apply(out, have), subst_apply(out, want), effect_inst_arg_anchor(arg)))
+                }
+              }
+            }
+            if !found && effect_inst_row_has_bare(Some(arow), eff) {
+              let want_text = type_to_string(subst_apply(out, want))
+              Array::push(errors, "write a concrete `\{eff}[\{want_text}]` row on \{subject}: its bare `\{eff}` contract does not establish the payload type required by \{slot}\{off_marker(effect_inst_arg_anchor(arg))}")
+            }
+          },
+          _ => ()
+        }
+      }
+      out
     },
     _ => s
   }
@@ -1363,42 +1499,58 @@ fn effect_inst_call_message(callee_name: String, eff: String, have: Type, want: 
   "make \{callee} perform `\{eff}` at `\{want_text}`, or handle `\{eff}` around this call: it performs `\{eff}` at `\{have_text}`, and the `\{eff}` in scope here is `\{eff}[\{want_text}]`\{off_marker(off)}"
 }
 
-/// #3341: a type with every `#einst:` label dropped from its rows. A
-/// top-level binding is published without them: their variables belong to
-/// this check, and an importer or a cache would read them as its own.
-export fn strip_effect_inst_labels(t: Type) -> Type {
+/// Publish inferred concrete payloads as ordinary row arguments, then drop
+/// every `#einst:` label: its variables belong to this check and cannot be
+/// read by an importer or a cache. An unresolved bare contract remains bare
+/// and cannot satisfy a concrete callback row without an explicit annotation.
+export fn strip_effect_inst_labels(t: Type, s: Subst, defs: Array[TypeDef]) -> Type {
   match t {
     CtFn(params, ret, eff) => CtFn(for p in params {
-      strip_effect_inst_labels(p)
-    }, strip_effect_inst_labels(ret), strip_effect_inst_row(eff)),
-    CtArray(e) => CtArray(strip_effect_inst_labels(e)),
-    CtOption(e) => CtOption(strip_effect_inst_labels(e)),
+      strip_effect_inst_labels(p, s, defs)
+    }, strip_effect_inst_labels(ret, s, defs), strip_effect_inst_row(eff, s, defs)),
+    CtArray(e) => CtArray(strip_effect_inst_labels(e, s, defs)),
+    CtOption(e) => CtOption(strip_effect_inst_labels(e, s, defs)),
     CtTuple(items) => CtTuple(for item in items {
-      strip_effect_inst_labels(item)
+      strip_effect_inst_labels(item, s, defs)
     }),
     CtRecord(fields) => CtRecord(for field in fields {
       let (fname, fty) = field
-      (fname, strip_effect_inst_labels(fty))
+      (fname, strip_effect_inst_labels(fty, s, defs))
     }),
     CtNamed(name, args) => CtNamed(name, for arg in args {
-      strip_effect_inst_labels(arg)
+      strip_effect_inst_labels(arg, s, defs)
     }),
-    CtApplied(head, args) => CtApplied(strip_effect_inst_labels(head), for arg in args {
-      strip_effect_inst_labels(arg)
+    CtApplied(head, args) => CtApplied(strip_effect_inst_labels(head, s, defs), for arg in args {
+      strip_effect_inst_labels(arg, s, defs)
     }),
-    CtForAll(vs, bounds, body) => CtForAll(vs, bounds, strip_effect_inst_labels(body)),
+    CtForAll(vs, bounds, body) => CtForAll(vs, bounds, strip_effect_inst_labels(body, s, defs)),
     _ => t
   }
 }
 
-fn strip_effect_inst_row(eff: Option[String]) -> Option[String] {
+fn strip_effect_inst_row(eff: Option[String], s: Subst, defs: Array[TypeDef]) -> Option[String] {
   match eff {
     Some(row) => if String::contains(row, "#einst:") {
       let kept = array_empty()
+      let inferred: Array[(String, Type)] = []
+      for label in effect_inst_labels(eff) {
+        let (name, id) = label
+        let ty = subst_apply(s, CtVar(id))
+        if Array::length(collect_tvars(ty)) == 0 && callback_type_exact(ty, [], true, defs) {
+          Array::push(inferred, (name, ty))
+        }
+      }
       for raw in String::split(row, ",") {
         let label = String::trim(raw)
         if !is_effect_inst_label(label) && String::length(label) > 0 {
-          Array::push(kept, label)
+          let mut published = label
+          for inst in inferred {
+            let (name, ty) = inst
+            if label == name {
+              published = "\{name}[\{type_to_string(ty)}]"
+            }
+          }
+          Array::push(kept, published)
         } else {
           ()
         }
