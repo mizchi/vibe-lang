@@ -1091,6 +1091,18 @@ fn retention_walk(expr: Expr, env: TypeEnv, local: Array[(String, Array[String])
       },
       None => retention_walk_children(expr, env, local, active, defs, s, returns)
     },
+    // An expression callee has no binding name to shadow. Its re-check is
+    // recorded at the call's own source offset, and describes the result,
+    // independently of the regions its consumed arguments carried.
+    ECall(_, args, call_off, _) => match retention_row(retention_call_rows, call_off) {
+      Some(recorded) => {
+        for arg in args {
+          let _ = retention_walk(arg, env, local, active, defs, s, returns)
+        }
+        recorded
+      },
+      None => retention_walk_children(expr, env, local, active, defs, s, returns)
+    },
     EBreak(val) => {
       match val {
         Some(v) => retention_union_into(returns, retention_walk(v, env, local, active, defs, s, returns)),
@@ -2849,7 +2861,7 @@ export fn retention_expr_callee_region_check(callee: Expr, label: String, marker
       EFn(_, _, _, _, _, _) => RetentionVisible(callee, env, String::concat("lambda:", __to_string(marker_off))),
       _ => RetentionOpaque
     }
-    retention_check_callee(classified, callee, label, off_marker(marker_off), 0 - 1, args, env, defs, s, c, errors, check_child)
+    retention_check_callee(classified, callee, label, off_marker(marker_off), marker_off, args, env, defs, s, c, errors, check_child)
   } else {
     ()
   }

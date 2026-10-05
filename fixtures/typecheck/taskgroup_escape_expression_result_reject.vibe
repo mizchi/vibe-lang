@@ -1,0 +1,25 @@
+// An immediately invoked lambda's result still carries a handle it keeps.
+// Recording expression-call summaries must not permit this outer write.
+import @vibe/concurrent { TaskGroup, TaskHandle }
+
+struct Box[T] {
+  mut h: Option[T]
+}
+
+fn main() -> Int allows Exception {
+  let outside: Box[Box[TaskHandle[Int]]] = Box::{ h: None }
+  let _ = TaskGroup::run((g) -> {
+    let h = TaskGroup::spawn(g, () -> 42)
+    outside.h = Some(((h: TaskHandle[Int]) -> Box[TaskHandle[Int]] {
+      Box::{ h: Some(h) }
+    })(h))
+    0
+  })
+  match outside.h {
+    Some(b) => match b.h {
+      None => 42,
+      Some(_) => 0
+    },
+    None => 0
+  }
+}

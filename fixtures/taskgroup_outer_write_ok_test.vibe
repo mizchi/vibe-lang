@@ -437,3 +437,28 @@ fn swapped_regions() -> String with Exception {
 test "a recursion that swaps handles between groups stays legal while it stores them locally" allows Exception {
   inspect(swapped_regions(), "r=42")
 }
+
+// An expression call's consumed argument is not its result. Keep the same
+// result provenance that a named helper records after joining its handle.
+fn expression_result() -> Int with Exception {
+  let outside: Cell[Cell[TaskHandle[Int]]] = Cell::{ v: None }
+  let _ = TaskGroup::run((g) -> {
+    let h = TaskGroup::spawn(g, () -> 42)
+    outside.v = Some(((h: TaskHandle[Int]) -> Cell[TaskHandle[Int]] with Exception {
+      TaskHandle::join(h)
+      Cell::{ v: None }
+    })(h))
+    0
+  })
+  match outside.v {
+    Some(b) => match b.v {
+      None => 42,
+      Some(_) => 0
+    },
+    None => 0
+  }
+}
+
+test "an immediately invoked lambda may return an empty box after consuming a handle" allows Exception {
+  inspect(expression_result(), "42")
+}
