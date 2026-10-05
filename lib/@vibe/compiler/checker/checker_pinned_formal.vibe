@@ -1,0 +1,246 @@
+// lib/@vibe/compiler/checker -- a type parameter in a function's effect row
+// that the function's own body fixes (#3318).
+
+import @vibe/compiler/checker/diagnostics {
+  off_marker
+}
+
+import @vibe/compiler/core {
+  Expr,
+  Subst,
+  Type,
+  TypeDef,
+  expr_child_at,
+  expr_children_pop,
+  expr_children_push,
+  expr_children_top,
+  subst_apply,
+  subst_lookup,
+  type_to_string
+}
+
+import @vibe/ast {
+  type_param_name
+}
+
+import ./checker_eq_unbounded_formal_msg.vibe {
+  effect_tparams
+}
+
+import ./checker_merge_capture_provenance.vibe {
+  eq_formal_group, eq_formal_vars, eq_group_is_open, int_array_has
+}
+
+import ./checker_throw_kind_of_type.vibe {
+  railway_expr_off
+}
+
+/// #3318: refuse a declared type parameter that instantiates a generic effect
+/// in the function's own row (`fn f[T]() -> Int with Box[T]`) when the body
+/// fixes it -- to a concrete type, to another type parameter of the same
+/// declaration, or to one of an enclosing declaration's. Inside its body a
+/// formal is a unification variable (#2130), so `perform Box::Put(1)` binds
+/// `T := Int`; the declaration's scheme then carries `Int` where `T` was, but
+/// its row still says `Box[T]`, and a caller's handler picks `T` afresh.
+/// Measured on the base compiler: handled at `String`, `String::length` ran
+/// on the `Int` and answered `2`.
+///
+/// Only a formal the row names is judged. The wider rule -- every declared
+/// formal rigid in its own body -- refuses the five arithmetic helpers of
+/// `@vibe/builtin/builtin_traits.vibe` (their `T` is fixed to `Int` by `<`,
+/// `-`, `*`, `/`), and with them every program that imports them; there a
+/// mismatch is already a call-site type error, since the scheme carries the
+/// fixed type.
+///
+/// `s_in` is the substitution the declaration was checked under, `s_body`
+/// the one right after the body, `s_deferred` after the deferred field reads
+/// were resolved, and `s_final` after the return annotation was checked. Only
+/// what the body and the return annotation bound is counted. A binding only
+/// the deferred reads introduced is not: a read deferred by an EARLIER
+/// declaration is judged again here with its own variable ids, which may name
+/// this declaration's variables. Nor is a formal whose variable `s_in`
+/// already binds -- the body did not choose that binding (measured: a `handle`
+/// arm resuming with a generic struct literal earlier in the module left one).
+export fn pinned_row_formal_errors(tparams: Array[String], tparam_ids: Array[Int], row: Option[String], body: Expr, defs: Array[TypeDef], s_in: Subst, s_body: Subst, s_deferred: Subst, s_final: Subst, errors: Array[String]) -> Unit {
+  match row {
+    Some(text) => {
+      let n = Array::length(tparam_ids)
+      let mut i = 0
+      while i < n && i < Array::length(tparams) {
+        let name = type_param_name(Array::get(tparams, i))
+        let eff = match subst_lookup(s_in, Array::get(tparam_ids, i)) {
+          Some(_) => "",
+          None => row_effect_of_formal(text, name, defs)
+        }
+        if eff != "" {
+          let at_body = pinned_text(tparams, tparam_ids, i, s_body)
+          let fixed = if at_body != "" {
+            at_body
+          } else if pinned_text(tparams, tparam_ids, i, s_deferred) == "" {
+            pinned_text(tparams, tparam_ids, i, s_final)
+          } else {
+            ""
+          }
+          if fixed != "" {
+            let perform_off = first_perform_off(body, eff)
+            let off = if perform_off >= 0 {
+              perform_off
+            } else {
+              railway_expr_off(body)
+            }
+            Array::push(errors, "write `\{fixed}` in place of the type parameter `\{name}`, or keep the value generic: the body fixes `\{name}` to `\{fixed}`, but `\{name}` is the instantiation of `\{eff}` in this function's row, so a caller's handler chooses it and would read the `\{fixed}` as its own type\{off_marker(off)}")
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+    },
+    None => ()
+  }
+}
+
+/// The generic effect whose type argument in `row` names the formal `name`
+/// (`Box` for `Box[T]`), or "" when no row item names it.
+fn row_effect_of_formal(row: String, name: String, defs: Array[TypeDef]) -> String {
+  let mut found = ""
+  for raw in String::split(row, ",") {
+    let label = String::trim(raw)
+    let bi = String::index_of(label, "[")
+    if found == "" && bi > 0 && Array::length(effect_tparams(defs, label[0: bi])) > 0 && text_has_word(label[bi: String::length(label)], name) {
+      found = label[0: bi]
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+/// Does `text` contain `word` as a whole identifier?
+fn text_has_word(text: String, word: String) -> Bool {
+  let n = String::length(text)
+  let mut found = false
+  let mut start = 0 - 1
+  let mut i = 0
+  while i <= n && !found {
+    let c = if i < n {
+      String::byte_at(text, i)
+    } else {
+      0
+    }
+    let word_char = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 95 || c == 36
+    if word_char {
+      if start < 0 {
+        start = i
+      } else {
+        ()
+      }
+    } else {
+      if start >= 0 && String::substring(text, start, i) == word {
+        found = true
+      } else {
+        ()
+      }
+      start = 0 - 1
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// What the formal at `i` is fixed to under `s`, spelled for the message, or
+/// "" when it is still free. A free variable that is no declared formal is
+/// free; the formal's own name as a rigid spelling (`CtNamed("T", [])`, an
+/// impl method's erased parameter) is the formal itself.
+fn pinned_text(tparams: Array[String], tparam_ids: Array[Int], i: Int, s: Subst) -> String {
+  let name = type_param_name(Array::get(tparams, i))
+  let vid = Array::get(tparam_ids, i)
+  match subst_apply(s, CtVar(vid)) {
+    CtVar(x) => {
+      let mut other = ""
+      let mut j = 0
+      while j < Array::length(tparam_ids) && j < Array::length(tparams) {
+        if j != i && other == "" {
+          match subst_apply(s, CtVar(Array::get(tparam_ids, j))) {
+            CtVar(y) => if y == x {
+              other = type_param_name(Array::get(tparams, j))
+            } else {
+              ()
+            },
+            _ => ()
+          }
+        } else {
+          ()
+        }
+        j = j + 1
+      }
+      if other == "" {
+        let mut r = 0
+        while r < Array::length(eq_formal_vars) {
+          let (fvid, fname) = Array::get(eq_formal_vars, r)
+          if other == "" && !int_array_has(tparam_ids, fvid) && eq_group_is_open(Array::get(eq_formal_group, r)) {
+            match subst_apply(s, CtVar(fvid)) {
+              CtVar(y) => if y == x {
+                other = fname
+              } else {
+                ()
+              },
+              _ => ()
+            }
+          } else {
+            ()
+          }
+          r = r + 1
+        }
+      } else {
+        ()
+      }
+      other
+    },
+    CtUnknown => "",
+    CtNamed(hn, args) => if Array::length(args) == 0 && (hn == name || hn == String::concat("#hktformal.", name)) {
+      ""
+    } else if Array::length(args) == 0 && String::starts_with(hn, "#hktformal.") {
+      String::substring(hn, 11, String::length(hn))
+    } else {
+      type_to_string(CtNamed(hn, args))
+    },
+    t => type_to_string(t)
+  }
+}
+
+/// The operation offset of the first `perform <eff>::Op(..)` in `e`, or -1:
+/// the site that most likely fixed the formal. A nested lambda is searched
+/// too, since one called in the body performs under this row.
+fn first_perform_off(e: Expr, eff: String) -> Int {
+  match e {
+    ECall(EIdent(pname, _), pargs, _, _) => if (pname == "perform" || pname == "perform?") && Array::length(pargs) == 1 {
+      match Array::get(pargs, 0) {
+        ECall(EIdent(qname, qoff), _, _, _) => if String::starts_with(qname, String::concat(eff, "::")) && qoff >= 0 {
+          qoff
+        } else {
+          first_perform_off_children(e, eff)
+        },
+        _ => first_perform_off_children(e, eff)
+      }
+    } else {
+      first_perform_off_children(e, eff)
+    },
+    _ => first_perform_off_children(e, eff)
+  }
+}
+
+fn first_perform_off_children(e: Expr, eff: String) -> Int {
+  let mark = expr_children_push(e)
+  let top = expr_children_top()
+  let mut found = 0 - 1
+  let mut i = mark
+  while i < top && found < 0 {
+    found = first_perform_off(expr_child_at(i), eff)
+    i = i + 1
+  }
+  expr_children_pop(mark)
+  found
+}
