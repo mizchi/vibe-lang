@@ -75,6 +75,10 @@ vibe compile --entry <name> <file.vibe>          # entry other than `main` (not 
   and set `VIBE_TASKGROUP_ARTIFACT_DIR` when using another output directory.
   To install those images, pass `--taskgroup-artifacts <directory>` together
   with the same `--cli-wasm` to `install/install.sh`. Release bundles ship them.
+  For repeated parallel builds, `VIBE_TASKGROUP_JOB_CACHE=1 vibe build --jobs 4 ...`
+  enables experimental reuse of successful worker results. Source, dependency
+  environments, compiler/worker images and execution environment must match;
+  changes trigger fresh checks, and diagnosed modules are checked again.
 - **Any other option is refused** with `unknown option: <flag>`. That includes
   the retired MoonBit host's flags (`--no-dce`, `-O<level>`, `--wasm-gc`,
   `--wac`, `--library`, ...). The wasm-gc backend is reached through

@@ -142,6 +142,7 @@ import ./checker_eq_unbounded_formal_msg.vibe {
   effect_tparams,
   interp_name_is_shim,
   is_bytestream_named_type,
+  note_local_generic_binding,
   preserve_generic_instantiation,
   reject_non_frozen_receiver,
   slice_receiver_is_invalid,
@@ -175,6 +176,16 @@ import ./checker_lambda_expr.vibe {
   run_body_param_cell,
   tab_call_ty,
   tail_named_record_mentions_region
+}
+
+import ./checker_row_effect_inst.vibe {
+  callback_arg_env,
+  callback_prefix_subst,
+  effect_inst_annotation_check,
+  effect_inst_arg_check,
+  effect_inst_call_check,
+  field_callback_arg_env,
+  field_effect_inst_arg_check
 }
 
 import ./checker_merge_capture_provenance.vibe {
@@ -1968,7 +1979,8 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                   let lookup_name = railway_ident_lookup_name(name)
                   // #3146: a call the compiler synthesized skips the program's
                   // same-named function and reaches the builtin below.
-                  let (ct, s1, c1) = match env_lookup_unless_synthesized_builtin(env, lookup_name, callee_off) {
+                  let callee_binding = env_lookup_unless_synthesized_builtin(env, lookup_name, callee_off)
+                  let (ct, s1, c1) = match callee_binding {
                     Some(t) => {
                       let (ti, nc, new_bounds) = instantiate(t, c)
                       // #3027: the handle check reads a generic callee's
@@ -2000,16 +2012,36 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                     CtFn(params, _, _) => params,
                     _ => array_empty()
                   }
+                  // #3311: a generic callee's scheme and this call's
+                  // instantiation, so a callback row naming its formal reads
+                  // the type this call gives it.
+                  let callee_inst = match callee_binding {
+                    Some(t) => match t {
+                      CtForAll(_, _, _) => Some((t, ct)),
+                      _ => None
+                    },
+                    None => None
+                  }
                   let alen = Array::length(args)
                   let arg_tys = array_empty()
                   let mut ai = 0
                   let mut s2 = s1
                   let mut c2 = c1
                   while ai < alen {
-                    let (at, ns, nc) = check_child(Array::get(args, ai), env, defs, s2, c2, errors, tytab, capture, lane)
+                    let arg = Array::get(args, ai)
+                    let arg_env = if ai < Array::length(inferred_param_tys) {
+                      callback_arg_env(env, arg, Array::get(inferred_param_tys, ai), s2, callee_inst, defs)
+                    } else {
+                      env
+                    }
+                    let arg_s = callback_prefix_subst(arg, inferred_param_tys, arg_tys, s2, callee_inst)
+                    let (at, ns, nc) = check_child(arg, arg_env, defs, arg_s, c2, errors, tytab, capture, lane)
                     Array::push(arg_tys, at)
                     if ai < Array::length(inferred_param_tys) {
-                      s2 = refine_trait_bounds_from_receiver(env, ns, Array::get(inferred_param_tys, ai), at)
+                      // #3341: a function value passed here performs at the
+                      // parameter row's instantiation.
+                      let ns_inst = effect_inst_arg_check(env, arg, at, Array::get(inferred_param_tys, ai), ns, callee_inst, name, defs, errors)
+                      s2 = refine_trait_bounds_from_receiver(env, ns_inst, Array::get(inferred_param_tys, ai), at)
                     } else {
                       s2 = ns
                     }
@@ -2051,7 +2083,11 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                       if alen3 != plen2 {
                         Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(name, String::concat(": expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))))), off_marker_len(callee_off, String::length(name))))
                       }
-                      let s3 = unify_call_args(call_param_tys, arg_tys, args, s2, errors, name, callee_off)
+                      let s3_args = unify_call_args(call_param_tys, arg_tys, args, s2, errors, name, callee_off)
+                      // #3341: a called lambda performs at the instantiation
+                      // in scope here; read after the arguments, which fix a
+                      // payload a generic lambda takes from them.
+                      let s3 = effect_inst_call_check(env, callee_binding, ct, name, callee_off, s3_args, errors)
                       // #3152: a spawn-shaped callee of another arity
                       // (`Parallel::map(n, xs, f)`) keeps this general typing
                       // path and gets the same capture check on its closure.
@@ -2198,7 +2234,8 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
               }
             } else {
               let direct_ret = direct_call_return(env, qualified, 0 - 1)
-              let method_ty = match env_lookup(env, qualified) {
+              let method_binding = env_lookup(env, qualified)
+              let method_ty = match method_binding {
                 Some(t) => {
                   let (ti, c2, _) = instantiate(t, c1)
                   (ti, s1, c2)
@@ -2209,6 +2246,34 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                 }
               }
               let (mt, s2, c2) = method_ty
+              // #3311: the method's parameter types, for a callback row's
+              // instantiation (see the named-call path).
+              let method_param_tys = match mt {
+                CtFn(params, _, _) => params,
+                _ => array_empty()
+              }
+              let method_inst = match method_binding {
+                Some(t) => match t {
+                  CtForAll(_, _, _) => Some((t, mt)),
+                  _ => None
+                },
+                None => None
+              }
+              // Codex on #3340: with no `T::method`, `r.f(..)` may call a
+              // function-typed field of the receiver's struct. Its parameter
+              // types are found below, after the arguments; a callback
+              // argument's row is read from them here, before (see
+              // `field_callback_arg_env`). The receiver is not an argument of
+              // the field, so explicit argument `ai` is field parameter
+              // `ai - 1`.
+              let field_recv = subst_apply(s2, obj_ty)
+              let field_param_tys = match mt {
+                CtUnknown => match receiver_struct_field_type(defs, field_recv, method) {
+                  Some(CtFn(fpts, _, _)) => fpts,
+                  _ => array_empty()
+                },
+                _ => array_empty()
+              }
               let all_args = prepend_expr(obj, args)
               retaining_write_region_check(qualified, all_args, env, defs, s2, c2, errors, check_plain)
               // #3343: as for a call by name; a method that names no
@@ -2224,9 +2289,25 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
               let mut s3 = s2
               let mut c3 = c2
               while ai < alen {
-                let (at, ns, nc) = check_child(Array::get(all_args, ai), env, defs, s3, c3, errors, tytab, capture, lane)
+                let marg = Array::get(all_args, ai)
+                let marg_env = if ai < Array::length(method_param_tys) {
+                  callback_arg_env(env, marg, Array::get(method_param_tys, ai), s3, method_inst, defs)
+                } else if ai - 1 < Array::length(field_param_tys) {
+                  field_callback_arg_env(env, marg, Array::get(field_param_tys, ai - 1), s3, field_recv, defs)
+                } else {
+                  env
+                }
+                let marg_s = callback_prefix_subst(marg, method_param_tys, arg_tys, s3, method_inst)
+                let (at, ns, nc) = check_child(marg, marg_env, defs, marg_s, c3, errors, tytab, capture, lane)
                 Array::push(arg_tys, at)
-                s3 = ns
+                // #3341: see the named-call path.
+                s3 = if ai < Array::length(method_param_tys) {
+                  effect_inst_arg_check(env, marg, at, Array::get(method_param_tys, ai), ns, method_inst, qualified, defs, errors)
+                } else if ai - 1 < Array::length(field_param_tys) {
+                  field_effect_inst_arg_check(env, marg, at, Array::get(field_param_tys, ai - 1), ns, field_recv, method, defs, errors)
+                } else {
+                  ns
+                }
                 c3 = nc
                 ai = ai + 1
               }
@@ -2414,7 +2495,9 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
               call_off
             }
             check_assignable_set_end(string_lit_end(Array::get(args, 0)))
-            let ns2 = check_assignable(resolved, actual, ns0, errors, "binding type mismatch for a local let", asc_off)
+            let ns2_assign = check_assignable(resolved, actual, ns0, errors, "binding type mismatch for a local let", asc_off)
+            // #3341: the annotation's row is where the value is used from now on.
+            let ns2 = effect_inst_annotation_check(env, Array::get(args, 0), actual, resolved, ns2_assign, "the function bound here", "the annotation's row", defs, errors)
             let bound_ty = preserve_generic_instantiation(resolved, subst_apply(ns2, actual))
             (tab_call_ty(tytab, call_off, bound_ty, capture, lane), ns2, nc0)
           },
@@ -2442,15 +2525,26 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                 },
                 None => {
                   let (ct, s1, c1) = check_child(callee, env, defs, s, c, errors, tytab, capture, lane)
+                  let (callee_param_tys, callee_inst) = callee_callback_params(ct)
                   let alen = Array::length(args)
                   let arg_tys = array_empty()
                   let mut ai = 0
                   let mut s2 = s1
                   let mut c2 = c1
                   while ai < alen {
-                    let (at, ns, nc) = check_child(Array::get(args, ai), env, defs, s2, c2, errors, tytab, capture, lane)
+                    let arg = Array::get(args, ai)
+                    let arg_env = if ai < Array::length(callee_param_tys) {
+                      callback_arg_env(env, arg, Array::get(callee_param_tys, ai), s2, callee_inst, defs)
+                    } else {
+                      env
+                    }
+                    let (at, ns, nc) = check_child(arg, arg_env, defs, s2, c2, errors, tytab, capture, lane)
                     Array::push(arg_tys, at)
-                    s2 = ns
+                    s2 = if ai < Array::length(callee_param_tys) {
+                      effect_inst_arg_check(env, arg, at, Array::get(callee_param_tys, ai), ns, callee_inst, callee_name0, defs, errors)
+                    } else {
+                      ns
+                    }
                     c2 = nc
                     ai = ai + 1
                   }
@@ -2467,7 +2561,9 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                       if alen3 != plen2 {
                         Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(callee_name0, String::concat(": expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))))), off_marker_len(call_off, String::length(callee_name0))))
                       }
-                      let s3 = unify_call_args(call_param_tys, arg_tys, args, s2, errors, callee_name0, call_off)
+                      let s3_args = unify_call_args(call_param_tys, arg_tys, args, s2, errors, callee_name0, call_off)
+                      // #3341: see the named-call path.
+                      let s3 = effect_inst_call_check(env, env_lookup(env, callee_name0), ct, callee_name0, call_off, s3_args, errors)
                       check_spawn_shaped_call(env, s3, defs, call_param_tys, Array::get(ret_box, 0), args, errors, off_marker_len(call_off, String::length(callee_name0)))
                       let call_ret = call_result_with_provenance(Array::get(ret_box, 0), call_param_tys, arg_tys, s3)
                       (tab_call_ty(tytab, call_off, call_ret, capture, lane), s3, c2)
@@ -2478,16 +2574,57 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                 }
               }
             } else {
-              let (ct, s1, c1) = check_child(callee, env, defs, s, c, errors, tytab, capture, lane)
+              let (ct, s1, c1_callee) = check_child(callee, env, defs, s, c, errors, tytab, capture, lane)
+              // #2890 / #3341 (Codex on #3340): a generic lambda applied where
+              // it is written checks to a `CtForAll`. Its scheme is opened
+              // BEFORE the arguments, and that one instantiation is what a
+              // callback argument's row is read against: opened only after
+              // them, `([T](x: T, f: () -> Int with Box[T]) -> Int { .. })("s",
+              // () -> { perform Box::Put(1) })` handed the callback nothing and
+              // its perform chose `Int` while the callee's `T` was `String`.
+              let (opened_callee_ty, c1) = match ct {
+                CtForAll(_, _, _) => {
+                  // The lambda's own declaration names the formals its rows
+                  // spell, so the callback row is read by them.
+                  let callee_lambda = match callee {
+                    ECall(EIdent(wrapper, _), wargs, _, _) => if wrapper == "$source_span" && Array::length(wargs) > 0 {
+                      Array::get(wargs, 0)
+                    } else {
+                      callee
+                    },
+                    _ => callee
+                  }
+                  note_local_generic_binding(callee_lambda, ct, env)
+                  match instantiate(ct, c1_callee) {
+                    (ity, nc, _) => (ity, nc)
+                  }
+                },
+                _ => (ct, c1_callee)
+              }
+              let (callee_param_tys, callee_inst) = match (ct, opened_callee_ty) {
+                (CtForAll(_, _, _), CtFn(oparams, _, _)) => (oparams, Some((ct, opened_callee_ty))),
+                _ => callee_callback_params(ct)
+              }
               let alen = Array::length(args)
               let arg_tys = array_empty()
               let mut ai = 0
               let mut s2 = s1
               let mut c2 = c1
               while ai < alen {
-                let (at, ns, nc) = check_child(Array::get(args, ai), env, defs, s2, c2, errors, tytab, capture, lane)
+                let arg = Array::get(args, ai)
+                let arg_env = if ai < Array::length(callee_param_tys) {
+                  callback_arg_env(env, arg, Array::get(callee_param_tys, ai), s2, callee_inst, defs)
+                } else {
+                  env
+                }
+                let arg_s = callback_prefix_subst(arg, callee_param_tys, arg_tys, s2, callee_inst)
+                let (at, ns, nc) = check_child(arg, arg_env, defs, arg_s, c2, errors, tytab, capture, lane)
                 Array::push(arg_tys, at)
-                s2 = ns
+                s2 = if ai < Array::length(callee_param_tys) {
+                  effect_inst_arg_check(env, arg, at, Array::get(callee_param_tys, ai), ns, callee_inst, "", defs, errors)
+                } else {
+                  ns
+                }
                 c2 = nc
                 ai = ai + 1
               }
@@ -2504,14 +2641,9 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
               // The same lambda bound to a NAME first is checked, because that
               // callee is an `EIdent` and takes the named path; only applying it
               // where it is written reached here. Opening the scheme with fresh
-              // variables is what that named path effectively gets, so the call
-              // is checked exactly as any other.
-              let (opened_callee_ty, c2o) = match ct {
-                CtForAll(_, _, _) => match instantiate(ct, c2) {
-                  (ity, nc, _) => (ity, nc)
-                },
-                _ => (ct, c2)
-              }
+              // variables (above, before the arguments) is what that named path
+              // effectively gets, so the call is checked exactly as any other.
+              let c2o = c2
               let applied_callee_ty = match opened_callee_ty {
                 CtFn(_, _, _) => opened_callee_ty,
                 _ => subst_apply(s2, opened_callee_ty)
@@ -2525,7 +2657,9 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                   if alen3 != plen2 {
                     Array::push(errors, String::concat(String::concat("function arity mismatch for <expr>: expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))), off_marker(call_off)))
                   }
-                  let s3 = unify_call_args(call_param_tys, arg_tys, args, s2, errors, "<expr>", call_off)
+                  let s3_args = unify_call_args(call_param_tys, arg_tys, args, s2, errors, "<expr>", call_off)
+                  // #3341: see the named-call path.
+                  let s3 = effect_inst_call_check(env, None, ct, "", call_off, s3_args, errors)
                   check_spawn_shaped_call(env, s3, defs, call_param_tys, Array::get(ret_box, 0), args, errors, off_marker(call_off))
                   let call_ret = call_result_with_provenance(Array::get(ret_box, 0), call_param_tys, arg_tys, s3)
                   (tab_call_ty(tytab, call_off, call_ret, capture, lane), s3, c2o)
@@ -2539,5 +2673,17 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
       }
     },
     _ => (CtUnknown, s, c)
+  }
+}
+
+/// #3311: the parameter types of a callee checked as an expression, for
+/// `callback_arg_env`. A generic one is not instantiated before its arguments
+/// are checked, so it is handed over with no instantiation, and a callback row
+/// that names one of its formals hands the lambda nothing.
+fn callee_callback_params(ct: Type) -> (Array[Type], Option[(Type, Type)]) {
+  match ct {
+    CtFn(params, _, _) => (params, None),
+    CtForAll(_, _, CtFn(params, _, _)) => (params, Some((ct, CtUnknown))),
+    _ => (array_empty(), None)
   }
 }

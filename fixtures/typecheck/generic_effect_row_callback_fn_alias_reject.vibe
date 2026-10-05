@@ -1,0 +1,25 @@
+// #3311 (Codex on #3340): a callback row's type argument that resolves
+// through an alias to a function type is handed to the lambda like any other.
+// Before, `Box[Mapper]` read as `(Int) -> Int` was not handed over, the
+// perform chose `(String) -> Int`, and `run_map`'s arm called the closure with
+// an `Int`: this checked clean and its test answered `82` (`String::length` of
+// the tagged `41`), then trapped.
+effect Box[T] {
+  Put(T) -> Int
+}
+
+type Mapper = (Int) -> Int
+
+fn run_map(f: () -> Int with Box[Mapper]) -> Int {
+  handle {
+    f()
+  } with {
+    Box::Put(m) => resume(m(41))
+  }
+}
+
+fn producer() -> Int with Box[Mapper] {
+  run_map(() -> {
+    perform Box::Put((s: String) -> Int { String::length(s) })
+  })
+}

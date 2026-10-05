@@ -53,6 +53,10 @@ import @vibe/compiler/core {
   type_to_string
 }
 
+import ./checker_row_effect_inst.vibe {
+  effect_inst_annotation_check, strip_effect_inst_labels
+}
+
 import ./checker_eq_generalized_site.vibe {
   note_source_comparator_heads, refuse_generalized_eq_sites
 }
@@ -1016,7 +1020,10 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
               },
               _ => ()
             }
-            let ns_b = check_assignable_for(resolved_te, actual_v, ns0, errors, "binding type mismatch for ", name, top_stmt_expr_off(val))
+            let ns_assign = check_assignable_for(resolved_te, actual_v, ns0, errors, "binding type mismatch for ", name, top_stmt_expr_off(val))
+            // The annotation replaces the inferred type at publication, so
+            // check its nested callback payloads before losing that evidence.
+            let ns_b = effect_inst_annotation_check(env, val, actual_v, resolved_te, ns_assign, "the function bound here", "the annotation's row", defs, errors)
             // #1941: a literal value carries no offset, so anchor the binder
             // name instead of emitting the one unlocated diagnostic left in
             // this lane.
@@ -1066,10 +1073,12 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
           EIdent(_, _) => true,
           _ => false
         }
+        // #3341: a lambda's instantiation labels name this check's variables.
+        let t_published = strip_effect_inst_labels(t, ns, defs)
         let published = if exported || is_alias {
-          publish_row_formals(type_exception_rows_resolved(t), val, env, defs)
+          publish_row_formals(type_exception_rows_resolved(t_published), val, env, defs)
         } else {
-          type_exception_rows_resolved(t)
+          type_exception_rows_resolved(t_published)
         }
         let env1 = bind_function_dependency_contracts(env_bind(env, name, published), name, val)
         capture_statement_root_type(capture, statement_path, "SLet", vt)

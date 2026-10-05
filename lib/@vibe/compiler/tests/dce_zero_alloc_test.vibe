@@ -1,0 +1,96 @@
+import @vibe/compiler/core {
+  Expr, Stmt, dce_stmts, dce_stmts_before_trait_desugar
+}
+
+import @vibe/compiler/codegen/common_analysis {
+  zero_alloc_check
+}
+
+fn za_fn(name: String, body: Expr) -> Stmt {
+  SLet(false, false, name, None, EFn([], [], [], None, None, body))
+}
+
+test "late DCE removes a marker with its unused function" {
+  let stmts = [
+    SExpr(EIdent("@zero_alloc", -1)),
+    za_fn("unused", EInt(1)),
+    SExpr(EIdent("@zero_alloc_strict", -1)),
+    za_fn("used", EInt(2))
+  ]
+  let kept = dce_stmts(stmts, ["used"])
+  inspect(Array::length(kept), "2")
+  match Array::get(kept, 0) {
+    SExpr(EIdent(name, _)) => inspect(name, "@zero_alloc_strict"),
+    _ => assert_true(false)
+  }
+}
+
+test "early DCE retains annotated functions and their transitive callees" {
+  let stmts = [
+    za_fn("leaf", EInt(1)),
+    za_fn("helper", ECall(EIdent("leaf", -1), [], -1, [])),
+    SExpr(EIdent("@zero_alloc", -1)),
+    za_fn("unused", ECall(EIdent("helper", -1), [], -1, [])),
+    za_fn("main", EInt(0)),
+    za_fn("dead", EInt(9))
+  ]
+  let early = dce_stmts_before_trait_desugar(stmts, ["main"])
+  inspect(Array::length(early), "5")
+  inspect(Array::length(dce_stmts(early, ["main"])), "1")
+}
+
+test "early DCE retains marked preserved declarations for validation" {
+  let stmts = [
+    SExpr(EIdent("@zero_alloc_assume", -1)),
+    SFnDecl(false, "unused", EFn([], [], [], None, None, EInt(0)), [], []),
+    za_fn("main", EInt(0))
+  ]
+  inspect(Array::length(dce_stmts_before_trait_desugar(stmts, ["main"])), "3")
+  inspect(Array::length(dce_stmts(stmts, ["main"])), "1")
+}
+
+test "malformed marker adjacency survives DCE for refusal" {
+  let stmts = [
+    SExpr(EIdent("@zero_alloc", -1)),
+    SLet(false, false, "dead", None, EInt(0)),
+    za_fn("main", EInt(0))
+  ]
+  inspect(Array::length(dce_stmts(stmts, ["main"])), "3")
+}
+
+test "trailing marker survives DCE for refusal" {
+  let stmts = [za_fn("main", EInt(0)), SExpr(EIdent("@zero_alloc", -1))]
+  inspect(Array::length(dce_stmts(stmts, ["main"])), "2")
+}
+
+test "ordinary structural expressions retain their dependencies" {
+  let stmts = [
+    za_fn("helper", EInt(1)),
+    SExpr(ECall(EIdent("helper", -1), [], -1, []))
+  ]
+  inspect(Array::length(dce_stmts(stmts, [])), "2")
+}
+
+test "an unused allocation contract is checked before late DCE" {
+  let stmts = [
+    za_fn("helper", EArray([EInt(1)])),
+    SExpr(EIdent("@zero_alloc", -1)),
+    za_fn("unused", ECall(EIdent("helper", -1), [], -1, [])),
+    za_fn("main", EInt(0))
+  ]
+  let early = dce_stmts_before_trait_desugar(stmts, ["main"])
+  assert_true(String::contains(zero_alloc_check(early), "fn 'unused' may allocate"))
+}
+
+test "a dead pure marker does not constrain the allocating entry" {
+  let stmts = [
+    SExpr(EIdent("@zero_alloc_strict", -1)),
+    za_fn("unused", EInt(1)),
+    za_fn("main", EArray([EInt(1)]))
+  ]
+  let early = dce_stmts_before_trait_desugar(stmts, ["main"])
+  inspect(zero_alloc_check(early), "")
+  let late = dce_stmts(early, ["main"])
+  inspect(Array::length(late), "1")
+  inspect(zero_alloc_check(late), "")
+}

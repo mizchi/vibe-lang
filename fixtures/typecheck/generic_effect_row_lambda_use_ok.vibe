@@ -1,0 +1,65 @@
+// #3341 controls: a lambda's own instantiation is compared with the place it
+// is used, and every use below agrees with it.
+effect Box[T] {
+  Put(T) -> Int
+}
+
+effect Other {
+  Ping() -> Int
+}
+
+fn run_cb(f: () -> Int with Box[String]) -> Int with Box[String] {
+  f()
+}
+
+fn run_int(f: () -> Int with Box[Int]) -> Int {
+  handle {
+    f()
+  } with {
+    Box::Put(n) => resume(n + 1)
+  }
+}
+
+// A named lambda whose performs agree with the parameter's row.
+fn named_ok() -> Int with Box[String] {
+  let g = () -> Int { perform Box::Put("s") }
+  run_cb(g) + g()
+}
+
+// A named lambda inside a `Box[String]` function, passed to a callee that
+// handles `Box[Int]` itself: it belongs to the parameter's row, not to the
+// enclosing one (the #3304 review case, through a name).
+fn named_other_row() -> Int with Box[String] {
+  let g = () -> Int { perform Box::Put(41) }
+  run_int(g)
+}
+
+// A lambda that never performs `Box` is not tied to any instantiation.
+fn pure_lambda() -> Int with Box[String] {
+  let g = () -> Int { 3 }
+  run_cb(g) + run_int(g)
+}
+
+// A lambda whose own row names a different effect.
+fn other_effect() -> Int with Box[String] + Other {
+  let g = () -> Int { perform Other::Ping() }
+  run_cb(g)
+}
+
+// A lambda generic in its payload is checked at each use's instantiation.
+fn generic_payload() -> Int with Box[String] {
+  let g = (x) -> { perform Box::Put(x) }
+  g("a") + run_int(() -> g(1))
+}
+
+// A lambda whose own row agrees with the parameter's.
+fn own_row_ok() -> Int with Box[String] {
+  run_cb(() -> Int with Box[String] { perform Box::Put("t") })
+}
+
+// A lambda called inside the lambda it is passed with performs at that one's
+// instantiation.
+fn nested_ok() -> Int with Box[String] {
+  let g = () -> Int { perform Box::Put("u") }
+  run_cb(() -> g() + 1)
+}

@@ -103,6 +103,10 @@ import ./checker_call_expr.vibe {
   check_call_expr
 }
 
+import ./checker_row_effect_inst.vibe {
+  field_effect_inst_arg_check
+}
+
 import ./checker_closure_capture_row.vibe {
   assignment_crosses_region,
   builtin_ident_is_value,
@@ -194,6 +198,7 @@ import ./checker_merge_capture_provenance.vibe {
   formal_shadow,
   marker_default_dispatch_error,
   merge_capture_provenance,
+  merge_value_effect_provenance,
   record_local_let_rec_type,
   record_local_let_type,
   reset_eq_formal_vars,
@@ -816,7 +821,8 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               } else {
                 check_assignable_set_end(string_lit_end(then_e))
               }
-              (check_assignable(rtt, ret, s3, errors, "if branches have incompatible types", branch_off), tt)
+              let joined_s = check_assignable(rtt, ret, s3, errors, "if branches have incompatible types", branch_off)
+              (joined_s, merge_value_effect_provenance(tt, et, joined_s))
             }
           }
         }
@@ -1068,6 +1074,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               ()
             } else {
               si = refine_open_option_branch(result_ty, arm_ty, si)
+              result_ty = merge_value_effect_provenance(result_ty, arm_ty, si)
             }
             if check_arms {
               // Tolerate a `CtUnit` arm (statement-position match); rely on
@@ -2180,6 +2187,14 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                   Some(aty) => {
                     // Value type check (ground-gated like check_record_fields).
                     s1 = check_assignable_for(dty, subst_apply(s1, aty), s1, errors, "struct field type mismatch for ", dn, lookup_field_expr_off(fields, dn))
+                    // Compare latent payloads before the struct's field type
+                    // replaces the value's own instantiation evidence.
+                    for field in fields {
+                      let (fname, value) = field
+                      if fname == dn {
+                        s1 = field_effect_inst_arg_check(env, value, aty, dty, s1, CtNamed(rn, fresh_targs), dn, defs, errors)
+                      }
+                    }
                   },
                   None => Array::push(errors, String::concat("missing field `", String::concat(dn, String::concat("` in construction of struct ", rn))))
                 }
@@ -2294,6 +2309,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             elem_ty = it
           } else {
             s1 = check_assignable(elem_ty, subst_apply(s1, it), s1, errors, "array elements have incompatible types", railway_expr_off(Array::get(items, ai)))
+            elem_ty = merge_value_effect_provenance(elem_ty, it, s1)
           }
           ai = ai + 1
         }
