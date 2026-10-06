@@ -73,9 +73,12 @@ import ./checker_merge_capture_provenance.vibe {
   checker_string_array_has,
   effect_inst_used_vars,
   eq_formal_arity,
+  eq_formal_binder_spelling,
+  eq_formal_group,
   eq_formal_rigid_row,
   eq_formal_row_of,
   eq_formal_vars,
+  eq_group_is_open,
   formal_shadow,
   int_array_has,
   merge_provenance_row,
@@ -1504,9 +1507,15 @@ fn effect_inst_fn_check(env: TypeEnv, arg: Expr, arg_ty: Type, param_ty: Type, s
               let (name, have) = pair
               if name == eff && !refused {
                 found = true
-                match unify(have, want, out) {
-                  Some(ns) => out = ns,
-                  None => Array::push(errors, effect_inst_value_message(subject, slot, eff, subst_apply(out, have), subst_apply(out, want), effect_inst_arg_anchor(arg)))
+                match callback_row_unreadable([have]) {
+                  Some((label, missing)) => {
+                    refused = true
+                    Array::push(errors, "import `\{missing}` into this module: \{subject}'s row `\{label}` names a type unavailable here\{off_marker(effect_inst_arg_anchor(arg))}")
+                  },
+                  None => match unify(have, want, out) {
+                    Some(ns) => out = ns,
+                    None => Array::push(errors, effect_inst_value_message(subject, slot, eff, subst_apply(out, have), subst_apply(out, want), effect_inst_arg_anchor(arg)))
+                  }
                 }
               }
             }
@@ -1522,6 +1531,37 @@ fn effect_inst_fn_check(env: TypeEnv, arg: Expr, arg_ty: Type, param_ty: Type, s
     },
     _ => s
   }
+}
+
+/// A lambda's written row or a current parameter's provenance-marked row is
+/// owned by this lexical environment. Read its enclosing formals by active
+/// binder identities and arities. Published and independently quantified
+/// values continue to use their own scheme.
+fn lexical_value_row_instantiations(row: String, env: TypeEnv, defs: Array[TypeDef]) -> Array[Type] {
+  let formals: Array[String] = []
+  for binding in eq_formal_vars {
+    let (id, name) = binding
+    let formal_index = match env_lookup(env, name) {
+      Some(CtVar(bound)) => if bound == id {
+        eq_formal_row_of(bound)
+      } else {
+        0 - 1
+      },
+      Some(CtNamed(head, _)) => if head == String::concat("#hktformal.", name) {
+        eq_formal_rigid_row(name)
+      } else {
+        0 - 1
+      },
+      _ => 0 - 1
+    }
+    if formal_index >= 0 && eq_group_is_open(Array::get(eq_formal_group, formal_index)) {
+      let (_, recorded_name) = Array::get(eq_formal_vars, formal_index)
+      if recorded_name == name && !formals_contain_source_name(formals, name) {
+        Array::push(formals, eq_formal_binder_spelling(name, Array::get(eq_formal_arity, formal_index)))
+      }
+    }
+  }
+  callback_row_instantiations_at(row, formals, env, true, defs, array_empty(), array_empty())
 }
 
 /// The instantiation a function value performs each one-parameter generic
@@ -1552,8 +1592,20 @@ fn value_effect_instantiations(env: TypeEnv, arg: Expr, arg_ty: Type, arow: Stri
       Some(scheme) => Some((scheme, arg_ty)),
       None => None
     }
+    let lexical_row = !String::contains(arow, "$") && match arg {
+      EFn(tparams, _, _, _, Some(written), _) => Array::length(tparams) == 0 && row_names_instantiation(written),
+      EIdent(name, _) => match env_lookup(env, String::concat("__param_marker__", name)) {
+        Some(CtNamed(marker, _)) => checker_string_array_has(row_items_top_level(arow), marker),
+        _ => false
+      },
+      _ => false
+    }
     for raw in row_items_top_level(arow) {
-      let items = callback_row_instantiations(String::trim(raw), scope, defs)
+      let items = if lexical_row {
+        lexical_value_row_instantiations(String::trim(raw), env, defs)
+      } else {
+        callback_row_instantiations(String::trim(raw), scope, defs)
+      }
       for item in items {
         match item {
           CtNamed(iname, iargs) => if Array::length(iargs) == 1 {

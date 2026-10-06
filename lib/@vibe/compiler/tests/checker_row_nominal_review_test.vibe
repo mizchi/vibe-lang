@@ -11,7 +11,7 @@ import @vibe/compiler/core {
   Type, TypeDef
 }
 import @vibe/compiler/runtime {
-  build_import_envs_from_interfaces, dependency_interface_set_new, dependency_interface_set_publish
+  build_import_envs_from_interfaces, checked_module_public_env, dependency_interface_set_new, dependency_interface_set_publish
 }
 import @vibe/compiler/syntax {
   lex, lex_with_offsets, parse_program, parse_program_located
@@ -47,8 +47,23 @@ fn only_callback_row(t: Type) -> String {
 }
 
 fn projected_error(dependency: String, importer: String) -> String with Env + Exception {
+  projected_interface_error(dependency, importer, false)
+}
+
+fn projected_published_error(dependency: String, importer: String) -> String with Env + Exception {
+  projected_interface_error(dependency, importer, true)
+}
+
+fn projected_interface_error(dependency: String, importer: String, public_surface: Bool) -> String with Env + Exception {
   let interfaces = dependency_interface_set_new()
-  dependency_interface_set_publish(interfaces, "/dep.vibe", check_program(parse_program(lex(dependency))))
+  let dependency_stmts = parse_program(lex(dependency))
+  let checked = check_program(dependency_stmts)
+  let published = if public_surface {
+    checked_module_public_env(dependency_stmts, checked)
+  } else {
+    checked
+  }
+  dependency_interface_set_publish(interfaces, "/dep.vibe", published)
   let (tokens, starts, _) = lex_with_offsets(importer)
   let stmts = parse_program_located(tokens, starts, importer)
   let errors: Array[String] = []
@@ -441,4 +456,106 @@ test "a published lowercase nominal still rejects an Int payload" {
   let dependency = "export effect Box[T] { Put(T) -> Int }\nexport struct point { x: Int }\nexport fn run(f: () -> Int with Box[point]) -> Int { 42 }\n"
   let message = projected_error(dependency, "import ./dep.vibe { effect Box, run }\nfn caller() -> Int with Box { run(() -> { perform Box::Put(41) }) }\n")
   assert(String::contains(message, "expected point, got Int"))
+}
+
+fn nominal_definition_dependency() -> String {
+  "export effect Box[T] { Put(T) -> Int }\nexport struct Pt { x: Int }\nexport fn mk_pt() -> Pt { Pt::{ x: 42 } }\nexport fn producer() -> Int with Box[Pt] { perform Box::Put(Pt::{ x: 42 }) }\nexport struct Holder { run: () -> Int with Box[Pt] }\nexport enum Choice { Run(() -> Int with Box[Pt]) }\nexport fn accept_holder(h: Holder) -> Int { 42 }\nexport fn accept_choice(c: Choice) -> Int { 42 }\n"
+}
+
+fn nominal_definition_importer(shape: String, payload: String, named: Bool) -> String {
+  let good = payload == "mk_pt()"
+  let callback = if named {
+    if good {
+      "producer"
+    } else {
+      "wrong"
+    }
+  } else {
+    "() -> { perform Box::Put(\{payload}) }"
+  }
+  let call = if shape == "enum" {
+    "accept_choice(Choice::Run(\{callback}))"
+  } else {
+    "accept_holder(Holder::{ run: \{callback} })"
+  }
+  "import ./dep.vibe { effect Box, struct Holder, enum Choice, accept_holder, accept_choice, mk_pt, producer }\nfn wrong() -> Int with Box[Int] { perform Box::Put(41) }\nfn caller() -> Int with Box { \{call} }\n"
+}
+
+test "an exported struct field accepts a compatible literal callback without Pt" {
+  assert_eq(projected_published_error(nominal_definition_dependency(), nominal_definition_importer("struct", "mk_pt()", false)), "")
+}
+
+test "an exported struct field rejects an Int callback by its published nominal" {
+  let message = projected_published_error(nominal_definition_dependency(), nominal_definition_importer("struct", "41", false))
+  assert(String::contains(message, "Pt"))
+  assert(String::contains(message, "Int"))
+  assert(!String::contains(message, "import `Pt`"))
+  assert(message != "")
+}
+
+test "an exported enum constructor accepts a compatible literal callback without Pt" {
+  assert_eq(projected_published_error(nominal_definition_dependency(), nominal_definition_importer("enum", "mk_pt()", false)), "")
+}
+
+test "an exported enum constructor rejects an Int callback by its published nominal" {
+  let message = projected_published_error(nominal_definition_dependency(), nominal_definition_importer("enum", "41", false))
+  assert(String::contains(message, "Pt"))
+  assert(String::contains(message, "Int"))
+  assert(!String::contains(message, "import `Pt`"))
+  assert(message != "")
+}
+
+test "an exported struct field accepts a compatible named callback without Pt" {
+  assert_eq(projected_published_error(nominal_definition_dependency(), nominal_definition_importer("struct", "mk_pt()", true)), "")
+}
+
+test "an exported enum constructor accepts a compatible named callback without Pt" {
+  assert_eq(projected_published_error(nominal_definition_dependency(), nominal_definition_importer("enum", "mk_pt()", true)), "")
+}
+
+test "an exported struct field rejects a mismatched named callback" {
+  let message = projected_published_error(nominal_definition_dependency(), nominal_definition_importer("struct", "41", true))
+  assert(String::contains(message, "Pt"))
+  assert(String::contains(message, "Int"))
+  assert(!String::contains(message, "import `Pt`"))
+}
+
+test "an exported enum constructor rejects a mismatched named callback" {
+  let message = projected_published_error(nominal_definition_dependency(), nominal_definition_importer("enum", "41", true))
+  assert(String::contains(message, "Pt"))
+  assert(String::contains(message, "Int"))
+  assert(!String::contains(message, "import `Pt`"))
+}
+
+fn generic_nominal_definition_dependency() -> String {
+  "export effect Box[T] { Put(T) -> Int }\nexport struct Holder[T] { run: () -> Int with Box[T] }\nexport fn accept_holder(h: Holder[String]) -> Int { 42 }\n"
+}
+
+test "an exported generic struct's field keeps its declared formal" {
+  let importer = "import ./dep.vibe { effect Box, struct Holder, accept_holder }\nfn caller() -> Int with Box { accept_holder(Holder[String]::{ run: () -> { perform Box::Put(\"abc\") } }) }\n"
+  assert_eq(projected_published_error(generic_nominal_definition_dependency(), importer), "")
+}
+
+test "an exported generic struct's field rejects a different concrete payload" {
+  let importer = "import ./dep.vibe { effect Box, struct Holder, accept_holder }\nfn caller() -> Int with Box { accept_holder(Holder[String]::{ run: () -> { perform Box::Put(41) } }) }\n"
+  let message = projected_published_error(generic_nominal_definition_dependency(), importer)
+  assert(String::contains(message, "Int"))
+  assert(String::contains(message, "String"))
+}
+
+test "an unreadable private callback row names its import edit without leaking a sentinel" {
+  let importer = "import ./dep.vibe { effect Box, struct Holder, accept_holder, mk_pt }\nfn private_bare() -> Int with Box { perform Box::Put(mk_pt()) }\nfn caller() -> Int with Box { accept_holder(Holder::{ run: private_bare }) }\n"
+  let message = projected_published_error(nominal_definition_dependency(), importer)
+  assert(String::contains(message, "import `Pt` into this module"))
+  assert(!String::contains(message, "#callback-row-unreadable"))
+}
+
+test "a kinded lambda row keeps its lexical constructor formal" {
+  let source = "effect Kb[F[_]] { Put(F[Int]) -> Int }\nfn consume[F[_]](x: F[Int], f: () -> Int with Kb[F]) -> Int { 42 }\nfn outer[G[_]](x: G[Int]) -> Int with Kb[G] { consume[G](x, () -> Int with Kb[G] { perform Kb::Put(x) }) }\n"
+  assert(check_source_ok(source))
+}
+
+test "a generic forwarding parameter's row keeps its declaration formal" {
+  let source = "effect Box[T] { Put(T) -> Int }\nexport fn run_len[T](x: T, f: () -> Int with Box[T], len: (T) -> Int) -> Int { handle { f() } with { Box::Put(v) => resume(len(v) + len(x) * 0) } }\nfn forward[T](x: T, f: () -> Int with Box[T], len: (T) -> Int) -> Int { run_len(x, f, len) }\nexport let forwarded = forward\n"
+  assert(check_source_ok(source))
 }

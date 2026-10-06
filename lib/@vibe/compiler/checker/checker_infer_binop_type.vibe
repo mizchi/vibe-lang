@@ -17,6 +17,7 @@ import @vibe/compiler/checker/diagnostics {
 }
 
 import @vibe/compiler/core {
+  EnvValueBinding,
   Expr,
   Pat,
   Stmt,
@@ -27,6 +28,7 @@ import @vibe/compiler/core {
   TypeExpr,
   apply_type_constructor,
   env_lookup,
+  env_value_binding_with_origin,
   expr_child_at,
   expr_children,
   expr_children_pop,
@@ -358,6 +360,144 @@ export fn publish_row_nominals(t: Type, defs: Array[TypeDef]) -> Type {
     mark_row_nominal_words(row, defs)
   }
   map_fn_rows(t, mark)
+}
+
+/// Whether a type contains a function row with arguments to publish. Borrow
+/// its child arrays, so ordinary nominal definitions need no copied payloads.
+fn type_has_bracketed_fn_row(t: Type) -> Bool {
+  match t {
+    CtFn(params, ret, row) => {
+      let own = match row {
+        Some(r) => String::contains(r, "["),
+        None => false
+      }
+      own || types_have_bracketed_fn_row(params) || type_has_bracketed_fn_row(ret)
+    },
+    CtArray(e) => type_has_bracketed_fn_row(e),
+    CtOption(e) => type_has_bracketed_fn_row(e),
+    CtTuple(items) => types_have_bracketed_fn_row(items),
+    CtNamed(_, args) => types_have_bracketed_fn_row(args),
+    CtApplied(head, args) => type_has_bracketed_fn_row(head) || types_have_bracketed_fn_row(args),
+    CtForAll(_, _, body) => type_has_bracketed_fn_row(body),
+    CtRecord(fields) => {
+      let mut found = false
+      for field in fields {
+        let (_, ty) = field
+        if !found {
+          found = type_has_bracketed_fn_row(ty)
+        }
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+/// The borrowed child types containing a bracketed function row.
+fn types_have_bracketed_fn_row(types: Array[Type]) -> Bool {
+  let mut found = false
+  for ty in types {
+    if !found {
+      found = type_has_bracketed_fn_row(ty)
+    }
+  }
+  found
+}
+
+/// Publish a nominal definition's member with its own declared formals in
+/// scope. A formal's spelling never grants a nominal declaration's authority.
+fn publish_definition_member_rows(t: Type, defs: Array[TypeDef], formals: Array[String]) -> Type {
+  if !type_has_bracketed_fn_row(t) {
+    return t
+  }
+  map_fn_rows(t, (row: String) -> String {
+    mark_nominal_row_words(row, (word: String) -> String {
+      if checker_string_array_has(formals, word) {
+        ""
+      } else {
+        match find_typedef(defs, word) {
+          Some(TDStruct(_, _, _, _)) => "^",
+          Some(TDEnum(_, _, _)) => "^^",
+          _ => ""
+        }
+      }
+    })
+  })
+}
+
+/// Publish callback rows carried by an exported struct or enum definition.
+/// Definitions without such rows keep their original payload arrays.
+export fn publish_type_def_row_nominals(d: TypeDef, defs: Array[TypeDef]) -> TypeDef {
+  match d {
+    TDStruct(name, fields, mut_fields, params) => {
+      let mut needed = false
+      for field in fields {
+        let (_, ty) = field
+        if !needed {
+          needed = type_has_bracketed_fn_row(ty)
+        }
+      }
+      if needed {
+        TDStruct(name, for field in fields {
+          let (field_name, ty) = field
+          (field_name, publish_definition_member_rows(ty, defs, params))
+        }, mut_fields, params)
+      } else {
+        d
+      }
+    },
+    TDEnum(name, params, variants) => {
+      let mut needed = false
+      for variant in variants {
+        let (_, payloads) = variant
+        if !needed {
+          needed = types_have_bracketed_fn_row(payloads)
+        }
+      }
+      if needed {
+        TDEnum(name, params, for variant in variants {
+          let (variant_name, payloads) = variant
+          (variant_name, for ty in payloads {
+            publish_definition_member_rows(ty, defs, params)
+          })
+        })
+      } else {
+        d
+      }
+    },
+    _ => d
+  }
+}
+
+/// Constructor bindings carry the same callback rows as their nominal
+/// definition. Preserve the binding's origin and its declaration's formals.
+export fn publish_type_constructor_binding_rows(name: String, binding: EnvValueBinding, defs: Array[TypeDef]) -> EnvValueBinding {
+  if !type_has_bracketed_fn_row(binding.ty) {
+    return binding
+  }
+  let mut result = binding
+  let mut found = false
+  for d in defs {
+    if !found {
+      match d {
+        TDStruct(owner, _, _, params) => if name == owner {
+          found = true
+          result = env_value_binding_with_origin(publish_definition_member_rows(binding.ty, defs, params), binding.origin)
+        },
+        TDEnum(_, params, variants) => {
+          for variant in variants {
+            let (variant_name, _) = variant
+            if name == variant_name && !found {
+              found = true
+              result = env_value_binding_with_origin(publish_definition_member_rows(binding.ty, defs, params), binding.origin)
+            }
+          }
+        },
+        _ => ()
+      }
+    }
+  }
+  result
 }
 
 /// `row` with each bracketed word of a non-exception label that names a
