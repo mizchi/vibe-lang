@@ -40,10 +40,10 @@ import @vibe/compiler/core {
   instantiate,
   is_exception_label,
   strip_published_formal_suffixes,
+  strip_published_row_marks,
   subst_add_bound,
   subst_apply,
   subst_bounds_for,
-  subst_cache_read_snapshot,
   subst_lookup,
   type_implements_trait,
   type_to_string,
@@ -108,9 +108,6 @@ import ./checker_closure_capture_row.vibe {
 }
 
 import ./checker_eq_unbounded_formal_msg.vibe {
-  call_formal_key,
-  callee_formal_marked_texts,
-  callee_formal_texts,
   callee_inst_types_cell,
   check_assignable_for,
   decl_formal_ids,
@@ -118,13 +115,11 @@ import ./checker_eq_unbounded_formal_msg.vibe {
   effect_tparams,
   eq_unbounded_formal_msg,
   eq_unbounded_formals_in,
-  formal_var_binder_reps,
-  formal_var_display_subst,
-  formal_var_reps,
   generic_callback_instance,
   generic_decl_of_scheme,
   published_row_formal_ids,
   resolve_callee_formal_args,
+  row_marked_type_display,
   row_marked_type_text,
   scheme_var_types_from,
   struct_field_names_match
@@ -135,7 +130,7 @@ import ./checker_eq_generalized_site.vibe {
 }
 
 import ./checker_merge_capture_provenance.vibe {
-  checker_string_array_has, eq_formal_row_of, note_effect_inst_used, unsent_open_formal_vars
+  checker_string_array_has, eq_formal_row_of, formal_shadow, note_effect_inst_used, unsent_open_formal_vars
 }
 
 /// #3051: an exported generic binding is published with each formal its row
@@ -984,96 +979,6 @@ fn rename_row_bracket_words(row: String, renames: Array[(String, String)]) -> St
   StringBuilder::freeze(sb)
 }
 
-/// Share an indexed read view when a large call table queries a completed
-/// substitution repeatedly. Small tables keep the original substitution.
-export fn callee_formal_query_subst(s: Subst) -> Subst {
-  if Array::length(callee_inst_types_cell) >= 256 {
-    subst_cache_read_snapshot(s)
-  } else {
-    s
-  }
-}
-
-/// #3053: every recorded generic call's formal bindings under the final
-/// substitution, keyed by `call_formal_key`, for the effects pass
-/// to instantiate the callee's row at that call. Only the call's own scheme is
-/// read here: a call whose scheme has no recorded declaration contributes
-/// nothing, so its row stays as written (open) rather than being guessed.
-export fn callee_formal_bindings(defs: Array[TypeDef], s: Subst) -> Array[(String, Array[(String, String)])] {
-  let out: Array[(String, Array[(String, String)])] = []
-  let ds = formal_var_display_subst(s)
-  let mut i = 0
-  while i < Array::length(callee_inst_types_cell) {
-    let (off, scheme, inst, cname) = Array::get(callee_inst_types_cell, i)
-    // An empty entry is published too: it is evidence for a collision, so a
-    // key two merged sources share -- one call resolving a formal, the other
-    // not -- turns ambiguous rather than lending the first call's binding to
-    // the second (Codex on #3055).
-    let decl = generic_decl_of_scheme(scheme)
-    let texts = callee_formal_texts(decl, scheme, inst, defs, ds)
-    // #3095: a formal the call resolves only in part (`get([])` gives
-    // `Array[?]`) is printed with `_` for the open part rather than left as
-    // the callee's own spelling, so the requirement reads `State[Array[_]]`.
-    let marked = callee_formal_marked_texts(decl, scheme, inst, defs, s, formal_var_reps(s))
-    let mut mi = 0
-    while mi < Array::length(marked) {
-      let (mname, mtext) = Array::get(marked, mi)
-      let mut seen = false
-      let mut ti = 0
-      while ti < Array::length(texts) {
-        let (tn, _) = Array::get(texts, ti)
-        if tn == mname {
-          seen = true
-        }
-        ti = ti + 1
-      }
-      if !seen && mtext != "_" && !String::contains(mtext, "~") {
-        Array::push(texts, (mname, row_marked_type_display(mtext)))
-      }
-      mi = mi + 1
-    }
-    Array::push(out, (call_formal_key(off, cname), texts))
-    i = i + 1
-  }
-  out
-}
-
-/// A `row_marked_type_text` spelling as a reader writes it: the provenance
-/// marks dropped, `,` followed by a space.
-fn row_marked_type_display(m: String) -> String {
-  let sb = StringBuilder::new()
-  let mut i = 0
-  while i < String::length(m) {
-    let c = String::char_code_at(m, i)
-    if c == 94 || c == 39 {
-      ()
-    } else if c == 44 {
-      StringBuilder::push(sb, ", ")
-    } else {
-      StringBuilder::push(sb, String::substring(m, i, i + 1))
-    }
-    i = i + 1
-  }
-  StringBuilder::freeze(sb)
-}
-
-/// #3095: `callee_formal_bindings` spelled for judging (`row_marked_type_text`),
-/// under the same keys. The effects pass reads a row's instantiation by its
-/// marked spelling only to decide whether a declared row certainly does NOT
-/// cover it; the printed spelling stays the one above.
-export fn callee_formal_marked_bindings(defs: Array[TypeDef], s: Subst) -> Array[(String, Array[(String, String)])] {
-  let out: Array[(String, Array[(String, String)])] = []
-  let reps = formal_var_binder_reps(s)
-  let mut i = 0
-  while i < Array::length(callee_inst_types_cell) {
-    let (off, scheme, inst, cname) = Array::get(callee_inst_types_cell, i)
-    let texts = callee_formal_marked_texts(generic_decl_of_scheme(scheme), scheme, inst, defs, s, reps)
-    Array::push(out, (call_formal_key(off, cname), texts))
-    i = i + 1
-  }
-  out
-}
-
 fn str_array_contains_name(xs: Array[String], x: String) -> Bool {
   let mut found = false
   let mut i = 0
@@ -1084,6 +989,36 @@ fn str_array_contains_name(xs: Array[String], x: String) -> Bool {
     i = i + 1
   }
   found
+}
+
+/// A handled callee's unmarked alias must be readable here. Its own formals
+/// and published nominal authority are retained; an import cannot borrow a
+/// same-named caller formal. Written local rows can read their lexical binders.
+fn refuse_unreadable_handled_row(row: String, own_formals: Array[String], lexical: Bool, env: TypeEnv, defs: Array[TypeDef], callee: String, off: Int, errors: Array[String]) -> Bool {
+  let nominals = published_nominal_names(published_nominal_words(row))
+  let formals: Array[String] = []
+  for name in own_formals {
+    Array::push(formals, name)
+  }
+  // A marked constructor already has declaration authority, even when its
+  // layout is not imported. Comparing identities needs no local layout.
+  for name in nominals {
+    Array::push(formals, name)
+  }
+  let scoped = if lexical {
+    handle {
+      let (te, _) = parse_type(lex(strip_published_row_marks(row)), 0)
+      formal_shadow(te, env, formals)
+    } with { Exception::Throw(_) => formals }
+  } else {
+    formals
+  }
+  let missing = callback_row_unreadable_labels(row, defs, scoped, nominals)
+  for item in missing {
+    let (_, label, name) = item
+    Array::push(errors, "import `\{name}` into this module: the handled call `\{callee}` requires `\{label}`, which names a type unavailable here\{off_marker(off)}")
+  }
+  Array::length(missing) > 0
 }
 
 export fn check_handle_inst_vs_callee_rows(body: Expr, insts: Array[(String, Array[Type])], env: TypeEnv, defs: Array[TypeDef], s: Subst, errors: Array[String]) -> Unit {
@@ -1104,6 +1039,31 @@ export fn check_handle_inst_vs_callee_rows(body: Expr, insts: Array[(String, Arr
       }
       match row {
         Some(rtext) => {
+          let row_formals: Array[String] = []
+          let mut scheme = env_lookup(env, cname)
+          for recorded in callee_inst_types_cell {
+            let (at, original, _, _) = recorded
+            if at == coff {
+              scheme = Some(original)
+            }
+          }
+          match scheme {
+            Some(st) => match generic_decl_of_scheme(st) {
+              Some((tps, _, _)) => for tp in tps {
+                Array::push(row_formals, type_param_name(tp))
+              },
+              None => ()
+            },
+            None => ()
+          }
+          for word in published_marker_words(rtext) {
+            Array::push(row_formals, strip_published_formal_suffixes(word))
+          }
+          let parameter_row = match env_lookup(env, String::concat("__param_marker__", cname)) {
+            Some(CtNamed(marker, _)) => checker_string_array_has(split_row_top_level(rtext), marker),
+            _ => false
+          }
+          let lexical_row = String::length(local_row) > 0 || String::contains(rtext, "#einst:") || parameter_row
           let items = split_row_top_level(rtext)
           let mut ii = 0
           while ii < Array::length(items) {
@@ -1134,8 +1094,10 @@ export fn check_handle_inst_vs_callee_rows(body: Expr, insts: Array[(String, Arr
                     }
                     String::join(parts, ", ")
                   }
+                  let resolved_item = ename + "[" + String::join(wants, ", ") + "]"
+                  let unreadable = refuse_unreadable_handled_row(resolved_item, row_formals, lexical_row, env, defs, cname, coff, errors)
                   let mut mismatch = false
-                  if Array::length(wants) == Array::length(haves) {
+                  if !unreadable && Array::length(wants) == Array::length(haves) {
                     let mut wi = 0
                     while wi < Array::length(wants) {
                       if effect_arg_mismatch(Array::get(haves, wi), Array::get(wants, wi), defs) {

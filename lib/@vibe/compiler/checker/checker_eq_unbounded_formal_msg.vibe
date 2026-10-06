@@ -40,6 +40,7 @@ import @vibe/compiler/core {
   fresh_var,
   instantiate,
   subst_apply,
+  subst_cache_read_snapshot,
   type_to_string,
   unify
 }
@@ -1647,6 +1648,7 @@ export fn row_marked_type_text(t: Type, reps: Array[(Int, String)]) -> String {
       }
       String::concat("(", String::concat(String::join(parts, ","), ")"))
     },
+    CtConstructor(n, _) => row_marked_nominal(n, []),
     CtStruct(n) => row_marked_nominal(n, []),
     CtEnum(n) => row_marked_nominal(n, []),
     CtNamed(n, args) => {
@@ -2034,4 +2036,94 @@ export fn scheme_var_types_from(st: Type, it: Type, out: Array[(Int, Type)]) -> 
     },
     _ => ()
   }
+}
+
+/// Share an indexed read view when a large call table queries a completed
+/// substitution repeatedly. Small tables keep the original substitution.
+export fn callee_formal_query_subst(s: Subst) -> Subst {
+  if Array::length(callee_inst_types_cell) >= 256 {
+    subst_cache_read_snapshot(s)
+  } else {
+    s
+  }
+}
+
+/// #3053: every recorded generic call's formal bindings under the final
+/// substitution, keyed by `call_formal_key`, for the effects pass
+/// to instantiate the callee's row at that call. Only the call's own scheme is
+/// read here: a call whose scheme has no recorded declaration contributes
+/// nothing, so its row stays as written (open) rather than being guessed.
+export fn callee_formal_bindings(defs: Array[TypeDef], s: Subst) -> Array[(String, Array[(String, String)])] {
+  let out: Array[(String, Array[(String, String)])] = []
+  let ds = formal_var_display_subst(s)
+  let mut i = 0
+  while i < Array::length(callee_inst_types_cell) {
+    let (off, scheme, inst, cname) = Array::get(callee_inst_types_cell, i)
+    // An empty entry is published too: it is evidence for a collision, so a
+    // key two merged sources share -- one call resolving a formal, the other
+    // not -- turns ambiguous rather than lending the first call's binding to
+    // the second (Codex on #3055).
+    let decl = generic_decl_of_scheme(scheme)
+    let texts = callee_formal_texts(decl, scheme, inst, defs, ds)
+    // #3095: a formal the call resolves only in part (`get([])` gives
+    // `Array[?]`) is printed with `_` for the open part rather than left as
+    // the callee's own spelling, so the requirement reads `State[Array[_]]`.
+    let marked = callee_formal_marked_texts(decl, scheme, inst, defs, s, formal_var_reps(s))
+    let mut mi = 0
+    while mi < Array::length(marked) {
+      let (mname, mtext) = Array::get(marked, mi)
+      let mut seen = false
+      let mut ti = 0
+      while ti < Array::length(texts) {
+        let (tn, _) = Array::get(texts, ti)
+        if tn == mname {
+          seen = true
+        }
+        ti = ti + 1
+      }
+      if !seen && mtext != "_" && !String::contains(mtext, "~") {
+        Array::push(texts, (mname, row_marked_type_display(mtext)))
+      }
+      mi = mi + 1
+    }
+    Array::push(out, (call_formal_key(off, cname), texts))
+    i = i + 1
+  }
+  out
+}
+
+/// A `row_marked_type_text` spelling as a reader writes it: the provenance
+/// marks dropped, `,` followed by a space.
+export fn row_marked_type_display(m: String) -> String {
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < String::length(m) {
+    let c = String::char_code_at(m, i)
+    if c == 94 || c == 39 {
+      ()
+    } else if c == 44 {
+      StringBuilder::push(sb, ", ")
+    } else {
+      StringBuilder::push(sb, String::substring(m, i, i + 1))
+    }
+    i = i + 1
+  }
+  StringBuilder::freeze(sb)
+}
+
+/// #3095: `callee_formal_bindings` spelled for judging (`row_marked_type_text`),
+/// under the same keys. The effects pass reads a row's instantiation by its
+/// marked spelling only to decide whether a declared row certainly does NOT
+/// cover it; the printed spelling stays the one above.
+export fn callee_formal_marked_bindings(defs: Array[TypeDef], s: Subst) -> Array[(String, Array[(String, String)])] {
+  let out: Array[(String, Array[(String, String)])] = []
+  let reps = formal_var_binder_reps(s)
+  let mut i = 0
+  while i < Array::length(callee_inst_types_cell) {
+    let (off, scheme, inst, cname) = Array::get(callee_inst_types_cell, i)
+    let texts = callee_formal_marked_texts(generic_decl_of_scheme(scheme), scheme, inst, defs, s, reps)
+    Array::push(out, (call_formal_key(off, cname), texts))
+    i = i + 1
+  }
+  out
 }

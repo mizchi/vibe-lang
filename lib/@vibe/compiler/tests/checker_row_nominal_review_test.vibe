@@ -666,3 +666,48 @@ test "a lowercase published formal stays independent of a declared alias of the 
   let src = "import ./dep.vibe { effect Box, make, consume }\nstruct t { local: Int }\nfn caller() -> Int { consume(Array::get([make], 0)(\"abc\")) }\n"
   assert_eq(projected_published_error(dep, src), "")
 }
+
+fn producer_alias_dependency() -> String {
+  "export effect Box[T] { Put(T) -> Int }\nexport type Pts = String\nexport fn producer() -> Int with Box[Pts] { perform Box::Put(\"abc\") }\n"
+}
+
+test "a handled producer with an unreadable row alias requires its import" {
+  let src = "import ./dep.vibe { effect Box, producer }\nfn caller() -> Int { handle { producer() } with { Box::Put(p) => resume(p + 1) } }\n"
+  assert(String::contains(projected_published_error(producer_alias_dependency(), src), "import `Pts` into this module"))
+}
+
+test "a handled producer alias accepts its actual String payload once imported" {
+  let src = "import ./dep.vibe { effect Box, producer, type Pts }\nfn caller() -> Int { handle { producer() } with { Box::Put(p) => resume(String::length(p)) } }\n"
+  assert_eq(projected_published_error(producer_alias_dependency(), src), "")
+}
+
+fn producer_constructor_dependency() -> String {
+  "export effect Kb[F[_]] { Put(F[Int]) -> Int }\nexport struct Bag[T] { v: T }\nexport fn producer() -> Int with Kb[Bag] { perform Kb::Put(Bag::{ v: 42 }) }\n"
+}
+
+test "a marked constructor producer cannot be handled as Array" {
+  let src = "import ./dep.vibe { effect Kb, producer }\nfn caller() -> Int { handle { producer() } with { Kb::Put(p) => { let xs: Array[Int] = p; resume(Array::length(xs)) } } }\n"
+  assert(String::contains(projected_published_error(producer_constructor_dependency(), src), "handler instantiates `Kb[Array/1]`"))
+}
+
+test "a marked constructor producer accepts its matching Bag handler" {
+  let src = "import ./dep.vibe { effect Kb, producer, struct Bag }\nfn caller() -> Int { handle { producer() } with { Kb::Put(p) => { let xs: Bag[Int] = p; resume(xs.v) } } }\n"
+  assert_eq(projected_published_error(producer_constructor_dependency(), src), "")
+}
+
+test "an imported producer alias cannot borrow a caller's same-named formal" {
+  let src = "import ./dep.vibe { effect Box, producer }\nfn caller[Pts](x: Pts) -> Int { handle { producer() } with { Box::Put(p) => resume(p + 1) } }\n"
+  assert(String::contains(projected_published_error(producer_alias_dependency(), src), "import `Pts` into this module"))
+}
+
+test "a readable imported producer alias still rejects an Int handler" {
+  let src = "import ./dep.vibe { effect Box, producer, type Pts }\nfn caller() -> Int { handle { producer() } with { Box::Put(p) => resume(p + 1) } }\n"
+  assert(String::contains(projected_published_error(producer_alias_dependency(), src), "handler instantiates `Box[Int]`"))
+}
+
+test "a handled callback parameter preserves its enclosing lexical formal" {
+  let src = "effect Box[T] { Put(T) -> Int }\nfn run[T](x: T, f: () -> Int with Box[T]) -> Int { handle { f() } with { Box::Put(p) => resume(42) } }\n"
+  let (tokens, starts, _) = lex_with_offsets(src)
+  let stmts = parse_program_located(tokens, starts, src)
+  let _ = check_program(stmts)
+}
