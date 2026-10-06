@@ -281,3 +281,62 @@ test "a structurally equal instance cannot supply another generic's row binders"
   let message = projected_error(reused_generic_dependency(), reused_generic_importer("\"WRONG\""))
   assert(String::contains(message, "expected Wrap[Int], got Wrap[String]"))
 }
+
+fn wrapped_callback_dependency(shape: String) -> String {
+  let wrapped = match shape {
+    "option" => "Option[() -> Int with Box[Wrap[T]]]",
+    "tuple" => "(() -> Int with Box[Wrap[T]], Int)",
+    "record" => "Holder[() -> Int with Box[Wrap[T]]]",
+    _ => "Array[() -> Int with Box[Wrap[T]]]"
+  }
+  // Checking a signature's contract must not depend on its implementation
+  // calling the supplied callback; a later body may consume its payload.
+  "export effect Box[T] { Put(T) -> Int }\nexport struct Wrap[T] { v: T }\nexport struct Holder[F] { run: F }\nexport fn mk_wrap[T](v: T) -> Wrap[T] { Wrap::{ v: v } }\nexport fn run_many[T](x: T, callbacks: \{wrapped}) -> Int { 42 }\n"
+}
+
+fn wrapped_callback_importer(shape: String, payload: String) -> String {
+  let callback = "() -> { perform Box::Put(mk_wrap(\{payload})) }"
+  let wrapped = match shape {
+    "option" => "Some(\{callback})",
+    "tuple" => "(\{callback}, 17)",
+    "record" => "Holder::{ run: \{callback} }",
+    _ => "[\{callback}]"
+  }
+  "import ./dep.vibe { effect Box, Wrap, Holder, run_many, mk_wrap }\nstruct T { n: Int }\nfn caller() -> Int with Box { Array::get([run_many], 0)(\"abc\", \{wrapped}) }\n"
+}
+
+test "array wrapped callbacks instantiate the extracted generic's formal" {
+  assert_eq(projected_error(wrapped_callback_dependency("array"), wrapped_callback_importer("array", "\"xy\"")), "")
+}
+
+test "array wrapped callbacks cannot use a caller nominal as a callee formal" {
+  let message = projected_error(wrapped_callback_dependency("array"), wrapped_callback_importer("array", "T::{ n: 17 }"))
+  assert(String::contains(message, "Wrap[String]"))
+}
+
+test "option wrapped callbacks instantiate the extracted generic's formal" {
+  assert_eq(projected_error(wrapped_callback_dependency("option"), wrapped_callback_importer("option", "\"xy\"")), "")
+}
+
+test "option wrapped callbacks reject a mismatched caller nominal" {
+  let message = projected_error(wrapped_callback_dependency("option"), wrapped_callback_importer("option", "T::{ n: 17 }"))
+  assert(String::contains(message, "Wrap[String]"))
+}
+
+test "tuple wrapped callbacks instantiate the extracted generic's formal" {
+  assert_eq(projected_error(wrapped_callback_dependency("tuple"), wrapped_callback_importer("tuple", "\"xy\"")), "")
+}
+
+test "tuple wrapped callbacks reject a mismatched caller nominal" {
+  let message = projected_error(wrapped_callback_dependency("tuple"), wrapped_callback_importer("tuple", "T::{ n: 17 }"))
+  assert(String::contains(message, "Wrap[String]"))
+}
+
+test "record wrapped callbacks instantiate the extracted generic's formal" {
+  assert_eq(projected_error(wrapped_callback_dependency("record"), wrapped_callback_importer("record", "\"xy\"")), "")
+}
+
+test "record wrapped callbacks reject a mismatched caller nominal" {
+  let message = projected_error(wrapped_callback_dependency("record"), wrapped_callback_importer("record", "T::{ n: 17 }"))
+  assert(String::contains(message, "Wrap[String]"))
+}

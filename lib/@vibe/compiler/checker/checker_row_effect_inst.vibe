@@ -563,34 +563,70 @@ fn callback_arg_env_read(env: TypeEnv, arg: Expr, param_ty: Type, s: Subst, read
 export fn callback_prefix_subst(arg: Expr, param_tys: Array[Type], arg_tys: Array[Type], s: Subst, callee: Option[(Type, Type)]) -> Subst {
   let ai = Array::length(arg_tys)
   match callee {
-    Some(_) => match arg {
-      EFn(_, _, _, _, None, _) => if ai > 0 && ai < Array::length(param_tys) {
-        match subst_apply(s, Array::get(param_tys, ai)) {
-          CtFn(_, _, Some(row)) => if row_names_instantiation(row) {
-            let mut out = s
-            let mut j = 0
-            while j < ai {
-              match unify(Array::get(param_tys, j), Array::get(arg_tys, j), out) {
-                Some(su) => {
-                  out = su
-                },
-                None => ()
-              }
-              j = j + 1
-            }
-            out
-          } else {
-            s
-          },
-          _ => s
+    Some(_) => if ai > 0 && ai < Array::length(param_tys) && type_has_instantiated_callback_row(subst_apply(s, Array::get(param_tys, ai))) {
+      // Aggregate contents and named/explicit callbacks must read the same
+      // instantiation as a rowless literal. The contract, not the syntax of
+      // `arg`, determines whether its earlier arguments need unifying first.
+      let mut out = s
+      let mut j = 0
+      while j < ai {
+        match unify(Array::get(param_tys, j), Array::get(arg_tys, j), out) {
+          Some(su) => out = su,
+          None => ()
         }
-      } else {
-        s
-      },
-      _ => s
+        j = j + 1
+      }
+      out
+    } else {
+      s
     },
     None => s
   }
+}
+
+/// Rows within an aggregate parameter have the same prefix constraints as a
+/// direct callback row. A separately quantified callback has its own scope.
+fn type_has_instantiated_callback_row(t: Type) -> Bool {
+  let children = match t {
+    CtFn(params, ret, row) => {
+      match row {
+        Some(r) => if String::contains(r, "[") && row_names_instantiation(r) {
+          return true
+        },
+        None => ()
+      }
+      if type_has_instantiated_callback_row(ret) {
+        return true
+      }
+      params
+    },
+    CtArray(e) => return type_has_instantiated_callback_row(e),
+    CtOption(e) => return type_has_instantiated_callback_row(e),
+    CtTuple(items) => items,
+    CtNamed(_, items) => items,
+    CtApplied(head, args) => {
+      if type_has_instantiated_callback_row(head) {
+        return true
+      }
+      args
+    },
+    CtRecord(fields) => {
+      for field in fields {
+        let (_, ft) = field
+        if type_has_instantiated_callback_row(ft) {
+          return true
+        }
+      }
+      return false
+    },
+    _ => return false
+  }
+  for child in children {
+    if type_has_instantiated_callback_row(child) {
+      return true
+    }
+  }
+  false
 }
 
 /// Does the row text name an effect with a type argument (`Box[T]`)? The

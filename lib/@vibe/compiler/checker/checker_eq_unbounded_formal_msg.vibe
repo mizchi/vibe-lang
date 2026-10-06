@@ -1181,15 +1181,8 @@ export fn note_generic_callback_instance(scheme: Type, inst: Type) -> Unit {
     CtForAll(vars, _, CtFn(params, _, _)) => {
       let mut needed = false
       for param in params {
-        match param {
-          CtFn(_, _, Some(row)) => if !needed && String::contains(row, "$") {
-            let marked: Array[(String, Int)] = []
-            published_row_formal_ids(Some(row), vars, marked)
-            needed = Array::length(marked) > 0
-          } else {
-            ()
-          },
-          _ => ()
+        if !needed && callback_type_has_published_formals(param, vars) {
+          needed = true
         }
       }
       if needed {
@@ -1200,6 +1193,55 @@ export fn note_generic_callback_instance(scheme: Type, inst: Type) -> Unit {
     },
     _ => ()
   }
+}
+
+/// Does this parameter contain a callback row indexed by the enclosing scheme?
+/// An independently quantified callback owns its own marker indices.
+fn callback_type_has_published_formals(t: Type, vars: Array[Int]) -> Bool {
+  let children = match t {
+    CtFn(params, ret, row) => {
+      match row {
+        Some(r) => if String::contains(r, "$") {
+          let marked: Array[(String, Int)] = []
+          published_row_formal_ids(Some(r), vars, marked)
+          if Array::length(marked) > 0 {
+            return true
+          }
+        },
+        None => ()
+      }
+      if callback_type_has_published_formals(ret, vars) {
+        return true
+      }
+      params
+    },
+    CtArray(e) => return callback_type_has_published_formals(e, vars),
+    CtOption(e) => return callback_type_has_published_formals(e, vars),
+    CtTuple(items) => items,
+    CtNamed(_, items) => items,
+    CtApplied(head, args) => {
+      if callback_type_has_published_formals(head, vars) {
+        return true
+      }
+      args
+    },
+    CtRecord(fields) => {
+      for field in fields {
+        let (_, ft) = field
+        if callback_type_has_published_formals(ft, vars) {
+          return true
+        }
+      }
+      return false
+    },
+    _ => return false
+  }
+  for child in children {
+    if callback_type_has_published_formals(child, vars) {
+      return true
+    }
+  }
+  false
 }
 
 /// Recover a value callee's scheme by its instantiated type identities, never
