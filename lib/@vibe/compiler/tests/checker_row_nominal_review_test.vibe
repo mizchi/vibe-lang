@@ -70,7 +70,9 @@ fn projected_interface_error(dependency: String, importer: String, public_surfac
   let (env, _) = build_import_envs_from_interfaces(stmts, "/", interfaces, [
     "/dep.vibe"
   ], errors)
-  assert_eq(Array::length(errors), 0)
+  if Array::length(errors) > 0 {
+    return String::join(errors, "\n")
+  }
   handle {
     let _ = check_program_with_projected_import_env_result(stmts, env)
     ""
@@ -623,4 +625,44 @@ test "an unresolved generic result cannot borrow an importer nominal named T" {
 test "an unresolved generic result keeps its array payload available for inference" {
   let src = "import ./dep.vibe { effect Box, make }\nfn consume(f: () -> Int with Box[Array[String]]) -> Int { 42 }\nfn caller() -> Int { consume(Array::get([make], 0)([])) }\n"
   assert_eq(projected_error(generic_result_dependency(), src), "")
+}
+
+fn lowercase_nominal_dependency() -> String {
+  "export effect Box[T] { Put(T) -> Int }\nexport struct point { x: Int }\nexport enum tone { Light }\nexport type payload = String\nexport fn run_point(f: () -> Int with Box[point]) -> Int { handle { f() } with { Box::Put(p) => resume(p.x) } }\nexport fn point_producer() -> Int with Box[point] { perform Box::Put(point::{ x: 42 }) }\nexport fn run_tone(f: () -> Int with Box[tone]) -> Int { 42 }\nexport fn run_payload(f: () -> Int with Box[payload]) -> Int { 42 }\n"
+}
+
+test "a lowercase nominal callback cannot use the importer's different same-named struct" {
+  let src = "import ./dep.vibe { effect Box, run_point }\nstruct point { text: String }\nfn caller() -> Int with Box { run_point(() -> { perform Box::Put(point::{ text: \"wrong\" }) }) }\n"
+  assert(String::contains(projected_published_error(lowercase_nominal_dependency(), src), "rename this module's type `point`"))
+}
+
+test "a named callback cannot borrow a lowercase nominal declaration's name" {
+  let src = "import ./dep.vibe { effect Box, run_point }\nstruct point { text: String }\nfn local() -> Int with Box[point] { perform Box::Put(point::{ text: \"wrong\" }) }\nfn caller() -> Int with Box { run_point(local) }\n"
+  assert(String::contains(projected_published_error(lowercase_nominal_dependency(), src), "rename this module's type `point`"))
+}
+
+test "a lowercase enum callback cannot use a local enum of the same name" {
+  let src = "import ./dep.vibe { effect Box, run_tone }\nenum tone { Other(String) }\nfn caller() -> Int with Box { run_tone(() -> { perform Box::Put(Other(\"wrong\")) }) }\n"
+  assert(String::contains(projected_published_error(lowercase_nominal_dependency(), src), "rename this module's type `tone`"))
+}
+
+test "a lowercase row alias cannot be reinterpreted by an importer alias" {
+  let src = "import ./dep.vibe { effect Box, run_payload }\ntype payload = Int\nfn caller() -> Int with Box { run_payload(() -> { perform Box::Put(42) }) }\n"
+  assert(String::contains(projected_published_error(lowercase_nominal_dependency(), src), "rename this module's type `payload`"))
+}
+
+test "a compatible lowercase nominal producer needs no local type declaration" {
+  let src = "import ./dep.vibe { effect Box, run_point, point_producer }\nfn caller() -> Int with Box { run_point(point_producer) }\n"
+  assert_eq(projected_published_error(lowercase_nominal_dependency(), src), "")
+}
+
+test "an explicitly imported lowercase nominal remains compatible" {
+  let src = "import ./dep.vibe { effect Box, run_point, struct point }\nfn caller() -> Int with Box { run_point(() -> { perform Box::Put(point::{ x: 42 }) }) }\n"
+  assert_eq(projected_published_error(lowercase_nominal_dependency(), src), "")
+}
+
+test "a lowercase published formal stays independent of a declared alias of the same name" {
+  let dep = "export effect Box[T] { Put(T) -> Int }\nexport type t = Int\nexport fn make[t](x: t) -> () -> Int with Box[t] { () -> { 42 } }\nexport fn consume(f: () -> Int with Box[String]) -> Int { 42 }\n"
+  let src = "import ./dep.vibe { effect Box, make, consume }\nstruct t { local: Int }\nfn caller() -> Int { consume(Array::get([make], 0)(\"abc\")) }\n"
+  assert_eq(projected_published_error(dep, src), "")
 }
