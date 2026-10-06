@@ -115,6 +115,7 @@ import ./checker_eq_unbounded_formal_msg.vibe {
   formal_var_binder_reps,
   formal_var_display_subst,
   formal_var_reps,
+  generic_callback_instance,
   generic_decl_of_scheme,
   published_row_formal_ids,
   resolve_callee_formal_args,
@@ -141,7 +142,7 @@ import ./checker_merge_capture_provenance.vibe {
 /// the result (`f: () -> Int with Box[T]`) is spelled the same way, so an
 /// importer passing a lambda for `f` can read `T` as the type its call gives
 /// it. An exception kind there is left as written.
-export fn publish_row_formals(t: Type, val: Expr, env: TypeEnv, defs: Array[TypeDef]) -> Type {
+export fn publish_row_formals(t: Type, val: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst) -> Type {
   // The declaration whose formals the row names: the value itself, or -- for
   // `export let get = get0` -- the aliased binding's, whose formals sit at the
   // same positions (Codex on #3056).
@@ -227,8 +228,18 @@ export fn publish_row_formals(t: Type, val: Expr, env: TypeEnv, defs: Array[Type
     // order (`f[A, B](b: B, a: A)` aliased generalizes as `B, A`), so each
     // marker is respelled against the variable it now stands for, found by
     // position in the two signatures (Codex on #3056).
-    (CtForAll(vars, bounds, CtFn(sparams, sret, row_opt)), None) => match val {
-      EIdent(src, _) => match env_lookup(env, src) {
+    (CtForAll(vars, bounds, CtFn(sparams, sret, row_opt)), None) => {
+      // An extracted value is generalized afresh just like a named alias.
+      // Its original instantiated type, not its expression syntax, identifies
+      // the source whose quantifier indices the copied rows still carry.
+      let source = match val {
+        EIdent(src, _) => env_lookup(env, src),
+        _ => match generic_callback_instance(CtFn(sparams, sret, row_opt), s) {
+          Some((scheme, _)) => Some(scheme),
+          None => None
+        }
+      }
+      match source {
         Some(CtForAll(src_vars, _, src_body)) => {
           let body = CtFn(sparams, sret, None)
           let respell_nested = (row: String) -> String {
@@ -243,8 +254,7 @@ export fn publish_row_formals(t: Type, val: Expr, env: TypeEnv, defs: Array[Type
           }, map_fn_rows(sret, respell_nested), respelled_row))
         },
         _ => t
-      },
-      _ => t
+      }
     },
     _ => t
   }

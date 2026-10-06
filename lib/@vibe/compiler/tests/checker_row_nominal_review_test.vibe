@@ -209,3 +209,75 @@ test "importing a nested payload's nominal preserves matching contracts" {
   let good = nested_importer(", struct Pt", "() -> Int with Inner[Pt] { perform Inner::Put(Pt::{ x: 42 }) }")
   assert_eq(projected_error(nested_dependency(), good), "")
 }
+
+fn aggregate_generic_dependency() -> String {
+  "export effect Box[T] { Put(T) -> Int }\nexport struct Wrap[T] { v: T }\nexport fn mk_wrap[T](v: T) -> Wrap[T] { Wrap::{ v: v } }\nexport fn run_wrap[T](x: T, f: () -> Int with Box[Wrap[T]], len: (T) -> Int) -> Int { handle { f() } with { Box::Put(w) => { let q: Wrap[T] = w; resume(len(q.v) + len(x) * 0) } } }\nexport fn run_swapped[A, B](b: B, a: A, f: () -> Int with Box[Wrap[A]], len: (A) -> Int) -> Int { handle { f() } with { Box::Put(w) => { let q: Wrap[A] = w; resume(len(q.v) + len(a) * 0) } } }\n"
+}
+
+fn aggregate_generic_importer(style: String, payload: String) -> String {
+  let call = match style {
+    "alias" => "let selected = Array::get([run_wrap], 0); selected(\"abc\", () -> { perform Box::Put(\{payload}) }, (s) -> String::length(s))",
+    "alias swapped" => "let selected = Array::get([run_swapped], 0); selected(17, \"abc\", () -> { perform Box::Put(\{payload}) }, (s) -> String::length(s))",
+    "swapped" => "Array::get([run_swapped], 0)(17, \"abc\", () -> { perform Box::Put(\{payload}) }, (s) -> String::length(s))",
+    _ => "Array::get([run_wrap], 0)(\"abc\", () -> { perform Box::Put(\{payload}) }, (s) -> String::length(s))"
+  }
+  "import ./dep.vibe { effect Box, run_wrap, run_swapped, mk_wrap }\nfn caller() -> Int with Box { \{call} }\n"
+}
+
+test "a generic callee extracted from an array accepts its concrete callback payload" {
+  assert_eq(projected_error(aggregate_generic_dependency(), aggregate_generic_importer("direct", "mk_wrap(\"xy\")")), "")
+}
+
+test "a generic callee extracted from an array rejects a different callback payload" {
+  let message = projected_error(aggregate_generic_dependency(), aggregate_generic_importer("direct", "41"))
+  assert(String::contains(message, "expected Wrap[String], got Int"))
+}
+
+test "an extracted generic callee keeps its callback contract through a local alias" {
+  assert_eq(projected_error(aggregate_generic_dependency(), aggregate_generic_importer("alias", "mk_wrap(\"xy\")")), "")
+}
+
+test "an extracted generic callee alias cannot erase a mismatched callback contract" {
+  let message = projected_error(aggregate_generic_dependency(), aggregate_generic_importer("alias", "41"))
+  assert(String::contains(message, "expected Wrap[String], got Int"))
+}
+
+test "an extracted generic callee maps quantified variables by the original signature" {
+  assert_eq(projected_error(aggregate_generic_dependency(), aggregate_generic_importer("swapped", "mk_wrap(\"xy\")")), "")
+}
+
+test "reordered quantified variables still reject a different callback payload" {
+  let message = projected_error(aggregate_generic_dependency(), aggregate_generic_importer("swapped", "41"))
+  assert(String::contains(message, "expected Wrap[String], got Int"))
+}
+
+test "an extracted generic alias respells reordered quantifiers" {
+  assert_eq(projected_error(aggregate_generic_dependency(), aggregate_generic_importer("alias swapped", "mk_wrap(\"xy\")")), "")
+}
+
+test "an extracted generic alias with reordered quantifiers rejects an Int payload" {
+  let message = projected_error(aggregate_generic_dependency(), aggregate_generic_importer("alias swapped", "41"))
+  assert(String::contains(message, "expected Wrap[String], got Int"))
+}
+
+test "an extracted generic formal is independent of a same-named importer nominal" {
+  let importer = "struct T { n: Int }\n" + aggregate_generic_importer("direct", "mk_wrap(\"xy\")")
+  assert_eq(projected_error(aggregate_generic_dependency(), importer), "")
+}
+
+fn reused_generic_dependency() -> String {
+  "export effect Box[T] { Put(T) -> Int }\nexport struct Wrap[T] { v: T }\nexport fn mk_wrap[T](v: T) -> Wrap[T] { Wrap::{ v: v } }\nexport fn first[A, B](a: A, b: B, f: () -> Int with Box[Wrap[A]]) -> Int { handle { f() } with { Box::Put(w) => { let q: Wrap[A] = w; resume(42) } } }\nexport fn second[A, B](b: B, a: A, f: () -> Int with Box[Wrap[A]]) -> Int { handle { f() } with { Box::Put(w) => { let q: Wrap[A] = w; resume(42) } } }\n"
+}
+
+fn reused_generic_importer(payload: String) -> String {
+  "import ./dep.vibe { effect Box, Wrap, first, second, mk_wrap }\nfn caller() -> Int with Box { let unused: (String, Int, () -> Int with Box[Wrap[String]]) -> Int = first; let fs = [second]; Array::get(fs, 0)(\"abc\", 17, () -> { perform Box::Put(mk_wrap(11)) }); Array::get(fs, 0)(\"abc\", 17, () -> { perform Box::Put(mk_wrap(\{payload})) }) }\n"
+}
+
+test "reusing an extracted generic keeps its own quantified variable identities" {
+  assert_eq(projected_error(reused_generic_dependency(), reused_generic_importer("19")), "")
+}
+
+test "a structurally equal instance cannot supply another generic's row binders" {
+  let message = projected_error(reused_generic_dependency(), reused_generic_importer("\"WRONG\""))
+  assert(String::contains(message, "expected Wrap[Int], got Wrap[String]"))
+}

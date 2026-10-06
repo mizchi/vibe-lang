@@ -1168,6 +1168,100 @@ let generic_fn_decls_cell: Array[(String, Array[String], Array[(String, Option[T
 /// generic binding, recorded where the call position instantiates the scheme.
 export let callee_inst_types_cell: Array[(Int, Type, Type, String)] = []
 
+// A published generic used as a VALUE has already been instantiated when a
+// later expression calls it (an array element, for example). Keep the exact
+// scheme/instance pair while checking this module so callback rows still read
+// their quantifier indices through that original signature. Ordinary generics
+// without a published formal in a callback row allocate no entry.
+let generic_callback_instances: Array[(Type, Type)] = []
+
+/// Record the original scheme of an instantiated published generic callback.
+export fn note_generic_callback_instance(scheme: Type, inst: Type) -> Unit {
+  match scheme {
+    CtForAll(vars, _, CtFn(params, _, _)) => {
+      let mut needed = false
+      for param in params {
+        match param {
+          CtFn(_, _, Some(row)) => if !needed && String::contains(row, "$") {
+            let marked: Array[(String, Int)] = []
+            published_row_formal_ids(Some(row), vars, marked)
+            needed = Array::length(marked) > 0
+          } else {
+            ()
+          },
+          _ => ()
+        }
+      }
+      if needed {
+        Array::push(generic_callback_instances, (scheme, inst))
+      } else {
+        ()
+      }
+    },
+    _ => ()
+  }
+}
+
+/// Recover a value callee's scheme by its instantiated type identities, never
+/// by its name or the order in which its type variables occur in parameters.
+export fn generic_callback_instance(inst: Type, s: Subst) -> Option[(Type, Type)] {
+  // Prefer the original variable identities before applying any substitution:
+  // different quantifier orders can otherwise collapse to the same ground type.
+  for entry in generic_callback_instances {
+    let (scheme, original) = entry
+    if original == inst {
+      return Some((scheme, inst))
+    }
+  }
+  let mut out = None
+  let mut bindings: Array[Type] = []
+  let mut ambiguous = false
+  for entry in generic_callback_instances {
+    let (scheme, original) = entry
+    if subst_apply(s, original) == subst_apply(s, inst) {
+      let current = callback_instance_bindings(scheme, original, s)
+      match out {
+        None => {
+          out = Some((scheme, inst))
+          bindings = current
+        },
+        Some(_) => if bindings != current {
+          ambiguous = true
+        } else {
+          ()
+        }
+      }
+    }
+  }
+  if ambiguous {
+    None
+  } else {
+    out
+  }
+}
+
+/// Types in quantifier-index order, for comparing the meaning of published
+/// row markers when substitution made two instance signatures look alike.
+fn callback_instance_bindings(scheme: Type, inst: Type, s: Subst) -> Array[Type] {
+  match scheme {
+    CtForAll(vars, _, body) => {
+      let pairs: Array[(Int, Type)] = []
+      scheme_var_types_from(body, inst, pairs)
+      for id in vars {
+        let mut ty = CtUnknown
+        for pair in pairs {
+          let (pid, pt) = pair
+          if pid == id {
+            ty = subst_apply(s, pt)
+          }
+        }
+        ty
+      }
+    },
+    _ => []
+  }
+}
+
 /// #3027: every generic binding's annotations, keyed by the scheme it was
 /// bound with -- a top-level declaration (its hoisted signature and its
 /// checked one) and a local generic lambda alike. A call finds its callee's
@@ -1235,6 +1329,7 @@ fn note_generic_alias(val: Expr, bound: Type, env: TypeEnv) -> Unit {
 export fn set_generic_fn_decls(stmts: Array[Stmt]) -> Unit {
   Array::truncate(generic_fn_decls_cell, 0)
   Array::truncate(callee_inst_types_cell, 0)
+  Array::truncate(generic_callback_instances, 0)
   Array::truncate(generic_scheme_decls_cell, 0)
   let mut i = 0
   while i < Array::length(stmts) {

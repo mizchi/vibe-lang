@@ -140,6 +140,7 @@ import ./checker_eq_unbounded_formal_msg.vibe {
   check_interp_formal,
   effect_op_sig,
   effect_tparams,
+  generic_callback_instance,
   interp_name_is_shim,
   is_bytestream_named_type,
   note_local_generic_binding,
@@ -161,6 +162,7 @@ import ./checker_infer_binop_type.vibe {
   param_types_are_spawn_shaped,
   record_index_receiver,
   report_spawnable_violations,
+  resolve_bare_var,
   resolve_tparams_in,
   typed_occurrence_capture_enter_virtual_child,
   typed_occurrence_capture_frame_depth,
@@ -1335,7 +1337,10 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
           } else {
             ()
           }
-          let result = match subst_apply(s2, obj_ty) {
+          // Keep a function element's original variable identities. Applying
+          // the whole substitution here erases which generic instance its row
+          // markers belong to once its arguments have become ground types.
+          let result = match resolve_bare_var(s2, obj_ty) {
             CtArray(elem) => elem,
             _ => CtUnknown
           }
@@ -2465,7 +2470,7 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                 },
                 None => {
                   let (ct, s1, c1) = check_child(callee, env, defs, s, c, errors, tytab, capture, lane)
-                  let (callee_param_tys, callee_inst) = callee_callback_params(ct)
+                  let (callee_param_tys, callee_inst) = callee_callback_params(ct, s1)
                   let alen = Array::length(args)
                   let arg_tys = array_empty()
                   let mut ai = 0
@@ -2543,7 +2548,7 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
               }
               let (callee_param_tys, callee_inst) = match (ct, opened_callee_ty) {
                 (CtForAll(_, _, _), CtFn(oparams, _, _)) => (oparams, Some((ct, opened_callee_ty))),
-                _ => callee_callback_params(ct)
+                _ => callee_callback_params(ct, s1)
               }
               let alen = Array::length(args)
               let arg_tys = array_empty()
@@ -2617,12 +2622,12 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
 }
 
 /// #3311: the parameter types of a callee checked as an expression, for
-/// `callback_arg_env`. A generic one is not instantiated before its arguments
-/// are checked, so it is handed over with no instantiation, and a callback row
-/// that names one of its formals hands the lambda nothing.
-fn callee_callback_params(ct: Type) -> (Array[Type], Option[(Type, Type)]) {
+/// `callback_arg_env`. A value callee may already be an instantiated generic;
+/// its recorded scheme keeps published row formals tied to that instance.
+/// An unopened scheme is handed over without inventing an instantiation.
+fn callee_callback_params(ct: Type, s: Subst) -> (Array[Type], Option[(Type, Type)]) {
   match ct {
-    CtFn(params, _, _) => (params, None),
+    CtFn(params, _, _) => (params, generic_callback_instance(ct, s)),
     CtForAll(_, _, CtFn(params, _, _)) => (params, Some((ct, CtUnknown))),
     _ => (array_empty(), None)
   }
