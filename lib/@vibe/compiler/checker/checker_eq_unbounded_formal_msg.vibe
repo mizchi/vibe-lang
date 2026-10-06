@@ -1398,9 +1398,9 @@ export fn generic_decl_of_scheme(scheme: Type) -> Option[(Array[String], Array[(
   decl
 }
 
-/// Each argument that is exactly one of the callee's type formals, replaced by
-/// the concrete type that formal takes at the call at `coff`; every other
-/// argument, and any formal that cannot be resolved, is left as written.
+/// Each whole formal word in a callee row argument, including a nested
+/// constructor argument, replaced by the concrete type it takes at `coff`.
+/// Authoritative nominal words and unresolved formals are left as written.
 export fn resolve_callee_formal_args(wants: Array[String], env_scheme: Option[Type], coff: Int, defs: Array[TypeDef], s: Subst) -> Array[String] {
   let mut call = None
   let mut ti = 0
@@ -1432,22 +1432,57 @@ export fn resolve_callee_formal_args(wants: Array[String], env_scheme: Option[Ty
       let mut wi = 0
       while wi < Array::length(wants) {
         let w = String::trim(Array::get(wants, wi))
-        let mut rep = w
-        let mut ni = 0
-        while ni < Array::length(texts) {
-          let (fname, text) = Array::get(texts, ni)
-          if fname == w {
-            rep = text
-          }
-          ni = ni + 1
-        }
-        Array::push(out, rep)
+        Array::push(out, instantiate_row_arg_words(w, texts))
         wi = wi + 1
       }
       out
     },
     None => wants
   }
+}
+
+/// Substitute whole formal words without rewriting a marked nominal head.
+/// Published names include a `$K` index; it belongs to the same token.
+fn instantiate_row_arg_words(arg: String, bindings: Array[(String, String)]) -> String {
+  if Array::length(bindings) == 0 {
+    return arg
+  }
+  let sb = StringBuilder::new()
+  let n = String::length(arg)
+  let mut i = 0
+  while i < n {
+    let c = String::byte_at(arg, i)
+    let word = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '$'
+    if word {
+      let start = i
+      i = i + 1
+      let mut scanning = true
+      while i < n && scanning {
+        let next = String::byte_at(arg, i)
+        if (next >= 'a' && next <= 'z') || (next >= 'A' && next <= 'Z') || (next >= '0' && next <= '9') || next == '_' || next == '$' {
+          i = i + 1
+        } else {
+          scanning = false
+        }
+      }
+      let name = String::substring(arg, start, i)
+      let mut text = name
+      let protected = start > 0 && (String::byte_at(arg, start - 1) == '^' || String::byte_at(arg, start - 1) == '\'')
+      if !protected {
+        for binding in bindings {
+          let (formal, value) = binding
+          if name == formal {
+            text = value
+          }
+        }
+      }
+      StringBuilder::push(sb, text)
+    } else {
+      StringBuilder::push(sb, String::substring(arg, i, i + 1))
+      i = i + 1
+    }
+  }
+  StringBuilder::freeze(sb)
 }
 
 /// Each of a generic callee's formals that its instantiation at one call
@@ -1573,7 +1608,7 @@ export fn callee_formal_marked_texts(decl: Option[(Array[String], Array[(String,
 /// variable: any instantiation may fill it) and `~` a part the pass must not
 /// judge (a function or record type, a higher-kinded application). Aliases
 /// are already expanded here, so no word of this text is an alias.
-fn row_marked_type_text(t: Type, reps: Array[(Int, String)]) -> String {
+export fn row_marked_type_text(t: Type, reps: Array[(Int, String)]) -> String {
   match t {
     CtInt => "^Int",
     CtDouble => "^Double",

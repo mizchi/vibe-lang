@@ -89,6 +89,10 @@ import ./checker_effects.vibe {
   row_items_top_level
 }
 
+import ./checker_effects_throw_payload_kind.vibe {
+  row_label_args_differ
+}
+
 import ./checker_escape.vibe {
   diag_report_into
 }
@@ -119,6 +123,7 @@ import ./checker_eq_unbounded_formal_msg.vibe {
   generic_decl_of_scheme,
   published_row_formal_ids,
   resolve_callee_formal_args,
+  row_marked_type_text,
   scheme_var_types_from,
   struct_field_names_match
 }
@@ -1004,7 +1009,7 @@ export fn check_handle_inst_vs_callee_rows(body: Expr, insts: Array[(String, Arr
                   if mismatch {
                     // Name the requirement as this call resolves it: a
                     // callee formal reads as the type it takes here.
-                    let shown_arg = String::join(wants, ", ")
+                    let shown_arg = strip_published_formal_suffixes(row_marked_type_display(String::join(wants, ", ")))
                     let shown_item = String::concat(ename, String::concat("[", String::concat(shown_arg, "]")))
                     Array::push(errors, String::concat("handler instantiates `", String::concat(ename, String::concat("[", String::concat(have_text, String::concat("]` but the handled body requires `", String::concat(shown_item, String::concat("` (from `", String::concat(cname, String::concat("`) -- make the arms answer `", String::concat(shown_arg, String::concat("`, or handle `", String::concat(cname, String::concat("` with a handler for `", String::concat(shown_item, String::concat("`", off_marker(coff)))))))))))))))))
                   }
@@ -1500,6 +1505,15 @@ fn handle_locals_with_pat(locals: String, pat: Pat) -> String {
 /// `Box[Int]` -- since such a spelling has one meaning. An alias, a type formal
 /// or an unresolved handler type is not judged (#3010, #3022 review).
 fn effect_arg_mismatch(have: Type, want0: String, defs: Array[TypeDef]) -> Bool {
+  if String::contains(want0, "^") {
+    // A published marker has already resolved the nominal. Compare it with
+    // the handler's resolved type through the same authoritative row reader;
+    // re-reading the publisher's name in the importer loses that authority.
+    let actual = String::concat("Arg[", String::concat(row_marked_type_text(have, [
+    ]), "]"))
+    let required = String::concat("=Arg[", String::concat(want0, "]"))
+    return row_label_args_differ(actual, required)
+  }
   // A non-generic alias means its target, so it is read through (#3022
   // review): `with State[A]` for `type A = Int` compares as `State[Int]`.
   let want = expand_alias_words(want0, defs, 0)

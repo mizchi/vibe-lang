@@ -14,7 +14,7 @@ import @vibe/compiler/runtime {
   build_import_envs_from_interfaces, dependency_interface_set_new, dependency_interface_set_publish
 }
 import @vibe/compiler/syntax {
-  lex, parse_program
+  lex, lex_with_offsets, parse_program, parse_program_located
 }
 import ./checker_parity_test_support.vibe {
   check_source_err_contains, check_source_ok
@@ -49,7 +49,8 @@ fn only_callback_row(t: Type) -> String {
 fn projected_error(dependency: String, importer: String) -> String with Env + Exception {
   let interfaces = dependency_interface_set_new()
   dependency_interface_set_publish(interfaces, "/dep.vibe", check_program(parse_program(lex(dependency))))
-  let stmts = parse_program(lex(importer))
+  let (tokens, starts, _) = lex_with_offsets(importer)
+  let stmts = parse_program_located(tokens, starts, importer)
   let errors: Array[String] = []
   let (env, _) = build_import_envs_from_interfaces(stmts, "/", interfaces, [
     "/dep.vibe"
@@ -339,4 +340,54 @@ test "record wrapped callbacks instantiate the extracted generic's formal" {
 test "record wrapped callbacks reject a mismatched caller nominal" {
   let message = projected_error(wrapped_callback_dependency("record"), wrapped_callback_importer("record", "T::{ n: 17 }"))
   assert(String::contains(message, "Wrap[String]"))
+}
+
+fn handler_marker_dependency() -> String {
+  "export effect Box[T] { Put(T) -> Int }\nexport struct Pt { x: Int }\nexport enum Shade { Light }\nexport fn producer() -> Int with Box[Pt] { perform Box::Put(Pt::{ x: 42 }) }\nexport fn enum_producer() -> Int with Box[Shade] { perform Box::Put(Light) }\nexport fn use_pt(p: Pt) -> Int { p.x }\nexport fn use_shade(s: Shade) -> Int { match s { Light => 42 } }\nexport fn array_producer() -> Int with Box[Array[Pt]] { perform Box::Put([Pt::{ x: 42 }]) }\n"
+}
+
+test "an imported nominal producer cannot be handled as Int without importing the nominal" {
+  let importer = "import ./dep.vibe { effect Box, producer }\nfn caller() -> Int { handle { producer() } with { Box::Put(n) => { let q: Int = n; resume(q + 1) } } }\n"
+  let message = projected_error(handler_marker_dependency(), importer)
+  assert(String::contains(message, "handler instantiates `Box[Int]`"))
+  assert(String::contains(message, "requires `Box[Pt]`"))
+  assert(!String::contains(message, "^Pt"))
+}
+
+test "an imported enum producer cannot be handled as Int without importing the enum" {
+  let importer = "import ./dep.vibe { effect Box, enum_producer }\nfn caller() -> Int { handle { enum_producer() } with { Box::Put(n) => { let q: Int = n; resume(q + 1) } } }\n"
+  let message = projected_error(handler_marker_dependency(), importer)
+  assert(String::contains(message, "requires `Box[Shade]`"))
+  assert(!String::contains(message, "^^Shade"))
+}
+
+test "an imported nominal array producer cannot be handled as an Int array" {
+  let importer = "import ./dep.vibe { effect Box, array_producer }\nfn caller() -> Int { handle { array_producer() } with { Box::Put(n) => { let q: Array[Int] = n; resume(Array::get(q, 0) + 1) } } }\n"
+  let message = projected_error(handler_marker_dependency(), importer)
+  assert(String::contains(message, "requires `Box[Array[Pt]]`"))
+}
+
+test "compatible imported struct and enum handlers retain nominal authority" {
+  let importer = "import ./dep.vibe { effect Box, producer, enum_producer, struct Pt, enum Shade }\nfn struct_caller() -> Int { handle { producer() } with { Box::Put(n) => { let q: Pt = n; resume(q.x) } } }\nfn enum_caller() -> Int { handle { enum_producer() } with { Box::Put(n) => { let q: Shade = n; resume(match q { Light => 42 }) } } }\n"
+  assert_eq(projected_error(handler_marker_dependency(), importer), "")
+}
+
+test "nominal handler types inferred through imported consumers need no type import" {
+  let importer = "import ./dep.vibe { effect Box, producer, enum_producer, use_pt, use_shade }\nfn struct_caller() -> Int { handle { producer() } with { Box::Put(n) => resume(use_pt(n)) } }\nfn enum_caller() -> Int { handle { enum_producer() } with { Box::Put(n) => resume(use_shade(n)) } }\n"
+  assert_eq(projected_error(handler_marker_dependency(), importer), "")
+}
+
+fn generic_handler_dependency() -> String {
+  "export effect Box[T] { Put(T) -> Int }\nexport struct Wrap[T] { v: T }\nexport fn producer[T](x: T) -> Int with Box[Wrap[T]] { perform Box::Put(Wrap::{ v: x }) }\n"
+}
+
+test "an imported generic nominal producer fixes its nested row argument for its handler" {
+  let importer = "import ./dep.vibe { effect Box, Wrap, producer }\nfn caller() -> Int { handle { producer(\"abc\") } with { Box::Put(n) => { let q: Wrap[String] = n; resume(String::length(q.v)) } } }\n"
+  assert_eq(projected_error(generic_handler_dependency(), importer), "")
+}
+
+test "an imported generic nominal producer cannot be handled at a different nested argument" {
+  let importer = "import ./dep.vibe { effect Box, Wrap, producer }\nfn caller() -> Int { handle { producer(\"abc\") } with { Box::Put(n) => { let q: Wrap[Int] = n; resume(q.v + 1) } } }\n"
+  let message = projected_error(generic_handler_dependency(), importer)
+  assert(String::contains(message, "requires `Box[Wrap[String]]`"))
 }
