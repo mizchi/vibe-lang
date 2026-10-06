@@ -559,3 +559,68 @@ test "a generic forwarding parameter's row keeps its declaration formal" {
   let source = "effect Box[T] { Put(T) -> Int }\nexport fn run_len[T](x: T, f: () -> Int with Box[T], len: (T) -> Int) -> Int { handle { f() } with { Box::Put(v) => resume(len(v) + len(x) * 0) } }\nfn forward[T](x: T, f: () -> Int with Box[T], len: (T) -> Int) -> Int { run_len(x, f, len) }\nexport let forwarded = forward\n"
   assert(check_source_ok(source))
 }
+
+fn generic_result_dependency() -> String {
+  "export effect Box[T] { Put(T) -> Int }\nexport fn make[T](x: T) -> () -> Int with Box[T] { () -> { 42 } }\nexport fn consume_int(f: () -> Int with Box[Int]) -> Int { handle { f() } with { Box::Put(n) => resume(n + 1) } }\nexport fn consume_string(f: () -> Int with Box[String]) -> Int { handle { f() } with { Box::Put(s) => resume(String::length(s)) } }\n"
+}
+
+fn generic_result_importer(style: String, consumer: String) -> String {
+  let call = match style {
+    "named" => "make(\"abc\")",
+    "alias" => "let selected = Array::get([make], 0); selected(\"abc\")",
+    _ => "Array::get([make], 0)(\"abc\")"
+  }
+  "import ./dep.vibe { effect Box, make, consume_int, consume_string }\nfn caller() -> Int { let callback = { \{call} }; \{consumer}(callback) }\n"
+}
+
+test "a generic result keeps its String callback contract through a named call" {
+  assert_eq(projected_error(generic_result_dependency(), generic_result_importer("named", "consume_string")), "")
+}
+
+test "an extracted generic result keeps its String callback contract" {
+  assert_eq(projected_error(generic_result_dependency(), generic_result_importer("direct", "consume_string")), "")
+}
+
+test "an extracted generic result preserves its row through an alias" {
+  assert_eq(projected_error(generic_result_dependency(), generic_result_importer("alias", "consume_string")), "")
+}
+
+test "a generic String callback result cannot satisfy an Int consumer" {
+  for style in ["named", "direct", "alias"] {
+    let message = projected_error(generic_result_dependency(), generic_result_importer(style, "consume_int"))
+    assert(String::contains(message, "performs `Box` at `String`"))
+  }
+}
+
+test "a joined callee cannot select one of two different generic callback contracts" {
+  let dep = "export effect Box[T] { Put(T) -> Int }\nexport fn first[A, B](a: A, b: B, f: () -> Int with Box[A]) -> Int { 42 }\nexport fn second[A, B](a: A, b: B, f: () -> Int with Box[B]) -> Int { 42 }\n"
+  for index in [0, 1] {
+    let src = "import ./dep.vibe { effect Box, first, second }\nfn caller() -> Int with Box { Array::get([first, second], \{index})(\"abc\", 17, () -> { perform Box::Put(\"xyz\") }) }\n"
+    let message = projected_error(dep, src)
+    assert(String::contains(message, "import `A` into this module"))
+  }
+}
+
+test "a generic result retains nominal struct and enum payload kinds" {
+  let dep = generic_result_dependency() + "export struct Point_Type { x: Int }\nexport enum Shade { Light }\nexport fn consume_point(f: () -> Int with Box[Point_Type]) -> Int { 42 }\nexport fn consume_shade(f: () -> Int with Box[Shade]) -> Int { 42 }\n"
+  let src = "import ./dep.vibe { effect Box, make, struct Point_Type, Shade, consume_point, consume_shade }\nfn caller() -> Int { consume_point(Array::get([make], 0)(Point_Type::{ x: 42 })); consume_shade(Array::get([make], 0)(Light)) }\n"
+  assert_eq(projected_error(dep, src), "")
+}
+
+test "a located generic factory may return its declared formal callback row" {
+  let source = "effect Box[T] { Put(T) -> Int }\nfn make[T](x: T) -> () -> Int with Box[T] { () -> Int with Box[T] { perform Box::Put(x) } }\n"
+  let (tokens, starts, _) = lex_with_offsets(source)
+  let stmts = parse_program_located(tokens, starts, source)
+  let _ = check_program(stmts)
+}
+
+test "an unresolved generic result cannot borrow an importer nominal named T" {
+  let src = "import ./dep.vibe { effect Box, make }\nstruct T { n: Int }\nfn consume(f: () -> Int with Box[T]) -> Int { handle { f() } with { Box::Put(p) => { let q: T = p; resume(q.n) } } }\nfn caller() -> Int { consume(Array::get([make], 0)([])) }\n"
+  let message = projected_error(generic_result_dependency(), src)
+  assert(String::contains(message, "performs `Box` at `Array["))
+}
+
+test "an unresolved generic result keeps its array payload available for inference" {
+  let src = "import ./dep.vibe { effect Box, make }\nfn consume(f: () -> Int with Box[Array[String]]) -> Int { 42 }\nfn caller() -> Int { consume(Array::get([make], 0)([])) }\n"
+  assert_eq(projected_error(generic_result_dependency(), src), "")
+}

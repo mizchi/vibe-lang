@@ -830,6 +830,28 @@ fn struct_field_row_instantiations(row: String, recv: Type, defs: Array[TypeDef]
   }
 }
 
+/// Keep every generic result callback's payload tied to this call instance,
+/// including unresolved ordinary type variables. Existing payload labels carry
+/// that identity through aliases, containers and later substitutions.
+export fn bind_generic_result_effect_instantiations(t: Type, callee: Option[(Type, Type)], defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], off: Int) -> (Type, Subst, Int) {
+  match callee {
+    Some((CtForAll(_, _, _), _)) => if field_effect_type_has_row(t) {
+      let read = (row: String) -> Array[Type] {
+        let items = callback_row_instantiations(row, callee, defs)
+        if Array::length(published_marker_words(row)) > 0 && Array::length(items) == 0 {
+          let readable = strip_published_row_marks(row)
+          Array::push(errors, "write a concrete callback result row: `\{readable}` has no payload type resolved by this call\{off_marker(off)}")
+        }
+        items
+      }
+      bind_field_effect_type(t, read, defs, s, c)
+    } else {
+      (t, s, c)
+    },
+    _ => (t, s, c)
+  }
+}
+
 /// Resolve a generic struct field's function rows in the receiver's scope
 /// before the field leaves that scope. The existing payload labels preserve
 /// this evidence through arbitrary projections, aliases and containers.
@@ -845,7 +867,9 @@ fn bind_struct_field_effect_receiver(t: Type, recv: Type, defs: Array[TypeDef], 
   match recv {
     CtNamed(name, args) => match find_typedef(defs, name) {
       Some(TDStruct(_, _, _, params)) => if Array::length(params) > 0 && Array::length(params) == Array::length(args) {
-        bind_field_effect_type(t, recv, defs, s, c)
+        bind_field_effect_type(t, (row: String) -> Array[Type] {
+          struct_field_row_instantiations(row, recv, defs)
+        }, defs, s, c)
       } else {
         (t, s, c)
       },
@@ -898,24 +922,24 @@ fn field_effect_types_have_row(items: Array[Type]) -> Bool {
   found
 }
 
-fn bind_field_effect_type(t: Type, recv: Type, defs: Array[TypeDef], s: Subst, c: Int) -> (Type, Subst, Int) {
+fn bind_field_effect_type(t: Type, read: (String) -> Array[Type], defs: Array[TypeDef], s: Subst, c: Int) -> (Type, Subst, Int) {
   match t {
     CtFn(params, ret, row) => {
-      let (ps, s1, c1) = bind_field_effect_types(params, recv, defs, s, c)
-      let (rt, s2, c2) = bind_field_effect_type(ret, recv, defs, s1, c1)
-      let (eff, s3, c3) = bind_field_effect_row(row, recv, defs, s2, c2)
+      let (ps, s1, c1) = bind_field_effect_types(params, read, defs, s, c)
+      let (rt, s2, c2) = bind_field_effect_type(ret, read, defs, s1, c1)
+      let (eff, s3, c3) = bind_field_effect_row(row, read, defs, s2, c2)
       (CtFn(ps, rt, eff), s3, c3)
     },
     CtArray(e) => {
-      let (et, ns, nc) = bind_field_effect_type(e, recv, defs, s, c)
+      let (et, ns, nc) = bind_field_effect_type(e, read, defs, s, c)
       (CtArray(et), ns, nc)
     },
     CtOption(e) => {
-      let (et, ns, nc) = bind_field_effect_type(e, recv, defs, s, c)
+      let (et, ns, nc) = bind_field_effect_type(e, read, defs, s, c)
       (CtOption(et), ns, nc)
     },
     CtTuple(items) => {
-      let (ts, ns, nc) = bind_field_effect_types(items, recv, defs, s, c)
+      let (ts, ns, nc) = bind_field_effect_types(items, read, defs, s, c)
       (CtTuple(ts), ns, nc)
     },
     CtRecord(fields) => {
@@ -923,7 +947,7 @@ fn bind_field_effect_type(t: Type, recv: Type, defs: Array[TypeDef], s: Subst, c
       let mut nc = c
       let fs = for field in fields {
         let (name, ft) = field
-        let (nt, next_s, next_c) = bind_field_effect_type(ft, recv, defs, ns, nc)
+        let (nt, next_s, next_c) = bind_field_effect_type(ft, read, defs, ns, nc)
         ns = next_s
         nc = next_c
         (name, nt)
@@ -931,23 +955,23 @@ fn bind_field_effect_type(t: Type, recv: Type, defs: Array[TypeDef], s: Subst, c
       (CtRecord(fs), ns, nc)
     },
     CtNamed(name, args) => {
-      let (ts, ns, nc) = bind_field_effect_types(args, recv, defs, s, c)
+      let (ts, ns, nc) = bind_field_effect_types(args, read, defs, s, c)
       (CtNamed(name, ts), ns, nc)
     },
     CtApplied(head, args) => {
-      let (ht, s1, c1) = bind_field_effect_type(head, recv, defs, s, c)
-      let (ts, ns, nc) = bind_field_effect_types(args, recv, defs, s1, c1)
+      let (ht, s1, c1) = bind_field_effect_type(head, read, defs, s, c)
+      let (ts, ns, nc) = bind_field_effect_types(args, read, defs, s1, c1)
       (CtApplied(ht, ts), ns, nc)
     },
     _ => (t, s, c)
   }
 }
 
-fn bind_field_effect_types(items: Array[Type], recv: Type, defs: Array[TypeDef], s: Subst, c: Int) -> (Array[Type], Subst, Int) {
+fn bind_field_effect_types(items: Array[Type], read: (String) -> Array[Type], defs: Array[TypeDef], s: Subst, c: Int) -> (Array[Type], Subst, Int) {
   let mut ns = s
   let mut nc = c
   let ts = for item in items {
-    let (nt, next_s, next_c) = bind_field_effect_type(item, recv, defs, ns, nc)
+    let (nt, next_s, next_c) = bind_field_effect_type(item, read, defs, ns, nc)
     ns = next_s
     nc = next_c
     nt
@@ -955,7 +979,7 @@ fn bind_field_effect_types(items: Array[Type], recv: Type, defs: Array[TypeDef],
   (ts, ns, nc)
 }
 
-fn bind_field_effect_row(row: Option[String], recv: Type, defs: Array[TypeDef], s: Subst, c: Int) -> (Option[String], Subst, Int) {
+fn bind_field_effect_row(row: Option[String], read: (String) -> Array[Type], defs: Array[TypeDef], s: Subst, c: Int) -> (Option[String], Subst, Int) {
   match row {
     Some(text) => {
       let out: Array[String] = []
@@ -963,7 +987,7 @@ fn bind_field_effect_row(row: Option[String], recv: Type, defs: Array[TypeDef], 
       let mut nc = c
       for raw in row_items_top_level(text) {
         let label = String::trim(raw)
-        let items = struct_field_row_instantiations(label, recv, defs)
+        let items = read(label)
         let vouched = published_nominal_names(published_nominal_words(label))
         let mut replaced = false
         for item in items {
@@ -1346,7 +1370,11 @@ export fn field_effect_inst_arg_check(env: TypeEnv, arg: Expr, arg_ty: Type, par
 /// (`callback_type_exact`).
 export fn effect_inst_annotation_check(env: TypeEnv, value: Expr, value_ty: Type, want_ty: Type, s: Subst, subject: String, slot: String, defs: Array[TypeDef], errors: Array[String]) -> Subst {
   effect_inst_value_check(env, value, value_ty, want_ty, s, (row: String) -> Array[Type] {
-    callback_row_instantiations(row, None, defs)
+    if String::contains(row, "$") {
+      callback_row_instantiations(row, None, defs)
+    } else {
+      lexical_value_row_instantiations_at(row, env, defs, true)
+    }
   }, subject, slot, defs, errors)
 }
 
@@ -1538,6 +1566,12 @@ fn effect_inst_fn_check(env: TypeEnv, arg: Expr, arg_ty: Type, param_ty: Type, s
 /// binder identities and arities. Published and independently quantified
 /// values continue to use their own scheme.
 fn lexical_value_row_instantiations(row: String, env: TypeEnv, defs: Array[TypeDef]) -> Array[Type] {
+  lexical_value_row_instantiations_at(row, env, defs, false)
+}
+
+/// Return checking follows the owning binder's close; its lexical env still
+/// supplies the exact formal identity. Value lookups retain the open-group guard.
+fn lexical_value_row_instantiations_at(row: String, env: TypeEnv, defs: Array[TypeDef], closed: Bool) -> Array[Type] {
   let formals: Array[String] = []
   for binding in eq_formal_vars {
     let (id, name) = binding
@@ -1554,7 +1588,7 @@ fn lexical_value_row_instantiations(row: String, env: TypeEnv, defs: Array[TypeD
       },
       _ => 0 - 1
     }
-    if formal_index >= 0 && eq_group_is_open(Array::get(eq_formal_group, formal_index)) {
+    if formal_index >= 0 && (closed || eq_group_is_open(Array::get(eq_formal_group, formal_index))) {
       let (_, recorded_name) = Array::get(eq_formal_vars, formal_index)
       if recorded_name == name && !formals_contain_source_name(formals, name) {
         Array::push(formals, eq_formal_binder_spelling(name, Array::get(eq_formal_arity, formal_index)))
@@ -1602,7 +1636,10 @@ fn value_effect_instantiations(env: TypeEnv, arg: Expr, arg_ty: Type, arow: Stri
     }
     for raw in row_items_top_level(arow) {
       let items = if lexical_row {
-        lexical_value_row_instantiations(String::trim(raw), env, defs)
+        lexical_value_row_instantiations_at(String::trim(raw), env, defs, match arg {
+          EFn(_, _, _, _, _, _) => true,
+          _ => false
+        })
       } else {
         callback_row_instantiations(String::trim(raw), scope, defs)
       }
