@@ -391,3 +391,54 @@ test "an imported generic nominal producer cannot be handled at a different nest
   let message = projected_error(generic_handler_dependency(), importer)
   assert(String::contains(message, "requires `Box[Wrap[String]]`"))
 }
+
+fn lowercase_alias_dependency() -> String {
+  "export effect Box[T] { Put(T) -> Int }\nexport type payload = String\nexport fn run(f: () -> Int with Box[payload]) -> Int { handle { f() } with { Box::Put(p) => { let q: payload = p; resume(String::length(q)) } } }\n"
+}
+
+test "an unimported lowercase payload alias refuses a literal callback" {
+  let message = projected_error(lowercase_alias_dependency(), "import ./dep.vibe { effect Box, run }\nfn caller() -> Int with Box { run(() -> { perform Box::Put(41) }) }\n")
+  assert(String::contains(message, "import `payload` into this module"))
+}
+
+test "an unimported lowercase payload alias refuses a named callback" {
+  let message = projected_error(lowercase_alias_dependency(), "import ./dep.vibe { effect Box, run }\nfn wrong() -> Int with Box[Int] { perform Box::Put(41) }\nfn caller() -> Int with Box { run(wrong) }\n")
+  assert(String::contains(message, "import `payload` into this module"))
+}
+
+test "importing a lowercase alias accepts its matching concrete payload" {
+  assert_eq(projected_error(lowercase_alias_dependency(), "import ./dep.vibe { effect Box, run, payload }\nfn caller() -> Int with Box { run(() -> { perform Box::Put(\"abc\") }) }\n"), "")
+}
+
+test "importing a lowercase alias still rejects an incompatible payload" {
+  let message = projected_error(lowercase_alias_dependency(), "import ./dep.vibe { effect Box, run, payload }\nfn caller() -> Int with Box { run(() -> { perform Box::Put(41) }) }\n")
+  assert(String::contains(message, "expected String, got Int"))
+}
+
+test "a lowercase callee formal stays in scope after instantiation" {
+  let dependency = "export effect Box[T] { Put(T) -> Int }\nexport fn run[payload](x: payload, f: () -> Int with Box[payload]) -> Int { 42 }\n"
+  assert_eq(projected_error(dependency, "import ./dep.vibe { effect Box, run }\nfn caller() -> Int with Box { run(\"abc\", () -> { perform Box::Put(\"xy\") }) }\n"), "")
+}
+
+test "a published lowercase nominal remains vouched without an import" {
+  let dependency = "export effect Box[T] { Put(T) -> Int }\nexport struct point { x: Int }\nexport fn mk_point() -> point { point::{ x: 42 } }\nexport fn run(f: () -> Int with Box[point]) -> Int { 42 }\n"
+  assert_eq(projected_error(dependency, "import ./dep.vibe { effect Box, run, mk_point }\nfn caller() -> Int with Box { run(() -> { perform Box::Put(mk_point()) }) }\n"), "")
+}
+
+test "an unreadable lowercase constructor alias also names the import edit" {
+  let dependency = "export effect Kb[F[_]] { Put(F[Int]) -> Int }\nexport type payload[T] = Array[T]\nexport fn run(f: () -> Int with Kb[payload]) -> Int { 42 }\n"
+  let message = projected_error(dependency, "import ./dep.vibe { effect Kb, run }\nfn caller() -> Int with Kb { run(() -> { perform Kb::Put([41]) }) }\n")
+  assert(String::contains(message, "import `payload` into this module"))
+}
+
+test "a lowercase callee formal rejects a mismatched concrete payload" {
+  let dependency = "export effect Box[T] { Put(T) -> Int }\nexport fn run[payload](x: payload, f: () -> Int with Box[payload]) -> Int { 42 }\n"
+  let message = projected_error(dependency, "import ./dep.vibe { effect Box, run }\nfn caller() -> Int with Box { run(\"abc\", () -> { perform Box::Put(41) }) }\n")
+  assert(String::contains(message, "expected String, got Int"))
+}
+
+test "a published lowercase nominal still rejects an Int payload" {
+  let dependency = "export effect Box[T] { Put(T) -> Int }\nexport struct point { x: Int }\nexport fn run(f: () -> Int with Box[point]) -> Int { 42 }\n"
+  let message = projected_error(dependency, "import ./dep.vibe { effect Box, run }\nfn caller() -> Int with Box { run(() -> { perform Box::Put(41) }) }\n")
+  assert(String::contains(message, "expected point, got Int"))
+}
