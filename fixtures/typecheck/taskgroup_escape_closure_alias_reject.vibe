@@ -1,0 +1,31 @@
+// #3343: a closure reached through an alias. `let keep = stash` records the
+// name it stands for, so `keep(handle)` re-checks `stash`'s body, in the
+// scope `stash` was written in -- not the one `keep` was, where `c` names a
+// different, body-local cell. This compiled and the outer handle was joined
+// after its group closed.
+import @vibe/concurrent { TaskGroup, TaskHandle }
+
+struct Cell[T] {
+  mut v: Option[T]
+}
+
+fn main() -> Unit allows Exception + Console {
+  let c = Cell::{ v: None }
+  let stash = (h) -> {
+    c.v = Some(h)
+  }
+  let r = TaskGroup::run((n) -> {
+    let c = Cell::{ v: None }
+    let keep = stash
+    keep(TaskGroup::spawn(n, () -> { 41 }))
+    match c.v {
+      Some(_) => 0,
+      None => 1
+    }
+  })
+  let after = match c.v {
+    Some(h) => TaskHandle::join(h),
+    None => 0 - 1
+  }
+  println("r=\{r} after=\{after}")
+}

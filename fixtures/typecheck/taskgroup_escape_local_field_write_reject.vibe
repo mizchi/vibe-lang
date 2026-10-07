@@ -1,0 +1,23 @@
+// #3343 (Codex on #3359): a body-local struct is made with a safe field and
+// the handle is written into the field afterwards; the body then returns the
+// struct. The struct's binding recorded only what it was made from, so the
+// result check saw no region: this compiled and the handle was joined after
+// its group closed. A binding now carries what every write into it writes.
+import @vibe/concurrent { TaskGroup, TaskHandle }
+
+struct Box {
+  mut h: Option[TaskHandle[Int]]
+}
+
+fn main() -> Unit allows Exception + Console {
+  let b = TaskGroup::run((n) -> {
+    let b = Box::{ h: None }
+    b.h = Some(TaskGroup::spawn(n, () -> { 41 }))
+    b
+  })
+  let after = match b.h {
+    Some(h) => TaskHandle::join(h),
+    None => 0 - 1
+  }
+  println("after=\{after}")
+}

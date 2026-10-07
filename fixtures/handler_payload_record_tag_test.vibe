@@ -1,0 +1,132 @@
+effect Payload[T] {
+  P(T) -> Int
+}
+fn tuple_payload() -> Int {
+  handle {
+    perform Payload::P((10, 3))
+  } with { Payload::P(v) => {
+    let (x, y) = v; resume(x - y)
+  } }
+}
+fn record_payload() -> Int {
+  handle {
+    perform Payload::P(record {
+      x: 10,
+      y: 3
+    })
+  } with { Payload::P(v) => match v {
+    record {
+      x,
+      y
+    } => resume(x - y)
+  } }
+}
+fn tested_tuple_payload() -> Int {
+  handle {
+    perform Payload::P((10, 3))
+  } with { Payload::P(v) => match v {
+    (10, y) => resume(y),
+    _ => resume(0)
+  } }
+}
+fn or_tuple_payload() -> Int {
+  handle {
+    perform Payload::P((10, 3))
+  } with { Payload::P(v) => match v {
+    (10, _)|(20, _) => resume(42),
+    _ => resume(0)
+  } }
+}
+fn nested_record_payload() -> Int {
+  handle {
+    perform Payload::P(record {
+      pair: (10, 3),
+      extra: 4
+    })
+  } with { Payload::P(v) => match v {
+    record {
+      pair: (x, y),
+      extra
+    } => resume(x - y + extra)
+  } }
+}
+test "generic tuple payload bindings strip the pointer tag" {
+  assert_eq(tuple_payload(), 7)
+}
+test "generic record payload bindings strip the pointer tag" {
+  assert_eq(record_payload(), 7)
+}
+test "generic tuple literal tests strip the pointer tag" {
+  assert_eq(tested_tuple_payload(), 3)
+}
+test "generic tuple or-pattern tests strip the pointer tag" {
+  assert_eq(or_tuple_payload(), 42)
+}
+test "nested generic record bindings strip pointer tags" {
+  assert_eq(nested_record_payload(), 11)
+}
+
+fn tested_record_payload() -> Int {
+  handle {
+    perform Payload::P(record {
+      x: 10,
+      y: 3
+    })
+  } with { Payload::P(v) => match v {
+    record {
+      x: 10,
+      y
+    } => resume(y),
+    _ => resume(0)
+  } }
+}
+fn or_record_payload() -> Int {
+  handle {
+    perform Payload::P(record {
+      x: 10,
+      y: 3
+    })
+  } with { Payload::P(v) => match v {
+    record {
+      x: 10,
+      y: _
+    }| record {
+      x: 20,
+      y: _
+    } => resume(42),
+    _ => resume(0)
+  } }
+}
+test "generic record literal tests strip the pointer tag" {
+  assert_eq(tested_record_payload(), 3)
+}
+test "generic record or-pattern tests strip the pointer tag" {
+  assert_eq(or_record_payload(), 42)
+}
+
+fn scratch_hygiene(__tuple_probe: Int) -> Int {
+  match (10, 3) {
+    (x, y) => __tuple_probe
+  }
+}
+test "a scratch slot never shadows a user binding" {
+  assert_eq(scratch_hygiene(42), 42)
+}
+
+fn nested_literal_payload() -> Int {
+  handle {
+    perform Payload::P(record {
+      pair: (10, 3),
+      extra: 4
+    })
+  } with { Payload::P(v) => match v {
+    record {
+      pair: (10, y),
+      extra
+    } => resume(y + extra),
+    _ => resume(0)
+  } }
+}
+test "nested tuple literal probes retain the parent record layout" {
+  assert_eq(nested_literal_payload(), 7)
+}

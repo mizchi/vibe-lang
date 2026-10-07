@@ -11,7 +11,8 @@ import @vibe/compiler/core {
   namespace_rename_originals_reset,
   rename_builtin_shadow_defs,
   rewrite_top_level_fn_alias_refs,
-  sorted_names_of
+  sorted_names_of,
+  split_handler_or_arms
 }
 
 import @vibe/ast {
@@ -611,6 +612,12 @@ export fn effect_lowering_prelude_grants(stmts: Array[Stmt], entry_name: String,
     // (nothing named `inspect` survives it), same as desugar_labeled_args's
     // check-then-codegen double run.
     desugar_inspect_calls(stmts)
+    // #3301: a handler arm `A | B => body` is the arms `A => body` and
+    // `B => body`. Split where the checker split it, before the host-call
+    // interception below and every effect lowering read a handler arm: each
+    // of them names one operation per arm, and an or-pattern arm reached
+    // none of them -- its handle survived to codegen as `unreachable`.
+    split_handler_or_arms(stmts, true)
     // #1962 (Option 1): a direct host-builtin call inside a `handle` whose arms
     // name the same operation becomes `perform <Op>(..)`, so the handler
     // intercepts it. Runs HERE as well as in the checker for the reason the

@@ -1,0 +1,150 @@
+import @vibe/compiler/checker {
+  retention_type_hides_region, retention_value_regions
+}
+import @vibe/compiler/core {
+  Expr, Pat, Subst, Type, TypeDef, TypeEnv, env_bind
+}
+
+fn review_region_env() -> TypeEnv {
+  let outside = env_bind(EnvEmpty, "f", CtFn([], CtInt, None))
+  let active = env_bind(outside, "#active_region", CtNamed("#region_review", []))
+  env_bind(active, "h", CtNamed("TaskHandle", [
+    CtNamed("#region_review", []),
+    CtInt
+  ]))
+}
+
+test "a declared alias is classified by its body before a builtin spelling" {
+  let defs = [
+    TDStruct("Box", [("v", CtNamed("T", []))], [], ["T"]),
+    TDAlias("Sender", ["T"], CtNamed("Box", [CtNamed("T", [])]))
+  ]
+  assert(!retention_type_hides_region(CtNamed("Sender", [CtInt]), defs))
+  let retaining = [
+    TDAlias("Sender", ["T"], CtNamed("TaskHandle", [CtNamed("T", [])]))
+  ]
+  assert(retention_type_hides_region(CtNamed("Sender", [CtInt]), retaining))
+}
+
+test "tuple pattern provenance belongs to the selected component" {
+  let env = review_region_env()
+  let pair = ETuple([EIdent("h", 1), EIdent("f", 2)])
+  let independent = EMatch(pair, [
+    (PTuple([PWild, PBind("selected")]), EIdent("selected", 3))
+  ])
+  let selected_handle = EMatch(pair, [
+    (PTuple([PBind("selected"), PWild]), EIdent("selected", 3))
+  ])
+  assert_eq(retention_value_regions(independent, env, [], SubstEmpty), [])
+  assert_eq(retention_value_regions(selected_handle, env, [], SubstEmpty), [
+    "#region_review"
+  ])
+}
+
+test "a write into a shadowing local does not taint the outer location" {
+  let box = ERecord("Box", [("v", EInt(0))], [])
+  let write = ECall(EIdent("store", 1), [EIdent("box", 2), EIdent("h", 3)], 1, [
+  ])
+  let inner = ELet("box", box, ESeq(write, EUnit), 10)
+  let safe = ELet("box", box, ESeq(inner, EIdent("box", 4)), 11)
+  let retaining = ELet("box", box, ESeq(write, EIdent("box", 4)), 11)
+  assert_eq(retention_value_regions(safe, review_region_env(), [], SubstEmpty), [
+  ])
+  assert_eq(retention_value_regions(retaining, review_region_env(), [], SubstEmpty), [
+    "#region_review"
+  ])
+}
+
+test "a loop result carries early break values without tainting a consumed result" {
+  let early = EIf(EBool(true), EBreak(Some(EIdent("h", 1))), EUnit)
+  let loop_value = ELoop([], ESeq(early, EInt(0)))
+  assert_eq(retention_value_regions(loop_value, review_region_env(), [], SubstEmpty), [
+    "#region_review"
+  ])
+  let consumed = ESeq(loop_value, EInt(42))
+  assert_eq(retention_value_regions(consumed, review_region_env(), [], SubstEmpty), [
+  ])
+}
+
+test "a closure parameter shadows an outer location in the write scan" {
+  let box = ERecord("Box", [("v", EInt(0))], [])
+  let write = ECall(EIdent("store", 1), [EIdent("box", 2), EIdent("h", 3)], 1, [
+  ])
+  let inner = EFn([], [], [("box", None)], None, None, write)
+  let safe = ELet("box", box, ESeq(inner, EIdent("box", 4)), 11)
+  assert_eq(retention_value_regions(safe, review_region_env(), [], SubstEmpty), [
+  ])
+}
+
+test "match and for binders own their locations, including genuine aliases" {
+  let box = ERecord("Box", [("v", EInt(0))], [])
+  let write = ECall(EIdent("store", 1), [EIdent("box", 2), EIdent("h", 3)], 1, [
+  ])
+  let inner_match = EMatch(box, [(PBind("box"), ESeq(write, EUnit))])
+  let inner_for = EForIn("box", None, EArray([box]), ESeq(write, EUnit))
+  for inner in [inner_match, inner_for] {
+    let safe = ELet("box", box, ESeq(inner, EIdent("box", 4)), 11)
+    assert_eq(retention_value_regions(safe, review_region_env(), [], SubstEmpty), [
+    ])
+  }
+  let same_location = EMatch(EIdent("box", 5), [
+    (PBind("box"), ESeq(write, EUnit))
+  ])
+  let retaining = ELet("box", box, ESeq(same_location, EIdent("box", 4)), 11)
+  assert_eq(retention_value_regions(retaining, review_region_env(), [], SubstEmpty), [
+    "#region_review"
+  ])
+}
+
+test "a recursive binding shadows the outer location before its initializer" {
+  let box = ERecord("Box", [("v", EInt(0))], [])
+  let inner = ELetRec("box", EFn([], [], [], None, None, EIdent("h", 1)), EUnit)
+  let safe = ELet("box", box, ESeq(inner, EIdent("box", 4)), 11)
+  assert_eq(retention_value_regions(safe, review_region_env(), [], SubstEmpty), [
+  ])
+}
+
+test "a handler payload binder owns a different location from its outer namesake" {
+  let box = ERecord("Box", [("v", EInt(0))], [])
+  let write = ECall(EIdent("store", 1), [EIdent("box", 2), EIdent("h", 3)], 1, [
+  ])
+  let inner = EHandle(box, [(PCtor("E::P", [PBind("box")]), ESeq(write, EUnit))])
+  let safe = ELet("box", box, ESeq(inner, EIdent("box", 4)), 11)
+  assert_eq(retention_value_regions(safe, review_region_env(), [], SubstEmpty), [
+  ])
+}
+
+test "recursive type arguments retain changed hidden regions with bounded expansion" {
+  let defs = [
+    TDEnum("Nest", ["T"], [
+      ("Here", [CtNamed("T", [])]),
+      ("Next", [CtNamed("Nest", [CtNamed("TaskHandle", [CtInt])])])
+    ])
+  ]
+  assert(retention_type_hides_region(CtNamed("Nest", [CtInt]), defs))
+  let growing = [
+    TDEnum("Grow", ["T"], [
+      ("Here", [CtNamed("T", [])]),
+      ("Next", [CtNamed("Grow", [CtArray(CtNamed("T", []))])])
+    ])
+  ]
+  assert(!retention_type_hides_region(CtNamed("Grow", [CtInt]), growing))
+  assert(retention_type_hides_region(CtNamed("Grow", [
+    CtNamed("TaskHandle", [CtInt])
+  ]), growing))
+  let mutual = [
+    TDAlias("Left", ["T"], CtNamed("Right", [CtNamed("T", [])])),
+    TDEnum("Right", ["T"], [("Next", [CtNamed("Left", [CtFn([], CtInt, None)])])])
+  ]
+  assert(retention_type_hides_region(CtNamed("Left", [CtInt]), mutual))
+}
+
+test "recursive self references add no region but external captures do" {
+  let pure = ELetRec("self", EFn([], [], [], None, None, EIdent("self", 1)), EIdent("self", 2))
+  let capturing = ELetRec("self", EFn([], [], [], None, None, ESeq(EIdent("self", 1), EIdent("h", 3))), EIdent("self", 2))
+  assert_eq(retention_value_regions(pure, review_region_env(), [], SubstEmpty), [
+  ])
+  assert_eq(retention_value_regions(capturing, review_region_env(), [], SubstEmpty), [
+    "#region_review"
+  ])
+}

@@ -1904,6 +1904,10 @@ fn pick(x: Int) -> Int {
 }
 ```
 
+If several arms name the same operation, combine them into one `if`/`match`
+arm with the fallback in its body, and remove the old separate fallback arm.
+Generic-effect diagnostics use the parameter type inferred for this handle.
+
 Before, such a pattern was silently treated as `_`: `Pick::P(1) => ..` ran
 for `perform Pick::P(3)`, and the names of a destructure bound nothing, so
 `Pair::Diff((a, b)) => resume(a)` read an outer `a` when there was one. Any
@@ -1911,6 +1915,27 @@ other pattern moves into a `match` in the body, spelled as you wrote it:
 `Paint::Use(c) => match c { Color::Red => .., _ => .. }`, or
 `Pair::Diff(p) => match p { (a, b) => .. }`. This holds for
 `Exception::Throw` too: `Throw("boom") => ..` caught every throw.
+
+An or-pattern arm `A | B => body` is the two arms `A => body` and
+`B => body` (#3301): each alternative is typed against its own operation,
+resumes its own `perform`, and counts toward the handler's exhaustiveness, and
+`resume` inside it is the continuation even when a top-level `fn resume`
+exists. As in a `match`, an or-pattern cannot bind a payload: `P(x) | Q(x)` is
+refused; write `P(_) | Q(_)` or separate arms with the same body. Nor can it
+test one: `P(1) | Q(_)` is refused, because the effect lowerings dispatch on
+the operation and never match an arm's payload pattern, so write one arm per
+operation and test the payload with `if` in its body. For the same
+reason the arm's `resume` has one type: an arm that names `resume` is refused
+when its operations resume with different types (`A -> Int`, `B -> String`,
+or a generic effect's `X -> A`, `Y -> B` at a handle that makes them differ or
+leaves them unknown), while one that never names it (`A(_) | B(_) => return 0`)
+may mix signatures.
+Because each alternative compiles its own copy of the body, or-pattern arms
+nested in one another multiply. An arm body expanded more than 256 times is
+refused, counting the current arm's alternatives too, even when its body has
+no nested handler. Write separate arms, or move a nested `handle` into a
+top-level `fn` so each enclosing copy becomes a call. A closure written in
+place is inside the arm, so it is copied with it.
 
 Call resolution for an effect row follows the same lexical scope as ordinary
 value resolution. When a local closure, a function parameter, or a pattern /

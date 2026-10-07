@@ -144,6 +144,18 @@ handler_set_comma_arms_reject	reject	line 14:29: replace this `,` with `;` or a 
 handler_legacy_comma_arms_reject	reject	line 13:24: replace this `,` with `;`: the arms of a `with Effect { ... }` handler are separated by `;`
 handler_arm_mixed_resume_branch_reject	reject	handler arm `Name::Get` must pass its value back with resume(...)
 handler_arm_lambda_resume_wrong_handle_type_reject	reject	handler arm value type mismatch with the handle body's type: expected Int, got String
+handler_or_pattern_binding_reject	reject	write one handler arm per operation, or `_` for the payloads: an or-pattern arm cannot bind a payload
+handler_or_pattern_resume_wrong_type_reject	reject	resume value type mismatch: expected Int, got String
+handler_or_pattern_incomplete_reject	reject	non-exhaustive handler: operation `C` of effect Logger has no arm
+handler_or_pattern_resume_types_differ_reject	reject	write `Name::A => ..` and `Name::B => ..` as separate arms: `resume` here would take Int for `Name::A` but String for `Name::B`
+handler_or_pattern_nested_copies_reject	reject	write separate handler arms, or move this nested `handle` into a top-level `fn` (passing it the values it uses from around it) and call that here: an or-pattern handler arm (`A | B => ..`) is compiled once per operation, together with every closure and `handle` inside it, so this arm and its enclosing or-pattern arms would compile its body 512 times, over the limit of 256
+handler_or_pattern_terminal_copies_reject	reject	this arm and its enclosing or-pattern arms would compile its body 258 times, over the limit of 256
+handler_or_pattern_generic_resume_differ_reject	reject	write `E::X => ..` and `E::Y => ..` as separate arms: `resume` here would take Int for `E::X` but String for `E::Y`
+handler_or_pattern_generic_resume_unresolved_reject	reject	write `E::X => ..` and `E::Y => ..` as separate arms: `resume` here would take A for `E::X` but B for `E::Y`
+handler_or_pattern_payload_literal_reject	reject	write one handler arm per operation
+handler_arm_resume_value_shadowed_fn_reject	reject	resume value type mismatch: expected Int, got String
+handler_arm_resume_value_shadowed_param_reject	reject	resume value type mismatch: expected Int, got String
+handler_arm_resume_value_shadowed_arm_reject	reject	resume value type mismatch: expected String, got Int
 err_array_contains_no_lowering	reject	unknown name: Array::contains -- there is no `Array::contains`; write `Array::any(xs, (v) -> v == needle)`
 err_array_foreach_no_lowering	reject	unknown name: Array::foreach -- there is no `Array::foreach`; write `for x in xs { .. }`
 err_array_join_no_lowering	reject	unknown name: Array::join -- there is no `Array::join`; write `String::join(xs, sep)`
@@ -1012,6 +1024,15 @@ generic_effect_row_two_items_reject	reject	perform argument type mismatch for Bo
 generic_effect_row_annotated_let_reject	reject	perform argument type mismatch for Box::Put: expected Int, got String
 generic_effect_row_annotated_local_let_reject	reject	perform argument type mismatch for Box::Put: expected String, got Int
 generic_effect_row_own_row_lambda_ok	ok
+generic_struct_array_let_reject	reject	binding type mismatch for a local let: expected Cell[Int], got Array[Int]
+generic_struct_array_arg_reject	reject	argument type mismatch for take: expected Cell[Int], got Array[Int]
+generic_enum_array_reject	reject	binding type mismatch for a local let: expected Wrap[Int], got Array[Int]
+generic_struct_array_generic_callee_reject	reject	argument type mismatch for get: expected Cell[
+user_future_struct_array_reject	reject	binding type mismatch for a local let: expected Task[Int], got Array[Int]
+user_fixed_array_struct_array_reject	reject	rename this struct: `FixedArray` is a builtin type whose values may be used as `Array`, and a struct of the same name would be treated as that same type
+user_owned_head_dep_ok	ok
+user_owned_head_import_reject	reject	binding type mismatch for a local let: expected Task[Int], got Array[Int]
+user_owned_head_import_reverse_reject	reject	argument type mismatch for total: expected Array[Int], got Task[Int]
 # #3311: a lambda passed to a parameter whose function type has a row performs at that row's
 # instantiation (a formal of the callee at this call's type); a bare callback row hands it nothing.
 generic_effect_row_callback_reject	reject	perform argument type mismatch for Box::Put: expected String, got Int
@@ -1039,6 +1060,21 @@ generic_effect_row_callback_imported_nominal_reject	reject	perform argument type
 generic_effect_row_callback_imported_nominal_clash_reject	reject	rename this module's type `Wrap`: imported `run_wrap`
 generic_effect_row_callback_imported_nominal_other_reject	reject	are different types that share the name `Wrap`
 generic_effect_row_callback_imported_row_formal_ok	ok
+callback_row_unimported_dep_ok	ok
+callback_row_unimported_struct_reject	reject	perform argument type mismatch for Box::Put: expected Pt, got Int
+callback_row_unimported_enum_reject	reject	perform argument type mismatch for Box::Put: expected Shade, got Int
+callback_row_unimported_generic_reject	reject	perform argument type mismatch for Box::Put: expected Wrap[String], got Int
+callback_row_unimported_result_reject	reject	type mismatch in '+': operands must be Int, Double, or String
+callback_row_unimported_alias_reject	reject	import `Pts` into this module: perform Box::Put is checked against `Box[Pts]`
+callback_row_unimported_alias_bare_reject	reject	import `Pts` into this module: perform Get::Take is checked against `Get[Pts]`
+callback_row_unimported_kinded_reject	reject	import `Bag` into this module: perform Kb::Put is checked against `Kb[Bag]`
+callback_row_unimported_clash_reject	reject	rename this module's type `Pt`: imported `run_pt`
+callback_row_unimported_alias_ok	ok
+callback_row_unimported_ok	ok
+callback_row_nested_nominal_dep_ok	ok
+callback_row_nested_nominal_unreadable_reject	reject	import `Pt` into this module
+callback_row_nested_nominal_mismatch_reject	reject	performs `Inner` at `Int`
+callback_row_nested_nominal_compatible_ok	ok
 # #3318: a type parameter the row names is the caller's handler's choice; the body may not fix it.
 generic_effect_row_formal_pinned_reject	reject	write `Int` in place of the type parameter `T`, or keep the value generic: the body fixes `T` to `Int`
 generic_effect_row_formal_pinned_formal_reject	reject	write `B` in place of the type parameter `A`
@@ -1067,7 +1103,7 @@ taskgroup_escape_run_alias_field_reject	reject	region escapes its nursery scope:
 taskgroup_escape_sender_field_reject	reject	region escapes its nursery scope: this write stores this TaskGroup::run call's own Nursery/Task/Sender/Receiver token in a binding declared outside the body
 taskgroup_escape_open_array_reject	reject	region escapes its nursery scope: this write stores this TaskGroup::run call's own Nursery/Task/Sender/Receiver token in a binding declared outside the body
 handler_payload_literal_set_reject	reject	bind the payload to a name and test it in the arm body: `Pick::P(v) => if v == 1 { .. } else { .. }` -- a handler arm selects on the operation alone, so `1` in `Pick::P(1)` is never tested and the arm would run for every `Pick::P` payload
-handler_payload_literal_legacy_reject	reject	bind the payload to a name and test it in the arm body: `Pick::P(v) => if v == 1 { .. } else { .. }`
+handler_payload_literal_legacy_reject	reject	combine all `Pick::P` arms into this one conditional/match arm, and remove the separate same-operation fallback arm
 handler_payload_suffix_reject	reject	bind the payload to a name and test it in the arm body: `Pick::P(v) => if v == 1 { .. } else { .. }`
 handler_payload_string_reject	reject	bind the payload to a name and test it in the arm body: `Say::Word(v) => if v == "hi" { .. } else { .. }`
 handler_payload_ctor_reject	reject	bind the payload to a name (`Paint::Use(v) => ..`) and `match v` against your pattern in the arm body -- a handler arm selects on the operation alone, so a payload pattern is never tested and the arm would run for every `Paint::Use` payload
@@ -1091,6 +1127,83 @@ reexport_enum_alias_private_qualified_payload_reject	reject	bind the payload to 
 reexport_enum_alias_private_struct_payload_reject	reject	bind the payload to a name (`Logger::A(v) => ..`) and `match v` against your pattern in the arm body -- a handler arm binds a payload to a name or `_` and nothing else, so the names in a payload pattern would bind nothing
 reexport_enum_alias_private_record_payload_reject	reject	bind the payload to a name (`Logger::A(v) => ..`) and `match v` against your pattern in the arm body -- a handler arm binds a payload to a name or `_` and nothing else, so the names in a payload pattern would bind nothing
 reexport_enum_alias_private_handler_nested_payload_reject	reject	bind the payload to a name (`Logger::A(v) => ..`) and `match v` against your pattern in the arm body -- a handler arm selects on the operation alone, so a payload pattern is never tested and the arm would run for every `Logger::A` payload
+# #3343: code written OUTSIDE the body -- a helper, a closure bound before the call, a body passed
+# by name -- is re-checked under the call's region when it is handed the group's token, and a write
+# it makes that keeps the token refuses the call; a function it is passed is followed. A function
+# value with no visible body that the region's own minter was handed (`cb`) is refused. Every row
+# compiled and ran before the fix.
+taskgroup_escape_helper_field_reject	reject	region escapes its nursery scope: this call to `put` stores this TaskGroup::run call's own Nursery/Task/Sender/Receiver token in a binding declared outside the body
+taskgroup_escape_helper_forward_reject	reject	region escapes its nursery scope: this call to `put_later` stores this TaskGroup::run call's own Nursery/Task/Sender/Receiver token in a binding declared outside the body
+taskgroup_escape_helper_chain_reject	reject	region escapes its nursery scope: this call to `forward` stores this TaskGroup::run call's own Nursery/Task/Sender/Receiver token in a binding declared outside the body
+taskgroup_escape_helper_global_reject	reject	region escapes its nursery scope: this call to `keep` stores this TaskGroup::run call's own Nursery/Task/Sender/Receiver token in a binding declared outside the body
+taskgroup_escape_helper_annotated_reject	reject	region escapes its nursery scope: this call to `put` stores this TaskGroup::run call's own Nursery/Task/Sender/Receiver token in a binding declared outside the body
+taskgroup_escape_prebound_closure_reject	reject	region escapes its nursery scope: this call to `stash` stores this TaskGroup::run call's own Nursery/Task/Sender/Receiver token in a binding declared outside the body
+taskgroup_escape_body_closure_param_reject	reject	region escapes its nursery scope: this call to `stash` stores this TaskGroup::run call's own Nursery/Task/Sender/Receiver token in a binding declared outside the body
+taskgroup_escape_closure_alias_reject	reject	region escapes its nursery scope: this call to `keep` stores this TaskGroup::run call's own Nursery/Task/Sender/Receiver token in a binding declared outside the body
+taskgroup_escape_method_reject	reject	region escapes its nursery scope: this call to `Cell::put` stores this TaskGroup::run call's own Nursery/Task/Sender/Receiver token in a binding declared outside the body
+taskgroup_escape_named_body_reject	reject	region escapes its nursery scope: `body`, the body this TaskGroup::run call runs, stores the call's own Nursery/Task/Sender/Receiver token in a binding declared outside it
+taskgroup_escape_callback_arg_reject	reject	region escapes its nursery scope: this call to `apply_to` stores this TaskGroup::run call's own Nursery/Task/Sender/Receiver token in a binding declared outside the body
+taskgroup_escape_captured_callback_reject	reject	region escapes its nursery scope: this call to `apply` stores this TaskGroup::run call's own Nursery/Task/Sender/Receiver token in a binding declared outside the body
+taskgroup_escape_fn_param_reject	reject	region escapes its nursery scope: this call passes this TaskGroup::run call's own Nursery/Task/Sender/Receiver token to `cb`, a function whose body the checker cannot see
+region_escape_helper_push_reject	reject	region escapes its scope: this call to `put` stores a value that captures this region into an outer binding
+# #3343 (Codex on #3359): a helper that RETURNS the token under a type that does not name the group
+# (an annotation that spells `TaskHandle[Int]`, a struct, a closure, a tuple) laundered it past the
+# caller's write; a struct built from the token hid it from a direct write and from the body's return
+# check; and a body passed to `TaskGroup::run` whose code is not visible here (a `let mut` closure, a
+# call's result, a field) was not checked at all. Each compiled and ran before the fix, except the
+# `let mut` body, which the scan of outer bindings already refused through its open type.
+taskgroup_escape_helper_returns_reject	reject	region escapes its nursery scope: this write stores this TaskGroup::run call's own Nursery/Task/Sender/Receiver token in a binding declared outside the body
+taskgroup_escape_helper_returns_struct_reject	reject	region escapes its nursery scope: this write stores this TaskGroup::run call's own Nursery/Task/Sender/Receiver token in a binding declared outside the body
+taskgroup_escape_expression_result_reject	reject	region escapes its nursery scope: this write stores this TaskGroup::run call's own Nursery/Task/Sender/Receiver token in a binding declared outside the body
+taskgroup_escape_helper_returns_closure_reject	reject	region escapes its nursery scope: this write stores this TaskGroup::run call's own Nursery/Task/Sender/Receiver token in a binding declared outside the body
+taskgroup_escape_helper_returns_tuple_reject	reject	region escapes its nursery scope: this write stores this TaskGroup::run call's own Nursery/Task/Sender/Receiver token in a binding declared outside the body
+taskgroup_escape_struct_literal_write_reject	reject	region escapes its nursery scope: this write stores this TaskGroup::run call's own Nursery/Task/Sender/Receiver token in a binding declared outside the body
+taskgroup_escape_return_struct_reject	reject	region escapes its nursery scope: the value returned from this TaskGroup::run body still depends on its own Nursery/Task/Sender/Receiver token
+taskgroup_escape_opaque_body_let_mut_reject	reject	region escapes its nursery scope: `body`, the body this TaskGroup::run call runs, is a function whose body the checker cannot see
+taskgroup_escape_opaque_body_call_reject	reject	region escapes its nursery scope: the body this TaskGroup::run call runs is a function whose body the checker cannot see
+taskgroup_escape_opaque_body_field_reject	reject	region escapes its nursery scope: the body this TaskGroup::run call runs is a function whose body the checker cannot see
+# #3343 (Codex on #3359, third round): a value whose type does not show the group's region -- a
+# struct, an enum payload, a struct two levels deep, a handle a helper returns under `TaskHandle[Int]`
+# -- is judged by what it reads, so the helper's result carries the region into the caller (an explicit
+# `return`, in a branch or a `match` arm too), a struct argument re-checks the helper it is handed to,
+# a `let`-bound struct records what it carries, and a body's explicit `return` is read like its tail,
+# as are its branches, `match` arms and structs two levels deep. A helper recursing with another
+# callback re-checks that callback. Every row compiled and joined the handle after its group closed
+# before the fix (the region row's list outlived its region).
+taskgroup_escape_helper_explicit_return_reject	reject	region escapes its nursery scope: this write stores this TaskGroup::run call's own Nursery/Task/Sender/Receiver token in a binding declared outside the body
+taskgroup_escape_helper_return_branch_reject	reject	region escapes its nursery scope: this write stores this TaskGroup::run call's own Nursery/Task/Sender/Receiver token in a binding declared outside the body
+taskgroup_escape_helper_return_match_reject	reject	region escapes its nursery scope: this write stores this TaskGroup::run call's own Nursery/Task/Sender/Receiver token in a binding declared outside the body
+taskgroup_escape_struct_arg_reject	reject	region escapes its nursery scope: this call to `put` stores this TaskGroup::run call's own Nursery/Task/Sender/Receiver token in a binding declared outside the body
+taskgroup_escape_let_struct_write_reject	reject	region escapes its nursery scope: this write stores this TaskGroup::run call's own Nursery/Task/Sender/Receiver token in a binding declared outside the body
+taskgroup_escape_enum_payload_reject	reject	region escapes its nursery scope: this write stores this TaskGroup::run call's own Nursery/Task/Sender/Receiver token in a binding declared outside the body
+taskgroup_escape_enum_payload_arg_reject	reject	region escapes its nursery scope: this call to `put` stores this TaskGroup::run call's own Nursery/Task/Sender/Receiver token in a binding declared outside the body
+taskgroup_escape_nested_struct_reject	reject	region escapes its nursery scope: this write stores this TaskGroup::run call's own Nursery/Task/Sender/Receiver token in a binding declared outside the body
+taskgroup_escape_nested_struct_arg_reject	reject	region escapes its nursery scope: this call to `put` stores this TaskGroup::run call's own Nursery/Task/Sender/Receiver token in a binding declared outside the body
+taskgroup_escape_run_explicit_return_reject	reject	region escapes its nursery scope: the value returned from this TaskGroup::run body still depends on its own Nursery/Task/Sender/Receiver token
+region_escape_struct_arg_reject	reject	region escapes its scope: this call to `put` stores a value that captures this region into an outer binding
+taskgroup_escape_nested_tail_reject	reject	region escapes its nursery scope: the value returned from this TaskGroup::run body still depends on its own Nursery/Task/Sender/Receiver token
+taskgroup_escape_branch_tail_reject	reject	region escapes its nursery scope: the value returned from this TaskGroup::run body still depends on its own Nursery/Task/Sender/Receiver token
+taskgroup_escape_match_tail_reject	reject	region escapes its nursery scope: the value returned from this TaskGroup::run body still depends on its own Nursery/Task/Sender/Receiver token
+taskgroup_escape_recursive_callback_reject	reject	region escapes its nursery scope: this call to `walk` stores this TaskGroup::run call's own Nursery/Task/Sender/Receiver token in a binding declared outside the body
+struct_literal_erased_region_field_reject	reject	binding type mismatch for a local let: expected Bool, got Box
+# #3343 (Codex on #3359, fifth round): a binding made in the body carries what every write into it
+# writes, anywhere in its scope -- a field write, `Array::push` / `Array::set`, an assignment, a write
+# through an alias or a helper handed it, and a write later in a loop than the read that stores it. All
+# but the reassignment compiled and joined the handle after its group closed before the fix.
+taskgroup_escape_local_field_write_reject	reject	region escapes its nursery scope: the value returned from this TaskGroup::run body still depends on its own Nursery/Task/Sender/Receiver token
+taskgroup_escape_local_push_reject	reject	region escapes its nursery scope: the value returned from this TaskGroup::run body still depends on its own Nursery/Task/Sender/Receiver token
+taskgroup_escape_local_set_reject	reject	region escapes its nursery scope: the value returned from this TaskGroup::run body still depends on its own Nursery/Task/Sender/Receiver token
+taskgroup_escape_local_reassign_reject	reject	region escapes its nursery scope: this write stores this TaskGroup::run call's own Nursery/Task/Sender/Receiver token in a binding declared outside the body
+taskgroup_escape_local_write_loop_reject	reject	region escapes its nursery scope: this write stores this TaskGroup::run call's own Nursery/Task/Sender/Receiver token in a binding declared outside the body
+taskgroup_escape_local_alias_write_reject	reject	region escapes its nursery scope: the value returned from this TaskGroup::run body still depends on its own Nursery/Task/Sender/Receiver token
+# #3343 (Codex on #3359, sixth round): a second check is keyed by WHICH regions each argument carries,
+# so a recursive call that swaps an outer group's handle for an inner one's is checked again (it compiled
+# and joined the inner handle after its group closed); and a program's own type spelled like a
+# region-carrying builtin (`struct Sender[T]`) is judged by its declaration, not as the builtin (the
+# `_ok` row was refused; its `_handle_reject` counterpart holds the handle in the field and stays refused).
+taskgroup_escape_recursive_region_swap_reject	reject	region escapes its nursery scope: this call to `keep` stores this TaskGroup::run call's own Nursery/Task/Sender/Receiver token in a binding declared outside the body
+taskgroup_escape_shadowed_head_ok	ok
+taskgroup_escape_shadowed_head_handle_reject	reject	region escapes its nursery scope: this write stores this TaskGroup::run call's own Nursery/Task/Sender/Receiver token in a binding declared outside the body
 # #3311 (Codex on #3340): a callback row's type argument that resolves to a function type, through an alias
 # or nested in a tuple, an Option, an Array or a generic struct, is handed to the lambda like any other.
 generic_effect_row_callback_fn_alias_reject	reject	perform argument type mismatch for Box::Put: expected (Int) -> Int, got (String) -> Int
@@ -1112,3 +1225,137 @@ generic_effect_row_bare_review_dep_ok	ok
 generic_effect_row_bare_review_import_reject	reject	make the function passed to `run_str` perform `Box` at `String`: it performs `Box` at `Int`
 generic_effect_row_bare_review_alias_reject	reject	make the function passed to `run_str` perform `Box` at `String`: it performs `Box` at `Int`
 generic_effect_row_bare_review_import_ok	ok
+callback_row_own_nominal_dep_ok	ok
+callback_row_own_struct_nominal_ok	ok
+callback_row_own_enum_nominal_ok	ok
+callback_row_own_nominal_mismatch_reject	reject	performs `Box` at `Int`
+
+# #3352: builtin constructors exclusively own their nominal layouts.
+builtin_future_nominal_constructor_reject	reject	rename this struct: `Future`
+builtin_frozen_array_nominal_constructor_reject	reject	rename this struct: `FrozenArray`
+builtin_future_nominal_export_reject	reject	rename this struct: `Future`
+builtin_future_nominal_import_reject	reject	rename this struct: `Future`
+callback_row_extracted_generic_dep_ok	ok
+callback_row_extracted_generic_direct_ok	ok
+callback_row_extracted_generic_direct_reject	reject	perform argument type mismatch for Box::Put: expected Wrap[String], got Int
+callback_row_extracted_generic_alias_ok	ok
+callback_row_extracted_generic_alias_reject	reject	perform argument type mismatch for Box::Put: expected Wrap[String], got Int
+callback_row_extracted_generic_swapped_ok	ok
+callback_row_extracted_generic_swapped_reject	reject	perform argument type mismatch for Box::Put: expected Wrap[String], got Int
+callback_row_extracted_generic_alias_swapped_ok	ok
+callback_row_extracted_generic_alias_swapped_reject	reject	perform argument type mismatch for Box::Put: expected Wrap[String], got Int
+callback_row_extracted_generic_reuse_ok	ok
+callback_row_extracted_generic_reuse_reject	reject	perform argument type mismatch for Box::Put: expected Wrap[Int], got Wrap[String]
+callback_row_wrapped_generic_dep_ok	ok
+callback_row_wrapped_generic_array_ok	ok
+callback_row_wrapped_generic_array_reject	reject	Wrap[String]
+callback_row_wrapped_generic_option_ok	ok
+callback_row_wrapped_generic_option_reject	reject	Wrap[String]
+callback_row_wrapped_generic_tuple_ok	ok
+callback_row_wrapped_generic_tuple_reject	reject	Wrap[String]
+callback_row_wrapped_generic_record_ok	ok
+callback_row_wrapped_generic_record_reject	reject	Wrap[String]
+callback_row_handler_nominal_dep_ok	ok
+callback_row_handler_nominal_struct_ok	ok
+callback_row_handler_nominal_struct_reject	reject	requires `Box[Pt]`
+callback_row_handler_nominal_enum_ok	ok
+callback_row_handler_nominal_enum_reject	reject	requires `Box[Shade]`
+callback_row_handler_nominal_array_ok	ok
+callback_row_handler_nominal_array_reject	reject	requires `Box[Array[Pt]]`
+callback_row_handler_nominal_generic_ok	ok
+callback_row_handler_nominal_generic_reject	reject	requires `Box[Wrap[String]]`
+callback_row_lowercase_alias_dep_ok	ok
+callback_row_lowercase_alias_literal_reject	reject	import `payload` into this module
+callback_row_lowercase_alias_named_reject	reject	import `payload` into this module
+callback_row_lowercase_alias_imported_ok	ok
+callback_row_lowercase_alias_imported_reject	reject	expected String, got Int
+callback_row_definition_nominal_dep_ok	ok
+callback_row_definition_nominal_struct_literal_ok	ok
+callback_row_definition_nominal_struct_literal_reject	reject	Pt
+callback_row_definition_nominal_struct_named_ok	ok
+callback_row_definition_nominal_struct_named_reject	reject	Pt
+callback_row_definition_nominal_enum_literal_ok	ok
+callback_row_definition_nominal_enum_literal_reject	reject	Pt
+callback_row_definition_nominal_enum_named_ok	ok
+callback_row_definition_nominal_enum_named_reject	reject	Pt
+callback_row_definition_generic_dep_ok	ok
+callback_row_definition_generic_facade_ok	ok
+callback_row_definition_generic_ok	ok
+callback_row_definition_generic_reject	reject	String
+callback_row_definition_nominal_private_inferred_reject	reject	import `Pt` into this module
+callback_row_result_generic_dep_ok	ok
+callback_row_result_generic_named_ok	ok
+callback_row_result_generic_named_reject	reject	performs `Box` at `String`
+callback_row_result_generic_direct_ok	ok
+callback_row_result_generic_direct_reject	reject	performs `Box` at `String`
+callback_row_result_generic_alias_ok	ok
+callback_row_result_generic_alias_reject	reject	performs `Box` at `String`
+callback_row_joined_generic_dep_ok	ok
+callback_row_joined_generic_index0_reject	reject	import `A` into this module
+callback_row_joined_generic_index1_reject	reject	import `A` into this module
+callback_row_result_generic_factory_dep_ok	ok
+callback_row_result_generic_factory_ok	ok
+callback_row_result_generic_factory_reject	reject	performs `Box` at `String`
+callback_row_result_generic_unresolved_ok	ok
+callback_row_result_generic_unresolved_nominal_reject	reject	performs `Box` at `Array[
+callback_row_lower_identity_dep_ok	ok
+callback_row_lower_identity_struct_literal_reject	reject	rename this module's type `point`
+callback_row_lower_identity_struct_named_reject	reject	rename this module's type `point`
+callback_row_lower_identity_enum_literal_reject	reject	rename this module's type `tone`
+callback_row_lower_identity_enum_named_reject	reject	rename this module's type `tone`
+callback_row_lower_identity_alias_literal_reject	reject	rename this module's type `payload`
+callback_row_lower_identity_alias_named_reject	reject	rename this module's type `payload`
+callback_row_lower_identity_producer_ok	ok
+callback_row_lower_identity_struct_import_ok	ok
+callback_row_lower_identity_alias_import_ok	ok
+callback_row_lower_identity_formal_dep_ok	ok
+callback_row_lower_identity_formal_ok	ok
+callback_row_producer_alias_dep_ok	ok
+callback_row_producer_constructor_dep_ok	ok
+callback_row_producer_alias_unreadable_reject	reject	import `Pts` into this module
+callback_row_producer_alias_ok	ok
+callback_row_producer_constructor_array_reject	reject	handler instantiates `Kb[Array/1]`
+callback_row_producer_constructor_ok	ok
+callback_row_producer_alias_readable_reject	reject	handler instantiates `Box[Int]`
+callback_row_producer_alias_caller_formal_reject	reject	import `Pts` into this module
+callback_row_producer_constructor_option_reject	reject	handler instantiates `Kb[Option/1]`
+callback_row_producer_alias_lower_dep_ok	ok
+callback_row_producer_alias_lower_unreadable_reject	reject	import `pts` into this module
+callback_row_producer_alias_lower_ok	ok
+callback_row_producer_parameter_formal_ok	ok
+taskgroup_retention_spawn_wrapper_reject	reject	region escapes
+taskgroup_retention_spawn_wrapper_ok	ok
+taskgroup_retention_match_independent_ok	ok
+taskgroup_retention_shadow_local_ok	ok
+taskgroup_retention_alias_head_ok	ok
+taskgroup_retention_break_reject	reject	region escapes
+taskgroup_retention_break_ok	ok
+taskgroup_retention_match_captured_reject	reject	region escapes
+taskgroup_retention_shadow_local_reject	reject	region escapes
+taskgroup_retention_method_result_ok	ok
+taskgroup_retention_method_result_reject	reject	region escapes
+taskgroup_retention_method_write_reject	reject	this call to `Cell::empty` stores
+taskgroup_retention_binder_zero_ok	ok
+taskgroup_retention_binder_zero_reject	reject	region escapes
+taskgroup_retention_binder_match_ok	ok
+taskgroup_retention_binder_match_reject	reject	region escapes
+taskgroup_retention_binder_for_ok	ok
+taskgroup_retention_binder_for_reject	reject	region escapes
+taskgroup_retention_binder_rec_ok	ok
+taskgroup_retention_binder_rec_reject	reject	region escapes
+taskgroup_retention_binder_handler_eligibility_reject	reject	effect E has closure values whose row carries it
+taskgroup_retention_binder_handler_reject	reject	region escapes
+taskgroup_retention_binder_loop_ok	ok
+taskgroup_retention_binder_zero_expr_ok	ok
+taskgroup_retention_binder_zero_expr_reject	reject	region escapes
+taskgroup_retention_nonregular_reject	reject	region escapes
+taskgroup_retention_pure_recursive_ok	ok
+taskgroup_retention_capturing_recursive_reject	reject	region escapes
+taskgroup_retention_growing_recursive_ok	ok
+taskgroup_retention_nonregular_empty_ok	ok
+handler_payload_generic_string_literal_reject	reject	`1` is an Int, but `E::P` takes a String
+handler_payload_generic_int_literal_reject	reject	if v == 1
+handler_payload_char_literal_reject	reject	if v == 97
+handler_payload_char_comparison_ok	ok
+handler_payload_generic_string_comparison_ok	ok
+handler_payload_consolidated_comparison_ok	ok

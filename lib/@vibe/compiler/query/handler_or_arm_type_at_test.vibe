@@ -1,0 +1,76 @@
+// #3301 (Codex on #3337): hover types an or-pattern handler arm's body the way
+// the check does. `check_program_type_table` used to receive the unsplit arm,
+// skip it, and leave `k` untyped, while `resume` answered with the top-level
+// `fn resume`'s `(Int) -> Int` rather than the arm's continuation.
+
+import ./type_at.vibe {
+  type_at_source
+}
+
+fn or_arm_src() -> String {
+  "effect Name {\n  A(Int) -> String\n  B(Int) -> String\n}\n\nfn resume(x: Int) -> Int {\n  x * 1000\n}\n\nfn work() -> String with Name {\n  String::concat(perform Name::A(1), perform Name::B(2))\n}\n\nfn run() -> String {\n  handle {\n    work()\n  } with Name {\n    A(_)|B(_) => {\n      let k = resume\n      k(\"x\")\n    }\n  }\n}\n"
+}
+
+test "#3301: a binding in an or-pattern arm has the continuation's type" {
+  inspect(type_at_source(or_arm_src(), 19, 11), content = "(String) -> String")
+}
+
+test "#3301: resume in an or-pattern arm is the continuation, not the top-level fn" {
+  inspect(type_at_source(or_arm_src(), 19, 15), content = "(String) -> String")
+}
+
+// The arm's `resume` has one type when every operation resumes with the same
+// one, whatever their payloads, so each copy the split checks records the
+// same type at that offset. An arm whose operations resume with different
+// types is refused (fixtures/typecheck/handler_or_pattern_resume_types_differ_reject.vibe).
+fn or_arm_payloads_differ_src() -> String {
+  "effect Name {\n  A(Int) -> Int\n  B(String) -> Int\n}\n\nfn run() -> Int {\n  handle {\n    perform Name::A(1) + perform Name::B(\"x\")\n  } with Name {\n    A(_)|B(_) => {\n      let k = resume\n      k(5)\n    }\n  }\n}\n"
+}
+
+test "#3301: an or-pattern arm whose payloads differ has one resume type" {
+  inspect(type_at_source(or_arm_payloads_differ_src(), 11, 11), content = "(Int) -> Int")
+  inspect(type_at_source(or_arm_payloads_differ_src(), 11, 15), content = "(Int) -> Int")
+}
+
+fn conflicting_or_arm_src(generic: Bool, same: Bool) -> String {
+  let decl = if generic {
+    "effect Name[T, U] {\n  A -> T\n  B -> U\n}\n"
+  } else {
+    "effect Name {\n  A -> Int\n  B -> String\n}\n"
+  }
+  let second = if same {
+    "Int"
+  } else {
+    "String"
+  }
+  String::concat(decl, String::concat("fn run() -> Int {\n  let stable = 7\n  handle {\n    let a: Int = perform Name::A\n    let b: ", String::concat(second, " = perform Name::B\n    a\n  } with Name {\n    A|B => {\n      let k = resume\n      let copy = k\n      stable\n    }\n  }\n}\n")))
+}
+
+test "hover suppresses conflicting resume and captured continuation types" {
+  let src = conflicting_or_arm_src(false, false)
+  assert_eq(type_at_source(src, 13, 11), "")
+  assert_eq(type_at_source(src, 13, 15), "")
+  assert_eq(type_at_source(src, 14, 18), "")
+  assert_eq(type_at_source(src, 14, 11), "")
+  inspect(type_at_source(src, 15, 7), content = "Int")
+}
+
+test "hover suppresses generic resume types instantiated differently" {
+  let src = conflicting_or_arm_src(true, false)
+  assert_eq(type_at_source(src, 13, 11), "")
+  assert_eq(type_at_source(src, 13, 15), "")
+}
+
+test "a conflicting arm never falls back to a top-level function named resume" {
+  let src = String::concat("fn resume(x: Int) -> Int { x }\n", conflicting_or_arm_src(false, false))
+  assert_eq(type_at_source(src, 14, 15), "")
+}
+
+test "hover preserves generic resume types instantiated alike after a conflict" {
+  let bad = conflicting_or_arm_src(true, false)
+  assert_eq(type_at_source(bad, 13, 15), "")
+  let good = conflicting_or_arm_src(true, true)
+  inspect(type_at_source(good, 13, 11), content = "(Int) -> Int")
+  inspect(type_at_source(good, 13, 15), content = "(Int) -> Int")
+  inspect(type_at_source(good, 14, 18), content = "(Int) -> Int")
+}

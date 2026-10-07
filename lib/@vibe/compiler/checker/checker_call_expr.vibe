@@ -140,6 +140,7 @@ import ./checker_eq_unbounded_formal_msg.vibe {
   check_interp_formal,
   effect_op_sig,
   effect_tparams,
+  generic_callback_instance,
   interp_name_is_shim,
   is_bytestream_named_type,
   note_local_generic_binding,
@@ -152,6 +153,7 @@ import ./checker_eq_unbounded_formal_msg.vibe {
 
 import ./checker_infer_binop_type.vibe {
   TypedOccurrenceRoleLaneCapture,
+  callback_row_unreadable,
   callee_is_run_shaped,
   callee_is_spawn_shaped,
   effect_instantiate,
@@ -160,6 +162,7 @@ import ./checker_infer_binop_type.vibe {
   param_types_are_spawn_shaped,
   record_index_receiver,
   report_spawnable_violations,
+  resolve_bare_var,
   resolve_tparams_in,
   typed_occurrence_capture_enter_virtual_child,
   typed_occurrence_capture_frame_depth,
@@ -179,6 +182,7 @@ import ./checker_lambda_expr.vibe {
 }
 
 import ./checker_row_effect_inst.vibe {
+  bind_generic_result_effect_instantiations,
   callback_arg_env,
   callback_prefix_subst,
   effect_inst_annotation_check,
@@ -193,9 +197,21 @@ import ./checker_merge_capture_provenance.vibe {
   collect_env_bindings,
   eq_formal_row_of,
   formal_shadow,
+  resume_walk_param_base,
   throw_payload_sites,
   type_is_ground_except,
   type_mentions_named
+}
+
+import ./checker_region_retention.vibe {
+  retention_call_region_check,
+  retention_expr_callee_region_check,
+  retention_named_run_body,
+  retention_named_run_body_message,
+  retention_region_listed,
+  retention_result_regions,
+  retention_type_hides_region,
+  retention_type_may_hide_region
 }
 
 import ./checker_throw_kind_of_type.vibe {
@@ -225,6 +241,9 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
           ()
         }
         retaining_write_region_check(name, args, env, defs, s, c, errors, check_plain)
+        // #3343: a region value handed to a function or closure that may
+        // keep it -- its body is re-checked under this call's regions.
+        retention_call_region_check(name, callee_off, callee_off, String::length(name), args, env, defs, s, c, errors, check_child)
         // #3179: the builtin arms below are selected by `arm`, never by
         // `name`: a spelling the program's own function answers for reaches
         // the ordinary call path at the end of this chain instead.
@@ -326,22 +345,31 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                         let eff_of_op = String::substring(op_qname, 0, String::index_of(op_qname, "::"))
                         let etps = effect_tparams(defs, eff_of_op)
                         let mut c1b = c1
+                        let mut unreadable = false
                         let (sig_params, sig_ret, ret_usable) = if Array::length(etps) > 0 {
                           let (ftargs, nc) = effect_instantiate(env, eff_of_op, etps, c1b)
                           c1b = nc
+                          unreadable = refuse_unreadable_callback_row(ftargs, op_qname, op_off, errors)
                           let ip = for p in sig_params_decl {
                             subst_type_params(p, etps, ftargs)
                           }
-                          (ip, subst_type_params(sig_ret_decl, etps, ftargs), type_is_ground_except(sig_ret_decl, etps))
+                          (ip, subst_type_params(sig_ret_decl, etps, ftargs), type_is_ground_except(sig_ret_decl, etps) && !unreadable)
                         } else {
                           (sig_params_decl, sig_ret_decl, type_is_ground(sig_ret_decl))
                         }
                         if Array::length(sig_params) != oalen {
                           Array::push(errors, String::concat("perform ", String::concat(op_qname, String::concat(" expects ", String::concat(__to_string(Array::length(sig_params)), String::concat(" argument(s), got ", String::concat(__to_string(oalen), off_marker(op_off))))))))
+                        } else if unreadable {
+                          ()
                         } else {
                           let mut vi = 0
                           while vi < oalen {
                             s1 = check_assignable_for(subst_apply(s1, Array::get(sig_params, vi)), subst_apply(s1, Array::get(oparg_tys, vi)), s1, errors, "perform argument type mismatch for ", op_qname, op_off)
+                            // A function sent as an effect payload is consumed
+                            // under the operation's contract, just like a callback
+                            // argument. Structural unification alone erases the
+                            // generic arguments of its nested effect row.
+                            s1 = effect_inst_annotation_check(env, Array::get(opargs, vi), subst_apply(s1, Array::get(oparg_tys, vi)), subst_apply(s1, Array::get(sig_params, vi)), s1, "the function passed to `\{op_qname}`", "the operation's parameter", defs, errors)
                             vi = vi + 1
                           }
                         }
@@ -439,7 +467,8 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                     let (bare_ret, bare_ret_usable) = if Array::length(betps) > 0 {
                       let (bftargs, bnc) = effect_instantiate(env, bare_eff, betps, bc1)
                       bc1 = bnc
-                      (subst_type_params(bare_ret_decl, betps, bftargs), type_is_ground_except(bare_ret_decl, betps))
+                      let bare_unreadable = refuse_unreadable_callback_row(bftargs, bare_qname, bare_off, errors)
+                      (subst_type_params(bare_ret_decl, betps, bftargs), type_is_ground_except(bare_ret_decl, betps) && !bare_unreadable)
                     } else {
                       (bare_ret_decl, type_is_ground(bare_ret_decl))
                     }
@@ -1324,7 +1353,10 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
           } else {
             ()
           }
-          let result = match subst_apply(s2, obj_ty) {
+          // Keep a function element's original variable identities. Applying
+          // the whole substitution here erases which generic instance its row
+          // markers belong to once its arguments have become ground types.
+          let result = match resolve_bare_var(s2, obj_ty) {
             CtArray(elem) => elem,
             _ => CtUnknown
           }
@@ -1503,10 +1535,52 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                             }
                             ei = ei + 1
                           }
+                          // #3343: a body passed BY NAME was checked where it
+                          // was written, outside this region; a closure
+                          // literal or function of this module bound to the
+                          // name is re-checked inside it, its group parameter
+                          // carrying the region, exactly as a literal body is.
+                          // Codex on #3359: a body whose code is not visible
+                          // here -- a `let mut` closure, a call's result, a
+                          // function stored in a field -- is refused.
+                          let (named_kind, named_returns) = if literal_body {
+                            (0, false)
+                          } else {
+                            retention_named_run_body(body_arg, env, defs, s_skolem, c_body, region_ty, subst_apply(s_skolem, Array::get(body_params, 0)), check_child)
+                          }
+                          if named_kind > 0 {
+                            Array::push(errors, String::concat(retention_named_run_body_message(expr_ident_name_or_empty(body_arg), named_kind), off_marker_len(callee_off, String::length(name))))
+                            write_refused = true
+                          } else {
+                            ()
+                          }
                           match unify(CtFn(body_params, body_ret, body_eff), bt, s_body) {
                             Some(s_unified) => {
                               let zonked_ret = subst_apply(s_unified, body_ret)
-                              if type_mentions_named(zonked_ret, skolem_name) {
+                              // #3343 (Codex on #3359): a value whose type
+                              // may hide the region -- a struct built from
+                              // the token, a handle under an erased
+                              // annotation, a closure -- is asked by what the
+                              // body's tail and its explicit `return`s read.
+                              let tail_returns = match body_arg {
+                                EFn(_, _, fn_params, _, _, fn_body) => if literal_body && retention_type_may_hide_region(zonked_ret) {
+                                  let (raw_pname, _) = Array::get(fn_params, 0)
+                                  let pname = resume_walk_param_base(raw_pname)
+                                  let lit_env = env_bind(env_bind(body_env, "__capture_boundary__", CtUnit), pname, subst_apply(s_unified, Array::get(body_params, 0)))
+                                  // The body's own result type, too: a
+                                  // value the checker could not type
+                                  // leaves the run's result open.
+                                  let own_ret = match subst_apply(s_unified, bt) {
+                                    CtFn(_, own, _) => subst_apply(s_unified, own),
+                                    _ => zonked_ret
+                                  }
+                                  tail_named_record_mentions_region(fn_body, lit_env, defs, s_unified, c_body, skolem_name, check_plain) || ((retention_type_hides_region(zonked_ret, defs) || retention_type_hides_region(own_ret, defs)) && retention_region_listed(retention_result_regions(fn_body, lit_env, defs, s_unified), skolem_name))
+                                } else {
+                                  false
+                                },
+                                _ => false
+                              }
+                              if type_mentions_named(zonked_ret, skolem_name) || named_returns || tail_returns {
                                 Array::push(errors, String::concat("region escapes its nursery scope: the value returned from this TaskGroup::run body still depends on its own Nursery/Task/Sender/Receiver token", off_marker_len(callee_off, String::length(name))))
                               } else {
                                 ()
@@ -1636,7 +1710,9 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
               let (body_ty, s1, c1) = check_child(fn_body, env_body, defs, s, c + 1, errors, tytab, capture, lane)
               typed_occurrence_capture_restore_frame_depth(capture, virtual_parent_depth)
               let zonked_ret = subst_apply(s1, body_ty)
-              if type_mentions_named(zonked_ret, skolem_name) || tail_named_record_mentions_region(fn_body, env_body, defs, s, c + 1, skolem_name, check_plain) {
+              // #3343 (Codex on #3359): a value whose type may hide the
+              // region is asked by what the body's tail reads, too.
+              if type_mentions_named(zonked_ret, skolem_name) || tail_named_record_mentions_region(fn_body, env_body, defs, s, c + 1, skolem_name, check_plain) || (retention_type_hides_region(zonked_ret, defs) && retention_region_listed(retention_result_regions(fn_body, env_body, defs, s1), skolem_name)) {
                 Array::push(errors, String::concat("region escapes its scope: the value returned from this region body still depends on the region's own token", off_marker_len(region_off, String::length(name))))
               } else {
                 ()
@@ -2037,8 +2113,9 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                       } else {
                         ()
                       }
-                      let call_ret = call_result_with_provenance(Array::get(ret_box, 0), call_param_tys, arg_tys, s3)
-                      (tab_call_ty(tytab, call_off, call_ret, capture, lane), s3, c2)
+                      let result_ty = call_result_with_provenance(Array::get(ret_box, 0), call_param_tys, arg_tys, s3)
+                      let (call_ret, result_s, result_c) = bind_generic_result_effect_instantiations(result_ty, callee_inst, defs, s3, c2, errors, call_off)
+                      (tab_call_ty(tytab, call_off, call_ret, capture, lane), result_s, result_c)
                     },
                     CtStruct(sname) => (tab_call_ty(tytab, call_off, CtStruct(sname), capture, lane), s2, c2),
                     other => {
@@ -2135,7 +2212,7 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
             // `a.set(0, "bad")`). Reject these HERE instead of silently
             // accepting a call that can never compile.
             // #3198 review: a program may declare its own type with a builtin
-            // head's spelling (`struct Future[T] { apply: (T) -> T }`); the
+            // head's spelling (`struct Map[K, V] { apply: (K) -> V }`); the
             // resolver lets it own that name, so its receiver is the program's
             // type -- a function-valued field read below, not a builtin method.
             let prefix_is_declared = match find_typedef(defs, type_prefix) {
@@ -2217,6 +2294,12 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
               }
               let all_args = prepend_expr(obj, args)
               retaining_write_region_check(qualified, all_args, env, defs, s2, c2, errors, check_plain)
+              // #3343: as for a call by name; a method that names no
+              // function (a function stored in a field) is checked below.
+              match env_lookup(env, qualified) {
+                Some(_) => retention_call_region_check(qualified, qcall_field_off, call_off, String::length(method), all_args, env, defs, s2, c2, errors, check_child),
+                None => ()
+              }
               let alen = Array::length(all_args)
               let arg_tys = array_empty()
               Array::push(arg_tys, obj_ty)
@@ -2283,6 +2366,9 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                   let field_fn = receiver_struct_field_type(defs, subst_apply(s3, obj_ty), method)
                   match field_fn {
                     Some(CtFn(fpts, fret, _)) => {
+                      // #3343: a function stored in a field has no body the
+                      // checker can see.
+                      retention_expr_callee_region_check(EUnit, method, qcall_field_off, Array::slice(all_args, 1, Array::length(all_args)), env, defs, s3, c3, errors, check_child)
                       let explicit = Array::slice(arg_tys, 1, Array::length(arg_tys))
                       if Array::length(fpts) != Array::length(explicit) {
                         Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(qualified, String::concat(": expected ", String::concat(__to_string(Array::length(fpts)), String::concat(" args, got ", __to_string(Array::length(explicit))))))), off_marker_len(call_off, String::length(qualified))))
@@ -2434,6 +2520,9 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
             (tab_call_ty(tytab, call_off, bound_ty, capture, lane), ns2, nc0)
           },
           None => {
+            // #3343: a lambda applied where it is written is re-checked
+            // under this call's regions; any other callee has no visible body.
+            retention_expr_callee_region_check(callee, "(lambda)", call_off, args, env, defs, s, c, errors, check_child)
             let callee_name0 = expr_ident_name_or_empty(callee)
             if callee_name0 != "" {
               match direct_call_return(env, callee_name0, 0 - 1) {
@@ -2454,7 +2543,7 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                 },
                 None => {
                   let (ct, s1, c1) = check_child(callee, env, defs, s, c, errors, tytab, capture, lane)
-                  let (callee_param_tys, callee_inst) = callee_callback_params(ct)
+                  let (callee_param_tys, callee_inst) = callee_callback_params(ct, s1)
                   let alen = Array::length(args)
                   let arg_tys = array_empty()
                   let mut ai = 0
@@ -2494,8 +2583,9 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                       // #3341: see the named-call path.
                       let s3 = effect_inst_call_check(env, env_lookup(env, callee_name0), ct, callee_name0, call_off, s3_args, errors)
                       check_spawn_shaped_call(env, s3, defs, call_param_tys, Array::get(ret_box, 0), args, errors, off_marker_len(call_off, String::length(callee_name0)))
-                      let call_ret = call_result_with_provenance(Array::get(ret_box, 0), call_param_tys, arg_tys, s3)
-                      (tab_call_ty(tytab, call_off, call_ret, capture, lane), s3, c2)
+                      let result_ty = call_result_with_provenance(Array::get(ret_box, 0), call_param_tys, arg_tys, s3)
+                      let (call_ret, result_s, result_c) = bind_generic_result_effect_instantiations(result_ty, callee_inst, defs, s3, c2, errors, call_off)
+                      (tab_call_ty(tytab, call_off, call_ret, capture, lane), result_s, result_c)
                     },
                     CtStruct(sname) => (tab_call_ty(tytab, call_off, CtStruct(sname), capture, lane), s2, c2),
                     _ => (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), s2, c2)
@@ -2532,7 +2622,7 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
               }
               let (callee_param_tys, callee_inst) = match (ct, opened_callee_ty) {
                 (CtForAll(_, _, _), CtFn(oparams, _, _)) => (oparams, Some((ct, opened_callee_ty))),
-                _ => callee_callback_params(ct)
+                _ => callee_callback_params(ct, s1)
               }
               let alen = Array::length(args)
               let arg_tys = array_empty()
@@ -2590,8 +2680,9 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                   // #3341: see the named-call path.
                   let s3 = effect_inst_call_check(env, None, ct, "", call_off, s3_args, errors)
                   check_spawn_shaped_call(env, s3, defs, call_param_tys, Array::get(ret_box, 0), args, errors, off_marker(call_off))
-                  let call_ret = call_result_with_provenance(Array::get(ret_box, 0), call_param_tys, arg_tys, s3)
-                  (tab_call_ty(tytab, call_off, call_ret, capture, lane), s3, c2o)
+                  let result_ty = call_result_with_provenance(Array::get(ret_box, 0), call_param_tys, arg_tys, s3)
+                  let (call_ret, result_s, result_c) = bind_generic_result_effect_instantiations(result_ty, callee_inst, defs, s3, c2o, errors, call_off)
+                  (tab_call_ty(tytab, call_off, call_ret, capture, lane), result_s, result_c)
                 },
                 CtStruct(sname) => (tab_call_ty(tytab, call_off, CtStruct(sname), capture, lane), s2, c2o),
                 _ => (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), s2, c2o)
@@ -2606,13 +2697,28 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
 }
 
 /// #3311: the parameter types of a callee checked as an expression, for
-/// `callback_arg_env`. A generic one is not instantiated before its arguments
-/// are checked, so it is handed over with no instantiation, and a callback row
-/// that names one of its formals hands the lambda nothing.
-fn callee_callback_params(ct: Type) -> (Array[Type], Option[(Type, Type)]) {
+/// `callback_arg_env`. A value callee may already be an instantiated generic;
+/// its recorded scheme keeps published row formals tied to that instance.
+/// An unopened scheme is handed over without inventing an instantiation.
+fn callee_callback_params(ct: Type, s: Subst) -> (Array[Type], Option[(Type, Type)]) {
   match ct {
-    CtFn(params, _, _) => (params, None),
+    CtFn(params, _, _) => (params, generic_callback_instance(ct, s)),
     CtForAll(_, _, CtFn(params, _, _)) => (params, Some((ct, CtUnknown))),
     _ => (array_empty(), None)
+  }
+}
+
+/// #3351: refuse a perform whose effect instantiation `targs` is the refusal
+/// a callback row hands a lambda when it names a type this module cannot read
+/// (`callback_row_unreadable`), with the edit, and answer whether it did. The
+/// perform's arguments are then not checked against that instantiation, and
+/// its value is not typed by it.
+fn refuse_unreadable_callback_row(targs: Array[Type], op_qname: String, op_off: Int, errors: Array[String]) -> Bool {
+  match callback_row_unreadable(targs) {
+    Some((label, missing)) => {
+      Array::push(errors, "import `\{missing}` into this module: perform \{op_qname} is checked against `\{label}`, the effect row of the parameter this lambda is passed to, and `\{missing}` is not a type here\{off_marker(op_off)}")
+      true
+    },
+    None => false
   }
 }

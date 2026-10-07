@@ -1,0 +1,28 @@
+// #3343 (Codex on #3359): a struct built from the handle is bound to a local
+// first and then written into an outer cell. The local's nominal type `Box`
+// does not show the handle, so this compiled and the handle was joined after
+// its group closed. The local records what its value carries, and the write
+// is refused.
+import @vibe/concurrent { TaskGroup, TaskHandle }
+
+struct Box {
+  h: TaskHandle[Int]
+}
+
+struct Cell[T] {
+  mut v: Option[T]
+}
+
+fn main() -> Unit allows Exception + Console {
+  let c: Cell[Box] = Cell::{ v: None }
+  let r = TaskGroup::run((n) -> {
+    let b = Box::{ h: TaskGroup::spawn(n, () -> { 41 }) }
+    c.v = Some(b)
+    1
+  })
+  let after = match c.v {
+    Some(b) => TaskHandle::join(b.h),
+    None => 0 - 1
+  }
+  println("r=\{r} after=\{after}")
+}

@@ -1,0 +1,79 @@
+// #3351 controls: a module that does not import the type an imported
+// callee's callback row names (`Box[Pt]`, `Get[Pt]`, `Box[Wrap[T]]`) still
+// passes it values of that type, and reads the ones its arm resumes with,
+// each answering through the imported handler. The refusals are the
+// callback_row_unimported_*_reject rows in fixtures/typecheck/expected.tsv.
+//
+// The effect-row pass charges a callback's performs to the function that
+// writes the lambda, so each test discharges the effect once more around the
+// call. That outer arm never runs: it answers -1, and no expected value
+// contains it.
+import ./modules/callback_row_unimported_dep.vibe {
+  effect Box,
+  effect Get,
+  run_pt,
+  run_pts,
+  run_shade,
+  run_take,
+  run_wrap,
+  mk_light,
+  mk_pt,
+  mk_wrap,
+  Pts
+}
+
+test "a Pt from the dependency reaches the callee without importing Pt" {
+  let r = handle {
+    run_pt(() -> {
+      perform Box::Put(mk_pt(7))
+    })
+  } with {
+    Box::Put(_) => resume(0 - 1)
+  }
+  inspect(r, "70")
+}
+
+test "an enum value reaches the callee without importing the enum" {
+  let r = handle {
+    run_shade(() -> {
+      perform Box::Put(mk_light(6))
+    })
+  } with {
+    Box::Put(_) => resume(0 - 1)
+  }
+  inspect(r, "6")
+}
+
+test "a Pt the callee resumes with is read without importing Pt" {
+  let r = handle {
+    run_take(() -> {
+      let p = perform Get::Take()
+      p.x + 1
+    })
+  } with {
+    Get::Take => resume(mk_pt(0 - 1))
+  }
+  inspect(r, "8")
+}
+
+test "an imported alias in the callback row" {
+  let r = handle {
+    run_pts(() -> {
+      perform Box::Put(mk_pt(3))
+    })
+  } with {
+    Box::Put(_) => resume(0 - 1)
+  }
+  inspect(r, "300")
+}
+
+test "a generic callee's Wrap[T] without importing Wrap" {
+  let r = handle {
+    run_wrap("abcd", () -> {
+      perform Box::Put(mk_wrap("xy"))
+    }, (s) -> String::length(s))
+  } with {
+    Box::Put(_) => resume(0 - 1)
+  }
+  inspect(r, "2")
+}

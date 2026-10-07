@@ -1,0 +1,28 @@
+// #3343 (Codex on #3359): the handle is written through an alias of a
+// body-local box (`let a = b; a.h = ..`) and through a helper handed the box
+// (`fill(b, handle)`), and the box is returned. This compiled and the handle
+// was joined after its group closed; the call is refused.
+import @vibe/concurrent { TaskGroup, TaskHandle }
+
+struct Box {
+  mut h: Option[TaskHandle[Int]]
+}
+
+fn fill(b: Box, h: TaskHandle[Int]) -> Unit {
+  b.h = Some(h)
+}
+
+fn main() -> Unit allows Exception + Console {
+  let b = TaskGroup::run((n) -> {
+    let b = Box::{ h: None }
+    let a = b
+    a.h = None
+    fill(b, TaskGroup::spawn(n, () -> { 41 }))
+    b
+  })
+  let after = match b.h {
+    Some(h) => TaskHandle::join(h),
+    None => 0 - 1
+  }
+  println("after=\{after}")
+}

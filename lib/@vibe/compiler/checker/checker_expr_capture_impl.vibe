@@ -5,7 +5,7 @@ import @vibe/compiler/checker/annotations {
 }
 
 import @vibe/compiler/checker/type_relations {
-  type_is_ground
+  check_assignable_set_type_defs, type_is_ground
 }
 
 import @vibe/compiler/checker/resume {
@@ -33,6 +33,8 @@ import @vibe/compiler/core {
   find_typedef,
   fresh_var,
   generalize,
+  handler_or_arm_stamp,
+  handler_or_arm_tests_payload,
   instantiate,
   is_exception_effect_name,
   resolve_type_constructor_args,
@@ -49,7 +51,7 @@ import @vibe/ast {
 }
 
 import @vibe/parser {
-  lex, parse_type, print_pat
+  lex, parse_type
 }
 
 import ./builtins.vibe {
@@ -58,6 +60,10 @@ import ./builtins.vibe {
 
 import @vibe/core {
   array_empty, struct MutMap
+}
+
+import ./checker_handler_payload_patterns.vibe {
+  reject_handler_arm_payload_patterns
 }
 
 import ./checker_exhaustive.vibe {
@@ -104,7 +110,7 @@ import ./checker_call_expr.vibe {
 }
 
 import ./checker_row_effect_inst.vibe {
-  field_effect_inst_arg_check
+  bind_struct_field_effect_instantiations, field_effect_inst_arg_check
 }
 
 import ./checker_closure_capture_row.vibe {
@@ -126,6 +132,10 @@ import ./checker_closure_capture_row.vibe {
   type_is_concrete_non_option
 }
 
+import ./checker_handler_or_arm_resume.vibe {
+  handler_or_arm_handle_instance, record_handler_or_arm_resume
+}
+
 import ./checker_eq_unbounded_formal_msg.vibe {
   bind_function_dependency_contracts,
   check_assignable,
@@ -136,6 +146,7 @@ import ./checker_eq_unbounded_formal_msg.vibe {
   effect_tparams,
   env_has_active_region,
   mark_return_provenance_written,
+  note_generic_callback_instance,
   note_local_generic_binding,
   string_lit_end,
   struct_fields_ground,
@@ -205,6 +216,10 @@ import ./checker_merge_capture_provenance.vibe {
   resume_walk_param_base,
   return_provenance_key,
   unary_operand_is_definitely_wrong
+}
+
+import ./checker_region_retention.vibe {
+  retention_assign_hidden_region, retention_bind_carry, retention_bind_let, retention_note_let_mut
 }
 
 import ./checker_throw_kind_of_type.vibe {
@@ -305,8 +320,8 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         // in another order than `f`, so the row markers it copied are
         // respelled against its own quantifier list, as a top-level one's are.
         let gen = match val {
-          EIdent(_, _) => publish_row_formals(gen0, val, cenv, defs),
-          _ => gen0
+          EFn(_, _, _, _, _, _) => gen0,
+          _ => publish_row_formals(gen0, val, cenv, defs, ns)
         }
         // #2848: a field read on a parameter this binding just quantified.
         refuse_generalized_field_reads(gen, ns, errors)
@@ -337,6 +352,18 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         } else {
           ()
         }
+        // #3343: what a call of `name` reaches -- the closure literal, or the
+        // callee an alias stands for -- so a call inside a region can check
+        // the body for what it keeps.
+        cenv = retention_bind_let(cenv, name, val, gen, false)
+        // #3343 (Codex on #3359): inside a region, record which regions the
+        // value carries where its type may hide them, so a later write,
+        // return or call of `name` is judged by the value it was bound to.
+        if spine_region_active {
+          cenv = retention_bind_carry(cenv, def_env, name, val, body, subst_apply(ns, gen), defs, ns, let_off)
+        } else {
+          ()
+        }
         s1 = ns
         c1 = nc
         typed_occurrence_capture_enter_virtual_child(capture, 1, Array::length(expr_children(body)))
@@ -361,6 +388,7 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         // `env_mut_escape` (checker_spawnable) instead of re-deriving
         // mutability from the raw AST.
         let escapes = mut_binding_escapes(body, name)
+        let mut_def_env = cenv
         if name == "__loop_result" {
           let (lr_tv, nc2) = fresh_var(nc)
           cenv = env_bind_mut(cenv, name, lr_tv, escapes)
@@ -368,6 +396,14 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         } else {
           cenv = env_bind_mut(cenv, name, vt, escapes)
           c1 = nc
+        }
+        // #3343 (Codex on #3359): what the binding may carry -- what it
+        // starts with and what is written into it anywhere in its scope --
+        // for a later walk of this body or write of the binding.
+        if spine_region_active {
+          cenv = retention_note_let_mut(cenv, mut_def_env, name, val, body, subst_apply(ns, vt), defs, ns, let_off)
+        } else {
+          ()
         }
         s1 = ns
         typed_occurrence_capture_enter_virtual_child(capture, 1, Array::length(expr_children(body)))
@@ -404,6 +440,7 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         note_local_generic_binding(val, gen, cenv)
         cenv = env_bind(cenv, name, gen)
         cenv = bind_function_dependency_contracts(cenv, name, val)
+        cenv = retention_bind_let(cenv, name, val, gen, true)
         s1 = s2
         c1 = nc
         typed_occurrence_capture_enter_virtual_child(capture, 1, Array::length(expr_children(body)))
@@ -420,6 +457,20 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
   typed_occurrence_capture_record_virtual_spine_returns(capture, start_frame_depth, result.0, lane)
   typed_occurrence_capture_restore_frame_depth(capture, start_frame_depth)
   result
+}
+
+/// #3301: what check_resume_values' walk starts with `resume` bound to: the
+/// arm's own continuation. A binder the walk meets inside the arm rebinds the
+/// name to something else, which is what shadows it.
+fn resume_continuation_marker() -> Type {
+  CtNamed("$resume_continuation", [])
+}
+
+fn resume_is_continuation(t: Type) -> Bool {
+  match t {
+    CtNamed(name, _) => name == "$resume_continuation",
+    _ => false
+  }
 }
 
 /// The handler-arm `resume(x)` re-check: each `x` must be assignable to the
@@ -441,9 +492,16 @@ fn check_resume_values(e: Expr, ret_ty: Type, env: TypeEnv, defs: Array[TypeDef]
       // through check_expr, already containing every enclosing binder (the
       // top-level fn/let hoist, the arm's own payload binders via henv, and
       // any local let/let-mut/let-rec/match-arm binder this walk itself adds
-      // below) — so a `resume` name already bound here is a real callable
-      // binding codegen's prefer_bound_call routes to, not the builtin.
-      let resume_shadowed = env_lookup(env, "resume") is Some(_)
+      // below). The arm loop binds `resume` to the continuation marker on top
+      // of them (#3301): inside the arm the continuation shadows a top-level
+      // `fn resume` and an enclosing arm's continuation alike, and both used
+      // to switch this check off -- `Op => resume("str")` for an Int
+      // operation compiled when a `fn resume` existed, and resumed the
+      // perform with a string. Only a binder inside the arm shadows it.
+      let resume_shadowed = match env_lookup(env, "resume") {
+        Some(bound) => !resume_is_continuation(bound),
+        None => false
+      }
       match callee {
         EIdent(nm, _) => {
           // A Unit-returning op discards the resumed value at the perform
@@ -619,6 +677,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           ()
         }
         let (ti, c1, new_bounds) = instantiate(t, c)
+        note_generic_callback_instance(t, ti)
         let nblen = Array::length(new_bounds)
         let mut s1 = s
         let mut bi = 0
@@ -910,8 +969,21 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
     EAssign(name, val, body, target_off) => {
       let (vt, s1, c1) = check_expr_capture(val, env, defs, s, c, errors, tytab, capture, lane)
       let assigned_ty = subst_apply(s1, vt)
-      if assignment_crosses_region(name, assigned_ty, env) || (binding_predates_active_region(name, env) && expression_mentions_active_region(val, env, defs, s1, c1, check_expr)) {
-        Array::push(errors, String::concat(region_write_escape_message(assigned_ty, env, "region escapes its scope: an assignment stores a value that captures this region into an outer binding"), off_marker(tail_expr_off(val))))
+      // #3343 (Codex on #3359): a value whose type may hide the region is
+      // asked by what it reads, too (`retention_assign_hidden_region`).
+      let predates_region = binding_predates_active_region(name, env)
+      let hidden_region = if predates_region && !assignment_crosses_region(name, assigned_ty, env) {
+        retention_assign_hidden_region(name, val, assigned_ty, env, defs, s1)
+      } else {
+        ""
+      }
+      if assignment_crosses_region(name, assigned_ty, env) || (predates_region && (hidden_region != "" || expression_mentions_active_region(val, env, defs, s1, c1, check_expr))) {
+        let shown_ty = if hidden_region != "" {
+          CtNamed(hidden_region, [])
+        } else {
+          assigned_ty
+        }
+        Array::push(errors, String::concat(region_write_escape_message(shown_ty, env, "region escapes its scope: an assignment stores a value that captures this region into an outer binding"), off_marker(tail_expr_off(val))))
       }
       // The assigned value must be assignable to the variable's type
       // (previously unchecked — `y = "s"` for `let mut y = 1` was accepted).
@@ -1241,6 +1313,8 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       // syntactically (`Eff::Op`), so this pre-pass needs no type information
       // and cannot depend on checking the body first.
       let hinst_seen = array_empty()
+      // #3301: the copies of one or-pattern arm are compared per `handle`.
+      let hor_instance = handler_or_arm_handle_instance()
       let mut hc0 = c
       let mut henv_shared = env
       let mut hpi = 0
@@ -1293,9 +1367,12 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       // same S the `Put(v)` payload binder and the body's performs see.
       let mut hai = 0
       while hai < Array::length(harms) {
-        let (hpat, hbody) = Array::get(harms, hai)
-        // #3371: a payload position other than a name or `_` is never tested.
-        reject_handler_arm_payload_patterns(hpat, hbody, body, env, defs, errors)
+        // A split or-pattern arm carries its group stamp around the body.
+        let (hpat, hbody_stamped) = Array::get(harms, hai)
+        let (hgroup, hbody) = handler_or_arm_stamp(hbody_stamped)
+        // The body's substitution gives the actual payload type. Diagnose
+        // the pattern before names it failed to bind are read by the arm.
+        reject_handler_arm_payload_patterns(hpat, hbody, body, henv_shared, defs, hs1, harms, errors)
         match hpat {
           PCtor(hqname, hbinds) => {
             let hci = String::index_of(hqname, "::")
@@ -1314,6 +1391,10 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                   } else {
                     (hparams_decl, hret_decl)
                   }
+                  // #3301 (Codex on #3337): the copies of an or-pattern arm
+                  // are compared at the type this handle instantiated, not
+                  // at the declaration's template.
+                  record_handler_or_arm_resume(hor_instance, hgroup, hbody, hqname, hret)
                   let hplen = Array::length(hparams)
                   let hblen = Array::length(hbinds)
                   // The op's declared arity, plus optionally one trailing
@@ -1460,7 +1541,16 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                   // resume(x): x must be assignable to the op's declared
                   // return type (ground-gated). Throwaway walk — nested
                   // handles are skipped (their resumes belong to inner arms).
-                  let (hrv_s, hrv_c) = check_resume_values(hbody, hret, henv, defs, hs1, hc1, errors, tytab, capture)
+                  // The arm's own continuation shadows every `resume` bound
+                  // outside the arm -- a top-level `fn resume`, or an
+                  // enclosing arm's continuation -- so the walk starts with
+                  // it bound (#3301): those used to switch the check off.
+                  let hresume_env = if hbinds_shadow_resume {
+                    henv
+                  } else {
+                    env_bind(henv, "resume", resume_continuation_marker())
+                  }
+                  let (hrv_s, hrv_c) = check_resume_values(hbody, hret, hresume_env, defs, hs1, hc1, errors, tytab, capture)
                   hs1 = hrv_s
                   hc1 = hrv_c
                 },
@@ -1566,6 +1656,25 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               }
             } else {
               ()
+            }
+          },
+          // #3301: check_program split every or-pattern arm whose
+          // alternatives bind nothing into one arm per operation. One that
+          // is still here binds a payload, which a `match` or-pattern cannot
+          // do either; nothing would type the body or lower the handle.
+          POr(_, _) => {
+            let por_off = if railway_expr_off(hbody) >= 0 {
+              railway_expr_off(hbody)
+            } else {
+              railway_expr_off(body)
+            }
+            // #3301 (Codex on #3337): a payload pattern that tests a value
+            // is not matched by either effect lowering, so an or-pattern of
+            // them would run for every payload; the split left it whole.
+            if handler_or_arm_tests_payload(hpat) {
+              Array::push(errors, String::concat("write one handler arm per operation and test the payload with `if` in its body (`P(n) => if n == 1 { .. } else { .. }`): an or-pattern handler arm cannot match a payload's value (`P(1) | Q(_) => ..`)", off_marker(por_off)))
+            } else {
+              Array::push(errors, String::concat("write one handler arm per operation, or `_` for the payloads: an or-pattern arm cannot bind a payload (`A(v) | B(v) => ..`), but separate arms may repeat the same body", off_marker(por_off)))
             }
           },
           _ => ()
@@ -1931,6 +2040,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             },
             _ => (field_ty0, c1)
           }
+          let (inst_field_ty, field_s, field_c) = bind_struct_field_effect_instantiations(field_ty, resolved, defs, s1, c_after)
           // Record this field-access node's (raw, pre-final-subst) projection type
           // keyed by its real source offset, for typed-hover on `obj.field`.
           // Synthetic accesses (dot_off < 0) are skipped. #645: the field token's
@@ -1938,13 +2048,13 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           // the base) resolves the projection type.
           let dependent_field_ty = match obj {
             EIdent(base_name, _) => match env_lookup(env, String::concat("__param_marker__", base_name)) {
-              Some(CtNamed(marker_label, _)) => add_param_capture_dependency(field_ty, match param_marker_index(marker_label) {
+              Some(CtNamed(marker_label, _)) => add_param_capture_dependency(inst_field_ty, match param_marker_index(marker_label) {
                 Some(marker) => marker,
                 None => 0 - 1
               }),
-              _ => field_ty
+              _ => inst_field_ty
             },
-            _ => field_ty
+            _ => inst_field_ty
           }
           if dot_off >= 0 {
             tab_dot_projection_ty(tytab, dot_off, dependent_field_ty, capture, lane)
@@ -1956,7 +2066,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           } else {
             ()
           }
-          (dependent_field_ty, s1, c_after)
+          (dependent_field_ty, field_s, field_c)
         }
       }
     },
@@ -2169,7 +2279,10 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               // every downstream use of the value unchecked). A non-ground
               // struct WITHOUT declared params (unresolved field type names)
               // keeps the old CtUnknown tolerance.
-              if struct_fields_ground(dfields, defs, s_tparams) || (tplen == 0 && struct_fields_ground_builtin_named(dfields)) {
+              // A parameter used only in a function field's effect row is
+              // still part of the struct's identity. Keep its concrete
+              // arguments even when every ordinary field type is ground.
+              if tplen == 0 && (struct_fields_ground(dfields, defs, s_tparams) || struct_fields_ground_builtin_named(dfields)) {
                 (CtStruct(rn), s1, c2)
               } else if tplen > 0 {
                 let inst_targs = for ta in fresh_targs {
@@ -2434,6 +2547,7 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
   // alias a fresh variable here. Not an internal entry: the checker recurses
   // through check_expr_capture.
   reset_eq_formal_vars()
+  check_assignable_set_type_defs(defs)
   check_expr_capture_impl(expr, env, defs, s, c, errors, tytab, None, "Primary", false)
 }
 
@@ -2457,413 +2571,4 @@ fn check_unmatched_call_args(args: Array[Expr], env: TypeEnv, defs: Array[TypeDe
     i = i + 1
   }
   (s1, c1)
-}
-
-/// #3371: a handler arm's payload is a name or `_`, and nothing else. The
-/// evidence pass binds each payload position to its name or to nothing
-/// (`edp_pat_bind_names`), and the exception tag binds a name and drops
-/// anything else, on the linear and the gc lane alike. So a literal, a
-/// constructor, a tuple, a struct or record, or an or-pattern in a payload
-/// position was never tested and never destructured: `Pick::P(1) => ..` ran
-/// for `perform Pick::P(3)`, a `P(1)` arm lost to a later `P(_)` for
-/// `perform P(1)`, and `Pair::Diff((a, b)) => resume(a)` read an outer `a`.
-/// Nor was such a pattern typed against the payload: `(_, "s")` for an `Int`
-/// compiled. Only the suspend lowering (an arm that stores `resume`)
-/// matched the payload, and it trapped when no arm did; which lowering a
-/// handle takes depends on its other arms, so the same arm could not keep one
-/// meaning. Every handler spelling -- the `with { E::Op(..) => .. }` set, the
-/// `with E { Op(..) => .. }` header, a suffix `with E::Op(..) => ..`, and each
-/// alternative of an or-pattern arm -- reaches the arm loop as this pattern.
-fn reject_handler_arm_payload_patterns(arm_pat: Pat, arm_body: Expr, handle_body: Expr, env: TypeEnv, defs: Array[TypeDef], errors: Array[String]) -> Unit {
-  match handler_payload_unwrap(arm_pat) {
-    POr(left, right) => {
-      reject_handler_arm_payload_patterns(left, arm_body, handle_body, env, defs, errors)
-      reject_handler_arm_payload_patterns(right, arm_body, handle_body, env, defs, errors)
-    },
-    PCtor(op, payloads) => {
-      let offending = array_empty()
-      let mut i = 0
-      while i < Array::length(payloads) {
-        if !handler_payload_is_binder(Array::get(payloads, i)) {
-          Array::push(offending, i)
-        }
-        i = i + 1
-      }
-      if Array::length(offending) > 0 {
-        let off = if railway_expr_off(arm_body) >= 0 {
-          railway_expr_off(arm_body)
-        } else {
-          railway_expr_off(handle_body)
-        }
-        Array::push(errors, String::concat(handler_arm_payload_message(op, payloads, offending, handler_op_param_types(defs, op), arm_body, env), off_marker(off)))
-      }
-    },
-    _ => ()
-  }
-}
-
-/// A tooling parse wraps a pattern in a `$source_span` node; the rule reads
-/// the wrapped shape.
-fn handler_payload_unwrap(p: Pat) -> Pat {
-  match p {
-    PCtor(marker, wrapped) => if marker == "$source_span" && Array::length(wrapped) > 0 {
-      handler_payload_unwrap(Array::get(wrapped, 0))
-    } else {
-      p
-    },
-    _ => p
-  }
-}
-
-/// The payload shapes every effect lowering honours: a name, or `_`.
-fn handler_payload_is_binder(p: Pat) -> Bool {
-  match handler_payload_unwrap(p) {
-    PBind(_) => true,
-    PWild => true,
-    _ => false
-  }
-}
-
-fn handler_payload_is_literal(p: Pat) -> Bool {
-  match handler_payload_unwrap(p) {
-    PInt(_) => true,
-    PFloat(_) => true,
-    PString(_) => true,
-    PBool(_) => true,
-    _ => false
-  }
-}
-
-/// A tuple, struct or record pattern that cannot fail: its trouble is that
-/// its names bind nothing, not that it is never tested.
-fn handler_payload_is_destructure(p: Pat) -> Bool {
-  match handler_payload_unwrap(p) {
-    PTuple(elems) => {
-      let mut ok = true
-      let mut i = 0
-      while i < Array::length(elems) {
-        if !handler_payload_is_irrefutable(Array::get(elems, i)) {
-          ok = false
-        }
-        i = i + 1
-      }
-      ok
-    },
-    PStruct(_, fields) => {
-      let mut ok = true
-      let mut i = 0
-      while i < Array::length(fields) {
-        let (_, fp) = Array::get(fields, i)
-        if !handler_payload_is_irrefutable(fp) {
-          ok = false
-        }
-        i = i + 1
-      }
-      ok
-    },
-    _ => false
-  }
-}
-
-fn handler_payload_is_irrefutable(p: Pat) -> Bool {
-  if handler_payload_is_binder(p) {
-    true
-  } else {
-    handler_payload_is_destructure(p)
-  }
-}
-
-/// The source spelling of a name, `_` or scalar literal. Nothing else is
-/// printed back: the parser drops a variant's qualifier (`Api::A` arrives as
-/// `A`) and reads a nested `record { .. }` as a tuple of its field patterns,
-/// so a composite pattern printed from the AST is not what was written, and
-/// an edit built from it may not compile.
-fn handler_payload_source_text(p: Pat) -> String {
-  print_pat(handler_payload_unwrap(p))
-}
-
-fn handler_payload_binders_into(p: Pat, out: Array[String]) -> Unit {
-  match handler_payload_unwrap(p) {
-    PBind(n) => Array::push(out, n),
-    PCtor(_, args) => {
-      let mut i = 0
-      while i < Array::length(args) {
-        handler_payload_binders_into(Array::get(args, i), out)
-        i = i + 1
-      }
-    },
-    PTuple(elems) => {
-      let mut i = 0
-      while i < Array::length(elems) {
-        handler_payload_binders_into(Array::get(elems, i), out)
-        i = i + 1
-      }
-    },
-    POr(left, right) => {
-      handler_payload_binders_into(left, out)
-      handler_payload_binders_into(right, out)
-    },
-    PStruct(_, fields) => {
-      let mut i = 0
-      while i < Array::length(fields) {
-        let (_, fp) = Array::get(fields, i)
-        handler_payload_binders_into(fp, out)
-        i = i + 1
-      }
-    },
-    _ => ()
-  }
-}
-
-fn handler_payload_name_taken(taken: Array[String], name: String) -> Bool {
-  let mut found = false
-  let mut i = 0
-  while i < Array::length(taken) {
-    if Array::get(taken, i) == name {
-      found = true
-    }
-    i = i + 1
-  }
-  found
-}
-
-/// A pattern that cannot fail and binds nothing: lowering it as `_` is
-/// exactly its meaning, so the edit is to write `_`.
-fn handler_payload_is_wild(p: Pat) -> Bool {
-  let bound = array_empty()
-  handler_payload_binders_into(p, bound)
-  Array::length(bound) == 0 && handler_payload_is_irrefutable(p)
-}
-
-/// The declared parameter types of a declared effect's operation, or none
-/// when the operation is not one (`Exception::Throw`, an unknown effect).
-fn handler_op_param_types(defs: Array[TypeDef], op: String) -> Array[Type] {
-  let ci = String::index_of(op, "::")
-  if ci > 0 && effect_is_declared(defs, String::substring(op, 0, ci)) {
-    match effect_op_sig(defs, op) {
-      Some(sig) => sig.0,
-      None => array_empty()
-    }
-  } else {
-    array_empty()
-  }
-}
-
-/// The type a scalar literal pattern has.
-fn handler_literal_type_name(p: Pat) -> String {
-  match handler_payload_unwrap(p) {
-    PInt(_) => "Int",
-    PFloat(_) => "Double",
-    PString(_) => "String",
-    PBool(_) => "Bool",
-    _ => ""
-  }
-}
-
-/// Whether the literal at payload position `pos` has the type the operation
-/// declares there: 1 it does, -1 it cannot (a different scalar, or a
-/// structured type), 0 unknown (a formal, an alias, an untyped payload). Only
-/// a 1 lets the message offer `v == <literal>`; a -1 is reported as the type
-/// mismatch it is.
-fn handler_literal_fit(p: Pat, params: Array[Type], pos: Int) -> Int {
-  if pos >= Array::length(params) {
-    0
-  } else {
-    let lit = handler_literal_type_name(p)
-    let declared = match Array::get(params, pos) {
-      CtInt => "Int",
-      CtDouble => "Double",
-      CtString => "String",
-      CtBool => "Bool",
-      CtChar => "Char",
-      CtUnit => "Unit",
-      CtBytes => "Bytes",
-      CtTuple(_) => "-",
-      CtArray(_) => "-",
-      CtOption(_) => "-",
-      CtFn(_, _, _) => "-",
-      CtEnum(_) => "-",
-      CtStruct(_) => "-",
-      CtRecord(_) => "-",
-      _ => ""
-    }
-    if String::length(lit) == 0 || String::length(declared) == 0 {
-      0
-    } else if lit == declared {
-      1
-    } else {
-      -1
-    }
-  }
-}
-
-fn handler_with_article(type_name: String) -> String {
-  let first = if String::length(type_name) > 0 {
-    String::substring(type_name, 0, 1)
-  } else {
-    ""
-  }
-  if first == "A" || first == "E" || first == "I" || first == "O" || first == "U" {
-    String::concat("an ", type_name)
-  } else {
-    String::concat("a ", type_name)
-  }
-}
-
-/// A binder name for the suggested arm that captures nothing: not bound by
-/// the payload pattern, not free in the arm body (the body moves under the
-/// new binder, so a free `v` there would silently start reading the
-/// payload), not bound around the handle, and not already chosen. Tries `v`
-/// (when `first` is 0), then `v1`, `v2`, ...
-fn handler_fresh_binder(first: Int, taken: Array[String], arm_body: Expr, env: TypeEnv) -> String {
-  let mut n = first
-  let mut found = ""
-  while String::length(found) == 0 {
-    let cand = if n == 0 {
-      "v"
-    } else {
-      String::concat("v", __to_string(n))
-    }
-    let bound_around = match env_lookup(env, cand) {
-      Some(_) => true,
-      None => false
-    }
-    if !handler_payload_name_taken(taken, cand) && !bound_around && !expr_free_in(arm_body, cand) {
-      found = cand
-    }
-    n = n + 1
-  }
-  found
-}
-
-/// The refusal leads with the edit, and every edit it prints compiles: the
-/// arm rewritten to bind each refused position to a fresh name (`_` for a
-/// pattern that cannot fail and binds nothing). A scalar literal of the
-/// operation's declared type is moved into an `if` in the body, spelled as
-/// written; a literal of another type is reported as that mismatch, with no
-/// `==` to copy. Any other pattern is not printed back (see
-/// `handler_payload_source_text`): the message asks for a `match` against the
-/// pattern the reader wrote.
-fn handler_arm_payload_message(op: String, payloads: Array[Pat], offending: Array[Int], params: Array[Type], arm_body: Expr, env: TypeEnv) -> String {
-  let taken = array_empty()
-  let mut i = 0
-  while i < Array::length(payloads) {
-    handler_payload_binders_into(Array::get(payloads, i), taken)
-    i = i + 1
-  }
-  let tested = array_empty()
-  let mut all_literal = true
-  let mut all_fit = true
-  let mut all_destructure = true
-  let mut mismatch = -1
-  let mut w = 0
-  while w < Array::length(offending) {
-    let pos = Array::get(offending, w)
-    let p = Array::get(payloads, pos)
-    if handler_payload_is_literal(p) {
-      let fit = handler_literal_fit(p, params, pos)
-      if fit != 1 {
-        all_fit = false
-      }
-      if fit == -1 && mismatch < 0 {
-        mismatch = pos
-      }
-    } else {
-      all_literal = false
-    }
-    if !handler_payload_is_wild(p) {
-      Array::push(tested, pos)
-      if !handler_payload_is_destructure(p) {
-        all_destructure = false
-      }
-    }
-    w = w + 1
-  }
-  let several = Array::length(tested) > 1
-  let names = array_empty()
-  let mut k = 0
-  while k < Array::length(tested) {
-    let name = handler_fresh_binder(if several {
-      1
-    } else {
-      0
-    }, taken, arm_body, env)
-    Array::push(taken, name)
-    Array::push(names, name)
-    k = k + 1
-  }
-  let head_parts = array_empty()
-  let mut next_off = 0
-  let mut next_tested = 0
-  let mut j = 0
-  while j < Array::length(payloads) {
-    if next_tested < Array::length(tested) && Array::get(tested, next_tested) == j {
-      Array::push(head_parts, Array::get(names, next_tested))
-      next_tested = next_tested + 1
-      next_off = next_off + 1
-    } else if next_off < Array::length(offending) && Array::get(offending, next_off) == j {
-      Array::push(head_parts, "_")
-      next_off = next_off + 1
-    } else {
-      Array::push(head_parts, handler_payload_source_text(Array::get(payloads, j)))
-    }
-    j = j + 1
-  }
-  let head = String::concat(op, String::concat("(", String::concat(String::join(head_parts, ", "), ")")))
-  if mismatch >= 0 {
-    let lit_pat = Array::get(payloads, mismatch)
-    let declared = handler_with_article(type_to_string(Array::get(params, mismatch)))
-    let where_ = if Array::length(params) == 1 {
-      String::concat("`", String::concat(op, String::concat("` takes ", declared)))
-    } else {
-      String::concat("argument ", String::concat(__to_string(mismatch + 1), String::concat(" of `", String::concat(op, String::concat("` is ", declared)))))
-    }
-    let lead = String::concat("`", String::concat(handler_payload_source_text(lit_pat), String::concat("` is ", String::concat(handler_with_article(handler_literal_type_name(lit_pat)), String::concat(", but ", where_)))))
-    String::concat(lead, String::concat(" -- and a handler arm's payload is a name or `_`: bind it (`", String::concat(head, " => ..`) and test it in the arm body")))
-  } else if Array::length(tested) == 0 {
-    String::concat("write `_` for the payload: `", String::concat(head, " => ..` -- a handler arm binds a payload to a name or `_` and nothing else, and the pattern written there matches every value anyway"))
-  } else if all_literal && all_fit {
-    // Every position is a name, `_` or a literal of the declared type, so the
-    // arm as written can be quoted exactly and `==` type-checks.
-    let original_parts = for p in payloads {
-      handler_payload_source_text(p)
-    }
-    let original = String::concat(op, String::concat("(", String::concat(String::join(original_parts, ", "), ")")))
-    let tests = array_empty()
-    let mut t = 0
-    while t < Array::length(names) {
-      let lit = handler_payload_source_text(Array::get(payloads, Array::get(tested, t)))
-      Array::push(tests, String::concat(Array::get(names, t), String::concat(" == ", lit)))
-      t = t + 1
-    }
-    let first_lit = handler_payload_source_text(Array::get(payloads, Array::get(tested, 0)))
-    let subject = if several {
-      "bind the payloads to names and test them in the arm body: `"
-    } else {
-      "bind the payload to a name and test it in the arm body: `"
-    }
-    String::concat(subject, String::concat(head, String::concat(" => if ", String::concat(String::join(tests, " && "), String::concat(" { .. } else { .. }` -- a handler arm selects on the operation alone, so `", String::concat(first_lit, String::concat("` in `", String::concat(original, String::concat("` is never tested and the arm would run for every `", String::concat(op, "` payload"))))))))))
-  } else {
-    let subject = if several {
-      "bind the payloads to names (`"
-    } else {
-      "bind the payload to a name (`"
-    }
-    let scrutinee = if several {
-      String::concat("(", String::concat(String::join(names, ", "), ")"))
-    } else {
-      Array::get(names, 0)
-    }
-    let object = if several {
-      "` against your patterns in the arm body -- "
-    } else {
-      "` against your pattern in the arm body -- "
-    }
-    let why = if all_destructure {
-      "a handler arm binds a payload to a name or `_` and nothing else, so the names in a payload pattern would bind nothing"
-    } else {
-      String::concat("a handler arm selects on the operation alone, so a payload pattern is never tested and the arm would run for every `", String::concat(op, "` payload"))
-    }
-    String::concat(subject, String::concat(head, String::concat(" => ..`) and `match ", String::concat(scrutinee, String::concat(object, why)))))
-  }
 }

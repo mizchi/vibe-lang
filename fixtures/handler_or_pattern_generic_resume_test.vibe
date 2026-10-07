@@ -1,0 +1,97 @@
+//# #3301 (Codex on #3337): an or-pattern arm's `resume` has one type, and for
+//# a generic effect that type is the one the handle instantiated, not the
+//# declaration's template. `X -> A` and `Y -> B` differ as written, but the
+//# handled computation below makes both `Int`, so `X|Y => resume(1)` resumes
+//# both operations at `Int`. Comparing the templates refused it.
+//# The other instantiation, `E[Int, String]`, is refused
+//# (`fixtures/typecheck/handler_or_pattern_generic_resume_differ_reject.vibe`),
+//# and so are templates nothing instantiates
+//# (`fixtures/typecheck/handler_or_pattern_generic_resume_unresolved_reject.vibe`).
+
+effect E[A, B] {
+  X -> A
+  Y -> B
+}
+
+effect Same[S] {
+  P -> S
+  Q -> S
+}
+
+fn both_int_called() -> Int {
+  handle {
+    perform E::X + perform E::Y
+  } with E {
+    X|Y => resume(1)
+  }
+}
+
+fn both_int_captured() -> Int {
+  handle {
+    perform E::X + perform E::Y
+  } with E {
+    X|Y => {
+      let k = resume
+      k(5)
+    }
+  }
+}
+
+fn one_template() -> String {
+  handle {
+    String::concat(perform Same::P, perform Same::Q)
+  } with Same {
+    P|Q => resume("ab")
+  }
+}
+
+// An or-pattern arm nested in another handler arm is known by its own
+// `resume`, not by its body's first located node, which here is that same
+// `resume` for the outer arm too (Codex on #3337); and the inner arm's resume
+// values are checked although the outer arm's continuation is in scope.
+fn nested_in_an_arm() -> Int {
+  handle {
+    let a: Int = perform E::X
+    let b: String = perform E::Y
+    a + String::length(b)
+  } with E {
+    X|Y => return handle {
+      0
+    } with E {
+      X|Y => resume(1)
+    }
+  }
+}
+
+effect Three[A, B, C] {
+  X -> A
+  Y -> B
+  Z -> C
+}
+
+// Two or-pattern arms whose operations share a prefix are two arms: the
+// copies of `X|Y|Z` are compared among themselves, not cut short by the
+// `X|Y` arm of the handle before (Codex on #3337). Each `handle` here makes
+// all three types Int.
+fn prefix_arms() -> Int {
+  let first = handle {
+    perform Three::X + perform Three::Y
+  } with Three {
+    X|Y => resume(1);
+    Z => resume(0)
+  }
+  let second = handle {
+    perform Three::X + perform Three::Y + perform Three::Z
+  } with Three {
+    X|Y|Z => resume(2)
+  }
+  first + second
+}
+
+test "a generic or-pattern arm resumes at the instantiated type" {
+  inspect(both_int_called(), "2")
+  inspect(both_int_captured(), "10")
+  inspect(one_template(), "abab")
+  inspect(nested_in_an_arm(), "0")
+  inspect(prefix_arms(), "8")
+}
