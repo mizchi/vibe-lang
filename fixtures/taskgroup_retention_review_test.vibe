@@ -1,41 +1,56 @@
-import @vibe/concurrent { TaskGroup, TaskHandle }
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
 
 struct Box[T] { mut v: Option[T] }
 fn shadowed_location() -> Int with Exception {
- let result = TaskGroup::run((g) -> {
-  let box: Box[TaskHandle[Int]] = Box::{ v: None }
-  let _ = {
-   let box: Box[TaskHandle[Int]] = Box::{ v: None }
-   box.v = Some(TaskGroup::spawn(g, () -> 42))
-   match box.v { Some(h) => TaskHandle::join(h), None => 0 }
+  let result = TaskGroup::run((g) -> {
+    let box: Box[TaskHandle[Int]] = Box::{ v: None }
+    let _ = {
+      let box: Box[TaskHandle[Int]] = Box::{ v: None }
+      box.v = Some(TaskGroup::spawn(g, () -> 42))
+      match box.v {
+        Some(h) => TaskHandle::join(h),
+        None => 0
+      }
+    }
+    box
+  })
+  match result.v {
+    None => 42,
+    Some(_) => 0
   }
-  box
- })
- match result.v { None => 42, Some(_) => 0 }
 }
 
 struct Cell[T] { mut v: Option[T] }
 fn take_f(h: TaskHandle[Int], f: () -> Int) -> () -> Int {
- match (h, f) { (_, independent) => independent }
+  match (h, f) {
+    (_, independent) => independent
+  }
 }
 fn independent_component() -> Int with Exception {
- let outside: Cell[() -> Int] = Cell::{ v: None }
- TaskGroup::run((g) -> {
-  let h = TaskGroup::spawn(g, () -> 1)
-  let f = take_f(h, () -> 42)
-  outside.v = Some(f)
-  TaskHandle::join(h)
- })
- match outside.v { Some(f) => f(), None => 0 }
+  let outside: Cell[() -> Int] = Cell::{ v: None }
+  TaskGroup::run((g) -> {
+    let h = TaskGroup::spawn(g, () -> 1)
+    let f = take_f(h, () -> 42)
+    outside.v = Some(f)
+    TaskHandle::join(h)
+  })
+  match outside.v {
+    Some(f) => f(),
+    None => 0
+  }
 }
 
 fn my_spawn[rg, e](g: TaskGroup[rg, e], f: () -> Int with e) -> TaskHandle[rg, e, Int] with Exception {
- let h = TaskGroup::spawn(g, f)
- h
+  let h = TaskGroup::spawn(g, f)
+  h
 }
 fn visible_spawn() -> Int with Exception {
- TaskGroup::run((g) -> { TaskHandle::join(my_spawn(g, () -> 42)) })
- 42
+  TaskGroup::run((g) -> {
+    TaskHandle::join(my_spawn(g, () -> 42))
+  })
+  42
 }
 
 test "shadowed inner locations do not taint the outer location" allows Exception {
@@ -46,4 +61,29 @@ test "an independent matched closure may leave the group" allows Exception {
 }
 test "a visible spawn wrapper may keep its handle inside the group" allows Exception {
   assert_eq(visible_spawn(), 42)
+}
+
+fn Cell::empty(self: Cell[TaskHandle[Int]], h: TaskHandle[Int]) -> Cell[TaskHandle[Int]] with Exception {
+  let _ = TaskHandle::join(h)
+  Cell::{ v: None }
+}
+fn empty_method_result() -> Int with Exception {
+  let outside: Cell[Cell[TaskHandle[Int]]] = Cell::{ v: None }
+  TaskGroup::run((g) -> {
+    let factory: Cell[TaskHandle[Int]] = Cell::{ v: None }
+    let result = factory.empty(TaskGroup::spawn(g, () -> 42))
+    outside.v = Some(result)
+    0
+  })
+  match outside.v {
+    Some(c) => match c.v {
+      None => 42,
+      Some(_) => 0
+    },
+    None => 0
+  }
+}
+
+test "a consuming method returns an empty location without the handle region" allows Exception {
+  assert_eq(empty_method_result(), 42)
 }

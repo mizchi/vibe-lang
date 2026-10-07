@@ -582,6 +582,11 @@ is checked again like any other visible helper. Its signature does not prove
 that it refrains from storing the group's handle. Imported library spawners
 and their proven aliases retain their existing imported-callee classification.
 
+A method result is recorded at the enclosing dot-call's offset, the same key
+used when reading the result's provenance. Its diagnostic remains attached to
+the method token. A method that joins its handle and returns an empty nominal
+location therefore passes that empty result out without retaining the handle.
+
 A write the second check refuses refuses the call, naming the callee:
 
 ```text
