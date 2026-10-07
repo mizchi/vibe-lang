@@ -113,3 +113,38 @@ test "a handler payload binder owns a different location from its outer namesake
   assert_eq(retention_value_regions(safe, review_region_env(), [], SubstEmpty), [
   ])
 }
+
+test "recursive type arguments retain changed hidden regions with bounded expansion" {
+  let defs = [
+    TDEnum("Nest", ["T"], [
+      ("Here", [CtNamed("T", [])]),
+      ("Next", [CtNamed("Nest", [CtNamed("TaskHandle", [CtInt])])])
+    ])
+  ]
+  assert(retention_type_hides_region(CtNamed("Nest", [CtInt]), defs))
+  let growing = [
+    TDEnum("Grow", ["T"], [
+      ("Here", [CtNamed("T", [])]),
+      ("Next", [CtNamed("Grow", [CtArray(CtNamed("T", []))])])
+    ])
+  ]
+  assert(!retention_type_hides_region(CtNamed("Grow", [CtInt]), growing))
+  assert(retention_type_hides_region(CtNamed("Grow", [
+    CtNamed("TaskHandle", [CtInt])
+  ]), growing))
+  let mutual = [
+    TDAlias("Left", ["T"], CtNamed("Right", [CtNamed("T", [])])),
+    TDEnum("Right", ["T"], [("Next", [CtNamed("Left", [CtFn([], CtInt, None)])])])
+  ]
+  assert(retention_type_hides_region(CtNamed("Left", [CtInt]), mutual))
+}
+
+test "recursive self references add no region but external captures do" {
+  let pure = ELetRec("self", EFn([], [], [], None, None, EIdent("self", 1)), EIdent("self", 2))
+  let capturing = ELetRec("self", EFn([], [], [], None, None, ESeq(EIdent("self", 1), EIdent("h", 3))), EIdent("self", 2))
+  assert_eq(retention_value_regions(pure, review_region_env(), [], SubstEmpty), [
+  ])
+  assert_eq(retention_value_regions(capturing, review_region_env(), [], SubstEmpty), [
+    "#region_review"
+  ])
+}
