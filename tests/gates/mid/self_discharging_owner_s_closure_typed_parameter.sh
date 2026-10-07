@@ -295,11 +295,11 @@ for private_pat_lane in bump shadow gc; do
     fixtures/reexport_enum_alias_private_local_type_alias_test.vibe \
     fixtures/reexport_enum_alias_private_applied_type_alias_test.vibe \
     fixtures/reexport_enum_alias_private_dependency_type_alias_test.vibe \
-    fixtures/reexport_enum_alias_private_handler_or_test.vibe \
-    fixtures/reexport_enum_alias_private_struct_payload_test.vibe \
-    fixtures/reexport_enum_alias_private_record_payload_test.vibe; do
-    # GC does not lower algebraic effect handlers.
-    if [ "$private_pat_lane" = gc ] && { [ "$private_pat_fixture" = fixtures/reexport_enum_alias_private_handler_or_test.vibe ] || [ "$private_pat_fixture" = fixtures/reexport_enum_alias_private_struct_payload_test.vibe ] || [ "$private_pat_fixture" = fixtures/reexport_enum_alias_private_record_payload_test.vibe ]; }; then
+    fixtures/reexport_enum_alias_private_handler_or_test.vibe; do
+    # GC does not lower algebraic effect handlers. The struct and record
+    # payload fixtures are typecheck rows since #3371 refused their payload
+    # patterns (reexport_enum_alias_private_{struct,record}_payload_reject).
+    if [ "$private_pat_lane" = gc ] && [ "$private_pat_fixture" = fixtures/reexport_enum_alias_private_handler_or_test.vibe ]; then
       continue
     fi
     if ! VIBE_RC="$private_pat_rc" VIBE_TEST_BACKEND="$private_pat_backend" \

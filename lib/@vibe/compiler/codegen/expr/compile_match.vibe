@@ -138,7 +138,8 @@ import @vibe/compiler/codegen/common_extractors {
   get_pint_value,
   get_pstring_value,
   get_ptuple_pats,
-  get_slet_export
+  get_slet_export,
+  is_catchall_pat
 }
 
 import @vibe/compiler/codegen/wasm_emit {
@@ -233,8 +234,7 @@ import @vibe/compiler/codegen/wasm_emit {
 // container whose fields hold the sub-pattern values. `is_ctor_layout`
 // selects the field layout: a constructor stores its tag at offset 0 and
 // fields at `8 + i*8` with the pointer always tag-cleared; a tuple stores
-// fields at `8 + i*8` (RC, tagged) or `i*8` (non-RC, untagged). A record
-// pattern shares PTuple but uses the tagged header layout on either lane. Used for
+// fields at `8 + i*8` (RC, tagged) or `i*8` (non-RC, untagged). Used for
 // conditional match arms whose top pattern is a bare tuple with literal
 // siblings (`(false, n) => ..`), where the binding pass previously emitted
 // nothing and any use of `n` trapped codegen with "undefined variable".
@@ -1034,25 +1034,50 @@ fn emit_rc_dup_guarded_n(buf: Bytes, local_idx: Int, n: Int, rc_shadow: Bool, du
   }
 }
 
-/// Load a positional pattern field. Constructors and RC tuples always have
-/// a header; bump tuples do not, but records still do. PTuple represents both
-/// record and tuple patterns, so the bump lane must inspect the pointer tag.
-fn emit_match_field_load(buf: Bytes, base_local: Int, idx: Int, has_header: Bool) -> Unit {
-  emit_local_get(buf, base_local)
+/// A nested tuple needs a probe word only when its elements test a value.
+/// Scalar matches and irrefutable tuple bindings reserve no extra locals.
+fn match_tuple_probe_needed(p: Pat, nested: Bool) -> Bool {
+  match p {
+    PTuple(parts) => {
+      let mut needed = nested && !is_catchall_pat(p)
+      for part in parts {
+        if match_tuple_probe_needed(part, true) {
+          needed = true
+        }
+      }
+      needed
+    },
+    PCtor(_, parts) => {
+      let mut needed = false
+      for part in parts {
+        if match_tuple_probe_needed(part, true) {
+          needed = true
+        }
+      }
+      needed
+    },
+    POr(left, right) => match_tuple_probe_needed(left, nested) || match_tuple_probe_needed(right, nested),
+    _ => false
+  }
+}
+
+/// A tuple pattern reads either a raw bump tuple or a tagged record.
+/// Tagged records always have a type/length header, including bump mode;
+/// RC tuples also have that header. Preserve the original word in `scratch`
+/// before untagging, so nested probes evaluate their parent load only once.
+fn emit_match_fields_base(buf: Bytes, scratch: Int, constant_header: Bool) -> Unit {
+  if !constant_header {
+    emit_local_tee(buf, scratch)
+  }
   emit_i64_const(buf, -2)
   emit_i64_and(buf)
-  emit_i32_wrap_i64(buf)
-  if has_header {
-    emit_i64_load(buf, 3, 8 + idx * 8)
-  } else {
-    emit_local_get(buf, base_local)
+  if !constant_header {
+    emit_local_get(buf, scratch)
     emit_i64_const(buf, 1)
     emit_i64_and(buf)
-    emit_i32_wrap_i64(buf)
-    emit_i32_const(buf, 8)
-    emit_i32_mul(buf)
-    emit_i32_add(buf)
-    emit_i64_load(buf, 3, idx * 8)
+    emit_i64_const(buf, 3)
+    emit_i64_shl(buf)
+    emit_i64_add(buf)
   }
 }
 
@@ -1075,11 +1100,20 @@ fn bind_match_pat(buf: Bytes, base_local: Int, container_pat: Pat, is_ctor_layou
   let mut i = 0
   while i < Array::length(elems) {
     let ep = Array::get(elems, i)
-    let has_header = is_ctor_layout || ctx.enable_rc
+    let off = if is_ctor_layout {
+      8 + i * 8
+    } else if ctx.enable_rc {
+      8 + i * 8
+    } else {
+      i * 8
+    }
     if is_pbind(ep) {
       let nm = get_pbind_name(ep)
       let fl = Array::length(local_names)
-      emit_match_field_load(buf, base_local, i, has_header)
+      emit_local_get(buf, base_local)
+      emit_match_fields_base(buf, base_local, is_ctor_layout || ctx.enable_rc)
+      emit_i32_wrap_i64(buf)
+      emit_i64_load(buf, 3, off)
       emit_local_set(buf, fl)
       // #1062: a Double/Float-typed constructor field bound by a pattern
       // (`Circle(r) => r * r`) must be registered into float_local_slots
@@ -1113,13 +1147,19 @@ fn bind_match_pat(buf: Bytes, base_local: Int, container_pat: Pat, is_ctor_layou
       Array::push(local_names, nm)
     } else if is_ptuple(ep) {
       let sl = Array::length(local_names)
-      emit_match_field_load(buf, base_local, i, has_header)
+      emit_local_get(buf, base_local)
+      emit_match_fields_base(buf, base_local, is_ctor_layout || ctx.enable_rc)
+      emit_i32_wrap_i64(buf)
+      emit_i64_load(buf, 3, off)
       emit_local_set(buf, sl)
       Array::push(local_names, "__bind_sub")
       bind_match_pat(buf, sl, ep, false, local_names, ctx, body, md_bmasks)
     } else if is_pctor(ep) {
       let sl = Array::length(local_names)
-      emit_match_field_load(buf, base_local, i, has_header)
+      emit_local_get(buf, base_local)
+      emit_match_fields_base(buf, base_local, is_ctor_layout || ctx.enable_rc)
+      emit_i32_wrap_i64(buf)
+      emit_i64_load(buf, 3, off)
       emit_local_set(buf, sl)
       Array::push(local_names, "__bind_sub")
       bind_match_pat(buf, sl, ep, true, local_names, ctx, body, md_bmasks)
@@ -1275,11 +1315,32 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
   Array::push(local_names, "__match_scrut")
   let nl1 = ce(buf, __match_scrutinee, local_names, next_local + 1, ctx, ld)
   emit_local_set(buf, scrut_local)
+  // One scratch word suffices for nested tuple/record field probes. A
+  // parent load completes before its child writes this word again.
+  let mut needs_tuple_probe = false
+  if !ctx.enable_rc {
+    for arm in __match_arms {
+      if match_tuple_probe_needed(arm.0, false) {
+        needs_tuple_probe = true
+      }
+    }
+  }
+  let tuple_probe_local = if !needs_tuple_probe {
+    -1
+  } else {
+    let slot = Array::length(local_names)
+    Array::push(local_names, "")
+    slot
+  }
   let num_arms = Array::length(__match_arms)
   let catchall_idx = find_catchall_idx(__match_arms)
   let num_cond_arms = catchall_idx
   let mut ai = 0
-  let mut max_nl = nl1
+  let mut max_nl = if tuple_probe_local >= 0 && tuple_probe_local + 1 > nl1 {
+    tuple_probe_local + 1
+  } else {
+    nl1
+  }
   let names_len_at_match = Array::length(local_names)
   // #965 review (#984): ref_cell_names is name-keyed. An arm's captured
   // `let mut n` stayed registered as a ref cell after the local_names
@@ -1416,18 +1477,20 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
             ()
           }
         } else if is_ptuple(sp) {
-          // Evaluate the container load once, including at nested patterns.
-          let __tuple_local = Array::length(local_names)
-          load_field()
-          emit_local_set(buf, __tuple_local)
-          Array::push(local_names, "[match-temp]__pat_positional_tmp")
           emit_i32_const(buf, 1)
           let __tpats = get_ptuple_pats(sp)
           let mut __tk = 0
           while __tk < Array::length(__tpats) {
             let __tkk = __tk
             let __tload: () -> Unit = () -> {
-              emit_match_field_load(buf, __tuple_local, __tkk, ctx.enable_rc)
+              load_field()
+              emit_match_fields_base(buf, tuple_probe_local, ctx.enable_rc)
+              emit_i32_wrap_i64(buf)
+              emit_i64_load(buf, 3, if ctx.enable_rc {
+                8 + __tkk * 8
+              } else {
+                __tkk * 8
+              })
             }
             emit_pat_test(Array::get(__tpats, __tkk), __tload)
             bytebuf_push(buf, 113)
@@ -1599,7 +1662,14 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
             while __tck < Array::length(__tpats_cond) {
               let __tckk = __tck
               let __tcload: () -> Unit = () -> {
-                emit_match_field_load(buf, scrut_local, __tckk, ctx.enable_rc)
+                emit_local_get(buf, scrut_local)
+                emit_match_fields_base(buf, scrut_local, ctx.enable_rc)
+                emit_i32_wrap_i64(buf)
+                emit_i64_load(buf, 3, if ctx.enable_rc {
+                  8 + __tckk * 8
+                } else {
+                  __tckk * 8
+                })
               }
               emit_sub_tests(Array::get(__tpats_cond, __tckk), __tcload)
               __tck = __tck + 1
@@ -1708,7 +1778,14 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
                   while __ok < Array::length(tpats) {
                     let __okk = __ok
                     let __oload: () -> Unit = () -> {
-                      emit_match_field_load(buf, scrut_local, __okk, ctx.enable_rc)
+                      emit_local_get(buf, scrut_local)
+                      emit_match_fields_base(buf, scrut_local, ctx.enable_rc)
+                      emit_i32_wrap_i64(buf)
+                      emit_i64_load(buf, 3, if ctx.enable_rc {
+                        8 + __okk * 8
+                      } else {
+                        __okk * 8
+                      })
                     }
                     emit_sub_tests(Array::get(tpats, __okk), __oload)
                     __ok = __ok + 1
@@ -1723,9 +1800,6 @@ export fn compile_match(buf: Bytes, expr: Expr, local_names: Array[String], next
           }
         }
       }
-    }
-    if Array::length(local_names) > max_nl {
-      max_nl = Array::length(local_names)
     }
     // #cov branch: this conditional arm was taken (start of the if-then block).
     cov_emit_branch(buf, ctx.cov)
