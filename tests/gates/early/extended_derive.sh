@@ -963,6 +963,15 @@ run_test_block_fixtures_gc "gc-lane scalar parity (gc)" fixtures/gc_lane_scalar_
 run_test_block_fixtures_rc "gc-lane scalar parity (linear, RC)" fixtures/gc_lane_scalar_parity_test.vibe
 echo '[compiler-gate] gc-lane scalar parity ok'
 
+# #3389: match record fields by content on every layout. GC records carry a
+# tagged pointer and a header, while its tuples have neither. The nested and
+# literal-pattern cases exercise both field binding and arm discrimination.
+echo '[compiler-gate] record pattern layout parity (#3389)'
+run_test_block_fixtures "record patterns (linear, bump)" fixtures/record_pattern_*_test.vibe
+run_test_block_fixtures_gc "record patterns (gc)" fixtures/record_pattern_*_test.vibe
+run_test_block_fixtures_rc "record patterns (linear, RC)" fixtures/record_pattern_*_test.vibe
+echo '[compiler-gate] record pattern layout parity ok'
+
 # #3074 / #3075 (and #3065 / #3066 before them): renders that printed a
 # representation instead of the value -- a generic enum's payload through its
 # erased formal (`GA(1)`), a `Char` as its code point, a `Unit` as `0`. The

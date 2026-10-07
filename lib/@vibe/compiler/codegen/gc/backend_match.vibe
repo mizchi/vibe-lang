@@ -334,12 +334,22 @@ fn gc_extract_ctor_payload(buf: Bytes, local_names: Array[String], vloc: Int, id
   tl
 }
 
-/// Load tuple element `idx` of the untagged tuple pointer in `vloc` (tuple
-/// layout: raw even pointer, elements at i*8, no header).
-fn gc_extract_tuple_elem(buf: Bytes, local_names: Array[String], vloc: Int, idx: Int) -> Int {
+/// Load positional field `idx` for a PTuple pattern. Tuples have an even
+/// pointer with no header; anonymous records have a tagged pointer and an
+/// eight-byte header. The parser represents both patterns as PTuple (#3389).
+fn gc_extract_positional_field(buf: Bytes, local_names: Array[String], vloc: Int, idx: Int) -> Int {
   let tl = Array::length(local_names)
   emit_local_get(buf, vloc)
+  emit_i64_const(buf, -2)
+  emit_i64_and(buf)
   emit_i32_wrap_i64(buf)
+  emit_local_get(buf, vloc)
+  emit_i64_const(buf, 1)
+  emit_i64_and(buf)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 8)
+  emit_i32_mul(buf)
+  emit_i32_add(buf)
   emit_i64_load(buf, 3, idx * 8)
   emit_local_set(buf, tl)
   Array::push(local_names, "[gc-temp]__pat_tmp")
@@ -461,7 +471,7 @@ fn emit_gc_pat_test(buf: Bytes, local_names: Array[String], vloc: Int, pat: Pat,
         if gc_pat_needs_test(sub) {
           bytebuf_push(buf, 4)
           bytebuf_push(buf, 127)
-          let tl = gc_extract_tuple_elem(buf, local_names, vloc, ti)
+          let tl = gc_extract_positional_field(buf, local_names, vloc, ti)
           emit_gc_pat_test(buf, local_names, tl, sub, ctx)
           emit_else(buf)
           emit_i32_const(buf, 0)
@@ -524,7 +534,7 @@ fn emit_gc_pat_binds(buf: Bytes, local_names: Array[String], vloc: Int, pat: Pat
       while i < Array::length(ps) {
         let sub = Array::get(ps, i)
         if gc_pat_has_binds(sub) {
-          let tl = gc_extract_tuple_elem(buf, local_names, vloc, i)
+          let tl = gc_extract_positional_field(buf, local_names, vloc, i)
           emit_gc_pat_binds(buf, local_names, tl, sub, ctx)
         } else {
           ()

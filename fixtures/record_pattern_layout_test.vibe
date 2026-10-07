@@ -1,0 +1,263 @@
+// #3389: record patterns share PTuple with tuple patterns, but the GC lane
+// stores records behind a tagged pointer and an eight-byte header. Both the
+// pattern's tests and its bindings must read fields from the correct layout.
+// The compiler gate runs this file on linear, linear RC, and GC.
+
+test "record pattern in match" {
+  let r = record {
+    x: 10,
+    y: 3
+  }
+  let d = match r {
+    record {
+      x,
+      y
+    } => x - y
+  }
+  inspect(d, "7")
+}
+
+test "record pattern in let" {
+  let r = record {
+    x: 10,
+    y: 3
+  }
+  let record {
+    x,
+    y
+  } = r
+  inspect(x - y, "7")
+}
+
+test "tuple pattern retains its own layout" {
+  let d = match (10, 3) {
+    (x, y) => x - y
+  }
+  inspect(d, "7")
+}
+
+test "record field aliases and wildcards" {
+  let d = match record {
+    x: 10,
+    y: 3,
+    unused: 99
+  } {
+    record {
+      x: a,
+      y: b,
+      unused: _
+    } => a - b
+  }
+  inspect(d, "7")
+}
+
+test "record literal patterns test the field values" {
+  let r = record {
+    x: 10,
+    y: 3
+  }
+  let d = match r {
+    record {
+      x: 11,
+      y: _
+    } => 100,
+    record {
+      x: 10,
+      y: 4
+    } => 200,
+    record {
+      x: 10,
+      y
+    } => y,
+    _ => 300
+  }
+  inspect(d, "3")
+}
+
+test "tuple literal patterns retain their own layout" {
+  let d = match (10, 3) {
+    (11, _) => 100,
+    (10, 4) => 200,
+    (10, y) => y,
+    _ => 300
+  }
+  inspect(d, "3")
+}
+
+test "nested record patterns" {
+  let r = record {
+    inner: record {
+      x: 10,
+      y: 3
+    },
+    z: 2
+  }
+  let d = match r {
+    record {
+      inner: record {
+        x: 11,
+        y: _
+      },
+      z: _
+    } => 100,
+    record {
+      inner: record {
+        x,
+        y
+      },
+      z
+    } => x - y - z
+  }
+  inspect(d, "5")
+}
+
+test "nested record literal patterns select the matching arm" {
+  let r = record {
+    inner: record {
+      x: 10,
+      y: 3
+    },
+    z: 2
+  }
+  let d = match r {
+    record {
+      inner: record {
+        x: 10,
+        y: 3
+      },
+      z: 2
+    } => 7,
+    _ => 100
+  }
+  inspect(d, "7")
+}
+
+test "nested pattern temporaries do not shadow user bindings" {
+  let __pat_positional_tmp = 1000
+  let r = record {
+    inner: record {
+      x: 10,
+      y: 3
+    },
+    z: 2
+  }
+  let d = match r {
+    record {
+      inner: record {
+        x: 10,
+        y: 3
+      },
+      z: 2
+    } => __pat_positional_tmp - 7,
+    _ => 100
+  }
+  inspect(d, "993")
+}
+
+test "record literal or patterns" {
+  let r = record {
+    x: 10,
+    y: 3
+  }
+  let d = match r {
+    record {
+      x: 11,
+      y: _
+    }| record {
+      x: 12,
+      y: _
+    } => 100,
+    record {
+      x: 9,
+      y: _
+    }| record {
+      x: 10,
+      y: _
+    } => 7,
+    _ => 200
+  }
+  inspect(d, "7")
+}
+
+test "a tuple inside a record" {
+  let d = match record {
+    pair: (10, 3),
+    z: 2
+  } {
+    record {
+      pair: (11, _),
+      z: _
+    } => 100,
+    record {
+      pair: (x, y),
+      z
+    } => x - y - z
+  }
+  inspect(d, "5")
+}
+
+test "a record inside a tuple" {
+  let r = record {
+    x: 10,
+    y: 3
+  }
+  let pair = (r, 2)
+  let d = match pair {
+    (record {
+      x: 11,
+      y: _
+    }, _) => 100,
+    (record {
+      x,
+      y
+    }, z) => x - y - z
+  }
+  inspect(d, "5")
+}
+
+test "a record inside an option" {
+  let d = match Some(record {
+    x: 10,
+    y: 3
+  }) {
+    Some(record {
+      x: 11,
+      y: _
+    }) => 100,
+    Some(record {
+      x,
+      y
+    }) => x - y,
+    None => 200
+  }
+  inspect(d, "7")
+}
+
+test "a record returned by a closure" {
+  let make = () -> {
+    record {
+      x: 10,
+      y: 3
+    }
+  }
+  let d = match make() {
+    record {
+      x,
+      y
+    } => x - y
+  }
+  inspect(d, "7")
+}
+
+test "record fields preserve signed and large integers" {
+  let d = match record {
+    x: 1<<40,
+    y: 0 - 3
+  } {
+    record {
+      x,
+      y
+    } => x - y
+  }
+  inspect(d, "1099511627779")
+}
