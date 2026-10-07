@@ -75,3 +75,41 @@ test "a closure parameter shadows an outer location in the write scan" {
   assert_eq(retention_value_regions(safe, review_region_env(), [], SubstEmpty), [
   ])
 }
+
+test "match and for binders own their locations, including genuine aliases" {
+  let box = ERecord("Box", [("v", EInt(0))], [])
+  let write = ECall(EIdent("store", 1), [EIdent("box", 2), EIdent("h", 3)], 1, [
+  ])
+  let inner_match = EMatch(box, [(PBind("box"), ESeq(write, EUnit))])
+  let inner_for = EForIn("box", None, EArray([box]), ESeq(write, EUnit))
+  for inner in [inner_match, inner_for] {
+    let safe = ELet("box", box, ESeq(inner, EIdent("box", 4)), 11)
+    assert_eq(retention_value_regions(safe, review_region_env(), [], SubstEmpty), [
+    ])
+  }
+  let same_location = EMatch(EIdent("box", 5), [
+    (PBind("box"), ESeq(write, EUnit))
+  ])
+  let retaining = ELet("box", box, ESeq(same_location, EIdent("box", 4)), 11)
+  assert_eq(retention_value_regions(retaining, review_region_env(), [], SubstEmpty), [
+    "#region_review"
+  ])
+}
+
+test "a recursive binding shadows the outer location before its initializer" {
+  let box = ERecord("Box", [("v", EInt(0))], [])
+  let inner = ELetRec("box", EFn([], [], [], None, None, EIdent("h", 1)), EUnit)
+  let safe = ELet("box", box, ESeq(inner, EIdent("box", 4)), 11)
+  assert_eq(retention_value_regions(safe, review_region_env(), [], SubstEmpty), [
+  ])
+}
+
+test "a handler payload binder owns a different location from its outer namesake" {
+  let box = ERecord("Box", [("v", EInt(0))], [])
+  let write = ECall(EIdent("store", 1), [EIdent("box", 2), EIdent("h", 3)], 1, [
+  ])
+  let inner = EHandle(box, [(PCtor("E::P", [PBind("box")]), ESeq(write, EUnit))])
+  let safe = ELet("box", box, ESeq(inner, EIdent("box", 4)), 11)
+  assert_eq(retention_value_regions(safe, review_region_env(), [], SubstEmpty), [
+  ])
+}

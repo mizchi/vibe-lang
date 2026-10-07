@@ -550,7 +550,8 @@ an escape. Neither is a nested group storing the outer group's handle in a
 local of the outer body.
 
 The alias walk distinguishes each local binder's scope: an inner `let`,
-`let mut`, or closure parameter with the same spelling does not become the
+`let mut`, recursive binding, match/handler arm, for binding, or closure
+parameter with the same spelling does not become the
 outer location. Fixed-point rounds retain a separate alias set for each
 binder occurrence, and the write pass reads those same sets. A literal tuple
 or record match transfers the selected component's provenance to its binder;
@@ -576,6 +577,13 @@ callee's lambda again under the call's region:
 - a parameter whose argument is a location declared before the region stands
   for that outer binding, for that region only (a nested group's helper may
   still store the outer group's handle in a local of the outer body).
+
+A visible closure is checked when its captures carry the region, including
+when called with no arguments, by name or as a literal expression. Joining
+its captured handle and returning an empty container produces a region-free
+result summary; returning or retaining the handle stays refused. The re-check
+request is explicit: no request differs from a request with zero parameter
+overrides, so a zero-argument body still records its result provenance.
 
 A user-defined wrapper with the same signature shape as `TaskGroup::spawn`
 is checked again like any other visible helper. Its signature does not prove
