@@ -62,6 +62,10 @@ import @vibe/core {
   array_empty, struct MutMap
 }
 
+import ./checker_handler_payload_patterns.vibe {
+  reject_handler_arm_payload_patterns
+}
+
 import ./checker_exhaustive.vibe {
   match_nonexhaustive_witness
 }
@@ -87,7 +91,7 @@ import ./checker_effects.vibe {
 }
 
 import ./checker_escape.vibe {
-  mut_binding_escapes
+  expr_free_in, mut_binding_escapes
 }
 
 import ./checker_builtin_arg_head_rest.vibe {
@@ -1363,10 +1367,12 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       // same S the `Put(v)` payload binder and the body's performs see.
       let mut hai = 0
       while hai < Array::length(harms) {
-        // #3301: a copy of an or-pattern arm carries the split's group stamp
-        // around its body; the arm is checked as the body under it.
+        // A split or-pattern arm carries its group stamp around the body.
         let (hpat, hbody_stamped) = Array::get(harms, hai)
         let (hgroup, hbody) = handler_or_arm_stamp(hbody_stamped)
+        // The body's substitution gives the actual payload type. Diagnose
+        // the pattern before names it failed to bind are read by the arm.
+        reject_handler_arm_payload_patterns(hpat, hbody, body, henv_shared, defs, hs1, harms, errors)
         match hpat {
           PCtor(hqname, hbinds) => {
             let hci = String::index_of(hqname, "::")
