@@ -1,0 +1,31 @@
+// #3343: the write is two calls away. `forward` aliases its target and hands
+// it on; `put` stores into it. Each re-check marks the parameter that stands
+// for the outer binding, so the write in `put` is judged as a write into `c`.
+// This compiled and the handle was joined after its group closed.
+import @vibe/concurrent { TaskGroup, TaskHandle }
+
+struct Cell[T] {
+  mut v: Option[T]
+}
+
+fn put[T](c: Cell[T], v: T) -> Unit {
+  let w = Some(v)
+  c.v = w
+}
+
+fn forward[T](target: Cell[T], x: T) -> Unit {
+  put(target, x)
+}
+
+fn main() -> Unit allows Exception + Console {
+  let c = Cell::{ v: None }
+  let r = TaskGroup::run((n) -> {
+    forward(c, TaskGroup::spawn(n, () -> { 41 }))
+    1
+  })
+  let after = match c.v {
+    Some(h) => TaskHandle::join(h),
+    None => 0 - 1
+  }
+  println("r=\{r} after=\{after}")
+}

@@ -61,6 +61,10 @@ import ./checker_eq_generalized_site.vibe {
   note_source_comparator_heads, refuse_generalized_eq_sites
 }
 
+import ./checker_region_retention.vibe {
+  retention_begin_module, retention_end_module, retention_note_module_env
+}
+
 import ./checker.vibe {
   TypedOccurrenceRoleLaneCapture,
   attach_unlocated_decl_name_marker,
@@ -712,6 +716,13 @@ fn next_type_def_binder_id(type_def_binders: Array[Array[Int]], floor: Int) -> I
 
 export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: Array[TypeDef], type_def_binders: Array[Array[Int]], local_defs_start: Int, s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], statement_parent_path: Option[Array[Int]], capture: Option[CheckerStatementCapture], role_lane_capture: Option[TypedOccurrenceRoleLaneCapture], imports_already_projected: Bool, validate_completed_decls: Bool) -> (TypeEnv, Subst, Int) {
   let stmts = reorder_type_decls_first(raw_stmts, i)
+  // #3343: the root list's declarations, so a call inside a region can find
+  // the body of the function it names wherever that function is declared.
+  let retention_saved = if validate_completed_decls {
+    Some(retention_begin_module(stmts))
+  } else {
+    None
+  }
   let completed_decl_error_insert_at = Array::length(errors)
   let observation_checkpoint = checker_observation_checkpoint(capture, role_lane_capture, tytab)
   // Retained coordinates exist solely for the opt-in observation. Keep the
@@ -888,6 +899,7 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
     let s = cur_s
     let c = cur_c
     let stmt = Array::get(stmts, idx)
+    retention_note_module_env(env)
     let defs_before_stmt = Array::length(defs)
     // Do not construct paths or read the legacy append boundary on the normal
     // checker path. The parent/current coordinate is observation-only.
@@ -1593,13 +1605,16 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
         let env1 = env_bind(env, name, t)
         (bind_annotation_return(env1, name, Some(te), defs), s, c)
       },
+      // #3343: `#interp.top.fn` marks the body's own bindings as local, as
+      // it does for a declaration's value (`val_env` above); it reads as
+      // "not a top-level function", which a test body is not.
       STest(_, body) => {
-        let (vt, ns, nc) = check_expr_capture(body, env, defs, s, c, errors, tytab, role_lane_capture, "Primary")
+        let (vt, ns, nc) = check_expr_capture(body, env_bind(env, "#interp.top.fn", CtUnit), defs, s, c, errors, tytab, role_lane_capture, "Primary")
         capture_statement_root_type(capture, statement_path, "STest", vt)
         (env, ns, nc)
       },
       SBench(_, body) => {
-        let (vt, ns, nc) = check_expr_capture(body, env, defs, s, c, errors, tytab, role_lane_capture, "Primary")
+        let (vt, ns, nc) = check_expr_capture(body, env_bind(env, "#interp.top.fn", CtUnit), defs, s, c, errors, tytab, role_lane_capture, "Primary")
         capture_statement_root_type(capture, statement_path, "SBench", vt)
         (env, ns, nc)
       },
@@ -1933,6 +1948,10 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
     }
   } else {
     ()
+  }
+  match retention_saved {
+    Some(saved) => retention_end_module(saved),
+    None => ()
   }
   (cur_env, cur_s, cur_c)
 }

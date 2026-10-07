@@ -197,9 +197,21 @@ import ./checker_merge_capture_provenance.vibe {
   collect_env_bindings,
   eq_formal_row_of,
   formal_shadow,
+  resume_walk_param_base,
   throw_payload_sites,
   type_is_ground_except,
   type_mentions_named
+}
+
+import ./checker_region_retention.vibe {
+  retention_call_region_check,
+  retention_expr_callee_region_check,
+  retention_named_run_body,
+  retention_named_run_body_message,
+  retention_region_listed,
+  retention_result_regions,
+  retention_type_hides_region,
+  retention_type_may_hide_region
 }
 
 import ./checker_throw_kind_of_type.vibe {
@@ -229,6 +241,9 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
           ()
         }
         retaining_write_region_check(name, args, env, defs, s, c, errors, check_plain)
+        // #3343: a region value handed to a function or closure that may
+        // keep it -- its body is re-checked under this call's regions.
+        retention_call_region_check(name, callee_off, callee_off, String::length(name), args, env, defs, s, c, errors, check_child)
         // #3179: the builtin arms below are selected by `arm`, never by
         // `name`: a spelling the program's own function answers for reaches
         // the ordinary call path at the end of this chain instead.
@@ -1520,10 +1535,52 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                             }
                             ei = ei + 1
                           }
+                          // #3343: a body passed BY NAME was checked where it
+                          // was written, outside this region; a closure
+                          // literal or function of this module bound to the
+                          // name is re-checked inside it, its group parameter
+                          // carrying the region, exactly as a literal body is.
+                          // Codex on #3359: a body whose code is not visible
+                          // here -- a `let mut` closure, a call's result, a
+                          // function stored in a field -- is refused.
+                          let (named_kind, named_returns) = if literal_body {
+                            (0, false)
+                          } else {
+                            retention_named_run_body(body_arg, env, defs, s_skolem, c_body, region_ty, subst_apply(s_skolem, Array::get(body_params, 0)), check_child)
+                          }
+                          if named_kind > 0 {
+                            Array::push(errors, String::concat(retention_named_run_body_message(expr_ident_name_or_empty(body_arg), named_kind), off_marker_len(callee_off, String::length(name))))
+                            write_refused = true
+                          } else {
+                            ()
+                          }
                           match unify(CtFn(body_params, body_ret, body_eff), bt, s_body) {
                             Some(s_unified) => {
                               let zonked_ret = subst_apply(s_unified, body_ret)
-                              if type_mentions_named(zonked_ret, skolem_name) {
+                              // #3343 (Codex on #3359): a value whose type
+                              // may hide the region -- a struct built from
+                              // the token, a handle under an erased
+                              // annotation, a closure -- is asked by what the
+                              // body's tail and its explicit `return`s read.
+                              let tail_returns = match body_arg {
+                                EFn(_, _, fn_params, _, _, fn_body) => if literal_body && retention_type_may_hide_region(zonked_ret) {
+                                  let (raw_pname, _) = Array::get(fn_params, 0)
+                                  let pname = resume_walk_param_base(raw_pname)
+                                  let lit_env = env_bind(env_bind(body_env, "__capture_boundary__", CtUnit), pname, subst_apply(s_unified, Array::get(body_params, 0)))
+                                  // The body's own result type, too: a
+                                  // value the checker could not type
+                                  // leaves the run's result open.
+                                  let own_ret = match subst_apply(s_unified, bt) {
+                                    CtFn(_, own, _) => subst_apply(s_unified, own),
+                                    _ => zonked_ret
+                                  }
+                                  tail_named_record_mentions_region(fn_body, lit_env, defs, s_unified, c_body, skolem_name, check_plain) || ((retention_type_hides_region(zonked_ret, defs) || retention_type_hides_region(own_ret, defs)) && retention_region_listed(retention_result_regions(fn_body, lit_env, defs, s_unified), skolem_name))
+                                } else {
+                                  false
+                                },
+                                _ => false
+                              }
+                              if type_mentions_named(zonked_ret, skolem_name) || named_returns || tail_returns {
                                 Array::push(errors, String::concat("region escapes its nursery scope: the value returned from this TaskGroup::run body still depends on its own Nursery/Task/Sender/Receiver token", off_marker_len(callee_off, String::length(name))))
                               } else {
                                 ()
@@ -1653,7 +1710,9 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
               let (body_ty, s1, c1) = check_child(fn_body, env_body, defs, s, c + 1, errors, tytab, capture, lane)
               typed_occurrence_capture_restore_frame_depth(capture, virtual_parent_depth)
               let zonked_ret = subst_apply(s1, body_ty)
-              if type_mentions_named(zonked_ret, skolem_name) || tail_named_record_mentions_region(fn_body, env_body, defs, s, c + 1, skolem_name, check_plain) {
+              // #3343 (Codex on #3359): a value whose type may hide the
+              // region is asked by what the body's tail reads, too.
+              if type_mentions_named(zonked_ret, skolem_name) || tail_named_record_mentions_region(fn_body, env_body, defs, s, c + 1, skolem_name, check_plain) || (retention_type_hides_region(zonked_ret, defs) && retention_region_listed(retention_result_regions(fn_body, env_body, defs, s1), skolem_name)) {
                 Array::push(errors, String::concat("region escapes its scope: the value returned from this region body still depends on the region's own token", off_marker_len(region_off, String::length(name))))
               } else {
                 ()
@@ -2235,6 +2294,12 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
               }
               let all_args = prepend_expr(obj, args)
               retaining_write_region_check(qualified, all_args, env, defs, s2, c2, errors, check_plain)
+              // #3343: as for a call by name; a method that names no
+              // function (a function stored in a field) is checked below.
+              match env_lookup(env, qualified) {
+                Some(_) => retention_call_region_check(qualified, qcall_field_off, call_off, String::length(method), all_args, env, defs, s2, c2, errors, check_child),
+                None => ()
+              }
               let alen = Array::length(all_args)
               let arg_tys = array_empty()
               Array::push(arg_tys, obj_ty)
@@ -2301,6 +2366,9 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                   let field_fn = receiver_struct_field_type(defs, subst_apply(s3, obj_ty), method)
                   match field_fn {
                     Some(CtFn(fpts, fret, _)) => {
+                      // #3343: a function stored in a field has no body the
+                      // checker can see.
+                      retention_expr_callee_region_check(EUnit, method, qcall_field_off, Array::slice(all_args, 1, Array::length(all_args)), env, defs, s3, c3, errors, check_child)
                       let explicit = Array::slice(arg_tys, 1, Array::length(arg_tys))
                       if Array::length(fpts) != Array::length(explicit) {
                         Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(qualified, String::concat(": expected ", String::concat(__to_string(Array::length(fpts)), String::concat(" args, got ", __to_string(Array::length(explicit))))))), off_marker_len(call_off, String::length(qualified))))
@@ -2452,6 +2520,9 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
             (tab_call_ty(tytab, call_off, bound_ty, capture, lane), ns2, nc0)
           },
           None => {
+            // #3343: a lambda applied where it is written is re-checked
+            // under this call's regions; any other callee has no visible body.
+            retention_expr_callee_region_check(callee, "(lambda)", call_off, args, env, defs, s, c, errors, check_child)
             let callee_name0 = expr_ident_name_or_empty(callee)
             if callee_name0 != "" {
               match direct_call_return(env, callee_name0, 0 - 1) {

@@ -1,0 +1,35 @@
+// #3343 (Codex on #3359): a helper that recurses with a DIFFERENT callback.
+// `walk(safe, h, true)` calls `walk(stash, h, false)`, which hands the handle
+// to `stash`, and `stash` keeps it in a top-level array. The second check of
+// `walk` was keyed by the callee and its arguments' regions only, so the
+// recursive call read as already checked and `stash` was never followed:
+// this compiled and the handle was joined after its group closed. The key
+// now names each function argument, and the call is refused.
+import @vibe/concurrent { TaskGroup, TaskHandle }
+
+let kept: Array[TaskHandle[Int]] = []
+
+fn safe(h: TaskHandle[Int]) -> Unit {
+  let _ = h
+  ()
+}
+
+fn stash(h: TaskHandle[Int]) -> Unit {
+  Array::push(kept, h)
+}
+
+fn walk(cb: (TaskHandle[Int]) -> Unit, h: TaskHandle[Int], first: Bool) -> Unit {
+  if first {
+    walk(stash, h, false)
+  } else {
+    cb(h)
+  }
+}
+
+fn main() -> Unit allows Exception + Console {
+  let r = TaskGroup::run((n) -> {
+    walk(safe, TaskGroup::spawn(n, () -> { 41 }), true)
+    1
+  })
+  println("r=\{r} after=\{TaskHandle::join(Array::get(kept, 0))}")
+}

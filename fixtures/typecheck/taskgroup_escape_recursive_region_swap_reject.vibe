@@ -1,0 +1,37 @@
+// #3343 (Codex on #3359): nested groups. `keep` is handed a fresh handle of
+// the outer group and one of the inner group, and recurses with the two
+// swapped; the recursive call stores the INNER handle in a cell of the outer
+// body. The second check of `keep` was keyed by whether each argument carried
+// a region, not which, so the recursive call read as the one already being
+// checked, and only the first call's store (of the outer handle, legal) was
+// judged: this compiled and the inner handle was joined after its group
+// closed (`r=42`). The key now names the regions, and the call is refused.
+import @vibe/concurrent { TaskGroup, TaskHandle }
+
+struct Cell[T] {
+  mut v: Option[T]
+}
+
+fn keep(c: Cell[TaskHandle[Int]], a: TaskHandle[Int], b: TaskHandle[Int], again: Bool) -> Unit {
+  if again {
+    keep(c, b, a, false)
+  } else {
+    c.v = Some(a)
+  }
+}
+
+fn main() -> Unit allows Exception + Console {
+  let r = TaskGroup::run((n) -> {
+    let c: Cell[TaskHandle[Int]] = Cell::{ v: None }
+    let inner = TaskGroup::run((m) -> {
+      keep(c, TaskGroup::spawn(n, () -> { 1 }), TaskGroup::spawn(m, () -> { 41 }), true)
+      1
+    })
+    let after = match c.v {
+      Some(h) => TaskHandle::join(h),
+      None => 0 - 1
+    }
+    inner + after
+  })
+  println("r=\{r}")
+}

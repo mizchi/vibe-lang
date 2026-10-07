@@ -1,0 +1,29 @@
+// #3343 (Codex on #3359): the handle sits two structs deep (`Outer` holds a
+// `Box` that holds it) in a value written into an outer cell. This compiled
+// and the handle was joined after its group closed; the write is refused.
+import @vibe/concurrent { TaskGroup, TaskHandle }
+
+struct Box {
+  h: TaskHandle[Int]
+}
+
+struct Outer {
+  b: Box
+}
+
+struct Cell[T] {
+  mut v: Option[T]
+}
+
+fn main() -> Unit allows Exception + Console {
+  let c: Cell[Outer] = Cell::{ v: None }
+  let r = TaskGroup::run((n) -> {
+    c.v = Some(Outer::{ b: Box::{ h: TaskGroup::spawn(n, () -> { 41 }) } })
+    1
+  })
+  let after = match c.v {
+    Some(o) => TaskHandle::join(o.b.h),
+    None => 0 - 1
+  }
+  println("r=\{r} after=\{after}")
+}

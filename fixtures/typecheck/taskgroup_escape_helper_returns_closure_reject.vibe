@@ -1,0 +1,28 @@
+// #3343 (Codex on #3359): the handle comes back captured by a closure whose
+// declared type `() -> Int with Exception` does not name the group. This
+// compiled and the handle was joined after its group closed; the caller's
+// write of the result is refused.
+import @vibe/concurrent { TaskGroup, TaskHandle }
+
+struct Cell[T] {
+  mut v: Option[T]
+}
+
+fn later(h: TaskHandle[Int]) -> () -> Int with Exception {
+  () -> Int with Exception {
+    TaskHandle::join(h)
+  }
+}
+
+fn main() -> Unit allows Exception + Console {
+  let c: Cell[() -> Int with Exception] = Cell::{ v: None }
+  let r = TaskGroup::run((n) -> {
+    c.v = Some(later(TaskGroup::spawn(n, () -> { 41 })))
+    1
+  })
+  let after = match c.v {
+    Some(f) => f(),
+    None => 0 - 1
+  }
+  println("r=\{r} after=\{after}")
+}
