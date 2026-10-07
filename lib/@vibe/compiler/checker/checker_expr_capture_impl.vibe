@@ -5,7 +5,7 @@ import @vibe/compiler/checker/annotations {
 }
 
 import @vibe/compiler/checker/type_relations {
-  type_is_ground
+  check_assignable_set_type_defs, type_is_ground
 }
 
 import @vibe/compiler/checker/resume {
@@ -104,7 +104,7 @@ import ./checker_call_expr.vibe {
 }
 
 import ./checker_row_effect_inst.vibe {
-  field_effect_inst_arg_check
+  bind_struct_field_effect_instantiations, field_effect_inst_arg_check
 }
 
 import ./checker_closure_capture_row.vibe {
@@ -136,6 +136,7 @@ import ./checker_eq_unbounded_formal_msg.vibe {
   effect_tparams,
   env_has_active_region,
   mark_return_provenance_written,
+  note_generic_callback_instance,
   note_local_generic_binding,
   string_lit_end,
   struct_fields_ground,
@@ -309,8 +310,8 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         // in another order than `f`, so the row markers it copied are
         // respelled against its own quantifier list, as a top-level one's are.
         let gen = match val {
-          EIdent(_, _) => publish_row_formals(gen0, val, cenv, defs),
-          _ => gen0
+          EFn(_, _, _, _, _, _) => gen0,
+          _ => publish_row_formals(gen0, val, cenv, defs, ns)
         }
         // #2848: a field read on a parameter this binding just quantified.
         refuse_generalized_field_reads(gen, ns, errors)
@@ -645,6 +646,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           ()
         }
         let (ti, c1, new_bounds) = instantiate(t, c)
+        note_generic_callback_instance(t, ti)
         let nblen = Array::length(new_bounds)
         let mut s1 = s
         let mut bi = 0
@@ -1968,6 +1970,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             },
             _ => (field_ty0, c1)
           }
+          let (inst_field_ty, field_s, field_c) = bind_struct_field_effect_instantiations(field_ty, resolved, defs, s1, c_after)
           // Record this field-access node's (raw, pre-final-subst) projection type
           // keyed by its real source offset, for typed-hover on `obj.field`.
           // Synthetic accesses (dot_off < 0) are skipped. #645: the field token's
@@ -1975,13 +1978,13 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           // the base) resolves the projection type.
           let dependent_field_ty = match obj {
             EIdent(base_name, _) => match env_lookup(env, String::concat("__param_marker__", base_name)) {
-              Some(CtNamed(marker_label, _)) => add_param_capture_dependency(field_ty, match param_marker_index(marker_label) {
+              Some(CtNamed(marker_label, _)) => add_param_capture_dependency(inst_field_ty, match param_marker_index(marker_label) {
                 Some(marker) => marker,
                 None => 0 - 1
               }),
-              _ => field_ty
+              _ => inst_field_ty
             },
-            _ => field_ty
+            _ => inst_field_ty
           }
           if dot_off >= 0 {
             tab_dot_projection_ty(tytab, dot_off, dependent_field_ty, capture, lane)
@@ -1993,7 +1996,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           } else {
             ()
           }
-          (dependent_field_ty, s1, c_after)
+          (dependent_field_ty, field_s, field_c)
         }
       }
     },
@@ -2206,7 +2209,10 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               // every downstream use of the value unchecked). A non-ground
               // struct WITHOUT declared params (unresolved field type names)
               // keeps the old CtUnknown tolerance.
-              if struct_fields_ground(dfields, defs, s_tparams) || (tplen == 0 && struct_fields_ground_builtin_named(dfields)) {
+              // A parameter used only in a function field's effect row is
+              // still part of the struct's identity. Keep its concrete
+              // arguments even when every ordinary field type is ground.
+              if tplen == 0 && (struct_fields_ground(dfields, defs, s_tparams) || struct_fields_ground_builtin_named(dfields)) {
                 (CtStruct(rn), s1, c2)
               } else if tplen > 0 {
                 let inst_targs = for ta in fresh_targs {
@@ -2471,6 +2477,7 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
   // alias a fresh variable here. Not an internal entry: the checker recurses
   // through check_expr_capture.
   reset_eq_formal_vars()
+  check_assignable_set_type_defs(defs)
   check_expr_capture_impl(expr, env, defs, s, c, errors, tytab, None, "Primary", false)
 }
 

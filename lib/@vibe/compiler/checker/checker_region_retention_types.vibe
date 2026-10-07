@@ -1,0 +1,253 @@
+import @vibe/compiler/core {
+  Type, TypeDef
+}
+import @vibe/core {
+  array_empty
+}
+
+/// The region-carrying builtin heads: their region is an argument of the
+/// type, so a use of the head with no `#region_` argument is a spelling that
+/// erased it (`TaskHandle[Int]`, a struct field `MutList[Int]`).
+fn retention_is_region_head(name: String) -> Bool {
+  name == "TaskHandle" || name == "TaskGroup" || name == "Sender" || name == "Receiver" || name == "Channel" || name == "MutList" || name == "MutBytes" || name == "Region" || name == "Task" || name == "Nursery"
+}
+
+/// Codex on #3359: whether the program declares a struct, enum or alias named
+/// `name` -- itself or through an import. A compiler-owned head spelled the
+/// same way (`struct Sender[T]` of the program's own) is then that
+/// declaration, judged by its fields, the way `source_declares_type` reads
+/// the declaration table for the assignability checks (#3326).
+fn retention_declared_type(name: String, defs: Array[TypeDef]) -> Bool {
+  let mut found = false
+  for d in defs {
+    match d {
+      TDStruct(dn, _, _, _) => if String::equals(dn, name) {
+        found = true
+      } else {
+        ()
+      },
+      TDAlias(dn, _, _) => if String::equals(dn, name) {
+        found = true
+      },
+      TDEnum(dn, _, _) => if String::equals(dn, name) {
+        found = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+  }
+  found
+}
+
+fn retention_type_has_region_skolem(t: Type) -> Bool {
+  match t {
+    CtNamed(n, args) => if String::starts_with(n, "#region_") {
+      true
+    } else {
+      let mut found = false
+      for a in args {
+        if retention_type_has_region_skolem(a) {
+          found = true
+        } else {
+          ()
+        }
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+/// `t` with each of `names` (a declaration's type parameters) replaced by
+/// the argument at the same position, where there is one.
+fn retention_subst_params(t: Type, names: Array[String], args: Array[Type]) -> Type {
+  if Array::length(names) == 0 {
+    t
+  } else {
+    match t {
+      CtNamed(n, targs) => {
+        let mut hit = -1
+        let mut i = 0
+        while i < Array::length(names) && i < Array::length(args) {
+          if hit < 0 && String::equals(Array::get(names, i), n) && Array::length(targs) == 0 {
+            hit = i
+          } else {
+            ()
+          }
+          i = i + 1
+        }
+        if hit >= 0 {
+          Array::get(args, hit)
+        } else {
+          CtNamed(n, for a in targs {
+            retention_subst_params(a, names, args)
+          })
+        }
+      },
+      CtArray(e) => CtArray(retention_subst_params(e, names, args)),
+      CtOption(e) => CtOption(retention_subst_params(e, names, args)),
+      CtTuple(items) => CtTuple(for item in items {
+        retention_subst_params(item, names, args)
+      }),
+      CtRecord(fields) => CtRecord(for field in fields {
+        let (fname, fty) = field
+        (fname, retention_subst_params(fty, names, args))
+      }),
+      CtFn(ps, ret, eff) => CtFn(for p in ps {
+        retention_subst_params(p, names, args)
+      }, retention_subst_params(ret, names, args), eff),
+      _ => t
+    }
+  }
+}
+
+fn retention_any_hides(items: Array[Type], defs: Array[TypeDef], visiting: Array[String]) -> Bool {
+  let mut any = false
+  for item in items {
+    if !any && retention_hides(item, defs, visiting) {
+      any = true
+    } else {
+      ()
+    }
+  }
+  any
+}
+
+/// Whether a declared type `name` applied to `args` holds a value whose
+/// region its type would not show. A declaration already being asked about
+/// answers no: the first visit answers for the recursion.
+fn retention_named_hides(name: String, args: Array[Type], defs: Array[TypeDef], visiting: Array[String]) -> Bool {
+  if retention_string_has(visiting, name) {
+    false
+  } else {
+    let mut found = false
+    let mut answer = false
+    for d in defs {
+      if !found {
+        match d {
+          TDStruct(dn, fields, _, tparams) => if String::equals(dn, name) {
+            found = true
+            Array::push(visiting, name)
+            answer = retention_any_hides(for field in fields {
+              let (_, fty) = field
+              retention_subst_params(fty, tparams, args)
+            }, defs, visiting)
+            Array::truncate(visiting, Array::length(visiting) - 1)
+          } else {
+            ()
+          },
+          TDEnum(dn, tparams, variants) => if String::equals(dn, name) {
+            found = true
+            Array::push(visiting, name)
+            let payloads = array_empty()
+            for v in variants {
+              let (_, tys) = v
+              for t in tys {
+                Array::push(payloads, retention_subst_params(t, tparams, args))
+              }
+            }
+            answer = retention_any_hides(payloads, defs, visiting)
+            Array::truncate(visiting, Array::length(visiting) - 1)
+          } else {
+            ()
+          },
+          TDAlias(dn, tparams, body) => if String::equals(dn, name) {
+            found = true
+            Array::push(visiting, name)
+            answer = retention_hides(retention_subst_params(body, tparams, args), defs, visiting)
+            Array::truncate(visiting, Array::length(visiting) - 1)
+          } else {
+            ()
+          },
+          _ => ()
+        }
+      } else {
+        ()
+      }
+    }
+    if found {
+      answer
+    } else if Array::length(args) == 0 {
+      // An opaque type whose declaration is not visible here may hold
+      // anything; a lowercase spelling is a type or row variable's name
+      // (`e` of `TaskHandle[r, e, T]`), not a declaration.
+      let head = if String::length(name) > 0 {
+        String::byte_at(name, 0)
+      } else {
+        0
+      }
+      !(head >= 97 && head <= 122)
+    } else {
+      retention_any_hides(args, defs, visiting)
+    }
+  }
+}
+
+fn retention_hides(t: Type, defs: Array[TypeDef], visiting: Array[String]) -> Bool {
+  match t {
+    CtInt => false,
+    CtDouble => false,
+    CtBool => false,
+    CtString => false,
+    CtChar => false,
+    CtUnit => false,
+    CtBytes => false,
+    CtVar(_) => false,
+    // A type the checker could not resolve is not judged here: what left a
+    // region-carrying value untyped -- a struct literal whose field spells a
+    // region head without its region -- is typed now, and an element the
+    // checker lost (`FrozenArray::get(MutList::freeze(l), 0)` on a list whose
+    // element type stayed open) is a copy out of the region.
+    CtUnknown => false,
+    CtConstructor(_, _) => false,
+    CtArray(e) => retention_hides(e, defs, visiting),
+    CtOption(e) => retention_hides(e, defs, visiting),
+    CtTuple(items) => retention_any_hides(items, defs, visiting),
+    CtRecord(fields) => retention_any_hides(for field in fields {
+      let (_, fty) = field
+      fty
+    }, defs, visiting),
+    // A closure's type does not list everything it captured.
+    CtFn(_, _, _) => true,
+    CtForAll(_, _, body) => retention_hides(body, defs, visiting),
+    CtApplied(_, _) => true,
+    CtStruct(name) => retention_named_hides(name, array_empty(), defs, visiting),
+    CtEnum(name) => retention_named_hides(name, array_empty(), defs, visiting),
+    CtNamed(name, args) => if String::starts_with(name, "#region_") {
+      false
+    } else if retention_is_region_head(name) && !retention_declared_type(name, defs) {
+      let mut shown = false
+      for a in args {
+        if retention_type_has_region_skolem(a) {
+          shown = true
+        } else {
+          ()
+        }
+      }
+      !shown || retention_any_hides(args, defs, visiting)
+    } else {
+      retention_named_hides(name, args, defs, visiting)
+    }
+  }
+}
+
+/// #3343 (Codex on #3359): whether a value of type `t` may carry a region
+/// its type does not name -- a region-carrying builtin spelled without its
+/// region, a closure, a declared struct or enum holding either (through its
+/// type arguments too), or a type whose declaration is not visible.
+export fn retention_type_hides_region(t: Type, defs: Array[TypeDef]) -> Bool {
+  retention_hides(t, defs, array_empty())
+}
+
+fn retention_string_has(items: Array[String], wanted: String) -> Bool {
+  let mut found = false
+  for item in items {
+    if String::equals(item, wanted) {
+      found = true
+    } else {
+      ()
+    }
+  }
+  found
+}

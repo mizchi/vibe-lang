@@ -1,0 +1,77 @@
+import @vibe/compiler/checker {
+  retention_type_hides_region, retention_value_regions
+}
+import @vibe/compiler/core {
+  Expr, Pat, Subst, Type, TypeDef, TypeEnv, env_bind
+}
+
+fn review_region_env() -> TypeEnv {
+  let outside = env_bind(EnvEmpty, "f", CtFn([], CtInt, None))
+  let active = env_bind(outside, "#active_region", CtNamed("#region_review", []))
+  env_bind(active, "h", CtNamed("TaskHandle", [
+    CtNamed("#region_review", []),
+    CtInt
+  ]))
+}
+
+test "a declared alias is classified by its body before a builtin spelling" {
+  let defs = [
+    TDStruct("Box", [("v", CtNamed("T", []))], [], ["T"]),
+    TDAlias("Sender", ["T"], CtNamed("Box", [CtNamed("T", [])]))
+  ]
+  assert(!retention_type_hides_region(CtNamed("Sender", [CtInt]), defs))
+  let retaining = [
+    TDAlias("Sender", ["T"], CtNamed("TaskHandle", [CtNamed("T", [])]))
+  ]
+  assert(retention_type_hides_region(CtNamed("Sender", [CtInt]), retaining))
+}
+
+test "tuple pattern provenance belongs to the selected component" {
+  let env = review_region_env()
+  let pair = ETuple([EIdent("h", 1), EIdent("f", 2)])
+  let independent = EMatch(pair, [
+    (PTuple([PWild, PBind("selected")]), EIdent("selected", 3))
+  ])
+  let selected_handle = EMatch(pair, [
+    (PTuple([PBind("selected"), PWild]), EIdent("selected", 3))
+  ])
+  assert_eq(retention_value_regions(independent, env, [], SubstEmpty), [])
+  assert_eq(retention_value_regions(selected_handle, env, [], SubstEmpty), [
+    "#region_review"
+  ])
+}
+
+test "a write into a shadowing local does not taint the outer location" {
+  let box = ERecord("Box", [("v", EInt(0))], [])
+  let write = ECall(EIdent("store", 1), [EIdent("box", 2), EIdent("h", 3)], 1, [
+  ])
+  let inner = ELet("box", box, ESeq(write, EUnit), 10)
+  let safe = ELet("box", box, ESeq(inner, EIdent("box", 4)), 11)
+  let retaining = ELet("box", box, ESeq(write, EIdent("box", 4)), 11)
+  assert_eq(retention_value_regions(safe, review_region_env(), [], SubstEmpty), [
+  ])
+  assert_eq(retention_value_regions(retaining, review_region_env(), [], SubstEmpty), [
+    "#region_review"
+  ])
+}
+
+test "a loop result carries early break values without tainting a consumed result" {
+  let early = EIf(EBool(true), EBreak(Some(EIdent("h", 1))), EUnit)
+  let loop_value = ELoop([], ESeq(early, EInt(0)))
+  assert_eq(retention_value_regions(loop_value, review_region_env(), [], SubstEmpty), [
+    "#region_review"
+  ])
+  let consumed = ESeq(loop_value, EInt(42))
+  assert_eq(retention_value_regions(consumed, review_region_env(), [], SubstEmpty), [
+  ])
+}
+
+test "a closure parameter shadows an outer location in the write scan" {
+  let box = ERecord("Box", [("v", EInt(0))], [])
+  let write = ECall(EIdent("store", 1), [EIdent("box", 2), EIdent("h", 3)], 1, [
+  ])
+  let inner = EFn([], [], [("box", None)], None, None, write)
+  let safe = ELet("box", box, ESeq(inner, EIdent("box", 4)), 11)
+  assert_eq(retention_value_regions(safe, review_region_env(), [], SubstEmpty), [
+  ])
+}

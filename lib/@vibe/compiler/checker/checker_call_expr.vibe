@@ -140,6 +140,7 @@ import ./checker_eq_unbounded_formal_msg.vibe {
   check_interp_formal,
   effect_op_sig,
   effect_tparams,
+  generic_callback_instance,
   interp_name_is_shim,
   is_bytestream_named_type,
   note_local_generic_binding,
@@ -152,6 +153,7 @@ import ./checker_eq_unbounded_formal_msg.vibe {
 
 import ./checker_infer_binop_type.vibe {
   TypedOccurrenceRoleLaneCapture,
+  callback_row_unreadable,
   callee_is_run_shaped,
   callee_is_spawn_shaped,
   effect_instantiate,
@@ -160,6 +162,7 @@ import ./checker_infer_binop_type.vibe {
   param_types_are_spawn_shaped,
   record_index_receiver,
   report_spawnable_violations,
+  resolve_bare_var,
   resolve_tparams_in,
   typed_occurrence_capture_enter_virtual_child,
   typed_occurrence_capture_frame_depth,
@@ -179,6 +182,7 @@ import ./checker_lambda_expr.vibe {
 }
 
 import ./checker_row_effect_inst.vibe {
+  bind_generic_result_effect_instantiations,
   callback_arg_env,
   callback_prefix_subst,
   effect_inst_annotation_check,
@@ -341,22 +345,31 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                         let eff_of_op = String::substring(op_qname, 0, String::index_of(op_qname, "::"))
                         let etps = effect_tparams(defs, eff_of_op)
                         let mut c1b = c1
+                        let mut unreadable = false
                         let (sig_params, sig_ret, ret_usable) = if Array::length(etps) > 0 {
                           let (ftargs, nc) = effect_instantiate(env, eff_of_op, etps, c1b)
                           c1b = nc
+                          unreadable = refuse_unreadable_callback_row(ftargs, op_qname, op_off, errors)
                           let ip = for p in sig_params_decl {
                             subst_type_params(p, etps, ftargs)
                           }
-                          (ip, subst_type_params(sig_ret_decl, etps, ftargs), type_is_ground_except(sig_ret_decl, etps))
+                          (ip, subst_type_params(sig_ret_decl, etps, ftargs), type_is_ground_except(sig_ret_decl, etps) && !unreadable)
                         } else {
                           (sig_params_decl, sig_ret_decl, type_is_ground(sig_ret_decl))
                         }
                         if Array::length(sig_params) != oalen {
                           Array::push(errors, String::concat("perform ", String::concat(op_qname, String::concat(" expects ", String::concat(__to_string(Array::length(sig_params)), String::concat(" argument(s), got ", String::concat(__to_string(oalen), off_marker(op_off))))))))
+                        } else if unreadable {
+                          ()
                         } else {
                           let mut vi = 0
                           while vi < oalen {
                             s1 = check_assignable_for(subst_apply(s1, Array::get(sig_params, vi)), subst_apply(s1, Array::get(oparg_tys, vi)), s1, errors, "perform argument type mismatch for ", op_qname, op_off)
+                            // A function sent as an effect payload is consumed
+                            // under the operation's contract, just like a callback
+                            // argument. Structural unification alone erases the
+                            // generic arguments of its nested effect row.
+                            s1 = effect_inst_annotation_check(env, Array::get(opargs, vi), subst_apply(s1, Array::get(oparg_tys, vi)), subst_apply(s1, Array::get(sig_params, vi)), s1, "the function passed to `\{op_qname}`", "the operation's parameter", defs, errors)
                             vi = vi + 1
                           }
                         }
@@ -454,7 +467,8 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                     let (bare_ret, bare_ret_usable) = if Array::length(betps) > 0 {
                       let (bftargs, bnc) = effect_instantiate(env, bare_eff, betps, bc1)
                       bc1 = bnc
-                      (subst_type_params(bare_ret_decl, betps, bftargs), type_is_ground_except(bare_ret_decl, betps))
+                      let bare_unreadable = refuse_unreadable_callback_row(bftargs, bare_qname, bare_off, errors)
+                      (subst_type_params(bare_ret_decl, betps, bftargs), type_is_ground_except(bare_ret_decl, betps) && !bare_unreadable)
                     } else {
                       (bare_ret_decl, type_is_ground(bare_ret_decl))
                     }
@@ -1339,7 +1353,10 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
           } else {
             ()
           }
-          let result = match subst_apply(s2, obj_ty) {
+          // Keep a function element's original variable identities. Applying
+          // the whole substitution here erases which generic instance its row
+          // markers belong to once its arguments have become ground types.
+          let result = match resolve_bare_var(s2, obj_ty) {
             CtArray(elem) => elem,
             _ => CtUnknown
           }
@@ -2096,8 +2113,9 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                       } else {
                         ()
                       }
-                      let call_ret = call_result_with_provenance(Array::get(ret_box, 0), call_param_tys, arg_tys, s3)
-                      (tab_call_ty(tytab, call_off, call_ret, capture, lane), s3, c2)
+                      let result_ty = call_result_with_provenance(Array::get(ret_box, 0), call_param_tys, arg_tys, s3)
+                      let (call_ret, result_s, result_c) = bind_generic_result_effect_instantiations(result_ty, callee_inst, defs, s3, c2, errors, call_off)
+                      (tab_call_ty(tytab, call_off, call_ret, capture, lane), result_s, result_c)
                     },
                     CtStruct(sname) => (tab_call_ty(tytab, call_off, CtStruct(sname), capture, lane), s2, c2),
                     other => {
@@ -2194,7 +2212,7 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
             // `a.set(0, "bad")`). Reject these HERE instead of silently
             // accepting a call that can never compile.
             // #3198 review: a program may declare its own type with a builtin
-            // head's spelling (`struct Future[T] { apply: (T) -> T }`); the
+            // head's spelling (`struct Map[K, V] { apply: (K) -> V }`); the
             // resolver lets it own that name, so its receiver is the program's
             // type -- a function-valued field read below, not a builtin method.
             let prefix_is_declared = match find_typedef(defs, type_prefix) {
@@ -2525,7 +2543,7 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                 },
                 None => {
                   let (ct, s1, c1) = check_child(callee, env, defs, s, c, errors, tytab, capture, lane)
-                  let (callee_param_tys, callee_inst) = callee_callback_params(ct)
+                  let (callee_param_tys, callee_inst) = callee_callback_params(ct, s1)
                   let alen = Array::length(args)
                   let arg_tys = array_empty()
                   let mut ai = 0
@@ -2565,8 +2583,9 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                       // #3341: see the named-call path.
                       let s3 = effect_inst_call_check(env, env_lookup(env, callee_name0), ct, callee_name0, call_off, s3_args, errors)
                       check_spawn_shaped_call(env, s3, defs, call_param_tys, Array::get(ret_box, 0), args, errors, off_marker_len(call_off, String::length(callee_name0)))
-                      let call_ret = call_result_with_provenance(Array::get(ret_box, 0), call_param_tys, arg_tys, s3)
-                      (tab_call_ty(tytab, call_off, call_ret, capture, lane), s3, c2)
+                      let result_ty = call_result_with_provenance(Array::get(ret_box, 0), call_param_tys, arg_tys, s3)
+                      let (call_ret, result_s, result_c) = bind_generic_result_effect_instantiations(result_ty, callee_inst, defs, s3, c2, errors, call_off)
+                      (tab_call_ty(tytab, call_off, call_ret, capture, lane), result_s, result_c)
                     },
                     CtStruct(sname) => (tab_call_ty(tytab, call_off, CtStruct(sname), capture, lane), s2, c2),
                     _ => (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), s2, c2)
@@ -2603,7 +2622,7 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
               }
               let (callee_param_tys, callee_inst) = match (ct, opened_callee_ty) {
                 (CtForAll(_, _, _), CtFn(oparams, _, _)) => (oparams, Some((ct, opened_callee_ty))),
-                _ => callee_callback_params(ct)
+                _ => callee_callback_params(ct, s1)
               }
               let alen = Array::length(args)
               let arg_tys = array_empty()
@@ -2661,8 +2680,9 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                   // #3341: see the named-call path.
                   let s3 = effect_inst_call_check(env, None, ct, "", call_off, s3_args, errors)
                   check_spawn_shaped_call(env, s3, defs, call_param_tys, Array::get(ret_box, 0), args, errors, off_marker(call_off))
-                  let call_ret = call_result_with_provenance(Array::get(ret_box, 0), call_param_tys, arg_tys, s3)
-                  (tab_call_ty(tytab, call_off, call_ret, capture, lane), s3, c2o)
+                  let result_ty = call_result_with_provenance(Array::get(ret_box, 0), call_param_tys, arg_tys, s3)
+                  let (call_ret, result_s, result_c) = bind_generic_result_effect_instantiations(result_ty, callee_inst, defs, s3, c2o, errors, call_off)
+                  (tab_call_ty(tytab, call_off, call_ret, capture, lane), result_s, result_c)
                 },
                 CtStruct(sname) => (tab_call_ty(tytab, call_off, CtStruct(sname), capture, lane), s2, c2o),
                 _ => (tab_call_ty(tytab, call_off, CtUnknown, capture, lane), s2, c2o)
@@ -2677,13 +2697,28 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
 }
 
 /// #3311: the parameter types of a callee checked as an expression, for
-/// `callback_arg_env`. A generic one is not instantiated before its arguments
-/// are checked, so it is handed over with no instantiation, and a callback row
-/// that names one of its formals hands the lambda nothing.
-fn callee_callback_params(ct: Type) -> (Array[Type], Option[(Type, Type)]) {
+/// `callback_arg_env`. A value callee may already be an instantiated generic;
+/// its recorded scheme keeps published row formals tied to that instance.
+/// An unopened scheme is handed over without inventing an instantiation.
+fn callee_callback_params(ct: Type, s: Subst) -> (Array[Type], Option[(Type, Type)]) {
   match ct {
-    CtFn(params, _, _) => (params, None),
+    CtFn(params, _, _) => (params, generic_callback_instance(ct, s)),
     CtForAll(_, _, CtFn(params, _, _)) => (params, Some((ct, CtUnknown))),
     _ => (array_empty(), None)
+  }
+}
+
+/// #3351: refuse a perform whose effect instantiation `targs` is the refusal
+/// a callback row hands a lambda when it names a type this module cannot read
+/// (`callback_row_unreadable`), with the edit, and answer whether it did. The
+/// perform's arguments are then not checked against that instantiation, and
+/// its value is not typed by it.
+fn refuse_unreadable_callback_row(targs: Array[Type], op_qname: String, op_off: Int, errors: Array[String]) -> Bool {
+  match callback_row_unreadable(targs) {
+    Some((label, missing)) => {
+      Array::push(errors, "import `\{missing}` into this module: perform \{op_qname} is checked against `\{label}`, the effect row of the parameter this lambda is passed to, and `\{missing}` is not a type here\{off_marker(op_off)}")
+      true
+    },
+    None => false
   }
 }

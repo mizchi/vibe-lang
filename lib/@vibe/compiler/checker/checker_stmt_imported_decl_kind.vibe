@@ -404,10 +404,48 @@ export fn builtin_spelling_decl_error(kind: String, name: String, arity: Int, er
   } else {
     false
   }
+  // A type alias introduces no nominal type, so it cannot be mistaken for
+  // the builtin's values; only the declaring kinds are held to this.
+  let layout_target = if kind == "type alias" {
+    ""
+  } else {
+    builtin_layout_head_target(name)
+  }
   if collides {
     Array::push(errors, String::concat("rename this ", String::concat(kind, String::concat(": `", String::concat(name, String::concat("` is a builtin type's name, and a type annotation always resolves it to the builtin -- so this ", String::concat(kind, " could never be named in one")))))))
+  } else if String::length(layout_target) > 0 {
+    Array::push(errors, "rename this " + kind + ": `" + name + "` is a builtin type whose values may be used as `" + layout_target + "`, and a " + kind + " of the same name would be treated as that same type")
+  } else if kind != "type alias" && (name == "Future" || name == "FrozenArray") {
+    Array::push(errors, "rename this " + kind + ": `" + name + "` is reserved for values made by builtin constructors -- a source declaration would give their different runtime layouts the same type")
   } else {
     ()
+  }
+}
+
+/// #3326 review (Codex P2 on #3352): the builtin heads whose values the
+/// checker lets stand in for a builtin value -- `FixedArray[T]` (a phantom
+/// over `Array[T]`'s layout, #1140) and `ArrayBuilder[T]` for an `Array`,
+/// `MutBytes[r]` for `Bytes` -- answered with that builtin's name, or "".
+///
+/// These spellings are reserved at ANY arity. A declaration of one and the
+/// builtin resolve to the same `CtNamed(name, args)` (and a nullary
+/// declaration's `CtStruct(name)` unifies with it by name), so nothing tells
+/// a value of the program's type from the builtin's: with
+/// `struct FixedArray[T] { v: T }` declared, `let x: FixedArray[Int] =
+/// FixedArray::make(2, 7)` checked clean and `x.v` read the builtin array as
+/// the struct. Whichever owner the checker assumed was wrong for the other
+/// value -- an array passed as the program's struct, or the builtin's own
+/// `FixedArray::make(..)` refused where an `Array` is declared. The other
+/// spellings are not covered by this layout-crossing rule. `Future` and
+/// `FrozenArray` are separately reserved because builtin constructors return
+/// those nominal heads. Other declared heads still follow source ownership.
+fn builtin_layout_head_target(name: String) -> String {
+  if name == "FixedArray" || name == "ArrayBuilder" {
+    "Array"
+  } else if name == "MutBytes" {
+    "Bytes"
+  } else {
+    ""
   }
 }
 

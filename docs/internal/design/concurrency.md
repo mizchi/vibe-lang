@@ -549,6 +549,17 @@ A joined result, or a handle kept in a local declared inside the body, is not
 an escape. Neither is a nested group storing the outer group's handle in a
 local of the outer body.
 
+The alias walk distinguishes each local binder's scope: an inner `let`,
+`let mut`, or closure parameter with the same spelling does not become the
+outer location. Fixed-point rounds retain a separate alias set for each
+binder occurrence, and the write pass reads those same sets. A literal tuple
+or record match transfers the selected component's provenance to its binder;
+when the source shape is unknown, the whole scrutinee remains the conservative
+answer. Loop `break` values flow into that loop's result, separately from
+explicit function returns, so consuming a loop result does not taint a later
+independent return. A declared type alias is classified by its expanded body
+before a same-named builtin head.
+
 **Code written outside the body is checked where the token reaches it.** A
 call made inside the region that passes a value carrying the region -- a
 handle, an endpoint, the group, a closure that captured one -- to a function
@@ -565,6 +576,11 @@ callee's lambda again under the call's region:
 - a parameter whose argument is a location declared before the region stands
   for that outer binding, for that region only (a nested group's helper may
   still store the outer group's handle in a local of the outer body).
+
+A user-defined wrapper with the same signature shape as `TaskGroup::spawn`
+is checked again like any other visible helper. Its signature does not prove
+that it refrains from storing the group's handle. Imported library spawners
+and their proven aliases retain their existing imported-callee classification.
 
 A write the second check refuses refuses the call, naming the callee:
 
