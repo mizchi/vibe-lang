@@ -33,6 +33,8 @@ import @vibe/compiler/core {
   find_typedef,
   fresh_var,
   generalize,
+  handler_or_arm_stamp,
+  handler_or_arm_tests_payload,
   instantiate,
   is_exception_effect_name,
   resolve_type_constructor_args,
@@ -124,6 +126,10 @@ import ./checker_closure_capture_row.vibe {
   report_railway_after_arms,
   tail_expr_off,
   type_is_concrete_non_option
+}
+
+import ./checker_handler_or_arm_resume.vibe {
+  handler_or_arm_handle_instance, record_handler_or_arm_resume
 }
 
 import ./checker_eq_unbounded_formal_msg.vibe {
@@ -449,6 +455,20 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
   result
 }
 
+/// #3301: what check_resume_values' walk starts with `resume` bound to: the
+/// arm's own continuation. A binder the walk meets inside the arm rebinds the
+/// name to something else, which is what shadows it.
+fn resume_continuation_marker() -> Type {
+  CtNamed("$resume_continuation", [])
+}
+
+fn resume_is_continuation(t: Type) -> Bool {
+  match t {
+    CtNamed(name, _) => name == "$resume_continuation",
+    _ => false
+  }
+}
+
 /// The handler-arm `resume(x)` re-check: each `x` must be assignable to the
 /// operation's return type. Answers the substitution AND the next free type
 /// variable (#3362). Re-checking `x` allocates variables of its own -- a field
@@ -468,9 +488,16 @@ fn check_resume_values(e: Expr, ret_ty: Type, env: TypeEnv, defs: Array[TypeDef]
       // through check_expr, already containing every enclosing binder (the
       // top-level fn/let hoist, the arm's own payload binders via henv, and
       // any local let/let-mut/let-rec/match-arm binder this walk itself adds
-      // below) — so a `resume` name already bound here is a real callable
-      // binding codegen's prefer_bound_call routes to, not the builtin.
-      let resume_shadowed = env_lookup(env, "resume") is Some(_)
+      // below). The arm loop binds `resume` to the continuation marker on top
+      // of them (#3301): inside the arm the continuation shadows a top-level
+      // `fn resume` and an enclosing arm's continuation alike, and both used
+      // to switch this check off -- `Op => resume("str")` for an Int
+      // operation compiled when a `fn resume` existed, and resumed the
+      // perform with a string. Only a binder inside the arm shadows it.
+      let resume_shadowed = match env_lookup(env, "resume") {
+        Some(bound) => !resume_is_continuation(bound),
+        None => false
+      }
       match callee {
         EIdent(nm, _) => {
           // A Unit-returning op discards the resumed value at the perform
@@ -1282,6 +1309,8 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       // syntactically (`Eff::Op`), so this pre-pass needs no type information
       // and cannot depend on checking the body first.
       let hinst_seen = array_empty()
+      // #3301: the copies of one or-pattern arm are compared per `handle`.
+      let hor_instance = handler_or_arm_handle_instance()
       let mut hc0 = c
       let mut henv_shared = env
       let mut hpi = 0
@@ -1334,7 +1363,10 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       // same S the `Put(v)` payload binder and the body's performs see.
       let mut hai = 0
       while hai < Array::length(harms) {
-        let (hpat, hbody) = Array::get(harms, hai)
+        // #3301: a copy of an or-pattern arm carries the split's group stamp
+        // around its body; the arm is checked as the body under it.
+        let (hpat, hbody_stamped) = Array::get(harms, hai)
+        let (hgroup, hbody) = handler_or_arm_stamp(hbody_stamped)
         match hpat {
           PCtor(hqname, hbinds) => {
             let hci = String::index_of(hqname, "::")
@@ -1353,6 +1385,10 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                   } else {
                     (hparams_decl, hret_decl)
                   }
+                  // #3301 (Codex on #3337): the copies of an or-pattern arm
+                  // are compared at the type this handle instantiated, not
+                  // at the declaration's template.
+                  record_handler_or_arm_resume(hor_instance, hgroup, hbody, hqname, hret)
                   let hplen = Array::length(hparams)
                   let hblen = Array::length(hbinds)
                   // The op's declared arity, plus optionally one trailing
@@ -1499,7 +1535,16 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                   // resume(x): x must be assignable to the op's declared
                   // return type (ground-gated). Throwaway walk — nested
                   // handles are skipped (their resumes belong to inner arms).
-                  let (hrv_s, hrv_c) = check_resume_values(hbody, hret, henv, defs, hs1, hc1, errors, tytab, capture)
+                  // The arm's own continuation shadows every `resume` bound
+                  // outside the arm -- a top-level `fn resume`, or an
+                  // enclosing arm's continuation -- so the walk starts with
+                  // it bound (#3301): those used to switch the check off.
+                  let hresume_env = if hbinds_shadow_resume {
+                    henv
+                  } else {
+                    env_bind(henv, "resume", resume_continuation_marker())
+                  }
+                  let (hrv_s, hrv_c) = check_resume_values(hbody, hret, hresume_env, defs, hs1, hc1, errors, tytab, capture)
                   hs1 = hrv_s
                   hc1 = hrv_c
                 },
@@ -1605,6 +1650,25 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               }
             } else {
               ()
+            }
+          },
+          // #3301: check_program split every or-pattern arm whose
+          // alternatives bind nothing into one arm per operation. One that
+          // is still here binds a payload, which a `match` or-pattern cannot
+          // do either; nothing would type the body or lower the handle.
+          POr(_, _) => {
+            let por_off = if railway_expr_off(hbody) >= 0 {
+              railway_expr_off(hbody)
+            } else {
+              railway_expr_off(body)
+            }
+            // #3301 (Codex on #3337): a payload pattern that tests a value
+            // is not matched by either effect lowering, so an or-pattern of
+            // them would run for every payload; the split left it whole.
+            if handler_or_arm_tests_payload(hpat) {
+              Array::push(errors, String::concat("write one handler arm per operation and test the payload with `if` in its body (`P(n) => if n == 1 { .. } else { .. }`): an or-pattern handler arm cannot match a payload's value (`P(1) | Q(_) => ..`)", off_marker(por_off)))
+            } else {
+              Array::push(errors, String::concat("write one handler arm per operation, or `_` for the payloads: an or-pattern arm cannot bind a payload (`A(v) | B(v) => ..`), but separate arms may repeat the same body", off_marker(por_off)))
             }
           },
           _ => ()

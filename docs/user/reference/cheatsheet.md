@@ -1885,6 +1885,27 @@ stores `resume` as a value (the suspend shape below) keeps the other rule: its
 own value is the handle's result. Only `Exception` arms abort; a declared
 effect has no abortive operations.
 
+An or-pattern arm `A | B => body` is the two arms `A => body` and
+`B => body` (#3301): each alternative is typed against its own operation,
+resumes its own `perform`, and counts toward the handler's exhaustiveness, and
+`resume` inside it is the continuation even when a top-level `fn resume`
+exists. As in a `match`, an or-pattern cannot bind a payload: `P(x) | Q(x)` is
+refused; write `P(_) | Q(_)` or separate arms with the same body. Nor can it
+test one: `P(1) | Q(_)` is refused, because the effect lowerings dispatch on
+the operation and never match an arm's payload pattern, so write one arm per
+operation and test the payload with `if` in its body. For the same
+reason the arm's `resume` has one type: an arm that names `resume` is refused
+when its operations resume with different types (`A -> Int`, `B -> String`,
+or a generic effect's `X -> A`, `Y -> B` at a handle that makes them differ or
+leaves them unknown), while one that never names it (`A(_) | B(_) => return 0`)
+may mix signatures.
+Because each alternative compiles its own copy of the body, or-pattern arms
+nested in one another multiply. An arm body expanded more than 256 times is
+refused, counting the current arm's alternatives too, even when its body has
+no nested handler. Write separate arms, or move a nested `handle` into a
+top-level `fn` so each enclosing copy becomes a call. A closure written in
+place is inside the arm, so it is copied with it.
+
 Call resolution for an effect row follows the same lexical scope as ordinary
 value resolution. When a local closure, a function parameter, or a pattern /
 loop binder has the same name as a top-level `fn`, the local binding wins. So

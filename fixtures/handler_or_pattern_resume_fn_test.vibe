@@ -1,0 +1,51 @@
+//# #3301: inside an or-pattern handler arm, `resume` is the continuation of
+//# the operation that arm is handling, as it is in a single-operation arm.
+//# A top-level function of that spelling is shadowed there and still answers
+//# outside the handler. Before the fix every call below trapped with
+//# `unreachable`, with or without the function.
+
+effect Logger {
+  A -> Int
+  B -> Int
+}
+
+fn resume(x: Int) -> Int {
+  x * 1000
+}
+
+fn or_called() -> Int {
+  handle {
+    perform Logger::A + perform Logger::B
+  } with Logger {
+    A|B => resume(7)
+  }
+}
+
+fn or_captured() -> Int {
+  handle {
+    perform Logger::A + perform Logger::B
+  } with Logger {
+    A|B => {
+      let k = resume
+      k(7)
+    }
+  }
+}
+
+fn or_in_a_lambda() -> Int {
+  handle {
+    perform Logger::A + perform Logger::B
+  } with Logger {
+    A|B => {
+      let f = (x: Int) -> resume(x)
+      f(7)
+    }
+  }
+}
+
+test "an or-pattern arm's resume shadows a top-level fn named resume" {
+  inspect(or_called(), "14")
+  inspect(or_captured(), "14")
+  inspect(or_in_a_lambda(), "14")
+  inspect(resume(2), "2000")
+}

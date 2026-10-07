@@ -301,41 +301,62 @@ fn fn_params_bind_resume(params: Array[(String, Option[TypeExpr])]) -> Bool {
 /// reject_resume_outside_handler; the walk mirrors the lowering's
 /// scps_arm_refs_resume_value so both classify an arm the same way.
 export fn arm_refs_resume_value(e: Expr, sh: Bool) -> Bool {
-  arm_refs_resume_value_at(e, sh, false)
+  match arm_first_resume_ref_at(e, sh, false) {
+    Some(_) => true,
+    None => false
+  }
+}
+
+/// #3301: the first reference in `e` to the arm's own continuation, a direct
+/// call `resume(v)` as much as a value use, or None when the arm never names
+/// it. The walk is arm_refs_resume_value's, so the two agree about which
+/// `resume` is the arm's: one hidden by a binder, or rebound by a nested
+/// handle's arm, is not. An or-pattern arm whose body answers None reads
+/// nothing that differs between its operations.
+export fn arm_first_resume_ref(e: Expr, sh: Bool) -> Option[Expr] {
+  arm_first_resume_ref_at(e, sh, true)
 }
 
 /// The walk itself. `in_fn` = inside a nested lambda literal: there even the
 /// direct call form `resume(v)` is a CAPTURE of the continuation (the
 /// closure keeps it and may run it later, after the arm has returned), so
 /// it counts as a value reference. Outside a lambda the callee position is
-/// the tail-resumptive form and is not.
-fn arm_refs_resume_value_at(e: Expr, sh: Bool, in_fn: Bool) -> Bool {
+/// the tail-resumptive form and is not. The hit is the `resume` identifier
+/// itself, the first one in evaluation order.
+fn arm_first_resume_ref_at(e: Expr, sh: Bool, in_fn: Bool) -> Option[Expr] {
   match e {
-    EIdent(nm, _) => nm == "resume" && !sh,
+    EIdent(nm, _) => if nm == "resume" && !sh {
+      Some(e)
+    } else {
+      None
+    },
     ECall(callee, args, _, _) => {
       // The immediate callee position `resume(x)` is the direct call form,
       // NOT a value reference; a computed callee is walked normally.
       let callee_hit = match callee {
-        EIdent(cn, _) => in_fn && cn == "resume" && !sh,
-        _ => arm_refs_resume_value_at(callee, sh, in_fn)
+        EIdent(cn, _) => if in_fn && cn == "resume" && !sh {
+          Some(callee)
+        } else {
+          None
+        },
+        _ => arm_first_resume_ref_at(callee, sh, in_fn)
       }
-      callee_hit || exprs_ref_resume_value(args, sh, in_fn)
+      match callee_hit {
+        Some(_) => callee_hit,
+        None => exprs_first_resume_ref(args, sh, in_fn)
+      }
     },
-    ELet(n, v, b, _) => arm_refs_resume_value_at(v, sh, in_fn) || arm_refs_resume_value_at(b, sh || n == "resume", in_fn),
-    ELetMut(n, v, b, _) => arm_refs_resume_value_at(v, sh, in_fn) || arm_refs_resume_value_at(b, sh || n == "resume", in_fn),
-    ELetRec(n, v, b) => arm_refs_resume_value_at(v, sh || n == "resume", in_fn) || arm_refs_resume_value_at(b, sh || n == "resume", in_fn),
-    ESeq(a, b) => arm_refs_resume_value_at(a, sh, in_fn) || arm_refs_resume_value_at(b, sh, in_fn),
-    EIf(c, t, el) => arm_refs_resume_value_at(c, sh, in_fn) || arm_refs_resume_value_at(t, sh, in_fn) || arm_refs_resume_value_at(el, sh, in_fn),
+    ELet(n, v, b, _) => resume_ref_then(arm_first_resume_ref_at(v, sh, in_fn), b, sh || n == "resume", in_fn),
+    ELetMut(n, v, b, _) => resume_ref_then(arm_first_resume_ref_at(v, sh, in_fn), b, sh || n == "resume", in_fn),
+    ELetRec(n, v, b) => resume_ref_then(arm_first_resume_ref_at(v, sh || n == "resume", in_fn), b, sh || n == "resume", in_fn),
+    ESeq(a, b) => resume_ref_then(arm_first_resume_ref_at(a, sh, in_fn), b, sh, in_fn),
+    EIf(c, t, el) => resume_ref_then(resume_ref_then(arm_first_resume_ref_at(c, sh, in_fn), t, sh, in_fn), el, sh, in_fn),
     EMatch(s, arms) => {
-      let mut hit = arm_refs_resume_value_at(s, sh, in_fn)
+      let mut hit = arm_first_resume_ref_at(s, sh, in_fn)
       let mut i = 0
       while i < Array::length(arms) {
         let (p, ex) = Array::get(arms, i)
-        if arm_refs_resume_value_at(ex, sh || pat_binds_resume(p), in_fn) {
-          hit = true
-        } else {
-          ()
-        }
+        hit = resume_ref_then(hit, ex, sh || pat_binds_resume(p), in_fn)
         i = i + 1
       }
       hit
@@ -343,30 +364,26 @@ fn arm_refs_resume_value_at(e: Expr, sh: Bool, in_fn: Bool) -> Bool {
     EHandle(b, arms) => {
       // A nested handle's arms rebind `resume` for THEMSELVES; only its
       // handled body can still reach this arm's continuation.
-      let mut hit = arm_refs_resume_value_at(b, sh, in_fn)
+      let mut hit = arm_first_resume_ref_at(b, sh, in_fn)
       let mut i = 0
       while i < Array::length(arms) {
         let (_, ex) = Array::get(arms, i)
-        if arm_refs_resume_value_at(ex, true, in_fn) {
-          hit = true
-        } else {
-          ()
-        }
+        hit = resume_ref_then(hit, ex, true, in_fn)
         i = i + 1
       }
       hit
     },
-    EFn(_, _, params, _, _, b) => arm_refs_resume_value_at(b, sh || fn_params_bind_resume(params), true),
-    EWhile(c, b) => arm_refs_resume_value_at(c, sh, in_fn) || arm_refs_resume_value_at(b, sh, in_fn),
+    EFn(_, _, params, _, _, b) => arm_first_resume_ref_at(b, sh || fn_params_bind_resume(params), true),
+    EWhile(c, b) => resume_ref_then(arm_first_resume_ref_at(c, sh, in_fn), b, sh, in_fn),
     EForIn(v1, v2, it, b) => {
       let for_sh = v1 == "resume" || (match v2 {
         Some(v2n) => v2n == "resume",
         None => false
       })
-      arm_refs_resume_value_at(it, sh, in_fn) || arm_refs_resume_value_at(b, sh || for_sh, in_fn)
+      resume_ref_then(arm_first_resume_ref_at(it, sh, in_fn), b, sh || for_sh, in_fn)
     },
     ELoop(pairs, b) => {
-      let mut hit = false
+      let mut hit: Option[Expr] = None
       let mut loop_sh = sh
       let mut i = 0
       while i < Array::length(pairs) {
@@ -376,60 +393,57 @@ fn arm_refs_resume_value_at(e: Expr, sh: Bool, in_fn: Bool) -> Bool {
         } else {
           ()
         }
-        if arm_refs_resume_value_at(v, sh, in_fn) {
-          hit = true
-        } else {
-          ()
-        }
+        hit = resume_ref_then(hit, v, sh, in_fn)
         i = i + 1
       }
-      hit || arm_refs_resume_value_at(b, loop_sh, in_fn)
+      resume_ref_then(hit, b, loop_sh, in_fn)
     },
-    EBinOp(_, l, r, _) => arm_refs_resume_value_at(l, sh, in_fn) || arm_refs_resume_value_at(r, sh, in_fn),
-    EUnaryOp(_, e2) => arm_refs_resume_value_at(e2, sh, in_fn),
-    EAssign(_, v, c, _) => arm_refs_resume_value_at(v, sh, in_fn) || arm_refs_resume_value_at(c, sh, in_fn),
-    EAssignOp(_, _, v, c, _) => arm_refs_resume_value_at(v, sh, in_fn) || arm_refs_resume_value_at(c, sh, in_fn),
-    EReturn(e2) => arm_refs_resume_value_at(e2, sh, in_fn),
-    EDot(o, _, _, _) => arm_refs_resume_value_at(o, sh, in_fn),
-    ELabeledArg(_, _, v) => arm_refs_resume_value_at(v, sh, in_fn),
+    EBinOp(_, l, r, _) => resume_ref_then(arm_first_resume_ref_at(l, sh, in_fn), r, sh, in_fn),
+    EUnaryOp(_, e2) => arm_first_resume_ref_at(e2, sh, in_fn),
+    EAssign(_, v, c, _) => resume_ref_then(arm_first_resume_ref_at(v, sh, in_fn), c, sh, in_fn),
+    EAssignOp(_, _, v, c, _) => resume_ref_then(arm_first_resume_ref_at(v, sh, in_fn), c, sh, in_fn),
+    EReturn(e2) => arm_first_resume_ref_at(e2, sh, in_fn),
+    EDot(o, _, _, _) => arm_first_resume_ref_at(o, sh, in_fn),
+    ELabeledArg(_, _, v) => arm_first_resume_ref_at(v, sh, in_fn),
     EBreak(opt) => match opt {
-      Some(e2) => arm_refs_resume_value_at(e2, sh, in_fn),
-      None => false
+      Some(e2) => arm_first_resume_ref_at(e2, sh, in_fn),
+      None => None
     },
-    EContinue(args) => exprs_ref_resume_value(args, sh, in_fn),
-    ETuple(elems) => exprs_ref_resume_value(elems, sh, in_fn),
-    EArray(elems) => exprs_ref_resume_value(elems, sh, in_fn),
-    ERecord(_, fields, _) => fields_ref_resume_value(fields, sh, in_fn),
-    EMap(fields) => fields_ref_resume_value(fields, sh, in_fn),
-    ESpread(e2) => arm_refs_resume_value_at(e2, sh, in_fn),
-    _ => false
+    EContinue(args) => exprs_first_resume_ref(args, sh, in_fn),
+    ETuple(elems) => exprs_first_resume_ref(elems, sh, in_fn),
+    EArray(elems) => exprs_first_resume_ref(elems, sh, in_fn),
+    ERecord(_, fields, _) => fields_first_resume_ref(fields, sh, in_fn),
+    EMap(fields) => fields_first_resume_ref(fields, sh, in_fn),
+    ESpread(e2) => arm_first_resume_ref_at(e2, sh, in_fn),
+    _ => None
   }
 }
 
-fn exprs_ref_resume_value(es: Array[Expr], sh: Bool, in_fn: Bool) -> Bool {
+/// `hit` when an earlier part already reached the continuation, else the
+/// first reference in `next`.
+fn resume_ref_then(hit: Option[Expr], next: Expr, sh: Bool, in_fn: Bool) -> Option[Expr] {
+  match hit {
+    Some(_) => hit,
+    None => arm_first_resume_ref_at(next, sh, in_fn)
+  }
+}
+
+fn exprs_first_resume_ref(es: Array[Expr], sh: Bool, in_fn: Bool) -> Option[Expr] {
+  let mut hit: Option[Expr] = None
   let mut i = 0
-  let mut hit = false
   while i < Array::length(es) {
-    if arm_refs_resume_value_at(Array::get(es, i), sh, in_fn) {
-      hit = true
-    } else {
-      ()
-    }
+    hit = resume_ref_then(hit, Array::get(es, i), sh, in_fn)
     i = i + 1
   }
   hit
 }
 
-fn fields_ref_resume_value(fields: Array[(String, Expr)], sh: Bool, in_fn: Bool) -> Bool {
+fn fields_first_resume_ref(fields: Array[(String, Expr)], sh: Bool, in_fn: Bool) -> Option[Expr] {
+  let mut hit: Option[Expr] = None
   let mut i = 0
-  let mut hit = false
   while i < Array::length(fields) {
     let (_, v) = Array::get(fields, i)
-    if arm_refs_resume_value_at(v, sh, in_fn) {
-      hit = true
-    } else {
-      ()
-    }
+    hit = resume_ref_then(hit, v, sh, in_fn)
     i = i + 1
   }
   hit
