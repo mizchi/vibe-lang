@@ -1,5 +1,5 @@
 import @vibe/compiler/core {
-  Expr, Stmt, dce_stmts, dce_stmts_before_trait_desugar
+  Expr, Stmt, dce_keep_flags, dce_keep_flags_via, dce_stmts, dce_stmts_before_trait_desugar
 }
 
 import @vibe/compiler/codegen/common_analysis {
@@ -93,4 +93,90 @@ test "a dead pure marker does not constrain the allocating entry" {
   let late = dce_stmts(early, ["main"])
   inspect(Array::length(late), "1")
   inspect(zero_alloc_check(late), "")
+}
+
+test "keep flags remove each dead marker with its function" {
+  let markers = ["@zero_alloc", "@zero_alloc_strict", "@zero_alloc_assume"]
+  let mut i = 0
+  while i < Array::length(markers) {
+    let stmts = [
+      SExpr(EIdent(Array::get(markers, i), -1)),
+      za_fn("unused", EInt(1)),
+      za_fn("main", EArray([EInt(3)]))
+    ]
+    let flags = dce_keep_flags(stmts, ["main"])
+    inspect(Array::length(flags), "3")
+    assert_true(not(Array::get(flags, 0)))
+    assert_true(not(Array::get(flags, 1)))
+    assert_true(Array::get(flags, 2))
+    i = i + 1
+  }
+}
+
+test "keep flags preserve reachable markers and function declarations" {
+  let stmts = [
+    SExpr(EIdent("@zero_alloc_assume", -1)),
+    SFnDecl(false, "used", EFn([], [], [], None, None, EInt(0)), [], [])
+  ]
+  let flags = dce_keep_flags(stmts, ["used"])
+  assert_true(Array::get(flags, 0))
+  assert_true(Array::get(flags, 1))
+}
+
+test "split reachability preserves a marker reached only through a hidden body" {
+  let stmts = [
+    SExpr(EIdent("@zero_alloc_strict", -1)),
+    za_fn("helper", EInt(7)),
+    za_fn("main", EInt(0))
+  ]
+  let reach = [
+    SExpr(EIdent("@zero_alloc_strict", -1)),
+    za_fn("helper", EInt(7)),
+    za_fn("hidden", ECall(EIdent("helper", -1), [], -1, [])),
+    za_fn("main", EInt(0))
+  ]
+  let flags = dce_keep_flags_via(stmts, reach, ["main"])
+  inspect(Array::length(flags), "3")
+  assert_true(Array::get(flags, 0))
+  assert_true(Array::get(flags, 1))
+  assert_true(Array::get(flags, 2))
+}
+
+test "keep flags retain malformed marker adjacency without deleting intervening text" {
+  let stmts = [
+    SExpr(EIdent("@zero_alloc", -1)),
+    SLet(false, false, "dead", None, EInt(0)),
+    za_fn("main", EInt(0))
+  ]
+  let flags = dce_keep_flags(stmts, ["main"])
+  assert_true(Array::get(flags, 0))
+  assert_true(Array::get(flags, 1))
+  assert_true(Array::get(flags, 2))
+}
+
+test "keep flags retain trailing markers and preceding dead functions for refusal" {
+  let stmts = [
+    za_fn("dead", EInt(0)),
+    za_fn("main", EInt(0)),
+    SExpr(EIdent("@zero_alloc", -1))
+  ]
+  let flags = dce_keep_flags(stmts, ["main"])
+  assert_true(Array::get(flags, 0))
+  assert_true(Array::get(flags, 1))
+  assert_true(Array::get(flags, 2))
+}
+
+test "duplicate function names keep both allocation contracts with the union of bodies" {
+  let stmts = [
+    SExpr(EIdent("@zero_alloc", -1)),
+    za_fn("same", EInt(1)),
+    SExpr(EIdent("@zero_alloc_strict", -1)),
+    za_fn("same", EInt(2))
+  ]
+  let flags = dce_keep_flags(stmts, ["same"])
+  let mut i = 0
+  while i < Array::length(flags) {
+    assert_true(Array::get(flags, i))
+    i = i + 1
+  }
 }

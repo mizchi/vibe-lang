@@ -838,10 +838,35 @@ export fn dce_keep_flags_via(stmts: Array[Stmt], reach_stmts: Array[Stmt], entry
       rn = rn + 1
     }
     let graph = dce_reachable_graph(reach_stmts, roots)
+    let mut preserve_all = graph.opaque_live
     let mut m = 0
     while m < Array::length(stmts) {
-      Array::push(flags, graph.opaque_live || dce_keep_stmt(Array::get(stmts, m), graph))
+      let stmt = Array::get(stmts, m)
+      Array::push(flags, graph.opaque_live || dce_keep_stmt(stmt, graph))
+      if dce_zero_alloc_marker(stmt) {
+        // Keep malformed input intact, matching dce_stmts: deleting an
+        // intervening statement could turn a refused contract into a valid one.
+        if m + 1 >= Array::length(stmts) {
+          preserve_all = true
+        } else {
+          match dce_zero_alloc_target(Array::get(stmts, m + 1)) {
+            Some(_) => (),
+            None => preserve_all = true
+          }
+        }
+      }
       m = m + 1
+    }
+    let mut k = 0
+    while k < Array::length(stmts) {
+      if preserve_all {
+        Array::set(flags, k, true)
+      } else if dce_zero_alloc_marker(Array::get(stmts, k)) {
+        // Ownership follows the original statement indexes, even when the
+        // reachability parse carries additional impl method bodies.
+        Array::set(flags, k, Array::get(flags, k + 1))
+      }
+      k = k + 1
     }
     flags
   }
