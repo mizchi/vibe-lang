@@ -1,0 +1,61 @@
+import @vibe/concurrent {
+  TaskGroup, TaskHandle
+}
+struct Cell[T] { mut v: Option[T] }
+fn taskgroup_retention_pure_recursive_ok() -> Int with Exception {
+  let result = TaskGroup::run((g) -> {
+    let rec f = (n: Int) -> Int {
+      if n == 0 {
+        42
+      } else {
+        f(n - 1)
+      }
+    }
+    f
+  })
+  result(3)
+}
+
+test "taskgroup_retention_pure_recursive_ok" allows Exception {
+  assert_eq(taskgroup_retention_pure_recursive_ok(), 42)
+}
+enum Grow[T] {
+  GrowHere(T);
+  GrowNext(Grow[Array[T]])
+}
+fn taskgroup_retention_growing_recursive_ok() -> Int with Exception {
+  let outer: Cell[Grow[Int]] = Cell::{ v: None }
+  TaskGroup::run((g) -> {
+    let _ = TaskHandle::join(TaskGroup::spawn(g, () -> 42))
+    outer.v = Some(GrowNext(GrowHere([42])))
+    0
+  })
+  match outer.v {
+    Some(GrowNext(GrowHere(xs))) => xs[0],
+    _ => 0
+  }
+}
+
+test "taskgroup_retention_growing_recursive_ok" allows Exception {
+  assert_eq(taskgroup_retention_growing_recursive_ok(), 42)
+}
+enum Nest[T] {
+  Here(T);
+  Next(Nest[TaskHandle[Int]])
+}
+fn taskgroup_retention_nonregular_empty_ok() -> Int with Exception {
+  let outer: Cell[Nest[Int]] = Cell::{ v: None }
+  TaskGroup::run((g) -> {
+    let _ = TaskHandle::join(TaskGroup::spawn(g, () -> 42))
+    outer.v = Some(Here(42))
+    0
+  })
+  match outer.v {
+    Some(Here(n)) => n,
+    _ => 0
+  }
+}
+
+test "taskgroup_retention_nonregular_empty_ok" allows Exception {
+  assert_eq(taskgroup_retention_nonregular_empty_ok(), 42)
+}

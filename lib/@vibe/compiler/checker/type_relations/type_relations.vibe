@@ -1,10 +1,14 @@
 import @vibe/compiler/core {
   Subst,
   Type,
+  TypeDef,
+  compiler_owned_type_arity,
   exception_effect_kind,
   exception_effect_labels_equal,
   exception_label_kind,
+  find_typedef,
   instantiate,
+  is_effect_inst_label,
   is_exception_effect_name,
   is_exception_label,
   is_hkt_app,
@@ -381,7 +385,7 @@ fn effect_label_is_exempt(lbl: String) -> Bool {
   // opt-in and carries real information, so dropping it through a pure-typed
   // slot is exactly the #939 hole this check exists to catch. Nothing in the
   // codebase writes a kinded label, so no existing program changes verdict.
-  if String::starts_with(lbl, "#region_") || String::starts_with(lbl, "#capture[") || String::starts_with(lbl, "#param[") || String::starts_with(lbl, "#aliasparam[") || String::starts_with(lbl, "#fieldparam[") {
+  if String::starts_with(lbl, "#region_") || String::starts_with(lbl, "#capture[") || String::starts_with(lbl, "#param[") || String::starts_with(lbl, "#aliasparam[") || String::starts_with(lbl, "#fieldparam[") || is_effect_inst_label(lbl) {
     true
     // #1963: `is_runtime_scheduled_effect`, not `lbl == "Async"`. Row labels
     // can arrive operation-qualified (`Async::Suspend`), and the literal
@@ -911,6 +915,91 @@ fn nominal_name_of(t: Type) -> Option[String] {
   }
 }
 
+/// #3326: the program's type declarations, for telling a source type apart
+/// from a compiler-owned head spelled the same way. A program may declare its
+/// own `struct Task[T]` or `enum Task[T]` (the legacy builtin is retired),
+/// Their applications resolve to `CtNamed(name, args)`, so
+/// the name alone cannot say whose type it is. (The heads whose values stand
+/// in for a builtin value -- `FixedArray`, `ArrayBuilder`, `MutBytes` -- and
+/// the constructor-owned `Future` / `FrozenArray` heads may
+/// not be declared at all: `builtin_spelling_decl_error`.) Each
+/// checker entry stores the `defs` table it checks with; that table grows in
+/// place as declarations (local and imported) are registered, so a lookup
+/// sees the declarations known at the point of the check.
+let assignable_type_defs: Array[Array[TypeDef]] = [[]]
+
+export fn check_assignable_set_type_defs(defs: Array[TypeDef]) -> Unit {
+  Array::set(assignable_type_defs, 0, defs)
+}
+
+fn source_declares_type(name: String) -> Bool {
+  match find_typedef(Array::get(assignable_type_defs, 0), name) {
+    Some(td) => match td {
+      TDStruct(_, _, _, _) => true,
+      TDEnum(_, _, _) => true,
+      _ => false
+    },
+    None => false
+  }
+}
+
+/// #3326: true for a source-declared generic struct or enum APPLIED to
+/// arguments (`Cell[Int]`, `Wrap[String]`, and `Cell[T]` / `Cell[?t]` too).
+/// Its HEAD is certain whatever the arguments are. A rigid formal surfaces
+/// as `CtNamed(T, [])` (no arguments) or `CtNamed(T, [CtUnknown])` (excluded
+/// below); a constructor formal applied to arguments resolves to `CtApplied`
+/// or a `#hkt` application, not to this; and an alias is expanded by
+/// resolution (`type L[T] = Array[T]` resolves `L[Int]` to `Array[Int]`).
+/// So no instantiation of the arguments can turn it into a builtin value --
+/// `fn get[T](c: Cell[T])` applied to `[7]` is as wrong as `Cell[Int]` is.
+///
+/// A compiler-owned head is excluded and keeps its own treatment: several of
+/// them cross into a builtin on purpose (`FixedArray[T]` is a checker-only
+/// phantom over `Array[T]`'s layout, #1140, and the compiler passes its own
+/// `MutBytes[r]` where `Bytes` is declared), and the ones that must not mix
+/// carry a `head_kind`. The exclusion is the COMPILER's: when a source
+/// declaration owns the spelling (`struct Task[T]`, local or imported),
+/// the type is an ordinary struct or enum and an array read as one is this
+/// bug again. A spelling with a sanctioned crossing cannot be owned by a
+/// source declaration (it is refused), so this never takes the crossing away
+/// from the builtin's own values. `#`-prefixed internal encodings (`#hkt`
+/// applications) are excluded too; `rigid_applied_mismatch` owns them.
+fn is_applied_declared_nominal(t: Type) -> Bool {
+  match t {
+    CtNamed(n, args) => if Array::length(args) == 0 || String::starts_with(n, "#") || is_unknown_arg_sentinel(args) {
+      false
+    } else {
+      match compiler_owned_type_arity(n) {
+        Some(_) => source_declares_type(n),
+        None => true
+      }
+    },
+    _ => false
+  }
+}
+
+fn is_unknown_arg_sentinel(args: Array[Type]) -> Bool {
+  Array::length(args) == 1 && match Array::get(args, 0) {
+    CtUnknown => true,
+    _ => false
+  }
+}
+
+/// #3326: true for a type whose head is a builtin VALUE shape -- an `Array`, a
+/// tuple, a function, an anonymous record or a scalar. None of those is ever
+/// a declared struct or enum, so against `is_applied_declared_nominal` no
+/// instantiation can reconcile the two. `Option` is absent because
+/// `nominal_name_of` already names it.
+fn has_builtin_value_head(t: Type) -> Bool {
+  match t {
+    CtArray(_) => true,
+    CtTuple(_) => true,
+    CtFn(_, _, _) => true,
+    CtRecord(_) => true,
+    _ => is_builtin_scalar(t)
+  }
+}
+
 /// #1001: true when `expected` and `actual` carry a corresponding pair of
 /// nominal names that DIFFER, anywhere in their structure -- e.g.
 /// `Result[Int,String]` (`CtNamed`) vs `Option[Int]` (the builtin `CtOption`),
@@ -924,6 +1013,12 @@ fn nominal_name_of(t: Type) -> Option[String] {
 /// `Box[Int]` vs `Box[String]`, #981) and never even inspects a
 /// `CtArray[Option[Int]]` vs `CtArray[Result[Int,String]]` pair's nested heads,
 /// nor a builtin `CtOption` against a `CtNamed`/`CtEnum` nominal type, at all.
+///
+/// #3326: an applied declared type against a builtin value head
+/// (`Cell[Int]` vs `Array[Int]`) is the same kind of conflict, checked by
+/// `declared_vs_builtin` because neither side carries a nominal name. Without
+/// it an array passed as a `Cell[Int]` compiles clean and `x.value` reads the
+/// array's packed representation.
 fn nominal_head_conflict(expected: Type, actual: Type) -> Bool {
   let direct_conflict = match nominal_name_of(expected) {
     Some(en) => match nominal_name_of(actual) {
@@ -932,7 +1027,8 @@ fn nominal_head_conflict(expected: Type, actual: Type) -> Bool {
     },
     None => false
   }
-  if direct_conflict {
+  let declared_vs_builtin = (is_applied_declared_nominal(expected) && has_builtin_value_head(actual)) || (has_builtin_value_head(expected) && is_applied_declared_nominal(actual))
+  if direct_conflict || declared_vs_builtin {
     true
   } else {
     match expected {

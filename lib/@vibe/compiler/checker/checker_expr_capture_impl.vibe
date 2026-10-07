@@ -5,7 +5,7 @@ import @vibe/compiler/checker/annotations {
 }
 
 import @vibe/compiler/checker/type_relations {
-  type_is_ground
+  check_assignable_set_type_defs, type_is_ground
 }
 
 import @vibe/compiler/checker/resume {
@@ -33,6 +33,8 @@ import @vibe/compiler/core {
   find_typedef,
   fresh_var,
   generalize,
+  handler_or_arm_stamp,
+  handler_or_arm_tests_payload,
   instantiate,
   is_exception_effect_name,
   resolve_type_constructor_args,
@@ -60,6 +62,10 @@ import @vibe/core {
   array_empty, struct MutMap
 }
 
+import ./checker_handler_payload_patterns.vibe {
+  reject_handler_arm_payload_patterns
+}
+
 import ./checker_exhaustive.vibe {
   match_nonexhaustive_witness
 }
@@ -85,7 +91,7 @@ import ./checker_effects.vibe {
 }
 
 import ./checker_escape.vibe {
-  mut_binding_escapes
+  expr_free_in, mut_binding_escapes
 }
 
 import ./checker_builtin_arg_head_rest.vibe {
@@ -101,6 +107,10 @@ import ./checker_builtin_arg_head_rest.vibe {
 
 import ./checker_call_expr.vibe {
   check_call_expr
+}
+
+import ./checker_row_effect_inst.vibe {
+  bind_struct_field_effect_instantiations, field_effect_inst_arg_check
 }
 
 import ./checker_closure_capture_row.vibe {
@@ -122,6 +132,10 @@ import ./checker_closure_capture_row.vibe {
   type_is_concrete_non_option
 }
 
+import ./checker_handler_or_arm_resume.vibe {
+  handler_or_arm_handle_instance, record_handler_or_arm_resume
+}
+
 import ./checker_eq_unbounded_formal_msg.vibe {
   bind_function_dependency_contracts,
   check_assignable,
@@ -132,6 +146,7 @@ import ./checker_eq_unbounded_formal_msg.vibe {
   effect_tparams,
   env_has_active_region,
   mark_return_provenance_written,
+  note_generic_callback_instance,
   note_local_generic_binding,
   string_lit_end,
   struct_fields_ground,
@@ -194,12 +209,17 @@ import ./checker_merge_capture_provenance.vibe {
   formal_shadow,
   marker_default_dispatch_error,
   merge_capture_provenance,
+  merge_value_effect_provenance,
   record_local_let_rec_type,
   record_local_let_type,
   reset_eq_formal_vars,
   resume_walk_param_base,
   return_provenance_key,
   unary_operand_is_definitely_wrong
+}
+
+import ./checker_region_retention.vibe {
+  retention_assign_hidden_region, retention_bind_carry, retention_bind_let, retention_note_let_mut
 }
 
 import ./checker_throw_kind_of_type.vibe {
@@ -300,8 +320,8 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         // in another order than `f`, so the row markers it copied are
         // respelled against its own quantifier list, as a top-level one's are.
         let gen = match val {
-          EIdent(_, _) => publish_row_formals(gen0, val, cenv, defs),
-          _ => gen0
+          EFn(_, _, _, _, _, _) => gen0,
+          _ => publish_row_formals(gen0, val, cenv, defs, ns)
         }
         // #2848: a field read on a parameter this binding just quantified.
         refuse_generalized_field_reads(gen, ns, errors)
@@ -332,6 +352,18 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         } else {
           ()
         }
+        // #3343: what a call of `name` reaches -- the closure literal, or the
+        // callee an alias stands for -- so a call inside a region can check
+        // the body for what it keeps.
+        cenv = retention_bind_let(cenv, name, val, gen, false)
+        // #3343 (Codex on #3359): inside a region, record which regions the
+        // value carries where its type may hide them, so a later write,
+        // return or call of `name` is judged by the value it was bound to.
+        if spine_region_active {
+          cenv = retention_bind_carry(cenv, def_env, name, val, body, subst_apply(ns, gen), defs, ns, let_off)
+        } else {
+          ()
+        }
         s1 = ns
         c1 = nc
         typed_occurrence_capture_enter_virtual_child(capture, 1, Array::length(expr_children(body)))
@@ -356,6 +388,7 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         // `env_mut_escape` (checker_spawnable) instead of re-deriving
         // mutability from the raw AST.
         let escapes = mut_binding_escapes(body, name)
+        let mut_def_env = cenv
         if name == "__loop_result" {
           let (lr_tv, nc2) = fresh_var(nc)
           cenv = env_bind_mut(cenv, name, lr_tv, escapes)
@@ -363,6 +396,14 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         } else {
           cenv = env_bind_mut(cenv, name, vt, escapes)
           c1 = nc
+        }
+        // #3343 (Codex on #3359): what the binding may carry -- what it
+        // starts with and what is written into it anywhere in its scope --
+        // for a later walk of this body or write of the binding.
+        if spine_region_active {
+          cenv = retention_note_let_mut(cenv, mut_def_env, name, val, body, subst_apply(ns, vt), defs, ns, let_off)
+        } else {
+          ()
         }
         s1 = ns
         typed_occurrence_capture_enter_virtual_child(capture, 1, Array::length(expr_children(body)))
@@ -399,6 +440,7 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         note_local_generic_binding(val, gen, cenv)
         cenv = env_bind(cenv, name, gen)
         cenv = bind_function_dependency_contracts(cenv, name, val)
+        cenv = retention_bind_let(cenv, name, val, gen, true)
         s1 = s2
         c1 = nc
         typed_occurrence_capture_enter_virtual_child(capture, 1, Array::length(expr_children(body)))
@@ -415,6 +457,20 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
   typed_occurrence_capture_record_virtual_spine_returns(capture, start_frame_depth, result.0, lane)
   typed_occurrence_capture_restore_frame_depth(capture, start_frame_depth)
   result
+}
+
+/// #3301: what check_resume_values' walk starts with `resume` bound to: the
+/// arm's own continuation. A binder the walk meets inside the arm rebinds the
+/// name to something else, which is what shadows it.
+fn resume_continuation_marker() -> Type {
+  CtNamed("$resume_continuation", [])
+}
+
+fn resume_is_continuation(t: Type) -> Bool {
+  match t {
+    CtNamed(name, _) => name == "$resume_continuation",
+    _ => false
+  }
 }
 
 /// The handler-arm `resume(x)` re-check: each `x` must be assignable to the
@@ -436,9 +492,16 @@ fn check_resume_values(e: Expr, ret_ty: Type, env: TypeEnv, defs: Array[TypeDef]
       // through check_expr, already containing every enclosing binder (the
       // top-level fn/let hoist, the arm's own payload binders via henv, and
       // any local let/let-mut/let-rec/match-arm binder this walk itself adds
-      // below) — so a `resume` name already bound here is a real callable
-      // binding codegen's prefer_bound_call routes to, not the builtin.
-      let resume_shadowed = env_lookup(env, "resume") is Some(_)
+      // below). The arm loop binds `resume` to the continuation marker on top
+      // of them (#3301): inside the arm the continuation shadows a top-level
+      // `fn resume` and an enclosing arm's continuation alike, and both used
+      // to switch this check off -- `Op => resume("str")` for an Int
+      // operation compiled when a `fn resume` existed, and resumed the
+      // perform with a string. Only a binder inside the arm shadows it.
+      let resume_shadowed = match env_lookup(env, "resume") {
+        Some(bound) => !resume_is_continuation(bound),
+        None => false
+      }
       match callee {
         EIdent(nm, _) => {
           // A Unit-returning op discards the resumed value at the perform
@@ -614,6 +677,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           ()
         }
         let (ti, c1, new_bounds) = instantiate(t, c)
+        note_generic_callback_instance(t, ti)
         let nblen = Array::length(new_bounds)
         let mut s1 = s
         let mut bi = 0
@@ -790,7 +854,8 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               } else {
                 check_assignable_set_end(string_lit_end(then_e))
               }
-              (check_assignable(rtt, ret, s3, errors, "if branches have incompatible types", branch_off), tt)
+              let joined_s = check_assignable(rtt, ret, s3, errors, "if branches have incompatible types", branch_off)
+              (joined_s, merge_value_effect_provenance(tt, et, joined_s))
             }
           }
         }
@@ -904,8 +969,21 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
     EAssign(name, val, body, target_off) => {
       let (vt, s1, c1) = check_expr_capture(val, env, defs, s, c, errors, tytab, capture, lane)
       let assigned_ty = subst_apply(s1, vt)
-      if assignment_crosses_region(name, assigned_ty, env) || (binding_predates_active_region(name, env) && expression_mentions_active_region(val, env, defs, s1, c1, check_expr)) {
-        Array::push(errors, String::concat(region_write_escape_message(assigned_ty, env, "region escapes its scope: an assignment stores a value that captures this region into an outer binding"), off_marker(tail_expr_off(val))))
+      // #3343 (Codex on #3359): a value whose type may hide the region is
+      // asked by what it reads, too (`retention_assign_hidden_region`).
+      let predates_region = binding_predates_active_region(name, env)
+      let hidden_region = if predates_region && !assignment_crosses_region(name, assigned_ty, env) {
+        retention_assign_hidden_region(name, val, assigned_ty, env, defs, s1)
+      } else {
+        ""
+      }
+      if assignment_crosses_region(name, assigned_ty, env) || (predates_region && (hidden_region != "" || expression_mentions_active_region(val, env, defs, s1, c1, check_expr))) {
+        let shown_ty = if hidden_region != "" {
+          CtNamed(hidden_region, [])
+        } else {
+          assigned_ty
+        }
+        Array::push(errors, String::concat(region_write_escape_message(shown_ty, env, "region escapes its scope: an assignment stores a value that captures this region into an outer binding"), off_marker(tail_expr_off(val))))
       }
       // The assigned value must be assignable to the variable's type
       // (previously unchecked — `y = "s"` for `let mut y = 1` was accepted).
@@ -1029,6 +1107,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               ()
             } else {
               si = refine_open_option_branch(result_ty, arm_ty, si)
+              result_ty = merge_value_effect_provenance(result_ty, arm_ty, si)
             }
             if check_arms {
               // Tolerate a `CtUnit` arm (statement-position match); rely on
@@ -1234,6 +1313,8 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       // syntactically (`Eff::Op`), so this pre-pass needs no type information
       // and cannot depend on checking the body first.
       let hinst_seen = array_empty()
+      // #3301: the copies of one or-pattern arm are compared per `handle`.
+      let hor_instance = handler_or_arm_handle_instance()
       let mut hc0 = c
       let mut henv_shared = env
       let mut hpi = 0
@@ -1286,7 +1367,12 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       // same S the `Put(v)` payload binder and the body's performs see.
       let mut hai = 0
       while hai < Array::length(harms) {
-        let (hpat, hbody) = Array::get(harms, hai)
+        // A split or-pattern arm carries its group stamp around the body.
+        let (hpat, hbody_stamped) = Array::get(harms, hai)
+        let (hgroup, hbody) = handler_or_arm_stamp(hbody_stamped)
+        // The body's substitution gives the actual payload type. Diagnose
+        // the pattern before names it failed to bind are read by the arm.
+        reject_handler_arm_payload_patterns(hpat, hbody, body, henv_shared, defs, hs1, harms, errors)
         match hpat {
           PCtor(hqname, hbinds) => {
             let hci = String::index_of(hqname, "::")
@@ -1305,6 +1391,10 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                   } else {
                     (hparams_decl, hret_decl)
                   }
+                  // #3301 (Codex on #3337): the copies of an or-pattern arm
+                  // are compared at the type this handle instantiated, not
+                  // at the declaration's template.
+                  record_handler_or_arm_resume(hor_instance, hgroup, hbody, hqname, hret)
                   let hplen = Array::length(hparams)
                   let hblen = Array::length(hbinds)
                   // The op's declared arity, plus optionally one trailing
@@ -1451,7 +1541,16 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                   // resume(x): x must be assignable to the op's declared
                   // return type (ground-gated). Throwaway walk — nested
                   // handles are skipped (their resumes belong to inner arms).
-                  let (hrv_s, hrv_c) = check_resume_values(hbody, hret, henv, defs, hs1, hc1, errors, tytab, capture)
+                  // The arm's own continuation shadows every `resume` bound
+                  // outside the arm -- a top-level `fn resume`, or an
+                  // enclosing arm's continuation -- so the walk starts with
+                  // it bound (#3301): those used to switch the check off.
+                  let hresume_env = if hbinds_shadow_resume {
+                    henv
+                  } else {
+                    env_bind(henv, "resume", resume_continuation_marker())
+                  }
+                  let (hrv_s, hrv_c) = check_resume_values(hbody, hret, hresume_env, defs, hs1, hc1, errors, tytab, capture)
                   hs1 = hrv_s
                   hc1 = hrv_c
                 },
@@ -1557,6 +1656,25 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               }
             } else {
               ()
+            }
+          },
+          // #3301: check_program split every or-pattern arm whose
+          // alternatives bind nothing into one arm per operation. One that
+          // is still here binds a payload, which a `match` or-pattern cannot
+          // do either; nothing would type the body or lower the handle.
+          POr(_, _) => {
+            let por_off = if railway_expr_off(hbody) >= 0 {
+              railway_expr_off(hbody)
+            } else {
+              railway_expr_off(body)
+            }
+            // #3301 (Codex on #3337): a payload pattern that tests a value
+            // is not matched by either effect lowering, so an or-pattern of
+            // them would run for every payload; the split left it whole.
+            if handler_or_arm_tests_payload(hpat) {
+              Array::push(errors, String::concat("write one handler arm per operation and test the payload with `if` in its body (`P(n) => if n == 1 { .. } else { .. }`): an or-pattern handler arm cannot match a payload's value (`P(1) | Q(_) => ..`)", off_marker(por_off)))
+            } else {
+              Array::push(errors, String::concat("write one handler arm per operation, or `_` for the payloads: an or-pattern arm cannot bind a payload (`A(v) | B(v) => ..`), but separate arms may repeat the same body", off_marker(por_off)))
             }
           },
           _ => ()
@@ -1922,6 +2040,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             },
             _ => (field_ty0, c1)
           }
+          let (inst_field_ty, field_s, field_c) = bind_struct_field_effect_instantiations(field_ty, resolved, defs, s1, c_after)
           // Record this field-access node's (raw, pre-final-subst) projection type
           // keyed by its real source offset, for typed-hover on `obj.field`.
           // Synthetic accesses (dot_off < 0) are skipped. #645: the field token's
@@ -1929,13 +2048,13 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           // the base) resolves the projection type.
           let dependent_field_ty = match obj {
             EIdent(base_name, _) => match env_lookup(env, String::concat("__param_marker__", base_name)) {
-              Some(CtNamed(marker_label, _)) => add_param_capture_dependency(field_ty, match param_marker_index(marker_label) {
+              Some(CtNamed(marker_label, _)) => add_param_capture_dependency(inst_field_ty, match param_marker_index(marker_label) {
                 Some(marker) => marker,
                 None => 0 - 1
               }),
-              _ => field_ty
+              _ => inst_field_ty
             },
-            _ => field_ty
+            _ => inst_field_ty
           }
           if dot_off >= 0 {
             tab_dot_projection_ty(tytab, dot_off, dependent_field_ty, capture, lane)
@@ -1947,7 +2066,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           } else {
             ()
           }
-          (dependent_field_ty, s1, c_after)
+          (dependent_field_ty, field_s, field_c)
         }
       }
     },
@@ -2141,6 +2260,14 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                   Some(aty) => {
                     // Value type check (ground-gated like check_record_fields).
                     s1 = check_assignable_for(dty, subst_apply(s1, aty), s1, errors, "struct field type mismatch for ", dn, lookup_field_expr_off(fields, dn))
+                    // Compare latent payloads before the struct's field type
+                    // replaces the value's own instantiation evidence.
+                    for field in fields {
+                      let (fname, value) = field
+                      if fname == dn {
+                        s1 = field_effect_inst_arg_check(env, value, aty, dty, s1, CtNamed(rn, fresh_targs), dn, defs, errors)
+                      }
+                    }
                   },
                   None => Array::push(errors, String::concat("missing field `", String::concat(dn, String::concat("` in construction of struct ", rn))))
                 }
@@ -2152,7 +2279,10 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               // every downstream use of the value unchecked). A non-ground
               // struct WITHOUT declared params (unresolved field type names)
               // keeps the old CtUnknown tolerance.
-              if struct_fields_ground(dfields, defs, s_tparams) || (tplen == 0 && struct_fields_ground_builtin_named(dfields)) {
+              // A parameter used only in a function field's effect row is
+              // still part of the struct's identity. Keep its concrete
+              // arguments even when every ordinary field type is ground.
+              if tplen == 0 && (struct_fields_ground(dfields, defs, s_tparams) || struct_fields_ground_builtin_named(dfields)) {
                 (CtStruct(rn), s1, c2)
               } else if tplen > 0 {
                 let inst_targs = for ta in fresh_targs {
@@ -2255,6 +2385,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             elem_ty = it
           } else {
             s1 = check_assignable(elem_ty, subst_apply(s1, it), s1, errors, "array elements have incompatible types", railway_expr_off(Array::get(items, ai)))
+            elem_ty = merge_value_effect_provenance(elem_ty, it, s1)
           }
           ai = ai + 1
         }
@@ -2416,6 +2547,7 @@ export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
   // alias a fresh variable here. Not an internal entry: the checker recurses
   // through check_expr_capture.
   reset_eq_formal_vars()
+  check_assignable_set_type_defs(defs)
   check_expr_capture_impl(expr, env, defs, s, c, errors, tytab, None, "Primary", false)
 }
 

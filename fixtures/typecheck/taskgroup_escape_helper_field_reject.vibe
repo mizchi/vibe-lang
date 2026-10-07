@@ -1,0 +1,27 @@
+// #3343: a helper that stores its argument keeps the handle where the body's
+// own write could not. `put` was checked where it was written, outside any
+// group, so `put(c, handle)` compiled and the handle was joined after its
+// group closed (`r=1 after=41`). The call now re-checks `put` under the
+// group's region, with `c` standing for the outer binding it was passed.
+import @vibe/concurrent { TaskGroup, TaskHandle }
+
+struct Cell[T] {
+  mut v: Option[T]
+}
+
+fn put[T](c: Cell[T], v: T) -> Unit {
+  c.v = Some(v)
+}
+
+fn main() -> Unit allows Exception + Console {
+  let c = Cell::{ v: None }
+  let r = TaskGroup::run((n) -> {
+    put(c, TaskGroup::spawn(n, () -> { 41 }))
+    1
+  })
+  let after = match c.v {
+    Some(h) => TaskHandle::join(h),
+    None => 0 - 1
+  }
+  println("r=\{r} after=\{after}")
+}

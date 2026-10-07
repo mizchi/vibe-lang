@@ -1,0 +1,95 @@
+// #3351: callees whose callback row names a type of this module's, imported
+// by fixtures/callback_row_unimported_test.vibe without that type.
+export effect Box[T] {
+  Put(T) -> Int
+}
+
+export effect Get[T] {
+  Take() -> T
+}
+
+export struct Pt {
+  x: Int
+}
+
+export type Pts = Pt
+
+export struct Wrap[T] {
+  v: T
+}
+
+export fn mk_pt(x: Int) -> Pt {
+  Pt::{ x: x }
+}
+
+export enum Shade {
+  Light(Int);
+  Dark
+}
+
+export fn mk_light(n: Int) -> Shade {
+  Shade::Light(n)
+}
+
+export fn mk_wrap[T](v: T) -> Wrap[T] {
+  Wrap::{ v: v }
+}
+
+// The arms' payloads are annotated: an unannotated field read in an arm
+// fixes the formal of a generic declared after it at `Int` (#3362).
+export fn run_pt(f: () -> Int with Box[Pt]) -> Int {
+  handle {
+    f()
+  } with {
+    Box::Put(p) => {
+      let q: Pt = p
+      resume(q.x * 10)
+    }
+  }
+}
+
+// An enum in the row is marked `^^Shade`, so a bare `Shade` reads as the
+// enum type a `Shade` value has.
+export fn run_shade(f: () -> Int with Box[Shade]) -> Int {
+  handle {
+    f()
+  } with {
+    Box::Put(c) => {
+      let q: Shade = c
+      resume(match q {
+        Shade::Light(n) => n,
+        Shade::Dark => 0
+      })
+    }
+  }
+}
+
+export fn run_pts(f: () -> Int with Box[Pts]) -> Int {
+  handle {
+    f()
+  } with {
+    Box::Put(p) => {
+      let q: Pt = p
+      resume(q.x * 100)
+    }
+  }
+}
+
+export fn run_take(f: () -> Int with Get[Pt]) -> Int {
+  handle {
+    f()
+  } with {
+    Get::Take => resume(Pt::{ x: 7 })
+  }
+}
+
+export fn run_wrap[T](x: T, f: () -> Int with Box[Wrap[T]], len: (T) -> Int) -> Int {
+  handle {
+    f()
+  } with {
+    Box::Put(w) => {
+      let q: Wrap[T] = w
+      resume(len(q.v) + len(x) * 0)
+    }
+  }
+}

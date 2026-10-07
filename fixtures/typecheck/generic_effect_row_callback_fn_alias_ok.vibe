@@ -1,0 +1,161 @@
+// #3311 (Codex on #3340) control: callback rows whose type argument holds a
+// function type -- through an alias, an alias with its own row, a tuple
+// alias, `Option`, `Array`, a generic struct, a generic alias, a function
+// taking a function, and a callee formal -- accept a lambda performing the
+// payload the row names. The refusals are the
+// generic_effect_row_{callback_fn_alias,callback_fn_formal,callback_fn_nested,
+// named_fn_alias}_reject rows.
+effect Box[T] {
+  Put(T) -> Int
+}
+
+type Mapper = (Int) -> Int
+
+type MapperC = (Int) -> Int with Console
+
+type MT = (Mapper, Int)
+
+type Pair[A] = (A, A)
+
+type HigherM = (Mapper) -> Int
+
+type Fn1[A] = (A) -> Int
+
+struct W[T] {
+  f: T
+}
+
+fn run_map(f: () -> Int with Box[Mapper]) -> Int {
+  handle {
+    f()
+  } with {
+    Box::Put(m) => resume(m(41))
+  }
+}
+
+fn run_mapc(f: () -> Int with Box[MapperC]) -> Int with Console {
+  handle {
+    f()
+  } with {
+    Box::Put(m) => resume(m(41))
+  }
+}
+
+fn run_mt(f: () -> Int with Box[MT]) -> Int {
+  handle {
+    f()
+  } with {
+    Box::Put(m) => resume(m.0(m.1))
+  }
+}
+
+fn run_opt(f: () -> Int with Box[Option[Mapper]]) -> Int {
+  handle {
+    f()
+  } with {
+    Box::Put(m) => resume(match m {
+      Some(g) => g(41),
+      None => 0
+    })
+  }
+}
+
+fn run_arr(f: () -> Int with Box[Array[Mapper]]) -> Int {
+  handle {
+    f()
+  } with {
+    Box::Put(m) => resume(Array::length(m))
+  }
+}
+
+fn run_w(f: () -> Int with Box[W[Mapper]]) -> Int {
+  handle {
+    f()
+  } with {
+    Box::Put(w) => resume(w.f(41))
+  }
+}
+
+fn run_pair(f: () -> Int with Box[Pair[Mapper]]) -> Int {
+  handle {
+    f()
+  } with {
+    Box::Put(p) => resume(p.1(41))
+  }
+}
+
+fn run_higher(f: () -> Int with Box[HigherM]) -> Int {
+  handle {
+    f()
+  } with {
+    Box::Put(h) => resume(h((n: Int) -> Int { n }))
+  }
+}
+
+fn run_g[T](x: T, f: () -> Int with Box[Fn1[T]]) -> Int {
+  handle {
+    f()
+  } with {
+    Box::Put(m) => resume(m(x))
+  }
+}
+
+fn inc(n: Int) -> Int {
+  n + 1
+}
+
+fn producer() -> Int with Box[Mapper] {
+  run_map(() -> {
+    perform Box::Put((n: Int) -> Int { n + 1 })
+  }) + run_map(() -> {
+    perform Box::Put(inc)
+  })
+}
+
+fn producer_c() -> Int with Box[MapperC] + Console {
+  run_mapc(() -> {
+    perform Box::Put((n: Int) -> Int { n + 1 })
+  })
+}
+
+fn producer_mt() -> Int with Box[MT] {
+  run_mt(() -> {
+    perform Box::Put((inc, 1))
+  })
+}
+
+fn producer_opt() -> Int with Box[Option[Mapper]] {
+  run_opt(() -> {
+    perform Box::Put(Some(inc))
+  })
+}
+
+fn producer_arr() -> Int with Box[Array[Mapper]] {
+  run_arr(() -> {
+    perform Box::Put([inc])
+  })
+}
+
+fn producer_w() -> Int with Box[W[Mapper]] {
+  run_w(() -> {
+    perform Box::Put(W::{ f: inc })
+  })
+}
+
+fn producer_pair() -> Int with Box[Pair[Mapper]] {
+  run_pair(() -> {
+    perform Box::Put((inc, inc))
+  })
+}
+
+fn producer_higher() -> Int with Box[HigherM] {
+  run_higher(() -> {
+    perform Box::Put((g: Mapper) -> Int { g(1) })
+  })
+}
+
+fn producer_g() -> Int with Box[Fn1[String]] {
+  run_g("abc", () -> {
+    perform Box::Put((s: String) -> Int { String::length(s) })
+  })
+}

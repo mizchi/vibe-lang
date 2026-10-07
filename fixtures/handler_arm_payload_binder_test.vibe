@@ -1,0 +1,228 @@
+// #3371: a handler arm's payload is a name or `_`, and the arm body tests it.
+// These are the edits the refusal names, run in every handler spelling; each
+// answer differs by payload, so an arm that ignored its payload would show.
+effect Pick {
+  P(Int) -> Int
+  Q(Int) -> Int
+}
+
+effect Two {
+  Add(Int, Int) -> Int
+}
+
+enum Color {
+  Red;
+  Green
+}
+
+effect Paint {
+  Use(Color) -> Int
+}
+
+type P2 = (Int, Int)
+
+effect Pair {
+  Diff(P2) -> Int
+}
+
+effect Geo[T] {
+  Sum(T) -> Int
+}
+
+fn set_arm(x: Int) -> Int {
+  handle {
+    perform Pick::P(x)
+  } with {
+    Pick::P(n) => if n == 1 {
+      resume(100)
+    } else {
+      resume(5)
+    };
+    Pick::Q(_) => resume(7)
+  }
+}
+
+fn legacy_arm(x: Int) -> Int {
+  handle {
+    perform Pick::P(x)
+  } with Pick {
+    P(n) => if n == 1 {
+      resume(100)
+    } else {
+      resume(5)
+    };
+    Q(_) => resume(7)
+  }
+}
+
+fn suffix_arm(x: Int) -> Int {
+  with Pick::P(n) => if n == 1 {
+    resume(100)
+  } else {
+    resume(5)
+  }
+  with Pick::Q(_) => resume(7)
+  perform Pick::P(x)
+}
+
+fn lambda_arm(x: Int) -> Int {
+  let f = () -> {
+    handle {
+      perform Pick::Q(x)
+    } with {
+      Pick::P(_) => resume(7);
+      Pick::Q(n) => if n == 1 {
+        resume(100)
+      } else {
+        resume(5)
+      }
+    }
+  }
+  f()
+}
+
+fn two_args(a: Int, b: Int) -> Int {
+  handle {
+    perform Two::Add(a, b)
+  } with {
+    Two::Add(x, y) => if x == 1 && y == 2 {
+      resume(100)
+    } else {
+      resume(x - y)
+    }
+  }
+}
+
+fn ctor_arm(c: Color) -> Int {
+  handle {
+    perform Paint::Use(c)
+  } with {
+    Paint::Use(v) => match v {
+      Color::Red => resume(1),
+      Color::Green => resume(2)
+    }
+  }
+}
+
+fn tuple_arm(p: P2) -> Int {
+  handle {
+    perform Pair::Diff(p)
+  } with {
+    Pair::Diff(v) => {
+      let (a, b) = v
+      resume(a - b)
+    }
+  }
+}
+
+// The refusal for `Geo::Sum(record { x, y }) =>` names the binder and asks
+// for a `match` against the written pattern; this is that edit.
+fn record_arm(dx: Int) -> Int {
+  handle {
+    perform Geo::Sum(record { x: dx, y: 3 })
+  } with {
+    Geo::Sum(v) => match v {
+      record { x, y } => resume(x - y)
+    }
+  }
+}
+
+// The refusal for `Pick::P(1) => resume(v + v1)` with `v` and `v1` in scope
+// suggests the binder `v2`, so the moved body still reads the outer names.
+fn hygiene_arm(v: Int, v1: Int, x: Int) -> Int {
+  handle {
+    perform Pick::P(x)
+  } with {
+    Pick::P(v2) => if v2 == 1 {
+      resume(v + v1)
+    } else {
+      resume(5)
+    };
+    Pick::Q(_) => resume(7)
+  }
+}
+
+fn suspend_arm(x: Int) -> Int {
+  handle {
+    perform Pick::P(x)
+  } with {
+    Pick::P(n) => {
+      let k = resume
+      if n == 1 {
+        k(100)
+      } else {
+        k(5)
+      }
+    };
+    Pick::Q(_) => {
+      let k = resume
+      k(7)
+    }
+  }
+}
+
+fn exception_arm(msg: String) -> Int {
+  handle {
+    throw(msg)
+  } with {
+    Exception::Throw(m) => if m == "boom" {
+      1
+    } else {
+      2
+    }
+  }
+}
+
+test "a binder arm tests its payload in the handler-set spelling" {
+  inspect(set_arm(1), content = "100")
+  inspect(set_arm(3), content = "5")
+}
+
+test "a binder arm tests its payload in the legacy header spelling" {
+  inspect(legacy_arm(1), content = "100")
+  inspect(legacy_arm(3), content = "5")
+}
+
+test "a binder arm tests its payload in the suffix spelling" {
+  inspect(suffix_arm(1), content = "100")
+  inspect(suffix_arm(3), content = "5")
+}
+
+test "a binder arm tests its payload in a handler inside a lambda" {
+  inspect(lambda_arm(1), content = "100")
+  inspect(lambda_arm(3), content = "5")
+}
+
+test "a two-argument arm binds both payloads" {
+  inspect(two_args(1, 2), content = "100")
+  inspect(two_args(10, 3), content = "7")
+}
+
+test "a constructor test moves into a match in the arm body" {
+  inspect(ctor_arm(Color::Red), content = "1")
+  inspect(ctor_arm(Color::Green), content = "2")
+}
+
+test "a tuple destructure moves into a let in the arm body" {
+  inspect(tuple_arm((10, 3)), content = "7")
+}
+
+test "a record pattern moves into a match in the arm body" {
+  inspect(record_arm(10), content = "7")
+  inspect(record_arm(20), content = "17")
+}
+
+test "the suggested binder leaves outer names to the moved body" {
+  inspect(hygiene_arm(10, 20, 1), content = "30")
+  inspect(hygiene_arm(10, 20, 3), content = "5")
+}
+
+test "a suspend arm tests its payload in the body" {
+  inspect(suspend_arm(1), content = "100")
+  inspect(suspend_arm(3), content = "5")
+}
+
+test "an exception arm tests its payload in the body" {
+  inspect(exception_arm("boom"), content = "1")
+  inspect(exception_arm("other"), content = "2")
+}

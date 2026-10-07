@@ -20,6 +20,10 @@ import ./checker_pattern.vibe {
   check_qualified_pattern_refs
 }
 
+import ./checker_handler_or_arm_resume.vibe {
+  check_handler_or_arm_resume_types, handler_or_arm_resume_begin
+}
+
 import ./builtins.vibe {
   lookup_builtin
 }
@@ -41,11 +45,14 @@ import @vibe/compiler/core {
   TypeExpr,
   env_cache,
   env_show_wrapper_facts,
+  erase_handler_or_arm_stamps,
   expr_child_at,
   expr_children_pop,
   expr_children_push,
   expr_children_top,
+  handler_or_arm_groups,
   sort_perm_by_names,
+  split_handler_or_arms,
   subst_apply,
   subst_lookup,
   subst_resolves_to_double,
@@ -61,6 +68,10 @@ import @vibe/compiler/core {
 
 import ./checker_merge_capture_provenance.vibe {
   eq_formal_row_of
+}
+
+import @vibe/compiler/checker/type_relations {
+  check_assignable_set_type_defs
 }
 
 import ./checker.vibe {
@@ -191,6 +202,14 @@ export fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: 
   // pre-codegen scan, so the snapshot assertion is import-free (see
   // desugar_inspect_calls).
   desugar_inspect_calls(stmts)
+  // #3301: a handler arm `A | B => body` is the two arms `A => body` and
+  // `B => body`. Split here, before anything reads a handler arm, so the
+  // checker types, counts and discharges each operation the way codegen
+  // lowers it. An alternative that binds a name stays whole, to be refused.
+  // The arms it took are kept, by the group id it stamps on their copies,
+  // for the check after typing.
+  split_handler_or_arms(stmts, false)
+  let handler_or_arms = Array::slice(handler_or_arm_groups(), 0, Array::length(handler_or_arm_groups()))
   // #1962 (Option 1): a direct host-builtin call inside a `handle` whose arms
   // name the same operation becomes `perform <Op>(..)`. BEFORE checking, so
   // the effect row the checker computes is the one the program actually has.
@@ -209,7 +228,10 @@ export fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: 
   reset_return_provenance_index()
   reset_eq_formal_vars()
   reset_throw_payload_sites()
+  // #3301: the or-pattern arm copies the check after typing compares.
+  handler_or_arm_resume_begin(handler_or_arms)
   set_generic_fn_decls(stmts)
+  check_assignable_set_type_defs(empty_defs)
   // #986: labeled-argument name validation (unknown / out-of-order labels).
   // Must run after desugar_labeled_args above.
   check_labeled_arg_names_stmts(stmts, frozen_errors, false)
@@ -262,6 +284,11 @@ export fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: 
   // #1455 step 3: `empty_defs` is the finished enum table by now, so the
   // qualifiers drained above can finally be checked against it.
   check_qualified_pattern_refs(qualified_pattern_refs, empty_defs, frozen_errors)
+  // #3301: and every effect's operations, so an or-pattern arm whose
+  // `resume` the split typed at two types can be refused.
+  check_handler_or_arm_resume_types(handler_or_arms, empty_defs, final_s, frozen_errors)
+  // The split's group stamps are the checker's alone.
+  erase_handler_or_arm_stamps(stmts)
   if Array::length(frozen_errors) > 0 {
     // #2831 criterion 4: report EVERY diagnostic this check collected, not
     // just the first. They are all computed by the time we get here, and

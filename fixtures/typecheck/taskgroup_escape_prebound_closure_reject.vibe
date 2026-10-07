@@ -1,0 +1,26 @@
+// #3343: a closure bound BEFORE the group writes an outer binding with its
+// parameter. It was checked where it was written, outside the group, so
+// `stash(handle)` compiled and the handle was joined after its group closed.
+// The call re-checks the closure in the scope it was written in, under the
+// group's region.
+import @vibe/concurrent { TaskGroup, TaskHandle }
+
+struct Cell[T] {
+  mut v: Option[T]
+}
+
+fn main() -> Unit allows Exception + Console {
+  let c = Cell::{ v: None }
+  let stash = (h) -> {
+    c.v = Some(h)
+  }
+  let r = TaskGroup::run((n) -> {
+    stash(TaskGroup::spawn(n, () -> { 41 }))
+    1
+  })
+  let after = match c.v {
+    Some(h) => TaskHandle::join(h),
+    None => 0 - 1
+  }
+  println("r=\{r} after=\{after}")
+}

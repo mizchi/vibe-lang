@@ -1,0 +1,28 @@
+// #3343 (Codex on #3359): a program's own `struct Sender[T]` is its own
+// type, judged by its fields, not the library's channel endpoint spelled the
+// same way. Storing one built from a JOINED result in an outer cell keeps
+// nothing of the group; the region check refused it, reading `Sender[Int]` as
+// an endpoint whose region its type does not show.
+import @vibe/concurrent { TaskGroup, TaskHandle }
+
+struct Sender[T] {
+  value: T
+}
+
+struct Cell[T] {
+  mut v: Option[T]
+}
+
+fn main() -> Unit allows Exception + Console {
+  let c: Cell[Sender[Int]] = Cell::{ v: None }
+  let r = TaskGroup::run((n) -> {
+    let h = TaskGroup::spawn(n, () -> { 41 })
+    c.v = Some(Sender::{ value: TaskHandle::join(h) })
+    1
+  })
+  let after = match c.v {
+    Some(s) => s.value,
+    None => 0 - 1
+  }
+  println("r=\{r} after=\{after}")
+}

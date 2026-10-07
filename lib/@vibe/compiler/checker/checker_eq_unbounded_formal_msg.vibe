@@ -40,6 +40,7 @@ import @vibe/compiler/core {
   fresh_var,
   instantiate,
   subst_apply,
+  subst_cache_read_snapshot,
   type_to_string,
   unify
 }
@@ -886,6 +887,12 @@ export fn struct_fields_ground(dfields: Array[(String, Type)], defs: Array[TypeD
   ok
 }
 
+/// The compiler-owned heads whose region (and effect) slots a source
+/// annotation may leave out: the value's own type supplies them.
+fn region_slot_erasable_head(n: String) -> Bool {
+  n == "TaskHandle" || n == "TaskGroup" || n == "Sender" || n == "Receiver" || n == "MutList" || n == "MutBytes"
+}
+
 fn struct_field_type_ground(t: Type, defs: Array[TypeDef], tparams: Array[String]) -> Bool {
   match t {
     CtNamed(n, args) => {
@@ -893,7 +900,12 @@ fn struct_field_type_ground(t: Type, defs: Array[TypeDef], tparams: Array[String
         false
       } else {
         match compiler_owned_type_arity(n) {
-          Some(arity) => arity == Array::length(args),
+          // #3343: a region-carrying head spelled without its region slot
+          // (`h: TaskHandle[Int]`, `xs: MutList[Int]`) is the spelling a
+          // parameter annotation already accepts. Typing the literal as
+          // CtUnknown left every use of the struct unchecked and hid the
+          // handle from the region checks.
+          Some(arity) => arity == Array::length(args) || (Array::length(args) < arity && region_slot_erasable_head(n)),
           None => match find_typedef(defs, n) {
             Some(TDStruct(_, _, _, tps)) => Array::length(tps) == Array::length(args),
             Some(TDEnum(_, tps, _)) => Array::length(tps) == Array::length(args),
@@ -1168,6 +1180,142 @@ let generic_fn_decls_cell: Array[(String, Array[String], Array[(String, Option[T
 /// generic binding, recorded where the call position instantiates the scheme.
 export let callee_inst_types_cell: Array[(Int, Type, Type, String)] = []
 
+// A published generic used as a VALUE has already been instantiated when a
+// later expression calls it (an array element, for example). Keep the exact
+// scheme/instance pair while checking this module so callback rows still read
+// their quantifier indices through that original signature. Ordinary generics
+// without a published formal in a callback row allocate no entry.
+let generic_callback_instances: Array[(Type, Type)] = []
+
+/// Record the original scheme of an instantiated published generic callback.
+export fn note_generic_callback_instance(scheme: Type, inst: Type) -> Unit {
+  match scheme {
+    CtForAll(vars, _, CtFn(params, ret, _)) => {
+      let mut needed = callback_type_has_published_formals(ret, vars)
+      for param in params {
+        if !needed && callback_type_has_published_formals(param, vars) {
+          needed = true
+        }
+      }
+      if needed {
+        Array::push(generic_callback_instances, (scheme, inst))
+      } else {
+        ()
+      }
+    },
+    _ => ()
+  }
+}
+
+/// Does this parameter contain a callback row indexed by the enclosing scheme?
+/// An independently quantified callback owns its own marker indices.
+fn callback_type_has_published_formals(t: Type, vars: Array[Int]) -> Bool {
+  let children = match t {
+    CtFn(params, ret, row) => {
+      match row {
+        Some(r) => if String::contains(r, "$") {
+          let marked: Array[(String, Int)] = []
+          published_row_formal_ids(Some(r), vars, marked)
+          if Array::length(marked) > 0 {
+            return true
+          }
+        },
+        None => ()
+      }
+      if callback_type_has_published_formals(ret, vars) {
+        return true
+      }
+      params
+    },
+    CtArray(e) => return callback_type_has_published_formals(e, vars),
+    CtOption(e) => return callback_type_has_published_formals(e, vars),
+    CtTuple(items) => items,
+    CtNamed(_, items) => items,
+    CtApplied(head, args) => {
+      if callback_type_has_published_formals(head, vars) {
+        return true
+      }
+      args
+    },
+    CtRecord(fields) => {
+      for field in fields {
+        let (_, ft) = field
+        if callback_type_has_published_formals(ft, vars) {
+          return true
+        }
+      }
+      return false
+    },
+    _ => return false
+  }
+  for child in children {
+    if callback_type_has_published_formals(child, vars) {
+      return true
+    }
+  }
+  false
+}
+
+/// Recover a value callee's scheme by its instantiated type identities, never
+/// by its name or the order in which its type variables occur in parameters.
+export fn generic_callback_instance(inst: Type, s: Subst) -> Option[(Type, Type)] {
+  // Prefer the original variable identities before applying any substitution:
+  // different quantifier orders can otherwise collapse to the same ground type.
+  for entry in generic_callback_instances {
+    let (scheme, original) = entry
+    if original == inst {
+      return Some((scheme, inst))
+    }
+  }
+  let mut out = None
+  let mut bindings: Array[Type] = []
+  let mut ambiguous = false
+  for entry in generic_callback_instances {
+    let (scheme, original) = entry
+    if subst_apply(s, original) == subst_apply(s, inst) {
+      let current = callback_instance_bindings(scheme, original, s)
+      match out {
+        None => {
+          out = Some((scheme, inst))
+          bindings = current
+        },
+        Some(_) => if bindings != current {
+          ambiguous = true
+        } else {
+          ()
+        }
+      }
+    }
+  }
+  if ambiguous {
+    None
+  } else {
+    out
+  }
+}
+
+/// Types in quantifier-index order, for comparing the meaning of published
+/// row markers when substitution made two instance signatures look alike.
+fn callback_instance_bindings(scheme: Type, inst: Type, s: Subst) -> Array[Type] {
+  match scheme {
+    CtForAll(vars, _, body) => {
+      let pairs: Array[(Int, Type)] = []
+      scheme_var_types_from(body, inst, pairs)
+      for id in vars {
+        let mut ty = CtUnknown
+        for pair in pairs {
+          let (pid, pt) = pair
+          if pid == id {
+            ty = subst_apply(s, pt)
+          }
+        }
+        ty
+      }
+    },
+    _ => []
+  }
+}
+
 /// #3027: every generic binding's annotations, keyed by the scheme it was
 /// bound with -- a top-level declaration (its hoisted signature and its
 /// checked one) and a local generic lambda alike. A call finds its callee's
@@ -1235,6 +1383,7 @@ fn note_generic_alias(val: Expr, bound: Type, env: TypeEnv) -> Unit {
 export fn set_generic_fn_decls(stmts: Array[Stmt]) -> Unit {
   Array::truncate(generic_fn_decls_cell, 0)
   Array::truncate(callee_inst_types_cell, 0)
+  Array::truncate(generic_callback_instances, 0)
   Array::truncate(generic_scheme_decls_cell, 0)
   let mut i = 0
   while i < Array::length(stmts) {
@@ -1261,9 +1410,9 @@ export fn generic_decl_of_scheme(scheme: Type) -> Option[(Array[String], Array[(
   decl
 }
 
-/// Each argument that is exactly one of the callee's type formals, replaced by
-/// the concrete type that formal takes at the call at `coff`; every other
-/// argument, and any formal that cannot be resolved, is left as written.
+/// Each whole formal word in a callee row argument, including a nested
+/// constructor argument, replaced by the concrete type it takes at `coff`.
+/// Authoritative nominal words and unresolved formals are left as written.
 export fn resolve_callee_formal_args(wants: Array[String], env_scheme: Option[Type], coff: Int, defs: Array[TypeDef], s: Subst) -> Array[String] {
   let mut call = None
   let mut ti = 0
@@ -1295,22 +1444,57 @@ export fn resolve_callee_formal_args(wants: Array[String], env_scheme: Option[Ty
       let mut wi = 0
       while wi < Array::length(wants) {
         let w = String::trim(Array::get(wants, wi))
-        let mut rep = w
-        let mut ni = 0
-        while ni < Array::length(texts) {
-          let (fname, text) = Array::get(texts, ni)
-          if fname == w {
-            rep = text
-          }
-          ni = ni + 1
-        }
-        Array::push(out, rep)
+        Array::push(out, instantiate_row_arg_words(w, texts))
         wi = wi + 1
       }
       out
     },
     None => wants
   }
+}
+
+/// Substitute whole formal words without rewriting a marked nominal head.
+/// Published names include a `$K` index; it belongs to the same token.
+fn instantiate_row_arg_words(arg: String, bindings: Array[(String, String)]) -> String {
+  if Array::length(bindings) == 0 {
+    return arg
+  }
+  let sb = StringBuilder::new()
+  let n = String::length(arg)
+  let mut i = 0
+  while i < n {
+    let c = String::byte_at(arg, i)
+    let word = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '$'
+    if word {
+      let start = i
+      i = i + 1
+      let mut scanning = true
+      while i < n && scanning {
+        let next = String::byte_at(arg, i)
+        if (next >= 'a' && next <= 'z') || (next >= 'A' && next <= 'Z') || (next >= '0' && next <= '9') || next == '_' || next == '$' {
+          i = i + 1
+        } else {
+          scanning = false
+        }
+      }
+      let name = String::substring(arg, start, i)
+      let mut text = name
+      let protected = start > 0 && (String::byte_at(arg, start - 1) == '^' || String::byte_at(arg, start - 1) == '\'')
+      if !protected {
+        for binding in bindings {
+          let (formal, value) = binding
+          if name == formal {
+            text = value
+          }
+        }
+      }
+      StringBuilder::push(sb, text)
+    } else {
+      StringBuilder::push(sb, String::substring(arg, i, i + 1))
+      i = i + 1
+    }
+  }
+  StringBuilder::freeze(sb)
 }
 
 /// Each of a generic callee's formals that its instantiation at one call
@@ -1344,9 +1528,10 @@ export fn callee_formal_texts(decl: Option[(Array[String], Array[(String, Option
 }
 
 /// The callee's formals (name -> scheme variable id) and the type this call
-/// gives each scheme variable, shared by `callee_formal_texts` and
-/// `callee_formal_marked_texts`.
-fn callee_formal_ids(decl: Option[(Array[String], Array[(String, Option[TypeExpr])], Option[TypeExpr])], scheme: Type, inst: Type, defs: Array[TypeDef]) -> (Array[(String, Int)], Array[(Int, Type)]) {
+/// gives each scheme variable, shared by `callee_formal_texts`,
+/// `callee_formal_marked_texts` and the callback row binder
+/// (`callback_arg_env`, #3311).
+export fn callee_formal_ids(decl: Option[(Array[String], Array[(String, Option[TypeExpr])], Option[TypeExpr])], scheme: Type, inst: Type, defs: Array[TypeDef]) -> (Array[(String, Int)], Array[(Int, Type)]) {
   // formal name -> scheme variable id, from the declaration when this
   // module has one ...
   let name_ids: Array[(String, Int)] = []
@@ -1435,7 +1620,7 @@ export fn callee_formal_marked_texts(decl: Option[(Array[String], Array[(String,
 /// variable: any instantiation may fill it) and `~` a part the pass must not
 /// judge (a function or record type, a higher-kinded application). Aliases
 /// are already expanded here, so no word of this text is an alias.
-fn row_marked_type_text(t: Type, reps: Array[(Int, String)]) -> String {
+export fn row_marked_type_text(t: Type, reps: Array[(Int, String)]) -> String {
   match t {
     CtInt => "^Int",
     CtDouble => "^Double",
@@ -1474,6 +1659,7 @@ fn row_marked_type_text(t: Type, reps: Array[(Int, String)]) -> String {
       }
       String::concat("(", String::concat(String::join(parts, ","), ")"))
     },
+    CtConstructor(n, _) => row_marked_nominal(n, []),
     CtStruct(n) => row_marked_nominal(n, []),
     CtEnum(n) => row_marked_nominal(n, []),
     CtNamed(n, args) => {
@@ -1861,4 +2047,94 @@ export fn scheme_var_types_from(st: Type, it: Type, out: Array[(Int, Type)]) -> 
     },
     _ => ()
   }
+}
+
+/// Share an indexed read view when a large call table queries a completed
+/// substitution repeatedly. Small tables keep the original substitution.
+export fn callee_formal_query_subst(s: Subst) -> Subst {
+  if Array::length(callee_inst_types_cell) >= 256 {
+    subst_cache_read_snapshot(s)
+  } else {
+    s
+  }
+}
+
+/// #3053: every recorded generic call's formal bindings under the final
+/// substitution, keyed by `call_formal_key`, for the effects pass
+/// to instantiate the callee's row at that call. Only the call's own scheme is
+/// read here: a call whose scheme has no recorded declaration contributes
+/// nothing, so its row stays as written (open) rather than being guessed.
+export fn callee_formal_bindings(defs: Array[TypeDef], s: Subst) -> Array[(String, Array[(String, String)])] {
+  let out: Array[(String, Array[(String, String)])] = []
+  let ds = formal_var_display_subst(s)
+  let mut i = 0
+  while i < Array::length(callee_inst_types_cell) {
+    let (off, scheme, inst, cname) = Array::get(callee_inst_types_cell, i)
+    // An empty entry is published too: it is evidence for a collision, so a
+    // key two merged sources share -- one call resolving a formal, the other
+    // not -- turns ambiguous rather than lending the first call's binding to
+    // the second (Codex on #3055).
+    let decl = generic_decl_of_scheme(scheme)
+    let texts = callee_formal_texts(decl, scheme, inst, defs, ds)
+    // #3095: a formal the call resolves only in part (`get([])` gives
+    // `Array[?]`) is printed with `_` for the open part rather than left as
+    // the callee's own spelling, so the requirement reads `State[Array[_]]`.
+    let marked = callee_formal_marked_texts(decl, scheme, inst, defs, s, formal_var_reps(s))
+    let mut mi = 0
+    while mi < Array::length(marked) {
+      let (mname, mtext) = Array::get(marked, mi)
+      let mut seen = false
+      let mut ti = 0
+      while ti < Array::length(texts) {
+        let (tn, _) = Array::get(texts, ti)
+        if tn == mname {
+          seen = true
+        }
+        ti = ti + 1
+      }
+      if !seen && mtext != "_" && !String::contains(mtext, "~") {
+        Array::push(texts, (mname, row_marked_type_display(mtext)))
+      }
+      mi = mi + 1
+    }
+    Array::push(out, (call_formal_key(off, cname), texts))
+    i = i + 1
+  }
+  out
+}
+
+/// A `row_marked_type_text` spelling as a reader writes it: the provenance
+/// marks dropped, `,` followed by a space.
+export fn row_marked_type_display(m: String) -> String {
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < String::length(m) {
+    let c = String::char_code_at(m, i)
+    if c == 94 || c == 39 {
+      ()
+    } else if c == 44 {
+      StringBuilder::push(sb, ", ")
+    } else {
+      StringBuilder::push(sb, String::substring(m, i, i + 1))
+    }
+    i = i + 1
+  }
+  StringBuilder::freeze(sb)
+}
+
+/// #3095: `callee_formal_bindings` spelled for judging (`row_marked_type_text`),
+/// under the same keys. The effects pass reads a row's instantiation by its
+/// marked spelling only to decide whether a declared row certainly does NOT
+/// cover it; the printed spelling stays the one above.
+export fn callee_formal_marked_bindings(defs: Array[TypeDef], s: Subst) -> Array[(String, Array[(String, String)])] {
+  let out: Array[(String, Array[(String, String)])] = []
+  let reps = formal_var_binder_reps(s)
+  let mut i = 0
+  while i < Array::length(callee_inst_types_cell) {
+    let (off, scheme, inst, cname) = Array::get(callee_inst_types_cell, i)
+    let texts = callee_formal_marked_texts(generic_decl_of_scheme(scheme), scheme, inst, defs, s, reps)
+    Array::push(out, (call_formal_key(off, cname), texts))
+    i = i + 1
+  }
+  out
 }

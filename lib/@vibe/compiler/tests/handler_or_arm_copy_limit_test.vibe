@@ -1,0 +1,44 @@
+import @vibe/compiler/core {
+  Expr, Pat, Stmt, split_handler_or_arms
+}
+
+fn alternatives(count: Int) -> Pat {
+  let mut pat: Pat = PCtor("E::A", [])
+  let mut i = 1
+  while i < count {
+    pat = POr(pat, PCtor("E::B", []))
+    i = i + 1
+  }
+  pat
+}
+
+fn nested_arms(outer: Int, inner: Int) -> Array[Stmt] {
+  let terminal = EHandle(EInt(0), [(alternatives(inner), EInt(1))])
+  [SExpr(EHandle(EInt(0), [(alternatives(outer), terminal)]))]
+}
+
+fn split_verdict(stmts: Array[Stmt], with_binders: Bool, copies: Int) -> Bool {
+  handle {
+    split_handler_or_arms(stmts, with_binders)
+    false
+  } with { Exception::Throw(msg) => String::contains(msg, String::concat(__to_string(copies), " times, over the limit of 256")) }
+}
+
+test "a terminal arm expansion exceeding the limit is refused in both lanes" {
+  assert(split_verdict(nested_arms(2, 129), false, 258))
+  assert(split_verdict(nested_arms(2, 129), true, 258))
+}
+
+test "an incoming count at the limit cannot expand a terminal inner arm" {
+  assert(split_verdict(nested_arms(256, 257), false, 65792))
+  assert(split_verdict(nested_arms(256, 257), true, 65792))
+}
+
+test "exactly the limit remains accepted in both lanes" {
+  split_handler_or_arms(nested_arms(16, 16), false)
+  split_handler_or_arms(nested_arms(16, 16), true)
+}
+
+test "a single arm over the limit is refused" {
+  assert(split_verdict([SExpr(EHandle(EInt(0), [(alternatives(257), EInt(1))]))], false, 257))
+}

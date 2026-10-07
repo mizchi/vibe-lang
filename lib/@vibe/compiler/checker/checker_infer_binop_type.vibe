@@ -17,6 +17,7 @@ import @vibe/compiler/checker/diagnostics {
 }
 
 import @vibe/compiler/core {
+  EnvValueBinding,
   Expr,
   Pat,
   Stmt,
@@ -27,6 +28,7 @@ import @vibe/compiler/core {
   TypeExpr,
   apply_type_constructor,
   env_lookup,
+  env_value_binding_with_origin,
   expr_child_at,
   expr_children,
   expr_children_pop,
@@ -36,11 +38,12 @@ import @vibe/compiler/core {
   generalize,
   hkt_apply_ctor,
   instantiate,
+  is_exception_label,
   strip_published_formal_suffixes,
+  strip_published_row_marks,
   subst_add_bound,
   subst_apply,
   subst_bounds_for,
-  subst_cache_read_snapshot,
   subst_lookup,
   type_implements_trait,
   type_to_string,
@@ -49,11 +52,11 @@ import @vibe/compiler/core {
 }
 
 import @vibe/ast {
-  impl_encode_name
+  impl_encode_name, type_param_arity, type_param_name
 }
 
 import @vibe/parser {
-  lex
+  lex, parse_type
 }
 
 import ./builtins.vibe {
@@ -88,6 +91,10 @@ import ./checker_effects.vibe {
   row_items_top_level
 }
 
+import ./checker_effects_throw_payload_kind.vibe {
+  row_label_args_differ
+}
+
 import ./checker_escape.vibe {
   diag_report_into
 }
@@ -101,21 +108,19 @@ import ./checker_closure_capture_row.vibe {
 }
 
 import ./checker_eq_unbounded_formal_msg.vibe {
-  call_formal_key,
-  callee_formal_marked_texts,
-  callee_formal_texts,
   callee_inst_types_cell,
   check_assignable_for,
   decl_formal_ids,
   effect_fresh_targs,
+  effect_tparams,
   eq_unbounded_formal_msg,
   eq_unbounded_formals_in,
-  formal_var_binder_reps,
-  formal_var_display_subst,
-  formal_var_reps,
+  generic_callback_instance,
   generic_decl_of_scheme,
   published_row_formal_ids,
   resolve_callee_formal_args,
+  row_marked_type_display,
+  row_marked_type_text,
   scheme_var_types_from,
   struct_field_names_match
 }
@@ -125,7 +130,7 @@ import ./checker_eq_generalized_site.vibe {
 }
 
 import ./checker_merge_capture_provenance.vibe {
-  eq_formal_row_of, unsent_open_formal_vars
+  checker_string_array_has, eq_formal_row_of, formal_shadow, note_effect_inst_used, unsent_open_formal_vars
 }
 
 /// #3051: an exported generic binding is published with each formal its row
@@ -134,7 +139,12 @@ import ./checker_merge_capture_provenance.vibe {
 /// formal by spelling rather than by variable, and it reaches the importer
 /// verbatim, so this is the whole transport: no interface field, no codec
 /// change. `type_to_string` renders the spelling back as `NAME`.
-export fn publish_row_formals(t: Type, val: Expr, env: TypeEnv, defs: Array[TypeDef]) -> Type {
+///
+/// #3311 (Codex on #3340): the row of a function type among the parameters or
+/// the result (`f: () -> Int with Box[T]`) is spelled the same way, so an
+/// importer passing a lambda for `f` can read `T` as the type its call gives
+/// it. An exception kind there is left as written.
+export fn publish_row_formals(t: Type, val: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst) -> Type {
   // The declaration whose formals the row names: the value itself, or -- for
   // `export let get = get0` -- the aliased binding's, whose formals sit at the
   // same positions (Codex on #3056).
@@ -151,10 +161,7 @@ export fn publish_row_formals(t: Type, val: Expr, env: TypeEnv, defs: Array[Type
     _ => None
   }
   match (t, decl) {
-    (CtForAll(vars, bounds, CtFn(sparams, sret, Some(row0))), Some((tps, params, ret))) => {
-      // An aliased row may already carry markers indexed against its source's
-      // quantifier list; they are respelled against this scheme's.
-      let row = strip_published_formal_suffixes(row0)
+    (CtForAll(vars, bounds, CtFn(sparams, sret, row_opt)), Some((tps, params, ret))) => {
       let name_ids: Array[(String, Int)] = []
       decl_formal_ids(tps, params, ret, sparams, sret, defs, name_ids)
       let renames: Array[(String, String)] = []
@@ -170,10 +177,51 @@ export fn publish_row_formals(t: Type, val: Expr, env: TypeEnv, defs: Array[Type
         }
         ni = ni + 1
       }
-      if Array::length(renames) == 0 {
+      // #3311 (Codex on #3340): a formal no parameter or result mentions
+      // (`U` of `fn run[T, U](x: T, f: () -> Int with Box[U])`) has no
+      // variable to index, but in a callback row it is still a formal and
+      // not the importer's type of that name. It is marked with an index past
+      // the quantifier list, which no reader resolves to a variable.
+      let nested_renames: Array[(String, String)] = []
+      for rename in renames {
+        Array::push(nested_renames, rename)
+      }
+      for tp in tps {
+        let tpn = type_param_name(tp)
+        let mut named = false
+        for rename in renames {
+          let (from, _) = rename
+          if from == tpn {
+            named = true
+          } else {
+            ()
+          }
+        }
+        if !named {
+          Array::push(nested_renames, (tpn, String::concat(tpn, String::concat("$", __to_string(Array::length(vars))))))
+        } else {
+          ()
+        }
+      }
+      if Array::length(nested_renames) == 0 {
         t
       } else {
-        CtForAll(vars, bounds, CtFn(sparams, sret, Some(rename_row_bracket_words(row, renames))))
+        // An aliased row may already carry markers indexed against its
+        // source's quantifier list; they are respelled against this scheme's.
+        let marked_row = if Array::length(renames) == 0 {
+          row_opt
+        } else {
+          match row_opt {
+            Some(row0) => Some(rename_row_bracket_words(strip_published_formal_suffixes(row0), renames)),
+            None => None
+          }
+        }
+        let mark_nested = (row: String) -> String {
+          rename_generic_label_words(strip_published_formal_suffixes(row), nested_renames)
+        }
+        CtForAll(vars, bounds, CtFn(for p in sparams {
+          map_fn_rows(p, mark_nested)
+        }, map_fn_rows(sret, mark_nested), marked_row))
       }
     },
     // An alias of an IMPORTED generic has no declaration here, only the
@@ -182,25 +230,617 @@ export fn publish_row_formals(t: Type, val: Expr, env: TypeEnv, defs: Array[Type
     // order (`f[A, B](b: B, a: A)` aliased generalizes as `B, A`), so each
     // marker is respelled against the variable it now stands for, found by
     // position in the two signatures (Codex on #3056).
-    (CtForAll(vars, bounds, CtFn(sparams, sret, Some(row0))), None) => match val {
-      EIdent(src, _) => match env_lookup(env, src) {
-        Some(CtForAll(src_vars, _, src_body)) => CtForAll(vars, bounds, CtFn(sparams, sret, Some(respell_imported_markers(row0, src_vars, src_body, vars, CtFn(sparams, sret, None))))),
+    (CtForAll(vars, bounds, CtFn(sparams, sret, row_opt)), None) => {
+      // An extracted value is generalized afresh just like a named alias.
+      // Its original instantiated type, not its expression syntax, identifies
+      // the source whose quantifier indices the copied rows still carry.
+      let source = match val {
+        EIdent(src, _) => env_lookup(env, src),
+        _ => match generic_callback_instance(CtFn(sparams, sret, row_opt), s) {
+          Some((scheme, _)) => Some(scheme),
+          None => None
+        }
+      }
+      match source {
+        Some(CtForAll(src_vars, _, src_body)) => {
+          let body = CtFn(sparams, sret, None)
+          let respell_nested = (row: String) -> String {
+            respell_imported_markers(row, src_vars, src_body, vars, body, true)
+          }
+          let respelled_row = match row_opt {
+            Some(row0) => Some(respell_imported_markers(row0, src_vars, src_body, vars, body, false)),
+            None => None
+          }
+          CtForAll(vars, bounds, CtFn(for p in sparams {
+            map_fn_rows(p, respell_nested)
+          }, map_fn_rows(sret, respell_nested), respelled_row))
+        },
         _ => t
-      },
-      _ => t
+      }
     },
     _ => t
   }
 }
 
+/// #3311: `t` with `f` applied to the row of every function type in it, at any
+/// depth. A parameter's or the result's own row is the caller's to rewrite.
+fn map_fn_rows(t: Type, f: (String) -> String) -> Type {
+  match t {
+    CtFn(params, ret, row) => CtFn(for p in params {
+      map_fn_rows(p, f)
+    }, map_fn_rows(ret, f), match row {
+      Some(r) => Some(f(r)),
+      None => None
+    }),
+    CtArray(e) => CtArray(map_fn_rows(e, f)),
+    CtOption(e) => CtOption(map_fn_rows(e, f)),
+    CtTuple(items) => CtTuple(for item in items {
+      map_fn_rows(item, f)
+    }),
+    CtNamed(n, args) => if Array::length(args) == 0 {
+      t
+    } else {
+      CtNamed(n, for a in args {
+        map_fn_rows(a, f)
+      })
+    },
+    CtApplied(head, args) => CtApplied(map_fn_rows(head, f), for a in args {
+      map_fn_rows(a, f)
+    }),
+    CtRecord(fields) => CtRecord(for field in fields {
+      let (fname, fty) = field
+      (fname, map_fn_rows(fty, f))
+    }),
+    CtForAll(vars, bounds, body) => CtForAll(vars, bounds, map_fn_rows(body, f)),
+    _ => t
+  }
+}
+
+/// `rename_row_bracket_words` for each label of `row` but an exception label,
+/// whose kind is compared as written (#3033); the separators are kept.
+fn rename_generic_label_words(row: String, renames: Array[(String, String)]) -> String {
+  let n = String::length(row)
+  let sb = StringBuilder::new()
+  let mut depth = 0
+  let mut start = 0
+  let mut i = 0
+  while i <= n {
+    let c = if i < n {
+      String::char_code_at(row, i)
+    } else {
+      0
+    }
+    if c == 91 {
+      depth = depth + 1
+    } else if c == 93 {
+      depth = depth - 1
+    } else {
+      ()
+    }
+    if i == n || (c == 44 && depth == 0) {
+      let label = String::substring(row, start, i)
+      if is_exception_label(String::trim(label)) {
+        StringBuilder::push(sb, label)
+      } else {
+        StringBuilder::push(sb, rename_row_bracket_words(label, renames))
+      }
+      if i < n {
+        StringBuilder::push(sb, ",")
+      } else {
+        ()
+      }
+      start = i + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  StringBuilder::freeze(sb)
+}
+
+/// #3351: the published type of an exported binding, with each word of a
+/// function row, including its own row and rows among its parameters, result or
+/// aggregate members, that names a struct declared in `defs` spelled `^Name`, and one
+/// that names an enum `^^Name`. The row reaches an importer as text, and an importer that does not import
+/// `Pt` cannot otherwise tell the exporter's `Box[Pt]` from a name it has no
+/// declaration for -- so a lambda passed for that parameter was handed
+/// nothing, and `perform Box::Put(41)` reached an arm reading a `Pt`. A marked
+/// word is a nominal type by name: the program holds one declaration under
+/// that name, or the import is refused (#3035 / #3036). The two marks keep
+/// the kind, which a bare `Pt` needs to be the type a `Pt` value has
+/// (`vouch_published_nominals`). An alias, a formal
+/// (already `NAME$K`) and an exception kind are left as written.
+export fn publish_row_nominals(t: Type, defs: Array[TypeDef]) -> Type {
+  let mark = (row: String) -> String {
+    mark_row_nominal_words(row, defs)
+  }
+  map_fn_rows(t, mark)
+}
+
+/// Whether a type contains a function row with arguments to publish. Borrow
+/// its child arrays, so ordinary nominal definitions need no copied payloads.
+fn type_has_bracketed_fn_row(t: Type) -> Bool {
+  match t {
+    CtFn(params, ret, row) => {
+      let own = match row {
+        Some(r) => String::contains(r, "["),
+        None => false
+      }
+      own || types_have_bracketed_fn_row(params) || type_has_bracketed_fn_row(ret)
+    },
+    CtArray(e) => type_has_bracketed_fn_row(e),
+    CtOption(e) => type_has_bracketed_fn_row(e),
+    CtTuple(items) => types_have_bracketed_fn_row(items),
+    CtNamed(_, args) => types_have_bracketed_fn_row(args),
+    CtApplied(head, args) => type_has_bracketed_fn_row(head) || types_have_bracketed_fn_row(args),
+    CtForAll(_, _, body) => type_has_bracketed_fn_row(body),
+    CtRecord(fields) => {
+      let mut found = false
+      for field in fields {
+        let (_, ty) = field
+        if !found {
+          found = type_has_bracketed_fn_row(ty)
+        }
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+/// The borrowed child types containing a bracketed function row.
+fn types_have_bracketed_fn_row(types: Array[Type]) -> Bool {
+  let mut found = false
+  for ty in types {
+    if !found {
+      found = type_has_bracketed_fn_row(ty)
+    }
+  }
+  found
+}
+
+/// Publish a nominal definition's member with its own declared formals in
+/// scope. A formal's spelling never grants a nominal declaration's authority.
+fn publish_definition_member_rows(t: Type, defs: Array[TypeDef], formals: Array[String]) -> Type {
+  if !type_has_bracketed_fn_row(t) {
+    return t
+  }
+  map_fn_rows(t, (row: String) -> String {
+    mark_nominal_row_words(row, (word: String) -> String {
+      if checker_string_array_has(formals, word) {
+        ""
+      } else {
+        match find_typedef(defs, word) {
+          Some(TDStruct(_, _, _, _)) => "^",
+          Some(TDEnum(_, _, _)) => "^^",
+          _ => ""
+        }
+      }
+    })
+  })
+}
+
+/// Publish callback rows carried by an exported struct or enum definition.
+/// Definitions without such rows keep their original payload arrays.
+export fn publish_type_def_row_nominals(d: TypeDef, defs: Array[TypeDef]) -> TypeDef {
+  match d {
+    TDStruct(name, fields, mut_fields, params) => {
+      let mut needed = false
+      for field in fields {
+        let (_, ty) = field
+        if !needed {
+          needed = type_has_bracketed_fn_row(ty)
+        }
+      }
+      if needed {
+        TDStruct(name, for field in fields {
+          let (field_name, ty) = field
+          (field_name, publish_definition_member_rows(ty, defs, params))
+        }, mut_fields, params)
+      } else {
+        d
+      }
+    },
+    TDEnum(name, params, variants) => {
+      let mut needed = false
+      for variant in variants {
+        let (_, payloads) = variant
+        if !needed {
+          needed = types_have_bracketed_fn_row(payloads)
+        }
+      }
+      if needed {
+        TDEnum(name, params, for variant in variants {
+          let (variant_name, payloads) = variant
+          (variant_name, for ty in payloads {
+            publish_definition_member_rows(ty, defs, params)
+          })
+        })
+      } else {
+        d
+      }
+    },
+    _ => d
+  }
+}
+
+/// Constructor bindings carry the same callback rows as their nominal
+/// definition. Preserve the binding's origin and its declaration's formals.
+export fn publish_type_constructor_binding_rows(name: String, binding: EnvValueBinding, defs: Array[TypeDef]) -> EnvValueBinding {
+  if !type_has_bracketed_fn_row(binding.ty) {
+    return binding
+  }
+  let mut result = binding
+  let mut found = false
+  for d in defs {
+    if !found {
+      match d {
+        TDStruct(owner, _, _, params) => if name == owner {
+          found = true
+          result = env_value_binding_with_origin(publish_definition_member_rows(binding.ty, defs, params), binding.origin)
+        },
+        TDEnum(_, params, variants) => {
+          for variant in variants {
+            let (variant_name, _) = variant
+            if name == variant_name && !found {
+              found = true
+              result = env_value_binding_with_origin(publish_definition_member_rows(binding.ty, defs, params), binding.origin)
+            }
+          }
+        },
+        _ => ()
+      }
+    }
+  }
+  result
+}
+
+/// `row` with each bracketed word of a non-exception label that names a
+/// struct in `defs` spelled `^Name`, and an enum `^^Name`; the separators are
+/// kept.
+fn mark_row_nominal_words(row: String, defs: Array[TypeDef]) -> String {
+  mark_nominal_row_words(row, (word: String) -> String {
+    match find_typedef(defs, word) {
+      Some(TDStruct(_, _, _, _)) => "^",
+      Some(TDEnum(_, _, _)) => "^^",
+      _ => ""
+    }
+  })
+}
+
+/// Mark the nominal words of each non-exception label using declaration
+/// authority supplied by the publisher or retained through a parsed payload.
+/// Existing marks and published formals are preserved.
+fn mark_nominal_row_words(row: String, mark: (String) -> String) -> String {
+  let n = String::length(row)
+  let sb = StringBuilder::new()
+  let mut depth = 0
+  let mut start = 0
+  let mut i = 0
+  while i <= n {
+    let c = if i < n {
+      String::byte_at(row, i)
+    } else {
+      0
+    }
+    if c == 91 {
+      depth = depth + 1
+    } else if c == 93 {
+      depth = depth - 1
+    } else {
+      ()
+    }
+    if i == n || (c == 44 && depth == 0) {
+      let label = String::substring(row, start, i)
+      if is_exception_label(String::trim(label)) {
+        StringBuilder::push(sb, label)
+      } else {
+        StringBuilder::push(sb, mark_label_nominal_words(label, mark))
+      }
+      if i < n {
+        StringBuilder::push(sb, ",")
+      } else {
+        ()
+      }
+      start = i + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  StringBuilder::freeze(sb)
+}
+
+/// One label of `mark_row_nominal_words`. A word already marked (`^Name`,
+/// `NAME$K`) is kept as it is.
+fn mark_label_nominal_words(label: String, mark_word: (String) -> String) -> String {
+  let n = String::length(label)
+  let sb = StringBuilder::new()
+  let mut depth = 0
+  let mut start = 0 - 1
+  let mut i = 0
+  while i <= n {
+    let c = if i < n {
+      String::byte_at(label, i)
+    } else {
+      0
+    }
+    let word_char = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 95 || c == 36
+    if word_char {
+      if start < 0 {
+        start = i
+      } else {
+        ()
+      }
+    } else {
+      if start >= 0 {
+        let w = String::substring(label, start, i)
+        let after_caret = start > 0 && String::byte_at(label, start - 1) == 94
+        let candidate = depth > 0 && !after_caret && !String::contains(w, "$")
+        let mark = if candidate {
+          mark_word(w)
+        } else {
+          ""
+        }
+        StringBuilder::push(sb, mark)
+        StringBuilder::push(sb, w)
+        start = 0 - 1
+      } else {
+        ()
+      }
+      if c == 91 {
+        depth = depth + 1
+      } else if c == 93 {
+        depth = depth - 1
+      } else {
+        ()
+      }
+      if i < n {
+        StringBuilder::push(sb, String::substring(label, i, i + 1))
+      } else {
+        ()
+      }
+    }
+    i = i + 1
+  }
+  StringBuilder::freeze(sb)
+}
+
+/// #3351: the head of the instantiation a callback row hands a lambda when
+/// the row names a type this module cannot read -- one the exporter did not
+/// mark as a struct or enum (an alias, say), or any name an effect's
+/// constructor parameter takes. A perform of that effect in the lambda is
+/// refused with the edit (`callback_row_unreadable`) instead of being left
+/// unchecked. A spelling no source type has.
+fn callback_row_unreadable_head() -> String {
+  "#callback-row-unreadable"
+}
+
+/// The instantiation `callback_row_instantiations` hands a lambda for the
+/// effect of the callback row label `label`, which names `missing`, a type
+/// this module cannot read.
+export fn callback_row_refusal(label: String, missing: String) -> Type {
+  CtTuple([
+    CtNamed(callback_row_unreadable_head(), [
+      CtNamed(label, []),
+      CtNamed(missing, [])
+    ])
+  ])
+}
+
+/// The callback row label and the name in it this module cannot read, when a
+/// perform's instantiation `targs` is a refusal handed over by
+/// `callback_row_instantiations`.
+export fn callback_row_unreadable(targs: Array[Type]) -> Option[(String, String)] {
+  let mut found = None
+  for t in targs {
+    match t {
+      CtNamed(head, parts) => if head == callback_row_unreadable_head() && Array::length(parts) == 2 {
+        match (Array::get(parts, 0), Array::get(parts, 1)) {
+          (CtNamed(label, _), CtNamed(missing, _)) => {
+            found = Some((label, missing))
+          },
+          _ => ()
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+  }
+  found
+}
+
+/// Each label of the readable callback row `row`, as `(effect, label, name)`,
+/// whose type argument names a type this module has no declaration for and
+/// that the exporter did not mark as a struct or enum (`vouched`). A
+/// scoped formal is left alone, regardless of its spelling. An effect
+/// whose parameter takes a constructor is listed for any such name, marked or
+/// not: a constructor is read through a declaration this module lacks.
+export fn callback_row_unreadable_labels(row: String, defs: Array[TypeDef], formals: Array[String], vouched: Array[String]) -> Array[(String, String, String)] {
+  let out: Array[(String, String, String)] = []
+  for label in split_row_top_level(row) {
+    let bi = String::index_of(label, "[")
+    if bi > 0 && String::ends_with(label, "]") {
+      let base = label[0: bi]
+      let etps = effect_tparams(defs, base)
+      if Array::length(etps) == 1 {
+        let parsed = handle {
+          let (arg_te, _) = parse_type(lex(label[bi + 1: String::length(label) - 1]), 0)
+          Some(arg_te)
+        } with { Exception::Throw(_unreadable) => None }
+        match parsed {
+          Some(arg_te) => {
+            let unknown: Array[String] = []
+            collect_unknown_type_names(arg_te, defs, formals, unknown)
+            let kinded = type_param_arity(Array::get(etps, 0)) > 0
+            let mut missing = ""
+            for u in unknown {
+              if String::length(missing) == 0 && (kinded || !checker_string_array_has(vouched, u)) {
+                missing = u
+              } else {
+                ()
+              }
+            }
+            if String::length(missing) > 0 {
+              Array::push(out, (base, label, missing))
+            } else {
+              ()
+            }
+          },
+          None => ()
+        }
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+  }
+  out
+}
+
+/// The words of `row` the exporter marked as structs (`^Name`) or enums
+/// (`^^Name`, `publish_row_nominals`), without the mark, each with whether it
+/// names an enum.
+export fn published_nominal_words(row: String) -> Array[(String, Bool)] {
+  let out: Array[(String, Bool)] = []
+  let n = String::length(row)
+  let mut i = 0
+  while i < n {
+    if String::byte_at(row, i) == 94 {
+      let is_enum = i + 1 < n && String::byte_at(row, i + 1) == 94
+      let begin = if is_enum {
+        i + 2
+      } else {
+        i + 1
+      }
+      let mut j = begin
+      while j < n && row_ident_code(String::byte_at(row, j)) {
+        j = j + 1
+      }
+      if j > begin {
+        Array::push(out, (String::substring(row, begin, j), is_enum))
+      } else {
+        ()
+      }
+      i = j
+    } else {
+      i = i + 1
+    }
+  }
+  out
+}
+
+/// The names of `published_nominal_words`.
+export fn published_nominal_names(nominals: Array[(String, Bool)]) -> Array[String] {
+  for nominal in nominals {
+    let (name, _) = nominal
+    name
+  }
+}
+
+/// `t`, an instantiation a callback row hands a lambda, with each bare name
+/// the exporter marked (`nominals`, `published_nominal_words`) read as that
+/// struct or enum -- the type a value of it has. Read from the row's text, an
+/// undeclared `Pt` is a rigid name, which a payload of any type was let
+/// through against (#3351). A callee formal the call fixes is a variable
+/// here, and one it does not fix (`formals`) is never a marked name.
+export fn vouch_published_nominals(t: Type, nominals: Array[(String, Bool)], formals: Array[String]) -> Type {
+  if Array::length(nominals) == 0 {
+    return t
+  } else {
+    ()
+  }
+  let again = (u: Type) -> Type {
+    vouch_published_nominals(u, nominals, formals)
+  }
+  match t {
+    CtNamed(n, args) => if Array::length(args) == 0 && !checker_string_array_has(formals, n) {
+      let mut out = t
+      for nominal in nominals {
+        let (name, is_enum) = nominal
+        if name == n {
+          out = if is_enum {
+            CtEnum(n)
+          } else {
+            CtStruct(n)
+          }
+        } else {
+          ()
+        }
+      }
+      out
+    } else {
+      CtNamed(n, for a in args {
+        again(a)
+      })
+    },
+    CtArray(e) => CtArray(again(e)),
+    CtOption(e) => CtOption(again(e)),
+    CtTuple(es) => CtTuple(for e in es {
+      again(e)
+    }),
+    CtApplied(h, args) => CtApplied(again(h), for a in args {
+      again(a)
+    }),
+    CtFn(ps, ret, eff) => CtFn(for p in ps {
+      again(p)
+    }, again(ret), match eff {
+      Some(row) => Some(mark_nominal_row_words(row, (word: String) -> String {
+        let mut mark = ""
+        if !checker_string_array_has(formals, word) {
+          for nominal in nominals {
+            let (name, is_enum) = nominal
+            if name == word {
+              mark = if is_enum {
+                "^^"
+              } else {
+                "^"
+              }
+            } else {
+              ()
+            }
+          }
+        } else {
+          ()
+        }
+        mark
+      })),
+      None => None
+    }),
+    CtRecord(fields) => CtRecord(for field in fields {
+      let (name, ft) = field
+      (name, again(ft))
+    }),
+    CtForAll(vars, bounds, body) => CtForAll(vars, bounds, again(body)),
+    _ => t
+  }
+}
+
+fn row_ident_code(c: Int) -> Bool {
+  (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 95
+}
+
 /// `row` with each published marker `NAME$K`, K indexing `src_vars`, respelled
 /// `NAME$K2`, K2 indexing `vars` at the variable found in the same position of
-/// `body` as the source variable's in `src_body`. A marker with no such
-/// variable keeps its base name only.
-fn respell_imported_markers(row: String, src_vars: Array[Int], src_body: Type, vars: Array[Int], body: Type) -> String {
+/// `body` as the source variable's in `src_body`. In the binding's own row a
+/// marker with no such variable keeps its base name only.
+///
+/// `nested` (#3311): `row` is a callback row among the parameters or the
+/// result. Every marker there stays a marker -- one with no such variable, or
+/// past the source's quantifier list (a formal no parameter mentions), is
+/// spelled past this scheme's -- so an importer never reads a formal as a type
+/// of the same name; and an exception kind is left as written.
+fn respell_imported_markers(row: String, src_vars: Array[Int], src_body: Type, vars: Array[Int], body: Type, nested: Bool) -> String {
   let marked: Array[(String, Int)] = []
   published_row_formal_ids(Some(row), src_vars, marked)
-  if Array::length(marked) == 0 {
+  let marker_words = if nested {
+    published_marker_words(row)
+  } else {
+    array_empty()
+  }
+  if Array::length(marked) == 0 && Array::length(marker_words) == 0 {
     row
   } else {
     let pairs: Array[(Int, Type)] = []
@@ -228,8 +868,65 @@ fn respell_imported_markers(row: String, src_vars: Array[Int], src_body: Type, v
       }
       mi = mi + 1
     }
-    rename_row_bracket_words(strip_published_formal_suffixes(row), renames)
+    if nested {
+      for word in marker_words {
+        let base = strip_published_formal_suffixes(word)
+        let mut renamed = false
+        for rename in renames {
+          let (from, _) = rename
+          if from == base {
+            renamed = true
+          } else {
+            ()
+          }
+        }
+        if !renamed {
+          Array::push(renames, (base, String::concat(base, String::concat("$", __to_string(Array::length(vars))))))
+        } else {
+          ()
+        }
+      }
+      rename_generic_label_words(strip_published_formal_suffixes(row), renames)
+    } else {
+      rename_row_bracket_words(strip_published_formal_suffixes(row), renames)
+    }
   }
+}
+
+/// Every word of `row` spelled as a published formal (`NAME$K`), in range of
+/// a quantifier list or not.
+export fn published_marker_words(row: String) -> Array[String] {
+  let out: Array[String] = []
+  let n = String::length(row)
+  let mut start = 0 - 1
+  let mut i = 0
+  while i <= n {
+    let c = if i < n {
+      String::char_code_at(row, i)
+    } else {
+      0
+    }
+    let word_char = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 95 || c == 36
+    if word_char {
+      if start < 0 {
+        start = i
+      } else {
+        ()
+      }
+    } else if start >= 0 {
+      let w = String::substring(row, start, i)
+      if strip_published_formal_suffixes(w) != w {
+        Array::push(out, w)
+      } else {
+        ()
+      }
+      start = 0 - 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
 }
 
 /// `row` with every whole word inside a label's brackets renamed per
@@ -282,96 +979,6 @@ fn rename_row_bracket_words(row: String, renames: Array[(String, String)]) -> St
   StringBuilder::freeze(sb)
 }
 
-/// Share an indexed read view when a large call table queries a completed
-/// substitution repeatedly. Small tables keep the original substitution.
-export fn callee_formal_query_subst(s: Subst) -> Subst {
-  if Array::length(callee_inst_types_cell) >= 256 {
-    subst_cache_read_snapshot(s)
-  } else {
-    s
-  }
-}
-
-/// #3053: every recorded generic call's formal bindings under the final
-/// substitution, keyed by `call_formal_key`, for the effects pass
-/// to instantiate the callee's row at that call. Only the call's own scheme is
-/// read here: a call whose scheme has no recorded declaration contributes
-/// nothing, so its row stays as written (open) rather than being guessed.
-export fn callee_formal_bindings(defs: Array[TypeDef], s: Subst) -> Array[(String, Array[(String, String)])] {
-  let out: Array[(String, Array[(String, String)])] = []
-  let ds = formal_var_display_subst(s)
-  let mut i = 0
-  while i < Array::length(callee_inst_types_cell) {
-    let (off, scheme, inst, cname) = Array::get(callee_inst_types_cell, i)
-    // An empty entry is published too: it is evidence for a collision, so a
-    // key two merged sources share -- one call resolving a formal, the other
-    // not -- turns ambiguous rather than lending the first call's binding to
-    // the second (Codex on #3055).
-    let decl = generic_decl_of_scheme(scheme)
-    let texts = callee_formal_texts(decl, scheme, inst, defs, ds)
-    // #3095: a formal the call resolves only in part (`get([])` gives
-    // `Array[?]`) is printed with `_` for the open part rather than left as
-    // the callee's own spelling, so the requirement reads `State[Array[_]]`.
-    let marked = callee_formal_marked_texts(decl, scheme, inst, defs, s, formal_var_reps(s))
-    let mut mi = 0
-    while mi < Array::length(marked) {
-      let (mname, mtext) = Array::get(marked, mi)
-      let mut seen = false
-      let mut ti = 0
-      while ti < Array::length(texts) {
-        let (tn, _) = Array::get(texts, ti)
-        if tn == mname {
-          seen = true
-        }
-        ti = ti + 1
-      }
-      if !seen && mtext != "_" && !String::contains(mtext, "~") {
-        Array::push(texts, (mname, row_marked_type_display(mtext)))
-      }
-      mi = mi + 1
-    }
-    Array::push(out, (call_formal_key(off, cname), texts))
-    i = i + 1
-  }
-  out
-}
-
-/// A `row_marked_type_text` spelling as a reader writes it: the provenance
-/// marks dropped, `,` followed by a space.
-fn row_marked_type_display(m: String) -> String {
-  let sb = StringBuilder::new()
-  let mut i = 0
-  while i < String::length(m) {
-    let c = String::char_code_at(m, i)
-    if c == 94 || c == 39 {
-      ()
-    } else if c == 44 {
-      StringBuilder::push(sb, ", ")
-    } else {
-      StringBuilder::push(sb, String::substring(m, i, i + 1))
-    }
-    i = i + 1
-  }
-  StringBuilder::freeze(sb)
-}
-
-/// #3095: `callee_formal_bindings` spelled for judging (`row_marked_type_text`),
-/// under the same keys. The effects pass reads a row's instantiation by its
-/// marked spelling only to decide whether a declared row certainly does NOT
-/// cover it; the printed spelling stays the one above.
-export fn callee_formal_marked_bindings(defs: Array[TypeDef], s: Subst) -> Array[(String, Array[(String, String)])] {
-  let out: Array[(String, Array[(String, String)])] = []
-  let reps = formal_var_binder_reps(s)
-  let mut i = 0
-  while i < Array::length(callee_inst_types_cell) {
-    let (off, scheme, inst, cname) = Array::get(callee_inst_types_cell, i)
-    let texts = callee_formal_marked_texts(generic_decl_of_scheme(scheme), scheme, inst, defs, s, reps)
-    Array::push(out, (call_formal_key(off, cname), texts))
-    i = i + 1
-  }
-  out
-}
-
 fn str_array_contains_name(xs: Array[String], x: String) -> Bool {
   let mut found = false
   let mut i = 0
@@ -382,6 +989,36 @@ fn str_array_contains_name(xs: Array[String], x: String) -> Bool {
     i = i + 1
   }
   found
+}
+
+/// A handled callee's unmarked alias must be readable here. Its own formals
+/// and published nominal authority are retained; an import cannot borrow a
+/// same-named caller formal. Written local rows can read their lexical binders.
+fn refuse_unreadable_handled_row(row: String, own_formals: Array[String], lexical: Bool, env: TypeEnv, defs: Array[TypeDef], callee: String, off: Int, errors: Array[String]) -> Bool {
+  let nominals = published_nominal_names(published_nominal_words(row))
+  let formals: Array[String] = []
+  for name in own_formals {
+    Array::push(formals, name)
+  }
+  // A marked constructor already has declaration authority, even when its
+  // layout is not imported. Comparing identities needs no local layout.
+  for name in nominals {
+    Array::push(formals, name)
+  }
+  let scoped = if lexical {
+    handle {
+      let (te, _) = parse_type(lex(strip_published_row_marks(row)), 0)
+      formal_shadow(te, env, formals)
+    } with { Exception::Throw(_) => formals }
+  } else {
+    formals
+  }
+  let missing = callback_row_unreadable_labels(row, defs, scoped, nominals)
+  for item in missing {
+    let (_, label, name) = item
+    Array::push(errors, "import `\{name}` into this module: the handled call `\{callee}` requires `\{label}`, which names a type unavailable here\{off_marker(off)}")
+  }
+  Array::length(missing) > 0
 }
 
 export fn check_handle_inst_vs_callee_rows(body: Expr, insts: Array[(String, Array[Type])], env: TypeEnv, defs: Array[TypeDef], s: Subst, errors: Array[String]) -> Unit {
@@ -402,6 +1039,31 @@ export fn check_handle_inst_vs_callee_rows(body: Expr, insts: Array[(String, Arr
       }
       match row {
         Some(rtext) => {
+          let row_formals: Array[String] = []
+          let mut scheme = env_lookup(env, cname)
+          for recorded in callee_inst_types_cell {
+            let (at, original, _, _) = recorded
+            if at == coff {
+              scheme = Some(original)
+            }
+          }
+          match scheme {
+            Some(st) => match generic_decl_of_scheme(st) {
+              Some((tps, _, _)) => for tp in tps {
+                Array::push(row_formals, type_param_name(tp))
+              },
+              None => ()
+            },
+            None => ()
+          }
+          for word in published_marker_words(rtext) {
+            Array::push(row_formals, strip_published_formal_suffixes(word))
+          }
+          let parameter_row = match env_lookup(env, String::concat("__param_marker__", cname)) {
+            Some(CtNamed(marker, _)) => checker_string_array_has(split_row_top_level(rtext), marker),
+            _ => false
+          }
+          let lexical_row = String::length(local_row) > 0 || String::contains(rtext, "#einst:") || parameter_row
           let items = split_row_top_level(rtext)
           let mut ii = 0
           while ii < Array::length(items) {
@@ -432,8 +1094,10 @@ export fn check_handle_inst_vs_callee_rows(body: Expr, insts: Array[(String, Arr
                     }
                     String::join(parts, ", ")
                   }
+                  let resolved_item = ename + "[" + String::join(wants, ", ") + "]"
+                  let unreadable = refuse_unreadable_handled_row(resolved_item, row_formals, lexical_row, env, defs, cname, coff, errors)
                   let mut mismatch = false
-                  if Array::length(wants) == Array::length(haves) {
+                  if !unreadable && Array::length(wants) == Array::length(haves) {
                     let mut wi = 0
                     while wi < Array::length(wants) {
                       if effect_arg_mismatch(Array::get(haves, wi), Array::get(wants, wi), defs) {
@@ -445,7 +1109,7 @@ export fn check_handle_inst_vs_callee_rows(body: Expr, insts: Array[(String, Arr
                   if mismatch {
                     // Name the requirement as this call resolves it: a
                     // callee formal reads as the type it takes here.
-                    let shown_arg = String::join(wants, ", ")
+                    let shown_arg = strip_published_formal_suffixes(row_marked_type_display(String::join(wants, ", ")))
                     let shown_item = String::concat(ename, String::concat("[", String::concat(shown_arg, "]")))
                     Array::push(errors, String::concat("handler instantiates `", String::concat(ename, String::concat("[", String::concat(have_text, String::concat("]` but the handled body requires `", String::concat(shown_item, String::concat("` (from `", String::concat(cname, String::concat("`) -- make the arms answer `", String::concat(shown_arg, String::concat("`, or handle `", String::concat(cname, String::concat("` with a handler for `", String::concat(shown_item, String::concat("`", off_marker(coff)))))))))))))))))
                   }
@@ -941,6 +1605,15 @@ fn handle_locals_with_pat(locals: String, pat: Pat) -> String {
 /// `Box[Int]` -- since such a spelling has one meaning. An alias, a type formal
 /// or an unresolved handler type is not judged (#3010, #3022 review).
 fn effect_arg_mismatch(have: Type, want0: String, defs: Array[TypeDef]) -> Bool {
+  if String::contains(want0, "^") {
+    // A published marker has already resolved the nominal. Compare it with
+    // the handler's resolved type through the same authoritative row reader;
+    // re-reading the publisher's name in the importer loses that authority.
+    let actual = String::concat("Arg[", String::concat(row_marked_type_text(have, [
+    ]), "]"))
+    let required = String::concat("=Arg[", String::concat(want0, "]"))
+    return row_label_args_differ(actual, required)
+  }
   // A non-generic alias means its target, so it is read through (#3022
   // review): `with State[A]` for `type A = Int` compares as `State[Int]`.
   let want = expand_alias_words(want0, defs, 0)
@@ -1193,7 +1866,11 @@ fn effect_inst_lookup(env: TypeEnv, eff: String, etps: Array[String]) -> Option[
 /// meet on their own, so the instantiation has to be shared explicitly.
 export fn effect_instantiate(env: TypeEnv, eff: String, etps: Array[String], c: Int) -> (Array[Type], Int) {
   match effect_inst_lookup(env, eff, etps) {
-    Some(targs) => (targs, c),
+    Some(targs) => {
+      // #3341: a lambda labels its type only with the instantiations used.
+      note_effect_inst_used(targs)
+      (targs, c)
+    },
     None => effect_fresh_targs(etps, c)
   }
 }

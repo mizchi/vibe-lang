@@ -17,6 +17,7 @@ import @vibe/compiler/core {
   leb128_encode_u32,
   rename_builtin_shadow_defs,
   rewrite_top_level_fn_alias_refs,
+  split_handler_or_arms,
   verify_lane_builtins
 }
 
@@ -258,6 +259,10 @@ export fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name_in: String,
   // #3009: the suspend CPS pass (a handler arm that captures `resume` as a
   // value) runs first, as in the linear prelude. The gc lane never ran it,
   // so such a site reached codegen with `resume` unresolved.
+  // #3301: both effect lowerings read one operation per handler arm, so an
+  // or-pattern arm `A | B => body` becomes `A => body` and `B => body` first,
+  // as the linear lane splits it.
+  split_handler_or_arms(stmts, true)
   let scps_errs = suspend_cps_pass(stmts)
   if Array::length(scps_errs) > 0 {
     throw(Array::get(scps_errs, 0))

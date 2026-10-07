@@ -1,0 +1,76 @@
+import @vibe/compiler/checker {
+  check_program
+}
+import @vibe/compiler/syntax {
+  lex_with_offsets, parse_program_located
+}
+
+fn message(src: String) -> String {
+  handle {
+    let (tokens, offsets, _) = lex_with_offsets(src)
+    let _ = check_program(parse_program_located(tokens, offsets, src))
+    "accepted"
+  } with { Exception::Throw(m) => m }
+}
+
+test "handler_payload_generic_string_literal_reject" {
+  let m = message("effect E[T] { P(T) -> Int }\nfn main() -> Int { handle { perform E::P(\"x\") } with { E::P(1) => resume(0) } }\n")
+  assert(String::contains(m, "`1` is an Int, but `E::P` takes a String"))
+}
+
+test "handler_payload_generic_int_literal_reject" {
+  let m = message("effect E[T] { P(T) -> Int }\nfn main() -> Int { handle { perform E::P(1) } with { E::P(1) => resume(0) } }\n")
+  assert(String::contains(m, "if v == 1"))
+}
+
+test "handler_payload_char_literal_reject" {
+  let m = message("effect E { P(Char) -> Int }\nfn main() -> Int { handle { perform E::P('a') } with E { P('a') => resume(0) } }\n")
+  assert(String::contains(m, "if v == 97"))
+  assert(!String::contains(m, "is an Int, but `E::P` takes a Char"))
+}
+
+test "same operation fallback arms must be consolidated" {
+  let m = message("// #3371: the legacy `with Effect { .. }` header qualifies each arm the same\n// way, so its literal payload was ignored too: `P(1)` lost to the later\n// `P(_)` for `perform Pick::P(1)` and `main` answered 5, not 100.\neffect Pick {\n  P(Int) -> Int\n  Q(Int) -> Int\n}\n\nfn main() -> Int {\n  handle {\n    perform Pick::P(1)\n  } with Pick {\n    P(1) => resume(100);\n    P(_) => resume(5);\n    Q(_) => resume(7)\n  }\n}\n")
+  assert(String::contains(m, "combine all `Pick::P` arms"))
+  assert(String::contains(m, "remove the separate same-operation fallback arm"))
+}
+
+test "handler_payload_char_comparison_ok" {
+  assert_eq(message("effect E { P(Char) -> Int }\nfn main() -> Int { handle { perform E::P('a') } with E { P(v) => if v == 97 { resume(42) } else { resume(0) } } }\n"), "accepted")
+}
+test "handler_payload_generic_string_comparison_ok" {
+  assert_eq(message("effect E[T] { P(T) -> Int }\nfn main() -> Int { handle { perform E::P(\"x\") } with { E::P(v) => if v == \"x\" { resume(42) } else { resume(0) } } }\n"), "accepted")
+}
+test "handler_payload_consolidated_comparison_ok" {
+  assert_eq(message("effect Pick { P(Int) -> Int; Q(Int) -> Int }\nfn main() -> Int { handle { perform Pick::P(1) } with Pick { P(v) => if v == 1 { resume(100) } else { resume(5) }; Q(_) => resume(7) } }\n"), "accepted")
+}
+
+test "handler_payload_record_fields_reject gets actionable advice before unbound payload names" {
+  let m = message("// #3371: a nested `record { x, y }` pattern reaches the checker as a tuple of\n// its field patterns, labels dropped, so printing it back gave `(x, y)` and\n// the message suggested `let (x, y) = v` -- an edit that does not say what\n// was written (Codex on #3384). The message now names the binder and asks\n// for a `match` against the reader's own pattern; that edit is run in\n// fixtures/handler_arm_payload_binder_test.vibe.\neffect Geo[T] {\n  Sum(T) -> Int\n}\n\nfn run() -> Int {\n  handle {\n    perform Geo::Sum(record { x: 10, y: 3 })\n  } with {\n    Geo::Sum(record { x, y }) => resume(x - y)\n  }\n}\n")
+  let advice = String::index_of(m, "bind the payload to a name")
+  let unknown = String::index_of(m, "unknown name:")
+  assert(advice >= 0)
+  assert(unknown < 0 || advice < unknown)
+}
+
+test "handler_payload_tuple_destructure_reject gets actionable advice before unbound payload names" {
+  let m = message("// #3371: a tuple of names in a payload position cannot fail, but neither\n// lowering destructures it, so its names bind nothing. Where an outer binding\n// has the same name, the arm body read THAT one: measured on main, this `run`\n// answered 100 for a payload of (10, 3). The message names the binder and\n// asks for a `match` against the written pattern in the arm body.\ntype P2 = (Int, Int)\n\neffect Pair {\n  Diff(P2) -> Int\n}\n\nfn run() -> Int {\n  let a = 100\n  handle {\n    perform Pair::Diff((10, 3))\n  } with {\n    Pair::Diff((a, b)) => resume(a)\n  }\n}\n")
+  let advice = String::index_of(m, "bind the payload to a name")
+  let unknown = String::index_of(m, "unknown name:")
+  assert(advice >= 0)
+  assert(unknown < 0 || advice < unknown)
+}
+
+test "handler_payload_struct_reject gets actionable advice before unbound payload names" {
+  let m = message("// #3371: a struct destructure in a payload position binds nothing, like a\n// tuple one, so `x` in the arm body read the outer `x`: measured on main,\n// `run` answered 100 for `Pt::{ x: 10, y: 3 }`. The message names the\n// binder and asks for a `match` against the written pattern in the arm body.\nstruct Pt {\n  x: Int;\n  y: Int\n}\n\neffect Geo {\n  Sum(Pt) -> Int\n}\n\nfn run() -> Int {\n  let x = 100\n  handle {\n    perform Geo::Sum(Pt::{ x: 10, y: 3 })\n  } with {\n    Geo::Sum(Pt::{ x, y }) => resume(x)\n  }\n}\n")
+  let advice = String::index_of(m, "bind the payload to a name")
+  let unknown = String::index_of(m, "unknown name:")
+  assert(advice >= 0)
+  assert(unknown < 0 || advice < unknown)
+}
+
+test "a literal or-arm must split operations before binding its payload" {
+  let m = message("// #3371: each alternative of an or-pattern arm is checked like an arm of its\n// own, so the literal payload of the SECOND alternative is refused although\n// the first one is `_`. Before, the arm compiled and trapped at run time.\neffect Pick {\n  P(Int) -> Int\n  Q(Int) -> Int\n}\n\nfn run() -> Int {\n  handle {\n    perform Pick::P(3)\n  } with Pick {\n    P(_) | Q(2) => resume(100)\n  }\n}\n")
+  assert(String::contains(m, "write one handler arm per operation, then"))
+  assert(String::contains(m, "Pick::Q(v) => if v == 2"))
+}

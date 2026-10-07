@@ -70,7 +70,7 @@ import ./checker_resolve.vibe {
 }
 
 import ./checker_spawnable.vibe {
-  closure_bare_callee_names, closure_free_names
+  closure_bare_callee_names, closure_free_names, env_marker_before
 }
 
 import ./builtin_call_arms.vibe {
@@ -1037,7 +1037,25 @@ export fn assignment_crosses_region(name: String, ty: Type, env: TypeEnv) -> Boo
 /// retain a value whose closure provenance names that region.
 export fn container_write_crosses_region(target: Expr, ty: Type, env: TypeEnv) -> Bool {
   match target {
-    EIdent(name, _) => assignment_crosses_region(name, ty, env) || match env_lookup(env, String::concat("__region_outer_alias__", name)) {
+    // An alias marker describes the binding it sits in front of, so an inner
+    // binding of the same name hides it. #3343: a region re-check marks a
+    // parameter with the regions its argument's location predates; a value
+    // of any other active region may still be stored through it.
+    EIdent(name, _) => assignment_crosses_region(name, ty, env) || match env_marker_before(env, String::concat("__region_outer_alias__", name), name) {
+      Some(CtTuple(regions)) => {
+        let mut crosses = false
+        for rty in regions {
+          match rty {
+            CtNamed(region_name, _) => if type_mentions_named(ty, region_name) {
+              crosses = true
+            } else {
+              ()
+            },
+            _ => ()
+          }
+        }
+        crosses
+      },
       Some(_) => type_mentions_active_region(ty, env),
       None => false
     },

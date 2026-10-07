@@ -1,0 +1,33 @@
+// #3343 (Codex on #3359): a value holding the handle two structs deep is
+// handed to a helper that stores it in an outer cell. This compiled and the
+// handle was joined after its group closed; the call is refused.
+import @vibe/concurrent { TaskGroup, TaskHandle }
+
+struct Box {
+  h: TaskHandle[Int]
+}
+
+struct Outer {
+  b: Box
+}
+
+struct Cell[T] {
+  mut v: Option[T]
+}
+
+fn put(c: Cell[Outer], o: Outer) -> Unit {
+  c.v = Some(o)
+}
+
+fn main() -> Unit allows Exception + Console {
+  let c: Cell[Outer] = Cell::{ v: None }
+  let r = TaskGroup::run((n) -> {
+    put(c, Outer::{ b: Box::{ h: TaskGroup::spawn(n, () -> { 41 }) } })
+    1
+  })
+  let after = match c.v {
+    Some(o) => TaskHandle::join(o.b.h),
+    None => 0 - 1
+  }
+  println("r=\{r} after=\{after}")
+}

@@ -1,0 +1,32 @@
+// #3343 (Codex on #3359): the helper hands the handle back with an explicit
+// `return`, inside a struct whose nominal type `Box` does not show its
+// fields. The result check read only the body's tail, so this compiled and the
+// handle was joined after its group closed. The call's result now carries the
+// group's region of the handle it was made from, and the caller's write of it
+// into an outer cell is refused.
+import @vibe/concurrent { TaskGroup, TaskHandle }
+
+struct Box {
+  h: TaskHandle[Int]
+}
+
+struct Cell[T] {
+  mut v: Option[T]
+}
+
+fn boxit(h: TaskHandle[Int]) -> Box {
+  return Box::{ h: h }
+}
+
+fn main() -> Unit allows Exception + Console {
+  let c: Cell[Box] = Cell::{ v: None }
+  let r = TaskGroup::run((n) -> {
+    c.v = Some(boxit(TaskGroup::spawn(n, () -> { 41 })))
+    1
+  })
+  let after = match c.v {
+    Some(b) => TaskHandle::join(b.h),
+    None => 0 - 1
+  }
+  println("r=\{r} after=\{after}")
+}
