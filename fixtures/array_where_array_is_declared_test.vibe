@@ -1,0 +1,58 @@
+//# #3326: the shapes that ARE an `Array` keep accepting an array literal.
+//
+// An `Array[X]` is rejected where a generic struct or enum applied to `X` is
+// declared (fixtures/typecheck/generic_struct_array_*_reject.vibe). These are
+// the controls that must not move with that rule: a parameterized alias whose
+// target is `Array`, a constructor formal instantiated at `Array`, a
+// `FixedArray` (a checker-only phantom over `Array`'s layout, #1140) flowing
+// into an `Array` slot, and an `Array` as a generic struct's ARGUMENT.
+
+type L[T] = Array[T]
+
+struct Cell[T] {
+  value: T
+}
+
+struct Holder[F[_]] {
+  value: F[Int]
+}
+
+fn alias_len(xs: L[Int]) -> Int {
+  Array::length(xs)
+}
+
+fn ctor_len[F[_]](x: F[Int], n: (F[Int]) -> Int) -> Int {
+  n(x)
+}
+
+fn plain_len(xs: Array[Int]) -> Int {
+  Array::length(xs)
+}
+
+fn wrap[T](x: T) -> Cell[T] {
+  Cell::{ value: x }
+}
+
+test "an alias whose target is Array" {
+  let xs: L[Int] = [4, 5, 6]
+  inspect(Array::get(xs, 2), "6")
+  inspect(alias_len([1, 2]), "2")
+}
+
+test "a constructor formal instantiated at Array" {
+  inspect(ctor_len([1, 2, 3], (a: Array[Int]) -> Array::length(a)), "3")
+  let h: Holder[Array] = Holder::{ value: [7, 8] }
+  inspect(Array::get(h.value, 1), "8")
+}
+
+test "a FixedArray where an Array is declared" {
+  let f = FixedArray::make(3, 9)
+  inspect(plain_len(f), "3")
+}
+
+test "an Array as the generic struct's argument" {
+  let c: Cell[Array[Int]] = Cell::{ value: [1, 2] }
+  inspect(Array::get(c.value, 1), "2")
+  let d: Cell[Array[Int]] = wrap([3])
+  inspect(Array::get(d.value, 0), "3")
+}

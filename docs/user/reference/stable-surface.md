@@ -294,6 +294,9 @@ spelling at all — `Option::Some` reports `unknown name`, so write `Some`.
 
 ### 2.5 Type definitions and traits
 - `type` aliases, `enum`, `struct`, `derive(Eq)` (ADR-0045).
+- `Future` and `FrozenArray` are reserved nominal names for builtin constructor
+  results. A source struct, enum or suberror must use another name at every
+  arity; a type alias remains allowed because it adds no nominal identity.
 - **Declaration members are separated by `;`**: `struct P { x: Int; y: Int }`,
   `enum E { A; B }`. A `,` there is a parse error naming the edit, and a bare
   newline is not a separator either (ADR-0107).

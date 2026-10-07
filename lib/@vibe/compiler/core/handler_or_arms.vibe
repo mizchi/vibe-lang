@@ -13,8 +13,8 @@
 // Each alternative gets its own copy of the body, and an or-pattern arm in
 // that body is split again inside every copy, so nested or-pattern arms
 // multiply: a chain of n arms with two alternatives each copies its innermost
-// body 2^n times. The split refuses a `handle` it would copy more than
-// hoa_copy_limit times rather than expand it. Moving that `handle` into a
+// body 2^n times. The split refuses an arm whose body it would copy more than
+// hoa_copy_limit times rather than expand it. Moving a nested `handle` into a
 // top-level `fn` makes each copy a call; a closure written in place is still
 // inside the arm, and is copied with it.
 
@@ -327,16 +327,13 @@ fn hoa_first_offset(expr: Expr) -> Int {
   first
 }
 
-/// The first `handle` in `expr`, in source order, that has an or-pattern arm
-/// to split and that the enclosing or-pattern arms would copy more than
-/// hoa_copy_limit times, with that count. `copies` is how many times the
-/// split copies `expr`: an arm's body is copied once per alternative of that
-/// arm, on top of the copies of the arm itself.
+/// The first `handle` in `expr`, in source order, whose current arm expansion
+/// together with its enclosing arms exceeds hoa_copy_limit, with that count.
+/// `copies` is how many times the split copies `expr`: an arm's body is copied
+/// once per alternative of that arm, on top of the copies of the arm itself.
 fn hoa_over_limit(expr: Expr, copies: Int, with_binders: Bool) -> Option[(Expr, Int)] {
   match expr {
-    EHandle(body, arms) => if copies > hoa_copy_limit && hoa_arms_split_any(arms, with_binders) {
-      Some((expr, copies))
-    } else {
+    EHandle(body, arms) => {
       let mut hit = hoa_over_limit(body, copies, with_binders)
       let mut i = 0
       while hoa_no_hit(hit) && i < Array::length(arms) {
@@ -346,7 +343,11 @@ fn hoa_over_limit(expr: Expr, copies: Int, with_binders: Bool) -> Option[(Expr, 
         } else {
           copies
         }
-        hit = hoa_over_limit(arm_body, arm_copies, with_binders)
+        hit = if arm_copies > hoa_copy_limit {
+          Some((expr, arm_copies))
+        } else {
+          hoa_over_limit(arm_body, arm_copies, with_binders)
+        }
         i = i + 1
       }
       hit
@@ -373,9 +374,8 @@ fn hoa_no_hit(hit: Option[(Expr, Int)]) -> Bool {
   }
 }
 
-/// The refusal for the first `handle` in `stmts` that the split would copy
-/// more than hoa_copy_limit times, located at that `handle`; None when every
-/// `handle` stays within it.
+/// The refusal for the first `handle` whose arm expansion exceeds
+/// hoa_copy_limit, located at that `handle`; None when every arm stays within it.
 fn hoa_copy_refusal(stmts: Array[Stmt], with_binders: Bool) -> Option[String] {
   let exprs: Array[Expr] = []
   hoa_stmt_exprs_into(stmts, exprs)
@@ -394,7 +394,7 @@ fn hoa_copy_refusal(stmts: Array[Stmt], with_binders: Bool) -> Option[String] {
             } else {
               ""
             }
-            refusal = Some(String::concat("move this `handle` into a top-level `fn` (passing it the values it uses from around it) and call that here: an or-pattern handler arm (`A | B => ..`) is compiled once per operation, together with every closure and `handle` inside it, so the or-pattern arms around this `handle` would compile it ", String::concat(__to_string(copies), String::concat(" times, over the limit of ", String::concat(__to_string(hoa_copy_limit), marker)))))
+            refusal = Some(String::concat("write separate handler arms, or move this nested `handle` into a top-level `fn` (passing it the values it uses from around it) and call that here: an or-pattern handler arm (`A | B => ..`) is compiled once per operation, together with every closure and `handle` inside it, so this arm and its enclosing or-pattern arms would compile its body ", String::concat(__to_string(copies), String::concat(" times, over the limit of ", String::concat(__to_string(hoa_copy_limit), marker)))))
           },
           None => ()
         }
@@ -482,7 +482,7 @@ fn hoa_erase_stamps(expr: Expr) -> Unit {
 /// `A => body` and `B => body`, in place, so each arm names one operation.
 /// A statement with no or-pattern handler arm is left as it was, unvisited by
 /// the rebuild. With `with_binders` false an alternative that binds a name
-/// keeps its arm whole, for the checker to refuse. A `handle` the split would
+/// keeps its arm whole, for the checker to refuse. An arm body the split would
 /// copy more than hoa_copy_limit times is refused before anything is split.
 export fn split_handler_or_arms(stmts: Array[Stmt], with_binders: Bool) -> Unit with Exception {
   if !with_binders {

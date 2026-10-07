@@ -246,3 +246,46 @@ test "a generic callback row keeps an enclosing formal" {
   let source = "effect Box[A] { Put(A) -> Int }\nstruct Token { value: Int }\nfn consume[A](x: A, f: () -> Int with Box[A]) -> Int {\n  handle { f() } with { Box::Put(_) => resume(42) }\n}\nfn outer[T](x: T) -> Int {\n  consume(x, () -> Int with Box[T] { perform Box::Put(x) })\n}\n"
   assert_eq(Array::length(collect_all_diagnostics(source)), 0)
 }
+
+fn generic_field_projection_source(style: String, payload: String, arg_ty: String) -> String {
+  let literal = "GenericHolder[\{arg_ty}]::{ f: () -> { perform Box::Put(\{payload}) } }"
+  let use = match style {
+    "literal" => "run_str(\{literal}.f)",
+    "call" => "run_str(make_holder().f)",
+    "alias" => "let cb = make_holder().f; run_str(cb)",
+    _ => "run_str((if true { make_holder() } else { make_holder() }).f)"
+  }
+  String::concat(callback_declarations(), "struct GenericHolder[T] { f: () -> Int with Box[T] }\nfn make_holder() -> GenericHolder[\{arg_ty}] { \{literal} }\nfn main_like() -> Int with Box { \{use} }\n")
+}
+
+test "a generic field retains its payload through any receiver expression" {
+  for style in ["literal", "call", "alias", "conditional"] {
+    let diags = collect_all_diagnostics(generic_field_projection_source(style, "\"abc\"", "String"))
+    assert_eq(String::join(diags, "\n"), "")
+  }
+}
+
+test "a generic field refuses the actual payload mismatch through any receiver" {
+  for style in ["literal", "call", "alias", "conditional"] {
+    let diags = collect_all_diagnostics(generic_field_projection_source(style, "1", "Int"))
+    let text = String::join(diags, "\n")
+    assert(Array::length(diags) > 0)
+    assert(String::contains(text, "performs `Box` at `Int`"))
+    assert(!String::contains(text, "#callback-row-unreadable"))
+  }
+}
+
+test "a generic field's compound payload remains linked to its enclosing formal" {
+  let source = "effect Box[T] { Put(T) -> Int }\nstruct Holder[T] { f: () -> Int with Box[Array[T]] }\nfn pass[T](f: () -> Int with Box[Array[T]], x: T) -> Int with Box[Array[T]] { f() }\nfn forward[T](h: Holder[T], x: T) -> Int with Box[Array[T]] { let cb = h.f; pass(cb, x) }\n"
+  assert_eq(String::join(collect_all_diagnostics(source), "\n"), "")
+}
+
+test "a specialized field consumer refuses a different payload at its call site" {
+  let source = String::concat(callback_declarations(), "struct Holder[T] { f: () -> Int with Box[T] }\nfn bad[T](h: Holder[T]) -> Int with Box { let cb = h.f; run_str(cb) }\nfn main_like() -> Int with Box { let h = Holder[Int]::{ f: () -> { perform Box::Put(1) } }; bad(h) }\n")
+  assert(Array::length(collect_all_diagnostics(source)) > 0)
+}
+
+test "a projected callback keeps a tuple payload through publication" {
+  let source = "effect Box[T] { Put(T) -> Int }\ntype Pair = (Int, Int)\nstruct Holder[T] { f: () -> Int with Box[T] }\nfn get() -> Holder[Pair] { Holder[Pair]::{ f: () -> { perform Box::Put((1, 2)) } } }\nfn consume(f: () -> Int with Box[Pair]) -> Int with Box[Pair] { f() }\nfn main_like() -> Int with Box[Pair] { let cb = get().f; consume(cb) }\n"
+  assert_eq(String::join(collect_all_diagnostics(source), "\n"), "")
+}

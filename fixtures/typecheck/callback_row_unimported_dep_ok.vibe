@@ -1,0 +1,124 @@
+// #3351: a dependency exporting NON-generic and generic callees whose
+// callback parameter's row names a type of this module's, imported by the
+// callback_row_unimported_* rows, most of which do not import that type.
+// Its published type marks a struct or enum such a row names (`Box[^Pt]`), so
+// an importer reads it as this module's `Pt` without importing it; an alias
+// or a constructor argument is not marked, and the importer is told to
+// import it.
+export effect Box[T] {
+  Put(T) -> Int
+}
+
+export effect Get[T] {
+  Take() -> T
+}
+
+export effect Kb[F[_]] {
+  Put(F[Int]) -> Int
+}
+
+export struct Pt {
+  x: Int
+}
+
+export type Pts = Pt
+
+export struct Wrap[T] {
+  v: T
+}
+
+export struct Bag[T] {
+  item: T
+}
+
+export fn mk_pt(x: Int) -> Pt {
+  Pt::{ x: x }
+}
+
+export enum Shade {
+  Light(Int);
+  Dark
+}
+
+export fn mk_light(n: Int) -> Shade {
+  Shade::Light(n)
+}
+
+// The arms' payloads are annotated: an unannotated field read in an arm
+// (`resume(p.x)`) fixes the formal of a generic declared after it at `Int`
+// (#3362), which these fixtures should not lean on.
+export fn run_pt(f: () -> Int with Box[Pt]) -> Int {
+  handle {
+    f()
+  } with {
+    Box::Put(p) => {
+      let q: Pt = p
+      resume(q.x)
+    }
+  }
+}
+
+// An enum in the row is marked `^^Shade`, so a bare `Shade` reads as the
+// enum type a `Shade` value has.
+export fn run_shade(f: () -> Int with Box[Shade]) -> Int {
+  handle {
+    f()
+  } with {
+    Box::Put(c) => {
+      let q: Shade = c
+      resume(match q {
+        Shade::Light(n) => n,
+        Shade::Dark => 0
+      })
+    }
+  }
+}
+
+export fn run_pts(f: () -> Int with Box[Pts]) -> Int {
+  handle {
+    f()
+  } with {
+    Box::Put(p) => {
+      let q: Pt = p
+      resume(q.x)
+    }
+  }
+}
+
+export fn run_take(f: () -> Int with Get[Pt]) -> Int {
+  handle {
+    f()
+  } with {
+    Get::Take => resume(Pt::{ x: 7 })
+  }
+}
+
+export fn run_take_alias(f: () -> Int with Get[Pts]) -> Int {
+  handle {
+    f()
+  } with {
+    Get::Take => resume(Pt::{ x: 8 })
+  }
+}
+
+export fn run_bag(f: () -> Int with Kb[Bag]) -> Int {
+  handle {
+    f()
+  } with {
+    Kb::Put(b) => {
+      let q: Bag[Int] = b
+      resume(q.item)
+    }
+  }
+}
+
+export fn run_wrap[T](x: T, f: () -> Int with Box[Wrap[T]], len: (T) -> Int) -> Int {
+  handle {
+    f()
+  } with {
+    Box::Put(w) => {
+      let q: Wrap[T] = w
+      resume(len(q.v) + len(x) * 0)
+    }
+  }
+}

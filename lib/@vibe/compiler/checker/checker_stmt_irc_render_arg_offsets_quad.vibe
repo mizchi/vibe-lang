@@ -56,13 +56,20 @@ import @vibe/compiler/core {
   typed_lowering_arg_offset,
   typed_lowering_float_key,
   typed_render_refuse_key,
-  typed_render_row_head
+  typed_render_row_head,
+  types_equal
+}
+
+import @vibe/compiler/checker/type_relations {
+  check_assignable_set_type_defs
 }
 
 import ./checker.vibe {
   TypedOccurrenceRoleLaneCapture,
   callee_formal_bindings,
   callee_formal_marked_bindings,
+  local_let_rec_types,
+  local_let_types,
   local_let_types_begin,
   local_let_types_end,
   reset_eq_formal_vars,
@@ -898,6 +905,39 @@ export fn check_program(stmts: Array[Stmt]) -> TypeEnv with Exception {
   check_program_result(stmts).final_env
 }
 
+/// Mark an offset unknown when its copies disagree after substitution.
+/// Used only after the or-arm check found a conflict; unrelated hover rows
+/// remain available. Keeping an unknown row prevents query fallback from
+/// resolving the conflicting name to an unrelated outer binding.
+fn suppress_conflicting_hover_types(table: Array[(Int, Type)], final_s: Subst) -> Unit {
+  let first: MutMap[Int, Type] = MutMap::new_int()
+  let conflicts: MutMap[Int, Bool] = MutMap::new_int()
+  let mut r = 0
+  while r < Array::length(table) {
+    let (off, ty) = Array::get(table, r)
+    let resolved = subst_apply(final_s, ty)
+    match MutMap::get(first, off) {
+      None => MutMap::set(first, off, resolved),
+      Some(previous) => if !types_equal(previous, resolved) {
+        MutMap::set(conflicts, off, true)
+      } else {
+        ()
+      }
+    }
+    r = r + 1
+  }
+  let mut i = 0
+  while i < Array::length(table) {
+    let row = Array::get(table, i)
+    let (off, _) = row
+    match MutMap::get(conflicts, off) {
+      Some(_) => Array::set(table, i, (off, CtUnknown)),
+      None => ()
+    }
+    i = i + 1
+  }
+}
+
 /// Collecting variant of check_program for typed hover (vibe type-at): runs the
 /// same inference but RETURNS the recorded (offset, Type) table plus the FINAL
 /// substitution (check_stmts' 2nd value), instead of the TypeEnv. It degrades
@@ -915,6 +955,7 @@ export fn check_program_type_table(stmts: Array[Stmt]) -> (Array[(Int, Type)], S
   handle {
     split_handler_or_arms(stmts, false)
   } with { Exception::Throw(_) => () }
+  let handler_or_arms = Array::slice(handler_or_arm_groups(), 0, Array::length(handler_or_arm_groups()))
   let empty_defs = array_empty()
   let seeded_raw_env = if trait_defined(EnvEmpty, "Eq") {
     EnvEmpty
@@ -928,7 +969,9 @@ export fn check_program_type_table(stmts: Array[Stmt]) -> (Array[(Int, Type)], S
   reset_return_provenance_index()
   reset_eq_formal_vars()
   reset_throw_payload_sites()
+  handler_or_arm_resume_begin(handler_or_arms)
   set_generic_fn_decls(stmts)
+  check_assignable_set_type_defs(empty_defs)
   // #3050: also record each local `let`'s value type, for hover alone.
   local_let_types_begin()
   handle {
@@ -944,9 +987,31 @@ export fn check_program_type_table(stmts: Array[Stmt]) -> (Array[(Int, Type)], S
     // or `p.value` under `let f: (Holder) -> Int = (p) -> { p.value }` would
     // show the variable instead of `Int`.
     let final_s = resolve_deferred_field_reads(final_s0, empty_defs, frozen_errors, false)
+    let errors_before_or_arms = Array::length(frozen_errors)
+    check_handler_or_arm_resume_types(handler_or_arms, empty_defs, final_s, frozen_errors)
+    if Array::length(frozen_errors) > errors_before_or_arms {
+      suppress_conflicting_hover_types(tytab, final_s)
+      suppress_conflicting_hover_types(local_let_types(), final_s)
+      suppress_conflicting_hover_types(local_let_rec_types(), final_s)
+    } else {
+      ()
+    }
+    erase_handler_or_arm_stamps(stmts)
     local_let_types_end()
     (tytab, final_s)
   } with { Exception::Throw(_) => {
+    // No completed substitution is available after an inference failure.
+    // Clear the arm recording and any contradictory partial rows too.
+    let errors_before_or_arms = Array::length(frozen_errors)
+    check_handler_or_arm_resume_types(handler_or_arms, empty_defs, SubstEmpty, frozen_errors)
+    if Array::length(frozen_errors) > errors_before_or_arms {
+      suppress_conflicting_hover_types(tytab, SubstEmpty)
+      suppress_conflicting_hover_types(local_let_types(), SubstEmpty)
+      suppress_conflicting_hover_types(local_let_rec_types(), SubstEmpty)
+    } else {
+      ()
+    }
+    erase_handler_or_arm_stamps(stmts)
     local_let_types_end()
     (tytab, SubstEmpty)
   } }
@@ -1022,6 +1087,7 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
       // #3301: the or-pattern arm copies the check after typing compares.
       handler_or_arm_resume_begin(handler_or_arms)
       set_generic_fn_decls(stmts)
+      check_assignable_set_type_defs(empty_defs)
       // #986: labeled-argument name validation (see check_program).
       check_labeled_arg_names_stmts(stmts, frozen_errors, false)
       // Keep CheckedProgram.checked_stmts as the original post-desugar source,

@@ -621,6 +621,7 @@ fn type_at_local_let(source: String, boff: Int, final_s: Subst) -> String with E
   let let_off = type_at_let_keyword_before(source, boff)
   if let_off >= 0 {
     match tytab_lookup(local_let_types(), let_off) {
+      Some(CtUnknown) => "",
       Some(t) => type_to_string(subst_apply(final_s, t)),
       None => ""
     }
@@ -630,6 +631,7 @@ fn type_at_local_let(source: String, boff: Int, final_s: Subst) -> String with E
       ""
     } else {
       match tytab_lookup(local_let_rec_types(), anchor) {
+        Some(CtUnknown) => "",
         Some(t) => type_to_string(subst_apply(final_s, t)),
         None => ""
       }
@@ -648,11 +650,15 @@ fn type_at_local_let(source: String, boff: Int, final_s: Subst) -> String with E
 /// the checker recorded for that `let` (#3050).
 fn type_at_use_or_env(source: String, table: Array[(Int, Type)], hits: Array[IdentHit], name: String, chosen_off: Int, final_s: Subst, stmts: Array[Stmt], occ: Array[(Int, Int)], local_binder: Bool) -> String with Exception {
   let mut use_ty = ""
+  let mut unknown_use = false
   let mut u = 0
   while u < Array::length(hits) {
     let (hname, hoff) = hit_name_off(Array::get(hits, u))
     if hname == name && hoff != chosen_off && !hit_is_callee(Array::get(hits, u)) && type_at_off_in_occ(occ, hoff) {
       match tytab_lookup(table, hoff) {
+        Some(CtUnknown) => {
+          unknown_use = true
+        },
         Some(t) => {
           use_ty = type_to_string(subst_apply(final_s, t))
         },
@@ -663,7 +669,9 @@ fn type_at_use_or_env(source: String, table: Array[(Int, Type)], hits: Array[Ide
     }
     u = u + 1
   }
-  if use_ty != "" {
+  if unknown_use {
+    ""
+  } else if use_ty != "" {
     use_ty
   } else if local_binder {
     type_at_local_let(source, chosen_off, final_s)
@@ -776,6 +784,9 @@ export fn type_at_source(source: String, line: Int, col: Int) -> String {
             None
           }
           match table_hit {
+            // A contradictory split-arm type is explicitly unknown. Do not
+            // fall back to an outer binding with the same spelling.
+            Some(CtUnknown) => "",
             Some(rec_ty) => type_to_string(subst_apply(final_s, rec_ty)),
             None => type_at_use_or_env(source, table, hits, name, chosen_off, final_s, stmts, binding_occurrences(source, line, col), pick_ident_is_local_binder(hits, tgt))
           }
