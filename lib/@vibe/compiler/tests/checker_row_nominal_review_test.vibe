@@ -1,0 +1,713 @@
+import @vibe/compiler/checker {
+  check_program,
+  check_program_with_projected_import_env_result,
+  publish_row_nominals,
+  row_formal_scope,
+  row_label_args_differ,
+  set_row_nominal_types,
+  vouch_published_nominals
+}
+import @vibe/compiler/core {
+  Type, TypeDef
+}
+import @vibe/compiler/runtime {
+  build_import_envs_from_interfaces, checked_module_public_env, dependency_interface_set_new, dependency_interface_set_publish
+}
+import @vibe/compiler/syntax {
+  lex, lex_with_offsets, parse_program, parse_program_located
+}
+import ./checker_parity_test_support.vibe {
+  check_source_err_contains, check_source_ok
+}
+
+fn reset_row_scope() -> Unit {
+  Array::truncate(row_formal_scope, 0)
+  set_row_nominal_types([])
+}
+
+fn nominal_defs() -> Array[TypeDef] {
+  [TDStruct("Pt", [("x", CtInt)], [], []), TDEnum("Shade", [], [("Light", [])])]
+}
+
+fn only_callback_row(t: Type) -> String {
+  match t {
+    CtFn(_, _, Some(row)) => row,
+    CtArray(e) => only_callback_row(e),
+    CtOption(e) => only_callback_row(e),
+    CtTuple(items) => only_callback_row(Array::get(items, 0)),
+    CtNamed(_, items) => only_callback_row(Array::get(items, 0)),
+    CtApplied(_, items) => only_callback_row(Array::get(items, 0)),
+    CtRecord(fields) => {
+      let (_, ft) = Array::get(fields, 0)
+      only_callback_row(ft)
+    },
+    CtForAll(_, _, body) => only_callback_row(body),
+    _ => ""
+  }
+}
+
+fn projected_error(dependency: String, importer: String) -> String with Env + Exception {
+  projected_interface_error(dependency, importer, false)
+}
+
+fn projected_published_error(dependency: String, importer: String) -> String with Env + Exception {
+  projected_interface_error(dependency, importer, true)
+}
+
+fn projected_interface_error(dependency: String, importer: String, public_surface: Bool) -> String with Env + Exception {
+  let interfaces = dependency_interface_set_new()
+  let dependency_stmts = parse_program(lex(dependency))
+  let checked = check_program(dependency_stmts)
+  let published = if public_surface {
+    checked_module_public_env(dependency_stmts, checked)
+  } else {
+    checked
+  }
+  dependency_interface_set_publish(interfaces, "/dep.vibe", published)
+  let (tokens, starts, _) = lex_with_offsets(importer)
+  let stmts = parse_program_located(tokens, starts, importer)
+  let errors: Array[String] = []
+  let (env, _) = build_import_envs_from_interfaces(stmts, "/", interfaces, [
+    "/dep.vibe"
+  ], errors)
+  if Array::length(errors) > 0 {
+    return String::join(errors, "\n")
+  }
+  handle {
+    let _ = check_program_with_projected_import_env_result(stmts, env)
+    ""
+  } with { Exception::Throw(message) => message }
+}
+
+fn aggregate_dependency() -> String {
+  "export effect Box[T] { Put(T) -> Int }\nexport struct Pt { x: Int }\nexport let fs: Array[() -> Int with Box[Pt]] = [() -> Int with Box[Pt] { perform Box::Put(Pt::{ x: 42 }) }]\n"
+}
+
+fn function_payload_source(payload: String) -> String {
+  "effect Box[T] { Put(T) -> Int }\neffect Inner[T] { Put(T) -> Int }\nstruct Pt { x: Int }\ntype Work = () -> Int with Inner[Pt]\nfn wrong() -> Int with Inner[Int] { perform Inner::Put(41) }\nfn good() -> Int with Inner[Pt] { perform Inner::Put(Pt::{ x: 42 }) }\nfn caller() -> Int with Box[Work] { perform Box::Put(\{payload}) }\n"
+}
+
+fn nested_dependency() -> String {
+  "export effect Box[T] { Put(T) -> Int }\nexport effect Inner[T] { Put(T) -> Int }\nexport struct Pt { x: Int }\nexport type Work = () -> Int with Inner[Pt]\nexport fn use_inner(g: () -> Int with Inner[Pt]) -> Int { handle { g() } with { Inner::Put(p) => { let q: Pt = p; resume(q.x) } } }\nexport fn run_nested(f: () -> Int with Box[Work]) -> Int { handle { f() } with { Box::Put(g) => resume(use_inner(g)) } }\n"
+}
+
+fn nested_importer(imports: String, payload: String) -> String {
+  "import ./dep.vibe { effect Box, effect Inner, run_nested, Work\{imports} }\nfn wrong() -> Int with Inner[Int] { perform Inner::Put(41) }\nfn main_like() -> Int with Box + Inner { run_nested(() -> { perform Box::Put(\{payload}) }) }\n"
+}
+
+test "published struct markers authorize only their nominal without importing it" {
+  reset_row_scope()
+  assert(row_label_args_differ("Box[Int]", "=Box[^Pt]"))
+  assert(row_label_args_differ("Box[Int]", "Box[^Pt]"))
+  assert(!row_label_args_differ("Box[^Pt]", "Box[^Pt]"))
+  assert(!row_label_args_differ("Box[Int]", "Box[Pt]"))
+  reset_row_scope()
+}
+
+test "published enum markers participate in row authorization" {
+  reset_row_scope()
+  assert(row_label_args_differ("Box[Int]", "=Box[^^Shade]"))
+  assert(row_label_args_differ("Box[Array[Int]]", "Box[Array[^^Shade]]"))
+  assert(!row_label_args_differ("Box[^^Shade]", "Box[^^Shade]"))
+  reset_row_scope()
+}
+
+test "a local formal cannot erase the authority of a published nominal" {
+  reset_row_scope()
+  Array::push(row_formal_scope, ["Pt"])
+  assert(row_label_args_differ("Box[Pt]", "=Box[^Pt]"))
+  reset_row_scope()
+}
+
+test "aggregate publication preserves callback row authority at every type shape" {
+  let callback = CtFn([], CtInt, Some("Box[Pt]"))
+  let aggregates = [
+    CtArray(callback),
+    CtOption(callback),
+    CtTuple([callback]),
+    CtRecord([("run", callback)]),
+    CtNamed("Holder", [callback]),
+    CtApplied(CtConstructor("Holder", 1), [callback]),
+    CtForAll([0], [], CtArray(callback))
+  ]
+  for aggregate in aggregates {
+    let row = only_callback_row(publish_row_nominals(aggregate, nominal_defs()))
+    assert_eq(row, "Box[^Pt]")
+    reset_row_scope()
+    assert(row_label_args_differ("Box[Int]", "=" + row))
+  }
+  reset_row_scope()
+}
+
+test "publication marks the binding's own row and its callback rows" {
+  let callback = CtFn([], CtInt, Some("Box[Shade]"))
+  match publish_row_nominals(CtFn([callback], CtInt, Some("Outer[Pt]")), nominal_defs()) {
+    CtFn(params, _, own) => {
+      assert_eq(own, Some("Outer[^Pt]"))
+      assert_eq(only_callback_row(Array::get(params, 0)), "Box[^^Shade]")
+    },
+    _ => assert(false)
+  }
+}
+
+test "a quantified exported function preserves its own nominal row and formal markers" {
+  let t = CtForAll([0], [], CtFn([CtVar(0)], CtInt, Some("Outer[Pt, T$0]")))
+  assert_eq(only_callback_row(publish_row_nominals(t, nominal_defs())), "Outer[^Pt, T$0]")
+}
+
+test "exported struct and enum producers satisfy imported contracts without type imports" {
+  let dependency = "export effect Box[T] { Put(T) -> Int }\nexport struct Pt { x: Int }\nexport enum Shade { Light }\nexport fn producer() -> Int with Box[Pt] { perform Box::Put(Pt::{ x: 42 }) }\nexport fn run_pt(f: () -> Int with Box[Pt]) -> Int { handle { f() } with { Box::Put(p) => { let q: Pt = p; resume(q.x) } } }\nexport fn enum_producer() -> Int with Box[Shade] { perform Box::Put(Light) }\nexport fn run_shade(f: () -> Int with Box[Shade]) -> Int { handle { f() } with { Box::Put(s) => { let q: Shade = s; resume(match q { Light => 42 }) } } }\n"
+  let importer = "import ./dep.vibe { effect Box, producer, run_pt, enum_producer, run_shade }\nfn struct_caller() -> Int { run_pt(producer) }\nfn enum_caller() -> Int { run_shade(enum_producer) }\n"
+  assert_eq(projected_error(dependency, importer), "")
+  let wrong = "import ./dep.vibe { effect Box, run_pt }\nfn wrong() -> Int with Box[Int] { perform Box::Put(41) }\nfn caller() -> Int { run_pt(wrong) }\n"
+  assert(String::contains(projected_error(dependency, wrong), "performs `Box` at `Int`"))
+}
+
+test "an exported generic producer retains nominal authority at callback instantiation" {
+  let dependency = "export effect Box[T] { Put(T) -> Int }\nexport struct Pt { x: Int }\nexport fn producer[T](unused: T) -> Int with Box[Pt] { perform Box::Put(Pt::{ x: 42 }) }\nexport fn run_pt(f: (Int) -> Int with Box[Pt]) -> Int { handle { f(0) } with { Box::Put(p) => { let q: Pt = p; resume(q.x) } } }\n"
+  let importer = "import ./dep.vibe { effect Box, producer, run_pt }\nfn caller() -> Int { run_pt(producer) }\n"
+  assert_eq(projected_error(dependency, importer), "")
+}
+
+test "vouching a nested function preserves the nominal authority of its own row" {
+  let nested = CtFn([], CtInt, Some("Inner[Pt]"))
+  let vouched = vouch_published_nominals(nested, [("Pt", false)], [])
+  assert_eq(only_callback_row(vouched), "Inner[^Pt]")
+  assert_eq(only_callback_row(vouch_published_nominals(vouched, [("Pt", false)], [
+  ])), "Inner[^Pt]")
+  assert_eq(only_callback_row(vouch_published_nominals(CtRecord([
+    ("run", nested)
+  ]), [("Pt", false)], [])), "Inner[^Pt]")
+}
+
+test "vouching distinguishes enums and does not mark an uninstantiated formal" {
+  let nested = CtFn([], CtInt, Some("Inner[Shade]"))
+  assert_eq(only_callback_row(vouch_published_nominals(nested, [("Shade", true)], [
+  ])), "Inner[^^Shade]")
+  assert_eq(only_callback_row(vouch_published_nominals(nested, [("Shade", true)], [
+    "Shade"
+  ])), "Inner[Shade]")
+}
+
+test "vouching without nominal authority leaves an ordinary row unchanged" {
+  let nested = CtFn([], CtInt, Some("Inner[Pt]"))
+  assert_eq(only_callback_row(vouch_published_nominals(nested, [], [])), "Inner[Pt]")
+}
+
+test "an imported aggregate callback cannot satisfy an Int callback contract" {
+  let importer = "import ./dep.vibe { effect Box, fs }\nfn run_int(f: () -> Int with Box[Int]) -> Int with Box[Int] { f() }\nfn caller() -> Int with Box[Int] { run_int(Array::get(fs, 0)) }\n"
+  let message = projected_error(aggregate_dependency(), importer)
+  assert(String::contains(message, "performs `Box` at `Pt`"))
+}
+
+test "an imported aggregate callback keeps compatible bare and nominal rows" {
+  let bare = "import ./dep.vibe { effect Box, fs }\nfn pass(f: () -> Int with Box) -> Int with Box { f() }\nfn caller() -> Int with Box { pass(Array::get(fs, 0)) }\n"
+  assert_eq(projected_error(aggregate_dependency(), bare), "")
+  let nominal = "import ./dep.vibe { effect Box, fs, struct Pt }\nfn pass(f: () -> Int with Box[Pt]) -> Int with Box[Pt] { f() }\nfn caller() -> Int with Box[Pt] { pass(Array::get(fs, 0)) }\n"
+  assert_eq(projected_error(aggregate_dependency(), nominal), "")
+}
+
+test "perform cannot erase a nested function payload's concrete effect row" {
+  assert(check_source_err_contains(function_payload_source("wrong"), "`Inner` at `Pt`"))
+}
+
+test "perform preserves a compatible function payload" {
+  assert(check_source_ok(function_payload_source("good")))
+}
+
+test "an unreadable nominal inside an imported payload alias names the import edit" {
+  let message = projected_error(nested_dependency(), nested_importer("", "wrong"))
+  assert(String::contains(message, "import `Pt` into this module"))
+  assert(!String::contains(message, "#callback-row-unreadable"))
+}
+
+test "importing a nested payload's nominal preserves matching contracts" {
+  let wrong = projected_error(nested_dependency(), nested_importer(", struct Pt", "wrong"))
+  assert(String::contains(wrong, "performs `Inner` at `Int`"))
+  let good = nested_importer(", struct Pt", "() -> Int with Inner[Pt] { perform Inner::Put(Pt::{ x: 42 }) }")
+  assert_eq(projected_error(nested_dependency(), good), "")
+}
+
+fn aggregate_generic_dependency() -> String {
+  "export effect Box[T] { Put(T) -> Int }\nexport struct Wrap[T] { v: T }\nexport fn mk_wrap[T](v: T) -> Wrap[T] { Wrap::{ v: v } }\nexport fn run_wrap[T](x: T, f: () -> Int with Box[Wrap[T]], len: (T) -> Int) -> Int { handle { f() } with { Box::Put(w) => { let q: Wrap[T] = w; resume(len(q.v) + len(x) * 0) } } }\nexport fn run_swapped[A, B](b: B, a: A, f: () -> Int with Box[Wrap[A]], len: (A) -> Int) -> Int { handle { f() } with { Box::Put(w) => { let q: Wrap[A] = w; resume(len(q.v) + len(a) * 0) } } }\n"
+}
+
+fn aggregate_generic_importer(style: String, payload: String) -> String {
+  let call = match style {
+    "alias" => "let selected = Array::get([run_wrap], 0); selected(\"abc\", () -> { perform Box::Put(\{payload}) }, (s) -> String::length(s))",
+    "alias swapped" => "let selected = Array::get([run_swapped], 0); selected(17, \"abc\", () -> { perform Box::Put(\{payload}) }, (s) -> String::length(s))",
+    "swapped" => "Array::get([run_swapped], 0)(17, \"abc\", () -> { perform Box::Put(\{payload}) }, (s) -> String::length(s))",
+    _ => "Array::get([run_wrap], 0)(\"abc\", () -> { perform Box::Put(\{payload}) }, (s) -> String::length(s))"
+  }
+  "import ./dep.vibe { effect Box, run_wrap, run_swapped, mk_wrap }\nfn caller() -> Int with Box { \{call} }\n"
+}
+
+test "a generic callee extracted from an array accepts its concrete callback payload" {
+  assert_eq(projected_error(aggregate_generic_dependency(), aggregate_generic_importer("direct", "mk_wrap(\"xy\")")), "")
+}
+
+test "a generic callee extracted from an array rejects a different callback payload" {
+  let message = projected_error(aggregate_generic_dependency(), aggregate_generic_importer("direct", "41"))
+  assert(String::contains(message, "expected Wrap[String], got Int"))
+}
+
+test "an extracted generic callee keeps its callback contract through a local alias" {
+  assert_eq(projected_error(aggregate_generic_dependency(), aggregate_generic_importer("alias", "mk_wrap(\"xy\")")), "")
+}
+
+test "an extracted generic callee alias cannot erase a mismatched callback contract" {
+  let message = projected_error(aggregate_generic_dependency(), aggregate_generic_importer("alias", "41"))
+  assert(String::contains(message, "expected Wrap[String], got Int"))
+}
+
+test "an extracted generic callee maps quantified variables by the original signature" {
+  assert_eq(projected_error(aggregate_generic_dependency(), aggregate_generic_importer("swapped", "mk_wrap(\"xy\")")), "")
+}
+
+test "reordered quantified variables still reject a different callback payload" {
+  let message = projected_error(aggregate_generic_dependency(), aggregate_generic_importer("swapped", "41"))
+  assert(String::contains(message, "expected Wrap[String], got Int"))
+}
+
+test "an extracted generic alias respells reordered quantifiers" {
+  assert_eq(projected_error(aggregate_generic_dependency(), aggregate_generic_importer("alias swapped", "mk_wrap(\"xy\")")), "")
+}
+
+test "an extracted generic alias with reordered quantifiers rejects an Int payload" {
+  let message = projected_error(aggregate_generic_dependency(), aggregate_generic_importer("alias swapped", "41"))
+  assert(String::contains(message, "expected Wrap[String], got Int"))
+}
+
+test "an extracted generic formal is independent of a same-named importer nominal" {
+  let importer = "struct T { n: Int }\n" + aggregate_generic_importer("direct", "mk_wrap(\"xy\")")
+  assert_eq(projected_error(aggregate_generic_dependency(), importer), "")
+}
+
+fn reused_generic_dependency() -> String {
+  "export effect Box[T] { Put(T) -> Int }\nexport struct Wrap[T] { v: T }\nexport fn mk_wrap[T](v: T) -> Wrap[T] { Wrap::{ v: v } }\nexport fn first[A, B](a: A, b: B, f: () -> Int with Box[Wrap[A]]) -> Int { handle { f() } with { Box::Put(w) => { let q: Wrap[A] = w; resume(42) } } }\nexport fn second[A, B](b: B, a: A, f: () -> Int with Box[Wrap[A]]) -> Int { handle { f() } with { Box::Put(w) => { let q: Wrap[A] = w; resume(42) } } }\n"
+}
+
+fn reused_generic_importer(payload: String) -> String {
+  "import ./dep.vibe { effect Box, Wrap, first, second, mk_wrap }\nfn caller() -> Int with Box { let unused: (String, Int, () -> Int with Box[Wrap[String]]) -> Int = first; let fs = [second]; Array::get(fs, 0)(\"abc\", 17, () -> { perform Box::Put(mk_wrap(11)) }); Array::get(fs, 0)(\"abc\", 17, () -> { perform Box::Put(mk_wrap(\{payload})) }) }\n"
+}
+
+test "reusing an extracted generic keeps its own quantified variable identities" {
+  assert_eq(projected_error(reused_generic_dependency(), reused_generic_importer("19")), "")
+}
+
+test "a structurally equal instance cannot supply another generic's row binders" {
+  let message = projected_error(reused_generic_dependency(), reused_generic_importer("\"WRONG\""))
+  assert(String::contains(message, "expected Wrap[Int], got Wrap[String]"))
+}
+
+fn wrapped_callback_dependency(shape: String) -> String {
+  let wrapped = match shape {
+    "option" => "Option[() -> Int with Box[Wrap[T]]]",
+    "tuple" => "(() -> Int with Box[Wrap[T]], Int)",
+    "record" => "Holder[() -> Int with Box[Wrap[T]]]",
+    _ => "Array[() -> Int with Box[Wrap[T]]]"
+  }
+  // Checking a signature's contract must not depend on its implementation
+  // calling the supplied callback; a later body may consume its payload.
+  "export effect Box[T] { Put(T) -> Int }\nexport struct Wrap[T] { v: T }\nexport struct Holder[F] { run: F }\nexport fn mk_wrap[T](v: T) -> Wrap[T] { Wrap::{ v: v } }\nexport fn run_many[T](x: T, callbacks: \{wrapped}) -> Int { 42 }\n"
+}
+
+fn wrapped_callback_importer(shape: String, payload: String) -> String {
+  let callback = "() -> { perform Box::Put(mk_wrap(\{payload})) }"
+  let wrapped = match shape {
+    "option" => "Some(\{callback})",
+    "tuple" => "(\{callback}, 17)",
+    "record" => "Holder::{ run: \{callback} }",
+    _ => "[\{callback}]"
+  }
+  "import ./dep.vibe { effect Box, Wrap, Holder, run_many, mk_wrap }\nstruct T { n: Int }\nfn caller() -> Int with Box { Array::get([run_many], 0)(\"abc\", \{wrapped}) }\n"
+}
+
+test "array wrapped callbacks instantiate the extracted generic's formal" {
+  assert_eq(projected_error(wrapped_callback_dependency("array"), wrapped_callback_importer("array", "\"xy\"")), "")
+}
+
+test "array wrapped callbacks cannot use a caller nominal as a callee formal" {
+  let message = projected_error(wrapped_callback_dependency("array"), wrapped_callback_importer("array", "T::{ n: 17 }"))
+  assert(String::contains(message, "Wrap[String]"))
+}
+
+test "option wrapped callbacks instantiate the extracted generic's formal" {
+  assert_eq(projected_error(wrapped_callback_dependency("option"), wrapped_callback_importer("option", "\"xy\"")), "")
+}
+
+test "option wrapped callbacks reject a mismatched caller nominal" {
+  let message = projected_error(wrapped_callback_dependency("option"), wrapped_callback_importer("option", "T::{ n: 17 }"))
+  assert(String::contains(message, "Wrap[String]"))
+}
+
+test "tuple wrapped callbacks instantiate the extracted generic's formal" {
+  assert_eq(projected_error(wrapped_callback_dependency("tuple"), wrapped_callback_importer("tuple", "\"xy\"")), "")
+}
+
+test "tuple wrapped callbacks reject a mismatched caller nominal" {
+  let message = projected_error(wrapped_callback_dependency("tuple"), wrapped_callback_importer("tuple", "T::{ n: 17 }"))
+  assert(String::contains(message, "Wrap[String]"))
+}
+
+test "record wrapped callbacks instantiate the extracted generic's formal" {
+  assert_eq(projected_error(wrapped_callback_dependency("record"), wrapped_callback_importer("record", "\"xy\"")), "")
+}
+
+test "record wrapped callbacks reject a mismatched caller nominal" {
+  let message = projected_error(wrapped_callback_dependency("record"), wrapped_callback_importer("record", "T::{ n: 17 }"))
+  assert(String::contains(message, "Wrap[String]"))
+}
+
+fn handler_marker_dependency() -> String {
+  "export effect Box[T] { Put(T) -> Int }\nexport struct Pt { x: Int }\nexport enum Shade { Light }\nexport fn producer() -> Int with Box[Pt] { perform Box::Put(Pt::{ x: 42 }) }\nexport fn enum_producer() -> Int with Box[Shade] { perform Box::Put(Light) }\nexport fn use_pt(p: Pt) -> Int { p.x }\nexport fn use_shade(s: Shade) -> Int { match s { Light => 42 } }\nexport fn array_producer() -> Int with Box[Array[Pt]] { perform Box::Put([Pt::{ x: 42 }]) }\n"
+}
+
+test "an imported nominal producer cannot be handled as Int without importing the nominal" {
+  let importer = "import ./dep.vibe { effect Box, producer }\nfn caller() -> Int { handle { producer() } with { Box::Put(n) => { let q: Int = n; resume(q + 1) } } }\n"
+  let message = projected_error(handler_marker_dependency(), importer)
+  assert(String::contains(message, "handler instantiates `Box[Int]`"))
+  assert(String::contains(message, "requires `Box[Pt]`"))
+  assert(!String::contains(message, "^Pt"))
+}
+
+test "an imported enum producer cannot be handled as Int without importing the enum" {
+  let importer = "import ./dep.vibe { effect Box, enum_producer }\nfn caller() -> Int { handle { enum_producer() } with { Box::Put(n) => { let q: Int = n; resume(q + 1) } } }\n"
+  let message = projected_error(handler_marker_dependency(), importer)
+  assert(String::contains(message, "requires `Box[Shade]`"))
+  assert(!String::contains(message, "^^Shade"))
+}
+
+test "an imported nominal array producer cannot be handled as an Int array" {
+  let importer = "import ./dep.vibe { effect Box, array_producer }\nfn caller() -> Int { handle { array_producer() } with { Box::Put(n) => { let q: Array[Int] = n; resume(Array::get(q, 0) + 1) } } }\n"
+  let message = projected_error(handler_marker_dependency(), importer)
+  assert(String::contains(message, "requires `Box[Array[Pt]]`"))
+}
+
+test "compatible imported struct and enum handlers retain nominal authority" {
+  let importer = "import ./dep.vibe { effect Box, producer, enum_producer, struct Pt, enum Shade }\nfn struct_caller() -> Int { handle { producer() } with { Box::Put(n) => { let q: Pt = n; resume(q.x) } } }\nfn enum_caller() -> Int { handle { enum_producer() } with { Box::Put(n) => { let q: Shade = n; resume(match q { Light => 42 }) } } }\n"
+  assert_eq(projected_error(handler_marker_dependency(), importer), "")
+}
+
+test "nominal handler types inferred through imported consumers need no type import" {
+  let importer = "import ./dep.vibe { effect Box, producer, enum_producer, use_pt, use_shade }\nfn struct_caller() -> Int { handle { producer() } with { Box::Put(n) => resume(use_pt(n)) } }\nfn enum_caller() -> Int { handle { enum_producer() } with { Box::Put(n) => resume(use_shade(n)) } }\n"
+  assert_eq(projected_error(handler_marker_dependency(), importer), "")
+}
+
+fn generic_handler_dependency() -> String {
+  "export effect Box[T] { Put(T) -> Int }\nexport struct Wrap[T] { v: T }\nexport fn producer[T](x: T) -> Int with Box[Wrap[T]] { perform Box::Put(Wrap::{ v: x }) }\n"
+}
+
+test "an imported generic nominal producer fixes its nested row argument for its handler" {
+  let importer = "import ./dep.vibe { effect Box, Wrap, producer }\nfn caller() -> Int { handle { producer(\"abc\") } with { Box::Put(n) => { let q: Wrap[String] = n; resume(String::length(q.v)) } } }\n"
+  assert_eq(projected_error(generic_handler_dependency(), importer), "")
+}
+
+test "an imported generic nominal producer cannot be handled at a different nested argument" {
+  let importer = "import ./dep.vibe { effect Box, Wrap, producer }\nfn caller() -> Int { handle { producer(\"abc\") } with { Box::Put(n) => { let q: Wrap[Int] = n; resume(q.v + 1) } } }\n"
+  let message = projected_error(generic_handler_dependency(), importer)
+  assert(String::contains(message, "requires `Box[Wrap[String]]`"))
+}
+
+fn lowercase_alias_dependency() -> String {
+  "export effect Box[T] { Put(T) -> Int }\nexport type payload = String\nexport fn run(f: () -> Int with Box[payload]) -> Int { handle { f() } with { Box::Put(p) => { let q: payload = p; resume(String::length(q)) } } }\n"
+}
+
+test "an unimported lowercase payload alias refuses a literal callback" {
+  let message = projected_error(lowercase_alias_dependency(), "import ./dep.vibe { effect Box, run }\nfn caller() -> Int with Box { run(() -> { perform Box::Put(41) }) }\n")
+  assert(String::contains(message, "import `payload` into this module"))
+}
+
+test "an unimported lowercase payload alias refuses a named callback" {
+  let message = projected_error(lowercase_alias_dependency(), "import ./dep.vibe { effect Box, run }\nfn wrong() -> Int with Box[Int] { perform Box::Put(41) }\nfn caller() -> Int with Box { run(wrong) }\n")
+  assert(String::contains(message, "import `payload` into this module"))
+}
+
+test "importing a lowercase alias accepts its matching concrete payload" {
+  assert_eq(projected_error(lowercase_alias_dependency(), "import ./dep.vibe { effect Box, run, payload }\nfn caller() -> Int with Box { run(() -> { perform Box::Put(\"abc\") }) }\n"), "")
+}
+
+test "importing a lowercase alias still rejects an incompatible payload" {
+  let message = projected_error(lowercase_alias_dependency(), "import ./dep.vibe { effect Box, run, payload }\nfn caller() -> Int with Box { run(() -> { perform Box::Put(41) }) }\n")
+  assert(String::contains(message, "expected String, got Int"))
+}
+
+test "a lowercase callee formal stays in scope after instantiation" {
+  let dependency = "export effect Box[T] { Put(T) -> Int }\nexport fn run[payload](x: payload, f: () -> Int with Box[payload]) -> Int { 42 }\n"
+  assert_eq(projected_error(dependency, "import ./dep.vibe { effect Box, run }\nfn caller() -> Int with Box { run(\"abc\", () -> { perform Box::Put(\"xy\") }) }\n"), "")
+}
+
+test "a published lowercase nominal remains vouched without an import" {
+  let dependency = "export effect Box[T] { Put(T) -> Int }\nexport struct point { x: Int }\nexport fn mk_point() -> point { point::{ x: 42 } }\nexport fn run(f: () -> Int with Box[point]) -> Int { 42 }\n"
+  assert_eq(projected_error(dependency, "import ./dep.vibe { effect Box, run, mk_point }\nfn caller() -> Int with Box { run(() -> { perform Box::Put(mk_point()) }) }\n"), "")
+}
+
+test "an unreadable lowercase constructor alias also names the import edit" {
+  let dependency = "export effect Kb[F[_]] { Put(F[Int]) -> Int }\nexport type payload[T] = Array[T]\nexport fn run(f: () -> Int with Kb[payload]) -> Int { 42 }\n"
+  let message = projected_error(dependency, "import ./dep.vibe { effect Kb, run }\nfn caller() -> Int with Kb { run(() -> { perform Kb::Put([41]) }) }\n")
+  assert(String::contains(message, "import `payload` into this module"))
+}
+
+test "a lowercase callee formal rejects a mismatched concrete payload" {
+  let dependency = "export effect Box[T] { Put(T) -> Int }\nexport fn run[payload](x: payload, f: () -> Int with Box[payload]) -> Int { 42 }\n"
+  let message = projected_error(dependency, "import ./dep.vibe { effect Box, run }\nfn caller() -> Int with Box { run(\"abc\", () -> { perform Box::Put(41) }) }\n")
+  assert(String::contains(message, "expected String, got Int"))
+}
+
+test "a published lowercase nominal still rejects an Int payload" {
+  let dependency = "export effect Box[T] { Put(T) -> Int }\nexport struct point { x: Int }\nexport fn run(f: () -> Int with Box[point]) -> Int { 42 }\n"
+  let message = projected_error(dependency, "import ./dep.vibe { effect Box, run }\nfn caller() -> Int with Box { run(() -> { perform Box::Put(41) }) }\n")
+  assert(String::contains(message, "expected point, got Int"))
+}
+
+fn nominal_definition_dependency() -> String {
+  "export effect Box[T] { Put(T) -> Int }\nexport struct Pt { x: Int }\nexport fn mk_pt() -> Pt { Pt::{ x: 42 } }\nexport fn producer() -> Int with Box[Pt] { perform Box::Put(Pt::{ x: 42 }) }\nexport struct Holder { run: () -> Int with Box[Pt] }\nexport enum Choice { Run(() -> Int with Box[Pt]) }\nexport fn accept_holder(h: Holder) -> Int { 42 }\nexport fn accept_choice(c: Choice) -> Int { 42 }\n"
+}
+
+fn nominal_definition_importer(shape: String, payload: String, named: Bool) -> String {
+  let good = payload == "mk_pt()"
+  let callback = if named {
+    if good {
+      "producer"
+    } else {
+      "wrong"
+    }
+  } else {
+    "() -> { perform Box::Put(\{payload}) }"
+  }
+  let call = if shape == "enum" {
+    "accept_choice(Choice::Run(\{callback}))"
+  } else {
+    "accept_holder(Holder::{ run: \{callback} })"
+  }
+  "import ./dep.vibe { effect Box, struct Holder, enum Choice, accept_holder, accept_choice, mk_pt, producer }\nfn wrong() -> Int with Box[Int] { perform Box::Put(41) }\nfn caller() -> Int with Box { \{call} }\n"
+}
+
+test "an exported struct field accepts a compatible literal callback without Pt" {
+  assert_eq(projected_published_error(nominal_definition_dependency(), nominal_definition_importer("struct", "mk_pt()", false)), "")
+}
+
+test "an exported struct field rejects an Int callback by its published nominal" {
+  let message = projected_published_error(nominal_definition_dependency(), nominal_definition_importer("struct", "41", false))
+  assert(String::contains(message, "Pt"))
+  assert(String::contains(message, "Int"))
+  assert(!String::contains(message, "import `Pt`"))
+  assert(message != "")
+}
+
+test "an exported enum constructor accepts a compatible literal callback without Pt" {
+  assert_eq(projected_published_error(nominal_definition_dependency(), nominal_definition_importer("enum", "mk_pt()", false)), "")
+}
+
+test "an exported enum constructor rejects an Int callback by its published nominal" {
+  let message = projected_published_error(nominal_definition_dependency(), nominal_definition_importer("enum", "41", false))
+  assert(String::contains(message, "Pt"))
+  assert(String::contains(message, "Int"))
+  assert(!String::contains(message, "import `Pt`"))
+  assert(message != "")
+}
+
+test "an exported struct field accepts a compatible named callback without Pt" {
+  assert_eq(projected_published_error(nominal_definition_dependency(), nominal_definition_importer("struct", "mk_pt()", true)), "")
+}
+
+test "an exported enum constructor accepts a compatible named callback without Pt" {
+  assert_eq(projected_published_error(nominal_definition_dependency(), nominal_definition_importer("enum", "mk_pt()", true)), "")
+}
+
+test "an exported struct field rejects a mismatched named callback" {
+  let message = projected_published_error(nominal_definition_dependency(), nominal_definition_importer("struct", "41", true))
+  assert(String::contains(message, "Pt"))
+  assert(String::contains(message, "Int"))
+  assert(!String::contains(message, "import `Pt`"))
+}
+
+test "an exported enum constructor rejects a mismatched named callback" {
+  let message = projected_published_error(nominal_definition_dependency(), nominal_definition_importer("enum", "41", true))
+  assert(String::contains(message, "Pt"))
+  assert(String::contains(message, "Int"))
+  assert(!String::contains(message, "import `Pt`"))
+}
+
+fn generic_nominal_definition_dependency() -> String {
+  "export effect Box[T] { Put(T) -> Int }\nexport struct Holder[T] { run: () -> Int with Box[T] }\nexport fn accept_holder(h: Holder[String]) -> Int { 42 }\n"
+}
+
+test "an exported generic struct's field keeps its declared formal" {
+  let importer = "import ./dep.vibe { effect Box, struct Holder, accept_holder }\nfn caller() -> Int with Box { accept_holder(Holder[String]::{ run: () -> { perform Box::Put(\"abc\") } }) }\n"
+  assert_eq(projected_published_error(generic_nominal_definition_dependency(), importer), "")
+}
+
+test "an exported generic struct's field rejects a different concrete payload" {
+  let importer = "import ./dep.vibe { effect Box, struct Holder, accept_holder }\nfn caller() -> Int with Box { accept_holder(Holder[String]::{ run: () -> { perform Box::Put(41) } }) }\n"
+  let message = projected_published_error(generic_nominal_definition_dependency(), importer)
+  assert(String::contains(message, "Int"))
+  assert(String::contains(message, "String"))
+}
+
+test "an unreadable private callback row names its import edit without leaking a sentinel" {
+  let importer = "import ./dep.vibe { effect Box, struct Holder, accept_holder, mk_pt }\nfn private_bare() -> Int with Box { perform Box::Put(mk_pt()) }\nfn caller() -> Int with Box { accept_holder(Holder::{ run: private_bare }) }\n"
+  let message = projected_published_error(nominal_definition_dependency(), importer)
+  assert(String::contains(message, "import `Pt` into this module"))
+  assert(!String::contains(message, "#callback-row-unreadable"))
+}
+
+test "a kinded lambda row keeps its lexical constructor formal" {
+  let source = "effect Kb[F[_]] { Put(F[Int]) -> Int }\nfn consume[F[_]](x: F[Int], f: () -> Int with Kb[F]) -> Int { 42 }\nfn outer[G[_]](x: G[Int]) -> Int with Kb[G] { consume[G](x, () -> Int with Kb[G] { perform Kb::Put(x) }) }\n"
+  assert(check_source_ok(source))
+}
+
+test "a generic forwarding parameter's row keeps its declaration formal" {
+  let source = "effect Box[T] { Put(T) -> Int }\nexport fn run_len[T](x: T, f: () -> Int with Box[T], len: (T) -> Int) -> Int { handle { f() } with { Box::Put(v) => resume(len(v) + len(x) * 0) } }\nfn forward[T](x: T, f: () -> Int with Box[T], len: (T) -> Int) -> Int { run_len(x, f, len) }\nexport let forwarded = forward\n"
+  assert(check_source_ok(source))
+}
+
+fn generic_result_dependency() -> String {
+  "export effect Box[T] { Put(T) -> Int }\nexport fn make[T](x: T) -> () -> Int with Box[T] { () -> { 42 } }\nexport fn consume_int(f: () -> Int with Box[Int]) -> Int { handle { f() } with { Box::Put(n) => resume(n + 1) } }\nexport fn consume_string(f: () -> Int with Box[String]) -> Int { handle { f() } with { Box::Put(s) => resume(String::length(s)) } }\n"
+}
+
+fn generic_result_importer(style: String, consumer: String) -> String {
+  let call = match style {
+    "named" => "make(\"abc\")",
+    "alias" => "let selected = Array::get([make], 0); selected(\"abc\")",
+    _ => "Array::get([make], 0)(\"abc\")"
+  }
+  "import ./dep.vibe { effect Box, make, consume_int, consume_string }\nfn caller() -> Int { let callback = { \{call} }; \{consumer}(callback) }\n"
+}
+
+test "a generic result keeps its String callback contract through a named call" {
+  assert_eq(projected_error(generic_result_dependency(), generic_result_importer("named", "consume_string")), "")
+}
+
+test "an extracted generic result keeps its String callback contract" {
+  assert_eq(projected_error(generic_result_dependency(), generic_result_importer("direct", "consume_string")), "")
+}
+
+test "an extracted generic result preserves its row through an alias" {
+  assert_eq(projected_error(generic_result_dependency(), generic_result_importer("alias", "consume_string")), "")
+}
+
+test "a generic String callback result cannot satisfy an Int consumer" {
+  for style in ["named", "direct", "alias"] {
+    let message = projected_error(generic_result_dependency(), generic_result_importer(style, "consume_int"))
+    assert(String::contains(message, "performs `Box` at `String`"))
+  }
+}
+
+test "a joined callee cannot select one of two different generic callback contracts" {
+  let dep = "export effect Box[T] { Put(T) -> Int }\nexport fn first[A, B](a: A, b: B, f: () -> Int with Box[A]) -> Int { 42 }\nexport fn second[A, B](a: A, b: B, f: () -> Int with Box[B]) -> Int { 42 }\n"
+  for index in [0, 1] {
+    let src = "import ./dep.vibe { effect Box, first, second }\nfn caller() -> Int with Box { Array::get([first, second], \{index})(\"abc\", 17, () -> { perform Box::Put(\"xyz\") }) }\n"
+    let message = projected_error(dep, src)
+    assert(String::contains(message, "import `A` into this module"))
+  }
+}
+
+test "a generic result retains nominal struct and enum payload kinds" {
+  let dep = generic_result_dependency() + "export struct Point_Type { x: Int }\nexport enum Shade { Light }\nexport fn consume_point(f: () -> Int with Box[Point_Type]) -> Int { 42 }\nexport fn consume_shade(f: () -> Int with Box[Shade]) -> Int { 42 }\n"
+  let src = "import ./dep.vibe { effect Box, make, struct Point_Type, Shade, consume_point, consume_shade }\nfn caller() -> Int { consume_point(Array::get([make], 0)(Point_Type::{ x: 42 })); consume_shade(Array::get([make], 0)(Light)) }\n"
+  assert_eq(projected_error(dep, src), "")
+}
+
+test "a located generic factory may return its declared formal callback row" {
+  let source = "effect Box[T] { Put(T) -> Int }\nfn make[T](x: T) -> () -> Int with Box[T] { () -> Int with Box[T] { perform Box::Put(x) } }\n"
+  let (tokens, starts, _) = lex_with_offsets(source)
+  let stmts = parse_program_located(tokens, starts, source)
+  let _ = check_program(stmts)
+}
+
+test "an unresolved generic result cannot borrow an importer nominal named T" {
+  let src = "import ./dep.vibe { effect Box, make }\nstruct T { n: Int }\nfn consume(f: () -> Int with Box[T]) -> Int { handle { f() } with { Box::Put(p) => { let q: T = p; resume(q.n) } } }\nfn caller() -> Int { consume(Array::get([make], 0)([])) }\n"
+  let message = projected_error(generic_result_dependency(), src)
+  assert(String::contains(message, "performs `Box` at `Array["))
+}
+
+test "an unresolved generic result keeps its array payload available for inference" {
+  let src = "import ./dep.vibe { effect Box, make }\nfn consume(f: () -> Int with Box[Array[String]]) -> Int { 42 }\nfn caller() -> Int { consume(Array::get([make], 0)([])) }\n"
+  assert_eq(projected_error(generic_result_dependency(), src), "")
+}
+
+fn lowercase_nominal_dependency() -> String {
+  "export effect Box[T] { Put(T) -> Int }\nexport struct point { x: Int }\nexport enum tone { Light }\nexport type payload = String\nexport fn run_point(f: () -> Int with Box[point]) -> Int { handle { f() } with { Box::Put(p) => resume(p.x) } }\nexport fn point_producer() -> Int with Box[point] { perform Box::Put(point::{ x: 42 }) }\nexport fn run_tone(f: () -> Int with Box[tone]) -> Int { 42 }\nexport fn run_payload(f: () -> Int with Box[payload]) -> Int { 42 }\n"
+}
+
+test "a lowercase nominal callback cannot use the importer's different same-named struct" {
+  let src = "import ./dep.vibe { effect Box, run_point }\nstruct point { text: String }\nfn caller() -> Int with Box { run_point(() -> { perform Box::Put(point::{ text: \"wrong\" }) }) }\n"
+  assert(String::contains(projected_published_error(lowercase_nominal_dependency(), src), "rename this module's type `point`"))
+}
+
+test "a named callback cannot borrow a lowercase nominal declaration's name" {
+  let src = "import ./dep.vibe { effect Box, run_point }\nstruct point { text: String }\nfn local() -> Int with Box[point] { perform Box::Put(point::{ text: \"wrong\" }) }\nfn caller() -> Int with Box { run_point(local) }\n"
+  assert(String::contains(projected_published_error(lowercase_nominal_dependency(), src), "rename this module's type `point`"))
+}
+
+test "a lowercase enum callback cannot use a local enum of the same name" {
+  let src = "import ./dep.vibe { effect Box, run_tone }\nenum tone { Other(String) }\nfn caller() -> Int with Box { run_tone(() -> { perform Box::Put(Other(\"wrong\")) }) }\n"
+  assert(String::contains(projected_published_error(lowercase_nominal_dependency(), src), "rename this module's type `tone`"))
+}
+
+test "a lowercase row alias cannot be reinterpreted by an importer alias" {
+  let src = "import ./dep.vibe { effect Box, run_payload }\ntype payload = Int\nfn caller() -> Int with Box { run_payload(() -> { perform Box::Put(42) }) }\n"
+  assert(String::contains(projected_published_error(lowercase_nominal_dependency(), src), "rename this module's type `payload`"))
+}
+
+test "a compatible lowercase nominal producer needs no local type declaration" {
+  let src = "import ./dep.vibe { effect Box, run_point, point_producer }\nfn caller() -> Int with Box { run_point(point_producer) }\n"
+  assert_eq(projected_published_error(lowercase_nominal_dependency(), src), "")
+}
+
+test "an explicitly imported lowercase nominal remains compatible" {
+  let src = "import ./dep.vibe { effect Box, run_point, struct point }\nfn caller() -> Int with Box { run_point(() -> { perform Box::Put(point::{ x: 42 }) }) }\n"
+  assert_eq(projected_published_error(lowercase_nominal_dependency(), src), "")
+}
+
+test "a lowercase published formal stays independent of a declared alias of the same name" {
+  let dep = "export effect Box[T] { Put(T) -> Int }\nexport type t = Int\nexport fn make[t](x: t) -> () -> Int with Box[t] { () -> { 42 } }\nexport fn consume(f: () -> Int with Box[String]) -> Int { 42 }\n"
+  let src = "import ./dep.vibe { effect Box, make, consume }\nstruct t { local: Int }\nfn caller() -> Int { consume(Array::get([make], 0)(\"abc\")) }\n"
+  assert_eq(projected_published_error(dep, src), "")
+}
+
+fn producer_alias_dependency() -> String {
+  "export effect Box[T] { Put(T) -> Int }\nexport type Pts = String\nexport fn producer() -> Int with Box[Pts] { perform Box::Put(\"abc\") }\n"
+}
+
+test "a handled producer with an unreadable row alias requires its import" {
+  let src = "import ./dep.vibe { effect Box, producer }\nfn caller() -> Int { handle { producer() } with { Box::Put(p) => resume(p + 1) } }\n"
+  assert(String::contains(projected_published_error(producer_alias_dependency(), src), "import `Pts` into this module"))
+}
+
+test "a handled producer alias accepts its actual String payload once imported" {
+  let src = "import ./dep.vibe { effect Box, producer, type Pts }\nfn caller() -> Int { handle { producer() } with { Box::Put(p) => resume(String::length(p)) } }\n"
+  assert_eq(projected_published_error(producer_alias_dependency(), src), "")
+}
+
+fn producer_constructor_dependency() -> String {
+  "export effect Kb[F[_]] { Put(F[Int]) -> Int }\nexport struct Bag[T] { v: T }\nexport fn producer() -> Int with Kb[Bag] { perform Kb::Put(Bag::{ v: 42 }) }\n"
+}
+
+test "a marked constructor producer cannot be handled as Array" {
+  let src = "import ./dep.vibe { effect Kb, producer }\nfn caller() -> Int { handle { producer() } with { Kb::Put(p) => { let xs: Array[Int] = p; resume(Array::length(xs)) } } }\n"
+  assert(String::contains(projected_published_error(producer_constructor_dependency(), src), "handler instantiates `Kb[Array/1]`"))
+}
+
+test "a marked constructor producer accepts its matching Bag handler" {
+  let src = "import ./dep.vibe { effect Kb, producer, struct Bag }\nfn caller() -> Int { handle { producer() } with { Kb::Put(p) => { let xs: Bag[Int] = p; resume(xs.v) } } }\n"
+  assert_eq(projected_published_error(producer_constructor_dependency(), src), "")
+}
+
+test "an imported producer alias cannot borrow a caller's same-named formal" {
+  let src = "import ./dep.vibe { effect Box, producer }\nfn caller[Pts](x: Pts) -> Int { handle { producer() } with { Box::Put(p) => resume(p + 1) } }\n"
+  assert(String::contains(projected_published_error(producer_alias_dependency(), src), "import `Pts` into this module"))
+}
+
+test "a readable imported producer alias still rejects an Int handler" {
+  let src = "import ./dep.vibe { effect Box, producer, type Pts }\nfn caller() -> Int { handle { producer() } with { Box::Put(p) => resume(p + 1) } }\n"
+  assert(String::contains(projected_published_error(producer_alias_dependency(), src), "handler instantiates `Box[Int]`"))
+}
+
+test "a handled callback parameter preserves its enclosing lexical formal" {
+  let src = "effect Box[T] { Put(T) -> Int }\nfn run[T](x: T, f: () -> Int with Box[T]) -> Int { handle { f() } with { Box::Put(p) => resume(42) } }\n"
+  let (tokens, starts, _) = lex_with_offsets(src)
+  let stmts = parse_program_located(tokens, starts, src)
+  let _ = check_program(stmts)
+}
