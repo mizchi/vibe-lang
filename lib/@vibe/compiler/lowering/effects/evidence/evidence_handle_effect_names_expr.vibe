@@ -12,7 +12,8 @@ import @vibe/compiler/core {
   expr_children_push,
   expr_children_top,
   is_exception_effect_name,
-  sort_perm_by_names
+  sort_perm_by_names,
+  str_lt
 }
 
 import @vibe/core {
@@ -876,16 +877,6 @@ export fn edp_append_free_host_inert_names(stmts: Array[Stmt], pure_fns: Array[S
 /// makes a flat name set safe here, and it is the same guarantee `fn_names`
 /// relies on.
 export fn edp_append_ctor_inert_names(stmts: Array[Stmt], pure_fns: Array[String]) -> Unit {
-  let top_names = empty_str_array()
-  let mut ti = 0
-  while ti < Array::length(stmts) {
-    match Array::get(stmts, ti) {
-      SLet(_, _, nm, _, _) => Array::push(top_names, nm),
-      SLetMut(nm, _, _) => Array::push(top_names, nm),
-      _ => ()
-    }
-    ti = ti + 1
-  }
   let found = empty_str_array()
   // The compiler-provided constructors have no declaration in the program.
   // `None` is nullary, so it is never a CALLEE and needs no row here.
@@ -916,14 +907,80 @@ export fn edp_append_ctor_inert_names(stmts: Array[Stmt], pure_fns: Array[String
     i = i + 1
   }
   let mut fi = 0
+  // Index only constructor candidates. The stable permutation marks their
+  // first declarations; declaration and existing-purity names only clear
+  // those flags. The result remains in its original declaration order.
+  let ctor_order = sort_perm_by_names(found)
+  let first = Bytes::new()
+  Bytes::fill(first, 0, Array::length(found))
+  let mut ci = 0
+  let mut previous = ""
+  while ci < Array::length(ctor_order) {
+    let pos = Array::get(ctor_order, ci)
+    let nm: String = Array::get(found, pos)
+    if ci == 0 || nm != previous {
+      Bytes::set(first, pos, 1)
+    } else {
+      ()
+    }
+    previous = nm
+    ci = ci + 1
+  }
+  let mut ti = 0
+  while ti < Array::length(stmts) {
+    let pos = match Array::get(stmts, ti) {
+      SLet(_, _, nm, _, _) => edp_ctor_candidate_index(found, ctor_order, nm),
+      SLetMut(nm, _, _) => edp_ctor_candidate_index(found, ctor_order, nm),
+      _ => -1
+    }
+    if pos >= 0 {
+      Bytes::set(first, pos, 0)
+    } else {
+      ()
+    }
+    ti = ti + 1
+  }
+  for name in pure_fns {
+    let pos = edp_ctor_candidate_index(found, ctor_order, name)
+    if pos >= 0 {
+      Bytes::set(first, pos, 0)
+    } else {
+      ()
+    }
+  }
   while fi < Array::length(found) {
     let nm = Array::get(found, fi)
-    if edp_str_array_contains(top_names, nm) || edp_str_array_contains(pure_fns, nm) {
+    if Bytes::get(first, fi) == 0 {
       ()
     } else {
       Array::push(pure_fns, nm)
     }
     fi = fi + 1
+  }
+}
+
+/// Lookup a candidate through its stable name permutation. Equal candidates
+/// resolve to their first declaration, which is the only output flag set.
+fn edp_ctor_candidate_index(names: Array[String], order: Array[Int], name: String) -> Int {
+  let n = Array::length(order)
+  if n == 0 || str_lt(Array::get(names, Array::get(order, n - 1)), name) || str_lt(name, Array::get(names, Array::get(order, 0))) {
+    -1
+  } else {
+    let mut lo = 0
+    let mut hi = n
+    while lo < hi {
+      let mid = (lo + hi) / 2
+      if str_lt(Array::get(names, Array::get(order, mid)), name) {
+        lo = mid + 1
+      } else {
+        hi = mid
+      }
+    }
+    if lo < n && eq_string(Array::get(names, Array::get(order, lo)), name) {
+      Array::get(order, lo)
+    } else {
+      -1
+    }
   }
 }
 
