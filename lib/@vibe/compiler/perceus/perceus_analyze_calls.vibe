@@ -1476,7 +1476,7 @@ fn inferred_bound_owns(bound: Array[String], name: String) -> Int {
   -1
 }
 
-fn inferred_heap_result_spine(body: Expr, ctor_names: Array[String], heap_names: Array[String], bound: Array[String], double_names: Array[String]) -> Bool {
+fn inferred_heap_result_spine(body: Expr, ctor_names: MutSet[String], heap_names: MutSet[String], bound: Array[String], double_names: Array[String]) -> Bool {
   match body {
     EIdent(name, _) => inferred_bound_owns(bound, name) == 1,
     EArray(_) => true,
@@ -1488,7 +1488,7 @@ fn inferred_heap_result_spine(body: Expr, ctor_names: Array[String], heap_names:
     ECall(EIdent(name, off), args, _, _) => if name == "__lambda_return_owned" && off < 0 && Array::length(args) == 1 {
       true
     } else {
-      inferred_bound_owns(bound, name) < 0 && (array_contains_str_pctx(ctor_names, name) || array_contains_str_pctx(heap_names, name))
+      inferred_bound_owns(bound, name) < 0 && (MutSet::has(ctor_names, name) || MutSet::has(heap_names, name))
     },
     EReturn(value) => inferred_heap_result_spine(value, ctor_names, heap_names, bound, double_names),
     EBinOp(_, _, _, _) => inferred_double_expr(body, double_names),
@@ -1554,51 +1554,58 @@ fn inferred_heap_result_spine(body: Expr, ctor_names: Array[String], heap_names:
   }
 }
 
+/// Return heap-producing names in their discovery order. Membership indexes
+/// are invocation-local; a discovered name remains known through later rounds.
 export fn compute_heap_returning(stmts: Array[Stmt]) -> Array[String] {
   let out: Array[String] = []
-  let ctor_names = collect_ctor_names(stmts)
+  let known = MutSet::new_string()
+  let ctors = MutSet::new_string()
+  for ctor in collect_ctor_names(stmts) {
+    MutSet::add(ctors, ctor)
+  }
   let mut changed = true
   while changed {
     changed = false
     let mut i = 0
     while i < Array::length(stmts) {
       match Array::get(stmts, i) {
-        SLet(_, _, name, ann, value) => match value {
-          EFn(_, _, params, fn_ret, _, body) => {
-            let ret = match ann {
-              Some(at) => match at {
-                TyFn(_, r, _) => Some(r),
-                _ => fn_ret
-              },
-              None => fn_ret
-            }
-            // Follow only result spines whose every leaf allocates. A borrowed
-            // name or call remains unknown without a declared return type.
-            let bound: Array[String] = []
-            let double_names: Array[String] = []
-            for param in params {
-              Array::push(bound, param.0)
-              match param.1 {
-                Some(TyName(ty)) => if ty == "Double" || ty == "Float" || ty == "f64" || ty == "f32" {
-                  Array::push(double_names, param.0)
+        SLet(_, _, name, ann, value) => if !MutSet::has(known, name) {
+          match value {
+            EFn(_, _, params, fn_ret, _, body) => {
+              let ret = match ann {
+                Some(at) => match at {
+                  TyFn(_, r, _) => Some(r),
+                  _ => fn_ret
                 },
-                _ => ()
+                None => fn_ret
               }
-            }
-            let direct_fresh_result = inferred_heap_result_spine(body, ctor_names, out, bound, double_names)
-            if type_expr_is_heap(ret) || (match ret {
-              None => direct_fresh_result,
-              Some(_) => false
-            }) {
-              if !array_contains_str_pctx(out, name) {
+              // An explicit return type already decides the result. Only an
+              // unannotated function needs the allocating result-spine proof.
+              let returns_heap = match ret {
+                Some(_) => type_expr_is_heap(ret),
+                None => {
+                  let bound: Array[String] = []
+                  let double_names: Array[String] = []
+                  for param in params {
+                    Array::push(bound, param.0)
+                    match param.1 {
+                      Some(TyName(ty)) => if ty == "Double" || ty == "Float" || ty == "f64" || ty == "f32" {
+                        Array::push(double_names, param.0)
+                      },
+                      _ => ()
+                    }
+                  }
+                  inferred_heap_result_spine(body, ctors, known, bound, double_names)
+                }
+              }
+              if returns_heap {
                 Array::push(out, name)
+                MutSet::add(known, name)
                 changed = true
               }
-            } else {
-              ()
-            }
-          },
-          _ => ()
+            },
+            _ => ()
+          }
         },
         _ => ()
       }
