@@ -1,0 +1,74 @@
+import @vibe/compiler/core {
+  Expr, Stmt, TypeExpr
+}
+import @vibe/compiler/lowering/effects/evidence {
+  edp_append_ctor_inert_names
+}
+
+test "constructor membership preserves existing duplicates and declaration order" {
+  let stmts = [
+    SEnum(false, "First", [], [("Zed", []), ("Alpha", []), ("Zed", [])], []),
+    SSuberror(false, "Fault", [("Alpha", []), ("Bad", [])]),
+    SEnum(false, "Second", [], [("Tail", []), ("Ok", [])], [])
+  ]
+  let names = ["existing", "Zed", "existing"]
+  edp_append_ctor_inert_names(stmts, names)
+  inspect(String::join(names, ","), content = "existing,Zed,existing,Some,Ok,Err,Alpha,Bad,Tail")
+  edp_append_ctor_inert_names(stmts, names)
+  inspect(String::join(names, ","), content = "existing,Zed,existing,Some,Ok,Err,Alpha,Bad,Tail")
+}
+
+test "immutable and mutable declarations shadow constructor names" {
+  let stmts = [
+    SEnum(false, "Choice", [], [("Taken", []), ("Mutable", []), ("Free", [])], [
+    ]),
+    SLet(false, false, "Some", None, EInt(1)),
+    SLet(false, false, "Taken", None, EInt(2)),
+    SLetMut("Mutable", None, EInt(3))
+  ]
+  let names: Array[String] = []
+  edp_append_ctor_inert_names(stmts, names)
+  inspect(String::join(names, ","), content = "Ok,Err,Free")
+}
+
+test "constructor indexes are rebuilt after declarations change" {
+  let stmts = [SEnum(false, "Choice", [], [("Alpha", []), ("Tail", [])], [])]
+  let first = ["Alpha", "Alpha"]
+  edp_append_ctor_inert_names(stmts, first)
+  inspect(String::join(first, ","), content = "Alpha,Alpha,Some,Ok,Err,Tail")
+  Array::set(stmts, 0, SEnum(false, "Choice", [], [
+    ("Ω", []),
+    ("Ωx", []),
+    ("Ω", [])
+  ], []))
+  let second: Array[String] = []
+  edp_append_ctor_inert_names(stmts, second)
+  inspect(String::join(second, ","), content = "Some,Ok,Err,Ω,Ωx")
+}
+
+test "permutation flags preserve order for allocated names across merge runs" {
+  let ctors: Array[(String, Array[TypeExpr])] = []
+  let mut i = 0
+  while i < 32 {
+    Array::push(ctors, (String::concat("Ctor_", __to_string((i * 7) % 31)), []))
+    i = i + 1
+  }
+  let names: Array[String] = []
+  edp_append_ctor_inert_names([SEnum(false, "Choice", [], ctors, [])], names)
+  inspect(Array::length(names), content = "34")
+  inspect(Array::get(names, 3), content = "Ctor_0")
+  inspect(Array::get(names, 4), content = "Ctor_7")
+  inspect(Array::get(names, 33), content = "Ctor_24")
+}
+
+test "candidate boundary names and unrelated declarations preserve membership" {
+  let stmts = [
+    SEnum(false, "Choice", [], [("Alpha", []), ("Omega", []), ("Alpha", [])], []),
+    SLet(false, false, "AAA", None, EInt(1)),
+    SLet(false, false, "zzz", None, EInt(2)),
+    SLet(false, false, "Some", None, EInt(3))
+  ]
+  let names = ["Alpha", "Alpha"]
+  edp_append_ctor_inert_names(stmts, names)
+  inspect(String::join(names, ","), content = "Alpha,Alpha,Ok,Err,Omega")
+}
