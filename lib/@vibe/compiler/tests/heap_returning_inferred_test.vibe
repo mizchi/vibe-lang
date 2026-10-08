@@ -65,3 +65,49 @@ test "early returns participate in inferred ownership" {
   inspect(contains(names, "fresh"), "true")
   inspect(contains(names, "borrowed"), "false")
 }
+
+test "forwarding retains fixed-point discovery order" {
+  let stmts = parse_program(lex("let third = () -> second()\nlet second = () -> first()\nlet first = () -> [1]"))
+  let names = compute_heap_returning(stmts)
+  inspect(Array::length(names), "3")
+  inspect(Array::get(names, 0), "first")
+  inspect(Array::get(names, 1), "second")
+  inspect(Array::get(names, 2), "third")
+}
+
+test "parameters and local bindings shadow heap callees and constructors" {
+  let stmts = parse_program(lex("enum Parcel { Packed(Array[Int]) }\nlet make = () -> [1]\nlet shadow_fn = (make: (Int) -> Int) -> make(0)\nlet shadow_ctor = (Packed: (Int) -> Int) -> Packed(0)\nlet local = () -> { let make = (n: Int) -> n; make(0) }\nlet fresh = () -> Packed([1])"))
+  let names = compute_heap_returning(stmts)
+  inspect(contains(names, "make"), "true")
+  inspect(contains(names, "fresh"), "true")
+  inspect(contains(names, "shadow_fn"), "false")
+  inspect(contains(names, "shadow_ctor"), "false")
+  inspect(contains(names, "local"), "false")
+}
+
+test "declared return types take precedence over the inferred result spine" {
+  // This helper classifies AST metadata; the checker separately rejects a
+  // mismatched body. Neither of these deliberately mismatched bodies is run.
+  let stmts = parse_program(lex("let scalar = (n: Int) -> Int { [n] }\nlet heap = (n: Int) -> Array[Int] { n }"))
+  let names = compute_heap_returning(stmts)
+  inspect(contains(names, "scalar"), "false")
+  inspect(contains(names, "heap"), "true")
+}
+
+test "heap-name membership belongs to one inference invocation" {
+  let first = parse_program(lex("let make = () -> [1]"))
+  let second = parse_program(lex("let make = () -> 1"))
+  let saved = compute_heap_returning(first)
+  inspect(Array::length(compute_heap_returning(second)), "0")
+  inspect(Array::length(saved), "1")
+  inspect(Array::get(saved, 0), "make")
+  inspect(Array::length(compute_heap_returning(first)), "1")
+}
+
+test "duplicate definitions keep the union and append a forwarded result once" {
+  let stmts = parse_program(lex("let caller = () -> same()\nlet same = () -> 0\nlet same = () -> [1]"))
+  let names = compute_heap_returning(stmts)
+  inspect(Array::length(names), "2")
+  inspect(Array::get(names, 0), "same")
+  inspect(Array::get(names, 1), "caller")
+}
