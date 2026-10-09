@@ -1169,6 +1169,19 @@ fn resolve_bare_rows_through_callees(env: TypeEnv, first_local: Int, bodies: Arr
   }
 }
 
+/// Does any label name the effect `base`, bare or at an instantiation?
+fn labels_name_base(labels: Array[String], base: String) -> Bool {
+  let mut found = false
+  for label in labels {
+    if label == base || label_base_is(label, base) {
+      found = true
+    } else {
+      ()
+    }
+  }
+  found
+}
+
 /// Is `label` an instantiation of the effect `base` (`Box[Int]` of `Box`)?
 fn label_base_is(label: String, base: String) -> Bool {
   let bi = String::index_of(label, "[")
@@ -1208,7 +1221,7 @@ fn labels_have_bare(labels: Array[String]) -> Bool {
 /// Every `eff[..]` label the recorded calls require. A call under a `handle`
 /// of `eff` is that handle's, and a call inside a lambda passed to a parameter
 /// whose row names `eff` is the callee's to answer for, unless the callee's own
-/// row is the bare `eff`, which forwards it. Callees that disagree
+/// row names `eff` too, which forwards it. Callees that disagree
 /// give the caller both instantiations, so its own callers must cover each
 /// (Codex on #3409: leaving the label bare let a `Box[String]` caller through).
 /// A generic callee's row names its formals (`Box[T]`); it is read as this
@@ -1263,10 +1276,12 @@ fn via_parameter_names(eff: String, via: Array[(String, Int)], env: TypeEnv, fir
   for step in via {
     let (callee, k) = step
     let (crow, prows) = callee_rows(callee, env, first_local, index, fn_effs, fn_param_effs)
-    // A callee whose own row is the bare effect forwards its callback's
-    // performs to its caller instead of answering for them (Codex on #3409:
-    // `pass(f: () -> Int with Box) -> Int with Box { f() }`).
-    if !checker_effects_string_has(crow, eff) && k < Array::length(prows) {
+    // Only a callee whose own row does not name the effect at all discharges
+    // its callback's performs. One that names it, bare or at an instantiation
+    // its own body fixed, forwards them to its caller (Codex on #3409: `pass(f:
+    // () -> Int with Box) -> Int with Box { perform Box::Put("abc") + f() }`
+    // publishes `Box[String]` and still passes the callback's `Box[Int]` on).
+    if !labels_name_base(crow, eff) && k < Array::length(prows) {
       for label in Array::get(prows, k) {
         let bi = String::index_of(label, "[")
         let base = if bi > 0 {
