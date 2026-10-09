@@ -3,7 +3,7 @@
 # admitted under (#2934, the 0.1.0-rc.0 bug hunt).
 #
 # `HostStream::close` and `host_stream_close` carry the same signature,
-# `(HostStream) -> Unit`, and `checker/builtins_async.vibe` admits both. The
+# `(HostStream) -> Unit`, and `checker/builtin_sigs/builtins_async.vibe` admits both. The
 # default (non-linked) lane's dispatch in `codegen/expr/compile_call.vibe`
 # carried only the bare one, so the two spellings of one operation answered
 # differently -- measured on stage2 at c5afe4373:
