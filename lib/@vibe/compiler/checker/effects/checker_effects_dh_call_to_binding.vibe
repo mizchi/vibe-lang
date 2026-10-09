@@ -1375,9 +1375,15 @@ fn collect_call_records(expr: Expr, handled: Array[String], via: Array[(String, 
       let entry = let_scope_entry(name, value, handled, via, scope, out)
       collect_call_records(body, handled, via, scope_with(scope, entry), out)
     },
-    ELetMut(name, value, body, _) => {
-      collect_call_records(value, handled, via, scope, out)
-      collect_call_records(body, handled, via, scope_with(scope, (name, "")), out)
+    ELetMut(name, value, body, _) => match value {
+      // The initial lambda is read where the name is used, like a `let` one
+      // (Codex on #3409: `let mut cb = () -> mk(); 0` charged `mk`). A lambda
+      // assigned later is read at the assignment.
+      EFn(_, _, _, _, _, _) => collect_call_records(body, handled, via, scope_with(scope, (name, bound_lambda_marker(value, scope))), out),
+      _ => {
+        collect_call_records(value, handled, via, scope, out)
+        collect_call_records(body, handled, via, scope_with(scope, (name, "")), out)
+      }
     },
     ELetRec(name, value, body) => match dh_value_alias_name(value) {
       // `let rec h = mk` is an alias like `let h = mk` (Codex on #3409); the
