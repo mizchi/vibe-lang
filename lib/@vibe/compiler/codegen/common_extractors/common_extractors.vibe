@@ -24,6 +24,36 @@ import @vibe/compiler/codegen/wasm_emit {
 
 let op_prefix = 252
 
+/// The checked local-let type marker is a strict identity lambda. Keep its
+/// annotation in the AST for type-directed analyses, but emit only its value.
+/// An explicit return/effect row, type parameter, bound or non-identity body
+/// remains an ordinary call; shadow-uniquified synthetic names are accepted.
+export fn ascription_call_value(callee: Expr, args: Array[Expr]) -> Option[Expr] {
+  if Array::length(args) != 1 {
+    None
+  } else {
+    match callee {
+      EFn(tparams, bounds, params, ret, effect, body) => if Array::length(tparams) == 0 && Array::length(bounds) == 0 && Array::length(params) == 1 {
+        match (ret, effect) {
+          (None, None) => {
+            let (name, _) = Array::get(params, 0)
+            if name == "__asc" || String::starts_with(name, "__shadow_") && String::ends_with(name, "___asc") {
+              match body {
+                EIdent(value, _) => if value == name {
+                  Some(Array::get(args, 0))
+                } else None,
+                _ => None
+              }
+            } else None
+          },
+          _ => None
+        }
+      } else None,
+      _ => None
+    }
+  }
+}
+
 //# Functions
 
 /// Interior-line breakpoints (span-arc step5): return the first available source
