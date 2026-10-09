@@ -1,0 +1,78 @@
+struct Box { values: Array[Int]; name: String }
+type Thunk = () -> Int with Exception
+fn projected(box: Box) -> Array[Int] {
+  let values: Array[Int] = box.values
+  values
+}
+fn id[T](x: T) -> T {
+  x
+}
+fn borrowed_identity(x~: Array[Int]) -> Array[Int] {
+  x
+}
+fn make_values() -> Array[Int] {
+  let values: Array[Int] = []
+  Array::push(values, 17)
+  values
+}
+test "ascription scalar kinds survive" {
+  let d: Double = id(1.5)
+  let d2: Double = id(2.5)
+  let s: String = id("value")
+  let yes: Bool = id(true)
+  let mut no: Bool = id(false)
+  no = !no
+  inspect(d + d2, content = "4")
+  inspect(s, content = "value")
+  inspect(yes && no, content = "true")
+}
+test "ascription owns projected and borrowed heap results" {
+  let box = Box::{ values: [4, 9], name: "kept" }
+  let result: Array[Int] = projected(box)
+  inspect(Array::get(result, 1), content = "9")
+  inspect(box.name, content = "kept")
+  let input = [3, 8]
+  let alias: Array[Int] = borrowed_identity(input)
+  inspect(Array::get(alias, 0) + Array::get(input, 1), content = "11")
+  inspect(Array::get(make_values(), 0), content = "17")
+}
+test "ascribed function values keep their effect rows" {
+  let action: Thunk = () -> Int {
+    throw("value")
+  }
+  let result = handle {
+    action()
+  } with { Exception::Throw(value) => String::length(value) }
+  inspect(result, content = "5")
+}
+
+test "ordinary lookalike lambdas retain their body and captured values" {
+  let outer = 19
+  let changed = ((__asc: Int) -> __asc + 2)(5)
+  let captured = ((__asc: Int) -> outer)(5)
+  let explicit_identity = ((__asc: Int) -> Int {
+    __asc
+  })(11)
+  let ordinary_identity = ((value: Int) -> value)(13)
+  inspect(changed, content = "7")
+  inspect(captured, content = "19")
+  inspect(explicit_identity, content = "11")
+  inspect(ordinary_identity, content = "13")
+}
+
+test "ascription arguments run once and borrowed loop values remain live" {
+  let cell: Array[Int] = [0]
+  let result: Int = {
+    Array::set(cell, 0, Array::get(cell, 0) + 1); 23
+  }
+  inspect(result, content = "23")
+  inspect(Array::get(cell, 0), content = "1")
+  let values = [[2, 3], [5, 7]]
+  let mut total = 0
+  for value in values {
+    let alias: Array[Int] = value
+    total = total + Array::get(alias, 0) + Array::get(value, 1)
+  }
+  inspect(total, content = "17")
+  inspect(Array::get(Array::get(values, 1), 1), content = "7")
+}

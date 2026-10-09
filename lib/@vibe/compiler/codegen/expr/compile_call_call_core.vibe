@@ -55,7 +55,7 @@ import @vibe/compiler/codegen/common_base {
 }
 
 import @vibe/compiler/codegen/common_extractors {
-  array_contains_str, get_eident_name, get_eint_value
+  array_contains_str, ascription_call_value, get_eident_name, get_eint_value
 }
 
 import @vibe/compiler/codegen/wasm_emit {
@@ -175,6 +175,28 @@ fn cc_emit_truncate_release(buf: Bytes, args: Array[Expr], kind: Int, local_name
 }
 
 export fn compile_call(buf: Bytes, callee: Expr, args: Array[Expr], resolution: Array[Int], local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
+  if is_efn(callee) {
+    match ascription_call_value(callee, args) {
+      Some(value) => {
+        let nl = ce(buf, value, local_names, next_local, ctx, ld)
+        // Match the owning result of the old identity closure call. Borrowed
+        // arguments still need retaining, including the loop compensation.
+        let loop_borrow = ctx.enable_rc && cc_is_loop_borrowed_ident(value, ctx)
+        if ctx.enable_rc && (cc_is_projection(value) || cc_is_ref_cell_read(value, ctx) || cc_is_borrow_ret_call(value, ctx) || loop_borrow) {
+          if loop_borrow {
+            Array::push(ctx.loop_consumed_names, get_eident_name(value))
+          } else ()
+          Array::push(local_names, "__ascription_argdup")
+          emit_local_tee(buf, nl)
+          emit_rc_dup_guarded(buf, nl, ctx.rc_shadow, ctx.rc_dup_func_idx)
+          return nl + 1
+        } else {
+          return nl
+        }
+      },
+      None => ()
+    }
+  } else ()
   let operation = resolved_callee_operation(resolution)
   if is_eident(callee) && get_eident_name(callee) == "__region_run" && Array::length(args) == 1 {
     if ctx.region_ptr_addr >= 0 {
