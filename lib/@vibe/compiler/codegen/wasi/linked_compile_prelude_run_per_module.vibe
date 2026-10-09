@@ -16,7 +16,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/ast {
-  TypeExpr::is_array_of_int, builtin_ref
+  TypeExpr::is_array_of_int, builtin_ref, impl_method_owner
 }
 
 import @vibe/core {
@@ -431,6 +431,9 @@ export fn lc_exported_fn_without_return_annotation(stmts: Array[Stmt]) -> Bool {
       } else {
         ()
       },
+      SFnDecl(exported, _, EFn(_, _, _, ret, _, _), _, _) => if exported && ret == None {
+        found = true
+      } else (),
       _ => ()
     }
     i = i + 1
@@ -840,6 +843,9 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
     let src = Array::get(parts, pf)
     let dst: Array[Stmt] = []
     let src_export_block = oracle_export_block_names(src)
+    // An impl is part of the dependency interface. Its method targets are
+    // top-level bindings without an export flag, and must travel as signatures.
+    lc_add_impl_interface_bindings(src, src_export_block)
     let mut ps = 0
     while ps < Array::length(src) {
       if oracle_is_interface_stmt_with(Array::get(src, ps), src_export_block) {
@@ -1287,6 +1293,35 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
   // every later one rendering `Point_dep_<path>` for `Point`.
   namespace_rename_originals_reset()
   linked
+}
+
+/// Impl dictionaries refer to method bindings even without an export flag.
+/// Project their signatures with the impl; the shared interface form removes
+/// bodies, and the original dependency closure still controls visibility.
+fn lc_add_impl_interface_bindings(stmts: Array[Stmt], names: MutMap[String, Int]) -> Unit {
+  let owners: Array[String] = []
+  for stmt in stmts {
+    match stmt {
+      SImpl(tparams, _, trait_name, target) => Array::push(owners, String::concat(impl_method_owner(tparams, trait_name, target), "::")),
+      _ => ()
+    }
+  }
+  for stmt in stmts {
+    let name = match stmt {
+      SLet(_, _, n, _, EFn(_, _, _, _, _, _)) => n,
+      SFnDecl(_, n, EFn(_, _, _, _, _, _), _, _) => n,
+      _ => ""
+    }
+    if name != "" {
+      for owner in owners {
+        if String::starts_with(name, owner) {
+          MutMap::set(names, name, 1)
+        } else ()
+      }
+      ()
+    } else ()
+  }
+  ()
 }
 
 /// Outputs required to assemble and validate the lowered program.
