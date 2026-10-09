@@ -1372,16 +1372,7 @@ fn collect_call_records(expr: Expr, handled: Array[String], via: Array[(String, 
       ()
     },
     ELet(name, value, body, _) => {
-      let entry = match dh_value_alias_name(value) {
-        Some(src) => (name, scope_resolve(scope, src)),
-        None => match value {
-          EFn(_, _, _, _, _, _) => (name, bound_lambda_marker(value, scope)),
-          _ => {
-            collect_call_records(value, handled, via, scope, out)
-            (name, "")
-          }
-        }
-      }
+      let entry = let_scope_entry(name, value, handled, via, scope, out)
       collect_call_records(body, handled, via, scope_with(scope, entry), out)
     },
     ELetMut(name, value, body, _) => {
@@ -1496,11 +1487,12 @@ fn run_bound_lambda(marker: String, handled: Array[String], via: Array[(String, 
 }
 
 /// A call's argument. Where its value is a function -- a lambda, a bound
-/// lambda's name, or an `if` / `match` / sequence whose result is one -- that
-/// function is read under the call's (callee, k) (`arg_via`), as the callee is
-/// the one that runs it (Codex on #3409: `run(if c { () -> mk() } else { ..
-/// })`). Everything that runs before the call (a condition, a scrutinee, the
-/// head of a sequence, any other expression) is read under `via`.
+/// lambda's name, or an `if` / `match` / sequence / `let` block whose result
+/// is one -- that function is read under the call's (callee, k) (`arg_via`),
+/// as the callee is the one that runs it (Codex on #3409: `run(if c { () ->
+/// mk() } else { .. })`, `run({ let cb = () -> mk(); cb })`). Everything that
+/// runs before the call (a condition, a scrutinee, the head of a sequence, a
+/// `let`'s value, any other expression) is read under `via`.
 fn collect_arg_records(arg: Expr, handled: Array[String], arg_via: Array[(String, Int)], via: Array[(String, Int)], scope: Array[(String, String)], out: Array[(String, Array[String], Array[(String, Int)], String)]) -> Unit {
   match arg {
     EFn(_, _, _, _, _, _) => collect_runnable_records(arg, handled, arg_via, scope, out),
@@ -1535,7 +1527,27 @@ fn collect_arg_records(arg: Expr, handled: Array[String], arg_via: Array[(String
       collect_call_records(first, handled, via, scope, out)
       collect_arg_records(rest, handled, arg_via, via, scope, out)
     },
+    ELet(name, value, body, _) => {
+      let entry = let_scope_entry(name, value, handled, via, scope, out)
+      collect_arg_records(body, handled, arg_via, via, scope_with(scope, entry), out)
+    },
     _ => collect_call_records(arg, handled, via, scope, out)
+  }
+}
+
+/// The scope entry a `let name = value` adds, reading `value` now unless it
+/// is an alias (the source it names) or a lambda (a marker; it is read where
+/// it is used).
+fn let_scope_entry(name: String, value: Expr, handled: Array[String], via: Array[(String, Int)], scope: Array[(String, String)], out: Array[(String, Array[String], Array[(String, Int)], String)]) -> (String, String) {
+  match dh_value_alias_name(value) {
+    Some(src) => (name, scope_resolve(scope, src)),
+    None => match value {
+      EFn(_, _, _, _, _, _) => (name, bound_lambda_marker(value, scope)),
+      _ => {
+        collect_call_records(value, handled, via, scope, out)
+        (name, "")
+      }
+    }
   }
 }
 
