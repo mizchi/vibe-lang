@@ -1072,16 +1072,21 @@ export fn build_perform_fn_effs(stmts: Array[Stmt], env: TypeEnv, fn_names: Arra
 /// `mid` must cover `Box[Int]`. Each local binding's calls are recorded once
 /// (`collect_call_records`), and every bare label takes the instantiations its
 /// callees require of that effect (`callee_payloads_for`), until nothing
-/// changes. A label no callee instantiates stays bare, which is what keeps
+/// changes. Each round recomputes a binding's row from its declared one, so a
+/// callee that resolves in a later round still adds its instantiation (Codex
+/// on #3409: replacing the bare label in place froze it at the first
+/// callee's). A label no callee instantiates stays bare, which is what keeps
 /// `Console` and the other plain effects as they are. An alias (`let h = mk`)
 /// is a call of its source.
 fn resolve_bare_rows_through_callees(env: TypeEnv, first_local: Int, bodies: Array[Expr], alias_sources: Array[String], fn_names: Array[String], fn_effs: Array[Array[String]], fn_param_effs: Array[Array[Array[String]]]) -> Unit {
   let local_count = Array::length(bodies)
   let index = program_fn_index(fn_names)
   let records = array_empty()
+  let declared = array_empty()
   let mut any_bare = false
   let mut i = 0
   while i < local_count {
+    Array::push(declared, Array::get(fn_effs, first_local + i))
     let out = array_empty()
     let src = Array::get(alias_sources, i)
     if String::length(src) > 0 {
@@ -1109,24 +1114,21 @@ fn resolve_bare_rows_through_callees(env: TypeEnv, first_local: Int, bodies: Arr
       let recs = Array::get(records, li)
       if Array::length(recs) > 0 {
         let updated = array_empty()
-        let mut any = false
-        for label in Array::get(fn_effs, idx) {
-          let next = label
+        for label in Array::get(declared, li) {
           let fixed = if String::index_of(label, "[") < 0 && String::index_of(label, "::") < 0 {
             callee_payloads_for(label, recs, env, first_local, index, fn_effs, fn_param_effs)
           } else {
             []
           }
           if Array::length(fixed) > 0 {
-            any = true
             for item in fixed {
               Array::push(updated, item)
             }
           } else {
-            Array::push(updated, next)
+            Array::push(updated, label)
           }
         }
-        if any {
+        if !labels_same(updated, Array::get(fn_effs, idx)) {
           Array::set(fn_effs, idx, updated)
           changed = true
         } else {
@@ -1138,6 +1140,24 @@ fn resolve_bare_rows_through_callees(env: TypeEnv, first_local: Int, bodies: Arr
       li = li + 1
     }
     rounds = rounds + 1
+  }
+}
+
+fn labels_same(a: Array[String], b: Array[String]) -> Bool {
+  if Array::length(a) != Array::length(b) {
+    false
+  } else {
+    let mut same = true
+    let mut i = 0
+    while i < Array::length(a) {
+      if Array::get(a, i) != Array::get(b, i) {
+        same = false
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    same
   }
 }
 
@@ -1252,11 +1272,31 @@ fn collect_call_records(expr: Expr, handled: Array[String], via: Array[(String, 
         Array::push(inner, h)
       }
       collect_call_records(body, inner, via, scope, out)
-      for arm in arms {
-        let (_, arm_body) = arm
-        collect_call_records(arm_body, handled, via, scope, out)
+      collect_arm_records(arms, handled, via, scope, out)
+    },
+    EMatch(scrutinee, arms) => {
+      collect_call_records(scrutinee, handled, via, scope, out)
+      collect_arm_records(arms, handled, via, scope, out)
+    },
+    EForIn(item, index_name, iter, body) => {
+      collect_call_records(iter, handled, via, scope, out)
+      let mut inner = scope_with(scope, (item, ""))
+      match index_name {
+        Some(ix) => {
+          inner = scope_with(inner, (ix, ""))
+        },
+        None => ()
       }
-      ()
+      collect_call_records(body, handled, via, inner, out)
+    },
+    ELoop(pairs, body) => {
+      let mut inner = scope
+      for pair in pairs {
+        let (pname, value) = pair
+        collect_call_records(value, handled, via, scope, out)
+        inner = scope_with(inner, (pname, ""))
+      }
+      collect_call_records(body, handled, via, inner, out)
     },
     ECall(callee_expr, args, _, _) => {
       let (target, off) = match callee_expr {
@@ -1322,6 +1362,21 @@ fn collect_call_records(expr: Expr, handled: Array[String], via: Array[(String, 
       ()
     }
   }
+}
+
+/// Each arm's body, with the names its pattern binds in scope.
+fn collect_arm_records(arms: Array[(Pat, Expr)], handled: Array[String], via: Array[(String, Int)], scope: Array[(String, String)], out: Array[(String, Array[String], Array[(String, Int)], Int)]) -> Unit {
+  for arm in arms {
+    let (pat, arm_body) = arm
+    let bound = array_empty()
+    collect_pat_binds_into(pat, bound)
+    let mut inner = scope
+    for b in bound {
+      inner = scope_with(inner, (b, ""))
+    }
+    collect_call_records(arm_body, handled, via, inner, out)
+  }
+  ()
 }
 
 /// The calls a function value makes when it runs: a lambda's body with its
