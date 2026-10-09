@@ -1572,15 +1572,22 @@ export fn effect_inst_unnamed_args_check(env: TypeEnv, args: Array[Expr], arg_ty
   out
 }
 
-/// #3387: `effect_inst_unnamed_args_check` for one argument of a builtin
-/// whose callback parameter's type has no row at all (`Array::map`). It calls
-/// the worker directly rather than passing that function one-element array
-/// literals: the stage2 compiler miscompiles that shape (#3406).
-export fn effect_inst_rowless_arg_check(env: TypeEnv, arg: Expr, arg_ty: Type, s: Subst, callee_name: String, defs: Array[TypeDef], errors: Array[String]) -> Subst {
+/// #3387: `effect_inst_unnamed_args_check` for one argument whose parameter
+/// type `param_ty` is already known: a `TaskGroup::spawn` callback, a
+/// `TaskGroup::run` body. It calls the worker directly rather than passing
+/// `effect_inst_unnamed_args_check` one-element array literals: the stage2
+/// compiler miscompiles that shape (#3406).
+export fn effect_inst_unnamed_arg_check(env: TypeEnv, arg: Expr, arg_ty: Type, param_ty: Type, s: Subst, callee_name: String, defs: Array[TypeDef], errors: Array[String]) -> Subst {
   let read = (row: String) -> Array[Type] {
     array_empty()
   }
-  effect_inst_value_check(env, arg, subst_apply(s, arg_ty), CtFn(array_empty(), CtUnknown, None), s, read, "the function passed to `\{callee_name}`", "the parameter's row", defs, errors, 2)
+  effect_inst_value_check(env, arg, subst_apply(s, arg_ty), subst_apply(s, param_ty), s, read, "the function passed to `\{callee_name}`", "the parameter's row", defs, errors, 2)
+}
+
+/// #3387: `effect_inst_unnamed_arg_check` for a builtin's callback parameter,
+/// whose type has no row at all (`Array::map`, `Array::filter`).
+export fn effect_inst_rowless_arg_check(env: TypeEnv, arg: Expr, arg_ty: Type, s: Subst, callee_name: String, defs: Array[TypeDef], errors: Array[String]) -> Subst {
+  effect_inst_unnamed_arg_check(env, arg, arg_ty, CtFn(array_empty(), CtUnknown, None), s, callee_name, defs, errors)
 }
 
 /// Codex on #3340: `effect_inst_arg_check` for a field call `r.f(..)`, whose

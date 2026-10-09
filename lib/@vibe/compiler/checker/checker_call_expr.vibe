@@ -181,6 +181,7 @@ import ./checker_row_effect_inst.vibe {
   effect_inst_arg_check,
   effect_inst_call_check,
   effect_inst_rowless_arg_check,
+  effect_inst_unnamed_arg_check,
   effect_inst_unnamed_args_check,
   field_callback_arg_env,
   field_effect_inst_arg_check
@@ -1555,7 +1556,9 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                             ()
                           }
                           match unify(CtFn(body_params, body_ret, body_eff), bt, s_body) {
-                            Some(s_unified) => {
+                            Some(s_body_unified) => {
+                              // #3387: see `TaskGroup::spawn` below.
+                              let s_unified = effect_inst_unnamed_arg_check(env, body_arg, bt, CtFn(body_params, body_ret, body_eff), s_body_unified, name, defs, errors)
                               let zonked_ret = subst_apply(s_unified, body_ret)
                               // #3343 (Codex on #3359): a value whose type
                               // may hide the region -- a struct built from
@@ -1827,7 +1830,15 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                   let (a0_ty, s1, c2) = check_child(Array::get(args, 0), env, defs, s0, c1, errors, tytab, capture, lane)
                   let (a1_ty, s2, c3) = check_child(Array::get(args, 1), env, defs, s1, c2, errors, tytab, capture, lane)
                   let arg_tys = [a0_ty, a1_ty]
-                  let s3 = unify_call_args(param_tys, arg_tys, args, s2, errors, name, callee_off)
+                  let s3_unified = unify_call_args(param_tys, arg_tys, args, s2, errors, name, callee_off)
+                  // #3387: the task's row names the effects it forwards by a
+                  // row variable, so a generic effect it performs is the
+                  // enclosing body's.
+                  let s3 = if Array::length(param_tys) == 2 {
+                    effect_inst_unnamed_arg_check(env, Array::get(args, 1), a1_ty, Array::get(param_tys, 1), s3_unified, name, defs, errors)
+                  } else {
+                    s3_unified
+                  }
                   report_spawnable_violations(env, s3, defs, a0_ty, Array::get(args, 1), errors, name, callee_off)
                   (tab_call_ty(tytab, call_off, subst_apply(s3, ret_ty), capture, lane), s3, c3)
                 },
@@ -1868,8 +1879,10 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
               let mut ai = 0
               let mut s2 = s
               let mut c2 = c
+              let direct_arg_tys: Array[Type] = []
               while ai < alen {
                 let (at, ns, nc) = check_child(Array::get(args, ai), env, defs, s2, c2, errors, tytab, capture, lane)
+                Array::push(direct_arg_tys, at)
                 if name == "__to_string" && ai == 0 {
                   check_interp_formal(at, ns, env, errors, call_off)
                 }
@@ -1930,7 +1943,17 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                 c2 = bound_c
                 ai = ai + 1
               }
-              (tab_call_ty(tytab, call_off, subst_apply(s2, ret_ty), capture, lane), s2, c2)
+              // #3387: the element-callback builtins pass each element to
+              // the callback, as `Array::map` does, and their callback
+              // parameter names no row, so a generic effect it performs is
+              // compared with the one in scope once the element is bound.
+              let s_hof = if alen == 2 && (name == "Array::filter" || name == "Array::any" || name == "Array::all" || name == "Array::find") {
+                let elem_s = check_hof_param_vs_elem(subst_apply(s2, Array::get(direct_arg_tys, 0)), subst_apply(s2, Array::get(direct_arg_tys, 1)), 0, s2, errors, String::concat(name, " function parameter type mismatch"))
+                effect_inst_rowless_arg_check(env, Array::get(args, 1), Array::get(direct_arg_tys, 1), elem_s, name, defs, errors)
+              } else {
+                s2
+              }
+              (tab_call_ty(tytab, call_off, subst_apply(s_hof, ret_ty), capture, lane), s_hof, c2)
             },
             None => {
               // #736 residual: method-style call with a bare UNRESOLVED callee —
