@@ -1398,10 +1398,22 @@ fn collect_call_records(expr: Expr, handled: Array[String], via: Array[(String, 
       collect_call_records(value, handled, via, scope, out)
       collect_call_records(body, handled, via, scope_with(scope, (name, "")), out)
     },
-    ELetRec(name, value, body) => {
-      let inner = scope_with(scope, (name, ""))
-      collect_runnable_records(value, handled, via, inner, out)
-      collect_call_records(body, handled, via, inner, out)
+    ELetRec(name, value, body) => match dh_value_alias_name(value) {
+      // `let rec h = mk` is an alias like `let h = mk` (Codex on #3409); the
+      // source is resolved outside the binding, which cannot name itself.
+      Some(src) => {
+        let target = if src == name {
+          ""
+        } else {
+          scope_resolve(scope, src)
+        }
+        collect_call_records(body, handled, via, scope_with(scope, (name, target)), out)
+      },
+      None => {
+        let inner = scope_with(scope, (name, ""))
+        collect_runnable_records(value, handled, via, inner, out)
+        collect_call_records(body, handled, via, inner, out)
+      }
     },
     EFn(_, _, _, _, _, _) => collect_runnable_records(expr, handled, via, scope, out),
     EIdent(x, _) => {
