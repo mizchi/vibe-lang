@@ -1,0 +1,110 @@
+// #3406: a match or destructure binder of a BORROWED scrutinee, renamed by a
+// plain `let`, then handed to an OWNED parameter. The bind retains the binder
+// once per consume (the `let` among them), so the alias owns a reference and
+// must take its plan's dups like any owned binding. Before the fix the alias
+// skipped them: each call released the scrutinee's array once more than it
+// retained it, so the second call read freed memory (VIBE_RC=shadow traps in
+// `__rt_shadow_uaf_abort`; plain RC hands the freed block to the next
+// allocation, which `refill` overwrites).
+enum Ty {
+  F(Array[Int]);
+  I
+}
+
+fn own_a(zs: Array[Int]) -> Int {
+  Array::length(zs) * 10 + Array::get(zs, 0)
+}
+
+// A fresh literal at the owning position makes `own_a`'s parameter OWNED
+// (ADR-0092 borrow inference), so the callee releases what it is given.
+fn force_owned() -> Int {
+  own_a([1])
+}
+
+fn refill() -> Int {
+  let a = [7, 7]
+  let b = [8, 8]
+  let c = [9, 9]
+  Array::get(a, 0) + Array::get(b, 0) + Array::get(c, 0)
+}
+
+fn alias_twice(t: Ty) -> Int {
+  match t {
+    F(ps) => {
+      let alias = ps
+      own_a(alias) + own_a(alias)
+    },
+    I => 0
+  }
+}
+
+fn alias_transitive(t: Ty) -> Int {
+  match t {
+    F(ps) => {
+      let alias = ps
+      let a2 = alias
+      own_a(a2) + own_a(a2)
+    },
+    I => 0
+  }
+}
+
+fn alias_once_then_read(t: Ty) -> Int {
+  match t {
+    F(ps) => {
+      let alias = ps
+      let n = own_a(alias)
+      n + Array::length(alias)
+    },
+    I => 0
+  }
+}
+
+fn destructure_alias(t: (Array[Int], Int)) -> Int {
+  let (ps, k) = t
+  let alias = ps
+  own_a(alias) + own_a(alias) + k
+}
+
+fn first(t: Ty) -> Int {
+  match t {
+    F(ps) => Array::get(ps, 0),
+    I => -1
+  }
+}
+
+test "alias of a match binder passed twice to an owned parameter" {
+  let t = F([1, 2])
+  let r1 = alias_twice(t)
+  let f1 = refill()
+  let r2 = alias_twice(t)
+  let f2 = refill()
+  inspect((r1, r2, first(t), f1 + f2, force_owned()), "(42, 42, 1, 48, 11)")
+}
+
+test "transitive alias of a match binder" {
+  let t = F([3, 4])
+  let r1 = alias_transitive(t)
+  let f1 = refill()
+  let r2 = alias_transitive(t)
+  let f2 = refill()
+  inspect((r1, r2, first(t), f1 + f2), "(46, 46, 3, 48)")
+}
+
+test "alias passed once then read" {
+  let t = F([5, 6])
+  let r1 = alias_once_then_read(t)
+  let f1 = refill()
+  let r2 = alias_once_then_read(t)
+  inspect((r1, r2, first(t), f1), "(27, 27, 5, 24)")
+}
+
+test "alias of a destructure binder passed twice" {
+  let t = ([2, 3, 4], 1)
+  let r1 = destructure_alias(t)
+  let f1 = refill()
+  let r2 = destructure_alias(t)
+  let f2 = refill()
+  let (xs, _) = t
+  inspect((r1, r2, Array::get(xs, 0), f1 + f2), "(65, 65, 2, 48)")
+}

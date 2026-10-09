@@ -84,7 +84,8 @@ import ./checker_merge_capture_provenance.vibe {
   int_array_has,
   merge_provenance_row,
   note_effect_inst_used,
-  record_eq_formal_var
+  record_eq_formal_var,
+  row_only_formal_vars
 }
 
 import ./checker_builtin_arg_head_rest.vibe {
@@ -523,6 +524,128 @@ export fn callback_arg_env(env: TypeEnv, arg: Expr, param_ty: Type, s: Subst, ca
   callback_arg_env_read(env, arg, param_ty, s, callee, (row: String) -> Array[Type] {
     callback_row_instantiations(row, callee, defs)
   })
+}
+
+/// #3386: a generic callee's own row hands its effects to whatever is in
+/// scope at the call -- the nearest `handle`, else the enclosing function's
+/// row. A formal only that row names (`fn run[T](f: () -> Int with Box[T])
+/// -> Int with Box[T]`) is therefore the type the scope gives the effect, and
+/// it is fixed here, before the arguments are checked, so a callback's
+/// `perform Box::Put(12345)` under a caller's `with Box[String]` is checked
+/// at `String`. Before, `T` stayed free, the lambda chose `Int`, and the
+/// handler read the `Int` as a `String`. Only the variables
+/// `label_row_only_formals` made are fixed here: a formal an argument
+/// reaches is the argument's to fix, and the row comparison judges it. A label
+/// the scope cannot take is left alone for the same comparison.
+export fn callee_row_scope_subst(env: TypeEnv, callee_ty: Type, s: Subst) -> Subst {
+  match callee_ty {
+    CtFn(_, _, row) => {
+      let mut out = s
+      for label in effect_inst_labels(row) {
+        let (eff, id) = label
+        if int_array_has(row_only_formal_vars, id) {
+          match env_lookup(env, effect_inst_env_key(eff)) {
+            Some(CtTuple(scope)) => if Array::length(scope) == 1 {
+              match unify(CtVar(id), Array::get(scope, 0), out) {
+                Some(ns) => {
+                  out = ns
+                },
+                None => ()
+              }
+            },
+            _ => ()
+          }
+        }
+      }
+      out
+    },
+    _ => s
+  }
+}
+
+/// #3386: a generic callee's formal that only its rows name (`T` of `fn
+/// run[T](f: () -> Int with Box[T]) -> Int with Box[T]`) has no place in the
+/// instantiated type -- rows are text -- so nothing at the call could read the
+/// type this call gives it. Each such formal gets a fresh variable here, and
+/// every row item that is exactly `E[formal]`, in the callee's own row and in
+/// its parameters' and result's function types, is labelled with it
+/// (`#einst:E:<id>`). The labels are what the callback hand-off, the argument
+/// checks and `callee_row_scope_subst` read; the written items stay for the
+/// readers of the text.
+export fn label_row_only_formals(scheme: Type, inst: Type, defs: Array[TypeDef], c: Int) -> (Type, Int) {
+  match scheme {
+    CtForAll(_, _, _) => match generic_decl_of_scheme(scheme) {
+      Some((tps, dparams, dret)) => {
+        let (name_ids, id_tys) = callee_formal_ids(Some((tps, dparams, dret)), scheme, inst, defs)
+        let formals: Array[(String, Int)] = []
+        let mut next = c
+        for tp in tps {
+          let fname = type_param_name(tp)
+          // Reached: a parameter or the result spells it, so the
+          // instantiated type already carries this call's variable.
+          let mut reached = false
+          for name_id in name_ids {
+            let (nname, nid) = name_id
+            if nname == fname {
+              for id_ty in id_tys {
+                if id_ty.0 == nid {
+                  reached = true
+                }
+              }
+            }
+          }
+          if !reached && type_param_arity(tp) == 0 {
+            let (_, nc) = fresh_var(next)
+            Array::push(formals, (fname, nc - 1))
+            Array::push(row_only_formal_vars, nc - 1)
+            next = nc
+          }
+        }
+        if Array::length(formals) == 0 {
+          (inst, c)
+        } else {
+          (label_row_only_type(inst, formals, defs), next)
+        }
+      },
+      None => (inst, c)
+    },
+    _ => (inst, c)
+  }
+}
+
+fn label_row_only_type(t: Type, formals: Array[(String, Int)], defs: Array[TypeDef]) -> Type {
+  match t {
+    CtFn(params, ret, row) => CtFn(for p in params {
+      label_row_only_type(p, formals, defs)
+    }, label_row_only_type(ret, formals, defs), label_row_only_row(row, formals, defs)),
+    _ => t
+  }
+}
+
+fn label_row_only_row(row: Option[String], formals: Array[(String, Int)], defs: Array[TypeDef]) -> Option[String] {
+  match row {
+    Some(text) => {
+      let mut out = row
+      for raw in row_items_top_level(text) {
+        let label = String::trim(raw)
+        let bi = String::index_of(label, "[")
+        if bi > 0 && String::ends_with(label, "]") {
+          let base = label[0: bi]
+          let arg = String::trim(label[bi + 1: String::length(label) - 1])
+          let etps = effect_tparams(defs, base)
+          if Array::length(etps) == 1 && type_param_arity(Array::get(etps, 0)) == 0 {
+            for f in formals {
+              if f.0 == arg {
+                out = merge_provenance_row(out, Some(effect_inst_label(base, f.1)))
+              }
+            }
+          }
+        }
+      }
+      out
+    },
+    None => None
+  }
 }
 
 /// Codex on #3340: the environment a field call `r.f(..)` checks the argument
@@ -1321,7 +1444,29 @@ export fn bind_lambda_effect_instantiations(env: TypeEnv, row: Option[String], d
     None => top_level,
     Some(_) => false
   }
-  if generic || top_level_pure {
+  if generic {
+    // #3411: a generic declaration's BARE label still gets a variable for its
+    // payload, so `generic_bare_row_payload_errors` can see what the body
+    // fixes it to. Written labels are left to the scheme, as before.
+    let mut gout = base
+    let mut gs = s
+    let mut gc = c
+    for d in defs {
+      match d {
+        TDEffect(name, _, etps) => if Array::length(etps) == 1 && type_param_arity(Array::get(etps, 0)) == 0 && effect_inst_row_has_bare(row, name) {
+          let (tid, nc) = fresh_unbound_var(gs, gc)
+          gc = nc
+          let own_inst = CtTuple([CtVar(tid)])
+          gout = env_bind(env_bind(gout, effect_inst_env_key(name), own_inst), effect_row_inst_key(name), own_inst)
+          Array::push(pairs, (name, tid))
+        } else {
+          ()
+        },
+        _ => ()
+      }
+    }
+    (gout, gs, gc, pairs)
+  } else if top_level_pure {
     (base, s, c, pairs)
   } else {
     let mut out = base
@@ -1383,6 +1528,47 @@ export fn bind_lambda_effect_instantiations(env: TypeEnv, row: Option[String], d
     }
     (out, s1, c1, pairs)
   }
+}
+
+/// #3411: a generic declaration's bare `with Box` publishes no payload, so a
+/// caller's `with Box[String]` covered it by name and `mk(12345)` reached a
+/// `Box[String]` handler, which read the `Int` as a string. When the body
+/// fixes the payload -- to one of the declaration's formals or to a concrete
+/// type -- the row has to say so. `pairs` are the bare labels'
+/// variables (`bind_lambda_effect_instantiations`), `s` the substitution
+/// after the body.
+export fn generic_bare_row_payload_errors(pairs: Array[(String, Int)], tparams: Array[String], tparam_ids: Array[Int], s: Subst, errors: Array[String]) -> Unit {
+  for pair in pairs {
+    let (name, tid) = pair
+    let payload = subst_apply(s, CtVar(tid))
+    let mut formal = ""
+    let mut fi = 0
+    while fi < Array::length(tparam_ids) && fi < Array::length(tparams) && formal == "" {
+      if types_equal(subst_apply(s, CtVar(Array::get(tparam_ids, fi))), payload) {
+        formal = type_param_name(Array::get(tparams, fi))
+      }
+      fi = fi + 1
+    }
+    let written = if formal != "" {
+      formal
+    } else {
+      match payload {
+        CtVar(_) => "",
+        CtUnknown => "",
+        _ => if Array::length(collect_tvars(payload)) == 0 {
+          type_to_string(payload)
+        } else {
+          ""
+        }
+      }
+    }
+    if written != "" {
+      Array::push(errors, "write `with \{name}[\{written}]`: this generic function performs `\{name}` at `\{written}`, and a bare `with \{name}` lets a caller's `\{name}[..]` of another type cover it")
+    } else {
+      ()
+    }
+  }
+  ()
 }
 
 /// A variable `s` does not bind yet, and the next counter. The counter can
@@ -1576,8 +1762,9 @@ export fn effect_inst_unnamed_args_check(env: TypeEnv, args: Array[Expr], arg_ty
 /// #3387: `effect_inst_unnamed_args_check` for one argument whose parameter
 /// type `param_ty` is already known: a `TaskGroup::spawn` callback, a
 /// `TaskGroup::run` body. It calls the worker directly rather than passing
-/// `effect_inst_unnamed_args_check` one-element array literals: the stage2
-/// compiler miscompiles that shape (#3406).
+/// `effect_inst_unnamed_args_check` one-element array literals: a compiler
+/// before #3406's codegen fix miscompiles that shape, and the committed seed
+/// is one. Fold this into the worker once the seed carries the fix.
 export fn effect_inst_unnamed_arg_check(env: TypeEnv, arg: Expr, arg_ty: Type, param_ty: Type, s: Subst, callee_name: String, defs: Array[TypeDef], errors: Array[String]) -> Subst {
   let read = (row: String) -> Array[Type] {
     array_empty()

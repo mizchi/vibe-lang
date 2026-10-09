@@ -39,6 +39,7 @@ import @vibe/compiler/lowering/effects/queries {
   edp_rq_fold,
   edp_split_qualified,
   edp_str_array_contains,
+  scps_pat_binds_resume,
   scps_ty_has_fn
 }
 
@@ -1561,13 +1562,28 @@ export fn edp_pat_bind_names(pat: Pat) -> Array[String] {
   }
 }
 
+/// #3379: a binder named `resume` inside the arm shadows the continuation,
+/// the way the checker types it, so the strip stops there: `let resume = (s:
+/// String) -> ..; return resume("abcd")` calls the lambda.
 export fn edp_strip_tail_resume(expr: Expr) -> Expr {
   match expr {
     EIf(c, t, e) => EIf(c, edp_strip_tail_resume(t), edp_strip_tail_resume(e)),
     EMatch(s, arms) => EMatch(s, edp_strip_tail_resume_arms(arms)),
-    ELet(n, v, b, off) => ELet(n, v, edp_strip_tail_resume(b), off),
-    ELetMut(n, v, b, off) => ELetMut(n, v, edp_strip_tail_resume(b), off),
-    ELetRec(n, v, b) => ELetRec(n, v, edp_strip_tail_resume(b)),
+    ELet(n, v, b, off) => if n == "resume" {
+      expr
+    } else {
+      ELet(n, v, edp_strip_tail_resume(b), off)
+    },
+    ELetMut(n, v, b, off) => if n == "resume" {
+      expr
+    } else {
+      ELetMut(n, v, edp_strip_tail_resume(b), off)
+    },
+    ELetRec(n, v, b) => if n == "resume" {
+      expr
+    } else {
+      ELetRec(n, v, edp_strip_tail_resume(b))
+    },
     ESeq(a, b) => ESeq(a, edp_strip_tail_resume(b)),
     EAssign(n, v, c, target_off) => EAssign(n, v, edp_strip_tail_resume(c), target_off),
     EAssignOp(n, op, v, c, target_off) => EAssignOp(n, op, v, edp_strip_tail_resume(c), target_off),
@@ -1587,7 +1603,11 @@ export fn edp_strip_tail_resume(expr: Expr) -> Expr {
 fn edp_strip_tail_resume_arms(arms: Array[(Pat, Expr)]) -> Array[(Pat, Expr)] {
   for a in arms {
     let (p, ex) = a
-    (p, edp_strip_tail_resume(ex))
+    if scps_pat_binds_resume(p) {
+      (p, ex)
+    } else {
+      (p, edp_strip_tail_resume(ex))
+    }
   }
 }
 

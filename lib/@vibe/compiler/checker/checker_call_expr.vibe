@@ -177,6 +177,7 @@ import ./checker_row_effect_inst.vibe {
   bind_generic_result_effect_instantiations,
   callback_arg_env,
   callback_prefix_subst,
+  callee_row_scope_subst,
   effect_inst_annotation_check,
   effect_inst_arg_check,
   effect_inst_call_check,
@@ -184,7 +185,8 @@ import ./checker_row_effect_inst.vibe {
   effect_inst_unnamed_arg_check,
   effect_inst_unnamed_args_check,
   field_callback_arg_env,
-  field_effect_inst_arg_check
+  field_effect_inst_arg_check,
+  label_row_only_formals
 }
 
 import ./checker_merge_capture_provenance.vibe {
@@ -2022,7 +2024,10 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                   let callee_binding = env_lookup_unless_synthesized_builtin(env, lookup_name, callee_off)
                   let (ct, s1, c1) = match callee_binding {
                     Some(t) => {
-                      let (ti, nc, new_bounds) = instantiate(t, c)
+                      let (ti0, nc0, new_bounds) = instantiate(t, c)
+                      // #3386: a formal only the rows name gets this call's
+                      // own variable.
+                      let (ti, nc) = label_row_only_formals(t, ti0, defs, nc0)
                       // #3027: the handle check reads a generic callee's
                       // instantiation at this call to resolve a formal its
                       // row names.
@@ -2065,7 +2070,7 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                   let alen = Array::length(args)
                   let arg_tys = array_empty()
                   let mut ai = 0
-                  let mut s2 = s1
+                  let mut s2 = callee_row_scope_subst(env, ct, s1)
                   let mut c2 = c1
                   while ai < alen {
                     let arg = Array::get(args, ai)

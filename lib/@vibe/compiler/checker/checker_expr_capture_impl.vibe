@@ -102,7 +102,7 @@ import ./checker_call_expr.vibe {
 }
 
 import ./checker_row_effect_inst.vibe {
-  bind_generic_value_effect_instantiations, bind_struct_field_effect_instantiations, struct_field_effect_inst_check
+  bind_generic_value_effect_instantiations, bind_struct_field_effect_instantiations, label_row_only_formals, struct_field_effect_inst_check
 }
 
 import ./checker_closure_capture_row.vibe {
@@ -668,7 +668,15 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         } else {
           ()
         }
-        let (ti0, c0, new_bounds) = instantiate(t, c)
+        let (ti00, c00, new_bounds) = instantiate(t, c)
+        // #3386: a formal only the rows name gets this instantiation's own
+        // variable. A bare `let g = f` alias is left to the effect pass, which
+        // respells its rows (see the `own_row` flag below).
+        let (ti0, c0) = if let_rhs {
+          (ti00, c00)
+        } else {
+          label_row_only_formals(t, ti00, defs, c00)
+        }
         // #3387: the rows of a generic function taken as a value are bound
         // to this instantiation here, before the value travels.
         let (ti, s0, c1) = bind_generic_value_effect_instantiations(t, ti0, defs, s, c0, !let_rhs)
@@ -1035,21 +1043,13 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         }
         let mut result_ty = CtUnknown
         let mut result_anchored = false
-        // Whether to cross-check arm types. Enabled only when the first arm's
-        // type resolves to a SIMPLE scalar (Int/Double/Bool/String/Char) — that
-        // covers the real bug (`match x { 0 => 1, _ => "s" }`) while skipping
-        // the per-arm `subst_apply` for matches whose arms yield large tuple /
-        // struct / function types (e.g. the compiler's own `(Type, Subst, Int)`
-        // returning matches), which would otherwise balloon the self-compile
-        // heap. CtUnknown/CtVar/aggregate first arms are left unchecked.
-        let mut check_arms = false
-        // #941: cross-check arms for Option⇔Result railway-head conflicts
-        // when the first arm's type is railway-headed. The full aggregate
-        // cross-check stays off (heap cost, see `check_arms` above), but this
-        // one conflict is both cheap (head-only) and always genuine — it is
-        // exactly the `let*` desugar's failure track (`Err(e)` / `None`)
-        // yielding the WRONG monad into a match whose other arms yield the
-        // function's annotated one (docs/user/reference/cheatsheet.md #635).
+        // #3382: EVERY arm after the anchoring one is checked against it. The
+        // check used to run only when the first arm was a scalar, so a struct
+        // or tuple first arm let `_ => [5]` be returned as a `P`. The narrowing
+        // came from #667, when the per-arm `subst_apply` on the compiler's own
+        // aggregate-typed matches pushed the seed's self-compile heap over its
+        // ~64MB cap; that cap is gone (#3353 removed the same narrowing from
+        // array literals).
         let mut si = s1
         let mut ci = c1
         let mut ai = 0
@@ -1086,15 +1086,6 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           if !result_anchored && !arm_tail_all_return(body) {
             result_anchored = true
             result_ty = arm_ty
-            let r0 = subst_apply(si, arm_ty)
-            check_arms = match r0 {
-              CtInt => true,
-              CtDouble => true,
-              CtBool => true,
-              CtString => true,
-              CtChar => true,
-              _ => false
-            }
           } else if !result_anchored {
             ()
           } else {
@@ -1104,28 +1095,29 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               si = refine_open_option_branch(result_ty, arm_ty, si)
               result_ty = merge_value_effect_provenance(result_ty, arm_ty, si)
             }
-            if check_arms {
-              // Tolerate a `CtUnit` arm (statement-position match); rely on
-              // check_assignable's ground/ground gate otherwise. Also tolerate a
-              // DIVERGING arm whose body is an early `return` (#635): `val?`
-              // lowers to `match val { Some(v) => v, None => return None }` — the
-              // `return` arm yields no value to the match, so it must not force
-              // the match's result type (it would clash `T` vs `Option[T]`).
-              let r2 = subst_apply(si, arm_ty)
-              si = if arm_tail_all_return(body) {
-                si
-              } else {
-                match r2 {
-                  CtUnit => si,
-                  _ => if rk != 0 {
-                    si
-                  } else {
-                    check_assignable(result_ty, r2, si, errors, "match arms have incompatible types", tail_expr_off(body))
+            // Tolerate a `CtUnit` arm (statement-position match); rely on
+            // check_assignable's ground/ground gate otherwise. Also tolerate a
+            // DIVERGING arm whose body is an early `return` (#635): `val?`
+            // lowers to `match val { Some(v) => v, None => return None }` — the
+            // `return` arm yields no value to the match, so it must not force
+            // the match's result type (it would clash `T` vs `Option[T]`).
+            let r2 = subst_apply(si, arm_ty)
+            si = if arm_tail_all_return(body) {
+              si
+            } else {
+              match r2 {
+                CtUnit => si,
+                _ => if rk != 0 {
+                  si
+                } else {
+                  // A `Unit` first arm is a statement-position match, the
+                  // way a `Unit` branch makes an `if` a statement.
+                  match subst_apply(si, result_ty) {
+                    CtUnit => si,
+                    _ => check_assignable(result_ty, r2, si, errors, "match arms have incompatible types", tail_expr_off(body))
                   }
                 }
               }
-            } else {
-              ()
             }
           }
           ai = ai + 1
@@ -2299,11 +2291,24 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           // merged defs no longer contain. The typo detection above still
           // fires for the common case (the struct EXISTS and a field name is
           // wrong).
+          //
+          // #3405: when the field set resolves to no struct either, nothing
+          // declares or imports `rn`. The literal used to be typed unknown,
+          // which unifies with everything, so `let n: String = Nope::{ v: 1 }`
+          // checked clean and read the struct as a string.
           None => {
             let s2f = check_record_fields(defs, field_tys, s1, errors)
             let rec_tyf = match resolve_record_struct_name(defs, field_tys) {
               Some(sname) => CtStruct(sname),
-              None => CtUnknown
+              None => {
+                let lit_off = if flen > 0 {
+                  railway_expr_off(Array::get(fields, 0).1)
+                } else {
+                  -1
+                }
+                Array::push(errors, "unknown type `\{rn}` in struct literal -- declare `struct \{rn} { .. }`, or import it (`import ./module.vibe { struct \{rn} }`)\{off_marker(lit_off)}")
+                CtUnknown
+              }
             }
             (rec_tyf, s2f, c1)
           }

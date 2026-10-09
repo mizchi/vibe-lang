@@ -20,6 +20,10 @@ import ./module_graph_path.vibe {
   dir_of_path
 }
 
+import ./exception_effect.vibe {
+  is_exception_operation_name
+}
+
 import ./inline_wasm_marker.vibe {
   inline_wasm_marker_name, wat_callee_names, wat_rewrite_callees
 }
@@ -168,6 +172,58 @@ fn rewrite_alias_arms_ix(arms: Array[(Pat, Expr)], am: AliasIdx) -> Array[(Pat, 
     i = i + 1
   }
   out
+}
+
+/// #3379: an effect operation's arm binds `resume` to its continuation, so
+/// an imported `fn resume` is not what `resume` names there. Renaming it to
+/// the import's target made `Op => resume(7)` call the function instead of
+/// resuming; a top-level `fn resume` of the same module already resolved to
+/// the continuation. An exception arm binds no `resume`, so it keeps the
+/// import.
+fn rewrite_alias_handle_arms_ix(arms: Array[(Pat, Expr)], am: AliasIdx) -> Array[(Pat, Expr)] {
+  let mut binds_resume = false
+  let mut bi = 0
+  while bi < Array::length(arms) && !binds_resume {
+    binds_resume = handle_arm_binds_resume(Array::get(arms, bi).0)
+    bi = bi + 1
+  }
+  if !binds_resume {
+    rewrite_alias_arms_ix(arms, am)
+  } else {
+    let without_resume = aliasidx_without_name(am, "resume")
+    let mut out = arms
+    let mut copied = false
+    let mut i = 0
+    while i < Array::length(arms) {
+      let arm = Array::get(arms, i)
+      let m = alias_marks()
+      let arm_aliases = if handle_arm_binds_resume(arm.0) {
+        without_resume
+      } else {
+        am
+      }
+      let r = Array::get(rewrite_alias_arms_ix([arm], arm_aliases), 0)
+      if copied {
+        Array::push(out, r)
+      } else if alias_marks() != m {
+        out = Array::slice(arms, 0, i)
+        Array::push(out, r)
+        copied = true
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    out
+  }
+}
+
+fn handle_arm_binds_resume(p: Pat) -> Bool {
+  match p {
+    PCtor(label, _) => String::index_of(label, "::") > 0 && !is_exception_operation_name(label),
+    POr(l, r) => handle_arm_binds_resume(l) && handle_arm_binds_resume(r),
+    _ => false
+  }
 }
 
 /// Type arguments (`TyApp`, `TyTuple`, `TyFn` params), same sharing.
@@ -601,7 +657,7 @@ export fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
       EHandle(body, arms) => {
         let m = alias_marks()
         let b2 = rewrite_alias_expr_ix(body, am)
-        let arms2 = rewrite_alias_arms_ix(arms, am)
+        let arms2 = rewrite_alias_handle_arms_ix(arms, am)
         if alias_marks() == m {
           expr
         } else {
