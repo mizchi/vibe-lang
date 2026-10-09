@@ -270,7 +270,7 @@ there is no separate finalizer stack.
 The evidence and suspend lowerings add no cross-task rule. A stored
 continuation is an ordinary closure value, so whether it may cross a task
 boundary is decided by ADR-0068's `Spawnable` checks on closure values
-(`lib/@vibe/compiler/checker/checker_spawnable.vibe`), and it remains
+(`lib/@vibe/compiler/checker/traits/checker_spawnable.vibe`), and it remains
 one-shot by the dynamic check above. The cooperative scheduler in
 `@vibe/concurrent/experimental` parks a task by storing its `resume` and wakes
 it by calling it ([concurrency.md](concurrency.md)).

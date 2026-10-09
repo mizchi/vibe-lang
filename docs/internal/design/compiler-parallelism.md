@@ -132,7 +132,7 @@ benchmark, so the contract needs an immutable bulk container that is `Send`.
 `Array[T]`'s runtime layout. Its surface is `FrozenArray::from_array`,
 `FrozenArray::get`, `FrozenArray::length` and `FrozenArray::to_array`, with no
 mutation. `Send`'s structural judgement (`send_ok_rec` in
-`lib/@vibe/compiler/checker/checker_trait.vibe`) treats `FrozenArray[T]` as
+`lib/@vibe/compiler/checker/traits/checker_trait.vibe`) treats `FrozenArray[T]` as
 `Send` exactly when `T` is, while `Array[T]` is never `Send`.
 
 Both conversions copy (#1733): with an identity cast, a retained `Array`
