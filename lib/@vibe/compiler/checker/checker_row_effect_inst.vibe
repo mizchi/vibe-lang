@@ -661,8 +661,9 @@ export fn label_row_only_formals(scheme: Type, inst: Type, defs: Array[TypeDef],
 }
 
 /// The `(effect, item)` pairs of every row in `t` (its own, its parameters'
-/// and its result's) whose single generic-effect argument names one of
-/// `formals` as a whole word.
+/// and its result's, and a function type's inside an `Array`, `Option`,
+/// tuple, named type or record, Codex on #3414) whose single generic-effect
+/// argument names one of `formals` as a whole word.
 fn row_only_items(t: Type, formals: Array[(String, Int)], defs: Array[TypeDef]) -> Array[(String, String)] {
   let out: Array[(String, String)] = []
   row_only_items_into(t, formals, defs, out)
@@ -701,8 +702,23 @@ fn row_only_items_into(t: Type, formals: Array[(String, Int)], defs: Array[TypeD
       }
       ()
     },
+    CtArray(e) => row_only_items_into(e, formals, defs, out),
+    CtOption(e) => row_only_items_into(e, formals, defs, out),
+    CtTuple(es) => for e in es {
+      row_only_items_into(e, formals, defs, out)
+    },
+    CtNamed(_, args) => for a in args {
+      row_only_items_into(a, formals, defs, out)
+    },
+    CtApplied(_, args) => for a in args {
+      row_only_items_into(a, formals, defs, out)
+    },
+    CtRecord(fields) => for f in fields {
+      row_only_items_into(f.1, formals, defs, out)
+    },
     _ => ()
   }
+  ()
 }
 
 /// Whether `word` occurs in `text` delimited by non-identifier bytes.
@@ -729,6 +745,20 @@ fn label_row_only_type(t: Type, items: Array[(String, Int)], defs: Array[TypeDef
     CtFn(params, ret, row) => CtFn(for p in params {
       label_row_only_type(p, items, defs)
     }, label_row_only_type(ret, items, defs), label_row_only_row(row, items)),
+    CtArray(e) => CtArray(label_row_only_type(e, items, defs)),
+    CtOption(e) => CtOption(label_row_only_type(e, items, defs)),
+    CtTuple(es) => CtTuple(for e in es {
+      label_row_only_type(e, items, defs)
+    }),
+    CtNamed(n, args) => CtNamed(n, for a in args {
+      label_row_only_type(a, items, defs)
+    }),
+    CtApplied(h, args) => CtApplied(h, for a in args {
+      label_row_only_type(a, items, defs)
+    }),
+    CtRecord(fields) => CtRecord(for f in fields {
+      (f.0, label_row_only_type(f.1, items, defs))
+    }),
     _ => t
   }
 }

@@ -44,3 +44,13 @@ test "a nested row-only payload that matches the caller's row is accepted" {
   let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn run[T](f: () -> Int with Box[Option[T]]) -> Int with Box[Option[T]] {\n  f()\n}\n\nfn caller() -> Int with Box[Option[String]] {\n  run(() -> { perform Box::Put(Some(\"a\")) })\n}\n"
   inspect(collect_all_diagnostics(src), "[]")
 }
+
+test "a callback inside an array parameter is checked at the caller's row" {
+  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn run[T](fs: Array[() -> Int with Box[T]]) -> Int with Box[T] {\n  Array::length(fs)\n}\n\nfn caller() -> Int with Box[String] {\n  run([() -> { perform Box::Put(12345) }])\n}\n"
+  inspect(collect_all_diagnostics(src), "[line 10:16: make the function passed to `run` perform `Box` at `String`: it performs `Box` at `Int`, but the parameter's row is `Box[String]` (its handler would read the `Int` as `String`)]")
+}
+
+test "a callback inside an array parameter at the caller's row is accepted" {
+  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn run[T](fs: Array[() -> Int with Box[T]]) -> Int with Box[T] {\n  Array::length(fs)\n}\n\nfn caller() -> Int with Box[String] {\n  run([() -> { perform Box::Put(\"a\") }])\n}\n"
+  inspect(collect_all_diagnostics(src), "[]")
+}
