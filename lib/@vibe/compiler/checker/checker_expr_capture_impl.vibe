@@ -102,7 +102,7 @@ import ./checker_call_expr.vibe {
 }
 
 import ./checker_row_effect_inst.vibe {
-  bind_struct_field_effect_instantiations, field_effect_inst_arg_check
+  bind_generic_value_effect_instantiations, bind_struct_field_effect_instantiations, struct_field_effect_inst_check
 }
 
 import ./checker_closure_capture_row.vibe {
@@ -668,10 +668,13 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         } else {
           ()
         }
-        let (ti, c1, new_bounds) = instantiate(t, c)
+        let (ti0, c0, new_bounds) = instantiate(t, c)
+        // #3387: the rows of a generic function taken as a value are bound
+        // to this instantiation here, before the value travels.
+        let (ti, s0, c1) = bind_generic_value_effect_instantiations(t, ti0, defs, s, c0, !let_rhs)
         note_generic_callback_instance(t, ti)
         let nblen = Array::length(new_bounds)
-        let mut s1 = s
+        let mut s1 = s0
         let mut bi = 0
         while bi < nblen {
           let (vid, bounds) = Array::get(new_bounds, bi)
@@ -2257,7 +2260,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                     for field in fields {
                       let (fname, value) = field
                       if fname == dn {
-                        s1 = field_effect_inst_arg_check(env, value, aty, dty, s1, CtNamed(rn, fresh_targs), dn, defs, errors)
+                        s1 = struct_field_effect_inst_check(env, value, aty, dty, s1, CtNamed(rn, fresh_targs), dn, defs, errors)
                       }
                     }
                   },
