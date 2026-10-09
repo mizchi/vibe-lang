@@ -1508,12 +1508,13 @@ fn run_bound_lambda(marker: String, handled: Array[String], via: Array[(String, 
 }
 
 /// A call's argument. Where its value is a function -- a lambda, a bound
-/// lambda's name, or an `if` / `match` / sequence / `let` block whose result
-/// is one -- that function is read under the call's (callee, k) (`arg_via`),
-/// as the callee is the one that runs it (Codex on #3409: `run(if c { () ->
-/// mk() } else { .. })`, `run({ let cb = () -> mk(); cb })`). Everything that
-/// runs before the call (a condition, a scrutinee, the head of a sequence, a
-/// `let`'s value, any other expression) is read under `via`.
+/// lambda's or a function's name, or an `if` / `match` / sequence / `let`
+/// block whose result is one -- that function is read under the call's
+/// (callee, k) (`arg_via`), as the callee is the one that runs it (Codex on
+/// #3409: `run(if c { () -> mk() } else { .. })`, `run({ let cb = () -> mk();
+/// cb })`, `pass(mk)`). Everything that runs before the call (a condition, a
+/// scrutinee, the head of a sequence, a `let`'s value, any other expression)
+/// is read under `via`.
 fn collect_arg_records(arg: Expr, handled: Array[String], arg_via: Array[(String, Int)], via: Array[(String, Int)], scope: Array[(String, String)], out: Array[(String, Array[String], Array[(String, Int)], String)]) -> Unit {
   match arg {
     EFn(_, _, _, _, _, _) => collect_runnable_records(arg, handled, arg_via, scope, out),
@@ -1521,6 +1522,10 @@ fn collect_arg_records(arg: Expr, handled: Array[String], arg_via: Array[(String
       let bound = scope_resolve(scope, x)
       if is_bound_lambda_marker(bound) {
         run_bound_lambda(bound, handled, arg_via, out)
+      } else if String::length(bound) > 0 {
+        // A function passed by name (`pass(mk)`) is run by the callee, so it
+        // is recorded as a call under the callee's context (Codex on #3409).
+        Array::push(out, (bound, handled, arg_via, ""))
       } else {
         ()
       }
