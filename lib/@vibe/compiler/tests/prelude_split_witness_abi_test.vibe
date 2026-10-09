@@ -1,5 +1,5 @@
 import @vibe/compiler/entry/compiler/file_compile {
-  compile_file_fs_mode_rc_body_cached_split
+  compile_file_fs_mode_rc_body_cached_split, prelude_module_oracle_report_fs
 }
 import @vibe/compiler/codegen/wasi {
   prelude_split_last_module_count
@@ -35,6 +35,23 @@ fn check_program(tag: String, leaf_source: String, imports: String, expression: 
     inspect(Array::length(lines), content = "1")
     inspect(Array::get(lines, 0), content = expected)
   }
+  // The step oracle must use the same bodyless impl-method interfaces.
+  // Trait dictionaries may reorder synthesized definitions; keyed content
+  // equality, rather than positional equality, is the pass-4 verdict.
+  let report = prelude_module_oracle_report_fs(main, "main", 4)
+  let passes: Array[String] = []
+  let mut keyed = ""
+  for line in String::split(report, "\n") {
+    if String::starts_with(line, "PASS ") {
+      Array::push(passes, line)
+    } else if String::starts_with(line, "  keyed ") {
+      keyed = String::trim(line)
+    } else ()
+  }
+  inspect(Array::length(passes), content = "5")
+  inspect(String::starts_with(Array::get(passes, 4), "PASS desugar_trait_dicts_with_typed_eq stmts="), content = "true")
+  inspect(String::starts_with(keyed, "keyed missing=0 extra=0 "), content = "true")
+  inspect(String::contains(keyed, " content=0 "), content = "true")
   ()
 }
 
