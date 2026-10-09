@@ -52,7 +52,7 @@ already infers**, which is why it is cheaper than it sounds.
 | consume counting | `md_consume_count` in `common_analysis.vibe` | the usage map Bend uses, mostly computed (loop and closure bodies count once; A4 needs ω there) |
 | guarded constructor reuse | ADR-0092, [perceus-reuse.md](../../internal/design/perceus-reuse.md) | in-place reuse behind a run-time `rc == 1` test |
 | region tokens and escape errors | ADR-0090, `checker/checker.vibe` | return / outer-binding / container-write / capture escape checks |
-| `Send` as a compiler-judged marker | `checker/checker_trait.vibe` | a structural "shareable" classifier, like Bend's `Data` |
+| `Send` as a compiler-judged marker | `checker/traits/checker_trait.vibe` | a structural "shareable" classifier, like Bend's `Data` |
 | checked annotation with interprocedural summaries | `#zero_alloc` (ADR-0091) | the shape a `#vectorize` check should copy |
 | `where { requires, ensures }` | ADR-0064 | the contract surface, runtime traps today |
 | Lean models with executable oracles diffed against the selfhost | `formal/check-oracle.sh` | the way to keep a model tied to the implementation |

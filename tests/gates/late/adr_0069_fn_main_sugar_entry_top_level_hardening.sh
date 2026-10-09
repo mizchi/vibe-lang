@@ -893,7 +893,7 @@ echo "[compiler-gate] self-hosted vibe lsp round trip ok (incl. completion/signa
 #        mut-field struct, and closure are rejected with the standard
 #        `no impl `Send` for `...`` diagnostic; a user `impl Send` is
 #        rejected as such (Send cannot be user-implemented). Judgment is
-#        type_send_ok in checker/checker_trait.vibe, wired into
+#        type_send_ok in checker/traits/checker_trait.vibe, wired into
 #        check_program_bounds (checker_stmt.vibe).
 echo "[compiler-gate] 48/48 ADR-0068 Send marker (structural judgment + rejections)"
 senddir="_build/_gate_send_marker"

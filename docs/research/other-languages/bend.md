@@ -137,7 +137,7 @@ slower than one CPU thread.
    Linear-time, no context splitting, and the error names the binder.
 3. **The `Data` / `Type` kind split already has a vibe counterpart**: `Send`
    is a compiler-judged structural marker that excludes `Array`, `Bytes`,
-   closures and `mut` fields (`checker/checker_trait.vibe`). A "copyable" kind
+   closures and `mut` fields (`checker/traits/checker_trait.vibe`). A "copyable" kind
    and a "sendable" kind are close enough to share one classifier.
 4. **An annotation that the checker never reads is a lie waiting for a crash.**
    If vibe adds `#vectorize` or a parallel annotation, it must be *checked*

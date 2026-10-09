@@ -405,7 +405,7 @@ drift from the checker without a test failing.
 ### `Send`
 
 `Send` is a marker the compiler judges from a type's structure
-(`type_send_ok` in `lib/@vibe/compiler/checker/checker_trait.vibe`). It is
+(`type_send_ok` in `lib/@vibe/compiler/checker/traits/checker_trait.vibe`). It is
 not a trait a program can grant: `impl Send for X` is refused with
 `` `Send` is a compiler-judged structural marker and cannot be implemented;
 remove `impl Send` ``.
@@ -464,7 +464,7 @@ across the spawn boundary. A capture that holds a host stream is refused with
 the edit (open the stream inside the task).
 
 The check is `check_spawnable_captures`
-(`lib/@vibe/compiler/checker/checker_spawnable.vibe`). It runs at every call
+(`lib/@vibe/compiler/checker/traits/checker_spawnable.vibe`). It runs at every call
 whose callee has spawn's shape -- a `TaskGroup[rg, e]` first parameter and a
 closure last parameter -- which covers `TaskGroup::spawn`,
 `TaskGroup::spawn_suspend`, `Parallel::map`, a local `let` alias, a renamed
