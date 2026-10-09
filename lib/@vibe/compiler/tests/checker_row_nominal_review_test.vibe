@@ -596,8 +596,14 @@ test "a joined callee cannot select one of two different generic callback contra
   for index in [0, 1] {
     let src = "import ./dep.vibe { effect Box, first, second }\nfn caller() -> Int with Box { Array::get([first, second], \{index})(\"abc\", 17, () -> { perform Box::Put(\"xyz\") }) }\n"
     let message = projected_error(dep, src)
-    assert(String::contains(message, "import `A` into this module"))
+    // #3387: each member's instantiation is a label on the joined callee's
+    // row, and the two disagree.
+    assert(String::contains(message, "the parameter's row is `Box[String]` and `Box[Int]` at once"))
   }
+  let same = "import ./dep.vibe { effect Box, first, second }\nfn caller() -> Int with Box { Array::get([first, first], 0)(\"abc\", 17, () -> { perform Box::Put(1) }) }\n"
+  assert(String::contains(projected_error(dep, same), "expected String, got Int"))
+  let agreed = "import ./dep.vibe { effect Box, first, second }\nfn caller() -> Int with Box { Array::get([first, first], 0)(\"abc\", 17, () -> { perform Box::Put(\"xyz\") }) }\n"
+  assert_eq(projected_error(dep, agreed), "")
 }
 
 test "a generic result retains nominal struct and enum payload kinds" {

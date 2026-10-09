@@ -180,6 +180,8 @@ import ./checker_row_effect_inst.vibe {
   effect_inst_annotation_check,
   effect_inst_arg_check,
   effect_inst_call_check,
+  effect_inst_rowless_arg_check,
+  effect_inst_unnamed_args_check,
   field_callback_arg_env,
   field_effect_inst_arg_check
 }
@@ -1421,7 +1423,9 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
             },
             _ => s3
           }
-          let s5 = check_hof_param_vs_elem(subst_apply(s4, recv_ty), subst_apply(s4, fn_ty), 1, s4, errors, "Array::fold element parameter type mismatch")
+          let s5_elem = check_hof_param_vs_elem(subst_apply(s4, recv_ty), subst_apply(s4, fn_ty), 1, s4, errors, "Array::fold element parameter type mismatch")
+          // #3387: see `Array::map`.
+          let s5 = effect_inst_rowless_arg_check(env, Array::get(args, 2), fn_ty, s5_elem, name, defs, errors)
           (tab_call_ty(tytab, call_off, subst_apply(s5, init_ty), capture, lane), s5, c3)
         } else if arm == "Array::map" {
           // `Array::map(a, f)` returns `Array[R]` where R is f's return type —
@@ -1438,7 +1442,11 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
           let (s1, c1) = bind_array_arg(capture, name, callee_off, recv_ty, s1, c1)
           let (fn_ty, s2, c2) = check_child(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
           check_builtin_arg_head(name, 1, subst_apply(s2, fn_ty), errors, callee_off)
-          let s3 = check_hof_param_vs_elem(subst_apply(s2, recv_ty), subst_apply(s2, fn_ty), 0, s2, errors, "Array::map function parameter type mismatch")
+          let s3_elem = check_hof_param_vs_elem(subst_apply(s2, recv_ty), subst_apply(s2, fn_ty), 0, s2, errors, "Array::map function parameter type mismatch")
+          // #3387: the callback parameter names no row, so a generic effect
+          // the function performs is compared with the one in scope here,
+          // once its parameter has the element type.
+          let s3 = effect_inst_rowless_arg_check(env, Array::get(args, 1), fn_ty, s3_elem, name, defs, errors)
           let result = match subst_apply(s3, fn_ty) {
             CtFn(_, ret, _) => CtArray(ret),
             _ => CtUnknown
@@ -2038,12 +2046,14 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                   let mut c2 = c1
                   while ai < alen {
                     let arg = Array::get(args, ai)
+                    let arg_s = callback_prefix_subst(arg, inferred_param_tys, arg_tys, s2, callee_inst)
+                    // #3387: the row is read once the arguments to its left
+                    // have fixed what they fix.
                     let arg_env = if ai < Array::length(inferred_param_tys) {
-                      callback_arg_env(env, arg, Array::get(inferred_param_tys, ai), s2, callee_inst, defs)
+                      callback_arg_env(env, arg, Array::get(inferred_param_tys, ai), arg_s, callee_inst, defs)
                     } else {
                       env
                     }
-                    let arg_s = callback_prefix_subst(arg, inferred_param_tys, arg_tys, s2, callee_inst)
                     let (at, ns, nc) = check_child(arg, arg_env, defs, arg_s, c2, errors, tytab, capture, lane)
                     Array::push(arg_tys, at)
                     if ai < Array::length(inferred_param_tys) {
@@ -2092,7 +2102,10 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                       if alen3 != plen2 {
                         Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(name, String::concat(": expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))))), off_marker_len(callee_off, String::length(name))))
                       }
-                      let s3_args = unify_call_args(call_param_tys, arg_tys, args, s2, errors, name, callee_off)
+                      let s3_unified = unify_call_args(call_param_tys, arg_tys, args, s2, errors, name, callee_off)
+                      // #3387: a parameter whose type names no row for an
+                      // effect a function argument performs.
+                      let s3_args = effect_inst_unnamed_args_check(env, args, arg_tys, call_param_tys, s3_unified, name, defs, errors)
                       // #3341: a called lambda performs at the instantiation
                       // in scope here; read after the arguments, which fix a
                       // payload a generic lambda takes from them.
@@ -2300,14 +2313,14 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
               let mut c3 = c2
               while ai < alen {
                 let marg = Array::get(all_args, ai)
+                let marg_s = callback_prefix_subst(marg, method_param_tys, arg_tys, s3, method_inst)
                 let marg_env = if ai < Array::length(method_param_tys) {
-                  callback_arg_env(env, marg, Array::get(method_param_tys, ai), s3, method_inst, defs)
+                  callback_arg_env(env, marg, Array::get(method_param_tys, ai), marg_s, method_inst, defs)
                 } else if ai - 1 < Array::length(field_param_tys) {
-                  field_callback_arg_env(env, marg, Array::get(field_param_tys, ai - 1), s3, field_recv, defs)
+                  field_callback_arg_env(env, marg, Array::get(field_param_tys, ai - 1), marg_s, field_recv, defs)
                 } else {
                   env
                 }
-                let marg_s = callback_prefix_subst(marg, method_param_tys, arg_tys, s3, method_inst)
                 let (at, ns, nc) = check_child(marg, marg_env, defs, marg_s, c3, errors, tytab, capture, lane)
                 Array::push(arg_tys, at)
                 // #3341: see the named-call path.
@@ -2334,7 +2347,9 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                   if alen2 != plen {
                     Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(qualified, String::concat(": expected ", String::concat(__to_string(plen), String::concat(" args, got ", __to_string(alen2)))))), off_marker_len(call_off, String::length(qualified))))
                   }
-                  let s4 = unify_call_args(call_param_tys, arg_tys, all_args, s3, errors, qualified, call_off)
+                  let s4_unified = unify_call_args(call_param_tys, arg_tys, all_args, s3, errors, qualified, call_off)
+                  // #3387: see the named-call path.
+                  let s4 = effect_inst_unnamed_args_check(env, all_args, arg_tys, call_param_tys, s4_unified, qualified, defs, errors)
                   let call_ret = Array::get(ret_box, 0)
                   let selected_ret = match direct_ret {
                     Some(t) => t,
@@ -2365,7 +2380,10 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                       if Array::length(fpts) != Array::length(explicit) {
                         Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(qualified, String::concat(": expected ", String::concat(__to_string(Array::length(fpts)), String::concat(" args, got ", __to_string(Array::length(explicit))))))), off_marker_len(call_off, String::length(qualified))))
                       }
-                      let s4 = unify_call_args(fpts, explicit, Array::slice(all_args, 1, Array::length(all_args)), s3, errors, qualified, call_off)
+                      let field_args = Array::slice(all_args, 1, Array::length(all_args))
+                      let s4_unified = unify_call_args(fpts, explicit, field_args, s3, errors, qualified, call_off)
+                      // #3387: see the named-call path.
+                      let s4 = effect_inst_unnamed_args_check(env, field_args, explicit, fpts, s4_unified, method, defs, errors)
                       let result_ty = call_result_with_provenance(fret, fpts, explicit, s4)
                       (tab_call_ty(tytab, call_off, result_ty, capture, lane), s4, c3)
                     },
@@ -2571,7 +2589,9 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                       if alen3 != plen2 {
                         Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(callee_name0, String::concat(": expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))))), off_marker_len(call_off, String::length(callee_name0))))
                       }
-                      let s3_args = unify_call_args(call_param_tys, arg_tys, args, s2, errors, callee_name0, call_off)
+                      let s3_unified = unify_call_args(call_param_tys, arg_tys, args, s2, errors, callee_name0, call_off)
+                      // #3387: see the named-call path.
+                      let s3_args = effect_inst_unnamed_args_check(env, args, arg_tys, call_param_tys, s3_unified, callee_name0, defs, errors)
                       // #3341: see the named-call path.
                       let s3 = effect_inst_call_check(env, env_lookup(env, callee_name0), ct, callee_name0, call_off, s3_args, errors)
                       check_spawn_shaped_call(env, s3, defs, call_param_tys, Array::get(ret_box, 0), args, errors, off_marker_len(call_off, String::length(callee_name0)))
@@ -2623,12 +2643,12 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
               let mut c2 = c1
               while ai < alen {
                 let arg = Array::get(args, ai)
+                let arg_s = callback_prefix_subst(arg, callee_param_tys, arg_tys, s2, callee_inst)
                 let arg_env = if ai < Array::length(callee_param_tys) {
-                  callback_arg_env(env, arg, Array::get(callee_param_tys, ai), s2, callee_inst, defs)
+                  callback_arg_env(env, arg, Array::get(callee_param_tys, ai), arg_s, callee_inst, defs)
                 } else {
                   env
                 }
-                let arg_s = callback_prefix_subst(arg, callee_param_tys, arg_tys, s2, callee_inst)
                 let (at, ns, nc) = check_child(arg, arg_env, defs, arg_s, c2, errors, tytab, capture, lane)
                 Array::push(arg_tys, at)
                 s2 = if ai < Array::length(callee_param_tys) {
@@ -2668,7 +2688,9 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                   if alen3 != plen2 {
                     Array::push(errors, String::concat(String::concat("function arity mismatch for <expr>: expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))), off_marker(call_off)))
                   }
-                  let s3_args = unify_call_args(call_param_tys, arg_tys, args, s2, errors, "<expr>", call_off)
+                  let s3_unified = unify_call_args(call_param_tys, arg_tys, args, s2, errors, "<expr>", call_off)
+                  // #3387: see the named-call path.
+                  let s3_args = effect_inst_unnamed_args_check(env, args, arg_tys, call_param_tys, s3_unified, "", defs, errors)
                   // #3341: see the named-call path.
                   let s3 = effect_inst_call_check(env, None, ct, "", call_off, s3_args, errors)
                   check_spawn_shaped_call(env, s3, defs, call_param_tys, Array::get(ret_box, 0), args, errors, off_marker(call_off))

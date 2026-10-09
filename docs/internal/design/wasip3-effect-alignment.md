@@ -59,8 +59,14 @@ abstraction.
    its own does not take the enclosing function's: its row is decided where
    it is used. Passed to a parameter typed `() -> Int with State[String]`, it
    performs at that row's instantiation, and a formal of the callee the row
-   names is the type this call gives it (#3311). A row argument that names no
-   type is refused (#3319). A row naming `State[Int]` does not cover a callee's
+   names is the type this call gives it (#3311). Passed into a slot whose type
+   names no row for the effect (a parameter typed `() -> Int`, a struct field
+   of that type, a builtin's callback), it performs at the instantiation in
+   scope where it is passed, the one its performs are charged to (#3387). A
+   generic function taken as a value (`let f = if c { run } else { run }`)
+   keeps the instantiation its rows were given there, and a joined callee
+   whose members disagree on it is refused (#3387). A row argument that names
+   no type is refused (#3319). A row naming `State[Int]` does not cover a callee's
    `State[String]` (#3053), and a handle whose arms answer one instantiation
    refuses a handled call that declares another (#3010).
 2. **A tail-resumptive arm cannot abort.** An `Error` / `Exception` arm and a
