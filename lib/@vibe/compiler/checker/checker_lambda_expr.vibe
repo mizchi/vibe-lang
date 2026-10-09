@@ -76,7 +76,7 @@ import ./checker_resolve.vibe {
 }
 
 import ./checker_row_effect_inst.vibe {
-  bind_lambda_effect_instantiations, effect_inst_annotation_check, lambda_effect_inst_row
+  bind_lambda_effect_instantiations, effect_inst_annotation_check, lambda_effect_inst_row, struct_field_effect_inst_check
 }
 
 import @vibe/compiler/checker/traits {
@@ -310,13 +310,19 @@ export fn field_write_mut_check(name: String, args: Array[Expr], env: TypeEnv, d
                   fi = fi + 1
                 }
                 if has_field {
-                  let (val_ty, _, _) = ce(Array::get(args, 2), env, defs, s, c, throwaway, throwtab)
+                  let (val_ty, val_s, _) = ce(Array::get(args, 2), env, defs, s, c, throwaway, throwtab)
                   // #829: instantiate a generic field's declared type from the
                   // receiver's type args so the written value is checked against
                   // the CONCRETE field type; a non-applied receiver keeps the
                   // raw (rigid) type, which check_assignable tolerates.
                   let inst_fty = inst_struct_field_ty(fty, s_tparams, recv_targs)
                   let _ = check_assignable(subst_apply(s, inst_fty), subst_apply(s, val_ty), s, errors, String::concat("type mismatch writing field `", String::concat(field, "`")), tail_expr_off(Array::get(args, 2)))
+                  // #3387 (Codex on #3407): a function written into a field is
+                  // stored as the literal's is, so the generic effect it
+                  // performs is compared with the field's row, or with the one
+                  // in scope when the field's type names none. Read in the
+                  // value's own substitution, where its labels are bound.
+                  let _ = struct_field_effect_inst_check(env, Array::get(args, 2), val_ty, inst_fty, val_s, subst_apply(s, obj_ty), field, defs, errors)
                   ()
                 } else {
                   ()
