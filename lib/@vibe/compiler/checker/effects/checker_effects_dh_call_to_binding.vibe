@@ -70,7 +70,7 @@ import ./checker_effects_throw_payload_kind.vibe {
   exception_effect_labels,
   fn_binding_effects,
   fn_binding_param_effects,
-  instantiate_callee_label,
+  instantiate_callee_label_at,
   is_entry_point_name,
   is_program_entry_name,
   join_labels,
@@ -1100,7 +1100,7 @@ fn resolve_bare_rows_through_callees(env: TypeEnv, first_local: Int, bodies: Arr
     let out = array_empty()
     let src = Array::get(alias_sources, i)
     if String::length(src) > 0 {
-      Array::push(out, (src, array_empty(), array_empty(), 0 - 1))
+      Array::push(out, (src, array_empty(), array_empty(), ""))
     } else if labels_have_bare(Array::get(written_rows, i)) {
       collect_runnable_records(Array::get(bodies, i), array_empty(), array_empty(), array_empty(), out)
     } else {
@@ -1209,13 +1209,13 @@ fn labels_have_bare(labels: Array[String]) -> Bool {
 /// give the caller both instantiations, so its own callers must cover each
 /// (Codex on #3409: leaving the label bare let a `Box[String]` caller through).
 /// A generic callee's row names its formals (`Box[T]`); it is read as this
-/// call instantiates them (`instantiate_callee_label`, the checker's bindings
-/// at the callee's offset), so `mk(12345)` requires `Box[Int]`. A formal the
+/// call instantiates them (`instantiate_callee_label_at`, the checker's
+/// bindings under the call's own spelling and offset), so `mk(12345)` requires `Box[Int]`. A formal the
 /// call leaves open stays as written, which no caller's row covers.
-fn callee_payloads_for(eff: String, recs: Array[(String, Array[String], Array[(String, Int)], Int)], env: TypeEnv, first_local: Int, index: MutMap[String, Int], fn_effs: Array[Array[String]], fn_param_effs: Array[Array[Array[String]]]) -> Array[String] {
+fn callee_payloads_for(eff: String, recs: Array[(String, Array[String], Array[(String, Int)], String)], env: TypeEnv, first_local: Int, index: MutMap[String, Int], fn_effs: Array[Array[String]], fn_param_effs: Array[Array[Array[String]]]) -> Array[String] {
   let found = array_empty()
   for entry in recs {
-    let (callee, handled, via, off) = entry
+    let (callee, handled, via, key) = entry
     let generic = match env_lookup(env, callee) {
       Some(CtForAll(_, _, _)) => true,
       _ => false
@@ -1224,7 +1224,7 @@ fn callee_payloads_for(eff: String, recs: Array[(String, Array[String], Array[(S
       let (rows, _) = callee_rows(callee, env, first_local, index, fn_effs, fn_param_effs)
       for row_label in rows {
         let label = if generic {
-          instantiate_callee_label(row_label, off, callee)
+          instantiate_callee_label_at(row_label, key)
         } else {
           row_label
         }
@@ -1290,8 +1290,8 @@ fn via_parameter_names(eff: String, via: Array[(String, Int)], env: TypeEnv, fir
 /// the body only builds can still be invoked there (`Array::get([() -> mk()],
 /// 0)()`), and leaving it out would let that call's payload through. Each
 /// record carries the callee identifier's offset, the key of the checker's
-/// formal bindings for that call.
-fn collect_call_records(expr: Expr, handled: Array[String], via: Array[(String, Int)], scope: Array[(String, String)], out: Array[(String, Array[String], Array[(String, Int)], Int)]) -> Unit {
+/// formal bindings for that call, under the name as spelled there.
+fn collect_call_records(expr: Expr, handled: Array[String], via: Array[(String, Int)], scope: Array[(String, String)], out: Array[(String, Array[String], Array[(String, Int)], String)]) -> Unit {
   match expr {
     EHandle(body, arms) => {
       let inner = array_empty()
@@ -1329,15 +1329,15 @@ fn collect_call_records(expr: Expr, handled: Array[String], via: Array[(String, 
       collect_call_records(body, handled, via, inner, out)
     },
     ECall(callee_expr, args, _, _) => {
-      let (target, off) = match callee_expr {
-        EIdent(callee, coff) => (scope_resolve(scope, callee), coff),
+      let (target, key) = match callee_expr {
+        EIdent(callee, coff) => (scope_resolve(scope, callee), String::concat(__to_string(coff), String::concat(":", callee))),
         _ => {
           collect_runnable_records(callee_expr, handled, via, scope, out)
-          ("", 0 - 1)
+          ("", "")
         }
       }
       if String::length(target) > 0 {
-        Array::push(out, (target, handled, via, off))
+        Array::push(out, (target, handled, via, key))
       } else {
         ()
       }
@@ -1366,7 +1366,7 @@ fn collect_call_records(expr: Expr, handled: Array[String], via: Array[(String, 
         Some(src) => (name, scope_resolve(scope, src)),
         None => match value {
           EFn(_, _, _, _, _, _) => {
-            collect_runnable_records(value, handled, via, scope, out)
+            collect_bound_lambda_records(name, value, body, handled, via, scope, out)
             (name, "")
           },
           _ => {
@@ -1396,8 +1396,96 @@ fn collect_call_records(expr: Expr, handled: Array[String], via: Array[(String, 
   }
 }
 
+/// A lambda bound by `let name = lambda` runs where `name` is used: passed
+/// as a call's argument it is that callee's to run, so it is read under that
+/// (callee, argument index), the way an inline lambda argument is (Codex on
+/// #3409: `let cb = () -> mk(); run(cb)` with a `run` that handles its
+/// callback's `Box` charged `mk` to the binder). Any other use -- a direct
+/// call, a store, a return -- reads it where it is bound. A lambda the body
+/// never names cannot run.
+fn collect_bound_lambda_records(name: String, lambda: Expr, body: Expr, handled: Array[String], via: Array[(String, Int)], scope: Array[(String, String)], out: Array[(String, Array[String], Array[(String, Int)], String)]) -> Unit {
+  let sites = array_empty()
+  let other = array_empty()
+  lambda_use_sites(body, name, sites, other)
+  if Array::length(other) > 0 {
+    collect_runnable_records(lambda, handled, via, scope, out)
+  } else {
+    ()
+  }
+  for site in sites {
+    let (callee, k) = site
+    let target = scope_resolve(scope, callee)
+    if String::length(target) > 0 {
+      let inner = array_empty()
+      for step in via {
+        Array::push(inner, step)
+      }
+      Array::push(inner, (target, k))
+      collect_runnable_records(lambda, handled, inner, scope, out)
+    } else {
+      collect_runnable_records(lambda, handled, via, scope, out)
+    }
+  }
+  ()
+}
+
+/// Where `expr` names `name`: as the argument at index k of a call of a named
+/// callee (`sites`), or anywhere else (`other`).
+fn lambda_use_sites(expr: Expr, name: String, sites: Array[(String, Int)], other: Array[Int]) -> Unit {
+  match expr {
+    EIdent(x, _) => if x == name {
+      Array::push(other, 1)
+    } else {
+      ()
+    },
+    ECall(callee_expr, args, _, _) => {
+      lambda_use_sites(callee_expr, name, sites, other)
+      let mut k = 0
+      while k < Array::length(args) {
+        let arg = Array::get(args, k)
+        match arg {
+          EIdent(x, _) => if x == name {
+            match callee_expr {
+              EIdent(c, _) => if !checker_effects_string_has_pair(sites, c, k) {
+                Array::push(sites, (c, k))
+              } else {
+                ()
+              },
+              _ => Array::push(other, 1)
+            }
+          } else {
+            ()
+          },
+          _ => lambda_use_sites(arg, name, sites, other)
+        }
+        k = k + 1
+      }
+      ()
+    },
+    _ => {
+      for child in expr_children(expr) {
+        lambda_use_sites(child, name, sites, other)
+      }
+      ()
+    }
+  }
+}
+
+fn checker_effects_string_has_pair(xs: Array[(String, Int)], c: String, k: Int) -> Bool {
+  let mut found = false
+  for item in xs {
+    let (ic, ik) = item
+    if ic == c && ik == k {
+      found = true
+    } else {
+      ()
+    }
+  }
+  found
+}
+
 /// Each arm's body, with the names its pattern binds in scope.
-fn collect_arm_records(arms: Array[(Pat, Expr)], handled: Array[String], via: Array[(String, Int)], scope: Array[(String, String)], out: Array[(String, Array[String], Array[(String, Int)], Int)]) -> Unit {
+fn collect_arm_records(arms: Array[(Pat, Expr)], handled: Array[String], via: Array[(String, Int)], scope: Array[(String, String)], out: Array[(String, Array[String], Array[(String, Int)], String)]) -> Unit {
   for arm in arms {
     let (pat, arm_body) = arm
     let bound = array_empty()
@@ -1413,7 +1501,7 @@ fn collect_arm_records(arms: Array[(Pat, Expr)], handled: Array[String], via: Ar
 
 /// The calls a function value makes when it runs: a lambda's body with its
 /// parameters in scope, else whatever `expr` calls on its own.
-fn collect_runnable_records(expr: Expr, handled: Array[String], via: Array[(String, Int)], scope: Array[(String, String)], out: Array[(String, Array[String], Array[(String, Int)], Int)]) -> Unit {
+fn collect_runnable_records(expr: Expr, handled: Array[String], via: Array[(String, Int)], scope: Array[(String, String)], out: Array[(String, Array[String], Array[(String, Int)], String)]) -> Unit {
   match expr {
     EFn(_, _, params, _, _, fbody) => {
       let mut inner = scope
