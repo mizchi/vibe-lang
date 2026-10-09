@@ -76,3 +76,72 @@ test "ascription arguments run once and borrowed loop values remain live" {
   inspect(total, content = "17")
   inspect(Array::get(Array::get(values, 1), 1), content = "7")
 }
+
+fn consume_alias(value: Array[Int]) -> Int {
+  let owner = [value]
+  Array::get(Array::get(owner, 0), 0)
+}
+
+fn ascribed_cell_if(use_cell: Bool) -> Int {
+  let mut cell = [29]
+  let read = () -> Int {
+    Array::get(cell, 0)
+  }
+  let alias: Array[Int] = if use_cell {
+    cell
+  } else {
+    [7]
+  }
+  let consumed = consume_alias(alias)
+  consumed + read()
+}
+
+fn ascribed_cell_match(use_cell: Bool) -> Int {
+  let mut cell = [29]
+  let read = () -> Int {
+    Array::get(cell, 0)
+  }
+  let alias: Array[Int] = match use_cell {
+    true => cell,
+    false => [7]
+  }
+  let consumed = consume_alias(alias)
+  consumed + read()
+}
+
+fn ascribed_cell_block(use_cell: Bool) -> Int {
+  let mut cell = [29]
+  let read = () -> Int {
+    Array::get(cell, 0)
+  }
+  let alias: Array[Int] = {
+    let local = 7
+    if use_cell {
+      cell
+    } else {
+      [local]
+    }
+  }
+  let consumed = consume_alias(alias)
+  consumed + read()
+}
+
+test "ascribed compound captured-cell results own their reference" {
+  inspect(ascribed_cell_if(true), content = "58")
+  inspect(ascribed_cell_if(false), content = "36")
+  inspect(ascribed_cell_match(true), content = "58")
+  inspect(ascribed_cell_match(false), content = "36")
+  inspect(ascribed_cell_block(true), content = "58")
+  inspect(ascribed_cell_block(false), content = "36")
+}
+
+fn __ascription_argdup(n: Int) -> Int {
+  n + 1
+}
+
+test "ascription scratch slots cannot shadow a source function" {
+  let holder = Box::{ values: [6, 7], name: "kept" }
+  let alias: Array[Int] = holder.values
+  inspect(Array::get(alias, 1), content = "7")
+  inspect(__ascription_argdup(3), content = "4")
+}
