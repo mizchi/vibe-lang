@@ -65,6 +65,7 @@ import ./checker_effects_mutability_expr_into.vibe {
 }
 
 import ./checker_effects_throw_payload_kind.vibe {
+  collect_handle_effects,
   effect_name_of_op,
   exception_effect_labels,
   fn_binding_effects,
@@ -1024,6 +1025,8 @@ fn seed_env_fn_effs(env: TypeEnv, fn_names: Array[String], fn_effs: Array[Array[
 }
 
 export fn build_perform_fn_effs(stmts: Array[Stmt], env: TypeEnv, fn_names: Array[String], fn_effs: Array[Array[String]], fn_param_effs: Array[Array[Array[String]]]) -> Unit {
+  let first_local = Array::length(fn_names)
+  let local_bodies: Array[Expr] = []
   let mut m = 0
   while m < Array::length(stmts) {
     match Array::get(stmts, m) {
@@ -1037,20 +1040,211 @@ export fn build_perform_fn_effs(stmts: Array[Stmt], env: TypeEnv, fn_names: Arra
         Array::push(fn_names, name)
         Array::push(fn_effs, effs)
         Array::push(fn_param_effs, peffs)
+        Array::push(local_bodies, EUnit)
       },
       SLet(_, _, name, ty, body) => {
         Array::push(fn_names, name)
-        Array::push(fn_effs, fn_binding_effects(ty, body))
+        Array::push(fn_effs, bare_rows_with_published_payload(fn_binding_effects(ty, body), env, name))
         Array::push(fn_param_effs, fn_binding_param_effects(ty, body))
+        Array::push(local_bodies, body)
       },
       SLetMut(name, ty, body) => {
         Array::push(fn_names, name)
         Array::push(fn_effs, fn_binding_effects(ty, body))
         Array::push(fn_param_effs, fn_binding_param_effects(ty, body))
+        Array::push(local_bodies, EUnit)
       },
       _ => ()
     }
     m = m + 1
+  }
+  resolve_bare_rows_through_callees(generic_effect_names(stmts), first_local, local_bodies, fn_names, fn_effs)
+}
+
+/// #3408: the effects this module declares with a type parameter
+/// (`effect Box[T]`); only their bare labels leave a payload to be fixed.
+fn generic_effect_names(stmts: Array[Stmt]) -> Array[String] {
+  let out: Array[String] = []
+  for stmt in stmts {
+    match stmt {
+      SEffectDef(_, name, params, _) => if Array::length(params) > 0 {
+        Array::push(out, name)
+      } else {
+        ()
+      },
+      _ => ()
+    }
+  }
+  out
+}
+
+/// #3408: a bare row is fixed by the callees its body reaches as well as by
+/// its own performs. `mid() with Box { mk() }` over `mk() with Box { perform
+/// Box::Put(12345) }` performs `Box` at `Int` through `mk`, so a caller of
+/// `mid` must cover `Box[Int]`. Each local binding whose row still has a bare
+/// label of a generic effect takes the one instantiation its direct callees
+/// require of that effect (`bare_label_callee_payload`), until nothing
+/// changes; calls a `handle` of the effect answers for are not counted, and
+/// callees that disagree leave the label bare.
+fn resolve_bare_rows_through_callees(generic: Array[String], first_local: Int, bodies: Array[Expr], fn_names: Array[String], fn_effs: Array[Array[String]]) -> Unit {
+  if Array::length(generic) == 0 {
+    ()
+  } else {
+    let local_count = Array::length(bodies)
+    let mut changed = true
+    let mut rounds = 0
+    while changed && rounds <= local_count {
+      changed = false
+      let mut i = 0
+      while i < local_count {
+        let idx = first_local + i
+        let labels = Array::get(fn_effs, idx)
+        let updated: Array[String] = []
+        let mut any = false
+        for label in labels {
+          let mut next = label
+          if checker_effects_string_has(generic, label) {
+            match bare_label_callee_payload(Array::get(bodies, i), label, first_local, local_count, fn_names, fn_effs) {
+              Some(fixed) => {
+                next = fixed
+                any = true
+              },
+              None => ()
+            }
+          } else {
+            ()
+          }
+          Array::push(updated, next)
+        }
+        if any {
+          Array::set(fn_effs, idx, updated)
+          changed = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      rounds = rounds + 1
+    }
+  }
+}
+
+/// The one `eff[..]` label the local callees called in `body` require, when
+/// they agree; a call under a `handle` of `eff` is that handle's.
+fn bare_label_callee_payload(body: Expr, eff: String, first_local: Int, local_count: Int, fn_names: Array[String], fn_effs: Array[Array[String]]) -> Option[String] {
+  let found: Array[String] = []
+  collect_callee_payloads(body, eff, first_local, local_count, fn_names, fn_effs, found)
+  if Array::length(found) == 1 {
+    Some(Array::get(found, 0))
+  } else {
+    None
+  }
+}
+
+fn collect_callee_payloads(expr: Expr, eff: String, first_local: Int, local_count: Int, fn_names: Array[String], fn_effs: Array[Array[String]], found: Array[String]) -> Unit {
+  match expr {
+    EHandle(body, arms) => {
+      if !checker_effects_string_has(collect_handle_effects(arms), eff) {
+        collect_callee_payloads(body, eff, first_local, local_count, fn_names, fn_effs, found)
+      } else {
+        ()
+      }
+      for arm in arms {
+        let (_, arm_body) = arm
+        collect_callee_payloads(arm_body, eff, first_local, local_count, fn_names, fn_effs, found)
+      }
+      ()
+    },
+    ECall(EIdent(callee, _), args, _, _) => {
+      let mut j = 0
+      while j < local_count {
+        if Array::get(fn_names, first_local + j) == callee {
+          for label in Array::get(fn_effs, first_local + j) {
+            let bi = String::index_of(label, "[")
+            if bi > 0 && String::substring(label, 0, bi) == eff && !checker_effects_string_has(found, label) {
+              Array::push(found, label)
+            } else {
+              ()
+            }
+          }
+        } else {
+          ()
+        }
+        j = j + 1
+      }
+      for arg in args {
+        collect_callee_payloads(arg, eff, first_local, local_count, fn_names, fn_effs, found)
+      }
+      ()
+    },
+    _ => {
+      for child in expr_children(expr) {
+        collect_callee_payloads(child, eff, first_local, local_count, fn_names, fn_effs, found)
+      }
+      ()
+    }
+  }
+}
+
+fn checker_effects_string_has(xs: Array[String], x: String) -> Bool {
+  let mut found = false
+  for item in xs {
+    if item == x {
+      found = true
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+/// #3408: the row a call of the local binding `name` requires, with each bare
+/// generic-effect label (`Box`) replaced by the instantiation its body fixed,
+/// when the checked type in `env` publishes one (`Box[Int]`). A bare row
+/// leaves the payload to the body, and the checker publishes what the body
+/// performed (`strip_effect_inst_labels`); the declaration's text does not
+/// say it. Read from the text alone, a `with Box` callee was covered by a
+/// caller's `with Box[String]` by base name, and its `perform Box::Put(12345)`
+/// reached that caller's `String` handler. A label whose payload the body
+/// left open stays bare, and so does every label a written row spells.
+fn bare_rows_with_published_payload(declared: Array[String], env: TypeEnv, name: String) -> Array[String] {
+  let mut bare = false
+  for label in declared {
+    if String::index_of(label, "[") < 0 {
+      bare = true
+    } else {
+      ()
+    }
+  }
+  if !bare {
+    declared
+  } else {
+    let (published, _) = env_binding_effects(env, name)
+    let out: Array[String] = []
+    for label in declared {
+      let mut replaced = label
+      if String::index_of(label, "[") < 0 {
+        let mut matches = 0
+        for candidate in published {
+          let bi = String::index_of(candidate, "[")
+          if bi > 0 && String::substring(candidate, 0, bi) == label {
+            matches = matches + 1
+            replaced = candidate
+          } else {
+            ()
+          }
+        }
+        if matches != 1 {
+          replaced = label
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      Array::push(out, replaced)
+    }
+    out
   }
 }
 
