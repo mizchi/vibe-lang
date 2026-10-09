@@ -27,6 +27,7 @@ import @vibe/compiler/core {
   strip_published_row_marks,
   subst_apply,
   subst_lookup,
+  type_application_view,
   type_expr_name_is_shadowed,
   type_to_string,
   types_equal,
@@ -1851,7 +1852,7 @@ fn effect_inst_fn_check(env: TypeEnv, arg: Expr, arg_ty: Type, param_ty: Type, s
               }
             }
             if !found && !refused && effect_inst_row_has_bare(Some(arow), eff) {
-              let want_text = type_to_string(subst_apply(out, want))
+              let want_text = effect_payload_text(subst_apply(out, want))
               Array::push(errors, "write a concrete `\{eff}[\{want_text}]` row on \{subject}: its bare `\{eff}` contract does not establish the payload type required by \{slot}\{off_marker(effect_inst_arg_anchor(arg))}")
             }
           },
@@ -2203,6 +2204,16 @@ fn pair_quantified(scheme: Type, used: Type, vs: Array[Int], out: Array[(Int, Ty
       },
       _ => ()
     },
+    // #3387 (Codex on #3407): a constructor formal applied to arguments
+    // (`F[Int]` of `put[F[_]](x: F[Int])`) pairs its head with the head the
+    // use holds, read the way unification reads `Array[Int]` or `Box[Int]`.
+    CtApplied(head, args) => match type_application_view(used) {
+      Some((uhead, uargs)) => {
+        pair_quantified(head, uhead, vs, out)
+        pair_quantified_lists(args, uargs, vs, out)
+      },
+      None => ()
+    },
     _ => ()
   }
 }
@@ -2226,9 +2237,18 @@ fn effect_inst_arg_anchor(arg: Expr) -> Int {
   }
 }
 
+/// An effect payload as a row spells it: a kinded parameter's payload is a
+/// bare constructor, written `Option` in `Kb[Option]`, not `Option/1`.
+fn effect_payload_text(t: Type) -> String {
+  match t {
+    CtConstructor(name, _) => name,
+    _ => type_to_string(t)
+  }
+}
+
 fn effect_inst_value_message(subject: String, slot: String, eff: String, have: Type, want: Type, off: Int) -> String {
-  let have_text = type_to_string(have)
-  let want_text = type_to_string(want)
+  let have_text = effect_payload_text(have)
+  let want_text = effect_payload_text(want)
   "make \{subject} perform `\{eff}` at `\{want_text}`: it performs `\{eff}` at `\{have_text}`, but \{slot} is `\{eff}[\{want_text}]` (its handler would read the `\{have_text}` as `\{want_text}`)\{off_marker(off)}"
 }
 
@@ -2237,7 +2257,7 @@ fn effect_inst_conflict_message(subject: String, slot: String, eff: String, labe
   for item in labelled {
     match effect_inst_wanted_payload(item) {
       Some((name, want)) => if name == eff {
-        let text = type_to_string(subst_apply(s, want))
+        let text = effect_payload_text(subst_apply(s, want))
         if !checker_string_array_has(texts, text) {
           Array::push(texts, text)
         }
@@ -2252,8 +2272,8 @@ fn effect_inst_conflict_message(subject: String, slot: String, eff: String, labe
 }
 
 fn effect_inst_unnamed_slot_message(subject: String, slot: String, eff: String, have: Type, want: Type, off: Int) -> String {
-  let have_text = type_to_string(have)
-  let want_text = type_to_string(want)
+  let have_text = effect_payload_text(have)
+  let want_text = effect_payload_text(want)
   "make \{subject} perform `\{eff}` at `\{want_text}`: it performs `\{eff}` at `\{have_text}`, and \{slot} names no `\{eff}`, so its performs reach the `\{eff}[\{want_text}]` in scope here (its handler would read the `\{have_text}` as `\{want_text}`)\{off_marker(off)}"
 }
 
@@ -2263,8 +2283,8 @@ fn effect_inst_call_message(callee_name: String, eff: String, have: Type, want: 
   } else {
     "the called function"
   }
-  let have_text = type_to_string(have)
-  let want_text = type_to_string(want)
+  let have_text = effect_payload_text(have)
+  let want_text = effect_payload_text(want)
   "make \{callee} perform `\{eff}` at `\{want_text}`, or handle `\{eff}` around this call: it performs `\{eff}` at `\{have_text}`, and the `\{eff}` in scope here is `\{eff}[\{want_text}]`\{off_marker(off)}"
 }
 
