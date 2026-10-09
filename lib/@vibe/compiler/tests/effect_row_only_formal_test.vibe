@@ -34,3 +34,13 @@ test "under a handle, the row-only formal is the handle's instantiation" {
   let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn run[T](f: () -> Int with Box[T]) -> Int with Box[T] {\n  f()\n}\n\nfn caller() -> Int {\n  handle {\n    run(() -> { perform Box::Put(12345) })\n  } with {\n    Box::Put(s) => resume(String::length(s))\n  }\n}\n"
   inspect(collect_all_diagnostics(src), "[line 13:27-41: argument type mismatch for String::length: receiver type Int]")
 }
+
+test "a row-only formal nested in the payload is fixed from the caller's row" {
+  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn run[T](f: () -> Int with Box[Option[T]]) -> Int with Box[Option[T]] {\n  f()\n}\n\nfn caller() -> Int with Box[Option[String]] {\n  run(() -> { perform Box::Put(Some(12345)) })\n}\n"
+  inspect(collect_all_diagnostics(src), "[line 10:23: perform argument type mismatch for Box::Put: expected Option[String], got Option[Int]]")
+}
+
+test "a nested row-only payload that matches the caller's row is accepted" {
+  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn run[T](f: () -> Int with Box[Option[T]]) -> Int with Box[Option[T]] {\n  f()\n}\n\nfn caller() -> Int with Box[Option[String]] {\n  run(() -> { perform Box::Put(Some(\"a\")) })\n}\n"
+  inspect(collect_all_diagnostics(src), "[]")
+}

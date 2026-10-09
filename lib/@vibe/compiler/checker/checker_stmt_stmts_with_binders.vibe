@@ -52,6 +52,10 @@ import @vibe/compiler/core {
   unify
 }
 
+import ./checker_closure_capture_row.vibe {
+  tail_expr_off
+}
+
 import ./checker_row_effect_inst.vibe {
   effect_inst_annotation_check, strip_effect_inst_labels
 }
@@ -586,7 +590,8 @@ fn string_array_has(items: Array[String], wanted: String) -> Bool {
 /// variable. Callers below the declaration already see the fixed type.
 fn forward_generic_narrowing_errors(name: String, val: Expr, hoisted: Type, published: Type, s: Subst, c: Int, errors: Array[String]) -> Unit {
   match (hoisted, val) {
-    (CtForAll(hids, _, hbody), EFn(tparams, _, _, _, _, _)) => {
+    (CtForAll(hids, _, hbody), EFn(tparams, _, _, _, _, body)) => {
+      let at = off_marker(tail_expr_off(body))
       let (inst, _, _) = instantiate(published, c)
       let fixed = match unify(inst, hbody, s) {
         Some(su) => {
@@ -619,13 +624,38 @@ fn forward_generic_narrowing_errors(name: String, val: Expr, hoisted: Type, publ
         None => None
       }
       match fixed {
-        Some((formal, CtVar(_))) => Array::push(errors, "`\{name}` is called above its declaration, but its body makes type parameter `\{formal}` the same type as another of its type parameters -- write one type parameter for both, or declare `\{name}` before its first caller"),
-        Some((formal, ty)) => Array::push(errors, "`\{name}` is called above its declaration, but its body uses type parameter `\{formal}` as `\{type_to_string(ty)}` -- write `\{type_to_string(ty)}` in place of `\{formal}` in the signature, or add a bound that provides what the body uses"),
+        Some((formal, CtVar(_))) => Array::push(errors, "`\{name}` is called above its declaration, but its body makes type parameter `\{formal}` the same type as another of its type parameters -- write one type parameter for both, or declare `\{name}` before its first caller\{at}"),
+        Some((formal, ty)) => {
+          let written = wildcard_type_text(ty)
+          Array::push(errors, "`\{name}` is called above its declaration, but its body uses type parameter `\{formal}` as `\{written}` -- write `\{written}` in place of `\{formal}` in the signature, or add a bound that provides what the body uses\{at}")
+        },
         None => ()
       }
     },
     _ => ()
   }
+}
+
+/// A type as the edit spells it: an inference variable the body left open
+/// (`?t9`) is written `_`.
+fn wildcard_type_text(t: Type) -> String {
+  let text = type_to_string(t)
+  let out = StringBuilder::new()
+  let n = String::length(text)
+  let mut i = 0
+  while i < n {
+    if i + 1 < n && String::byte_at(text, i) == 63 && String::byte_at(text, i + 1) == 116 {
+      StringBuilder::push(out, "_")
+      i = i + 2
+      while i < n && String::byte_at(text, i) >= 48 && String::byte_at(text, i) <= 57 {
+        i = i + 1
+      }
+    } else {
+      StringBuilder::push(out, String::substring(text, i, i + 1))
+      i = i + 1
+    }
+  }
+  StringBuilder::freeze(out)
 }
 
 fn int_array_contains(items: Array[Int], wanted: Int) -> Bool {

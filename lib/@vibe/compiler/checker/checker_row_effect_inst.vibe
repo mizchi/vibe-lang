@@ -566,21 +566,26 @@ export fn callee_row_scope_subst(env: TypeEnv, callee_ty: Type, s: Subst) -> Sub
 /// #3386: a generic callee's formal that only its rows name (`T` of `fn
 /// run[T](f: () -> Int with Box[T]) -> Int with Box[T]`) has no place in the
 /// instantiated type -- rows are text -- so nothing at the call could read the
-/// type this call gives it. Each such formal gets a fresh variable here, and
-/// every row item that is exactly `E[formal]`, in the callee's own row and in
-/// its parameters' and result's function types, is labelled with it
-/// (`#einst:E:<id>`). The labels are what the callback hand-off, the argument
+/// type this call gives it. Each such formal gets a fresh variable here. Every
+/// row item whose argument mentions one, in the callee's own row and in its
+/// parameters' and result's function types, is labelled (`#einst:E:<id>`)
+/// with a variable bound to that payload as this call reads it: the formal's
+/// own variable for `E[T]`, a new one bound to `Option[T]` for
+/// `E[Option[T]]`. The labels are what the callback hand-off, the argument
 /// checks and `callee_row_scope_subst` read; the written items stay for the
 /// readers of the text.
-export fn label_row_only_formals(scheme: Type, inst: Type, defs: Array[TypeDef], c: Int) -> (Type, Int) {
+export fn label_row_only_formals(scheme: Type, inst: Type, defs: Array[TypeDef], s: Subst, c: Int) -> (Type, Subst, Int) {
   match scheme {
     CtForAll(_, _, _) => match generic_decl_of_scheme(scheme) {
       Some((tps, dparams, dret)) => {
         let (name_ids, id_tys) = callee_formal_ids(Some((tps, dparams, dret)), scheme, inst, defs)
         let formals: Array[(String, Int)] = []
+        let names: Array[String] = []
+        let mut scope = EnvEmpty
         let mut next = c
         for tp in tps {
           let fname = type_param_name(tp)
+          Array::push(names, fname)
           // Reached: a parameter or the result spells it, so the
           // instantiated type already carries this call's variable.
           let mut reached = false
@@ -588,57 +593,156 @@ export fn label_row_only_formals(scheme: Type, inst: Type, defs: Array[TypeDef],
             let (nname, nid) = name_id
             if nname == fname {
               for id_ty in id_tys {
-                if id_ty.0 == nid {
+                let (kid, kty) = id_ty
+                if kid == nid && !reached {
                   reached = true
+                  scope = env_bind(scope, fname, kty)
                 }
               }
             }
           }
           if !reached && type_param_arity(tp) == 0 {
-            let (_, nc) = fresh_var(next)
+            let (fv, nc) = fresh_var(next)
             Array::push(formals, (fname, nc - 1))
             Array::push(row_only_formal_vars, nc - 1)
+            scope = env_bind(scope, fname, fv)
             next = nc
           }
         }
         if Array::length(formals) == 0 {
-          (inst, c)
+          (inst, s, c)
         } else {
-          (label_row_only_type(inst, formals, defs), next)
+          // Each row item that mentions a row-only formal, read once.
+          let items: Array[(String, Int)] = []
+          let mut out_s = s
+          for raw in row_only_items(inst, formals, defs) {
+            let (base, item) = raw
+            let mut seen = false
+            for done in items {
+              if done.0 == item {
+                seen = true
+              }
+            }
+            if !seen {
+              let mut exact = -1
+              for f in formals {
+                if String::concat(base, String::concat("[", String::concat(f.0, "]"))) == item {
+                  exact = f.1
+                }
+              }
+              if exact >= 0 {
+                Array::push(items, (item, exact))
+              } else {
+                match env_lookup(bind_row_effect_instantiations(scope, Some(item), defs, names, array_empty()), effect_inst_env_key(base)) {
+                  Some(CtTuple(read)) => if Array::length(read) == 1 {
+                    let (lv, nc) = fresh_var(next)
+                    match unify(lv, Array::get(read, 0), out_s) {
+                      Some(ns) => {
+                        out_s = ns
+                        next = nc
+                        Array::push(row_only_formal_vars, nc - 1)
+                        Array::push(items, (item, nc - 1))
+                      },
+                      None => ()
+                    }
+                  },
+                  _ => ()
+                }
+              }
+            }
+          }
+          (label_row_only_type(inst, items, defs), out_s, next)
         }
       },
-      None => (inst, c)
+      None => (inst, s, c)
     },
-    _ => (inst, c)
+    _ => (inst, s, c)
   }
 }
 
-fn label_row_only_type(t: Type, formals: Array[(String, Int)], defs: Array[TypeDef]) -> Type {
+/// The `(effect, item)` pairs of every row in `t` (its own, its parameters'
+/// and its result's) whose single generic-effect argument names one of
+/// `formals` as a whole word.
+fn row_only_items(t: Type, formals: Array[(String, Int)], defs: Array[TypeDef]) -> Array[(String, String)] {
+  let out: Array[(String, String)] = []
+  row_only_items_into(t, formals, defs, out)
+  out
+}
+
+fn row_only_items_into(t: Type, formals: Array[(String, Int)], defs: Array[TypeDef], out: Array[(String, String)]) -> Unit {
+  match t {
+    CtFn(params, ret, row) => {
+      for p in params {
+        row_only_items_into(p, formals, defs, out)
+      }
+      row_only_items_into(ret, formals, defs, out)
+      match row {
+        Some(text) => for raw in row_items_top_level(text) {
+          let item = String::trim(raw)
+          let bi = String::index_of(item, "[")
+          if bi > 0 && String::ends_with(item, "]") {
+            let base = item[0: bi]
+            let arg = item[bi + 1: String::length(item) - 1]
+            let etps = effect_tparams(defs, base)
+            if Array::length(etps) == 1 && type_param_arity(Array::get(etps, 0)) == 0 {
+              let mut mentions = false
+              for f in formals {
+                if text_has_word(arg, f.0) {
+                  mentions = true
+                }
+              }
+              if mentions {
+                Array::push(out, (base, item))
+              }
+            }
+          }
+        },
+        None => ()
+      }
+      ()
+    },
+    _ => ()
+  }
+}
+
+/// Whether `word` occurs in `text` delimited by non-identifier bytes.
+fn text_has_word(text: String, word: String) -> Bool {
+  let n = String::length(text)
+  let w = String::length(word)
+  let mut found = false
+  let mut i = 0
+  while i + w <= n && !found {
+    if String::substring(text, i, i + w) == word && (i == 0 || !is_word_byte(String::byte_at(text, i - 1))) && (i + w == n || !is_word_byte(String::byte_at(text, i + w))) {
+      found = true
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn is_word_byte(b: Int) -> Bool {
+  (b >= 48 && b <= 57) || (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || b == 95
+}
+
+fn label_row_only_type(t: Type, items: Array[(String, Int)], defs: Array[TypeDef]) -> Type {
   match t {
     CtFn(params, ret, row) => CtFn(for p in params {
-      label_row_only_type(p, formals, defs)
-    }, label_row_only_type(ret, formals, defs), label_row_only_row(row, formals, defs)),
+      label_row_only_type(p, items, defs)
+    }, label_row_only_type(ret, items, defs), label_row_only_row(row, items)),
     _ => t
   }
 }
 
-fn label_row_only_row(row: Option[String], formals: Array[(String, Int)], defs: Array[TypeDef]) -> Option[String] {
+fn label_row_only_row(row: Option[String], items: Array[(String, Int)]) -> Option[String] {
   match row {
     Some(text) => {
       let mut out = row
       for raw in row_items_top_level(text) {
-        let label = String::trim(raw)
-        let bi = String::index_of(label, "[")
-        if bi > 0 && String::ends_with(label, "]") {
-          let base = label[0: bi]
-          let arg = String::trim(label[bi + 1: String::length(label) - 1])
-          let etps = effect_tparams(defs, base)
-          if Array::length(etps) == 1 && type_param_arity(Array::get(etps, 0)) == 0 {
-            for f in formals {
-              if f.0 == arg {
-                out = merge_provenance_row(out, Some(effect_inst_label(base, f.1)))
-              }
-            }
+        let item = String::trim(raw)
+        let bi = String::index_of(item, "[")
+        for labelled in items {
+          if labelled.0 == item && bi > 0 {
+            out = merge_provenance_row(out, Some(effect_inst_label(item[0: bi], labelled.1)))
           }
         }
       }

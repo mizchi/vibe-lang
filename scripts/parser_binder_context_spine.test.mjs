@@ -748,7 +748,10 @@ test("parser binder context crosses every immediate binder-bearing lowering and 
 
   assertContextual(coreSource, "wrap_placeholder_arg", ['String::concat("__ph", __to_string(pc))']);
   assertContextual(coreSource, "desugar_placeholder_args", ["wrap_placeholder_arg(arg, context)"], ["wrap_placeholder_arg(arg)"]);
-  assertContextual(coreSource, "parse_postfix", ["desugar_placeholder_args(args, context)"], ["desugar_placeholder_args(args)"]);
+  // #3385: the call suffix lives in `parse_postfix_call`, shared by a bare
+  // callee and a parenthesized control form; `parse_postfix` hands it context.
+  assertContextual(coreSource, "parse_postfix_call", ["desugar_placeholder_args(args, context)"], ["desugar_placeholder_args(args)"]);
+  assertContextual(coreSource, "parse_postfix", ["parse_postfix_call(tokens, starts, first, pos, expr, parse_recur, context)"]);
 
   for (const helper of ["map_expr_offsets", "map_exprs", "map_named_exprs", "map_arm_exprs"]) {
     assertContextual(primarySource, helper, []);
