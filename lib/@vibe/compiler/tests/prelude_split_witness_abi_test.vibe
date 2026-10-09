@@ -1,0 +1,69 @@
+import @vibe/compiler/entry/compiler/file_compile {
+  compile_file_fs_mode_rc_body_cached_split, prelude_module_oracle_report_fs
+}
+import @vibe/compiler/codegen/wasi {
+  prelude_split_last_module_count
+}
+
+fn check_program(tag: String, leaf_source: String, imports: String, expression: String, expected: String, facade: Bool) -> Unit with Console + Env + Exception + Fs + Process {
+  let leaf = "/tmp/vibe_witness_leaf_" + tag + ".vibe"
+  let middle = "/tmp/vibe_witness_facade_" + tag + ".vibe"
+  let main = "/tmp/vibe_witness_main_" + tag + ".vibe"
+  Fs::write_file(leaf, leaf_source)
+  if facade {
+    Fs::write_file(middle, "export ./vibe_witness_leaf_" + tag + ".vibe { " + imports + " }\n")
+  } else ()
+  let dependency = if facade {
+    "facade_"
+  } else {
+    "leaf_"
+  }
+  Fs::write_file(main, "import ./vibe_witness_" + dependency + tag + ".vibe { " + imports + " }\nfn main() -> Int { " + expression + " }\n")
+  let whole = compile_file_fs_mode_rc_body_cached_split(main, "main", "off", false)
+  let split = compile_file_fs_mode_rc_body_cached_split(main, "main", "off", true)
+  inspect(prelude_split_last_module_count(), content = if facade {
+    "3"
+  } else {
+    "2"
+  })
+  inspect(whole == split, content = "true")
+  for row in [("whole", whole), ("split", split)] {
+    let path = "/tmp/vibe_witness_" + tag + "_" + row.0 + ".wasm"
+    Fs::write_bytes(path, row.1)
+    // The exported closure takes its hidden env parameter explicitly.
+    let lines = sh_lines("wasmtime run -W exceptions=y --invoke main " + path + " 0")
+    inspect(Array::length(lines), content = "1")
+    inspect(Array::get(lines, 0), content = expected)
+  }
+  // The step oracle must use the same bodyless impl-method interfaces.
+  // Trait dictionaries may reorder synthesized definitions; keyed content
+  // equality, rather than positional equality, is the pass-4 verdict.
+  let report = prelude_module_oracle_report_fs(main, "main", 4)
+  let passes: Array[String] = []
+  let mut keyed = ""
+  for line in String::split(report, "\n") {
+    if String::starts_with(line, "PASS ") {
+      Array::push(passes, line)
+    } else if String::starts_with(line, "  keyed ") {
+      keyed = String::trim(line)
+    } else ()
+  }
+  inspect(Array::length(passes), content = "5")
+  inspect(String::starts_with(Array::get(passes, 4), "PASS desugar_trait_dicts_with_typed_eq stmts="), content = "true")
+  inspect(String::starts_with(keyed, "keyed missing=0 extra=0 "), content = "true")
+  inspect(String::contains(keyed, " content=0 "), content = "true")
+  ()
+}
+
+test "split witness ABI preserves direct and re-exported impl methods" {
+  let leaf = "export trait Doubler { dbl(Self) -> Int }\nexport struct Box { v: Int }\nimpl Doubler for Box { dbl(b: Box) -> Int { b.v * 2 } }\nexport fn apply_dbl[T: Doubler](x: T) -> Int { T::dbl(x) }\n"
+  check_program("direct", leaf, "Doubler, Box, apply_dbl", "apply_dbl(Box::{ v: 20 })", "40", false)
+  check_program("facade", leaf, "Doubler, Box, apply_dbl", "apply_dbl(Box::{ v: 21 })", "42", true)
+}
+
+test "split witness ABI includes inherited methods and builtin method targets" {
+  let inherited = "export trait Parent { dbl(Self) -> Int }\nexport trait Child: Parent {}\nexport struct Box { v: Int }\nimpl Child for Box { dbl(b: Box) -> Int { b.v * 2 } }\nexport fn apply_dbl[T: Child](x: T) -> Int { T::dbl(x) }\n"
+  check_program("inherited", inherited, "Parent, Child, Box, apply_dbl", "apply_dbl(Box::{ v: 22 })", "44", true)
+  let builtin = "export trait Count { length(Self) -> Int }\nimpl Count for String\nexport fn count[T: Count](x: T) -> Int { T::length(x) }\n"
+  check_program("builtin", builtin, "Count, count", "count(\"abc\")", "3", false)
+}

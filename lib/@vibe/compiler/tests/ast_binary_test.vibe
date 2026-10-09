@@ -14,6 +14,7 @@ import @vibe/compiler/cache {
   ast_binary_read_optstr,
   ast_binary_read_span,
   ast_binary_read_string,
+  ast_binary_read_string_checked,
   ast_binary_read_svarint,
   ast_binary_read_svarint_checked,
   ast_binary_read_varint,
@@ -382,4 +383,58 @@ test "ast_binary: the checked header twin answers like the raw one on good input
   } with { Exception::Throw(_msg) => (false, 0) }
   assert(ok)
   assert(v == AST_BINARY_VERSION)
+}
+
+fn raw_string_packet(padding: Int) -> Bytes {
+  let bytes = Bytes::new()
+  // ASCII followed by the independently specified UTF-8 of é, 🍣 and NUL.
+  ast_binary_write_varint(bytes, padding + 7)
+  let mut i = 0
+  while i < padding {
+    Bytes::push(bytes, 97)
+    i = i + 1
+  }
+  for b in [195, 169, 240, 159, 141, 163, 0] {
+    Bytes::push(bytes, b)
+  }
+  Bytes::push(bytes, 127)
+  bytes
+}
+
+test "ast_binary: string boundaries preserve canonical UTF-8 NUL and cursor" {
+  for padding in [0, 1016, 1017, 1018] {
+    let reader = ast_binary_reader_new(raw_string_packet(padding))
+    let value = ast_binary_read_string_checked(reader)
+    inspect(String::length(value) == padding + 7, content = "true")
+    inspect(String::char_code_at(value, padding), content = "195")
+    inspect(String::char_code_at(value, padding + 1), content = "169")
+    inspect(String::char_code_at(value, padding + 2), content = "240")
+    inspect(String::char_code_at(value, padding + 3), content = "159")
+    inspect(String::char_code_at(value, padding + 4), content = "141")
+    inspect(String::char_code_at(value, padding + 5), content = "163")
+    inspect(String::char_code_at(value, padding + 6), content = "0")
+    inspect(ast_binary_read_byte(reader), content = "127")
+  }
+}
+
+test "ast_binary: empty one-byte and truncated raw strings keep cursor semantics" {
+  let empty = ast_binary_reader_new(Bytes::from_array([0, 127]))
+  inspect(ast_binary_read_string(empty), content = "")
+  inspect(ast_binary_read_byte(empty), content = "127")
+  let single = ast_binary_reader_new(Bytes::from_array([1, 97, 127]))
+  inspect(ast_binary_read_string(single), content = "a")
+  inspect(ast_binary_read_byte(single), content = "127")
+  let short = ast_binary_reader_new(Bytes::from_array([5, 97, 98, 195, 169]))
+  inspect(ast_binary_read_string(short), content = "abé")
+  inspect(ast_binary_read_byte(short), content = "-1")
+  let refusal = handle {
+    ast_binary_read_string_checked(ast_binary_reader_new(Bytes::from_array([
+      5,
+      97,
+      98,
+      195,
+      169
+    ])))
+  } with { Exception::Throw(message) => message }
+  inspect(refusal, content = "ast_binary: string length exceeds remaining input")
 }
