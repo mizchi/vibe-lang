@@ -1092,6 +1092,7 @@ fn resolve_bare_rows_through_callees(env: TypeEnv, first_local: Int, bodies: Arr
   let local_count = Array::length(bodies)
   let index = program_fn_index(fn_names)
   Array::set(bound_lambda_cell, 0, bound_lambda_table())
+  Array::set(bound_lambda_active_cell, 0, bound_lambda_active_empty())
   let records = array_empty()
   let declared = array_empty()
   let mut any_bare = false
@@ -1365,18 +1366,7 @@ fn collect_call_records(expr: Expr, handled: Array[String], via: Array[(String, 
         } else {
           via
         }
-        match arg {
-          EFn(_, _, _, _, _, _) => collect_runnable_records(arg, handled, arg_via, scope, out),
-          EIdent(x, _) => {
-            let bound = scope_resolve(scope, x)
-            if is_bound_lambda_marker(bound) {
-              run_bound_lambda(bound, handled, arg_via, out)
-            } else {
-              ()
-            }
-          },
-          _ => collect_call_records(arg, handled, via, scope, out)
-        }
+        collect_arg_records(arg, handled, arg_via, via, scope, out)
         k = k + 1
       }
       ()
@@ -1409,10 +1399,18 @@ fn collect_call_records(expr: Expr, handled: Array[String], via: Array[(String, 
         }
         collect_call_records(body, handled, via, scope_with(scope, (name, target)), out)
       },
-      None => {
-        let inner = scope_with(scope, (name, ""))
-        collect_runnable_records(value, handled, via, inner, out)
-        collect_call_records(body, handled, via, inner, out)
+      None => match value {
+        EFn(_, _, _, _, _, _) => {
+          // A recursive lambda is read where it is used, like a `let` one
+          // (Codex on #3409: `let rec cb = () -> mk(); 0` charged `mk`).
+          let marker = bound_lambda_rec_marker(name, value, scope)
+          collect_call_records(body, handled, via, scope_with(scope, (name, marker)), out)
+        },
+        _ => {
+          let inner = scope_with(scope, (name, ""))
+          collect_runnable_records(value, handled, via, inner, out)
+          collect_call_records(body, handled, via, inner, out)
+        }
       }
     },
     EFn(_, _, _, _, _, _) => collect_runnable_records(expr, handled, via, scope, out),
@@ -1460,16 +1458,85 @@ fn is_bound_lambda_marker(target: String) -> Bool {
   String::starts_with(target, "#lambda:")
 }
 
+/// A `let rec` lambda's marker: its own name is in the scope its body is
+/// read in, bound to the marker itself.
+fn bound_lambda_rec_marker(name: String, lambda: Expr, scope: Array[(String, String)]) -> String {
+  let table = Array::get(bound_lambda_cell, 0)
+  let marker = String::concat("#lambda:", __to_string(Array::length(table)))
+  Array::push(table, (marker, lambda, scope_with(scope, (name, marker))))
+  marker
+}
+
+/// The markers whose bodies are being read, so a lambda that reaches itself
+/// (a `let rec`, or one bound lambda calling another that calls it back) is
+/// read once.
+let bound_lambda_active_cell = [bound_lambda_active_empty()]
+
+fn bound_lambda_active_empty() -> Array[String] {
+  array_empty()
+}
+
 fn run_bound_lambda(marker: String, handled: Array[String], via: Array[(String, Int)], out: Array[(String, Array[String], Array[(String, Int)], String)]) -> Unit {
-  for entry in Array::get(bound_lambda_cell, 0) {
-    let (m, lambda, def_scope) = entry
-    if m == marker {
-      collect_runnable_records(lambda, handled, via, def_scope, out)
-    } else {
-      ()
+  let active = Array::get(bound_lambda_active_cell, 0)
+  if !checker_effects_string_has(active, marker) {
+    for entry in Array::get(bound_lambda_cell, 0) {
+      let (m, lambda, def_scope) = entry
+      if m == marker {
+        Array::push(active, marker)
+        collect_runnable_records(lambda, handled, via, def_scope, out)
+        Array::truncate(active, Array::length(active) - 1)
+      } else {
+        ()
+      }
     }
+  } else {
+    ()
   }
   ()
+}
+
+/// A call's argument. Where its value is a function -- a lambda, a bound
+/// lambda's name, or an `if` / `match` / sequence whose result is one -- that
+/// function is read under the call's (callee, k) (`arg_via`), as the callee is
+/// the one that runs it (Codex on #3409: `run(if c { () -> mk() } else { ..
+/// })`). Everything that runs before the call (a condition, a scrutinee, the
+/// head of a sequence, any other expression) is read under `via`.
+fn collect_arg_records(arg: Expr, handled: Array[String], arg_via: Array[(String, Int)], via: Array[(String, Int)], scope: Array[(String, String)], out: Array[(String, Array[String], Array[(String, Int)], String)]) -> Unit {
+  match arg {
+    EFn(_, _, _, _, _, _) => collect_runnable_records(arg, handled, arg_via, scope, out),
+    EIdent(x, _) => {
+      let bound = scope_resolve(scope, x)
+      if is_bound_lambda_marker(bound) {
+        run_bound_lambda(bound, handled, arg_via, out)
+      } else {
+        ()
+      }
+    },
+    EIf(cond, then_e, else_e) => {
+      collect_call_records(cond, handled, via, scope, out)
+      collect_arg_records(then_e, handled, arg_via, via, scope, out)
+      collect_arg_records(else_e, handled, arg_via, via, scope, out)
+    },
+    EMatch(scrutinee, arms) => {
+      collect_call_records(scrutinee, handled, via, scope, out)
+      for arm in arms {
+        let (pat, arm_body) = arm
+        let bound = array_empty()
+        collect_pat_binds_into(pat, bound)
+        let mut inner = scope
+        for b in bound {
+          inner = scope_with(inner, (b, ""))
+        }
+        collect_arg_records(arm_body, handled, arg_via, via, inner, out)
+      }
+      ()
+    },
+    ESeq(first, rest) => {
+      collect_call_records(first, handled, via, scope, out)
+      collect_arg_records(rest, handled, arg_via, via, scope, out)
+    },
+    _ => collect_call_records(arg, handled, via, scope, out)
+  }
 }
 
 /// Each arm's body, with the names its pattern binds in scope.
