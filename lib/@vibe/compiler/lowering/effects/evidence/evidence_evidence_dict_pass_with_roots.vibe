@@ -30,6 +30,8 @@ import @vibe/compiler/lowering/effects/queries {
   edp_collect_program_binders,
   edp_effect_name_of,
   edp_handle_matches_effect,
+  edp_handle_statement_index,
+  edp_handle_statement_indices,
   edp_has_unsafe_construct,
   edp_row_is_exactly,
   edp_rq_fold,
@@ -43,7 +45,7 @@ import ./evidence_ecall_arg_idents_expr.vibe {
 }
 
 import ./evidence_edp_apply_migration.vibe {
-  edp_all_sites_eligible_with_context, edp_apply_migration, edp_handle_owner_cps
+  edp_all_sites_eligible_with_index, edp_apply_migration_with_index, edp_handle_owner_cps
 }
 
 import ./evidence_handle_effect_names_expr.vibe {
@@ -72,7 +74,7 @@ import ./evidence_poison_expr.vibe {
   edp_collect_fn_defs,
   edp_collect_performing_fns,
   edp_collect_prefixed_names,
-  edp_erase_effect_handles,
+  edp_erase_effect_handles_with_index,
   edp_es_collect_into,
   edp_fn_row_label_table,
   edp_name_set,
@@ -541,8 +543,17 @@ export fn evidence_dict_pass_with_roots(stmts: Array[Stmt], roots: Array[String]
   // declaration. Erasing nothing is a no-op: skip the walk outright when
   // the name never appears on a handle. (R3: collected once and unioned
   // into vhe_names below -- this used to be two identical program walks.)
+  // Erasure, alpha/eta rewrites and migration preserve statement ownership:
+  // no handle is introduced in another statement. Rows remain supersets;
+  // consumers still check the current expression, rather than stale sites.
+  let handle_statements = edp_handle_statement_index(stmts)
   let vhe_handle_names = empty_str_array()
-  edp_collect_handle_effect_names(stmts, vhe_handle_names)
+  for row in handle_statements {
+    let (name, _) = row
+    if !is_exception_effect_name(name) {
+      Array::push(vhe_handle_names, name)
+    } else ()
+  }
   let vhe_names = empty_str_array()
   let mut vhn = 0
   while vhn < Array::length(effect_defs) {
@@ -589,14 +600,14 @@ export fn evidence_dict_pass_with_roots(stmts: Array[Stmt], roots: Array[String]
       // edp_body_may_perform). Erasing those is what keeps a client-only
       // handle over a builtin effect label compilable next to unrelated
       // server-side perform wrappers.
-      edp_erase_effect_handles(stmts, vh_name, true, edp_collect_performing_fns(stmts, vhe_fn_defs, vh_name, vhe_inert, vhe_fn_names), vhe_inert, vhe_fn_names)
+      edp_erase_effect_handles_with_index(stmts, vh_name, true, edp_collect_performing_fns(stmts, vhe_fn_defs, vh_name, vhe_inert, vhe_fn_names), vhe_inert, vhe_fn_names, Some(edp_handle_statement_indices(handle_statements, vh_name)))
     } else {
       // Nothing performs it ANYWHERE: every site is vacuous by
       // construction, so erase unconditionally -- no reachability
       // question to ask, and asking would wrongly keep sites whose body
       // merely makes an opaque call (entry.vibe's Profiler handle wraps
       // the whole CLI dispatch).
-      edp_erase_effect_handles(stmts, vh_name, false, empty_str_array(), vhe_inert, vhe_fn_names)
+      edp_erase_effect_handles_with_index(stmts, vh_name, false, empty_str_array(), vhe_inert, vhe_fn_names, Some(edp_handle_statement_indices(handle_statements, vh_name)))
     }
     vhi = vhi + 1
   }
@@ -622,7 +633,7 @@ export fn evidence_dict_pass_with_roots(stmts: Array[Stmt], roots: Array[String]
   let mut pi = 0
   while pi < Array::length(plans) {
     let (ename, ops, needing, handle_sites) = Array::get(plans, pi)
-    edp_apply_migration(stmts, ename, ops, needing, handle_sites, fn_defs, fn_row_labels, keep, errs)
+    edp_apply_migration_with_index(stmts, ename, ops, needing, handle_sites, fn_defs, fn_row_labels, keep, errs, Some(edp_handle_statement_indices(handle_statements, ename)))
     pi = pi + 1
   }
   // V2 step 3: the replay frontier is gone from codegen, so any non-Error
@@ -1611,8 +1622,14 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
   // self-discharge drop, the three inert-set builders, eligibility) walk
   // the whole merged program per effect. One cheap name collection up
   // front lets those effects skip the loop body entirely.
+  let plan_handle_statements = edp_handle_statement_index(stmts)
   let plan_handle_names = empty_str_array()
-  edp_collect_handle_effect_names(stmts, plan_handle_names)
+  for row in plan_handle_statements {
+    let (name, _) = row
+    if !is_exception_effect_name(name) {
+      Array::push(plan_handle_names, name)
+    } else ()
+  }
   // #1875 R3: the base inert set (pure fns + free-host-inert names) is
   // effect-independent; computing it per effect re-ran a full-program
   // callee scan for every planned effect. Build it once and copy per
@@ -1739,7 +1756,7 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
       } else {
         ()
       }
-      match edp_try_plan_for_effect(stmts, ename, ops, needing_full, plan_sites, fn_defs, row_labels, eligibility_base, eligibility_binders) {
+      match edp_try_plan_for_effect(stmts, ename, ops, needing_full, plan_sites, fn_defs, row_labels, eligibility_base, eligibility_binders, edp_handle_statement_indices(plan_handle_statements, ename)) {
         Some(plan) => if escaped == "" {
           Array::push(plans, plan)
         } else {
@@ -1764,7 +1781,7 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
           if Array::length(needing_live) == Array::length(needing_full) {
             ()
           } else {
-            match edp_try_plan_for_effect(stmts, ename, ops, needing_live, plan_sites, fn_defs, row_labels, eligibility_base, eligibility_binders) {
+            match edp_try_plan_for_effect(stmts, ename, ops, needing_live, plan_sites, fn_defs, row_labels, eligibility_base, eligibility_binders, edp_handle_statement_indices(plan_handle_statements, ename)) {
               Some(plan2) => {
                 Array::push(plans, plan2)
                 planned2 = true
@@ -1825,7 +1842,7 @@ fn edp_plan_migrations(stmts: Array[Stmt], effect_defs: Array[(String, Array[(St
 /// when there is neither a needing function NOR any proven owner param
 /// (nothing to gain; matches the old behavior for every previously-planned
 /// program exactly).
-fn edp_try_plan_for_effect(stmts: Array[Stmt], ename: String, ops: Array[(String, Array[TypeExpr], TypeExpr)], needing: Array[String], handle_sites: Array[(Expr, Array[(Pat, Expr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], row_labels: Array[Array[String]], base_inert: Array[String], binders: Option[MutSet[String]]) -> Option[(String, Array[(String, Array[TypeExpr], TypeExpr)], Array[String], Array[(Expr, Array[(Pat, Expr)])])] {
+fn edp_try_plan_for_effect(stmts: Array[Stmt], ename: String, ops: Array[(String, Array[TypeExpr], TypeExpr)], needing: Array[String], handle_sites: Array[(Expr, Array[(Pat, Expr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], row_labels: Array[Array[String]], base_inert: Array[String], binders: Option[MutSet[String]], handle_statement_indices: Array[Int]) -> Option[(String, Array[(String, Array[TypeExpr], TypeExpr)], Array[String], Array[(Expr, Array[(Pat, Expr)])])] {
   // ADR-0076 追記31 Vertical C (replay 撤去): a handle site EXISTING is
   // itself worth planning for — a self-discharging dispatcher whose body
   // performs the effect directly (lsp_server.vibe's Lsp handler is the
@@ -1840,7 +1857,7 @@ fn edp_try_plan_for_effect(stmts: Array[Stmt], ename: String, ops: Array[(String
   if !worth {
     None
   } else {
-    if edp_all_sites_eligible_with_context(stmts, ename, needing, handle_sites, fn_defs, row_labels, Some(base_inert), binders) {
+    if edp_all_sites_eligible_with_index(stmts, ename, needing, handle_sites, fn_defs, row_labels, Some(base_inert), binders, Some(handle_statement_indices)) {
       Some((ename, ops, needing, handle_sites))
     } else {
       None
