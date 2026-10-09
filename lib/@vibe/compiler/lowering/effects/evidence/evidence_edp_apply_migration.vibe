@@ -85,6 +85,12 @@ export fn edp_all_sites_eligible_with_base(stmts: Array[Stmt], ename: String, ne
 
 /// A planning attempt may share the inert base and binder census of its tree.
 export fn edp_all_sites_eligible_with_context(stmts: Array[Stmt], ename: String, needing: Array[String], handle_sites: Array[(Expr, Array[(Pat, Expr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], row_labels: Array[Array[String]], base_inert: Option[Array[String]], binders: Option[MutSet[String]]) -> Bool {
+  edp_all_sites_eligible_with_index(stmts, ename, needing, handle_sites, fn_defs, row_labels, base_inert, binders, None)
+}
+
+/// Reuse statement candidates while lowering preserves statement ownership.
+/// Every candidate is checked against its current expression before use.
+export fn edp_all_sites_eligible_with_index(stmts: Array[Stmt], ename: String, needing: Array[String], handle_sites: Array[(Expr, Array[(Pat, Expr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], row_labels: Array[Array[String]], base_inert: Option[Array[String]], binders: Option[MutSet[String]], statement_indices: Option[Array[Int]]) -> Bool {
   if Array::length(handle_sites) == 0 {
     // Nothing discharges `ename` anywhere -- by the checker's own
     // soundness a `needing` function could never actually run, so there is
@@ -150,8 +156,16 @@ export fn edp_all_sites_eligible_with_context(stmts: Array[Stmt], ename: String,
     // a read-only containment query so the thousands of site-free
     // statements cost no allocation here.
     let hq = RQHandlesEffect(ename)
-    let mut hsi = 0
-    while hsi < Array::length(stmts) {
+    let candidate_count = match statement_indices {
+      Some(indices) => Array::length(indices),
+      None => Array::length(stmts)
+    }
+    let mut site_pos = 0
+    while site_pos < candidate_count {
+      let hsi = match statement_indices {
+        Some(indices) => Array::get(indices, site_pos),
+        None => site_pos
+      }
       // ADR-0076 追記34 V2: non-SLet site-bearing statements (test/bench
       // blocks, top-level exprs, `let mut`) get the base safe-call set --
       // no owner-closure-param extension (that proof is tied to a named
@@ -199,7 +213,7 @@ export fn edp_all_sites_eligible_with_context(stmts: Array[Stmt], ename: String,
         },
         None => ()
       }
-      hsi = hsi + 1
+      site_pos = site_pos + 1
     }
     let mut ni = 0
     while ni < Array::length(needing) {
@@ -805,6 +819,12 @@ fn edp_migrate_closure_binding_expr(expr: Expr, xname: String, ename: String, di
 // --- applying an eligible migration.
 
 export fn edp_apply_migration(stmts: Array[Stmt], ename: String, ops: Array[(String, Array[TypeExpr], TypeExpr)], needing: Array[String], handle_sites: Array[(Expr, Array[(Pat, Expr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], row_labels: Array[Array[String]], keep: Array[Bool], errs: Array[String]) -> Unit {
+  edp_apply_migration_with_index(stmts, ename, ops, needing, handle_sites, fn_defs, row_labels, keep, errs, None)
+}
+
+/// Reuse statement candidates while lowering preserves statement ownership.
+/// Every candidate is checked against its current expression before use.
+export fn edp_apply_migration_with_index(stmts: Array[Stmt], ename: String, ops: Array[(String, Array[TypeExpr], TypeExpr)], needing: Array[String], handle_sites: Array[(Expr, Array[(Pat, Expr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], row_labels: Array[Array[String]], keep: Array[Bool], errs: Array[String], statement_indices: Option[Array[Int]]) -> Unit {
   edp_set_declared_op_order(ename, ops)
   let dict_pname = edp_dict_param_name(ename)
   let dict_tyname = edp_dict_struct_name(ename)
@@ -1012,8 +1032,16 @@ export fn edp_apply_migration(stmts: Array[Stmt], ename: String, ops: Array[(Str
   // query traverses arms of non-matching handles too, so it can never miss
   // a statement the rewrite would touch).
   let apq = RQHandlesEffect(ename)
-  let mut si = 0
-  while si < Array::length(stmts) {
+  let candidate_count = match statement_indices {
+    Some(indices) => Array::length(indices),
+    None => Array::length(stmts)
+  }
+  let mut site_pos = 0
+  while site_pos < candidate_count {
+    let si = match statement_indices {
+      Some(indices) => Array::get(indices, site_pos),
+      None => site_pos
+    }
     match Array::get(stmts, si) {
       SLet(exported, is_rec, name, ty, expr) => if edp_rq_fold(apq, expr) > 0 {
         // Extend the safe-call set with THIS statement's own proven
@@ -1080,7 +1108,7 @@ export fn edp_apply_migration(stmts: Array[Stmt], ename: String, ops: Array[(Str
       },
       _ => ()
     }
-    si = si + 1
+    site_pos = site_pos + 1
   }
   // Register the dict struct type once (idempotent, mirrors
   // desugar_trait_dict.vibe's own struct_decl_exists guard).

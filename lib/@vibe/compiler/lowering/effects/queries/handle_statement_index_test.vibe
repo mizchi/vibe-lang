@@ -1,0 +1,129 @@
+import @vibe/compiler/core {
+  Expr, Pat, Stmt
+}
+import @vibe/core {
+  struct MutSet
+}
+import @vibe/compiler/lowering/effects/queries {
+  EdpReadQuery, edp_handle_statement_index, edp_handle_statement_indices, edp_rq_fold
+}
+import @vibe/compiler/lowering/effects/evidence {
+  edp_erase_effect_handles_with_index
+}
+
+fn indexed_handle(name: String) -> Expr {
+  EHandle(EInt(0), [(PCtor(name + "::Get", []), EInt(1))])
+}
+
+fn oracle_statement_indices(stmts: Array[Stmt], effect: String) -> Array[Int] {
+  let out: Array[Int] = []
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let found = match Array::get(stmts, i) {
+      SLet(_, _, _, _, expr) => edp_rq_fold(RQHandlesEffect(effect), expr),
+      SLetMut(_, _, expr) => edp_rq_fold(RQHandlesEffect(effect), expr),
+      SExpr(expr) => edp_rq_fold(RQHandlesEffect(effect), expr),
+      STest(_, expr) => edp_rq_fold(RQHandlesEffect(effect), expr),
+      SBench(_, expr) => edp_rq_fold(RQHandlesEffect(effect), expr),
+      _ => 0
+    }
+    if found > 0 {
+      Array::push(out, i)
+    } else ()
+    i = i + 1
+  }
+  out
+}
+
+test "handle statement index preserves owner order and deduplicates nested sites" {
+  let stmts = [
+    SExpr(ESeq(indexed_handle("Ask"), indexed_handle("Ask"))),
+    SLet(false, false, "f", None, EFn([], [], [], None, None, indexed_handle("Other"))),
+    SLetMut("x", None, indexed_handle("Ask")),
+    STest("test", indexed_handle("Ask")),
+    SBench("bench", indexed_handle("Ask")),
+    SModule(false, "ignored", [SExpr(indexed_handle("Ask"))])
+  ]
+  let index = edp_handle_statement_index(stmts)
+  inspect(edp_handle_statement_indices(index, "Ask"), content = "[0, 2, 3, 4]")
+  inspect(edp_handle_statement_indices(index, "Other"), content = "[1]")
+  inspect(edp_handle_statement_indices(index, "Missing"), content = "[]")
+}
+
+test "handle index agrees with the independent containment query across containers" {
+  let hit = indexed_handle("Ask")
+  let containers = [
+    ETuple([EInt(0), hit]),
+    EArray([hit]),
+    ERecord("R", [("x", hit)], []),
+    EMap([("x", hit)]),
+    EIf(EBool(false), EInt(0), hit),
+    ELet("x", EInt(0), hit, -1),
+    ELetMut("x", hit, EInt(0), -1),
+    ELetRec("x", hit, EInt(0)),
+    EAssign("x", EInt(0), hit, -1),
+    EAssignOp("x", "+", hit, EInt(0), -1),
+    ESeq(EInt(0), hit),
+    EMatch(EInt(0), [(PWild, hit)]),
+    EHandle(EInt(0), [(PCtor("Other::Get", []), hit)]),
+    EWhile(EBool(false), hit),
+    ELoop([("x", hit)], EInt(0)),
+    ELoop([], hit),
+    EForIn("x", None, EArray([]), hit),
+    ECall(EIdent("f", -1), [hit], -1, []),
+    ECall(hit, [], -1, []),
+    EBinOp("+", hit, EInt(0), -1),
+    EUnaryOp("-", hit),
+    EFn([], [], [], None, None, hit),
+    EDot(hit, "x", -1, -1),
+    ELabeledArg("", "x", hit),
+    EReturn(hit),
+    EBreak(Some(hit)),
+    EContinue([hit]),
+    ESpread(hit),
+    EHandle(hit, []),
+    EHandle(hit, [(PCtor("Get", []), EInt(0))]),
+    EHandle(EInt(0), [(PWild, hit), (PCtor("Ask::Get", []), EInt(0))])
+  ]
+  let stmts: Array[Stmt] = []
+  for expr in containers {
+    Array::push(stmts, SExpr(expr))
+  }
+  let index = edp_handle_statement_index(stmts)
+  for effect in ["Ask", "Other", "Missing"] {
+    inspect(edp_handle_statement_indices(index, effect) == oracle_statement_indices(stmts, effect), content = "true")
+  }
+}
+
+test "removed nested handler arms leave safe candidate supersets" {
+  let stmts = [
+    SExpr(EHandle(EInt(7), [(PCtor("Ask::Get", []), indexed_handle("Other"))]))
+  ]
+  let index = edp_handle_statement_index(stmts)
+  let names: MutSet[String] = MutSet::new_string()
+  edp_erase_effect_handles_with_index(stmts, "Ask", false, [], names, names, Some(edp_handle_statement_indices(index, "Ask")))
+  inspect(edp_handle_statement_indices(index, "Other"), content = "[0]")
+  inspect(edp_handle_statement_indices(edp_handle_statement_index(stmts), "Other"), content = "[]")
+  edp_erase_effect_handles_with_index(stmts, "Other", false, [], names, names, Some(edp_handle_statement_indices(index, "Other")))
+  inspect(match Array::get(stmts, 0) {
+    SExpr(EInt(7)) => true,
+    _ => false
+  }, content = "true")
+}
+
+test "only the first arm determines the effect label including exception labels" {
+  let stmts = [
+    SExpr(EHandle(EInt(0), [
+      (PCtor("Error::Throw", []), EInt(0)),
+      (PCtor("Ask::Get", []), EInt(0))
+    ])),
+    SExpr(EHandle(EInt(0), [
+      (POr(PCtor("Ask::Get", []), PCtor("Other::Get", [])), EInt(0))
+    ])),
+    SExpr(EHandle(EInt(0), [(PCtor("::Get", []), EInt(0))]))
+  ]
+  let index = edp_handle_statement_index(stmts)
+  inspect(edp_handle_statement_indices(index, "Error"), content = "[0]")
+  inspect(edp_handle_statement_indices(index, "Ask"), content = "[]")
+  inspect(edp_handle_statement_indices(index, "Other"), content = "[]")
+}
