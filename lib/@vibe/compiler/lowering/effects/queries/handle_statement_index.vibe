@@ -1,0 +1,83 @@
+import @vibe/compiler/core {
+  Expr, Stmt, expr_child_at, expr_children_pop, expr_children_push, expr_children_top
+}
+import @vibe/core {
+  array_empty
+}
+import ./queries.vibe {
+  edp_pat_qname, edp_split_qualified
+}
+
+fn edp_index_handle_expr(expr: Expr, statement: Int, index: Array[(String, Array[Int])]) -> Unit {
+  match expr {
+    EHandle(_, arms) => if Array::length(arms) > 0 {
+      let (pat, _) = Array::get(arms, 0)
+      let (effect, _) = edp_split_qualified(edp_pat_qname(pat))
+      match effect {
+        Some(name) => {
+          let mut found = false
+          let mut i = 0
+          while i < Array::length(index) && !found {
+            let (key, statements) = Array::get(index, i)
+            if key == name {
+              let n = Array::length(statements)
+              if n == 0 || Array::get(statements, n - 1) != statement {
+                Array::push(statements, statement)
+              } else ()
+              found = true
+            } else ()
+            i = i + 1
+          }
+          if !found {
+            Array::push(index, (name, [statement]))
+          } else ()
+        },
+        None => ()
+      }
+    } else (),
+    _ => ()
+  }
+  let mark = expr_children_push(expr)
+  let top = expr_children_top()
+  let mut child = mark
+  while child < top {
+    edp_index_handle_expr(expr_child_at(child), statement, index)
+    child = child + 1
+  }
+  expr_children_pop(mark)
+}
+
+/// Statement candidates for every first-arm effect label, in source order.
+/// This reads the same five statement forms and expression descendants as
+/// RQHandlesEffect. It stores ordinals rather than mutable expression values.
+/// Reuse requires stable statement order and rewrites that never introduce a
+/// handle in a previously site-free statement; removals leave safe supersets.
+export fn edp_handle_statement_index(stmts: Array[Stmt]) -> Array[(String, Array[Int])] {
+  let index: Array[(String, Array[Int])] = []
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, expr) => edp_index_handle_expr(expr, i, index),
+      SLetMut(_, _, expr) => edp_index_handle_expr(expr, i, index),
+      SExpr(expr) => edp_index_handle_expr(expr, i, index),
+      STest(_, expr) => edp_index_handle_expr(expr, i, index),
+      SBench(_, expr) => edp_index_handle_expr(expr, i, index),
+      _ => ()
+    }
+    i = i + 1
+  }
+  index
+}
+
+/// Borrow one effect's immutable candidate row; absence means no original site.
+export fn edp_handle_statement_indices(index: Array[(String, Array[Int])], effect: String) -> Array[Int] {
+  let mut i = 0
+  while i < Array::length(index) {
+    let (name, statements) = Array::get(index, i)
+    if name == effect {
+      return statements
+    } else ()
+    i = i + 1
+  }
+  array_empty()
+}

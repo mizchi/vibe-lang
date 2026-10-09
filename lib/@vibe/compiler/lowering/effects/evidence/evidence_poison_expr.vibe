@@ -305,6 +305,12 @@ fn edp_erase_effect_handles_exprs(es: Array[Expr], ename: String, analyze: Bool,
 }
 
 export fn edp_erase_effect_handles(stmts: Array[Stmt], ename: String, analyze: Bool, perf_fns: Array[String], inert: MutSet[String], fn_names: MutSet[String]) -> Unit {
+  edp_erase_effect_handles_with_index(stmts, ename, analyze, perf_fns, inert, fn_names, None)
+}
+
+/// Reuse statement candidates while lowering preserves statement ownership.
+/// Every candidate is checked against its current expression before use.
+export fn edp_erase_effect_handles_with_index(stmts: Array[Stmt], ename: String, analyze: Bool, perf_fns: Array[String], inert: MutSet[String], fn_names: MutSet[String], statement_indices: Option[Array[Int]]) -> Unit {
   // #1875 R3: edp_erase_effect_handles_expr is a RECONSTRUCTING walk -- on a
   // statement with no matching handle site it rebuilds the whole expression
   // tree only to return a structurally identical copy. Handle sites are rare
@@ -312,8 +318,16 @@ export fn edp_erase_effect_handles(stmts: Array[Stmt], ename: String, analyze: B
   // behind a read-only containment query and leave every other statement
   // untouched.
   let hq = RQHandlesEffect(ename)
-  let mut i = 0
-  while i < Array::length(stmts) {
+  let candidate_count = match statement_indices {
+    Some(indices) => Array::length(indices),
+    None => Array::length(stmts)
+  }
+  let mut site_pos = 0
+  while site_pos < candidate_count {
+    let i = match statement_indices {
+      Some(indices) => Array::get(indices, site_pos),
+      None => site_pos
+    }
     match Array::get(stmts, i) {
       SLet(exported, is_rec, name, ty, expr) => if edp_rq_fold(hq, expr) > 0 {
         Array::set(stmts, i, SLet(exported, is_rec, name, ty, edp_erase_effect_handles_expr(expr, ename, analyze, perf_fns, inert, fn_names)))
@@ -342,7 +356,7 @@ export fn edp_erase_effect_handles(stmts: Array[Stmt], ename: String, analyze: B
       },
       _ => ()
     }
-    i = i + 1
+    site_pos = site_pos + 1
   }
 }
 
