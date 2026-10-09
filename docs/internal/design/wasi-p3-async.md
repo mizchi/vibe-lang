@@ -54,7 +54,7 @@ vibe has no function colouring; side effects are carried by the effect row. So
 contains `Async`** (`with Async`).
 
 - `await(f)` is the builtin `(Future[T]) -> T with Async`
-  (`checker/builtins_async.vibe`). It is not a reserved word, so the parser is
+  (`checker/builtin_sigs/builtins_async.vibe`). It is not a reserved word, so the parser is
   unchanged (`ECall(EIdent("await"), [f])`).
 - Using an `Async` computation in a context without `Async` is rejected by the
   effect-escape check (`EEEffectfulCallOutsideEffect`).
@@ -1108,7 +1108,7 @@ let run: () -> Int with Async = () -> {
 `test-hostfuture-source-component`）:
 
 1. **surface**: `host_future_get() -> Future[Int]`（pure builtin、
-   checker/builtins_async.vibe）。component-level import
+   checker/builtin_sigs/builtins_async.vibe）。component-level import
    `get-future: func() -> future<u32>` の readable end を Future cell に
    包む。cell は第3の状態 **state 2 = waitable**（`[2, handle]`; 0=ready,
    1=pending に追加）。compile_call が

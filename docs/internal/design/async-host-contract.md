@@ -521,7 +521,7 @@ error.
 
 A `Future[T]` is a two-word cell `[state, payload]`, and the state word is
 what distinguishes the four things that share the representation
-(the header comment of `checker/builtins_async.vibe`):
+(the header comment of `checker/builtin_sigs/builtins_async.vibe`):
 
 | state | meaning | payload |
 |---|---|---|

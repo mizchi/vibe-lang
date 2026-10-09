@@ -68,7 +68,7 @@ needs of one break the representation of the other.
   separate `HttpServer` / `HttpClient` / `HttpIncoming` effects fragments one
   host HTTP provider's contract into three, while the raw import layer stays
   `Http`, so the labels disagree layer by layer.
-  `checker/builtins_net.vibe` was in that state; its builtins now carry the
+  `checker/builtin_sigs/builtins_net.vibe` was in that state; its builtins now carry the
   single provider label `Http`. (The `effect HttpServer` / `HttpClient` /
   `HttpIncoming` declarations in `lib/@vibe/http/http_effect.vibe` are
   something else: user algebraic effects for in-process mocking.)

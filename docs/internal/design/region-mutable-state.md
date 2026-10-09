@@ -59,7 +59,7 @@ the capture-provenance merge that carries region skolems through closure types
 in
 [`checker_merge_capture_provenance.vibe`](../../../lib/@vibe/compiler/checker/checker_merge_capture_provenance.vibe);
 and the compiler-recognized call rows in
-[`builtin_call_arms.vibe`](../../../lib/@vibe/compiler/checker/builtin_call_arms.vibe).
+[`builtin_call_arms.vibe`](../../../lib/@vibe/compiler/checker/builtin_sigs/builtin_call_arms.vibe).
 The parser-generated literal lambda receives the bind-before-check handling;
 the internal non-literal `__region_run(f)` fallback is not a public lifetime
 API and does not provide the same generalization guarantee.
