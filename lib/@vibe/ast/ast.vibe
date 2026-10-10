@@ -79,14 +79,27 @@ export fn impl_target_head(target: TypeExpr) -> String {
   }
 }
 
+let impl_encoded_byte_names: Array[String] = []
+
+// The representation is byte-wise decimal plus an underscore. Prepare the
+// fixed 256 spellings once; repeated type names need no integer-to-string
+// allocation per byte, and each builder slot carries the whole spelling.
+fn impl_prepare_byte_names() -> Unit {
+  if Array::length(impl_encoded_byte_names) == 0 {
+    let mut byte = 0
+    while byte < 256 {
+      Array::push(impl_encoded_byte_names, String::concat(Int::to_string(byte), "_"))
+      byte = byte + 1
+    }
+  } else ()
+}
+
 export fn impl_encode_name(name: String) -> String {
-  // One builder, not a concat per byte: re-copying the growing prefix made
-  // this quadratic in the name, and it runs for every impl-target key.
+  impl_prepare_byte_names()
   let buf = StringBuilder::new()
   let mut i = 0
   while i < String::length(name) {
-    StringBuilder::push(buf, Int::to_string(String::char_code_at(name, i)))
-    StringBuilder::push(buf, "_")
+    StringBuilder::push(buf, Array::get(impl_encoded_byte_names, String::char_code_at(name, i)))
     i = i + 1
   }
   StringBuilder::freeze(buf)
@@ -160,41 +173,201 @@ export fn index_write_callee(index_callee: Expr) -> Expr {
   EIdent("Array::set", key)
 }
 
-export fn impl_target_key(target: TypeExpr) -> String {
+// Append the canonical key into one builder. Nested targets do not need
+// temporary keys or copies of an increasingly long parameter prefix.
+fn impl_write_name(buf: StringBuilder, name: String) -> Unit {
+  let mut i = 0
+  while i < String::length(name) {
+    StringBuilder::push(buf, Array::get(impl_encoded_byte_names, String::char_code_at(name, i)))
+    i = i + 1
+  }
+}
+
+fn impl_write_target_key(buf: StringBuilder, target: TypeExpr) -> Unit {
   match target {
-    TyName(name) => String::concat("N", String::concat(impl_encode_name(name), "Z")),
+    TyName(name) => {
+      StringBuilder::push(buf, "N")
+      impl_write_name(buf, name)
+      StringBuilder::push(buf, "Z")
+    },
     TyApp(name, args) => {
-      let keys = []
-      let mut i = 0
-      while i < Array::length(args) {
-        Array::push(keys, impl_target_key(Array::get(args, i)))
-        i = i + 1
+      StringBuilder::push(buf, "A")
+      impl_write_name(buf, name)
+      StringBuilder::push(buf, "L")
+      for arg in args {
+        impl_write_target_key(buf, arg)
       }
-      impl_applied_target_key(name, keys)
+      StringBuilder::push(buf, "R")
     },
     TyFn(params, ret, effect) => {
-      let mut out = "F"
-      let mut i = 0
-      while i < Array::length(params) {
-        out = String::concat(out, impl_target_key(Array::get(params, i)))
-        i = i + 1
+      StringBuilder::push(buf, "F")
+      for param in params {
+        impl_write_target_key(buf, param)
       }
-      let effect_key = match effect {
-        None => "E0",
-        Some(name) => String::concat("E1", String::concat(impl_encode_name(name), "Z"))
+      StringBuilder::push(buf, "T")
+      impl_write_target_key(buf, ret)
+      match effect {
+        None => StringBuilder::push(buf, "E0"),
+        Some(name) => {
+          StringBuilder::push(buf, "E1")
+          impl_write_name(buf, name)
+          StringBuilder::push(buf, "Z")
+        }
       }
-      String::concat(out, String::concat("T", String::concat(impl_target_key(ret), String::concat(effect_key, "R"))))
+      StringBuilder::push(buf, "R")
     },
     TyTuple(items) => {
-      let mut out = "P"
-      let mut i = 0
-      while i < Array::length(items) {
-        out = String::concat(out, impl_target_key(Array::get(items, i)))
-        i = i + 1
+      StringBuilder::push(buf, "P")
+      for item in items {
+        impl_write_target_key(buf, item)
       }
-      String::concat(out, "R")
+      StringBuilder::push(buf, "R")
     },
-    TyUnit => "U"
+    TyUnit => StringBuilder::push(buf, "U")
+  }
+}
+
+// Pure keys may be reused across compiles, but caller-owned argument arrays
+// may change. Store a deep copy of each eligible small target, never its
+// mutable arrays. The fixed entry/node/name limits bound retained memory.
+let impl_key_targets: Array[TypeExpr] = []
+let impl_key_values: Array[String] = []
+let impl_key_next: Array[Int] = []
+let impl_key_heads: Array[Int] = []
+
+fn impl_key_cost(target: TypeExpr, budget: Int) -> Int {
+  if budget <= 0 {
+    return -1
+  } else ()
+  match target {
+    TyName(n) => if String::length(n) <= 128 {
+      1
+    } else {
+      -1
+    },
+    TyUnit => 1,
+    TyApp(n, args) => if String::length(n) > 128 {
+      -1
+    } else {
+      impl_key_list_cost(args, budget)
+    },
+    TyTuple(items) => impl_key_list_cost(items, budget),
+    TyFn(params, ret, effect) => {
+      let effect_ok = match effect {
+        None => true,
+        Some(n) => String::length(n) <= 128
+      }
+      let cost = impl_key_list_cost(params, budget)
+      if !effect_ok || cost < 0 {
+        -1
+      } else {
+        let rc = impl_key_cost(ret, budget - cost)
+        if rc < 0 {
+          -1
+        } else {
+          cost + rc
+        }
+      }
+    }
+  }
+}
+
+fn impl_key_list_cost(items: Array[TypeExpr], budget: Int) -> Int {
+  let mut used = 1
+  let mut i = 0
+  while i < Array::length(items) {
+    let cost = impl_key_cost(Array::get(items, i), budget - used)
+    if cost < 0 {
+      return -1
+    } else ()
+    used = used + cost
+    i = i + 1
+  }
+  used
+}
+
+fn impl_key_copy(target: TypeExpr) -> TypeExpr {
+  match target {
+    TyName(n) => TyName(n),
+    TyUnit => TyUnit,
+    TyApp(n, args) => TyApp(n, impl_key_copy_list(args)),
+    TyTuple(items) => TyTuple(impl_key_copy_list(items)),
+    TyFn(params, ret, effect) => TyFn(impl_key_copy_list(params), impl_key_copy(ret), effect)
+  }
+}
+
+fn impl_key_copy_list(items: Array[TypeExpr]) -> Array[TypeExpr] {
+  let out: Array[TypeExpr] = []
+  for item in items {
+    Array::push(out, impl_key_copy(item))
+  }
+  out
+}
+
+fn impl_key_name_bucket(name: String, tag: Int) -> Int {
+  let n = String::length(name)
+  let first = if n == 0 {
+    0
+  } else {
+    String::char_code_at(name, 0)
+  }
+  let last = if n == 0 {
+    0
+  } else {
+    String::char_code_at(name, n - 1)
+  }
+  (tag + n * 17 + first * 31 + last * 7) % 128
+}
+
+fn impl_key_bucket(target: TypeExpr) -> Int {
+  match target {
+    TyName(n) => impl_key_name_bucket(n, 1),
+    TyApp(n, _) => impl_key_name_bucket(n, 2),
+    TyTuple(items) => (3 + Array::length(items) * 17) % 128,
+    TyFn(params, _, _) => (4 + Array::length(params) * 17) % 128,
+    TyUnit => 5
+  }
+}
+
+export fn impl_target_key(target: TypeExpr) -> String {
+  match target {
+    TyUnit => "U",
+    _ => {
+      let eligible = impl_key_cost(target, 16) > 0
+      let bucket = if eligible {
+        impl_key_bucket(target)
+      } else {
+        0
+      }
+      if eligible {
+        if Array::length(impl_key_heads) == 0 {
+          let mut i = 0
+          while i < 128 {
+            Array::push(impl_key_heads, -1); i = i + 1
+          }
+        } else ()
+        let mut at = Array::get(impl_key_heads, bucket)
+        while at >= 0 {
+          let cached: TypeExpr = Array::get(impl_key_targets, at)
+          if cached == target {
+            return Array::get(impl_key_values, at)
+          } else ()
+          at = Array::get(impl_key_next, at)
+        }
+      } else ()
+      impl_prepare_byte_names()
+      let buf = StringBuilder::new()
+      impl_write_target_key(buf, target)
+      let key = StringBuilder::freeze(buf)
+      if eligible && Array::length(impl_key_targets) < 128 {
+        let at = Array::length(impl_key_targets)
+        Array::push(impl_key_targets, impl_key_copy(target))
+        Array::push(impl_key_values, key)
+        Array::push(impl_key_next, Array::get(impl_key_heads, bucket))
+        Array::set(impl_key_heads, bucket, at)
+      } else ()
+      key
+    }
   }
 }
 
