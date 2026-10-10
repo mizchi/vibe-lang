@@ -1,0 +1,47 @@
+// #3370: a callback whose performs the callee handles itself needs no row
+// on the function that writes it. Both used to be refused: `producer` with
+// `missing { Box::Put }`, and the test through `run_two` with "cannot
+// discharge { Two2 }".
+effect Box[T] {
+  Put(T) -> Int
+}
+
+fn run_str(f: () -> Int with Box[String]) -> Int {
+  handle {
+    f()
+  } with {
+    Box::Put(s) => resume(String::length(s))
+  }
+}
+
+fn producer() -> Int {
+  run_str(() -> {
+    perform Box::Put("abc")
+  })
+}
+
+effect Two2 {
+  A(Int) -> Int
+  B(Int) -> Int
+}
+
+fn two_ops() -> Int with Two2 {
+  perform Two2::A(2) + perform Two2::B(3)
+}
+
+fn run_two(f: () -> Int with Two2) -> Int {
+  handle {
+    f()
+  } with {
+    Two2::A(n) => resume(n);
+    Two2::B(n) => resume(n + 1)
+  }
+}
+
+test "the callee handles the callback's perform" {
+  inspect(producer(), "3")
+}
+
+test "through a parameter" {
+  inspect(run_two(() -> two_ops()), "6")
+}

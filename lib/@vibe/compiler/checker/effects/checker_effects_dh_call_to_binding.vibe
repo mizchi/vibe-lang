@@ -119,7 +119,43 @@ import ./checker_effects_throw_payload_kind.vibe {
 /// callback is accepted at its own definition by the gradual rule and so
 /// can raise a kind it does not declare -- a definition-site hole reachable
 /// through a named or an annotated argument as well, filed separately.
+/// #3370: a closure literal passed where the parameter's function type
+/// carries a row performs under that row too. Its performs used to be
+/// charged only to the enclosing function, so `run_str(() -> { perform
+/// Box::Put("abc") })` required `with Box` of a caller whose callee handles
+/// `Box` itself. Adding the parameter's row is sound: a callee that does not
+/// discharge it calls the parameter, so its own row carries it, and that row
+/// is charged to this call below as usual. Exception kinds keep the exact
+/// treatment above, and a row variable is resolved from the arguments by the
+/// call's own check, so neither is added here.
 export fn closure_arg_declared(arg: Expr, declared: Array[String], callee: String, lexical_callee: Option[Array[String]], index: Int) -> Array[String] {
+  let base = closure_arg_declared_base(arg, declared, callee, lexical_callee, index)
+  match arg {
+    EFn(_, _, _, _, _, _) => match lexical_callee {
+      Some(_) => base,
+      None => match MutMap::get(Array::get(callee_sig_index, 0), callee) {
+        None => base,
+        Some(si) => {
+          let prows = Array::get(callee_sig_param_effs, si)
+          if index >= Array::length(prows) {
+            base
+          } else {
+            let added = no_str_labels()
+            for label in Array::get(prows, index) {
+              if String::length(label) > 0 && !is_exception_label(label) && !label_is_effect_var(label) {
+                Array::push(added, label)
+              }
+            }
+            labels_union(base, added)
+          }
+        }
+      }
+    },
+    _ => base
+  }
+}
+
+fn closure_arg_declared_base(arg: Expr, declared: Array[String], callee: String, lexical_callee: Option[Array[String]], index: Int) -> Array[String] {
   match arg {
     EFn(_, _, _, _, _, _) => if !under_kinded_handle(declared) {
       // #3013: outside a kinded handle the literal inherited the ENCLOSING row,
