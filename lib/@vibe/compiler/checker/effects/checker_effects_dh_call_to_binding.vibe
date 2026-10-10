@@ -140,7 +140,13 @@ export fn closure_arg_declared(arg: Expr, declared: Array[String], callee: Strin
           if index >= Array::length(prows) {
             base
           } else {
-            labels_union(base, closure_row_extra_labels(Array::get(prows, index)))
+            let added = no_str_labels()
+            for label in Array::get(prows, index) {
+              if String::length(label) > 0 && !is_exception_label(label) && !label_is_effect_var(label) {
+                Array::push(added, label)
+              }
+            }
+            labels_union(base, added)
           }
         }
       }
@@ -1078,19 +1084,19 @@ export fn build_perform_fn_effs(stmts: Array[Stmt], env: TypeEnv, fn_names: Arra
         Array::push(written_rows, effs)
       },
       SLet(_, _, name, ty, body) => {
-        let written = fn_binding_effects(dh_expand_sig(ty), body)
+        let written = fn_binding_effects(ty, body)
         Array::push(fn_names, name)
         Array::push(fn_effs, bare_rows_with_published_payload(written, env, name))
-        Array::push(fn_param_effs, fn_binding_param_effects(dh_expand_sig(ty), body))
+        Array::push(fn_param_effs, fn_binding_param_effects(ty, body))
         Array::push(local_bodies, body)
         Array::push(alias_sources, "")
         Array::push(written_rows, written)
       },
       SLetMut(name, ty, body) => {
-        let written = fn_binding_effects(dh_expand_sig(ty), body)
+        let written = fn_binding_effects(ty, body)
         Array::push(fn_names, name)
         Array::push(fn_effs, written)
-        Array::push(fn_param_effs, fn_binding_param_effects(dh_expand_sig(ty), body))
+        Array::push(fn_param_effs, fn_binding_param_effects(ty, body))
         Array::push(local_bodies, EUnit)
         Array::push(alias_sources, "")
         Array::push(written_rows, written)
@@ -2039,58 +2045,6 @@ fn dh_type_alias_head(t: TypeExpr) -> Bool {
 /// be trusted -- a generic alias named without its arguments, an argument
 /// count that does not match, or a chain that does not end -- so a caller
 /// leaves the annotation unclassified instead of guessing its row.
-/// #3347: the row a closure literal declares through an annotation the
-/// parser could not distribute onto it -- an alias, `let side: Thunk = () ->
-/// Int { .. }` with `type Thunk = () -> Int with Ask`, kept as the identity
-/// ascription `((__asc: Thunk) -> __asc)(lit)`. None when `val` is not such an
-/// ascription of a literal, or the annotation does not expand to a function
-/// type here (an alias from another module).
-export fn ascribed_closure_literal_row(val: Expr) -> Option[Array[String]] {
-  match val {
-    ECall(EFn(_, _, params, _, _, EIdent(body_name, _)), args, _, _) => if Array::length(params) == 1 && Array::length(args) == 1 && body_name == "__asc" {
-      match Array::get(args, 0) {
-        EFn(_, _, _, _, _, _) => match Array::get(params, 0) {
-          ("__asc", Some(ann)) => match dh_expand_type_alias(ann) {
-            Some(TyFn(_, _, ann_eff)) => Some(effect_row_labels(effect_row_parse(ann_eff))),
-            _ => None
-          },
-          _ => None
-        },
-        _ => None
-      }
-    } else {
-      None
-    },
-    _ => None
-  }
-}
-
-/// #3347: a top-level binding's annotation with a function-type alias
-/// expanded (`let side: Thunk = ..`), so its row is the binding's as a row
-/// written out is. Anything else is returned as written.
-export fn dh_expand_sig(ty: Option[TypeExpr]) -> Option[TypeExpr] {
-  match ty {
-    Some(t) => match dh_expand_type_alias(t) {
-      Some(TyFn(ps, r, eff)) => Some(TyFn(ps, r, eff)),
-      _ => ty
-    },
-    None => None
-  }
-}
-
-/// The labels of `row` a closure literal performs under besides the enclosing
-/// row (#3370, #3347): everything but exception kinds and row variables,
-/// which keep their own treatment.
-export fn closure_row_extra_labels(row: Array[String]) -> Array[String] {
-  let added = no_str_labels()
-  for label in row {
-    if String::length(label) > 0 && !is_exception_label(label) && !label_is_effect_var(label) {
-      Array::push(added, label)
-    }
-  }
-  added
-}
-
 export fn dh_expand_type_alias(t: TypeExpr) -> Option[TypeExpr] {
   let no_args: Array[TypeExpr] = []
   let mut current = t

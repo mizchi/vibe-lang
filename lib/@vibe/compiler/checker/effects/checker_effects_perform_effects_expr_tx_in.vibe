@@ -44,9 +44,7 @@ import ./checker_effects_decl_authorizes_effect.vibe {
 }
 
 import ./checker_effects_dh_call_to_binding.vibe {
-  ascribed_closure_literal_row,
   closure_arg_declared,
-  closure_row_extra_labels,
   error_row_checked,
   labels_without_exception_family_marker,
   make_contextual_row_error,
@@ -616,17 +614,6 @@ fn local_fn_overlay_labels(val: Expr, ov_names: Array[String], ov_effs: Array[Ar
     EIdent(n, _) => alias_fn_overlay_labels(n, ov_names, ov_effs, fn_names, fn_effs, fn_index),
     // A local annotation is lowered to `((__asc: T) -> __asc)(value)`.
     // Its declared function row is the contract at calls through the binding.
-    // #3347: a closure literal under an alias annotation carries the alias's
-    // row, which its body is checked against.
-    _ => match ascribed_closure_literal_row(val) {
-      Some(row) => row,
-      None => local_ascribed_fn_labels(val, ov_names, ov_effs, fn_names, fn_effs, fn_index)
-    }
-  }
-}
-
-fn local_ascribed_fn_labels(val: Expr, ov_names: Array[String], ov_effs: Array[Array[String]], fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int]) -> Array[String] {
-  match val {
     _ => match afe_ascribed_name_type(val) {
       Some(TyFn(_, _, eff)) => match local_alias_target(val, ov_names, ov_effs, fn_index) {
         Some(target) => {
@@ -1181,25 +1168,15 @@ export fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_dec
               ai = ai + 1
             }
           },
-          _ => match ascribed_closure_literal_row(expr) {
-            // #3347: a closure literal annotated through an alias
-            // (`let side: Thunk = () -> ..`) performs under the alias's row,
-            // as one with the row written out does; a call through the
-            // binding is charged that row (local_fn_overlay_labels).
-            Some(row) => {
-              pe_push(stack, stack_ci, callee, ci)
-              pe_push(stack, stack_ci, Array::get(args, 0), pe_ctx(ctxs, labels_union(declared, closure_row_extra_labels(row)), in_handle, ov_names, ov_effs, kinds))
-            },
-            None => {
-              // A callee that is not a name (a field, a call result) is one
-              // this pass cannot see, so a closure literal handed to it stays
-              // as strict as the body (closure_arg_declared).
-              pe_push(stack, stack_ci, callee, ci)
-              let mut bi = 0
-              while bi < Array::length(args) {
-                pe_push(stack, stack_ci, Array::get(args, bi), ci)
-                bi = bi + 1
-              }
+          _ => {
+            // A callee that is not a name (a field, a call result) is one
+            // this pass cannot see, so a closure literal handed to it stays
+            // as strict as the body (closure_arg_declared).
+            pe_push(stack, stack_ci, callee, ci)
+            let mut bi = 0
+            while bi < Array::length(args) {
+              pe_push(stack, stack_ci, Array::get(args, bi), ci)
+              bi = bi + 1
             }
           }
         }
