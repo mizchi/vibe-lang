@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Pat, Type, TypeDef, TypeEnv, env_bind, env_lookup, find_enum_typedef, find_typedef
+  Pat, Type, TypeDef, TypeEnv, env_bind, env_lookup, find_enum_typedef, find_typedef, type_to_string
 }
 
 import @vibe/core {
@@ -546,5 +546,180 @@ export fn check_pattern(pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[
       }
       bind_fields(0, env)
     }
+  }
+}
+
+/// #3419: a constructor pattern that can never match its scrutinee, or None.
+/// `check_pattern` refuses a declared enum's constructor only against a
+/// scalar, a function, an `Array` or a tuple. Everything else was accepted
+/// as a dead arm: `Some(n)` on an `Array[Int]` (`_ => -1` answered), a
+/// constructor of another enum or on a struct or an `Option`, and a name no
+/// enum declares (`Zork(n)` on an `Int`). `scrutinee_ty` is the zonked type;
+/// a variable, an unknown, a formal, an alias or a type this module does not
+/// declare is tolerated, as before. Nested patterns are checked where the
+/// payload type is known structurally (`Option` and tuples).
+export fn ctor_pattern_scrutinee_mismatch(pat: Pat, scrutinee_ty: Type, defs: Array[TypeDef]) -> Option[String] {
+  match pat {
+    PCtor(raw_name, sub_pats) => {
+      let name = cp_ctor_base_name(raw_name)
+      let builtin = name == "Some" || name == "None"
+      match scrutinee_ty {
+        CtOption(elem) => if builtin {
+          if name == "Some" && Array::length(sub_pats) == 1 {
+            ctor_pattern_scrutinee_mismatch(Array::get(sub_pats, 0), elem, defs)
+          } else {
+            None
+          }
+        } else {
+          Some(cp_ctor_never_matches(name, find_ctor_in_defs(defs, name), scrutinee_ty))
+        },
+        _ => {
+          let declared = find_ctor_in_defs(defs, name)
+          let user_ctor = match declared {
+            Some(_) => true,
+            None => false
+          }
+          if cp_scrutinee_is_structural(scrutinee_ty) {
+            // A declared constructor here is already refused by
+            // `check_pattern` (`non_enum_scrutinee`).
+            if user_ctor {
+              None
+            } else {
+              Some(cp_ctor_never_matches(name, declared, scrutinee_ty))
+            }
+          } else {
+            match cp_nominal_variants(scrutinee_ty, defs) {
+              Some(variants) => if cp_names_has(variants, name) {
+                None
+              } else {
+                Some(cp_ctor_never_matches(name, declared, scrutinee_ty))
+              },
+              None => None
+            }
+          }
+        }
+      }
+    },
+    PTuple(pats) => match scrutinee_ty {
+      CtTuple(elem_tys) => if Array::length(pats) == Array::length(elem_tys) {
+        let mut out: Option[String] = None
+        let mut i = 0
+        while i < Array::length(pats) {
+          match out {
+            None => {
+              out = ctor_pattern_scrutinee_mismatch(Array::get(pats, i), Array::get(elem_tys, i), defs)
+            },
+            Some(_) => ()
+          }
+          i = i + 1
+        }
+        out
+      } else {
+        None
+      },
+      _ => None
+    },
+    POr(left, right) => match ctor_pattern_scrutinee_mismatch(left, scrutinee_ty, defs) {
+      Some(msg) => Some(msg),
+      None => ctor_pattern_scrutinee_mismatch(right, scrutinee_ty, defs)
+    },
+    _ => None
+  }
+}
+
+/// `E::A` names the variant `A`.
+fn cp_ctor_base_name(name: String) -> String {
+  let mut cut = 0
+  let mut i = 0
+  let n = String::length(name)
+  while i + 1 < n {
+    if name[i: i + 2] == "::" {
+      cut = i + 2
+    }
+    i = i + 1
+  }
+  name[cut: n]
+}
+
+/// A concrete type no constructor pattern but its own can match, with no
+/// declaration to consult: a scalar, a function, an `Array` or a tuple.
+fn cp_scrutinee_is_structural(ty: Type) -> Bool {
+  match ty {
+    CtInt => true,
+    CtDouble => true,
+    CtBool => true,
+    CtString => true,
+    CtChar => true,
+    CtUnit => true,
+    CtBytes => true,
+    CtFn(_, _, _) => true,
+    CtArray(_) => true,
+    CtTuple(_) => true,
+    _ => false
+  }
+}
+
+/// The variant names of a scrutinee whose type this module declares: an
+/// enum's variants, or none for a struct. None when the type is not a
+/// declared struct or enum (a formal, an alias, a builtin head, an
+/// unresolved name), which stays tolerated.
+fn cp_nominal_variants(ty: Type, defs: Array[TypeDef]) -> Option[Array[String]] {
+  let head = match ty {
+    CtNamed(n, _) => n,
+    CtEnum(n) => n,
+    CtStruct(n) => n,
+    _ => ""
+  }
+  if head == "" {
+    None
+  } else {
+    match find_typedef(defs, head) {
+      Some(td) => match td {
+        TDEnum(_, _, variants) => {
+          let names: Array[String] = []
+          for v in variants {
+            let (vname, _) = v
+            Array::push(names, vname)
+          }
+          Some(names)
+        },
+        TDStruct(_, _, _, _) => {
+          let none: Array[String] = []
+          Some(none)
+        },
+        _ => None
+      },
+      None => None
+    }
+  }
+}
+
+fn cp_names_has(names: Array[String], name: String) -> Bool {
+  let mut found = false
+  for n in names {
+    if n == name {
+      found = true
+    }
+  }
+  found
+}
+
+fn cp_ctor_never_matches(name: String, declared: Option[(String, Array[Type])], scrutinee_ty: Type) -> String {
+  let ty_text = type_to_string(scrutinee_ty)
+  let owner = if name == "Some" || name == "None" {
+    "Option"
+  } else {
+    match declared {
+      Some(info) => {
+        let (enum_name, _) = info
+        enum_name
+      },
+      None => ""
+    }
+  }
+  if owner == "" {
+    "unknown constructor `\{name}` in a pattern on a value of type `\{ty_text}`: no enum declares it, so the arm never matches -- use a constructor of `\{ty_text}`, or declare or import the enum that has `\{name}`"
+  } else {
+    "constructor pattern `\{name}` (of `\{owner}`) never matches a value of type `\{ty_text}` -- use a constructor of `\{ty_text}`, or remove the arm"
   }
 }
