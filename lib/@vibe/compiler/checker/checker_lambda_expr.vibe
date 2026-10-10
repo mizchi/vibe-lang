@@ -362,38 +362,6 @@ fn retaining_write_argument_mask(source_name: String) -> Int {
   }
 }
 
-/// #3360: a container write whose stored type is still open when it is
-/// checked -- `Array::push(outer, h)` in a closure literal handed to a
-/// library function, checked before the call fixes `h`'s type -- with the
-/// target, the environment and the value's offset. The `TaskGroup::run` body
-/// that encloses it reads each one again with the body's final substitution
-/// (`recheck_deferred_region_writes`). The same write in a `for h in hs` loop
-/// was refused, since its variable is typed from `hs` first.
-export let deferred_region_writes: Array[(Expr, Type, TypeEnv, Int)] = Array::slice([
-  (EUnit, CtUnit, EnvEmpty, 0)
-], 0, 0)
-
-/// #3360: the deferred writes recorded since `mark`, read with `s`; one
-/// refusal per write that now stores the region outward. The entries are
-/// dropped either way.
-export fn recheck_deferred_region_writes(mark: Int, s: Subst, errors: Array[String]) -> Bool {
-  let mut refused = false
-  let mut i = mark
-  while i < Array::length(deferred_region_writes) {
-    let (target, raw_ty, wenv, off) = Array::get(deferred_region_writes, i)
-    let stored_ty = subst_apply(s, raw_ty)
-    if container_write_crosses_region(target, stored_ty, wenv) {
-      refused = true
-      Array::push(errors, String::concat(region_write_escape_message(stored_ty, wenv, "region escapes its scope: a container write stores a value that captures this region into an outer binding"), off_marker(off)))
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  Array::truncate(deferred_region_writes, mark)
-  refused
-}
-
 /// Mutable container operations are assignments with a non-syntactic target.
 /// Check every stored argument against the same region lifetime rule as
 /// `EAssign`; skip the duplicate type walk entirely outside a region.
@@ -418,10 +386,6 @@ export fn retaining_write_region_check(name: String, args: Array[Expr], env: Typ
         let stored_ty = subst_apply(s1, val_ty)
         if container_write_crosses_region(Array::get(args, 0), stored_ty, env) {
           Array::push(errors, String::concat(region_write_escape_message(stored_ty, env, "region escapes its scope: a container write stores a value that captures this region into an outer binding"), off_marker(tail_expr_off(Array::get(args, value_index)))))
-        } else if Array::length(collect_tvars(stored_ty)) > 0 {
-          // #3360: the stored type is still open; the enclosing run body
-          // reads it again once its substitution is final.
-          Array::push(deferred_region_writes, (Array::get(args, 0), val_ty, env, tail_expr_off(Array::get(args, value_index))))
         } else if retention_type_hides_region(stored_ty, defs) {
           // #3343 (Codex on #3359): a value whose type may hide a region --
           // a struct built from the token, a handle under an annotation that

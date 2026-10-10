@@ -165,9 +165,7 @@ import ./checker_infer_binop_type.vibe {
 import ./checker_lambda_expr.vibe {
   array_reader_second_key,
   bind_array_arg,
-  deferred_region_writes,
   field_write_mut_check,
-  recheck_deferred_region_writes,
   record_array_receiver,
   retaining_write_region_check,
   run_body_param_cell,
@@ -1530,13 +1528,8 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                             env
                           }
                           let errors_before_body = Array::length(errors)
-                          let deferred_mark = Array::length(deferred_region_writes)
                           let (bt, s_body, c_body) = check_child(body_arg, body_env, defs, s_skolem, c1 + 1, errors, tytab, capture, lane)
                           Array::truncate(run_body_param_cell, 0)
-                          // #3360: a write in the body whose stored type was
-                          // still open (a closure literal handed to a library
-                          // function) is read again with the body's types.
-                          let _ = recheck_deferred_region_writes(deferred_mark, s_body, errors)
                           let mut write_refused = false
                           let mut ei = errors_before_body
                           while ei < Array::length(errors) {
@@ -1719,11 +1712,8 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
               // argument child 1, then EFn body child 0.
               let virtual_parent_depth = typed_occurrence_capture_frame_depth(capture)
               typed_occurrence_capture_enter_virtual_child(capture, 1, 1)
-              let deferred_mark = Array::length(deferred_region_writes)
               let (body_ty, s1, c1) = check_child(fn_body, env_body, defs, s, c + 1, errors, tytab, capture, lane)
               typed_occurrence_capture_restore_frame_depth(capture, virtual_parent_depth)
-              // #3360: as for a `TaskGroup::run` body.
-              let _ = recheck_deferred_region_writes(deferred_mark, s1, errors)
               let zonked_ret = subst_apply(s1, body_ty)
               // #3343 (Codex on #3359): a value whose type may hide the
               // region is asked by what the body's tail reads, too.
