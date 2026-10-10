@@ -1,0 +1,20 @@
+//# #3339: an or-pattern arm in a handler set
+
+// `Ab::A(_) | Ab::B(_) =>` was refused with "handler-set arms must name a
+// fully qualified operation", anchored at the enclosing function. Each
+// alternative is now qualified by the effect it names, like the header form's
+// `A(_) | B(_)`; an alternative written without its effect names the edit at
+// that alternative.
+import @vibe/compiler/runtime {
+  collect_all_diagnostics
+}
+
+test "a handler-set arm may join qualified operations with |" {
+  let src = "effect Ab {\n  A(Int) -> Int\n  B(Int) -> Int\n}\n\nfn work() -> Int with Ab {\n  perform Ab::A(1) + perform Ab::B(2)\n}\n\nfn run() -> Int {\n  handle {\n    work()\n  } with {\n    Ab::A(_) | Ab::B(_) => resume(7)\n  }\n}\n"
+  inspect(collect_all_diagnostics(src), "[]")
+}
+
+test "an unqualified alternative in a handler-set arm names the edit" {
+  let src = "effect Ab {\n  A(Int) -> Int\n  B(Int) -> Int\n}\n\nfn work() -> Int with Ab {\n  perform Ab::A(1) + perform Ab::B(2)\n}\n\nfn run() -> Int {\n  handle {\n    work()\n  } with {\n    Ab::A(_) | B(_) => resume(7)\n  }\n}\n"
+  inspect(collect_all_diagnostics(src), "[line 14:16: write each alternative of a handler-set arm as a qualified operation, such as `Effect::B(_)`, not a bare `B`]")
+}

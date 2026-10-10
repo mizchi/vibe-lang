@@ -753,7 +753,11 @@ fn parse_qualified_handle_arm(tokens: Array[Token], starts: Array[Int], pos: Int
     } else {
       throw("handler-set arm operation did not match its qualified pattern")
     },
-    _ => throw("handler-set arms must name a fully qualified operation such as `Exception::Throw(_)`")
+    // #3339: `Ab::A(_) | Ab::B(_) =>` is one arm per operation, as the
+    // header form's `A(_) | B(_)` is. The pattern parser keeps only each
+    // later alternative's variant name, so its effect is read back here.
+    POr(_, _) => qualify_handler_set_or_arm(tokens, operation_pos, pat_next, effect_label, pat),
+    _ => throw("handler-set arms must name a fully qualified operation such as `Exception::Throw(_)` at #\{pos}")
   }
   let arrow_pos = expect_tk(tokens, pat_next, "=>")
   // #2197: a handler body is an arm body too -- same bare-assignment tail,
@@ -767,6 +771,101 @@ fn parse_qualified_handle_arm(tokens: Array[Token], starts: Array[Int], pos: Int
     next = after_assign
   }
   ((source_set_pat_qualifier(source_wrap_pat(source_rewrap_pat(pat, qualified_pat), pos, pat_next, context), pos, operation_pos - 1, context), expr), next)
+}
+
+/// #3339: the alternatives of a handler-set or-arm, each qualified by the
+/// effect it names. `first` is the token of the first alternative's
+/// operation, whose effect is `first_label`; every later alternative starts
+/// after a top-level `|` and must be written `Effect::Op(..)` too.
+fn qualify_handler_set_or_arm(tokens: Array[Token], first: Int, end: Int, first_label: String, pat: Pat) -> Pat with Exception {
+  let alternatives: Array[Pat] = []
+  flatten_or_pattern(pat, alternatives)
+  let starts: Array[Int] = [first]
+  let mut depth = 0
+  let mut i = first
+  while i < end {
+    match peek(tokens, i) {
+      TLParen => {
+        depth = depth + 1
+      },
+      TLBracket => {
+        depth = depth + 1
+      },
+      TLBrace => {
+        depth = depth + 1
+      },
+      TRParen => {
+        depth = depth - 1
+      },
+      TRBracket => {
+        depth = depth - 1
+      },
+      TRBrace => {
+        depth = depth - 1
+      },
+      TBitOr => if depth == 0 {
+        Array::push(starts, i + 1)
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  if Array::length(starts) != Array::length(alternatives) {
+    throw("write one handler-set arm per operation: this or-pattern's alternatives could not be read as qualified operations at #\{first}")
+  }
+  let qualified: Array[Pat] = []
+  let mut ai = 0
+  while ai < Array::length(alternatives) {
+    let start = Array::get(starts, ai)
+    let alt = Array::get(alternatives, ai)
+    let (name, args) = match source_pat(alt) {
+      PCtor(n, a) => (n, a),
+      _ => throw("write each alternative of a handler-set arm as a qualified operation, such as `Exception::Throw(_)` at #\{start}")
+    }
+    let label = if ai == 0 {
+      first_label
+    } else {
+      match peek(tokens, start) {
+        TIdent(effect_name) => {
+          let (lbl, after_label) = match peek(tokens, start + 1) {
+            TLBracket => collect_row_item_targs(tokens, start + 2, 1, String::concat(effect_name, "[")),
+            _ => (effect_name, start + 1)
+          }
+          match peek(tokens, after_label) {
+            TDoubleColon => match peek(tokens, after_label + 1) {
+              TIdent(op) => if op == name {
+                lbl
+              } else {
+                throw("write each alternative of a handler-set arm as a qualified operation, such as `\{effect_name}::\{name}(_)` at #\{start}")
+              },
+              _ => throw("write each alternative of a handler-set arm as a qualified operation, such as `\{effect_name}::\{name}(_)` at #\{start}")
+            },
+            _ => throw("write each alternative of a handler-set arm as a qualified operation, such as `Effect::\{name}(_)`, not a bare `\{name}` at #\{start}")
+          }
+        },
+        _ => throw("write each alternative of a handler-set arm as a qualified operation, such as `Exception::Throw(_)` at #\{start}")
+      }
+    }
+    Array::push(qualified, PCtor(intern_qualified(label, name), args))
+    ai = ai + 1
+  }
+  let mut out = Array::get(qualified, Array::length(qualified) - 1)
+  let mut k = Array::length(qualified) - 2
+  while k >= 0 {
+    out = POr(Array::get(qualified, k), out)
+    k = k - 1
+  }
+  out
+}
+
+fn flatten_or_pattern(pat: Pat, out: Array[Pat]) -> Unit {
+  match source_pat(pat) {
+    POr(left, right) => {
+      flatten_or_pattern(left, out)
+      flatten_or_pattern(right, out)
+    },
+    _ => Array::push(out, pat)
+  }
 }
 
 fn parse_qualified_handle_rest(tokens: Array[Token], starts: Array[Int], pos: Int, body: Expr, b: ArrayBuilder[(Pat, Expr)], parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
