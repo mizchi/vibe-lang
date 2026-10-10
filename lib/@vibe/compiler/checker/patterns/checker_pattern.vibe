@@ -49,6 +49,50 @@ fn find_ctor_in_defs(defs: Array[TypeDef], ctor_name: String) -> Option[(String,
   go_defs(0)
 }
 
+/// #3421: the enums a pattern of this program qualifies `Some` or `None` with
+/// (`Maybe::Some(n)`). The parser keeps only the variant name in the pattern,
+/// so `Maybe::Some(n)` and the builtin `Some(n)` reach the checker as the
+/// same `PCtor("Some", ..)`, and on an `Option` both matched the builtin one.
+/// Set from the parser's side channel before each check.
+let qualified_builtin_ctor_owners: Array[(String, String)] = Array::slice([
+  ("", "")
+], 0, 0)
+
+export fn note_qualified_builtin_ctor_refs(refs: Array[(String, String)]) -> Unit {
+  Array::truncate(qualified_builtin_ctor_owners, 0)
+  for r in refs {
+    let (q, v) = r
+    if (v == "Some" || v == "None") && q != "Option" {
+      Array::push(qualified_builtin_ctor_owners, (q, v))
+    }
+  }
+  ()
+}
+
+/// A declared enum some pattern of this program qualifies `name` (`Some` /
+/// `None`) with, which owns a variant of that name; "" for none.
+fn cp_qualified_builtin_owner(name: String, defs: Array[TypeDef]) -> String {
+  let mut out = ""
+  for r in qualified_builtin_ctor_owners {
+    let (q, v) = r
+    if v == name && out == "" {
+      match find_typedef(defs, q) {
+        Some(TDEnum(_, _, variants)) => {
+          for vt in variants {
+            let (vname, _) = vt
+            if vname == name {
+              out = q
+            }
+          }
+          ()
+        },
+        _ => ()
+      }
+    }
+  }
+  out
+}
+
 /// Validate the `Enum::Variant` pattern qualifiers the parser recorded on its
 /// side channel (#1455 step 3), appending one error per bad pair.
 ///
@@ -564,7 +608,11 @@ export fn ctor_pattern_scrutinee_mismatch(pat: Pat, scrutinee_ty: Type, defs: Ar
       let name = cp_ctor_base_name(raw_name)
       let builtin = name == "Some" || name == "None"
       match scrutinee_ty {
-        CtOption(elem) => if builtin {
+        CtOption(elem) => if builtin && cp_qualified_builtin_owner(name, defs) != "" {
+          let owner = cp_qualified_builtin_owner(name, defs)
+          let ty_text = type_to_string(scrutinee_ty)
+          Some("pattern `\{name}` on a value of type `\{ty_text}` cannot be told apart from `\{owner}::\{name}`: a pattern does not keep its qualifier, and this program writes `\{owner}::\{name}` in one -- rename the variant `\{name}` of `\{owner}` (for example `Just` / `Nothing`)")
+        } else if builtin {
           if name == "Some" && Array::length(sub_pats) == 1 {
             ctor_pattern_scrutinee_mismatch(Array::get(sub_pats, 0), elem, defs)
           } else {
@@ -647,13 +695,16 @@ fn cp_variant_payload(ty: Type, defs: Array[TypeDef], name: String) -> Array[Typ
   }
   let out: Array[Type] = []
   match find_typedef(defs, head) {
-    Some(TDEnum(_, _, variants)) => for v in variants {
-      let (vname, vtypes) = v
-      if vname == name {
-        for t in vtypes {
-          Array::push(out, t)
+    Some(TDEnum(_, _, variants)) => {
+      for v in variants {
+        let (vname, vtypes) = v
+        if vname == name {
+          for t in vtypes {
+            Array::push(out, t)
+          }
         }
       }
+      ()
     },
     _ => ()
   }
