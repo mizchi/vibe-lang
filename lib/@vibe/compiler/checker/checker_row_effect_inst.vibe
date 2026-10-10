@@ -601,7 +601,9 @@ export fn label_row_only_formals(scheme: Type, inst: Type, defs: Array[TypeDef],
               }
             }
           }
-          if !reached && type_param_arity(tp) == 0 {
+          // #3418: a constructor formal (`F[_]`) too; `Box[F[Int]]` reads
+          // its payload through the variable like `Box[Option[T]]`.
+          if !reached {
             let (fv, nc) = fresh_var(next)
             Array::push(formals, (fname, nc - 1))
             Array::push(row_only_formal_vars, nc - 1)
@@ -685,7 +687,7 @@ fn row_only_items_into(t: Type, formals: Array[(String, Int)], defs: Array[TypeD
             let base = item[0: bi]
             let arg = item[bi + 1: String::length(item) - 1]
             let etps = effect_tparams(defs, base)
-            if Array::length(etps) == 1 && type_param_arity(Array::get(etps, 0)) == 0 {
+            if Array::length(etps) == 1 {
               let mut mentions = false
               for f in formals {
                 if text_has_word(arg, f.0) {
@@ -1581,13 +1583,15 @@ export fn bind_lambda_effect_instantiations(env: TypeEnv, row: Option[String], d
   if generic {
     // #3411: a generic declaration's BARE label still gets a variable for its
     // payload, so `generic_bare_row_payload_errors` can see what the body
-    // fixes it to. Written labels are left to the scheme, as before.
+    // fixes it to. Written labels are left to the scheme, as before. A kinded
+    // effect (`Kb[F[_]]`) is included (#3418): its variable is the
+    // constructor the body performs at.
     let mut gout = base
     let mut gs = s
     let mut gc = c
     for d in defs {
       match d {
-        TDEffect(name, _, etps) => if Array::length(etps) == 1 && type_param_arity(Array::get(etps, 0)) == 0 && effect_inst_row_has_bare(row, name) {
+        TDEffect(name, _, etps) => if Array::length(etps) == 1 && effect_inst_row_has_bare(row, name) {
           let (tid, nc) = fresh_unbound_var(gs, gc)
           gc = nc
           let own_inst = CtTuple([CtVar(tid)])
@@ -1608,7 +1612,7 @@ export fn bind_lambda_effect_instantiations(env: TypeEnv, row: Option[String], d
     let mut c1 = c
     for d in defs {
       match d {
-        TDEffect(name, _, etps) => if Array::length(etps) == 1 && type_param_arity(Array::get(etps, 0)) == 0 {
+        TDEffect(name, _, etps) => if Array::length(etps) == 1 {
           match row {
             Some(text) => if row_writes_effect_instantiation(text, name) {
               if !top_level {
@@ -2685,7 +2689,7 @@ fn strip_effect_inst_row(eff: Option[String], s: Subst, defs: Array[TypeDef]) ->
           for inst in inferred {
             let (name, ty) = inst
             if label == name {
-              published = "\{name}[\{type_to_string(ty)}]"
+              published = "\{name}[\{effect_payload_text(ty)}]"
             }
           }
           Array::push(kept, published)
