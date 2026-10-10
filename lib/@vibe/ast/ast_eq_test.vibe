@@ -23,7 +23,7 @@
 //# Imports
 
 import .{
-  Expr, ImportItem, Pat, Stmt, TypeExpr, impl_method_owner, impl_target_from_key, impl_target_key
+  Expr, ImportItem, Pat, Stmt, TypeExpr, impl_encode_name, impl_method_owner, impl_target_from_key, impl_target_key
 }
 
 //# Helpers
@@ -87,6 +87,24 @@ fn every_typeexpr_alt() -> Array[TypeExpr] {
     TyTuple([TyName("z")]),
     TyUnit
   ]
+}
+
+test "impl target key cache snapshots nested mutable arrays" {
+  let args: Array[TypeExpr] = [TyName("Int")]
+  let params: Array[TypeExpr] = [TyApp("Box", args)]
+  let items: Array[TypeExpr] = [TyUnit]
+  let target = TyFn(params, TyTuple(items), Some("Fs"))
+  let original = impl_target_key(target)
+  inspect(original, content = "FA66_111_120_LN73_110_116_ZRTPURE170_115_ZR")
+  Array::set(args, 0, TyName("Bool"))
+  let changed = impl_target_key(target)
+  assert(changed != original)
+  Array::push(items, TyName("String"))
+  assert(impl_target_key(target) != changed)
+  Array::set(params, 0, TyUnit)
+  assert(impl_target_key(target) != original)
+  // Reconstructing the original target must still find its original key.
+  assert(impl_target_key(TyFn([TyApp("Box", [TyName("Int")])], TyTuple([TyUnit]), Some("Fs"))) == original)
 }
 
 test "impl target keys distinguish function effect rows" {
@@ -1048,4 +1066,52 @@ test "Stmt ==: same variant with different payloads is not equal" {
   // tags only would report 0 here.
   inspect(Array::length(alt), "26")
   inspect(differ, "26")
+}
+
+test "impl name encoding preserves decimal bytes including UTF-8 and NUL" {
+  inspect(impl_encode_name(""), content = "")
+  inspect(impl_encode_name("AZ_09"), content = "65_90_95_48_57_")
+  inspect(impl_encode_name("é🍣"), content = "195_169_240_159_141_163_")
+  inspect(impl_encode_name(String::from_byte(0)), content = "0_")
+  inspect(impl_encode_name(String::from_byte(255)), content = "255_")
+  // A second call observes the same representation after the fixed table
+  // has initialized; the result owns its bytes independently of the table.
+  inspect(impl_encode_name("AZ_09"), content = "65_90_95_48_57_")
+}
+
+test "impl target keys keep the canonical nested wire spelling" {
+  inspect(impl_target_key(TyTuple([TyName("Int"), TyUnit])), content = "PN73_110_116_ZUR")
+  inspect(impl_target_key(TyFn([], TyUnit, Some("Fs"))), content = "FTUE170_115_ZR")
+  inspect(impl_target_key(TyApp("A", [])), content = "A65_LR")
+  inspect(impl_target_key(TyApp("Box", [
+    TyFn([TyName("Int")], TyName("Int"), None)
+  ])), content = "A66_111_120_LFN73_110_116_ZTN73_110_116_ZE0RR")
+}
+
+test "impl target key limits preserve large and saturated targets" {
+  let many: Array[TypeExpr] = []
+  let mut i = 0
+  while i < 20 {
+    Array::push(many, TyUnit); i = i + 1
+  }
+  inspect(impl_target_key(TyTuple(many)), content = "PUUUUUUUUUUUUUUUUUUUUR")
+  let long = repeat_key_text("x", 129)
+  let key = impl_target_key(TyName(long))
+  assert(key == "N" + repeat_key_text("120_", 129) + "Z")
+  i = 0
+  while i < 160 {
+    let name = "cache_capacity_" + Int::to_string(i)
+    assert(impl_target_key(TyName(name)) == "N" + impl_encode_name(name) + "Z")
+    i = i + 1
+  }
+  inspect(impl_target_key(TyFn([TyUnit], TyUnit, None)), content = "FUTUE0R")
+}
+
+fn repeat_key_text(text: String, n: Int) -> String {
+  let buf = StringBuilder::new()
+  let mut i = 0
+  while i < n {
+    StringBuilder::push(buf, text); i = i + 1
+  }
+  StringBuilder::freeze(buf)
 }

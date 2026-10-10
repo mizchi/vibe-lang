@@ -39,7 +39,6 @@ import @vibe/compiler/normalize {
   eq_mint_deferred_into,
   eq_synthesis_requests_list,
   eq_typed_refusals_list,
-  program_performs_host_operation,
   unbox_tuple_loop_params
 }
 
@@ -474,12 +473,10 @@ export fn effect_lowering_prelude_split_grants(stmts: Array[Stmt], entry_name: S
   // only a call to a program's own `Array::length` cannot tell it from the
   // builtin. Renames in place, so the split's statement indices still hold.
   rename_builtin_shadow_defs(stmts)
-  // #1962: a program that performs a host operation takes the whole-program
-  // prelude. The entry host provider (pass 11) must see every perform, and a
-  // partition sees an imported helper only through its interface -- split, the
-  // entry would get no arm for a perform in the helper and the program would
-  // die unhandled exactly as before the provider existed (Codex on #3059).
-  let errs = if module_split_usable(split, Array::length(stmts)) && !lc_exported_fn_without_return_annotation(stmts) && !program_performs_host_operation(stmts) {
+  // Host providers and the entry exception boundary run once on the linked
+  // program (pass 11), where imported callees' performs and handlers are
+  // visible. Host operations no longer force the entire prelude to fall back.
+  let errs = if module_split_usable(split, Array::length(stmts)) && !lc_exported_fn_without_return_annotation(stmts) {
     // WHOLE-PROGRAM, and first, exactly as `effect_lowering_prelude` runs it:
     // the check is interprocedural, and it short-circuits the entire prelude
     // when it fires. Running it per module instead REJECTS VALID CODE -- a
@@ -1031,7 +1028,9 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
       Array::push(part, Array::get(synthesized, sy))
       sy = sy + 1
     }
-    // PASSES 5..11 PER MODULE. The cut is at 12, not 15 (#2647 Codex round 3).
+    // PASSES 5..10 PER MODULE. The entry provider and exception boundary
+    // (11) require the linked program: a dependency interface has no body,
+    // and a handler must intercept host calls in imported implementations.
     //
     // #2633 moved 15 and 16 to the link: `evidence_dict_pass` decides from a
     // union over the whole program -- declared effects union every effect
@@ -1048,10 +1047,10 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
     // what it injects has to be visible to 13 and 14, so 12, 13 and 14 join 15
     // and 16 at the link.
     //
-    // What the split still buys: 0..11 is most of the prelude, and it is the
+    // What the split still buys: 0..10 is most of the prelude, and it is the
     // half a per-module cache can reuse.
     let mut j2 = 5
-    while j2 < 12 {
+    while j2 < 11 {
       lc_apply_pass_recording(j2, part, part_entry, checker_eq_offsets, checker_eq_type_keys, synth_keys, link.tail, link.diags, env)
       // After pass 5, where production runs it.
       if j2 == 5 {
@@ -1064,7 +1063,7 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
     match observations {
       Some(st) => {
         // This module's facts after every pass it runs. The caller samples the
-        // whole lane at the SAME point (after pass 11), so the two are comparable;
+        // whole lane at the SAME point (after pass 10), so the two are comparable;
         // before this cut both sampled after 14.
         let (evd, evh, evp) = evidence_module_facts(part)
         lc_union_into(st.declared, evd)
@@ -1207,11 +1206,12 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
   // what a module deferring rather than guessing buys: the need travels upward
   // instead of vanishing.
   let minted = eq_mint_deferred_into(trial)
-  // The whole-program phases, run once on the linked program: 12 and 14 read
-  // facts no module has, and 13 and 15 follow them to keep the order.
+  // The whole-program phases run once on the linked program: the entry
+  // provider (11), async boundary (12), and evidence pass (14) require
+  // imported implementations; 13 and 15 follow them to keep the order.
   // (#2500 deleted pass 14, `inline_direct_performs`; the three that
   // outlived it kept their order and closed the gap.)
-  let mut lj = 12
+  let mut lj = 11
   while lj < 16 {
     oracle_apply_pass(lj, trial, entry_name, checker_eq_offsets, checker_eq_type_keys, link.diags, env)
     lj = lj + 1
@@ -1228,7 +1228,7 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
   // module disagrees" without saying how many or about what. Production keeps
   // the throw.
   // #2638 FOURTH CONTROL, and the one that settles what the other three left
-  // open. `trial` is the parts concatenated WITH passes 12-16 and the mint
+  // open. `trial` is the parts concatenated WITH passes 11-15 and the mint
   // applied, but BEFORE the fold; `linked` is the same thing folded. So
   // `trial` vs `linked` isolates the FOLD, and `trial` vs the raw parts
   // isolates the LINK-ONLY PASSES. Measured because the obvious reading of the
@@ -1489,7 +1489,7 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   let ev_req_w = lc_fresh_string_array()
   let ev_ref_w = lc_fresh_string_array()
   let ev_def_w = lc_fresh_string_array()
-  while k < 12 {
+  while k < 11 {
     oracle_apply_pass(k, a, entry_name, checker_eq_offsets, checker_eq_type_keys, diag_w, prelude_env_none())
     // #2634: sampled right after pass 4 (`desugar_trait_dicts_with_typed_eq`),
     // which is where a container comparator or a generic specialization is
@@ -1514,13 +1514,9 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
     }
     k = k + 1
   }
-  // #2633: sampled HERE, immediately before pass 15 (`evidence_dict_pass`) and
-  // after every pass that precedes it. Sampling earlier would be vacuous --
-  // the modules partition the merged program, so any purely syntactic fact
-  // unions trivially -- and sampling later reads a program whose handles the
-  // evidence pass has already erased or migrated. The question is whether the
-  // passes BEFORE it leave each module carrying the same facts the whole
-  // program carries.
+  // Sample both lanes at the module boundary, after pass 10 and before the
+  // global entry provider/exception boundary. Each module has completed the
+  // same passes; link-only machinery is not attributed to a partition.
   let (ev_decl_w, ev_handled_w, ev_perf_w) = evidence_module_facts(a)
   while k < 17 {
     oracle_apply_pass(k, a, entry_name, checker_eq_offsets, checker_eq_type_keys, diag_w, prelude_env_none())
@@ -1938,9 +1934,9 @@ export fn prelude_pass_module_oracle_step(k: Int, a: Array[Stmt], c: Array[Stmt]
         Array::push(part, Array::get(synthesized, sy))
         sy = sy + 1
       }
-    } else {
+    } else if k < 11 {
       oracle_apply_pass(k, part, part_entry, checker_eq_offsets, checker_eq_type_keys, lc_fresh_string_array(), prelude_env_none())
-    }
+    } else ()
     let mut oi = 0
     while oi < Array::length(part) {
       Array::push(trial, Array::get(part, oi))
@@ -1949,6 +1945,18 @@ export fn prelude_pass_module_oracle_step(k: Int, a: Array[Stmt], c: Array[Stmt]
     }
     fi = fi + 1
   }
+  if k >= 11 {
+    let old_keys: Array[String] = []
+    for stmt in trial {
+      Array::push(old_keys, oracle_stmt_key(stmt))
+    }
+    oracle_apply_pass(k, trial, entry_name, checker_eq_offsets, checker_eq_type_keys, lc_fresh_string_array(), prelude_env_none())
+    let realigned = oracle_realign(old_keys, trial_file, trial)
+    Array::truncate(trial_file, 0)
+    for fid in realigned {
+      Array::push(trial_file, fid)
+    }
+  } else ()
   let nn = Array::length(a)
   let nt = Array::length(trial)
   let lim = if nn < nt {

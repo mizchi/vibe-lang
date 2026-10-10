@@ -1,0 +1,65 @@
+import @vibe/compiler/entry/compiler/file_compile {
+  compile_file_fs_mode_rc_body_cached_split
+}
+import @vibe/compiler/codegen/wasi {
+  prelude_split_last_module_count
+}
+
+fn host_program(tag: String, direct: Bool, facade: Bool) -> Unit with Console + Env + Exception + Fs + Process {
+  let leaf = "/tmp/vibe_split_host_leaf_" + tag + ".vibe"
+  let middle = "/tmp/vibe_split_host_facade_" + tag + ".vibe"
+  let main = "/tmp/vibe_split_host_main_" + tag + ".vibe"
+  let payload = "/tmp/vibe_split_host_payload_" + tag + ".txt"
+  Fs::write_file(payload, "abcdef")
+  let read = if direct {
+    "Fs::read_file(p)"
+  } else {
+    "perform Fs::ReadFile(p)"
+  }
+  Fs::write_file(leaf, "export fn load(p: String) -> String with Fs { " + read + " }\n")
+  if facade {
+    Fs::write_file(middle, "export ./vibe_split_host_leaf_" + tag + ".vibe { load }\n")
+  } else ()
+  let dependency = if facade {
+    "facade_"
+  } else {
+    "leaf_"
+  }
+  let body = if direct {
+    "handle { load(\"" + payload + "\") } with { Fs::ReadFile(p) => resume(\"override\") }"
+  } else {
+    "load(\"" + payload + "\")"
+  }
+  let row = "Fs + Exception"
+  Fs::write_file(main, "import ./vibe_split_host_" + dependency + tag + ".vibe { load }\nfn main() -> Int allows " + row + " { let value = " + body + "\n String::length(value) }\n")
+  let whole = compile_file_fs_mode_rc_body_cached_split(main, "main", "off", false)
+  let split = compile_file_fs_mode_rc_body_cached_split(main, "main", "off", true)
+  inspect(prelude_split_last_module_count(), content = if facade {
+    "3"
+  } else {
+    "2"
+  })
+  inspect(whole == split, content = "true")
+  for row in [("whole", whole), ("split", split)] {
+    let path = "/tmp/vibe_split_host_" + tag + "_" + row.0 + ".wasm"
+    Fs::write_bytes(path, row.1)
+    let lines = sh_lines("VIBE_RUNNER_QUIET_RESULT=0 VIBE_RUNNER_EXIT_WITH_RESULT=0 bash scripts/run_wasm_vibe_host_runner.sh --invoke main " + path)
+    inspect(Array::length(lines), content = "1")
+    inspect(Array::get(lines, 0), content = if direct {
+      "8"
+    } else {
+      "6"
+    })
+  }
+  ()
+}
+
+test "split entry provider sees a perform in an imported or re-exported body" {
+  host_program("perform", false, false)
+  host_program("perform_facade", false, true)
+}
+
+test "split host handler intercepts direct calls in imported implementations" {
+  host_program("direct", true, false)
+  host_program("direct_facade", true, true)
+}

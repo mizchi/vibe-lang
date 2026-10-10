@@ -826,6 +826,10 @@ fn oracle_import_closure(source_groups: Array[(String, Array[(String, String)])]
     }
     gi = gi + 1
   }
+  // Expansion depends only on this walk's immutable flat file space.
+  // Reuse a contract's complete set of seats across its importers; each row
+  // below only reads the seats, preserving duplicate source provenance.
+  let expanded_deps: MutMap[String, Array[Int]] = MutMap::new_string()
   // Direct edges, from the loader's own header scan.
   let direct: Array[Array[Int]] = []
   let mut unresolved = 0
@@ -841,7 +845,14 @@ fn oracle_import_closure(source_groups: Array[(String, Array[(String, String)])]
       // are what the merge actually carries. Either way it resolves to a SET
       // of seats, and every one of them is an edge.
       let seats = match MutMap::get(index_of, dep) {
-        Some(found) => oracle_expand_contract_dep(dep, found, flat, contract_dirs),
+        Some(found) => match MutMap::get(expanded_deps, dep) {
+          Some(seats) => seats,
+          None => {
+            let seats = oracle_expand_contract_dep(dep, found, flat, contract_dirs)
+            MutMap::set(expanded_deps, dep, seats)
+            seats
+          }
+        },
         None =>
         match MutMap::get(group_members, dep) {
           Some(members) => members,
