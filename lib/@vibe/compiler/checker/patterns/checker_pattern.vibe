@@ -589,8 +589,12 @@ export fn ctor_pattern_scrutinee_mismatch(pat: Pat, scrutinee_ty: Type, defs: Ar
             }
           } else {
             match cp_nominal_variants(scrutinee_ty, defs) {
+              // The scrutinee's own constructor: its payload patterns are
+              // checked against the variant's field types (Codex on #3420:
+              // `Wrap(Some(n))` with `Wrap(Array[Int])`). A field typed by
+              // the enum's own parameter stays a variable, and is tolerated.
               Some(variants) => if cp_names_has(variants, name) {
-                None
+                cp_sub_patterns_mismatch(sub_pats, cp_variant_payload(scrutinee_ty, defs, name), defs)
               } else {
                 Some(cp_ctor_never_matches(name, declared, scrutinee_ty, defs))
               },
@@ -601,22 +605,7 @@ export fn ctor_pattern_scrutinee_mismatch(pat: Pat, scrutinee_ty: Type, defs: Ar
       }
     },
     PTuple(pats) => match scrutinee_ty {
-      CtTuple(elem_tys) => if Array::length(pats) == Array::length(elem_tys) {
-        let mut out: Option[String] = None
-        let mut i = 0
-        while i < Array::length(pats) {
-          match out {
-            None => {
-              out = ctor_pattern_scrutinee_mismatch(Array::get(pats, i), Array::get(elem_tys, i), defs)
-            },
-            Some(_) => ()
-          }
-          i = i + 1
-        }
-        out
-      } else {
-        None
-      },
+      CtTuple(elem_tys) => cp_sub_patterns_mismatch(pats, elem_tys, defs),
       _ => None
     },
     POr(left, right) => match ctor_pattern_scrutinee_mismatch(left, scrutinee_ty, defs) {
@@ -625,6 +614,50 @@ export fn ctor_pattern_scrutinee_mismatch(pat: Pat, scrutinee_ty: Type, defs: Ar
     },
     _ => None
   }
+}
+
+/// The first mismatch among `pats` read against `tys` position by position,
+/// or None when the counts differ (that is `check_pattern`'s arity message).
+fn cp_sub_patterns_mismatch(pats: Array[Pat], tys: Array[Type], defs: Array[TypeDef]) -> Option[String] {
+  if Array::length(pats) != Array::length(tys) {
+    None
+  } else {
+    let mut out: Option[String] = None
+    let mut i = 0
+    while i < Array::length(pats) {
+      match out {
+        None => {
+          out = ctor_pattern_scrutinee_mismatch(Array::get(pats, i), Array::get(tys, i), defs)
+        },
+        Some(_) => ()
+      }
+      i = i + 1
+    }
+    out
+  }
+}
+
+/// The declared field types of variant `name` of the enum `ty` names, or
+/// none when `ty` is not a declared enum with that variant.
+fn cp_variant_payload(ty: Type, defs: Array[TypeDef], name: String) -> Array[Type] {
+  let head = match ty {
+    CtNamed(n, _) => n,
+    CtEnum(n) => n,
+    _ => ""
+  }
+  let out: Array[Type] = []
+  match find_typedef(defs, head) {
+    Some(TDEnum(_, _, variants)) => for v in variants {
+      let (vname, vtypes) = v
+      if vname == name {
+        for t in vtypes {
+          Array::push(out, t)
+        }
+      }
+    },
+    _ => ()
+  }
+  out
 }
 
 /// `E::A` names the variant `A`.
