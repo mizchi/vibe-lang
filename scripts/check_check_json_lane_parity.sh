@@ -262,7 +262,7 @@ rows = json.load(open(sys.argv[1]))
 assert len(rows) == 1, rows
 assert 'write `with Box[T]`' in rows[0]['message'], rows[0]
 assert rows[0]['range']['start'] == {'line': 4, 'character': 10}, rows[0]
-assert not rows[0].get('data', {}).get('synthetic'), rows[0]
+assert not (rows[0].get('data') or {}).get('synthetic'), rows[0]
 PY
 
 # #3369: a file with an import reports every diagnostic on the FS lane, as one
