@@ -83,6 +83,7 @@ import @vibe/compiler/runtime {
   check_inline_wasm_fns,
   checked_warning_stmts,
   locate_type_error,
+  locate_type_error_lines_except_paths,
   unstable_import_diagnostics,
   unstable_index_of_str,
   unstable_inherited_marker
@@ -1003,7 +1004,18 @@ export fn check_linked_file_source_groups(input_path: String) -> Array[(String, 
             throw(locate_type_error("", msg))
           }
         } else {
-          throw(locate_type_error(entry_source, msg))
+          // #3348: a module job's diagnostics already carry their path (and
+          // their location, when there is one); only the rest is located
+          // against the entry file here.
+          let known_paths: Array[String] = [input_path]
+          for group in source_groups {
+            let (_, members) = group
+            for member in members {
+              let (mpath, _) = member
+              Array::push(known_paths, mpath)
+            }
+          }
+          throw(String::join(locate_type_error_lines_except_paths(entry_source, msg, known_paths), "\n"))
         }
       }
     }
