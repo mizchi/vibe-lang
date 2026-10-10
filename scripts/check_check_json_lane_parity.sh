@@ -243,6 +243,30 @@ probe assign_immutable 1
 if ! grep -qF 'cannot assign to immutable binding `acc` (declare it with `let mut`)' "$WORK/assign_immutable.fs.json"; then
   bad "assign_immutable: lost the let mut edit"
 fi
+# #3348: the error points at the assignment's target, `acc` on line 3.
+python3 - "$WORK/assign_immutable.fs.json" <<'PY' || bad "assign_immutable: expected the target's position at line 3"
+import json, sys
+rows = json.load(open(sys.argv[1]))
+assert len(rows) == 1, rows
+assert rows[0]['range']['start'] == {'line': 2, 'character': 2}, rows[0]
+assert rows[0]['range']['end'] == {'line': 2, 'character': 5}, rows[0]
+PY
+
+# #3369: a file with an import reports every diagnostic on the FS lane, as one
+# without does. The import-resolving checker threw only the first one. The
+# single-file lane cannot resolve the import, so only the FS lane is asked.
+printf 'export struct Pt {\n  x: Int\n}\n' > "$WORK/imported_dep.vibe"
+printf 'import ./imported_dep.vibe { Pt }\n\nfn total(n: Int) -> Int {\n  n\n}\n\nfn main() -> Unit {\n  let p: Pt = 1\n  let t = total("s")\n}\n' > "$WORK/imported_two.vibe"
+SRC_REL="_build/_check_json_parity/imported_two.vibe"
+imported_exit="$(run_lane "$WORK/imported_two.fs.json")"
+if [ "$imported_exit" != 1 ]; then
+  bad "imported_two: exit $imported_exit, expected 1"
+fi
+python3 - "$WORK/imported_two.fs.json" <<'PY' || bad "imported_two: expected both diagnostics of a file with an import"
+import json, sys
+rows = json.load(open(sys.argv[1]))
+assert len(rows) == 2, rows
+PY
 
 # The conversion case. 20 bytes, 8 UTF-16 code units.
 printf 'let a: Int = "\xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e\xe3\x81\xa7\xe3\x81\x99\xe3\x82\x88"\n' > "$WORK/multibyte.vibe"
