@@ -223,6 +223,31 @@ fn edp_expr_passes_literal_arg(e: Expr) -> Bool {
   found
 }
 
+/// Does `body` call a local binding? A row-carrying literal that calls one is
+/// something the migration cannot see through, so stamping it would turn an
+/// accepted program into a refused one; such a literal is left as written.
+fn edp_body_calls_local(body: Expr, binders: MutSet[String]) -> Bool {
+  let mut found = false
+  let stack: Array[Expr] = [body]
+  while !found && Array::length(stack) > 0 {
+    let n = Array::length(stack)
+    let cur = Array::get(stack, n - 1)
+    Array::truncate(stack, n - 1)
+    match cur {
+      ECall(EIdent(cn, _), _, _, _) => if MutSet::has(binders, cn) {
+        found = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    for child in expr_children(cur) {
+      Array::push(stack, child)
+    }
+  }
+  found
+}
+
 /// The row a top-level function's parameter `pos` declares on its function
 /// type, or None.
 fn edp_slot_row(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], callee: String, pos: Int) -> Option[String] {
@@ -270,7 +295,7 @@ fn edp_stamp_expr(e: Expr, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, 
       while ai < Array::length(args) {
         let a2 = edp_stamp_expr(Array::get(args, ai), stmts, fn_defs, binders)
         let a3 = match a2 {
-          EFn(tps, tbs, ps, ret, None, b) => if String::length(named) > 0 {
+          EFn(tps, tbs, ps, ret, None, b) => if String::length(named) > 0 && !edp_body_calls_local(b, binders) {
             match edp_slot_row(stmts, fn_defs, named, ai) {
               Some(row) => EFn(tps, tbs, ps, ret, Some(row), b),
               None => EFn(tps, tbs, ps, ret, None, b)
