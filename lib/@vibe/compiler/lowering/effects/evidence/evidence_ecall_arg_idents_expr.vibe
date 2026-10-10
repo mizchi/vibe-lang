@@ -14,6 +14,7 @@ import @vibe/compiler/lowering/effects/direct {
 
 import @vibe/compiler/lowering/effects/queries {
   EdpReadQuery,
+  edp_collect_program_binders,
   edp_efn_eligible_for_migration,
   edp_handle_matches_effect,
   edp_has_unsafe_construct,
@@ -139,6 +140,202 @@ export fn edp_params_of_fn(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, 
     i = i + 1
   }
   out
+}
+
+/// #3370: a closure literal with no written row, passed at a parameter of a
+/// top-level function whose declared type carries a row, takes that row.
+/// A call through such a parameter always prepends the dict
+/// (`edp_row_typed_param_names`), but the type-directed sweep gives a literal
+/// its dict parameter only when the literal's own row carries the effect
+/// (`edp_efn_row_carries`). So `run_str(() -> put_abc())` -- and even
+/// `run_str(() -> 3)` -- compiled the literal at arity 0, `run_str` called it
+/// with the dict, and wasm trapped (`null function or function signature
+/// mismatch`). Stamping the slot's row makes the tree the same as the
+/// written `() -> Int with Box[String] { .. }`, which already worked. A
+/// labeled argument (position is not the parameter) and a callee a local
+/// binding shadows are left alone.
+export fn edp_stamp_slot_rows(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> Unit {
+  let mut binders: Option[MutSet[String]] = None
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let stmt = Array::get(stmts, i)
+    let body = match stmt {
+      SLet(_, _, _, _, e) => Some(e),
+      SLetMut(_, _, e) => Some(e),
+      SExpr(e) => Some(e),
+      STest(_, e) => Some(e),
+      SBench(_, e) => Some(e),
+      _ => None
+    }
+    match body {
+      Some(e) => if edp_expr_passes_literal_arg(e) {
+        let census = match binders {
+          Some(b) => b,
+          None => {
+            let b = edp_collect_program_binders(stmts)
+            binders = Some(b)
+            b
+          }
+        }
+        let stamped = edp_stamp_expr(e, stmts, fn_defs, census)
+        match stmt {
+          SLet(exported, is_rec, nm, ty, _) => Array::set(stmts, i, SLet(exported, is_rec, nm, ty, stamped)),
+          SLetMut(nm, ty, _) => Array::set(stmts, i, SLetMut(nm, ty, stamped)),
+          SExpr(_) => Array::set(stmts, i, SExpr(stamped)),
+          STest(tn, _) => Array::set(stmts, i, STest(tn, stamped)),
+          SBench(bn, _) => Array::set(stmts, i, SBench(bn, stamped)),
+          _ => ()
+        }
+      } else {
+        ()
+      },
+      None => ()
+    }
+    i = i + 1
+  }
+  ()
+}
+
+/// Does `e` contain a named call with a row-free closure literal argument?
+/// A read-only scan, so a statement with none is not rebuilt (#1875).
+fn edp_expr_passes_literal_arg(e: Expr) -> Bool {
+  let mut found = false
+  let stack: Array[Expr] = [e]
+  while !found && Array::length(stack) > 0 {
+    let n = Array::length(stack)
+    let cur = Array::get(stack, n - 1)
+    Array::truncate(stack, n - 1)
+    match cur {
+      ECall(EIdent(_, _), args, _, _) => for a in args {
+        match a {
+          EFn(_, _, _, _, None, _) => {
+            found = true
+          },
+          _ => ()
+        }
+      },
+      _ => ()
+    }
+    for child in expr_children(cur) {
+      Array::push(stack, child)
+    }
+  }
+  found
+}
+
+/// The row a top-level function's parameter `pos` declares on its function
+/// type, or None.
+fn edp_slot_row(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], callee: String, pos: Int) -> Option[String] {
+  match edp_params_of_fn(stmts, fn_defs, callee) {
+    Some(params) => if pos < Array::length(params) {
+      let (_, pty) = Array::get(params, pos)
+      match pty {
+        Some(TyFn(_, _, Some(row))) => if String::length(String::trim(row)) > 0 {
+          Some(row)
+        } else {
+          None
+        },
+        _ => None
+      }
+    } else {
+      None
+    },
+    None => None
+  }
+}
+
+fn edp_stamp_expr(e: Expr, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], binders: MutSet[String]) -> Expr {
+  match e {
+    ECall(callee, args, off, res) => {
+      let callee2 = edp_stamp_expr(callee, stmts, fn_defs, binders)
+      let mut labeled = false
+      for a in args {
+        match a {
+          ELabeledArg(_, _, _) => {
+            labeled = true
+          },
+          _ => ()
+        }
+      }
+      let named = match callee {
+        EIdent(cn, _) => if labeled || MutSet::has(binders, cn) {
+          ""
+        } else {
+          cn
+        },
+        _ => ""
+      }
+      let out: Array[Expr] = []
+      let mut ai = 0
+      while ai < Array::length(args) {
+        let a2 = edp_stamp_expr(Array::get(args, ai), stmts, fn_defs, binders)
+        let a3 = match a2 {
+          EFn(tps, tbs, ps, ret, None, b) => if String::length(named) > 0 {
+            match edp_slot_row(stmts, fn_defs, named, ai) {
+              Some(row) => EFn(tps, tbs, ps, ret, Some(row), b),
+              None => EFn(tps, tbs, ps, ret, None, b)
+            }
+          } else {
+            EFn(tps, tbs, ps, ret, None, b)
+          },
+          other => other
+        }
+        Array::push(out, a3)
+        ai = ai + 1
+      }
+      ECall(callee2, out, off, res)
+    },
+    EFn(tps, tbs, params, ret, eff, body) => EFn(tps, tbs, params, ret, eff, edp_stamp_expr(body, stmts, fn_defs, binders)),
+    ELet(n, v, b, off) => ELet(n, edp_stamp_expr(v, stmts, fn_defs, binders), edp_stamp_expr(b, stmts, fn_defs, binders), off),
+    ELetRec(n, v, b) => ELetRec(n, edp_stamp_expr(v, stmts, fn_defs, binders), edp_stamp_expr(b, stmts, fn_defs, binders)),
+    ELetMut(n, v, b, off) => ELetMut(n, edp_stamp_expr(v, stmts, fn_defs, binders), edp_stamp_expr(b, stmts, fn_defs, binders), off),
+    ESeq(a, b) => ESeq(edp_stamp_expr(a, stmts, fn_defs, binders), edp_stamp_expr(b, stmts, fn_defs, binders)),
+    EIf(c, t, el) => EIf(edp_stamp_expr(c, stmts, fn_defs, binders), edp_stamp_expr(t, stmts, fn_defs, binders), edp_stamp_expr(el, stmts, fn_defs, binders)),
+    EMatch(sc, arms) => EMatch(edp_stamp_expr(sc, stmts, fn_defs, binders), for a in arms {
+      let (pp, ex) = a
+      (pp, edp_stamp_expr(ex, stmts, fn_defs, binders))
+    }),
+    EHandle(bd, arms) => EHandle(edp_stamp_expr(bd, stmts, fn_defs, binders), for a in arms {
+      let (pp, ex) = a
+      (pp, edp_stamp_expr(ex, stmts, fn_defs, binders))
+    }),
+    EWhile(c, b) => EWhile(edp_stamp_expr(c, stmts, fn_defs, binders), edp_stamp_expr(b, stmts, fn_defs, binders)),
+    EForIn(n, idx, it, b) => EForIn(n, idx, edp_stamp_expr(it, stmts, fn_defs, binders), edp_stamp_expr(b, stmts, fn_defs, binders)),
+    ELoop(pairs, b) => ELoop(for pr in pairs {
+      let (n, v) = pr
+      (n, edp_stamp_expr(v, stmts, fn_defs, binders))
+    }, edp_stamp_expr(b, stmts, fn_defs, binders)),
+    EBinOp(op, l, r, boff) => EBinOp(op, edp_stamp_expr(l, stmts, fn_defs, binders), edp_stamp_expr(r, stmts, fn_defs, binders), boff),
+    EUnaryOp(op, x) => EUnaryOp(op, edp_stamp_expr(x, stmts, fn_defs, binders)),
+    EAssign(n, v, c, target_off) => EAssign(n, edp_stamp_expr(v, stmts, fn_defs, binders), edp_stamp_expr(c, stmts, fn_defs, binders), target_off),
+    EAssignOp(n, op, v, c, target_off) => EAssignOp(n, op, edp_stamp_expr(v, stmts, fn_defs, binders), edp_stamp_expr(c, stmts, fn_defs, binders), target_off),
+    EReturn(x) => EReturn(edp_stamp_expr(x, stmts, fn_defs, binders)),
+    EDot(o, f, o1, o2) => EDot(edp_stamp_expr(o, stmts, fn_defs, binders), f, o1, o2),
+    ELabeledArg(l, n, v) => ELabeledArg(l, n, edp_stamp_expr(v, stmts, fn_defs, binders)),
+    EBreak(opt) => EBreak(match opt {
+      Some(x) => Some(edp_stamp_expr(x, stmts, fn_defs, binders)),
+      None => None
+    }),
+    EContinue(args) => EContinue(for a in args {
+      edp_stamp_expr(a, stmts, fn_defs, binders)
+    }),
+    ETuple(items) => ETuple(for a in items {
+      edp_stamp_expr(a, stmts, fn_defs, binders)
+    }),
+    EArray(items) => EArray(for a in items {
+      edp_stamp_expr(a, stmts, fn_defs, binders)
+    }),
+    ERecord(n, fields, tas) => ERecord(n, for f in fields {
+      let (fn2, v) = f
+      (fn2, edp_stamp_expr(v, stmts, fn_defs, binders))
+    }, tas),
+    EMap(fields) => EMap(for f in fields {
+      let (fn2, v) = f
+      (fn2, edp_stamp_expr(v, stmts, fn_defs, binders))
+    }),
+    ESpread(x) => ESpread(edp_stamp_expr(x, stmts, fn_defs, binders)),
+    _ => e
+  }
 }
 
 /// #1261: is `nm`'s value legal to hand to parameter `pos` of `callee_nm`?
