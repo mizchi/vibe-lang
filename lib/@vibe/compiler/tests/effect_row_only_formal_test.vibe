@@ -54,3 +54,23 @@ test "a callback inside an array parameter at the caller's row is accepted" {
   let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn run[T](fs: Array[() -> Int with Box[T]]) -> Int with Box[T] {\n  Array::length(fs)\n}\n\nfn caller() -> Int with Box[String] {\n  run([() -> { perform Box::Put(\"a\") }])\n}\n"
   inspect(collect_all_diagnostics(src), "[]")
 }
+
+test "a generic method call fixes its row-only formal from the caller's row" {
+  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nstruct Runner {\n  n: Int\n}\n\nfn Runner::run[T](r: Runner, f: () -> Int with Box[T]) -> Int with Box[T] {\n  f() + r.n\n}\n\nfn caller() -> Int with Box[String] {\n  let r = Runner::{ n: 1 }\n  r.run(() -> { perform Box::Put(12345) })\n}\n"
+  inspect(collect_all_diagnostics(src), "[line 15:25: perform argument type mismatch for Box::Put: expected String, got Int]")
+}
+
+test "a generic lambda applied where it is written fixes its row-only formal" {
+  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn caller() -> Int with Box[String] {\n  ([T](f: () -> Int with Box[T]) -> Int with Box[T] { f() })(() -> { perform Box::Put(12345) })\n}\n"
+  inspect(collect_all_diagnostics(src), "[line 6:78: perform argument type mismatch for Box::Put: expected String, got Int]")
+}
+
+test "a bare row hiding a payload that nests a formal is refused (#3411)" {
+  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn mk[T](x: T) -> Int with Box {\n  perform Box::Put(Some(x))\n}\n"
+  inspect(collect_all_diagnostics(src), "[write `with Box[Option[T]]`: this generic function performs `Box` at `Option[T]`, and a bare `with Box` lets a caller's `Box[..]` of another type cover it]")
+}
+
+test "a generic method call at the caller's row is accepted" {
+  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nstruct Runner {\n  n: Int\n}\n\nfn Runner::run[T](r: Runner, f: () -> Int with Box[T]) -> Int with Box[T] {\n  f() + r.n\n}\n\nfn caller() -> Int with Box[String] {\n  let r = Runner::{ n: 1 }\n  r.run(() -> { perform Box::Put(\"a\") })\n}\n"
+  inspect(collect_all_diagnostics(src), "[]")
+}
