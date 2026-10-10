@@ -602,7 +602,7 @@ export fn check_pattern(pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[
 /// a variable, an unknown, a formal, an alias or a type this module does not
 /// declare is tolerated, as before. Nested patterns are checked where the
 /// payload type is known structurally (`Option` and tuples).
-export fn ctor_pattern_scrutinee_mismatch(pat: Pat, scrutinee_ty: Type, defs: Array[TypeDef]) -> Option[String] {
+export fn ctor_pattern_scrutinee_mismatch(pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[TypeDef]) -> Option[String] {
   match pat {
     PCtor(raw_name, sub_pats) => {
       let name = cp_ctor_base_name(raw_name)
@@ -614,7 +614,7 @@ export fn ctor_pattern_scrutinee_mismatch(pat: Pat, scrutinee_ty: Type, defs: Ar
           Some("pattern `\{name}` on a value of type `\{ty_text}` cannot be told apart from `\{owner}::\{name}`: a pattern does not keep its qualifier, and this program writes `\{owner}::\{name}` in one -- rename the variant `\{name}` of `\{owner}` (for example `Just` / `Nothing`)")
         } else if builtin {
           if name == "Some" && Array::length(sub_pats) == 1 {
-            ctor_pattern_scrutinee_mismatch(Array::get(sub_pats, 0), elem, defs)
+            ctor_pattern_scrutinee_mismatch(Array::get(sub_pats, 0), elem, env, defs)
           } else {
             None
           }
@@ -642,7 +642,7 @@ export fn ctor_pattern_scrutinee_mismatch(pat: Pat, scrutinee_ty: Type, defs: Ar
               // `Wrap(Some(n))` with `Wrap(Array[Int])`). A field typed by
               // the enum's own parameter stays a variable, and is tolerated.
               Some(variants) => if cp_names_has(variants, name) {
-                cp_sub_patterns_mismatch(sub_pats, cp_variant_payload(scrutinee_ty, defs, name), defs)
+                cp_sub_patterns_mismatch(sub_pats, cp_variant_payload(scrutinee_ty, env, defs, name), env, defs)
               } else {
                 Some(cp_ctor_never_matches(name, declared, scrutinee_ty, defs))
               },
@@ -653,12 +653,12 @@ export fn ctor_pattern_scrutinee_mismatch(pat: Pat, scrutinee_ty: Type, defs: Ar
       }
     },
     PTuple(pats) => match scrutinee_ty {
-      CtTuple(elem_tys) => cp_sub_patterns_mismatch(pats, elem_tys, defs),
+      CtTuple(elem_tys) => cp_sub_patterns_mismatch(pats, elem_tys, env, defs),
       _ => None
     },
-    POr(left, right) => match ctor_pattern_scrutinee_mismatch(left, scrutinee_ty, defs) {
+    POr(left, right) => match ctor_pattern_scrutinee_mismatch(left, scrutinee_ty, env, defs) {
       Some(msg) => Some(msg),
-      None => ctor_pattern_scrutinee_mismatch(right, scrutinee_ty, defs)
+      None => ctor_pattern_scrutinee_mismatch(right, scrutinee_ty, env, defs)
     },
     _ => None
   }
@@ -666,7 +666,7 @@ export fn ctor_pattern_scrutinee_mismatch(pat: Pat, scrutinee_ty: Type, defs: Ar
 
 /// The first mismatch among `pats` read against `tys` position by position,
 /// or None when the counts differ (that is `check_pattern`'s arity message).
-fn cp_sub_patterns_mismatch(pats: Array[Pat], tys: Array[Type], defs: Array[TypeDef]) -> Option[String] {
+fn cp_sub_patterns_mismatch(pats: Array[Pat], tys: Array[Type], env: TypeEnv, defs: Array[TypeDef]) -> Option[String] {
   if Array::length(pats) != Array::length(tys) {
     None
   } else {
@@ -675,7 +675,7 @@ fn cp_sub_patterns_mismatch(pats: Array[Pat], tys: Array[Type], defs: Array[Type
     while i < Array::length(pats) {
       match out {
         None => {
-          out = ctor_pattern_scrutinee_mismatch(Array::get(pats, i), Array::get(tys, i), defs)
+          out = ctor_pattern_scrutinee_mismatch(Array::get(pats, i), Array::get(tys, i), env, defs)
         },
         Some(_) => ()
       }
@@ -685,13 +685,18 @@ fn cp_sub_patterns_mismatch(pats: Array[Pat], tys: Array[Type], defs: Array[Type
   }
 }
 
-/// The declared field types of variant `name` of the enum `ty` names, or
-/// none when `ty` is not a declared enum with that variant.
-fn cp_variant_payload(ty: Type, defs: Array[TypeDef], name: String) -> Array[Type] {
-  let head = match ty {
-    CtNamed(n, _) => n,
-    CtEnum(n) => n,
-    _ => ""
+/// The field types of variant `name` of the enum `ty` names, at `ty`'s
+/// type arguments, or none when `ty` is not a declared enum with that
+/// variant. A generic enum's declared fields carry its declaration-time
+/// variables, so they are substituted through the constructor's scheme in
+/// `env`, as `check_pattern` does (Codex on #3420: `W(Some(n))` on a
+/// `Wrap[Array[Int]]`); without a scheme the declared fields are used, and a
+/// variable among them is tolerated.
+fn cp_variant_payload(ty: Type, env: TypeEnv, defs: Array[TypeDef], name: String) -> Array[Type] {
+  let (head, sargs) = match ty {
+    CtNamed(n, args) => (n, args),
+    CtEnum(n) => (n, array_empty()),
+    _ => ("", array_empty())
   }
   let out: Array[Type] = []
   match find_typedef(defs, head) {
@@ -708,7 +713,20 @@ fn cp_variant_payload(ty: Type, defs: Array[TypeDef], name: String) -> Array[Typ
     },
     _ => ()
   }
-  out
+  if Array::length(sargs) == 0 {
+    out
+  } else {
+    match env_lookup(env, name) {
+      Some(CtForAll(param_var_ids, _, CtFn(fn_payload_tys, _, _))) => if Array::length(param_var_ids) == Array::length(sargs) && Array::length(fn_payload_tys) == Array::length(out) {
+        for pt in fn_payload_tys {
+          send_subst_vars(pt, param_var_ids, sargs)
+        }
+      } else {
+        out
+      },
+      _ => out
+    }
+  }
 }
 
 /// `E::A` names the variant `A`.
