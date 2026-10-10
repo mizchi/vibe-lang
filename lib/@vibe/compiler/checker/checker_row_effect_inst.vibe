@@ -50,6 +50,10 @@ import @vibe/core {
   array_empty
 }
 
+import ./checker_pinned_formal.vibe {
+  first_perform_off
+}
+
 import ./checker_resolve.vibe {
   resolve_type_expr_shadowed
 }
@@ -1674,8 +1678,10 @@ export fn bind_lambda_effect_instantiations(env: TypeEnv, row: Option[String], d
 /// fixes the payload -- to one of the declaration's formals or to a concrete
 /// type -- the row has to say so. `pairs` are the bare labels'
 /// variables (`bind_lambda_effect_instantiations`), `s` the substitution
-/// after the body.
-export fn generic_bare_row_payload_errors(pairs: Array[(String, Int)], tparams: Array[String], tparam_ids: Array[Int], s: Subst, errors: Array[String]) -> Unit {
+/// after the body. The refusal points at the body's first `perform` of the
+/// effect, the site that most likely fixed the payload, or else at the body
+/// (#3423: it used to carry no position at all).
+export fn generic_bare_row_payload_errors(pairs: Array[(String, Int)], tparams: Array[String], tparam_ids: Array[Int], s: Subst, body: Expr, errors: Array[String]) -> Unit {
   for pair in pairs {
     let (name, tid) = pair
     let payload = subst_apply(s, CtVar(tid))
@@ -1710,7 +1716,13 @@ export fn generic_bare_row_payload_errors(pairs: Array[(String, Int)], tparams: 
       }
     }
     if written != "" {
-      Array::push(errors, "write `with \{name}[\{written}]`: this generic function performs `\{name}` at `\{written}`, and a bare `with \{name}` lets a caller's `\{name}[..]` of another type cover it")
+      let perform_off = first_perform_off(body, name)
+      let off = if perform_off >= 0 {
+        perform_off
+      } else {
+        railway_expr_off(body)
+      }
+      Array::push(errors, "write `with \{name}[\{written}]`: this generic function performs `\{name}` at `\{written}`, and a bare `with \{name}` lets a caller's `\{name}[..]` of another type cover it\{off_marker(off)}")
     } else {
       ()
     }

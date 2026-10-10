@@ -252,6 +252,19 @@ assert rows[0]['range']['start'] == {'line': 2, 'character': 2}, rows[0]
 assert rows[0]['range']['end'] == {'line': 2, 'character': 5}, rows[0]
 PY
 
+# #3423: the bare-generic-row refusal points at the perform that fixes the
+# payload (`Box::Put`, line 5 column 11), not at 0:0 with no position.
+printf 'effect Box[T] {\n  Put(T) -> Int\n}\nfn mk[T](x: T) -> Int with Box {\n  perform Box::Put(x)\n}\n' > "$WORK/bare_row.vibe"
+probe bare_row 1
+python3 - "$WORK/bare_row.fs.json" <<'PY' || bad "bare_row: expected the perform's position at line 5"
+import json, sys
+rows = json.load(open(sys.argv[1]))
+assert len(rows) == 1, rows
+assert 'write `with Box[T]`' in rows[0]['message'], rows[0]
+assert rows[0]['range']['start'] == {'line': 4, 'character': 10}, rows[0]
+assert not rows[0].get('data', {}).get('synthetic'), rows[0]
+PY
+
 # #3369: a file with an import reports every diagnostic on the FS lane, as one
 # without does. The import-resolving checker threw only the first one. The
 # single-file lane cannot resolve the import, so only the FS lane is asked.
@@ -330,4 +343,4 @@ if grep -qF 'unlocated.vibe' "$WORK/unlocated.fs.json" 2>/dev/null; then
 fi
 
 [ "$fails" -eq 0 ] || exit 1
-echo "[check-json-parity] ok (13 probes: both lanes agree on diagnostics, exit code, and UTF-16 offsets)"
+echo "[check-json-parity] ok (14 probes: both lanes agree on diagnostics, exit code, and UTF-16 offsets)"
