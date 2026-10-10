@@ -200,9 +200,10 @@ export fn edp_stamp_slot_rows(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Boo
   ()
 }
 
-/// Does `e` contain a named call with a row-free closure literal argument,
-/// or a row-free top-level function passed by name? A read-only scan, so a
-/// statement with neither is not rebuilt (#1875).
+/// Does `e` contain a named call with a row-free closure literal argument, a
+/// row-free top-level function passed by name, or a `let`-bound row-free
+/// literal? A read-only scan, so a statement with none is not rebuilt
+/// (#1875).
 fn edp_expr_passes_literal_arg(e: Expr, pure_names: MutSet[String]) -> Bool {
   let mut found = false
   let stack: Array[Expr] = [e]
@@ -231,6 +232,9 @@ fn edp_expr_passes_literal_arg(e: Expr, pure_names: MutSet[String]) -> Bool {
           },
           _ => ()
         }
+      },
+      ELet(_, EFn(_, _, _, _, None, _), _, _) => {
+        found = true
       },
       _ => ()
     }
@@ -416,7 +420,7 @@ fn edp_stamp_expr(e: Expr, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, 
       EFn(tps, tbs, params, ret, eff, body2)
     },
     ELet(n, v, b, off) => {
-      let v2 = edp_stamp_expr(v, stmts, fn_defs, scope, pure_names)
+      let v2 = edp_stamp_let_literal(n, edp_stamp_expr(v, stmts, fn_defs, scope, pure_names), b, stmts, fn_defs, scope)
       ELet(n, v2, edp_stamp_scoped(b, [n], stmts, fn_defs, scope, pure_names), off)
     },
     ELetRec(n, v, b) => ELetRec(n, edp_stamp_scoped(v, [n], stmts, fn_defs, scope, pure_names), edp_stamp_scoped(b, [
@@ -486,6 +490,106 @@ fn edp_stamp_expr(e: Expr, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, 
     ESpread(x) => ESpread(edp_stamp_expr(x, stmts, fn_defs, scope, pure_names)),
     _ => e
   }
+}
+
+/// #3424: a row-free literal bound by `let` and passed by that name. When
+/// every use of the name is an argument at a row-typed parameter of a
+/// top-level function, and all those rows agree, the literal takes the row
+/// the way one written at the slot does: the callee passes the dict, and the
+/// literal had no parameter for it. Any other use (a direct call, a capture,
+/// a slot without a row, two different rows) leaves it as written.
+fn edp_stamp_let_literal(name: String, v: Expr, body: Expr, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], scope: Array[String]) -> Expr {
+  match v {
+    EFn(tps, tbs, ps, ret, None, lb) => if edp_literal_calls_local(v, lb, scope) {
+      v
+    } else {
+      let total = edp_count_ident_uses(body, name)
+      let rows: Array[String] = []
+      edp_slot_uses_of(body, name, stmts, fn_defs, scope, rows)
+      if total > 0 && Array::length(rows) == total && edp_rows_agree(rows) {
+        EFn(tps, tbs, ps, ret, Some(Array::get(rows, 0)), lb)
+      } else {
+        v
+      }
+    },
+    _ => v
+  }
+}
+
+/// The slot rows of every use of `name` passed as an argument of a top-level
+/// function. A use at a slot with no stampable row records "" so it never
+/// agrees.
+fn edp_slot_uses_of(e: Expr, name: String, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], scope: Array[String], rows: Array[String]) -> Unit {
+  let stack: Array[Expr] = [e]
+  while Array::length(stack) > 0 {
+    let n = Array::length(stack)
+    let cur = Array::get(stack, n - 1)
+    Array::truncate(stack, n - 1)
+    match cur {
+      ECall(EIdent(cn, _), args, _, _) => if !edp_scope_has(scope, cn) && cn != name {
+        let mut labeled = false
+        for a in args {
+          match a {
+            ELabeledArg(_, _, _) => {
+              labeled = true
+            },
+            _ => ()
+          }
+        }
+        let mut ai = 0
+        while ai < Array::length(args) {
+          match Array::get(args, ai) {
+            EIdent(an, _) => if an == name {
+              Array::push(rows, if labeled {
+                ""
+              } else {
+                edp_slot_row_or_empty(stmts, fn_defs, cn, ai)
+              })
+            } else {
+              ()
+            },
+            ELabeledArg(l, _, EIdent(an, _)) => if an == name {
+              Array::push(rows, edp_slot_row_or_empty(stmts, fn_defs, cn, edp_param_index_by_label(stmts, fn_defs, cn, l)))
+            } else {
+              ()
+            },
+            _ => ()
+          }
+          ai = ai + 1
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    for child in expr_children(cur) {
+      Array::push(stack, child)
+    }
+  }
+  ()
+}
+
+fn edp_slot_row_or_empty(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], callee: String, pos: Int) -> String {
+  if pos < 0 {
+    ""
+  } else {
+    match edp_slot_row(stmts, fn_defs, callee, pos) {
+      Some(row) => row,
+      None => ""
+    }
+  }
+}
+
+fn edp_rows_agree(rows: Array[String]) -> Bool {
+  let mut ok = Array::length(rows) > 0
+  for r in rows {
+    if r == "" || r != Array::get(rows, 0) {
+      ok = false
+    } else {
+      ()
+    }
+  }
+  ok
 }
 
 /// `e` walked with `names` bound on top of `scope`.
