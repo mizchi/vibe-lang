@@ -18,6 +18,7 @@ import @vibe/compiler/lowering/effects/queries {
   edp_efn_eligible_for_migration,
   edp_handle_matches_effect,
   edp_has_unsafe_construct,
+  edp_is_identity_ascription,
   edp_pat_binds,
   edp_rq_fold,
   edp_str_array_contains,
@@ -170,6 +171,20 @@ export fn edp_stamp_slot_rows(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Boo
   }
   let mut i = 0
   while i < Array::length(stmts) {
+    // #3347: a top-level `let side: Thunk = () -> Int { .. }` keeps its alias
+    // annotation on the statement; the literal takes the alias's row.
+    match Array::get(stmts, i) {
+      SLet(exported, is_rec, nm, Some(ty), EFn(tps, tbs, ps, ret, None, b)) => match edp_alias_fn_row(stmts, ty) {
+        Some(row) => if edp_literal_calls_local(EFn(tps, tbs, ps, ret, None, b), b, [
+        ]) {
+          ()
+        } else {
+          Array::set(stmts, i, SLet(exported, is_rec, nm, Some(ty), EFn(tps, tbs, ps, ret, Some(row), b)))
+        },
+        None => ()
+      },
+      _ => ()
+    }
     let stmt = Array::get(stmts, i)
     let body = match stmt {
       SLet(_, _, _, _, e) => Some(e),
@@ -234,6 +249,16 @@ fn edp_expr_passes_literal_arg(e: Expr, pure_names: MutSet[String]) -> Bool {
           },
           _ => ()
         }
+      },
+      ECall(EFn(_, _, _, _, _, _), cargs, _, _) => if Array::length(cargs) == 1 {
+        match Array::get(cargs, 0) {
+          EFn(_, _, _, _, None, _) => {
+            found = true
+          },
+          _ => ()
+        }
+      } else {
+        ()
       },
       ELet(_, EFn(_, _, _, _, None, _), _, _) => {
         found = true
@@ -368,49 +393,9 @@ fn edp_slot_row(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Opt
 
 fn edp_stamp_expr(e: Expr, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], scope: Array[String], pure_names: MutSet[String]) -> Expr {
   match e {
-    ECall(callee, args, off, res) => {
-      let callee2 = edp_stamp_expr(callee, stmts, fn_defs, scope, pure_names)
-      let mut labeled = false
-      for a in args {
-        match a {
-          ELabeledArg(_, _, _) => {
-            labeled = true
-          },
-          _ => ()
-        }
-      }
-      // A callee a binding in scope shadows is not the top-level function.
-      let named = match callee {
-        EIdent(cn, _) => if edp_scope_has(scope, cn) {
-          ""
-        } else {
-          cn
-        },
-        _ => ""
-      }
-      let out: Array[Expr] = []
-      let mut ai = 0
-      while ai < Array::length(args) {
-        let a2 = edp_stamp_expr(Array::get(args, ai), stmts, fn_defs, scope, pure_names)
-        // A labeled argument names its parameter; a positional one beside a
-        // labeled one has no position to trust, so only the labeled one is
-        // stamped there.
-        let a3 = match a2 {
-          ELabeledArg(l, m, v) => if String::length(named) > 0 {
-            ELabeledArg(l, m, edp_stamp_slot_arg(v, stmts, fn_defs, scope, pure_names, named, edp_param_index_by_label(stmts, fn_defs, named, l)))
-          } else {
-            a2
-          },
-          other => if String::length(named) > 0 && !labeled {
-            edp_stamp_slot_arg(other, stmts, fn_defs, scope, pure_names, named, ai)
-          } else {
-            other
-          }
-        }
-        Array::push(out, a3)
-        ai = ai + 1
-      }
-      ECall(callee2, out, off, res)
+    ECall(callee, args, off, res) => match edp_alias_ascribed_literal(callee, args, stmts, scope) {
+      Some(lit) => edp_stamp_expr(lit, stmts, fn_defs, scope, pure_names),
+      None => edp_stamp_call(callee, args, off, res, stmts, fn_defs, scope, pure_names)
     },
     EFn(tps, tbs, params, ret, eff, body) => {
       let base = Array::length(scope)
@@ -592,6 +577,101 @@ fn edp_rows_agree(rows: Array[String]) -> Bool {
     }
   }
   ok
+}
+
+fn edp_stamp_call(callee: Expr, args: Array[Expr], off: Int, res: Array[Int], stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], scope: Array[String], pure_names: MutSet[String]) -> Expr {
+  let callee2 = edp_stamp_expr(callee, stmts, fn_defs, scope, pure_names)
+  let mut labeled = false
+  for a in args {
+    match a {
+      ELabeledArg(_, _, _) => {
+        labeled = true
+      },
+      _ => ()
+    }
+  }
+  // A callee a binding in scope shadows is not the top-level function.
+  let named = match callee {
+    EIdent(cn, _) => if edp_scope_has(scope, cn) {
+      ""
+    } else {
+      cn
+    },
+    _ => ""
+  }
+  let out: Array[Expr] = []
+  let mut ai = 0
+  while ai < Array::length(args) {
+    let a2 = edp_stamp_expr(Array::get(args, ai), stmts, fn_defs, scope, pure_names)
+    // A labeled argument names its parameter; a positional one beside a
+    // labeled one has no position to trust, so only the labeled one is
+    // stamped there.
+    let a3 = match a2 {
+      ELabeledArg(l, m, v) => if String::length(named) > 0 {
+        ELabeledArg(l, m, edp_stamp_slot_arg(v, stmts, fn_defs, scope, pure_names, named, edp_param_index_by_label(stmts, fn_defs, named, l)))
+      } else {
+        a2
+      },
+      other => if String::length(named) > 0 && !labeled {
+        edp_stamp_slot_arg(other, stmts, fn_defs, scope, pure_names, named, ai)
+      } else {
+        other
+      }
+    }
+    Array::push(out, a3)
+    ai = ai + 1
+  }
+  ECall(callee2, out, off, res)
+}
+
+/// #3347: `let side: Thunk = () -> Int { .. }` with `type Thunk = () -> Int
+/// with Ask` reaches this pass as the identity ascription
+/// `((__asc: Thunk) -> __asc)(lit)`, and the literal had no row: a direct
+/// `() -> Int with Ask` annotation is folded into the literal by the parser,
+/// an alias is not. The literal takes the alias's row, and the wrapper goes,
+/// so the tree is the one the direct annotation gives.
+fn edp_alias_ascribed_literal(callee: Expr, args: Array[Expr], stmts: Array[Stmt], scope: Array[String]) -> Option[Expr] {
+  match callee {
+    EFn(_, _, aparams, _, _, abody) => if Array::length(args) == 1 && edp_is_identity_ascription(aparams, abody) {
+      let (_, aty) = Array::get(aparams, 0)
+      match (aty, Array::get(args, 0)) {
+        (Some(ty), EFn(tps, tbs, ps, ret, None, b)) => match edp_alias_fn_row(stmts, ty) {
+          Some(row) => if edp_literal_calls_local(Array::get(args, 0), b, scope) {
+            None
+          } else {
+            Some(EFn(tps, tbs, ps, ret, Some(row), b))
+          },
+          None => None
+        },
+        _ => None
+      }
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
+/// The row of a non-generic type alias that names a function type with a
+/// concrete row, or None.
+fn edp_alias_fn_row(stmts: Array[Stmt], ty: TypeExpr) -> Option[String] {
+  match ty {
+    TyName(alias) => {
+      let mut found: Option[String] = None
+      for st in stmts {
+        match st {
+          STypeAlias(_, n, tparams, TyFn(_, _, Some(row))) => if n == alias && Array::length(tparams) == 0 && edp_slot_row_stampable(row) {
+            found = Some(row)
+          } else {
+            ()
+          },
+          _ => ()
+        }
+      }
+      found
+    },
+    _ => None
+  }
 }
 
 /// `e` walked with `names` bound on top of `scope`.
