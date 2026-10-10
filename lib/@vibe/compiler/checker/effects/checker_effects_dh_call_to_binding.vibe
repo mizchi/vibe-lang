@@ -1169,6 +1169,20 @@ fn resolve_bare_rows_through_callees(env: TypeEnv, first_local: Int, bodies: Arr
   }
 }
 
+/// A generic callee reached with no call of its own -- passed by name, or
+/// assigned -- has no instantiation for its formals here (the checker records
+/// one per call), so a payload its row names is unknown: `Box[T]` reads
+/// `Box[?]`, which no row authorizes (Codex on #3409: `pass(mk)` with `mk[T]
+/// .. with Box[T]` let `mk`'s `Int` reach a `Box[String]` caller).
+fn unknown_instantiation_label(label: String) -> String {
+  let bi = String::index_of(label, "[")
+  if bi > 0 {
+    String::concat(String::substring(label, 0, bi), "[?]")
+  } else {
+    label
+  }
+}
+
 /// Does any label name the effect `base`, bare or at an instantiation?
 fn labels_name_base(labels: Array[String], base: String) -> Bool {
   let mut found = false
@@ -1226,8 +1240,10 @@ fn labels_have_bare(labels: Array[String]) -> Bool {
 /// (Codex on #3409: leaving the label bare let a `Box[String]` caller through).
 /// A generic callee's row names its formals (`Box[T]`); it is read as this
 /// call instantiates them (`instantiate_callee_label_at`, the checker's
-/// bindings under the call's own spelling and offset), so `mk(12345)` requires `Box[Int]`. A formal the
-/// call leaves open stays as written, which no caller's row covers.
+/// bindings under the call's own spelling and offset), so `mk(12345)`
+/// requires `Box[Int]`. One reached with no call of its own reads `Box[?]`
+/// (`unknown_instantiation_label`). A formal the call leaves open stays as
+/// written, which no caller's row covers.
 fn callee_payloads_for(eff: String, recs: Array[(String, Array[String], Array[(String, Int)], String)], env: TypeEnv, first_local: Int, index: MutMap[String, Int], fn_effs: Array[Array[String]], fn_param_effs: Array[Array[Array[String]]]) -> Array[String] {
   let found = array_empty()
   for entry in recs {
@@ -1239,10 +1255,12 @@ fn callee_payloads_for(eff: String, recs: Array[(String, Array[String], Array[(S
     if !checker_effects_string_has(handled, eff) && !via_parameter_names(eff, via, env, first_local, index, fn_effs, fn_param_effs) {
       let (rows, _) = callee_rows(callee, env, first_local, index, fn_effs, fn_param_effs)
       for row_label in rows {
-        let label = if generic {
+        let label = if !generic {
+          row_label
+        } else if String::length(key) > 0 {
           instantiate_callee_label_at(row_label, key)
         } else {
-          row_label
+          unknown_instantiation_label(row_label)
         }
         let bi = String::index_of(label, "[")
         if bi > 0 && String::substring(label, 0, bi) == eff && !checker_effects_string_has(found, label) {
