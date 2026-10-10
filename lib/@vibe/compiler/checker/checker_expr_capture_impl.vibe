@@ -67,7 +67,7 @@ import ./checker_handler_payload_patterns.vibe {
 }
 
 import @vibe/compiler/checker/patterns {
-  check_pattern, match_nonexhaustive_witness, pat_has_unsupported_or_binding
+  check_pattern, ctor_pattern_scrutinee_mismatch, match_nonexhaustive_witness, pat_has_unsupported_or_binding
 }
 
 import ./checker_resolve.vibe {
@@ -1076,6 +1076,16 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             ()
           }
           let arm_env = check_pattern(pat, scr_ty, rail_env, defs, errors)
+          // #3419: a constructor the scrutinee's type cannot have makes the
+          // arm dead code. A `let*` / `?` desugar is reported above instead.
+          if rk == 0 {
+            match ctor_pattern_scrutinee_mismatch(pat, subst_apply(si, scr_ty), rail_env, defs) {
+              Some(msg) => Array::push(errors, String::concat(msg, off_marker(railway_expr_off(scrutinee)))),
+              None => ()
+            }
+          } else {
+            ()
+          }
           let (arm_ty, ns, nc) = check_expr_capture(body, arm_env, defs, si, ci, errors, tytab, capture, lane)
           si = ns
           ci = nc

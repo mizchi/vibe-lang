@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Pat, Type, TypeDef, TypeEnv, env_bind, env_lookup, find_enum_typedef, find_typedef
+  Pat, Type, TypeDef, TypeEnv, env_bind, env_lookup, find_enum_typedef, find_typedef, type_to_string
 }
 
 import @vibe/core {
@@ -47,6 +47,50 @@ fn find_ctor_in_defs(defs: Array[TypeDef], ctor_name: String) -> Option[(String,
     }
   }
   go_defs(0)
+}
+
+/// #3421: the enums a pattern of this program qualifies `Some` or `None` with
+/// (`Maybe::Some(n)`). The parser keeps only the variant name in the pattern,
+/// so `Maybe::Some(n)` and the builtin `Some(n)` reach the checker as the
+/// same `PCtor("Some", ..)`, and on an `Option` both matched the builtin one.
+/// Set from the parser's side channel before each check.
+let qualified_builtin_ctor_owners: Array[(String, String)] = Array::slice([
+  ("", "")
+], 0, 0)
+
+export fn note_qualified_builtin_ctor_refs(refs: Array[(String, String)]) -> Unit {
+  Array::truncate(qualified_builtin_ctor_owners, 0)
+  for r in refs {
+    let (q, v) = r
+    if (v == "Some" || v == "None") && q != "Option" {
+      Array::push(qualified_builtin_ctor_owners, (q, v))
+    }
+  }
+  ()
+}
+
+/// A declared enum some pattern of this program qualifies `name` (`Some` /
+/// `None`) with, which owns a variant of that name; "" for none.
+fn cp_qualified_builtin_owner(name: String, defs: Array[TypeDef]) -> String {
+  let mut out = ""
+  for r in qualified_builtin_ctor_owners {
+    let (q, v) = r
+    if v == name && out == "" {
+      match find_typedef(defs, q) {
+        Some(TDEnum(_, _, variants)) => {
+          for vt in variants {
+            let (vname, _) = vt
+            if vname == name {
+              out = q
+            }
+          }
+          ()
+        },
+        _ => ()
+      }
+    }
+  }
+  out
 }
 
 /// Validate the `Enum::Variant` pattern qualifiers the parser recorded on its
@@ -545,6 +589,258 @@ export fn check_pattern(pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[
         }
       }
       bind_fields(0, env)
+    }
+  }
+}
+
+/// #3419: a constructor pattern that can never match its scrutinee, or None.
+/// `check_pattern` refuses a declared enum's constructor only against a
+/// scalar, a function, an `Array` or a tuple. Everything else was accepted
+/// as a dead arm: `Some(n)` on an `Array[Int]` (`_ => -1` answered), a
+/// constructor of another enum or on a struct or an `Option`, and a name no
+/// enum declares (`Zork(n)` on an `Int`). `scrutinee_ty` is the zonked type;
+/// a variable, an unknown, a formal, an alias or a type this module does not
+/// declare is tolerated, as before. Nested patterns are checked where the
+/// payload type is known structurally (`Option` and tuples).
+export fn ctor_pattern_scrutinee_mismatch(pat: Pat, scrutinee_ty: Type, env: TypeEnv, defs: Array[TypeDef]) -> Option[String] {
+  match pat {
+    PCtor(raw_name, sub_pats) => {
+      let name = cp_ctor_base_name(raw_name)
+      let builtin = name == "Some" || name == "None"
+      match scrutinee_ty {
+        CtOption(elem) => if builtin && cp_qualified_builtin_owner(name, defs) != "" {
+          let owner = cp_qualified_builtin_owner(name, defs)
+          let ty_text = type_to_string(scrutinee_ty)
+          Some("pattern `\{name}` on a value of type `\{ty_text}` cannot be told apart from `\{owner}::\{name}`: a pattern does not keep its qualifier, and this program writes `\{owner}::\{name}` in one -- rename the variant `\{name}` of `\{owner}` (for example `Just` / `Nothing`)")
+        } else if builtin {
+          if name == "Some" && Array::length(sub_pats) == 1 {
+            ctor_pattern_scrutinee_mismatch(Array::get(sub_pats, 0), elem, env, defs)
+          } else {
+            None
+          }
+        } else {
+          Some(cp_ctor_never_matches(name, find_ctor_in_defs(defs, name), scrutinee_ty, defs))
+        },
+        _ => {
+          let declared = find_ctor_in_defs(defs, name)
+          let user_ctor = match declared {
+            Some(_) => true,
+            None => false
+          }
+          if cp_scrutinee_is_structural(scrutinee_ty) {
+            // A declared constructor here is already refused by
+            // `check_pattern` (`non_enum_scrutinee`).
+            if user_ctor {
+              None
+            } else {
+              Some(cp_ctor_never_matches(name, declared, scrutinee_ty, defs))
+            }
+          } else {
+            match cp_nominal_variants(scrutinee_ty, defs) {
+              // The scrutinee's own constructor: its payload patterns are
+              // checked against the variant's field types (Codex on #3420:
+              // `Wrap(Some(n))` with `Wrap(Array[Int])`). A field typed by
+              // the enum's own parameter stays a variable, and is tolerated.
+              Some(variants) => if cp_names_has(variants, name) {
+                cp_sub_patterns_mismatch(sub_pats, cp_variant_payload(scrutinee_ty, env, defs, name), env, defs)
+              } else {
+                Some(cp_ctor_never_matches(name, declared, scrutinee_ty, defs))
+              },
+              None => None
+            }
+          }
+        }
+      }
+    },
+    PTuple(pats) => match scrutinee_ty {
+      CtTuple(elem_tys) => cp_sub_patterns_mismatch(pats, elem_tys, env, defs),
+      _ => None
+    },
+    POr(left, right) => match ctor_pattern_scrutinee_mismatch(left, scrutinee_ty, env, defs) {
+      Some(msg) => Some(msg),
+      None => ctor_pattern_scrutinee_mismatch(right, scrutinee_ty, env, defs)
+    },
+    _ => None
+  }
+}
+
+/// The first mismatch among `pats` read against `tys` position by position,
+/// or None when the counts differ (that is `check_pattern`'s arity message).
+fn cp_sub_patterns_mismatch(pats: Array[Pat], tys: Array[Type], env: TypeEnv, defs: Array[TypeDef]) -> Option[String] {
+  if Array::length(pats) != Array::length(tys) {
+    None
+  } else {
+    let mut out: Option[String] = None
+    let mut i = 0
+    while i < Array::length(pats) {
+      match out {
+        None => {
+          out = ctor_pattern_scrutinee_mismatch(Array::get(pats, i), Array::get(tys, i), env, defs)
+        },
+        Some(_) => ()
+      }
+      i = i + 1
+    }
+    out
+  }
+}
+
+/// The field types of variant `name` of the enum `ty` names, at `ty`'s
+/// type arguments, or none when `ty` is not a declared enum with that
+/// variant. A generic enum's declared fields carry its declaration-time
+/// variables, so they are substituted through the constructor's scheme in
+/// `env`, as `check_pattern` does (Codex on #3420: `W(Some(n))` on a
+/// `Wrap[Array[Int]]`); without a scheme the declared fields are used, and a
+/// variable among them is tolerated.
+fn cp_variant_payload(ty: Type, env: TypeEnv, defs: Array[TypeDef], name: String) -> Array[Type] {
+  let (head, sargs) = match ty {
+    CtNamed(n, args) => (n, args),
+    CtEnum(n) => (n, array_empty()),
+    _ => ("", array_empty())
+  }
+  let out: Array[Type] = []
+  match find_typedef(defs, head) {
+    Some(TDEnum(_, _, variants)) => {
+      for v in variants {
+        let (vname, vtypes) = v
+        if vname == name {
+          for t in vtypes {
+            Array::push(out, t)
+          }
+        }
+      }
+      ()
+    },
+    _ => ()
+  }
+  if Array::length(sargs) == 0 {
+    out
+  } else {
+    match env_lookup(env, name) {
+      Some(CtForAll(param_var_ids, _, CtFn(fn_payload_tys, _, _))) => if Array::length(param_var_ids) == Array::length(sargs) && Array::length(fn_payload_tys) == Array::length(out) {
+        for pt in fn_payload_tys {
+          send_subst_vars(pt, param_var_ids, sargs)
+        }
+      } else {
+        out
+      },
+      _ => out
+    }
+  }
+}
+
+/// `E::A` names the variant `A`.
+fn cp_ctor_base_name(name: String) -> String {
+  let mut cut = 0
+  let mut i = 0
+  let n = String::length(name)
+  while i + 1 < n {
+    if name[i: i + 2] == "::" {
+      cut = i + 2
+    }
+    i = i + 1
+  }
+  name[cut: n]
+}
+
+/// A concrete type no constructor pattern but its own can match, with no
+/// declaration to consult: a scalar, a function, an `Array` or a tuple.
+fn cp_scrutinee_is_structural(ty: Type) -> Bool {
+  match ty {
+    CtInt => true,
+    CtDouble => true,
+    CtBool => true,
+    CtString => true,
+    CtChar => true,
+    CtUnit => true,
+    CtBytes => true,
+    CtFn(_, _, _) => true,
+    CtArray(_) => true,
+    CtTuple(_) => true,
+    _ => false
+  }
+}
+
+/// The variant names of a scrutinee whose type this module declares: an
+/// enum's variants, or none for a struct. None when the type is not a
+/// declared struct or enum (a formal, an alias, a builtin head, an
+/// unresolved name), which stays tolerated.
+fn cp_nominal_variants(ty: Type, defs: Array[TypeDef]) -> Option[Array[String]] {
+  let head = match ty {
+    CtNamed(n, _) => n,
+    CtEnum(n) => n,
+    CtStruct(n) => n,
+    _ => ""
+  }
+  if head == "" {
+    None
+  } else {
+    match find_typedef(defs, head) {
+      Some(td) => match td {
+        TDEnum(_, _, variants) => {
+          let names: Array[String] = []
+          for v in variants {
+            let (vname, _) = v
+            Array::push(names, vname)
+          }
+          Some(names)
+        },
+        TDStruct(_, _, _, _) => {
+          let none: Array[String] = []
+          Some(none)
+        },
+        _ => None
+      },
+      None => None
+    }
+  }
+}
+
+fn cp_names_has(names: Array[String], name: String) -> Bool {
+  let mut found = false
+  for n in names {
+    if n == name {
+      found = true
+    }
+  }
+  found
+}
+
+fn cp_ctor_never_matches(name: String, declared: Option[(String, Array[Type])], scrutinee_ty: Type, defs: Array[TypeDef]) -> String {
+  let ty_text = type_to_string(scrutinee_ty)
+  let owner = if name == "Some" || name == "None" {
+    "Option"
+  } else {
+    match declared {
+      Some(info) => {
+        let (enum_name, _) = info
+        enum_name
+      },
+      None => ""
+    }
+  }
+  let edit = cp_pattern_edit(scrutinee_ty, ty_text, defs)
+  if owner == "" {
+    "unknown constructor `\{name}` in a pattern on a value of type `\{ty_text}`: no enum declares it, so the arm never matches -- \{edit}, or remove the arm"
+  } else {
+    "constructor pattern `\{name}` (of `\{owner}`) never matches a value of type `\{ty_text}` -- \{edit}, or remove the arm"
+  }
+}
+
+/// The pattern edit that does match a value of `ty` (Codex on #3420): an
+/// enum's own constructors, `Some` / `None` for an `Option`, and otherwise a
+/// binding, `_` or a literal -- a scalar, an `Array` or a struct has no
+/// constructor to name.
+fn cp_pattern_edit(ty: Type, ty_text: String, defs: Array[TypeDef]) -> String {
+  match ty {
+    CtOption(_) => "match it with `Some(..)` or `None`",
+    _ => match cp_nominal_variants(ty, defs) {
+      Some(variants) => if Array::length(variants) > 0 {
+        "match it with a constructor of `\{ty_text}` (\{String::join(variants, ", ")})"
+      } else {
+        "match it with a binding or `_`"
+      },
+      None => "match it with a binding, `_` or a literal of `\{ty_text}`"
     }
   }
 }

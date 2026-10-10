@@ -1,0 +1,59 @@
+//# #3419: a constructor pattern its scrutinee's type cannot have
+
+// `Some(n)` on an `Array[Int]`, a constructor of another enum, `None` on a
+// struct and an undeclared name all checked clean, as arms that never match
+// (`match xs { Some(n) => n, _ => -1 }` answered `-1`). Each is refused now,
+// and the message names a pattern the scrutinee's type does take.
+import @vibe/compiler/runtime {
+  collect_all_diagnostics
+}
+
+test "an undeclared constructor on an Int names a pattern an Int can take" {
+  let src = "fn f(v: Int) -> Int {\n  match v {\n    Zork(n) => n,\n    _ => 0\n  }\n}\n"
+  inspect(collect_all_diagnostics(src), "[line 2:9: unknown constructor `Zork` in a pattern on a value of type `Int`: no enum declares it, so the arm never matches -- match it with a binding, `_` or a literal of `Int`, or remove the arm]")
+}
+
+test "a misspelled constructor on an enum lists the enum's constructors" {
+  let src = "enum Color {\n  Red;\n  Green\n}\n\nfn f(c: Color) -> Int {\n  match c {\n    Yellow => 1,\n    _ => 0\n  }\n}\n"
+  inspect(collect_all_diagnostics(src), "[line 7:9: unknown constructor `Yellow` in a pattern on a value of type `Color`: no enum declares it, so the arm never matches -- match it with a constructor of `Color` (Red, Green), or remove the arm]")
+}
+
+test "Some on an Array names a pattern an Array can take" {
+  let src = "fn f(v: Array[Int]) -> Int {\n  match v {\n    Some(n) => n,\n    _ => 0 - 1\n  }\n}\n"
+  inspect(collect_all_diagnostics(src), "[line 2:9: constructor pattern `Some` (of `Option`) never matches a value of type `Array[Int]` -- match it with a binding, `_` or a literal of `Array[Int]`, or remove the arm]")
+}
+
+test "another enum's constructor on an Option names Some and None" {
+  let src = "enum E {\n  A(Int);\n  B\n}\n\nfn f(v: Option[Int]) -> Int {\n  match v {\n    A(n) => n,\n    _ => 0\n  }\n}\n"
+  inspect(collect_all_diagnostics(src), "[line 7:9: constructor pattern `A` (of `E`) never matches a value of type `Option[Int]` -- match it with `Some(..)` or `None`, or remove the arm]")
+}
+
+test "None on a struct names a binding or a wildcard" {
+  let src = "struct P {\n  x: Int\n}\n\nfn g(v: P) -> Int {\n  match v {\n    None => 0,\n    _ => v.x\n  }\n}\n"
+  inspect(collect_all_diagnostics(src), "[line 6:9: constructor pattern `None` (of `Option`) never matches a value of type `P` -- match it with a binding or `_`, or remove the arm]")
+}
+
+test "a constructor of the scrutinee's own enum is accepted" {
+  let src = "enum E {\n  A(Int);\n  B\n}\n\nfn f(v: Option[(E, Int)]) -> Int {\n  match v {\n    Some((A(n), m)) => n + m,\n    _ => 0\n  }\n}\n"
+  inspect(collect_all_diagnostics(src), "[]")
+}
+
+test "a pattern nested in the scrutinee's own constructor is checked against its field" {
+  let src = "enum E {\n  Wrap(Array[Int]);\n  Other\n}\n\nfn f(e: E) -> Int {\n  match e {\n    Wrap(Some(n)) => n,\n    _ => 0\n  }\n}\n"
+  inspect(collect_all_diagnostics(src), "[line 7:9: constructor pattern `Some` (of `Option`) never matches a value of type `Array[Int]` -- match it with a binding, `_` or a literal of `Array[Int]`, or remove the arm]")
+}
+
+test "a pattern nested in a generic enum's constructor at its parameter is accepted" {
+  let src = "enum Wrap[T] {\n  W(T);\n  Empty\n}\n\nfn f(v: Wrap[Option[Int]]) -> Int {\n  match v {\n    W(Some(n)) => n,\n    _ => 0\n  }\n}\n"
+  inspect(collect_all_diagnostics(src), "[]")
+}
+
+test "a program enum's qualified Some on an Option is refused, since the pattern drops the qualifier" {
+  let src = "enum Maybe {\n  Some(Int);\n  Nothing\n}\n\nfn f(v: Option[Int]) -> Int {\n  match v {\n    Maybe::Some(n) => n,\n    _ => 0\n  }\n}\n"
+  inspect(collect_all_diagnostics(src), "[line 7:9: pattern `Some` on a value of type `Option[Int]` cannot be told apart from `Maybe::Some`: a pattern does not keep its qualifier, and this program writes `Maybe::Some` in one -- rename the variant `Some` of `Maybe` (for example `Just` / `Nothing`)]")
+}
+
+test "a pattern nested in a generic enum's constructor is checked at the scrutinee's type argument" {
+  let src = "enum Wrap[T] {\n  W(T);\n  Empty\n}\n\nfn f(v: Wrap[Array[Int]]) -> Int {\n  match v {\n    W(Some(n)) => n,\n    _ => 0\n  }\n}\n"
+  inspect(collect_all_diagnostics(src), "[line 7:9: constructor pattern `Some` (of `Option`) never matches a value of type `Array[Int]` -- match it with a binding, `_` or a literal of `Array[Int]`, or remove the arm]")
+}
