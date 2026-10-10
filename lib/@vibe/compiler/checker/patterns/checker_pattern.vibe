@@ -571,7 +571,7 @@ export fn ctor_pattern_scrutinee_mismatch(pat: Pat, scrutinee_ty: Type, defs: Ar
             None
           }
         } else {
-          Some(cp_ctor_never_matches(name, find_ctor_in_defs(defs, name), scrutinee_ty))
+          Some(cp_ctor_never_matches(name, find_ctor_in_defs(defs, name), scrutinee_ty, defs))
         },
         _ => {
           let declared = find_ctor_in_defs(defs, name)
@@ -585,14 +585,14 @@ export fn ctor_pattern_scrutinee_mismatch(pat: Pat, scrutinee_ty: Type, defs: Ar
             if user_ctor {
               None
             } else {
-              Some(cp_ctor_never_matches(name, declared, scrutinee_ty))
+              Some(cp_ctor_never_matches(name, declared, scrutinee_ty, defs))
             }
           } else {
             match cp_nominal_variants(scrutinee_ty, defs) {
               Some(variants) => if cp_names_has(variants, name) {
                 None
               } else {
-                Some(cp_ctor_never_matches(name, declared, scrutinee_ty))
+                Some(cp_ctor_never_matches(name, declared, scrutinee_ty, defs))
               },
               None => None
             }
@@ -704,7 +704,7 @@ fn cp_names_has(names: Array[String], name: String) -> Bool {
   found
 }
 
-fn cp_ctor_never_matches(name: String, declared: Option[(String, Array[Type])], scrutinee_ty: Type) -> String {
+fn cp_ctor_never_matches(name: String, declared: Option[(String, Array[Type])], scrutinee_ty: Type, defs: Array[TypeDef]) -> String {
   let ty_text = type_to_string(scrutinee_ty)
   let owner = if name == "Some" || name == "None" {
     "Option"
@@ -717,9 +717,28 @@ fn cp_ctor_never_matches(name: String, declared: Option[(String, Array[Type])], 
       None => ""
     }
   }
+  let edit = cp_pattern_edit(scrutinee_ty, ty_text, defs)
   if owner == "" {
-    "unknown constructor `\{name}` in a pattern on a value of type `\{ty_text}`: no enum declares it, so the arm never matches -- use a constructor of `\{ty_text}`, or declare or import the enum that has `\{name}`"
+    "unknown constructor `\{name}` in a pattern on a value of type `\{ty_text}`: no enum declares it, so the arm never matches -- \{edit}, or remove the arm"
   } else {
-    "constructor pattern `\{name}` (of `\{owner}`) never matches a value of type `\{ty_text}` -- use a constructor of `\{ty_text}`, or remove the arm"
+    "constructor pattern `\{name}` (of `\{owner}`) never matches a value of type `\{ty_text}` -- \{edit}, or remove the arm"
+  }
+}
+
+/// The pattern edit that does match a value of `ty` (Codex on #3420): an
+/// enum's own constructors, `Some` / `None` for an `Option`, and otherwise a
+/// binding, `_` or a literal -- a scalar, an `Array` or a struct has no
+/// constructor to name.
+fn cp_pattern_edit(ty: Type, ty_text: String, defs: Array[TypeDef]) -> String {
+  match ty {
+    CtOption(_) => "match it with `Some(..)` or `None`",
+    _ => match cp_nominal_variants(ty, defs) {
+      Some(variants) => if Array::length(variants) > 0 {
+        "match it with a constructor of `\{ty_text}` (\{String::join(variants, ", ")})"
+      } else {
+        "match it with a binding or `_`"
+      },
+      None => "match it with a binding, `_` or a literal of `\{ty_text}`"
+    }
   }
 }
