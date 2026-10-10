@@ -1390,40 +1390,36 @@ fn collect_call_records(expr: Expr, handled: Array[String], via: Array[(String, 
       let entry = let_scope_entry(name, value, handled, via, scope, out)
       collect_call_records(body, handled, via, scope_with(scope, entry), out)
     },
-    ELetMut(name, value, body, _) => match value {
-      // The initial lambda is read where the name is used, like a `let` one
-      // (Codex on #3409: `let mut cb = () -> mk(); 0` charged `mk`). A lambda
-      // assigned later is read at the assignment.
-      EFn(_, _, _, _, _, _) => collect_call_records(body, handled, via, scope_with(scope, (name, bound_lambda_marker(value, scope))), out),
-      _ => {
-        collect_call_records(value, handled, via, scope, out)
-        collect_call_records(body, handled, via, scope_with(scope, (name, "")), out)
-      }
+    ELetMut(name, value, body, _) => {
+      // The initial value is read like a `let` one: an alias names its source,
+      // and a lambda is read where the name is used (Codex on #3409: `let mut
+      // cb = () -> mk(); 0` charged `mk`). A value assigned later is read at
+      // the assignment (`EAssign`).
+      let entry = let_scope_entry(name, value, handled, via, scope, out)
+      collect_call_records(body, handled, via, scope_with(scope, entry), out)
     },
-    ELetRec(name, value, body) => match dh_value_alias_name(value) {
-      // `let rec h = mk` is an alias like `let h = mk` (Codex on #3409); the
-      // source is resolved outside the binding, which cannot name itself.
-      Some(src) => {
-        let target = if src == name {
-          ""
-        } else {
-          scope_resolve(scope, src)
-        }
-        collect_call_records(body, handled, via, scope_with(scope, (name, target)), out)
-      },
-      None => match value {
-        EFn(_, _, _, _, _, _) => {
-          // A recursive lambda is read where it is used, like a `let` one
-          // (Codex on #3409: `let rec cb = () -> mk(); 0` charged `mk`).
-          let marker = bound_lambda_rec_marker(name, value, scope)
-          collect_call_records(body, handled, via, scope_with(scope, (name, marker)), out)
+    EAssign(_, value, body, _) => {
+      // A function or bound lambda assigned to a mutable binding can be called
+      // through it from anywhere after this point, so it is read here, called
+      // or not (Codex on #3409: `cb = mk; cb()`).
+      match value {
+        EIdent(x, _) => {
+          let bound = scope_resolve(scope, x)
+          if is_bound_lambda_marker(bound) {
+            run_bound_lambda(bound, handled, via, out)
+          } else if String::length(bound) > 0 {
+            Array::push(out, (bound, handled, via, ""))
+          } else {
+            ()
+          }
         },
-        _ => {
-          let inner = scope_with(scope, (name, ""))
-          collect_runnable_records(value, handled, via, inner, out)
-          collect_call_records(body, handled, via, inner, out)
-        }
+        _ => collect_call_records(value, handled, via, scope, out)
       }
+      collect_call_records(body, handled, via, scope, out)
+    },
+    ELetRec(name, value, body) => {
+      let entry = letrec_scope_entry(name, value, handled, via, scope, out)
+      collect_call_records(body, handled, via, scope_with(scope, entry), out)
     },
     EFn(_, _, _, _, _, _) => collect_runnable_records(expr, handled, via, scope, out),
     EIdent(x, _) => {
@@ -1557,6 +1553,14 @@ fn collect_arg_records(arg: Expr, handled: Array[String], arg_via: Array[(String
       let entry = let_scope_entry(name, value, handled, via, scope, out)
       collect_arg_records(body, handled, arg_via, via, scope_with(scope, entry), out)
     },
+    ELetMut(name, value, body, _) => {
+      let entry = let_scope_entry(name, value, handled, via, scope, out)
+      collect_arg_records(body, handled, arg_via, via, scope_with(scope, entry), out)
+    },
+    ELetRec(name, value, body) => {
+      let entry = letrec_scope_entry(name, value, handled, via, scope, out)
+      collect_arg_records(body, handled, arg_via, via, scope_with(scope, entry), out)
+    },
     _ => collect_call_records(arg, handled, via, scope, out)
   }
 }
@@ -1571,6 +1575,34 @@ fn let_scope_entry(name: String, value: Expr, handled: Array[String], via: Array
       EFn(_, _, _, _, _, _) => (name, bound_lambda_marker(value, scope)),
       _ => {
         collect_call_records(value, handled, via, scope, out)
+        (name, "")
+      }
+    }
+  }
+}
+
+/// The name a `let rec name = src` alias resolves to; a binding that names
+/// itself resolves to nothing.
+fn letrec_alias_target(src: String, name: String, scope: Array[(String, String)]) -> String {
+  if src == name {
+    ""
+  } else {
+    scope_resolve(scope, src)
+  }
+}
+
+/// The scope entry a `let rec name = value` adds. An alias names its source,
+/// resolved outside the binding, which cannot name itself (Codex on #3409:
+/// `let rec h = mk`). A recursive lambda gets a marker with its own name in
+/// its body's scope, and is read where it is used (`let rec cb = () -> mk();
+/// 0` charged `mk`). Any other value is read now, with the name in scope.
+fn letrec_scope_entry(name: String, value: Expr, handled: Array[String], via: Array[(String, Int)], scope: Array[(String, String)], out: Array[(String, Array[String], Array[(String, Int)], String)]) -> (String, String) {
+  match dh_value_alias_name(value) {
+    Some(src) => (name, letrec_alias_target(src, name, scope)),
+    None => match value {
+      EFn(_, _, _, _, _, _) => (name, bound_lambda_rec_marker(name, value, scope)),
+      _ => {
+        collect_runnable_records(value, handled, via, scope_with(scope, (name, "")), out)
         (name, "")
       }
     }
