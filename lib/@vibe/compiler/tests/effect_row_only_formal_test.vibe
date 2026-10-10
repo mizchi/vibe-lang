@@ -1,0 +1,76 @@
+//# #3386: a formal only a generic callee's rows name
+
+// `fn run[T](f: () -> Int with Box[T]) -> Int with Box[T]` forwards `Box[T]` to
+// its caller, and nothing but the rows names `T`. The call used to leave `T`
+// free, so the lambda's `Put(12345)` chose `Int` and reached the caller's
+// `Box[String]` handler, which read the `Int` as a string (`24690`). The call
+// now gives such a formal its own variable (`label_row_only_formals`) and fixes
+// it from the instantiation in scope (`callee_row_scope_subst`).
+import @vibe/compiler/runtime {
+  collect_all_diagnostics
+}
+
+test "a lambda passed to a row-only formal performs at the caller's row" {
+  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn run[T](f: () -> Int with Box[T]) -> Int with Box[T] {\n  f()\n}\n\nfn caller() -> Int with Box[String] {\n  run(() -> { perform Box::Put(12345) })\n}\n"
+  inspect(collect_all_diagnostics(src), "[line 10:23: perform argument type mismatch for Box::Put: expected String, got Int]")
+}
+
+test "a function value passed to a row-only formal is compared with the caller's row" {
+  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn run[T](f: () -> Int with Box[T]) -> Int with Box[T] {\n  f()\n}\n\nfn caller() -> Int with Box[String] {\n  let g = () -> { perform Box::Put(12345) }\n  run(g)\n}\n"
+  inspect(collect_all_diagnostics(src), "[line 11:7: make the function passed to `run` perform `Box` at `String`: it performs `Box` at `Int`, but the parameter's row is `Box[String]` (its handler would read the `Int` as `String`)]")
+}
+
+test "a lambda that performs at the caller's row is accepted" {
+  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn run[T](f: () -> Int with Box[T]) -> Int with Box[T] {\n  f()\n}\n\nfn caller() -> Int with Box[String] {\n  run(() -> { perform Box::Put(\"a\") })\n}\n"
+  inspect(collect_all_diagnostics(src), "[]")
+}
+
+test "a generic joined as a value fixes its row-only formal at the call" {
+  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn run[T](f: () -> Int with Box[T]) -> Int with Box[T] {\n  f()\n}\n\nfn caller(c: Bool) -> Int with Box[String] {\n  let f = if c { run } else { run }\n  f(() -> { perform Box::Put(12345) })\n}\n"
+  inspect(collect_all_diagnostics(src), "[line 11:21: perform argument type mismatch for Box::Put: expected String, got Int]")
+}
+
+test "under a handle, the row-only formal is the handle's instantiation" {
+  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn run[T](f: () -> Int with Box[T]) -> Int with Box[T] {\n  f()\n}\n\nfn caller() -> Int {\n  handle {\n    run(() -> { perform Box::Put(12345) })\n  } with {\n    Box::Put(s) => resume(String::length(s))\n  }\n}\n"
+  inspect(collect_all_diagnostics(src), "[line 13:27-41: argument type mismatch for String::length: receiver type Int]")
+}
+
+test "a row-only formal nested in the payload is fixed from the caller's row" {
+  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn run[T](f: () -> Int with Box[Option[T]]) -> Int with Box[Option[T]] {\n  f()\n}\n\nfn caller() -> Int with Box[Option[String]] {\n  run(() -> { perform Box::Put(Some(12345)) })\n}\n"
+  inspect(collect_all_diagnostics(src), "[line 10:23: perform argument type mismatch for Box::Put: expected Option[String], got Option[Int]]")
+}
+
+test "a nested row-only payload that matches the caller's row is accepted" {
+  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn run[T](f: () -> Int with Box[Option[T]]) -> Int with Box[Option[T]] {\n  f()\n}\n\nfn caller() -> Int with Box[Option[String]] {\n  run(() -> { perform Box::Put(Some(\"a\")) })\n}\n"
+  inspect(collect_all_diagnostics(src), "[]")
+}
+
+test "a callback inside an array parameter is checked at the caller's row" {
+  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn run[T](fs: Array[() -> Int with Box[T]]) -> Int with Box[T] {\n  Array::length(fs)\n}\n\nfn caller() -> Int with Box[String] {\n  run([() -> { perform Box::Put(12345) }])\n}\n"
+  inspect(collect_all_diagnostics(src), "[line 10:16: make the function passed to `run` perform `Box` at `String`: it performs `Box` at `Int`, but the parameter's row is `Box[String]` (its handler would read the `Int` as `String`)]")
+}
+
+test "a callback inside an array parameter at the caller's row is accepted" {
+  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn run[T](fs: Array[() -> Int with Box[T]]) -> Int with Box[T] {\n  Array::length(fs)\n}\n\nfn caller() -> Int with Box[String] {\n  run([() -> { perform Box::Put(\"a\") }])\n}\n"
+  inspect(collect_all_diagnostics(src), "[]")
+}
+
+test "a generic method call fixes its row-only formal from the caller's row" {
+  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nstruct Runner {\n  n: Int\n}\n\nfn Runner::run[T](r: Runner, f: () -> Int with Box[T]) -> Int with Box[T] {\n  f() + r.n\n}\n\nfn caller() -> Int with Box[String] {\n  let r = Runner::{ n: 1 }\n  r.run(() -> { perform Box::Put(12345) })\n}\n"
+  inspect(collect_all_diagnostics(src), "[line 15:25: perform argument type mismatch for Box::Put: expected String, got Int]")
+}
+
+test "a generic lambda applied where it is written fixes its row-only formal" {
+  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn caller() -> Int with Box[String] {\n  ([T](f: () -> Int with Box[T]) -> Int with Box[T] { f() })(() -> { perform Box::Put(12345) })\n}\n"
+  inspect(collect_all_diagnostics(src), "[line 6:78: perform argument type mismatch for Box::Put: expected String, got Int]")
+}
+
+test "a bare row hiding a payload that nests a formal is refused (#3411)" {
+  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn mk[T](x: T) -> Int with Box {\n  perform Box::Put(Some(x))\n}\n"
+  inspect(collect_all_diagnostics(src), "[write `with Box[Option[T]]`: this generic function performs `Box` at `Option[T]`, and a bare `with Box` lets a caller's `Box[..]` of another type cover it]")
+}
+
+test "a generic method call at the caller's row is accepted" {
+  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nstruct Runner {\n  n: Int\n}\n\nfn Runner::run[T](r: Runner, f: () -> Int with Box[T]) -> Int with Box[T] {\n  f() + r.n\n}\n\nfn caller() -> Int with Box[String] {\n  let r = Runner::{ n: 1 }\n  r.run(() -> { perform Box::Put(\"a\") })\n}\n"
+  inspect(collect_all_diagnostics(src), "[]")
+}

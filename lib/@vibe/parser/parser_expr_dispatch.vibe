@@ -963,8 +963,22 @@ fn parse_block_value_body(tokens: Array[Token], eq: Int, parse_recur: (Array[Tok
   (val, body, end, a)
 }
 
+/// #3385: the edit for a `(` written on the same line after an expression
+/// that `(` does not call (an `if`, `match`, literal, ...).
+fn same_line_paren_message(pos: Int) -> String {
+  "to call the value of this expression, wrap it in parentheses -- `(if c { f } else { g })(x)`; to start a new statement, put it on its own line or after `;` at #\{pos}"
+}
+
+fn reject_same_line_paren(tokens: Array[Token], pos: Int) -> Unit with Exception {
+  match peek(tokens, pos) {
+    TLParen => throw(same_line_paren_message(pos)),
+    _ => ()
+  }
+}
+
 fn parse_block_value_only(tokens: Array[Token], value_pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
   let val_pair = parse_recur(tokens, value_pos, 0, context)
+  reject_same_line_paren(tokens, val_pair.1)
   (val_pair.0, skip_semi(tokens, val_pair.1))
 }
 
@@ -1645,6 +1659,11 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
               },
               _ => throw("invalid assignment target")
             },
+            // #3385: a `(` reaches here only on the SAME line as the
+            // expression before it (a newline before `(` is a synthetic `;`),
+            // after a form `(` does not call -- `if c { f } else { g } (x)`.
+            // Reading it as a second statement silently dropped the call.
+            TLParen => throw(same_line_paren_message(next)),
             _ => {
               ArrayBuilder::push(steps, StepSeq(e))
               p = next

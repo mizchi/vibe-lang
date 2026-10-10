@@ -177,6 +177,7 @@ import ./checker_row_effect_inst.vibe {
   bind_generic_result_effect_instantiations,
   callback_arg_env,
   callback_prefix_subst,
+  callee_row_scope_subst,
   effect_inst_annotation_check,
   effect_inst_arg_check,
   effect_inst_call_check,
@@ -184,7 +185,8 @@ import ./checker_row_effect_inst.vibe {
   effect_inst_unnamed_arg_check,
   effect_inst_unnamed_args_check,
   field_callback_arg_env,
-  field_effect_inst_arg_check
+  field_effect_inst_arg_check,
+  label_row_only_formals
 }
 
 import ./checker_merge_capture_provenance.vibe {
@@ -2022,7 +2024,10 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                   let callee_binding = env_lookup_unless_synthesized_builtin(env, lookup_name, callee_off)
                   let (ct, s1, c1) = match callee_binding {
                     Some(t) => {
-                      let (ti, nc, new_bounds) = instantiate(t, c)
+                      let (ti0, nc0, new_bounds) = instantiate(t, c)
+                      // #3386: a formal only the rows name gets this call's
+                      // own variable.
+                      let (ti, s_rows, nc) = label_row_only_formals(t, ti0, defs, s, nc0)
                       // #3027: the handle check reads a generic callee's
                       // instantiation at this call to resolve a formal its
                       // row names.
@@ -2032,7 +2037,7 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                         },
                         _ => ()
                       }
-                      let mut sbound = s
+                      let mut sbound = s_rows
                       let mut bi = 0
                       while bi < Array::length(new_bounds) {
                         let (vid, bounds) = Array::get(new_bounds, bi)
@@ -2065,7 +2070,7 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                   let alen = Array::length(args)
                   let arg_tys = array_empty()
                   let mut ai = 0
-                  let mut s2 = s1
+                  let mut s2 = callee_row_scope_subst(env, ct, s1)
                   let mut c2 = c1
                   while ai < alen {
                     let arg = Array::get(args, ai)
@@ -2283,8 +2288,10 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
               let method_binding = env_lookup(env, qualified)
               let method_ty = match method_binding {
                 Some(t) => {
-                  let (ti, c2, _) = instantiate(t, c1)
-                  (ti, s1, c2)
+                  let (ti0, c20, _) = instantiate(t, c1)
+                  // #3386 (Codex on #3414): as for a call by name.
+                  let (ti, s1r, c2) = label_row_only_formals(t, ti0, defs, s1, c20)
+                  (ti, s1r, c2)
                 },
                 None => match lookup_builtin_in_env(env, qualified) {
                   Some(t) => (t, s1, c1),
@@ -2332,7 +2339,7 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
               let arg_tys = array_empty()
               Array::push(arg_tys, obj_ty)
               let mut ai = 1
-              let mut s3 = s2
+              let mut s3 = callee_row_scope_subst(env, mt, s2)
               let mut c3 = c2
               while ai < alen {
                 let marg = Array::get(all_args, ai)
@@ -2580,7 +2587,9 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                   let alen = Array::length(args)
                   let arg_tys = array_empty()
                   let mut ai = 0
-                  let mut s2 = s1
+                  // #3386 (Codex on #3414): the value's row-only labels, from
+                  // the `EIdent` instantiation, are fixed from the scope here.
+                  let mut s2 = callee_row_scope_subst(env, ct, s1)
                   let mut c2 = c1
                   while ai < alen {
                     let arg = Array::get(args, ai)
@@ -2654,6 +2663,15 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                   }
                 },
                 _ => (ct, c1_callee)
+              }
+              // #3386 (Codex on #3414): a generic applied where it is written
+              // labels and fixes its row-only formals like a call by name.
+              let (opened_callee_ty, s1, c1) = match ct {
+                CtForAll(_, _, _) => {
+                  let (lty, ls, lc) = label_row_only_formals(ct, opened_callee_ty, defs, s1, c1)
+                  (lty, callee_row_scope_subst(env, lty, ls), lc)
+                },
+                _ => (opened_callee_ty, s1, c1)
               }
               let (callee_param_tys, callee_inst) = match (ct, opened_callee_ty) {
                 (CtForAll(_, _, _), CtFn(oparams, _, _)) => (oparams, Some((ct, opened_callee_ty))),

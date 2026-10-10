@@ -568,62 +568,102 @@ fn build_call_expr(expr: Expr, args: Array[Expr], pos: Int, lparen_off: Int) -> 
   }
 }
 
+/// The `(args)` suffix of a call whose callee `expr` ends just before `pos`.
+fn parse_postfix_call(tokens: Array[Token], starts: Array[Int], first: Int, pos: Int, expr: Expr, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
+  match peek(tokens, pos + 1) {
+    TRParen => parse_postfix(tokens, starts, first, pos + 2, build_call_expr(expr, empty_exprs(), pos, field_offset_at(starts, pos)), parse_recur, context),
+    _ => {
+      let b = ArrayBuilder::new()
+      let row_marks = match context {
+        Some(_) => Some(ArrayBuilder::new()),
+        None => None
+      }
+      match row_marks {
+        Some(marks) => ArrayBuilder::push(marks, binder_capture_mark(context)),
+        None => ()
+      }
+      let (first_arg, next_pos) = parse_call_arg(tokens, starts, pos + 1, parse_recur, context)
+      ArrayBuilder::push(b, first_arg)
+      let (args, end_pos) = parse_call_args_rest(tokens, starts, next_pos, b, row_marks, parse_recur, context)
+      let close_pos = expect_tk(tokens, end_pos, ")")
+      let call_args = if has_placeholder_args(args) {
+        match row_marks {
+          Some(marks) => insert_placeholder_rows(args, ArrayBuilder::freeze(marks), context),
+          None => ()
+        }
+        desugar_placeholder_args(args, context)
+      } else {
+        args
+      }
+      parse_postfix(tokens, starts, first, close_pos, build_call_expr(expr, call_args, pos, field_offset_at(starts, pos)), parse_recur, context)
+    }
+  }
+}
+
+/// #3385: true when the primary spanning tokens `[first, pos)` is a
+/// parenthesized group `( .. )`. A primary that opens with `(` and yields a
+/// control form can only be a group (a lambda yields `EFn`, a tuple `ETuple`).
+fn parenthesized_primary(tokens: Array[Token], first: Int, pos: Int) -> Bool {
+  if pos < first + 2 {
+    false
+  } else {
+    match peek(tokens, first) {
+      TLParen => match peek(tokens, pos - 1) {
+        TRParen => true,
+        _ => false
+      },
+      _ => false
+    }
+  }
+}
+
+/// #3385: the control forms a bare `(` does not call (the `(` after them
+/// starts no argument list), but which ARE callees once parenthesized.
+fn is_paren_callable_form(expr: Expr) -> Bool {
+  match expr {
+    EIf(_, _, _) => true,
+    EMatch(_, _) => true,
+    EHandle(_, _) => true,
+    _ => false
+  }
+}
+
 fn parse_postfix(tokens: Array[Token], starts: Array[Int], first: Int, pos: Int, expr: Expr, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
   let expr = source_wrap_expr(expr, first, pos, context)
   match peek(tokens, pos) {
-    TLParen => match source_expr(expr) {
-      // NOTE: an ECall left is deliberately NOT blocked here — a same-line
-      // `(` after a call/index result is a chained call (`f()()`, `arr[i](x)`,
-      // `f()()()`). The statement-boundary case (`f(1)` then `(2)` on the next
-      // line) is already separated by the lexer, which inserts a synthetic `;`
-      // for a newline-then-`(` after an expr-ending token (see is_expr_ending_tok
-      // + the synthetic-`;` insertion in lexer.vibe), so no newline-merge can
-      // reach here. `arr[i]` desugars to `ECall(__index, ...)`, so this also
-      // enables subscript-then-call.
-      EArray(_) => (expr, pos),
-      ETuple(_) => (expr, pos),
-      ERecord(_, _, _) => (expr, pos),
-      EMap(_) => (expr, pos),
-      EInt(_) => (expr, pos),
-      EFloat(_) => (expr, pos),
-      EString(_, _) => (expr, pos),
-      EStringInterp(_) => (expr, pos),
-      EBool(_) => (expr, pos),
-      EUnit => (expr, pos),
-      EWhile(_, _) => (expr, pos),
-      EIf(_, _, _) => (expr, pos),
-      EMatch(_, _) => (expr, pos),
-      ELoop(_, _) => (expr, pos),
-      EForIn(_, _, _, _) => (expr, pos),
-      EHandle(_, _) => (expr, pos),
-      _ => match peek(tokens, pos + 1) {
-        TRParen => parse_postfix(tokens, starts, first, pos + 2, build_call_expr(expr, empty_exprs(), pos, field_offset_at(starts, pos)), parse_recur, context),
-        _ => {
-          let b = ArrayBuilder::new()
-          let row_marks = match context {
-            Some(_) => Some(ArrayBuilder::new()),
-            None => None
-          }
-          match row_marks {
-            Some(marks) => ArrayBuilder::push(marks, binder_capture_mark(context)),
-            None => ()
-          }
-          let (first_arg, next_pos) = parse_call_arg(tokens, starts, pos + 1, parse_recur, context)
-          ArrayBuilder::push(b, first_arg)
-          let (args, end_pos) = parse_call_args_rest(tokens, starts, next_pos, b, row_marks, parse_recur, context)
-          let close_pos = expect_tk(tokens, end_pos, ")")
-          let call_args = if has_placeholder_args(args) {
-            match row_marks {
-              Some(marks) => insert_placeholder_rows(args, ArrayBuilder::freeze(marks), context),
-              None => ()
-            }
-            desugar_placeholder_args(args, context)
-          } else {
-            args
-          }
-          parse_postfix(tokens, starts, first, close_pos, build_call_expr(expr, call_args, pos, field_offset_at(starts, pos)), parse_recur, context)
-        }
-      },
+    // #3385: a control form inside its own parentheses is a callee like any
+    // other parenthesized expression: `(if c { f } else { g })(x)` calls the
+    // chosen function. Only the bare forms below stop at the `(`.
+    TLParen => if parenthesized_primary(tokens, first, pos) && is_paren_callable_form(source_expr(expr)) {
+      parse_postfix_call(tokens, starts, first, pos, expr, parse_recur, context)
+    } else {
+      match source_expr(expr) {
+        // NOTE: an ECall left is deliberately NOT blocked here — a same-line
+        // `(` after a call/index result is a chained call (`f()()`, `arr[i](x)`,
+        // `f()()()`). The statement-boundary case (`f(1)` then `(2)` on the next
+        // line) is already separated by the lexer, which inserts a synthetic `;`
+        // for a newline-then-`(` after an expr-ending token (see is_expr_ending_tok
+        // + the synthetic-`;` insertion in lexer.vibe), so no newline-merge can
+        // reach here. `arr[i]` desugars to `ECall(__index, ...)`, so this also
+        // enables subscript-then-call.
+        EArray(_) => (expr, pos),
+        ETuple(_) => (expr, pos),
+        ERecord(_, _, _) => (expr, pos),
+        EMap(_) => (expr, pos),
+        EInt(_) => (expr, pos),
+        EFloat(_) => (expr, pos),
+        EString(_, _) => (expr, pos),
+        EStringInterp(_) => (expr, pos),
+        EBool(_) => (expr, pos),
+        EUnit => (expr, pos),
+        EWhile(_, _) => (expr, pos),
+        EIf(_, _, _) => (expr, pos),
+        EMatch(_, _) => (expr, pos),
+        ELoop(_, _) => (expr, pos),
+        EForIn(_, _, _, _) => (expr, pos),
+        EHandle(_, _) => (expr, pos),
+        _ => parse_postfix_call(tokens, starts, first, pos, expr, parse_recur, context)
+      }
     },
     TLBracket => match peek(tokens, pos + 1) {
       TColon => match peek(tokens, pos + 2) {

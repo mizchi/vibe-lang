@@ -40,13 +40,20 @@ import @vibe/compiler/core {
   env_lookup,
   env_with_reexport_surface_blockers,
   find_typedef,
+  instantiate,
   overlapping_impl_target_for,
   prelude_ordering_stmt,
   stmts_declare_prelude_ordering_shape,
   stmts_shadow_prelude_ordering,
   stmts_use_prelude_ordering,
   subst_apply,
-  type_to_string
+  subst_lookup,
+  type_to_string,
+  unify
+}
+
+import ./checker_closure_capture_row.vibe {
+  tail_expr_off
 }
 
 import ./checker_row_effect_inst.vibe {
@@ -99,7 +106,7 @@ import ./checker.vibe {
 }
 
 import @vibe/ast {
-  trait_ref_name, type_param_arity
+  trait_ref_name, type_param_arity, type_param_name
 }
 
 import ./checked_expression_structure_core.vibe {
@@ -574,6 +581,93 @@ fn string_array_has(items: Array[String], wanted: String) -> Bool {
   hit
 }
 
+/// #3378: refuse a generic declaration that an earlier statement calls when
+/// its body fixes a formal. `hoisted` is the scheme that caller was checked
+/// against, built from the signature alone; `published` is the one the body
+/// produced. The body fixed a formal exactly when the published scheme is not
+/// as general as the hoisted one: unifying an instance of it with the
+/// hoisted body binds a hoisted variable to something other than a distinct
+/// variable. Callers below the declaration already see the fixed type.
+fn forward_generic_narrowing_errors(name: String, val: Expr, hoisted: Type, published: Type, s: Subst, c: Int, errors: Array[String]) -> Unit {
+  match (hoisted, val) {
+    (CtForAll(hids, _, hbody), EFn(tparams, _, _, _, _, body)) => {
+      let at = off_marker(tail_expr_off(body))
+      let (inst, _, _) = instantiate(published, c)
+      let fixed = match unify(inst, hbody, s) {
+        Some(su) => {
+          let seen = array_empty()
+          let mut found = -1
+          let mut fixed_to = CtUnknown
+          let mut hi = 0
+          while hi < Array::length(hids) && found < 0 {
+            match subst_apply(su, CtVar(Array::get(hids, hi))) {
+              CtVar(v) => if int_array_contains(seen, v) {
+                found = hi
+                fixed_to = CtVar(v)
+              } else {
+                Array::push(seen, v)
+              },
+              CtUnknown => (),
+              other => {
+                found = hi
+                fixed_to = other
+              }
+            }
+            hi = hi + 1
+          }
+          if found >= 0 && found < Array::length(tparams) {
+            Some((type_param_name(Array::get(tparams, found)), fixed_to))
+          } else {
+            None
+          }
+        },
+        None => None
+      }
+      match fixed {
+        Some((formal, CtVar(_))) => Array::push(errors, "`\{name}` is called above its declaration, but its body makes type parameter `\{formal}` the same type as another of its type parameters -- write one type parameter for both, or declare `\{name}` before its first caller\{at}"),
+        Some((formal, ty)) => {
+          let written = wildcard_type_text(ty)
+          Array::push(errors, "`\{name}` is called above its declaration, but its body uses type parameter `\{formal}` as `\{written}` -- write `\{written}` in place of `\{formal}` in the signature, or add a bound that provides what the body uses\{at}")
+        },
+        None => ()
+      }
+    },
+    _ => ()
+  }
+}
+
+/// A type as the edit spells it: an inference variable the body left open
+/// (`?t9`) is written `_`.
+fn wildcard_type_text(t: Type) -> String {
+  let text = type_to_string(t)
+  let out = StringBuilder::new()
+  let n = String::length(text)
+  let mut i = 0
+  while i < n {
+    if i + 1 < n && String::byte_at(text, i) == 63 && String::byte_at(text, i + 1) == 116 {
+      StringBuilder::push(out, "_")
+      i = i + 2
+      while i < n && String::byte_at(text, i) >= 48 && String::byte_at(text, i) <= 57 {
+        i = i + 1
+      }
+    } else {
+      StringBuilder::push(out, String::substring(text, i, i + 1))
+      i = i + 1
+    }
+  }
+  StringBuilder::freeze(out)
+}
+
+fn int_array_contains(items: Array[Int], wanted: Int) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(items) && !hit {
+    hit = Array::get(items, i) == wanted
+    i = i + 1
+  }
+  hit
+}
+
 fn generic_forward_referenced_names(stmts: Array[Stmt], idx: Int) -> Array[String] {
   let generic_names = array_empty()
   let mut gi = idx
@@ -975,6 +1069,18 @@ export fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv,
         // signature; only the rest has every caller checked against the
         // scheme its body produced.
         efn_head_bound_commit(head_bound_mark, !exported && !string_array_has(generic_forward_used, name))
+        // #3378: such a caller was checked against the hoisted scheme. When the
+        // body fixed one of the formals, that call was never checked against
+        // what the body assumes -- `add_one("abc")` above `fn add_one[T](x:
+        // T) -> Int { x + 1 }` compiled and added 1 to a pointer.
+        if Array::length(errors) == err_before && string_array_has(generic_forward_used, name) {
+          match env_lookup(env, name) {
+            Some(hoisted) => forward_generic_narrowing_errors(name, val, hoisted, subst_apply(ns0, vt), ns0, nc, errors),
+            None => ()
+          }
+        } else {
+          ()
+        }
         attach_unlocated_decl_name_marker(errors, err_before, name)
         // The value must be assignable to a declared annotation (previously
         // unchecked — `let x: Int = "s"` was accepted).

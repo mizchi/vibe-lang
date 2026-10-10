@@ -1880,7 +1880,11 @@ because nothing in the declaration says whether such an arm resumes or aborts.
 A Unit-returning operation resumes with `resume(())`. The resumed value is
 typed against the OPERATION's return type: for `Get() -> String`,
 `Get() => resume(7)` is refused. A payload binder named `resume` hides the
-continuation from the whole arm and is refused -- rename it. An arm that
+continuation from the whole arm and is refused -- rename it. A function named
+`resume` that the module imports or declares at the top level does not hide
+it: inside an arm `resume` is the continuation. A `let resume = ..` inside the
+arm does hide it from the rest of the arm, and a call then reaches that
+binding (#3379). An arm that
 stores `resume` as a value (the suspend shape below) keeps the other rule: its
 own value is the handle's result. Only `Exception` arms abort; a declared
 effect has no abortive operations.
@@ -2943,6 +2947,30 @@ fn simd_add(a: Int, b: Int) -> Int = wasm
 
 判断に迷いやすい規則をここに集める。**すべて現行 stage2 で実測したもの**で、
 仕様書の記述ではない。同じことを二度調べ直さないための場所。
+
+### Calling the value of an `if` or `match` needs parentheses (#3385)
+
+`(` after a bare `if`, `match` or `handle` does not call its value. Put the
+form in parentheses to call it, the same as any other parenthesized callee:
+
+```vibe
+fn add2(x: Int, y: Int) -> Int {
+  x + y
+}
+
+fn sub2(x: Int, y: Int) -> Int {
+  x - y
+}
+
+fn pick(c: Bool) -> Int {
+  (if c { add2 } else { sub2 })(10, 20)
+}
+```
+
+Without the parentheses, `if c { add2 } else { sub2 } (10, 20)` on one line is
+a parse error that names this edit. Before #3385 both spellings parsed as two
+statements, so the call was dropped and `(10, 20)` became the block's value. A
+`(` at the start of the NEXT line still starts a new statement.
 
 ### A library `fn X::y` replaces a same-named builtin PROGRAM-WIDE
 

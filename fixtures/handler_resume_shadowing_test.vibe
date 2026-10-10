@@ -1,0 +1,41 @@
+// #3379: inside an effect operation's arm, `resume` is that arm's
+// continuation unless a binder inside the arm shadows it. An imported
+// `fn resume` used to win over the continuation (`7008`), and a `let resume`
+// inside the arm used to lose to it (the string was handed to the
+// continuation).
+import ./_handler_resume_import_dep.vibe {
+  resume
+}
+
+effect Ask {
+  Op() -> Int
+}
+
+fn run() -> Int with Ask {
+  perform Ask::Op() + 1
+}
+
+test "an imported resume does not shadow the continuation" {
+  let r = handle {
+    run()
+  } with { Ask::Op() => resume(7) }
+  inspect(r, "8")
+}
+
+test "the imported resume is still callable outside a handler arm" {
+  inspect(resume(1), "7001")
+}
+
+fn shadowed() -> Int {
+  let r = handle {
+    run()
+  } with { Ask::Op() => {
+    let resume = (s: String) -> String::length(s)
+    return resume("abcd")
+  } }
+  r + 100
+}
+
+test "a let resume inside the arm shadows the continuation" {
+  inspect(shadowed(), "4")
+}
