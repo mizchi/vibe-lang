@@ -55,7 +55,7 @@ import @vibe/compiler/codegen/common_base {
 }
 
 import @vibe/compiler/codegen/common_extractors {
-  array_contains_str, get_eident_name, get_eint_value
+  array_contains_str, ascription_call_value, get_eident_name, get_eint_value
 }
 
 import @vibe/compiler/codegen/wasm_emit {
@@ -231,6 +231,31 @@ fn compile_call_core(buf: Bytes, callee: Expr, raw_args: Array[Expr], local_name
 
 fn compile_call_core_resolved(buf: Bytes, callee: Expr, raw_args: Array[Expr], resolution: Array[Int], local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
   let args = cc_own_cell_compound_args(callee, raw_args, local_names, ctx)
+  // Retain captured-cell reads on compound result paths before inlining,
+  // as on the ordinary closure-call path.
+  if is_efn(callee) {
+    match ascription_call_value(callee, args) {
+      Some(value) => {
+        let nl = ce(buf, value, local_names, next_local, ctx, ld)
+        // Match the owning result of the old identity closure call. Borrowed
+        // arguments still need retaining, including the loop compensation.
+        let loop_borrow = ctx.enable_rc && cc_is_loop_borrowed_ident(value, ctx)
+        if ctx.enable_rc && (cc_is_projection(value) || cc_is_ref_cell_read(value, ctx) || cc_is_borrow_ret_call(value, ctx) || loop_borrow) {
+          if loop_borrow {
+            Array::push(ctx.loop_consumed_names, get_eident_name(value))
+          } else ()
+          // Anonymous scratch slots must not hide a source binding.
+          Array::push(local_names, "")
+          emit_local_tee(buf, nl)
+          emit_rc_dup_guarded(buf, nl, ctx.rc_shadow, ctx.rc_dup_func_idx)
+          return nl + 1
+        } else {
+          return nl
+        }
+      },
+      None => ()
+    }
+  } else ()
   if is_eident(callee) {
     let source_name = get_eident_name(callee)
     // Builtin aliases are source-compatible fallbacks, not reserved names.

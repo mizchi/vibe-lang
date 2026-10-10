@@ -65,10 +65,12 @@ import ./checker_effects_mutability_expr_into.vibe {
 }
 
 import ./checker_effects_throw_payload_kind.vibe {
+  collect_handle_effects,
   effect_name_of_op,
   exception_effect_labels,
   fn_binding_effects,
   fn_binding_param_effects,
+  instantiate_callee_label_at,
   is_entry_point_name,
   is_program_entry_name,
   join_labels,
@@ -1024,6 +1026,10 @@ fn seed_env_fn_effs(env: TypeEnv, fn_names: Array[String], fn_effs: Array[Array[
 }
 
 export fn build_perform_fn_effs(stmts: Array[Stmt], env: TypeEnv, fn_names: Array[String], fn_effs: Array[Array[String]], fn_param_effs: Array[Array[Array[String]]]) -> Unit {
+  let first_local = Array::length(fn_names)
+  let local_bodies = array_empty()
+  let alias_sources = array_empty()
+  let written_rows = array_empty()
   let mut m = 0
   while m < Array::length(stmts) {
     match Array::get(stmts, m) {
@@ -1037,20 +1043,708 @@ export fn build_perform_fn_effs(stmts: Array[Stmt], env: TypeEnv, fn_names: Arra
         Array::push(fn_names, name)
         Array::push(fn_effs, effs)
         Array::push(fn_param_effs, peffs)
+        Array::push(local_bodies, EUnit)
+        Array::push(alias_sources, src)
+        Array::push(written_rows, effs)
       },
       SLet(_, _, name, ty, body) => {
+        let written = fn_binding_effects(ty, body)
         Array::push(fn_names, name)
-        Array::push(fn_effs, fn_binding_effects(ty, body))
+        Array::push(fn_effs, bare_rows_with_published_payload(written, env, name))
         Array::push(fn_param_effs, fn_binding_param_effects(ty, body))
+        Array::push(local_bodies, body)
+        Array::push(alias_sources, "")
+        Array::push(written_rows, written)
       },
       SLetMut(name, ty, body) => {
+        let written = fn_binding_effects(ty, body)
         Array::push(fn_names, name)
-        Array::push(fn_effs, fn_binding_effects(ty, body))
+        Array::push(fn_effs, written)
         Array::push(fn_param_effs, fn_binding_param_effects(ty, body))
+        Array::push(local_bodies, EUnit)
+        Array::push(alias_sources, "")
+        Array::push(written_rows, written)
       },
       _ => ()
     }
     m = m + 1
+  }
+  resolve_bare_rows_through_callees(env, first_local, local_bodies, alias_sources, written_rows, fn_names, fn_effs, fn_param_effs)
+}
+
+/// #3408: a bare row is fixed by the callees its body reaches as well as by
+/// its own performs. `mid() with Box { mk() }` over `mk() with Box { perform
+/// Box::Put(12345) }` performs `Box` at `Int` through `mk`, so a caller of
+/// `mid` must cover `Box[Int]`. Each local binding's calls are recorded once
+/// (`collect_call_records`), and every bare label takes the instantiations its
+/// callees require of that effect (`callee_payloads_for`), until nothing
+/// changes. Which labels are bare is read from the row as WRITTEN: the payload
+/// the body's own performs fix (`Box[Int]`, already published) is kept, and the
+/// callees' are added to it (Codex on #3409: deciding from the published row
+/// skipped a body that both performs and calls). Each round recomputes a
+/// binding's row from its declared one, so a
+/// callee that resolves in a later round still adds its instantiation (Codex
+/// on #3409: replacing the bare label in place froze it at the first
+/// callee's). A label no callee instantiates stays bare, which is what keeps
+/// `Console` and the other plain effects as they are. An alias (`let h = mk`)
+/// is a call of its source.
+fn resolve_bare_rows_through_callees(env: TypeEnv, first_local: Int, bodies: Array[Expr], alias_sources: Array[String], written_rows: Array[Array[String]], fn_names: Array[String], fn_effs: Array[Array[String]], fn_param_effs: Array[Array[Array[String]]]) -> Unit {
+  let local_count = Array::length(bodies)
+  let index = program_fn_index(fn_names)
+  Array::set(bound_lambda_cell, 0, bound_lambda_table())
+  Array::set(bound_lambda_active_cell, 0, bound_lambda_active_empty())
+  let records = array_empty()
+  let declared = array_empty()
+  let mut any_bare = false
+  let mut i = 0
+  while i < local_count {
+    Array::push(declared, Array::get(fn_effs, first_local + i))
+    let out = array_empty()
+    let src = Array::get(alias_sources, i)
+    if String::length(src) > 0 {
+      Array::push(out, (src, array_empty(), array_empty(), ""))
+    } else if labels_have_bare(Array::get(written_rows, i)) {
+      collect_runnable_records(Array::get(bodies, i), array_empty(), array_empty(), array_empty(), out)
+    } else {
+      ()
+    }
+    if Array::length(out) > 0 {
+      any_bare = true
+    } else {
+      ()
+    }
+    Array::push(records, out)
+    i = i + 1
+  }
+  let mut changed = any_bare
+  let mut rounds = 0
+  while changed && rounds <= local_count {
+    changed = false
+    let mut li = 0
+    while li < local_count {
+      let idx = first_local + li
+      let recs = Array::get(records, li)
+      if Array::length(recs) > 0 {
+        let updated = array_empty()
+        for label in Array::get(written_rows, li) {
+          if String::index_of(label, "[") < 0 && String::index_of(label, "::") < 0 {
+            let fixed = array_empty()
+            for own in Array::get(declared, li) {
+              if label_base_is(own, label) && !checker_effects_string_has(fixed, own) {
+                Array::push(fixed, own)
+              } else {
+                ()
+              }
+            }
+            for item in callee_payloads_for(label, recs, env, first_local, index, fn_effs, fn_param_effs) {
+              if !checker_effects_string_has(fixed, item) {
+                Array::push(fixed, item)
+              } else {
+                ()
+              }
+            }
+            if Array::length(fixed) > 0 {
+              for item in fixed {
+                Array::push(updated, item)
+              }
+            } else {
+              Array::push(updated, label)
+            }
+          } else {
+            Array::push(updated, label)
+          }
+        }
+        if !labels_same(updated, Array::get(fn_effs, idx)) {
+          Array::set(fn_effs, idx, updated)
+          changed = true
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      li = li + 1
+    }
+    rounds = rounds + 1
+  }
+}
+
+/// A generic callee reached with no call of its own -- passed by name, or
+/// assigned -- has no instantiation for its formals here (the checker records
+/// one per call), so a payload its row names is unknown: `Box[T]` reads
+/// `Box[?]`, which no row authorizes (Codex on #3409: `pass(mk)` with `mk[T]
+/// .. with Box[T]` let `mk`'s `Int` reach a `Box[String]` caller).
+fn unknown_instantiation_label(label: String) -> String {
+  let bi = String::index_of(label, "[")
+  if bi > 0 {
+    String::concat(String::substring(label, 0, bi), "[?]")
+  } else {
+    label
+  }
+}
+
+/// Does any label name the effect `base`, bare or at an instantiation?
+fn labels_name_base(labels: Array[String], base: String) -> Bool {
+  let mut found = false
+  for label in labels {
+    if label == base || label_base_is(label, base) {
+      found = true
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+/// Is `label` an instantiation of the effect `base` (`Box[Int]` of `Box`)?
+fn label_base_is(label: String, base: String) -> Bool {
+  let bi = String::index_of(label, "[")
+  bi > 0 && String::substring(label, 0, bi) == base
+}
+
+fn labels_same(a: Array[String], b: Array[String]) -> Bool {
+  if Array::length(a) != Array::length(b) {
+    false
+  } else {
+    let mut same = true
+    let mut i = 0
+    while i < Array::length(a) {
+      if Array::get(a, i) != Array::get(b, i) {
+        same = false
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    same
+  }
+}
+
+fn labels_have_bare(labels: Array[String]) -> Bool {
+  let mut found = false
+  for label in labels {
+    if String::index_of(label, "[") < 0 && String::index_of(label, "::") < 0 {
+      found = true
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+/// Every `eff[..]` label the recorded calls require. A call under a `handle`
+/// of `eff` is that handle's, and a call inside a lambda passed to a parameter
+/// whose row names `eff` is the callee's to answer for, unless the callee's own
+/// row names `eff` too, which forwards it. Callees that disagree
+/// give the caller both instantiations, so its own callers must cover each
+/// (Codex on #3409: leaving the label bare let a `Box[String]` caller through).
+/// A generic callee's row names its formals (`Box[T]`); it is read as this
+/// call instantiates them (`instantiate_callee_label_at`, the checker's
+/// bindings under the call's own spelling and offset), so `mk(12345)`
+/// requires `Box[Int]`. One reached with no call of its own reads `Box[?]`
+/// (`unknown_instantiation_label`). A formal the call leaves open stays as
+/// written, which no caller's row covers.
+fn callee_payloads_for(eff: String, recs: Array[(String, Array[String], Array[(String, Int)], String)], env: TypeEnv, first_local: Int, index: MutMap[String, Int], fn_effs: Array[Array[String]], fn_param_effs: Array[Array[Array[String]]]) -> Array[String] {
+  let found = array_empty()
+  for entry in recs {
+    let (callee, handled, via, key) = entry
+    let generic = match env_lookup(env, callee) {
+      Some(CtForAll(_, _, _)) => true,
+      _ => false
+    }
+    if !checker_effects_string_has(handled, eff) && !via_parameter_names(eff, via, env, first_local, index, fn_effs, fn_param_effs) {
+      let (rows, _) = callee_rows(callee, env, first_local, index, fn_effs, fn_param_effs)
+      for row_label in rows {
+        let label = if !generic {
+          row_label
+        } else if String::length(key) > 0 {
+          instantiate_callee_label_at(row_label, key)
+        } else {
+          unknown_instantiation_label(row_label)
+        }
+        let bi = String::index_of(label, "[")
+        if bi > 0 && String::substring(label, 0, bi) == eff && !checker_effects_string_has(found, label) {
+          Array::push(found, label)
+        } else {
+          ()
+        }
+      }
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+/// The row and per-parameter rows a call of `callee` sees: a local binding's
+/// current entry, else its checked type in `env`.
+fn callee_rows(callee: String, env: TypeEnv, first_local: Int, index: MutMap[String, Int], fn_effs: Array[Array[String]], fn_param_effs: Array[Array[Array[String]]]) -> (Array[String], Array[Array[String]]) {
+  match MutMap::get(index, callee) {
+    Some(j) => if j >= first_local {
+      (Array::get(fn_effs, j), Array::get(fn_param_effs, j))
+    } else {
+      env_binding_effects(env, callee)
+    },
+    None => env_binding_effects(env, callee)
+  }
+}
+
+fn via_parameter_names(eff: String, via: Array[(String, Int)], env: TypeEnv, first_local: Int, index: MutMap[String, Int], fn_effs: Array[Array[String]], fn_param_effs: Array[Array[Array[String]]]) -> Bool {
+  let mut names = false
+  for step in via {
+    let (callee, k) = step
+    let (crow, prows) = callee_rows(callee, env, first_local, index, fn_effs, fn_param_effs)
+    // Only a callee whose own row does not name the effect at all discharges
+    // its callback's performs. One that names it, bare or at an instantiation
+    // its own body fixed, forwards them to its caller (Codex on #3409: `pass(f:
+    // () -> Int with Box) -> Int with Box { perform Box::Put("abc") + f() }`
+    // publishes `Box[String]` and still passes the callback's `Box[Int]` on).
+    if !labels_name_base(crow, eff) && k < Array::length(prows) {
+      for label in Array::get(prows, k) {
+        let bi = String::index_of(label, "[")
+        let base = if bi > 0 {
+          String::substring(label, 0, bi)
+        } else {
+          label
+        }
+        if base == eff {
+          names = true
+        } else {
+          ()
+        }
+      }
+    } else {
+      ()
+    }
+  }
+  names
+}
+
+/// Every named call in `expr`, with the effects the `handle`s around it
+/// answer for and the (callee, argument index) of each lambda it sits in.
+/// `scope` holds the local names in scope, innermost last: a name bound to
+/// another name (`let h = mk`) carries that name, and any other local binding
+/// carries "" (it is not the top-level binding of the same spelling, so a call
+/// of it is not recorded). Every lambda's body is read, wherever it sits: one
+/// the body only builds can still be invoked there (`Array::get([() -> mk()],
+/// 0)()`), and leaving it out would let that call's payload through. Each
+/// record carries the callee identifier's offset, the key of the checker's
+/// formal bindings for that call, under the name as spelled there.
+fn collect_call_records(expr: Expr, handled: Array[String], via: Array[(String, Int)], scope: Array[(String, String)], out: Array[(String, Array[String], Array[(String, Int)], String)]) -> Unit {
+  match expr {
+    EHandle(body, arms) => {
+      let inner = array_empty()
+      for h in handled {
+        Array::push(inner, h)
+      }
+      for h in collect_handle_effects(arms) {
+        Array::push(inner, h)
+      }
+      collect_call_records(body, inner, via, scope, out)
+      collect_arm_records(arms, handled, via, scope, out)
+    },
+    EMatch(scrutinee, arms) => {
+      collect_call_records(scrutinee, handled, via, scope, out)
+      collect_arm_records(arms, handled, via, scope, out)
+    },
+    EForIn(item, index_name, iter, body) => {
+      collect_call_records(iter, handled, via, scope, out)
+      let mut inner = scope_with(scope, (item, ""))
+      match index_name {
+        Some(ix) => {
+          inner = scope_with(inner, (ix, ""))
+        },
+        None => ()
+      }
+      collect_call_records(body, handled, via, inner, out)
+    },
+    ELoop(pairs, body) => {
+      let mut inner = scope
+      for pair in pairs {
+        let (pname, value) = pair
+        collect_call_records(value, handled, via, scope, out)
+        inner = scope_with(inner, (pname, ""))
+      }
+      collect_call_records(body, handled, via, inner, out)
+    },
+    ECall(callee_expr, args, _, _) => {
+      let (resolved, key) = match callee_expr {
+        EIdent(callee, coff) => (scope_resolve(scope, callee), String::concat(__to_string(coff), String::concat(":", callee))),
+        _ => {
+          collect_runnable_records(callee_expr, handled, via, scope, out)
+          ("", "")
+        }
+      }
+      let target = if is_bound_lambda_marker(resolved) {
+        run_bound_lambda(resolved, handled, via, out)
+        ""
+      } else {
+        resolved
+      }
+      if String::length(target) > 0 {
+        Array::push(out, (target, handled, via, key))
+      } else {
+        ()
+      }
+      let mut k = 0
+      while k < Array::length(args) {
+        let arg = Array::get(args, k)
+        let arg_via = if String::length(target) > 0 {
+          let inner = array_empty()
+          for step in via {
+            Array::push(inner, step)
+          }
+          Array::push(inner, (target, k))
+          inner
+        } else {
+          via
+        }
+        collect_arg_records(arg, handled, arg_via, via, scope, out)
+        k = k + 1
+      }
+      ()
+    },
+    ELet(name, value, body, _) => {
+      let entry = let_scope_entry(name, value, handled, via, scope, out)
+      collect_call_records(body, handled, via, scope_with(scope, entry), out)
+    },
+    ELetMut(name, value, body, _) => {
+      // The initial value is read like a `let` one: an alias names its source,
+      // and a lambda is read where the name is used (Codex on #3409: `let mut
+      // cb = () -> mk(); 0` charged `mk`). A value assigned later is read at
+      // the assignment (`EAssign`).
+      let entry = let_scope_entry(name, value, handled, via, scope, out)
+      collect_call_records(body, handled, via, scope_with(scope, entry), out)
+    },
+    EAssign(_, value, body, _) => {
+      // A function or bound lambda assigned to a mutable binding can be called
+      // through it from anywhere after this point, so it is read here, called
+      // or not (Codex on #3409: `cb = mk; cb()`).
+      match value {
+        EIdent(x, _) => {
+          let bound = scope_resolve(scope, x)
+          if is_bound_lambda_marker(bound) {
+            run_bound_lambda(bound, handled, via, out)
+          } else if String::length(bound) > 0 {
+            Array::push(out, (bound, handled, via, ""))
+          } else {
+            ()
+          }
+        },
+        _ => collect_call_records(value, handled, via, scope, out)
+      }
+      collect_call_records(body, handled, via, scope, out)
+    },
+    ELetRec(name, value, body) => {
+      let entry = letrec_scope_entry(name, value, handled, via, scope, out)
+      collect_call_records(body, handled, via, scope_with(scope, entry), out)
+    },
+    EFn(_, _, _, _, _, _) => collect_runnable_records(expr, handled, via, scope, out),
+    EIdent(x, _) => {
+      let bound = scope_resolve(scope, x)
+      if is_bound_lambda_marker(bound) {
+        run_bound_lambda(bound, handled, via, out)
+      } else {
+        ()
+      }
+    },
+    _ => {
+      for child in expr_children(expr) {
+        collect_call_records(child, handled, via, scope, out)
+      }
+      ()
+    }
+  }
+}
+
+/// A lambda bound by `let name = lambda` runs where `name` is used, so it is
+/// not read where it is bound. Its binding carries a marker into the scope
+/// (`bound_lambda_marker`), and each use reads the lambda's body in the scope
+/// it was written in: passed as the argument at index k of a named call, under
+/// that (callee, k), as an inline lambda argument is (Codex on #3409: `let cb
+/// = () -> mk(); run(cb)` with a `run` that handles its callback's `Box`
+/// charged `mk` to the binder); any other use (a direct call, a store, a
+/// return) where it is used. The callee is resolved in the scope of the use,
+/// so a local binding that shadows a top-level consumer is not taken for it.
+/// A lambda the body never names cannot run and is not read.
+let bound_lambda_cell = [bound_lambda_table()]
+
+fn bound_lambda_table() -> Array[(String, Expr, Array[(String, String)])] {
+  array_empty()
+}
+
+fn bound_lambda_marker(lambda: Expr, scope: Array[(String, String)]) -> String {
+  let table = Array::get(bound_lambda_cell, 0)
+  let marker = String::concat("#lambda:", __to_string(Array::length(table)))
+  Array::push(table, (marker, lambda, scope))
+  marker
+}
+
+fn is_bound_lambda_marker(target: String) -> Bool {
+  String::starts_with(target, "#lambda:")
+}
+
+/// A `let rec` lambda's marker: its own name is in the scope its body is
+/// read in, bound to the marker itself.
+fn bound_lambda_rec_marker(name: String, lambda: Expr, scope: Array[(String, String)]) -> String {
+  let table = Array::get(bound_lambda_cell, 0)
+  let marker = String::concat("#lambda:", __to_string(Array::length(table)))
+  Array::push(table, (marker, lambda, scope_with(scope, (name, marker))))
+  marker
+}
+
+/// The markers whose bodies are being read, so a lambda that reaches itself
+/// (a `let rec`, or one bound lambda calling another that calls it back) is
+/// read once.
+let bound_lambda_active_cell = [bound_lambda_active_empty()]
+
+fn bound_lambda_active_empty() -> Array[String] {
+  array_empty()
+}
+
+fn run_bound_lambda(marker: String, handled: Array[String], via: Array[(String, Int)], out: Array[(String, Array[String], Array[(String, Int)], String)]) -> Unit {
+  let active = Array::get(bound_lambda_active_cell, 0)
+  if !checker_effects_string_has(active, marker) {
+    for entry in Array::get(bound_lambda_cell, 0) {
+      let (m, lambda, def_scope) = entry
+      if m == marker {
+        Array::push(active, marker)
+        collect_runnable_records(lambda, handled, via, def_scope, out)
+        Array::truncate(active, Array::length(active) - 1)
+      } else {
+        ()
+      }
+    }
+  } else {
+    ()
+  }
+  ()
+}
+
+/// A call's argument. Where its value is a function -- a lambda, a bound
+/// lambda's or a function's name, or an `if` / `match` / sequence / `let`
+/// block whose result is one -- that function is read under the call's
+/// (callee, k) (`arg_via`), as the callee is the one that runs it (Codex on
+/// #3409: `run(if c { () -> mk() } else { .. })`, `run({ let cb = () -> mk();
+/// cb })`, `pass(mk)`). Everything that runs before the call (a condition, a
+/// scrutinee, the head of a sequence, a `let`'s value, any other expression)
+/// is read under `via`.
+fn collect_arg_records(arg: Expr, handled: Array[String], arg_via: Array[(String, Int)], via: Array[(String, Int)], scope: Array[(String, String)], out: Array[(String, Array[String], Array[(String, Int)], String)]) -> Unit {
+  match arg {
+    EFn(_, _, _, _, _, _) => collect_runnable_records(arg, handled, arg_via, scope, out),
+    EIdent(x, _) => {
+      let bound = scope_resolve(scope, x)
+      if is_bound_lambda_marker(bound) {
+        run_bound_lambda(bound, handled, arg_via, out)
+      } else if String::length(bound) > 0 {
+        // A function passed by name (`pass(mk)`) is run by the callee, so it
+        // is recorded as a call under the callee's context (Codex on #3409).
+        Array::push(out, (bound, handled, arg_via, ""))
+      } else {
+        ()
+      }
+    },
+    EIf(cond, then_e, else_e) => {
+      collect_call_records(cond, handled, via, scope, out)
+      collect_arg_records(then_e, handled, arg_via, via, scope, out)
+      collect_arg_records(else_e, handled, arg_via, via, scope, out)
+    },
+    EMatch(scrutinee, arms) => {
+      collect_call_records(scrutinee, handled, via, scope, out)
+      for arm in arms {
+        let (pat, arm_body) = arm
+        let bound = array_empty()
+        collect_pat_binds_into(pat, bound)
+        let mut inner = scope
+        for b in bound {
+          inner = scope_with(inner, (b, ""))
+        }
+        collect_arg_records(arm_body, handled, arg_via, via, inner, out)
+      }
+      ()
+    },
+    ESeq(first, rest) => {
+      collect_call_records(first, handled, via, scope, out)
+      collect_arg_records(rest, handled, arg_via, via, scope, out)
+    },
+    ELet(name, value, body, _) => {
+      let entry = let_scope_entry(name, value, handled, via, scope, out)
+      collect_arg_records(body, handled, arg_via, via, scope_with(scope, entry), out)
+    },
+    ELetMut(name, value, body, _) => {
+      let entry = let_scope_entry(name, value, handled, via, scope, out)
+      collect_arg_records(body, handled, arg_via, via, scope_with(scope, entry), out)
+    },
+    ELetRec(name, value, body) => {
+      let entry = letrec_scope_entry(name, value, handled, via, scope, out)
+      collect_arg_records(body, handled, arg_via, via, scope_with(scope, entry), out)
+    },
+    _ => collect_call_records(arg, handled, via, scope, out)
+  }
+}
+
+/// The scope entry a `let name = value` adds, reading `value` now unless it
+/// is an alias (the source it names) or a lambda (a marker; it is read where
+/// it is used).
+fn let_scope_entry(name: String, value: Expr, handled: Array[String], via: Array[(String, Int)], scope: Array[(String, String)], out: Array[(String, Array[String], Array[(String, Int)], String)]) -> (String, String) {
+  match dh_value_alias_name(value) {
+    Some(src) => (name, scope_resolve(scope, src)),
+    None => match value {
+      EFn(_, _, _, _, _, _) => (name, bound_lambda_marker(value, scope)),
+      _ => {
+        collect_call_records(value, handled, via, scope, out)
+        (name, "")
+      }
+    }
+  }
+}
+
+/// The name a `let rec name = src` alias resolves to; a binding that names
+/// itself resolves to nothing.
+fn letrec_alias_target(src: String, name: String, scope: Array[(String, String)]) -> String {
+  if src == name {
+    ""
+  } else {
+    scope_resolve(scope, src)
+  }
+}
+
+/// The scope entry a `let rec name = value` adds. An alias names its source,
+/// resolved outside the binding, which cannot name itself (Codex on #3409:
+/// `let rec h = mk`). A recursive lambda gets a marker with its own name in
+/// its body's scope, and is read where it is used (`let rec cb = () -> mk();
+/// 0` charged `mk`). Any other value is read now, with the name in scope.
+fn letrec_scope_entry(name: String, value: Expr, handled: Array[String], via: Array[(String, Int)], scope: Array[(String, String)], out: Array[(String, Array[String], Array[(String, Int)], String)]) -> (String, String) {
+  match dh_value_alias_name(value) {
+    Some(src) => (name, letrec_alias_target(src, name, scope)),
+    None => match value {
+      EFn(_, _, _, _, _, _) => (name, bound_lambda_rec_marker(name, value, scope)),
+      _ => {
+        collect_runnable_records(value, handled, via, scope_with(scope, (name, "")), out)
+        (name, "")
+      }
+    }
+  }
+}
+
+/// Each arm's body, with the names its pattern binds in scope.
+fn collect_arm_records(arms: Array[(Pat, Expr)], handled: Array[String], via: Array[(String, Int)], scope: Array[(String, String)], out: Array[(String, Array[String], Array[(String, Int)], String)]) -> Unit {
+  for arm in arms {
+    let (pat, arm_body) = arm
+    let bound = array_empty()
+    collect_pat_binds_into(pat, bound)
+    let mut inner = scope
+    for b in bound {
+      inner = scope_with(inner, (b, ""))
+    }
+    collect_call_records(arm_body, handled, via, inner, out)
+  }
+  ()
+}
+
+/// The calls a function value makes when it runs: a lambda's body with its
+/// parameters in scope, else whatever `expr` calls on its own.
+fn collect_runnable_records(expr: Expr, handled: Array[String], via: Array[(String, Int)], scope: Array[(String, String)], out: Array[(String, Array[String], Array[(String, Int)], String)]) -> Unit {
+  match expr {
+    EFn(_, _, params, _, _, fbody) => {
+      let mut inner = scope
+      for param in params {
+        let (pname, _) = param
+        inner = scope_with(inner, (effect_param_base_name(pname), ""))
+      }
+      collect_call_records(fbody, handled, via, inner, out)
+    },
+    _ => collect_call_records(expr, handled, via, scope, out)
+  }
+}
+
+/// The top-level name a call of `name` reaches, or "" when a local binding
+/// that is not an alias of one shadows it.
+fn scope_resolve(scope: Array[(String, String)], name: String) -> String {
+  let mut i = Array::length(scope) - 1
+  let mut found = name
+  let mut looking = true
+  while looking && i >= 0 {
+    let (bound, target) = Array::get(scope, i)
+    if bound == name {
+      found = target
+      looking = false
+    } else {
+      ()
+    }
+    i = i - 1
+  }
+  found
+}
+
+fn scope_with(scope: Array[(String, String)], entry: (String, String)) -> Array[(String, String)] {
+  let out = array_empty()
+  for item in scope {
+    Array::push(out, item)
+  }
+  Array::push(out, entry)
+  out
+}
+
+fn checker_effects_string_has(xs: Array[String], x: String) -> Bool {
+  let mut found = false
+  for item in xs {
+    if item == x {
+      found = true
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+/// #3408: the row a call of the local binding `name` requires, with each bare
+/// generic-effect label (`Box`) replaced by the instantiation its body fixed,
+/// when the checked type in `env` publishes one (`Box[Int]`). A bare row
+/// leaves the payload to the body, and the checker publishes what the body
+/// performed (`strip_effect_inst_labels`); the declaration's text does not
+/// say it. Read from the text alone, a `with Box` callee was covered by a
+/// caller's `with Box[String]` by base name, and its `perform Box::Put(12345)`
+/// reached that caller's `String` handler. A label whose payload the body
+/// left open stays bare, and so does every label a written row spells.
+fn bare_rows_with_published_payload(declared: Array[String], env: TypeEnv, name: String) -> Array[String] {
+  let mut bare = false
+  for label in declared {
+    if String::index_of(label, "[") < 0 {
+      bare = true
+    } else {
+      ()
+    }
+  }
+  if !bare {
+    declared
+  } else {
+    let (published, _) = env_binding_effects(env, name)
+    let out = array_empty()
+    for label in declared {
+      let mut replaced = label
+      if String::index_of(label, "[") < 0 {
+        let mut matches = 0
+        for candidate in published {
+          let bi = String::index_of(candidate, "[")
+          if bi > 0 && String::substring(candidate, 0, bi) == label {
+            matches = matches + 1
+            replaced = candidate
+          } else {
+            ()
+          }
+        }
+        if matches != 1 {
+          replaced = label
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      Array::push(out, replaced)
+    }
+    out
   }
 }
 

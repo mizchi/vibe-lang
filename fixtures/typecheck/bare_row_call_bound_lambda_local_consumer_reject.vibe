@@ -1,0 +1,28 @@
+// #3408 (Codex on #3409): `run(cb)` calls the LOCAL `run`, which forwards
+// `cb`'s `Box[Int]`, not the top-level `run`, which handles it. The use is
+// resolved in its own scope, so `mid` requires `Box[Int]` and a
+// `Box[String]` caller is refused.
+effect Box[T] {
+  Put(T) -> Int
+}
+fn mk() -> Int with Box {
+  perform Box::Put(12345)
+}
+fn run(f: () -> Int with Box[Int]) -> Int {
+  handle {
+    f()
+  } with { Box::Put(n) => resume(n + 1) }
+}
+fn mid() -> Int with Box {
+  let cb = () -> mk()
+  let run = (f: () -> Int with Box[Int]) -> Int with Box[Int] { f() }
+  run(cb)
+}
+fn caller() -> Int with Box[String] {
+  mid()
+}
+fn main() -> Int {
+  handle {
+    caller()
+  } with { Box::Put(s) => resume(String::length(s)) }
+}
