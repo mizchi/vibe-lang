@@ -1,7 +1,7 @@
 // lib/@vibe/compiler/lowering/effects/evidence/evidence.vibe — ecall arg idents expr.
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeExpr, builtin_shadow_source_name, expr_children
+  Expr, Pat, Stmt, TypeExpr, builtin_shadow_source_name, expr_children, is_runtime_scheduled_effect
 }
 
 import @vibe/core {
@@ -269,6 +269,38 @@ fn edp_literal_calls_local(lit: Expr, body: Expr, scope: Array[String]) -> Bool 
   found
 }
 
+/// Can a literal at a slot with this row be given it? Only when every label
+/// is a concrete effect. A row variable (`TaskGroup::run`'s `with e`) is
+/// admitted by the argument-inertness rule when the literal has no row of its
+/// own (`edp_argcond_admits`), and the callee passes no dict through it, so a
+/// stamp would only refuse the call. A runtime-scheduled effect (`Async`)
+/// belongs to the suspend lane, which lowers it before this pass
+/// (`TaskGroup::spawn_suspend`).
+fn edp_slot_row_stampable(row: String) -> Bool {
+  let mut ok = String::length(String::trim(row)) > 0
+  for item in String::split(row, "+") {
+    for part in String::split(item, ",") {
+      let label = String::trim(part)
+      let bracket = String::index_of(label, "[")
+      let head = if bracket > 0 {
+        String::substring(label, 0, bracket)
+      } else {
+        label
+      }
+      if String::length(head) == 0 {
+        ()
+      } else if String::byte_at(head, 0) >= 97 && String::byte_at(head, 0) <= 122 {
+        ok = false
+      } else if is_runtime_scheduled_effect(head) {
+        ok = false
+      } else {
+        ()
+      }
+    }
+  }
+  ok
+}
+
 /// The arity and row of the function type a top-level function's parameter
 /// `pos` declares, when that type carries a row.
 fn edp_slot_fn_type(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], callee: String, pos: Int) -> Option[(Int, String)] {
@@ -276,7 +308,7 @@ fn edp_slot_fn_type(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String,
     Some(params) => if pos < Array::length(params) {
       let (_, pty) = Array::get(params, pos)
       match pty {
-        Some(TyFn(ptys, _, Some(row))) => if String::length(String::trim(row)) > 0 {
+        Some(TyFn(ptys, _, Some(row))) => if edp_slot_row_stampable(row) {
           Some((Array::length(ptys), row))
         } else {
           None
@@ -314,7 +346,7 @@ fn edp_slot_row(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Opt
     Some(params) => if pos < Array::length(params) {
       let (_, pty) = Array::get(params, pos)
       match pty {
-        Some(TyFn(_, _, Some(row))) => if String::length(String::trim(row)) > 0 {
+        Some(TyFn(_, _, Some(row))) => if edp_slot_row_stampable(row) {
           Some(row)
         } else {
           None
