@@ -516,6 +516,122 @@ export fn collect_labeled_check_fns(stmts: Array[Stmt]) -> Array[(String, Array[
   out
 }
 
+/// #3120: per top-level `fn`, which parameters carry a default. The parser
+/// lowers `x: T = d` onto the optional `x?: Option[T]` and opens the body with
+/// `let x: T = match x { Some(x) => x, None => d }` (ascribed), so a default is
+/// recognised by that prefix. Rebuilt by `collect_defaulted_param_fns` for
+/// each pre-desugar validation run.
+let defaulted_param_tbl: Array[(String, Array[Bool])] = []
+
+fn defaulted_unwrap_name(e: Expr) -> Option[(String, Expr)] {
+  match e {
+    ELet(n, ECall(EFn(_, _, aparams, _, _, EIdent(abody, _)), cargs, _, _), rest, _) => if abody == "__asc" && Array::length(aparams) == 1 && Array::length(cargs) == 1 {
+      match Array::get(cargs, 0) {
+        EMatch(EIdent(m, _), _) => if m == n {
+          Some((n, rest))
+        } else {
+          None
+        },
+        _ => None
+      }
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
+export fn collect_defaulted_param_fns(stmts: Array[Stmt]) -> Unit {
+  Array::truncate(defaulted_param_tbl, 0)
+  for stmt in stmts {
+    match stmt {
+      SLet(_, _, fname, _, EFn(_, _, params, _, _, body)) => {
+        let flags: Array[Bool] = []
+        for param in params {
+          let _ = param
+          Array::push(flags, false)
+        }
+        let mut any = false
+        let mut cur = body
+        let mut more = true
+        while more {
+          match defaulted_unwrap_name(cur) {
+            Some((n, rest)) => {
+              let mut pi = 0
+              while pi < Array::length(params) {
+                let (pn, _) = Array::get(params, pi)
+                if pn == String::concat(n, "?") {
+                  Array::set(flags, pi, true)
+                  any = true
+                } else {
+                  ()
+                }
+                pi = pi + 1
+              }
+              cur = rest
+            },
+            None => {
+              more = false
+            }
+          }
+        }
+        if any {
+          Array::push(defaulted_param_tbl, (fname, flags))
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+  }
+  ()
+}
+
+fn syntactic_option_arg(e: Expr) -> Bool {
+  match e {
+    EIdent(n, _) => n == "None",
+    ECall(EIdent(n, _), cargs, _, _) => n == "Some" && Array::length(cargs) == 1,
+    _ => false
+  }
+}
+
+/// #3120 (Codex on #3438): the call-site lowering leaves a written `None` /
+/// `Some(..)` unwrapped, because for `x?: T` it already IS the `Option` the
+/// parameter takes. For a DEFAULTED parameter the `Option` is hidden, so a
+/// written `None` would read as "omitted" and run the default: `f(None)` for
+/// `x: Option[Int] = Some(1)` answered `Some(1)`. Refused here, before the
+/// lowering, where only what the program wrote is visible.
+fn defaulted_explicit_option_check(fname: String, fname_off: Int, args: Array[Expr], errors: Array[String]) -> Unit {
+  let mut flags_opt = None
+  for row in defaulted_param_tbl {
+    let (n, flags) = row
+    if n == fname {
+      flags_opt = Some(flags)
+    } else {
+      ()
+    }
+  }
+  match flags_opt {
+    Some(flags) => {
+      let mut ai = 0
+      while ai < Array::length(args) {
+        let value = match Array::get(args, ai) {
+          ELabeledArg(_, _, v) => v,
+          other => other
+        }
+        if ai < Array::length(flags) && Array::get(flags, ai) && syntactic_option_arg(value) {
+          let marker = labeled_name_marker(fname_off, String::length(fname))
+          Array::push(errors, String::concat("argument ", String::concat(__to_string(ai + 1), String::concat(" of ", String::concat(fname, String::concat(" is a written `None` / `Some(..)` for a parameter with a default, which would read as an omitted argument; bind the value first (`let v: T = None`) and pass `v`, or omit the argument to use the default", marker))))))
+        } else {
+          ()
+        }
+        ai = ai + 1
+      }
+    },
+    None => ()
+  }
+}
+
 fn lookup_labeled_check_fn(tbl: Array[(String, Array[String])], fname: String) -> Option[Array[String]] {
   let mut i = 0
   let mut found = None
@@ -669,6 +785,11 @@ export fn labeled_name_check_expr(e: Expr, tbl: Array[(String, Array[String])], 
       }
       match callee {
         EIdent(fname, fname_off) => {
+          if pre_desugar && !labeled_walk_shadowed(shadows, fname) {
+            defaulted_explicit_option_check(fname, fname_off, args, errors)
+          } else {
+            ()
+          }
           let mut has_labeled = false
           let mut li = 0
           while li < Array::length(args) {

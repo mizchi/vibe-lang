@@ -220,8 +220,32 @@ export let two: () -> Int = () -> { f(x = 1, y = 2) }
 
 `x~` is a required labeled parameter. A call site is either ALL positional or
 ALL labeled; mixing them is rejected ("call to f mixes positional and labeled
-arguments"). Default values in parameter lists are not part of the current
-surface syntax.
+arguments"). A labeled parameter cannot carry a default yet.
+
+A typed `fn` parameter may carry a **default** (#3120). The body sees the
+declared type, and an omitted trailing argument evaluates the default in the
+callee on each call:
+
+```vibe
+fn greet(name: String, times: Int = 1) -> String {
+  "\{name} x\{times}"
+}
+
+export let g1: () -> String = () -> { greet("hi") }
+export let g2: () -> String = () -> { greet("hi", 3) }
+```
+
+- It is lowered onto the optional parameter below: the parameter is declared
+  `times?: Option[Int]`, and the body opens with
+  `let times: Int = match times { Some(times) => times, None => 1 }`.
+- A default may read the parameters BEFORE it; naming itself or a later
+  parameter is refused, since those are still the call site's `Option` then.
+- Only trailing parameters can default. A lambda, a `.vpkg` contract
+  declaration, an `= wasm` body, a labeled (`x~`) or optional (`x?`)
+  parameter cannot carry one, and a default cannot yet be combined with a
+  `where` contract.
+- A written `None` / `Some(..)` passed to a defaulted parameter is refused: it
+  would read as an omitted argument. Bind the value first and pass the name.
 
 `x?` is an optional parameter (#1500). It is declared at type `Option[T]` and
 the call site may omit it:
