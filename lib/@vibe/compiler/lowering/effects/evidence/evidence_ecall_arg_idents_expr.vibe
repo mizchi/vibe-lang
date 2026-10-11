@@ -371,9 +371,16 @@ fn edp_slot_fn_type(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String,
 fn edp_slot_wrapper(name: String, arity: Int, row: String) -> Expr {
   let params: Array[(String, Option[TypeExpr])] = []
   let args: Array[Expr] = []
+  // The parameters must not shadow `name` inside the wrapper; a function
+  // spelled with the usual prefix gets the other one (Codex on #3426).
+  let prefix = if String::starts_with(name, "__edpw_") {
+    "__edpx_"
+  } else {
+    "__edpw_"
+  }
   let mut k = 0
   while k < arity {
-    let pn = String::concat("__edpw_", Int::to_string(k))
+    let pn = String::concat(prefix, Int::to_string(k))
     Array::push(params, (pn, None))
     Array::push(args, EIdent(pn, 0 - 1))
     k = k + 1
@@ -754,9 +761,7 @@ fn edp_stamp_slot_arg(a: Expr, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bo
           None => a
         }
       },
-      // A function spelled with the wrapper's own parameter prefix would be
-      // shadowed inside the wrapper, so it is left as written.
-      EIdent(an, _) => if MutSet::has(pure_names, an) && !edp_scope_has(scope, an) && !String::starts_with(an, "__edpw_") {
+      EIdent(an, _) => if MutSet::has(pure_names, an) && !edp_scope_has(scope, an) {
         match edp_slot_fn_type(stmts, fn_defs, callee, pos) {
           Some((arity, row)) => edp_slot_wrapper(an, arity, row),
           None => a
