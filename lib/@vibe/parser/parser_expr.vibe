@@ -32,6 +32,7 @@ import ./parser_base.vibe {
   parse_enum_stmt,
   parse_impl_stmt_dispatch,
   parse_import_item,
+  parse_one_param_with_binder_context,
   parse_param_list,
   parse_param_list_with_binder_context,
   parse_pattern,
@@ -815,11 +816,112 @@ fn parse_fn_name(tokens: Array[Token], pos: Int, context: Option[ParserBinderCon
   }
 }
 
-fn parse_fn_signature_with_binder_context(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext], contract_rows: Option[(ArrayBuilder[SourceBinder], ArrayBuilder[SourceBinder])]) -> ((String, Array[String], Array[(String, Array[String])]), (Array[(String, Option[TypeExpr])], TypeExpr, Option[String]), (Array[Expr], Array[Expr]), Int) with Exception {
+/// #3120: a `fn` declaration's parameter list, where a typed parameter may
+/// carry a default -- `times: Int = 1`. `parse_one_param_with_binder_context`
+/// already turned such a parameter into the optional `times?: Option[Int]`
+/// (#1500) and stopped at the `=`; this reads the default expression and
+/// returns it beside the parameter's bare name. `fn_param_defaults_wrap`
+/// unwraps the parameter at the top of the body.
+fn parse_fn_param_list_with_defaults(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (Array[(String, Option[TypeExpr])], Array[(String, TypeExpr, Expr)], Int) with Exception {
+  let params: Array[(String, Option[TypeExpr])] = []
+  let defaults: Array[(String, TypeExpr, Expr)] = []
+  match peek(tokens, pos) {
+    TRParen => (params, defaults, pos + 1),
+    _ => {
+      let mut p = pos
+      let mut done = false
+      while !done {
+        let (param, pn) = parse_one_param_with_binder_context(tokens, p, context)
+        Array::push(params, param)
+        let after = match peek(tokens, pn) {
+          TEq => {
+            let (pname, pty) = param
+            let base = pname[0: String::length(pname) - 1]
+            // The parameter is `Option[T]`; the body binds `T`.
+            let declared = match pty {
+              Some(TyApp(_, args)) => Array::get(args, 0),
+              Some(other) => other,
+              None => throw("parameter '\{base}' has a default but no type")
+            }
+            let (dflt, dn) = parse_impl_with_binder_context(tokens, [], pn + 1, 0, context)
+            Array::push(defaults, (base, declared, dflt))
+            dn
+          },
+          _ => {
+            let (pname, _) = param
+            let pl = String::length(pname)
+            if Array::length(defaults) > 0 && !(pl > 0 && pname[pl - 1: pl] == "?") {
+              throw("parameter '\{pname}' follows a parameter with a default, so it must have a default too (an omitted argument can only be a trailing one)")
+            } else {
+              ()
+            }
+            pn
+          }
+        }
+        match peek(tokens, after) {
+          TComma => match peek(tokens, after + 1) {
+            TRParen => {
+              p = after + 2
+              done = true
+            },
+            _ => {
+              p = after + 1
+            }
+          },
+          TRParen => {
+            p = after + 1
+            done = true
+          },
+          _ => {
+            let actual = tk_name(peek(tokens, after))
+            throw("expected ',' or ')' in param list at #\{after} token=\{actual}")
+          }
+        }
+      }
+      (params, defaults, p)
+    }
+  }
+}
+
+/// The identity `(__asc: T) -> __asc` a written `let x: T = e` parses to
+/// (`ascribe_wrap`): the checker enforces `e : T` at the call.
+fn param_default_ascription(declared: TypeExpr) -> Expr {
+  EFn(_no_tp(), _no_tb(), [("__asc", Some(declared))], None, None, EIdent("__asc", 0 - 1))
+}
+
+/// #3120: unwrap each defaulted parameter at the top of the body, in
+/// declaration order, so a default may read the parameters before it:
+/// `let times: T = match times { Some(times) => times, None => <default> }`.
+/// The body then sees `T`, never the `Option[T]` the call site passes. The
+/// `let` carries the declared type (the same ascription a written
+/// `let x: T = e` parses to), so a default of the wrong type is reported
+/// against `T`, and every later pass reads `T` for the name rather than the
+/// parameter's `Option[T]` (#3434).
+fn fn_param_defaults_wrap(body: Expr, defaults: Array[(String, TypeExpr, Expr)]) -> Expr {
+  let mut out = body
+  let mut i = Array::length(defaults)
+  while i > 0 {
+    i = i - 1
+    let (name, declared, dflt) = Array::get(defaults, i)
+    // The default is ascribed on its own as well, so a default of the wrong
+    // type is reported at the default ("expected Int, got String") rather
+    // than as two match arms that disagree.
+    let unwrap = EMatch(EIdent(name, 0 - 1), [
+      (PCtor("Some", [PBind(name)]), EIdent(name, 0 - 1)),
+      (PCtor("None", []), ECall(param_default_ascription(declared), [dflt], 0 - 1, [
+      ]))
+    ])
+    out = ELet(name, ECall(param_default_ascription(declared), [unwrap], 0 - 1, [
+    ]), out, 0 - 1)
+  }
+  out
+}
+
+fn parse_fn_signature_with_binder_context(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext], contract_rows: Option[(ArrayBuilder[SourceBinder], ArrayBuilder[SourceBinder])]) -> ((String, Array[String], Array[(String, Array[String])]), (Array[(String, Option[TypeExpr])], TypeExpr, Option[String]), (Array[Expr], Array[Expr]), Array[(String, TypeExpr, Expr)], Int) with Exception {
   let (name, name_next) = parse_fn_name(tokens, pos, context)
   let (tps, tbs, after_gen) = parse_value_bracket_header(tokens, name_next, context)
   let lp = expect_tk(tokens, after_gen, "(")
-  let (params, after_params) = parse_param_list_with_binder_context(tokens, lp, context)
+  let (params, param_defaults, after_params) = parse_fn_param_list_with_defaults(tokens, lp, context)
   let mut pi = 0
   while pi < Array::length(params) {
     let param = Array::get(params, pi)
@@ -922,11 +1024,27 @@ fn parse_fn_signature_with_binder_context(tokens: Array[Token], pos: Int, contex
   } else {
     ()
   }
-  ((name, tps, tbs), (params, ret_ty, eff_opt), (reqs, enss), where_next)
+  // #3120: a `where` contract's conditions run before the body, where a
+  // defaulted parameter is still the `Option` the call site passed. Refused
+  // until the contract lowering learns to run after the unwrap.
+  if Array::length(param_defaults) > 0 && (Array::length(reqs) > 0 || Array::length(enss) > 0) {
+    throw("`fn \{name}` combines a parameter default with a `where` contract, which is not supported yet; declare the parameter `x?: T` and match on the `Option`, or drop the contract")
+  } else {
+    ()
+  }
+  ((name, tps, tbs), (params, ret_ty, eff_opt), (reqs, enss), param_defaults, where_next)
 }
 
 export fn parse_fn_signature(tokens: Array[Token], pos: Int) -> ((String, Array[String], Array[(String, Array[String])]), (Array[(String, Option[TypeExpr])], TypeExpr, Option[String]), (Array[Expr], Array[Expr]), Int) with Exception {
-  parse_fn_signature_with_binder_context(tokens, pos, None, None)
+  let (head, sig, contracts, defaults, next) = parse_fn_signature_with_binder_context(tokens, pos, None, None)
+  // #3120: a bodyless declaration (a `.vpkg` contract) has no body to run a
+  // default in; the implementation owns it.
+  if Array::length(defaults) > 0 {
+    let (fname, _, _) = head
+    throw("the declaration of `\{fname}` gives a parameter default, which only a `fn` with a body can carry; declare the parameter `x?: T` here")
+  } else {
+    (head, sig, contracts, next)
+  }
 }
 
 /// ADR-0069 Phase 1: `fn main { ... }` / `fn main allows Fs { ... }` — the ONE
@@ -1078,7 +1196,7 @@ fn parse_fn_stmt_general(tokens: Array[Token], starts: Array[Int], pos: Int, exp
     Some(_) => Some((ArrayBuilder::new(), ArrayBuilder::new())),
     None => None
   }
-  let (head, sig, contracts, where_next) = parse_fn_signature_with_binder_context(tokens, pos, context, contract_rows)
+  let (head, sig, contracts, param_defaults, where_next) = parse_fn_signature_with_binder_context(tokens, pos, context, contract_rows)
   let (name, tps, tbs) = head
   let (params, ret_ty, eff_opt) = sig
   let (reqs, enss) = contracts
@@ -1090,12 +1208,15 @@ fn parse_fn_stmt_general(tokens: Array[Token], starts: Array[Int], pos: Int, exp
     },
     _ => false
   }
-  if is_wasm_body {
+  if is_wasm_body && Array::length(param_defaults) > 0 {
+    throw("`fn \{name}` gives a parameter default, which an `= wasm` body cannot run; declare the parameter `x?: T`")
+  } else if is_wasm_body {
     parse_fn_wasm_body(tokens, where_next + 2, exported, name, tps, tbs, params, ret_ty, eff_opt, reqs, enss, context)
   } else {
     let br = expect_tk(tokens, where_next, "{")
     let body_mark = binder_capture_mark(context)
-    let (body, end) = parse_impl_with_binder_context(tokens, starts, br, mode_block, context)
+    let (parsed_body, end) = parse_impl_with_binder_context(tokens, starts, br, mode_block, context)
+    let body = fn_param_defaults_wrap(parsed_body, param_defaults)
     match contract_rows {
       Some((req_out, ens_out)) => {
         let body_rows = binder_capture_take_from(context, body_mark)

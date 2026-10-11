@@ -1711,7 +1711,7 @@ fn optional_param_type(ty: TypeExpr, is_optional: Bool) -> TypeExpr {
   }
 }
 
-fn parse_one_param_with_binder_context(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> ((String, Option[TypeExpr]), Int) with Exception {
+export fn parse_one_param_with_binder_context(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> ((String, Option[TypeExpr]), Int) with Exception {
   let ((name, ty), next) = match peek(tokens, pos) {
     TIdent(name) => {
       match peek(tokens, pos + 1) {
@@ -1771,7 +1771,22 @@ fn parse_one_param_with_binder_context(tokens: Array[Token], pos: Int, context: 
             },
             _ => tp
           }
-          ((name, Some(ty)), tp2)
+          match peek(tokens, tp2) {
+            // #3120: `name: T = default`. The parameter becomes the optional
+            // `name?: Option[T]` (#1500), so call sites, the checker and
+            // codegen see exactly what `name?: T` gives them; the `fn`
+            // declaration parser reads the default expression at `tp2` and
+            // unwraps the parameter at the top of the body. The binder row
+            // captured above names `name`, not `name?`, and the body gains
+            // synthetic binders, so this declaration takes the
+            // capture-ineligible path rather than hand misaligned rows to the
+            // binder authority.
+            TEq => {
+              binder_capture_mark_ineligible(context)
+              (("\{name}?", Some(optional_param_type(ty, true))), tp2)
+            },
+            _ => ((name, Some(ty)), tp2)
+          }
         },
         _ => {
           binder_capture_source(context, name, pos, pos)
@@ -1800,6 +1815,9 @@ fn parse_param_cont_with_binder_context(tokens: Array[Token], pos: Int, b: Array
       }
     },
     TRParen => (ArrayBuilder::freeze(b), pos + 1),
+    // #3120: only a `fn` declaration reads a default; a lambda's parameter
+    // list ends here.
+    TEq => throw("a parameter default (`x: T = value`) is allowed only on a `fn` declaration; for a lambda, declare `x?: T` and match on the `Option`"),
     _ => {
       let actual = tk_name(peek(tokens, pos))
       throw("expected ',' or ')' in param list at #\{pos} token=\{actual}")
