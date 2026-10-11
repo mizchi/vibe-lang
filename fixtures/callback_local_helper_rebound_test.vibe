@@ -1,0 +1,34 @@
+// #3424: a literal at a row-typed parameter that calls a local closure is
+// given a copy of that closure's binding. The copy must read the bindings the
+// original reads: here a name the closure mentions is rebound between the
+// closure and the literal, and by an enclosing parameter.
+effect Box[T] {
+  Put(T) -> Int
+}
+
+fn run_str(f: () -> Int with Box[String]) -> Int {
+  handle {
+    f()
+  } with {
+    Box::Put(s) => resume(String::length(s))
+  }
+}
+
+fn rebound() -> Int {
+  let k = 1
+  let helper = () -> k
+  let k = 2
+  run_str(() -> helper() * 10 + k)
+}
+
+fn param_clash() -> Int {
+  let k = 7
+  let helper = () -> k
+  let run_k = (k: Int) -> run_str(() -> helper() + k)
+  run_k(100)
+}
+
+test "a copied local closure keeps its own bindings" {
+  inspect(rebound(), "12")
+  inspect(param_clash(), "107")
+}
