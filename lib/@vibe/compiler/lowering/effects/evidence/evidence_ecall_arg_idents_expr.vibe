@@ -516,7 +516,11 @@ fn edp_stamp_let_literal(name: String, v: Expr, body: Expr, stmts: Array[Stmt], 
       let total = edp_count_ident_uses(body, name)
       let rows: Array[String] = []
       let callees: Array[String] = []
-      edp_slot_uses_of(body, name, stmts, fn_defs, scope, rows, callees)
+      // The scan below does not track scopes, so a callee any binder in
+      // `body` spells is taken to be that local, not the top-level function
+      // (Codex on #3426).
+      let inner = edp_collect_program_binders([SExpr(body)])
+      edp_slot_uses_of(body, name, stmts, fn_defs, scope, inner, rows, callees)
       if total > 0 && Array::length(rows) == total && edp_rows_agree(rows) {
         EFn(tps, tbs, ps, ret, Some(Array::get(rows, 0)), lb)
       } else {
@@ -547,14 +551,14 @@ fn edp_stamp_let_literal(name: String, v: Expr, body: Expr, stmts: Array[Stmt], 
 /// The slot rows of every use of `name` passed as an argument of a top-level
 /// function. A use at a slot with no stampable row records "" so it never
 /// agrees.
-fn edp_slot_uses_of(e: Expr, name: String, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], scope: Array[String], rows: Array[String], callees: Array[String]) -> Unit {
+fn edp_slot_uses_of(e: Expr, name: String, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], scope: Array[String], inner: MutSet[String], rows: Array[String], callees: Array[String]) -> Unit {
   let stack: Array[Expr] = [e]
   while Array::length(stack) > 0 {
     let n = Array::length(stack)
     let cur = Array::get(stack, n - 1)
     Array::truncate(stack, n - 1)
     match cur {
-      ECall(EIdent(cn, _), args, _, _) => if !edp_scope_has(scope, cn) && cn != name {
+      ECall(EIdent(cn, _), args, _, _) => if !edp_scope_has(scope, cn) && !MutSet::has(inner, cn) && cn != name {
         let mut labeled = false
         for a in args {
           match a {
@@ -726,26 +730,54 @@ fn edp_alias_fn_row(stmts: Array[Stmt], ty: TypeExpr) -> Option[String] {
   }
 }
 
-/// The function type a non-generic type alias names, when its row is
-/// concrete, or None.
+/// The function type a non-generic type alias names, directly or through
+/// other aliases, when its row is concrete, or None.
 fn edp_alias_fn_type(stmts: Array[Stmt], ty: TypeExpr) -> Option[TypeExpr] {
-  match ty {
-    TyName(alias) => {
-      let mut found: Option[TypeExpr] = None
-      for st in stmts {
-        match st {
-          STypeAlias(_, n, tparams, TyFn(ps, r, Some(row))) => if n == alias && Array::length(tparams) == 0 && edp_slot_row_stampable(row) {
-            found = Some(TyFn(ps, r, Some(row)))
-          } else {
-            ()
-          },
-          _ => ()
+  // An alias of an alias is followed, as the checker's
+  // `dh_expand_type_alias` does; the step bound stops a cycle (Codex on
+  // #3426).
+  let mut cur = ty
+  let mut out: Option[TypeExpr] = None
+  let mut steps = 0
+  let mut done = false
+  while !done && steps < 32 {
+    match cur {
+      TyName(alias) => {
+        let mut next: Option[TypeExpr] = None
+        for st in stmts {
+          match st {
+            STypeAlias(_, n, tparams, body) => if n == alias && Array::length(tparams) == 0 {
+              next = Some(body)
+            } else {
+              ()
+            },
+            _ => ()
+          }
         }
+        match next {
+          Some(TyFn(ps, r, Some(row))) => {
+            if edp_slot_row_stampable(row) {
+              out = Some(TyFn(ps, r, Some(row)))
+            } else {
+              ()
+            }
+            done = true
+          },
+          Some(TyName(n2)) => {
+            cur = TyName(n2)
+          },
+          _ => {
+            done = true
+          }
+        }
+      },
+      _ => {
+        done = true
       }
-      found
-    },
-    _ => None
+    }
+    steps = steps + 1
   }
+  out
 }
 
 /// `e` walked with `names` bound on top of `scope`.
