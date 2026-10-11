@@ -298,11 +298,6 @@ test("B2 expression helper bodies carry context without private duplicate wrappe
   // takes the builder-backed list parser, with the same context.
   assertContextual(exprSource, "parse_fn_param_list_with_defaults", [
     "parse_param_list_with_binder_context(tokens, pos, context)",
-    "parse_fn_param_list_defaulted(tokens, pos, context)",
-  ], [
-    "parse_param_list(tokens,",
-  ]);
-  assertContextual(exprSource, "parse_fn_param_list_defaulted", [
     "parse_one_param_with_binder_context(tokens, p, context)",
     "parse_impl_with_binder_context(tokens, [], pn + 1, 0, context)",
   ], [
