@@ -131,15 +131,45 @@ test "a method call anchors its argument through the prepended receiver (#2831)"
   assert(String::contains(first_diag(src), "line 5:11-17"))
 }
 
-test "an offset-less literal argument keeps the callee anchor (#2831)" {
-  // The OTHER half of #2831 -- `EInt` carries no offset slot -- is untouched
-  // here, and must stay untouched: the fallback is the callee, never a
-  // plausible-looking position invented for a node that has none.
+test "an offset-less literal argument is read back from the call's tokens (#3348)" {
+  // `EInt` still carries no offset slot, so the checker anchors the callee
+  // and names the argument's position; the locator reads that argument from
+  // the call's own tokens. It is the honest range, not an invented one: the
+  // source shows exactly the literal the AST holds there.
   //    123456789
-  //  `  takes(42)` -- `takes` is column 3; there is no offset for `42`.
+  //  `  takes(42)` -- `takes` is column 3, `42` columns 9-10.
   let src = "fn takes(s: String) -> Int { String::length(s) }\nfn f() -> Int {\n  takes(42)\n}\n"
   assert(String::contains(first_diag(src), "argument type mismatch for takes"))
-  assert(anchored_at(src, 3, 3))
+  assert(String::contains(first_diag(src), "line 3:9-11"))
+  // An array of scalars has no located element either.
+  //    12345678901234
+  //  `  sum([1, 2])` -- the literal is columns 7-12.
+  let arr = "fn sum(xs: Array[String]) -> Int { 0 }\nfn f() -> Int {\n  sum([1, 2])\n}\n"
+  assert(String::contains(first_diag(arr), "line 3:7-13"))
+  // The second argument, after a nested one.
+  //    1234567890123456789
+  //  `  two([1, 2], 1.5)` -- `1.5` is columns 15-17.
+  let second = "fn two(a: Array[Int], b: Int) -> Int { b }\nfn f() -> Int {\n  two([1, 2], 1.5)\n}\n"
+  assert(String::contains(first_diag(second), "line 3:15-18"))
+  // A tuple, a qualified callee and a bool.
+  //    123456789012345678
+  //  `  M::pair((1, 2))` -- the tuple is columns 11-16.
+  let tup = "fn M::pair(t: (String, Int)) -> Int { 0 }\nfn f() -> Int {\n  M::pair((1, 2))\n}\n"
+  assert(String::contains(first_diag(tup), "line 3:11-17"))
+}
+
+test "an offset-less literal argument the call's tokens do not show keeps the callee anchor (#3348)" {
+  // A pipe prepends an argument the parentheses do not show.
+  //    1234567890123
+  //  `  1 |> two(true)` -- `two` is column 8.
+  let piped = "fn two(a: Int, b: Int) -> Int { a + b }\nfn f() -> Int {\n  1 |> two(true)\n}\n"
+  assert(String::contains(first_diag(piped), "argument type mismatch for two"))
+  assert(anchored_at(piped, 3, 8))
+  // A negative literal is two tokens: no range is guessed for it.
+  //    1234567
+  //  `  takes(-1)` -- `takes` is column 3.
+  let neg = "fn takes(s: String) -> Int { 0 }\nfn f() -> Int {\n  takes(-1)\n}\n"
+  assert(anchored_at(neg, 3, 3))
 }
 
 test "a malformed require directive is located on its own line" {

@@ -265,6 +265,20 @@ assert rows[0]['range']['start'] == {'line': 4, 'character': 10}, rows[0]
 assert not (rows[0].get('data') or {}).get('synthetic'), rows[0]
 PY
 
+# #3348: a literal argument with no offset of its own (`EInt`) is read back
+# from the call's tokens on both lanes: `takes(42)` slices `42` (line 5,
+# characters 8-10), not the callee `takes` at character 2.
+printf 'fn takes(s: String) -> Int {\n  0\n}\nfn f() -> Int {\n  takes(42)\n}\n' > "$WORK/literal_arg.vibe"
+probe literal_arg 1
+python3 - "$WORK/literal_arg.fs.json" <<'PY' || bad "literal_arg: expected the literal argument's range at line 5"
+import json, sys
+rows = json.load(open(sys.argv[1]))
+assert len(rows) == 1, rows
+assert 'argument type mismatch for takes' in rows[0]['message'], rows[0]
+assert rows[0]['range']['start'] == {'line': 4, 'character': 8}, rows[0]
+assert rows[0]['range']['end'] == {'line': 4, 'character': 10}, rows[0]
+PY
+
 # #3369: a file with an import reports every diagnostic on the FS lane, as one
 # without does. The import-resolving checker threw only the first one. The
 # single-file lane cannot resolve the import, so only the FS lane is asked.
@@ -343,4 +357,4 @@ if grep -qF 'unlocated.vibe' "$WORK/unlocated.fs.json" 2>/dev/null; then
 fi
 
 [ "$fails" -eq 0 ] || exit 1
-echo "[check-json-parity] ok (14 probes: both lanes agree on diagnostics, exit code, and UTF-16 offsets)"
+echo "[check-json-parity] ok (15 probes: both lanes agree on diagnostics, exit code, and UTF-16 offsets)"
