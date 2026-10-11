@@ -523,59 +523,52 @@ export fn collect_labeled_check_fns(stmts: Array[Stmt]) -> Array[(String, Array[
 /// each pre-desugar validation run.
 let defaulted_param_tbl: Array[(String, Array[Bool])] = []
 
-fn defaulted_unwrap_name(e: Expr) -> Option[(String, Expr)] {
+fn defaulted_unwrap_scrutinee_is(e: Expr, n: String) -> Bool {
   match e {
+    EMatch(EIdent(m, _), _) => m == n,
+    _ => false
+  }
+}
+
+/// Mark in `flags` every parameter the parser's unwrap prefix of `cur`
+/// defaults; true when `cur` opens with at least one such unwrap. Recursive
+/// over the prefix rather than a `let mut` cursor, so no projection of the
+/// borrowed body outlives the match that reads it.
+fn defaulted_mark(cur: Expr, params: Array[(String, Option[TypeExpr])], flags: Array[Bool]) -> Bool {
+  match cur {
     // Only the parser's own unwrap: it alone carries the compiler-synthesized
     // offset on the `let`, so a program's `let x: T = match x { .. }` over an
     // `x?` parameter is not mistaken for a default.
-    ELet(n, ECall(EFn(_, _, aparams, _, _, EIdent(abody, _)), cargs, _, _), rest, loff) => if loff == builtin_ref_offset() && abody == "__asc" && Array::length(aparams) == 1 && Array::length(cargs) == 1 {
-      match Array::get(cargs, 0) {
-        EMatch(EIdent(m, _), _) => if m == n {
-          Some((n, rest))
+    ELet(n, ECall(EFn(_, _, aparams, _, _, EIdent(abody, _)), cargs, _, _), rest, loff) => if loff == builtin_ref_offset() && abody == "__asc" && Array::length(aparams) == 1 && Array::length(cargs) == 1 && defaulted_unwrap_scrutinee_is(Array::get(cargs, 0), n) {
+      let marker = String::concat(n, "?")
+      let mut pi = 0
+      while pi < Array::length(params) {
+        let (pn, _) = Array::get(params, pi)
+        if pn == marker {
+          Array::set(flags, pi, true)
         } else {
-          None
-        },
-        _ => None
+          ()
+        }
+        pi = pi + 1
       }
+      let _ = defaulted_mark(rest, params, flags)
+      true
     } else {
-      None
+      false
     },
-    _ => None
+    _ => false
   }
 }
 
 /// Which of `params` the parser defaulted, read off `body`'s unwrap prefix.
 fn defaulted_flags_of(params: Array[(String, Option[TypeExpr])], body: Expr) -> Option[Array[Bool]] {
   let flags: Array[Bool] = []
-  for param in params {
-    let _ = param
+  let mut pi = 0
+  while pi < Array::length(params) {
     Array::push(flags, false)
+    pi = pi + 1
   }
-  let mut any = false
-  let mut cur = body
-  let mut more = true
-  while more {
-    match defaulted_unwrap_name(cur) {
-      Some((n, rest)) => {
-        let mut pi = 0
-        while pi < Array::length(params) {
-          let (pn, _) = Array::get(params, pi)
-          if pn == String::concat(n, "?") {
-            Array::set(flags, pi, true)
-            any = true
-          } else {
-            ()
-          }
-          pi = pi + 1
-        }
-        cur = rest
-      },
-      None => {
-        more = false
-      }
-    }
-  }
-  if any {
+  if defaulted_mark(body, params, flags) {
     Some(flags)
   } else {
     None
@@ -627,17 +620,23 @@ export fn collect_defaulted_param_fns(stmts: Array[Stmt], errors: Array[String])
   ()
 }
 
-fn defaulted_fn_known(fname: String) -> Bool {
-  let mut found = false
-  for row in defaulted_param_tbl {
-    let (n, _) = row
+fn defaulted_fn_index(fname: String) -> Int {
+  let mut i = 0
+  let mut found = 0 - 1
+  while i < Array::length(defaulted_param_tbl) && found < 0 {
+    let (n, _) = Array::get(defaulted_param_tbl, i)
     if n == fname {
-      found = true
+      found = i
     } else {
       ()
     }
+    i = i + 1
   }
   found
+}
+
+fn defaulted_fn_known(fname: String) -> Bool {
+  defaulted_fn_index(fname) >= 0
 }
 
 fn syntactic_option_arg(e: Expr) -> Bool {
@@ -655,14 +654,12 @@ fn syntactic_option_arg(e: Expr) -> Bool {
 /// `x: Option[Int] = Some(1)` answered `Some(1)`. Refused here, before the
 /// lowering, where only what the program wrote is visible.
 fn defaulted_explicit_option_check(fname: String, fname_off: Int, args: Array[Expr], pnames: Array[String], errors: Array[String]) -> Unit {
-  let mut flags_opt = None
-  for row in defaulted_param_tbl {
-    let (n, flags) = row
-    if n == fname {
-      flags_opt = Some(flags)
-    } else {
-      ()
-    }
+  let at = defaulted_fn_index(fname)
+  let flags_opt = if at >= 0 {
+    let (_, found) = Array::get(defaulted_param_tbl, at)
+    Some(found)
+  } else {
+    None
   }
   match flags_opt {
     Some(flags) => {
