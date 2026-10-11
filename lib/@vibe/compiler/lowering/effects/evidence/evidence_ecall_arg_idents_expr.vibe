@@ -143,6 +143,12 @@ export fn edp_params_of_fn(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, 
   out
 }
 
+/// #3424: refusals the stamp collects, and the effects some handle in the
+/// program discharges (a callee passes evidence only for those).
+let edp_stamp_errors: Array[String] = []
+
+let edp_stamp_handled: Array[String] = []
+
 /// #3370: a closure literal with no written row, passed at a parameter of a
 /// top-level function whose declared type carries a row, takes that row.
 /// A call through such a parameter always prepends the dict
@@ -156,7 +162,12 @@ export fn edp_params_of_fn(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, 
 /// labeled argument is matched to its parameter by name; a callee a binding
 /// in scope shadows is left alone. A row-free top-level function passed by
 /// name there is wrapped the same way (#3424, `edp_slot_wrapper`).
-export fn edp_stamp_slot_rows(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> Unit {
+export fn edp_stamp_slot_rows(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], handled: Array[String]) -> Array[String] {
+  Array::truncate(edp_stamp_errors, 0)
+  Array::truncate(edp_stamp_handled, 0)
+  for h in handled {
+    Array::push(edp_stamp_handled, h)
+  }
   // #3424: the top-level functions with no row of their own. Passed by name
   // at a row-typed parameter, one is compiled without the dict the callee
   // passes, so the slot gets a wrapper literal that takes it.
@@ -200,7 +211,7 @@ export fn edp_stamp_slot_rows(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Boo
     }
     i = i + 1
   }
-  ()
+  Array::concat(edp_stamp_errors, [])
 }
 
 /// #3347: a top-level `let side: Thunk = () -> Int { .. }` keeps its alias
@@ -504,10 +515,28 @@ fn edp_stamp_let_literal(name: String, v: Expr, body: Expr, stmts: Array[Stmt], 
     } else {
       let total = edp_count_ident_uses(body, name)
       let rows: Array[String] = []
-      edp_slot_uses_of(body, name, stmts, fn_defs, scope, rows)
+      let callees: Array[String] = []
+      edp_slot_uses_of(body, name, stmts, fn_defs, scope, rows, callees)
       if total > 0 && Array::length(rows) == total && edp_rows_agree(rows) {
         EFn(tps, tbs, ps, ret, Some(Array::get(rows, 0)), lb)
       } else {
+        // A use at a slot whose callee passes evidence would call the
+        // literal with a dict it has no parameter for, and trap. The literal
+        // cannot take the row here (another use disagrees), so the build is
+        // refused with the edit.
+        let mut ri = 0
+        let mut reported = false
+        while !reported && ri < Array::length(rows) {
+          let row = Array::get(rows, ri)
+          if row != "" && edp_row_names_handled(row) {
+            let callee = Array::get(callees, ri)
+            Array::push(edp_stamp_errors, "give the closure `\{name}` the row of the parameter it is passed to (`() -> .. with \{row}`), or write it in place at the call to `\{callee}`: `\{callee}` passes it evidence for `\{row}`, and a closure bound by `let` with no row has no parameter for that, while another use of `\{name}` keeps it from taking the row")
+            reported = true
+          } else {
+            ()
+          }
+          ri = ri + 1
+        }
         v
       }
     },
@@ -518,7 +547,7 @@ fn edp_stamp_let_literal(name: String, v: Expr, body: Expr, stmts: Array[Stmt], 
 /// The slot rows of every use of `name` passed as an argument of a top-level
 /// function. A use at a slot with no stampable row records "" so it never
 /// agrees.
-fn edp_slot_uses_of(e: Expr, name: String, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], scope: Array[String], rows: Array[String]) -> Unit {
+fn edp_slot_uses_of(e: Expr, name: String, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], scope: Array[String], rows: Array[String], callees: Array[String]) -> Unit {
   let stack: Array[Expr] = [e]
   while Array::length(stack) > 0 {
     let n = Array::length(stack)
@@ -544,11 +573,13 @@ fn edp_slot_uses_of(e: Expr, name: String, stmts: Array[Stmt], fn_defs: Array[(I
               } else {
                 edp_slot_row_or_empty(stmts, fn_defs, cn, ai)
               })
+              Array::push(callees, cn)
             } else {
               ()
             },
             ELabeledArg(l, _, EIdent(an, _)) => if an == name {
               Array::push(rows, edp_slot_row_or_empty(stmts, fn_defs, cn, edp_param_index_by_label(stmts, fn_defs, cn, l)))
+              Array::push(callees, cn)
             } else {
               ()
             },
@@ -577,6 +608,28 @@ fn edp_slot_row_or_empty(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, St
       None => ""
     }
   }
+}
+
+/// Does `row` name an effect some handle in the program discharges?
+fn edp_row_names_handled(row: String) -> Bool {
+  let mut hit = false
+  for item in String::split(row, "+") {
+    for part in String::split(item, ",") {
+      let label = String::trim(part)
+      let bracket = String::index_of(label, "[")
+      let head = if bracket > 0 {
+        String::substring(label, 0, bracket)
+      } else {
+        label
+      }
+      if edp_str_array_contains(edp_stamp_handled, head) {
+        hit = true
+      } else {
+        ()
+      }
+    }
+  }
+  hit
 }
 
 fn edp_rows_agree(rows: Array[String]) -> Bool {
