@@ -243,6 +243,43 @@ probe assign_immutable 1
 if ! grep -qF 'cannot assign to immutable binding `acc` (declare it with `let mut`)' "$WORK/assign_immutable.fs.json"; then
   bad "assign_immutable: lost the let mut edit"
 fi
+# #3348: the error points at the assignment's target, `acc` on line 3.
+python3 - "$WORK/assign_immutable.fs.json" <<'PY' || bad "assign_immutable: expected the target's position at line 3"
+import json, sys
+rows = json.load(open(sys.argv[1]))
+assert len(rows) == 1, rows
+assert rows[0]['range']['start'] == {'line': 2, 'character': 2}, rows[0]
+assert rows[0]['range']['end'] == {'line': 2, 'character': 5}, rows[0]
+PY
+
+# #3423: the bare-generic-row refusal points at the perform that fixes the
+# payload (`Box::Put`, line 5 column 11), not at 0:0 with no position.
+printf 'effect Box[T] {\n  Put(T) -> Int\n}\nfn mk[T](x: T) -> Int with Box {\n  perform Box::Put(x)\n}\n' > "$WORK/bare_row.vibe"
+probe bare_row 1
+python3 - "$WORK/bare_row.fs.json" <<'PY' || bad "bare_row: expected the perform's position at line 5"
+import json, sys
+rows = json.load(open(sys.argv[1]))
+assert len(rows) == 1, rows
+assert 'write `with Box[T]`' in rows[0]['message'], rows[0]
+assert rows[0]['range']['start'] == {'line': 4, 'character': 10}, rows[0]
+assert not (rows[0].get('data') or {}).get('synthetic'), rows[0]
+PY
+
+# #3369: a file with an import reports every diagnostic on the FS lane, as one
+# without does. The import-resolving checker threw only the first one. The
+# single-file lane cannot resolve the import, so only the FS lane is asked.
+printf 'export struct Pt {\n  x: Int\n}\n' > "$WORK/imported_dep.vibe"
+printf 'import ./imported_dep.vibe { Pt }\n\nfn total(n: Int) -> Int {\n  n\n}\n\nfn main() -> Unit {\n  let p: Pt = 1\n  let t = total("s")\n}\n' > "$WORK/imported_two.vibe"
+SRC_REL="_build/_check_json_parity/imported_two.vibe"
+imported_exit="$(run_lane "$WORK/imported_two.fs.json")"
+if [ "$imported_exit" != 1 ]; then
+  bad "imported_two: exit $imported_exit, expected 1"
+fi
+python3 - "$WORK/imported_two.fs.json" <<'PY' || bad "imported_two: expected both diagnostics of a file with an import"
+import json, sys
+rows = json.load(open(sys.argv[1]))
+assert len(rows) == 2, rows
+PY
 
 # The conversion case. 20 bytes, 8 UTF-16 code units.
 printf 'let a: Int = "\xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e\xe3\x81\xa7\xe3\x81\x99\xe3\x82\x88"\n' > "$WORK/multibyte.vibe"
@@ -306,4 +343,4 @@ if grep -qF 'unlocated.vibe' "$WORK/unlocated.fs.json" 2>/dev/null; then
 fi
 
 [ "$fails" -eq 0 ] || exit 1
-echo "[check-json-parity] ok (13 probes: both lanes agree on diagnostics, exit code, and UTF-16 offsets)"
+echo "[check-json-parity] ok (14 probes: both lanes agree on diagnostics, exit code, and UTF-16 offsets)"

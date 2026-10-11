@@ -1,0 +1,30 @@
+//# #3347: a closure literal annotated through a type alias
+
+// `let side: Thunk = () -> Int { perform Ask::Get() }` with `type Thunk =
+// () -> Int with Ask` was checked as if the closure had no row: its perform
+// was charged to the enclosing function, so a `handle` of `Ask` around
+// `side()` could not discharge it. The alias's row is the closure's, as a row
+// written out is, and a call through the binding is charged that row.
+import @vibe/compiler/runtime {
+  collect_all_diagnostics
+}
+
+test "a closure annotated through an alias performs under the alias's row" {
+  let src = "effect Ask {\n  Get() -> Int\n}\n\ntype Thunk = () -> Int with Ask\n\nfn run() -> Int {\n  let side: Thunk = () -> Int {\n    perform Ask::Get()\n  }\n  handle {\n    side()\n  } with {\n    Ask::Get() => resume(41)\n  }\n}\n"
+  inspect(collect_all_diagnostics(src), "[]")
+}
+
+test "a call through an alias-annotated closure is charged the alias's row" {
+  let src = "effect Ask {\n  Get() -> Int\n}\n\ntype Thunk = () -> Int with Ask\n\nfn run() -> Int {\n  let side: Thunk = () -> Int {\n    perform Ask::Get()\n  }\n  side()\n}\n"
+  inspect(collect_all_diagnostics(src), "[line 11:3: effect row mismatch for 'run': missing { Ask } (no 'with' clause, requires { Ask })\nhint: declare 'fn run(...) -> T with Ask']")
+}
+
+test "a top-level closure annotated through an alias performs under its row" {
+  let src = "effect Ask {\n  Get() -> Int\n}\n\ntype Thunk = () -> Int with Ask\n\nlet side: Thunk = () -> Int {\n  perform Ask::Get()\n}\n"
+  inspect(collect_all_diagnostics(src), "[]")
+}
+
+test "a call of a top-level alias-annotated closure is charged the alias's row" {
+  let src = "effect Ask {\n  Get() -> Int\n}\n\ntype Thunk = () -> Int with Ask\n\nlet side: Thunk = () -> Int {\n  perform Ask::Get()\n}\n\nfn caller() -> Int {\n  side()\n}\n"
+  inspect(collect_all_diagnostics(src), "[line 12:3: effect row mismatch for 'caller': missing { Ask } (no 'with' clause, requires { Ask })\nhint: declare 'fn caller(...) -> T with Ask']")
+}

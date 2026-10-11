@@ -306,19 +306,13 @@ test "#3347: an alias that carries the row is not a rowless closure" {
   // the alias annotation as rowless and tell the reader to add the row the
   // alias already declares. It now counts the alias's row as the binding's,
   // like the written one, so this check no longer refuses the handle.
-  //
-  // The handle is still refused, by the evidence migration, which does not
-  // see the alias's row either (#3347): its message names the call and does
-  // not claim `side` has no row. That pass exempts a handle in dead code, so
-  // the driver keeps `run` live.
+  // The evidence migration now reads the alias's row too: the literal takes
+  // it, as a written annotation's row is folded into the literal, so the
+  // handle compiles (#3347; `fixtures/alias_annotated_closure_handle_test.vibe`
+  // answers 41).
   let driver = "\ntest \"t\" {\n  let r = handle {\n    run()\n  } with {\n    Ask::Get() => resume(1)\n  }\n  assert_eq(r, 42)\n}\n"
   let src = program(String::concat("type Thunk = () -> Int with Ask\n\nfn run() -> Int with Ask {\n  let side: Thunk = () -> Int {\n    perform Ask::Get()\n  }\n  handle {\n    side()\n  } with {\n    Ask::Get() => resume(42)\n  }\n}\n", driver))
-  assert(!compiles_linear(src))
-  let msg = reject_message(src)
-  assert(!String::contains(msg, "give the local closure `side` an effect row"))
-  assert(!String::contains(msg, "has no row"))
-  assert(!String::contains(msg, "can never fire"))
-  assert(String::contains(msg, "the call to 'side'"))
+  assert(compiles_linear(src))
   // `let mut` through the alias is refused like `let mut` with the row
   // written out: a call through an effect-typed mutable local.
   let written = program("fn run() -> Int with Ask {\n  let mut side: () -> Int with Ask = () -> Int {\n    perform Ask::Get()\n  }\n  handle {\n    side()\n  } with {\n    Ask::Get() => resume(42)\n  }\n}\n")
