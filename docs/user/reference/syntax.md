@@ -248,8 +248,8 @@ export let g2: () -> String = () -> { greet("hi", 3) }
   would read as an omitted argument. Bind the value first and pass the name.
 - Defaults apply only to a direct call of a top-level `fn` by its name. A
   function with defaults cannot be used as a value (wrap it in a lambda that
-  calls it, `(a) -> greet(a)`), and a namespaced `T::f` or a `module` member
-  cannot carry one, since a method call or a qualified name bypasses them.
+  calls it, `(a) -> greet(a)`), and a namespaced `T::f` cannot carry one,
+  since a method call (`x.f(..)`) bypasses them.
 
 `x?` is an optional parameter (#1500). It is declared at type `Option[T]` and
 the call site may omit it:

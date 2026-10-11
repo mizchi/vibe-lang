@@ -453,8 +453,8 @@ let e = label("v", "rc")   // => "v-rc"
   position is recorded as `Option[Int]`.
 - Defaults apply only to a direct call of a top-level `fn` by its name. A
   function with defaults cannot be used as a value (wrap it in a lambda that
-  calls it, `(n) -> greet(n)`), and a namespaced `T::f` or a `module` member
-  cannot carry one. A written
+  calls it, `(n) -> greet(n)`), and a namespaced `T::f` cannot carry one,
+  since a method call (`x.f(..)`) bypasses them. A written
   `None` / `Some(..)` passed to a defaulted parameter is refused, since it would
   read as an omitted argument; bind the value and pass the name.
 - An imported function's optional parameter cannot be omitted yet (#3432).
