@@ -631,12 +631,22 @@ export fn parse_pattern_with_binder_context(tokens: Array[Token], pos: Int, cont
                 let vc = String::char_code_at(vname, 0)
                 if vc >= 65 && vc <= 90 {
                   note_qualified_pattern_ref(name, vname)
+                  // #3422: `Maybe::Some` / `Maybe::None` keep their owner, so
+                  // the checker can tell them from the builtin `Some` /
+                  // `None` at this pattern rather than program-wide. Every
+                  // other reader compares the bare name
+                  // (`pattern_ctor_base_name`).
+                  let pname = if (vname == "Some" || vname == "None") && name != "Option" {
+                    intern_qualified(name, vname)
+                  } else {
+                    vname
+                  }
                   match peek(tokens, pos + 3) {
                     TLParen => {
                       let (args, end) = parse_pats_until_rparen(tokens, pos + 4, context);
-                      (PCtor(vname, args), end)
+                      (PCtor(pname, args), end)
                     },
-                    _ => (PCtor(vname, empty_pats()), pos + 3)
+                    _ => (PCtor(pname, empty_pats()), pos + 3)
                   }
                 } else {
                   note_bare_pattern_ref(name)
