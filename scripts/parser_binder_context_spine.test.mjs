@@ -232,6 +232,10 @@ test("balanced-token inventory classifies every production EFn site", () => {
     ["parser_expr.vibe:parse_fn_wasm_body", [1, "source-captured"]],
     ["parser_expr.vibe:parse_fn_stmt_general", [1, "source-captured"]],
     ["parser_expr.vibe:lower_fn_decl_stmt_with_binder_context", [2, "slot-preserving reconstruction"]],
+    // #3120: the ascription a parameter default's unwrap is spelled with. A
+    // defaulted declaration marks binder capture ineligible
+    // (parse_one_param_with_binder_context), so no row is captured for it.
+    ["parser_expr.vibe:param_default_ascription", [1, "deliberately ineligible"]],
     ["parser_expr_core.vibe:parse_call_arg", [1, "source-captured"]],
     ["parser_expr_core.vibe:wrap_placeholder_arg", [1, "synthetic-captured"]],
     ["parser_expr_dispatch.vibe:ascribe_wrap", [1, "synthetic-captured"]],
@@ -289,10 +293,19 @@ test("B2 expression helper bodies carry context without private duplicate wrappe
   assertContextual(exprSource, "parse_fn_name", [
     "parse_binding_name_with_binder_context(tokens, pos, context)",
   ], ["parse_binding_name(tokens,"]);
+  // #3120: the `fn` parameter list (defaults included) threads the context
+  // into each parameter and each default expression.
+  assertContextual(exprSource, "parse_fn_param_list_with_defaults", [
+    "parse_one_param_with_binder_context(tokens, p, context)",
+    "parse_impl_with_binder_context(tokens, [], pn + 1, 0, context)",
+  ], [
+    "parse_param_list(tokens,",
+    "parse_impl(tokens,",
+  ]);
   assertContextual(exprSource, "parse_fn_signature_with_binder_context", [
     "parse_fn_name(tokens, pos, context)",
     "parse_value_bracket_header(tokens, name_next, context)",
-    "parse_param_list_with_binder_context(tokens, lp, context)",
+    "parse_fn_param_list_with_defaults(tokens, lp, context)",
     "parse_impl_with_binder_context(tokens, [",
   ], [
     "parse_fn_name_with_binder_context",
