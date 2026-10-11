@@ -171,20 +171,6 @@ export fn edp_stamp_slot_rows(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Boo
   }
   let mut i = 0
   while i < Array::length(stmts) {
-    // #3347: a top-level `let side: Thunk = () -> Int { .. }` keeps its alias
-    // annotation on the statement; the literal takes the alias's row.
-    match Array::get(stmts, i) {
-      SLet(exported, is_rec, nm, Some(ty), EFn(tps, tbs, ps, ret, None, b)) => match edp_alias_fn_row(stmts, ty) {
-        Some(row) => if edp_literal_calls_local(EFn(tps, tbs, ps, ret, None, b), b, [
-        ]) {
-          ()
-        } else {
-          Array::set(stmts, i, SLet(exported, is_rec, nm, Some(ty), EFn(tps, tbs, ps, ret, Some(row), b)))
-        },
-        None => ()
-      },
-      _ => ()
-    }
     let stmt = Array::get(stmts, i)
     let body = match stmt {
       SLet(_, _, _, _, e) => Some(e),
@@ -211,6 +197,32 @@ export fn edp_stamp_slot_rows(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Boo
         ()
       },
       None => ()
+    }
+    i = i + 1
+  }
+  ()
+}
+
+/// #3347: a top-level `let side: Thunk = () -> Int { .. }` keeps its alias
+/// annotation on the statement, and the literal has no row: a written
+/// `() -> Int with Ask` is folded into the literal by the parser, an alias is
+/// not. The literal takes the alias's row, and the annotation is expanded, so
+/// the statement reads as the written one does. This runs first in the pass:
+/// the handle erasure and the needing-function table read top-level rows.
+export fn edp_stamp_alias_annotated_lets(stmts: Array[Stmt]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(exported, is_rec, nm, Some(ty), EFn(tps, tbs, ps, ret, None, b)) => match edp_alias_fn_type(stmts, ty) {
+        Some(TyFn(fps, fr, Some(row))) => if edp_literal_calls_local(EFn(tps, tbs, ps, ret, None, b), b, [
+        ]) {
+          ()
+        } else {
+          Array::set(stmts, i, SLet(exported, is_rec, nm, Some(TyFn(fps, fr, Some(row))), EFn(tps, tbs, ps, ret, Some(row), b)))
+        },
+        _ => ()
+      },
+      _ => ()
     }
     i = i + 1
   }
@@ -655,13 +667,22 @@ fn edp_alias_ascribed_literal(callee: Expr, args: Array[Expr], stmts: Array[Stmt
 /// The row of a non-generic type alias that names a function type with a
 /// concrete row, or None.
 fn edp_alias_fn_row(stmts: Array[Stmt], ty: TypeExpr) -> Option[String] {
+  match edp_alias_fn_type(stmts, ty) {
+    Some(TyFn(_, _, Some(row))) => Some(row),
+    _ => None
+  }
+}
+
+/// The function type a non-generic type alias names, when its row is
+/// concrete, or None.
+fn edp_alias_fn_type(stmts: Array[Stmt], ty: TypeExpr) -> Option[TypeExpr] {
   match ty {
     TyName(alias) => {
-      let mut found: Option[String] = None
+      let mut found: Option[TypeExpr] = None
       for st in stmts {
         match st {
-          STypeAlias(_, n, tparams, TyFn(_, _, Some(row))) => if n == alias && Array::length(tparams) == 0 && edp_slot_row_stampable(row) {
-            found = Some(row)
+          STypeAlias(_, n, tparams, TyFn(ps, r, Some(row))) => if n == alias && Array::length(tparams) == 0 && edp_slot_row_stampable(row) {
+            found = Some(TyFn(ps, r, Some(row)))
           } else {
             ()
           },
