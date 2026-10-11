@@ -978,6 +978,47 @@ fn is_applied_declared_nominal(t: Type) -> Bool {
   }
 }
 
+/// #3368: a compiler-owned head (`Future[Int]`, `FixedArray[Int]`,
+/// `MutBytes`) against a builtin value it is not represented as. The heads are
+/// excluded from `is_applied_declared_nominal`, and a `CtNamed` head is kind 0
+/// to `head_kind`, so `let x: Future[Int] = [1]` and a tuple where
+/// `FixedArray` is declared checked clean. Only the representation-compatible
+/// crossings the compiler relies on stay accepted
+/// (`compiler_owned_crossing`); every other builtin value is refused like any
+/// other declared type. A source declaration that owns the spelling is
+/// `is_applied_declared_nominal`'s, and `Array` / `Option` resolve to their
+/// structural nodes.
+fn compiler_owned_head_conflict(owned: Type, other: Type) -> Bool {
+  match owned {
+    CtNamed(n, args) => if String::starts_with(n, "#") || is_unknown_arg_sentinel(args) || n == "Array" || n == "Option" {
+      false
+    } else {
+      match compiler_owned_type_arity(n) {
+        Some(_) => !source_declares_type(n) && has_builtin_value_head(other) && !compiler_owned_crossing(n, other),
+        None => false
+      }
+    },
+    _ => false
+  }
+}
+
+/// The builtin values a compiler-owned head shares a representation with:
+/// `FixedArray` / `FrozenArray` / `ArrayBuilder` are phantoms over an
+/// `Array`'s layout (#1140), `MutBytes` is passed where `Bytes` is
+/// declared, and a `ByteStream` reaches an unannotated parameter a `for`
+/// loop typed `Array[_]` (#3148), which iterates it by byte
+/// (tests/gates/early/async_for_loop_classification.sh), and a `String` is
+/// coerced to `PromptText` where one is declared
+/// (fixtures/prompttext_coercion_fn_call_test.vibe).
+fn compiler_owned_crossing(head: String, other: Type) -> Bool {
+  match other {
+    CtArray(_) => head == "FixedArray" || head == "FrozenArray" || head == "ArrayBuilder" || head == "ByteStream",
+    CtBytes => head == "MutBytes",
+    CtString => head == "PromptText",
+    _ => false
+  }
+}
+
 fn is_unknown_arg_sentinel(args: Array[Type]) -> Bool {
   Array::length(args) == 1 && match Array::get(args, 0) {
     CtUnknown => true,
@@ -1028,7 +1069,8 @@ fn nominal_head_conflict(expected: Type, actual: Type) -> Bool {
     None => false
   }
   let declared_vs_builtin = (is_applied_declared_nominal(expected) && has_builtin_value_head(actual)) || (has_builtin_value_head(expected) && is_applied_declared_nominal(actual))
-  if direct_conflict || declared_vs_builtin {
+  let owned_vs_builtin = compiler_owned_head_conflict(expected, actual) || compiler_owned_head_conflict(actual, expected)
+  if direct_conflict || declared_vs_builtin || owned_vs_builtin {
     true
   } else {
     match expected {

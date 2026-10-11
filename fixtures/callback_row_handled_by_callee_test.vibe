@@ -1,0 +1,93 @@
+// #3370: a callback whose performs the callee handles itself needs no row
+// on the function that writes it. Both used to be refused: `producer` with
+// `missing { Box::Put }`, and the test through `run_two` with "cannot
+// discharge { Two2 }". A literal with no written row at a row-typed
+// parameter is also given the dict its callee passes (`edp_stamp_slot_rows`):
+// `run_str(() -> 3)` and a literal that calls a performing function trapped
+// with `null function or function signature mismatch`.
+effect Box[T] {
+  Put(T) -> Int
+}
+
+fn run_str(f: () -> Int with Box[String]) -> Int {
+  handle {
+    f()
+  } with {
+    Box::Put(s) => resume(String::length(s))
+  }
+}
+
+fn producer() -> Int {
+  run_str(() -> {
+    perform Box::Put("abc")
+  })
+}
+
+fn put_abcd() -> Int with Box[String] {
+  perform Box::Put("abcd")
+}
+
+effect Two2 {
+  A(Int) -> Int
+  B(Int) -> Int
+}
+
+fn two_ops() -> Int with Two2 {
+  perform Two2::A(2) + perform Two2::B(3)
+}
+
+fn run_two(f: () -> Int with Two2) -> Int {
+  handle {
+    f()
+  } with {
+    Two2::A(n) => resume(n);
+    Two2::B(n) => resume(n + 1)
+  }
+}
+
+test "the callee handles the callback's perform" {
+  inspect(producer(), "3")
+}
+
+test "through a parameter" {
+  inspect(run_two(() -> two_ops()), "6")
+}
+
+test "a pure literal at a row-typed parameter" {
+  inspect(run_str(() -> 3), "3")
+}
+
+test "a literal that calls a performing function" {
+  inspect(run_str(() -> put_abcd()), "4")
+}
+
+fn run_lab(f~: () -> Int with Box[String]) -> Int {
+  handle {
+    f()
+  } with {
+    Box::Put(s) => resume(String::length(s) + 10)
+  }
+}
+
+// A local elsewhere spelled like the callee does not shadow it here.
+fn unrelated_local() -> Int {
+  let run_str = 1
+  run_str
+}
+
+test "a literal passed by label" {
+  inspect(run_lab(f = () -> 3), "3")
+  inspect(run_lab(f = () -> put_abcd()), "14")
+}
+
+test "a local of the callee's name elsewhere" {
+  inspect(unrelated_local() + run_str(() -> 3), "4")
+}
+
+// A top-level destructuring `let` keeps its initializer through lowering, and
+// a literal in it is stamped the same way.
+let (lp_a, lp_b) = (run_str(() -> 3), 0)
+
+test "a literal inside a top-level destructuring let" {
+  inspect(lp_a + lp_b, "3")
+}

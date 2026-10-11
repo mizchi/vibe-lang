@@ -1,0 +1,59 @@
+// #3424: a row-free function passed by name at a parameter whose function
+// type carries a row. The callee calls it with the dict the row asks for,
+// and the function had no parameter for it: `run_str(three)` trapped with
+// `null function or function signature mismatch`. The slot now gets a
+// wrapper literal under the parameter's row. A row-free literal bound by
+// `let` and passed only at such slots, all of one row, takes that row too.
+effect Box[T] {
+  Put(T) -> Int
+}
+
+fn run_str(f: () -> Int with Box[String]) -> Int {
+  handle {
+    f()
+  } with {
+    Box::Put(s) => resume(String::length(s))
+  }
+}
+
+fn run_with(f: (Int) -> Int with Box[String]) -> Int {
+  handle {
+    f(4)
+  } with {
+    Box::Put(s) => resume(String::length(s))
+  }
+}
+
+fn three() -> Int {
+  3
+}
+
+fn dbl(n: Int) -> Int {
+  n * 2
+}
+
+fn put_abc() -> Int with Box[String] {
+  perform Box::Put("abc")
+}
+
+test "a pure function passed by name" {
+  inspect(run_str(three), "3")
+}
+
+test "a pure function of one parameter passed by name" {
+  inspect(run_with(dbl), "8")
+}
+
+test "a function that performs the row is passed as before" {
+  inspect(run_str(put_abc), "3")
+}
+
+test "a let-bound row-free literal passed by name" {
+  let k = () -> 5
+  inspect(run_str(k), "5")
+}
+
+test "a let-bound literal passed to two slots of one row" {
+  let k = (n: Int) -> n + 1
+  inspect(run_with(k) + run_with(k), "10")
+}

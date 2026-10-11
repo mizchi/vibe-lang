@@ -1,7 +1,7 @@
 // lib/@vibe/compiler/lowering/effects/evidence/evidence.vibe — ecall arg idents expr.
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeExpr, builtin_shadow_source_name, expr_children
+  Expr, Pat, Stmt, TypeExpr, builtin_shadow_source_name, expr_children, is_runtime_scheduled_effect
 }
 
 import @vibe/core {
@@ -14,9 +14,11 @@ import @vibe/compiler/lowering/effects/direct {
 
 import @vibe/compiler/lowering/effects/queries {
   EdpReadQuery,
+  edp_collect_program_binders,
   edp_efn_eligible_for_migration,
   edp_handle_matches_effect,
   edp_has_unsafe_construct,
+  edp_is_identity_ascription,
   edp_pat_binds,
   edp_rq_fold,
   edp_str_array_contains,
@@ -139,6 +141,651 @@ export fn edp_params_of_fn(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, 
     i = i + 1
   }
   out
+}
+
+/// #3370: a closure literal with no written row, passed at a parameter of a
+/// top-level function whose declared type carries a row, takes that row.
+/// A call through such a parameter always prepends the dict
+/// (`edp_row_typed_param_names`), but the type-directed sweep gives a literal
+/// its dict parameter only when the literal's own row carries the effect
+/// (`edp_efn_row_carries`). So `run_str(() -> put_abc())` -- and even
+/// `run_str(() -> 3)` -- compiled the literal at arity 0, `run_str` called it
+/// with the dict, and wasm trapped (`null function or function signature
+/// mismatch`). Stamping the slot's row makes the tree the same as the
+/// written `() -> Int with Box[String] { .. }`, which already worked. A
+/// labeled argument is matched to its parameter by name; a callee a binding
+/// in scope shadows is left alone. A row-free top-level function passed by
+/// name there is wrapped the same way (#3424, `edp_slot_wrapper`).
+export fn edp_stamp_slot_rows(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)]) -> Unit {
+  // #3424: the top-level functions with no row of their own. Passed by name
+  // at a row-typed parameter, one is compiled without the dict the callee
+  // passes, so the slot gets a wrapper literal that takes it.
+  let pure_names = MutSet::new_string()
+  for def in fn_defs {
+    let (_, _, _, fname, _, frow) = def
+    if String::length(String::trim(frow)) == 0 {
+      MutSet::insert(pure_names, fname)
+    } else {
+      ()
+    }
+  }
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let stmt = Array::get(stmts, i)
+    let body = match stmt {
+      SLet(_, _, _, _, e) => Some(e),
+      SLetMut(_, _, e) => Some(e),
+      SExpr(e) => Some(e),
+      STest(_, e) => Some(e),
+      SBench(_, e) => Some(e),
+      SLetPat(_, e) => Some(e),
+      _ => None
+    }
+    match body {
+      Some(e) => if edp_expr_passes_literal_arg(e, pure_names) {
+        let stamped = edp_stamp_expr(e, stmts, fn_defs, [], pure_names)
+        match stmt {
+          SLet(exported, is_rec, nm, ty, _) => Array::set(stmts, i, SLet(exported, is_rec, nm, ty, stamped)),
+          SLetMut(nm, ty, _) => Array::set(stmts, i, SLetMut(nm, ty, stamped)),
+          SExpr(_) => Array::set(stmts, i, SExpr(stamped)),
+          STest(tn, _) => Array::set(stmts, i, STest(tn, stamped)),
+          SBench(bn, _) => Array::set(stmts, i, SBench(bn, stamped)),
+          SLetPat(pt, _) => Array::set(stmts, i, SLetPat(pt, stamped)),
+          _ => ()
+        }
+      } else {
+        ()
+      },
+      None => ()
+    }
+    i = i + 1
+  }
+  ()
+}
+
+/// #3347: a top-level `let side: Thunk = () -> Int { .. }` keeps its alias
+/// annotation on the statement, and the literal has no row: a written
+/// `() -> Int with Ask` is folded into the literal by the parser, an alias is
+/// not. The literal takes the alias's row, and the annotation is expanded, so
+/// the statement reads as the written one does. This runs first in the pass:
+/// the handle erasure and the needing-function table read top-level rows.
+export fn edp_stamp_alias_annotated_lets(stmts: Array[Stmt]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(exported, is_rec, nm, Some(ty), EFn(tps, tbs, ps, ret, None, b)) => match edp_alias_fn_type(stmts, ty) {
+        Some(TyFn(fps, fr, Some(row))) => if edp_literal_calls_local(EFn(tps, tbs, ps, ret, None, b), b, [
+        ]) {
+          ()
+        } else {
+          Array::set(stmts, i, SLet(exported, is_rec, nm, Some(TyFn(fps, fr, Some(row))), EFn(tps, tbs, ps, ret, Some(row), b)))
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  ()
+}
+
+/// Does `e` contain a named call with a row-free closure literal argument, a
+/// row-free top-level function passed by name, or a `let`-bound row-free
+/// literal? A read-only scan, so a statement with none is not rebuilt
+/// (#1875).
+fn edp_expr_passes_literal_arg(e: Expr, pure_names: MutSet[String]) -> Bool {
+  let mut found = false
+  let stack: Array[Expr] = [e]
+  while !found && Array::length(stack) > 0 {
+    let n = Array::length(stack)
+    let cur = Array::get(stack, n - 1)
+    Array::truncate(stack, n - 1)
+    match cur {
+      ECall(EIdent(_, _), args, _, _) => for a in args {
+        match a {
+          EFn(_, _, _, _, None, _) => {
+            found = true
+          },
+          EIdent(an, _) => if MutSet::has(pure_names, an) {
+            found = true
+          } else {
+            ()
+          },
+          ELabeledArg(_, _, EFn(_, _, _, _, None, _)) => {
+            found = true
+          },
+          ELabeledArg(_, _, EIdent(an, _)) => if MutSet::has(pure_names, an) {
+            found = true
+          } else {
+            ()
+          },
+          _ => ()
+        }
+      },
+      ECall(EFn(_, _, _, _, _, _), cargs, _, _) => if Array::length(cargs) == 1 {
+        match Array::get(cargs, 0) {
+          EFn(_, _, _, _, None, _) => {
+            found = true
+          },
+          _ => ()
+        }
+      } else {
+        ()
+      },
+      ELet(_, EFn(_, _, _, _, None, _), _, _) => {
+        found = true
+      },
+      _ => ()
+    }
+    for child in expr_children(cur) {
+      Array::push(stack, child)
+    }
+  }
+  found
+}
+
+/// Does a literal's `body` call a local binding -- one in `scope`, one the
+/// literal binds itself, or a local closure already hoisted to a top-level
+/// `__hoisted_lam_*` function? The migration cannot see through such a call,
+/// so stamping it would turn an accepted program into a refused one; such a
+/// literal is left as written.
+fn edp_literal_calls_local(lit: Expr, body: Expr, scope: Array[String]) -> Bool {
+  let own = edp_collect_program_binders([SExpr(lit)])
+  let mut found = false
+  let stack: Array[Expr] = [body]
+  while !found && Array::length(stack) > 0 {
+    let n = Array::length(stack)
+    let cur = Array::get(stack, n - 1)
+    Array::truncate(stack, n - 1)
+    match cur {
+      ECall(EIdent(cn, _), _, _, _) => if edp_scope_has(scope, cn) || MutSet::has(own, cn) || String::starts_with(cn, "__hoisted_lam_") {
+        found = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    for child in expr_children(cur) {
+      Array::push(stack, child)
+    }
+  }
+  found
+}
+
+/// Can a literal at a slot with this row be given it? Only when every label
+/// is a concrete effect. A row variable (`TaskGroup::run`'s `with e`) is
+/// admitted by the argument-inertness rule when the literal has no row of its
+/// own (`edp_argcond_admits`), and the callee passes no dict through it, so a
+/// stamp would only refuse the call. A runtime-scheduled effect (`Async`)
+/// belongs to the suspend lane, which lowers it before this pass
+/// (`TaskGroup::spawn_suspend`).
+fn edp_slot_row_stampable(row: String) -> Bool {
+  let mut ok = String::length(String::trim(row)) > 0
+  for item in String::split(row, "+") {
+    for part in String::split(item, ",") {
+      let label = String::trim(part)
+      let bracket = String::index_of(label, "[")
+      let head = if bracket > 0 {
+        String::substring(label, 0, bracket)
+      } else {
+        label
+      }
+      if String::length(head) == 0 {
+        ()
+      } else if String::byte_at(head, 0) >= 97 && String::byte_at(head, 0) <= 122 {
+        ok = false
+      } else if is_runtime_scheduled_effect(head) {
+        ok = false
+      } else {
+        ()
+      }
+    }
+  }
+  ok
+}
+
+/// The arity and row of the function type a top-level function's parameter
+/// `pos` declares, when that type carries a row.
+fn edp_slot_fn_type(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], callee: String, pos: Int) -> Option[(Int, String)] {
+  match edp_params_of_fn(stmts, fn_defs, callee) {
+    Some(params) => if pos < Array::length(params) {
+      let (_, pty) = Array::get(params, pos)
+      match pty {
+        Some(TyFn(ptys, _, Some(row))) => if edp_slot_row_stampable(row) {
+          Some((Array::length(ptys), row))
+        } else {
+          None
+        },
+        _ => None
+      }
+    } else {
+      None
+    },
+    None => None
+  }
+}
+
+/// `(p0, .., pn) -> name(p0, .., pn)` under `row`: a row-free function passed
+/// by name at a row-typed slot, wrapped so the dict its callee passes has a
+/// parameter to land in (#3424).
+fn edp_slot_wrapper(name: String, arity: Int, row: String) -> Expr {
+  let params: Array[(String, Option[TypeExpr])] = []
+  let args: Array[Expr] = []
+  let mut k = 0
+  while k < arity {
+    let pn = String::concat("__edpw_", Int::to_string(k))
+    Array::push(params, (pn, None))
+    Array::push(args, EIdent(pn, 0 - 1))
+    k = k + 1
+  }
+  EFn([], [], params, None, Some(row), ECall(EIdent(name, 0 - 1), args, 0 - 1, [
+  ]))
+}
+
+/// The row a top-level function's parameter `pos` declares on its function
+/// type, or None.
+fn edp_slot_row(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], callee: String, pos: Int) -> Option[String] {
+  match edp_params_of_fn(stmts, fn_defs, callee) {
+    Some(params) => if pos < Array::length(params) {
+      let (_, pty) = Array::get(params, pos)
+      match pty {
+        Some(TyFn(_, _, Some(row))) => if edp_slot_row_stampable(row) {
+          Some(row)
+        } else {
+          None
+        },
+        _ => None
+      }
+    } else {
+      None
+    },
+    None => None
+  }
+}
+
+fn edp_stamp_expr(e: Expr, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], scope: Array[String], pure_names: MutSet[String]) -> Expr {
+  match e {
+    ECall(callee, args, off, res) => match edp_alias_ascribed_literal(callee, args, stmts, scope) {
+      Some(lit) => edp_stamp_expr(lit, stmts, fn_defs, scope, pure_names),
+      None => edp_stamp_call(callee, args, off, res, stmts, fn_defs, scope, pure_names)
+    },
+    EFn(tps, tbs, params, ret, eff, body) => {
+      let base = Array::length(scope)
+      for param in params {
+        Array::push(scope, edp_param_base_name(param.0))
+      }
+      let body2 = edp_stamp_expr(body, stmts, fn_defs, scope, pure_names)
+      Array::truncate(scope, base)
+      EFn(tps, tbs, params, ret, eff, body2)
+    },
+    ELet(n, v, b, off) => {
+      let v2 = edp_stamp_let_literal(n, edp_stamp_expr(v, stmts, fn_defs, scope, pure_names), b, stmts, fn_defs, scope)
+      ELet(n, v2, edp_stamp_scoped(b, [n], stmts, fn_defs, scope, pure_names), off)
+    },
+    ELetRec(n, v, b) => ELetRec(n, edp_stamp_scoped(v, [n], stmts, fn_defs, scope, pure_names), edp_stamp_scoped(b, [
+      n
+    ], stmts, fn_defs, scope, pure_names)),
+    ELetMut(n, v, b, off) => {
+      let v2 = edp_stamp_expr(v, stmts, fn_defs, scope, pure_names)
+      ELetMut(n, v2, edp_stamp_scoped(b, [n], stmts, fn_defs, scope, pure_names), off)
+    },
+    ESeq(a, b) => ESeq(edp_stamp_expr(a, stmts, fn_defs, scope, pure_names), edp_stamp_expr(b, stmts, fn_defs, scope, pure_names)),
+    EIf(c, t, el) => EIf(edp_stamp_expr(c, stmts, fn_defs, scope, pure_names), edp_stamp_expr(t, stmts, fn_defs, scope, pure_names), edp_stamp_expr(el, stmts, fn_defs, scope, pure_names)),
+    EMatch(sc, arms) => EMatch(edp_stamp_expr(sc, stmts, fn_defs, scope, pure_names), for a in arms {
+      let (pp, ex) = a
+      (pp, edp_stamp_scoped(ex, edp_pat_names(pp), stmts, fn_defs, scope, pure_names))
+    }),
+    EHandle(bd, arms) => EHandle(edp_stamp_expr(bd, stmts, fn_defs, scope, pure_names), for a in arms {
+      let (pp, ex) = a
+      (pp, edp_stamp_scoped(ex, edp_pat_names(pp), stmts, fn_defs, scope, pure_names))
+    }),
+    EWhile(c, b) => EWhile(edp_stamp_expr(c, stmts, fn_defs, scope, pure_names), edp_stamp_expr(b, stmts, fn_defs, scope, pure_names)),
+    EForIn(n, idx, it, b) => {
+      let it2 = edp_stamp_expr(it, stmts, fn_defs, scope, pure_names)
+      let names = [n]
+      match idx {
+        Some(iname) => Array::push(names, iname),
+        None => ()
+      }
+      EForIn(n, idx, it2, edp_stamp_scoped(b, names, stmts, fn_defs, scope, pure_names))
+    },
+    ELoop(pairs, b) => {
+      let names: Array[String] = []
+      let pairs2 = for pr in pairs {
+        let (n, v) = pr
+        Array::push(names, n)
+        (n, edp_stamp_expr(v, stmts, fn_defs, scope, pure_names))
+      }
+      ELoop(pairs2, edp_stamp_scoped(b, names, stmts, fn_defs, scope, pure_names))
+    },
+    EBinOp(op, l, r, boff) => EBinOp(op, edp_stamp_expr(l, stmts, fn_defs, scope, pure_names), edp_stamp_expr(r, stmts, fn_defs, scope, pure_names), boff),
+    EUnaryOp(op, x) => EUnaryOp(op, edp_stamp_expr(x, stmts, fn_defs, scope, pure_names)),
+    EAssign(n, v, c, target_off) => EAssign(n, edp_stamp_expr(v, stmts, fn_defs, scope, pure_names), edp_stamp_expr(c, stmts, fn_defs, scope, pure_names), target_off),
+    EAssignOp(n, op, v, c, target_off) => EAssignOp(n, op, edp_stamp_expr(v, stmts, fn_defs, scope, pure_names), edp_stamp_expr(c, stmts, fn_defs, scope, pure_names), target_off),
+    EReturn(x) => EReturn(edp_stamp_expr(x, stmts, fn_defs, scope, pure_names)),
+    EDot(o, f, o1, o2) => EDot(edp_stamp_expr(o, stmts, fn_defs, scope, pure_names), f, o1, o2),
+    ELabeledArg(l, n, v) => ELabeledArg(l, n, edp_stamp_expr(v, stmts, fn_defs, scope, pure_names)),
+    EBreak(opt) => EBreak(match opt {
+      Some(x) => Some(edp_stamp_expr(x, stmts, fn_defs, scope, pure_names)),
+      None => None
+    }),
+    EContinue(args) => EContinue(for a in args {
+      edp_stamp_expr(a, stmts, fn_defs, scope, pure_names)
+    }),
+    ETuple(items) => ETuple(for a in items {
+      edp_stamp_expr(a, stmts, fn_defs, scope, pure_names)
+    }),
+    EArray(items) => EArray(for a in items {
+      edp_stamp_expr(a, stmts, fn_defs, scope, pure_names)
+    }),
+    ERecord(n, fields, tas) => ERecord(n, for f in fields {
+      let (fn2, v) = f
+      (fn2, edp_stamp_expr(v, stmts, fn_defs, scope, pure_names))
+    }, tas),
+    EMap(fields) => EMap(for f in fields {
+      let (fn2, v) = f
+      (fn2, edp_stamp_expr(v, stmts, fn_defs, scope, pure_names))
+    }),
+    ESpread(x) => ESpread(edp_stamp_expr(x, stmts, fn_defs, scope, pure_names)),
+    _ => e
+  }
+}
+
+/// #3424: a row-free literal bound by `let` and passed by that name. When
+/// every use of the name is an argument at a row-typed parameter of a
+/// top-level function, and all those rows agree, the literal takes the row
+/// the way one written at the slot does: the callee passes the dict, and the
+/// literal had no parameter for it. Any other use (a direct call, a capture,
+/// a slot without a row, two different rows) leaves it as written.
+fn edp_stamp_let_literal(name: String, v: Expr, body: Expr, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], scope: Array[String]) -> Expr {
+  match v {
+    EFn(tps, tbs, ps, ret, None, lb) => if edp_literal_calls_local(v, lb, scope) {
+      v
+    } else {
+      let total = edp_count_ident_uses(body, name)
+      let rows: Array[String] = []
+      edp_slot_uses_of(body, name, stmts, fn_defs, scope, rows)
+      if total > 0 && Array::length(rows) == total && edp_rows_agree(rows) {
+        EFn(tps, tbs, ps, ret, Some(Array::get(rows, 0)), lb)
+      } else {
+        v
+      }
+    },
+    _ => v
+  }
+}
+
+/// The slot rows of every use of `name` passed as an argument of a top-level
+/// function. A use at a slot with no stampable row records "" so it never
+/// agrees.
+fn edp_slot_uses_of(e: Expr, name: String, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], scope: Array[String], rows: Array[String]) -> Unit {
+  let stack: Array[Expr] = [e]
+  while Array::length(stack) > 0 {
+    let n = Array::length(stack)
+    let cur = Array::get(stack, n - 1)
+    Array::truncate(stack, n - 1)
+    match cur {
+      ECall(EIdent(cn, _), args, _, _) => if !edp_scope_has(scope, cn) && cn != name {
+        let mut labeled = false
+        for a in args {
+          match a {
+            ELabeledArg(_, _, _) => {
+              labeled = true
+            },
+            _ => ()
+          }
+        }
+        let mut ai = 0
+        while ai < Array::length(args) {
+          match Array::get(args, ai) {
+            EIdent(an, _) => if an == name {
+              Array::push(rows, if labeled {
+                ""
+              } else {
+                edp_slot_row_or_empty(stmts, fn_defs, cn, ai)
+              })
+            } else {
+              ()
+            },
+            ELabeledArg(l, _, EIdent(an, _)) => if an == name {
+              Array::push(rows, edp_slot_row_or_empty(stmts, fn_defs, cn, edp_param_index_by_label(stmts, fn_defs, cn, l)))
+            } else {
+              ()
+            },
+            _ => ()
+          }
+          ai = ai + 1
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    for child in expr_children(cur) {
+      Array::push(stack, child)
+    }
+  }
+  ()
+}
+
+fn edp_slot_row_or_empty(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], callee: String, pos: Int) -> String {
+  if pos < 0 {
+    ""
+  } else {
+    match edp_slot_row(stmts, fn_defs, callee, pos) {
+      Some(row) => row,
+      None => ""
+    }
+  }
+}
+
+fn edp_rows_agree(rows: Array[String]) -> Bool {
+  let mut ok = Array::length(rows) > 0
+  for r in rows {
+    if r == "" || r != Array::get(rows, 0) {
+      ok = false
+    } else {
+      ()
+    }
+  }
+  ok
+}
+
+fn edp_stamp_call(callee: Expr, args: Array[Expr], off: Int, res: Array[Int], stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], scope: Array[String], pure_names: MutSet[String]) -> Expr {
+  let callee2 = edp_stamp_expr(callee, stmts, fn_defs, scope, pure_names)
+  let mut labeled = false
+  for a in args {
+    match a {
+      ELabeledArg(_, _, _) => {
+        labeled = true
+      },
+      _ => ()
+    }
+  }
+  // A callee a binding in scope shadows is not the top-level function.
+  let named = match callee {
+    EIdent(cn, _) => if edp_scope_has(scope, cn) {
+      ""
+    } else {
+      cn
+    },
+    _ => ""
+  }
+  let out: Array[Expr] = []
+  let mut ai = 0
+  while ai < Array::length(args) {
+    let a2 = edp_stamp_expr(Array::get(args, ai), stmts, fn_defs, scope, pure_names)
+    // A labeled argument names its parameter; a positional one beside a
+    // labeled one has no position to trust, so only the labeled one is
+    // stamped there.
+    let a3 = match a2 {
+      ELabeledArg(l, m, v) => if String::length(named) > 0 {
+        ELabeledArg(l, m, edp_stamp_slot_arg(v, stmts, fn_defs, scope, pure_names, named, edp_param_index_by_label(stmts, fn_defs, named, l)))
+      } else {
+        a2
+      },
+      other => if String::length(named) > 0 && !labeled {
+        edp_stamp_slot_arg(other, stmts, fn_defs, scope, pure_names, named, ai)
+      } else {
+        other
+      }
+    }
+    Array::push(out, a3)
+    ai = ai + 1
+  }
+  ECall(callee2, out, off, res)
+}
+
+/// #3347: `let side: Thunk = () -> Int { .. }` with `type Thunk = () -> Int
+/// with Ask` reaches this pass as the identity ascription
+/// `((__asc: Thunk) -> __asc)(lit)`, and the literal had no row: a direct
+/// `() -> Int with Ask` annotation is folded into the literal by the parser,
+/// an alias is not. The literal takes the alias's row, and the wrapper goes,
+/// so the tree is the one the direct annotation gives.
+fn edp_alias_ascribed_literal(callee: Expr, args: Array[Expr], stmts: Array[Stmt], scope: Array[String]) -> Option[Expr] {
+  match callee {
+    EFn(_, _, aparams, _, _, abody) => if Array::length(args) == 1 && edp_is_identity_ascription(aparams, abody) {
+      let (_, aty) = Array::get(aparams, 0)
+      match (aty, Array::get(args, 0)) {
+        (Some(ty), EFn(tps, tbs, ps, ret, None, b)) => match edp_alias_fn_row(stmts, ty) {
+          Some(row) => if edp_literal_calls_local(Array::get(args, 0), b, scope) {
+            None
+          } else {
+            Some(EFn(tps, tbs, ps, ret, Some(row), b))
+          },
+          None => None
+        },
+        _ => None
+      }
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
+/// The row of a non-generic type alias that names a function type with a
+/// concrete row, or None.
+fn edp_alias_fn_row(stmts: Array[Stmt], ty: TypeExpr) -> Option[String] {
+  match edp_alias_fn_type(stmts, ty) {
+    Some(TyFn(_, _, Some(row))) => Some(row),
+    _ => None
+  }
+}
+
+/// The function type a non-generic type alias names, when its row is
+/// concrete, or None.
+fn edp_alias_fn_type(stmts: Array[Stmt], ty: TypeExpr) -> Option[TypeExpr] {
+  match ty {
+    TyName(alias) => {
+      let mut found: Option[TypeExpr] = None
+      for st in stmts {
+        match st {
+          STypeAlias(_, n, tparams, TyFn(ps, r, Some(row))) => if n == alias && Array::length(tparams) == 0 && edp_slot_row_stampable(row) {
+            found = Some(TyFn(ps, r, Some(row)))
+          } else {
+            ()
+          },
+          _ => ()
+        }
+      }
+      found
+    },
+    _ => None
+  }
+}
+
+/// `e` walked with `names` bound on top of `scope`.
+fn edp_stamp_scoped(e: Expr, names: Array[String], stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], scope: Array[String], pure_names: MutSet[String]) -> Expr {
+  let base = Array::length(scope)
+  for n in names {
+    Array::push(scope, n)
+  }
+  let out = edp_stamp_expr(e, stmts, fn_defs, scope, pure_names)
+  Array::truncate(scope, base)
+  out
+}
+
+/// One argument at the parameter `pos` of the top-level `callee` (-1: no
+/// such parameter). A row-free literal takes the slot's row (#3370), and a
+/// row-free top-level function passed by name is wrapped (#3424).
+fn edp_stamp_slot_arg(a: Expr, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], scope: Array[String], pure_names: MutSet[String], callee: String, pos: Int) -> Expr {
+  if pos < 0 {
+    a
+  } else {
+    match a {
+      EFn(tps, tbs, ps, ret, None, b) => if edp_literal_calls_local(a, b, scope) {
+        a
+      } else {
+        match edp_slot_row(stmts, fn_defs, callee, pos) {
+          Some(row) => EFn(tps, tbs, ps, ret, Some(row), b),
+          None => a
+        }
+      },
+      // A function spelled with the wrapper's own parameter prefix would be
+      // shadowed inside the wrapper, so it is left as written.
+      EIdent(an, _) => if MutSet::has(pure_names, an) && !edp_scope_has(scope, an) && !String::starts_with(an, "__edpw_") {
+        match edp_slot_fn_type(stmts, fn_defs, callee, pos) {
+          Some((arity, row)) => edp_slot_wrapper(an, arity, row),
+          None => a
+        }
+      } else {
+        a
+      },
+      _ => a
+    }
+  }
+}
+
+fn edp_scope_has(scope: Array[String], name: String) -> Bool {
+  let mut i = Array::length(scope)
+  let mut found = false
+  while !found && i > 0 {
+    i = i - 1
+    if Array::get(scope, i) == name {
+      found = true
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+/// A parameter's name without its labeled (`~`) or optional (`?`) marker.
+fn edp_param_base_name(pn: String) -> String {
+  let ln = String::length(pn)
+  if ln > 0 && (pn[ln - 1: ln] == "~" || pn[ln - 1: ln] == "?") {
+    pn[0: ln - 1]
+  } else {
+    pn
+  }
+}
+
+/// The names a pattern binds, read with the same census the pass uses.
+fn edp_pat_names(p: Pat) -> Array[String] {
+  let census = edp_collect_program_binders([SExpr(EMatch(EInt(0), [(p, EUnit)]))])
+  MutSet::to_array(census)
+}
+
+/// The index of the parameter of the top-level `callee` a label names, or -1.
+fn edp_param_index_by_label(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], callee: String, label: String) -> Int {
+  match edp_params_of_fn(stmts, fn_defs, callee) {
+    Some(params) => {
+      let mut found = 0 - 1
+      let mut i = 0
+      while found < 0 && i < Array::length(params) {
+        let (pn, _) = Array::get(params, i)
+        if edp_param_base_name(pn) == label {
+          found = i
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    None => 0 - 1
+  }
 }
 
 /// #1261: is `nm`'s value legal to hand to parameter `pos` of `callee_nm`?

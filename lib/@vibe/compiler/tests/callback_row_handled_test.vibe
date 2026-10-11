@@ -1,0 +1,29 @@
+//# #3370: a callback's performs are checked against the parameter's row
+
+// A closure literal passed where the parameter's function type carries a row
+// performs under that row. Its performs were charged only to the function that
+// writes it, so `run_str(() -> { perform Box::Put("abc") })` required `with
+// Box` of a caller whose callee handles `Box` itself.
+import @vibe/compiler/runtime {
+  collect_all_diagnostics
+}
+
+test "a callback whose performs the callee handles needs no row of its own" {
+  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn run_str(f: () -> Int with Box[String]) -> Int {\n  handle {\n    f()\n  } with {\n    Box::Put(s) => resume(String::length(s))\n  }\n}\n\nfn producer() -> Int {\n  run_str(() -> {\n    perform Box::Put(\"abc\")\n  })\n}\n"
+  inspect(collect_all_diagnostics(src), "[]")
+}
+
+test "a callback that calls a function performing the handled effect needs no row" {
+  let src = "effect Two2 {\n  A(Int) -> Int\n  B(Int) -> Int\n}\n\nfn two_ops() -> Int with Two2 {\n  perform Two2::A(2) + perform Two2::B(3)\n}\n\nfn run_two(f: () -> Int with Two2) -> Int {\n  handle {\n    f()\n  } with {\n    Two2::A(n) => resume(n);\n    Two2::B(n) => resume(n + 1)\n  }\n}\n\nfn producer() -> Int {\n  run_two(() -> two_ops())\n}\n"
+  inspect(collect_all_diagnostics(src), "[]")
+}
+
+test "a callee that only forwards the callback's row charges it to the caller" {
+  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\nfn run_pass(f: () -> Int with Box[String]) -> Int with Box[String] {\n  f()\n}\n\nfn producer() -> Int {\n  run_pass(() -> {\n    perform Box::Put(\"abc\")\n  })\n}\n"
+  inspect(collect_all_diagnostics(src), "[line 10:3: effect row mismatch for 'producer': missing { Box[String] } (no 'with' clause, requires { Box[String] })\nhint: declare 'fn producer(...) -> T with Box[String]']")
+}
+
+test "an effect outside the parameter's row is still the enclosing function's" {
+  let src = "effect Box[T] {\n  Put(T) -> Int\n}\n\neffect Other {\n  Go(Int) -> Int\n}\n\nfn run_str(f: () -> Int with Box[String]) -> Int {\n  handle {\n    f()\n  } with {\n    Box::Put(s) => resume(String::length(s))\n  }\n}\n\nfn producer() -> Int {\n  run_str(() -> {\n    perform Other::Go(1)\n  })\n}\n"
+  inspect(collect_all_diagnostics(src), "[line 19:5: effect row mismatch for 'producer': missing { Other::Go } (no 'with' clause, requires { Other::Go })\nhint: declare 'fn producer(...) -> T with Other::Go']")
+}

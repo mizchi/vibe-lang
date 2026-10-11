@@ -1,0 +1,30 @@
+//# #3348: a module job's diagnostic is not located a second time
+
+// The FS `vibe check` lane located every diagnostic against the entry file
+// after the module jobs had already located (and path-prefixed) theirs. An
+// unlocated `p.vibe: unknown name: missing` then got the first textual
+// occurrence of `missing` glued in front of its path.
+import @vibe/compiler/runtime {
+  locate_type_error_lines_except_paths
+}
+
+test "a path-prefixed unlocated diagnostic stays unlocated" {
+  let source = "// missing\nfn f() -> Int {\n  1\n}\n"
+  inspect(locate_type_error_lines_except_paths(source, "p.vibe: unknown name: missing", [
+    "p.vibe"
+  ]), "[p.vibe: unknown name: missing]")
+}
+
+test "a diagnostic with no path is still located against the entry" {
+  let source = "fn f() -> Int {\n  missing\n}\n"
+  inspect(locate_type_error_lines_except_paths(source, "unknown name: missing", [
+    "p.vibe"
+  ]), "[line 2:3: unknown name: missing]")
+}
+
+test "each diagnostic of a joined report is judged on its own" {
+  let source = "fn f() -> Int {\n  missing\n}\n"
+  inspect(locate_type_error_lines_except_paths(source, "p.vibe: unknown name: other\nunknown name: missing", [
+    "p.vibe"
+  ]), "[p.vibe: unknown name: other, line 2:3: unknown name: missing]")
+}
