@@ -587,17 +587,39 @@ fn defaulted_flags_of(params: Array[(String, Option[TypeExpr])], body: Expr) -> 
 /// call-site lowering both see. A namespaced function is also reachable as a
 /// method (`b.pick(None)`), where a written `None` read as "omitted"; a
 /// default there is refused until method calls carry the defaults.
+fn defaulted_export_error(fname: String) -> String {
+  String::concat("`", String::concat(fname, "` has parameter defaults and is exported, but defaults do not cross a module boundary yet (#3432), so an importer's call could not tell a written `None` from an omitted argument; keep the function private, or declare the parameter `x?: T` and match on the `Option`"))
+}
+
 export fn collect_defaulted_param_fns(stmts: Array[Stmt], errors: Array[String]) -> Unit {
   Array::truncate(defaulted_param_tbl, 0)
   for stmt in stmts {
     match stmt {
-      SLet(_, _, fname, _, EFn(_, _, params, _, _, body)) => match defaulted_flags_of(params, body) {
+      SLet(exported, _, fname, _, EFn(_, _, params, _, _, body)) => match defaulted_flags_of(params, body) {
         Some(flags) => if String::contains(fname, "::") {
           Array::push(errors, String::concat("`", String::concat(fname, "` is a namespaced function with parameter defaults, which apply only to a direct call by name and not to a method call (`x.f(..)`); declare the parameter `x?: T` and match on the `Option`, or make it a plain top-level `fn`")))
         } else {
+          // Codex on #3438: an importer sees only the lowered type.
+          if exported {
+            Array::push(errors, defaulted_export_error(fname))
+          } else {
+            ()
+          }
           Array::push(defaulted_param_tbl, (fname, flags))
         },
         None => ()
+      },
+      _ => ()
+    }
+  }
+  for stmt in stmts {
+    match stmt {
+      SExport(names) => for n in names {
+        if defaulted_fn_known(n) {
+          Array::push(errors, defaulted_export_error(n))
+        } else {
+          ()
+        }
       },
       _ => ()
     }
