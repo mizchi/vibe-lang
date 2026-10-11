@@ -2204,6 +2204,33 @@ export fn lc_emit_module_sections(input: LinkedSectionInputs, coverage: Bool, de
   }
   Array::push(name_sec_names, "_start")
   Array::push(name_sec_names, "run")
+  // #3412: lambda bodies follow `run` (see the function section above), one
+  // per lambda-table slot. Each is named after the user function that owns
+  // its slot in the lambda plan (`<owner>__lambda_slot__<k>`), so a closure
+  // keeps its owner's module provenance: check_compile_only_lanes.sh matches
+  // dropped-lane fragments against these names, and a closure that survived
+  // its pruned owner would otherwise count as named while matching nothing.
+  // A slot outside the plan keeps the bare `__lambda_slot__<i>`.
+  let lsn_bases = input.lambda_bases
+  let lsn_owners = if Array::length(lsn_bases) < num_user_funcs {
+    Array::length(lsn_bases)
+  } else {
+    num_user_funcs
+  }
+  let mut lsn_owner = 0
+  let mut lsn_i = 0
+  while lsn_i < num_lambdas {
+    while lsn_owner + 1 < lsn_owners && Array::get(lsn_bases, lsn_owner + 1) <= lsn_i {
+      lsn_owner = lsn_owner + 1
+    }
+    let lsn_name = if lsn_owner < lsn_owners && lsn_i < input.lambda_count && Array::get(lsn_bases, lsn_owner) <= lsn_i {
+      String::concat(Array::get(fn_names_list, lsn_owner), String::concat("__lambda_slot__", __to_string(lsn_i - Array::get(lsn_bases, lsn_owner))))
+    } else {
+      String::concat("__lambda_slot__", __to_string(lsn_i))
+    }
+    Array::push(name_sec_names, lsn_name)
+    lsn_i = lsn_i + 1
+  }
   emit_function_name_section(out, name_sec_names, num_imported_funcs)
   // #2359: drop unreachable functions and renumber. Same build gating as the
   // body-stubbing pass above (instrumented builds must see unmodified
