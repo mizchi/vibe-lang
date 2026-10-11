@@ -451,8 +451,10 @@ let e = label("v", "rc")   // => "v-rc"
   there), and a default cannot yet be combined with a `where` contract.
 - A function type spells either form as `(String, times?: Int) -> String`; the
   position is recorded as `Option[Int]`.
-- Defaults apply only to a direct call. A function with defaults cannot be used
-  as a value; wrap it in a lambda that calls it, `(n) -> greet(n)`. A written
+- Defaults apply only to a direct call of a top-level `fn` by its name. A
+  function with defaults cannot be used as a value (wrap it in a lambda that
+  calls it, `(n) -> greet(n)`), and a namespaced `T::f` or a `module` member
+  cannot carry one. A written
   `None` / `Some(..)` passed to a defaulted parameter is refused, since it would
   read as an omitted argument; bind the value and pass the name.
 - An imported function's optional parameter cannot be omitted yet (#3432).
