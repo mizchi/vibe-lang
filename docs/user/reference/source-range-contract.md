@@ -34,7 +34,7 @@ query surface passes them through unconverted. Two spellings of the same thing:
 | `vibe binding-at` | `START END` per occurrence | byte offset | 0 | half-open |
 | `vibe escapes` | `NAME START END` | byte offset | 0 | half-open |
 | `vibe allocs` | `FN SITE OFFSET` | byte offset | 0 | point |
-| `vibe check` (text) | `line L:C-E:` | line, byte column | 1 | half-open |
+| `vibe check` (text) | `line L:C-E:`, or `line L:C-L2:C2:` across lines | line, byte column | 1 | half-open |
 | `vibe grep` (text) | `path:L:C:` | line, byte column | 1 | point |
 | `vibe grep --json` | `line`, `col`, `start`, `end` | line + byte column, byte offset | 1 / 0 | see below |
 | `vibe type-at` **in** | `<line> <col>` | line, byte column | 1 | — |
@@ -236,6 +236,23 @@ extent. A node the parser never constructed still reports null bounds and
 = f()` reports at `f()`, because that is where the edit goes. Pinned by
 `lib/@vibe/compiler/tests/source_range_contract_test.vibe` and
 `scripts/check_source_range_contract.sh` checks 9, 10 and 11.
+
+### Ranges across lines (#3348)
+
+A range that ends on a later line is written `line L:C-L2:C2:` -- the end's
+own line, then its byte column -- and `--json` converts both ends. The form
+used to be `line L:C-E` only, which cannot name another line, so a literal
+written across lines was reported as the point at its first byte:
+
+| source | before | now |
+| --- | --- | --- |
+| `let xs: Array[Int] = [` / `"a",` / `"b"` / `]` | `2:24` (the `[`) | `2:24-5:4`, slicing the whole literal |
+
+The position still ends at the first `": "` and still opens with `line L:`, so
+a reader that takes the line, or splits the prefix off, is unchanged. A reader
+of the end column has one case to add: a digit right after the second `:` is
+the end column of a later line, because the message after a position always
+opens with a space.
 
 ### Tuple and array literals (#3305)
 
