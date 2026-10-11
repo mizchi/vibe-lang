@@ -1,0 +1,97 @@
+import @vibe/compiler/normalize/desugar {
+  ModuleLoweringDeferred,
+  ModuleLoweringJob,
+  desugar_trait_dicts_module_with_facts,
+  eq_deferred_requests_list,
+  eq_deferred_reset,
+  module_lowering_deferred_merge,
+  module_lowering_deferred_snapshot,
+  module_trait_facts_none,
+  run_module_lowering_job
+}
+import @vibe/compiler/core {
+  Stmt, TypeExpr, namespace_rename_original, namespace_rename_originals_restore, namespace_rename_originals_snapshot
+}
+import @vibe/compiler/syntax {
+  lex, parse_program, print_stmt
+}
+
+fn job(src: String, renames: Array[(String, String)]) -> ModuleLoweringJob with Exception {
+  ModuleLoweringJob::{
+    own: parse_program(lex(src)),
+    interfaces: [],
+    module_tag: "f0",
+    typed_offsets: [],
+    typed_keys: [],
+    facts: module_trait_facts_none(),
+    namespace_originals: renames
+  }
+}
+fn rendered(stmts: Array[Stmt]) -> String {
+  let rows: Array[String] = []
+  for st in stmts {
+    Array::push(rows, print_stmt(st))
+  }
+  String::join(rows, "\n")
+}
+
+test "module job produces the sequential trait dictionary AST" {
+  let src = "struct Pt { x: Int } derive (Eq)\nfn same(a: Pt, b: Pt) -> Bool { a == b }\n"
+  let old = parse_program(lex(src))
+  let synth = desugar_trait_dicts_module_with_facts(old, [], "f0", [], [], module_trait_facts_none())
+  let product = run_module_lowering_job(job(src, []))
+  inspect(rendered(old) == rendered(product.own), content = "true")
+  inspect(rendered(synth) == rendered(product.synthesized), content = "true")
+}
+
+test "module job keeps coordinator deferrals outside its result" {
+  eq_deferred_reset()
+  let ledger = ModuleLoweringDeferred::{
+    requests: [("foreign", TyApp("Array", [TyName("String")]))],
+    refusals: ["foreign-refusal"]
+  }
+  module_lowering_deferred_merge(ledger)
+  let product = run_module_lowering_job(job("fn answer() -> Int { 42 }", []))
+  inspect(Array::length(product.deferred.requests), content = "0")
+  inspect(Array::length(product.deferred.refusals), content = "0")
+  let after = module_lowering_deferred_snapshot()
+  inspect(Array::length(after.requests), content = "1")
+  inspect(Array::get(after.requests, 0).0, content = "foreign")
+  inspect(Array::length(after.refusals), content = "1")
+  inspect(Array::get(after.refusals, 0), content = "foreign-refusal")
+  eq_deferred_reset()
+}
+
+test "module job imports source names and restores coordinator names" {
+  namespace_rename_originals_restore([("Point", "ParentPoint")])
+  let product = run_module_lowering_job(job("struct Point { x: Int } derive (Show)", [
+    ("Point", "WorkerPoint")
+  ]))
+  inspect(String::contains(rendered(product.own) + rendered(product.synthesized), "WorkerPoint"), content = "true")
+  inspect(namespace_rename_original("Point"), content = "ParentPoint")
+  namespace_rename_originals_restore([])
+}
+
+test "module job restores boundary state after a refused comparison" {
+  namespace_rename_originals_restore([("Point", "ParentPoint")])
+  eq_deferred_reset()
+  module_lowering_deferred_merge(ModuleLoweringDeferred::{
+    requests: [("parent", TyApp("Array", [TyName("Int")]))],
+    refusals: []
+  })
+  let failed_message = handle {
+    let _ = run_module_lowering_job(job("struct F {\n  f: () -> Int\n} derive (Eq)\n\nfn mk1() -> () -> Int {\n  () -> {\n    1\n  }\n}\n\nexport fn _start() -> Int {\n  let left = []\n  Array::push(left, F::{\n    f: mk1()\n  })\n  let right = []\n  Array::push(right, F::{\n    f: mk1()\n  })\n  if left == right {\n    1\n  } else {\n    0\n  }\n}\n", [
+      ("Point", "WorkerPoint")
+    ]))
+    "accepted"
+  } with { Exception::Throw(msg) => msg }
+  inspect(String::contains(failed_message, "structural `==`"), content = "true")
+  inspect(namespace_rename_original("Point"), content = "ParentPoint")
+  let requests: Array[String] = eq_deferred_requests_list()
+  inspect(Array::length(requests), content = "1")
+  inspect(Array::get(requests, 0), content = "parent")
+  let product = run_module_lowering_job(job("fn next() -> Int { 7 }", []))
+  inspect(Array::length(product.deferred.requests), content = "0")
+  namespace_rename_originals_restore([])
+  eq_deferred_reset()
+}

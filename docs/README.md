@@ -146,6 +146,7 @@ the repo; not the user manual.
 | --- | --- |
 | [internal/compiler/ast_binary_abi.md](internal/compiler/ast_binary_abi.md) | Binary encoding of the surface AST (`selfhost_ast_v1`, behind `VIBE_EXPERIMENTAL_AST_CACHE`) |
 | [internal/compiler/checked-body-transport.md](internal/compiler/checked-body-transport.md) | Opt-in checked-module artifact lane (`VIBE_CHECKED_MODULE_CACHE`, default off): format, consumers, cost measurements, parity gate |
+| [internal/compiler/module-lowering-workers.md](internal/compiler/module-lowering-workers.md) | Independent module-lowering job/product boundary, state transfer and worker-phase measurements |
 | [internal/compiler/checked-direct-expression-return-observation.md](internal/compiler/checked-direct-expression-return-observation.md) | Checker observation note |
 | [internal/compiler/tracing-design.md](internal/compiler/tracing-design.md) | Internal span tracing: host-side stage 0 implemented; guest `effect Trace` proposed |
 | [internal/design/experimental-wasmfx-effect-backend.md](internal/design/experimental-wasmfx-effect-backend.md) | WasmFX feasibility probe. Tracked by #2221 |

@@ -1,0 +1,156 @@
+import @vibe/compiler/cache {
+  AstBinaryReader,
+  ast_binary_read_bool_checked,
+  ast_binary_read_byte_checked,
+  ast_binary_read_count_checked,
+  ast_binary_read_string_checked,
+  ast_binary_read_svarint_checked,
+  ast_binary_reader_new,
+  ast_binary_reader_remaining,
+  ast_binary_write_bool,
+  ast_binary_write_string,
+  ast_binary_write_svarint,
+  ast_binary_write_varint
+}
+import @vibe/compiler/codegen/wasi {
+  PreludeModuleJob, PreludeModuleProduct, PreludeTail
+}
+import @vibe/compiler/normalize/desugar {
+  ModuleLoweringProduct
+}
+import ./transport.vibe {
+  decode_module_lowering_job, decode_module_lowering_product, encode_module_lowering_job, encode_module_lowering_product
+}
+fn put_blob(b: Bytes, bytes: Bytes) -> Unit {
+  ast_binary_write_varint(b, Bytes::length(bytes)); Bytes::append(b, bytes)
+}
+fn get_blob(r: AstBinaryReader) -> Bytes with Exception {
+  let n = ast_binary_read_count_checked(r)
+  let b = Bytes::new()
+  let mut i = 0
+  while i < n {
+    Bytes::push(b, ast_binary_read_byte_checked(r)); i = i + 1
+  }
+  b
+}
+fn put_strings(b: Bytes, strings: Array[String]) -> Unit {
+  ast_binary_write_varint(b, Array::length(strings))
+  for s in strings {
+    ast_binary_write_string(b, s)
+  }
+  ()
+}
+fn get_strings(r: AstBinaryReader) -> Array[String] with Exception {
+  let n = ast_binary_read_count_checked(r)
+  let strings: Array[String] = []
+  let mut i = 0
+  while i < n {
+    Array::push(strings, ast_binary_read_string_checked(r)); i = i + 1
+  }
+  strings
+}
+fn expect_magic(r: AstBinaryReader, magic: String) -> Unit with Exception {
+  if ast_binary_read_string_checked(r) != magic {
+    throw("prelude module: unsupported wire format")
+  } else ()
+}
+fn expect_end(r: AstBinaryReader) -> Unit with Exception {
+  if ast_binary_reader_remaining(r) != 0 {
+    throw("prelude module: trailing bytes")
+  } else ()
+}
+export fn encode_prelude_module_job(job: PreludeModuleJob) -> Bytes with Exception {
+  let b = Bytes::new()
+  ast_binary_write_string(b, "vibe-prelude-module-job-1")
+  put_blob(b, encode_module_lowering_job(job.trait_job))
+  ast_binary_write_string(b, job.entry_name)
+  ast_binary_write_varint(b, Array::length(job.alias_renames))
+  for pair in job.alias_renames {
+    ast_binary_write_string(b, pair.0); ast_binary_write_string(b, pair.1)
+  }
+  ast_binary_write_bool(b, job.calls_host_future)
+  ast_binary_write_bool(b, job.waiter_hooks)
+  ast_binary_write_string(b, job.aw_note)
+  b
+}
+export fn decode_prelude_module_job(bytes: Bytes) -> PreludeModuleJob with Exception {
+  let r = ast_binary_reader_new(bytes)
+  expect_magic(r, "vibe-prelude-module-job-1")
+  let job = decode_module_lowering_job(get_blob(r))
+  let entry = ast_binary_read_string_checked(r)
+  let n = ast_binary_read_count_checked(r)
+  let renames: Array[(String, String)] = []
+  let mut i = 0
+  while i < n {
+    let from = ast_binary_read_string_checked(r)
+    let to = ast_binary_read_string_checked(r)
+    Array::push(renames, (from, to)); i = i + 1
+  }
+  let future = ast_binary_read_bool_checked(r)
+  let waiter = ast_binary_read_bool_checked(r)
+  let note = ast_binary_read_string_checked(r)
+  expect_end(r)
+  PreludeModuleJob::{
+    trait_job: job,
+    entry_name: entry,
+    alias_renames: renames,
+    calls_host_future: future,
+    waiter_hooks: waiter,
+    aw_note: note
+  }
+}
+export fn encode_prelude_module_product(product: PreludeModuleProduct) -> Bytes {
+  let b = Bytes::new()
+  ast_binary_write_string(b, "vibe-prelude-module-product-1")
+  ast_binary_write_string(b, product.module_tag)
+  put_blob(b, encode_module_lowering_product(ModuleLoweringProduct::{
+    own: product.own,
+    synthesized: [],
+    synthesis_requests: product.synthesis_requests,
+    deferred: product.deferred,
+    invisible_nominals: product.invisible_nominals
+  }))
+  put_strings(b, product.synth_keys)
+  put_strings(b, product.tail.keys)
+  ast_binary_write_varint(b, Array::length(product.tail.passes))
+  for pass in product.tail.passes {
+    ast_binary_write_svarint(b, pass)
+  }
+  put_strings(b, product.diagnostics)
+  put_strings(b, product.inline_names)
+  put_strings(b, product.inline_wats)
+  b
+}
+export fn decode_prelude_module_product(bytes: Bytes) -> PreludeModuleProduct with Exception {
+  let r = ast_binary_reader_new(bytes)
+  expect_magic(r, "vibe-prelude-module-product-1")
+  let tag = ast_binary_read_string_checked(r)
+  let base = decode_module_lowering_product(get_blob(r))
+  let keys = get_strings(r)
+  let tail_keys = get_strings(r)
+  let n = ast_binary_read_count_checked(r)
+  let ranks: Array[Int] = []
+  let mut i = 0
+  while i < n {
+    Array::push(ranks, ast_binary_read_svarint_checked(r)); i = i + 1
+  }
+  let diagnostics = get_strings(r)
+  let names = get_strings(r)
+  let wats = get_strings(r)
+  expect_end(r)
+  if Array::length(tail_keys) != n || Array::length(names) != Array::length(wats) || Array::length(base.synthesized) != 0 {
+    throw("prelude module: inconsistent product arrays")
+  } else ()
+  PreludeModuleProduct::{
+    module_tag: tag,
+    own: base.own,
+    synth_keys: keys,
+    tail: PreludeTail::{ keys: tail_keys, passes: ranks },
+    diagnostics: diagnostics,
+    synthesis_requests: base.synthesis_requests,
+    deferred: base.deferred,
+    inline_names: names,
+    inline_wats: wats,
+    invisible_nominals: base.invisible_nominals
+  }
+}

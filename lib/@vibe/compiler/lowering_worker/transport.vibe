@@ -1,0 +1,149 @@
+// Wire boundary for one independent trait-dictionary lowering job.
+import @vibe/compiler/cache {
+  AstBinaryReader,
+  ast_binary_read_count_checked,
+  ast_binary_read_module,
+  ast_binary_read_string_checked,
+  ast_binary_read_svarint_checked,
+  ast_binary_read_type_expr,
+  ast_binary_reader_new,
+  ast_binary_reader_remaining,
+  ast_binary_write_module,
+  ast_binary_write_string,
+  ast_binary_write_svarint,
+  ast_binary_write_type_expr,
+  ast_binary_write_varint
+}
+import @vibe/compiler/normalize/desugar {
+  ModuleLoweringDeferred, ModuleLoweringJob, ModuleLoweringProduct, ModuleTraitFacts
+}
+import @vibe/compiler/core {
+  Stmt, TypeExpr
+}
+
+fn write_strings(b: Bytes, values: Array[String]) -> Unit {
+  ast_binary_write_varint(b, Array::length(values))
+  for value in values {
+    ast_binary_write_string(b, value)
+  }
+  ()
+}
+fn read_strings(r: AstBinaryReader) -> Array[String] with Exception {
+  let values: Array[String] = []
+  let n = ast_binary_read_count_checked(r)
+  let mut i = 0
+  while i < n {
+    Array::push(values, ast_binary_read_string_checked(r)); i = i + 1
+  }
+  values
+}
+fn read_magic(r: AstBinaryReader, expected: String) -> Unit with Exception {
+  if ast_binary_read_string_checked(r) != expected {
+    throw("module lowering: unsupported wire format")
+  } else ()
+}
+fn require_end(r: AstBinaryReader) -> Unit with Exception {
+  if ast_binary_reader_remaining(r) != 0 {
+    throw("module lowering: trailing bytes")
+  } else ()
+}
+export fn encode_module_lowering_job(job: ModuleLoweringJob) -> Bytes with Exception {
+  if Array::length(job.typed_offsets) != Array::length(job.typed_keys) {
+    throw("module lowering: typed row lengths differ")
+  } else ()
+  let b = Bytes::new()
+  ast_binary_write_string(b, "vibe-module-trait-job-1")
+  ast_binary_write_string(b, job.module_tag)
+  ast_binary_write_module(b, job.own)
+  ast_binary_write_module(b, job.interfaces)
+  ast_binary_write_varint(b, Array::length(job.typed_offsets))
+  let mut i = 0
+  while i < Array::length(job.typed_offsets) {
+    ast_binary_write_svarint(b, Array::get(job.typed_offsets, i))
+    ast_binary_write_string(b, Array::get(job.typed_keys, i))
+    i = i + 1
+  }
+  write_strings(b, job.facts.wrapper_names)
+  write_strings(b, job.facts.explicit_ops)
+  ast_binary_write_varint(b, Array::length(job.namespace_originals))
+  for pair in job.namespace_originals {
+    ast_binary_write_string(b, pair.0); ast_binary_write_string(b, pair.1)
+  }
+  b
+}
+export fn decode_module_lowering_job(b: Bytes) -> ModuleLoweringJob with Exception {
+  let r = ast_binary_reader_new(b)
+  read_magic(r, "vibe-module-trait-job-1")
+  let tag = ast_binary_read_string_checked(r)
+  let own = ast_binary_read_module(r)
+  let interfaces = ast_binary_read_module(r)
+  let offsets: Array[Int] = []
+  let keys: Array[String] = []
+  let n = ast_binary_read_count_checked(r)
+  let mut i = 0
+  while i < n {
+    let offset = ast_binary_read_svarint_checked(r)
+    let key = ast_binary_read_string_checked(r)
+    Array::push(offsets, offset); Array::push(keys, key)
+    i = i + 1
+  }
+  let wrappers = read_strings(r)
+  let ops = read_strings(r)
+  let renames: Array[(String, String)] = []
+  let pairs = ast_binary_read_count_checked(r)
+  i = 0
+  while i < pairs {
+    let mangled = ast_binary_read_string_checked(r)
+    let original = ast_binary_read_string_checked(r)
+    Array::push(renames, (mangled, original)); i = i + 1
+  }
+  require_end(r)
+  ModuleLoweringJob::{
+    own: own,
+    interfaces: interfaces,
+    module_tag: tag,
+    typed_offsets: offsets,
+    typed_keys: keys,
+    facts: ModuleTraitFacts::{ wrapper_names: wrappers, explicit_ops: ops },
+    namespace_originals: renames
+  }
+}
+export fn encode_module_lowering_product(product: ModuleLoweringProduct) -> Bytes {
+  let b = Bytes::new()
+  ast_binary_write_string(b, "vibe-module-trait-product-1")
+  ast_binary_write_module(b, product.own)
+  ast_binary_write_module(b, product.synthesized)
+  write_strings(b, product.synthesis_requests)
+  ast_binary_write_varint(b, Array::length(product.deferred.requests))
+  for pair in product.deferred.requests {
+    ast_binary_write_string(b, pair.0); ast_binary_write_type_expr(b, pair.1)
+  }
+  write_strings(b, product.deferred.refusals)
+  write_strings(b, product.invisible_nominals)
+  b
+}
+export fn decode_module_lowering_product(b: Bytes) -> ModuleLoweringProduct with Exception {
+  let r = ast_binary_reader_new(b)
+  read_magic(r, "vibe-module-trait-product-1")
+  let own = ast_binary_read_module(r)
+  let synthesized = ast_binary_read_module(r)
+  let synthesis_requests = read_strings(r)
+  let requests: Array[(String, TypeExpr)] = []
+  let n = ast_binary_read_count_checked(r)
+  let mut i = 0
+  while i < n {
+    let key = ast_binary_read_string_checked(r)
+    let ty = ast_binary_read_type_expr(r)
+    Array::push(requests, (key, ty)); i = i + 1
+  }
+  let refusals = read_strings(r)
+  let invisible = read_strings(r)
+  require_end(r)
+  ModuleLoweringProduct::{
+    own: own,
+    synthesized: synthesized,
+    synthesis_requests: synthesis_requests,
+    deferred: ModuleLoweringDeferred::{ requests: requests, refusals: refusals },
+    invisible_nominals: invisible
+  }
+}
