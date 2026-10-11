@@ -338,32 +338,15 @@ let edp_local_lit_vals: Array[Expr] = []
 /// definition and the literal, or by the literal's parameters, because the
 /// copy would then read that binding instead.
 fn edp_copy_local_helpers(tps: Array[String], tbs: Array[(String, Array[String])], ps: Array[(String, Option[TypeExpr])], ret: Option[TypeExpr], body: Expr, scope: Array[String]) -> Option[Expr] {
-  let own = edp_collect_program_binders([SExpr(body)])
   let param_names: Array[String] = []
   for p in ps {
     Array::push(param_names, edp_param_base_name(p.0))
   }
+  // Scoped (Codex on #3437): a name the literal binds only shadows the outer
+  // local where that binding is in scope, so a call to the outer `helper`
+  // still counts beside an inner `helper` bound in another branch.
   let called: Array[String] = []
-  let mut ok = true
-  let stack: Array[Expr] = [body]
-  while ok && Array::length(stack) > 0 {
-    let n = Array::length(stack)
-    let cur = Array::get(stack, n - 1)
-    Array::truncate(stack, n - 1)
-    match cur {
-      ECall(EIdent(cn, _), _, _, _) => if MutSet::has(own, cn) || String::starts_with(cn, "__hoisted_lam_") || edp_str_array_contains(param_names, cn) {
-        ok = false
-      } else if edp_scope_has(scope, cn) && !edp_str_array_contains(called, cn) {
-        Array::push(called, cn)
-      } else {
-        ()
-      },
-      _ => ()
-    }
-    for child in expr_children(cur) {
-      Array::push(stack, child)
-    }
-  }
+  let mut ok = edp_call_census(body, param_names, scope, called)
   // Each copy, outermost binding first, so a later one may mention an earlier.
   let slots: Array[Int] = []
   let vals: Array[Expr] = []
@@ -410,6 +393,88 @@ fn edp_copy_local_helpers(tps: Array[String], tbs: Array[(String, Array[String])
       k = k - 1
     }
     Some(EFn(tps, tbs, ps, ret, None, out))
+  }
+}
+
+/// The locals in `scope` that `e` calls, into `called`, with the binders
+/// around each call scoped as `edp_free_names` scopes them. False when `e`
+/// calls something the copy cannot stand for: a name `bound` holds (the
+/// literal's own binders and parameters, whose meaning the migration cannot
+/// see through) or a hoisted lambda.
+fn edp_call_census(e: Expr, bound: Array[String], scope: Array[String], called: Array[String]) -> Bool {
+  match e {
+    ECall(EIdent(cn, _), args, _, _) => {
+      let here = if edp_str_array_contains(bound, cn) || String::starts_with(cn, "__hoisted_lam_") {
+        false
+      } else {
+        if edp_scope_has(scope, cn) && !edp_str_array_contains(called, cn) {
+          Array::push(called, cn)
+        } else {
+          ()
+        }
+        true
+      }
+      let mut ok = here
+      for a in args {
+        ok = ok && edp_call_census(a, bound, scope, called)
+      }
+      ok
+    },
+    ELet(n, v, b, _) => edp_call_census(v, bound, scope, called) && edp_call_census(b, edp_names_with(bound, [
+      n
+    ]), scope, called),
+    ELetMut(n, v, b, _) => edp_call_census(v, bound, scope, called) && edp_call_census(b, edp_names_with(bound, [
+      n
+    ]), scope, called),
+    ELetRec(n, v, b) => {
+      let inner = edp_names_with(bound, [n])
+      edp_call_census(v, inner, scope, called) && edp_call_census(b, inner, scope, called)
+    },
+    EFn(_, _, fps, _, _, fb) => {
+      let names: Array[String] = []
+      for p in fps {
+        Array::push(names, edp_param_base_name(p.0))
+      }
+      edp_call_census(fb, edp_names_with(bound, names), scope, called)
+    },
+    EMatch(sc, arms) => {
+      let mut ok = edp_call_census(sc, bound, scope, called)
+      for arm in arms {
+        ok = ok && edp_call_census(arm.1, edp_names_with(bound, edp_pat_names(arm.0)), scope, called)
+      }
+      ok
+    },
+    EHandle(bd, arms) => {
+      let mut ok = edp_call_census(bd, bound, scope, called)
+      for arm in arms {
+        ok = ok && edp_call_census(arm.1, edp_names_with(bound, edp_pat_names(arm.0)), scope, called)
+      }
+      ok
+    },
+    EForIn(n, idx, it, b) => {
+      let names = [n]
+      match idx {
+        Some(i) => Array::push(names, i),
+        None => ()
+      }
+      edp_call_census(it, bound, scope, called) && edp_call_census(b, edp_names_with(bound, names), scope, called)
+    },
+    ELoop(pairs, b) => {
+      let mut ok = true
+      let names: Array[String] = []
+      for pair in pairs {
+        ok = ok && edp_call_census(pair.1, bound, scope, called)
+        Array::push(names, pair.0)
+      }
+      ok && edp_call_census(b, edp_names_with(bound, names), scope, called)
+    },
+    _ => {
+      let mut ok = true
+      for child in expr_children(e) {
+        ok = ok && edp_call_census(child, bound, scope, called)
+      }
+      ok
+    }
   }
 }
 
