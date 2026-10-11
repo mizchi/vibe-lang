@@ -835,10 +835,12 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
     fi = fi + 1
   }
   let ifaces: Array[Array[Stmt]] = []
+  let iface_keys: Array[Array[String]] = []
   let mut pf = 0
   while pf < file_count {
     let src = Array::get(parts, pf)
     let dst: Array[Stmt] = []
+    let keys: Array[String] = []
     let src_export_block = oracle_export_block_names(src)
     // An impl is part of the dependency interface. Its method targets are
     // top-level bindings without an export flag, and must travel as signatures.
@@ -846,13 +848,16 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
     let mut ps = 0
     while ps < Array::length(src) {
       if oracle_is_interface_stmt_with(Array::get(src, ps), src_export_block) {
-        Array::push(dst, oracle_interface_form(Array::get(src, ps)))
+        let signature = oracle_interface_form(Array::get(src, ps))
+        Array::push(dst, signature)
+        Array::push(keys, oracle_stmt_key(signature))
       } else {
         ()
       }
       ps = ps + 1
     }
     Array::push(ifaces, dst)
+    Array::push(iface_keys, keys)
     pf = pf + 1
   }
   // #2633: which module each mangle tag belongs to, so an unresolved name can
@@ -982,10 +987,13 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
         ()
       } else {
         let other = Array::get(ifaces, cj)
+        // Interface names are fixed before any module is lowered. Reuse
+        // their keys while keeping this importer's own-key filter intact.
+        let other_keys = Array::get(iface_keys, cj)
         let mut ci = 0
         while ci < Array::length(other) {
           let cs = Array::get(other, ci)
-          if MutMap::has(own_keys, oracle_stmt_key(cs)) {
+          if MutMap::has(own_keys, Array::get(other_keys, ci)) {
             ()
           } else {
             Array::push(ctx, cs)
