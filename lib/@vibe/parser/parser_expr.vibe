@@ -827,101 +827,66 @@ fn parse_fn_name(tokens: Array[Token], pos: Int, context: Option[ParserBinderCon
 /// returns it beside the parameter's bare name. `fn_param_defaults_wrap`
 /// unwraps the parameter at the top of the body.
 fn parse_fn_param_list_with_defaults(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (Array[(String, Option[TypeExpr])], Array[(String, TypeExpr, Expr)], Int) with Exception {
-  // Almost no list carries a default: a list with no `=` outside a bracket
-  // keeps the builder-backed list parser, so a `fn` without defaults
-  // allocates what it did before.
-  let mut depth = 0
-  let mut t = pos
-  let mut has_default = false
-  let mut scanning = true
-  while scanning {
-    match peek(tokens, t) {
-      TLParen|TLBracket|TLBrace => {
-        depth = depth + 1
-      },
-      TRParen|TRBracket|TRBrace => if depth == 0 {
-        scanning = false
-      } else {
-        depth = depth - 1
-      },
-      TEq => if depth == 0 {
-        has_default = true
-        scanning = false
-      } else {
-        ()
-      },
-      TEof => {
-        scanning = false
-      },
-      _ => ()
-    }
-    t = t + 1
-  }
-  if !has_default {
-    let (plain, next) = parse_param_list_with_binder_context(tokens, pos, context)
-    (plain, [], next)
-  } else {
-    let params: Array[(String, Option[TypeExpr])] = []
-    let defaults: Array[(String, TypeExpr, Expr)] = []
-    // (parameter index, first token, end token) of each default expression.
-    let default_spans: Array[(Int, Int, Int)] = []
-    match peek(tokens, pos) {
-      TRParen => (params, defaults, pos + 1),
-      _ => {
-        let mut p = pos
-        let mut done = false
-        while !done {
-          let (param, pn) = parse_one_param_with_binder_context(tokens, p, context)
-          Array::push(params, param)
-          let after = match peek(tokens, pn) {
-            TEq => {
-              let (pname, pty) = param
-              let base = pname[0: String::length(pname) - 1]
-              // The parameter is `Option[T]`; the body binds `T`.
-              let declared = match pty {
-                Some(TyApp(_, args)) => Array::get(args, 0),
-                Some(other) => other,
-                None => throw("parameter '\{base}' has a default but no type")
-              }
-              let (dflt, dn) = parse_impl_with_binder_context(tokens, [], pn + 1, 0, context)
-              Array::push(defaults, (base, declared, dflt))
-              Array::push(default_spans, (Array::length(params) - 1, pn + 1, dn))
-              dn
-            },
-            _ => {
-              let (pname, _) = param
-              let pl = String::length(pname)
-              if Array::length(defaults) > 0 && !(pl > 0 && pname[pl - 1: pl] == "?") {
-                throw("parameter '\{pname}' follows a parameter with a default, so it must have a default too (an omitted argument can only be a trailing one)")
-              } else {
-                ()
-              }
-              pn
+  let params: Array[(String, Option[TypeExpr])] = []
+  let defaults: Array[(String, TypeExpr, Expr)] = []
+  // (parameter index, first token, end token) of each default expression.
+  let default_spans: Array[(Int, Int, Int)] = []
+  match peek(tokens, pos) {
+    TRParen => (params, defaults, pos + 1),
+    _ => {
+      let mut p = pos
+      let mut done = false
+      while !done {
+        let (param, pn) = parse_one_param_with_binder_context(tokens, p, context)
+        Array::push(params, param)
+        let after = match peek(tokens, pn) {
+          TEq => {
+            let (pname, pty) = param
+            let base = pname[0: String::length(pname) - 1]
+            // The parameter is `Option[T]`; the body binds `T`.
+            let declared = match pty {
+              Some(TyApp(_, args)) => Array::get(args, 0),
+              Some(other) => other,
+              None => throw("parameter '\{base}' has a default but no type")
             }
+            let (dflt, dn) = parse_impl_with_binder_context(tokens, [], pn + 1, 0, context)
+            Array::push(defaults, (base, declared, dflt))
+            Array::push(default_spans, (Array::length(params) - 1, pn + 1, dn))
+            dn
+          },
+          _ => {
+            let (pname, _) = param
+            let pl = String::length(pname)
+            if Array::length(defaults) > 0 && !(pl > 0 && pname[pl - 1: pl] == "?") {
+              throw("parameter '\{pname}' follows a parameter with a default, so it must have a default too (an omitted argument can only be a trailing one)")
+            } else {
+              ()
+            }
+            pn
           }
-          match peek(tokens, after) {
-            TComma => match peek(tokens, after + 1) {
-              TRParen => {
-                p = after + 2
-                done = true
-              },
-              _ => {
-                p = after + 1
-              }
-            },
+        }
+        match peek(tokens, after) {
+          TComma => match peek(tokens, after + 1) {
             TRParen => {
-              p = after + 1
+              p = after + 2
               done = true
             },
             _ => {
-              let actual = tk_name(peek(tokens, after))
-              throw("expected ',' or ')' in param list at #\{after} token=\{actual}")
+              p = after + 1
             }
+          },
+          TRParen => {
+            p = after + 1
+            done = true
+          },
+          _ => {
+            let actual = tk_name(peek(tokens, after))
+            throw("expected ',' or ')' in param list at #\{after} token=\{actual}")
           }
         }
-        fn_param_defaults_refuse_forward_refs(tokens, params, default_spans)
-        (params, defaults, p)
       }
+      fn_param_defaults_refuse_forward_refs(tokens, params, default_spans)
+      (params, defaults, p)
     }
   }
 }

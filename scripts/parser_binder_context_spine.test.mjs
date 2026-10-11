@@ -294,10 +294,8 @@ test("B2 expression helper bodies carry context without private duplicate wrappe
     "parse_binding_name_with_binder_context(tokens, pos, context)",
   ], ["parse_binding_name(tokens,"]);
   // #3120: the `fn` parameter list (defaults included) threads the context
-  // into each parameter and each default expression. A list without a default
-  // takes the builder-backed list parser, with the same context.
+  // into each parameter and each default expression.
   assertContextual(exprSource, "parse_fn_param_list_with_defaults", [
-    "parse_param_list_with_binder_context(tokens, pos, context)",
     "parse_one_param_with_binder_context(tokens, p, context)",
     "parse_impl_with_binder_context(tokens, [], pn + 1, 0, context)",
   ], [
