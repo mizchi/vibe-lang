@@ -33,7 +33,7 @@ import ./checker.vibe {
 }
 
 import @vibe/ast {
-  type_param_name
+  builtin_ref_offset, type_param_name
 }
 
 import ./checked_expression_structure_core.vibe {
@@ -525,7 +525,10 @@ let defaulted_param_tbl: Array[(String, Array[Bool])] = []
 
 fn defaulted_unwrap_name(e: Expr) -> Option[(String, Expr)] {
   match e {
-    ELet(n, ECall(EFn(_, _, aparams, _, _, EIdent(abody, _)), cargs, _, _), rest, _) => if abody == "__asc" && Array::length(aparams) == 1 && Array::length(cargs) == 1 {
+    // Only the parser's own unwrap: it alone carries the compiler-synthesized
+    // offset on the `let`, so a program's `let x: T = match x { .. }` over an
+    // `x?` parameter is not mistaken for a default.
+    ELet(n, ECall(EFn(_, _, aparams, _, _, EIdent(abody, _)), cargs, _, _), rest, loff) => if loff == builtin_ref_offset() && abody == "__asc" && Array::length(aparams) == 1 && Array::length(cargs) == 1 {
       match Array::get(cargs, 0) {
         EMatch(EIdent(m, _), _) => if m == n {
           Some((n, rest))
@@ -601,7 +604,7 @@ fn syntactic_option_arg(e: Expr) -> Bool {
 /// written `None` would read as "omitted" and run the default: `f(None)` for
 /// `x: Option[Int] = Some(1)` answered `Some(1)`. Refused here, before the
 /// lowering, where only what the program wrote is visible.
-fn defaulted_explicit_option_check(fname: String, fname_off: Int, args: Array[Expr], errors: Array[String]) -> Unit {
+fn defaulted_explicit_option_check(fname: String, fname_off: Int, args: Array[Expr], pnames: Array[String], errors: Array[String]) -> Unit {
   let mut flags_opt = None
   for row in defaulted_param_tbl {
     let (n, flags) = row
@@ -615,13 +618,27 @@ fn defaulted_explicit_option_check(fname: String, fname_off: Int, args: Array[Ex
     Some(flags) => {
       let mut ai = 0
       while ai < Array::length(args) {
-        let value = match Array::get(args, ai) {
-          ELabeledArg(_, _, v) => v,
-          other => other
+        // A labeled argument binds the parameter its label names, not its
+        // written position (`f(b = None, a = 1)`); the lowering reorders it.
+        let (slot, value) = match Array::get(args, ai) {
+          ELabeledArg(lbl, _, v) => {
+            let mut at = ai
+            let mut pi = 0
+            while pi < Array::length(pnames) {
+              if Array::get(pnames, pi) == lbl {
+                at = pi
+              } else {
+                ()
+              }
+              pi = pi + 1
+            }
+            (at, v)
+          },
+          other => (ai, other)
         }
-        if ai < Array::length(flags) && Array::get(flags, ai) && syntactic_option_arg(value) {
+        if slot < Array::length(flags) && Array::get(flags, slot) && syntactic_option_arg(value) {
           let marker = labeled_name_marker(fname_off, String::length(fname))
-          Array::push(errors, String::concat("argument ", String::concat(__to_string(ai + 1), String::concat(" of ", String::concat(fname, String::concat(" is a written `None` / `Some(..)` for a parameter with a default, which would read as an omitted argument; bind the value first (`let v: T = None`) and pass `v`, or omit the argument to use the default", marker))))))
+          Array::push(errors, String::concat("argument ", String::concat(__to_string(slot + 1), String::concat(" of ", String::concat(fname, String::concat(" is a written `None` / `Some(..)` for a parameter with a default, which would read as an omitted argument; bind the value first (`let v: T = None`) and pass `v`, or omit the argument to use the default", marker))))))
         } else {
           ()
         }
@@ -786,7 +803,10 @@ export fn labeled_name_check_expr(e: Expr, tbl: Array[(String, Array[String])], 
       match callee {
         EIdent(fname, fname_off) => {
           if pre_desugar && !labeled_walk_shadowed(shadows, fname) {
-            defaulted_explicit_option_check(fname, fname_off, args, errors)
+            match lookup_labeled_check_fn(tbl, fname) {
+              Some(pnames) => defaulted_explicit_option_check(fname, fname_off, args, pnames, errors),
+              None => ()
+            }
           } else {
             ()
           }
