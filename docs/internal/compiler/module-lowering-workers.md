@@ -31,7 +31,11 @@ and preserve inline-Wasm name/body pairing. Whole-program passes 11 onward,
 structural-helper minting, ownership fixpoints and validators remain at link.
 A job failure must be propagated instead of publishing a partial linked program.
 
-`@vibe/compiler/lowering_worker` provides checked codecs built on AST binary
+The worker is a separate build unit and is not enrolled in the selfhost
+compiler source manifest. Importing the ordinary compiler does not load its
+job runners or transport codecs.
+
+`@vibe/lowering_worker` provides checked codecs built on AST binary
 ABI v4. The versioned job/product envelopes reject unsupported formats, trailing
 bytes and inconsistent parallel arrays. These are transient worker messages,
 not persistent cache entries. Callers own job freshness and must not reuse a
