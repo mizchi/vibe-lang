@@ -687,10 +687,11 @@ element each; a type error carries a byte RANGE over the offending expression
 -- and falls back to the enclosing anchor only where the AST has no offset for
 the node; a lexer error carries `line:col` on every lane; and the FS lane and
 `--single-file` answer `--json` byte-identically
-(`scripts/check_check_json_lane_parity.sh`). The residue is one AST shape:
-`EInt` / `EFloat` / `EBool` still have no offset slot, so an offset-less
-literal *argument* still anchors the callee (a binding's literal initializer
-is recovered from the source text instead).
+(`scripts/check_check_json_lane_parity.sh`). `EInt` / `EFloat` / `EBool`
+still have no offset slot; a binding's literal initializer and a literal
+*argument* (`f([1, 2])`, #3348) are recovered from the source text instead,
+and an argument the call's tokens do not show as written (a pipe's, a negative
+literal) still anchors the callee.
 
 > **解決済み: 「どちらの動詞を使うか」問題 (#1567)。** かつて `vibe check` と
 > `vibe diagnostics` が同じ質問に別の答え方をしていた (import 解決の有無・

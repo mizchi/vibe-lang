@@ -451,6 +451,173 @@ fn engine_enclosing_literal_range(source: String, elem: Int, path: String) -> (I
   }
 }
 
+/// #3348: the range of a literal ARGUMENT the checker could only anchor at
+/// its callee, or `(-1, -1)`.
+///
+/// `spec` is `@INDEX/COUNT/KIND/ITEMS` (`literal_arg_position_path`): the
+/// argument's position among the call's COUNT arguments, `1` / `2` / `4` for
+/// an array, a tuple or a scalar literal, and the literal's element count.
+/// `callee` must be the start of a name token, optionally qualified
+/// (`M::f`), followed directly by the call's `(`. The call must not be the
+/// receiver side of a `.` or `|>` (those prepend an argument the parentheses
+/// do not show) nor be applied again (`f(a)(b)` would name `a` for `b`). The
+/// parentheses must hold exactly COUNT arguments, none labeled, and the one at
+/// INDEX must be exactly the literal described. Anything else returns no
+/// range, and the callee stands.
+fn engine_call_argument_range(source: String, callee: Int, spec: String) -> (Int, Int) {
+  let fields = String::split(String::substring(spec, 1, String::length(spec)), "/")
+  if Array::length(fields) != 4 {
+    (0 - 1, 0 - 1)
+  } else {
+    let field = (k: Int) -> {
+      let f = Array::get(fields, k)
+      engine_parse_offset_digits(f, 0, String::length(f))
+    }
+    let index = field(0)
+    let count = field(1)
+    let kind = field(2)
+    let items = field(3)
+    let (tokens, starts, ends, _, _) = lex_with_offsets_recovering(source)
+    let at = engine_lit_token_index_at(tokens, starts, callee)
+    let named = at >= 0 && match Array::get(tokens, at) {
+      TIdent(_) => true,
+      _ => false
+    }
+    let received = at > 0 && match Array::get(tokens, at - 1) {
+      TDot => true,
+      TPipeGt => true,
+      TDoubleColon => true,
+      _ => false
+    }
+    if !named || received || index < 0 || count <= index || kind < 0 || items < 0 {
+      (0 - 1, 0 - 1)
+    } else {
+      let mut paren = at + 1
+      while paren + 1 < Array::length(tokens) && engine_call_arg_is_qualifier(Array::get(tokens, paren), Array::get(tokens, paren + 1)) {
+        paren = paren + 2
+      }
+      let opens_call = paren < Array::length(tokens) && match Array::get(tokens, paren) {
+        TLParen => true,
+        _ => false
+      }
+      let close = if opens_call {
+        engine_lit_matching_close(tokens, paren)
+      } else {
+        0 - 1
+      }
+      let applied_again = close >= 0 && close + 1 < Array::length(tokens) && match Array::get(tokens, close + 1) {
+        TLParen => true,
+        _ => false
+      }
+      if close < 0 || applied_again {
+        (0 - 1, 0 - 1)
+      } else {
+        let firsts: Array[Int] = []
+        let lasts: Array[Int] = []
+        let ok = engine_call_arg_segments(tokens, paren + 1, close, firsts, lasts)
+        if !ok || Array::length(firsts) != count {
+          (0 - 1, 0 - 1)
+        } else {
+          let first = Array::get(firsts, index)
+          let last = Array::get(lasts, index)
+          if engine_call_arg_is_literal(tokens, first, last, kind, items) {
+            (Array::get(starts, first), Array::get(ends, last))
+          } else {
+            (0 - 1, 0 - 1)
+          }
+        }
+      }
+    }
+  }
+}
+
+/// `::` followed by a name: one more segment of a qualified callee.
+fn engine_call_arg_is_qualifier(sep: Token, name: Token) -> Bool {
+  match sep {
+    TDoubleColon => match name {
+      TIdent(_) => true,
+      _ => false
+    },
+    _ => false
+  }
+}
+
+/// Split the tokens strictly between a call's parentheses (`from` .. `close`,
+/// exclusive) at its top-level commas, recording each argument's first and
+/// last token. A trailing comma is allowed. False for an empty argument, a
+/// labeled one (a top-level `:`), or a bracket that does not close inside.
+fn engine_call_arg_segments(tokens: Array[Token], from: Int, close: Int, firsts: Array[Int], lasts: Array[Int]) -> Bool {
+  let mut ok = true
+  let mut depth = 0
+  let mut seg = from
+  let mut i = from
+  while ok && i < close {
+    let tok = Array::get(tokens, i)
+    let k = engine_lit_bracket_kind(tok)
+    if k > 0 {
+      depth = depth + 1
+    } else if k < 0 {
+      depth = depth - 1
+      ok = depth >= 0
+    } else if depth == 0 {
+      match tok {
+        TComma => {
+          if i == seg {
+            ok = false
+          } else {
+            Array::push(firsts, seg)
+            Array::push(lasts, i - 1)
+          }
+          seg = i + 1
+        },
+        TColon => {
+          ok = false
+        },
+        _ => ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if ok && depth == 0 && seg < close {
+    Array::push(firsts, seg)
+    Array::push(lasts, close - 1)
+  } else {
+    ()
+  }
+  ok && depth == 0
+}
+
+/// Is the argument `first` .. `last` exactly the literal described: an array
+/// (`1`) or tuple (`2`) of `items` top-level elements spanning the whole
+/// argument, or (`4`) a single `Int` / `Double` / `Bool` token?
+fn engine_call_arg_is_literal(tokens: Array[Token], first: Int, last: Int, kind: Int, items: Int) -> Bool {
+  if kind == 4 {
+    first == last && match Array::get(tokens, first) {
+      TInt(_) => true,
+      TFloat(_) => true,
+      TIdent(word) => word == "true" || word == "false",
+      _ => false
+    }
+  } else if (kind == 1 || kind == 2) && engine_lit_bracket_kind(Array::get(tokens, first)) == kind && engine_lit_matching_close(tokens, first) == last {
+    let firsts: Array[Int] = []
+    let lasts: Array[Int] = []
+    let ok = engine_call_arg_segments(tokens, first + 1, last, firsts, lasts)
+    // A one-element tuple is written `(x,)`; `(x)` is grouping, not a tuple.
+    ok && Array::length(firsts) == items && (kind == 1 || items != 1 || engine_call_arg_trailing_comma(tokens, last))
+  } else {
+    false
+  }
+}
+
+fn engine_call_arg_trailing_comma(tokens: Array[Token], close: Int) -> Bool {
+  close > 0 && match Array::get(tokens, close - 1) {
+    TComma => true,
+    _ => false
+  }
+}
+
 /// #2831: locate and path-prefix each diagnostic in a `\n`-joined message.
 ///
 /// One entry per line, in order, blank lines dropped. A single-diagnostic
@@ -628,7 +795,12 @@ export fn engine_locate_type_error(source: String, msg: String) -> String {
       // When the source does not show exactly that literal, the element
       // stands -- a position inside the literal, never outside it.
       let (n, m) = if String::length(path) > 0 {
-        match engine_enclosing_literal_range(source, n, path) {
+        let widened = if String::starts_with(path, "@") {
+          engine_call_argument_range(source, n, path)
+        } else {
+          engine_enclosing_literal_range(source, n, path)
+        }
+        match widened {
           (ls, le) => if ls >= 0 {
             (ls, le)
           } else {

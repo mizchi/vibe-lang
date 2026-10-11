@@ -188,7 +188,10 @@ export fn unify_call_args(param_tys: Array[Type], arg_tys: Array[Type], arg_expr
     //
     // #3305: a tuple or array literal has no offset of its own, so it is
     // anchored at a located element inside it, and the locator widens that
-    // to the literal's brackets (`literal_arg_anchor`).
+    // to the literal's brackets (`literal_arg_anchor`). #3348: a literal with
+    // no located element at all (`f([1, 2])`, `takes(42)`) keeps the callee
+    // anchor and names its place in the call, which the locator reads back
+    // from the call's tokens (`literal_arg_position_path`).
     let (a_off, a_path) = if have_exprs {
       let ao = railway_expr_off(Array::get(arg_exprs, ui))
       if ao >= 0 {
@@ -198,7 +201,7 @@ export fn unify_call_args(param_tys: Array[Type], arg_tys: Array[Type], arg_expr
         if lo >= 0 {
           (lo, lpath)
         } else {
-          (off, "")
+          (off, literal_arg_position_path(Array::get(arg_exprs, ui), ui, Array::length(arg_exprs)))
         }
       }
     } else {
@@ -242,6 +245,31 @@ fn literal_arg_anchor(e: Expr) -> (Int, String) {
     EArray(items) => literal_items_anchor(items, "1"),
     ETuple(items) => literal_items_anchor(items, "2"),
     _ => (0 - 1, "")
+  }
+}
+
+/// #3348: where a literal argument with no located element can be found, as
+/// a path from the CALLEE: `@INDEX/COUNT/KIND/ITEMS`. `f([1, 2])` has no offset
+/// anywhere inside its argument -- `EInt` / `EFloat` / `EBool` carry none -- so
+/// the diagnostic anchors the callee, and the locator reads the argument back
+/// from the call's own tokens (`engine_call_argument_range`). `KIND` is `1` for
+/// an array, `2` for a tuple and `4` for an `Int` / `Double` / `Bool` literal,
+/// and `ITEMS` the literal's element count, so the source argument has to show
+/// exactly that shape; anything else keeps the callee anchor. `""` for any
+/// other expression.
+fn literal_arg_position_path(e: Expr, index: Int, count: Int) -> String {
+  let shape = match e {
+    EArray(items) => String::concat("1/", __to_string(Array::length(items))),
+    ETuple(items) => String::concat("2/", __to_string(Array::length(items))),
+    EInt(_) => "4/0",
+    EFloat(_) => "4/0",
+    EBool(_) => "4/0",
+    _ => ""
+  }
+  if String::length(shape) == 0 {
+    ""
+  } else {
+    String::concat("@", String::concat(__to_string(index), String::concat("/", String::concat(__to_string(count), String::concat("/", shape)))))
   }
 }
 

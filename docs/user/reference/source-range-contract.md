@@ -267,9 +267,26 @@ bracket path from the argument down to it, as `[@off=N::PATH]` (`1` for `[`,
 `2` for `(`, outermost first). The locator widens that position to the
 argument's own brackets: the brackets still open at the element's token must
 end in exactly that path, and the outermost is matched to its closer. Any
-other shape keeps the element itself, a position inside the argument. An
-argument literal with no such element — `f([1, 2])` — still anchors the
-callee.
+other shape keeps the element itself, a position inside the argument.
+
+An argument literal with no such element — `f([1, 2])`, `takes(42)`,
+`f((1, 2))` — is anchored at the CALLEE, with its place in the call recorded
+as `[@off=N::@INDEX/COUNT/KIND/ITEMS]` (#3348): its index among the call's
+COUNT arguments, `1` / `2` / `4` for an array, a tuple or an `Int` / `Double` /
+`Bool` literal, and the literal's element count. The locator reads the call's
+tokens: the callee is a name, optionally qualified, directly followed by `(`;
+the parentheses hold exactly COUNT unlabeled arguments; and the one at INDEX
+is exactly that literal, bracket to bracket, with that many elements. The
+range is then that argument's own text:
+
+| source | before | now |
+| --- | --- | --- |
+| `takes(42)`, `takes(s: String)` | `3:3` (the callee) | `3:9-11`, slicing `42` |
+| `sum([1, 2])`, `sum(xs: Array[String])` | `3:3` | `3:7-13`, slicing `[1, 2]` |
+
+Where the tokens do not show the call as the AST holds it, the callee stands:
+a pipe (`1 |> two(true)`) or a method receiver prepends an argument the
+parentheses do not show, `f(a)(b)` is applied again, and `-1` is two tokens.
 
 ### Assignment targets (#3248)
 
