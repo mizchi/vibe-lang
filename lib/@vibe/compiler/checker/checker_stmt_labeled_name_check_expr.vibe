@@ -590,6 +590,19 @@ export fn collect_defaulted_param_fns(stmts: Array[Stmt]) -> Unit {
   ()
 }
 
+fn defaulted_fn_known(fname: String) -> Bool {
+  let mut found = false
+  for row in defaulted_param_tbl {
+    let (n, _) = row
+    if n == fname {
+      found = true
+    } else {
+      ()
+    }
+  }
+  found
+}
+
 fn syntactic_option_arg(e: Expr) -> Bool {
   match e {
     EIdent(n, _) => n == "None",
@@ -794,7 +807,11 @@ fn labeled_walk_pat_binds(pat: Pat, shadows: Array[String]) -> Unit {
 export fn labeled_name_check_expr(e: Expr, tbl: Array[(String, Array[String])], shadows: Array[String], errors: Array[String], pre_desugar: Bool) -> Unit {
   match e {
     ECall(callee, args, _, _) => {
-      labeled_name_check_expr(callee, tbl, shadows, errors, pre_desugar)
+      // A named callee is a call, not a value reference (see the `EIdent` arm).
+      match callee {
+        EIdent(_, _) => (),
+        _ => labeled_name_check_expr(callee, tbl, shadows, errors, pre_desugar)
+      }
       let mut i = 0
       while i < Array::length(args) {
         labeled_name_check_expr(Array::get(args, i), tbl, shadows, errors, pre_desugar)
@@ -1019,6 +1036,18 @@ export fn labeled_name_check_expr(e: Expr, tbl: Array[(String, Array[String])], 
         labeled_name_check_expr(Array::get(exprs, i), tbl, shadows, errors, pre_desugar)
         i = i + 1
       }
+    },
+    // #3120 (Codex on #3438): a function with parameter defaults used as a
+    // VALUE has the lowered type, where each defaulted `x: T` is an
+    // `Option[T]`. Called through it, `g(None)` reads as "omitted" and runs
+    // the default -- the direct-call refusal above cannot see that call. Only
+    // a direct call knows the defaults, so the value is refused with the
+    // wrapper that keeps the call direct.
+    EIdent(n, off) => if pre_desugar && !labeled_walk_shadowed(shadows, n) && defaulted_fn_known(n) {
+      let marker = labeled_name_marker(off, String::length(n))
+      Array::push(errors, String::concat(n, String::concat(" has parameter defaults, which apply only to a direct call, so it cannot be used as a value; wrap it in a lambda that calls it, e.g. `(a) -> ", String::concat(n, String::concat("(a)`", marker)))))
+    } else {
+      ()
     },
     _ => ()
   }
