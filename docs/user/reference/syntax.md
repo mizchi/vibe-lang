@@ -246,6 +246,8 @@ export let g2: () -> String = () -> { greet("hi", 3) }
   `where` contract.
 - A written `None` / `Some(..)` passed to a defaulted parameter is refused: it
   would read as an omitted argument. Bind the value first and pass the name.
+- Defaults apply only to a direct call. A function with defaults cannot be
+  used as a value; wrap it in a lambda that calls it, `(a) -> greet(a)`.
 
 `x?` is an optional parameter (#1500). It is declared at type `Option[T]` and
 the call site may omit it:
