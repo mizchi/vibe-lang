@@ -1486,33 +1486,46 @@ fn collect_call_records(expr: Expr, handled: Array[String], via: Array[(String, 
       }
       // A bound lambda is run here, and stays the arguments' callee: whether it
       // answers for a callback is read from its own body
-      // (`bound_lambda_discharges`, #3416).
-      let target = if is_bound_lambda_marker(resolved) {
-        run_bound_lambda(resolved, handled, via, out)
-        resolved
-      } else {
-        if String::length(resolved) > 0 {
-          Array::push(out, (resolved, handled, via, key))
-        } else {
-          ()
-        }
-        resolved
-      }
-      let mut k = 0
-      while k < Array::length(args) {
-        let arg = Array::get(args, k)
-        let arg_via = if String::length(target) > 0 {
-          let inner = array_empty()
-          for step in via {
-            Array::push(inner, step)
+      // (`bound_lambda_discharges`, #3416). A `let mut` binding that holds
+      // only function names calls those functions, under this call's
+      // instantiation and with their own parameter rows (Codex on #3436: `let
+      // mut h = run; h(() -> mk())`).
+      let targets = array_empty()
+      if is_bound_lambda_marker(resolved) {
+        let aliases = bound_alias_targets(resolved)
+        if Array::length(aliases) > 0 {
+          mark_bound_lambda_used(resolved)
+          for t in aliases {
+            Array::push(out, (t, handled, via, key))
+            Array::push(targets, t)
           }
-          Array::push(inner, (target, k))
-          inner
         } else {
-          via
+          run_bound_lambda(resolved, handled, via, out)
+          Array::push(targets, resolved)
         }
-        collect_arg_records(arg, handled, arg_via, via, scope, out)
-        k = k + 1
+      } else if String::length(resolved) > 0 {
+        Array::push(out, (resolved, handled, via, key))
+        Array::push(targets, resolved)
+      } else {
+        ()
+      }
+      if Array::length(targets) == 0 {
+        for arg in args {
+          collect_arg_records(arg, handled, via, via, scope, out)
+        }
+      } else {
+        for target in targets {
+          let mut k = 0
+          while k < Array::length(args) {
+            let arg_via = array_empty()
+            for step in via {
+              Array::push(arg_via, step)
+            }
+            Array::push(arg_via, (target, k))
+            collect_arg_records(Array::get(args, k), handled, arg_via, via, scope, out)
+            k = k + 1
+          }
+        }
       }
       ()
     },
@@ -1631,13 +1644,45 @@ fn bound_lambda_active_empty() -> Array[String] {
   array_empty()
 }
 
-fn run_bound_lambda(marker: String, handled: Array[String], via: Array[(String, Int)], out: Array[(String, Array[String], Array[(String, Int)], String)]) -> Unit {
+fn mark_bound_lambda_used(marker: String) -> Unit {
   let used = Array::get(bound_lambda_used_cell, 0)
   if !checker_effects_string_has(used, marker) {
     Array::push(used, marker)
   } else {
     ()
   }
+}
+
+/// The top-level functions a binding's values all name, or nothing when any
+/// value is a lambda or a local binding.
+fn bound_alias_targets(marker: String) -> Array[String] {
+  let found = array_empty()
+  let mut all = true
+  for entry in bound_lambda_values(marker) {
+    let (value, def_scope) = entry
+    let target = match value {
+      EIdent(x, _) => scope_resolve(def_scope, x),
+      _ => ""
+    }
+    if String::length(target) > 0 && !is_bound_lambda_marker(target) {
+      if !checker_effects_string_has(found, target) {
+        Array::push(found, target)
+      } else {
+        ()
+      }
+    } else {
+      all = false
+    }
+  }
+  if all {
+    found
+  } else {
+    array_empty()
+  }
+}
+
+fn run_bound_lambda(marker: String, handled: Array[String], via: Array[(String, Int)], out: Array[(String, Array[String], Array[(String, Int)], String)]) -> Unit {
+  mark_bound_lambda_used(marker)
   let active = Array::get(bound_lambda_active_cell, 0)
   if !checker_effects_string_has(active, marker) {
     Array::push(active, marker)
