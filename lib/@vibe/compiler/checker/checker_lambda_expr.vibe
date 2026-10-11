@@ -38,6 +38,7 @@ import @vibe/compiler/core {
   env_bind_mut,
   env_has_reexport_surface_binding,
   env_lookup,
+  expr_children,
   find_typedef,
   fresh_var,
   instantiate,
@@ -108,13 +109,15 @@ import ./checker_builtin_arg_head_rest.vibe {
 }
 
 import ./checker_closure_capture_row.vibe {
+  assignment_crosses_region,
   captured_escape_tvars,
   closure_capture_row,
   container_write_crosses_region,
   env_reachable_tvars,
   esc_ids_intersect,
   region_write_escape_message,
-  tail_expr_off
+  tail_expr_off,
+  type_mentions_active_region
 }
 
 import ./checker_eq_unbounded_formal_msg.vibe {
@@ -415,6 +418,278 @@ export fn retaining_write_region_check(name: String, args: Array[Expr], env: Typ
     }
   } else {
     ()
+  }
+}
+
+/// #3360: a closure literal handed to a function is checked before the call
+/// fixes its parameter's type, so a write of that parameter inside it saw a
+/// type variable and no region: `Array::map(hs, (h) -> { Array::push(outer,
+/// h); 0 })` kept the group's task handles in an outer array, where `for h in
+/// hs` is refused. After the call has unified its arguments, `s` knows the
+/// parameter's type; each unannotated parameter whose type now carries an
+/// active region has its writes checked again with it -- the parameter stored
+/// whole, or wrapped in a constructor, tuple or array literal, by a retaining
+/// call or an assignment. A target or parameter that a binder inside the
+/// literal shadows is not the outer one, so it is not asked.
+export fn lambda_arg_param_write_check(args: Array[Expr], arg_tys: Array[Type], s: Subst, env: TypeEnv, errors: Array[String]) -> Unit {
+  if env_has_active_region(env) {
+    let mut ai = 0
+    while ai < Array::length(args) && ai < Array::length(arg_tys) {
+      match Array::get(args, ai) {
+        EFn(_, _, ps, _, _, body) => match subst_apply(s, Array::get(arg_tys, ai)) {
+          CtFn(ptys, _, _) => {
+            let inner: Array[String] = []
+            lapw_binders(body, inner)
+            let mut pi = 0
+            while pi < Array::length(ps) && pi < Array::length(ptys) {
+              let (pn, pann) = Array::get(ps, pi)
+              let pname = lapw_base_name(pn)
+              let pty = subst_apply(s, Array::get(ptys, pi))
+              match pann {
+                None => if !lapw_has(inner, pname) && type_mentions_active_region(pty, env) {
+                  lapw_scan(body, pname, pty, inner, env, errors)
+                } else {
+                  ()
+                },
+                Some(_) => ()
+              }
+              pi = pi + 1
+            }
+          },
+          _ => ()
+        },
+        _ => ()
+      }
+      ai = ai + 1
+    }
+  } else {
+    ()
+  }
+}
+
+/// #3360: the element-callback builtins (`Array::map`, `Array::fold`,
+/// `Array::filter`, ..) check an unannotated callback parameter against the
+/// element type without binding it, so its type variable stays open and
+/// `lambda_arg_param_write_check` cannot read it. Their parameter at `pidx`
+/// receives each element, so its writes are checked with the element type.
+export fn lambda_arg_elem_write_check(arg: Expr, recv_ty: Type, pidx: Int, s: Subst, env: TypeEnv, errors: Array[String]) -> Unit {
+  if env_has_active_region(env) {
+    match subst_apply(s, recv_ty) {
+      CtArray(elem) => match arg {
+        EFn(_, _, ps, _, _, body) => if pidx < Array::length(ps) {
+          let (pn, pann) = Array::get(ps, pidx)
+          let pname = lapw_base_name(pn)
+          let inner: Array[String] = []
+          lapw_binders(body, inner)
+          let ety = subst_apply(s, elem)
+          match pann {
+            None => if !lapw_has(inner, pname) && type_mentions_active_region(ety, env) {
+              lapw_scan(body, pname, ety, inner, env, errors)
+            } else {
+              ()
+            },
+            Some(_) => ()
+          }
+        } else {
+          ()
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+  } else {
+    ()
+  }
+}
+
+fn lapw_scan(e: Expr, pname: String, pty: Type, inner: Array[String], env: TypeEnv, errors: Array[String]) -> Unit {
+  match e {
+    ECall(EIdent(callee, _), args, _, _) => {
+      let mask = retaining_write_argument_mask(callee)
+      if mask != 0 && Array::length(args) > 0 && lapw_target_outer(Array::get(args, 0), inner) {
+        let mut vi = 1
+        while vi <= 2 && vi < Array::length(args) {
+          let retained = if vi == 1 {
+            mask == 1 || mask == 3
+          } else {
+            mask == 2 || mask == 3
+          }
+          let value = Array::get(args, vi)
+          if retained && lapw_stores_param(value, pname) && container_write_crosses_region(Array::get(args, 0), pty, env) {
+            lapw_report(region_write_escape_message(pty, env, "region escapes its scope: a container write stores a value that captures this region into an outer binding"), value, errors)
+          } else {
+            ()
+          }
+          vi = vi + 1
+        }
+      } else {
+        ()
+      }
+    },
+    EAssign(n, v, _, _) => if !lapw_has(inner, n) && lapw_stores_param(v, pname) && assignment_crosses_region(n, pty, env) {
+      lapw_report(region_write_escape_message(pty, env, "region escapes its scope: an assignment stores a value that captures this region into an outer binding"), v, errors)
+    } else {
+      ()
+    },
+    _ => ()
+  }
+  for child in expr_children(e) {
+    lapw_scan(child, pname, pty, inner, env, errors)
+  }
+  ()
+}
+
+/// One diagnostic per site: a write the literal's own check already refused
+/// (its parameter was known there) is not reported twice.
+fn lapw_report(message: String, value: Expr, errors: Array[String]) -> Unit {
+  let line = String::concat(message, off_marker(tail_expr_off(value)))
+  if !lapw_has(errors, line) {
+    Array::push(errors, line)
+  } else {
+    ()
+  }
+}
+
+/// Is `value` the parameter itself, or a constructor call, tuple or array
+/// literal holding it directly?
+fn lapw_stores_param(value: Expr, pname: String) -> Bool {
+  match value {
+    EIdent(n, _) => n == pname,
+    ECall(EIdent(ctor, _), cargs, _, _) => lapw_is_ctor_name(ctor) && lapw_any_is_param(cargs, pname),
+    ETuple(items) => lapw_any_is_param(items, pname),
+    EArray(items) => lapw_any_is_param(items, pname),
+    _ => false
+  }
+}
+
+/// A constructor's last segment is capitalized (`Some`, `Maybe::Some`); a
+/// function's is not (`TaskHandle::join`).
+fn lapw_is_ctor_name(name: String) -> Bool {
+  let cut = String::last_index_of(name, "::")
+  let last = if cut >= 0 {
+    String::substring(name, cut + 2, String::length(name))
+  } else {
+    name
+  }
+  String::length(last) > 0 && String::byte_at(last, 0) >= 65 && String::byte_at(last, 0) <= 90
+}
+
+fn lapw_any_is_param(items: Array[Expr], pname: String) -> Bool {
+  let mut found = false
+  for item in items {
+    match item {
+      EIdent(n, _) => if n == pname {
+        found = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+  }
+  found
+}
+
+/// A target named by a binding the literal makes itself is not outer.
+fn lapw_target_outer(target: Expr, inner: Array[String]) -> Bool {
+  match target {
+    EIdent(n, _) => !lapw_has(inner, n),
+    EDot(obj, _, _, _) => lapw_target_outer(obj, inner),
+    _ => true
+  }
+}
+
+/// Every name a binder inside `e` introduces.
+fn lapw_binders(e: Expr, out: Array[String]) -> Unit {
+  match e {
+    ELet(n, _, _, _) => Array::push(out, n),
+    ELetMut(n, _, _, _) => Array::push(out, n),
+    ELetRec(n, _, _) => Array::push(out, n),
+    EFn(_, _, ps, _, _, _) => {
+      for p in ps {
+        Array::push(out, lapw_base_name(p.0))
+      }
+      ()
+    },
+    EForIn(n, idx, _, _) => {
+      Array::push(out, n)
+      match idx {
+        Some(i) => Array::push(out, i),
+        None => ()
+      }
+    },
+    ELoop(pairs, _) => {
+      for pair in pairs {
+        Array::push(out, pair.0)
+      }
+      ()
+    },
+    EMatch(_, arms) => {
+      for arm in arms {
+        lapw_pat_binders(arm.0, out)
+      }
+      ()
+    },
+    EHandle(_, arms) => {
+      for arm in arms {
+        lapw_pat_binders(arm.0, out)
+      }
+      ()
+    },
+    _ => ()
+  }
+  for child in expr_children(e) {
+    lapw_binders(child, out)
+  }
+  ()
+}
+
+fn lapw_pat_binders(p: Pat, out: Array[String]) -> Unit {
+  match p {
+    PBind(n) => Array::push(out, n),
+    PCtor(_, ps) => {
+      for q in ps {
+        lapw_pat_binders(q, out)
+      }
+      ()
+    },
+    PTuple(ps) => {
+      for q in ps {
+        lapw_pat_binders(q, out)
+      }
+      ()
+    },
+    POr(a, b) => {
+      lapw_pat_binders(a, out)
+      lapw_pat_binders(b, out)
+    },
+    PStruct(_, fields) => {
+      for f in fields {
+        lapw_pat_binders(f.1, out)
+      }
+      ()
+    },
+    _ => ()
+  }
+}
+
+fn lapw_has(names: Array[String], name: String) -> Bool {
+  let mut found = false
+  for n in names {
+    if n == name {
+      found = true
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+fn lapw_base_name(pn: String) -> String {
+  let ln = String::length(pn)
+  if ln > 0 && (String::byte_at(pn, ln - 1) == 126 || String::byte_at(pn, ln - 1) == 63) {
+    String::substring(pn, 0, ln - 1)
+  } else {
+    pn
   }
 }
 
