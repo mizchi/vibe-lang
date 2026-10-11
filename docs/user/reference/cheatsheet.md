@@ -2565,6 +2565,29 @@ from `@vibe/core`.
 `Int::is_even`, `Int::is_odd`, `Double::abs`, `Double::max`, `Double::min`,
 `Double::floor`, `Double::ceil`.
 
+**Checked arithmetic** (#3127): `Int::checked_add`, `Int::checked_sub`,
+`Int::checked_mul`, `Int::checked_div`, `Int::checked_neg`, imported from
+`@vibe/builtin`. The bare operators keep wrapping (`max + 1 == min`); each
+checked form returns `Option[Int]`, `None` exactly when the true result leaves
+the 63-bit range (and, for `checked_div`, when the divisor is zero), otherwise
+`Some` of the bare operator's answer.
+
+```vibe
+import @vibe/builtin { Int::checked_add, max_value }
+
+fn next_id(n: Int) -> Int {
+  match Int::checked_add(n, 1) {
+    Some(m) => m,
+    None => 0
+  }
+}
+
+test "next_id saturates instead of wrapping" {
+  assert_eq(next_id(41), 42)
+  assert_eq(next_id(max_value), 0)
+}
+```
+
 **Bits** (#2344): `Int::popcount`, `Int::ctz`, `Int::clz`, `Int::select1`.
 All four are **63-bit** answers, because an `Int` is a 63-bit two's complement
 value and not an i64 — so `Int::popcount(-1)` is 63, not 64, and the largest

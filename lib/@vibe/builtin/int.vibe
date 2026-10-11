@@ -249,3 +249,57 @@ export fn Int::is_negative(x: Int) -> Bool {
 export fn Int::is_positive(x: Int) -> Bool {
   int_is_positive(x)
 }
+
+//# Checked arithmetic (#3127)
+// The bare operators wrap as 63-bit two's complement (ADR-0105). These are the
+// opt-in spelling for "fail if this overflows": each answers `None` exactly
+// when the true result lies outside `min_value ..= max_value`, and otherwise
+// `Some` of the same value the bare operator gives.
+
+/// `a + b`, or `None` when the sum overflows. The wrapped sum has the wrong
+/// sign exactly when the operands share a sign and the result does not.
+export fn Int::checked_add(a: Int, b: Int) -> Option[Int] {
+  let r = a + b
+  if (a < 0) == (b < 0) && (r < 0) != (a < 0) {
+    None
+  } else Some(r)
+}
+
+/// `a - b`, or `None` when the difference overflows.
+export fn Int::checked_sub(a: Int, b: Int) -> Option[Int] {
+  let r = a - b
+  if (a < 0) != (b < 0) && (r < 0) != (a < 0) {
+    None
+  } else Some(r)
+}
+
+/// `a * b`, or `None` when the product overflows.
+export fn Int::checked_mul(a: Int, b: Int) -> Option[Int] {
+  if a == 0 || b == 0 {
+    Some(0)
+  }
+  else if (a == 0 - 1 && b == int_min_value) || (b == 0 - 1 && a == int_min_value) {
+    None
+  }
+  else {
+    let r = a * b
+    if r / b != a {
+      None
+    } else Some(r)
+  }
+}
+
+/// `a / b`, or `None` when `b` is zero or the quotient overflows
+/// (`min_value / -1`).
+export fn Int::checked_div(a: Int, b: Int) -> Option[Int] {
+  if b == 0 || (a == int_min_value && b == 0 - 1) {
+    None
+  } else Some(a / b)
+}
+
+/// `-a`, or `None` for `min_value`, whose negation does not fit.
+export fn Int::checked_neg(a: Int) -> Option[Int] {
+  if a == int_min_value {
+    None
+  } else Some(0 - a)
+}
