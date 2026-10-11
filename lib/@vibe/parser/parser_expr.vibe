@@ -827,6 +827,50 @@ fn parse_fn_name(tokens: Array[Token], pos: Int, context: Option[ParserBinderCon
 /// returns it beside the parameter's bare name. `fn_param_defaults_wrap`
 /// unwraps the parameter at the top of the body.
 fn parse_fn_param_list_with_defaults(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (Array[(String, Option[TypeExpr])], Array[(String, TypeExpr, Expr)], Int) with Exception {
+  // Almost no list carries a default: keep the builder-backed list parser
+  // for those, so a `fn` without defaults allocates what it did before.
+  if !fn_param_list_has_default(tokens, pos) {
+    let (params, next) = parse_param_list_with_binder_context(tokens, pos, context)
+    (params, [], next)
+  } else {
+    parse_fn_param_list_defaulted(tokens, pos, context)
+  }
+}
+
+/// Whether the parameter list starting at `pos` has an `=` outside any
+/// bracket, which only a default can put there.
+fn fn_param_list_has_default(tokens: Array[Token], pos: Int) -> Bool {
+  let mut depth = 0
+  let mut t = pos
+  let mut found = false
+  let mut done = false
+  while !done {
+    match peek(tokens, t) {
+      TLParen|TLBracket|TLBrace => {
+        depth = depth + 1
+      },
+      TRParen|TRBracket|TRBrace => if depth == 0 {
+        done = true
+      } else {
+        depth = depth - 1
+      },
+      TEq => if depth == 0 {
+        found = true
+        done = true
+      } else {
+        ()
+      },
+      TEof => {
+        done = true
+      },
+      _ => ()
+    }
+    t = t + 1
+  }
+  found
+}
+
+fn parse_fn_param_list_defaulted(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (Array[(String, Option[TypeExpr])], Array[(String, TypeExpr, Expr)], Int) with Exception {
   let params: Array[(String, Option[TypeExpr])] = []
   let defaults: Array[(String, TypeExpr, Expr)] = []
   // (parameter index, first token, end token) of each default expression.
