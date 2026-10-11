@@ -8,6 +8,10 @@ import @vibe/ast {
   Expr, Pat, Stmt, TypeExpr, builtin_ref, builtin_ref_offset, trait_ref_key
 }
 
+import ./lexer.vibe {
+  lex_with_offsets
+}
+
 import ./parser_base.vibe {
   _no_tb,
   _no_tp,
@@ -908,27 +912,52 @@ fn fn_param_defaults_refuse_forward_refs(tokens: Array[Token], params: Array[(St
   for span in spans {
     let (at, first, end) = span
     let (own, _) = Array::get(params, at)
-    let mut t = first
-    while t < end {
-      match peek(tokens, t) {
-        TIdent(n) => {
-          let mut j = at
-          while j < Array::length(params) {
-            let (pj, _) = Array::get(params, j)
-            if fn_param_base_name(pj) == n {
-              throw("the default of parameter '\{fn_param_base_name(own)}' reads '\{n}', which is declared at or after it; a default can only read the parameters before it")
-            } else {
-              ()
-            }
-            j = j + 1
-          }
-        },
-        _ => ()
-      }
-      t = t + 1
+    let later: Array[String] = []
+    let mut j = at
+    while j < Array::length(params) {
+      let (pj, _) = Array::get(params, j)
+      Array::push(later, fn_param_base_name(pj))
+      j = j + 1
+    }
+    match fn_param_default_names_any(tokens, first, end, later) {
+      Some(n) => throw("the default of parameter '\{fn_param_base_name(own)}' reads '\{n}', which is declared at or after it; a default can only read the parameters before it"),
+      None => ()
     }
   }
   ()
+}
+
+/// The first identifier among `tokens[first..end)` named in `names`. An
+/// interpolated string is one token whose expression fragments are re-lexed
+/// only when it is built (Codex on #3438: `x: String = "\{y}"` hid `y`), so
+/// each fragment is lexed and scanned here too.
+fn fn_param_default_names_any(tokens: Array[Token], first: Int, end: Int, names: Array[String]) -> Option[String] with Exception {
+  let mut found = None
+  let mut t = first
+  while t < end && found == None {
+    match peek(tokens, t) {
+      TIdent(n) => {
+        for name in names {
+          if name == n {
+            found = Some(n)
+          } else {
+            ()
+          }
+        }
+      },
+      TStringInterp(parts, _) => {
+        let mut i = 1
+        while i < Array::length(parts) && found == None {
+          let (ftoks, _, _) = lex_with_offsets(Array::get(parts, i))
+          found = fn_param_default_names_any(ftoks, 0, Array::length(ftoks), names)
+          i = i + 2
+        }
+      },
+      _ => ()
+    }
+    t = t + 1
+  }
+  found
 }
 
 /// The identity `(__asc: T) -> __asc` a written `let x: T = e` parses to
