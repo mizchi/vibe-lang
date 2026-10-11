@@ -1,0 +1,87 @@
+// Module-local prelude after dependency interfaces have been prepared.
+// Whole-program passes 11 onward remain in the coordinator.
+import @vibe/compiler/core {
+  Stmt
+}
+import ./module_job.vibe {
+  ModuleLoweringDeferred, ModuleLoweringJob, run_module_lowering_job
+}
+import @vibe/compiler/codegen/wasi {
+  PreludeEnv, PreludeTail, lc_apply_pass_recording, lc_collect_stdin_provider_diag, oracle_stmt_key, prelude_tail_new, prelude_tail_record
+}
+
+export struct PreludeModuleJob {
+  trait_job: ModuleLoweringJob;
+  entry_name: String;
+  alias_renames: Array[(String, String)];
+  calls_host_future: Bool;
+  waiter_hooks: Bool;
+  aw_note: String
+}
+export struct PreludeModuleProduct {
+  module_tag: String;
+  own: Array[Stmt];
+  synth_keys: Array[String];
+  tail: PreludeTail;
+  diagnostics: Array[String];
+  synthesis_requests: Array[String];
+  deferred: ModuleLoweringDeferred;
+  inline_names: Array[String];
+  inline_wats: Array[String];
+  invisible_nominals: Array[String]
+}
+
+/// The input was normalized through pass 3 before its bodyless interfaces
+/// were constructed. Workers run exactly 4..10, in the existing order.
+export fn run_prelude_module_job(job: PreludeModuleJob) -> PreludeModuleProduct with Exception {
+  let inline_names: Array[String] = []
+  let inline_wats: Array[String] = []
+  let env = PreludeEnv::{
+    linked_imports: [],
+    iw_names: inline_names,
+    iw_wats: inline_wats,
+    facts_known: true,
+    optional_resolution: [],
+    optional_source_names: [],
+    alias_renames: job.alias_renames,
+    calls_host_future: job.calls_host_future,
+    waiter_hooks: job.waiter_hooks,
+    aw_note: job.aw_note,
+    trait_facts: job.trait_job.facts
+  }
+  let result = run_module_lowering_job(job.trait_job)
+  let part = result.own
+  let keys: Array[String] = []
+  let diags: Array[String] = []
+  let tail = prelude_tail_new()
+  for synthesized in result.synthesized {
+    let key = oracle_stmt_key(synthesized)
+    Array::push(keys, key)
+    prelude_tail_record(tail, key, 4)
+    Array::push(part, synthesized)
+  }
+  let mut pass = 5
+  while pass < 11 {
+    lc_apply_pass_recording(pass, part, job.entry_name, job.trait_job.typed_offsets, job.trait_job.typed_keys, keys, tail, diags, env)
+    if pass == 5 {
+      lc_collect_stdin_provider_diag(part, diags)
+    } else ()
+    pass = pass + 1
+  }
+  PreludeModuleProduct::{
+    module_tag: job.trait_job.module_tag,
+    own: part,
+    synth_keys: keys,
+    tail: tail,
+    diagnostics: diags,
+    synthesis_requests: result.synthesis_requests,
+    deferred: result.deferred,
+    inline_names: inline_names,
+    inline_wats: inline_wats,
+    invisible_nominals: result.invisible_nominals
+  }
+}
+
+export fn PreludeModuleJob::run_prelude_module_job(recv: PreludeModuleJob) -> PreludeModuleProduct with Exception {
+  run_prelude_module_job(recv)
+}

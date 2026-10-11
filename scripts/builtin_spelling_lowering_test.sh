@@ -89,15 +89,18 @@ assert_lowered() { # assert_lowered <call>
   note "  ok   $1 is lowered and explains itself under its own name"
 }
 
+# A real HostStream keeps this test's checker-admission premise after #3368
+# stopped accepting an Int as a compiler-owned nominal. The named producer
+# never executes: close itself must explain the missing Async entry first.
 note "=== both spellings of the close operation reach the same lowering ==="
-assert_lowered "HostStream::close(0)"
-assert_lowered "host_stream_close(0)"
+assert_lowered 'HostStream::close(host_stream_named("probe"))'
+assert_lowered 'host_stream_close(host_stream_named("probe"))'
 
 note "=== and the checker admitted both, which is why the above must hold ==="
 # If a spelling ever stops type-checking this test would pass vacuously: the
 # run output would carry a type error instead of an ICE, and "not an ICE" is
 # not the property. So the admission is asserted separately.
-for spelling in "HostStream::close(0)" "host_stream_close(0)"; do
+for spelling in 'HostStream::close(host_stream_named("probe"))' 'host_stream_close(host_stream_named("probe"))'; do
   probe "$spelling"
   if [ -n "$CHECK_OUT" ]; then
     note "  FAIL $spelling: vibe check is no longer clean, so the rows above prove nothing"

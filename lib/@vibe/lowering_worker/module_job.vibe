@@ -1,0 +1,125 @@
+// Trait-dictionary worker boundary. A job contains one owned partition and
+// its resolved bodyless dependency interfaces, never a whole codegen plan.
+import @vibe/compiler/core {
+  Stmt, TypeExpr, namespace_rename_originals_restore, namespace_rename_originals_snapshot
+}
+import @vibe/compiler/normalize/desugar {
+  ModuleTraitFacts,
+  desugar_trait_dicts_module_with_facts,
+  dtd_eq_deferred_requests,
+  dtd_eq_deferred_types,
+  dtd_eq_invisible_nominals,
+  dtd_eq_typed_refusals,
+  eq_deferred_request_record_ty,
+  eq_deferred_reset,
+  eq_invisible_nominals_list,
+  eq_invisible_nominals_reset,
+  eq_synthesis_requests_list,
+  eq_typed_refusals_list
+}
+
+export struct ModuleLoweringJob {
+  own: Array[Stmt];
+  interfaces: Array[Stmt];
+  module_tag: String;
+  typed_offsets: Array[Int];
+  typed_keys: Array[String];
+  facts: ModuleTraitFacts;
+  namespace_originals: Array[(String, String)]
+}
+
+export struct ModuleLoweringDeferred {
+  requests: Array[(String, TypeExpr)];
+  refusals: Array[String]
+}
+
+export struct ModuleLoweringProduct {
+  own: Array[Stmt];
+  synthesized: Array[Stmt];
+  synthesis_requests: Array[String];
+  deferred: ModuleLoweringDeferred;
+  invisible_nominals: Array[String]
+}
+
+export fn module_lowering_deferred_snapshot() -> ModuleLoweringDeferred {
+  let requests: Array[(String, TypeExpr)] = []
+  let mut i = 0
+  while i < Array::length(dtd_eq_deferred_requests) {
+    Array::push(requests, (Array::get(dtd_eq_deferred_requests, i), Array::get(dtd_eq_deferred_types, i)))
+    i = i + 1
+  }
+  ModuleLoweringDeferred::{
+    requests: requests,
+    refusals: eq_typed_refusals_list()
+  }
+}
+
+/// Coordinator merge, in source-module order. First occurrence owns a key,
+/// exactly as in the existing sequential lane.
+export fn module_lowering_deferred_merge(product: ModuleLoweringDeferred) -> Unit {
+  for request in product.requests {
+    eq_deferred_request_record_ty(request.0, request.1)
+  }
+  for key in product.refusals {
+    let mut present = false
+    for previous in dtd_eq_typed_refusals {
+      if previous == key {
+        present = true
+      } else ()
+    }
+    if !present {
+      Array::push(dtd_eq_typed_refusals, key)
+    } else ()
+  }
+  ()
+}
+
+fn restore_job_boundary(renames: Array[(String, String)], deferred: ModuleLoweringDeferred, invisible: Array[String]) -> Unit {
+  namespace_rename_originals_restore(renames)
+  eq_deferred_reset()
+  module_lowering_deferred_merge(deferred)
+  eq_invisible_nominals_reset()
+  for name in invisible {
+    Array::push(dtd_eq_invisible_nominals, name)
+  }
+  ()
+}
+
+/// Consumes the owned AST. Separate Wasm instances provide CPU isolation;
+/// this entry is not safe for simultaneous calls within one instance.
+/// The coordinator's cross-module ledger and merge metadata are restored on
+/// success AND failure. The equality ledger and namespace metadata cross this boundary explicitly.
+export fn run_module_lowering_job(job: ModuleLoweringJob) -> ModuleLoweringProduct with Exception {
+  if Array::length(job.typed_offsets) != Array::length(job.typed_keys) {
+    throw("module lowering: typed row lengths differ")
+  } else ()
+  let renames = namespace_rename_originals_snapshot()
+  let deferred = module_lowering_deferred_snapshot()
+  let invisible = eq_invisible_nominals_list()
+  namespace_rename_originals_restore(job.namespace_originals)
+  eq_deferred_reset()
+  eq_invisible_nominals_reset()
+  handle {
+    let synthesized = desugar_trait_dicts_module_with_facts(job.own, job.interfaces, job.module_tag, job.typed_offsets, job.typed_keys, job.facts)
+    let product = ModuleLoweringProduct::{
+      own: job.own,
+      synthesized: synthesized,
+      synthesis_requests: eq_synthesis_requests_list(),
+      deferred: module_lowering_deferred_snapshot(),
+      invisible_nominals: eq_invisible_nominals_list()
+    }
+    restore_job_boundary(renames, deferred, invisible)
+    product
+  } with { Exception::Throw(message) => {
+    restore_job_boundary(renames, deferred, invisible)
+    throw(message)
+  } }
+}
+
+export fn ModuleLoweringJob::run_module_lowering_job(recv: ModuleLoweringJob) -> ModuleLoweringProduct with Exception {
+  run_module_lowering_job(recv)
+}
+
+export fn ModuleLoweringDeferred::module_lowering_deferred_merge(recv: ModuleLoweringDeferred) -> Unit {
+  module_lowering_deferred_merge(recv)
+}

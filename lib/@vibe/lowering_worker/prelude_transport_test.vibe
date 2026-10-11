@@ -1,0 +1,58 @@
+import ./prelude_job.vibe {
+  PreludeModuleJob, run_prelude_module_job
+}
+import ./module_job.vibe {
+  ModuleLoweringJob
+}
+import @vibe/compiler/normalize/desugar {
+  module_trait_facts_none
+}
+import @vibe/compiler/syntax {
+  lex, parse_program, print_stmt
+}
+import ./prelude_transport.vibe {
+  decode_prelude_module_job, decode_prelude_module_product, encode_prelude_module_job, encode_prelude_module_product
+}
+
+fn sample_job() -> PreludeModuleJob with Exception {
+  PreludeModuleJob::{
+    trait_job: ModuleLoweringJob::{
+      own: parse_program(lex("fn raw() -> Int = wasm \"(i64.const 7)\"\nfn answer() -> Int { raw() }\n")),
+      interfaces: [],
+      module_tag: "f0",
+      typed_offsets: [],
+      typed_keys: [],
+      facts: module_trait_facts_none(),
+      namespace_originals: []
+    },
+    entry_name: "answer",
+    alias_renames: [],
+    calls_host_future: false,
+    waiter_hooks: false,
+    aw_note: ""
+  }
+}
+
+test "module prelude wire carries extracted inline wasm separately" {
+  let job = sample_job()
+  let wire = encode_prelude_module_job(job)
+  let decoded = decode_prelude_module_job(wire)
+  inspect(encode_prelude_module_job(decoded) == wire, content = "true")
+  let product = run_prelude_module_job(decoded)
+  inspect(Array::length(product.inline_names), content = "1")
+  inspect(Array::get(product.inline_names, 0), content = "raw")
+  inspect(Array::get(product.inline_wats, 0), content = "(i64.const 7)")
+  let body = print_stmt(Array::get(product.own, 0))
+  inspect(String::contains(body, "%wasm"), content = "false")
+  let bytes = encode_prelude_module_product(product)
+  inspect(encode_prelude_module_product(decode_prelude_module_product(bytes)) == bytes, content = "true")
+}
+
+test "module prelude wire refuses trailing input" {
+  let wire = encode_prelude_module_job(sample_job())
+  Bytes::push(wire, 0)
+  let outcome = handle {
+    let _ = decode_prelude_module_job(wire); "accepted"
+  } with { Exception::Throw(msg) => msg }
+  inspect(outcome, content = "prelude module: trailing bytes")
+}

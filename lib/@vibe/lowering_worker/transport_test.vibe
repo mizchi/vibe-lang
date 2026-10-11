@@ -1,0 +1,52 @@
+import ./transport.vibe {
+  decode_module_lowering_job, decode_module_lowering_product, encode_module_lowering_job, encode_module_lowering_product
+}
+import ./module_job.vibe {
+  ModuleLoweringJob, run_module_lowering_job
+}
+import @vibe/compiler/normalize/desugar {
+  module_trait_facts_none
+}
+import @vibe/compiler/syntax {
+  lex, parse_program, print_stmt
+}
+
+test "module job wire preserves owned bodies and source names" {
+  let job = ModuleLoweringJob::{
+    own: parse_program(lex("struct Point { x: Int } derive (Show)")),
+    interfaces: [],
+    module_tag: "f7",
+    typed_offsets: [17],
+    typed_keys: ["row"],
+    facts: module_trait_facts_none(),
+    namespace_originals: [("Point", "SourcePoint")]
+  }
+  let bytes = encode_module_lowering_job(job)
+  let decoded = decode_module_lowering_job(bytes)
+  inspect(encode_module_lowering_job(decoded) == bytes, content = "true")
+  let product = run_module_lowering_job(decoded)
+  let wire = encode_module_lowering_product(product)
+  inspect(encode_module_lowering_product(decode_module_lowering_product(wire)) == wire, content = "true")
+}
+
+test "module job wire refuses suffixes and truncated products" {
+  let job = ModuleLoweringJob::{
+    own: [],
+    interfaces: [],
+    module_tag: "f7",
+    typed_offsets: [],
+    typed_keys: [],
+    facts: module_trait_facts_none(),
+    namespace_originals: []
+  }
+  let bytes = encode_module_lowering_job(job)
+  Bytes::push(bytes, 0)
+  let message = handle {
+    let _ = decode_module_lowering_job(bytes); "accepted"
+  } with { Exception::Throw(msg) => msg }
+  inspect(message, content = "module lowering: trailing bytes")
+  let refused = handle {
+    let _ = decode_module_lowering_product(Bytes::new()); false
+  } with { Exception::Throw(_) => true }
+  inspect(refused, content = "true")
+}
