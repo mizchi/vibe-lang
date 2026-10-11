@@ -825,6 +825,8 @@ fn parse_fn_name(tokens: Array[Token], pos: Int, context: Option[ParserBinderCon
 fn parse_fn_param_list_with_defaults(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (Array[(String, Option[TypeExpr])], Array[(String, TypeExpr, Expr)], Int) with Exception {
   let params: Array[(String, Option[TypeExpr])] = []
   let defaults: Array[(String, TypeExpr, Expr)] = []
+  // (parameter index, first token, end token) of each default expression.
+  let default_spans: Array[(Int, Int, Int)] = []
   match peek(tokens, pos) {
     TRParen => (params, defaults, pos + 1),
     _ => {
@@ -845,6 +847,7 @@ fn parse_fn_param_list_with_defaults(tokens: Array[Token], pos: Int, context: Op
             }
             let (dflt, dn) = parse_impl_with_binder_context(tokens, [], pn + 1, 0, context)
             Array::push(defaults, (base, declared, dflt))
+            Array::push(default_spans, (Array::length(params) - 1, pn + 1, dn))
             dn
           },
           _ => {
@@ -878,9 +881,54 @@ fn parse_fn_param_list_with_defaults(tokens: Array[Token], pos: Int, context: Op
           }
         }
       }
+      fn_param_defaults_refuse_forward_refs(tokens, params, default_spans)
       (params, defaults, p)
     }
   }
+}
+
+/// A parameter's name without its `~` / `?` marker.
+fn fn_param_base_name(raw: String) -> String {
+  let n = String::length(raw)
+  if n > 0 && (raw[n - 1: n] == "?" || raw[n - 1: n] == "~") {
+    raw[0: n - 1]
+  } else {
+    raw
+  }
+}
+
+/// #3120: the defaults are unwrapped in declaration order, so while a default
+/// runs, the parameter itself and every later one are still the `Option` the
+/// call site passed. Reading one would see that hidden representation
+/// (Codex on #3438: `fn f(x: Option[Int] = y, y: Int = 7)` answered `None`).
+/// Refused instead. The check reads the default's TOKENS, so a field or a
+/// lambda parameter that merely shares the name is refused too -- the safe
+/// direction.
+fn fn_param_defaults_refuse_forward_refs(tokens: Array[Token], params: Array[(String, Option[TypeExpr])], spans: Array[(Int, Int, Int)]) -> Unit with Exception {
+  for span in spans {
+    let (at, first, end) = span
+    let (own, _) = Array::get(params, at)
+    let mut t = first
+    while t < end {
+      match peek(tokens, t) {
+        TIdent(n) => {
+          let mut j = at
+          while j < Array::length(params) {
+            let (pj, _) = Array::get(params, j)
+            if fn_param_base_name(pj) == n {
+              throw("the default of parameter '\{fn_param_base_name(own)}' reads '\{n}', which is declared at or after it; a default can only read the parameters before it")
+            } else {
+              ()
+            }
+            j = j + 1
+          }
+        },
+        _ => ()
+      }
+      t = t + 1
+    }
+  }
+  ()
 }
 
 /// The identity `(__asc: T) -> __asc` a written `let x: T = e` parses to

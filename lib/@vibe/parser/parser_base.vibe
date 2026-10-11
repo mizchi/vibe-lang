@@ -1721,7 +1721,12 @@ export fn parse_one_param_with_binder_context(tokens: Array[Token], pos: Int, co
           match peek(tokens, pos + 2) {
             TColon => {
               let (ty, tp) = parse_type_with_source_context(tokens, pos + 3, 0, context);
-              ((labeled_name, Some(ty)), tp)
+              match peek(tokens, tp) {
+                // #3120 (Codex on #3438): a default is not supported on a
+                // labeled parameter yet.
+                TEq => throw("parameter '\{name}~' is labeled, and a labeled parameter cannot carry a default yet; drop the `~`, or declare it `\{name}?: T` and match on the `Option`"),
+                _ => ((labeled_name, Some(ty)), tp)
+              }
             },
             _ => ((labeled_name, None), pos + 2)
           }
@@ -1738,7 +1743,12 @@ export fn parse_one_param_with_binder_context(tokens: Array[Token], pos: Int, co
               // slots become `None`, supplied ones `Some(v)`. The `?` used to be
               // recorded only on the NAME, so the declared type stayed `T` and
               // the parameter was optional in spelling alone.
-              ((opt_name, Some(optional_param_type(ty, true))), tp)
+              match peek(tokens, tp) {
+                // #3120: `x?: T` already means "omitted is `None`"; a default
+                // is spelled without the `?`.
+                TEq => throw("parameter '\{name}?' is optional and also has a default; write `\{name}: T = value` (without `?`) to get the default"),
+                _ => ((opt_name, Some(optional_param_type(ty, true))), tp)
+              }
             },
             _ => ((opt_name, None), pos + 2)
           }
