@@ -373,9 +373,9 @@ fn edp_copy_local_helpers(tps: Array[String], tbs: Array[(String, Array[String])
     let slot = edp_scope_last_index(scope, cn)
     let found = edp_local_lit_at(cn, slot)
     match found {
-      Some(EFn(_, _, hps, _, None, hb)) => {
+      Some(EFn(_, _, _, _, None, hb)) => {
         let helper = Array::get(edp_local_lit_vals, edp_local_lit_index(cn, slot))
-        if edp_literal_calls_local(helper, hb, scope) || edp_copy_is_rebound(helper, hps, slot, scope, param_names) {
+        if edp_literal_calls_local(helper, hb, scope) || edp_copy_is_rebound(helper, slot, scope, param_names) {
           ok = false
         } else {
           Array::push(slots, slot)
@@ -413,33 +413,119 @@ fn edp_copy_local_helpers(tps: Array[String], tbs: Array[(String, Array[String])
   }
 }
 
-/// Does any identifier the copied `helper` mentions -- other than its own
-/// parameters -- name a binding made after `slot` in `scope`, or a parameter
-/// of the literal it is copied into?
-fn edp_copy_is_rebound(helper: Expr, hps: Array[(String, Option[TypeExpr])], slot: Int, scope: Array[String], param_names: Array[String]) -> Bool {
-  let hparams: Array[String] = []
-  for p in hps {
-    Array::push(hparams, edp_param_base_name(p.0))
-  }
+/// Does a name the copied `helper` reads or writes from outside itself name a
+/// binding made after `slot` in `scope`, or a parameter of the literal it is
+/// copied into? Either would capture the copy, which then reads -- or assigns
+/// -- a different binding from the original (Codex on #3437).
+fn edp_copy_is_rebound(helper: Expr, slot: Int, scope: Array[String], param_names: Array[String]) -> Bool {
+  let free: Array[String] = []
+  edp_free_names(helper, [], free)
   let mut rebound = false
-  let stack: Array[Expr] = [helper]
-  while !rebound && Array::length(stack) > 0 {
-    let n = Array::length(stack)
-    let cur = Array::get(stack, n - 1)
-    Array::truncate(stack, n - 1)
-    match cur {
-      EIdent(name, _) => if !edp_str_array_contains(hparams, name) && (edp_str_array_contains(param_names, name) || edp_scope_index_after(scope, name, slot)) {
-        rebound = true
-      } else {
-        ()
-      },
-      _ => ()
-    }
-    for child in expr_children(cur) {
-      Array::push(stack, child)
+  for name in free {
+    if name == edp_free_names_opaque || edp_str_array_contains(param_names, name) || edp_scope_index_after(scope, name, slot) {
+      rebound = true
+    } else {
+      ()
     }
   }
   rebound
+}
+
+/// Recorded by `edp_free_names` for a part it cannot read names out of (an
+/// interpolation's text), so a copy is declined rather than trusted.
+let edp_free_names_opaque = "#opaque"
+
+/// The names `e` reads or assigns that it does not bind itself, into `out`.
+/// `bound` is the names bound around `e`. Every binder form is scoped (`let`,
+/// `let mut`, `let rec`, parameters, match and handler arm patterns, `for`,
+/// `loop`), and an assignment's target counts, because the AST keeps it as a
+/// name rather than an `EIdent`.
+fn edp_free_names(e: Expr, bound: Array[String], out: Array[String]) -> Unit {
+  match e {
+    EIdent(n, _) => edp_free_name(n, bound, out),
+    EAssign(n, v, c, _) => {
+      edp_free_name(n, bound, out)
+      edp_free_names(v, bound, out)
+      edp_free_names(c, bound, out)
+    },
+    EAssignOp(n, _, v, c, _) => {
+      edp_free_name(n, bound, out)
+      edp_free_names(v, bound, out)
+      edp_free_names(c, bound, out)
+    },
+    ELet(n, v, b, _) => {
+      edp_free_names(v, bound, out)
+      edp_free_names(b, edp_names_with(bound, [n]), out)
+    },
+    ELetMut(n, v, b, _) => {
+      edp_free_names(v, bound, out)
+      edp_free_names(b, edp_names_with(bound, [n]), out)
+    },
+    ELetRec(n, v, b) => {
+      let inner = edp_names_with(bound, [n])
+      edp_free_names(v, inner, out)
+      edp_free_names(b, inner, out)
+    },
+    EFn(_, _, ps, _, _, body) => {
+      let names: Array[String] = []
+      for p in ps {
+        Array::push(names, edp_param_base_name(p.0))
+      }
+      edp_free_names(body, edp_names_with(bound, names), out)
+    },
+    EMatch(sc, arms) => {
+      edp_free_names(sc, bound, out)
+      for arm in arms {
+        edp_free_names(arm.1, edp_names_with(bound, edp_pat_names(arm.0)), out)
+      }
+    },
+    EHandle(bd, arms) => {
+      edp_free_names(bd, bound, out)
+      for arm in arms {
+        edp_free_names(arm.1, edp_names_with(bound, edp_pat_names(arm.0)), out)
+      }
+    },
+    EForIn(n, idx, it, b) => {
+      edp_free_names(it, bound, out)
+      let names = [n]
+      match idx {
+        Some(i) => Array::push(names, i),
+        None => ()
+      }
+      edp_free_names(b, edp_names_with(bound, names), out)
+    },
+    ELoop(pairs, b) => {
+      let names: Array[String] = []
+      for pair in pairs {
+        edp_free_names(pair.1, bound, out)
+        Array::push(names, pair.0)
+      }
+      edp_free_names(b, edp_names_with(bound, names), out)
+    },
+    EStringInterp(_) => Array::push(out, edp_free_names_opaque),
+    _ => for child in expr_children(e) {
+      edp_free_names(child, bound, out)
+    }
+  }
+}
+
+fn edp_free_name(n: String, bound: Array[String], out: Array[String]) -> Unit {
+  if !edp_str_array_contains(bound, n) && !edp_str_array_contains(out, n) {
+    Array::push(out, n)
+  } else {
+    ()
+  }
+}
+
+fn edp_names_with(bound: Array[String], names: Array[String]) -> Array[String] {
+  let out: Array[String] = []
+  for n in bound {
+    Array::push(out, n)
+  }
+  for n in names {
+    Array::push(out, n)
+  }
+  out
 }
 
 fn edp_scope_last_index(scope: Array[String], name: String) -> Int {
