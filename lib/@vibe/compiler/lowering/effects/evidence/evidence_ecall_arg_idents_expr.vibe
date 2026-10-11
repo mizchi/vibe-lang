@@ -312,6 +312,189 @@ fn edp_literal_calls_local(lit: Expr, body: Expr, scope: Array[String]) -> Bool 
   found
 }
 
+/// #3424: the row-free closure literals `let`-bound around the expression the
+/// stamp is walking, innermost last, each with the index its name has in
+/// `scope`.
+let edp_local_lit_names: Array[String] = []
+let edp_local_lit_slots: Array[Int] = []
+let edp_local_lit_vals: Array[Expr] = []
+
+/// #3424: a row-free literal at a row-typed slot that calls local closures
+/// (`let helper = () -> 3; run_str(() -> helper())`), rebuilt with a copy of
+/// each one's binding at the top of its body, or None.
+///
+/// The literal is left at arity 0 otherwise and traps when the callee passes
+/// it a dict. Stamping it as written is refused: the migration's eligibility
+/// scan reads the literal's body on its own, where `helper` is an unknown
+/// call. With the binding copied in, the scan reads `helper`'s literal at its
+/// definition and the call through it as a call through a local literal, the
+/// shape it already rewrites -- a perform inside `helper` takes the dict the
+/// callee passes, which is the handler a perform reaches at run time.
+///
+/// The copy must mean what the original binding means. So every local the
+/// literal calls must be a row-free closure literal bound by `let`, not one of
+/// the literal's own binders, nor a hoisted lambda, nor a closure that itself
+/// calls a local. No name the copy mentions may be rebound between its
+/// definition and the literal, or by the literal's parameters, because the
+/// copy would then read that binding instead.
+fn edp_copy_local_helpers(tps: Array[String], tbs: Array[(String, Array[String])], ps: Array[(String, Option[TypeExpr])], ret: Option[TypeExpr], body: Expr, scope: Array[String]) -> Option[Expr] {
+  let own = edp_collect_program_binders([SExpr(body)])
+  let param_names: Array[String] = []
+  for p in ps {
+    Array::push(param_names, edp_param_base_name(p.0))
+  }
+  let called: Array[String] = []
+  let mut ok = true
+  let stack: Array[Expr] = [body]
+  while ok && Array::length(stack) > 0 {
+    let n = Array::length(stack)
+    let cur = Array::get(stack, n - 1)
+    Array::truncate(stack, n - 1)
+    match cur {
+      ECall(EIdent(cn, _), _, _, _) => if MutSet::has(own, cn) || String::starts_with(cn, "__hoisted_lam_") || edp_str_array_contains(param_names, cn) {
+        ok = false
+      } else if edp_scope_has(scope, cn) && !edp_str_array_contains(called, cn) {
+        Array::push(called, cn)
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    for child in expr_children(cur) {
+      Array::push(stack, child)
+    }
+  }
+  // Each copy, outermost binding first, so a later one may mention an earlier.
+  let slots: Array[Int] = []
+  let vals: Array[Expr] = []
+  let mut ci = 0
+  while ok && ci < Array::length(called) {
+    let cn = Array::get(called, ci)
+    let slot = edp_scope_last_index(scope, cn)
+    let found = edp_local_lit_at(cn, slot)
+    match found {
+      Some(EFn(_, _, hps, _, None, hb)) => {
+        let helper = Array::get(edp_local_lit_vals, edp_local_lit_index(cn, slot))
+        if edp_literal_calls_local(helper, hb, scope) || edp_copy_is_rebound(helper, hps, slot, scope, param_names) {
+          ok = false
+        } else {
+          Array::push(slots, slot)
+          Array::push(vals, helper)
+        }
+      },
+      _ => {
+        ok = false
+      }
+    }
+    ci = ci + 1
+  }
+  if !ok || Array::length(vals) == 0 {
+    None
+  } else {
+    // Innermost first while wrapping, so the outermost ends up outside.
+    let mut out = body
+    let mut k = Array::length(called)
+    while k > 0 {
+      let mut best = 0 - 1
+      let mut bi = 0
+      while bi < Array::length(slots) {
+        if Array::get(slots, bi) >= 0 && (best < 0 || Array::get(slots, bi) > Array::get(slots, best)) {
+          best = bi
+        } else {
+          ()
+        }
+        bi = bi + 1
+      }
+      out = ELet(Array::get(called, best), Array::get(vals, best), out, -1)
+      Array::set(slots, best, 0 - 1)
+      k = k - 1
+    }
+    Some(EFn(tps, tbs, ps, ret, None, out))
+  }
+}
+
+/// Does any identifier the copied `helper` mentions -- other than its own
+/// parameters -- name a binding made after `slot` in `scope`, or a parameter
+/// of the literal it is copied into?
+fn edp_copy_is_rebound(helper: Expr, hps: Array[(String, Option[TypeExpr])], slot: Int, scope: Array[String], param_names: Array[String]) -> Bool {
+  let hparams: Array[String] = []
+  for p in hps {
+    Array::push(hparams, edp_param_base_name(p.0))
+  }
+  let mut rebound = false
+  let stack: Array[Expr] = [helper]
+  while !rebound && Array::length(stack) > 0 {
+    let n = Array::length(stack)
+    let cur = Array::get(stack, n - 1)
+    Array::truncate(stack, n - 1)
+    match cur {
+      EIdent(name, _) => if !edp_str_array_contains(hparams, name) && (edp_str_array_contains(param_names, name) || edp_scope_index_after(scope, name, slot)) {
+        rebound = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    for child in expr_children(cur) {
+      Array::push(stack, child)
+    }
+  }
+  rebound
+}
+
+fn edp_scope_last_index(scope: Array[String], name: String) -> Int {
+  let mut i = Array::length(scope)
+  let mut found = 0 - 1
+  while found < 0 && i > 0 {
+    i = i - 1
+    if Array::get(scope, i) == name {
+      found = i
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+fn edp_scope_index_after(scope: Array[String], name: String, slot: Int) -> Bool {
+  let mut i = slot + 1
+  let mut found = false
+  while !found && i < Array::length(scope) {
+    found = Array::get(scope, i) == name
+    i = i + 1
+  }
+  found
+}
+
+/// The index in `edp_local_lit_*` of the literal bound to `name` at `slot`, or
+/// -1. A name rebound at another slot (a parameter, a pattern) is not it.
+fn edp_local_lit_index(name: String, slot: Int) -> Int {
+  let mut i = Array::length(edp_local_lit_names)
+  let mut found = 0 - 1
+  while found < 0 && i > 0 {
+    i = i - 1
+    if Array::get(edp_local_lit_names, i) == name && Array::get(edp_local_lit_slots, i) == slot {
+      found = i
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+fn edp_local_lit_at(name: String, slot: Int) -> Option[Expr] {
+  let i = if slot < 0 {
+    0 - 1
+  } else {
+    edp_local_lit_index(name, slot)
+  }
+  if i < 0 {
+    None
+  } else {
+    Some(Array::get(edp_local_lit_vals, i))
+  }
+}
+
 /// Can a literal at a slot with this row be given it? Only when every label
 /// is a concrete effect. A row variable (`TaskGroup::run`'s `with e`) is
 /// admitted by the argument-inertness rule when the literal has no row of its
@@ -427,7 +610,22 @@ fn edp_stamp_expr(e: Expr, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, 
     },
     ELet(n, v, b, off) => {
       let v2 = edp_stamp_let_literal(n, edp_stamp_expr(v, stmts, fn_defs, scope, pure_names), b, stmts, fn_defs, scope)
-      ELet(n, v2, edp_stamp_scoped(b, [n], stmts, fn_defs, scope, pure_names), off)
+      // #3424: a row-free closure literal stays visible to a literal in its
+      // body that calls it (`edp_copy_local_helpers`).
+      let mark = Array::length(edp_local_lit_names)
+      match v2 {
+        EFn(_, _, _, _, None, _) => {
+          Array::push(edp_local_lit_names, n)
+          Array::push(edp_local_lit_slots, Array::length(scope))
+          Array::push(edp_local_lit_vals, v2)
+        },
+        _ => ()
+      }
+      let b2 = edp_stamp_scoped(b, [n], stmts, fn_defs, scope, pure_names)
+      Array::truncate(edp_local_lit_names, mark)
+      Array::truncate(edp_local_lit_slots, mark)
+      Array::truncate(edp_local_lit_vals, mark)
+      ELet(n, v2, b2, off)
     },
     ELetRec(n, v, b) => ELetRec(n, edp_stamp_scoped(v, [n], stmts, fn_defs, scope, pure_names), edp_stamp_scoped(b, [
       n
@@ -753,12 +951,18 @@ fn edp_stamp_slot_arg(a: Expr, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bo
     a
   } else {
     match a {
-      EFn(tps, tbs, ps, ret, None, b) => if edp_literal_calls_local(a, b, scope) {
-        a
-      } else {
-        match edp_slot_row(stmts, fn_defs, callee, pos) {
-          Some(row) => EFn(tps, tbs, ps, ret, Some(row), b),
-          None => a
+      EFn(tps, tbs, ps, ret, None, b) => {
+        let lit = if edp_literal_calls_local(a, b, scope) {
+          edp_copy_local_helpers(tps, tbs, ps, ret, b, scope)
+        } else {
+          Some(a)
+        }
+        match lit {
+          Some(EFn(ltps, ltbs, lps, lret, None, lb)) => match edp_slot_row(stmts, fn_defs, callee, pos) {
+            Some(row) => EFn(ltps, ltbs, lps, lret, Some(row), lb),
+            None => a
+          },
+          _ => a
         }
       },
       EIdent(an, _) => if MutSet::has(pure_names, an) && !edp_scope_has(scope, an) {
