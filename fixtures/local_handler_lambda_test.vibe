@@ -1,0 +1,54 @@
+// #3416: a local lambda that handles the effect its callback parameter names.
+// With the rows written, the evidence pass refused the program ("its evidence
+// migration is not fully eligible"): the handle inside the local lambda calls
+// that lambda's own row-typed parameter, and only the enclosing top-level
+// function's parameters were counted as passing the dict.
+effect Box[T] {
+  Put(T) -> Int
+}
+
+fn mk() -> Int with Box[Int] {
+  perform Box::Put(12345)
+}
+
+fn written() -> Int {
+  let cb = () -> Int with Box[Int] { mk() }
+  let lrun = (f: () -> Int with Box[Int]) -> Int {
+    handle {
+      f()
+    } with {
+      Box::Put(n) => resume(n + 1)
+    }
+  }
+  lrun(cb)
+}
+
+fn bare_mk() -> Int with Box {
+  perform Box::Put(41)
+}
+
+fn bare() -> Int with Box {
+  let cb = () -> bare_mk()
+  let lrun = (f: () -> Int with Box[Int]) -> Int {
+    handle {
+      f()
+    } with {
+      Box::Put(n) => resume(n + 1)
+    }
+  }
+  lrun(cb)
+}
+
+fn top() -> Int with Box[String] {
+  bare()
+}
+
+test "a local lambda handles its callback's effect" {
+  inspect(written(), "12346")
+  let v = handle {
+    top()
+  } with {
+    Box::Put(s) => resume(String::length(s))
+  }
+  inspect(v, "42")
+}
