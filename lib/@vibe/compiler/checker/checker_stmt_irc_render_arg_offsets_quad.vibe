@@ -167,7 +167,7 @@ import ./checker_stmt_stmts_with_binders.vibe {
 import ./checker_stmt_unknown_effect_label_errors.vibe {
   builtin_seed_withheld,
   canonicalize_stdin_provider_type_import_heads,
-  check_labeled_arg_names_stmts,
+  check_labeled_arg_names_stmts_with_imports,
   check_program_bounds,
   collect_async_effect_errors,
   collect_constructor_binder_errors,
@@ -1157,12 +1157,14 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
       collect_derive_field_errors(stmts, initial_env, frozen_errors)
       // #1455 step 3: see check_program.
       let qualified_pattern_refs = collect_qualified_pattern_refs(stmts)
+      // #3432: the imported functions' parameter names, so an omitted
+      // optional argument or a label reaches the callee it names, and a label
+      // the callee does not declare is refused as it is for a local callee.
+      let imported_param_rows = unshadowed_param_rows(env_param_name_rows(initial_env), stmts)
       // #1001: mixed argument-mode validation before desugar (see check_program).
-      check_labeled_arg_names_stmts(stmts, frozen_errors, true)
+      check_labeled_arg_names_stmts_with_imports(stmts, frozen_errors, true, imported_param_rows)
       // #986: reorder fully-labeled calls before checking (see check_program).
-      // #3432: with the imported functions' parameter names, so an omitted
-      // optional argument or a label reaches the callee it names.
-      imported_params_set(unshadowed_param_rows(env_param_name_rows(initial_env), stmts))
+      imported_params_set(imported_param_rows)
       desugar_labeled_args(stmts)
       imported_params_set(array_empty())
       // #1571: see check_program.
@@ -1208,7 +1210,7 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
       set_generic_fn_decls(stmts)
       check_assignable_set_type_defs(empty_defs)
       // #986: labeled-argument name validation (see check_program).
-      check_labeled_arg_names_stmts(stmts, frozen_errors, false)
+      check_labeled_arg_names_stmts_with_imports(stmts, frozen_errors, false, imported_param_rows)
       // Keep CheckedProgram.checked_stmts as the original post-desugar source,
       // but match the ordinary path by checking and validating an expanded copy.
       let expanded_stmts = es_expand_top_level_effectset_rows(stmts, initial_env)

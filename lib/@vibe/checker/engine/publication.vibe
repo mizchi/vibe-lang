@@ -796,10 +796,10 @@ fn engine_bind_param_name_markers(stmts: Array[Stmt], publication_env: TypeEnv, 
   }
   // The markers this module's imports brought in, for what it re-publishes:
   // a re-exported function, or the companions of a re-exported type. An own
-  // function of the same name hides the imported marker.
+  // top-level binding of the same name hides the imported marker.
   for row in env_param_name_rows(publication_env) {
     let (fname, names) = row
-    if engine_env_has_value(published, fname) && !engine_stmts_define_fn(stmts, fname) {
+    if engine_env_has_value(published, fname) && !engine_stmts_bind_top_level(stmts, fname) {
       let fields: Array[(String, Type)] = []
       for pn in names {
         Array::push(fields, (pn, CtUnit))
@@ -821,15 +821,21 @@ fn engine_params_have_optional(params: Array[(String, Option[TypeExpr])]) -> Boo
   found
 }
 
-fn engine_stmts_define_fn(stmts: Array[Stmt], name: String) -> Bool {
+/// Whether the module binds `name` at top level: a local `fn` or `let` of
+/// that name is what gets published, so it hides an imported marker even
+/// when it is not written as a lambda (`export let f: (Int) -> Int = g`,
+/// Codex on #3441).
+fn engine_stmts_bind_top_level(stmts: Array[Stmt], name: String) -> Bool {
   let mut found = false
   for stmt in stmts {
-    match stmt {
-      SLet(_, _, fname, _, EFn(_, _, _, _, _, _)) => {
-        found = found || fname == name
-      },
-      _ => ()
+    let bound = match stmt {
+      SLet(_, _, n, _, _) => n == name,
+      SLetMut(n, _, _) => n == name,
+      SExternLet(n, _) => n == name,
+      SFnDecl(_, n, _, _, _) => n == name,
+      _ => false
     }
+    found = found || bound
   }
   found
 }
