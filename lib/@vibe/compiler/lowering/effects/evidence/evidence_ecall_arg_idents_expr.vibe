@@ -288,7 +288,9 @@ fn edp_expr_passes_literal_arg(e: Expr, pure_names: MutSet[String]) -> Bool {
       } else {
         ()
       },
-      ELet(_, EFn(_, _, _, _, None, _), _, _) => {
+      // A row-free one may take a row from its uses; one with a row is
+      // bound under a name of its own (`edp_unique_row_lit_name`, #3416).
+      ELet(_, EFn(_, _, _, _, _, _), _, _) => {
         found = true
       },
       _ => ()
@@ -388,6 +390,34 @@ fn edp_snap_fresh_name(name: String) -> String {
     ()
   }
   fresh
+}
+
+/// #3416: a closure literal with a row of its own, `let`-bound, under a name
+/// no other binder of the program spells. The migration passes the dict at a
+/// call through a name bound to such a literal, and it decides that by NAME:
+/// a name some other binder also spells is dropped from that set
+/// (`edp_filter_unpoisoned`), while the literal still takes the dict
+/// parameter. So `let run = () -> Int with Box[Int] { .. }; run()` in one
+/// function and `let run = (x: Int) -> Int { .. }` in another compiled to a
+/// call with one argument too few and trapped ("null function or function
+/// signature mismatch"). The body is left as written when it holds a part the
+/// rename cannot read (an interpolation's text).
+fn edp_unique_row_lit_name(name: String, v: Expr, body: Expr) -> (String, Expr) {
+  match v {
+    EFn(_, _, _, _, Some(row), _) => if String::length(String::trim(row)) == 0 {
+      (name, body)
+    } else {
+      let free: Array[String] = []
+      edp_free_names(body, empty_str_array(), free)
+      if edp_str_array_contains(free, edp_free_names_opaque) {
+        (name, body)
+      } else {
+        let fresh = edp_snap_fresh_name(name)
+        (fresh, edp_rename_free(body, name, fresh))
+      }
+    },
+    _ => (name, body)
+  }
 }
 
 /// #3424: a row-free literal at a row-typed slot that calls local closures
@@ -1192,8 +1222,9 @@ fn edp_stamp_expr(e: Expr, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, 
       Array::truncate(scope, base)
       EFn(tps, tbs, params, ret, eff, body2)
     },
-    ELet(n, v, b, off) => {
-      let v2 = edp_stamp_let_literal(n, edp_stamp_expr(v, stmts, fn_defs, scope, pure_names), b, stmts, fn_defs, scope)
+    ELet(n0, v, b0, off) => {
+      let v2 = edp_stamp_let_literal(n0, edp_stamp_expr(v, stmts, fn_defs, scope, pure_names), b0, stmts, fn_defs, scope)
+      let (n, b) = edp_unique_row_lit_name(n0, v2, b0)
       // #3424: a closure literal stays visible to a literal in its body that
       // calls it (`edp_copy_local_helpers` copies only a row-free one), and
       // to an argument written at one of its row-typed parameters
