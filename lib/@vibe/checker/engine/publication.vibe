@@ -775,68 +775,69 @@ export fn engine_checked_module_public_env_publishing(stmts: Array[Stmt], full_c
 /// rides out with its type (Codex on #3441). A re-exported function carries
 /// the marker its own import brought in.
 fn engine_bind_param_name_markers(stmts: Array[Stmt], publication_env: TypeEnv, published: TypeEnv) -> TypeEnv {
-  // The candidates are few: own functions with an optional parameter, then
-  // the markers this module's imports brought in. An own function without
-  // one hides an imported marker under its name.
-  let own_fns: Array[String] = []
-  let candidates: Array[(String, Array[String])] = []
+  // Allocates nothing for a module without an optional parameter in sight:
+  // this runs at every publication, and the self-compile heap budget is
+  // measured across all of them.
+  let mut acc = published
   for stmt in stmts {
     match stmt {
-      SLet(_, _, fname, _, EFn(_, _, params, _, _, _)) => {
-        Array::push(own_fns, fname)
-        let names: Array[String] = []
-        let mut optional = false
+      SLet(_, _, fname, _, EFn(_, _, params, _, _, _)) => if engine_params_have_optional(params) && engine_env_has_value(published, fname) {
+        let fields: Array[(String, Type)] = []
         for param in params {
           let (pn, _) = param
-          optional = optional || String::ends_with(pn, "?")
-          Array::push(names, pn)
+          Array::push(fields, (pn, CtUnit))
         }
-        if optional {
-          Array::push(candidates, (fname, names))
-        } else {
-          ()
-        }
+        acc = env_bind(acc, param_names_marker(fname), CtRecord(fields))
+      } else {
+        ()
       },
       _ => ()
     }
   }
+  // The markers this module's imports brought in, for what it re-publishes:
+  // a re-exported function, or the companions of a re-exported type. An own
+  // function of the same name hides the imported marker.
   for row in env_param_name_rows(publication_env) {
-    let (fname, _) = row
-    if contains_str(own_fns, fname) {
-      ()
+    let (fname, names) = row
+    if engine_env_has_value(published, fname) && !engine_stmts_define_fn(stmts, fname) {
+      let fields: Array[(String, Type)] = []
+      for pn in names {
+        Array::push(fields, (pn, CtUnit))
+      }
+      acc = env_bind(acc, param_names_marker(fname), CtRecord(fields))
     } else {
-      Array::push(candidates, row)
+      ()
     }
   }
-  if Array::length(candidates) == 0 {
-    published
-  } else {
-    let mut acc = published
-    for binding in env_flat_bindings(published) {
-      let (name, _) = binding
-      let mut found = None
-      let mut hit = false
-      for row in candidates {
-        let (fname, names) = row
-        if !hit && fname == name {
-          hit = true
-          found = Some(names)
-        } else {
-          ()
-        }
-      }
-      match found {
-        Some(names) => {
-          let fields: Array[(String, Type)] = []
-          for pn in names {
-            Array::push(fields, (pn, CtUnit))
-          }
-          acc = env_bind(acc, param_names_marker(name), CtRecord(fields))
-        },
-        None => ()
-      }
+  acc
+}
+
+fn engine_params_have_optional(params: Array[(String, Option[TypeExpr])]) -> Bool {
+  let mut found = false
+  for param in params {
+    let (pn, _) = param
+    found = found || String::ends_with(pn, "?")
+  }
+  found
+}
+
+fn engine_stmts_define_fn(stmts: Array[Stmt], name: String) -> Bool {
+  let mut found = false
+  for stmt in stmts {
+    match stmt {
+      SLet(_, _, fname, _, EFn(_, _, _, _, _, _)) => {
+        found = found || fname == name
+      },
+      _ => ()
     }
-    acc
+  }
+  found
+}
+
+fn engine_env_has_value(env: TypeEnv, name: String) -> Bool {
+  match env_lookup(env, name) {
+    Some(_) => true,
+    None => false
   }
 }
 /// Every declaration line, with its declared type-parameter ARITY.
