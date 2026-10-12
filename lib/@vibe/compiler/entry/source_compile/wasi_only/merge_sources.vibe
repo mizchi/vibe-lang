@@ -32,7 +32,6 @@ import @vibe/compiler/core {
   build_export_rename_plan,
   builtin_iterator_namespace_markers,
   builtin_iterator_serialized_boundary_from_markers,
-  collect_import_alias_collision_locals,
   collect_import_alias_collision_refs,
   collect_import_aliases,
   collect_import_value_renames,
@@ -124,7 +123,7 @@ fn append_fs_import_local_def(merged: Array[Stmt], current_path: String, raw_pat
   done
 }
 
-fn append_fs_import_alias_collision_defs(merged: Array[Stmt], current_path: String, stmts: Array[Stmt], plan: ExportRenamePlan, excluded_locals: Array[String]) -> Unit with Env + Exception + Fs {
+fn append_fs_import_alias_collision_defs(merged: Array[Stmt], current_path: String, stmts: Array[Stmt], plan: ExportRenamePlan, excluded_locals: Array[String]) -> Array[String] with Env + Exception + Fs {
   let refs = collect_import_alias_collision_refs(stmts)
   let emitted = array_empty()
   let mut i = 0
@@ -139,6 +138,7 @@ fn append_fs_import_alias_collision_defs(merged: Array[Stmt], current_path: Stri
     }
     i = i + 1
   }
+  emitted
 }
 
 /// Inline a real import under its local spelling when its ordinary rewrite
@@ -406,12 +406,15 @@ fn append_parsed_merged_stmts(entry_path: String, file_paths: Array[String], fil
       let retained_collision_locals = import_rename_locals_targeting(collect_import_aliases(stmts), reexport_surface_only)
       append_unique_strings(retained_collision_locals, import_rename_locals_targeting(import_renames, reexport_surface_only))
       let active_import_renames = import_renames_without_locals(import_renames, retained_collision_locals)
-      let skipped_locals = collect_import_alias_collision_locals(stmts)
-      append_unique_strings(skipped_locals, import_rename_locals_named(collect_import_aliases(stmts), reexport_surface_only))
-      append_unique_strings(skipped_locals, retained_collision_locals)
       let inline_exclusions = import_value_rename_locals(active_import_renames)
       append_unique_strings(inline_exclusions, retained_collision_locals)
-      append_fs_import_alias_collision_defs(merged, path, stmts, plan, inline_exclusions)
+      // #3443: only the locals the fallback cloned stop being rewritten. A
+      // collision local with no value to clone (a type, a constructor) keeps
+      // its alias: dropping it left `B::plain` unresolved at codegen when `Box`
+      // also arrived through a re-export of the same module.
+      let skipped_locals = append_fs_import_alias_collision_defs(merged, path, stmts, plan, inline_exclusions)
+      append_unique_strings(skipped_locals, import_rename_locals_named(collect_import_aliases(stmts), reexport_surface_only))
+      append_unique_strings(skipped_locals, retained_collision_locals)
       append_fs_selected_import_defs(merged, path, stmts, plan, retained_collision_locals)
       append_import_alias_rewritten_non_import_stmts_with_renames(merged, namespaced_stmts, skipped_locals, active_import_renames)
     } else {

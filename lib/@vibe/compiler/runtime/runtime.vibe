@@ -16,7 +16,6 @@ import @vibe/compiler/core {
   build_export_rename_plan,
   builtin_iterator_serialized_boundary_from_markers,
   builtin_iterator_serialized_boundary_markers,
-  collect_import_alias_collision_locals,
   collect_import_alias_collision_refs,
   collect_import_value_renames,
   dir_of_path,
@@ -639,7 +638,7 @@ fn lookup_source_by_path(sources: Array[(String, String)], target_path: String) 
 /// #716: collision-def fallback (see merge_sources.vibe). `excluded_locals`
 /// are the locals the export-rename plan already rewrites; the inline copy gets
 /// the target file's export renames applied first.
-fn append_import_alias_collision_defs_from_sources(merged: Array[Stmt], current_path: String, stmts: Array[Stmt], sources: Array[(String, String)], plan: ExportRenamePlan, excluded_locals: Array[String]) -> Unit with Env + Exception {
+fn append_import_alias_collision_defs_from_sources(merged: Array[Stmt], current_path: String, stmts: Array[Stmt], sources: Array[(String, String)], plan: ExportRenamePlan, excluded_locals: Array[String]) -> Array[String] with Env + Exception {
   let refs = collect_import_alias_collision_refs(stmts)
   let emitted = array_empty()
   let base_dir = dir_of_path(current_path)
@@ -670,6 +669,7 @@ fn append_import_alias_collision_defs_from_sources(merged: Array[Stmt], current_
     }
     i = i + 1
   }
+  emitted
 }
 
 /// #716: parse every source once and expose (paths, stmts) for the export-
@@ -728,8 +728,11 @@ fn build_merged_source_with_plan(entry_path: String, sources: Array[(String, Str
       namespace_private_value_stmts_after_renames(path, collision_renamed, export_plan_renames_for(plan, path))
     }
     if stmts_have_import_deep(stmts) {
-      let skipped_locals = collect_import_alias_collision_locals(stmts)
-      append_import_alias_collision_defs_from_sources(merged, path, stmts, collision_sources, plan, import_value_rename_locals(import_renames))
+      // #3443: only the locals the fallback cloned stop being rewritten. A
+      // collision local with no value to clone (a type, a constructor) keeps
+      // its alias: dropping it left `B::plain` unresolved at codegen when `Box`
+      // also arrived through a re-export of the same module.
+      let skipped_locals = append_import_alias_collision_defs_from_sources(merged, path, stmts, collision_sources, plan, import_value_rename_locals(import_renames))
       append_import_alias_rewritten_non_import_stmts_with_renames(merged, namespaced_stmts, skipped_locals, import_renames)
     } else {
       append_non_import_stmts_without_alias_rewrite(merged, namespaced_stmts)
