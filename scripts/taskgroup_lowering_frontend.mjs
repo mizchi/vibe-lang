@@ -162,6 +162,9 @@ export async function buildTaskGroupLowering({ compiler, input, output, entry, j
         await writeFile(stagedReport, JSON.stringify(report));
         await rename(stagedReport, trace);
         traceWritten = true;
+        // Once created, an absent case-folded alias can be checked by inode.
+        await refuseTraceAlias(trace, destination);
+        await refuseTraceAlias(trace, resolve(root, input), "source entry");
       }
       await rename(staging, destination);
       published = true;

@@ -22,7 +22,8 @@ def main():
     env.update(VIBE_CLI_WASM=str(compiler), VIBE_RUNNER=str(runner),
                VIBE_LOWERING_ARTIFACT_DIR=str(artifacts), VIBE_UNSTABLE="1",
                VIBE_LIB=str(repo / "lib"), VIBE_RC="1")
-    with tempfile.TemporaryDirectory(prefix="vibe lowering test ") as directory:
+    with tempfile.TemporaryDirectory(prefix="vibe lowering test ",
+                                     dir=os.environ.get("VIBE_LOWERING_TEST_TMPDIR")) as directory:
         project = Path(directory)
         for i in range(66):
             (project / f"m{i}.vibe").write_text(f"export fn f{i}() -> Int {{ {i} }}\n")
@@ -83,6 +84,22 @@ def main():
         output, _, result = build("trace-absent", ["--jobs", "2"],
             {"VIBE_TASKGROUP_LOWERING": "1", "VIBE_LOWERING_TRACE_OUT": "trace-parent/trace-absent.wasm"}, expected=1)
         assert "trace must not alias the build output" in result.stderr and not absent.exists(), result
+
+        if (project / "JOBS2.WASM").exists():
+            for existing in [False, True]:
+                label = f"casefold-{existing}"
+                target = project / f"{label}.wasm"
+                trace_alias = project / target.name.upper()
+                if existing:
+                    target.write_bytes(b"keep previous output")
+                output, _, result = build(label, ["--jobs", "2"],
+                    {"VIBE_TASKGROUP_LOWERING": "1", "VIBE_LOWERING_TRACE_OUT": str(trace_alias)}, expected=1)
+                assert "trace must not alias the build output" in result.stderr, result
+                if existing:
+                    assert output.read_bytes() == b"keep previous output", result
+                else:
+                    assert not output.exists() and not trace_alias.exists(), result
+            print("TaskGroup lowering: existing and absent case-folded aliases refused")
 
         for alias in ["direct", "symlink", "hardlink"]:
             trace_alias = project / "main.vibe"
