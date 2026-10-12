@@ -169,6 +169,23 @@ export fn edp_stamp_slot_rows(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Boo
       ()
     }
   }
+  // #3424 (Codex on #3437): a snapshot's fresh name must be one no binder
+  // and no top-level name of the program spells, or the copy would read that
+  // binding instead.
+  let taken = edp_collect_program_binders(stmts)
+  for st in stmts {
+    match st {
+      SLet(_, _, tn, _, _) => MutSet::insert(taken, tn),
+      SLetMut(tn, _, _) => MutSet::insert(taken, tn),
+      _ => ()
+    }
+  }
+  for def in fn_defs {
+    let (_, _, _, dname, _, _) = def
+    MutSet::insert(taken, dname)
+  }
+  Array::truncate(edp_snap_taken, 0)
+  Array::push(edp_snap_taken, taken)
   let mut i = 0
   while i < Array::length(stmts) {
     let stmt = Array::get(stmts, i)
@@ -328,6 +345,27 @@ let edp_snap_slots: Array[Int] = []
 let edp_snap_fresh: Array[String] = []
 let edp_snap_src: Array[String] = []
 let edp_snap_counter: Array[Int] = [0]
+
+/// Every name the program binds or declares (`edp_stamp_slot_rows` fills it),
+/// so a snapshot's name is one nothing in the program spells.
+let edp_snap_taken: Array[MutSet[String]] = []
+
+fn edp_snap_fresh_name(name: String) -> String {
+  let mut fresh = ""
+  let mut found = false
+  while !found {
+    let k = Array::get(edp_snap_counter, 0)
+    Array::set(edp_snap_counter, 0, k + 1)
+    fresh = String::concat("__edpc", String::concat(Int::to_string(k), String::concat("_", name)))
+    found = Array::length(edp_snap_taken) == 0 || !MutSet::has(Array::get(edp_snap_taken, 0), fresh)
+  }
+  if Array::length(edp_snap_taken) > 0 {
+    MutSet::insert(Array::get(edp_snap_taken, 0), fresh)
+  } else {
+    ()
+  }
+  fresh
+}
 
 /// #3424: a row-free literal at a row-typed slot that calls local closures
 /// (`let helper = () -> 3; run_str(() -> helper())`), rebuilt with a copy of
@@ -531,9 +569,7 @@ fn edp_copy_snapshots(helper: Expr, cn: String, slot: Int, scope: Array[String],
       if j < 0 || name == cn || edp_int_array_has(edp_local_mut_slots, j) {
         ok = false
       } else {
-        let k = Array::get(edp_snap_counter, 0)
-        Array::set(edp_snap_counter, 0, k + 1)
-        let fresh = String::concat("__edpc", String::concat(Int::to_string(k), String::concat("_", name)))
+        let fresh = edp_snap_fresh_name(name)
         Array::push(snaps, (slot, fresh, name))
         out = edp_rename_free(out, name, fresh)
       }
