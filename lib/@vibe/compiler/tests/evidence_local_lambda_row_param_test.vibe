@@ -1,0 +1,34 @@
+import @vibe/compiler/lowering/effects/evidence {
+  evidence_dict_pass
+}
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+fn head() -> String {
+  "effect Box[T] {\n  Put(T) -> Int\n}\nfn bare_mk() -> Int with Box {\n  perform Box::Put(41)\n}\n"
+}
+
+fn tail() -> String {
+  "fn top() -> Int with Box[String] {\n  bare()\n}\nfn main() -> Int {\n  handle {\n    top()\n  } with {\n    Box::Put(s) => resume(String::length(s))\n  }\n}\n"
+}
+
+fn run(body: String) -> Int with Exception {
+  let errs = evidence_dict_pass(parse_program(lex(String::concat(head(), String::concat(body, tail())))), "main")
+  Array::length(errs)
+}
+
+// #3416: inside a function that needs `Box`, a local lambda calls its own
+// row-typed parameter `f`. The rewrite passes that call the dict -- the
+// handle's inside a handle, the enclosing function's outside one -- so the
+// eligibility scan has to accept it; it used to meet `f`'s binder and refuse
+// the whole effect ("not fully eligible"). The runtime answers are in
+// `fixtures/local_handler_lambda_test.vibe`.
+test "a local lambda's row-typed parameter does not refuse its needing function" {
+  // the callback takes the parameter's row
+  inspect(run("fn bare() -> Int with Box {\n  let lrun = (f: () -> Int with Box[Int]) -> Int {\n    handle {\n      f()\n    } with {\n      Box::Put(n) => resume(n + 1)\n    }\n  }\n  lrun(() -> bare_mk())\n}\n"), "0")
+  // the callback writes the row itself
+  inspect(run("fn bare() -> Int with Box {\n  let lrun = (f: () -> Int with Box[Int]) -> Int {\n    handle {\n      f()\n    } with {\n      Box::Put(n) => resume(n + 1)\n    }\n  }\n  lrun(() -> Int with Box[Int] { bare_mk() })\n}\n"), "0")
+  // the local lambda forwards its callback rather than handling it
+  inspect(run("fn bare() -> Int with Box {\n  let lrun = (f: () -> Int with Box[Int]) -> Int with Box[Int] {\n    f()\n  }\n  lrun(() -> bare_mk())\n}\n"), "0")
+}

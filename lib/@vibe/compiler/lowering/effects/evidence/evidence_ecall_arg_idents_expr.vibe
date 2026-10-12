@@ -1,7 +1,17 @@
 // lib/@vibe/compiler/lowering/effects/evidence/evidence.vibe — ecall arg idents expr.
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeExpr, builtin_shadow_source_name, expr_children, is_runtime_scheduled_effect
+  Expr,
+  Pat,
+  Stmt,
+  TypeExpr,
+  builtin_shadow_source_name,
+  expr_child_at,
+  expr_children,
+  expr_children_pop,
+  expr_children_push,
+  expr_children_top,
+  is_runtime_scheduled_effect
 }
 
 import @vibe/core {
@@ -26,7 +36,7 @@ import @vibe/compiler/lowering/effects/queries {
 }
 
 import ./evidence_handle_effect_names_expr.vibe {
-  edp_append_ctor_inert_names
+  edp_append_ctor_inert_names, edp_expr_binds_name
 }
 
 import ./evidence_poison_expr.vibe {
@@ -661,6 +671,133 @@ fn edp_int_array_has(xs: Array[Int], x: Int) -> Bool {
     }
   }
   found
+}
+
+/// #3416: the parameters of a lambda whose function type carries `ename`
+/// (`edp_row_typed_param_names`) and that its body does not bind again. A call
+/// through one is passed the dict; a binder of the same name in the body would
+/// make the spelling ambiguous, so such a parameter is left out and a call
+/// through it stays unsafe.
+export fn edp_lambda_row_params(params: Array[(String, Option[TypeExpr])], body: Expr, ename: String, es_names: Array[String], es_members_list: Array[Array[String]]) -> Array[String] {
+  let all = edp_row_typed_param_names(params, ename, es_names, es_members_list)
+  if Array::length(all) == 0 {
+    all
+  } else {
+    let out = empty_str_array()
+    for p in all {
+      if edp_expr_binds_name(body, p) {
+        ()
+      } else {
+        Array::push(out, p)
+      }
+    }
+    out
+  }
+}
+
+/// Does `e` hold a lambda with a parameter `edp_lambda_row_params` keeps?
+fn edp_has_row_param_lambda(e: Expr, ename: String, es_names: Array[String], es_members_list: Array[Array[String]]) -> Bool {
+  match e {
+    EFn(_, _, params, _, _, body) => Array::length(edp_lambda_row_params(params, body, ename, es_names, es_members_list)) > 0 || edp_has_row_param_lambda(body, ename, es_names, es_members_list),
+    _ => {
+      let mark = expr_children_push(e)
+      let top = expr_children_top()
+      let mut found = false
+      let mut i = mark
+      while !found && i < top {
+        found = edp_has_row_param_lambda(expr_child_at(i), ename, es_names, es_members_list)
+        i = i + 1
+      }
+      expr_children_pop(mark)
+      found
+    }
+  }
+}
+
+/// The body a needing function's eligibility scan reads (#3416). Inside a
+/// local lambda, a parameter `edp_lambda_row_params` keeps is spelled
+/// `#rowp:<name>`, which nothing binds, and that spelling is pushed to `safe`:
+/// the rewrite passes a call through the parameter the dict, as it does a call
+/// to a needing function (`edp_rewrite_needing_body`'s `EFn` arm), so the scan
+/// asks the same question of it. Without a rename the scan meets the
+/// parameter's own binder and refuses the call. The body is returned as
+/// written when it holds no such lambda.
+export fn edp_needing_scan_view(e: Expr, ename: String, es_names: Array[String], es_members_list: Array[Array[String]], safe: Array[String]) -> Expr {
+  if edp_has_row_param_lambda(e, ename, es_names, es_members_list) {
+    edp_scan_view_rename(e, ename, es_names, es_members_list, safe)
+  } else {
+    e
+  }
+}
+
+fn edp_scan_view_rename(e: Expr, ename: String, es_names: Array[String], es_members_list: Array[Array[String]], safe: Array[String]) -> Expr {
+  match e {
+    EFn(tps, tbs, params, ret, eff, body) => {
+      let mut b = edp_scan_view_rename(body, ename, es_names, es_members_list, safe)
+      for p in edp_lambda_row_params(params, body, ename, es_names, es_members_list) {
+        let spelled = String::concat("#rowp:", p)
+        b = edp_rename_free(b, p, spelled)
+        if edp_str_array_contains(safe, spelled) {
+          ()
+        } else {
+          Array::push(safe, spelled)
+        }
+      }
+      EFn(tps, tbs, params, ret, eff, b)
+    },
+    ECall(callee, args, off, res) => ECall(edp_scan_view_rename(callee, ename, es_names, es_members_list, safe), for a in args {
+      edp_scan_view_rename(a, ename, es_names, es_members_list, safe)
+    }, off, res),
+    ELet(n, v, b, off) => ELet(n, edp_scan_view_rename(v, ename, es_names, es_members_list, safe), edp_scan_view_rename(b, ename, es_names, es_members_list, safe), off),
+    ELetMut(n, v, b, off) => ELetMut(n, edp_scan_view_rename(v, ename, es_names, es_members_list, safe), edp_scan_view_rename(b, ename, es_names, es_members_list, safe), off),
+    ELetRec(n, v, b) => ELetRec(n, edp_scan_view_rename(v, ename, es_names, es_members_list, safe), edp_scan_view_rename(b, ename, es_names, es_members_list, safe)),
+    ESeq(a, b) => ESeq(edp_scan_view_rename(a, ename, es_names, es_members_list, safe), edp_scan_view_rename(b, ename, es_names, es_members_list, safe)),
+    EIf(c, t, el) => EIf(edp_scan_view_rename(c, ename, es_names, es_members_list, safe), edp_scan_view_rename(t, ename, es_names, es_members_list, safe), edp_scan_view_rename(el, ename, es_names, es_members_list, safe)),
+    EMatch(sc, arms) => EMatch(edp_scan_view_rename(sc, ename, es_names, es_members_list, safe), for a in arms {
+      let (pp, ex) = a
+      (pp, edp_scan_view_rename(ex, ename, es_names, es_members_list, safe))
+    }),
+    EHandle(bd, arms) => EHandle(edp_scan_view_rename(bd, ename, es_names, es_members_list, safe), for a in arms {
+      let (pp, ex) = a
+      (pp, edp_scan_view_rename(ex, ename, es_names, es_members_list, safe))
+    }),
+    EWhile(c, b) => EWhile(edp_scan_view_rename(c, ename, es_names, es_members_list, safe), edp_scan_view_rename(b, ename, es_names, es_members_list, safe)),
+    EForIn(n, idx, it, b) => EForIn(n, idx, edp_scan_view_rename(it, ename, es_names, es_members_list, safe), edp_scan_view_rename(b, ename, es_names, es_members_list, safe)),
+    ELoop(pairs, b) => ELoop(for pr in pairs {
+      let (n, v) = pr
+      (n, edp_scan_view_rename(v, ename, es_names, es_members_list, safe))
+    }, edp_scan_view_rename(b, ename, es_names, es_members_list, safe)),
+    EBinOp(op, l, r, boff) => EBinOp(op, edp_scan_view_rename(l, ename, es_names, es_members_list, safe), edp_scan_view_rename(r, ename, es_names, es_members_list, safe), boff),
+    EUnaryOp(op, x) => EUnaryOp(op, edp_scan_view_rename(x, ename, es_names, es_members_list, safe)),
+    EAssign(n, v, c, target_off) => EAssign(n, edp_scan_view_rename(v, ename, es_names, es_members_list, safe), edp_scan_view_rename(c, ename, es_names, es_members_list, safe), target_off),
+    EAssignOp(n, op, v, c, target_off) => EAssignOp(n, op, edp_scan_view_rename(v, ename, es_names, es_members_list, safe), edp_scan_view_rename(c, ename, es_names, es_members_list, safe), target_off),
+    EReturn(x) => EReturn(edp_scan_view_rename(x, ename, es_names, es_members_list, safe)),
+    EDot(o, f, o1, o2) => EDot(edp_scan_view_rename(o, ename, es_names, es_members_list, safe), f, o1, o2),
+    ELabeledArg(l, n, v) => ELabeledArg(l, n, edp_scan_view_rename(v, ename, es_names, es_members_list, safe)),
+    EBreak(opt) => EBreak(match opt {
+      Some(x) => Some(edp_scan_view_rename(x, ename, es_names, es_members_list, safe)),
+      None => None
+    }),
+    EContinue(args) => EContinue(for a in args {
+      edp_scan_view_rename(a, ename, es_names, es_members_list, safe)
+    }),
+    ETuple(items) => ETuple(for a in items {
+      edp_scan_view_rename(a, ename, es_names, es_members_list, safe)
+    }),
+    EArray(items) => EArray(for a in items {
+      edp_scan_view_rename(a, ename, es_names, es_members_list, safe)
+    }),
+    ERecord(n, fields, tas) => ERecord(n, for f in fields {
+      let (fn2, v) = f
+      (fn2, edp_scan_view_rename(v, ename, es_names, es_members_list, safe))
+    }, tas),
+    EMap(fields) => EMap(for f in fields {
+      let (fn2, v) = f
+      (fn2, edp_scan_view_rename(v, ename, es_names, es_members_list, safe))
+    }),
+    ESpread(x) => ESpread(edp_scan_view_rename(x, ename, es_names, es_members_list, safe)),
+    _ => e
+  }
 }
 
 /// `e` with its free uses of `from` spelled `to`. A binder of `from` inside
