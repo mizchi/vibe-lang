@@ -1086,14 +1086,18 @@ nursery scope`).
   `Sender::send(tx, v)`); the standard library's own retaining operations are
   listed by name and checked like `Array::push`. Closing it needs a summary of
   which arguments a function keeps, published in the module's interface.
-- **A closure literal handed to a library function.** A closure written in the
-  body is checked before the call it is passed to has fixed its parameter's
-  type, so a write of that parameter does not yet carry the region:
-  `Array::map(hs, (h) -> { Array::push(outer, h); 0 })` keeps the handles in
-  an outer array, and compiles and runs (measured). The `for h in hs` loop is
-  refused, because its variable is typed from `hs` first. On both routes,
-  joining the escaped handle after the group returns the task's value
-  (measured), so no program is answered wrongly today, but nothing enforces
+- **A closure handed to a function that names its parameter's type.** A
+  closure literal is checked before the call it is passed to has fixed its
+  parameter's type, so its writes of that parameter are checked again once the
+  call has (#3360). The element-callback builtins (`Array::map`, `fold`,
+  `filter`, `any`, `all`, `find`) use the element type, and a call through the
+  ordinary path uses the callee's own parameter type: `Array::map(hs, (h) -> {
+  Array::push(outer, h); 0 })` is refused like `for h in hs`, and so is a
+  generic `each_of[T](xs: Array[T], f: (T) -> Int)`. A callee that spells the
+  parameter's type itself, `f: (TaskHandle[Int]) -> Int`, erases the region in
+  that annotation, so the same write through it still compiles and runs
+  (measured). Joining the escaped handle after the group returns the task's
+  value (measured), so no program is answered wrongly, but nothing enforces
   that the handle stays in its group.
 - **Mid-run cancellation.** A cancel request is observed at dispatch and at a
   parked task only. A running task, and a suspendable task that is running

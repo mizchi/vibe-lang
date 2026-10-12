@@ -40,6 +40,13 @@ test "a callback that stores its element into an outer binding is reported" {
   assert(String::contains(check_source_error_message(fold_src), "region escapes its scope"))
 }
 
+test "a callback passed to a generic function stores its element into an outer binding is reported" {
+  // The callee's own parameter type, `(T) -> Int` with `T` fixed by the array
+  // argument, is what the call unified; the callback's variable was not.
+  let src = "fn each_of[T](xs: Array[T], f: (T) -> Int) -> Int {\n  Array::length(Array::map(xs, f))\n}\n\nfn build() -> Int {\n  let sink: Array[MutList[Int]] = []\n  region r {\n    let cells = [MutList::empty(r)]\n    let _ = each_of(cells, (c) -> {\n      Array::push(sink, c)\n      0\n    })\n  }\n  0\n}"
+  assert(String::contains(check_source_error_message(src), "region escapes its scope"))
+}
+
 test "a callback that keeps its element in its own binding, or stores a value read from it, is fine" {
   assert(check_source_ok("fn build() -> Int {\n  region r {\n    let cells = [MutList::empty(r)]\n    let _ = Array::map(cells, (c) -> {\n      let mine = [c]\n      Array::push(mine, c)\n      0\n    })\n  }\n  0\n}"))
   assert(check_source_ok("fn build() -> Int {\n  let sink: Array[Int] = []\n  region r {\n    let cells = [MutList::empty(r)]\n    let _ = Array::map(cells, (c) -> {\n      Array::push(sink, MutList::length(c))\n      0\n    })\n  }\n  Array::length(sink)\n}"))
