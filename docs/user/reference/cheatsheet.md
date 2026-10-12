@@ -407,29 +407,58 @@ let f: (x~: Int, y~: Int) -> Int = (x~, y~) -> { x + y }
 let sum = f(x=10, y=20)   // => 30
 ```
 
-### optional 引数 `z?` (#1500)
+### Optional arguments: `x: T = default` (#3120) and `x?: T` (#1500)
 
-`z?` は**省略できる**引数。宣言した型が `T` でも、body で受け取るのは
-`Option[T]`（省略された場合に何かを渡す必要があるため）。呼び出し側は
-素の値を書けばよく、`Some(..)` は desugar が付ける。
+A parameter with a **default** can be left out by the caller. The body sees
+the declared type `T`, and the default is evaluated in the callee on every
+call that omits the argument. A default may read the parameters before it.
 
 ```vibe
-fn greet(name: String, times?: Int) -> String {
-  let n = match times {
-    Some(v) => v,
-    None => 1
-  }
-  "\{name} x\{n}"
+fn greet(name: String, times: Int = 1) -> String {
+  "\{name} x\{times}"
+}
+
+fn span(start: Int, end: Int = start + 10) -> Int {
+  end - start
 }
 
 let a = greet("hi")        // => "hi x1"
 let b = greet("hi", 3)     // => "hi x3"
+let c = span(5)            // => 10
 ```
 
-- 省略できるのは**末尾の** optional 引数だけ。必須引数を落とすのは従来どおり
-  arity エラー
-- 関数型でも `(String, times?: Int) -> String` と書ける (この位置は
-  `Option[Int]` として記録される)
+`x?: T` is the form without a default: the body receives an `Option[T]` and
+decides for itself what an omitted argument means. The caller writes the bare
+value either way, and the desugar adds the `Some(..)`.
+
+```vibe
+fn label(name: String, suffix?: String) -> String {
+  match suffix {
+    Some(s) => "\{name}-\{s}",
+    None => name
+  }
+}
+
+let d = label("v")         // => "v"
+let e = label("v", "rc")   // => "v-rc"
+```
+
+- Only **trailing** arguments can be omitted. A required parameter after a
+  defaulted one is refused; leaving out a required argument is still an arity
+  error.
+- A default belongs to a `fn` declaration with a body. A lambda, a `.vpkg`
+  contract declaration and an `= wasm` body cannot carry one (declare `x?: T`
+  there), and a default cannot yet be combined with a `where` contract.
+- A function type spells either form as `(String, times?: Int) -> String`; the
+  position is recorded as `Option[Int]`.
+- Defaults apply only to a direct call of a top-level `fn` by its name. A
+  function with defaults cannot be used as a value (wrap it in a lambda that
+  calls it, `(n) -> greet(n)`), and a namespaced `T::f` cannot carry one,
+  since a method call (`x.f(..)`) bypasses them. An exported function cannot
+  carry one yet: defaults do not cross a module boundary (#3432). A written
+  `None` / `Some(..)` passed to a defaulted parameter is refused, since it would
+  read as an omitted argument; bind the value and pass the name.
+- An imported function's optional parameter cannot be omitted yet (#3432).
 
 ### Lambda shorthand
 

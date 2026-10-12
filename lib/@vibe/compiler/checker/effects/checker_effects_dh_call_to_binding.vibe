@@ -1122,7 +1122,10 @@ fn resolve_bare_rows_through_callees(env: TypeEnv, first_local: Int, bodies: Arr
   let local_count = Array::length(bodies)
   let index = program_fn_index(fn_names)
   Array::set(bound_lambda_cell, 0, bound_lambda_table())
+  Array::set(bound_lambda_count_cell, 0, 0)
   Array::set(bound_lambda_active_cell, 0, bound_lambda_active_empty())
+  Array::set(bound_lambda_used_cell, 0, bound_lambda_active_empty())
+  Array::set(returned_rows_cell, 0, returned_rows_empty())
   let records = array_empty()
   let declared = array_empty()
   let mut any_bare = false
@@ -1134,7 +1137,7 @@ fn resolve_bare_rows_through_callees(env: TypeEnv, first_local: Int, bodies: Arr
     if String::length(src) > 0 {
       Array::push(out, (src, array_empty(), array_empty(), ""))
     } else if labels_have_bare(Array::get(written_rows, i)) {
-      collect_runnable_records(Array::get(bodies, i), array_empty(), array_empty(), array_empty(), out)
+      collect_body_records(Array::get(bodies, i), out)
     } else {
       ()
     }
@@ -1293,7 +1296,7 @@ fn callee_payloads_for(eff: String, recs: Array[(String, Array[String], Array[(S
           unknown_instantiation_label(row_label)
         }
         let bi = String::index_of(label, "[")
-        if bi > 0 && String::substring(label, 0, bi) == eff && !checker_effects_string_has(found, label) {
+        if bi > 0 && String::substring(label, 0, bi) == eff && !checker_effects_string_has(found, label) && !via_returned_row_covers(via, label) {
           Array::push(found, label)
         } else {
           ()
@@ -1309,11 +1312,6 @@ fn callee_payloads_for(eff: String, recs: Array[(String, Array[String], Array[(S
 /// The row and per-parameter rows a call of `callee` sees: a local binding's
 /// current entry, else its checked type in `env`.
 fn callee_rows(callee: String, env: TypeEnv, first_local: Int, index: MutMap[String, Int], fn_effs: Array[Array[String]], fn_param_effs: Array[Array[Array[String]]]) -> (Array[String], Array[Array[String]]) {
-  if is_bound_lambda_marker(callee) {
-    return bound_lambda_rows(callee)
-  } else {
-    ()
-  }
   match MutMap::get(index, callee) {
     Some(j) => if j >= first_local {
       (Array::get(fn_effs, j), Array::get(fn_param_effs, j))
@@ -1328,7 +1326,20 @@ fn via_parameter_names(eff: String, via: Array[(String, Int)], env: TypeEnv, fir
   let mut names = false
   for step in via {
     let (callee, k) = step
-    let (crow, prows) = callee_rows(callee, env, first_local, index, fn_effs, fn_param_effs)
+    if is_bound_lambda_marker(callee) {
+      if bound_lambda_discharges(callee, k, eff) {
+        names = true
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    let (crow, prows) = if is_bound_lambda_marker(callee) || is_returned_step(callee) {
+      (array_empty(), array_empty())
+    } else {
+      callee_rows(callee, env, first_local, index, fn_effs, fn_param_effs)
+    }
     // Only a callee whose own row does not name the effect at all discharges
     // its callback's performs. One that names it, bare or at an instantiation
     // its own body fixed, forwards them to its caller (Codex on #3409: `pass(f:
@@ -1353,6 +1364,69 @@ fn via_parameter_names(eff: String, via: Array[(String, Int)], env: TypeEnv, fir
     }
   }
   names
+}
+
+/// #3416: the calls a top-level binding's body makes. A function the body
+/// RETURNS does not run on the binding's row when the declared return type is
+/// a function type whose own row answers for it: `fn mid() -> (() -> Int with
+/// Box[Int]) with Box { () -> mk() }` hands `mk`'s `Box[Int]` to whoever calls
+/// the result, and the checker holds the closure to that row. The returned
+/// value is walked as an argument is (`collect_arg_records`), under a step
+/// naming the declared row, and a callee's label that row names exactly is not
+/// charged (`via_returned_row_covers`). A label it does not name, or one only
+/// known as `Box[?]`, is still charged, and a closure the body builds and does
+/// not return is read as before.
+fn collect_body_records(body: Expr, out: Array[(String, Array[String], Array[(String, Int)], String)]) -> Unit {
+  match body {
+    EFn(_, _, params, Some(TyFn(_, _, reff)), _, fbody) => {
+      let labels = effect_row_labels(effect_row_parse(reff))
+      if Array::length(labels) > 0 {
+        let mut scope = array_empty()
+        for param in params {
+          let (pname, _) = param
+          scope = scope_with(scope, (effect_param_base_name(pname), ""))
+        }
+        let rows = Array::get(returned_rows_cell, 0)
+        let ret_via = array_empty()
+        Array::push(ret_via, (returned_step_name(), Array::length(rows)))
+        Array::push(rows, labels)
+        collect_arg_records(fbody, array_empty(), ret_via, array_empty(), scope, out)
+      } else {
+        collect_runnable_records(body, array_empty(), array_empty(), array_empty(), out)
+      }
+    },
+    _ => collect_runnable_records(body, array_empty(), array_empty(), array_empty(), out)
+  }
+}
+
+/// The declared rows of returned function types, indexed by a returned step.
+let returned_rows_cell = [returned_rows_empty()]
+
+fn returned_rows_empty() -> Array[Array[String]] {
+  array_empty()
+}
+
+fn returned_step_name() -> String {
+  "#returns"
+}
+
+fn is_returned_step(callee: String) -> Bool {
+  callee == returned_step_name()
+}
+
+/// Does a returned step on `via` declare `label` itself?
+fn via_returned_row_covers(via: Array[(String, Int)], label: String) -> Bool {
+  let rows = Array::get(returned_rows_cell, 0)
+  let mut covered = false
+  for step in via {
+    let (callee, k) = step
+    if is_returned_step(callee) && k < Array::length(rows) && checker_effects_string_has(Array::get(rows, k), label) {
+      covered = true
+    } else {
+      ()
+    }
+  }
+  covered
 }
 
 /// Every named call in `expr`, with the effects the `handle`s around it
@@ -1410,42 +1484,48 @@ fn collect_call_records(expr: Expr, handled: Array[String], via: Array[(String, 
           ("", "")
         }
       }
-      let target = if is_bound_lambda_marker(resolved) {
-        run_bound_lambda(resolved, handled, via, out)
-        ""
-      } else {
-        resolved
-      }
-      if String::length(target) > 0 {
-        Array::push(out, (target, handled, via, key))
+      // A bound lambda is run here, and stays the arguments' callee: whether it
+      // answers for a callback is read from its own body
+      // (`bound_lambda_discharges`, #3416). A `let mut` binding that holds
+      // only function names calls those functions, under this call's
+      // instantiation and with their own parameter rows (Codex on #3436: `let
+      // mut h = run; h(() -> mk())`).
+      let targets = array_empty()
+      if is_bound_lambda_marker(resolved) {
+        let aliases = bound_alias_targets(resolved)
+        if Array::length(aliases) > 0 {
+          mark_bound_lambda_used(resolved)
+          for t in aliases {
+            Array::push(out, (t, handled, via, key))
+            Array::push(targets, t)
+          }
+        } else {
+          run_bound_lambda(resolved, handled, via, out)
+          Array::push(targets, resolved)
+        }
+      } else if String::length(resolved) > 0 {
+        Array::push(out, (resolved, handled, via, key))
+        Array::push(targets, resolved)
       } else {
         ()
       }
-      // #3416: a call of a local lambda runs its arguments the way a named
-      // callee does, so the lambda itself is the step an argument runs under
-      // (`bound_lambda_rows` answers for it).
-      let step_callee = if String::length(target) > 0 {
-        target
-      } else if is_bound_lambda_marker(resolved) {
-        resolved
-      } else {
-        ""
-      }
-      let mut k = 0
-      while k < Array::length(args) {
-        let arg = Array::get(args, k)
-        let arg_via = if String::length(step_callee) > 0 {
-          let inner = array_empty()
-          for step in via {
-            Array::push(inner, step)
-          }
-          Array::push(inner, (step_callee, k))
-          inner
-        } else {
-          via
+      if Array::length(targets) == 0 {
+        for arg in args {
+          collect_arg_records(arg, handled, via, via, scope, out)
         }
-        collect_arg_records(arg, handled, arg_via, via, scope, out)
-        k = k + 1
+      } else {
+        for target in targets {
+          let mut k = 0
+          while k < Array::length(args) {
+            let arg_via = array_empty()
+            for step in via {
+              Array::push(arg_via, step)
+            }
+            Array::push(arg_via, (target, k))
+            collect_arg_records(Array::get(args, k), handled, arg_via, via, scope, out)
+            k = k + 1
+          }
+        }
       }
       ()
     },
@@ -1454,29 +1534,19 @@ fn collect_call_records(expr: Expr, handled: Array[String], via: Array[(String, 
       collect_call_records(body, handled, via, scope_with(scope, entry), out)
     },
     ELetMut(name, value, body, _) => {
-      // The initial value is read like a `let` one: an alias names its source,
-      // and a lambda is read where the name is used (Codex on #3409: `let mut
-      // cb = () -> mk(); 0` charged `mk`). A value assigned later is read at
-      // the assignment (`EAssign`).
-      let entry = let_scope_entry(name, value, handled, via, scope, out)
+      let entry = letmut_scope_entry(name, value, handled, via, scope, out)
       collect_call_records(body, handled, via, scope_with(scope, entry), out)
     },
-    EAssign(_, value, body, _) => {
-      // A function or bound lambda assigned to a mutable binding can be called
-      // through it from anywhere after this point, so it is read here, called
-      // or not (Codex on #3409: `cb = mk; cb()`).
-      match value {
-        EIdent(x, _) => {
-          let bound = scope_resolve(scope, x)
-          if is_bound_lambda_marker(bound) {
-            run_bound_lambda(bound, handled, via, out)
-          } else if String::length(bound) > 0 {
-            Array::push(out, (bound, handled, via, ""))
-          } else {
-            ()
-          }
-        },
-        _ => collect_call_records(value, handled, via, scope, out)
+    EAssign(target_name, value, body, _) => {
+      let bound = scope_resolve(scope, target_name)
+      if is_bound_lambda_marker(bound) {
+        assign_to_bound_lambda(bound, value, handled, via, scope, out)
+      } else {
+        // An assignment to a binding the walk does not track: a function or
+        // bound lambda assigned there can be called through it from anywhere
+        // after this point, so it is read here, called or not (Codex on #3409:
+        // `cb = mk; cb()`).
+        read_assigned_value(value, handled, via, scope, out)
       }
       collect_call_records(body, handled, via, scope, out)
     },
@@ -1514,14 +1584,42 @@ fn collect_call_records(expr: Expr, handled: Array[String], via: Array[(String, 
 /// A lambda the body never names cannot run and is not read.
 let bound_lambda_cell = [bound_lambda_table()]
 
-fn bound_lambda_table() -> Array[(String, Expr, Array[(String, String)])] {
-  array_empty()
+let bound_lambda_count_cell = [0]
+
+/// Each marker's values, with the scope each was written in. A `let` or `let
+/// rec` lambda has one; a `let mut` binding gains one per assignment (#3416).
+fn bound_lambda_table() -> MutMap[String, Array[(Expr, Array[(String, String)])]] {
+  MutMap::new_string()
+}
+
+fn bound_lambda_new_marker() -> String {
+  let n = Array::get(bound_lambda_count_cell, 0)
+  Array::set(bound_lambda_count_cell, 0, n + 1)
+  String::concat("#lambda:", __to_string(n))
+}
+
+fn bound_lambda_add(marker: String, value: Expr, scope: Array[(String, String)]) -> Unit {
+  let table = Array::get(bound_lambda_cell, 0)
+  match MutMap::get(table, marker) {
+    Some(values) => Array::push(values, (value, scope)),
+    None => {
+      let values = array_empty()
+      Array::push(values, (value, scope))
+      MutMap::set(table, marker, values)
+    }
+  }
+}
+
+fn bound_lambda_values(marker: String) -> Array[(Expr, Array[(String, String)])] {
+  match MutMap::get(Array::get(bound_lambda_cell, 0), marker) {
+    Some(values) => values,
+    None => array_empty()
+  }
 }
 
 fn bound_lambda_marker(lambda: Expr, scope: Array[(String, String)]) -> String {
-  let table = Array::get(bound_lambda_cell, 0)
-  let marker = String::concat("#lambda:", __to_string(Array::length(table)))
-  Array::push(table, (marker, lambda, scope))
+  let marker = bound_lambda_new_marker()
+  bound_lambda_add(marker, lambda, scope)
   marker
 }
 
@@ -1532,9 +1630,8 @@ fn is_bound_lambda_marker(target: String) -> Bool {
 /// A `let rec` lambda's marker: its own name is in the scope its body is
 /// read in, bound to the marker itself.
 fn bound_lambda_rec_marker(name: String, lambda: Expr, scope: Array[(String, String)]) -> String {
-  let table = Array::get(bound_lambda_cell, 0)
-  let marker = String::concat("#lambda:", __to_string(Array::length(table)))
-  Array::push(table, (marker, lambda, scope_with(scope, (name, marker))))
+  let marker = bound_lambda_new_marker()
+  bound_lambda_add(marker, lambda, scope_with(scope, (name, marker)))
   marker
 }
 
@@ -1547,127 +1644,229 @@ fn bound_lambda_active_empty() -> Array[String] {
   array_empty()
 }
 
-fn run_bound_lambda(marker: String, handled: Array[String], via: Array[(String, Int)], out: Array[(String, Array[String], Array[(String, Int)], String)]) -> Unit {
-  let active = Array::get(bound_lambda_active_cell, 0)
-  if !checker_effects_string_has(active, marker) {
-    for entry in Array::get(bound_lambda_cell, 0) {
-      let (m, lambda, def_scope) = entry
-      if m == marker {
-        Array::push(active, marker)
-        collect_runnable_records(lambda, handled, via, def_scope, out)
-        Array::truncate(active, Array::length(active) - 1)
+fn mark_bound_lambda_used(marker: String) -> Unit {
+  let used = Array::get(bound_lambda_used_cell, 0)
+  if !checker_effects_string_has(used, marker) {
+    Array::push(used, marker)
+  } else {
+    ()
+  }
+}
+
+/// The top-level functions a binding's values all name, or nothing when any
+/// value is a lambda or a local binding.
+fn bound_alias_targets(marker: String) -> Array[String] {
+  let found = array_empty()
+  let mut all = true
+  for entry in bound_lambda_values(marker) {
+    let (value, def_scope) = entry
+    let target = match value {
+      EIdent(x, _) => scope_resolve(def_scope, x),
+      _ => ""
+    }
+    if String::length(target) > 0 && !is_bound_lambda_marker(target) {
+      if !checker_effects_string_has(found, target) {
+        Array::push(found, target)
       } else {
         ()
       }
+    } else {
+      all = false
     }
+  }
+  if all {
+    found
+  } else {
+    array_empty()
+  }
+}
+
+fn run_bound_lambda(marker: String, handled: Array[String], via: Array[(String, Int)], out: Array[(String, Array[String], Array[(String, Int)], String)]) -> Unit {
+  mark_bound_lambda_used(marker)
+  let active = Array::get(bound_lambda_active_cell, 0)
+  if !checker_effects_string_has(active, marker) {
+    Array::push(active, marker)
+    let values = bound_lambda_values(marker)
+    let mut i = 0
+    while i < Array::length(values) {
+      let (value, def_scope) = Array::get(values, i)
+      run_bound_value(value, handled, via, def_scope, out)
+      i = i + 1
+    }
+    Array::truncate(active, Array::length(active) - 1)
   } else {
     ()
   }
   ()
 }
 
-/// #3416: the row and per-parameter rows a call of a local lambda sees. The
-/// row is the one the literal writes. A parameter's row counts only for the
-/// effects the body provably answers for itself: every use of the parameter
-/// is a direct call inside a `handle` of that effect, with no nested lambda
-/// or rebinding of its name. A top-level callee's signature says this; a
-/// local lambda's inferred row is the enclosing function's, so its body is
-/// read instead (`let lrun = (f: () -> Int with Box[Int]) -> Int { handle {
-/// f() } with { Box::Put(n) => .. } }` handles its callback's `Box`).
-fn bound_lambda_rows(marker: String) -> (Array[String], Array[Array[String]]) {
-  let mut own = no_str_labels()
-  let prows: Array[Array[String]] = array_empty()
-  for entry in Array::get(bound_lambda_cell, 0) {
-    let (m, lambda, _) = entry
-    if m == marker {
-      match lambda {
-        EFn(_, _, params, _, eff, body) => {
-          own = effect_row_labels(effect_row_parse(eff))
-          for p in params {
-            let kept = array_empty()
-            match p.1 {
-              Some(TyFn(_, _, prow)) => for label in effect_row_labels(effect_row_parse(prow)) {
-                if lambda_param_handled(body, bound_param_base(p.0), label_effect_base(label), false) {
-                  Array::push(kept, label)
-                } else {
-                  ()
-                }
-              },
-              _ => ()
-            }
-            Array::push(prows, kept)
-          }
-          ()
-        },
-        _ => ()
+/// What running one value a binding holds calls: a lambda's body, or the
+/// function or bound lambda a name stands for (a `let mut` alias or an
+/// assigned name).
+fn run_bound_value(value: Expr, handled: Array[String], via: Array[(String, Int)], scope: Array[(String, String)], out: Array[(String, Array[String], Array[(String, Int)], String)]) -> Unit {
+  match value {
+    EIdent(x, _) => {
+      let bound = scope_resolve(scope, x)
+      if is_bound_lambda_marker(bound) {
+        run_bound_lambda(bound, handled, via, out)
+      } else if String::length(bound) > 0 {
+        Array::push(out, (bound, handled, via, ""))
+      } else {
+        ()
       }
+    },
+    _ => collect_runnable_records(value, handled, via, scope, out)
+  }
+}
+
+/// The markers some use has already read, so a value assigned afterwards
+/// cannot wait for a later use (#3416: a use earlier in a loop body runs it).
+let bound_lambda_used_cell = [bound_lambda_active_empty()]
+
+/// #3416: the scope entry a `let mut name = value` adds. A binding that holds
+/// a lambda or a function's name gets a marker, so the values assigned to it
+/// later are read where it is used rather than where they are assigned: `let
+/// mut cb = () -> 0; cb = () -> mk(); 0` does not charge `mk`. Any other
+/// initial value is read now, and the binding is untracked, as before.
+fn letmut_scope_entry(name: String, value: Expr, handled: Array[String], via: Array[(String, Int)], scope: Array[(String, String)], out: Array[(String, Array[String], Array[(String, Int)], String)]) -> (String, String) {
+  match dh_value_alias_name(value) {
+    Some(src) => (name, bound_lambda_marker(EIdent(src, 0 - 1), scope)),
+    None => match value {
+      EFn(_, _, _, _, _, _) => (name, bound_lambda_marker(value, scope)),
+      _ => {
+        collect_call_records(value, handled, via, scope, out)
+        (name, "")
+      }
+    }
+  }
+}
+
+/// #3416: `name = value` where `name` is a binding the walk tracks. A lambda
+/// or a name is recorded under the binding's marker, to be read where the
+/// binding is used. When a use has already read the marker, the value is read
+/// now too, with no `handle` or callback context assumed, because that earlier
+/// use can run it (a loop). Any other value is read here, as before.
+fn assign_to_bound_lambda(marker: String, value: Expr, handled: Array[String], via: Array[(String, Int)], scope: Array[(String, String)], out: Array[(String, Array[String], Array[(String, Int)], String)]) -> Unit {
+  let held = match dh_value_alias_name(value) {
+    Some(src) => Some(EIdent(src, 0 - 1)),
+    None => match value {
+      EFn(_, _, _, _, _, _) => Some(value),
+      _ => None
+    }
+  }
+  match held {
+    Some(v) => {
+      bound_lambda_add(marker, v, scope)
+      if checker_effects_string_has(Array::get(bound_lambda_used_cell, 0), marker) {
+        run_bound_value(v, array_empty(), array_empty(), scope, out)
+      } else {
+        ()
+      }
+    },
+    None => collect_call_records(value, handled, via, scope, out)
+  }
+}
+
+fn read_assigned_value(value: Expr, handled: Array[String], via: Array[(String, Int)], scope: Array[(String, String)], out: Array[(String, Array[String], Array[(String, Int)], String)]) -> Unit {
+  match value {
+    EIdent(_, _) => run_bound_value(value, handled, via, scope, out),
+    _ => collect_call_records(value, handled, via, scope, out)
+  }
+}
+
+/// #3416: does the bound lambda `marker` answer for `eff` performed by what is
+/// passed as its parameter `k`? Every value the binding can hold must be a
+/// lambda whose parameter `k` names `eff` in its row and whose body calls that
+/// parameter only directly and only under a `handle` of `eff`. Anything else --
+/// the parameter passed on, stored, returned or called outside such a handle --
+/// forwards it, so the callback is charged as usual. The lambda's own row is not
+/// trusted for this: a local lambda's row may be inferred.
+fn bound_lambda_discharges(marker: String, k: Int, eff: String) -> Bool {
+  let mut seen = false
+  let mut all = true
+  for entry in bound_lambda_values(marker) {
+    let (value, _) = entry
+    seen = true
+    let ok = match value {
+      EFn(_, _, params, _, _, fbody) => if k < Array::length(params) {
+        let prows = fn_binding_param_effects(None, value)
+        let (pname, _) = Array::get(params, k)
+        labels_name_base(Array::get(prows, k), eff) && param_calls_handled(fbody, effect_param_base_name(pname), eff, array_empty())
+      } else {
+        false
+      },
+      _ => false
+    }
+    if !ok {
+      all = false
     } else {
       ()
     }
   }
-  (own, prows)
+  seen && all
 }
 
-fn bound_param_base(pn: String) -> String {
-  let ln = String::length(pn)
-  if ln > 0 && (String::byte_at(pn, ln - 1) == 126 || String::byte_at(pn, ln - 1) == 63) {
-    String::substring(pn, 0, ln - 1)
-  } else {
-    pn
-  }
-}
-
-fn label_effect_base(label: String) -> String {
-  let bi = String::index_of(label, "[")
-  if bi > 0 {
-    String::substring(label, 0, bi)
-  } else {
-    label
-  }
-}
-
-/// Is every use of `pname` in `e` a direct call inside a `handle` of `eff`
-/// (`inside`: one encloses `e`)? A nested lambda that mentions it, a binder
-/// that rebinds it, or any other use answers false.
-fn lambda_param_handled(e: Expr, pname: String, eff: String, inside: Bool) -> Bool {
-  match e {
-    EIdent(n, _) => n != pname,
-    ECall(EIdent(n, _), args, _, _) => {
-      let mut ok = n != pname || inside
-      for a in args {
-        ok = ok && lambda_param_handled(a, pname, eff, inside)
-      }
-      ok
-    },
+/// Is every occurrence of `pname` in `expr` a direct call under a `handle` of
+/// `eff`? A nested lambda that names it, or any other use, answers no.
+fn param_calls_handled(expr: Expr, pname: String, eff: String, handled: Array[String]) -> Bool {
+  match expr {
     EHandle(body, arms) => {
-      let covers = inside || checker_effects_string_has(collect_handle_effects(arms), eff)
-      let mut ok = lambda_param_handled(body, pname, eff, covers)
+      let inner = array_empty()
+      for h in handled {
+        Array::push(inner, h)
+      }
+      for h in collect_handle_effects(arms) {
+        Array::push(inner, h)
+      }
+      let mut ok = param_calls_handled(body, pname, eff, inner)
       for arm in arms {
-        ok = ok && lambda_param_handled(arm.1, pname, eff, inside)
+        let (_, arm_body) = arm
+        if !param_calls_handled(arm_body, pname, eff, handled) {
+          ok = false
+        } else {
+          ()
+        }
       }
       ok
     },
-    EFn(_, _, _, _, _, fb) => !lambda_mentions_name(fb, pname),
-    ELet(n, v, b, _) => n != pname && lambda_param_handled(v, pname, eff, inside) && lambda_param_handled(b, pname, eff, inside),
-    ELetMut(n, v, b, _) => n != pname && lambda_param_handled(v, pname, eff, inside) && lambda_param_handled(b, pname, eff, inside),
-    ELetRec(n, v, b) => n != pname && lambda_param_handled(v, pname, eff, inside) && lambda_param_handled(b, pname, eff, inside),
+    ECall(EIdent(x, _), args, _, _) => {
+      let mut ok = x != pname || checker_effects_string_has(handled, eff)
+      for arg in args {
+        if !param_calls_handled(arg, pname, eff, handled) {
+          ok = false
+        } else {
+          ()
+        }
+      }
+      ok
+    },
+    EIdent(x, _) => x != pname,
+    EFn(_, _, _, _, _, _) => !lambda_mentions_name(expr, pname),
     _ => {
       let mut ok = true
-      for child in expr_children(e) {
-        ok = ok && lambda_param_handled(child, pname, eff, inside)
+      for child in expr_children(expr) {
+        if !param_calls_handled(child, pname, eff, handled) {
+          ok = false
+        } else {
+          ()
+        }
       }
       ok
     }
   }
 }
 
-fn lambda_mentions_name(e: Expr, name: String) -> Bool {
-  match e {
-    EIdent(n, _) => n == name,
+fn lambda_mentions_name(expr: Expr, name: String) -> Bool {
+  match expr {
+    EIdent(x, _) => x == name,
     _ => {
       let mut found = false
-      for child in expr_children(e) {
-        found = found || lambda_mentions_name(child, name)
+      for child in expr_children(expr) {
+        if lambda_mentions_name(child, name) {
+          found = true
+        } else {
+          ()
+        }
       }
       found
     }
@@ -1725,7 +1924,7 @@ fn collect_arg_records(arg: Expr, handled: Array[String], arg_via: Array[(String
       collect_arg_records(body, handled, arg_via, via, scope_with(scope, entry), out)
     },
     ELetMut(name, value, body, _) => {
-      let entry = let_scope_entry(name, value, handled, via, scope, out)
+      let entry = letmut_scope_entry(name, value, handled, via, scope, out)
       collect_arg_records(body, handled, arg_via, via, scope_with(scope, entry), out)
     },
     ELetRec(name, value, body) => {

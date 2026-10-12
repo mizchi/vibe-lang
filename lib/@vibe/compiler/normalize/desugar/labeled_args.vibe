@@ -729,7 +729,16 @@ fn optional_fill_args(args: Array[Expr], flags: Array[Bool]) -> Array[Expr] {
       while i < np {
         if i < na {
           let a = Array::get(args, i)
-          if Array::get(flags, i) && !opt_arg_already_option(a) {
+          // A label still here could not be placed: neither reorder took the
+          // call (an unknown or repeated label, or an omitted parameter that
+          // is not optional). Wrapping it in `Some` would hide it from the
+          // post-desugar order check and bind it to this slot silently
+          // (Codex on #3438).
+          let still_labeled = match a {
+            ELabeledArg(_, _, _) => true,
+            _ => false
+          }
+          if Array::get(flags, i) && !opt_arg_already_option(a) && !still_labeled {
             Array::push(out, ECall(EIdent("Some", 0 - 1), [a], 0 - 1, []))
           } else {
             Array::push(out, a)
@@ -827,6 +836,41 @@ fn reorder_labeled_args(args: Array[Expr], param_labels: Array[String]) -> Optio
   }
 }
 
+/// A fully labeled call that omits optional parameters (Codex on #3438):
+/// `f(b = 4, a = 5)` against `(a?, b?, c?)`. Each label goes to the slot it
+/// names and every omitted slot gets `None`, so the call reads in declared
+/// order. Declined (None) when an argument is unlabeled, a label is unknown
+/// or repeated (each leaves an argument unplaced), or an omitted slot is not
+/// optional; the label then survives to the order check.
+fn reorder_labeled_with_omissions(args: Array[Expr], param_labels: Array[String], flags: Array[Bool]) -> Option[Array[Expr]] {
+  let np = Array::length(param_labels)
+  if Array::length(args) >= np || Array::length(flags) != np {
+    None
+  } else {
+    let out = empty_expr_array()
+    let mut placed = 0
+    let mut ok = true
+    let mut pj = 0
+    while pj < np && ok {
+      let fk = labeled_source_index(args, Array::get(param_labels, pj))
+      if fk >= 0 {
+        Array::push(out, Array::get(args, fk))
+        placed = placed + 1
+      } else if Array::get(flags, pj) {
+        Array::push(out, EIdent("None", 0 - 1))
+      } else {
+        ok = false
+      }
+      pj = pj + 1
+    }
+    if ok && placed == Array::length(args) {
+      Some(out)
+    } else {
+      None
+    }
+  }
+}
+
 fn strip_labeled_wrappers(args: Array[Expr]) -> Array[Expr] {
   let out = empty_expr_array()
   let mut i = 0
@@ -905,7 +949,13 @@ export fn relabel_expr(expr: Expr, tbl: Array[(String, Array[String])], shadows:
             match labels_opt {
               Some(labels) => match reorder_labeled_args(rargs, labels) {
                 Some(reordered) => strip_labeled_wrappers(reordered),
-                None => strip_in_position_labels(rargs, labels)
+                None => match optional_flags_for_call(fname, shadows) {
+                  Some(flags) => match reorder_labeled_with_omissions(rargs, labels, flags) {
+                    Some(filled) => strip_labeled_wrappers(filled),
+                    None => strip_in_position_labels(rargs, labels)
+                  },
+                  None => strip_in_position_labels(rargs, labels)
+                }
               },
               None => rargs
             }

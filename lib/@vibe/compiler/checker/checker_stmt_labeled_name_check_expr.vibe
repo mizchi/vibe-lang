@@ -33,7 +33,7 @@ import ./checker.vibe {
 }
 
 import @vibe/ast {
-  type_param_name
+  builtin_ref_offset, type_param_name
 }
 
 import ./checked_expression_structure_core.vibe {
@@ -516,6 +516,186 @@ export fn collect_labeled_check_fns(stmts: Array[Stmt]) -> Array[(String, Array[
   out
 }
 
+/// #3120: per top-level `fn`, which parameters carry a default. The parser
+/// lowers `x: T = d` onto the optional `x?: Option[T]` and opens the body with
+/// `let x: T = match x { Some(x) => x, None => d }` (ascribed), so a default is
+/// recognised by that prefix. Rebuilt by `collect_defaulted_param_fns` for
+/// each pre-desugar validation run.
+let defaulted_param_tbl: Array[(String, Array[Bool])] = []
+
+fn defaulted_unwrap_scrutinee_is(e: Expr, n: String) -> Bool {
+  match e {
+    EMatch(EIdent(m, _), _) => m == n,
+    _ => false
+  }
+}
+
+/// Mark in `flags` every parameter the parser's unwrap prefix of `cur`
+/// defaults; true when `cur` opens with at least one such unwrap. Recursive
+/// over the prefix rather than a `let mut` cursor, so no projection of the
+/// borrowed body outlives the match that reads it.
+fn defaulted_mark(cur: Expr, params: Array[(String, Option[TypeExpr])], flags: Array[Bool]) -> Bool {
+  match cur {
+    // Only the parser's own unwrap: it alone carries the compiler-synthesized
+    // offset on the `let`, so a program's `let x: T = match x { .. }` over an
+    // `x?` parameter is not mistaken for a default.
+    ELet(n, ECall(EFn(_, _, aparams, _, _, EIdent(abody, _)), cargs, _, _), rest, loff) => if loff == builtin_ref_offset() && abody == "__asc" && Array::length(aparams) == 1 && Array::length(cargs) == 1 && defaulted_unwrap_scrutinee_is(Array::get(cargs, 0), n) {
+      let marker = String::concat(n, "?")
+      let mut pi = 0
+      while pi < Array::length(params) {
+        let (pn, _) = Array::get(params, pi)
+        if pn == marker {
+          Array::set(flags, pi, true)
+        } else {
+          ()
+        }
+        pi = pi + 1
+      }
+      let _ = defaulted_mark(rest, params, flags)
+      true
+    } else {
+      false
+    },
+    _ => false
+  }
+}
+
+/// Which of `params` the parser defaulted, read off `body`'s unwrap prefix.
+fn defaulted_flags_of(params: Array[(String, Option[TypeExpr])], body: Expr) -> Option[Array[Bool]] {
+  let flags: Array[Bool] = []
+  let mut pi = 0
+  while pi < Array::length(params) {
+    Array::push(flags, false)
+    pi = pi + 1
+  }
+  if defaulted_mark(body, params, flags) {
+    Some(flags)
+  } else {
+    None
+  }
+}
+
+/// #3120 (Codex on #3438): defaults are honoured only where every call is a
+/// direct call by the declared name, which is what this validation and the
+/// call-site lowering both see. A namespaced function is also reachable as a
+/// method (`b.pick(None)`), where a written `None` read as "omitted"; a
+/// default there is refused until method calls carry the defaults.
+fn defaulted_export_error(fname: String) -> String {
+  String::concat("`", String::concat(fname, "` has parameter defaults and is exported, but defaults do not cross a module boundary yet (#3432), so an importer's call could not tell a written `None` from an omitted argument; keep the function private, or declare the parameter `x?: T` and match on the `Option`"))
+}
+
+export fn collect_defaulted_param_fns(stmts: Array[Stmt], errors: Array[String]) -> Unit {
+  Array::truncate(defaulted_param_tbl, 0)
+  for stmt in stmts {
+    match stmt {
+      SLet(exported, _, fname, _, EFn(_, _, params, _, _, body)) => match defaulted_flags_of(params, body) {
+        Some(flags) => if String::contains(fname, "::") {
+          Array::push(errors, String::concat("`", String::concat(fname, "` is a namespaced function with parameter defaults, which apply only to a direct call by name and not to a method call (`x.f(..)`); declare the parameter `x?: T` and match on the `Option`, or make it a plain top-level `fn`")))
+        } else {
+          // Codex on #3438: an importer sees only the lowered type.
+          if exported {
+            Array::push(errors, defaulted_export_error(fname))
+          } else {
+            ()
+          }
+          Array::push(defaulted_param_tbl, (fname, flags))
+        },
+        None => ()
+      },
+      _ => ()
+    }
+  }
+  for stmt in stmts {
+    match stmt {
+      SExport(names) => for n in names {
+        if defaulted_fn_known(n) {
+          Array::push(errors, defaulted_export_error(n))
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+  }
+  ()
+}
+
+fn defaulted_fn_index(fname: String) -> Int {
+  let mut i = 0
+  let mut found = 0 - 1
+  while i < Array::length(defaulted_param_tbl) && found < 0 {
+    let (n, _) = Array::get(defaulted_param_tbl, i)
+    if n == fname {
+      found = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn defaulted_fn_known(fname: String) -> Bool {
+  defaulted_fn_index(fname) >= 0
+}
+
+fn syntactic_option_arg(e: Expr) -> Bool {
+  match e {
+    EIdent(n, _) => n == "None",
+    ECall(EIdent(n, _), cargs, _, _) => n == "Some" && Array::length(cargs) == 1,
+    _ => false
+  }
+}
+
+/// #3120 (Codex on #3438): the call-site lowering leaves a written `None` /
+/// `Some(..)` unwrapped, because for `x?: T` it already IS the `Option` the
+/// parameter takes. For a DEFAULTED parameter the `Option` is hidden, so a
+/// written `None` would read as "omitted" and run the default: `f(None)` for
+/// `x: Option[Int] = Some(1)` answered `Some(1)`. Refused here, before the
+/// lowering, where only what the program wrote is visible.
+fn defaulted_explicit_option_check(fname: String, fname_off: Int, args: Array[Expr], pnames: Array[String], errors: Array[String]) -> Unit {
+  let at = defaulted_fn_index(fname)
+  let flags_opt = if at >= 0 {
+    let (_, found) = Array::get(defaulted_param_tbl, at)
+    Some(found)
+  } else {
+    None
+  }
+  match flags_opt {
+    Some(flags) => {
+      let mut ai = 0
+      while ai < Array::length(args) {
+        // A labeled argument binds the parameter its label names, not its
+        // written position (`f(b = None, a = 1)`); the lowering reorders it.
+        let (slot, value) = match Array::get(args, ai) {
+          ELabeledArg(lbl, _, v) => {
+            let mut at = ai
+            let mut pi = 0
+            while pi < Array::length(pnames) {
+              if Array::get(pnames, pi) == lbl {
+                at = pi
+              } else {
+                ()
+              }
+              pi = pi + 1
+            }
+            (at, v)
+          },
+          other => (ai, other)
+        }
+        if slot < Array::length(flags) && Array::get(flags, slot) && syntactic_option_arg(value) {
+          let marker = labeled_name_marker(fname_off, String::length(fname))
+          Array::push(errors, String::concat("argument ", String::concat(__to_string(slot + 1), String::concat(" of ", String::concat(fname, String::concat(" is a written `None` / `Some(..)` for a parameter with a default, which would read as an omitted argument; bind the value first (`let v: T = None`) and pass `v`, or omit the argument to use the default", marker))))))
+        } else {
+          ()
+        }
+        ai = ai + 1
+      }
+    },
+    None => ()
+  }
+}
+
 fn lookup_labeled_check_fn(tbl: Array[(String, Array[String])], fname: String) -> Option[Array[String]] {
   let mut i = 0
   let mut found = None
@@ -661,7 +841,11 @@ fn labeled_walk_pat_binds(pat: Pat, shadows: Array[String]) -> Unit {
 export fn labeled_name_check_expr(e: Expr, tbl: Array[(String, Array[String])], shadows: Array[String], errors: Array[String], pre_desugar: Bool) -> Unit {
   match e {
     ECall(callee, args, _, _) => {
-      labeled_name_check_expr(callee, tbl, shadows, errors, pre_desugar)
+      // A named callee is a call, not a value reference (see the `EIdent` arm).
+      match callee {
+        EIdent(_, _) => (),
+        _ => labeled_name_check_expr(callee, tbl, shadows, errors, pre_desugar)
+      }
       let mut i = 0
       while i < Array::length(args) {
         labeled_name_check_expr(Array::get(args, i), tbl, shadows, errors, pre_desugar)
@@ -669,6 +853,14 @@ export fn labeled_name_check_expr(e: Expr, tbl: Array[(String, Array[String])], 
       }
       match callee {
         EIdent(fname, fname_off) => {
+          if pre_desugar && !labeled_walk_shadowed(shadows, fname) {
+            match lookup_labeled_check_fn(tbl, fname) {
+              Some(pnames) => defaulted_explicit_option_check(fname, fname_off, args, pnames, errors),
+              None => ()
+            }
+          } else {
+            ()
+          }
           let mut has_labeled = false
           let mut li = 0
           while li < Array::length(args) {
@@ -878,6 +1070,18 @@ export fn labeled_name_check_expr(e: Expr, tbl: Array[(String, Array[String])], 
         labeled_name_check_expr(Array::get(exprs, i), tbl, shadows, errors, pre_desugar)
         i = i + 1
       }
+    },
+    // #3120 (Codex on #3438): a function with parameter defaults used as a
+    // VALUE has the lowered type, where each defaulted `x: T` is an
+    // `Option[T]`. Called through it, `g(None)` reads as "omitted" and runs
+    // the default -- the direct-call refusal above cannot see that call. Only
+    // a direct call knows the defaults, so the value is refused with the
+    // wrapper that keeps the call direct.
+    EIdent(n, off) => if pre_desugar && !labeled_walk_shadowed(shadows, n) && defaulted_fn_known(n) {
+      let marker = labeled_name_marker(off, String::length(n))
+      Array::push(errors, String::concat(n, String::concat(" has parameter defaults, which apply only to a direct call, so it cannot be used as a value; wrap it in a lambda that calls it, e.g. `(a) -> ", String::concat(n, String::concat("(a)`", marker)))))
+    } else {
+      ()
     },
     _ => ()
   }
