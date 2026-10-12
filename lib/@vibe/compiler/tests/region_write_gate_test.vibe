@@ -62,7 +62,21 @@ test "a callback that stores its element through an if or a block is reported (C
   assert(String::contains(check_source_error_message(src), "region escapes its scope"))
 }
 
+test "a callback that stores an alias of its element is reported (Codex on #3437)" {
+  let alias_src = "fn build() -> Int {\n  let sink: Array[MutList[Int]] = []\n  region r {\n    let cells = [MutList::empty(r)]\n    let _ = Array::map(cells, (c) -> {\n      let alias = c\n      Array::push(sink, alias)\n      0\n    })\n  }\n  0\n}"
+  assert(String::contains(check_source_error_message(alias_src), "region escapes its scope"))
+  let wrapped_src = "fn build() -> Int {\n  let sink: Array[Option[MutList[Int]]] = []\n  region r {\n    let cells = [MutList::empty(r)]\n    let _ = Array::map(cells, (c) -> {\n      let w = Some(c)\n      Array::push(sink, w)\n      0\n    })\n  }\n  0\n}"
+  assert(String::contains(check_source_error_message(wrapped_src), "region escapes its scope"))
+}
+
+test "a callback that stores its element in a map literal is reported (Codex on #3437)" {
+  let src = "fn build() -> Int {\n  let sink: Array[Map[String, MutList[Int]]] = []\n  region r {\n    let cells = [MutList::empty(r)]\n    let _ = Array::map(cells, (c) -> {\n      Array::push(sink, Map::from_pairs([(\"k\", c)]))\n      0\n    })\n  }\n  0\n}"
+  assert(String::contains(check_source_error_message(src), "region escapes its scope"))
+}
+
 test "a callback that keeps its element in its own binding, or stores a value read from it, is fine" {
   assert(check_source_ok("fn build() -> Int {\n  region r {\n    let cells = [MutList::empty(r)]\n    let _ = Array::map(cells, (c) -> {\n      let mine = [c]\n      Array::push(mine, c)\n      0\n    })\n  }\n  0\n}"))
   assert(check_source_ok("fn build() -> Int {\n  let sink: Array[Int] = []\n  region r {\n    let cells = [MutList::empty(r)]\n    let _ = Array::map(cells, (c) -> {\n      Array::push(sink, MutList::length(c))\n      0\n    })\n  }\n  Array::length(sink)\n}"))
+  // An alias kept in the callback's own array stays inside it.
+  assert(check_source_ok("fn build() -> Int {\n  region r {\n    let cells = [MutList::empty(r)]\n    let _ = Array::map(cells, (c) -> {\n      let alias = c\n      let mine = [alias]\n      Array::length(mine)\n    })\n  }\n  0\n}"))
 }

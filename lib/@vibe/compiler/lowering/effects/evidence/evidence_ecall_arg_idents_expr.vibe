@@ -308,26 +308,24 @@ fn edp_expr_passes_literal_arg(e: Expr, pure_names: MutSet[String]) -> Bool {
 /// so stamping it would turn an accepted program into a refused one; such a
 /// literal is left as written.
 fn edp_literal_calls_local(lit: Expr, body: Expr, scope: Array[String]) -> Bool {
-  let own = edp_collect_program_binders([SExpr(lit)])
-  let mut found = false
-  let stack: Array[Expr] = [body]
-  while !found && Array::length(stack) > 0 {
-    let n = Array::length(stack)
-    let cur = Array::get(stack, n - 1)
-    Array::truncate(stack, n - 1)
-    match cur {
-      ECall(EIdent(cn, _), _, _, _) => if edp_scope_has(scope, cn) || MutSet::has(own, cn) || String::starts_with(cn, "__hoisted_lam_") {
-        found = true
-      } else {
-        ()
-      },
-      _ => ()
-    }
-    for child in expr_children(cur) {
-      Array::push(stack, child)
-    }
+  // Scoped as the copy's own census is (`edp_call_census`): a call counts as
+  // the literal's own binder only where that binder is in scope, so a call to
+  // a top-level `helper` beside a `let helper` in another branch is not one
+  // (Codex on #3437). Read unscoped, it left the literal unstamped and the
+  // callee's dict met a closure of its source arity.
+  let names: Array[String] = []
+  match lit {
+    EFn(_, _, ps, _, _, _) => {
+      let mut pi = 0
+      while pi < Array::length(ps) {
+        Array::push(names, edp_param_base_name(Array::get(ps, pi).0))
+        pi = pi + 1
+      }
+    },
+    _ => ()
   }
-  found
+  let called: Array[String] = []
+  !edp_call_census(body, names, scope, called) || Array::length(called) > 0
 }
 
 /// #3424: the closure literals `let`-bound around the expression the stamp is
