@@ -200,6 +200,10 @@ try {
                          "  p.write_bytes(p.read_bytes().replace(b'f0',b'g0',1))\n"
                          " elif os.environ.get('LOWERING_TEST_MUTATION') == 'worker-failure':\n"
                          "  sys.exit(23)\n"
+                         " elif os.environ.get('LOWERING_TEST_MUTATION') == 'symlink':\n"
+                         f"  p=Path({str(project / 'm0.vibe')!r})\n"
+                         "  target=p.with_suffix('.same'); target.write_bytes(p.read_bytes())\n"
+                         "  p.unlink(); p.symlink_to(target)\n"
                          " elif os.environ.get('LOWERING_TEST_MUTATION') == 'import':\n"
                          f"  p=Path({str(project / 'm0.vibe')!r})\n"
                          "  p.write_text(p.read_text().replace('{ 0 }', '{ 9 }'))\n"
@@ -227,6 +231,7 @@ try {
         assert not output.exists() and not trace.exists(), result
         assert "product does not match its prepared input" in result.stderr, result
         for mutation, message in [("import", "inputs changed after preparation"),
+                                  ("symlink", "inputs changed after preparation"),
                                   ("worker-failure", "coordinator exited 23")]:
             label = f"refuse-{mutation}"
             target = project / f"{label}.wasm"
@@ -236,6 +241,8 @@ try {
                  "VIBE_LOWERING_ARTIFACT_DIR": str(altered), "LOWERING_TEST_MUTATION": mutation}, expected=1)
             assert output.read_bytes() == b"keep previous output" and not trace.exists(), result
             assert message in result.stderr, result
+            if (project / "m0.vibe").is_symlink():
+                (project / "m0.vibe").unlink()
             (project / "m0.vibe").write_bytes(previous)
     print("TaskGroup lowering: public CLI parity 1/2/4, bounded waves, input freshness, trace aliases and protected output passed")
 

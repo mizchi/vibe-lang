@@ -164,25 +164,27 @@ the retained-parent service.
 ## Retained-parent full-build measurements (2026-10-13)
 
 The [raw report](../../../bench/perf/analysis/module-single-preparation-2026-10-13.json)
-records 48 full builds against `b49d197282991286d7c222ec011aa9355e426be2`.
-Each cold/warm pair has an isolated parsed-source cache; other guest caches are
-off and native JIT caches are primed. Three rounds alternate old/new order on
-one frozen corpus with no concurrent builds, tests or source edits. All output
-Wasm bytes agree across both variants, both temperatures and both serial controls.
+records 24 final full builds against `b49d197282991286d7c222ec011aa9355e426be2`,
+including the source-kind freshness guard added during review. Each cold/warm
+pair has an isolated parsed-source cache; other guest caches are off and native
+JIT caches are primed. Three rounds alternate old/new order on one frozen corpus
+with no concurrent builds, tests or source edits. All output Wasm bytes agree
+across these 24 runs and the preceding 48-run experiment, including serial controls.
+Both experiments and their separate artifact receipts are retained in the report.
 
-| full build | old TaskGroup 2 | retained-parent TaskGroup 2 | wall change | summed RSS, old → new | RSS change | new serial split |
+| full build | old TaskGroup 2 | retained-parent TaskGroup 2 | wall change | summed RSS, old → new | RSS change | earlier serial split |
 |---|---:|---:|---:|---:|---:|---:|
-| compiler cold | 17.36 s | 15.98 s | -8.0% | 960 → 1,220 MiB | +27.0% | 12.67 s |
-| compiler warm | 13.51 s | 11.77 s | -12.9% | 906 → 844 MiB | -6.8% | 8.73 s |
-| CLI cold | 49.78 s | 45.70 s | -8.2% | 2,822 → 3,189 MiB | +13.0% | 31.95 s |
-| CLI warm | 41.48 s | 36.71 s | -11.5% | 2,813 → 2,450 MiB | -12.9% | 23.67 s |
+| compiler cold | 17.54 s | 16.24 s | -7.4% | 957 → 1,217 MiB | +27.2% | 12.67 s |
+| compiler warm | 13.69 s | 11.98 s | -12.5% | 905 → 845 MiB | -6.7% | 8.73 s |
+| cli cold | 50.43 s | 46.52 s | -7.7% | 2,822 → 3,203 MiB | +13.5% | 31.95 s |
+| cli warm | 41.98 s | 37.20 s | -11.4% | 2,822 → 2,451 MiB | -13.1% | 23.67 s |
 
 Values are medians of three samples per cell. RSS sums the live process tree
 every 25 ms and can count shared mappings twice; it is not allocation volume.
-Serial split changed by about 0.5% warm and 1.1–1.3% cold; its raw samples and
-RSS are retained in the report. The new service's `worker_ms` includes parent
-encoding, decoding and merging, so it cannot be compared directly with the old
-worker-only phase field.
+The serial controls were measured in the preceding experiment, before the
+native source-kind guard; they are not new samples from the final experiment.
+The new service's `worker_ms` includes parent encoding, decoding and merging,
+so it cannot be compared directly with the old worker-only phase field.
 
 One preparation improves TaskGroup walltime and warm RSS, but raises cold RSS
 and remains slower than serial split. This route therefore stays opt-in. The

@@ -18,6 +18,7 @@ pub(super) struct InputSnapshot {
     files: BTreeMap<PathBuf, [u8; 32]>,
     directories: BTreeMap<PathBuf, Vec<String>>,
     probes: BTreeMap<(PathBuf, u8), bool>,
+    kinds: BTreeMap<PathBuf, Option<u8>>,
     inconsistent: bool,
 }
 
@@ -50,11 +51,41 @@ fn configured_cache_root(setting: Option<String>) -> PathBuf {
     )
 }
 
+fn source_kind(path: &Path) -> Option<u8> {
+    std::fs::symlink_metadata(path).ok().map(|metadata| {
+        let kind = metadata.file_type();
+        if kind.is_symlink() {
+            1
+        } else if kind.is_file() {
+            2
+        } else if kind.is_dir() {
+            3
+        } else {
+            4
+        }
+    })
+}
+
 impl InputSnapshot {
+    fn record_kind(&mut self, path: &Path) {
+        let kind = source_kind(path);
+        if self
+            .kinds
+            .insert(path.to_path_buf(), kind)
+            .is_some_and(|old| old != kind)
+        {
+            self.inconsistent = true;
+        }
+    }
+
     pub(super) fn stat_file(&mut self, path: &str) {
-        if !cache_path(&absolute(path)) && Path::new(path).is_file() {
-            if let Ok(bytes) = std::fs::read(path) {
-                self.file(path, &bytes);
+        let absolute = absolute(path);
+        if !cache_path(&absolute) {
+            self.record_kind(&absolute);
+            if Path::new(path).is_file() {
+                if let Ok(bytes) = std::fs::read(path) {
+                    self.file(path, &bytes);
+                }
             }
         }
     }
@@ -63,6 +94,7 @@ impl InputSnapshot {
         if cache_path(&path) {
             return;
         }
+        self.record_kind(&path);
         let digest: [u8; 32] = Sha256::digest(data).into();
         if self
             .files
@@ -110,6 +142,11 @@ impl InputSnapshot {
         let changed = || format_err!("lowering: build inputs changed after preparation; rebuild");
         if self.inconsistent {
             return Err(changed());
+        }
+        for (path, expected) in &self.kinds {
+            if source_kind(path) != *expected {
+                return Err(changed());
+            }
         }
         for (path, expected) in &self.files {
             let bytes = std::fs::read(path).map_err(|_| changed())?;
@@ -434,5 +471,29 @@ mod tests {
         snapshot.file("snapshot-read.vibe", b"first");
         snapshot.file("snapshot-read.vibe", b"other");
         assert!(snapshot.verify().is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn snapshot_refuses_identical_symlink_replacement() {
+        use std::os::unix::fs::symlink;
+        let directory =
+            std::env::temp_dir().join(format!("vibe-lowering-source-kind-{}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        for name in ["module.vibe", "index.vpkg"] {
+            let path = directory.join(name);
+            let target = directory.join(format!("{name}.target"));
+            std::fs::write(&path, b"same source").unwrap();
+            std::fs::write(&target, b"same source").unwrap();
+            let mut snapshot = InputSnapshot::default();
+            snapshot.stat_file(path.to_str().unwrap());
+            snapshot.file(path.to_str().unwrap(), b"same source");
+            snapshot.verify().unwrap();
+            std::fs::remove_file(&path).unwrap();
+            symlink(&target, &path).unwrap();
+            assert_eq!(std::fs::read(&path).unwrap(), b"same source");
+            assert!(snapshot.verify().is_err(), "{name} became a symlink");
+        }
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }
