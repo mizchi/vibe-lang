@@ -40,7 +40,6 @@ import @vibe/compiler/core {
   TypeEnv,
   TypeExpr,
   env_cache,
-  env_param_name_rows,
   erase_handler_or_arm_stamps,
   expr_children,
   handler_or_arm_groups,
@@ -1019,6 +1018,87 @@ export fn check_program_type_table(stmts: Array[Stmt]) -> (Array[(Int, Type)], S
 /// As `check_program_result`, seeded with an importing module's environment.
 /// The non-empty path intentionally keeps the existing imported-module checks
 /// and error behavior unchanged.
+/// #3432: the binding a published env uses to carry a function's raw
+/// parameter names (`times?`, `x~`) to its importers. A `TypeEnv` row keeps
+/// only parameter TYPES, so `times?: Int` and `times: Option[Int]` publish the
+/// same row, and an importer could neither omit the argument nor pass it by
+/// label. The marker is bound to a record whose field names are the parameter
+/// names; no source identifier can spell it.
+export fn param_names_marker(name: String) -> String {
+  String::concat(param_names_prefix, name)
+}
+
+let param_names_prefix: String = "#params:"
+
+/// Whether a binding name is a `param_names_marker`. Allocates nothing, so a
+/// scan over every binding of a dependency costs no heap.
+export fn is_param_names_marker(name: String) -> Bool {
+  String::starts_with(name, param_names_prefix)
+}
+
+/// The function a `param_names_marker` binding names.
+export fn param_names_marker_target(name: String) -> String {
+  String::substring(name, String::length(param_names_prefix), String::length(name))
+}
+
+/// Every `param_names_marker` row in `env`, as (function name, parameter
+/// names), nearest binding first and each name once. One walk over the chain,
+/// so an importer finds a type companion's row (`Box::make`, reached by
+/// importing `Box`) without knowing its name in advance.
+export fn env_param_name_rows(env: TypeEnv) -> Array[(String, Array[String])] {
+  let rows: Array[(String, Array[String])] = []
+  let mut current = env
+  let mut done = false
+  while !done {
+    match current {
+      EnvBind(name, binding, rest) => {
+        param_name_row_push(rows, name, binding.ty)
+        current = rest
+      },
+      EnvFlat(bindings) => {
+        for entry in bindings {
+          let (name, binding) = entry
+          param_name_row_push(rows, name, binding.ty)
+        }
+        done = true
+      },
+      EnvShowWrappers(_, _, rest) => current = rest,
+      EnvTraitDef(_, _, _, _, rest, _, _) => current = rest,
+      EnvTraitImpl(_, _, rest) => current = rest,
+      EnvTraitImplGen(_, _, _, _, rest) => current = rest,
+      EnvTypeDefs(_, _, rest) => current = rest,
+      EnvMutCell(_, _, rest) => current = rest,
+      EnvCached(_, _, rest) => current = rest,
+      EnvEmpty => done = true
+    }
+  }
+  rows
+}
+
+fn param_name_row_push(rows: Array[(String, Array[String])], name: String, ty: Type) -> Unit {
+  if is_param_names_marker(name) {
+    let fname = param_names_marker_target(name)
+    let mut seen = false
+    for row in rows {
+      let (n, _) = row
+      seen = seen || n == fname
+    }
+    match ty {
+      CtRecord(fields) => if seen {
+        ()
+      } else {
+        Array::push(rows, (fname, for field in fields {
+          let (pn, _) = field
+          pn
+        }))
+      },
+      _ => ()
+    }
+  } else {
+    ()
+  }
+}
+
 fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial_env: TypeEnv, capture: Option[CheckerStatementCapture], role_lane_capture: Option[TypedOccurrenceRoleLaneCapture], imports_already_projected: Bool) -> CheckedProgramTypeDefsObservation with Exception {
   match initial_env {
     EnvEmpty => check_program_type_defs_observation_impl(stmts, capture, role_lane_capture),
