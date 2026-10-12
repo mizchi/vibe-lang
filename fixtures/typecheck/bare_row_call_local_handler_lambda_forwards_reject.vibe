@@ -1,0 +1,27 @@
+// #3416: the local lambda handles one call of its callback but also calls it
+// outside the handle, which forwards `Box[Int]` to `mid`; a `Box[String]`
+// caller is refused.
+effect Box[T] {
+  Put(T) -> Int
+}
+fn mk() -> Int with Box {
+  perform Box::Put(12345)
+}
+fn mid() -> Int with Box {
+  let cb = () -> mk()
+  let lrun = (f: () -> Int with Box[Int]) -> Int with Box[Int] {
+    let a = handle {
+      f()
+    } with { Box::Put(n) => resume(n + 1) }
+    a + f()
+  }
+  lrun(cb)
+}
+fn caller() -> Int with Box[String] {
+  mid()
+}
+fn main() -> Int {
+  handle {
+    caller()
+  } with { Box::Put(s) => resume(String::length(s)) }
+}
