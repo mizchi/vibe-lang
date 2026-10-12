@@ -2,13 +2,36 @@
 // only publishes the compiler result after source-order replay succeeds.
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 
 const LIMIT_BYTES = 64 * 1024 * 1024, LIMIT_JOBS = 16;
+
+// Resolve existing symlinks even when the final file or its parent is absent.
+async function canonicalDestination(path) {
+  try { return await realpath(path); }
+  catch (e) {
+    if (e.code !== "ENOENT") throw e;
+    return join(await canonicalDestination(dirname(path)), basename(path));
+  }
+}
+
+async function refuseTraceAlias(trace, destination) {
+  if (await canonicalDestination(trace) === await canonicalDestination(destination)) {
+    throw new Error("lowering trace must not alias the build output");
+  }
+  const info = async path => {
+    try { return await stat(path); }
+    catch (e) { if (e.code !== "ENOENT") throw e; return null; }
+  };
+  const [a, b] = await Promise.all([info(trace), info(destination)]);
+  if (a && b && a.dev === b.dev && a.ino === b.ino) {
+    throw new Error("lowering trace must not alias the build output");
+  }
+}
 
 function run(runner, image, cwd, env) {
   return new Promise((yes, no) => {
@@ -38,7 +61,12 @@ function run(runner, image, cwd, env) {
 export async function buildTaskGroupLowering({ compiler, input, output, entry, jobs, root, artifacts, runner }) {
   if (![1, 2, 4].includes(jobs)) throw new Error("lowering jobs must be 1, 2 or 4");
   root = resolve(root); artifacts = resolve(artifacts); runner = resolve(runner);
-  if (process.env.VIBE_LOWERING_TRACE_OUT) await rm(process.env.VIBE_LOWERING_TRACE_OUT, { force: true });
+  const destination = resolve(root, output);
+  const trace = process.env.VIBE_LOWERING_TRACE_OUT ? resolve(root, process.env.VIBE_LOWERING_TRACE_OUT) : null;
+  if (trace) {
+    await refuseTraceAlias(trace, destination);
+    await rm(trace, { force: true });
+  }
   const digest = async p => createHash("sha256").update(await readFile(p)).digest("hex");
   const receipt = JSON.parse(await readFile(join(artifacts, "build.json"), "utf8"));
   if (receipt.version !== 1 || receipt.compiler_sha256 !== await digest(resolve(compiler)) ||
@@ -100,7 +128,6 @@ export async function buildTaskGroupLowering({ compiler, input, output, entry, j
     if (!WebAssembly.validate(result)) throw new Error("lowering produced invalid core Wasm");
     // Preserve an existing target if any phase failed; temp publication avoids
     // exposing partial compiler output or products.
-    const destination = resolve(root, output);
     const { rename } = await import("node:fs/promises");
     await mkdir(dirname(destination), { recursive: true });
     const staging = destination + `.lowering-${process.pid}.tmp`;
@@ -111,7 +138,10 @@ export async function buildTaskGroupLowering({ compiler, input, output, entry, j
       peak_queued_input_bytes: peakBytes, prepare_ms: prepared - started,
       worker_ms: lowered - prepared, replay_ms: finished - lowered,
       total_ms: finished - started, waves };
-    if (process.env.VIBE_LOWERING_TRACE_OUT) await writeFile(process.env.VIBE_LOWERING_TRACE_OUT, JSON.stringify(report));
+    if (trace) {
+      await refuseTraceAlias(trace, destination);
+      await writeFile(trace, JSON.stringify(report));
+    }
     return report;
   } finally { await rm(work, { recursive: true, force: true }); }
 }

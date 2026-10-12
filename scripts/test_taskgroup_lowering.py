@@ -33,7 +33,8 @@ def main():
         def build(label, flags, extra=None, expected=0):
             output, trace = project / f"{label}.wasm", project / f"{label}.json"
             current = dict(env, VIBE_BUILD_CACHE_DIR=str(project / f"{label}-cache"),
-                           VIBE_LOWERING_TRACE_OUT=str(trace), **(extra or {}))
+                           VIBE_LOWERING_TRACE_OUT=str(trace))
+            current.update(extra or {})
             result = subprocess.run(["bash", str(repo / "runtime/vibe"), "build", "main.vibe",
                                      "-o", str(output), *flags], cwd=project, env=current,
                                     capture_output=True, text=True, timeout=180)
@@ -57,6 +58,31 @@ def main():
         assert len(defaults) == 1 and defaults[0].read_bytes() == control.read_bytes(), defaults
         result = subprocess.run([str(runner), str(output)], capture_output=True, text=True, check=True)
         assert result.stdout.strip() == "2145", result
+
+        for alias in ["direct", "symlink", "hardlink", "parent-symlink"]:
+            label = f"trace-{alias}"
+            target = project / f"{label}.wasm"
+            target.write_bytes(b"keep previous output")
+            trace_alias = target
+            if alias == "symlink":
+                trace_alias = project / "trace-link.json"
+                trace_alias.symlink_to(target)
+            elif alias == "hardlink":
+                trace_alias = project / "trace-hardlink.json"
+                os.link(target, trace_alias)
+            elif alias == "parent-symlink":
+                link = project / "trace-parent"
+                link.symlink_to(project, target_is_directory=True)
+                trace_alias = link / target.name
+            output, _, result = build(label, ["--jobs", "2"],
+                {"VIBE_TASKGROUP_LOWERING": "1", "VIBE_LOWERING_TRACE_OUT": str(trace_alias)}, expected=1)
+            assert "trace must not alias the build output" in result.stderr, result
+            assert output.read_bytes() == b"keep previous output" and trace_alias.exists(), result
+
+        absent = project / "trace-absent.wasm"
+        output, _, result = build("trace-absent", ["--jobs", "2"],
+            {"VIBE_TASKGROUP_LOWERING": "1", "VIBE_LOWERING_TRACE_OUT": "trace-parent/trace-absent.wasm"}, expected=1)
+        assert "trace must not alias the build output" in result.stderr and not absent.exists(), result
 
         for label, extra, flags, message in [
             ("stable-refusal", {"VIBE_UNSTABLE": "0"}, [], "requires VIBE_UNSTABLE=1"),
@@ -101,7 +127,7 @@ def main():
              "VIBE_LOWERING_ARTIFACT_DIR": str(altered), "LOWERING_TEST_MUTATION": "job"}, expected=1)
         assert not output.exists() and not trace.exists(), result
         assert "product does not match its prepared input" in result.stderr, result
-    print("TaskGroup lowering: public CLI parity 1/2/4, bounded waves, input freshness and protected output passed")
+    print("TaskGroup lowering: public CLI parity 1/2/4, bounded waves, input freshness, trace aliases and protected output passed")
 
 
 if __name__ == "__main__":
