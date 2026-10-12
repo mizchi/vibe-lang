@@ -630,11 +630,29 @@ fn lapw_report(message: String, value: Expr, errors: Array[String]) -> Unit {
 
 /// Does `value` store the parameter: the parameter itself, or a constructor
 /// call, tuple, array or record literal holding it at any depth (Codex on
-/// #3437: `Some((c, 0))`)? A value a function call computes from it is not
-/// the parameter.
+/// #3437: `Some((c, 0))`), or a form whose value is one of its parts -- either
+/// branch of an `if`, any arm of a `match`, the tail of a block or `let`
+/// (`if flag { c } else { c }`)? A value a function call computes from it is
+/// not the parameter.
 fn lapw_stores_param(value: Expr, pname: String) -> Bool {
   match value {
     EIdent(n, _) => n == pname,
+    EIf(_, t, el) => lapw_stores_param(t, pname) || lapw_stores_param(el, pname),
+    EMatch(_, arms) => {
+      let mut found = false
+      for arm in arms {
+        let names: Array[String] = []
+        lapw_pat_binders(arm.0, names)
+        if !lapw_has(names, pname) && lapw_stores_param(arm.1, pname) {
+          found = true
+        } else {
+          ()
+        }
+      }
+      found
+    },
+    ESeq(_, b) => lapw_stores_param(b, pname),
+    ELet(n, v, b, _) => n != pname && (lapw_stores_param(b, pname) || lapw_stores_param(b, n) && lapw_stores_param(v, pname)),
     ECall(EIdent(ctor, _), cargs, _, _) => lapw_is_ctor_name(ctor) && lapw_any_stores(cargs, pname),
     ETuple(items) => lapw_any_stores(items, pname),
     EArray(items) => lapw_any_stores(items, pname),
