@@ -84,6 +84,37 @@ def main():
             {"VIBE_TASKGROUP_LOWERING": "1", "VIBE_LOWERING_TRACE_OUT": "trace-parent/trace-absent.wasm"}, expected=1)
         assert "trace must not alias the build output" in result.stderr and not absent.exists(), result
 
+        for alias in ["direct", "symlink", "hardlink"]:
+            trace_alias = project / "main.vibe"
+            if alias != "direct":
+                trace_alias = project / f"source-{alias}.json"
+                if alias == "symlink":
+                    trace_alias.symlink_to(project / "main.vibe")
+                else:
+                    os.link(project / "main.vibe", trace_alias)
+            _, _, result = build(f"source-{alias}", ["--jobs", "2"],
+                {"VIBE_TASKGROUP_LOWERING": "1", "VIBE_LOWERING_TRACE_OUT": str(trace_alias)}, expected=1)
+            assert "trace must not alias the source entry" in result.stderr, result
+            assert (project / "main.vibe").read_text() == source and trace_alias.exists(), result
+        imported = project / "m0.vibe"
+        previous = imported.read_bytes()
+        _, _, result = build("source-import", ["--jobs", "2"],
+            {"VIBE_TASKGROUP_LOWERING": "1", "VIBE_LOWERING_TRACE_OUT": str(imported)}, expected=1)
+        assert "not a lowering report" in result.stderr and imported.read_bytes() == previous, result
+
+        target = project / "trace-write-refusal.wasm"
+        target.write_bytes(b"keep previous output")
+        output, _, result = build("trace-write-refusal", ["--jobs", "2"],
+            {"VIBE_TASKGROUP_LOWERING": "1", "VIBE_LOWERING_TRACE_OUT": str(project / "missing-parent/report.json")}, expected=1)
+        assert "ENOENT" in result.stderr and output.read_bytes() == b"keep previous output", result
+
+        # A prior report from this route is reusable; arbitrary files are not.
+        reusable = project / "reusable.json"
+        reusable.write_text((project / "jobs2.json").read_text())
+        output, _, _ = build("trace-reuse", ["--jobs", "2"],
+            {"VIBE_TASKGROUP_LOWERING": "1", "VIBE_LOWERING_TRACE_OUT": str(reusable)})
+        assert output.read_bytes() == control.read_bytes(), output
+
         for label, extra, flags, message in [
             ("stable-refusal", {"VIBE_UNSTABLE": "0"}, [], "requires VIBE_UNSTABLE=1"),
             ("bump-refusal", {"VIBE_RC": "0"}, [], "requires the RC backend"),

@@ -100,6 +100,13 @@ bind both the consumed input and the encoded product. The host rechecks images
 before atomically publishing the final Wasm; any failure preserves an existing
 output.
 
+`VIBE_LOWERING_TRACE_OUT` optionally saves a versioned lowering report. Its
+path must not alias the entry or output, including symlinks and hardlinks.
+An existing file is replaceable only when it identifies itself as a report
+from this route; imported source files and unrelated user data are refused.
+The report is staged before the output is published, so a trace write failure
+also preserves the previous output.
+
 Outstanding worker inputs are bounded; total compiler memory is not thereby
 bounded. Preparation still holds the whole raw AST, and replay currently loads
 completed encoded products before the second compiler preparation. That second
