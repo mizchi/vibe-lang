@@ -904,7 +904,9 @@ export fn rc_exit_site_matches(ctx: CompileCtx, ord: Int, kind: Int, fingerprint
 
 // Ordered named-call dispatch group.
 export fn cc_compile_named_3(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception, fname: String, fn_idx_in_list: Int, resolved_name: String, local_idx_hint: Int, prefer_bound_call: Bool, ctor_lookup_idx: Int, compile_call_core_fn: (Bytes, Expr, Array[Expr], Array[String], Int, CompileCtx, Int, (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception) -> Int with Exception {
-  if fname == "Map::delete" {
+  if fname == "compiler_lowering_run" && local_idx_hint >= 0 {
+    cc_compile_resolved_call(buf, fname, args, local_names, next_local, ctx, ld, ce, fn_idx_in_list, local_idx_hint)
+  } else if fname == "Map::delete" {
     // Copies every entry whose key doesn't match into a fresh block (same
     // raw i64 load/store technique Map::set uses for entries it preserves
     // unmodified — no extra retain needed, matching that precedent). The
@@ -1710,7 +1712,7 @@ export fn cc_compile_named_3(buf: Bytes, callee: Expr, args: Array[Expr], local_
     emit_i64_shr_s(buf)
     nl
   }
-  else if ctx.enable_rc && (fname == "Env::args_len" || fname == "Env::args_get" || fname == "Fs::exists" || fname == "Fs::is_dir" || fname == "Fs::is_file" || fname == "Fs::stat_token" || fname == "vibe_fs_stat_token_raw" || fname == "Profiler::now_us" || fname == "Profiler::NowUs" || fname == "Profiler::heap_bytes" || fname == "Profiler::HeapBytes" || fname == "Stdin::read_char" || fname == "Console::read_char") {
+  else if ctx.enable_rc && ((fname == "compiler_lowering_run" && cc_raw_abi_shim_applies(ctx.func_table, ctx.func_offset, fname)) || fname == "Env::args_len" || fname == "Env::args_get" || fname == "Fs::exists" || fname == "Fs::is_dir" || fname == "Fs::is_file" || fname == "Fs::stat_token" || fname == "vibe_fs_stat_token_raw" || fname == "Profiler::now_us" || fname == "Profiler::NowUs" || fname == "Profiler::heap_bytes" || fname == "Profiler::HeapBytes" || fname == "Stdin::read_char" || fname == "Console::read_char") {
     // #705: the raw-ABI host imports speak UNTAGGED integers, but RC values
     // are tagged (n<<1). These builtins alias their import function
     // directly, so the generic call path handed the import a TAGGED index
@@ -1742,7 +1744,7 @@ export fn cc_compile_named_3(buf: Bytes, callee: Expr, args: Array[Expr], local_
     let mut nl = next_local
     if Array::length(args) > 0 {
       nl = ce(buf, Array::get(args, 0), local_names, nl, ctx, ld)
-      if fname == "Env::args_get" {
+      if fname == "Env::args_get" || fname == "compiler_lowering_run" {
         emit_i64_const(buf, 1)
         emit_i64_shr_s(buf)
       } else {

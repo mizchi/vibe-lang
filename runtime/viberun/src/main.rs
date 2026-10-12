@@ -33,6 +33,7 @@ use wasmtime::{
 
 mod checker_workers;
 mod commands;
+mod lowering_service;
 mod lowering_workers;
 mod native_cache;
 
@@ -286,6 +287,9 @@ struct HostState {
     // self-hosted LSP's JSON-RPC framing.
     stdin_pending: Vec<u8>,
     host_fs_scope: Option<HostFsScope>,
+    lowering_inputs: Option<lowering_service::InputSnapshot>,
+    lowering_service_used: bool,
+    lowering_finalize: Option<(Instant, std::path::PathBuf)>,
 }
 
 // #901: {exit_code, stdout, stderr} parked behind a handle by `sh_capture`,
@@ -398,6 +402,10 @@ impl HostState {
             next_http_handle: 1,
             stdin_pending: Vec::new(),
             host_fs_scope: None,
+            lowering_inputs: std::env::var_os("VIBE_LOWERING_SERVICE_CONFIG")
+                .map(|_| lowering_service::InputSnapshot::default()),
+            lowering_service_used: false,
+            lowering_finalize: None,
         }
     }
 

@@ -313,6 +313,7 @@ impl CheckerProcess {
             .stderr(stderr)
             .env("VIBE_LOWERING_WORKER_LIST", list);
         for name in [
+            "VIBE_LOWERING_SERVICE_CONFIG",
             "VIBE_LOWERING_WORKERS",
             "VIBE_CHECKER_WORKERS",
             "VIBE_CHECKER_WORKER_TRACE",
@@ -334,6 +335,53 @@ impl CheckerProcess {
             trace: false,
             permit: Some(permit),
         })
+    }
+
+    pub(super) fn start_coordinator(
+        runner: &Path,
+        wasm: &Path,
+        cwd: &Path,
+        manifest: &Path,
+    ) -> Result<Self> {
+        let stderr_path = manifest.with_extension("stderr");
+        let stderr = std::fs::File::create(&stderr_path)?;
+        let mut command = Command::new(runner);
+        command
+            .arg(wasm)
+            .current_dir(cwd)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(stderr)
+            .env("VIBE_LOWERING_WORKERS", manifest);
+        for name in [
+            "VIBE_LOWERING_SERVICE_CONFIG",
+            "VIBE_CHECKER_WORKERS",
+            "VIBE_GUEST_PROFILE",
+            "VIBE_MEM",
+            "VIBE_FS_COMPILE",
+        ] {
+            command.env_remove(name);
+        }
+        Ok(Self {
+            child: Some(command.spawn()?),
+            sleep: None,
+            slot: 0,
+            started: Instant::now(),
+            stderr: stderr_path,
+            trace: false,
+            permit: None,
+        })
+    }
+
+    pub(super) fn wait_blocking(&mut self) -> Result<u32> {
+        let status = self
+            .child
+            .as_mut()
+            .ok_or_else(|| format_err!("worker already completed"))?
+            .wait()?;
+        self.child = None;
+        self.permit = None;
+        Ok(status.code().unwrap_or(255) as u32)
     }
 
     fn start_batch(

@@ -23,6 +23,15 @@ import @vibe/core {
   array_empty, struct MutMap, struct MutSet
 }
 
+import ./prelude_module_batch.vibe {
+  PreludeModuleBatch,
+  enter_module_executor_scope,
+  leave_module_executor_scope,
+  prelude_batch_contexts,
+  prelude_execute_module_batch,
+  prelude_module_batch_active
+}
+
 import @vibe/compiler/normalize {
   ModuleTraitFacts,
   collect_explicit_derived_op_names,
@@ -178,16 +187,16 @@ let prelude_module_executors: Array[(Array[Stmt], Array[Stmt], Int, Int, String,
 /// Install one independent executor only for this compile. Nested use is
 /// refused, and success or an exception restores the ordinary sequential lane.
 export fn prelude_with_module_executor(executor: (Array[Stmt], Array[Stmt], Int, Int, String, Array[Int], Array[String], PreludeEnv, Array[String], PreludeTail, Array[String]) -> Unit with Exception, action: () -> Bytes with Env + Exception + Fs) -> Bytes with Env + Exception + Fs {
-  if Array::length(prelude_module_executors) != 0 {
-    throw("lowering: a module executor is already active")
-  } else ()
+  enter_module_executor_scope()
   Array::push(prelude_module_executors, executor)
   handle {
     let result = action()
     Array::truncate(prelude_module_executors, 0)
+    leave_module_executor_scope()
     result
   } with { Exception::Throw(message) => {
     Array::truncate(prelude_module_executors, 0)
+    leave_module_executor_scope()
     throw(message)
   } }
 }
@@ -939,8 +948,26 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
   // per module.
   // #2634: the union of the synthesis requests each module made.
   // #2633: the union of what each module reports just before the evidence pass.
+  let execute_batch = match observations {
+    None => prelude_module_batch_active(),
+    Some(_) => false
+  }
+  if execute_batch {
+    prelude_execute_module_batch(PreludeModuleBatch::{
+      parts: parts,
+      contexts: prelude_batch_contexts(parts, ifaces, iface_keys, import_closure),
+      entry_fid: entry_fid,
+      entry_name: entry_name,
+      offsets: checker_eq_offsets,
+      keys: checker_eq_type_keys,
+      env: env,
+      synth: synth_keys,
+      tail: link.tail,
+      diagnostics: link.diags
+    })
+  } else ()
   fi = 0
-  while fi < file_count {
+  while fi < file_count && !execute_batch {
     let part_entry = if fi == entry_fid {
       entry_name
     } else {

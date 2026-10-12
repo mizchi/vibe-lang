@@ -21,6 +21,7 @@ for name in worker compile coordinator; do
     compile) source_file=lib/@vibe/lowering_build/compile.vibe; entry=main; target=compile.wasm ;;
     coordinator) source_file=lib/@vibe/lowering_worker/coordinator/coordinator.vibe; entry=run; target=coordinator.component.wasm ;;
   esac
+  if [ "$name" = compile ]; then export VIBE_WASM_KEEP_EXPORTS=1; else unset VIBE_WASM_KEEP_EXPORTS; fi
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$COMPILER" "$source_file" "$OUT/$target" "$entry"
 done
 python3 - "$COMPILER" "$OUT" "$ROOT_DIR/runtime/viberun/target/release/viberun" <<'PY'
