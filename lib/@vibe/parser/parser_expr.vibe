@@ -826,7 +826,7 @@ fn parse_fn_name(tokens: Array[Token], pos: Int, context: Option[ParserBinderCon
 /// (#1500) and stopped at the `=`; this reads the default expression and
 /// returns it beside the parameter's bare name. `fn_param_defaults_wrap`
 /// unwraps the parameter at the top of the body.
-fn parse_fn_param_list_with_defaults(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> (Array[(String, Option[TypeExpr])], Array[(String, TypeExpr, Expr)], Int) with Exception {
+fn parse_fn_param_list_with_defaults(tokens: Array[Token], starts: Array[Int], pos: Int, context: Option[ParserBinderContext]) -> (Array[(String, Option[TypeExpr])], Array[(String, TypeExpr, Expr)], Int) with Exception {
   let params: Array[(String, Option[TypeExpr])] = []
   let defaults: Array[(String, TypeExpr, Expr)] = []
   // (parameter index, first token, end token) of each default expression.
@@ -849,7 +849,7 @@ fn parse_fn_param_list_with_defaults(tokens: Array[Token], pos: Int, context: Op
               Some(other) => other,
               None => throw("parameter '\{base}' has a default but no type")
             }
-            let (dflt, dn) = parse_impl_with_binder_context(tokens, [], pn + 1, 0, context)
+            let (dflt, dn) = parse_impl_with_binder_context(tokens, starts, pn + 1, 0, context)
             Array::push(defaults, (base, declared, dflt))
             Array::push(default_spans, (Array::length(params) - 1, pn + 1, dn))
             dn
@@ -997,11 +997,11 @@ fn fn_param_defaults_wrap(body: Expr, defaults: Array[(String, TypeExpr, Expr)])
   out
 }
 
-fn parse_fn_signature_with_binder_context(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext], contract_rows: Option[(ArrayBuilder[SourceBinder], ArrayBuilder[SourceBinder])]) -> ((String, Array[String], Array[(String, Array[String])]), (Array[(String, Option[TypeExpr])], TypeExpr, Option[String]), (Array[Expr], Array[Expr]), Array[(String, TypeExpr, Expr)], Int) with Exception {
+fn parse_fn_signature_with_binder_context(tokens: Array[Token], starts: Array[Int], pos: Int, context: Option[ParserBinderContext], contract_rows: Option[(ArrayBuilder[SourceBinder], ArrayBuilder[SourceBinder])]) -> ((String, Array[String], Array[(String, Array[String])]), (Array[(String, Option[TypeExpr])], TypeExpr, Option[String]), (Array[Expr], Array[Expr]), Array[(String, TypeExpr, Expr)], Int) with Exception {
   let (name, name_next) = parse_fn_name(tokens, pos, context)
   let (tps, tbs, after_gen) = parse_value_bracket_header(tokens, name_next, context)
   let lp = expect_tk(tokens, after_gen, "(")
-  let (params, param_defaults, after_params) = parse_fn_param_list_with_defaults(tokens, lp, context)
+  let (params, param_defaults, after_params) = parse_fn_param_list_with_defaults(tokens, starts, lp, context)
   let mut pi = 0
   while pi < Array::length(params) {
     let param = Array::get(params, pi)
@@ -1116,7 +1116,8 @@ fn parse_fn_signature_with_binder_context(tokens: Array[Token], pos: Int, contex
 }
 
 export fn parse_fn_signature(tokens: Array[Token], pos: Int) -> ((String, Array[String], Array[(String, Array[String])]), (Array[(String, Option[TypeExpr])], TypeExpr, Option[String]), (Array[Expr], Array[Expr]), Int) with Exception {
-  let (head, sig, contracts, defaults, next) = parse_fn_signature_with_binder_context(tokens, pos, None, None)
+  let no_starts: Array[Int] = []
+  let (head, sig, contracts, defaults, next) = parse_fn_signature_with_binder_context(tokens, no_starts, pos, None, None)
   // #3120: a bodyless declaration (a `.vpkg` contract) has no body to run a
   // default in; the implementation owns it.
   if Array::length(defaults) > 0 {
@@ -1276,7 +1277,7 @@ fn parse_fn_stmt_general(tokens: Array[Token], starts: Array[Int], pos: Int, exp
     Some(_) => Some((ArrayBuilder::new(), ArrayBuilder::new())),
     None => None
   }
-  let (head, sig, contracts, param_defaults, where_next) = parse_fn_signature_with_binder_context(tokens, pos, context, contract_rows)
+  let (head, sig, contracts, param_defaults, where_next) = parse_fn_signature_with_binder_context(tokens, starts, pos, context, contract_rows)
   let (name, tps, tbs) = head
   let (params, ret_ty, eff_opt) = sig
   let (reqs, enss) = contracts

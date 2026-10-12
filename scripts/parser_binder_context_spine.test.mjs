@@ -297,7 +297,7 @@ test("B2 expression helper bodies carry context without private duplicate wrappe
   // into each parameter and each default expression.
   assertContextual(exprSource, "parse_fn_param_list_with_defaults", [
     "parse_one_param_with_binder_context(tokens, p, context)",
-    "parse_impl_with_binder_context(tokens, [], pn + 1, 0, context)",
+    "parse_impl_with_binder_context(tokens, starts, pn + 1, 0, context)",
   ], [
     "parse_param_list(tokens,",
     "parse_impl(tokens,",
@@ -305,7 +305,7 @@ test("B2 expression helper bodies carry context without private duplicate wrappe
   assertContextual(exprSource, "parse_fn_signature_with_binder_context", [
     "parse_fn_name(tokens, pos, context)",
     "parse_value_bracket_header(tokens, name_next, context)",
-    "parse_fn_param_list_with_defaults(tokens, lp, context)",
+    "parse_fn_param_list_with_defaults(tokens, starts, lp, context)",
     "parse_impl_with_binder_context(tokens, [",
   ], [
     "parse_fn_name_with_binder_context",
@@ -313,7 +313,7 @@ test("B2 expression helper bodies carry context without private duplicate wrappe
     "parse_impl(tokens,",
   ]);
   assertBody(exprSource, "parse_fn_signature", [
-    "parse_fn_signature_with_binder_context(tokens, pos, None, None)",
+    "parse_fn_signature_with_binder_context(tokens, no_starts, pos, None, None)",
   ], ["Some(ParserBinderContext"]);
   assertContextual(exprSource, "parse_fn_main_stmt", [
     "parse_impl_with_binder_context(tokens, starts, br, mode_block, context)",
@@ -326,7 +326,7 @@ test("B2 expression helper bodies carry context without private duplicate wrappe
     "parse_fn_stmt_general_with_binder_context",
   ]);
   assertContextual(exprSource, "parse_fn_stmt_general", [
-    "parse_fn_signature_with_binder_context(tokens, pos, context, contract_rows)",
+    "parse_fn_signature_with_binder_context(tokens, starts, pos, context, contract_rows)",
     "parse_impl_with_binder_context(tokens, starts, br, mode_block, context)",
   ], [
     "parse_fn_signature(tokens,",
