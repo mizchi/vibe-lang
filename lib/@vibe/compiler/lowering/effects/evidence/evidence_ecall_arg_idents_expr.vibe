@@ -187,6 +187,7 @@ export fn edp_stamp_slot_rows(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Boo
   Array::push(edp_snap_program, (stmts, fn_defs))
   let mut i = 0
   while i < Array::length(stmts) {
+    edp_stamp_returned_closure(stmts, i, pure_names)
     let stmt = Array::get(stmts, i)
     let body = match stmt {
       SLet(_, _, _, _, e) => Some(e),
@@ -217,6 +218,69 @@ export fn edp_stamp_slot_rows(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Boo
     i = i + 1
   }
   ()
+}
+
+/// #3435: a function whose declared result is a function type with a row
+/// (`fn mid() -> (() -> Int with Box[Int]) { () -> mk() }`) hands its caller a
+/// closure the caller calls with the dict, as a callee calls one written at
+/// its row-typed parameter. The returned literal took no dict, so `drive(mid())`
+/// passed one it had no parameter for and the module failed to instantiate
+/// ("not enough arguments on the stack for call"). The closure in tail
+/// position takes the declared row, the way `edp_stamp_slot_arg_at` gives a
+/// parameter's; one that calls a local closure is left as written.
+fn edp_stamp_returned_closure(stmts: Array[Stmt], i: Int, pure_names: MutSet[String]) -> Unit {
+  match Array::get(stmts, i) {
+    SLet(exported, is_rec, nm, ty, EFn(tps, tbs, ps, Some(TyFn(rptys, rret, Some(rrow))), eff, fb)) => if edp_slot_row_stampable(rrow) {
+      let scope: Array[String] = []
+      let mut pi = 0
+      while pi < Array::length(ps) {
+        Array::push(scope, edp_param_base_name(Array::get(ps, pi).0))
+        pi = pi + 1
+      }
+      let fb2 = edp_stamp_tail(fb, (Array::length(rptys), rrow), scope, pure_names)
+      Array::set(stmts, i, SLet(exported, is_rec, nm, ty, EFn(tps, tbs, ps, Some(TyFn(rptys, rret, Some(rrow))), eff, fb2)))
+    } else {
+      ()
+    },
+    _ => ()
+  }
+}
+
+/// `e` with the closure it evaluates to, in each tail position, given `slot`.
+fn edp_stamp_tail(e: Expr, slot: (Int, String), scope: Array[String], pure_names: MutSet[String]) -> Expr {
+  match e {
+    ESeq(a, b) => ESeq(a, edp_stamp_tail(b, slot, scope, pure_names)),
+    ELet(n, v, b, off) => {
+      Array::push(scope, n)
+      let b2 = edp_stamp_tail(b, slot, scope, pure_names)
+      Array::truncate(scope, Array::length(scope) - 1)
+      ELet(n, v, b2, off)
+    },
+    ELetMut(n, v, b, off) => {
+      Array::push(scope, n)
+      let b2 = edp_stamp_tail(b, slot, scope, pure_names)
+      Array::truncate(scope, Array::length(scope) - 1)
+      ELetMut(n, v, b2, off)
+    },
+    EIf(c, t, el) => EIf(c, edp_stamp_tail(t, slot, scope, pure_names), edp_stamp_tail(el, slot, scope, pure_names)),
+    EMatch(sc, arms) => EMatch(sc, for a in arms {
+      let (pp, ex) = a
+      let base = Array::length(scope)
+      for pn in edp_pat_names(pp) {
+        Array::push(scope, pn)
+      }
+      let ex2 = edp_stamp_tail(ex, slot, scope, pure_names)
+      Array::truncate(scope, base)
+      (pp, ex2)
+    }),
+    EFn(_, _, _, _, None, lb) => if edp_literal_calls_local(e, lb, scope) {
+      e
+    } else {
+      edp_stamp_slot_arg_at(e, scope, pure_names, Some(slot))
+    },
+    EIdent(_, _) => edp_stamp_slot_arg_at(e, scope, pure_names, Some(slot)),
+    _ => e
+  }
 }
 
 /// #3347: a top-level `let side: Thunk = () -> Int { .. }` keeps its alias

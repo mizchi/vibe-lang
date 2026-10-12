@@ -1,0 +1,64 @@
+// #3435: a function whose declared result is a function type with a row
+// returns a closure that its caller calls with the dict. The returned literal
+// took no dict, so `drive(mid())` failed to instantiate ("not enough arguments
+// on the stack for call"), and with the row on `mid` too it trapped ("null
+// function or function signature mismatch").
+
+effect Box[T] {
+  Put(T) -> Int
+}
+
+fn mk() -> Int with Box[Int] {
+  perform Box::Put(12345)
+}
+
+fn mid() -> (() -> Int with Box[Int]) {
+  () -> mk()
+}
+
+fn drive(f: () -> Int with Box[Int]) -> Int {
+  handle {
+    f()
+  } with {
+    Box::Put(n) => resume(n + 1)
+  }
+}
+
+// The row on the function as well: the closure is made under a handler and
+// run under another.
+fn mid_row() -> (() -> Int with Box[Int]) with Box[Int] {
+  let base = perform Box::Put(1)
+  () -> mk() + base
+}
+
+fn seven() -> Int {
+  7
+}
+
+// A row-free named function returned at the row takes a wrapper that accepts
+// the dict.
+fn mid_named() -> (() -> Int with Box[Int]) {
+  seven
+}
+
+// Each branch's closure is the result.
+fn mid_branch(flag: Bool) -> (() -> Int with Box[Int]) {
+  if flag {
+    () -> mk()
+  } else {
+    () -> 3
+  }
+}
+
+test "a returned closure takes the dict its caller passes" {
+  inspect(drive(mid()), "12346")
+  let f = handle {
+    mid_row()
+  } with {
+    Box::Put(n) => resume(n * 10)
+  }
+  inspect(drive(f), "12356")
+  inspect(drive(mid_named()), "7")
+  inspect(drive(mid_branch(true)), "12346")
+  inspect(drive(mid_branch(false)), "3")
+}

@@ -1,0 +1,34 @@
+import @vibe/compiler/lowering/effects/evidence {
+  evidence_dict_pass
+}
+import @vibe/compiler/syntax {
+  lex, parse_program, print_stmt
+}
+
+// The printed `mid` after the evidence pass over `decls`.
+fn mid_after(decls: String) -> String with Exception {
+  let head = "effect Box[T] {\n  Put(T) -> Int\n}\nfn mk() -> Int with Box[Int] {\n  perform Box::Put(12345)\n}\nfn drive(f: () -> Int with Box[Int]) -> Int {\n  handle {\n    f()\n  } with { Box::Put(n) => resume(n + 1) }\n}\nfn main() -> Int {\n  drive(mid())\n}\n"
+  let stmts = parse_program(lex(String::concat(head, decls)))
+  let _ = evidence_dict_pass(stmts, "main")
+  let mut out = ""
+  for s in stmts {
+    match s {
+      SLet(_, _, n, _, _) => if n == "mid" {
+        out = print_stmt(s)
+      } else {
+        ()
+      },
+      _ => ()
+    }
+  }
+  out
+}
+
+// #3435: the closure a function returns at a declared row takes the dict its
+// caller passes. It was left at arity 0, so `drive(mid())` failed to
+// instantiate. The runtime answers are in
+// `fixtures/returned_row_closure_test.vibe`.
+test "a returned closure takes the declared row's dict" {
+  inspect(mid_after("fn mid() -> (() -> Int with Box[Int]) {\n  () -> mk()\n}\n"), "let rec mid = () -> () -> Int with Box[Int] { (__ev_Box: __EvDict_Box) -> { mk(__ev_Box) } }")
+  inspect(mid_after("fn mid() -> (() -> Int with Box[Int]) {\n  if true {\n    () -> mk()\n  } else {\n    () -> 3\n  }\n}\n"), "let rec mid = () -> () -> Int with Box[Int] { if true { (__ev_Box: __EvDict_Box) -> { mk(__ev_Box) } } else { (__ev_Box: __EvDict_Box) -> { 3 } } }")
+}
