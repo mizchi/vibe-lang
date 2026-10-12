@@ -328,9 +328,8 @@ fn edp_literal_calls_local(lit: Expr, body: Expr, scope: Array[String]) -> Bool 
   found
 }
 
-/// #3424: the row-free closure literals `let`-bound around the expression the
-/// stamp is walking, innermost last, each with the index its name has in
-/// `scope`.
+/// #3424: the closure literals `let`-bound around the expression the stamp is
+/// walking, innermost last, each with the index its name has in `scope`.
 let edp_local_lit_names: Array[String] = []
 let edp_local_lit_slots: Array[Int] = []
 let edp_local_lit_vals: Array[Expr] = []
@@ -1195,11 +1194,13 @@ fn edp_stamp_expr(e: Expr, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, 
     },
     ELet(n, v, b, off) => {
       let v2 = edp_stamp_let_literal(n, edp_stamp_expr(v, stmts, fn_defs, scope, pure_names), b, stmts, fn_defs, scope)
-      // #3424: a row-free closure literal stays visible to a literal in its
-      // body that calls it (`edp_copy_local_helpers`).
+      // #3424: a closure literal stays visible to a literal in its body that
+      // calls it (`edp_copy_local_helpers` copies only a row-free one), and
+      // to an argument written at one of its row-typed parameters
+      // (`edp_local_slot_fn_type`, #3416), whether or not it has a row.
       let mark = Array::length(edp_local_lit_names)
       match v2 {
-        EFn(_, _, _, _, None, _) => {
+        EFn(_, _, _, _, _, _) => {
           Array::push(edp_local_lit_names, n)
           Array::push(edp_local_lit_slots, Array::length(scope))
           Array::push(edp_local_lit_vals, v2)
@@ -1592,8 +1593,8 @@ fn edp_stamp_slot_arg_at(a: Expr, scope: Array[String], pure_names: MutSet[Strin
   }
 }
 
-/// #3416: the slot at `pos` of a LOCAL lambda the call names -- a row-free
-/// literal bound by `let` in scope -- read from its parameter annotation the
+/// #3416: the slot at `pos` of a LOCAL lambda the call names -- a literal
+/// bound by `let` in scope -- read from its parameter annotation the
 /// way `edp_slot_fn_type` reads a top-level function's. Its handle passes a
 /// row-typed parameter the dict (`edp_rh_extend`), so a callback literal
 /// written there needs the parameter too.

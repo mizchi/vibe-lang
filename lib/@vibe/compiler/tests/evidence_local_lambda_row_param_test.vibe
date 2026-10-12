@@ -2,7 +2,7 @@ import @vibe/compiler/lowering/effects/evidence {
   evidence_dict_pass
 }
 import @vibe/compiler/syntax {
-  lex, parse_program
+  lex, parse_program, print_stmt
 }
 
 fn head() -> String {
@@ -31,4 +31,31 @@ test "a local lambda's row-typed parameter does not refuse its needing function"
   inspect(run("fn bare() -> Int with Box {\n  let lrun = (f: () -> Int with Box[Int]) -> Int {\n    handle {\n      f()\n    } with {\n      Box::Put(n) => resume(n + 1)\n    }\n  }\n  lrun(() -> Int with Box[Int] { bare_mk() })\n}\n"), "0")
   // the local lambda forwards its callback rather than handling it
   inspect(run("fn bare() -> Int with Box {\n  let lrun = (f: () -> Int with Box[Int]) -> Int with Box[Int] {\n    f()\n  }\n  lrun(() -> bare_mk())\n}\n"), "0")
+}
+
+/// The printed `fwd` after the pass.
+fn fwd_after_pass() -> String with Exception {
+  let stmts = parse_program(lex(String::concat(head(), "fn fwd() -> Int with Box {\n  let lrun = (f: () -> Int with Box[Int]) -> Int with Box[Int] {\n    f() + 1\n  }\n  lrun(() -> bare_mk())\n}\nfn main() -> Int {\n  handle {\n    fwd()\n  } with {\n    Box::Put(n) => resume(n * 2)\n  }\n}\n")))
+  let _ = evidence_dict_pass(stmts, "main")
+  let mut out = ""
+  for s in stmts {
+    match s {
+      SLet(_, _, n, _, _) => if n == "fwd" {
+        out = print_stmt(s)
+      } else {
+        ()
+      },
+      _ => ()
+    }
+  }
+  out
+}
+
+// A local lambda WITH a row of its own passes `f` its dict, so the row-free
+// callback written at `f` takes the parameter's row and a dict parameter.
+// It used to stay `() -> { .. }`, which the call `f(__ev_Box)` trapped on
+// ("null function or function signature mismatch"): only row-free local
+// lambdas were recorded for the slot lookup.
+test "a callback at a row-carrying local lambda's parameter takes the dict" {
+  inspect(fwd_after_pass(), "let rec fwd = (__ev_Box: __EvDict_Box) -> Int with Box { { let lrun = (__ev_Box: __EvDict_Box, f: () -> Int with Box[Int]) -> Int with Box[Int] { (f(__ev_Box) + 1) }; lrun(__ev_Box, (__ev_Box: __EvDict_Box) -> { bare_mk(__ev_Box) }) } }")
 }
