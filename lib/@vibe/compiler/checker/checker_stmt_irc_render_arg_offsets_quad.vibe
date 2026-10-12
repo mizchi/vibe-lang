@@ -1045,20 +1045,72 @@ export fn param_names_marker_target(name: String) -> String {
 /// names), nearest binding first and each name once. One walk over the chain,
 /// so an importer finds a type companion's row (`Box::make`, reached by
 /// importing `Box`) without knowing its name in advance.
+///
+/// A marker bound to anything but a record is a TOMBSTONE: a later import of
+/// the same name that carries no parameter names. It hides every older
+/// marker for that name and yields no row (Codex on #3441).
+///
+/// An env with no marker at all, which is nearly every env, answers a shared
+/// empty array without allocating. Callers only read the answer.
 export fn env_param_name_rows(env: TypeEnv) -> Array[(String, Array[String])] {
-  let rows: Array[(String, Array[String])] = []
+  if env_param_marker_count(env) == 0 {
+    no_param_name_rows
+  } else {
+    let rows: Array[(String, Array[String])] = []
+    let tombs: Array[String] = []
+    let mut current = env
+    let mut done = false
+    while !done {
+      match current {
+        EnvBind(name, binding, rest) => {
+          param_name_row_push(rows, tombs, name, binding.ty)
+          current = rest
+        },
+        EnvFlat(bindings) => {
+          for entry in bindings {
+            let (name, binding) = entry
+            param_name_row_push(rows, tombs, name, binding.ty)
+          }
+          done = true
+        },
+        EnvShowWrappers(_, _, rest) => current = rest,
+        EnvTraitDef(_, _, _, _, rest, _, _) => current = rest,
+        EnvTraitImpl(_, _, rest) => current = rest,
+        EnvTraitImplGen(_, _, _, _, rest) => current = rest,
+        EnvTypeDefs(_, _, rest) => current = rest,
+        EnvMutCell(_, _, rest) => current = rest,
+        EnvCached(_, _, rest) => current = rest,
+        EnvEmpty => done = true
+      }
+    }
+    rows
+  }
+}
+
+let no_param_name_rows: Array[(String, Array[String])] = []
+
+fn env_param_marker_count(env: TypeEnv) -> Int {
+  let mut count = 0
   let mut current = env
   let mut done = false
   while !done {
     match current {
-      EnvBind(name, binding, rest) => {
-        param_name_row_push(rows, name, binding.ty)
+      EnvBind(name, _, rest) => {
+        if is_param_names_marker(name) {
+          count = count + 1
+        } else {
+          ()
+        }
         current = rest
       },
       EnvFlat(bindings) => {
         for entry in bindings {
-          let (name, binding) = entry
-          param_name_row_push(rows, name, binding.ty)
+          let (name, _) = entry
+          if is_param_names_marker(name) {
+            count = count + 1
+          } else {
+            ()
+          }
         }
         done = true
       },
@@ -1072,7 +1124,40 @@ export fn env_param_name_rows(env: TypeEnv) -> Array[(String, Array[String])] {
       EnvEmpty => done = true
     }
   }
-  rows
+  count
+}
+
+/// Whether `name` has a row in `rows`.
+export fn param_name_rows_have(rows: Array[(String, Array[String])], name: String) -> Bool {
+  let mut found = false
+  for row in rows {
+    let (n, _) = row
+    found = found || n == name
+  }
+  found
+}
+
+fn param_name_row_push(rows: Array[(String, Array[String])], tombs: Array[String], name: String, ty: Type) -> Unit {
+  if is_param_names_marker(name) {
+    let fname = param_names_marker_target(name)
+    let mut seen = param_name_rows_have(rows, fname)
+    for t in tombs {
+      seen = seen || t == fname
+    }
+    if seen {
+      ()
+    } else {
+      match ty {
+        CtRecord(fields) => Array::push(rows, (fname, for field in fields {
+          let (pn, _) = field
+          pn
+        })),
+        _ => Array::push(tombs, fname)
+      }
+    }
+  } else {
+    ()
+  }
 }
 
 /// The imported rows whose name this module does not bind itself. A
@@ -1109,30 +1194,6 @@ fn stmts_bind_top_level(stmts: Array[Stmt], name: String) -> Bool {
     found = found || bound
   }
   found
-}
-
-fn param_name_row_push(rows: Array[(String, Array[String])], name: String, ty: Type) -> Unit {
-  if is_param_names_marker(name) {
-    let fname = param_names_marker_target(name)
-    let mut seen = false
-    for row in rows {
-      let (n, _) = row
-      seen = seen || n == fname
-    }
-    match ty {
-      CtRecord(fields) => if seen {
-        ()
-      } else {
-        Array::push(rows, (fname, for field in fields {
-          let (pn, _) = field
-          pn
-        }))
-      },
-      _ => ()
-    }
-  } else {
-    ()
-  }
 }
 
 fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial_env: TypeEnv, capture: Option[CheckerStatementCapture], role_lane_capture: Option[TypedOccurrenceRoleLaneCapture], imports_already_projected: Bool) -> CheckedProgramTypeDefsObservation with Exception {
