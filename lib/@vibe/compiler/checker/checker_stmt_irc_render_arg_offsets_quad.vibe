@@ -1075,6 +1075,42 @@ export fn env_param_name_rows(env: TypeEnv) -> Array[(String, Array[String])] {
   rows
 }
 
+/// The imported rows whose name this module does not bind itself. A
+/// top-level `fn f` or `let f` shadows an imported `f`, so the import's
+/// parameter names must not rewrite its calls (Codex on #3441): a local
+/// `fn f(x: Int)` would otherwise see `f(1)` wrapped as `f(Some(1))`.
+fn unshadowed_param_rows(rows: Array[(String, Array[String])], stmts: Array[Stmt]) -> Array[(String, Array[String])] {
+  if Array::length(rows) == 0 {
+    rows
+  } else {
+    let kept: Array[(String, Array[String])] = []
+    for row in rows {
+      let (fname, _) = row
+      if stmts_bind_top_level(stmts, fname) {
+        ()
+      } else {
+        Array::push(kept, row)
+      }
+    }
+    kept
+  }
+}
+
+fn stmts_bind_top_level(stmts: Array[Stmt], name: String) -> Bool {
+  let mut found = false
+  for stmt in stmts {
+    let bound = match stmt {
+      SLet(_, _, n, _, _) => n == name,
+      SLetMut(n, _, _) => n == name,
+      SExternLet(n, _) => n == name,
+      SFnDecl(_, n, _, _, _) => n == name,
+      _ => false
+    }
+    found = found || bound
+  }
+  found
+}
+
 fn param_name_row_push(rows: Array[(String, Array[String])], name: String, ty: Type) -> Unit {
   if is_param_names_marker(name) {
     let fname = param_names_marker_target(name)
@@ -1126,7 +1162,7 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
       // #986: reorder fully-labeled calls before checking (see check_program).
       // #3432: with the imported functions' parameter names, so an omitted
       // optional argument or a label reaches the callee it names.
-      imported_params_set(env_param_name_rows(initial_env))
+      imported_params_set(unshadowed_param_rows(env_param_name_rows(initial_env), stmts))
       desugar_labeled_args(stmts)
       imported_params_set(array_empty())
       // #1571: see check_program.
