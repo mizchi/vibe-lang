@@ -41,3 +41,14 @@ test "a closure returned by name, by return, or at an aliased row takes the dict
   inspect(mid_after("fn mid() -> (() -> Int with Box[Int]) {\n  return () -> mk()\n}\n"), "let rec mid = () -> () -> Int with Box[Int] { return (__ev_Box: __EvDict_Box) -> { mk(__ev_Box) } }")
   inspect(mid_after("type Thunk = () -> Int with Box[Int]\nfn mid() -> Thunk {\n  () -> mk()\n}\n"), "let rec mid = () -> Thunk { (__ev_Box: __EvDict_Box) -> { mk(__ev_Box) } }")
 }
+
+// Four more (Codex on #3447): a `return` after an assignment (kept in the
+// assignment's continuation), a closure produced by a tail `handle`, an
+// applied alias, and a returned name beside an unrelated binder of its
+// spelling.
+test "a closure returned after an assignment, from a handle, at an applied alias, or beside a shadow" {
+  inspect(mid_after("fn mid() -> (() -> Int with Box[Int]) {\n  let mut x = 0\n  x = 1\n  return () -> mk()\n}\n"), "let rec mid = () -> () -> Int with Box[Int] { { let mut x = 0; { x = 1; return (__ev_Box: __EvDict_Box) -> { mk(__ev_Box) } } } }")
+  inspect(mid_after("fn mid() -> (() -> Int with Box[Int]) {\n  handle {\n    () -> mk()\n  } with {\n    Box::Put(n) => resume(n)\n  }\n}\n"), "let rec mid = () -> () -> Int with Box[Int] { (__ev_Box: __EvDict_Box) -> { mk(__ev_Box) } }")
+  inspect(mid_after("type Thunk[T] = () -> Int with Box[Int]\nfn mid() -> Thunk[Unit] {\n  () -> mk()\n}\n"), "let rec mid = () -> Thunk[Unit] { (__ev_Box: __EvDict_Box) -> { mk(__ev_Box) } }")
+  inspect(mid_after("fn mid() -> (() -> Int with Box[Int]) {\n  let f = () -> mk()\n  let _ = ((f: Int) -> f)(0)\n  f\n}\n"), "let rec mid = () -> () -> Int with Box[Int] { { let __edpc1_f = (__ev_Box: __EvDict_Box) -> { mk(__ev_Box) }; { let _ = ((f: Int) -> { f })(0); __edpc1_f } } }")
+}

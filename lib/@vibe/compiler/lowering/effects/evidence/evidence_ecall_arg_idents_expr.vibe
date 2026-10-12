@@ -236,6 +236,7 @@ fn edp_stamp_returned_closure(stmts: Array[Stmt], i: Int, pure_names: MutSet[Str
       let resolved = match rty {
         TyFn(_, _, Some(_)) => Some(rty),
         TyName(_) => edp_alias_fn_type(stmts, rty),
+        TyApp(alias, _) => edp_applied_alias_fn_type(stmts, alias),
         _ => None
       }
       match resolved {
@@ -293,6 +294,8 @@ fn edp_stamp_returns(e: Expr, slot: (Int, String), scope: Array[String], pure_na
       (pp, ex2)
     }),
     EWhile(c, b) => EWhile(edp_stamp_returns(c, slot, scope, pure_names), edp_stamp_returns(b, slot, scope, pure_names)),
+    EAssign(n, v, c, off) => EAssign(n, edp_stamp_returns(v, slot, scope, pure_names), edp_stamp_returns(c, slot, scope, pure_names), off),
+    EAssignOp(n, op, v, c, off) => EAssignOp(n, op, edp_stamp_returns(v, slot, scope, pure_names), edp_stamp_returns(c, slot, scope, pure_names), off),
     EForIn(n, idx, it, b) => {
       let it2 = edp_stamp_returns(it, slot, scope, pure_names)
       let base = Array::length(scope)
@@ -353,18 +356,90 @@ fn edp_tail_name_count(e: Expr, n: String) -> Int {
       edp_tail_name_count(b, n)
     },
     EIf(_, t, el) => edp_tail_name_count(t, n) + edp_tail_name_count(el, n),
-    EMatch(_, arms) => {
-      let mut total = 0
-      for a in arms {
-        if !edp_str_array_contains(edp_pat_names(a.0), n) {
-          total = total + edp_tail_name_count(a.1, n)
-        } else {
-          ()
-        }
-      }
-      total
-    },
+    EAssign(_, _, c, _) => edp_tail_name_count(c, n),
+    EAssignOp(_, _, _, c, _) => edp_tail_name_count(c, n),
+    EHandle(bd, arms) => edp_tail_name_count(bd, n) + edp_tail_name_count_arms(arms, n),
+    EMatch(_, arms) => edp_tail_name_count_arms(arms, n),
     _ => 0
+  }
+}
+
+fn edp_tail_name_count_arms(arms: Array[(Pat, Expr)], n: String) -> Int {
+  let mut total = 0
+  for a in arms {
+    if !edp_str_array_contains(edp_pat_names(a.0), n) {
+      total = total + edp_tail_name_count(a.1, n)
+    } else {
+      ()
+    }
+  }
+  total
+}
+
+/// The uses of `n` in `e` that the binding around `e` reaches: a binder of `n`
+/// inside `e` hides it in its scope (Codex on #3447: `let _ = ((f: Int) ->
+/// f)(0)` is not a use of the outer `f`).
+fn edp_free_use_count(e: Expr, n: String) -> Int {
+  let marker = "#free-use"
+  edp_count_ident_uses(edp_rename_free(e, n, marker), marker)
+}
+
+/// An applied alias (`Thunk[Unit]`) whose body is a function type with a
+/// stampable row that names none of the alias's parameters, so the row reads
+/// the same at every application.
+fn edp_applied_alias_fn_type(stmts: Array[Stmt], alias: String) -> Option[TypeExpr] {
+  let mut out: Option[TypeExpr] = None
+  for st in stmts {
+    match st {
+      STypeAlias(_, an, tparams, TyFn(ps, r, Some(row))) => if an == alias && edp_slot_row_stampable(row) && !edp_row_mentions_any(row, tparams) {
+        out = Some(TyFn(ps, r, Some(row)))
+      } else {
+        ()
+      },
+      _ => ()
+    }
+  }
+  out
+}
+
+/// Does `row` spell any of `names` as a whole token?
+fn edp_row_mentions_any(row: String, names: Array[String]) -> Bool {
+  let mut found = false
+  let mut start = 0
+  let mut i = 0
+  let len = String::length(row)
+  while i <= len {
+    let boundary = i == len || {
+      let c = String::byte_at(row, i)
+      !(c >= 97 && c <= 122 || c >= 65 && c <= 90 || c >= 48 && c <= 57 || c == 95)
+    }
+    if boundary {
+      if i > start && edp_str_array_contains(names, String::substring(row, start, i)) {
+        found = true
+      } else {
+        ()
+      }
+      start = i + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Each arm of a `match` or `handle` stamped as a tail, its pattern's binders in
+/// scope.
+fn edp_stamp_tail_arms(arms: Array[(Pat, Expr)], slot: (Int, String), scope: Array[String], pure_names: MutSet[String]) -> Array[(Pat, Expr)] {
+  for a in arms {
+    let (pp, ex) = a
+    let base = Array::length(scope)
+    for pn in edp_pat_names(pp) {
+      Array::push(scope, pn)
+    }
+    let ex2 = edp_stamp_tail(ex, slot, scope, pure_names)
+    Array::truncate(scope, base)
+    (pp, ex2)
   }
 }
 
@@ -377,7 +452,7 @@ fn edp_stamp_tail(e: Expr, slot: (Int, String), scope: Array[String], pure_names
       // f`) is the result itself, when the body uses the name nowhere else
       // (Codex on #3447).
       let v2 = match v {
-        EFn(_, _, _, _, None, lb) => if edp_tail_name_count(b, n) > 0 && edp_tail_name_count(b, n) == edp_count_ident_uses(b, n) && !edp_literal_calls_local(v, lb, scope) {
+        EFn(_, _, _, _, None, lb) => if edp_tail_name_count(b, n) > 0 && edp_tail_name_count(b, n) == edp_free_use_count(b, n) && !edp_literal_calls_local(v, lb, scope) {
           edp_stamp_slot_arg_at(v, scope, pure_names, Some(slot))
         } else {
           v
@@ -396,16 +471,12 @@ fn edp_stamp_tail(e: Expr, slot: (Int, String), scope: Array[String], pure_names
       ELetMut(n, v, b2, off)
     },
     EIf(c, t, el) => EIf(c, edp_stamp_tail(t, slot, scope, pure_names), edp_stamp_tail(el, slot, scope, pure_names)),
-    EMatch(sc, arms) => EMatch(sc, for a in arms {
-      let (pp, ex) = a
-      let base = Array::length(scope)
-      for pn in edp_pat_names(pp) {
-        Array::push(scope, pn)
-      }
-      let ex2 = edp_stamp_tail(ex, slot, scope, pure_names)
-      Array::truncate(scope, base)
-      (pp, ex2)
-    }),
+    EMatch(sc, arms) => EMatch(sc, edp_stamp_tail_arms(arms, slot, scope, pure_names)),
+    // An assignment keeps the rest of its block as its continuation, and a
+    // handle's value is its body's or an arm's (Codex on #3447).
+    EAssign(n, v, c, off) => EAssign(n, v, edp_stamp_tail(c, slot, scope, pure_names), off),
+    EAssignOp(n, op, v, c, off) => EAssignOp(n, op, v, edp_stamp_tail(c, slot, scope, pure_names), off),
+    EHandle(bd, arms) => EHandle(edp_stamp_tail(bd, slot, scope, pure_names), edp_stamp_tail_arms(arms, slot, scope, pure_names)),
     EFn(_, _, _, _, None, lb) => if edp_literal_calls_local(e, lb, scope) {
       e
     } else {
