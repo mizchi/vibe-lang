@@ -729,7 +729,16 @@ fn optional_fill_args(args: Array[Expr], flags: Array[Bool]) -> Array[Expr] {
       while i < np {
         if i < na {
           let a = Array::get(args, i)
-          if Array::get(flags, i) && !opt_arg_already_option(a) {
+          // A label still here was not in position and the call was not
+          // reordered (omitted trailing arguments block the reorder): wrapping
+          // it in `Some` would hide it from the post-desugar order check and
+          // bind it to this slot silently -- `f(b = 4, a = 5)` read as
+          // `a = 4, b = 5` (Codex on #3438).
+          let still_labeled = match a {
+            ELabeledArg(_, _, _) => true,
+            _ => false
+          }
+          if Array::get(flags, i) && !opt_arg_already_option(a) && !still_labeled {
             Array::push(out, ECall(EIdent("Some", 0 - 1), [a], 0 - 1, []))
           } else {
             Array::push(out, a)

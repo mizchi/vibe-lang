@@ -142,3 +142,26 @@ test "1001: fully-positional call is not a mix, stays accepted" {
 test "1001: mixed positional/labeled arguments on a LOCAL closure rejected" {
   assert(check_source_err("fn main() -> Int {\n  let f = (x~: Int, y~: String) -> Int { x }\n  f(x=1, \"ok\")\n}"))
 }
+
+/// Codex on #3438: a labeled call that reorders its labels while omitting a
+/// trailing default is not reordered, and filling the omitted slot wrapped
+/// each surviving label in `Some`, which hid it from the order check: the
+/// call bound `a = 4, b = 5`. The label now survives, and the call is refused.
+test "labeled args: reordered labels with an omitted default rejected" {
+  assert(check_source_err("fn f(a: Int = 1, b: Int = 2, c: Int = 3) -> Int {\n  a + b + c\n}\n\nfn main() -> Int {\n  f(b = 4, a = 5)\n}"))
+}
+
+/// The same shape on `x?` parameters, where a label skips an omitted one.
+test "labeled args: a label skipping an omitted optional rejected" {
+  assert(check_source_err("fn g(a?: Int, b?: Int, c?: Int) -> Int {\n  0\n}\n\nfn main() -> Int {\n  g(a = 5, c = 6)\n}"))
+}
+
+/// In declared order, an omitted trailing default is still fine.
+test "labeled args: in-order labels with an omitted default accepted" {
+  assert(check_source_ok("fn f(a: Int = 1, b: Int = 2, c: Int = 3) -> Int {\n  a + b + c\n}\n\nfn main() -> Int {\n  f(a = 5, b = 4)\n}"))
+}
+
+/// Fully labeled and complete, the reorder still applies.
+test "labeled args: reordered labels with every default supplied accepted" {
+  assert(check_source_ok("fn f(a: Int = 1, b: Int = 2, c: Int = 3) -> Int {\n  a + b + c\n}\n\nfn main() -> Int {\n  f(c = 6, b = 4, a = 5)\n}"))
+}
