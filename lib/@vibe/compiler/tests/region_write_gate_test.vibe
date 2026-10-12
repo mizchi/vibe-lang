@@ -47,6 +47,16 @@ test "a callback passed to a generic function stores its element into an outer b
   assert(String::contains(check_source_error_message(src), "region escapes its scope"))
 }
 
+test "a binding in one branch of a callback does not hide the outer target in another (Codex on #3437)" {
+  let src = "fn build(flag: Bool) -> Int {\n  let sink: Array[MutList[Int]] = []\n  region r {\n    let cells = [MutList::empty(r)]\n    let _ = Array::map(cells, (c) -> {\n      if flag {\n        let sink = [c]\n        Array::length(sink)\n      } else {\n        Array::push(sink, c)\n        0\n      }\n    })\n  }\n  0\n}"
+  assert(String::contains(check_source_error_message(src), "region escapes its scope"))
+}
+
+test "a callback that stores its element nested in aggregates is reported (Codex on #3437)" {
+  let src = "fn build() -> Int {\n  let sink: Array[Option[(MutList[Int], Int)]] = []\n  region r {\n    let cells = [MutList::empty(r)]\n    let _ = Array::map(cells, (c) -> {\n      Array::push(sink, Some((c, 0)))\n      0\n    })\n  }\n  0\n}"
+  assert(String::contains(check_source_error_message(src), "region escapes its scope"))
+}
+
 test "a callback that keeps its element in its own binding, or stores a value read from it, is fine" {
   assert(check_source_ok("fn build() -> Int {\n  region r {\n    let cells = [MutList::empty(r)]\n    let _ = Array::map(cells, (c) -> {\n      let mine = [c]\n      Array::push(mine, c)\n      0\n    })\n  }\n  0\n}"))
   assert(check_source_ok("fn build() -> Int {\n  let sink: Array[Int] = []\n  region r {\n    let cells = [MutList::empty(r)]\n    let _ = Array::map(cells, (c) -> {\n      Array::push(sink, MutList::length(c))\n      0\n    })\n  }\n  Array::length(sink)\n}"))
