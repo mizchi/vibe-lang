@@ -67,6 +67,65 @@ Cold CLI collection trapped in the allocator; warm collection reached almost
 4 GiB of linear memory. That collector is not a production implementation.
 A production coordinator needs bounded outstanding jobs and products instead
 of retaining both complete serialized sets. No full-build speedup or total
-memory improvement is claimed. The default CLI remains sequential; TaskGroup
-scheduling, coordinator-inclusive cold/warm measurements and failure/cancellation
-integration remain follow-up work.
+memory improvement is claimed. The default CLI remains sequential.
+
+## Bounded TaskGroup dogfood
+
+`scripts/build_taskgroup_lowering.sh <stage2.wasm>` builds three independent
+images: the compiler preparation/replay entry, the lowering worker, and an
+Async-only coordinator. Their receipt binds the compiler, native runner and
+all three images. `VIBE_TASKGROUP_LOWERING=1 VIBE_UNSTABLE=1 vibe build --jobs 2`
+selects this route in a repository checkout. `VIBE_LOWERING_ARTIFACT_DIR`
+selects a different artifact directory. This currently accepts the RC backend
+and `.vibe` core builds without `--minify`. Installed-toolchain packaging and
+other build modes remain follow-up work.
+
+The coordinator uses `TaskGroup::spawn_suspend` to await at most four native
+worker instances. Each wave contains at most 16 jobs per slot and 64 MiB of
+serialized input. The native bridge independently enforces both limits and
+rejects duplicate jobs and pre-existing products. Every future owns its child;
+drop/cancellation kills and reaps it through the existing checker supervisor.
+The frontend waits for a complete wave before deleting its inputs and opening
+another wave. Disk products remain private until replay succeeds.
+
+The current Async component composition cannot satisfy the compiler's Env/Fs
+imports. Preparation and replay therefore use a synchronous compiler image
+around the Async coordinator. `prelude_with_module_executor` scopes its callback
+to one compile and clears it on success or exception. Oracle observations keep
+the sequential path. Preparation captures raw module AST references and writes
+one encoded job at a time rather than retaining all input byte buffers. Replay
+rechecks each current input's BLAKE3 digest and module tag, merges complete
+products in source order, and runs whole-program finalization. Worker receipts
+bind both the consumed input and the encoded product. The host rechecks images
+before atomically publishing the final Wasm; any failure preserves an existing
+output.
+
+Outstanding worker inputs are bounded; total compiler memory is not thereby
+bounded. Preparation still holds the whole raw AST, and replay currently loads
+completed encoded products before the second compiler preparation. That second
+preparation and digest computation are included in full-build walltime. The
+route is opt-in dogfood until coordinator-inclusive cold/warm measurements
+justify a default change; worker-only timings above do not establish that.
+
+Full-build dogfood measurements (three interleaved rounds per temperature)
+are recorded in the [TaskGroup report](../../../bench/perf/analysis/taskgroup-module-lowering-2026-10-12.json).
+The preparation CPU profile put scalar BLAKE3 at 58.0–58.2% inclusive. The RC-only
+build units now use the existing SIMD BLAKE3 implementation, with official
+vector parity. It changes the transport validation cost, not the job format.
+
+| warm full build | ordinary whole | serial split | TaskGroup 1 | TaskGroup 2 |
+|---|---:|---:|---:|---:|
+| compiler closure | 3.78 s | 8.64 s | 16.24 s | 13.48 s |
+| CLI | 11.23 s | 23.00 s | 48.11 s | 41.99 s |
+
+Before SIMD, TaskGroup 2 took 20.99 s and 75.10 s respectively. The new route
+improved by 35.8% and 44.1%, but remains slower than both existing controls.
+Sampled summed warm RSS is about 895 MiB and 2,789 MiB with two workers,
+compared with 574 MiB and 2,039 MiB for ordinary whole builds. These are live
+process RSS sums, not allocation volume; shared mappings may be counted twice.
+
+Default enablement is blocked by repeated compiler preparation, repeated AST
+encoding/decoding and replay's completed-product buffers. A continuation-based
+compiler entry or a synchronous native CPU-service boundary would avoid the
+second preparation; shared immutable interface dictionaries could reduce repeated
+wire context. Those changes need their own correctness and full-build measurements.

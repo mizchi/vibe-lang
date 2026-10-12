@@ -1,0 +1,108 @@
+"""Real CLI parity, wave bounds and refusal before publishing partial output."""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("compiler", type=Path)
+    parser.add_argument("artifacts", type=Path)
+    args = parser.parse_args()
+    repo = Path(__file__).resolve().parent.parent
+    runner = repo / "runtime/viberun/target/release/viberun"
+    compiler, artifacts = args.compiler.resolve(), args.artifacts.resolve()
+    env = {k: v for k, v in os.environ.items() if not k.startswith("VIBE_")}
+    env.update(VIBE_CLI_WASM=str(compiler), VIBE_RUNNER=str(runner),
+               VIBE_LOWERING_ARTIFACT_DIR=str(artifacts), VIBE_UNSTABLE="1",
+               VIBE_LIB=str(repo / "lib"), VIBE_RC="1")
+    with tempfile.TemporaryDirectory(prefix="vibe lowering test ") as directory:
+        project = Path(directory)
+        for i in range(66):
+            (project / f"m{i}.vibe").write_text(f"export fn f{i}() -> Int {{ {i} }}\n")
+        source = "".join(f"import ./m{i}.vibe {{ f{i} }}\n" for i in range(66))
+        source += "export fn main() -> Int { " + " + ".join(f"f{i}()" for i in range(66)) + " }\n"
+        (project / "main.vibe").write_text(source)
+
+        def build(label, flags, extra=None, expected=0):
+            output, trace = project / f"{label}.wasm", project / f"{label}.json"
+            current = dict(env, VIBE_BUILD_CACHE_DIR=str(project / f"{label}-cache"),
+                           VIBE_LOWERING_TRACE_OUT=str(trace), **(extra or {}))
+            result = subprocess.run(["bash", str(repo / "runtime/vibe"), "build", "main.vibe",
+                                     "-o", str(output), *flags], cwd=project, env=current,
+                                    capture_output=True, text=True, timeout=180)
+            assert result.returncode == expected, (label, result.stdout, result.stderr)
+            return output, trace, result
+
+        control, _, _ = build("serial", [])
+        for jobs in [1, 2, 4]:
+            output, trace, _ = build(f"jobs{jobs}", ["--jobs", str(jobs)],
+                                     {"VIBE_TASKGROUP_LOWERING": "1"})
+            assert output.read_bytes() == control.read_bytes(), f"Wasm differs: {jobs} workers"
+            report = json.loads(trace.read_text())
+            assert report["modules"] == 67 and report["workers"] == jobs, report
+            assert len(report["waves"]) >= 2, report
+            assert report["peak_queued_jobs"] <= 16 * jobs, report
+            assert report["peak_queued_input_bytes"] <= 64 * 1024 * 1024, report
+        default_build = subprocess.run(["bash", str(repo / "runtime/vibe"), "build", "main.vibe", "--jobs", "2"],
+            cwd=project, env=dict(env, VIBE_TASKGROUP_LOWERING="1"), capture_output=True, text=True, timeout=180)
+        assert default_build.returncode == 0, default_build
+        defaults = list((project / ".vibe/build/out").glob("*.wasm"))
+        assert len(defaults) == 1 and defaults[0].read_bytes() == control.read_bytes(), defaults
+        result = subprocess.run([str(runner), str(output)], capture_output=True, text=True, check=True)
+        assert result.stdout.strip() == "2145", result
+
+        for label, extra, flags, message in [
+            ("stable-refusal", {"VIBE_UNSTABLE": "0"}, [], "requires VIBE_UNSTABLE=1"),
+            ("bump-refusal", {"VIBE_RC": "0"}, [], "requires the RC backend"),
+            ("minify-refusal", {}, ["--minify"], "does not yet support --minify"),
+        ]:
+            target = project / f"{label}.wasm"
+            target.write_bytes(b"keep previous output")
+            output, _, result = build(label, ["--jobs", "2", *flags],
+                                      {"VIBE_TASKGROUP_LOWERING": "1", **extra}, expected=1)
+            assert output.read_bytes() == b"keep previous output" and message in result.stderr, result
+
+        # Mutation after a real preparation: replay must compare every current
+        # input with the prepared input, rather than trust a matching module tag.
+        proxy = project / "runner.py"
+        proxy.write_text(f"#!{sys.executable}\nimport subprocess,sys,os,json\nfrom pathlib import Path\n"
+                         "if Path(sys.argv[1]).name == 'coordinator.component.wasm':\n"
+                         " if os.environ.get('LOWERING_TEST_MUTATION') == 'job':\n"
+                         "  plan=json.loads(Path(os.environ['VIBE_LOWERING_WORKERS']).read_text())\n"
+                         "  p=Path(next(p for q in plan['queues'] for p in q))\n"
+                         "  p.write_bytes(p.read_bytes().replace(b'f0',b'g0',1))\n"
+                         " else:\n"
+                         f"  p=Path({str(project / 'main.vibe')!r})\n"
+                         "  p.write_text(p.read_text().replace('f0() +', '100 +'))\n"
+                         f"sys.exit(subprocess.run([{str(runner)!r},*sys.argv[1:]]).returncode)\n")
+        proxy.chmod(0o755)
+        altered = project / "images"
+        shutil.copytree(artifacts, altered, ignore=shutil.ignore_patterns("compile-cache"))
+        receipt = json.loads((altered / "build.json").read_text())
+        receipt["runner_sha256"] = hashlib.sha256(proxy.read_bytes()).hexdigest()
+        (altered / "build.json").write_text(json.dumps(receipt))
+        target = project / "changed.wasm"
+        target.write_bytes(b"keep previous output")
+        output, trace, result = build("changed", ["--jobs", "2"],
+            {"VIBE_TASKGROUP_LOWERING": "1", "VIBE_RUNNER": str(proxy),
+             "VIBE_LOWERING_ARTIFACT_DIR": str(altered)}, expected=1)
+        assert output.read_bytes() == b"keep previous output" and not trace.exists(), result
+        assert "inputs changed after preparation" in result.stderr, result
+        (project / "main.vibe").write_text(source)
+        output, trace, result = build("tampered-job", ["--jobs", "2"],
+            {"VIBE_TASKGROUP_LOWERING": "1", "VIBE_RUNNER": str(proxy),
+             "VIBE_LOWERING_ARTIFACT_DIR": str(altered), "LOWERING_TEST_MUTATION": "job"}, expected=1)
+        assert not output.exists() and not trace.exists(), result
+        assert "product does not match its prepared input" in result.stderr, result
+    print("TaskGroup lowering: public CLI parity 1/2/4, bounded waves, input freshness and protected output passed")
+
+
+if __name__ == "__main__":
+    main()
