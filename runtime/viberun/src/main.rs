@@ -33,6 +33,7 @@ use wasmtime::{
 
 mod checker_workers;
 mod commands;
+mod lowering_workers;
 mod native_cache;
 
 const FFI_END_OF_STRING_ARRAY: &str = "ffi_end_of_/string_array";

@@ -125,7 +125,7 @@ impl Plan {
     }
 }
 
-struct CheckerProcess {
+pub(super) struct CheckerProcess {
     child: Option<Child>,
     sleep: Option<Pin<Box<tokio::time::Sleep>>>,
     slot: usize,
@@ -135,7 +135,7 @@ struct CheckerProcess {
     permit: Option<SlotPermit>,
 }
 
-struct SlotPermit(Arc<AtomicBool>);
+pub(super) struct SlotPermit(pub(super) Arc<AtomicBool>);
 impl Drop for SlotPermit {
     fn drop(&mut self) {
         self.0.store(false, Ordering::Release);
@@ -224,7 +224,7 @@ impl CheckerProcess {
     }
 
     // Bound failure output before the frontend removes its private job files.
-    fn failure_detail(&self) -> String {
+    pub(super) fn failure_detail(&self) -> String {
         let mut bytes = Vec::new();
         let read = (|| -> std::io::Result<()> {
             let mut file = std::fs::File::open(&self.stderr)?;
@@ -270,7 +270,7 @@ impl CheckerProcess {
         self.permit = None;
     }
 
-    async fn wait(&mut self) -> Result<u32> {
+    pub(super) async fn wait(&mut self) -> Result<u32> {
         loop {
             match self
                 .child
@@ -291,6 +291,49 @@ impl CheckerProcess {
                 None => tokio::time::sleep(Duration::from_millis(10)).await,
             }
         }
+    }
+
+    // The lowering coordinator uses the same kill-and-reap ownership as
+    // checker futures, with a different immutable input protocol.
+    pub(super) fn start_lowering(
+        wasm: &Path,
+        cwd: &Path,
+        list: &Path,
+        slot: usize,
+        permit: SlotPermit,
+    ) -> Result<Self> {
+        let stderr_path = list.with_extension("stderr");
+        let stderr = std::fs::File::create(&stderr_path)?;
+        let mut command = Command::new(std::env::current_exe()?);
+        command
+            .arg(wasm)
+            .current_dir(cwd)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(stderr)
+            .env("VIBE_LOWERING_WORKER_LIST", list);
+        for name in [
+            "VIBE_LOWERING_WORKERS",
+            "VIBE_CHECKER_WORKERS",
+            "VIBE_CHECKER_WORKER_TRACE",
+            "VIBE_FS_COMPILE",
+            "VIBE_DIAGNOSTICS",
+            "VIBE_COVERAGE",
+            "VIBE_DEBUG",
+            "VIBE_GUEST_PROFILE",
+            "VIBE_MEM",
+        ] {
+            command.env_remove(name);
+        }
+        Ok(Self {
+            child: Some(command.spawn()?),
+            sleep: None,
+            slot,
+            started: Instant::now(),
+            stderr: stderr_path,
+            trace: false,
+            permit: Some(permit),
+        })
     }
 
     fn start_batch(

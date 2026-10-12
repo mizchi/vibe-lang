@@ -466,6 +466,7 @@ pub(super) fn run_async_component(path: &str) -> Result<i32> {
         }
     }
     super::checker_workers::link(&mut linker)?;
+    super::lowering_workers::link(&mut linker)?;
     // #2066: WIT responses. VIBE_ASYNC_RESPONSES="iface#func=status:delay_ms:
     // b1|b2|b3" links `func: async func() -> response` inside `iface`,
     // returning a future that resolves after `delay_ms` to `{ status, body }`
