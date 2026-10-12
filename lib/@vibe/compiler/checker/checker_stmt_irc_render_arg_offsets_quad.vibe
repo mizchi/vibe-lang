@@ -1022,23 +1022,35 @@ export fn check_program_type_table(stmts: Array[Stmt]) -> (Array[(Int, Type)], S
 /// and error behavior unchanged.
 /// #3432: the parameter names each imported function's module published,
 /// under the name this module imports it as.
+fn imported_param_rows_into(items: Array[ImportItem], plain_only: Bool, env: TypeEnv, rows: Array[(String, Array[String])]) -> Unit {
+  for item in items {
+    if plain_only && item.alias != None {
+      ()
+    } else {
+      let local = match item.alias {
+        Some(a) => a,
+        None => item.name
+      }
+      match env_lookup(env, param_names_marker(local)) {
+        Some(CtRecord(fields)) => Array::push(rows, (local, for field in fields {
+          let (pn, _) = field
+          pn
+        })),
+        _ => ()
+      }
+    }
+  }
+  ()
+}
+
 fn imported_param_rows(stmts: Array[Stmt], env: TypeEnv) -> Array[(String, Array[String])] {
   let rows: Array[(String, Array[String])] = []
   for stmt in stmts {
     match stmt {
-      SImport(_, items) => for item in items {
-        let local = match item.alias {
-          Some(a) => a,
-          None => item.name
-        }
-        match env_lookup(env, param_names_marker(local)) {
-          Some(CtRecord(fields)) => Array::push(rows, (local, for field in fields {
-            let (pn, _) = field
-            pn
-          })),
-          _ => ()
-        }
-      },
+      SImport(_, items) => imported_param_rows_into(items, false, env, rows),
+      // A plain re-export is also bound locally; an aliased one is surface
+      // only (Codex on #3441).
+      SReExport(_, items) => imported_param_rows_into(items, true, env, rows),
       _ => ()
     }
   }
