@@ -1222,12 +1222,21 @@ fn edp_stamp_call(callee: Expr, args: Array[Expr], off: Int, res: Array[Int], st
       _ => ()
     }
   }
-  // A callee a binding in scope shadows is not the top-level function.
+  // A callee a binding in scope shadows is not the top-level function; a
+  // local lambda's own parameters are read instead (#3416).
   let named = match callee {
     EIdent(cn, _) => if edp_scope_has(scope, cn) {
       ""
     } else {
       cn
+    },
+    _ => ""
+  }
+  let local_callee = match callee {
+    EIdent(cn, _) => if edp_scope_has(scope, cn) {
+      cn
+    } else {
+      ""
     },
     _ => ""
   }
@@ -1246,6 +1255,8 @@ fn edp_stamp_call(callee: Expr, args: Array[Expr], off: Int, res: Array[Int], st
       },
       other => if String::length(named) > 0 && !labeled {
         edp_stamp_slot_arg(other, stmts, fn_defs, scope, pure_names, named, ai)
+      } else if String::length(local_callee) > 0 && !labeled {
+        edp_stamp_slot_arg_at(other, scope, pure_names, edp_local_slot_fn_type(local_callee, scope, ai))
       } else {
         other
       }
@@ -1361,7 +1372,18 @@ fn edp_stamp_slot_arg(a: Expr, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bo
   if pos < 0 {
     a
   } else {
-    match a {
+    edp_stamp_slot_arg_at(a, scope, pure_names, edp_slot_fn_type(stmts, fn_defs, callee, pos))
+  }
+}
+
+/// One argument at a parameter whose function type is `slot` (its arity and
+/// row), or left as written when the slot carries no stampable row. The slot
+/// is read first, so a literal is copied (`edp_copy_local_helpers`, which
+/// queues snapshots) only where it will be stamped.
+fn edp_stamp_slot_arg_at(a: Expr, scope: Array[String], pure_names: MutSet[String], slot: Option[(Int, String)]) -> Expr {
+  match slot {
+    None => a,
+    Some((arity, row)) => match a {
       EFn(tps, tbs, ps, ret, None, b) => {
         let lit = if edp_literal_calls_local(a, b, scope) {
           edp_copy_local_helpers(tps, tbs, ps, ret, b, scope)
@@ -1369,23 +1391,41 @@ fn edp_stamp_slot_arg(a: Expr, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bo
           Some(a)
         }
         match lit {
-          Some(EFn(ltps, ltbs, lps, lret, None, lb)) => match edp_slot_row(stmts, fn_defs, callee, pos) {
-            Some(row) => EFn(ltps, ltbs, lps, lret, Some(row), lb),
-            None => a
-          },
+          Some(EFn(ltps, ltbs, lps, lret, None, lb)) => EFn(ltps, ltbs, lps, lret, Some(row), lb),
           _ => a
         }
       },
       EIdent(an, _) => if MutSet::has(pure_names, an) && !edp_scope_has(scope, an) {
-        match edp_slot_fn_type(stmts, fn_defs, callee, pos) {
-          Some((arity, row)) => edp_slot_wrapper(an, arity, row),
-          None => a
-        }
+        edp_slot_wrapper(an, arity, row)
       } else {
         a
       },
       _ => a
     }
+  }
+}
+
+/// #3416: the slot at `pos` of a LOCAL lambda the call names -- a row-free
+/// literal bound by `let` in scope -- read from its parameter annotation the
+/// way `edp_slot_fn_type` reads a top-level function's. Its handle passes a
+/// row-typed parameter the dict (`edp_rh_extend`), so a callback literal
+/// written there needs the parameter too.
+fn edp_local_slot_fn_type(callee: String, scope: Array[String], pos: Int) -> Option[(Int, String)] {
+  match edp_local_lit_at(callee, edp_scope_last_index(scope, callee)) {
+    Some(EFn(_, _, params, _, _, _)) => if pos >= 0 && pos < Array::length(params) {
+      let (_, pty) = Array::get(params, pos)
+      match pty {
+        Some(TyFn(ptys, _, Some(row))) => if edp_slot_row_stampable(row) {
+          Some((Array::length(ptys), row))
+        } else {
+          None
+        },
+        _ => None
+      }
+    } else {
+      None
+    },
+    _ => None
   }
 }
 
