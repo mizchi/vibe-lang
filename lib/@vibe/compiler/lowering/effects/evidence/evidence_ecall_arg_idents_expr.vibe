@@ -170,22 +170,11 @@ export fn edp_stamp_slot_rows(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Boo
     }
   }
   // #3424 (Codex on #3437): a snapshot's fresh name must be one no binder
-  // and no top-level name of the program spells, or the copy would read that
-  // binding instead.
-  let taken = edp_collect_program_binders(stmts)
-  for st in stmts {
-    match st {
-      SLet(_, _, tn, _, _) => MutSet::insert(taken, tn),
-      SLetMut(tn, _, _) => MutSet::insert(taken, tn),
-      _ => ()
-    }
-  }
-  for def in fn_defs {
-    let (_, _, _, dname, _, _) = def
-    MutSet::insert(taken, dname)
-  }
+  // and no top-level name of the program spells. The census is taken only
+  // when a snapshot is first asked for (`edp_snap_fresh_name`).
   Array::truncate(edp_snap_taken, 0)
-  Array::push(edp_snap_taken, taken)
+  Array::truncate(edp_snap_program, 0)
+  Array::push(edp_snap_program, (stmts, fn_defs))
   let mut i = 0
   while i < Array::length(stmts) {
     let stmt = Array::get(stmts, i)
@@ -346,11 +335,36 @@ let edp_snap_fresh: Array[String] = []
 let edp_snap_src: Array[String] = []
 let edp_snap_counter: Array[Int] = [0]
 
-/// Every name the program binds or declares (`edp_stamp_slot_rows` fills it),
-/// so a snapshot's name is one nothing in the program spells.
+/// Every name the program binds or declares, so a snapshot's name is one
+/// nothing in the program spells. Filled from `edp_snap_program` on the first
+/// snapshot, so a compile that needs none pays nothing for it.
 let edp_snap_taken: Array[MutSet[String]] = []
+let edp_snap_program: Array[(Array[Stmt], Array[(Int, Bool, Bool, String, Option[TypeExpr], String)])] = [
+]
+
+fn edp_snap_taken_set() -> Unit {
+  if Array::length(edp_snap_taken) == 0 && Array::length(edp_snap_program) > 0 {
+    let (stmts, fn_defs) = Array::get(edp_snap_program, 0)
+    let taken = edp_collect_program_binders(stmts)
+    for st in stmts {
+      match st {
+        SLet(_, _, tn, _, _) => MutSet::insert(taken, tn),
+        SLetMut(tn, _, _) => MutSet::insert(taken, tn),
+        _ => ()
+      }
+    }
+    for def in fn_defs {
+      let (_, _, _, dname, _, _) = def
+      MutSet::insert(taken, dname)
+    }
+    Array::push(edp_snap_taken, taken)
+  } else {
+    ()
+  }
+}
 
 fn edp_snap_fresh_name(name: String) -> String {
+  edp_snap_taken_set()
   let mut fresh = ""
   let mut found = false
   while !found {
