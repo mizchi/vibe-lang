@@ -94,3 +94,78 @@ let (lp_a, lp_b) = (run_str(() -> 3), 0)
 test "a literal inside a top-level destructuring let" {
   inspect(lp_a + lp_b, "3")
 }
+
+// #3424: a literal that calls a local closure is given a copy of that
+// closure's binding, so it can take the dict its callee passes. It was left
+// at arity 0 and trapped (`null function or function signature mismatch`).
+fn local_helper() -> Int {
+  let helper = () -> 3
+  run_str(() -> helper())
+}
+
+fn local_helper_capture() -> Int {
+  let k = 4
+  let add = (x: Int) -> x + k
+  run_str(() -> add(1) + put_abcd())
+}
+
+fn local_helper_two() -> Int {
+  let one = () -> 1
+  let two = () -> 2
+  run_str(() -> one() + two())
+}
+
+// A name the closure binds itself is not a capture, so a later `k` does not
+// stop the copy (Codex on #3437).
+fn local_helper_own_binder() -> Int {
+  let helper = () -> {
+    let k = 3
+    k + 1
+  }
+  let k = 100
+  run_str(() -> helper() + k)
+}
+
+// A name the literal binds in one branch does not hide the outer closure the
+// other branch calls (Codex on #3437).
+fn local_helper_branch(flag: Bool) -> Int {
+  let helper = () -> 3
+  run_str(() -> {
+    if flag {
+      let helper = 10
+      helper
+    } else {
+      helper()
+    }
+  })
+}
+
+// A name the closure reads that is rebound before the literal, or by an
+// enclosing parameter, is read through a snapshot taken right after the
+// closure. Both used to decline the copy and trap.
+fn local_helper_snapshot() -> Int {
+  let k = 1
+  let helper = () -> k
+  let k = 2
+  run_str(() -> helper() * 10 + k)
+}
+
+fn local_helper_snapshot_param() -> Int {
+  let k = 7
+  let helper = () -> k
+  let run_k = (k: Int) -> run_str(() -> helper() + k)
+  run_k(100)
+}
+
+test "a literal that calls a local closure" {
+  inspect(local_helper(), "3")
+  inspect(local_helper_capture(), "9")
+  inspect(local_helper_two(), "3")
+  inspect(local_helper_own_binder(), "104")
+  inspect(local_helper_branch(false), "3")
+  inspect(local_helper_branch(true), "10")
+  inspect(local_helper_snapshot(), "12")
+  inspect(local_helper_snapshot_param(), "107")
+  let helper = () -> 5
+  inspect(run_str(() -> helper()), "5")
+}

@@ -166,6 +166,8 @@ import ./checker_lambda_expr.vibe {
   array_reader_second_key,
   bind_array_arg,
   field_write_mut_check,
+  lambda_arg_elem_write_check,
+  lambda_arg_param_write_check,
   record_array_receiver,
   retaining_write_region_check,
   run_body_param_cell,
@@ -1429,6 +1431,8 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
           let s5_elem = check_hof_param_vs_elem(subst_apply(s4, recv_ty), subst_apply(s4, fn_ty), 1, s4, errors, "Array::fold element parameter type mismatch")
           // #3387: see `Array::map`.
           let s5 = effect_inst_rowless_arg_check(env, Array::get(args, 2), fn_ty, s5_elem, name, defs, errors)
+          // #3360: the callback's writes of its parameters, now typed.
+          lambda_arg_elem_write_check(Array::get(args, 2), recv_ty, 1, s5, env, errors)
           (tab_call_ty(tytab, call_off, subst_apply(s5, init_ty), capture, lane), s5, c3)
         } else if arm == "Array::map" {
           // `Array::map(a, f)` returns `Array[R]` where R is f's return type —
@@ -1450,6 +1454,8 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
           // the function performs is compared with the one in scope here,
           // once its parameter has the element type.
           let s3 = effect_inst_rowless_arg_check(env, Array::get(args, 1), fn_ty, s3_elem, name, defs, errors)
+          // #3360: the callback's writes of its parameter, now typed.
+          lambda_arg_elem_write_check(Array::get(args, 1), recv_ty, 0, s3, env, errors)
           let result = match subst_apply(s3, fn_ty) {
             CtFn(_, ret, _) => CtArray(ret),
             _ => CtUnknown
@@ -1951,7 +1957,10 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
               // compared with the one in scope once the element is bound.
               let s_hof = if alen == 2 && (name == "Array::filter" || name == "Array::any" || name == "Array::all" || name == "Array::find") {
                 let elem_s = check_hof_param_vs_elem(subst_apply(s2, Array::get(direct_arg_tys, 0)), subst_apply(s2, Array::get(direct_arg_tys, 1)), 0, s2, errors, String::concat(name, " function parameter type mismatch"))
-                effect_inst_rowless_arg_check(env, Array::get(args, 1), Array::get(direct_arg_tys, 1), elem_s, name, defs, errors)
+                let eff_s = effect_inst_rowless_arg_check(env, Array::get(args, 1), Array::get(direct_arg_tys, 1), elem_s, name, defs, errors)
+                // #3360: the callback's writes of its parameter, now typed.
+                lambda_arg_elem_write_check(Array::get(args, 1), Array::get(direct_arg_tys, 0), 0, eff_s, env, errors)
+                eff_s
               } else {
                 s2
               }
@@ -2131,6 +2140,9 @@ export fn check_call_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Sub
                         Array::push(errors, String::concat(String::concat("function arity mismatch for ", String::concat(name, String::concat(": expected ", String::concat(__to_string(plen2), String::concat(" args, got ", __to_string(alen3)))))), off_marker_len(callee_off, String::length(name))))
                       }
                       let s3_unified = unify_call_args(call_param_tys, arg_tys, args, s2, errors, name, callee_off)
+                      // #3360: a closure argument's writes of its own
+                      // parameter, now that the call has fixed its type.
+                      lambda_arg_param_write_check(args, call_param_tys, s3_unified, env, errors)
                       // #3387: a parameter whose type names no row for an
                       // effect a function argument performs.
                       let s3_args = effect_inst_unnamed_args_check(env, args, arg_tys, call_param_tys, s3_unified, name, defs, errors)

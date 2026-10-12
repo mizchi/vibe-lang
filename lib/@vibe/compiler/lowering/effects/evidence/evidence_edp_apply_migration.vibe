@@ -33,6 +33,8 @@ import ./evidence_ecall_arg_idents_expr.vibe {
   edp_count_ident_uses,
   edp_count_ident_uses_stmts,
   edp_count_safe_closure_bindings_stmts,
+  edp_lambda_row_params,
+  edp_needing_scan_view,
   edp_usage_ctor_for,
   edp_usage_ctor_loop,
   edp_usage_ctor_mask,
@@ -197,11 +199,12 @@ export fn edp_all_sites_eligible_with_index(stmts: Array[Stmt], ename: String, n
           }
           let call_safe_h = Array::concat(Array::concat(needing, hext), tdext)
           let sites = array_empty()
-          edp_collect_handle_sites_expr(sval, ename, sites)
+          let site_extra: Array[Array[String]] = []
+          edp_collect_handle_sites_scoped(sval, ename, td_mode, es_names, es_members_list, empty_str_array(), sites, site_extra)
           let mut hi = 0
           while hi < Array::length(sites) {
             let (body, _) = Array::get(sites, hi)
-            if edp_has_unsafe_construct(body, call_safe_h, ename, pure_fns) {
+            if edp_has_unsafe_construct(body, Array::concat(call_safe_h, Array::get(site_extra, hi)), ename, pure_fns) {
               ok = false
             } else {
               ()
@@ -235,7 +238,15 @@ export fn edp_all_sites_eligible_with_index(stmts: Array[Stmt], ename: String, n
             empty_str_array()
           }
           let call_safe = Array::concat(Array::concat(needing, edp_closure_param_names_only(own_cp)), tdext2)
-          if edp_has_unsafe_construct(b, call_safe, ename, pure_fns) {
+          // #3416: a local lambda's row-typed parameter is read as the
+          // rewrite reads it (`edp_needing_scan_view`).
+          let view_safe = empty_str_array()
+          let bscan = if td_mode {
+            edp_needing_scan_view(b, ename, es_names, es_members_list, view_safe)
+          } else {
+            b
+          }
+          if edp_has_unsafe_construct(bscan, Array::concat(call_safe, view_safe), ename, pure_fns) {
             ok = false
           } else {
             ()
@@ -997,6 +1008,10 @@ export fn edp_apply_migration_with_index(stmts: Array[Stmt], ename: String, ops:
   }
   let td_binds = edp_filter_unpoisoned(td_binds_raw, td_poison0)
   let td_mode = Array::length(td_binds) > 0 || Array::length(td_lits0) > 0 || edp_any_row_typed_param(stmts, fn_defs, ename, es_names, es_members_list)
+  // #3416: a local lambda calls its row-typed parameters with the dict, in
+  // the needing rewrites and the handle rewrites below (`edp_rh_extend`), as
+  // eligibility allowed.
+  edp_rh_begin(td_mode, es_names, es_members_list)
   if td_mode {
     let td_safe = Array::concat(needing, td_binds)
     edp_sweep_row_lits_stmts(stmts, ename, dict_pname, td_safe, es_names, es_members_list)
@@ -1198,10 +1213,12 @@ fn edp_rewrite_needing_body(expr: Expr, ename: String, dict_pname: String, needi
     // SECOND time at each needing call and hand the callee one argument
     // too many. This is the `__ev_` first-param guard edp_rewrite_needing_fn
     // already uses for the same reason, applied to the nested case.
+    // A local lambda's row-typed parameters are passed the dict as well
+    // (#3416), as the eligibility scan read them (`edp_needing_scan_view`).
     EFn(tps, tbs, params, ret, eff, body) => if edp_params_have_dict(params, dict_pname) {
       expr
     } else {
-      EFn(tps, tbs, params, ret, eff, edp_rewrite_needing_body(body, ename, dict_pname, needing))
+      EFn(tps, tbs, params, ret, eff, edp_rewrite_needing_body(body, ename, dict_pname, edp_rh_extend(needing, params, body, ename)))
     },
     // A nested EHandle for a DIFFERENT effect than `ename` is safe to
     // recurse into (edp_has_unsafe_construct already verified this, both
@@ -1641,6 +1658,70 @@ fn edp_splice_or_leave(qname: String, actual_args: Array[Expr], original_operand
 /// every occurrence found here is sound -- eligibility, not this
 /// traversal, is what decides whether rewriting was safe to attempt at
 /// all.
+/// #3416: the type-directed mode and effect sets of the migration in
+/// progress, read by `edp_rh_extend` while `edp_find_rewrite_handles` walks.
+let edp_rh_td_cell: Array[Bool] = [false]
+let edp_rh_es_names_cell: Array[Array[String]] = []
+let edp_rh_es_members_cell: Array[Array[Array[String]]] = []
+
+fn edp_rh_begin(td_mode: Bool, es_names: Array[String], es_members_list: Array[Array[String]]) -> Unit {
+  Array::set(edp_rh_td_cell, 0, td_mode)
+  Array::truncate(edp_rh_es_names_cell, 0)
+  Array::truncate(edp_rh_es_members_cell, 0)
+  Array::push(edp_rh_es_names_cell, es_names)
+  Array::push(edp_rh_es_members_cell, es_members_list)
+}
+
+/// `needing` extended, in type-directed mode, with the lambda's own
+/// parameters whose function type carries the effect: a call through one
+/// passes the dict, exactly as through a top-level function's (the
+/// eligibility scan's `edp_collect_handle_sites_scoped` allows the same).
+fn edp_rh_extend(needing: Array[String], params: Array[(String, Option[TypeExpr])], body: Expr, ename: String) -> Array[String] {
+  if Array::get(edp_rh_td_cell, 0) && Array::length(edp_rh_es_names_cell) > 0 {
+    let extra = edp_lambda_row_params(params, body, ename, Array::get(edp_rh_es_names_cell, 0), Array::get(edp_rh_es_members_cell, 0))
+    if Array::length(extra) > 0 {
+      Array::concat(needing, extra)
+    } else {
+      needing
+    }
+  } else {
+    needing
+  }
+}
+
+/// #3416: the handle sites of `ename` in `expr`, each with the row-typed
+/// parameters of the lambdas around it (`site_extra`, in type-directed mode
+/// only). A handle inside a local lambda (`let lrun = (f: () -> Int with
+/// Box[Int]) -> Int { handle { f() } with { .. } }`) calls `f`, which the
+/// rewrite passes the dict (`edp_rh_extend`); counting only the enclosing
+/// top-level function's parameters refused the program.
+fn edp_collect_handle_sites_scoped(expr: Expr, ename: String, td_mode: Bool, es_names: Array[String], es_members_list: Array[Array[String]], extra: Array[String], sites: Array[(Expr, Array[(Pat, Expr)])], site_extra: Array[Array[String]]) -> Unit {
+  match expr {
+    EHandle(body, arms) => if edp_handle_matches_effect(arms, ename) {
+      Array::push(sites, (body, arms))
+      Array::push(site_extra, extra)
+    } else {
+      // As `edp_collect_handle_sites_expr`: a foreign handle's arms are not
+      // walked here.
+      edp_collect_handle_sites_scoped(body, ename, td_mode, es_names, es_members_list, extra, sites, site_extra)
+    },
+    EFn(_, _, params, _, _, b) => {
+      let inner = if td_mode {
+        Array::concat(extra, edp_lambda_row_params(params, b, ename, es_names, es_members_list))
+      } else {
+        extra
+      }
+      edp_collect_handle_sites_scoped(b, ename, td_mode, es_names, es_members_list, inner, sites, site_extra)
+    },
+    _ => {
+      for child in expr_children(expr) {
+        edp_collect_handle_sites_scoped(child, ename, td_mode, es_names, es_members_list, extra, sites, site_extra)
+      }
+      ()
+    }
+  }
+}
+
 fn edp_find_rewrite_handles(expr: Expr, ename: String, needing: Array[String]) -> Expr {
   match expr {
     EHandle(body, arms) => if edp_handle_matches_effect(arms, ename) {
@@ -1651,7 +1732,7 @@ fn edp_find_rewrite_handles(expr: Expr, ename: String, needing: Array[String]) -
         (p, edp_find_rewrite_handles(ex, ename, needing))
       })
     },
-    EFn(tps, tbs, params, ret, eff, b) => EFn(tps, tbs, params, ret, eff, edp_find_rewrite_handles(b, ename, needing)),
+    EFn(tps, tbs, params, ret, eff, b) => EFn(tps, tbs, params, ret, eff, edp_find_rewrite_handles(b, ename, edp_rh_extend(needing, params, b, ename))),
     ELet(n, v, b, off) => ELet(n, edp_find_rewrite_handles(v, ename, needing), edp_find_rewrite_handles(b, ename, needing), off),
     ELetMut(n, v, b, off) => ELetMut(n, edp_find_rewrite_handles(v, ename, needing), edp_find_rewrite_handles(b, ename, needing), off),
     ELetRec(n, v, b) => ELetRec(n, edp_find_rewrite_handles(v, ename, needing), edp_find_rewrite_handles(b, ename, needing)),

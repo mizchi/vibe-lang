@@ -26,3 +26,43 @@ test "an alias of an outer container taken inside a region still carries the out
   let src = "fn build() -> Int {\n  let sink: Array[() -> Int] = []\n  region r {\n    let cell = MutList::empty(r)\n    let alias = sink\n    Array::push(alias, () -> Int {\n      MutList::length(cell)\n    })\n  }\n  0\n}"
   inspect(check_source_error_message(src), content = "region escapes its scope: a container write stores a value that captures this region into an outer binding")
 }
+
+// #3360: a closure handed to an element-callback builtin is checked before
+// its parameter is bound to the element type, so a write of that parameter
+// into an outer binding saw a type variable and no region. The same write in
+// `for c in cells` was refused; through the callback it compiled.
+test "a callback that stores its element into an outer binding is reported" {
+  let map_src = "fn build() -> Int {\n  let sink: Array[MutList[Int]] = []\n  region r {\n    let cells = [MutList::empty(r)]\n    let _ = Array::map(cells, (c) -> {\n      Array::push(sink, c)\n      0\n    })\n  }\n  0\n}"
+  assert(String::contains(check_source_error_message(map_src), "region escapes its scope"))
+  let filter_src = "fn build() -> Int {\n  let sink: Array[MutList[Int]] = []\n  region r {\n    let cells = [MutList::empty(r)]\n    let _ = Array::filter(cells, (c) -> {\n      Array::push(sink, c)\n      true\n    })\n  }\n  0\n}"
+  assert(String::contains(check_source_error_message(filter_src), "region escapes its scope"))
+  let fold_src = "fn build() -> Int {\n  let sink: Array[Option[MutList[Int]]] = []\n  region r {\n    let cells = [MutList::empty(r)]\n    let _ = Array::fold(cells, 0, (acc, c) -> {\n      Array::push(sink, Some(c))\n      acc\n    })\n  }\n  0\n}"
+  assert(String::contains(check_source_error_message(fold_src), "region escapes its scope"))
+}
+
+test "a callback passed to a generic function stores its element into an outer binding is reported" {
+  // The callee's own parameter type, `(T) -> Int` with `T` fixed by the array
+  // argument, is what the call unified; the callback's variable was not.
+  let src = "fn each_of[T](xs: Array[T], f: (T) -> Int) -> Int {\n  Array::length(Array::map(xs, f))\n}\n\nfn build() -> Int {\n  let sink: Array[MutList[Int]] = []\n  region r {\n    let cells = [MutList::empty(r)]\n    let _ = each_of(cells, (c) -> {\n      Array::push(sink, c)\n      0\n    })\n  }\n  0\n}"
+  assert(String::contains(check_source_error_message(src), "region escapes its scope"))
+}
+
+test "a binding in one branch of a callback does not hide the outer target in another (Codex on #3437)" {
+  let src = "fn build(flag: Bool) -> Int {\n  let sink: Array[MutList[Int]] = []\n  region r {\n    let cells = [MutList::empty(r)]\n    let _ = Array::map(cells, (c) -> {\n      if flag {\n        let sink = [c]\n        Array::length(sink)\n      } else {\n        Array::push(sink, c)\n        0\n      }\n    })\n  }\n  0\n}"
+  assert(String::contains(check_source_error_message(src), "region escapes its scope"))
+}
+
+test "a callback that stores its element nested in aggregates is reported (Codex on #3437)" {
+  let src = "fn build() -> Int {\n  let sink: Array[Option[(MutList[Int], Int)]] = []\n  region r {\n    let cells = [MutList::empty(r)]\n    let _ = Array::map(cells, (c) -> {\n      Array::push(sink, Some((c, 0)))\n      0\n    })\n  }\n  0\n}"
+  assert(String::contains(check_source_error_message(src), "region escapes its scope"))
+}
+
+test "a callback that stores its element through an if or a block is reported (Codex on #3437)" {
+  let src = "fn build(flag: Bool) -> Int {\n  let sink: Array[MutList[Int]] = []\n  region r {\n    let cells = [MutList::empty(r)]\n    let _ = Array::map(cells, (c) -> {\n      Array::push(sink, if flag {\n        c\n      } else {\n        c\n      })\n      0\n    })\n  }\n  0\n}"
+  assert(String::contains(check_source_error_message(src), "region escapes its scope"))
+}
+
+test "a callback that keeps its element in its own binding, or stores a value read from it, is fine" {
+  assert(check_source_ok("fn build() -> Int {\n  region r {\n    let cells = [MutList::empty(r)]\n    let _ = Array::map(cells, (c) -> {\n      let mine = [c]\n      Array::push(mine, c)\n      0\n    })\n  }\n  0\n}"))
+  assert(check_source_ok("fn build() -> Int {\n  let sink: Array[Int] = []\n  region r {\n    let cells = [MutList::empty(r)]\n    let _ = Array::map(cells, (c) -> {\n      Array::push(sink, MutList::length(c))\n      0\n    })\n  }\n  Array::length(sink)\n}"))
+}

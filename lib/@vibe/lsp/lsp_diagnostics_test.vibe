@@ -265,3 +265,27 @@ test "the entry's own prefixed diagnostic is still located (#2868)" {
   // Same file, so the path is consumed like any other located prefix.
   assert(!String::contains(Json::string(Json::field(Json::index(parsed, 0), "message")), "entry.vibe"))
 }
+
+test "a range that ends on a later line converts both ends (#3348)" {
+  // `line L:C-L2:C2:` -- a multi-line literal, which used to be reported as
+  // the point at its first byte.
+  let src = "fn f() -> Int {\n  let xs: Array[Int] = [\n    \"a\"\n  ]\n  0\n}\n"
+  let parsed = Json::parse(lsp_diagnostics_json_of_messages(src, [
+    "line 2:24-4:4: type mismatch: expected Array[Int], got Array[String]"
+  ]))
+  let range = Json::field(Json::index(parsed, 0), "range")
+  let start = Json::field(range, "start")
+  let end = Json::field(range, "end")
+  inspect(Double::to_int(Json::number(Json::field(start, "line"))), "1")
+  inspect(Double::to_int(Json::number(Json::field(start, "character"))), "23")
+  inspect(Double::to_int(Json::number(Json::field(end, "line"))), "3")
+  inspect(Double::to_int(Json::number(Json::field(end, "character"))), "3")
+  inspect(Json::string(Json::field(Json::index(parsed, 0), "message")), "type mismatch: expected Array[Int], got Array[String]")
+  // A one-line range whose message opens with a digit is still one line.
+  let one = Json::parse(lsp_diagnostics_json_of_messages(src, [
+    "line 2:24-27: 3 problems"
+  ]))
+  let one_range = Json::field(Json::index(one, 0), "range")
+  inspect(Double::to_int(Json::number(Json::field(Json::field(one_range, "end"), "line"))), "1")
+  inspect(Json::string(Json::field(Json::index(one, 0), "message")), "3 problems")
+}

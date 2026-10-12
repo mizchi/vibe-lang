@@ -1,0 +1,87 @@
+import @vibe/compiler/lowering/effects/evidence {
+  evidence_dict_pass
+}
+import @vibe/compiler/syntax {
+  lex, parse_program, print_stmt
+}
+
+fn head() -> String {
+  "effect Box[T] {\n  Put(T) -> Int\n}\nfn bare_mk() -> Int with Box {\n  perform Box::Put(41)\n}\n"
+}
+
+fn tail() -> String {
+  "fn top() -> Int with Box[String] {\n  bare()\n}\nfn main() -> Int {\n  handle {\n    top()\n  } with {\n    Box::Put(s) => resume(String::length(s))\n  }\n}\n"
+}
+
+fn run(body: String) -> Int with Exception {
+  let errs = evidence_dict_pass(parse_program(lex(String::concat(head(), String::concat(body, tail())))), "main")
+  Array::length(errs)
+}
+
+// #3416: inside a function that needs `Box`, a local lambda calls its own
+// row-typed parameter `f`. The rewrite passes that call the dict -- the
+// handle's inside a handle, the enclosing function's outside one -- so the
+// eligibility scan has to accept it; it used to meet `f`'s binder and refuse
+// the whole effect ("not fully eligible"). The runtime answers are in
+// `fixtures/local_handler_lambda_test.vibe`.
+test "a local lambda's row-typed parameter does not refuse its needing function" {
+  // the callback takes the parameter's row
+  inspect(run("fn bare() -> Int with Box {\n  let lrun = (f: () -> Int with Box[Int]) -> Int {\n    handle {\n      f()\n    } with {\n      Box::Put(n) => resume(n + 1)\n    }\n  }\n  lrun(() -> bare_mk())\n}\n"), "0")
+  // the callback writes the row itself
+  inspect(run("fn bare() -> Int with Box {\n  let lrun = (f: () -> Int with Box[Int]) -> Int {\n    handle {\n      f()\n    } with {\n      Box::Put(n) => resume(n + 1)\n    }\n  }\n  lrun(() -> Int with Box[Int] { bare_mk() })\n}\n"), "0")
+  // the local lambda forwards its callback rather than handling it
+  inspect(run("fn bare() -> Int with Box {\n  let lrun = (f: () -> Int with Box[Int]) -> Int with Box[Int] {\n    f()\n  }\n  lrun(() -> bare_mk())\n}\n"), "0")
+}
+
+/// The printed `fwd` after the pass, `fwd` being declared by `decls`.
+fn fwd_after(decls: String) -> String with Exception {
+  let stmts = parse_program(lex(String::concat(head(), decls)))
+  let _ = evidence_dict_pass(stmts, "main")
+  let mut out = ""
+  for s in stmts {
+    match s {
+      SLet(_, _, n, _, _) => if n == "fwd" {
+        out = print_stmt(s)
+      } else {
+        ()
+      },
+      _ => ()
+    }
+  }
+  out
+}
+
+/// The printed `fwd` after the pass.
+fn fwd_after_pass() -> String with Exception {
+  let stmts = parse_program(lex(String::concat(head(), "fn fwd() -> Int with Box {\n  let lrun = (f: () -> Int with Box[Int]) -> Int with Box[Int] {\n    f() + 1\n  }\n  lrun(() -> bare_mk())\n}\nfn main() -> Int {\n  handle {\n    fwd()\n  } with {\n    Box::Put(n) => resume(n * 2)\n  }\n}\n")))
+  let _ = evidence_dict_pass(stmts, "main")
+  let mut out = ""
+  for s in stmts {
+    match s {
+      SLet(_, _, n, _, _) => if n == "fwd" {
+        out = print_stmt(s)
+      } else {
+        ()
+      },
+      _ => ()
+    }
+  }
+  out
+}
+
+// A local lambda WITH a row of its own passes `f` its dict, so the row-free
+// callback written at `f` takes the parameter's row and a dict parameter.
+// It used to stay `() -> { .. }`, which the call `f(__ev_Box)` trapped on
+// ("null function or function signature mismatch"): only row-free local
+// lambdas were recorded for the slot lookup.
+test "a callback at a row-carrying local lambda's parameter takes the dict" {
+  inspect(fwd_after_pass(), "let rec fwd = (__ev_Box: __EvDict_Box) -> Int with Box { { let __edpc1_lrun = (__ev_Box: __EvDict_Box, f: () -> Int with Box[Int]) -> Int with Box[Int] { (f(__ev_Box) + 1) }; __edpc1_lrun(__ev_Box, (__ev_Box: __EvDict_Box) -> { bare_mk(__ev_Box) }) } }")
+}
+
+// A row-carrying local lambda bound under a name another function binds to a
+// row-free lambda: the call passes the dict. It used to be dropped (the name
+// was decided program-wide), and `run()` trapped with a signature mismatch.
+// The runtime answer is in `fixtures/row_lambda_shared_name_test.vibe`.
+test "a row-carrying local lambda keeps its dict beside a same-named binding" {
+  inspect(fwd_after("fn other() -> Int {\n  let run = (x: Int) -> Int { x + 1 }\n  run(1)\n}\nfn fwd() -> Int with Box {\n  let run = () -> Int with Box[Int] { bare_mk() + 1 }\n  run()\n}\nfn main() -> Int {\n  handle {\n    fwd()\n  } with {\n    Box::Put(n) => resume(n * 2)\n  }\n}\n"), "let rec fwd = (__ev_Box: __EvDict_Box) -> Int with Box { { let __edpc2_run = (__ev_Box: __EvDict_Box) -> Int with Box[Int] { (bare_mk(__ev_Box) + 1) }; __edpc2_run(__ev_Box) } }")
+}
