@@ -58,6 +58,7 @@ import @vibe/compiler/core {
   env_flat_bindings,
   env_lookup,
   env_lookup_flat,
+  env_param_name_rows,
   env_preserve_type_definition_origins,
   env_selectable_type_defs,
   env_trait_def_names_into,
@@ -765,35 +766,33 @@ export fn engine_checked_module_public_env_publishing(stmts: Array[Stmt], full_c
       ()
     }
   }
-  env_with_show_wrapper_facts(engine_bind_param_name_markers(stmts, value_surface, publication_env, published_env), exported_wrappers, exported_unknown)
+  env_with_show_wrapper_facts(engine_bind_param_name_markers(stmts, publication_env, published_env), exported_wrappers, exported_unknown)
 }
-/// #3432: one `param_names_marker` per exported function with an optional
+/// #3432: one `param_names_marker` per published function with an optional
 /// (`x?`) parameter, so an importer can omit it or pass it by label the way
-/// the defining module can. A re-exported function carries the marker its
-/// own import brought in.
-fn engine_bind_param_name_markers(stmts: Array[Stmt], value_surface: Array[String], publication_env: TypeEnv, published: TypeEnv) -> TypeEnv {
-  let mut acc = published
-  // A re-export: the marker the import of it brought in.
-  for name in value_surface {
-    match env_lookup(publication_env, param_names_marker(name)) {
-      Some(t) => {
-        acc = env_bind(acc, param_names_marker(name), t)
-      },
-      None => ()
-    }
-  }
+/// the defining module can. The test is whether the NAME is published, not
+/// whether it is in the value surface: a type companion (`fn Box::make`)
+/// rides out with its type (Codex on #3441). A re-exported function carries
+/// the marker its own import brought in.
+fn engine_bind_param_name_markers(stmts: Array[Stmt], publication_env: TypeEnv, published: TypeEnv) -> TypeEnv {
+  // The candidates are few: own functions with an optional parameter, then
+  // the markers this module's imports brought in. An own function without
+  // one hides an imported marker under its name.
+  let own_fns: Array[String] = []
+  let candidates: Array[(String, Array[String])] = []
   for stmt in stmts {
     match stmt {
       SLet(_, _, fname, _, EFn(_, _, params, _, _, _)) => {
-        let fields: Array[(String, Type)] = []
+        Array::push(own_fns, fname)
+        let names: Array[String] = []
         let mut optional = false
         for param in params {
           let (pn, _) = param
           optional = optional || String::ends_with(pn, "?")
-          Array::push(fields, (pn, CtUnit))
+          Array::push(names, pn)
         }
-        if optional && contains_str(value_surface, fname) {
-          acc = env_bind(acc, param_names_marker(fname), CtRecord(fields))
+        if optional {
+          Array::push(candidates, (fname, names))
         } else {
           ()
         }
@@ -801,7 +800,44 @@ fn engine_bind_param_name_markers(stmts: Array[Stmt], value_surface: Array[Strin
       _ => ()
     }
   }
-  acc
+  for row in env_param_name_rows(publication_env) {
+    let (fname, _) = row
+    if contains_str(own_fns, fname) {
+      ()
+    } else {
+      Array::push(candidates, row)
+    }
+  }
+  if Array::length(candidates) == 0 {
+    published
+  } else {
+    let mut acc = published
+    for binding in env_flat_bindings(published) {
+      let (name, _) = binding
+      let mut found = None
+      let mut hit = false
+      for row in candidates {
+        let (fname, names) = row
+        if !hit && fname == name {
+          hit = true
+          found = Some(names)
+        } else {
+          ()
+        }
+      }
+      match found {
+        Some(names) => {
+          let fields: Array[(String, Type)] = []
+          for pn in names {
+            Array::push(fields, (pn, CtUnit))
+          }
+          acc = env_bind(acc, param_names_marker(name), CtRecord(fields))
+        },
+        None => ()
+      }
+    }
+    acc
+  }
 }
 /// Every declaration line, with its declared type-parameter ARITY.
 ///

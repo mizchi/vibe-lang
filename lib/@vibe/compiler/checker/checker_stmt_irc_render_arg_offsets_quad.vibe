@@ -40,11 +40,10 @@ import @vibe/compiler/core {
   TypeEnv,
   TypeExpr,
   env_cache,
-  env_lookup,
+  env_param_name_rows,
   erase_handler_or_arm_stamps,
   expr_children,
   handler_or_arm_groups,
-  param_names_marker,
   resolved_callee_capture_reset,
   resolved_callee_capture_rows,
   split_handler_or_arms,
@@ -1020,43 +1019,6 @@ export fn check_program_type_table(stmts: Array[Stmt]) -> (Array[(Int, Type)], S
 /// As `check_program_result`, seeded with an importing module's environment.
 /// The non-empty path intentionally keeps the existing imported-module checks
 /// and error behavior unchanged.
-/// #3432: the parameter names each imported function's module published,
-/// under the name this module imports it as.
-fn imported_param_rows_into(items: Array[ImportItem], plain_only: Bool, env: TypeEnv, rows: Array[(String, Array[String])]) -> Unit {
-  for item in items {
-    if plain_only && item.alias != None {
-      ()
-    } else {
-      let local = match item.alias {
-        Some(a) => a,
-        None => item.name
-      }
-      match env_lookup(env, param_names_marker(local)) {
-        Some(CtRecord(fields)) => Array::push(rows, (local, for field in fields {
-          let (pn, _) = field
-          pn
-        })),
-        _ => ()
-      }
-    }
-  }
-  ()
-}
-
-fn imported_param_rows(stmts: Array[Stmt], env: TypeEnv) -> Array[(String, Array[String])] {
-  let rows: Array[(String, Array[String])] = []
-  for stmt in stmts {
-    match stmt {
-      SImport(_, items) => imported_param_rows_into(items, false, env, rows),
-      // A plain re-export is also bound locally; an aliased one is surface
-      // only (Codex on #3441).
-      SReExport(_, items) => imported_param_rows_into(items, true, env, rows),
-      _ => ()
-    }
-  }
-  rows
-}
-
 fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial_env: TypeEnv, capture: Option[CheckerStatementCapture], role_lane_capture: Option[TypedOccurrenceRoleLaneCapture], imports_already_projected: Bool) -> CheckedProgramTypeDefsObservation with Exception {
   match initial_env {
     EnvEmpty => check_program_type_defs_observation_impl(stmts, capture, role_lane_capture),
@@ -1084,7 +1046,7 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
       // #986: reorder fully-labeled calls before checking (see check_program).
       // #3432: with the imported functions' parameter names, so an omitted
       // optional argument or a label reaches the callee it names.
-      imported_params_set(imported_param_rows(stmts, initial_env))
+      imported_params_set(env_param_name_rows(initial_env))
       desugar_labeled_args(stmts)
       imported_params_set(array_empty())
       // #1571: see check_program.

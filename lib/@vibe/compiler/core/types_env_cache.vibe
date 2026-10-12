@@ -220,6 +220,65 @@ export fn param_names_marker(name: String) -> String {
   String::concat("#params:", name)
 }
 
+/// Every `param_names_marker` row in `env`, as (function name, parameter
+/// names), nearest binding first and each name once. One walk over the chain,
+/// so an importer finds a type companion's row (`Box::make`, reached by
+/// importing `Box`) without knowing its name in advance.
+export fn env_param_name_rows(env: TypeEnv) -> Array[(String, Array[String])] {
+  let rows: Array[(String, Array[String])] = []
+  let prefix = param_names_marker("")
+  let mut current = env
+  let mut done = false
+  while !done {
+    match current {
+      EnvBind(name, binding, rest) => {
+        param_name_row_push(rows, prefix, name, binding.ty)
+        current = rest
+      },
+      EnvFlat(bindings) => {
+        for entry in bindings {
+          let (name, binding) = entry
+          param_name_row_push(rows, prefix, name, binding.ty)
+        }
+        done = true
+      },
+      EnvShowWrappers(_, _, rest) => current = rest,
+      EnvTraitDef(_, _, _, _, rest, _, _) => current = rest,
+      EnvTraitImpl(_, _, rest) => current = rest,
+      EnvTraitImplGen(_, _, _, _, rest) => current = rest,
+      EnvTypeDefs(_, _, rest) => current = rest,
+      EnvMutCell(_, _, rest) => current = rest,
+      EnvCached(_, _, rest) => current = rest,
+      EnvEmpty => done = true
+    }
+  }
+  rows
+}
+
+fn param_name_row_push(rows: Array[(String, Array[String])], prefix: String, name: String, ty: Type) -> Unit {
+  if String::starts_with(name, prefix) {
+    let fname = String::substring(name, String::length(prefix), String::length(name))
+    let mut seen = false
+    for row in rows {
+      let (n, _) = row
+      seen = seen || n == fname
+    }
+    match ty {
+      CtRecord(fields) => if seen {
+        ()
+      } else {
+        Array::push(rows, (fname, for field in fields {
+          let (pn, _) = field
+          pn
+        }))
+      },
+      _ => ()
+    }
+  } else {
+    ()
+  }
+}
+
 export fn env_bind(env: TypeEnv, name: String, ty: Type) -> TypeEnv {
   env_bind_with_origin(env, name, ty, BindingOriginUnavailable)
 }
