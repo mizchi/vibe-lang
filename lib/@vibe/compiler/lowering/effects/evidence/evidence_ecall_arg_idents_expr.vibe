@@ -319,6 +319,16 @@ let edp_local_lit_names: Array[String] = []
 let edp_local_lit_slots: Array[Int] = []
 let edp_local_lit_vals: Array[Expr] = []
 
+/// #3424: the `scope` indices of the mutable bindings (`let mut`, `loop`)
+/// around the walk, and the snapshots `edp_copy_snapshots` asked for: a fresh
+/// name bound to `src` right after the closure at slot, which is where `src`
+/// still names what the closure reads.
+let edp_local_mut_slots: Array[Int] = []
+let edp_snap_slots: Array[Int] = []
+let edp_snap_fresh: Array[String] = []
+let edp_snap_src: Array[String] = []
+let edp_snap_counter: Array[Int] = [0]
+
 /// #3424: a row-free literal at a row-typed slot that calls local closures
 /// (`let helper = () -> 3; run_str(() -> helper())`), rebuilt with a copy of
 /// each one's binding at the top of its body, or None.
@@ -334,9 +344,10 @@ let edp_local_lit_vals: Array[Expr] = []
 /// The copy must mean what the original binding means. So every local the
 /// literal calls must be a row-free closure literal bound by `let`, not one of
 /// the literal's own binders, nor a hoisted lambda, nor a closure that itself
-/// calls a local. No name the copy mentions may be rebound between its
-/// definition and the literal, or by the literal's parameters, because the
-/// copy would then read that binding instead.
+/// calls a local. A name the copy reads that is rebound between its definition
+/// and the literal, or by the literal's parameters, is read through a snapshot
+/// taken right after the closure (`edp_copy_snapshots`); where no snapshot is
+/// sound the copy is declined.
 fn edp_copy_local_helpers(tps: Array[String], tbs: Array[(String, Array[String])], ps: Array[(String, Option[TypeExpr])], ret: Option[TypeExpr], body: Expr, scope: Array[String]) -> Option[Expr] {
   let param_names: Array[String] = []
   for p in ps {
@@ -350,6 +361,8 @@ fn edp_copy_local_helpers(tps: Array[String], tbs: Array[(String, Array[String])
   // Each copy, outermost binding first, so a later one may mention an earlier.
   let slots: Array[Int] = []
   let vals: Array[Expr] = []
+  // Snapshots the copies need, committed only when every copy is made.
+  let snaps: Array[(Int, String, String)] = []
   let mut ci = 0
   while ok && ci < Array::length(called) {
     let cn = Array::get(called, ci)
@@ -358,11 +371,18 @@ fn edp_copy_local_helpers(tps: Array[String], tbs: Array[(String, Array[String])
     match found {
       Some(EFn(_, _, _, _, None, hb)) => {
         let helper = Array::get(edp_local_lit_vals, edp_local_lit_index(cn, slot))
-        if edp_literal_calls_local(helper, hb, scope) || edp_copy_is_rebound(helper, slot, scope, param_names) {
+        if edp_literal_calls_local(helper, hb, scope) {
           ok = false
         } else {
-          Array::push(slots, slot)
-          Array::push(vals, helper)
+          match edp_copy_snapshots(helper, cn, slot, scope, param_names, snaps) {
+            Some(renamed) => {
+              Array::push(slots, slot)
+              Array::push(vals, renamed)
+            },
+            None => {
+              ok = false
+            }
+          }
         }
       },
       _ => {
@@ -370,6 +390,15 @@ fn edp_copy_local_helpers(tps: Array[String], tbs: Array[(String, Array[String])
       }
     }
     ci = ci + 1
+  }
+  if ok && Array::length(vals) > 0 {
+    for snap in snaps {
+      Array::push(edp_snap_slots, snap.0)
+      Array::push(edp_snap_fresh, snap.1)
+      Array::push(edp_snap_src, snap.2)
+    }
+  } else {
+    ()
   }
   if !ok || Array::length(vals) == 0 {
     None
@@ -478,22 +507,240 @@ fn edp_call_census(e: Expr, bound: Array[String], scope: Array[String], called: 
   }
 }
 
-/// Does a name the copied `helper` reads or writes from outside itself name a
-/// binding made after `slot` in `scope`, or a parameter of the literal it is
-/// copied into? Either would capture the copy, which then reads -- or assigns
-/// -- a different binding from the original (Codex on #3437).
-fn edp_copy_is_rebound(helper: Expr, slot: Int, scope: Array[String], param_names: Array[String]) -> Bool {
+/// #3424: the copy of `helper` (bound to `cn` at `slot`) to put in the literal,
+/// or None. A name the copy reads that is rebound between the closure and the
+/// literal, or by the literal's parameters, would read that other binding once
+/// copied. When the binding the closure reads is an immutable local, the copy
+/// reads a snapshot of it instead -- `let fresh = name`, bound right after the
+/// closure, where `name` still means what the closure saw (queued in `snaps`).
+/// A mutable one (`let mut`, a `loop` variable), the closure's own name, a
+/// name that is not local, or text the walk cannot read (an interpolation)
+/// declines the copy.
+fn edp_copy_snapshots(helper: Expr, cn: String, slot: Int, scope: Array[String], param_names: Array[String], snaps: Array[(Int, String, String)]) -> Option[Expr] {
   let free: Array[String] = []
   edp_free_names(helper, [], free)
-  let mut rebound = false
+  let mut ok = true
+  let mut out = helper
   for name in free {
-    if name == edp_free_names_opaque || edp_str_array_contains(param_names, name) || edp_scope_index_after(scope, name, slot) {
-      rebound = true
+    if !ok {
+      ()
+    } else if name == edp_free_names_opaque {
+      ok = false
+    } else if edp_str_array_contains(param_names, name) || edp_scope_index_after(scope, name, slot) {
+      let j = edp_scope_last_index_before(scope, name, slot)
+      if j < 0 || name == cn || edp_int_array_has(edp_local_mut_slots, j) {
+        ok = false
+      } else {
+        let k = Array::get(edp_snap_counter, 0)
+        Array::set(edp_snap_counter, 0, k + 1)
+        let fresh = String::concat("__edpc", String::concat(Int::to_string(k), String::concat("_", name)))
+        Array::push(snaps, (slot, fresh, name))
+        out = edp_rename_free(out, name, fresh)
+      }
     } else {
       ()
     }
   }
-  rebound
+  if ok {
+    Some(out)
+  } else {
+    None
+  }
+}
+
+/// `body` of the closure bound at `slot`, under the snapshots queued for it.
+fn edp_wrap_snapshots(body: Expr, slot: Int) -> Expr {
+  let mut out = body
+  let keep_slots: Array[Int] = []
+  let keep_fresh: Array[String] = []
+  let keep_src: Array[String] = []
+  let mut i = 0
+  while i < Array::length(edp_snap_slots) {
+    if Array::get(edp_snap_slots, i) == slot {
+      out = ELet(Array::get(edp_snap_fresh, i), EIdent(Array::get(edp_snap_src, i), 0 - 1), out, -1)
+    } else {
+      Array::push(keep_slots, Array::get(edp_snap_slots, i))
+      Array::push(keep_fresh, Array::get(edp_snap_fresh, i))
+      Array::push(keep_src, Array::get(edp_snap_src, i))
+    }
+    i = i + 1
+  }
+  if Array::length(keep_slots) != Array::length(edp_snap_slots) {
+    Array::truncate(edp_snap_slots, 0)
+    Array::truncate(edp_snap_fresh, 0)
+    Array::truncate(edp_snap_src, 0)
+    let mut k = 0
+    while k < Array::length(keep_slots) {
+      Array::push(edp_snap_slots, Array::get(keep_slots, k))
+      Array::push(edp_snap_fresh, Array::get(keep_fresh, k))
+      Array::push(edp_snap_src, Array::get(keep_src, k))
+      k = k + 1
+    }
+  } else {
+    ()
+  }
+  out
+}
+
+/// The innermost index of `name` in `scope` below `slot`, or -1.
+fn edp_scope_last_index_before(scope: Array[String], name: String, slot: Int) -> Int {
+  let mut i = if slot < Array::length(scope) {
+    slot
+  } else {
+    Array::length(scope)
+  }
+  let mut found = 0 - 1
+  while found < 0 && i > 0 {
+    i = i - 1
+    if Array::get(scope, i) == name {
+      found = i
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+fn edp_int_array_has(xs: Array[Int], x: Int) -> Bool {
+  let mut found = false
+  for v in xs {
+    if v == x {
+      found = true
+    } else {
+      ()
+    }
+  }
+  found
+}
+
+/// `e` with its free uses of `from` spelled `to`. A binder of `from` inside
+/// `e` stops the rename in its scope.
+fn edp_rename_free(e: Expr, from: String, to: String) -> Expr {
+  match e {
+    EIdent(n, o) => if n == from {
+      EIdent(to, o)
+    } else {
+      e
+    },
+    ECall(callee, args, off, res) => ECall(edp_rename_free(callee, from, to), for a in args {
+      edp_rename_free(a, from, to)
+    }, off, res),
+    EFn(tps, tbs, params, ret, eff, body) => {
+      let mut binds = false
+      for p in params {
+        if edp_param_base_name(p.0) == from {
+          binds = true
+        } else {
+          ()
+        }
+      }
+      if binds {
+        e
+      } else {
+        EFn(tps, tbs, params, ret, eff, edp_rename_free(body, from, to))
+      }
+    },
+    ELet(n, v, b, off) => ELet(n, edp_rename_free(v, from, to), if n == from {
+      b
+    } else {
+      edp_rename_free(b, from, to)
+    }, off),
+    ELetMut(n, v, b, off) => ELetMut(n, edp_rename_free(v, from, to), if n == from {
+      b
+    } else {
+      edp_rename_free(b, from, to)
+    }, off),
+    ELetRec(n, v, b) => if n == from {
+      e
+    } else {
+      ELetRec(n, edp_rename_free(v, from, to), edp_rename_free(b, from, to))
+    },
+    ESeq(a, b) => ESeq(edp_rename_free(a, from, to), edp_rename_free(b, from, to)),
+    EIf(c, t, el) => EIf(edp_rename_free(c, from, to), edp_rename_free(t, from, to), edp_rename_free(el, from, to)),
+    EMatch(sc, arms) => EMatch(edp_rename_free(sc, from, to), for a in arms {
+      let (pp, ex) = a
+      (pp, if edp_str_array_contains(edp_pat_names(pp), from) {
+        ex
+      } else {
+        edp_rename_free(ex, from, to)
+      })
+    }),
+    EHandle(bd, arms) => EHandle(edp_rename_free(bd, from, to), for a in arms {
+      let (pp, ex) = a
+      (pp, if edp_str_array_contains(edp_pat_names(pp), from) {
+        ex
+      } else {
+        edp_rename_free(ex, from, to)
+      })
+    }),
+    EWhile(c, b) => EWhile(edp_rename_free(c, from, to), edp_rename_free(b, from, to)),
+    EForIn(n, idx, it, b) => {
+      let shadows = n == from || match idx {
+        Some(i) => i == from,
+        None => false
+      }
+      EForIn(n, idx, edp_rename_free(it, from, to), if shadows {
+        b
+      } else {
+        edp_rename_free(b, from, to)
+      })
+    },
+    ELoop(pairs, b) => {
+      let mut shadows = false
+      let pairs2 = for pr in pairs {
+        let (n, v) = pr
+        if n == from {
+          shadows = true
+        } else {
+          ()
+        }
+        (n, edp_rename_free(v, from, to))
+      }
+      ELoop(pairs2, if shadows {
+        b
+      } else {
+        edp_rename_free(b, from, to)
+      })
+    },
+    EBinOp(op, l, r, boff) => EBinOp(op, edp_rename_free(l, from, to), edp_rename_free(r, from, to), boff),
+    EUnaryOp(op, x) => EUnaryOp(op, edp_rename_free(x, from, to)),
+    EAssign(n, v, c, target_off) => EAssign(if n == from {
+      to
+    } else {
+      n
+    }, edp_rename_free(v, from, to), edp_rename_free(c, from, to), target_off),
+    EAssignOp(n, op, v, c, target_off) => EAssignOp(if n == from {
+      to
+    } else {
+      n
+    }, op, edp_rename_free(v, from, to), edp_rename_free(c, from, to), target_off),
+    EReturn(x) => EReturn(edp_rename_free(x, from, to)),
+    EDot(o, f, o1, o2) => EDot(edp_rename_free(o, from, to), f, o1, o2),
+    ELabeledArg(l, n, v) => ELabeledArg(l, n, edp_rename_free(v, from, to)),
+    EBreak(opt) => EBreak(match opt {
+      Some(x) => Some(edp_rename_free(x, from, to)),
+      None => None
+    }),
+    EContinue(args) => EContinue(for a in args {
+      edp_rename_free(a, from, to)
+    }),
+    ETuple(items) => ETuple(for a in items {
+      edp_rename_free(a, from, to)
+    }),
+    EArray(items) => EArray(for a in items {
+      edp_rename_free(a, from, to)
+    }),
+    ERecord(n, fields, tas) => ERecord(n, for f in fields {
+      let (fn2, v) = f
+      (fn2, edp_rename_free(v, from, to))
+    }, tas),
+    EMap(fields) => EMap(for f in fields {
+      let (fn2, v) = f
+      (fn2, edp_rename_free(v, from, to))
+    }),
+    ESpread(x) => ESpread(edp_rename_free(x, from, to)),
+    _ => e
+  }
 }
 
 /// Recorded by `edp_free_names` for a part it cannot read names out of (an
@@ -772,18 +1019,23 @@ fn edp_stamp_expr(e: Expr, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, 
         },
         _ => ()
       }
+      let hslot = Array::length(scope)
       let b2 = edp_stamp_scoped(b, [n], stmts, fn_defs, scope, pure_names)
       Array::truncate(edp_local_lit_names, mark)
       Array::truncate(edp_local_lit_slots, mark)
       Array::truncate(edp_local_lit_vals, mark)
-      ELet(n, v2, b2, off)
+      ELet(n, v2, edp_wrap_snapshots(b2, hslot), off)
     },
     ELetRec(n, v, b) => ELetRec(n, edp_stamp_scoped(v, [n], stmts, fn_defs, scope, pure_names), edp_stamp_scoped(b, [
       n
     ], stmts, fn_defs, scope, pure_names)),
     ELetMut(n, v, b, off) => {
       let v2 = edp_stamp_expr(v, stmts, fn_defs, scope, pure_names)
-      ELetMut(n, v2, edp_stamp_scoped(b, [n], stmts, fn_defs, scope, pure_names), off)
+      let mmark = Array::length(edp_local_mut_slots)
+      Array::push(edp_local_mut_slots, Array::length(scope))
+      let b2 = edp_stamp_scoped(b, [n], stmts, fn_defs, scope, pure_names)
+      Array::truncate(edp_local_mut_slots, mmark)
+      ELetMut(n, v2, b2, off)
     },
     ESeq(a, b) => ESeq(edp_stamp_expr(a, stmts, fn_defs, scope, pure_names), edp_stamp_expr(b, stmts, fn_defs, scope, pure_names)),
     EIf(c, t, el) => EIf(edp_stamp_expr(c, stmts, fn_defs, scope, pure_names), edp_stamp_expr(t, stmts, fn_defs, scope, pure_names), edp_stamp_expr(el, stmts, fn_defs, scope, pure_names)),
@@ -812,7 +1064,15 @@ fn edp_stamp_expr(e: Expr, stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, 
         Array::push(names, n)
         (n, edp_stamp_expr(v, stmts, fn_defs, scope, pure_names))
       }
-      ELoop(pairs2, edp_stamp_scoped(b, names, stmts, fn_defs, scope, pure_names))
+      let mmark = Array::length(edp_local_mut_slots)
+      let mut li = 0
+      while li < Array::length(names) {
+        Array::push(edp_local_mut_slots, Array::length(scope) + li)
+        li = li + 1
+      }
+      let b2 = edp_stamp_scoped(b, names, stmts, fn_defs, scope, pure_names)
+      Array::truncate(edp_local_mut_slots, mmark)
+      ELoop(pairs2, b2)
     },
     EBinOp(op, l, r, boff) => EBinOp(op, edp_stamp_expr(l, stmts, fn_defs, scope, pure_names), edp_stamp_expr(r, stmts, fn_defs, scope, pure_names), boff),
     EUnaryOp(op, x) => EUnaryOp(op, edp_stamp_expr(x, stmts, fn_defs, scope, pure_names)),
