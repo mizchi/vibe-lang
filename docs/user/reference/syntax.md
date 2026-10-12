@@ -250,7 +250,8 @@ export let g2: () -> String = () -> { greet("hi", 3) }
   function with defaults cannot be used as a value (wrap it in a lambda that
   calls it, `(a) -> greet(a)`), and a namespaced `T::f` cannot carry one,
   since a method call (`x.f(..)`) bypasses them. An exported function cannot
-  carry one yet either: defaults do not cross a module boundary (#3432).
+  carry one yet either: an importer cannot tell a default from a plain `x?`
+  (#3440).
 
 `x?` is an optional parameter (#1500). It is declared at type `Option[T]` and
 the call site may omit it:

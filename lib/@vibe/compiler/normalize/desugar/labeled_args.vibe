@@ -53,6 +53,21 @@ export fn strip_label_tilde(n: String) -> String {
 
 /// fname -> ordered param base names, for every top-level `let f = (..) -> ..`
 /// (#986: labeled or not — see the pass comment above).
+/// #3432: an imported function's raw parameter names (`times?`, `x~`), under
+/// the name this module imports it as, read from the dependency's
+/// `param_names_marker`. Both tables below append them after the module's own
+/// functions, so an importer can omit an optional argument or pass it by
+/// label the way the defining module can.
+let imported_params_cell: Array[(String, Array[String])] = array_empty()
+
+export fn imported_params_set(rows: Array[(String, Array[String])]) -> Unit {
+  Array::truncate(imported_params_cell, 0)
+  for row in rows {
+    Array::push(imported_params_cell, row)
+  }
+  ()
+}
+
 export fn collect_fn_param_labels(stmts: Array[Stmt]) -> Array[(String, Array[String])] {
   let out = array_empty()
   let mut i = 0
@@ -74,6 +89,12 @@ export fn collect_fn_param_labels(stmts: Array[Stmt]) -> Array[(String, Array[St
       _ => ()
     }
     i = i + 1
+  }
+  for row in imported_params_cell {
+    let (fname, params) = row
+    Array::push(out, (fname, for pn in params {
+      strip_label_tilde(pn)
+    }))
   }
   out
 }
@@ -673,6 +694,21 @@ export fn collect_optional_param_fns(stmts: Array[Stmt]) -> Array[(String, Array
       _ => ()
     }
     i = i + 1
+  }
+  for row in imported_params_cell {
+    let (fname, params) = row
+    let flags: Array[Bool] = []
+    let mut any = false
+    for pn in params {
+      let is_opt = String::ends_with(pn, "?")
+      any = any || is_opt
+      Array::push(flags, is_opt)
+    }
+    if any {
+      Array::push(out, (fname, flags))
+    } else {
+      ()
+    }
   }
   out
 }

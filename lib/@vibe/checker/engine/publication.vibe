@@ -54,6 +54,7 @@ import @vibe/compiler/core {
   TypeDef,
   TypeEnv,
   bsearch_leftmost,
+  env_bind,
   env_flat_bindings,
   env_lookup,
   env_lookup_flat,
@@ -63,7 +64,8 @@ import @vibe/compiler/core {
   env_type_defs,
   env_value_binding,
   env_with_show_wrapper_facts,
-  is_contract_ext
+  is_contract_ext,
+  param_names_marker
 }
 import @vibe/compiler/runtime/eval_loader {
   contains_str
@@ -763,7 +765,43 @@ export fn engine_checked_module_public_env_publishing(stmts: Array[Stmt], full_c
       ()
     }
   }
-  env_with_show_wrapper_facts(published_env, exported_wrappers, exported_unknown)
+  env_with_show_wrapper_facts(engine_bind_param_name_markers(stmts, value_surface, publication_env, published_env), exported_wrappers, exported_unknown)
+}
+/// #3432: one `param_names_marker` per exported function with an optional
+/// (`x?`) parameter, so an importer can omit it or pass it by label the way
+/// the defining module can. A re-exported function carries the marker its
+/// own import brought in.
+fn engine_bind_param_name_markers(stmts: Array[Stmt], value_surface: Array[String], publication_env: TypeEnv, published: TypeEnv) -> TypeEnv {
+  let mut acc = published
+  // A re-export: the marker the import of it brought in.
+  for name in value_surface {
+    match env_lookup(publication_env, param_names_marker(name)) {
+      Some(t) => {
+        acc = env_bind(acc, param_names_marker(name), t)
+      },
+      None => ()
+    }
+  }
+  for stmt in stmts {
+    match stmt {
+      SLet(_, _, fname, _, EFn(_, _, params, _, _, _)) => {
+        let fields: Array[(String, Type)] = []
+        let mut optional = false
+        for param in params {
+          let (pn, _) = param
+          optional = optional || String::ends_with(pn, "?")
+          Array::push(fields, (pn, CtUnit))
+        }
+        if optional && contains_str(value_surface, fname) {
+          acc = env_bind(acc, param_names_marker(fname), CtRecord(fields))
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+  }
+  acc
 }
 /// Every declaration line, with its declared type-parameter ARITY.
 ///
